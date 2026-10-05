@@ -340,8 +340,10 @@ counts them (`erased.proposals`). A live root whose only history is a proposal s
   from the changes, never from the files: one change shows as its own card (a hire's title, name, role and intent);
   more show "Apply N changes saved from …", the first 8 changes in order, the rest counted, and each shown change's
   quoted text. The reviewer also reads the proposal in full beside the card: every change with its files' whole
-  parses (the tool's new `reviewContents` hook, which the gate adds to the action as `contents`; a tool that cannot
-  give all of it fails the review closed). A proposal the list carries only in part (over 50 units) is never applied
+  parses, and each item a new folder contains by path and kind (the listing's `contains`, from the proposal's path
+  rows; a plain file is named only, as it would save without review on its own). This is the tool's new
+  `reviewContents` hook, which the gate adds to the action as `contents`; a tool that cannot give all of it fails the
+  review closed. A proposal the list carries only in part (over 50 units) is never applied
   on a review of a part: its arguments are refused, and it can still be discarded. An allow records the review with the proposal
   (`qorpera_folder_record_review`, before the receipt), then applies it as one operation (`apply:<id>`, tool version
   `folder-v2/1`, the company's revision required) and tells the agent what saved, whom it hired (to wake with
@@ -353,6 +355,9 @@ counts them (`erased.proposals`). A live root whose only history is a proposal s
   `{schema: "qorpera.folder-proposal-unapplied/v1", proposalId, status, receiptId}` (`status` is `erased` for an
   erased one). The executor finishes that call as failed (`stale_version`) through `CloudToolOperationSettled`, and
   the agent hears that nothing was applied. A receipt that stayed executing would fence the run's later operations.
+  A discard that commits while the apply waits for the proposal's lock instead leaves a commit under the receipt that
+  saved nothing (every unit `denied`, `review_required`, and no proposal): a retry of the same call replays that
+  commit, the receipt completes with it, and the agent hears the same "nothing was applied".
 - A deny (the reviewer's, or a member's on the card) calls the tool's new `denied` hook with the denial's id, and the
   hook closes the proposal as declined (`qorpera_folder_close_proposal` with `actionReviewId`). The boundary passes
   the id on each denying path; if the hook cannot close it, the denial stands as it was.

@@ -182,14 +182,15 @@ export interface CloudCompanyFolderRoutinePage {
 }
 
 /** One unit of an open proposal as its run's list shows it (P40, `qorpera_folder_agent_proposals`): the op, its path (a
- * move's or copy's source) and target, a new folder's item count, and the structured files it writes with their parses
- * (SQL leaves out a parse's null fields). */
+ * move's or copy's source) and target, a new folder's item count and items (each path and kind, P40b), and the
+ * structured files it writes with their parses (SQL leaves out a parse's null fields). */
 export interface CloudCompanyFolderProposalUnit {
 	readonly unit: number;
 	readonly op: CloudCompanyFolderUnit["op"];
 	readonly path: string;
 	readonly to: string | null;
 	readonly items: number | null;
+	readonly contains: readonly { readonly path: string; readonly kind: "file" | "folder" }[];
 	readonly structured: readonly {
 		readonly path: string;
 		readonly kind: string;
@@ -1174,12 +1175,13 @@ export class CloudCompanyFolderClient {
 			)
 				invalid();
 			const units = proposal.units.map((item, index): CloudCompanyFolderProposalUnit => {
-				const unit = record(item, ["unit", "op", "path"], ["to", "items", "structured"]);
+				const unit = record(item, ["unit", "op", "path"], ["to", "items", "contains", "structured"]);
 				if (
 					unit.unit !== index + 1 ||
 					!OPS.includes(unit.op as CloudCompanyFolderUnit["op"]) ||
 					typeof unit.path !== "string" ||
 					(unit.to !== undefined && typeof unit.to !== "string") ||
+					(unit.contains !== undefined && (unit.op !== "new_folder" || !Array.isArray(unit.contains))) ||
 					(unit.structured !== undefined && !Array.isArray(unit.structured))
 				)
 					invalid();
@@ -1189,6 +1191,16 @@ export class CloudCompanyFolderClient {
 					path: unit.path,
 					to: (unit.to as string | undefined) ?? null,
 					items: unit.items === undefined ? null : counter(unit.items),
+					contains: ((unit.contains as unknown[] | undefined) ?? []).map((entry) => {
+						const contained = record(entry, ["path", "kind"]);
+						if (
+							typeof contained.path !== "string" ||
+							!contained.path ||
+							(contained.kind !== "file" && contained.kind !== "folder")
+						)
+							invalid();
+						return { path: contained.path, kind: contained.kind };
+					}),
 					structured: ((unit.structured as unknown[] | undefined) ?? []).map((file) => {
 						const entry = record(file, ["path", "kind", "parse"]);
 						if (
@@ -1286,8 +1298,9 @@ export class CloudCompanyFolderClient {
 	 * `qorpera_folder_apply_proposal`): one commit decides each unit (a moved base is a conflict, kept as a copy where a
 	 * file's bytes differ) and closes the proposal, applied when a unit saved, else not applied. A proposal decided before
 	 * the apply reached it applies nothing: the kernel cancels the call's receipt and answers with the proposal's status
-	 * (P40b). A retry with the same key, review and receipt replays either; this call retries a lost answer as `commit`
-	 * does. */
+	 * (P40b). One decided while the apply waited for it commits nothing under the receipt, each unit denied as
+	 * `review_required`. A retry with the same key, review and receipt replays any of these; this call retries a lost
+	 * answer as `commit` does. */
 	async applyProposal(
 		operationKey: string,
 		proposal: Pick<CloudCompanyFolderProposal, "proposalId" | "unitCount" | "units">,

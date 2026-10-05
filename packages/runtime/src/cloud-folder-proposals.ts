@@ -340,6 +340,7 @@ export class CloudFolderProposals {
 				path: unit.path,
 				...(unit.to === null ? {} : { to: unit.to }),
 				...(unit.items === null ? {} : { items: unit.items }),
+				...(unit.contains.length > 0 ? { contains: unit.contains.map(({ path, kind }) => ({ path, kind })) } : {}),
 				...(unit.structured.length > 0
 					? { files: unit.structured.map(({ path, kind, parse }) => ({ path, kind, parse })) }
 					: {}),
@@ -497,6 +498,19 @@ export class CloudFolderProposals {
 
 /** The apply's answer for the model: what was saved, what was not and why, and who was hired. */
 function applied(proposal: CloudCompanyFolderProposal, receiptId: string, committed: CloudCompanyFolderCommitResult) {
+	// Every change refused for review: the proposal was decided or erased while the apply waited for it.
+	if (
+		committed.units.length > 0 &&
+		committed.units.every((unit) => unit.outcome === "denied" && unit.reason === "review_required")
+	)
+		return cloudToolJsonText({
+			schema: "qorpera.folder-proposal-apply/v1",
+			proposalId: proposal.proposalId,
+			receiptId,
+			outcome: "not_applied",
+			saved: 0,
+			next: NOT_WAITING,
+		});
 	const saved = committed.units.filter((unit) => unit.outcome === "saved");
 	const unsaved = committed.units.filter((unit) => unit.outcome !== "saved");
 	const hired = committed.units.flatMap((unit) => {

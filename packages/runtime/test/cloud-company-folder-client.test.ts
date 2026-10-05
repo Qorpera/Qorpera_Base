@@ -1095,6 +1095,7 @@ describe("changes saved from a computer that wait for review (P40b)", () => {
 			op: "new_folder",
 			path: "agents/nora",
 			items: 1,
+			contains: [{ path: "agents/nora/agent.md", kind: "file" }],
 			structured: [
 				{ path: "agents/nora/agent.md", kind: "agent", parse: { kind: "agent", id: AGENT_ID, name: "Nora" } },
 			],
@@ -1134,7 +1135,7 @@ describe("changes saved from a computer that wait for review (P40b)", () => {
 		unitCount: 3,
 		units: [
 			{ ...units[0], to: null },
-			{ ...units[1], items: null, structured: [] },
+			{ ...units[1], items: null, contains: [], structured: [] },
 		],
 		moreUnits: 1,
 		// No file was read: no version.
@@ -1162,6 +1163,18 @@ describe("changes saved from a computer that wait for review (P40b)", () => {
 			page({ proposals: [proposal({ units: [] })] }),
 			page({ proposals: [proposal({ units: [units[1], units[0]] })] }),
 			page({ proposals: [proposal({ units: [{ ...units[0], op: "chmod" }, units[1]] })] }),
+			// Only a new folder names what it contains, each item a path and a kind.
+			page({ proposals: [proposal({ units: [units[0], { ...units[1], contains: [] }] })] }),
+			page({
+				proposals: [
+					proposal({
+						units: [{ ...units[0], contains: [{ path: "agents/nora/agent.md", kind: "x" }] }, units[1]],
+					}),
+				],
+			}),
+			page({
+				proposals: [proposal({ units: [{ ...units[0], contains: [{ path: "", kind: "file" }] }, units[1]] })],
+			}),
 			page({ proposals: [proposal({ effect: "external" })] }),
 			page({ proposals: [proposal({ note: "x" })] }),
 			// Its reads: at least one, each a path and a whole authority.

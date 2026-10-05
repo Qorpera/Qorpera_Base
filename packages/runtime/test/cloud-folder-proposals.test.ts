@@ -28,7 +28,11 @@ const hireUnit = {
 	unit: 1,
 	op: "new_folder",
 	path: "agents/mira",
-	items: 1,
+	items: 2,
+	contains: [
+		{ path: "agents/mira/agent.md", kind: "file" },
+		{ path: "agents/mira/notes.md", kind: "file" },
+	],
 	structured: [
 		{
 			path: "agents/mira/agent.md",
@@ -299,7 +303,11 @@ it("gives the review every change in full, where the card counts the rest and cu
 			{
 				op: "new_folder",
 				path: "agents/mira",
-				items: 1,
+				items: 2,
+				contains: [
+					{ path: "agents/mira/agent.md", kind: "file" },
+					{ path: "agents/mira/notes.md", kind: "file" },
+				],
 				files: [{ path: "agents/mira/agent.md", kind: "agent", parse: agentParse }],
 			},
 			...deletes.map(({ op, path }) => ({ op, path })),
@@ -400,6 +408,19 @@ it("says which changes were not applied and why", async () => {
 	expect(none.hired).toBeUndefined();
 	// The commit is still the receipt's: nothing was saved, and the receipt says so.
 	expect(g.operationControl.completeFolderToolOperation.mock.calls[0]?.[1]).toMatchObject({ folderCommitId: COMMIT });
+	// Decided while the apply waited for it: every change refused for review, and nothing to redo.
+	const h = await fixture({
+		apply: () =>
+			committed([{ unit: 1, op: "new_folder", path: "agents/mira", outcome: "denied", reason: "review_required" }]),
+	});
+	const decided = parse(await h.apply.execute({ proposalId: HIRE }, h.context));
+	expect(decided).toMatchObject({
+		outcome: "not_applied",
+		saved: 0,
+		next: expect.stringContaining("no longer waiting"),
+	});
+	expect(decided.notSaved).toBeUndefined();
+	expect(h.operationControl.completeFolderToolOperation.mock.calls[0]?.[1]).toMatchObject({ folderCommitId: COMMIT });
 });
 
 it("refuses before any receipt when the proposal is no longer open, or the call has no approval", async () => {

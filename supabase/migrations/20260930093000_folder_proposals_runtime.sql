@@ -7,9 +7,11 @@
 --   qorpera_folder_close_proposal with the binding's.
 -- * Observations name the two tools.
 -- * The listing gives each proposal's reads, the paths it names with their authority, which the run releases with the
---   context that shows them: a revocation after the listing fences the run.
+--   context that shows them: a revocation after the listing fences the run. It names what a new folder contains, each
+--   item by path and kind, for the review to read.
 -- * An apply that finds its proposal decided or erased (a member's discard after the run recorded its review) cancels
---   the call's own receipt, still executing with no commit, and answers so: the run is not fenced by it.
+--   the call's own receipt, still executing with no commit, and answers so: the run is not fenced by it. One the discard
+--   reached while it waited for the proposal committed nothing under that receipt; a retry replays that commit.
 -- No table, no lock. Inert until a view saves (F3 steps 3 and 4).
 
 set local lock_timeout = '3s';
@@ -56,6 +58,16 @@ select pg_temp.p40b_replace('public.qorpera_folder_agent_proposals(uuid,jsonb,js
 				-- 20260930093000 (P40b): what the run releases with the context that shows it.
 				'reads', public.qorpera_folder_proposal_reads(p_environment_id, v_run.profile_id, v_auth, (v_rows[i]).id))
 				order by i)$new$);
+-- What a new folder contains, each item by its path row (items 1 and up) and kind (a file has a manifest): the review
+-- reads every path an apply would make, where the structured files alone come with their parses.
+select pg_temp.p40b_replace('public.qorpera_folder_agent_proposals(uuid,jsonb,jsonb)'::regprocedure,
+	$old$'items', case when u.v ->> 'op' = 'new_folder' then jsonb_array_length(u.v -> 'contents') end,$old$,
+	$new$'items', case when u.v ->> 'op' = 'new_folder' then jsonb_array_length(u.v -> 'contents') end,
+						-- 20260930093000 (P40b)
+						'contains', case when u.v ->> 'op' = 'new_folder' then (select jsonb_agg(jsonb_build_object('path', q.path,
+								'kind', case when q.manifest_sha256 is null then 'folder' else 'file' end) order by q.item_no)
+							from public.qorpera_folder_proposal_paths q
+							where q.proposal_id = (v_rows[i]).id and q.unit_no = u.o and q.item_no >= 1) end,$new$);
 
 drop function pg_temp.p40b_replace(regprocedure, text, text);
 
@@ -63,7 +75,8 @@ drop function pg_temp.p40b_replace(regprocedure, text, text);
 -- recorded the review before the call's receipt, so a member's discard (or an erasure) can land between the two. The
 -- receipt, the run's own for this proposal's apply, is then still executing with no commit, and nothing will apply under
 -- it: it is cancelled here under its lock (the commit's, FOR NO KEY UPDATE, rank C1C §5.7, taken alone), and the
--- answer says what the proposal is. A retry with the same receipt answers the same.
+-- answer says what the proposal is. A retry with the same receipt answers the same. A discard that lands while the apply
+-- waits for the proposal leaves a commit of this key that applied nothing and carries the receipt: a retry replays it.
 create or replace function public.qorpera_folder_apply_proposal(p_environment_id uuid, p_actor jsonb, p_operation_key text,
 	p_proposal_id uuid, p_review_id uuid, p_receipt_id uuid default null)
 returns jsonb language plpgsql security definer set search_path = '' as $$
@@ -83,19 +96,25 @@ begin
 		return public.qorpera_folder_commit(p_environment_id, p_actor, p_operation_key, v_proposal.units, p_review_id,
 			p_receipt_id);
 	end if;
+	-- The commit of this key that applied the proposal, or (20260930093000, P40b) the one that carries this call's receipt
+	-- and applied nothing: a discard or an erasure reached the proposal while the apply waited for it.
+	select c.* into v_commit from public.qorpera_folder_operation_keys k
+	join public.qorpera_folder_commits c on c.id = k.commit_id
+	where k.environment_id = p_environment_id and k.scope_id = (p_actor ->> 'runId')::uuid
+		and k.operation_key = p_operation_key
+		and (c.id = v_proposal.apply_commit_id or (c.proposal_id is null and c.receipt_id = p_receipt_id));
 	if found then
-		select c.* into v_commit from public.qorpera_folder_operation_keys k
-		join public.qorpera_folder_commits c on c.id = k.commit_id
-		where k.environment_id = p_environment_id and k.scope_id = (p_actor ->> 'runId')::uuid
-			and k.operation_key = p_operation_key and c.id = v_proposal.apply_commit_id;
-		if found then
-			-- The same request only: the review and the receipt the apply was made with (the commit's own digest covered its
-			-- units, which the decided proposal no longer keeps).
-			if v_proposal.review_id is distinct from p_review_id or v_commit.receipt_id is distinct from p_receipt_id then
-				raise exception 'Operation key was used for a different change set' using errcode = '22023'; end if;
-			return jsonb_build_object('schema','qorpera.folder-commit/v1','commitId',v_commit.id,'seq',v_commit.seq,'replay',true,
-				'units',v_commit.units);
-		end if;
+		-- The same request only: the review and the receipt the apply was made with (the commit's own digest covered its
+		-- units, which the decided proposal no longer keeps). A commit that applied nothing names no review: the receipt,
+		-- this run's for this proposal's apply, stands for the request.
+		if v_commit.receipt_id is distinct from p_receipt_id
+			or (v_commit.proposal_id is not null and v_proposal.review_id is distinct from p_review_id)
+			or (v_commit.proposal_id is null and not exists (select 1 from public.qorpera_run_operation_receipts r
+				where r.id = p_receipt_id and r.run_id = (p_actor ->> 'runId')::uuid
+					and r.logical_operation_key = 'apply_proposal:apply:' || p_proposal_id::text)) then
+			raise exception 'Operation key was used for a different change set' using errcode = '22023'; end if;
+		return jsonb_build_object('schema','qorpera.folder-commit/v1','commitId',v_commit.id,'seq',v_commit.seq,'replay',true,
+			'units',v_commit.units);
 	end if;
 	-- 20260930093000 (P40b): decided or erased before this apply reached it. A decided proposal never opens again, so the
 	-- status read without a lock stands.
@@ -125,6 +144,8 @@ begin
 		'''discard_proposal''') = 0 then
 		raise exception 'P40b did not reach the observation vocabulary'; end if;
 	if strpos((select prosrc from pg_proc where oid = 'public.qorpera_folder_agent_proposals(uuid,jsonb,jsonb)'::regprocedure),
-		'qorpera_folder_proposal_reads') = 0 then
+		'qorpera_folder_proposal_reads') = 0
+		or strpos((select prosrc from pg_proc where oid = 'public.qorpera_folder_agent_proposals(uuid,jsonb,jsonb)'::regprocedure),
+			'''contains''') = 0 then
 		raise exception 'P40b did not reach the proposal listing'; end if;
 end $guard$;

@@ -4,7 +4,8 @@
 -- apply_proposal call, records the approval through R1's recorder and applies it; a deny declines it; the agent's run,
 -- the asked member and owners or admins discard it; an open proposal roots its bytes; a restricted agent's hire through a
 -- view asks the owners and admins; erasure erases it; an apply that finds it decided after its review cancels the call's
--- receipt, and a listed proposal names the reads its run releases (P40b). Views are run boxes of 769's runs (each acts through its live run). Races are in 927.
+-- receipt, and a listed proposal names the reads its run releases and what a new folder contains (P40b). Views are run
+-- boxes of 769's runs (each acts through its live run). Races are in 927.
 
 create function pg_temp.box(p_run jsonb) returns jsonb language sql as $$
 	select public.qorpera_folder_view_open('63400000-0000-4000-8000-000000000020', p_run, 'run_box', '{}')
@@ -356,6 +357,11 @@ begin
 		raise exception 'An open proposal roots its file'; end if;
 	if not (pg_temp.list(x -> 'actor') -> 'proposals' @> jsonb_build_array(jsonb_build_object('proposalId', p.id, 'createsAgent', true))) then
 		raise exception 'The list says the proposal makes an agent: %', pg_temp.list(x -> 'actor'); end if;
+	-- (P40b) It names what the new folder contains, each item by path and kind, for the review to read.
+	perform pg_temp.same((select q -> 'units' -> 0 -> 'contains' from jsonb_array_elements(pg_temp.list(x -> 'actor') -> 'proposals') q
+		where q ->> 'proposalId' = p.id::text), '[{"path":"agents/nora/agent.md","kind":"file"},
+		{"path":"agents/nora/memory","kind":"folder"},{"path":"agents/nora/todos","kind":"folder"}]'::jsonb,
+		'A listed new folder''s items');
 	-- Agent A becomes restricted.
 	perform pg_temp.fx(format('update public.qorpera_company_path_grants set expires_at = clock_timestamp() + interval ''1 day'' where id = %L',
 		(pg_temp.agent_grant((pg_temp.root()).id, '63400000-0000-4000-8000-0000000000a1')).id));

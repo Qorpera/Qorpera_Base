@@ -219,8 +219,9 @@ end $$;
 
 -- F. P40b, with receipts begun for real (run f1's acknowledgement recorded first, as 651 does, so its calls may work).
 -- A member's discard in flight: the apply under its receipt waits at the proposal, then its commit applies nothing and
--- carries the receipt, which the run completes with it. A discard committed before the apply: the apply cancels the
--- receipt, which no commit carries, and answers the proposal as discarded; the run's next operation begins (no fence).
+-- carries the receipt, which a retry replays and the run completes with it. A discard committed before the apply: the
+-- apply cancels the receipt, which no commit carries, and answers the proposal as discarded; the run's next operation
+-- begins (no fence).
 set session_replication_role = replica;
 with e as (
 	insert into public.qorpera_session_events(session_id, sequence, event_id, event_type, actor_user_id, body, event_hash, created_at,
@@ -265,7 +266,7 @@ select set_config('qorpera_test.receipt_f', pg_temp.begin_receipt('apply_proposa
 
 do $$
 declare v_state text; pf uuid := current_setting('qorpera_test.pf')::uuid; v_receipt uuid := current_setting('qorpera_test.receipt_f')::uuid;
-	v_commit public.qorpera_folder_commits;
+	v_commit public.qorpera_folder_commits; a jsonb;
 begin
 	perform dblink_exec('fence_one', 'begin');
 	perform * from dblink('fence_one', pg_temp.sql_discard(pf)) as t(r text);
@@ -280,6 +281,12 @@ begin
 	if v_state <> 'ok' or pg_temp.status(pf) <> 'discarded' or not pg_temp.present('p40-f.txt')
 		or pg_temp.unit_of('apply-proposal:' || pf) <> 'denied:review_required' or v_commit.receipt_id is distinct from v_receipt then
 		raise exception 'F: % % % %', v_state, pg_temp.status(pf), pg_temp.unit_of('apply-proposal:' || pf), to_jsonb(v_commit); end if;
+	-- Its answer lost, the same call again replays that commit: the receipt it carries stands for the request.
+	select r::jsonb into a from dblink('fence_two', pg_temp.sql_apply_under(pf, current_setting('qorpera_test.rf')::uuid, v_receipt))
+		as t(r text);
+	if a is distinct from jsonb_build_object('schema', 'qorpera.folder-commit/v1', 'commitId', v_commit.id, 'seq', v_commit.seq,
+			'replay', true, 'units', v_commit.units) then
+		raise exception 'F: a retry replays the commit that carries its receipt: %', a; end if;
 	-- The run completes the receipt with the commit that carries it, as for any commit.
 	if public.qorpera_folder_complete_run_receipt(current_setting('qorpera_test.binding')::jsonb, v_receipt, repeat('a', 64),
 			'{"ok":true}', v_commit.id) ->> 'state' <> 'completed' then
