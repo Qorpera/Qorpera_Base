@@ -1,8 +1,9 @@
 -- 20260930091000: check-ins for the Company Computer's shells under one idle rule for every machine (the 2026-10-03
 -- amendment, item 5). Folder-v2 only by the founder's decision of 3 October. A shell that stays busy since its agent
 -- last worked with it (started or typed into any command on that screen) has its agent asked whether it still needs
--- it, after 1, 3 and 7 hours, then every 24, each time only while busy, in the conversation of the run that worked
--- with it last (a worker's: the conversation that dispatched it). A question is a notice, never a stop.
+-- it, after 1, 3 and 7 hours, then every 24, each time only while busy, in the conversation of the run that started
+-- each program still running there (a worker's: the conversation that dispatched it). A question is a notice, never a
+-- stop.
 -- 1. Asking: qorpera_machine_checkins holds one row per question (agents' machines and coding sessions use it too);
 --    qorpera_office_shell_checkins_unasked lists the questions due and not asked yet.
 -- 2. Delivery on the shared folder drains (LISTENER §9), with C1c-3i-b's helpers (20260930058000): the source kind
@@ -10,9 +11,10 @@
 --    materialized with the parent's capability, told in the parent's conversation, read with a continuation of its
 --    own). qorpera_folder_machine_checkins_due / _company are the drain's pair: a company's step takes the folder
 --    fence KEY SHARE, rank 0 and the ready parents' ranks 1 to 3 KEY SHARE, asks, then takes the questions FOR UPDATE
---    SKIP LOCKED (run-owned rows), the parents' conversations KEY SHARE in id order, and admission; then one wake per
---    parent with up to 8 questions that still stand. One continuation per parent at a time; a question no longer
---    standing, or a stopped parent's, is suppressed, a gone parent's undeliverable; a running parent's wait.
+--    SKIP LOCKED (run-owned rows), the parents' conversations KEY SHARE in id order, and admission; then, with each
+--    parent's state read again under admission, one wake per parent with up to 8 questions that still stand. One
+--    continuation per parent at a time, across concurrent steps; a question no longer standing, or a stopped parent's,
+--    is suppressed, a gone parent's undeliverable; a running parent's wait.
 -- Every patched or new body names this migration (20260930091000).
 
 -- 1. Asking ------------------------------------------------------------------------------------------------------------
@@ -22,7 +24,8 @@ create table public.qorpera_machine_checkins (
 	profile_id uuid not null,
 	environment_id uuid not null,
 	staff_agent_id uuid not null,
-	-- The run whose conversation is asked: the one that worked with it last (for a worker, the run that dispatched it).
+	-- The run whose conversation is asked: the one that started the programs asked about (for a worker's, the run that
+	-- dispatched it).
 	parent_run_id uuid not null references public.qorpera_execution_runs(id) on delete cascade,
 	-- computer: a Company Computer's shell; machine: an agent's machine; coding: a coding session.
 	machine_kind text not null check (machine_kind in ('computer', 'machine', 'coding')),
@@ -37,7 +40,7 @@ create table public.qorpera_machine_checkins (
 	delivery text not null default 'waiting' check (delivery in ('waiting', 'delivered', 'suppressed', 'undeliverable')),
 	occurrence_id uuid,
 	scanned_at timestamptz not null default '-infinity',
-	unique (machine_kind, subject_id, since, mark_hours)
+	unique (machine_kind, subject_id, parent_run_id, since, mark_hours)
 );
 create index qorpera_machine_checkins_waiting on public.qorpera_machine_checkins (environment_id, parent_run_id, created_at, id)
 	where delivery = 'waiting';
@@ -55,9 +58,10 @@ returns integer language sql immutable set search_path = '' as $$
 $$;
 revoke all on function public.qorpera_machine_checkin_mark(double precision) from public, anon, authenticated, service_role;
 
--- The questions due and not asked yet, in one folder-v2 environment (or all, for the due list): each screen whose shell
--- is busy, whose agent still runs a command there and has not worked with that shell for at least an hour, at the mark
--- reached, for the run that worked with it last. An archived agent is not asked.
+-- The questions due and not asked yet, in one folder-v2 environment (or all, for the due list): for each screen whose
+-- shell is busy and whose agent has not worked with that shell for at least an hour, one question per conversation whose
+-- run started a command of that agent still running there, at the mark reached. The count starts at the agent's last
+-- work with the shell, whichever conversation it came from. An archived agent is not asked.
 create function public.qorpera_office_shell_checkins_unasked(p_environment_id uuid)
 returns table (office_id uuid, screen_id uuid, profile_id uuid, environment_id uuid, staff_agent_id uuid, conversation_run_id uuid,
 	worked_at timestamptz, mark integer)
@@ -65,25 +69,26 @@ language sql stable security definer set search_path = '' as $$
 	-- 20260930091000.
 	select asking.* from (
 		select activity.office_id, activity.screen_id, office.profile_id, office.environment_id, screen.staff_agent_id,
-			latest.conversation_run_id, latest.worked_at,
-			public.qorpera_machine_checkin_mark(extract(epoch from clock_timestamp() - latest.worked_at) / 3600) as mark
+			program.conversation_run_id, worked.worked_at,
+			public.qorpera_machine_checkin_mark(extract(epoch from clock_timestamp() - worked.worked_at) / 3600) as mark
 		from public.qorpera_runtime_office_shell_activity activity
 		join public.qorpera_runtime_offices office on office.id = activity.office_id and office.generation = activity.computer_generation
 		join public.qorpera_runtime_office_screens screen on screen.id = activity.screen_id
-		cross join lateral (select command.conversation_run_id, command.worked_at
+		cross join lateral (select max(command.worked_at) as worked_at
 			from public.qorpera_runtime_office_shell_commands command
-			where command.screen_id = activity.screen_id and command.staff_agent_id = screen.staff_agent_id
-			order by command.worked_at desc, command.id desc limit 1) latest
+			where command.screen_id = activity.screen_id and command.staff_agent_id = screen.staff_agent_id) worked
+		cross join lateral (select distinct open_command.conversation_run_id
+			from public.qorpera_runtime_office_shell_commands open_command
+			where open_command.office_id = activity.office_id and open_command.screen_id = activity.screen_id
+				and open_command.staff_agent_id = screen.staff_agent_id and open_command.ended_at is null) program
 		where (p_environment_id is null or office.environment_id = p_environment_id) and activity.busy_until > clock_timestamp()
-			and latest.worked_at <= clock_timestamp() - interval '1 hour'
+			and worked.worked_at <= clock_timestamp() - interval '1 hour'
 			and public.qorpera_environment_is_folder_v2(office.environment_id)
-			and exists (select 1 from public.qorpera_runtime_office_shell_commands open_command
-				where open_command.office_id = activity.office_id and open_command.screen_id = activity.screen_id
-					and open_command.staff_agent_id = screen.staff_agent_id and open_command.ended_at is null)
 			and exists (select 1 from public.qorpera_profile_staff staff where staff.profile_id = office.profile_id
 				and staff.staff_agent_id = screen.staff_agent_id and staff.employment_status = 'active')) asking
 	where not exists (select 1 from public.qorpera_machine_checkins asked where asked.machine_kind = 'computer'
-		and asked.subject_id = asking.screen_id and asked.since = asking.worked_at and asked.mark_hours = asking.mark)
+		and asked.subject_id = asking.screen_id and asked.parent_run_id = asking.conversation_run_id
+		and asked.since = asking.worked_at and asked.mark_hours = asking.mark)
 $$;
 revoke all on function public.qorpera_office_shell_checkins_unasked(uuid) from public, anon, authenticated, service_role;
 
@@ -98,15 +103,17 @@ begin
 	if p_environment_id is null or p_limit is null or p_limit not between 1 and 256 then
 		raise exception 'Office shell check-in bound is invalid' using errcode = '22023'; end if;
 	for v_shell in select * from public.qorpera_office_shell_checkins_unasked(p_environment_id) unasked
-		order by unasked.worked_at, unasked.screen_id limit p_limit loop
+		order by unasked.worked_at, unasked.screen_id, unasked.conversation_run_id limit p_limit loop
 		begin
-			-- What still runs, as many as fit: 8 at most and 3000 bytes of commands, the rest counted.
+			-- What this conversation's runs started that still runs, as many as fit: 8 at most and 3000 bytes of commands,
+			-- the rest counted.
 			with listed as (
 				select command.id, command.started_at,
 					jsonb_build_object('command', left(command.command, 200), 'startedAt', command.started_at) as item
 				from public.qorpera_runtime_office_shell_commands command
 				where command.office_id = v_shell.office_id and command.screen_id = v_shell.screen_id
-					and command.staff_agent_id = v_shell.staff_agent_id and command.ended_at is null),
+					and command.staff_agent_id = v_shell.staff_agent_id and command.conversation_run_id = v_shell.conversation_run_id
+					and command.ended_at is null),
 			ordered as (
 				select listed.item, row_number() over (order by listed.started_at, listed.id) as n,
 					sum(octet_length(listed.item::text)) over (order by listed.started_at, listed.id) as bytes
@@ -119,7 +126,7 @@ begin
 				subject_id, since, mark_hours, body)
 			values (v_shell.profile_id, v_shell.environment_id, v_shell.staff_agent_id, v_shell.conversation_run_id, 'computer',
 				v_shell.screen_id, v_shell.worked_at, v_shell.mark, v_body)
-			on conflict (machine_kind, subject_id, since, mark_hours) do nothing;
+			on conflict (machine_kind, subject_id, parent_run_id, since, mark_hours) do nothing;
 			get diagnostics v_count = row_count;
 			v_asked := v_asked + v_count;
 		exception when check_violation or not_null_violation or foreign_key_violation or program_limit_exceeded then
@@ -131,13 +138,15 @@ begin
 end $$;
 revoke all on function public.qorpera_ask_busy_office_shells(uuid, integer) from public, anon, authenticated, service_role;
 
--- Whether a question still stands when it would be delivered: no later mark was asked for the same count, and (on a
--- Company Computer) the shell is busy now, its seat is the same agent's and nobody worked with it since.
+-- Whether a question still stands when it would be delivered: no later mark was asked of the same conversation for the
+-- same count, and (on a Company Computer) the shell is busy now, its seat is the same agent's, nobody worked with it
+-- since, and a command that conversation's runs started still runs there.
 create function public.qorpera_machine_checkin_current(p_checkin public.qorpera_machine_checkins)
 returns boolean language sql stable security definer set search_path = '' as $$
 	-- 20260930091000.
 	select not exists (select 1 from public.qorpera_machine_checkins later where later.machine_kind = p_checkin.machine_kind
-			and later.subject_id = p_checkin.subject_id and later.since = p_checkin.since and later.mark_hours > p_checkin.mark_hours)
+			and later.subject_id = p_checkin.subject_id and later.parent_run_id = p_checkin.parent_run_id
+			and later.since = p_checkin.since and later.mark_hours > p_checkin.mark_hours)
 		and case p_checkin.machine_kind
 			when 'computer' then exists (select 1 from public.qorpera_runtime_office_shell_activity activity
 				join public.qorpera_runtime_offices office on office.id = activity.office_id and office.generation = activity.computer_generation
@@ -145,7 +154,11 @@ returns boolean language sql stable security definer set search_path = '' as $$
 				where activity.screen_id = p_checkin.subject_id and activity.busy_until > clock_timestamp()
 					and screen.staff_agent_id = p_checkin.staff_agent_id
 					and (select max(command.worked_at) from public.qorpera_runtime_office_shell_commands command
-						where command.screen_id = screen.id and command.staff_agent_id = screen.staff_agent_id) = p_checkin.since)
+						where command.screen_id = screen.id and command.staff_agent_id = screen.staff_agent_id) = p_checkin.since
+					and exists (select 1 from public.qorpera_runtime_office_shell_commands open_command
+						where open_command.office_id = activity.office_id and open_command.screen_id = screen.id
+							and open_command.staff_agent_id = screen.staff_agent_id
+							and open_command.conversation_run_id = p_checkin.parent_run_id and open_command.ended_at is null))
 			-- Other machines judge their questions when they ask them.
 			else true end
 $$;
@@ -403,7 +416,8 @@ begin
 		perform public.qorpera_folder_company_enter(p_environment_id, v_profile, v_targets, false);
 		if public.qorpera_company_execution_paused(v_profile) then
 			return jsonb_build_object('schema', c_schema, 'state', 'paused'); end if;
-		-- 3. Ask: new questions wait for the next step (their parents' ranks were not taken here).
+		-- 3. Ask. A new question goes out in this step only if its parent was read in step 1 (its ranks are held here);
+		-- the others wait for the next step.
 		v_asked := public.qorpera_ask_busy_office_shells(p_environment_id, 64);
 		-- 4. Each parent's waiting questions FOR UPDATE SKIP LOCKED (run-owned rows), in parent id order, and the parent's
 		-- state again under them. Questions that no longer stand are suppressed; those another step holds are its own.
@@ -440,12 +454,15 @@ begin
 			perform 1 from public.qorpera_shared_sessions where id = any(coalesce(v_sessions, '{}')) and profile_id = v_profile
 			order by id for key share;
 			perform public.qorpera_folder_admit_wakes(v_profile);
-			-- 6. One wake per parent, its questions in at most 6 KiB. A pause at admission cancels the wake and the
-			-- questions wait; a parent whose agent, requester or conversation is gone, or whose questions cannot be carried,
-			-- is undeliverable.
+			-- 6. One wake per parent, its questions in at most 6 KiB. The parent's state again under admission, which
+			-- serializes the company's wake inserts: another step that holds other questions of the same parent may have
+			-- continued it since (one continuation at a time); its questions then wait. A pause at admission cancels the
+			-- wake and the questions wait; a parent whose agent, requester or conversation is gone, or whose questions
+			-- cannot be carried, is undeliverable.
 			for v_item in select x.value from jsonb_array_elements(v_ready) x loop
 				v_ids := array(select jsonb_array_elements_text(v_item -> 'ids')::uuid);
 				select * into v_run from public.qorpera_execution_runs where id = (v_item ->> 'parent')::uuid;
+				if public.qorpera_folder_parent_continuation(v_run.id, 'machine-checkin') <> 'ready' then continue; end if;
 				begin
 					v_payload := public.qorpera_machine_checkin_payload(v_run.id, v_ids);
 					while pg_column_size(v_payload) > 6144 and cardinality(v_ids) > 1 loop

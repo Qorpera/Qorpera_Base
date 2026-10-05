@@ -399,9 +399,12 @@ run's events cost no request per pass. One step delivers up to 8 parents' events
 **The check-ins' due list** (`machine_checkins`, the 2026-10-03 amendment "one idle rule for every machine", item 5):
 the folder-v2 environments, not paused or being deleted, with a busy shell whose agent is due a question not asked yet
 (a mark of 1, 3 or 7 hours, then every 24, since the agent last worked with it), or with a waiting question whose
-parent run is ready, stopped or gone. A step asks first (its new questions wait for the next step), then continues up to
-8 parents, a wake each with up to 8 questions that still stand; a question no longer standing is suppressed. The wake's
-source kind is `machine-checkin`, continued with C1c-3i-b's helpers as a machine event is.
+parent run is ready, stopped or gone. Each question goes to the conversation of the run that started a program still
+running there. A step asks first (a new question goes out in the same step only if its parent was already due; the
+others wait for the next step), then continues up to 8 parents, a wake each with up to 8 questions that still stand. It
+reads each parent's state again under admission, so concurrent steps continue a parent once at a time. A question no
+longer standing is suppressed. The wake's source kind is `machine-checkin`, continued with C1c-3i-b's helpers as a
+machine event is.
 
 Commits do not nudge the orchestrator. A file wake waits one 2 s pass while one step's window covers the company's
 backlog; with N listeners a step reads 512/N seqs (at most 32), and each company gets one step per pass, so a large

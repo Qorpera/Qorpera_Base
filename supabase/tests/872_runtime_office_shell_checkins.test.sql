@@ -2,9 +2,10 @@
 -- 20260930091000: check-ins for the Company Computer's shells under one idle rule for every machine (the 2026-10-03
 -- amendment, item 5), on a folder-v2 company's computer (folder-v2 only, the founder's decision of 3 October). Asking: a
 -- shell that stays busy since its agent last worked with it has its agent asked after 1, 3 and 7 hours, then every 24,
--- once per mark, in the conversation of the run that worked with it last; a question still stands only while the shell
--- stays busy and nobody worked with it. Delivery: the folder drain's step continues the parent run with a
--- 'machine-checkin' wake once that run ended, one at a time, and suppresses what no longer stands.
+-- once per mark, in the conversation of the run that started each program still running; a question still stands only
+-- while the shell stays busy, its program runs and nobody worked with the shell. Delivery: the folder drain's step
+-- continues the parent run with a 'machine-checkin' wake once that run ended, one at a time (also across concurrent
+-- steps), and suppresses what no longer stands.
 -- 648's committed fixture; the company's computer is registered, started and activated as 894 does (870's setup), and
 -- Ada's screen opened by the owner. Effect records and reports are synthetic. Everything is removed at the end.
 
@@ -25,11 +26,10 @@ begin
 	perform dblink_exec(p_conn, format('set request.jwt.claims = %L',
 		jsonb_strip_nulls(jsonb_build_object('role', p_role, 'sub', p_user))::text));
 end $$;
--- Sends a call and waits up to ten seconds for it to end; its text answer, or the error as "<sqlstate> <message>".
-create function pg_temp.settled(p_conn text, p_sql text) returns text language plpgsql as $$
+-- Waits up to ten seconds for a sent call to end; its text answer, or the error as "<sqlstate> <message>".
+create function pg_temp.answer(p_conn text) returns text language plpgsql as $$
 declare v_until timestamptz := clock_timestamp() + interval '10 seconds'; v_answer text;
 begin
-	perform dblink_send_query(p_conn, p_sql);
 	while dblink_is_busy(p_conn) = 1 loop
 		if clock_timestamp() > v_until then return 'WAITED'; end if;
 		perform pg_sleep(0.02);
@@ -43,6 +43,23 @@ begin
 	exception when others then null;
 	end;
 	return coalesce(v_answer, 'null');
+end $$;
+-- Sends a call and waits for its answer.
+create function pg_temp.settled(p_conn text, p_sql text) returns text language plpgsql as $$
+begin
+	perform dblink_send_query(p_conn, p_sql);
+	return pg_temp.answer(p_conn);
+end $$;
+-- Whether a sent call comes to wait on another session's lock within ten seconds.
+create function pg_temp.blocked(p_conn text) returns boolean language plpgsql as $$
+declare v_until timestamptz := clock_timestamp() + interval '10 seconds';
+begin
+	loop
+		if cardinality(pg_blocking_pids(current_setting('qorpera_test.pid_' || p_conn)::integer)) > 0 then return true; end if;
+		exit when clock_timestamp() > v_until or dblink_is_busy(p_conn) = 0;
+		perform pg_sleep(0.02);
+	end loop;
+	return false;
 end $$;
 
 -- The company's computer, started by its owner and brought up by the provider (894's chain), and Ada's screen opened
@@ -220,7 +237,7 @@ select pg_temp.check((select count(*) = 1 and bool_and(q.machine_kind = 'compute
 	and q.since = (pg_temp.command_row(5)).worked_at and q.delivery = 'waiting'
 	and q.body -> 'running' = jsonb_build_array(jsonb_build_object('command', 'python crawl.py', 'startedAt', (pg_temp.command_row(5)).started_at))
 	and (q.body ->> 'busyHours')::integer = 1 and (q.body ->> 'more')::integer = 0)
-	from public.qorpera_machine_checkins q), 'the question names the screen, the run that worked with it last and what runs');
+	from public.qorpera_machine_checkins q), 'the question names the screen, the run that started the crawl and what runs');
 select pg_temp.check(public.qorpera_machine_checkin_current(q), 'the question stands while the crawl stays busy')
 from public.qorpera_machine_checkins q;
 -- A snapshot-v1 environment asks nothing.
@@ -296,6 +313,49 @@ where id = pg_temp.command(5);
 select pg_temp.check(pg_temp.asked_again(), 'a worker''s busy command is asked about');
 select pg_temp.check((select parent_run_id = '64800000-0000-4000-8000-0000000000f1' from public.qorpera_machine_checkins),
 	'the question goes to the run whose conversation is asked');
+rollback;
+-- Each program is asked about in the conversation of the run that started it, not in the one that worked with the
+-- shell last. Another conversation's run (9b1) ran a short `git status` two hours ago: that restarts the count, and the
+-- crawl is still asked about in its own conversation. Once 9b1 also runs a build, each conversation is asked about its
+-- own program; when the build ends, 9b1's question no longer stands.
+begin;
+set local session_replication_role = replica;
+insert into public.qorpera_execution_runs
+select (jsonb_populate_record(pg_temp.run(), jsonb_build_object('id', '87200000-0000-4000-8000-0000000009b1',
+	'job_id', extensions.gen_random_uuid(), 'source_id', extensions.gen_random_uuid(), 'session_id', '87200000-0000-4000-8000-0000000009b2'))).*;
+set local session_replication_role = origin;
+insert into public.qorpera_runtime_office_shell_commands(id, office_id, computer_generation, screen_id, staff_agent_id, run_id,
+	receipt_id, conversation_run_id, session_id, command, started_at, worked_at, ended_at, end_reason)
+values ('87200000-0000-4000-8000-0000000000c6', (pg_temp.office()).id, (pg_temp.office()).generation,
+	current_setting('qorpera_test.screen')::uuid, (pg_temp.run()).staff_agent_id, '87200000-0000-4000-8000-0000000009b1',
+	'87200000-0000-4000-8000-0000000000d6', '87200000-0000-4000-8000-0000000009b1', '87200000-0000-4000-8000-0000000009b2', 'git status',
+	clock_timestamp() - interval '2 hours', clock_timestamp() - interval '2 hours', clock_timestamp() - interval '119 minutes', 'exited');
+select pg_temp.check(pg_temp.asked_again(), 'a busy crawl is asked about after another conversation''s short command');
+select pg_temp.check((select count(*) = 1 and bool_and(q.parent_run_id = (pg_temp.run()).id and q.mark_hours = 1
+		and q.since = (select c.worked_at from public.qorpera_runtime_office_shell_commands c where c.id = '87200000-0000-4000-8000-0000000000c6')
+		and q.body -> 'running' = jsonb_build_array(jsonb_build_object('command', 'python crawl.py', 'startedAt', (pg_temp.command_row(5)).started_at)))
+	from public.qorpera_machine_checkins q),
+	'in the conversation that started the crawl, counted from the other conversation''s work');
+insert into public.qorpera_runtime_office_shell_commands(id, office_id, computer_generation, screen_id, staff_agent_id, run_id,
+	receipt_id, conversation_run_id, session_id, command, started_at, worked_at)
+values ('87200000-0000-4000-8000-0000000000c7', (pg_temp.office()).id, (pg_temp.office()).generation,
+	current_setting('qorpera_test.screen')::uuid, (pg_temp.run()).staff_agent_id, '87200000-0000-4000-8000-0000000009b1',
+	'87200000-0000-4000-8000-0000000000d7', '87200000-0000-4000-8000-0000000009b1', '87200000-0000-4000-8000-0000000009b2', 'npm run build',
+	clock_timestamp() - interval '150 minutes', clock_timestamp() - interval '150 minutes');
+select pg_temp.check(pg_temp.asked_again(), 'with a program of each conversation running, the shell is asked about');
+select pg_temp.check((select count(*) from public.qorpera_machine_checkins) = 2, 'each conversation is asked');
+select pg_temp.check((select body -> 'running' = jsonb_build_array(jsonb_build_object('command', 'python crawl.py',
+		'startedAt', (pg_temp.command_row(5)).started_at)) and (body ->> 'more')::integer = 0
+	from public.qorpera_machine_checkins where parent_run_id = (pg_temp.run()).id)
+	and (select body -> 'running' = jsonb_build_array(jsonb_build_object('command', 'npm run build',
+		'startedAt', (select c.started_at from public.qorpera_runtime_office_shell_commands c where c.id = '87200000-0000-4000-8000-0000000000c7')))
+		and (body ->> 'more')::integer = 0
+	from public.qorpera_machine_checkins where parent_run_id = '87200000-0000-4000-8000-0000000009b1'),
+	'each conversation is asked about its own program only');
+update public.qorpera_runtime_office_shell_commands set ended_at = clock_timestamp(), end_reason = 'exited'
+where id = '87200000-0000-4000-8000-0000000000c7';
+select pg_temp.check((select bool_and(public.qorpera_machine_checkin_current(q) = (q.parent_run_id = (pg_temp.run()).id))
+	from public.qorpera_machine_checkins q), 'when the build ends, its question no longer stands; the crawl''s still does');
 rollback;
 
 -- 5. Delivery, by the drain's step (C1c-3i-b's helpers). The company's login may pay for autonomous work: a check-in
@@ -452,6 +512,41 @@ begin
 		raise exception 'Delivery: a cancelled parent''s question is suppressed: %', v_answer; end if;
 	perform pg_temp.job('completed');
 end $$;
+-- Two steps at once continue a parent once. The first holds the hour-one question and waits at admission (held here by
+-- fence_four, as an admitting step holds it). Meanwhile the three-hour mark comes, and a second step asks it, holds it
+-- and waits behind. The first continues the parent; the second reads the parent's state again under admission, finds
+-- that continuation, and its question waits.
+select pg_temp.forget() \g /dev/null
+delete from public.qorpera_machine_checkins;
+select pg_temp.still_busy() \g /dev/null
+update public.qorpera_runtime_office_shell_commands set worked_at = clock_timestamp() - interval '90 minutes' where id = pg_temp.command(5);
+select pg_temp.check(pg_temp.ask() = 1, 'the hour-one question waits for the ended parent');
+select dblink_exec('fence_four', 'begin') \g /dev/null
+select * from dblink('fence_four', $q$select 1 from public.qorpera_folder_admissions where profile_id = '64800000-0000-4000-8000-000000000010'
+	for no key update$q$) as t(x integer) \g /dev/null
+select dblink_send_query('fence_one', format('select public.qorpera_folder_machine_checkins_company(%L, 8)::text',
+	'64800000-0000-4000-8000-000000000020')) \g /dev/null
+select pg_temp.check(pg_temp.waits_for('fence_one', 'fence_four'), 'the first step holds the hour-one question and waits at admission');
+update public.qorpera_runtime_office_shell_commands set worked_at = worked_at - interval '2 hours' where id = pg_temp.command(5);
+select dblink_send_query('fence_three', format('select public.qorpera_folder_machine_checkins_company(%L, 8)::text',
+	'64800000-0000-4000-8000-000000000020')) \g /dev/null
+select pg_temp.check(pg_temp.blocked('fence_three'), 'the second step asks the three-hour question, holds it and waits behind');
+select dblink_exec('fence_four', 'commit') \g /dev/null
+do $$
+declare v_first text := pg_temp.answer('fence_one'); v_second text := pg_temp.answer('fence_three');
+begin
+	if v_first !~ '^\{' or v_second !~ '^\{' then raise exception 'Delivery: both steps answer: % %', v_first, v_second; end if;
+	if v_first::jsonb ->> 'state' is distinct from 'done' or v_first::jsonb ->> 'delivered' is distinct from '1'
+		or v_second::jsonb ->> 'state' is distinct from 'done' or v_second::jsonb ->> 'asked' is distinct from '1'
+		or v_second::jsonb ->> 'delivered' is distinct from '0'
+		or (select count(*) from pg_temp.wakes()) <> 1 or (pg_temp.question(1)).delivery is distinct from 'delivered'
+		or (pg_temp.question(1)).occurrence_id is distinct from (select id from pg_temp.wakes() limit 1)
+		or (pg_temp.question(3)).delivery is distinct from 'waiting' then
+		raise exception 'Delivery: two steps at once continue the parent once: % % %', v_first, v_second,
+			(select jsonb_agg(to_jsonb(w)) from pg_temp.wakes() w); end if;
+end $$;
+select pg_temp.forget() \g /dev/null
+delete from public.qorpera_machine_checkins;
 -- A paused company is left alone: its step answers paused, and its questions wait.
 begin;
 select pg_temp.still_busy();
