@@ -727,6 +727,9 @@ request, for event `i` of conversation C:
    A node it cannot recover is just missing, and is rebuilt (step 6).
 3. **Old versions.** A P18 request on those block paths erases their earlier lives. P18 already keeps a live path's
    current life and erases its earlier ones (§2.2 there). Their index rows go with them (§5 there).
+   - It follows moves, as P18 does (§2.3 there). A block can have an earlier life at another path, for example
+     before its agent's folder was renamed. P18 then refuses and names that path. The erase adds each path it names
+     and asks again, until no partner is open. So every life of each block is erased, at every path it had.
 4. **Receipts.** Every `zoom` receipt **in the whole company** whose target is C and whose result may hold text from
    `i` gets the P18 §6 scrub: its envelope stays and its `content` becomes `[erased]`.
    - Matched by the target conversation in the receipt's input, not by the run's own conversation. Any agent may
@@ -758,11 +761,21 @@ results never enter the tree (§2), so a summary never quotes a file that the co
 remove such a quote, an owner or admin erases the message, and the tree follows it.
 
 **GC** (decided by Jonas, 5 October). Tree files are ordinary folder files with ordinary roots. Versions are kept for
-good (core §2), with one more exception next to old git objects: a version of a path under a tree root (§4.2) that a
-later write of the same path replaced is pruned 7 days after that write. It runs beside the git-object prune, through
-the same shared helper (`RUNTIME-COMPANY-FOLDER-ERASURE.md` §4 step 5).
-- A path's current version is kept, and so is its last version before a delete or a move. So restoring a deleted
-  group folder, or an agent's, brings its tree back.
+good (core §2), with one more exception next to old git objects. A version of a path under a tree root (§4.2) is
+pruned when all three hold:
+1. its op is a `write` with a prior. So it is not the start of a life (a `write` with no prior, a `copy` or a
+   `move_in`), and not a `move_out` or a delete;
+2. a later `write` of the same path took it as its prior. So it lies inside one life, and is not the last version
+   before a delete or a move;
+3. that later write is at least 7 days old.
+
+The prune runs beside the git-object prune, through the same shared helper (`RUNTIME-COMPANY-FOLDER-ERASURE.md` §4
+step 5).
+- **Moves and life boundaries keep their rows, with their content.** P18 finds a file's lives through the start of
+  each life and through its move pairs (§2.1 and §2.3 there). Suppose an agent's folder is renamed and a block is
+  then rewritten at its new path. The `move_in` stays, so a later message erase still follows it back to the old path
+  and erases the block's lives there too (step 3). Moves are rare, so the rows they keep cost little.
+- A path's current version is always kept. So restoring a deleted group folder, or an agent's, brings its tree back.
 - Only tree roots are covered. The notebook (`agents/<agent>/memory/` outside `thread/`) and every other file keep all
   their versions.
 - A pruned version can no longer be restored, the same trade as for git objects. A tree is derived from the
@@ -847,8 +860,8 @@ No slots or test numbers are reserved yet. Each step is its own PR with its own 
 | **M0** | Probe, no product code: the Codex 0.155.1 request order, `prompt_cache_key`, cross-run `cachedInputTokens` with a fixed prefix and with a growing conversation; today's real per-run sizes on Live Test from `model_turn` | a short report; decides §6 |
 | **M1** | Agent threads on Live Test only, behind a deploy-config list of company ids: tree files, refusals and index (SQL); `memory_generation` and the checked batch commit; fold, rendering and VIEW_DOC; closing compactor with its raw window, and settle that fills gaps any run left; `zoom` into any agent's thread, with fitted results; view in developer instructions; cache key in the patch; stable `read_context` schema; `memory_view` and `memory_compaction` | SQL tests for index, write refusals, ordinary reads and search of tree files, and the generation check (a batch read before a generation change is discarded), and a dblink race of a batch commit and a zoom receipt against a payer's role change (`qorpera_folder_member_change_enter`) that ends with no deadlock; runtime tests for fold determinism, budget, placeholders, size enforcement, a zoom by an agent into another agent's thread whose result is the same whichever member the run works for, and a markup-heavy zoom read whole through `from`; one live run that writes and reads a tree |
 | **M2** | Measure and tune: the memory probe, VIEW at 48,000 vs 96,000, Luna low vs medium | probe report against §13's targets |
-| **M3** | Erasing one message (§10): the generation raise, the rebuild of every line with the message among its sources, and the receipt scrub by target and range across all runs | SQL tests, including a later message whose line named the erased fact, a Co-Founder zoom into another thread, a compactor batch and a zoom receipt racing the erase (each either lands before it and is deleted or scrubbed, or is discarded and redone at the new generation), and an erase racing a role change, with no deadlock; live: erase, then see the lines rebuilt and old versions gone |
-| **M3b** | The 7-day prune of replaced tree versions (§10, GC) | SQL tests: a block version replaced more than 7 days ago is pruned; the current version, one replaced less than 7 days ago, the last version before a delete, and old versions of a notebook file are kept |
+| **M3** | Erasing one message (§10): the generation raise, the rebuild of every line with the message among its sources, and the receipt scrub by target and range across all runs | SQL tests, including a later message whose line named the erased fact, a Co-Founder zoom into another thread, a compactor batch and a zoom receipt racing the erase (each either lands before it and is deleted or scrubbed, or is discarded and redone at the new generation), and an erase racing a role change, with no deadlock; a block with an earlier life at its agent's former path (a renamed folder), erased at both paths; live: erase, then see the lines rebuilt and old versions gone |
+| **M3b** | The 7-day prune of replaced tree versions (§10, GC) | SQL tests: a block version replaced by a write more than 7 days ago is pruned. Kept: the current version, one replaced less than 7 days ago, a life's first version, the last version before a delete or a move, both rows of a move pair, and old versions of a notebook file. Regression: an agent's folder is renamed, a block is rewritten at its new path, and 8 days pass; the prune keeps the `move_in`, and a message erase then erases the block's lives at both paths |
 | **M4** | Group chats, branches of every conversation the agent takes part in, and the Co-Founder's branches of every agent's thread | runtime tests for branch choice and budget; probe: a fact said in a group chat is recalled in the agent's own thread, and the Co-Founder recalls a fact from another agent's thread |
 | **M5** | On for every folder-v2 company; notebook trimmed to its profile page (§11) | the probe on a fresh company |
 | **M6** | Agent pair transcripts | — |
