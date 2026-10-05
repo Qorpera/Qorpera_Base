@@ -226,6 +226,8 @@ export const CLOUD_FOLDER_DRAINS: readonly CloudFolderDrainSpec[] = Object.freez
 	Object.freeze({ name: "listen", companyLimit: 32 }),
 	// F2's human-task wakes (H2c) after the listener, which marks the task changes they wake for.
 	Object.freeze({ name: "human_tasks", companyLimit: 32 }),
+	// A company machine's events, to the runs that started the work (C1c-3i-b): up to 8 parents a step.
+	Object.freeze({ name: "machine_events", companyLimit: 8 }),
 ]);
 
 /** A page of folder-v2 environments with work for one drain. */

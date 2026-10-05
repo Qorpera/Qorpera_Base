@@ -17,6 +17,12 @@ export const FOLDER_DRAINS: Readonly<Record<string, Readonly<{ due: string; comp
 		company: "qorpera_folder_human_tasks_company",
 		maximum: 32,
 	}),
+	// A company machine's events, delivered to the runs that started the work (C1c-3i-b).
+	machine_events: Object.freeze({
+		due: "qorpera_folder_machine_events_due",
+		company: "qorpera_folder_machine_events_company",
+		maximum: 64,
+	}),
 });
 
 export type RunnerOrchestratorRequest =
