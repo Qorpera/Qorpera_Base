@@ -120,7 +120,8 @@ export function interfaceSource(company: CompanyController, source: string): Int
 			readable: table.readable,
 			problems: table.problems,
 		};
-	if (folderText(company, source) !== undefined) return { columns: ["text"], time: null, readable: true, problems: [] };
+	if (folderText(company, source) !== undefined)
+		return { columns: ["text"], time: null, readable: true, problems: [] };
 	return undefined;
 }
 
@@ -141,7 +142,9 @@ export function idColumn(
 /** Whether this client can draw a block: its kind is drawn here and it reads one source the client has. */
 export function drawableBlock(block: InterfaceBlock, company: CompanyController): boolean {
 	return (
-		DRAWN_BLOCKS.has(block.kind) && block.from.length === 1 && interfaceSource(company, block.from[0] ?? "") !== undefined
+		DRAWN_BLOCKS.has(block.kind) &&
+		block.from.length === 1 &&
+		interfaceSource(company, block.from[0] ?? "") !== undefined
 	);
 }
 

@@ -312,7 +312,8 @@ export class CompanyInterfaceFolder {
 				return;
 			}
 			for (const event of page.events)
-				if (event.kind === "change_set") for (const change of event.changes) touched.add(companyPathKey(change.path));
+				if (event.kind === "change_set")
+					for (const change of event.changes) touched.add(companyPathKey(change.path));
 			position = page.next;
 			if (!page.more) break;
 		}
@@ -353,7 +354,11 @@ export class CompanyInterfaceFolder {
 				[tablePath(name), TABLE_FILE_MAX_BYTES, decodeInterfaceFile],
 				[rowsPath(name), TABLE_ROWS_MAX_BYTES, decodeInterfaceFile],
 			]),
-			...files.map((path): [string, number, (bytes: Uint8Array) => string | null] => [path, FILE_MAX_BYTES, markdownText]),
+			...files.map((path): [string, number, (bytes: Uint8Array) => string | null] => [
+				path,
+				FILE_MAX_BYTES,
+				markdownText,
+			]),
 		];
 		await each(
 			reads.filter(([path]) => again(path) || this.#readOf(path) === undefined),
@@ -369,7 +374,9 @@ export class CompanyInterfaceFolder {
 			let page = this.#parses.get(read);
 			if (!page) {
 				const parsed = parseInterfaceFile(read.text);
-				page = parsed.ok ? { name, file: parsed.file } : { name, file: null, problems: problemsOf(parsed.problems) };
+				page = parsed.ok
+					? { name, file: parsed.file }
+					: { name, file: null, problems: problemsOf(parsed.problems) };
 				this.#parses.set(read, page);
 			}
 			return [page];
@@ -393,9 +400,12 @@ export class CompanyInterfaceFolder {
 	#forget(): void {
 		const { tables, files } = this.#sources();
 		const kept = new Set(
-			[ORDER, ...this.#names.map(pagePath), ...tables.flatMap((name) => [tablePath(name), rowsPath(name)]), ...files].map(
-				companyPathKey,
-			),
+			[
+				ORDER,
+				...this.#names.map(pagePath),
+				...tables.flatMap((name) => [tablePath(name), rowsPath(name)]),
+				...files,
+			].map(companyPathKey),
 		);
 		for (const key of [...this.#reads.keys()]) if (!kept.has(key)) this.#reads.delete(key);
 	}

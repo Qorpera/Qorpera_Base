@@ -12,8 +12,8 @@ import { renderInterface } from "../src/app/views/interface.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import type { HostedProfileRole, HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { h } from "../src/ui/dom.ts";
-import { type FolderFake, folderFake } from "./folder-fake.ts";
 import { fixture, id, profileA, session, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
+import { type FolderFake, folderFake } from "./folder-fake.ts";
 
 /* Interfaces step I7 (RUNTIME-INTERFACES.md §10): a folder-v2 company's interfaces and tables come from its folder,
  * parsed by the client from their text, and follow the folder's feed. The folder is the member's (folder-fake.ts). */
