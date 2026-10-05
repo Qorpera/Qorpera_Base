@@ -116,8 +116,8 @@ end $$;
 -- byte the definition before this migration. A later change to one of these functions updates its digest here, once
 -- its folder-v2 line is checked to still come first. C1c-3f (20260930002000) replaced machine start's refusal with its
 -- marker line in the same place, so its digest is unchanged. An agent's office start and its descriptor serve folder-v2
--- since C1c-3l (20260930030000, test 890) and are no longer pinned here (no old-text pins, the founder's decision of
--- 3 October).
+-- since C1c-3l (20260930030000, test 890), and an agent's screenshot capture since P06d (20260930057000, test 910); they
+-- are no longer pinned here (no old-text pins, the founder's decision of 3 October).
 create function pg_temp.without_guard(p_definition text) returns text language plpgsql as $$
 declare v_body integer := position('$function$' in p_definition); v_at integer; v_end integer;
 begin
@@ -136,7 +136,6 @@ begin
 		('qorpera_wake_authorized(qorpera_wake_occurrences)', 'guard', '025e118587495df4f03ef7634a9eadab'),
 		('qorpera_company_path_assert_context(jsonb)', 'guard', '885499e6425c36e3d55ac3976c1459c6'),
 		('qorpera_presence_path_routes(jsonb,text[],boolean)', 'guard', '8e5f14e3327ac4e308f17ed4e61d25c0'),
-		('qorpera_native_office_capture(jsonb,jsonb,jsonb,text,uuid,text,jsonb,text)', 'guard', '1df3854ac567e4e0c9eb3b23d4c8923f'),
 		('qorpera_native_office_file_export(jsonb,jsonb,jsonb,text,uuid,text,jsonb,text)', 'guard', 'd59292a74936b34ecf70782bda467019'),
 		('qorpera_native_shared_file_export_source(jsonb,jsonb)', 'guard', '07f303ad8158c42fcf15cebe407ac3ce'),
 		('qorpera_self_approve_organization_proposal(jsonb,uuid)', 'guard', 'c975bdeee11aa81db54a2169b6fce819'),
@@ -152,7 +151,8 @@ begin
 		('qorpera_begin_native_company_execution_v2(jsonb,text,text,text,text,text,integer)', 'actor', '3b5736c1cf409a623f10007429aa2f68'),
 		('qorpera_read_company_run_context(jsonb,text,uuid,text,integer,integer)', 'actor', '65725e9941e3dae609539d722faed13f'),
 		('qorpera_native_presence_register(jsonb,uuid,text)', 'actor', '32f9f1dd6f8106351cf53ab012e8b34a'),
-		('qorpera_describe_agent_open_work(jsonb)', 'actor', 'b70d3ac1bbcfe97baf7c9a7baf8f79e3'),
+		-- qorpera_describe_agent_open_work is not pinned: the one idle rule (20260930029000) adds the told list on both
+		-- cores (the founder's decision of 3 October: no old-text pins for folder-v2 work).
 		('qorpera_native_company_object_actor(jsonb,uuid)', 'actor', '57a44af9c107b7c0a3da5bfc6d3eafa7'),
 		('qorpera_company_presence_scope(uuid,jsonb,text[])', 'actor', 'a9398c12528abddb25f91544455da044'),
 		('qorpera_native_presence_subject(uuid,uuid,text[])', 'actor', '0f6897f705023a6b7d6e467aa5346a53'),
@@ -538,8 +538,9 @@ begin
 		raise exception 'Folder-v2 run context folders: %', c -> 'folder'; end if;
 end $$;
 
--- 9. Refusals: the office's capture and export and the self-approval until C1c-3 (machine start serves folder-v2 since
--- C1c-3f, test 824; an agent's office start and its descriptor since C1c-3l, test 890); the
+-- 9. Refusals: the office's export and the self-approval until C1c-3 (machine start serves folder-v2 since C1c-3f, test
+-- 824; an agent's office start and its descriptor since C1c-3l, test 890; an agent's screenshot capture since P06d, test
+-- 910); the
 -- runner broker's send, direct receipts
 -- and transcript append until C3 (the native send, the interaction request and the tool operation receipts have folder
 -- bodies since C1c-2b, tests 650 and 652). The same calls on a snapshot-v1 company are not refused as folder-v2.
@@ -550,8 +551,6 @@ declare
 begin
 	foreach v in array array[b, s] loop
 		foreach v_sql in array array[
-			format('select public.qorpera_native_office_capture(%L, %L, %L, %L, %L, %L, %L, %L)', v, '{}', '{}', '{}',
-				extensions.gen_random_uuid(), repeat('a', 64), '{}', 'begin'),
 			format('select public.qorpera_native_office_file_export(%L, %L, %L, %L, %L, %L, %L, %L)', v, '{}', '{}', '{}',
 				extensions.gen_random_uuid(), repeat('a', 64), '{}', 'begin'),
 			format('select public.qorpera_native_shared_file_export_source(%L, %L)', v, '{}'),

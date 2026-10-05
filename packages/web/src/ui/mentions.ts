@@ -1,3 +1,5 @@
+import { foldQuotes, type MessageQuote } from "../cloud/quotes.ts";
+
 /* Mentions: "@" and a member's or agent's name in a message. The cloud reads the
  * same rule from the text (qorpera_room_text_mentions, 20260928010000): an agent
  * named in a group chat answers, the others stay quiet; a member named is told.
@@ -6,7 +8,8 @@
  * A-Z match in either case and every Unicode space counts as a space (mentionFold,
  * qorpera_mention_fold), so both sides read the same whatever the locale. Longer
  * names win: "@Bo Jensen" names Bo Jensen, not Bo. Everyone who shares a name
- * named is named. */
+ * named is named. A name inside a quote of outside content names nobody
+ * (20260928459100): the text is read with each quote as its placeholder. */
 
 export interface MentionTarget {
 	kind: "member" | "agent";
@@ -31,8 +34,21 @@ export function mentionFold(text: string): string {
 	return text.replace(/[A-Z]/g, (letter) => letter.toLowerCase()).replace(SPACES, " ");
 }
 
-/** Every mention in a text, in order. */
-export function findMentions(text: string, targets: readonly MentionTarget[]): Mention[] {
+/** Every mention in a text, in order. A name inside a quote of outside content names nobody: the text is read with
+ * each quote folded to its placeholder first, as the cloud reads it (cloud/quotes.ts, foldQuotes). */
+export function findMentions(
+	text: string,
+	targets: readonly MentionTarget[],
+	quotes: readonly MessageQuote[] = [],
+): Mention[] {
+	if (quotes.length) {
+		const own = foldQuotes(text, quotes);
+		return findMentions(own.text, targets).map((mention) => ({
+			...mention,
+			start: own.at(mention.start),
+			end: own.at(mention.end),
+		}));
+	}
 	const folded = mentionFold(text);
 	// Which name took each letter: a shorter name cannot use them, the same name can.
 	const taken = new Array<string | undefined>(text.length).fill(undefined);
@@ -68,10 +84,14 @@ export interface MentionPart {
 }
 
 /** A text as plain parts and mentions, for showing a message. */
-export function mentionParts(text: string, targets: readonly MentionTarget[]): (string | MentionPart)[] {
+export function mentionParts(
+	text: string,
+	targets: readonly MentionTarget[],
+	quotes: readonly MessageQuote[] = [],
+): (string | MentionPart)[] {
 	const parts: (string | MentionPart)[] = [];
 	let at = 0;
-	for (const mention of findMentions(text, targets)) {
+	for (const mention of findMentions(text, targets, quotes)) {
 		const last = parts[parts.length - 1];
 		if (typeof last === "object" && last.start === mention.start && last.end === mention.end) {
 			last.targets.push(mention.target);

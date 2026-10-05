@@ -8,7 +8,7 @@ import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
 import { type SessionExecutionSponsor, selectSessionExecutionSponsor } from "../cloud/session-input.ts";
 import { t } from "../ui/preferences.ts";
-import type { CompanyController } from "./company.ts";
+import { type CompanyController, draftReplaced } from "./company.ts";
 import type { WorkspaceActions } from "./workspace-actions.ts";
 
 /** One draft owns its room identity, including retries after an uncertain folder
@@ -153,7 +153,7 @@ export function createConversationStarter(options: {
 						"This conversation has an unsent draft. Open it to finish or clear that draft before sending another.",
 					),
 				);
-			conversation.set({ draft: text, executionSponsor: sponsor });
+			conversation.set((state) => ({ draft: text, executionSponsor: sponsor, ...draftReplaced(state) }));
 			await options.send(sessionId, text, signal);
 			check();
 			// Failed sends retain the draft and exact retry identity in this session.

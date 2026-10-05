@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { createConnection, createServer, type Socket } from "node:net";
+import { createConnection, createServer, Socket } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runCompanyComputerShellHost } from "./cloud-company-computer-shell-host.ts";
 
 /** Runs inside the browser's otherwise empty network namespace. The Unix
  * relay is its only route out. DevTools stays on inherited descriptors 3/4;
@@ -77,9 +78,22 @@ export async function runCompanyComputerBrowserChild(args: string[]): Promise<vo
 	}
 }
 
+/**
+ * The image carries one namespace entry file, so the shell's init is a mode of
+ * it. A guest-code revision replaces this file; adding a file would need a new image.
+ */
+function runCompanyComputerNamespaceChild(args: string[]): Promise<void> {
+	if (args.length === 1 && args[0] === "--shell-host")
+		return runCompanyComputerShellHost({
+			input: new Socket({ fd: 3, readable: true, writable: false }),
+			output: new Socket({ fd: 4, readable: false, writable: true }),
+		});
+	return runCompanyComputerBrowserChild(args);
+}
+
 if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
-	runCompanyComputerBrowserChild(process.argv.slice(2)).catch(() => {
-		process.stderr.write("Office browser entry failed\n");
+	runCompanyComputerNamespaceChild(process.argv.slice(2)).catch(() => {
+		process.stderr.write("Office namespace entry failed\n");
 		process.exitCode = 1;
 	});
 }
