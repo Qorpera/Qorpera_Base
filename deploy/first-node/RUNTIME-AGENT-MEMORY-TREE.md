@@ -526,16 +526,19 @@ beside its parent's, under the same root, so a log moves, is restored and is era
 **A step record**, one JSON object per line:
 
 ```
-{"j":12,"tool":"company_read","call":"call_…","args":"{…}","args_bytes":214,"args_hash":"…","result":{…},"reads":[{"path":"sales/prices.md","version":"…"}],"text":"…","at":"2026-10-05T09:12:03Z"}
+{"j":12,"tool":"company_read","call":"call_…","args":"{…}","args_bytes":214,"args_hash":"…","result":{…},"reads":[{"path":"sales/prices.md","version":"…"}],"release":"…","text":"…","at":"2026-10-05T09:12:03Z"}
 ```
 
 - `result` is the envelope exactly as the fence issued it, at most 8 KiB (§1). So the log holds what the model saw,
   never a larger raw result. The envelope is JSON (`rt/cloud-native-tool-boundary.ts:788`), so it is stored as a JSON
   value, not as an escaped string, and takes no more room in the file than it did in the request.
 - `args` is fitted to 8 KiB as stored, JSON escaping included, with its byte count and hash.
-- `reads` are the read references the fence recorded for this result in the context view (§1). Erasure uses them
-  (§10.1). They are kept up to 16 KiB as stored. If the fence recorded more, the step also has `"reads_cut": true`,
-  and a file's erasure treats it as reached in every run it lists (§10.1).
+- `reads` are the read references the fence recorded for this result in the context view (§1), a copy for whoever
+  reads the log. They are kept up to 16 KiB as stored. If the fence recorded more, the step also has
+  `"reads_cut": true`. Erasure never uses this copy.
+- `release` is the id the fence released the result under (`mig/20260928249000_folder_core_authority.sql:528-616`).
+  That release's read record lists every path and version the result read, in full, and P18 keeps it for good
+  (`RUNTIME-COMPANY-FOLDER-ERASURE.md` §1). Erasure goes by it (§10.1). It is null for a result that read nothing.
 - `text` is the agent's own text before the call, fitted to 8 KiB as stored like `args`. Reasoning items are never
   stored (§6.3). So a rendered step is at most about 24 KiB.
 - **A block holds 16 steps or fewer, and never passes core §5's 64 KiB for a structured file**
@@ -587,11 +590,19 @@ beside its parent's, under the same root, so a log moves, is restored and is era
   rebuilt from files, so a rebuild of the indexes cannot reset it. It is run-owned, so it is taken at core §3's
   run-owned step: `FOR SHARE` by a step batch, a step-line batch, a zoom that checks it and a resume (W5), and
   `FOR UPDATE` by a step erase (§10.1).
-- **`erase_open`** names the run's one open step erase, by its id, between its delete and its rewrite (§10.1). It is
-  null when no erase is open. The erase sets it in its first commit and clears it in the rewrite's commit. While it
-  is set, another step erase of the run stays pending, the memory eraser does not scan the run, a step batch fails,
-  and a resume's claim rolls back to be tried later. So nothing erases, scans, writes or resumes over the missing
-  block, and the erase it names can always be found and finished.
+- **`erase_open`** names the run's one open step erase, by the id of its row in `qorpera_memory_step_erases`
+  (below). It is null when no erase is open. The erase sets it in its first commit, and clears it only after its
+  rewrite has landed and its requests for the old versions have been accepted (§10.1). While it is set, another step
+  erase of the run stays pending, the memory eraser does not scan the run, a step batch fails, and a resume's claim
+  rolls back to be tried later. So nothing erases, scans, writes or resumes over the missing block, and the erase it
+  names can always be found and finished.
+- **`qorpera_memory_step_erases`** (id, run id, step, requested by, erasure id, state) holds each step erase. Like the
+  generation row, it is run-owned, taken at the same step, and never rebuilt from files. The erase's request writes
+  it, in a transaction of its own, before step 1: an owner's or admin's request with that member and no erasure, the
+  memory eraser with the file's erasure and the member who asked for it (§10.1). Its state goes from `pending` to
+  `open` (step 1 landed), `rewritten`, `requested` (the old versions asked for, and the mark cleared) and `done` (the
+  old versions erased and the zooms scrubbed, §10.1). So whoever carries an erase on reads its step, its member and
+  how far it got from this row, never from the log.
 - **If the log's folder is deleted while the run is live** (a group folder's delete during a group-chat run, or the
   agent's), the log goes with it, as its tree does (§4.2). The next batch finds the index row retired and fails with
   `memory_run_log_gone`. The run's effectful calls then cannot pre-commit, so they do not run, and the run ends with
@@ -608,8 +619,9 @@ beside its parent's, under the same root, so a log moves, is restored and is era
   and the 7-day prune removes that rewrite noise (§10, GC).
 
 **Index and rules.** `qorpera_memory_run_logs` (one row per run: path, conversation, parent, step count) and
-`qorpera_memory_run_steps` (one row per step: its block, tool, call id, `args_hash` and whether it is erased, never
-its text) are structured-file indexes, rebuilt from the files. Like every index, they are taken at core §3's rank 5,
+`qorpera_memory_run_steps` (one row per step: its block, tool, call id, `args_hash`, `release`, whether its `args` or
+`result` name a path under a tree root, and whether it is erased, never its text) are structured-file indexes,
+rebuilt from the files. Like every index, they are taken at core §3's rank 5,
 through the structured-file hook; the generation is not on them (above). A run log's tree nodes go into
 `qorpera_memory_tree_nodes` with the run in place of the conversation. Writes are the platform's only, reads are
 ordinary, and no file change under `runs/` wakes anyone, as §4.3 says for trees.
@@ -1110,6 +1122,8 @@ request, for event `i` of conversation C:
    A node it cannot recover is just missing, and is rebuilt (step 6).
 3. **Old versions.** A P18 request on those block paths erases their earlier lives. P18 already keeps a live path's
    current life and erases its earlier ones (§2.2 there). Their index rows go with them (§5 there).
+   - The request is marked as a **block-history** request. It erases the tree's own blocks, so P18's row for run
+     logs reaches only the steps that read those blocks, never a whole run (§10.1).
    - It follows moves, as P18 does (§2.3 there). A block can have an earlier life at another path, for example
      before its agent's folder was renamed. P18 then refuses and names that path. The erase adds each path it names
      and asks again, until no partner is open. So every life of each block is erased, at every path it had.
@@ -1179,32 +1193,48 @@ compactor's window holds only the same run's raw steps (§7.5), so step `j` is a
     commit, taken `FOR UPDATE` at core §3's run-owned step, where step-line batches check it `FOR SHARE` (§4.5,
     §7.5);
   - the step's record keeps only `j`, `tool`, `call`, `args_bytes` and `args_hash`, with `"erased": true`. Its
-    arguments, result, read references and text go. The call id keeps pairing intact, and the hash is what receipts
-    keep today (`inputSha256`, P18 §6);
+    arguments, result, read references, release and text go. The call id keeps pairing intact, and the hash is what
+    receipts keep today (`inputSha256`, P18 §6);
   - its log block and every tree block with the step among its sources are deleted, rewritten without it, and their
-    earlier lives erased through P18 (steps 1 to 3);
+    earlier lives erased through P18 by block-history requests (steps 1 to 3);
   - **a log block is never "just missing".** Its rewrite is the only copy of the block's other steps, so §10 step 2's
     "a node it cannot recover is just missing" holds for tree blocks only. Step 3 runs for a log block only after its
     rewrite has landed with every other step. If the rewrite cannot read the block's last version, it stops, the erase
-    stays `pending`, and it is tried again; no earlier version is erased until it lands;
+    stays `open`, and it is tried again; no earlier version is erased until it lands;
   - **one open step erase per run.** Between step 1's delete and the rewrite, run A's log lacks that block. So step
     1's commit takes A's generation row `FOR UPDATE`. In a later statement it reads A's job row plainly (core §9
     never locks a job row for a read) to check that A holds no run lease, and it checks that `erase_open` is clear.
-    Then it sets the mark to its own id (§4.5). The rewrite's commit clears it. While it is set, only the erase it
+    Then it sets the mark to its row's id (§4.5), and the row to `open`. While the mark is set, only the erase it
     names raises the generation, so its log-block rewrite never meets `memory_generation_stale`; its tree-block
     rewrites follow §10 step 2;
+  - **the mark is held through step 3.** The rewrite sets the row to `rewritten` and keeps the mark. The erase then
+    asks P18 for the old versions (step 3), and only then clears the mark and sets the row to `requested`. P18 fixes
+    a request's cutoff when it accepts it, at the start of a live block's current life
+    (`RUNTIME-COMPANY-FOLDER-ERASURE.md` §2.1-§2.2), so the version the rewrite wrote stays. With the mark held, no
+    other erase can delete the block first. If one could, the request would find no live block, and would erase every
+    life of it, the last version that erase's rewrite needs included. As a second guard, a block-history request for
+    a log block's own path is live-only: P18 refuses it when the path is not live, instead of erasing every life. Its
+    partner paths (step 3) are earlier paths, never live, and are asked for as usual;
   - **retries.** A step 1 that finds a lease, or another erase's id in the mark, rolls back whole, without claiming
     its operation key (core §3 step 1), so a retry is a new attempt and never replays a refusal. The erase stays
     pending and is tried again; it then reads the blocks as the earlier rewrite left them, so each erase builds on the
-    one before. A step 1 that finds its own id knows its delete landed and goes straight to the rewrite. A retry that
-    finds its step already erased and the mark clear goes on to step 3, so erasing a step twice changes nothing. The
-    memory eraser finishes every open erase: it finds runs whose mark is set and carries on the erase the mark names,
-    an owner's erase included, so a host restart between the delete and the rewrite leaves no mark behind;
+    one before. An erase that finds its step already erased and the mark clear makes no delete, and goes on to step 3,
+    so erasing a step twice changes nothing;
+  - **one carrier does each part.** The request that wrote the row carries the erase on. The memory eraser finishes
+    every erase whose row is not `done` once its run has ended: it reads the step, the member and the state from the row, so a host restart
+    at any point, an owner's erase included, leaves no mark behind. Each commit after step 1 (the rewrite, and the
+    one that clears the mark) takes the generation row `FOR UPDATE` and the erase's row, and checks that the mark
+    names this erase and that the row is in the state before. If not, it rolls back, and its carrier carries on from
+    the state the row holds. So when the owner's request and the eraser carry the same erase, each part lands once,
+    and neither meets another erase's delete. A step 1 that finds its own id in the mark carries on from the row's
+    state the same way. Asking P18 again for a live block erases only lives before its current one, which are old by
+    then, and a refusal with nothing left to erase counts as asked;
   - **a run does not resume over a hole.** A resume of A takes the same row `FOR SHARE` in the transaction that
     claims A's lease again. If the mark is set, that claim rolls back and is tried again later. Every step batch takes
     the row `FOR SHARE` and fails while the mark is set. So an erase and a resume are ordered by that row: either the
     resume lands first and the erase sees its lease and waits for A to end, or the erase lands first and A resumes
-    only once the rewrite has landed. The erase never locks the job row, so the two cannot deadlock. A never misses a
+    only once the rewrite has landed and the mark is cleared. The erase never locks the job row, so the two cannot
+    deadlock. A never misses a
     pending effectful step (W5);
   - step 4 scrubs every zoom **in the company** whose target is run A and whose range may hold text from `j`, by the
     same range rule as §10. It matches by run id and range, never by a block version, which the 7-day prune may have
@@ -1218,25 +1248,44 @@ compactor's window holds only the same run's raw steps (§7.5), so step `j` is a
   - over the runs P18 notes in phases 1 to 3 (the runs that wrote, refused, were refused about, or read the erased
     path), once they have ended;
   - a step is reached when the JSON text of its `args` or of its `result` contains a needle (an erased path as P18
-    spells it, §4.3 there), when its read references name an erased version (§4.5), or when it has `"reads_cut"`;
+    spells it, §4.3 there), or when the read record of its `release` names an erased version (§4.5). That record is
+    the fence's full list, so a step whose `reads` copy was cut is checked exactly, never assumed reached;
   - a reached step gets the full step erase above: its record keeps only the call's identity and hash, its log block
     and the tree blocks over it are deleted, rewritten and their earlier lives erased, and zooms of it are scrubbed
     company-wide;
   - **the drain lists runs; the runtime finds and erases steps.** P18's drain is one SQL step per tick (P18 §4.2).
     The step text lives in log blocks in the object store (core §7), which SQL neither reads nor writes, and no index
-    copies it (`qorpera_memory_run_steps` holds only each step's block, tool, call id, `args_hash` and erased flag,
-    §4.5). So the drain's new row lists the noted runs that have a log on the erasure as pending, as it lists pending
-    runs today. The runtime host's memory eraser, which makes no model call, reads each listed run's log blocks, finds
-    the reached steps by the rule above, and does the step erase through the folder commit function, one at a time.
-    The erasure stays `waiting` until the eraser reports every listed run done;
+    copies it (`qorpera_memory_run_steps` holds only each step's block, tool, call id, `args_hash`, release, tree-path
+    flag and erased flag, §4.5). So the drain's new row lists the noted runs that have a log on the erasure as
+    pending, as it lists pending runs today. The runtime host's memory eraser, which makes no model call, reads each
+    listed run's log blocks, finds the reached steps by the rule above, and writes a `qorpera_memory_step_erases` row
+    for each (§4.5). It then does their step erases through the folder commit function, one at a time. The erasure
+    stays `waiting` until the eraser reports every listed run done;
+  - **a block-history request reaches only steps that read the blocks.** Step 3 of a message erase or a step erase
+    asks P18 for the old versions of tree and log blocks (§10). For such a request, the row:
+    - covers only runs noted in phase 3, the runs that read an erased version, and lists none noted only in phases 1
+      and 2. Those are the runs whose batches wrote the blocks: a compactor call keeps no copy of what it wrote
+      (§7.1), and a run's own step batches are the log being erased;
+    - reaches only steps that are not zooms. A step is reached when the read record of its `release` names an erased
+      version (a `company_read` or a search of a tree block), or when the step index flags it as naming a tree path
+      and its `args` or `result` contain a needle (a shell command that printed a block);
+    - leaves zoom steps to step 4's range rule. A zoom's read names the whole block version, but its result holds
+      only the lines of its range, so the range rule is exact and a zoom elsewhere in the block keeps its text;
+    - finds these steps through the step index, by release id and by the tree-path flag. So it lists only runs that
+      have such a step, and the eraser reads only those steps' blocks. A run that read a block only through its
+      context view, as almost every run in a thread does, has no such step, and its log is never read.
+
+    So erasing one message or one step reaches only the steps that read the blocks it rewrote, besides the zooms that
+    step 4 scrubs, and the chain of erases stays within those;
   - **a scan sees whole blocks.** The eraser reads the run's generation row before and after it reads the blocks. It
     scans only while `erase_open` is clear, and a scan counts only if the generation is the same after it; otherwise
     it scans again, later. Every step erase raises the generation in its first commit, so a counted scan never read
     the log with a block missing;
   - **when a run is done.** A listed run is done only once the erase of each of its reached steps has finished §10's
-    steps 1 to 4: the rewrites have landed, the earlier versions of every block they rewrote are erased (step 3, with
-    any partner paths), and the zoom scrub is done. A zooming run still live is added to this erasure's run table as
-    pending, as P18 lists runs, so the erasure stays `waiting` until that run ends and its zoom step is erased too.
+    steps 1 to 4 and its row is `done`: the rewrites have landed, the earlier versions of every block they rewrote
+    are erased (step 3, with any partner paths), and the zoom scrub is done. A zooming run still live is added to
+    this erasure's run table as pending, as P18 lists runs, so the erasure stays `waiting` until that run ends and
+    its zoom step is erased too.
 
   So a `company_write` step, whose `args` hold the file's text, is reached by the path it names, as P18 reaches a
   card's arguments. A search or list result that names the path is reached the same way.
@@ -1380,7 +1429,7 @@ words; W steps make it the whole context.
 | --- | --- | --- |
 | **M0** | Probe, no product code, with the patch as it is today and no key set: the Codex 0.155.1 request order, the `prompt_cache_key` Codex sends, `cachedInputTokens` within a run and across runs with a fixed prefix and with a growing conversation, and where Codex's auto-compaction starts; today's real per-run sizes on Live Test from `model_turn` | a short report; decides §6 |
 | **M1** | Agent threads on Live Test only, behind a deploy-config list of company ids: tree files, refusals and index (SQL); `memory_generation` and the checked batch commit; fold, rendering and VIEW_DOC; closing compactor with its raw window, and settle that fills gaps any run left; `zoom` into any agent's thread, with fitted results; view in developer instructions, as labelled data; quotes fenced in every line, window and zoom; stable `read_context` schema; `memory_view` and `memory_compaction`. The cache key in the patch once Jonas has said yes to it (§16), with the shared-key cache check M0 leaves open | SQL tests for index, write refusals (with a line over 2,048 bytes once escaped), a full block of 30 lines at the limit accepted within 64 KiB, ordinary reads and search of tree files, and the generation check (a batch read before a generation change is discarded), and a dblink race of a batch commit and a zoom receipt against a payer's role change (`qorpera_folder_member_change_enter`) that ends with no deadlock; runtime tests for fold determinism, budget, placeholders, size enforcement (a free node from a message full of control characters stores within 2 × NODE, and a compactor line still over 2,048 bytes as stored after TRIES is left missing and never batched), a zoom by an agent into another agent's thread whose result is the same whichever member the run works for, and a markup-heavy zoom read whole through `from`; contract Order 2's fake-instruction proof (C:2136) through a view line; the quote amendment's test 7 (C:4571) through a free node, a compactor line and a zoom; one live run that writes and reads a tree |
-| **W1** | Run logs (§3, §4.5): step records committed in batches that only append, effectful calls committed before they run, the run index, platform-only paths, step lines at closing, `zoom` into run logs, and a message's zoom naming its run; erasure of work (§10.1): one step's erase, the P18 scrub of steps by needle and read reference, the scrub of zooms into a run log, the zoom-step scrub of a message erase, and erases of a live run's log held until it ends | SQL tests for run-log refusals; a step-line batch read before a step erase is discarded, and a step batch is never discarded; a step scrubbed because its read reference names an erased path; a `company_write` step whose `args` are scrubbed when its path is erased; run B zooms a step of run A that read file F, and erasing F scrubs A's step, B's receipt and B's zoom step, and leaves no earlier version of A's log block, all before F's erasure is `done`; with B still live, F's erasure stays `waiting` until B ends and its zoom step is erased; an erase of a live run's step stays pending while the run's batches keep landing, and runs when it ends; a step erase that rebuilds the lines over it; a step erase whose log-block rewrite cannot read the last version stays pending and erases no earlier version; a file erasure whose drain lists the noted runs and stays waiting until the memory eraser has found and erased their reached steps; a run of full-size `company_read` steps whose block closes before 64 KiB and whose next batch starts a new block; a pre-commit that would leave its block less room than a full step starts a new block, and every block stays within 64 KiB once its pending results are filled in; a batch that fills in the results of many parallel effectful calls is split into change sets within 1 MiB and 64 files; two step erases of one run racing, with their steps in the same block and in different blocks: the second stays pending until the first's rewrite clears `erase_open`, both steps end up erased, and no earlier version keeps either; a file's erasure that lists a run while a step erase of it is open scans the run only after that rewrite, and reaches its steps; a step erase killed after its first commit is carried on by the memory eraser, its rewrite lands, the mark clears, and a second erase waiting behind it then runs; a refused step 1 claims no operation key, so its retry is not a replayed refusal; a step batch that meets `erase_open` fails; a batch never fills in a pending step that was erased; a step with `reads_cut` reached by any erasure that lists its run; a `send_mail` step whose receipt is in `result` and is reached by a contact's needles once H4 adds its row; a first batch that creates the log under the conversation's tree root; a step batch that still finds its log by run id after the agent's folder is renamed; a run whose log folder is deleted finds its index row retired, gets `memory_run_log_gone`, writes nothing under the deleted path, and no effectful call pre-commits; a group-chat run whose first batch comes after its group folder's delete gets `memory_run_log_gone` the same way; a send, card or `send_mail` step whose `args` hold only the hash. Runtime tests: a run's log matches its context views call for call; an effectful call whose pre-commit fails is not run; a step erase whose first commit lands between the memory eraser's two reads of the generation row makes that scan not count, and the eraser scans again after the rewrite and still reaches its steps. The folder probe |
+| **W1** | Run logs (§3, §4.5): step records committed in batches that only append, effectful calls committed before they run, the run index, platform-only paths, step lines at closing, `zoom` into run logs, and a message's zoom naming its run; erasure of work (§10.1): one step's erase with its `qorpera_memory_step_erases` row, the P18 scrub of steps by needle and release, block-history requests, the scrub of zooms into a run log, the zoom-step scrub of a message erase, and erases of a live run's log held until it ends | SQL tests for run-log refusals; a step-line batch read before a step erase is discarded, and a step batch is never discarded; a step scrubbed because its read reference names an erased path; a `company_write` step whose `args` are scrubbed when its path is erased; run B zooms a step of run A that read file F, and erasing F scrubs A's step, B's receipt and B's zoom step, and leaves no earlier version of A's log block, all before F's erasure is `done`; with B still live, F's erasure stays `waiting` until B ends and its zoom step is erased; an erase of a live run's step stays pending while the run's batches keep landing, and runs when it ends; a step erase that rebuilds the lines over it; a step erase whose log-block rewrite cannot read the last version stays pending and erases no earlier version; a file erasure whose drain lists the noted runs and stays waiting until the memory eraser has found and erased their reached steps; a run of full-size `company_read` steps whose block closes before 64 KiB and whose next batch starts a new block; a pre-commit that would leave its block less room than a full step starts a new block, and every block stays within 64 KiB once its pending results are filled in; a batch that fills in the results of many parallel effectful calls is split into change sets within 1 MiB and 64 files; two step erases of one run racing, with their steps in the same block and in different blocks: the second stays pending until the first has asked for its old versions and cleared `erase_open`, both steps end up erased, and no earlier version keeps either, and the block keeps its other steps; a file's erasure that lists a run while a step erase of it is open scans the run only after that rewrite, and reaches its steps; an owner's step erase killed after its first commit is carried on by the memory eraser from its `qorpera_memory_step_erases` row, its rewrite lands, the mark clears, and a second erase waiting behind it then runs; an owner's request and the memory eraser carrying the same erase, with each part landing once; a block-history request for a log block's path while another erase has it deleted is refused, and erases none of its lives; a refused step 1 claims no operation key, so its retry is not a replayed refusal; a step batch that meets `erase_open` fails; a batch never fills in a pending step that was erased; a step with `reads_cut` reached through its release's read record when that names an erased version, and not reached when it does not; an owner's erase of one step leaves the run's other `reads_cut` steps whole; a message erase leaves alone a `reads_cut` step of a run that compacted in that thread and a zoom into the same block at a range that does not overlap, still reaches a `company_read` of a tree block that held the message's line, and reads no log of a run that read the block only through its context view; a `send_mail` step whose receipt is in `result` and is reached by a contact's needles once H4 adds its row; a first batch that creates the log under the conversation's tree root; a step batch that still finds its log by run id after the agent's folder is renamed; a run whose log folder is deleted finds its index row retired, gets `memory_run_log_gone`, writes nothing under the deleted path, and no effectful call pre-commits; a group-chat run whose first batch comes after its group folder's delete gets `memory_run_log_gone` the same way; a send, card or `send_mail` step whose `args` hold only the hash. Runtime tests: a run's log matches its context views call for call; an effectful call whose pre-commit fails is not run; a step erase whose first commit lands between the memory eraser's two reads of the generation row makes that scan not count, and the eraser scans again after the rewrite and still reaches its steps. The folder probe |
 | **M2** | Measure and tune: the memory probe, VIEW at 48,000 vs 96,000, Luna low vs medium | probe report against §13's targets |
 | **M3** | Erasing one message (§10): the generation raise, the rebuild of every line with the message among its sources, and the receipt scrub by target and range across all runs | SQL tests, including a later message whose line named the erased fact, a Co-Founder zoom into another thread, a compactor batch and a zoom receipt racing the erase (each either lands before it and is deleted or scrubbed, or is discarded and redone at the new generation), and an erase racing a role change, with no deadlock; a block with an earlier life at its agent's former path (a renamed folder), erased at both paths; live: erase, then see the lines rebuilt and old versions gone |
 | **M3b** | The 7-day prune of replaced tree versions (§10, GC) | SQL tests: a block version replaced by a write more than 7 days ago is pruned. Kept: the current version, one replaced less than 7 days ago, a life's first version, the last version before a delete or a move, both rows of a move pair, and old versions of a notebook file. Regression: an agent's folder is renamed, a block is rewritten at its new path, and 8 days pass; the prune keeps the `move_in`, and a message erase then erases the block's lives at both paths |
@@ -1389,7 +1438,7 @@ words; W steps make it the whole context.
 | **M4** | Group chats, branches of every conversation the agent takes part in, and the Co-Founder's branches of every agent's thread | runtime tests for branch choice and budget; probe: a fact said in a group chat is recalled in the agent's own thread, and the Co-Founder recalls a fact from another agent's thread |
 | **W4** | Workers start from their parent's view by reference, and their logs nest under the dispatching step (§12) | runtime test: a worker's first request shares the parent's prefix and reads it from the cache on the same payer; zoom from the parent's step into the worker's log |
 | **M5** | On for every folder-v2 company; notebook trimmed to its profile page (§11) | the probe on a fresh company |
-| **W5** | A cut-off run resumes from its log, and a run at its usage limit pauses and resumes on the same login after the reset (§12). **Contract change; needs Jonas's sign-off** | SQL: a dblink race of a resume's lease claim against step 1 of a step erase, which ends with no deadlock: either the resume lands first and the erase stays pending until the run ends, or the erase lands first and the claim rolls back until the rewrite clears `erase_open`; with two erases open one after the other, the run resumes only after both rewrites. Live: kill the machine mid-run twice, and run a test login to its limit; each run finishes without repeating an action; a paused run whose log has an erase between its delete and its rewrite does not resume until the rewrite lands, and then sends a pending mail only after checking it; the swap probe with restarts |
+| **W5** | A cut-off run resumes from its log, and a run at its usage limit pauses and resumes on the same login after the reset (§12). **Contract change; needs Jonas's sign-off** | SQL: a dblink race of a resume's lease claim against step 1 of a step erase, which ends with no deadlock: either the resume lands first and the erase stays pending until the run ends, or the erase lands first and the claim rolls back until the erase clears `erase_open`; with two erases open one after the other, the run resumes only after both rewrites. Live: kill the machine mid-run twice, and run a test login to its limit; each run finishes without repeating an action; a paused run whose log has an erase between its delete and its rewrite does not resume until the rewrite lands, and then sends a pending mail only after checking it; the swap probe with restarts |
 | **W6** | Coding sessions as child logs of the step that started them (§12) | to design with W6 |
 | **M6** | Agent pair transcripts | — |
 
@@ -1478,9 +1527,11 @@ words; W steps make it the whole context.
   each later version holds every step the earlier one held.
 - **17**: a run's summaries, and the gaps it fills, are part of its work and are paid by its payer.
 - **P18**: erasing one message or one step by an owner or admin, and the tree's rebuild after it. A new row in P18 §6:
-  run-log steps whose arguments or results contain an erased path, whose read references name an erased version, or
-  that have `reads_cut`, get the full step erase once their run has ended, with every zoom of them. The drain only
-  lists the noted runs; the runtime's memory eraser finds and erases the steps (§10.1).
+  run-log steps whose arguments or results contain an erased path, or whose release's read record names an erased
+  version, get the full step erase once their run has ended, with every zoom of them. The drain only lists the noted
+  runs; the runtime's memory eraser finds and erases the steps (§10.1). A request gets a block-history mark, set by
+  the tree's own erases: for it, the row covers only steps that read the blocks, and a request for a log block's path
+  is refused when the path is not live (§10.1).
 - **Company-wide conversations**: every member and agent of the company may read every conversation, run log and tree.
   Group membership decides who takes part and whom a post wakes. The rule in `RUNTIME-COMPANY-STATE-FILES.md:280-281`
   that an agent adds to `people` only the member its run works for loses its reason ("adding a person lets them read
