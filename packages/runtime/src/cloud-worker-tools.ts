@@ -13,9 +13,11 @@ import {
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
 import {
+	CloudControlRefusalRelay,
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
 	type CloudToolContext,
+	cloudOperationKeyOf,
 	cloudToolJsonText,
 	MAX_CLOUD_TOOL_RESULT_BYTES,
 } from "./cloud-native-tool-boundary.ts";
@@ -261,14 +263,19 @@ export function cloudWorkerTools(
 			throw new Error("Worker tool identity differs");
 		context.signal.throwIfAborted();
 	};
+	// Each tool's first effect: a refusal of it reaches the model as the tool's answer, unless an earlier attempt of the
+	// same operation key ended unknown (control calls, 4 Oct 2026).
+	const refusals = new CloudControlRefusalRelay();
 	const call = (
 		method: "qorpera_manage_agent_todo" | "qorpera_manage_agent_worker" | "qorpera_report_worker_result",
 		request: Record<string, unknown>,
 		signal: AbortSignal,
 	) =>
-		cloudToolRequest(
-			(requestSignal) => control.call(method, { p_binding: admitted, p_request: request }, requestSignal),
-			signal,
+		refusals.call(cloudOperationKeyOf(request), () =>
+			cloudToolRequest(
+				(requestSignal) => control.call(method, { p_binding: admitted, p_request: request }, requestSignal),
+				signal,
+			),
 		) as Promise<Record<string, unknown> | null>;
 
 	const publish = async (
@@ -693,6 +700,12 @@ export interface CloudAgentOpenWork {
 	workers: { active: number; blocked: number };
 	/** Commands the platform stopped on the agent's computer, told once in their conversation. */
 	computerStopped?: { command: string; startedAt: string; endedAt: string; reason: string }[];
+	/** Machine commands, and containers on a machine the agent started, that a stop or restart of the machine ended,
+	 * told once in their conversation. */
+	machineStopped?: (
+		| { machine: string; work: "command"; command: string; startedAt: string; endedAt: string; reason: string }
+		| { machine: string; work: "containers"; endedAt: string; reason: string }
+	)[];
 }
 
 export async function describeCloudAgentOpenWork(
@@ -742,10 +755,42 @@ export async function describeCloudAgentOpenWork(
 			};
 		});
 	}
+	let machineStopped: CloudAgentOpenWork["machineStopped"];
+	if (result.machineStopped !== undefined) {
+		if (
+			!Array.isArray(result.machineStopped) ||
+			result.machineStopped.length < 1 ||
+			result.machineStopped.length > 32
+		)
+			throw new Error("Open work differs");
+		machineStopped = result.machineStopped.map((item) => {
+			const work = (item as { work?: unknown } | null)?.work;
+			const keys =
+				work === "command"
+					? ["machine", "work", "command", "startedAt", "endedAt", "reason"]
+					: ["machine", "work", "endedAt", "reason"];
+			const stopped = object(item, keys, keys);
+			if (
+				(work !== "command" && work !== "containers") ||
+				keys.some((key) => typeof stopped[key] !== "string") ||
+				!["slept", "hours", "stopped", "lost"].includes(stopped.reason as string)
+			)
+				throw new Error("Open work differs");
+			const shared = {
+				machine: stopped.machine as string,
+				endedAt: stopped.endedAt as string,
+				reason: stopped.reason as string,
+			};
+			return work === "command"
+				? { ...shared, work, command: stopped.command as string, startedAt: stopped.startedAt as string }
+				: { ...shared, work };
+		});
+	}
 	return {
 		todos: { open: count(todos.open), blocked: count(todos.blocked) },
 		workers: { active: count(workers.active), blocked: count(workers.blocked) },
 		...(computerStopped ? { computerStopped } : {}),
+		...(machineStopped ? { machineStopped } : {}),
 	};
 }
 

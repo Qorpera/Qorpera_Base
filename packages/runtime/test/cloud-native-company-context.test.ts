@@ -295,6 +295,10 @@ it("tells the agent's next run what the platform stopped on its computer", () =>
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	expect(instructions).toContain("openWork.computerStopped");
 	expect(instructions).toContain("reason slept (the computer went to sleep because nothing busy kept it awake)");
+	expect(instructions).toContain("openWork.machineStopped");
+	expect(instructions).toContain(
+		"reason slept (the task machine went to sleep after an hour with nothing busy keeping it awake)",
+	);
 });
 
 it.each(["human", "office-activation"] as const)("does not restart a prior startup assignment on a %s wake", (kind) => {

@@ -10,6 +10,7 @@ import {
 	CloudCompanyPathRpcPrecondition,
 	CloudCompanyPathRpcRefusal,
 } from "./cloud-company-path-refusal.ts";
+import { CloudControlRpcRefused, cloudControlRefusalCode, cloudPostgrestError } from "./cloud-control-errors.ts";
 import { CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS, cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 
@@ -197,11 +198,12 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 										: response.ok
 											? 256 * 1024
 											: 4096;
-				// A folder call's 5xx that is not PostgREST's own answer (a proxy's page, a cut body) is a lost answer:
-				// the transaction may have committed, and the folder client retries it with the same key.
+				// A 5xx that is not PostgREST's own answer (a proxy's page, a cut body) is a lost answer: the transaction
+				// may have committed. The folder client retries a folder call with the same key; a run's authority and
+				// read-set checks ask again (control calls, 4 Oct 2026); nothing else retries.
 				const unreadable = (message: string): CloudRuntimeDiagnosticError =>
 					new CloudRuntimeDiagnosticError(
-						FOLDER_RPCS.has(method) && response.status >= 500 ? "transport_unavailable" : "invalid_response",
+						response.status >= 500 ? "transport_unavailable" : "invalid_response",
 						message,
 					);
 				const reader = response.body?.getReader();
@@ -270,7 +272,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 						throw new CloudCompanyFolderRpcError(folderCode, (value as { message: string }).message);
 					// PostgREST answers 42501 with 403, or with 401 for a request on the publishable key (G2-2).
 					if ((response.status === 401 || response.status === 403) && postgrestError("42501"))
-						throw new CloudCompanyPathRpcRefusal();
+						throw new CloudCompanyPathRpcRefusal((value as { message: string }).message);
 					if (response.status === 412 && postgrestError("PT412")) throw new CloudCompanyPathRpcPrecondition();
 					if (response.status === 424 && postgrestError("PT424")) throw new CloudCompanyPathRpcParentMissing();
 					// Only the one-call fence acts on a missing function; every other call keeps its category.
@@ -285,6 +287,11 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 						(value as Record<string, unknown>).code === "PT409"
 					)
 						throw new CloudCompanyHeadConflict();
+					// A refusal the database raised (55000, 0A000, P0001, a QRC code, an invalid argument): that transaction
+					// rolled back whole and asking again changes nothing. Never a lost connection (control calls, 4 Oct 2026).
+					const refused = cloudPostgrestError(value);
+					if (refused && cloudControlRefusalCode(refused.code))
+						throw new CloudControlRpcRefused(refused.code, refused.message, "Company File authority unavailable");
 					throw new CloudRuntimeDiagnosticError(
 						response.status === 401 || response.status === 403
 							? "authority_unavailable"

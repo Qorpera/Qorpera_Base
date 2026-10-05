@@ -4,6 +4,7 @@ import {
 	IDLE_RULE_BUSY_CORE_SHARE,
 	IDLE_RULE_SAMPLE_SECONDS,
 	idleRuleBusy,
+	idleRuleProcessIoBytes,
 } from "../src/idle-rule.ts";
 
 describe("the one idle rule's busy measure", () => {
@@ -34,5 +35,16 @@ describe("the one idle rule's busy measure", () => {
 		expect(idleRuleBusy(before, later(99, 99_000_000, 0))).toBe(false);
 		expect(idleRuleBusy(before, later(99, 99_000_000, -5))).toBe(false);
 		expect(idleRuleBusy(before, later(1, 1))).toBe(false);
+	});
+
+	it("reads the bytes a process read and wrote, and nothing from what it cannot read", () => {
+		expect(
+			idleRuleProcessIoBytes(
+				"rchar: 4096\nwchar: 1024\nsyscr: 7\nsyscw: 3\nread_bytes: 0\nwrite_bytes: 0\ncancelled_write_bytes: 0\n",
+			),
+		).toBe(5120);
+		expect(idleRuleProcessIoBytes("")).toBe(0);
+		expect(idleRuleProcessIoBytes("rchar: 12\n")).toBe(12);
+		expect(idleRuleProcessIoBytes("rchar: 99999999999999999999\nwchar: 1\n")).toBe(0);
 	});
 });

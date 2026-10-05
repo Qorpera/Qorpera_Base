@@ -29,6 +29,8 @@ September 2026).
 | `agents/<handle>/todos/<todo>/<worker>/brief.md` | worker-brief | yes (platform-only) |
 | `agents/<handle>/todos/<todo>/<worker>/results.md` | worker-results | yes (platform-only) |
 | `connections/<name>.md` | connection | yes (platform-only settings) |
+| `connections/hook-<name>.md` | hook | yes (platform-only settings; E1) |
+| `connections/mailbox-<name>.md` | mailbox | yes (platform-only settings; E1) |
 | `rules/<name>.md` | rule | yes |
 | `human-tasks/<name>.md` | human-task | yes (H1; indexed and ruled by H2) |
 | `contacts/<name>.md` | contact | yes (H1; indexed and ruled by H2) |
@@ -350,6 +352,43 @@ closes the conversation; a restore reopens both, with the same conversation.
   (refused while it is active, whatever its status). Disconnecting removes the file; a file a member moved
   meanwhile is found again through the index on the next claim.
 - **Moving:** within `connections/` the index follows; out of it is a kind change (refused).
+- **Names:** `hook-` and `mailbox-` belong to hooks' and mailboxes' files (below), so a vault file never takes them:
+  the name a new file gets has `connection-` before it then (E1, `20260930060000`).
+- Not reviewed.
+
+### `connections/hook-<name>.md` and `connections/mailbox-<name>.md` (E1)
+
+A hook (where a service sends events) and a company mailbox (a hook that receives mail) of a folder-v2 company, each
+described by a file (folder core C4, E1, migration `20260930060000`; `RUNTIME-COMPANY-FOLDER-EVENTS.md` §3). The
+database stays the authority: the hook's address, proof, limits, status and delivery receipts are runtime state, and
+every tool that acts on a hook reads the hook, never this file.
+
+| Key | Kind | Required | Values |
+| --- | --- | --- | --- |
+| `id` | both | yes | the hook's id (`qorpera_event_hooks.id`); a mailbox's is its hook's |
+| `name` | hook | yes | the hook's name: lowercase letters, digits and hyphens, starting with a letter, up to 64 characters |
+| `proof` | hook | yes | `address`, `stripe`, `github` or `hmac-sha256` |
+| `address` | mailbox | yes | the mailbox's address, `<name>@<mail domain>` |
+| `status` | both | yes | `active` or `paused` |
+| `max_body_bytes` | hook | yes | 1024 to 262144, without quotes |
+| `per_minute` | hook | yes | 1 to 120, without quotes |
+| `created_by` | both | yes | the member (or agent) who created it |
+| `created_at` | both | yes | UTC instant |
+| body | both | no | what it is for, written by the company; a new file starts with the purpose given at creation |
+
+- **Never in the file:** a hook's address (a capability; owners and admins see it in Settings) or a signing secret.
+- **Settings:** written only by the platform, to match the hook. A member or an agent changes the body only, and never
+  creates or deletes the file. One file per hook; the id never changes.
+- **How it is written:** as a vault connection's (above), by the same writer: a change of a folder-v2 hook that its file
+  shows (created, paused, resumed, removed, renamed, its limits) marks it due by kind (`subject_kind` `hook` or
+  `mailbox` on P22's marks and work); the claim answers the settings by the allow-list above, the purpose a new file
+  starts with (`body`), and `operationKey` `hook-file:<id>:<generation>` or `mailbox-file:<id>:<generation>`; the finish
+  names the kind. A new file is named `hook-<name>` or `mailbox-<name>` in the name rule; when the name is taken the
+  writer numbers it.
+- **Index:** `qorpera_folder_hook_index` (environment, id): the file's path and version. A move repoints it, a delete
+  retires it, a restore revives it, erasure removes a retired row under its roots.
+- **Deleting:** only the platform, and only once the hook or mailbox is removed.
+- **Moving:** within the same prefix the index follows; anything else is a kind change (refused).
 - Not reviewed.
 
 ### `rules/<name>.md`
@@ -2295,7 +2334,9 @@ worker suites (379, 385, 387, 388, 395–399, 600–606, 656) after the new colu
     an enabled executor for the harness; the agent's grant for the repository; the owner's own login for the harness,
     allowed to work while they are away, and a ChatGPT plan only for work started on it
     (`qorpera_coding_owner_problem`, which reads `qorpera_coding_owner_login`, the selection
-    `qorpera_coding_owner_sponsor` now shares). A coding session is paid by that login, not the starter's sponsor.
+    `qorpera_coding_owner_sponsor` now shares). A coding session is paid by that login, not the starter's sponsor. The
+    index takes the payer again and holds it to the plan rule (`qorpera_coding_owner_payer`): a login changed between
+    the rules and the index fails the commit rather than bill a plan that did not fund the run.
     The brief agrees with the request: the species, the harness and the repository too.
   - **The index.** An accepted coding dispatch writes the worker (`coding`, active, no wake, owned by the run's
     requester and paid by their sponsor), its session (`queued`, branch `qorpera/coding/<worker id>`, no lease, in the
@@ -2303,7 +2344,11 @@ worker suites (379, 385, 387, 388, 395–399, 600–606, 656) after the new colu
     claim starts the session, and its turn's begin admits the worker's wake. A replay answers the first commit.
   - **Follow-up, report, decide.** A coding session keeps its branch, workspace and pull request through a cancel, so a
     cancelled one may be followed up, and only by the member it runs for; the follow-up queues its next turn the same
-    way. A coding session finishes through `coding_finish`: its run never writes `agents/**`, so the folder core denies it
+    way. A member's answer (`qorpera_answer_coding_session`) turns the session too without touching the brief, so a
+    coding brief's `follow_ups` counts the agent's follow-ups alone: each is one more than the brief it rewrites. A
+    worker whose folder was deleted continues only after a restore: the member's answer, the claim and the begin refuse
+    it (a todo's file goes only after its workers' folders, so a retired todo has only retired workers). A coding
+    session finishes through `coding_finish`: its run never writes `agents/**`, so the folder core denies it
     `report_work`. Decide is unchanged.
   - **The turn's wake** carries the folder-v2 dispatch payload (`qorpera_folder_worker_dispatch_payload`: the worker's
     folder and the todo's file).

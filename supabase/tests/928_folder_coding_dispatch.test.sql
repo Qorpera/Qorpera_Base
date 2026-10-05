@@ -103,6 +103,32 @@ $$;
 create function pg_temp.c3_session(p_id uuid) returns public.qorpera_coding_sessions language sql as $$
 	select * from public.qorpera_coding_sessions where worker_id = p_id
 $$;
+-- The owner's answer in the session's thread, as the web app sends it.
+create function pg_temp.c3_answer(p_worker uuid, p_text text) returns jsonb language plpgsql as $$
+declare v_view jsonb;
+begin
+	perform pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+	set local role authenticated;
+	v_view := public.qorpera_answer_coding_session(p_worker, p_text, extensions.gen_random_uuid());
+	reset role;
+	perform pg_temp.base_claims('service_role');
+	return v_view;
+end $$;
+-- The agent's follow-up of a worker: its brief with one more follow-up, under review.
+create function pg_temp.c3_followup(p_binding jsonb, p_key text, p_folder text, p_text text) returns jsonb language plpgsql as $$
+declare v_base jsonb := (select v.structured -> 'parse' from public.qorpera_folder_path_versions v
+		where v.version = pg_temp.base_version(p_folder || '/brief.md'));
+	v_brief jsonb; v_units jsonb;
+begin
+	v_brief := v_base || jsonb_build_object('followUps', (v_base ->> 'followUps')::integer + 1,
+		'followedUpAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'followUp', p_text);
+	v_units := jsonb_build_array(jsonb_build_object('op', 'write', 'path', p_folder || '/brief.md',
+		'file', pg_temp.c3_stage(p_binding, v_brief::text), 'expectedVersion', pg_temp.base_version(p_folder || '/brief.md'),
+		'structured', jsonb_build_array(pg_temp.c3_entry(p_folder || '/brief.md', v_brief))));
+	return pg_temp.c3_commit(p_binding, p_key, v_units,
+		jsonb_build_object('action', 'followup', 'folder', p_folder, 'resultsVersion', null, 'text', p_text),
+		pg_temp.c3_review(p_binding, p_key, v_units));
+end $$;
 
 -- 0. Alice's todo with its folder, written by the owner -------------------------------------------------------------
 select pg_temp.base_commit(pg_temp.base_owner(), 'c3-todos', jsonb_build_array(
@@ -292,6 +318,26 @@ begin
 		'operationKey', 'c3-cancel-3'));
 end $$;
 
+-- 6b. A member's answer turns a coding session too, without its brief; the agent's next follow-up counts its own -------
+do $$
+declare v_alice jsonb := pg_temp.c3_alice(); v_folder text := 'agents/alice/todos/fix-login/session-2'; v_result jsonb;
+	w public.qorpera_runtime_workers%rowtype;
+begin
+	-- The owner answers the cancelled session in its thread: it works again, at sequence 3; its brief still says 1.
+	perform pg_temp.c3_answer('92800000-0000-4000-8000-0000000000b3', 'Use the new route after all.');
+	w := pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b3');
+	perform pg_temp.base_assert(w.state = 'active' and w.sequence = 3, 'the member''s turn: ' || to_jsonb(w)::text);
+	perform public.qorpera_folder_cancel_agent_worker(v_alice, jsonb_build_object('folder', v_folder, 'operationKey', 'c3-cancel-4'));
+	-- The agent's follow-up: follow_ups 2 (one more than the brief), at sequence 4.
+	v_result := pg_temp.c3_followup(v_alice, 'c3-followup-3', v_folder, 'Only the login route.');
+	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', 'the agent''s follow-up: ' || v_result::text);
+	w := pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b3');
+	perform pg_temp.base_assert(w.state = 'active' and w.sequence = 4 and (pg_temp.c3_session(w.id)).phase = 'input_ready'
+		and (select (v.structured -> 'parse' ->> 'followUps')::integer from public.qorpera_folder_path_versions v
+			where v.version = w.folder_brief_version) = 2, 'the counted follow-up: ' || to_jsonb(w)::text);
+	perform public.qorpera_folder_cancel_agent_worker(v_alice, jsonb_build_object('folder', v_folder, 'operationKey', 'c3-cancel-5'));
+end $$;
+
 -- 7. The drain stops an active coding worker whose parent a member stopped -------------------------------------------
 do $$
 declare v_wakes jsonb; v_pass jsonb; v_bob jsonb; v_result jsonb; v_drain jsonb; v_run public.qorpera_execution_runs%rowtype;
@@ -417,12 +463,61 @@ begin
 		'the parent''s wake carries both: ' || to_jsonb(v_wake)::text);
 end $$;
 
+-- 8b. A worker whose folder was deleted continues only after a restore -------------------------------------------------
+do $$
+declare v_folder text := 'agents/alice/todos/fix-login/session-1'; v_result jsonb;
+begin
+	perform pg_temp.base_commit(pg_temp.base_owner(), 'c3-delete-1', jsonb_build_array(jsonb_build_object('op', 'delete',
+		'path', v_folder, 'expectedVersion', pg_temp.base_version(v_folder), 'asOfSeq', (select last_seq
+			from public.qorpera_folder_clocks where environment_id = '92400000-0000-4000-8000-000000000020'))));
+	perform pg_temp.base_assert((pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b1')).folder_retired_at is not null, 'retired');
+	perform pg_temp.base_error($q$select pg_temp.c3_answer('92800000-0000-4000-8000-0000000000b1', 'One more thing.')$q$, '55000',
+		'This session''s folder was deleted; restore it to continue');
+	perform pg_temp.base_assert((pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b1')).state = 'succeeded'
+		and (pg_temp.c3_session('92800000-0000-4000-8000-0000000000b1')).phase = 'completed', 'nothing turned');
+	-- The todo's file cannot go before its other session's folder, so a live worker's todo is never retired.
+	v_result := public.qorpera_folder_commit('92400000-0000-4000-8000-000000000020', pg_temp.base_owner(), 'c3-delete-2',
+		jsonb_build_array(jsonb_build_object('op', 'delete', 'path', 'agents/alice/todos/fix-login.md',
+			'expectedVersion', pg_temp.base_version('agents/alice/todos/fix-login.md'), 'asOfSeq', (select last_seq
+				from public.qorpera_folder_clocks where environment_id = '92400000-0000-4000-8000-000000000020'))));
+	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'refused'
+		and v_result -> 'units' -> 0 -> 'problems' -> 0 ->> 'message' = 'this todo has workers: delete its folder first, or write a new todo'
+		and (select t.folder_retired_at from public.qorpera_runtime_agent_todos t where t.id = '92800000-0000-4000-8000-0000000000a1') is null,
+		'the todo stays: ' || v_result::text);
+end $$;
+
+-- 8c. The payer: the login that pays is held to the plan rule when the index takes it --------------------------------
+-- The owner's login becomes a ChatGPT plan (a vault login of its capsule): it pays only for work of runs it pays for.
+set local session_replication_role = replica;
+insert into public.qorpera_model_logins(id, profile_id, compute_identity_id, credential_capsule_id, broker_authority_id, provider,
+	native_harness, current_version, access_issued_at, access_expires_at, login_kind)
+select '92800000-0000-4000-8000-0000000000e1', '92400000-0000-4000-8000-000000000010',
+	(current_setting('qorpera_test.base_identity')::jsonb ->> 'compute_identity_id')::uuid, v.credential_capsule_id,
+	'92800000-0000-4000-8000-0000000000e2', 'openai', 'codex-cli', 1, clock_timestamp(), clock_timestamp() + interval '1 hour',
+	'chatgpt_plan'
+from public.qorpera_provider_connection_versions v
+where v.connection_id = (current_setting('qorpera_test.base_connection')::jsonb ->> 'connection_id')::uuid and v.version = 2;
+set local session_replication_role = origin;
+do $$
+declare v_sponsor uuid := (current_setting('qorpera_test.base_sponsor')::jsonb ->> 'binding_id')::uuid;
+begin
+	-- For a run it pays for, the plan pays; for any other run, it does not, and the rules say the same.
+	perform pg_temp.base_assert((select payer.binding_id from public.qorpera_coding_owner_payer('92400000-0000-4000-8000-000000000010',
+		'92400000-0000-4000-8000-000000000001', 'codex', v_sponsor) payer) = v_sponsor, 'the plan pays for its own run''s work');
+	perform pg_temp.base_error($q$select * from public.qorpera_coding_owner_payer('92400000-0000-4000-8000-000000000010',
+		'92400000-0000-4000-8000-000000000001', 'codex', '92800000-0000-4000-8000-0000000000e3')$q$, '55000',
+		'Coding for this work needs a Codex login: a ChatGPT plan pays only for work started on it');
+	perform pg_temp.base_assert(public.qorpera_coding_owner_problem('92400000-0000-4000-8000-000000000010',
+		'92400000-0000-4000-8000-000000000001', 'codex', '92800000-0000-4000-8000-0000000000e3')
+		= 'Coding for this work needs a Codex login: a ChatGPT plan pays only for work started on it', 'the rules agree');
+end $$;
+
 -- 9. The new helpers are the database's own: no API role calls them -------------------------------------------------
 do $$
 declare v_fn text;
 begin
 	foreach v_fn in array array['public.qorpera_coding_owner_login(uuid,uuid,text)',
-		'public.qorpera_coding_owner_problem(uuid,uuid,text,uuid)'] loop
+		'public.qorpera_coding_owner_problem(uuid,uuid,text,uuid)', 'public.qorpera_coding_owner_payer(uuid,uuid,text,uuid)'] loop
 		perform pg_temp.base_assert(not has_function_privilege('anon', v_fn, 'execute')
 			and not has_function_privilege('authenticated', v_fn, 'execute')
 			and not has_function_privilege('service_role', v_fn, 'execute'), v_fn || ' is postgres-only');
