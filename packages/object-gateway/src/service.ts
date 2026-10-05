@@ -3,6 +3,7 @@ import type { IncomingMessage, RequestListener, ServerResponse } from "node:http
 import { boundedObjectOperation, ObjectDependencyError, type ObjectDependencyHealth } from "./dependency.ts";
 import type { ObjectGatewayFolderGc } from "./folder-gc.ts";
 import { serveFolderObject } from "./folder-objects.ts";
+import { type FolderServiceObjectOptions, serveFolderServiceObject } from "./folder-service-objects.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { serveMemberCompanyFile } from "./member-company-file.ts";
 import { type MemberCompanyObjectAuthority, serveMemberCompanyObject } from "./member-company-objects.ts";
@@ -41,6 +42,8 @@ export interface ObjectGatewayServiceOptions {
 	/** Folder GC's unlink lane (C1D §9.8), on the control token. */
 	folderGc?: ObjectGatewayFolderGc;
 	nativeObjects?: NativeCompanyObjectOptions;
+	/** The folder service's puts for its views (F3 step 3), on the folder service's own token. */
+	folderServiceObjects?: FolderServiceObjectOptions;
 	memberObjects?: MemberCompanyObjectAuthority;
 	/** A member's bytes of a folder-v2 company (folder core C4, P27b). */
 	memberFolderObjects?: MemberFolderObjectAuthority;
@@ -145,6 +148,16 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 			))
 	) {
 		throw new Error("Native object staging requires replication and a distinct private credential");
+	}
+	if (
+		options.folderServiceObjects &&
+		(!options.replication ||
+			!/^[A-Za-z0-9_-]{43}$/.test(options.folderServiceObjects.token) ||
+			[options.controlToken, options.verifierToken, options.revocationToken, options.nativeObjects?.token].some(
+				(token) => token !== undefined && secureEqual(token, options.folderServiceObjects!.token),
+			))
+	) {
+		throw new Error("The folder service's staging requires replication and a distinct private credential");
 	}
 	if (
 		options.readLeases &&
@@ -330,6 +343,11 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 						readFallback: (profileId, sha256) => options.authority.readLegacyObject(profileId, sha256),
 						...(observation ? { observation } : {}),
 					});
+					return;
+				}
+				if (request.url?.startsWith("/v1/folder-service-objects/")) {
+					if (!options.folderServiceObjects || !options.replication) throw new HttpError(404, "Not found");
+					await serveFolderServiceObject(request, response, options.folderServiceObjects, options.replication);
 					return;
 				}
 				if (request.url?.startsWith("/v1/folder-objects/")) {

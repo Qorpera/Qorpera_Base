@@ -168,7 +168,8 @@ revision, the exact bytes and the file state:
   revision its file has lost since, while a retry still replays.
 
 Every publisher (todo and worker receipts, the worker's report, the list
-repair) goes through the same checks. Proof: `supabase/tests/387_runtime_todo_publication_race.test.sql`
+repair) goes through the same checks. Proof (deleted in the legacy sweep, step B2, with the old Company File path that
+it tested; todo files on the company folder are tested in 707): `supabase/tests/387_runtime_todo_publication_race.test.sql`
 (two runs: the worker's report against the parent's newer change; the review's
 reproduction, including the replayed receipt; a writer the run checks do not
 stop, detected and repaired; byte-bound confirmation; the write-time check on

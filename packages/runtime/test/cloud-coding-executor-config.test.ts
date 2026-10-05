@@ -23,7 +23,7 @@ function fixture() {
 			imageFingerprint: "b".repeat(64),
 			bootstrapSha256: "c".repeat(64),
 			storagePool: "coding-disks",
-			network: "coding-net",
+			network: "qagent0",
 			cpus: 2,
 			memoryBytes: 4096 * 1024 ** 2,
 			rootDiskBytes: 64 * 1024 ** 3,
@@ -86,7 +86,7 @@ describe("coding executor service configuration", () => {
 				imageFingerprint: "f".repeat(64),
 				bootstrapSha256: "a".repeat(64),
 				storagePool: "machines",
-				network: "machine-net",
+				network: "qagent0",
 			},
 			helperSha256: "b".repeat(64),
 		};

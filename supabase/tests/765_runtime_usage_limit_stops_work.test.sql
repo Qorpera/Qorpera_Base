@@ -2,8 +2,9 @@
 -- A usage limit stops the work (20260928349910, founder decision 2026-10-01), on a folder-v2 company (ported from
 -- snapshot-v1 in the legacy sweep). Test 924's run of Alice's (the owner's post in her thread, turned into a run by the
 -- folder materializer) is leased on the owner's login A; the owner also has login B with room left, which the old
--- sponsor handoff would have moved the run to (test 583 shows the handoff would choose it). Now the runner's failure
--- report fails the run: it stays on A, keeps its binding version, gets no handoff event, and is not queued again.
+-- sponsor handoff would have moved the run to (the handoff is gone since 20260930059000; test 905 keeps the work that
+-- follows on A too). Now the runner's failure report fails the run: it stays on A, keeps its binding version, gets no
+-- handoff event, and is not queued again.
 select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
 do $$
 declare login jsonb; connection jsonb; sponsor jsonb;

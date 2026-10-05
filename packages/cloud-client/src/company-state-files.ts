@@ -13,7 +13,15 @@
 
 import { parseCloudCompanyPath } from "./company-path-schema.ts";
 import { AGENT_COLOURS, type AgentColour, companyPathKey } from "./company-state-shared.ts";
-import type { InterfaceProblemCode } from "./interfaces.ts";
+import { interfaceLibraryFiles } from "./interface-library.ts";
+import {
+	type InterfaceFile,
+	type InterfaceOrderFile,
+	type InterfaceProblemCode,
+	parseInterfaceStateFile,
+	type TableFile,
+	type TableRowsFile,
+} from "./interfaces.ts";
 import { STAFF_CHARACTER_IDS } from "./staff-characters.ts";
 
 export type CompanyStateFileKind =
@@ -26,9 +34,16 @@ export type CompanyStateFileKind =
 	| "worker-brief"
 	| "worker-results"
 	| "connection"
+	| "hook"
+	| "mailbox"
 	| "rule"
 	| "human-task"
-	| "contact";
+	| "contact"
+	/** Interfaces and tables (./interfaces.ts, RUNTIME-INTERFACES.md §6.1), dispatched to their own parser. */
+	| "interface"
+	| "interface-order"
+	| "table"
+	| "table-rows";
 
 /** One reason a file cannot be saved. Lines count from 1 over the whole file. */
 export interface CompanyStateProblem {
@@ -194,6 +209,35 @@ export interface ConnectionFile {
 	readonly purpose: string;
 }
 
+/** A hook's connection file, `connections/hook-<name>.md` (folder core C4, E1). Its settings are the platform's, kept in
+ * line with the hook (the database stays the authority, and never writes the hook's address or a secret here); its body
+ * is the company's: what the hook is for. */
+export interface HookFile {
+	readonly kind: "hook";
+	readonly id: string;
+	readonly name: string;
+	readonly proof: (typeof HOOK_PROOFS)[number];
+	readonly status: "active" | "paused";
+	readonly maxBodyBytes: number;
+	readonly perMinute: number;
+	readonly createdBy: string;
+	readonly createdAt: string;
+	readonly purpose: string;
+}
+
+/** A mailbox's connection file, `connections/mailbox-<name>.md` (E1): the platform's settings, the company's body. */
+export interface MailboxFile {
+	readonly kind: "mailbox";
+	readonly id: string;
+	readonly address: string;
+	readonly status: "active" | "paused";
+	readonly createdBy: string;
+	readonly createdAt: string;
+	readonly purpose: string;
+}
+
+export const HOOK_PROOFS = ["address", "stripe", "github", "hmac-sha256"] as const;
+
 export interface RuleFile {
 	readonly kind: "rule";
 	readonly id: string;
@@ -339,13 +383,19 @@ export type CompanyStateFile =
 	| SectionsFile
 	| GroupFile
 	| ConnectionFile
+	| HookFile
+	| MailboxFile
 	| RuleFile
 	| RoutineFile
 	| TodoFile
 	| WorkerBriefFile
 	| WorkerResultsFile
 	| HumanTaskFile
-	| ContactFile;
+	| ContactFile
+	| InterfaceFile
+	| InterfaceOrderFile
+	| TableFile
+	| TableRowsFile;
 
 /** Where a structured file sits: its kind and the names its path carries, as keys. */
 export interface CompanyStatePath {
@@ -354,7 +404,8 @@ export interface CompanyStatePath {
 	readonly agent: string | null;
 	/** The group's folder name, for `group.md`. */
 	readonly group: string | null;
-	/** The file's own name without `.md`: routine, todo, rule, connection, human-task and contact files. */
+	/** The file's own name without `.md`: routine, todo, rule, connection, human-task and contact files. An
+	 * interface's or a table's folder name for their files. */
 	readonly name: string | null;
 	/** The todo and worker folder names, for a worker's brief and results. */
 	readonly todo: string | null;
@@ -375,12 +426,22 @@ export function companyStatePath(path: string): CompanyStatePath | null {
 	const [a, b, c, d, e, f] = parts;
 	if (parts.length === 2 && a === "vision" && b === "vision.md") return { kind: "vision", ...none };
 	if (parts.length === 2 && a === "agents" && b === "sections.md") return { kind: "sections", ...none };
-	if (parts.length === 2 && a === "connections" && stem(b) !== null)
-		return { kind: "connection", ...none, name: stem(b) };
+	if (parts.length === 2 && a === "connections" && stem(b) !== null) {
+		// A hook's and a mailbox's files take their prefixes before a vault connection's (E1).
+		const name = stem(b) as string;
+		const kind = name.startsWith("hook-") ? "hook" : name.startsWith("mailbox-") ? "mailbox" : "connection";
+		return { kind, ...none, name };
+	}
 	if (parts.length === 2 && a === "rules" && stem(b) !== null) return { kind: "rule", ...none, name: stem(b) };
 	if (parts.length === 2 && a === "human-tasks" && stem(b) !== null)
 		return { kind: "human-task", ...none, name: stem(b) };
 	if (parts.length === 2 && a === "contacts" && stem(b) !== null) return { kind: "contact", ...none, name: stem(b) };
+	// Interfaces and tables, by the path's shape alone (P16): a badly named folder's file is still checked, and refused.
+	if (parts.length === 2 && a === "interfaces" && b === "order.md") return { kind: "interface-order", ...none };
+	if (parts.length === 3 && a === "interfaces" && b && c === "interface.toml")
+		return { kind: "interface", ...none, name: b };
+	if (parts.length === 3 && a === "tables" && b && c === "table.toml") return { kind: "table", ...none, name: b };
+	if (parts.length === 3 && a === "tables" && b && c === "rows.csv") return { kind: "table-rows", ...none, name: b };
 	if (a !== "agents" || b === undefined || b === "sections.md") return null;
 	if (b === "groups")
 		return parts.length === 4 && d === "group.md" ? { kind: "group", ...none, group: c ?? null } : null;
@@ -1165,6 +1226,58 @@ function connection(split: Split, fields: Fields, problems: Problems): Connectio
 	return { kind: "connection", id, service, account, status, actions, connectedBy, connectedAt, purpose };
 }
 
+const HOOK_STATUSES = ["active", "paused"] as const;
+const HOOK_NAME = /^[a-z][a-z0-9-]{0,63}$/;
+const MAILBOX_ADDRESS = /^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?@[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/;
+
+function hook(split: Split, fields: Fields, problems: Problems): HookFile | null {
+	const id = fields.id("id", true);
+	const name = fields.text("name", true, 64);
+	if (name && !HOOK_NAME.test(name))
+		problems.add("value", fields.line("name"), "name", "name is the hook's name, like stripe-payments");
+	const proof = fields.choice("proof", true, HOOK_PROOFS);
+	const status = fields.choice("status", true, HOOK_STATUSES);
+	const maxBodyBytes = fields.whole("max_body_bytes", true, 1024, 262144);
+	const perMinute = fields.whole("per_minute", true, 1, 120);
+	const createdBy = fields.id("created_by", true);
+	const createdAt = fields.instant("created_at", true);
+	const purpose = body(split, problems, "what the hook is for", false, 32768);
+	fields.close("a hook");
+	if (
+		problems.list.length ||
+		!id ||
+		!name ||
+		!proof ||
+		!status ||
+		maxBodyBytes === null ||
+		perMinute === null ||
+		!createdBy ||
+		!createdAt ||
+		purpose === null
+	)
+		return null;
+	return { kind: "hook", id, name, proof, status, maxBodyBytes, perMinute, createdBy, createdAt, purpose };
+}
+
+function mailbox(split: Split, fields: Fields, problems: Problems): MailboxFile | null {
+	const id = fields.id("id", true);
+	const address = fields.text("address", true, 254);
+	if (address && !MAILBOX_ADDRESS.test(address))
+		problems.add(
+			"value",
+			fields.line("address"),
+			"address",
+			"address is the mailbox's address, like support@example.com",
+		);
+	const status = fields.choice("status", true, HOOK_STATUSES);
+	const createdBy = fields.id("created_by", true);
+	const createdAt = fields.instant("created_at", true);
+	const purpose = body(split, problems, "what the mailbox is for", false, 32768);
+	fields.close("a mailbox");
+	if (problems.list.length || !id || !address || !status || !createdBy || !createdAt || purpose === null) return null;
+	return { kind: "mailbox", id, address, status, createdBy, createdAt, purpose };
+}
+
 function rule(split: Split, fields: Fields, problems: Problems): RuleFile | null {
 	const id = fields.id("id", true);
 	const outcome = fields.choice("outcome", true, ["ask-first", "allow"] as const);
@@ -1794,6 +1907,11 @@ function structuredFolderNames(parts: readonly string[]): [number, string][] | n
 	const [a, b, c, d, e] = parts;
 	// The two top folders have no name of their own; they are places so a wrong spelling cannot be made.
 	if (a === "contacts") return parts.length === 1 ? [] : null;
+	// Interfaces and tables (P16): the roots, and one named folder per interface or table.
+	if (a === "interfaces" || a === "tables") {
+		if (parts.length === 1) return [];
+		return parts.length === 2 ? [[1, a === "interfaces" ? "an interface's folder" : "a table's folder"]] : null;
+	}
 	if (a === "human-tasks") {
 		if (parts.length === 1) return [];
 		if (parts.length === 2 || (parts.length === 3 && c === "proof")) return [[1, "a human task's folder"]];
@@ -1838,10 +1956,14 @@ export function companyStatePathProblems(path: string, folder = false): CompanyS
 		if (!where) return [];
 		if (where.kind === "group") named.push([written[2], "a group chat's folder"]);
 		else if (where.agent !== null) named.push([written[1], "an agent's folder"]);
+		else if (where.kind === "interface") named.push([written[1], "an interface's folder"]);
+		else if (where.kind === "table" || where.kind === "table-rows") named.push([written[1], "a table's folder"]);
 		if (where.kind === "routine" || where.kind === "todo") named.push([written[3]?.slice(0, -3), "the file"]);
 		if (
 			where.kind === "rule" ||
 			where.kind === "connection" ||
+			where.kind === "hook" ||
+			where.kind === "mailbox" ||
 			where.kind === "human-task" ||
 			where.kind === "contact"
 		)
@@ -1863,12 +1985,16 @@ export function companyStatePathProblems(path: string, folder = false): CompanyS
 						"the todo's folder": "todo",
 						"the worker's folder": "worker",
 						"a human task's folder": "task",
+						"an interface's folder": "page",
+						"a table's folder": "table",
 					}[what] ??
 						"file")
 				}`,
 			);
 	const kind = folder ? null : companyStatePath(path)?.kind;
-	if (kind && kind !== "vision" && kind !== "sections" && !written.at(-1)?.endsWith(".md"))
+	// Interface and table files are named by their kind (interface.toml, table.toml, rows.csv, order.md).
+	const fixedName = kind === "interface" || kind === "interface-order" || kind === "table" || kind === "table-rows";
+	if (kind && kind !== "vision" && kind !== "sections" && !fixedName && !written.at(-1)?.endsWith(".md"))
 		problems.add("name", null, null, "the file name ends in .md, in lowercase");
 	else if (!problems.list.length && path !== companyPathKey(path))
 		problems.add("name", null, null, `write the path in lowercase, as ${shown(companyPathKey(path))}`);
@@ -1885,6 +2011,14 @@ export const COMPANY_STATE_MAX_PROBLEMS = 50;
 export function parseCompanyStateFile(path: string, text: string): CompanyStateFileResult | null {
 	const where = companyStatePath(path);
 	if (!where) return null;
+	// Interfaces and tables have their own parser and fixtures (./interfaces.ts, RUNTIME-INTERFACES.md §6.1).
+	if (
+		where.kind === "interface" ||
+		where.kind === "interface-order" ||
+		where.kind === "table" ||
+		where.kind === "table-rows"
+	)
+		return parseInterfaceStateFile(path, text);
 	const problems = new Problems();
 	const refused = () => {
 		const more = problems.list.length - COMPANY_STATE_MAX_PROBLEMS;
@@ -1929,6 +2063,12 @@ export function parseCompanyStateFile(path: string, text: string): CompanyStateF
 			break;
 		case "connection":
 			file = connection(parts, fields, problems);
+			break;
+		case "hook":
+			file = hook(parts, fields, problems);
+			break;
+		case "mailbox":
+			file = mailbox(parts, fields, problems);
 			break;
 		case "rule":
 			file = rule(parts, fields, problems);
@@ -2084,6 +2224,35 @@ export function writeConnectionFile(file: Omit<ConnectionFile, "kind">): string 
 			["site", file.site === undefined ? null : companyStateValue(file.site)],
 			["two_step", file.twoStep ?? null],
 			["opened_for", file.openedFor ?? null],
+		],
+		file.purpose,
+	);
+}
+
+export function writeHookFile(file: Omit<HookFile, "kind">): string {
+	return document(
+		[
+			["id", file.id],
+			["name", companyStateValue(file.name)],
+			["proof", file.proof],
+			["status", file.status],
+			["max_body_bytes", String(file.maxBodyBytes)],
+			["per_minute", String(file.perMinute)],
+			["created_by", file.createdBy],
+			["created_at", file.createdAt],
+		],
+		file.purpose,
+	);
+}
+
+export function writeMailboxFile(file: Omit<MailboxFile, "kind">): string {
+	return document(
+		[
+			["id", file.id],
+			["address", companyStateValue(file.address)],
+			["status", file.status],
+			["created_by", file.createdBy],
+			["created_at", file.createdAt],
 		],
 		file.purpose,
 	);
@@ -2398,6 +2567,13 @@ export const COMPANY_STATE_SEEDED_PATHS = Object.freeze([
 	"contacts",
 	"skills",
 	"rules",
+	// Interfaces and tables (P16, RUNTIME-INTERFACES.md §6.1 rule 2).
+	"interfaces",
+	"interfaces/order.md",
+	"tables",
+	"tables/areas",
+	"tables/areas/table.toml",
+	"tables/areas/rows.csv",
 ] as const);
 
 /** The Co-Founder's instructions when a company is created: a thin job, not the platform's brain
@@ -2435,6 +2611,9 @@ export interface CompanyStateSeedOptions {
 	readonly founders?: readonly CompanyStateSeedFounder[];
 	/** The Co-Founder's first task (decision 2): a todo file in its own folder. */
 	readonly firstTodo?: { readonly id: string; readonly requestedBy: string | null };
+	/** The ids of the library's interfaces and tables (`interfaceLibraryFiles`), random unless given. A creation commits
+	 * whole, so each attempt may draw new ones. */
+	readonly newId?: () => string;
 }
 
 /** The Co-Founder's first todo when the founding table starts the company. */
@@ -2530,7 +2709,28 @@ function seedEntries(options: CompanyStateSeedOptions): CompanyStateSeedEntry[] 
 		{ path: "skills/human-task", kind: "folder" },
 		{ path: COMPANY_STATE_HUMAN_TASK_SKILL_PATH, kind: "file", text: COMPANY_STATE_HUMAN_TASK_SKILL },
 		{ path: "rules", kind: "folder" },
+		...seedLibrary(options.newId ?? (() => globalThis.crypto.randomUUID())),
 	];
+}
+
+/** interfaces/ and tables/ with the library's pages and tables (RUNTIME-INTERFACES.md §8), parents before children. */
+function seedLibrary(newId: () => string): CompanyStateSeedEntry[] {
+	const files = interfaceLibraryFiles(newId);
+	const entries: CompanyStateSeedEntry[] = [];
+	const folders = new Set<string>();
+	for (const root of ["interfaces", "tables"]) {
+		entries.push({ path: root, kind: "folder" });
+		folders.add(root);
+		for (const path of Object.keys(files).filter((file) => file.startsWith(`${root}/`))) {
+			const folder = path.slice(0, path.lastIndexOf("/"));
+			if (!folders.has(folder)) {
+				folders.add(folder);
+				entries.push({ path: folder, kind: "folder" });
+			}
+			entries.push({ path, kind: "file", text: files[path] });
+		}
+	}
+	return entries;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2559,7 +2759,7 @@ Use a human task only for work no agent can do: signing, paying, posting or open
 \`human-tasks/<name>.md\` with \`id\`, \`title\`, \`status: open\`, \`member:\` or \`contact:\`, \`from:\` (your own id), \`todo:\` (the id of your todo that waits on it) and \`due:\`, plus \`minutes\`, \`proof\` and \`files\` when they help. Keep your todo blocked until the task is accepted.
 
 ## Follow it
-- You are woken when the person marks it done or says they can't, and when it is overdue.
+- You are woken when someone else changes your task: the person marks it done or says they can't, a member accepts, returns or cancels it, hands it to another person, or hands it to you. You are also woken once when it is overdue. Your own changes never wake you. When the agent that asked is gone, the Co-Founder is woken instead.
 - Done: check the proof in \`human-tasks/<name>/\`. Set \`accepted\`, or \`returned\` with a \`reason\` and a new due date.
 - Declined: find another route or another person.
 - Overdue: remind, move the due date, hand it to someone else, or tell the Co-Founder.

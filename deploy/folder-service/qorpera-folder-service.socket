@@ -1,0 +1,14 @@
+[Unit]
+Description=Qorpera folder service socket (only the vsock bridge's account may connect)
+Documentation=file:///opt/qorpera-folder-service/README.md
+
+[Socket]
+ListenStream=/run/qorpera-folder/service.sock
+SocketUser=qorpera-folder
+SocketGroup=qorpera-folder-bridge
+SocketMode=0660
+DirectoryMode=0755
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target
