@@ -357,6 +357,35 @@ where id = '87200000-0000-4000-8000-0000000000c7';
 select pg_temp.check((select bool_and(public.qorpera_machine_checkin_current(q) = (q.parent_run_id = (pg_temp.run()).id))
 	from public.qorpera_machine_checkins q), 'when the build ends, its question no longer stands; the crawl''s still does');
 rollback;
+-- The count never moves back. Ada started the crawl nine days ago and ran a short `git status` eight days ago; ten days
+-- ago she ran a `ls`. The report's weekly clean-up of ended commands takes the `ls` but keeps the `git status`, her last
+-- work there, while the crawl runs: nothing new is asked and her question still stands. Once the crawl ended, the next
+-- clean-up takes that row too.
+begin;
+update public.qorpera_runtime_office_shell_commands set started_at = clock_timestamp() - interval '9 days',
+	worked_at = clock_timestamp() - interval '9 days' where id = pg_temp.command(5);
+insert into public.qorpera_runtime_office_shell_commands(id, office_id, computer_generation, screen_id, staff_agent_id, run_id,
+	receipt_id, conversation_run_id, session_id, command, started_at, worked_at, ended_at, end_reason)
+select ('87200000-0000-4000-8000-0000000000' || x.n)::uuid, (pg_temp.office()).id, (pg_temp.office()).generation,
+	current_setting('qorpera_test.screen')::uuid, (pg_temp.run()).staff_agent_id, (pg_temp.run()).id,
+	('87200000-0000-4000-8000-0000000000d' || right(x.n, 1))::uuid, (pg_temp.run()).id, (pg_temp.run()).session_id, x.command,
+	clock_timestamp() - x.ago, clock_timestamp() - x.ago, clock_timestamp() - x.ago + interval '1 minute', 'exited'
+from (values ('c8', 'git status', interval '8 days'), ('c9', 'ls', interval '10 days')) x(n, command, ago);
+select pg_temp.check(pg_temp.asked_again(), 'a crawl busy for days is asked about');
+select pg_temp.check((select since = (select c.worked_at from public.qorpera_runtime_office_shell_commands c
+		where c.id = '87200000-0000-4000-8000-0000000000c8') from public.qorpera_machine_checkins),
+	'counted from her last work, the git status');
+select pg_temp.shells(true, jsonb_build_array(pg_temp.open_item(5, 'python crawl.py', '9 days', '9 days'))) \g /dev/null
+select pg_temp.check((select array_agg(c.command order by c.command) from public.qorpera_runtime_office_shell_commands c
+		where c.id in ('87200000-0000-4000-8000-0000000000c8', '87200000-0000-4000-8000-0000000000c9')) = array['git status'],
+	'the weekly clean-up keeps the row of her last work while the crawl runs, and takes the older one');
+select pg_temp.check(pg_temp.ask() = 0, 'so nothing new is asked');
+select pg_temp.check(public.qorpera_machine_checkin_current(q), 'and her question still stands') from public.qorpera_machine_checkins q;
+update public.qorpera_runtime_office_shell_commands set ended_at = clock_timestamp(), end_reason = 'exited' where id = pg_temp.command(5);
+select pg_temp.shells(false) \g /dev/null
+select pg_temp.check(not exists (select 1 from public.qorpera_runtime_office_shell_commands c
+		where c.id = '87200000-0000-4000-8000-0000000000c8'), 'once the crawl ended, the clean-up takes that row too');
+rollback;
 
 -- 5. Delivery, by the drain's step (C1c-3i-b's helpers). The company's login may pay for autonomous work: a check-in
 --    is paid as the work that started it.

@@ -5,7 +5,9 @@
 -- each program still running there (a worker's: the conversation that dispatched it). A question is a notice, never a
 -- stop.
 -- 1. Asking: qorpera_machine_checkins holds one row per question (agents' machines and coding sessions use it too);
---    qorpera_office_shell_checkins_unasked lists the questions due and not asked yet.
+--    qorpera_office_shell_checkins_unasked lists the questions due and not asked yet. The shell report's weekly clean-up
+--    keeps the row of an agent's last work on a screen while the agent still runs a command there, so the count never
+--    moves back.
 -- 2. Delivery on the shared folder drains (LISTENER §9), with C1c-3i-b's helpers (20260930058000): the source kind
 --    'machine-checkin' continues the parent run as a machine event does (admitted, authorized by its own chain,
 --    materialized with the parent's capability, told in the parent's conversation, read with a continuation of its
@@ -334,6 +336,19 @@ select pg_temp.shell_checkin_patch('public.qorpera_runtime_wake_policy_internal(
 select pg_temp.shell_checkin_patch('public.qorpera_run_continuation(public.qorpera_execution_runs)'::regprocedure,
 	$old$public.qorpera_machine_run_continuation(p_run)); end if;$old$,
 	$new$public.qorpera_machine_run_continuation(p_run), public.qorpera_machine_checkin_continuation(p_run)); end if; -- 20260930091000$new$);
+-- The shell report's weekly clean-up of ended commands keeps the row of an agent's last work on a screen while the agent
+-- still runs a command there: its idle count starts at that row, and without it the count would move back to older work
+-- and ask off its marks.
+select pg_temp.shell_checkin_patch('public.qorpera_report_runtime_office_shell_activity(jsonb,bigint,jsonb)'::regprocedure,
+	$old$where office_id=v_office.id and ended_at<v_at-interval '7 days' order by ended_at limit 64);$old$,
+	$new$where office_id=v_office.id and ended_at<v_at-interval '7 days' -- 20260930091000
+			and not (worked_at=(select max(latest.worked_at) from public.qorpera_runtime_office_shell_commands latest
+					where latest.screen_id=qorpera_runtime_office_shell_commands.screen_id
+						and latest.staff_agent_id=qorpera_runtime_office_shell_commands.staff_agent_id)
+				and exists(select 1 from public.qorpera_runtime_office_shell_commands running
+					where running.office_id=v_office.id and running.screen_id=qorpera_runtime_office_shell_commands.screen_id
+						and running.staff_agent_id=qorpera_runtime_office_shell_commands.staff_agent_id and running.ended_at is null))
+		order by ended_at limit 64);$new$);
 
 -- 3. The drain ---------------------------------------------------------------------------------------------------------
 
