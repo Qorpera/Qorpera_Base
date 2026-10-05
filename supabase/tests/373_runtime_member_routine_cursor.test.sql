@@ -156,6 +156,14 @@ begin
 	v_cursor := pg_temp.rc_cursor('new');
 	perform pg_temp.base_assert(v_cursor.routine_version = 4 and v_cursor.last_scheduled_for is null
 		and v_cursor.next_due_at = '-infinity'::timestamptz, 'a never-run weekly routine made hourly keeps its kickoff');
+	-- Paused and resumed, a never-run routine keeps its fresh cursor too.
+	perform pg_temp.rc_save('fresh-resume', 'Brief', v_brief);
+	perform pg_temp.rc_save('fresh-resume', 'Brief', v_brief, '{"status":"paused"}');
+	perform pg_temp.rc_save('fresh-resume', 'Brief', v_brief);
+	v_cursor := pg_temp.rc_cursor('fresh-resume');
+	perform pg_temp.base_assert((pg_temp.rc_row('fresh-resume')).status = 'active' and v_cursor.routine_version = 1
+		and v_cursor.last_scheduled_for is null and v_cursor.next_due_at = '-infinity'::timestamptz,
+		'a never-run routine paused and resumed keeps its fresh cursor');
 end
 $$;
 
