@@ -888,10 +888,12 @@ describe("cloud runner orchestrator", () => {
 		);
 	});
 
-	it("runs F2's worker drain before the listener, each with its company limit", () => {
+	it("runs F2's worker drain before the listener, its human-task wakes after it, then machine events, each with its company limit", () => {
 		expect(CLOUD_FOLDER_DRAINS).toEqual([
 			{ name: "workers", companyLimit: 32 },
 			{ name: "listen", companyLimit: 32 },
+			{ name: "human_tasks", companyLimit: 32 },
+			{ name: "machine_events", companyLimit: 8 },
 		]);
 	});
 

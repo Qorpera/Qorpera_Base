@@ -290,7 +290,9 @@ begin
 			'qorpera_folder_contents_bytes_problem', 'qorpera_folder_unit_objects_unlocked')) <> 3 then
 		raise exception 'E: the three helpers exist once each'; end if;
 	if position('array_agg(s.sha256 order by s.sha256 collate "C")' in v_commit) = 0
-		or position('elsif public.qorpera_folder_contents_bytes_problem(p_environment_id, v_file.profile_id, p_actor, v_auth_actor,' in v_commit) = 0
+		-- (Its actor argument is P40's v_bytes_actor since 20260930074000: the platform's for an applied proposal's files.)
+		or position('elsif public.qorpera_folder_contents_bytes_problem(p_environment_id, v_file.profile_id, v_bytes_actor, v_auth_actor,'
+			in v_commit) = 0
 		or position('and public.qorpera_folder_unit_objects_unlocked(p_environment_id, v_file.profile_id, v_unit, v_objects) then' in v_commit) = 0
 		or position('c.value -> ''file'', v_objects) is not null) then' in v_commit) > 0
 		or position('where not (h = any (v_objects))' in v_commit) > 0 then

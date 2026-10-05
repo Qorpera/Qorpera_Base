@@ -71,7 +71,17 @@ hash order, `order by sha256 collate "C"`, the order C1d-2's GC must use too.
 **Possession before reference.** An actor references only bytes it possesses: bytes it put under its own intent (the
 gateway checked their hash), or bytes it may already read. An intent row records which (`held` or `put`). So an actor
 cannot learn that the company stores a hash it may not read, and cannot seal or commit a file over such bytes. The
-platform reads everything and holds every stored object.
+platform reads everything and holds every stored object. The commit's bytes check decides possession before it calls a
+reference malformed (20260930043000, test 903): a reference whose media type or executable bit disagrees with its
+stored manifest is 22023 only for an actor who holds the bytes; anyone else gets `bytes_unverified`, as for a hash the
+company does not store. Nor does the upload check's quota (413) depend on the catalog (20260930062000, test 914): it is
+waived only for an object the actor possesses already under its intent (item 2). Before, near the storage limit, the
+hash alone told whether the company stored it: a stored object passed and any other was refused. Two answers on the
+upload path still differ:
+- authorization and seal answer "being collected" (409) for a marked object the actor does not hold. Backlog: hiding
+  the GC mark changes how a marked object is put again, which is more than this check;
+- the gateway answers 201 or 200 for a put by whether the object exists. Accepted: it is the usual dedup channel, and
+  it needs the real bytes, so it tells only someone who has them already.
 
 Possession is judged when the intent opens. Bytes the actor could read then are bytes it could have fetched then, so a
 later narrowing does not revoke an intent already open or sealed; a sealed intent lapses within the hour unless its
@@ -82,13 +92,17 @@ writer renews it, and a new intent judges again. (Reviewer round 2, L1; F1 may a
      row (plain), since `read_actor` does not check it;
    - validates the manifest (§2) and inserts the intent and its object rows, `expires_at` = now + 15 minutes;
    - finds the listed objects the catalog already has and the actor may already read (§7's rule; the platform: all),
-     takes them `FOR KEY SHARE` in hash order (G1), marks them `held`, and returns them, so the writer puts only the
+     or put itself under another of its own unexpired intents in this environment (20260930083000, test 931: a
+     machine sends a big file's chunks before its manifest is known; RUNTIME-FOLDER-WRITES.md, 3a), takes them
+     `FOR KEY SHARE` in hash order (G1), marks them `held`, and returns them, so the writer puts only the
      others: `{schema: 'qorpera.folder-upload/v1', intentId, manifestSha256, expiresAt, present: [sha256…]}`.
 2. **`qorpera_folder_authorize_object_upload(env, actor, intent, sha256, bytes)`**, per chunk, from the gateway:
    plain reads of the intent (this environment, this actor's kind and scope, `open`, unexpired) and of its object row
-   for `(sha256, bytes)`, and for an object the catalog lacks the soft quota (§5; 23514), so a company at its limit
-   is refused before the gateway writes (20260928309710). Returns the company (`profileId`); the gateway derives the
-   NAS path. No run check per chunk (core §7).
+   for `(sha256, bytes)`, and the soft quota (§5; 23514) for an object the row marks neither `held` nor `put`, so a
+   company at its limit is refused before the gateway writes (20260928309710). Whether the catalog has the object
+   does not matter (20260930062000): a stored object the actor does not possess counts as new here, although storing
+   it adds nothing, so the answer tells nothing. Returns the company (`profileId`); the gateway derives the NAS path.
+   No run check per chunk (core §7).
 3. **`qorpera_folder_confirm_object(env, actor, intent, sha256, bytes)`**, after the gateway's NAS put: the same
    intent checks, then marks the row `put`, then `insert into profile_objects … on conflict do nothing`; then
    `KEY SHARE` on the row. It checks no quota: the authorization before the write let this object in, and refusing
@@ -116,8 +130,6 @@ treats an intent's `expires_at` as the end of that root (G4).
 For every `write`, every file of a `new_folder`, and every file a `copy` newly references (a copied folder's files
 included):
 - the proof row matches `(profile, manifest, file, bytes)`;
-- a version-2 proof's media type and executable bit must equal the unit's; a difference raises 22023 for the change
-  set, so an entry never disagrees with its bytes. A version-1 proof keeps today's rule;
 - the manifest and every chunk of the proof's closure are taken `FOR KEY SHARE`, sorted `collate "C"`, inside step 6
   (after paths, before admission). Step 6 keeps the set it locked, and the decision refuses as `bytes_unverified` any
   closure object outside that set or missing from the catalog with its size. A proof that became visible after
@@ -125,7 +137,12 @@ included):
 - possession (§3), for a `write` or `new_folder` file with a version-2 proof: the actor has an unexpired sealed intent
   of its own for that manifest, or may already read it (§7; the platform always may). Otherwise `bytes_unverified`. A
   replay is answered at step 0 and is unaffected. Version-1 proofs are exempt: only the SQL test fixtures make them
-  for `folder-v2`, until C5 moves the fixtures and refuses `verify_company_path_file` there (§6).
+  for `folder-v2`, until C5 moves the fixtures and refuses `verify_company_path_file` there (§6);
+- last, for a `write` or `new_folder` file whose actor holds the bytes (20260930043000): a version-2 proof's media type
+  and executable bit must equal the unit's; a difference raises 22023 for the change set, so an entry never disagrees
+  with its bytes. Anyone else got `bytes_unverified` above, so the check tells nothing about bytes the actor does not
+  hold. A version-1 proof keeps today's rule. (A copy's files never reach this check: they come from entries that
+  already agree with their proofs.)
 
 A copy's source files are found by an equality probe on the source key and a range probe under it
 (`key_text > k || '/' and key_text < k || '0'`, both on the `(environment_id, key_text)` index). A source over the
@@ -177,9 +194,10 @@ The catalog rows a new folder reads went from N × 20,000 to 20,000 + 2N.
 - **`enforce_company_storage_quota`** (on `storage.objects`): for a `folder-v2` company it reads the usage and the
   limit plainly, takes neither the fence nor `company_files`, and checks only objects the catalog lacks.
 - **The quota is soft** for `folder-v2`: uploads in flight at once can pass the limit by what they carry, as F2-3's
-  48 KiB budget can. The gateway's authorization checks it before the NAS write, for an object the catalog lacks;
-  the confirm after the write never refuses for it (20260928309710). An object already stored never counts again,
-  so a company at its limit can still stage a file from bytes it has.
+  48 KiB budget can. The gateway's authorization checks it before the NAS write, for an object the actor does not
+  possess under its intent (§3, item 2); the confirm after the write never refuses for it (20260928309710). An object
+  the actor possesses never counts again, so a company at its limit can still stage a file from bytes the actor may
+  read; usage itself counts each stored object once.
 - GC (C1d-2) decrements the row through the same trigger.
 - `qorpera_company_file_json` still reports `company_files.storage_used_bytes`, which stops moving for `folder-v2`.
   C4's clients read the usage row instead.
@@ -218,6 +236,8 @@ the migration checks its digest.
     costs one pass, not one authority check per path. Open checks it on the upload's own present objects only: in one statement with the
     company's catalog, a plan that scanned the catalog first ran it on every object the company stores (the C1e load
     test's second finding: uploads took up to 6.8 s of CPU in about one run in three).
+  - Since P17 (migration 20260930042000) a conflict copy at a path counts as an old version of it in the set-based
+    pass, so whoever may read the path can fetch the copy and commit it again.
 
 It returns `{profileId, bytes}`. The bytes never form a read set: the read receipt comes from `qorpera_folder_read`,
 and releases cover what the model sees. The chunks of a version-1 proof (fixtures, and bytes staged before C1d) have no
@@ -229,7 +249,11 @@ that the Storage mirror inserted is still served.
 ## 8. The gateway and the runtime
 
 - **Gateway** (`packages/object-gateway`): `/v1/folder-objects/<environmentId>/<sha256>`, on the native token, with
-  the run's binding (its actor) and, for a put, `x-qorpera-upload-intent`. Put: authorize, read the body, check the
+  the run's binding (its actor) and, for a put, `x-qorpera-upload-intent`. The folder service's puts for its views (F3
+  step 3, `RUNTIME-FOLDER-WRITES.md`, slice 3b) go to `PUT /v1/folder-service-objects/<environmentId>/<sha256>`, on
+  the folder service's own token (`QORPERA_OBJECT_GATEWAY_FOLDER_SERVICE_TOKEN`, distinct from every other; the route
+  is off without it), naming the actor in `x-qorpera-folder-actor` (canonical base64url JSON of exactly a member's,
+  the platform's or a view's fields) and the intent. The same checks and store as a run's put (`putFolderObject`). Put: authorize, read the body, check the
   hash, `uploadWithAuthority` (NAS put, confirm, replication). Get: authorize, NAS read, check, re-authorize. The
   native route's token check and binding format are shared; SQL judges the run by the folder actor (run, job, runner
   and assignment, as commit and read do), not by the provider execution lease the native route checks.
@@ -353,11 +377,12 @@ c1d2-gc-inventory.md` (2026-10-01).
 - **Path versions keep every committed manifest for good.** Pruning them is the git-object exception and erasure,
   both C2. So a committed file's manifest is always rooted, and so are its chunks.
 - **What can lose every root today:** objects staged under an upload intent that was never committed (abandoned or
-  refused uploads, the losing side of a conflict). Their intent expires, and nothing else names them.
+  refused uploads). Their intent expires, and nothing else names them. The losing side of a conflict is kept as a
+  conflict copy since P17 (§9.3), when its bytes would have passed the commit's check.
 - **Objects with no intent history are kept** (a leak, not a loss): objects a company held before it was enabled, and
   anything a future non-folder writer adds. They get no GC row (§9.4).
-- **Later roots come with C2:** proposals and review cards, conflict copies on receipts, retention holds, erasure. C2
-  adds them to the one root check (§9.3) under the rules of §9.4.
+- **Later roots come with C2:** proposals and review cards, retention holds, erasure. C2 adds them to the one root
+  check (§9.3) under the rules of §9.4. Conflict copies on receipts came first (P17, §9.3).
 - **Today's company GC never claims a folder-v2 company's objects** (the patch at 20260928120000:221-234; artifact GC
   at :236-251 retains everything for folder-v2). A folder-v2 company has no artifacts: since `20260930041000` every
   path that makes one refuses folder-v2 (§9.3).
@@ -391,7 +416,10 @@ company may have several: test 761 enables a second). An object is rooted when i
   `(environment_id, manifest_sha256)`);
 - an object of an upload intent still in the table whose `expires_at` is after `now() - grace`. So an expired intent
   the sweep hasn't reached yet still protects its objects for the whole grace window (G4 holds even when the sweep
-  falls behind); or
+  falls behind);
+- the manifest of a conflict copy on a receipt in any of those environments (P17, `20260930042000`:
+  `qorpera_folder_conflict_copies`, indexed by `(environment_id, manifest_sha256)`). A copy ends only when erasure
+  removes it, and that end follows §9.4's rule; or
 - a chunk of a rooted manifest, through `qorpera_folder_file_chunks`, read from the chunk side.
 
 The chunk index must be complete for every proof a folder-v2 company holds. Seal writes it for version 2; version-1
@@ -499,7 +527,7 @@ Two places take no lock, and are safe by roots, not by the mark:
   commits, and its put can land after the quarantine rename. That is harmless: the upload's intent was committed by
   `open` before any put, so it is a root, and the finish answers `restore`.
 - **`authorize_object_download`** answers a marked object as missing. A non-platform download is allowed only for an
-  object an entry or path version roots, and those are never collected.
+  object an entry, path version or conflict copy (P17) roots, and those are never collected.
 
 Since the claim marks under `FOR UPDATE`, a locking reference either holds KEY SHARE first (the claim skips the
 object) or is granted it after the mark is committed (and sees it in its next statement). Once GC has finished, the

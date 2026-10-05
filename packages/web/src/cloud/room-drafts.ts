@@ -37,13 +37,16 @@ export function parseRoomDraft(value: unknown, roomId: string): RoomDraft {
 		throw new CloudShapeError("room draft");
 	if (typeof input.body !== "string" || new TextEncoder().encode(input.body).length > ROOM_DRAFT_BYTES)
 		throw new CloudShapeError("room draft text");
-	// A draft carries `quotes` only when it holds any, checked as a message's are.
+	// A draft carries `quotes` only when it holds any, checked as a message's are. A draft whose quotes this client
+	// can't hold (a quote whose words hold « or », which the cloud refuses since 20260930087000) is as good as absent:
+	// none of its text is shown, so none of it can become the member's own words. It keeps its revision, so the owner's
+	// next save lands over it, as any first save over a draft does; with no text, a teammate's is not listed.
 	const quotes = input.quotes === undefined ? undefined : parseQuotes(input.quotes, input.body);
-	if (input.quotes !== undefined && !quotes) throw new CloudShapeError("room draft quotes");
+	const readable = input.quotes === undefined || quotes !== undefined;
 	return {
 		roomId,
 		ownerUserId: uuid(input.ownerUserId, "room draft owner"),
-		body: input.body,
+		body: readable ? input.body : "",
 		...(quotes ? { quotes } : {}),
 		revision: boundedInteger(input.revision, "room draft revision", 0, Number.MAX_SAFE_INTEGER),
 		editorUserId: uuid(input.editorUserId, "room draft editor"),

@@ -69,6 +69,27 @@ describe("native subscription browser transport", () => {
 		f.fetch.mockResolvedValueOnce(Response.json(null));
 		expect(await f.client.selectSessionAccount!(session.sessionId)).toBeUndefined();
 	});
+	it("sends the member's own pick of a conversation's login and checks the answer", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(Response.json(id(95)));
+		expect(await f.client.chooseSessionAccount!(session.sessionId, id(95), f.view.signal)).toBe(id(95));
+		const [url, request] = f.fetch.mock.calls[0]!;
+		expect(url).toBe("https://fixture.invalid/rest/v1/rpc/qorpera_choose_member_session_account");
+		expect(JSON.parse(String(request?.body))).toEqual({
+			p_profile_id: profileA.profileId,
+			p_session_id: session.sessionId,
+			p_connection_id: id(95),
+		});
+		expect(f.current).toHaveBeenCalledWith(session.sessionId);
+		f.fetch.mockResolvedValueOnce(Response.json(id(96)));
+		await expect(f.client.chooseSessionAccount!(session.sessionId, id(95))).rejects.toThrow(
+			"Invalid conversation account response",
+		);
+		await expect(f.client.chooseSessionAccount!(session.sessionId, "invalid")).rejects.toThrow(
+			"Invalid conversation account request",
+		);
+		expect(f.fetch).toHaveBeenCalledTimes(2);
+	});
 	it("rejects malformed account selections and does not send after an account switch", async () => {
 		const f = setup();
 		f.fetch.mockResolvedValueOnce(Response.json({ access_token: "private" }));

@@ -68,6 +68,14 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 		...rowsOf(read("20260928429984_runtime_company_mail_attachments.sql")),
 		...rowsOf(read("20260928439965_runtime_company_account_tool.sql")),
 		...rowsOf(read("20260928439970_folder_run_view_open.sql")),
+		// The worker tools on folder-v2 (F2-5b-2), found by name: a release re-slots the file.
+		...rowsOf(
+			read(
+				readdirSync(new URL("../../../supabase/migrations/", import.meta.url)).find((name) =>
+					name.endsWith("_folder_state_worker_files.sql"),
+				) ?? "missing-worker-files-migration.sql",
+			),
+		),
 	];
 	const long = new Set(
 		[...migration.matchAll(/set budget = 'long' where name = '(qorpera_[a-z0-9_]+)'/g)].map((m) => m[1]),
@@ -77,7 +85,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, , scope]) => scope !== "identity")
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(87);
+	expect(rows).toHaveLength(90);
 	expect(new Map(NATIVE_HOST_CALLS)).toEqual(expected);
 	expect([...NATIVE_HOST_CALLS].filter(([, budget]) => budget === "long")).toEqual([
 		["qorpera_validate_native_provider_execution_lease", "long"],

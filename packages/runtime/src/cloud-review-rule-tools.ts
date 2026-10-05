@@ -5,7 +5,12 @@ import {
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
-import { type CloudNativeTool, type CloudToolContext, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
+import {
+	CloudControlRefusalRelay,
+	type CloudNativeTool,
+	type CloudToolContext,
+	cloudToolJsonText,
+} from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 const OPERATION_KEY = /^[A-Za-z0-9_:.-]{1,128}$/;
@@ -34,6 +39,7 @@ export function cloudReviewRuleTools(
 ): readonly CloudNativeTool[] {
 	const admitted = parseCloudNativeToolBinding(binding),
 		expected = Object.freeze({ ...identity });
+	const refusals = new CloudControlRefusalRelay();
 	if (
 		Object.entries(admitted).some(
 			([key, value]) => key !== "credentialCapsuleId" && expected[key as keyof CloudNativeToolIdentity] !== value,
@@ -79,14 +85,17 @@ export function cloudReviewRuleTools(
 		async execute(value, context) {
 			assertContext(context);
 			const request = value as { operationKey: string; when: string };
-			const result = await cloudToolRequest(
-				(requestSignal) =>
-					control.call(
-						"qorpera_add_agent_review_rule",
-						{ p_binding: admitted, p_request: request },
-						requestSignal,
-					),
-				context.signal,
+			// The tool's first effect: a refusal of it is the tool's answer (control calls, 4 Oct 2026).
+			const result = await refusals.call(request.operationKey, () =>
+				cloudToolRequest(
+					(requestSignal) =>
+						control.call(
+							"qorpera_add_agent_review_rule",
+							{ p_binding: admitted, p_request: request },
+							requestSignal,
+						),
+					context.signal,
+				),
 			);
 			const r = result as Record<string, unknown> | null;
 			const rule = r?.rule as Record<string, unknown> | null | undefined;

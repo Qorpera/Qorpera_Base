@@ -1,4 +1,4 @@
--- @fixture 764_chatgpt_plan_login.test.sql until "-- A plan login is never listed for the account record the node switch-off reads; the Codex login is."
+-- @fixture 764_chatgpt_plan_login.test.sql until "-- Both kinds are listed for their account (20260930059000)"
 -- Sign in with ChatGPT (20260928369980): a ChatGPT plan works while its member is away only by the member's own
 -- choice. The consent call alone refuses to turn a plan on (an older web build calls it for every connection);
 -- qorpera_set_chatgpt_plan_work_while_away, the member's switch, does. Test 764's fixture leaves the member with

@@ -1,0 +1,10 @@
+[Unit]
+Description=Qorpera agent exit: tend the logs on the node (seal, compress, count, keep under the cap)
+Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/agent-exit/README.md
+
+[Service]
+Type=oneshot
+# The tool reads the node's cap and floor from /etc/default/qorpera-agent-exit, as it does for the logger.
+ExecStart=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh logs
+Nice=10
+IOSchedulingClass=idle
