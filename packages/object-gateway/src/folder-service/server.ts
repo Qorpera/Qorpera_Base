@@ -15,6 +15,7 @@ import {
 	parseHello,
 	parseList,
 	parseRead,
+	parseSearch,
 	REQUEST_MAX_PAYLOAD,
 } from "./protocol.ts";
 import type { ChangeMessage, FolderService, ViewHandle } from "./service.ts";
@@ -170,6 +171,9 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 				send(encodeFrame(Kind.data, bytes));
 				return;
 			}
+			case Kind.search:
+				send(encodeJson(Kind.found, await handle.search(parseSearch(frame.payload))));
+				return;
 			default:
 				throw new ProtocolError(ErrorCode.badRequest, "Unknown request", true);
 		}
