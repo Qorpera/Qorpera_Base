@@ -49,6 +49,12 @@ export const ErrorCode = {
 	viewClosed: "VIEW_CLOSED",
 	/** The view, its pass or the calling machine did not match. */
 	viewRefused: "VIEW_REFUSED",
+	// Writes (protocol 2): what a program on the machine sees as EEXIST, ENOTEMPTY, EPERM, EFBIG and EROFS.
+	exists: "EXISTS",
+	notEmpty: "NOT_EMPTY",
+	notPermitted: "NOT_PERMITTED",
+	tooLarge: "TOO_LARGE",
+	readOnly: "READ_ONLY",
 } as const;
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
 
