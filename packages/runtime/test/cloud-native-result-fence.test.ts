@@ -4,7 +4,6 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-	CLOUD_NATIVE_RESULT_FENCE_DEADLINE_MS,
 	CLOUD_NATIVE_RESULT_FENCE_SCHEMA,
 	startCloudNativeResultFence,
 } from "@qorpera/runtime/cloud-native-result-fence";
@@ -121,7 +120,7 @@ it("does not release a provider view when durable provenance fails", async () =>
 	expect(f.onFailure).toHaveBeenCalledTimes(1);
 });
 
-it("bounds stalled provenance recording without requiring a cooperative callback", async () => {
+it("waits for stalled provenance recording with no stopwatch, until the run ends, cooperative or not", async () => {
 	let started: () => void = () => undefined;
 	const began = new Promise<void>((resolve) => {
 		started = resolve;
@@ -133,7 +132,11 @@ it("bounds stalled provenance recording without requiring a cooperative callback
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 	const pending = exchange(f.service.path, request());
 	await began;
-	await vi.advanceTimersByTimeAsync(CLOUD_NATIVE_RESULT_FENCE_DEADLINE_MS + 1);
+	// A slow database is not a stopped run (5 Oct 2026): fifteen minutes on, the request still waits.
+	await vi.advanceTimersByTimeAsync(15 * 60_000);
+	expect(f.onFailure).not.toHaveBeenCalled();
+	// The run's end (its authority or lease gone, a refusal, a stop) ends it.
+	f.abort.abort();
 	expect(await pending).toBeUndefined();
 	expect(f.onFailure).toHaveBeenCalledTimes(1);
 });
@@ -263,7 +266,7 @@ it("does not return cached native data after revocation", async () => {
 	expect(f.onFailure).toHaveBeenCalledTimes(1);
 });
 
-it("bounds stalled authority independently of whether the authority callback cooperates", async () => {
+it("waits for a stalled authority check with no stopwatch, until the run ends, cooperative or not", async () => {
 	let started: () => void = () => undefined;
 	const began = new Promise<void>((resolve) => {
 		started = resolve;
@@ -275,7 +278,9 @@ it("bounds stalled authority independently of whether the authority callback coo
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 	const pending = exchange(f.service.path, request());
 	await began;
-	await vi.advanceTimersByTimeAsync(CLOUD_NATIVE_RESULT_FENCE_DEADLINE_MS + 1);
+	await vi.advanceTimersByTimeAsync(15 * 60_000);
+	expect(f.onFailure).not.toHaveBeenCalled();
+	f.abort.abort();
 	expect(await pending).toBeUndefined();
 	expect(f.onFailure).toHaveBeenCalledTimes(1);
 });

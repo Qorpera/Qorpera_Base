@@ -1,9 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
-import { CLOUD_NATIVE_RESULT_FENCE_DEADLINE_MS } from "@qorpera/runtime/cloud-native-result-fence";
 import {
-	CLOUD_NATIVE_FENCE_BUDGET_MS,
 	CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS,
 	type CloudNativeToolAuthorityReader,
 	CloudNativeToolRun,
@@ -248,13 +246,7 @@ it("closes at once on a refusal, and asks no more once the authority would lapse
 	expect(second.run.signal.aborted).toBe(true);
 });
 
-it("keeps the fence's attempts inside the host's deadline, and the host's inside the pinned Codex's 45 s", () => {
-	expect(CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS).toBeLessThan(CLOUD_NATIVE_FENCE_BUDGET_MS);
-	expect(CLOUD_NATIVE_FENCE_BUDGET_MS + 1_000).toBeLessThan(CLOUD_NATIVE_RESULT_FENCE_DEADLINE_MS);
-	expect(CLOUD_NATIVE_RESULT_FENCE_DEADLINE_MS + 4_000).toBeLessThan(45_000);
-});
-
-it("asks another call's read again only within its budget", async () => {
+it("keeps a model request's fence asking while a slow database answers, for as long as the lease holds (5 Oct 2026)", async () => {
 	vi.useFakeTimers();
 	let now = 0;
 	vi.spyOn(performance, "now").mockImplementation(() => now);
@@ -265,24 +257,46 @@ it("asks another call's read again only within its budget", async () => {
 			await vi.advanceTimersByTimeAsync(50);
 		}
 	};
-	const { run, authority } = await admit();
-	// A fast 503, then the answer: within 3.5 s.
-	const fence = vi
-		.fn<(signal: AbortSignal) => Promise<unknown>>()
-		.mockRejectedValueOnce(new CloudRuntimeDiagnosticError("transport_unavailable"))
-		.mockResolvedValueOnce(structuredClone(authority));
-	const fenced = run.assertActiveWith(fence, run.signal, 3_500, 3_500);
-	await tick(300);
+	const { run, reader, authority } = await admit();
+	// The fence's reads hang for 40 s, past the 30 s authority read at the start; the run's refresh keeps renewing it.
+	const fence = vi.fn<(signal: AbortSignal) => Promise<unknown>>(async () =>
+		now < 40_000 ? new Promise<never>(() => undefined) : structuredClone(authority),
+	);
+	let settled = false;
+	const fenced = run.assertActiveWith(fence, run.signal, CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS).finally(() => {
+		settled = true;
+	});
+	for (let second = 0; second < 50 && !settled; second += 1) await tick(1_000);
 	await expect(fenced).resolves.toBe(true);
-	expect(fence).toHaveBeenCalledTimes(2);
-	// A read that uses up the budget is not asked again: the run stops.
-	const slow = vi.fn<(signal: AbortSignal) => Promise<unknown>>(async () => new Promise<never>(() => undefined));
-	const stopped = run.assertActiveWith(slow, run.signal, 3_500, 3_500);
-	const rejected = expect(stopped).rejects.toThrow("Cloud tool authority unavailable");
-	await tick(4_000);
+	expect(now).toBeGreaterThanOrEqual(40_000);
+	expect(fence.mock.calls.length).toBeGreaterThanOrEqual(5);
+	expect(reader.describeToolAuthority.mock.calls.length).toBeGreaterThanOrEqual(4);
+	expect(run.signal.aborted).toBe(false);
+	// Its answer renewed the authority as a refresh does: the run goes on.
+	await tick(25_000);
+	expect(run.signal.aborted).toBe(false);
+});
+
+it("stops a model request's fence at once when the run's authority is lost meanwhile", async () => {
+	vi.useFakeTimers();
+	let now = 0;
+	vi.spyOn(performance, "now").mockImplementation(() => now);
+	const { run, reader } = await admit();
+	now = 1_000;
+	await vi.advanceTimersByTimeAsync(1_000);
+	// The fence's read hangs from 1 s; the refresh at 10 s is refused: the run stops, and with it the fence's attempt.
+	const fence = vi.fn<(signal: AbortSignal) => Promise<unknown>>(async () => new Promise<never>(() => undefined));
+	const fenced = run.assertActiveWith(fence, run.signal, CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS);
+	const rejected = expect(fenced).rejects.toThrow("Cloud tool authority unavailable");
+	reader.describeToolAuthority.mockRejectedValue(new CloudControlRpcRefused("55000", "Company execution is paused"));
+	for (let step = 0; step < 200; step += 1) {
+		now += 50;
+		await vi.advanceTimersByTimeAsync(50);
+	}
 	await rejected;
-	expect(slow).toHaveBeenCalledTimes(1);
 	expect(run.signal.aborted).toBe(true);
+	expect(fence).toHaveBeenCalledTimes(1);
+	expect(now).toBeLessThan(12_000);
 });
 
 it("retains the independent lease deadline while refresh is stalled", async () => {

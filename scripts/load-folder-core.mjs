@@ -43,7 +43,7 @@ import { buildContainerName, expandTestFixture, POSTGRES_IMAGE, sortMigrationNam
  * that succeeded after the agent's revoke committed and before its next grant began); an entry without its parent; a
  * file whose bytes are gone; a run's tool call or context fence over 4 s, or the big run's context fence over 3.5 s
  * (the result fence's and the fence call's budgets until 4 Oct 2026, kept here as the load test's latency targets; the
- * runtime now waits up to 40 s for a slow database, cloud-native-result-fence.ts).
+ * runtime now waits for a slow database for as long as the run's authority holds, cloud-native-result-fence.ts).
  */
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const options = {

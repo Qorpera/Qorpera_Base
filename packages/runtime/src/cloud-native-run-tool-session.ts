@@ -5,7 +5,6 @@ import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts"
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import type { CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
 import {
-	CLOUD_NATIVE_FENCE_BUDGET_MS,
 	CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS,
 	CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 	type CloudNativeToolAuthorityReader,
@@ -145,13 +144,13 @@ export async function runCloudNativeRunToolSession(options: {
 				// Through the run's own check: refused before sending once the run is closed or its
 				// authority lapsed, cancelled if the run closes meanwhile, and the authority it read
 				// is held to what assertActive holds its own read to. A lost or late answer is asked again
-				// within the result fence's budget (the call replays its view by request id).
+				// for as long as the run's authority holds, which its refresh keeps renewing meanwhile (the call replays
+				// its view by request id): a slow database is not a stopped run (5 Oct 2026).
 				if (
 					!(await run.assertActiveWith(
 						(requestSignal) => fence(frame, outputs, requestSignal),
 						signal,
 						CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS,
-						CLOUD_NATIVE_FENCE_BUDGET_MS,
 					))
 				) {
 					observation?.finish("failed", { errorCategory: "unavailable_tool" });

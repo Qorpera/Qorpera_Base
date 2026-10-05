@@ -545,7 +545,7 @@ new file mode 100644
 index 000000000..4a60a6777
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_result_fence.rs
-@@ -0,0 +1,387 @@
+@@ -0,0 +1,388 @@
 +//! Private cloud result boundary. This has no access to provider credentials or transports.
 +//! The Qorpera host enables it only in a pinned, isolated app-server process.
 +
@@ -628,9 +628,10 @@ index 000000000..4a60a6777
 +    const MAX_RESULT_BYTES: usize = 8 * 1024;
 +    const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 +    const MAX_IMAGE_BATCH_BYTES: usize = 128 * 1024 * 1024;
-+    // A model request waits this long for the host's checks: a slow database is not a stopped run
-+    // (Qorpera, 4 Oct 2026; the host answers within 40 s). Tests use 1 s.
-+    const DEADLINE: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 45 });
++    // Not a budget: a backstop against a host that is alive but hung. The host decides when a model
++    // request's checks fail (lost authority or lease, or a refusal; never a slow database), and a host
++    // that dies closes the socket at once (Qorpera, 5 Oct 2026). Tests use 1 s.
++    const BACKSTOP: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 600 });
 +
 +    #[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
 +    #[serde(rename_all = "snake_case")]
@@ -866,7 +867,7 @@ index 000000000..4a60a6777
 +        }
 +        // Even an empty first request requires a live host acknowledgement. This is
 +        // outside the provider HTTP/WS layer and never forwards its authorization.
-+        let reply: Reply = tokio::time::timeout(DEADLINE, async {
++        let reply: Reply = tokio::time::timeout(BACKSTOP, async {
 +            let mut stream = UnixStream::connect(socket).await.map_err(|_| ())?;
 +            stream.write_u32(wire.len() as u32).await.map_err(|_| ())?;
 +            stream.write_all(&wire).await.map_err(|_| ())?;

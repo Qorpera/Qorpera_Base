@@ -88,9 +88,11 @@ thread/turn, purpose and the exact result bodies. It contains no authentication
 headers, credentials, installation identity or session tokens.
 
 Every request, including an empty initial request, needs a live acknowledgement.
-Missing, stalled, malformed, mismatched or replayed replies fail closed. The
-native deadline is 45 seconds; the host deadline is 40 (5 and 4 until 4 Oct 2026: a database slowed to a few
-seconds per call stopped turns; the host now asks a lost or late fence call again within its budget). An exhaustive
+Missing, malformed, mismatched or replayed replies fail closed, and a host that dies closes the socket at once.
+Neither side times a reply out: the host's checks take as long as the database does and end only with the run
+(its authority or lease gone, a refusal, a stop), asking a lost or late fence call again meanwhile. The native
+side keeps a 10-minute backstop against a host that is alive but hung (until 5 Oct 2026 a fixed 5 s native and 4 s
+host deadline, which a database slowed to a few seconds per call turned into stopped turns). An exhaustive
 item match rejects unhandled tool-result kinds, unissued images and encrypted tool
 results. Native memory requests are not admitted in this adapter. Only result
 bodies can change; the reply cannot alter calls, instructions, models or roles.
