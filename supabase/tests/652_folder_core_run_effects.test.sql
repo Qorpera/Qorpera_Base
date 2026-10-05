@@ -257,7 +257,8 @@ begin
 		array[]::text[]), '42501', 'Company File authority is unavailable');
 end $$;
 
--- 8. The context view: outputs cite this run's releases; the ordinal and the replay; office captures refused.
+-- 8. The context view: outputs cite this run's releases; the ordinal and the replay; a malformed screenshot refused (a
+--    real one is recorded since P06d, test 910).
 do $$
 declare
 	c_env constant uuid := '63400000-0000-4000-8000-000000000020';
@@ -289,8 +290,8 @@ begin
 		jsonb_set(jsonb_set(v_view, '{requestId}', '"req-4"'), '{outputs,0,readId}', to_jsonb(extensions.gen_random_uuid()))), '42501',
 		'Context read provenance differs');
 	perform pg_temp.raises_like(format('select public.qorpera_record_native_context_view(%L, %L, %L)', c_env, b,
-		jsonb_set(jsonb_set(v_view, '{requestId}', '"req-5"'), '{outputs,0,capture}', '{"assetId":"x"}')), '0A000',
-		'This Company File path does not serve folder-v2 companies');
+		jsonb_set(jsonb_set(v_view, '{requestId}', '"req-5"'), '{outputs,0,capture}', '{"assetId":"x"}')), '22023',
+		'Native capture invalid');
 	-- The release id in upper case is the same release.
 	if public.qorpera_record_native_context_view(c_env, b, jsonb_set(jsonb_set(v_view, '{requestId}', '"req-6"'), '{outputs,0,readId}',
 		to_jsonb(upper(v_release::text)))) ->> 'ordinal' <> '3' then raise exception 'An upper-case release id'; end if;
