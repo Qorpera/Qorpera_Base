@@ -71,8 +71,9 @@ const HEARTBEAT_MS = 15_000;
 /** A core view's lease is 120 s; it is renewed every 40 s while a machine is connected (C1b-3a). */
 const RENEW_MS = 40_000;
 const LEASE_MS = 120_000;
-/** A chunk's own intent lasts 15 minutes; it is renewed after 10 while its chunk is pending (C1D §3.5). */
-const CHUNK_INTENT_RENEW_MS = 10 * 60_000;
+/** A chunk's own intent lasts 15 minutes and a file's sealed one an hour; each is renewed after 10 while its file is
+ * pending (C1D §3.5). */
+const INTENT_RENEW_MS = 10 * 60_000;
 /** Files staged at once at a boundary (step 0: 12 small files a second to the NAS one at a time, 67 with eight). */
 const STAGING_PARALLEL = 8;
 
@@ -100,6 +101,26 @@ interface ChunkUpload {
 	readonly bytes: number;
 	next: number;
 	readonly upload: Upload | undefined;
+}
+
+/** An intent that roots bytes of a file the view holds pending (C1D §3.5): a chunk's own, or the file's sealed one. It
+ * is renewed while the file is pending; one the core lets lapse is replaced (a chunk is held again from the share, a
+ * file is staged again at the next boundary). */
+interface HeldIntent {
+	renewed: number;
+	readonly node: PendingFile;
+	readonly chunk?: { readonly sha256: string; readonly bytes: number };
+	readonly staged?: FileRef;
+}
+
+/** A boundary the core answered, while the view waits for the feed to bring its change set: until then the view keeps
+ * its pending changes as they were, and nothing changes (BUSY). */
+interface Settlement {
+	readonly plan: BoundaryPlan;
+	readonly made: ReadonlyMap<string, string>;
+	readonly answer: CommitAnswer;
+	readonly keep: ReadonlySet<string>;
+	readonly saved: ReadonlySet<string>;
 }
 
 class View {
@@ -147,14 +168,17 @@ class View {
 				readonly made: ReadonlyMap<string, string>;
 		  }
 		| undefined;
-	/** What this view's saves published, by path: the version a save made while pending (the one the machine's
-	 * version map holds after it) and the version its change set gave the path. */
-	readonly published = new Map<string, { readonly made: string; readonly live: string }>();
+	/** A boundary answered but not settled yet (the feed has not brought its change set). */
+	unsettled: Settlement | undefined;
+	/** What this view's saves published, by path, newest last (as many as the readable versions kept per path): the
+	 * version a save made while pending (the one the machine's version map holds after it) and the version its change
+	 * set gave the path. */
+	readonly published = new Map<string, { readonly made: string; readonly live: string }[]>();
 	/** While a boundary's change set may reach the feed: the versions each change set wrote, by seq. */
 	recording: Map<number, Map<string, string>> | undefined;
 	readonly uploads = new Map<string, ChunkUpload>();
-	/** The intents chunks went under, and when each was last renewed. */
-	readonly chunkIntents = new Map<string, number>();
+	/** The intents that root the bytes of its pending files, by id. */
+	readonly intents = new Map<string, HeldIntent>();
 	/** The write handles open on the view. The machine's program pools its connections, so any of them may use a
 	 * handle; they are abandoned when the view's last connection ends. */
 	readonly handles = new Set<number>();
@@ -246,7 +270,7 @@ export class FolderService {
 		this.#heartbeat ??= setInterval(() => this.heartbeat(), HEARTBEAT_MS);
 		this.#renewals ??= setInterval(() => {
 			void this.renewLeases();
-			void this.renewChunkIntents();
+			void this.renewIntents();
 		}, RENEW_MS);
 	}
 
@@ -388,7 +412,8 @@ export class FolderService {
 				const node = await this.#change(view, (pending) => pending.close(handle, size));
 				view.handles.delete(handle);
 				for (const key of [...view.uploads.keys()]) if (key.startsWith(`${handle}:`)) view.uploads.delete(key);
-				if (node.open === 0) await this.#stage(view, node).catch(() => undefined);
+				const path = node.open === 0 ? this.#pathOfNode(view, node) : undefined;
+				if (path !== undefined) await this.#stage(view, node, path).catch(() => undefined);
 				return { version: node.version };
 			},
 			mkdir: async (path) => this.#change(view, (pending) => pending.mkdir(path)),
@@ -501,6 +526,8 @@ export class FolderService {
 		for (const upload of view.uploads.values()) upload.upload?.abort();
 		view.uploads.clear();
 		view.handles.clear();
+		view.intents.clear();
+		view.unsettled = undefined;
 		// The pass goes with it: a closed view makes no more calls.
 		view.lease = undefined;
 		if (this.#views.get(view.key) === view) this.#views.delete(view.key);
@@ -590,6 +617,7 @@ export class FolderService {
 		} finally {
 			view.pending?.liveChanged(changed);
 			if (!told) this.#push(view, changed);
+			this.#settleIfCaughtUp(view);
 		}
 	}
 
@@ -605,8 +633,8 @@ export class FolderService {
 	 * as the version its change set gave the path: the machine's version map holds the first (RUNTIME-FOLDER-WRITES.md,
 	 * "After a save the map holds the version the save made"). */
 	#base(view: View, path: string, base: string | undefined): string | undefined {
-		const published = view.published.get(path);
-		return base !== undefined && published?.made === base ? published.live : base;
+		if (base === undefined) return undefined;
+		return view.published.get(path)?.find((p) => p.made === base)?.live ?? base;
 	}
 
 	/** Keeps a replaced file version readable for the files opened on it (at most SUPERSEDED_PER_PATH per path). */
@@ -655,6 +683,7 @@ export class FolderService {
 		view.pending?.liveChanged(changed);
 		this.#log(`folder-service: ${view.key} listed again (${why}): ${tree.size} paths, ${changed.length} changed`);
 		this.#push(view, changed);
+		this.#settleIfCaughtUp(view);
 	}
 
 	#push(view: View, changed: readonly string[]): void {
@@ -722,8 +751,7 @@ export class FolderService {
 		const current = view.pending ? view.pending.get(request.path) : this.#tree(view).get(request.path);
 		// A version this view's own save made, published since, reads as the version that save published: a file the
 		// machine still holds open from before the boundary goes on reading the same bytes.
-		const published = view.published.get(request.path);
-		const version = published?.made === request.version ? published.live : request.version;
+		const version = this.#base(view, request.path, request.version) ?? request.version;
 		let entry: TreeEntry | undefined;
 		if (current?.version === version) entry = current;
 		else entry = view.superseded.get(request.path)?.find((old) => old.version === version);
@@ -804,13 +832,19 @@ export class FolderService {
 
 	/** Waits for a running boundary (a change never lands while one is deciding what it publishes), and gets a boundary
 	 * whose answer never came through first: until it has one, nothing changes (BUSY), so it settles exactly what it
-	 * published. */
+	 * published. Likewise an answered boundary waits for the feed to bring its change set. */
 	async #quiet(view: View): Promise<void> {
 		await view.publishing.catch(() => undefined);
 		this.#tree(view);
 		if (view.unanswered) {
 			await this.#publish(view);
 			if (view.unanswered) throw new ProtocolError(ErrorCode.busy, "The last save has not got through yet");
+		}
+		if (view.unsettled) {
+			this.#queue(view, () => this.#advance(view));
+			await view.work;
+			if (view.unsettled)
+				throw new ProtocolError(ErrorCode.busy, "The last save has not come back through the feed yet");
 		}
 	}
 
@@ -867,7 +901,11 @@ export class FolderService {
 				pending.beginContent(part.handle, chunks);
 			}
 			const intent = await staging.openChunk(view.environmentId, view.actor, part.sha256, part.bytes);
-			view.chunkIntents.set(intent.intentId, this.#now());
+			view.intents.set(intent.intentId, {
+				renewed: this.#now(),
+				node: pending.file(part.handle),
+				chunk: { sha256: part.sha256, bytes: part.bytes },
+			});
 			if (!this.#profiles.has(view.environmentId))
 				this.#profiles.set(
 					view.environmentId,
@@ -929,13 +967,30 @@ export class FolderService {
 		}
 	}
 
-	/** Stages a closed file's current version (its bytes, or its origin's chunks under a new bit), once. */
-	async #stage(view: View, node: PendingFile): Promise<FileRef | undefined> {
+	/** The media type a file is saved with at `path`: the path's own, if it has a version there (an edit, or a file
+	 * renamed over it: "a path that has a version keeps its media type"); otherwise the file's, or one from its name. */
+	#mediaType(view: View, node: PendingFile, path: string): string {
+		const live = view.tree?.get(path);
+		if (live?.kind === "file" && live.mediaType) return live.mediaType;
+		return node.mediaType ?? mediaTypeOf(nameOf(path));
+	}
+
+	/** Whether a node's staging is for what it is now: its version, at the media type its path gives it. */
+	#stagedNow(view: View, node: PendingFile, path: string): boolean {
+		return node.staged?.version === node.version && node.staged.file.mediaType === this.#mediaType(view, node, path);
+	}
+
+	/** Stages a closed file's current version (its bytes, or its origin's chunks under a new bit) at `path`, once; the
+	 * intent it is sealed under is renewed while the file is pending. */
+	async #stage(view: View, node: PendingFile, path: string): Promise<FileRef | undefined> {
 		const staging = this.#staging;
 		const changed = node.content !== undefined || (node.origin && node.executable !== node.origin.entry?.executable);
 		if (!staging || node.open > 0 || !changed) return undefined;
 		const version = node.version;
-		if (node.staged?.version === version) return node.staged.file;
+		if (this.#stagedNow(view, node, path)) return node.staged?.file;
+		// A staging for another version or media type is never used again.
+		node.staged = undefined;
+		const mediaType = this.#mediaType(view, node, path);
 		let content = node.content;
 		const origin = node.origin?.entry;
 		if (!content && origin)
@@ -950,22 +1005,25 @@ export class FolderService {
 			: content.chunks.length > 0
 				? await this.#uploadProfile(view)
 				: "";
-		const file = await staging.stageFile(
+		const staged = await staging.stageFile(
 			view.environmentId,
 			view.actor,
 			profile,
 			content,
-			node.mediaType ?? mediaTypeOf(this.#nameOfNode(view, node)),
+			mediaType,
 			node.executable,
 		);
-		if (node.version === version) node.staged = { version, file };
-		return file;
+		if (node.version === version) {
+			node.staged = { version, file: staged.file };
+			view.intents.set(staged.intentId, { renewed: this.#now(), node, staged: staged.file });
+		}
+		return staged.file;
 	}
 
-	/** The name a node is shown at now (for its media type). */
-	#nameOfNode(view: View, node: PendingFile): string {
-		for (const [path, n] of view.pending?.nodes() ?? []) if (n === node) return nameOf(path);
-		return "";
+	/** The path a node is shown at now. */
+	#pathOfNode(view: View, node: PendingFile): string | undefined {
+		for (const [path, n] of view.pending?.nodes() ?? []) if (n === node) return path;
+		return undefined;
 	}
 
 	/** One boundary, after any running one (RUNTIME-FOLDER-WRITES.md, "A boundary"). */
@@ -983,12 +1041,19 @@ export class FolderService {
 		try {
 			return await this.#boundaryRecorded(view, pending);
 		} finally {
-			if (!view.unanswered) view.recording = undefined;
+			if (!view.unanswered && !view.unsettled) view.recording = undefined;
 		}
 	}
 
 	async #boundaryRecorded(view: View, pending: PendingView): Promise<Report> {
 		const entries: ReportEntry[] = [];
+		// An answered boundary the feed has not brought back yet settles first; nothing else is decided until it has.
+		if (view.unsettled) {
+			this.#queue(view, () => this.#advance(view));
+			await view.work;
+			if (view.unsettled)
+				throw new ProtocolError(ErrorCode.busy, "The last save has not come back through the feed yet");
+		}
 		// A boundary whose answer never came goes first, unchanged.
 		if (view.unanswered) {
 			const earlier = view.unanswered;
@@ -1009,6 +1074,7 @@ export class FolderService {
 				};
 			view.unanswered = undefined;
 			entries.push(...(await this.#settle(view, earlier.plan, earlier.made, answer)));
+			if (view.unsettled) return { commitId: answer.commitId, seq: answer.seq, paths: entries };
 		}
 		await this.#stageAll(view);
 		const plan = planBoundary(pending, (node) =>
@@ -1053,13 +1119,14 @@ export class FolderService {
 
 	/** Stages every closed, changed file not staged yet, a few at a time. */
 	async #stageAll(view: View): Promise<void> {
-		const nodes = [...(view.pending?.nodes().values() ?? [])].filter(
-			(n): n is PendingFile => n.kind === "file" && n.open === 0 && n.staged?.version !== n.version,
+		const nodes = [...(view.pending?.nodes() ?? [])].filter(
+			(entry): entry is [string, PendingFile] =>
+				entry[1].kind === "file" && entry[1].open === 0 && !this.#stagedNow(view, entry[1], entry[0]),
 		);
 		for (let i = 0; i < nodes.length; i += STAGING_PARALLEL)
 			await Promise.all(
-				nodes.slice(i, i + STAGING_PARALLEL).map((node) =>
-					this.#stage(view, node).catch((error: unknown) => {
+				nodes.slice(i, i + STAGING_PARALLEL).map(([path, node]) =>
+					this.#stage(view, node, path).catch((error: unknown) => {
 						this.#log(`folder-service: ${view.key}: a file could not be staged: ${(error as Error).message}`);
 					}),
 				),
@@ -1134,8 +1201,10 @@ export class FolderService {
 		return undefined;
 	}
 
-	/** After an answer: the view catches up with the feed, then shows the live folder again, keeping what the boundary
-	 * keeps and every unit with new bytes the core neither saved nor kept as a conflict copy. */
+	/** After an answer: the report, and the view settled once the feed has brought the change set. Until then the view
+	 * keeps its pending changes as they were and takes no change (BUSY), so the settling drops nothing made since. It
+	 * shows the live folder again but for what the boundary keeps and every unit with new bytes the core neither saved
+	 * nor kept as a conflict copy. */
 	async #settle(
 		view: View,
 		plan: BoundaryPlan,
@@ -1145,9 +1214,10 @@ export class FolderService {
 		const entries: ReportEntry[] = [];
 		const keep = new Set(plan.keep);
 		const saved = new Set<string>();
+		const copied = await this.#copied(view, plan, answer);
 		plan.units.forEach((planned, i) => {
 			const outcome = answer.units[i];
-			const kept = planned.bytes && outcome?.outcome !== "saved" && outcome?.outcome !== "conflict";
+			const kept = planned.bytes && outcome?.outcome !== "saved" && !copied.has(i);
 			for (const path of planned.paths) {
 				if (kept) keep.add(path);
 				if (outcome?.outcome === "saved") saved.add(path);
@@ -1155,29 +1225,95 @@ export class FolderService {
 					path,
 					outcome: outcome?.outcome ?? "not_applied",
 					...(outcome?.reason ? { reason: outcome.reason } : {}),
-					...(outcome?.outcome === "conflict" && answer.commitId ? { receipt: answer.commitId } : {}),
+					...(copied.has(i) ? { receipt: answer.commitId } : {}),
 					...(kept ? { kept: true } : {}),
 				});
 			}
 		});
-		if (answer.seq !== null) {
-			this.#queue(view, () => this.#advance(view));
-			await view.work;
-			// What each saved file's version became, from the change set itself (not the tree, which a later change
-			// set may have moved on): a save the machine bases on its own pending version is based on it.
-			const written = view.recording?.get(answer.seq);
-			for (const [path, version] of made) {
-				const live = saved.has(path) ? written?.get(path) : undefined;
-				if (live) view.published.set(path, { made: version, live });
+		const settlement: Settlement = { plan, made, answer, keep, saved };
+		view.unsettled = settlement;
+		if (answer.seq === null) this.#finishSettle(view, settlement);
+		else {
+			// The feed is asked now; a round that fails leaves the view unsettled, and the next one that reaches the
+			// change set settles it (#settleIfCaughtUp).
+			for (let attempt = 0; attempt < 3 && view.unsettled === settlement && !view.closed; attempt++) {
+				this.#queue(view, () => this.#advance(view));
+				await view.work;
 			}
 		}
+		return entries;
+	}
+
+	/** The units whose conflict kept this view's bytes on the receipt: P17 keeps a copy only when the unit's bytes would
+	 * have passed, so each file is checked to be readable now. A conflict whose bytes were not kept stays pending, and
+	 * the next boundary tries it again. */
+	async #copied(view: View, plan: BoundaryPlan, answer: CommitAnswer): Promise<Set<number>> {
+		const copied = new Set<number>();
+		for (const [i, planned] of plan.units.entries()) {
+			if (answer.units[i]?.outcome !== "conflict" || !planned.bytes || !answer.commitId) continue;
+			const unit = planned.unit;
+			const files =
+				unit.op === "write"
+					? [unit.file]
+					: unit.op === "new_folder"
+						? unit.contents.flatMap((c) => (c.file ? [c.file] : []))
+						: [];
+			try {
+				for (const file of files)
+					await this.#core.objectProfile(view.environmentId, view.actor, file.manifestSha256);
+				copied.add(i);
+			} catch (error) {
+				if (!(error instanceof CoreRefusal))
+					this.#log(
+						`folder-service: ${view.key}: a conflict copy could not be checked: ${(error as Error).message}`,
+					);
+			}
+		}
+		return copied;
+	}
+
+	/** Settles an answered boundary once the view's feed has reached its change set. Called after every feed round. */
+	#settleIfCaughtUp(view: View): void {
+		const settlement = view.unsettled;
+		if (settlement && (settlement.answer.seq === null || view.seq >= settlement.answer.seq))
+			this.#finishSettle(view, settlement);
+	}
+
+	#finishSettle(view: View, settlement: Settlement): void {
+		view.unsettled = undefined;
+		if (settlement.answer.seq !== null) this.#notePublished(view, settlement);
 		this.#settleNodes(
 			view,
-			keep,
-			plan.units.flatMap((u) => u.paths),
-			saved,
+			settlement.keep,
+			settlement.plan.units.flatMap((u) => u.paths),
+			settlement.saved,
 		);
-		return entries;
+	}
+
+	/** The versions this boundary's saves published, for bases and reads naming the versions they made: a write's from
+	 * the core's answer; a new folder's files from its change set as the feed brought it, or from the tree when the view
+	 * stands exactly at that change set. */
+	#notePublished(view: View, settlement: Settlement): void {
+		const seq = settlement.answer.seq;
+		const written = seq === null ? undefined : view.recording?.get(seq);
+		const answered = new Map<string, string>();
+		settlement.plan.units.forEach((planned, i) => {
+			const outcome = settlement.answer.units[i];
+			if (planned.unit.op === "write" && outcome?.outcome === "saved" && outcome.version)
+				answered.set(planned.unit.path, outcome.version);
+		});
+		for (const [path, made] of settlement.made) {
+			if (!settlement.saved.has(path)) continue;
+			const live =
+				answered.get(path) ??
+				written?.get(path) ??
+				(view.seq === seq && view.tree?.get(path)?.kind === "file" ? view.tree.get(path)?.version : undefined);
+			if (!live) continue;
+			const aliases = view.published.get(path) ?? [];
+			aliases.push({ made, live });
+			if (aliases.length > SUPERSEDED_PER_PATH) aliases.shift();
+			view.published.set(path, aliases);
+		}
 	}
 
 	/** Shows the live folder again but for the nodes kept, and tells the machines the paths that change by it. */
@@ -1198,24 +1334,66 @@ export class FolderService {
 			}
 		const before = [...pending.nodes().keys()];
 		pending.settle(new Set([...keepAll].filter((p) => pending.nodes().has(p))));
-		for (const intent of [...view.chunkIntents.keys()]) if (pending.empty) view.chunkIntents.delete(intent);
+		if (pending.empty) view.intents.clear();
 		this.#push(view, [...new Set([...paths, ...before])]);
 	}
 
-	/** Renews the intents of chunks still pending (they root the bytes for 15 minutes). Exposed for tests. */
-	async renewChunkIntents(): Promise<void> {
+	/** Renews the intents that root the bytes of pending files, each after 10 minutes. One the core lets lapse is
+	 * replaced: a chunk is held again under a new intent (put again from the share if the actor no longer holds it), and
+	 * a file whose sealed intent lapsed is staged again at the next boundary. A renewal that could not reach the core is
+	 * tried again next round. The intents of files no longer pending are let go. Exposed for tests. */
+	async renewIntents(): Promise<void> {
 		const now = this.#now();
-		for (const view of this.#views.values()) {
-			if (!view.pending || view.closed) continue;
-			for (const [intent, renewed] of view.chunkIntents) {
-				if (now - renewed < CHUNK_INTENT_RENEW_MS) continue;
+		for (const view of [...this.#views.values()]) {
+			const pending = view.pending;
+			if (!pending || view.closed) continue;
+			const files = new Set<PendingFile>();
+			for (const node of pending.nodes().values()) if (node.kind === "file") files.add(node);
+			for (const [id, held] of [...view.intents]) {
+				if (!files.has(held.node)) {
+					view.intents.delete(id);
+					continue;
+				}
+				if (now - held.renewed < INTENT_RENEW_MS) continue;
 				try {
-					await this.#core.renewUpload(view.environmentId, view.actor, intent);
-					view.chunkIntents.set(intent, now);
-				} catch {
-					view.chunkIntents.delete(intent);
+					await this.#core.renewUpload(view.environmentId, view.actor, id);
+					held.renewed = now;
+				} catch (error) {
+					if (!(error instanceof CoreRefusal)) {
+						this.#log(
+							`folder-service: ${view.key}: an upload intent was not renewed now: ${(error as Error).message}`,
+						);
+						continue;
+					}
+					// The core let it lapse (C1D §3.5).
+					view.intents.delete(id);
+					if (held.staged && held.node.staged?.file === held.staged) held.node.staged = undefined;
+					if (held.chunk) await this.#holdAgain(view, id, held);
 				}
 			}
+		}
+	}
+
+	/** A pending chunk whose intent lapsed, held again under a new one. Until that works the old entry stays, so the
+	 * next round tries again. */
+	async #holdAgain(view: View, lapsed: string, held: HeldIntent): Promise<void> {
+		const staging = this.#staging;
+		const chunk = held.chunk;
+		if (!staging || !chunk) return;
+		try {
+			const id = await staging.holdChunk(
+				view.environmentId,
+				view.actor,
+				await this.#uploadProfile(view),
+				chunk.sha256,
+				chunk.bytes,
+			);
+			view.intents.set(id, { renewed: this.#now(), node: held.node, chunk });
+		} catch (error) {
+			this.#log(
+				`folder-service: ${view.key}: a pending chunk could not be held again now: ${(error as Error).message}`,
+			);
+			view.intents.set(lapsed, held);
 		}
 	}
 

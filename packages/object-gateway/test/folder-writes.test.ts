@@ -1,5 +1,6 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { connect } from "node:net";
+import { createServer as createHttpServer } from "node:http";
+import { type AddressInfo, connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -19,7 +20,7 @@ import {
 } from "../src/folder-service/protocol.ts";
 import { createFolderServer } from "../src/folder-service/server.ts";
 import { FolderService, type ViewHandle } from "../src/folder-service/service.ts";
-import { FolderStaging } from "../src/folder-service/staging.ts";
+import { FolderStaging, GatewayUploads } from "../src/folder-service/staging.ts";
 import {
 	BRIDGE,
 	ENV,
@@ -28,8 +29,10 @@ import {
 	folder,
 	grants,
 	hashOf,
+	MEMBER,
 	PASS,
 	storeFile,
+	v,
 	writableGrants,
 } from "./folder-service-fixtures.ts";
 
@@ -44,7 +47,7 @@ afterEach(async () => {
 const BIG = 4 * 1024 * 1024;
 const hello: Hello = { protocol: 2, environmentId: ENV, viewId: "proof", pass: PASS, role: "io" };
 
-async function fixture(options: { quietMs?: number; readOnly?: boolean } = {}) {
+async function fixture(options: { quietMs?: number; readOnly?: boolean; now?: () => number } = {}) {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-folder-writes-"));
 	const core = new FakeCore();
 	const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
@@ -56,6 +59,7 @@ async function fixture(options: { quietMs?: number; readOnly?: boolean } = {}) {
 			grants: options.readOnly ? grants() : writableGrants(options.quietMs),
 			staging: new FolderStaging(core, uploads, objects),
 			log: () => undefined,
+			...(options.now ? { now: options.now } : {}),
 		});
 	let service = start();
 	const handles: ViewHandle[] = [];
@@ -100,6 +104,20 @@ async function read(view: ViewHandle, path: string): Promise<string> {
 	);
 	if (!entry) throw new Error(`no ${path}`);
 	return (await view.read({ path, version: entry.version, offset: 0, length: 1024 * 1024 })).toString();
+}
+
+/** A save as the folder program makes it, and the version its close answered (what its version map then holds). */
+async function save(view: ViewHandle, path: string, text: string, base?: string): Promise<string> {
+	const { handle } = await view.open({
+		path,
+		create: true,
+		exclusive: false,
+		truncate: true,
+		...(base ? { base } : {}),
+	});
+	const data = Buffer.from(text);
+	await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
+	return (await view.close(handle, data.byteLength)).version;
 }
 
 async function refused(promise: Promise<unknown>, code: string): Promise<void> {
@@ -411,6 +429,110 @@ describe("writes through the mount", () => {
 		]);
 	});
 
+	it("keeps a conflicting save pending until the core holds it on the receipt", async () => {
+		const { root, core, service, open } = await fixture();
+		core.seed([await storeFile(root, "plan.md", "v1", 1, BIG)]);
+		const view = await open();
+		const read1 = core.entries.get("plan.md")!.version;
+		core.write(await storeFile(root, "plan.md", "theirs", 2, BIG));
+		await service.poll();
+		await service.settled();
+		await write(view, "plan.md", "mine", read1);
+		// The core decided the conflict but kept no copy (P17 keeps one only when the bytes would have passed): the
+		// save is not dropped, it stays this view's and is tried again.
+		core.copyConflicts = false;
+		expect((await view.publish()).paths).toEqual([
+			{ path: "plan.md", outcome: "conflict", reason: "version_changed", kept: true },
+		]);
+		expect(await read(view, "plan.md")).toBe("mine");
+		core.copyConflicts = true;
+		const report = await view.publish();
+		expect(report.paths).toEqual([
+			{ path: "plan.md", outcome: "conflict", reason: "version_changed", receipt: report.commitId },
+		]);
+		expect(await read(view, "plan.md")).toBe("theirs");
+	});
+
+	it("renews the intents that hold pending bytes, and replaces those that lapse", async () => {
+		let now = Date.now();
+		const { core, open, service } = await fixture({ now: () => now });
+		const view = await open();
+		await write(view, "kept.txt", "kept");
+		const opened = [...core.intents.keys()];
+		expect(opened).toHaveLength(2);
+		const [chunkIntent, fileIntent] = opened as [string, string];
+		// A renewal that does not get through is tried again at the next round.
+		now += 10 * 60_000;
+		core.renewFailures = 2;
+		await service.renewIntents();
+		expect(core.renewals).toEqual([chunkIntent, fileIntent]);
+		await service.renewIntents();
+		expect(core.renewals.slice(2)).toEqual([chunkIntent, fileIntent]);
+		// Both lapse: the chunk is held again under a new intent, and the file is staged again at the next boundary.
+		now += 10 * 60_000;
+		core.lapsed.add(chunkIntent);
+		core.lapsed.add(fileIntent);
+		await service.renewIntents();
+		const held = [...core.intents.keys()].filter((id) => !opened.includes(id));
+		expect(held).toHaveLength(1);
+		expect(core.intents.get(held[0]!)?.objects.has(hashOf("kept"))).toBe(true);
+		expect((await view.publish()).paths).toEqual([{ path: "kept.txt", outcome: "saved" }]);
+		// The commit named a file sealed under an intent of its own, opened after the lapse.
+		expect(core.intents.size).toBe(4);
+		now += 10 * 60_000;
+		const before = core.renewals.length;
+		await service.renewIntents();
+		expect(core.renewals.length).toBe(before);
+	});
+
+	it("settles a boundary only once the feed has brought its change set back", async () => {
+		const { core, open, service } = await fixture();
+		const view = await open();
+		const made = await save(view, "f.txt", "one");
+		// The commit lands; the feed does not answer (the service's three tries, then the next change's).
+		core.feedFailures = 4;
+		expect((await view.publish()).paths).toEqual([{ path: "f.txt", outcome: "saved" }]);
+		await refused(view.mkdir("g"), "BUSY");
+		// The feed is back: the view settles, and a save based on the version its close answered is based on the
+		// version it published.
+		await service.poll();
+		await service.settled();
+		await view.mkdir("g");
+		await save(view, "f.txt", "two", made);
+		expect((await view.publish()).paths).toEqual(expect.arrayContaining([{ path: "f.txt", outcome: "saved" }]));
+		expect(core.entries.get("f.txt")?.fileSha256).toBe(hashOf("two"));
+	});
+
+	it("keeps every published save's own version readable while its published version is", async () => {
+		const { core, open } = await fixture();
+		const view = await open();
+		const first = await save(view, "a.md", "one");
+		await view.publish();
+		const second = await save(view, "a.md", "two", first);
+		await view.publish();
+		expect(core.entries.get("a.md")?.fileSha256).toBe(hashOf("two"));
+		expect((await view.read({ path: "a.md", version: first, offset: 0, length: 16 })).toString()).toBe("one");
+		expect((await view.read({ path: "a.md", version: second, offset: 0, length: 16 })).toString()).toBe("two");
+	});
+
+	it("saves a file renamed over another at the media type of the path it lands on", async () => {
+		const { root, core, open } = await fixture();
+		core.seed([await storeFile(root, "document.md", "v1", 1, BIG, { mediaType: "text/markdown" })]);
+		const view = await open();
+		const base = core.entries.get("document.md")!.version;
+		// Staged at close as the temporary name gives it, then renamed.
+		await write(view, "draft.tmp", "edited");
+		await view.rename({ from: "draft.tmp", to: "document.md", toBase: base, noReplace: false });
+		await write(view, "new.tmp", "notes");
+		await view.rename({ from: "new.tmp", to: "notes.md", noReplace: false });
+		await view.publish();
+		expect(core.entries.get("document.md")).toMatchObject({
+			fileSha256: hashOf("edited"),
+			mediaType: "text/markdown",
+		});
+		expect(core.entries.get("notes.md")).toMatchObject({ fileSha256: hashOf("notes"), mediaType: "text/markdown" });
+	});
+
 	it("takes no writes on a read-only view", async () => {
 		const { open } = await fixture({ readOnly: true });
 		const view = await open();
@@ -478,7 +600,7 @@ describe("protocol 2", () => {
 			await new Promise<void>((resolve) => server.close(() => resolve()));
 			await rm(dir, { recursive: true, force: true });
 		});
-		const client = async (protocol: number) => {
+		const client = async (protocol: number, role: "io" | "feed" = "io") => {
 			const socket = connect(path);
 			await new Promise<void>((resolve) => socket.once("connect", () => resolve()));
 			cleanups.push(async () => {
@@ -502,7 +624,7 @@ describe("protocol 2", () => {
 				return { kind: frame.kind, body: JSON.parse(frame.payload.toString()) as Record<string, unknown> };
 			};
 			socket.write(encodeJson(Kind.bridge, BRIDGE));
-			const hello = await ask(Kind.hello, { protocol, environmentId: ENV, viewId: "proof", pass: PASS, role: "io" });
+			const hello = await ask(Kind.hello, { protocol, environmentId: ENV, viewId: "proof", pass: PASS, role });
 			return { hello, ask };
 		};
 		const v2 = await client(2);
@@ -528,5 +650,46 @@ describe("protocol 2", () => {
 		expect(await v1.ask(Kind.mkdir, { path: "x" })).toMatchObject({ kind: Kind.error, body: { code: "READ_ONLY" } });
 		// The connection carries on after a refused request.
 		expect((await v1.ask(Kind.list, { path: "" })).kind).toBe(Kind.listing);
+		// A feed's hello says what the view takes, so the folder program mounts read-write; the feed itself takes only
+		// acknowledgements.
+		const feed = await client(2, "feed");
+		expect(feed.hello.body).toMatchObject({ protocol: 2, readOnly: false });
+		expect(await feed.ask(Kind.mkdir, { path: "y" })).toMatchObject({
+			kind: Kind.error,
+			body: { code: "BAD_REQUEST" },
+		});
+	});
+});
+
+describe("the gateway's upload", () => {
+	it("fails a part waiting for the socket to drain when the put ends, and when it is aborted", async () => {
+		// A gateway that takes the request and reads nothing, then drops it.
+		const server = createHttpServer((request) => {
+			request.pause();
+			setTimeout(() => request.socket.destroy(), 100);
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		cleanups.push(async () => {
+			server.closeAllConnections();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		});
+		const uploads = new GatewayUploads({
+			url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+			token: "t".repeat(43),
+		});
+		const actor = { kind: "member" as const, userId: MEMBER };
+		const part = Buffer.alloc(4 * 1024 * 1024);
+		const dropped = uploads.start(ENV, actor, v(1), hashOf("x"), 64 * 1024 * 1024);
+		await expect(
+			(async () => {
+				for (let i = 0; i < 16; i++) await dropped.write(part);
+			})(),
+		).rejects.toMatchObject({ code: "UNAVAILABLE" });
+		const aborted = uploads.start(ENV, actor, v(2), hashOf("y"), 64 * 1024 * 1024);
+		const waiting = (async () => {
+			for (let i = 0; i < 16; i++) await aborted.write(part);
+		})();
+		setTimeout(() => aborted.abort(), 20);
+		await expect(waiting).rejects.toMatchObject({ code: "UNAVAILABLE" });
 	});
 });

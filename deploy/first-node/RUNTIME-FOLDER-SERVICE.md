@@ -49,8 +49,9 @@ TypeScript: `packages/object-gateway/src/folder-service/protocol.ts`.
 | `e` | service → machine | `{code, message}` |
 
 **Protocol 2 (writes, F3 step 3: `RUNTIME-FOLDER-WRITES.md`).** A hello may say `protocol: 2`; the answer echoes it and
-says `readOnly: false` when the view takes writes (a writable operator mount, on the `io` role). A machine on protocol 1
-reads only. On a writing connection frames may carry up to 2 MiB, and these requests are answered with `k` (`{}`, or
+says `readOnly: false` when the view takes writes (a writable operator mount). That is the view's, on either role: the
+folder program learns it from its feed's hello and mounts read-write; writes are taken on `io` connections only (a
+feed takes acknowledgements alone). A machine on protocol 1 reads only. On a writing connection frames may carry up to 2 MiB, and these requests are answered with `k` (`{}`, or
 `{version}` for a close and the executable bit), `o`, `d` or `p`:
 
 | Type | Request | Answer |

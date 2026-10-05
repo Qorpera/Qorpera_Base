@@ -121,6 +121,8 @@ export class FakeCore implements FolderCore {
 	feedPage = 0;
 	feedCalls = 0;
 	failFeedAt: number | undefined;
+	/** The next feed calls that fail. */
+	feedFailures = 0;
 
 	seed(entries: CoreEntry[]): void {
 		for (const e of entries) this.entries.set(e.path, e);
@@ -187,6 +189,10 @@ export class FakeCore implements FolderCore {
 		if (this.deny) throw new CoreRefusal("denied");
 		this.feedCalls++;
 		if (this.failFeedAt === this.feedCalls) throw new Error("The core did not answer this page");
+		if (this.feedFailures > 0) {
+			this.feedFailures--;
+			throw new Error("The core did not answer this page");
+		}
 		const events = this.journal
 			.filter((e) => e.seq > afterSeq)
 			.map((e) =>
@@ -210,10 +216,11 @@ export class FakeCore implements FolderCore {
 		return new Map(environmentIds.filter((id) => id === ENV).map((id) => [id, this.seq]));
 	}
 
-	async objectProfile(environmentId: string, actor: FolderActor) {
+	async objectProfile(environmentId: string, actor: FolderActor, manifestSha256?: string) {
 		this.profileCalls++;
 		if (environmentId !== ENV) throw new CoreRefusal("invalid");
 		this.#check(actor, environmentId);
+		if (manifestSha256 && this.unreadable.has(manifestSha256)) throw new CoreRefusal("denied");
 		return PROFILE;
 	}
 
@@ -228,6 +235,15 @@ export class FakeCore implements FolderCore {
 	#nextVersion = 1000;
 	/** A path's units the core refuses (no write authority there). */
 	refuse: (path: string) => boolean = () => false;
+	/** Whether a conflicting write or new folder keeps its files on the receipt (P17 keeps them only when their bytes
+	 * would have passed). When not, those files are unreadable to the actor, as they are to the real core. */
+	copyConflicts = true;
+	readonly unreadable = new Set<string>();
+	/** Intents the core let lapse (their renewal is refused), the next renewals that do not get through, and every
+	 * renewal asked. */
+	readonly lapsed = new Set<string>();
+	renewFailures = 0;
+	readonly renewals: string[] = [];
 	/** The next commits get no answer: `lost` applies them first (the reply was lost), `down` does not. */
 	commitFailures: { mode: "lost" | "down"; count: number } = { mode: "down", count: 0 };
 
@@ -271,7 +287,14 @@ export class FakeCore implements FolderCore {
 		};
 	}
 
-	async renewUpload() {
+	async renewUpload(environmentId: string, actor: FolderActor, intentId: string) {
+		this.#check(actor, environmentId);
+		this.renewals.push(intentId);
+		if (this.renewFailures > 0) {
+			this.renewFailures--;
+			throw new Error("The database did not answer");
+		}
+		if (this.lapsed.has(intentId) || !this.intents.has(intentId)) throw new CoreRefusal("denied");
 		return new Date(this.now() + 15 * 60_000).toISOString();
 	}
 
@@ -307,11 +330,19 @@ export class FakeCore implements FolderCore {
 			});
 			const path = u.op === "move" ? u.to : u.path;
 			if (this.refuse(path) || (u.op === "move" && this.refuse(u.from))) return no("denied", "denied");
+			const conflict = (reason: string): CommitOutcome => {
+				const files =
+					u.op === "write" ? [u.file] : u.op === "new_folder" ? u.contents.flatMap((c) => c.file ?? []) : [];
+				for (const file of files)
+					if (this.copyConflicts) this.unreadable.delete(file.manifestSha256);
+					else this.unreadable.add(file.manifestSha256);
+				return no("conflict", reason);
+			};
 			switch (u.op) {
 				case "write": {
 					const e = this.entries.get(u.path);
 					if (u.expectedVersion !== undefined ? e?.kind !== "file" || e.version !== u.expectedVersion : e)
-						return no("conflict", u.expectedVersion !== undefined ? "version_changed" : "exists");
+						return conflict(u.expectedVersion !== undefined ? "version_changed" : "exists");
 					if (!parentOk(u.path)) return no("refused", "parent_missing");
 					const entry: CoreEntry = {
 						path: u.path,
@@ -326,7 +357,8 @@ export class FakeCore implements FolderCore {
 				}
 				case "mkdir":
 				case "new_folder": {
-					if (this.entries.has(u.path)) return no("conflict", "exists");
+					if (this.entries.has(u.path))
+						return u.op === "new_folder" ? conflict("exists") : no("conflict", "exists");
 					if (!parentOk(u.path)) return no("refused", "parent_missing");
 					const entry: CoreEntry = {
 						path: u.path,
