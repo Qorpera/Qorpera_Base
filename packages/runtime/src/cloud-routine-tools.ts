@@ -14,9 +14,11 @@ import {
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
 import {
+	CloudControlRefusalRelay,
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
 	type CloudToolContext,
+	cloudOperationKeyOf,
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
@@ -205,7 +207,8 @@ export const CLOUD_ROUTINE_TOOL_DESCRIPTION =
 	"Keep operationKey stable for one intended change; an unconfirmed result needs the same key again, never a new one. A routine is not a reminder to a person and cannot act beyond your own authority.";
 
 /** A folder-v2 agent's routines are files in its own folder, named by their keys, and each change is reviewed (thin
- * writers W4c). Routines that react to files or events come back when they move to files. */
+ * writers W4c). A file change wakes a routine from the folder journal (P29); routines that react to events come back
+ * with E2. */
 const CLOUD_ROUTINE_TOOL_DESCRIPTION_FOLDER = CLOUD_ROUTINE_TOOL_DESCRIPTION.replace(
 	"No member approval is needed; use it whenever",
 	"Each change goes through the automatic review first, and some wait for a member's approval; use it whenever",
@@ -220,11 +223,11 @@ const CLOUD_ROUTINE_TOOL_DESCRIPTION_FOLDER = CLOUD_ROUTINE_TOOL_DESCRIPTION.rep
 	)
 	.replace(
 		"every (minutes 5-10080, optional firstRunAt with its offset), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt with its offset), file_change (a Company File path you can read, match exact or subtree), or event (hookId, the id of one of the company's hooks from list_hooks; optional only, the event types to take; and an IANA timeZone). ",
-		"every (minutes 5-10080, optional firstRunAt with its offset) or weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt with its offset); routines that react to files or events are not available in this company yet. ",
+		"every (minutes 5-10080, optional firstRunAt with its offset), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt with its offset) or file_change (a Company File path you can read, match exact or subtree); routines that react to events are not available in this company yet. ",
 	)
 	.replace(
 		"Use every or weekly for work tied to the clock, such as a Monday report, file_change to react to a file, and event to react to what other services send, such as a form submission, a payment or an alert: each run gets the events that arrived, up to 20 at a time. ",
-		"Use every or weekly for work tied to the clock, such as a Monday report. ",
+		"Use every or weekly for work tied to the clock, such as a Monday report, and file_change to react to a file: each saved change under the path wakes you once, with what it changed, except your own changes. It listens from the save that set it up, so a later save of the routine drops changes not delivered yet. With report required it needs your public thread, or the run is skipped. ",
 	)
 	.replace(
 		"remove deletes it from the list for good. ",
@@ -283,7 +286,8 @@ function routineAuthority(binding: CloudNativeToolBinding, identity: CloudNative
 			throw new Error("Routine tool identity differs");
 		context.signal.throwIfAborted();
 	};
-	return { admitted, assertContext };
+	// One per tool of a run (control calls, 4 Oct 2026).
+	return { admitted, assertContext, refusals: new CloudControlRefusalRelay() };
 }
 
 export function cloudRoutineTools(
@@ -300,7 +304,7 @@ export function cloudRoutineTools(
 	/** A folder-v2 run's routines, written as the files in its folder. */
 	folderRoutines?: CloudFolderRoutines,
 ): readonly CloudNativeTool[] {
-	const { admitted, assertContext } = routineAuthority(binding, identity);
+	const { admitted, assertContext, refusals } = routineAuthority(binding, identity);
 	const reportSchema = { type: "string", enum: [...REPLY] };
 	const zoneSchema = { type: "string", minLength: 1, maxLength: 64 };
 	const timeSchema = { type: "string", pattern: LOCAL_TIME.source };
@@ -379,22 +383,22 @@ export function cloudRoutineTools(
 								report: reportSchema,
 							},
 						},
-						// Routines that react to files or events are not available on folder-v2 yet.
+						{
+							type: "object",
+							additionalProperties: false,
+							required: ["kind", "path", "timeZone"],
+							properties: {
+								kind: { const: "file_change" },
+								path: { type: "string", minLength: 1, maxLength: 1024 },
+								match: { type: "string", enum: ["exact", "subtree"] },
+								timeZone: zoneSchema,
+								report: reportSchema,
+							},
+						},
+						// Routines that react to events are not available on folder-v2 yet (E2).
 						...(folderRoutines
 							? []
 							: [
-									{
-										type: "object",
-										additionalProperties: false,
-										required: ["kind", "path", "timeZone"],
-										properties: {
-											kind: { const: "file_change" },
-											path: { type: "string", minLength: 1, maxLength: 1024 },
-											match: { type: "string", enum: ["exact", "subtree"] },
-											timeZone: zoneSchema,
-											report: reportSchema,
-										},
-									},
 									{
 										type: "object",
 										additionalProperties: false,
@@ -527,9 +531,9 @@ export function cloudRoutineTools(
 				return request as never;
 			}
 			const kind = (a.trigger as { kind?: unknown } | null)?.kind;
-			if (folderRoutines && (kind === "file_change" || kind === "event"))
+			if (folderRoutines && kind === "event")
 				throw new CloudToolArgumentRefusal(
-					"In this company a routine runs on the clock (dynamic, every or weekly): routines that react to files or events are not available yet",
+					"In this company a routine runs on the clock (dynamic, every or weekly) or on a file change: routines that react to events are not available yet",
 				);
 			const request: Record<string, unknown> = {
 				action,
@@ -596,10 +600,17 @@ export function cloudRoutineTools(
 					ownDynamicRoutine.settled();
 				return changed.content;
 			}
-			const result = await cloudToolRequest(
-				(requestSignal) =>
-					control.call("qorpera_manage_agent_routine", { p_binding: admitted, p_request: request }, requestSignal),
-				context.signal,
+			// The tool's first effect: a refusal of it is the tool's answer (control calls, 4 Oct 2026).
+			const result = await refusals.call(cloudOperationKeyOf(request), () =>
+				cloudToolRequest(
+					(requestSignal) =>
+						control.call(
+							"qorpera_manage_agent_routine",
+							{ p_binding: admitted, p_request: request },
+							requestSignal,
+						),
+					context.signal,
+				),
 			);
 			const r = result as Record<string, unknown> | null;
 			if (
@@ -640,7 +651,7 @@ export function cloudRoutineDecisionTool(
 		readonly folderDecision?: CloudFolderRoutineDecision;
 	},
 ): CloudNativeTool {
-	const { admitted, assertContext } = routineAuthority(binding, identity);
+	const { admitted, assertContext, refusals } = routineAuthority(binding, identity);
 	return {
 		name: "decide_routine" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
@@ -707,10 +718,16 @@ export function cloudRoutineDecisionTool(
 				if (decision.decided) options.decided();
 				return decision.content;
 			}
-			const result = await cloudToolRequest(
-				(requestSignal) =>
-					control.call("qorpera_decide_agent_routine", { p_binding: admitted, p_request: request }, requestSignal),
-				context.signal,
+			const result = await refusals.call(cloudOperationKeyOf(request), () =>
+				cloudToolRequest(
+					(requestSignal) =>
+						control.call(
+							"qorpera_decide_agent_routine",
+							{ p_binding: admitted, p_request: request },
+							requestSignal,
+						),
+					context.signal,
+				),
 			);
 			const r = result as Record<string, unknown> | null;
 			const receipt =

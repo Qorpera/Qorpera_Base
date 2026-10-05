@@ -9,10 +9,23 @@ are alive and the conntrack reader watches the exit's current namespace, for `ve
 replaced under it, the logger exits and its unit starts it again in the new one. Never content: only addresses,
 ports, protocol, times and byte counts. E3 joins these lines with the client map and the DNS log.
 
-  qorpera-agent-exit-log.py --netns qexit --log-dir DIR --heartbeat FILE
+The node's disk comes first. Every 5 seconds the logger reads the logs' size (the log folder's files and the tender's
+deletion records in lost/) and the disk's free share; past either line (the logs over their cap, or the disk under its
+floor) it pauses: it writes no connection or refusal lines, only a gap line when it pauses and one when it goes on
+(with the number of lines it did not write); it empties
+dns.log every 5 seconds (dnsmasq goes on answering; a gap line says how much of the DNS record was not kept); and it
+keeps <pause-file> while it pauses, so `verify` fails and the node takes no new agent road machines. It goes on once
+the logs are under 95% of the cap and the disk 2 points above its floor (qorpera-agent-exit-logs.py `tend` deletes
+the oldest parts to get there). A line it cannot write (a full disk, no inodes left, say) is counted, it keeps
+<failing-file> (so `verify` fails) until a line can be written again, and the first line then written is a gap line
+that says how many it lost.
+
+  qorpera-agent-exit-log.py --netns qexit --log-dir DIR --heartbeat FILE --pause-file FILE --failing-file FILE
+                            [--cap-bytes N] [--floor-percent P]
   qorpera-agent-exit-log.py --parse-conntrack   (stdin: conntrack -E lines; stdout: JSON lines)
   qorpera-agent-exit-log.py --parse-set         (stdin: nft -j list set; stdout: [key, expires] per element)
   qorpera-agent-exit-log.py --diff-sets         (stdin: {previous, current}; stdout: [key, rule] per flow to log)
+  qorpera-agent-exit-log.py --should-pause      (stdin: {paused, freePercent, bytes, cap, floor}; stdout: true|false)
 """
 
 import argparse
@@ -37,6 +50,10 @@ INTERNAL = [
 ]
 # conntrack's own warning when the kernel drops events because the reader is behind.
 LOST = ("ENOBUFS", "losing events")
+CAP_BYTES = 2 * 1024 * 1024 * 1024
+FLOOR_PERCENT = 10.0
+# The tender's deletion records, one file per deleted file (qorpera-agent-exit-logs.py).
+RECORDS = "lost"
 
 
 def parse_conntrack(line):
@@ -125,19 +142,128 @@ def rule_for(key):
     return "open_limit"
 
 
-class Writer:
-    def __init__(self, log_dir):
-        self.log_dir = log_dir
-        self.lock = threading.Lock()
+def should_pause(paused, free, size, cap, floor):
+    """Pause past either line; go on only with some room again, so the logger does not flap at the line."""
+    if paused:
+        return free < floor + 2 or size > cap * 0.95
+    return free < floor or size > cap
 
-    def write(self, record):
+
+def folder_bytes(path):
+    with os.scandir(path) as entries:
+        return sum(e.stat(follow_symlinks=False).st_size for e in entries if e.is_file(follow_symlinks=False))
+
+
+def disk_state(log_dir):
+    """The disk's free share (for ordinary users, so root's reserve counts as used) and the logs' size: the log
+    folder's files and the tender's deletion records in lost/ (they count toward the cap, though they never go)."""
+    st = os.statvfs(log_dir)
+    free = st.f_bavail * 100.0 / st.f_blocks if st.f_blocks else 0.0
+    size = folder_bytes(log_dir)
+    try:
+        size += folder_bytes(os.path.join(log_dir, RECORDS))
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    return free, size
+
+
+def mark(path, text):
+    """Writes the marker file `path` (on /run, which a full log disk does not touch); a failure only goes to stderr."""
+    try:
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            f.write(text + "\n")
+        os.replace(path + ".tmp", path)
+    except OSError as error:
+        print(f"cannot write {path}: {error}", file=sys.stderr, flush=True)
+
+
+def unmark(path):
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
+class Writer:
+    def __init__(self, log_dir, failing_file=None):
+        self.log_dir = log_dir
+        self.failing_file = failing_file
+        self.lock = threading.Lock()
+        self.paused = False
+        self.paused_at = None
+        self.held = 0
+        self.unwritten = 0
+        self.unwritten_since = None
+        self.unwritten_error = None
+
+    def append(self, record):
         day = time.strftime("%Y-%m-%d", time.gmtime(record["ts"]))
         line = json.dumps(record, separators=(",", ":"), sort_keys=True)
         path = os.path.join(self.log_dir, f"flows-{day}.jsonl")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o640)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+    def recover(self):
+        """Lines that could not be written: the first line that can be says how many, and since when. Under the lock."""
+        if self.unwritten:
+            self.append({"ts": time.time(), "event": "gap", "since": self.unwritten_since,
+                         "reason": f"{self.unwritten} lines could not be written ({self.unwritten_error})"})
+            self.unwritten, self.unwritten_since, self.unwritten_error = 0, None, None
+            if self.failing_file:
+                unmark(self.failing_file)
+
+    def retry(self):
+        """Every few seconds: with lines lost to a write failure, try to say so (and so be healthy again) even when no
+        new line comes."""
         with self.lock:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o640)
-            with os.fdopen(fd, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
+            try:
+                self.recover()
+            except OSError:
+                pass
+
+    def write(self, record):
+        with self.lock:
+            if self.paused and record.get("event") != "gap":
+                self.held += 1
+                return
+            try:
+                self.recover()
+                self.append(record)
+            except OSError as error:
+                if not self.unwritten:
+                    self.unwritten_since = record.get("ts", time.time())
+                self.unwritten += 1
+                self.unwritten_error = error.strerror or str(error)
+                # The exit is unhealthy until a line can be written again.
+                if self.failing_file and self.unwritten == 1:
+                    mark(self.failing_file, f"cannot write the connection log: {self.unwritten_error}")
+
+    def pause(self, paused, reason, pause_file):
+        """Pauses or goes on, with a gap line either way; the pause file is there exactly while it pauses."""
+        with self.lock:
+            if paused == self.paused:
+                return
+            self.paused = paused
+            since, held = self.paused_at, self.held
+            self.paused_at, self.held = (time.time(), 0) if paused else (None, 0)
+        if paused:
+            self.gap(f"paused: {reason}")
+            mark(pause_file, reason)
+        else:
+            self.gap(f"resumed: {held} lines not written while paused", since=since)
+            unmark(pause_file)
+
+    def empty_dns_log(self):
+        """While paused, dnsmasq's record is emptied too (dnsmasq appends, so it writes on from the start)."""
+        path = os.path.join(self.log_dir, "dns.log")
+        try:
+            size = os.lstat(path).st_size
+            if size:
+                os.truncate(path, 0)
+                self.gap(f"paused: {size} bytes of the DNS record not kept")
+        except OSError as error:
+            print(f"cannot empty {path}: {error}", file=sys.stderr, flush=True)
 
     def gap(self, reason, since=None):
         record = {"ts": time.time(), "event": "gap", "reason": reason}
@@ -234,7 +360,17 @@ def main():
     parser.add_argument("--parse-conntrack", action="store_true")
     parser.add_argument("--parse-set", action="store_true")
     parser.add_argument("--diff-sets", action="store_true")
+    parser.add_argument("--should-pause", action="store_true")
+    parser.add_argument("--pause-file")
+    parser.add_argument("--failing-file")
+    parser.add_argument("--cap-bytes", type=int, default=CAP_BYTES)
+    parser.add_argument("--floor-percent", type=float, default=FLOOR_PERCENT)
     args = parser.parse_args()
+    if args.should_pause:
+        state = json.load(sys.stdin)
+        print(json.dumps(should_pause(state["paused"], state["freePercent"], state["bytes"], state["cap"],
+                                      state["floor"])))
+        return
     if args.parse_conntrack:
         for line in sys.stdin:
             record = parse_conntrack(line)
@@ -253,10 +389,29 @@ def main():
         for key in new_refusals(previous, current):
             print(json.dumps([list(key), rule_for(key)]))
         return
-    if not (args.netns and args.log_dir and args.heartbeat):
-        parser.error("--netns, --log-dir and --heartbeat are required")
+    if not (args.netns and args.log_dir and args.heartbeat and args.pause_file and args.failing_file):
+        parser.error("--netns, --log-dir, --heartbeat, --pause-file and --failing-file are required")
     os.makedirs(args.log_dir, mode=0o750, exist_ok=True)
-    writer = Writer(args.log_dir)
+    writer = Writer(args.log_dir, args.failing_file)
+    # Markers from an earlier run say nothing about now: the first check and the first line decide afresh.
+    unmark(args.pause_file)
+    unmark(args.failing_file)
+
+    def check_disk():
+        writer.retry()
+        try:
+            free, size = disk_state(args.log_dir)
+        except OSError as error:
+            print(f"cannot read the log folder: {error}", file=sys.stderr, flush=True)
+            return
+        if should_pause(writer.paused, free, size, args.cap_bytes, args.floor_percent):
+            writer.pause(True, f"the node's disk has {free:.1f}% free (floor {args.floor_percent:g}%) and the exit's logs "
+                               f"hold {size} bytes (cap {args.cap_bytes})", args.pause_file)
+            writer.empty_dns_log()
+        else:
+            writer.pause(False, "", args.pause_file)
+
+    check_disk()
     try:
         last_beat = os.stat(args.heartbeat).st_mtime
     except OSError:
@@ -273,6 +428,7 @@ def main():
     elsewhere = 0
     while True:
         time.sleep(min(5.0, args.interval))
+        check_disk()
         if not all(thread.is_alive() for thread in threads):
             sys.exit("the connection logger stopped")
         # Twice in a row, so a reader caught between entering the namespace and starting does not count.

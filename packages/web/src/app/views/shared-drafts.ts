@@ -1,10 +1,28 @@
+import { QUOTES_MAX } from "../../cloud/quotes.ts";
 import type { RoomDraft } from "../../cloud/room-drafts.ts";
 import { h, icon, personAvatar, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
+import {
+	brokenQuotes,
+	keepQuotesWhole,
+	placeQuotes,
+	type QuoteRecord,
+	quotePieces,
+	takeQuoteRecords,
+} from "../quotes.ts";
 import { DRAFT_TYPING_MS, type DraftStatus, type DraftSync, type RoomDraftRoom } from "../room-drafts.ts";
 import { moveIndex, type TextEdit } from "../text-merge.ts";
+import {
+	FieldHistory,
+	type HistoryStep,
+	historyRun,
+	historyStep,
+	keepCaretOutOfQuotes,
+	watchEdits,
+	watchHistory,
+} from "./composer-quotes.ts";
 
 /* Other members' unsent messages, right above the composer. Each shows as a
  * notch with the member's picture, typing while they type; pointing at it opens
@@ -27,6 +45,25 @@ function showKeepingCaret(field: HTMLTextAreaElement, text: string, edit: TextEd
 	field.scrollTop = scrollTop;
 }
 
+/** Said when a quote gave way in a merge (app/quotes.ts, mergeQuoted). */
+const droppedText = () => t("A quote was taken out: the draft now quotes the same words from another email.");
+
+/** What a member is told about a draft that isn't saved as it is. Beside the member's own composer a retried write
+ * says nothing (the draft stays there either way, as before), and the quote limit and a broken quote are said by the
+ * composer's own quote note; a teammate's draft, open in its panel, says all of them. */
+function statusText(status: DraftStatus, own: boolean): string {
+	if (status === "retrying") return own ? "" : t("Not saved yet. Trying again…");
+	if (status === "too-long") return t("Too long to share. Shorten it to share your changes.");
+	if (status === "quote-limit")
+		return own
+			? ""
+			: t("A message can hold at most {count} quotes. Remove some to share your changes.", { count: QUOTES_MAX });
+	if (status === "refused") return t("A quote in it can't be shared. Remove the quote to share your changes.");
+	if (status === "broken-quote")
+		return own ? "" : t("A quote is missing one of its « » marks. Remove it, or put the mark back.");
+	return "";
+}
+
 function names(values: readonly string[]): string {
 	return new Intl.ListFormat(presentationLocale(), { style: "long", type: "conjunction" }).format(values);
 }
@@ -43,12 +80,18 @@ interface OpenDraft {
 	sync: DraftSync;
 	el: HTMLElement;
 	input: HTMLTextAreaElement;
+	/** Ends the panel's own listeners when it closes. */
+	lifetime: AbortController;
 }
 
 export class SharedDrafts {
 	readonly el = h("div", { class: "composer-drafts", hidden: true });
 	readonly #row = h("div", { class: "draft-notches" });
 	readonly #helpers = h("div", { class: "draft-helpers", role: "status", hidden: true });
+	/** What became of the member's own draft: the cloud would not take it as it is, or a quote gave way. */
+	readonly #note = h("p", { class: "draft-own-note", role: "status", hidden: true });
+	/** A quote of the member's own draft gave way in a merge; said until they next type. */
+	#dropped = false;
 	readonly #company: CompanyController;
 	readonly #sessionId: string;
 	readonly #composer: HTMLTextAreaElement;
@@ -64,20 +107,26 @@ export class SharedDrafts {
 	#helpersKey = "";
 	#disposed = false;
 	readonly #stopShown: () => void;
+	readonly #stopOwn: () => void;
 
 	constructor(company: CompanyController, sessionId: string, composer: HTMLTextAreaElement, resized: () => void) {
 		this.#company = company;
 		this.#sessionId = sessionId;
 		this.#composer = composer;
 		this.#resized = resized;
-		this.el.append(this.#row, this.#helpers);
+		this.el.append(this.#row, this.#helpers, this.#note);
 		composer.addEventListener("compositionstart", () => {
 			this.#composing = true;
 		});
 		composer.addEventListener("compositionend", () => {
 			this.#composing = false;
 			// A browser may end the letter without another input event: take the text as it stands.
-			company.conversation(sessionId).set({ draft: composer.value });
+			const caret = composer.selectionStart === composer.selectionEnd ? composer.selectionEnd : undefined;
+			const kept = company.editDraft(sessionId, composer.value, caret);
+			if (kept.text !== composer.value) {
+				composer.value = kept.text;
+				if (kept.caret !== undefined) composer.setSelectionRange(kept.caret, kept.caret);
+			}
 			this.input();
 		});
 		// Another member's words arrive in the member's own draft without moving their caret.
@@ -85,10 +134,18 @@ export class SharedDrafts {
 			showKeepingCaret(composer, text, edit);
 			this.#resized();
 		});
+		this.#stopOwn = company.roomDrafts.onOwnDraft(sessionId, (note) => {
+			if (note.kind === "dropped") this.#dropped = true;
+			this.#render();
+		});
 	}
 
 	/** The member typed in their own composer. */
 	input(): void {
+		if (this.#dropped) {
+			this.#dropped = false;
+			this.#render();
+		}
 		this.#company.roomDrafts.input(this.#sessionId);
 	}
 
@@ -118,6 +175,7 @@ export class SharedDrafts {
 		this.#disposed = true;
 		clearTimeout(this.#timer);
 		this.#stopShown();
+		this.#stopOwn();
 		this.#unsubscribe?.();
 		this.#release?.();
 		this.#close(false);
@@ -167,7 +225,11 @@ export class SharedDrafts {
 			drafts.find((draft) => draft.ownerUserId === me),
 			typing(me),
 		);
-		const hidden = !others.length && this.#helpers.hidden && !this.#open;
+		const own = this.#room ? statusText(this.#company.roomDrafts.ownStatus(this.#sessionId), true) : "";
+		const note = this.#room && this.#dropped ? droppedText() : own;
+		this.#note.hidden = !note;
+		if (this.#note.textContent !== note) this.#note.textContent = note;
+		const hidden = !others.length && this.#helpers.hidden && !this.#open && this.#note.hidden;
 		if (this.el.hidden !== hidden) {
 			this.el.hidden = hidden;
 			this.#resized();
@@ -274,37 +336,104 @@ export class SharedDrafts {
 			"aria-label": t("{name}'s message", { name }),
 		});
 		const status = h("p", { class: "draft-panel-status", role: "status", hidden: true });
+		// A quote that gave way in a merge is said until the member next writes here.
+		let dropped = false;
 		const showStatus = (now: DraftStatus) => {
-			status.hidden = now === "saved";
-			status.textContent =
-				now === "retrying"
-					? t("Not saved yet. Trying again…")
-					: now === "too-long"
-						? t("Too long to share. Shorten it to share your changes.")
-						: "";
+			const text = dropped ? droppedText() : statusText(now, false);
+			status.hidden = !text;
+			if (status.textContent !== text) status.textContent = text;
 		};
+		// The draft's quotes of outside content stay whole here too: found by their records' words (app/quotes.ts),
+		// the caret kept out of them, and a change that reaches into one removes it.
+		let records: readonly QuoteRecord[] = [];
+		let before = "";
+		const quotes = () => placeQuotes(input.value, records);
+		const quoted = h(
+			"p",
+			{ class: "draft-panel-quotes", hidden: true },
+			t("Text in «» is quoted from an email. Agents read it as quoted, never as your words."),
+		);
+		const showQuoted = () => {
+			quoted.hidden = !quotes().length;
+		};
+		const lifetime = new AbortController();
+		// Its own undo history, as the member's composer has (composer-quotes.ts): each state with its records. Text
+		// that changes from outside (a teammate's words merged in, `show`) starts it again there.
+		const history = new FieldHistory({ text: "", caret: 0, records: [] });
 		const state: { composing: boolean } = { composing: false };
 		const opened = this.#company.roomDrafts.edit(this.#sessionId, ownerUserId, {
 			text: () => input.value,
+			quotes,
+			broken: () => brokenQuotes(input.value, records).length > 0,
 			caret: () => (document.activeElement === input ? input.selectionEnd : undefined),
 			busy: () => state.composing,
-			show: (text, edit) => {
+			show: (text, edit, shown) => {
+				records = takeQuoteRecords(records, text, shown);
 				showKeepingCaret(input, text, edit);
+				before = input.value;
+				// A teammate's words merged in: the undo history starts again here.
+				history.restart({ text: before, caret: input.selectionEnd, records });
+				showQuoted();
 				this.#autosize(input);
 			},
 			gone: () => {
 				if (this.#open?.input === input) this.#close(false);
 			},
 			status: (now) => showStatus(now),
+			dropped: () => {
+				dropped = true;
+				showStatus(sync.status);
+			},
 		});
 		if (!opened) return;
 		const { sync } = opened;
 		input.value = opened.text;
+		records = takeQuoteRecords([], opened.text, opened.quotes);
+		before = opened.text;
 		showStatus(sync.status);
-		input.addEventListener("input", () => {
+		showQuoted();
+		const edits = watchEdits(input, lifetime.signal);
+		history.restart({ text: input.value, caret: input.value.length, records });
+		const edited = () => {
+			showQuoted();
+			if (dropped) {
+				dropped = false;
+				showStatus(sync.status);
+			}
 			sync.changed();
 			this.#autosize(input);
+		};
+		const step = (which: HistoryStep) => {
+			const state = history.step(which, { text: before, caret: input.selectionEnd, records });
+			if (!state) {
+				if (input.value !== before) input.value = before;
+				return;
+			}
+			input.value = state.text;
+			input.setSelectionRange(state.caret, state.caret);
+			before = state.text;
+			records = state.records;
+			edited();
+		};
+		watchHistory(input, lifetime.signal, step);
+		input.addEventListener("input", (event) => {
+			const which = historyStep(event);
+			if (which) {
+				step(which);
+				return;
+			}
+			const caret = input.selectionStart === input.selectionEnd ? input.selectionEnd : undefined;
+			const edit = edits.take(event);
+			const kept = keepQuotesWhole(before, records, input.value, caret, edit);
+			if (kept.text !== input.value) {
+				input.value = kept.text;
+				if (kept.caret !== undefined) input.setSelectionRange(kept.caret, kept.caret);
+			}
+			history.edited(before, { text: input.value, caret: input.selectionEnd, records }, historyRun(edit, event));
+			before = input.value;
+			edited();
 		});
+		keepCaretOutOfQuotes(input, () => quotePieces(input.value, quotes()), lifetime.signal);
 		input.addEventListener("compositionstart", () => {
 			state.composing = true;
 		});
@@ -346,9 +475,10 @@ export class SharedDrafts {
 				),
 			),
 			input,
+			quoted,
 			status,
 		);
-		this.#open = { ownerUserId, sync, el, input };
+		this.#open = { ownerUserId, sync, el, input, lifetime };
 		this.el.append(el);
 		this.#render();
 		this.#autosize(input);
@@ -362,6 +492,7 @@ export class SharedDrafts {
 		const open = this.#open;
 		if (!open) return;
 		this.#open = undefined;
+		open.lifetime.abort();
 		const focused = open.el.contains(document.activeElement);
 		open.el.remove();
 		void this.#company.roomDrafts.leave(open.sync);

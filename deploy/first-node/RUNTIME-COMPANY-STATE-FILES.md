@@ -29,6 +29,8 @@ September 2026).
 | `agents/<handle>/todos/<todo>/<worker>/brief.md` | worker-brief | yes (platform-only) |
 | `agents/<handle>/todos/<todo>/<worker>/results.md` | worker-results | yes (platform-only) |
 | `connections/<name>.md` | connection | yes (platform-only settings) |
+| `connections/hook-<name>.md` | hook | yes (platform-only settings; E1) |
+| `connections/mailbox-<name>.md` | mailbox | yes (platform-only settings; E1) |
 | `rules/<name>.md` | rule | yes |
 | `human-tasks/<name>.md` | human-task | yes (H1; indexed and ruled by H2) |
 | `contacts/<name>.md` | contact | yes (H1; indexed and ruled by H2) |
@@ -190,7 +192,7 @@ first; deleting or moving the file (seeded).
 | `status` | yes | `active` or `archived` |
 | `colour` | no | charcoal, brown, coral, orange, gold, green, teal, blue, purple, pink, gray (the app's `qorpera-<colour>` tokens) |
 | `figure` | no | `STAFF_CHARACTER_IDS`: planet, acorn, flame, rocket, crown, heart, ghost |
-| `model` | no | gpt-6-astra, gpt-6-sol, gpt-6-luna: used when no conversation or routine picks one |
+| `model` | no | gpt-6-astra, gpt-6-sol, gpt-6-luna: the agent's model for its runs; on a native subscription, a conversation's own choice wins in that conversation; gpt-6-astra when the file names none (20260930081000) |
 | `effort` | no | low, medium, high; default low |
 | body | yes | the instructions (today's charter), up to 32768 bytes trimmed; no control character other than tab and line breaks |
 
@@ -350,6 +352,43 @@ closes the conversation; a restore reopens both, with the same conversation.
   (refused while it is active, whatever its status). Disconnecting removes the file; a file a member moved
   meanwhile is found again through the index on the next claim.
 - **Moving:** within `connections/` the index follows; out of it is a kind change (refused).
+- **Names:** `hook-` and `mailbox-` belong to hooks' and mailboxes' files (below), so a vault file never takes them:
+  the name a new file gets has `connection-` before it then (E1, `20260930060000`).
+- Not reviewed.
+
+### `connections/hook-<name>.md` and `connections/mailbox-<name>.md` (E1)
+
+A hook (where a service sends events) and a company mailbox (a hook that receives mail) of a folder-v2 company, each
+described by a file (folder core C4, E1, migration `20260930060000`; `RUNTIME-COMPANY-FOLDER-EVENTS.md` §3). The
+database stays the authority: the hook's address, proof, limits, status and delivery receipts are runtime state, and
+every tool that acts on a hook reads the hook, never this file.
+
+| Key | Kind | Required | Values |
+| --- | --- | --- | --- |
+| `id` | both | yes | the hook's id (`qorpera_event_hooks.id`); a mailbox's is its hook's |
+| `name` | hook | yes | the hook's name: lowercase letters, digits and hyphens, starting with a letter, up to 64 characters |
+| `proof` | hook | yes | `address`, `stripe`, `github` or `hmac-sha256` |
+| `address` | mailbox | yes | the mailbox's address, `<name>@<mail domain>` |
+| `status` | both | yes | `active` or `paused` |
+| `max_body_bytes` | hook | yes | 1024 to 262144, without quotes |
+| `per_minute` | hook | yes | 1 to 120, without quotes |
+| `created_by` | both | yes | the member (or agent) who created it |
+| `created_at` | both | yes | UTC instant |
+| body | both | no | what it is for, written by the company; a new file starts with the purpose given at creation |
+
+- **Never in the file:** a hook's address (a capability; owners and admins see it in Settings) or a signing secret.
+- **Settings:** written only by the platform, to match the hook. A member or an agent changes the body only, and never
+  creates or deletes the file. One file per hook; the id never changes.
+- **How it is written:** as a vault connection's (above), by the same writer: a change of a folder-v2 hook that its file
+  shows (created, paused, resumed, removed, renamed, its limits) marks it due by kind (`subject_kind` `hook` or
+  `mailbox` on P22's marks and work); the claim answers the settings by the allow-list above, the purpose a new file
+  starts with (`body`), and `operationKey` `hook-file:<id>:<generation>` or `mailbox-file:<id>:<generation>`; the finish
+  names the kind. A new file is named `hook-<name>` or `mailbox-<name>` in the name rule; when the name is taken the
+  writer numbers it.
+- **Index:** `qorpera_folder_hook_index` (environment, id): the file's path and version. A move repoints it, a delete
+  retires it, a restore revives it, erasure removes a retired row under its roots.
+- **Deleting:** only the platform, and only once the hook or mailbox is removed.
+- **Moving:** within the same prefix the index follows; anything else is a kind change (refused).
 - Not reviewed.
 
 ### `rules/<name>.md`
@@ -550,6 +589,9 @@ Not reviewed. Dispatching a worker is reviewed.
 | `id` | the worker's id |
 | `title` | 1–200 bytes |
 | `species` | `in-house` or `coding` |
+| `harness` | a coding session's: `codex` or `claude-code` (only in a coding brief, C3a) |
+| `repository` | a coding session's: `github.com/<owner>/<name>` (only in a coding brief) |
+| `base_branch` | a coding session's base branch (only in a coding brief) |
 | `access` | `read` or `write` |
 | `revival` | `each` or `batch` |
 | `dispatched_at` | UTC instant |
@@ -816,7 +858,7 @@ of the body, for readers that should not reach the storage server.
 | Kind | Index | Keeps | Stays runtime state |
 | --- | --- | --- | --- |
 | vision | new `qorpera_folder_company_index` row | name, vision version, `vision_seeded`; `qorpera_profiles.name` is copied by the follow-up queue | — |
-| agent | `qorpera_profile_staff` (folder columns `folder_environment_id`, `folder_path`: the stored path of its `agent.md`, `folder_path_version`, `folder_commit_id`, `folder_retired_at`) | name, role, instructions (charter), colour (`native` when none), figure, status; the Co-Founder's `template_id = 'co-founder'` and its `qorpera_company_cofounders` row (no formation) | lifecycle (setup), execution authority. `hire_overlay`, `reasoning_policy` and `startup_instructions` stay null on folder-v2 rows (the source-complete check ties them to the snapshot-v1 source columns), so the file's `model` and `effort` stay in the parse until the runtime reads them (F2-1b) |
+| agent | `qorpera_profile_staff` (folder columns `folder_environment_id`, `folder_path`: the stored path of its `agent.md`, `folder_path_version`, `folder_commit_id`, `folder_retired_at`) | name, role, instructions (charter), colour (`native` when none), figure, status, model (provider `openai`, model id the file's or `gpt-6-astra`; 20260930081000); the Co-Founder's `template_id = 'co-founder'` and its `qorpera_company_cofounders` row (no formation) | lifecycle (setup), execution authority. `hire_overlay`, `reasoning_policy` and `startup_instructions` stay null on folder-v2 rows (the source-complete check ties them to the snapshot-v1 source columns), so the file's `effort` stays in the parse until the runtime reads it (F2-1b); its `model` is indexed as above |
 | sections | sidebar sections and placements (+ #370's room placements) | section order, members in order | member pins and hidden |
 | group | `qorpera_company_rooms` (folder columns as the roster's, with no bound agent), room members | name, subtitle, purpose copy, members, open or closed | conversation, drafts, mentions, session model |
 | connection | new `qorpera_folder_connection_index`, one row per account keyed by the vault row's id (its own table, so a connection save never writes or locks a vault row) | path, path version, purpose copy | the vault row, secret versions, grants, audit |
@@ -929,8 +971,13 @@ of the body, for readers that should not reach the storage server.
   as the default consent an agent's save records today. It takes the run's job and then the login,
   as an agent's routine save does, so it can meet a member switching that login off (40P01): the
   writer retries it.
-- Still to come: the vision in full (read through core C3's folder client), and the file's `model`
-  and `effort` reaching runs.
+- Still to come: the vision in full (read through core C3's folder client), and the file's `effort` reaching runs.
+- The file's `model` reaches runs (20260930081000, the coordinator's gap of 5 October from A1's ports): the index sets
+  the roster row's model provider (`openai`) and model id, the file's or `gpt-6-astra` when it names none, so the
+  provider-model mapping follows and the agent's runs take it. A conversation's own model choice wins only on a native
+  subscription (`qorpera_execution_run_model_authority`); on an API-key account the agent's model applies. Before, a
+  folder-v2 agent had no model of its own: an API-key account could not run it, and an owner could not name an API-key
+  company account as its standing account (22023). Agents indexed earlier took the same from their current file.
 
 **Core C3's folder client** (`packages/runtime/src/cloud-company-folder-client.ts`). The coordinator moved it
 from F1 to F2 on 2026-09-29, and F1 reviewed its shape on #533. It is the run's client of the folder core's four
@@ -1722,6 +1769,41 @@ choices made while building:
   lock, index, verify, proof and seeding rule): 64 caught by 803, 785 or 805, and one equivalent (it rewrote the
   final-task check into the same rule).
 
+**Plan (P31): H2c, human-task wakes** (migration 20260930065000, SQL tests 915 and 916; the coordinator's
+decisions of 4 October). It replaces §9's payer rule: nobody pays in someone else's place unless they choose to.
+- **Markers, then wakes.** P29's commit hook (`qorpera_folder_listener_commit`, LISTENER §8) only inserts a
+  pending marker in `qorpera_folder_human_task_wakes` for each change that should wake an agent. It chooses no
+  payer, inserts no wake and locks nothing but its new rows; the targets hook stays empty. A shared folder drain,
+  `human_tasks` (LISTENER §9; after `listen` in the orchestrator's pass), makes every wake, one company per
+  transaction in the core's lock order: ranks 1–3 KEY SHARE (the payer, the agent and its authority), the tasks
+  FOR SHARE at rank 5, the threads, admission, then the markers FOR UPDATE SKIP LOCKED.
+- **What wakes `from`.** done and declined; accepted, returned and cancelled; a new person; a hand-off (the
+  new `from`); a new open task someone else names the agent in (`assigned`); and once per (task, `due`) an
+  overdue open or returned task. Never ticks, `due` moves, moves, restores (a restored task is final) or the
+  agent's own change. When `from` is not active, the Co-Founder is woken, never by its own change. A marker's
+  `expect` holds what the change left in the task's index row; when the drain finds the task moved on, the
+  marker is skipped (`changed`).
+- **No parent run.** The wake is an `agent` wake with source kind `human-task`, its source the task, its key
+  `human-task:<task>:<commit>` or `human-task-due:<task>:<due in µs>`. Its chain is the changing agent (if any)
+  and the woken one. The pin trigger takes the agent, the payer, the thread and the payload from the pending
+  marker and the task, never from the inserter; `qorpera_folder_wake_authorized` checks the marker, and before
+  the run also the task, agent and payer.
+- **Who pays.** The member who started the task (`started_by_user_id`), through `qorpera_starter_sponsor` with
+  no preferred login. A ChatGPT plan never pays (`human-task` is a listener source). When the starter has left,
+  or no login of theirs can pay, the marker stays `unpaid` and nobody is woken in their place. A member may
+  choose to pay: `qorpera_folder_human_task_wake_continue(env, task)` re-arms the task's unpaid markers with
+  them as the payer; `qorpera_member_folder_human_task_waits(env)` lists the unpaid ones (the web's button is
+  Interfaces', later).
+- **The run.** The agent's public thread for the payer, reply optional (`continuation` when there is a
+  thread). The payload is `{schema 'qorpera.human-task-wake/v1', taskId, reason, commitId, dueAt}`, and when the
+  run may read the task's file, its path, title, status and due. Showing them is a read of the task's file: the wake
+  read records it first (once per version, with the authority it was read under), so the run's effects recheck it and
+  erasure finds the run (review r1). The skill text says when an agent is woken.
+- **Runtime (same PR).** The wake bus accepts the source and its closed payload; the prompt's wake protocol
+  explains it; `FOLDER_DRAINS` and `CLOUD_FOLDER_DRAINS` gain `human_tasks`.
+- **Later:** removing old markers (keep those of live wakes); Interfaces lifts the gateway's hold on
+  `human-tasks/` member writes.
+
 **Then:** H2 (on the folder core) adds what §2 lists under "What H1 does not decide"; H3 the web
 screens; H4 the emails; H5 the contact links, after F2 widens erasure. A1's takeover becomes a
 human task through `from`, `connection`, `step` and the secret keys, once H2 is in.
@@ -2207,33 +2289,41 @@ writes it in the same transaction as the files:
 **6. Wakes: the folder-v2 worker drain** (F2 builds it, the coordinator agreed 3 October). The commit
 inserts no wake: the hook has no call at core §3 step 10, and a refused wake must never roll back the
 files. So a dispatch or a follow-up leaves its row active with no occurrence, and the drain starts it.
-- `qorpera_folder_drain_worker_wakes(environment, limit)`: one company in its own transaction (never
-  inside a caller's transaction that holds admission). In order:
-  1. `qorpera_folder_company_enter(environment, profile, targets, true)`: the pause (a paused company
-     refuses with 55000, and the due list leaves paused companies out), the fence `KEY SHARE` with the pause
-     read again, the company row at rank 0, and the targets at their ranks: each requester's member row
-     (rank 1, `KEY SHARE`), each parent agent's staff row (rank 2, `KEY SHARE`) and execution authority
-     (rank 3, `KEY SHARE`), then the todos (`FOR SHARE`) and the workers (`FOR NO KEY UPDATE`) at rank 5. The
-     workers are the due ones and every other waiting worker of their parents, so a revival's set of up to
-     four is always among the locked rows;
+- The drain is the shared folder drains' `workers` (LISTENER.md §9; F2-5b-3, migration 20260930003100), first in the
+  orchestrator's pass, before the listener and the materializer.
+- `qorpera_folder_workers_company(environment, limit ≤ 32)`: one company in its own transaction (never inside a
+  caller's transaction that holds admission), at read committed, answering `{state: done | idle | paused | busy |
+  deleting | not_folder, started, failed, cancelled, revivals, suppressed, undeliverable, skipped}`. In order:
+  1. `qorpera_folder_company_enter(environment, profile, targets, false)`, then the pause and the deletion read
+     again under the fence (answers, never 55000): the fence `KEY SHARE`, the company row at rank 0, and the
+     targets at their ranks: each requester's member row (rank 1, `KEY SHARE`), each parent agent's staff row (rank
+     2, `KEY SHARE`) and execution authority (rank 3, `KEY SHARE`), then the todos (`FOR SHARE`) and the workers
+     (`FOR UPDATE`, so a row the drain updates inside a block is never key-shared by another) at rank 5. The workers
+     are the due ones and up to four waiting workers of each waiting one's parent, so a revival's set is always among
+     the locked rows; a lock it waits on past 2 seconds answers `busy`;
   2. the parent's conversation `KEY SHARE`, for a completion wake (as routine firing holds its session);
   3. `qorpera_folder_admit_wakes`;
   4. one block per worker: the dispatch wake of a row with none; a dispatch wake that is refused,
      cancelled at insert, or fails with an error (42501 when nobody pays, 55000) makes the worker `failed`
      (`not_started`, completion `waiting`), so it never stays active without a wake; a worker that ended
      without a report becomes `failed`; a stopped parent cancels its workers; a cancelled todo cancels its
-     workers (`todo_cancelled`, which no queue does yet); and revival with today's rules (`each`, `batch`,
+     workers (`todo_cancelled`, which no queue does yet), each cancel taking the worker's queued wake `NOWAIT` (one
+     P28's materializer holds keeps the worker for the next pass); and revival with today's rules (`each`, `batch`,
      at most four results, one revival of a parent at a time). A revival block that fails (42501, P0002,
-     55000) marks its workers undeliverable, as today. The drain never touches a todo row. A pass handles at
-     most 32 workers, within core §3's 64 subtransactions.
+     55000), or whose wake is cancelled at insert, marks its workers undeliverable. An erased worker's waiting
+     results are suppressed (their text is gone). Coding workers are started by their coding turns and only
+     revived here. The drain never touches a todo row. A pass handles at most 32 due workers, within core §3's 64
+     subtransactions.
   - The parent's job status is a plain read: no lock, no `NOWAIT`, nothing taken before the fence. The drain
     acts only on final job states, which never go back, so a stale read waits one pass.
   - The legacy `qorpera_serialize_wake_admission` (the company row `FOR UPDATE NOWAIT`) is never used.
-- `qorpera_folder_worker_wakes_due()` lists the companies with due work.
-- **The seam for P28** (written into core §11 C4): the `folder-v2` materializer calls the drain for each
-  company `qorpera_folder_worker_wakes_due()` lists, in its own transaction, before it materializes that
-  company's wakes; P28's acceptance includes "a dispatch runs and its revival returns". Until P28 nothing
-  calls it, and no `folder-v2` run exists either.
+- `qorpera_folder_workers_due(after, limit)` lists, a page at a time, the folder-v2 environments with a due worker
+  (`qorpera_folder_worker_due`, the same predicate the drain uses, so it leaves out companies the drain would only
+  answer `idle` for), leaving out paused companies and those being deleted.
+- **The seam** (core §11 C4, corrected 3 October): the orchestrator's shared folder-drains step runs the drain for
+  each company the due list names, in its own request, before the materializer's list, so a worker started or a
+  parent revived this pass is materialized this pass; the edge function's `FOLDER_DRAINS` and the orchestrator's
+  `CLOUD_FOLDER_DRAINS` name it `workers`.
 
 **7. The runtime.**
 - `manage_worker` on `folder-v2`: dispatch, follow-up and decide build the files with the shared writers,
@@ -2258,7 +2348,11 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
   markers in every patched function, anchored on today's text (H2b's included). New functions for the
   `folder-v2` payloads; the shared payload functions and the legacy drain stay untouched.
 - **F2-5b-3, the drain** (migration 20260930003100, SQL tests 842 and 843): §6.
-- **F2-5b-4, the runtime** (TS): §7.
+- **F2-5b-4, the runtime** (TS): §7. Built 4 October (`CloudFolderWorkers`, moved up after Q1's live test: a new
+  agent's first act was `manage_worker`, which refused). Status on `folder-v2` lists one todo's workers, filtered and
+  paged in SQL (16 newest first, with a cursor; migration 20260930075000), and reads one worker's whole result from its
+  file; a follow-up names the results it removes, so a decision that landed in between makes it a conflict rather than a
+  half-saved change set; `archive` and coding sessions refuse until coding workers come to `folder-v2` (S3's C3).
 
 Tests: every action's rules and refusals; a worker-file unit with no request (a member, the model's file
 tool); a request that names another run, environment or operation key; a report commit holding any other
@@ -2266,6 +2360,47 @@ unit; the read-only and narrowed-folder report; R1 accepting `manage_worker` for
 only; races of dispatch against `done`, two saves of one todo, the drain against cancel, a report and a
 subtree delete, and an agent folder move against a dispatch; a mutant run, as H1b and H2b; and the legacy
 worker suites (379, 385, 387, 388, 395–399, 600–606, 656) after the new columns.
+
+**Plan (C3): coding workers on folder-v2** (S3; design approved by the coordinator, 4 October; A1's acceptance cases from
+396). A coding session is a worker like an in-house one: `manage_worker` writes its `brief.md` through
+`qorpera_folder_worker_commit`, and the worker row is the brief's index.
+- **C3a (migration 20260930077000, SQL test 928; the parser):**
+  - **The brief.** A coding brief names `harness`, `repository` and `base_branch`; an in-house brief names none of
+    them. The parse gives `harness` and `repository` (`{host, owner, name, baseBranch}`, as the coding tables hold it)
+    for a coding brief only, and the database's parse check holds both to their rules.
+  - **The request.** A dispatch may carry `species`, `harness`, `repository` and `owner`. The worker rules check a
+    coding dispatch as `qorpera_manage_agent_worker` did, in its order and with its words, as rule refusals that write
+    nothing: the species; the harness, repository and read access; the owner (only the member who asked);
+    an enabled executor for the harness; the agent's grant for the repository; the owner's own login for the harness,
+    allowed to work while they are away, and a ChatGPT plan only for work started on it
+    (`qorpera_coding_owner_problem`, which reads `qorpera_coding_owner_login`, the selection
+    `qorpera_coding_owner_sponsor` now shares). A coding session is paid by that login, not the starter's sponsor. The
+    index takes the payer again and holds it to the plan rule (`qorpera_coding_owner_payer`): a login changed between
+    the rules and the index fails the commit rather than bill a plan that did not fund the run.
+    The brief agrees with the request: the species, the harness and the repository too.
+  - **The index.** An accepted coding dispatch writes the worker (`coding`, active, no wake, owned by the run's
+    requester and paid by their sponsor), its session (`queued`, branch `qorpera/coding/<worker id>`, no lease, in the
+    run's conversation), and its first turn and `phase` event (`qorpera_coding_session_queue`). No wake: the executor's
+    claim starts the session, and its turn's begin admits the worker's wake. A replay answers the first commit.
+  - **Follow-up, report, decide.** A coding session keeps its branch, workspace and pull request through a cancel, so a
+    cancelled one may be followed up, and only by the member it runs for; the follow-up queues its next turn the same
+    way. A member's answer (`qorpera_answer_coding_session`) turns the session too without touching the brief, so a
+    coding brief's `follow_ups` counts the agent's follow-ups alone: each is one more than the brief it rewrites. A
+    worker whose folder or todo was deleted continues only after a restore (a worker's folder may come back without its
+    todo): the member's answer, the claim and the begin refuse it (`qorpera_coding_worker_retired`, under the worker's
+    rank-5 locks). A coding session finishes through `coding_finish`: its run never writes `agents/**`, so the folder
+    core denies it `report_work`. Decide is unchanged.
+  - **The turn's wake** carries the folder-v2 dispatch payload (`qorpera_folder_worker_dispatch_payload`: the worker's
+    folder and the todo's file).
+  - **F2's drain** (with F2's review): an active coding worker is due only to be stopped, when its parent was stopped
+    or its todo cancelled, as an in-house one; the drain never starts it and revives its parent as before. It takes
+    the sessions it may stop `FOR UPDATE` after the parents' conversations and before admission (core §3).
+  - **Locks.** The session a dispatch inserts is new; a follow-up's session update comes after the worker's rank-5
+    lock, as every coding-session writer takes it (3i-a's claim, begin and complete, the cancel, the drain).
+- **C3b (the runtime):** `cloud-folder-workers.ts` dispatches and follows up coding sessions (the brief's coding
+  fields, the request's), and the dispatch's answer names the session's phase.
+- **C3c:** the quiet coding check-ins as a drain, on #816's continuation helpers (C1C §6.20's hand-over).
+- **C3d:** a coding turn's result written to `results.md`.
 
 **Plan (P16): interfaces and tables on the folder core** (the coordinator's slice P16, RUNTIME-INTERFACES.md
 step I6, with Interfaces; design, 3 October, review r1 folded). The rules are RUNTIME-INTERFACES.md §6.1 (its nine

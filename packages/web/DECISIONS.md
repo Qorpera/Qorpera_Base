@@ -193,6 +193,14 @@ picker, which always keeps the current colour. The meet page keeps the stored
 colour until a different figure is picked there, so returning to it never
 replaces a colour chosen in the details.
 
+**Superseded in part (2026-10-04).** On the company folder a colour is a
+name in the agent's file (`colour: blue`), which the index keeps as
+`qorpera-blue`, and founding (P15, #789) seeds the Co-Founder's file with
+no colour, which the index keeps as `native`. A member who picks Blue for the
+Co-Founder is therefore stored as the old seed token, so the seed-token rule
+is gone: the Co-Founder is drawn by the same rule as every agent, and its
+own shade comes from `native`.
+
 ## 2026-09-24 — Rail menu, pinned cards and sections (Grok Bot's rail)
 
 Jonas asked for Grok Bot's right-click menu on agents, pinned agents as square
@@ -414,3 +422,53 @@ Rules" title and hint) plus Qorpera's "Applies to:" choice, and one table of
 rules with edit and remove icons. The rules are the company Settings show
 (the one whose page is open, or the account's only company); with none,
 General says "Open a company to see its rules." in their place.
+
+## 2026-10-04 — A quote of outside content is one piece of the draft
+
+**Decision.** A message button's email values travel as quotes (contract, the
+2026-10-02 amendment "quoted outside content in a member's message"; Interfaces
+step I5d-4). In the composer a quote stays in the plain textarea and is set
+apart in the coloured copy that already lies over it for skill names: its «»
+marks and words are tinted as quoted, and a line under the field says agents
+read it as quoted, never as the member's words. The caret never rests inside a
+quote: arrow keys step over it, a click lands at its nearer edge, a selection
+takes it whole or not at all, and Backspace or Delete that reaches one of its
+marks removes the whole quote.
+
+**How.** The draft keeps each quote's record (its words and mail thread)
+beside the text, and finds the quotes wherever a record's words stand in «»
+marks, as the cloud finds a draft's kept quotes. So the member's own marks
+around the same words as a quote carry that quote's record, an undo or paste
+that puts a quote back makes it a quote again, and a save never keeps a quote's
+words without its record (which the cloud would refuse). The records go once
+the message is sent. Since one record stands for its words, a message button
+that would quote the same words from another email (two emails with one
+subject) while the draft still quotes them is refused with a line saying so,
+rather than giving the new quote the other email's thread.
+
+In a shared draft each quote merges as one piece: kept, removed or replaced
+whole, never cut into bare words. When the cloud's draft comes to quote the
+same words from another email as a quote the member has here, the cloud's
+quote stays and the member's gives way, with a line saying so: the cloud's
+draft is what every member's browser shows, and one record per words can't
+hold both. Asking the member to choose was the other option; it would leave a
+draft that can't be saved until they do.
+
+**The composer keeps its own undo history** (round 4 of the review), in the
+member's composer and in a teammate's draft opened above it. The browser's own
+undo can put back a text the composer never held: the moment after a Backspace
+reached a quote's mark, where the marks left over pair with the member's own
+(`«A» «Btail»`), so the quote's words would go without their record, and the
+cloud would take them. Undo and redo (the keys, the menu) answer from states
+the composer held after its quote rules settled each edit, so every quote in
+them is whole; typing and deleting group into runs as a text field's do. A text
+that changes from outside the member's own edits (a teammate's words, a send,
+a message button) starts the history again there, as a browser's does when a
+page sets the text. An edit the field can't account for (a spelling fix, no
+`beforeinput`) is kept only when it leaves every quote whole and no quote's
+words outside a quote; otherwise the text goes back as it was.
+
+**Rules out.** A rich-text composer with quote chips (a larger change to the
+field, its caret handling and shared drafts' text merging), and a row's value
+filled in as plain words when it can't travel as a quote: a row without its
+mail thread id gets no message button at all.

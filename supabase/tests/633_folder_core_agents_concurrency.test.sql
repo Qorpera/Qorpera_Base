@@ -313,7 +313,7 @@ begin
 	-- The functions that end a lease themselves (the design review's list of the live job writers).
 	select string_agg(f, ', ') into v_missing from unnest(array['qorpera_terminalize_runner_attempt_before_native_start',
 		'qorpera_complete_runner_job_v6','qorpera_complete_runner_job_before_path_runtime','qorpera_complete_runner_job',
-		'qorpera_fail_runner_job','qorpera_handoff_run_sponsor','qorpera_revoke_runner','qorpera_reissue_runner_activation',
+		'qorpera_fail_runner_job','qorpera_revoke_runner','qorpera_reissue_runner_activation',
 		'qorpera_resolve_failed_execution_run','qorpera_retry_room_delivery','qorpera_claim_runner_job',
 		'qorpera_reconcile_runner_orchestrator_without_sponsored_turns']) f
 	where not exists (select 1 from pg_proc where proname = f and prosrc ~* '\mfor\s+update\M');
