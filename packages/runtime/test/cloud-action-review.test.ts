@@ -45,6 +45,13 @@ describe("which calls are reviewed", () => {
 		["update_skill", { action: "create", name: "call-the-bank" }, "internal"],
 		["update_skill", { action: "update", name: "call-the-bank" }, "internal"],
 		["computer_shell", { action: { kind: "shell", command: "ls" } }, "external"],
+		// The shell reaches the internet: starting a command and typing into one are reviewed.
+		["computer_shell", { action: { kind: "shell", action: "start", command: "ls", waitMs: 0 } }, "external"],
+		["computer_shell", { action: { kind: "shell", action: "write", sessionId: RULE, text: "y\n" } }, "external"],
+		["computer_shell", { action: { kind: "shell", action: "read", sessionId: RULE, waitMs: 0 } }, "read"],
+		["computer_shell", { action: { kind: "shell", action: "list" } }, "read"],
+		["computer_shell", { action: { kind: "shell", action: "stop", sessionId: RULE } }, "internal"],
+		["computer_shell", { action: { kind: "shell", action: "stop" } }, "internal"],
 		["computer_browser", { action: { kind: "browser", action: "snapshot" } }, "read"],
 		["computer_browser", { action: { kind: "browser", action: "click", role: "button", name: "Send" } }, "external"],
 		[

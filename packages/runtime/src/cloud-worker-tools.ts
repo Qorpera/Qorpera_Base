@@ -661,6 +661,8 @@ export function cloudWorkerTools(
 export interface CloudAgentOpenWork {
 	todos: { open: number; blocked: number };
 	workers: { active: number; blocked: number };
+	/** Commands the platform stopped on the agent's computer, told once in their conversation. */
+	computerStopped?: { command: string; startedAt: string; endedAt: string; reason: string }[];
 }
 
 export async function describeCloudAgentOpenWork(
@@ -681,9 +683,39 @@ export async function describeCloudAgentOpenWork(
 	};
 	const todos = object(result.todos, ["open", "blocked"], ["open", "blocked"]);
 	const workers = object(result.workers, ["active", "blocked"], ["active", "blocked"]);
+	let computerStopped: CloudAgentOpenWork["computerStopped"];
+	if (result.computerStopped !== undefined) {
+		if (
+			!Array.isArray(result.computerStopped) ||
+			result.computerStopped.length < 1 ||
+			result.computerStopped.length > 32
+		)
+			throw new Error("Open work differs");
+		computerStopped = result.computerStopped.map((item) => {
+			const stopped = object(
+				item,
+				["command", "startedAt", "endedAt", "reason"],
+				["command", "startedAt", "endedAt", "reason"],
+			);
+			if (
+				typeof stopped.command !== "string" ||
+				typeof stopped.startedAt !== "string" ||
+				typeof stopped.endedAt !== "string" ||
+				!["slept", "closed", "paused", "pressure", "lost"].includes(stopped.reason as string)
+			)
+				throw new Error("Open work differs");
+			return {
+				command: stopped.command,
+				startedAt: stopped.startedAt,
+				endedAt: stopped.endedAt,
+				reason: stopped.reason as string,
+			};
+		});
+	}
 	return {
 		todos: { open: count(todos.open), blocked: count(todos.blocked) },
 		workers: { active: count(workers.active), blocked: count(workers.blocked) },
+		...(computerStopped ? { computerStopped } : {}),
 	};
 }
 

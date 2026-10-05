@@ -291,6 +291,12 @@ it("asks only whether a quiet coding session can be archived on its check-in", (
 	expect(instructions).toContain("qorpera.worker-completion-continuation/v1");
 });
 
+it("tells the agent's next run what the platform stopped on its computer", () => {
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	expect(instructions).toContain("openWork.computerStopped");
+	expect(instructions).toContain("reason slept (the computer went to sleep because nothing busy kept it awake)");
+});
+
 it.each(["human", "office-activation"] as const)("does not restart a prior startup assignment on a %s wake", (kind) => {
 	const f = nativeCompanyContextFixture();
 	const startup = {

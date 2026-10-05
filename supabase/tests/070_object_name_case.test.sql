@@ -17,6 +17,9 @@ declare
 	v_identity record;
 begin
 	if v_profile is null then raise exception 'case suite lost its profile fixture'; end if;
+	if not public.qorpera_company_is_folder_v2(v_profile) then
+		raise exception 'the case suite''s company is not a folder-v2 company';
+	end if;
 
 	-- The identity function must not recognise a non-canonical name at all.
 	select * into v_identity
@@ -75,7 +78,11 @@ end
 $$;
 
 -- An authenticated member must not be able to create an alias in the first
--- place: the insert policy is the outer half of the fix.
+-- place: the insert policy is the outer half of the fix. On a folder-v2
+-- company the policy refuses a member's every Storage write, whatever the
+-- spelling (646), so the old positive control (the member writing the
+-- canonical name) cannot hold; the platform writes the canonical name past the
+-- policies instead, as it stores every folder-v2 object.
 select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}', false);
 set role authenticated;
 
@@ -95,15 +102,15 @@ begin
 	if not v_ok then
 		raise exception 'the insert policy still accepts a non-canonical uuid prefix';
 	end if;
-
-	-- Positive control: the same member may still write the canonical name,
-	-- so the denial above is about spelling, not a broken write path.
-	insert into storage.objects (bucket_id, name, metadata)
-	values ('qorpera-profile-objects',
-		current_setting('qorpera_test.case_profile') || '/' || repeat('a', 64), '{"size":"7"}');
 end
 $$;
 
+reset role;
+select set_config('request.jwt.claims', '{"role":"service_role"}', false);
+set role service_role;
+insert into storage.objects (bucket_id, name, metadata)
+values ('qorpera-profile-objects',
+	current_setting('qorpera_test.case_profile') || '/' || repeat('a', 64), '{"size":"7"}');
 reset role;
 select set_config('request.jwt.claims', '', false);
 
