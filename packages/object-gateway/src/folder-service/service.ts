@@ -720,9 +720,13 @@ export class FolderService {
 			}
 		}
 		const current = view.pending ? view.pending.get(request.path) : this.#tree(view).get(request.path);
+		// A version this view's own save made, published since, reads as the version that save published: a file the
+		// machine still holds open from before the boundary goes on reading the same bytes.
+		const published = view.published.get(request.path);
+		const version = published?.made === request.version ? published.live : request.version;
 		let entry: TreeEntry | undefined;
-		if (current?.version === request.version) entry = current;
-		else entry = view.superseded.get(request.path)?.find((old) => old.version === request.version);
+		if (current?.version === version) entry = current;
+		else entry = view.superseded.get(request.path)?.find((old) => old.version === version);
 		if (!entry) {
 			if (!current) throw new ProtocolError(ErrorCode.notFound, "No such file");
 			if (current.kind === "folder") throw new ProtocolError(ErrorCode.notAFile, "Not a file");

@@ -73,7 +73,8 @@ connection ends is abandoned, and what it held at its last close stays pending.
 A save's base is the version the machine's version map holds: the newest it read of the path, or the version its own
 save made (the `version` of `C` or `X`). Once that save is published, the service reads such a base as the version
 the save's change set gave the path, so the machine's next save is based on its own published save and not on a
-pending id the core never knew. A base naming any other version is passed on as it is.
+pending id the core never knew; a read naming it reads that version too, so a file held open since the save goes on
+reading the same bytes. A base naming any other version is passed on as it is.
 
 Error codes and what a program on the machine sees: `NOT_FOUND` ENOENT, `NOT_A_FOLDER` ENOTDIR, `NOT_A_FILE` EISDIR,
 `STALE` ESTALE, `DENIED` EACCES, `BAD_REQUEST` EINVAL, `UNAVAILABLE` EIO; for writes `EXISTS` EEXIST, `NOT_EMPTY`

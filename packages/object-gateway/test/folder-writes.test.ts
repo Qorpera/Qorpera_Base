@@ -386,6 +386,8 @@ describe("writes through the mount", () => {
 		await view.publish();
 		const [liveA, liveB] = [core.entries.get("docs/a.md")!.version, core.entries.get("new/b.md")!.version];
 		expect([liveA, liveB]).not.toContain(first);
+		// A file held open from before the boundary reads the same bytes under the version its save made.
+		expect((await view.read({ path: "docs/a.md", version: first, offset: 0, length: 16 })).toString()).toBe("one");
 		// The next saves name the versions the machine's own saves made: based on what those published, they save.
 		const bit = (await view.setExecutable("new/b.md", true, inner)).version;
 		const second = await save("docs/a.md", "two", first);
