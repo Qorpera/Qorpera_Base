@@ -49,9 +49,7 @@ test("packages the folder service, the folder program, the units and the install
 				"qorpera-folder-service.socket",
 				"qorpera-folder-service.service",
 				"qorpera-folder-bridge.service",
-				"qorpera-folder-mount@.service",
 				"install-folder-service.sh",
-				"install-folder-mount-guest.sh",
 				"README.md",
 			],
 		);
@@ -78,7 +76,6 @@ test("packages the folder service, the folder program, the units and the install
 				EXPECTED_SERVICE_UNIT_SHA256: "qorpera-folder-service.service",
 				EXPECTED_BRIDGE_UNIT_SHA256: "qorpera-folder-bridge.service",
 			},
-			"install-folder-mount-guest.sh": { EXPECTED_MOUNT_UNIT_SHA256: "qorpera-folder-mount@.service" },
 		};
 		for (const [installer, expected] of Object.entries(pins)) {
 			const script = await readFile(join(destination, installer), "utf8");
@@ -105,8 +102,8 @@ test("packages the folder service, the folder program, the units and the install
 		const socket = await readFile(join(destination, "qorpera-folder-service.socket"), "utf8");
 		assert.match(socket, /^SocketMode=0660$/m);
 		assert.match(socket, /^SocketGroup=qorpera-folder-bridge$/m);
-		const mount = await readFile(join(destination, "qorpera-folder-mount@.service"), "utf8");
-		// The mount must land in PID 1's mount namespace.
+		// The mount unit ships in the shared-execution package; it must land in PID 1's mount namespace.
+		const mount = await readFile(join(repositoryRoot, "deploy/folder-service/qorpera-folder-mount@.service"), "utf8");
 		for (const option of ["ProtectSystem", "PrivateTmp", "PrivateDevices", "ProtectHome", "ReadWritePaths", "InaccessiblePaths"])
 			assert.ok(!new RegExp(`^${option}=`, "m").test(mount), option);
 		assert.match(mount, /^RestartPreventExitStatus=3$/m);

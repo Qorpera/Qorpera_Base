@@ -20,7 +20,8 @@ const BEGIN = "=== qorpera live schema begin ===";
 const END = "=== qorpera live schema end ===";
 
 /** Deterministic: byte order ("C" collation) and schema-qualified names (empty search_path). Objects that
- * belong to an extension are left out. */
+ * belong to an extension are left out, and so is the test databases' own support (supabase/tests/bootstrap.sql,
+ * schema qorpera_test_support and the triggers that call it), which production never has. */
 export const DUMP_SQL = `set search_path = '';
 with objects as (
 	select 1 as kind, n.nspname as schema_name, p.proname as object_name, pg_catalog.pg_get_function_identity_arguments(p.oid) as detail,
@@ -28,7 +29,7 @@ with objects as (
 			pg_catalog.rtrim(pg_catalog.pg_get_functiondef(p.oid), E'\\n')) as body
 	from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
 	where p.prokind in ('f', 'p', 'w')
-		and n.nspname not in ('pg_catalog', 'information_schema') and n.nspname !~ '^pg_(toast|temp)'
+		and n.nspname not in ('pg_catalog', 'information_schema', 'qorpera_test_support') and n.nspname !~ '^pg_(toast|temp)'
 		and not exists (select 1 from pg_catalog.pg_depend d
 			where d.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass and d.objid = p.oid and d.deptype = 'e')
 	union all
@@ -36,6 +37,8 @@ with objects as (
 		pg_catalog.format(E'-- @live trigger %s on %s.%s\\n%s;\\n', t.tgname, n.nspname, c.relname, pg_catalog.pg_get_triggerdef(t.oid, true))
 	from pg_catalog.pg_trigger t join pg_catalog.pg_class c on c.oid = t.tgrelid join pg_catalog.pg_namespace n on n.oid = c.relnamespace
 	where not t.tgisinternal and n.nspname not in ('pg_catalog', 'information_schema')
+		and not exists (select 1 from pg_catalog.pg_proc f join pg_catalog.pg_namespace fn on fn.oid = f.pronamespace
+			where f.oid = t.tgfoid and fn.nspname = 'qorpera_test_support')
 		and not exists (select 1 from pg_catalog.pg_depend d
 			where d.classid = 'pg_catalog.pg_class'::pg_catalog.regclass and d.objid = c.oid and d.deptype = 'e')
 	union all
