@@ -427,3 +427,41 @@ fn one_writer_per_file_across_duplicated_inherited_and_truncating_descriptors() 
 	node.close_view();
 	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
 }
+
+#[test]
+fn a_file_held_open_across_a_newer_version_bases_its_save_on_what_it_read() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("plan.md", "the first", false);
+	let (company, runner) = start(&node);
+	let plan = company.join("plan.md");
+	// An editor opens the file; another machine publishes a newer version before the editor reads it, and the mount
+	// shows that one now.
+	let mut held = std::fs::File::open(&plan).unwrap();
+	node.put("plan.md", "the second one", false);
+	assert!(eventually(Duration::from_secs(2), || std::fs::metadata(&plan).is_ok_and(|m| m.len() == 14)));
+	// The editor reads the version it opened: the only version this mount read of the path.
+	let mut text = String::new();
+	held.read_to_string(&mut text).unwrap();
+	assert_eq!(text, "the first");
+	// Its save in place names that version, so the node takes it for the stale save it is, not an overwrite.
+	std::fs::write(&plan, "mine").unwrap();
+	assert_eq!(node.opens().last().unwrap(), &("plan.md".to_string(), Some("v1".to_string())));
+	// A read of the newest version takes over; the file still open does not take the map back.
+	node.put("notes.md", "n1", false);
+	assert!(eventually(Duration::from_secs(2), || company.join("notes.md").exists()));
+	let mut notes = std::fs::File::open(company.join("notes.md")).unwrap();
+	node.put("notes.md", "n2 longer", false);
+	assert!(eventually(Duration::from_secs(2), || std::fs::read_to_string(company.join("notes.md")).ok().as_deref()
+		== Some("n2 longer")));
+	let mut old = String::new();
+	notes.read_to_string(&mut old).unwrap();
+	assert_eq!(old, "n1");
+	std::fs::write(company.join("notes.md"), "mine").unwrap();
+	assert_eq!(node.opens().last().unwrap(), &("notes.md".to_string(), Some("v2".to_string())));
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+

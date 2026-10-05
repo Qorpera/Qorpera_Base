@@ -398,7 +398,8 @@ impl Shared {
 				if let Some(path) = tree.path(ino) {
 					self.versions.lock().unwrap().saved(path, &version);
 				}
-				if let Some(attr) = tree.attr(ino) {
+				// Known again if a change had made them unknown: the path shows this mount's pending file.
+				if let Some(attr) = tree.last_seen(ino) {
 					tree.set_local(ino, Attr { size, version: version.clone(), mtime_ms: now_ms(), ..attr });
 				}
 			}
@@ -745,16 +746,18 @@ impl Filesystem for FolderFs {
 		let len = (file_size - offset).min(size.min(MAX_READ) as u64) as u32;
 		match self.s.link.read(&path, &version, offset, len) {
 			Ok(data) => {
-				// The version map: the newest version this mount read of the path, a save's base. Only a read of the version
-				// the path shows now, through the inode it names: a file still open from before a newer version arrived
-				// reads an older one, and a read under way while this mount saves the file read the version before the save.
+				// The version map: the newest version this mount read of the path, a save's base. A read of the version the
+				// path's inode stands for, through that inode (its version, not its attributes: a change on the feed makes
+				// those unknown until the folder is listed again). A read under way while this mount saves the file read the
+				// version before the save, and is not taken. A file still open from before a newer version arrived reads an
+				// older one: taken only while the map holds nothing for the path, when it is the only version the mount read.
 				if self.s.writable {
 					let tree = self.s.tree.lock().unwrap();
-					if tree.current(ino)
-						&& tree.path(ino) == Some(path.as_str())
-						&& tree.attr(ino).is_some_and(|a| a.version == version)
-					{
-						self.s.versions.lock().unwrap().read(&path, &version);
+					let mut versions = self.s.versions.lock().unwrap();
+					let its = tree.path(ino) == Some(path.as_str())
+						&& tree.last_seen(ino).is_some_and(|a| a.version == version);
+					if its && (tree.current(ino) || (!tree.removed_here(ino) && versions.get(&path).is_none())) {
+						versions.read(&path, &version);
 					}
 				}
 				reply.data(&data)

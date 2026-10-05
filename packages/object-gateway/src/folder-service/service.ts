@@ -114,14 +114,14 @@ interface HeldIntent {
 	readonly staged?: FileRef;
 }
 
-/** A boundary the core answered, while the view waits for the feed to bring its change set: until then the view keeps
- * its pending changes as they were, and nothing changes (BUSY). */
 /** A file a published move took to its path: the version it had where it came from, and the one the move gave it. */
 interface MovedVersion {
 	readonly prior: string;
 	readonly version: string;
 }
 
+/** A boundary the core answered, while the view waits for the feed to bring its change set: until then the view keeps
+ * its pending changes as they were, and nothing changes (BUSY). */
 interface Settlement {
 	readonly plan: BoundaryPlan;
 	readonly made: ReadonlyMap<string, string>;
@@ -1394,8 +1394,9 @@ export class FolderService {
 
 	/** The versions this boundary's saves published, for bases and reads naming the versions they made; and the versions
 	 * its moves gave the files they moved, for bases and reads naming the version a file showed at its new path while
-	 * the move was pending (the one it had before). As many are kept per path as versions of it stay readable: the
-	 * current one and the replaced ones. */
+	 * the move was pending (the one it had before), or a version this view's own save made of it before the move (the
+	 * machine's version map takes a save's version along when it renames the file). As many are kept per path as
+	 * versions of it stay readable: the current one and the replaced ones. */
 	#notePublished(
 		view: View,
 		settlement: Settlement,
@@ -1412,7 +1413,19 @@ export class FolderService {
 			const live = settlement.saved.has(path) ? written.get(path) : undefined;
 			if (live) alias(path, made, live);
 		}
-		for (const [path, { prior, version }] of moved) alias(path, prior, version);
+		if (moved.size === 0) return;
+		// The versions this view's saves made, by the version they published (at any path, before the moves).
+		const madeOf = new Map<string, string[]>();
+		for (const aliases of view.published.values())
+			for (const { made, live } of aliases) {
+				const versions = madeOf.get(live);
+				if (versions) versions.push(made);
+				else madeOf.set(live, [made]);
+			}
+		for (const [path, { prior, version }] of moved) {
+			alias(path, prior, version);
+			for (const made of madeOf.get(prior) ?? []) if (made !== prior) alias(path, made, version);
+		}
 	}
 
 	/** Shows the live folder again but for the nodes kept, and tells the machines the paths that change by it. */

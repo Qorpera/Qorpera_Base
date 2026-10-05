@@ -222,8 +222,12 @@ As built (3d-2), the program: a file's last writing handle closes it at the node
 that opened it, so a boundary right after the close publishes it; a child that inherited the descriptor leaves it
 open. A write after that opens it again, going on from the chunk in memory. A close the node does not take
 (`BUSY` while a boundary settles, the link down) leaves the file open there, and the program tries again until it is
-taken: the node's handle is never left open, nor closed at a size the program did not write. `P` goes out once, and
-waits as long as the boundary takes; when no answer comes, `publish` says the outcome is unknown.
+taken: the node's handle is never left open, nor closed at a size the program did not write. Every change waits for
+its answer as long as the node takes (a boundary it waits for or publishes first), so a change the node made is never
+taken for one it did not. `P` goes out once, and waits likewise; when no answer comes, `publish` says the outcome is
+unknown. A read takes its version into the map when the path's file is that version; a file still open from before a
+newer version arrived counts too while the map holds nothing for the path, so an editor's save of what it opened is a
+conflict, not an overwrite.
 
 Frames stay at most 2 MiB, so a 4 MiB chunk is four frames. The service still handles one request at a time per
 connection, with the socket paused, so a machine can never make it buffer more than one frame of its bytes.

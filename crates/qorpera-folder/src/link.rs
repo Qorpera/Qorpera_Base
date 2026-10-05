@@ -15,8 +15,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
-/// How long a request may wait for its answer. A cold read of a 4 MiB piece from the storage server
-/// takes well under a second (measured 28 September); this only catches a link that died silently.
+/// How long a list or a read may wait for its answer, and a request to be sent. A cold read of a 4 MiB piece from the
+/// storage server takes well under a second (measured 28 September); this only catches a link that died silently. A
+/// change waits for its answer as long as the node takes (`change`).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// The node sends a heartbeat on the feed every 15 seconds; three missed ones mean the link is gone.
 pub const FEED_TIMEOUT: Duration = Duration::from_secs(45);
@@ -77,6 +78,8 @@ pub struct Link {
 	closed: AtomicBool,
 	/// Called once when the view closes, so the mount can end instead of failing every call.
 	on_closed: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+	/// REQUEST_TIMEOUT, shorter in tests.
+	timeout: Duration,
 }
 
 impl Link {
@@ -90,6 +93,7 @@ impl Link {
 			max: max.max(1),
 			closed: AtomicBool::new(false),
 			on_closed: Mutex::new(None),
+			timeout: REQUEST_TIMEOUT,
 		}
 	}
 
@@ -114,7 +118,7 @@ impl Link {
 
 	fn hello(&self, role: Role, timeout: Duration) -> Result<(Stream, HelloOk), Fail> {
 		let mut s = connect(&self.addr).map_err(Fail::Link)?;
-		s.set_timeouts(Some(timeout), Some(REQUEST_TIMEOUT)).map_err(Fail::Link)?;
+		s.set_timeouts(Some(timeout), Some(self.timeout)).map_err(Fail::Link)?;
 		let hello = Hello {
 			protocol: PROTOCOL,
 			environment_id: self.view.environment_id.clone(),
@@ -202,6 +206,10 @@ impl Link {
 	/// broke before the answer: the node may have made it, so the program sees EIO. A connection that could not be made,
 	/// or that would not take the request (a pooled one the node closed, when its service restarted), never delivered
 	/// it: every idle pooled connection is let go with it, and the change goes out once more on a new connection.
+	///
+	/// It waits for its answer as long as the node takes (a boundary the change waits for, or publishes first): the node
+	/// answers, or its service goes and the connection with it. Given up early, a change the node still made would be
+	/// lost to the program: a file opened there that nothing closes, a close whose version never comes.
 	fn change(&self, request: u8, payload: &[u8], answer: u8) -> Result<Vec<u8>, Fail> {
 		let mut attempt = 0;
 		loop {
@@ -211,7 +219,7 @@ impl Link {
 				Err(Fail::Link(_)) if attempt == 1 => continue,
 				Err(f) => return Err(f),
 			};
-			if let Err(e) = write_frame(&mut s, request, payload) {
+			if let Err(e) = s.set_timeouts(None, Some(self.timeout)).and_then(|()| write_frame(&mut s, request, payload)) {
 				self.lost();
 				self.drop_idle();
 				if attempt == 1 {
@@ -221,11 +229,16 @@ impl Link {
 			}
 			return match read_answer(&mut s, answer) {
 				Ok(data) => {
-					self.give(s);
+					if let Some(s) = self.after_change(s) {
+						self.give(s);
+					}
 					Ok(data)
 				}
 				Err(f @ Fail::Remote(_)) => {
-					self.answered(s, &f);
+					match self.after_change(s) {
+						Some(s) => self.answered(s, &f),
+						None => self.note(&f),
+					}
 					Err(f)
 				}
 				Err(Fail::Link(e)) => {
@@ -234,6 +247,16 @@ impl Link {
 				}
 			};
 		}
+	}
+
+	/// A connection a change used, with a request's read timeout again; ended when it will not take it.
+	fn after_change(&self, s: Stream) -> Option<Stream> {
+		if s.set_timeouts(Some(self.timeout), Some(self.timeout)).is_ok() {
+			return Some(s);
+		}
+		s.shutdown();
+		self.lost();
+		None
 	}
 
 	/// Every idle pooled connection, ended: one the node closed means its service went, and took the others with it.
@@ -338,8 +361,8 @@ impl Link {
 	/// and the connection with it. When the link breaks after the request went out, the boundary may have run, and its
 	/// report is lost: a second one would publish only what is still pending, and leave the first one's conflicts out.
 	pub fn publish(&self) -> Result<Report, Fail> {
-		let (mut s, _) = self.hello(Role::Io, REQUEST_TIMEOUT).inspect_err(|f| self.note(f))?;
-		let answer = s.set_timeouts(None, Some(REQUEST_TIMEOUT)).map_err(Fail::Link).and_then(|()| {
+		let (mut s, _) = self.hello(Role::Io, self.timeout).inspect_err(|f| self.note(f))?;
+		let answer = s.set_timeouts(None, Some(self.timeout)).map_err(Fail::Link).and_then(|()| {
 			write_frame(&mut s, kind::PUBLISH, b"{}").map_err(Fail::Link)?;
 			read_answer(&mut s, kind::REPORT).map_err(|f| match f {
 				Fail::Link(e) => Fail::Link(io::Error::new(
@@ -383,7 +406,7 @@ impl Link {
 					*open += 1;
 					drop(open);
 					drop(free);
-					return self.hello(Role::Io, REQUEST_TIMEOUT).map(|(s, _)| s).inspect_err(|f| {
+					return self.hello(Role::Io, self.timeout).map(|(s, _)| s).inspect_err(|f| {
 						self.lost();
 						self.note(f);
 					});
@@ -823,6 +846,50 @@ mod tests {
 		assert_eq!(got.lock().unwrap().iter().filter(|(k, _)| *k == kind::MKDIR).count(), 1);
 		// The pool goes on with a new connection.
 		link.mkdir("next").unwrap();
+		std::fs::remove_dir_all(dir).unwrap();
+	}
+
+	/// A node stand-in that answers every request after `delay`: a list with an empty listing, anything else with `{}`.
+	fn slow_node(dir: &std::path::Path, delay: Duration) -> String {
+		let path = dir.join("node.sock");
+		let listener = UnixListener::bind(&path).unwrap();
+		std::thread::spawn(move || {
+			for conn in listener.incoming() {
+				let mut s = conn.unwrap();
+				std::thread::spawn(move || {
+					let (_, body) = read_frame(&mut s).unwrap();
+					let hello: Hello = serde_json::from_slice(&body).unwrap();
+					let ok = HelloOk { protocol: 2, view_id: hello.view_id, as_of_seq: 1, read_only: false };
+					write_frame(&mut s, kind::HELLO_OK, &serde_json::to_vec(&ok).unwrap()).unwrap();
+					while let Ok((k, _)) = read_frame(&mut s) {
+						std::thread::sleep(delay);
+						let (k, body) = if k == kind::LIST {
+							(kind::LISTING, serde_json::to_vec(&Listing { entries: Vec::new(), next: None }).unwrap())
+						} else {
+							(kind::DONE, b"{}".to_vec())
+						};
+						if write_frame(&mut s, k, &body).is_err() {
+							return;
+						}
+					}
+				});
+			}
+		});
+		format!("unix:{}", path.display())
+	}
+
+	#[test]
+	fn a_change_waits_for_its_answer_as_long_as_the_node_takes() {
+		let dir = tempdir();
+		let mut link = Link::new(slow_node(&dir, Duration::from_millis(600)), view("right"), 2);
+		link.timeout = Duration::from_millis(200);
+		// A list gives up on a node that does not answer in time.
+		assert!(matches!(link.list(""), Err(Fail::Link(_))));
+		// A change does not: the node may be waiting for a boundary, and it would still make a change given up on.
+		link.mkdir("slow").unwrap();
+		// Its connection goes back to the pool with the request timeout again.
+		assert_eq!(link.free.lock().unwrap().len(), 1);
+		assert!(matches!(link.list(""), Err(Fail::Link(_))));
 		std::fs::remove_dir_all(dir).unwrap();
 	}
 

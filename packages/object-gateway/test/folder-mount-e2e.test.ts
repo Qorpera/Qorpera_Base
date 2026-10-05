@@ -3,7 +3,19 @@
  * names the machine's CID. Needs the built program, root and /dev/fuse, so it runs only when
  * QORPERA_FOLDER_MOUNT_BIN names the program (the run-on-node step "folder-program" does, in a container). */
 import { type ChildProcess, spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+	appendFile,
+	chmod,
+	mkdir,
+	mkdtemp,
+	open,
+	readdir,
+	readFile,
+	rename,
+	rm,
+	stat,
+	writeFile,
+} from "node:fs/promises";
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -312,6 +324,17 @@ describe.skipIf(!program)("folder program against the folder service", () => {
 		expect(published.text).toMatch(/saved\s+archive\/q1\.md/);
 		expect(core.entries.has("reports/q1.md")).toBe(false);
 		expect(core.entries.get("archive/q1.md")?.fileSha256).toBe(hashOf("q1 mine"));
+
+		// A file this mount saved, then renamed, then saved again: the version map takes its save's version to the new
+		// name, and the save there is based on what the move published.
+		await writeFile(join(company, "docs/new.md"), "hello again");
+		await rename(join(company, "docs/new.md"), join(company, "docs/renamed.md"));
+		await appendFile(join(company, "docs/renamed.md"), " and more");
+		published = await publish();
+		expect(published, published.text + output).toMatchObject({ code: 0 });
+		expect(published.text).toMatch(/saved\s+docs\/renamed\.md/);
+		expect(core.entries.has("docs/new.md")).toBe(false);
+		expect(core.entries.get("docs/renamed.md")?.fileSha256).toBe(hashOf("hello again and more"));
 
 		// Two editors read their files (the version map takes version one of each); then the node's service restarts,
 		// and another machine saves both meanwhile.

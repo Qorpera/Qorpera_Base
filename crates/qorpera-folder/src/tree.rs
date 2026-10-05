@@ -133,6 +133,12 @@ impl Tree {
 		self.nodes.get(&ino).and_then(|n| n.attr.clone())
 	}
 
+	/// The attributes the inode was last seen with, known to be current or not: a file's inode stands for one version
+	/// of it, so its version is the one it had then.
+	pub fn last_seen(&self, ino: u64) -> Option<Attr> {
+		self.nodes.get(&ino).map(|n| n.seen.clone())
+	}
+
 	#[cfg(test)]
 	fn knows(&self, ino: u64) -> bool {
 		self.nodes.contains_key(&ino)
