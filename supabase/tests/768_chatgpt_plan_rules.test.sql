@@ -62,7 +62,7 @@ set role authenticated;
 select pg_temp.plan764_expect(pg_temp.plan764_try(format(
 	'select public.qorpera_set_chatgpt_plan_work_while_away(%L,%L,true)::text',
 	'16000000-0000-4000-8000-000000000010', pg_temp.r768('plan'))), 'ok', 'the member turns on work while away');
--- A run on the plan, as the member's conversation on it pays for (20260930064000: an agent's routine is prepared only
+-- A run on the plan, as the member's conversation on it pays for (20260930095000: an agent's routine is prepared only
 -- on the login its run pays with; the fixture's run, paid by the capsule login that is gone, prepares nothing).
 select set_config('qorpera_test.r768_plan_chat', public.qorpera_create_member_execution_sponsor(
 	'16000000-0000-4000-8000-000000000010', '76800000-0000-4000-8000-000000000009', pg_temp.r768('plan'),

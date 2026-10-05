@@ -8,5 +8,8 @@ StartLimitIntervalSec=0
 Type=oneshot
 User=root
 Group=root
+# Beside the commands' slice under qorpera.slice, whose processor time the idle rule counts as the machine's own,
+# never as work outside its commands.
+Slice=qorpera-control.slice
 ExecStart=/usr/bin/node /opt/qorpera-machine/cloud-machine-guest.mjs watchdog
 TimeoutStartSec=15

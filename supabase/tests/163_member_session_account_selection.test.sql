@@ -9,6 +9,13 @@ insert into public.qorpera_profile_members(profile_id,user_id,email,display_name
 ('16300000-0000-4000-8000-000000000010','16300000-0000-4000-8000-000000000002','selection-other@example.test','Other','contributor');
 insert into public.qorpera_company_environments(id,profile_id,name,contract_version,created_by_user_id) values
 ('16300000-0000-4000-8000-000000000020','16300000-0000-4000-8000-000000000010','Selection',1,'16300000-0000-4000-8000-000000000001');
+-- A folder-v2 company (the company folder core).
+select set_config('request.jwt.claims','{"role":"service_role"}',true) \g /dev/null
+select public.qorpera_folder_enable('16300000-0000-4000-8000-000000000020') \g /dev/null
+do $$ begin
+    if not public.qorpera_company_is_folder_v2('16300000-0000-4000-8000-000000000010') then
+        raise exception 'the selection company is not a folder-v2 company'; end if;
+end $$;
 insert into public.qorpera_shared_sessions(id,client_session_id,profile_id,environment_id,title,created_by_user_id,audience_kind,audience_user_id) values
 ('16300000-0000-4000-8000-000000000030','16300000-0000-4000-8000-000000000031','16300000-0000-4000-8000-000000000010','16300000-0000-4000-8000-000000000020','First','16300000-0000-4000-8000-000000000001','member_private','16300000-0000-4000-8000-000000000001'),
 ('16300000-0000-4000-8000-000000000032','16300000-0000-4000-8000-000000000033','16300000-0000-4000-8000-000000000010','16300000-0000-4000-8000-000000000020','Second','16300000-0000-4000-8000-000000000001','company',null),

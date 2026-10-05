@@ -212,7 +212,10 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
   - A quote is one piece: the viewer keeps it or removes it. Words they type around it are their own.
   - A value is cut to 2,000 characters before it is filled in. A button whose text names more than 16 outside
     values is refused (`outside_value`).
-  - Until that amendment is built (step I5d, §10), a message button fills in no value from outside content.
+  - Built (step I5d, §10): the input checks and drafts (I5d-1, I5d-2), the fence and the review (I5d-3), the cloud
+    client's `outside_value` check (I5d-4a) and the web composer (I5d-4). In the web, a message button fills each
+    outside value in as a quote with its mail thread as the record. A row without its thread id gets no button, so a
+    value never goes as the viewer's own words.
 - **Confirmations.** The client draws every confirmation itself, never from the file. Money, sending and other
   outside effects keep their own review.
 - **Built-in verbs.** A block that lists a built-in verb (`answer`, `take`, `offer`, `release`) shows that button, so
@@ -685,3 +688,12 @@ Each step is one PR, handed to the coordinator with an exact-head review and a n
 | I11 | the Mailbox reads mail from the folder | Q1, with Interfaces | M2c |
 
 The library with update offers, the table store and the marketplace come later.
+
+**Built: I7** (web; `packages/web/src/app/interface-folder.ts`, `app/interfaces.ts`). The client reads every
+`interfaces/<name>/interface.toml`, `interfaces/order.md`, and the tables and `file:` sources its drawn blocks name,
+with the member's own reads, and parses each text itself. The tab follows the order file, then the interfaces it
+doesn't list by name (§8). A broken page shows its problems and no button; with zero or two mains none is on top, and
+owners and admins see a quiet line about it. The folder's feed keeps it live: only changed paths are read again, and
+`resync` reads everything. A `file:` source whose text is outside content (§4) stays undrawn until blocks can show the
+outside-content mark. A company whose folder has no `interfaces/order.md`, or whose first read fails, keeps the
+library's definitions.

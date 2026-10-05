@@ -1,5 +1,5 @@
 -- @fixture 708_folder_state_routines.test.sql until "-- 2. A member's routine: its row, its version and its position"
--- A routine's payer never changes without permission (20260930064000, founder decision 2026-10-04). A routine keeps a
+-- A routine's payer never changes without permission (20260930095000, founder decision 2026-10-04). A routine keeps a
 -- payer that serves its saver, also when that payer cannot pay: it waits as needs_model_account. A member picks
 -- another of their own logins, or an owner or admin a company account, with qorpera_set_routine_login; another
 -- member's own save is their own first choice. A changed payer is recorded, and the member whose login paid before is

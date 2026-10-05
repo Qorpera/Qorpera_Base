@@ -11,6 +11,7 @@ import type {
 	CompanyComputerGuestEffectInput,
 } from "./cloud-company-computer-endpoint.ts";
 import { type CloudNativeToolRun, cloudToolRequest } from "./cloud-native-tool-authority.ts";
+import { CloudToolAuthorizeRefusal } from "./cloud-native-tool-boundary.ts";
 import { cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations.ts";
 
 export interface CompanyComputerEffectRegistry {
@@ -91,6 +92,17 @@ export class CloudCompanyComputerEffectControl implements CompanyComputerGuestEf
 		if (!result || typeof result !== "object" || Array.isArray(result))
 			throw new Error("INVALID_OFFICE_EFFECT_RESPONSE");
 		const response = result as Record<string, unknown>;
+		// A refusal worded for the model (C1c-3l part 3: no screenshot on folder-v2 yet). Only an authorize answers one,
+		// before any receipt; the operation executor relays it to the model as the tool's answer.
+		if (
+			action === "authorize" &&
+			Object.keys(response).sort().join() === "message,state" &&
+			response.state === "refused" &&
+			typeof response.message === "string" &&
+			/^[ -~]{1,512}$/.test(response.message)
+		) {
+			throw new CloudToolAuthorizeRefusal(response.message);
+		}
 		if (action === "authorize" || action === "finish") {
 			if (
 				Object.keys(response).join() !== "state" ||

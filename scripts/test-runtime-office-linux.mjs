@@ -10,7 +10,12 @@ import { createOfficeCombinedControl } from "./test-runtime-office-combined-cont
 // Explicit local Linux proof. No provider APIs, production paths or host home
 // mounts. Set QORPERA_OFFICE_TEST_IMAGE to an already prepared test image.
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+// Mounted read-only at /opt/probe, where the container's root (no capabilities)
+// and its uid 1000 read it: on a real Linux host (not Docker Desktop) the
+// runner's umask and mkdtemp's 0700 would lock them out.
+process.umask(0o022);
 const root = await mkdtemp(join(tmpdir(), "qorpera-office-linux-"));
+await chmod(root, 0o755);
 const rebuild = process.argv.slice(2).includes("--combined-rebuild");
 const combined = rebuild || process.argv.slice(2).includes("--combined");
 const guest = combined || process.argv.slice(2).includes("--guest");
@@ -18,8 +23,11 @@ const boundary = process.argv.slice(2).includes("--boundary");
 const privateSurface = guest || boundary || process.argv.slice(2).includes("--private");
 const browser = privateSurface || process.argv.slice(2).includes("--browser");
 const desktop = browser || process.argv.slice(2).includes("--desktop");
-if (process.argv.slice(2).some((arg) => !["--desktop", "--browser", "--private", "--guest", "--boundary", "--combined", "--combined-rebuild"].includes(arg))) throw new Error("Unsupported Linux proof mode");
-const image = process.env.QORPERA_OFFICE_TEST_IMAGE || `qorpera-office-linux-test:step4-${browser ? "browser" : desktop ? "desktop" : "commands"}`;
+// The long-running shell alone: its namespace, relay and namespace entry file.
+const shell = process.argv.slice(2).includes("--shell");
+if (process.argv.slice(2).some((arg) => !["--desktop", "--browser", "--private", "--guest", "--boundary", "--combined", "--combined-rebuild", "--shell"].includes(arg))) throw new Error("Unsupported Linux proof mode");
+if (shell && process.argv.length !== 3) throw new Error("The shell proof runs alone");
+const image = process.env.QORPERA_OFFICE_TEST_IMAGE || `qorpera-office-linux-test:step4-${browser ? "browser" : desktop ? "desktop" : shell ? "shell" : "commands"}`;
 if (!/^[a-zA-Z0-9_./:@-]+$/.test(image)) throw new Error("Invalid local test image reference");
 let runningImage = image;
 let combinedControl;
@@ -57,7 +65,7 @@ async function run(args, rpc = false) {
 }
 try {
 	if (!process.env.QORPERA_OFFICE_TEST_IMAGE) {
-		await writeFile(join(root, "Dockerfile"), `FROM ${base}\nRUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs bubblewrap tini xvfb xdotool scrot x11-xserver-utils xauth${desktop ? " tigervnc-standalone-server xfce4-session xfwm4 xfdesktop4 xfconf xfce4-panel xfce4-terminal thunar dbus-x11 x11-utils procps" : ""}${browser ? " curl ca-certificates unzip libnss3 libasound2t64 libgbm1 libcups2t64" : ""} && rm -rf /var/lib/apt/lists/*\n${browser ? `RUN case "$(dpkg --print-architecture)" in arm64) browser_url=https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1234/chromium-linux-arm64.zip; browser_dir=chrome-linux;; amd64) browser_url=https://cdn.playwright.dev/builds/cft/151.0.7922.34/linux64/chrome-linux64.zip; browser_dir=chrome-linux64;; *) exit 1;; esac && curl --fail --location --retry 2 "$browser_url" -o /tmp/chromium.zip && unzip -q /tmp/chromium.zip -d /usr/lib && mv "/usr/lib/$browser_dir" /usr/lib/qorpera-chromium && rm /tmp/chromium.zip\n` : ""}`);
+		await writeFile(join(root, "Dockerfile"), `FROM ${base}\nRUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs bubblewrap tini xvfb xdotool scrot x11-xserver-utils xauth${shell || desktop ? " curl ca-certificates" : ""}${shell ? " iproute2 nftables iputils-ping" : ""}${desktop ? " tigervnc-standalone-server xfce4-session xfwm4 xfdesktop4 xfconf xfce4-panel xfce4-terminal thunar dbus-x11 x11-utils procps" : ""}${browser ? " unzip libnss3 libasound2t64 libgbm1 libcups2t64" : ""} && rm -rf /var/lib/apt/lists/*\n${browser ? `RUN case "$(dpkg --print-architecture)" in arm64) browser_url=https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1234/chromium-linux-arm64.zip; browser_dir=chrome-linux;; amd64) browser_url=https://cdn.playwright.dev/builds/cft/151.0.7922.34/linux64/chrome-linux64.zip; browser_dir=chrome-linux64;; *) exit 1;; esac && curl --fail --location --retry 2 "$browser_url" -o /tmp/chromium.zip && unzip -q /tmp/chromium.zip -d /usr/lib && mv "/usr/lib/$browser_dir" /usr/lib/qorpera-chromium && rm /tmp/chromium.zip\n` : ""}`);
 		await run(["build", "--tag", image, root]);
 	}
 	if (desktop) {
@@ -66,27 +74,107 @@ try {
 		for (const name of ["qorpera-screen-session", "qorpera-screen-xfce", "qorpera-screen-browser"])
 			await copyFile(join(repository, "deploy/lxd-company-computer-guest", name), join(root, name));
 		await copyFile(join(repository, "deploy/lxd-company-computer-guest/backdrops/qorpera-screen-pebble.png"), join(root, "wallpaper.png"));
-		if (guest) {
+		// The wallpaper follows the agent's avatar, so every creature must be there.
+		{
 			await mkdir(join(root, "wallpapers"));
 			for (const name of await readdir(join(repository, "deploy/lxd-company-computer-guest/backdrops"))) {
 				if (!/^qorpera-screen-[a-z]+(?:-(?:[01][0-9]|2[0-3]))?\.png$/.test(name)) throw new Error("Invalid fixture creature artifact");
 				await copyFile(join(repository, "deploy/lxd-company-computer-guest/backdrops", name), join(root, "wallpapers", name));
 			}
 		}
-		if (browser) {
-			await copyFile(join(repository, "deploy/lxd-company-computer-guest/qorpera-browser-policy.json"), join(root, "browser-policy.json"));
-			await build({ absWorkingDir: repository, entryPoints: ["packages/runtime/src/cloud-company-computer-browser-child.ts"],
-				outfile: join(root, "office-browser-child.mjs"), platform: "node", format: "esm", target: "node22.19", bundle: true });
+		if (browser) await copyFile(join(repository, "deploy/lxd-company-computer-guest/qorpera-browser-policy.json"), join(root, "browser-policy.json"));
+		// Every desktop runs the namespace entry file for its Terminal's proxy.
+		await build({ absWorkingDir: repository, entryPoints: ["packages/runtime/src/cloud-company-computer-browser-child.ts"],
+			outfile: join(root, "office-browser-child.mjs"), platform: "node", format: "esm", target: "node22.19", bundle: true });
+		// A certificate authority the image trusts, as the public ones are, and a certificate it signed for 127.0.0.1:
+		// the desktop's Terminal checks HTTPS against the image's CA store.
+		await writeFile(join(root, "tls-proof.ext"), "subjectAltName=IP:127.0.0.1\n");
+		for (const args of [
+			["req","-x509","-newkey","rsa:2048","-nodes","-keyout",join(root,"proof-ca-key.pem"),"-out",join(root,"proof-ca.crt"),"-days","1","-subj","/CN=Qorpera proof CA"],
+			["req","-newkey","rsa:2048","-nodes","-keyout",join(root,"tls-proof-key.pem"),"-out",join(root,"tls-proof.csr"),"-subj","/CN=127.0.0.1"],
+			["x509","-req","-in",join(root,"tls-proof.csr"),"-CA",join(root,"proof-ca.crt"),"-CAkey",join(root,"proof-ca-key.pem"),"-CAcreateserial",
+				"-out",join(root,"tls-proof-cert.pem"),"-days","1","-extfile",join(root,"tls-proof.ext")],
+		]) {
+			const made = spawnSync("openssl", args, { encoding: "utf8", timeout: 15000 });
+			if (made.status !== 0) throw new Error(made.stderr);
 		}
-		await writeFile(join(root, "Dockerfile"), `FROM ${image}\nCOPY --chmod=0555 qorpera-screen-session qorpera-screen-xfce qorpera-screen-browser /usr/local/bin/\nCOPY wallpaper.png /usr/share/backgrounds/qorpera-screen-pebble.png\n${guest ? "COPY --chmod=0444 wallpapers/ /usr/share/backgrounds/\n" : ""}${browser ? "RUN mkdir -p /usr/local/share/qorpera /usr/local/lib/qorpera && chmod 0755 /usr/local/share/qorpera /usr/local/lib/qorpera && install -m 0555 /usr/bin/bwrap /usr/local/lib/qorpera/qorpera-browser-bwrap\nCOPY --chmod=0444 browser-policy.json /usr/local/share/qorpera/browser-policy.json\nCOPY --chmod=0555 office-browser-child.mjs /usr/local/lib/qorpera/office-browser-child.mjs\n" : ""}`);
+		await chmod(join(root, "tls-proof-key.pem"), 0o644);
+		await writeFile(join(root, "Dockerfile"), `FROM ${image}\nCOPY proof-ca.crt /usr/local/share/ca-certificates/qorpera-proof-ca.crt\nRUN update-ca-certificates\nCOPY --chmod=0555 qorpera-screen-session qorpera-screen-xfce qorpera-screen-browser /usr/local/bin/\nCOPY wallpaper.png /usr/share/backgrounds/qorpera-screen-pebble.png\nCOPY --chmod=0444 wallpapers/ /usr/share/backgrounds/\nRUN mkdir -p /usr/local/share/qorpera /usr/local/lib/qorpera && chmod 0755 /usr/local/share/qorpera /usr/local/lib/qorpera\nCOPY --chmod=0555 office-browser-child.mjs /usr/local/lib/qorpera/office-browser-child.mjs\n${browser ? "RUN install -m 0555 /usr/bin/bwrap /usr/local/lib/qorpera/qorpera-browser-bwrap\nCOPY --chmod=0444 browser-policy.json /usr/local/share/qorpera/browser-policy.json\n" : ""}`);
 		runningImage = `qorpera-office-desktop-probe:${randomUUID()}`;
+		await run(["build", "--tag", runningImage, root]);
+	}
+	if (shell) {
+		await build({ absWorkingDir: repository, entryPoints: ["packages/runtime/src/cloud-company-computer-browser-child.ts"],
+			outfile: join(root, "office-browser-child.mjs"), platform: "node", format: "esm", target: "node22.19", bundle: true });
+		// The image's network pieces exactly as packaged: the firewall and the root plumber.
+		await copyFile(join(repository, "deploy/lxd-company-computer-guest/qorpera-computer-network.nft"), join(root, "computer-network.nft"));
+		await copyFile(join(repository, "deploy/lxd-company-computer-guest/qorpera-computer-plumb"), join(root, "qorpera-computer-plumb"));
+		await writeFile(join(root, "Dockerfile"), `FROM ${image}\nRUN mkdir -p /usr/local/lib/qorpera /usr/local/share/qorpera && chmod 0755 /usr/local/lib/qorpera /usr/local/share/qorpera\nCOPY --chmod=0444 office-browser-child.mjs /usr/local/lib/qorpera/office-browser-child.mjs\nCOPY --chmod=0500 qorpera-computer-plumb /usr/local/lib/qorpera/qorpera-computer-plumb\nCOPY --chmod=0444 computer-network.nft /usr/local/share/qorpera/computer-network.nft\n`);
+		// Stand-ins, as root in the container: systemd's socket activation of the
+		// plumber (one script per connection), and hosts behind the machine.
+		await writeFile(join(root, "plumb-socket.mjs"), `import { execFileSync, spawn } from "node:child_process";
+import { chownSync, mkdirSync } from "node:fs";
+import { createServer } from "node:net";
+mkdirSync("/run/qorpera-computer-network", { recursive: true, mode: 0o755 });
+const plumber = "/usr/local/lib/qorpera/qorpera-computer-plumb";
+// Test only: the probe changes the machine's firewall as an accident (flush)
+// or stopping qorpera-computer-network.service (down) would.
+const controls = {
+	"test-firewall flush": ["nft", ["delete", "table", "inet", "qorpera_computers"]],
+	"test-firewall down": [plumber, ["--down"]],
+	"test-firewall up": [plumber, ["--up"]],
+};
+// Like systemd's accepted socket: a client that has finished sending still gets its answer.
+const server = createServer({ allowHalfOpen: true }, (socket) => {
+	let first = "";
+	socket.setEncoding("utf8");
+	const request = (text) => {
+		first += text;
+		if (!first.includes("\\n")) return;
+		socket.off("data", request);
+		const control = controls[first.slice(0, first.indexOf("\\n"))];
+		if (control) {
+			execFileSync(control[0], control[1], { stdio: ["ignore", "ignore", "inherit"] });
+			socket.end("done\\n");
+			return;
+		}
+		const plumb = spawn(plumber, [], { env: { QORPERA_OFFICE_USER: process.argv[2] }, stdio: ["pipe", "pipe", "inherit"] });
+		plumb.stdin.write(first);
+		socket.pipe(plumb.stdin);
+		plumb.stdout.pipe(socket);
+		socket.on("error", () => plumb.kill());
+	};
+	socket.on("data", request);
+});
+server.listen("/run/qorpera-computer-network/plumb.sock", () => {
+	chownSync("/run/qorpera-computer-network/plumb.sock", 1000, 1000);
+	console.log("plumber listening");
+});
+`);
+		await writeFile(join(root, "stand-in.mjs"), `import { createSocket } from "node:dgram";
+import { createServer as createHttp } from "node:http";
+import { createServer } from "node:net";
+const name = process.argv[2];
+// High ports: the container keeps no right to bind low ones.
+createHttp((request, response) => response.end(name + ":" + request.url)).listen(8080, "0.0.0.0");
+createServer((socket) => {
+	// A client may hang up as soon as it has read enough.
+	socket.on("error", () => undefined);
+	socket.end("SSH-2.0-" + name + "\\r\\n");
+}).listen(2222, "0.0.0.0");
+const udp = createSocket("udp4");
+udp.on("message", (message, from) => udp.send(Buffer.concat([Buffer.from(name + ":"), message]), from.port, from.address));
+// Answers from the host's own address, as a real server does, so the reply matches.
+udp.bind(5353, process.argv[3]);
+`);
+		runningImage = `qorpera-office-shell-probe:${randomUUID()}`;
 		await run(["build", "--tag", runningImage, root]);
 	}
 	if (browser) {
 		await mkdir(join(root, "node_modules"));
 		await cp(join(repository, "node_modules/playwright-core"), join(root, "node_modules/playwright-core"), { recursive: true });
 	}
-	await build({ absWorkingDir: repository, entryPoints: [combined ? "packages/runtime/test/fixtures/company-computer-linux-combined-probe.mjs" : `packages/runtime/test/fixtures/company-computer-linux-${boundary ? "boundary-" : guest ? "guest-" : privateSurface ? "private-" : browser ? "browser-" : desktop ? "desktop-" : ""}probe.ts`],
+	await build({ absWorkingDir: repository, entryPoints: [combined ? "packages/runtime/test/fixtures/company-computer-linux-combined-probe.mjs" : `packages/runtime/test/fixtures/company-computer-linux-${boundary ? "boundary-" : guest ? "guest-" : privateSurface ? "private-" : browser ? "browser-" : desktop ? "desktop-" : shell ? "shell-" : ""}probe.ts`],
 		outfile: join(root, "probe.mjs"), platform: "node", format: "esm", target: "node22.19", bundle: true, external: browser ? ["playwright-core"] : [],
 		...(combined ? {banner:{js:'import {createRequire} from "node:module"; const require=createRequire(import.meta.url);'},
 			plugins:[{name:"disposable-browser-content",setup(builder) {
@@ -130,16 +218,42 @@ dpkg-query -W nodejs bubblewrap tini xvfb xdotool scrot
 ${desktop ? "dpkg-query -W tigervnc-standalone-server xfce4-session xfwm4 xfdesktop4" : ""}
 ${browser ? "/usr/lib/qorpera-chromium/chrome --version" : ""}
 ${boundary ? "node /opt/probe/probe.mjs --prepare" : ""}
-exec setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all node /opt/probe/probe.mjs
+${shell ? `# The machine: the computers' firewall, a public and a private host behind it, the plumber.
+/usr/local/lib/qorpera/qorpera-computer-plumb --up
+ip link set lo up
+for side in pub:1:93.184.216.34 priv:5:10.9.9.9; do
+	netns=\${side%%:*}; rest=\${side#*:}; low=\${rest%%:*}; address=\${rest#*:}
+	ip netns add "\$netns"
+	ip link add "\${netns}net" type veth peer name eth0 netns "\$netns"
+	ip addr add "192.0.2.\$low/30" dev "\${netns}net"
+	ip link set "\${netns}net" up
+	ip -n "\$netns" link set lo up
+	ip -n "\$netns" addr add "192.0.2.\$((low + 1))/30" dev eth0
+	ip -n "\$netns" link set eth0 up
+	ip -n "\$netns" addr add "\$address/32" dev lo
+	ip -n "\$netns" route add default via "192.0.2.\$low"
+	ip route add "\$address/32" via "192.0.2.\$((low + 1))"
+done
+ip -n priv addr add 169.254.169.254/32 dev lo
+ip route add 169.254.169.254/32 via 192.0.2.6
+ip netns exec pub node /opt/probe/stand-in.mjs public 93.184.216.34 &
+ip netns exec priv node /opt/probe/stand-in.mjs private 10.9.9.9 &
+node /opt/probe/plumb-socket.mjs "$(getent passwd 1000 | cut -d: -f1)" &
+sleep 1
+` : ""}exec setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all node /opt/probe/probe.mjs
 `);
-	// Docker's default seccomp and proc masks block nested user/PID namespaces.
+	// Docker's default seccomp, AppArmor profile (on hosts with AppArmor, such as
+	// the node 2 test machine) and proc masks block nested user/PID namespaces.
 	// The outer container permits that setup; the real bwrap boundary then runs
 	// as uid 1000 with no capabilities, no network, and finite cgroup ceilings.
-	const guestArgs = ["run", ...(combined ? ["-i"] : []), "--rm", "--name", container, "--network", "none", "--read-only", "--memory", browser ? "2g" : desktop ? "1g" : "512m", "--memory-swap", browser ? "2g" : desktop ? "1g" : "512m",
-		"--pids-limit", browser ? "512" : desktop ? "256" : "128", "--cpus", desktop ? "2" : "1", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "SETUID", "--cap-add", "SETGID", "--cap-add", "SETPCAP",
+	const guestArgs = ["run", ...(combined ? ["-i"] : []), "--rm", "--name", container, "--network", "none", "--read-only", "--memory", browser ? "2g" : desktop ? "1g" : shell ? "640m" : "512m", "--memory-swap", browser ? "2g" : desktop ? "1g" : shell ? "640m" : "512m",
+		"--pids-limit", browser ? "512" : desktop || shell ? "256" : "128", "--cpus", desktop ? "2" : "1", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "SETUID", "--cap-add", "SETGID", "--cap-add", "SETPCAP",
+		// The shell proof's root plumber and machine firewall; the probe itself drops them.
+		...(shell ? ["--cap-add", "NET_ADMIN", "--cap-add", "SYS_ADMIN", "--cap-add", "SYS_PTRACE",
+			"--tmpfs", "/run/netns:rw,nosuid,nodev,size=1m,mode=755", "--tmpfs", "/run/qorpera-computer-network:rw,nosuid,nodev,size=1m,mode=755"] : []),
 		// Root attester reads uid-1000 private mounts; setpriv drops this before the broker probe.
 		...(boundary ? ["--cap-add", "DAC_READ_SEARCH"] : []),
-		"--security-opt", "no-new-privileges", "--security-opt", "seccomp=unconfined", "--security-opt", "systempaths=unconfined",
+		"--security-opt", "no-new-privileges", "--security-opt", "seccomp=unconfined", "--security-opt", "apparmor=unconfined", "--security-opt", "systempaths=unconfined",
 		"--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=128m,mode=1777",
 		...(boundary ? ["--mount", `type=volume,source=${boundaryVolume},target=/srv`] : ["--tmpfs", "/srv:rw,nosuid,nodev,size=128m,mode=755"]),
 		"--tmpfs", "/run/office-captures:rw,nosuid,nodev,noexec,size=32m,uid=1000,gid=1000,mode=700",

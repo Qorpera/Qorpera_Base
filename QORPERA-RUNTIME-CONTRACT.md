@@ -2133,7 +2133,7 @@ follows a run:
 This supersedes the follow-up order of the 2026-09-28 amendment above (the
 requester's login with room left first, then a company account).
 
-Routines follow the same rule (migration 20260930064000):
+Routines follow the same rule (migration 20260930095000):
 
 - A routine keeps a payer that serves its saver (their own login, or a company
   account), also when that payer cannot pay right now; the routine then waits
@@ -3061,13 +3061,27 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    when members started the run, their latest earlier messages in the
    conversation), and the rules that apply (all company rules and the
    personal rules of the member the run works for), never the agent's own
-   words or any tool result, and answers allow, ask or deny. A review that cannot
-   run is never an approval: the call does not run.
+   words (apart from the one message below) or any tool result, and answers
+   allow, ask or deny. A review that cannot run is never an approval: the call
+   does not run.
    Amended 2026-10-02 (not built yet): a quote of outside content inside a
    member's message is not what the member asked for, and the reviewer never
    reads the quoted words. See the [quote provenance
    amendment](#2026-10-02-amendment-quoted-outside-content-in-a-members-message),
    item 5.
+   Amended 2026-10-04 (the coordinator's decision, after live run 22b287a3
+   denied a hire the founder had agreed to with "Agreed, hire both."):
+   - When members started the run, the reviewer also reads what the member was
+     answering, bounded and marked as the agent's words:
+     - for a card answer, the card the agent asked (found by its interaction
+       id), or nothing;
+     - for a message, the agent's latest message or card before it.
+   - An approval card is the platform's, never the agent's, and is not read.
+   - What the member answered is context for what the reply refers to. It is
+     never a request or an approval.
+   - Delegation to the company's own agents is denied only when the member said
+     no, or when it goes against what they said. When the reviewer cannot tell
+     whether the member agreed, it asks with a card.
 4. **Layering.** Built-in checks (money, legal terms, deleting outside data,
    access changes: ask; an action that plainly does not serve the request:
    deny), then company rules, then personal rules. Ask first wins; an Allow
@@ -4072,12 +4086,15 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    applies only to its signing secret: a member captures it. Owners, admins
    and agents create and remove hooks; an agent's new hook passes the
    automatic review as a new connection. For `folder-v2` companies a hook is
-   described by its connection file, `connections/hook-<name>.md` (5.6), which
-   the platform writes in the same step as the hook; the prefix keeps hook
-   names apart from account connections. The database keeps the address, the
-   limits and the delivery receipts as runtime state. Until the core's writer
-   lands, hooks exist only for `snapshot-v1` companies, whose connections are
-   rows.
+   described by its connection file, `connections/hook-<name>.md` (5.6), and
+   a mailbox by `connections/mailbox-<name>.md`; the platform's writer brings
+   the file in line with the hook within seconds of each change, as it does an
+   account's (amended 4 October 2026, E1: core §3, "the vault never calls the
+   commit"). The prefixes keep hooks' and mailboxes' files apart from account
+   connections. The file never shows the hook's address or a signing secret.
+   The database keeps the address, the limits and the delivery receipts as
+   runtime state, and every tool that acts on a hook reads the hook, never
+   its file.
 3. **Only verified deliveries wake, and the intake is bounded.** A delivery is
    a duplicate when a verified delivery of the same hook carries the same
    sender id; without a sender id, when the same body arrived within 10
@@ -4549,6 +4566,8 @@ It amends these texts. Where older text conflicts with this amendment, this amen
    - The spans are in order and don't overlap. Each is 1 to 2,000 characters.
    - Each span sits inside a pair of marks: the character before `start` is «, and the character at `end` is ».
      The span covers the words inside the marks.
+   - The words hold neither « nor » (amended 5 October 2026): a quote is always «words», with no marks inside, so
+     quotes never nest or cross, and a quote's words can't hide inside another's.
    - `source` says where the words came from, from a closed list. Today that list is only `mail`.
    - `ref` names the record. For `mail` it is the thread's id. It must be a thread that `qorpera_member_mail_thread`
      shows this member, in the conversation's company and environment, with mail switched on.
@@ -4669,12 +4688,18 @@ amendment governs. In-place edits are marked "(changed in place)".
        idle rule keeps that machine awake.
      - A coding turn is a run.
    - **A program** counts while it is busy: while it uses more than about 5%
-     of one processor core.
-     - That is measured for each command, coding session or computer's shell.
-     - On an agent's machine, programs outside its commands, such as
-       containers, count by the processor share of the whole machine beyond
-       its commands' own use (about 2% of the machine). That share belongs to
-       the agent that started the machine.
+     of one processor core, or moves data, at least 512 KiB read or written
+     in a 30-second sample, about 17 KB a second (decided 4 October 2026, the
+     coordinator: a slow download is working; a waiting server, a prompt or
+     a loaded page moves about nothing).
+     - That is measured for each coding session or computer's shell, and for
+       an agent's machine as a whole (changed in place 4 October 2026, the
+       coordinator): its commands, containers and programs left behind count
+       together, apart from the machine's own control (its watchdog, the
+       platform's calls into it and the relay that keeps a command's output).
+       Both thresholds live in one place (`@qorpera/contracts`, `idle-rule`);
+       coding sessions take the data signal with the idle rule's coding
+       part.
      - A program that only waits (a dev server, an idle database, `sleep`, a
        watcher with nothing to do) is not busy.
 2. **Seats follow the same test.** A computer's seat is in use under the same
@@ -4697,9 +4722,12 @@ amendment governs. In-place edits are marked "(changed in place)".
      - It is told in the conversation of the run that started the program.
      - A worker's program is told to its agent, in the conversation that
        dispatched the worker.
-     - Work outside an agent's machine's commands, such as containers, is told
+     - An agent's machine tells what its stop saw running just before
+       (changed in place 4 October 2026, the coordinator): its commands, at
+       most 32, oldest first, told as above, and whether containers ran, told
        to the agent that started the machine, in the conversation of the run
-       that started it.
+       that started it. A stop whose power-off fails is over; the next is a
+       new stop.
 4. **Busy work keeps running.** A busy program keeps its machine awake for as
    long as it stays busy. The platform never stops a program for running
    long. Every other stop stays as before, for example an agent's or a

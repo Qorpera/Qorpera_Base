@@ -193,7 +193,7 @@ healthy exit (E2).
   another company's name on traffic, and an address stays tied to its company also after the machine is gone.
 - A sleeping machine keeps its address and its entry; its connections are flushed when it sleeps, so stale entries
   never hold its connection bound. When a machine goes away (missing from two reads of LXD in a row after it was seen,
-  or never created within an hour of its plug), the reconciler unplugs it under the plug lock: its address is
+  or never created within an hour of its last plug), the reconciler unplugs it under the plug lock: its address is
   quarantined first, then its lease is removed (dnsmasq reloads), its connections and the exit's per-machine counts
   and refused flows are cleared, and its entry is removed. A machine made again under the same name gets its entry
   back from `plug` with a new time, and is not unplugged in between. A flush that fails is tried again every pass, and
@@ -376,6 +376,6 @@ machine. The coordinator merges and installs.
 
 E2 lands in four PRs: E2a, the node's side (the plug tool and its reconciler, the bridge rules that tie each MAC
 to its address, `notrack` for the bridged leg, the health file); E2b, the proof on LXD in a throwaway VM inside a
-test machine (the NIC filters, port isolation, the spoofs, the floods and the tables); E2c, the plug in the three
-creators' plans; E2d, exit health in placement. With no users and no legacy machines (founder decision, 3 October),
+test machine (the NIC filters, port isolation, the spoofs, the floods and the tables); E2c, the plug in the agents' and
+coding machines' creators (the Company Computer's card comes with E6 and its next image); E2d, exit health in placement. With no users and no legacy machines (founder decision, 3 October),
 neither keeps a switch.

@@ -3,10 +3,15 @@ import {
 	COMPANY_STATE_PARSER_VERSION,
 	type CompanyStateSetting,
 	type ConnectionFile,
+	HOOK_PROOFS,
+	type HookFile,
+	type MailboxFile,
 	parseCompanyStateFile,
 	setCompanyStateSettings,
 	WEBSITE_TWO_STEP,
 	writeConnectionFile,
+	writeHookFile,
+	writeMailboxFile,
 } from "@qorpera/cloud-client/company-state-files";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { UUID } from "./native-objects.ts";
@@ -34,12 +39,23 @@ import type { ObjectGatewayReplication } from "./replication.ts";
  * other field is refused unread, and the text below the settings is the company's own (kept as it is). Problems are
  * reported as codes, never with a message. Built switched off: the gateway runs it only with
  * QORPERA_CONNECTION_FILE_WRITER=1.
+ *
+ * Since E1 (folder core C4, 20260930060000) a claim's subject is a vault secret, a hook or a mailbox (`subjectKind`), and
+ * the file is connections/<name>.md, connections/hook-<name>.md or connections/mailbox-<name>.md. A hook's file never
+ * shows its address (a capability) or a signing secret, and a new one starts with the hook's purpose (`body`). A claim
+ * without `subjectKind` (before E1's migration) is a vault secret's.
  */
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const OPERATION = /^[a-z][a-z0-9_]{0,63}$/;
-const CONNECTION_PATH = /^connections\/[a-z0-9]+(?:-[a-z0-9]+)*\.md$/;
-/** Every field a claim may carry; any other refuses it. */
+/** Each subject's own file names: a vault file never takes a hook's or a mailbox's prefix. */
+const SUBJECT_PATHS = {
+	vault: /^connections\/(?!hook-|mailbox-)[a-z0-9]+(?:-[a-z0-9]+)*\.md$/,
+	hook: /^connections\/hook-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/,
+	mailbox: /^connections\/mailbox-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/,
+} as const;
+export type ConnectionSubjectKind = keyof typeof SUBJECT_PATHS;
+/** Every field a claim may carry; any other refuses it (E1 adds subjectKind, and body for a hook or a mailbox). */
 const CLAIM_KEYS = [
 	"schema",
 	"secretId",
@@ -59,6 +75,10 @@ const SETTINGS_KEYS = ["id", "service", "account", "status", "actions", "connect
 const WEBSITE_KEYS = ["site", "twoStep", "openedFor"] as const;
 const CURRENT_KEYS = ["path", "version", "manifestSha256", "fileSha256", "bytes", "mediaType"] as const;
 const STATUSES = new Set(["connected", "broken", "pending", "needs_person"]);
+/** The allow-lists of a hook's and a mailbox's settings (E1's state): never an address of a hook, never a secret. */
+const HOOK_KEYS = ["id", "name", "proof", "status", "maxBodyBytes", "perMinute", "createdBy", "createdAt"] as const;
+const MAILBOX_KEYS = ["id", "address", "status", "createdBy", "createdAt"] as const;
+const HOOK_STATUSES = new Set(["active", "paused"]);
 const MEDIA_TYPE = "text/markdown";
 /** A structured file is at most 64 KiB (core §5). */
 const MAX_FILE_BYTES = 64 * 1024;
@@ -69,6 +89,8 @@ const NAME_TRIES = 20;
 const FINISH_MS = 15_000;
 
 export type ConnectionSettings = Omit<ConnectionFile, "kind" | "purpose">;
+export type HookSettings = Omit<HookFile, "kind" | "purpose">;
+export type MailboxSettings = Omit<MailboxFile, "kind" | "purpose">;
 
 interface CurrentFile {
 	readonly path: string;
@@ -80,13 +102,16 @@ interface CurrentFile {
 }
 
 export interface ConnectionFileClaim {
+	readonly subjectKind: ConnectionSubjectKind;
 	readonly secretId: string;
 	readonly environmentId: string;
 	readonly generation: number;
 	readonly operationKey: string;
 	/** False: the file goes (a revoked secret, a closed account). */
 	readonly present: boolean;
-	readonly settings: ConnectionSettings | null;
+	readonly settings: ConnectionSettings | HookSettings | MailboxSettings | null;
+	/** A hook's or a mailbox's purpose, which a new file starts with; null for a vault secret's. */
+	readonly body: string | null;
 	/** A new file's path. */
 	readonly path: string | null;
 	readonly current: CurrentFile | null;
@@ -134,10 +159,70 @@ export function parseConnectionSettings(value: unknown): ConnectionSettings {
 	};
 }
 
+const UUID_TEXT = (value: unknown): string =>
+	typeof value === "string" && UUID.test(value) ? value : problem("claim_invalid");
+const WHOLE = (value: unknown, min: number, max: number): number =>
+	Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max
+		? (value as number)
+		: problem("claim_invalid");
+
+/** A hook's claimed settings, by E1's allow-list. */
+export function parseHookSettings(value: unknown): HookSettings {
+	const input = record(value, HOOK_KEYS, "claim_invalid");
+	const name = text(input.name, 64);
+	if (!/^[a-z][a-z0-9-]{0,63}$/.test(name)) problem("claim_invalid");
+	if (!(HOOK_PROOFS as readonly unknown[]).includes(input.proof)) problem("claim_invalid");
+	if (!HOOK_STATUSES.has(text(input.status, 16))) problem("claim_invalid");
+	return {
+		id: UUID_TEXT(input.id),
+		name,
+		proof: input.proof as HookSettings["proof"],
+		status: input.status as HookSettings["status"],
+		maxBodyBytes: WHOLE(input.maxBodyBytes, 1024, 262144),
+		perMinute: WHOLE(input.perMinute, 1, 120),
+		createdBy: UUID_TEXT(input.createdBy),
+		createdAt: text(input.createdAt, 40),
+	};
+}
+
+/** A mailbox's claimed settings, by E1's allow-list. */
+export function parseMailboxSettings(value: unknown): MailboxSettings {
+	const input = record(value, MAILBOX_KEYS, "claim_invalid");
+	const address = text(input.address, 254);
+	if (!/^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?@[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/.test(address))
+		problem("claim_invalid");
+	if (!HOOK_STATUSES.has(text(input.status, 16))) problem("claim_invalid");
+	return {
+		id: UUID_TEXT(input.id),
+		address,
+		status: input.status as MailboxSettings["status"],
+		createdBy: UUID_TEXT(input.createdBy),
+		createdAt: text(input.createdAt, 40),
+	};
+}
+
+/** The subject a claim names: `subjectKind` when it carries one (E1), else a vault secret. */
+function claimSubjectKind(input: Record<string, unknown> | null): ConnectionSubjectKind {
+	if (!input || !Object.hasOwn(input, "subjectKind")) return "vault";
+	const kind = input.subjectKind;
+	return kind === "vault" || kind === "hook" || kind === "mailbox" ? kind : problem("claim_invalid");
+}
+
+/** The operation key the database gives a subject's claim. */
+export function connectionFileOperationKey(kind: ConnectionSubjectKind, id: string, generation: number): string {
+	return `${kind === "vault" ? "connection" : kind}-file:${id}:${generation}`;
+}
+
 /** A claim answer (`qorpera.connection-file-claim/v1`), checked field by field; null when nothing is due. */
 export function parseConnectionFileClaim(value: unknown): ConnectionFileClaim | null {
 	if (value === null) return null;
-	const input = record(value, CLAIM_KEYS, "claim_invalid");
+	const kind = claimSubjectKind(value && typeof value === "object" ? (value as Record<string, unknown>) : null);
+	const keys = [
+		...CLAIM_KEYS,
+		...(Object.hasOwn(value as object, "subjectKind") ? ["subjectKind"] : []),
+		...(kind === "vault" ? [] : ["body"]),
+	];
+	const input = record(value, keys, "claim_invalid");
 	if (
 		input.schema !== "qorpera.connection-file-claim/v1" ||
 		typeof input.secretId !== "string" ||
@@ -146,7 +231,7 @@ export function parseConnectionFileClaim(value: unknown): ConnectionFileClaim | 
 		!UUID.test(input.environmentId) ||
 		!Number.isSafeInteger(input.generation) ||
 		(input.generation as number) < 1 ||
-		input.operationKey !== `connection-file:${input.secretId}:${input.generation}` ||
+		input.operationKey !== connectionFileOperationKey(kind, input.secretId, input.generation as number) ||
 		typeof input.present !== "boolean"
 	)
 		problem("claim_invalid");
@@ -170,15 +255,31 @@ export function parseConnectionFileClaim(value: unknown): ConnectionFileClaim | 
 		current = file as unknown as CurrentFile;
 	}
 	const present = input.present as boolean;
-	if (present && (typeof input.path !== "string" || !CONNECTION_PATH.test(input.path))) problem("claim_invalid");
+	if (present && (typeof input.path !== "string" || !SUBJECT_PATHS[kind].test(input.path))) problem("claim_invalid");
 	if (!present && (input.settings !== null || input.path !== null)) problem("claim_invalid");
+	let body: string | null = null;
+	if (kind !== "vault") {
+		if (present)
+			body = typeof input.body === "string" && [...input.body].length <= 512 ? input.body : problem("claim_invalid");
+		else if (input.body !== null) problem("claim_invalid");
+	}
+	const settings = !present
+		? null
+		: kind === "hook"
+			? parseHookSettings(input.settings)
+			: kind === "mailbox"
+				? parseMailboxSettings(input.settings)
+				: parseConnectionSettings(input.settings);
+	if (settings && settings.id !== input.secretId) problem("claim_invalid");
 	return {
+		subjectKind: kind,
 		secretId: input.secretId as string,
 		environmentId: input.environmentId as string,
 		generation: input.generation as number,
 		operationKey: input.operationKey as string,
 		present,
-		settings: present ? parseConnectionSettings(input.settings) : null,
+		settings,
+		body,
 		path: present ? (input.path as string) : null,
 		current,
 	};
@@ -231,6 +332,65 @@ export function connectionFileText(path: string, settings: ConnectionSettings, c
 		}
 	}
 	return writeConnectionFile({ ...settings, purpose: current === null ? "" : bodyOf(current) });
+}
+
+/** A hook's settings as setCompanyStateSettings names them. */
+function hookChanges(settings: HookSettings): Record<string, CompanyStateSetting> {
+	return {
+		id: settings.id,
+		name: settings.name,
+		proof: settings.proof,
+		status: settings.status,
+		max_body_bytes: settings.maxBodyBytes,
+		per_minute: settings.perMinute,
+		created_by: settings.createdBy,
+		created_at: settings.createdAt,
+	};
+}
+
+/** A mailbox's settings as setCompanyStateSettings names them. */
+function mailboxChanges(settings: MailboxSettings): Record<string, CompanyStateSetting> {
+	return {
+		id: settings.id,
+		address: settings.address,
+		status: settings.status,
+		created_by: settings.createdBy,
+		created_at: settings.createdAt,
+	};
+}
+
+/**
+ * A hook's or a mailbox's file text for the claim's settings (E1), as connectionFileText does a vault file's: an existing
+ * file of the kind keeps every byte but the settings that changed; anything else keeps its text below the settings; a new
+ * file is the canonical writer's, starting with the hook's purpose.
+ */
+export function hookFileText(
+	kind: "hook" | "mailbox",
+	path: string,
+	settings: HookSettings | MailboxSettings,
+	current: string | null,
+	body: string | null,
+): string {
+	const changes =
+		kind === "hook" ? hookChanges(settings as HookSettings) : mailboxChanges(settings as MailboxSettings);
+	if (current !== null) {
+		const parsed = parseCompanyStateFile(path, current);
+		if (parsed?.ok && parsed.file.kind === kind) {
+			const before = (
+				kind === "hook" ? hookChanges(parsed.file as HookFile) : mailboxChanges(parsed.file as MailboxFile)
+			) as Record<string, unknown>;
+			const changed = Object.fromEntries(
+				Object.entries(changes).filter(
+					([key, value]) => JSON.stringify(before[key] ?? null) !== JSON.stringify(value),
+				),
+			);
+			return Object.keys(changed).length ? setCompanyStateSettings(current, changed) : current;
+		}
+	}
+	const purpose = current === null ? (body ?? "") : bodyOf(current);
+	return kind === "hook"
+		? writeHookFile({ ...(settings as HookSettings), purpose })
+		: writeMailboxFile({ ...(settings as MailboxSettings), purpose });
 }
 
 /** The text below a settings block, trimmed as a parse keeps it; the whole text when there is no block. */
@@ -299,8 +459,15 @@ export class ConnectionFileWriter {
 				typeof input?.secretId === "string" &&
 				UUID.test(input.secretId) &&
 				Number.isSafeInteger(input.generation)
-			)
-				await this.#finish(input.secretId, input.generation as number, error.code);
+			) {
+				let kind: ConnectionSubjectKind;
+				try {
+					kind = claimSubjectKind(answer as Record<string, unknown>);
+				} catch {
+					throw error;
+				}
+				await this.#finish(kind, input.secretId, input.generation as number, error.code);
+			}
 			throw error;
 		}
 		if (!claim) return false;
@@ -310,7 +477,7 @@ export class ConnectionFileWriter {
 		} catch (error) {
 			code = platformFolderProblemCode(error);
 		}
-		await this.#finish(claim.secretId, claim.generation, code);
+		await this.#finish(claim.subjectKind, claim.secretId, claim.generation, code);
 		return true;
 	}
 
@@ -330,7 +497,7 @@ export class ConnectionFileWriter {
 			if (unit.outcome !== "saved") problem(reasonCode(unit.reason ?? unit.outcome));
 			return;
 		}
-		const settings = claim.settings as ConnectionSettings;
+		const fileKind = claim.subjectKind === "vault" ? "connection" : claim.subjectKind;
 		let existing: string | null = null;
 		if (current) {
 			try {
@@ -343,7 +510,16 @@ export class ConnectionFileWriter {
 			}
 		}
 		let path = current?.path ?? (claim.path as string);
-		const next = connectionFileText(path, settings, existing);
+		const next =
+			claim.subjectKind === "vault"
+				? connectionFileText(path, claim.settings as ConnectionSettings, existing)
+				: hookFileText(
+						claim.subjectKind,
+						path,
+						claim.settings as HookSettings | MailboxSettings,
+						existing,
+						claim.body,
+					);
 		if (existing !== null && next === existing) return;
 		const bytes = new TextEncoder().encode(next);
 		if (bytes.byteLength > MAX_FILE_BYTES) return problem("file_too_large");
@@ -356,7 +532,7 @@ export class ConnectionFileWriter {
 		);
 		for (let attempt = 1; attempt <= NAME_TRIES; attempt++) {
 			const parsed = parseCompanyStateFile(path, next);
-			if (!parsed?.ok || parsed.file.kind !== "connection") return problem("file_invalid");
+			if (!parsed?.ok || parsed.file.kind !== fileKind) return problem("file_invalid");
 			const unit = commitUnitOutcome(
 				await this.#folder.commit(
 					claim.environmentId,
@@ -369,7 +545,7 @@ export class ConnectionFileWriter {
 							structured: [
 								{
 									path,
-									kind: "connection",
+									kind: fileKind,
 									text: next,
 									parse: parsed.file,
 									parserVersion: COMPANY_STATE_PARSER_VERSION,
@@ -391,10 +567,22 @@ export class ConnectionFileWriter {
 
 	/** Closes a claim on its own short deadline. `finished: false` means another writer holds the connection now: its
 	 * claim converges the file, so there is nothing to do. */
-	async #finish(secretId: string, generation: number, code: string | null): Promise<void> {
+	async #finish(
+		kind: ConnectionSubjectKind,
+		secretId: string,
+		generation: number,
+		code: string | null,
+	): Promise<void> {
 		const answer = (await this.#options.authority.publisher(
 			"qorpera_finish_connection_file",
-			{ p_worker: this.#options.workerId, p_secret_id: secretId, p_generation: generation, p_problem: code },
+			{
+				p_worker: this.#options.workerId,
+				p_secret_id: secretId,
+				p_generation: generation,
+				p_problem: code,
+				// A vault secret's finish names no kind, so a database from before E1 takes it as before.
+				...(kind === "vault" ? {} : { p_subject_kind: kind }),
+			},
 			AbortSignal.timeout(FINISH_MS),
 		)) as { schema?: unknown; finished?: unknown } | null;
 		if (answer?.schema !== "qorpera.connection-file-finish/v1" || typeof answer.finished !== "boolean")

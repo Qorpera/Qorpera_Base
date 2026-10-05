@@ -33,11 +33,31 @@ export type MemberNotificationSubject =
 			staffAgentId: string;
 			routineId: string;
 			title: string;
+	  }
+	| {
+			/** A routine that ran on this member's login moved to another by someone else's save or pick
+			 * (20260930095000: a routine's payer never changes without permission). */
+			schema: "qorpera.member-notification.routine-payer-changed/v1";
+			routineId: string;
+			routineVersion: number;
+			staffAgentId: string;
+			/** Who pays now: a member's own login (`payerUserId`), or a company account (no member). */
+			payer: "member" | "company";
+			payerUserId: string | null;
+			/** The member whose save or pick moved it; null when the cloud names no one. */
+			changedByUserId: string | null;
+			reason: "save" | "pick";
+			at: string;
 	  };
 export interface MemberNotification {
 	notificationId: string;
 	profileId: string;
-	kind: "provider_usage_limit" | "company_ceiling_tripped" | "routine_needs_model_account" | "run_no_progress";
+	kind:
+		| "provider_usage_limit"
+		| "company_ceiling_tripped"
+		| "routine_needs_model_account"
+		| "run_no_progress"
+		| "routine_payer_changed";
 	createdAt: string;
 	acknowledgedAt: string | null;
 	subject: MemberNotificationSubject;
@@ -151,6 +171,22 @@ function notification(value: unknown, profileId: string): MemberNotification {
 			since: date(s.since),
 			minutes: integer(s.minutes, 1, 1440),
 			worker: s.worker === undefined ? false : s.worker === true ? true : s.worker === false ? false : invalidFlag(),
+		};
+	} else if (kind === "routine_payer_changed" && s.schema === "qorpera.member-notification.routine-payer-changed/v1") {
+		const payer = s.payer,
+			reason = s.reason;
+		if ((payer !== "member" && payer !== "company") || (reason !== "save" && reason !== "pick")) throw invalid();
+		subject = {
+			schema: s.schema,
+			routineId: uuid(s.routineId),
+			routineVersion: integer(s.routineVersion, 1),
+			staffAgentId: uuid(s.staffAgentId),
+			payer,
+			// A member's login names its member; a company account none.
+			payerUserId: payer === "member" ? uuid(s.payerUserId) : s.payerUserId === null ? null : invalidFlag(),
+			changedByUserId: s.changedByUserId === null ? null : uuid(s.changedByUserId),
+			reason,
+			at: date(s.at),
 		};
 	} else throw invalid();
 	return {

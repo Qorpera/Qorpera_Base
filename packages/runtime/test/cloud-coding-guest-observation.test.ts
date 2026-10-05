@@ -25,6 +25,8 @@ async function machine() {
 	for (const path of [runtimeRoot, custodyRoot, cgroupRoot]) await mkdir(path, { recursive: true });
 	const bootId = randomUUID();
 	let units = "";
+	/** /proc as the guest reads it: each process's cgroup, NUL-ended arguments and io. */
+	const proc = new Map<string, string>();
 	const session = async (
 		options: { cpu?: number; commands?: { id?: string; turn: number; command: string }[] } = {},
 	) => {
@@ -61,12 +63,28 @@ async function machine() {
 		setUnits: (value: string) => {
 			units = value;
 		},
+		/** A process in a cgroup (relative to the coding slice when it names a session's slice). */
+		process: (pid: number, cgroup: string, cmdline: string, io: string) => {
+			proc.set(`/proc/${pid}/cgroup`, `0::${cgroup}\n`);
+			proc.set(`/proc/${pid}/cmdline`, cmdline);
+			proc.set(`/proc/${pid}/io`, io);
+		},
 		observe: () =>
 			observeCloudCodingGuest({
 				runtimeRoot,
 				custodyRoot,
 				cgroupRoot,
 				system: async () => units,
+				readSystemFile: async (path: string) => {
+					const contents = proc.get(path);
+					if (contents === undefined) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+					return contents;
+				},
+				listSystemDirectory: async () => [
+					...new Set([...proc.keys()].map((path) => path.split("/")[2])),
+					"self",
+					"sys",
+				],
 				protectedUid: process.getuid?.() ?? 0,
 				bootId: async () => bootId,
 				uptimeMs: async () => 123456,
@@ -108,19 +126,33 @@ describe("what runs inside a member's coding machine", () => {
 			].join("\n"),
 		);
 		await m.lease(a.workerId, "token-a", 150000);
+		// The dev server's processes count; its relay only copies its output to the log; nothing outside a session's slice
+		// is any session's.
+		const unit = `/qorpera.slice/qorpera-coding.slice/${a.layout.slice}/${a.layout.unitPrefix}${a.ids[0]}.service`;
+		m.process(
+			300,
+			unit,
+			`/usr/bin/node\0/opt/qorpera-coding/cloud-coding-command-guest.mjs\0execute\0${a.workerId}\0${a.ids[0]}\0`,
+			"rchar: 9000000\nwchar: 9000000\n",
+		);
+		m.process(301, unit, "/bin/bash\0--noprofile\0--norc\0-c\0npm run dev\0", "rchar: 4096\nwchar: 0\n");
+		m.process(302, unit, "node\0server.js\0", "rchar: 1000\nwchar: 24\n");
+		m.process(303, "/system.slice/ssh.service", "sshd\0", "rchar: 777777\nwchar: 0\n");
 		const observation = await m.observe();
 		expect(observation).toEqual({
-			schema: "qorpera.coding-guest-observation/v2",
+			schema: "qorpera.coding-guest-observation/v3",
 			bootId: m.bootId,
 			uptimeMs: 123456,
 			sessions: expect.arrayContaining([
 				{
 					workerId: a.workerId,
 					cpuUsageUsec: 5000,
+					// Its dev server read and wrote; its relay's bytes are left out.
+					ioBytes: 5120,
 					running: 1,
 					lease: { tokenSha256: sha("token-a"), expiresInMs: 150000 - 123456 },
 				},
-				{ workerId: b.workerId, cpuUsageUsec: 0, running: 0, lease: null },
+				{ workerId: b.workerId, cpuUsageUsec: 0, ioBytes: 0, running: 0, lease: null },
 			]),
 		});
 		expect(await m.running(a.workerId)).toEqual({
@@ -205,8 +237,14 @@ describe("what runs inside a member's coding machine", () => {
 				`${s.layout.unitPrefix}not-a-uuid.service loaded active running odd`,
 			].join("\n"),
 		);
+		m.process(
+			400,
+			`/qorpera.slice/qorpera-coding.slice/${stranger.slice}/${stranger.unitPrefix}${randomUUID()}.service`,
+			"make\0",
+			"rchar: 999\nwchar: 0\n",
+		);
 		expect((await m.observe()).sessions).toEqual([
-			{ workerId: s.workerId, cpuUsageUsec: 0, running: 0, lease: null },
+			{ workerId: s.workerId, cpuUsageUsec: 0, ioBytes: 0, running: 0, lease: null },
 		]);
 	});
 });

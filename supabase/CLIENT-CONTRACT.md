@@ -600,6 +600,10 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   `qorpera_post_company_room_message`.
   - `start` and `end` are whole numbers counting characters (Unicode code points) from 0, with `end` excluded.
   - Each span sits just inside « and »; spans are in order, apart, and 1 to 2,000 characters long.
+  - A quote's words hold neither « nor » (20260930087000_member_quote_words_hold_no_marks): a quote is always «words»,
+    with no marks inside, so quotes never nest or cross. Such a quote is refused (22023) on every path that takes
+    quotes, room drafts included, and room drafts stored with one were deleted. A client treats a draft whose quotes
+    it can't read as absent: it shows none of its text, and the owner's next save replaces it.
   - `source` is `mail`, and `ref` is a thread id that `qorpera_member_mail_thread` shows the member, never account
     mail.
   - A body with `quotes` carries no `displayText`. Leave `quotes` out when there are none: an empty list is refused.
@@ -806,7 +810,7 @@ Built switched off with plan logins. Show none of it while plan logins are switc
   work while away".
 
 - `qorpera_get_routine_payer(p_routine_id)` and `qorpera_set_routine_login(p_routine_id, p_connection_id)`
-  (20260930064000, folder-v2 routines; the payer never changes without permission). Get answers
+  (20260930095000, folder-v2 routines; the payer never changes without permission). Get answers
   `{schema: 'qorpera.routine-payer/v1', routineId, routineVersion, status, pauseReason, connectionId,
   payer: 'member'|'company'|null, payerUserId (null for a company account), savedByUserId (the member the routine
   runs for), canPay, since, changedByUserId, changeReason: 'save'|'pick'|null}` to a member who may read the
@@ -832,7 +836,7 @@ Folder-v2 companies only (folder core C4, P27a; `deploy/first-node/RUNTIME-COMPA
 answers 42501 "Company folder is unavailable" for a caller who is not a member of a folder-v2 company with that
 environment, and 55000 "Company is being deleted" while the company is being deleted. A path the member may not read
 looks absent in every answer. Members write through the object gateway's member commit route (P34a,
-`20260930021000_folder_core_member_writes`; `POST /v1/member-folder-commits/<environment>`), never with these calls;
+`20260928479130_folder_core_member_writes`; `POST /v1/member-folder-commits/<environment>`), never with these calls;
 a write under `human-tasks/` waits for P31.
 
 - `qorpera_member_company_file_mode(profile)` answers `mode: "folder"` for a folder-v2 company (P33,

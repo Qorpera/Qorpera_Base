@@ -83,7 +83,7 @@ begin
 	end if;
 	-- An agent routine set up in the contributor's chain runs on the login the contributor's run pays with, never on
 	-- another member's: a run of theirs the owner's login paid for (which the run trigger refuses anyway) prepares
-	-- nothing, and never the contributor's other login either (20260930064000); the viewer's chain has nothing to run on.
+	-- nothing, and never the contributor's other login either (20260930095000); the viewer's chain has nothing to run on.
 	select sponsor.* into v_payer from public.qorpera_execution_runs as run
 	cross join lateral public.qorpera_agent_routine_sponsor(jsonb_populate_record(run, jsonb_build_object(
 		'requested_by_user_id', '30000000-0000-4000-8000-000000000002', 'sponsor_binding_id', v_member_binding,
