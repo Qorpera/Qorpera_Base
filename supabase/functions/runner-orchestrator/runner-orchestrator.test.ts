@@ -299,6 +299,19 @@ describe("runner orchestrator boundary", () => {
 		assert.throws(() =>
 			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "machine_events", environmentId, limit: 65 }),
 		);
+		// Event wakes (E2): W2's listeners on hooks and mailboxes, at most 64 a step.
+		assert.deepEqual(FOLDER_DRAINS.events, {
+			due: "qorpera_folder_event_wakes_due",
+			company: "qorpera_folder_event_wakes_company",
+			maximum: 64,
+		});
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "events", environmentId, limit: 16 }),
+			{ action: "folder_drain_company", orchestratorId, drain: "events", environmentId, limit: 16 },
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "events", environmentId, limit: 65 }),
+		);
 	});
 
 	it("rejects secret-shaped garbage and maps durable conflicts", () => {

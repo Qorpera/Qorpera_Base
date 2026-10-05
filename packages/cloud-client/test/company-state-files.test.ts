@@ -1553,6 +1553,8 @@ Go through new leads in sales/leads/.
 			{ when: "window", minutes: 60, from: "09:00", to: "17:00", days: ["mon"], months: [1, 12] },
 			{ when: "once", at: "2026-09-30T07:00:00.123456Z" },
 			{ when: "file-change", watch: "sales/leads", match: "exact" },
+			{ when: "event", hook: ID, only: ["payment_intent.succeeded", "a,b", "#tag", "yes"] },
+			{ when: "event", hook: ID, only: null },
 		];
 		for (const trigger of triggers) {
 			const file = { ...base, trigger };
@@ -1622,6 +1624,58 @@ Go through new leads in sales/leads/.
 					routine(`when: file-change\nwatch: sales\nmatch: exact\ntimezone: UTC\n${empty}`),
 				).length,
 			).toBeGreaterThan(0);
+	});
+
+	it("reads an event routine: its hook, and the types it takes or every type", () => {
+		expect(
+			ok(
+				"agents/a/routines/r.md",
+				routine(`when: event\nhook: ${ID}\nonly: [invoice.paid, "charge.refunded"]\ntimezone: UTC`),
+			),
+		).toMatchObject({
+			trigger: { when: "event", hook: ID, only: ["invoice.paid", "charge.refunded"] },
+			timezone: "UTC",
+		});
+		expect(ok("agents/a/routines/r.md", routine(`when: event\nhook: ${ID}\ntimezone: UTC`))).toMatchObject({
+			trigger: { when: "event", hook: ID, only: null },
+		});
+		expect(keys(refused("agents/a/routines/r.md", routine("when: event\ntimezone: UTC")))).toEqual([
+			["hook", "missing"],
+		]);
+		expect(keys(refused("agents/a/routines/r.md", routine(`when: event\nhook: ${ID}`)))).toEqual([
+			["timezone", "missing"],
+		]);
+		expect(
+			refused("agents/a/routines/r.md", routine(`when: event\nhook: ${ID.toUpperCase()}\ntimezone: UTC`))[0]
+				?.message,
+		).toBe("hook must be written in lowercase");
+		expect(
+			keys(
+				refused(
+					"agents/a/routines/r.md",
+					routine(`when: event\nhook: ${ID}\nonly: ["invoice paid", a, a]\nwatch: sales\ntimezone: UTC`),
+				),
+			),
+		).toEqual([
+			["watch", "unknown_key"],
+			["only", "value"],
+			["only", "value"],
+		]);
+		for (const only of ["only: []", "only:", "only: invoice.paid"])
+			expect(
+				keys(refused("agents/a/routines/r.md", routine(`when: event\nhook: ${ID}\n${only}\ntimezone: UTC`))),
+			).toEqual([["only", only === "only:" ? "missing" : "value"]]);
+		const many = Array.from({ length: 21 }, (_, n) => `t${n}`).join(", ");
+		expect(
+			keys(refused("agents/a/routines/r.md", routine(`when: event\nhook: ${ID}\nonly: [${many}]\ntimezone: UTC`))),
+		).toEqual([["only", "value"]]);
+		// Another trigger's settings name the event's as unknown to it.
+		expect(
+			keys(refused("agents/a/routines/r.md", routine(`when: every\nminutes: 5\nhook: ${ID}\nonly: [a]`))),
+		).toEqual([
+			["hook", "unknown_key"],
+			["only", "unknown_key"],
+		]);
 	});
 
 	it("refuses settings of another trigger and broken combinations", () => {

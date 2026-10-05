@@ -17,6 +17,12 @@ export const FOLDER_DRAINS: Readonly<Record<string, Readonly<{ due: string; comp
 		company: "qorpera_folder_machine_events_company",
 		maximum: 64,
 	}),
+	// Event wakes (E2): a verified delivery to a hook or mailbox wakes the routines that listen to it.
+	events: Object.freeze({
+		due: "qorpera_folder_event_wakes_due",
+		company: "qorpera_folder_event_wakes_company",
+		maximum: 64,
+	}),
 });
 
 export type RunnerOrchestratorRequest =

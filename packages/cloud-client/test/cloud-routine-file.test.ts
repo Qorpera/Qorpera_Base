@@ -91,6 +91,39 @@ describe("a routine file's trigger as the routine list reads it", () => {
 			cloudRoutineTriggerOfFile(file({ trigger: { when: "file-change", watch: "notes", match: "subtree" } })),
 		).toBeNull();
 	});
+
+	it("reads an event routine as W2's listener on its hook, as the index compiles it (E2)", () => {
+		const hook = "89900000-0000-4000-8000-0000000000b1";
+		expect(
+			cloudRoutineTriggerOfFile(
+				file({ trigger: { when: "event", hook, only: ["invoice.paid", "charge.refunded"] }, timezone: "UTC" }),
+			),
+		).toEqual({
+			id: "file",
+			kind: "listener",
+			source: "event",
+			hookId: hook,
+			only: ["invoice.paid", "charge.refunded"],
+			timeZone: "UTC",
+			replyPolicy: "required",
+		});
+		expect(
+			cloudRoutineTriggerOfFile(
+				file({ trigger: { when: "event", hook, only: null }, timezone: "Europe/Oslo", reply: "silent" }),
+			),
+		).toEqual({
+			id: "file",
+			kind: "listener",
+			source: "event",
+			hookId: hook,
+			timeZone: "Europe/Oslo",
+			replyPolicy: "silent",
+		});
+		expect(cloudRoutineTriggerOfFile(file({ trigger: { when: "event", hook, only: null } }))).toBeNull();
+		expect(
+			routineFileTrigger({ id: "file", kind: "listener", source: "event", hookId: hook, timeZone: "UTC" }),
+		).toBeNull();
+	});
 });
 
 describe("what a member's editor makes, as a file's trigger", () => {
@@ -207,6 +240,26 @@ describe("the settings an edit changes", () => {
 		const read = parse(setCompanyStateSettings(text(before), changes));
 		expect(read.trigger).toEqual({ when: "every", minutes: 90, starts: null });
 		expect(read.timezone).toBe("Europe/Copenhagen");
+	});
+
+	it("keeps an event routine's hook and types through an edit of the rest, and drops them for a clock", () => {
+		const trigger = { when: "event", hook: "89900000-0000-4000-8000-0000000000b1", only: ["form.posted"] } as const;
+		const before = file({ trigger, timezone: "UTC" });
+		const renamed = routineFileSettings(before, { title: "Forms", trigger, timezone: "UTC", reply: "optional" });
+		expect(renamed).toEqual({ title: "Forms", reply: "optional" });
+		expect(parse(setCompanyStateSettings(text(before), renamed))).toMatchObject({ title: "Forms", trigger });
+		const clock = routineFileSettings(before, {
+			title: before.title,
+			trigger: { when: "every", minutes: 60, starts: null },
+			timezone: null,
+			reply: before.reply,
+		});
+		expect(clock).toEqual({ when: "every", minutes: 60, starts: null, hook: null, only: null });
+		expect(parse(setCompanyStateSettings(text(before), clock)).trigger).toEqual({
+			when: "every",
+			minutes: 60,
+			starts: null,
+		});
 	});
 
 	it("keeps quiet hours in the zone they went by when an edit changes the routine's zone", () => {

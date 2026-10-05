@@ -91,6 +91,8 @@ const WRITER_ESCAPED = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\ufffe\uffff]/;
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 const INSTANT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?Z$/;
 const CLOCK = /^([01]\d|2[0-3]):([0-5]\d)$/;
+/** An event type as a sender names it: printable ASCII without spaces, at most 128 characters. */
+const EVENT_TYPE = /^[\x21-\x7e]{1,128}$/;
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 const encoder = new TextEncoder();
 
@@ -98,7 +100,7 @@ export { AGENT_COLOURS, type AgentColour, companyPathKey };
 export const AGENT_MODELS = Object.freeze(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] as const);
 /** Effort an agent or a routine may ask for; runs accept these three today. */
 export const COMPANY_STATE_EFFORTS = Object.freeze(["low", "medium", "high"] as const);
-export const ROUTINE_WHEN = Object.freeze(["every", "weekly", "window", "once", "file-change"] as const);
+export const ROUTINE_WHEN = Object.freeze(["every", "weekly", "window", "once", "file-change", "event"] as const);
 
 /** A human task's statuses: the agent sets open, accepted, returned and cancelled; the person done
  * and declined (H2). */
@@ -263,7 +265,9 @@ export type RoutineTrigger =
 			readonly months: readonly number[] | null;
 	  }
 	| { readonly when: "once"; readonly at: string }
-	| { readonly when: "file-change"; readonly watch: string; readonly match: "exact" | "subtree" };
+	| { readonly when: "file-change"; readonly watch: string; readonly match: "exact" | "subtree" }
+	/** A delivery to one of the company's hooks or mailboxes (E2): `only` keeps the listed event types. */
+	| { readonly when: "event"; readonly hook: string; readonly only: readonly string[] | null };
 
 export interface RoutineFile {
 	readonly kind: "routine";
@@ -1300,6 +1304,7 @@ const TRIGGER_KEYS = {
 	window: ["minutes", "from", "to", "days", "months"],
 	once: ["at"],
 	"file-change": ["watch", "match"],
+	event: ["hook", "only"],
 } as const;
 
 function routine(split: Split, fields: Fields, problems: Problems): RoutineFile | null {
@@ -1364,6 +1369,28 @@ function routine(split: Split, fields: Fields, problems: Problems): RoutineFile 
 			);
 		const match = fields.choice("match", true, ["exact", "subtree"] as const);
 		if (watch && match) trigger = { when, watch, match };
+	} else if (when === "event") {
+		// The hook's or mailbox's id; the save's rules check that it is a live one of this company.
+		const hook = fields.id("hook", true);
+		let only: string[] | null = null;
+		const items = fields.list("only", false, false);
+		if (items) {
+			only = [];
+			for (const item of items) {
+				if (!EVENT_TYPE.test(item.text))
+					problems.add(
+						"value",
+						item.line,
+						"only",
+						"event types are printable characters without spaces, at most 128, like payment_intent.succeeded",
+					);
+				else if (only.includes(item.text))
+					problems.add("value", item.line, "only", `${shown(item.text)} is listed twice`);
+				else only.push(item.text);
+			}
+			if (items.length > 20) problems.add("value", fields.line("only"), "only", "only lists at most 20 event types");
+		}
+		if (hook) trigger = { when, hook, only };
 	}
 	const timezone = fields.timeZone("timezone", when !== null && when !== "every");
 	const ends = fields.instant("ends", false);
@@ -2290,6 +2317,8 @@ export function writeRoutineFile(file: Omit<RoutineFile, "kind">): string {
 	if (trigger.when === "once") lines.push(["at", trigger.at]);
 	if (trigger.when === "file-change")
 		lines.push(["watch", companyStateValue(trigger.watch)], ["match", trigger.match]);
+	if (trigger.when === "event")
+		lines.push(["hook", trigger.hook], ["only", trigger.only ? listValue(trigger.only) : null]);
 	lines.push(
 		["timezone", file.timezone],
 		["ends", file.ends],
