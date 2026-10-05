@@ -43,8 +43,7 @@ pub struct VersionMap {
 	/// Where it is written through; None keeps it in memory only.
 	file: Option<(PathBuf, File)>,
 	lines: usize,
-	/// The file's length up to its last whole line, and whether a failed write may have left part of a line after it.
-	length: u64,
+	/// A write failed: it may have left part of a line, and its entry is not in the file.
 	torn: bool,
 	/// A write that failed is reported once; the map goes on in memory.
 	failed: bool,
@@ -53,7 +52,7 @@ pub struct VersionMap {
 impl VersionMap {
 	/// A map kept in memory only.
 	pub fn memory() -> VersionMap {
-		VersionMap { map: BTreeMap::new(), file: None, lines: 0, length: 0, torn: false, failed: false }
+		VersionMap { map: BTreeMap::new(), file: None, lines: 0, torn: false, failed: false }
 	}
 
 	/// The map of the mount whose state folder is `dir` (made 0700 if missing), with what an earlier program wrote.
@@ -82,8 +81,7 @@ impl VersionMap {
 			OpenOptions::new().write(true).open(&path)?.set_len(whole as u64)?;
 		}
 		let file = OpenOptions::new().create(true).append(true).mode(0o600).open(&path)?;
-		let mut out =
-			VersionMap { map, file: Some((path, file)), lines, length: whole as u64, torn: false, failed: false };
+		let mut out = VersionMap { map, file: Some((path, file)), lines, torn: false, failed: false };
 		out.compact_if_due();
 		Ok(out)
 	}
@@ -148,12 +146,15 @@ impl VersionMap {
 		}
 	}
 
+	/// Memory first, then the file: a rewrite the line sets off (after a failed write, or a compaction) writes the map
+	/// with this entry in it.
 	fn set(&mut self, path: &str, entry: Entry) {
 		if self.map.get(path) == Some(&entry) {
 			return;
 		}
-		self.append(&Line { p: path.to_string(), v: Some(entry.version.clone()), m: entry.made });
+		let line = Line { p: path.to_string(), v: Some(entry.version.clone()), m: entry.made };
 		self.map.insert(path.to_string(), entry);
+		self.append(&line);
 	}
 
 	fn forget(&mut self, path: &str) {
@@ -172,10 +173,7 @@ impl VersionMap {
 		let mut text = serde_json::to_string(line).expect("a line always serializes");
 		text.push('\n');
 		match file.write_all(text.as_bytes()) {
-			Ok(()) => {
-				self.lines += 1;
-				self.length += text.len() as u64;
-			}
+			Ok(()) => self.lines += 1,
 			Err(e) => {
 				if !self.failed {
 					eprintln!("qorpera-folder: the version map could not be written to {}: {e}", path.display());
@@ -213,7 +211,6 @@ impl VersionMap {
 		})();
 		match result {
 			Ok(file) => {
-				self.length = file.metadata().map_or(0, |m| m.len());
 				self.file = Some((path, file));
 				self.lines = self.map.len();
 				self.torn = false;
@@ -304,6 +301,45 @@ mod tests {
 		map.renamed("d", "e", true);
 		assert_eq!((map.get("d/x"), map.get("e/y")), (None, None));
 		assert_eq!(map.base("de").as_deref(), Some("3"));
+	}
+
+	#[test]
+	fn the_line_that_sets_off_a_compaction_is_in_the_file_written_afresh() {
+		let dir = tempdir();
+		{
+			let mut map = VersionMap::open(&dir).unwrap();
+			map.read("plan.md", "v1");
+			// The 1029th line crosses the limit (twice the entries, and 1024 more): the file is written afresh, with the
+			// version that line names.
+			for i in 0..1028 {
+				map.read("same.md", &format!("v{i}"));
+			}
+			assert_eq!(map.lines, 2);
+		}
+		let map = VersionMap::open(&dir).unwrap();
+		assert_eq!((map.base("plan.md").as_deref(), map.base("same.md").as_deref()), (Some("v1"), Some("v1027")));
+		std::fs::remove_dir_all(dir).unwrap();
+	}
+
+	#[test]
+	fn a_write_that_failed_is_made_good_from_memory() {
+		let dir = tempdir();
+		{
+			let mut map = VersionMap::open(&dir).unwrap();
+			map.read("a.md", "1");
+			// The memory file system is full: the write fails, and the map goes on in memory.
+			let (path, file) = map.file.take().unwrap();
+			map.file = Some((path.clone(), OpenOptions::new().write(true).open("/dev/full").unwrap()));
+			map.saved("b.md", "2");
+			assert!(map.torn);
+			// Room again: the next line writes the whole map first, the entry that failed included.
+			map.file = Some((path, file));
+			map.read("c.md", "3");
+		}
+		let map = VersionMap::open(&dir).unwrap();
+		assert_eq!(map.get("b.md"), Some(&Entry { version: "2".into(), made: true }));
+		assert_eq!((map.base("a.md").as_deref(), map.base("c.md").as_deref()), (Some("1"), Some("3")));
+		std::fs::remove_dir_all(dir).unwrap();
 	}
 
 	#[test]
