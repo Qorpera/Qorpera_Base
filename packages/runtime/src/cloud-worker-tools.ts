@@ -708,6 +708,12 @@ export interface CloudAgentOpenWork {
 	workers: { active: number; blocked: number };
 	/** Commands the platform stopped on the agent's computer, told once in their conversation. */
 	computerStopped?: { command: string; startedAt: string; endedAt: string; reason: string }[];
+	/** Machine commands, and containers on a machine the agent started, that a stop or restart of the machine ended,
+	 * told once in their conversation. */
+	machineStopped?: (
+		| { machine: string; work: "command"; command: string; startedAt: string; endedAt: string; reason: string }
+		| { machine: string; work: "containers"; endedAt: string; reason: string }
+	)[];
 }
 
 export async function describeCloudAgentOpenWork(
@@ -757,10 +763,42 @@ export async function describeCloudAgentOpenWork(
 			};
 		});
 	}
+	let machineStopped: CloudAgentOpenWork["machineStopped"];
+	if (result.machineStopped !== undefined) {
+		if (
+			!Array.isArray(result.machineStopped) ||
+			result.machineStopped.length < 1 ||
+			result.machineStopped.length > 32
+		)
+			throw new Error("Open work differs");
+		machineStopped = result.machineStopped.map((item) => {
+			const work = (item as { work?: unknown } | null)?.work;
+			const keys =
+				work === "command"
+					? ["machine", "work", "command", "startedAt", "endedAt", "reason"]
+					: ["machine", "work", "endedAt", "reason"];
+			const stopped = object(item, keys, keys);
+			if (
+				(work !== "command" && work !== "containers") ||
+				keys.some((key) => typeof stopped[key] !== "string") ||
+				!["slept", "hours", "stopped", "lost"].includes(stopped.reason as string)
+			)
+				throw new Error("Open work differs");
+			const shared = {
+				machine: stopped.machine as string,
+				endedAt: stopped.endedAt as string,
+				reason: stopped.reason as string,
+			};
+			return work === "command"
+				? { ...shared, work, command: stopped.command as string, startedAt: stopped.startedAt as string }
+				: { ...shared, work };
+		});
+	}
 	return {
 		todos: { open: count(todos.open), blocked: count(todos.blocked) },
 		workers: { active: count(workers.active), blocked: count(workers.blocked) },
 		...(computerStopped ? { computerStopped } : {}),
+		...(machineStopped ? { machineStopped } : {}),
 	};
 }
 

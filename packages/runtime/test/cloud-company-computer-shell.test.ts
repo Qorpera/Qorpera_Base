@@ -5,7 +5,6 @@ import {
 	CompanyComputerLinuxShell,
 	type CompanyComputerShellEnvironmentLauncher,
 	CompanyComputerShellPressureGuard,
-	companyComputerProcessIoBytes,
 	companyComputerShellBusy,
 } from "@qorpera/runtime/cloud-company-computer-linux-shell";
 import {
@@ -316,16 +315,6 @@ describe("what the platform hears of a shell", () => {
 		expect(companyComputerShellBusy(before, later(5000, 9_000_000, 0))).toBe(false);
 		expect(companyComputerShellBusy(before, later(5000, 9_000_000, -1))).toBe(false);
 		expect(companyComputerShellBusy(before, later(10, 10))).toBe(false);
-	});
-
-	it("reads the bytes a process read and wrote, and nothing from what it cannot read", () => {
-		expect(
-			companyComputerProcessIoBytes(
-				"rchar: 4096\nwchar: 1024\nsyscr: 7\nsyscw: 3\nread_bytes: 0\nwrite_bytes: 0\ncancelled_write_bytes: 0\n",
-			),
-		).toBe(5120);
-		expect(companyComputerProcessIoBytes("")).toBe(0);
-		expect(companyComputerProcessIoBytes("rchar: 12\n")).toBe(12);
 	});
 });
 
