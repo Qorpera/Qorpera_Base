@@ -117,20 +117,23 @@ select pg_temp.e2_replace('public.qorpera_activate_company_file_listener()'::reg
 -- 4. The gate and the read -----------------------------------------------------------------------------------------------
 
 -- The folder gate stops refusing event wakes. 'event' leaves the refusal list by its own token, whatever other kinds the
--- list holds by then (C1c-3l and 3i-b drop theirs the same way); the clause goes when nothing is left in it.
+-- list holds by then (C1c-3l and 3i-b drop theirs the same way). When nothing is left, the clause goes and a comment line
+-- takes its place, so the rest of the statement (" then return false; end if;", and any note after it) stays on a line
+-- of its own: the line before the clause may itself be another migration's comment (C1c-3l leaves one there).
 do $$
 declare
 	v_function constant regprocedure := 'public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)'::regprocedure;
 	v_definition text := pg_get_functiondef(v_function); v_clause text; v_list text; v_rest text;
 begin
-	v_clause := (regexp_match(v_definition, E'\n\t\tor p_wake\\.source_kind in \\([^)]*\\)'))[1];
+	v_clause := (regexp_match(v_definition, E'(\n\t\tor p_wake\\.source_kind in \\([^)]*\\) ?)'))[1];
 	if v_clause is null or (length(v_definition) - length(replace(v_definition, v_clause, ''))) / length(v_clause) <> 1 then
 		raise exception 'E2a: the folder gate''s refusal list differs'; end if;
 	v_list := (regexp_match(v_clause, E'\\(([^)]*)\\)'))[1];
 	if v_list !~ E'(^|,)\\s*''event''\\s*(,|$)' then raise exception 'E2a: the folder gate does not refuse event wakes'; end if;
 	v_rest := regexp_replace(regexp_replace(v_list, E'\\s*,\\s*''event''\\s*(?=,|$)', ''), E'^\\s*''event''\\s*,?\\s*', '');
-	execute replace(v_definition, v_clause,
-		case when btrim(v_rest) = '' then '' else replace(v_clause, '(' || v_list || ')', '(' || v_rest || ')') end);
+	execute replace(v_definition, v_clause, case when btrim(v_rest) = ''
+		then E'\n\t\t-- 20260930061000 (E2a): event wakes serve folder-v2; their hook is checked below.\n\t\t'
+		else replace(v_clause, '(' || v_list || ')', '(' || v_rest || ')') end);
 end $$;
 select pg_temp.e2_replace('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)'::regprocedure,
 	$old$	-- A member's login pays only for work that member started (20260928230000).$old$,
