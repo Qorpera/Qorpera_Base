@@ -263,8 +263,11 @@ The drain follows P29's contract (`RUNTIME-COMPANY-FOLDER-LISTENER.md` §9) and 
 
 - **The gate:** `qorpera_folder_wake_authorized` drops `event` from its refusal list and checks that the hook is still
   live, as W2's patch does on the old gate. As built, `'event'` leaves the list by its own token. That works whatever
-  other kinds the list still holds (#803 and 3i-b drop theirs the same way), and the whole clause goes when nothing is
-  left in it.
+  other kinds the list still holds (#803 and 3i-b drop theirs the same way).
+  - When nothing is left, the clause goes and a comment line of E2a's takes its place.
+  - The rest of the statement (`then return false; end if;`) stays on a line of its own, because the line before the
+    clause may be #803's comment. Removing the clause with its line break used to put that rest inside #803's comment.
+    This was found by applying all three together.
 - **The read:** `qorpera_folder_read_wake` adds W2's event batch (`qorpera_event_wake_payload`). The runtime already
   parses the envelope (`packages/runtime/src/cloud-wake-bus.ts:403-450`).
 - **The runtime:** `manage_routine` on folder-v2 accepts `event` and writes `when: event` into the routine file
