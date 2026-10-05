@@ -7,7 +7,8 @@
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
 	"bin": {
-		"qorpera-object-gateway": "./dist/cli.js"
+		"qorpera-object-gateway": "./dist/cli.js",
+		"qorpera-folder-service": "./dist/folder-service/cli.js"
 	},
 	"exports": {
 		".": {
@@ -27,7 +28,8 @@
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"dependencies": {
-		"@qorpera/cloud-client": "^0.83.0"
+		"@qorpera/cloud-client": "^0.83.0",
+		"@qorpera/contracts": "^0.83.0"
 	},
 	"devDependencies": {
 		"shx": "0.4.0",

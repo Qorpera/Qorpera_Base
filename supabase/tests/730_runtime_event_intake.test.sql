@@ -496,15 +496,15 @@ set local role service_role;
 select pg_temp.hook_error($q$select public.qorpera_folder_enable('73000000-0000-4000-8000-000000000020')$q$, '55000');
 reset role;
 
--- Folder companies get hooks with their connection file, not before.
+-- Folder companies get hooks, with their connection file (20260930060000, E1; test 912 covers the folder side).
 select pg_temp.hook_claims('service_role');
 set local role service_role;
 select public.qorpera_folder_enable('73000000-0000-4000-8000-000000000021');
 reset role;
 select pg_temp.hook_claims('authenticated', '73000000-0000-4000-8000-000000000005');
 set local role authenticated;
-select pg_temp.hook_error($q$select public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000011',
-	'73000000-0000-4000-8000-000000000021', 'forms', 'Website form')$q$, '0A000');
+select pg_temp.hook_assert(public.qorpera_create_event_hook('73000000-0000-4000-8000-000000000011',
+	'73000000-0000-4000-8000-000000000021', 'forms', 'Website form') ->> 'name' = 'forms', 'A folder company has no hook');
 reset role;
 
 -- The company purge removes hooks and their deliveries with the company. Usage rows carry no
