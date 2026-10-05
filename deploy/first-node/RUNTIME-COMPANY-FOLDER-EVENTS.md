@@ -232,12 +232,18 @@ This is the spelling W2 and F2-6 agreed (`REG:1948`, `RUNTIME-COMPANY-STATE-FILE
 The drain follows P29's contract (`RUNTIME-COMPANY-FOLDER-LISTENER.md` §9) and #803's shape.
 
 - **The due list:** `qorpera_folder_event_wakes_due(p_after_environment, p_limit)` is a plain read. It lists the folder-v2
-  environments that have an active event cursor with a verified delivery after the cursor's mark and no open event wake
-  for that trigger. It leaves out companies being deleted and paused ones: paused events wait, as W2's drain skips paused
-  companies (`WAKES:277`).
+  environments whose step would wake a listener now (as built, after review r1):
+  - a live listener: the routine's current version active, a valid trigger, its cursor active, its hook not removed, its
+    agent active and its requester a member;
+  - a verified delivery of a type it takes waiting (W2's `qorpera_event_listener_waiting`, with `only`);
+  - no wake pending for its trigger, and no retry waiting for that delivery (`qorpera_folder_event_wake_retry_waits`).
+
+  It leaves out companies being deleted and paused ones: paused events wait, as W2's drain skips paused companies
+  (`WAKES:277`). A company is still listed when a `required` reply has no public conversation; its step passes it over.
 - **One company:** `qorpera_folder_event_wakes_company(p_environment_id, p_limit ≤ 64)`, in one transaction (as built):
   1. a plain read of the company's live listeners (least recently scanned first) and their routine, requester, agent and
-     trigger;
+     trigger. Only live listeners (the routine current and active, a valid trigger, the hook not removed) are ordered and
+     counted against `p_limit`, so an active cursor that is no listener never takes a live one's place (review r1 F1);
   2. `qorpera_folder_company_enter(…, false)` with those targets: requesters at rank 1, agents at 2, authorities at 3,
      each routine `FOR NO KEY UPDATE` and its hook `FOR SHARE` at rank 5. Then `deleting`, or `paused` with nothing
      written or moved: a paused company's events wait;
@@ -286,7 +292,9 @@ As built, 913 runs on 708's company (P29's 887 uses the same). It covers:
 - both rules (a removed or unknown hook, a ChatGPT plan payer) and the rank-5 target;
 - one wake for a batch, with W2's key and payload, `only` filtering, and one open wake per trigger;
 - the gate, and the run's read: the batch is the wake's, and a late delivery makes the next wake;
-- a retry after its wait, a paused company's events waiting, a removed hook stopping, and the grants.
+- a retry after its wait, a paused company's events waiting, a removed hook stopping, and the grants;
+- the due list: not due for a type the routine does not take, with a wake open, or while a retry waits;
+- a step with `p_limit` 1 whose oldest active cursor is on a removed hook: the live listener still wakes (review r1 F1).
 
 923 races a save against a removal, and the drain against a save.
 

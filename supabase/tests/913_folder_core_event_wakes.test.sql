@@ -143,8 +143,9 @@ end $$;
 do $$
 declare r jsonb; v_first uuid; w public.qorpera_wake_occurrences;
 begin
-	-- A type Nora's routine does not take: due (the step looks), but no wake; it is behind her listener after the step.
+	-- A type Nora's routine does not take: not due, and a step makes no wake; it is behind her listener after the step.
 	perform pg_temp.deliver('91300000-0000-4000-8000-0000000000b1', 'customer.created');
+	if pg_temp.due() then raise exception 'Due for a type its routine does not take'; end if;
 	r := pg_temp.drain();
 	perform pg_temp.is(r ->> 'state', 'done', 'a step');
 	perform pg_temp.is(pg_temp.ew_count('91300000-0000-4000-8000-0000000000e1')::text, '0', 'only filters');
@@ -273,8 +274,10 @@ begin
 	-- Otto's wake ends without a run reading its batch: tried again after a minute, with the attempt in the key.
 	select * into strict w from pg_temp.ew('91300000-0000-4000-8000-0000000000e2');
 	perform pg_temp.finish(w.id);
+	if pg_temp.due() then raise exception 'Due while the retry waits'; end if;
 	perform pg_temp.is(pg_temp.drain() ->> 'wakes', '0', 'a retry waits a minute');
 	perform pg_temp.age(w.id::text, '2 minutes');
+	if not pg_temp.due() then raise exception 'Not due when the retry is'; end if;
 	perform pg_temp.is(pg_temp.drain() ->> 'wakes', '1', 'then tries again');
 	select * into strict w from pg_temp.ew('91300000-0000-4000-8000-0000000000e2') offset 1;
 	if w.occurrence_key !~ ':2$' then raise exception 'The retry''s key: %', w.occurrence_key; end if;
@@ -297,15 +300,39 @@ begin
 	v_first := pg_temp.deliver('91300000-0000-4000-8000-0000000000b2', 'mail.received');
 	perform pg_temp.age('91300000-0000-4000-8000-0000000000e2', '1 hour');
 	perform pg_temp.is(coalesce(pg_temp.drain() ->> 'wakes', '0'), '0', 'a removed hook wakes nothing');
-	-- Its routine still saves (a move or a handover makes a version with the hook removed, never refused); a save by a
-	-- member that keeps the hook is refused by the rules, which (unlike a version made by a move) are asked.
+	-- A save that keeps the removed hook is refused by its rules. (A version made by a move or a handover asks no rules and
+	-- is kept; its listener never wakes.)
 	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'event-0009', jsonb_build_array(pg_temp.routine('agents/otto/routines/support.md',
 			pg_temp.rparse('91300000-0000-4000-8000-0000000000e2', 'Support again', pg_temp.ev('91300000-0000-4000-8000-0000000000b2'))))),
 		'structured_rule') then
 		raise exception 'A save keeps a removed hook'; end if;
 end $$;
 
--- 6. Grants -------------------------------------------------------------------------------------------------------------------
+-- 6. A cursor that is no listener never takes a live listener's place (review r1 F1) ------------------------------------------
+
+do $$
+declare r jsonb; i integer;
+begin
+	-- Otto's cursor stays active on the removed mailbox, oldest of all; Nora's new routine on the forms hook has a post waiting.
+	perform pg_temp.saved(pg_temp.commit(pg_temp.owner(), 'event-0010', jsonb_build_array(pg_temp.routine('agents/nora/routines/forms.md',
+		pg_temp.rparse('91300000-0000-4000-8000-0000000000e6', 'Forms', pg_temp.ev('91300000-0000-4000-8000-0000000000b3'))))));
+	perform pg_temp.deliver('91300000-0000-4000-8000-0000000000b3', 'form.posted');
+	update public.qorpera_event_listener_cursors set last_scanned_at = '-infinity' where routine_id = '91300000-0000-4000-8000-0000000000e2';
+	update public.qorpera_event_listener_cursors set last_scanned_at = clock_timestamp()
+	where routine_id not in ('91300000-0000-4000-8000-0000000000e2', '91300000-0000-4000-8000-0000000000e6');
+	if not (select active from public.qorpera_event_listener_cursors where routine_id = '91300000-0000-4000-8000-0000000000e2') then
+		raise exception 'The fixture: Otto''s cursor is active'; end if;
+	if not pg_temp.due() then raise exception 'Not due with a form post waiting'; end if;
+	-- One listener a step: the live one is taken, and repeated steps make progress (never idle while it waits).
+	for i in 1..2 loop
+		r := public.qorpera_folder_event_wakes_company('70700000-0000-4000-8000-000000000020', 1);
+		perform pg_temp.is(r ->> 'state', 'done', 'step ' || i || ' with one listener a step');
+		exit when pg_temp.ew_count('91300000-0000-4000-8000-0000000000e6') > 0;
+	end loop;
+	perform pg_temp.is(pg_temp.ew_count('91300000-0000-4000-8000-0000000000e6')::text, '1', 'the live listener wakes');
+end $$;
+
+-- 7. Grants -------------------------------------------------------------------------------------------------------------------
 
 do $$
 declare v_role text;
@@ -316,6 +343,10 @@ begin
 			raise exception 'The event drain is the platform''s alone (%)', v_role; end if;
 	end loop;
 	if not has_function_privilege('service_role', 'public.qorpera_folder_event_wakes_company(uuid,integer)', 'EXECUTE')
-		or has_function_privilege('service_role', 'public.qorpera_folder_event_wake_pending(uuid,text)', 'EXECUTE') then
+		or has_function_privilege('service_role', 'public.qorpera_folder_event_wake_pending(uuid,text)', 'EXECUTE')
+		or has_function_privilege('service_role',
+			'public.qorpera_folder_event_wake_tries(public.qorpera_event_listener_cursors,uuid)', 'EXECUTE')
+		or has_function_privilege('service_role',
+			'public.qorpera_folder_event_wake_retry_waits(public.qorpera_event_listener_cursors,uuid)', 'EXECUTE') then
 		raise exception 'The event drain''s grants'; end if;
 end $$;

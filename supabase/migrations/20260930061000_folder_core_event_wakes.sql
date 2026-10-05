@@ -170,9 +170,28 @@ returns boolean language sql stable security definer set search_path = '' as $$
 					where run.id = pending.run_id and job.status in ('queued','leased')))))
 $$;
 
--- The folder-v2 environments with a live event listener (an active folder-v2 routine's current version, its cursor
--- active, its hook not removed) that has no wake pending and a verified delivery after its mark, in environment order
--- after p_after_environment. Leaves out companies being deleted and paused ones: their events wait. A plain read.
+-- The wakes a listener already made for one first delivery (keys 1 to 5) and when the last was made.
+create function public.qorpera_folder_event_wake_tries(p_cursor public.qorpera_event_listener_cursors, p_first uuid)
+returns table (tries bigint, tried_at timestamptz) language sql stable security definer set search_path = '' as $$
+	-- 20260930061000 (E2a), as qorpera_drain_event_wakes (20260928269290).
+	select count(*), max(w.created_at) from public.qorpera_wake_occurrences w
+	where w.routine_id = p_cursor.routine_id and w.occurrence_key = any (array(select 'event:' || p_cursor.routine_version::text
+		|| ':' || p_cursor.trigger_id || ':' || p_first::text || ':' || n from generate_series(1, 5) as n))
+$$;
+
+-- An earlier wake for this first delivery ended without taking it, and its retry (after 1, 4, 16 or 64 minutes) is not due.
+create function public.qorpera_folder_event_wake_retry_waits(p_cursor public.qorpera_event_listener_cursors, p_first uuid)
+returns boolean language sql stable security definer set search_path = '' as $$
+	-- 20260930061000 (E2a).
+	select coalesce(t.tries between 1 and 4 and clock_timestamp() < t.tried_at + interval '1 minute' * power(4, t.tries - 1),
+		false)
+	from public.qorpera_folder_event_wake_tries(p_cursor, p_first) t
+$$;
+
+-- The folder-v2 environments whose drain step would wake a listener now: a live listener (an active folder-v2 routine's
+-- current version, its cursor active, its hook not removed, its agent active and its requester a member) with a delivery
+-- of a type it takes waiting, and no wake pending or waiting for its retry. In environment order after
+-- p_after_environment. Leaves out companies being deleted and paused ones: their events wait. A plain read.
 create function public.qorpera_folder_event_wakes_due(p_after_environment uuid default null, p_limit integer default 100)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_environments uuid[];
@@ -187,13 +206,18 @@ begin
 		join public.qorpera_company_files f on f.environment_id = c.environment_id and f.core = 'folder-v2'
 		join public.qorpera_cloud_routines r on r.id = c.routine_id and r.current_version = c.routine_version
 			and r.status = 'active' and r.folder_path is not null
+		join public.qorpera_cloud_routine_versions v on v.routine_id = c.routine_id and v.version = c.routine_version
+		join lateral (select x.value from jsonb_array_elements(v.triggers) x(value) where x.value ->> 'id' = c.trigger_id
+			limit 1) t on public.qorpera_cloud_routine_trigger_valid(t.value)
 		join public.qorpera_event_hooks h on h.id = c.hook_id and h.status <> 'removed'
+		join public.qorpera_profile_staff s on s.profile_id = c.profile_id and s.staff_agent_id = v.staff_agent_id
+			and s.employment_status = 'active'
+		join public.qorpera_profile_members m on m.profile_id = c.profile_id and m.user_id = v.created_by_user_id
+		cross join lateral public.qorpera_event_listener_waiting(c, t.value -> 'only', 1) first
 		where c.active and (p_after_environment is null or c.environment_id > p_after_environment)
 			and not public.qorpera_company_deleting(c.profile_id) and not public.qorpera_company_execution_paused(c.profile_id)
 			and not public.qorpera_folder_event_wake_pending(c.routine_id, c.trigger_id)
-			and exists (select 1 from public.qorpera_event_deliveries d where d.hook_id = c.hook_id and d.status = 'verified'
-				and d.verified_at >= greatest(c.taken_before, c.activated_at - interval '1 second')
-				and d.received_at >= c.activated_at and d.received_at > clock_timestamp() - interval '7 days')
+			and not public.qorpera_folder_event_wake_retry_waits(c, first.id)
 		order by c.environment_id limit p_limit) x;
 	-- The shared folder drains' page (LISTENER.md §9).
 	return jsonb_build_object('items', coalesce((select jsonb_agg(jsonb_build_object('environment_id', e) order by e)
@@ -225,19 +249,23 @@ begin
 	select profile_id into v_profile from public.qorpera_company_files where environment_id = p_environment_id and core = 'folder-v2';
 	if v_profile is null then return jsonb_build_object('schema', c_schema, 'state', 'not_folder'); end if;
 
-	-- 1. Plain reads: the live listeners, least recently scanned first, with their agent, requester and trigger.
-	select coalesce(jsonb_agg(jsonb_build_object('routineId', c.routine_id, 'version', c.routine_version,
-			'triggerId', c.trigger_id, 'hookId', c.hook_id, 'staff', v.staff_agent_id, 'requester', v.created_by_user_id,
-			'trigger', t.value) order by c.last_scanned_at, c.routine_id, c.trigger_id), '[]'::jsonb)
+	-- 1. Plain reads: the live listeners, least recently scanned first, with their agent, requester and trigger. Only live
+	-- ones are ordered and counted against the limit: a cursor that is active but no listener (its hook removed, its
+	-- routine moved on) is never scanned, so it must never take a live listener's place (review r1 F1).
+	select coalesce(jsonb_agg(l.listener order by l.scanned, l.routine_id, l.trigger_id), '[]'::jsonb)
 	into v_listeners
-	from (select x.* from public.qorpera_event_listener_cursors x where x.environment_id = p_environment_id and x.active
-		order by x.last_scanned_at, x.routine_id, x.trigger_id limit p_limit) c
-	join public.qorpera_cloud_routines r on r.id = c.routine_id and r.current_version = c.routine_version
-		and r.status = 'active' and r.folder_path is not null and r.profile_id = v_profile
-	join public.qorpera_cloud_routine_versions v on v.routine_id = c.routine_id and v.version = c.routine_version
-	join lateral (select x.value from jsonb_array_elements(v.triggers) x(value) where x.value ->> 'id' = c.trigger_id
-		limit 1) t on public.qorpera_cloud_routine_trigger_valid(t.value)
-	join public.qorpera_event_hooks h on h.id = c.hook_id and h.status <> 'removed';
+	from (select jsonb_build_object('routineId', c.routine_id, 'version', c.routine_version, 'triggerId', c.trigger_id,
+				'hookId', c.hook_id, 'staff', v.staff_agent_id, 'requester', v.created_by_user_id, 'trigger', t.value) as listener,
+			c.last_scanned_at as scanned, c.routine_id, c.trigger_id
+		from public.qorpera_event_listener_cursors c
+		join public.qorpera_cloud_routines r on r.id = c.routine_id and r.current_version = c.routine_version
+			and r.status = 'active' and r.folder_path is not null and r.profile_id = v_profile
+		join public.qorpera_cloud_routine_versions v on v.routine_id = c.routine_id and v.version = c.routine_version
+		join lateral (select x.value from jsonb_array_elements(v.triggers) x(value) where x.value ->> 'id' = c.trigger_id
+			limit 1) t on public.qorpera_cloud_routine_trigger_valid(t.value)
+		join public.qorpera_event_hooks h on h.id = c.hook_id and h.status <> 'removed'
+		where c.environment_id = p_environment_id and c.active
+		order by c.last_scanned_at, c.routine_id, c.trigger_id limit p_limit) l;
 	if jsonb_array_length(v_listeners) = 0 then return jsonb_build_object('schema', c_schema, 'state', 'idle'); end if;
 	-- Ranks 1 to 3 KEY SHARE, and at rank 5 each routine FOR NO KEY UPDATE (as routine firing and saves take it) and its
 	-- hook FOR SHARE (a removal waits for this step, or this step sees the hook removed).
@@ -290,9 +318,7 @@ begin
 			-- Earlier wakes for the same first delivery that ended without taking it: tried again after 1, 4, 16 and 64
 			-- minutes, then the delivery is left behind with the last of them.
 			v_prefix := 'event:' || v_cursor.routine_version::text || ':' || v_cursor.trigger_id || ':' || v_first.id::text;
-			select count(*), max(created_at) into v_attempts, v_tried_at from public.qorpera_wake_occurrences
-			where routine_id = v_cursor.routine_id
-				and occurrence_key = any (array(select v_prefix || ':' || n from generate_series(1, 5) as n));
+			select t.tries, t.tried_at into v_attempts, v_tried_at from public.qorpera_folder_event_wake_tries(v_cursor, v_first.id) t;
 			if v_attempts >= 5 then
 				insert into public.qorpera_event_wake_deliveries(routine_id, trigger_id, delivery_id, occurrence_id)
 				select v_cursor.routine_id, v_cursor.trigger_id, v_first.id, id from public.qorpera_wake_occurrences
@@ -301,8 +327,7 @@ begin
 				v_skipped := v_skipped + 1;
 				continue;
 			end if;
-			if v_attempts > 0 and clock_timestamp() < v_tried_at + interval '1 minute' * power(4, v_attempts - 1) then
-				continue; end if;
+			if public.qorpera_folder_event_wake_retry_waits(v_cursor, v_first.id) then continue; end if;
 			-- A routine that must report needs its agent's public conversation; its requester must still be a member.
 			v_session := public.qorpera_folder_wake_public_session(v_profile, p_environment_id, (v_listener.l ->> 'staff')::uuid,
 				(v_listener.l ->> 'requester')::uuid);
@@ -355,7 +380,10 @@ end $$;
 
 -- 6. Grants and the deploy guard -----------------------------------------------------------------------------------------
 
-revoke all on function public.qorpera_folder_event_wake_pending(uuid, text) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_folder_event_wake_pending(uuid, text),
+	public.qorpera_folder_event_wake_tries(public.qorpera_event_listener_cursors, uuid),
+	public.qorpera_folder_event_wake_retry_waits(public.qorpera_event_listener_cursors, uuid)
+	from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_folder_event_wakes_due(uuid, integer), public.qorpera_folder_event_wakes_company(uuid, integer)
 	from public, anon, authenticated;
 grant execute on function public.qorpera_folder_event_wakes_due(uuid, integer), public.qorpera_folder_event_wakes_company(uuid, integer)
@@ -369,7 +397,9 @@ begin
 		'public.qorpera_company_state_routine_rules(uuid,uuid,jsonb,text,jsonb,boolean)',
 		'public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)', 'public.qorpera_activate_company_file_listener()',
 		'public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)', 'public.qorpera_folder_read_wake(jsonb)',
-		'public.qorpera_folder_event_wakes_due(uuid,integer)', 'public.qorpera_folder_event_wakes_company(uuid,integer)'
+		'public.qorpera_folder_event_wakes_due(uuid,integer)', 'public.qorpera_folder_event_wakes_company(uuid,integer)',
+		'public.qorpera_folder_event_wake_tries(public.qorpera_event_listener_cursors,uuid)',
+		'public.qorpera_folder_event_wake_retry_waits(public.qorpera_event_listener_cursors,uuid)'
 	]::regprocedure[] loop
 		if strpos((select prosrc from pg_proc where oid = v_function), '20260930061000') = 0 then
 			raise exception 'E2a marker is missing in %', v_function; end if;
