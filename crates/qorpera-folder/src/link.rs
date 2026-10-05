@@ -180,10 +180,8 @@ impl Link {
 					self.give(s);
 					return Ok(data);
 				}
-				Err(Fail::Remote(e)) => {
-					self.give(s);
-					let f = Fail::Remote(e);
-					self.note(&f);
+				Err(f @ Fail::Remote(_)) => {
+					self.answered(s, &f);
 					return Err(f);
 				}
 				Err(Fail::Link(e)) => {
@@ -198,31 +196,54 @@ impl Link {
 
 	// ---- Writes (protocol 2) --------------------------------------------------------------------------------------
 
-	/// One change on a pooled connection. Unlike a list or a read it is not sent again when the link breaks after it
-	/// went out: the node may have made it, so the program sees EIO. A connection that could not be made at all is
-	/// tried once more (nothing was sent).
+	/// One change on a pooled connection. Unlike a list or a read it is not sent again once it went out and the link
+	/// broke before the answer: the node may have made it, so the program sees EIO. A connection that could not be made,
+	/// or that would not take the request (a pooled one the node closed, when its service restarted), never delivered
+	/// it: the change goes out once more on a new connection.
 	fn change(&self, request: u8, payload: &[u8], answer: u8) -> Result<Vec<u8>, Fail> {
-		let mut s = match self.take() {
-			Ok(s) => s,
-			Err(Fail::Link(_)) => self.take()?,
-			Err(f) => return Err(f),
-		};
-		match exchange(&mut s, request, payload, answer) {
-			Ok(data) => {
-				self.give(s);
-				Ok(data)
-			}
-			Err(Fail::Remote(e)) => {
-				self.give(s);
-				let f = Fail::Remote(e);
-				self.note(&f);
-				Err(f)
-			}
-			Err(Fail::Link(e)) => {
+		let mut attempt = 0;
+		loop {
+			attempt += 1;
+			let mut s = match self.take() {
+				Ok(s) => s,
+				Err(Fail::Link(_)) if attempt == 1 => continue,
+				Err(f) => return Err(f),
+			};
+			if let Err(e) = write_frame(&mut s, request, payload) {
 				self.lost();
-				Err(Fail::Link(e))
+				if attempt == 1 {
+					continue;
+				}
+				return Err(Fail::Link(e));
 			}
+			return match read_answer(&mut s, answer) {
+				Ok(data) => {
+					self.give(s);
+					Ok(data)
+				}
+				Err(f @ Fail::Remote(_)) => {
+					self.answered(s, &f);
+					Err(f)
+				}
+				Err(Fail::Link(e)) => {
+					self.lost();
+					Err(Fail::Link(e))
+				}
+			};
 		}
+	}
+
+	/// A connection the node answered with an error: back to the pool, unless the error says the node may have ended it
+	/// (it ends a connection after a failure of its own, which it answers as UNAVAILABLE).
+	fn answered(&self, s: Stream, f: &Fail) {
+		match f {
+			Fail::Remote(e) if e.code == code::UNAVAILABLE => {
+				s.shutdown();
+				self.lost();
+			}
+			_ => self.give(s),
+		}
+		self.note(f);
 	}
 
 	pub fn open_write(&self, request: &OpenRequest) -> Result<Opened, Fail> {
@@ -383,6 +404,10 @@ impl Feed {
 
 fn exchange(s: &mut Stream, request: u8, payload: &[u8], answer: u8) -> Result<Vec<u8>, Fail> {
 	write_frame(s, request, payload).map_err(Fail::Link)?;
+	read_answer(s, answer)
+}
+
+fn read_answer(s: &mut Stream, answer: u8) -> Result<Vec<u8>, Fail> {
 	let (k, body) = read_frame(s).map_err(Fail::Link)?;
 	if k == answer {
 		Ok(body)
@@ -632,6 +657,92 @@ mod tests {
 			}
 		});
 		(format!("unix:{}", path.display()), stored)
+	}
+
+	/// A node stand-in that takes writes and drops the connection the first time `drop` says so for a frame it got
+	/// (before answering it). Returns its address and every frame it got: its kind, and a chunk part's offset.
+	fn dropping_node(
+		dir: &std::path::Path,
+		drop: impl Fn(u8, &[u8]) -> bool + Send + Sync + 'static,
+	) -> (String, Arc<std::sync::Mutex<Vec<(u8, u64)>>>, Stored) {
+		let path = dir.join("node.sock");
+		let listener = UnixListener::bind(&path).unwrap();
+		let got: Arc<std::sync::Mutex<Vec<(u8, u64)>>> = Arc::default();
+		let stored: Stored = Arc::default();
+		let (seen, chunks, drop) = (got.clone(), stored.clone(), Arc::new(drop));
+		let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+		std::thread::spawn(move || {
+			let partial: Arc<std::sync::Mutex<Vec<u8>>> = Arc::default();
+			for conn in listener.incoming() {
+				let mut s = conn.unwrap();
+				let (seen, chunks, drop, dropped, partial) =
+					(seen.clone(), chunks.clone(), drop.clone(), dropped.clone(), partial.clone());
+				std::thread::spawn(move || {
+					let (_, body) = read_frame(&mut s).unwrap();
+					let hello: Hello = serde_json::from_slice(&body).unwrap();
+					let ok = HelloOk { protocol: 2, view_id: hello.view_id, as_of_seq: 1, read_only: false };
+					write_frame(&mut s, kind::HELLO_OK, &serde_json::to_vec(&ok).unwrap()).unwrap();
+					while let Ok((k, body)) = read_frame(&mut s) {
+						let mut offset = 0;
+						if k == kind::CHUNK {
+							let len = u32::from_be_bytes(body[..4].try_into().unwrap()) as usize;
+							let header: ChunkHeader = serde_json::from_slice(&body[4..4 + len]).unwrap();
+							offset = header.offset;
+							let mut sofar = partial.lock().unwrap();
+							if header.offset == 0 {
+								sofar.clear();
+							}
+							assert_eq!(header.offset as usize, sofar.len(), "parts in order");
+							sofar.extend_from_slice(&body[4 + len..]);
+							if sofar.len() as u64 == header.bytes {
+								chunks.lock().unwrap().insert((header.handle, header.index), sofar.clone());
+							}
+						}
+						seen.lock().unwrap().push((k, offset));
+						if !dropped.load(Ordering::SeqCst) && drop(k, &body) {
+							dropped.store(true, Ordering::SeqCst);
+							return;
+						}
+						write_frame(&mut s, kind::DONE, b"{}").unwrap();
+					}
+				});
+			}
+		});
+		(format!("unix:{}", path.display()), got, stored)
+	}
+
+	#[test]
+	fn a_change_whose_answer_is_lost_is_never_sent_twice() {
+		let dir = tempdir();
+		// The node takes the mkdir, then the link breaks before its answer: it may have made it.
+		let (addr, got, _) = dropping_node(&dir, |k, _| k == kind::MKDIR);
+		let link = Link::new(addr, view("right"), 2);
+		let err = link.mkdir("made").unwrap_err();
+		assert!(matches!(err, Fail::Link(_)), "{err}");
+		assert_eq!(err.errno(), libc::EIO);
+		assert_eq!(got.lock().unwrap().iter().filter(|(k, _)| *k == kind::MKDIR).count(), 1);
+		// The pool goes on with a new connection.
+		link.mkdir("next").unwrap();
+		std::fs::remove_dir_all(dir).unwrap();
+	}
+
+	#[test]
+	fn a_chunk_whose_sending_broke_off_is_sent_again_whole() {
+		let dir = tempdir();
+		// The link breaks at the chunk's second part.
+		let (addr, got, stored) = dropping_node(&dir, |k, body| {
+			k == kind::CHUNK && {
+				let len = u32::from_be_bytes(body[..4].try_into().unwrap()) as usize;
+				serde_json::from_slice::<ChunkHeader>(&body[4..4 + len]).unwrap().offset == PART as u64
+			}
+		});
+		let link = Link::new(addr, view("right"), 2);
+		let data: Vec<u8> = (0..2 * PART + 7).map(|i| (i % 253) as u8).collect();
+		link.put_chunk(3, 0, &data).unwrap();
+		let offsets: Vec<u64> = got.lock().unwrap().iter().map(|(_, o)| *o).collect();
+		assert_eq!(offsets, [0, PART as u64, 0, PART as u64, 2 * PART as u64]);
+		assert_eq!(stored.lock().unwrap()[&(3, 0)], data);
+		std::fs::remove_dir_all(dir).unwrap();
 	}
 
 	#[test]
