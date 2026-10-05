@@ -207,7 +207,9 @@ impl VersionMap {
 			}
 			out.write_all(text.as_bytes())?;
 			std::fs::rename(&fresh, &path)?;
-			OpenOptions::new().append(true).open(&path)
+			// The handle written through goes on appending: it is the file now in place, at its end, and the map is its
+			// only writer. Opening it again could fail after the rename, and leave the lines going to the file it replaced.
+			Ok(out)
 		})();
 		match result {
 			Ok(file) => {
@@ -315,9 +317,15 @@ mod tests {
 				map.read("same.md", &format!("v{i}"));
 			}
 			assert_eq!(map.lines, 2);
+			// It goes on writing to the file now in place, not the one that file replaced.
+			let (path, file) = map.file.as_ref().unwrap();
+			use std::os::unix::fs::MetadataExt;
+			assert_eq!(file.metadata().unwrap().ino(), std::fs::metadata(path).unwrap().ino());
+			map.read("after.md", "a1");
 		}
 		let map = VersionMap::open(&dir).unwrap();
 		assert_eq!((map.base("plan.md").as_deref(), map.base("same.md").as_deref()), (Some("v1"), Some("v1027")));
+		assert_eq!(map.base("after.md").as_deref(), Some("a1"));
 		std::fs::remove_dir_all(dir).unwrap();
 	}
 
