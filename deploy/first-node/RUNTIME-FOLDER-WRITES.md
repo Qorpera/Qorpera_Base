@@ -30,8 +30,8 @@ restore in the web app (the Interfaces session's file page; below).
 
 | Part | Step 3 adds |
 | --- | --- |
-| Folder program (`crates/qorpera-folder`, in the machine) | write operations; the bytes of each file open for writing, cut into chunks, with at most one partial chunk in memory per file; the `publish` command |
-| Folder service (node host) | each view's pending changes (names and chunk lists, never bytes); base versions; staging; boundaries; the report |
+| Folder program (`crates/qorpera-folder`, in the machine) | write operations; the bytes of each file open for writing, cut into chunks, with at most one partial chunk in memory per file; the version map (each path's newest version read); the `publish` command |
+| Folder service (node host) | each view's pending changes (names and chunk lists, never bytes) with their bases; staging; boundaries; the report |
 | Object gateway | a byte route for the folder service, on its own token |
 | Folder core (SQL) | an upload holds the bytes its actor put under its own earlier intents (3a); the rest is live or in review (below) |
 
@@ -74,9 +74,10 @@ holds: created, changed and deleted paths, renames, the executable bit, and each
 attributes and reads served to that view include them, so a program sees its own work at once. Other views see only
 what is published.
 
-**Base versions** (§2 "The base version of a path": the newest version the writer has seen). The service keeps, per
-view, a version map: for each path whose content it served the view, the newest version it served. Every read names
-its version, so the map is exact. A change's base is taken from it:
+**Base versions** (§2 "The base version of a path": the newest version the writer has seen). The folder program keeps
+the mount's version map: for each path whose content it read, the newest version it read. Every read names its
+version, so the map is exact. The program sends a path's base with each change it asks for, and the service uses it.
+A change's base is:
 - a path the view read: the newest version it read, even if the feed has moved on since. An editor that read v1,
   while another machine published v2, saves with base v1, by writing the file in place or by renaming a temporary
   file over it, and gets a conflict, not a silent overwrite of v2;
@@ -87,12 +88,20 @@ its version, so the map is exact. A change's base is taken from it:
 
 A removed or renamed folder records the view's position in the feed (`asOfSeq`) at the first such operation. The
 feed keeps moving underneath: a pending path keeps showing the view's own version, and the commit decides. After a
-save the map holds the version the save made. The map lives as long as the view, at most one entry per path the
-view read.
+save the map holds the version the save made.
 
-This replaces §2's "saved with each command's read record". Step 3 has no commands, and a restarted service loses the
-pending work anyway (below); a view opened again starts with an empty map, so its first writes take the version shown
-when they start.
+**The map lives as long as the programs it protects.** An editor's buffer outlives a restart of the folder service
+or of the folder program, so the map must too; otherwise a save after the restart would take the newest version as
+its base and overwrite it. So the program keeps the map in memory and writes each new entry through to a file under
+`/run/qorpera-folder/<mount>/` (a memory file system, root's only), and a program started again for the same mount
+reads it back. It holds paths and version ids, never content, at most one entry per path the mount read, and goes when
+the machine restarts, together with every process whose buffer it protected. A restart of the service loses the
+pending changes (below), never the map.
+
+The map is not authority. A writer that forges a base can only claim to have seen the live version, which it could
+have read anyway; the core still checks every unit.
+
+This replaces §2's "saved with each command's read record": step 3 has no commands.
 
 ## A boundary
 
@@ -150,18 +159,19 @@ reported, instead of failing at open with `EACCES` as §2 says. Proposal P9 belo
 ## Protocol v2
 
 The hello's answer says whether the view may write (`readOnly`). New requests on the `io` connection, each answered
-with a small JSON reply or `e`:
+with a small JSON reply or `e`. Every change names the base of each existing path it touches (`base`: the version the
+mount last read of it, from its version map; left out for a path it never read):
 
 | Type | Request | Reply |
 | --- | --- | --- |
-| `O` | open for writing `{path, create, exclusive, truncate}` | `{handle, size, version}` |
+| `O` | open for writing `{path, base?, create, exclusive, truncate}` | `{handle, size, version}` |
 | `K` | a chunk `{handle, index, sha256, bytes}`, then its bytes in `d` frames | `{}` once the gateway has it |
 | `G` | read back a pending chunk `{handle, index}` | its bytes |
 | `C` | close `{handle, size, chunks}` (the last chunk sent with it) | `{}` once staged |
-| `T` | truncate a path that is not open `{path, size}` | `{}` |
-| `M`, `U`, `D` | mkdir, unlink, rmdir `{path}` | `{}` |
-| `N` | rename `{from, to, noReplace}` | `{}` |
-| `X` | the executable bit `{path, executable}` | `{}` |
+| `T` | truncate a path that is not open `{path, base?, size}` | `{}` |
+| `M`, `U`, `D` | mkdir, unlink, rmdir `{path, base?}` | `{}` |
+| `N` | rename `{from, fromBase?, to, toBase?, noReplace}` | `{}` |
+| `X` | the executable bit `{path, base?, executable}` | `{}` |
 | `P` | publish | the report |
 
 Frames stay at most 2 MiB, so a 4 MiB chunk is three frames. The service still handles one request at a time per
@@ -193,8 +203,8 @@ extend it.
 | --- | --- | --- |
 | 3a | SQL: an upload holds its actor's own puts (migration `20260930083000`, test 931) | a chunk put under one intent is `present` in the same actor's next intent and not in another actor's; the whole file then seals and commits; an expired intent does not count; a marked object still refuses |
 | 3b | Gateway: the folder service's byte route and token | put and refusal paths as `folder-objects.ts`'s tests; the native token is refused there, and the folder service's token on the native routes |
-| 3c | Folder service: protocol v2, pending changes, base versions, staging, boundaries, the report | the service's tests with a stand-in core that commits (conflicts, unseen changes, refusals, replays) and a stand-in gateway: a stale save (v1 read, v2 published, then saved in place and by renaming a temporary file over it) is a conflict; a lost reply in either phase of a two-phase boundary replays under that phase's key; the hosted-db script runs the real commit on boundaries the service builds |
-| 3d | Folder program: write operations, chunks, read-back, `publish` | FUSE tests on the test machine (a file written across chunks, a write inside a sent chunk, rename over a file, `rm -rf`, an open file left out, lock names); the end-to-end test against the service |
+| 3c | Folder service: protocol v2, pending changes, base versions, staging, boundaries, the report | the service's tests with a stand-in core that commits (conflicts, unseen changes, refusals, replays) and a stand-in gateway: a stale save (v1 read, v2 published, then saved in place and by renaming a temporary file over it) is a conflict, also when the service restarted between the read and the save; a lost reply in either phase of a two-phase boundary replays under that phase's key; the hosted-db script runs the real commit on boundaries the service builds |
+| 3d | Folder program: write operations, chunks, read-back, `publish` | FUSE tests on the test machine (a file written across chunks, a write inside a sent chunk, rename over a file, `rm -rf`, an open file left out, lock names; the version map kept across a restart of the program and of the service); the end-to-end test against the service: a stale save after a service restart, in place and by rename, is a conflict |
 | 3e | Live proof (coordinator runs it): read-write operator mounts in a machine on each node, one test company | below |
 
 **Live proof (3e)**, from the design's §10 "Ordinary work" and "Conflict":
