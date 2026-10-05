@@ -218,7 +218,6 @@ export const CONVERSATION: Record<string, string> = {
 	"Choose a login to continue.": "Vælg et login for at fortsætte.",
 	"Use {account}": "Brug {account}",
 	"Model account {number}": "Modelkonto {number}",
-	"The login could not be chosen. Try again.": "Login kunne ikke vælges. Prøv igen.",
 
 	// Company notices above the composer (app/views/execution-notices.ts)
 	"Company updates": "Virksomhedsopdateringer",
