@@ -201,8 +201,8 @@ const CLOUD_WORKER_TOOL_DESCRIPTION_WITHOUT_MACHINES = CLOUD_WORKER_TOOL_DESCRIP
 	"",
 );
 
-/** A folder-v2 agent's workers are folders of its todos (F2-5b): the key names the folder, status reads one todo's
- * workers, and coding sessions are not there yet. */
+/** A folder-v2 agent's workers are folders of its todos (F2-5b): the key names the folder, and status reads one todo's
+ * workers. Coding sessions and their archive work there too (C3b). */
 function folderWorkerDescription(description: string): string {
 	return description
 		.replace(
@@ -212,14 +212,6 @@ function folderWorkerDescription(description: string): string {
 		.replace(
 			"status lists your workers, newest first, as many as fit one result, each with the start of its summary: without todoKey, those of open todos and any that changed in the last week. Filter it with todoKey, state",
 			"status lists the workers of one todo (name its todoKey), newest first, as many as fit one result, each with the start of its summary. Filter it with state",
-		)
-		.replace(
-			"Actions: dispatch, status, followup, cancel, decide, archive.",
-			"Actions: dispatch, status, followup, cancel, decide.",
-		)
-		.replace(
-			/ A coding session is a worker with species coding: .*$/,
-			" Coding sessions are not available in this company yet.",
 		);
 }
 
