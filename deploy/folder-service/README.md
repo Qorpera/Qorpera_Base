@@ -61,6 +61,17 @@ Then, as root, without echoing anything secret:
 empty until runs use the folder; any view kind presented from such a machine is accepted, so list only execution
 hosts.
 
+**Writes through the mount (F3 step 3, `deploy/first-node/RUNTIME-FOLDER-WRITES.md`)** are off until both of these:
+- `"gatewayUrl": "https://<node 1's object gateway origin>"` in `config.json`, and the gateway's folder-service token
+  (`QORPERA_OBJECT_GATEWAY_FOLDER_SERVICE_TOKEN` on the gateway, #859) at `/etc/qorpera-folder-service/gateway-token`
+  (0400), loaded by a drop-in `LoadCredential=qorpera-folder-gateway-token:/etc/qorpera-folder-service/gateway-token`
+  (the unit does not name it, so a node without writes needs no file);
+- a mount with `"write": true`, and for a desktop's save rule `"quietMs": 2000` (500–60000): its pending changes are
+  published that long after the last change; without it, only when the machine asks (`qorpera-folder publish`).
+
+Only a member's or the platform's operator mount writes in step 3; core views stay read-only until steps 4–6. Writes
+need P17's conflict copies and their erasure live (#783, #798), and step 3a (#855) for big files' chunks.
+
 - Objects on the share are 0600, owned by the object gateway's account. Give the service that uid with a drop-in
   (`User=`) or a read grant on the storage server, and check with `sudo -u <account> head -c1 <one object>`.
 - `systemctl enable --now qorpera-folder-service.socket qorpera-folder-bridge.service`

@@ -48,9 +48,30 @@ TypeScript: `packages/object-gateway/src/folder-service/protocol.ts`.
 | `a` | feed, machine → service | `{seq}` |
 | `e` | service → machine | `{code, message}` |
 
+**Protocol 2 (writes, F3 step 3: `RUNTIME-FOLDER-WRITES.md`).** A hello may say `protocol: 2`; the answer echoes it and
+says `readOnly: false` when the view takes writes (a writable operator mount, on the `io` role). A machine on protocol 1
+reads only. On a writing connection frames may carry up to 2 MiB, and these requests are answered with `k` (`{}`, or
+`{version}` for a close), `o`, `d` or `p`:
+
+| Type | Request | Answer |
+| --- | --- | --- |
+| `O` | open for writing `{path, base?, create, exclusive, truncate}` | `o` `{handle, size, version}` |
+| `K` | one part of a chunk: `[u32 header length][{handle, index, sha256, bytes, offset}][≤ 1 MiB]`, in order from offset 0 | `k` once stored (the last part) |
+| `G` | `{handle, index, offset, length ≤ 1 MiB}`: part of a pending chunk back | `d` the bytes |
+| `C` | close `{handle, size}`: the chunks must tile `size` on the 4 MiB grid | `k` `{version}` |
+| `M` | mkdir `{path}` | `k` |
+| `U`, `D` | unlink, rmdir `{path, base?}` | `k` |
+| `N` | rename `{from, fromBase?, to, toBase?, noReplace}` | `k` |
+| `X` | the executable bit `{path, base?, executable}` | `k` |
+| `P` | publish `{}` | `p` the report `{commitId, seq, paths: [{path, outcome, reason?, receipt?, kept?}]}` |
+
+A truncate of a file not open is an open, the chunk that ends it, and a close; a file whose manifest is not on the
+4 MiB grid is changed whole (open it with truncate), not chunk by chunk.
+
 Error codes and what a program on the machine sees: `NOT_FOUND` ENOENT, `NOT_A_FOLDER` ENOTDIR, `NOT_A_FILE` EISDIR,
-`STALE` ESTALE, `DENIED` EACCES, `BAD_REQUEST` EINVAL, `UNAVAILABLE` EIO. `VIEW_CLOSED` and `VIEW_REFUSED` unmount
-the folder; the program exits 3 and its unit does not restart it.
+`STALE` ESTALE, `DENIED` EACCES, `BAD_REQUEST` EINVAL, `UNAVAILABLE` EIO; for writes `EXISTS` EEXIST, `NOT_EMPTY`
+ENOTEMPTY, `NOT_PERMITTED` EPERM, `TOO_LARGE` EFBIG, `READ_ONLY` EROFS, `NOT_HERE` EXDEV and `BUSY` EBUSY.
+`VIEW_CLOSED` and `VIEW_REFUSED` unmount the folder; the program exits 3 and its unit does not restart it.
 
 `version` is the core's version id of the path (a uuid), opaque to the machine. A read names the version the machine
 was shown, and the service serves exactly that version: the current one, or one of the last 16 replaced on the
@@ -62,7 +83,8 @@ longer reachable by name, its attributes frozen) and stays readable by whoever o
 pages of two versions in one file.
 
 Memory per connection is bounded in the service: frames from a machine are at most 4 KiB until the hello is accepted
-and 64 KiB after, one request is handled at a time with the socket paused, the next waits until the machine has
+and 64 KiB after (2 MiB on a writing connection: a chunk part is up to 1 MiB, streamed on to the gateway, never
+gathered), one request is handled at a time with the socket paused, the next waits until the machine has
 read the last answer, and a feed connection whose machine leaves 4 MiB unread is ended (the machine reconnects and
 drops its caches).
 
