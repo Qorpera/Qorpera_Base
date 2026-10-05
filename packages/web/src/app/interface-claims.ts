@@ -33,6 +33,11 @@ export class ClaimLostError extends Error {
 
 export type ClaimVerb = "take" | "release";
 
+/** What failed, as a refusal says it before its problems. */
+export function claimFailure(verb: ClaimVerb): string {
+	return verb === "take" ? t("The card could not be taken.") : t("The card could not be released.");
+}
+
 /** Takes or releases one row's holder cell in `tables/<table>/rows.csv`. Answers whether it wrote: false when the cell
  * already says it. Throws `ClaimLostError` when the cell changed under the card, and a refusal
  * (`WebCompanyFolderRejectedError`) with the problems when the rows or the claim don't pass. */
@@ -47,7 +52,7 @@ export async function claimTableCell(options: {
 	readonly check: () => void;
 }): Promise<boolean> {
 	const { folder, table, verb, memberId, signal } = options;
-	const failure = verb === "take" ? t("The card could not be taken.") : t("The card could not be released.");
+	const failure = claimFailure(verb);
 	let definition: TableFile | null = null;
 	return await rewriteStateFile(
 		folder,
