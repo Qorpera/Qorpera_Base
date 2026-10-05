@@ -748,7 +748,11 @@ export class SupabaseNativeProviderControlPlane
 				try {
 					while (true) {
 						requestSignal.throwIfAborted();
-						const next = await reader.read();
+						const next = await reader.read().catch((error: unknown) => {
+							// The connection ended mid-answer: a lost answer, like a failed fetch (control calls).
+							if (requestSignal.aborted) throw error;
+							throw new CloudRuntimeDiagnosticError("transport_unavailable", "Native control-plane RPC failed");
+						});
 						requestSignal.throwIfAborted();
 						if (next.done) break;
 						bytes += next.value.byteLength;

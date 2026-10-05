@@ -7,7 +7,7 @@ import {
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
-import { type CloudNativeTool, relayControlRefusal } from "./cloud-native-tool-boundary.ts";
+import { CloudControlRefusalRelay, type CloudNativeTool } from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 export const CLOUD_WAKE_SCHEMA = "qorpera.wake-envelope/v1";
@@ -775,7 +775,6 @@ async function callCoworkerMessage(
 	message: CloudCoworkerMessage,
 	signal: AbortSignal,
 ): Promise<CloudCoworkerReceipt> {
-	// The send is the tool's first effect: a refusal of it is the tool's answer (control calls, 4 Oct 2026).
 	const value = await cloudToolRequest(
 		(requestSignal) =>
 			control.call(
@@ -790,7 +789,7 @@ async function callCoworkerMessage(
 				requestSignal,
 			),
 		signal,
-	).catch(relayControlRefusal);
+	);
 	const receipt = closed(value, ["schema", "runId", "receiptId", "occurrenceId", "recipientStaffId", "status"]);
 	if (
 		receipt.schema !== "qorpera.coworker-send/v1" ||
@@ -890,14 +889,19 @@ export function cloudCoworkerMessageTool(
 		).some((key) => admittedBinding[key] !== admittedIdentity[key])
 	)
 		throw new Error("Coworker tool binding does not match its native run");
+	// The send is the tool's first effect: a refusal of it is the tool's answer, unless an earlier attempt with the same
+	// key ended unknown (control calls, 4 Oct 2026).
+	const refusals = new CloudControlRefusalRelay();
 	return makeCoworkerTool(admittedIdentity, (message, signal) =>
-		callCoworkerMessage(admittedBinding, control, message, signal),
+		refusals.call(message.operationKey, () => callCoworkerMessage(admittedBinding, control, message, signal)),
 	);
 }
 
 /** Lives in the cloud host. Neither bindings nor requester/audience selectors are model input. */
 export class CloudNativeWakeBus {
 	readonly #run: CloudNativeToolRun;
+	/** The coworker tool's refusals (control calls, 4 Oct 2026), kept apart for keys an earlier attempt left unknown. */
+	readonly #refusals = new CloudControlRefusalRelay();
 	readonly #control: CloudWakeControl;
 	constructor(run: CloudNativeToolRun, control: CloudWakeControl) {
 		this.#run = run;
@@ -931,11 +935,8 @@ export class CloudNativeWakeBus {
 	async sendCoworker(value: CloudCoworkerMessage, signal: AbortSignal): Promise<CloudCoworkerReceipt> {
 		const message = parseCoworkerMessage(value);
 		await this.#run.assertActive(signal);
-		const receipt = await callCoworkerMessage(
-			this.#run.binding,
-			this.#control,
-			message,
-			AbortSignal.any([signal, this.#run.signal]),
+		const receipt = await this.#refusals.call(message.operationKey, () =>
+			callCoworkerMessage(this.#run.binding, this.#control, message, AbortSignal.any([signal, this.#run.signal])),
 		);
 		await this.#run.assertActive(signal);
 		return receipt;

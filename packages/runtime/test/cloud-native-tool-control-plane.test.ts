@@ -35,6 +35,37 @@ it("calls the service-only authority RPC with a closed host binding", async () =
 	expect(JSON.stringify(run.identity)).not.toContain("SYNTHETIC_SERVICE_KEY");
 });
 
+it("asks again when an authority answer's connection ends mid-body, and keeps the run (control calls)", async () => {
+	const { binding, authority } = nativeToolAuthorityFixture();
+	let calls = 0;
+	const request = vi.fn<typeof fetch>(async () => {
+		calls += 1;
+		if (calls > 1) return Response.json(authority);
+		// HTTP 200, then the connection resets before the body ends.
+		return new Response(
+			new ReadableStream({
+				start(controller) {
+					controller.enqueue(new TextEncoder().encode('{"schema":'));
+					controller.error(new TypeError("terminated"));
+				},
+			}),
+		);
+	});
+	const control = new SupabaseNativeProviderControlPlane(
+		"https://cloud.example.test",
+		"SYNTHETIC_SERVICE_KEY",
+		request,
+	);
+	const run = await CloudNativeToolRun.open(binding, control, new AbortController().signal);
+	runs.push(run);
+	expect(request).toHaveBeenCalledTimes(2);
+	expect(run.identity).toEqual(authority.identity);
+	// A malformed but complete answer is no lost answer: it is not asked again.
+	request.mockImplementationOnce(async () => new Response("{not json"));
+	await expect(run.assertActive(run.signal)).rejects.toThrow("Cloud tool authority unavailable");
+	expect(request).toHaveBeenCalledTimes(3);
+});
+
 it("does not send a model-supplied authority field to the control plane", async () => {
 	const { binding } = nativeToolAuthorityFixture();
 	const request = vi.fn<typeof fetch>();
