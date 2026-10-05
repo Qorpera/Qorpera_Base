@@ -269,6 +269,12 @@ export function cloudActionEffect(
 			return args.intent !== undefined || args.title !== undefined ? "delegation" : "internal";
 		case "manage_worker":
 			return args.action === "dispatch" || args.action === "followup" ? "delegation" : "internal";
+		// Changes the agent saved from a computer that needed review (P40b): applying them has the proposal's own effect,
+		// which the run's list gave (cloud-folder-proposals.ts); dropping them changes nothing in the company.
+		case "apply_proposal":
+			return args.effect === "destructive" ? "destructive" : "delegation";
+		case "discard_proposal":
+			return "internal";
 		default:
 			return "external";
 	}
@@ -330,6 +336,8 @@ function fileName(path: string): string {
 	const base = path.split("/").filter(Boolean).at(-1) ?? path;
 	return readable(base.replace(/\.(?=[a-z])[a-z0-9]{1,8}$/i, "")) || base;
 }
+/** The same for other cards' facts (cloud-folder-proposals.ts). */
+export const cloudActionFileName = fileName;
 
 /** A time zone this host can read, if the value is one. */
 function knownZone(value: JsonValue | undefined): string | undefined {
@@ -593,6 +601,17 @@ export function describeCloudAction(
 			(args.action === "followup" && worker ? readable(worker) : null);
 		add("title", args.title);
 		quote("task", args.goal ?? args.text, CONTENT_BYTES);
+	} else if (tool.name === "apply_proposal") {
+		// Changes the agent saved from a computer, as the run's list described them (cloud-folder-proposals.ts): what
+		// changes, in order, never its files.
+		title = text(args.title, 200) || "Apply changes saved from a computer";
+		target = text(args.target) || null;
+		for (const item of Array.isArray(args.details) ? args.details : []) {
+			const detail = record(item);
+			if (typeof detail.key !== "string") continue;
+			if (detail.quoted === true) quote(detail.key, detail.value, CONTENT_BYTES);
+			else add(detail.key, detail.value);
+		}
 	} else if (tool.name === "google_drive_create_file" || tool.name === "google_drive_update_file") {
 		title = CONNECTOR_TITLES[tool.name] ?? title;
 		const input = record(args.input ?? parsed);
@@ -808,8 +827,12 @@ export interface CloudActionReviewControl {
 }
 
 /** A reviewed call that may run carries its approval's id (the action review row), which a folder writer records as
- * the review of the change set it commits (RUNTIME-COMPANY-FOLDER-C2.md, R1). Reads and internal calls carry none. */
-export type CloudActionGateResult = { run: true; reviewId?: string } | { run: false; text: string };
+ * the review of the change set it commits (RUNTIME-COMPANY-FOLDER-C2.md, R1). Reads and internal calls carry none. A
+ * call that was denied (by the reviewer, or by a member on its card) carries its denial's id, with which a tool closes
+ * what the call stood for (P40b: a proposal is declined). */
+export type CloudActionGateResult =
+	| { run: true; reviewId?: string }
+	| { run: false; text: string; deniedReviewId?: string };
 
 /** One acting call as the boundary hands it to the review. */
 export interface CloudActionCall {
@@ -833,6 +856,13 @@ function approved(reviewId: unknown): CloudActionGateResult {
 	return typeof reviewId === "string" && UUID.test(reviewId)
 		? { run: true, reviewId: reviewId.toLowerCase() }
 		: { run: true };
+}
+
+/** A denied call, with its denial's id when the kernel gave one. */
+function denied(text: string, reviewId: unknown): CloudActionGateResult {
+	return typeof reviewId === "string" && UUID.test(reviewId)
+		? { run: false, text, deniedReviewId: reviewId.toLowerCase() }
+		: { run: false, text };
 }
 
 function name(value: unknown, fallback: string): string {
@@ -884,7 +914,7 @@ export class CloudActionReviewGate {
 		// A dynamic routine run must still decide: without rewriting its instructions it can.
 		return !result.run && call.tool.name === "decide_routine"
 			? {
-					run: false,
+					...result,
 					text: `${result.text} This run's decision is still owed: call decide_routine again without intent or title, and the routine keeps its current instructions.`,
 				}
 			: result;
@@ -902,10 +932,10 @@ export class CloudActionReviewGate {
 		);
 		if (begin.state === "approved") return approved(begin.reviewId);
 		if (begin.state === "declined")
-			return {
-				run: false,
-				text: "REVIEW_DENIED: This exact action was declined before, so it did not happen. Do not retry it, reword it or reach it another way; take a genuinely safer path or tell the member. Only if the member then asks for it again in a new message here (a card answer does not count), repeat the identical call once: it will then wait for approval on a card.",
-			};
+			return denied(
+				"REVIEW_DENIED: This exact action was declined before, so it did not happen. Do not retry it, reword it or reach it another way; take a genuinely safer path or tell the member. Only if the member then asks for it again in a new message here (a card answer does not count), repeat the identical call once: it will then wait for approval on a card.",
+				begin.reviewId,
+			);
 		if (begin.state === "used")
 			return {
 				run: false,
@@ -986,10 +1016,10 @@ export class CloudActionReviewGate {
 		const reason = name(recorded.reason, verdict.reason);
 		if (recorded.decision === "allow") return approved(recorded.reviewId);
 		if (recorded.decision === "deny")
-			return {
-				run: false,
-				text: `REVIEW_DENIED: ${reason} The action did not happen. Do not retry it, reword it or reach it another way; take a genuinely safer path or tell the member. Only if the member then asks for it again in a new message here (a card answer does not count), repeat the identical call once: it will then wait for approval on a card.`,
-			};
+			return denied(
+				`REVIEW_DENIED: ${reason} The action did not happen. Do not retry it, reword it or reach it another way; take a genuinely safer path or tell the member. Only if the member then asks for it again in a new message here (a card answer does not count), repeat the identical call once: it will then wait for approval on a card.`,
+				recorded.reviewId,
+			);
 		if (recorded.decision !== "ask") throw new Error("Action review response is invalid");
 		if (recorded.card !== true)
 			return {
@@ -1030,10 +1060,10 @@ export class CloudActionReviewGate {
 			);
 			if (state.state === "approved") return approved(reviewId);
 			if (state.state === "declined")
-				return {
-					run: false,
-					text: `APPROVAL_DECLINED: ${name(state.answeredBy, "The member")} declined this action, so it did not happen. Do not retry it, reword it or reach it another way. Only if the member later asks for it again in a new message here (a card answer does not count), repeat the identical call once: it will then wait for approval on a card.`,
-				};
+				return denied(
+					`APPROVAL_DECLINED: ${name(state.answeredBy, "The member")} declined this action, so it did not happen. Do not retry it, reword it or reach it another way. Only if the member later asks for it again in a new message here (a card answer does not count), repeat the identical call once: it will then wait for approval on a card.`,
+					reviewId,
+				);
 			if (state.state === "used")
 				return {
 					run: false,

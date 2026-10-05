@@ -28,6 +28,7 @@ import { cloudEventTools } from "./cloud-event-tools.ts";
 import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
 import { CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
 import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
+import { CloudFolderProposals } from "./cloud-folder-proposals.ts";
 import { CloudFolderNotebooks } from "./cloud-folder-notebooks.ts";
 import { CloudFolderRoutineDecision } from "./cloud-folder-routine-decision.ts";
 import { CloudFolderRoutines } from "./cloud-folder-routines.ts";
@@ -377,6 +378,16 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					context.identity.audienceKind === "company" && !cloudWorkerToolFilter(wake).isWorker
 						? describeCloudAgentOpenWork(binding, this.#paths, signal).catch(() => undefined)
 						: Promise.resolve(undefined);
+				// Changes the agent saved from a computer that wait for review (P40): listed only where it can
+				// raise a card (its own conversation or thread, not a worker), the same rule the folder core keeps.
+				const proposalsRequest =
+					folder &&
+					context.identity.audienceKind === "company" &&
+					context.identity.sessionId !== null &&
+					!cloudWorkerToolFilter(wake).isWorker &&
+					(wake.kind !== "room" || cloudWakeIsOwnThread(wake))
+						? CloudFolderProposals.list(folder.client, signal)
+						: Promise.resolve(undefined);
 				// The agent's own notebook (contract 15.1) and its skill catalog (15.2) are
 				// composed side by side through the trusted read lane; an unreadable one
 				// degrades to "unavailable" and the run still starts, because neither is a
@@ -402,15 +413,32 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						},
 					),
 				]);
-				return { initialPresence, gateway, memory, skills, openWork: await openWorkRequest };
+				return {
+					initialPresence,
+					gateway,
+					memory,
+					skills,
+					openWork: await openWorkRequest,
+					proposals: await proposalsRequest,
+				};
 			};
-			const { initialPresence, gateway, memory, skills, openWork } = await composeContext().catch(async (error) => {
-				await connectorTools();
-				throw error;
-			});
+			const { initialPresence, gateway, memory, skills, openWork, proposals } = await composeContext().catch(
+				async (error) => {
+					await connectorTools();
+					throw error;
+				},
+			);
 			const connectorDescriptors = await connectorTools();
 			signal.throwIfAborted();
-			const prompt = composeCloudNativeCompanyPrompt(context, wake, initialPresence, memory, openWork, skills);
+			const prompt = composeCloudNativeCompanyPrompt(
+				context,
+				wake,
+				initialPresence,
+				memory,
+				openWork,
+				skills,
+				proposals?.context,
+			);
 			composition.finish("succeeded", { outputBytes: Buffer.byteLength(prompt) });
 			const contextSha256 = createHash("sha256").update(prompt).digest("hex");
 			// What composition read from the folder is released under the composed context before any model request.
@@ -840,6 +868,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								!work.isWorker
 									? [ask]
 									: []),
+								// Listed only for a run that may raise their cards (composeContext).
+								...(proposals ? proposals.tools(operations) : []),
 							],
 							assertContext: (requestSignal) => gateway.assertReadableContext(requestSignal),
 							recordContextView: (frame, outputs, requestSignal) =>

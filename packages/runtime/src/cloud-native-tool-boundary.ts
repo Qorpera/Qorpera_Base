@@ -71,6 +71,27 @@ function remember<K>(store: Set<K> | Map<K, unknown>, limit: number): void {
 	while (store.size > limit) store.delete(store.keys().next().value as K);
 }
 
+/** Whether a Company File change waits for a member's review: the path gateway's JSON result, or a folder-v2 file
+ * tool's text (cloud-folder-file-tools.ts, `qorpera.company-folder-result/v1`). */
+function proposedResult(content: CloudToolContent): boolean {
+	let value: unknown = content.value;
+	if (content.kind === "text") {
+		if (!content.value.startsWith('{"')) return false;
+		try {
+			value = JSON.parse(content.value);
+		} catch {
+			return false;
+		}
+		if ((value as { schema?: unknown } | null)?.schema !== "qorpera.company-folder-result/v1") return false;
+	} else if ((value as { schema?: unknown } | null)?.schema !== "qorpera.company-path-result/v1") return false;
+	return (
+		value !== null &&
+		typeof value === "object" &&
+		!Array.isArray(value) &&
+		(value as { state?: unknown }).state === "proposed"
+	);
+}
+
 export interface CloudToolContext {
 	readonly companyId: string;
 	readonly runId: string;
@@ -94,6 +115,10 @@ export interface CloudNativeTool {
 	parseArguments(value: JsonValue): JsonValue;
 	/** The cloud adapter still owns effect-time authorization, durable receipts and secret handling. */
 	execute(argumentsValue: JsonValue, context: CloudToolContext): Promise<CloudToolContent>;
+	/** After the automatic review denied the call (the reviewer, or a member on its card), with the denial's id: a call
+	 * that stands for a waiting change closes it (P40b: `apply_proposal` declines its proposal). Its text follows the
+	 * denial. It never runs the call; if it fails, the denial stands as it is. */
+	denied?(argumentsValue: JsonValue, context: CloudToolContext & { readonly actionReviewId: string }): Promise<string>;
 }
 
 export type CloudToolContent = ({ kind: "text"; value: string } | { kind: "json"; value: JsonValue }) & {
@@ -612,6 +637,15 @@ export class CloudNativeToolBoundary {
 		} catch {
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
 		}
+		const context: CloudToolContext = {
+			companyId: this.#companyId,
+			runId: this.#runId,
+			callId,
+			argumentSha256: digest,
+			signal: this.#signal,
+			...(this.#identity ? { identity: this.#identity } : {}),
+			...(observation ? { observation } : {}),
+		};
 		let actionReviewId: string | undefined;
 		if (this.#review) {
 			// Auto-review (v130): an acting call runs only after the reviewer lets it, or a
@@ -628,7 +662,23 @@ export class CloudNativeToolBoundary {
 					value: "REVIEW_UNAVAILABLE: The safety review of this action could not run, so it did not happen. You may try the identical call once more; if it fails again, tell the member.",
 				});
 			}
-			if (!gate.run) return this.#result(callId, tool, digest, "denied", { kind: "text", value: gate.text });
+			if (!gate.run) {
+				let text = gate.text;
+				// A denied call that stands for a waiting change closes it (P40b); a failure leaves the denial as it is.
+				if (gate.deniedReviewId && tool.denied) {
+					const deniedReviewId = gate.deniedReviewId;
+					try {
+						const closed = await untilStopped(
+							() => tool.denied!(parsed, { ...context, actionReviewId: deniedReviewId }),
+							this.#signal,
+						);
+						if (closed) text = `${text} ${closed}`;
+					} catch {
+						// The denial stands, and what the call stood for stays open until a later denial or a discard.
+					}
+				}
+				return this.#result(callId, tool, digest, "denied", { kind: "text", value: text });
+			}
 			actionReviewId = gate.reviewId;
 			// The call may have waited for an approval: authority is checked again right before the effect (contract 4.3).
 			try {
@@ -641,17 +691,7 @@ export class CloudNativeToolBoundary {
 		}
 		try {
 			const content = await untilStopped(
-				() =>
-					tool.execute(parsed, {
-						companyId: this.#companyId,
-						runId: this.#runId,
-						callId,
-						argumentSha256: digest,
-						signal: this.#signal,
-						...(this.#identity ? { identity: this.#identity } : {}),
-						...(actionReviewId ? { actionReviewId } : {}),
-						...(observation ? { observation } : {}),
-					}),
+				() => tool.execute(parsed, { ...context, ...(actionReviewId ? { actionReviewId } : {}) }),
 				this.#signal,
 			);
 			const response = this.#result(callId, tool, digest, "ok", content);
@@ -671,12 +711,7 @@ export class CloudNativeToolBoundary {
 			const proposed =
 				tool.source === "company_file" &&
 				["company_write", "company_mkdir", "company_delete"].includes(tool.name) &&
-				content.kind === "json" &&
-				content.value !== null &&
-				typeof content.value === "object" &&
-				!Array.isArray(content.value) &&
-				content.value.schema === "qorpera.company-path-result/v1" &&
-				content.value.state === "proposed";
+				proposedResult(content);
 			observation?.finish(proposed ? "proposed" : "succeeded", proposed ? { errorCategory: "protected_path" } : {});
 			return response;
 		} catch (error) {

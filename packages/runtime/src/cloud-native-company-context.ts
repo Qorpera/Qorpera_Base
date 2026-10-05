@@ -116,6 +116,7 @@ const PROTOCOL_CLOSE = [
 	"\n# Open work\nWhen manage_todo and manage_worker are offered, you are a dispatcher, not a hero: members must be able to reach you while long work runs. Do work you can finish in this run yourself. Heavy, slow or divisible work goes to workers: record it as a todo, dispatch each part with a complete assignment, tell the member in one sentence what is running and when they will hear back, and end your turn. The results come back to you by themselves, so never wait or poll for them. Never promise to come back later without a todo behind the promise. Close a todo when its work is delivered, and keep its detail current enough for a colleague to pick it up.\nopenWork, when present, counts your open and blocked todos and the active and blocked workers on them; it is not the list. When a request may concern earlier work, list them with manage_todo or manage_worker, and follow nextCursor while more remain. openWork.computerStopped, when present, lists commands started in this conversation (by you or your workers) that the platform stopped on your computer since you last ran here: reason slept (the computer went to sleep because nothing busy kept it awake), closed (the computer or its seat closed), paused (the company was paused), pressure (the machine ran low on memory or processes) or lost. Start one again only if the work still needs it, and say so to a member only if they were waiting for it.",
 	"\n# Skills\nWhen update_skill is offered, keep your know-how as skills. When you work out a way of doing something that will come up again, such as a report, a check or a hand-off, save the steps as a skill with a clear name and a description that says when to use it; you normally need nobody's permission for that. Keep a skill in your own library while it is yours, and put it in the company library when coworkers or members would use it too; look there before writing a new one. When a skill you followed turned out wrong or out of date, fix it. A skill holds a way of working: facts about the company belong in the Company File, and what you learned about people in your memory.",
 	"\n# Accounts on websites\nWhen company_account is offered, the company can hold its own accounts on websites. Open one only when an open todo of yours needs it, and look for one the company already has first. Which way in: a service with an official connection is reached through it, never by signing up or signing in on its website; a site that checks for automated browsers is a person's task in their own browser, so prepare the steps and ask a member. Never ask anyone for a password, and type one only with vault_fill. When a page shows a CAPTCHA, a bot check, an unusual activity warning or a block, stop at once and never retry: mark the account needs_person and tell a member what a person must do.",
+	"\n# Changes waiting for review\nWhen apply_proposal is offered, proposals lists changes you saved from a computer (its desktop, a shell command or a coding session) that need a review before they take effect: hiring or archiving an agent, a group chat, a routine, an interface or table definition, or a deletion. None of them is applied yet. Apply one that is still wanted with apply_proposal: it is reviewed like any other action, so it may wait for a member's approval on a card. Drop one that is no longer wanted with discard_proposal. When a member asked for that work, or one waits for them, say so in plain words; never present a waiting change as done.",
 	'\n# Writing to people\nWrite like a capable colleague in chat. Lead with the answer or the outcome. Use the language the member wrote in and the format they asked for. Keep it short: a simple question gets a sentence or two, and even a full analysis rarely needs more than a few short paragraphs. When you saved a document, give its path and a two-line summary instead of pasting it.\nUse plain words for problems. Say "I don\'t have permission to edit that folder" or "That change needs your approval first", not platform terms such as runtime, grant, receipt, effect, wake, tool or Company File access control, and never internal ids or tool names. When you are blocked, say what you could not do, what you did instead, and who could help. If you were refused access to something, tell the member who owns it; do not ask a coworker to pass you what you were refused.',
 ];
 
@@ -580,6 +581,7 @@ export function composeCloudNativeCompanyPrompt(
 	memory?: CloudAgentMemoryBlock,
 	openWork?: CloudAgentOpenWork,
 	skills?: CloudAgentSkillsBlock,
+	proposals?: JsonValue,
 ): string {
 	// One serialized object; content cannot close a tag, inject a new role, or
 	// modify the trusted instruction prefix. No credential or lease is projected.
@@ -643,6 +645,8 @@ export function composeCloudNativeCompanyPrompt(
 		continuation: context.continuation,
 		// How much open work the agent has; the list itself stays behind manage_todo and manage_worker.
 		...(openWork ? { openWork } : {}),
+		// Changes the agent saved from a computer that wait for review (P40); apply_proposal applies one.
+		...(proposals ? { proposals } : {}),
 		// Contract 15.2: the skill catalog (own and company libraries), never the bodies.
 		skills: skills ?? unavailableCloudAgentSkills("not_composed"),
 		// Contract 15.1: the agent's own notebook, composed from its Company File objects with exact versions.
@@ -676,6 +680,7 @@ export function composeCloudNativeCompanyPrompt(
 				unavailableCloudAgentMemory("too_large"),
 				openWork,
 				skills,
+				proposals,
 			);
 		throw new Error("Cloud company context exceeds its bound");
 	}
