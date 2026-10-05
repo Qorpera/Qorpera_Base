@@ -29,6 +29,8 @@ September 2026).
 | `agents/<handle>/todos/<todo>/<worker>/brief.md` | worker-brief | yes (platform-only) |
 | `agents/<handle>/todos/<todo>/<worker>/results.md` | worker-results | yes (platform-only) |
 | `connections/<name>.md` | connection | yes (platform-only settings) |
+| `connections/hook-<name>.md` | hook | yes (platform-only settings; E1) |
+| `connections/mailbox-<name>.md` | mailbox | yes (platform-only settings; E1) |
 | `rules/<name>.md` | rule | yes |
 | `human-tasks/<name>.md` | human-task | yes (H1; indexed and ruled by H2) |
 | `contacts/<name>.md` | contact | yes (H1; indexed and ruled by H2) |
@@ -350,6 +352,43 @@ closes the conversation; a restore reopens both, with the same conversation.
   (refused while it is active, whatever its status). Disconnecting removes the file; a file a member moved
   meanwhile is found again through the index on the next claim.
 - **Moving:** within `connections/` the index follows; out of it is a kind change (refused).
+- **Names:** `hook-` and `mailbox-` belong to hooks' and mailboxes' files (below), so a vault file never takes them:
+  the name a new file gets has `connection-` before it then (E1, `20260930060000`).
+- Not reviewed.
+
+### `connections/hook-<name>.md` and `connections/mailbox-<name>.md` (E1)
+
+A hook (where a service sends events) and a company mailbox (a hook that receives mail) of a folder-v2 company, each
+described by a file (folder core C4, E1, migration `20260930060000`; `RUNTIME-COMPANY-FOLDER-EVENTS.md` §3). The
+database stays the authority: the hook's address, proof, limits, status and delivery receipts are runtime state, and
+every tool that acts on a hook reads the hook, never this file.
+
+| Key | Kind | Required | Values |
+| --- | --- | --- | --- |
+| `id` | both | yes | the hook's id (`qorpera_event_hooks.id`); a mailbox's is its hook's |
+| `name` | hook | yes | the hook's name: lowercase letters, digits and hyphens, starting with a letter, up to 64 characters |
+| `proof` | hook | yes | `address`, `stripe`, `github` or `hmac-sha256` |
+| `address` | mailbox | yes | the mailbox's address, `<name>@<mail domain>` |
+| `status` | both | yes | `active` or `paused` |
+| `max_body_bytes` | hook | yes | 1024 to 262144, without quotes |
+| `per_minute` | hook | yes | 1 to 120, without quotes |
+| `created_by` | both | yes | the member (or agent) who created it |
+| `created_at` | both | yes | UTC instant |
+| body | both | no | what it is for, written by the company; a new file starts with the purpose given at creation |
+
+- **Never in the file:** a hook's address (a capability; owners and admins see it in Settings) or a signing secret.
+- **Settings:** written only by the platform, to match the hook. A member or an agent changes the body only, and never
+  creates or deletes the file. One file per hook; the id never changes.
+- **How it is written:** as a vault connection's (above), by the same writer: a change of a folder-v2 hook that its file
+  shows (created, paused, resumed, removed, renamed, its limits) marks it due by kind (`subject_kind` `hook` or
+  `mailbox` on P22's marks and work); the claim answers the settings by the allow-list above, the purpose a new file
+  starts with (`body`), and `operationKey` `hook-file:<id>:<generation>` or `mailbox-file:<id>:<generation>`; the finish
+  names the kind. A new file is named `hook-<name>` or `mailbox-<name>` in the name rule; when the name is taken the
+  writer numbers it.
+- **Index:** `qorpera_folder_hook_index` (environment, id): the file's path and version. A move repoints it, a delete
+  retires it, a restore revives it, erasure removes a retired row under its roots.
+- **Deleting:** only the platform, and only once the hook or mailbox is removed.
+- **Moving:** within the same prefix the index follows; anything else is a kind change (refused).
 - Not reviewed.
 
 ### `rules/<name>.md`
@@ -2266,7 +2305,11 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
   markers in every patched function, anchored on today's text (H2b's included). New functions for the
   `folder-v2` payloads; the shared payload functions and the legacy drain stay untouched.
 - **F2-5b-3, the drain** (migration 20260930003100, SQL tests 842 and 843): §6.
-- **F2-5b-4, the runtime** (TS): §7.
+- **F2-5b-4, the runtime** (TS): §7. Built 4 October (`CloudFolderWorkers`, moved up after Q1's live test: a new
+  agent's first act was `manage_worker`, which refused). Status on `folder-v2` lists one todo's workers, filtered and
+  paged in SQL (16 newest first, with a cursor; migration 20260930075000), and reads one worker's whole result from its
+  file; a follow-up names the results it removes, so a decision that landed in between makes it a conflict rather than a
+  half-saved change set; `archive` and coding sessions refuse until coding workers come to `folder-v2` (S3's C3).
 
 Tests: every action's rules and refusals; a worker-file unit with no request (a member, the model's file
 tool); a request that names another run, environment or operation key; a report commit holding any other
