@@ -17,8 +17,8 @@
 --    session and its turn's begin admits the worker's wake (C1c-3i). A coding follow-up queues the session's next turn
 --    the same way; a coding session keeps its branch through a cancel, so a cancelled one may be followed up, and only
 --    by the member it runs for. Its brief counts the agent's follow-ups alone (a member's answer turns it too). A
---    worker whose folder was deleted continues only after a restore: the member's answer, the claim and the begin
---    refuse it (a todo's file goes only after its workers' folders). (A coding session's turn ends through coding_finish: its run never writes agents/**, so the folder
+--    worker whose folder or todo was deleted continues only after a restore: the member's answer, the claim and the
+--    begin refuse it. (A coding session's turn ends through coding_finish: its run never writes agents/**, so the folder
 --    core denies it report_work before any worker rule.)
 -- 4. A coding turn's wake carries the folder-v2 dispatch payload (the worker's folder and the todo's file), not the
 --    snapshot-v1 one.
@@ -305,31 +305,44 @@ select pg_temp.c3a_replace('public.qorpera_begin_coding_turn(uuid,uuid,jsonb)'::
 	$new$		-- 20260930077000 (C3a): the folder-v2 payload (the worker's folder, the todo's file).
 		public.qorpera_folder_worker_dispatch_payload(v_worker, v_todo) || jsonb_build_object('coding', p_coding || jsonb_build_object($new$);
 
--- 6b. A retired worker never continues: its folder was deleted, so it comes back only by a restore.
--- Only a finished worker's folder can be deleted, and the member's answer is the one path that turns a finished coding
--- session again; the claim and the begin refuse a retired worker too. Each reads the worker under its rank-5 lock, which
--- the delete takes as well. A retired todo has only retired workers: its file is neither deleted nor moved while a
--- worker folder of it lives, and its id never changes.
+-- 6b. A retired worker never continues: its folder or its todo's file was deleted, so it comes back only by a restore.
+-- Only a finished worker's folder can be deleted, and a todo's file only once its workers' folders are gone; a restore
+-- may bring a worker's folder back without its todo. The member's answer is the one path that turns a finished coding
+-- session again (the agent's follow-up needs a live worker and todo); the claim and the begin refuse either too. Each
+-- reads the worker and its todo under the rank-5 locks qorpera_lock_coding_worker takes, which the delete and the
+-- restore take as well.
+
+-- A worker whose folder, or whose todo, is retired.
+create function public.qorpera_coding_worker_retired(p_worker public.qorpera_runtime_workers)
+returns boolean language sql stable set search_path = '' as $$
+	-- 20260930077000 (C3a).
+	select p_worker.folder_retired_at is not null or exists (select 1 from public.qorpera_runtime_agent_todos todo
+		where todo.id = p_worker.todo_id and todo.folder_retired_at is not null)
+$$;
+revoke all on function public.qorpera_coding_worker_retired(public.qorpera_runtime_workers)
+	from public, anon, authenticated, service_role;
 
 select pg_temp.c3a_replace('public.qorpera_answer_coding_session(uuid,text,uuid)'::regprocedure,
 	$old$	if v_worker.state = 'active' then
 		raise exception 'The session is still working; wait for its question or its result' using errcode = '55000'; end if;$old$,
-	$new$	-- 20260930077000 (C3a): a session whose folder was deleted continues only after its restore.
+	$new$	-- 20260930077000 (C3a): a session whose folder or todo was deleted continues only after its restore.
 	if v_worker.folder_retired_at is not null then
 		raise exception 'This session''s folder was deleted; restore it to continue' using errcode = '55000'; end if;
+	if public.qorpera_coding_worker_retired(v_worker) then
+		raise exception 'This session''s todo was deleted; restore it to continue' using errcode = '55000'; end if;
 	if v_worker.state = 'active' then
 		raise exception 'The session is still working; wait for its question or its result' using errcode = '55000'; end if;$new$);
 
 select pg_temp.c3a_replace('public.qorpera_claim_coding_session(text,integer)'::regprocedure,
 	$old$			if v_worker.state <> 'active' then raise exception 'Coding candidate skipped' using errcode = 'QSK01'; end if;$old$,
 	$new$			-- 20260930077000 (C3a): nor a retired worker.
-			if v_worker.state <> 'active' or v_worker.folder_retired_at is not null then
+			if v_worker.state <> 'active' or public.qorpera_coding_worker_retired(v_worker) then
 				raise exception 'Coding candidate skipped' using errcode = 'QSK01'; end if;$new$);
 
 select pg_temp.c3a_replace('public.qorpera_begin_coding_turn(uuid,uuid,jsonb)'::regprocedure,
 	$old$	if v_worker.state <> 'active' or v_worker.occurrence_id is not null then$old$,
 	$new$	-- 20260930077000 (C3a): nor a retired worker.
-	if v_worker.state <> 'active' or v_worker.occurrence_id is not null or v_worker.folder_retired_at is not null then$new$);
+	if v_worker.state <> 'active' or v_worker.occurrence_id is not null or public.qorpera_coding_worker_retired(v_worker) then$new$);
 
 -- 7. The drain ---------------------------------------------------------------------------------------------------------
 
