@@ -237,12 +237,14 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
   adding one to a block counts as adding a button (§7).
 - **Take and release on a board (proposed, built in I9a).** They act on each card's own table `holder` column, so a
   board's verbs need no `table` or `column`.
-  - **Take** shows on a card in the open pile, and **Release** on a card in the viewer's own lane. Each shows only
-    when the block lists it, the board has that lane, and the viewer may write the table's rows (`[write] members`:
-    `all`, or `owners` for owners and admins).
+  - **Take** shows on a card whose holder cell is empty, and **Release** on a card whose holder cell names the viewer,
+    in whichever lane the card is: the open pile and the viewer's own lane, and the Shared lane too. Each shows only
+    when the block lists it, the board has member lanes (`lanes = "members"`), and the viewer may write the table's
+    rows (`[write] members`: `all`, or `owners` for owners and admins).
   - Dragging an open-pile card to the viewer's own lane takes it, and dragging the viewer's own card to the open pile
-    releases it. No other drop does anything. Only the lane a card may land in is marked while it is dragged. The
-    buttons stay the way on a phone and from the keyboard.
+    releases it. No other drop does anything, and a Shared card, which stays in the Shared lane either way, has no
+    drag. Only the lane a card may land in is marked while it is dragged. The buttons stay the way on a phone and from
+    the keyboard.
   - The write reads `tables/<t>/rows.csv`, parses it against the current `table.toml`, changes only that cell, checks
     the claim rule (§5) before sending, and names the version it read. When the file changed meanwhile, it is read and
     checked again: a cell no longer empty (take) or no longer the viewer's (release) stops the write, and the board

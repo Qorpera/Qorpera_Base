@@ -1230,20 +1230,22 @@ function boardCard(
 					...body,
 				)
 			: h("div", { class: "interface-card-body" }, ...body);
-	// Take in the open pile, Release in the member's own lane, where the block lists them and the table lets members
-	// write; offer and answer are not drawn on a board (step I9a).
+	// Take on a card no one holds, Release on the member's own, in any lane of a members board (a Shared card too),
+	// where the block lists them and the table lets members write; offer and answer are not drawn on a board (step I9a).
 	const verbs = new Set(drawn.block.buttons);
 	const holder = part.definition?.holder ?? null;
 	const claimable =
 		context.writes !== undefined &&
 		part.mayWrite &&
 		part.table !== null &&
+		places.own !== undefined &&
 		part.definition?.columns.some((column) => column.name === holder) === true;
+	const held = holder === null ? undefined : row[holder];
 	const verb: ClaimVerb | null = !claimable
 		? null
-		: lane.kind === "open" && places.own && verbs.has("take")
+		: emptyCell(held) && verbs.has("take")
 			? "take"
-			: lane.own && verbs.has("release")
+			: held === context.company.userId && verbs.has("release")
 				? "release"
 				: null;
 	const claim =
@@ -1275,8 +1277,10 @@ function boardCard(
 		actions ?? (claim ? h("span", { class: "interface-actions" }, claim) : null),
 		saving ? h("small", { class: "interface-card-saving" }, t("Saving…")) : null,
 	);
-	// Dragging is the same take or release: from the open pile to the member's own lane, or back.
-	const target = verb === "take" ? places.own : verb === "release" ? places.pile : undefined;
+	// Dragging is the same take or release: from the open pile to the member's own lane, or back. A Shared card stays in
+	// the Shared lane either way, so it has no drag.
+	const target =
+		lane.kind === "shared" ? undefined : verb === "take" ? places.own : verb === "release" ? places.pile : undefined;
 	if (verb !== null && target && !saving)
 		boardDrag(element, { targets: [target.id], drop: () => void claimCard(context, part, item, verb) });
 	return element;

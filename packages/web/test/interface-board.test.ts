@@ -235,6 +235,28 @@ describe("the Members board (I9a)", () => {
 		expect(card(main, "Call the bank").classList.contains("is-draggable")).toBe(true);
 	});
 
+	it("draws Take and Release on a Shared card by its holder, with no drag", async () => {
+		const fake = seeded();
+		const shared = (brand: string) => areas(`Brand,The look,${brand},yes,,`, "Web,,,yes,,", `Press,,${bea},yes,,`);
+		fake.put(AREAS, shared(me));
+		const { main, hint } = await members(fake);
+		const labels = (title: string) => texts(card(main, title), ".interface-actions button");
+		expect(titles(main, "Shared")).toEqual(["Brand", "Web", "Press"]);
+		expect(labels("Brand")).toEqual(["Release"]);
+		expect(labels("Web")).toEqual(["Take"]);
+		expect(labels("Press")).toEqual([]);
+		// The card stays in the Shared lane either way, so there is nowhere to drag it.
+		expect(lane(main, "Shared").querySelector(".interface-card.is-draggable")).toBeNull();
+		const before = fake.version(AREAS);
+		buttonOf(card(main, "Brand"), "Release")!.click();
+		await vi.waitFor(() => expect(fake.commits).toHaveLength(1));
+		expect(fake.commits[0]?.units).toEqual([{ op: "write", path: AREAS, text: shared(""), expectedVersion: before }]);
+		await hint();
+		await vi.waitFor(() => expect(labels("Brand")).toEqual(["Take"]));
+		expect(titles(main, "Shared")).toEqual(["Brand", "Web", "Press"]);
+		expect(main.querySelector(".interface-card.is-saving")).toBeNull();
+	});
+
 	it("draws no Take or Release for a member who may not write", async () => {
 		const { main } = await members(seeded(), "viewer");
 		expect(main.querySelector(".interface-board .interface-actions")).toBeNull();
