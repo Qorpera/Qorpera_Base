@@ -175,10 +175,17 @@ export class DraftSync {
 		this.#merge(draft);
 	}
 
-	/** Resolves once this browser's changes are written, or the draft is gone, or the cloud will not take the text. */
+	/** Resolves once this browser's changes are written, or the draft is gone, or the cloud will not take the text.
+	 * A text the cloud would not take counts only while nothing is on its way: an edit after it (the extra quote taken
+	 * out, the text shortened) is waited for, so a panel closed within the write delay still writes it. */
 	flushed(): Promise<void> {
-		if (this.#stopped || givenUp(this.#status) || this.settled) return Promise.resolve();
+		if (this.#stopped || this.settled || this.#waiting()) return Promise.resolve();
 		return new Promise((resolve) => this.#settled.push(resolve));
+	}
+
+	/** The text can't be written as it is, and no change of it is on its way: it waits for the member. */
+	#waiting(): boolean {
+		return givenUp(this.#status) && !this.#timer && !this.#writing;
 	}
 
 	stop(): void {
@@ -233,11 +240,12 @@ export class DraftSync {
 	}
 
 	#setStatus(status: DraftStatus): void {
-		if (status === this.#status) return;
-		this.#status = status;
-		this.#host.status?.(status);
-		// A text the cloud will not take is given up until the member changes it.
-		if (givenUp(status)) for (const resolve of this.#settled.splice(0)) resolve();
+		if (status !== this.#status) {
+			this.#status = status;
+			this.#host.status?.(status);
+		}
+		// A text the cloud will not take is given up until the member changes it (again or not: it is said once).
+		if (this.#waiting()) for (const resolve of this.#settled.splice(0)) resolve();
 	}
 
 	async #flush(): Promise<void> {
@@ -283,6 +291,9 @@ export class DraftSync {
 		}
 		if (this.#stopped) return;
 		if (refused) {
+			// The member changed the text while it was on its way: that change goes next.
+			const changed = wellFormed(this.#host.text()) !== body || !sameQuotes(this.quotes(), quotes);
+			if (changed) this.#schedule(WRITE_DELAY_MS);
 			this.#setStatus(refused);
 			return;
 		}

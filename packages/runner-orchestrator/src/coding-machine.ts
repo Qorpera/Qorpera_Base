@@ -8,6 +8,16 @@ import {
 	cloudCodingSessionLayout,
 	createCloudCodingStorageBinding,
 } from "@qorpera/contracts";
+import {
+	AGENT_BRIDGE,
+	type AgentPlug,
+	type AgentPlugClaim,
+	agentPlugCard,
+	isAgentPlugCard,
+	isAgentPlugMac,
+	runAgentPlug,
+	withAgentPlug,
+} from "./agent-plug.ts";
 import type { LxdCreateInstanceRequest, LxdInstanceRecord, LxdTrackedClient } from "./lxd-client.ts";
 import { checkDirectory, code, publish, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
 
@@ -94,6 +104,8 @@ export function lxdCodingMachinePlan(value: LxdCodingMachineBinding): {
 			(sha) => typeof sha === "string" && SHA.test(sha),
 		) ||
 		![value.project, value.storagePool, value.network].every((name) => typeof name === "string" && NAME.test(name)) ||
+		// An agent road machine: its only card is on the agents' bridge (deploy/agent-exit).
+		value.network !== AGENT_BRIDGE ||
 		![value.cpus, value.memoryBytes, value.rootDiskBytes].every((n) => Number.isSafeInteger(n) && n > 0) ||
 		value.cpus > 64 ||
 		value.memoryBytes > 1024 ** 4 ||
@@ -132,7 +144,8 @@ export function lxdCodingMachinePlan(value: LxdCodingMachineBinding): {
 			},
 			devices: {
 				root: { type: "disk", path: "/", pool: binding.storagePool, size: String(binding.rootDiskBytes) },
-				network: { type: "nic", network: binding.network, name: "eth0" },
+				// Its MAC comes from the agent plug right before the create (withAgentPlug).
+				network: agentPlugCard("eth0"),
 			},
 		},
 	};
@@ -207,6 +220,10 @@ export function assertLxdCodingMachineInstance(
 	}
 	const sessions = new Set<string>();
 	for (const [name, device] of Object.entries(instance.devices)) {
+		if (name === "network") {
+			if (!isAgentPlugCard(device, request.devices.network)) throw new Error("CODING_MACHINE_DRIFTED");
+			continue;
+		}
 		if (Object.hasOwn(request.devices, name)) {
 			if (!isDeepStrictEqual(device, request.devices[name])) throw new Error("CODING_MACHINE_DRIFTED");
 			continue;
@@ -291,6 +308,9 @@ export interface CodingMachineJournalPlan {
 	readonly binding: Readonly<object>;
 	/** How to create it; none for a machine that is only retired. */
 	readonly request: LxdCreateInstanceRequest | null;
+	/** An agent road machine: its request's `device` is the agent card, whose MAC the plug gives right before each
+	 * create. */
+	readonly agentPlug?: { readonly claim: AgentPlugClaim; readonly device: string };
 	/** A VM that keeps nothing of its own (a company machine): where the
 	 * journal cannot tell, LXD's view settles it. A VM that stopped by itself
 	 * (a poweroff inside, a node reboot) is stopped; a failed create or start
@@ -312,6 +332,17 @@ export function lxdCodingMachineJournalPlan(
 		journalName: plan.binding.machineId,
 		binding: plan.binding,
 		request: plan.request,
+		agentPlug: {
+			claim: {
+				kind: "coding" as const,
+				companyId: plan.binding.companyId,
+				machineId: plan.binding.machineId,
+				memberUserId: plan.binding.memberUserId,
+				project: plan.binding.project,
+				instance: plan.request.name,
+			},
+			device: "network",
+		},
 		assertInstance: (instance: LxdInstanceRecord) => {
 			assertLxdCodingMachineInstance(plan.binding, storage, instance);
 		},
@@ -338,6 +369,8 @@ export interface CodingMachineReconcileOptions {
 	/** Fresh SQL authority for this effect's intent (run, stop or delete). */
 	authorize(intent: CodingMachineIntent, signal: AbortSignal): Promise<unknown>;
 	signal: AbortSignal;
+	/** The node's agent plug (default: its plug tool), for a plan with an agent card. */
+	plug?: AgentPlug;
 }
 export interface CodingMachineReconcileResult {
 	/** absent: never created; deleted: our journaled delete and no instance. */
@@ -720,6 +753,23 @@ export async function reconcileCodingMachine(
 		return result("pending");
 	}
 	if (current.events.length > MAX_RETAINED_EVENTS - 3) throw new Error("CODING_MACHINE_JOURNAL_FULL");
+	// An agent road machine is plugged in right before each create (the old instance, if any, is gone): the plug
+	// gives the MAC its card carries. Before the fresh authority, so the plug's time costs none of it. A plug that
+	// is never followed by a create (another process won the dispatch) is the same entry again for that winner.
+	let request = plan.request;
+	if (action === "create" && plan.agentPlug) {
+		if (!request) return result("recovery-required");
+		const hwaddr = await (options.plug ?? runAgentPlug)(plan.agentPlug.claim, options.signal);
+		request = withAgentPlug(request, plan.agentPlug.device, hwaddr);
+	}
+	// No card on the agents' bridge goes out without a plug MAC: a plan that names no plug never makes one.
+	if (
+		action === "create" &&
+		Object.values(request?.devices ?? {}).some(
+			(device) => device.parent === AGENT_BRIDGE && !isAgentPlugMac(device.hwaddr),
+		)
+	)
+		throw new Error("AGENT_PLUG_MISSING");
 	// Fresh authority immediately before irreversible dispatch; journal CAS
 	// chooses one winner across processes. A crash after claiming is unknown.
 	signal = await authorize();
@@ -733,7 +783,7 @@ export async function reconcileCodingMachine(
 			// NAS): power it off; a guest that ignores the shutdown request would
 			// otherwise keep its place on the node until an operator stepped in.
 			action === "create"
-				? { action, request: plan.request as LxdCreateInstanceRequest }
+				? { action, request: request as LxdCreateInstanceRequest }
 				: action === "stop"
 					? { action, name: plan.name, force: true }
 					: { action, name: plan.name },

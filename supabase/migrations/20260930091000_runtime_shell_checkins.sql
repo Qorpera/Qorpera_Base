@@ -325,8 +325,8 @@ select pg_temp.checkin_patch('public.qorpera_folder_read_wake(jsonb)'::regproced
 	$new$if v_wake.source_kind in ('office-activation','worker-dispatch','worker-completion','machine-event','machine-checkin') then -- 20260930091000$new$);
 -- The wake's reply policy: an agent wake, and in a conversation it reports as a machine event does.
 select pg_temp.checkin_patch('public.qorpera_runtime_wake_policy_internal(uuid)'::regprocedure,
-	$old$'worker-dispatch','worker-completion','machine-event')))))$old$,
-	$new$'worker-dispatch','worker-completion','machine-event','machine-checkin'))))) -- 20260930091000$new$);
+	$old$'human-task')))))$old$,
+	$new$'human-task','machine-checkin'))))) -- 20260930091000$new$);
 select pg_temp.checkin_patch('public.qorpera_runtime_wake_policy_internal(uuid)'::regprocedure,
 	$old$if v_wake.source_kind in ('worker-completion','machine-event') and v_wake.session_id is not null$old$,
 	$new$if v_wake.source_kind in ('worker-completion','machine-event','machine-checkin') and v_wake.session_id is not null$new$);

@@ -51,7 +51,7 @@ $$;
 -- 1. One node that makes machines, as in 628.
 do $$
 declare v_policy jsonb := jsonb_build_object('providerId','machine-fixture','providerPolicySha256',repeat('f',64),'project','machines',
-	'imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),'storagePool','machines','network','machine-net');
+	'imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),'storagePool','machines','network','qagent0');
 begin
 	perform public.qorpera_configure_runtime_node(jsonb_build_object('schema','qorpera.runtime-node-policy/v1',
 		'nodeId','30000000-0000-4000-8000-000000000410','machineIdSha256',repeat('c',64),'label','machine-a','cpuMillis',16000,

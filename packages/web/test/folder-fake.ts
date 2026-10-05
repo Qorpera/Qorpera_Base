@@ -1,7 +1,9 @@
 import {
+	type CloudMemberFolderChangesPage,
 	type CloudMemberFolderCommit,
 	type CloudMemberFolderEntry,
 	CloudMemberFolderError,
+	type CloudMemberFolderFeedPosition,
 	type CloudMemberFolderFile,
 	type CloudMemberFolderListPage,
 	type CloudMemberFolderOutcome,
@@ -22,6 +24,9 @@ import type { WebMemberFolder } from "../src/cloud/company-folder-writes.ts";
  * `version_changed`; a create on a taken path is `exists`; a delete of a missing path is `missing`; a missing parent is
  * refused `parent_missing`; a folder delete read before a change under it is `unseen_change`; every state file gets
  * its parse; and the same operation key with the same units replays its answer.
+ *
+ * The feed (`changes`) gives each change at its seq, as the folder's feed does, leaving out paths the member may not
+ * read; `resync()` makes its next answer a resync, and `authority()` adds a change to what the member may read.
  */
 
 interface Node {
@@ -69,15 +74,33 @@ export function folderFake(
 	const listsRoutines = options.listsRoutines ?? true;
 	const nodes = new Map<string, Node>();
 	const texts = new Map<string, string>();
+	/** The path each handed-out file's bytes were read from, by hash. */
+	const paths = new Map<string, string>();
 	const answers: Answer[] = [];
 	const replays = new Map<string, { units: string; answer: CloudMemberFolderCommit }>();
 	const denied = new Set<string>();
 	const failing = new Map<string, unknown>();
+	/** Roots whose files' bytes fail to download (the object gateway), while their entries still read. */
+	const failingBytes = new Set<string>();
 	const commits: FolderCommitCall[] = [];
+	/** The feed: each seq's changed paths, or a change to what the member may read. */
+	const feed: { seq: number; changes: { path: string; kind: "file" | "folder"; version: string }[] | "authority" }[] =
+		[];
+	let resyncNext = false;
 	let seq = 0;
 	let versions = 0;
+	let removals = 0;
 	let hashes = 0;
 	const nextVersion = () => `f0000000-0000-4000-8000-${String(++versions).padStart(12, "0")}`;
+	/** Notes a change to `path` at `at` in the feed. */
+	function changed(path: string, kind: "file" | "folder", version: string, at: number): void {
+		let event = feed.at(-1);
+		if (event?.seq !== at || event.changes === "authority") {
+			event = { seq: at, changes: [] };
+			feed.push(event);
+		}
+		(event.changes as { path: string; kind: "file" | "folder"; version: string }[]).push({ path, kind, version });
+	}
 
 	const key = companyPathKey;
 	const under = (path: string, root: string) => key(path).startsWith(`${key(root)}/`);
@@ -88,9 +111,10 @@ export function folderFake(
 		for (const [root, error] of failing) if (key(path) === key(root) || under(path, root)) throw error;
 	};
 
-	function reference(text: string): CloudMemberFolderFile {
+	function reference(text: string, path: string): CloudMemberFolderFile {
 		const hash = (++hashes).toString(16).padStart(64, "0");
 		texts.set(hash, text);
+		paths.set(hash, path);
 		return {
 			manifestSha256: hash,
 			fileSha256: hash,
@@ -107,14 +131,22 @@ export function folderFake(
 			version: node.version,
 			seq: node.seq,
 			updatedAt: "2026-10-04T09:00:00Z",
-			file: node.kind === "file" ? reference(node.text ?? "") : null,
+			file: node.kind === "file" ? reference(node.text ?? "", node.path) : null,
 		};
 	}
 
 	function set(path: string, kind: "file" | "folder", text: string | null, at: number): Node {
 		const node = { path, kind, text, version: nextVersion(), seq: at };
 		nodes.set(key(path), node);
+		changed(path, kind, node.version, at);
 		return node;
+	}
+
+	/** Takes `node` out of the folder at `at`, as a delete or the old side of a move. The feed's version of a removal
+	 * counts on its own, so the versions of what is written stay as before. */
+	function drop(node: Node, at: number): void {
+		nodes.delete(key(node.path));
+		changed(node.path, node.kind, `e0000000-0000-4000-8000-${String(++removals).padStart(12, "0")}`, at);
 	}
 
 	/** Every folder above `path` that is not there yet, as a change at `at`. */
@@ -237,7 +269,7 @@ export function folderFake(
 				const removed = subtree(unit.path);
 				if (unit.asOfSeq !== undefined && removed.some((item) => item.seq > (unit.asOfSeq as number)))
 					return conflict("unseen_change");
-				for (const item of removed) nodes.delete(key(item.path));
+				for (const item of removed) drop(item, at);
 				return { outcome: "saved", reason: null, problems: [], version: nextVersion() };
 			}
 			case "move": {
@@ -249,7 +281,7 @@ export function folderFake(
 				const moved = subtree(unit.from);
 				if (unit.asOfSeq !== undefined && moved.some((item) => item.seq > (unit.asOfSeq as number)))
 					return conflict("unseen_change");
-				for (const item of moved) nodes.delete(key(item.path));
+				for (const item of moved) drop(item, at);
 				let version: string | null = null;
 				for (const item of moved) {
 					const placed = set(`${unit.to}${item.path.slice(unit.from.length)}`, item.kind, item.text, at);
@@ -290,6 +322,9 @@ export function folderFake(
 				signal.throwIfAborted();
 				if (file.bytes > maximumBytes)
 					throw new CloudMemberFolderError("Company folder file exceeds this viewer's limit");
+				const path = paths.get(file.fileSha256) ?? "";
+				if ([...failingBytes].some((root) => key(path) === key(root) || under(path, root)))
+					throw new CloudMemberFolderError("Company folder bytes are unavailable (503)", 503);
 				const text = texts.get(file.fileSha256);
 				if (text === undefined)
 					throw new CloudMemberFolderError("Company folder object failed integrity verification");
@@ -300,6 +335,50 @@ export function folderFake(
 			signal.throwIfAborted();
 			return stateFolders();
 		}),
+		changes: vi.fn(
+			async (
+				from: CloudMemberFolderFeedPosition,
+				limit: number,
+				signal: AbortSignal,
+			): Promise<CloudMemberFolderChangesPage> => {
+				signal.throwIfAborted();
+				if (resyncNext) {
+					resyncNext = false;
+					return { asOfSeq: seq, resync: true, events: [], next: null, more: false };
+				}
+				const after = feed.filter((event) => event.seq > from.afterSeq);
+				const page = after.slice(0, limit);
+				return {
+					asOfSeq: seq,
+					resync: false,
+					events: page.map((event) =>
+						event.changes === "authority"
+							? { kind: "authority" as const, seq: event.seq }
+							: {
+									kind: "change_set" as const,
+									seq: event.seq,
+									commitId: `c0000000-0000-4000-8000-${String(event.seq).padStart(12, "0")}`,
+									at: "2026-10-04T09:00:00Z",
+									by: { kind: "platform" as const },
+									changes: event.changes
+										.filter((change) => !hidden(change.path))
+										.map((change, index) => ({
+											unitNo: index + 1,
+											op: "write" as const,
+											kind: change.kind,
+											path: change.path,
+											version: change.version,
+											priorVersion: null,
+											updatedAt: null,
+											file: null,
+										})),
+								},
+					),
+					next: { afterSeq: page.at(-1)?.seq ?? from.afterSeq, cursor: null },
+					more: after.length > page.length,
+				};
+			},
+		),
 		commit: vi.fn(
 			async (
 				operationKey: string,
@@ -384,8 +463,16 @@ export function folderFake(
 			return set(path, "folder", null, at).version;
 		},
 		remove(path: string): void {
-			seq++;
-			for (const node of subtree(path)) nodes.delete(key(node.path));
+			const at = ++seq;
+			for (const node of subtree(path)) drop(node, at);
+		},
+		/** The feed's next answer is `resync`: the position can't be continued. */
+		resync(): void {
+			resyncNext = true;
+		},
+		/** What the member may read changed (a role, a grant): the feed says so at a new seq. */
+		authority(): void {
+			feed.push({ seq: ++seq, changes: "authority" });
 		},
 		has(path: string): boolean {
 			return nodes.has(key(path));
@@ -434,6 +521,15 @@ export function folderFake(
 			error: unknown = new CloudMemberFolderError("Company folder is unavailable (503)", 503),
 		): void {
 			failing.set(root, error);
+		},
+		/** Reads under `root` answer again, and their bytes download again. */
+		heal(root: string): void {
+			failing.delete(root);
+			failingBytes.delete(root);
+		},
+		/** The bytes of files at or under `root` fail to download; their entries still read. */
+		failDownload(root: string): void {
+			failingBytes.add(root);
 		},
 	};
 	for (const path of options.seed ?? SEEDED) fake.mkdir(path);
