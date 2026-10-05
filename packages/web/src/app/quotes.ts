@@ -69,10 +69,8 @@ export function takeQuoteRecords(
 	return [...taken, ...known.filter((record) => !words.has(record.words))];
 }
 
-/** The quotes of a text: every «words» of a known record, in order and apart. A record's words may hold marks of
- * their own: the cloud takes any words just inside a pair of marks (a shared draft's «Use «root» now»), so every quote
- * it took is held here too, never dropped into the member's own words. Where two pieces overlap (a quote that holds
- * another record's «words»), the one that starts first holds, the longer where both start together. */
+/** The quotes of a text: every «words» of a known record, in order. A record's words never hold a mark, so they
+ * never overlap. */
 export function placeQuotes(text: string, records: readonly QuoteRecord[]): MessageQuote[] {
 	if (!records.length || !text.includes(QUOTE_OPEN)) return [];
 	const byWords = new Map<string, QuoteRecord>();
@@ -80,28 +78,23 @@ export function placeQuotes(text: string, records: readonly QuoteRecord[]): Mess
 		if (
 			!byWords.has(record.words) &&
 			record.words &&
+			!/[«»]/.test(record.words) &&
 			[...record.words].length <= QUOTE_MAX_CHARACTERS &&
 			quoteRefFits(record.source, record.ref)
 		)
 			byWords.set(record.words, record);
-	const found: { from: number; to: number; record: QuoteRecord }[] = [];
-	for (const record of byWords.values()) {
-		const piece = `${QUOTE_OPEN}${record.words}${QUOTE_CLOSE}`;
-		for (let at = text.indexOf(piece); at >= 0; at = text.indexOf(piece, at + 1))
-			found.push({ from: at, to: at + piece.length, record });
-	}
-	found.sort((a, b) => a.from - b.from || b.to - a.to);
 	const quotes: MessageQuote[] = [];
-	let taken = 0;
 	let units = 0;
 	let characters = 0;
-	for (const { from, to, record } of found) {
-		if (from < taken) continue;
-		taken = to;
-		characters += characterIndex(text.slice(units, from + 1), from + 1 - units);
-		units = from + 1;
+	for (const match of text.matchAll(/«([^«»]+)»/g)) {
+		const record = byWords.get(match[1] ?? "");
+		if (!record) continue;
+		const from = match.index + 1;
+		characters += characterIndex(text.slice(units, from), from - units);
+		units = from;
 		const start = characters;
-		quotes.push({ start, end: start + [...record.words].length, source: record.source, ref: record.ref });
+		const end = start + [...record.words].length;
+		quotes.push({ start, end, source: record.source, ref: record.ref });
 	}
 	return quotes;
 }
@@ -176,8 +169,7 @@ function diffSpan(before: string, after: string, caret: number | undefined): Cha
  * the next », none between): a « that pairs with no », right before a record's words, or a » that pairs with no «,
  * right after them. Whatever letters follow or precede the words: «Btail with no » is B's words without their record,
  * and only a closing mark tells a quote from a longer word. A « that pairs with a later » is the member's own marks
- * («Janet» when a quote is "Jane"); a lone «Janet is held as broken, which fails closed. A quote the text holds is one
- * piece here: the marks inside it («Use «root» now») are its words, not marks to pair. Each as the span of the words
+ * («Janet» when a quote is "Jane"); a lone «Janet is held as broken, which fails closed. Each as the span of the words
  * and that mark. Such words would go as the member's own: a save or a send waits until the member mends or removes
  * them. */
 export function brokenQuotes(
@@ -185,20 +177,12 @@ export function brokenQuotes(
 	records: readonly QuoteRecord[],
 ): { readonly from: number; readonly to: number; readonly words: string }[] {
 	const words = [...new Set(records.map((record) => record.words))]
-		.filter((item) => item)
+		.filter((item) => item && !/[«»]/.test(item))
 		.sort((a, b) => b.length - a.length);
 	if (!words.length || !/[«»]/.test(text)) return [];
-	const held = quotePieces(text, placeQuotes(text, records));
-	let next = 0;
 	const lone: { at: number; opens: boolean }[] = [];
 	let open: number | undefined;
 	for (let at = 0; at < text.length; at++) {
-		const piece = held[next];
-		if (piece?.from === at) {
-			next += 1;
-			at = piece.to - 1;
-			continue;
-		}
 		if (text[at] === QUOTE_OPEN) {
 			if (open !== undefined) lone.push({ at: open, opens: true });
 			open = at;
@@ -224,7 +208,7 @@ export function brokenQuotes(
 function clean(before: string, after: string, records: readonly QuoteRecord[], change: Change): boolean {
 	const piecesBefore = quotePieces(before, placeQuotes(before, records));
 	const piecesAfter = quotePieces(after, placeQuotes(after, records));
-	// Within a quote's piece, its marks included: the quote's own words, or words inside them.
+	// Within a quote's piece, its marks included (a record's words hold no mark, so they can only be its words).
 	const quoted = (pieces: readonly QuotePiece[], from: number, to: number) =>
 		pieces.some((piece) => piece.from <= from && to <= piece.to);
 	const { prefix, removed, inserted } = change;
