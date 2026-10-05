@@ -250,16 +250,83 @@ Runtime:
 - The SQL and the runtime ship in one cut. The runtime calls the recorder only from a writer, and none does before W4,
   so the change is inert until then.
 
-## 8. R2: change sets no tool call carried (not built)
+## 8. R2: change sets no tool call carried (P40a built; P40b, the runtime, next)
 
 An agent can also change delegation paths without a reviewed tool: a computer or shell edit saved through a view
-(C1b-3), or a Company File write onto `agents/**`. Those units are denied today and stay denied after R1. R2 reviews the
-change set itself:
-- the reviewer runs on the change set, and SQL applies the same layering, factored out of `qorpera_record_action_review`
-  so both share it;
-- the record can be `ask` or `deny`; an ask raises a card on the change set;
-- a member's answer takes the review row `FOR NO KEY UPDATE` at 7b, after the member prelude and before the
-  conversation;
-- a unit `waiting_for_review` is parked as a proposal (`qorpera_folder_proposals`, not built), and an allow applies it.
+(C1b-3). Until P40 such units were denied. The coordinator chose shape B on 4 October 2026 (registry 05:51Z): the
+commit parks them, and the agent's next run for the same member reviews them as one call through the existing gate
+and card, and applies them on an allow. This replaces the plan written here before (a shared layering factored out of
+`qorpera_record_action_review`, `ask` and `deny` folder reviews, and a member answer path at 7b): folder reviews are
+still written only after an approval, by R1's recorder, so no answer races a commit. A Company File write onto a
+delegation path keeps "use the tool made for it" (no P40d).
 
-R2 is F2's (the coordinator's plan of 2 October 2026).
+**Parking** (migration `20260930074000`, SQL tests 926 and 927):
+- In the commit, a view's unit that needs review (an in-house agent's deletion, or a delegation unit) and carries no
+  review id is parked: its outcome is `waiting_for_review`, reason `parked`. Runs are unchanged (`review_required`,
+  since R1 covers tool calls), and members are never reviewed. This covers every view kind: a detached desktop, and a
+  view acting through a live run that carries no review.
+- The commit makes one proposal (`qorpera_folder_proposals`) of all its parked units: the units as sent (with their
+  structured parses), their numbers in the commit, their change-set digest, and the effect (`destructive` when a unit
+  deletes or moves, else `delegation`). The agent is the view's, and the member is the view's requester (the
+  member of its last holder, or the live run's requester).
+- `qorpera_folder_proposal_paths` keeps one row per path the units name, and the manifest for a file. While the
+  proposal is open, those rows root the files (`qorpera_folder_object_rooted`). Proposals never expire.
+- A commit that parked something and saved nothing no longer returns early. Like P17's conflict copies, it passes the
+  anchor step and step 11's authority check, and then stops without a seq. Parked bytes are derived content, so a
+  narrowing journaled meanwhile refuses the commit, and nothing is parked.
+
+**Review and apply:**
+- `qorpera_folder_agent_proposals(env, run, {cursor?})` lists the open proposals of the run's agent for the run's
+  requester, oldest first, 4 per page, each with its first 50 units (op, path, target, a new folder's item count and
+  its structured parses) and `createsAgent`. Only a run that can raise a card lists them: an in-house run with a
+  session, not a worker, not in a group chat. A proposal is listed (and counted) only while the run may read every path
+  it names, decided at each list, so a revocation since parking hides its paths and content.
+- The runtime reviews each proposal as one call `apply_proposal`, whose arguments are exactly
+  `{"proposalId":"<id>"}`. Its digest is the tool boundary's: SHA-256 of `["qorpera","apply_proposal","<arguments>"]`
+  (`qorpera_folder_proposal_call_sha256`). The layering refuses an `apply_proposal` record whose arguments or digest
+  do not name a proposal (22023).
+- R1's recorder accepts the approval for the proposal it names: the request is `{actionReviewId, tool, argumentSha256,
+  proposalId}`. The proposal must be open and belong to this run's agent and requester. The review it records is of
+  the proposal's own units, and names the proposal (`qorpera_folder_reviews.proposal_id`).
+- `qorpera_folder_apply_proposal(env, run, operationKey, proposalId, reviewId, receiptId?)` commits the proposal's
+  units as the run with that review. At rank 7c, the commit locks the proposal and checks that the review is this run's
+  and the proposal still open, of this agent and member, and of these units. If not, each unit is refused
+  (`review_required`) before anything else is decided, and the proposal is left as it is. The
+  files' possession was checked when the view parked them, so the byte checks take them as the platform's (the proof,
+  the catalog and step 6's lock still hold). The units are decided as any reviewed unit. A moved base is a conflict,
+  which P17 keeps as a copy. The proposal closes `applied` when a unit saved, else `not_applied`, and its units and
+  path rows go. The commit names the proposal (`qorpera_folder_commits.proposal_id`). A retry with the same operation
+  key, review and receipt replays; the same key with another review or receipt is refused (22023).
+- A restricted agent's hire through a view (contract 14.1) asks the owners and admins, as `hire_agent` does. The
+  layering makes the reviewer's allow an owners-and-admins ask, and the recorder stands only on such an answer.
+
+**Closing:**
+- `qorpera_folder_close_proposal(binding, {proposalId, actionReviewId?})`: the agent's run for the member declines the
+  proposal with a denial of its `apply_proposal` call (the reviewer's deny, or a member's on the card). Without one, the
+  run discards it.
+- `qorpera_folder_member_discard_proposal(env, member, proposalId)`: the member the proposal waits for, an owner or an
+  admin discards it. Members have no list yet (P40c, with the web).
+- A decided proposal answers as it stands.
+
+**Erasure:** erasing a path erases the open proposals that name a path under it before the root's cutoff. A proposal
+is placed as a conflict copy is: by its parking commit's seq and the unit's number there, or by the commit's time when
+that commit saved nothing. The proposals' file hashes go to phase 5 and their commits' runs to phase 4. The reply
+counts them (`erased.proposals`). A live root whose only history is a proposal still answers "Nothing to erase".
+
+**Locks:** a proposal row is rank 7c, after the folder review (7b) and before ranks 8 and 9:
+- the applying commit takes it FOR NO KEY UPDATE after the review;
+- a close and a member's discard take it after their ranks 0 to 7 (the run's entry; or the company row and the member
+  row);
+- the recorder takes it FOR SHARE after its run entry and the action review;
+- the erasure takes it FOR UPDATE after its rank 7 and before rank 8, and re-reads after its paths: a proposal parked
+  under a root in between makes it retry (QRC01);
+- the parking commit only inserts.
+
+**Left for P40b and later:**
+- P40b (runtime): list at the start of a turn, review each proposal through the gate with an action summary built from
+  the changes (not a file list), record, apply, and tell the agent. It also fixes the boundary's "proposed" observation
+  for folder-v2 results.
+- P40c (web): open proposals in the agent's thread, and a member's discard.
+- A proposal waiting for a removed member, or for an archived agent, stays open until an owner or admin discards it.
+
+R2 is F2's (the coordinator's plan of 2 October 2026; shape B on 4 October 2026).

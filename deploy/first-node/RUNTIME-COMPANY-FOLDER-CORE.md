@@ -206,10 +206,13 @@ All tables are keyed by company environment.
   transaction that inserts a wake takes it as its last lock before the clock
   (§3 step 10). It serializes wake admission and the wake count, which today
   sit on the fence (20260907000200:23-31).
-- **Proposals** (`qorpera_folder_proposals`) hold parked units: units waiting
-  on a review card, a restricted creator's hire (contract 14.1), or a
-  protected path if one is ever configured. Each proposal keeps its unit list
-  and its upload intents open until it is decided.
+- **Proposals** (`qorpera_folder_proposals`, P40a, migration 20260930074000)
+  hold parked units: a view's units that need review and carry none, a
+  restricted creator's hire through a view among them (contract 14.1). Each
+  proposal keeps its units, and a row per path they name
+  (`qorpera_folder_proposal_paths`, which roots their files), until it is
+  decided: applied by the agent's next run with that member, declined, or
+  discarded (C2 §8).
 - **Upload intents** (`qorpera_folder_upload_intents`) record bytes a writer is
   about to commit: the file manifest and its chunks, the size, the run or
   member command, the operation key, and an expiry that long uploads renew.
@@ -285,11 +288,12 @@ is never upgraded. The steps:
    - Every change that ends a lease (requeue, cancel, handoff, completion,
      re-claiming an expired lease) takes `FOR UPDATE`, which waits for commits
      that checked the old lease. An activation check enforces this.
-   - An approval applied after its run ended (a parked unit) takes no job
-     lock. It never substitutes the approver for the agent (contract 4.3).
-     The commit re-checks the agent's current authority and status, and the
-     approver's right to answer the card. It records the agent as actor and
-     the member as approver, and refuses the unit if either check fails.
+   - A parked unit is applied by a run (C2 §8, shape B): the agent's next
+     run for the same member, whose commit takes its own job lock as any
+     run's. It never substitutes the approver for the agent (contract 4.3):
+     the commit checks the agent's current authority as it does for any run,
+     records the agent as actor and the member who answered the card as
+     approver. The proposal row is rank 7c, after the review.
    - **A view** (C1B "C1b-3: views" §4): the job of its live run, if any, then
      the view row `FOR KEY SHARE`, which closing and superseding (`FOR
      UPDATE`) wait for. Releases take them in the same order, and so must
@@ -334,7 +338,12 @@ is never upgraded. The steps:
    6. resources, in ancestors-first order of their paths;
    7. grants;
    8. vault rows;
-   9. unique-key claims, by kind then key.
+   9. unique-key claims, by kind then key. Besides the commit's own claims (below), a per-company transaction advisory
+      lock is a unique-key claim at this rank, after the folder entry (the fence and rank 0) and before any row it then
+      touches: E1's `qorpera.event-hooks:<company>` for hooks and mailboxes, and A1-7's `qorpera.company-accounts:<company>`
+      for opening an account (`pg_advisory_xact_lock(hashtextextended('qorpera.company-accounts:' || <company>, 0))`,
+      migration 20260930072000, C1C §6.23), under which the opening reads its duplicate login and vault name; its receipt
+      and inserts follow.
 
    After rank 9 (C1C §5.7): run-owned rows (receipts, action reviews, context views); rank 10's recheck of read sets;
    every session the transaction will write, `FOR UPDATE` in id order: the conversations, then the coding sessions
@@ -412,6 +421,18 @@ is never upgraded. The steps:
    rows (§5), the queue rows (§5) and the commit row. A unit whose version
    check failed is not applied: nobody's work is overwritten, and its bytes
    stay on the receipt as a conflict copy.
+   - Built in slice P17 (`20260930042000`, SQL test 823): a write or new
+     folder that conflicted keeps each of its files as a row of
+     `qorpera_folder_conflict_copies` (commit, unit, file number, the path it
+     would have been stored at, the file reference). A conflict is decided
+     before the bytes, so a copy is kept only when the whole unit's files
+     would have passed the bytes check against step 6's locked objects (the
+     proof, no GC mark, the actor's possession); otherwise nothing is kept.
+     The commit's units JSON is unchanged. A copy reads as an old version of
+     its path (`qorpera_folder_object_readable`), so whoever may read the
+     path can fetch it and commit it again. A commit that saves nothing but keeps copies still passes the anchor
+     step and step 11's authority check under the clock, as a saving commit does: a narrowing journaled while it
+     decided refuses it, and its copies go with it. It then stops without a seq.
 9. **Check.** An explicit check over the structured units confirms that every
    index row written points at its entry's current version. The folder core's
    tables have no deferred constraints or deferred triggers; an activation
@@ -473,8 +494,8 @@ Each unit reports one of:
 - refused (a rule of 5.6, a structured file that fails its schema, or a
   path the unit would store past the 4096-byte limit, `too_long`);
 - denied (authority, or a reviewed unit without its review);
-- waiting for review (its review record is a pending ask, and the unit is
-  parked as a proposal);
+- waiting for review (a view's unit that needs review and carries none, parked
+  as a proposal; or a review record that is a pending ask);
 - not applied (RUNTIME-COMPANY-FOLDER.md §2).
 
 ### Who calls it
@@ -599,8 +620,9 @@ parse. The class is one of:
 
 An agent's delegation or deletion unit is handled by its review record:
 - **allow**, or an approved card: the unit applies;
-- **pending ask:** the unit waits for review and is parked as a proposal;
-- **none, or deny:** the unit is denied.
+- **pending ask:** the unit waits for review;
+- **none, or deny:** the unit is denied; a view's unit with no review is parked
+  as a proposal instead (C2 §8).
 
 One review covers a change set. Tools that act outside the folder
 (connectors, the computer, workers, coding) keep their tool-name classes in
@@ -843,9 +865,12 @@ An object is retained while it is referenced by any of:
 - a path version (kept for good, apart from the git-object exception and
   erasure);
 - an open upload intent;
-- a conflict copy on a receipt;
-- an open proposal, including units parked on a review card, which never
-  expire (2026-09-25 amendment, item 5); or
+- a conflict copy on a receipt (P17: `qorpera_folder_conflict_copies`, in
+  `qorpera_folder_object_rooted`; erasing a path will remove its copies,
+  which the folder GC + erasure session adds to `qorpera_folder_erase`);
+- an open proposal (P40a: `qorpera_folder_proposal_paths`, in
+  `qorpera_folder_object_rooted`), which never expires (2026-09-25 amendment,
+  item 5); erasing a path erases the open proposals under it; or
 - a retention hold.
 
 ### Invariants
@@ -915,7 +940,7 @@ GC is the largest correctness risk of the design, so it gets its own tests:
 | --- | --- | --- |
 | Company File row | every call, `FOR UPDATE` | never |
 | Profile row | every call, `FOR UPDATE` | never `FOR UPDATE` or `NOWAIT`, on any path. Foreign-key inserts take their KEY SHARE, which nothing now blocks. P15's name copy alone takes `FOR NO KEY UPDATE SKIP LOCKED` (§3 step 3) |
-| Folder fence row | not present (the wake-admission fence, `FOR UPDATE`) | effects, wake admission and the post-commit worker `FOR KEY SHARE`; stop and resume `FOR UPDATE`; reads and GC never. A transaction over several companies takes one company per transaction, or every company's fence in company-id order: `FOR KEY SHARE` and nothing stronger of any company (the node-update steps, C1C §6.15), or deletion's finisher batch `FOR UPDATE` (C1C §6.10) |
+| Folder fence row | not present (the wake-admission fence, `FOR UPDATE`) | effects, wake admission and the post-commit worker `FOR KEY SHARE`; stop and resume `FOR UPDATE`; reads and GC never. A loop over several companies handles one company per transaction, or takes every company's fence in one transaction in company-id order: `FOR KEY SHARE` and nothing stronger of any company (the node-update steps, C1C §6.15), or `FOR UPDATE` (deletion's finisher batch, C1C §6.10) |
 | Admission row | not present | every wake-inserting or wake-admitting transaction `FOR NO KEY UPDATE`, last before the clock; multi-company loops one company per transaction |
 | Job row | `FOR UPDATE`, which also serializes a run's own reads | commits and effects `FOR KEY SHARE`; renewal `FOR NO KEY UPDATE`; lease-ending changes `FOR UPDATE`; reads never |
 | Members, staff, rooms, index rows, resources, grants, vault rows, unique claims | various, unordered | once, in the order of §3 step 4: `FOR NO KEY UPDATE` for rows rewritten, `FOR KEY SHARE` for rows referenced. One exception: a member's post, a room delivery's retry and a member's answer in an agent's thread take their room `FOR SHARE` (C1C §6.2, §6.3) |
@@ -997,7 +1022,11 @@ whose read set holds N paths, alone, with function statistics. Its first
 finding was the quadratic read-set re-check, fixed by P24b (C1B "Notes for
 later slices"). Its second was the upload's presence check, which under a plan
 that scanned the company's catalog first checked every object it stores, fixed
-by P24c (C1D §7). It reports statements running over 2 s with their wait
+by P24c (C1D §7). A third, from P17's review rather than the load: a file
+reference's byte check hashed the company's catalog for every file and copied
+the commit's locked array for every file or object, so a new folder of 10,000
+new files took 87 s; P24d (C1D §4) makes it 4.5-5.6 s, and a copy of it 2.9 s
+rather than 17 s. The script reports statements running over 2 s with their wait
 events, statements over 1 s with their plans (auto_explain), and PL/pgSQL
 functions by self time over the load. Since C1c-3i every migration change runs it short (run-on-node's
 `folder-core-load` step: 16 runs for 30 s and a 5,000-path read set), in place
@@ -1155,10 +1184,11 @@ worker on"). Nothing else in this plan waits on him.
 - Proposals for parked units and the restricted hire.
   - R1 (#613) records the review of tool calls. The restricted hire is a card
     on that record (W4a, #621), not a parked proposal.
-  - R2 reviews change sets that no tool call carried, and adds
-    `qorpera_folder_proposals`. Until it exists, agents make the interface
-    and table changes that "interfaces" item 7 counts as delegation only with
-    `save_interface`, which joins R1's tools.
+  - R2 reviews change sets that no tool call carried: P40a (migration
+    20260930074000) parks a view's units as `qorpera_folder_proposals`, and the
+    agent's next run for that member applies them through R1 (C2 §8). A
+    Company File write onto a delegation path keeps using the tool made for
+    it (`save_interface` for interfaces and tables).
 - Erasure. "Work for people" item 3 (approved 3 October 2026) widens it from
   a deleted agent's folder to any deleted path (a contact's file too).
 
@@ -1198,12 +1228,11 @@ For `folder-v2` companies:
 ### C4. Journal consumers and clients
 
 - The wake drain works on sequence numbers, and the pin becomes `companySeq`.
-  The `folder-v2` materializer (P28) also calls F2's worker drain,
-  `qorpera_folder_drain_worker_wakes(environment, limit)`, for each company
-  that `qorpera_folder_worker_wakes_due()` lists, in its own transaction,
-  before it materializes that company's wakes (RUNTIME-COMPANY-STATE-FILES.md,
-  "Plan (F2-5b)" §6). Its acceptance includes "a dispatch runs and its revival
-  returns".
+  F2's worker drain (`workers`: `qorpera_folder_workers_due` and
+  `qorpera_folder_workers_company`) runs as the first of the shared folder
+  drains, each company in its own transaction, before the materializer's list
+  (RUNTIME-COMPANY-STATE-FILES.md, "Plan (F2-5b)" §6; LISTENER.md §9). Its
+  acceptance includes "a dispatch runs and its revival returns".
 - The members' and clients' hint (the feed itself is C1f).
 - The observability views (P32, migration `20260930032000`: the operator's run and company queries read commits,
   reviews and read sets).

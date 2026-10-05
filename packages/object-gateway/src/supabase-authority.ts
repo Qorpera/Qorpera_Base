@@ -9,7 +9,7 @@ import {
 	unavailableStateFailure,
 } from "./dependency.ts";
 import type { FolderGcAuthority } from "./folder-gc.ts";
-import type { FolderObjectAuthority, FolderRunActor } from "./folder-objects.ts";
+import type { FolderActor, FolderObjectAuthority } from "./folder-objects.ts";
 import type {
 	AuthorizedMemberCompanyObject,
 	MemberCompanyObjectAuthority,
@@ -393,7 +393,7 @@ export class SupabaseObjectAuthority
 
 	async authorizeFolderUpload(
 		environmentId: string,
-		actor: FolderRunActor,
+		actor: FolderActor,
 		intentId: string,
 		sha256: string,
 		bytes: number,
@@ -419,7 +419,7 @@ export class SupabaseObjectAuthority
 
 	async confirmFolderObject(
 		environmentId: string,
-		actor: FolderRunActor,
+		actor: FolderActor,
 		intentId: string,
 		sha256: string,
 		bytes: number,
@@ -437,7 +437,7 @@ export class SupabaseObjectAuthority
 
 	async authorizeFolderDownload(
 		environmentId: string,
-		actor: FolderRunActor,
+		actor: FolderActor,
 		sha256: string,
 	): Promise<{ profileId: string; bytes: number }> {
 		const value = (await this.#rpc(

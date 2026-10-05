@@ -17,14 +17,6 @@ export type MemberNotificationSubject =
 			allocationId: string;
 	  }
 	| {
-			schema: "qorpera.member-notification.sponsor-handoff/v1";
-			runId: string;
-			fromConnectionId: string;
-			toConnectionId: string;
-			reason: "usage_limit";
-			at: string;
-	  }
-	| {
 			/** A run with no progress for 15 minutes (session-buildup audit gap 4, migration 20260930002600). */
 			schema: "qorpera.member-notification.run-no-progress/v1";
 			runId: string;
@@ -41,6 +33,21 @@ export type MemberNotificationSubject =
 			staffAgentId: string;
 			routineId: string;
 			title: string;
+	  }
+	| {
+			/** A routine that ran on this member's login moved to another by someone else's save or pick
+			 * (20260930064000: a routine's payer never changes without permission). */
+			schema: "qorpera.member-notification.routine-payer-changed/v1";
+			routineId: string;
+			routineVersion: number;
+			staffAgentId: string;
+			/** Who pays now: a member's own login (`payerUserId`), or a company account (no member). */
+			payer: "member" | "company";
+			payerUserId: string | null;
+			/** The member whose save or pick moved it; null when the cloud names no one. */
+			changedByUserId: string | null;
+			reason: "save" | "pick";
+			at: string;
 	  };
 export interface MemberNotification {
 	notificationId: string;
@@ -48,9 +55,9 @@ export interface MemberNotification {
 	kind:
 		| "provider_usage_limit"
 		| "company_ceiling_tripped"
-		| "sponsor_handoff"
 		| "routine_needs_model_account"
-		| "run_no_progress";
+		| "run_no_progress"
+		| "routine_payer_changed";
 	createdAt: string;
 	acknowledgedAt: string | null;
 	subject: MemberNotificationSubject;
@@ -165,14 +172,20 @@ function notification(value: unknown, profileId: string): MemberNotification {
 			minutes: integer(s.minutes, 1, 1440),
 			worker: s.worker === undefined ? false : s.worker === true ? true : s.worker === false ? false : invalidFlag(),
 		};
-	} else if (kind === "sponsor_handoff" && s.schema === "qorpera.member-notification.sponsor-handoff/v1") {
-		if (s.reason !== "usage_limit") throw invalid();
+	} else if (kind === "routine_payer_changed" && s.schema === "qorpera.member-notification.routine-payer-changed/v1") {
+		const payer = s.payer,
+			reason = s.reason;
+		if ((payer !== "member" && payer !== "company") || (reason !== "save" && reason !== "pick")) throw invalid();
 		subject = {
 			schema: s.schema,
-			runId: uuid(s.runId),
-			fromConnectionId: uuid(s.fromConnectionId),
-			toConnectionId: uuid(s.toConnectionId),
-			reason: s.reason,
+			routineId: uuid(s.routineId),
+			routineVersion: integer(s.routineVersion, 1),
+			staffAgentId: uuid(s.staffAgentId),
+			payer,
+			// A member's login names its member; a company account none.
+			payerUserId: payer === "member" ? uuid(s.payerUserId) : s.payerUserId === null ? null : invalidFlag(),
+			changedByUserId: s.changedByUserId === null ? null : uuid(s.changedByUserId),
+			reason,
 			at: date(s.at),
 		};
 	} else throw invalid();
@@ -186,8 +199,10 @@ function notification(value: unknown, profileId: string): MemberNotification {
 	};
 }
 
-/** Public member RPC wire contracts: migrations 20260828019980 (list, acknowledge),
- * 20260828024000 (sponsor handoff) and 20260908000300 (machine capacity). The cloud
+/** Public member RPC wire contracts: migrations 20260828019980 (list, acknowledge)
+ * and 20260908000300 (machine capacity). A run that reaches its login's usage
+ * limit stops on that login (20260928349910), so no sponsor hand-off notice
+ * (20260828024000) is written any more. The cloud
  * alone enforces notification authority. The SDK supplies bounded transport; this
  * browser host validates display records only. */
 export function createWebMemberNotifications(

@@ -8,6 +8,15 @@ insert into public.qorpera_profiles (id, name, created_by_user_id) values
 insert into public.qorpera_profile_members (profile_id, user_id, email, display_name, role) values
 ('16200000-0000-4000-8000-000000000010', '16200000-0000-4000-8000-000000000001', 'owner@example.test', 'Owner', 'owner'),
 ('16200000-0000-4000-8000-000000000010', '16200000-0000-4000-8000-000000000002', 'coworker@example.test', 'Coworker', 'contributor');
+-- A folder-v2 company (the company folder core).
+insert into public.qorpera_company_environments (id, profile_id, name, contract_version, created_by_user_id) values
+('16200000-0000-4000-8000-000000000011', '16200000-0000-4000-8000-000000000010', 'Login display', 1, '16200000-0000-4000-8000-000000000001');
+select set_config('request.jwt.claims', '{"role":"service_role"}', true) \g /dev/null
+select public.qorpera_folder_enable('16200000-0000-4000-8000-000000000011') \g /dev/null
+do $$ begin
+    if not public.qorpera_company_is_folder_v2('16200000-0000-4000-8000-000000000010') then
+        raise exception 'the account metadata company is not a folder-v2 company'; end if;
+end $$;
 
 select set_config('request.jwt.claims', '{"sub":"16200000-0000-4000-8000-000000000001","role":"authenticated"}', true);
 set local role authenticated;

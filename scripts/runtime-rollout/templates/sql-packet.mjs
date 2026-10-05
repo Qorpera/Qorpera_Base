@@ -81,7 +81,6 @@ const finalInterfaces = `${activeBundle}=${q(F.bundle)}
   and to_regclass('public.qorpera_company_machine_limits') is null
   and to_regprocedure('public.qorpera_set_company_machine_limit(uuid,integer,bigint)') is null
   and to_regprocedure('public.qorpera_consent_provider_connection_autonomous(uuid,uuid,boolean)') is not null
-  and to_regprocedure('public.qorpera_handoff_run_sponsor(uuid,text)') is not null
   and to_regprocedure('public.qorpera_ensure_default_agent_read_grants(uuid,uuid)') is not null
   and exists(select 1 from information_schema.columns where table_schema='public' and table_name='qorpera_company_path_grants' and column_name='origin')
   and exists(select 1 from information_schema.columns where table_schema='public' and table_name='qorpera_wake_occurrences' and column_name='wake_kind')

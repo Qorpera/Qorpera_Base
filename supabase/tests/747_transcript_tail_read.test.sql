@@ -16,6 +16,15 @@ insert into public.qorpera_profile_members(profile_id,user_id,email,display_name
 	('74400000-0000-4000-8000-000000000010','74400000-0000-4000-8000-000000000003','tail-viewer@example.test','Viewer','viewer');
 insert into public.qorpera_company_environments(id,profile_id,name,contract_version,created_by_user_id)
 values ('74400000-0000-4000-8000-000000000020','74400000-0000-4000-8000-000000000010','Environment',1,'74400000-0000-4000-8000-000000000001');
+-- A folder-v2 company (the company folder core).
+select set_config('request.jwt.claims','{"role":"service_role"}',true) \g /dev/null
+select public.qorpera_folder_enable('74400000-0000-4000-8000-000000000020') \g /dev/null
+select set_config('request.jwt.claims','',true) \g /dev/null
+do $$
+begin
+	if not public.qorpera_company_is_folder_v2('74400000-0000-4000-8000-000000000010') then
+		raise exception 'the tail read company is not a folder-v2 company'; end if;
+end $$;
 -- A company conversation with 1,203 events, a member's private conversation with 7, and an
 -- empty one.
 insert into public.qorpera_shared_sessions(id,client_session_id,profile_id,environment_id,title,status,
