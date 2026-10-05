@@ -3005,13 +3005,27 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    when members started the run, their latest earlier messages in the
    conversation), and the rules that apply (all company rules and the
    personal rules of the member the run works for), never the agent's own
-   words or any tool result, and answers allow, ask or deny. A review that cannot
-   run is never an approval: the call does not run.
+   words (apart from the one message below) or any tool result, and answers
+   allow, ask or deny. A review that cannot run is never an approval: the call
+   does not run.
    Amended 2026-10-02 (not built yet): a quote of outside content inside a
    member's message is not what the member asked for, and the reviewer never
    reads the quoted words. See the [quote provenance
    amendment](#2026-10-02-amendment-quoted-outside-content-in-a-members-message),
    item 5.
+   Amended 2026-10-04 (the coordinator's decision, after live run 22b287a3
+   denied a hire the founder had agreed to with "Agreed, hire both."):
+   - When members started the run, the reviewer also reads what the member was
+     answering, bounded and marked as the agent's words:
+     - for a card answer, the card the agent asked (found by its interaction
+       id), or nothing;
+     - for a message, the agent's latest message or card before it.
+   - An approval card is the platform's, never the agent's, and is not read.
+   - What the member answered is context for what the reply refers to. It is
+     never a request or an approval.
+   - Delegation to the company's own agents is denied only when the member said
+     no, or when it goes against what they said. When the reviewer cannot tell
+     whether the member agreed, it asks with a card.
 4. **Layering.** Built-in checks (money, legal terms, deleting outside data,
    access changes: ask; an action that plainly does not serve the request:
    deny), then company rules, then personal rules. Ask first wins; an Allow
