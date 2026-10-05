@@ -349,10 +349,21 @@ and Q6 proposes pruning them after 7 days, like git objects. Without Q6, they co
 - **Erasure generation.** `qorpera_shared_sessions` gets `memory_generation`, a counter per conversation. The
   single-message erase (§10) raises it in the same transaction that blanks the event and deletes the blocks.
   - A compactor batch reads the generation before it reads any event or line, and keeps it with its results.
-  - Its commit is one platform function that, in one transaction, reads the session row `FOR SHARE`, checks that the
-    generation is unchanged, and only then calls the folder commit. The erase's update of that row waits for it.
-  - If the generation moved, the batch is **discarded whole**: it is never merged, retried or partly kept. The next
-    run builds those nodes again from the transcript as it now is.
+  - Its commit is the ordinary folder commit with one new precondition, `sessionGenerations`: a list of
+    `(session, generation)` pairs.
+  - **The check sits at the commit's own session step**, not before the commit. Core §3's transaction takes, in
+    order: the run's rows, the folder fence, the principals (members first), the index rows, resources, grants and
+    uniques, then run-owned rows, and then every session the transaction writes, `FOR UPDATE` in id order (step 4). A checked session joins that
+    pass in the same id order, `FOR SHARE` when the commit only checks it. Then the commit compares the generation,
+    and only then does it lock and write paths.
+  - So the batch takes the member row before the session, like every other commit. For example, a payer's role
+    change holds the member row `FOR UPDATE` and then asks for the thread session
+    (`qorpera_folder_member_change_enter`). A batch waits for it at the member row, holding no session lock, and
+    the two cannot deadlock.
+  - The erase's update of the session row takes `FOR UPDATE` at the same step, so it and a batch wait for each other
+    there in one order (§10).
+  - If the generation moved, the commit refuses with `memory_generation_stale`. The batch is **discarded whole**: it
+    is never merged, retried or partly kept. The next run builds those nodes again from the transcript as it now is.
   - Every retry below is its own commit, so it makes the same check.
   - So a result computed before an erasure can never land after it. The level-0 `hash` alone could not show this,
     because an erased event keeps its hash.
@@ -616,8 +627,12 @@ zoom({ line: "2184+8", conversation?: "thread:sales", from?: 3812 })
   - Its receipt input keeps the target conversation's session id (not the ref, which a rename changes), `start`,
     `size` and `from`. Erasure matches receipts by these (§10).
   - It reads the conversation's `memory_generation` (§4.3) before it reads, and stores its receipt in a transaction
-    that checks the generation again under the same row lock. If the generation moved, zoom reads again and answers
-    from the new state. So no receipt that holds erased text is stored after the erase.
+    that checks the generation again. If the generation moved, that transaction rolls back, and zoom reads again and
+    answers from the new state. So no receipt that holds erased text is stored after the erase.
+  - That transaction keeps core §3's order: the run's rows first (a receipt takes the run mutex, step 2), then the
+    receipt row with the other run-owned rows, and the target session `FOR SHARE` last, at the session step. It
+    takes no principal or path lock after the session. The erase takes the session at that same step, so the two
+    wait in one order.
 - **Light threads.** It runs on the server, with no shell.
 
 ## 9. Visibility
@@ -680,13 +695,26 @@ the compactor's window holds raw messages, never lines (§7.3). With lines in it
 and every later line would depend on every earlier message.
 
 **Erasing one message** (new, M3; Q5 decides who may). One request, for event `i` of conversation C:
-1. **Transcript.** The event's body becomes `{"erased": true}`. Its stored `event_hash` is kept, and chain checks
-   treat an erased body as opaque. The speaker and time stay, as attribution (`RUNTIME-COMPANY-FOLDER-ERASURE.md` §1
-   keeps speaker names). In the same transaction, C's `memory_generation` goes up by one (§4.3), and step 2 runs.
-2. **Tree.** Every block holding a node with `i` among its sources is deleted in one change set. In the next change
-   set, each block is written again without those nodes, which gives each block path a new life. Both change sets
-   are part of step 1's transaction. A compactor batch or zoom that read before it now fails its generation check
-   (§4.3, §8), so nothing computed from the old text can be written back.
+1. **Transcript and tree, in one folder commit.** The erase is one commit, attributed to the member who asked, and
+   it keeps core §3's order like any other:
+   - the principals first (members and the rest, step 4);
+   - then C's session row `FOR UPDATE`, at the session step, as a session the commit writes. There the event's body
+     becomes `{"erased": true}` and `memory_generation` goes up by one. Its stored `event_hash` is kept, and chain
+     checks treat an erased body as opaque. The speaker and time stay, as attribution
+     (`RUNTIME-COMPANY-FOLDER-ERASURE.md` §1 keeps speaker names);
+   - then the paths: every block that can hold a node with `i` among its sources is deleted. The candidate blocks
+     follow from the addresses alone. At the path step, the erase lists which of them exist and deletes each at its
+     current version.
+
+   A compactor batch or zoom that read before this commit now fails its generation check (§4.3, §8), so nothing
+   computed from the old text can be written back. One that checks first holds the session `FOR SHARE`, and the
+   erase waits for it at that step. The erase lists the blocks only after it holds the session, so it sees every
+   batch that committed before it, and deletes those nodes with the rest.
+2. **Rewrite.** A second, ordinary commit writes each deleted block again with the nodes that do not have `i` among
+   their sources. It reads them from the block's last version before the delete, so it runs before step 3. Writing
+   a deleted path gives it a new life. The rewrite is a batch at the new generation, so it merges by position with
+   any batch that recreated a block first (§4.3). Nothing it writes derives from `i`, so the order does not matter.
+   A node it cannot recover is just missing, and is rebuilt (step 6).
 3. **Old versions.** A P18 request on those block paths erases their earlier lives. P18 already keeps a live path's
    current life and erases its earlier ones (§2.2 there). Their index rows go with them (§5 there).
 4. **Receipts.** Every `zoom` receipt **in the whole company** whose target is C and whose result may hold text from
@@ -793,9 +821,9 @@ No slots or test numbers are reserved yet. Each step is its own PR with its own 
 | Step | What | Proof |
 | --- | --- | --- |
 | **M0** | Probe, no product code: the Codex 0.155.1 request order, `prompt_cache_key`, cross-run `cachedInputTokens` with a fixed prefix and with a growing conversation; today's real per-run sizes on Live Test from `model_turn` | a short report; decides §6 |
-| **M1** | Agent threads on Live Test only, behind a deploy-config list of company ids: tree files, refusals and index (SQL); `memory_generation` and the checked batch commit; tree roots hidden from agents' folder reads, search and machine copies, and V1 in the release check; fold, rendering and VIEW_DOC; closing compactor with its raw window; `zoom` with fitted results; view in developer instructions; cache key in the patch; stable `read_context` schema; `memory_view` and `memory_compaction` | SQL tests for index, refusals, hidden reads and the generation check (a batch read before a generation change is discarded); runtime tests for fold determinism, budget, placeholders, size enforcement, zoom checks and a markup-heavy zoom read whole through `from`; one live run that writes and reads a tree |
+| **M1** | Agent threads on Live Test only, behind a deploy-config list of company ids: tree files, refusals and index (SQL); `memory_generation` and the checked batch commit; tree roots hidden from agents' folder reads, search and machine copies, and V1 in the release check; fold, rendering and VIEW_DOC; closing compactor with its raw window; `zoom` with fitted results; view in developer instructions; cache key in the patch; stable `read_context` schema; `memory_view` and `memory_compaction` | SQL tests for index, refusals, hidden reads and the generation check (a batch read before a generation change is discarded), and a dblink race of a batch commit and a zoom receipt against a payer's role change (`qorpera_folder_member_change_enter`) that ends with no deadlock; runtime tests for fold determinism, budget, placeholders, size enforcement, zoom checks and a markup-heavy zoom read whole through `from`; one live run that writes and reads a tree |
 | **M2** | Measure and tune: the memory probe, VIEW at 48,000 vs 96,000, Luna low vs medium | probe report against §13's targets |
-| **M3** | Erasing one message (§10): the generation raise, the rebuild of every line with the message among its sources, and the receipt scrub by target and range across all runs | SQL tests, including a later message whose line named the erased fact, a Co-Founder zoom into another thread, and a compactor batch racing the erase; live: erase, then see the lines rebuilt and old versions gone |
+| **M3** | Erasing one message (§10): the generation raise, the rebuild of every line with the message among its sources, and the receipt scrub by target and range across all runs | SQL tests, including a later message whose line named the erased fact, a Co-Founder zoom into another thread, a compactor batch and a zoom receipt racing the erase (each either lands before it and is deleted or scrubbed, or is discarded and redone at the new generation), and an erase racing a role change, with no deadlock; live: erase, then see the lines rebuilt and old versions gone |
 | **M4** | Group chats (path resource, V2 in the composer, `zoom` and the release check, closing the read gap) and Co-Founder branches | SQL tests for the resource and the read check; probe: a group fact never appears in a thread run, even when the member and the agent are both in the group |
 | **M5** | On for every folder-v2 company; notebook trimmed (Q1) | the probe on a fresh company |
 | **M6** | Agent pair transcripts | — |
