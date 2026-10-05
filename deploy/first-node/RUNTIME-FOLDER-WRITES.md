@@ -33,7 +33,7 @@ restore in the web app (the Interfaces session's file page; below).
 | Folder program (`crates/qorpera-folder`, in the machine) | write operations; the bytes of each file open for writing, cut into chunks, with at most one partial chunk in memory per file; the `publish` command |
 | Folder service (node host) | each view's pending changes (names and chunk lists, never bytes); base versions; staging; boundaries; the report |
 | Object gateway | a byte route for the folder service, on its own token |
-| Folder core (SQL) | an upload holds the bytes its actor put under its own earlier intents (3a); everything else is live |
+| Folder core (SQL) | an upload holds the bytes its actor put under its own earlier intents (3a); the rest is live or in review (below) |
 
 ## Pending bytes
 
@@ -74,15 +74,25 @@ holds: created, changed and deleted paths, renames, the executable bit, and each
 attributes and reads served to that view include them, so a program sees its own work at once. Other views see only
 what is published.
 
-**Base versions** (§2 "The base version of a path"): the first time a boundary's work touches a path (opened for
-writing, removed, renamed, its bit set), the service records the version that view showed then. A path the view
-showed as absent has no base, so its write must find it absent. A blind `echo > f` therefore never overwrites a
-version the view did not see. A removed or renamed folder records the view's position in the feed (`asOfSeq`) at
-the first such operation. The feed keeps moving underneath: a pending path keeps showing the view's own version,
-and the commit decides.
+**Base versions** (§2 "The base version of a path": the newest version the writer has seen). The service keeps, per
+view, a version map: for each path whose content it served the view, the newest version it served. Every read names
+its version, so the map is exact. A change's base is taken from it:
+- a path the view read: the newest version it read, even if the feed has moved on since. An editor that read v1,
+  while another machine published v2, saves with base v1, by writing the file in place or by renaming a temporary
+  file over it, and gets a conflict, not a silent overwrite of v2;
+- a path the view never read: the version the view showed when the boundary's work first touched it (opened for
+  writing, removed, renamed, its bit set). A blind `echo > f` therefore never overwrites a version the view did not
+  see;
+- a path the view showed as absent: no base, so its write must find it absent.
 
-This replaces §2's "version map saved with each command's read record". Step 3 has no commands, and a restarted
-service loses the pending work anyway (below).
+A removed or renamed folder records the view's position in the feed (`asOfSeq`) at the first such operation. The
+feed keeps moving underneath: a pending path keeps showing the view's own version, and the commit decides. After a
+save the map holds the version the save made. The map lives as long as the view, at most one entry per path the
+view read.
+
+This replaces §2's "saved with each command's read record". Step 3 has no commands, and a restarted service loses the
+pending work anyway (below); a view opened again starts with an empty map, so its first writes take the version shown
+when they start.
 
 ## A boundary
 
@@ -107,16 +117,19 @@ and output reads, and per-desktop quiet periods.
 - `mkdir` of an empty folder: `mkdir`.
 
 A path moved and then changed in the same boundary needs the version the move creates, which no one knows before
-the commit. Such a boundary commits in two change sets: the moves first, then the writes that depend on them, with
-the versions the first one returned. Every other boundary is one change set.
+the commit. Such a boundary commits in two change sets, two phases: the moves first, then the writes that depend on
+them, with the versions the first one returned. Every other boundary is one change set, one phase.
 
-**Commit.** As the view's actor, with operation key `folder-view:<viewId>:<boundary id>`, where the boundary id is
-random and kept until the boundary has an answer, so a commit asked again after a lost reply is the same commit and
-the core replays it. If the service dies during a commit, the commit has landed or not; the mount shows the live
-folder after the program reconnects either way.
+**Commit.** As the view's actor. Each phase has its own operation key, `folder-view:<viewId>:<boundary id>:<phase>`,
+where the boundary id is random. The service keeps each phase's exact units until that phase has an answer, so a
+phase asked again after a lost reply is the same change set under the same key, and the core replays it (the core
+refuses a key used for different units, 22023). The second phase is built only from the first phase's answer. If
+the service dies during a commit, that phase has landed or not; the mount shows the live folder after the program
+reconnects either way.
 
 **Outcomes and the report.** After the commit the view shows exactly the live folder, and the report lists every
-changed path: `saved`; `conflict`, with the receipt that keeps this view's version (P17's conflict copies); `refused`,
+changed path: `saved`; `conflict`, with the receipt that keeps this view's version (P17's conflict copies, below);
+`refused`,
 with the core's reason (no write authority, a seeded path, a structured file that does not parse); or `not
 applied`, with why (still open, a unit it depended on failed, the save did not get through). The reply to `publish`
 carries it, and the program prints it. A quiet-period report is logged in the machine's journal until step 4 routes
@@ -171,11 +184,16 @@ adds one per node, as runs on node 2 already do.
 
 Each is its own PR with an exact-head review, in this order; 3b and 3d can be built side by side.
 
+**Before any mount writes, and before the conflict proof:** P17, a conflict's copy kept on its receipt with its GC
+root (#783), and the erasure of those copies (#798) are merged and live. Without them a losing version would live
+only in an upload intent and go when the intent lapses. The read path (#647, #656) is merged first, as 3c and 3d
+extend it.
+
 | Slice | What | Tests |
 | --- | --- | --- |
-| 3a | SQL: an upload holds its actor's own puts (migration `20260930083000`, test 931) | an intent's chunk is `present` in the same actor's next intent and not in another actor's; an expired or other-environment intent does not count; a marked object still refuses |
+| 3a | SQL: an upload holds its actor's own puts (migration `20260930083000`, test 931) | a chunk put under one intent is `present` in the same actor's next intent and not in another actor's; the whole file then seals and commits; an expired intent does not count; a marked object still refuses |
 | 3b | Gateway: the folder service's byte route and token | put and refusal paths as `folder-objects.ts`'s tests; the native token is refused there, and the folder service's token on the native routes |
-| 3c | Folder service: protocol v2, pending changes, base versions, staging, boundaries, the report | the service's tests with a stand-in core that commits (conflicts, unseen changes, refusals, replays) and a stand-in gateway; the hosted-db script runs the real commit on boundaries the service builds |
+| 3c | Folder service: protocol v2, pending changes, base versions, staging, boundaries, the report | the service's tests with a stand-in core that commits (conflicts, unseen changes, refusals, replays) and a stand-in gateway: a stale save (v1 read, v2 published, then saved in place and by renaming a temporary file over it) is a conflict; a lost reply in either phase of a two-phase boundary replays under that phase's key; the hosted-db script runs the real commit on boundaries the service builds |
 | 3d | Folder program: write operations, chunks, read-back, `publish` | FUSE tests on the test machine (a file written across chunks, a write inside a sent chunk, rename over a file, `rm -rf`, an open file left out, lock names); the end-to-end test against the service |
 | 3e | Live proof (coordinator runs it): read-write operator mounts in a machine on each node, one test company | below |
 
