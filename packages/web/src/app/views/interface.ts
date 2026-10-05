@@ -1318,8 +1318,9 @@ async function claimCard(context: BlockContext, part: DrawnPart, item: Interface
 		});
 	} catch (error) {
 		const rejected = error instanceof WebCompanyFolderRejectedError ? error : null;
-		if (rejected?.reason === "version_changed")
-			page.error = verb === "take" ? t("Someone else took it first.") : t("That changed while you were looking.");
+		// Every read found the cell still free (or still the member's), so the file kept changing elsewhere; a cell that
+		// was lost says so itself (ClaimLostError).
+		if (rejected?.reason === "version_changed") page.error = t("That changed while you were looking.");
 		else if (rejected?.problems.length) {
 			page.error = claimFailure(verb);
 			page.errorProblems = [...rejected.problems];

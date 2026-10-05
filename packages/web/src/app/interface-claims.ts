@@ -1,19 +1,20 @@
 import {
 	parseTableFile,
 	parseTableRows,
+	splitCsv,
 	type TableFile,
 	tableClaimProblems,
 	tableRowKey,
-	writeTableRows,
 } from "@qorpera/cloud-client/interfaces";
 import { invalid, readStateFile, rewriteStateFile, type WebMemberFolder } from "../cloud/company-folder-writes.ts";
 import { t } from "../ui/preferences.ts";
 
 /* A board's take and release (Interfaces step I9a; deploy/first-node/RUNTIME-INTERFACES.md §3.3 and §5): a member puts
  * their own id in a card's empty holder cell, or clears the cell that names them. The rows file is read and parsed
- * against the table's current definition, only that cell changes, the claim rule is checked here before anything is
- * sent, and the write names the version it read. When the file changed in between it is read and checked again: a
- * cell someone else took meanwhile, or that stopped being the member's, ends the claim with that said. */
+ * against the table's current definition, only that field's text changes (every other byte stays as written), the
+ * claim rule is checked here before anything is sent, and the write names the version it read. When the file changed in
+ * between it is read and checked again: a cell someone else took meanwhile, or that stopped being the member's, ends
+ * the claim with that said. */
 
 /** What a page needs to write: the member's own client for the company's folder, and a check that the company is still
  * the one the page was drawn for. */
@@ -118,7 +119,56 @@ function rewriteRows(
 			failure,
 			problems.map((problem) => problem.message),
 		);
-	const written = writeTableRows(definition, after);
-	// A byte-order mark the file starts with stays.
-	return text.startsWith("﻿") ? `﻿${written}` : written;
+	return withHolder(text, index, holder, verb === "take" ? memberId : "");
 }
+
+/** `text` with the holder field of its `index`th row set to `value`, and every other byte as it was: the typed values
+ * are only for the checks, so writing them back can't round a number or reword a time in another row. The rows parsed
+ * without problems, so each line that isn't blank is one of them, in order. A first line that leaves the holder
+ * column out gets it at its end, and every row an empty field for it. */
+function withHolder(text: string, index: number, holder: string, value: string): string {
+	// A byte-order mark the file starts with stays.
+	const mark = text.startsWith("\ufeff") ? "\ufeff" : "";
+	const body = text.slice(mark.length);
+	const { records } = splitCsv(body);
+	const lineStarts = [0];
+	for (let at = body.indexOf("\n"); at >= 0; at = body.indexOf("\n", at + 1)) lineStarts.push(at + 1);
+	const startOf = (place: number) => {
+		const record = records[place];
+		return record === undefined ? body.length : (lineStarts[record.line - 1] ?? body.length);
+	};
+	const column = records[0]?.fields.indexOf(holder) ?? -1;
+	let row = -1;
+	const lines = records.map((record, place) => {
+		const raw = body.slice(startOf(place), startOf(place + 1));
+		const end = /\r?\n$/.exec(raw)?.[0] ?? "";
+		const line = raw.slice(0, raw.length - end.length);
+		if (place === 0) return column < 0 ? `${line},${csvText(holder)}${end}` : raw;
+		if (record.fields.length === 1 && record.fields[0] === "") return raw;
+		row += 1;
+		if (row !== index) return column < 0 ? `${line},${end}` : raw;
+		if (column < 0) return `${line},${csvText(value)}${end}`;
+		const [from, to] = fieldSpans(line)[column] ?? [line.length, line.length];
+		return `${line.slice(0, from)}${csvText(value)}${line.slice(to)}${end}`;
+	});
+	return `${mark}${lines.join("")}`;
+}
+
+/** Where each field of one well-formed CSV record starts and ends in its text. */
+function fieldSpans(record: string): [number, number][] {
+	const spans: [number, number][] = [];
+	let from = 0;
+	let quoted = false;
+	for (let at = 0; at < record.length; at++) {
+		// A doubled quote inside a quoted field turns `quoted` off and on again.
+		if (record[at] === '"') quoted = !quoted;
+		else if (record[at] === "," && !quoted) {
+			spans.push([from, at]);
+			from = at + 1;
+		}
+	}
+	spans.push([from, record.length]);
+	return spans;
+}
+
+const csvText = (text: string) => (/[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text);

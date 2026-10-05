@@ -245,10 +245,12 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
     releases it. No other drop does anything, and a Shared card, which stays in the Shared lane either way, has no
     drag. Only the lane a card may land in is marked while it is dragged. The buttons stay the way on a phone and from
     the keyboard.
-  - The write reads `tables/<t>/rows.csv`, parses it against the current `table.toml`, changes only that cell, checks
-    the claim rule (§5) before sending, and names the version it read. When the file changed meanwhile, it is read and
-    checked again: a cell no longer empty (take) or no longer the viewer's (release) stops the write, and the board
-    says "Someone else took it first." or "That changed while you were looking.". A refusal shows its problems.
+  - The write reads `tables/<t>/rows.csv`, parses it against the current `table.toml`, changes only that cell's text
+    (every other byte stays as written), checks the claim rule (§5) before sending, and names the version it read.
+    When the file changed meanwhile, it is read and checked again: a cell no longer empty (take) or no longer the
+    viewer's (release) stops the write, and the board says "Someone else took it first." or "That changed while you
+    were looking.". A file that keeps changing past the retries also says "That changed while you were looking.". A
+    refusal shows its problems.
   - A card stays where it is, saving, until the save has landed and the folder's feed shows the change.
   - `offer` and `answer` are not drawn on a board until offers have their machinery. An area's `supervisor` is not
     taken from a board; it waits for consent records (I9b).
@@ -734,8 +736,9 @@ library's definitions.
 `ui/board-drag.ts`). The `members` source is live: one row per member with `id`, `name`, `picture` (their account id,
 drawn as their picture), `role` and `here`. The viewer is here whenever the company's presence is joined, and nobody is
 when it isn't. A board draws its parts' cards in the proposed lanes of §3.2, and a part's `opens` opens its detail.
-Take and release (§3.3) write the member's own rows with the folder's member client. A rows file with rows that don't
-fit its definition is not written, since writing it would drop them. Lookup columns are drawn as names or a count, and
-the folder reader reads the tables that board parts and lookups name. The Members page's People view draws; its
-`file:rules/shared-areas.md` block stays undrawn until that file exists. Offers, answers on a board, and supervision
-(I9b) are not built.
+Take and release (§3.3) write the member's own rows with the folder's member client. They change only the holder
+field's text in `rows.csv` and keep every other byte as written (a first line without the holder column gets it at its
+end). A rows file with rows that don't fit its definition is not written. Lookup columns are drawn as names or a count,
+and the folder reader reads the tables that board parts and lookups name. The Members page's People view draws its
+table; its `file:rules/shared-areas.md` block is not drawn, since this client draws no `text` blocks yet. Offers,
+answers on a board, and supervision (I9b) are not built.

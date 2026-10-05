@@ -339,13 +339,79 @@ describe("the Members board (I9a)", () => {
 		expect(fake.commits).toHaveLength(1);
 	});
 
-	it("says someone else took it first when the file keeps changing", async () => {
+	it("says the card changed, not who took it, when the file keeps changing while the cell stays free", async () => {
 		const fake = seeded();
 		const { main } = await members(fake);
 		for (let attempt = 0; attempt < 4; attempt++) fake.answer("conflict", "version_changed");
 		buttonOf(card(main, "Call the bank"), "Take")!.click();
-		await vi.waitFor(() => expect(main.querySelector(".notice")?.textContent).toBe("Someone else took it first."));
+		await vi.waitFor(() =>
+			expect(main.querySelector(".notice")?.textContent).toBe("That changed while you were looking."),
+		);
 		expect(fake.commits).toHaveLength(4);
+	});
+
+	it("changes only the holder field, keeping every other byte of the rows file as written", async () => {
+		const fake = seeded();
+		// A byte-order mark, CRLF line ends, a blank line, a quoted field, and optional columns left out.
+		const written = (call: string) =>
+			`\ufeffid,card,area,holder,state\r\n${CALL},Call the bank,Sales,${call},open\r\n\r\n${SEND},"Send ""all"" invoices",Sales,${me},held\r\n`;
+		fake.put(CARDS, written(""));
+		const { main } = await members(fake);
+		buttonOf(card(main, "Call the bank"), "Take")!.click();
+		await vi.waitFor(() => expect(fake.commits).toHaveLength(1));
+		expect(fake.text(CARDS)).toBe(written(me));
+	});
+
+	it("adds the holder column at the end of a rows file that leaves it out", async () => {
+		const fake = seeded();
+		fake.put(CARDS, `id,card,state\n${CALL},Call the bank,open\n${SEND},Send invoices,held\n`);
+		const { main } = await members(fake);
+		buttonOf(card(main, "Call the bank"), "Take")!.click();
+		await vi.waitFor(() => expect(fake.commits).toHaveLength(1));
+		expect(fake.text(CARDS)).toBe(
+			`id,card,state,holder\n${CALL},Call the bank,open,${me}\n${SEND},Send invoices,held,\n`,
+		);
+	});
+
+	it("writes nothing while the rows file has a row that doesn't fit, and lists it", async () => {
+		const fake = seeded();
+		const unfit = `${cards("", me)}${id(703)},Plan the week,Sales,,maybe,,\n`;
+		fake.put(CARDS, unfit);
+		const { main } = await members(fake);
+		buttonOf(card(main, "Call the bank"), "Take")!.click();
+		await vi.waitFor(() => expect(main.querySelector(".notice p")?.textContent).toBe("The card could not be taken."));
+		const listed = texts(main, ".notice .interface-problems li");
+		expect(listed).toHaveLength(1);
+		expect(listed[0]).toContain("doesn't fit");
+		expect(fake.folder.commit).not.toHaveBeenCalled();
+		expect(fake.text(CARDS)).toBe(unfit);
+	});
+
+	it("draws Take and Release only for owners and admins where only they write the rows", async () => {
+		const fake = seeded();
+		const toml = "tables/cards/table.toml";
+		fake.put(toml, fake.text(toml)!.replace('members = "all"', 'members = "owners"'));
+		const { main } = await members(fake, "contributor");
+		const labels = (title: string) => texts(card(main, title), ".interface-actions button");
+		// Every member writes areas; only owners and admins write cards.
+		expect(labels("Ops")).toEqual(["Take"]);
+		expect(labels("Sales")).toEqual(["Release"]);
+		expect(labels("Call the bank")).toEqual([]);
+		expect(labels("Send invoices")).toEqual([]);
+		expect(card(main, "Call the bank").classList.contains("is-draggable")).toBe(false);
+	});
+
+	it("stops showing a landed card as saving after 10 s when the feed is slow to show it", async () => {
+		const fake = seeded();
+		const { main, hint } = await members(fake);
+		buttonOf(card(main, "Call the bank"), "Take")!.click();
+		await vi.waitFor(() => expect(fake.text(CARDS)).toBe(cards(me, me)));
+		expect(card(main, "Call the bank").classList.contains("is-saving")).toBe(true);
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(card(main, "Call the bank").classList.contains("is-saving")).toBe(false);
+		expect(titles(main, "Open pile")).toEqual(["Ops", "Call the bank"]);
+		await hint();
+		await vi.waitFor(() => expect(titles(main, "You")).toEqual(["Sales", "Call the bank", "Send invoices"]));
 	});
 
 	it("shows a refused save with its problems, and the card where it was", async () => {
@@ -402,6 +468,32 @@ describe("the Members board (I9a)", () => {
 		drag(card(main, "Call the bank"), lane(main, "Bea"));
 		await vi.advanceTimersByTimeAsync(100);
 		expect(fake.folder.commit).not.toHaveBeenCalled();
+	});
+
+	it("puts a dragged card back on Escape, and takes nothing when it is let go", async () => {
+		const fake = seeded();
+		const { main } = await members(fake);
+		drag(card(main, "Call the bank"), lane(main, "You"), () => {
+			document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+			expect(main.querySelector(".is-drop-target, .is-drop-over, .is-dragging")).toBeNull();
+		});
+		await vi.advanceTimersByTimeAsync(100);
+		expect(fake.folder.commit).not.toHaveBeenCalled();
+		expect(titles(main, "Open pile")).toEqual(["Ops", "Call the bank"]);
+	});
+
+	it("draws a lane per choice when its lanes are a choice column, with no Take or Release", async () => {
+		const fake = seeded();
+		const path = "interfaces/members/interface.toml";
+		fake.put(path, fake.text(path)!.replace('lanes = "members"', 'lanes = "state"'));
+		const { main } = await members(fake);
+		// Areas have no state column, so only cards are drawn.
+		expect(lanes(main)).toEqual(["open", "held", "done"]);
+		expect(titles(main, "open")).toEqual(["Call the bank"]);
+		expect(titles(main, "held")).toEqual(["Send invoices"]);
+		expect(titles(main, "done")).toEqual([]);
+		expect(main.querySelector(".interface-board .interface-actions button")).toBeNull();
+		expect(main.querySelector(".interface-card.is-draggable")).toBeNull();
 	});
 });
 
