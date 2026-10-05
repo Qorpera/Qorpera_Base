@@ -159,7 +159,8 @@ export function drawnParts(
 ): { readonly part: InterfaceBoardPart; readonly index: number }[] {
 	return block.parts.flatMap((part, index) => {
 		const columns = interfaceSource(company, part.from)?.columns;
-		return columns !== undefined && narrow.every((where) => Object.keys(where).every((name) => columns.includes(name)))
+		return columns !== undefined &&
+			narrow.every((where) => Object.keys(where).every((name) => columns.includes(name)))
 			? [{ part, index }]
 			: [];
 	});
