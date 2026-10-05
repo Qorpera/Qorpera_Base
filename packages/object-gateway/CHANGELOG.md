@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- The connection-file writer writes hooks' and mailboxes' files too (folder core C4, E1; migration `20260930060000`): a claim's `subjectKind` picks the kind, the settings' allow-list (never a hook's address or a secret), the file's prefix and the operation key; a new hook or mailbox file starts with its purpose (`body`); the finish names the kind. A claim without `subjectKind` (a database before E1) is a vault account's, and a vault account's finish names no kind, so the gateway can roll before the migration.
 
 - The folder service searches a run's view (F3, the founder's "Light threads" decision: no shell in a chat turn): `S` frames `{query, path, glob, namesOnly, caseSensitive, after}` answer `s` `{hits, searched, binary, reads, next}`. Literal text in the lines of text files, or in names; one page per call (hits up to about 6 KiB, 4,000 paths drawn on, or about 2 s of work) with where to go on, never an end of its own. `reads` names each folder looked through and each file read, with its receipt, for the run to release before the model sees the answer.
 - Agent views get each entry's read receipt in their listings: the core's receipt from its listing, or, for a path its feed brought, the path's earlier receipt or its folder's; a newer receipt counts as a change.

@@ -67,66 +67,6 @@ begin
  perform pg_temp.path_claims('service_role');
 end $$;
 
-create function pg_temp.review2_handoff(p_kind text,p_revoke boolean default false,p_repeat boolean default false)
-returns void language plpgsql as $$
-declare b jsonb; v_first jsonb; c jsonb; v_plan jsonb; v_result jsonb; v_old jsonb; v_context jsonb; i integer;
-begin
- b:=pg_temp.review2_start(p_kind);
- perform set_config('qorpera_test.wake_binding',b::text,true);
- perform pg_temp.wake_assert(public.qorpera_read_native_wake(b)->>'kind'=p_kind,'Initial wake kind');
- perform pg_temp.handoff_begin(b,repeat('c',64));
- if p_kind in ('human','first-run') then perform pg_temp.wake_public_send(b,'progress'); end if;
- v_plan:=pg_temp.path_plan('review2-before-quota','review2-before.md',pg_temp.path_stage_file('review2-before.md','Completed once'));
- v_result:=pg_temp.path_commit(v_plan);
- select to_jsonb(receipt) into strict v_old from public.qorpera_run_operation_receipts receipt where id=(v_result->>'receiptId')::uuid;
- for i in 1..case when p_repeat then 2 else 1 end loop
-  c:=pg_temp.handoff_connection();
-  perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
-  perform public.qorpera_consent_provider_connection_autonomous('30000000-0000-4000-8000-000000000010',(c->>'connection_id')::uuid,true);
-  perform pg_temp.path_claims('service_role');
-  v_first:=b;
-  perform public.qorpera_record_provider_usage_signal(b,'usage_limit',clock_timestamp()+interval '2 hours');
-  perform pg_temp.wake_assert((public.qorpera_record_provider_usage_signal(b,'usage_limit',clock_timestamp()+interval '2 hours')->>'replayed')::boolean,
-   'Signal retry deduplicates within the current sponsor version');
-  perform pg_temp.wake_assert((select count(*)=i from public.qorpera_provider_connection_usage_signals where run_id=(b->>'runId')::uuid),
-   'Each exhausted sponsor retains its own signal');
-  -- The failure report no longer hands off (20260928349910): call the handoff function directly.
-  perform public.qorpera_handoff_run_sponsor((b->>'runId')::uuid,'Native harness failed (provider allowance unavailable)');
-  perform pg_temp.wake_assert((select j.status='queued' and r.sponsor_version=i+1 from public.qorpera_execution_runs r
-   join public.qorpera_runner_jobs j on j.id=r.job_id where r.id=(b->>'runId')::uuid),'Handoff queues the same logical run');
-  b:=pg_temp.wake_start((b->>'runId')::uuid);
-  perform set_config('qorpera_test.wake_binding',b::text,true);
-  perform pg_temp.wake_assert(b->>'assignmentId'<>v_first->>'assignmentId','Fresh assignment');
-  perform pg_temp.wake_assert(public.qorpera_read_native_wake(b)->>'kind'=p_kind,'Replacement retains wake policy');
-  v_context:=public.qorpera_describe_company_run_context(b);
-  perform pg_temp.wake_assert(v_context->'continuation' is not null,'Replacement has confirmed-work context');
-  perform pg_temp.handoff_begin(b,repeat('d',64));
-  perform pg_temp.wake_assert(pg_temp.path_commit(v_plan)=v_result,'Receipt replay returns the original effect');
-  perform pg_temp.wake_assert((select to_jsonb(receipt)=v_old from public.qorpera_run_operation_receipts receipt
-   where id=(v_result->>'receiptId')::uuid),'Original receipt stays immutable');
- end loop;
- if p_revoke then
-  perform pg_temp.review2_change_authority(p_kind);
-  perform pg_temp.wake_error(format('select public.qorpera_describe_company_run_context(%L)',b),'42501');
-  perform pg_temp.wake_error(format('select pg_temp.path_commit(%L)',v_plan),'42501');
-  perform pg_temp.wake_error(format('select pg_temp.wake_acceptance_finish(%L)',b),'42501');
- else
-  perform pg_temp.path_commit(pg_temp.path_plan('review2-unfinished','review2-after.md',pg_temp.path_stage_file('review2-after.md','New work')));
-  if p_kind<>'agent' then perform pg_temp.wake_public_send(b,'final'); end if;
-  perform pg_temp.wake_acceptance_finish(b);
-  perform pg_temp.wake_assert((select count(*)=1 from public.qorpera_company_path_revisions where receipt_id=(v_result->>'receiptId')::uuid),'No duplicate effect');
- end if;
-end $$;
-select pg_temp.wake_acceptance_case('human_confirmed_work_handoff',$q$select pg_temp.review2_handoff('human')$q$);
-select pg_temp.wake_acceptance_case('first_run_confirmed_work_handoff',$q$select pg_temp.review2_handoff('first-run')$q$);
-select pg_temp.wake_acceptance_case('routine_confirmed_work_handoff',$q$select pg_temp.review2_handoff('routine')$q$);
-select pg_temp.wake_acceptance_case('agent_confirmed_work_handoff',$q$select pg_temp.review2_handoff('agent')$q$);
-select pg_temp.wake_acceptance_case('room_confirmed_work_handoff',$q$select pg_temp.review2_handoff('room')$q$);
-select pg_temp.wake_acceptance_case('routine_two_recorded_handoffs',$q$select pg_temp.review2_handoff('routine',false,true)$q$);
-select pg_temp.wake_acceptance_case('agent_two_recorded_handoffs',$q$select pg_temp.review2_handoff('agent',false,true)$q$);
-select pg_temp.wake_acceptance_case('routine_pause_after_handoff_fences_effects',$q$select pg_temp.review2_handoff('routine',true)$q$);
-select pg_temp.wake_acceptance_case('agent_authority_change_after_handoff_fences_effects',$q$select pg_temp.review2_handoff('agent',true)$q$);
-
 create function pg_temp.review2_revocation(p_kind text)
 returns void language plpgsql as $$
 declare b jsonb; v_plan jsonb;

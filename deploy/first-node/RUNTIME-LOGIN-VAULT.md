@@ -688,6 +688,15 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
     active node Codex connection of the same member that is older than the member's vault connection
     and whose current login (the node capsule its latest version uses) was recorded as the same account;
     a record of an earlier login of the connection never counts (at most 4 per pass).
+    Since `20260930059000` (the payer never changes without the member) it finds an older vault
+    connection the same way: one whose current vault login (active, or needing a new sign-in) is of the
+    same kind (Codex or ChatGPT plan) and was recorded as the same account. Every sign-in makes a new
+    connection, so this is how a member who signs in to the vault again keeps their conversations,
+    follow-up work and routines: their pins follow to the same account's new login. A ChatGPT plan
+    login's account is recorded too: sha256 of `openai-subject:` + OpenAI's verified subject, a
+    namespace of its own, so it pairs only with another plan login of the same person (the broker's
+    `recordAccounts` reads it from the plan envelope; the secret broker needs that build). A login that
+    needs a new sign-in before its account was read is still listed for it, so it can be paired.
   - It moves the member's pins to the vault connection first (`qorpera_move_member_login_pins`, #450:
     routines, coding sessions and agent work follow).
   - Once no queued or leased job, live lease, queued wake, queued turn or queued change review names
