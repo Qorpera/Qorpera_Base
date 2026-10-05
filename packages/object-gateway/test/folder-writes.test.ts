@@ -619,10 +619,33 @@ describe("writes through the mount", () => {
 			{ path: "locked/x.txt", outcome: "denied", reason: "denied", kept: true },
 			{ path: "ok.txt", outcome: "saved" },
 		]);
-		// A new file and a boundary asked for at once: the file lands after the boundary has settled, and stays.
+		// A new file is asked for first, and its wait on the feed is held; a boundary is asked for meanwhile, and its
+		// commit is held: the file must not land while that boundary decides and settles.
+		const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 20));
+		let releaseFeed!: () => void;
+		const feedHeld = new Promise<void>((resolve) => {
+			releaseFeed = resolve;
+		});
+		let first = true;
+		core.feedHook = () => {
+			if (!first) return undefined;
+			first = false;
+			return feedHeld;
+		};
+		let releaseCommit!: () => void;
+		core.commitGate = new Promise<void>((resolve) => {
+			releaseCommit = resolve;
+		});
 		const opening = view.open({ path: "new.txt", create: true, exclusive: false, truncate: true });
+		await tick();
 		const publishing = view.publish();
+		await tick();
+		releaseFeed();
+		await tick();
+		releaseCommit();
 		const [{ handle }] = await Promise.all([opening, publishing]);
+		core.commitGate = undefined;
+		// The file landed after the boundary settled, and stays.
 		const data = Buffer.from("new");
 		await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: 3, offset: 0, data });
 		await view.close(handle, 3);
@@ -634,17 +657,67 @@ describe("writes through the mount", () => {
 		]);
 	});
 
-	it("renews a chunk's intent while its parts are still on their way", async () => {
-		let now = Date.now();
-		const { core, open, service } = await fixture({ now: () => now });
+	it("makes a change that had to publish first only once that boundary has settled", async () => {
+		const { core, open } = await fixture();
+		core.seed([folder("logs")]);
 		const view = await open();
-		const { handle } = await view.open({ path: "big.bin", create: true, exclusive: false, truncate: true });
-		const data = Buffer.alloc(2 * 1024 * 1024, 1);
-		const first = data.subarray(0, 1024 * 1024);
-		await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data: first });
+		// A new folder with a file, and the live folder moved away: its name is free only once that is published.
+		await view.mkdir("build");
+		await write(view, "build/out.txt", "out");
+		await view.rename({ from: "logs", to: "logs.old", noReplace: false });
+		// The boundary's change set reaches the view, but its new folder's file versions cannot be read yet.
+		let reads = 0;
+		core.feedHook = (afterSeq) => {
+			if (afterSeq === 0 && reads++ > 0) throw new Error("The core did not answer this page");
+			return undefined;
+		};
+		await refused(view.mkdir("logs"), "BUSY");
+		// Once it settles, the change is made, and published; nothing undoes it.
+		core.feedHook = undefined;
+		await view.mkdir("logs");
+		expect(byPath((await view.publish()).paths)).toEqual([{ path: "logs", outcome: "saved" }]);
+		expect([...core.entries.keys()].sort()).toEqual(["build", "build/out.txt", "logs", "logs.old"]);
+	});
+
+	it("holds a chunk's intent while the chunk is started, and while the gateway finishes its put", async () => {
+		let now = Date.now();
+		const { core, uploads, open, service } = await fixture({ now: () => now });
+		const view = await open();
+		const later = async (): Promise<void> => {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		};
+		const gate = (): { held: Promise<void>; release: () => void } => {
+			let release!: () => void;
+			const held = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			return { held, release };
+		};
+		// The company's storage profile is being learnt when the renewal round runs.
+		const profile = gate();
+		core.uploadProfileGate = profile.held;
+		const one = await view.open({ path: "one.bin", create: true, exclusive: false, truncate: true });
+		const a = Buffer.from("a");
+		const sendingA = view.chunk({ handle: one.handle, index: 0, sha256: hashOf(a), bytes: 1, offset: 0, data: a });
+		await later();
 		now += 10 * 60_000;
 		await service.renewIntents();
 		expect(core.renewals).toEqual([...core.intents.keys()]);
+		profile.release();
+		await sendingA;
+		// The gateway is finishing the put of another chunk when the round runs.
+		const end = gate();
+		uploads.endGate = end.held;
+		const two = await view.open({ path: "two.bin", create: true, exclusive: false, truncate: true });
+		const b = Buffer.from("b");
+		const sendingB = view.chunk({ handle: two.handle, index: 0, sha256: hashOf(b), bytes: 1, offset: 0, data: b });
+		await later();
+		now += 10 * 60_000;
+		const before = core.renewals.length;
+		await service.renewIntents();
+		expect(core.renewals.slice(before)).toContain([...core.intents.keys()].at(-1));
+		end.release();
+		await sendingB;
 	});
 
 	it("answers a close it cannot cut, for want of the origin's bytes, and keeps the handle", async () => {
