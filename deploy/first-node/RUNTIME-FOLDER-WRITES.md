@@ -200,7 +200,9 @@ removal, the version the name showed):
 | `X` | the executable bit `{path, base?, executable}` | `{version}` |
 | `P` | publish | the report |
 
-As built (3c-2): a truncate of a file not open is an `O`, the chunk that ends it, and a `C`, so there is no `T`. A
+As built (3c-2): a truncate of a file not open is an `O`, the chunk that ends it when the cut is inside a chunk, and a
+`C`, so there is no `T`; a cut on the grid, or to nothing, sends no chunk, and the close cuts the file's chunks (from its
+origin's when none of it was sent). A
 chunk is changed by its index on the 4 MiB grid, which every version-2 manifest's chunks are on; a file laid out
 otherwise is changed whole. A write handle belongs to the view, not to the connection that opened it, since the
 program pools its connections. The version map holds the `version` of a close or the bit after a save; once that save

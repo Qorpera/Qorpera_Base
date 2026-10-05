@@ -163,20 +163,19 @@ impl VersionMap {
 	}
 
 	fn append(&mut self, line: &Line) {
+		// A write that failed may have left part of its line, and its entry is not in the file: the file is written
+		// afresh from memory first. Until that works, nothing more is appended after the fragment.
+		if self.torn && !self.rewrite() {
+			return;
+		}
 		let Some((path, file)) = &mut self.file else { return };
 		let mut text = serde_json::to_string(line).expect("a line always serializes");
 		text.push('\n');
-		// A write that failed may have left part of its line: the file goes back to its last whole line first, so this
-		// line is read on its own.
-		if self.torn && file.set_len(self.length).is_ok() {
-			self.torn = false;
-		}
 		match file.write_all(text.as_bytes()) {
-			Ok(()) if !self.torn => {
+			Ok(()) => {
 				self.lines += 1;
 				self.length += text.len() as u64;
 			}
-			Ok(()) => {}
 			Err(e) => {
 				if !self.failed {
 					eprintln!("qorpera-folder: the version map could not be written to {}: {e}", path.display());
@@ -190,10 +189,15 @@ impl VersionMap {
 
 	/// Writes the map out afresh once the file holds many more lines than entries.
 	fn compact_if_due(&mut self) {
-		if self.lines <= 2 * self.map.len() + 1024 {
-			return;
+		if self.lines > 2 * self.map.len() + 1024 && !self.rewrite() {
+			// Not tried again until it has grown as much once more.
+			self.lines = self.map.len();
 		}
-		let Some((path, _)) = &self.file else { return };
+	}
+
+	/// Writes the whole map to a new file and puts it in place. Whether it worked.
+	fn rewrite(&mut self) -> bool {
+		let Some((path, _)) = &self.file else { return false };
 		let path = path.clone();
 		let fresh = path.with_extension("jsonl.new");
 		let result = (|| -> io::Result<File> {
@@ -213,12 +217,15 @@ impl VersionMap {
 				self.file = Some((path, file));
 				self.lines = self.map.len();
 				self.torn = false;
+				true
 			}
 			Err(e) => {
 				let _ = std::fs::remove_file(&fresh);
-				eprintln!("qorpera-folder: the version map could not be compacted: {e}");
-				// Not tried again until it has grown as much once more.
-				self.lines = self.map.len();
+				if !self.failed {
+					eprintln!("qorpera-folder: the version map could not be written afresh: {e}");
+				}
+				self.failed = true;
+				false
 			}
 		}
 	}

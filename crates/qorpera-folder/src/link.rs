@@ -186,6 +186,8 @@ impl Link {
 				}
 				Err(Fail::Link(e)) => {
 					self.lost();
+					// Pooled connections broke together (the node's service restarted): the next try opens a new one.
+					self.drop_idle();
 					if attempt > 1 {
 						return Err(Fail::Link(e));
 					}
@@ -199,7 +201,7 @@ impl Link {
 	/// One change on a pooled connection. Unlike a list or a read it is not sent again once it went out and the link
 	/// broke before the answer: the node may have made it, so the program sees EIO. A connection that could not be made,
 	/// or that would not take the request (a pooled one the node closed, when its service restarted), never delivered
-	/// it: the change goes out once more on a new connection.
+	/// it: every idle pooled connection is let go with it, and the change goes out once more on a new connection.
 	fn change(&self, request: u8, payload: &[u8], answer: u8) -> Result<Vec<u8>, Fail> {
 		let mut attempt = 0;
 		loop {
@@ -211,6 +213,7 @@ impl Link {
 			};
 			if let Err(e) = write_frame(&mut s, request, payload) {
 				self.lost();
+				self.drop_idle();
 				if attempt == 1 {
 					continue;
 				}
@@ -230,6 +233,15 @@ impl Link {
 					Err(Fail::Link(e))
 				}
 			};
+		}
+	}
+
+	/// Every idle pooled connection, ended: one the node closed means its service went, and took the others with it.
+	fn drop_idle(&self) {
+		let idle = std::mem::take(&mut *self.free.lock().unwrap());
+		for s in idle {
+			s.shutdown();
+			self.lost();
 		}
 	}
 
@@ -709,6 +721,77 @@ mod tests {
 			}
 		});
 		(format!("unix:{}", path.display()), got, stored)
+	}
+
+	/// A node stand-in whose answers take a moment (so requests at once each take a connection of their own), that
+	/// counts the mkdirs it got by path, and can end every connection at once (its service restarting).
+	struct ClosingNode {
+		addr: String,
+		streams: Arc<std::sync::Mutex<Vec<std::os::unix::net::UnixStream>>>,
+		made: Arc<std::sync::Mutex<Vec<String>>>,
+	}
+
+	impl ClosingNode {
+		fn start(dir: &std::path::Path) -> ClosingNode {
+			let path = dir.join("node.sock");
+			let listener = UnixListener::bind(&path).unwrap();
+			let streams: Arc<std::sync::Mutex<Vec<std::os::unix::net::UnixStream>>> = Arc::default();
+			let made: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+			let (all, got) = (streams.clone(), made.clone());
+			std::thread::spawn(move || {
+				for conn in listener.incoming() {
+					let mut s = conn.unwrap();
+					all.lock().unwrap().push(s.try_clone().unwrap());
+					let got = got.clone();
+					std::thread::spawn(move || {
+						let Ok((_, body)) = read_frame(&mut s) else { return };
+						let hello: Hello = serde_json::from_slice(&body).unwrap();
+						let ok = HelloOk { protocol: 2, view_id: hello.view_id, as_of_seq: 1, read_only: false };
+						write_frame(&mut s, kind::HELLO_OK, &serde_json::to_vec(&ok).unwrap()).unwrap();
+						while let Ok((k, body)) = read_frame(&mut s) {
+							assert_eq!(k, kind::MKDIR);
+							got.lock().unwrap().push(serde_json::from_slice::<PathRequest>(&body).unwrap().path);
+							std::thread::sleep(Duration::from_millis(100));
+							if write_frame(&mut s, kind::DONE, b"{}").is_err() {
+								return;
+							}
+						}
+					});
+				}
+			});
+			ClosingNode { addr: format!("unix:{}", path.display()), streams, made }
+		}
+
+		fn close_all(&self) {
+			for s in self.streams.lock().unwrap().drain(..) {
+				let _ = s.shutdown(std::net::Shutdown::Both);
+			}
+		}
+	}
+
+	#[test]
+	fn a_change_after_the_node_ended_every_pooled_connection_goes_out_once() {
+		let dir = tempdir();
+		let node = ClosingNode::start(&dir);
+		let link = Arc::new(Link::new(node.addr.clone(), view("right"), 4));
+		// Three changes at once: the pool keeps three connections.
+		let threads: Vec<_> = ["a", "b", "c"]
+			.into_iter()
+			.map(|p| {
+				let link = link.clone();
+				std::thread::spawn(move || link.mkdir(p).unwrap())
+			})
+			.collect();
+		for t in threads {
+			t.join().unwrap();
+		}
+		assert_eq!(link.free.lock().unwrap().len(), 3);
+		// The node's service restarts: every pooled connection is dead. The next change still goes out, once.
+		node.close_all();
+		std::thread::sleep(Duration::from_millis(50));
+		link.mkdir("d").unwrap();
+		assert_eq!(node.made.lock().unwrap().iter().filter(|p| *p == "d").count(), 1);
+		std::fs::remove_dir_all(dir).unwrap();
 	}
 
 	#[test]

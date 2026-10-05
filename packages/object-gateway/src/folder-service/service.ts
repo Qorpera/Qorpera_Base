@@ -11,7 +11,7 @@ import {
 } from "./core.ts";
 import type { Grant, MountGrants } from "./mounts.ts";
 import { type NasObjects, ObjectIntegrityError, ObjectUnavailableError } from "./objects.ts";
-import { CHUNK_BYTES, type FileRef, type PendingFile, PendingView, PublishFirst } from "./pending.ts";
+import { CHUNK_BYTES, type ChunkRef, type FileRef, type PendingFile, PendingView, PublishFirst } from "./pending.ts";
 import { type BoundaryPlan, type CommitUnit, planBoundary } from "./plan.ts";
 import {
 	type BridgeInfo,
@@ -823,17 +823,34 @@ export class FolderService {
 	 * whose answer never came through first: until it has one, nothing changes (BUSY), so it settles exactly what it
 	 * published. Likewise an answered boundary waits for the feed to bring its change set. */
 	async #quiet(view: View): Promise<void> {
-		await view.publishing.catch(() => undefined);
-		this.#tree(view);
-		if (view.unanswered) {
-			await this.#publish(view);
-			if (view.unanswered) throw new ProtocolError(ErrorCode.busy, "The last save has not got through yet");
+		for (;;) {
+			const publishing = view.publishing;
+			await publishing.catch(() => undefined);
+			this.#tree(view);
+			if (view.unanswered) {
+				await this.#publish(view);
+				if (view.unanswered) throw new ProtocolError(ErrorCode.busy, "The last save has not got through yet");
+			} else if (view.unsettled) {
+				await this.#settleInTurn(view);
+				if (view.unsettled)
+					throw new ProtocolError(ErrorCode.busy, "The last save has not come back through the feed yet");
+			}
+			// Waiting may have let another boundary start: the change waits for that one too, so it never lands while a
+			// boundary is between deciding what it publishes and settling.
+			if (view.publishing === publishing) return;
 		}
-		if (view.unsettled) {
-			await this.#trySettle(view);
-			if (view.unsettled)
-				throw new ProtocolError(ErrorCode.busy, "The last save has not come back through the feed yet");
-		}
+	}
+
+	/** Tries to settle an answered boundary in its turn among the view's boundaries, never beside one. */
+	#settleInTurn(view: View): Promise<Report> {
+		const next = view.publishing
+			.catch(() => undefined)
+			.then(async (): Promise<Report> => {
+				await this.#trySettle(view);
+				return { commitId: null, seq: null, paths: [] };
+			});
+		view.publishing = next;
+		return next;
 	}
 
 	/** A change restarts the quiet period of a mount that publishes on one. */
@@ -882,16 +899,12 @@ export class FolderService {
 			const origin = pending.originToCopy(part.handle);
 			if (origin) await this.#beginFromOrigin(view, part.handle, origin);
 			const intent = await staging.openChunk(view.environmentId, view.actor, part.sha256, part.bytes);
+			// The chunk counts as needed (its intent renewed) from here until it is set in the file or its put fails.
 			view.intents.set(intent.intentId, {
 				renewed: this.#now(),
 				node: pending.file(part.handle),
 				chunk: { sha256: part.sha256, bytes: part.bytes },
 			});
-			if (!this.#profiles.has(view.environmentId))
-				this.#profiles.set(
-					view.environmentId,
-					await this.#core.uploadProfile(view.environmentId, view.actor, intent.intentId, part.sha256, part.bytes),
-				);
 			upload = {
 				sha256: part.sha256,
 				bytes: part.bytes,
@@ -901,26 +914,34 @@ export class FolderService {
 					: staging.upload(view.environmentId, view.actor, intent.intentId, part.sha256, part.bytes),
 			};
 			view.uploads.set(key, upload);
+			if (!this.#profiles.has(view.environmentId))
+				this.#profiles.set(
+					view.environmentId,
+					await this.#core.uploadProfile(view.environmentId, view.actor, intent.intentId, part.sha256, part.bytes),
+				);
 		}
 		if (!upload || upload.sha256 !== part.sha256 || upload.bytes !== part.bytes || upload.next !== part.offset) {
 			upload?.upload?.abort();
 			view.uploads.delete(key);
 			throw new ProtocolError(ErrorCode.badRequest, "Chunk parts out of order");
 		}
+		const done = (): void => {
+			if (view.uploads.get(key) === upload) view.uploads.delete(key);
+		};
 		try {
 			await upload.upload?.write(part.data);
 			upload.next += part.data.byteLength;
 			if (upload.next < upload.bytes) return;
-			view.uploads.delete(key);
 			await upload.upload?.end();
+			pending.setChunk(part.handle, part.index, { sha256: part.sha256, bytes: part.bytes });
+			done();
 		} catch (error) {
-			view.uploads.delete(key);
+			done();
 			upload.upload?.abort();
 			throw error instanceof ProtocolError
 				? error
 				: new ProtocolError(ErrorCode.unavailable, "The chunk could not be saved now");
 		}
-		pending.setChunk(part.handle, part.index, { sha256: part.sha256, bytes: part.bytes });
 		this.#touch(view);
 	}
 
@@ -928,7 +949,14 @@ export class FolderService {
 	 * Chunks are changed by index on the 4 MiB grid; a file laid out otherwise (fixtures, version 1) is written whole
 	 * instead (opened with truncate). */
 	async #beginFromOrigin(view: View, handle: number, origin: TreeEntry): Promise<void> {
-		const chunks = await this.#objects.manifestChunks(await this.#profile(view, origin), origin);
+		let chunks: readonly ChunkRef[];
+		try {
+			chunks = await this.#objects.manifestChunks(await this.#profile(view, origin), origin);
+		} catch (error) {
+			if (error instanceof ProtocolError) throw error;
+			if (error instanceof CoreRefusal) throw new ProtocolError(ErrorCode.denied, "The core refused the read");
+			throw new ProtocolError(ErrorCode.unavailable, "The file's bytes could not be read now");
+		}
 		if (chunks.some((c, i) => i < chunks.length - 1 && c.bytes !== CHUNK_BYTES))
 			throw new ProtocolError(ErrorCode.notPermitted, "This file is changed whole: open it with truncate");
 		view.pending?.beginContent(handle, chunks);
@@ -1250,8 +1278,8 @@ export class FolderService {
 		return copied;
 	}
 
-	/** Settles an answered boundary once the view's feed has reached its change set, and the change set itself is read
-	 * for the versions its saves published. Until both, the view stays unsettled. */
+	/** Settles an answered boundary once the view's feed has reached its change set, with the versions its saves
+	 * published. Until then the view stays unsettled. */
 	async #trySettle(view: View): Promise<void> {
 		const settlement = view.unsettled;
 		if (!settlement) return;
@@ -1262,13 +1290,24 @@ export class FolderService {
 			await view.work;
 			if (view.seq < seq) return;
 		}
-		let written: Map<string, string>;
-		try {
-			written = await this.#changeSetWrites(view, seq);
-		} catch (error) {
-			this.#log(`folder-service: ${view.key}: change set ${seq} could not be read now: ${(error as Error).message}`);
-			return;
-		}
+		// A write's version is in the core's answer; a new folder's files' are only in its change set, which is read
+		// when one of them was saved.
+		const written = new Map<string, string>();
+		settlement.plan.units.forEach((planned, i) => {
+			const outcome = settlement.answer.units[i];
+			if (planned.unit.op === "write" && outcome?.outcome === "saved" && outcome.version)
+				written.set(planned.unit.path, outcome.version);
+		});
+		if ([...settlement.made.keys()].some((path) => settlement.saved.has(path) && !written.has(path)))
+			try {
+				for (const [path, version] of await this.#changeSetWrites(view, seq))
+					if (!written.has(path)) written.set(path, version);
+			} catch (error) {
+				this.#log(
+					`folder-service: ${view.key}: change set ${seq} could not be read now: ${(error as Error).message}`,
+				);
+				return;
+			}
 		if (view.unsettled === settlement) this.#finishSettle(view, settlement, written);
 	}
 
