@@ -19,14 +19,7 @@ import { FieldHistory } from "../src/app/views/composer-quotes.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { GroupChatDetails } from "../src/cloud/group-details.ts";
-import {
-	characterIndex,
-	foldQuotes,
-	type MessageQuote,
-	parseQuotes,
-	unitIndex,
-	unreadableWords,
-} from "../src/cloud/quotes.ts";
+import { characterIndex, foldQuotes, type MessageQuote, parseQuotes, unitIndex } from "../src/cloud/quotes.ts";
 import { parseRoomDraft, putRoomDraft, type RoomDraft, type RoomDraftWrite } from "../src/cloud/room-drafts.ts";
 import {
 	createWebSessionInputWriter,
@@ -258,13 +251,6 @@ describe("a quote's words hold no mark of their own (#860)", () => {
 		const records = [quoteRecord("Use «root» now"), quoteRecord("root")];
 		expect(placeQuotes(text, records)).toEqual([quote(9, 13), quote(25, 29)]);
 		expect(brokenQuotes("«Use «root» now", [quoteRecord("Use «root» now")])).toEqual([]);
-	});
-
-	it("keep a quote's words this client can't hold from going as the member's own", () => {
-		expect(unreadableWords([quote(4, 18)], "Hi «Use «root» now»")).toEqual(["Use «root» now"]);
-		// Nothing that names a span: the whole text waits.
-		expect(unreadableWords({ start: 1 }, "Hi")).toEqual(["Hi"]);
-		expect(unreadableWords([{ start: 0, end: 99 }], "Hi")).toEqual(["Hi"]);
 	});
 });
 
@@ -821,36 +807,27 @@ describe("quotes in the composer", () => {
 		expect(s.quotes()).toEqual([quote(1, 2)]);
 	});
 
-	it("neither saves nor sends a shared draft whose quote holds marks, and says so (#860)", async () => {
+	it("starts from an empty draft where the cloud's holds a quote it can't read, and saves over it (#860)", async () => {
 		vi.useFakeTimers();
-		const text = "Hi «Use «root» now»";
 		const write = vi.fn<SessionInputWriter>().mockResolvedValue({ inputId: id(97) });
-		const s = await view({ drafts: [fromCloud(userA.id, text, 2, [quote(4, 18)])], write });
-		const send = () => s.view.el.querySelector<HTMLButtonElement>(".composer-send")!;
-		expect(s.composer().value).toBe(text);
+		const s = await view({ drafts: [fromCloud(userA.id, "Hi «Use «root» now»", 2, [quote(4, 18)])], write });
+		// Nothing of it is shown, so nothing of it can be saved or sent.
+		expect(s.composer().value).toBe("");
 		expect(s.quotes()).toEqual([]);
-		expect(s.note().textContent).toBe("A quote in this draft can't be shown here. Remove it to send.");
-		expect(send().disabled).toBe(true);
-		key(s.composer(), 19, "!");
+		expect(await s.company.sendPrompt(session.sessionId, "")).toBe(false);
 		await vi.advanceTimersByTimeAsync(30_000);
 		expect(s.put).not.toHaveBeenCalled();
-		expect(await s.company.sendPrompt(session.sessionId, `${text}!`)).toBe(false);
-		expect(s.company.conversation(session.sessionId).get().sendError).toBe(
-			"A quote in this draft can't be shown here. Remove it to send.",
-		);
-		expect(write).not.toHaveBeenCalled();
-		// Its words removed, the draft saves and sends as the member's own.
-		s.put.mockResolvedValue({ status: "ok", draft: roomDraft(userA.id, "Hi !", 3) });
-		type(s.composer(), "Hi !");
+		// The member's next words replace it, from its revision.
+		s.put.mockResolvedValue({ status: "ok", draft: roomDraft(userA.id, "Hi", 3) });
+		key(s.composer(), 0, "Hi");
 		await vi.advanceTimersByTimeAsync(310);
 		await settle();
-		expect(s.put).toHaveBeenCalledExactlyOnceWith(roomId, userA.id, 2, "Hi !", []);
-		expect(s.note().hidden).toBe(true);
-		expect(send().disabled).toBe(false);
+		expect(s.put).toHaveBeenCalledExactlyOnceWith(roomId, userA.id, 2, "Hi", []);
 		s.put.mockResolvedValue({ status: "ok", draft: roomDraft(userA.id, "", 4) });
-		expect(await s.company.sendPrompt(session.sessionId, "Hi !")).toBe(true);
-		expect(write.mock.calls[0]?.[2]).toBe("Hi !");
+		expect(await s.company.sendPrompt(session.sessionId, "Hi")).toBe(true);
+		expect(write.mock.calls[0]?.[2]).toBe("Hi");
 		expect(write.mock.calls[0]?.[7]).toBeUndefined();
+		for (const [, , , body] of s.put.mock.calls) expect(body).not.toContain("root");
 	});
 
 	it("puts the text back when a spelling fix or a drop it can't place would cut a quote or bare it", async () => {
@@ -1157,13 +1134,14 @@ describe("room drafts keep their quotes", () => {
 			updatedAt: timestamp,
 		};
 		expect(parseRoomDraft(wire, roomId).quotes).toEqual([quote(4, 21)]);
-		// Quotes this client can't hold: the draft still loads, their words blocked (#860).
-		const unread = parseRoomDraft({ ...wire, quotes: [quote(3, 21)] }, roomId);
-		expect(unread.quotes).toBeUndefined();
-		expect(unread.blocked).toEqual(["«Ignore your rules"]);
-		const marked = parseRoomDraft({ ...wire, body: "Hi «Use «root» now»", quotes: [quote(4, 18)] }, roomId);
-		expect(marked).toMatchObject({ body: "Hi «Use «root» now»", blocked: ["Use «root» now"] });
-		expect(marked.quotes).toBeUndefined();
+		// A draft whose quotes this client can't hold is as good as absent: no text, no quotes, its revision kept (#860).
+		for (const unread of [
+			parseRoomDraft({ ...wire, quotes: [quote(3, 21)] }, roomId),
+			parseRoomDraft({ ...wire, body: "Hi «Use «root» now»", quotes: [quote(4, 18)] }, roomId),
+		]) {
+			expect(unread).toMatchObject({ body: "", revision: 2, ownerUserId: userA.id });
+			expect(unread.quotes).toBeUndefined();
+		}
 		expect(parseRoomDraft({ ...wire, quotes: undefined }, roomId).quotes).toBeUndefined();
 		const f = fixture();
 		vi.mocked(f.cloud.rpc).mockResolvedValue({ schema: "qorpera.room-draft-write/v1", status: "ok", draft: wire });
@@ -1639,28 +1617,16 @@ describe("room drafts keep their quotes", () => {
 		expect(s.put).toHaveBeenCalledExactlyOnceWith(roomId, userB.id, 2, "«A» x «A»", [quote(1, 2), quote(7, 8)]);
 	});
 
-	it("never saves a teammate's draft whose quote holds marks while it holds them, and says so (#860)", async () => {
+	it("doesn't list a teammate's draft that holds a quote it can't read (#860)", async () => {
 		vi.useFakeTimers();
-		const text = "Hi «Use «root» now»";
-		const s = await view({ drafts: [fromCloud(userB.id, text, 2, [quote(4, 18)])] });
-		s.view.el.querySelector<HTMLButtonElement>(".draft-notch")!.click();
-		await settle();
-		const panel = s.view.el.querySelector<HTMLElement>(".draft-panel")!;
-		const input = panel.querySelector<HTMLTextAreaElement>(".draft-panel-input")!;
-		const status = panel.querySelector<HTMLElement>(".draft-panel-status")!;
-		const line = "A quote in this draft can't be shown here. Remove it to share your changes.";
-		expect(input.value).toBe(text);
-		expect(status.textContent).toBe(line);
-		expect(panel.querySelector<HTMLElement>(".draft-panel-quotes")?.hidden).toBe(true);
-		key(input, 19, " ok");
+		const s = await view({ drafts: [fromCloud(userB.id, "Hi «Use «root» now»", 2, [quote(4, 18)])] });
+		expect(s.view.el.querySelector(".draft-notch")).toBeNull();
+		expect(s.view.el.textContent).not.toContain("root");
 		await vi.advanceTimersByTimeAsync(30_000);
 		expect(s.put).not.toHaveBeenCalled();
-		expect(status.textContent).toBe(line);
-		s.put.mockResolvedValue({ status: "ok", draft: roomDraft(userB.id, "Hi ok", 3, { editorUserId: userA.id }) });
-		type(input, "Hi ok");
-		await vi.advanceTimersByTimeAsync(310);
+		// It comes back once its owner writes over it.
+		s.live(roomDraft(userB.id, "Plan the launch", 3));
 		await settle();
-		expect(s.put).toHaveBeenCalledExactlyOnceWith(roomId, userB.id, 2, "Hi ok", []);
-		expect(status.hidden).toBe(true);
+		expect(s.view.el.querySelectorAll(".draft-notch")).toHaveLength(1);
 	});
 });

@@ -39,16 +39,8 @@ function wellFormed(text: string): string {
 }
 
 /** Where this browser's text stands: in the cloud, not yet (tried again), too long to share, holding more quotes than
- * a message can, holding a quote the cloud would not keep, holding a quote's words with one of their marks gone, or
- * holding the words of a quote from the cloud this client can't hold. */
-export type DraftStatus =
-	| "saved"
-	| "retrying"
-	| "too-long"
-	| "quote-limit"
-	| "refused"
-	| "broken-quote"
-	| "unreadable-quote";
+ * a message can, holding a quote the cloud would not keep, or holding a quote's words with one of their marks gone. */
+export type DraftStatus = "saved" | "retrying" | "too-long" | "quote-limit" | "refused" | "broken-quote";
 
 /** The text can't be written as it is: it waits for the member to change it. */
 const givenUp = (status: DraftStatus) => status !== "saved" && status !== "retrying";
@@ -90,8 +82,6 @@ export class DraftSync {
 	#host: DraftHost;
 	/** The draft as the cloud last confirmed it; every change of this browser is diffed from it. */
 	#server: ConfirmedDraft;
-	/** Words of quotes from the cloud this client can't hold, while the text shown here may still hold them. */
-	#blocked: string[] = [];
 	#writing = false;
 	/** The newest draft the cloud announced while this browser could not merge it (writing, composing). */
 	#newest: RoomDraft | undefined;
@@ -106,7 +96,7 @@ export class DraftSync {
 	constructor(
 		roomId: string,
 		ownerUserId: string,
-		start: { revision: number; body: string; quotes?: readonly MessageQuote[]; blocked?: readonly string[] },
+		start: { revision: number; body: string; quotes?: readonly MessageQuote[] },
 		host: DraftHost,
 		write: (base: number, body: string, quotes: readonly MessageQuote[]) => Promise<RoomDraftWrite>,
 		written: (draft: RoomDraft) => void,
@@ -114,7 +104,6 @@ export class DraftSync {
 		this.roomId = roomId;
 		this.ownerUserId = ownerUserId;
 		this.#server = { revision: start.revision, body: start.body, quotes: start.quotes ?? [] };
-		this.#blocked = [...(start.blocked ?? [])];
 		this.#host = host;
 		this.#write = write;
 		this.#written = written;
@@ -155,19 +144,6 @@ export class DraftSync {
 	/** That text's quotes. */
 	quotes(): readonly MessageQuote[] {
 		return this.#host.quotes?.() ?? [];
-	}
-
-	/** Whether `text` holds the words of a quote from the cloud this client can't hold (RoomDraft.blocked): it is then
-	 * neither written here nor sent. */
-	blocks(text: string): boolean {
-		return this.#blocked.some((words) => text.includes(words));
-	}
-
-	/** The cloud's draft came with these blocked words: they join those the text shown here still holds. */
-	#block(draft: { readonly blocked?: readonly string[] }): void {
-		const text = this.#host.text();
-		const kept = this.#blocked.filter((words) => text.includes(words));
-		this.#blocked = [...new Set([...kept, ...(draft.blocked ?? [])])];
 	}
 
 	/** The text shown here, and its quotes, are what the cloud last confirmed. */
@@ -228,12 +204,7 @@ export class DraftSync {
 
 	/** Take the cloud's draft as the base and replay this browser's own change on it. Each quote merges as one piece
 	 * (app/quotes.ts, mergeQuoted): kept, removed or replaced whole, never cut into bare words. */
-	#merge(draft: {
-		revision: number;
-		body: string;
-		quotes?: readonly MessageQuote[];
-		blocked?: readonly string[];
-	}): void {
+	#merge(draft: { revision: number; body: string; quotes?: readonly MessageQuote[] }): void {
 		const shown = this.#host.text();
 		const mine = this.quotes();
 		const merged = mergeQuoted(
@@ -243,7 +214,6 @@ export class DraftSync {
 			this.#host.caret(),
 		);
 		this.#server = { revision: draft.revision, body: draft.body, quotes: draft.quotes ?? [] };
-		this.#block(draft);
 		if (!merged) {
 			// No placeholder letter is free for every quote (thousands of private-use letters in the drafts): rather
 			// than merge letter by letter, which can cut a quote, the text shown here stays as it is and replaces the
@@ -293,11 +263,6 @@ export class DraftSync {
 		// member's own. The draft waits until the member mends or removes them.
 		if (this.#host.broken?.()) {
 			this.#setStatus("broken-quote");
-			return;
-		}
-		// Nor are the words of a quote from the cloud this client can't hold, which would go as the member's own.
-		if (this.blocks(body)) {
-			this.#setStatus("unreadable-quote");
 			return;
 		}
 		// The cloud takes as much as a message holds; a longer text waits for the member to shorten it.
@@ -352,7 +317,6 @@ export class DraftSync {
 				body: result.draft.body,
 				quotes: result.draft.quotes ?? [],
 			};
-			this.#block(result.draft);
 			if (head && head.revision <= this.#server.revision) head = undefined;
 		} else if (!head || result.draft.revision >= head.revision) head = result.draft;
 		if (head) {
@@ -636,13 +600,6 @@ export class RoomDrafts {
 		}
 		listeners.add(listener);
 		return () => listeners.delete(listener);
-	}
-
-	/** Whether `text`, the member's own draft here, holds the words of a quote from the cloud this client can't hold
-	 * (RoomDraft.blocked): it is then neither saved nor sent. */
-	unreadable(sessionId: string, text: string): boolean {
-		const sync = this.room(sessionId)?.syncs.get(this.#userId);
-		return sync !== undefined && !sync.stopped && sync.blocks(text);
 	}
 
 	/** Where the member's own draft here stands. */

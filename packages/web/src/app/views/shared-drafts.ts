@@ -61,8 +61,6 @@ function statusText(status: DraftStatus, own: boolean): string {
 	if (status === "refused") return t("A quote in it can't be shared. Remove the quote to share your changes.");
 	if (status === "broken-quote")
 		return own ? "" : t("A quote is missing one of its « » marks. Remove it, or put the mark back.");
-	if (status === "unreadable-quote")
-		return own ? "" : t("A quote in this draft can't be shown here. Remove it to share your changes.");
 	return "";
 }
 
@@ -340,14 +338,8 @@ export class SharedDrafts {
 		const status = h("p", { class: "draft-panel-status", role: "status", hidden: true });
 		// A quote that gave way in a merge is said until the member next writes here.
 		let dropped = false;
-		// The draft's sync, once open: whether the text holds the words of a quote from the cloud this client can't hold.
-		let held: DraftSync | undefined;
 		const showStatus = (now: DraftStatus) => {
-			const text = dropped
-				? droppedText()
-				: held?.blocks(input.value)
-					? t("A quote in this draft can't be shown here. Remove it to share your changes.")
-					: statusText(now, false);
+			const text = dropped ? droppedText() : statusText(now, false);
 			status.hidden = !text;
 			if (status.textContent !== text) status.textContent = text;
 		};
@@ -382,7 +374,6 @@ export class SharedDrafts {
 				// A teammate's words merged in: the undo history starts again here.
 				history.restart({ text: before, caret: input.selectionEnd, records });
 				showQuoted();
-				if (held) showStatus(held.status);
 				this.#autosize(input);
 			},
 			gone: () => {
@@ -396,7 +387,6 @@ export class SharedDrafts {
 		});
 		if (!opened) return;
 		const { sync } = opened;
-		held = sync;
 		input.value = opened.text;
 		records = takeQuoteRecords([], opened.text, opened.quotes);
 		before = opened.text;
@@ -406,8 +396,10 @@ export class SharedDrafts {
 		history.restart({ text: input.value, caret: input.value.length, records });
 		const edited = () => {
 			showQuoted();
-			dropped = false;
-			showStatus(sync.status);
+			if (dropped) {
+				dropped = false;
+				showStatus(sync.status);
+			}
 			sync.changed();
 			this.#autosize(input);
 		};

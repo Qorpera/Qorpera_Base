@@ -1,7 +1,7 @@
 import { REALTIME_SUBSCRIBE_STATES, type RealtimeChannel } from "@supabase/supabase-js";
 import type { Cloud } from "./client.ts";
 import { array, boundedInteger, CloudShapeError, record, timestamp, uuid } from "./parse.ts";
-import { type MessageQuote, parseQuotes, QUOTES_MAX, unreadableWords } from "./quotes.ts";
+import { type MessageQuote, parseQuotes, QUOTES_MAX } from "./quotes.ts";
 import type { RealtimePhase } from "./realtime.ts";
 
 /* Shared drafts (20260928000500): a room member's unsent message, which the
@@ -15,9 +15,6 @@ export interface RoomDraft {
 	body: string;
 	/** The body's quotes of outside content (20260928469160), when it holds any. */
 	quotes?: readonly MessageQuote[];
-	/** The words of quotes the body holds that this client can't hold (cloud/quotes.ts, unreadableWords): while a text
-	 * holds them it is neither saved nor sent. */
-	blocked?: readonly string[];
 	revision: number;
 	editorUserId: string;
 	contributors: readonly string[];
@@ -40,16 +37,17 @@ export function parseRoomDraft(value: unknown, roomId: string): RoomDraft {
 		throw new CloudShapeError("room draft");
 	if (typeof input.body !== "string" || new TextEncoder().encode(input.body).length > ROOM_DRAFT_BYTES)
 		throw new CloudShapeError("room draft text");
-	// A draft carries `quotes` only when it holds any, checked as a message's are. Quotes this client can't hold are
-	// kept as blocked words, never dropped into the member's own: the draft still shows, and waits for them to go.
+	// A draft carries `quotes` only when it holds any, checked as a message's are. A draft whose quotes this client
+	// can't hold (a quote whose words hold « or », which the cloud refuses since 20260930087000) is as good as absent:
+	// none of its text is shown, so none of it can become the member's own words. It keeps its revision, so the owner's
+	// next save lands over it, as any first save over a draft does; with no text, a teammate's is not listed.
 	const quotes = input.quotes === undefined ? undefined : parseQuotes(input.quotes, input.body);
-	const blocked = input.quotes !== undefined && !quotes ? unreadableWords(input.quotes, input.body) : [];
+	const readable = input.quotes === undefined || quotes !== undefined;
 	return {
 		roomId,
 		ownerUserId: uuid(input.ownerUserId, "room draft owner"),
-		body: input.body,
+		body: readable ? input.body : "",
 		...(quotes ? { quotes } : {}),
-		...(blocked.length ? { blocked } : {}),
 		revision: boundedInteger(input.revision, "room draft revision", 0, Number.MAX_SAFE_INTEGER),
 		editorUserId: uuid(input.editorUserId, "room draft editor"),
 		contributors: array(input.contributors, "room draft contributors")

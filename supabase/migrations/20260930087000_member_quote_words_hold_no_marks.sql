@@ -11,6 +11,9 @@
 -- (qorpera_put_room_draft). qorpera_draft_keeps_quotes takes no quotes of its own: it compares a draft's stored quotes,
 -- which the check took, with a save's, which the check takes or refuses first, so it needs no change.
 --
+-- A room draft stored before this with such a quote is deleted: there are no users, so this is a cleanup, and no client
+-- ever has to hold a quote it can't (a client treats such a draft as absent all the same).
+--
 -- Exact-text patch: it fails unless the function has the text given exactly once. Body marker "20260930087000".
 
 create function pg_temp.member_quote_words_patch(p_function regprocedure, p_old text, p_new text) returns void
@@ -34,3 +37,11 @@ $old$,
 			raise exception 'Message quotes are invalid' using errcode = '22023'; end if;
 		v_previous_end := v_end;
 $new$);
+
+-- Room drafts that hold a quote whose words hold « or ». Their quotes passed the check when they were stored, so each
+-- start and end is a whole number within the body.
+delete from public.qorpera_room_drafts as draft
+where draft.quotes is not null and exists (
+	select 1 from jsonb_array_elements(draft.quotes) as quote(value)
+	where substr(draft.body, (quote.value ->> 'start')::integer + 1,
+		(quote.value ->> 'end')::integer - (quote.value ->> 'start')::integer) ~ '[«»]');

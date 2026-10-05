@@ -1148,15 +1148,13 @@ export class ConversationView {
 		const count = this.#composerQuotes().length;
 		const shown = this.#composer.value === (this.#company.conversation(this.#sessionId).get().draft ?? "");
 		const text =
-			shown && this.#company.draftUnreadable(this.#sessionId)
-				? t("A quote in this draft can't be shown here. Remove it to send.")
-				: shown && this.#company.draftBroken(this.#sessionId)
-					? t("A quote is missing one of its « » marks. Remove it, or put the mark back.")
-					: count > QUOTES_MAX
-						? t("A message can hold at most {count} quotes. Remove some to send it.", { count: QUOTES_MAX })
-						: count
-							? t("Text in «» is quoted from an email. Agents read it as quoted, never as your words.")
-							: "";
+			shown && this.#company.draftBroken(this.#sessionId)
+				? t("A quote is missing one of its « » marks. Remove it, or put the mark back.")
+				: count > QUOTES_MAX
+					? t("A message can hold at most {count} quotes. Remove some to send it.", { count: QUOTES_MAX })
+					: count
+						? t("Text in «» is quoted from an email. Agents read it as quoted, never as your words.")
+						: "";
 		this.#quoteNote.hidden = !text;
 		if (this.#quoteNote.textContent !== text) this.#quoteNote.textContent = text;
 	}
@@ -1195,12 +1193,11 @@ export class ConversationView {
 	}
 
 	/** A member's message with its mentions set apart, this member's own name most of all, and its quotes of outside
-	 * content shown as quoted. A name inside a quote names nobody; in a message whose quotes this client can't read,
-	 * no name is set apart. */
-	#withMentions(text: string, quotes: readonly MessageQuote[] = [], unread = false): (string | HTMLElement)[] {
+	 * content shown as quoted. A name inside a quote names nobody. */
+	#withMentions(text: string, quotes: readonly MessageQuote[] = []): (string | HTMLElement)[] {
 		const me = this.#company.userId;
 		const marks: { start: number; end: number; node: HTMLElement }[] = [];
-		for (const part of unread ? [] : mentionParts(text, this.#shownMentionTargets(), quotes))
+		for (const part of mentionParts(text, this.#shownMentionTargets(), quotes))
 			if (typeof part !== "string")
 				marks.push({
 					...part,
@@ -1362,11 +1359,9 @@ export class ConversationView {
 			(!conversation.draft?.trim() && !this.#attachments.count) ||
 			needsText ||
 			Boolean(attachmentIssue) ||
-			// More quotes than a message carries, a quote with a mark gone, or one from the cloud this client can't
-			// hold: the note under the field says so.
+			// More quotes than a message carries, or a quote with a mark gone: the note under the field says so.
 			this.#company.draftQuotes(this.#sessionId).length > QUOTES_MAX ||
-			this.#company.draftBroken(this.#sessionId) ||
-			this.#company.draftUnreadable(this.#sessionId);
+			this.#company.draftBroken(this.#sessionId);
 		this.#syncSend();
 		this.#attach.disabled = this.#composer.disabled || noImages;
 		this.#attachNote.hidden = !noImages;
@@ -1774,7 +1769,7 @@ export class ConversationView {
 				mine,
 				room,
 				{
-					body: `${JSON.stringify([item.kind, item.text, item.quotes ?? null, item.unreadQuotes ?? false, Boolean(item.attachmentCount), locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}`,
+					body: `${JSON.stringify([item.kind, item.text, item.quotes ?? null, Boolean(item.attachmentCount), locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}`,
 					files: JSON.stringify([
 						locale,
 						item.attachmentCount,
@@ -2361,9 +2356,7 @@ export class ConversationView {
 								h(
 									"div",
 									{ class: "text" },
-									...(item.text
-										? this.#withMentions(item.text, item.quotes, item.unreadQuotes === true)
-										: [t("(empty)")]),
+									...(item.text ? this.#withMentions(item.text, item.quotes) : [t("(empty)")]),
 								),
 							]
 						: []

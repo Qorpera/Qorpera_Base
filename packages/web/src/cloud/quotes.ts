@@ -92,30 +92,6 @@ export function parseQuotes(value: unknown, text: string): MessageQuote[] | unde
 	return quotes;
 }
 
-/** The words of the quotes in a list this client can't hold (`parseQuotes` refuses it): each item that names a span
- * of the text, as its words; the whole text when none does. The cloud refuses such quotes since 20260930087000, so
- * none should come. Should one come all the same (a draft written before), its words are kept from going as the
- * member's own: a save or a send waits while the text holds them. */
-export function unreadableWords(value: unknown, text: string): string[] {
-	const characters = [...text];
-	const words = new Set<string>();
-	for (const item of Array.isArray(value) ? value : []) {
-		if (!item || typeof item !== "object") continue;
-		const { start, end } = item as Record<string, unknown>;
-		if (
-			typeof start === "number" &&
-			typeof end === "number" &&
-			Number.isSafeInteger(start) &&
-			Number.isSafeInteger(end) &&
-			start >= 0 &&
-			start < end &&
-			end <= characters.length
-		)
-			words.add(characters.slice(start, end).join(""));
-	}
-	return words.size ? [...words] : text ? [text] : [];
-}
-
 export function sameQuotes(a: readonly MessageQuote[], b: readonly MessageQuote[]): boolean {
 	return (
 		a.length === b.length &&

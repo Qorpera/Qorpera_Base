@@ -2084,12 +2084,6 @@ export class CompanyController {
 		return brokenQuotes(state.draft ?? "", state.quoteRecords ?? []).length > 0;
 	}
 
-	/** The draft holds the words of a quote from the cloud this client can't hold (RoomDraft.blocked): it is neither
-	 * saved nor sent until the member removes them, so the words never go as their own. */
-	draftUnreadable(sessionId: string): boolean {
-		return this.roomDrafts.unreadable(sessionId, this.conversation(sessionId, false).get().draft ?? "");
-	}
-
 	/** The member changed the draft's text in a composer; `caret` is where theirs stands. A change that reaches into a
 	 * quote removes the whole quote (app/quotes.ts). Returns the text kept, which the composer shows, and its caret. */
 	editDraft(
@@ -2137,11 +2131,6 @@ export class CompanyController {
 		// The last guard: a quote's words with one mark gone never go as the member's own.
 		if (brokenQuotes(trimmed, store.get().quoteRecords ?? []).length) {
 			store.set({ sendError: t("A quote is missing one of its « » marks. Remove it, or put the mark back.") });
-			return false;
-		}
-		// Nor the words of a quote from the cloud this client can't hold.
-		if (this.roomDrafts.unreadable(sessionId, trimmed)) {
-			store.set({ sendError: t("A quote in this draft can't be shown here. Remove it to send.") });
 			return false;
 		}
 		if (quotes.length > QUOTES_MAX) {

@@ -115,23 +115,27 @@ begin
 	perform pg_temp.expect(v_draft -> 'draft' -> 'quotes', v_body -> 'quotes', 'the draft keeps it');
 end $$;
 
--- A draft stored before this migration with a quote that holds marks: a save that keeps it with its record is now
--- refused, and removing it whole is an ordinary save, so the member can always clear it.
+-- Room drafts stored before this migration with such a quote are deleted by it. Migrations run before this test can
+-- seed one, so the migration's own statement runs here again over two seeded drafts: the one whose quote holds marks
+-- goes, the one with an ordinary quote stays.
 select pg_temp.path_claims('service_role');
-update public.qorpera_room_drafts
-set body = 'Read «Use «root» now» please', revision = 2,
-	quotes = jsonb_build_array(jsonb_build_object('start', 6, 'end', 20, 'source', 'mail',
-		'ref', current_setting('qorpera_test.mail_thread')))
-where room_id = '30000000-0000-4000-8000-000000081605' and owner_user_id = '30000000-0000-4000-8000-000000000001';
-select pg_temp.member();
-do $$
-declare v_result jsonb;
-begin
-	perform pg_temp.expect(pg_temp.message_of(format($call$select pg_temp.draft(2, %L, %L::jsonb)$call$,
-		'Read «Use «root» now» please!', jsonb_build_array(jsonb_build_object('start', 6, 'end', 20, 'source', 'mail',
-			'ref', current_setting('qorpera_test.mail_thread'))))), 'Message quotes are invalid',
-		'an old quote with marks kept with its record');
-	v_result := pg_temp.draft(2, 'Read please', '[]');
-	perform pg_temp.expect(v_result ->> 'status', 'ok', 'the old quote removed whole');
-	perform pg_temp.expect((v_result -> 'draft' ? 'quotes')::text, 'false', 'the draft holds no quotes');
+insert into public.qorpera_company_room_members (room_id, principal_kind, principal_id, status, source_path_version)
+values ('30000000-0000-4000-8000-000000081605', 'member', '30000000-0000-4000-8000-000000000002', 'active',
+	'30000000-0000-4000-8000-000000081606');
+insert into public.qorpera_room_drafts (room_id, owner_user_id, body, revision, editor_user_id, quotes)
+values ('30000000-0000-4000-8000-000000081605', '30000000-0000-4000-8000-000000000002', 'Read «Use «root» now» please',
+	1, '30000000-0000-4000-8000-000000000002', jsonb_build_array(jsonb_build_object('start', 6, 'end', 20,
+		'source', 'mail', 'ref', current_setting('qorpera_test.mail_thread'))));
+do $$ begin
+	perform pg_temp.expect((select count(*) from public.qorpera_room_drafts
+		where room_id = '30000000-0000-4000-8000-000000081605')::text, '2', 'two drafts seeded');
+	-- The cleanup, word for word as 20260930087000 has it.
+	delete from public.qorpera_room_drafts as draft
+	where draft.quotes is not null and exists (
+		select 1 from jsonb_array_elements(draft.quotes) as quote(value)
+		where substr(draft.body, (quote.value ->> 'start')::integer + 1,
+			(quote.value ->> 'end')::integer - (quote.value ->> 'start')::integer) ~ '[«»]');
+	perform pg_temp.expect((select string_agg(owner_user_id::text, ',') from public.qorpera_room_drafts
+		where room_id = '30000000-0000-4000-8000-000000081605'), '30000000-0000-4000-8000-000000000001',
+		'only the draft whose quote holds marks went');
 end $$;
