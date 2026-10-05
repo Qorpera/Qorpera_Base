@@ -10,12 +10,16 @@ values
 	('a0000000-0000-4000-8000-0000000000ab', 'presence-viewer@example.test', statement_timestamp()),
 	('a0000000-0000-4000-8000-0000000000ac', 'presence-outsider@example.test', statement_timestamp());
 
-select set_config('request.jwt.claims', '{"sub":"a0000000-0000-4000-8000-0000000000aa","email":"presence-owner@example.test","role":"authenticated","user_metadata":{}}', false);
-set role authenticated;
-select set_config('qorpera_test.pr_profile',
-	public.qorpera_create_hosted_profile('Presence QA', 'main', 1) ->> 'profile_id', false);
-reset role;
-select set_config('request.jwt.claims', '', false);
+-- The company is a folder-v2 company, opened the way the company creation opens one (856).
+select set_config('qorpera_test.pr_profile', public.qorpera_folder_company_open('a0000000-0000-4000-8000-0000000000aa',
+	'a0000000-0000-4000-8000-0000000000e1', 'Presence QA') ->> 'profile_id', false);
+do $$
+begin
+	if not public.qorpera_company_is_folder_v2(current_setting('qorpera_test.pr_profile')::uuid) then
+		raise exception 'the presence company is not a folder-v2 company';
+	end if;
+end
+$$;
 
 insert into public.qorpera_profile_members (profile_id, user_id, email, display_name, role)
 values (current_setting('qorpera_test.pr_profile')::uuid,
@@ -112,10 +116,11 @@ $$;
 reset role;
 
 -- A member of profile X gains nothing on profile Y's topic: the outsider
--- creates their own profile and still cannot see the first one's presence.
+-- creates their own (folder-v2) profile and still cannot see the first one's presence.
+select public.qorpera_folder_company_open('a0000000-0000-4000-8000-0000000000ac',
+	'a0000000-0000-4000-8000-0000000000e2', 'Presence QA Other') \g /dev/null
 select set_config('request.jwt.claims', '{"sub":"a0000000-0000-4000-8000-0000000000ac","email":"presence-outsider@example.test","role":"authenticated","user_metadata":{}}', false);
 set role authenticated;
-select public.qorpera_create_hosted_profile('Presence QA Other', 'main', 1);
 do $$
 declare v_seen integer;
 begin

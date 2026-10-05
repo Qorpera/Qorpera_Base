@@ -380,6 +380,30 @@ describe("account and route ownership", () => {
 		}
 	});
 
+	it("opens a folder-v2 company's Co-Founder, which has no organization record, from its template", async () => {
+		const home = `#/c/${profileA.profileId}`;
+		const f = mounted(home);
+		const cofounder = {
+			...staff,
+			id: id(40),
+			displayName: "Co-Founder",
+			role: "Co-Founder",
+			templateId: "co-founder",
+		};
+		vi.mocked(f.api.listStaff).mockResolvedValue([staff, cofounder]);
+		vi.mocked(f.api.getOrganization).mockResolvedValue(undefined);
+		const create = vi.spyOn(f.api, "agentThread").mockResolvedValue({
+			sessionId: session.sessionId,
+			roomId: id(41),
+			staffAgentId: cofounder.id,
+			status: "active",
+		});
+		await draw();
+		expect(create).toHaveBeenCalledExactlyOnceWith(profileA.environmentId, cofounder.id);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		expect(visibleText(f.root.querySelector("main"))).not.toContain("no Co-Founder yet");
+	});
+
 	it("waits for membership before creating the private Co-Founder conversation", async () => {
 		const home = `#/c/${profileA.profileId}`;
 		const f = mounted(home);
