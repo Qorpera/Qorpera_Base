@@ -5,9 +5,11 @@ import type { CompanyComputerScreenshotAsset } from "./cloud-company-computer-sc
 import {
 	CloudCompanyFormationRefused,
 	CloudCompanyPathParentMissing,
+	CloudCompanyPathRpcRefusal,
 	CloudCompanyPathToolRefusal,
 	CloudCompanyPathVersionChanged,
 } from "./cloud-company-path-refusal.ts";
+import { CloudControlRpcRefused } from "./cloud-control-errors.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
@@ -221,6 +223,54 @@ export class CloudToolAuthorizeRefusal extends CloudToolRefusal {
 }
 /** Printable ASCII and Latin-1 letters: no control, invisible, bidi or separator character. */
 const REFUSAL_PLAIN = /^[\u0020-\u007e\u00c0-\u00ff]*$/;
+
+/**
+ * Control calls (4 Oct 2026): a tool whose control call is its first effect relays the database's refusal of that call
+ * to the model as the tool's answer (`REFUSED: NOT_AVAILABLE: <message>`), never as an unknown outcome the model
+ * retries. Use it only around a call that nothing before it in the tool began: a refusal proves only that call's
+ * transaction changed nothing. Anything else is thrown as it came.
+ */
+export function relayControlRefusal(error: unknown): never {
+	if (error instanceof CloudControlRpcRefused || error instanceof CloudCompanyPathRpcRefusal) {
+		// Arrows and typographic quotes the database's words use, in their plain forms.
+		const plain = error.detail
+			.replace(/\u2192/g, "->")
+			.replace(/[\u2018\u2019]/g, "'")
+			.replace(/[\u201c\u201d]/g, '"')
+			.replace(/[\u2013\u2014]/g, "-")
+			.replace(/\u2026/g, "...");
+		throw new CloudToolRefusal(
+			plain && REFUSAL_PLAIN.test(plain) ? `NOT_AVAILABLE: ${plain}` : "NOT_AVAILABLE: this is not available now",
+		);
+	}
+	throw error;
+}
+
+/** A request's `operationKey`, when it has one. */
+export function cloudOperationKeyOf(request: Record<string, unknown>): string | undefined {
+	return typeof request.operationKey === "string" ? request.operationKey : undefined;
+}
+
+/**
+ * `relayControlRefusal` for one tool of one run, keeping what an earlier attempt left unknown: a call whose operation
+ * key once ended without an answer (its effect may have committed) is never answered as refused later, because a
+ * refusal of the retry says nothing about the first attempt. Its refusal stays an unknown outcome until the receipt is
+ * reconciled. A call without a key (a read) is relayed as is.
+ */
+export class CloudControlRefusalRelay {
+	readonly #uncertain = new Set<string>();
+
+	async call<T>(operationKey: string | undefined, send: () => Promise<T>): Promise<T> {
+		try {
+			return await send();
+		} catch (error) {
+			const refused = error instanceof CloudControlRpcRefused || error instanceof CloudCompanyPathRpcRefusal;
+			if (refused && (operationKey === undefined || !this.#uncertain.has(operationKey))) relayControlRefusal(error);
+			if (!refused && operationKey !== undefined) this.#uncertain.add(operationKey);
+			throw error;
+		}
+	}
+}
 
 /** Canonicalization is for exact in-process retries, not an authorization grant or durable receipt. */
 export function cloudToolJsonText(value: unknown, limit = MAX_ARGUMENT_BYTES): string {

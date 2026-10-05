@@ -363,7 +363,7 @@ declare
 	base jsonb := (select v.structured -> 'parse' from public.qorpera_folder_path_versions v where v.version = pg_temp.f2_version(f || '/brief.md'));
 	next jsonb := base || jsonb_build_object('followUps', 1, 'followedUpAt', to_char(clock_timestamp() at time zone 'UTC',
 		'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'followUp', 'Add a fourth.');
-	u jsonb; r jsonb; w public.qorpera_runtime_workers%rowtype; q jsonb := jsonb_build_object('action','followup','folder',f,'text','Add a fourth.');
+	u jsonb; r jsonb; w public.qorpera_runtime_workers%rowtype; q jsonb := jsonb_build_object('action','followup','folder',f,'text','Add a fourth.','resultsVersion',pg_temp.f2_version(f || '/results.md'));
 begin
 	u := jsonb_build_array(pg_temp.f2_write(p, f || '/brief.md', next),
 		jsonb_build_object('op','delete','path',f || '/results.md','expectedVersion',pg_temp.f2_version(f || '/results.md')));
@@ -375,6 +375,14 @@ begin
 	-- Its results stay: they go only after this commit's brief landed.
 	perform pg_temp.refused(r, 2, 'holds only its own files');
 	if pg_temp.f2_version(f || '/results.md') is null then raise exception 'A refused follow-up removed the results'; end if;
+	-- 20260930075000: results other than those the tool read (a decision landed since) make the follow-up a conflict, and
+	-- nothing of it is saved, where the brief alone used to save and the verify step refused the change set.
+	r := pg_temp.wc(p, 'f2b-followup-0001b', u, q || jsonb_build_object('resultsVersion', extensions.gen_random_uuid()),
+		pg_temp.reviewed(ada, 'f2b-call-0013b', u));
+	perform pg_temp.expect(r, 1, 'conflict', 'version_changed');
+	if (r -> 'units' -> 1 ->> 'outcome') = 'saved' or pg_temp.f2_version(f || '/results.md') is null
+		or (pg_temp.worker_row(f)).sequence is distinct from 1 then
+		raise exception 'A follow-up behind a decision saves nothing: %', r; end if;
 	r := pg_temp.wc(p, 'f2b-followup-0002', u, q, pg_temp.reviewed(ada, 'f2b-call-0014', u));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
 	w := pg_temp.worker_row(f);
@@ -384,7 +392,8 @@ begin
 		raise exception 'The followed-up row: %', to_jsonb(w); end if;
 	-- At work again: a second follow-up waits for its report.
 	perform pg_temp.refused(pg_temp.wc(p, 'f2b-followup-0003', jsonb_build_array(pg_temp.f2_write(p, f || '/brief.md',
-		next || jsonb_build_object('followUps', 2, 'followUp', 'More.'))), jsonb_build_object('action','followup','folder',f,'text','More.'),
+		next || jsonb_build_object('followUps', 2, 'followUp', 'More.'))), jsonb_build_object('action','followup','folder',f,'text','More.',
+		'resultsVersion',null),
 		pg_temp.reviewed(ada, 'f2b-call-0015', jsonb_build_array(pg_temp.f2_write(p, f || '/brief.md',
 			next || jsonb_build_object('followUps', 2, 'followUp', 'More.'))))), 1, 'still working');
 	-- A follow-up that keeps the old results.md: the row no longer points at it, so verify refuses the whole change set.
@@ -395,7 +404,8 @@ begin
 		ru := jsonb_build_array(pg_temp.f2_write(p, 'agents/ada/todos/call-the-bank/reader/brief.md', rb || jsonb_build_object('followUps', 1,
 			'followedUpAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'followUp', 'Try again.')));
 		perform pg_temp.raises(format('select pg_temp.wc(%L, %L, %L, %L, %L)', p, 'f2b-followup-0004', ru,
-			jsonb_build_object('action','followup','folder','agents/ada/todos/call-the-bank/reader','text','Try again.'),
+			jsonb_build_object('action','followup','folder','agents/ada/todos/call-the-bank/reader','text','Try again.',
+				'resultsVersion',pg_temp.f2_version('agents/ada/todos/call-the-bank/reader/results.md')),
 			pg_temp.reviewed(ada, 'f2b-call-0016', ru)), 'XX000');
 		if (pg_temp.worker_row('agents/ada/todos/call-the-bank/reader')).state is distinct from 'blocked' then
 			raise exception 'A refused follow-up changed the reader'; end if;
@@ -418,6 +428,27 @@ begin
 		pg_temp.member(2), '{"todoKey":"call-the-bank"}'), '42501');
 	perform pg_temp.raises(format('select public.qorpera_folder_agent_workers(%L, %L, %L)', '63400000-0000-4000-8000-000000000020',
 		ada -> 'actor', '{"todoKey":"ben-only"}'), 'P0002');
+	-- 20260930075000: filtered in SQL, and a page continues after a cursor (newest first; at most 16 a page).
+	if r ->> 'moreWorkers' is distinct from '0' or r -> 'nextCursor' is distinct from 'null'
+		or exists (select 1 from jsonb_array_elements(r -> 'workers') w where w ->> 'cursor' is null) then
+		raise exception 'A whole page: %', r; end if;
+	declare one jsonb := public.qorpera_folder_agent_workers('63400000-0000-4000-8000-000000000020', ada -> 'actor',
+			'{"todoKey":"call-the-bank","workerKey":"reader"}');
+		later jsonb := public.qorpera_folder_agent_workers('63400000-0000-4000-8000-000000000020', ada -> 'actor',
+			jsonb_build_object('todoKey', 'call-the-bank', 'cursor', r -> 'workers' -> 0 ->> 'cursor'));
+	begin
+		if jsonb_array_length(one -> 'workers') <> 1 or one -> 'workers' -> 0 ->> 'workerKey' <> 'reader'
+			or jsonb_array_length(later -> 'workers') <> 2 or later -> 'workers' -> 0 = r -> 'workers' -> 0
+			or jsonb_array_length(public.qorpera_folder_agent_workers('63400000-0000-4000-8000-000000000020', ada -> 'actor',
+				'{"todoKey":"call-the-bank","search":"PRICE"}') -> 'workers') <> 1
+			or jsonb_array_length(public.qorpera_folder_agent_workers('63400000-0000-4000-8000-000000000020', ada -> 'actor',
+				'{"todoKey":"call-the-bank","state":"cancelled"}') -> 'workers') <> 0 then
+			raise exception 'Filters and pages: %, %', one, later; end if;
+	end;
+	perform pg_temp.raises(format('select public.qorpera_folder_agent_workers(%L, %L, %L)', '63400000-0000-4000-8000-000000000020',
+		ada -> 'actor', jsonb_build_object('todoKey', 'call-the-bank', 'cursor', extensions.gen_random_uuid())), 'P0002');
+	perform pg_temp.raises(format('select public.qorpera_folder_agent_workers(%L, %L, %L)', '63400000-0000-4000-8000-000000000020',
+		ada -> 'actor', '{"todoKey":"call-the-bank","state":"queued"}'), '22023');
 end $$;
 
 -- 8. Cancel: the row only, its queued wake cancelled; no file ------------------------------------------------------------
@@ -446,7 +477,7 @@ begin
 		cu := jsonb_build_array(pg_temp.f2_write(ada -> 'actor', f || '/brief.md', cb || jsonb_build_object('followUps', 2,
 			'followedUpAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'followUp', 'Again.')));
 		perform pg_temp.refused(pg_temp.wc(ada -> 'actor', 'f2b-followup-0005', cu,
-			jsonb_build_object('action','followup','folder',f,'text','Again.'), pg_temp.reviewed(ada, 'f2b-call-0017', cu)),
+			jsonb_build_object('action','followup','folder',f,'text','Again.','resultsVersion',null), pg_temp.reviewed(ada, 'f2b-call-0017', cu)),
 			1, 'cannot continue');
 	end;
 	-- A folder with no worker: nothing to cancel (never a retry).

@@ -5,6 +5,7 @@ import {
 	ConnectionFileWriter,
 	type ConnectionSettings,
 	connectionFileText,
+	hookFileText,
 	numberedConnectionPath,
 	parseConnectionFileClaim,
 } from "../src/connection-files.ts";
@@ -404,7 +405,9 @@ describe("connection file writer, review round 1", () => {
 
 	it("counts an account's length in characters, as the database does", () => {
 		const account = "\u{1F600}".repeat(254);
-		expect(parseConnectionFileClaim(claim({ settings: { ...gmail, account } }))?.settings?.account).toBe(account);
+		expect(
+			(parseConnectionFileClaim(claim({ settings: { ...gmail, account } }))?.settings as ConnectionSettings).account,
+		).toBe(account);
 		expect(() => parseConnectionFileClaim(claim({ settings: { ...gmail, account: `${account}x` } }))).toThrow(
 			PlatformFolderProblem,
 		);
@@ -499,5 +502,112 @@ describe("connection file writer, review round 3", () => {
 		controller.abort();
 		expect(await run.writer.writeDue(10, controller.signal)).toBe(0);
 		expect(run.calls).toHaveLength(0);
+	});
+});
+
+describe("hook and mailbox files (E1)", () => {
+	const hookSettings = {
+		id: secretId,
+		name: "stripe-payments",
+		proof: "stripe",
+		status: "active",
+		maxBodyBytes: 65536,
+		perMinute: 60,
+		createdBy: memberId,
+		createdAt: "2026-10-04T08:00:00Z",
+	};
+	const mailboxSettings = {
+		id: secretId,
+		address: "support@inbox.qorpera.com",
+		status: "active",
+		createdBy: memberId,
+		createdAt: "2026-10-04T08:00:00Z",
+	};
+	const hookBody = "Payments from Stripe wake the Analyst.";
+	const hookClaim = (overrides: Record<string, unknown> = {}) =>
+		claim({
+			subjectKind: "hook",
+			operationKey: `hook-file:${secretId}:3`,
+			settings: hookSettings,
+			path: "connections/hook-stripe-payments.md",
+			body: hookBody,
+			...overrides,
+		});
+
+	it("reads a hook's and a mailbox's claim by their own allow-lists, and a claim from before E1 as a vault's", () => {
+		expect(parseConnectionFileClaim(hookClaim())).toMatchObject({ subjectKind: "hook", body: hookBody });
+		expect(
+			parseConnectionFileClaim(
+				claim({
+					subjectKind: "mailbox",
+					operationKey: `mailbox-file:${secretId}:3`,
+					settings: mailboxSettings,
+					path: "connections/mailbox-support.md",
+					body: "Customer support.",
+				}),
+			)?.settings,
+		).toEqual(mailboxSettings);
+		expect(parseConnectionFileClaim(claim())?.subjectKind).toBe("vault");
+		expect(parseConnectionFileClaim(claim({ subjectKind: "vault" }))?.subjectKind).toBe("vault");
+		for (const overrides of [
+			// A hook's address, a signing secret, or anything else outside the allow-list.
+			{ settings: { ...hookSettings, address: "Zm9v" } },
+			{ settings: { ...hookSettings, signingSecret: "whsec_x" } },
+			// The vault's key, a vault's name, or a body on a vault claim.
+			{ operationKey: `connection-file:${secretId}:3` },
+			{ path: "connections/stripe-payments.md" },
+			{
+				subjectKind: "vault",
+				operationKey: `connection-file:${secretId}:3`,
+				settings: gmail,
+				path: "connections/gmail.md",
+			},
+			{ settings: { ...hookSettings, id: memberId } },
+			{ subjectKind: "website" },
+		])
+			expect(() => parseConnectionFileClaim(hookClaim(overrides))).toThrow(PlatformFolderProblem);
+		expect(() => parseConnectionFileClaim(claim({ path: "connections/hook-gmail.md" }))).toThrow(
+			PlatformFolderProblem,
+		);
+	});
+
+	it("starts a new hook's file with its purpose, and changes only the settings that differ", () => {
+		const fresh = hookFileText("hook", "connections/hook-x.md", hookSettings as never, null, "Stripe payments.");
+		expect(parseCompanyStateFile("connections/hook-x.md", fresh)).toMatchObject({
+			ok: true,
+			file: { kind: "hook", name: "stripe-payments", purpose: "Stripe payments." },
+		});
+		const edited = fresh.replace("Stripe payments.", "Payments, and what the Analyst does with them.");
+		const paused = hookFileText(
+			"hook",
+			"connections/hook-x.md",
+			{ ...hookSettings, status: "paused" } as never,
+			edited,
+			"x",
+		);
+		expect(paused).toBe(edited.replace("status: active", "status: paused"));
+	});
+
+	it("writes, commits as a hook's file, and finishes with its kind", async () => {
+		const { writer, calls, commits, committedText } = folder({ claims: [hookClaim()] });
+		expect(await writer.writeOne()).toBe(true);
+		const unit = (commits()[0]?.args.p_units as Record<string, unknown>[])[0] as {
+			path: string;
+			structured: { kind: string }[];
+		};
+		expect(unit.path).toBe("connections/hook-stripe-payments.md");
+		expect(unit.structured[0]?.kind).toBe("hook");
+		expect(commits()[0]?.args.p_operation_key).toBe(`hook-file:${secretId}:3`);
+		expect(committedText()).toContain("Payments from Stripe wake the Analyst.");
+		expect(committedText()).not.toContain("address");
+		const finish = calls.find((call) => call.method === "qorpera_finish_connection_file");
+		expect(finish?.args).toMatchObject({ p_subject_kind: "hook", p_secret_id: secretId, p_problem: null });
+	});
+
+	it("finishes a vault secret's claim without naming a kind, as a database from before E1 takes it", async () => {
+		const { writer, calls } = folder({ claims: [claim()] });
+		await writer.writeOne();
+		const finish = calls.find((call) => call.method === "qorpera_finish_connection_file");
+		expect(finish?.args).not.toHaveProperty("p_subject_kind");
 	});
 });

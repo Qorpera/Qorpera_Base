@@ -688,3 +688,12 @@ Each step is one PR, handed to the coordinator with an exact-head review and a n
 | I11 | the Mailbox reads mail from the folder | Q1, with Interfaces | M2c |
 
 The library with update offers, the table store and the marketplace come later.
+
+**Built: I7** (web; `packages/web/src/app/interface-folder.ts`, `app/interfaces.ts`). The client reads every
+`interfaces/<name>/interface.toml`, `interfaces/order.md`, and the tables and `file:` sources its drawn blocks name,
+with the member's own reads, and parses each text itself. The tab follows the order file, then the interfaces it
+doesn't list by name (§8). A broken page shows its problems and no button; with zero or two mains none is on top, and
+owners and admins see a quiet line about it. The folder's feed keeps it live: only changed paths are read again, and
+`resync` reads everything. A `file:` source whose text is outside content (§4) stays undrawn until blocks can show the
+outside-content mark. A company whose folder has no `interfaces/order.md`, or whose first read fails, keeps the
+library's definitions.

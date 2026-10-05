@@ -34,6 +34,8 @@ export type CompanyStateFileKind =
 	| "worker-brief"
 	| "worker-results"
 	| "connection"
+	| "hook"
+	| "mailbox"
 	| "rule"
 	| "human-task"
 	| "contact"
@@ -207,6 +209,35 @@ export interface ConnectionFile {
 	readonly purpose: string;
 }
 
+/** A hook's connection file, `connections/hook-<name>.md` (folder core C4, E1). Its settings are the platform's, kept in
+ * line with the hook (the database stays the authority, and never writes the hook's address or a secret here); its body
+ * is the company's: what the hook is for. */
+export interface HookFile {
+	readonly kind: "hook";
+	readonly id: string;
+	readonly name: string;
+	readonly proof: (typeof HOOK_PROOFS)[number];
+	readonly status: "active" | "paused";
+	readonly maxBodyBytes: number;
+	readonly perMinute: number;
+	readonly createdBy: string;
+	readonly createdAt: string;
+	readonly purpose: string;
+}
+
+/** A mailbox's connection file, `connections/mailbox-<name>.md` (E1): the platform's settings, the company's body. */
+export interface MailboxFile {
+	readonly kind: "mailbox";
+	readonly id: string;
+	readonly address: string;
+	readonly status: "active" | "paused";
+	readonly createdBy: string;
+	readonly createdAt: string;
+	readonly purpose: string;
+}
+
+export const HOOK_PROOFS = ["address", "stripe", "github", "hmac-sha256"] as const;
+
 export interface RuleFile {
 	readonly kind: "rule";
 	readonly id: string;
@@ -352,6 +383,8 @@ export type CompanyStateFile =
 	| SectionsFile
 	| GroupFile
 	| ConnectionFile
+	| HookFile
+	| MailboxFile
 	| RuleFile
 	| RoutineFile
 	| TodoFile
@@ -393,8 +426,12 @@ export function companyStatePath(path: string): CompanyStatePath | null {
 	const [a, b, c, d, e, f] = parts;
 	if (parts.length === 2 && a === "vision" && b === "vision.md") return { kind: "vision", ...none };
 	if (parts.length === 2 && a === "agents" && b === "sections.md") return { kind: "sections", ...none };
-	if (parts.length === 2 && a === "connections" && stem(b) !== null)
-		return { kind: "connection", ...none, name: stem(b) };
+	if (parts.length === 2 && a === "connections" && stem(b) !== null) {
+		// A hook's and a mailbox's files take their prefixes before a vault connection's (E1).
+		const name = stem(b) as string;
+		const kind = name.startsWith("hook-") ? "hook" : name.startsWith("mailbox-") ? "mailbox" : "connection";
+		return { kind, ...none, name };
+	}
 	if (parts.length === 2 && a === "rules" && stem(b) !== null) return { kind: "rule", ...none, name: stem(b) };
 	if (parts.length === 2 && a === "human-tasks" && stem(b) !== null)
 		return { kind: "human-task", ...none, name: stem(b) };
@@ -1189,6 +1226,58 @@ function connection(split: Split, fields: Fields, problems: Problems): Connectio
 	return { kind: "connection", id, service, account, status, actions, connectedBy, connectedAt, purpose };
 }
 
+const HOOK_STATUSES = ["active", "paused"] as const;
+const HOOK_NAME = /^[a-z][a-z0-9-]{0,63}$/;
+const MAILBOX_ADDRESS = /^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?@[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/;
+
+function hook(split: Split, fields: Fields, problems: Problems): HookFile | null {
+	const id = fields.id("id", true);
+	const name = fields.text("name", true, 64);
+	if (name && !HOOK_NAME.test(name))
+		problems.add("value", fields.line("name"), "name", "name is the hook's name, like stripe-payments");
+	const proof = fields.choice("proof", true, HOOK_PROOFS);
+	const status = fields.choice("status", true, HOOK_STATUSES);
+	const maxBodyBytes = fields.whole("max_body_bytes", true, 1024, 262144);
+	const perMinute = fields.whole("per_minute", true, 1, 120);
+	const createdBy = fields.id("created_by", true);
+	const createdAt = fields.instant("created_at", true);
+	const purpose = body(split, problems, "what the hook is for", false, 32768);
+	fields.close("a hook");
+	if (
+		problems.list.length ||
+		!id ||
+		!name ||
+		!proof ||
+		!status ||
+		maxBodyBytes === null ||
+		perMinute === null ||
+		!createdBy ||
+		!createdAt ||
+		purpose === null
+	)
+		return null;
+	return { kind: "hook", id, name, proof, status, maxBodyBytes, perMinute, createdBy, createdAt, purpose };
+}
+
+function mailbox(split: Split, fields: Fields, problems: Problems): MailboxFile | null {
+	const id = fields.id("id", true);
+	const address = fields.text("address", true, 254);
+	if (address && !MAILBOX_ADDRESS.test(address))
+		problems.add(
+			"value",
+			fields.line("address"),
+			"address",
+			"address is the mailbox's address, like support@example.com",
+		);
+	const status = fields.choice("status", true, HOOK_STATUSES);
+	const createdBy = fields.id("created_by", true);
+	const createdAt = fields.instant("created_at", true);
+	const purpose = body(split, problems, "what the mailbox is for", false, 32768);
+	fields.close("a mailbox");
+	if (problems.list.length || !id || !address || !status || !createdBy || !createdAt || purpose === null) return null;
+	return { kind: "mailbox", id, address, status, createdBy, createdAt, purpose };
+}
+
 function rule(split: Split, fields: Fields, problems: Problems): RuleFile | null {
 	const id = fields.id("id", true);
 	const outcome = fields.choice("outcome", true, ["ask-first", "allow"] as const);
@@ -1873,6 +1962,8 @@ export function companyStatePathProblems(path: string, folder = false): CompanyS
 		if (
 			where.kind === "rule" ||
 			where.kind === "connection" ||
+			where.kind === "hook" ||
+			where.kind === "mailbox" ||
 			where.kind === "human-task" ||
 			where.kind === "contact"
 		)
@@ -1972,6 +2063,12 @@ export function parseCompanyStateFile(path: string, text: string): CompanyStateF
 			break;
 		case "connection":
 			file = connection(parts, fields, problems);
+			break;
+		case "hook":
+			file = hook(parts, fields, problems);
+			break;
+		case "mailbox":
+			file = mailbox(parts, fields, problems);
 			break;
 		case "rule":
 			file = rule(parts, fields, problems);
@@ -2127,6 +2224,35 @@ export function writeConnectionFile(file: Omit<ConnectionFile, "kind">): string 
 			["site", file.site === undefined ? null : companyStateValue(file.site)],
 			["two_step", file.twoStep ?? null],
 			["opened_for", file.openedFor ?? null],
+		],
+		file.purpose,
+	);
+}
+
+export function writeHookFile(file: Omit<HookFile, "kind">): string {
+	return document(
+		[
+			["id", file.id],
+			["name", companyStateValue(file.name)],
+			["proof", file.proof],
+			["status", file.status],
+			["max_body_bytes", String(file.maxBodyBytes)],
+			["per_minute", String(file.perMinute)],
+			["created_by", file.createdBy],
+			["created_at", file.createdAt],
+		],
+		file.purpose,
+	);
+}
+
+export function writeMailboxFile(file: Omit<MailboxFile, "kind">): string {
+	return document(
+		[
+			["id", file.id],
+			["address", companyStateValue(file.address)],
+			["status", file.status],
+			["created_by", file.createdBy],
+			["created_at", file.createdAt],
 		],
 		file.purpose,
 	);
@@ -2633,7 +2759,7 @@ Use a human task only for work no agent can do: signing, paying, posting or open
 \`human-tasks/<name>.md\` with \`id\`, \`title\`, \`status: open\`, \`member:\` or \`contact:\`, \`from:\` (your own id), \`todo:\` (the id of your todo that waits on it) and \`due:\`, plus \`minutes\`, \`proof\` and \`files\` when they help. Keep your todo blocked until the task is accepted.
 
 ## Follow it
-- You are woken when the person marks it done or says they can't, and when it is overdue.
+- You are woken when someone else changes your task: the person marks it done or says they can't, a member accepts, returns or cancels it, hands it to another person, or hands it to you. You are also woken once when it is overdue. Your own changes never wake you. When the agent that asked is gone, the Co-Founder is woken instead.
 - Done: check the proof in \`human-tasks/<name>/\`. Set \`accepted\`, or \`returned\` with a \`reason\` and a new due date.
 - Declined: find another route or another person.
 - Overdue: remind, move the due date, hand it to someone else, or tell the Co-Founder.

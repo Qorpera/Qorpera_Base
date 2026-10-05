@@ -56,9 +56,9 @@ export function quoteRefFits(source: string, ref: string): boolean {
 }
 
 /** A message's quotes as the cloud takes them (qorpera_check_member_quotes): 1 to 16, each with exactly `start`,
- * `end`, `source` and `ref`; in order and apart; each 1 to 2,000 characters just inside a pair of marks; from a
- * source on the quote list, naming a record of its shape. Undefined when `value` is not that. Whether the record
- * exists is the cloud's to say. */
+ * `end`, `source` and `ref`; in order and apart; each 1 to 2,000 characters just inside a pair of marks, with no mark
+ * of its own inside (20260930087000: a quote is always «words»); from a source on the quote list, naming a record of
+ * its shape. Undefined when `value` is not that. Whether the record exists is the cloud's to say. */
 export function parseQuotes(value: unknown, text: string): MessageQuote[] | undefined {
 	if (!Array.isArray(value) || value.length < 1 || value.length > QUOTES_MAX) return undefined;
 	const characters = [...text];
@@ -82,6 +82,7 @@ export function parseQuotes(value: unknown, text: string): MessageQuote[] | unde
 			start <= previous ||
 			characters[start - 1] !== QUOTE_OPEN ||
 			characters[end] !== QUOTE_CLOSE ||
+			characters.slice(start, end).some((letter) => letter === QUOTE_OPEN || letter === QUOTE_CLOSE) ||
 			!quoteRefFits(source, ref)
 		)
 			return undefined;

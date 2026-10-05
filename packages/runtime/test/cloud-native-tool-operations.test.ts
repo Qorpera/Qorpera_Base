@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import type { JsonValue } from "@qorpera/contracts";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
@@ -734,9 +735,25 @@ it("names a timeout in the permission check before the receipt as its own child 
 it("names a timeout in the run's own recheck before the receipt, although the run then closes", async () => {
 	const f = await fixture();
 	const observed = observe(f.binding.assignmentId);
-	f.reader.describeToolAuthority.mockRejectedValueOnce(new CloudRuntimeDiagnosticError("timeout"));
+	// A timeout is asked again (control calls, 4 Oct 2026): one that lasts until the run's authority would lapse is the
+	// recheck's answer. Both clocks move together.
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	let now = performance.now();
+	const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
 	const span = observed.observability.start("connector");
-	await expect(f.execute({ observation: span })).rejects.toThrow();
+	try {
+		f.reader.describeToolAuthority.mockRejectedValue(new CloudRuntimeDiagnosticError("timeout"));
+		const executed = expect(f.execute({ observation: span })).rejects.toThrow();
+		for (let step = 0; step < 140; step += 1) {
+			now += 250;
+			await vi.advanceTimersByTimeAsync(250);
+		}
+		await executed;
+		expect(f.reader.describeToolAuthority.mock.calls.length).toBeGreaterThan(2);
+	} finally {
+		clock.mockRestore();
+		vi.useRealTimers();
+	}
 	expect(f.control.beginToolOperation).not.toHaveBeenCalled();
 	await observed.observability.close();
 	expect(

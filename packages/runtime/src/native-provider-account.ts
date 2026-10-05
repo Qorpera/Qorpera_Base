@@ -12,6 +12,13 @@ function email(value: unknown): string | undefined {
 		: undefined;
 }
 
+/** A ChatGPT plan login's identity: OpenAI's verified subject, in a namespace of its own, so it matches
+ * only another plan login of the same person (a member who signs in again keeps what they started). */
+export function chatGptPlanAccountIdentity(subject: string): string | undefined {
+	if (subject.length < 1 || subject.length > 512) return undefined;
+	return createHash("sha256").update("openai-subject:").update(subject).digest("hex");
+}
+
 /** Stable provider account identity for quota deduplication only. Credential
  * rotations do not change the key; raw account IDs never leave the host. */
 export function nativeProviderAccountIdentity(metadata: string): string | undefined {

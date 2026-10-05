@@ -45,7 +45,9 @@ try {
 	sql(read("supabase/tests/bootstrap.sql"));
 	const migrations = sortMigrationNames(readdirSync(join(root, "supabase/migrations")));
 	sql(migrations.map((name) => read(`supabase/migrations/${name}`)).join("\n"));
-	const tests = ["403_runtime_node_capacity_fits_demand.test.sql", "404_runtime_cpu_allocation_ratio.test.sql", "602_runtime_coding_fleet.test.sql", "604_runtime_coding_cpu_ratio.test.sql"];
+	// 403 and 404 run on the folder-v2 base fixture (924). The coding fleet tests 602 and 604 went with C1c-3i
+	// (20260930026000), coding sessions folder-v2 only.
+	const tests = ["403_runtime_node_capacity_fits_demand.test.sql", "404_runtime_cpu_allocation_ratio.test.sql"];
 	for (const test of tests) {
 		process.stdout.write(`Running ${test}\n`);
 		sql(expandTestFixture(test, (name) => read(`supabase/tests/${name}`)));
@@ -73,6 +75,13 @@ try {
 		insert into public.qorpera_runtime_machine_allocations(id,profile_id,coding_worker_id,provider_adapter,instance_sha256)
 		select '40400000-0000-4000-8000-000000000206',profile_id,'40400000-0000-4000-8000-000000000106',provider_adapter,encode(extensions.digest('capacity-vm-6','sha256'),'hex')
 		from public.qorpera_runtime_machine_allocations where id='40300000-0000-4000-8000-000000000202';
+		-- A coding worker commits only with its first turn recorded (20260926162500, deferred). The fixture's coding
+		-- workers are fixture rows, so their sessions and first turns are too.
+		insert into public.qorpera_coding_sessions(worker_id,profile_id,environment_id,harness,repository,branch)
+		select id,profile_id,environment_id,'codex','{"host":"github.com","owner":"acme","name":"app","baseBranch":"main"}'::jsonb,'ratio-'||worker_key
+		from public.qorpera_runtime_workers where species='coding' and profile_id='92400000-0000-4000-8000-000000000010';
+		insert into public.qorpera_coding_session_turns(worker_id,sequence,input_from)
+		select worker_id,1,'dispatch' from public.qorpera_coding_sessions where profile_id='92400000-0000-4000-8000-000000000010';
 		commit;`);
 	const reserve = (id, n) => `select public.qorpera_reserve_runtime_node_machine('${id}','coding','coding-capacity',repeat('f',64),
 	 encode(extensions.digest('capacity-vm-${n}','sha256'),'hex'),repeat('4',64),2000,4294967296);`;

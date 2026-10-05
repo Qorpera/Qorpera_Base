@@ -60,8 +60,9 @@ It prints `{"address": "10.210.x.y", "hwaddr": "0e:51:0a:d2:xx:yy"}`: the lowest
 (kept for the exit's own services) that is not in quarantine and not still held by a machine, and a MAC made from it.
 It writes the client map entry `/var/lib/qorpera-agent-exit/clients/<address>.json` (created exclusively, so two
 creators never share an address) and the lease `dhcp-hosts/<address>`, which dnsmasq reads by itself. Asked again for
-the same instance, it gives the same answer (with a new time when the machine it was given to has been seen: it is
-being made again); for another machine on the same instance it refuses. Files get mode 0644 whatever the creator's
+the same instance, it gives the same answer with a new time (the machine is about to be made again: one that was seen
+is not unplugged as gone, and one never seen has a new hour to appear); for another machine on the same instance it
+refuses. Files get mode 0644 whatever the creator's
 umask (dnsmasq's unprivileged user reads the leases). The creator then makes the machine with this card, and nothing
 else on `qagent0`:
 
@@ -84,7 +85,7 @@ and its usual identity keys: `user.qorpera.company_id`, `user.qorpera.machine_id
 Everything after that is the reconciler's (`qorpera-agent-plug.service`, root), which reads LXD every 5 seconds:
 - a machine that stops (asleep) keeps its address and entry; its connections are flushed once;
 - a machine that is gone (missing from two reads of LXD in a row after it was seen, or never created within an hour
-  of its plug) is unplugged under the plug lock: quarantined for 15 minutes first, then it loses its lease (dnsmasq
+  of its last plug) is unplugged under the plug lock: quarantined for 15 minutes first, then it loses its lease (dnsmasq
   reloads), its connections, the exit's per-machine counts and refused flows, and its entry. A failed flush is
   tried again every pass; the address is not given out before it succeeds. An entry removed by hand is unplugged
   the same way, from the reconciler's own copy;
