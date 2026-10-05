@@ -125,21 +125,28 @@ and output reads, and per-desktop quiet periods.
 - a deleted folder with everything inside it: one `delete` with `asOfSeq`; a deleted file: `delete`;
 - `mkdir` of an empty folder: `mkdir`.
 
-A path moved and then changed in the same boundary needs the version the move creates, which no one knows before
-the commit. Such a boundary commits in two change sets, two phases: the moves first, then the writes that depend on
-them, with the versions the first one returned. Every other boundary is one change set, one phase.
+**One change set, no version made inside it needed.** A unit's `expectedVersion` must be known before the commit,
+and a move gives what it moves new versions. So:
+- every unit names live paths as they are before the change set's own moves: a change inside a moved folder lands
+  at its old path first and goes with the folder (the core does not count the change set's own entries as unseen,
+  since they have no sequence number yet);
+- a file both moved and changed in one boundary is published as the removal of its old path and a new file at the
+  new one;
+- the units are ordered so each finds what it needs: a path freed before it is filled, a new folder before what goes
+  in it, what is inside a moving folder before the folder moves, what moves out of a removed folder before it goes;
+- two files that take each other's place become writes of each other's bytes; two folders that do cannot be one
+  change set, and are not applied (rename one at a time);
+- a file still open for writing whose path or folder moves holds the whole boundary until it closes.
 
-**Commit.** As the view's actor. Each phase has its own operation key, `folder-view:<viewId>:<boundary id>:<phase>`,
-where the boundary id is random. The service keeps each phase's exact units until that phase has an answer, so a
-phase asked again after a lost reply is the same change set under the same key, and the core replays it (the core
-refuses a key used for different units, 22023). The second phase is built only from the first phase's answer. If
-the service dies during a commit, that phase has landed or not; the mount shows the live folder after the program
-reconnects either way.
+**Commit.** As the view's actor, with operation key `folder-view:<viewId>:<boundary id>`, where the boundary id is
+random. The service keeps the exact units until the boundary has an answer, so a commit asked again after a lost
+reply is the same change set under the same key, and the core replays it (the core refuses a key used for different
+units, 22023). If the service dies during a commit, it has landed or not; the mount shows the live folder after the
+program reconnects either way.
 
 **Outcomes and the report.** After the commit the view shows exactly the live folder, and the report lists every
 changed path: `saved`; `conflict`, with the receipt that keeps this view's version (P17's conflict copies, below);
-`refused`,
-with the core's reason (no write authority, a seeded path, a structured file that does not parse); or `not
+`refused`, with the core's reason (no write authority, a seeded path, a structured file that does not parse); or `not
 applied`, with why (still open, a unit it depended on failed, the save did not get through). The reply to `publish`
 carries it, and the program prints it. A quiet-period report is logged in the machine's journal until step 4 routes
 it to the desktop.
@@ -203,7 +210,7 @@ extend it.
 | --- | --- | --- |
 | 3a | SQL: an upload holds its actor's own puts (migration `20260930083000`, test 931) | a chunk put under one intent is `present` in the same actor's next intent and not in another actor's; the whole file then seals and commits; an expired intent does not count; a marked object still refuses |
 | 3b | Gateway: the folder service's byte route and token | put and refusal paths as `folder-objects.ts`'s tests; the native token is refused there, and the folder service's token on the native routes |
-| 3c | Folder service: protocol v2, pending changes, base versions, staging, boundaries, the report | the service's tests with a stand-in core that commits (conflicts, unseen changes, refusals, replays) and a stand-in gateway: a stale save (v1 read, v2 published, then saved in place and by renaming a temporary file over it) is a conflict, also when the service restarted between the read and the save; a lost reply in either phase of a two-phase boundary replays under that phase's key; the hosted-db script runs the real commit on boundaries the service builds |
+| 3c | Folder service: protocol v2, pending changes, base versions, staging, boundaries, the report | the service's tests with a stand-in core that commits (conflicts, unseen changes, refusals, replays) and a stand-in gateway: a stale save (v1 read, v2 published, then saved in place and by renaming a temporary file over it) is a conflict, also when the service restarted between the read and the save; a lost reply replays under the same key; every ordering case of the units (moves inside moved folders, swaps, a folder made again, moves out of a removed folder) applied to a model of the core's rules ends as the view showed it; the hosted-db script runs the real commit on boundaries the service builds |
 | 3d | Folder program: write operations, chunks, read-back, `publish` | FUSE tests on the test machine (a file written across chunks, a write inside a sent chunk, rename over a file, `rm -rf`, an open file left out, lock names; the version map kept across a restart of the program and of the service); the end-to-end test against the service: a stale save after a service restart, in place and by rename, is a conflict |
 | 3e | Live proof (coordinator runs it): read-write operator mounts in a machine on each node, one test company | below |
 
