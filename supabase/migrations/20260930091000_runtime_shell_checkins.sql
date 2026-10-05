@@ -288,7 +288,7 @@ $$;
 revoke all on function public.qorpera_machine_checkin_continuation(public.qorpera_execution_runs, integer)
 	from public, anon, authenticated, service_role;
 
-create function pg_temp.checkin_patch(p_target regprocedure, p_old text, p_new text) returns void language plpgsql as $$
+create function pg_temp.shell_checkin_patch(p_target regprocedure, p_old text, p_new text) returns void language plpgsql as $$
 declare v_definition text := pg_get_functiondef(p_target);
 begin
 	if (length(v_definition) - length(replace(v_definition, p_old, ''))) / length(p_old) <> 1 then
@@ -297,41 +297,41 @@ begin
 	execute replace(v_definition, p_old, p_new);
 end $$;
 -- The pin trigger admits it as an agent wake, in the parent's conversation, with its own chain.
-select pg_temp.checkin_patch('public.qorpera_pin_wake_occurrence()'::regprocedure,
+select pg_temp.shell_checkin_patch('public.qorpera_pin_wake_occurrence()'::regprocedure,
 	$old$'worker-completion','machine-event') then raise exception 'Agent source is invalid'$old$,
 	$new$'worker-completion','machine-event','machine-checkin') then raise exception 'Agent source is invalid'$new$);
-select pg_temp.checkin_patch('public.qorpera_pin_wake_occurrence()'::regprocedure,
+select pg_temp.shell_checkin_patch('public.qorpera_pin_wake_occurrence()'::regprocedure,
 	$old$new.session_id := case when new.source_kind in ('worker-completion','machine-event') then v_run.session_id$old$,
 	$new$new.session_id := case when new.source_kind in ('worker-completion','machine-event','machine-checkin') then v_run.session_id$new$);
-select pg_temp.checkin_patch('public.qorpera_pin_wake_occurrence()'::regprocedure,
+select pg_temp.shell_checkin_patch('public.qorpera_pin_wake_occurrence()'::regprocedure,
 	$old$ elsif new.source_kind = 'machine-event' then v_ancestry := public.qorpera_machine_wake_ancestry(new);$old$,
 	$new$ elsif new.source_kind = 'machine-event' then v_ancestry := public.qorpera_machine_wake_ancestry(new);
  elsif new.source_kind = 'machine-checkin' then v_ancestry := public.qorpera_machine_checkin_ancestry(new); -- 20260930091000$new$);
 -- The folder-v2 wake check: in a parent's room conversation as a machine event, and by its own chain.
-select pg_temp.checkin_patch('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)'::regprocedure,
+select pg_temp.shell_checkin_patch('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)'::regprocedure,
 	$old$(p_wake.source_kind in ('worker-completion', 'machine-event')$old$,
 	$new$((p_wake.source_kind in ('worker-completion', 'machine-event') or p_wake.source_kind = 'machine-checkin')$new$);
-select pg_temp.checkin_patch('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)'::regprocedure,
+select pg_temp.shell_checkin_patch('public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)'::regprocedure,
 	$old$v_ancestry := public.qorpera_machine_wake_ancestry(p_wake); -- 20260930058000$old$,
 	$new$v_ancestry := public.qorpera_machine_wake_ancestry(p_wake); -- 20260930058000
 		elsif p_wake.source_kind = 'machine-checkin' then v_ancestry := public.qorpera_machine_checkin_ancestry(p_wake); -- 20260930091000$new$);
 -- P28's materializer: continuing work keeps the parent's capability and publication policy.
-select pg_temp.checkin_patch('public.qorpera_folder_materialize_company(uuid,integer)'::regprocedure,
+select pg_temp.shell_checkin_patch('public.qorpera_folder_materialize_company(uuid,integer)'::regprocedure,
 	$old$('office-activation', 'worker-dispatch', 'worker-completion', 'machine-event') then$old$,
 	$new$('office-activation', 'worker-dispatch', 'worker-completion', 'machine-event', 'machine-checkin') then -- 20260930091000$new$);
 -- The wake as the run reads it: an internal continuation, with no sender.
-select pg_temp.checkin_patch('public.qorpera_folder_read_wake(jsonb)'::regprocedure,
+select pg_temp.shell_checkin_patch('public.qorpera_folder_read_wake(jsonb)'::regprocedure,
 	$old$if v_wake.source_kind in ('office-activation','worker-dispatch','worker-completion','machine-event') then$old$,
 	$new$if v_wake.source_kind in ('office-activation','worker-dispatch','worker-completion','machine-event','machine-checkin') then -- 20260930091000$new$);
 -- The wake's reply policy: an agent wake, and in a conversation it reports as a machine event does.
-select pg_temp.checkin_patch('public.qorpera_runtime_wake_policy_internal(uuid)'::regprocedure,
+select pg_temp.shell_checkin_patch('public.qorpera_runtime_wake_policy_internal(uuid)'::regprocedure,
 	$old$'human-task')))))$old$,
 	$new$'human-task','machine-checkin'))))) -- 20260930091000$new$);
-select pg_temp.checkin_patch('public.qorpera_runtime_wake_policy_internal(uuid)'::regprocedure,
+select pg_temp.shell_checkin_patch('public.qorpera_runtime_wake_policy_internal(uuid)'::regprocedure,
 	$old$if v_wake.source_kind in ('worker-completion','machine-event') and v_wake.session_id is not null$old$,
 	$new$if v_wake.source_kind in ('worker-completion','machine-event','machine-checkin') and v_wake.session_id is not null$new$);
 -- The run's continuation.
-select pg_temp.checkin_patch('public.qorpera_run_continuation(public.qorpera_execution_runs)'::regprocedure,
+select pg_temp.shell_checkin_patch('public.qorpera_run_continuation(public.qorpera_execution_runs)'::regprocedure,
 	$old$public.qorpera_machine_run_continuation(p_run)); end if;$old$,
 	$new$public.qorpera_machine_run_continuation(p_run), public.qorpera_machine_checkin_continuation(p_run)); end if; -- 20260930091000$new$);
 
