@@ -90,6 +90,13 @@ function setup(paths: Record<string, string | null>) {
 		view,
 		tree: () => tree,
 		advance: () => seq++,
+		/** Another machine's new file. */
+		create(path: string, content: string) {
+			state.set(folderKey(path), { path, kind: "file", version: version(), manifest: hash(`manifest:${content}`) });
+			tree = treeOf(state);
+			seq++;
+			view.liveChanged([path]);
+		},
 		/** Another machine's save of a file: a new version. */
 		change(path: string, content: string) {
 			const e = state.get(folderKey(path))!;
@@ -475,6 +482,26 @@ describe("a view's pending changes", () => {
 		expect(plan.dropped.map((d) => d.path).sort()).toEqual(["D", "D/f", "D/g"]);
 	});
 
+	it("drops a removed change whose file moved on, and shows the newer version", () => {
+		const f = setup({ D: null, "D/f": "v1" });
+		write(f.view, "D/f", "mine");
+		f.change("D/f", "v2");
+		f.view.unlink("D/f");
+		expect(shown(f.view)).toEqual({ D: "folder", "D/f": hash("manifest:v2") });
+		refused(() => f.view.rmdir("D"), "NOT_EMPTY");
+	});
+
+	it("removes a folder as of the oldest position of the folders removed in it", () => {
+		const f = setup({ D: null, "D/sub": null });
+		f.view.rmdir("D/sub");
+		// Another machine adds a file to the removed subfolder; the view no longer shows it, so D looks empty.
+		f.create("D/sub/new", "n");
+		f.view.rmdir("D");
+		expect(f.plan().units.map((u) => u.unit)).toEqual([
+			{ op: "delete", path: "D", expectedVersion: expect.any(String), asOfSeq: 10 },
+		]);
+	});
+
 	it("moves no file open for writing or changed: an open one is busy, a changed one publishes first", () => {
 		const f = setup({ a: "a", x: "x" });
 		const { handle } = f.view.openWrite("a", { create: false, exclusive: false, truncate: false });
@@ -495,6 +522,16 @@ describe("a view's pending changes", () => {
 		expect(node.version).toBe(version);
 		expect(node.content).toEqual({ chunks: [chunk("from b")], size: 6 });
 		expect(node.open).toBe(0);
+		// The other order: what a handle writes after another closed, and never closes itself, is lost with it.
+		const c = f.view.openWrite("log", { create: false, exclusive: false, truncate: false });
+		const d = f.view.openWrite("log", { create: false, exclusive: false, truncate: false });
+		f.view.setChunk(d.handle, 0, chunk("from d"));
+		f.view.close(d.handle, 6);
+		const closed = node.version;
+		f.view.setChunk(c.handle, 0, chunk("from c"));
+		f.view.abandon(c.handle);
+		expect(node.version).toBe(closed);
+		expect(node.content).toEqual({ chunks: [chunk("from d")], size: 6 });
 	});
 
 	it("renames a folder only in case, with what is in it", () => {

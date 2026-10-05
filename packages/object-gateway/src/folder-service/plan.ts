@@ -131,7 +131,17 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 				dropped.push({ path: p, reason: "something in the folder changed since the machine saw it" });
 			continue;
 		}
-		deletes.push({ kind: "delete", path, ref, paths: [path, ...inside.map(([p]) => p)] });
+		// The oldest position of any folder removed in it: a removed subfolder hid what came into it after.
+		const asOfSeq = Math.min(
+			ref.asOfSeq ?? Number.MAX_SAFE_INTEGER,
+			...inside.map(([, r]) => (r.kind === "folder" ? (r.asOfSeq ?? 0) : Number.MAX_SAFE_INTEGER)),
+		);
+		deletes.push({
+			kind: "delete",
+			path,
+			ref: ref.kind === "folder" ? { ...ref, asOfSeq } : ref,
+			paths: [path, ...inside.map(([p]) => p)],
+		});
 	}
 
 	// A new file where the view removed a live file (its folder still there) is that file's next version: an editor's

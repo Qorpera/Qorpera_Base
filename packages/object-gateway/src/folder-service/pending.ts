@@ -192,15 +192,11 @@ export class PendingView {
 	readonly #children = new Map<string, Set<string>>();
 	/** Live entries the view removed, by their live path. */
 	readonly #removed = new Map<string, LiveRef>();
-	/** Open handles: the file, whether this handle wrote, and the file as it was when the handle opened. */
-	readonly #handles = new Map<
-		number,
-		{
-			readonly node: PendingFile;
-			dirty: boolean;
-			readonly before: Pick<PendingFile, "content" | "version" | "staged" | "executable">;
-		}
-	>();
+	/** Open handles: the file, and whether this handle wrote. */
+	readonly #handles = new Map<number, { readonly node: PendingFile; dirty: boolean }>();
+	/** Each file open for writing as its last close (or its open, a truncate included) fixed it: what an abandoned
+	 * handle goes back to. Writes no close fixed are not in it. */
+	readonly #fixed = new WeakMap<PendingFile, Pick<PendingFile, "content" | "version" | "staged" | "executable">>();
 	#nextHandle = 1;
 
 	constructor(live: () => ViewTree, seq: () => number, now: () => number = Date.now) {
@@ -413,12 +409,13 @@ export class PendingView {
 			if (options.truncate && (node.content === undefined || node.content.size > 0)) {
 				node.content = { chunks: [], size: 0 };
 				this.#changed(node);
+				this.#fix(node);
 			}
 		}
+		if (node.open === 0) this.#fix(node);
 		node.open++;
 		const handle = this.#nextHandle++;
-		const before = { content: node.content, version: node.version, staged: node.staged, executable: node.executable };
-		this.#handles.set(handle, { node, dirty: false, before });
+		this.#handles.set(handle, { node, dirty: false });
 		return {
 			handle,
 			size: node.content ? node.content.size : (node.origin?.entry?.bytes ?? 0),
@@ -486,18 +483,32 @@ export class PendingView {
 		}
 		this.#handles.delete(handle);
 		node.open--;
+		this.#fix(node);
+		if (node.open === 0) this.#fixed.delete(node);
 		return node;
 	}
 
-	/** The machine's connection ended with the handle still open: what it wrote and no close fixed is lost (founder
-	 * decision 3). The file goes back to how it was when the handle opened (a truncate at open included), unless
-	 * another handle is still open on it or closed since: their writes share the file, so it stays as they left it. */
+	/** The machine's connection ended with the handle still open: what was written and no close fixed is lost (founder
+	 * decision 3). Writes share the file, as in a page cache: while another handle is still open, its close will fix
+	 * them; when this was the last, the file goes back to how the last close (or open) left it. */
 	abandon(handle: number): void {
 		const open = this.#handles.get(handle);
 		if (!open) return;
 		this.#handles.delete(handle);
 		open.node.open--;
-		if (open.node.open === 0 && open.node.version === open.before.version) Object.assign(open.node, open.before);
+		if (open.node.open > 0) return;
+		const fixed = this.#fixed.get(open.node);
+		if (fixed) Object.assign(open.node, fixed);
+		this.#fixed.delete(open.node);
+	}
+
+	#fix(node: PendingFile): void {
+		this.#fixed.set(node, {
+			content: node.content,
+			version: node.version,
+			staged: node.staged,
+			executable: node.executable,
+		});
 	}
 
 	mkdir(path: string): void {
@@ -622,6 +633,9 @@ export class PendingView {
 		if (node.executable === executable) return;
 		node.executable = executable;
 		this.#changed(node);
+		// A bit set on a file open for writing is fixed at once, like the bit itself.
+		const fixed = this.#fixed.get(node);
+		if (fixed) this.#fixed.set(node, { ...fixed, executable, version: node.version, staged: undefined });
 	}
 
 	/** The feed changed these live paths. A removal whose live entry changed since is dropped, so the view shows the
@@ -709,10 +723,11 @@ export class PendingView {
 			// A changed file whose live version moved on since its base is not removed with it: the change goes, and the
 			// newer version shows again, as a conflict would have left it.
 			const current = origin && this.#live().get(origin.path)?.version === origin.version;
-			if (origin && current)
-				this.#removed.set(origin.path, origin.kind === "folder" ? { ...origin, asOfSeq: this.#seq() } : origin);
 			this.#dropUnder(r.path);
 			this.#unset(r.path);
+			if (origin && !current) return;
+			if (origin)
+				this.#removed.set(origin.path, origin.kind === "folder" ? { ...origin, asOfSeq: this.#seq() } : origin);
 		}
 		this.#hide(r.path);
 	}
