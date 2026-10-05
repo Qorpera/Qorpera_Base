@@ -3,21 +3,23 @@
 -- from storage.objects. Equivalence while the mirror holds is asserted by
 -- the drift checks in 050; this suite proves the *source* changed, by
 -- forcing the two apart and watching which one the functions believe.
+--
+-- The snapshot-v1 reachability graph over the object (workspace, snapshot,
+-- graph, entry) and its availability checks are gone with the old core: a
+-- folder-v2 company has no snapshots or graphs.
 
--- A profile created the same way clients create one, as the separation
--- suite's user A (fixtures are order-coupled and already present).
-select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}', false);
-set role authenticated;
-select set_config('qorpera_test.cutover_profile',
-	public.qorpera_create_hosted_profile('Cutover', 'main', 1) ->> 'profile_id', false);
-reset role;
-select set_config('request.jwt.claims', '', false);
+-- A folder-v2 company opened the way the company creation opens one (856), for
+-- the separation suite's user A (fixtures are order-coupled and already present).
+select set_config('qorpera_test.cutover_profile', public.qorpera_folder_company_open('80000000-0000-4000-8000-00000000000a',
+	'91000000-0000-4000-8000-0000000000e1', 'Cutover') ->> 'profile_id', false);
 
-select set_config('qorpera_test.cutover_environment',
-	(select environment.id::text
-	from public.qorpera_company_environments as environment
-	where environment.profile_id = current_setting('qorpera_test.cutover_profile')::uuid
-	limit 1), false);
+do $$
+begin
+	if not public.qorpera_company_is_folder_v2(current_setting('qorpera_test.cutover_profile')::uuid) then
+		raise exception 'the cutover company is not a folder-v2 company';
+	end if;
+end
+$$;
 
 -- One object, arriving through the real upload table so the mirror populates
 -- the catalog exactly as production writes would.
@@ -37,57 +39,6 @@ begin
 	end if;
 	if public.qorpera_object_exists(v_profile, repeat('c', 64), 41) then
 		raise exception 'predicate accepts a wrong size';
-	end if;
-end
-$$;
-
--- A minimal graph over that object, then the divergence experiment. The
--- hardening triggers demand a real root whose creator matches and an
--- auth.uid() equal to that creator, so the fixture builds the honest chain
--- (workspace, snapshot, graph, entry) with user A's claims in place.
-select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}', false);
-
-insert into public.qorpera_company_workspaces
-	(id, profile_id, environment_id, client_workspace_id, name, created_by_user_id)
-values ('91000000-0000-4000-8000-000000000004',
-	current_setting('qorpera_test.cutover_profile')::uuid,
-	current_setting('qorpera_test.cutover_environment')::uuid,
-	'91000000-0000-4000-8000-000000000005', 'Cutover workspace',
-	'80000000-0000-4000-8000-00000000000a');
-
-insert into public.qorpera_company_snapshots
-	(id, profile_id, environment_id, workspace_id, client_snapshot_id,
-	tree_manifest_sha256, tree_manifest_bytes, tree_contract_version,
-	file_count, total_bytes, created_by_user_id)
-values ('91000000-0000-4000-8000-000000000002',
-	current_setting('qorpera_test.cutover_profile')::uuid,
-	current_setting('qorpera_test.cutover_environment')::uuid,
-	'91000000-0000-4000-8000-000000000004',
-	'91000000-0000-4000-8000-000000000006',
-	repeat('c', 64), 42, 2, 1, 42,
-	'80000000-0000-4000-8000-00000000000a');
-
-insert into public.qorpera_object_reachability_graphs
-	(id, profile_id, environment_id, root_kind, root_id, client_graph_id,
-	root_object_sha256, contract_version, content_sha256, object_count, storage_bytes,
-	status, created_by_user_id)
-values ('91000000-0000-4000-8000-000000000001',
-	current_setting('qorpera_test.cutover_profile')::uuid,
-	current_setting('qorpera_test.cutover_environment')::uuid,
-	'company_snapshot', '91000000-0000-4000-8000-000000000002',
-	'91000000-0000-4000-8000-000000000003',
-	repeat('c', 64), 1, repeat('d', 64), 1, 42,
-	'uploading', '80000000-0000-4000-8000-00000000000a');
-
-insert into public.qorpera_object_reachability_entries (graph_id, object_sha256, bytes)
-values ('91000000-0000-4000-8000-000000000001', repeat('c', 64), 42);
-
-select set_config('request.jwt.claims', '', false);
-
-do $$
-begin
-	if not public.qorpera_object_graph_objects_available('91000000-0000-4000-8000-000000000001') then
-		raise exception 'graph unavailable while its object is catalogued';
 	end if;
 end
 $$;
@@ -112,9 +63,6 @@ begin
 	if public.qorpera_object_exists(v_profile, repeat('c', 64)) then
 		raise exception 'predicate still answers from storage.objects';
 	end if;
-	if public.qorpera_object_graph_objects_available('91000000-0000-4000-8000-000000000001') then
-		raise exception 'graph availability still answers from storage.objects';
-	end if;
 	if public.qorpera_object_catalog_drift() <> 1 then
 		raise exception 'drift check failed to see the forced divergence';
 	end if;
@@ -127,8 +75,8 @@ values (current_setting('qorpera_test.cutover_profile')::uuid, repeat('c', 64), 
 
 do $$
 begin
-	if not public.qorpera_object_graph_objects_available('91000000-0000-4000-8000-000000000001') then
-		raise exception 'graph did not recover after healing the catalog';
+	if not public.qorpera_object_exists(current_setting('qorpera_test.cutover_profile')::uuid, repeat('c', 64), 42) then
+		raise exception 'predicate did not recover after healing the catalog';
 	end if;
 	if public.qorpera_object_catalog_drift() <> 0 then
 		raise exception 'drift remains after healing: %', public.qorpera_object_catalog_drift();

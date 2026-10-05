@@ -4613,8 +4613,14 @@ amendment governs. In-place edits are marked "(changed in place)".
        idle rule keeps that machine awake.
      - A coding turn is a run.
    - **A program** counts while it is busy: while it uses more than about 5%
-     of one processor core.
+     of one processor core, or moves data, at least 512 KiB read or written
+     in a 30-second sample, about 17 KB a second (decided 4 October 2026, the
+     coordinator: a slow download is working; a waiting server, a prompt or
+     a loaded page moves about nothing).
      - That is measured for each command, coding session or computer's shell.
+       Both thresholds live in one place (`@qorpera/contracts`, `idle-rule`);
+       coding sessions take the data signal with the idle rule's coding
+       part.
      - On an agent's machine, programs outside its commands, such as
        containers, count by the processor share of the whole machine beyond
        its commands' own use (about 2% of the machine). That share belongs to
