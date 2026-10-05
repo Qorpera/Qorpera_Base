@@ -173,6 +173,32 @@ it("bounds an uncooperative authority transport before admission, asking again w
 	expect(vi.getTimerCount()).toBe(0);
 });
 
+it("ends every attempt at admission within the 30 s window, a late one too", async () => {
+	vi.useFakeTimers();
+	let now = 0;
+	vi.spyOn(performance, "now").mockImplementation(() => now);
+	const { binding } = nativeToolAuthorityFixture();
+	// Fast failures until 29 s; the attempt after that (at 29.75 s) never answers: it is cut at 30 s, not at 34.75 s.
+	const request = vi.fn<CloudNativeToolAuthorityReader["describeToolAuthority"]>(async () => {
+		if (now < 29_000) throw new CloudRuntimeDiagnosticError("transport_unavailable");
+		return new Promise<never>(() => undefined);
+	});
+	const opened = CloudNativeToolRun.open(binding, { describeToolAuthority: request }, new AbortController().signal);
+	let settled = false;
+	const rejected = expect(
+		opened.finally(() => {
+			settled = true;
+		}),
+	).rejects.toThrow("Cloud tool authority unavailable");
+	for (let step = 0; step < 121 && !settled; step += 1) {
+		now += 250;
+		await vi.advanceTimersByTimeAsync(250);
+	}
+	await rejected;
+	expect(now).toBeLessThanOrEqual(30_250);
+	expect(vi.getTimerCount()).toBe(0);
+});
+
 it("asks a lost or late authority read again and keeps the run (control calls, 4 Oct 2026)", async () => {
 	vi.useFakeTimers();
 	const { run, reader, authority } = await admit();

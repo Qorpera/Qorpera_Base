@@ -221,6 +221,32 @@ export function relayControlRefusal(error: unknown): never {
 	throw error;
 }
 
+/** A request's `operationKey`, when it has one. */
+export function cloudOperationKeyOf(request: Record<string, unknown>): string | undefined {
+	return typeof request.operationKey === "string" ? request.operationKey : undefined;
+}
+
+/**
+ * `relayControlRefusal` for one tool of one run, keeping what an earlier attempt left unknown: a call whose operation
+ * key once ended without an answer (its effect may have committed) is never answered as refused later, because a
+ * refusal of the retry says nothing about the first attempt. Its refusal stays an unknown outcome until the receipt is
+ * reconciled. A call without a key (a read) is relayed as is.
+ */
+export class CloudControlRefusalRelay {
+	readonly #uncertain = new Set<string>();
+
+	async call<T>(operationKey: string | undefined, send: () => Promise<T>): Promise<T> {
+		try {
+			return await send();
+		} catch (error) {
+			const refused = error instanceof CloudControlRpcRefused || error instanceof CloudCompanyPathRpcRefusal;
+			if (refused && (operationKey === undefined || !this.#uncertain.has(operationKey))) relayControlRefusal(error);
+			if (!refused && operationKey !== undefined) this.#uncertain.add(operationKey);
+			throw error;
+		}
+	}
+}
+
 /** Canonicalization is for exact in-process retries, not an authorization grant or durable receipt. */
 export function cloudToolJsonText(value: unknown, limit = MAX_ARGUMENT_BYTES): string {
 	let nodes = 0;

@@ -331,10 +331,10 @@ export class CloudNativeToolRun {
 		for (let attempt = 0; ; attempt += 1) {
 			combined.throwIfAborted();
 			const started = performance.now();
-			const remaining = Math.floor(limit - started);
 			try {
-				const attemptMs = budgetMs === undefined ? timeoutMs : Math.min(timeoutMs ?? remaining, remaining);
-				if (attemptMs !== undefined && attemptMs < 1) throw new Error("Cloud tool authority unavailable");
+				// Every attempt ends by the limit: none starts with less than 1 ms of it.
+				const attemptMs = Math.min(timeoutMs ?? REQUEST_TIMEOUT_MS, Math.floor(limit - started));
+				if (attemptMs < 1) throw new Error("Cloud tool authority unavailable");
 				return { value: await cloudToolRequest(read, combined, attemptMs), started };
 			} catch (error) {
 				const pause = cloudControlBackoffMs(attempt);
