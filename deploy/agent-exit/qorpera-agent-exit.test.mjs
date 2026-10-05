@@ -447,6 +447,18 @@ describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or 
 		assert.equal(last.reason, "its entry was removed by hand");
 	});
 
+	test("a plug repeated for a machine never seen gives it a new hour: a create retried late is not dropped", () => {
+		lxdHas();
+		const late = ["--kind", "machine", "--company", "c9", "--machine", "m9", "--project", "qp", "--instance", "late"];
+		const first = plugged(...late);
+		const path = join(state, "clients", `${first.address}.json`);
+		writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), since: "2000-01-01T00:00:00Z" }));
+		assert.deepEqual(plugged(...late), first, "the same address and MAC");
+		assert.ok(Date.now() / 1000 - Date.parse(entry(first.address).since) / 1000 < 60, "a new time");
+		reconcile();
+		assert.ok(existsSync(path), "not given up: its hour starts again");
+	});
+
 	test("a plug whose machine never appears is given up after an hour as dropped; expired quarantines are cleared", () => {
 		lxdHas();
 		const pending = readdirSync(join(state, "clients")).filter((n) => n.endsWith(".json"));

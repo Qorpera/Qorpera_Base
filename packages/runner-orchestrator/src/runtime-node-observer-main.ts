@@ -30,6 +30,9 @@ if (process.argv.length === 3 && process.argv[2] === "--health-probe") {
 		(state) => {
 			process.stdout.write(`${JSON.stringify({ event: "node_health", state })}\n`);
 		},
+		(state) => {
+			process.stdout.write(`${JSON.stringify({ event: "node_agent_exit", state })}\n`);
+		},
 	).catch(() => {
 		process.stderr.write("NODE_OBSERVER_STARTUP_UNCONFIRMED\n");
 		process.exitCode = 1;

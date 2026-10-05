@@ -1,54 +1,41 @@
--- @fixture 290_company_file_path_gateway.test.sql until "create function pg_temp.path_plan("
--- Company accounts, A1-1: the vault's records for a company's website
--- accounts. Real admission, assignment and native lease from the 290 fixture;
--- every account call is the broker's, bound to an executing company_account
--- effect receipt of that run. An account is opened only for an open todo of
--- the run's own agent. Members read the facts and never a value; an owner or
--- admin removes an account and its envelopes go at once.
+-- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
+-- Company accounts, A1-1, on the company folder (A1-7, migration 20260930072000): the vault's records for a company's
+-- website accounts. 924's folder-v2 company and Alice's run, with a real claim, runner, assignment and native lease;
+-- every account call is the broker's, bound to an executing company_account effect receipt of that run. An account is
+-- opened only for an open todo of the run's own agent. Members read the facts and never a value; an owner or admin
+-- removes an account and its envelopes go at once. A company that is not on the company folder is refused (0A000).
 
 insert into auth.users(id,email) values
-	('79400000-0000-4000-8000-000000000001','accounts-other-owner@example.test'),
-	('79400000-0000-4000-8000-000000000003','accounts-admin@example.test');
+	('79400000-0000-4000-8000-000000000001','accounts-other-owner@example.test');
 insert into public.qorpera_profiles(id,name,created_by_user_id)
 values ('79400000-0000-4000-8000-000000000010','Other company','79400000-0000-4000-8000-000000000001');
 insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role) values
 	('79400000-0000-4000-8000-000000000010','79400000-0000-4000-8000-000000000001',
-		'accounts-other-owner@example.test','Other owner','owner'),
-	('29000000-0000-4000-8000-000000000010','79400000-0000-4000-8000-000000000003',
-		'accounts-admin@example.test','Admin','admin');
+		'accounts-other-owner@example.test','Other owner','owner');
 insert into public.qorpera_cloud_secret_broker_authorities(id,profile_id,service_origin,key_id,capability_sha256) values
-	('79400000-0000-4000-8000-000000000040','29000000-0000-4000-8000-000000000010',
+	('79400000-0000-4000-8000-000000000040','92400000-0000-4000-8000-000000000010',
 		'https://company41-node-01.tailbb15c7.ts.net:10000','company-kek-1',repeat('c',64)),
 	('79400000-0000-4000-8000-000000000041','79400000-0000-4000-8000-000000000010',
 		'https://company41-node-01.tailbb15c7.ts.net:10000','other-kek-1',repeat('e',64));
 
 -- The run acknowledges its wake, as every run does before effects.
-select pg_temp.path_claims('service_role');
-set local role service_role;
-do $$
-declare b jsonb := current_setting('qorpera_test.path_binding')::jsonb;
-begin
-	perform public.qorpera_send_native_agent_message((b ->> 'leaseId')::uuid,(b ->> 'runId')::uuid,
-		(b ->> 'jobId')::uuid,(b ->> 'runnerId')::uuid,(b ->> 'assignmentId')::uuid,
-		(b ->> 'credentialCapsuleId')::uuid,(b ->> 'computeIdentityId')::uuid,
-		'openai','codex-cli','accounts-ack','Putting the website online.','progress');
-end $$;
-reset role;
+select pg_temp.base_claims('service_role');
+select pg_temp.base_public_send(current_setting('qorpera_test.base_binding')::jsonb, 'progress', 'accounts-ack') \g /dev/null
 
--- The agent's own open todo, one it finished, and another agent's.
+-- Alice's own open todo, one she finished, and Bob's.
 insert into public.qorpera_runtime_agent_todos(id,profile_id,environment_id,staff_agent_id,todo_key,title,state,
 	requested_by_user_id,created_by_run_id,updated_by_run_id)
-select todo.id,'29000000-0000-4000-8000-000000000010','29000000-0000-4000-8000-000000000020',todo.staff,todo.key,
-	todo.title,todo.state,'29000000-0000-4000-8000-000000000001',run.id,run.id
+select todo.id,'92400000-0000-4000-8000-000000000010','92400000-0000-4000-8000-000000000020',todo.staff,todo.key,
+	todo.title,todo.state,'92400000-0000-4000-8000-000000000001',run.id,run.id
 from (values
-	('79400000-0000-4000-8000-000000000060'::uuid,'29000000-0000-4000-8000-000000000030'::uuid,'website-online',
+	('79400000-0000-4000-8000-000000000060'::uuid,'92400000-0000-4000-8000-000000000030'::uuid,'website-online',
 		'Put the website online','open'),
-	('79400000-0000-4000-8000-000000000061'::uuid,'29000000-0000-4000-8000-000000000030'::uuid,'old-task',
+	('79400000-0000-4000-8000-000000000061'::uuid,'92400000-0000-4000-8000-000000000030'::uuid,'old-task',
 		'An old task','done'),
-	('79400000-0000-4000-8000-000000000062'::uuid,'79400000-0000-4000-8000-000000000039'::uuid,'not-mine',
+	('79400000-0000-4000-8000-000000000062'::uuid,'92400000-0000-4000-8000-000000000031'::uuid,'not-mine',
 		'Another agent''s task','open')
 ) as todo(id,staff,key,title,state)
-cross join (select (current_setting('qorpera_test.path_binding')::jsonb ->> 'runId')::uuid as id) as run;
+cross join (select (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid as id) as run;
 
 -- The agent's tool call begins and finishes its effect receipt, as the runtime
 -- does (a run holds one unresolved receipt at a time). Owner-run helpers, so
@@ -56,16 +43,16 @@ cross join (select (current_setting('qorpera_test.path_binding')::jsonb ->> 'run
 create function pg_temp.ca_receipt(p_n text,p_key text)
 returns void language plpgsql security definer as $$
 begin
-	perform pg_temp.path_claims('service_role');
-	perform public.qorpera_begin_native_tool_operation(current_setting('qorpera_test.path_binding')::jsonb,
+	perform pg_temp.base_claims('service_role');
+	perform public.qorpera_begin_native_tool_operation(current_setting('qorpera_test.base_binding')::jsonb,
 		('79400000-0000-4000-8000-0000000001' || p_n)::uuid,p_key,repeat('a',64),repeat('b',64),false);
 end
 $$;
 create function pg_temp.ca_done(p_n text)
 returns void language plpgsql security definer as $$
 begin
-	perform pg_temp.path_claims('service_role');
-	perform public.qorpera_complete_native_tool_operation(current_setting('qorpera_test.path_binding')::jsonb,
+	perform pg_temp.base_claims('service_role');
+	perform public.qorpera_complete_native_tool_operation(current_setting('qorpera_test.base_binding')::jsonb,
 		('79400000-0000-4000-8000-0000000001' || p_n)::uuid,repeat('a',64),'{}'::jsonb);
 end
 $$;
@@ -91,12 +78,12 @@ $$;
 create function pg_temp.ca_open(p_receipt text,p_login text,p_todo text,
 	p_authority text default '79400000-0000-4000-8000-000000000040',p_capability text default repeat('c',64),
 	p_site text default 'vercel.com',p_input text default repeat('a',64),p_key text default 'company-kek-1',
-	p_sha text default null,p_environment text default '29000000-0000-4000-8000-000000000020',
-	p_secret text default null,p_company text default '29000000-0000-4000-8000-000000000010',p_hosts text default '{}')
+	p_sha text default null,p_environment text default '92400000-0000-4000-8000-000000000020',
+	p_secret text default null,p_company text default '92400000-0000-4000-8000-000000000010',p_hosts text default '{}')
 returns text language plpgsql as $$
 begin
 	return pg_temp.ca_try(format('select public.qorpera_open_company_account(%L,%L,'
-		'current_setting(''qorpera_test.path_binding'')::jsonb,%L,%L,repeat(''b'',64),%L,%L,%L,%L,'
+		'current_setting(''qorpera_test.base_binding'')::jsonb,%L,%L,repeat(''b'',64),%L,%L,%L,%L,'
 		'%L::text[],%L,''Hosting for the website'',%L,%L,%L::bytea,%L)',
 		p_authority,p_capability,'79400000-0000-4000-8000-0000000001' || p_receipt,p_input,
 		coalesce(p_secret,'79400000-0000-4000-8000-0000000002' || p_receipt),p_company,p_environment,p_site,p_hosts,p_login,
@@ -107,7 +94,7 @@ create function pg_temp.ca_call(p_function text,p_receipt text,p_rest text)
 returns text language plpgsql as $$
 begin
 	return pg_temp.ca_try(format('select public.%s(''79400000-0000-4000-8000-000000000040'',repeat(''c'',64),'
-		'current_setting(''qorpera_test.path_binding'')::jsonb,%L,repeat(''a'',64),repeat(''b'',64),%s)',
+		'current_setting(''qorpera_test.base_binding'')::jsonb,%L,repeat(''a'',64),repeat(''b'',64),%s)',
 		p_function,'79400000-0000-4000-8000-0000000001' || p_receipt,p_rest));
 end
 $$;
@@ -121,12 +108,13 @@ grant execute on function pg_temp.ca_receipt(text,text), pg_temp.ca_done(text), 
 	pg_temp.ca_open(text,text,text,text,text,text,text,text,text,text,text,text,text), pg_temp.ca_call(text,text,text),
 	pg_temp.ca_version_args(text,text,text) to qorpera_secret_broker;
 
--- The company's mailbox: an agent's account signs up with a tagged address of it (A1-4a's trigger).
+-- The company's mailbox: an agent's account signs up with a tagged address of it (A1-4a's trigger). Written directly,
+-- as replica (the mailbox's hook is not this test's).
 update public.qorpera_mail_settings set domain = 'nordlys.example';
 select set_config('session_replication_role','replica',true);
 insert into public.qorpera_company_mailboxes(hook_id,profile_id,environment_id,local_part)
-values ('79400000-0000-4000-8000-000000000090','29000000-0000-4000-8000-000000000010',
-	'29000000-0000-4000-8000-000000000020','agents');
+values ('79400000-0000-4000-8000-000000000090','92400000-0000-4000-8000-000000000010',
+	'92400000-0000-4000-8000-000000000020','agents');
 select set_config('session_replication_role','origin',true);
 
 -- 1. Switched off, and only the broker may call.
@@ -169,11 +157,11 @@ select set_config('qorpera_test.ca_bad_environment',pg_temp.ca_open('01','agents
 select set_config('qorpera_test.ca_bad_company',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060',p_company => '79400000-0000-4000-8000-000000000010'),true);
 reset session authorization;
--- A folder company's accounts come with their connection file (A1-7): refused for now. The run's company is
--- read as a folder company for one call (the helper is swapped inside this rolled-back transaction, then put back).
+-- Accounts need a company on the company folder (A1-7): the run's company is read as one on the old core for one call (the
+-- helper is swapped inside this rolled-back transaction, then put back), and the opening is refused before any lock.
 select set_config('qorpera_test.ca_job_v2',pg_get_functiondef('public.qorpera_job_is_folder_v2(uuid)'::regprocedure),true);
 create or replace function public.qorpera_job_is_folder_v2(p_job_id uuid)
-returns boolean language sql stable security definer set search_path = '' as $$ select true $$;
+returns boolean language sql stable security definer set search_path = '' as $$ select false $$;
 set local session authorization qorpera_secret_broker;
 select set_config('qorpera_test.ca_folder',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060'),true);
@@ -183,17 +171,17 @@ set local session authorization qorpera_secret_broker;
 -- 3. What the broker reads before sealing; then opened, a repeat of the same call (also one that drew a
 --    new id), a duplicate and a second account on the same website.
 select set_config('qorpera_test.ca_context',pg_temp.ca_try('select public.qorpera_describe_company_account_open('
-	'''79400000-0000-4000-8000-000000000040'',repeat(''c'',64),current_setting(''qorpera_test.path_binding'')::jsonb,'
+	'''79400000-0000-4000-8000-000000000040'',repeat(''c'',64),current_setting(''qorpera_test.base_binding'')::jsonb,'
 	'''79400000-0000-4000-8000-000000000101'',repeat(''a'',64),repeat(''b'',64))'),true);
 -- A missing capability or digest refuses (never passes as unknown), before anything is opened.
 select set_config('qorpera_test.ca_null_capability',pg_temp.ca_try('select public.qorpera_describe_company_account_open('
-	'''79400000-0000-4000-8000-000000000040'',null,current_setting(''qorpera_test.path_binding'')::jsonb,'
+	'''79400000-0000-4000-8000-000000000040'',null,current_setting(''qorpera_test.base_binding'')::jsonb,'
 	'''79400000-0000-4000-8000-000000000101'',repeat(''a'',64),repeat(''b'',64))'),true);
 select set_config('qorpera_test.ca_null_digests',pg_temp.ca_try('select public.qorpera_describe_company_account_open('
-	'''79400000-0000-4000-8000-000000000040'',repeat(''c'',64),current_setting(''qorpera_test.path_binding'')::jsonb,'
+	'''79400000-0000-4000-8000-000000000040'',repeat(''c'',64),current_setting(''qorpera_test.base_binding'')::jsonb,'
 	'''79400000-0000-4000-8000-000000000101'',null,null)'),true);
 select set_config('qorpera_test.ca_null_downstream',pg_temp.ca_try('select public.qorpera_describe_company_account_open('
-	'''79400000-0000-4000-8000-000000000040'',repeat(''c'',64),current_setting(''qorpera_test.path_binding'')::jsonb,'
+	'''79400000-0000-4000-8000-000000000040'',repeat(''c'',64),current_setting(''qorpera_test.base_binding'')::jsonb,'
 	'''79400000-0000-4000-8000-000000000101'',repeat(''a'',64),null)'),true);
 select set_config('qorpera_test.ca_open_null_capability',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060',p_capability => null),true);
@@ -206,14 +194,15 @@ select set_config('qorpera_test.ca_repeat',pg_temp.ca_open('01','agents+vercel.c
 select set_config('qorpera_test.ca_repeat_new_id',pg_temp.ca_open('01','agents+vercel.com@nordlys.example',
 	'79400000-0000-4000-8000-000000000060',p_secret => '79400000-0000-4000-8000-000000000299'),true);
 select pg_temp.ca_done('01');
--- A finished receipt opens nothing, nor does one begun for another action.
+-- A finished receipt opens nothing (its repeat is not answered either), nor does one begun for another action (a new
+-- login, so the call reaches its receipt: the checks under the company's claim come first).
 select set_config('qorpera_test.ca_finished',pg_temp.ca_open('01','agents+9@nordlys.example',
 	'79400000-0000-4000-8000-000000000060'),true);
 select pg_temp.ca_receipt('02','company_account:use:r2');
 select set_config('qorpera_test.ca_describe_wrong_action',pg_temp.ca_try('select public.qorpera_describe_company_account_open('
-	'''79400000-0000-4000-8000-000000000040'',repeat(''c'',64),current_setting(''qorpera_test.path_binding'')::jsonb,'
+	'''79400000-0000-4000-8000-000000000040'',repeat(''c'',64),current_setting(''qorpera_test.base_binding'')::jsonb,'
 	'''79400000-0000-4000-8000-000000000102'',repeat(''a'',64),repeat(''b'',64))'),true);
-select set_config('qorpera_test.ca_wrong_action',pg_temp.ca_open('02','agents+vercel.com@nordlys.example',
+select set_config('qorpera_test.ca_wrong_action',pg_temp.ca_open('02','agents+wrong@nordlys.example',
 	'79400000-0000-4000-8000-000000000060'),true);
 select pg_temp.ca_done('02');
 select pg_temp.ca_receipt('03','company_account:open:r3');
@@ -286,8 +275,8 @@ begin
 			current_setting('qorpera_test.ca_bad_digest'),current_setting('qorpera_test.ca_bad_key'),
 			current_setting('qorpera_test.ca_bad_environment'),current_setting('qorpera_test.ca_bad_company');
 	end if;
-	if current_setting('qorpera_test.ca_folder') is distinct from '0A000:Accounts for folder companies come with their connection file' then
-		raise exception 'A folder company opened an account: %',current_setting('qorpera_test.ca_folder');
+	if current_setting('qorpera_test.ca_folder') is distinct from '0A000:Accounts need a company on the company folder' then
+		raise exception 'A company on the old core opened an account: %',current_setting('qorpera_test.ca_folder');
 	end if;
 
 	v_account := current_setting('qorpera_test.ca_account')::uuid;
@@ -297,8 +286,8 @@ begin
 		raise exception 'Wrong opened account: %',current_setting('qorpera_test.ca_opened');
 	end if;
 	if current_setting('qorpera_test.ca_context') is distinct from 'ok:' || jsonb_build_object(
-		'schema','qorpera.company-account-context/v1','companyId','29000000-0000-4000-8000-000000000010',
-		'environmentId','29000000-0000-4000-8000-000000000020','keyId','company-kek-1')::text then
+		'schema','qorpera.company-account-context/v1','companyId','92400000-0000-4000-8000-000000000010',
+		'environmentId','92400000-0000-4000-8000-000000000020','keyId','company-kek-1')::text then
 		raise exception 'Wrong context for the broker: %',current_setting('qorpera_test.ca_context');
 	end if;
 	if current_setting('qorpera_test.ca_null_capability') is distinct from '42501:cloud secret broker authority is unavailable'
@@ -335,13 +324,13 @@ begin
 	if v_secret.connector_id is distinct from 'website' or v_secret.owner_kind is distinct from 'company' or v_secret.owner_user_id is not null
 		or v_secret.secret_name is distinct from 'vercel-com' or v_secret.current_version is distinct from 1 or v_secret.status is distinct from 'active'
 		or v_secret.broker_authority_id is distinct from '79400000-0000-4000-8000-000000000040'
-		or v_secret.created_by_user_id is distinct from '29000000-0000-4000-8000-000000000001' then
+		or v_secret.created_by_user_id is distinct from '92400000-0000-4000-8000-000000000001' then
 		raise exception 'Wrong vault secret: %',row_to_json(v_secret);
 	end if;
 	if v_row.opened_for_todo_id is distinct from '79400000-0000-4000-8000-000000000060'
-		or v_row.opened_by_staff_agent_id is distinct from '29000000-0000-4000-8000-000000000030'
+		or v_row.opened_by_staff_agent_id is distinct from '92400000-0000-4000-8000-000000000030'
 		or v_row.opened_receipt_id is distinct from '79400000-0000-4000-8000-000000000101'
-		or v_row.opened_by_user_id is distinct from '29000000-0000-4000-8000-000000000001'
+		or v_row.opened_by_user_id is distinct from '92400000-0000-4000-8000-000000000001'
 		or v_row.status is distinct from 'pending' then
 		raise exception 'Wrong account row: %',row_to_json(v_row);
 	end if;
@@ -352,6 +341,11 @@ begin
 	if (select secret_name from public.qorpera_cloud_secrets where id = current_setting('qorpera_test.ca_account2')::uuid)
 		<> 'vercel-com-2' then
 		raise exception 'A second account on the same website did not get its own vault name';
+	end if;
+	-- On the company folder the opening marks the account's connection file due (P22), for the platform's writer.
+	if (select count(distinct secret_id) from public.qorpera_folder_connection_file_marks
+			where secret_id in (v_account, current_setting('qorpera_test.ca_account2')::uuid)) is distinct from 2 then
+		raise exception 'An opened account did not mark its connection file';
 	end if;
 end
 $$;
@@ -406,8 +400,8 @@ begin
 	if v_use ->> 'encryptedEnvelopeBase64' is distinct from encode('\x0102'::bytea,'base64')
 		or v_use ->> 'envelopeSha256' is distinct from pg_temp.ca_sha('\x0102')
 		or v_use ->> 'keyId' is distinct from 'company-kek-1' or v_use ->> 'version' is distinct from '1'
-		or v_use ->> 'companyId' is distinct from '29000000-0000-4000-8000-000000000010'
-		or v_use ->> 'environmentId' is distinct from '29000000-0000-4000-8000-000000000020'
+		or v_use ->> 'companyId' is distinct from '92400000-0000-4000-8000-000000000010'
+		or v_use ->> 'environmentId' is distinct from '92400000-0000-4000-8000-000000000020'
 		or v_use ->> 'accountId' is distinct from v_account::text
 		or v_use ->> 'receiptId' is distinct from '79400000-0000-4000-8000-000000000105' then
 		raise exception 'Wrong use answer: %',v_use;
@@ -446,7 +440,7 @@ begin
 	end if;
 	select account.* into strict v_row from public.qorpera_company_accounts as account where account.secret_id = v_account;
 	if v_row.connected_at is null or v_row.closed_at is null or v_row.last_used_at is null
-		or v_row.last_used_by_staff_agent_id is distinct from '29000000-0000-4000-8000-000000000030' then
+		or v_row.last_used_by_staff_agent_id is distinct from '92400000-0000-4000-8000-000000000030' then
 		raise exception 'Wrong account after use and state changes: %',row_to_json(v_row);
 	end if;
 	if current_setting('qorpera_test.ca_use_closed') is distinct from '22023:The company has no such open account' then
@@ -469,7 +463,7 @@ create function pg_temp.ca_member(p_user uuid,p_sql text)
 returns text language plpgsql as $$
 declare v_result text;
 begin
-	perform pg_temp.path_claims('authenticated',p_user);
+	perform pg_temp.base_claims('authenticated',p_user);
 	set local role authenticated;
 	v_result := pg_temp.ca_try(p_sql);
 	reset role;
@@ -489,15 +483,15 @@ insert into public.qorpera_cloud_secrets(id,profile_id,environment_id,broker_aut
 	('79400000-0000-4000-8000-000000000070','79400000-0000-4000-8000-000000000010','79400000-0000-4000-8000-000000000020',
 		'79400000-0000-4000-8000-000000000041','company',null,'website','vercel-com','The other company''s hosting',1,
 		'79400000-0000-4000-8000-000000000001'),
-	('79400000-0000-4000-8000-000000000071','29000000-0000-4000-8000-000000000010','29000000-0000-4000-8000-000000000020',
+	('79400000-0000-4000-8000-000000000071','92400000-0000-4000-8000-000000000010','92400000-0000-4000-8000-000000000020',
 		'79400000-0000-4000-8000-000000000040','company',null,'gmail','primary','Gmail account',1,
-		'29000000-0000-4000-8000-000000000001');
+		'92400000-0000-4000-8000-000000000001');
 insert into public.qorpera_cloud_secret_versions(secret_id,version,broker_authority_id,key_id,encrypted_envelope,
 	envelope_sha256,created_by_user_id) values
 	('79400000-0000-4000-8000-000000000070',1,'79400000-0000-4000-8000-000000000041','other-kek-1','\x09'::bytea,
 		pg_temp.ca_sha('\x09'),'79400000-0000-4000-8000-000000000001'),
 	('79400000-0000-4000-8000-000000000071',1,'79400000-0000-4000-8000-000000000040','company-kek-1','\x0a'::bytea,
-		pg_temp.ca_sha('\x0a'),'29000000-0000-4000-8000-000000000001');
+		pg_temp.ca_sha('\x0a'),'92400000-0000-4000-8000-000000000001');
 insert into public.qorpera_company_accounts(secret_id,profile_id,environment_id,site,login,opened_by_user_id)
 values ('79400000-0000-4000-8000-000000000070','79400000-0000-4000-8000-000000000010',
 	'79400000-0000-4000-8000-000000000020','vercel.com','team@other.example','79400000-0000-4000-8000-000000000001');
@@ -505,19 +499,19 @@ values ('79400000-0000-4000-8000-000000000070','79400000-0000-4000-8000-00000000
 -- check stands on its own anyway).
 insert into public.qorpera_cloud_secrets(id,profile_id,environment_id,broker_authority_id,owner_kind,owner_user_id,
 	connector_id,secret_name,purpose,current_version,created_by_user_id,status,revoked_at,revoked_by_user_id)
-values ('79400000-0000-4000-8000-000000000072','29000000-0000-4000-8000-000000000010','29000000-0000-4000-8000-000000000020',
+values ('79400000-0000-4000-8000-000000000072','92400000-0000-4000-8000-000000000010','92400000-0000-4000-8000-000000000020',
 	'79400000-0000-4000-8000-000000000040','company',null,'website','netlify-com','Old hosting',1,
-	'29000000-0000-4000-8000-000000000001','revoked',statement_timestamp(),'29000000-0000-4000-8000-000000000001');
+	'92400000-0000-4000-8000-000000000001','revoked',statement_timestamp(),'92400000-0000-4000-8000-000000000001');
 insert into public.qorpera_cloud_secret_versions(secret_id,version,broker_authority_id,key_id,encrypted_envelope,
 	envelope_sha256,created_by_user_id)
 values ('79400000-0000-4000-8000-000000000072',1,'79400000-0000-4000-8000-000000000040','company-kek-1','\x0b'::bytea,
-	pg_temp.ca_sha('\x0b'),'29000000-0000-4000-8000-000000000001');
+	pg_temp.ca_sha('\x0b'),'92400000-0000-4000-8000-000000000001');
 insert into public.qorpera_company_accounts(secret_id,profile_id,environment_id,site,login,opened_by_user_id)
-values ('79400000-0000-4000-8000-000000000072','29000000-0000-4000-8000-000000000010',
-	'29000000-0000-4000-8000-000000000020','netlify.com','agents@nordlys.example','29000000-0000-4000-8000-000000000001');
+values ('79400000-0000-4000-8000-000000000072','92400000-0000-4000-8000-000000000010',
+	'92400000-0000-4000-8000-000000000020','netlify.com','agents@nordlys.example','92400000-0000-4000-8000-000000000001');
 select set_config('qorpera_test.ca_account3',pg_temp.ca_id(current_setting('qorpera_test.ca_reopened')),true);
-select set_config('qorpera_test.ca_generic_revoke',pg_temp.ca_member('29000000-0000-4000-8000-000000000001',
-	format('select public.qorpera_revoke_cloud_secret(''29000000-0000-4000-8000-000000000010'',%L)',
+select set_config('qorpera_test.ca_generic_revoke',pg_temp.ca_member('92400000-0000-4000-8000-000000000001',
+	format('select public.qorpera_revoke_cloud_secret(''92400000-0000-4000-8000-000000000010'',%L)',
 		current_setting('qorpera_test.ca_account3'))),true);
 set local session authorization qorpera_secret_broker;
 select pg_temp.ca_receipt('12','company_account:use:79400000-0000-4000-8000-000000000070:r12');
@@ -555,7 +549,7 @@ begin
 	if current_setting('qorpera_test.ca_generic_revoke') not like 'ok:%'
 		or (select status from public.qorpera_company_accounts where secret_id = v_account3) is distinct from 'closed'
 		or (select removed_by_user_id from public.qorpera_company_accounts where secret_id = v_account3)
-			is distinct from '29000000-0000-4000-8000-000000000001'
+			is distinct from '92400000-0000-4000-8000-000000000001'
 		or exists (select 1 from public.qorpera_cloud_secret_versions where secret_id = v_account3) then
 		raise exception 'The generic revoke left the account open or its envelopes kept: %',
 			current_setting('qorpera_test.ca_generic_revoke');
@@ -581,25 +575,29 @@ begin
 end
 $$;
 -- 5. Members read the facts, never a value; an outsider reads nothing.
-select set_config('qorpera_test.ca_list',pg_temp.ca_member('79400000-0000-4000-8000-000000000003',
-	'select public.qorpera_list_company_accounts(''29000000-0000-4000-8000-000000000010'',''29000000-0000-4000-8000-000000000020'')'),
+select set_config('qorpera_test.ca_list',pg_temp.ca_member('92400000-0000-4000-8000-000000000004',
+	'select public.qorpera_list_company_accounts(''92400000-0000-4000-8000-000000000010'',''92400000-0000-4000-8000-000000000020'')'),
 	true);
-select set_config('qorpera_test.ca_list_outsider',pg_temp.ca_member('79400000-0000-4000-8000-000000000001',
-	'select public.qorpera_list_company_accounts(''29000000-0000-4000-8000-000000000010'',''29000000-0000-4000-8000-000000000020'')'),
+select set_config('qorpera_test.ca_list_outsider',pg_temp.ca_member('92400000-0000-4000-8000-000000000005',
+	'select public.qorpera_list_company_accounts(''92400000-0000-4000-8000-000000000010'',''92400000-0000-4000-8000-000000000020'')'),
 	true);
 -- Removing: a contributor is refused before anything is locked; an admin removes, and a repeat changes nothing.
-select set_config('qorpera_test.ca_remove_contributor',pg_temp.ca_member('29000000-0000-4000-8000-000000000002',
-	format('select public.qorpera_remove_company_account(''29000000-0000-4000-8000-000000000010'',%L)',
+select set_config('qorpera_test.ca_remove_contributor',pg_temp.ca_member('92400000-0000-4000-8000-000000000002',
+	format('select public.qorpera_remove_company_account(''92400000-0000-4000-8000-000000000010'',%L)',
 		current_setting('qorpera_test.ca_account2'))),true);
-select set_config('qorpera_test.ca_remove',pg_temp.ca_member('79400000-0000-4000-8000-000000000003',
-	format('select public.qorpera_remove_company_account(''29000000-0000-4000-8000-000000000010'',%L)',
+select set_config('qorpera_test.ca_remove',pg_temp.ca_member('92400000-0000-4000-8000-000000000004',
+	format('select public.qorpera_remove_company_account(''92400000-0000-4000-8000-000000000010'',%L)',
 		current_setting('qorpera_test.ca_account2'))),true);
-select set_config('qorpera_test.ca_remove_again',pg_temp.ca_member('79400000-0000-4000-8000-000000000003',
-	format('select public.qorpera_remove_company_account(''29000000-0000-4000-8000-000000000010'',%L)',
+select set_config('qorpera_test.ca_remove_again',pg_temp.ca_member('92400000-0000-4000-8000-000000000004',
+	format('select public.qorpera_remove_company_account(''92400000-0000-4000-8000-000000000010'',%L)',
 		current_setting('qorpera_test.ca_account2'))),true);
-select set_config('qorpera_test.ca_remove_outsider',pg_temp.ca_member('79400000-0000-4000-8000-000000000001',
-	format('select public.qorpera_remove_company_account(''29000000-0000-4000-8000-000000000010'',%L)',
+select set_config('qorpera_test.ca_remove_outsider',pg_temp.ca_member('92400000-0000-4000-8000-000000000005',
+	format('select public.qorpera_remove_company_account(''92400000-0000-4000-8000-000000000010'',%L)',
 		current_setting('qorpera_test.ca_account'))),true);
+-- Another company's owner removing its account on the old core: refused before any lock (A1-7).
+select set_config('qorpera_test.ca_remove_old_core',pg_temp.ca_member('79400000-0000-4000-8000-000000000001',
+	'select public.qorpera_remove_company_account(''79400000-0000-4000-8000-000000000010'',''79400000-0000-4000-8000-000000000070'')'),
+	true);
 
 do $$
 declare v_list jsonb; v_first jsonb; v_account2 uuid := current_setting('qorpera_test.ca_account2')::uuid;
@@ -617,8 +615,8 @@ begin
 		or v_first -> 'openedFor' is distinct from jsonb_build_object('todoId','79400000-0000-4000-8000-000000000060',
 			'title','Put the website online')
 		or v_first -> 'openedBy' is distinct from jsonb_build_object('kind','agent',
-			'staffAgentId','29000000-0000-4000-8000-000000000030','name','Agent')
-		or v_first #>> '{lastUsedBy,name}' is distinct from 'Agent'
+			'staffAgentId','92400000-0000-4000-8000-000000000030','name','Alice')
+		or v_first #>> '{lastUsedBy,name}' is distinct from 'Alice'
 		or v_first ->> 'purpose' is distinct from 'Hosting for the website' then
 		raise exception 'Wrong listed account: %',v_first;
 	end if;
@@ -629,6 +627,11 @@ begin
 		or current_setting('qorpera_test.ca_remove_outsider') is distinct from '42501:company account removal is unavailable' then
 		raise exception 'A removal without authority was not refused: % / %',
 			current_setting('qorpera_test.ca_remove_contributor'),current_setting('qorpera_test.ca_remove_outsider');
+	end if;
+	if current_setting('qorpera_test.ca_remove_old_core') is distinct from '0A000:Accounts need a company on the company folder'
+		or (select status from public.qorpera_cloud_secrets where id = '79400000-0000-4000-8000-000000000070')
+			is distinct from 'active' then
+		raise exception 'A removal on the old core was not refused: %',current_setting('qorpera_test.ca_remove_old_core');
 	end if;
 	if current_setting('qorpera_test.ca_remove') not like 'ok:%"removed": true%'
 		or current_setting('qorpera_test.ca_remove_again') is distinct from current_setting('qorpera_test.ca_remove') then
@@ -641,11 +644,11 @@ begin
 	if (select status from public.qorpera_cloud_secrets where id = v_account2) is distinct from 'revoked'
 		or (select status from public.qorpera_company_accounts where secret_id = v_account2) is distinct from 'closed'
 		or (select removed_by_user_id from public.qorpera_company_accounts where secret_id = v_account2)
-			is distinct from '79400000-0000-4000-8000-000000000003' then
+			is distinct from '92400000-0000-4000-8000-000000000004' then
 		raise exception 'The removed account is not closed and revoked';
 	end if;
 	if (select count(*) from public.qorpera_cloud_secret_audit_events where event_type = 'account_removed'
-		and actor_user_id = '79400000-0000-4000-8000-000000000003') is distinct from 1 then
+		and actor_user_id = '92400000-0000-4000-8000-000000000004') is distinct from 1 then
 		raise exception 'The removal was not audited once';
 	end if;
 	-- The other open account keeps its envelope (the first one's went at its close).

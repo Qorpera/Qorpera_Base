@@ -90,9 +90,17 @@ if [[ -n ${BUNDLE} && ! ${BUNDLE} =~ ^[0-9a-f]{64}$ ]]; then
 	echo "EXEC_RUNTIME_BUNDLE_SHA256 must be a sha256." >&2
 	exit 1
 fi
-for file in qorpera-shared-execution-service.mjs install-shared-execution-guest.sh manifest.json; do
+for file in qorpera-shared-execution-service.mjs install-shared-execution-guest.sh manifest.json qorpera-folder qorpera-folder-mount@.service \
+	qorpera-folder-relay@.socket qorpera-folder-relay@.service; do
 	[[ -f ${PACKAGE}/${file} ]] || { echo "Package is incomplete: ${PACKAGE}/${file}" >&2; exit 1; }
 done
+# The installer refuses a folder program other than the pinned build, but only after the root disk is replaced:
+# check it here, before anything stops.
+pinned=$(sed -n 's/^EXPECTED_FOLDER_PROGRAM_SHA256="\([0-9a-f]\{64\}\)"$/\1/p' "${PACKAGE}/install-shared-execution-guest.sh")
+if [[ -z ${pinned} || $(sha256sum "${PACKAGE}/qorpera-folder" | cut -d' ' -f1) != "${pinned}" ]]; then
+	echo "${PACKAGE}/qorpera-folder is not the folder program the installer pins (${pinned:-none}); build it with scripts/build-folder-program.mjs from this commit." >&2
+	exit 1
+fi
 for file in shared-execution.env runner-orchestrator.env credentials/qorpera-runner-provider credentials/qorpera-supabase-service-key; do
 	[[ -f ${STAGING}/${file} ]] || { echo "Staging is incomplete: ${STAGING}/${file}" >&2; exit 1; }
 done

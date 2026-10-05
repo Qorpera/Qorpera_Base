@@ -1,8 +1,16 @@
-/* Interfaces in the web client (contract, 2026-10-02 interfaces amendment; RUNTIME-INTERFACES.md). Until a company
- * keeps its own interface files (folder-v2, step I7), the client draws the library's definitions, and only the parts
- * whose source it can read today: a part without its source is not drawn, and an interface with no part to draw is
- * not listed (the client contract's rule against rendering missing machinery). Today that is Pulse's "Needs you"
- * and "Working now", read from the company's live state. */
+/* Interfaces in the web client (contract, 2026-10-02 interfaces amendment; RUNTIME-INTERFACES.md). A folder-v2 company
+ * keeps its interfaces in its folder (step I7): app/interface-folder.ts reads them, parsing every text itself, and the
+ * Interfaces tab lists them in the order of `interfaces/order.md`, then the ones it doesn't list by name (§8). A block
+ * whose source is a table reads it from the folder too.
+ *
+ * Until that read lands, and when the folder keeps no `interfaces/order.md` (a company seeded before P16b, of which
+ * there should be none) or its first read failed, the client draws the library's definitions instead, as before I7,
+ * so the tab is never empty because of a read error.
+ *
+ * Either way only the parts whose source the client can read are drawn: a part without its source is not drawn, and an
+ * interface with no part to draw is not listed (the client contract's rule against rendering missing machinery). Today
+ * those sources are Pulse's "Needs you" and "Working now", read from the company's live state, the company's tables,
+ * and its files that hold no outside content. */
 
 import { INTERFACE_LIBRARY } from "@qorpera/cloud-client/interface-library";
 import {
@@ -10,17 +18,26 @@ import {
 	type InterfaceButton,
 	type InterfaceFile,
 	type InterfaceQuery,
+	interfaceOutsideColumns,
 	parseInterfaceFile,
 	type TableRow,
+	tableRowKey,
 } from "@qorpera/cloud-client/interfaces";
-import { t } from "../ui/preferences.ts";
+import { presentationLocale, t } from "../ui/preferences.ts";
 import { type CompanyController, isAgentPairSession } from "./company.ts";
+import type { FolderPage, FolderProblem, FolderTable, InterfaceFolderState } from "./interface-folder.ts";
 
-export interface CompanyInterface {
-	/** The interface's folder name, its route: `#/c/{id}/i/{name}`. */
-	readonly name: string;
-	readonly file: InterfaceFile;
-}
+/** An interface the Interfaces tab lists: its parse, or, for a text that doesn't parse, its problems. A broken page is
+ * drawn with its name and its problems, never its blocks or buttons (§10, I7). */
+export type CompanyInterface =
+	| {
+			/** The interface's folder name, its route: `#/c/{id}/i/{name}`. */
+			readonly name: string;
+			readonly file: InterfaceFile;
+			/** The main interface, drawn on top of the tab (§3, §6.1 rule 3). */
+			readonly main: boolean;
+	  }
+	| { readonly name: string; readonly file: null; readonly main: false; readonly problems: readonly FolderProblem[] };
 
 /** One row a block shows, with where it leads. A row from the company's live state leads to the thread it is
  * about; that link is the platform's, never the file's. */
@@ -35,11 +52,24 @@ export interface InterfaceRow {
 
 /** The blocks this client draws today. A `detail` block is drawn only when a drawn block in its view opens it. */
 const DRAWN_BLOCKS: ReadonlySet<InterfaceBlock["kind"]> = new Set(["list", "table", "detail"]);
-/** The sources this client reads today: their columns, and the column `since` and ordering use. */
-const SOURCES: Readonly<Record<string, { readonly columns: readonly string[]; readonly time: string | null }>> = {
+/** The sources this client reads from the company's live state: their columns, and the column `since` and ordering
+ * use. */
+const LIVE_SOURCES: Readonly<Record<string, { readonly columns: readonly string[]; readonly time: string | null }>> = {
 	working: { columns: ["agent", "what", "since"], time: "since" },
 	waiting: { columns: ["id", "kind", "title", "from", "due"], time: "due" },
 };
+/** Columns that hold an agent's id: drawn as the agent's name. A table's columns say what they hold by their type. */
+const AGENT_COLUMNS: ReadonlySet<string> = new Set(["agent", "from", "handled_by", "kept_by"]);
+
+/** A source as a block reads it. */
+export interface InterfaceSource {
+	readonly columns: readonly string[];
+	readonly time: string | null;
+	/** False for a table whose definition doesn't parse or whose rows file can't be read at all: it has no rows. */
+	readonly readable: boolean;
+	/** The source's own problems: a table's rows that don't fit its definition, or why it can't be read. */
+	readonly problems: readonly FolderProblem[];
+}
 
 /** The `waiting` kinds whose row has a platform card the member answers in its thread. A mention leads to a
  * conversation, not a card. */
@@ -48,10 +78,10 @@ export function rowHasCard(source: string, row: TableRow): boolean {
 	return source === "waiting" && typeof row.kind === "string" && CARD_KINDS.has(row.kind);
 }
 
-let library: CompanyInterface[] | undefined;
+let library: { readonly name: string; readonly file: InterfaceFile }[] | undefined;
 /** The library's definitions, parsed once. A definition that doesn't parse is a bug in the library; it is left out
  * rather than drawn wrong. */
-function libraryInterfaces(): CompanyInterface[] {
+function libraryInterfaces(): { readonly name: string; readonly file: InterfaceFile }[] {
 	library ??= INTERFACE_LIBRARY.flatMap((entry) => {
 		const parsed = parseInterfaceFile(entry.interface);
 		return parsed.ok ? [{ name: entry.name, file: parsed.file }] : [];
@@ -59,13 +89,88 @@ function libraryInterfaces(): CompanyInterface[] {
 	return library;
 }
 
-export function interfaceSourceTime(source: string): string | null {
-	return SOURCES[source]?.time ?? null;
+/** Whether a source's column names are the platform's (the live state's), so drawn in the member's language. A table's
+ * own columns are the company's words. */
+export function isLiveSource(source: string): boolean {
+	return Object.hasOwn(LIVE_SOURCES, source);
+}
+
+function folderTable(company: CompanyController, source: string): FolderTable | undefined {
+	if (!source.startsWith("table:")) return undefined;
+	return company.store.get().interfaceFolder?.tables.get(source.slice("table:".length));
+}
+
+/** A `file:` source's text. A file whose text is outside content (under `hooks/` or `human-tasks/`, §4) is not read:
+ * the blocks can't show it with its outside-content mark yet (the 2026-10-02 interfaces amendment, item 3). */
+function folderText(company: CompanyController, source: string): string | undefined {
+	if (!source.startsWith("file:") || interfaceOutsideColumns(source).length > 0) return undefined;
+	return company.store.get().interfaceFolder?.files.get(source.slice("file:".length));
+}
+
+/** A source this client can read, or undefined: the live state's, and a folder-v2 company's tables and files once its
+ * folder is read. */
+export function interfaceSource(company: CompanyController, source: string): InterfaceSource | undefined {
+	const live = Object.hasOwn(LIVE_SOURCES, source) ? LIVE_SOURCES[source] : undefined;
+	if (live) return { ...live, readable: true, problems: [] };
+	const table = folderTable(company, source);
+	if (table)
+		return {
+			columns: table.table?.columns.map((column) => column.name) ?? [],
+			time: table.table?.time ?? null,
+			readable: table.readable,
+			problems: table.problems,
+		};
+	if (folderText(company, source) !== undefined)
+		return { columns: ["text"], time: null, readable: true, problems: [] };
+	return undefined;
+}
+
+/** What a column's values are the ids of, so a page shows names: the live sources' agent columns, and a table's
+ * `agent`, `member` and `agents` columns (§5: "a stable id; the client shows the name"). */
+export function idColumn(
+	company: CompanyController,
+	source: string,
+	column: string,
+): "agent" | "member" | "agents" | null {
+	if (source.startsWith("table:")) {
+		const type = folderTable(company, source)?.table?.columns.find((candidate) => candidate.name === column)?.type;
+		return type === "agent" || type === "member" || type === "agents" ? type : null;
+	}
+	return AGENT_COLUMNS.has(column) ? "agent" : null;
 }
 
 /** Whether this client can draw a block: its kind is drawn here and it reads one source the client has. */
-export function drawableBlock(block: InterfaceBlock): boolean {
-	return DRAWN_BLOCKS.has(block.kind) && block.from.length === 1 && Object.hasOwn(SOURCES, block.from[0] ?? "");
+export function drawableBlock(block: InterfaceBlock, company: CompanyController): boolean {
+	return (
+		DRAWN_BLOCKS.has(block.kind) &&
+		block.from.length === 1 &&
+		interfaceSource(company, block.from[0] ?? "") !== undefined
+	);
+}
+
+/** The folder sources a page's drawn blocks could read, which app/interface-folder.ts reads: the tables of its list,
+ * table and detail blocks and of its `needs`, and the files of those blocks that hold no outside content. A detail
+ * block counts only where a list or table block in its view opens it, as `viewBlocks` draws it. */
+export function folderSources(file: InterfaceFile): { readonly tables: string[]; readonly files: string[] } {
+	const tables = new Set<string>();
+	const files = new Set<string>();
+	for (const need of file.needs) if (need.startsWith("table:")) tables.add(need.slice("table:".length));
+	for (const view of file.views) {
+		const opened = new Set(
+			view.blocks.flatMap((block) =>
+				(block.kind === "list" || block.kind === "table") && block.opens !== null ? [block.opens] : [],
+			),
+		);
+		for (const block of view.blocks) {
+			if (!DRAWN_BLOCKS.has(block.kind) || (block.kind === "detail" && !opened.has(block.id ?? ""))) continue;
+			for (const source of block.from) {
+				if (source.startsWith("table:")) tables.add(source.slice("table:".length));
+				else if (source.startsWith("file:") && interfaceOutsideColumns(source).length === 0)
+					files.add(source.slice("file:".length));
+			}
+		}
+	}
+	return { tables: [...tables], files: [...files] };
 }
 
 /** The column of each quote source's rows that names the record its outside values came from, which a quote of them
@@ -106,18 +211,15 @@ export function interfaceViews(file: InterfaceFile): InterfaceViewShape[] {
 	return resolved;
 }
 
-export function sourceColumns(source: string): readonly string[] | undefined {
-	return SOURCES[source]?.columns;
-}
-
 /** The blocks of a view this client draws, in their order: the drawable ones, and a `detail` block that one of
  * them opens. A block a view narrows by a column its source doesn't have is left out of that view: it could only
  * ever look empty. */
-export function viewBlocks(view: InterfaceViewShape): ViewBlock[] {
+export function viewBlocks(view: InterfaceViewShape, company: CompanyController): ViewBlock[] {
 	const fits = ({ block, narrow }: ViewBlock) => {
-		const columns = sourceColumns(block.from[0] ?? "") ?? [];
+		const columns = interfaceSource(company, block.from[0] ?? "")?.columns ?? [];
 		return (
-			drawableBlock(block) && narrow.every((where) => Object.keys(where).every((column) => columns.includes(column)))
+			drawableBlock(block, company) &&
+			narrow.every((where) => Object.keys(where).every((column) => columns.includes(column)))
 		);
 	};
 	const drawn = view.blocks.filter((shown) => shown.block.kind !== "detail" && fits(shown));
@@ -138,7 +240,7 @@ export type DrawnButton =
 	| { readonly verb: "open"; readonly label: string; readonly target: string };
 
 /** The buttons a block shows here. A member draws only what a member can do: `who = "agents"` is left out, and so
- * are the verbs whose machinery this client lacks today (add, set, take, offer, release need tables; `open file:`
+ * are the verbs whose machinery this client lacks today (add, set, take, offer, release write tables; `open file:`
  * needs a file route). */
 export function blockButtons(file: InterfaceFile, block: InterfaceBlock): DrawnButton[] {
 	return block.buttons.flatMap((name): DrawnButton[] => {
@@ -160,10 +262,20 @@ export function blockButtons(file: InterfaceFile, block: InterfaceBlock): DrawnB
 
 function needsMet(file: InterfaceFile, company: CompanyController): boolean {
 	return file.needs.every((need) => {
-		// No member can read the company's mail yet (Q1's member read, step I5a); tables live in the folder (I7).
 		if (need === "team") return (company.store.get().team?.members.length ?? 0) >= 2;
+		// A table is there when its folder holds its definition (step I7), or may be when its read failed: the page is
+		// listed and its table says it can't be read.
+		if (need.startsWith("table:"))
+			return company.store.get().interfaceFolder?.tables.has(need.slice("table:".length)) === true;
+		// No member can read the company's mail yet (Q1's member read, step I5a), nor its connections here.
 		return false;
 	});
+}
+
+/** Owners and admins: who "owners" means in a file, and who is told about the company's interfaces. */
+function ownerOrAdmin(company: CompanyController): boolean {
+	const role = company.store.get().team?.role;
+	return role === "owner" || role === "admin";
 }
 
 /** Whether `[access] members` lets this member see the page. It only narrows: the data is read with the
@@ -171,27 +283,80 @@ function needsMet(file: InterfaceFile, company: CompanyController): boolean {
 function memberMaySee(file: InterfaceFile, company: CompanyController): boolean {
 	const access = file.access.members;
 	if (access === "all") return true;
-	if (access === "owners") {
-		const role = company.store.get().team?.role;
-		return role === "owner" || role === "admin";
-	}
+	if (access === "owners") return ownerOrAdmin(company);
 	return access.includes(company.userId);
 }
 
-/** The interfaces the Interfaces tab lists, the main one first. */
-export function companyInterfaces(company: CompanyController): CompanyInterface[] {
-	const shown = libraryInterfaces().filter(
-		({ file }) =>
-			file.status === "active" &&
-			memberMaySee(file, company) &&
-			needsMet(file, company) &&
-			interfaceViews(file).some((view) => viewBlocks(view).length > 0),
+/** Whether the tab lists a parsed interface: it is on, this member may see it, its needs are met, and it has a part
+ * this client can draw. */
+function listed(file: InterfaceFile, company: CompanyController): boolean {
+	return (
+		file.status === "active" &&
+		memberMaySee(file, company) &&
+		needsMet(file, company) &&
+		interfaceViews(file).some((view) => viewBlocks(view, company).length > 0)
 	);
-	return [...shown.filter((entry) => entry.file.main), ...shown.filter((entry) => !entry.file.main)];
+}
+
+/** The folder's pages in the tab's order: as `interfaces/order.md` lists them by id, then those it doesn't list, by
+ * name (§8). A broken page has no id to be listed by, so it is among the second. */
+function orderedPages(folder: InterfaceFolderState): FolderPage[] {
+	const places = new Map(folder.order.map((id, index) => [id, index]));
+	const place = (page: FolderPage) => (page.file === null ? undefined : places.get(page.file.id));
+	const title = (page: FolderPage) => page.file?.name ?? page.name;
+	const collator = new Intl.Collator(presentationLocale(), { numeric: true, sensitivity: "base" });
+	return [...folder.pages].sort((a, b) => {
+		const [first, second] = [place(a), place(b)];
+		if (first !== undefined && second !== undefined) return first - second;
+		if (first !== undefined || second !== undefined) return first === undefined ? 1 : -1;
+		return collator.compare(title(a), title(b)) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+	});
+}
+
+/** The display names of the interfaces whose text says `main = true`, read by this client's own parse. */
+function mainNames(folder: InterfaceFolderState): string[] {
+	return folder.pages.flatMap((page) => (page.file?.main ? [page.file.name] : []));
+}
+
+/** The interfaces the Interfaces tab lists, the main one first. In a folder-v2 company the main one is the interface
+ * whose text says `main = true` when exactly one does; with none or several, none is (§6.1 rule 3): the save check
+ * lets a switch pass through none, and two promotions at one moment can leave two. `interfaceMainProblem` says so. */
+export function companyInterfaces(company: CompanyController): CompanyInterface[] {
+	const folder = company.store.get().interfaceFolder;
+	let shown: CompanyInterface[];
+	if (!folder) {
+		shown = libraryInterfaces()
+			.filter(({ file }) => listed(file, company))
+			.map(({ name, file }) => ({ name, file, main: file.main }));
+	} else {
+		const mains = folder.pages.filter((page) => page.file?.main === true);
+		const main = mains.length === 1 ? mains[0]?.name : undefined;
+		shown = orderedPages(folder).flatMap((page): CompanyInterface[] => {
+			if (page.file === null) return [{ name: page.name, file: null, main: false, problems: page.problems }];
+			return listed(page.file, company) ? [{ name: page.name, file: page.file, main: page.name === main }] : [];
+		});
+	}
+	return [...shown.filter((entry) => entry.main), ...shown.filter((entry) => !entry.main)];
 }
 
 export function companyInterface(company: CompanyController, name: string): CompanyInterface | undefined {
 	return companyInterfaces(company).find((entry) => entry.name === name);
+}
+
+/** The line the owners and admins see on the Interfaces tab when the company has no main interface or several
+ * (§6.1 rule 3, §10 I7), or null. Nobody else sees it: they see the interfaces, none on top. */
+export function interfaceMainProblem(company: CompanyController): string | null {
+	const folder = company.store.get().interfaceFolder;
+	if (!folder || !ownerOrAdmin(company)) return null;
+	const mains = mainNames(folder);
+	if (mains.length === 1) return null;
+	if (mains.length === 0)
+		return t("No interface is marked as the main one, so none is shown on top. Mark one as main in its file.");
+	const names = new Intl.ListFormat(presentationLocale(), { style: "long", type: "conjunction" }).format(mains);
+	return t(
+		"{names} are all marked as the main interface, so none is shown on top. Keep the mark on just one of them.",
+		{ names },
+	);
 }
 
 /** The rows of a source this client reads, or undefined when it can't read it. */
@@ -271,5 +436,15 @@ export function interfaceRows(company: CompanyController, source: string): Inter
 		}
 		return rows;
 	}
+	// A table's rows that fit its definition, each known by its key, so an open row stays open while its other
+	// columns change.
+	const table = folderTable(company, source);
+	if (table) {
+		const definition = table.table;
+		return definition ? table.rows.map((row) => ({ row, key: `${source}:${tableRowKey(definition, row)}` })) : [];
+	}
+	// A file is one row: its text.
+	const text = folderText(company, source);
+	if (text !== undefined) return [{ row: { text }, key: source }];
 	return undefined;
 }
