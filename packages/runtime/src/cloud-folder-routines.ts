@@ -80,8 +80,8 @@ const concludedFile = (text: string, summary: string) =>
 
 type Reply = RoutineFile["reply"];
 
-/** manage_routine's compiled clock trigger (cloud-routine-tools.ts). A file-change or event listener is refused with
- * the arguments. */
+/** manage_routine's compiled trigger (cloud-routine-tools.ts): a clock trigger or a file change (P29, read from the
+ * folder journal). An event listener is refused with the arguments. */
 export type CloudFolderRoutineTrigger =
 	| {
 			readonly kind: "schedule";
@@ -92,7 +92,15 @@ export type CloudFolderRoutineTrigger =
 			readonly timeZone?: string;
 			readonly replyPolicy: Reply;
 	  }
-	| { readonly kind: "once"; readonly at?: string; readonly timeZone: string; readonly replyPolicy: Reply };
+	| { readonly kind: "once"; readonly at?: string; readonly timeZone: string; readonly replyPolicy: Reply }
+	| {
+			readonly kind: "listener";
+			readonly source: "company-file";
+			readonly path: string;
+			readonly match: "exact" | "subtree";
+			readonly timeZone: string;
+			readonly replyPolicy: Reply;
+	  };
 
 export interface CloudFolderRoutineListing {
 	readonly routineKey?: string;
@@ -142,6 +150,10 @@ function upsertFile(request: CloudFolderRoutineUpsert, id: string, current: Rout
 		const kept =
 			current?.trigger.when === "once" && Date.parse(current.trigger.at) > now ? current.trigger.at : undefined;
 		trigger = { when: "once", at: instant(given.at ?? kept ?? new Date(now).toISOString()) };
+		timezone = given.timeZone;
+	} else if (given.kind === "listener") {
+		// The path as given: the folder core folds it into the key it watches (P29).
+		trigger = { when: "file-change", watch: given.path, match: given.match };
 		timezone = given.timeZone;
 	} else if (given.weekdays) {
 		trigger = {

@@ -54,6 +54,7 @@ import {
 	UUID_PATTERN,
 } from "./parse.ts";
 import { type CloudPresenceHandle, joinCompanyPresence, type PresenceHealth, type PresenceMember } from "./presence.ts";
+import type { MessageQuote } from "./quotes.ts";
 import type { RealtimePhase } from "./realtime.ts";
 import { type ActionReviewAnswer, type ActionReviewReceipt, parseActionReviewReceipt } from "./review-rules.ts";
 import {
@@ -351,7 +352,13 @@ export class CloudApi {
 		return listRoomDrafts(this.cloud, requiredUuid(roomId, "Room id").toLowerCase());
 	}
 
-	putRoomDraft(roomId: string, ownerUserId: string, baseRevision: number, body: string): Promise<RoomDraftWrite> {
+	putRoomDraft(
+		roomId: string,
+		ownerUserId: string,
+		baseRevision: number,
+		body: string,
+		quotes: readonly MessageQuote[],
+	): Promise<RoomDraftWrite> {
 		if (!Number.isSafeInteger(baseRevision) || baseRevision < 0) throw new Error("Draft revision is invalid");
 		return putRoomDraft(
 			this.cloud,
@@ -359,6 +366,7 @@ export class CloudApi {
 			requiredUuid(ownerUserId, "Draft owner").toLowerCase(),
 			baseRevision,
 			body,
+			quotes,
 		);
 	}
 

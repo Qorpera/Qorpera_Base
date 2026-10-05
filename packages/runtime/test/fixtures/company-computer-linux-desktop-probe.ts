@@ -62,10 +62,24 @@ function commands(binding: CompanyComputerScreenBinding) {
 	running.push(command);
 	return command;
 }
-async function shell(command: CompanyComputerLinuxCommands, binding: CompanyComputerScreenBinding, script: string) {
+// A shell command never gets the screen's display; the screen's own tools do.
+async function shell(command: CompanyComputerLinuxCommands, script: string) {
 	const result = await command.run({
 		program: "/bin/bash",
 		args: ["--noprofile", "--norc", "-c", script],
+		environment: { PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
+		workingDirectory: layout.workbenchRoot,
+		timeoutMs: 5000,
+		maxOutputBytes: 16384,
+		signal,
+	});
+	assert.equal(result.code, 0, result.stderr);
+	return result.stdout.trim();
+}
+async function xdo(command: CompanyComputerLinuxCommands, binding: CompanyComputerScreenBinding, ...args: string[]) {
+	const result = await command.run({
+		program: "/usr/bin/xdotool",
+		args,
 		environment: { DISPLAY: `:${binding.screenOrdinal}`, PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
 		workingDirectory: layout.workbenchRoot,
 		timeoutMs: 5000,
@@ -154,6 +168,23 @@ try {
 		`[Desktop Entry]\nType=Application\nName=Detached lifecycle fixture\nExec=/usr/bin/setsid /usr/bin/bash -c "while true; do echo tick >> /srv/workbench/desktop-ticks; sleep 0.03; done"\nTerminal=false\n`,
 		{ mode: 0o600 },
 	);
+	// HTTPS from inside the desktop, with certificate checks: a server on the desktop's own loopback, its certificate
+	// signed by a CA the image trusts (the proof adds one, as the public ones are), and curl as the Terminal runs it.
+	for (const name of ["tls-proof-key.pem", "tls-proof-cert.pem"])
+		await writeFile(`/srv/workbench/${name}`, await readFile(`/opt/probe/${name}`), { mode: 0o600 });
+	await writeFile(
+		"/srv/workbench/tls-proof-server.mjs",
+		`import { readFileSync } from "node:fs";\nimport { createServer } from "node:https";\ncreateServer({ key: readFileSync("/srv/workbench/tls-proof-key.pem"), cert: readFileSync("/srv/workbench/tls-proof-cert.pem") }, (_request, response) => response.end("verified\\n")).listen(8443, "127.0.0.1");\n`,
+	);
+	await writeFile(
+		"/srv/workbench/tls-proof.sh",
+		`/usr/bin/node /srv/workbench/tls-proof-server.mjs &\nserver=$!\n/usr/bin/curl --silent --show-error --retry 30 --retry-delay 1 --retry-connrefused https://127.0.0.1:8443/ > /srv/workbench/tls-proof.partial 2> /srv/workbench/tls-proof-errors\necho "exit=$?" >> /srv/workbench/tls-proof.partial\nmv /srv/workbench/tls-proof.partial /srv/workbench/tls-proof\nkill "$server"\n`,
+	);
+	await writeFile(
+		`${autostart}/tls-proof.desktop`,
+		`[Desktop Entry]\nType=Application\nName=HTTPS fixture\nExec=/usr/bin/bash /srv/workbench/tls-proof.sh\nTerminal=false\n`,
+		{ mode: 0o600 },
+	);
 	const firstStart = new AbortController();
 	const firstLaunching = launcher.launch(bindings[0], firstStart.signal);
 	await assert.rejects(launcher.launch(bindings[0], signal), /OFFICE_DESKTOP_ALREADY_OCCUPIED/);
@@ -173,26 +204,55 @@ try {
 		await delay(25);
 	}
 	assert.ok((await readFile("/srv/workbench/desktop-ticks", "utf8")).includes("tick"));
+	let tls = "";
+	for (let attempt = 0; attempt < 400 && !tls; attempt++) {
+		tls = await readFile("/srv/workbench/tls-proof", "utf8").catch(() => "");
+		if (!tls) await delay(100);
+	}
+	// Its first tries meet a server still starting (connection refused); the last answers.
+	assert.equal(
+		tls,
+		"verified\nexit=0\n",
+		`the desktop verifies HTTPS against the image's CA store: ${await readFile("/srv/workbench/tls-proof-errors", "utf8").catch(() => "")}`,
+	);
+	// Internet for the Terminal is the desktop's own network from the root
+	// plumber, not a proxy: what the desktop starts carries no proxy settings and
+	// resolves through public name servers. This proof has no plumber, so the
+	// desktop keeps loopback only, never an unfiltered network.
+	const processes: { pid: string; command: string; environment: string }[] = [];
+	for (const pid of (await readdir("/proc")).filter((name) => /^[0-9]+$/.test(name))) {
+		const command = await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "");
+		const environment = await readFile(`/proc/${pid}/environ`, "utf8").catch(() => "");
+		processes.push({ pid, command: command.replaceAll("\0", " "), environment });
+	}
+	const started = processes.find((entry) => entry.command.includes("desktop-ticks"));
+	assert.ok(started, "the autostart fixture is running");
+	assert.ok(
+		!/^(HTTPS?_PROXY|https?_proxy|ALL_PROXY|NO_PROXY)=/m.test(started.environment.replaceAll("\0", "\n")),
+		started.environment,
+	);
+	assert.match(await readFile(`/proc/${started.pid}/root/etc/resolv.conf`, "utf8"), /^nameserver 1\.1\.1\.1\n/);
+	const devices = await readFile(`/proc/${started.pid}/net/dev`, "utf8");
+	assert.match(devices, /^ *lo:/m);
+	assert.doesNotMatch(devices, /eth0/);
+	assert.equal(processes.filter((entry) => entry.command.includes("--network-proxy")).length, 0);
 	const firstCommands = commands(bindings[0]);
 	const secondCommands = commands(bindings[1]);
 	assert.notEqual(launcher.xSocket(bindings[0]), launcher.xSocket(bindings[1]));
+	await shell(firstCommands, "printf shared-from-first > shared.txt");
+	await xdo(firstCommands, bindings[0], "mousemove", "120", "230");
 	assert.match(
-		await shell(
-			firstCommands,
-			bindings[0],
-			"printf shared-from-first > shared.txt; xdotool mousemove 120 230; xdotool getmouselocation --shell",
-		),
+		await xdo(firstCommands, bindings[0], "getmouselocation", "--shell"),
 		/^X=120\nY=230\nSCREEN=0\nWINDOW=[0-9]+$/,
 	);
-	assert.equal(await shell(secondCommands, bindings[1], "cat shared.txt"), "shared-from-first");
-	await shell(secondCommands, bindings[1], "xdotool mousemove 420 530");
-	assert.match(await shell(firstCommands, bindings[0], "xdotool getmouselocation --shell"), /^X=120\nY=230\n/);
-	assert.match(await shell(secondCommands, bindings[1], "xdotool getmouselocation --shell"), /^X=420\nY=530\n/);
+	assert.equal(await shell(secondCommands, "cat shared.txt"), "shared-from-first");
+	await xdo(secondCommands, bindings[1], "mousemove", "420", "530");
+	assert.match(await xdo(firstCommands, bindings[0], "getmouselocation", "--shell"), /^X=120\nY=230\n/);
+	assert.match(await xdo(secondCommands, bindings[1], "getmouselocation", "--shell"), /^X=420\nY=530\n/);
 	assert.equal(
 		await shell(
 			firstCommands,
-			bindings[0],
-			"test ! -e /srv/profiles; test ! -e /run/office-screens; test ! -e /tmp/.X11-unix/X2; printf contained",
+			`test ! -e /srv/profiles; test ! -e /run/office-screens; test ! -e /tmp/.X11-unix; test -z "\${DISPLAY-}"; printf contained`,
 		),
 		"contained",
 	);
@@ -202,7 +262,7 @@ try {
 		socket.destroy();
 	}
 	await delay(250);
-	assert.equal(await shell(firstCommands, bindings[0], "xdotool getdisplaygeometry"), "1920 1200");
+	assert.equal(await xdo(firstCommands, bindings[0], "getdisplaygeometry"), "1920 1200");
 	const png = Buffer.from(await firstCommands.capturePng({ display: ":1", signal, maxBytes: 16777216 }));
 	assert.equal(png.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
 	assert.equal(png.readUInt32BE(16), 1920);
@@ -231,7 +291,7 @@ try {
 		await readFile(`/srv/screens/${bindings[0].screenId}/preserved-setting`, "utf8"),
 		"survives-close-and-reopen",
 	);
-	assert.equal(await shell(secondCommands, bindings[1], "cat shared.txt"), "shared-from-first");
+	assert.equal(await shell(secondCommands, "cat shared.txt"), "shared-from-first");
 	const reopened = await launcher.launch(bindings[0], signal);
 	await reopened.ready;
 	await reopened.stop();

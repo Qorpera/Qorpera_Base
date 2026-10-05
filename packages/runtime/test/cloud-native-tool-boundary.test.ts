@@ -13,6 +13,7 @@ import {
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
 	CloudToolArgumentRefusal,
+	CloudToolAuthorizeRefusal,
 	CloudToolRefusal,
 	type CloudToolResult,
 	MAX_CLOUD_TOOL_RESULT_BYTES,
@@ -225,6 +226,17 @@ describe("cloud-owned native tool boundary", () => {
 			content: { text: "REFUSED" },
 		});
 		expect(execute).toHaveBeenCalledTimes(2);
+	});
+
+	it("relays the registry's refusal at an authorize before the receipt as the tool's refusal", async () => {
+		const execute = vi.fn<CloudNativeTool["execute"]>(async () => {
+			throw new CloudToolAuthorizeRefusal("Screenshots are not available on this computer yet");
+		});
+		const { call } = fixture({ execute });
+		expect((await call()).result).toMatchObject({
+			status: "denied",
+			content: { text: "REFUSED: Screenshots are not available on this computer yet" },
+		});
 	});
 
 	it("deduplicates concurrent identical call ids but rejects changed arguments", async () => {
