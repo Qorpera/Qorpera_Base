@@ -2136,13 +2136,16 @@ requester's login with room left first, then a company account).
 Routines follow the same rule (migration 20260930095000):
 
 - A routine keeps a payer that serves its saver (their own login, or a company
-  account), also when that payer cannot pay right now; the routine then waits
-  as paused (needs a model account) and says why. It never moves to the
+  account), also when that payer cannot pay right now. One it may no longer use
+  (revoked, or without consent) leaves the routine paused (needs a model
+  account); one at its usage limit, or needing a new sign-in, stops its runs
+  until it can pay again. Either way the routine says why. It never moves to the
   member's other login or to a company account on its own.
 - The pick is explicit and outside the routine's file: a member picks one of
   their own logins for it (and becomes its saver), an owner or admin picks a
-  company account (its saver stays). A key in the file never chooses a payer,
-  since anyone who may edit the file could set it.
+  company account (its saver stays). A pick takes only a login that can pay
+  now, and none while the company is stopped or being deleted. A key in the
+  file never chooses a payer, since anyone who may edit the file could set it.
 - A routine's first save, and another member's own save of a routine, are
   that saver's own act: their own login, or the login or company account of
   the run that saves it. A member's own save never starts on a company account.

@@ -9,8 +9,10 @@
 --   (qorpera_agent_routine_sponsor, qorpera_ensure_unattended_sponsor).
 -- Now:
 -- * A routine keeps a payer that serves its saver: their own login, or a company account (one already chosen, or that
---   of a company-paid run that saves it), also when that payer cannot pay right now, at its limit, revoked or without
---   consent. The routine then waits as paused, needs_model_account, until someone picks a login for it.
+--   of a company-paid run that saves it), also when that payer cannot pay: revoked or without consent. The routine
+--   then waits as paused, needs_model_account, until someone picks a login for it. A login at its usage limit, or one
+--   its member must sign in to again, stays too: the routine's runs stop at the limit (20260928349910), and the read
+--   says why it cannot pay now (canPay, waitsFor).
 -- * The pick is explicit and outside the file (qorpera_set_routine_login, new): a member picks one of their own logins
 --   (and becomes the routine's saver), an owner or admin picks a company account (the saver stays).
 -- * A save by someone the routine's payer does not serve (a new routine, or another member's) is that saver's own act:
@@ -21,9 +23,10 @@
 --   (member notification routine_payer_changed).
 -- * An agent's save prepares only the login its run pays with (or the run's company account), never the member's other
 --   login.
--- Locks: the new pick takes the folder fence and the company row KEY SHARE, the caller's member row KEY SHARE (rank 1),
--- then the routine row FOR NO KEY UPDATE (rank 5), as a routine's save does; the payer reads take no lock. Every new or
--- patched body carries the marker 20260930095000. Folder-v2 only.
+-- Locks: the new pick enters as a member's action does (qorpera_folder_company_enter): the pause read, the folder fence
+-- KEY SHARE and the pause read again (a stopped or deleting company refuses it), the company row KEY SHARE, the caller's
+-- member row KEY SHARE (rank 1), then the routine row FOR NO KEY UPDATE (rank 5), as a routine's save takes them; the
+-- payer reads take no lock. Every new or patched body carries the marker 20260930095000. Folder-v2 only.
 
 create function pg_temp.routine_payer_replace(p_target regprocedure, p_old text, p_new text) returns void
 language plpgsql as $$
@@ -257,15 +260,33 @@ $$;
 
 -- 5. The explicit pick ---------------------------------------------------------------------------------------------
 
+-- Why a routine's login cannot pay right now although the routine keeps it: 'usage_limit' (it reached its usage limit;
+-- an unknown usage counts as room) or 'sign_in' (its member must sign in to it again). Null: it can pay now.
+create function public.qorpera_company_state_routine_waits(p_connection_id uuid)
+returns text language sql stable security definer set search_path = '' as $$
+	-- 20260930095000
+	select case
+		when exists (select 1 from public.qorpera_model_logins as login
+			where login.credential_capsule_id = version.credential_capsule_id and login.status <> 'active') then 'sign_in'
+		when public.qorpera_native_account_remaining(version.connection_id, version.version) = 0 then 'usage_limit'
+	end
+	from public.qorpera_provider_connection_versions as version
+	where version.connection_id = p_connection_id
+	order by version.version desc
+	limit 1
+$$;
+revoke all on function public.qorpera_company_state_routine_waits(uuid) from public, anon, authenticated, service_role;
+
 -- A member picks the login a routine runs on: one of their own logins (they become its saver), or, as an owner or
--- admin, a company account (its saver stays). Only a login that can pay for the routine's work while its member is away
--- now. The routine gets a version on that login; one waiting for a login (needs_model_account) runs again.
+-- admin, a company account (its saver stays). Only a login that can pay for the routine's work while its member is away,
+-- and can pay now: not at its usage limit, and not one its member must sign in to again. The routine gets a version on
+-- that login; one waiting for a login (needs_model_account) runs again. A stopped or deleting company refuses it.
 create function public.qorpera_set_routine_login(p_routine_id uuid, p_connection_id uuid)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_user uuid := auth.uid(); v_routine public.qorpera_cloud_routines%rowtype;
 	v_current public.qorpera_cloud_routine_versions%rowtype; v_connection public.qorpera_provider_connections%rowtype;
 	v_role text; v_requester uuid; v_binding uuid; v_pay record; v_status text; v_reason text; v_next bigint;
-	v_created timestamptz; v_trigger jsonb;
+	v_created timestamptz; v_trigger jsonb; v_waits text;
 begin
 	-- 20260930095000
 	if auth.role() is distinct from 'authenticated' or v_user is null or p_routine_id is null or p_connection_id is null then
@@ -273,11 +294,17 @@ begin
 	select * into v_routine from public.qorpera_cloud_routines where id = p_routine_id;
 	if not found or v_routine.folder_environment_id is null or not public.qorpera_company_is_folder_v2(v_routine.profile_id) then
 		raise exception 'Routine is unavailable' using errcode = '42501'; end if;
-	-- The core's order: the fence and the company row KEY SHARE, the member (rank 1), then the routine (rank 5).
-	perform public.qorpera_folder_machine_fence(v_routine.profile_id);
+	-- A member's action in the core's order: the pause read, the fence KEY SHARE and the pause read again (a deletion
+	-- request counts as a pause), the company row KEY SHARE, the member (rank 1), then the routine (rank 5). A pick
+	-- changes who pays and may restart the routine, so it stops with the company.
+	perform public.qorpera_folder_company_enter(v_routine.folder_environment_id, v_routine.profile_id, jsonb_build_array(
+		jsonb_build_object('rank', 1, 'tbl', 'qorpera_profile_members', 'key', v_routine.profile_id::text || ':' || v_user::text,
+			'mode', 'keyshare', 'required', false),
+		jsonb_build_object('rank', 5, 'tbl', 'qorpera_cloud_routines', 'key', v_routine.id::text, 'mode', 'nokeyupdate',
+			'required', true)), true);
 	select member.role into v_role from public.qorpera_profile_members as member
-	where member.profile_id = v_routine.profile_id and member.user_id = v_user for key share;
-	select * into v_routine from public.qorpera_cloud_routines where id = p_routine_id for no key update;
+	where member.profile_id = v_routine.profile_id and member.user_id = v_user;
+	select * into v_routine from public.qorpera_cloud_routines where id = p_routine_id;
 	if v_role is null or v_role not in ('owner', 'admin', 'contributor') or v_routine.folder_retired_at is not null
 		or v_routine.status = 'retired'
 		or not public.qorpera_folder_actor_allowed(v_routine.folder_environment_id, v_routine.profile_id,
@@ -299,9 +326,17 @@ begin
 	select * into v_pay from public.qorpera_company_state_routine_payer(v_routine.profile_id, v_requester, v_binding);
 	if v_pay.binding_id is null or public.qorpera_sponsor_binding_connection(v_pay.binding_id) is distinct from p_connection_id then
 		raise exception 'This login cannot pay for this routine' using errcode = '22023'; end if;
-	if exists (select 1 from jsonb_array_elements(v_current.triggers) as trigger(value) where trigger.value ->> 'kind' = 'listener')
+	-- A ChatGPT plan pays only for work its member starts or the clock they set: never for a file change (folder-v2's
+	-- listener) or any other trigger, as the file rules and the folder wake check refuse it.
+	if exists (select 1 from jsonb_array_elements(v_current.triggers) as trigger(value)
+			where coalesce(trigger.value ->> 'kind', '') not in ('schedule', 'once'))
 		and public.qorpera_sponsor_version_is_chatgpt_plan(v_pay.binding_id, v_pay.version) then
 		raise exception 'A ChatGPT plan cannot pay for a listener' using errcode = '42501'; end if;
+	v_waits := public.qorpera_company_state_routine_waits(p_connection_id);
+	if v_waits = 'usage_limit' then
+		raise exception 'This login has reached its usage limit' using errcode = '22023';
+	elsif v_waits = 'sign_in' then
+		raise exception 'This login needs a new sign-in' using errcode = '22023'; end if;
 
 	v_status := v_routine.status; v_reason := v_routine.pause_reason;
 	-- A routine that waited for a login runs again, as a paid save leaves it.
@@ -347,12 +382,14 @@ begin
 	return public.qorpera_get_routine_payer(v_routine.id);
 end $$;
 
--- What the routine editor shows: the login a routine runs on, whether it can pay now, and since when and by whose save
--- or pick it is the one. For a member who may read the routine's file.
+-- What the routine editor shows: the login a routine runs on, whether it can pay now and else why (waitsFor: 'login'
+-- when the routine waits for a pick, 'usage_limit' or 'sign_in' when it keeps a login that cannot pay right now), and
+-- since when and by whose save or pick it is the one. For a member who may read the routine's file.
 create function public.qorpera_get_routine_payer(p_routine_id uuid)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_routine public.qorpera_cloud_routines%rowtype; v_current public.qorpera_cloud_routine_versions%rowtype;
 	v_connection public.qorpera_provider_connections%rowtype; v_change public.qorpera_routine_payer_changes%rowtype;
+	v_waits text;
 begin
 	-- 20260930095000
 	select * into v_routine from public.qorpera_cloud_routines where id = p_routine_id;
@@ -366,12 +403,14 @@ begin
 	where connection.id = public.qorpera_sponsor_binding_connection(v_current.sponsor_binding_id);
 	select * into v_change from public.qorpera_routine_payer_changes
 	where routine_id = v_routine.id order by routine_version desc limit 1;
+	v_waits := case when not public.qorpera_company_state_routine_paid(v_current) then 'login'
+		else public.qorpera_company_state_routine_waits(v_connection.id) end;
 	return jsonb_build_object('schema', 'qorpera.routine-payer/v1', 'routineId', v_routine.id,
 		'routineVersion', v_routine.current_version, 'status', v_routine.status, 'pauseReason', v_routine.pause_reason,
 		'connectionId', v_connection.id,
 		'payer', case when v_connection.id is null then null when v_connection.owner_user_id is null then 'company' else 'member' end,
 		'payerUserId', v_connection.owner_user_id, 'savedByUserId', v_current.created_by_user_id,
-		'canPay', public.qorpera_company_state_routine_paid(v_current),
+		'canPay', v_waits is null, 'waitsFor', v_waits,
 		'since', coalesce(v_change.changed_at, v_routine.created_at), 'changedByUserId', v_change.changed_by_user_id,
 		'changeReason', v_change.reason);
 end $$;

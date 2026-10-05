@@ -3,7 +3,9 @@
 -- payer that serves its saver, also when that payer cannot pay: it waits as needs_model_account. A member picks
 -- another of their own logins, or an owner or admin a company account, with qorpera_set_routine_login; another
 -- member's own save is their own first choice. A changed payer is recorded, and the member whose login paid before is
--- told. The fixture's owner (…01) pays with login c1 (b1); the member (…02) has login c2 (b2), not for unattended work.
+-- told. A login at its usage limit or needing a new sign-in is kept, and the read says why; a pick refuses it, a ChatGPT
+-- plan for a file-change routine, and any pick while the company is stopped or being deleted. The fixture's owner (…01)
+-- pays with login c1 (b1); the member (…02) has login c2 (b2), not for unattended work.
 
 create function pg_temp.p911_as(p_user text) returns void language plpgsql as $$
 begin
@@ -217,4 +219,86 @@ begin
 	r.sponsor_binding_id := '70800000-0000-4000-8000-0000000000b1';
 	perform pg_temp.p911_assert(not exists (select 1 from public.qorpera_agent_routine_sponsor(r)),
 		'never the login of another member, nor the member''s other one');
+end $$;
+
+-- 9. A kept login that can't pay now, at its usage limit or needing a new sign-in, stays the routine's: the read says
+-- why and a pick of it is refused. The member's login c2 is a vault login here.
+select pg_temp.fx($f$insert into public.qorpera_model_logins(id, profile_id, compute_identity_id, credential_capsule_id,
+	broker_authority_id, provider, native_harness, status, current_version, access_issued_at, access_expires_at)
+	select '91100000-0000-4000-8000-0000000000f2', '70700000-0000-4000-8000-000000000010', extensions.gen_random_uuid(),
+		cv.credential_capsule_id, extensions.gen_random_uuid(), 'openai', 'codex-cli', 'active', 1, now(), now() + interval '1 hour'
+	from public.qorpera_provider_connection_versions cv
+	where cv.connection_id = '70800000-0000-4000-8000-0000000000c2' and cv.version = 2$f$);
+do $$
+declare p jsonb := pg_temp.p911_payer('91100000-0000-4000-8000-0000000000e2');
+begin
+	perform pg_temp.p911_assert(p ->> 'connectionId' = '70800000-0000-4000-8000-0000000000c2' and (p ->> 'canPay')::boolean
+		and p -> 'waitsFor' = 'null'::jsonb, 'a login that can pay waits for nothing: ' || p::text);
+end $$;
+insert into public.qorpera_native_provider_account_metadata(connection_id, connection_version, provider_account_usage)
+values ('70800000-0000-4000-8000-0000000000c2', 2, jsonb_build_object('observedAt', clock_timestamp(), 'windows',
+	jsonb_build_array(jsonb_build_object('id', 'primary', 'label', '5 hours', 'usedPercent', 100))));
+do $$
+declare e uuid := '91100000-0000-4000-8000-0000000000e2'; p jsonb := pg_temp.p911_payer('91100000-0000-4000-8000-0000000000e2');
+begin
+	perform pg_temp.p911_assert(p ->> 'connectionId' = '70800000-0000-4000-8000-0000000000c2' and p ->> 'status' = 'active'
+		and not (p ->> 'canPay')::boolean and p ->> 'waitsFor' = 'usage_limit',
+		'a login at its usage limit is kept, and the read says why: ' || p::text);
+	perform pg_temp.p911_assert(pg_temp.p911_pick('2', e, '70800000-0000-4000-8000-0000000000c2')
+		= '22023:This login has reached its usage limit', 'a pick of a login at its usage limit');
+	perform pg_temp.p911_assert((pg_temp.rv(e)).sponsor_binding_id = '70800000-0000-4000-8000-0000000000b2'
+		and (pg_temp.rv(e)).sponsor_version = 2, 'the routine keeps its login');
+end $$;
+delete from public.qorpera_native_provider_account_metadata where connection_id = '70800000-0000-4000-8000-0000000000c2';
+select pg_temp.fx($f$update public.qorpera_model_logins set status = 'needs_sign_in'
+	where id = '91100000-0000-4000-8000-0000000000f2'$f$);
+do $$
+declare e uuid := '91100000-0000-4000-8000-0000000000e2'; p jsonb := pg_temp.p911_payer('91100000-0000-4000-8000-0000000000e2');
+begin
+	perform pg_temp.p911_assert(p ->> 'connectionId' = '70800000-0000-4000-8000-0000000000c2'
+		and not (p ->> 'canPay')::boolean and p ->> 'waitsFor' = 'sign_in',
+		'a login that needs a new sign-in is kept, and the read says why: ' || p::text);
+	perform pg_temp.p911_assert(pg_temp.p911_pick('2', e, '70800000-0000-4000-8000-0000000000c2')
+		= '22023:This login needs a new sign-in', 'a pick of a login that needs a new sign-in');
+end $$;
+
+-- 10. A ChatGPT plan never pays for a file-change routine, also by a pick. c2 is now the member's plan, turned on for
+-- work while away.
+select pg_temp.fx($f$update public.qorpera_model_logins set status = 'active', login_kind = 'chatgpt_plan'
+	where id = '91100000-0000-4000-8000-0000000000f2'$f$);
+do $$
+declare e uuid := '91100000-0000-4000-8000-0000000000e3';
+begin
+	perform pg_temp.commit(pg_temp.owner(), 'p911-0006', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'docs')));
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'p911-0007', jsonb_build_array(pg_temp.routine(
+		'agents/nora/routines/watch.md', pg_temp.rparse(e, 'Watch docs',
+			jsonb_build_object('when', 'file-change', 'watch', 'docs', 'match', 'subtree'))))), 1, 'saved');
+	perform pg_temp.p911_assert((pg_temp.rv(e)).triggers -> 0 ->> 'kind' = 'file-change'
+		and (pg_temp.rv(e)).sponsor_binding_id = '70800000-0000-4000-8000-0000000000b1', 'the owner''s file-change routine');
+	perform pg_temp.p911_assert(pg_temp.p911_pick('2', e, '70800000-0000-4000-8000-0000000000c2')
+		= '42501:A ChatGPT plan cannot pay for a listener', 'a ChatGPT plan picked for a file-change routine');
+	perform pg_temp.p911_assert((pg_temp.rv(e)).sponsor_binding_id = '70800000-0000-4000-8000-0000000000b1',
+		'the routine keeps its login');
+end $$;
+
+-- 11. A stopped company, or one being deleted, refuses a pick: it changes who pays and may restart a routine.
+select pg_temp.fx($f$insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id)
+	values ('70700000-0000-4000-8000-000000000010', '70700000-0000-4000-8000-000000000001')$f$);
+do $$
+begin
+	perform pg_temp.p911_assert(pg_temp.p911_pick('1', '91100000-0000-4000-8000-0000000000e1', '70800000-0000-4000-8000-0000000000c1')
+		= '55000:Company execution is paused', 'a pick while the company is stopped');
+end $$;
+select pg_temp.fx($f$delete from public.qorpera_company_execution_pauses where profile_id = '70700000-0000-4000-8000-000000000010';
+	insert into public.qorpera_company_deletions(profile_id, requested_by_user_id)
+	values ('70700000-0000-4000-8000-000000000010', '70700000-0000-4000-8000-000000000001')$f$);
+do $$
+declare e uuid := '91100000-0000-4000-8000-0000000000e1';
+begin
+	perform pg_temp.p911_assert(pg_temp.p911_pick('1', e, '70800000-0000-4000-8000-0000000000c1')
+		= '55000:Company execution is paused', 'a pick while the company is being deleted');
+	perform pg_temp.p911_assert((pg_temp.rv(e)).sponsor_binding_id = current_setting('qorpera_test.p911_company_binding')::uuid
+		-- Only section 3's pick moved it to c1.
+		and (select count(*) from public.qorpera_routine_payer_changes where routine_id = e and to_connection_id
+			= '70800000-0000-4000-8000-0000000000c1') = 1, 'nothing changed');
 end $$;

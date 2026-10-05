@@ -114,8 +114,12 @@ export interface WebRoutinePayer {
 	/** The member the routine runs for: its current version's saver. */
 	readonly savedByUserId: string;
 	/** Whether that login can pay for its work now. One that cannot leaves the routine waiting (needs_model_account)
-	 * until someone picks a login. */
+	 * until someone picks a login, or keeps it while it is at its usage limit or needs a new sign-in. */
 	readonly canPay: boolean;
+	/** Why it can't: `login` (the routine waits for a pick), `usage_limit` (the login reached its usage limit; the
+	 * routine's runs stop until it resets) or `sign_in` (its member must sign in to it again). Null when it can pay, and
+	 * from a cloud that does not say. */
+	readonly waitsFor: "login" | "usage_limit" | "sign_in" | null;
 	/** When the payer last changed, else when the routine was made. */
 	readonly since: string;
 	/** Who changed it, and whether by a save or a pick; both null until a change is recorded. */
@@ -125,9 +129,17 @@ export interface WebRoutinePayer {
 
 /** Why the cloud refused a login for a routine: `unavailable` (the member may not change the routine, or it is
  * retired), `not_yours` (another member's login, or a company account picked by a contributor), `cannot_pay` (the
- * login cannot pay for work while its member is away now), `plan_listener` (a ChatGPT plan for a file-change or
- * webhook routine). */
-export type WebRoutineLoginRefusal = "unavailable" | "not_yours" | "cannot_pay" | "plan_listener";
+ * login cannot pay for work while its member is away now), `usage_limit` (it reached its usage limit), `sign_in` (its
+ * member must sign in to it again), `plan_listener` (a ChatGPT plan for a file-change or webhook routine), `stopped`
+ * (the company is stopped or being deleted). */
+export type WebRoutineLoginRefusal =
+	| "stopped"
+	| "unavailable"
+	| "not_yours"
+	| "cannot_pay"
+	| "usage_limit"
+	| "sign_in"
+	| "plan_listener";
 
 export interface WebRoutines {
 	list(): Promise<WebRoutine[]>;
@@ -183,6 +195,7 @@ export class WebRoutineLoginRefusedError extends Error {
 /** Clouds without the payer calls (before 20260930095000): asked no more while the page lives. */
 const payerless = new WeakSet<Cloud>();
 const ROUTINE_STATUSES: ReadonlySet<string> = new Set(["active", "paused", "expired", "concluded", "retired"]);
+const ROUTINE_PAYER_WAITS: ReadonlySet<string> = new Set(["login", "usage_limit", "sign_in"]);
 
 /** A `qorpera.routine-payer/v1` answer for `routineId`. Anything else is not read: a payer that names no member
  * for a member's login, or one for a company account, is as wrong as a missing field. */
@@ -207,6 +220,8 @@ export function parseRoutinePayer(value: unknown, routineId: string): WebRoutine
 				: v.payer === "company" && v.payerUserId === null) ||
 		!id(v.savedByUserId) ||
 		typeof v.canPay !== "boolean" ||
+		// A login that can pay waits for nothing; one that can't says why (a cloud before the reason says nothing).
+		!(v.waitsFor === undefined || (v.canPay ? v.waitsFor === null : waitsFor(v.waitsFor) !== null)) ||
 		typeof since !== "string" ||
 		since.length > 64 ||
 		!/^\d{4}-\d{2}-\d{2}T/.test(since) ||
@@ -226,17 +241,34 @@ export function parseRoutinePayer(value: unknown, routineId: string): WebRoutine
 		payerUserId: v.payerUserId as string | null,
 		savedByUserId: v.savedByUserId as string,
 		canPay: v.canPay as boolean,
+		waitsFor: v.canPay ? null : waitsFor(v.waitsFor),
 		since,
 		changedByUserId: v.changedByUserId as string | null,
 		changeReason: v.changeReason as WebRoutinePayer["changeReason"],
 	};
 }
 
+/** A payer read's reason, or null for anything else. */
+function waitsFor(value: unknown): WebRoutinePayer["waitsFor"] {
+	if (typeof value !== "string" || !ROUTINE_PAYER_WAITS.has(value)) return null;
+	return value as WebRoutinePayer["waitsFor"];
+}
+
 /** The refusals `qorpera_set_routine_login` names, by code and message; anything else is no refusal of the login. */
 function loginRefusal(error: unknown): WebRoutineLoginRefusal | undefined {
 	if (!(error instanceof CloudRpcError)) return undefined;
+	if (error.code === "55000") return error.message === "Company execution is paused" ? "stopped" : undefined;
 	if (error.code === "22023")
-		return error.message === "This login cannot pay for this routine" ? "cannot_pay" : undefined;
+		switch (error.message) {
+			case "This login cannot pay for this routine":
+				return "cannot_pay";
+			case "This login has reached its usage limit":
+				return "usage_limit";
+			case "This login needs a new sign-in":
+				return "sign_in";
+			default:
+				return undefined;
+		}
 	if (error.code !== "42501") return undefined;
 	switch (error.message) {
 		case "Routine is unavailable":

@@ -475,7 +475,11 @@ paths it may read. Its own change sets never wake it.
   own, an owner or admin a company account). A save by someone that payer does not serve (a new
   routine, another member's save) is their own first choice: their own login, or the saving run's.
   A changed payer is recorded (`qorpera_routine_payer_changes`, read by `qorpera_get_routine_payer`)
-  and the member whose login paid before gets a `routine_payer_changed` notice.
+  and the member whose login paid before gets a `routine_payer_changed` notice. A login at its usage
+  limit or needing a new sign-in is kept too (its runs stop at the limit); the read says why
+  (`waitsFor`), and a pick refuses such a login, a ChatGPT plan for any trigger other than a
+  schedule or a single time, and any pick while the company is stopped or being deleted (the
+  member-action entry, `qorpera_folder_company_enter`).
 - A member without such a login cannot make those saves, and neither can an agent acting with no
   run (a coding session, or a desktop whose run ended: C1b-3a's views) for a member without one. A
   run whose requester has none pins the run's login, and the routine waits (`needs_model_account`). Unlike an agent's save today, the
