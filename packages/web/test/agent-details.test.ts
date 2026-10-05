@@ -409,6 +409,8 @@ describe("agent pages", () => {
 			}),
 			save: vi.fn(async (): Promise<"saved" | "unchanged"> => "saved"),
 			setEnabled: vi.fn(async () => {}),
+			payer: vi.fn(async () => null),
+			setLogin: vi.fn(async () => null),
 		} satisfies WebRoutines;
 		const nativeSubscription = {
 			listConnections: vi.fn(async () => ({ connections: [] })),

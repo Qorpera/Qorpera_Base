@@ -83,8 +83,7 @@ export const WORKSPACE: Record<string, string> = {
 	"Filter {title}": "Filtrér {title}",
 	"No rows match.": "Ingen rækker passer.",
 	"Choose one to see it here.": "Vælg en for at se den her.",
-	"Text in «» is quoted from outside content, not written by me.":
-		"Tekst i «» er citeret fra udefrakommende indhold og ikke skrevet af mig.",
+	"This row's email can't be quoted in a message.": "Mailen i denne række kan ikke citeres i en besked.",
 	"The Co-Founder's thread can't be opened here.": "Co-Founderens tråd kan ikke åbnes her.",
 
 	// app/interfaces.ts and app/views/interface.ts

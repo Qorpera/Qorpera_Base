@@ -230,7 +230,14 @@ export function cloudActionEffect(
 			return "internal";
 		case "company_delete":
 			return "destructive";
+		// A command can reach the internet, and so can what is typed into one.
+		// Reading output and listing change nothing; stopping only ends work.
 		case "computer_shell":
+			return ["read", "list"].includes(action.action as string)
+				? "read"
+				: action.action === "stop"
+					? "internal"
+					: "external";
 		// An email from a company mailbox leaves the company (M2b).
 		case "send_mail":
 			return "external";
@@ -474,8 +481,10 @@ export function describeCloudAction(
 		quote("text", action.text);
 		add("key", action.key);
 	} else if (tool.name === "computer_shell") {
-		title = "Run a command on the computer";
+		title =
+			action.action === "write" ? "Type into a running command on the computer" : "Run a command on the computer";
 		quote("command", action.command, 2000);
+		quote("text", action.text, 2000);
 	} else if (tool.name === "send_mail") {
 		title = "Send an email";
 		const addresses = (value: JsonValue | undefined) =>
