@@ -31,6 +31,7 @@ import {
 	hashOf,
 	MEMBER,
 	PASS,
+	PROFILE,
 	storeFile,
 	v,
 	writableGrants,
@@ -603,6 +604,61 @@ describe("writes through the mount", () => {
 			fileSha256: hashOf(big.slice(0, 8 * 1024 * 1024)),
 		});
 		expect(core.entries.get("log.txt")).toMatchObject({ bytes: 0, fileSha256: hashOf("") });
+	});
+
+	it("lands a change asked for while a boundary settles after that boundary, never in it", async () => {
+		const { core, open } = await fixture();
+		core.seed([folder("locked")]);
+		core.refuse = (path) => path.startsWith("locked/");
+		const view = await open();
+		await write(view, "ok.txt", "ok");
+		await write(view, "locked/x.txt", "x");
+		// The boundary saves one file and keeps the refused one; the feed fails, so it does not settle.
+		core.feedFailures = 3;
+		expect(byPath((await view.publish()).paths)).toEqual([
+			{ path: "locked/x.txt", outcome: "denied", reason: "denied", kept: true },
+			{ path: "ok.txt", outcome: "saved" },
+		]);
+		// A new file and a boundary asked for at once: the file lands after the boundary has settled, and stays.
+		const opening = view.open({ path: "new.txt", create: true, exclusive: false, truncate: true });
+		const publishing = view.publish();
+		const [{ handle }] = await Promise.all([opening, publishing]);
+		const data = Buffer.from("new");
+		await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: 3, offset: 0, data });
+		await view.close(handle, 3);
+		expect(await read(view, "new.txt")).toBe("new");
+		core.refuse = () => false;
+		expect(byPath((await view.publish()).paths)).toEqual([
+			{ path: "locked/x.txt", outcome: "saved" },
+			{ path: "new.txt", outcome: "saved" },
+		]);
+	});
+
+	it("renews a chunk's intent while its parts are still on their way", async () => {
+		let now = Date.now();
+		const { core, open, service } = await fixture({ now: () => now });
+		const view = await open();
+		const { handle } = await view.open({ path: "big.bin", create: true, exclusive: false, truncate: true });
+		const data = Buffer.alloc(2 * 1024 * 1024, 1);
+		const first = data.subarray(0, 1024 * 1024);
+		await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data: first });
+		now += 10 * 60_000;
+		await service.renewIntents();
+		expect(core.renewals).toEqual([...core.intents.keys()]);
+	});
+
+	it("answers a close it cannot cut, for want of the origin's bytes, and keeps the handle", async () => {
+		const { root, core, open } = await fixture();
+		const entry = await storeFile(root, "log.txt", "lines", 1, BIG);
+		core.seed([entry]);
+		const view = await open();
+		const { handle } = await view.open({ path: "log.txt", create: false, exclusive: false, truncate: false });
+		// The share cannot give the origin's manifest now: the close is refused as a request, not a broken connection.
+		await rm(join(root, PROFILE, entry.manifestSha256!));
+		await refused(view.close(handle, 0), "UNAVAILABLE");
+		await storeFile(root, "log.txt", "lines", 1, BIG);
+		await view.close(handle, 0);
+		expect(await read(view, "log.txt")).toBe("");
 	});
 
 	it("takes no writes on a read-only view", async () => {

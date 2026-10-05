@@ -59,15 +59,16 @@ feed takes acknowledgements alone). A machine on protocol 1 reads only. On a wri
 | `O` | open for writing `{path, base?, create, exclusive, truncate}` | `o` `{handle, size, version}` |
 | `K` | one part of a chunk: `[u32 header length][{handle, index, sha256, bytes, offset}][≤ 1 MiB]`, in order from offset 0 | `k` once stored (the last part) |
 | `G` | `{handle, index, offset, length ≤ 1 MiB}`: part of a pending chunk back | `d` the bytes |
-| `C` | close `{handle, size}`: the chunks must tile `size` on the 4 MiB grid | `k` `{version}` |
+| `C` | close `{handle, size}`: the chunks must tile `size` on the 4 MiB grid; a file whose bytes are still its origin's is cut to `size` from the origin's chunks | `k` `{version}` |
 | `M` | mkdir `{path}` | `k` |
 | `U`, `D` | unlink, rmdir `{path, base?}` | `k` |
 | `N` | rename `{from, fromBase?, to, toBase?, noReplace}` | `k` |
 | `X` | the executable bit `{path, base?, executable}` | `k` `{version}` |
 | `P` | publish `{}` | `p` the report `{commitId, seq, paths: [{path, outcome, reason?, receipt?, kept?}]}` |
 
-A truncate of a file not open is an open, the chunk that ends it, and a close; a file whose manifest is not on the
-4 MiB grid is changed whole (open it with truncate), not chunk by chunk. A write handle belongs to the view, not to
+A truncate of a file not open is an open, the chunk that ends it when the cut is inside a chunk, and a close. A cut on
+the 4 MiB grid, or to nothing, sends no chunk: the close cuts the file's chunks, from its origin's when none of it was
+sent. A file whose manifest is not on the 4 MiB grid is changed whole (open it with truncate), not chunk by chunk. A write handle belongs to the view, not to
 the connection that opened it (the folder program pools its connections); a file still open when the view's last
 connection ends is abandoned, and what it held at its last close stays pending.
 
