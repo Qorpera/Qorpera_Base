@@ -178,10 +178,25 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
 
 - **Lookup columns** (table): a column of `columns` that the source does not have may be an inline table
   `{ from = "table:<t>", match = "<column>", show = "<column>" }` or `{ …, count = true }`. It lists or counts the rows
-  of that table whose `match` column holds this row's id. That is the only join.
+  of that table whose `match` column holds this row's id. That is the only join. This row's id is its `id`, or its
+  table's key when that is one column. A listed member or agent id shows as a name. A lookup whose table can't be read
+  is empty.
 - **Board parts:** each `[[view.block.part]]` has `title`, `from` (a table), `card = { title, line, figures, note }`
   and an optional `opens`. The lane of a row is its table's `holder` column (§5): a member's lane, the Shared lane
-  when the `shared` column says yes, or the open pile when it is empty. Dragging a card is a take or an offer.
+  when the `shared` column says yes, or the open pile when it is empty. Dragging a card is a take or a release
+  (offers come later).
+- **Board lanes (proposed, built in I9a):**
+  - `lanes = "members"`: one lane per member, the viewer's own first, then the others by name.
+  - Then the **Shared** lane, when the block names `shared`: rows whose `shared` column says yes, whoever holds them.
+    A part whose table has no such column has no shared rows.
+  - Then the **open pile**, when `open_pile = true`: rows whose holder cell is empty.
+  - Last, a row whose holder is no longer a member: a lane titled with that person's name when the client knows it,
+    else "Someone who left". Its cards have no Take or Release.
+  - `lanes = "<column>"` (a `choice` column): one lane per choice, in the column's order. Such a board has no Shared
+    lane, open pile, Take or Release.
+  - A card's lane comes from its own table's `holder` (§5). A part whose table has no `holder` draws its cards in the
+    open pile when there is one, else not at all.
+  - An empty lane keeps its title and says so quietly. On a phone the lanes stack.
 - **`opens`** names a `detail` block, or a `mail` block for a thread, in the same view. On a wide screen it opens
   beside the list; on a phone it opens as the next screen.
 
@@ -220,6 +235,21 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
   outside effects keep their own review.
 - **Built-in verbs.** A block that lists a built-in verb (`answer`, `take`, `offer`, `release`) shows that button, so
   adding one to a block counts as adding a button (§7).
+- **Take and release on a board (proposed, built in I9a).** They act on each card's own table `holder` column, so a
+  board's verbs need no `table` or `column`.
+  - **Take** shows on a card in the open pile, and **Release** on a card in the viewer's own lane. Each shows only
+    when the block lists it, the board has that lane, and the viewer may write the table's rows (`[write] members`:
+    `all`, or `owners` for owners and admins).
+  - Dragging an open-pile card to the viewer's own lane takes it, and dragging the viewer's own card to the open pile
+    releases it. No other drop does anything. Only the lane a card may land in is marked while it is dragged. The
+    buttons stay the way on a phone and from the keyboard.
+  - The write reads `tables/<t>/rows.csv`, parses it against the current `table.toml`, changes only that cell, checks
+    the claim rule (§5) before sending, and names the version it read. When the file changed meanwhile, it is read and
+    checked again: a cell no longer empty (take) or no longer the viewer's (release) stops the write, and the board
+    says "Someone else took it first." or "That changed while you were looking.". A refusal shows its problems.
+  - A card stays where it is, saving, until the save has landed and the folder's feed shows the change.
+  - `offer` and `answer` are not drawn on a board until offers have their machinery. An area's `supervisor` is not
+    taken from a board; it waits for consent records (I9b).
 - **Never possible:** a link to another site, a script, or a request to any address.
 
 ## 4. Sources
@@ -697,3 +727,13 @@ owners and admins see a quiet line about it. The folder's feed keeps it live: on
 `resync` reads everything. A `file:` source whose text is outside content (§4) stays undrawn until blocks can show the
 outside-content mark. A company whose folder has no `interfaces/order.md`, or whose first read fails, keeps the
 library's definitions.
+
+**Built: I9a** (web; `packages/web/src/app/interface-board.ts`, `app/interface-claims.ts`, `app/views/interface.ts`,
+`ui/board-drag.ts`). The `members` source is live: one row per member with `id`, `name`, `picture` (their account id,
+drawn as their picture), `role` and `here`. The viewer is here whenever the company's presence is joined, and nobody is
+when it isn't. A board draws its parts' cards in the proposed lanes of §3.2, and a part's `opens` opens its detail.
+Take and release (§3.3) write the member's own rows with the folder's member client. A rows file with rows that don't
+fit its definition is not written, since writing it would drop them. Lookup columns are drawn as names or a count, and
+the folder reader reads the tables that board parts and lookups name. The Members page's People view draws; its
+`file:rules/shared-areas.md` block stays undrawn until that file exists. Offers, answers on a board, and supervision
+(I9b) are not built.
