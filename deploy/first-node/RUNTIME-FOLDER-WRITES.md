@@ -136,8 +136,10 @@ before what goes in it. Then:
   live version;
 - **refused, denied, or not applied** (its folder was not made, the save did not get through) for a unit carrying new
   bytes: the change stays pending in this view, the report says why, and the next boundary tries it again. An agent
-  fixes what was refused (a structured file that does not parse, a folder it may not write) by changing it again, or
-  moving it;
+  fixes what was refused by changing it again (a structured file that does not parse), or by copying its bytes to a
+  path it may write (a folder it may not write: a kept change cannot be moved, since that would publish it first and
+  it is still refused, so the move fails with `EBUSY`). A kept change nobody fixes is reported at every boundary, and
+  goes when the view closes;
 - a unit that only moves or removes, and fails, loses nothing: what it would have moved or removed is still live,
   and the view shows it again.
 - **A removal never takes a version the machine did not see.** A removal of a file names the version the name showed;
