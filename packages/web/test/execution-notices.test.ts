@@ -288,6 +288,71 @@ describe("company notices", () => {
 		expect(unnamed.view.el.querySelector("p")?.textContent).toBe("An agent has made no progress for 15 minutes.");
 	});
 
+	it("says who moved a routine off the member's login, and dismisses it like any line (20260930064000)", async () => {
+		type Moved = Extract<
+			MemberNotification["subject"],
+			{ schema: "qorpera.member-notification.routine-payer-changed/v1" }
+		>;
+		const moved = (n: number, subject: Partial<Moved> = {}): MemberNotification => ({
+			...item(n),
+			kind: "routine_payer_changed",
+			subject: {
+				schema: "qorpera.member-notification.routine-payer-changed/v1",
+				routineId: id(81),
+				routineVersion: 2,
+				staffAgentId: id(83),
+				payer: "member",
+				payerUserId: id(84),
+				changedByUserId: id(84),
+				reason: "save",
+				at: timestamp,
+				...subject,
+			},
+		});
+		const names: Record<string, string> = { [id(83)]: "Nova", [id(84)]: "Anna", [id(85)]: "Ben" };
+		const show = async (notice: MemberNotification, named = true) => {
+			const client = {
+				listNotifications: vi.fn(async () => [notice]),
+				acknowledgeNotification: vi.fn(async () => ({ ...notice, acknowledgedAt: timestamp })),
+			};
+			const view = new ExecutionNotices(
+				client,
+				new AbortController().signal,
+				undefined,
+				undefined,
+				named ? (staffAgentId) => names[staffAgentId] : undefined,
+				undefined,
+				named ? (userId) => names[userId] : undefined,
+			);
+			document.body.append(view.el);
+			cleanup.push(() => view.dispose());
+			await settle();
+			return { client, view, text: view.el.querySelector("p")?.textContent };
+		};
+		expect((await show(moved(71))).text).toBe(
+			"Nova's routine no longer runs on your login. Anna moved it to their login.",
+		);
+		expect((await show(moved(72, { payer: "company", payerUserId: null, reason: "pick" }))).text).toBe(
+			"Nova's routine no longer runs on your login. Anna moved it to the company's account.",
+		);
+		expect((await show(moved(73, { payerUserId: id(85) }))).text).toBe(
+			"Nova's routine no longer runs on your login. Anna moved it to Ben's login.",
+		);
+		// Without the names (another window's lists, or no one named), the line still says what happened.
+		expect((await show(moved(74), false)).text).toBe(
+			"An agent's routine no longer runs on your login. A member moved it to their login.",
+		);
+		expect((await show(moved(75, { changedByUserId: null, payerUserId: id(86) }))).text).toBe(
+			"Nova's routine no longer runs on your login. A member moved it to another member's login.",
+		);
+		const shown = await show(moved(76));
+		const dismiss = shown.view.el.querySelector<HTMLButtonElement>('[data-action="dismiss-notification"]')!;
+		dismiss.click();
+		await settle();
+		expect(shown.client.acknowledgeNotification).toHaveBeenCalledWith(id(76), expect.any(AbortSignal));
+		expect(shown.view.el.hidden).toBe(true);
+	});
+
 	it("offers Stop for a worker's run to a member who may stop it, and the stopped run's notice is done (gap 4b)", async () => {
 		const stalled = (n: number, worker: boolean): MemberNotification => ({
 			...item(70 + n),
