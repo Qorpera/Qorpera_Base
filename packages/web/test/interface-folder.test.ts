@@ -581,7 +581,9 @@ text = "${text}"
 			fail(new Error("agent threads unavailable"));
 			await vi.advanceTimersByTimeAsync(10);
 			expect(main.querySelector(".interface-problem p")?.textContent).toBe("This page has a problem.");
-			expect(main.querySelector(".interface-list, .interface-table, .interface-actions, .notice, button")).toBeNull();
+			expect(
+				main.querySelector(".interface-list, .interface-table, .interface-actions, .notice, button"),
+			).toBeNull();
 		});
 	});
 
