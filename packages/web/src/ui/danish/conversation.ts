@@ -23,6 +23,24 @@ export const CONVERSATION: Record<string, string> = {
 	"Sending messages is not available yet. Your draft stays here.":
 		"Beskeder kan ikke sendes endnu. Din kladde bliver her.",
 	"The message could not be confirmed. Try again.": "Beskeden kunne ikke bekræftes. Prøv igen.",
+	// Quotes of outside content in a message (conversation.ts, shared-drafts.ts, company.ts)
+	"Text in «» is quoted from an email. Agents read it as quoted, never as your words.":
+		"Tekst i «» er citeret fra en mail. Agenterne læser den som citat, aldrig som dine ord.",
+	"A message can hold at most {count} quotes. Remove some to send it.":
+		"En besked kan højst rumme {count} citater. Fjern nogle for at sende den.",
+	"That message already quotes as much as one message can. Send it or remove a quote first.":
+		"Den besked citerer allerede så meget, som én besked kan. Send den, eller fjern et citat først.",
+	"That message already quotes the same words from another email. Send it or remove that quote first.":
+		"Den besked citerer allerede de samme ord fra en anden mail. Send den, eller fjern det citat først.",
+	"Quoted from an email": "Citeret fra en mail",
+	"A quote is missing one of its « » marks. Remove it, or put the mark back.":
+		"Et citat mangler et af sine «»-tegn. Fjern det, eller sæt tegnet tilbage.",
+	"A message can hold at most {count} quotes. Remove some to share your changes.":
+		"En besked kan højst rumme {count} citater. Fjern nogle for at dele dine ændringer.",
+	"A quote was taken out: the draft now quotes the same words from another email.":
+		"Et citat blev taget ud: kladden citerer nu de samme ord fra en anden mail.",
+	"A quote in it can't be shared. Remove the quote to share your changes.":
+		"Et citat i den kan ikke deles. Fjern citatet for at dele dine ændringer.",
 	// Mentions: "@" and a name in a message (conversation.ts, ui/mentions.ts, shell.ts)
 	"People and agents to mention": "Personer og agenter, du kan nævne",
 	"Only {names} will answer": "Kun {names} svarer",

@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Quotes of an email travel as quotes, never as the member's own words (Interfaces step I5d-4; migrations `20260928459100`, `20260928469160`). A message button puts each email value in the composer as one tinted piece in «» marks, with the email's thread as its record, and a line under the field says agents read it as quoted. The member keeps a quote or removes it whole (the caret steps over it; Backspace at its edge takes all of it) and writes around it. Messages send their `quotes`, shared drafts save and restore them (an empty list once the last one is gone), the thread shows them as quoted, and a name inside one names nobody. A row without its thread id gets no message button. A quote pasted over another stays a quote, shared drafts merge each quote whole, and a draft the cloud won't take as it is (a refused quote, more than 16 quotes) says so instead of retrying. The composer keeps its own undo history, since the browser's can put back a quote without its record.
 
 ### Added
 
@@ -16,7 +17,7 @@
   - **Buttons** are drawn only where the member can use them:
     - `answer` appears where a platform card waits for the member, and takes them to its thread.
     - `open` leads to an agent who still works here, or to another interface the member can open.
-    - `message` opens the agent's thread with the text in its composer. Nothing is sent until the member sends it. A value from outside content, such as an email's subject, goes in «» on one line (it can't close the marks or start a line of its own) with a quoted line saying so.
+    - `message` opens the agent's thread with the text in its composer. Nothing is sent until the member sends it. A value from outside content, such as an email's subject, goes in «» on one line (it can't close the marks or start a line of its own), as a quote since I5d-4 (above).
     - Answer and message need a member who can write.
   - Every control keeps keyboard focus through live redraws. The platform's column names and the kinds of what waits are in the member's language.
   - Pulse's "Needs you" cards show their Answer button.
