@@ -10,7 +10,12 @@ insert into auth.users(id,email) values('32100000-0000-4000-8000-000000000001','
 insert into public.qorpera_profiles(id,name,created_by_user_id) values('32100000-0000-4000-8000-000000000010','Node update fixture','32100000-0000-4000-8000-000000000001');
 insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
  values('32100000-0000-4000-8000-000000000010','32100000-0000-4000-8000-000000000001','node-updater@example.test','Owner','owner');
+-- A folder-v2 company (the company folder core).
+insert into public.qorpera_company_environments(id,profile_id,name,contract_version,created_by_user_id)
+ values('32100000-0000-4000-8000-000000000011','32100000-0000-4000-8000-000000000010','Node update fixture',1,'32100000-0000-4000-8000-000000000001');
 select set_config('request.jwt.claims','{"role":"service_role"}',true);
+select public.qorpera_folder_enable('32100000-0000-4000-8000-000000000011') \g /dev/null
+select pg_temp.ok(public.qorpera_company_is_folder_v2('32100000-0000-4000-8000-000000000010'),'Node update company is not a folder-v2 company');
 set local role service_role;
 select public.qorpera_configure_runtime_node(jsonb_build_object('schema','qorpera.runtime-node-policy/v1','nodeId','32100000-0000-4000-8000-000000000020',
  'machineIdSha256',repeat('a',64),'label','node-update-fixture','cpuMillis',16000,'memoryBytes',68719476736,'headroomCpuMillis',4000,'headroomMemoryBytes',17179869184,
@@ -91,9 +96,10 @@ select pg_temp.denied(format('select public.qorpera_record_node_update_phase(%L,
 select pg_temp.denied('select pg_temp.phase(''install'')');
 select pg_temp.denied(format('select public.qorpera_drain_node_update(%L,1,%L,%L,1,%L)','32100000-0000-4000-8000-000000000020',current_setting('t.node_cap'),current_setting('t.node_release_sha'),pg_temp.node_state()#>>'{observation,policySha256}'));
 reset role;
--- The pause is an operator brake: the operator session acts with a founder's claims.
+-- The pause is an operator brake, in a founder's name. A folder-v2 company refuses the snapshot-v1 founder pause
+-- (qorpera_set_company_execution_pause, 0A000); the operator pauses it through the folder core, as 849 does.
+select public.qorpera_folder_pause('32100000-0000-4000-8000-000000000010','32100000-0000-4000-8000-000000000001','node update fixture') \g /dev/null
 select set_config('request.jwt.claims','{"role":"authenticated","sub":"32100000-0000-4000-8000-000000000001"}',true);
-select public.qorpera_set_company_execution_pause('32100000-0000-4000-8000-000000000010',true,'node update fixture');
 select public.qorpera_authorize_node_update_drain('32100000-0000-4000-8000-000000000020',current_setting('t.node_release_sha'),repeat('3',64));
 set local role anon;
 select set_config('t.before_transition',(pg_temp.node_state()->'observation')::text,true);

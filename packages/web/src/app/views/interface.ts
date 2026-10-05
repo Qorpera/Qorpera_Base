@@ -9,8 +9,17 @@ import {
 	plainText,
 	queryInterfaceRows,
 } from "@qorpera/cloud-client/interface-query";
-import type { InterfaceBlock, InterfaceFile, TableRow, TableValue } from "@qorpera/cloud-client/interfaces";
+import {
+	INTERFACE_OUTSIDE_VALUES_MAX,
+	INTERFACE_QUOTE_SOURCES,
+	type InterfaceBlock,
+	type InterfaceFile,
+	interfaceOutsideColumns,
+	type TableRow,
+	type TableValue,
+} from "@qorpera/cloud-client/interfaces";
 import { describeError } from "../../cloud/client.ts";
+import { type MessageQuote, QUOTE_MAX_CHARACTERS, quoteRefFits } from "../../cloud/quotes.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { button, fmtTime, h, notice, replace, spinner } from "../../ui/dom.ts";
@@ -28,12 +37,13 @@ import {
 	interfaceRows,
 	interfaceSourceTime,
 	interfaceViews,
-	OUTSIDE_COLUMNS,
+	QUOTE_RECORD_COLUMNS,
 	rowHasCard,
 	sourceColumns,
 	type ViewBlock,
 	viewBlocks,
 } from "../interfaces.ts";
+import type { QuotedText } from "../quotes.ts";
 
 /** What each container last showed, and the element that shows it. The page area is shared with every other
  * page, so a redraw is skipped only while that element is still the one on screen. */
@@ -788,7 +798,9 @@ function rowButtons(
 			return [];
 		}
 		const agent = messageTarget(context, drawnButton.to, item.row);
-		if (!agent || !context.canWrite) return [];
+		// A row whose outside values can't travel as quotes gets no button (messageText says why).
+		if (!agent || !context.canWrite || !messageText(drawnButton.text, item.row, drawn.source, context.nameOf))
+			return [];
 		const pendingKey = focus(index);
 		const pending = () => context.page.pending.includes(pendingKey);
 		const action = h(
@@ -847,48 +859,87 @@ function openTarget(target: string, row: TableRow, context: BlockContext): strin
 	return null;
 }
 
-/** The longest an outside value runs inside its marks. */
-const OUTSIDE_VALUE_MAX = 200;
+/** The `{column}` names a button's text fills in, as the cloud client's fill reads them. */
+const TEMPLATE_COLUMN = /\{([a-z][a-z0-9_]{0,39})\}/g;
 
-/** The text a `message` button puts in the composer. A value from a column that carries outside content goes
- * in «guillemets», on the same line, and a quoted last line says those marks quote outside content: the agent and
- * the reviewer read it as quoted, never as the member's own words. A quoted value can't close or open the marks,
- * start a line of its own (a fake quote line, an instruction set apart), or hide text with control or direction
- * characters. */
+/** An outside value as quoted words: it can't close or open the marks, start a line of its own (a fake quote line,
+ * an instruction set apart), or hide text with control or direction characters, and it is cut to the longest a quote
+ * may be, between characters, never inside one (an emoji is two UTF-16 units). */
+function quotedWords(shown: string): string {
+	const flat = shown
+		.replace(/«/g, "‹")
+		.replace(/»/g, "›")
+		.replace(/[\p{Cc}\p{Cf}\u2028\u2029]+/gu, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	const characters = [...flat];
+	return characters.length > QUOTE_MAX_CHARACTERS
+		? `${characters
+				.slice(0, QUOTE_MAX_CHARACTERS - 1)
+				.join("")
+				.trimEnd()}…`
+		: flat;
+}
+
+/** The text a `message` button puts in the composer, with its quotes. A value from a column that carries outside
+ * content (RUNTIME-INTERFACES.md §4) goes as a quote (contract, the 2026-10-02 amendment "quoted outside content in
+ * a member's message"): in «» marks on the same line, with where it came from, so the platform fences those words
+ * and the review never reads them as the member's own. An empty value fills in nothing.
+ *
+ * Undefined when a value from outside content can't travel as a quote: its source is not on the contract's quote
+ * list, or the row doesn't name the record it came from (a mail row without its thread id). The button is then not
+ * drawn for that row (rowButtons): filling the value in as the member's own words is what a quote is there to
+ * prevent, and leaving it out would put in less than the button says, with nothing to tell the member. */
 export function messageText(
 	text: string,
 	row: TableRow,
-	outside: readonly string[],
+	source: string,
 	nameOf: (column: string, value: unknown) => string,
-): string {
-	let quoted = false;
-	const filled = fillInterfaceText(text, row, (column, value) => {
-		const shown = nameOf(column, value);
-		if (!outside.includes(column)) return shown;
-		quoted = true;
-		const flat = shown
-			.replace(/«/g, "‹")
-			.replace(/»/g, "›")
-			.replace(/[\p{Cc}\p{Cf}\u2028\u2029]+/gu, " ")
-			.replace(/\s+/g, " ")
-			.trim();
-		// Cut by characters, never inside one (an emoji is two UTF-16 units).
-		const characters = [...flat];
-		return `«${
-			characters.length > OUTSIDE_VALUE_MAX
-				? `${characters
-						.slice(0, OUTSIDE_VALUE_MAX - 1)
-						.join("")
-						.trimEnd()}…`
-				: flat
-		}»`;
-	});
-	return quoted ? `${filled}\n\n> ${t("Text in «» is quoted from outside content, not written by me.")}` : filled;
+): QuotedText | undefined {
+	const outside = interfaceOutsideColumns(source);
+	const recordColumn = Object.hasOwn(QUOTE_RECORD_COLUMNS, source) ? QUOTE_RECORD_COLUMNS[source] : undefined;
+	const ref = recordColumn === undefined ? undefined : interfaceCell(row, recordColumn);
+	const quotes: MessageQuote[] = [];
+	let filled = "";
+	// Characters (code points) of `filled`, which the quotes count in.
+	let characters = 0;
+	const add = (words: string) => {
+		filled += words;
+		characters += [...words].length;
+	};
+	let last = 0;
+	for (const match of text.matchAll(TEMPLATE_COLUMN)) {
+		add(text.slice(last, match.index));
+		last = match.index + match[0].length;
+		const column = match[1] ?? "";
+		const value = interfaceCell(row, column);
+		if (value === undefined) continue;
+		if (!outside.includes(column)) {
+			add(nameOf(column, value));
+			continue;
+		}
+		const words = quotedWords(nameOf(column, value));
+		if (!words) continue;
+		if (
+			!INTERFACE_QUOTE_SOURCES.includes(source) ||
+			typeof ref !== "string" ||
+			!quoteRefFits(source, ref) ||
+			quotes.length >= INTERFACE_OUTSIDE_VALUES_MAX
+		)
+			return undefined;
+		add("«");
+		const start = characters;
+		add(words);
+		quotes.push({ start, end: characters, source, ref });
+		add("»");
+	}
+	add(text.slice(last));
+	return { text: filled, quotes };
 }
 
-/** A `message` button: opens the agent's thread with the prefilled text in its composer. Nothing is sent until the
- * member sends it. If the member has moved on by the time the thread is ready, the text still waits in its
- * composer, but the page stays where they are. */
+/** A `message` button: opens the agent's thread with the prefilled text in its composer, its outside values as
+ * quotes. Nothing is sent until the member sends it. If the member has moved on by the time the thread is ready,
+ * the text still waits in its composer, but the page stays where they are. */
 async function messageAgent(
 	context: BlockContext,
 	agent: HostedStaffAgent,
@@ -897,6 +948,9 @@ async function messageAgent(
 	source: string,
 ): Promise<void> {
 	const { company, profileId } = context;
+	// The button is drawn only for a row whose values can travel (rowButtons); this holds the line if one can't.
+	const text = messageText(drawnButton.text, row, source, context.nameOf);
+	if (!text) throw new Error(t("This row's email can't be quoted in a message."));
 	const from = location.hash;
 	const cofounderId = company.cofounderId();
 	let sessionId: string | undefined;
@@ -905,10 +959,7 @@ async function messageAgent(
 		if (!opened.sessionId) throw new Error(opened.reason ?? t("The Co-Founder's thread can't be opened here."));
 		sessionId = opened.sessionId;
 	} else sessionId = await company.openStaffConversation(agent);
-	const text = messageText(drawnButton.text, row, OUTSIDE_COLUMNS[source] ?? [], context.nameOf);
-	const conversation = company.conversation(sessionId);
-	const draft = conversation.get().draft?.trim();
-	conversation.set({ draft: draft ? `${draft}\n\n${text}` : text });
+	company.addToDraft(sessionId, text);
 	if (location.hash === from)
 		location.hash = agent.id === cofounderId ? `#/c/${profileId}` : `#/c/${profileId}/staff/${agent.id}`;
 }

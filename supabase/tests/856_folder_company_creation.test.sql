@@ -522,6 +522,11 @@ begin
 	perform public.qorpera_folder_follow_up_take(v_env, 'agent', v_cofounder);
 	if public.qorpera_folder_company_ready(v_profile) or public.qorpera_folder_company_setup(v_profile) is distinct from 'pending' then
 		raise exception 'A Co-Founder not converged yet is ready'; end if;
+	-- Its turn request comes with the converge: until then the first run reads queued, not waiting for a login
+	-- (20260930067000).
+	if public.qorpera_folder_company_first_run_state(v_profile) is distinct from 'queued' then
+		raise exception 'Before the converge the first run is not shown as queued: %',
+			public.qorpera_folder_company_first_run_state(v_profile); end if;
 	perform pg_temp.follow_ups(v_env);
 	if not public.qorpera_folder_company_ready(v_profile) or public.qorpera_folder_company_setup(v_profile) is distinct from 'ready' then
 		raise exception 'A converged Co-Founder is not ready'; end if;

@@ -27,6 +27,17 @@ values (
 	'50000000-0000-4000-8000-000000000001'
 );
 
+-- Every company is a folder-v2 company (the company folder core).
+select set_config('request.jwt.claims', '{"role":"service_role"}', true) \g /dev/null
+select public.qorpera_folder_enable('50000000-0000-4000-8000-000000000011') \g /dev/null
+do $$
+begin
+	if not public.qorpera_company_is_folder_v2('50000000-0000-4000-8000-000000000010') then
+		raise exception 'the invitation company is not a folder-v2 company';
+	end if;
+end
+$$;
+
 insert into public.qorpera_profile_invitations (id, profile_id, email, role, invited_by_user_id, expires_at)
 values (
 	'50000000-0000-4000-8000-000000000012',
@@ -115,6 +126,18 @@ $$;
 
 insert into public.qorpera_profiles (id, name, created_by_user_id)
 values ('50000000-0000-4000-8000-000000000020', 'Profile cascade', '50000000-0000-4000-8000-000000000001');
+insert into public.qorpera_company_environments (id, profile_id, name, contract_version, created_by_user_id)
+values ('50000000-0000-4000-8000-000000000021', '50000000-0000-4000-8000-000000000020', 'Primary', 1,
+	'50000000-0000-4000-8000-000000000001');
+select set_config('request.jwt.claims', '{"role":"service_role"}', true) \g /dev/null
+select public.qorpera_folder_enable('50000000-0000-4000-8000-000000000021') \g /dev/null
+do $$
+begin
+	if not public.qorpera_company_is_folder_v2('50000000-0000-4000-8000-000000000020') then
+		raise exception 'the profile cascade company is not a folder-v2 company';
+	end if;
+end
+$$;
 
 insert into public.qorpera_profile_members (profile_id, user_id, email, display_name, role)
 values (
@@ -140,6 +163,18 @@ $$;
 
 insert into public.qorpera_profiles (id, name, created_by_user_id)
 values ('50000000-0000-4000-8000-000000000030', 'User cascade', '50000000-0000-4000-8000-000000000001');
+insert into public.qorpera_company_environments (id, profile_id, name, contract_version, created_by_user_id)
+values ('50000000-0000-4000-8000-000000000031', '50000000-0000-4000-8000-000000000030', 'Primary', 1,
+	'50000000-0000-4000-8000-000000000001');
+select set_config('request.jwt.claims', '{"role":"service_role"}', true) \g /dev/null
+select public.qorpera_folder_enable('50000000-0000-4000-8000-000000000031') \g /dev/null
+do $$
+begin
+	if not public.qorpera_company_is_folder_v2('50000000-0000-4000-8000-000000000030') then
+		raise exception 'the user cascade company is not a folder-v2 company';
+	end if;
+end
+$$;
 
 insert into public.qorpera_profile_members (profile_id, user_id, email, display_name, role)
 values (

@@ -558,3 +558,10 @@ again; an expired routine alone and a `required` routine with no session; the 46
 builds it by hand); a SQL-built folder-v2 file wake envelope run through the TypeScript parser (887 checks the
 payload's keys, `cloud-wake-bus.test.ts` the parser; `scripts/test-runtime-wake-bus.mjs` dropped its snapshot-v1 File
 envelope); the drain against routine firing and against the materializer.
+
+**Who writes a listener** (4 October, after the live check on 10c3ee8c):
+- **Agents:** `manage_routine` on folder-v2 takes `file_change` (Q1, #837). It writes `when: file-change`, `watch`, `match`
+  and the time zone into the routine's file, and its description gives the rules of §2.
+  - Before this, the tool refused the trigger and told agents that file routines were not available, so nothing could make
+    a listener: runs d59f0a93 and 231d7f2c.
+- **Members:** the web routine editor offers it next (Interfaces), once the runtime part has shipped.
