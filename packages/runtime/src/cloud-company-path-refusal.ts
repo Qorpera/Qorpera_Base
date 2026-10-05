@@ -3,8 +3,17 @@ import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 /** A complete, validated PostgreSQL 42501 response proves rejection of that
  * transaction only. It says nothing about earlier effects in a tool adapter. */
 export class CloudCompanyPathRpcRefusal extends CloudRuntimeDiagnosticError {
-	constructor() {
+	readonly code = "42501";
+	readonly #detail: string;
+
+	constructor(message = "") {
 		super("authority_unavailable", "Company File authority unavailable");
+		this.#detail = message.slice(0, 500);
+	}
+
+	/** The database's message (control calls, 4 Oct 2026), kept off the error's text and out of its serialization. */
+	get detail(): string {
+		return this.#detail;
 	}
 }
 

@@ -5,6 +5,7 @@
  * messages carry JSON; a read reply carries the bytes as they are. */
 
 import { isUuid } from "@qorpera/contracts";
+import type { CoreReceipt } from "./core.ts";
 
 export const PROTOCOL = 1;
 export const MAX_PAYLOAD = 2 * 1024 * 1024;
@@ -28,6 +29,9 @@ export const Kind = {
 	data: 0x64, // d
 	change: 0x63, // c
 	ack: 0x61, // a
+	/** A run's search over its own view, served here (F3 `company_search`), and its answer. */
+	search: 0x53, // S
+	found: 0x73, // s
 	error: 0x65, // e
 } as const;
 
@@ -121,6 +125,8 @@ export interface WireEntry {
 	readonly executable: boolean;
 	/** The core's version id of the path (a uuid), opaque to the machine. */
 	readonly version: string;
+	/** The core's read receipt, in an agent's view (a run box's), for the box's read log. */
+	readonly authority?: CoreReceipt;
 }
 
 export interface ListRequest {
@@ -245,6 +251,66 @@ export function parseRead(payload: Buffer): ReadRequest {
 		version: value.version,
 		offset: count(value.offset, Number.MAX_SAFE_INTEGER),
 		length: count(value.length, MAX_READ),
+	};
+}
+
+/** Where a search goes on: the next path to look at, and inside a file, the byte and line its next line starts at
+ * (in the version it was searched at; another version is searched from its start). */
+export interface SearchCursor {
+	readonly path: string;
+	readonly version: string;
+	readonly offset: number;
+	readonly line: number;
+}
+
+export interface SearchRequest {
+	/** Literal text: in the files' lines, or with `namesOnly` in the names of files and folders. */
+	readonly query: string;
+	/** The folder (or the one file) to search: "" for the whole view. */
+	readonly path: string;
+	/** Only paths matching it: `*` and `?` within a name, `**` across folders; without a '/', the name alone. */
+	readonly glob: string | null;
+	readonly namesOnly: boolean;
+	readonly caseSensitive: boolean;
+	readonly after: SearchCursor | null;
+}
+
+export const MAX_SEARCH_QUERY = 256;
+
+export function parseSearch(payload: Buffer): SearchRequest {
+	const value = object(payload);
+	exactKeys(value, ["query", "path", "glob", "namesOnly", "caseSensitive", "after"]);
+	const text = (v: unknown): v is string =>
+		typeof v === "string" && v.length > 0 && v.length <= MAX_SEARCH_QUERY && !/[\u0000-\u001f\u007f]/.test(v);
+	if (!text(value.query)) throw new ProtocolError(ErrorCode.badRequest, "Bad query");
+	if (typeof value.path !== "string" || !validPath(value.path))
+		throw new ProtocolError(ErrorCode.badRequest, "Bad path");
+	if (value.glob !== null && !text(value.glob)) throw new ProtocolError(ErrorCode.badRequest, "Bad glob");
+	if (typeof value.namesOnly !== "boolean" || typeof value.caseSensitive !== "boolean")
+		throw new ProtocolError(ErrorCode.badRequest, "Bad flag");
+	let after: SearchCursor | null = null;
+	if (value.after !== null) {
+		const a = value.after as Record<string, unknown>;
+		if (!a || typeof a !== "object" || Array.isArray(a)) throw new ProtocolError(ErrorCode.badRequest, "Bad cursor");
+		exactKeys(a, ["path", "version", "offset", "line"]);
+		if (typeof a.path !== "string" || a.path === "" || !validPath(a.path))
+			throw new ProtocolError(ErrorCode.badRequest, "Bad cursor");
+		if (typeof a.version !== "string" || !/^[0-9a-f-]{0,64}$/.test(a.version))
+			throw new ProtocolError(ErrorCode.badRequest, "Bad cursor");
+		after = {
+			path: a.path,
+			version: a.version,
+			offset: count(a.offset, Number.MAX_SAFE_INTEGER),
+			line: count(a.line, Number.MAX_SAFE_INTEGER),
+		};
+	}
+	return {
+		query: value.query,
+		path: value.path,
+		glob: value.glob as string | null,
+		namesOnly: value.namesOnly,
+		caseSensitive: value.caseSensitive,
+		after,
 	};
 }
 

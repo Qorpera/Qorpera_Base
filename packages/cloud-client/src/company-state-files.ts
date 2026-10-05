@@ -11,6 +11,7 @@
  * `- item` per line below the key), and `#` after a space starts a note. Each kind has a
  * closed set of keys. The same bytes always give the same result, problems included. */
 
+import { type CloudCodingRepository, parseCloudCodingBranch, parseCloudCodingRepository } from "@qorpera/contracts";
 import { parseCloudCompanyPath } from "./company-path-schema.ts";
 import { AGENT_COLOURS, type AgentColour, companyPathKey } from "./company-state-shared.ts";
 import { interfaceLibraryFiles } from "./interface-library.ts";
@@ -301,6 +302,9 @@ export interface WorkerBriefFile {
 	readonly id: string;
 	readonly title: string;
 	readonly species: "in-house" | "coding";
+	/** A coding session's harness and repository (C3a): a coding brief has both, an in-house one neither. */
+	readonly harness?: "codex" | "claude-code";
+	readonly repository?: CloudCodingRepository;
 	readonly access: "read" | "write";
 	readonly revival: "each" | "batch";
 	readonly dispatchedAt: string;
@@ -1612,6 +1616,7 @@ function workerBrief(split: Split, fields: Fields, problems: Problems): WorkerBr
 	const id = fields.id("id", true);
 	const title = fields.text("title", true, 200, { bytes: true });
 	const species = fields.choice("species", true, ["in-house", "coding"] as const);
+	const coding = workerCoding(fields, species, problems);
 	const access = fields.choice("access", true, ["read", "write"] as const);
 	const revival = fields.choice("revival", true, ["each", "batch"] as const);
 	const dispatchedAt = fields.instant("dispatched_at", true);
@@ -1652,6 +1657,7 @@ function workerBrief(split: Split, fields: Fields, problems: Problems): WorkerBr
 		!id ||
 		!title ||
 		!species ||
+		(species === "coding" && !coding) ||
 		!access ||
 		!revival ||
 		!dispatchedAt ||
@@ -1670,6 +1676,7 @@ function workerBrief(split: Split, fields: Fields, problems: Problems): WorkerBr
 		id,
 		title,
 		species,
+		...(coding ?? {}),
 		access,
 		revival,
 		dispatchedAt,
@@ -1685,6 +1692,54 @@ function workerBrief(split: Split, fields: Fields, problems: Problems): WorkerBr
 		completion,
 		followUp,
 	};
+}
+
+/** A coding brief's `harness`, `repository` (`github.com/<owner>/<name>`) and `base_branch` (C3a), or null with its
+ * problems; an in-house brief has none of them. */
+function workerCoding(
+	fields: Fields,
+	species: "in-house" | "coding" | null,
+	problems: Problems,
+): { harness: "codex" | "claude-code"; repository: CloudCodingRepository } | null {
+	if (species !== "coding") {
+		for (const key of ["harness", "repository", "base_branch"])
+			if (fields.has(key) && species === "in-house")
+				problems.add("value", fields.line(key), key, `${key} belongs to a coding session's brief`);
+		return null;
+	}
+	const harness = fields.choice("harness", true, ["codex", "claude-code"] as const);
+	const repository = fields.text("repository", true, 240);
+	const baseBranch = fields.text("base_branch", true, 200);
+	let parsed: CloudCodingRepository | null = null;
+	if (repository !== null) {
+		const [host, owner, name, ...rest] = repository.split("/");
+		try {
+			// The repository's own rules, with a branch that passes them: the branch is checked on its own below.
+			parsed = rest.length ? null : parseCloudCodingRepository({ host, owner, name, baseBranch: "main" });
+		} catch {
+			parsed = null;
+		}
+		if (!parsed)
+			problems.add(
+				"value",
+				fields.line("repository"),
+				"repository",
+				"repository must be a GitHub repository like github.com/acme/app",
+			);
+	}
+	let branch: string | null = null;
+	if (baseBranch !== null)
+		try {
+			branch = parseCloudCodingBranch(baseBranch);
+		} catch {
+			problems.add(
+				"value",
+				fields.line("base_branch"),
+				"base_branch",
+				"base_branch must be a branch name like main",
+			);
+		}
+	return harness && parsed && branch !== null ? { harness, repository: { ...parsed, baseBranch: branch } } : null;
 }
 
 function workerResults(split: Split, fields: Fields, problems: Problems): WorkerResultsFile | null {
@@ -2439,6 +2494,14 @@ export function writeWorkerBriefFile(file: Omit<WorkerBriefFile, "kind">): strin
 			["id", file.id],
 			["title", companyStateValue(file.title)],
 			["species", file.species],
+			["harness", file.harness ?? null],
+			[
+				"repository",
+				file.repository
+					? companyStateValue(`${file.repository.host}/${file.repository.owner}/${file.repository.name}`)
+					: null,
+			],
+			["base_branch", file.repository ? companyStateValue(file.repository.baseBranch) : null],
 			["access", file.access],
 			["revival", file.revival],
 			["dispatched_at", file.dispatchedAt],
@@ -2788,7 +2851,7 @@ Use a human task only for work no agent can do: signing, paying, posting or open
 \`human-tasks/<name>.md\` with \`id\`, \`title\`, \`status: open\`, \`member:\` or \`contact:\`, \`from:\` (your own id), \`todo:\` (the id of your todo that waits on it) and \`due:\`, plus \`minutes\`, \`proof\` and \`files\` when they help. Keep your todo blocked until the task is accepted.
 
 ## Follow it
-- You are woken when the person marks it done or says they can't, and when it is overdue.
+- You are woken when someone else changes your task: the person marks it done or says they can't, a member accepts, returns or cancels it, hands it to another person, or hands it to you. You are also woken once when it is overdue. Your own changes never wake you. When the agent that asked is gone, the Co-Founder is woken instead.
 - Done: check the proof in \`human-tasks/<name>/\`. Set \`accepted\`, or \`returned\` with a \`reason\` and a new due date.
 - Declined: find another route or another person.
 - Overdue: remind, move the due date, hand it to someone else, or tell the Co-Founder.

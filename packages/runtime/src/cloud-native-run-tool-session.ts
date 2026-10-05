@@ -113,9 +113,10 @@ export async function runCloudNativeRunToolSession(options: {
 			const observation = options.observability?.start("context_authority");
 			try {
 				// Two independent reads, both required: the run's admission and its context read set.
-				// Both lock the run's job row, so each gets the pair's budget, not one read's.
+				// Both lock the run's job row, so each gets the pair's budget, not one read's. Each is asked again
+				// while its answer is lost or late, until the run's authority would lapse; a refusal stops the run.
 				const admission = run.assertActive(signal, CLOUD_PAIRED_REQUEST_TIMEOUT_MS);
-				const context = cloudToolRequest(
+				const context = run.retry(
 					(requestSignal) => activeAdapters.assertContext(requestSignal),
 					signal,
 					CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
@@ -142,11 +143,13 @@ export async function runCloudNativeRunToolSession(options: {
 			try {
 				// Through the run's own check: refused before sending once the run is closed or its
 				// authority lapsed, cancelled if the run closes meanwhile, and the authority it read
-				// is held to what assertActive holds its own read to.
+				// is held to what assertActive holds its own read to. A lost or late answer is asked again
+				// within the result fence's budget (the call replays its view by request id).
 				if (
 					!(await run.assertActiveWith(
 						(requestSignal) => fence(frame, outputs, requestSignal),
 						signal,
+						CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS,
 						CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS,
 					))
 				) {

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
+import { expandTestFixture, POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
 import { verifyIdentityRecoveryRoundTrip } from "./identity-recovery-round-trip.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -26,6 +27,16 @@ async function source(path) {
 	const bytes = await readFile(join(root, path));
 	checksums[path] = createHash("sha256").update(bytes).digest("hex");
 	return bytes.toString("utf8");
+}
+/** A test with the fixture part it runs after (`-- @fixture`), as the hosted-db suite expands it; every file read is
+ * checksummed. */
+function testSource(test) {
+	return expandTestFixture(test, (name) => {
+		const path = `supabase/tests/${name}`;
+		const bytes = readFileSync(join(root, path));
+		checksums[path] = createHash("sha256").update(bytes).digest("hex");
+		return bytes.toString("utf8");
+	});
 }
 function docker(args, input) {
 	const child = spawnSync("docker", args, { input, encoding: "utf8", timeout: 60_000, maxBuffer: 32 * 1024 * 1024 });
@@ -90,7 +101,7 @@ try {
 	for (const migration of migrations) sql(await source(`supabase/migrations/${migration}`));
 	console.log(`PASS ${migrations.length} migrations`);
 	for (const test of tests) {
-		await writeFile(join(evidence, `${test}.log`), sql(await source(`supabase/tests/${test}`)), { mode: 0o600 });
+		await writeFile(join(evidence, `${test}.log`), sql(testSource(test)), { mode: 0o600 });
 		console.log(`PASS ${test}`);
 	}
 	const recoveryTest = await source("supabase/tests/298_compute_identity_recovery.test.sql");

@@ -928,6 +928,53 @@ describe("connections, rules, todos and worker files", () => {
 			expect(() => appendWorkerFollowUp(PATH, "nope", "x", "2026-10-03T10:00:00Z")).toThrow("does not parse");
 		});
 
+		it("names a coding session's harness and repository, and only a coding brief does (C3a)", () => {
+			const coding: Omit<WorkerBriefFile, "kind"> = {
+				...brief,
+				species: "coding",
+				harness: "codex",
+				repository: { host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "release/v1.2" },
+				...workerStandingTexts({ species: "coding", access: "read", revival: "batch" }),
+			};
+			const text = writeWorkerBriefFile(coding);
+			expect(text).toContain("species: coding\nharness: codex\n");
+			expect(text).toMatch(
+				/\nrepository: "?github\.com\/Qorpera\/Qorpera_Base"?\nbase_branch: "?release\/v1\.2"?\n/,
+			);
+			// The parse is the one the database checks: the repository as the coding tables hold it.
+			expect(ok(PATH, text)).toEqual({ kind: "worker-brief", ...coding });
+			const followed = appendWorkerFollowUp(PATH, text, "Fix the test too.", "2026-10-03T09:00:00Z");
+			expect(ok(PATH, followed)).toMatchObject({ harness: "codex", repository: coding.repository, followUps: 1 });
+			// An in-house brief's parse has no such keys.
+			expect(Object.keys(ok(PATH, writeWorkerBriefFile(brief)) as object)).not.toContain("harness");
+			const head = (lines: string) =>
+				`---\nid: ${ID}\ntitle: T\n${lines}\naccess: read\nrevival: batch\ndispatched_at: 2026-10-03T08:00:00Z\nfollow_ups: 0\n---\n${sections()}`;
+			expect(refused(PATH, head("species: coding\nharness: codex"))).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ key: "repository", message: "repository is required" }),
+					expect.objectContaining({ key: "base_branch", message: "base_branch is required" }),
+				]),
+			);
+			expect(
+				refused(PATH, head('species: coding\nharness: cursor\nrepository: "github.com/a/b"\nbase_branch: main'))[0]
+					?.key,
+			).toBe("harness");
+			for (const repository of ["gitlab.com/a/b", "github.com/a", "github.com/a/b/c", "github.com/-a/b"])
+				expect(
+					refused(PATH, head(`species: coding\nharness: codex\nrepository: "${repository}"\nbase_branch: main`)),
+				).toEqual([expect.objectContaining({ key: "repository" })]);
+			for (const branch of ["a..b", "a/.b", "x.lock", "-x"])
+				expect(
+					refused(
+						PATH,
+						head(`species: coding\nharness: codex\nrepository: "github.com/a/b"\nbase_branch: "${branch}"`),
+					),
+				).toEqual([expect.objectContaining({ key: "base_branch" })]);
+			expect(refused(PATH, head("species: in-house\nharness: codex"))).toEqual([
+				expect.objectContaining({ key: "harness", message: "harness belongs to a coding session's brief" }),
+			]);
+		});
+
 		it("refuses a brief's missing, misplaced and unbalanced sections", () => {
 			expect(ok(PATH, `${front("follow_ups: 0")}${sections()}`)).toMatchObject({
 				goal: "G",

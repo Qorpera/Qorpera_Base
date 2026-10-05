@@ -1,6 +1,5 @@
 [Unit]
 Description=Qorpera company folder %i (read-only, from this node's folder service)
-Documentation=file:///opt/qorpera-folder/README.md
 ConditionPathExists=/etc/qorpera-folder/mounts/%i.json
 
 [Service]

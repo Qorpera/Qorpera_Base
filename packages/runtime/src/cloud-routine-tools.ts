@@ -14,9 +14,11 @@ import {
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
 import {
+	CloudControlRefusalRelay,
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
 	type CloudToolContext,
+	cloudOperationKeyOf,
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
@@ -284,7 +286,8 @@ function routineAuthority(binding: CloudNativeToolBinding, identity: CloudNative
 			throw new Error("Routine tool identity differs");
 		context.signal.throwIfAborted();
 	};
-	return { admitted, assertContext };
+	// One per tool of a run (control calls, 4 Oct 2026).
+	return { admitted, assertContext, refusals: new CloudControlRefusalRelay() };
 }
 
 export function cloudRoutineTools(
@@ -301,7 +304,7 @@ export function cloudRoutineTools(
 	/** A folder-v2 run's routines, written as the files in its folder. */
 	folderRoutines?: CloudFolderRoutines,
 ): readonly CloudNativeTool[] {
-	const { admitted, assertContext } = routineAuthority(binding, identity);
+	const { admitted, assertContext, refusals } = routineAuthority(binding, identity);
 	const reportSchema = { type: "string", enum: [...REPLY] };
 	const zoneSchema = { type: "string", minLength: 1, maxLength: 64 };
 	const timeSchema = { type: "string", pattern: LOCAL_TIME.source };
@@ -587,10 +590,17 @@ export function cloudRoutineTools(
 					ownDynamicRoutine.settled();
 				return changed.content;
 			}
-			const result = await cloudToolRequest(
-				(requestSignal) =>
-					control.call("qorpera_manage_agent_routine", { p_binding: admitted, p_request: request }, requestSignal),
-				context.signal,
+			// The tool's first effect: a refusal of it is the tool's answer (control calls, 4 Oct 2026).
+			const result = await refusals.call(cloudOperationKeyOf(request), () =>
+				cloudToolRequest(
+					(requestSignal) =>
+						control.call(
+							"qorpera_manage_agent_routine",
+							{ p_binding: admitted, p_request: request },
+							requestSignal,
+						),
+					context.signal,
+				),
 			);
 			const r = result as Record<string, unknown> | null;
 			if (
@@ -631,7 +641,7 @@ export function cloudRoutineDecisionTool(
 		readonly folderDecision?: CloudFolderRoutineDecision;
 	},
 ): CloudNativeTool {
-	const { admitted, assertContext } = routineAuthority(binding, identity);
+	const { admitted, assertContext, refusals } = routineAuthority(binding, identity);
 	return {
 		name: "decide_routine" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
@@ -698,10 +708,16 @@ export function cloudRoutineDecisionTool(
 				if (decision.decided) options.decided();
 				return decision.content;
 			}
-			const result = await cloudToolRequest(
-				(requestSignal) =>
-					control.call("qorpera_decide_agent_routine", { p_binding: admitted, p_request: request }, requestSignal),
-				context.signal,
+			const result = await refusals.call(cloudOperationKeyOf(request), () =>
+				cloudToolRequest(
+					(requestSignal) =>
+						control.call(
+							"qorpera_decide_agent_routine",
+							{ p_binding: admitted, p_request: request },
+							requestSignal,
+						),
+					context.signal,
+				),
 			);
 			const r = result as Record<string, unknown> | null;
 			const receipt =

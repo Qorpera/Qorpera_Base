@@ -22,8 +22,10 @@ function remainingAllowance(connection: NativeMemberConnection, now: number): nu
 	return windows.length ? Math.min(...windows.map((window) => 100 - window.usedPercent)) : undefined;
 }
 
-/** A conversation keeps its own account until that account becomes unavailable.
- * New conversations choose the member's account with the most remaining allowance. */
+/** A conversation keeps its own account, also at its usage limit: sending waits until it
+ * resets, and only the member moves a conversation to another account (founder decision
+ * 2026-10-04, migration 20260930059000). New conversations choose the member's account with
+ * the most remaining allowance. */
 export class SessionExecutionView {
 	readonly el = h("div", { class: "session-execution" });
 	readonly #company: CompanyController;
@@ -307,8 +309,14 @@ export class SessionExecutionView {
 			return;
 		const available = this.#available();
 		const kept = conversation.executionSponsor;
-		// Follow a runtime handoff on the same durable binding before selecting
-		// another account. A retry still keeps its exact original request authority.
+		// A conversation keeps its account even when it cannot pay now (also while an
+		// owner or admin has it disabled). One the member disconnected leaves it with no
+		// account until the member picks another by hand (#unchosen); only a new
+		// conversation takes a first choice.
+		const keeps = kept !== undefined && this.#keeps(kept.connectionId);
+		// Follow the conversation's binding to the member's new connection after they
+		// sign in again; never to another account. A retry still keeps its exact
+		// original request authority.
 		const handedOff =
 			kept &&
 			this.#observed.connections
@@ -324,13 +332,64 @@ export class SessionExecutionView {
 				? this.#serverConnectionId
 				: undefined
 			: (handedOff?.connectionId ??
-				(kept && available.includes(kept.connectionId) ? kept.connectionId : available[0]));
+				(kept ? (keeps && available.includes(kept.connectionId) ? kept.connectionId : undefined) : available[0]));
 		if (!next) return;
 		try {
 			this.#company.setExecutionSponsor(this.#sessionId, this.#observed, next);
 			this.#error = undefined;
 		} catch {
 			// Sending stays off until the member has a usable account and authority.
+		}
+	}
+
+	/** The member still has this login: listed, and not disconnected (revoked). */
+	#keeps(connectionId: string): boolean {
+		return (this.#observed?.connections ?? []).some(
+			(connection) => connection.connectionId === connectionId && connection.connectionStatus !== "revoked",
+		);
+	}
+
+	/** The conversation lost its login to a disconnect and waits for the member's own
+	 * pick: the cloud answered no account although a login could pay, or (without the
+	 * cloud's choice) the kept account is gone. */
+	#unchosen(available: readonly string[]): boolean {
+		if (!available.length) return false;
+		if (this.#serverSelection) return Boolean(this.#native.chooseSessionAccount) && !this.#serverConnectionId;
+		const kept = this.#company.conversation(this.#sessionId).get().executionSponsor;
+		return kept !== undefined && !this.#keeps(kept.connectionId);
+	}
+
+	/** The member's own pick of a login for this conversation: their permission to pay with it. */
+	async #pick(connectionId: string): Promise<void> {
+		if (this.#lifetime.signal.aborted || this.#busy || !this.#observed) return;
+		if (!this.#serverSelection) {
+			try {
+				this.#company.setExecutionSponsor(this.#sessionId, this.#observed, connectionId);
+				this.#error = undefined;
+			} catch {
+				this.#error = t("The login could not be chosen. Try again.");
+			}
+			this.#render();
+			this.#changed();
+			return;
+		}
+		this.#busy = true;
+		this.#render();
+		this.#changed();
+		let picked = false;
+		try {
+			await this.#native.chooseSessionAccount!(this.#sessionId, connectionId, this.#lifetime.signal);
+			picked = true;
+		} catch {
+			this.#error = t("The login could not be chosen. Try again.");
+		} finally {
+			this.#busy = false;
+		}
+		if (this.#lifetime.signal.aborted) return;
+		if (picked) void this.refresh();
+		else {
+			this.#render();
+			this.#changed();
 		}
 	}
 
@@ -349,6 +408,7 @@ export class SessionExecutionView {
 			this.#error,
 			this.#historyError,
 			selected,
+			this.#serverConnectionId,
 			locked,
 			this.#busy,
 			conversation.sending,
@@ -391,17 +451,47 @@ export class SessionExecutionView {
 						),
 					)
 				: this.#observed && !this.#error && !this.canSend && !this.#busy
-					? h(
-							"p",
-							{ class: "muted" },
-							this.#observed.connections.some((connection) => remainingAllowance(connection, Date.now()) === 0)
-								? t(
-										"Your model accounts have reached their usage limits. Sending resumes when an account resets.",
-									)
-								: t("Connect a model account in Settings → My connections to send messages."),
-						)
+					? this.#unchosen(this.#available())
+						? this.#choice(this.#observed, !canWrite)
+						: h("p", { class: "muted" }, this.#unavailableReason(this.#observed))
 					: null,
 		);
+	}
+
+	/** "Choose a login to continue": one button per login of the member's that can pay now. */
+	#choice(observed: NativeExecutionConnections, disabled: boolean): HTMLElement {
+		const available = this.#available();
+		return h(
+			"div",
+			{ class: "session-execution-choice" },
+			h("p", { class: "muted" }, t("Choose a login to continue.")),
+			...available.map((connectionId, index) => {
+				const connection = observed.connections.find((candidate) => candidate.connectionId === connectionId);
+				const account = connection?.providerAccountEmail ?? t("Model account {number}", { number: index + 1 });
+				return button(t("Use {account}", { account }), () => void this.#pick(connectionId), {
+					small: true,
+					disabled,
+				});
+			}),
+		);
+	}
+
+	/** Why sending is off. A conversation's own account at its limit is named first: the
+	 * conversation waits for it and never moves to another account on its own. */
+	#unavailableReason(observed: NativeExecutionConnections): string {
+		const now = Date.now();
+		const own = this.#serverSelection
+			? this.#serverConnectionId
+			: this.#company.conversation(this.#sessionId).get().executionSponsor?.connectionId;
+		const atLimit = observed.connections.filter((connection) => remainingAllowance(connection, now) === 0);
+		if (own && atLimit.some((connection) => connection.connectionId === own))
+			return t("This conversation's model account has reached its usage limit. Sending resumes when it resets.");
+		// Kept although it cannot pay now (disabled, a new sign-in, its computer recovering).
+		if (own && this.#keeps(own))
+			return t("This conversation's model account can't be used right now. Check it in Settings → My connections.");
+		if (atLimit.length)
+			return t("Your model accounts have reached their usage limits. Sending resumes when an account resets.");
+		return t("Connect a model account in Settings → My connections to send messages.");
 	}
 
 	dispose(): void {
