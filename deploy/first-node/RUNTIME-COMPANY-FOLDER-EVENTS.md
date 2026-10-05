@@ -2,7 +2,8 @@
 
 Status: plan agreed 4 October 2026 (Q1, qorpera-cb, with the coordinator, F2 and A1; §10). **E1 built** (migration
 `20260930060000`, SQL tests 912 and 919; the parser's two kinds; the writer by kind). **E2a built** (migration
-`20260930061000`, SQL tests 913 and 923; §4 as built). E2b (scheduling, the parser, the runtime) follows.
+`20260930061000`, SQL tests 913 and 923; §4 as built). **E2b built** (the parser and writer, `manage_routine`'s event
+trigger, the `events` drain entry; §4.1, §4.3, §4.4 as built).
 
 ## 0. Why
 
@@ -200,8 +201,13 @@ reply: …
 ```
 
 This is the spelling W2 and F2-6 agreed (`REG:1948`, `RUNTIME-COMPANY-STATE-FILES.md:393`).
-- The parser adds `event` to `ROUTINE_WHEN` and `TRIGGER_KEYS.event = [hook, only]`.
-- SQL's parse shape adds the same keys.
+- The parser adds `event` to `ROUTINE_WHEN` and `TRIGGER_KEYS.event = [hook, only]` (as built in E2b). `hook` is a
+  lowercase id; `only`, when given, is a list of 1 to 20 distinct event types, each printable ASCII without spaces and
+  at most 128 characters. The parse is `{when: event, hook, only}`, `only` null when absent. The writer quotes a type
+  that YAML would read otherwise.
+- SQL's parse shape adds the same keys (E2a).
+- `cloudRoutineTriggerOfFile` reads an event routine as W2's listener, as the index compiles it, and
+  `routineFileSettings` keeps `hook` and `only` through a member's edit of the title or the reply (E2b).
 - The trigger compiler emits W2's trigger, `{kind:'listener', source:'event', id:'file', hookId, only?, timeZone,
   replyPolicy}`.
 - W2's version-insert trigger (`qorpera_activate_company_file_listener`) then creates the event cursor, as it does for
@@ -261,9 +267,11 @@ The drain follows P29's contract (`RUNTIME-COMPANY-FOLDER-LISTENER.md` §9) and 
   It answers `busy` on 55P03/40P01 (or a conversation that moved at insert), and `paused`, `idle`, `deleting` or
   `not_folder` rather than raising. Its bounds are W2's: one open wake per trigger, at most 20 deliveries per wake, and
   retries after 1, 4, 16 and 64 minutes before a delivery is left behind.
-- **Scheduling:** one `FOLDER_DRAINS` entry (`events`) in `runner-orchestrator.ts`, and one `CLOUD_FOLDER_DRAINS` entry
-  after `listen`. Re-pin the Runner Orchestrator, shared execution and LXD provider artifacts. Deploy the migration, then
-  the edge function, then the orchestrator.
+- **Scheduling (E2b, as built):** one `FOLDER_DRAINS` entry (`events`, at most 64 a company step) in the edge function's
+  `runner-orchestrator.ts`, and one `CLOUD_FOLDER_DRAINS` entry after `machine_events` (16 a step, as
+  `qorpera_drain_event_wakes` took them). Re-pin the Runner Orchestrator, shared execution and LXD provider artifacts.
+  Deploy the migration, then the edge function, then the orchestrator, then the runtime bundle: an edge function without
+  the entry answers 400, which pauses that drain alone, and agents are offered event routines only once the drain runs.
 
 ### 4.4 The gate, the read, the runtime
 
@@ -276,8 +284,11 @@ The drain follows P29's contract (`RUNTIME-COMPANY-FOLDER-LISTENER.md` §9) and 
     This was found by applying all three together.
 - **The read:** `qorpera_folder_read_wake` adds W2's event batch (`qorpera_event_wake_payload`). The runtime already
   parses the envelope (`packages/runtime/src/cloud-wake-bus.ts:403-450`).
-- **The runtime:** `manage_routine` on folder-v2 accepts `event` and writes `when: event` into the routine file
-  (`cloud-routine-tools.ts:530-533` keeps refusing `file_change` only if P29 hasn't lifted it by then).
+- **The runtime (E2b, as built):** `manage_routine` on folder-v2 offers and takes `event` (hookId, optional only,
+  timeZone, report) and writes `when: event` into the routine's file; the save's own rules check the hook and the payer.
+  Its folder-v2 description now names hooks and mailboxes from `list_hooks`, and says that a file_change or event
+  routine listens from its last save, so a later save drops what was not delivered yet. The rest of its folder-v2
+  wording is shorter, so it stays within the tool boundary's 4096 bytes (4023 as built).
 
 ### 4.5 Tests (E2)
 
@@ -297,6 +308,11 @@ As built, 913 runs on 708's company (P29's 887 uses the same). It covers:
 - a step with `p_limit` 1 whose oldest active cursor is on a removed hook: the live listener still wakes (review r1 F1).
 
 923 races a save against a removal, and the drain against a save.
+
+E2b's TypeScript tests: the parser (an event routine read and written back, with quoting; a missing or uppercase hook,
+an empty, scalar, repeated, spaced or 21-long `only`, and another trigger's keys); `cloudRoutineTriggerOfFile` and
+`routineFileSettings`; `manage_routine` on folder-v2 (its schema, its description, an event upsert's file); and both
+drain tables.
 
 The plan's original list:
 - **SQL (on E1's fixture):**

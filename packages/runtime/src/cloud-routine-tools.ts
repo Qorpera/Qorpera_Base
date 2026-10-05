@@ -213,27 +213,27 @@ const CLOUD_ROUTINE_TOOL_DESCRIPTION_FOLDER = CLOUD_ROUTINE_TOOL_DESCRIPTION.rep
 )
 	.replace(
 		"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you. ",
-		"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you: in this company it is a file in your folder, routines/<routineKey>.md, and routineKey is the file's name (lowercase letters, digits and single hyphens, at most 64 characters). ",
+		"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you: it is the file routines/<routineKey>.md in your folder (routineKey: lowercase letters, digits and single hyphens, at most 64 characters). ",
 	)
 	.replace(
 		"list first when unsure. ",
-		"list first when unsure. list shows your routines a page at a time (cursor: the nextCursor of an earlier page), and with routineKey one routine whole. ",
-	)
-	.replace(
-		"or event (hookId, the id of one of the company's hooks from list_hooks;",
-		"or event (hookId, the id of one of the company's hooks or mailboxes from list_hooks;",
+		"list first when unsure. list pages your routines (cursor: the nextCursor of an earlier page), or shows one whole by routineKey. ",
 	)
 	.replace(
 		"Use every or weekly for work tied to the clock, such as a Monday report, file_change to react to a file, and event to react to what other services send, such as a form submission, a payment or an alert: each run gets the events that arrived, up to 20 at a time. ",
-		"Use every or weekly for work tied to the clock, such as a Monday report, file_change to react to a file: each saved change under the path wakes you once, with what it changed, except your own changes; and event to react to what other services send, such as a form submission, a payment, an alert or an email to a mailbox: each run gets the events that arrived, up to 20 at a time. A file_change or event routine listens from the save that set it up, so a later save of the routine drops changes and events not delivered yet. With report required it needs your public thread, or the run is skipped. ",
+		"Use every or weekly for clock work, such as a Monday report; file_change to react to a file (each saved change under the path wakes you once with what changed, never your own); event to react to other services, such as a form, a payment or an email to a mailbox (each run gets up to 20 new events). Both listen from their last save, which drops what was not delivered yet; report required needs your public thread or the run is skipped. ",
+	)
+	.replace(
+		"or event (hookId, the id of one of the company's hooks from list_hooks; optional only, the event types to take; and an IANA timeZone)",
+		"or event (hookId, a hook or mailbox from list_hooks; optional only, the event types to take; IANA timeZone)",
 	)
 	.replace(
 		"remove deletes it from the list for good. ",
-		"remove deletes its file, and its name is free again. resume switches a routine back on, also after a member stopped it or its model account stopped working. ",
+		"remove deletes its file and frees its name. resume switches a routine back on, also after a member or a failing model account stopped it. ",
 	)
 	.replace(
 		"an unconfirmed result needs the same key again, never a new one.",
-		"an unconfirmed result needs the same key again, never a new one. A save can come back as a conflict when the file changed since it was read: call again with a new operationKey.",
+		"an unconfirmed result needs the same key again, never a new one. A conflict means the file changed since it was read: call again with a new operationKey.",
 	);
 
 export const CLOUD_ROUTINE_DECISION_DESCRIPTION =

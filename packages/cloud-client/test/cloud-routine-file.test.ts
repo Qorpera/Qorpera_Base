@@ -254,7 +254,7 @@ describe("the settings an edit changes", () => {
 			timezone: null,
 			reply: before.reply,
 		});
-		expect(clock).toEqual({ when: "every", minutes: 60, starts: null, hook: null, only: null });
+		expect(clock).toEqual({ when: "every", minutes: 60, hook: null, only: null });
 		expect(parse(setCompanyStateSettings(text(before), clock)).trigger).toEqual({
 			when: "every",
 			minutes: 60,

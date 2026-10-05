@@ -684,13 +684,15 @@ it("is manage_routine's folder-v2 path: its description, its list arguments, the
 	expect(tool?.description).toContain("cursor: the nextCursor of an earlier page");
 	expect(tool?.description).toContain("resume switches a routine back on");
 	expect(tool?.description).toContain(
-		"file_change (a Company File path you can read, match exact or subtree), or event (hookId, the id of one of the company's hooks or mailboxes from list_hooks; ",
+		"file_change (a Company File path you can read, match exact or subtree), or event (hookId, a hook or mailbox from list_hooks; optional only, the event types to take; IANA timeZone). ",
 	);
 	expect(tool?.description).toContain(
-		"A file_change or event routine listens from the save that set it up, so a later save of the routine drops changes and events not delivered yet.",
+		"Both listen from their last save, which drops what was not delivered yet; report required needs your public thread or the run is skipped. ",
 	);
-	expect(tool?.description).toContain("each run gets the events that arrived, up to 20 at a time");
+	expect(tool?.description).toContain("each run gets up to 20 new events");
 	expect(tool?.description).not.toMatch(/No member approval|not available/);
+	// The tool boundary takes a description of at most 4096 bytes.
+	expect(Buffer.byteLength(tool?.description ?? "")).toBeLessThanOrEqual(4096);
 	expect(legacy?.inputSchema).not.toHaveProperty("properties.cursor");
 	expect(tool?.inputSchema).toHaveProperty("properties.cursor");
 	// list: one routine, or a page from a cursor.
