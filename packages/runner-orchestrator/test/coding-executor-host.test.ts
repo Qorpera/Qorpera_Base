@@ -215,10 +215,10 @@ async function fixture() {
 		attachRefusal: null as string | null,
 		/** The keeper's answer per session: kept (the default, turn closed) or released with a reason. */
 		release: new Map<string, string>(),
-		/** Running commands and processor time per session, as the guest's observe action reports them. */
+		/** Running commands, processor time and bytes moved per session, as the guest's observe action reports them. */
 		observed: new Map<
 			string,
-			{ cpuUsageUsec: number; running: { commandId: string; turn: number; command: string }[] }
+			{ cpuUsageUsec: number; ioBytes?: number; running: { commandId: string; turn: number; command: string }[] }
 		>(),
 		uptimeMs: 100000,
 		/** The watchdog's lease per session, as the executor's renewals left it (guest clock). */
@@ -415,6 +415,7 @@ async function fixture() {
 						return {
 							workerId,
 							cpuUsageUsec: seen.cpuUsageUsec,
+							ioBytes: seen.ioBytes ?? 0,
 							running: seen.running.length,
 							lease: lease && {
 								tokenSha256: lease.tokenSha256,
@@ -424,7 +425,7 @@ async function fixture() {
 					})
 					.map((session) => ({ ...session, lease: session.lease ?? null }));
 				published("/run/qorpera-coding/observation.json", {
-					schema: "qorpera.coding-guest-observation/v2",
+					schema: "qorpera.coding-guest-observation/v3",
 					bootId,
 					uptimeMs: state.uptimeMs,
 					sessions,
@@ -1375,19 +1376,40 @@ describe("a session between its turns", () => {
 				[`/run/qorpera-coding/observation-${f.claim.workerId}.json`, 65536],
 			]),
 		);
-		// A server that waits stays quiet; a build that works is busy.
+		// The one idle rule's two signals: a server that waits stays quiet; a build that works is busy, and so is a
+		// download that moves data with little processor.
+		const busy = () =>
+			(f.calls("qorpera_keep_coding_attachments").at(-1) as { p_observation: { busy: boolean } }).p_observation.busy;
 		f.state.uptimeMs += 10000;
-		f.state.observed.set(f.claim.workerId, { cpuUsageUsec: 1000 + 100000, running: [] });
+		f.state.observed.set(f.claim.workerId, { cpuUsageUsec: 1000 + 100000, ioBytes: 1000, running: [] });
 		await f.host.keep(f.signal);
-		expect(
-			(f.calls("qorpera_keep_coding_attachments").at(-1) as { p_observation: { busy: boolean } }).p_observation.busy,
-		).toBe(false);
+		expect(busy()).toBe(false);
 		f.state.uptimeMs += 10000;
-		f.state.observed.set(f.claim.workerId, { cpuUsageUsec: 1000 + 100000 + 5000000, running: [] });
+		f.state.observed.set(f.claim.workerId, { cpuUsageUsec: 1000 + 100000 + 5000000, ioBytes: 2000, running: [] });
 		await f.host.keep(f.signal);
-		expect(
-			(f.calls("qorpera_keep_coding_attachments").at(-1) as { p_observation: { busy: boolean } }).p_observation.busy,
-		).toBe(true);
+		expect(busy()).toBe(true);
+		// 0.1 s of processor in 10 s (1%), but 200 KB moved (more than 512 KiB in 30 s): busy by its data.
+		f.state.uptimeMs += 10000;
+		f.state.observed.set(f.claim.workerId, { cpuUsageUsec: 1000 + 200000 + 5000000, ioBytes: 202000, running: [] });
+		await f.host.keep(f.signal);
+		expect(busy()).toBe(true);
+		// 100 KB in 10 s and as little processor: below both thresholds.
+		f.state.uptimeMs += 10000;
+		f.state.observed.set(f.claim.workerId, { cpuUsageUsec: 1000 + 300000 + 5000000, ioBytes: 302000, running: [] });
+		await f.host.keep(f.signal);
+		expect(busy()).toBe(false);
+		// A reply that is not the measured shape is refused.
+		f.state.uptimeMs += 10000;
+		f.state.observed.set(f.claim.workerId, { cpuUsageUsec: 1000 + 300000 + 5000000, ioBytes: -1, running: [] });
+		expect(await f.host.keep(f.signal)).toEqual([
+			{
+				machineId: f.machine.machineId,
+				workerId: null,
+				step: "keep",
+				state: "failed",
+				code: "CODING_HOST_OBSERVATION_UNCONFIRMED",
+			},
+		]);
 	});
 	it("is taken off once released: running commands cancelled, stopped in the guest, unplugged under detach custody", async () => {
 		const f = await fixture();
