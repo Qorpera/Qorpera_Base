@@ -206,10 +206,13 @@ All tables are keyed by company environment.
   transaction that inserts a wake takes it as its last lock before the clock
   (§3 step 10). It serializes wake admission and the wake count, which today
   sit on the fence (20260907000200:23-31).
-- **Proposals** (`qorpera_folder_proposals`) hold parked units: units waiting
-  on a review card, a restricted creator's hire (contract 14.1), or a
-  protected path if one is ever configured. Each proposal keeps its unit list
-  and its upload intents open until it is decided.
+- **Proposals** (`qorpera_folder_proposals`, P40a, migration 20260930074000)
+  hold parked units: a view's units that need review and carry none, a
+  restricted creator's hire through a view among them (contract 14.1). Each
+  proposal keeps its units, and a row per path they name
+  (`qorpera_folder_proposal_paths`, which roots their files), until it is
+  decided: applied by the agent's next run with that member, declined, or
+  discarded (C2 §8).
 - **Upload intents** (`qorpera_folder_upload_intents`) record bytes a writer is
   about to commit: the file manifest and its chunks, the size, the run or
   member command, the operation key, and an expiry that long uploads renew.
@@ -285,11 +288,12 @@ is never upgraded. The steps:
    - Every change that ends a lease (requeue, cancel, handoff, completion,
      re-claiming an expired lease) takes `FOR UPDATE`, which waits for commits
      that checked the old lease. An activation check enforces this.
-   - An approval applied after its run ended (a parked unit) takes no job
-     lock. It never substitutes the approver for the agent (contract 4.3).
-     The commit re-checks the agent's current authority and status, and the
-     approver's right to answer the card. It records the agent as actor and
-     the member as approver, and refuses the unit if either check fails.
+   - A parked unit is applied by a run (C2 §8, shape B): the agent's next
+     run for the same member, whose commit takes its own job lock as any
+     run's. It never substitutes the approver for the agent (contract 4.3):
+     the commit checks the agent's current authority as it does for any run,
+     records the agent as actor and the member who answered the card as
+     approver. The proposal row is rank 7c, after the review.
    - **A view** (C1B "C1b-3: views" §4): the job of its live run, if any, then
      the view row `FOR KEY SHARE`, which closing and superseding (`FOR
      UPDATE`) wait for. Releases take them in the same order, and so must
@@ -485,8 +489,8 @@ Each unit reports one of:
 - refused (a rule of 5.6, a structured file that fails its schema, or a
   path the unit would store past the 4096-byte limit, `too_long`);
 - denied (authority, or a reviewed unit without its review);
-- waiting for review (its review record is a pending ask, and the unit is
-  parked as a proposal);
+- waiting for review (a view's unit that needs review and carries none, parked
+  as a proposal; or a review record that is a pending ask);
 - not applied (RUNTIME-COMPANY-FOLDER.md §2).
 
 ### Who calls it
@@ -611,8 +615,9 @@ parse. The class is one of:
 
 An agent's delegation or deletion unit is handled by its review record:
 - **allow**, or an approved card: the unit applies;
-- **pending ask:** the unit waits for review and is parked as a proposal;
-- **none, or deny:** the unit is denied.
+- **pending ask:** the unit waits for review;
+- **none, or deny:** the unit is denied; a view's unit with no review is parked
+  as a proposal instead (C2 §8).
 
 One review covers a change set. Tools that act outside the folder
 (connectors, the computer, workers, coding) keep their tool-name classes in
@@ -858,8 +863,9 @@ An object is retained while it is referenced by any of:
 - a conflict copy on a receipt (P17: `qorpera_folder_conflict_copies`, in
   `qorpera_folder_object_rooted`; erasing a path will remove its copies,
   which the folder GC + erasure session adds to `qorpera_folder_erase`);
-- an open proposal, including units parked on a review card, which never
-  expire (2026-09-25 amendment, item 5); or
+- an open proposal (P40a: `qorpera_folder_proposal_paths`, in
+  `qorpera_folder_object_rooted`), which never expires (2026-09-25 amendment,
+  item 5); erasing a path erases the open proposals under it; or
 - a retention hold.
 
 ### Invariants
@@ -1173,10 +1179,11 @@ worker on"). Nothing else in this plan waits on him.
 - Proposals for parked units and the restricted hire.
   - R1 (#613) records the review of tool calls. The restricted hire is a card
     on that record (W4a, #621), not a parked proposal.
-  - R2 reviews change sets that no tool call carried, and adds
-    `qorpera_folder_proposals`. Until it exists, agents make the interface
-    and table changes that "interfaces" item 7 counts as delegation only with
-    `save_interface`, which joins R1's tools.
+  - R2 reviews change sets that no tool call carried: P40a (migration
+    20260930074000) parks a view's units as `qorpera_folder_proposals`, and the
+    agent's next run for that member applies them through R1 (C2 §8). A
+    Company File write onto a delegation path keeps using the tool made for
+    it (`save_interface` for interfaces and tables).
 - Erasure. "Work for people" item 3 (approved 3 October 2026) widens it from
   a deleted agent's folder to any deleted path (a contact's file too).
 
