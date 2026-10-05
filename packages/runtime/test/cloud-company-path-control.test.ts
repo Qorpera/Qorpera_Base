@@ -324,6 +324,9 @@ describe("the folder core's entry points (core C3)", () => {
 		"qorpera_folder_record_review",
 		"qorpera_folder_agent_routines",
 		"qorpera_prepare_routine_login",
+		"qorpera_folder_worker_commit",
+		"qorpera_folder_agent_workers",
+		"qorpera_folder_cancel_agent_worker",
 	] as const;
 
 	it("reads one routine whole, up to a megabyte, where other folder reads stop at 256 KiB", async () => {
