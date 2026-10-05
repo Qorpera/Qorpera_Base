@@ -204,7 +204,8 @@ offered and accounts are switched on.
   - the company's mailbox addresses (removed ones left out), for the tagged login;
   - with `todo` (a todo key), that todo's id, when it is this agent's own open or blocked todo (22023 otherwise):
     agents know a todo by its key, and the opening names it by id.
-  It refuses 0A000 while accounts are switched off and for folder-v2 companies, and 22023 for any other request
+  It answers `refused` 0A000 while accounts are switched off and for a company not on the company folder (since
+  A1-7, 20260930072000), and 22023 for any other request
   shape. Granted to the service role only.
 - An agent's account signs up with a tagged address of one of the company's mailboxes. A trigger on
   `qorpera_company_accounts` (before insert, for an agent's opening only) refuses any other login with 22023,

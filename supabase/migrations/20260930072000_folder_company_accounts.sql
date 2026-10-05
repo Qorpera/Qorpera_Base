@@ -437,10 +437,44 @@ begin
 end
 $$;
 
+-- A close's vault rows: the account's secret, then the account (rank 8), as qorpera_company_account_locked takes them, but
+-- an account closed while the close waited for them (another close, or a member's removal) is answered too, not refused:
+-- the close then answers the closed account. Any other company's or kind's row, or another broker's, is refused as there.
+create function public.qorpera_company_account_locked_for_close(p_call_profile uuid, p_call_environment uuid,
+	p_authority_id uuid, p_account_id uuid)
+returns public.qorpera_company_accounts
+language plpgsql security definer set search_path = '' as $$
+declare
+	v_secret public.qorpera_cloud_secrets%rowtype;
+	v_account public.qorpera_company_accounts%rowtype;
+begin
+	-- 20260930072000 (A1-7, review r1): only this company's website accounts are locked; any other id is refused at once.
+	select secret.* into v_secret from public.qorpera_cloud_secrets as secret
+	where secret.id = p_account_id and secret.profile_id = p_call_profile and secret.environment_id = p_call_environment
+		and secret.connector_id = 'website' and secret.owner_kind = 'company'
+	for update;
+	if found then
+		select account.* into v_account from public.qorpera_company_accounts as account
+		where account.secret_id = p_account_id and account.profile_id = p_call_profile
+		for update;
+	end if;
+	if v_secret.id is null or v_account.secret_id is null
+		or (v_account.status is distinct from 'closed' and v_secret.status is distinct from 'active') then
+		raise exception 'The company has no such open account' using errcode = '22023';
+	end if;
+	if v_secret.broker_authority_id is distinct from p_authority_id then
+		raise exception 'cloud secret broker does not own this envelope' using errcode = '42501';
+	end if;
+	return v_account;
+end
+$$;
+revoke all on function public.qorpera_company_account_locked_for_close(uuid,uuid,uuid,uuid)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
 -- The agent reports what the website did: accepted (connected), wants a person (needs_person), or closed. Closing revokes
 -- the vault row at once (the revoke trigger wipes the envelopes and closes the account row); a repeat of a close, or a
--- close of an account already closed, answers the closed account after its receipt is checked. A closed account is
--- never opened again.
+-- close of an account already closed, answers the closed account after its receipt is checked, also when it was closed
+-- while this close waited for its rows. A closed account is never opened again.
 create or replace function public.qorpera_set_company_account_state(
 	p_broker_authority_id uuid,
 	p_broker_capability_sha256 text,
@@ -477,8 +511,21 @@ begin
 				(select secret.current_version from public.qorpera_cloud_secrets as secret where secret.id = p_account_id));
 		end if;
 	end if;
-	v_account := public.qorpera_company_account_locked(v_call.profile_id, v_call.environment_id, v_call.authority_id,
-		p_account_id);
+	if p_status = 'closed' then
+		-- Closed while this call waited for its rows (another close, or a member's removal): the closed account too, now
+		-- under the secret and the account, after its receipt; never a refusal (review r1).
+		v_account := public.qorpera_company_account_locked_for_close(v_call.profile_id, v_call.environment_id,
+			v_call.authority_id, p_account_id);
+		if v_account.status = 'closed' then
+			perform public.qorpera_company_account_receipt(v_call.run_id, p_receipt_id, p_input_sha256,
+				p_downstream_idempotency_sha256, 'state', p_account_id);
+			return public.qorpera_company_account_descriptor(v_account,
+				(select secret.current_version from public.qorpera_cloud_secrets as secret where secret.id = p_account_id));
+		end if;
+	else
+		v_account := public.qorpera_company_account_locked(v_call.profile_id, v_call.environment_id, v_call.authority_id,
+			p_account_id);
+	end if;
 	perform public.qorpera_company_account_receipt(v_call.run_id, p_receipt_id, p_input_sha256,
 		p_downstream_idempotency_sha256, 'state', p_account_id);
 	if v_account.status is distinct from p_status then
@@ -840,6 +887,7 @@ begin
 	foreach v_function in array array[
 		'public.qorpera_company_account_call(uuid,text,jsonb,uuid,text,text,text,uuid)',
 		'public.qorpera_company_account_receipt(uuid,uuid,text,text,text,uuid)',
+		'public.qorpera_company_account_locked_for_close(uuid,uuid,uuid,uuid)',
 		'public.qorpera_open_company_account(uuid,text,jsonb,uuid,text,text,uuid,uuid,uuid,text,text[],text,text,uuid,text,bytea,text)',
 		'public.qorpera_describe_company_account_open(uuid,text,jsonb,uuid,text,text)',
 		'public.qorpera_use_company_account(uuid,text,jsonb,uuid,text,text,uuid)',

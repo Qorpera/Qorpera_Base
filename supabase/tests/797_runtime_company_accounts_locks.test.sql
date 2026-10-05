@@ -20,6 +20,8 @@
 --    receipt free, and then answers as that one left things: its own receipt's replay, or "already has this account"
 --    (never a second account). A writer that took no claim is still caught by the unique indexes, the login's or the vault
 --    name's, and their 23505 answers the same refusal.
+-- 6. A close that waits for an account's rows while another close (6a) or a member's removal (6b) closes it answers the
+--    closed account, after its receipt, never a refusal; nothing is closed twice.
 
 -- The switch and the mail domain go back to what they were at the end.
 select set_config('qorpera_test.cl_enabled', (select enabled::text from public.qorpera_company_account_settings), false)
@@ -123,6 +125,11 @@ create function pg_temp.cl_open(p_receipt uuid, p_secret uuid, p_site text, p_lo
 		'79700000-0000-4000-8000-000000000040', repeat('7', 64), current_setting('qorpera_test.binding'), p_receipt, p_secret,
 		'64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', p_site, p_login,
 		'79700000-0000-4000-8000-000000000060', encode(extensions.digest('\x0102'::bytea, 'sha256'), 'hex'))
+$$;
+create function pg_temp.cl_state(p_receipt uuid, p_account uuid, p_status text) returns text language sql as $$
+	select format('select public.qorpera_set_company_account_state(%L, %L, %L::jsonb, %L, repeat(''a'', 64), repeat(''b'', 64), %L, %L)::text',
+		'79700000-0000-4000-8000-000000000040', repeat('7', 64), current_setting('qorpera_test.binding'), p_receipt, p_account,
+		p_status)
 $$;
 create function pg_temp.cl_remove(p_account uuid) returns text language sql as $$
 	select format('select public.qorpera_remove_company_account(''64800000-0000-4000-8000-000000000010'', %L)::text', p_account)
@@ -425,6 +432,69 @@ select pg_temp.cl_check(not exists (select 1 from public.qorpera_cloud_secret_ve
 	and (select count(*) from public.qorpera_company_accounts where profile_id = '64800000-0000-4000-8000-000000000010'
 		and status <> 'closed') = 4,
 	'The removed accounts kept envelopes or stayed open, or a race left a second account');
+
+-- 6. Closes that meet. 6a: the holder plays another close in flight (it revokes the secret, which closes the account
+--    through the revoke trigger, and keeps its transaction open); the broker's close of the same account passed its plain
+--    read while the account was still open, so it waits for the secret, then finds the account closed and answers it.
+--    6b: the holder keeps the account row; the owner's removal takes the secret and waits for the account; the broker's
+--    close waits for the secret behind it; the holder lets go, the removal lands, and the close answers the closed account.
+select pg_temp.cl_account('79700000-0000-4000-8000-000000000055', '64800000-0000-4000-8000-000000000010',
+	'64800000-0000-4000-8000-000000000020', '79700000-0000-4000-8000-000000000040', 'company-kek-1', 'website',
+	'race-six@nordlys.example', '64800000-0000-4000-8000-000000000001');
+select pg_temp.cl_receipt('79700000-0000-4000-8000-000000000111', 'company_account:state:79700000-0000-4000-8000-000000000054:r6a');
+do $$
+declare v_close text;
+begin
+	perform pg_temp.hold($q$update public.qorpera_cloud_secrets set status = 'revoked', revoked_at = statement_timestamp(),
+		updated_at = statement_timestamp() where id = '79700000-0000-4000-8000-000000000054'$q$);
+	perform dblink_send_query('fence_three', pg_temp.cl_state('79700000-0000-4000-8000-000000000111',
+		'79700000-0000-4000-8000-000000000054', 'closed'));
+	if not pg_temp.waits_at('fence_three', 'public.qorpera_cloud_secrets') then
+		perform dblink_exec('fence_one', 'rollback');
+		raise exception 'Race 6a: the close did not wait at the secret another close holds: %', pg_temp.cl_result('fence_three'); end if;
+	if not pg_temp.receipt_free('79700000-0000-4000-8000-000000000111') then
+		perform dblink_exec('fence_one', 'rollback');
+		raise exception 'Race 6a: the close locked its receipt before the vault rows'; end if;
+	perform dblink_exec('fence_one', 'commit');
+	v_close := pg_temp.cl_result('fence_three');
+	perform pg_temp.cl_check(v_close like 'ok:%"status": "closed"%' and v_close like '%"accountId": "79700000-0000-4000-8000-000000000054"%',
+		'Race 6a: a close that waited while another closed the account was not answered the closed account: ' || v_close);
+end $$;
+select pg_temp.cl_done('79700000-0000-4000-8000-000000000111');
+select pg_temp.cl_as('fence_two', pg_temp.cl_member('64800000-0000-4000-8000-000000000001'));
+select pg_temp.cl_receipt('79700000-0000-4000-8000-000000000112', 'company_account:state:79700000-0000-4000-8000-000000000055:r6b');
+do $$
+declare v_remove text; v_close text;
+begin
+	perform pg_temp.hold('select 1 from public.qorpera_company_accounts where secret_id = ''79700000-0000-4000-8000-000000000055'' for update');
+	perform dblink_send_query('fence_two', pg_temp.cl_remove('79700000-0000-4000-8000-000000000055'));
+	if not pg_temp.waits_at('fence_two', 'public.qorpera_company_accounts') then
+		perform dblink_exec('fence_one', 'rollback');
+		raise exception 'Race 6b: the removal did not wait at the held account: %', pg_temp.cl_result('fence_two'); end if;
+	perform dblink_send_query('fence_three', pg_temp.cl_state('79700000-0000-4000-8000-000000000112',
+		'79700000-0000-4000-8000-000000000055', 'closed'));
+	if not pg_temp.waits_at('fence_three', 'public.qorpera_cloud_secrets') then
+		perform dblink_exec('fence_one', 'rollback');
+		raise exception 'Race 6b: the close did not wait at the secret the removal holds: %', pg_temp.cl_result('fence_three'); end if;
+	perform dblink_exec('fence_one', 'rollback');
+	v_remove := pg_temp.cl_result('fence_two');
+	v_close := pg_temp.cl_result('fence_three');
+	perform pg_temp.cl_check(v_remove like 'ok:%', 'Race 6b: the removal did not land: ' || v_remove);
+	perform pg_temp.cl_check(v_close like 'ok:%"status": "closed"%' and v_close like '%"accountId": "79700000-0000-4000-8000-000000000055"%',
+		'Race 6b: a close that waited behind a removal was not answered the closed account: ' || v_close);
+end $$;
+select pg_temp.cl_done('79700000-0000-4000-8000-000000000112');
+-- Each account was closed once: by the other close (no state change of the waiting close's) or by the removal (its
+-- remover recorded); no envelope is left.
+select pg_temp.cl_check(not exists (select 1 from public.qorpera_cloud_secret_audit_events where event_type = 'account_state_changed'
+		and receipt_id in ('79700000-0000-4000-8000-000000000111', '79700000-0000-4000-8000-000000000112'))
+	and (select count(*) from public.qorpera_company_accounts where status = 'closed' and closed_at is not null
+		and secret_id in ('79700000-0000-4000-8000-000000000054', '79700000-0000-4000-8000-000000000055')) = 2
+	and (select removed_by_user_id from public.qorpera_company_accounts where secret_id = '79700000-0000-4000-8000-000000000055')
+		= '64800000-0000-4000-8000-000000000001'
+	and not exists (select 1 from public.qorpera_cloud_secret_versions where secret_id in
+		('79700000-0000-4000-8000-000000000054', '79700000-0000-4000-8000-000000000055')),
+	'Race 6: an account was closed twice, kept its envelopes, or lost its remover');
 
 select dblink_exec(name, 'reset session authorization') from unnest(array['fence_two','fence_three']) name \g /dev/null
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name \g /dev/null
