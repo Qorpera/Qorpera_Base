@@ -6,9 +6,10 @@
 -- wakes where there is no room, the executor's custody of every effect, idle sleep and removal for task machines,
 -- commands whose end is recorded as an event for the run that started them, members who see and stop every machine
 -- of the company (and the agent's thread that started them shows them), an operator giving up a gone node's executor,
--- and a deleted company's machines deleted by the folder-v2 deletion request. Left out: the snapshot-v1 test's
--- sections 17-19, the events' delivery as continuation runs, until machine-event wakes are on folder-v2; the events
--- themselves are checked here as they are recorded, waiting.
+-- a person who stops a machine-event continuation hears nothing more from that run's machines (§19, by the folder-v2
+-- drains' company step), and a deleted company's machines deleted by the folder-v2 deletion request. Deleted under the
+-- delete-first rule: the snapshot-v1 test's §17 (batching: 848 covers it) and §18 (the continuation's context with the
+-- events' output and the parent's receipts).
 select pg_temp.base_claims('service_role');
 select pg_temp.base_public_send(current_setting('qorpera_test.base_binding')::jsonb,'progress','machine-ack') \g /dev/null
 
@@ -682,8 +683,54 @@ begin
 		'Machine tools are known operations');
 end $$;
 
--- 17-19 (the snapshot-v1 test's machine-event wakes: continuation runs carrying the waiting events) are left out until
--- machine-event wakes are on folder-v2; see the header.
+-- 17-18 of the snapshot-v1 test are deleted under the delete-first rule: its batching (848 covers it) and the
+-- continuation's context with the events' output and the parent's receipts.
+
+-- 19. A person who stops a continuation hears nothing more from that run's machines (on folder-v2 by the shared drains'
+--     company step, 20260930058000). Alice's run ends; the step carries its waiting events into one continuation in her
+--     thread, which the materializer makes a run of hers; the owner stops it there, and the parent's next event is held back.
+do $$
+declare v_parent public.qorpera_execution_runs; v_answer jsonb; v_pass jsonb; v_wake public.qorpera_wake_occurrences;
+	v_stop jsonb; v_event uuid;
+begin
+	select * into strict v_parent from public.qorpera_execution_runs where id = (pg_temp.mc_binding() ->> 'runId')::uuid;
+	perform pg_temp.base_assert((select count(*) from public.qorpera_company_machine_events
+		where parent_run_id = v_parent.id and delivery = 'waiting') between 1 and 8, 'The parent''s events wait for it');
+	-- Alice's run reports and ends.
+	perform pg_temp.base_public_send(pg_temp.mc_binding(),'final','machine-final');
+	update public.qorpera_runner_jobs set status = 'completed', result = '{}'::jsonb, finished_at = statement_timestamp(),
+		lease_token_sha256 = null, lease_expires_at = null where id = v_parent.job_id;
+	v_answer := public.qorpera_folder_machine_events_company('92400000-0000-4000-8000-000000000020',8);
+	select * into strict v_wake from public.qorpera_wake_occurrences where parent_run_id = v_parent.id and source_kind = 'machine-event';
+	perform pg_temp.base_assert(v_answer ->> 'state' = 'done' and (v_answer ->> 'delivered')::int = 1 and v_wake.status = 'queued'
+		and v_wake.staff_agent_id = v_parent.staff_agent_id and v_wake.session_id = v_parent.session_id
+		and not exists (select 1 from public.qorpera_company_machine_events where parent_run_id = v_parent.id and delivery = 'waiting'),
+		'The ended run''s events go as one continuation in its conversation: '||v_answer::text);
+	v_pass := pg_temp.base_materialize();
+	select * into strict v_wake from public.qorpera_wake_occurrences where id = v_wake.id;
+	perform pg_temp.base_assert(v_wake.status = 'materialized' and v_pass -> 'run_ids' = jsonb_build_array(v_wake.run_id)
+		and exists (select 1 from public.qorpera_execution_runs where id = v_wake.run_id and staff_agent_id = v_parent.staff_agent_id
+			and session_id = v_parent.session_id),
+		'The continuation is a run of Alice''s in her thread: '||v_pass::text);
+	-- The owner stops it with the thread's Stop.
+	perform pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
+	set local role authenticated;
+	v_stop := public.qorpera_cancel_session_run(v_parent.session_id,v_wake.run_id);
+	reset role;
+	perform pg_temp.base_claims('service_role');
+	perform pg_temp.base_assert(v_stop ->> 'status' = 'cancelled','The owner stops the continuation: '||v_stop::text);
+	-- A machine of the parent's reports again: held back, and no continuation follows.
+	insert into public.qorpera_company_machine_events(machine_id, profile_id, environment_id, staff_agent_id, parent_run_id, kind)
+	values ((pg_temp.mc_machine('wide')).id, v_parent.profile_id, v_parent.environment_id, v_parent.staff_agent_id, v_parent.id, 'running')
+	returning id into v_event;
+	v_answer := public.qorpera_folder_machine_events_company('92400000-0000-4000-8000-000000000020',8);
+	perform pg_temp.base_assert(public.qorpera_machine_revival_stopped(v_parent.id)
+		and (v_answer ->> 'suppressed')::int = 1 and (v_answer ->> 'delivered')::int = 0
+		and exists (select 1 from public.qorpera_company_machine_events where id = v_event and delivery = 'suppressed')
+		and not exists (select 1 from public.qorpera_company_machine_events where delivery = 'waiting')
+		and (select count(*) from public.qorpera_wake_occurrences where parent_run_id = v_parent.id and source_kind = 'machine-event') = 1,
+		'That run''s later events are held back: '||v_answer::text);
+end $$;
 
 -- 20. A node gone for good: once its executor is disabled, an operator gives up its placements.
 --     Every allocation is released (its node's demand with it) after every placement is closed.
