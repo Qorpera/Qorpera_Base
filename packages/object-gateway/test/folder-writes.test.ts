@@ -611,27 +611,32 @@ describe("writes through the mount", () => {
 		core.seed([folder("locked")]);
 		core.refuse = (path) => path.startsWith("locked/");
 		const view = await open();
-		await write(view, "ok.txt", "ok");
+		// A new folder with a file saves, and a refused write stays pending. The view's feed reaches the change set,
+		// but reading the change set for the new folder's file versions fails three times, so it does not settle.
+		await view.mkdir("build");
+		await write(view, "build/out.txt", "out");
 		await write(view, "locked/x.txt", "x");
-		// The boundary saves one file and keeps the refused one; the feed fails, so it does not settle.
-		core.feedFailures = 3;
-		expect(byPath((await view.publish()).paths)).toEqual([
-			{ path: "locked/x.txt", outcome: "denied", reason: "denied", kept: true },
-			{ path: "ok.txt", outcome: "saved" },
-		]);
-		// A new file is asked for first, and its wait on the feed is held; a boundary is asked for meanwhile, and its
-		// commit is held: the file must not land while that boundary decides and settles.
-		const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 20));
-		let releaseFeed!: () => void;
-		const feedHeld = new Promise<void>((resolve) => {
-			releaseFeed = resolve;
+		let reads = 0;
+		let releaseRead!: () => void;
+		const readHeld = new Promise<void>((resolve) => {
+			releaseRead = resolve;
 		});
-		let first = true;
-		core.feedHook = () => {
-			if (!first) return undefined;
-			first = false;
-			return feedHeld;
+		core.feedHook = (afterSeq) => {
+			if (afterSeq !== 0) return undefined;
+			reads++;
+			if (reads === 1) return undefined;
+			if (reads <= 4) throw new Error("The core did not answer this page");
+			// The next read, the new file's settling, is held; any later one goes through.
+			return reads === 5 ? readHeld : undefined;
 		};
+		expect(byPath((await view.publish()).paths)).toEqual([
+			{ path: "build", outcome: "saved" },
+			{ path: "build/out.txt", outcome: "saved" },
+			{ path: "locked/x.txt", outcome: "denied", reason: "denied", kept: true },
+		]);
+		// A new file is asked for first; a boundary is asked for meanwhile, and its commit is held. The file must not
+		// land while that boundary decides and settles.
+		const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 20));
 		let releaseCommit!: () => void;
 		core.commitGate = new Promise<void>((resolve) => {
 			releaseCommit = resolve;
@@ -640,11 +645,12 @@ describe("writes through the mount", () => {
 		await tick();
 		const publishing = view.publish();
 		await tick();
-		releaseFeed();
+		releaseRead();
 		await tick();
 		releaseCommit();
 		const [{ handle }] = await Promise.all([opening, publishing]);
 		core.commitGate = undefined;
+		core.feedHook = undefined;
 		// The file landed after the boundary settled, and stays.
 		const data = Buffer.from("new");
 		await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: 3, offset: 0, data });
@@ -718,6 +724,47 @@ describe("writes through the mount", () => {
 		expect(core.renewals.slice(before)).toContain([...core.intents.keys()].at(-1));
 		end.release();
 		await sendingB;
+	});
+
+	it("renews a chunk's intent while its parts are still on their way", async () => {
+		let now = Date.now();
+		const { core, open, service } = await fixture({ now: () => now });
+		const view = await open();
+		const { handle } = await view.open({ path: "big.bin", create: true, exclusive: false, truncate: true });
+		const data = Buffer.alloc(2 * 1024 * 1024, 1);
+		const first = data.subarray(0, 1024 * 1024);
+		await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data: first });
+		now += 10 * 60_000;
+		await service.renewIntents();
+		expect(core.renewals).toEqual([...core.intents.keys()]);
+	});
+
+	it("answers a chunk it cannot start as a request error, and takes it again", async () => {
+		const { core, open } = await fixture();
+		const view = await open();
+		const { handle } = await view.open({ path: "a.bin", create: true, exclusive: false, truncate: true });
+		const data = Buffer.from("abc");
+		const part = { handle, index: 0, sha256: hashOf(data), bytes: 3, offset: 0, data };
+		// The company's storage profile cannot be learnt now.
+		const down = Promise.reject(new Error("The database did not answer"));
+		down.catch(() => undefined);
+		core.uploadProfileGate = down;
+		await refused(view.chunk(part), "UNAVAILABLE");
+		core.uploadProfileGate = undefined;
+		await view.chunk(part);
+		await view.close(handle, 3);
+		expect(await read(view, "a.bin")).toBe("abc");
+	});
+
+	it("fails a boundary whose company-state file cannot be read back as a request error", async () => {
+		const { root, core, uploads, open } = await fixture();
+		core.seed([folder("vision")]);
+		const view = await open();
+		await write(view, "vision/vision.md", "# Where we are going");
+		// The staged manifest is gone from the share before the boundary reads the file to parse it.
+		await rm(join(root, PROFILE, uploads.puts.at(-1)!));
+		await refused(view.publish(), "UNAVAILABLE");
+		expect(core.entries.has("vision/vision.md")).toBe(false);
 	});
 
 	it("answers a close it cannot cut, for want of the origin's bytes, and keeps the handle", async () => {
