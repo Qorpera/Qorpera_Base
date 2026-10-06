@@ -1199,8 +1199,15 @@ it("composes only the agent's requests from its run, never a reviewer's", async 
 	expect(composeContext).toHaveBeenCalledOnce();
 	expect(composeContext.mock.calls[0][0]).toMatchObject({ threadId: "thread_fixture", turnId: "turn_fixture" });
 	const recorded = JSON.parse(await readFile(evidence, "utf8"));
-	expect(recorded.context.agent).toMatchObject({ threadId: "thread_fixture", input: [{ keep: 0 }, { keep: 1 }, { work: WORK_MESSAGE }] });
-	expect(recorded.context.reviewer).toMatchObject({ threadId: "thread_review", turnId: "turn_review", input: [{ keep: 0 }, { keep: 1 }] });
+	expect(recorded.context.agent).toMatchObject({
+		threadId: "thread_fixture",
+		input: [{ keep: 0 }, { keep: 1 }, { work: WORK_MESSAGE }],
+	});
+	expect(recorded.context.reviewer).toMatchObject({
+		threadId: "thread_review",
+		turnId: "turn_review",
+		input: [{ keep: 0 }, { keep: 1 }],
+	});
 });
 
 it("never runs an acting call when the reviewer ends without a verdict", async () => {

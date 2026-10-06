@@ -443,7 +443,9 @@ it("returns only the protocol's own keys of a run's composition", async () => {
 
 it("serves a request's composition and then its fence on one socket path", async () => {
 	const f = await contextFixture(async () => ({ input: [{ work: WORK }, { keep: 0 }, { keep: 1 }] }));
-	expect(await exchange(f.service.path, contextRequest())).toMatchObject({ input: [{ work: WORK }, { keep: 0 }, { keep: 1 }] });
+	expect(await exchange(f.service.path, contextRequest())).toMatchObject({
+		input: [{ work: WORK }, { keep: 0 }, { keep: 1 }],
+	});
 	expect(await exchange(f.service.path, request())).toMatchObject({ schema: CLOUD_NATIVE_RESULT_FENCE_SCHEMA });
 	expect(f.onFailure).not.toHaveBeenCalled();
 });
@@ -505,7 +507,9 @@ it.each([
 it("releases a work message at its exact bound", async () => {
 	const work = "x".repeat(256 * 1024);
 	const f = await contextFixture(async () => ({ input: [{ keep: 0 }, { keep: 1 }, { work }] }));
-	expect(await exchange(f.service.path, contextRequest())).toMatchObject({ input: [{ keep: 0 }, { keep: 1 }, { work }] });
+	expect(await exchange(f.service.path, contextRequest())).toMatchObject({
+		input: [{ keep: 0 }, { keep: 1 }, { work }],
+	});
 	expect(f.onFailure).not.toHaveBeenCalled();
 });
 
@@ -522,9 +526,11 @@ it("refuses a composition request that is not the run's, before composing it", a
 
 it("re-binds a request after composing it, and releases nothing once the run has moved on", async () => {
 	const f = await contextFixture(async () => undefined);
-	f.assertRequest.mockImplementationOnce(() => undefined).mockImplementationOnce(() => {
-		throw new Error("Native result boundary stopped");
-	});
+	f.assertRequest
+		.mockImplementationOnce(() => undefined)
+		.mockImplementationOnce(() => {
+			throw new Error("Native result boundary stopped");
+		});
 	expect(await exchange(f.service.path, contextRequest())).toBeUndefined();
 	expect(f.onFailure).toHaveBeenCalledTimes(1);
 });
