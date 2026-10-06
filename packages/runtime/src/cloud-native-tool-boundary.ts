@@ -12,6 +12,7 @@ import {
 import { CloudControlRpcRefused } from "./cloud-control-errors.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
+import { type CloudRunLog, CloudRunLogGone, type CloudRunLogRelease, cloudRunLogReleases } from "./cloud-run-log.ts";
 import {
 	type CloudRuntimeObservability,
 	type CloudRuntimeObservationSpan,
@@ -38,6 +39,11 @@ export const CLOUD_TOOL_RESULT_INSTRUCTIONS =
 /** Fixed wording for a definite stale-version refusal of a Company File mutation. */
 const COMPANY_FILE_VERSION_CHANGED =
 	"COMPANY_FILE_VERSION_CHANGED: nothing was written; the path changed since your version. Read it again and make the change on its current version.";
+/** An acting call is recorded in the run's work log before it runs (RUNTIME-AGENT-MEMORY-TREE.md §4.5). */
+const WORK_LOG_UNAVAILABLE =
+	"WORK_LOG_UNAVAILABLE: The platform could not record this action in the run's work log first, so it did not run. You may try the identical call once more; if it fails again, tell the member.";
+const WORK_LOG_GONE =
+	"WORK_LOG_GONE: This conversation's folder was deleted, so this run can record no more work and the action did not run. Stop working on this run.";
 
 /** Prefix for a formation write the organization projection would refuse; the gateway's reason follows. */
 const COMPANY_FORMATION_REFUSED = "COMPANY_FORMATION_REFUSED: nothing was written; ";
@@ -323,6 +329,7 @@ export class CloudNativeToolBoundary {
 	readonly #assertActive: (signal: AbortSignal) => Promise<void>;
 	readonly #captures?: CloudNativeCaptureImages;
 	readonly #review?: CloudNativeActionReview;
+	readonly #runLog?: CloudRunLog;
 	readonly #stop = new AbortController();
 	readonly #signal: AbortSignal;
 	readonly #calls = new Map<
@@ -344,8 +351,14 @@ export class CloudNativeToolBoundary {
 		captures?: CloudNativeCaptureImages;
 		/** Auto-review before acting calls; absent in compositions that review nothing (coding sessions). */
 		review?: CloudNativeActionReview;
+		/** The run's work log: every call is a step, and an acting call is committed before it runs. */
+		runLog?: CloudRunLog;
 	}) {
-		if (!UUID.test(options.companyId) || !UUID.test(options.runId)) {
+		if (
+			!UUID.test(options.companyId) ||
+			!UUID.test(options.runId) ||
+			(options.runLog && options.runLog.runId !== options.runId)
+		) {
 			throw new Error("Invalid cloud tool boundary");
 		}
 		this.#companyId = options.companyId;
@@ -360,6 +373,7 @@ export class CloudNativeToolBoundary {
 		this.#assertActive = options.assertActive;
 		this.#captures = options.captures;
 		this.#review = options.review;
+		this.#runLog = options.runLog;
 		this.#signal = AbortSignal.any([options.signal, this.#stop.signal]);
 		for (const tool of options.tools) {
 			if (
@@ -376,6 +390,11 @@ export class CloudNativeToolBoundary {
 			}
 			this.#tools.set(tool.name, { ...tool, inputSchema: structuredClone(tool.inputSchema) });
 		}
+	}
+
+	/** The run's work log, which the session feeds the agent's own text as it streams. */
+	get runLog(): CloudRunLog | undefined {
+		return this.#runLog;
 	}
 
 	/** Matches the pinned Codex 0.147.0 DynamicToolSpec, without exposing server identity as arguments. */
@@ -545,6 +564,8 @@ export class CloudNativeToolBoundary {
 					COMPANY_FILE_VERSION_CHANGED: "stale_version",
 					COMPANY_FILE_PARENT_MISSING: "parent_missing",
 					COMPANY_FORMATION_REFUSED: "invalid_arguments",
+					WORK_LOG_UNAVAILABLE: "transport_unavailable",
+					WORK_LOG_GONE: "authority_unavailable",
 				} as const;
 				observation?.finish(envelope.status, {
 					errorCategory:
@@ -638,6 +659,38 @@ export class CloudNativeToolBoundary {
 		argumentsText: string,
 		observation?: CloudRuntimeObservationSpan,
 	): Promise<CloudDynamicToolResponse> {
+		const runLog = this.#runLog;
+		if (!runLog) return this.#act(callId, tool, digest, argumentsText, observation);
+		if (runLog.gone) return this.#result(callId, tool, digest, "denied", { kind: "text", value: WORK_LOG_GONE });
+		// Every call is a step of the run's work log, kept with the envelope it got and every release its result was
+		// issued under (RUNTIME-AGENT-MEMORY-TREE.md §4.5). `args_hash` is the call's digest, as receipts and reviews have it.
+		const step = runLog.step({ call: callId, tool: tool.name, argumentsText, argumentSha256: digest });
+		const releases: CloudRunLogRelease[] = [];
+		let response: CloudDynamicToolResponse;
+		try {
+			response = await cloudRunLogReleases(releases, () =>
+				this.#act(callId, tool, digest, argumentsText, observation, step),
+			);
+		} catch (error) {
+			const unconfirmed = this.#result(callId, tool, digest, "unconfirmed", {
+				kind: "text",
+				value: "TOOL_OUTCOME_UNCONFIRMED",
+			});
+			runLog.finish(step, unconfirmed.contentItems[0].text, releases);
+			throw error;
+		}
+		runLog.finish(step, response.contentItems[0].text, releases);
+		return response;
+	}
+
+	async #act(
+		callId: string,
+		tool: CloudNativeTool,
+		digest: string,
+		argumentsText: string,
+		observation?: CloudRuntimeObservationSpan,
+		step?: number,
+	): Promise<CloudDynamicToolResponse> {
 		if (tool.name === "computer_screenshot" && tool.source === "runtime" && !this.#captures)
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "TOOL_UNAVAILABLE" });
 		let parsed: JsonValue;
@@ -687,6 +740,19 @@ export class CloudNativeToolBoundary {
 				this.#signal.throwIfAborted();
 			} catch {
 				return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
+			}
+		}
+		// An acting call is committed to the work log, with no result yet, before it runs. If that cannot land, it does
+		// not run: the log must show every effect the run had.
+		const runLog = this.#runLog;
+		if (runLog && step !== undefined && runLog.effectful(tool, parsed)) {
+			try {
+				await untilStopped(() => runLog.precommit(step, this.#signal), this.#signal);
+			} catch (error) {
+				return this.#result(callId, tool, digest, "denied", {
+					kind: "text",
+					value: error instanceof CloudRunLogGone ? WORK_LOG_GONE : WORK_LOG_UNAVAILABLE,
+				});
 			}
 		}
 		try {

@@ -19,6 +19,7 @@ import {
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
+import { recordCloudRunLogRelease } from "./cloud-run-log.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 
 /*
@@ -1433,6 +1434,8 @@ export class CloudCompanyFolderClient {
 			typeof input.replay !== "boolean"
 		)
 			invalid();
+		// The run's work log keeps every release id of the step that made it (RUNTIME-AGENT-MEMORY-TREE.md §4.5).
+		recordCloudRunLogRelease(releaseId, reads);
 		return { releaseId, reads: reads.length, replay: input.replay };
 	}
 }
