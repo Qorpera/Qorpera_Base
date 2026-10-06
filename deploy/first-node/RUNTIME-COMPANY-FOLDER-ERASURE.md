@@ -597,9 +597,16 @@ deletes a tree or log block, rewrites it, and asks P18 to erase the block's earl
     copies before it. When a later erasure over the key (a later cutoff's request, or a member's erasure) has erased
     the delete, the request answers nothing left once that erasure is past its versions phase, and 55006 `Block
     history is being erased; ask again` while it runs. So step 3 is never refused for good;
-  - with none, every life of it goes. A live block is refused (55000 `Block is live again`), and so is one restored
-    and renamed to a live path since step 1 (`qorpera_folder_erasure_moved_live`: the key's newest row is a move whose
-    chain of renames ends at a live path, each life begun with its move);
+  - with none, every life of it goes. A live block is refused (55000 `Block is live again`), and so is one renamed
+    to a live path since step 1 (`qorpera_folder_erasure_moved_live`: the key's newest row is a move whose chain of
+    renames ends at a live path, each life begun with its move). That live block is the block restored, or another
+    tree's block at a name reused since the delete (an agent's handle is free again once its folder is deleted). P18
+    cannot tell them apart, so the detail names both what the carrier needs: `{"live": <the live path>, "delete":
+    {seq, unit} or null}`, the delete that ended the block's life before its newest one began
+    (`qorpera_folder_erasure_live_again`). The carrier reads the live tree's `tree.toml`: its own conversation's block
+    is deleted and rewritten first, as before; another tree's block is left alone, and the carrier asks again with
+    that delete as its cutoff, which erases the old lives and keeps the new one. So this refusal is not for good
+    either;
   - a life that moved on to a live path is another block: left alone, not refused;
   - no limit of 20 paths, and every copy is named;
   - its row keeps `block_history`, and after done its digest, its copies and `for` (the roots still go);
@@ -613,5 +620,6 @@ a write, a commit not yet made and another path's delete; a delete erased by a l
 while it runs, nothing left once it is done) and by a member's erasure; partners through a renamed folder, for a
 contributor; 22 paths through 21 renames, added in one round; a life moved on to a live path (a member's request is
 refused with it); 22 copies kept after done; no cutoff (every life, a member who left, a live block refused, a block
-restored and renamed once and twice refused, an older life moved on left alone); another member's private path; a
+restored and renamed once and twice refused, the detail's live path and delete, a reused name kept and renamed asked
+again with that delete and its new life kept, an older life moved on left alone); another member's private path; a
 run's commit noted by a member's erasure and not by the block's; grants.

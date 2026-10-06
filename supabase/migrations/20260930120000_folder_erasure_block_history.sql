@@ -11,8 +11,10 @@
 --   A delete already erased (by a later cutoff's request or a member's erasure) leaves nothing before it once that
 --   erasure is past its versions phase: the request answers nothing left, or is asked again (55006) while that phase
 --   runs. It is never refused for good (§10.1).
--- * With none, the block must not be live, and every life of it is erased; a block live again, or restored and renamed
---   to a live path since step 1, is refused (55000).
+-- * With none, the block must not be live, and every life of it is erased; a block live again, or renamed to a live
+--   path since step 1, is refused (55000), naming the live path and the delete before that life. It is the block
+--   restored, or another tree's block at a name reused since the delete; the carrier tells them apart, and asks again
+--   with that delete as its cutoff for the second.
 -- * Moves are followed: the wrapper adds each partner P18 names and asks again. A life that moved on to a live path is
 --   another tree's block and is left alone, not refused. There is no limit of 20 paths, and every copy is named.
 -- * Nothing left to erase answers erasureId null, with no row (asking again erases nothing more).
@@ -39,12 +41,13 @@ alter table public.qorpera_folder_erasures
 comment on column public.qorpera_folder_erasures.block_history is
 	'A block-history request (RUNTIME-AGENT-MEMORY-TREE.md §10 step 3): {path, cutoffSeq, cutoffUnit, for: {table, id}}; null for a member''s erasure.';
 
--- Whether a key's newest life moved on, through renames, to a live path whose life began with those moves: for a block
--- that is not live, the block restored and renamed since step 1 deleted it, so live again (§10 step 3). An older life
--- that moved on is another tree's block: the key's newest row is then not that move.
+-- The live path a key's newest life moved on to, through renames, when that path's life began with those moves; else
+-- null. For a block that is not live, that is the block restored and renamed since step 1 deleted it, or a reused name's
+-- block renamed since (§10 step 3). An older life that moved on is left alone: the key's newest row is then not that
+-- move.
 create function public.qorpera_folder_erasure_moved_live(p_environment_id uuid, p_key text)
-returns boolean language plpgsql stable security definer set search_path = '' as $$
-declare v_key text := p_key; v_last record; v_to record; v_start record;
+returns text language plpgsql stable security definer set search_path = '' as $$
+declare v_key text := p_key; v_last record; v_to record; v_start record; v_path text;
 begin
 	-- Each hop's newest row is later than the last, so the chain ends; the bound only guards it.
 	for i in 1..1000 loop
@@ -53,21 +56,38 @@ begin
 		where v.environment_id = p_environment_id and v.key_sha256 = extensions.digest(v_key, 'sha256') and c.seq is not null
 		order by c.seq desc, v.unit_no desc, (v.op = 'move_in') desc
 		limit 1;
-		if not found or v_last.op <> 'move_out' then return false; end if;
+		if not found or v_last.op <> 'move_out' then return null; end if;
 		select p.path, p.version into v_to from public.qorpera_folder_path_versions p
 		where p.commit_id = v_last.commit_id and p.unit_no = v_last.unit_no and p.prior_version = v_last.prior_version
 			and p.op = 'move_in';
-		if not found or public.qorpera_folder_key(v_to.path) = v_key then return false; end if;
+		if not found or public.qorpera_folder_key(v_to.path) = v_key then return null; end if;
 		v_key := public.qorpera_folder_key(v_to.path);
 		select * into v_start from public.qorpera_folder_erasure_life_start(p_environment_id, v_key);
-		if v_start.version is distinct from v_to.version then return false; end if;
-		if exists (select 1 from public.qorpera_folder_entries where environment_id = p_environment_id
-				and key_sha256 = extensions.digest(v_key, 'sha256') and kind <> 'claim') then
-			return true; end if;
+		if v_start.version is distinct from v_to.version then return null; end if;
+		select e.path into v_path from public.qorpera_folder_entries e where e.environment_id = p_environment_id
+			and e.key_sha256 = extensions.digest(v_key, 'sha256') and e.kind <> 'claim';
+		if found then return v_path; end if;
 	end loop;
-	return false;
+	return null;
 end $$;
 revoke all on function public.qorpera_folder_erasure_moved_live(uuid, text) from public, anon, authenticated, service_role;
+
+-- What a block-history request refused as live again names (55000's detail): the live path, and the delete that ended
+-- the block's life before its newest one began ({seq, unit}, or null when there was none). The carrier reads the live
+-- tree's tree.toml: its own block restored is deleted and rewritten first; another tree's block, at a name reused since
+-- the delete, is left alone, and the carrier asks again with that delete as its cutoff (§10 step 3).
+create function public.qorpera_folder_erasure_live_again(p_environment_id uuid, p_key text, p_live text)
+returns jsonb language sql stable security definer set search_path = '' as $$
+	select jsonb_build_object('live', p_live, 'delete', (
+		select jsonb_build_object('seq', c.seq, 'unit', v.unit_no)
+		from public.qorpera_folder_path_versions v join public.qorpera_folder_commits c on c.id = v.commit_id
+		cross join public.qorpera_folder_erasure_life_start(p_environment_id, p_key) s
+		where v.environment_id = p_environment_id and v.key_sha256 = extensions.digest(p_key, 'sha256') and c.seq is not null
+			and v.op = 'delete' and (c.seq, v.unit_no) < (s.seq, s.unit_no)
+		order by c.seq desc, v.unit_no desc
+		limit 1))
+$$;
+revoke all on function public.qorpera_folder_erasure_live_again(uuid, text, text) from public, anon, authenticated, service_role;
 
 -- 2. The request: qorpera_folder_erase with a memtree actor -----------------------------------------------------------
 
@@ -76,7 +96,7 @@ select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)':
 $old$,
 	$new$	v_proposals uuid[]; -- 20260930074000 (P40)
 	v_memtree jsonb; v_block_key text; v_cut_at timestamptz; v_total bigint := 0; -- 20260930120000 (W1a)
-	v_cut_op text; v_cut_gone boolean := false; v_cut_busy boolean := false; -- 20260930120000 (W1a)
+	v_cut_op text; v_cut_gone boolean := false; v_cut_busy boolean := false; v_live_path text; -- 20260930120000 (W1a)
 $new$);
 select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
 	$old$	if p_actor ->> 'kind' is distinct from 'member' or p_actor - array['kind','userId'] <> '{}'::jsonb
@@ -193,10 +213,17 @@ $old$,
 						(v_memtree ->> 'cutoffUnit')::integer));
 		else
 			v_roots := v_roots || jsonb_build_array(public.qorpera_folder_erasure_cutoff(p_environment_id, v_key, v_as_of, v_as_of_at));
-			-- Live again, or restored and renamed to a live path since step 1 deleted it: the same block, live.
-			if v_key = v_block_key and ((v_roots -> -1 ->> 'live')::boolean
-					or public.qorpera_folder_erasure_moved_live(p_environment_id, v_key)) then
-				raise exception 'Block is live again' using errcode = '55000'; end if;
+			-- Live again, or renamed to a live path since step 1 deleted it: the block restored, or another tree's block at
+			-- a reused name. Only the carrier can tell them apart; the detail names the live path and the delete before.
+			if v_key = v_block_key then
+				v_live_path := case when (v_roots -> -1 ->> 'live')::boolean
+					then (select e.path from public.qorpera_folder_entries e where e.environment_id = p_environment_id
+						and e.key_sha256 = extensions.digest(v_key, 'sha256'))
+					else public.qorpera_folder_erasure_moved_live(p_environment_id, v_key) end;
+				if v_live_path is not null then
+					raise exception 'Block is live again' using errcode = '55000',
+						detail = public.qorpera_folder_erasure_live_again(p_environment_id, v_key, v_live_path)::text; end if;
+			end if;
 		end if;
 $new$);
 select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
@@ -336,9 +363,10 @@ $new$);
 -- p_block: {"path", "cutoffSeq", "cutoffUnit", "for": {"table", "id"}}; the key is memtree: and the hex SHA-256 of
 -- <table>:<id>:<the block's folded key>. Each call runs in the caller's transaction, at read committed. The answer is
 -- P18's reply (kind block-history, its for, every copy), or erasureId null when nothing is left to erase. P18's other
--- refusals pass through: 55000 'Block is live again' (delete and rewrite the block first) or 'The company is being
--- deleted', 55006 'Block history is being erased; ask again', 22023, and the 409 to retry when the company folder
--- changed while the erasure began.
+-- refusals pass through: 55000 'Block is live again', whose detail is {"live": <path>, "delete": {seq, unit} or null}
+-- (the carrier's own block restored: delete and rewrite it first; another tree's block at a reused name: ask again
+-- with that delete as the cutoff), or 'The company is being deleted', 55006 'Block history is being erased; ask
+-- again', 22023, and the 409 to retry when the company folder changed while the erasure began.
 create function public.qorpera_folder_erase_block_history(p_environment_id uuid, p_user_id uuid, p_operation_key text,
 	p_block jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
