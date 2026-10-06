@@ -76,26 +76,39 @@ no `ReadWritePaths`, so the service still cannot write the share.
 - Before the first use, probe on node 2 as root, in a scratch folder on the share: root can chown there (no root
   squash); a 0600 file owned by the new uid is read by that uid from both nodes and refused to `qorpera-folder`. If
   root cannot chown, the account takes the uid that owns the objects now (1002), after the account that holds it on
-  node 1 moves to another uid along with the root helper's caller rule.
+  node 1 moves to another uid along with the root helper's caller rule; 1002 must then be free on node 2 as well.
 - Create the account on both nodes, with a uid and gid free on both; then move the gateway to it and chown its tree on
   the share and its files on node 1 (the coordinator's lane).
-- `/etc/systemd/system/qorpera-folder-service.service.d/read-objects.conf`, the same on both nodes, hides the gateway's
-  tokens and log (on node 1's disk) and its state folder on the share from the service; `-` skips a path that is not
-  on this node. Hiding the state folder needs root to reach it, which the probe shows; with the uid 1002 fallback,
-  leave that path out (it holds object records and token hashes, no token):
+- `/etc/systemd/system/qorpera-folder-service.service.d/read-objects.conf`, the same on both nodes, gives the service
+  the account and a process namespace of its own, and hides the gateway's tokens and log (on node 1's disk) and its
+  state folder on the share from the service; `-` skips a path that is not on this node.
+  - On node 1 the service shares the gateway's uid. The kernel lets a process follow `/proc/<pid>/root`, `cwd` and
+    `fd` of any process with its own uid, and signal it. Through the gateway's `root` the service would reach the
+    gateway's writable mount of the share and the paths the drop-in hides. `PrivatePIDs=` shows the service no
+    process but its own. It needs systemd 257 or later; an older one ignores the line, which the last check below
+    shows. A user namespace (`PrivateUsers=`) would not help: it keeps the uid, and the kernel compares uids first.
+  - The service is ready to be its namespace's first process: it handles `SIGTERM`, starts no other process, and
+    systemd sets `LISTEN_PID` to 1 inside the namespace, which is what the service checks.
+  - Hiding the state folder needs root to reach it, which the probe shows; with the uid 1002 fallback, leave that path
+    out (it holds object records and token hashes, no token).
 
 ```ini
 [Service]
 User=qorpera-objects
 Group=qorpera-objects
+PrivatePIDs=yes
 InaccessiblePaths=-/var/lib/qorpera-acceptance-phql-a1 -/srv/qorpera/canonical/.qorpera-acceptance-phqlfrkcvstmxlebljcj-7cf936a4/state -/run/credentials/qorpera-gateway-phql-a3.service
 ```
 
 - Check on both nodes: `sudo -u qorpera-objects head -c1 <one object>` works and `sudo -u qorpera-folder head -c1 <the
-  same object>` is refused. On node 1 the service and the gateway share a uid, so the service could signal the
-  gateway (accepted: it holds the database's service key already) and read its start environment (the gateway's
-  launcher reads its tokens from its file, so none is there). The kernel must not let it read the gateway's memory:
-  `/proc/sys/kernel/yama/ptrace_scope` is 1 or more.
+  same object>` is refused.
+- Check on node 1 that nothing else of the gateway's is left to the account: `sudo find / /run /dev/shm -xdev \(
+  -user qorpera-objects -o -group qorpera-objects \)` (and `/var` or `/opt` if either is its own filesystem) lists
+  only paths under the hidden ones.
+- Check on node 1, from inside the running service's sandbox (`systemctl start qorpera-folder-service.service`
+  first): `sudo nsenter -t <its MainPID> -m -p -S "$(id -u qorpera-objects)" -G "$(id -g qorpera-objects)" sh -c 'ls
+  /proc; ls /proc/<the gateway's MainPID>/root/; head -c1 <one object> | wc -c'`. It lists no process but `1` (the
+  service) and the check's own, fails on the gateway's, and prints 1.
 - `systemctl enable --now qorpera-folder-service.socket qorpera-folder-bridge.service`
 
 ## Execution host
