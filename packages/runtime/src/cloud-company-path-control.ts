@@ -30,6 +30,9 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_worker_commit",
 	"qorpera_folder_agent_workers",
 	"qorpera_folder_cancel_agent_worker",
+	"qorpera_folder_agent_proposals",
+	"qorpera_folder_apply_proposal",
+	"qorpera_folder_close_proposal",
 	"qorpera_folder_archive_coding_worker",
 ]);
 
@@ -134,6 +137,10 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_folder_worker_commit",
 			"qorpera_folder_agent_workers",
 			"qorpera_folder_cancel_agent_worker",
+			// Changes a view saved that wait for review (P40): a run's list, its apply and its close.
+			"qorpera_folder_agent_proposals",
+			"qorpera_folder_apply_proposal",
+			"qorpera_folder_close_proposal",
 			// A coding session's archive (C3b).
 			"qorpera_folder_archive_coding_worker",
 			// Event wakes (W2).
@@ -187,7 +194,12 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 								response.ok && method === "qorpera_folder_list"
 								? 2 * 1024 * 1024
 								: response.ok &&
-										(method === "qorpera_folder_commit" || method === "qorpera_folder_worker_commit")
+										(method === "qorpera_folder_commit" ||
+											method === "qorpera_folder_worker_commit" ||
+											// A proposal's apply is its commit; a page of proposals carries up to 200 units with their
+											// structured files' whole parses, which SQL does not cut.
+											method === "qorpera_folder_apply_proposal" ||
+											method === "qorpera_folder_agent_proposals")
 									? 16 * 1024 * 1024
 									: // One routine whole (32 KiB of instructions, each character escaped at worst), or a
 										// page of 32 with theirs cut; a page of 16 workers with their outputs' paths.
