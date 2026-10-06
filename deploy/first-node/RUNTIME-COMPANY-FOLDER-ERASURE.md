@@ -598,11 +598,17 @@ deletes a tree or log block, rewrites it, and asks P18 to erase the block's earl
 - **What differs from a member's request:**
   - no role is asked, and the member may have left; it erases with owner authority through the platform actor, and
     another member's private paths do not stop it;
+  - while another erasure's versions phase covers a path the request names (a root at, above or under the block's key
+    or a partner the wrapper added), the request is asked again: 55006 `Block history is being erased; ask again`,
+    under the path lock and before the count, whatever it carries (a cutoff, a life or neither). That phase takes its
+    versions in batches with no order (§4.3): it can have taken the block's delete, its life's start or the moves that
+    name its other paths, and not yet the versions they lead to, so nothing left, or an erasure of what is left, would
+    end before the block's history does. That phase locks nothing a request holds, and an erasure begun over the path
+    later waits for the request's path lock, so step 3 is never refused for good;
   - with a cutoff (step 1's own delete), the block is cut at the delete it names. `Block-history cutoff is not the
     block's delete` (22023) refuses a cutoff at another op, at no commit, or past the request, or with no version
     there and versions or copies before it. When a later erasure over the key (a later cutoff's request, or a member's
-    erasure) has erased the delete, the request answers nothing left once that erasure is past its versions phase, and
-    55006 `Block history is being erased; ask again` while it runs. So step 3 is never refused for good;
+    erasure) has erased the delete, the request answers nothing left once that erasure is past its versions phase;
   - with none, every life of it goes. A live block is refused (55000 `Block is live again`), and so is one renamed
     to a live path since step 1 (`qorpera_folder_erasure_moved_live`: the key's newest row is a move whose chain of
     renames ends at a live path, each life begun with its move). That live block is a life begun after a delete: the
@@ -637,5 +643,7 @@ request is refused with it); 22 copies kept after done; no cutoff (every life, a
 refused, a block written again and renamed once and twice refused, the detail's live path and life, a reused name kept
 and renamed asked again with its life and that life kept, a named life ended since refused and then, with no live
 path, asked with no cutoff, a life that ended in a rename to a path deleted since followed, a member's erasure in its
-versions phase, nothing left before the life, an older life moved on left alone); another member's private path; a
+versions phase of the name, or of the name and its old name with the name's rows taken first, asked again with no
+cutoff or with the life until it is past and then nothing left, nothing left before the life, an older life moved on
+left alone); another member's private path; a
 run's commit noted by a member's erasure and not by the block's; grants.

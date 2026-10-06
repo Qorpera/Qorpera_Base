@@ -9,8 +9,9 @@
 -- written again and renamed to a live path, refused, naming the live path and the key's newest life; a reused name
 -- asked again with that life, kept at its name or renamed, refused once a newer life began and, with no live path
 -- left, asked with no cutoff; a life that ended in a rename to a path deleted since, followed; a member's erasure in
--- its versions phase; nothing left before the life; an older life that moved on left alone; another member's private
--- path); nothing left (no erasure); no run noted; the grants.
+-- its versions phase, of the name or of the name and its old name, asked again until it is past, then nothing left;
+-- nothing left before the life; an older life that moved on left alone; another member's private path); nothing left
+-- (no erasure); no run noted; the grants.
 -- On 803's company; rolled back at the end.
 
 create function pg_temp.w1a_key(p_table text, p_id text, p_path text) returns text language sql as $$
@@ -331,7 +332,7 @@ end $$;
 
 do $$
 declare r jsonb; b jsonb; v_user uuid := extensions.gen_random_uuid(); v public.qorpera_folder_erasures%rowtype; v_at jsonb;
-	v_id uuid; c_private constant text := 'members/70700000-0000-4000-8000-000000000002/private/w1a.md';
+	v_life jsonb; v_id uuid; c_private constant text := 'members/70700000-0000-4000-8000-000000000002/private/w1a.md';
 begin
 	perform pg_temp.w1a_put('w1a-n-01', 'docs/n.md', 'w1a n one');
 	perform pg_temp.w1a_del('w1a-n-02', 'docs/n.md');
@@ -434,25 +435,48 @@ begin
 	perform pg_temp.is(v.state || pg_temp.versions_at('docs/t2.md') || pg_temp.versions_at('docs/t3.md'), 'done10',
 		'both paths'' old versions go; the new life stays');
 	-- A reused name while a member's erasure in its versions phase has taken the delete and not yet the write before it:
-	-- asked with the life, the request erases what is left before it.
+	-- asked again (55006) with no cutoff or with the life while that phase runs; once it is past, the same detail, and
+	-- nothing is left before the life.
 	perform pg_temp.w1a_put('w1a-s-01', 'docs/s.md', 'w1a s old tree');
 	perform pg_temp.w1a_del('w1a-s-02', 'docs/s.md');
 	v_at := pg_temp.w1a_at('docs/s.md');
 	perform pg_temp.w1a_put('w1a-s-03', 'docs/s.md', 'w1a s new tree');
+	v_life := pg_temp.w1a_life('docs/s.md');
 	v_id := (pg_temp.erase(array['docs/s.md'], 'w1a-s-member') ->> 'erasureId')::uuid;
 	-- As if its versions phase had erased the delete in a batch, and not yet the write before it.
 	delete from public.qorpera_folder_path_versions pv using public.qorpera_folder_commits c
 	where c.id = pv.commit_id and pv.environment_id = '70700000-0000-4000-8000-000000000020' and pv.path = 'docs/s.md'
 		and c.seq = (v_at ->> 'seq')::bigint and pv.unit_no = (v_at ->> 'unit')::integer;
-	r := pg_temp.detail(format('select pg_temp.w1a_ask(%L)',
-		pg_temp.w1a_block('docs/s.md', null, '95000000-0000-4000-8000-0000000000e9')));
-	perform pg_temp.is(r::text, jsonb_build_object('live', 'docs/s.md', 'life', pg_temp.w1a_life('docs/s.md'))::text,
-		'the delete taken: the same detail');
-	r := pg_temp.w1a_ask(pg_temp.w1a_block('docs/s.md', null, '95000000-0000-4000-8000-0000000000e9')
-		|| jsonb_build_object('lifeSeq', r #> '{life,seq}', 'lifeUnit', r #> '{life,unit}'));
-	perform pg_temp.is(r -> 'roots' -> 0 ->> 'versions', '1', 'the write left before the life');
-	perform pg_temp.is((pg_temp.w1a_drain(v_id)).state || (pg_temp.w1a_drain((r ->> 'erasureId')::uuid)).state
-		|| pg_temp.versions_at('docs/s.md'), 'donedone1', 'both drained; the new life stays');
+	b := pg_temp.w1a_block('docs/s.md', null, '95000000-0000-4000-8000-0000000000e9');
+	perform pg_temp.is(pg_temp.fails(format('select pg_temp.w1a_ask(%L)', b)), '55006', 'the delete taken: asked again');
+	perform pg_temp.is(pg_temp.fails(format('select pg_temp.w1a_ask(%L)',
+		b || jsonb_build_object('lifeSeq', v_life -> 'seq', 'lifeUnit', v_life -> 'unit'))), '55006', 'with the life too');
+	perform pg_temp.is((pg_temp.w1a_drain(v_id)).state, 'done', 'the member''s erasure drained');
+	r := pg_temp.detail(format('select pg_temp.w1a_ask(%L)', b));
+	perform pg_temp.is(r::text, jsonb_build_object('live', 'docs/s.md', 'life', v_life)::text, 'then the same detail');
+	r := pg_temp.w1a_ask(b || jsonb_build_object('lifeSeq', r #> '{life,seq}', 'lifeUnit', r #> '{life,unit}'));
+	perform pg_temp.is(coalesce(r ->> 'erasureId', 'none') || pg_temp.versions_at('docs/s.md'), 'none1',
+		'nothing left before the life; the new life stays');
+	-- A block renamed, deleted and its name reused, while a member's erasure of the name and the old name in its
+	-- versions phase has taken the name's rows before the life (the move that names the old name among them) and not
+	-- yet the old name's: asked with the life, asked again, not answered nothing left; nothing left once it is past.
+	perform pg_temp.w1a_put('w1a-u-01', 'docs/u0.md', 'w1a u old tree');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w1a-u-02', jsonb_build_array(pg_temp.mv('docs/u0.md', 'docs/u.md'))), 1, 'saved');
+	perform pg_temp.w1a_del('w1a-u-03', 'docs/u.md');
+	perform pg_temp.w1a_put('w1a-u-04', 'docs/u.md', 'w1a u new tree');
+	v_life := pg_temp.w1a_life('docs/u.md');
+	v_id := (pg_temp.erase(array['docs/u.md', 'docs/u0.md'], 'w1a-u-member') ->> 'erasureId')::uuid;
+	delete from public.qorpera_folder_path_versions pv using public.qorpera_folder_commits c
+	where c.id = pv.commit_id and pv.environment_id = '70700000-0000-4000-8000-000000000020' and pv.path = 'docs/u.md'
+		and (c.seq, pv.unit_no) < ((v_life ->> 'seq')::bigint, (v_life ->> 'unit')::integer);
+	b := pg_temp.w1a_block('docs/u.md', null, '95000000-0000-4000-8000-0000000000ed')
+		|| jsonb_build_object('lifeSeq', v_life -> 'seq', 'lifeUnit', v_life -> 'unit');
+	perform pg_temp.is(pg_temp.fails(format('select pg_temp.w1a_ask(%L)', b)) || pg_temp.versions_at('docs/u0.md')
+		|| pg_temp.versions_at('docs/u.md'), '5500621', 'asked again while the old name keeps its versions');
+	perform pg_temp.is((pg_temp.w1a_drain(v_id)).state, 'done', 'the member''s erasure of both names drained');
+	r := pg_temp.w1a_ask(b);
+	perform pg_temp.is(coalesce(r ->> 'erasureId', 'none') || pg_temp.versions_at('docs/u0.md') || pg_temp.versions_at('docs/u.md'),
+		'none01', 'nothing left once it is past; the new life stays');
 	-- After a member's erasure of the deleted name drained, the name reused and renamed: asked with the life, nothing is
 	-- left.
 	perform pg_temp.w1a_put('w1a-s2-01', 'docs/s2.md', 'w1a s2 old tree');

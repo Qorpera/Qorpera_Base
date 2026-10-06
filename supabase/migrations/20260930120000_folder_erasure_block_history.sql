@@ -7,11 +7,16 @@
 --   key. The prefix is reserved: P18 refuses it on every other request. The digest covers the block, its cutoff or
 --   life and the erase row, not the partners, and is kept after done, with the copies and what the request was for, so
 --   a carrier that asks again after done finds them.
+-- * While another erasure's versions phase covers a path the request names, the request is asked again (55006 'Block
+--   history is being erased; ask again'), under the path lock and before the count, whatever it carries. That phase
+--   takes its versions in batches with no order: it can have taken the block's delete, its life's start or the moves
+--   that name its other paths, and not yet the versions they lead to, so nothing left, or an erasure of what is left,
+--   would end before the block's history does. That phase locks nothing a request holds (RUNTIME-COMPANY-FOLDER-ERASURE.md
+--   §4.3), and an erasure begun over the path later waits for this request's path lock, so it is never refused for good.
 -- * With a cutoff (step 1's own delete), the block is cut at the delete it names, live again or not, and the delete and
 --   all after it stay.
 --   A delete already erased (by a later cutoff's request or a member's erasure) leaves nothing before it once that
---   erasure is past its versions phase: the request answers nothing left, or is asked again (55006) while that phase
---   runs. It is never refused for good (§10.1).
+--   erasure is past its versions phase: the request answers nothing left.
 -- * With none, the block must not be live, and every life of it is erased; a block live again, or renamed to a live
 --   path since step 1, is refused (55000 'Block is live again'), naming the live path and the key's newest life. That
 --   life began after step 1: the tree built again by the next run (a member's restore leaves out every path under a
@@ -100,7 +105,7 @@ select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)':
 $old$,
 	$new$	v_proposals uuid[]; -- 20260930074000 (P40)
 	v_memtree jsonb; v_block_key text; v_cut_at timestamptz; v_total bigint := 0; -- 20260930120000 (W1a)
-	v_cut_op text; v_cut_gone boolean := false; v_cut_busy boolean := false; v_live_path text; -- 20260930120000 (W1a)
+	v_cut_op text; v_cut_gone boolean := false; v_live_path text; -- 20260930120000 (W1a)
 	v_life_now record; -- 20260930120000 (W1a)
 $new$);
 select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
@@ -207,7 +212,15 @@ select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)':
 $old$,
 	$new$		-- 20260930120000 (W1a): a block-history request's block is cut at the delete it names, whatever came after it,
 		-- or at the start of the life it names (its partners at their own cutoffs); with neither the block must not be
-		-- live, and every life of it goes.
+		-- live, and every life of it goes. First, at each path it names, under the path lock and before the count: while
+		-- another erasure's versions phase covers the path, it is asked again. That phase takes rows in batches with no
+		-- order, and can have taken the delete, the life's start or a move that names another path before the versions
+		-- they lead to. A new erasure over the path waits for this one's lock, and that phase never waits, so it ends.
+		if v_memtree is not null and exists (select 1 from public.qorpera_folder_erasures e cross join jsonb_array_elements(e.roots) r
+				where e.environment_id = p_environment_id and e.done_at is null and e.phase = 1
+					and (public.qorpera_folder_erasure_covers(r ->> 'key', v_key)
+						or public.qorpera_folder_erasure_covers(v_key, r ->> 'key'))) then
+			raise exception 'Block history is being erased; ask again' using errcode = '55006'; end if;
 		if v_key = v_block_key and v_memtree ->> 'cutoffSeq' is not null then
 			select c.created_at into v_cut_at from public.qorpera_folder_commits c
 			where c.environment_id = p_environment_id and c.seq = (v_memtree ->> 'cutoffSeq')::bigint;
@@ -224,16 +237,10 @@ $old$,
 			if v_cut_op <> 'delete' then
 				raise exception 'Block-history cutoff is not the block''s delete' using errcode = '22023'; end if;
 			-- No version there: an erasure with a later cutoff over the key (a later request for the block, or a member's
-			-- erasure) has erased the delete. Once it is past its versions phase nothing before the cutoff is left, and the
-			-- request answers nothing left; while that phase runs it is asked again (the count below decides). Read before
-			-- the count, so an erasure done in between has left nothing to count.
+			-- erasure) has erased the delete. It is past its versions phase (else the check above asked again), so nothing
+			-- before the cutoff is left, and the request answers nothing left; versions left before it mean the cutoff was
+			-- never the delete (the count below decides).
 			v_cut_gone := v_cut_op is null;
-			v_cut_busy := v_cut_gone and exists (select 1 from public.qorpera_folder_erasures e
-				cross join jsonb_array_elements(e.roots) r
-				where e.environment_id = p_environment_id and e.done_at is null
-					and public.qorpera_folder_erasure_covers(r ->> 'key', v_key)
-					and public.qorpera_folder_erasure_before(r, (v_memtree ->> 'cutoffSeq')::bigint,
-						(v_memtree ->> 'cutoffUnit')::integer));
 		elsif v_key = v_block_key and v_memtree ->> 'lifeSeq' is not null then
 			-- The life a carrier keeps, as a 55000 named it: refused again, under the path lock, when the key has had a newer
 			-- life since (that life deleted and a new one begun). Cut at its start, as P18 cuts a live key: every earlier
@@ -266,13 +273,10 @@ select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)':
 	$old$		if (v_root ->> 'live')::boolean and v_versions = 0 and v_conflict = 0 then
 $old$,
 	$new$		v_total := v_total + v_versions + v_conflict; -- 20260930120000 (W1a)
-		-- 20260930120000 (W1a): the block's delete erased already, with versions or copies before it still here: asked
-		-- again while the erasure that took the delete runs its versions phase, else the cutoff was never the delete.
+		-- 20260930120000 (W1a): no delete at the cutoff, with versions or copies before it still here, and no erasure's
+		-- versions phase over the block (asked again above): the cutoff was never the block's delete.
 		if v_cut_gone and v_root ->> 'key' = v_block_key and v_versions + v_conflict > 0 then
-			if v_cut_busy then
-				raise exception 'Block history is being erased; ask again' using errcode = '55006'; end if;
-			raise exception 'Block-history cutoff is not the block''s delete' using errcode = '22023';
-		end if;
+			raise exception 'Block-history cutoff is not the block''s delete' using errcode = '22023'; end if;
 		if v_memtree is null and (v_root ->> 'live')::boolean and v_versions = 0 and v_conflict = 0 then
 $new$);
 select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
