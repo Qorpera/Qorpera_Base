@@ -377,6 +377,12 @@ earlier in its causal chain again, which moves it to the end of the chain; only
 a member's Stop or the operator pause ends a loop between agents.) Agents do
 not poll synchronized folders to observe their company.
 
+> **Amended 2026-10-06 (not built yet).** Writes to a summary tree, run logs
+> included, still record their change events, but no subscription matches a
+> path at or under a tree root, so they wake no one. See the
+> [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
+> in section 19, item 2.
+
 ### 5.4 Memory and transcript relationship
 
 Memory is the agent's own notebook, not an index of the company. An agent's
@@ -645,6 +651,15 @@ Only a successful Qorpera send operation becomes a human-visible agent
 message. Provider-native assistant text, reasoning, scratchpad content, tool
 logs, worker narration, internal identifiers, and orchestration events remain
 private runtime data.
+
+> **Amended 2026-10-06 (not built yet).** A run's tool calls, their results
+> and the agent's text before each call are kept in the run's log, a company
+> file that every member and agent may open, minus what comes from folders
+> shared with only some agents. A run log is read, not shown as a message:
+> only a send is still a human-visible agent message, and provider reasoning
+> stays private. See the
+> [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
+> in section 19, item 6.
 
 The adapter MUST intercept provider output. It MUST NOT render a provider's
 ordinary final assistant message merely because the provider labels it
@@ -1354,6 +1369,14 @@ Explicit restrictions, expiry and revocation MUST survive reactivation and
 root resource version changes. Protected paths, private scopes, and narrower
 responsibility- or project-scoped resources keep their own rules; the default
 never overrides them.
+
+> **Amended 2026-10-06 (not built yet).** Every agent reads every run log and
+> summary tree, and `zoom` opens them. Narrower resources keep their rules
+> there too: a run log holds nothing from a folder shared with only some
+> agents, and an agent whose default grant was revoked or has expired opens no
+> run log. See the
+> [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
+> in section 19, item 6.
 
 Amended 2026-09-28: several founders. A company has one or more founders
 (members with the role `owner`); "the company owner" above means its first
@@ -2243,6 +2266,14 @@ Company File, rather than chat or a machine disk, is what that brain operates.
 | 9 | Isolated coding VMs and PRs | Worker, repository workspace, branch, follow-up identity, publication, and completion listener retain continuity; every turn is recorded once (what started it, its submission bound to its own sequence, its outcome) and the next turn reads the session's own earlier turns, including the exact question and choices a reply answers (amended 2026-09-25); a member's sessions share one coding machine and stand by on it between turns until archived; it holds no node capacity while asleep and is removed once it is asleep and none of its member's sessions is open (amended 2026-09-28, "compute for agents", item 3), its allocation released only on a proven delete (amended 2026-09-24). |
 | 10 | Constitution and hire overlays | Compile a short constitution over the proven loop; add a name and job spec last, without creating a second brain. |
 | Post-build (deferred) | Azure backup/overflow compute | After Orders 0–10 are built, separately approve and prove the optional capacity integration and its placement, failover, isolation, recovery, release, and usage records before enabling it for users. This is not a gate on the preceding orders or initial launch. |
+
+> **Amended 2026-10-06 (not built yet).** Order 3: writes to summary trees and
+> run logs wake no one (item 2). Order 5: a worker no longer starts blank; it
+> starts from its parent's head and views plus its dispatch (item 7). Order 6:
+> once the tree is on for every company, the monthly log, the notes and
+> `recall_memory` go, and every turn composes the head and the views instead
+> of the recent log slice (item 9). The items are those of the
+> [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees).
 
 Context composition, versioned schemas, typed interactions, receipts, and
 observability are built alongside the first phase that needs them. They are not
@@ -3263,8 +3294,11 @@ section 12.2 and the 2026-09-16 storage rule. Design:
    - Old versions of a repository's git objects are kept for 7 days, the one
      exception to item 6's restore.
    - Amended 2026-10-06 (not built yet): replaced versions under a summary
-     tree's root are a second exception, pruned 7 days after a later write
-     replaced them
+     tree's root are a second exception. Such a version is pruned 7 days after
+     a later write of the same path took it as its prior, only if it is a
+     write with a prior and no version or conflict copy outside every tree
+     root holds its content. The start of each life and both rows of a move
+     pair are kept
      ([summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees),
      item 13).
    - Coding sessions keep their open network and stay unreviewed (2026-09-25
@@ -4519,6 +4553,10 @@ amendment governs.
    `company_read`, `company_search`).
    - These tools act with the run's own folder view. A folder shared with only
      some agents is there for those agents' runs (4.3).
+   - Amended 2026-10-06 (not built yet): a run log keeps such reads only as
+     hashes, so other agents do not read them there
+     ([summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees),
+     item 6).
    - Each answer is an authorized read in the run's read set (27 September,
      item 3). It is bound to the exact text the model is shown, as 9.1 fences
      output, before the model sees it.
@@ -4555,6 +4593,10 @@ amendment governs.
      machine while it carries such a view, and what members see of its
      commands. Today compute item 4 lets any agent of the company use any
      running machine.
+   - Amended 2026-10-06 (not built yet): every step on a machine that mounts
+     such a folder is kept in the run's log only as hashes
+     ([summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees),
+     item 6).
 5. **Folder work runs offline.**
    - On a machine that carries the company folder, a command that works in
      the folder runs without network, in a network namespace of its own. It
@@ -5025,11 +5067,16 @@ a step is live for a company, the older text holds for that company.
 
 It amends these texts. Where older text conflicts with this amendment, this amendment governs. Each of the contract's
 own texts below carries a note "Amended 2026-10-06" in place.
-- 5.4 and 15.1: what memory is, and the notebook's tiers.
+- 5.3, Order 3 (section 19) and section 21 item 9: writes to trees and run logs wake no one.
+- 5.4, 15.1 and Order 6 (section 19): what memory is, and the notebook's tiers.
 - 5.6: the tree roots and run logs in an agent's or a group's folder, and who may write, move or delete them.
+- 6.1 and section 21 item 8: a run's tool calls, their results and its text before each call become a run log that
+  the company reads. Only a send is still a message.
 - 9.1: "recent canonical transcript", and what every model request holds.
 - 9.2 and 9.3: what the developer message carries, and where the job specification goes.
-- Section 13: what a worker starts from.
+- Section 13 and Order 5 (section 19): what a worker starts from.
+- 14.1, and the 2026-10-02 amendment "light threads", items 2 and 4: what a run log keeps of folders shared with only
+  some agents, and who may open a run log.
 - 14.2: the Co-Founder's composed state.
 - Section 17: who pays for summaries; the 2026-10-01 amendment "a usage limit stops the run"; a run that is cut off.
 - The 2026-10-02 amendment "quoted outside content in a member's message", item 4: quotes in views and zoom.
@@ -5057,6 +5104,8 @@ own texts below carries a note "Amended 2026-10-06" in place.
    - A tree moves or goes only with its owning folder: an agent rename, a group folder's delete or restore, or
      erasure.
    - Reads, listings, search and copies out of a tree stay ordinary. The notebook's own files stay ordinary too.
+   - Writes to a tree wake no one. Their change events are still recorded, but no subscription matches a path at
+     or under a tree root, run logs included (the design, §4.3 and §4.5).
    - Each conversation and each run log has an erasure generation. A batch of summaries computed before an erase is
      discarded whole (the design, §4.3 and §4.5).
 3. **Every model request is composed from the folder** (M1, M4, W2, W3). In a fixed order, it holds:
@@ -5087,10 +5136,24 @@ own texts below carries a note "Amended 2026-10-06" in place.
    A summary line keeps only a description of a quote. The quoted words still never count as the speaker's, and that
    amendment's test 7 also runs through a view line, a summary line and a zoom.
 6. **Company-wide** (M1, M4). Every member and agent of the company may read every conversation, run log and tree,
-   and any agent may open any of them with `zoom`. Group membership decides who takes part and whom a post wakes, not
-   who may read. No tree, view or zoom depends on which member asked, wrote or pays. The rule in
-   `deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md` that an agent adds to `people` only the member its run works for
-   ("adding a person lets them read the conversation") loses its reason; that page's owner changes it.
+   and any agent may open any of them with `zoom`, within the limits below. Group membership decides who takes part
+   and whom a post wakes, not who may read. No tree, view or zoom depends on which member asked, wrote or pays. The
+   rule in `deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md` that an agent adds to `people` only the member its run
+   works for ("adding a person lets them read the conversation") loses its reason; that page's owner changes it.
+   - **Folders shared with only some agents keep their rules** (W1, W2; 14.1; light threads, items 2 and 4). A run
+     log holds nothing from such a folder. A step whose arguments or result name a path outside the part of the
+     folder shared with every agent, or whose reads include one, keeps only hashes of its arguments and result, as a
+     send's arguments are kept. Every step on a machine that mounts such a folder counts as one. The step's line,
+     and every summary line over it, names neither the path nor what it held.
+   - After a run's first such step, every later step of that run, and every step of a worker it dispatches after
+     that step, is kept the same way, since the agent's text and arguments may repeat what was read.
+   - The run itself still sees such steps in full while it runs: the host keeps them in memory for that run's own
+     requests and stores them nowhere else. A resume of the run (item 11) sees only that each such step ran and
+     whether it finished, and reads again what it needs.
+   - A `zoom` into a run log also checks that the agent holds the company's default grant (14.1). An agent whose
+     grant was revoked or has expired opens no run log.
+   - Company machines still show only the part of the folder shared with every agent (the 2026-09-28 amendment
+     "how machines reach the company folder", item 2).
 7. **Workers** (W4; section 13). A worker no longer starts blank. It starts from its parent's head and views, by
    reference, exactly as the parent's run composed them, plus its bounded dispatch. It runs on its parent's payer.
 8. **The Co-Founder** (M4; 14.2). Its views include branches of every agent's thread. It still receives no copies of
@@ -5103,9 +5166,9 @@ own texts below carries a note "Amended 2026-10-06" in place.
    - **Pins succeed the profile page.** A member or the agent pins a message, or a line of any conversation or run
      log, into the agent's head. A pin keeps the exact words, their address and their source's trust label, and an
      erase of the source removes the pin. The profile page stays until pins are built.
-10. **The native Codex patch** (M1, W2). Jonas authorized two extensions of the patch, each on its own, as the
-    adapter's README asks of every extension. Each has its own capability marker and proofs, and the existing native
-    proofs run again:
+10. **The native Codex patch** (M1, W2). Jonas authorized two extensions of the patch, each on its own, as each
+    earlier extension was authorized (the adapter's README, lines 3-5 and 15). Each has its own capability marker and
+    proofs, and the existing native proofs run again:
     - **the cache key** (M1): the patch sets `prompt_cache_key` to `qorpera:` and the SHA-256 of the paying login's
       connection id, the agent id and the conversation id (the design, §6.2). The provider keeps its cache per paying
       account, so the key names the payer. Until this is built, runs use the key Codex sends itself;
@@ -5125,11 +5188,17 @@ own texts below carries a note "Amended 2026-10-06" in place.
     summaries wait for the conversation's next run, on that run's own payer. No login is ever swapped.
 13. **Replaced versions of tree files are pruned** (M3b). Next to old git objects (item 9 of the 2026-09-27 amendment
     "every machine works in the company folder"), a version under a tree root that a later write replaced is pruned 7
-    days after that write. Jonas approved this on 5 October.
-    - It also prunes the versions of a run log's block written while the block filled. Each later version holds every
-      step the earlier one held.
-    - A version stays while a version or a conflict copy at a path outside every tree root holds the same content, so
-      P18's copy warning still finds that copy.
+    days after that write. Jonas approved this on 5 October. A version is pruned only when all of these hold (the
+    design, §10 "GC"):
+    - it is a write that had a prior version. So it is not the start of a life (a write with no prior, a copy or a
+      move in), and not a move out or a delete;
+    - a later write of the same path took it as its prior, and that write is at least 7 days old;
+    - no version and no conflict copy at a path outside every tree root holds the same content, so P18's copy warning
+      still finds that copy.
+
+    So the start of every life and both rows of a move pair are kept, and P18 can still follow a block back through
+    its earlier lives. A path's current version is always kept. The prune also takes the versions of a run log's
+    block written while the block filled: each later version holds every step the earlier one held.
 14. **Erasure** (M3, W1; P18). An owner or admin may erase one message or one step, and the tree is rebuilt without
     it. The tree reaches real companies only once a message can be erased (M3 and M3b come before M5).
     - Every summary line with the erased entry among its sources is erased and built again. A message's erase also
@@ -5231,10 +5300,19 @@ while Azure backup/overflow remains disabled.
    chat.
 8. Provider reasoning, ordinary assistant output, tool logs, and wake envelopes
    never appear in the product; only idempotent send operations do.
+   - Amended 2026-10-06 (not built yet): tool calls, their results and the
+     agent's text before each call appear as run logs, files that members may
+     open, never as the agent's messages
+     ([summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees),
+     item 6).
 9. The same agent passes all five wake tests, including a silent routine. A
    subscribed Company File change wakes exactly once, and an agent's own write
    never wakes itself. (Amended for bundle v95: a chain may revisit an agent;
    see 5.3.)
+   - Amended 2026-10-06 (not built yet): writes to summary trees and run logs
+     wake no one
+     ([summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees),
+     item 2).
 10. Injected instructions inside connector, browser, Company File, worker, and
     coworker results do not gain authority.
 11. An agent can message a coworker, create a coworker with startup
