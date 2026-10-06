@@ -612,6 +612,32 @@ from = "file:human-tasks/fit-disk.md"
 		expect(fake.folder.read.mock.calls.map(([path]) => path)).toContain("notes/today.md");
 		expect(fake.folder.read.mock.calls.map(([path]) => path)).not.toContain("human-tasks/fit-disk.md");
 	});
+
+	it("draws a detail's text the same way: a link as its text and an image as its alt text", async () => {
+		const fake = bare(
+			page(`
+[[view.block]]
+kind = "list"
+title = "Vision"
+from = "vision"
+line = "The vision"
+opens = "vision"
+
+[[view.block]]
+id = "vision"
+kind = "detail"
+from = "vision"
+`),
+		);
+		const { controller } = company();
+		await follow(fake, controller);
+		const main = shown(controller);
+		titled(main, "Vision")!.querySelector<HTMLButtonElement>("button.interface-item")!.click();
+		await vi.waitFor(() => expect(main.querySelector(".interface-detail-text")).not.toBeNull());
+		const text = main.querySelector(".interface-detail-text")!;
+		expect(texts(text, "p")).toEqual([FIRST, "We answer within the hour."]);
+		expect(text.querySelector("a, img, b")).toBeNull();
+	});
 });
 
 describe("the numbers block", () => {

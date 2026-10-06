@@ -35,6 +35,7 @@ import {
 	folderSourceColumns,
 	folderSourceRows,
 	isFolderSource,
+	rowInstant,
 } from "./interface-sources.ts";
 
 /** An interface the Interfaces tab lists: its parse, or, for a text that doesn't parse, its problems. A broken page is
@@ -460,7 +461,8 @@ export function interfaceRows(company: CompanyController, source: string): Inter
 	const agents = state.staff.filter((agent) => agent.employmentStatus === "active");
 	const agentHref = (agentId: string) =>
 		agentId === company.cofounderId() ? `#/c/${profileId}` : `#/c/${profileId}/staff/${agentId}`;
-	const since = (agentId: string) => company.activityFor(agentId)?.updatedAt ?? null;
+	// To the second, as every row's time is: the live state's times may carry milliseconds.
+	const since = (agentId: string) => rowInstant(company.activityFor(agentId)?.updatedAt);
 	// A waiting item is its kind and its run: when one is answered and another comes for the same agent, an open
 	// row never turns into the new one.
 	const runKey = (kind: string, agentId: string) => `${kind}:${company.activityFor(agentId)?.runId ?? agentId}`;
@@ -473,7 +475,7 @@ export function interfaceRows(company: CompanyController, source: string): Inter
 			const what = stalled ? t("No progress") : now === "writing" ? t("Writing") : t("Working");
 			return [
 				{
-					row: { agent: agent.id, what, since: stalled?.since ?? since(agent.id) },
+					row: { agent: agent.id, what, since: rowInstant(stalled?.since) ?? since(agent.id) },
 					href: agentHref(agent.id),
 					live: true,
 					key: `working:${agent.id}`,

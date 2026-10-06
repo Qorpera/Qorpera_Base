@@ -100,6 +100,19 @@ describe("which interfaces a company lists", () => {
 		]);
 	});
 
+	it("gives a run's time to the second, as every row's time is, though the live state's carry milliseconds", () => {
+		const { controller } = company([
+			run(ada.id, 1, { noProgressSince: "2026-10-02T09:20:00.250Z", noProgressMinutes: 15 }),
+			run(bo.id, 2, { updatedAt: "2026-10-02T09:44:10.999Z" }),
+			run(cy.id, 3, { activity: "needs_attention", jobStatus: "failed", updatedAt: "2026-10-02T09:50:00.5Z" }),
+		]);
+		expect(interfaceRows(controller, "working")?.map(({ row }) => row.since)).toEqual([
+			"2026-10-02T09:20:00Z",
+			"2026-10-02T09:44:10Z",
+		]);
+		expect(interfaceRows(controller, "waiting")?.map(({ row }) => row.due)).toEqual(["2026-10-02T09:50:00Z"]);
+	});
+
 	it("reads who is working and what waits for the member from the company's live state", () => {
 		const { controller } = company(
 			[

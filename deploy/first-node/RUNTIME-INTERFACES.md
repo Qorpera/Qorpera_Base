@@ -199,7 +199,8 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
   - An empty lane keeps its title and says so quietly. On a phone the lanes stack.
 - **Text (proposed, built with the folder pages):**
   - Markdown, drawn with the client's own renderer and no HTML. A link is drawn as its text and an image as its alt
-    text, so nothing leaves the page and nothing is fetched (§4, "Nothing remote").
+    text, so nothing leaves the page and nothing is fetched (§4, "Nothing remote"). A `detail` block draws a row's
+    text the same way.
   - `show = "first-paragraph"` draws the first paragraph; headings and rules before it are skipped.
   - A `from` source with nothing to show says so quietly. A block's own `text` is drawn as it is.
   - A `file:` source under `hooks/` or `human-tasks/` (§4) is not read, and its block is not drawn, until blocks can
@@ -781,7 +782,7 @@ feed reads only the touched folders again. Each file is parsed with the cloud cl
 that doesn't parse is left out and listed under its block. `agents` and `groups` are what the files say, not the store.
 A routine's `next` follows the orchestrator's schedule rules from its file. A human task's `person` is a member's id,
 or a contact's name when the task is for a contact. The `activity` source is the live state's runs: one row per run or
-wake, with a `member` only where a run's details name one (today a failed run's recovery). Column and value labels are
-in the member's language. The `text`, `numbers` and `calendar` blocks follow §3.2's proposed rules, so Pulse draws all
-its blocks and the Members page draws `file:rules/shared-areas.md` when the file exists. Answers and changes in
-`activity` are not built.
+wake, with a `member` only where a run's details name one (today a failed run's recovery). The `working` and `waiting`
+rows give their times to the second, as every row does. Column and value labels are in the member's language. The
+`text`, `numbers` and `calendar` blocks follow §3.2's proposed rules, so Pulse draws all its blocks and the Members page
+draws `file:rules/shared-areas.md` when the file exists. Answers and changes in `activity` are not built.

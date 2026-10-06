@@ -1151,7 +1151,9 @@ function detailBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 				h("dd", null, cellText(drawn, column, interfaceCell(open.row, column))),
 			]),
 		),
-		typeof text === "string" && text ? h("div", { class: "interface-detail-text" }, markdown(text)) : null,
+		typeof text === "string" && text
+			? h("div", { class: "interface-detail-text" }, markdown(text, { links: false }))
+			: null,
 		actions,
 	);
 }
