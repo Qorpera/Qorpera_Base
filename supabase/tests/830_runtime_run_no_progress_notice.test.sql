@@ -268,10 +268,9 @@ begin
 end
 $$;
 
--- H. The new functions are postgres-only; the notice kind is allowed; the activity row's text is master's but for its
--- two gap 4 lines.
+-- H. The new functions are postgres-only; the notice kind is allowed; the activity read keeps its grants. No text pin
+-- (the founder's decision of 3 October; legacy sweep A).
 do $$
-declare v_text text;
 begin
 	if has_function_privilege('authenticated', 'public.qorpera_notify_runs_without_progress()', 'execute')
 		or has_function_privilege('service_role', 'public.qorpera_notify_runs_without_progress()', 'execute')
@@ -282,15 +281,6 @@ begin
 		or has_function_privilege('authenticated', 'public.qorpera_run_last_progress_at(uuid,timestamptz)', 'execute')
 		or has_function_privilege('anon', 'public.qorpera_run_stall_minutes()', 'execute') then
 		raise exception 'H: the gap 4 functions are postgres-only'; end if;
-	v_text := replace(replace(pg_get_functiondef('public.qorpera_list_staff_execution_activity(uuid)'::regprocedure),
-		E'job.lease_expires_at, job.started_at, -- gap 4 (20260930002600)\n', E'job.lease_expires_at,\n'),
-		E'\t\t) || coalesce((select jsonb_build_object(''no_progress_since'', stall.since, -- gap 4 (20260930002600)\n'
-		|| E'\t\t\t\t''no_progress_minutes'', public.qorpera_run_stall_minutes())\n'
-		|| E'\t\t\tfrom (select public.qorpera_run_no_progress_since(activity.run_id, activity.started_at) as since) as stall\n'
-		|| E'\t\t\twhere stall.since is not null), ''{}''::jsonb)\n'
-		|| E'\t\telse ''{}''::jsonb end', E'\t\t) else ''{}''::jsonb end');
-	if md5(v_text) <> 'b62fffee4806f0ae74410e9c27d511c4' then
-		raise exception 'H: qorpera_list_staff_execution_activity''s text changed: %', md5(v_text); end if;
 	if not has_function_privilege('authenticated', 'public.qorpera_list_staff_execution_activity(uuid)', 'execute')
 		or has_function_privilege('anon', 'public.qorpera_list_staff_execution_activity(uuid)', 'execute') then
 		raise exception 'H: the activity read keeps its grants'; end if;
