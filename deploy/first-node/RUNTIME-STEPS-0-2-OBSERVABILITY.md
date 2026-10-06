@@ -151,10 +151,11 @@ usage, nothing more:
   sums can be lower than the turn's total, and are not a complete list of
   provider requests.
 - Codex's own compaction call is recorded like a model response only when Codex
-  compacts locally: a plan run's provider, or a test provider. With the OpenAI
-  provider (a Codex login's run), Codex compacts remotely and does not add that
-  call's usage to `total`, so it has no row. That is one more way the list falls
-  short.
+  compacts locally. Codex compacts remotely when its provider is named "OpenAI"
+  (a Codex login's run, and the test fixture's `remote-v2` mode) or is an Azure
+  endpoint. Any other provider compacts locally (a plan run's "ChatGPT plan", the
+  other test providers). A remote compaction does not add that call's usage to
+  `total`, so it has no row. That is one more way the list falls short.
 
 Native Company File byte counts are logical range/write bytes. Human immutable
 object transfers count available object bytes, which may be manifests or chunks,
