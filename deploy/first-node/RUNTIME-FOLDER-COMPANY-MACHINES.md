@@ -44,8 +44,8 @@ coordinator chose shape B on 4 October 2026 (C2 §8).
 | Folder core (SQL) | renew says the view's kind and machine (4a); shell command views, C1b-3b's `computer_shell_command`, for offline commands only (4b) |
 | Folder service (node host) | desktop views served to their own company machine only, read-write, published after a quiet period; `unsaved_since` reported (4a); command views (4b); reads released with the view actor; a newer view takes over a mount's pending changes (4c) |
 | Folder program (in the VM) | logs what each mount reads; moves a running mount to a newer view (4c) |
-| Office service (in the VM) | opens and closes the views, and gives a screen back when its view is refused; asks for boundaries at command output reads and ends, screen captures, drains and stops; offline and networked commands (4d) |
-| Mount helper (in the VM, new) | the one root piece: mounts, moves and unmounts a view's folder program; makes an offline command's network namespace (4d) |
+| Office service (in the VM) | opens and closes the views, and gives a screen back when its view is refused; asks for boundaries at command output reads and ends, screen captures, drains and stops; offline and networked commands; its stop control publishes the mounts a stopped service left (4d) |
+| Mount helper (in the VM, new) | the one new root piece: mounts, moves, lists and unmounts a view's folder program; brings up an offline command's `lo` (under (b): starts the command) (4d) |
 | Office image | the folder program, the helper and their units (4e) |
 
 ## Views and machines
@@ -58,10 +58,11 @@ its registry credential: two methods join the registry's allowlist (`cloud-compa
 current activation.
 
 **A running desktop moves to the newer view.** Another run of the same agent can acquire a screen whose desktop is
-open: the acquire keeps the screen's generation unless the screen was closed (`20260908000100_runtime_office_registry.sql`),
-and the contract closes a desktop only before a seat changes hands. The desktop keeps running, with its open
-documents. C1b-3 §3 ends the old run's view then, and has "changes the old holder's programs left pending publish
-later under the new holder's view". So a desktop's mount does not end with its view:
+open: the acquire keeps the screen's generation unless the screen was closed
+(`20260908000100_runtime_office_registry.sql`), and the contract closes a desktop only before a seat changes hands.
+The desktop keeps running, with its open documents. C1b-3 §3 ends the old run's view then, and has "changes the old
+holder's programs left pending publish later under the new holder's view". So a desktop's mount does not end with its
+view:
 - the office service has the helper write the newer view into the mount's view file (`switch`, below). The folder
   program then says hello with the newer view, naming the old one and proving it with the old pass. It keeps its
   FUSE session, inodes, version map and open files;
@@ -111,7 +112,7 @@ The office service runs with no capabilities, no devices and no `AF_VSOCK` (`qor
 desktops and shells run under bwrap with every capability dropped. That stays. Mounting needs root, `/dev/fuse` and
 `AF_VSOCK`, so it moves to one small root helper, shaped like the network plumb (`qorpera-computer-plumb@.service`):
 - a socket `/run/qorpera-folder-helper/helper.sock`, mode 0600, owned by the office service's user, one connection per
-  request;
+  request (the stop control, root, uses it too; below);
 - requests: `mount <name>` with the view (`{environmentId, viewId, pass}`); `switch <name>` with the newer view;
   `boundary <name>` (the mount's reads are released, then its pending changes published; it answers the report);
   `unmount <name>` (a boundary first); and `list` (the mounts it holds, from its view files). `<name>` is
@@ -135,13 +136,21 @@ What the service had pending still publishes when the program's last connection 
 not handed to the service is lost. That is a new loss case, not founder decision 3's (a machine or node dying), so it
 needs the coordinator's decision first (Q3).
 
-**A restarted office service finds the mounts.** The mount units are their own units, so they outlive the office
-service; its desktops and commands do not (they are in its cgroup, and `KillMode=mixed` ends them). The office service
-restarts after any failure (`Restart=on-failure`), a failed drain included: the supervisor marks itself failed and
-needs service recovery (`cloud-company-computer-supervisor.ts`). So a starting office service first asks the helper
-for the mounts left from before (`list`), asks a boundary on each (a command's is its final one: its processes are
-gone) and then unmounts it. It acknowledges no drain or stop until each of those boundaries has answered. Its new
-desktops and commands get new mounts and views.
+**The office's stop publishes the mounts left.** The mount units are their own units, so they outlive the office
+service; its desktops and commands do not (they are in its cgroup, and `KillMode=mixed` ends them). An office service
+never comes back into its activation: a restart has a new `INVOCATION_ID`, which the startup check refuses ("Office
+startup binding differs", `qorpera_lock_runtime_office_startup`). A failed office service, a failed drain included,
+waits for service recovery (`cloud-company-computer-supervisor.ts`): the provider's stop, then a successor with a new
+activation, which ends every old view (C1b-3 §3). So the stop control publishes them: the provider acknowledges a
+stop only after its completion (`cloud-company-computer-service-stop-control.ts`, run as root in the VM):
+- once the office service's cgroup is empty and before it writes its completion, it asks the helper for the mounts
+  left (`list`), asks a boundary on each (a command's is its final one: its processes are gone) and unmounts it;
+- a boundary with no answer fails the stop control, so the provider has no completion and acknowledges nothing:
+  `qorpera_ack_runtime_office_stop` does not clear the pending drain that keeps the old view valid. A later run of
+  the same stop (one that finds its claim only observes) asks again before its completion; the publish replays under
+  its operation key (RUNTIME-FOLDER-WRITES.md);
+- a successor's office service should find no mounts. Any it finds belong to ended views, and the helper unmounts
+  them without a publish.
 
 **A desktop's mount** is made before the desktop starts, and bound at `/company` in its bwrap. The desktop's
 Documents, Desktop and Downloads point at `/company`, and the Terminal and Files open there (today they open in the
@@ -240,10 +249,11 @@ adds, after each of those stops and before the acknowledgement: a boundary on th
 command's mount, then unmounting them. The acknowledgement waits for those boundaries' answers. A boundary with no
 answer by the drain's deadline fails the drain, as any stop that does not finish does today ("A timeout is never
 success", `cloud-company-computer-drain.ts`): nothing is acknowledged, the member cannot drive yet (the viewer
-refuses while `drain_pending`), and the restarted office service tries the drain again after it has published the
-mounts left from before (above); the publish replays under its operation key (RUNTIME-FOLDER-WRITES.md). An answer
-may still say a change was refused, or conflicted (its copy is kept); the run's report says so, and nothing of the
-old view carries into the member's.
+refuses while `drain_pending`), and the office service waits for service recovery. The provider's stop then publishes
+the mounts left before `qorpera_ack_runtime_office_stop` clears the drain, and acknowledges nothing while a boundary
+has no answer (above); the publish replays under its operation key (RUNTIME-FOLDER-WRITES.md). An answer may still say
+a change was refused, or conflicted (its copy is kept); the run's report says so, and nothing of the old view carries
+into the member's.
 
 **Unsaved changes keep the seat.** `qorpera_runtime_office_screen_in_use` counts a screen in use while its desktop view
 has `unsaved_since` set (C1b-3 §9). The folder service reports it at each renewal, and renews early when a mount first
@@ -269,7 +279,7 @@ moves to a newer view and offline commands are all in.
 | 4a | SQL: renew's open answer says the view's `kind` and `machineId` (#880; migration `20260930104000`, test 980). Folder service: desktop views from their own company machine only, read-write, quiet period 2 s; `unsaved_since` with the early renewal; a last release publishes first; a parked unit leaves the view's pending changes | 980 (each kind's answer; closed answers unchanged); the service's tests with a stand-in core: a desktop view only from its own office (not the execution host, another office or an unlisted project), a run box not from an office, other kinds refused, a kind or machine that changes closes the view, quiet publish, `unsaved_since` sent and cleared, a parked unit not kept |
 | 4b | SQL (C1b-3b, migration `20260930107000`, test 981): the command's row made when it starts, before it runs, saying whether it is networked, and an offline command's view: open for the run that starts it, valid while the command has not ended and the screen's generation and the office's activation are unchanged, and a final publish that closes the view in the commit's transaction. Folder service: command views from their own company machine, published only when asked | 981: open only for the screen's live run, generation and activation, and never for a networked command; an ended command's view takes one final publish, then renews closed; the 30 s report keeps the early row; a read released through a command's view for a leased run goes into the run's read set, and after a narrowing of the path's resource the run's recheck (`qorpera_folder_assert_run_reads`) refuses; once the run has ended the view resolves without a run; the service's tests as 4a's |
 | 4c | Folder program and service: the read log for core views (from #672) and its release with the view actor, before each publish and at each boundary (none for a member-held view); `switch`: a mount moving to a newer view in place, the service moving the old view's pending changes, open write handles and unreleased reads, and exit 3 only when no newer view came. A new build record and the installer pins | the service's tests with a stand-in core: reads released before a publish and at a boundary, and under the newer view after a move; a member-held desktop view publishing with no release; a move only between desktops of the same machine with the old pass; a closed view with no newer one dropped after the minute. FUSE tests: a move keeps open files and the version map; exit 3 only without a newer view. On the hosted database (the acceptance script, as 3c-3): a desktop view's read through the service, then a narrowing, refuses the view's next save |
-| 4d | Office runtime: views opened and closed by the office service, and a refused or unanswered open (above); the helper and its socket; a desktop's mount at `/company` and its user folders; caches in memory; a newer view moving the mount; offline commands (mount and network namespaces) and networked ones (`network`, the review's classes); boundaries at output reads, command ends and screen captures; `inherit_view_reads` for a command that outlived its run; boundaries before a drain's and a stop's acknowledgement, which waits for their answers; the mounts left from before, published and unmounted when the office service starts; the restart rule (above). Proven first on the real office image (a mount reaches a desktop and a command writable, through the office service's sandbox and bwrap; an offline command has only `lo`; a remount reaching running namespaces) | the runtime's tests with a stand-in helper: a refused open gives the screen back, an unanswered one is tried again, then given back; a refused command does not start; the review classes of offline and networked commands; a boundary before output and before a capture; a command's output reaching the model with `readId: null`; `inherit_view_reads` before a later run's output, and a later run for another member not shown it; a drain whose boundary has no answer is not acknowledged; an office service restarted during a pending drain publishing the old view's last changes before the acknowledgement. The helper's tests, including that the office account cannot attach to the helper or a child of it during a request. On the test machine: a command's view closing when its last process ends, background jobs included; an offline command reaching nothing but `lo`; a networked command without `/company`; a second run of the same agent keeping the desktop and its pending changes |
+| 4d | Office runtime: views opened and closed by the office service, and a refused or unanswered open (above); the helper and its socket; a desktop's mount at `/company` and its user folders; caches in memory; a newer view moving the mount; offline commands (mount and network namespaces) and networked ones (`network`, the review's classes); boundaries at output reads, command ends and screen captures; `inherit_view_reads` for a command that outlived its run; boundaries before a drain's and a stop's acknowledgement, which waits for their answers; the stop control publishing and unmounting the mounts a stopped office service left, before its completion, and a successor unmounting any it finds without a publish (above). Proven first on the real office image (a mount reaches a desktop and a command writable, through the office service's sandbox and bwrap; an offline command has only `lo`; a remount reaching running namespaces) | the runtime's tests with a stand-in helper: a refused open gives the screen back, an unanswered one is tried again, then given back; a refused command does not start; the review classes of offline and networked commands; a boundary before output and before a capture; a command's output reaching the model with `readId: null`; `inherit_view_reads` before a later run's output, and a later run for another member not shown it; a drain whose boundary has no answer is not acknowledged; an office service killed during a pending drain, whose stop control publishes the old view's last changes before `qorpera_ack_runtime_office_stop`; a stop whose boundary has no answer is not acknowledged, and a later run of it publishes and acknowledges. The helper's tests, including that the office account cannot attach to the helper or a child of it during a request. On the test machine: a command's view closing when its last process ends, background jobs included; an offline command reaching nothing but `lo`; a networked command without `/company`; a second run of the same agent keeping the desktop and its pending changes |
 | 4e | Office image: the folder program, the helper and their units, and swap off, in a new image generation (units need one) | the image contract tests: executables, prerequisites, provenance |
 | 4f | The report (above). Retirements (§4 "Retired after acceptance"): the Company File part of `computer_transfer` (the tool's schema, `cloud-file-transfer.ts`, `file-imports.ts`, and the SQL source of `20260908003100`); the workbench as a work area | the transfer tool's tests without the realm; a migration test that the source is gone |
 | 4g | Live proof (coordinator runs it) | below |
