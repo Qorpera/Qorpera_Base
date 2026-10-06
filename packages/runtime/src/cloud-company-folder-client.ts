@@ -61,7 +61,65 @@ const RUN_EFFECTS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_record_review",
 	"qorpera_prepare_routine_login",
 	"qorpera_folder_cancel_agent_worker",
+	"qorpera_folder_manage_hook",
 ]);
+/** The answers of `qorpera_folder_manage_hook` (E3a, 20260930106000) the model reads, by SQLSTATE and SQL's message,
+ * in the model's words: the request's rules, the company's state, the run's authority and the wake's refusals. Each is
+ * raised in the call's one transaction, so that call changed nothing. Any other error is a failure. */
+export const CLOUD_HOOK_REFUSALS: ReadonlyMap<string, string> = new Map([
+	...(
+		[
+			[
+				"22023",
+				"A hook name uses lowercase letters, digits and hyphens, starts with a letter and has at most 64 characters",
+			],
+			["22023", "A hook needs a purpose of one line, 1 to 512 characters"],
+			["22023", "A hook body limit is between 1 KiB and 256 KiB"],
+			["22023", "A hook accepts between 1 and 120 deliveries a minute"],
+			["22023", "A mailbox name is 1 to 64 lowercase letters, digits, dots, hyphens and underscores"],
+			["22023", "This mailbox name is reserved"],
+			["22023", "A mailbox name that reads as Qorpera is reserved"],
+			["22023", "A mailbox purpose is one line of at most 512 characters"],
+			["0A000", "Company mail is not set up yet"],
+			["P0002", "No hook has this name"],
+			["55000", "This hook was removed"],
+			["54000", "A company has at most 20 mailboxes"],
+			["54000", "A company has at most 50 hooks"],
+			["23505", "This address is taken"],
+			["23505", "A hook with this name already exists"],
+			["42501", "Only owners and admins can open hooks; ask one of them"],
+		] as const
+	).map(([code, message]) => [`${code} ${message}`, message] as const),
+	// The run receipt's: the key names an earlier, different request of this run.
+	[
+		"23505 logical operation key is already bound to other work",
+		"That operationKey was used for a different request: use a new one",
+	],
+	["42501 Hook authority is unavailable", "Only an agent's own run opens or changes hooks, never a worker's"],
+	[
+		"55000 Wake requires an acknowledgement before work",
+		"This conversation needs your first reply before any work: answer the member, then call again",
+	],
+	["55000 Wake public output is already final", "This run already sent its final reply, so it starts no more work"],
+	["55000 Company execution is paused", "The company's work is paused, so nothing can be changed now"],
+]);
+/** A hook as `qorpera_event_hook_descriptor` gives it (E1 and the signed hooks' secret), and, in a creation's answer, its
+ * address, path and URL. */
+const HOOK_KEYS = [
+	"schema",
+	"id",
+	"companyId",
+	"environmentId",
+	"name",
+	"purpose",
+	"proof",
+	"status",
+	"maxBodyBytes",
+	"perMinute",
+	"createdAt",
+] as const;
+const HOOK_OPTIONAL = ["email", "lastReceivedAt", "signingSecret", "address", "path", "url"] as const;
+const HOOK_STATUS = { create: "active", pause: "paused", resume: "active", remove: "removed" } as const;
 /** The wake's refusals of work (`qorpera_assert_wake_work_allowed`), by SQL's message. */
 const WAKE_REFUSALS: ReadonlyMap<string, "acknowledgement" | "final" | "paused"> = new Map([
 	["Wake requires an acknowledgement before work", "acknowledgement"],
@@ -181,6 +239,36 @@ export interface CloudCompanyFolderRoutinePage {
 export type CloudCompanyFolderRoutineLogin =
 	| { readonly login: { readonly bindingId: string; readonly version: number } | null }
 	| { readonly refused: "acknowledgement" | "final" | "paused" };
+
+/** A run agent's change to its company's hooks (E3a): an address hook or a mailbox opened, or one, by its name, paused,
+ * resumed or removed. A creation leaves out a limit to take SQL's default. */
+export type CloudCompanyFolderHookRequest =
+	| {
+			readonly action: "create";
+			readonly kind: "hook";
+			readonly name: string;
+			readonly purpose: string;
+			readonly maxBodyBytes?: number;
+			readonly perMinute?: number;
+			readonly operationKey: string;
+	  }
+	| {
+			readonly action: "create";
+			readonly kind: "mailbox";
+			readonly localPart: string;
+			readonly purpose: string;
+			readonly operationKey: string;
+	  }
+	| { readonly action: "pause" | "resume" | "remove"; readonly hook: string; readonly operationKey: string };
+
+/** The hook a change left, under the change's receipt, or why it was refused, in the model's words. */
+export type CloudCompanyFolderHookAnswer =
+	| {
+			readonly receiptId: string;
+			readonly action: CloudCompanyFolderHookRequest["action"];
+			readonly hook: Readonly<Record<string, unknown>>;
+	  }
+	| { readonly refused: string };
 
 /** The run's own view of the folder, for the node's folder service (its pass opens the view there). */
 export interface CloudCompanyFolderRunView {
@@ -755,6 +843,8 @@ export class CloudCompanyFolderClient {
 	readonly #control: CloudCompanyPathControl;
 	readonly #bytes: CloudCompanyFolderBytes;
 	readonly #actor: CloudCompanyFolderRunActor;
+	/** Hook changes, by operation key, whose call ended without an answer: they may have committed. */
+	readonly #uncertainHooks = new Set<string>();
 
 	constructor(options: {
 		binding: CloudNativeToolBinding;
@@ -802,7 +892,8 @@ export class CloudCompanyFolderClient {
 
 	/** One commit or release, tried again with the same key or id while SQL says so, or while the answer was lost (a
 	 * timeout or a dropped connection: the transaction may have committed, and a replay returns its outcome). An error
-	 * `kept` names is thrown as SQL gave it, for the caller to read. */
+	 * `kept` names is thrown as SQL gave it, for the caller to read; after a lost answer it says nothing of the try that
+	 * lost it, which may have committed, so the outcome is unknown. */
 	async #retried(
 		method: CloudCompanyPathRpc,
 		args: Record<string, unknown>,
@@ -827,7 +918,8 @@ export class CloudCompanyFolderClient {
 					error instanceof CloudRuntimeDiagnosticError &&
 					!(error instanceof CloudCompanyFolderRpcError) &&
 					(error.category === "timeout" || error.category === "transport_unavailable");
-				if (error instanceof CloudCompanyFolderRpcError && kept?.(error)) throw error;
+				if (error instanceof CloudCompanyFolderRpcError && kept?.(error))
+					throw uncertain ? new CloudCompanyFolderError("unknown") : error;
 				if (!lost && !(error instanceof CloudCompanyFolderRpcError && retryable.has(error.code)))
 					throw cloudCompanyFolderFailure(error);
 				uncertain ||= lost;
@@ -991,6 +1083,71 @@ export class CloudCompanyFolderClient {
 			receiptId: uuid(input.receiptId),
 			worker: folderWorker({ ...(input.worker as Record<string, unknown>), folder: request.folder }),
 		};
+	}
+
+	/** Opens, pauses, resumes or removes one of the company's hooks or mailboxes (E3a, `qorpera_folder_manage_hook`), a
+	 * run effect under its own receipt, keyed by the operation key: a retry with the same key replays it, and a
+	 * creation's replay reads the address from the hook again. A change that met a changed authority (QRC01) or a
+	 * deadlock is asked again. SQL's refusals come back as `refused`, unless an earlier call with the key ended without
+	 * a checked answer: that call may have changed the hook, so the outcome is unknown. */
+	async manageHook(
+		request: CloudCompanyFolderHookRequest,
+		signal: AbortSignal,
+	): Promise<CloudCompanyFolderHookAnswer> {
+		const refusal = (error: unknown) =>
+			error instanceof CloudCompanyFolderRpcError
+				? CLOUD_HOOK_REFUSALS.get(`${error.code} ${error.detail}`)
+				: undefined;
+		try {
+			const input = record(
+				await this.#retried(
+					"qorpera_folder_manage_hook",
+					{ p_binding: this.#binding, p_request: request },
+					RELEASE_RETRY,
+					signal,
+					(error) => refusal(error) !== undefined,
+				),
+				["schema", "runId", "receiptId", "action", "hook"],
+			);
+			const hook = record(input.hook, HOOK_KEYS, HOOK_OPTIONAL);
+			const { address, path, url } = hook;
+			if (
+				input.schema !== "qorpera.agent-hook-receipt/v1" ||
+				input.runId !== this.#identity.runId ||
+				input.action !== request.action ||
+				hook.schema !== "qorpera.event-hook/v1" ||
+				hook.companyId !== this.#identity.companyId ||
+				hook.environmentId !== this.#identity.environmentId ||
+				hook.status !== HOOK_STATUS[request.action] ||
+				(request.action !== "create"
+					? hook.name !== request.hook || address !== undefined
+					: request.kind === "hook"
+						? hook.name !== request.name || hook.proof !== "address"
+						: typeof hook.name !== "string" ||
+							!hook.name.startsWith("mail-") ||
+							hook.proof !== "mail" ||
+							typeof hook.email !== "string" ||
+							!hook.email.startsWith(`${request.localPart}@`) ||
+							address !== undefined) ||
+				// A creation's answer has the address while the hook is live, with its path and, once the platform has one,
+				// its URL; no other answer has them.
+				(address === undefined
+					? path !== undefined || url !== undefined
+					: typeof address !== "string" ||
+						!/^[A-Za-z0-9_-]{43}$/.test(address) ||
+						path !== `/functions/v1/event-intake/${address}` ||
+						(url !== undefined &&
+							(typeof url !== "string" || !url.endsWith(`/functions/v1/event-intake/${address}`))))
+			)
+				invalid();
+			uuid(hook.id);
+			return { receiptId: uuid(input.receiptId), action: request.action, hook };
+		} catch (error) {
+			const refused = refusal(error);
+			if (refused !== undefined && !this.#uncertainHooks.has(request.operationKey)) return { refused };
+			this.#uncertainHooks.add(request.operationKey);
+			throw refused === undefined ? error : new CloudCompanyFolderError("unknown");
+		}
 	}
 
 	/** A page of the run agent's own file routines from the routine index, which the commit updates with the files (thin

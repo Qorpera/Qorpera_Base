@@ -63,6 +63,8 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"company_search",
 	// Company accounts (A1-4): the company's own accounts on websites.
 	"company_account",
+	// An agent opens, pauses, resumes or removes the company's hooks and mailboxes (E3a).
+	"manage_hook",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

@@ -641,7 +641,7 @@ begin
 		'coding_run_command','coding_read_command','coding_cancel_command','coding_finish','coding_ask',
 		'update_memory','recall_memory','read_skill','search_skills','update_skill','organize_sidebar','add_review_rule',
 		'machine_start','machine_run','machine_read','machine_cancel','machine_stop','machine_delete','machine_list','list_hooks','read_event','send_mail','find_mail','save_attachment',
-		'company_search','company_account'] loop
+		'company_search','company_account','manage_hook'] loop
 		v_event := pg_temp.observation() || jsonb_build_object('operation',v_operation,'assignmentId',null,
 			'phase','finish','status','succeeded','logicalOperationSha256',null,'observedAt','0001-01-01T00:00:00.000Z',
 			'durationMs',9007199254740991,'inputBytes',9007199254740991,'outputBytes',0,'inputTokens',0,'outputTokens',1,

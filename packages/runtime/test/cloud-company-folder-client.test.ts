@@ -1222,6 +1222,243 @@ describe("routines (thin writers W4c)", () => {
 	});
 });
 
+describe("hooks (E3a)", () => {
+	const ADDRESS = "Ab_-".repeat(10).concat("xyz");
+	const PATH = `/functions/v1/event-intake/${ADDRESS}`;
+	const CREATE = {
+		action: "create",
+		kind: "hook",
+		name: "site-form",
+		purpose: "Leads from the website.",
+		perMinute: 10,
+		operationKey: "hook-1",
+	} as const;
+	const MAILBOX = {
+		action: "create",
+		kind: "mailbox",
+		localPart: "sales",
+		purpose: "Sales mail.",
+		operationKey: "box-1",
+	} as const;
+	type Fixture = ReturnType<typeof fixture>;
+	/** The hook SQL's descriptor gives (qorpera_event_hook_descriptor), as test 939 pins it. */
+	const hook = (f: Fixture, extra: Record<string, unknown> = {}) => ({
+		schema: "qorpera.event-hook/v1",
+		id: "73900000-0000-4000-8000-0000000000a1",
+		companyId: f.identity.companyId,
+		environmentId: f.identity.environmentId,
+		name: "site-form",
+		purpose: "Leads from the website.",
+		proof: "address",
+		status: "active",
+		maxBodyBytes: 65536,
+		perMinute: 10,
+		createdAt: "2026-10-06T12:00:00.123456+00:00",
+		...extra,
+	});
+	const receipt = (f: Fixture, action: string, answered: Record<string, unknown>) => ({
+		schema: "qorpera.agent-hook-receipt/v1",
+		runId: f.binding.runId,
+		receiptId: "73900000-0000-4000-8000-0000000000c1",
+		action,
+		hook: answered,
+	});
+
+	it("opens a hook as a run effect, asks again after a deadlock, and answers with its address", async () => {
+		let tries = 0;
+		const f: Fixture = fixture(() => {
+			if (++tries === 1) throw sqlError("40P01", "deadlock detected");
+			return receipt(f, "create", hook(f, { address: ADDRESS, path: PATH, url: `https://api.example.test${PATH}` }));
+		});
+		await expect(f.client.manageHook(CREATE, signal())).resolves.toEqual({
+			receiptId: "73900000-0000-4000-8000-0000000000c1",
+			action: "create",
+			hook: hook(f, { address: ADDRESS, path: PATH, url: `https://api.example.test${PATH}` }),
+		});
+		// The run's binding and the request as the run effect takes them: no folder actor.
+		expect(f.calls).toEqual([
+			{ method: "qorpera_folder_manage_hook", args: { p_binding: f.binding, p_request: CREATE } },
+			{ method: "qorpera_folder_manage_hook", args: { p_binding: f.binding, p_request: CREATE } },
+		]);
+		// Before the platform has a public address: no URL. A replay after the hook was removed: the receipt's hook, no
+		// address.
+		const early: Fixture = fixture(() => receipt(early, "create", hook(early, { address: ADDRESS, path: PATH })));
+		await expect(early.client.manageHook(CREATE, signal())).resolves.toMatchObject({ hook: { path: PATH } });
+		const removed: Fixture = fixture(() => receipt(removed, "create", hook(removed)));
+		await expect(removed.client.manageHook(CREATE, signal())).resolves.toMatchObject({ action: "create" });
+	});
+
+	it("opens a mailbox, and pauses, resumes and removes a hook by its name", async () => {
+		const box: Fixture = fixture(() =>
+			receipt(
+				box,
+				"create",
+				hook(box, {
+					name: "mail-sales",
+					purpose: "Sales mail.",
+					proof: "mail",
+					maxBodyBytes: 262144,
+					perMinute: 120,
+					email: "sales@mail.example.test",
+				}),
+			),
+		);
+		await expect(box.client.manageHook(MAILBOX, signal())).resolves.toMatchObject({
+			action: "create",
+			hook: { name: "mail-sales", email: "sales@mail.example.test" },
+		});
+		expect(box.calls[0].args).toEqual({ p_binding: box.binding, p_request: MAILBOX });
+		for (const [action, status] of [
+			["pause", "paused"],
+			["resume", "active"],
+			["remove", "removed"],
+		] as const) {
+			const request = { action, hook: "site-form", operationKey: `${action}-1` };
+			const f: Fixture = fixture(() => receipt(f, action, hook(f, { status, lastReceivedAt: null })));
+			await expect(f.client.manageHook(request, signal())).resolves.toMatchObject({ action, hook: { status } });
+			expect(f.calls).toEqual([
+				{ method: "qorpera_folder_manage_hook", args: { p_binding: f.binding, p_request: request } },
+			]);
+		}
+	});
+
+	it("names SQL's refusals in the model's words, at once, and fails on anything else", async () => {
+		for (const [code, message, refused] of [
+			["23505", "A hook with this name already exists", "A hook with this name already exists"],
+			["54000", "A company has at most 50 hooks", "A company has at most 50 hooks"],
+			["0A000", "Company mail is not set up yet", "Company mail is not set up yet"],
+			["P0002", "No hook has this name", "No hook has this name"],
+			["55000", "This hook was removed", "This hook was removed"],
+			[
+				"42501",
+				"Only owners and admins can open hooks; ask one of them",
+				"Only owners and admins can open hooks; ask one of them",
+			],
+			[
+				"23505",
+				"logical operation key is already bound to other work",
+				"That operationKey was used for a different request: use a new one",
+			],
+			["42501", "Hook authority is unavailable", "Only an agent's own run opens or changes hooks, never a worker's"],
+			[
+				"55000",
+				"Wake requires an acknowledgement before work",
+				"This conversation needs your first reply before any work: answer the member, then call again",
+			],
+			["55000", "Company execution is paused", "The company's work is paused, so nothing can be changed now"],
+		] as const) {
+			const f = fixture(() => {
+				throw sqlError(code, message);
+			});
+			await expect(f.client.manageHook(CREATE, signal())).resolves.toEqual({ refused });
+			expect(f.calls).toHaveLength(1);
+		}
+		const invalidRequest = fixture(() => {
+			throw sqlError("22023", "Hook request is invalid");
+		});
+		await expect(invalidRequest.client.manageHook(CREATE, signal())).rejects.toBeInstanceOf(
+			CloudCompanyFolderRpcError,
+		);
+		const cancelled = fixture(() => {
+			throw sqlError("55000", "Worker was cancelled");
+		});
+		await expect(cancelled.client.manageHook(CREATE, signal())).rejects.toMatchObject({ failure: "stopped" });
+	});
+
+	it("reports a refusal after a lost answer as unknown, in that call and in later ones with the same key", async () => {
+		let tries = 0;
+		let refuse = false;
+		const f: Fixture = fixture(() => {
+			// A lost answer, then SQL refusing the replay: the first try may have opened the hook.
+			if (++tries === 1) throw new CloudRuntimeDiagnosticError("timeout", "Cloud tool authority unavailable");
+			if (refuse || tries === 2) throw sqlError("23505", "A hook with this name already exists");
+			return receipt(f, "create", hook(f, { address: ADDRESS, path: PATH }));
+		});
+		await expect(f.client.manageHook(CREATE, signal())).rejects.toMatchObject({ failure: "unknown" });
+		expect(f.calls).toHaveLength(2);
+		refuse = true;
+		await expect(f.client.manageHook(CREATE, signal())).rejects.toMatchObject({ failure: "unknown" });
+		// Another key never met a lost answer: its refusal is SQL's.
+		await expect(f.client.manageHook({ ...CREATE, operationKey: "hook-2" }, signal())).resolves.toEqual({
+			refused: "A hook with this name already exists",
+		});
+		// An answer that did not check leaves its key uncertain too.
+		const wrong: Fixture = fixture(() => {
+			if (wrong.calls.length === 1) return receipt(wrong, "create", hook(wrong, { status: "paused" }));
+			throw sqlError("23505", "A hook with this name already exists");
+		});
+		await expect(wrong.client.manageHook(CREATE, signal())).rejects.toThrow("Company folder response is invalid");
+		await expect(wrong.client.manageHook(CREATE, signal())).rejects.toMatchObject({ failure: "unknown" });
+	});
+
+	it("refuses an answer that is not this change's", async () => {
+		const pause = { action: "pause", hook: "site-form", operationKey: "pause-1" } as const;
+		const live = { address: ADDRESS, path: PATH };
+		for (const [request, answer] of [
+			[CREATE, (f: Fixture) => ({ ...receipt(f, "create", hook(f, live)), runId: randomUUID() })],
+			[CREATE, (f: Fixture) => receipt(f, "pause", hook(f, live))],
+			[CREATE, (f: Fixture) => ({ ...receipt(f, "create", hook(f, live)), extra: 1 })],
+			[CREATE, (f: Fixture) => ({ ...receipt(f, "create", hook(f, live)), receiptId: "r" })],
+			[CREATE, (f: Fixture) => receipt(f, "create", hook(f, { ...live, status: "paused" }))],
+			[CREATE, (f: Fixture) => receipt(f, "create", hook(f, { ...live, name: "other-form" }))],
+			[CREATE, (f: Fixture) => receipt(f, "create", hook(f, { ...live, proof: "mail" }))],
+			[CREATE, (f: Fixture) => receipt(f, "create", hook(f, { ...live, companyId: randomUUID() }))],
+			[CREATE, (f: Fixture) => receipt(f, "create", hook(f, { ...live, environmentId: randomUUID() }))],
+			[CREATE, (f: Fixture) => receipt(f, "create", hook(f, { ...live, schema: "qorpera.event-hooks/v1" }))],
+			[CREATE, (f: Fixture) => receipt(f, "create", hook(f, { ...live, id: "site-form" }))],
+			[CREATE, (f: Fixture) => receipt(f, "create", hook(f, { ...live, secret: "s" }))],
+			[CREATE, (f: Fixture) => receipt(f, "create", hook(f, { ...live, address: "short" }))],
+			[
+				CREATE,
+				(f: Fixture) =>
+					receipt(f, "create", hook(f, { ...live, path: `/functions/v1/event-intake/${"b".repeat(43)}` })),
+			],
+			[
+				CREATE,
+				(f: Fixture) => receipt(f, "create", hook(f, { ...live, url: "https://api.example.test/elsewhere" })),
+			],
+			[CREATE, (f: Fixture) => receipt(f, "create", hook(f, { path: PATH }))],
+			[CREATE, (f: Fixture) => receipt(f, "create", hook(f, { url: `https://api.example.test${PATH}` }))],
+			[pause, (f: Fixture) => receipt(f, "pause", hook(f, { ...live, status: "paused" }))],
+			[pause, (f: Fixture) => receipt(f, "pause", hook(f, { status: "active" }))],
+			[pause, (f: Fixture) => receipt(f, "pause", hook(f, { status: "paused", name: "other-form" }))],
+			[
+				MAILBOX,
+				(f: Fixture) =>
+					receipt(f, "create", hook(f, { name: "mail-sales", proof: "mail", email: "support@mail.example.test" })),
+			],
+			[
+				MAILBOX,
+				(f: Fixture) =>
+					receipt(f, "create", hook(f, { name: "sales", proof: "mail", email: "sales@mail.example.test" })),
+			],
+			[
+				MAILBOX,
+				(f: Fixture) =>
+					receipt(
+						f,
+						"create",
+						hook(f, { name: "mail-sales", proof: "address", email: "sales@mail.example.test" }),
+					),
+			],
+			[
+				MAILBOX,
+				(f: Fixture) =>
+					receipt(
+						f,
+						"create",
+						hook(f, { name: "mail-sales", proof: "mail", email: "sales@mail.example.test", ...live }),
+					),
+			],
+		] as const) {
+			const f: Fixture = fixture(() => answer(f));
+			await expect(f.client.manageHook(request, signal()), JSON.stringify(answer(f))).rejects.toThrow(
+				"Company folder response is invalid",
+			);
+		}
+	});
+});
+
 describe("releases", () => {
 	it("records the reads a tool result shows, with their receipts", async () => {
 		const file = stagedFile("x");

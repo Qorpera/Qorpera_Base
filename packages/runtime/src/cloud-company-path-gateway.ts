@@ -153,6 +153,8 @@ export type CloudCompanyPathRpc =
 	// Event wakes (W2): the company's hooks and one event's body.
 	| "qorpera_list_agent_event_hooks"
 	| "qorpera_read_agent_event"
+	// A folder-v2 agent opens, pauses, resumes or removes one of the company's hooks or mailboxes (E3a).
+	| "qorpera_folder_manage_hook"
 	// Company mail (M2b): an agent's email from a mailbox, queued for the platform's sender; finding received mail;
 	// a received attachment's stored bytes (M2c-1).
 	| "qorpera_send_agent_mail"

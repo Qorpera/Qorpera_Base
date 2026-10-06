@@ -749,12 +749,14 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 													: {},
 											),
 											...cloudReviewRuleTools(binding, identity, this.#paths),
-											// save_attachment writes through the path gateway, which a folder-v2 company does not use (M2c-1).
+											// save_attachment writes through the path gateway, which a folder-v2 company does not use (M2c-1);
+											// a folder-v2 run's agent changes the company's hooks through its folder client (E3a).
 											...cloudEventTools(
 												binding,
 												identity,
 												this.#paths,
 												context.folder ? undefined : gateway,
+												folder?.client,
 											),
 										]),
 								// Machines are the company's: any agent run in a company conversation may start and
