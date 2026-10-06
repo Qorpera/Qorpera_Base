@@ -5177,8 +5177,9 @@ own texts below carries a note "Amended 2026-10-06" in place.
      log holds nothing from such a folder.
      - A step is **narrow** when its arguments or result name a path outside the part of the folder shared with every
        agent, when its reads include one, or when it runs on a machine that mounts such a folder.
-     - After a run's first narrow step, every later step of that run, and every step of a worker it dispatches after
-       that step, is narrow too, since the agent's text and arguments may repeat what was read.
+     - After a run's first narrow step, every later step of that run is narrow too, since the agent's text and
+       arguments may repeat what was read. So is every step of a worker whose dispatching step is narrow: a worker
+       dispatched at or after its parent's first narrow step, or by a run that is narrow from its first step (below).
      - So is every step of a run that continues a run with a narrow step, whatever woke it: a worker's report, a
        computer start, a machine event (a machine that started or stopped, or a command that ended, including a
        machine that had to wait for room) or any other continuation. Each carries the earlier run's receipts, sends
@@ -5205,7 +5206,8 @@ own texts below carries a note "Amended 2026-10-06" in place.
      every run log (its §4.5, §8 and §9). The design takes them up before W1 is built: §4.5 (what a narrow step
      keeps), §8 (zoom's grant check), §9 (who opens a run log) and §14, whose W1 and W2 proofs add tests for:
      - a narrow step stored with only the fields above, and no path or content in any line over it;
-     - later steps, and a worker dispatched after a narrow step, kept the same way;
+     - later steps, and a worker dispatched at or after a narrow step or by a run narrow from its first step, kept
+       the same way;
      - a worker with a narrow step keeping its own log narrow while its report (outcome, summary, `needs`, outputs)
        stays beside its todo, and the parent's completion continuation not made narrow by reading the report alone;
      - a machine-event continuation of a command on a machine that mounts such a folder, and a worker-completion
