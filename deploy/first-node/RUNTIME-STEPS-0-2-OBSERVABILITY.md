@@ -30,7 +30,7 @@ or billing data is synthesized here.
 | Boundary | Evidence and meaning |
 | --- | --- |
 | Run/job | Existing canonical admission, queue/start/end/status, request, claim, assignment, native lease and terminal-result records. Diagnostics cannot alter their outcomes. |
-| Native model invocation | Start/end/status/safe error for the logical turn, including its tool work, retries and compaction. Available native thread-total counters are retained as snapshots. Under the turn, one `model_request` child per Codex usage report that adds up (its `total` grew by exactly its `last`), with that response's own counters; Codex's own compaction call counts as one. See "Measurement limits" for what these rows do not say. |
+| Native model invocation | Start/end/status/safe error for the logical turn, including its tool work, retries and compaction. Available native thread-total counters are retained as snapshots. Under the turn, one `model_request` child per Codex usage report that adds up (its `total` grew by exactly its `last`), with that response's own counters; Codex's own compaction call counts as one only when Codex compacts locally. See "Measurement limits" for what these rows do not say. |
 | Major tools | Separate attempt IDs and timing, safe outcome/category, and validated read or operation-receipt links. Protected proposals remain proposed; confirmed receipt/message replays are not new effects. |
 | Enforcement | Run/context authorization and native result-fence observations. Post-effect result-release denial is separate from an already-confirmed effect. A passed pre-request fence is not proof that the provider received a request. |
 | Human Company File | Canonical member commits on the company folder (since `20260930032000`; member-command/actor/resource/revision queries before), complemented by the gateway's bounded request-observation window for read/apply attempts, including denials and transport failures. |
@@ -150,7 +150,11 @@ usage, nothing more:
   any other report Codex sends differently) is left out. So the row count and the
   sums can be lower than the turn's total, and are not a complete list of
   provider requests.
-- Codex's own compaction call is recorded the same way as a model response.
+- Codex's own compaction call is recorded like a model response only when Codex
+  compacts locally: a plan run's provider, or a test provider. With the OpenAI
+  provider (a Codex login's run), Codex compacts remotely and does not add that
+  call's usage to `total`, so it has no row. That is one more way the list falls
+  short.
 
 Native Company File byte counts are logical range/write bytes. Human immutable
 object transfers count available object bytes, which may be manifests or chunks,
