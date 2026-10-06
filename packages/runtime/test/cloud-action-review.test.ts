@@ -85,7 +85,8 @@ describe("which calls are reviewed", () => {
 			{ from: "support@mail.example.test", to: ["bob@acme.test"], subject: "Hi", text: "Hi" },
 			"external",
 		],
-		// A new hook or mailbox lets the outside reach the company; the rest only change what it takes in (E3a).
+		// A new hook or mailbox lets the outside reach the company; pause and resume only change what it takes in; a
+		// removal is final and frees a mailbox's address (E3a).
 		[
 			"manage_hook",
 			{ action: "create", kind: "hook", name: "site-form", purpose: "Contact form.", operationKey: "k" },
@@ -98,7 +99,7 @@ describe("which calls are reviewed", () => {
 		],
 		["manage_hook", { action: "pause", hook: "site-form", operationKey: "k" }, "internal"],
 		["manage_hook", { action: "resume", hook: "site-form", operationKey: "k" }, "internal"],
-		["manage_hook", { action: "remove", hook: "site-form", operationKey: "k" }, "internal"],
+		["manage_hook", { action: "remove", hook: "site-form", operationKey: "k" }, "destructive"],
 		["hire_agent", {}, "delegation"],
 		["create_group_chat", {}, "delegation"],
 		["manage_routine", { action: "list" }, "read"],
@@ -276,7 +277,7 @@ describe("what the card shows", () => {
 		).toEqual({
 			title: "Remove a hook",
 			target: "mail-sales",
-			details: { effect: "Ends it for good; a mailbox's address is freed" },
+			details: { effect: "Ends it for good; a mailbox's address is free for any company to take" },
 		});
 	});
 

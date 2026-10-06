@@ -241,10 +241,10 @@ export function cloudActionEffect(
 		// An email from a company mailbox leaves the company (M2b).
 		case "send_mail":
 			return "external";
-		// A new hook or mailbox lets the outside reach the company (E3a); pausing, resuming or removing one only changes
-		// what the company takes in.
+		// A new hook or mailbox lets the outside reach the company (E3a); pausing or resuming one only changes what the
+		// company takes in. Removing one ends it for good, and a removed mailbox's address is free for any company.
 		case "manage_hook":
-			return args.action === "create" ? "external" : "internal";
+			return args.action === "create" ? "external" : args.action === "remove" ? "destructive" : "internal";
 		case "computer_browser":
 			return ["snapshot", "list_tabs", "select_tab"].includes(action.action as string) ? "read" : "external";
 		// A company account (A1-4): finding one is a read; opening one acts on a website; recording the website's
@@ -522,7 +522,8 @@ export function describeCloudAction(
 					? "Anyone may send email to this address; what arrives can wake the company's routines"
 					: "Anyone with the hook's address may send it events; what arrives can wake the company's routines",
 			);
-		if (args.action === "remove") add("effect", "Ends it for good; a mailbox's address is freed");
+		if (args.action === "remove")
+			add("effect", "Ends it for good; a mailbox's address is free for any company to take");
 	} else if (tool.name === "company_account") {
 		title =
 			args.action === "open"

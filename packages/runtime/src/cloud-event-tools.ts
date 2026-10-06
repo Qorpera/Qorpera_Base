@@ -181,7 +181,7 @@ export const CLOUD_MANAGE_HOOK_TOOL_DESCRIPTION =
 	"Signed hooks (Stripe, GitHub, HMAC) come later: proof is address. " +
 	"A mailbox (action create, kind mailbox) receives email at localPart@ the company's mail domain: localPart is 1 to 64 lowercase letters, digits, dots, hyphens and underscores, starting and ending with a letter or digit, never two dots in a row; its hook is named mail- and the localPart. Find and read what arrives with find_mail and read_event, and send from it with send_mail. " +
 	"A company has at most 50 hooks, mailboxes included, and at most 20 mailboxes. Opening one is reviewed before it happens, like any action outside the company. " +
-	"pause makes a hook refuse what is sent to it until resume; remove ends it for good and frees a mailbox's address. " +
+	"pause makes a hook refuse what is sent to it until resume; remove ends it for good and frees a mailbox's address for any company to take, so a removal is reviewed first too. " +
 	"Only a run that one of the company's owners or admins started changes hooks. " +
 	"operationKey names the change: the same call again with the same key gives the same answer, and every new change needs a new key. " +
 	"A routine wakes on a hook's events with manage_routine and the trigger kind event, using the hook's id.";

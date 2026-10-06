@@ -314,14 +314,17 @@ E1's connection file has none.
 ### 5.3 Review (agreed)
 
 - **`create` is an outside effect (`external`)** and is reviewed like one. The card says "Open a hook" or "Open a
-  mailbox", with the name, the purpose and, for a mailbox, its email address. The reviewer's steps apply unchanged:
+  mailbox", with the hook's name or the mailbox's local part (the part before the @) and the purpose. The reviewer's
+  steps apply unchanged:
   - a hook that only an email or a web page asks for is denied (`not_requested`);
   - an Ask first rule that covers it (for example "ask before connecting new services") makes it ask;
   - otherwise it is allowed.
 - **No new built-in check.** A "new connection" check would ask the member about every hook, a default gate no member
   chose. Members add rules when they want one.
-- **`pause`, `resume` and `remove` are `internal`** and not reviewed: they only narrow, or restore, what a reviewed create
-  opened.
+- **`pause` and `resume` are `internal`** and not reviewed: they only narrow, or restore, what is already open.
+- **`remove` is `destructive`** and reviewed (changed after E3a's review r1). A removal is final, it can remove what a
+  member opened in Settings, and a removed mailbox's address is free for any company on the shared mail domain. A
+  removal the member asked for is allowed; one that only an email or a web page asks for is denied (`not_requested`).
 
 ### 5.4 Locks (E3a)
 
