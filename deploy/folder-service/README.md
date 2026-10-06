@@ -86,7 +86,8 @@ no `ReadWritePaths`, so the service still cannot write the share.
     `fd` of any process with its own uid, and signal it. Through the gateway's `root` the service would reach the
     gateway's writable mount of the share and the paths the drop-in hides. `PrivatePIDs=` shows the service no
     process but its own. It needs systemd 257 or later; an older one ignores the line, which the last check below
-    shows. A user namespace (`PrivateUsers=`) would not help: it keeps the uid, and the kernel compares uids first.
+    shows. A user namespace alone (`PrivateUsers=`) would close the `/proc` links (the kernel's capability check
+    wants the same user namespace) but not signals, which compare uids only; `PrivatePIDs=` closes both.
   - The service is ready to be its namespace's first process: it handles `SIGTERM`, starts no other process, and
     systemd sets `LISTEN_PID` to 1 inside the namespace, which is what the service checks.
   - Hiding the state folder needs root to reach it, which the probe shows; with the uid 1002 fallback, leave that path
