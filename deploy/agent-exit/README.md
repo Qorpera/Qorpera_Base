@@ -341,8 +341,8 @@ What the logs cannot say is listed as not known, never as "no one": a gap line (
 lost), a deleted file (its record), a file that should be there and is not, a node that has not shipped since before
 the window or has days not on the NAS yet, the NAS not mounted, this node's logger not running, paused or unable to
 write now (its heartbeat, `logger.pause` and `logger.failing`, which say since when), and time past 90 days. Also any
-stretch of more than 3 minutes with no line of the logger's own (an alive line, or a gap line, which a running logger
-writes at the clock's time), on any node, from its first day of logs to now (or, for another node, to its last pass):
+stretch of more than 3 minutes with no line that says the logger was logging (an alive line, or its `logger started`,
+`paused: …` or `resumed: …` line; not the other gap lines, which a paused logger writes too), on any node, from its first day of logs to now (or, for another node, to its last pass):
 the logger was down, paused or could not write then. That covers what no line read says: a logger stopped and not
 started again (on another node too, after its day went to the NAS), and an outage or pause that began before the days
 read and ended after them. Each stretch is judged at its full length: one across the edge of the days read runs from
@@ -401,8 +401,8 @@ folder that is no mount point or has no marker, a copy that reads back wrong, a 
 turn under pressure, 90 days on the NAS), the lookup across two nodes (the company, machine and name behind a
 connection, a refusal, and each kind of gap: lost events, a pause and the ways it ends, the DNS record not kept, a
 pause begun before what was read, a deleted file, a node's days not shipped, a stretch with no alive line here and on
-another node that stopped after it shipped, one across midnight at either edge of the days read, a node whose logs
-begin later, a logger not running, paused or failing now, no NAS or one not mounted). The tests' NAS is a plain folder
+another node that stopped after it shipped, one across midnight at either edge of the days read, a paused logger's
+other gap lines, which are no sign that it logged, a node whose logs begin later, a logger not running, paused or failing now, no NAS or one not mounted). The tests' NAS is a plain folder
 (`--nas-any-folder`). Then the plug tool: allocation under the creators' umask, twelve plugs at once, quarantine, and the
 reconciler against a stand-in for LXD (attribution only after a match, a forged claim, sleep, two misses before an unplug, a machine made again, an entry
 removed by hand, plugs never created, unusable entries and links never followed, the bridge sets, the twins it finds).

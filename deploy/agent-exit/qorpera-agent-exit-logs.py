@@ -1314,18 +1314,31 @@ def silences(beats, start, end, covered=(), outer=None):
     return found
 
 
+def is_sign(record):
+    """A line that says the logger was logging then, written at the clock's time: an alive line, or a gap line it never
+    writes in the middle of a pause (its start, its pause and its resume; each opens or closes a span the lookup lists
+    already). Other gap lines (lost events, unlogged refusals, lines it could not write, the DNS record emptied) come
+    also from a paused logger."""
+    if record.get("event") == "alive":
+        return True
+    reason = str(record.get("reason")) if record.get("event") == "gap" else ""
+    return reason == "logger started" or reason.startswith("resumed: ") or (
+        reason.startswith("paused: ") and "DNS record" not in reason)
+
+
 def first_sign(paths):
-    """The time of the first line of the logger's own (alive or gap, written at the clock's time) in these files."""
+    """The time of the first line of the logger's own that says it was logging (is_sign) in these files."""
     for record in flow_records(paths, []):
-        if record.get("event") in ("alive", "gap"):
+        if is_sign(record):
             return record["ts"]
     return None
 
 
 def last_sign(paths):
-    """The time of the last line of the logger's own in these files (the last that holds one is read)."""
+    """The time of the last line of the logger's own that says it was logging in these files (the last that holds one
+    is read)."""
     for path in reversed(paths):
-        times = [record["ts"] for record in flow_records([path], []) if record.get("event") in ("alive", "gap")]
+        times = [record["ts"] for record in flow_records([path], []) if is_sign(record)]
         if times:
             return max(times)
     return None
@@ -1535,8 +1548,8 @@ def lookup(log_dir, nas_dir, host, at, window, margin, remote, port, agent, now,
                 not_known(name, day_start(day), day_start(day) + DAY, "connections",
                           f"{record['path']}: {record['error']}")
             elif event == "gap":
-                # Written by a running logger at the clock's time, like an alive line.
-                beats.append(ts)
+                if is_sign(record):
+                    beats.append(ts)
                 reason = str(record.get("reason"))
                 since = record.get("since") if isinstance(record.get("since"), (int, float)) else None
                 begun = since if since is not None else record.get("after")
@@ -1580,8 +1593,8 @@ def lookup(log_dir, nas_dir, host, at, window, margin, remote, port, agent, now,
         for start, end, reason, lines in merged_spans(dns_gaps):
             not_known(name, start, end, "names", reason if lines == 1 else
                       f"{lines} gap lines say the DNS record was not kept, the last: {reason}")
-        # The logger writes an alive line every minute while it logs. A stretch of more than 3 minutes with no line of
-        # its own, from the node's first log day on, to now or to what it has shipped, is a time it was down, paused
+        # The logger writes an alive line every minute while it logs. A stretch of more than 3 minutes with no line that
+        # says it was logging (is_sign), from the node's first log day on, to now or to what it has shipped, is a time it was down, paused
         # or could not write: also when no line read says so (it stopped and has not started again, or its pause or
         # outage began before the days read and ends after them). A node whose first log day is after the days read
         # did not log then: nothing is missed. Each stretch is judged at its full length, so one across the edge of
@@ -1597,7 +1610,7 @@ def lookup(log_dir, nas_dir, host, at, window, margin, remote, port, agent, now,
             before = known_from - SILENCE if before is None else before
         after = first_sign([names[each] for each in day_names(names, "flows", next_day(last))])
         outer = (known_from if before is None else before,
-                 min(now, *(() if through is None else (through,))) if after is None else after)
+                 (now if through is None else min(now, through)) if after is None else after)
         for a, b in silences(beats, known_from, known_to, covered.get(name, []) + covered.get("*", []), outer):
             not_known(name, a, b, "connections", "the connection logger wrote no line then (it writes one every "
                                                  "minute while it logs): it was down, paused or could not write")

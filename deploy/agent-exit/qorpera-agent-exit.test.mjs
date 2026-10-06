@@ -1576,6 +1576,22 @@ print(json.dumps(passes))
 		assert.deepEqual(unknownAt(t0 + DAY - 90, "--days", "0"), [[], true]);
 		assert.deepEqual(unknownAt(t0 + DAY + 60, "--days", "0"), [[], true]);
 	});
+
+	test("lookup counts only the lines a paused logger never writes as signs that it was logging", () => {
+		const a = node("paused-gaps");
+		const now = t0 + DAY + 6 * 3600;
+		// The logger paused before the day and went on at 05:00 the next day. All the day long a machine went over its
+		// share of refusals: a paused logger still writes that gap line, one a minute, the last at 23:58:20.
+		const unlogged = (from, to) => Array.from({ length: Math.ceil((to - from) / 60) }, (_, i) => gap("12 refused packets of unlogged flows", from + 60 * i));
+		writeFileSync(join(a.log, `flows-${day}.jsonl`), lines(unlogged(t0 + 20, t0 + DAY - 60)));
+		writeFileSync(join(a.log, `flows-${next}.jsonl`), lines([...unlogged(t0 + DAY + 20, t0 + DAY + 5 * 3600), gap("resumed: 0 lines not written while paused", t0 + DAY + 5 * 3600), ...alive(t0 + DAY + 5 * 3600 + 5, now)]));
+		const silent = "the connection logger wrote no line then (it writes one every minute while it logs): it was down, paused or could not write";
+		const result = lookup(a, now, t0 + DAY - 60, "--window", "30", "--days", "0");
+		assert.deepEqual(
+			[result.unknown.map((u) => [u.node, u.from, u.to, u.what, u.why]), result.complete],
+			[[["node-a", iso(t0 + DAY - 100), iso(t0 + DAY), "connections", silent]], false],
+		);
+	});
 });
 
 const DOCKERFILE = `FROM ubuntu:26.04
