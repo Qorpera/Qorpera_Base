@@ -879,6 +879,21 @@ a write under `human-tasks/` waits for P31.
 - `qorpera_member_folder_writer(environment)` (P34a): `{schema: "qorpera.member-folder-writer/v1", actor, profileId}`,
   the caller's own actor `{kind: "member", userId}`. For the object gateway's member commit route, which calls it
   with the member's token; clients don't call it.
+- `qorpera_member_folder_agent_proposals(environment, staffAgentId, request)` (P40c,
+  `20260930102000_folder_proposals_member`): the changes one agent saved through a view for the caller that wait for
+  review (`deploy/first-node/RUNTIME-COMPANY-FOLDER-C2.md` §8). `request` is `{}` or `{cursor}` (22023 otherwise; a
+  cursor that is not the caller's proposal of that agent is P0002). The answer is
+  `{schema: "qorpera.member-folder-proposals/v1", proposals, moreProposals, nextCursor}`: oldest first, at most 4,
+  each `{proposalId, createdAt, viewKind, createsAgent, unitCount, units, moreUnits}` with its first 50 units
+  `{unit, op, path, to?, structured?}` (`op` is `write`, `new_folder`, `delete` or `move`; `to` only for a move;
+  `structured` lists `{path, kind, parse}`, where `parse` keeps only the strings `name`, `title`, `role` and `status`,
+  and is left out when the unit writes no structured file). A proposal is
+  listed (and counted) only while the caller may read every path it names. `nextCursor` is the last proposal's id when
+  `moreProposals` is above 0, else null.
+- `qorpera_member_folder_discard_proposal(environment, proposalId)` (P40c): `{schema: "qorpera.folder-proposal/v1",
+  proposalId, status}`, `status` being `discarded`, or how a decided proposal was decided (`applied`, `not_applied`,
+  `declined`). The member it waits for, owners and admins discard (42501 "Only the member it waits for, owners and
+  admins discard a proposal"); an unknown or erased proposal is P0002 "Proposal is unavailable".
 
 ## 3. Realtime
 

@@ -37,6 +37,7 @@ import { markdownBubbles } from "../../ui/markdown.ts";
 import { findMentions, type MentionTarget, matchTargets, mentionParts, mentionQuery } from "../../ui/mentions.ts";
 import { foldFrom, playOnce } from "../../ui/motion.ts";
 import { presentationDay, presentationLocale, presentationTimeZone, t, timeZoneOption } from "../../ui/preferences.ts";
+import { renderProposalCard } from "../../ui/proposal-card.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import {
@@ -951,6 +952,15 @@ export class ConversationView {
 		}
 	}
 
+	/** Discard one of the member's open proposals; its card leaves the thread once the cloud took it. */
+	async #discardProposal(proposalId: string): Promise<void> {
+		try {
+			await this.#company.discardProposal(this.#sessionId, proposalId);
+		} catch {
+			// The controller keeps the reason in the conversation state.
+		}
+	}
+
 	/** Take over the agent's computer for a card: open its screen here and give it the keyboard. */
 	#takeOver(agent: HostedStaffAgent): void {
 		const panel = this.#panel ?? this.#showPanel(agent);
@@ -1613,6 +1623,10 @@ export class ConversationView {
 		const codingSessions = [...(conversation.codingSessions ?? [])]
 			.filter((coding) => start === undefined || coding.createdAt.localeCompare(start) >= 0)
 			.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+		// The member's open proposals of the agent (P40c) wait below the thread, oldest first.
+		const proposals = conversation.proposals?.proposals ?? [];
+		const moreProposals = conversation.proposals?.moreProposals ?? 0;
+		const discarding = conversation.discardingProposals ?? [];
 		const mentionTargets = this.#shownMentionTargets();
 		const clock = this.#clock();
 		const skillNames = [...this.#skills.names()].sort().join(" ");
@@ -1626,6 +1640,9 @@ export class ConversationView {
 			mentionTargets,
 			// Only what the line shows: the header's poll changes the rest every few seconds.
 			codingSessions.map((coding) => [coding.workerId, coding.harness, coding.title, coding.createdAt]),
+			proposals,
+			moreProposals,
+			discarding,
 			agentName,
 			room,
 			answerable,
@@ -2109,6 +2126,25 @@ export class ConversationView {
 		}
 		liveStart ??= nodes.length;
 		placeSessions(undefined);
+		// Kept while the card reads the same, so a keyboard user on it keeps focus. No time: each waits until it is
+		// applied, declined or discarded.
+		for (const proposal of proposals) {
+			const busy = discarding.includes(proposal.proposalId);
+			nodes.push(
+				keep(`proposal ${proposal.proposalId}`, JSON.stringify([proposal, busy, locale]), "", () =>
+					renderProposalCard(proposal, {
+						discarding: busy,
+						discard: () => void this.#discardProposal(proposal.proposalId),
+					}),
+				),
+			);
+		}
+		if (moreProposals > 0)
+			nodes.push(
+				keep("proposals more", locale, "", () =>
+					h("div", { class: "conversation-note", role: "note" }, t("More saved changes wait after these.")),
+				),
+			);
 		// Items gone from the thread, and messages whose element passed on, let what they held go.
 		const live = new Set(drawn.values());
 		for (const previous of this.#drawn.values()) if (!live.has(previous)) previous.message?.files?.view.dispose();
@@ -2135,6 +2171,7 @@ export class ConversationView {
 			!conversation.loading &&
 			!items.length &&
 			!codingSessions.length &&
+			!proposals.length &&
 			!conversation.error &&
 			!this.#working &&
 			!conversation.hasEarlier
@@ -2200,6 +2237,7 @@ export class ConversationView {
 				: undefined;
 		const reviewInput = active instanceof HTMLInputElement ? active : undefined;
 		const reviewCard = active?.closest<HTMLElement>("[data-review-id]")?.dataset.reviewId;
+		const proposalCard = active?.closest<HTMLElement>("[data-proposal-id]")?.dataset.proposalId;
 		// Nodes already in place stay put: a live log re-reads what is taken out and put back.
 		// (replaceChildren would also drop keyboard focus, selection and an in-progress IME edit.)
 		const separatorOf = new Map<HTMLElement, HTMLTimeElement>();
@@ -2374,6 +2412,17 @@ export class ConversationView {
 			if (card) {
 				if (!card.contains(document.activeElement)) card.focus({ preventScroll: true });
 				this.#focusReview = undefined;
+			}
+		}
+		// A proposal card redrawn (its Discard button sending) keeps the keyboard; once it is gone, the thread has it.
+		if (proposalCard && active && !active.isConnected) {
+			const card = [...this.#messages.querySelectorAll<HTMLElement>("[data-proposal-id]")].find(
+				(element) => element.dataset.proposalId === proposalCard,
+			);
+			if (card) card.focus({ preventScroll: true });
+			else {
+				this.#messages.tabIndex = -1;
+				this.#messages.focus({ preventScroll: true });
 			}
 		}
 		this.#pinToBottom();
