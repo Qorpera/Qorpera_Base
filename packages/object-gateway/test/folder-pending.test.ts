@@ -429,7 +429,9 @@ describe("a view's pending changes", () => {
 		expect(f.view.get("docs/long.log")).toBeDefined();
 		expect(f.view.get("docs/.~lock.report.odt#")).toBeDefined();
 		f.view.close(handle, 0);
-		// The lock name stays pending, but is no unsaved work.
+		// The closed file goes at the next boundary; the lock name stays pending, but is no unsaved work.
+		expect(f.view.unsaved).toBe(true);
+		expect(f.publish()).toEqual([expect.objectContaining({ op: "write", path: "docs/long.log" })]);
 		expect(f.view.empty).toBe(false);
 		expect(f.view.unsaved).toBe(false);
 		// A folder with a file open inside it moves only after the file is published.
