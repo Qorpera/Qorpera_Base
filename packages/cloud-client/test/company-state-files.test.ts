@@ -1708,6 +1708,23 @@ Go through new leads in sales/leads/.
 			["only", "value"],
 			["only", "value"],
 		]);
+		// A type YAML reads as a number, a boolean or null is quoted, as the writer quotes it.
+		expect(
+			keys(
+				refused(
+					"agents/a/routines/r.md",
+					routine(`when: event\nhook: ${ID}\nonly: [404, true, null, ~, "200"]\ntimezone: UTC`),
+				),
+			),
+		).toEqual([
+			["only", "quote"],
+			["only", "quote"],
+			["only", "quote"],
+			["only", "quote"],
+		]);
+		expect(
+			ok("agents/a/routines/r.md", routine(`when: event\nhook: ${ID}\nonly: ["404", "true"]\ntimezone: UTC`)),
+		).toMatchObject({ trigger: { when: "event", hook: ID, only: ["404", "true"] } });
 		for (const only of ["only: []", "only:", "only: invoice.paid"])
 			expect(
 				keys(refused("agents/a/routines/r.md", routine(`when: event\nhook: ${ID}\n${only}\ntimezone: UTC`))),

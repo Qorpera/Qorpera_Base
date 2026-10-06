@@ -429,7 +429,7 @@ it; a different answer changes the parser and `qorpera_company_state_routine_tri
 | `id` | yes | UUID: the routine id cursors and occurrences use |
 | `title` | yes | 1–160 bytes |
 | `status` | yes | `active`, `paused`, `concluded` ("expired" is derived by the scheduler) |
-| `when` | yes | `every`, `weekly`, `window`, `once`, `file-change` (on `folder-v2` since core C4's P29, below); `event` comes with W2 (#519): `hook` (the hook's lowercase uuid), optional `only` (1–20 distinct event types), plus `timezone` and `reply`, added by whichever of W2 and F2-6 lands second |
+| `when` | yes | `every`, `weekly`, `window`, `once`, `file-change` (on `folder-v2` since core C4's P29, below), `event` (core C4's E2, below) |
 | `minutes` | every, window | 5–10080 |
 | `starts` | every, weekly: optional | UTC instant, to the millisecond at most (what a schedule keeps) |
 | `days` | weekly (required), window (optional) | list of `mon`…`sun`, at least one |
@@ -439,6 +439,8 @@ it; a different answer changes the parser and `qorpera_company_state_routine_tri
 | `at` | once | UTC instant; before `ends` |
 | `watch` | file-change | a path in the company; a trailing `/` is dropped |
 | `match` | file-change | `exact` or `subtree` |
+| `hook` | event | the lowercase id of a hook or mailbox of the company that is not removed (checked at save) |
+| `only` | event: optional | list of 1–20 distinct event types, each printable ASCII without spaces, at most 128 characters; quote a type YAML would read as a number, a boolean or null |
 | `timezone` | all but `every` | IANA name the database knows |
 | `ends` | no | UTC instant |
 | `runs` | no (not for `once`) | 1–100000 |
@@ -458,6 +460,15 @@ paths it may read. Its own change sets never wake it.
   starts again from the resume.
 - While the company is paused, changes wake nothing and are not replayed after the resume.
 - A path the agent may not read is never named or counted. The wake names at most 21 changes and counts the rest.
+
+**`event`** (core C4, E2; `RUNTIME-COMPANY-FOLDER-EVENTS.md`): a verified delivery to `hook` (a hook's event, or
+an email to a mailbox) wakes the agent, with up to 20 deliveries a wake; with `only`, only deliveries of those types.
+- The save refuses a `hook` that is not a live hook or mailbox of the company, and a routine a ChatGPT plan would pay
+  for.
+- The routine listens from its last save: **any save of the file, even one that changes nothing, drops the deliveries
+  it had not taken yet.** A resume is a save, so it starts again from the resume.
+- While the company is paused, its deliveries wait and wake the routine after the resume. A wake whose run does not take
+  its deliveries is tried again after 1, 4, 16 and 64 minutes; after the fifth try, its first delivery is left behind.
 
 **Ownership:**
 - A key of another `when` is refused by name.

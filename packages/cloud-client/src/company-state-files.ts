@@ -1381,7 +1381,9 @@ function routine(split: Split, fields: Fields, problems: Problems): RoutineFile 
 		if (items) {
 			only = [];
 			for (const item of items) {
-				if (!EVENT_TYPE.test(item.text))
+				if (!item.quoted && ambiguousPlain(item.text))
+					problems.add("quote", item.line, "only", `put ${shown(item.text)} in double quotes`);
+				else if (!EVENT_TYPE.test(item.text))
 					problems.add(
 						"value",
 						item.line,

@@ -270,8 +270,11 @@ The drain follows P29's contract (`RUNTIME-COMPANY-FOLDER-LISTENER.md` §9) and 
 - **Scheduling (E2b, as built):** one `FOLDER_DRAINS` entry (`events`, at most 64 a company step) in the edge function's
   `runner-orchestrator.ts`, and one `CLOUD_FOLDER_DRAINS` entry after `machine_events` (16 a step, as
   `qorpera_drain_event_wakes` took them). Re-pin the Runner Orchestrator, shared execution and LXD provider artifacts.
-  Deploy the migration, then the edge function, then the orchestrator, then the runtime bundle: an edge function without
-  the entry answers 400, which pauses that drain alone, and agents are offered event routines only once the drain runs.
+  Deploy the migration, then the edge function, then the orchestrator, then the runtime bundle, the object gateway and
+  the web client: an edge function without the entry answers 400, which pauses that drain alone, and agents are offered
+  event routines only once the drain runs. The object gateway and the web client bundle the same parser (a member's
+  commit, `memberFolderStructured`; the web's routine list). Until the gateway is redeployed, a member's edit of an event
+  routine's file is refused as `structured_invalid`, and nothing is lost.
 
 ### 4.4 The gate, the read, the runtime
 
