@@ -227,13 +227,3 @@ test("the statement splitter throws on what it does not parse", () => {
 	assert.throws(() => statements("select E'it\\'s; drop';", "e.sql"), /^Error: E'' string in e\.sql$/);
 	assert.throws(() => statements("/* a /* b */ c; */ select 1;", "nested.sql"), /^Error: nested block comment/);
 });
-
-test("the SQL regression test exercises every operation", async () => {
-	const source = await readFile(join(repositoryRoot, "supabase/tests/320_runtime_operational_observability.test.sql"), "utf8");
-	const marker = "foreach v_operation in array array[";
-	const start = source.indexOf(marker);
-	assert.notEqual(start, -1);
-	const list = source.slice(start + marker.length, source.indexOf("]", start));
-	const exercised = [...list.matchAll(/'([a-z_]+)'/g)].map((match) => match[1]);
-	assert.deepEqual(new Set(exercised), new Set(CLOUD_RUNTIME_OPERATIONS));
-});

@@ -221,7 +221,8 @@ the shared bundle registry), guest artifact 1,338,813 bytes,
 `4c1c280ecc4faabca5f1a25869f8fd907caa91d88fe13fb2c3586aed06ac5620`, SQL context
 parity after 307 migrations on master `863536b30` (v45).
 
-Proofs: `310_company_organization_kernel.test.sql` rewritten to the new model
+Proofs: `310_company_organization_kernel.test.sql` (deleted with snapshot-v1 in the
+legacy sweep, B2b) rewritten to the new model
 (company born without the objects, the old document as an ordinary file that
 needs no review, the projection refusing its text, the read model shape, a
 retired scope closed to agents, the tables gone);
