@@ -296,7 +296,9 @@ it("gives a fence read slower than one attempt twice as long next, so it lands b
 	const { run, authority } = await admit();
 	// Every fence read takes 12 s, and the database runs them one after another: the first attempt's read goes on
 	// after it is cut at 10 s, and the second (from 10.25 s) waits for it before its own 12 s. Given 20 s, it lands at
-	// 24 s; given 10 s again, every attempt would be cut and the fence would never land.
+	// 24 s; given 10 s again, every attempt would be cut and the fence would never land. This models a delay outside
+	// the statement (a connection pool wait): in the database each attempt is one statement under the native host
+	// entry's 8 s budget, which a cancelled attempt does not grow.
 	let busyUntil = 0;
 	const fence = vi.fn<(signal: AbortSignal) => Promise<unknown>>(async () => {
 		busyUntil = Math.max(clock.now, busyUntil) + 12_000;

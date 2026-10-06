@@ -307,8 +307,10 @@ export class CloudNativeToolRun {
 	 * the database lacks the call and nothing ran.
 	 *
 	 * It is not queued behind the run's own checks: a lost or late answer is asked again for as long as the run's
-	 * authority holds, while the background refresh keeps renewing it. So a slow database never ends the run; lost
-	 * authority, a refusal or a cancellation do (5 Oct 2026).
+	 * authority holds, while the background refresh keeps renewing it. So a slow database never ends the run here; lost
+	 * authority, a refusal or a cancellation do (5 Oct 2026). The database still cuts each attempt at its own statement
+	 * budget (8 s for the fence, through `qorpera_native_host_call`), and that is asked again like a lost answer: a
+	 * fence that needs longer in the database never lands.
 	 */
 	async assertActiveWith(
 		read: (signal: AbortSignal) => Promise<unknown>,
@@ -338,7 +340,9 @@ export class CloudNativeToolRun {
 	 *
 	 * An attempt cut at its deadline gives the next one twice as long, still within the limit: a read slower than one
 	 * attempt, queued behind the transaction its cut attempt left running, still lands (6 Oct 2026). That needs a read
-	 * whose own transport does not cut it first: the fence's waits `CLOUD_TOOL_REQUEST_MAX_MS`.
+	 * whose own transport does not cut it first: the fence's waits `CLOUD_TOOL_REQUEST_MAX_MS`. It helps a delay outside
+	 * the database statement (a connection pool wait). A statement the database cancels at its own budget (8 s for the
+	 * native host's calls) is not a cut here: it is asked again at the same length.
 	 */
 	async retry<T>(
 		read: (signal: AbortSignal) => Promise<T>,
