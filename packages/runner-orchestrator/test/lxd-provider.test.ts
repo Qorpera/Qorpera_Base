@@ -1924,6 +1924,88 @@ describe("LXD cloud runner provider", () => {
 		expect(await journal()).toMatchObject({ physicalState: "registered" });
 	});
 
+	it("names a failed ended-runner check by its fixed codes only, and fails the pass", async () => {
+		const f = await acquiredFixture();
+		const journal = async () => JSON.parse(await readFile(f.journalPath, "utf8")) as Record<string, unknown>;
+		await writeFile(
+			f.journalPath,
+			JSON.stringify({ ...(await journal()), updatedAt: new Date(Date.now() - 10 * 60_000).toISOString() }),
+		);
+		const secret = `sb_secret_${"y".repeat(40)}`;
+		const fetcher: typeof fetch = async (input, init) =>
+			String(input).includes("qorpera_runtime_ended_runners")
+				? Response.json({ code: "PGRST301", message: `JWT ${secret} expired` }, { status: 503 })
+				: f.fetchImplementation(input, init);
+		const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		await expect(
+			new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, fetcher).reconcile(),
+		).rejects.toThrow("Ended runners are unavailable (503)");
+		const lines = log.mock.calls.map(([line]) => String(line));
+		log.mockRestore();
+		expect(lines).toEqual([
+			"reconcile failed: stage=ended_runners rpc=qorpera_runtime_ended_runners status=503 code=PGRST301",
+		]);
+		expect(lines.join("\n")).not.toContain(secret);
+		expect(f.lxd.deleteCalls).toEqual([]);
+		expect(await journal()).toMatchObject({ physicalState: "registered" });
+	});
+
+	it("keeps an ended runner whose guest is gone out of the pass's failures, but not one whose guest stays", async () => {
+		// A waiting guest whose job ended; the database answers that every runner asked about has ended.
+		const ended = async () => {
+			const f = await acquiredFixture();
+			const journal = async () => JSON.parse(await readFile(f.journalPath, "utf8")) as Record<string, unknown>;
+			await writeFile(
+				f.journalPath,
+				JSON.stringify({ ...(await journal()), updatedAt: new Date(Date.now() - 10 * 60_000).toISOString() }),
+			);
+			const fetcher: typeof fetch = async (input, init) =>
+				String(input).includes("qorpera_runtime_ended_runners")
+					? Response.json((JSON.parse(String(init?.body)) as { p_runner_ids: string[] }).p_runner_ids)
+					: f.fetchImplementation(input, init);
+			return { ...f, journal, fetcher };
+		};
+		const secret = `sb_secret_${"x".repeat(40)}`;
+		// The guest is deleted, but its machine release fails: the journal is dead, logged once, and the pass goes on.
+		const gone = await ended();
+		let releaseFails = true;
+		const releases: string[] = [];
+		const fetcher: typeof fetch = async (input, init) => {
+			if (String(input).includes("qorpera_release_runtime_machine")) {
+				releases.push(String(input));
+				if (releaseFails) return Response.json({ code: "XX000", message: secret }, { status: 500 });
+			}
+			return gone.fetcher(input, init);
+		};
+		const backend = new LxdCloudRunnerProviderBackend(config(gone.stateRoot), gone.lxd, gone.guest, fetcher);
+		const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		await expect(backend.reconcile()).resolves.toBeUndefined();
+		expect(gone.lxd.deleteCalls).toEqual([gone.lxd.createCalls[0]?.name]);
+		expect(log.mock.calls.map(([line]) => String(line))).toEqual([
+			`dead journal kept: acquisition=${runId} stage=ended_runner rpc=qorpera_release_runtime_machine status=500 code=XX000`,
+		]);
+		expect(await gone.journal()).toMatchObject({ physicalState: "stopping", deletionConfirmed: true });
+		expect((await gone.journal()).capacityReleased).toBeUndefined();
+		// The next pass tries the release again; once it is answered the journal is released.
+		releaseFails = false;
+		await expect(backend.reconcile()).resolves.toBeUndefined();
+		expect(releases).toHaveLength(2);
+		expect(await gone.journal()).toMatchObject({ capacityReleased: true });
+		// The guest cannot be deleted: the journal is live, so the log names it and the pass fails.
+		const stays = await ended();
+		const remove = vi.spyOn(stays.lxd, "deleteInstance").mockRejectedValue(new Error(`LXD answered ${secret}`));
+		log.mockClear();
+		await expect(
+			new LxdCloudRunnerProviderBackend(config(stays.stateRoot), stays.lxd, stays.guest, stays.fetcher).reconcile(),
+		).rejects.toThrow(secret);
+		const lines = log.mock.calls.map(([line]) => String(line));
+		log.mockRestore();
+		remove.mockRestore();
+		expect(lines).toEqual([`reconcile failed: acquisition=${runId} stage=ended_runner`]);
+		expect(stays.lxd.instance).toBeDefined();
+		expect(await stays.journal()).toMatchObject({ physicalState: "stopping", stopReason: "revoked" });
+	});
+
 	it("continues a sponsor handoff in a fresh attempt while preserving the retired guest and recovery history", async () => {
 		const stateRoot = join(await root(), "state");
 		const settings = governedConfig(stateRoot);
