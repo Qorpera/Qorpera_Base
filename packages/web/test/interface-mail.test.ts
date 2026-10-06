@@ -909,6 +909,55 @@ describe("outside words in the page's other blocks (§4)", () => {
 		expect(ask.querySelector(".interface-outside")?.textContent).toBe("Ask about Invoice 42");
 		expect(button(open, "Back")!.querySelector(".interface-outside")).toBeNull();
 	});
+
+	it("marks a table's cells, the one that opens a thread too, and reads its mail as a list does", async () => {
+		// The Inbox edited: a table of the threads instead of the list.
+		const table = [
+			'id = "threads"',
+			'kind = "table"',
+			'from = "mail"',
+			'order = "-last_at"',
+			'columns = ["subject", "from_name", "state"]',
+			'opens = "thread"',
+			'width = "third"',
+		].join("\n");
+		const { main, fake, f } = await mailbox(
+			(mail) => {
+				mail.threads = Array.from({ length: 55 }, (_, index) =>
+					summary(index + 1, index === 0 ? { subject: "Invoice 42", fromName: "Jane" } : {}),
+				);
+			},
+			"owner",
+			(text) => text.replace(/id = "threads"[\s\S]*?width = "third"/, table),
+		);
+		const block = () => main.querySelector<HTMLElement>(".interface-table-block")!;
+		const tableRows = () => [...block().querySelectorAll("tbody tr")];
+		// Being read, the table says so instead of being empty.
+		expect(block().querySelector(".interface-empty")).toBeNull();
+		await vi.waitFor(() => expect(tableRows()).toHaveLength(50));
+		const cells = [...tableRows()[0]!.querySelectorAll("td")];
+		expect(cells.map((cell) => cell.textContent)).toEqual(["Invoice 42", "Jane", "New"]);
+		expect(cells[0]!.querySelector("button.interface-row-open")?.textContent).toBe("Invoice 42");
+		expect(cells.map((cell) => cell.classList.contains("interface-outside"))).toEqual([true, true, false]);
+		button(block(), "Show older")!.click();
+		await vi.waitFor(() => expect(tableRows()).toHaveLength(55));
+		expect(button(block(), "Show older")).toBeUndefined();
+		// A table never read that fails says why, with a way to try again.
+		const rpc = f.cloud.rpc as unknown as Mock;
+		const answer = rpc.getMockImplementation()!;
+		rpc.mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+			if (fn === "qorpera_member_mail_threads" && (args.p_request as { state?: string }).state === "waiting")
+				throw new CloudRpcError(fn, { message: "The mail read is busy.", code: "XX000" }, 500);
+			return answer(fn, args);
+		});
+		view(main, "Waiting for you");
+		await vi.waitFor(() => expect(block().querySelector(".notice")?.textContent).toContain("busy"));
+		expect(block().querySelector(".interface-empty")).toBeNull();
+		rpc.mockImplementation(answer);
+		fake.threads = [summary(1, { state: "waiting" })];
+		button(block(), "Try again")!.click();
+		await vi.waitFor(() => expect(tableRows()).toHaveLength(1));
+	});
 });
 
 describe("the Mailbox's badge (§3 badge)", () => {

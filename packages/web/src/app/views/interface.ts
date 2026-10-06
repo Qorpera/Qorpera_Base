@@ -1087,23 +1087,25 @@ function tableBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		const lineId = domId("line", key, item.key);
 		const cells = columns.map((column, index) => {
 			const value = text(item.row, column);
-			if (index === 0 && opens !== null)
-				return h(
-					"td",
-					{ id: lineId },
-					h(
-						"button",
-						{
-							type: "button",
-							class: "interface-row-open",
-							"aria-current": isOpen ? "true" : null,
-							"data-focus-key": `open:${opens}:${item.key}`,
-							onclick: () => openRow(context, opens, item),
-						},
-						value || t("Open"),
-					),
-				);
-			const cell = h("td", index === 0 ? { id: lineId } : null, memberPicture(drawn, column, item.row) ?? value);
+			const cell =
+				index === 0 && opens !== null
+					? h(
+							"td",
+							{ id: lineId },
+							h(
+								"button",
+								{
+									type: "button",
+									class: "interface-row-open",
+									"aria-current": isOpen ? "true" : null,
+									"data-focus-key": `open:${opens}:${item.key}`,
+									onclick: () => openRow(context, opens, item),
+								},
+								value || t("Open"),
+							),
+						)
+					: h("td", index === 0 ? { id: lineId } : null, memberPicture(drawn, column, item.row) ?? value);
+			// A cell that shows outside content is marked as such, the one whose button opens the row too.
 			return value && outsideColumns.includes(column) ? outside(cell) : cell;
 		});
 		const actions = rowButtons(buttons, item, drawn, context, lineId);
@@ -1126,6 +1128,8 @@ function tableBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		if (!(event as InputEvent).isComposing) applyFilter();
 	});
 	filterField.addEventListener("compositionend", applyFilter);
+	// A mail table says it is being read, or why it can't be, instead of being empty; then whether older mail is there.
+	const reading = drawn.mail !== undefined && drawn.mail.list?.status !== "ready";
 	const listing = shown.length
 		? h(
 				"div",
@@ -1140,7 +1144,11 @@ function tableBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 					h("tbody", null, ...body),
 				),
 			)
-		: h("p", { class: "interface-empty" }, drawn.rows.length ? t("No rows match.") : t("Nothing here right now."));
+		: drawn.rows.length
+			? h("p", { class: "interface-empty" }, t("No rows match."))
+			: reading
+				? null
+				: h("p", { class: "interface-empty" }, t("Nothing here right now."));
 	return blockFrame(
 		block,
 		key,
@@ -1150,6 +1158,7 @@ function tableBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		drawn.rows.length ? filterField : null,
 		// A table that can't be read shows only its problems.
 		drawn.readable ? listing : null,
+		drawn.mail ? mailListFooter(context.company, drawn.mail.request, drawn.mail.list, key) : null,
 	);
 }
 
