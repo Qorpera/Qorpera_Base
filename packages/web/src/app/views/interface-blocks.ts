@@ -29,6 +29,11 @@ export function folderColumnLabel(source: string, column: string): string | unde
 	if (source === "agents" && column === "id") return t("Agent");
 	if (source === "activity" && column === "line") return t("What");
 	const label: Record<string, () => string> = {
+		agent: () => t("Agent"),
+		title: () => t("Title"),
+		from: () => t("From"),
+		due: () => t("Due"),
+		kind: () => t("Kind"),
 		name: () => t("Name"),
 		role: () => t("Role"),
 		figure: () => t("Figure"),
