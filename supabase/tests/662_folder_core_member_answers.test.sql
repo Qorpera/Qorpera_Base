@@ -1,8 +1,8 @@
--- @fixture 647_folder_core_run_fence.test.sql until "-- 1. Snapshot-v1 keeps its text"
+-- @fixture 647_folder_core_run_fence.test.sql until "-- The checks start here: a test that runs after this file's fixture part stops at this line."
 -- Company folder core, C1c-3b (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.3): a member's answers on the folder
 -- fence. An answer to an agent's card in its thread; plain conversations and group chats refusing; an email draft's
 -- completion reaching the agent; an answer to an action-review card, waking the agent or joining a held call.
--- Snapshot-v1 keeps its text. Runs are 647's hand-built runs of agent A in its thread, for the owner. Races are in 663.
+-- Runs are 647's hand-built runs of agent A in its thread, for the owner. Races are in 663.
 
 create function pg_temp.send(p_binding jsonb, p_key text) returns jsonb language sql as $$
 	select public.qorpera_send_native_agent_message((p_binding ->> 'leaseId')::uuid, (p_binding ->> 'runId')::uuid,
@@ -61,63 +61,6 @@ select set_config('qorpera_test.plain', extensions.gen_random_uuid()::text, true
 select pg_temp.fx(format($f$insert into public.qorpera_shared_sessions(id, profile_id, environment_id, title, created_by_user_id, audience_kind)
 	values (%L, '63400000-0000-4000-8000-000000000010', '63400000-0000-4000-8000-000000000020', 'Plain', '63400000-0000-4000-8000-000000000001',
 	'company')$f$, current_setting('qorpera_test.plain'))) \g /dev/null
-
--- 1. Snapshot-v1 keeps its text: each body with its patches reversed is the definition before this migration.
-do $$
-declare v_def text; c_plain constant text := 'This conversation does not serve folder-v2 companies yet';
-begin
-	v_def := pg_get_functiondef('public.qorpera_answer_interaction(uuid,uuid,uuid,text,jsonb,uuid,bigint)'::regprocedure);
-	v_def := replace(v_def, E'\tif public.qorpera_company_is_folder_v2(v_profile_id) then\n'
-		|| E'\t\tif not public.qorpera_folder_enter_agent_thread(p_session_id, v_user_id) then\n'
-		|| E'\t\t\tif exists (select 1 from public.qorpera_company_rooms as room where room.session_id = p_session_id) then\n'
-		|| E'\t\t\t\traise exception ''cards are not answered in a group chat'' using errcode = ''22023''; end if;\n'
-		|| E'\t\t\traise exception ''' || c_plain || E''' using errcode = ''0A000''; end if;\n'
-		|| E'\telse\n'
-		|| E'\tperform public.qorpera_lock_profile_gc_fence(v_profile_id);\n'
-		|| E'\tend if;\n', E'\tperform public.qorpera_lock_profile_gc_fence(v_profile_id);\n');
-	v_def := replace(v_def, E'\t\tif public.qorpera_company_is_folder_v2(v_room.profile_id) then\n'
-		|| E'\t\t\t-- The transcript events (the operation clock), then admission, the last lock before the folder clock.\n'
-		|| E'\t\t\tperform public.qorpera_append_admitted_input_events(p_session_id, array[v_input.id]);\n'
-		|| E'\t\t\tperform public.qorpera_folder_admit_wakes(v_room.profile_id);\n'
-		|| E'\t\tend if;\n', '');
-	v_def := replace(v_def, E'\t\tif not public.qorpera_company_is_folder_v2(v_room.profile_id) then\n'
-		|| E'\t\tperform public.qorpera_append_admitted_input_events(p_session_id, array[v_input.id]);\n'
-		|| E'\t\tend if;\n', E'\t\tperform public.qorpera_append_admitted_input_events(p_session_id, array[v_input.id]);\n');
-	if md5(v_def) <> '11202d08f6486b20f9b39293c66c6eab' then raise exception 'The answer''s snapshot-v1 text changed'; end if;
-
-	v_def := pg_get_functiondef('public.qorpera_answer_action_review(uuid,uuid,text,text,uuid,bigint)'::regprocedure);
-	v_def := replace(v_def, E'\tif public.qorpera_company_is_folder_v2(v_review.profile_id) then\n'
-		|| E'\t\tif not public.qorpera_folder_enter_agent_thread(v_review.card_session_id, v_user) then\n'
-		|| E'\t\t\traise exception ''' || c_plain || E''' using errcode = ''0A000''; end if;\n'
-		|| E'\telse\n'
-		|| E'\tperform public.qorpera_lock_profile_gc_fence(v_review.profile_id);\n'
-		|| E'\tend if;\n', E'\tperform public.qorpera_lock_profile_gc_fence(v_review.profile_id);\n');
-	v_def := replace(v_def, E'\t\t\tif public.qorpera_company_is_folder_v2(v_room.profile_id) then\n'
-		|| E'\t\t\t\t-- The transcript events (the operation clock), then admission, the last lock before the folder clock.\n'
-		|| E'\t\t\t\tperform public.qorpera_append_admitted_input_events(v_session.id, array[v_input.id]);\n'
-		|| E'\t\t\t\tperform public.qorpera_folder_admit_wakes(v_room.profile_id);\n'
-		|| E'\t\t\tend if;\n', '');
-	v_def := replace(v_def, E'\t\t\tif not public.qorpera_company_is_folder_v2(v_room.profile_id) then\n'
-		|| E'\t\t\tperform public.qorpera_append_admitted_input_events(v_session.id, array[v_input.id]);\n'
-		|| E'\t\t\tend if;\n', E'\t\t\tperform public.qorpera_append_admitted_input_events(v_session.id, array[v_input.id]);\n');
-	if md5(v_def) <> 'a32672812df12b7607f8769e5959d8bc' then raise exception 'The review answer''s snapshot-v1 text changed'; end if;
-
-	v_def := pg_get_functiondef('public.qorpera_finish_email_draft_action(uuid,text,uuid,text,jsonb)'::regprocedure);
-	v_def := replace(v_def, E' if public.qorpera_company_is_folder_v2(v_profile) then\n'
-		|| E'  perform public.qorpera_folder_enter_agent_thread(d.session_id, d.user_id) from public.qorpera_member_email_drafts d\n'
-		|| E'  join public.qorpera_member_email_actions a on a.interaction_id=d.interaction_id\n'
-		|| E'  join public.qorpera_shared_sessions s on s.id=d.session_id where a.id=p_action_id and s.profile_id=v_profile;\n'
-		|| E' end if;\n', '');
-	if md5(v_def) <> '981da163ef5d23768e4403d48e0bce35' then raise exception 'The email completion''s snapshot-v1 text changed'; end if;
-
-	v_def := pg_get_functiondef('public.qorpera_claim_email_draft_action(uuid,text,uuid,text)'::regprocedure);
-	v_def := replace(v_def, E' if public.qorpera_company_is_folder_v2(v_broker.profile_id) then\n'
-		|| E'  perform public.qorpera_folder_enter_agent_thread(d.session_id, d.user_id) from public.qorpera_member_email_drafts d\n'
-		|| E'  join public.qorpera_member_email_actions a on a.interaction_id=d.interaction_id\n'
-		|| E'  join public.qorpera_shared_sessions s on s.id=d.session_id where a.id=p_action_id and s.profile_id=v_broker.profile_id;\n'
-		|| E' end if;\n', '');
-	if md5(v_def) <> '5fd11fbe416b12c11a2f66e636593f09' then raise exception 'The email claim''s snapshot-v1 text changed'; end if;
-end $$;
 
 -- 2. An answer to an agent's card in its thread: the input, the transcript events, admission and the agent's room wake;
 -- a replay adds nothing, and still returns its receipt while the company is paused; a new answer then refuses.

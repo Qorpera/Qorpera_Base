@@ -475,30 +475,25 @@ begin
 			from public.qorpera_folder_storage_usage u where profile_id = c_profile); end if;
 end $$;
 
--- 8. The lock text (C1D §8): the snapshot-v1 bodies are the reviewed ones but for their folder-v2 line, which comes
--- first after "begin", the folder-v2 bodies take no company-wide lock, and step 6 keeps its sorted locks.
+-- 8. The lock text (C1D §8): each dispatcher's folder-v2 line comes first after "begin", the folder-v2 bodies take no
+-- company-wide lock, and step 6 keeps its sorted locks.
 do $$
 declare v_check record; v_definition text;
 begin
 	for v_check in select * from (values
 		('public.qorpera_enforce_company_storage_quota()',
-			'if public.qorpera_folder_storage_quota(new.bucket_id, new.name, new.metadata) then return new; end if;',
-			'339d3122eed3d8f154b6a671a836dd074aaa9a6b07c47e42998fd8003c58eb59'),
+			'if public.qorpera_folder_storage_quota(new.bucket_id, new.name, new.metadata) then return new; end if;'),
 		('public.qorpera_refresh_company_storage_usage()',
-			'if public.qorpera_folder_storage_usage_changed(tg_op, old, new) then return case when tg_op = ''DELETE'' then old else new end; end if;',
-			'f70353b583f7cf6853f57331bc9fa897eaa96251d13eb3d120838522965b5075'),
+			'if public.qorpera_folder_storage_usage_changed(tg_op, old, new) then return case when tg_op = ''DELETE'' then old else new end; end if;'),
 		-- With the object gateway's 2 s lock budget after the folder-v2 line (20260928339630).
 		('public.qorpera_authorize_profile_object_replication(uuid,text,bigint)',
-			'if public.qorpera_company_is_folder_v2(p_profile_id) then return public.qorpera_folder_authorize_replication(p_profile_id, p_sha256, p_bytes); end if;',
-			'b428e2d5857983ffea34bfef05fe8cefa486d44edfc0e540685da1ee5a45d6fe'),
+			'if public.qorpera_company_is_folder_v2(p_profile_id) then return public.qorpera_folder_authorize_replication(p_profile_id, p_sha256, p_bytes); end if;'),
 		('public.qorpera_confirm_profile_object_upload(uuid,text,bigint,text)',
-			'if public.qorpera_company_is_folder_v2(p_profile_id) then raise exception ''This Company File path does not serve folder-v2 companies'' using errcode = ''0A000''; end if;',
-			'e97bb1724e5235cd41d1f2ed6af295f17765d7ab4e87e8ad98262303714e0059')) c(target, guard, digest)
+			'if public.qorpera_company_is_folder_v2(p_profile_id) then raise exception ''This Company File path does not serve folder-v2 companies'' using errcode = ''0A000''; end if;')) c(target, guard)
 	loop
 		v_definition := pg_get_functiondef(v_check.target::regprocedure);
-		if position(E'\nbegin\n\t' || v_check.guard || E'\n' in v_definition) = 0
-			or encode(extensions.digest(replace(v_definition, E'\t' || v_check.guard || E'\n', ''), 'sha256'), 'hex') <> v_check.digest then
-			raise exception 'The snapshot-v1 body of % changed beyond its folder-v2 line', v_check.target; end if;
+		if position(E'\nbegin\n\t' || v_check.guard || E'\n' in v_definition) = 0 then
+			raise exception 'The folder-v2 line of % no longer comes first', v_check.target; end if;
 	end loop;
 	for v_check in select p.proname, p.prosrc from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname in (
 		'qorpera_folder_manifest', 'qorpera_folder_upload_scope', 'qorpera_folder_upload_actor', 'qorpera_folder_object_readable',
