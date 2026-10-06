@@ -13,7 +13,8 @@ import type { WebSocketLikeConstructor } from "@supabase/supabase-js";
 /** The native host's calls inside a job, and the entry point (statement budget) of each: qorpera_native_host_calls as
  * migrations 20260928409985, 20260928429982 (find_mail), 20260928429984 (save_attachment), 20260929999965
  * (company_account), 20260929999970 (the run's folder view) and 20260930093000 (proposals, P40b) list them, without the
- * two identity calls, which the host makes between jobs (G2-3). */
+ * two identity calls, which the host makes between jobs (G2-3). The long budget is the lease validator's and, since
+ * 20260930109500, the model request's fence's. */
 export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new Map<string, "standard" | "long">([
 	["qorpera_add_agent_review_rule", "standard"],
 	["qorpera_append_native_interaction_request", "standard"],
@@ -39,7 +40,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_describe_agent_open_work", "standard"],
 	["qorpera_describe_company_run_context", "standard"],
 	["qorpera_describe_native_tool_authority", "standard"],
-	["qorpera_fence_native_context", "standard"],
+	["qorpera_fence_native_context", "long"],
 	["qorpera_find_agent_mail", "standard"],
 	["qorpera_find_company_accounts", "standard"],
 	["qorpera_folder_agent_proposals", "standard"],

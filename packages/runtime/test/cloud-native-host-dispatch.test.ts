@@ -56,7 +56,7 @@ function rpc(body: string, extra: Omit<RequestInit, "body"> = {}): RequestInit &
 	};
 }
 
-it("lists exactly the calls the host makes inside a job, with the long budget for the lease validator only", () => {
+it("lists exactly the calls the host makes inside a job, with the long budget for the lease validator and the fence", () => {
 	const read = (name: string) =>
 		readFileSync(new URL(`../../../supabase/migrations/${name}`, import.meta.url), "utf8");
 	const migration = read("20260928409985_runtime_native_host_call.sql");
@@ -84,8 +84,14 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 				),
 		),
 	];
+	// The model request's fence moved to the long budget (#839's follow-up), found by name: a release re-slots the file.
+	const fenceLong = readdirSync(new URL("../../../supabase/migrations/", import.meta.url)).find((name) =>
+		name.endsWith("_runtime_fence_long_budget.sql"),
+	);
 	const long = new Set(
-		[...migration.matchAll(/set budget = 'long' where name = '(qorpera_[a-z0-9_]+)'/g)].map((m) => m[1]),
+		[migration, read(fenceLong ?? "missing_runtime_fence_long_budget.sql")].flatMap((text) =>
+			[...text.matchAll(/set budget = 'long' where name = '(qorpera_[a-z0-9_]+)'/g)].map((m) => m[1]),
+		),
 	);
 	const expected = new Map(
 		rows
@@ -95,6 +101,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 	expect(rows).toHaveLength(94);
 	expect(new Map(NATIVE_HOST_CALLS)).toEqual(expected);
 	expect([...NATIVE_HOST_CALLS].filter(([, budget]) => budget === "long")).toEqual([
+		["qorpera_fence_native_context", "long"],
 		["qorpera_validate_native_provider_execution_lease", "long"],
 	]);
 });
@@ -229,9 +236,11 @@ it("sends a listed call through the entry point with the job's token and the pub
 	const args = '{"p_binding":{"jobId":"x"},"p_limit":9007199254740993}';
 	await dispatch.fetch(`${ORIGIN}/rest/v1/rpc/qorpera_describe_native_tool_authority`, rpc(args, { signal }));
 	await dispatch.fetch(new URL(`${ORIGIN}/rest/v1/rpc/qorpera_validate_native_provider_execution_lease`), rpc("{}"));
+	await dispatch.fetch(`${ORIGIN}/rest/v1/rpc/qorpera_fence_native_context`, rpc("{}"));
 	release();
 	expect(sent.map((call) => call.url)).toEqual([
 		`${ORIGIN}/rest/v1/rpc/qorpera_native_host_call`,
+		`${ORIGIN}/rest/v1/rpc/qorpera_native_host_call_long`,
 		`${ORIGIN}/rest/v1/rpc/qorpera_native_host_call_long`,
 	]);
 	const first = sent[0]!.init!;
@@ -247,6 +256,7 @@ it("sends a listed call through the entry point with the job's token and the pub
 	expect(JSON.parse(sent[1]!.init!.body as string)).toMatchObject({
 		p_name: "qorpera_validate_native_provider_execution_lease",
 	});
+	expect(JSON.parse(sent[2]!.init!.body as string)).toMatchObject({ p_name: "qorpera_fence_native_context" });
 });
 
 it("sends a between-job call through the identity entry point with the holder's credential, inside a job or not", async () => {
