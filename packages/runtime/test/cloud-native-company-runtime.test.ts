@@ -919,7 +919,6 @@ it.each([
 				"send_mail",
 				"find_mail",
 				"save_attachment",
-				"company_account",
 				"read_context",
 				"read_skill",
 				"recall_memory",
@@ -1037,11 +1036,11 @@ it("exposes only a named typed connector operation and keeps its grant and desti
 	expect(f.reviewedTools).toEqual(["linear_issue_create"]);
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
 	expect(f.secretBroker?.execute).toHaveBeenCalledTimes(1);
-	// With the vault, a company run is offered its accounts (A1-4).
+	// Even with the vault, a company not on the company folder is not offered accounts: they serve folder-v2 only (A1-7).
 	const offered = JSON.parse(await readFile(f.evidence, "utf8")).threadParameters.dynamicTools[0].tools.map(
 		(tool: { name: string }) => tool.name,
 	);
-	expect(offered).toContain("company_account");
+	expect(offered).not.toContain("company_account");
 	expect(f.control.beginToolOperation).toHaveBeenCalledTimes(1);
 	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
 	expect(
@@ -1585,8 +1584,8 @@ it.each([
 		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 		const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 		const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
-		// A folder company's accounts come with its connection files (A1-7): no company_account yet.
-		expect(tools.some((tool) => tool.name === "company_account")).toBe(!folder);
+		// Company accounts serve companies on the company folder only (A1-7).
+		expect(tools.some((tool) => tool.name === "company_account")).toBe(folder);
 		const todo = tools.find((tool) => tool.name === "manage_todo")?.description ?? "";
 		expect(todo.includes("Each todo is a file in your folder")).toBe(files);
 		expect(todo.includes("Each todo is also a document in the shared Company File")).toBe(!files);

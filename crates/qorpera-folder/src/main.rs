@@ -1,7 +1,7 @@
 //! qorpera-folder: the company folder inside a Qorpera machine, and the node's vsock bridge to the
 //! folder service. See README.md and deploy/first-node/RUNTIME-FOLDER-SERVICE.md.
 
-use qorpera_folder::{bridge, link, lxd, mount, proto};
+use qorpera_folder::{bridge, link, lxd, mount, proto, relay};
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -10,11 +10,15 @@ use std::time::Duration;
 const USAGE: &str = "Usage:
   qorpera-folder mount --view-file <file> --mountpoint <dir> [--connect vsock:2:5250] [--threads 16] [--ttl-seconds 3600] [--allow-other yes]
   qorpera-folder bridge --service unix:<socket> [--listen vsock:any:5250] [--per-machine 512] [--lxd-socket <path>]
+  qorpera-folder relay --listen systemd|unix:<socket> [--connect vsock:2:5250]
   qorpera-folder version
 
 mount: shows the view named in <file> (JSON {\"environmentId\", \"viewId\", \"pass\"}; a regular file owned by this
 account, mode 0600 or tighter) at <dir>, read-only, until a signal, the view's end or an unmount.
-Exit codes: 0 stopped, 1 failed, 2 usage, 3 the node closed or refused the view.";
+Exit codes: 0 stopped, 1 failed, 2 usage, 3 the node closed or refused the view.
+
+relay: carries each connection to <socket> (systemd: the one its socket unit passed) to the node's folder service,
+byte for byte (the execution host's native hosts, which cannot open vsock).";
 
 /// The node closed or refused the view: a supervisor must not simply start the mount again.
 const EXIT_VIEW_CLOSED: u8 = 3;
@@ -24,6 +28,7 @@ fn main() -> ExitCode {
 	let result = match args.first().map(String::as_str) {
 		Some("mount") => mount(&args[1..]),
 		Some("bridge") => bridge(&args[1..]),
+		Some("relay") => relay(&args[1..]),
 		Some("version" | "--version") => {
 			println!("qorpera-folder {} (protocol {})", env!("CARGO_PKG_VERSION"), proto::PROTOCOL);
 			Ok(ExitCode::SUCCESS)
@@ -160,6 +165,29 @@ fn bridge(args: &[String]) -> Result<ExitCode, Usage> {
 		Ok(()) => Ok(ExitCode::SUCCESS),
 		Err(e) => {
 			eprintln!("qorpera-folder bridge: {e}");
+			Ok(ExitCode::FAILURE)
+		}
+	}
+}
+
+fn relay(args: &[String]) -> Result<ExitCode, Usage> {
+	let o = options(args, &["listen", "connect"])?;
+	let upstream = o.get("connect").cloned().unwrap_or_else(|| format!("vsock:2:{}", proto::VSOCK_PORT));
+	let listener = match o.get("listen").map(String::as_str) {
+		Some("systemd") => relay::systemd_listener().map_err(Usage)?,
+		Some(path) if path.starts_with("unix:") => match std::os::unix::net::UnixListener::bind(&path[5..]) {
+			Ok(l) => l,
+			Err(e) => {
+				eprintln!("qorpera-folder relay: {path}: {e}");
+				return Ok(ExitCode::FAILURE);
+			}
+		},
+		_ => return Err(Usage("--listen is systemd or unix:<socket>".into())),
+	};
+	match relay::run(listener, &upstream) {
+		Ok(()) => Ok(ExitCode::SUCCESS),
+		Err(e) => {
+			eprintln!("qorpera-folder relay: {e}");
 			Ok(ExitCode::FAILURE)
 		}
 	}

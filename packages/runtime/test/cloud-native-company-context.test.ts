@@ -271,6 +271,19 @@ it.each([
 		expect(instructions.includes(staff)).toBe(continues);
 });
 
+it("gives a human task's wake its own protocol, with the staff's judgement and no coworker reply rule", () => {
+	const instructions = cloudCompanyRuntimeInstructions(
+		{ kind: "agent", source: { kind: "human-task", id: randomUUID(), occurrenceKey: "human-task" } } as never,
+		false,
+	);
+	expect(instructions).toContain("# This wake: a human task");
+	expect(instructions).toContain("Follow the human-task skill");
+	expect(instructions).not.toContain("# This wake: a message from a coworker");
+	expect(instructions).not.toContain("qorpera.run-continuation/v1");
+	for (const staff of ["you are a dispatcher, not a hero", "# Writing to people"])
+		expect(instructions).toContain(staff);
+});
+
 it("asks only whether a quiet coding session can be archived on its check-in", () => {
 	const f = nativeCompanyContextFixture();
 	const instructions = cloudCompanyRuntimeInstructions(
@@ -295,6 +308,10 @@ it("tells the agent's next run what the platform stopped on its computer", () =>
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	expect(instructions).toContain("openWork.computerStopped");
 	expect(instructions).toContain("reason slept (the computer went to sleep because nothing busy kept it awake)");
+	expect(instructions).toContain("openWork.machineStopped");
+	expect(instructions).toContain(
+		"reason slept (the task machine went to sleep after an hour with nothing busy keeping it awake)",
+	);
 });
 
 it.each(["human", "office-activation"] as const)("does not restart a prior startup assignment on a %s wake", (kind) => {

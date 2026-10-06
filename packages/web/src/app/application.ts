@@ -25,6 +25,7 @@ import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui
 import { AuthController } from "./auth.ts";
 import { CompanyController } from "./company.ts";
 import { FoundingController } from "./founding.ts";
+import { CompanyInterfaceFolder } from "./interface-folder.ts";
 import { MemberPictures } from "./member-pictures.ts";
 import { PlanPayments, takeCheckoutReturn } from "./plan-payments.ts";
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
@@ -212,6 +213,8 @@ export function mountApplication(
 
 	let company: CompanyController | undefined;
 	let notices: ExecutionNotices | undefined;
+	/** The open company's interfaces and tables, followed in its folder (Interfaces step I7). */
+	let interfaceFolder: CompanyInterfaceFolder | undefined;
 	let computer: WebCompanyComputer | undefined;
 	let computerPanels: ComputerPanels | undefined;
 	let liveFile: LiveCompanyFileView | undefined;
@@ -348,6 +351,8 @@ export function mountApplication(
 		settingsAfterHome = undefined;
 		notices?.dispose();
 		notices = undefined;
+		interfaceFolder?.dispose();
+		interfaceFolder = undefined;
 		executionNotices.replaceChildren();
 		unsubscribeCompany?.();
 		conversation?.dispose();
@@ -796,6 +801,8 @@ export function mountApplication(
 		if (state.accessLost) {
 			notices?.dispose();
 			notices = undefined;
+			interfaceFolder?.dispose();
+			interfaceFolder = undefined;
 			liveFile?.dispose();
 			liveFile = undefined;
 			closeSettings(false);
@@ -878,6 +885,37 @@ export function mountApplication(
 				(userId) => controller.store.get().team?.members.find((member) => member.userId === userId)?.displayName,
 			);
 			executionNotices.append(notices.el);
+		}
+		// The company's interfaces come from its folder, read with the member's own access as the Company File page
+		// reads it, and followed while the company is open; until the first read lands the rail draws the library's.
+		if (interfaceFolder && !state.team?.capabilities.read) {
+			interfaceFolder.dispose();
+			interfaceFolder = undefined;
+		}
+		if (!interfaceFolder && state.team?.capabilities.read) {
+			const files = new WebCompanyFiles(
+				cloud,
+				controller.profile,
+				controller.userId,
+				state.team.role,
+				controller.signal,
+				() => {
+					const now = controller.store.get();
+					if (
+						disposed ||
+						company !== controller ||
+						auth.userId !== controller.userId ||
+						now.accessLost ||
+						!now.team?.capabilities.read
+					)
+						throw new Error(t("Company access changed."));
+				},
+			);
+			const reader = new CompanyInterfaceFolder(files, (folder) => {
+				if (interfaceFolder === reader) controller.store.set({ interfaceFolder: folder });
+			});
+			interfaceFolder = reader;
+			void reader.open();
 		}
 		if (route.section !== "chat") {
 			conversation?.dispose();
