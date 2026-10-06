@@ -220,7 +220,7 @@ describe("company notices member read", () => {
 			await expect(f.client.listNotifications()).rejects.toThrow("invalid response");
 		}
 	});
-	it("reads a routine moved off the member's login (20260930064000), and fails the read for a bad one", async () => {
+	it("reads a routine moved off the member's login (20260930095000), and fails the read for a bad one", async () => {
 		const moved = (subject: Record<string, unknown> = {}, n = 100) => ({
 			...full,
 			notification_id: id(n),

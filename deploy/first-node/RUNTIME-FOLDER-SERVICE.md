@@ -14,7 +14,7 @@ see it yet; step 2 (the run box) is the first user.
 | --- | --- | --- | --- |
 | Folder program, `mount` | `crates/qorpera-folder` (Rust, `fuser` 0.18) | inside a machine, root | the view's id and pass; listings and attributes in memory; the kernel's page cache |
 | Folder program, `bridge` | the same binary | node host, `qorpera-folder-bridge` (+ LXD's socket group) | nothing |
-| Folder service | `packages/object-gateway/src/folder-service` (Node) | node host, `qorpera-folder` | the service credential; each view's tree, chunks and manifests in memory |
+| Folder service | `packages/object-gateway/src/folder-service` (Node) | node host, `qorpera-objects` (the gateway's account, by a drop-in) | the service credential; each view's tree, chunks and manifests in memory |
 
 The bridge exists because Node has no `AF_VSOCK`. It listens on vsock port 5250 and takes the peer's CID from the
 kernel (LXD assigns it; a machine cannot choose it). For each connection, before any pass is checked, it asks LXD on
@@ -48,9 +48,40 @@ TypeScript: `packages/object-gateway/src/folder-service/protocol.ts`.
 | `a` | feed, machine → service | `{seq}` |
 | `e` | service → machine | `{code, message}` |
 
+**Protocol 2 (writes, F3 step 3: `RUNTIME-FOLDER-WRITES.md`).** A hello may say `protocol: 2`; the answer echoes it and
+says `readOnly: false` when the view takes writes (a writable operator mount). That is the view's, on either role: the
+folder program learns it from its feed's hello and mounts read-write; writes are taken on `io` connections only (a
+feed takes acknowledgements alone). A machine on protocol 1 reads only. On a writing connection frames may carry up to 2 MiB, and these requests are answered with `k` (`{}`, or
+`{version}` for a close and the executable bit), `o`, `d` or `p`:
+
+| Type | Request | Answer |
+| --- | --- | --- |
+| `O` | open for writing `{path, base?, create, exclusive, truncate}` | `o` `{handle, size, version}` |
+| `K` | one part of a chunk: `[u32 header length][{handle, index, sha256, bytes, offset}][≤ 1 MiB]`, in order from offset 0 | `k` once stored (the last part) |
+| `G` | `{handle, index, offset, length ≤ 1 MiB}`: part of a pending chunk back | `d` the bytes |
+| `C` | close `{handle, size}`: the chunks must tile `size` on the 4 MiB grid; a file whose bytes are still its origin's is cut to `size` from the origin's chunks | `k` `{version}` |
+| `M` | mkdir `{path}` | `k` |
+| `U`, `D` | unlink, rmdir `{path, base?}` | `k` |
+| `N` | rename `{from, fromBase?, to, toBase?, noReplace}` | `k` |
+| `X` | the executable bit `{path, base?, executable}` | `k` `{version}` |
+| `P` | publish `{}` | `p` the report `{commitId, seq, paths: [{path, outcome, reason?, receipt?, kept?}]}` |
+
+A truncate of a file not open is an open, the chunk that ends it when the cut is inside a chunk, and a close. A cut on
+the 4 MiB grid, or to nothing, sends no chunk: the close cuts the file's chunks, from its origin's when none of it was
+sent. A file whose manifest is not on the 4 MiB grid is changed whole (open it with truncate), not chunk by chunk. A write handle belongs to the view, not to
+the connection that opened it (the folder program pools its connections); a file still open when the view's last
+connection ends is abandoned, and what it held at its last close stays pending.
+
+A save's base is the version the machine's version map holds: the newest it read of the path, or the version its own
+save made (the `version` of `C` or `X`). Once that save is published, the service reads such a base as the version
+the save's change set gave the path, so the machine's next save is based on its own published save and not on a
+pending id the core never knew; a read naming it reads that version too, so a file held open since the save goes on
+reading the same bytes. A base naming any other version is passed on as it is.
+
 Error codes and what a program on the machine sees: `NOT_FOUND` ENOENT, `NOT_A_FOLDER` ENOTDIR, `NOT_A_FILE` EISDIR,
-`STALE` ESTALE, `DENIED` EACCES, `BAD_REQUEST` EINVAL, `UNAVAILABLE` EIO. `VIEW_CLOSED` and `VIEW_REFUSED` unmount
-the folder; the program exits 3 and its unit does not restart it.
+`STALE` ESTALE, `DENIED` EACCES, `BAD_REQUEST` EINVAL, `UNAVAILABLE` EIO; for writes `EXISTS` EEXIST, `NOT_EMPTY`
+ENOTEMPTY, `NOT_PERMITTED` EPERM, `TOO_LARGE` EFBIG, `READ_ONLY` EROFS, `NOT_HERE` EXDEV and `BUSY` EBUSY.
+`VIEW_CLOSED` and `VIEW_REFUSED` unmount the folder; the program exits 3 and its unit does not restart it.
 
 `version` is the core's version id of the path (a uuid), opaque to the machine. A read names the version the machine
 was shown, and the service serves exactly that version: the current one, or one of the last 16 replaced on the
@@ -62,7 +93,8 @@ longer reachable by name, its attributes frozen) and stays readable by whoever o
 pages of two versions in one file.
 
 Memory per connection is bounded in the service: frames from a machine are at most 4 KiB until the hello is accepted
-and 64 KiB after, one request is handled at a time with the socket paused, the next waits until the machine has
+and 64 KiB after (2 MiB on a writing connection: a chunk part is up to 1 MiB, streamed on to the gateway, never
+gathered), one request is handled at a time with the socket paused, the next waits until the machine has
 read the last answer, and a feed connection whose machine leaves 4 MiB unread is ended (the machine reconnects and
 drops its caches).
 
@@ -93,12 +125,15 @@ On a view's first connection the service lists the actor's whole tree: `qorpera_
 pages listed later are caught up harmlessly. Listings are served from that tree. A folder that holds readable paths
 but that the actor may not list itself is shown anyway, so the paths are reachable.
 
-Bytes come from the storage server's share (`/srv/qorpera/canonical/<profileId>/<sha256>`), never through the
-gateway's byte routes. The service reads the manifest the core named, checks its hash and that it matches the entry
-(v2; v1 for fixtures), then reads each chunk it needs, opened with `O_NOFOLLOW`, checked for size and hash before it
-is used or kept. Chunks and manifests are kept in a least-recently-used memory cache (1 GiB by default, at most 2 GiB
-within the unit's 3 GiB). Sixteen reads run at once; each has a 30 s deadline counted from the request, waiting
-included. Committed objects are never collected (C1d-2a roots every path version), so a reader holds no lease.
+Bytes come from the storage server's share (`<storageRoot>/<profileId>/<sha256>`, where `storageRoot` is the object
+gateway's store as the node host sees it), never through the gateway's byte routes. The service reads them as the
+gateway's account, `qorpera-objects`, the same uid on both nodes, in a process namespace of its own so it cannot
+reach the gateway's processes (README: "Reading the objects"). The service reads the manifest the core named, checks
+its hash and that it matches the entry (v2; v1 for fixtures), then reads each chunk it needs, opened with
+`O_NOFOLLOW`, checked for size and hash before it is used or kept. Chunks and manifests are kept in a
+least-recently-used memory cache (1 GiB by default, at most 2 GiB within the unit's 3 GiB). Sixteen reads run at
+once; each has a 30 s deadline counted from the request, waiting included. Committed objects are never collected
+(C1d-2a roots every path version), so a reader holds no lease.
 
 The company's storage profile is not in list, read or feed answers. The service learns it once per company and
 process through `qorpera_folder_authorize_object_download` on the first file read (P2 below proposes a direct way).
@@ -215,14 +250,18 @@ program in the pinned Rust image and passes it to the shared-execution packager 
 
 1. Read-only prechecks, both nodes:
    - `ss -l --vsock` shows nothing on port 5250; `lsmod | grep vhost_vsock`.
-   - `stat -c '%U %a' /srv/qorpera/canonical/<a profile>/<an object>` and which account the gateway writes as; decide
-     the folder service's read access (README).
+   - `findmnt --target <storageRoot>` names `/srv/qorpera/canonical` from the storage server.
+   - The coordinator's account change is done (README: "Reading the objects": the probe, the account, the gateway
+     moved to it, its files chowned): `stat -c '%U %a' <storageRoot>/<a profile>/<an object>` shows
+     `qorpera-objects 600`.
    - In the execution host: `ls -l /dev/fuse; grep fuse /proc/filesystems`.
    - `lxc config get qorpera-exec-node02 volatile.uuid --project qn25b2`.
 2. Build and package on the node 2 test machine from the release commit (README); the build's record must equal the
    commit's `deploy/folder-service/folder-program-linux-x64.json`.
-3. Node 2 host: install, write `config.json` and the key, enable the socket and the bridge. Node 1 host: the same,
-   with an empty `mounts` list (node parity compares every `qorpera-*` unit).
+3. Node 2 host: install; write `config.json`, the key and the drop-in `read-objects.conf` (README: "Reading the
+   objects"; without it the service runs as `qorpera-folder` and every read fails as unavailable); run the README's
+   checks; enable the socket and the bridge. Node 1 host: the same, with an empty `mounts` list (node parity compares
+   every `qorpera-*` unit).
 4. Execution host on node 2: a full `rebuild-exec-host.sh` with the shared-execution package, as at any cut (drain the
    host, the current image, the orchestrator restarted as the script says); it installs the folder program and
    refuses an unpinned one before stopping anything. Then the view file and `systemctl start
