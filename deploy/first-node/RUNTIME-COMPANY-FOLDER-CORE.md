@@ -206,10 +206,13 @@ All tables are keyed by company environment.
   transaction that inserts a wake takes it as its last lock before the clock
   (§3 step 10). It serializes wake admission and the wake count, which today
   sit on the fence (20260907000200:23-31).
-- **Proposals** (`qorpera_folder_proposals`) hold parked units: units waiting
-  on a review card, a restricted creator's hire (contract 14.1), or a
-  protected path if one is ever configured. Each proposal keeps its unit list
-  and its upload intents open until it is decided.
+- **Proposals** (`qorpera_folder_proposals`, P40a, migration 20260930074000)
+  hold parked units: a view's units that need review and carry none, a
+  restricted creator's hire through a view among them (contract 14.1). Each
+  proposal keeps its units, and a row per path they name
+  (`qorpera_folder_proposal_paths`, which roots their files), until it is
+  decided: applied by the agent's next run with that member, declined, or
+  discarded (C2 §8).
 - **Upload intents** (`qorpera_folder_upload_intents`) record bytes a writer is
   about to commit: the file manifest and its chunks, the size, the run or
   member command, the operation key, and an expiry that long uploads renew.
@@ -285,11 +288,12 @@ is never upgraded. The steps:
    - Every change that ends a lease (requeue, cancel, handoff, completion,
      re-claiming an expired lease) takes `FOR UPDATE`, which waits for commits
      that checked the old lease. An activation check enforces this.
-   - An approval applied after its run ended (a parked unit) takes no job
-     lock. It never substitutes the approver for the agent (contract 4.3).
-     The commit re-checks the agent's current authority and status, and the
-     approver's right to answer the card. It records the agent as actor and
-     the member as approver, and refuses the unit if either check fails.
+   - A parked unit is applied by a run (C2 §8, shape B): the agent's next
+     run for the same member, whose commit takes its own job lock as any
+     run's. It never substitutes the approver for the agent (contract 4.3):
+     the commit checks the agent's current authority as it does for any run,
+     records the agent as actor and the member who answered the card as
+     approver. The proposal row is rank 7c, after the review.
    - **A view** (C1B "C1b-3: views" §4): the job of its live run, if any, then
      the view row `FOR KEY SHARE`, which closing and superseding (`FOR
      UPDATE`) wait for. Releases take them in the same order, and so must
@@ -334,7 +338,12 @@ is never upgraded. The steps:
    6. resources, in ancestors-first order of their paths;
    7. grants;
    8. vault rows;
-   9. unique-key claims, by kind then key.
+   9. unique-key claims, by kind then key. Besides the commit's own claims (below), a per-company transaction advisory
+      lock is a unique-key claim at this rank, after the folder entry (the fence and rank 0) and before any row it then
+      touches: E1's `qorpera.event-hooks:<company>` for hooks and mailboxes, and A1-7's `qorpera.company-accounts:<company>`
+      for opening an account (`pg_advisory_xact_lock(hashtextextended('qorpera.company-accounts:' || <company>, 0))`,
+      migration 20260930072000, C1C §6.23), under which the opening reads its duplicate login and vault name; its receipt
+      and inserts follow.
 
    After rank 9 (C1C §5.7): run-owned rows (receipts, action reviews, context views); rank 10's recheck of read sets;
    every session the transaction will write, `FOR UPDATE` in id order: the conversations, then the coding sessions
@@ -412,6 +421,18 @@ is never upgraded. The steps:
    rows (§5), the queue rows (§5) and the commit row. A unit whose version
    check failed is not applied: nobody's work is overwritten, and its bytes
    stay on the receipt as a conflict copy.
+   - Built in slice P17 (`20260930042000`, SQL test 823): a write or new
+     folder that conflicted keeps each of its files as a row of
+     `qorpera_folder_conflict_copies` (commit, unit, file number, the path it
+     would have been stored at, the file reference). A conflict is decided
+     before the bytes, so a copy is kept only when the whole unit's files
+     would have passed the bytes check against step 6's locked objects (the
+     proof, no GC mark, the actor's possession); otherwise nothing is kept.
+     The commit's units JSON is unchanged. A copy reads as an old version of
+     its path (`qorpera_folder_object_readable`), so whoever may read the
+     path can fetch it and commit it again. A commit that saves nothing but keeps copies still passes the anchor
+     step and step 11's authority check under the clock, as a saving commit does: a narrowing journaled while it
+     decided refuses it, and its copies go with it. It then stops without a seq.
 9. **Check.** An explicit check over the structured units confirms that every
    index row written points at its entry's current version. The folder core's
    tables have no deferred constraints or deferred triggers; an activation
@@ -473,8 +494,8 @@ Each unit reports one of:
 - refused (a rule of 5.6, a structured file that fails its schema, or a
   path the unit would store past the 4096-byte limit, `too_long`);
 - denied (authority, or a reviewed unit without its review);
-- waiting for review (its review record is a pending ask, and the unit is
-  parked as a proposal);
+- waiting for review (a view's unit that needs review and carries none, parked
+  as a proposal; or a review record that is a pending ask);
 - not applied (RUNTIME-COMPANY-FOLDER.md §2).
 
 ### Who calls it
@@ -599,8 +620,9 @@ parse. The class is one of:
 
 An agent's delegation or deletion unit is handled by its review record:
 - **allow**, or an approved card: the unit applies;
-- **pending ask:** the unit waits for review and is parked as a proposal;
-- **none, or deny:** the unit is denied.
+- **pending ask:** the unit waits for review;
+- **none, or deny:** the unit is denied; a view's unit with no review is parked
+  as a proposal instead (C2 §8).
 
 One review covers a change set. Tools that act outside the folder
 (connectors, the computer, workers, coding) keep their tool-name classes in
@@ -843,9 +865,12 @@ An object is retained while it is referenced by any of:
 - a path version (kept for good, apart from the git-object exception and
   erasure);
 - an open upload intent;
-- a conflict copy on a receipt;
-- an open proposal, including units parked on a review card, which never
-  expire (2026-09-25 amendment, item 5); or
+- a conflict copy on a receipt (P17: `qorpera_folder_conflict_copies`, in
+  `qorpera_folder_object_rooted`; erasing a path will remove its copies,
+  which the folder GC + erasure session adds to `qorpera_folder_erase`);
+- an open proposal (P40a: `qorpera_folder_proposal_paths`, in
+  `qorpera_folder_object_rooted`), which never expires (2026-09-25 amendment,
+  item 5); erasing a path erases the open proposals under it; or
 - a retention hold.
 
 ### Invariants
@@ -1161,10 +1186,11 @@ worker on"). Nothing else in this plan waits on him.
 - Proposals for parked units and the restricted hire.
   - R1 (#613) records the review of tool calls. The restricted hire is a card
     on that record (W4a, #621), not a parked proposal.
-  - R2 reviews change sets that no tool call carried, and adds
-    `qorpera_folder_proposals`. Until it exists, agents make the interface
-    and table changes that "interfaces" item 7 counts as delegation only with
-    `save_interface`, which joins R1's tools.
+  - R2 reviews change sets that no tool call carried: P40a (migration
+    20260930074000) parks a view's units as `qorpera_folder_proposals`, and the
+    agent's next run for that member applies them through R1 (C2 §8). A
+    Company File write onto a delegation path keeps using the tool made for
+    it (`save_interface` for interfaces and tables).
 - Erasure. "Work for people" item 3 (approved 3 October 2026) widens it from
   a deleted agent's folder to any deleted path (a contact's file too).
 
@@ -1272,6 +1298,23 @@ For `folder-v2` companies:
 
 Items 6, 13 and 14 need the mount and the Company Computer, and are proven in
 the mount steps.
+
+`scripts/test-folder-core-acceptance.mjs` (P36) walks this list: one line per
+item, PASS, FAIL or NOT RUN with its reason.
+- In the hosted-db step it founds a company the real way (the creation worker,
+  the founder's own model login) and proves every item the database and the
+  node folder service's code can. Items that need a real coding session, live
+  runs, the load test or the launch items say NOT RUN. So does item 11: its
+  races are SQL test 767's; the script runs the collector's steps one after
+  another and fails if they lose a live object.
+- With `--company <profileId>` it checks an existing company (P38's proof
+  company, a founder's first company) through `QORPERA_ACCEPTANCE_DATABASE_URL`:
+  read-only, or with `--write` under a scratch folder of its own. It deletes
+  that folder again only while every entry in it is one of its own commits',
+  as of the clock it read that from, so anything someone else wrote there
+  leaves the folder in place. The suite runs that mode too, on the company it
+  founded, with a member's note written into the scratch folder midway, which
+  the cleanup must keep.
 
 ### C6. Removal
 

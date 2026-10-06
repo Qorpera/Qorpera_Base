@@ -4,6 +4,7 @@ import {
 	assertOfficeImageResetCapability,
 	OFFICE_IMAGE_EXECUTABLES,
 	OFFICE_IMAGE_MOUNT_UNIT,
+	OFFICE_IMAGE_NETWORK_PACKAGE_FILES,
 	OFFICE_IMAGE_PACKAGE_FILES,
 	OFFICE_IMAGE_RESET_PACKAGE_FILES,
 	officeImageDestination,
@@ -119,6 +120,42 @@ describe("office image installation contract", () => {
 			path: "/usr/local/bin/qorpera-screen-browser",
 			mode: 0o555,
 		});
+		// Each computer's own network: the root plumber, its firewall and units.
+		expect(officeImageDestination("qorpera-computer-plumb")).toEqual({
+			path: "/usr/local/lib/qorpera/qorpera-computer-plumb",
+			mode: 0o500,
+		});
+		expect(officeImageDestination("qorpera-computer-network.nft")).toEqual({
+			path: "/usr/local/share/qorpera/computer-network.nft",
+			mode: 0o444,
+		});
+		for (const unit of [
+			"qorpera-computer-network.service",
+			"qorpera-computer-plumb.socket",
+			"qorpera-computer-plumb@.service",
+		])
+			expect(officeImageDestination(unit)).toEqual({ path: `/etc/systemd/system/${unit}`, mode: 0o644 });
+		const network = OFFICE_IMAGE_NETWORK_PACKAGE_FILES.map((file) => ({ file, bytes: 1, sha256: sha }));
+		expect(() =>
+			parseOfficeImagePackage({ ...manifest, artifacts: [...manifest.artifacts, ...network] }),
+		).not.toThrow();
+		for (const missing of OFFICE_IMAGE_NETWORK_PACKAGE_FILES)
+			expect(() =>
+				parseOfficeImagePackage({
+					...manifest,
+					artifacts: [...manifest.artifacts, ...network.filter((a) => a.file !== missing)],
+				}),
+			).toThrow("OFFICE_IMAGE_PACKAGE_INCOMPLETE");
+		// The machine's firewall and each computer's own filter block the same ranges.
+		const ranges = (text: string) =>
+			/elements = \{([^}]*)\}/
+				.exec(text)?.[1]
+				?.split(",")
+				.map((range) => range.trim());
+		const deploy = new URL("../../../deploy/lxd-company-computer-guest/", import.meta.url);
+		const machine = ranges(readFileSync(new URL("qorpera-computer-network.nft", deploy), "utf8"));
+		expect(machine).toContain("169.254.0.0/16");
+		expect(ranges(readFileSync(new URL("qorpera-computer-plumb", deploy), "utf8"))).toEqual(machine);
 		for (const frame of ["qorpera-screen-brain.png", "qorpera-screen-brain-00.png", "qorpera-screen-brain-23.png"])
 			expect(officeImageDestination(`wallpapers/${frame}`)).toEqual({
 				path: `/usr/share/backgrounds/${frame}`,

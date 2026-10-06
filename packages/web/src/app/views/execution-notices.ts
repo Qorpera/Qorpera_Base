@@ -68,9 +68,27 @@ function offerable(
 function sentence(
 	item: MemberNotification,
 	agentName?: (staffAgentId: string) => string | undefined,
+	memberName?: (userId: string) => string | undefined,
 ): string | undefined {
 	const subject = item.subject;
 	switch (subject.schema) {
+		case "qorpera.member-notification.routine-payer-changed/v1": {
+			// Someone else's save or pick moved a routine off this member's login (20260930095000).
+			const agent = agentName?.(subject.staffAgentId) ?? t("An agent");
+			const member = (subject.changedByUserId && memberName?.(subject.changedByUserId)) || t("A member");
+			if (subject.payer === "company")
+				return t("{agent}'s routine no longer runs on your login. {member} moved it to the company's account.", {
+					agent,
+					member,
+				});
+			return subject.payerUserId === subject.changedByUserId
+				? t("{agent}'s routine no longer runs on your login. {member} moved it to their login.", { agent, member })
+				: t("{agent}'s routine no longer runs on your login. {member} moved it to {payer}'s login.", {
+						agent,
+						member,
+						payer: (subject.payerUserId && memberName?.(subject.payerUserId)) || t("another member"),
+					});
+		}
 		case "qorpera.member-notification.run-no-progress/v1":
 			return t("{agent} has made no progress for {minutes} minutes.", {
 				agent: agentName?.(subject.staffAgentId) ?? t("An agent"),
@@ -103,6 +121,8 @@ export class ExecutionNotices {
 	readonly #plan: PlanOffer | undefined;
 	readonly #agentName: ((staffAgentId: string) => string | undefined) | undefined;
 	readonly #workerRuns: WorkerRuns | undefined;
+	/** A member's name, for who moved a routine off this member's login. */
+	readonly #memberName: ((userId: string) => string | undefined) | undefined;
 	/** Per notice of a worker's run: whether this member may stop it, once read. */
 	readonly #stoppable = new Map<string, boolean>();
 	#stopping = false;
@@ -135,12 +155,14 @@ export class ExecutionNotices {
 		plan?: PlanOffer,
 		agentName?: (staffAgentId: string) => string | undefined,
 		workerRuns?: WorkerRuns,
+		memberName?: (userId: string) => string | undefined,
 	) {
 		this.#client = client;
 		this.#restoreFocus = restoreFocus;
 		this.#plan = plan;
 		this.#agentName = agentName;
 		this.#workerRuns = workerRuns;
+		this.#memberName = memberName;
 		if (signal.aborted) {
 			this.dispose();
 			return;
@@ -399,7 +421,7 @@ export class ExecutionNotices {
 			return;
 		}
 		const item = this.#items.find((entry) => !this.#hidden.has(entry.notificationId));
-		const text = item && sentence(item, this.#agentName);
+		const text = item && sentence(item, this.#agentName, this.#memberName);
 		const stoppable = item ? this.#stoppable.get(item.notificationId) === true : false;
 		const stopFailed = item ? this.#stopFailed.has(item.notificationId) : false;
 		const key = JSON.stringify([item?.notificationId, text, this.#acking, stoppable, this.#stopping, stopFailed]);

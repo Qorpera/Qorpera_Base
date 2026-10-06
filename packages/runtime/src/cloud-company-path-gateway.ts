@@ -147,6 +147,16 @@ export type CloudCompanyPathRpc =
 	// A folder-v2 run's own routines from the routine index, and the login a routine save pins (thin writers W4c).
 	| "qorpera_folder_agent_routines"
 	| "qorpera_prepare_routine_login"
+	// A folder-v2 run's workers: their files under the worker tool's request, a todo's workers, and a cancel (F2-5b).
+	| "qorpera_folder_worker_commit"
+	| "qorpera_folder_agent_workers"
+	| "qorpera_folder_cancel_agent_worker"
+	// Changes a view saved that wait for review (P40): a run's list, its apply and its close.
+	| "qorpera_folder_agent_proposals"
+	| "qorpera_folder_apply_proposal"
+	| "qorpera_folder_close_proposal"
+	// A coding session's archive (C3b).
+	| "qorpera_folder_archive_coding_worker"
 	// Event wakes (W2): the company's hooks and one event's body.
 	| "qorpera_list_agent_event_hooks"
 	| "qorpera_read_agent_event"

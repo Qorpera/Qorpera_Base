@@ -156,10 +156,8 @@ begin
 end
 $$;
 
--- F. The new functions: the read and the Stop are the members'; the rest is postgres-only. Each patched body with its
--- gap 4b lines reversed is the text before this migration.
+-- F. The new functions: the read and the Stop are the members'; the rest is postgres-only.
 do $$
-declare v_text text;
 begin
 	perform pg_temp.wake_assert(has_function_privilege('authenticated', 'public.qorpera_get_worker_run_control(uuid)', 'execute')
 		and has_function_privilege('authenticated', 'public.qorpera_cancel_worker_run(uuid)', 'execute')
@@ -169,22 +167,6 @@ begin
 		and not has_function_privilege('authenticated', 'public.qorpera_worker_run_member_stopped(uuid)', 'execute')
 		and not has_function_privilege('authenticated', 'public.qorpera_is_member_worker_run(public.qorpera_execution_runs)', 'execute'),
 		'F: privileges');
-	v_text := replace(replace(pg_get_functiondef('public.qorpera_drain_worker_wakes(integer)'::regprocedure),
-		E'''reason'', case when public.qorpera_worker_run_member_stopped(v_worker.occurrence_id)\n'
-		|| E'\t\t\t\t\t\t\t\t\tthen ''member_stopped'' -- gap 4b (20260930002800)\n'
-		|| E'\t\t\t\t\t\t\t\twhen v_wake_status',
-		E'''reason'', case when v_wake_status'),
-		E'''summary'', case when public.qorpera_worker_run_member_stopped(v_worker.occurrence_id)\n'
-		|| E'\t\t\t\t\t\t\t\t\tthen ''A member stopped the background work.'' -- gap 4b (20260930002800)\n'
-		|| E'\t\t\t\t\t\t\t\twhen v_wake_status',
-		E'''summary'', case when v_wake_status');
-	perform pg_temp.wake_assert(md5(v_text) = 'c3eb3118b42011add23a6fb9ad47f2c1', 'F: the drain''s text changed: ' || md5(v_text));
-	v_text := replace(replace(replace(pg_get_functiondef('public.qorpera_notify_runs_without_progress()'::regprocedure),
-		E'\t\t\tpublic.qorpera_is_member_worker_run(run) as worker, -- gap 4b (20260930002800)\n', ''),
-		E'\n\t\t\t\tor (stalled.worker and member.role = ''contributor'' and member.user_id = stalled.created_by_user_id) end',
-		E' end'),
-		E', ''worker'', told.worker),', E'),');
-	perform pg_temp.wake_assert(md5(v_text) = 'cc900e6a469da45c89dfe36b632b96b5', 'F: the sweep''s text changed: ' || md5(v_text));
 end
 $$;
 

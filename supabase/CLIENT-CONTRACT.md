@@ -198,6 +198,18 @@ they answer 42501 "native host call is refused".
     (`qorpera_resolve_failed_execution_run` 'retry': 55000 for anyone else;
     acknowledging stays open) or a change's review on it
     (`qorpera_retry_company_proposal_review`: 42501 for anyone else).
+- `qorpera_select_member_session_account(p_profile_id, p_session_id)` and
+  `qorpera_choose_member_session_account(p_profile_id, p_session_id,
+  p_connection_id)` (20260930059000, the payer never changes without the
+  member): select keeps a conversation's login for every kind of login, also at
+  its usage limit, while it needs a new sign-in, while its computer recovers and
+  while an owner or admin has it disabled (it returns that login; sending waits).
+  It answers `null` for a new conversation with no login that has room, and for a
+  conversation whose login the member disconnected: that conversation waits for
+  the member's own pick ("Choose a login to continue"). Choose saves the member's
+  pick, one of their own logins that could pay now whatever its usage, and
+  returns its connection id; 22023 "This login cannot pay for your conversation"
+  for any other login, 42501 when the conversation cannot be read.
 - `qorpera_grant_cloud_connector` — Step 7 (bundle v87): grants every
   operation of one company-owned connection (Gmail, Google Drive, GitHub) to
   all active agents (`p_staff_agent_ids` null, marks the connection shared so
@@ -588,6 +600,10 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   `qorpera_post_company_room_message`.
   - `start` and `end` are whole numbers counting characters (Unicode code points) from 0, with `end` excluded.
   - Each span sits just inside « and »; spans are in order, apart, and 1 to 2,000 characters long.
+  - A quote's words hold neither « nor » (20260928489300_member_quote_words_hold_no_marks): a quote is always «words»,
+    with no marks inside, so quotes never nest or cross. Such a quote is refused (22023) on every path that takes
+    quotes, room drafts included, and room drafts stored with one were deleted. A client treats a draft whose quotes
+    it can't read as absent: it shows none of its text, and the owner's next save replaces it.
   - `source` is `mail`, and `ref` is a thread id that `qorpera_member_mail_thread` shows the member, never account
     mail.
   - A body with `quotes` carries no `displayText`. Leave `quotes` out when there are none: an empty list is refused.
@@ -793,6 +809,34 @@ Built switched off with plan logins. Show none of it while plan logins are switc
   three are null for any other version, so a later save clears them. Show it as "Resumed when <member> turned on
   work while away".
 
+- `qorpera_get_routine_payer(p_routine_id)` and `qorpera_set_routine_login(p_routine_id, p_connection_id)`
+  (20260930095000, folder-v2 routines; the payer never changes without permission). Get answers
+  `{schema: 'qorpera.routine-payer/v1', routineId, routineVersion, status, pauseReason, connectionId,
+  payer: 'member'|'company'|null, payerUserId (null for a company account), savedByUserId (the member the routine
+  runs for), canPay, waitsFor: 'login'|'usage_limit'|'sign_in'|null, since, changedByUserId,
+  changeReason: 'save'|'pick'|null}` to a member who may read the
+  routine's file. `payer` and `connectionId` are null when the routine's binding names no login any more (show no
+  "Paid by" line); `changedByUserId` and `changeReason` are null until a save or a pick has changed the payer, and
+  `since` is then when the routine was made. `canPay` is whether the login can pay now; `waitsFor` says why not:
+  `login` (the routine waits as `needs_model_account` until someone picks one), `usage_limit` (the routine keeps the
+  login, and its runs stop until the limit resets) or `sign_in` (its member must sign in to it again in Settings);
+  null when `canPay`. Show "Paid by <member or the company> since <since>", with that reason, and when `canPay`
+  is false a "Choose a login" control: set picks one of the caller's own
+  logins (the caller becomes the routine's saver; any member who may write the routine's file) or, for an owner or
+  admin, a company account (the saver stays), and answers the same shape. Set never consents a login: bind it for
+  work while away first (the editor's consent-and-bind step), else it answers 22023.
+  A routine that waited runs again. Refusals: 42501 "Routine is unavailable" (not a member who may write the
+  routine's file, or a retired routine), 42501 "This login cannot pay for this routine" (another member's login, or
+  a company account picked by a contributor), 22023 "This login cannot pay for this routine" (a login that cannot
+  pay for work while its member is away now), 22023 "This login has reached its usage limit", 22023 "This login needs
+  a new sign-in", 42501 "A ChatGPT plan cannot pay for a listener" (a plan for a routine with any trigger other than a
+  schedule or a single time, such as a file change), 55000 "Company execution is paused" (the company is stopped or
+  being deleted; nothing changed).
+- Member notification `routine_payer_changed` (subject `qorpera.member-notification.routine-payer-changed/v1`:
+  `routineId, routineVersion, staffAgentId, payer ('member'|'company'), payerUserId, changedByUserId (null when no
+  member made the change), reason ('save'|'pick'), at`): the member whose login paid for a routine before someone else's save or pick moved
+  it. Show "<agent>'s routine no longer runs on your login" with who moved it.
+
 ### The company folder for members (20260928469250_folder_core_member_reads)
 
 Folder-v2 companies only (folder core C4, P27a; `deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md`). Each call
@@ -835,6 +879,21 @@ a write under `human-tasks/` waits for P31.
 - `qorpera_member_folder_writer(environment)` (P34a): `{schema: "qorpera.member-folder-writer/v1", actor, profileId}`,
   the caller's own actor `{kind: "member", userId}`. For the object gateway's member commit route, which calls it
   with the member's token; clients don't call it.
+- `qorpera_member_folder_agent_proposals(environment, staffAgentId, request)` (P40c,
+  `20260930102000_folder_proposals_member`): the changes one agent saved through a view for the caller that wait for
+  review (`deploy/first-node/RUNTIME-COMPANY-FOLDER-C2.md` §8). `request` is `{}` or `{cursor}` (22023 otherwise; a
+  cursor that is not the caller's proposal of that agent is P0002). The answer is
+  `{schema: "qorpera.member-folder-proposals/v1", proposals, moreProposals, nextCursor}`: oldest first, at most 4,
+  each `{proposalId, createdAt, viewKind, createsAgent, unitCount, units, moreUnits}` with its first 50 units
+  `{unit, op, path, to?, structured?}` (`op` is `write`, `new_folder`, `delete` or `move`; `to` only for a move;
+  `structured` lists `{path, kind, parse}`, where `parse` keeps only the strings `name`, `title`, `role` and `status`,
+  and is left out when the unit writes no structured file). A proposal is
+  listed (and counted) only while the caller may read every path it names. `nextCursor` is the last proposal's id when
+  `moreProposals` is above 0, else null.
+- `qorpera_member_folder_discard_proposal(environment, proposalId)` (P40c): `{schema: "qorpera.folder-proposal/v1",
+  proposalId, status}`, `status` being `discarded`, or how a decided proposal was decided (`applied`, `not_applied`,
+  `declined`). The member it waits for, owners and admins discard (42501 "Only the member it waits for, owners and
+  admins discard a proposal"); an unknown or erased proposal is P0002 "Proposal is unavailable".
 
 ## 3. Realtime
 

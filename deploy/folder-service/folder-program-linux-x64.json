@@ -1,0 +1,9 @@
+{
+  "schema": "qorpera.folder-program-artifact/v1",
+  "image": "rust:1.95.0-slim-bookworm@sha256:d7482085ff5b415f84dba5647ae71606650bdef00db7aeb69f4b3d170c3e4082",
+  "target": "x86_64-unknown-linux-gnu",
+  "profile": "release",
+  "sourceSha256": "1ab71872a9ed968053f625057337427d06e2c54843c94a05f12350bbbb277ce8",
+  "bytes": 972000,
+  "sha256": "8d19f0eb270c2da47655208fb674632afb072b688837440b81a6c542b58b86fa"
+}

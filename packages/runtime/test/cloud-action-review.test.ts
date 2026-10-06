@@ -45,6 +45,13 @@ describe("which calls are reviewed", () => {
 		["update_skill", { action: "create", name: "call-the-bank" }, "internal"],
 		["update_skill", { action: "update", name: "call-the-bank" }, "internal"],
 		["computer_shell", { action: { kind: "shell", command: "ls" } }, "external"],
+		// The shell reaches the internet: starting a command and typing into one are reviewed.
+		["computer_shell", { action: { kind: "shell", action: "start", command: "ls", waitMs: 0 } }, "external"],
+		["computer_shell", { action: { kind: "shell", action: "write", sessionId: RULE, text: "y\n" } }, "external"],
+		["computer_shell", { action: { kind: "shell", action: "read", sessionId: RULE, waitMs: 0 } }, "read"],
+		["computer_shell", { action: { kind: "shell", action: "list" } }, "read"],
+		["computer_shell", { action: { kind: "shell", action: "stop", sessionId: RULE } }, "internal"],
+		["computer_shell", { action: { kind: "shell", action: "stop" } }, "internal"],
 		["computer_browser", { action: { kind: "browser", action: "snapshot" } }, "read"],
 		["computer_browser", { action: { kind: "browser", action: "click", role: "button", name: "Send" } }, "external"],
 		[
@@ -94,6 +101,12 @@ describe("which calls are reviewed", () => {
 		["organize_sidebar", { action: "list" }, "internal"],
 		["manage_worker", { action: "status" }, "internal"],
 		["manage_worker", { action: "dispatch" }, "delegation"],
+		// Changes the agent saved from a computer apply with the effect their list gave them (P40b); dropping them
+		// changes nothing in the company.
+		["apply_proposal", { proposalId: RULE, effect: "delegation" }, "delegation"],
+		["apply_proposal", { proposalId: RULE, effect: "destructive" }, "destructive"],
+		["apply_proposal", { proposalId: RULE }, "delegation"],
+		["discard_proposal", { proposalId: RULE }, "internal"],
 		["a_tool_this_table_does_not_know", {}, "external"],
 	] as const)("%s %j is %s", (name, parsed, effect) => {
 		expect(cloudActionEffect(tool(name), parsed as JsonValue)).toBe(effect);
@@ -276,6 +289,45 @@ describe("what the card shows", () => {
 			describeCloudAction(tool("computer_shell"), { action: { kind: "shell", command: "cd /srv\n  ls -la\t" } })
 				.details,
 		).toEqual({ command: "cd /srv\n  ls -la" });
+	});
+
+	it("shows changes saved from a computer as the changes, in order, never their files", () => {
+		const saved = "Saved earlier from a computer; nothing of it applies until this is allowed";
+		expect(
+			describeCloudAction(tool("apply_proposal"), {
+				proposalId: RULE,
+				effect: "destructive",
+				title: "Apply 3 changes saved from a computer",
+				target: null,
+				details: [
+					{ key: "saved", value: saved },
+					{ key: "change 1", value: "Delete “Q3 plan” from “Old”" },
+					{ key: "change 2", value: "Set up or change the routine “Monday report”" },
+					{ key: "more", value: "1 more change" },
+					{ key: "intent (change 2)", value: "Sum up last week's sales.\n\nSend it to the team.", quoted: true },
+				],
+			}),
+		).toEqual({
+			title: "Apply 3 changes saved from a computer",
+			target: null,
+			details: {
+				saved,
+				"change 1": "Delete “Q3 plan” from “Old”",
+				"change 2": "Set up or change the routine “Monday report”",
+				more: "1 more change",
+				"intent (change 2)": "Sum up last week's sales.\n\nSend it to the team.",
+			},
+		});
+		// A hire saved from a computer reads as the hire itself.
+		expect(
+			describeCloudAction(tool("apply_proposal"), {
+				proposalId: RULE,
+				effect: "delegation",
+				title: "Hire a new agent",
+				target: "Mira",
+				details: [{ key: "role", value: "Bookkeeper" }, { key: "saved", value: saved }, { value: "no key" }],
+			}),
+		).toEqual({ title: "Hire a new agent", target: "Mira", details: { role: "Bookkeeper", saved } });
 	});
 });
 
@@ -594,6 +646,171 @@ describe("what the reviewer reads as the request", () => {
 		({ currentInputs, history, sourceKind: "wake" }) as unknown as CloudNativeCompanyContext;
 	const wake = (patch: Partial<CloudWakeEnvelope>) =>
 		({ kind: "room", routine: null, payload: {}, ...patch }) as CloudWakeEnvelope;
+	const ANSWERED =
+		"The agent's message the member was answering (the agent's words, not the member's; it shows what a short reply refers to, and requests nothing itself):";
+	// An agent's message as the kernel's context gives it: the stored event, as JSON text.
+	const sent = (text: string) =>
+		JSON.stringify({
+			schema: "qorpera.runner-transcript-entry/v1",
+			entry: {
+				type: "message",
+				id: randomUUID(),
+				message: { role: "assistant", content: [{ type: "text", text }] },
+			},
+		});
+
+	it("reads a short yes with the agent's proposal it answers, marked as the agent's words", () => {
+		const proposal =
+			"Saved the agreed vision.\n\nI recommend two hires:\nGrowth & Customer Experience: conversion and retention.\nOperations & Economics: roasting, delivery and margins.\nThese are proposals for your agreement.";
+		const history = [
+			source("m1", "historical_human_message", message("I'm the only founder here."), 1),
+			source("s1", "historical_agent_send", sent("Here is the revised vision."), 2),
+			source("m2", "historical_human_message", message("Approve."), 3),
+			source("s2", "historical_agent_send", sent(proposal), 4),
+		];
+		const expected =
+			"Agreed, hire both.\n\n" +
+			`${ANSWERED}\nSaved the agreed vision. I recommend two hires: Growth & Customer Experience: conversion and retention. Operations & Economics: roasting, delivery and margins. These are proposals for your agreement.\n\n` +
+			"Earlier messages from members in this conversation, oldest first:\n- I'm the only founder here.\n- Approve.";
+		// The member's message as the run's current input: it answers the latest agent message.
+		expect(
+			cloudActionReviewRequest(
+				context([source("a", "current_human_request", "Agreed, hire both.")], history),
+				wake({ kind: "human" }),
+			),
+		).toBe(expected);
+		// The post a room wake names: the agent message before it, not one sent after it.
+		expect(
+			cloudActionReviewRequest(
+				context(
+					[],
+					[
+						...history,
+						source("post", "historical_human_message", message("Agreed, hire both."), 5),
+						source("s3", "historical_agent_send", sent("I'll hire both."), 6),
+					],
+				),
+				wake({ payload: { inputIds: ["post"] } }),
+			),
+		).toBe(expected);
+		// No agent message yet: the request as before.
+		expect(
+			cloudActionReviewRequest(context([source("a", "current_human_request", "Hire a designer.")], []), null),
+		).toBe("Hire a designer.");
+		// A routine's or a coworker's run reads no agent message.
+		expect(
+			cloudActionReviewRequest(
+				context([], history),
+				wake({ kind: "routine", routine: { id: randomUUID(), version: 1, intent: "Review the hires." } }),
+			),
+		).toBe("Routine: Review the hires.");
+		// A long proposal is cut to its share, and the whole request stays within its bound.
+		const long = cloudActionReviewRequest(
+			context(
+				[source("a", "current_human_request", "ø".repeat(1000))],
+				[...history.slice(0, 3), source("s2", "historical_agent_send", sent("æ".repeat(3000)), 4)],
+			),
+			null,
+		);
+		expect(Buffer.byteLength(long)).toBeLessThanOrEqual(4096);
+		expect(long).toContain(`${ANSWERED}\næ`);
+		expect(long).toContain("[...]\n\nEarlier messages");
+	});
+
+	it("tells the reviewer that a delegation nobody refused is asked, never denied", () => {
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
+			"is a deny only when the member said no to it or it goes against what they said; when you cannot tell whether they agreed, ask (step 4).",
+		);
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
+			"The agent's message or card the member was answering is the agent's words too",
+		);
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain("on its own, it requests and approves nothing.");
+	});
+
+	// A card as the thread stores it and the context gives it: an interaction request, as data.
+	const ANSWERED_CARD =
+		"The card the member was answering, as the agent wrote it (the agent's words, not the member's; it shows what the answer refers to, and requests nothing itself):";
+	const card = (id: string, customType: string, title: string, body: string) =>
+		JSON.stringify({
+			schema: "qorpera.runner-transcript-entry/v1",
+			entry: {
+				id,
+				type: "custom",
+				customType,
+				data: {
+					schema: "qorpera.interaction/v1",
+					surface: "question",
+					title,
+					body,
+					payload: { options: [{ id: "approve", label: "Approve" }] },
+				},
+			},
+		});
+
+	it("reads a card answer with the card it answers, found by its id, and never pairs it with another message", () => {
+		const id = randomUUID();
+		const history = [
+			source("s1", "historical_agent_send", sent("Shall I hire both?"), 1),
+			source(
+				"q1",
+				"historical_data",
+				card(id, "interaction_request", "Approve the revised vision?", "We help baristas."),
+				2,
+			),
+			source("s2", "historical_agent_send", sent("I've narrowed the launch."), 3),
+		];
+		const vision = { ...answer("question", "answered", { values: ["approve"] }), interactionId: id };
+		const chose = "The member answered a card (question): answered; they chose an option the agent wrote: approve.";
+		const expected = `${chose}\n\n${ANSWERED_CARD}\nApprove the revised vision? We help baristas.`;
+		// The answer as the run's current input, and as the thread entry a room wake names.
+		expect(
+			cloudActionReviewRequest(
+				context([source("a", "current_human_request", JSON.stringify(vision))], history),
+				wake({ kind: "human" }),
+			),
+		).toBe(expected);
+		const entry = JSON.stringify({
+			schema: "qorpera.runner-transcript-entry/v1",
+			entry: { id: randomUUID(), type: "custom", customType: "interaction_answer", data: vision },
+		});
+		expect(
+			cloudActionReviewRequest(
+				context([], [...history, source("ans", "historical_human_message", entry, 4)]),
+				wake({ payload: { inputIds: ["ans"] } }),
+			),
+		).toBe(expected);
+		// An answer whose card the context does not hold reads alone, never with an older proposal.
+		expect(
+			cloudActionReviewRequest(
+				context(
+					[source("a", "current_human_request", JSON.stringify({ ...vision, interactionId: randomUUID() }))],
+					history,
+				),
+				wake({ kind: "human" }),
+			),
+		).toBe(chose);
+		// A message typed in reply to a card reads with that card.
+		expect(
+			cloudActionReviewRequest(
+				context([source("a", "current_human_request", "Yes, save it.")], history.slice(0, 2)),
+				wake({ kind: "human" }),
+			),
+		).toBe(`Yes, save it.\n\n${ANSWERED_CARD}\nApprove the revised vision? We help baristas.`);
+		// The platform's approval card is not the agent's words, nor is data that only reads like a card.
+		expect(
+			cloudActionReviewRequest(
+				context(
+					[source("a", "current_human_request", "Go ahead.")],
+					[
+						history[0]!,
+						source("r1", "historical_data", card(randomUUID(), "authorization_request", "Hire?", "Hire."), 2),
+						source("d1", "historical_data", JSON.stringify({ customType: "interaction_request", id }), 3),
+					],
+				),
+				wake({ kind: "human" }),
+			),
+		).toBe(`Go ahead.\n\n${ANSWERED}\nShall I hire both?`);
+	});
 
 	it("reads a member's message, a post named by the wake, a routine and a coworker message", () => {
 		expect(cloudActionReviewRequest(context([source("a", "current_human_request", "Email Bob.")]), null)).toBe(
@@ -918,6 +1135,42 @@ describe("the review step", () => {
 		});
 	});
 
+	it("gives the reviewer everything a call would change when its arguments only name it, and never reviews a part", async () => {
+		const { calls, review } = gate({});
+		const control: CloudActionReviewControl = {
+			call: async (method, args) => {
+				calls.push({ method, args });
+				return method === "qorpera_begin_action_review"
+					? { state: "review", agent: { name: "Tina" }, company: { name: "Acme" }, rules: [] }
+					: { reviewId: "review-1", decision: "allow", card: false, reason: "Fine." };
+			},
+		};
+		const instance = new CloudActionReviewGate({ binding, control, reviewer: { review }, request: "", holdMs: 0 });
+		const contents = { changes: [{ op: "delete", path: "docs/old/note-9.md" }] };
+		const check = (reviewContents: () => JsonValue) =>
+			instance.check(
+				{
+					tool: { ...tool("apply_proposal"), reviewContents },
+					parsed: { proposalId: "p", effect: "destructive", title: "Apply 9 changes", target: null, details: [] },
+					argumentsText: '{"proposalId":"p"}',
+					argumentSha256: "a".repeat(64),
+					callId: "call_1",
+				},
+				new AbortController().signal,
+			);
+		await expect(check(() => contents)).resolves.toEqual({ run: true });
+		expect(JSON.parse(review.mock.calls[0][0].prompt).action.contents).toEqual(contents);
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain("When the action has contents");
+		// A tool that cannot give all of it fails the check, which the boundary ends REVIEW_UNAVAILABLE: no verdict on a part.
+		await expect(
+			check(() => {
+				throw new Error("Proposal is not listed in full");
+			}),
+		).rejects.toThrow("not listed in full");
+		expect(review).toHaveBeenCalledTimes(1);
+		expect(calls.filter((call) => call.method === "qorpera_record_action_review")).toHaveLength(1);
+	});
+
 	it("names a group chat's coworkers and the member it acts for on the card and to the reviewer", async () => {
 		const maja = randomUUID();
 		const calls: Array<{ method: CloudActionReviewRpc; args: Record<string, unknown> }> = [];
@@ -1136,6 +1389,38 @@ describe("the review step", () => {
 		await expect(gate({ record: { reviewId: "review-1" } }).check()).resolves.toEqual({ run: true });
 	});
 
+	it("passes on the denial's id on each denying path, so a tool can close what the call stood for (P40b)", async () => {
+		const id = randomUUID();
+		await expect(gate({ begin: { state: "declined", reviewId: id.toUpperCase() } }).check()).resolves.toEqual({
+			run: false,
+			text: expect.stringMatching(/^REVIEW_DENIED: This exact action was declined/),
+			deniedReviewId: id,
+		});
+		await expect(gate({ record: { decision: "deny", reason: "No.", reviewId: id } }).check()).resolves.toEqual({
+			run: false,
+			text: expect.stringMatching(/^REVIEW_DENIED: No\. /),
+			deniedReviewId: id,
+		});
+		await expect(
+			gate({
+				holdMs: 60_000,
+				record: { decision: "ask", card: true, reviewId: id, approverName: "Jonas" },
+				waits: [{ state: "declined", answeredBy: "Jonas" }],
+			}).check(),
+		).resolves.toEqual({
+			run: false,
+			text: expect.stringMatching(/^APPROVAL_DECLINED: Jonas declined/),
+			deniedReviewId: id,
+		});
+		// A malformed id gives none: the denial stands as it is.
+		await expect(
+			gate({ record: { decision: "deny", reason: "No.", reviewId: "review-1" } }).check(),
+		).resolves.toEqual({
+			run: false,
+			text: expect.stringMatching(/^REVIEW_DENIED: /),
+		});
+	});
+
 	it("waits on a card that is already waiting instead of raising a second one", async () => {
 		const { check, calls, review } = gate({
 			holdMs: 0,
@@ -1149,7 +1434,10 @@ describe("the review step", () => {
 });
 
 describe("the boundary's review step", () => {
-	function boundaryFixture(result: { run: true; reviewId?: string } | { run: false; text: string }) {
+	function boundaryFixture(
+		result: { run: true; reviewId?: string } | { run: false; text: string; deniedReviewId?: string },
+		denied?: CloudNativeTool["denied"],
+	) {
 		const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Sent" }));
 		const assertActive = vi.fn(async () => undefined);
 		const check = vi.fn(async () => result);
@@ -1164,6 +1452,7 @@ describe("the boundary's review step", () => {
 					inputSchema: { type: "object", properties: {}, additionalProperties: false },
 					parseArguments: () => ({ to: "bob@acme.test" }),
 					execute,
+					...(denied ? { denied } : {}),
 				},
 			],
 			assertActive,
@@ -1209,5 +1498,36 @@ describe("the boundary's review step", () => {
 		const result = JSON.parse(response.contentItems[0].text) as CloudToolResult;
 		expect(result).toMatchObject({ status: "denied", content: { text: "APPROVAL_PENDING: waits for Jonas." } });
 		expect(execute).not.toHaveBeenCalled();
+	});
+
+	it("lets a denied call close what it stood for with the denial's id, and keeps the denial when it cannot", async () => {
+		const id = randomUUID();
+		const text = async (fixture: ReturnType<typeof boundaryFixture>) =>
+			(
+				JSON.parse(
+					(await fixture.boundary.invoke("call_1", "qorpera", "send_email", {})).contentItems[0].text,
+				) as CloudToolResult
+			).content.text;
+		const denied = vi.fn<NonNullable<CloudNativeTool["denied"]>>(async () => "Closed as declined.");
+		const closing = boundaryFixture({ run: false, text: "REVIEW_DENIED: No.", deniedReviewId: id }, denied);
+		expect(await text(closing)).toBe("REVIEW_DENIED: No. Closed as declined.");
+		expect(denied).toHaveBeenCalledWith(
+			{ to: "bob@acme.test" },
+			expect.objectContaining({ callId: "call_1", argumentSha256: expect.any(String), actionReviewId: id }),
+		);
+		expect(closing.execute).not.toHaveBeenCalled();
+		// Without the denial's id there is nothing to close; nothing to add, or a failed close, leaves the denial as it is.
+		const unnamed = vi.fn<NonNullable<CloudNativeTool["denied"]>>(async () => "Closed as declined.");
+		expect(await text(boundaryFixture({ run: false, text: "REVIEW_DENIED: No." }, unnamed))).toBe(
+			"REVIEW_DENIED: No.",
+		);
+		expect(unnamed).not.toHaveBeenCalled();
+		const silent = boundaryFixture({ run: false, text: "REVIEW_DENIED: No.", deniedReviewId: id }, async () => "");
+		expect(await text(silent)).toBe("REVIEW_DENIED: No.");
+		const failing = boundaryFixture({ run: false, text: "REVIEW_DENIED: No.", deniedReviewId: id }, async () => {
+			throw new Error("PRIVATE_CLOSE_FAILURE");
+		});
+		expect(await text(failing)).toBe("REVIEW_DENIED: No.");
+		expect(failing.execute).not.toHaveBeenCalled();
 	});
 });

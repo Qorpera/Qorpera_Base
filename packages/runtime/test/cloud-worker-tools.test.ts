@@ -498,6 +498,102 @@ describe("agent todo and worker tools", () => {
 		}
 	});
 
+	it("passes on the commands the platform stopped, and refuses a list it does not know", async () => {
+		const { binding } = nativeToolAuthorityFixture();
+		const signal = new AbortController().signal;
+		const counts = { todos: { open: 0, blocked: 0 }, workers: { active: 0, blocked: 0 } };
+		const stopped = {
+			command: "npm run dev",
+			startedAt: "2026-10-03T02:00:00.123456+00:00",
+			endedAt: "2026-10-03T03:00:00.654321+00:00",
+			reason: "slept",
+		};
+		const call = vi.fn<CloudCompanyPathControl["call"]>(async () => ({
+			schema: "qorpera.agent-open-work/v1",
+			runId: binding.runId,
+			...counts,
+			computerStopped: [stopped],
+		}));
+		expect(await describeCloudAgentOpenWork(binding, { call }, signal)).toEqual({
+			...counts,
+			computerStopped: [stopped],
+		});
+		// A host reads only the keys it knows, as every host from before computerStopped did.
+		call.mockResolvedValueOnce({
+			schema: "qorpera.agent-open-work/v1",
+			runId: binding.runId,
+			...counts,
+			coffeeStopped: [{}],
+		});
+		expect(await describeCloudAgentOpenWork(binding, { call }, signal)).toEqual(counts);
+		for (const broken of [
+			[],
+			Array.from({ length: 33 }, () => stopped),
+			[{ ...stopped, reason: "exited" }],
+			[{ ...stopped, exitCode: 0 }],
+			[{ ...stopped, command: 1 }],
+			{ ...stopped },
+		]) {
+			call.mockResolvedValueOnce({
+				schema: "qorpera.agent-open-work/v1",
+				runId: binding.runId,
+				...counts,
+				computerStopped: broken,
+			});
+			await expect(describeCloudAgentOpenWork(binding, { call }, signal)).rejects.toThrow();
+		}
+	});
+
+	it("passes on what a machine's stop or restart ended, commands and containers, and refuses what it does not know", async () => {
+		const { binding } = nativeToolAuthorityFixture();
+		const signal = new AbortController().signal;
+		const counts = { todos: { open: 0, blocked: 0 }, workers: { active: 0, blocked: 0 } };
+		const command = {
+			machine: "build-a",
+			work: "command",
+			command: "npm run dev",
+			startedAt: "2026-10-04T02:00:00.123456+00:00",
+			endedAt: "2026-10-04T03:00:00.654321+00:00",
+			reason: "slept",
+		};
+		const containers = {
+			machine: "build-a",
+			work: "containers",
+			endedAt: "2026-10-04T03:00:00+00:00",
+			reason: "hours",
+		};
+		const call = vi.fn<CloudCompanyPathControl["call"]>(async () => ({
+			schema: "qorpera.agent-open-work/v1",
+			runId: binding.runId,
+			...counts,
+			machineStopped: [command, containers],
+		}));
+		expect(await describeCloudAgentOpenWork(binding, { call }, signal)).toEqual({
+			...counts,
+			machineStopped: [command, containers],
+		});
+		for (const broken of [
+			[],
+			Array.from({ length: 33 }, () => command),
+			[{ ...command, reason: "closed" }],
+			[{ ...command, work: "shell" }],
+			[{ ...command, busyAt: command.startedAt }],
+			[{ ...containers, command: "docker" }],
+			[{ ...containers, work: "outside" }],
+			[{ ...containers, endedAt: 1 }],
+			[{ ...command, machine: null }],
+			{ ...command },
+		]) {
+			call.mockResolvedValueOnce({
+				schema: "qorpera.agent-open-work/v1",
+				runId: binding.runId,
+				...counts,
+				machineStopped: broken,
+			});
+			await expect(describeCloudAgentOpenWork(binding, { call }, signal)).rejects.toThrow();
+		}
+	});
+
 	it("sends a complete dispatch and refuses an incomplete or widened one before any cloud call", async () => {
 		const f = await fixture();
 		try {

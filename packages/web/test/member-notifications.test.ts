@@ -220,6 +220,78 @@ describe("company notices member read", () => {
 			await expect(f.client.listNotifications()).rejects.toThrow("invalid response");
 		}
 	});
+	it("reads a routine moved off the member's login (20260930095000), and fails the read for a bad one", async () => {
+		const moved = (subject: Record<string, unknown> = {}, n = 100) => ({
+			...full,
+			notification_id: id(n),
+			kind: "routine_payer_changed",
+			subject: {
+				schema: "qorpera.member-notification.routine-payer-changed/v1",
+				routineId: id(71),
+				routineVersion: 3,
+				staffAgentId: id(70),
+				payer: "member",
+				payerUserId: userB.id,
+				changedByUserId: userB.id,
+				reason: "save",
+				at: timestamp,
+				...subject,
+			},
+		});
+		let f = setup();
+		f.fetch.mockResolvedValueOnce(
+			Response.json([
+				moved(),
+				moved(
+					{ payer: "company", payerUserId: null, changedByUserId: null, reason: "pick", private: "hidden" },
+					101,
+				),
+			]),
+		);
+		const [member, company] = await f.client.listNotifications();
+		expect(member).toMatchObject({ notificationId: id(100), kind: "routine_payer_changed" });
+		expect(member!.subject).toEqual({
+			schema: "qorpera.member-notification.routine-payer-changed/v1",
+			routineId: id(71),
+			routineVersion: 3,
+			staffAgentId: id(70),
+			payer: "member",
+			payerUserId: userB.id,
+			changedByUserId: userB.id,
+			reason: "save",
+			at: timestamp,
+		});
+		// A company account names no member; nothing beyond the published fields is kept.
+		expect(company!.subject).toEqual({
+			schema: "qorpera.member-notification.routine-payer-changed/v1",
+			routineId: id(71),
+			routineVersion: 3,
+			staffAgentId: id(70),
+			payer: "company",
+			payerUserId: null,
+			changedByUserId: null,
+			reason: "pick",
+			at: timestamp,
+		});
+		for (const bad of [
+			moved({ schema: undefined }),
+			moved({ schema: "qorpera.member-notification.routine-payer-changed/v2" }),
+			{ ...moved(), kind: "routine_suspended_payer" },
+			moved({ routineId: "routine" }),
+			moved({ routineVersion: 0 }),
+			moved({ staffAgentId: null }),
+			moved({ payer: "agent" }),
+			moved({ payerUserId: null }),
+			moved({ payer: "company" }),
+			moved({ changedByUserId: "someone" }),
+			moved({ reason: "swap" }),
+			moved({ at: "yesterday" }),
+		]) {
+			f = setup();
+			f.fetch.mockResolvedValueOnce(Response.json([bad, full]));
+			await expect(f.client.listNotifications(), JSON.stringify(bad)).rejects.toThrow("invalid response");
+		}
+	});
 	it("fails the read for a retired notice from another company, under another kind or envelope", async () => {
 		const pause = {
 			...full,

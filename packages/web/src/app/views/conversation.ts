@@ -1,5 +1,6 @@
 import { type CodingSession, codingSessionGoing } from "../../cloud/coding-session.ts";
 import type { EmailDraftAction, EmailDraftContent } from "../../cloud/email-drafts.ts";
+import { type MessageQuote, QUOTES_MAX } from "../../cloud/quotes.ts";
 import {
 	ACTION_REVIEW_SCHEMA,
 	type ActionReviewAnswer,
@@ -8,7 +9,7 @@ import {
 	answersActionReview,
 } from "../../cloud/review-rules.ts";
 import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
-import type { TranscriptCard, TranscriptItem, TranscriptMessage } from "../../cloud/transcript.ts";
+import type { TranscriptCard, TranscriptItem, TranscriptMessage, TranscriptPeerLink } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent, JsonValue } from "../../cloud/types.ts";
 import { AGENT_LOOK, activityCaption, syncCaption } from "../../ui/agent-activity.ts";
 import { AttachmentTray, attachmentProblemText } from "../../ui/attachments.ts";
@@ -36,6 +37,7 @@ import { markdownBubbles } from "../../ui/markdown.ts";
 import { findMentions, type MentionTarget, matchTargets, mentionParts, mentionQuery } from "../../ui/mentions.ts";
 import { foldFrom, playOnce } from "../../ui/motion.ts";
 import { presentationDay, presentationLocale, presentationTimeZone, t, timeZoneOption } from "../../ui/preferences.ts";
+import { renderProposalCard } from "../../ui/proposal-card.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import {
@@ -49,9 +51,21 @@ import { uiScale } from "../../ui/scale.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
 import { markSkillNames, SkillMentions } from "../../ui/skill-mentions.ts";
 import { type AgentState, answersInteraction, type CompanyController, type ConversationState } from "../company.ts";
+import { type QuotePiece, quotePieces } from "../quotes.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
 import { ComposerModels } from "./composer-models.ts";
+import {
+	type FieldEdits,
+	FieldHistory,
+	type FieldState,
+	type HistoryStep,
+	historyRun,
+	historyStep,
+	keepCaretOutOfQuotes,
+	watchEdits,
+	watchHistory,
+} from "./composer-quotes.ts";
 import { type ComputerPanel, ComputerPanels } from "./computer.ts";
 import { GroupDetails } from "./group-details.ts";
 import { PairTranscriptView } from "./pair-transcript.ts";
@@ -82,6 +96,15 @@ interface DrawnItem {
 	input?: string | undefined;
 	/** A message's parts, so a change redraws only the part that changed. */
 	message?: MessageParts;
+}
+
+/** A node of the thread by its moment, and the day separator it stands under, if any. */
+interface TimestampRow {
+	date: Date;
+	node: HTMLElement;
+	separator?: HTMLTimeElement;
+	/** A line that holds messages over a while (messages with coworkers in a row): its last one's moment. */
+	last?: Date;
 }
 
 interface MessageParts {
@@ -197,6 +220,15 @@ export class ConversationView {
 	#mention: { start: number; end: number; options: MentionTarget[]; active: number } | undefined;
 	/** In a group chat, which agents will answer the message being written. */
 	readonly #mentionNote = h("p", { class: "composer-mention-note", role: "status", hidden: true });
+	/** While the draft holds quotes of outside content: that they travel as quoted, never as the member's words. */
+	readonly #quoteNote = h("p", { class: "composer-quote-note", role: "status", hidden: true });
+	/** The quotes the field's copy last set apart, so a change in them alone redraws it. */
+	#piecesShown = "[]";
+	/** What each edit of the composer replaced, and its own undo history (composer-quotes.ts). */
+	readonly #edits: FieldEdits;
+	readonly #history: FieldHistory;
+	/** The draft change (ConversationState.draftEpoch) the history last started from. */
+	#historyEpoch = 0;
 	readonly #attachments: AttachmentTray;
 	readonly #more: HTMLButtonElement;
 	readonly #menu: HTMLElement;
@@ -279,7 +311,7 @@ export class ConversationView {
 	 * figure in the header; focus returns to the opener when it closes. */
 	#codingThread: { workerId: string; view: CodingSessionThreadView } | undefined;
 	readonly #timestampTimer: number;
-	#timestampRows: { date: Date; node: HTMLElement; separator?: HTMLTimeElement }[] = [];
+	#timestampRows: TimestampRow[] = [];
 	/** The clock (#clock) the day separators were last labelled with. */
 	#timestampClock = "";
 	/** The day each shown moment falls on in #daysZone, so a redraw need not work it out again. */
@@ -328,11 +360,28 @@ export class ConversationView {
 					this.#submit();
 				}
 			},
-			oninput: () => {
-				this.#autosize();
-				company.conversation(sessionId).set({ draft: this.#composer.value });
-				this.#sharedDrafts.input();
-				this.#updateMention();
+			oninput: (event: Event) => {
+				// The browser applied its own undo or redo, which it would not let the page cancel: the composer's own
+				// history answers instead (composer-quotes.ts, watchHistory).
+				const which = historyStep(event);
+				if (which) {
+					this.#stepHistory(which);
+					return;
+				}
+				// A change that reached into a quote removes the whole quote; the field shows what is kept. The field's
+				// own account of what it replaced tells a quote pasted over another from words typed inside it.
+				const composer = this.#composer;
+				this.#followHistory();
+				const before = company.conversation(sessionId).get().draft ?? "";
+				const caret = composer.selectionStart === composer.selectionEnd ? composer.selectionEnd : undefined;
+				const edit = this.#edits.take(event);
+				const kept = company.editDraft(sessionId, composer.value, caret, edit);
+				if (kept.text !== composer.value) {
+					composer.value = kept.text;
+					if (kept.caret !== undefined) composer.setSelectionRange(kept.caret, kept.caret);
+				}
+				this.#history.edited(before, this.#fieldState(), historyRun(edit, event));
+				this.#edited();
 			},
 		});
 		// Moving the caret with the keys or a click opens or closes the names as well.
@@ -375,7 +424,14 @@ export class ConversationView {
 				this.#renderedKey = "";
 				this.update();
 			},
+			quotes: () => this.#quotePieces(),
+			replacing: (start, end) => this.#edits.declare(start, end),
 		});
+		keepCaretOutOfQuotes(this.#composer, () => this.#quotePieces(), this.#lifetime.signal);
+		this.#edits = watchEdits(this.#composer, this.#lifetime.signal);
+		this.#history = new FieldHistory(this.#fieldState());
+		this.#historyEpoch = company.conversation(sessionId).get().draftEpoch ?? 0;
+		watchHistory(this.#composer, this.#lifetime.signal, (which) => this.#stepHistory(which));
 		this.#send = h(
 			"button",
 			{
@@ -519,6 +575,7 @@ export class ConversationView {
 			this.#sharedDrafts.el,
 			this.#composerShell,
 			this.#mentionNote,
+			this.#quoteNote,
 			this.#attachments.status,
 		);
 		this.#identity = h("button", {
@@ -828,14 +885,28 @@ export class ConversationView {
 		this.#conversationPane.inert = false;
 		if (!refocus) return;
 		// The chip that opened it, or the same chip after a re-render, or any chip.
-		const messageId = opener?.closest<HTMLElement>(".peer-link")?.dataset.messageId;
 		const target =
 			opener?.isConnected && this.#messages.contains(opener)
 				? opener
-				: (this.#messages.querySelector<HTMLElement>(
-						messageId ? `.peer-link[data-message-id="${messageId}"] .peer-chip` : ".peer-chip",
-					) ?? this.#messages.querySelector<HTMLElement>(".peer-chip"));
+				: ((opener && this.#sameChip(opener)) ?? this.#messages.querySelector<HTMLElement>(".peer-chip"));
 		target?.focus({ preventScroll: true });
+	}
+
+	/** A coworker's chip as drawn again: the one for the same messages with that coworker, else any for
+	 * that coworker, each on the same line first, as a line can split in two; else the line's first. */
+	#sameChip(chip: HTMLElement): HTMLElement | undefined {
+		const messageId = chip.closest<HTMLElement>(".peer-link")?.dataset.messageId;
+		if (!messageId) return undefined;
+		const pair = chip.dataset.pairSessionId;
+		const links = new Set(chip.dataset.linkIds?.split(" "));
+		const chips = [...this.#messages.querySelectorAll<HTMLElement>(".peer-link[data-message-id] .peer-chip")];
+		const onLine = (other: HTMLElement) => other.closest<HTMLElement>(".peer-link")?.dataset.messageId === messageId;
+		const samePair = (other: HTMLElement) => other.dataset.pairSessionId === pair;
+		const sameLinks = (other: HTMLElement) =>
+			samePair(other) && (other.dataset.linkIds?.split(" ") ?? []).some((id) => links.has(id));
+		const first = (match: (other: HTMLElement) => boolean) =>
+			chips.find((other) => onLine(other) && match(other)) ?? chips.find(match);
+		return first(sameLinks) ?? first(samePair) ?? chips.find(onLine);
 	}
 
 	#toggleComputer(): void {
@@ -878,6 +949,15 @@ export class ConversationView {
 		} catch {
 			// The controller keeps the reason in the conversation state; a refused
 			// Always allow keeps the rule as the member edited it.
+		}
+	}
+
+	/** Discard one of the member's open proposals; its card leaves the thread once the cloud took it. */
+	async #discardProposal(proposalId: string): Promise<void> {
+		try {
+			await this.#company.discardProposal(this.#sessionId, proposalId);
+		} catch {
+			// The controller keeps the reason in the conversation state.
 		}
 	}
 
@@ -1033,6 +1113,7 @@ export class ConversationView {
 			return;
 		}
 		const name = `@${option.name} `;
+		this.#edits.declare(query.start, end);
 		this.#composer.value = value.slice(0, query.start) + name + value.slice(end);
 		const caret = query.start + name.length;
 		this.#composer.focus();
@@ -1041,14 +1122,85 @@ export class ConversationView {
 		this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
 	}
 
-	/** In a group chat the agents a message names answer and the others stay quiet: say so as it is written. */
+	/** After an edit of the composer, or an undo or redo: its height, the shared draft, the names and the quote note. */
+	#edited(): void {
+		this.#autosize();
+		this.#sharedDrafts.input();
+		this.#updateMention();
+		this.#renderQuoteNote();
+	}
+
+	/** The draft as the composer holds it now, with its records. */
+	#fieldState(): FieldState {
+		const conversation = this.#company.conversation(this.#sessionId).get();
+		const caret = this.#composer.selectionEnd;
+		return { text: conversation.draft ?? "", caret, records: conversation.quoteRecords ?? [] };
+	}
+
+	/** The draft changed from outside the member's own edits (the controller says so: draftReplaced): the undo
+	 * history starts again from it. */
+	#followHistory(): void {
+		const epoch = this.#company.conversation(this.#sessionId).get().draftEpoch ?? 0;
+		if (epoch === this.#historyEpoch) return;
+		this.#historyEpoch = epoch;
+		this.#history.restart(this.#fieldState());
+	}
+
+	/** Undo or redo from the composer's own history. A state it held needs no quote rules: its quotes are whole, and
+	 * its records come back with it. */
+	#stepHistory(which: HistoryStep): void {
+		this.#followHistory();
+		const store = this.#company.conversation(this.#sessionId);
+		const current = this.#fieldState();
+		const state = this.#history.step(which, current);
+		const composer = this.#composer;
+		if (!state) {
+			// Nothing to undo or redo: the field keeps the text the composer holds (a browser may have changed it).
+			if (composer.value !== current.text) composer.value = current.text;
+			return;
+		}
+		composer.value = state.text;
+		composer.setSelectionRange(state.caret, state.caret);
+		store.set({ draft: state.text, quoteRecords: state.records });
+		this.#edited();
+	}
+
+	/** The quotes of outside content in the text the composer shows: the draft's, while the field shows the draft. */
+	#composerQuotes(): MessageQuote[] {
+		const draft = this.#company.conversation(this.#sessionId).get().draft ?? "";
+		return draft === this.#composer.value ? this.#company.draftQuotes(this.#sessionId) : [];
+	}
+
+	#quotePieces(): QuotePiece[] {
+		return quotePieces(this.#composer.value, this.#composerQuotes());
+	}
+
+	/** While the draft holds quotes: that they go as quoted, when there are more than a message carries, and when one
+	 * has lost a mark (it is neither saved nor sent then). */
+	#renderQuoteNote(): void {
+		const count = this.#composerQuotes().length;
+		const shown = this.#composer.value === (this.#company.conversation(this.#sessionId).get().draft ?? "");
+		const text =
+			shown && this.#company.draftBroken(this.#sessionId)
+				? t("A quote is missing one of its « » marks. Remove it, or put the mark back.")
+				: count > QUOTES_MAX
+					? t("A message can hold at most {count} quotes. Remove some to send it.", { count: QUOTES_MAX })
+					: count
+						? t("Text in «» is quoted from an email. Agents read it as quoted, never as your words.")
+						: "";
+		this.#quoteNote.hidden = !text;
+		if (this.#quoteNote.textContent !== text) this.#quoteNote.textContent = text;
+	}
+
+	/** In a group chat the agents a message names answer and the others stay quiet: say so as it is written. A name
+	 * inside a quote names nobody. */
 	#renderMentionNote(): void {
 		const targets = this.#company.mentionTargets(this.#sessionId);
 		const named =
 			targets.filter((target) => target.kind === "agent").length > 1
 				? [
 						...new Map(
-							findMentions(this.#composer.value, targets)
+							findMentions(this.#composer.value, targets, this.#composerQuotes())
 								.filter((mention) => mention.target.kind === "agent")
 								.map((mention) => [mention.target.id, mention.target.name]),
 						).values(),
@@ -1073,13 +1225,16 @@ export class ConversationView {
 		];
 	}
 
-	/** A member's message with its mentions set apart, this member's own name most of all. */
-	#withMentions(text: string): (string | HTMLElement)[] {
+	/** A member's message with its mentions set apart, this member's own name most of all, and its quotes of outside
+	 * content shown as quoted. A name inside a quote names nobody. */
+	#withMentions(text: string, quotes: readonly MessageQuote[] = []): (string | HTMLElement)[] {
 		const me = this.#company.userId;
-		return mentionParts(text, this.#shownMentionTargets()).map((part) =>
-			typeof part === "string"
-				? part
-				: h(
+		const marks: { start: number; end: number; node: HTMLElement }[] = [];
+		for (const part of mentionParts(text, this.#shownMentionTargets(), quotes))
+			if (typeof part !== "string")
+				marks.push({
+					...part,
+					node: h(
 						"span",
 						{
 							class: part.targets.some((target) => target.kind === "member" && target.id === me)
@@ -1088,7 +1243,27 @@ export class ConversationView {
 						},
 						text.slice(part.start, part.end),
 					),
-		);
+				});
+		for (const piece of quotePieces(text, quotes))
+			marks.push({
+				start: piece.from,
+				end: piece.to,
+				node: h(
+					"span",
+					{ class: "message-quote", title: t("Quoted from an email") },
+					text.slice(piece.from, piece.to),
+				),
+			});
+		marks.sort((a, b) => a.start - b.start);
+		const parts: (string | HTMLElement)[] = [];
+		let at = 0;
+		for (const mark of marks) {
+			if (mark.start > at) parts.push(text.slice(at, mark.start));
+			parts.push(mark.node);
+			at = mark.end;
+		}
+		if (at < text.length) parts.push(text.slice(at));
+		return parts;
 	}
 
 	#submit(): void {
@@ -1216,7 +1391,10 @@ export class ConversationView {
 			conversation.sending ||
 			(!conversation.draft?.trim() && !this.#attachments.count) ||
 			needsText ||
-			Boolean(attachmentIssue);
+			Boolean(attachmentIssue) ||
+			// More quotes than a message carries, or a quote with a mark gone: the note under the field says so.
+			this.#company.draftQuotes(this.#sessionId).length > QUOTES_MAX ||
+			this.#company.draftBroken(this.#sessionId);
 		this.#syncSend();
 		this.#attach.disabled = this.#composer.disabled || noImages;
 		this.#attachNote.hidden = !noImages;
@@ -1238,6 +1416,11 @@ export class ConversationView {
 			this.#composer.value = conversation.draft ?? "";
 			this.#autosize();
 		}
+		this.#followHistory();
+		// The same text can come to hold a quote it did not (a teammate's draft brought its record): the copy follows.
+		const pieces = JSON.stringify(this.#quotePieces());
+		if (pieces !== this.#piecesShown) this.#skills.sync();
+		this.#piecesShown = pieces;
 		if (this.#composer.disabled) this.#closeMention();
 		// A teammate's words can land in this composer (shared drafts) while names are shown:
 		// where the name being typed now starts is read again, or the names close.
@@ -1245,6 +1428,7 @@ export class ConversationView {
 		// The same for an open skill menu.
 		this.#skills.refresh();
 		this.#renderMentionNote();
+		this.#renderQuoteNote();
 		this.#sharedDrafts.update();
 	}
 
@@ -1353,7 +1537,7 @@ export class ConversationView {
 		let previousDate: Date | undefined;
 		const groups = this.#timestampRows.map((row) => {
 			const separated = needsConversationTimestamp(row.date, previousDate);
-			previousDate = row.date;
+			previousDate = row.last ?? row.date;
 			return { row, separated };
 		});
 		const regroup = groups.some(({ row, separated }) => Boolean(row.separator) !== separated);
@@ -1412,6 +1596,7 @@ export class ConversationView {
 					sequence: Number.MAX_SAFE_INTEGER,
 					authorUserId: item.authorUserId,
 					text: item.text,
+					...(item.quotes ? { quotes: item.quotes } : {}),
 					attachmentCount: item.attachmentCount ?? 0,
 					createdAt: item.createdAt,
 					pending: "queued",
@@ -1438,6 +1623,10 @@ export class ConversationView {
 		const codingSessions = [...(conversation.codingSessions ?? [])]
 			.filter((coding) => start === undefined || coding.createdAt.localeCompare(start) >= 0)
 			.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+		// The member's open proposals of the agent (P40c) wait below the thread, oldest first.
+		const proposals = conversation.proposals?.proposals ?? [];
+		const moreProposals = conversation.proposals?.moreProposals ?? 0;
+		const discarding = conversation.discardingProposals ?? [];
 		const mentionTargets = this.#shownMentionTargets();
 		const clock = this.#clock();
 		const skillNames = [...this.#skills.names()].sort().join(" ");
@@ -1451,6 +1640,9 @@ export class ConversationView {
 			mentionTargets,
 			// Only what the line shows: the header's poll changes the rest every few seconds.
 			codingSessions.map((coding) => [coding.workerId, coding.harness, coding.title, coding.createdAt]),
+			proposals,
+			moreProposals,
+			discarding,
 			agentName,
 			room,
 			answerable,
@@ -1617,7 +1809,7 @@ export class ConversationView {
 				mine,
 				room,
 				{
-					body: `${JSON.stringify([item.kind, item.text, Boolean(item.attachmentCount), locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}`,
+					body: `${JSON.stringify([item.kind, item.text, item.quotes ?? null, Boolean(item.attachmentCount), locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}`,
 					files: JSON.stringify([
 						locale,
 						item.attachmentCount,
@@ -1644,12 +1836,15 @@ export class ConversationView {
 		const separators = new Map<HTMLElement, HTMLTimeElement>();
 		for (const row of this.#timestampRows) if (row.separator) separators.set(row.node, row.separator);
 		this.#timestampRows = [];
-		const markTime = (date: Date, node: HTMLElement) => {
+		const markTime = (date: Date, node: HTMLElement, last?: Date) => {
 			const former = replaced.get(node);
 			const separator = separators.get(node) ?? (former ? separators.get(former) : undefined);
 			separators.delete(node);
 			if (former) separators.delete(former);
-			this.#timestampRows.push(separator ? { date, node, separator } : { date, node });
+			const row: TimestampRow = { date, node };
+			if (separator) row.separator = separator;
+			if (last) row.last = last;
+			this.#timestampRows.push(row);
 		};
 		// A coding session stands where the agent started it, before the first
 		// message written after it: one line, like a message to a coworker.
@@ -1680,7 +1875,8 @@ export class ConversationView {
 		this.#liveFrom ??= conversation.projection.items.find((item) => !waiting(item))?.sequence;
 		const liveFrom = this.#liveFrom;
 		let liveStart: number | undefined;
-		for (const item of items) {
+		for (let index = 0; index < items.length; index++) {
+			const item = items[index]!;
 			if (liveStart === undefined && (liveFrom === undefined || (!waiting(item) && item.sequence >= liveFrom)))
 				liveStart = nodes.length;
 			placeSessions(item.createdAt);
@@ -1697,9 +1893,43 @@ export class ConversationView {
 						: this.#company.memberName(item.authorUserId);
 				nodes.push(message(item, author, mine));
 			} else if (item.kind === "peer_link") {
+				// Messages with coworkers in a row stand on one line, unless something stands between
+				// them: a coding session, a time separator, or the start of the live log.
+				const run: TranscriptPeerLink[] = [item];
+				let last = parseConversationTimestamp(item.createdAt);
+				for (;;) {
+					const next = items[index + run.length];
+					if (next?.kind !== "peer_link") break;
+					const at = parseConversationTimestamp(next.createdAt);
+					const session = codingSessions[nextSession];
+					if (
+						!at ||
+						!last ||
+						needsConversationTimestamp(at, last) ||
+						(session !== undefined && session.createdAt.localeCompare(next.createdAt) <= 0) ||
+						(liveStart === undefined && (liveFrom === undefined || next.sequence >= liveFrom))
+					)
+						break;
+					run.push(next);
+					last = at;
+				}
+				const own = agent?.id ?? "";
+				if (run.length > 1) {
+					index += run.length - 1;
+					const line = keep(
+						item.id,
+						JSON.stringify([run, run.map((link) => coworker(link.counterpartStaffId)), own, locale]),
+						`${zone} ${run.map((link) => when(link.createdAt)).join(" ")}`,
+						() => this.#drawPeerGroup(run, own),
+					);
+					nodes.push(line);
+					const date = parseConversationTimestamp(item.createdAt);
+					// The next separator measures from the line's last message.
+					if (date) markTime(date, line, last);
+					continue;
+				}
 				// A message between this agent and a coworker: one centered line, the coworker's
 				// figure before its name, no text; the transcript is behind it.
-				const own = agent?.id ?? "";
 				nodes.push(
 					keep(
 						item.id,
@@ -1729,6 +1959,7 @@ export class ConversationView {
 									{
 										type: "button",
 										class: "peer-chip",
+										dataset: { pairSessionId: item.pairSessionId, linkIds: item.id },
 										title: `${label} · ${fmtTime(item.createdAt)}`,
 										"aria-label": t("{label}. Open the conversation", { label }),
 										onclick: (event: MouseEvent) =>
@@ -1895,6 +2126,25 @@ export class ConversationView {
 		}
 		liveStart ??= nodes.length;
 		placeSessions(undefined);
+		// Kept while the card reads the same, so a keyboard user on it keeps focus. No time: each waits until it is
+		// applied, declined or discarded.
+		for (const proposal of proposals) {
+			const busy = discarding.includes(proposal.proposalId);
+			nodes.push(
+				keep(`proposal ${proposal.proposalId}`, JSON.stringify([proposal, busy, locale]), "", () =>
+					renderProposalCard(proposal, {
+						discarding: busy,
+						discard: () => void this.#discardProposal(proposal.proposalId),
+					}),
+				),
+			);
+		}
+		if (moreProposals > 0)
+			nodes.push(
+				keep("proposals more", locale, "", () =>
+					h("div", { class: "conversation-note", role: "note" }, t("More saved changes wait after these.")),
+				),
+			);
 		// Items gone from the thread, and messages whose element passed on, let what they held go.
 		const live = new Set(drawn.values());
 		for (const previous of this.#drawn.values()) if (!live.has(previous)) previous.message?.files?.view.dispose();
@@ -1921,6 +2171,7 @@ export class ConversationView {
 			!conversation.loading &&
 			!items.length &&
 			!codingSessions.length &&
+			!proposals.length &&
 			!conversation.error &&
 			!this.#working &&
 			!conversation.hasEarlier
@@ -1971,7 +2222,7 @@ export class ConversationView {
 		let previousDate: Date | undefined;
 		for (const row of this.#timestampRows) {
 			const separated = needsConversationTimestamp(row.date, previousDate);
-			previousDate = row.date;
+			previousDate = row.last ?? row.date;
 			if (!separated) row.separator = undefined;
 			else if (!row.separator)
 				row.separator = this.#labelSeparator(h("time", { class: "conversation-timestamp" }), row.date, now);
@@ -1986,6 +2237,7 @@ export class ConversationView {
 				: undefined;
 		const reviewInput = active instanceof HTMLInputElement ? active : undefined;
 		const reviewCard = active?.closest<HTMLElement>("[data-review-id]")?.dataset.reviewId;
+		const proposalCard = active?.closest<HTMLElement>("[data-proposal-id]")?.dataset.proposalId;
 		// Nodes already in place stay put: a live log re-reads what is taken out and put back.
 		// (replaceChildren would also drop keyboard focus, selection and an in-progress IME edit.)
 		const separatorOf = new Map<HTMLElement, HTMLTimeElement>();
@@ -2069,9 +2321,28 @@ export class ConversationView {
 					},
 				)
 			: [];
+		// A line of messages with coworkers that takes in another is drawn anew in its old one's place:
+		// a coworker new to the line springs in, and its count ticks over.
+		const joining = this.#filled
+			? liveNodes.flatMap((node) => {
+					const former = replaced.get(node);
+					if (!former?.isConnected || !node.matches(".peer-link[data-message-id]")) return [];
+					const known = new Set(
+						[...former.querySelectorAll<HTMLElement>(".peer-chip")].map((chip) => chip.dataset.pairSessionId),
+					);
+					const count = node.querySelector<HTMLElement>(".peer-count");
+					return [
+						...[...node.querySelectorAll<HTMLElement>(".peer-chip")].filter(
+							(chip) => !known.has(chip.dataset.pairSessionId),
+						),
+						...(count && count.textContent !== former.querySelector(".peer-count")?.textContent ? [count] : []),
+					];
+				})
+			: [];
 		placeChildren(this.#older, rows(olderNodes));
 		placeChildren(this.#log, rows(liveNodes));
 		for (const node of arriving) playOnce(node, "is-arriving");
+		for (const part of joining) playOnce(part, "is-joining");
 		for (const { node, card, since, height, was } of decided) {
 			if (height) foldFrom(node, height, was);
 			const now = performance.now();
@@ -2115,6 +2386,9 @@ export class ConversationView {
 		for (const item of items) if (item.kind === "member" || item.kind === "agent") this.#skills.want(item.text);
 		// A keyboard user reading the row keeps it through a state change or a new message.
 		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
+		// And one on a coworker's chip keeps it as its line takes in another message.
+		if (active && !active.isConnected && active.matches(".peer-link[data-message-id] .peer-chip"))
+			this.#sameChip(active)?.focus({ preventScroll: true });
 		// An approval card keeps the keyboard through a redraw: the Always allow editor a member is
 		// typing in (caret and all), else the card itself, also once it is answered.
 		const editor = reviewInput?.dataset.reviewRule
@@ -2138,6 +2412,17 @@ export class ConversationView {
 			if (card) {
 				if (!card.contains(document.activeElement)) card.focus({ preventScroll: true });
 				this.#focusReview = undefined;
+			}
+		}
+		// A proposal card redrawn (its Discard button sending) keeps the keyboard; once it is gone, the thread has it.
+		if (proposalCard && active && !active.isConnected) {
+			const card = [...this.#messages.querySelectorAll<HTMLElement>("[data-proposal-id]")].find(
+				(element) => element.dataset.proposalId === proposalCard,
+			);
+			if (card) card.focus({ preventScroll: true });
+			else {
+				this.#messages.tabIndex = -1;
+				this.#messages.focus({ preventScroll: true });
 			}
 		}
 		this.#pinToBottom();
@@ -2200,7 +2485,13 @@ export class ConversationView {
 				item.kind === "agent"
 					? markdownBubbles(item.text)
 					: item.text || !item.attachmentCount
-						? [h("div", { class: "text" }, ...(item.text ? this.#withMentions(item.text) : [t("(empty)")]))]
+						? [
+								h(
+									"div",
+									{ class: "text" },
+									...(item.text ? this.#withMentions(item.text, item.quotes) : [t("(empty)")]),
+								),
+							]
 						: []
 			).map((part) => h("div", { class: "bubble" }, part));
 			// Marked before they join the log, which then reads them once.
@@ -2344,6 +2635,79 @@ export class ConversationView {
 		);
 	}
 
+	/** Messages with coworkers in a row: "Messaged (figure) Nova and (figure) Ada · 3 messages", one
+	 * centered line with a chip for each coworker that opens the two agents' transcript. From three
+	 * coworkers on, a chip is the figure alone, with the name in its label. */
+	#drawPeerGroup(run: readonly TranscriptPeerLink[], own: string): HTMLElement {
+		// Each coworker once, where it first comes; its chip has the time of its last message.
+		const latest = new Map<string, TranscriptPeerLink>();
+		for (const link of run) latest.set(link.counterpartStaffId, link);
+		const coworkers = [...latest.values()].map((link) => {
+			const staff = this.#company.staffById(link.counterpartStaffId);
+			// The messages its chip stands for, so a focused chip is found again if the line splits.
+			const ids = run.filter((other) => other.counterpartStaffId === link.counterpartStaffId).map(({ id }) => id);
+			return { link, staff, name: staff?.displayName ?? t("a coworker"), ids: ids.join(" ") };
+		});
+		const out = run.every((link) => link.direction === "out");
+		const inward = run.every((link) => link.direction === "in");
+		// Notes left for a next turn, as on one message's line.
+		const held = run.every((link) => link.held);
+		const [before = "", after = ""] = (
+			out
+				? held
+					? t("Left notes for {names}")
+					: t("Messaged {names}")
+				: inward
+					? held
+						? t("Notes from {names}")
+						: t("Messages from {names}")
+					: t("Talked with {names}")
+		).split("{names}");
+		const list = new Intl.ListFormat(presentationLocale(), { style: "long", type: "conjunction" });
+		const names = coworkers.map(({ name }) => name);
+		const count = run.length > coworkers.length ? t("{count} messages", { count: run.length }) : "";
+		const compact = coworkers.length > 2;
+		const chips = coworkers.map(({ link, staff, name, ids }) =>
+			h(
+				"button",
+				{
+					type: "button",
+					class: compact ? "peer-chip figure-only" : "peer-chip",
+					dataset: { pairSessionId: link.pairSessionId, linkIds: ids },
+					title: `${name} · ${fmtTime(link.createdAt)}`,
+					"aria-label": t("{label}. Open the conversation", { label: name }),
+					onclick: (event: MouseEvent) =>
+						this.#openPair(
+							link.pairSessionId,
+							[link.counterpartStaffId, own],
+							event.currentTarget as HTMLElement,
+						),
+				},
+				agentFigure(staff, name, { size: 16 }),
+				compact ? null : h("span", null, name),
+			),
+		);
+		const words = (text: string) => (text.trim() ? h("span", { class: "peer-words" }, text.trim()) : null);
+		// The chips stand where the language puts the names, with its own "and" between them.
+		let next = 0;
+		const parts = compact
+			? chips
+			: list.formatToParts(names).map((part) => (part.type === "element" ? chips[next++]! : words(part.value)));
+		return h(
+			"div",
+			{
+				class: "peer-link peer-group",
+				role: "group",
+				"aria-label": `${before}${list.format(names)}${after}${count ? ` · ${count}` : ""}`,
+				dataset: { messageId: run[0]!.id },
+			},
+			words(before),
+			...parts,
+			words(after),
+			count ? h("span", { class: "peer-count" }, `· ${count}`) : null,
+		);
+	}
+
 	/** The sessions still going sit beside the agent in the header, each a figure
 	 * that works while its session works; the figures are kept across renders so
 	 * their motion runs on. */
@@ -2451,6 +2815,7 @@ export class ConversationView {
 			askAgent: this.#actions.sendMessage
 				? (text: string) => {
 						this.#closeCodingSession();
+						this.#edits.declare(0, this.#composer.value.length);
 						this.#composer.value = text;
 						this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
 						this.#composer.focus();

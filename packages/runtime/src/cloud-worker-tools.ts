@@ -1,5 +1,11 @@
 import type { CloudCompanyPathControl, CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
 import type { CloudFolderTodoChange, CloudFolderTodoListing, CloudFolderTodos } from "./cloud-folder-todos.ts";
+import type {
+	CloudFolderWorkerChange,
+	CloudFolderWorkerReport,
+	CloudFolderWorkerStatus,
+	CloudFolderWorkers,
+} from "./cloud-folder-workers.ts";
 import {
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -197,6 +203,20 @@ const CLOUD_WORKER_TOOL_DESCRIPTION_WITHOUT_MACHINES = CLOUD_WORKER_TOOL_DESCRIP
 	"",
 );
 
+/** A folder-v2 agent's workers are folders of its todos (F2-5b): the key names the folder, and status reads one todo's
+ * workers. Coding sessions and their archive work there too (C3b). */
+function folderWorkerDescription(description: string): string {
+	return description
+		.replace(
+			"workerKey is the short name you give this worker, such as competitor-prices;",
+			"workerKey is the short name you give this worker, such as competitor-prices, and the name of its folder in the todo's folder (lowercase letters, digits and single hyphens), which holds brief.md (what it was asked) and results.md (what it reported, and your decision);",
+		)
+		.replace(
+			"status lists your workers, newest first, as many as fit one result, each with the start of its summary: without todoKey, those of open todos and any that changed in the last week. Filter it with todoKey, state",
+			"status lists the workers of one todo (name its todoKey), newest first, as many as fit one result, each with the start of its summary. Filter it with state",
+		);
+}
+
 export const CLOUD_WORKER_REPORT_TOOL_DESCRIPTION =
 	"Report your result to your parent. This is your only way out: you cannot speak to anyone, and a run that ends without a report counts as failed. Report exactly once, when the definition of done in wake.payload.dispatch is met or when you cannot continue. " +
 	"outcome: succeeded (the definition of done is met), blocked (you need something only your parent can give; say exactly what in needs), failed (it cannot be done; say why). " +
@@ -220,8 +240,8 @@ export function cloudWorkerTools(
 	gateway: Gateway,
 	wake: Pick<CloudWakeEnvelope, "kind" | "source">,
 	/** Whether this run's workers can use company machines (only when a node serves them); and, for a folder-v2
-	 * run, its todos as files. */
-	options: { machines?: boolean; folderTodos?: CloudFolderTodos } = {},
+	 * run, its todos and workers as files. */
+	options: { machines?: boolean; folderTodos?: CloudFolderTodos; folderWorkers?: CloudFolderWorkers } = {},
 ): readonly CloudNativeTool[] {
 	const admitted = parseCloudNativeToolBinding(binding),
 		expected = Object.freeze({ ...identity });
@@ -382,6 +402,9 @@ export function cloudWorkerTools(
 			async execute(value, context) {
 				assertContext(context);
 				const request = value as Record<string, unknown>;
+				// A folder-v2 worker reports in its results file; the folder core decides the save.
+				if (options.folderWorkers)
+					return options.folderWorkers.report(request as unknown as CloudFolderWorkerReport, context);
 				const result = await call("qorpera_report_worker_result", request, context.signal);
 				if (result?.outcome !== request.outcome) throw new Error("Work receipt differs");
 				return receipt(result, "qorpera.worker-report-receipt/v1", context);
@@ -490,7 +513,9 @@ export function cloudWorkerTools(
 	const worker: CloudNativeTool = {
 		name: "manage_worker" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: options.machines ? CLOUD_WORKER_TOOL_DESCRIPTION : CLOUD_WORKER_TOOL_DESCRIPTION_WITHOUT_MACHINES,
+		description: (options.folderWorkers ? folderWorkerDescription : (text: string) => text)(
+			options.machines ? CLOUD_WORKER_TOOL_DESCRIPTION : CLOUD_WORKER_TOOL_DESCRIPTION_WITHOUT_MACHINES,
+		),
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -637,6 +662,11 @@ export function cloudWorkerTools(
 		async execute(value, context) {
 			assertContext(context);
 			const request = value as Record<string, unknown>;
+			// A folder-v2 agent's workers are folders of its todos; the folder core decides each save.
+			if (options.folderWorkers)
+				return request.action === "status"
+					? options.folderWorkers.status(request as CloudFolderWorkerStatus, context, fitsOneResult)
+					: options.folderWorkers.change(request as unknown as CloudFolderWorkerChange, context);
 			const result = await call("qorpera_manage_agent_worker", request, context.signal);
 			if (request.action === "status") {
 				if (
@@ -668,6 +698,14 @@ export function cloudWorkerTools(
 export interface CloudAgentOpenWork {
 	todos: { open: number; blocked: number };
 	workers: { active: number; blocked: number };
+	/** Commands the platform stopped on the agent's computer, told once in their conversation. */
+	computerStopped?: { command: string; startedAt: string; endedAt: string; reason: string }[];
+	/** Machine commands, and containers on a machine the agent started, that a stop or restart of the machine ended,
+	 * told once in their conversation. */
+	machineStopped?: (
+		| { machine: string; work: "command"; command: string; startedAt: string; endedAt: string; reason: string }
+		| { machine: string; work: "containers"; endedAt: string; reason: string }
+	)[];
 }
 
 export async function describeCloudAgentOpenWork(
@@ -688,9 +726,71 @@ export async function describeCloudAgentOpenWork(
 	};
 	const todos = object(result.todos, ["open", "blocked"], ["open", "blocked"]);
 	const workers = object(result.workers, ["active", "blocked"], ["active", "blocked"]);
+	let computerStopped: CloudAgentOpenWork["computerStopped"];
+	if (result.computerStopped !== undefined) {
+		if (
+			!Array.isArray(result.computerStopped) ||
+			result.computerStopped.length < 1 ||
+			result.computerStopped.length > 32
+		)
+			throw new Error("Open work differs");
+		computerStopped = result.computerStopped.map((item) => {
+			const stopped = object(
+				item,
+				["command", "startedAt", "endedAt", "reason"],
+				["command", "startedAt", "endedAt", "reason"],
+			);
+			if (
+				typeof stopped.command !== "string" ||
+				typeof stopped.startedAt !== "string" ||
+				typeof stopped.endedAt !== "string" ||
+				!["slept", "closed", "paused", "pressure", "lost"].includes(stopped.reason as string)
+			)
+				throw new Error("Open work differs");
+			return {
+				command: stopped.command,
+				startedAt: stopped.startedAt,
+				endedAt: stopped.endedAt,
+				reason: stopped.reason as string,
+			};
+		});
+	}
+	let machineStopped: CloudAgentOpenWork["machineStopped"];
+	if (result.machineStopped !== undefined) {
+		if (
+			!Array.isArray(result.machineStopped) ||
+			result.machineStopped.length < 1 ||
+			result.machineStopped.length > 32
+		)
+			throw new Error("Open work differs");
+		machineStopped = result.machineStopped.map((item) => {
+			const work = (item as { work?: unknown } | null)?.work;
+			const keys =
+				work === "command"
+					? ["machine", "work", "command", "startedAt", "endedAt", "reason"]
+					: ["machine", "work", "endedAt", "reason"];
+			const stopped = object(item, keys, keys);
+			if (
+				(work !== "command" && work !== "containers") ||
+				keys.some((key) => typeof stopped[key] !== "string") ||
+				!["slept", "hours", "stopped", "lost"].includes(stopped.reason as string)
+			)
+				throw new Error("Open work differs");
+			const shared = {
+				machine: stopped.machine as string,
+				endedAt: stopped.endedAt as string,
+				reason: stopped.reason as string,
+			};
+			return work === "command"
+				? { ...shared, work, command: stopped.command as string, startedAt: stopped.startedAt as string }
+				: { ...shared, work };
+		});
+	}
 	return {
 		todos: { open: count(todos.open), blocked: count(todos.blocked) },
 		workers: { active: count(workers.active), blocked: count(workers.blocked) },
+		...(computerStopped ? { computerStopped } : {}),
+		...(machineStopped ? { machineStopped } : {}),
 	};
 }
 

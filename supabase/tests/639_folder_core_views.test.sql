@@ -207,7 +207,7 @@ end $$;
 
 
 -- A desktop held by a run: the run's authority within the company-wide view. After the run's release it is detached,
--- saves as the agent and member, and refuses a unit that needs review.
+-- saves as the agent and member, and parks a unit that needs review (P40).
 do $$
 declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); d jsonb; r jsonb; c public.qorpera_folder_commits%rowtype;
 	a jsonb := pg_temp.stage('beta'); e jsonb; u jsonb; g uuid;
@@ -240,7 +240,8 @@ begin
 	perform pg_temp.hold(null);
 	r := pg_temp.vcommit(d, 'desk-detached-1', jsonb_build_array(jsonb_build_object('op','write','path','shared/e.txt','file',a),
 		jsonb_build_object('op','delete','path','shared/d.txt','expectedVersion', pg_temp.read('shared/d.txt') -> 'entry' ->> 'version')));
-	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'denied', 'review_required');
+	-- P40 (20260930074000): the delete that needs review is parked for the agent's next run with this member.
+	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'waiting_for_review', 'parked');
 	c := pg_temp.last_commit(r);
 	-- A view belongs to its environment: another folder of the same company does not take it (a detached view, so no
 	-- run's own checks stand in front).

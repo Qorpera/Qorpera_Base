@@ -1,0 +1,15 @@
+# Qorpera computers' networks: the firewall of qorpera-computer-network.nft,
+# then forwarding, before the office service starts shells and desktops.
+# Pulled in by qorpera-company-computer.service (Wants=). Without it the
+# plumber refuses and computers start without a network, never with an
+# unfiltered one. Stopping it removes every computer's link first.
+[Unit]
+Description=Qorpera computers' network firewall
+After=nftables.service
+Before=qorpera-company-computer.service qorpera-computer-plumb.socket
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/qorpera/qorpera-computer-plumb --up
+ExecStop=/usr/local/lib/qorpera/qorpera-computer-plumb --down
