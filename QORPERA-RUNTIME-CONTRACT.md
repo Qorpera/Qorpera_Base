@@ -5111,8 +5111,9 @@ own texts below carries a note "Amended 2026-10-06" in place.
    - Writes, moves and deletes at or under a tree root by members, agents or machines are refused (`platform_only`).
      So is a move or a delete of `agents/<agent-name>/memory/`, which holds the thread's root. A move counts by its
      source and its target.
-   - A tree moves or goes only with its owning folder: an agent rename, a group folder's delete or restore, or
-     erasure.
+   - A tree moves or goes only with its owning folder: an agent rename, a group folder's delete, or erasure. A
+     member's restore of the owning folder leaves out every path under a tree root (a unit that spells one is
+     refused whole), so it brings back neither the tree nor its run logs; the next run builds the tree again.
    - Reads, listings, search and copies out of a tree stay ordinary. The notebook's own files stay ordinary too.
    - Writes to a tree wake no one. Their change events are still recorded, but no subscription matches a path at
      or under a tree root, run logs included (the design, §4.3 and §4.5).
