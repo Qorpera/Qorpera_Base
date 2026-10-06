@@ -37,9 +37,11 @@ import { isPhoneLayout } from "../../ui/layout.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { presentationLocale, presentationTimeZone, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
+import { CompanyMail, type MailList, type MailListRequest } from "../company-mail.ts";
 import { type BoardLane, boardLanes } from "../interface-board.ts";
 import { type ClaimVerb, claimFailure, claimTableCell, type InterfaceWrites } from "../interface-claims.ts";
 import type { FolderProblem } from "../interface-folder.ts";
+import { isMailSource, mailList, mailRequest, mailRows, openedMailRow, rowThread } from "../interface-mail.ts";
 import {
 	blockButtons,
 	companyInterface,
@@ -60,6 +62,7 @@ import {
 	viewBlocks,
 } from "../interfaces.ts";
 import type { QuotedText } from "../quotes.ts";
+import { type ListText, mailListFooter, mailListText, mailThreadParts, outside, unreadMark } from "./interface-mail.ts";
 import { roleLabel } from "./team.ts";
 
 /** What each container last showed, and the element that shows it. The page area is shared with every other
@@ -158,6 +161,22 @@ function columnLabel(source: string, column: string): string {
 			title: () => t("Title"),
 			from: () => t("From"),
 			due: () => t("Due"),
+			...(source === "mail" || source === "mail_addresses"
+				? {
+						thread: () => t("Thread"),
+						address: () => t("Address"),
+						from_name: () => t("From"),
+						from_address: () => t("From address"),
+						subject: () => t("Subject"),
+						last_at: () => t("Last message"),
+						state: () => t("State"),
+						handled_by: () => t("Handled by"),
+						direction: () => t("Direction"),
+						unread: () => t("Unread"),
+						routine: () => t("Routine"),
+						last_7_days: () => t("Last 7 days"),
+					}
+				: {}),
 			...(source === "members"
 				? {
 						id: () => t("Member"),
@@ -324,6 +343,8 @@ interface DrawnBlock {
 	readonly problems: readonly FolderProblem[];
 	/** A board's parts drawn and its lanes. */
 	readonly board?: { readonly parts: readonly DrawnPart[]; readonly lanes: readonly BoardLane[] };
+	/** A block from `mail`: the list its view reads (undefined while it is being read). */
+	readonly mail?: { readonly request: MailListRequest; readonly list: MailList | undefined };
 }
 
 /** One board part as drawn: its table's rows, as the block's query keeps them, and what the member may do with them. */
@@ -437,7 +458,10 @@ export function renderInterfaceFile(
 	) => {
 		const time = interfaceSource(company, source)?.time ?? null;
 		// A view built from another narrows the rows first; the block's own query then filters, orders and limits them.
-		let rows = interfaceRows(company, source) ?? [];
+		// A `mail` block reads the threads its view asks the threads call for, and narrows them here like any rows.
+		let rows =
+			(source === "mail" ? mailRows(company, mailRequest(narrow, query.where)) : interfaceRows(company, source)) ??
+			[];
 		for (const where of narrow) {
 			const kept = new Set(
 				queryInterfaceRows(
@@ -458,7 +482,9 @@ export function renderInterfaceFile(
 		).flatMap((row) => byRow.get(row) ?? []);
 	};
 	const details = new Set(
-		view.blocks.flatMap(({ block }) => (block.kind === "detail" && block.id !== null ? [block.id] : [])),
+		view.blocks.flatMap(({ block }) =>
+			(block.kind === "detail" || block.kind === "mail") && block.id !== null ? [block.id] : [],
+		),
 	);
 	const nameOf = namesFor("");
 	// A board's lanes are the company's members now; a holder who left is named where presence still knows them.
@@ -495,6 +521,7 @@ export function renderInterfaceFile(
 		);
 		return { parts, lanes };
 	};
+	const mailOf = (request: MailListRequest) => ({ request, list: mailList(company, request) });
 	const blocks: DrawnBlock[] = view.blocks.map((shown, index) => {
 		const { block } = shown;
 		const key = block.id ?? `${view.name}#${index}`;
@@ -513,10 +540,18 @@ export function renderInterfaceFile(
 			readable: read?.readable ?? true,
 			problems: read?.problems ?? [],
 			...(board ? { board } : {}),
+			...(source === "mail" && block.kind !== "mail"
+				? { mail: mailOf(mailRequest(shown.narrow, block.query.where)) }
+				: {}),
 		};
-		if (block.kind !== "detail" || block.id === null) return drawn;
+		if ((block.kind !== "detail" && block.kind !== "mail") || block.id === null) return drawn;
 		const opened = page.open[block.id];
-		const open = opened === undefined ? undefined : rows.find((row) => row.key === opened);
+		// An open thread stays open when its view's list no longer holds it (a send answered under "Waiting for you").
+		const open =
+			opened === undefined
+				? undefined
+				: (rows.find((row) => row.key === opened) ??
+					(block.kind === "mail" ? openedMailRow(company, opened) : undefined));
 		return { ...drawn, ...(open ? { open } : {}) };
 	});
 	// A part-width block whose neighbours have no source today stands alone, so it takes the whole row.
@@ -567,6 +602,7 @@ export function renderInterfaceFile(
 		Object.entries(page.claiming).filter(([card, claim]) => !claim.landed || cards.get(card) === claim.was),
 	);
 	const hasOpen = blocks.some((drawn) => drawn.open !== undefined);
+	const readsMail = blocks.some(({ source }) => isMailSource(source));
 	// The whole definition, so a change to anything drawn from it (a table's columns, a list's line, a button's
 	// text) draws the page again with the handlers of the new one, even when the rows and titles stay the same.
 	const key = JSON.stringify([
@@ -594,6 +630,8 @@ export function renderInterfaceFile(
 		widths,
 		agentLooks,
 		memberNames,
+		// The company's mail as read, where a block draws it: its lists' reads, an open thread and its answers.
+		readsMail ? (state.mail ?? null) : null,
 		// Each block's source as drawn beside its rows: whether it can be read (a table that recovers with no rows
 		// still draws again) and what its columns hold, which a table's definition says outside the page's.
 		blocks.map(({ block, source, rows, open, readable, problems, board }) => [
@@ -697,6 +735,16 @@ export function renderInterfaceFile(
 		moveFocus,
 	);
 	if (errorFirst) page.errorShown = true;
+	// The mail this page draws is read, and read again while it stays on screen (app/company-mail.ts).
+	if (readsMail)
+		CompanyMail.of(company)?.watch(
+			blocks.flatMap(({ mail }) => (mail ? [mail.request] : [])),
+			blocks.flatMap(({ block, open }) => {
+				const thread = block.kind === "mail" && open ? rowThread(open.row) : undefined;
+				return thread === undefined ? [] : [thread];
+			}),
+			context.stillShown,
+		);
 }
 
 /** The page's views as tabs. A view changes the blocks shown and closes what was open; the route stays. */
@@ -770,6 +818,7 @@ interface BlockContext {
 function drawBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 	if (drawn.block.kind === "table") return tableBlock(drawn, context);
 	if (drawn.block.kind === "detail") return detailBlock(drawn, context);
+	if (drawn.block.kind === "mail") return mailBlock(drawn, context);
 	if (drawn.block.kind === "board") return boardBlock(drawn, context);
 	return listBlock(drawn, context);
 }
@@ -815,11 +864,41 @@ function cellText(drawn: DrawnBlock, column: string, value: TableValue | undefin
 	if (typeof value === "string" && INSTANT.test(value)) return fmtTime(value) || value;
 	if (drawn.source === "waiting" && column === "kind" && typeof value === "string") return kindLabel(value);
 	if (drawn.source === "members" && column === "picture") return "";
+	if (drawn.source === "mail" && (column === "state" || column === "direction") && typeof value === "string")
+		return mailWord(value);
 	if (drawn.source === "members" && column === "role" && typeof value === "string") {
 		const role = roleLabel(value as HostedProfileRole);
 		return role.charAt(0).toLocaleUpperCase(presentationLocale()) + role.slice(1);
 	}
 	return drawn.nameOf(column, value);
+}
+
+/** A thread's state and direction, in the member's language. */
+function mailWord(value: string): string {
+	const word: Record<string, () => string> = {
+		new: () => t("New"),
+		handled: () => t("Handled"),
+		waiting: () => t("Waiting"),
+		received: () => t("Received"),
+		sent: () => t("Sent"),
+	};
+	return word[value]?.() ?? value;
+}
+
+/** Whether a template fills in a column that carries outside content in its source (§4): what it shows is marked. */
+function fillsOutside(template: string | null, source: string): boolean {
+	const columns = interfaceOutsideColumns(source);
+	return (
+		template !== null &&
+		columns.length > 0 &&
+		[...template.matchAll(TEMPLATE_COLUMN)].some((match) => columns.includes(match[1] ?? ""))
+	);
+}
+
+/** A list's words as drawn, with the outside-content mark when they hold any. */
+function listWords(tag: "strong" | "small", words: ListText, id?: string): HTMLElement {
+	const element = h(tag, id ? { id } : null, words.text);
+	return words.outside ? outside(element) : element;
 }
 
 /** A member's picture, for the `members` source's `picture` column (their account id). */
@@ -849,18 +928,29 @@ function listBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 	const items = rows.map((item) => {
 		const { row, href, live } = item;
 		const agentId = block.figure ? row[block.figure] : undefined;
-		const line = fillInterfaceText(block.line ?? "{title}", row, nameOf);
-		const sub = block.sub ? fillInterfaceText(block.sub, row, nameOf) : "";
+		const template = block.line ?? "{title}";
+		// What a line fills in from outside content is marked as such; a mail row says who wrote when it names nobody.
+		const filled = {
+			line: { text: fillInterfaceText(template, row, nameOf), outside: fillsOutside(template, drawn.source) },
+			sub: {
+				text: block.sub ? fillInterfaceText(block.sub, row, nameOf) : "",
+				outside: fillsOutside(block.sub, drawn.source),
+			},
+		};
+		const { line, sub } =
+			drawn.source === "mail" ? mailListText(context.company, row, filled.line, filled.sub) : filled;
 		const status = block.status ? cellText(drawn, block.status, row[block.status]) : "";
 		const byAgent = typeof agentId === "string" && block.figure === "agent";
 		const lineId = domId("line", key, item.key);
+		const unread = drawn.source === "mail" && row.unread === true;
 		const body = [
+			unread ? unreadMark() : null,
 			typeof agentId === "string" ? h("span", { class: "interface-item-figure" }, context.figureOf(agentId)) : null,
 			h(
 				"span",
 				{ class: "interface-item-copy" },
-				h("strong", { id: lineId }, byAgent ? nameOf("agent", agentId) : line),
-				byAgent ? h("small", null, line) : sub ? h("small", null, sub) : null,
+				byAgent ? h("strong", { id: lineId }, nameOf("agent", agentId)) : listWords("strong", line, lineId),
+				byAgent ? listWords("small", line) : sub.text ? listWords("small", sub) : null,
 			),
 			status ? h("span", { class: "interface-item-status" }, status) : null,
 			live ? h("span", { class: "interface-dots", "aria-hidden": "true" }, h("i"), h("i"), h("i")) : null,
@@ -883,19 +973,26 @@ function listBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 					? h("a", { class: "interface-item", href, "data-focus-key": `item:${key}:${item.key}` }, ...body)
 					: h("div", { class: "interface-item" }, ...body);
 		const actions = rowButtons(buttons, item, drawn, context, lineId);
-		return h("li", null, actions ? h("div", { class: "interface-item-row" }, main, actions) : main);
+		return h(
+			"li",
+			unread ? { class: "is-unread" } : null,
+			actions ? h("div", { class: "interface-item-row" }, main, actions) : main,
+		);
 	});
+	// A mail list says it is being read, or why it can't be, instead of being empty; then whether older mail is there.
+	const reading = drawn.mail !== undefined && drawn.mail.list?.status !== "ready";
 	return blockFrame(
 		block,
 		key,
-		cards ? " interface-cards" : "",
+		`${cards ? " interface-cards" : ""}${drawn.source === "mail" ? " interface-mail-list" : ""}`,
 		block.title,
 		sourceNote(drawn),
 		items.length
 			? h("ul", { class: "interface-list" }, ...items)
-			: drawn.readable
+			: drawn.readable && !reading
 				? h("p", { class: "interface-empty" }, t("Nothing here right now."))
 				: null,
+		drawn.mail ? mailListFooter(context.company, drawn.mail.request, drawn.mail.list, key) : null,
 	);
 }
 
@@ -930,6 +1027,7 @@ function tableBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		});
 	}
 	const opened = opens === null ? undefined : context.page.open[opens];
+	const outsideColumns = interfaceOutsideColumns(source);
 	const header = h(
 		"tr",
 		null,
@@ -980,7 +1078,8 @@ function tableBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 						value || t("Open"),
 					),
 				);
-			return h("td", index === 0 ? { id: lineId } : null, memberPicture(drawn, column, item.row) ?? value);
+			const cell = h("td", index === 0 ? { id: lineId } : null, memberPicture(drawn, column, item.row) ?? value);
+			return value && outsideColumns.includes(column) ? outside(cell) : cell;
 		});
 		const actions = rowButtons(buttons, item, drawn, context, lineId);
 		return h("tr", { class: isOpen ? "is-open" : null }, ...cells, actions ? h("td", null, actions) : null);
@@ -1071,6 +1170,57 @@ function detailBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		),
 		typeof text === "string" && text ? h("div", { class: "interface-detail-text" }, markdown(text)) : null,
 		actions,
+	);
+}
+
+/** A `mail` block (step I5c): the thread the list opened, drawn by views/interface-mail.ts, with a way back on a
+ * phone and the block's message buttons. Its `answer` is drawn on each waiting send, not as a button that leads
+ * away. */
+function mailBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
+	const { block, open, key, nameOf } = drawn;
+	const target = block.id ?? "";
+	if (!open)
+		return blockFrame(
+			block,
+			key,
+			" interface-detail interface-mail is-empty",
+			block.title === null ? null : fillInterfaceText(block.title, {}, nameOf),
+			h("p", { class: "interface-empty" }, t("Choose one to see it here.")),
+		);
+	const lineId = domId("line", key, open.key);
+	const buttons = blockButtons(context.file, block);
+	const actions = rowButtons(
+		buttons.filter((drawnButton) => drawnButton.verb !== "answer"),
+		open,
+		drawn,
+		context,
+		lineId,
+	);
+	return blockFrame(
+		block,
+		key,
+		" interface-detail interface-mail is-open",
+		null,
+		h(
+			"button",
+			{
+				type: "button",
+				class: "interface-back",
+				"data-focus-key": `back:${target}`,
+				onclick: () => openRow(context, target, null),
+			},
+			t("Back"),
+		),
+		...mailThreadParts({
+			company: context.company,
+			row: open.row,
+			lineId,
+			blockKey: key,
+			actions,
+			answerable: buttons.some((drawnButton) => drawnButton.verb === "answer"),
+			canWrite: context.canWrite,
+			agentName: (agentId, given) => context.company.staffById(agentId)?.displayName ?? given ?? agentId,
+		}),
 	);
 }
 

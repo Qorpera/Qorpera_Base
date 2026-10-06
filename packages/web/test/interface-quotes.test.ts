@@ -8,17 +8,19 @@ import type { HostedStaffAgent } from "../src/cloud/types.ts";
 import { h } from "../src/ui/dom.ts";
 import { fixture, id, profileA, session, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
 
-/* The message button fills outside values in as quotes (Interfaces step I5d-4). The web reads no `mail` source yet
- * (Q1's member mail read arrives with the Mailbox, I5c), so these tests give the page fixture mail rows in the shape
- * of `qorpera_member_mail_threads`: the row's `thread` is the record a quote names. */
+/* The message button fills outside values in as quotes (Interfaces step I5d-4). These tests give the page fixture
+ * mail rows, rows of any shape, in place of the member mail read (interface-mail.test.ts draws the Mailbox from it):
+ * the row's `thread` is the record a quote names. */
 
 const mail = vi.hoisted(() => ({ rows: [] as InterfaceRow[] }));
+vi.mock("../src/app/interface-mail.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/app/interface-mail.ts")>();
+	return { ...actual, mailRows: () => mail.rows };
+});
 vi.mock("../src/app/interfaces.ts", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../src/app/interfaces.ts")>();
 	return {
 		...actual,
-		interfaceRows: (company: CompanyController, source: string) =>
-			source === "mail" ? mail.rows : actual.interfaceRows(company, source),
 		// Every block is drawn, the mail list included.
 		viewBlocks: (view: { blocks: unknown[] }) => view.blocks,
 	};

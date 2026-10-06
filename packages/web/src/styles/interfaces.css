@@ -238,3 +238,36 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 	.interface-emblem .emblem-beat, .interface-live-dot, .interface-dots i { animation: none; }
 	.interface-lane, .interface-card, .interface-card.is-settling { transition: none; }
 }
+
+/* The Mailbox (step I5c). Words from outside the company carry a quiet tint, the way a quote does in a message. A
+ * thread with unread mail has a dot and a stronger line. An open thread is the email card the conversations use, a
+ * size smaller; on a phone it is the next screen, as a detail is. An interface's badge on its rail row is a count. */
+.interface-outside { padding: 0 3px; border-radius: 5px; background: var(--hover); box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.interface-table td.interface-outside { padding: 7px 8px; border-radius: 0; }
+.review-email-body.interface-outside { padding: 13px 16px; border-radius: 0; }
+.interface-unread { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--composer-accent); }
+.interface-mail-list li:not(.is-unread) .interface-item { padding-left: 22px; }
+.interface-mail-list li.is-unread strong { font-weight: 700; }
+.interface-mail-older { display: grid; justify-items: start; gap: 4px; margin-top: 8px; }
+.interface-mail-head { display: grid; gap: 4px; margin-bottom: 12px; }
+.interface-block h2.interface-mail-subject { justify-self: start; margin: 0; color: var(--text); font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+.interface-mail-meta { margin: 0; color: var(--text-muted); font-size: 12.5px; overflow-wrap: anywhere; }
+.interface-mail-head .interface-actions { margin-top: 4px; }
+.interface-mail-messages { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.interface-mail .interaction-card.email-draft-card { width: 100%; margin-top: 0; padding: 12px; border-radius: 16px; }
+.interface-mail .interface-mail-waiting { margin-top: 10px; }
+.interface-mail .email-draft-heading { flex-wrap: wrap; gap: 6px 10px; margin-bottom: 8px; }
+.interface-mail .email-draft-heading h3 { min-width: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.interface-mail-when { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.interface-mail .email-draft-status { padding: 2px 9px; font-size: 12px; }
+.interface-mail .email-draft-row { min-height: 0; margin: 0 12px; padding: 6px 0; font-size: 13px; }
+.interface-mail .email-draft-row .interface-outside { color: var(--text); }
+.interface-mail .review-email .review-email-body { padding: 10px 12px; font-size: 13.5px; }
+.interface-mail .email-draft-actions .btn { min-height: 32px; padding: 5px 11px; font-size: 13.5px; }
+.interface-mail-message.is-account .email-draft-heading { margin-bottom: 0; }
+.interface-mail-notes { margin: 8px 2px 0; font-size: 12px; }
+.rail-count { width: auto; min-width: 18px; padding: 0 5px; border-radius: 9px; box-sizing: border-box; }
+@media (max-width: 760px) {
+	.interface-mail .email-draft-heading { flex-direction: column; align-items: flex-start; }
+	.interface-mail .email-draft-row { flex-direction: column; align-items: flex-start; gap: 2px; }
+}
