@@ -69,6 +69,17 @@ itself: check that `findmnt --target <storageRoot>` names `/srv/qorpera/canonica
 the folder holds profile folders. `RequiresMountsFor=/srv/qorpera/canonical` covers it. A share that is not mounted
 fails reads as unavailable (the company's profile folder is missing), so a page never looks empty.
 
+**Writes through the mount (F3 step 3, `deploy/first-node/RUNTIME-FOLDER-WRITES.md`)** are off until both of these:
+- `"gatewayUrl": "https://<node 1's object gateway origin>"` in `config.json`, and the gateway's folder-service token
+  (`QORPERA_OBJECT_GATEWAY_FOLDER_SERVICE_TOKEN` on the gateway, #859) at `/etc/qorpera-folder-service/gateway-token`
+  (0400), loaded by a drop-in `LoadCredential=qorpera-folder-gateway-token:/etc/qorpera-folder-service/gateway-token`
+  (the unit does not name it, so a node without writes needs no file);
+- a mount with `"write": true`, and for a desktop's save rule `"quietMs": 2000` (500–60000): its pending changes are
+  published that long after the last change; without it, only when the machine asks (`qorpera-folder publish`).
+
+Only a member's or the platform's operator mount writes in step 3; core views stay read-only until steps 4–6. Writes
+need P17's conflict copies and their erasure live (#783, #798), and step 3a (#855) for big files' chunks.
+
 **Reading the objects.** The gateway writes them 0600, so the service reads them as the gateway's account:
 `qorpera-objects`, a system account with the same uid and gid on both nodes (no shell, no home, no other groups, no
 sudo, not a caller of the node's root helper). The gateway runs as it too. The unit keeps `ProtectSystem=strict` with
