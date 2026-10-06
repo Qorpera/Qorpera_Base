@@ -62,12 +62,21 @@ set role authenticated;
 select pg_temp.plan764_expect(pg_temp.plan764_try(format(
 	'select public.qorpera_set_chatgpt_plan_work_while_away(%L,%L,true)::text',
 	'16000000-0000-4000-8000-000000000010', pg_temp.r768('plan'))), 'ok', 'the member turns on work while away');
+-- A run on the plan, as the member's conversation on it pays for (20260930095000: an agent's routine is prepared only
+-- on the login its run pays with; the fixture's run, paid by the capsule login that is gone, prepares nothing).
+select set_config('qorpera_test.r768_plan_chat', public.qorpera_create_member_execution_sponsor(
+	'16000000-0000-4000-8000-000000000010', '76800000-0000-4000-8000-000000000009', pg_temp.r768('plan'),
+	(current_setting('qorpera_test.plan764_last')::jsonb ->> 'version')::bigint, false)::text, false);
 reset role;
 do $$
 declare v_run public.qorpera_execution_runs%rowtype; v_binding uuid; v_version bigint;
 begin
 	select * into strict v_run from public.qorpera_execution_runs
 	where id = (current_setting('qorpera_test.plan764_binding')::jsonb ->> 'runId')::uuid;
+	if exists (select 1 from public.qorpera_ensure_unattended_sponsor(v_run)) then
+		raise exception 'a run another login paid for moved its routine to the plan'; end if;
+	v_run.sponsor_binding_id := (current_setting('qorpera_test.r768_plan_chat')::jsonb ->> 'binding_id')::uuid;
+	v_run.sponsor_version := (current_setting('qorpera_test.r768_plan_chat')::jsonb ->> 'version')::bigint;
 	select sponsor.binding_id, sponsor.version into v_binding, v_version
 	from public.qorpera_ensure_unattended_sponsor(v_run) as sponsor;
 	if v_binding is null or not public.qorpera_sponsor_version_is_chatgpt_plan(v_binding, v_version) then

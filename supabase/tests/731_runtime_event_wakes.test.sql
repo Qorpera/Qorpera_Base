@@ -375,8 +375,7 @@ begin
 			where hook_id = '30000000-0000-4000-8000-0000000007b4' and status = 'duplicate' and event_type = 'v.test')), '42501');
 	perform pg_temp.wake_error($q$select public.qorpera_read_agent_event(current_setting('qorpera_test.event_binding')::jsonb,
 		'{"deliveryId":"30000000-0000-4000-8000-0000000007c2"}')$q$, '42501');
-	-- Folder companies take event wakes with routine files, not before.
-	perform pg_temp.wake_assert(not public.qorpera_folder_wake_authorized(v_occurrence), 'The folder core refuses event wakes');
+	-- Folder companies take event wakes with routine files since E2a (20260930061000); 913 covers their gate.
 	perform pg_temp.event_finish();
 end $$;
 
