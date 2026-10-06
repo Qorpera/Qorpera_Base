@@ -103,6 +103,21 @@ export const WORKSPACE: Record<string, string> = {
 		"Intet interface er markeret som hovedinterface, så intet vises øverst. Markér ét som hovedinterface i dets fil.",
 	"{names} are all marked as the main interface, so none is shown on top. Keep the mark on just one of them.":
 		"{names} er alle markeret som hovedinterface, så intet vises øverst. Behold markeringen på kun ét af dem.",
+	// A board and the members source (app/interface-board.ts, app/interface-claims.ts, app/views/interface.ts)
+	Shared: "Fælles",
+	"Open pile": "Åben bunke",
+	"Someone who left": "En, der er stoppet",
+	"Nothing here.": "Intet her.",
+	Take: "Tag",
+	Release: "Slip",
+	"The card could not be taken.": "Kortet kunne ikke tages.",
+	"The card could not be released.": "Kortet kunne ikke slippes.",
+	"This card is no longer here.": "Kortet er her ikke længere.",
+	"Someone else took it first.": "En anden tog det først.",
+	"That changed while you were looking.": "Det blev ændret, mens du kiggede.",
+	Picture: "Billede",
+	Role: "Rolle",
+	"Here now": "Her nu",
 
 	// app/views/shell.ts
 	"Profile: {name}": "Profil: {name}",

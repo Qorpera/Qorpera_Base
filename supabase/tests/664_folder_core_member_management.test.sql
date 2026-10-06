@@ -1,8 +1,7 @@
--- @fixture 647_folder_core_run_fence.test.sql until "-- 1. Snapshot-v1 keeps its text"
+-- @fixture 647_folder_core_run_fence.test.sql until "-- The checks start here: a test that runs after this file's fixture part stops at this line."
 -- Company folder core, C1c-3c (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.4): member management on the folder
 -- fence. Removing a member ends the runs its own login pays for, revokes its login, closes its private conversation and
--- leaves the agent threads; leaving; role changes and the founder guard; joining by invitation. Snapshot-v1 keeps its
--- text. Races are in 665.
+-- leaves the agent threads; leaving; role changes and the founder guard; joining by invitation. Races are in 665.
 
 create function pg_temp.member_row(p_user uuid) returns public.qorpera_profile_members language sql as $$
 	select * from public.qorpera_profile_members where profile_id = '63400000-0000-4000-8000-000000000010' and user_id = p_user
@@ -37,49 +36,7 @@ begin
 		clock_timestamp() + interval '1 hour', 'accepted' from public.qorpera_runner_assignments where id = %L$f$, p_actor ->> 'assignmentId'));
 end $$;
 
--- 1. Snapshot-v1 keeps its text: each body with its patch reversed is the definition before this migration.
-do $$
-declare v_def text;
-begin
-	foreach v_def in array array['public.qorpera_remove_profile_member(uuid,uuid)|p_member_user_id|remove|410d6f2552fc5f3691e8d5d70bb74d80',
-		'public.qorpera_leave_hosted_profile(uuid)|v_actor_id|remove|86af1292bbe3682782109da6a5e44386',
-		'public.qorpera_update_profile_member_role(uuid,uuid,qorpera_profile_role)|p_member_user_id|role|f68cd771bfe58ceabc2678c9c9fdd6f5'] loop
-		if md5(replace(pg_get_functiondef(split_part(v_def, '|', 1)::regprocedure),
-				E'\tif public.qorpera_company_is_folder_v2(p_profile_id) then\n'
-				|| E'\t\tperform public.qorpera_folder_member_change_enter(p_profile_id, ' || split_part(v_def, '|', 2) || ', '''
-				|| split_part(v_def, '|', 3) || E''');\n'
-				|| E'\telse\n'
-				|| E'\tperform 1 from public.qorpera_profiles where id = p_profile_id for update;\n'
-				|| E'\tend if;\n',
-				E'\tperform 1 from public.qorpera_profiles where id = p_profile_id for update;\n')) <> split_part(v_def, '|', 4) then
-			raise exception 'The snapshot-v1 text of % changed', split_part(v_def, '|', 1); end if;
-	end loop;
-	-- (P14a's creation block, 20260930010000, taken out first: it adds to this guard for folder-v2 creations.)
-	if md5(replace(replace(pg_get_functiondef('public.qorpera_guard_founder_departure()'::regprocedure),
-			E'\t-- 20260930010000 (P14a): so does a folder-v2 creation, for the member who started it.\n'
-			|| E'\tif exists (select 1 from public.qorpera_folder_company_creations as creation\n'
-			|| E'\t\twhere creation.profile_id = old.profile_id and creation.kickoff_user_id = old.user_id\n'
-			|| E'\t\t\tand creation.state in (''queued'', ''leased'')) then\n'
-			|| E'\t\traise exception ''Company setup must finish before the founder it runs for leaves or steps down''\n'
-			|| E'\t\t\tusing errcode = ''42501'';\n'
-			|| E'\tend if;\n', ''),
-			E'\tif public.qorpera_company_is_folder_v2(old.profile_id) then\n'
-			|| E'\t\tperform 1 from public.qorpera_profiles where id = old.profile_id for key share;\n'
-			|| E'\telse\n'
-			|| E'\tperform 1 from public.qorpera_profiles where id = old.profile_id for update;\n'
-			|| E'\tend if;\n',
-			E'\tperform 1 from public.qorpera_profiles where id = old.profile_id for update;\n')) <> '488053172974066541f7261c96373d63' then
-		raise exception 'The founder guard''s snapshot-v1 text changed'; end if;
-	-- The join's prelude as C1c-3d-1 (20260930002650) left it: only the invitee of a live invitation takes it.
-	if md5(replace(pg_get_functiondef('public.qorpera_accept_profile_invitation(uuid)'::regprocedure),
-			E'\t-- 20260930002650: only the invitee of a live invitation (the select below refuses anyone else) takes the fence.\n'
-			|| E'\tperform public.qorpera_folder_member_change_enter(invitation.profile_id, v_user_id, ''join'')\n'
-			|| E'\tfrom public.qorpera_profile_invitations as invitation\n'
-			|| E'\twhere invitation.id = p_invitation_id and invitation.email = v_email and invitation.expires_at > statement_timestamp()\n'
-			|| E'\t\tand public.qorpera_company_is_folder_v2(invitation.profile_id);\n', ''))
-		<> '062a100a20d3c8f595b9a22f9d95dc8d' then
-		raise exception 'The join''s snapshot-v1 text changed'; end if;
-end $$;
+-- The checks start here: a test that runs after this file's fixture part stops at this line.
 
 -- 2. Removing a member: the run its own login pays for ends, the login is revoked, its private conversation closes,
 -- it leaves agent A's thread, and its member row goes. A founder cannot be removed; an admin cannot remove an admin.

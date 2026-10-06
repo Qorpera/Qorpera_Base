@@ -271,7 +271,8 @@ within 63 characters.
 
 As in C1c-1, a line inserted at the start of each function sends `folder-v2` to its new body. The snapshot-v1 text
 after that line stays byte-identical, and its digest (the body without the line, or with a text patch reversed) is
-checked by each slice's functional test (647, 652, 656, 658).
+checked by each slice's functional test (647, 652, 656, 658). No snapshot-v1 digests since 3 October: legacy sweep A,
+#829, removed them from these tests.
 
 | Function | `folder-v2` | Slice |
 | --- | --- | --- |
@@ -286,7 +287,7 @@ checked by each slice's functional test (647, 652, 656, 658).
 | `record_action_review` | 2a: under the mutex; its card path refuses through the transcript append. 2b: the folder card path (§5.6) | 2a, 2b |
 | `assert_company_path_reads`, `record_native_context_view`, `add_agent_review_rule` | their `folder-v2` body (§5.6) | 2b |
 | `enforce_company_context_send` | requires the marker the folder send sets; refuses without it | 2b |
-| `pin_wake_occurrence`, `routine_occurrence_lifecycle` | their `folder-v2` modes (§5.6): text patches, each keeping the legacy statement as its `else` branch; the digest is of the patched text with the patch reversed | 2c part 1 |
+| `pin_wake_occurrence`, `routine_occurrence_lifecycle` | their `folder-v2` modes (§5.6): text patches, each keeping the legacy statement as its `else` branch; the digest was of the patched text with the patch reversed (removed since 3 October, as above) | 2c part 1 |
 | `send_coworker_message`, `read_native_wake` | their `folder-v2` bodies (§5.6), by a first line | 2c part 1 |
 | `enqueue_routine_wake` (routine firing) | its `folder-v2` mode in place of the gc fence, after its argument checks (§5.6); moved here from C1c-3 because part 1 closes the legacy path (F2-6's test 709 fires file routines) | 2c part 1 |
 | the legacy multi-company loops: `materialize_wake_execution_runs`, the drains (`office_activation`, `worker`, `machine`, `company_file` with the dynamic-routine tick), `materialize_session_execution_runs` | skip `folder-v2` companies in the scan's `WHERE` clause, before their first lock. `materialize_session_turn_requests` needs no skip: its scan requires the company's head snapshot, which a `folder-v2` company never has (`qorpera_company_files_core_head`) | 2c part 1 |
@@ -636,7 +637,7 @@ Concurrency tests (dblink, with `current_database()`), by slice:
   5. `assert_context` with a revoked read refuses rather than passing, and so does `run_wake_authorized` for a coworker
      wake whose parent's reads are no longer readable.
   6. Every `folder-v2` refusal, a run with no budget row included, and a snapshot-v1 control for every dispatcher, plus
-     a digest of each snapshot-v1 body.
+     a digest of each snapshot-v1 body (no snapshot-v1 digests since 3 October: legacy sweep A, #829, removed them).
 - **C1c-2b:**
   7. Concurrent receipt begins leave one `executing` receipt.
   7b. Concurrent context views of one run get ordinals 1 and 2.
@@ -995,7 +996,7 @@ Decisions:
   admission takes (824 B shows it runs beside a folder effect). Its final authority check takes the same rows again in the
   same modes.
 - **Snapshot-v1** keeps each patched statement in the `else` branch. Each body with its branch reversed is byte for byte
-  the definition before 3f (824 H).
+  the definition before 3f (824 H until 3 October; legacy sweep A, #829, removed that digest).
 - **Decided with 3f** (§6.1): the machine-event drain on `folder-v2` goes with 3i; the worker drain is F2's (F2-5b-3,
   the shared folder drains' `workers`). Both deliver to a
   parent run and need the per-company admission loop (`qorpera_drain_machine_wakes` skips `folder-v2`; until 3i, a
@@ -1066,7 +1067,8 @@ Decisions:
   for the threads (817 §2); a changed title is still written (817 §3).
 - **#581 N2:** an answer to a card and a member change meet at the thread room, in both orders (818 C).
 - Snapshot-v1 keeps every path: each patched body with its patch reversed is the definition before (817 §1; 664 §1 now
-  strips the join's new prelude text).
+  strips the join's new prelude text). No snapshot-v1 digests since 3 October: legacy sweep A, #829, removed 817 §1's
+  and 664 §1's.
 - Not in 3d-1:
   - A joiner still misses an agent thread created at the same moment (on master too). The hire is an effect (the fence
     and the member rows `KEY SHARE`) and the joiner's member row does not exist yet, so nothing both lock conflicts. It
@@ -1200,10 +1202,11 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
   whose purge wants the fence row (it deletes it by cascade): a 40P01 that heals on retry, as §6.4 notes for 3f. 3g's
   drain takes the fence `FOR UPDATE` before the company row and closes it.
 - **Snapshot-v1** keeps each statement in its `else` branch, so the activation markers of 20260925123000 stay in each
-  body. Each body reversed is master's text (826 D; the digests came from a test VM run of the reversal), and the
+  body. Each body reversed is master's text (826 D until 3 October: legacy sweep A, #829, removed the digests and kept
+  the markers check), and the
   snapshot-v1 company still waits for a
   holder of its company row (826 C). 824 B2 is flipped: a `folder-v2` coding reservation no longer waits for the company
-  row `KEY SHARE`, and 824 H reverses 3h's line before 3f's.
+  row `KEY SHARE`, and 824 H reversed 3h's line before 3f's (no digests since 3 October; legacy sweep A, #829).
 - **Inert until C3:** `manage_agent_worker` refuses `folder-v2` (the path actor), so no `folder-v2` coding session can be
   created yet. 3i brings the turn's admission (`begin_coding_turn`) and the machine-event drain; F2-5b-3 the worker drain.
 - **Coding view saves** (the inventory lists tests against them for 3h): attach is unchanged, so they go with 3i's
@@ -1249,8 +1252,8 @@ again after its first. 3e gives it a `folder-v2` path with one company per trans
   reconciler then reports it and asks again after ten minutes, as it does for the first-slot advance.
 - **Deploy order:** the migration, then the edge function, then the orchestrator. An older orchestrator never calls the
   actions, and a `folder-v2` dynamic routine waits for it.
-- Snapshot-v1 keeps its path: `ensure` with its first lines removed is the definition before (819 §1). The legacy tick
-  is unchanged.
+- Snapshot-v1 keeps its path: `ensure` with its first lines removed is the definition before (819 §1 until 3 October:
+  legacy sweep A, #829, removed that digest). The legacy tick is unchanged.
 - Not in 3e: the run itself (materializing a `folder-v2` wake) is C4's materializer (P28). Until then the inserted wake
   stays `queued`, and the list skips the routine (its run is pending). Like the legacy tick, the restore inserts the
   wake even when the company has no computer hours left; P28's materializer holds it ("Waiting for computer hours"),
@@ -1553,7 +1556,8 @@ reverse of core §3's order, and on `folder-v2` a stall of every effect of the c
 - **Snapshot-v1:** the reservations', releases' and node reservation's old statements stay in their `else` branches.
   The member removal's prelude is `folder-v2` only. The account metadata's new order holds on both cores (every other
   path also takes the model login before the identity). 900 I checks that each patched branch is present, with no
-  snapshot-v1 text pins (since 3 Oct); 824 H reverses the node reservation's new layer first.
+  snapshot-v1 text pins (since 3 Oct); 824 H reversed the node reservation's new layer first (no digests since 3
+  October; legacy sweep A, #829).
 - **A window P13's second part closed** (20260930049000, test 901, §6.17): `qorpera_request_login_identity_recovery` and
   `_account_refresh_identity_recovery` took the sign-in `FOR SHARE` and then the gc fence, the reverse of the new
   reservation (the row `KEY SHARE`, then the sign-in `FOR UPDATE`). They could deadlock on one sign-in when two gateway
@@ -1625,7 +1629,7 @@ A company that is not `folder-v2` keeps the gc fence in each `else` branch, unte
   the company, and no error recorded.
 - F: the markers.
 
-824 H gains this migration's layer, undone first.
+824 H gains this migration's layer, undone first (no digests since 3 October; legacy sweep A, #829, removed 824 H's).
 
 ### 6.16 C1c-3l part 1 as built: an agent starts the Company Computer (migration 20260930030000, test 890)
 
