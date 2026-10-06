@@ -376,11 +376,11 @@ A `needs_yes` member column holds who has something: a card's holder, or an area
 
 - **Take:** a member may put their own id in an empty cell.
 - **Release:** a member may clear a cell that names them.
-- **Offer:** the member a cell names, or anyone when the cell is empty, may offer it to a member, through the
-  `offer` button or `table_write`. The offer is a request card for that member (16.2, as amended) and changes
-  nothing in the file. When they say yes, the platform saves the change as them, and the save is allowed because the
-  open offer names them. Not now, a dismissal or no answer changes nothing.
-- **Offers (proposed, built in I9c):**
+- **Offer:** the member a cell names, or anyone when the cell is empty, may offer it to another member, through the
+  `offer` button (an agent through `table_write` once supervision is built, I9b). The platform keeps the offer as
+  its own record (below); it changes nothing in the file. When they say yes, they save the cell with their own id,
+  and the save is allowed because the open offer names them. Not now, a dismissal or no answer changes nothing.
+- **Offers (built in I9c):**
   - The platform keeps offers as its own records, not as 16.2 review cards. An offer names the table by its id (so
     it follows a moved folder), the row's key, the column, who made it (`from`), the cell as they read it (`was`:
     them, or empty) and the member it is offered to (`to`). It is open, accepted, declined, withdrawn or lapsed.
@@ -642,7 +642,7 @@ parser's codes for (1), `structured_rule` with these codes for the rest.
        - **accept:** a member putting *self* where an open offer names that row key, that column and *self*; the
          offer's `was` equals the cell as stored; and, unless `was` is empty, the offer's `from` equals `was`.
 
-       Offers are request cards the platform keeps (§5, built in I9c). An agent never accepts one.
+       Offers are records the platform keeps (§5, built in I9c). An agent never accepts one.
 9. **`tables/areas/`** (`areas`):
    - its `table.toml` keeps `owner` (`member`, `needs_yes`), `supervisor` (`member`, `needs_yes`) and `agents`
      (`agents`), each `optional`, by name and type;
@@ -761,9 +761,10 @@ answers on a board, and supervision (I9b) are not built.
 
 **Built: I9c, the offers' machinery** (`supabase/migrations/20260930105000_interface_offers.sql`, test 938). Offers are
 kept in `qorpera_interface_offers` (§5 "Offers"). Members make, decline, withdraw and list them with four calls
-(`supabase/CLIENT-CONTRACT.md`, "Offers of a claimed cell"). Each call holds the table's index row against commits
-(FOR SHARE, the lock a save takes for update), so it reads the files as the last commit left them. Rule 8 gains its
-accept. The save hook's apply settles a table's open offers after its rows or definition change, and lapses them when
+(`supabase/CLIENT-CONTRACT.md`, "Offers of a claimed cell"). Offer, decline and withdraw hold the table's index row
+FOR SHARE, so they wait for a save that holds it (FOR NO KEY UPDATE) and read the files as the last commit left
+them; the list reads no files and takes no lock. Rule 8 gains its accept. The save hook's apply settles a table's open offers after its rows or definition change, and lapses them when
 its folder is deleted. Removing the table's index row (erasure) removes its offers. The web (an Offer button and a
-drop onto a member's lane, Accept and Not now as `answer`, and offers in `waiting`) comes next. There is no race test
-of an offer against a save yet.
+drop onto a member's lane, Accept and Not now as `answer`, and offers in `waiting`) comes next. Test 866 races an
+offer against a rows save both ways: an offer behind a save reads the cell the save left, and a save behind an offer
+settles it.
