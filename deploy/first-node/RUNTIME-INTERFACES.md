@@ -224,7 +224,7 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
   - With `opens`, each tile is a button that opens its row in the detail.
 - **Calendar (proposed, built with the folder pages):**
   - `from` may name several sources. The calendar is drawn when at least one of them exists, from those that do, and
-    lists the problems of each.
+    lists the problems of each. A calendar that names `mail` is not drawn at all (see "Mail lists and threads").
   - A source's dates: a routine's `next`; a human task's `due`, while the task is open or returned; a table's time
     column, else its first `time` or `date` column.
   - The block's `where` applies to each source with the columns it has. A source without a column its view narrows by
@@ -240,6 +240,11 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
   - A block from `mail` reads the threads 50 at a time, newest first, with "Show older" for the next page. When the
     view's and the block's `where` all give `state` or `address` one text, the threads call is asked for just those.
     Any other column, such as `direction`, is filtered on the threads already read.
+  - A `text`, `numbers` or `calendar` block that names `mail` is not drawn, even beside other sources. The threads
+    are read a page at a time, so a tile or a day would count only those read so far, and neither block marks an
+    email's words.
+  - A thread's `last_at`, and a waiting send's `due` among the `waiting` rows, are to the second, as every row's time
+    is, so `since` and ordering read them.
   - An unread thread is marked in the list. Opening it in a `mail` block reads it and marks it read; the mark goes
     when that lands, and each new opening marks it again. A thread the cloud no longer has says it is gone.
   - The `mail` block draws each message's From, To, Cc, Subject, attachment names and plain text. A received
@@ -811,8 +816,9 @@ with their answer, and the Addresses table, all in the proposed rules of §3.2, 
 outside content keeps its mark in every block: a list's line, sub and status, a table's cells (the one whose button
 opens the row too), a detail's title and fields, and a button's label. A `mail` block is drawn only from `mail`. A
 table from `mail` reads as a list does: it says while it reads or why it can't, and has "Show older". A `text`,
-`numbers` or `calendar` block from `mail` is not drawn: the threads are read a page at a time, so a tile or a day would
-count only those read so far, and neither marks an email's words. An answer first
+`numbers` or `calendar` block that names `mail` is not drawn, even beside other sources: the threads are read a page at
+a time, so a tile or a day would count only those read so far, and neither marks an email's words. A thread's
+`last_at` and a waiting send's `due` are to the second, as every row's time is, so `since` reads them. An answer first
 chooses the conversation's model account as its thread does (never another one while a message is on its way); one refused
 for want of an account points to the agent's thread. Shown text is clipped to the cloud's bounds in characters, never
 refused. Its message buttons put outside values in as quotes (I5d), and draw none for account mail, which the cloud

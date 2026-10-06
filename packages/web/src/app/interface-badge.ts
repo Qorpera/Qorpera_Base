@@ -7,16 +7,17 @@
 import { queryInterfaceRows } from "@qorpera/cloud-client/interface-query";
 import type { InterfaceFile, TableRow } from "@qorpera/cloud-client/interfaces";
 import type { CompanyController } from "./company.ts";
+import { rowInstant } from "./interface-sources.ts";
 import { interfaceRows, interfaceSource } from "./interfaces.ts";
 
-/** The company's waiting mail sends as `waiting` rows. */
+/** The company's waiting mail sends as `waiting` rows, their times to the second as every row's are. */
 export function mailWaitingRows(company: CompanyController): TableRow[] {
 	return (company.store.get().mail?.waiting ?? []).map((item) => ({
 		id: item.reviewId,
 		kind: "mail",
 		title: item.subject ?? null,
 		from: item.staffAgent?.staffAgentId ?? null,
-		due: item.createdAt,
+		due: rowInstant(item.createdAt),
 	}));
 }
 

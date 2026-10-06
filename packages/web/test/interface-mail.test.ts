@@ -29,6 +29,9 @@ const bo: HostedStaffAgent = { ...staff, id: id(42), displayName: "Bo" };
 const thread = (n: number) => `thread-${String(n).padStart(36, "0")}`;
 /** `n` minutes before nine, so a smaller `n` is newer. */
 const at = (n: number) => new Date(Date.parse("2026-10-06T09:00:00Z") - n * 60_000).toISOString();
+/** `days` days before now, as the cloud writes a time: to the microsecond, with an offset. */
+const cloudTime = (days: number) =>
+	new Date(Date.now() - days * 86_400_000).toISOString().replace(/\.\d{3}Z$/, ".123456+00:00");
 
 const ADDRESS = {
 	address: "hello@acme.example",
@@ -374,6 +377,21 @@ describe("the Inbox list", () => {
 		});
 		// The last page is read: nothing older to show.
 		expect(button(main, "Show older")).toBeUndefined();
+	});
+
+	it("gives each thread's time to the second, so a list's `since` reads the cloud's times", async () => {
+		const { main } = await mailbox(
+			(mail) => {
+				mail.threads = [
+					summary(1, { lastAt: cloudTime(0) }),
+					summary(2, { lastAt: cloudTime(2) }),
+					summary(3, { lastAt: cloudTime(9) }),
+				];
+			},
+			"owner",
+			(text) => text.replace('order = "-last_at"', 'order = "-last_at"\nsince = "-7d"'),
+		);
+		await vi.waitFor(() => expect(lines(main)).toEqual(["Sender 1", "Sender 2"]));
 	});
 
 	it("reads the first page again every 20 seconds while the page is on screen, keeping the older pages", async () => {
@@ -1050,5 +1068,37 @@ describe("the Mailbox's badge (§3 badge)", () => {
 		fake.waiting = [];
 		window.dispatchEvent(new Event("focus"));
 		await vi.waitFor(() => expect(interfaceBadge(controller, file!)).toBe(0));
+	});
+
+	it("reads a waiting send's time as the cloud gives it, so a badge's `since` counts it", async () => {
+		const { f, controller } = company();
+		const fake = mailFake(f);
+		fake.addresses = [ADDRESS];
+		fake.waiting = [
+			{
+				reviewId: id(901),
+				thread: thread(1),
+				staffAgent: { staffAgentId: ada.id },
+				to: [],
+				createdAt: cloudTime(1),
+			},
+			{
+				reviewId: id(902),
+				thread: thread(2),
+				staffAgent: { staffAgentId: bo.id },
+				to: [],
+				createdAt: cloudTime(10),
+			},
+		];
+		await follow(controller, (text) =>
+			text.replace(
+				'badge = { from = "waiting", where = { kind = "mail" } }',
+				'badge = { from = "waiting", where = { kind = "mail" }, since = "-7d" }',
+			),
+		);
+		await readMail(controller, f);
+		const file = companyInterfaces(controller).find((entry) => entry.name === "mailbox")?.file;
+		expect(file?.badge?.query.since).toBe("-7d");
+		expect(interfaceBadge(controller, file!)).toBe(1);
 	});
 });

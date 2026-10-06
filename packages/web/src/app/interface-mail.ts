@@ -11,6 +11,7 @@ import type { MailThreadState, MailThreadSummary } from "../cloud/mail.ts";
 import type { CompanyController } from "./company.ts";
 import type { MailList, MailListRequest } from "./company-mail.ts";
 import { mailListKey } from "./company-mail.ts";
+import { rowInstant } from "./interface-sources.ts";
 import type { InterfaceRow } from "./interfaces.ts";
 
 export const MAIL_SOURCES: Readonly<
@@ -74,7 +75,9 @@ export function mailRequest(
 	};
 }
 
-/** A thread as a `mail` row. Account mail has no subject (the call keeps it back); nothing else is left out. */
+/** A thread as a `mail` row. Account mail has no subject (the call keeps it back); nothing else is left out. Its time
+ * is to the second, as every row's is (`rowInstant`): the cloud's `…09:00:00.123456+00:00` is a time `since` can't
+ * read. */
 export function mailRow(item: MailThreadSummary): TableRow {
 	return {
 		thread: item.thread,
@@ -82,7 +85,7 @@ export function mailRow(item: MailThreadSummary): TableRow {
 		from_name: item.fromName ?? null,
 		from_address: item.fromAddress ?? null,
 		subject: item.account ? null : (item.subject ?? null),
-		last_at: item.lastAt,
+		last_at: rowInstant(item.lastAt) ?? item.lastAt,
 		state: item.state,
 		handled_by: item.handledBy?.staffAgentId ?? null,
 		direction: item.direction,
