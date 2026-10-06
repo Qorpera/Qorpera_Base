@@ -228,6 +228,8 @@ export const CLOUD_FOLDER_DRAINS: readonly CloudFolderDrainSpec[] = Object.freez
 	Object.freeze({ name: "human_tasks", companyLimit: 32 }),
 	// A company machine's events, to the runs that started the work (C1c-3i-b): up to 8 parents a step.
 	Object.freeze({ name: "machine_events", companyLimit: 8 }),
+	// C1c-3l part 2: an agent's waiters for a Company Computer it started (RUNTIME-COMPANY-FOLDER-C1C.md §6.18).
+	Object.freeze({ name: "office_wakes", companyLimit: 16 }),
 	// Event wakes (E2): W2's listeners on hooks and mailboxes, up to 16 a step, as qorpera_drain_event_wakes took them.
 	Object.freeze({ name: "events", companyLimit: 16 }),
 ]);

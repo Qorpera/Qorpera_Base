@@ -36,12 +36,12 @@ const ROOT: TreeEntry = {
 	implicit: true,
 };
 
-function parentOf(path: string): string {
+export function parentOf(path: string): string {
 	const slash = path.lastIndexOf("/");
 	return slash < 0 ? "" : path.slice(0, slash);
 }
 
-function nameOf(path: string): string {
+export function nameOf(path: string): string {
 	return path.slice(path.lastIndexOf("/") + 1);
 }
 
@@ -191,6 +191,11 @@ export class ViewTree {
 			lo++;
 		}
 		for (let i = lo; i < names.length; i++) yield* this.walk(join(names[i]!));
+	}
+
+	/** A folder's names in byte order; none for a path that is not a folder here. */
+	names(path: string): readonly string[] {
+		return this.get(path)?.kind === "folder" ? this.#names(path) : [];
 	}
 
 	/** A folder's names in byte order (cached until the folder changes). */

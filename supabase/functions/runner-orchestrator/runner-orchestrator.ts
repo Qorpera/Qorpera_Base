@@ -23,6 +23,12 @@ export const FOLDER_DRAINS: Readonly<Record<string, Readonly<{ due: string; comp
 		company: "qorpera_folder_machine_events_company",
 		maximum: 64,
 	}),
+	// C1c-3l part 2: wake an agent once the Company Computer it started is up (RUNTIME-COMPANY-FOLDER-C1C.md §6.18).
+	office_wakes: Object.freeze({
+		due: "qorpera_folder_office_wakes_due",
+		company: "qorpera_folder_office_wakes_company",
+		maximum: 40,
+	}),
 	// Event wakes (E2): a verified delivery to a hook or mailbox wakes the routines that listen to it.
 	events: Object.freeze({
 		due: "qorpera_folder_event_wakes_due",

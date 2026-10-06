@@ -11,7 +11,7 @@ import { hostedDatabase, MIGRATIONS, migrationNames } from "./test-hosted-db-clu
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const databaseName = "agent_exit_undo";
-const placement = "20260930089100_runtime_node_agent_exit_placement.sql";
+const placement = "20260928489995_runtime_node_agent_exit_placement.sql";
 const undoFile = "deploy/agent-exit/undo-20260930089100.sql";
 const FUNCTIONS = [
 	"public.qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)",
