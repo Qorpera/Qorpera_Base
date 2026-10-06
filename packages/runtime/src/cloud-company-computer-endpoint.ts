@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { isDeepStrictEqual } from "node:util";
 import {
 	assertCompanyComputerLease,
@@ -22,6 +23,9 @@ import {
 	type CompanyComputerCloudEndpoint,
 	parseCompanyComputerToolArguments,
 } from "./cloud-company-computer-tools.ts";
+
+/** From the start of a guest action to its reply: the native call's 25 seconds minus transport margin. */
+export const COMPANY_COMPUTER_REPLY_BUDGET_MS = 19_000;
 
 /**
  * Adapt the existing Step 2 effect check here. It must validate live run,
@@ -52,7 +56,8 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 	readonly #binding: CompanyComputerScreenBinding;
 	readonly #effects: CompanyComputerGuestEffectCheck;
 	readonly #gate: CompanyComputerScreenActionGate;
-	readonly #automation: Pick<CompanyComputerGuestAutomation, "perform" | "stopBrowser">;
+	readonly #automation: Pick<CompanyComputerGuestAutomation, "perform" | "stopBrowser"> &
+		Partial<Pick<CompanyComputerGuestAutomation, "settle">>;
 	readonly #assertScreenAdmitted: (binding: CompanyComputerScreenBinding, signal: AbortSignal) => Promise<void>;
 	readonly #prepareScreen: (binding: CompanyComputerScreenBinding, signal: AbortSignal) => Promise<void>;
 	/** Settled actions (failed or successful) whose drain got no confirmation yet, by receipt. */
@@ -65,7 +70,9 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 		effects: CompanyComputerGuestEffectCheck;
 		/** One shared gate per physical guest, also used by takeover fencing. */
 		gate: CompanyComputerScreenActionGate;
-		automation: Pick<CompanyComputerGuestAutomation, "perform" | "stopBrowser">;
+		/** `settle` is an action's passive half (waiting for a shell command), after its effect finished. */
+		automation: Pick<CompanyComputerGuestAutomation, "perform" | "stopBrowser"> &
+			Partial<Pick<CompanyComputerGuestAutomation, "settle">>;
 		/** Pure authority/binding/readiness preflight. Must not launch or mutate a guest. */
 		assertScreenAdmitted: (binding: CompanyComputerScreenBinding, signal: AbortSignal) => Promise<void>;
 		/** Reuse or start the exact display and await real readiness. Runs only
@@ -178,6 +185,9 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 		}
 		const receipt = { receiptId: context.receiptId, idempotencyKey: context.idempotencyKey };
 		const effect = { operation, identity, lease, receipt };
+		// Both ends of the native call give it 25 seconds; keep the rest for the
+		// work before this point and the way back.
+		const replyBy = performance.now() + COMPANY_COMPUTER_REPLY_BUDGET_MS;
 		const resourceSignal = await this.#effects.begin(structuredClone(effect), context.signal);
 		const result = await this.#gate
 			.perform({
@@ -240,6 +250,7 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 			this.#undrained.set(receipt.receiptId, structuredClone(effect));
 			throw error;
 		});
-		return result;
+		// Outside the gate and after the resource drained: waiting stops nothing.
+		return this.#automation.settle ? this.#automation.settle(action, result, context.signal, replyBy) : result;
 	}
 }

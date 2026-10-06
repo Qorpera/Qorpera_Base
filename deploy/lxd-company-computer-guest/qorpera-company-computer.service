@@ -3,6 +3,10 @@ Description=Qorpera persistent shared office
 Wants=network-online.target
 Requires=systemd-tmpfiles-setup.service
 After=network-online.target systemd-tmpfiles-setup.service
+# Each computer's own filtered network. Wanted, not required: without it the
+# computers start without a network, never with an unfiltered one.
+Wants=qorpera-computer-network.service qorpera-computer-plumb.socket
+After=qorpera-computer-network.service qorpera-computer-plumb.socket
 After=apparmor.service
 RequiresMountsFor=/var/lib/qorpera-office /run/qorpera-office/private
 AssertPathIsMountPoint=/var/lib/qorpera-office

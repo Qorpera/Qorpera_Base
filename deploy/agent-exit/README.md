@@ -1,12 +1,13 @@
-# Agent exit (E1, E2)
+# Agent exit (E1, E2, and the node's half of E3 and E7)
 
 The exit that agent road machines' internet traffic leaves through, one per node, the same on every node. Design and
 decisions: `deploy/first-node/RUNTIME-AGENT-EXIT.md` and the contract's "2026-10-03 amendment: agent traffic leaves
 through the agent exit". E1 built the exit itself. E2 adds the node's side of the agent plug: the plug tool machine
 creators call, its reconciler, the bridge rules that tie each port to its MAC and each MAC to its address, `notrack`
-for the bridged leg, and the health file the node observer reads. Nothing is plugged in until the creators call `plug`
-(E2c); with no users and no legacy machines (founder decision, 3 October) there are no switches and nothing to
-migrate. Nothing is installed in production before a milestone release.
+for the bridged leg, and the health file the node observer reads. The logs' tender keeps the exit's logs on the node
+small and safe for its disk, and counts each day per company for the line guard (below). Nothing is plugged in until
+the creators call `plug` (E2c); with no users and no legacy machines (founder decision, 3 October) there are no
+switches and nothing to migrate. Nothing is installed in production before a milestone release.
 
 ## Layout
 
@@ -30,8 +31,9 @@ own and removes the node's masquerade.
 | --- | --- |
 | `qorpera-agent-exit.nft` | rules inside `qexit` (`inet qorpera_agent_exit`): our own networks and TCP port 25 refused at once; IPv6, invalid packets and sources outside 10.210.0.0/16 dropped; at most 16,384 open connections per machine and 98,304 in all (decided 3 October; per address, and the bridge rules pin each machine to one); a closed agent TCP connection held 30 s, not 120 (`ct timeout agent_tcp`); plain DNS to any resolver redirected to the exit; new connections and refusals counted per machine (`new_by_client`, `refused_by_client`); refused flows kept an hour for the log (`refused_flows`, `refused_other`), each machine's share rate-limited; masquerade out of `up0`; the exit answers DHCP, and DNS and ping from the agent range, only |
 | `qorpera-agent-exit-host.nft` | the node's second line (`inet qorpera_agent_exit_host`): nothing is routed into or out of `qagent0`, and the node does not track what enters from it (`notrack`; the exit tracks and bounds it); the masqueraded leg of a closed agent TCP connection is held 30 s, not 120; `qx-up` reaches public addresses only, never port 25 or the tailnet, and nothing on the node; nothing starts a connection into `qx-up`; the uplink's addresses are refused anywhere else; phase 1's masquerade, to public addresses only |
-| `qorpera-agent-exit.sh` | `check`, `up`, `down`, `dns`, `log`, `plug`, `verify`, `health`, `status` |
-| `qorpera-agent-exit-log.py` | the connection log: conntrack's start and end of each agent connection (with bytes each way), each refused flow, and a gap line whenever events were lost or a read failed; one JSON line each in `/var/log/qorpera-agent-exit/flows-YYYY-MM-DD.jsonl` (mode 0640); never content. It exits when its reader watches a namespace the exit replaced, and its unit starts it in the new one |
+| `qorpera-agent-exit.sh` | `check`, `up`, `down`, `dns`, `log`, `plug`, `logs`, `verify`, `health`, `status`, `counts` |
+| `qorpera-agent-exit-log.py` | the connection log: conntrack's start and end of each agent connection (with bytes each way), each refused flow, and a gap line whenever events were lost, a read failed or a line could not be written; one JSON line each in `/var/log/qorpera-agent-exit/flows-YYYY-MM-DD.jsonl` (mode 0640); never content. It exits when its reader watches a namespace the exit replaced, and its unit starts it in the new one. It pauses past the logs' cap or under the disk's floor (below) |
+| `qorpera-agent-exit-logs.py` | the logs' tender (`tend`): seals and compresses the logs, cuts `dns.log`, counts each closed day per company, keeps 90 days and the cap; `count` (a day's numbers, writing nothing) and `report` (the founder's table) |
 | `qorpera-agent-exit-bridge.nft` | the agents' bridge's own rules (`bridge qorpera_agent_exit_bridge`, on the node): before the bridge learns a MAC, a machine's port sends only its own MAC (`ports`, from LXD), so no machine takes another's or the exit's; then only ARP (its sender fields too) and IPv4 from a MAC and address pair in the client map, and DHCP only through one rule per machine (its own MAC, from no address or its own, naming its own MAC as the client), so no machine can take, release or decline another's lease; the node takes nothing from the bridge. `up` loads it filled with the entries LXD backed and the ports it held, in one transaction; the reconciler keeps it equal to LXD |
 | `qorpera-agent-plug.py` | the agent plug (below): `plug` for machine creators, `reconcile` for the plug unit, `elements`, `list` |
 | `qorpera-agent-exit.service` | oneshot, ordered before LXD: `up` (it turns on IPv4 forwarding if LXD has not yet), then starts the name, log and plug units; reload repairs in place; stop is `down`, which with a machine plugged in fails and changes nothing |
@@ -39,6 +41,7 @@ own and removes the node's masquerade.
 | `qorpera-agent-exit-log.service` | the connection log |
 | `qorpera-agent-plug.service` | the agent plug's reconciler, as root, after LXD |
 | `qorpera-agent-exit-health.service`, `.timer` | `health` every 10 seconds: `verify`'s answer as `/run/qorpera-agent-exit/health.json` (`{schema, healthy, checkedAt, problems}`, mode 0644) for the node observer, which has no capabilities and cannot run `verify` |
+| `qorpera-agent-exit-logs.service`, `.timer` | `logs` every 5 minutes (nice, idle I/O) |
 | `install-agent-exit.sh` | verifies the pins, copies the files, runs `check`; installs no package, creates no group, starts and enables nothing |
 
 Packages: `dnsmasq-base` and `conntrack` (neither starts a service of its own), and `python3`.
@@ -57,8 +60,9 @@ It prints `{"address": "10.210.x.y", "hwaddr": "0e:51:0a:d2:xx:yy"}`: the lowest
 (kept for the exit's own services) that is not in quarantine and not still held by a machine, and a MAC made from it.
 It writes the client map entry `/var/lib/qorpera-agent-exit/clients/<address>.json` (created exclusively, so two
 creators never share an address) and the lease `dhcp-hosts/<address>`, which dnsmasq reads by itself. Asked again for
-the same instance, it gives the same answer (with a new time when the machine it was given to has been seen: it is
-being made again); for another machine on the same instance it refuses. Files get mode 0644 whatever the creator's
+the same instance, it gives the same answer with a new time (the machine is about to be made again: one that was seen
+is not unplugged as gone, and one never seen has a new hour to appear); for another machine on the same instance it
+refuses. Files get mode 0644 whatever the creator's
 umask (dnsmasq's unprivileged user reads the leases). The creator then makes the machine with this card, and nothing
 else on `qagent0`:
 
@@ -81,7 +85,7 @@ and its usual identity keys: `user.qorpera.company_id`, `user.qorpera.machine_id
 Everything after that is the reconciler's (`qorpera-agent-plug.service`, root), which reads LXD every 5 seconds:
 - a machine that stops (asleep) keeps its address and entry; its connections are flushed once;
 - a machine that is gone (missing from two reads of LXD in a row after it was seen, or never created within an hour
-  of its plug) is unplugged under the plug lock: quarantined for 15 minutes first, then it loses its lease (dnsmasq
+  of its last plug) is unplugged under the plug lock: quarantined for 15 minutes first, then it loses its lease (dnsmasq
   reloads), its connections, the exit's per-machine counts and refused flows, and its entry. A failed flush is
   tried again every pass; the address is not given out before it succeeds. An entry removed by hand is unplugged
   the same way, from the reconciler's own copy;
@@ -108,18 +112,22 @@ group; sticky, so a creator cannot remove another's).
 
 ## Switching a node on (coordinator, root, after E2 is merged)
 
+The release that carries the exit, its creators (E2c) and its place in placement (E2d) goes on in the order of
+`ROLLOUT.md`, with its preconditions, checks and undos. Steps 1 to 6 here are its steps 1 and 2.
+
 `X` below is `/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh`.
 
 1. `apt-get install --no-install-recommends dnsmasq-base conntrack python3`
 2. `groupadd --system qorpera-agent-plug` (before the first `up`, which gives the client map directories to it).
 3. `bash deploy/agent-exit/install-agent-exit.sh` from a checkout at the merged head.
 4. `systemctl enable --now qorpera-agent-exit.service qorpera-agent-exit-dns.service qorpera-agent-exit-log.service
-   qorpera-agent-plug.service qorpera-agent-exit-health.timer`
+   qorpera-agent-plug.service qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer` (the logs' timer is not
+   optional: it keeps the logs off the node's disk, and `verify` fails without it).
 5. `X verify` says `healthy`; `X status` shows the addresses and an empty client map;
-   `/run/qorpera-agent-exit/health.json` says `"healthy": true`.
+   `/run/qorpera-agent-exit/health.json` says `"healthy": true`; `/run/qorpera-agent-exit/logs.json` names no problem.
 6. Undo, only with an empty client map (`X status`):
-   `systemctl disable --now qorpera-agent-exit-health.timer qorpera-agent-exit.service`, then
-   `systemctl disable qorpera-agent-exit-dns.service qorpera-agent-exit-log.service qorpera-agent-plug.service`.
+   `systemctl disable --now qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer qorpera-agent-exit.service`,
+   then `systemctl disable qorpera-agent-exit-dns.service qorpera-agent-exit-log.service qorpera-agent-plug.service`.
    The exit's stop stops the name, log and plug units itself. Never stop those by name while a machine is plugged in:
    traffic would keep flowing without names and without the log, and nothing would flush or unplug machines.
 
@@ -143,8 +151,9 @@ machine and the exit is bridged and would be refused as a private destination.
 
 `X verify` exits 0 only when the namespace, the bridge (not forwarding, a reverse-path filter on, not answering ARP),
 both addresses, the default route, the three rule tables, LLDP forwarded through the bridge rules, DNS on
-10.210.0.1:53 (from a name service in the exit's current namespace), a logger heartbeat younger than 30 seconds and a
-reconciler status younger than 30 seconds with no problem are all there. The heartbeat is written only while both of
+10.210.0.1:53 (from a name service in the exit's current namespace), a logger heartbeat younger than 30 seconds with
+the logger neither paused nor failing to write, a reconciler status younger than 30 seconds with no problem, and a
+logs' tender status younger than 15 minutes with no problem are all there. The heartbeat is written only while both of
 the logger's readers are alive. If the exit is down, its agent road machines have no internet; nothing falls back to
 the platform road. `X health` (every 10 seconds) writes the answer for the node observer; E2d keeps new agent road
 machines off a node whose exit is not healthy.
@@ -152,15 +161,79 @@ machines off a node whose exit is not healthy.
 `up` restarts the name service when it runs in an older namespace than the exit's (after a rebuild, also one an
 earlier, interrupted `up` made); the logger notices the same by itself and exits.
 
+## The logs on the node (E3's node half, E7's counts)
+
+The exit's logs live in `/var/log/qorpera-agent-exit` on the node's root disk until E3 ships them to the NAS: the
+connection log (`flows-*`), the client history (`clients-*`) and the DNS record (`dns.log`). One agent connection is
+about 340 bytes of connection log; a machine opening 100 connections a second would write about 3 GB a day, and a flood
+far more. So `X logs` (the logs' timer, every 5 minutes) tends them:
+- **Seals.** Each open file is sealed into a compressed part (`flows-YYYY-MM-DD.pNNN.jsonl.gz`, mode 0640) once its day
+  is closed (two hours after it ends, UTC: the plug's `plugged` lines carry the entry's time, normally less than an
+  hour back), or sooner once it holds 64 MiB. The writers open the file for each line, so a renamed file takes no new
+  lines. It is renamed to its part's name first (`….pNNN.sealing`), so a pass cut short finishes that part and never
+  seals a line twice.
+- **Cuts the DNS record.** `dns.log` is copied into `dns-YYYY-MM-DDTHHMMSSZ.log` (then compressed) and truncated once a
+  day, or sooner once it holds 64 MiB. The copy stops at what was there plus 64 MiB, however fast dnsmasq writes.
+  dnsmasq appends (`O_APPEND`), so it writes on from the start; what it wrote between the copy's end and the truncate
+  is lost. (Renaming it and sending SIGUSR2 would not do: dnsmasq's unprivileged user cannot create a file in the 0750
+  folder.)
+- **Counts, once.** Each closed day is counted once, per company, into `counts-YYYY-MM-DD.json`, as soon as all its
+  files are sealed; its counts never change after. The numbers are the line guard's (`RUNTIME-AGENT-EXIT.md` §8):
+  machines, new connections (by protocol), the most new connections in one 10-second step (the company's and one
+  machine's), refused flows (by rule), unanswered connections, distinct failed destinations (unanswered or refused) and
+  the most of them in one minute, and per node the gap lines. An address belongs to a company from its `plugged` line
+  to its `unplugged` one. Each counts file keeps the parts it counted and who was plugged in when its day ended: the
+  newest one is the checkpoint the next day starts from (`attribution.json` is a copy), and the counts file, written
+  whole and then renamed, is the one commit point. A part that turns up for a day already counted (after the plug's
+  reconciler was down, its `plugged` line can be days back) is counted with the next day the tender counts, under its
+  own day (`late`, with its own numbers per company); the day it belongs to never changes. Traffic from an address with
+  no company at that moment counts as `unattributed`, also when a late plug for it turns up afterwards. Counting never
+  slows or refuses anything: the brake waits for the founder's levels. A closed day the tender cannot count (a part it
+  cannot seal) is a problem in `logs.json`, so `verify` fails.
+- **Keeps the disk safe.** 90 days are kept. Past 80% of the cap, or with less than the floor plus 5 points of the disk
+  free, the oldest parts go first: the DNS record's and the connection log's, then the client history's (small, and
+  what ties addresses to companies). One rule for the connection log and the client history, at 90 days and under
+  pressure alike: a part goes only once a counts file names it. The open files and the counts never go under
+  pressure; so while a day cannot be counted, the logger's pause is what keeps the disk. At 90 days a counts file goes
+  only after every part it names, and the newest one (the checkpoint) never; each pass writes `attribution.json` again
+  if it is missing or behind. Each deleted file has its own record, `lost/<name>.json`, written whole (a temporary
+  file, synced, renamed) before the file goes, and `lost/` and the log folder are synced before every deletion: a
+  record exists complete or not at all, and a failed sync deletes nothing. Every pass first finishes the recorded
+  deletions whose file is still there (their records synced first), whatever the pressure is then. So a lookup knows
+  that day is unknown, and a part's name is never used twice. The records count toward the cap, for the tender and
+  the logger alike, though they never go.
+
+The cap is 2 GiB and the floor 10% of the disk unless the node sets them in `/etc/default/qorpera-agent-exit`
+(`QORPERA_AGENT_EXIT_LOG_CAP_BYTES=<bytes>` and `QORPERA_AGENT_EXIT_LOG_FLOOR_PERCENT=<percent>` lines, read by the tool
+for the logger and the tender alike; the logger reads them when it starts). The logger checks
+both every 5 seconds: past the cap, or under the floor, it pauses. It writes no connection or refusal lines, only a gap
+line when it pauses and one when it goes on (with how many lines it did not write), empties `dns.log` every 5 seconds
+(dnsmasq answers on; a gap line says how much of the DNS record was not kept), and keeps
+`/run/qorpera-agent-exit/logger.pause` meanwhile, so `verify` fails: the node takes no new agent road machines (E2d)
+while its log cannot record, and its disk never fills. Traffic and refusals go on (the log-down rule of 3 October). It
+goes on under 95% of the cap and 2 points above the floor. A line it cannot write (a full disk, no inodes left) is
+counted and keeps `/run/qorpera-agent-exit/logger.failing` until a line can be written again (it tries every 5
+seconds), so `verify` fails meanwhile; the first line then written is a gap line saying how many it lost. On a disk
+filled by something else, the exit turns unhealthy at the floor: for node 2 (98 GB, 16 GB free on 4 October) that is
+90% used.
+
+`X counts [--from DAY] [--to DAY] [--json]` prints the founder's table: per company, the days with traffic, connections
+(all and the busiest day), the most machines on a day, the burst peaks, refused, unanswered and the most failed
+destinations in a minute. `qorpera-agent-exit-logs.py count --log-dir … --day DAY` shows one day (also today) from what
+is there.
+
 ## Test
 
-`qorpera-agent-exit.test.mjs` checks the pins, the logger's parsers and the plug tool: allocation under the
-creators' umask, twelve plugs at once, quarantine, and the reconciler against a stand-in for LXD (attribution only
-after a match, a forged claim, sleep, two misses before an unplug, a machine made again, an entry removed by hand,
-plugs never created, unusable entries and links never followed, the bridge sets, the twins it finds). On Linux with
-Docker it runs `test/proof.sh` in a privileged container with no network of its own (`ubuntu:26.04` with the
-packages above, built once and cached). The proof never leaves the container's namespaces and never unloads a
-kernel module (the kernel loads nftables' own on demand).
+`qorpera-agent-exit.test.mjs` checks the pins, the logger's parsers and pause decision, the logs' tender (a day sealed
+and counted only once closed, a company carried from an earlier day, an address that changes company, parts by size, a
+late part counted with the next day under its own day, a pass cut short after the counts file, a closed day that
+cannot be counted, the DNS cut, a pass cut short while sealing, the report, the cap's order of deletion, the floor,
+90 days) and the plug tool: allocation under the creators' umask, twelve plugs at once, quarantine, and the
+reconciler against a stand-in for LXD (attribution only after a match, a forged claim, sleep, two misses before an unplug, a machine made again, an entry
+removed by hand, plugs never created, unusable entries and links never followed, the bridge sets, the twins it finds).
+On Linux with Docker it runs `test/proof.sh` in a privileged container with no network of its own (`ubuntu:26.04`
+with the packages above, built once and cached). The proof never leaves the container's namespaces and never unloads
+a kernel module (the kernel loads nftables' own on demand).
 The proof plays a node: an agent road machine plugged into `qagent0` by a creator (a member of the plug group, umask
 077), the office network (router, NAS, node 1), a small internet (a site, a resolver, our public address) and node 1
 on the tailnet. It checks:
@@ -184,6 +257,10 @@ on the tailnet. It checks:
   bridge (and `health` saying so), a forged entry (unhealthy, a mismatch line, dropped and never attributed), a sleep
   that ends the machine's TCP, UDP and ICMP connections in the exit and their twins on the node, a removal
   (quarantine, no more DHCP, the address skipped), and plugs never created given up;
+- the logs on the node: the day's counts per company from the live logs, the tender sealing the open files and cutting
+  `dns.log` while dnsmasq and the logger write on into new ones, a line the logger cannot write (unhealthy at once,
+  recovered by itself with a gap line), and the logger pausing past its cap (no lines, traffic and DNS on, `dns.log`
+  emptied, `verify` failing) and going on with a gap line saying what it missed;
 - an interrupted rebuild: the logger leaves the old namespace by itself, and `verify` fails until DNS follows;
 - that `down` refuses with a machine plugged in, or only in the client map, and changes nothing; that with the
   exit's namespace gone the machine has no internet and no names; and that with nothing plugged in `down` removes
@@ -254,8 +331,9 @@ What the numbers say:
 
 ## Notes for later steps
 
-- E3 (log shipping): rotate `dns.log` by copying and truncating it, not by renaming it and sending SIGUSR2. dnsmasq's
-  unprivileged user cannot create a file in the 0750 log directory, so a reopen would fail and logging would stop.
+- E3 (log shipping): ship the sealed parts and the counts to the NAS folder the coordinator makes (per node and day),
+  keep 90 days there, and answer "who used this address" from the parts, the client history and `lost/` (a gap
+  line or a lost file is unknown, never "no one").
 - The per-machine connection bound counts per address; the bridge rules and LXD's MAC filter pin each machine to its
   address. A reload of the rules starts both counts again from zero, and recreates the 30 s timeout policy: the
   connections open at that moment close into the kernel's 120 s. The trade-off of 30 s: a site that closed first and

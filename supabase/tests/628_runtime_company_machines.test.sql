@@ -141,7 +141,7 @@ end $$;
 -- 2. One node makes machines up to 8 CPUs / 32 GiB and gives them 300 GiB of disk; its executor holds the policy.
 do $$
 declare v_policy jsonb := jsonb_build_object('providerId','machine-fixture','providerPolicySha256',repeat('f',64),'project','machines',
-	'imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),'storagePool','machines','network','machine-net');
+	'imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),'storagePool','machines','network','qagent0');
 begin
 	-- Agents are offered machine tools only once a node can serve them (20260928259350).
 	perform pg_temp.wake_assert(not public.qorpera_company_machines_available()
@@ -205,7 +205,7 @@ begin
 		and v_place.binding = jsonb_build_object('schema','qorpera.lxd-company-machine/v1','machineId',v_row.id,'placementId',v_place.id,
 			'companyId',v_row.profile_id,
 			'environmentId',v_row.environment_id,'providerId','machine-fixture','providerPolicySha256',repeat('f',64),'project','machines',
-			'imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),'storagePool','machines','network','machine-net',
+			'imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),'storagePool','machines','network','qagent0',
 			'cpus',2,'memoryBytes',4294967296,'rootDiskBytes',42949672960,'repositoryWorkerId',null)
 		and v_place.instance_sha256 = encode(extensions.digest(convert_to(public.qorpera_company_machine_binding_text(v_place.binding),'utf8'),'sha256'),'hex')
 		and public.qorpera_company_machine_binding_text(v_place.binding) like '{"schema":"qorpera.lxd-company-machine/v1","machineId":%,"placementId":%,"repositoryWorkerId":null}'
@@ -416,7 +416,7 @@ end $$;
 --    A node that only looked away for a moment keeps its sleeping machine.
 do $$
 declare v_policy jsonb := jsonb_build_object('providerId','machine-fixture-b','providerPolicySha256',repeat('e',64),'project','machines',
-	'imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),'storagePool','machines','network','machine-net');
+	'imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),'storagePool','machines','network','qagent0');
 	v_old public.qorpera_company_machine_placements; v_new public.qorpera_company_machine_placements; v_entry jsonb; v_admitted jsonb;
 	v_released jsonb;
 begin
@@ -457,7 +457,8 @@ begin
 		'Released; the machine lives on in its new placement: '||v_released::text);
 end $$;
 
--- 10. A task machine sleeps when idle, unless a command runs; asleep past the removal delay it is deleted.
+-- 10. A task machine sleeps when idle, unless the machine is busy (the one idle rule, 20260930055000: a command that
+--     only waits keeps nothing awake); asleep past the removal delay it is deleted.
 do $$
 declare v_boot uuid := extensions.gen_random_uuid(); v_released jsonb; v_place public.qorpera_company_machine_placements;
 begin
@@ -467,12 +468,13 @@ begin
 	update public.qorpera_company_machines set last_used_at = clock_timestamp() - interval '2 minutes' where name = 'wait';
 	perform pg_temp.run('30000000-0000-4000-8000-000000000503','server',repeat('7',64),'wait','npm run dev',false);
 	update public.qorpera_company_machines set last_used_at = clock_timestamp() - interval '2 minutes' where name = 'wait';
-	perform pg_temp.wake_assert(not (pg_temp.listed('mx-a',repeat('c',64),'wait') ->> 'sleepDue')::boolean
-		and pg_temp.custody('wait','stop') ->> 'reason' = 'MACHINE_IN_USE','A running command keeps it awake');
+	perform pg_temp.wake_assert((pg_temp.listed('mx-a',repeat('c',64),'wait') ->> 'sleepDue')::boolean,
+		'A command that only waits keeps nothing awake');
 	perform pg_temp.record('wait',v_boot,'[{"commandId":"30000000-0000-4000-8000-000000000503","state":"cancelled"}]',false);
 	perform pg_temp.wake_assert((pg_temp.listed('mx-a',repeat('c',64),'wait') ->> 'sleepDue')::boolean,'Idle: sleep is due');
 	perform pg_temp.record('wait',v_boot,'[]',true);
-	perform pg_temp.wake_assert(not (pg_temp.listed('mx-a',repeat('c',64),'wait') ->> 'sleepDue')::boolean,'A busy machine is in use');
+	perform pg_temp.wake_assert(not (pg_temp.listed('mx-a',repeat('c',64),'wait') ->> 'sleepDue')::boolean
+		and pg_temp.custody('wait','stop') ->> 'reason' = 'MACHINE_IN_USE','A busy machine is in use');
 	update public.qorpera_company_machines set last_used_at = clock_timestamp() - interval '2 minutes' where name = 'wait';
 	perform pg_temp.wake_assert(pg_temp.custody('wait','stop') ->> 'intent' = 'stop' and (pg_temp.machine('wait')).desired_state = 'stopped'
 		and (pg_temp.machine('wait')).desired_by = 'kernel','The kernel puts it to sleep');
@@ -630,7 +632,7 @@ end $$;
 do $$
 declare v_old public.qorpera_company_machine_placements; v_new public.qorpera_company_machine_placements;
 	v_policy jsonb := jsonb_build_object('providerId','machine-fixture-b','providerPolicySha256',repeat('9',64),'project','machines',
-		'imageFingerprint',repeat('8',64),'bootstrapSha256',repeat('b',64),'storagePool','machines','network','machine-net');
+		'imageFingerprint',repeat('8',64),'bootstrapSha256',repeat('b',64),'storagePool','machines','network','qagent0');
 begin
 	perform public.qorpera_native_machine_manage(pg_temp.binding(),'{"action":"stop","machine":"big"}');
 	perform pg_temp.custody('big','stop');
@@ -658,12 +660,12 @@ begin
 		'companyId','00000000-0000-4000-8000-000000000003',
 		'environmentId','00000000-0000-4000-8000-000000000004','providerId','machine-node','providerPolicySha256',repeat('a',64),
 		'project','machines','imageFingerprint',repeat('b',64),'bootstrapSha256',repeat('c',64),'storagePool','machines',
-		'network','machine-net','cpus',8,'memoryBytes',34359738368,'rootDiskBytes',107374182400,'repositoryWorkerId',null))
+		'network','qagent0','cpus',8,'memoryBytes',34359738368,'rootDiskBytes',107374182400,'repositoryWorkerId',null))
 		= '{"schema":"qorpera.lxd-company-machine/v1","machineId":"00000000-0000-4000-8000-000000000002",'
 			|| '"placementId":"00000000-0000-4000-8000-000000000005","companyId":"00000000-0000-4000-8000-000000000003",'
 			|| '"environmentId":"00000000-0000-4000-8000-000000000004","providerId":"machine-node","providerPolicySha256":"' || repeat('a',64)
 			|| '","project":"machines","imageFingerprint":"' || repeat('b',64) || '","bootstrapSha256":"' || repeat('c',64)
-			|| '","storagePool":"machines","network":"machine-net","cpus":8,"memoryBytes":34359738368,"rootDiskBytes":107374182400,"repositoryWorkerId":null}',
+			|| '","storagePool":"machines","network":"qagent0","cpus":8,"memoryBytes":34359738368,"rootDiskBytes":107374182400,"repositoryWorkerId":null}',
 		'The binding text matches the executor''s');
 	perform pg_temp.wake_assert(pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure)
 		like '%''machine_start'',''machine_run'',''machine_read'',''machine_cancel'',''machine_stop'',''machine_delete'',''machine_list''%',

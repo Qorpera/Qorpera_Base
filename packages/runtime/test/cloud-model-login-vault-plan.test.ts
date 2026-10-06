@@ -346,3 +346,30 @@ it("refuses an envelope of another kind than the database names, giving the lock
 		expect.any(AbortSignal),
 	);
 });
+
+it("records a plan login's verified OpenAI subject as its account, never in the Codex namespace", async () => {
+	const f = fixture();
+	const answer = (await f.authority.issueModelLogin(f.run, null, true, signal())) as Record<string, unknown>;
+	f.authority.listModelLoginsWithoutAccount.mockResolvedValueOnce({
+		schema: "qorpera.model-login-accounts/v1",
+		logins: [
+			{
+				loginId: f.loginId,
+				companyId: f.companyId,
+				computeIdentityId: f.run.computeIdentityId,
+				version: 3,
+				keyId: answer.keyId,
+				encryptedEnvelopeBase64: answer.encryptedEnvelopeBase64,
+				envelopeSha256: answer.envelopeSha256,
+			},
+		],
+	});
+	const vault = new CloudModelLoginVault({ authority: f.authority, keyring: f.keyring });
+	await expect(vault.recordAccounts(signal())).resolves.toBe(1);
+	const subject = createHash("sha256").update("openai-subject:").update(f.stored.subject).digest("hex");
+	expect(f.authority.recordModelLoginAccount).toHaveBeenCalledExactlyOnceWith(
+		{ loginId: f.loginId, accountIdentity: subject },
+		expect.any(AbortSignal),
+	);
+	expect(subject).not.toBe(createHash("sha256").update("openai-account:").update(f.stored.subject).digest("hex"));
+});

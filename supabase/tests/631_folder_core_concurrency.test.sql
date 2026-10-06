@@ -347,6 +347,7 @@ end $$;
 delete from public.qorpera_folder_journal where environment_id = '63100000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_path_versions where environment_id = '63100000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_entries where environment_id = '63100000-0000-4000-8000-000000000020';
+delete from public.qorpera_folder_conflict_copies where environment_id = '63100000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_commits where environment_id = '63100000-0000-4000-8000-000000000020';
 -- Version-2 objects are catalog rows of the object gateway (no Storage mirror, no link to the company), so they go by
 -- hand, with their proofs and chunk rows; the intents go with the company.

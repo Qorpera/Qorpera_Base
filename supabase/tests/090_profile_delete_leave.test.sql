@@ -1,13 +1,17 @@
 -- Owner-delete and member-leave (20260818006000), exercised as the real
 -- client roles. The separation users from 040 are order-coupled fixtures.
 
--- Owner A creates the profile the suite revolves around.
-select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}', false);
-set role authenticated;
-select set_config('qorpera_test.dl_profile',
-	public.qorpera_create_hosted_profile('Delete Leave QA', 'main', 1) ->> 'profile_id', false);
-reset role;
-select set_config('request.jwt.claims', '', false);
+-- Owner A creates the profile the suite revolves around: a folder-v2 company,
+-- opened the way the company creation opens one (856).
+select set_config('qorpera_test.dl_profile', public.qorpera_folder_company_open('80000000-0000-4000-8000-00000000000a',
+	'80000000-0000-4000-8000-0000000000e9', 'Delete Leave QA') ->> 'profile_id', false);
+do $$
+begin
+	if not public.qorpera_company_is_folder_v2(current_setting('qorpera_test.dl_profile')::uuid) then
+		raise exception 'the delete and leave company is not a folder-v2 company';
+	end if;
+end
+$$;
 
 -- B joins as a contributor (fixture shortcut for the invitation flow).
 insert into public.qorpera_profile_members (profile_id, user_id, email, display_name, role)

@@ -19,7 +19,21 @@ insert into public.qorpera_profile_members (profile_id, user_id, email, display_
 	('98370000-0000-4000-8000-000000000011', '98370000-0000-4000-8000-00000000000a', 'topic-member@example.test', 'Mo', 'owner');
 insert into public.qorpera_company_environments (id, profile_id, name, contract_version, created_by_user_id) values
 	('98370000-0000-4000-8000-000000000020', '98370000-0000-4000-8000-000000000010', 'Environment', 1,
+		'98370000-0000-4000-8000-00000000000a'),
+	('98370000-0000-4000-8000-000000000021', '98370000-0000-4000-8000-000000000011', 'Environment', 1,
 		'98370000-0000-4000-8000-00000000000a');
+-- Both are folder-v2 companies (the company folder core).
+select set_config('request.jwt.claims', '{"role":"service_role"}', true) \g /dev/null
+select public.qorpera_folder_enable('98370000-0000-4000-8000-000000000020') \g /dev/null
+select public.qorpera_folder_enable('98370000-0000-4000-8000-000000000021') \g /dev/null
+select set_config('request.jwt.claims', '', true) \g /dev/null
+do $$
+begin
+	if not public.qorpera_company_is_folder_v2('98370000-0000-4000-8000-000000000010')
+		or not public.qorpera_company_is_folder_v2('98370000-0000-4000-8000-000000000011') then
+		raise exception 'a topic company is not a folder-v2 company';
+	end if;
+end $$;
 insert into public.qorpera_shared_sessions (id, profile_id, environment_id, title, created_by_user_id, audience_kind, execution_scope)
 select room.session_id, '98370000-0000-4000-8000-000000000010', '98370000-0000-4000-8000-000000000020', room.name,
 	'98370000-0000-4000-8000-00000000000a', 'company', jsonb_build_object('roomId', room.id)
@@ -27,11 +41,14 @@ from (values
 	('98370000-0000-4000-8000-000000000060'::uuid, '98370000-0000-4000-8000-000000000050'::uuid, 'Launch'),
 	('98370000-0000-4000-8000-000000000061'::uuid, '98370000-0000-4000-8000-000000000051'::uuid, 'Hiring')
 ) as room(id, session_id, name);
+-- Two folder-v2 group chats, as the folder index writes them for agents/groups/<key>/group.md (the path, that path's
+-- version and the commit that wrote it; no snapshot source).
 insert into public.qorpera_company_rooms (id, profile_id, environment_id, room_key, name, purpose, status, session_id,
-	version, source_path, source_path_version, source_snapshot_id, source_file_sha256, created_by_user_id)
-select room.id, '98370000-0000-4000-8000-000000000010', '98370000-0000-4000-8000-000000000020', room.room_key, room.name,
-	room.name || ' planning', 'active', room.session_id, 1, 'organization/rooms/' || room.room_key || '.json',
-	room.path_version, '98370000-0000-4000-8000-000000000070', repeat('d', 64), '98370000-0000-4000-8000-00000000000a'
+	version, source_path, created_by_user_id, folder_environment_id, folder_path, folder_path_version, folder_commit_id)
+select room.id, '98370000-0000-4000-8000-000000000010', '98370000-0000-4000-8000-000000000020', 'chat-' || room.id, room.name,
+	room.name || ' planning', 'active', room.session_id, 1, 'organization/rooms/' || room.id || '.json',
+	'98370000-0000-4000-8000-00000000000a', '98370000-0000-4000-8000-000000000020',
+	'agents/groups/' || room.room_key || '/group.md', room.path_version, '98370000-0000-4000-8000-000000000070'
 from (values
 	('98370000-0000-4000-8000-000000000060'::uuid, '98370000-0000-4000-8000-000000000050'::uuid, 'launch', 'Launch',
 		'98370000-0000-4000-8000-000000000062'::uuid),

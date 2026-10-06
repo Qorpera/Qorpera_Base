@@ -146,20 +146,25 @@ export class CompanyComputerLinuxCommands implements CompanyComputerGuestCommand
 				this.#layout.workbenchRoot,
 				this.#layout.desktopHome,
 			]);
-			const socket = await lstat(this.#xSocket);
-			if (
-				!socket.isSocket() ||
-				socket.uid !== process.getuid?.() ||
-				(await realpath(this.#xSocket)) !== this.#xSocket
-			)
-				throw new Error("OFFICE_X_SOCKET_UNAVAILABLE");
-			const socketParent = await lstat(dirname(this.#xSocket));
-			if (
-				!socketParent.isDirectory() ||
-				socketParent.uid !== process.getuid?.() ||
-				(socketParent.mode & 0o077) !== 0
-			)
-				throw new Error("UNSAFE_OFFICE_X_SOCKET_DIRECTORY");
+			// Only the screen's own tools reach its display. A shell command never
+			// does: any X client of the screen could read what a member types there.
+			const display = program !== "/usr/bin/bash";
+			if (display) {
+				const socket = await lstat(this.#xSocket);
+				if (
+					!socket.isSocket() ||
+					socket.uid !== process.getuid?.() ||
+					(await realpath(this.#xSocket)) !== this.#xSocket
+				)
+					throw new Error("OFFICE_X_SOCKET_UNAVAILABLE");
+				const socketParent = await lstat(dirname(this.#xSocket));
+				if (
+					!socketParent.isDirectory() ||
+					socketParent.uid !== process.getuid?.() ||
+					(socketParent.mode & 0o077) !== 0
+				)
+					throw new Error("UNSAFE_OFFICE_X_SOCKET_DIRECTORY");
+			}
 			const args = [
 				...companyComputerLinuxSandboxArgs(),
 				"--bind-fd",
@@ -168,9 +173,7 @@ export class CompanyComputerLinuxCommands implements CompanyComputerGuestCommand
 				"--bind-fd",
 				"4",
 				"/home/qorpera",
-				"--ro-bind",
-				this.#xSocket,
-				`/tmp/.X11-unix/X${this.#binding.screenOrdinal}`,
+				...(display ? ["--ro-bind", this.#xSocket, `/tmp/.X11-unix/X${this.#binding.screenOrdinal}`] : []),
 			];
 			if (capture) {
 				const handle = await open(capture, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
@@ -179,7 +182,7 @@ export class CompanyComputerLinuxCommands implements CompanyComputerGuestCommand
 			}
 			for (const [name, value] of Object.entries({
 				HOME: "/home/qorpera",
-				DISPLAY: companyComputerScreenDisplay(this.#binding.screenOrdinal),
+				...(display ? { DISPLAY: companyComputerScreenDisplay(this.#binding.screenOrdinal) } : {}),
 				PATH: "/usr/local/bin:/usr/bin:/bin",
 				LANG: "C.UTF-8",
 			}))
@@ -272,7 +275,10 @@ export class CompanyComputerLinuxCommands implements CompanyComputerGuestCommand
 			(input.stdin !== undefined && (typeof input.stdin !== "string" || Buffer.byteLength(input.stdin) > 16384)) ||
 			input.workingDirectory !== this.#layout.workbenchRoot ||
 			!isDeepStrictEqual(input.environment, {
-				DISPLAY: companyComputerScreenDisplay(this.#binding.screenOrdinal),
+				// A shell command gets no display (see #execute).
+				...(input.program === "/usr/bin/xdotool"
+					? { DISPLAY: companyComputerScreenDisplay(this.#binding.screenOrdinal) }
+					: {}),
 				PATH: "/usr/local/bin:/usr/bin:/bin",
 				LANG: "C.UTF-8",
 			}) ||

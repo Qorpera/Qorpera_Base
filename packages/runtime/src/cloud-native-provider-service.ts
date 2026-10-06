@@ -18,6 +18,13 @@ import {
 	parseCloudAgentSendReceipt,
 } from "./cloud-agent-mouth.ts";
 import { codingErrorCode } from "./cloud-coding-error-code.ts";
+import {
+	CloudControlRpcRefused,
+	cloudControlErrorBody,
+	cloudControlRefusalCode,
+	cloudControlTransientCode,
+	cloudPostgrestError,
+} from "./cloud-control-errors.ts";
 import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
 import {
 	isNativeHostPublishableKey,
@@ -47,6 +54,7 @@ import type {
 	CompleteFolderToolOperationInput,
 } from "./cloud-native-tool-operations.ts";
 import type { BeginCloudRunnerOperationInput, CompleteCloudRunnerOperationInput } from "./cloud-runner-broker.ts";
+import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 import {
 	type CloudInteractionRequestInput,
 	type CloudInteractionRequestReceipt,
@@ -697,9 +705,36 @@ export class SupabaseNativeProviderControlPlane
 					body: JSON.stringify(body),
 					redirect: "error",
 					signal: requestSignal,
+				}).catch((error: unknown) => {
+					// No answer at all: a lost connection, which an idempotent read may ask again.
+					if (requestSignal.aborted) throw error;
+					throw new CloudRuntimeDiagnosticError("transport_unavailable", "Native control-plane RPC failed");
 				});
 				if (!response.ok) {
-					void response.body?.cancel().catch(() => undefined);
+					// Control calls (4 Oct 2026): a refusal the database raised stays a refusal; a lost or late answer (a
+					// 5xx with no SQLSTATE, PostgREST's connection errors, a timeout or serialization SQLSTATE) is
+					// transient; anything else fails as before.
+					const text = await cloudControlErrorBody(response);
+					let error: { code: string; message: string } | undefined;
+					try {
+						error = text ? cloudPostgrestError(JSON.parse(text)) : undefined;
+					} catch {
+						error = undefined;
+					}
+					if (error && cloudControlRefusalCode(error.code))
+						throw new CloudControlRpcRefused(
+							error.code,
+							error.message,
+							`Native control-plane RPC failed (${response.status})`,
+						);
+					if (
+						(error && cloudControlTransientCode(error.code)) ||
+						(!error && (response.status >= 500 || response.status === 408 || response.status === 429))
+					)
+						throw new CloudRuntimeDiagnosticError(
+							"transport_unavailable",
+							`Native control-plane RPC failed (${response.status})`,
+						);
 					throw new Error(`Native control-plane RPC failed (${response.status})`);
 				}
 				if (!response.body) throw new Error("Native control-plane RPC returned no body");
@@ -713,7 +748,11 @@ export class SupabaseNativeProviderControlPlane
 				try {
 					while (true) {
 						requestSignal.throwIfAborted();
-						const next = await reader.read();
+						const next = await reader.read().catch((error: unknown) => {
+							// The connection ended mid-answer: a lost answer, like a failed fetch (control calls).
+							if (requestSignal.aborted) throw error;
+							throw new CloudRuntimeDiagnosticError("transport_unavailable", "Native control-plane RPC failed");
+						});
 						requestSignal.throwIfAborted();
 						if (next.done) break;
 						bytes += next.value.byteLength;
