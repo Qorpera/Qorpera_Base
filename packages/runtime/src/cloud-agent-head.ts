@@ -5,9 +5,11 @@
  * - The agent head: its job specification (the body of its agent.md) and its profile page.
  *
  * It is data, not instructions, as C §9.2 asks: one serialized object, escaped as the context prompt is, whose every
- * part names its file (path and version) and carries a trust label that the stable part explains. It is the same for
- * every member, model and payer, and changes only when one of its files does. The reads that compose it are released
- * with the run's context, as read references.
+ * part names its file and what it was read at (the vision and the profile page their file version, the job
+ * specification its staff version) and carries a trust label that the stable part explains. Only the vision part is its
+ * file's text; the job part is the job specification at that staff version and the profile part the page's facts. It is
+ * the same for every member, model and payer, and changes only when one of its files does. The reads that compose it
+ * are released with the run's context, as read references.
  *
  * Never cut: a part that does not fit in CLOUD_AGENT_HEAD_BYTES, in the order vision, job, profile, is left out whole
  * and named with its path and size, and the context message keeps the job specification and the profile page it left
@@ -47,25 +49,23 @@ export interface CloudAgentHead {
 }
 
 type Candidate =
-	| { part: CloudAgentHeadPart; path: string; version: string | number; text: string }
+	| { part: CloudAgentHeadPart; path: string; at: { version: string } | { staffVersion: number }; text: string }
 	| { part: CloudAgentHeadPart; path: string; bytes: number };
 
 /** The vision file for the company head, or null when there is none. A file a trusted read cannot hold as text (over
- * 32 KiB, or not UTF-8) is named with its size from its folder's listing. */
+ * 32 KiB, or not UTF-8) is named with the size that read found. */
 export async function readCloudAgentHeadVision(
-	gateway: Pick<CloudCompanyPathGateway, "readTrusted" | "listTrusted">,
+	gateway: Pick<CloudCompanyPathGateway, "readTrusted">,
 	signal: AbortSignal,
 ): Promise<CloudAgentHeadVision | null> {
 	try {
 		const read = await gateway.readTrusted(CLOUD_AGENT_VISION_PATH, signal);
 		return read.kind === "file" ? { path: read.path, version: read.version, text: read.text } : null;
 	} catch (error) {
-		if (!(error instanceof CloudCompanyPathNotText)) throw error;
+		if (error instanceof CloudCompanyPathNotText && error.bytes !== null)
+			return { path: CLOUD_AGENT_VISION_PATH, bytes: error.bytes };
+		throw error;
 	}
-	const listed = (await gateway.listTrusted("vision", signal)).find(
-		(entry) => entry.path === CLOUD_AGENT_VISION_PATH && entry.kind === "file",
-	);
-	return listed ? { path: listed.path, bytes: listed.bytes ?? 0 } : null;
 }
 
 function serialize(parts: readonly Candidate[], omitted: readonly Candidate[]): string {
@@ -77,7 +77,7 @@ function serialize(parts: readonly Candidate[], omitted: readonly Candidate[]): 
 					? {
 							part: part.part,
 							path: part.path,
-							version: part.version,
+							...part.at,
 							trust: CLOUD_AGENT_HEAD_TRUST[part.part],
 							text: part.text,
 						}
@@ -102,7 +102,12 @@ export function composeCloudAgentHead(
 ): CloudAgentHead {
 	const job = context.jobSpecification.content;
 	const candidates: Candidate[] = [];
-	if (vision) candidates.push({ part: "vision", ...vision });
+	if (vision)
+		candidates.push(
+			"text" in vision
+				? { part: "vision", path: vision.path, at: { version: vision.version }, text: vision.text }
+				: { part: "vision", ...vision },
+		);
 	const folder = cloudAgentFolder(
 		context.identity.companyId,
 		context.identity.staffAgentId,
@@ -112,13 +117,13 @@ export function composeCloudAgentHead(
 	candidates.push(
 		job.truncated
 			? { part: "job", path: jobPath, bytes: job.originalBytes }
-			: { part: "job", path: jobPath, version: context.agent.version, text: job.text },
+			: { part: "job", path: jobPath, at: { staffVersion: context.agent.version }, text: job.text },
 	);
 	if (memory.available && memory.profile.version !== null)
 		candidates.push({
 			part: "profile",
 			path: memory.profile.path,
-			version: memory.profile.version,
+			at: { version: memory.profile.version },
 			text: memory.profile.facts.map((fact) => `- (${fact.date}) ${fact.fact}`).join("\n"),
 		});
 	// Each step's head is exactly what would be sent if the parts after it were left out, so the last one fits too.

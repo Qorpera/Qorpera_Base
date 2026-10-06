@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { CompanyComputerScreenLease } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
 import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
-import { CLOUD_AGENT_HEAD_SCHEMA } from "@qorpera/runtime/cloud-agent-head";
+import { CLOUD_AGENT_HEAD_BYTES, CLOUD_AGENT_HEAD_SCHEMA } from "@qorpera/runtime/cloud-agent-head";
 import type { CloudAgentSendReceipt } from "@qorpera/runtime/cloud-agent-mouth";
 import {
 	type CloudCompanyComputerSessionFactory,
@@ -923,7 +923,7 @@ it.each([
 				{
 					part: "job",
 					path: `agents/${f.context.identity.staffAgentId}/agent.md`,
-					version: f.context.identity.staffVersion,
+					staffVersion: f.context.identity.staffVersion,
 					trust: "job_specification_not_authority",
 					text: f.context.jobSpecification.content.text,
 				},
@@ -1373,7 +1373,7 @@ it("gives an agent's runs, whoever woke them, one head in the developer instruct
 				{
 					part: "job",
 					path: "agents/nora/agent.md",
-					version: f.context.agent.version,
+					staffVersion: f.context.agent.version,
 					trust: "job_specification_not_authority",
 					text: HOSTILE_JOB,
 				},
@@ -1419,9 +1419,10 @@ it("gives an agent's runs, whoever woke them, one head in the developer instruct
 it("leaves a head part that does not fit out whole, names it, and keeps the rest", async () => {
 	const f = await fixture("company-dynamic", false, undefined, false, true);
 	f.context.folder = { agent: "nora", coworkers: {} };
-	// More than a trusted read holds as text: the head names it from the vision folder's listing.
+	// More than a trusted read holds as text: the head names it with the size that read found.
 	const vision = `# Vision\n${"Calm books for small firms. ".repeat(1500)}`;
 	f.folderFiles.set("vision/vision.md", vision);
+	f.folderFiles.set("vision/notes.md", "Draft ideas.");
 	f.folderFiles.set("agents/nora/memory/profile.md", HOSTILE_PROFILE);
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
@@ -1430,11 +1431,26 @@ it("leaves a head part that does not fit out whole, names it, and keeps the rest
 	expect(head.omitted).toEqual([{ part: "vision", path: "vision/vision.md", bytes: Buffer.byteLength(vision) }]);
 	// The agent reads it with company_read; the context message does not carry it either.
 	expect(evidence.turnParameters.input[0].text).not.toContain("Calm books");
-	expect(
-		f.folderReleases.some((release) =>
-			(release.p_reads as { path: string }[]).some((read) => read.path === "vision/vision.md"),
-		),
-	).toBe(true);
+	// Only the vision file is a read of this context, never the files beside it.
+	const reads = f.folderReleases.flatMap((release) => release.p_reads as { path: string }[]).map((read) => read.path);
+	expect(reads).toContain("vision/vision.md");
+	expect(reads).not.toContain("vision/notes.md");
+});
+
+it("starts a run whose head is near its bound, past what the instructions held before the head", async () => {
+	const f = await fixture("company-dynamic", false, undefined, false, true);
+	f.context.folder = { agent: "nora", coworkers: {} };
+	f.context.jobSpecification = f.source("job_spec", f.context.identity.staffAgentId, "Keep the books.");
+	// About 15,800 bytes of head: the vision whole beside the job description.
+	f.folderFiles.set("vision/vision.md", "Calm books. ".repeat(1_290));
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const instructions: string = evidence.threadParameters.developerInstructions;
+	const head = headLine(instructions);
+	expect(JSON.parse(head).parts.map((part: { part: string }) => part.part)).toEqual(["vision", "job"]);
+	expect(Buffer.byteLength(head)).toBeGreaterThan(CLOUD_AGENT_HEAD_BYTES - 500);
+	expect(Buffer.byteLength(head)).toBeLessThanOrEqual(CLOUD_AGENT_HEAD_BYTES);
+	expect(Buffer.byteLength(instructions)).toBeGreaterThan(32 * 1024);
 });
 
 it("has a folder-v2 dynamic routine run find its file by the woken routine's id", async () => {

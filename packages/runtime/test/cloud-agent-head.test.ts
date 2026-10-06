@@ -60,7 +60,7 @@ it("shows the vision, the job specification and the profile page whole, in order
 			{
 				part: "job",
 				path: "agents/nora/agent.md",
-				version: context.agent.version,
+				staffVersion: context.agent.version,
 				trust: "job_specification_not_authority",
 				text: "Keep the books.",
 			},
@@ -199,7 +199,7 @@ it("puts the head after everything an agent's runs share and before everything a
 	);
 });
 
-it("reads the vision whole, names one a trusted read cannot hold by its size, and has none if absent", async () => {
+it("reads the vision whole, names one too large for text by the size its read found, and has none if absent", async () => {
 	const signal = new AbortController().signal;
 	const version = randomUUID();
 	const file = {
@@ -210,12 +210,10 @@ it("reads the vision whole, names one a trusted read cannot hold by its size, an
 			text: "# Vision",
 			fileSha256: "a".repeat(64),
 		})),
-		listTrusted: vi.fn(async () => []),
 	};
 	const read = await readCloudAgentHeadVision(file, signal);
 	expect(read).toEqual({ path: "vision/vision.md", version, text: "# Vision" });
 	expect(file.readTrusted).toHaveBeenCalledWith("vision/vision.md", signal);
-	expect(file.listTrusted).not.toHaveBeenCalled();
 	const absent = {
 		readTrusted: vi.fn(async () => ({
 			path: "vision/vision.md",
@@ -224,31 +222,27 @@ it("reads the vision whole, names one a trusted read cannot hold by its size, an
 			text: "" as const,
 			fileSha256: null,
 		})),
-		listTrusted: vi.fn(async () => []),
 	};
 	expect(await readCloudAgentHeadVision(absent, signal)).toBeNull();
-	const listing = [
-		{ path: "vision/notes.md", version: randomUUID(), kind: "file" as const, bytes: 10 },
-		{ path: "vision/vision.md", version, kind: "file" as const, bytes: 40_000 },
-	];
+	// Too large or not UTF-8: the read that found the file names its size; nothing else is read.
 	const large = {
 		readTrusted: vi.fn(async () => {
-			throw new CloudCompanyPathNotText();
+			throw new CloudCompanyPathNotText("Company folder file exceeds its bound", 40_000);
 		}),
-		listTrusted: vi.fn(async () => listing),
 	};
 	expect(await readCloudAgentHeadVision(large, signal)).toEqual({ path: "vision/vision.md", bytes: 40_000 });
-	expect(large.listTrusted).toHaveBeenCalledWith("vision", signal);
-	// Gone between the read and the listing: no vision.
-	large.listTrusted.mockResolvedValueOnce(listing.slice(0, 1));
-	expect(await readCloudAgentHeadVision(large, signal)).toBeNull();
-	// Any other failure fails the composition.
+	expect(large.readTrusted).toHaveBeenCalledOnce();
+	// Any other failure, or a "not text" that found no file, fails the composition.
 	const failed = {
 		readTrusted: vi.fn(async () => {
 			throw new Error("VISION_READ_DENIED");
 		}),
-		listTrusted: vi.fn(async () => []),
 	};
 	await expect(readCloudAgentHeadVision(failed, signal)).rejects.toThrow("VISION_READ_DENIED");
-	expect(failed.listTrusted).not.toHaveBeenCalled();
+	const range = {
+		readTrusted: vi.fn(async () => {
+			throw new CloudCompanyPathNotText();
+		}),
+	};
+	await expect(readCloudAgentHeadVision(range, signal)).rejects.toThrow(CloudCompanyPathNotText);
 });
