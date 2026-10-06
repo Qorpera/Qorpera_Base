@@ -361,7 +361,7 @@ runtime adapter, with no migration.
   chunk for a write and for a copy; a closure object outside the locked set; a move into a folder, then a copy of it,
   in one change set.
 - Usage and the soft quota at the exact limit, for new and for stored objects; the lazy seed; the snapshot-v1 paths
-  unchanged (digests, and the old functions' results).
+  unchanged (digests, and the old functions' results; no digests since 3 October: legacy sweep A, #829, removed them).
 - Races (dblink, `current_database()`): a commit against a seal of the same file; two uploads of one hash; open,
   confirm and seal against a waiting `FOR UPDATE` on their objects; a stop against an open; replication behind a held
   profile row; staging, download and replication calls (and a replica insert) that finish while `company_files` and
