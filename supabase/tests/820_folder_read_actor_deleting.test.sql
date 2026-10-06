@@ -1,4 +1,4 @@
--- @fixture 647_folder_core_run_fence.test.sql until "-- 1. Snapshot-v1 keeps its text"
+-- @fixture 647_folder_core_run_fence.test.sql until "-- The checks start here: a test that runs after this file's fixture part stops at this line."
 -- Folder core slice P01 (20260930001000; F3's P1): a company being deleted serves its folder to no one. Members and the
 -- platform get 55000 'Company is being deleted' from the actor check, read, list and the feed; a run keeps its 'Company
 -- execution is paused'; another company's deletion changes nothing; once the deletion row is gone they read again. The

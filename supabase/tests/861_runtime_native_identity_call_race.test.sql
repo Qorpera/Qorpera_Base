@@ -1,18 +1,19 @@
--- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- G2-3a (20260930005000): the native identity entry point checks the holder's credential per call and with no lock,
--- so a refused call never waits for a transaction that holds the identity, its runner, the holder's allocation or
--- credential; a re-bind or a release takes effect on the next call, not after the calls in flight. A first bind and
--- a release of the same allocation wait only for each other's single statement (the bind's foreign key KEY SHARE
--- against the release's FOR UPDATE), and whichever commits first, a released allocation's credential is refused. A
--- sign-in's completion compares the capability before it locks the sign-in. Test 300's fixture gives a member's
--- identity, its runner and a completed sign-in; this adds a run allocation with a bound job guest credential, a
--- pending sign-in with an unbound allocation, and an account refresh request.
+-- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
+-- G2-3a (20260930005000) on a folder-v2 company (ported from snapshot-v1 in the legacy sweep): the native identity entry
+-- point checks the holder's credential per call and with no lock, so a refused call never waits for a transaction that
+-- holds the identity, its runner, the holder's allocation or credential; a re-bind or a release takes effect on the next
+-- call, not after the calls in flight. A first bind and a release of the same allocation wait only for each other's
+-- single statement (the bind's foreign key KEY SHARE against the release's FOR UPDATE), and whichever commits first, a
+-- released allocation's credential is refused. A sign-in's completion compares the capability before it locks the
+-- sign-in. Test 924's fixture gives the owner's identity, the runner of Alice's run (a thread post the folder
+-- materializer turned into a run) and a completed sign-in; this adds a run allocation with a bound job guest credential,
+-- a pending sign-in with an unbound allocation, and an account refresh request.
 reset role;
-create function pg_temp.sha(p_value text) returns text language sql as $$
+create function pg_temp.r861_sha(p_value text) returns text language sql as $$
 	select encode(extensions.digest(convert_to(p_value, 'utf8'), 'sha256'), 'hex')
 $$;
-select set_config('qorpera_test.identity', current_setting('qorpera_test.wake_binding')::jsonb ->> 'computeIdentityId', false);
-select set_config('qorpera_test.profile', '30000000-0000-4000-8000-000000000010', false);
+select set_config('qorpera_test.identity', current_setting('qorpera_test.base_binding')::jsonb ->> 'computeIdentityId', false);
+select set_config('qorpera_test.profile', '92400000-0000-4000-8000-000000000010', false);
 select set_config('qorpera_test.job_credential', 'J' || repeat('j', 42), false);
 select set_config('qorpera_test.rotated_credential', 'N' || repeat('n', 42), false);
 select set_config('qorpera_test.login_credential', 'L' || repeat('l', 42), false);
@@ -20,37 +21,37 @@ select set_config('qorpera_test.refresh_credential', 'R' || repeat('r', 42), fal
 select set_config('qorpera_test.epoch', recovery_epoch::text, false)
 from public.qorpera_member_compute_identities where id = current_setting('qorpera_test.identity')::uuid;
 
-select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
 set local role authenticated;
 select set_config('qorpera_test.login_id', public.qorpera_begin_native_provider_login(
-	'30000000-0000-4000-8000-000000000010', '86100000-0000-4000-8000-000000000051', '86100000-0000-4000-8000-000000000052',
-	current_setting('qorpera_test.identity')::uuid, 'openai', 'codex-cli', pg_temp.sha('login-capability'), 900) ->> 'login_id', false);
+	'92400000-0000-4000-8000-000000000010', '86100000-0000-4000-8000-000000000051', '86100000-0000-4000-8000-000000000052',
+	current_setting('qorpera_test.identity')::uuid, 'openai', 'codex-cli', pg_temp.r861_sha('login-capability'), 900) ->> 'login_id', false);
 reset role;
 insert into public.qorpera_native_account_refresh_requests(id, profile_id, client_request_id, compute_identity_id,
 	requested_by_user_id, capability_sha256, compute_recovery_epoch)
 values ('86100000-0000-4000-8000-000000000061', current_setting('qorpera_test.profile')::uuid,
 	'86100000-0000-4000-8000-000000000062', current_setting('qorpera_test.identity')::uuid,
-	'30000000-0000-4000-8000-000000000001', pg_temp.sha('refresh-capability'), current_setting('qorpera_test.epoch')::bigint);
+	'92400000-0000-4000-8000-000000000001', pg_temp.r861_sha('refresh-capability'), current_setting('qorpera_test.epoch')::bigint);
 insert into public.qorpera_runtime_machine_allocations(id, profile_id, run_id, runner_id, provider_adapter, instance_sha256)
 values ('86100000-0000-4000-8000-000000000071', current_setting('qorpera_test.profile')::uuid,
-	(current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid,
-	(current_setting('qorpera_test.wake_binding')::jsonb ->> 'runnerId')::uuid, 'lxd', repeat('7', 64));
+	(current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid,
+	(current_setting('qorpera_test.base_binding')::jsonb ->> 'runnerId')::uuid, 'lxd', repeat('7', 64));
 insert into public.qorpera_runtime_machine_allocations(id, profile_id, login_session_id, login_compute_identity_id,
 	provider_adapter, instance_sha256)
 values ('86100000-0000-4000-8000-000000000072', current_setting('qorpera_test.profile')::uuid,
 	current_setting('qorpera_test.login_id')::uuid, current_setting('qorpera_test.identity')::uuid, 'lxd-login', repeat('8', 64));
-select set_config('qorpera_test.job_hash', pg_temp.sha(current_setting('qorpera_test.job_credential')), false);
-select pg_temp.path_claims('service_role');
+select set_config('qorpera_test.job_hash', pg_temp.r861_sha(current_setting('qorpera_test.job_credential')), false);
+select pg_temp.base_claims('service_role');
 set local role service_role;
 select public.qorpera_bind_native_identity_credential('86100000-0000-4000-8000-000000000071', 'lxd', repeat('7', 64),
 	'job_guest', current_setting('qorpera_test.job_hash'));
 reset role;
 
--- Row locks show only across connections, so the fixture is committed here and removed again at the end (the
--- harness of 602, 746 and 793): the test refuses to run beside other connections to this database, whose rows the
+-- Row locks show only across connections, so 924's fixture and this one are committed here and removed again at the end
+-- (the harness of 602, 746 and 793): the test refuses to run beside other connections to this database, whose rows the
 -- cleanup could not tell from its own.
 reset role;
-select set_config('qorpera_test.wake_binding', current_setting('qorpera_test.wake_binding'), false);
+select set_config('qorpera_test.base_binding', current_setting('qorpera_test.base_binding'), false);
 select set_config('qorpera_test.r861_first_xid', xid(pg_current_xact_id())::text, false);
 select dblink_connect('r861_holder', 'dbname=' || current_database());
 select dblink_connect('r861_caller', 'dbname=' || current_database());
@@ -200,7 +201,7 @@ end $$;
 create function pg_temp.r861_refused(p_outcome jsonb) returns boolean language sql as $$
 	select coalesce(p_outcome ->> 'state' = '42501' and p_outcome ->> 'error' = 'native identity call is refused', false)
 $$;
--- A sign-in's completion with every input valid but the capability (as test 300's fixture completes its sign-in).
+-- A sign-in's completion with every input valid but the capability (as test 924's fixture completes its sign-in).
 create function pg_temp.r861_complete_sql(p_capability text) returns text language sql as $$
 	select format($q$select public.qorpera_complete_native_provider_login(%L, %L, %L, %L, %L, %L, %L, %L, %L, null)$q$,
 		current_setting('qorpera_test.login_id'), p_capability, '86100000-0000-4000-8000-000000000081',
@@ -219,7 +220,7 @@ begin
 	perform * from dblink('r861_holder', format('select 1 from public.qorpera_member_compute_identities where id = %L for update',
 		current_setting('qorpera_test.identity'))) as held(one integer);
 	perform * from dblink('r861_holder', format('select 1 from public.qorpera_runners where id = %L for update',
-		current_setting('qorpera_test.wake_binding')::jsonb ->> 'runnerId')) as held(one integer);
+		current_setting('qorpera_test.base_binding')::jsonb ->> 'runnerId')) as held(one integer);
 	perform * from dblink('r861_holder', format('select 1 from public.qorpera_runtime_machine_allocations where id = %L for update',
 		'86100000-0000-4000-8000-000000000071')) as held(one integer);
 	perform * from dblink('r861_holder', format('select 1 from public.qorpera_native_identity_credentials where allocation_id = %L for update',
@@ -229,7 +230,7 @@ begin
 		perform dblink_exec('r861_holder', 'rollback');
 		raise exception 'A wrong credential was not refused: %', v_outcome; end if;
 	v_outcome := pg_temp.r861_at_once(current_setting('qorpera_test.job_credential'), 'qorpera_describe_native_provider_login',
-		jsonb_build_object('p_login_id', current_setting('qorpera_test.login_id'), 'p_capability_sha256', pg_temp.sha('login-capability')));
+		jsonb_build_object('p_login_id', current_setting('qorpera_test.login_id'), 'p_capability_sha256', pg_temp.r861_sha('login-capability')));
 	if not pg_temp.r861_refused(v_outcome) then
 		perform dblink_exec('r861_holder', 'rollback');
 		raise exception 'A job guest''s sign-in call was not refused: %', v_outcome; end if;
@@ -261,7 +262,7 @@ begin
 			raise exception 'A sign-in completion with capability % answered %', coalesce(v_capability, 'null'), v_outcome; end if;
 	end loop;
 	perform pg_temp.r861_begin('caller', 'service_role');
-	perform dblink_send_query('r861_caller', pg_temp.r861_complete_sql(pg_temp.sha('login-capability')));
+	perform dblink_send_query('r861_caller', pg_temp.r861_complete_sql(pg_temp.r861_sha('login-capability')));
 	if not pg_temp.r861_waited_for('caller', pg_temp.r861_pid('holder')) then
 		perform dblink_exec('r861_holder', 'rollback');
 		v_outcome := pg_temp.r861_collect('r861_caller');
@@ -280,7 +281,7 @@ declare v_outcome jsonb;
 begin
 	perform pg_temp.r861_begin('holder', 'service_role');
 	perform * from dblink('r861_holder', format($q$select public.qorpera_bind_native_identity_credential(%L, 'lxd', %L, 'job_guest', %L)$q$,
-		'86100000-0000-4000-8000-000000000071', repeat('7', 64), pg_temp.sha(current_setting('qorpera_test.rotated_credential'))))
+		'86100000-0000-4000-8000-000000000071', repeat('7', 64), pg_temp.r861_sha(current_setting('qorpera_test.rotated_credential'))))
 		as bound(result jsonb);
 	v_outcome := pg_temp.r861_at_once(current_setting('qorpera_test.job_credential'));
 	if v_outcome ? 'error' then
@@ -330,7 +331,7 @@ declare v_outcome jsonb;
 begin
 	perform pg_temp.r861_begin('holder', 'service_role');
 	perform * from dblink('r861_holder', format($q$select public.qorpera_bind_native_identity_credential(%L, 'lxd-login', %L, 'login_guest', %L)$q$,
-		'86100000-0000-4000-8000-000000000072', repeat('8', 64), pg_temp.sha(current_setting('qorpera_test.login_credential'))))
+		'86100000-0000-4000-8000-000000000072', repeat('8', 64), pg_temp.r861_sha(current_setting('qorpera_test.login_credential'))))
 		as bound(result jsonb);
 	perform pg_temp.r861_begin('caller', 'service_role');
 	perform dblink_send_query('r861_caller', format(
@@ -346,7 +347,7 @@ begin
 	perform dblink_exec('r861_caller', 'commit');
 	if v_outcome ? 'error' then raise exception 'The release after a bind failed: %', v_outcome; end if;
 	v_outcome := pg_temp.r861_at_once(current_setting('qorpera_test.login_credential'), 'qorpera_describe_native_provider_login',
-		jsonb_build_object('p_login_id', current_setting('qorpera_test.login_id'), 'p_capability_sha256', pg_temp.sha('login-capability')));
+		jsonb_build_object('p_login_id', current_setting('qorpera_test.login_id'), 'p_capability_sha256', pg_temp.r861_sha('login-capability')));
 	if not pg_temp.r861_refused(v_outcome) then
 		raise exception 'A credential bound before its allocation''s release was not refused: %', v_outcome; end if;
 end $$;
@@ -364,7 +365,7 @@ begin
 	perform pg_temp.r861_begin('caller', 'service_role');
 	perform dblink_send_query('r861_caller', format(
 		$q$select public.qorpera_bind_native_identity_credential(%L, 'lxd-login', %L, 'login_guest', %L)$q$,
-		'86100000-0000-4000-8000-000000000073', repeat('9', 64), pg_temp.sha(current_setting('qorpera_test.refresh_credential'))));
+		'86100000-0000-4000-8000-000000000073', repeat('9', 64), pg_temp.r861_sha(current_setting('qorpera_test.refresh_credential'))));
 	if not pg_temp.r861_waited_for('caller', pg_temp.r861_pid('holder')) then
 		perform dblink_exec('r861_holder', 'rollback');
 		v_outcome := pg_temp.r861_collect('r861_caller');
@@ -376,7 +377,7 @@ begin
 	if v_outcome ? 'error' then raise exception 'A bind behind a release failed: %', v_outcome; end if;
 	v_outcome := pg_temp.r861_at_once(current_setting('qorpera_test.refresh_credential'),
 		'qorpera_describe_native_account_refresh_route', jsonb_build_object('p_request_id', '86100000-0000-4000-8000-000000000061',
-			'p_capability_sha256', pg_temp.sha('refresh-capability')));
+			'p_capability_sha256', pg_temp.r861_sha('refresh-capability')));
 	if not pg_temp.r861_refused(v_outcome) then
 		raise exception 'A credential bound while its allocation was released was not refused: %', v_outcome; end if;
 end $$;

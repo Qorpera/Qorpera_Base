@@ -2,7 +2,7 @@
 -- Company folder core, C1c-2a (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §5): a folder-v2 run's tool calls on
 -- the folder fence. The run check, the lease check, the wake check, the actor entry point, the context assertion, the
 -- presence routes and the reading callers serve folder-v2; the stop counts deletions; the office, the self-approval and
--- the legacy effects refuse it (machine start did until C1c-3f, test 824). Snapshot-v1 keeps its text (a digest of each body) and its behaviour.
+-- the legacy effects refuse it (machine start did until C1c-3f, test 824). Snapshot-v1 keeps its behaviour.
 -- Runs are hand-built as in 634, with the native login, runner, assignment, lease, reservation and budget rows added
 -- (foreign keys and triggers off while they go in). Races are in 648.
 
@@ -112,89 +112,7 @@ exception when others then
 		raise exception 'A snapshot-v1 company was refused as folder-v2 by %', p_sql; end if;
 end $$;
 
--- 1. Snapshot-v1 keeps its text: each body with the inserted line removed, or each text patch reversed, is byte for
--- byte the definition before this migration. A later change to one of these functions updates its digest here, once
--- its folder-v2 line is checked to still come first. C1c-3f (20260930002000) replaced machine start's refusal with its
--- marker line in the same place, so its digest is unchanged. An agent's office start and its descriptor serve folder-v2
--- since C1c-3l (20260930030000, test 890), and an agent's screenshot capture since P06d (20260930057000, test 910); they
--- are no longer pinned here (no old-text pins, the founder's decision of 3 October).
-create function pg_temp.without_guard(p_definition text) returns text language plpgsql as $$
-declare v_body integer := position('$function$' in p_definition); v_at integer; v_end integer;
-begin
-	v_at := v_body + position(E'\nbegin\n' in substr(p_definition, v_body)) - 1 + length(E'\nbegin\n');
-	v_end := v_at + position(E'\n' in substr(p_definition, v_at));
-	return substr(p_definition, 1, v_at - 1) || substr(p_definition, v_end);
-end $$;
-do $$
-declare v record; v_text text; v_bad text[] := '{}';
-begin
-	for v in select * from (values
-		('qorpera_native_tool_locked_run(jsonb)', 'guard', '05ff6cf43bcb0108234f8d4bafff592f'),
-		('qorpera_validate_native_provider_execution_lease(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text)', 'guard', '9695f5dc4c068fd8e7a69a38ea3e01c4'),
-		-- Re-pinned for Sign in with ChatGPT (20260928359950): a ChatGPT plan never pays for a file-change or
-		-- event wake, nor for work that follows from one; the snapshot-v1 text is otherwise unchanged.
-		('qorpera_wake_authorized(qorpera_wake_occurrences)', 'guard', '025e118587495df4f03ef7634a9eadab'),
-		('qorpera_company_path_assert_context(jsonb)', 'guard', '885499e6425c36e3d55ac3976c1459c6'),
-		('qorpera_presence_path_routes(jsonb,text[],boolean)', 'guard', '8e5f14e3327ac4e308f17ed4e61d25c0'),
-		('qorpera_native_office_file_export(jsonb,jsonb,jsonb,text,uuid,text,jsonb,text)', 'guard', 'd59292a74936b34ecf70782bda467019'),
-		('qorpera_native_shared_file_export_source(jsonb,jsonb)', 'guard', '07f303ad8158c42fcf15cebe407ac3ce'),
-		('qorpera_self_approve_organization_proposal(jsonb,uuid)', 'guard', 'c975bdeee11aa81db54a2169b6fce819'),
-		('qorpera_native_machine_start(jsonb,text,text,uuid,text)', 'guard', 'c80526fec0e2c46669823c57f174b78e'),
-		('qorpera_begin_native_tool_operation(jsonb,uuid,text,text,text,boolean)', 'guard', '68f9ad7a781178f4b075f0e92f1e5efd'),
-		('qorpera_complete_native_tool_operation(jsonb,uuid,text,jsonb,uuid,uuid)', 'guard', '9744401a09208bef038836ff1c93559c'),
-		('qorpera_begin_run_operation_receipt(uuid,text,uuid,text,uuid,uuid,text,text,text,text,boolean)', 'guard', '37c1883fe91cde03ab295f55d69a077c'),
-		('qorpera_complete_run_operation_receipt(uuid,text,uuid,text,uuid,uuid,text,jsonb,uuid,uuid)', 'guard', 'd58c2d536891199866a31d1477c6f3a0'),
-		('qorpera_send_native_agent_message(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text,text,text,text)', 'guard', 'c21e35f7f2420dbe98dfc18ef41b4251'),
-		('qorpera_send_runner_agent_message(uuid,text,uuid,text,uuid,text,text,text)', 'guard', 'b2109b5064f5d0def5d0a0bf72b1c5ba'),
-		('qorpera_append_native_interaction_request(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text,uuid,jsonb)', 'guard', '4d143aed500a29b11f813b06094a80ae'),
-		('qorpera_append_runner_transcript_event(uuid,text,uuid,text,uuid,uuid,text,jsonb,bigint)', 'guard', 'a2831b21140af7098ada4d3f491b2783'),
-		('qorpera_begin_native_company_execution_v2(jsonb,text,text,text,text,text,integer)', 'actor', '3b5736c1cf409a623f10007429aa2f68'),
-		('qorpera_read_company_run_context(jsonb,text,uuid,text,integer,integer)', 'actor', '65725e9941e3dae609539d722faed13f'),
-		('qorpera_native_presence_register(jsonb,uuid,text)', 'actor', '32f9f1dd6f8106351cf53ab012e8b34a'),
-		-- qorpera_describe_agent_open_work is not pinned: the one idle rule (20260930029000) adds the told list on both
-		-- cores (the founder's decision of 3 October: no old-text pins for folder-v2 work).
-		('qorpera_native_company_object_actor(jsonb,uuid)', 'actor', '57a44af9c107b7c0a3da5bfc6d3eafa7'),
-		('qorpera_company_presence_scope(uuid,jsonb,text[])', 'actor', 'a9398c12528abddb25f91544455da044'),
-		('qorpera_native_presence_subject(uuid,uuid,text[])', 'actor', '0f6897f705023a6b7d6e467aa5346a53'),
-		('qorpera_list_member_file_exports(uuid,uuid,integer)', 'actor', 'f02bc3ed8bf29611092444de8f3e7d57'),
-		('qorpera_member_file_export_source(uuid,jsonb)', 'export', '86298f73423ef925bc049b2e55f9fa2b'),
-		('qorpera_describe_company_run_context(jsonb)', 'describe', '2b55ddb0f9c9dba700e36ffd4ecc1f42')) t(fn, kind, digest)
-	loop
-		v_text := pg_get_functiondef(('public.' || v.fn)::regprocedure);
-		if v.kind = 'guard' then
-			v_text := pg_temp.without_guard(v_text);
-		else
-			v_text := replace(v_text, 'public.qorpera_company_run_actor(', 'public.qorpera_company_path_actor(');
-		end if;
-		if v.kind = 'export' then
-			v_text := replace(v_text, E' if not public.qorpera_environment_is_folder_v2(p_environment_id) then\n'
-				|| E'  perform public.qorpera_lock_profile_gc_fence((v_actor->>''companyId'')::uuid);\n end if;\n',
-				E' perform public.qorpera_lock_profile_gc_fence((v_actor->>''companyId'')::uuid);\n');
-		elsif v.kind = 'describe' then
-			v_text := replace(v_text, E'v_continuation jsonb; v_recorded jsonb; v_folder jsonb;\n', E'v_continuation jsonb; v_recorded jsonb;\n');
-			v_text := replace(v_text, E'\tif public.qorpera_environment_is_folder_v2(v_run.environment_id) then\n'
-				|| E'\t\tselect name into v_company_name from public.qorpera_folder_company_index where environment_id = v_run.environment_id;\n'
-				|| E'\t\tif not found then raise exception ''Company folder is unavailable'' using errcode = ''42501''; end if;\n'
-				|| E'\telse\n'
-				|| E'\t\tselect name into strict v_company_name from public.qorpera_profiles where id = v_run.profile_id;\n'
-				|| E'\tend if;\n',
-				E'\tselect name into strict v_company_name from public.qorpera_profiles where id = v_run.profile_id;\n');
-			v_text := replace(v_text, E'\tif public.qorpera_environment_is_folder_v2(v_run.environment_id) then\n'
-				|| E'\t\texecute ''select public.qorpera_company_state_run_folder($1, $2, $3)'' into v_folder\n'
-				|| E'\t\tusing v_run.environment_id, v_run.staff_agent_id,\n'
-				|| E'\t\t\t(select coalesce(array_agg((coworker ->> ''id'')::uuid), ''{}''::uuid[]) from jsonb_array_elements(v_coworkers) coworker);\n'
-				|| E'\tend if;\n', '');
-			v_text := replace(v_text, E'\t\t\telse jsonb_build_object(''serviceTier'',v_run.service_tier) end\n'
-				|| E'\t\t|| case when v_folder is null then ''{}''::jsonb else jsonb_build_object(''folder'', v_folder) end;\n',
-				E'\t\t\telse jsonb_build_object(''serviceTier'',v_run.service_tier) end;\n');
-		end if;
-		if md5(v_text) <> v.digest then v_bad := v_bad || v.fn; end if;
-	end loop;
-	if cardinality(v_bad) > 0 then raise exception 'Snapshot-v1 text changed in: %', v_bad; end if;
-	-- qorpera_run_wake_authorized keeps its text: it reaches the folder wake check through qorpera_wake_authorized.
-	if md5(pg_get_functiondef('public.qorpera_run_wake_authorized(uuid)'::regprocedure)) <> 'b1d8f8610f59ff4e532f1e06c5b5b100' then
-		raise exception 'qorpera_run_wake_authorized changed'; end if;
-end $$;
+-- The checks start here: a test that runs after this file's fixture part stops at this line.
 
 -- 2. The lease check without locks is the legacy check without its three FOR SHARE, and nothing else.
 do $$
