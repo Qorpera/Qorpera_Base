@@ -411,12 +411,14 @@ def main():
         else:
             writer.pause(False, "", args.pause_file)
 
-    check_disk()
     try:
         last_beat = os.stat(args.heartbeat).st_mtime
     except OSError:
         last_beat = None
+    # First, before its own pause (if any): so a pause line before "logger started" is always an earlier logger's, which
+    # ended with it (E3's lookup reads them so).
     writer.gap("logger started", since=last_beat)
+    check_disk()
     reader = {}
     threads = [
         threading.Thread(target=follow_conntrack, args=(args.netns, writer, reader), daemon=True),

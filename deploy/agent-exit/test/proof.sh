@@ -16,6 +16,10 @@ export QORPERA_AGENT_EXIT_RUN_DIR=$work/run QORPERA_AGENT_EXIT_STATE_DIR=$work/s
 export QORPERA_AGENT_EXIT_LOG_DIR=$work/log QORPERA_AGENT_EXIT_UPSTREAMS=9.9.9.9
 # The logs' disk floor is off here, so the proof never depends on the test machine's free space; the cap is tested.
 export QORPERA_AGENT_EXIT_LOG_FLOOR_PERCENT=0
+# The NAS: a folder with its marker, as the mounted share has it.
+export QORPERA_AGENT_EXIT_NAS_DIR=$work/nas
+mkdir "$work/nas"
+touch "$work/nas/.qorpera-agent-exit-logs"
 pids=()
 cleanup() { for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done; }
 trap cleanup EXIT
@@ -327,7 +331,8 @@ grep -q "no DNS on 10.210.0.1:53" "$work/verify.err" || fail "verify: $(cat "$wo
 grep -q "logger not running" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
 grep -q "the agent plug's reconciler not running" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
 grep -q "the logs' tender has not run" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
-pass "verify fails while DNS, the logger, the plug's reconciler and the logs' tender are not running"
+grep -q "the logs' shipper has not run" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
+pass "verify fails while DNS, the logger, the plug's reconciler and the logs' tender and shipper are not running"
 
 background - "$work/node.out" python3 "$work/serve.py" "$work/node-peers" 192.168.1.42:22 10.209.255.1:22
 background - "$work/nodeudp.out" python3 "$work/udpseen.py" "$work/node-udp" 192.168.1.42 9999
@@ -352,6 +357,7 @@ logger_pid=$!
 pids+=($!)
 wait_for "test -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.heartbeat"
 bash "$tool" logs >"$work/logs.out" || fail "the logs' tender: $(cat "$work/logs.out")"
+bash "$tool" ship >"$work/ship.out" || fail "the logs' shipper: $(cat "$work/ship.out")"
 AGENT="qp/agent:Running:10.210.1.1:c0:m0::va0"
 python3 "$work/fixture.py" "$work/lxd.json" "$AGENT"
 QORPERA_AGENT_PLUG_LXD_FIXTURE=$work/lxd.json QORPERA_AGENT_PLUG_RELOAD_DNS="pkill -HUP -x dnsmasq" \
@@ -706,6 +712,30 @@ python3 "$logs_tool" count --log-dir "$LOG" --day "$today" >"$work/count2.json" 
 python3 -c 'import json, sys; a, b = (json.load(open(f))["companies"]["c0"]["connections"] for f in sys.argv[1:]); assert b > a, (a, b)' \
 	"$work/count.json" "$work/count2.json" || fail "the count after sealing lost lines"
 pass "the tender seals open files into parts and cuts dns.log; the writers go on in new files, and counts read all"
+# The parts go to the NAS under this node's name and their day, each read back; the lookup finds the agent's
+# connection there and on the node, with its company, machine and the name it looked up.
+host=$(python3 -c 'import socket; print(socket.gethostname())')
+bash "$tool" ship >"$work/ship.out" || fail "ship: $(cat "$work/ship.out")"
+for part in "flows-$today.p001.jsonl.gz" "clients-$today.p001.jsonl.gz" "$(cd "$LOG" && ls dns-*.log.gz | head -1)"; do
+	cmp -s "$LOG/$part" "$work/nas/$host/$today/$part" || fail "$part is not on the NAS: $(ls -R "$work/nas")"
+	[[ -e $LOG/shipped/$part.json ]] || fail "no shipped record for $part: $(ls "$LOG/shipped")"
+done
+bash "$tool" lookup --remote 1.1.1.1 --remote-port 443 --at "$(date +%s)" --json >"$work/lookup.json" ||
+	fail "lookup: $(cat "$work/lookup.json")"
+python3 - "$work/lookup.json" "$work/nas/$host/status.json" "$host" "$today" >"$work/lookupcheck.out" 2>&1 <<'EOF' || fail "lookup: $(cat "$work/lookupcheck.out") $(cat "$work/lookup.json")"
+import json, sys
+r, status = (json.load(open(path)) for path in sys.argv[1:3])
+host, today = sys.argv[3:]
+# Today's open connection log and dns.log since the cut are on the node only: the other nodes' lookups read that here.
+assert status["host"] == host and today in status["notShipped"]["flows"] and today in status["notShipped"]["dns"], status
+assert r["nodes"] == [host], r["nodes"]
+found = [c for c in r["connections"] if c["src"] == "10.210.1.1"]
+assert found and all((c["company"], c["machine"]) == ("c0", "m0") for c in found), found
+assert any(c["name"] == "rotated.test" for c in found), found
+EOF
+bash "$tool" lookup --agent 10.210.1.1 --at "$(date +%s)" >"$work/lookup.out" || fail "lookup: $(cat "$work/lookup.out")"
+grep -q "on $host: company c0, machine m0; 10.210.1.1:" "$work/lookup.out" || fail "lookup: $(cat "$work/lookup.out")"
+pass "the shipper copies the sealed parts to the NAS; the lookup names the company, machine and name behind a connection"
 # A line the logger cannot write (here: a folder where its file goes) makes the exit unhealthy at once; once it can
 # write again it says how many lines it lost, and the exit is healthy again.
 for i in $(seq 1 20); do

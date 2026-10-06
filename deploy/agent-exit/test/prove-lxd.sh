@@ -48,6 +48,7 @@ diagnose() {
 	[[ -n ${work:-} && -d ${work:-/nonexistent} ]] || return 0
 	echo "--- dns.log"; tail -n 20 "$work/log/dns.log" 2>/dev/null
 	echo "--- plug"; cat "$work/run/plug.json" 2>/dev/null; tail -n 5 "$work/plug.out" 2>/dev/null
+	echo "--- logs"; cat "$work/run/logs.json" "$work/run/ship.json" 2>/dev/null; tail -n 5 "$work/ship.out" 2>/dev/null
 	echo "--- bridge rules"; nft list table bridge qorpera_agent_exit_bridge 2>/dev/null | head -60
 	echo "--- fdb"; bridge fdb show br qagent0 2>/dev/null | grep -v permanent | head
 }
@@ -59,6 +60,11 @@ for part in /run/netns/qexit /sys/class/net/qagent0; do [[ ! -e $part ]] || fail
 work=$(mktemp -d)
 chmod 0755 "$work"
 export QORPERA_AGENT_EXIT_RUN_DIR=$work/run QORPERA_AGENT_EXIT_STATE_DIR=$work/state QORPERA_AGENT_EXIT_LOG_DIR=$work/log
+# The logs' disk floor is off, so the proof never depends on this VM's free space; the NAS is a folder with its
+# marker, as the mounted share has it.
+export QORPERA_AGENT_EXIT_LOG_FLOOR_PERCENT=0 QORPERA_AGENT_EXIT_NAS_DIR=$work/nas
+mkdir "$work/nas"
+touch "$work/nas/.qorpera-agent-exit-logs"
 pids=()
 plug_pid=
 cleanup() {
@@ -123,6 +129,13 @@ start_plug() {
 	plug_pid=$!
 }
 start_plug
+# The logs' tender and shipper, as their timers run them on a node (more often here).
+(while :; do
+	bash "$tool" logs >>"$work/logs.out" 2>&1 || true
+	bash "$tool" ship >>"$work/ship.out" 2>&1 || true
+	sleep 20
+done) &
+pids+=($!)
 wait_for "bash $tool verify >/dev/null 2>&1"
 pass "the exit is up and healthy in the VM, with br_netfilter on as on the nodes"
 
