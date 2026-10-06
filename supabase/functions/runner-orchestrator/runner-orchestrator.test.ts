@@ -325,6 +325,15 @@ describe("runner orchestrator boundary", () => {
 		assert.throws(() =>
 			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "office_wakes", environmentId, limit: 41 }),
 		);
+		// The one idle rule's check-ins: their own RPCs, at most 64 parents a step.
+		assert.deepEqual(FOLDER_DRAINS.machine_checkins, {
+			due: "qorpera_folder_machine_checkins_due",
+			company: "qorpera_folder_machine_checkins_company",
+			maximum: 64,
+		});
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "machine_checkins", environmentId, limit: 65 }),
+		);
 	});
 
 	it("rejects secret-shaped garbage and maps durable conflicts", () => {

@@ -30,6 +30,7 @@ import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
 import { CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
 import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import { CloudFolderNotebooks } from "./cloud-folder-notebooks.ts";
+import { CloudFolderProposals } from "./cloud-folder-proposals.ts";
 import { CloudFolderRoutineDecision } from "./cloud-folder-routine-decision.ts";
 import { CloudFolderRoutines } from "./cloud-folder-routines.ts";
 import { CloudFolderSearch, cloudFolderSearchTool } from "./cloud-folder-search-tool.ts";
@@ -379,6 +380,16 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					context.identity.audienceKind === "company" && !cloudWorkerToolFilter(wake).isWorker
 						? describeCloudAgentOpenWork(binding, this.#paths, signal).catch(() => undefined)
 						: Promise.resolve(undefined);
+				// Changes the agent saved from a computer that wait for review (P40): listed only where it can
+				// raise a card (its own conversation or thread, not a worker), the same rule the folder core keeps.
+				const proposalsRequest =
+					folder &&
+					context.identity.audienceKind === "company" &&
+					context.identity.sessionId !== null &&
+					!cloudWorkerToolFilter(wake).isWorker &&
+					(wake.kind !== "room" || cloudWakeIsOwnThread(wake))
+						? CloudFolderProposals.list(folder.client, signal)
+						: Promise.resolve(undefined);
 				// The agent's own notebook (contract 15.1) and its skill catalog (15.2) are
 				// composed side by side through the trusted read lane; an unreadable one
 				// degrades to "unavailable" and the run still starts, because neither is a
@@ -406,9 +417,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					),
 					readCloudAgentHeadVision(notebooks?.composition ?? gateway, signal),
 				]);
-				return { initialPresence, gateway, memory, skills, vision, openWork: await openWorkRequest };
+				return {
+					initialPresence,
+					gateway,
+					memory,
+					skills,
+					vision,
+					openWork: await openWorkRequest,
+					proposals: await proposalsRequest,
+				};
 			};
-			const { initialPresence, gateway, memory, skills, vision, openWork } = await composeContext().catch(
+			const { initialPresence, gateway, memory, skills, vision, openWork, proposals } = await composeContext().catch(
 				async (error) => {
 					await connectorTools();
 					throw error;
@@ -419,15 +438,25 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const head = composeCloudAgentHead(context, vision, memory);
 			// The primary view (M1, §5.3) goes after the head; none yet.
 			const views = "";
-			const prompt = composeCloudNativeCompanyPrompt(context, wake, initialPresence, memory, openWork, skills, head);
+			const prompt = composeCloudNativeCompanyPrompt(
+				context,
+				wake,
+				initialPresence,
+				memory,
+				openWork,
+				skills,
+				proposals?.context,
+				head,
+			);
 			// The run's context is its head and views (in the developer instructions) and its context message, hashed
 			// together.
 			const composed = `${head.text}\n${views}\n${prompt}`;
 			const contextBytes = Buffer.byteLength(composed);
 			composition.finish("succeeded", { outputBytes: contextBytes });
 			const contextSha256 = createHash("sha256").update(composed).digest("hex");
-			// What composition read from the folder is released under the composed context before any model request.
-			await notebooks?.releaseComposition(contextSha256, signal);
+			// What composition read from the folder is released under the composed context before any model request, with
+			// the paths of the proposals it shows (P40b).
+			await notebooks?.releaseComposition(contextSha256, signal, proposals?.reads);
 			const mouth = new CloudAgentMouth(
 				binding.runId,
 				async (input) => {
@@ -863,6 +892,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								!work.isWorker
 									? [ask]
 									: []),
+								// Listed only for a run that may raise their cards (composeContext).
+								...(proposals ? proposals.tools(operations) : []),
 							],
 							assertContext: (requestSignal) => gateway.assertReadableContext(requestSignal),
 							recordContextView: (frame, outputs, requestSignal) =>

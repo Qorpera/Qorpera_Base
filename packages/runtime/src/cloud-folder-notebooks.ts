@@ -258,8 +258,14 @@ export class CloudFolderNotebooks {
 		this.composition = gateway(this.#folder, this.#composed, null);
 	}
 
-	/** Releases what composition read under the hash of the composed context, once, before the first model request. */
-	async releaseComposition(contextSha256: string, signal: AbortSignal): Promise<void> {
+	/** Releases what composition read under the hash of the composed context, once, before the first model request, with
+	 * the paths the context names besides (`named`: the listed proposals' reads, P40b). */
+	async releaseComposition(
+		contextSha256: string,
+		signal: AbortSignal,
+		named: readonly CloudCompanyFolderRelease[] = [],
+	): Promise<void> {
+		for (const read of named) this.#composed.set(`${read.path}\n${read.version ?? ""}`, read);
 		if (this.#composed.size === 0) return;
 		await release(this.#folder, this.#runId, "context", this.#composed, contextSha256, signal);
 		this.#composed.clear();

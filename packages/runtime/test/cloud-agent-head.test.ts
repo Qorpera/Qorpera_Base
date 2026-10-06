@@ -142,7 +142,7 @@ it("leaves out a job specification the context cut short, and has no profile par
 	expect(JSON.parse(composeCloudAgentHead(context, null, empty).text).omitted).toEqual([job]);
 	// The context message keeps what the head left out.
 	const prompt = JSON.parse(
-		composeCloudNativeCompanyPrompt(context, null, undefined, empty, undefined, undefined, head),
+		composeCloudNativeCompanyPrompt(context, null, undefined, empty, undefined, undefined, undefined, head),
 	);
 	expect(prompt.hireOverlay.jobSpecification).toEqual(context.jobSpecification);
 	expect(prompt.memory.profile).toEqual(empty.profile);
@@ -153,7 +153,7 @@ it("leaves out of the context message only what the head shows, and names the pr
 	const notebook = memory(["I am Nora"]);
 	const head = composeCloudAgentHead(context, null, notebook);
 	const prompt = JSON.parse(
-		composeCloudNativeCompanyPrompt(context, null, undefined, notebook, undefined, undefined, head),
+		composeCloudNativeCompanyPrompt(context, null, undefined, notebook, undefined, undefined, undefined, head),
 	);
 	expect(prompt.hireOverlay).not.toHaveProperty("jobSpecification");
 	const { path, version } = notebook.profile;
