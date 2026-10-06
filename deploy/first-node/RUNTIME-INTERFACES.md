@@ -183,8 +183,8 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
   is empty.
 - **Board parts:** each `[[view.block.part]]` has `title`, `from` (a table), `card = { title, line, figures, note }`
   and an optional `opens`. The lane of a row is its table's `holder` column (§5): a member's lane, the Shared lane
-  when the `shared` column says yes, or the open pile when it is empty. Dragging a card is a take or a release
-  (offers come later).
+  when the `shared` column says yes, or the open pile when it is empty. Dragging a card is a take or a release, or
+  an offer when it lands in another member's lane (§3.3, built in I9c).
 - **Board lanes (proposed, built in I9a):**
   - `lanes = "members"`: one lane per member, the viewer's own first, then the others by name.
   - Then the **Shared** lane, when the block names `shared`: rows whose `shared` column says yes, whoever holds them.
@@ -252,8 +252,18 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
     were looking.". A file that keeps changing past the retries also says "That changed while you were looking.". A
     refusal shows its problems.
   - A card stays where it is, saving, until the save has landed and the folder's feed shows the change.
-  - `offer` and `answer` are not drawn on a board until offers have their machinery. An area's `supervisor` is not
-    taken from a board; it waits for consent records (I9b).
+  - An area's `supervisor` is not taken from a board; it waits for consent records (I9b).
+- **Offer and its answers on a board (built in I9c).** They act on each card's own `holder` column too.
+  - **Offer** shows where Take or Release could (a card no one holds, or the viewer's own) when the block lists it. It
+    opens the members the card may go to: each other member who may change the table's rows, but those it is offered
+    to already. Dragging the card onto one of their lanes offers it as well; a Shared card has no drag.
+  - The card shows its open offers, those that read the cell as it is now: "Offered to …" with Withdraw for the
+    viewer's own, "… offers it to you" with Accept (where the viewer may take it) and Not now for one to the viewer,
+    and "… offered it to …" for the rest.
+  - **Accept** is the take's write with the offer's claim (§5 rule 8 accept): the viewer goes into the cell while it is
+    as the offer read it; a cell that changed says "That changed while you were looking.".
+  - `answer` is not drawn on a board: a waiting offer's answers are on its card. In `waiting` (§4) an offer to the
+    viewer is a row of kind `offer`, and its `answer` button is Accept and Not now.
 - **Never possible:** a link to another site, a script, or a request to any address.
 
 ## 4. Sources
@@ -756,14 +766,22 @@ Take and release (§3.3) write the member's own rows with the folder's member cl
 field's text in `rows.csv` and keep every other byte as written (a first line without the holder column gets it at its
 end). A rows file with rows that don't fit its definition is not written. Lookup columns are drawn as names or a count,
 and the folder reader reads the tables that board parts and lookups name. The Members page's People view draws its
-table; its `file:rules/shared-areas.md` block is not drawn, since this client draws no `text` blocks yet. Offers,
-answers on a board, and supervision (I9b) are not built.
+table; its `file:rules/shared-areas.md` block is not drawn, since this client draws no `text` blocks yet. Offers came
+with I9c (below); supervision (I9b) is not built.
 
 **Built: I9c, the offers' machinery** (`supabase/migrations/20260930105000_interface_offers.sql`, test 938). Offers are
 kept in `qorpera_interface_offers` (§5 "Offers"). Members make, decline, withdraw and list them with four calls
 (`supabase/CLIENT-CONTRACT.md`, "Offers of a claimed cell"). Each call holds the table's index row against commits
 (FOR SHARE, the lock a save takes for update), so it reads the files as the last commit left them. Rule 8 gains its
 accept. The save hook's apply settles a table's open offers after its rows or definition change, and lapses them when
-its folder is deleted. Removing the table's index row (erasure) removes its offers. The web (an Offer button and a
-drop onto a member's lane, Accept and Not now as `answer`, and offers in `waiting`) comes next. There is no race test
-of an offer against a save yet.
+its folder is deleted. Removing the table's index row (erasure) removes its offers. There is no race test of an offer
+against a save yet.
+
+**Built: I9c, the web** (`packages/web/src/cloud/interface-offers.ts`, `app/interface-offers.ts`,
+`app/interface-claims.ts`, `app/views/interface.ts`). The client reads the company's open offers when it opens, after
+each change to the folder its pages read (the save that changes a cell settles its offers), when the window comes back
+and each minute; making, declining or withdrawing one reads them again. A board draws Offer, its member list and the
+drop onto a member's lane, each card's offer lines, and Withdraw, Accept and Not now on them (§3.3). An accept is the
+take's write with the offer passed to the claim rule. Pulse's `waiting` lists each open offer to the viewer whose cell
+the folder read still shows as the offer read it, with Accept and Not now. A cloud without the calls, or a member they
+don't answer, draws no offer.

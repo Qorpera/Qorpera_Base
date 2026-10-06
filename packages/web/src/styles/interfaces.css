@@ -230,6 +230,13 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 .interface-board.is-dragging { user-select: none; }
 .interface-lane.is-drop-target { border-color: var(--composer-accent); border-style: dashed; }
 .interface-lane.is-drop-over { background: var(--hover); border-style: solid; }
+/* An offer of a card (step I9c): a quiet line on the card with its answers, and the members it may go to. */
+.interface-card-offers { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.interface-card-offer {
+	display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--text-muted); font-size: 12px;
+}
+.interface-offer-picker { align-items: center; }
+.interface-offer-picker-label { color: var(--text-soft); font-size: 11.5px; }
 @media (max-width: 760px) {
 	/* On a phone the lanes stack, each as wide as the page. */
 	.interface-board { grid-auto-flow: row; grid-auto-columns: auto; overflow-x: visible; }

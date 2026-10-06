@@ -25,6 +25,7 @@ import {
 	type TableRow,
 	tableRowKey,
 } from "@qorpera/cloud-client/interfaces";
+import type { MemberInterfaceOffer } from "../cloud/interface-offers.ts";
 import { presentationLocale, t } from "../ui/preferences.ts";
 import { type CompanyController, isAgentPairSession } from "./company.ts";
 import type { FolderPage, FolderProblem, FolderTable, InterfaceFolderState } from "./interface-folder.ts";
@@ -108,6 +109,25 @@ function folderTable(company: CompanyController, source: string): FolderTable | 
 /** A table source's definition as last read from the folder, or null. */
 export function tableDefinition(company: CompanyController, source: string): TableFile | null {
 	return folderTable(company, source)?.table ?? null;
+}
+
+/** The row an open offer names (step I9c), with its table's folder name and definition, as the folder read has them; or
+ * undefined when it names no row of a table read here, or the cell is not what the offer read any more (the save that
+ * changed it settles the offer). */
+export function offeredRow(
+	company: CompanyController,
+	offer: MemberInterfaceOffer,
+): { readonly table: string; readonly definition: TableFile; readonly row: TableRow } | undefined {
+	const { key, column, folder } = offer;
+	if (offer.state !== "open" || key === null || column === null || !folder?.startsWith("tables/")) return undefined;
+	const table = folder.slice("tables/".length);
+	const read = folderTable(company, `table:${table}`);
+	const definition = read?.table ?? null;
+	if (!read || definition === null || definition.id.toLowerCase() !== offer.table) return undefined;
+	const named = JSON.stringify(key);
+	const row = read.rows.find((candidate) => tableRowKey(definition, candidate) === named);
+	const held = row?.[column] ?? null;
+	return row !== undefined && (held === "" ? null : held) === offer.was ? { table, definition, row } : undefined;
 }
 
 /** A `file:` source's text. A file whose text is outside content (under `hooks/` or `human-tasks/`, §4) is not read:
@@ -284,8 +304,8 @@ export type DrawnButton =
 
 /** The buttons a block shows here. A member draws only what a member can do: `who = "agents"` is left out, and so
  * are the verbs whose machinery this client lacks today (add, set, offer and a file's own take and release buttons
- * write tables; `open file:` needs a file route). A board draws its built-in take and release itself (views/
- * interface.ts), and never offer or answer (step I9a). */
+ * write tables; `open file:` needs a file route). A board draws its built-in take, release and offer itself, and an
+ * offer's answers on its card; answer on a waiting offer is its Accept and Not now (views/interface.ts, step I9c). */
 export function blockButtons(file: InterfaceFile, block: InterfaceBlock): DrawnButton[] {
 	return block.buttons.flatMap((name): DrawnButton[] => {
 		if (name === "answer") return [{ verb: "answer", label: t("Answer") }];
@@ -483,6 +503,31 @@ export function interfaceRows(company: CompanyController, source: string): Inter
 				},
 				href: `#/c/${profileId}/chat/${sessionId}`,
 				key: `mention:${sessionId}`,
+			});
+		}
+		// A cell another member offers this one (step I9c), answered on the row itself: its offer is the row's id.
+		for (const offer of state.interfaceOffers?.offers ?? []) {
+			const offered = offer.to === company.userId ? offeredRow(company, offer) : undefined;
+			if (!offered) continue;
+			const { definition, row } = offered;
+			// The row by its first text that isn't empty, else by its key.
+			const words = definition.columns
+				.map((column) => (column.type === "text" ? row[column.name] : null))
+				.find((value): value is string => typeof value === "string" && value !== "");
+			const from = state.team?.members.find((member) => member.userId === offer.from);
+			rows.push({
+				row: {
+					id: offer.id,
+					kind: "offer",
+					title: t("{name} offers you “{row}” in {table}", {
+						name: from?.displayName || from?.email || t("A member"),
+						row: words ?? (offer.key ?? []).map(String).join(", "),
+						table: definition.name || offered.table,
+					}),
+					from: null,
+					due: offer.at,
+				},
+				key: `offer:${offer.id}`,
 			});
 		}
 		return rows;
