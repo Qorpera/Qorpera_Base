@@ -44,8 +44,11 @@ The initial context follows, in this order (`core/src/session/mod.rs:4064-4299`)
 - It stamps each user and developer message with the turn id and its creation time, to a fraction of a second
   (`:3353-3356`, `:3387-3390`; `protocol/src/models.rs:1331-1338`).
 
-Both are sent to the OpenAI provider, which is ours (`models.rs:1008-1020`). They are cleared only for other
-providers (`client.rs:833-835`). Within a run they stay as recorded, so each later request repeats them.
+Both are sent to the OpenAI provider, which is ours (`models.rs:1008-1020`). The ids go to every provider. Codex
+drops only the turn id and the time, with the rest of the passthrough metadata, and only for providers other than
+OpenAI (`client.rs:833-835`, `clear_internal_chat_message_metadata_passthrough` at `protocol/src/models.rs:1366-1370`).
+So Codex already has a way to drop the turn ids and times, and none for the ids. Within a run they stay as recorded,
+so each later request repeats them.
 
 So the environment context does come after the developer message, as the design assumed (§6.1, part 4). But the
 tools and the base instructions now come first, as input items, not as request fields. And every item carries ids
