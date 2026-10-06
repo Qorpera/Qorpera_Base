@@ -48,6 +48,7 @@ class Folder implements CloudRunLogFolder {
 	readonly files = new Map<string, { version: string; text: string }>();
 	readonly folders = new Set(["agents", "agents/scout", "agents/scout/sessions", ROOT]);
 	readonly commits: { key: string; units: readonly CloudCompanyFolderUnit[]; path: string }[] = [];
+	readonly runId: string;
 	path: string;
 	gone = false;
 	refuse: string | null = null;
@@ -55,7 +56,8 @@ class Folder implements CloudRunLogFolder {
 	/** Runs before a commit applies: another writer's change lands first. */
 	before?: () => void;
 
-	constructor(readonly runId: string) {
+	constructor(runId: string) {
+		this.runId = runId;
 		this.path = `${ROOT}/runs/${runId}`;
 	}
 
@@ -109,7 +111,9 @@ class Folder implements CloudRunLogFolder {
 			commitId: randomUUID(),
 			seq: 1,
 			replay: false,
-			units: units.map((unit, index) => (reason ? this.#result(unit, index, "refused", reason) : this.#apply(unit, index))),
+			units: units.map((unit, index) =>
+				reason ? this.#result(unit, index, "refused", reason) : this.#apply(unit, index),
+			),
 		};
 	}
 
@@ -134,7 +138,12 @@ class Folder implements CloudRunLogFolder {
 	/** Another writer replaces a block, as a step erase does. */
 	rewrite(path: string, edit: (lines: string[]) => string[]): void {
 		const lines = this.files.get(path)!.text.split("\n").filter(Boolean);
-		this.files.set(path, { version: randomUUID(), text: edit(lines).map((line) => `${line}\n`).join("") });
+		this.files.set(path, {
+			version: randomUUID(),
+			text: edit(lines)
+				.map((line) => `${line}\n`)
+				.join(""),
+		});
 	}
 
 	/** The agent's folder renamed: the log moves with it. */
@@ -262,7 +271,11 @@ describe("a run's work log", () => {
 		log.finish(next, envelope("prices.md"), []);
 		await log.flush(signal);
 		expect(folder.commits.at(-1)!.units).toEqual([
-			expect.objectContaining({ op: "write", path: `${folder.path}/log/00000000.jsonl`, expectedVersion: expect.any(String) }),
+			expect.objectContaining({
+				op: "write",
+				path: `${folder.path}/log/00000000.jsonl`,
+				expectedVersion: expect.any(String),
+			}),
 		]);
 		expect(folder.all().map((line) => [line.j, line.text, line.releases])).toEqual([
 			[0, "Checking the prices.", [expect.any(String)]],
@@ -312,7 +325,10 @@ describe("a run's work log", () => {
 		await log.flush(signal);
 
 		const [open, closed, later] = folder.all();
-		expect(open).toMatchObject({ args: JSON.stringify({ path: "sales/prices.md" }), result: JSON.parse(envelope("PUBLIC")) });
+		expect(open).toMatchObject({
+			args: JSON.stringify({ path: "sales/prices.md" }),
+			result: JSON.parse(envelope("PUBLIC")),
+		});
 		expect(closed).toEqual({
 			j: 1,
 			tool: "company_search",
@@ -329,7 +345,13 @@ describe("a run's work log", () => {
 		expect(later).toMatchObject({ args: "", hashes: true });
 		expect(later).not.toHaveProperty("result");
 		const stored = JSON.stringify([...folder.files.values()]);
-		for (const canary of ["members/", "PRIVATE_RESULT_TEXT", "PRIVATE_AGENT_TEXT", "PRIVATE_LATER_RESULT", "sales/plan.md"])
+		for (const canary of [
+			"members/",
+			"PRIVATE_RESULT_TEXT",
+			"PRIVATE_AGENT_TEXT",
+			"PRIVATE_LATER_RESULT",
+			"sales/plan.md",
+		])
 			expect(stored).not.toContain(canary);
 		expect(log.steps().slice(1)).toEqual([
 			expect.objectContaining({ args: "", result: "", text: "", restricted: true }),
@@ -512,7 +534,9 @@ describe("a run's work log", () => {
 		folder.refuse = null;
 		log.finish(acting, envelope("WORK_LOG_UNAVAILABLE"), []);
 		await log.flush(signal);
-		expect(folder.all()).toEqual([expect.objectContaining({ j: 0, result: JSON.parse(envelope("WORK_LOG_UNAVAILABLE")) })]);
+		expect(folder.all()).toEqual([
+			expect.objectContaining({ j: 0, result: JSON.parse(envelope("WORK_LOG_UNAVAILABLE")) }),
+		]);
 	});
 
 	it("finds a batch whose answer was lost in the file, and does not write it twice", async () => {
@@ -537,9 +561,9 @@ describe("a run's work log", () => {
 		const folder = new Folder(randomUUID());
 		const signal = new AbortController().signal;
 		expect(() => new CloudRunLog({ runId: "run", conversationId, folder, signal })).toThrow("Invalid run log");
-		expect(
-			() => new CloudRunLog({ runId: folder.runId, conversationId, folder, signal, firstStep: -1 }),
-		).toThrow("Invalid run log");
+		expect(() => new CloudRunLog({ runId: folder.runId, conversationId, folder, signal, firstStep: -1 })).toThrow(
+			"Invalid run log",
+		);
 		const log = new CloudRunLog({ runId: folder.runId, conversationId, folder, signal });
 		expect(() => log.step({ call: "c", tool: "company_read", argumentsText: "{}", argumentSha256: "x" })).toThrow(
 			"Invalid run log step",
@@ -593,7 +617,10 @@ describe("the tool boundary with a work log", () => {
 		});
 		const call = async (callId: string, tool: string, args: unknown) => {
 			const response = await boundary.invoke(callId, "qorpera", tool, args);
-			return { text: response.contentItems[0].text, result: JSON.parse(response.contentItems[0].text) as CloudToolResult };
+			return {
+				text: response.contentItems[0].text,
+				result: JSON.parse(response.contentItems[0].text) as CloudToolResult,
+			};
 		};
 		return { folder, log, signal, boundary, call, readTool, writeTool, order };
 	}
@@ -613,7 +640,10 @@ describe("the tool boundary with a work log", () => {
 				j: 0,
 				call: "call_r1",
 				result: JSON.parse(reading.text),
-				reads: [expect.objectContaining({ path: "sales/prices.md" }), expect.objectContaining({ path: "sales/plan.md" })],
+				reads: [
+					expect.objectContaining({ path: "sales/prices.md" }),
+					expect.objectContaining({ path: "sales/plan.md" }),
+				],
 				releases: ["70700000-0000-4000-8000-0000000000a1", "70700000-0000-4000-8000-0000000000a2"],
 			}),
 			expect.objectContaining({ j: 1, call: "call_w1", result: JSON.parse(writing.text), releases: [] }),
@@ -630,7 +660,10 @@ describe("the tool boundary with a work log", () => {
 		const f = fixture();
 		f.folder.refuse = "memory_erase_open";
 		const refused = await f.call("call_w1", "company_write", { path: "a.md", text: "a" });
-		expect(refused.result).toMatchObject({ status: "denied", content: { text: expect.stringMatching(/^WORK_LOG_UNAVAILABLE:/) } });
+		expect(refused.result).toMatchObject({
+			status: "denied",
+			content: { text: expect.stringMatching(/^WORK_LOG_UNAVAILABLE:/) },
+		});
 		expect(f.writeTool.execute).not.toHaveBeenCalled();
 		// A read is not held by the log.
 		expect((await f.call("call_r1", "company_read", { path: "sales/prices.md" })).result.status).toBe("ok");
@@ -660,7 +693,10 @@ describe("the tool boundary with a work log", () => {
 		expect(gone.result.content.text).toMatch(/^WORK_LOG_GONE:/);
 		expect(f.log.gone).toBe(true);
 		const after = await f.call("call_r1", "company_read", { path: "sales/prices.md" });
-		expect(after.result).toMatchObject({ status: "denied", content: { text: expect.stringMatching(/^WORK_LOG_GONE:/) } });
+		expect(after.result).toMatchObject({
+			status: "denied",
+			content: { text: expect.stringMatching(/^WORK_LOG_GONE:/) },
+		});
 		expect(f.writeTool.execute).not.toHaveBeenCalled();
 		expect(f.readTool.execute).not.toHaveBeenCalled();
 		expect(f.folder.files.size).toBe(0);

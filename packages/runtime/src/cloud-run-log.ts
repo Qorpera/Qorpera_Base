@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
-import type { JsonValue } from "@qorpera/contracts";
+import { isUuid, type JsonValue, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import { cloudActionEffect } from "./cloud-action-review.ts";
 import type {
 	CloudCompanyFolderCommitResult,
@@ -44,8 +44,6 @@ const CHANGE_SET_FILES = 64;
 const ATTEMPTS = 4;
 /** Calls whose words are already in the conversation, on a card or in the outbox row: their arguments are not copied. */
 const HASH_ONLY_TOOLS = new Set(["send_message", "send_coworker_message", "ask_member", "send_mail"]);
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const SHA = /^[0-9a-f]{64}$/;
 
 /** The log's folder was deleted (`memory_run_log_gone`): its effectful calls can no longer be committed first, so they
  * do not run, and the run ends. */
@@ -191,7 +189,7 @@ function stored(value: string): number {
 }
 
 /** The longest prefix of `value`, cut at a code point, that takes at most `bytes` as stored. */
-function fit(value: string, bytes: number): string {
+function clip(value: string, bytes: number): string {
 	if (stored(value) <= bytes) return value;
 	let low = 0;
 	let high = value.length;
@@ -293,12 +291,10 @@ export class CloudRunLog {
 		commitMs?: number;
 	}) {
 		if (
-			!UUID.test(options.runId) ||
-			!UUID.test(options.conversationId) ||
+			!isUuid(options.runId) ||
+			!isUuid(options.conversationId) ||
 			(options.parent &&
-				(!UUID.test(options.parent.runId) ||
-					!Number.isSafeInteger(options.parent.step) ||
-					options.parent.step < 0)) ||
+				(!isUuid(options.parent.runId) || !Number.isSafeInteger(options.parent.step) || options.parent.step < 0)) ||
 			(options.firstStep !== undefined && (!Number.isSafeInteger(options.firstStep) || options.firstStep < 0))
 		)
 			throw new Error("Invalid run log");
@@ -349,11 +345,14 @@ export class CloudRunLog {
 	/** Starts a step for a call, and returns its number. */
 	step(call: { call: string; tool: string; argumentsText: string; argumentSha256: string }): number {
 		if (this.#closed) throw new Error("Run log closed");
-		if (!SHA.test(call.argumentSha256)) throw new Error("Invalid run log step");
+		if (!SHA256_HEX_PATTERN.test(call.argumentSha256)) throw new Error("Invalid run log step");
 		const text = this.#text;
 		this.#text = "";
 		const hashOnly = HASH_ONLY_TOOLS.has(call.tool);
-		if (!this.#restricted && this.#restrictedCall?.({ tool: call.tool, argumentsText: call.argumentsText, reads: [] }))
+		if (
+			!this.#restricted &&
+			this.#restrictedCall?.({ tool: call.tool, argumentsText: call.argumentsText, reads: [] })
+		)
 			this.#restricted = true;
 		const j = this.#first + this.#steps.length;
 		this.#steps.push({
@@ -366,7 +365,9 @@ export class CloudRunLog {
 			argsBytes: Buffer.byteLength(call.argumentsText),
 			argsHash: call.argumentSha256,
 			text,
-			at: this.#now().toISOString().replace(/\.\d{3}Z$/, "Z"),
+			at: this.#now()
+				.toISOString()
+				.replace(/\.\d{3}Z$/, "Z"),
 			result: null,
 			reads: [],
 			releases: [],
@@ -436,9 +437,9 @@ export class CloudRunLog {
 					j: step.j,
 					call: step.call,
 					tool: step.tool,
-					args: step.hashOnly || step.restricted ? "" : fit(step.argumentsText, CLOUD_RUN_LOG_FIELD_BYTES),
+					args: step.hashOnly || step.restricted ? "" : clip(step.argumentsText, CLOUD_RUN_LOG_FIELD_BYTES),
 					result: step.state === "pending" ? null : step.restricted ? "" : step.result,
-					text: step.restricted ? "" : fit(step.text, CLOUD_RUN_LOG_FIELD_BYTES),
+					text: step.restricted ? "" : clip(step.text, CLOUD_RUN_LOG_FIELD_BYTES),
 					hashOnly: step.hashOnly,
 					restricted: step.restricted,
 					at: step.at,
@@ -585,7 +586,7 @@ export class CloudRunLog {
 			`"j":${step.j}`,
 			`"tool":${JSON.stringify(step.tool)}`,
 			`"call":${JSON.stringify(step.call)}`,
-			`"args":${JSON.stringify(hashes ? "" : fit(step.argumentsText, budget.args))}`,
+			`"args":${JSON.stringify(hashes ? "" : clip(step.argumentsText, budget.args))}`,
 			`"args_bytes":${step.argsBytes}`,
 			`"args_hash":${JSON.stringify(step.argsHash)}`,
 		];
@@ -621,7 +622,7 @@ export class CloudRunLog {
 			`"reads":[${reads.join(",")}]`,
 			...(cut ? [`"reads_cut":true`] : []),
 			releases,
-			`"text":${JSON.stringify(fit(step.text, budget.text))}`,
+			`"text":${JSON.stringify(clip(step.text, budget.text))}`,
 			at,
 		].join(",")}}`;
 	}
