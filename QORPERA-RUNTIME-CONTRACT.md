@@ -2158,8 +2158,9 @@ member's other login); the 2026-10-04 amendment below settles it.
 > **Amended 2026-10-06 (not built yet).** A run at its usage limit pauses
 > with its log kept, and resumes on the same login once the limit resets,
 > instead of failing; it still never moves to another login. A run that is cut
-> off resumes from its log. A run that touched a folder shared with only some
-> agents is the exception: it still fails or ends in review as today. A run's
+> off resumes from its log. A run with a narrow step (one that touched a
+> folder shared with only some agents, or came after or from such a step) is
+> the exception: it still fails or ends in review as today. A run's
 > summaries are paid by its payer. See the
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
 > in section 19, items 6, 11 and 12.
@@ -5157,10 +5158,11 @@ own texts below carries a note "Amended 2026-10-06" in place.
        agent, when its reads include one, or when it runs on a machine that mounts such a folder.
      - After a run's first narrow step, every later step of that run, and every step of a worker it dispatches after
        that step, is narrow too, since the agent's text and arguments may repeat what was read.
-     - So is every step of a run that continues a run with a narrow step: a continuation after a worker's report, a
-       computer start or a machine command, which carries the earlier run's receipts, sends or command output
-       (section 13; the 2026-09-28 amendment "compute for agents"). It is narrow from its first step, and so are its
-       own continuations.
+     - So is every step of a run that continues a run with a narrow step, whatever woke it: a worker's report, a
+       computer start, a machine event (a machine that started or stopped, or a command that ended, including a
+       machine that had to wait for room) or any other continuation. Each carries the earlier run's receipts, sends
+       or command output (section 13; the 2026-09-28 amendment "compute for agents"). It is narrow from its first
+       step, and so are its own continuations.
      - A narrow step keeps only its tool, its call id, its step number, its time, whether it finished, its
        `releases`, and hashes of its arguments and result. The hashes are keyed with a key that the platform holds
        and no agent, member or machine reads, so no one can confirm a guess with them. It keeps no `text` and no
