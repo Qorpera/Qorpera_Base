@@ -930,7 +930,25 @@ export function mountApplication(
 			mail = undefined;
 		}
 		if (!mail && state.team?.capabilities.read) {
-			const reader = new CompanyMail(controller, cloud, (read) => {
+			// A waiting send's answer runs its agent on the member's model account, chosen as the agent's thread chooses it.
+			const accounts = createWebNativeSubscription(
+				cloud,
+				controller.profile.profileId,
+				controller.userId,
+				controller.signal,
+				() => {
+					const now = controller.store.get();
+					if (
+						disposed ||
+						company !== controller ||
+						auth.userId !== controller.userId ||
+						now.accessLost ||
+						!now.team?.capabilities.read
+					)
+						throw new Error(t("Company access changed."));
+				},
+			);
+			const reader = new CompanyMail(controller, cloud, accounts, (read) => {
 				if (mail === reader) controller.store.set({ mail: read });
 			});
 			mail = reader;

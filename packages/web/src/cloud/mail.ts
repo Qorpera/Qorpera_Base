@@ -147,11 +147,14 @@ export interface MailWaitingItem {
 
 const absent = (value: unknown) => value === null || value === undefined;
 
-/** Text that is only shown: any string, or nothing. */
-function shownText(value: unknown, label: string, maximum = 32 * 1024): string | undefined {
-	if (absent(value)) return undefined;
-	if (typeof value !== "string" || value.length > maximum) throw new CloudShapeError(label);
-	return value;
+/** At most `maximum` characters as the cloud counts them: code points, so an emoji is one. */
+function clip(value: string, maximum: number): string {
+	return value.length <= maximum ? value : [...value].slice(0, maximum).join("");
+}
+
+/** Text that is only shown: any string, clipped, or nothing. It never fails a read. */
+function shownText(value: unknown, maximum: number): string | undefined {
+	return typeof value === "string" ? clip(value, maximum) : undefined;
 }
 
 function threadId(value: unknown, label: string): string {
@@ -168,7 +171,7 @@ function flag(value: unknown, label: string): boolean {
 function agent(value: unknown, label: string): MailAgent | undefined {
 	if (absent(value)) return undefined;
 	const item = record(value, label);
-	const name = shownText(item.name, label, 512);
+	const name = shownText(item.name, 512);
 	return { staffAgentId: uuid(item.staffAgentId, label), ...(name ? { name } : {}) };
 }
 
@@ -176,7 +179,7 @@ function account(value: unknown): MailAccount | undefined {
 	if (absent(value)) return undefined;
 	const item = record(value, "mail account");
 	if (item.unknown === true) return { unknown: true };
-	const site = shownText(item.site, "mail account site", 2048);
+	const site = shownText(item.site, 2048);
 	return {
 		unknown: false,
 		...(site ? { site } : {}),
@@ -188,19 +191,19 @@ function account(value: unknown): MailAccount | undefined {
 /** Recipients as given: a list of addresses, or one address. */
 function recipients(value: unknown): string[] {
 	const listed = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
-	return listed.flatMap((item) => (typeof item === "string" && item.trim() ? [item.trim().slice(0, 320)] : []));
+	return listed.flatMap((item) => (typeof item === "string" && item.trim() ? [clip(item.trim(), 320)] : []));
 }
 
 /** Attachments by name: the cloud's own `{filename, size}`, or a send's argument as the agent gave it. */
 function attachments(value: unknown): MailAttachment[] {
 	if (!Array.isArray(value)) return [];
 	return value.flatMap((item): MailAttachment[] => {
-		if (typeof item === "string" && item.trim()) return [{ filename: item.split("/").pop() || item }];
+		if (typeof item === "string" && item.trim()) return [{ filename: clip(item.split("/").pop() || item, 256) }];
 		if (!item || typeof item !== "object") return [];
 		const fields = item as Record<string, unknown>;
 		const named = typeof fields.filename === "string" && fields.filename.trim() ? fields.filename : undefined;
 		const path = typeof fields.path === "string" && fields.path.trim() ? fields.path : undefined;
-		const filename = (named ?? path?.split("/").pop() ?? "").slice(0, 256);
+		const filename = shownText(named ?? path?.split("/").pop(), 256) ?? "";
 		if (!filename) return [];
 		const size =
 			Number.isSafeInteger(fields.size) && (fields.size as number) >= 0 ? (fields.size as number) : undefined;
@@ -217,7 +220,7 @@ function parseAddress(value: unknown): MailAddress {
 	const item = record(value, "mail address");
 	return {
 		address: nonEmptyString(item.address, "mail address", 320),
-		...optional("status", shownText(item.status, "mail address status", 64)),
+		...optional("status", shownText(item.status, 64)),
 		handledBy: array(item.handledBy ?? [], "mail address agents").flatMap((entry) => {
 			const found = agent(entry, "mail address agent");
 			return found ? [found] : [];
@@ -226,7 +229,7 @@ function parseAddress(value: unknown): MailAddress {
 			const routine = record(entry, "mail address routine");
 			return {
 				routineId: uuid(routine.routineId, "mail routine"),
-				title: shownText(routine.title, "mail routine title", 512) ?? "",
+				title: shownText(routine.title, 512) ?? "",
 				...(absent(routine.staffAgentId) ? {} : { staffAgentId: uuid(routine.staffAgentId, "mail routine agent") }),
 			};
 		}),
@@ -246,10 +249,10 @@ function parseSummary(value: unknown): MailThreadSummary {
 	return {
 		thread: threadId(item.thread, "mail thread"),
 		address: nonEmptyString(item.address, "mail thread address", 320),
-		...optional("fromName", shownText(item.fromName, "mail sender", 320)),
-		...optional("fromAddress", shownText(item.fromAddress, "mail sender address", 320)),
+		...optional("fromName", shownText(item.fromName, 320)),
+		...optional("fromAddress", shownText(item.fromAddress, 320)),
 		// Account mail is drawn without its subject, whatever came.
-		...(found ? {} : optional("subject", shownText(item.subject, "mail subject", 2048))),
+		...(found ? {} : optional("subject", shownText(item.subject, 2048))),
 		lastAt: timestamp(item.lastAt, "mail thread time"),
 		state: oneOf(item.state, MAIL_THREAD_STATES, "mail thread state"),
 		...(handledBy ? { handledBy } : {}),
@@ -265,13 +268,13 @@ function parseMessage(value: unknown): MailMessage {
 	const kind = oneOf(item.kind, ["received", "sent"] as const, "mail message kind");
 	const found = kind === "received" ? account(item.account) : undefined;
 	const base = {
-		...optional("fromName", shownText(item.fromName, "mail sender", 320)),
-		...optional("fromAddress", shownText(item.fromAddress, "mail sender address", 320)),
+		...optional("fromName", shownText(item.fromName, 320)),
+		...optional("fromAddress", shownText(item.fromAddress, 320)),
 		// Account mail never shows its recipients, subject, text or attachments, whatever came.
 		to: found ? [] : recipients(item.to),
 		cc: found ? [] : recipients(item.cc),
-		...(found ? {} : optional("subject", shownText(item.subject, "mail subject", 2048))),
-		...(found ? {} : optional("text", shownText(item.text, "mail text", 16_000))),
+		...(found ? {} : optional("subject", shownText(item.subject, 2048))),
+		...(found ? {} : optional("text", shownText(item.text, 16_000))),
 		textCleared: flag(item.textCleared, "mail text cleared"),
 		attachments: found ? [] : attachments(item.attachments),
 	};
@@ -293,7 +296,7 @@ function parseMessage(value: unknown): MailMessage {
 		kind,
 		id: nonEmptyString(item.mailId, "mail message id", 128),
 		...base,
-		status: shownText(item.status, "mail status", 64) ?? "queued",
+		status: shownText(item.status, 64) ?? "queued",
 		at: timestamp(item.at, "mail message time"),
 		...(staffAgent ? { staffAgent } : {}),
 	};
@@ -308,8 +311,8 @@ function parseWaitingSend(value: unknown): MailWaitingSend {
 		...(staffAgent ? { staffAgent } : {}),
 		to: recipients(item.to),
 		cc: recipients(item.cc),
-		...(typeof item.subject === "string" ? { subject: item.subject.slice(0, 2048) } : {}),
-		...(typeof item.text === "string" ? { text: item.text.slice(0, 64_000) } : {}),
+		...optional("subject", shownText(item.subject, 2048)),
+		...optional("text", shownText(item.text, 64_000)),
 		attachments: attachments(item.attachments),
 		createdAt: timestamp(item.createdAt, "mail waiting time"),
 	};
@@ -322,10 +325,10 @@ function parseWaitingItem(value: unknown): MailWaitingItem {
 		reviewId: uuid(item.reviewId, "mail waiting review"),
 		...(absent(item.thread) ? {} : { thread: threadId(item.thread, "mail waiting thread") }),
 		...(absent(item.sessionId) ? {} : { sessionId: uuid(item.sessionId, "mail waiting conversation") }),
-		...optional("address", shownText(item.address, "mail waiting address", 320)),
+		...optional("address", shownText(item.address, 320)),
 		...(staffAgent ? { staffAgent } : {}),
 		to: recipients(item.to),
-		...(typeof item.subject === "string" ? { subject: item.subject.slice(0, 2048) } : {}),
+		...optional("subject", shownText(item.subject, 2048)),
 		createdAt: timestamp(item.createdAt, "mail waiting time"),
 	};
 }
@@ -368,7 +371,7 @@ export async function readMailThread(cloud: Cloud, environmentId: string, thread
 	);
 	return {
 		...(absent(answer.thread) ? {} : { thread: threadId(answer.thread, "mail thread") }),
-		...optional("address", shownText(answer.address, "mail thread address", 320)),
+		...optional("address", shownText(answer.address, 320)),
 		messages: array(answer.messages, "mail messages").map(parseMessage),
 		more: flag(answer.more, "mail thread more"),
 		waiting: array(answer.waiting ?? [], "mail waiting sends").map(parseWaitingSend),

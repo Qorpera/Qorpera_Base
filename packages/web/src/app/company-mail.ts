@@ -13,8 +13,9 @@ import {
 	readMailThreads,
 	readMailWaiting,
 } from "../cloud/mail.ts";
+import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
 import type { ActionReviewAnswer } from "../cloud/review-rules.ts";
-import type { CompanyController } from "./company.ts";
+import { type CompanyController, needsModelAccount } from "./company.ts";
 
 /* The company's mail as this member reads it (Interfaces step I5c; the member mail read of step I5a, cloud/mail.ts),
  * for the Mailbox page and the `mail` and `mail_addresses` sources (RUNTIME-INTERFACES.md §4).
@@ -58,7 +59,12 @@ export interface MailAnswer {
 	readonly pending: boolean;
 	readonly answered?: ActionReviewAnswer;
 	readonly error?: string;
+	/** The answer was refused for want of the member's model account, which the agent's thread lets them choose. */
+	readonly needsAccount?: boolean;
 }
+
+/** The member's model accounts, as a conversation's thread reads them (views/session-execution.ts). */
+export type MailAccounts = Pick<WebNativeSubscription, "listConnections" | "selectSessionAccount">;
 
 export interface MailState {
 	/** The company's addresses; none while its mail is off. */
@@ -102,6 +108,7 @@ export class CompanyMail {
 
 	readonly #company: CompanyController;
 	readonly #cloud: Cloud;
+	readonly #accounts: MailAccounts;
 	readonly #publish: (state: MailState) => void;
 	#state: MailState | undefined;
 	#disposed = false;
@@ -116,9 +123,10 @@ export class CompanyMail {
 	/** The threads marked read while open, so a mark is sent once per opening unless newer mail arrives. */
 	#marked = new Set<string>();
 
-	constructor(company: CompanyController, cloud: Cloud, publish: (state: MailState) => void) {
+	constructor(company: CompanyController, cloud: Cloud, accounts: MailAccounts, publish: (state: MailState) => void) {
 		this.#company = company;
 		this.#cloud = cloud;
+		this.#accounts = accounts;
 		this.#publish = publish;
 		readers.set(company, this);
 	}
@@ -196,14 +204,17 @@ export class CompanyMail {
 		]);
 	}
 
-	/** What a page draws now: its lists and its open threads. Called as it draws; reads start after the draw. */
+	/** What a page draws now: its lists and its open threads. Called as it draws; reads start after the draw, and the
+	 * threads it no longer has open are let go. */
 	watch(requests: readonly MailListRequest[], threads: readonly string[], shown: () => boolean): void {
 		if (this.#closed) return;
 		const lists = new Map(requests.map((request) => [mailListKey(request), request]));
 		const opened = new Set(threads);
-		// A thread opened now, and not on the last draw, is read again and marked read, even when it was read before.
-		const was = this.#watched.threads;
-		const fresh = new Set([...opened].filter((thread) => !was.has(thread)));
+		// A list or a thread drawn now, and not on the last draw, is read again (and a thread marked read), even when it
+		// was read before: coming back to a view shows its list as it is.
+		const was = this.#watched;
+		const freshLists = new Set([...lists.keys()].filter((key) => !was.lists.has(key)));
+		const fresh = new Set([...opened].filter((thread) => !was.threads.has(thread)));
 		for (const thread of this.#marked) if (!opened.has(thread)) this.#marked.delete(thread);
 		this.#watched = { lists, threads: opened, shown };
 		if (!this.#pageTimer && (lists.size > 0 || opened.size > 0))
@@ -218,8 +229,16 @@ export class CompanyMail {
 			}, PAGE_POLL_MS);
 		queueMicrotask(() => {
 			const state = this.#state ?? EMPTY;
-			for (const [key, request] of lists) if (!state.lists[key]) void this.#readFirst(key, request);
+			for (const [key, request] of lists)
+				if (freshLists.has(key) || !state.lists[key]) void this.#readFirst(key, request);
 			for (const thread of opened) if (fresh.has(thread) || !state.threads[thread]) void this.#readThread(thread);
+			// A closed thread's read is let go: opening it again reads it again anyway.
+			const open = this.#watched.threads;
+			if (Object.keys(state.threads).some((thread) => !open.has(thread)))
+				this.#set((now) => ({
+					...now,
+					threads: Object.fromEntries(Object.entries(now.threads).filter(([thread]) => open.has(thread))),
+				}));
 		});
 	}
 
@@ -305,6 +324,10 @@ export class CompanyMail {
 				this.#set((state) => {
 					const now = state.lists[key];
 					if (!now) return state;
+					// A first page that landed meanwhile moved where older threads start: this page no longer follows the
+					// list, so it is dropped, and Show older reads from there.
+					if (now.next?.lastAt !== before.lastAt || now.next.thread !== before.thread)
+						return { ...state, lists: { ...state.lists, [key]: { ...now, older: "idle" } } };
 					const seen = new Set(now.threads.map((item) => item.thread));
 					const added = page.threads.filter((item) => !seen.has(item.thread));
 					const { next: _next, ...rest } = now;
@@ -390,18 +413,24 @@ export class CompanyMail {
 	}
 
 	/** Answers a waiting send through the card of the conversation it was raised in (`company.answerActionReview`,
-	 * which says on that conversation why an answer is refused). The thread, its lists and the waiting sends are then
-	 * read again. */
+	 * which says on that conversation why an answer is refused). An answer wakes the agent on the member's model
+	 * account once the agent no longer waits for it, so the conversation's account is chosen first, as its thread
+	 * chooses it. The thread, its lists and the waiting sends are then read again. */
 	async answer(thread: string, sessionId: string, reviewId: string, answer: ActionReviewAnswer): Promise<void> {
 		if (this.#state?.answers[reviewId]?.pending) return;
 		const set = (given: MailAnswer) =>
 			this.#set((state) => ({ ...state, answers: { ...state.answers, [reviewId]: given } }));
 		set({ pending: true });
+		await this.#chooseAccount(sessionId);
 		try {
 			await this.#company.answerActionReview(sessionId, reviewId, answer);
 		} catch (error) {
 			const said = this.#company.conversation(sessionId, false).get().interactionError;
-			set({ pending: false, error: said ?? describeError(error) });
+			set({
+				pending: false,
+				error: said ?? describeError(error),
+				...(needsModelAccount(error) ? { needsAccount: true } : {}),
+			});
 			void this.#readThread(thread);
 			return;
 		}
@@ -411,5 +440,26 @@ export class CompanyMail {
 			this.#refreshCompany(),
 			...[...this.#watched.lists].map(([key, request]) => this.#readFirst(key, request)),
 		]);
+	}
+
+	/** Gives the conversation the model account the cloud chooses for it, as its thread does when it opens
+	 * (views/session-execution.ts): the conversation's own account, never another one (founder decision 2026-10-04).
+	 * A conversation with a message on its way keeps the account that message carries, and one the cloud has no
+	 * account for keeps what it has. While the agent still waits, its answer needs no account, so a choice that fails
+	 * only leaves the answer to say whether it needed one. */
+	async #chooseAccount(sessionId: string): Promise<void> {
+		const conversation = this.#company.conversation(sessionId, false).get();
+		if (conversation.sending || conversation.retrySend || !this.#accounts.selectSessionAccount) return;
+		const signal = this.#company.signal;
+		try {
+			const connectionId = await this.#accounts.selectSessionAccount(sessionId, signal);
+			if (!connectionId) return;
+			const observed = await this.#accounts.listConnections(signal);
+			const now = this.#company.conversation(sessionId, false).get();
+			if (now.sending || now.retrySend) return;
+			this.#company.setExecutionSponsor(sessionId, observed, connectionId);
+		} catch {
+			// The answer still goes.
+		}
 	}
 }

@@ -256,6 +256,7 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 .interface-mail-messages { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
 .interface-mail .interaction-card.email-draft-card { width: 100%; margin-top: 0; padding: 12px; border-radius: 16px; }
 .interface-mail .interface-mail-waiting { margin-top: 10px; }
+.interface-mail .interface-mail-thread { margin-top: 8px; }
 .interface-mail .email-draft-heading { flex-wrap: wrap; gap: 6px 10px; margin-bottom: 8px; }
 .interface-mail .email-draft-heading h3 { min-width: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
 .interface-mail-when { display: inline-flex; flex-wrap: wrap; gap: 6px; }

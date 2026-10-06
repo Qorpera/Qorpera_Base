@@ -41,7 +41,16 @@ import { CompanyMail, type MailList, type MailListRequest } from "../company-mai
 import { type BoardLane, boardLanes } from "../interface-board.ts";
 import { type ClaimVerb, claimFailure, claimTableCell, type InterfaceWrites } from "../interface-claims.ts";
 import type { FolderProblem } from "../interface-folder.ts";
-import { isMailSource, mailList, mailRequest, mailRows, openedMailRow, rowThread } from "../interface-mail.ts";
+import {
+	isAccountMail,
+	isMailSource,
+	mailList,
+	mailRequest,
+	mailRows,
+	mailSummary,
+	openedMailRow,
+	rowThread,
+} from "../interface-mail.ts";
 import {
 	blockButtons,
 	companyInterface,
@@ -603,6 +612,11 @@ export function renderInterfaceFile(
 	);
 	const hasOpen = blocks.some((drawn) => drawn.open !== undefined);
 	const readsMail = blocks.some(({ source }) => isMailSource(source));
+	const mailLists = blocks.flatMap(({ mail }) => (mail ? [mail.request] : []));
+	const mailThreads = blocks.flatMap(({ block, open }) => {
+		const thread = block.kind === "mail" && open ? rowThread(open.row) : undefined;
+		return thread === undefined ? [] : [thread];
+	});
 	// The whole definition, so a change to anything drawn from it (a table's columns, a list's line, a button's
 	// text) draws the page again with the handlers of the new one, even when the rows and titles stay the same.
 	const key = JSON.stringify([
@@ -630,8 +644,17 @@ export function renderInterfaceFile(
 		widths,
 		agentLooks,
 		memberNames,
-		// The company's mail as read, where a block draws it: its lists' reads, an open thread and its answers.
-		readsMail ? (state.mail ?? null) : null,
+		// The company's mail where a block draws it: the lists drawn, each open thread as read with its summary, the
+		// answers, the addresses and the waiting sends; not the other lists and threads read before.
+		readsMail && state.mail
+			? [
+					state.mail.addresses,
+					state.mail.waiting,
+					state.mail.answers,
+					mailLists.map((request) => mailList(company, request) ?? null),
+					mailThreads.map((thread) => [state.mail?.threads[thread] ?? null, mailSummary(company, thread) ?? null]),
+				]
+			: null,
 		// Each block's source as drawn beside its rows: whether it can be read (a table that recovers with no rows
 		// still draws again) and what its columns hold, which a table's definition says outside the page's.
 		blocks.map(({ block, source, rows, open, readable, problems, board }) => [
@@ -736,15 +759,7 @@ export function renderInterfaceFile(
 	);
 	if (errorFirst) page.errorShown = true;
 	// The mail this page draws is read, and read again while it stays on screen (app/company-mail.ts).
-	if (readsMail)
-		CompanyMail.of(company)?.watch(
-			blocks.flatMap(({ mail }) => (mail ? [mail.request] : [])),
-			blocks.flatMap(({ block, open }) => {
-				const thread = block.kind === "mail" && open ? rowThread(open.row) : undefined;
-				return thread === undefined ? [] : [thread];
-			}),
-			context.stillShown,
-		);
+	if (readsMail) CompanyMail.of(company)?.watch(mailLists, mailThreads, context.stillShown);
 }
 
 /** The page's views as tabs. A view changes the blocks shown and closes what was open; the route stays. */
@@ -1559,7 +1574,11 @@ function rowButtons(
 		}
 		const agent = messageTarget(context, drawnButton.to, item.row);
 		// A row whose outside values can't travel as quotes gets no button (messageText says why).
-		if (!agent || !context.canWrite || !messageText(drawnButton.text, item.row, drawn.source, drawn.nameOf))
+		if (
+			!agent ||
+			!context.canWrite ||
+			!messageText(drawnButton.text, item.row, drawn.source, drawn.nameOf, quotable(context, drawn.source))
+		)
 			return [];
 		const pendingKey = focus(index);
 		const pending = () => context.page.pending.includes(pendingKey);
@@ -1643,20 +1662,26 @@ function quotedWords(shown: string): string {
 		: flat;
 }
 
+/** Whether the cloud takes a quote of a source's record: of a mail thread, unless it is account mail. */
+const quotable = (context: BlockContext, source: string) => (ref: string) =>
+	source !== "mail" || !isAccountMail(context.company, ref);
+
 /** The text a `message` button puts in the composer, with its quotes. A value from a column that carries outside
  * content (RUNTIME-INTERFACES.md §4) goes as a quote (contract, the 2026-10-02 amendment "quoted outside content in
  * a member's message"): in «» marks on the same line, with where it came from, so the platform fences those words
  * and the review never reads them as the member's own. An empty value fills in nothing.
  *
  * Undefined when a value from outside content can't travel as a quote: its source is not on the contract's quote
- * list, or the row doesn't name the record it came from (a mail row without its thread id). The button is then not
- * drawn for that row (rowButtons): filling the value in as the member's own words is what a quote is there to
- * prevent, and leaving it out would put in less than the button says, with nothing to tell the member. */
+ * list, the row doesn't name the record it came from (a mail row without its thread id), or the cloud takes no quote
+ * of that record (`quotable`: account mail). The button is then not drawn for that row (rowButtons): filling the value
+ * in as the member's own words is what a quote is there to prevent, and leaving it out would put in less than the
+ * button says, with nothing to tell the member. */
 export function messageText(
 	text: string,
 	row: TableRow,
 	source: string,
 	nameOf: (column: string, value: unknown) => string,
+	quotable: (ref: string) => boolean = () => true,
 ): QuotedText | undefined {
 	const outside = interfaceOutsideColumns(source);
 	const recordColumn = Object.hasOwn(QUOTE_RECORD_COLUMNS, source) ? QUOTE_RECORD_COLUMNS[source] : undefined;
@@ -1686,6 +1711,7 @@ export function messageText(
 			!INTERFACE_QUOTE_SOURCES.includes(source) ||
 			typeof ref !== "string" ||
 			!quoteRefFits(source, ref) ||
+			!quotable(ref) ||
 			quotes.length >= INTERFACE_OUTSIDE_VALUES_MAX
 		)
 			return undefined;
@@ -1711,7 +1737,7 @@ async function messageAgent(
 ): Promise<void> {
 	const { company, profileId } = context;
 	// The button is drawn only for a row whose values can travel (rowButtons); this holds the line if one can't.
-	const text = messageText(drawnButton.text, row, drawn.source, drawn.nameOf);
+	const text = messageText(drawnButton.text, row, drawn.source, drawn.nameOf, quotable(context, drawn.source));
 	if (!text) throw new Error(t("This row's email can't be quoted in a message."));
 	const from = location.hash;
 	const cofounderId = company.cofounderId();

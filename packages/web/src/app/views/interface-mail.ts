@@ -274,8 +274,16 @@ function messageCard(message: MailMessage, agentName: AgentName): HTMLElement {
 	);
 }
 
+/** An agent's own thread, where its sends can be answered too; none for an agent no longer at work. */
+function agentThread(company: CompanyController, agentId: string): string | null {
+	if (company.staffById(agentId)?.employmentStatus !== "active") return null;
+	const profileId = company.profile.profileId;
+	return agentId === company.cofounderId() ? `#/c/${profileId}` : `#/c/${profileId}/staff/${agentId}`;
+}
+
 /** The sends in a thread that wait for a person, as their review card: what the agent wants to send, and the answer
- * where this member may give it (a `sessionId`, write access, and a block that offers `answer`). */
+ * where this member may give it (a `sessionId`, write access, and a block that offers `answer`). An answer refused
+ * for want of the member's model account points to the agent's thread, where they choose one. */
 function waitingCards(
 	company: CompanyController,
 	thread: string,
@@ -286,6 +294,8 @@ function waitingCards(
 	return read.waiting.map((send: MailWaitingSend) => {
 		const given = answers[send.reviewId];
 		const agent = send.staffAgent ? options.agentName(send.staffAgent.staffAgentId, send.staffAgent.name) : null;
+		const there =
+			given?.needsAccount && send.staffAgent && agent ? agentThread(company, send.staffAgent.staffAgentId) : null;
 		const sessionId = send.sessionId;
 		const mayAnswer = sessionId !== undefined && options.canWrite && options.answerable && !given?.answered;
 		const answer = (choice: "allow_once" | "deny") => () => {
@@ -318,7 +328,31 @@ function waitingCards(
 				send.text ? h("div", { class: "review-email-body" }, send.text) : null,
 				names ? field(t("Attachments"), names, false) : null,
 			),
-			given?.error ? h("p", { class: "email-draft-error", role: "alert" }, given.error) : null,
+			given?.error
+				? h(
+						"p",
+						{ class: "email-draft-error", role: "alert" },
+						there && agent
+							? t(
+									"This answer needs your model account. Answer it in {name}'s thread, where you can choose one.",
+									{
+										name: agent,
+									},
+								)
+							: given.error,
+					)
+				: null,
+			there && agent
+				? h(
+						"a",
+						{
+							class: "interface-button interface-mail-thread",
+							href: there,
+							"data-focus-key": `thread:${send.reviewId}`,
+						},
+						t("Open {name}'s thread", { name: agent }),
+					)
+				: null,
 			mayAnswer
 				? h(
 						"div",

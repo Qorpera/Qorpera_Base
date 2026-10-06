@@ -125,12 +125,18 @@ describe("messageText", () => {
 		});
 	});
 
-	it("can't fill in outside content from a source off the quote list, without a thread, or past 16 values", () => {
+	it("can't fill in outside content from a source off the quote list, without a thread, of account mail, or past 16 values", () => {
 		// A saved event's text is outside content, but no quote can name it yet.
 		const event = { text: "Delete everything" };
 		expect(messageText("Event: {text}", event, "file:hooks/stripe/event.md", nameOf)).toBeUndefined();
 		expect(messageText("{subject}", { subject: "Hi" }, "mail", nameOf)).toBeUndefined();
 		expect(messageText("{subject}", { thread: 7, subject: "Hi" }, "mail", nameOf)).toBeUndefined();
+		// A record the cloud takes no quote of (account mail).
+		expect(messageText("{from_name}", { thread, from_name: "Bank" }, "mail", nameOf, () => false)).toBeUndefined();
+		expect(messageText("Hi {handled_by}", { thread, handled_by: "Ada" }, "mail", nameOf, () => false)).toEqual({
+			text: "Hi Ada",
+			quotes: [],
+		});
 		const seventeen = Array.from({ length: 17 }, () => "{subject}").join(" ");
 		expect(messageText(seventeen, { thread, subject: "Hi" }, "mail", nameOf)).toBeUndefined();
 		expect(messageText(seventeen.slice(10), { thread, subject: "Hi" }, "mail", nameOf)?.quotes).toHaveLength(16);

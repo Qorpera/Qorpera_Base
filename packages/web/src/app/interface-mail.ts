@@ -129,6 +129,17 @@ export function mailSummary(company: CompanyController, thread: string): MailThr
 	return undefined;
 }
 
+/** Whether a thread is account mail (A1), as far as it is read: its summary or its read says so. The cloud takes no
+ * quote of it (`qorpera_check_member_quotes`), as it shows none of its words. */
+export function isAccountMail(company: CompanyController, thread: string): boolean {
+	if (mailSummary(company, thread)?.account) return true;
+	const read = company.store.get().mail?.threads[thread];
+	return (
+		read?.status === "ready" &&
+		read.thread.messages.some((message) => message.kind === "received" && message.account !== undefined)
+	);
+}
+
 /** The row an opened `mail` block shows when its view's list no longer holds it (a waiting send answered in the
  * "Waiting for you" view): the thread from another list, or just its id. The block reads the thread itself. */
 export function openedMailRow(company: CompanyController, key: string): InterfaceRow | undefined {

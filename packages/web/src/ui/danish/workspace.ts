@@ -143,6 +143,9 @@ export const WORKSPACE: Record<string, string> = {
 	Attachments: "Vedhæftede filer",
 	"{name} wants to send this email": "{name} vil sende denne e-mail",
 	"This send waits for someone who can answer it.": "Denne afsendelse venter på en, der kan svare på den.",
+	"This answer needs your model account. Answer it in {name}'s thread, where you can choose one.":
+		"Dette svar kræver din modelkonto. Svar i tråden med {name}, hvor du kan vælge en.",
+	"Open {name}'s thread": "Åbn tråden med {name}",
 	Thread: "Tråd",
 	Address: "Adresse",
 	"From address": "Fra-adresse",

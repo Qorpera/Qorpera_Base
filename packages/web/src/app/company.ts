@@ -127,11 +127,16 @@ function retryRefusal(error: unknown): string {
 	return t("It could not be tried again. Send the message again instead.");
 }
 
+/** Whether a card's answer was refused for want of the member's model account: in an agent's thread an answer runs
+ * the agent on it. */
+export function needsModelAccount(error: unknown): boolean {
+	return /sponsor|model account/i.test(error instanceof Error ? error.message : "");
+}
+
 /** Why the cloud would not take a card's answer, in the member's words. */
 function answerRefusal(error: unknown): string {
 	const message = error instanceof Error ? error.message : "";
-	// In an agent's thread an answer runs the agent on the member's own model account.
-	if (/sponsor|model account/i.test(message)) return t("Select an active model account, then try again.");
+	if (needsModelAccount(error)) return t("Select an active model account, then try again.");
 	if (/paused/i.test(message)) return t("Agents are paused for a moment while Qorpera updates. Try again shortly.");
 	return describeError(error);
 }

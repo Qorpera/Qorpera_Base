@@ -772,7 +772,10 @@ answers on a board, and supervision (I9b) are not built.
 `app/interface-badge.ts`, `app/views/interface-mail.ts`). The `mail` and `mail_addresses` sources read the member mail
 calls of I5a, and the `mail` need holds while the addresses call lists one. The Mailbox page draws its views: lists
 that page and poll, a thread with its outside-content marks and account mail kept back (I5b), the sends that wait
-with their answer, and the Addresses table, all in the proposed rules of §3.2, §3.3 and §4. Its message buttons put
-outside values in as quotes (I5d). The rail row shows the page's badge. Not built: `chips`, a thread's older
+with their answer, and the Addresses table, all in the proposed rules of §3.2, §3.3 and §4. An answer first chooses
+the conversation's model account as its thread does (never another one while a message is on its way); one refused
+for want of an account points to the agent's thread. Shown text is clipped to the cloud's bounds in characters, never
+refused. Its message buttons put outside values in as quotes (I5d), and draw none for account mail, which the cloud
+takes no quote of. The rail row shows the page's badge. Not built: `chips`, a thread's older
 messages (the thread call has no next page), and a `direction` filter in the threads call, so Sent shows the sent
 threads of the pages read.

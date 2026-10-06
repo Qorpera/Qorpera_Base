@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import { interfaceLibraryFiles } from "@qorpera/cloud-client/interface-library";
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
@@ -153,6 +154,51 @@ function mailFake(f: ReturnType<typeof fixture>): MailFake {
 	return fake;
 }
 
+/** The member's one model account that can pay. */
+const connections: NativeExecutionConnections = {
+	computeIdentity: {
+		computeIdentityId: id(882),
+		ownershipKind: "member",
+		ownerUserId: userA.id,
+		displayName: "Member computer",
+		templateKey: "member",
+		templateVersion: "v1",
+		capabilities: ["agent_turn"],
+		policy: {},
+		status: "active",
+		createdAt: "2026-09-12T00:00:00Z",
+		updatedAt: "2026-09-12T00:00:00Z",
+	},
+	connections: [
+		{
+			connectionId: id(880),
+			clientConnectionId: id(883),
+			connectionVersion: 1,
+			provider: "openai",
+			nativeHarness: "codex-cli",
+			authorizationState: "active",
+			maxNativeConcurrency: 1,
+			billingSource: "member",
+			consentVersion: "v1",
+			consentedAt: "2026-09-12T00:00:00Z",
+			connectionStatus: "active",
+			sponsorBindingId: id(881),
+			sponsorVersion: 1,
+			policy: { implementationStatus: "supported", enablementStatus: "enabled", policyVersion: 1 },
+		},
+	],
+};
+
+/** The member's model accounts as the cloud gives them: it chooses that account for every conversation. */
+function accountsFake() {
+	return {
+		listConnections: vi.fn(async (_signal?: AbortSignal) => connections),
+		selectSessionAccount: vi.fn(
+			async (_sessionId: string, _signal?: AbortSignal): Promise<string | undefined> => id(880),
+		),
+	};
+}
+
 const cleanup: (() => void)[] = [];
 beforeEach(() => {
 	stubFigureMotion();
@@ -207,8 +253,12 @@ async function follow(controller: CompanyController) {
 }
 
 /** The company's mail, read as the app reads it. */
-async function readMail(controller: CompanyController, f: ReturnType<typeof fixture>) {
-	const reader = new CompanyMail(controller, f.cloud, (state) => controller.store.set({ mail: state }));
+async function readMail(
+	controller: CompanyController,
+	f: ReturnType<typeof fixture>,
+	accounts: ReturnType<typeof accountsFake> = accountsFake(),
+) {
+	const reader = new CompanyMail(controller, f.cloud, accounts, (state) => controller.store.set({ mail: state }));
 	cleanup.push(() => reader.dispose());
 	await reader.open();
 	return reader;
@@ -221,7 +271,8 @@ async function mailbox(setup: (fake: MailFake) => void, role: HostedProfileRole 
 	fake.addresses = [ADDRESS];
 	setup(fake);
 	await follow(controller);
-	await readMail(controller, f);
+	const accounts = accountsFake();
+	await readMail(controller, f, accounts);
 	const main = h("main");
 	document.body.append(main);
 	const draw = () => renderInterface(main, controller, "mailbox");
@@ -233,7 +284,7 @@ async function mailbox(setup: (fake: MailFake) => void, role: HostedProfileRole 
 		view(main, "Inbox");
 	});
 	draw();
-	return { f, controller, fake, main };
+	return { f, controller, fake, main, accounts };
 }
 
 function rail(controller: CompanyController, f: ReturnType<typeof fixture>) {
@@ -334,6 +385,42 @@ describe("the Inbox list", () => {
 		expect(main.querySelectorAll(".interface-mail-list li.is-unread")).toHaveLength(1);
 	});
 
+	it("drops an older page that a fresh first page overtook, so no thread goes missing between them", async () => {
+		vi.useFakeTimers();
+		const { main, f, fake } = await mailbox((mail) => {
+			mail.threads = Array.from({ length: 55 }, (_, index) => summary(index + 1));
+		});
+		await vi.waitFor(() => expect(rows(main)).toHaveLength(50));
+		// Show older waits in the cloud while new mail arrives and the first page is read again.
+		const rpc = f.cloud.rpc as unknown as Mock;
+		const answer = rpc.getMockImplementation()!;
+		let release = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		rpc.mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+			const page = answer(fn, args);
+			if (fn === "qorpera_member_mail_threads" && (args.p_request as { before?: unknown }).before) await held;
+			return page;
+		});
+		button(main, "Show older")!.click();
+		fake.threads.unshift(summary(0, { fromName: "Newcomer" }));
+		await vi.advanceTimersByTimeAsync(20_000);
+		await vi.waitFor(() => expect(lines(main)[0]).toBe("Newcomer"));
+		release();
+		await vi.waitFor(() => expect(button(main, "Show older")?.disabled).toBe(false));
+		expect(rows(main)).toHaveLength(50);
+		// Show older reads on from the fresh page's end: Sender 50, which the old page would have skipped, is there.
+		rpc.mockImplementation(answer);
+		button(main, "Show older")!.click();
+		await vi.waitFor(() => expect(rows(main)).toHaveLength(56));
+		expect(lines(main)).toContain("Sender 50");
+		expect((calls(fake, "qorpera_member_mail_threads").at(-1)?.p_request as { before?: unknown }).before).toEqual({
+			lastAt: at(49),
+			thread: thread(49),
+		});
+	});
+
 	it("names a sender without a name by address, and says a list that can't be read, with a way to try again", async () => {
 		const { main, fake, f } = await mailbox((mail) => {
 			mail.threads = [summary(1, { fromName: null })];
@@ -375,17 +462,26 @@ describe("the views", () => {
 			p_request: { state: "waiting", limit: 50 },
 		});
 		expect(main.querySelector(".interface-item-status")?.textContent).toBe("Waiting");
+		// The send is answered meanwhile.
+		fake.threads[0]!.state = "handled";
 		const asked = calls(fake, "qorpera_member_mail_threads").length;
 		view(main, "Sent");
 		await vi.waitFor(() => expect(lines(main)).toEqual(["Ada"]));
-		// The Sent view reads the Inbox's list again: the call has no direction to ask for.
-		expect(calls(fake, "qorpera_member_mail_threads")).toHaveLength(asked);
+		// The Sent view reads the Inbox's list, afresh as it comes back on screen: the call has no direction to ask for.
+		expect(calls(fake, "qorpera_member_mail_threads").slice(asked)).toEqual([
+			{ p_environment_id: profileA.environmentId, p_request: { limit: 50 } },
+		]);
+		view(main, "Inbox");
+		await vi.waitFor(() => expect(main.querySelector(".interface-item-status")?.textContent).toBe("Handled"));
+		expect(rows(main)).toHaveLength(3);
+		// The Inbox shares that list: it is not read again.
+		expect(calls(fake, "qorpera_member_mail_threads")).toHaveLength(asked + 1);
 	});
 });
 
 describe("an open thread", () => {
 	it("draws its messages as plain text with outside marks, and marks the thread read", async () => {
-		const { main, fake } = await mailbox((mail) => {
+		const { main, fake, controller } = await mailbox((mail) => {
 			mail.threads = [summary(1, { unread: true, messages: 2 })];
 			mail.reads[thread(1)] = {
 				thread: thread(1),
@@ -455,9 +551,10 @@ describe("an open thread", () => {
 			p_thread: thread(1),
 		});
 		await vi.waitFor(() => expect(main.querySelector(".interface-mail-list li.is-unread")).toBeNull());
-		// Closing it and opening it again reads it again and marks it again.
+		// Closing it lets its read go; opening it again reads it again and marks it again.
 		button(main, "Back")!.click();
 		await vi.waitFor(() => expect(opened()).toBeNull());
+		await vi.waitFor(() => expect(controller.store.get().mail?.threads).toEqual({}));
 		rows(main)[0]!.click();
 		await vi.waitFor(() => expect(calls(fake, "qorpera_mark_mail_thread_read")).toHaveLength(2));
 		expect(calls(fake, "qorpera_member_mail_thread")).toHaveLength(2);
@@ -499,6 +596,8 @@ describe("an open thread", () => {
 			/^Account mail · bank\.example · last used by Ada .+/,
 		);
 		expect(opened()!.querySelector(".email-draft-panel, .review-email-body")).toBeNull();
+		// The cloud takes no quote of account mail, so there is no button that would put its sender in one.
+		expect(button(main, "Ask Ada")).toBeUndefined();
 		expect(main.textContent).not.toContain("481516");
 		expect(main.textContent).not.toContain("sign-in code");
 		rows(main)[1]!.click();
@@ -508,6 +607,29 @@ describe("an open thread", () => {
 			),
 		);
 		expect(main.textContent).not.toContain("shop.example/r/1");
+	});
+
+	it("reads names and texts at the cloud's bounds in characters, where an emoji is one, and clips what is longer", async () => {
+		// The cloud keeps 320 characters of a sender's name and 16,000 of a text; each emoji is two units in the page.
+		const name = "😀".repeat(200);
+		const text = `${"a".repeat(15_999)}😀`;
+		const { main } = await mailbox((mail) => {
+			mail.threads = [summary(1, { fromName: name }), summary(2, { fromName: "😀".repeat(400) })];
+			mail.reads[thread(1)] = {
+				thread: thread(1),
+				address: ADDRESS.address,
+				messages: [received(1, { fromName: name, text })],
+				more: false,
+				waiting: [],
+			};
+		});
+		await vi.waitFor(() => expect(rows(main)).toHaveLength(2));
+		expect(lines(main)).toEqual([name, "😀".repeat(320)]);
+		rows(main)[0]!.click();
+		await vi.waitFor(() => expect(opened()?.querySelector(".review-email-body")?.textContent).toBe(text));
+		expect(opened()!.querySelector(".interface-mail-message h3")?.textContent).toBe(
+			`${name} <sender1@outside.example>`,
+		);
 	});
 
 	it("says a thread the cloud no longer has (22023) is gone, and marks nothing", async () => {
@@ -537,7 +659,7 @@ describe("a send that waits for a person", () => {
 	};
 
 	it("is answered through its conversation's card when it names one; without one it only waits", async () => {
-		const { main, f, fake } = await mailbox((mail) =>
+		const { main, f, fake, accounts } = await mailbox((mail) =>
 			reviewed(
 				mail,
 				waitingSend(id(901)),
@@ -567,7 +689,12 @@ describe("a send that waits for a person", () => {
 		const waitingReads = calls(fake, "qorpera_member_mail_waiting").length;
 		button(withConversation!, "Send email")!.click();
 		await vi.waitFor(() => expect(answer).toHaveBeenCalledTimes(1));
-		expect(answer).toHaveBeenCalledWith(id(901), expect.any(String), "allow_once", undefined, undefined);
+		// On the model account the cloud chooses for the conversation, as its thread would: the answer may wake Ada.
+		expect(accounts.selectSessionAccount).toHaveBeenCalledWith(session.sessionId, expect.any(AbortSignal));
+		expect(answer).toHaveBeenCalledWith(id(901), expect.any(String), "allow_once", undefined, {
+			sponsorBindingId: id(881),
+			sponsorVersion: 1,
+		});
 		// The thread and the waiting sends are read again: the answered send is no longer there.
 		await vi.waitFor(() => expect(opened()?.querySelectorAll(".interface-mail-waiting")).toHaveLength(1));
 		expect(calls(fake, "qorpera_member_mail_waiting").length).toBeGreaterThan(waitingReads);
@@ -593,6 +720,79 @@ describe("a send that waits for a person", () => {
 		);
 		expect(main.querySelector(".email-draft-error")?.getAttribute("role")).toBe("alert");
 		expect(button(main, "Send email")?.disabled).toBe(false);
+		expect(main.querySelector(".interface-mail-thread")).toBeNull();
+	});
+
+	it("points to the agent's thread when the answer needs a model account the cloud can't choose here", async () => {
+		const { main, f, fake, accounts, controller } = await mailbox((mail) => reviewed(mail, waitingSend(id(901))));
+		accounts.selectSessionAccount.mockResolvedValue(undefined);
+		// Ada no longer waits: the answer wakes her, and the cloud refuses a wake without the member's account.
+		const answer = vi
+			.spyOn(f.api, "answerActionReview")
+			.mockImplementation(async (reviewId, _input, given, _rule, sponsor) => {
+				if (!sponsor)
+					throw new CloudRpcError(
+						"qorpera_answer_action_review",
+						{ code: "42501", message: "Room sponsor is unavailable" },
+						403,
+					);
+				fake.reads[thread(1)]!.waiting = [];
+				return { reviewId, answer: given, inputId: id(950), savedRuleId: null, woke: true };
+			});
+		await vi.waitFor(() => expect(rows(main)).toHaveLength(1));
+		rows(main)[0]!.click();
+		await vi.waitFor(() => expect(button(main, "Send email")).toBeDefined());
+		button(main, "Send email")!.click();
+		await vi.waitFor(() => expect(main.querySelector(".interface-mail-thread")).not.toBeNull());
+		expect(answer).toHaveBeenCalledWith(id(901), expect.any(String), "allow_once", undefined, undefined);
+		expect(accounts.listConnections).not.toHaveBeenCalled();
+		expect(main.querySelector(".interface-mail-waiting .email-draft-error")?.textContent).toBe(
+			"This answer needs your model account. Answer it in Ada's thread, where you can choose one.",
+		);
+		const link = main.querySelector<HTMLAnchorElement>(".interface-mail-thread")!;
+		expect(link.textContent).toBe("Open Ada's thread");
+		expect(link.getAttribute("href")).toBe(`#/c/${profileA.profileId}/staff/${ada.id}`);
+		// Once the conversation has its account (chosen in the thread), the same answer goes, on that account.
+		accounts.selectSessionAccount.mockResolvedValue(id(880));
+		expect(controller.conversation(session.sessionId, false).get().executionSponsor).toBeUndefined();
+		button(main, "Send email")!.click();
+		await vi.waitFor(() => expect(main.querySelector(".interface-mail-waiting")).toBeNull());
+		expect(answer).toHaveBeenLastCalledWith(id(901), expect.any(String), "allow_once", undefined, {
+			sponsorBindingId: id(881),
+			sponsorVersion: 1,
+		});
+	});
+
+	it("keeps the account of a conversation with a message on its way", async () => {
+		const { main, f, accounts, controller } = await mailbox((mail) => reviewed(mail, waitingSend(id(901))));
+		const kept = {
+			connectionId: id(884),
+			provider: "openai",
+			nativeHarness: "codex-cli",
+			sponsorBindingId: id(885),
+			sponsorVersion: 2,
+			computeIdentityId: id(882),
+			workerClass: "managed_sandbox",
+		} as const;
+		controller.conversation(session.sessionId, false).set({ sending: true, executionSponsor: kept });
+		const answer = vi.spyOn(f.api, "answerActionReview").mockResolvedValue({
+			reviewId: id(901),
+			answer: "allow_once",
+			inputId: id(950),
+			savedRuleId: null,
+			woke: false,
+		});
+		await vi.waitFor(() => expect(rows(main)).toHaveLength(1));
+		rows(main)[0]!.click();
+		await vi.waitFor(() => expect(button(main, "Send email")).toBeDefined());
+		button(main, "Send email")!.click();
+		await vi.waitFor(() => expect(answer).toHaveBeenCalledOnce());
+		expect(accounts.selectSessionAccount).not.toHaveBeenCalled();
+		expect(answer).toHaveBeenCalledWith(id(901), expect.any(String), "allow_once", undefined, {
+			sponsorBindingId: id(885),
+			sponsorVersion: 2,
+		});
+		expect(controller.conversation(session.sessionId, false).get().executionSponsor).toBe(kept);
 	});
 
 	it("can't be answered by a member who can't write", async () => {
@@ -681,7 +881,15 @@ describe("the Mailbox's badge (§3 badge)", () => {
 				subject: "Re: Subject 1",
 				createdAt: at(1),
 			},
-			{ reviewId: id(902), thread: thread(2), staffAgent: { staffAgentId: bo.id }, to: [], createdAt: at(2) },
+			// Its address is Bo's own `from` argument, only shown: a malformed one fails nothing.
+			{
+				reviewId: id(902),
+				thread: thread(2),
+				address: { local: "bo" },
+				staffAgent: { staffAgentId: bo.id },
+				to: [],
+				createdAt: at(2),
+			},
 		];
 		await follow(controller);
 		await readMail(controller, f);
