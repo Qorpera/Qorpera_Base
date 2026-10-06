@@ -574,6 +574,8 @@ it("routes manage_worker and report_work to the folder writer, and says how work
 	expect(manage?.description).toContain("holds brief.md");
 	// Coding sessions and their archive are this company's too (C3b).
 	expect(manage?.description).toContain("A coding session is a worker with species coding");
+	// The one idle rule: a busy session keeps its machine awake and brings check-ins (20260930109000).
+	expect(manage?.description).toContain("a session busy for hours after its last turn brings you check-ins");
 	expect(manage?.description).toContain("Actions: dispatch, status, followup, cancel, decide, archive.");
 	expect(manage?.description).not.toContain("without todoKey, those of open todos");
 	// As the model sends them: JSON, without the empty context.

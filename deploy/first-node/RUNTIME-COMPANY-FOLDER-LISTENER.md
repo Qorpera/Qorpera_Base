@@ -332,7 +332,8 @@ lease, the hook, the cursor.
 The coordinator (4 October) made the orchestrator step shared: a **folder drains** step before the folder materializer,
 which each per-company drain plugs into as a due list and a per-company action. P29's `listen` is the first. F2-5b-3
 (the worker drain), S3's 3i-b (machine events, `machine_events`, built; the quiet coding check-ins follow coding
-dispatch on folder-v2 with C3), the one idle rule's check-ins (`machine_checkins`, 20260930098000) and A1's 3l-2
+dispatch on folder-v2 with C3), the one idle rule's check-ins (`machine_checkins`, 20260930098000; coding sessions
+20260930109000) and A1's 3l-2
 (office wakes) plug in the same way, adding one entry to two tables and
 touching nothing else here.
 
@@ -408,6 +409,15 @@ others wait for the next step), then continues up to 8 parents, a wake each with
 reads each parent's state again under admission, so concurrent steps continue a parent once at a time. A question no
 longer standing is suppressed. The wake's source kind is `machine-checkin`, continued with C1c-3i-b's helpers as a
 machine event is.
+
+**Coding sessions in the same drain** (20260930109000, SQL test 988): the due list and the step also count a coding
+session busy now (attached, and the guest reported it busy within 90 seconds) whose worker is not active and has been
+for a mark since its last turn ended (`qorpera_coding_session_turns.settled_at`), with the question not asked yet. The
+question (`machine_kind` `coding`) goes to the conversation of the worker's steering run and names the session's
+`todoKey` and `workerKey`, which `manage_worker` archive takes. A session waiting on its agent's decision, an erased or
+retired worker, a staff member who is not active, and a session whose quiet question (`coding-quiet:…`, C3c) is still
+pending are not asked. A question stands while the session stays busy since the same turn; once a new turn starts, it
+is suppressed, and an archive from its run refuses (`qorpera_coding_question_stale`).
 
 Commits do not nudge the orchestrator. A file wake waits one 2 s pass while one step's window covers the company's
 backlog; with N listeners a step reads 512/N seqs (at most 32), and each company gets one step per pass, so a large
