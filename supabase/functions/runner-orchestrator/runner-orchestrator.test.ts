@@ -271,6 +271,19 @@ describe("runner orchestrator boundary", () => {
 			company: "qorpera_folder_workers_company",
 			maximum: 32,
 		});
+		// F2's human-task wakes (H2c), with the same maximum.
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "human_tasks", environmentId, limit: 32 }),
+			{ action: "folder_drain_company", orchestratorId, drain: "human_tasks", environmentId, limit: 32 },
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "human_tasks", environmentId, limit: 33 }),
+		);
+		assert.deepEqual(FOLDER_DRAINS.human_tasks, {
+			due: "qorpera_folder_human_tasks_due",
+			company: "qorpera_folder_human_tasks_company",
+			maximum: 32,
+		});
 		// A drain this edge function does not know is refused (400): the orchestrator pauses that drain alone.
 		for (const drain of ["machines", "", 7, undefined, "__proto__", "toString"]) {
 			assert.throws(() => parseRunnerOrchestratorRequest({ action: "folder_drain_due", orchestratorId, drain, limit: 1 }));
@@ -298,6 +311,19 @@ describe("runner orchestrator boundary", () => {
 		);
 		assert.throws(() =>
 			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "machine_events", environmentId, limit: 65 }),
+		);
+		// C1c-3l part 2's office wakes: at most 40 waiters of one company per request (a subtransaction each).
+		assert.deepEqual(FOLDER_DRAINS.office_wakes, {
+			due: "qorpera_folder_office_wakes_due",
+			company: "qorpera_folder_office_wakes_company",
+			maximum: 40,
+		});
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "office_wakes", environmentId, limit: 40 }),
+			{ action: "folder_drain_company", orchestratorId, drain: "office_wakes", environmentId, limit: 40 },
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "office_wakes", environmentId, limit: 41 }),
 		);
 	});
 

@@ -30,7 +30,7 @@ or billing data is synthesized here.
 | Boundary | Evidence and meaning |
 | --- | --- |
 | Run/job | Existing canonical admission, queue/start/end/status, request, claim, assignment, native lease and terminal-result records. Diagnostics cannot alter their outcomes. |
-| Native model invocation | Start/end/status/safe error for the logical turn, including its tool work, retries and compaction. Available native thread-total counters are retained as snapshots. |
+| Native model invocation | Start/end/status/safe error for the logical turn, including its tool work, retries and compaction. Available native thread-total counters are retained as snapshots. Under the turn, one `model_request` child per Codex usage report that adds up (its `total` grew by exactly its `last`), with that response's own counters; Codex's own compaction call counts as one only when Codex compacts locally. See "Measurement limits" for what these rows do not say. |
 | Major tools | Separate attempt IDs and timing, safe outcome/category, and validated read or operation-receipt links. Protected proposals remain proposed; confirmed receipt/message replays are not new effects. |
 | Enforcement | Run/context authorization and native result-fence observations. Post-effect result-release denial is separate from an already-confirmed effect. A passed pre-request fence is not proof that the provider received a request. |
 | Human Company File | Canonical member commits on the company folder (since `20260930032000`; member-command/actor/resource/revision queries before), complemented by the gateway's bounded request-observation window for read/apply attempts, including denials and transport failures. |
@@ -138,6 +138,24 @@ attempts. Internal provider request timing is explicitly unavailable; prewarm,
 compaction and result-fence callbacks are not renamed HTTP requests. Provider
 thread counters can contain estimates and repeated cumulative updates: do not
 sum them or present them as invoice-accurate tokens. Missing counters are null.
+
+A `model_request` child is one completed provider response as Codex reports its
+usage, nothing more:
+
+- It has no timing. Its start and finish are written together when the usage
+  report arrives, so its duration is about zero and its time is the report's,
+  which can come after that response's tools have run.
+- Its counters may be summed across one turn, but the list can fall short: a
+  report that does not add up (a repeat, an estimate, a filled context window, or
+  any other report Codex sends differently) is left out. So the row count and the
+  sums can be lower than the turn's total, and are not a complete list of
+  provider requests.
+- Codex's own compaction call is recorded like a model response only when Codex
+  compacts locally. Codex compacts remotely when its provider is named "OpenAI"
+  (a Codex login's run, and the test fixture's `remote-v2` mode) or is an Azure
+  endpoint. Any other provider compacts locally (a plan run's "ChatGPT plan", the
+  other test providers). A remote compaction does not add that call's usage to
+  `total`, so it has no row. That is one more way the list falls short.
 
 Native Company File byte counts are logical range/write bytes. Human immutable
 object transfers count available object bytes, which may be manifests or chunks,

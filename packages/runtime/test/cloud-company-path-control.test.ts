@@ -7,6 +7,7 @@ import {
 	CloudCompanyPathRpcPrecondition,
 	CloudCompanyPathRpcRefusal,
 } from "@qorpera/runtime/cloud-company-path-refusal";
+import { CloudControlRpcRefused, cloudControlRetryable } from "@qorpera/runtime/cloud-control-errors";
 import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -258,6 +259,47 @@ describe("Company File bounded control transport", () => {
 		}
 	});
 
+	it.each([
+		[500, "55000", "Company execution is paused", "authority_unavailable"],
+		[501, "0A000", "Coding workers come to the company folder with coding machines", "authority_unavailable"],
+		[400, "P0001", "That todo is closed", "authority_unavailable"],
+		[409, "QRC01", "Company folder view changed", "authority_unavailable"],
+		[400, "22023", "Worker request is invalid", "invalid_arguments"],
+	] as const)(
+		"keeps a refusal the database raised as a refusal, never a lost connection (%i %s)",
+		async (status, code, message, category) => {
+			const transport = vi.fn<typeof fetch>(async () =>
+				Response.json({ code, message, details: null, hint: null }, { status }),
+			);
+			const error = await fixture(transport)
+				.call("qorpera_manage_agent_worker", {}, new AbortController().signal)
+				.catch((error: unknown) => error);
+			expect(error).toBeInstanceOf(CloudControlRpcRefused);
+			expect((error as CloudControlRpcRefused).code).toBe(code);
+			expect((error as CloudControlRpcRefused).detail).toBe(message);
+			expect((error as CloudControlRpcRefused).category).toBe(category);
+			expect(String(error)).not.toContain(message);
+			expect(cloudControlRetryable(error)).toBe(false);
+			expect(transport).toHaveBeenCalledOnce();
+		},
+	);
+
+	it.each([
+		[500, { code: "40001", message: "could not serialize access", details: null, hint: null }],
+		[500, { code: "57014", message: "canceling statement due to statement timeout", details: null, hint: null }],
+		[503, { code: "PGRST001", message: "Could not connect", details: null, hint: null }],
+		[502, "<html>bad gateway</html>"],
+	] as const)("reads a lost or late answer as transient (%i)", async (status, body) => {
+		const transport = vi.fn<typeof fetch>(async () =>
+			typeof body === "string" ? new Response(body, { status }) : Response.json(body, { status }),
+		);
+		const error = await fixture(transport)
+			.call("qorpera_manage_agent_worker", {}, new AbortController().signal)
+			.catch((error: unknown) => error);
+		expect(error).not.toBeInstanceOf(CloudControlRpcRefused);
+		expect(cloudControlRetryable(error)).toBe(true);
+	});
+
 	it("does not call the service when already cancelled", async () => {
 		const transport = vi.fn<typeof fetch>();
 		const abort = new AbortController();
@@ -327,6 +369,7 @@ describe("the folder core's entry points (core C3)", () => {
 		"qorpera_folder_worker_commit",
 		"qorpera_folder_agent_workers",
 		"qorpera_folder_cancel_agent_worker",
+		"qorpera_folder_archive_coding_worker",
 	] as const;
 
 	it("reads one routine whole, up to a megabyte, where other folder reads stop at 256 KiB", async () => {
@@ -431,7 +474,8 @@ describe("the folder core's entry points (core C3)", () => {
 			[500, page, "qorpera_folder_list", "transport_unavailable"],
 			[504, page, "qorpera_folder_commit", "transport_unavailable"],
 			[502, "x".repeat(5000), "qorpera_folder_record_release", "transport_unavailable"],
-			[504, page, "qorpera_read_company_path_v2", "invalid_response"],
+			// Any call's unreadable 5xx is a lost answer (control calls, 4 Oct 2026); only checks of a run ask again.
+			[504, page, "qorpera_read_company_path_v2", "transport_unavailable"],
 			[400, page, "qorpera_folder_commit", "invalid_response"],
 		] as const) {
 			const error = await fixture(vi.fn<typeof fetch>(async () => new Response(body, { status })))

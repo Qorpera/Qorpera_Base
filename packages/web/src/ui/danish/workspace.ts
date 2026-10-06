@@ -94,6 +94,30 @@ export const WORKSPACE: Record<string, string> = {
 	"Back to the company": "Tilbage til virksomheden",
 	Live: "Live",
 	"Nothing here right now.": "Intet her lige nu.",
+	// Interfaces read from the company folder (app/interfaces.ts, app/views/interface.ts, app/views/shell.ts)
+	"This page has a problem.": "Siden har et problem.",
+	"Line {line}: {problem}": "Linje {line}: {problem}",
+	"Some rows can't be shown.": "Nogle rækker kan ikke vises.",
+	"This table can't be read.": "Tabellen kan ikke læses.",
+	"No interface is marked as the main one, so none is shown on top. Mark one as main in its file.":
+		"Intet interface er markeret som hovedinterface, så intet vises øverst. Markér ét som hovedinterface i dets fil.",
+	"{names} are all marked as the main interface, so none is shown on top. Keep the mark on just one of them.":
+		"{names} er alle markeret som hovedinterface, så intet vises øverst. Behold markeringen på kun ét af dem.",
+	// A board and the members source (app/interface-board.ts, app/interface-claims.ts, app/views/interface.ts)
+	Shared: "Fælles",
+	"Open pile": "Åben bunke",
+	"Someone who left": "En, der er stoppet",
+	"Nothing here.": "Intet her.",
+	Take: "Tag",
+	Release: "Slip",
+	"The card could not be taken.": "Kortet kunne ikke tages.",
+	"The card could not be released.": "Kortet kunne ikke slippes.",
+	"This card is no longer here.": "Kortet er her ikke længere.",
+	"Someone else took it first.": "En anden tog det først.",
+	"That changed while you were looking.": "Det blev ændret, mens du kiggede.",
+	Picture: "Billede",
+	Role: "Rolle",
+	"Here now": "Her nu",
 
 	// app/views/shell.ts
 	"Profile: {name}": "Profil: {name}",

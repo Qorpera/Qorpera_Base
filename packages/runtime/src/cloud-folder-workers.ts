@@ -11,7 +11,7 @@ import {
 	writeWorkerBriefFile,
 	writeWorkerResultsFile,
 } from "@qorpera/cloud-client/company-state-files";
-import type { JsonValue } from "@qorpera/contracts";
+import type { CloudCodingRepository, JsonValue } from "@qorpera/contracts";
 import {
 	type CloudCompanyFolderClient,
 	type CloudCompanyFolderCommitResult,
@@ -19,6 +19,7 @@ import {
 	type CloudCompanyFolderWorker,
 	type CloudCompanyFolderWorkerPage,
 	type CloudCompanyFolderWorkerRequest,
+	CODING_ARCHIVE_REFUSALS,
 	sha256,
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyFolderRpcError } from "./cloud-company-path-refusal.ts";
@@ -47,6 +48,10 @@ import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.t
  * - decide: the results with the agent's decision; plain.
  * - report (the worker's own run): its results; plain.
  * - cancel: a run effect under its own receipt (`qorpera_folder_cancel_agent_worker`); no file.
+ * - archive: a coding session's, a run effect too (`qorpera_folder_archive_coding_worker`, C3b); no file.
+ *
+ * A coding session is a worker whose brief names its harness and repository (C3a): the database checks it as the legacy
+ * dispatch did and queues its session, and the executor's claim starts it.
  * - status: one todo's workers from the worker index, and one worker's whole results, read from its file.
  *
  * As the todo writer does, a call refuses before its receipt only what can never succeed, and every such check still
@@ -74,6 +79,9 @@ export interface CloudFolderWorkerChange {
 	readonly access?: "read" | "write";
 	readonly revival?: "batch" | "each";
 	readonly species?: "in-house" | "coding";
+	readonly harness?: "codex" | "claude-code";
+	readonly repository?: CloudCodingRepository;
+	readonly owner?: string;
 	readonly text?: string;
 	readonly decision?: "accept" | "reject";
 	readonly note?: string;
@@ -152,14 +160,9 @@ export class CloudFolderWorkers {
 	}
 
 	async change(request: CloudFolderWorkerChange, context: CloudToolContext): Promise<CloudToolContent> {
-		if (request.action === "archive")
-			throw new CloudToolRefusal("archive closes a coding session, and this company has no coding sessions yet");
-		if (request.species === "coding")
-			throw new CloudToolRefusal(
-				"Coding sessions are not available in this company yet: dispatch an in-house worker",
-			);
 		const where = this.#where(request.todoKey, request.workerKey);
 		if (request.action === "cancel") return this.#cancel(request, where.folder, context);
+		if (request.action === "archive") return this.#archive(request, where.folder, context);
 		// A commit no one can complete would fence this run's later operations: refuse before writing anything.
 		if (!this.#operations.completesFolderCommits) throw new Error("This run cannot complete folder writes");
 		const signal = context.signal;
@@ -172,6 +175,15 @@ export class CloudFolderWorkers {
 			if (!todo) throw new CloudToolRefusal(NO_TODO);
 			if (todo.status !== "open" && todo.status !== "blocked")
 				throw new CloudToolRefusal("That todo is closed: a worker belongs to an open or blocked todo");
+			const species = request.species ?? "in-house";
+			// A coding session's brief names its harness and repository: without them it can never be written.
+			if (species === "coding" && (request.harness === undefined || request.repository === undefined))
+				throw new CloudToolRefusal("A coding session needs a harness, a repository and read access");
+			const coding =
+				species === "coding" && request.harness !== undefined && request.repository !== undefined
+					? { harness: request.harness, repository: request.repository }
+					: undefined;
+			const id = hashedId("qorpera.folder-worker/v1", this.#identity.runId, request.operationKey);
 			const access = request.access ?? "read";
 			const revival = request.revival ?? "batch";
 			const goal = workerTextNormal(request.goal ?? "");
@@ -180,9 +192,10 @@ export class CloudFolderWorkers {
 			const sources = [...(request.sources ?? [])];
 			const brief = written(() =>
 				writeWorkerBriefFile({
-					id: hashedId("qorpera.folder-worker/v1", this.#identity.runId, request.operationKey),
+					id,
 					title: request.title ?? "",
-					species: "in-house",
+					species,
+					...coding,
 					access,
 					revival,
 					dispatchedAt: now,
@@ -192,7 +205,7 @@ export class CloudFolderWorkers {
 					doneWhen,
 					context: briefContext || null,
 					sources,
-					...workerStandingTexts({ species: "in-house", access, revival }),
+					...workerStandingTexts({ species, access, revival }),
 					followUp: null,
 				}),
 			);
@@ -219,6 +232,11 @@ export class CloudFolderWorkers {
 					doneWhen,
 					context: briefContext || null,
 					sources,
+					// The database checks a coding session's fields, and refuses them on an in-house worker.
+					...(request.species === undefined ? {} : { species: request.species }),
+					...(request.harness === undefined ? {} : { harness: request.harness }),
+					...(request.repository === undefined ? {} : { repository: request.repository }),
+					...(request.owner === undefined ? {} : { owner: request.owner }),
 				},
 				{
 					action: "dispatch",
@@ -231,9 +249,14 @@ export class CloudFolderWorkers {
 					sources,
 					access,
 					revival,
+					...(request.species === undefined ? {} : { species: request.species }),
+					...(request.harness === undefined ? {} : { harness: request.harness }),
+					...(request.repository === undefined ? {} : { repository: { ...request.repository } }),
+					...(request.owner === undefined ? {} : { owner: request.owner }),
 				},
 				`${where.folder}/brief.md`,
 				actionReviewId,
+				coding ? { harness: coding.harness, branch: `qorpera/coding/${id}` } : undefined,
 			);
 		}
 		if (request.action === "followup") {
@@ -499,6 +522,7 @@ export class CloudFolderWorkers {
 		args: JsonValue,
 		path: string,
 		actionReviewId: string | undefined,
+		coding?: { readonly harness: string; readonly branch: string },
 	): Promise<CloudToolContent> {
 		const folder = workerRequest.folder;
 		return this.#operations.execute({
@@ -540,11 +564,15 @@ export class CloudFolderWorkers {
 					...(saved.problems.length ? { problems: saved.problems } : {}),
 					todoKey: request.todoKey,
 					worker: { workerKey: request.workerKey, path: folder, file: path },
+					// A coding session waits for its machine: the executor's claim starts it (C3a).
+					...(coding && saved.outcome === "saved" ? { coding: { phase: "queued", ...coding } } : {}),
 					next:
 						saved.outcome === "saved"
 							? request.action === "decide"
 								? "Your decision is recorded."
-								: "The worker starts shortly and its result comes back to you by itself: tell the member in one sentence what is running and end your turn; do not wait or poll."
+								: coding
+									? "The coding session is queued for its machine and starts by itself; its result comes back to you by itself: tell the member in one sentence what is running and end your turn; do not wait or poll."
+									: "The worker starts shortly and its result comes back to you by itself: tell the member in one sentence what is running and end your turn; do not wait or poll."
 							: saved.outcome === "conflict"
 								? "The worker's files changed since they were read: call again with a new operationKey."
 								: "Nothing was changed: say why to the member, or correct the arguments and call again with a new operationKey.",
@@ -554,6 +582,45 @@ export class CloudFolderWorkers {
 			signal: context.signal,
 			...(context.observation ? { observation: context.observation } : {}),
 		});
+	}
+
+	/** A coding session's archive (C3b): SQL's refusal (not a coding session, or a new turn since the agent was asked)
+	 * is the tool's answer, in SQL's words. */
+	async #archive(
+		request: CloudFolderWorkerChange,
+		folder: string,
+		context: CloudToolContext,
+	): Promise<CloudToolContent> {
+		let archived: Awaited<ReturnType<CloudCompanyFolderClient["archiveCodingWorker"]>>;
+		try {
+			archived = await this.#folder.archiveCodingWorker(
+				{ folder, operationKey: request.operationKey },
+				context.signal,
+			);
+		} catch (error) {
+			if (error instanceof CloudCompanyFolderRpcError && error.code === "P0002")
+				throw new CloudToolRefusal(NO_WORKER);
+			if (error instanceof CloudCompanyFolderRpcError && CODING_ARCHIVE_REFUSALS.has(error.detail))
+				throw new CloudToolRefusal(
+					error.code === "22023"
+						? "Only a coding session can be archived: cancel an in-house worker instead"
+						: "The session has a new turn since you were asked; leave it",
+				);
+			throw error;
+		}
+		const { folder: path, ...worker } = archived.worker;
+		return {
+			kind: "text",
+			value: cloudToolJsonText({
+				schema: "qorpera.agent-worker-receipt/v1",
+				runId: this.#identity.runId,
+				receiptId: archived.receiptId,
+				action: "archive",
+				todoKey: request.todoKey,
+				worker: { ...worker, path },
+				coding: { phase: archived.phase, archived: archived.archived },
+			}),
+		};
 	}
 
 	async #cancel(

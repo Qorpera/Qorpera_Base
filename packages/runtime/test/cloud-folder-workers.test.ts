@@ -213,7 +213,12 @@ it("follows up a worker that has no results without naming any", async () => {
 it.each<[string, Partial<CloudFolderWorkerChange>, Record<string, string>, string]>([
 	["no todo", {}, {}, "You have no todo with that todoKey"],
 	["a closed todo", {}, { [TODO]: todoText("done") }, "That todo is closed"],
-	["a coding session", { species: "coding" }, { [TODO]: todoText() }, "Coding sessions are not available"],
+	[
+		"a coding session without its harness and repository",
+		{ species: "coding" },
+		{ [TODO]: todoText() },
+		"A coding session needs a harness, a repository and read access",
+	],
 	["a key that cannot name a folder", { workerKey: "my_prices" }, { [TODO]: todoText() }, "names the worker's folder"],
 	[
 		"a todo key that is not a file name",
@@ -234,7 +239,7 @@ it.each<[string, Partial<CloudFolderWorkerChange>, Record<string, string>, strin
 	expect(f.operationControl.beginToolOperation).not.toHaveBeenCalled();
 });
 
-it("refuses a dispatch or a follow-up the automatic review did not approve, and archive", async () => {
+it("refuses a dispatch or a follow-up the automatic review did not approve", async () => {
 	const f = await fixture({ files: { [TODO]: todoText() } });
 	const { actionReviewId: _unused, ...unreviewed } = f.context;
 	await refuses(f.workers().change(DISPATCH, unreviewed), "automatic review's approval");
@@ -247,13 +252,45 @@ it("refuses a dispatch or a follow-up the automatic review did not approve, and 
 			),
 		"automatic review's approval",
 	);
-	await refuses(
-		f
-			.workers()
-			.change({ action: "archive", operationKey: "a-1", todoKey: "market-scan", workerKey: "prices" }, f.context),
-		"no coding sessions",
-	);
 	expect(f.commits).toHaveLength(0);
+});
+
+it("dispatches a coding session: its brief names the harness and repository, and the database gets them (C3a/C3b)", async () => {
+	const f = await fixture({ files: { [TODO]: todoText() } });
+	const repository = { host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" } as const;
+	const result = parse(
+		await f
+			.workers()
+			.change(
+				{ ...DISPATCH, operationKey: "code-1", species: "coding", harness: "codex", repository, sources: [] },
+				f.context,
+			),
+	);
+	const id = hashedId("qorpera.folder-worker/v1", f.identity.runId, "code-1");
+	// The session is queued for its machine; its result comes back by itself.
+	expect(result).toMatchObject({
+		action: "dispatch",
+		outcome: "saved",
+		coding: { phase: "queued", harness: "codex", branch: `qorpera/coding/${id}` },
+	});
+	expect(result.next).toContain("queued for its machine");
+	expect(f.workerRequests).toEqual([
+		expect.objectContaining({ action: "dispatch", species: "coding", harness: "codex", repository, access: "read" }),
+	]);
+	const parsed = parseCompanyStateFile(`${FOLDER}/brief.md`, f.text(`${FOLDER}/brief.md`) ?? "");
+	expect(parsed?.ok && parsed.file).toMatchObject({
+		kind: "worker-brief",
+		id,
+		species: "coding",
+		harness: "codex",
+		repository,
+		...workerStandingTexts({ species: "coding", access: "read", revival: "batch" }),
+	});
+	// An in-house dispatch names no coding field and gets no coding answer.
+	const plain = await fixture({ files: { [TODO]: todoText() } });
+	const answer = parse(await plain.workers().change(DISPATCH, plain.context));
+	expect(answer.coding).toBeUndefined();
+	expect(Object.keys(plain.workerRequests[0] ?? {})).not.toContain("species");
 });
 
 it("follows a worker up: its brief with one more follow-up, and its earlier results removed, under review", async () => {
@@ -467,6 +504,54 @@ it("cancels a worker as a run effect under its own receipt", async () => {
 	);
 });
 
+it("archives a coding session as a run effect under its own receipt, and relays its refusals (C3b)", async () => {
+	const f = await fixture({}, { workers: { "market-scan": [view("running")] } });
+	const result = parse(
+		await f
+			.workers()
+			.change(
+				{ action: "archive", operationKey: "archive-1", todoKey: "market-scan", workerKey: "prices" },
+				f.context,
+			),
+	);
+	expect(result).toMatchObject({
+		schema: "qorpera.agent-worker-receipt/v1",
+		action: "archive",
+		todoKey: "market-scan",
+		worker: { workerKey: "prices", state: "cancelled", path: FOLDER },
+		coding: { phase: "cancelled", archived: true },
+	});
+	expect(f.archives[0]).toMatchObject({
+		p_binding: f.binding,
+		p_request: { folder: FOLDER, operationKey: "archive-1" },
+	});
+	expect(f.operationControl.beginToolOperation).not.toHaveBeenCalled();
+	await refuses(
+		f
+			.workers()
+			.change(
+				{ action: "archive", operationKey: "archive-2", todoKey: "market-scan", workerKey: "other" },
+				f.context,
+			),
+		"You have no worker",
+	);
+	for (const [code, words] of [
+		["22023", "Only a coding session can be archived"],
+		["55000", "The session has a new turn since you were asked; leave it"],
+	] as const) {
+		const refused = await fixture({}, { archiveError: { code, message: words } });
+		await refuses(
+			refused
+				.workers()
+				.change(
+					{ action: "archive", operationKey: "archive-3", todoKey: "market-scan", workerKey: "prices" },
+					refused.context,
+				),
+			words,
+		);
+	}
+});
+
 it("routes manage_worker and report_work to the folder writer, and says how workers work there", async () => {
 	const f = await fixture({ files: { [TODO]: todoText() } });
 	const gateway = { read: async () => ({}), mutate: async () => ({}) } as never;
@@ -487,8 +572,9 @@ it("routes manage_worker and report_work to the folder writer, and says how work
 	);
 	expect(manage?.description).toContain("status lists the workers of one todo (name its todoKey)");
 	expect(manage?.description).toContain("holds brief.md");
-	expect(manage?.description).toContain("Coding sessions are not available in this company yet.");
-	expect(manage?.description).not.toContain("species coding");
+	// Coding sessions and their archive are this company's too (C3b).
+	expect(manage?.description).toContain("A coding session is a worker with species coding");
+	expect(manage?.description).toContain("Actions: dispatch, status, followup, cancel, decide, archive.");
 	expect(manage?.description).not.toContain("without todoKey, those of open todos");
 	// As the model sends them: JSON, without the empty context.
 	const { context: _context, ...sent } = DISPATCH;

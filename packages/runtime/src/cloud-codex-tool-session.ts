@@ -42,6 +42,7 @@ import {
 	CloudRuntimeDiagnosticError,
 	type CloudRuntimeErrorCategory,
 	type CloudRuntimeObservability,
+	type CloudRuntimeObservationDetails,
 	type CloudRuntimeObservationSpan,
 	type CloudRuntimeOutcome,
 	cloudRuntimeErrorCategory,
@@ -86,6 +87,18 @@ const TOKEN_COUNTERS = [
 	"reasoningOutputTokens",
 	"totalTokens",
 ] as const;
+
+/** A validated native usage snapshot as observation counters. */
+function tokenCounters(snapshot: Record<string, unknown>): CloudRuntimeObservationDetails {
+	return {
+		inputTokens: snapshot.inputTokens as number,
+		outputTokens: snapshot.outputTokens as number,
+		cachedInputTokens: snapshot.cachedInputTokens as number,
+		cacheWriteInputTokens: snapshot.cacheWriteInputTokens as number,
+		reasoningOutputTokens: snapshot.reasoningOutputTokens as number,
+		totalTokens: snapshot.totalTokens as number,
+	};
+}
 
 /** Waits for a promise unless the signal stops the wait first. */
 function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -460,6 +473,8 @@ class CodexBoundaryRpc {
 		{ span?: CloudRuntimeObservationSpan; contextRecorded: boolean; finished: boolean }
 	>();
 	#turnObservation?: CloudRuntimeObservationSpan;
+	/** The turn's last valid cumulative usage snapshot, to tell a model request's usage from a repeat. */
+	#usageTotal?: Record<string, unknown>;
 	readonly #compositions = new Map<
 		string,
 		{ span?: CloudRuntimeObservationSpan; timer?: ReturnType<typeof setTimeout>; finished: boolean }
@@ -1098,16 +1113,22 @@ class CodexBoundaryRpc {
 				)
 					return;
 			}
-			// Native cumulative snapshots can be replayed/recomputed. Never sum updates,
-			// infer a request count, or label these counters billing-exact provider usage.
-			this.#turnObservation.update({
-				inputTokens: total.inputTokens as number,
-				outputTokens: total.outputTokens as number,
-				cachedInputTokens: total.cachedInputTokens as number,
-				cacheWriteInputTokens: total.cacheWriteInputTokens as number,
-				reasoningOutputTokens: total.reasoningOutputTokens as number,
-				totalTokens: total.totalTokens as number,
-			});
+			// Native cumulative snapshots can be replayed/recomputed. Never sum updates
+			// or label these counters billing-exact provider usage.
+			this.#turnObservation.update(tokenCounters(total));
+			// Codex adds each completed provider response's usage to `total` and sends it as `last`
+			// (codex-rs `TokenUsageInfo::append_last_usage`), from zero on a new thread. Repeats,
+			// estimates and a filled context window do not add up that way, so only a report with input
+			// whose total grew by exactly `last` is recorded as one model request's usage.
+			const previous = this.#usageTotal;
+			this.#usageTotal = total;
+			if (
+				(last.inputTokens as number) > 0 &&
+				TOKEN_COUNTERS.every(
+					(key) => (total[key] as number) === ((previous?.[key] as number) ?? 0) + (last[key] as number),
+				)
+			)
+				this.#turnObservation.child("model_request").finish("succeeded", tokenCounters(last));
 		} catch {
 			// Malformed optional diagnostics remain unavailable; protocol enforcement is unchanged.
 		}

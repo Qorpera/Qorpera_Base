@@ -81,6 +81,12 @@ export const CONVERSATION: Record<string, string> = {
 	"Note from {name}": "Note fra {name}",
 	"Messaged {name}": "Skrev til {name}",
 	"Message from {name}": "Besked fra {name}",
+	"Left notes for {names}": "Efterlod noter til {names}",
+	"Notes from {names}": "Noter fra {names}",
+	"Messaged {names}": "Skrev til {names}",
+	"Messages from {names}": "Beskeder fra {names}",
+	"Talked with {names}": "Talte med {names}",
+	"{count} messages": "{count} beskeder",
 	"{label}. Open the conversation": "{label}. Åbn samtalen",
 	"Loading conversation": "Henter samtale",
 	"No messages yet.": "Ingen beskeder endnu.",
@@ -211,6 +217,13 @@ export const CONVERSATION: Record<string, string> = {
 	"This conversation is unavailable for a new request.": "Denne samtale er ikke tilgængelig for en ny anmodning.",
 	"Your model accounts have reached their usage limits. Sending resumes when an account resets.":
 		"Dine modelkonti har nået deres forbrugsgrænser. Du kan sende igen, når en konto nulstilles.",
+	"This conversation's model account has reached its usage limit. Sending resumes when it resets.":
+		"Samtalens modelkonto har nået sin forbrugsgrænse. Du kan sende igen, når den nulstilles.",
+	"This conversation's model account can't be used right now. Check it in Settings → My connections.":
+		"Samtalens modelkonto kan ikke bruges lige nu. Se den under Indstillinger → Mine forbindelser.",
+	"Choose a login to continue.": "Vælg et login for at fortsætte.",
+	"Use {account}": "Brug {account}",
+	"Model account {number}": "Modelkonto {number}",
 
 	// Company notices above the composer (app/views/execution-notices.ts)
 	"Company updates": "Virksomhedsopdateringer",

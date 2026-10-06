@@ -2,6 +2,7 @@ import { request } from "node:https";
 import { setTimeout as delay } from "node:timers/promises";
 import { officeDigest, officeRecord } from "./lxd-office-image-provenance.ts";
 import { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
+import { RuntimeNodeAgentExitPublisher } from "./runtime-node-agent-exit.ts";
 import { RuntimeNodeHealthPublisher } from "./runtime-node-health.ts";
 import { parseRuntimeNodeInventoryPolicy } from "./runtime-node-inventory.ts";
 import {
@@ -15,6 +16,7 @@ const METHODS = new Set<RuntimeNodeObserverMethod>([
 	"qorpera_observe_runtime_node_inventory",
 	"qorpera_observe_runtime_node",
 	"qorpera_observe_runtime_node_health",
+	"qorpera_observe_runtime_node_agent_exit",
 ]);
 const LIMIT = 4194304;
 export class RuntimeNodeObserverHttpRegistry implements RuntimeNodeObserverRegistry {
@@ -106,6 +108,7 @@ export async function runRuntimeNodeObserver(
 	signal: AbortSignal,
 	report: (state: "ready" | "unavailable" | "unconfirmed") => void,
 	reportHealth: (state: "reported" | "unconfirmed") => void = () => {},
+	reportExit: (state: "healthy" | "unhealthy" | "unconfirmed") => void = () => {},
 ): Promise<void> {
 	const config = officeRecord(
 		JSON.parse(
@@ -117,7 +120,9 @@ export async function runRuntimeNodeObserver(
 	);
 	if (typeof config.registryUrl !== "string") throw new Error("INVALID_NODE_OBSERVER_ENDPOINT");
 	const bytes = await readLxdOfficeCredentialFile("/etc/qorpera/node-observer.key", 4096);
-	let registry: RuntimeNodeObserverHttpRegistry, healthRegistry: RuntimeNodeObserverHttpRegistry;
+	let registry: RuntimeNodeObserverHttpRegistry,
+		healthRegistry: RuntimeNodeObserverHttpRegistry,
+		exitRegistry: RuntimeNodeObserverHttpRegistry;
 	try {
 		registry = new RuntimeNodeObserverHttpRegistry(
 			config.registryUrl,
@@ -126,6 +131,11 @@ export async function runRuntimeNodeObserver(
 		// Independent request ownership: a slow diagnostic export cannot occupy
 		// the inventory connection or become an admission prerequisite.
 		healthRegistry = new RuntimeNodeObserverHttpRegistry(
+			config.registryUrl,
+			new TextDecoder("utf8", { fatal: true }).decode(bytes).trim(),
+		);
+		// The agent exit's health has its own connection too: placement depends on it, the inventory never waits on it.
+		exitRegistry = new RuntimeNodeObserverHttpRegistry(
 			config.registryUrl,
 			new TextDecoder("utf8", { fatal: true }).decode(bytes).trim(),
 		);
@@ -139,6 +149,12 @@ export async function runRuntimeNodeObserver(
 		policy.host.machineIdSha256,
 		officeDigest(policy),
 		healthRegistry,
+	);
+	const exit = new RuntimeNodeAgentExitPublisher(
+		policy.nodeId,
+		policy.host.machineIdSha256,
+		officeDigest(policy),
+		exitRegistry,
 	);
 	const inventoryLoop = async () => {
 		while (!signal.aborted) {
@@ -161,5 +177,15 @@ export async function runRuntimeNodeObserver(
 			if (!signal.aborted) await delay(5000, undefined, { signal }).catch(() => {});
 		}
 	};
-	await Promise.all([inventoryLoop(), healthLoop()]);
+	const exitLoop = async () => {
+		while (!signal.aborted) {
+			try {
+				reportExit((await exit.observe(signal)).healthy ? "healthy" : "unhealthy");
+			} catch {
+				if (!signal.aborted) reportExit("unconfirmed");
+			}
+			if (!signal.aborted) await delay(5000, undefined, { signal }).catch(() => {});
+		}
+	};
+	await Promise.all([inventoryLoop(), healthLoop(), exitLoop()]);
 }

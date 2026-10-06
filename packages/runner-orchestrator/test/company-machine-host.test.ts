@@ -8,6 +8,7 @@ import type { CodingMachineIntent } from "../src/coding-machine.ts";
 import { type LxdCompanyMachineBinding, lxdCompanyMachinePlan } from "../src/company-machine.ts";
 import { type CompanyMachineEntry, LxdCompanyMachineHost } from "../src/company-machine-host.ts";
 import type { LxdInstanceRecord, LxdTrackedInstanceAction } from "../src/lxd-client.ts";
+import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 
 const state = vi.hoisted(() => ({ controlPath: "" }));
 vi.mock("../src/coding-storage.ts", () => ({
@@ -36,7 +37,7 @@ const policy = {
 	imageFingerprint: "b".repeat(64),
 	bootstrapSha256: "c".repeat(64),
 	storagePool: "machines",
-	network: "machine-net",
+	network: "qagent0",
 };
 function binding(): LxdCompanyMachineBinding {
 	return {
@@ -121,7 +122,9 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 	let instance: LxdInstanceRecord | undefined;
 	let pending: LxdTrackedInstanceAction | undefined;
 	const replies = new Map<string, unknown>();
-	let observed: unknown = { ended: [], cpu: { busyTicks: 0, totalTicks: 0 } };
+	let observed: unknown = { at: 0, cpuUsec: 0, ioBytes: 0, ended: [] };
+	/** What the guest's helper lists at a stop. */
+	let stopped: unknown = { commands: [], containers: false };
 	const client = {
 		getInstance: vi.fn(async () => instance),
 		submitInstanceOperation: vi.fn(async (_project: string, action: LxdTrackedInstanceAction) => {
@@ -130,14 +133,15 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 		}),
 		inspectInstanceOperation: vi.fn(async (): Promise<"succeeded" | "pending" | "failed"> => {
 			if (pending?.action === "create")
+				// LXD makes the machine from the request the agent plug completed.
 				instance = {
 					name: plan.request.name,
 					type: "virtual-machine",
 					status: "Stopped",
 					statusCode: 102,
 					profiles: [],
-					devices: structuredClone(plan.request.devices),
-					expandedDevices: structuredClone(plan.request.devices),
+					devices: structuredClone(pending.request.devices),
+					expandedDevices: structuredClone(pending.request.devices),
 					config: { ...plan.request.config, "volatile.base_image": policy.imageFingerprint },
 					expandedConfig: { ...plan.request.config, "volatile.base_image": policy.imageFingerprint },
 				};
@@ -165,22 +169,35 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 							}
 						: action === "observe"
 							? {
-									schema: "qorpera.machine-observation/v1",
+									schema: "qorpera.machine-observation/v2",
 									machineId: id(2),
 									bootId: boot,
 									...(observed as object),
 								}
-							: {
-									schema: "qorpera.machine-command-result/v1",
-									machineId: id(2),
-									commandId: args[0],
-									inputSha256: "e".repeat(64),
-									state: "running",
-									exitCode: null,
-									output: "",
-									truncated: false,
-									log: { offset: 0, nextOffset: 0, totalBytes: 0, limitBytes: 67108864, limitReached: false },
-								},
+							: action === "stop-commands"
+								? {
+										schema: "qorpera.machine-commands-stopped/v1",
+										machineId: id(2),
+										bootId: boot,
+										...(stopped as object),
+									}
+								: {
+										schema: "qorpera.machine-command-result/v1",
+										machineId: id(2),
+										commandId: args[0],
+										inputSha256: "e".repeat(64),
+										state: "running",
+										exitCode: null,
+										output: "",
+										truncated: false,
+										log: {
+											offset: 0,
+											nextOffset: 0,
+											totalBytes: 0,
+											limitBytes: 67108864,
+											limitReached: false,
+										},
+									},
 			);
 		}),
 		readInstanceFile: vi.fn(async (_project: string, _name: string, path: string) => {
@@ -192,6 +209,7 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 		}),
 		pushInstanceFile: vi.fn(async () => {}),
 	};
+	const agentPlug = vi.fn(testAgentPlug);
 	const host = new LxdCompanyMachineHost({
 		control,
 		owner: "mx-a",
@@ -207,6 +225,7 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 			serverAddress: "10.0.0.2",
 		},
 		helperSha256,
+		agentPlug,
 		...pins,
 	});
 	const signal = new AbortController().signal;
@@ -218,11 +237,15 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 		busy,
 		client,
 		host,
+		agentPlug,
 		signal,
 		boot,
 		instance: () => instance,
 		observe: (value: unknown) => {
 			observed = value;
+		},
+		snapshot: (value: unknown) => {
+			stopped = value;
 		},
 		methods: () => calls.map((call) => call.method),
 	};
@@ -234,6 +257,10 @@ describe("company machine host", () => {
 		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
 		expect(f.instance()?.status).toBe("Running");
 		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["create", "start"]);
+		// Plugged into the node's agent exit right before the create: the card carries the plug's MAC.
+		expect(f.agentPlug).toHaveBeenCalledTimes(1);
+		expect(f.agentPlug.mock.calls[0][0]).toMatchObject({ kind: "machine", machineId: id(2), companyId: id(3) });
+		expect(f.instance()?.devices.network?.hwaddr).toBe(testAgentMac);
 		const execs = f.client.execInstance.mock.calls.map((call) => call[2].slice(3));
 		expect(execs).toEqual([
 			["prepare", id(2), expect.stringMatching(/^\d+$/)],
@@ -260,47 +287,230 @@ describe("company machine host", () => {
 		f.entry.bootId = f.boot;
 		f.entry.runningAt = new Date().toISOString();
 		f.entry.commands = [id(7), id(8)];
+		const recorded = () => f.calls.filter((call) => call.method === "qorpera_record_company_machine_commands").at(-1);
+		/** The whole machine's work apart from its own control, every 10 s. */
+		const sample = (seconds: number, cpu: number, io: number) => ({
+			at: seconds * 1000,
+			cpuUsec: Math.round(cpu * 1e6),
+			ioBytes: io,
+			ended: [],
+		});
 		f.observe({
+			...sample(10, 1, 0),
 			ended: [
 				{ commandId: id(7), state: "failed", exitCode: 2, outputTail: "1 failing" },
 				{ commandId: id(9), state: "lost", exitCode: null, outputTail: "" },
 			],
-			cpu: { busyTicks: 100, totalTicks: 1000 },
 		});
 		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
-		let recorded = f.calls.filter((call) => call.method === "qorpera_record_company_machine_commands").at(-1);
 		// A command SQL does not list is never reported; the first sample has nothing to compare with.
-		expect(recorded?.args).toMatchObject({
+		expect(recorded()?.args).toMatchObject({
 			p_boot_id: f.boot,
 			p_ended: [{ commandId: id(7), state: "failed", exitCode: 2, outputTail: "1 failing" }],
 			p_busy: false,
 		});
-		f.observe({ ended: [], cpu: { busyTicks: 400, totalTicks: 2000 } });
+		// 0.5 processor-seconds in 10 s, 5% of one core: busy.
+		f.observe(sample(20, 1.5, 0));
 		await f.host.pass(f.signal);
-		recorded = f.calls.filter((call) => call.method === "qorpera_record_company_machine_commands").at(-1);
-		expect(recorded?.args).toMatchObject({ p_ended: [], p_busy: true });
-		f.observe({ ended: [], cpu: { busyTicks: 401, totalTicks: 3000 } });
+		expect(recorded()?.args).toMatchObject({ p_ended: [], p_busy: true });
+		// Little processor, but 200 KB moved in 10 s (more than 512 KiB in 30): busy by its data.
+		f.observe(sample(30, 1.6, 200_000));
+		await f.host.pass(f.signal);
+		expect(recorded()?.args).toMatchObject({ p_busy: true });
+		// A machine that only waits: nothing to record.
+		f.observe(sample(40, 1.7, 200_100));
 		const before = f.calls.length;
 		await f.host.pass(f.signal);
 		expect(f.calls.slice(before).some((call) => call.method === "qorpera_record_company_machine_commands")).toBe(
 			false,
 		);
+		// A reply that is not the measured shape is refused.
+		f.observe({ ...sample(50, 2, 0), cpuUsec: -1 });
+		expect((await f.host.pass(f.signal))[0]).toMatchObject({
+			state: "failed",
+			code: "COMPANY_MACHINE_GUEST_REPLY_INVALID",
+		});
 	});
 
-	it("puts a machine to sleep under stop authority, then gives its room back", async () => {
+	it("carries a busy machine a record did not reach SQL with to the next pass", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { runningAt: new Date().toISOString(), bootId: f.boot });
+		f.observe({ at: 10_000, cpuUsec: 0, ioBytes: 0, ended: [] });
+		await f.host.pass(f.signal);
+		f.observe({ at: 20_000, cpuUsec: 5_000_000, ioBytes: 0, ended: [] });
+		f.busy.add("qorpera_record_company_machine_commands");
+		await f.host.pass(f.signal);
+		f.busy.delete("qorpera_record_company_machine_commands");
+		// The next pass is quiet, but still owes SQL the busy machine.
+		f.observe({ at: 30_000, cpuUsec: 5_000_000, ioBytes: 0, ended: [] });
+		await f.host.pass(f.signal);
+		const records = f.calls.filter((call) => call.method === "qorpera_record_company_machine_commands");
+		expect(records.at(-1)?.args).toMatchObject({ p_busy: true });
+		// Once taken, it is owed no more.
+		f.observe({ at: 40_000, cpuUsec: 5_000_000, ioBytes: 0, ended: [] });
+		const before = records.length;
+		await f.host.pass(f.signal);
+		expect(f.calls.filter((call) => call.method === "qorpera_record_company_machine_commands")).toHaveLength(before);
+	});
+
+	it("takes a last look before a sleep, so a machine busy again keeps running", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { runningAt: new Date().toISOString(), bootId: f.boot, commands: [id(7)] });
+		f.observe({ at: 10_000, cpuUsec: 0, ioBytes: 0, ended: [] });
+		await f.host.pass(f.signal);
+		f.observe({
+			at: 20_000,
+			cpuUsec: 3_000_000,
+			ioBytes: 0,
+			ended: [{ commandId: id(7), state: "succeeded", exitCode: 0, outputTail: "done" }],
+		});
+		f.entry.sleepDue = true;
+		f.refusals.set("stop", "MACHINE_IN_USE");
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "not-now" }]);
+		const methods = f.methods();
+		const recordedAt = methods.lastIndexOf("qorpera_record_company_machine_commands");
+		expect(recordedAt).toBeGreaterThan(-1);
+		expect(recordedAt).toBeLessThan(methods.lastIndexOf("qorpera_authorize_executor_machine"));
+		expect(f.calls[recordedAt].args).toMatchObject({
+			p_ended: [{ commandId: id(7), state: "succeeded", exitCode: 0, outputTail: "done" }],
+			p_busy: true,
+		});
+		expect(f.client.execInstance.mock.calls.some((call) => call[2][3] === "stop-commands")).toBe(false);
+	});
+
+	it("leaves the machine running when the last look's record does not reach SQL", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { runningAt: new Date().toISOString(), bootId: f.boot });
+		f.observe({ at: 10_000, cpuUsec: 0, ioBytes: 0, ended: [] });
+		await f.host.pass(f.signal);
+		f.observe({ at: 20_000, cpuUsec: 3_000_000, ioBytes: 0, ended: [] });
+		f.entry.sleepDue = true;
+		f.busy.add("qorpera_record_company_machine_commands");
+		await f.host.pass(f.signal);
+		expect(
+			f.calls.some((call) => call.method === "qorpera_authorize_executor_machine" && call.args.p_intent === "stop"),
+		).toBe(false);
+		expect(f.instance()?.status).toBe("Running");
+	});
+
+	it("still sleeps when the guest does not answer its last look", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { runningAt: new Date().toISOString(), bootId: f.boot, commands: [id(7)] });
+		await f.host.pass(f.signal);
+		f.observe(null);
+		f.entry.sleepDue = true;
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
+		expect(f.methods()).not.toContain("qorpera_record_company_machine_commands");
+		expect(f.methods()).toContain("qorpera_suspend_company_machine");
+	});
+
+	it("puts a machine to sleep under stop authority: the guest's snapshot reaches SQL before the power-off", async () => {
 		const f = await fixture();
 		await f.host.pass(f.signal);
 		Object.assign(f.entry, { sleepDue: true, runningAt: new Date().toISOString(), bootId: f.boot });
+		f.snapshot({ commands: [id(7), id(8)], containers: true });
+		// How many control calls were made when LXD was asked to power the machine off.
+		let callsAtPowerOff = -1;
+		const submit = f.client.submitInstanceOperation.getMockImplementation()!;
+		f.client.submitInstanceOperation.mockImplementation(async (project: string, action: LxdTrackedInstanceAction) => {
+			if (action.action === "stop") callsAtPowerOff = f.calls.length;
+			return submit(project, action);
+		});
 		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
 		expect(f.instance()?.status).toBe("Stopped");
 		expect(f.client.submitInstanceOperation.mock.calls.at(-1)?.[1]).toMatchObject({ action: "stop", force: true });
-		// The guest's own programs are asked to stop and its disk synced first.
+		// The guest's helper lists what runs and stops it (and syncs its disk) first.
+		expect(f.client.execInstance.mock.calls.at(-1)?.[2].slice(3)).toEqual(["stop-commands"]);
+		const methods = f.methods();
+		const stoppedAt = methods.indexOf("qorpera_record_company_machine_stop");
+		expect(stoppedAt).toBeGreaterThan(
+			f.calls.findIndex(
+				(call) => call.method === "qorpera_authorize_executor_machine" && call.args.p_intent === "stop",
+			),
+		);
+		expect(stoppedAt).toBeLessThan(callsAtPowerOff);
+		expect(f.calls[stoppedAt].args).toMatchObject({
+			p_placement_id: id(6),
+			p_boot_id: f.boot,
+			p_commands: [id(7), id(8)],
+			p_containers: true,
+		});
+	});
+
+	it("stops a guest whose helper cannot list what runs as before, and tells SQL nothing of it", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { sleepDue: true, runningAt: new Date().toISOString(), bootId: f.boot });
+		const original = f.client.execInstance.getMockImplementation()!;
+		f.client.execInstance.mockImplementation(async (project: string, name: string, command: readonly string[]) => {
+			if (command[3] === "stop-commands") throw new Error("LXD exec failed");
+			return original(project, name, command);
+		});
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
 		expect(f.client.execInstance.mock.calls.at(-1)?.[2]).toEqual([
 			"/bin/sh",
 			"-c",
 			"systemctl stop qorpera-machine.slice docker.service containerd.service; sync",
 		]);
+		expect(f.methods()).not.toContain("qorpera_record_company_machine_stop");
 		expect(f.methods()).toContain("qorpera_suspend_company_machine");
+	});
+
+	it("never powers off before SQL took the stop's snapshot, and leaves out a snapshot it cannot read", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { sleepDue: true, runningAt: new Date().toISOString(), bootId: f.boot });
+		f.snapshot({ commands: [id(7)], containers: false });
+		f.busy.add("qorpera_record_company_machine_stop");
+		await f.host.pass(f.signal);
+		expect(f.instance()?.status).toBe("Running");
+		expect(f.methods()).not.toContain("qorpera_suspend_company_machine");
+		f.busy.delete("qorpera_record_company_machine_stop");
+		// A snapshot that is not the listed shape, or of another boot, is not SQL's: the machine still sleeps, and what
+		// ran is told at its power-off.
+		for (const broken of [
+			{ commands: ["not-a-command"], containers: false },
+			{ commands: Array.from({ length: 33 }, () => id(7)), containers: false },
+			{ commands: [], containers: "yes" },
+			{ commands: [], containers: false, bootId: randomUUID() },
+		]) {
+			f.snapshot(broken);
+			const before = f.calls.length;
+			expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
+			expect(f.calls.slice(before).map((call) => call.method)).not.toContain("qorpera_record_company_machine_stop");
+			expect(f.calls.slice(before).map((call) => call.method)).toContain("qorpera_suspend_company_machine");
+		}
+	});
+
+	it("measures afresh after a stop whose power-off did not happen", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { runningAt: new Date().toISOString(), bootId: f.boot });
+		f.observe({ at: 10_000, cpuUsec: 0, ioBytes: 0, ended: [] });
+		await f.host.pass(f.signal);
+		// The stop's helper ends a busy container, then a member wakes the machine before its power-off (SQL refuses it).
+		f.observe({ at: 20_000, cpuUsec: 0, ioBytes: 0, ended: [] });
+		f.entry.sleepDue = true;
+		f.snapshot({ commands: [], containers: true });
+		const exec = f.client.execInstance.getMockImplementation()!;
+		f.client.execInstance.mockImplementation(async (project: string, name: string, command: readonly string[]) => {
+			if (command[3] === "stop-commands") f.refusals.set("stop", "MACHINE_WANTED_RUNNING");
+			return exec(project, name, command);
+		});
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "not-now" }]);
+		expect(f.instance()?.status).toBe("Running");
+		// What the container used until the stop ended it is not busy work after it: the next look starts afresh.
+		f.entry.sleepDue = false;
+		f.observe({ at: 30_000, cpuUsec: 9_000_000, ioBytes: 0, ended: [] });
+		const before = f.calls.length;
+		await f.host.pass(f.signal);
+		expect(f.calls.slice(before).some((call) => call.method === "qorpera_record_company_machine_commands")).toBe(
+			false,
+		);
 	});
 
 	it("keeps a running machine's lease and watches its commands while SQL refuses new run authority", async () => {
@@ -309,8 +519,10 @@ describe("company machine host", () => {
 		Object.assign(f.entry, { runningAt: new Date().toISOString(), bootId: f.boot, commands: [id(7)] });
 		f.refusals.set("run", "NODE_OBSERVATION_UNAVAILABLE");
 		f.observe({
+			at: 10_000,
+			cpuUsec: 0,
+			ioBytes: 0,
 			ended: [{ commandId: id(7), state: "succeeded", exitCode: 0, outputTail: "ok" }],
-			cpu: { busyTicks: 0, totalTicks: 0 },
 		});
 		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
 		expect(f.client.execInstance.mock.calls.slice(-2).map((call) => call[2][3])).toEqual([
@@ -349,6 +561,9 @@ describe("company machine host", () => {
 			"create",
 			"start",
 		]);
+		// Plugged in before each create, with the same claim both times (the tool gives that claim its one entry).
+		expect(f.agentPlug).toHaveBeenCalledTimes(2);
+		expect(f.agentPlug.mock.calls[1][0]).toEqual(f.agentPlug.mock.calls[0][0]);
 		const g = await fixture();
 		g.client.inspectInstanceOperation.mockImplementation(async () => "failed");
 		expect((await g.host.pass(g.signal))[0]).toMatchObject({
@@ -360,6 +575,7 @@ describe("company machine host", () => {
 			"create",
 			"create",
 		]);
+		expect(g.agentPlug).toHaveBeenCalledTimes(3);
 		// Nothing was ever made: a member's delete has nothing to wait for.
 		Object.assign(g.entry, { desiredState: "deleted", removeDue: true, reserved: false });
 		expect(await g.host.pass(g.signal)).toEqual([{ placementId: id(6), step: "release", state: "done" }]);
@@ -505,8 +721,10 @@ describe("company machine host", () => {
 		Object.assign(f.entry, { runningAt: new Date().toISOString(), bootId: f.boot, commands: [id(7)] });
 		f.busy.add("qorpera_authorize_executor_machine");
 		f.observe({
+			at: 10_000,
+			cpuUsec: 0,
+			ioBytes: 0,
 			ended: [{ commandId: id(7), state: "succeeded", exitCode: 0, outputTail: "ok" }],
-			cpu: { busyTicks: 0, totalTicks: 0 },
 		});
 		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
 		expect(f.client.execInstance.mock.calls.slice(-2).map((call) => call[2][3])).toEqual([
