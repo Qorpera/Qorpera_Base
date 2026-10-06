@@ -6,7 +6,12 @@ import {
 	type CloudNativeToolRun,
 	cloudToolRequest,
 } from "./cloud-native-tool-authority.ts";
-import { CloudToolAuthorizeRefusal, type CloudToolContent, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
+import {
+	CloudToolAuthorizeRefusal,
+	type CloudToolContent,
+	type CloudToolRefusal,
+	cloudToolJsonText,
+} from "./cloud-native-tool-boundary.ts";
 import type { BeginCloudRunnerOperationInput, CompleteCloudRunnerOperationInput } from "./cloud-runner-broker.ts";
 import {
 	CloudRuntimeDiagnosticError,
@@ -19,6 +24,18 @@ class RefusedBeforeReceipt extends Error {
 	readonly refusal: CloudToolAuthorizeRefusal;
 	constructor(refusal: CloudToolAuthorizeRefusal) {
 		super("Cloud tool operation refused before its receipt");
+		this.refusal = refusal;
+	}
+}
+
+/** Thrown by `perform` when the kernel settled the call's own receipt without an effect, under the receipt's lock (it
+ * cancelled it): a definite outcome, so the call ends refused with the refusal's words, not unconfirmed. */
+export class CloudToolOperationSettled extends Error {
+	readonly receiptId: string;
+	readonly refusal: CloudToolRefusal;
+	constructor(receiptId: string, refusal: CloudToolRefusal) {
+		super("Cloud tool operation settled without an effect");
+		this.receiptId = receiptId;
 		this.refusal = refusal;
 	}
 }
@@ -127,12 +144,16 @@ export interface CloudNativeToolOperationOutput {
 	proposalId?: string;
 	/** The folder commit that carried this operation's receipt (a folder-v2 writer), whatever its units' outcomes. */
 	folderCommitId?: string;
+	/** That commit parked the change for a member's review instead of saving it. */
+	proposed?: true;
 }
 
 interface ConfirmedOperationResult {
 	content: CloudToolContent;
 	receiptId: string;
 	outcome: "succeeded" | "proposed" | "replayed";
+	/** A folder-v2 change parked for review: a protected path, as the path gateway reports it. */
+	parked?: true;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -377,7 +398,8 @@ export class CloudNativeToolOperations {
 					revisions.length > 1 ||
 					(operation.requiresCompanyRevision && revisions.length === 0) ||
 					(output.folderCommitId !== undefined &&
-						(!operation.requiresCompanyRevision || !this.#control.completeFolderToolOperation))
+						(!operation.requiresCompanyRevision || !this.#control.completeFolderToolOperation)) ||
+					(output.proposed !== undefined && (output.proposed !== true || output.folderCommitId === undefined))
 				)
 					throw new Error("Invalid cloud tool operation output");
 				const storedResult = JSON.parse(
@@ -430,7 +452,8 @@ export class CloudNativeToolOperations {
 					content: structuredClone(record(storedResult).content) as CloudToolContent,
 					receiptId: completed.receipt_id,
 					// The canonical completion confirms the submitted, run-owned revision/proposal link.
-					outcome: proposalId ? "proposed" : "succeeded",
+					outcome: proposalId || output.proposed ? "proposed" : "succeeded",
+					...(output.proposed ? { parked: true as const } : {}),
 				};
 			});
 		if (!previous) {
@@ -447,6 +470,7 @@ export class CloudNativeToolOperations {
 				outputBytes: Buffer.byteLength(
 					confirmed.content.kind === "text" ? confirmed.content.value : cloudToolJsonText(confirmed.content.value),
 				),
+				...(confirmed.parked ? { errorCategory: "protected_path" as const } : {}),
 			});
 			// A denied release cannot undo a confirmed effect or turn a replay into another successful effect.
 			await observedCloudToolAuthority(
@@ -465,6 +489,16 @@ export class CloudNativeToolOperations {
 			// Refused at the authorize before the receipt: nothing began, so the registry's words are the answer.
 			if (error instanceof RefusedBeforeReceipt && receipt.id === null && !signal.aborted) {
 				options.observation?.finish("denied", { errorCategory: "authority_unavailable" });
+				throw error.refusal;
+			}
+			// Settled by the kernel without an effect, on this call's own receipt: nothing happened either.
+			if (
+				error instanceof CloudToolOperationSettled &&
+				receipt.id !== null &&
+				error.receiptId === receipt.id &&
+				!signal.aborted
+			) {
+				options.observation?.finish("failed", { receiptId: receipt.id, errorCategory: "stale_version" });
 				throw error.refusal;
 			}
 			options.observation?.finish("unconfirmed", {

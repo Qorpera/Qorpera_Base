@@ -1,0 +1,11 @@
+[Unit]
+Description=Qorpera agent exit: copy the sealed logs to the NAS every 5 minutes
+Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/agent-exit/README.md
+
+[Timer]
+OnActiveSec=1min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

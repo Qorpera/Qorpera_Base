@@ -468,8 +468,18 @@ paths it may read. Its own change sets never wake it.
   (a member's, or a run's requester's; the rule of `qorpera_agent_routine_sponsor`, read without
   its lock on the login) pays for a new version and for work a save starts or extends: a resume,
   a reopen, reviving an expired routine, more runs, a later end, a handover to another agent. A
-  version on another login moves to the saver's. A pause, a conclusion, fewer runs, an earlier
-  end or new quiet hours need no login.
+  pause, a conclusion, fewer runs, an earlier end or new quiet hours need no login.
+- Since `20260930095000` (the payer never changes without permission) a routine keeps a payer that
+  serves its saver (their own login or a company account), also when it cannot pay: it waits as
+  `needs_model_account` until someone picks a login with `qorpera_set_routine_login` (a member their
+  own, an owner or admin a company account). A save by someone that payer does not serve (a new
+  routine, another member's save) is their own first choice: their own login, or the saving run's.
+  A changed payer is recorded (`qorpera_routine_payer_changes`, read by `qorpera_get_routine_payer`)
+  and the member whose login paid before gets a `routine_payer_changed` notice. A login at its usage
+  limit or needing a new sign-in is kept too (its runs stop at the limit); the read says why
+  (`waitsFor`), and a pick refuses such a login, a ChatGPT plan for any trigger other than a
+  schedule or a single time, and any pick while the company is stopped or being deleted (the
+  member-action entry, `qorpera_folder_company_enter`).
 - A member without such a login cannot make those saves, and neither can an agent acting with no
   run (a coding session, or a desktop whose run ended: C1b-3a's views) for a member without one. A
   run whose requester has none pins the run's login, and the routine waits (`needs_model_account`). Unlike an agent's save today, the
@@ -589,6 +599,9 @@ Not reviewed. Dispatching a worker is reviewed.
 | `id` | the worker's id |
 | `title` | 1–200 bytes |
 | `species` | `in-house` or `coding` |
+| `harness` | a coding session's: `codex` or `claude-code` (only in a coding brief, C3a) |
+| `repository` | a coding session's: `github.com/<owner>/<name>` (only in a coding brief) |
+| `base_branch` | a coding session's base branch (only in a coding brief) |
 | `access` | `read` or `write` |
 | `revival` | `each` or `batch` |
 | `dispatched_at` | UTC instant |
@@ -2357,6 +2370,47 @@ unit; the read-only and narrowed-folder report; R1 accepting `manage_worker` for
 only; races of dispatch against `done`, two saves of one todo, the drain against cancel, a report and a
 subtree delete, and an agent folder move against a dispatch; a mutant run, as H1b and H2b; and the legacy
 worker suites (379, 385, 387, 388, 395–399, 600–606, 656) after the new columns.
+
+**Plan (C3): coding workers on folder-v2** (S3; design approved by the coordinator, 4 October; A1's acceptance cases from
+396). A coding session is a worker like an in-house one: `manage_worker` writes its `brief.md` through
+`qorpera_folder_worker_commit`, and the worker row is the brief's index.
+- **C3a (migration 20260930077000, SQL test 928; the parser):**
+  - **The brief.** A coding brief names `harness`, `repository` and `base_branch`; an in-house brief names none of
+    them. The parse gives `harness` and `repository` (`{host, owner, name, baseBranch}`, as the coding tables hold it)
+    for a coding brief only, and the database's parse check holds both to their rules.
+  - **The request.** A dispatch may carry `species`, `harness`, `repository` and `owner`. The worker rules check a
+    coding dispatch as `qorpera_manage_agent_worker` did, in its order and with its words, as rule refusals that write
+    nothing: the species; the harness, repository and read access; the owner (only the member who asked);
+    an enabled executor for the harness; the agent's grant for the repository; the owner's own login for the harness,
+    allowed to work while they are away, and a ChatGPT plan only for work started on it
+    (`qorpera_coding_owner_problem`, which reads `qorpera_coding_owner_login`, the selection
+    `qorpera_coding_owner_sponsor` now shares). A coding session is paid by that login, not the starter's sponsor. The
+    index takes the payer again and holds it to the plan rule (`qorpera_coding_owner_payer`): a login changed between
+    the rules and the index fails the commit rather than bill a plan that did not fund the run.
+    The brief agrees with the request: the species, the harness and the repository too.
+  - **The index.** An accepted coding dispatch writes the worker (`coding`, active, no wake, owned by the run's
+    requester and paid by their sponsor), its session (`queued`, branch `qorpera/coding/<worker id>`, no lease, in the
+    run's conversation), and its first turn and `phase` event (`qorpera_coding_session_queue`). No wake: the executor's
+    claim starts the session, and its turn's begin admits the worker's wake. A replay answers the first commit.
+  - **Follow-up, report, decide.** A coding session keeps its branch, workspace and pull request through a cancel, so a
+    cancelled one may be followed up, and only by the member it runs for; the follow-up queues its next turn the same
+    way. A member's answer (`qorpera_answer_coding_session`) turns the session too without touching the brief, so a
+    coding brief's `follow_ups` counts the agent's follow-ups alone: each is one more than the brief it rewrites. A
+    worker whose folder or todo was deleted continues only after a restore (a worker's folder may come back without its
+    todo): the member's answer, the claim and the begin refuse it (`qorpera_coding_worker_retired`, under the worker's
+    rank-5 locks). A coding session finishes through `coding_finish`: its run never writes `agents/**`, so the folder
+    core denies it `report_work`. Decide is unchanged.
+  - **The turn's wake** carries the folder-v2 dispatch payload (`qorpera_folder_worker_dispatch_payload`: the worker's
+    folder and the todo's file).
+  - **F2's drain** (with F2's review): an active coding worker is due only to be stopped, when its parent was stopped
+    or its todo cancelled, as an in-house one; the drain never starts it and revives its parent as before. It takes
+    the sessions it may stop `FOR UPDATE` after the parents' conversations and before admission (core §3).
+  - **Locks.** The session a dispatch inserts is new; a follow-up's session update comes after the worker's rank-5
+    lock, as every coding-session writer takes it (3i-a's claim, begin and complete, the cancel, the drain).
+- **C3b (the runtime):** `cloud-folder-workers.ts` dispatches and follows up coding sessions (the brief's coding
+  fields, the request's), and the dispatch's answer names the session's phase.
+- **C3c:** the quiet coding check-ins as a drain, on #816's continuation helpers (C1C §6.20's hand-over).
+- **C3d:** a coding turn's result written to `results.md`.
 
 **Plan (P16): interfaces and tables on the folder core** (the coordinator's slice P16, RUNTIME-INTERFACES.md
 step I6, with Interfaces; design, 3 October, review r1 folded). The rules are RUNTIME-INTERFACES.md §6.1 (its nine

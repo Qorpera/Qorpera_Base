@@ -197,6 +197,41 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
   - A card's lane comes from its own table's `holder` (§5). A part whose table has no `holder` draws its cards in the
     open pile when there is one, else not at all.
   - An empty lane keeps its title and says so quietly. On a phone the lanes stack.
+- **Text (proposed, built with the folder pages):**
+  - Markdown, drawn with the client's own renderer and no HTML. A link is drawn as its text and an image as its alt
+    text, so nothing leaves the page and nothing is fetched (§4, "Nothing remote"). A `detail` block draws a row's
+    text the same way.
+  - `show = "first-paragraph"` draws the first paragraph; headings and rules before it are skipped.
+  - A `from` source with nothing to show says so quietly. A block's own `text` is drawn as it is.
+  - A `file:` source's `text` is the file without its settings block (front matter: the `---` lines and the settings
+    between them), as a rule's or an agent's file starts. The vision and sections files have none, so a leading `---`
+    there is part of the text.
+  - A `file:` source under `hooks/` or `human-tasks/` (§4) is not read, and its block is not drawn, until blocks can
+    show the outside-content mark (I7).
+- **Numbers (proposed, built with the folder pages):**
+  - The tiles are the rows the block's query keeps. With `latest_by`, that is the newest row of each group, and the
+    tile is labelled with the group's value. Without it, a block has one tile: the newest row of all.
+  - A tile's change is its `value` less the value of the row before it in its group, by the source's time column, else
+    `trend.over`. It shows as "+€100 since" or "No change since" that row's time; a `date` is shown as its day, the
+    same in every time zone.
+  - The unit is the row's `unit` cell, as the numbers table has one. Without one, a `money` column shows its currency
+    and a `percent` column a percent sign. `count` is a plain number.
+  - `target` names a column of the row; it shows as "Target €1,500".
+  - The trend line draws the group's values over `trend.over` in the last `trend.weeks` weeks, when there are at least
+    two.
+  - With `opens`, each tile is a button that opens its row in the detail.
+- **Calendar (proposed, built with the folder pages):**
+  - `from` may name several sources. The calendar is drawn when at least one of them exists, from those that do, and
+    lists the problems of each.
+  - A source's dates: a routine's `next`; a human task's `due`, while the task is open or returned; a table's time
+    column, else its first `time` or `date` column.
+  - The block's `where` applies to each source with the columns it has. A source without a column its view narrows by
+    is left out. A calendar has no `order`, `limit` or `latest_by`.
+  - It shows `days` days from today, 14 when the block doesn't say, in the member's time zone. A day with nothing on it
+    is left out. Days are titled Today, Tomorrow, then by weekday and date.
+  - Each thing shows its title (its `title`, else its `name`, else its table's first text column), its time, and what
+    it is: Routine, Task, or its table's name. A thing with a date and no time comes first on its day. Its figure is
+    the agent of the source's first agent column.
 - **`opens`** names a `detail` block, or a `mail` block for a thread, in the same view. On a wide screen it opens
   beside the list; on a phone it opens as the next screen.
 
@@ -760,6 +795,19 @@ end). A rows file with rows that don't fit its definition is not written. Lookup
 and the folder reader reads the tables that board parts and lookups name. The Members page's People view draws its
 table; its `file:rules/shared-areas.md` block is not drawn, since this client draws no `text` blocks yet. Offers,
 answers on a board, and supervision (I9b) are not built.
+
+**Built: folder pages** (web; `packages/web/src/app/interface-sources.ts`, `app/routine-next-run.ts`,
+`app/interface-folder.ts`, `app/views/interface-blocks.ts`, `ui/markdown.ts`). The folder's own sources of §4 are live:
+`vision`, `agents`, `groups`, `todos`, `routines`, `connections`, `contacts`, `human_tasks` and `interfaces`. The I7
+reader lists and reads the folders the active pages' drawn blocks name, with the member's own reads, and the change
+feed reads only the touched folders again. Each file is parsed with the cloud client's company-state parser; a file
+that doesn't parse is left out and listed under its block. `agents` and `groups` are what the files say, not the store.
+A routine's `next` follows the orchestrator's schedule rules from its file. A human task's `person` is a member's id,
+or a contact's name when the task is for a contact. The `working` and `waiting` rows give their times to the second, as
+every row does. Column and value labels are in the member's language. The `text`, `numbers` and `calendar` blocks follow
+§3.2's proposed rules, so Pulse draws all its blocks but "What happened" and the Members page draws
+`file:rules/shared-areas.md` when the file exists. The `activity` source is not built: the live state has only each
+agent's current run, not the runs that happened, so it waits for a read of past runs (with their answers and changes).
 
 **Built: I9c, the offers' machinery** (`supabase/migrations/20260930105000_interface_offers.sql`, test 938). Offers are
 kept in `qorpera_interface_offers` (§5 "Offers"). Members make, decline, withdraw and list them with four calls

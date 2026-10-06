@@ -232,10 +232,12 @@ begin
 	q := b || '{"authority":"Write anything."}'; u := pg_temp.dispatch_units(p, f, q);
 	r := pg_temp.wc(p, 'f2b-standing-0001', u, pg_temp.dispatch_request(f, q), pg_temp.reviewed(ada, 'f2b-call-0008', u));
 	perform pg_temp.refused(r, 1, 'standing texts are the platform''s');
-	q := pg_temp.brief('84000000-0000-4000-8000-000000000102', p_species => 'coding', p_access => 'read');
+	-- A coding brief under an in-house request (coding sessions are 928's, C3a).
+	q := pg_temp.brief('84000000-0000-4000-8000-000000000102', p_species => 'coding', p_access => 'read')
+		|| '{"harness":"codex","repository":{"host":"github.com","owner":"acme","name":"app","baseBranch":"main"}}';
 	u := pg_temp.dispatch_units(p, f, q);
 	r := pg_temp.wc(p, 'f2b-coding-0001', u, pg_temp.dispatch_request(f, q), pg_temp.reviewed(ada, 'f2b-call-0009', u));
-	perform pg_temp.refused(r, 1, 'coding workers come');
+	perform pg_temp.refused(r, 1, 'does not match the dispatch');
 	q := pg_temp.brief('84000000-0000-4000-8000-000000000102', p_at => clock_timestamp() - interval '1 hour');
 	u := pg_temp.dispatch_units(p, f, q);
 	r := pg_temp.wc(p, 'f2b-late-0001', u, pg_temp.dispatch_request(f, q), pg_temp.reviewed(ada, 'f2b-call-0010', u));

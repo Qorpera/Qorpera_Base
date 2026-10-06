@@ -5,8 +5,12 @@
  * messages carry JSON; a read reply carries the bytes as they are. */
 
 import { isUuid } from "@qorpera/contracts";
+import type { CoreReceipt } from "./core.ts";
 
-export const PROTOCOL = 1;
+/** Version 2 adds writes (F3 step 3, deploy/first-node/RUNTIME-FOLDER-WRITES.md, "Protocol v2"); a machine on version
+ * 1 reads only. */
+export const PROTOCOL = 2;
+export const PROTOCOLS = [1, 2] as const;
 export const MAX_PAYLOAD = 2 * 1024 * 1024;
 /** Before a machine's hello is accepted, frames (the bridge's and the hello) are small: an unfinished large frame
  * would otherwise hold memory for any machine on the node, with no pass. */
@@ -28,7 +32,24 @@ export const Kind = {
 	data: 0x64, // d
 	change: 0x63, // c
 	ack: 0x61, // a
+	/** A run's search over its own view, served here (F3 `company_search`), and its answer. */
+	search: 0x53, // S
+	found: 0x73, // s
 	error: 0x65, // e
+	// Writes (protocol 2).
+	open: 0x4f, // O: open a file for writing
+	opened: 0x6f, // o
+	chunk: 0x4b, // K: one part of a chunk
+	getChunk: 0x47, // G: a pending chunk back (answered with d)
+	close: 0x43, // C
+	mkdir: 0x4d, // M
+	unlink: 0x55, // U
+	rmdir: 0x44, // D
+	rename: 0x4e, // N
+	executable: 0x58, // X
+	done: 0x6b, // k: a write request's answer
+	publish: 0x50, // P
+	report: 0x70, // p
 } as const;
 
 export const ErrorCode = {
@@ -45,6 +66,16 @@ export const ErrorCode = {
 	viewClosed: "VIEW_CLOSED",
 	/** The view, its pass or the calling machine did not match. */
 	viewRefused: "VIEW_REFUSED",
+	// Writes (protocol 2): what a program on the machine sees as EEXIST, ENOTEMPTY, EPERM, EFBIG and EROFS.
+	exists: "EXISTS",
+	notEmpty: "NOT_EMPTY",
+	notPermitted: "NOT_PERMITTED",
+	tooLarge: "TOO_LARGE",
+	readOnly: "READ_ONLY",
+	/** EXDEV: a published path cannot go where nothing is published (a trash folder); a file manager then deletes. */
+	notHere: "NOT_HERE",
+	/** EBUSY: the change needed what was pending published first, and that could not be done now. */
+	busy: "BUSY",
 } as const;
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
 
@@ -121,6 +152,8 @@ export interface WireEntry {
 	readonly executable: boolean;
 	/** The core's version id of the path (a uuid), opaque to the machine. */
 	readonly version: string;
+	/** The core's read receipt, in an agent's view (a run box's), for the box's read log. */
+	readonly authority?: CoreReceipt;
 }
 
 export interface ListRequest {
@@ -206,7 +239,8 @@ export function parseBridge(payload: Buffer): BridgeInfo {
 export function parseHello(payload: Buffer): Hello {
 	const value = object(payload);
 	exactKeys(value, ["protocol", "environmentId", "viewId", "pass", "role"]);
-	if (value.protocol !== PROTOCOL) throw new ProtocolError(ErrorCode.viewRefused, "Unsupported folder protocol");
+	if (value.protocol !== 1 && value.protocol !== 2)
+		throw new ProtocolError(ErrorCode.viewRefused, "Unsupported folder protocol");
 	if (typeof value.environmentId !== "string" || !isUuid(value.environmentId))
 		throw new ProtocolError(ErrorCode.viewRefused, "Bad environment id");
 	const printable = (v: unknown): v is string =>
@@ -215,7 +249,7 @@ export function parseHello(payload: Buffer): Hello {
 		throw new ProtocolError(ErrorCode.viewRefused, "Bad view id or pass");
 	if (value.role !== "io" && value.role !== "feed") throw new ProtocolError(ErrorCode.badRequest, "Bad role");
 	return {
-		protocol: PROTOCOL,
+		protocol: value.protocol,
 		environmentId: value.environmentId,
 		viewId: value.viewId,
 		pass: value.pass,
@@ -248,8 +282,226 @@ export function parseRead(payload: Buffer): ReadRequest {
 	};
 }
 
+/** Where a search goes on: the next path to look at, and inside a file, the byte and line its next line starts at
+ * (in the version it was searched at; another version is searched from its start). */
+export interface SearchCursor {
+	readonly path: string;
+	readonly version: string;
+	readonly offset: number;
+	readonly line: number;
+}
+
+export interface SearchRequest {
+	/** Literal text: in the files' lines, or with `namesOnly` in the names of files and folders. */
+	readonly query: string;
+	/** The folder (or the one file) to search: "" for the whole view. */
+	readonly path: string;
+	/** Only paths matching it: `*` and `?` within a name, `**` across folders; without a '/', the name alone. */
+	readonly glob: string | null;
+	readonly namesOnly: boolean;
+	readonly caseSensitive: boolean;
+	readonly after: SearchCursor | null;
+}
+
+export const MAX_SEARCH_QUERY = 256;
+
+export function parseSearch(payload: Buffer): SearchRequest {
+	const value = object(payload);
+	exactKeys(value, ["query", "path", "glob", "namesOnly", "caseSensitive", "after"]);
+	const text = (v: unknown): v is string =>
+		typeof v === "string" && v.length > 0 && v.length <= MAX_SEARCH_QUERY && !/[\u0000-\u001f\u007f]/.test(v);
+	if (!text(value.query)) throw new ProtocolError(ErrorCode.badRequest, "Bad query");
+	if (typeof value.path !== "string" || !validPath(value.path))
+		throw new ProtocolError(ErrorCode.badRequest, "Bad path");
+	if (value.glob !== null && !text(value.glob)) throw new ProtocolError(ErrorCode.badRequest, "Bad glob");
+	if (typeof value.namesOnly !== "boolean" || typeof value.caseSensitive !== "boolean")
+		throw new ProtocolError(ErrorCode.badRequest, "Bad flag");
+	let after: SearchCursor | null = null;
+	if (value.after !== null) {
+		const a = value.after as Record<string, unknown>;
+		if (!a || typeof a !== "object" || Array.isArray(a)) throw new ProtocolError(ErrorCode.badRequest, "Bad cursor");
+		exactKeys(a, ["path", "version", "offset", "line"]);
+		if (typeof a.path !== "string" || a.path === "" || !validPath(a.path))
+			throw new ProtocolError(ErrorCode.badRequest, "Bad cursor");
+		if (typeof a.version !== "string" || !/^[0-9a-f-]{0,64}$/.test(a.version))
+			throw new ProtocolError(ErrorCode.badRequest, "Bad cursor");
+		after = {
+			path: a.path,
+			version: a.version,
+			offset: count(a.offset, Number.MAX_SAFE_INTEGER),
+			line: count(a.line, Number.MAX_SAFE_INTEGER),
+		};
+	}
+	return {
+		query: value.query,
+		path: value.path,
+		glob: value.glob as string | null,
+		namesOnly: value.namesOnly,
+		caseSensitive: value.caseSensitive,
+		after,
+	};
+}
+
 export function parseAck(payload: Buffer): number {
 	const value = object(payload);
 	exactKeys(value, ["seq"]);
 	return count(value.seq, Number.MAX_SAFE_INTEGER);
+}
+
+// ---- Writes (protocol 2) ----------------------------------------------------------------------------------------------
+
+/** A file's chunks are at most 4 MiB (the version-2 manifest's); a part of one at most 1 MiB. */
+export const CHUNK_MAX = 4 * 1024 * 1024;
+export const PART_MAX = 1024 * 1024;
+
+function path(value: unknown, root = false): string {
+	if (typeof value !== "string" || (!root && value === "") || !validPath(value))
+		throw new ProtocolError(ErrorCode.badRequest, "Bad path");
+	return value;
+}
+
+function base(value: unknown): string | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "string" || !isUuid(value)) throw new ProtocolError(ErrorCode.badRequest, "Bad base");
+	return value;
+}
+
+function flag(value: unknown): boolean {
+	if (typeof value !== "boolean") throw new ProtocolError(ErrorCode.badRequest, "Bad flag");
+	return value;
+}
+
+export interface OpenRequest {
+	readonly path: string;
+	readonly base?: string;
+	readonly create: boolean;
+	readonly exclusive: boolean;
+	readonly truncate: boolean;
+}
+
+export function parseOpen(payload: Buffer): OpenRequest {
+	const value = object(payload);
+	exactKeys(value, ["path", "create", "exclusive", "truncate"], ["base"]);
+	const b = base(value.base);
+	return {
+		path: path(value.path),
+		...(b ? { base: b } : {}),
+		create: flag(value.create),
+		exclusive: flag(value.exclusive),
+		truncate: flag(value.truncate),
+	};
+}
+
+/** One part of a chunk: `[u32 header length][header JSON][bytes]`. The parts of a chunk come in order, from offset 0;
+ * the header names the whole chunk's hash and size. */
+export interface ChunkPart {
+	readonly handle: number;
+	readonly index: number;
+	readonly sha256: string;
+	readonly bytes: number;
+	readonly offset: number;
+	readonly data: Buffer;
+}
+
+export function parseChunkPart(payload: Buffer): ChunkPart {
+	if (payload.byteLength < 4) throw new ProtocolError(ErrorCode.badRequest, "Bad chunk part");
+	const length = payload.readUInt32BE(0);
+	if (length > 4096 || 4 + length > payload.byteLength)
+		throw new ProtocolError(ErrorCode.badRequest, "Bad chunk part");
+	const value = object(payload.subarray(4, 4 + length));
+	exactKeys(value, ["handle", "index", "sha256", "bytes", "offset"]);
+	const data = payload.subarray(4 + length);
+	const bytes = count(value.bytes, CHUNK_MAX);
+	const offset = count(value.offset, CHUNK_MAX);
+	if (
+		bytes < 1 ||
+		typeof value.sha256 !== "string" ||
+		!/^[0-9a-f]{64}$/.test(value.sha256) ||
+		data.byteLength > PART_MAX ||
+		data.byteLength === 0 ||
+		offset + data.byteLength > bytes
+	)
+		throw new ProtocolError(ErrorCode.badRequest, "Bad chunk part");
+	return {
+		handle: count(value.handle, 0xffff_ffff),
+		index: count(value.index, 63),
+		sha256: value.sha256,
+		bytes,
+		offset,
+		data,
+	};
+}
+
+/** Part of a pending chunk back: at most 1 MiB from `offset` (a chunk is up to 4 MiB, a frame up to 2). */
+export function parseGetChunk(payload: Buffer): {
+	readonly handle: number;
+	readonly index: number;
+	readonly offset: number;
+	readonly length: number;
+} {
+	const value = object(payload);
+	exactKeys(value, ["handle", "index", "offset", "length"]);
+	return {
+		handle: count(value.handle, 0xffff_ffff),
+		index: count(value.index, 63),
+		offset: count(value.offset, CHUNK_MAX),
+		length: count(value.length, PART_MAX),
+	};
+}
+
+export function parseClose(payload: Buffer): { readonly handle: number; readonly size: number } {
+	const value = object(payload);
+	exactKeys(value, ["handle", "size"]);
+	return { handle: count(value.handle, 0xffff_ffff), size: count(value.size, 64 * CHUNK_MAX) };
+}
+
+export function parseMkdir(payload: Buffer): { readonly path: string } {
+	const value = object(payload);
+	exactKeys(value, ["path"]);
+	return { path: path(value.path) };
+}
+
+/** unlink and rmdir. */
+export function parseRemove(payload: Buffer): { readonly path: string; readonly base?: string } {
+	const value = object(payload);
+	exactKeys(value, ["path"], ["base"]);
+	const b = base(value.base);
+	return { path: path(value.path), ...(b ? { base: b } : {}) };
+}
+
+export interface RenameRequest {
+	readonly from: string;
+	readonly fromBase?: string;
+	readonly to: string;
+	readonly toBase?: string;
+	readonly noReplace: boolean;
+}
+
+export function parseRename(payload: Buffer): RenameRequest {
+	const value = object(payload);
+	exactKeys(value, ["from", "to", "noReplace"], ["fromBase", "toBase"]);
+	const fromBase = base(value.fromBase);
+	const toBase = base(value.toBase);
+	return {
+		from: path(value.from),
+		...(fromBase ? { fromBase } : {}),
+		to: path(value.to),
+		...(toBase ? { toBase } : {}),
+		noReplace: flag(value.noReplace),
+	};
+}
+
+export function parseExecutable(payload: Buffer): {
+	readonly path: string;
+	readonly base?: string;
+	readonly executable: boolean;
+} {
+	const value = object(payload);
+	exactKeys(value, ["path", "executable"], ["base"]);
+	const b = base(value.base);
+	return { path: path(value.path), ...(b ? { base: b } : {}), executable: flag(value.executable) };
+}
+
+export function parsePublish(payload: Buffer): void {
+	exactKeys(object(payload), []);
 }
