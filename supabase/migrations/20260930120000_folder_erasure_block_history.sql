@@ -8,7 +8,11 @@
 --   the erase row, not the partners, and is kept after done, with the copies and what the request was for, so a
 --   carrier that asks again after done finds them.
 -- * With a cutoff, the block is cut at the delete it names, live again or not, and the delete and all after it stay.
---   With none, the block must not be live, and every life of it is erased; a block live again is refused (55000).
+--   A delete already erased (by a later cutoff's request or a member's erasure) leaves nothing before it once that
+--   erasure is past its versions phase: the request answers nothing left, or is asked again (55006) while that phase
+--   runs. It is never refused for good (§10.1).
+-- * With none, the block must not be live, and every life of it is erased; a block live again, or restored and renamed
+--   to a live path since step 1, is refused (55000).
 -- * Moves are followed: the wrapper adds each partner P18 names and asks again. A life that moved on to a live path is
 --   another tree's block and is left alone, not refused. There is no limit of 20 paths, and every copy is named.
 -- * Nothing left to erase answers erasureId null, with no row (asking again erases nothing more).
@@ -35,6 +39,36 @@ alter table public.qorpera_folder_erasures
 comment on column public.qorpera_folder_erasures.block_history is
 	'A block-history request (RUNTIME-AGENT-MEMORY-TREE.md §10 step 3): {path, cutoffSeq, cutoffUnit, for: {table, id}}; null for a member''s erasure.';
 
+-- Whether a key's newest life moved on, through renames, to a live path whose life began with those moves: for a block
+-- that is not live, the block restored and renamed since step 1 deleted it, so live again (§10 step 3). An older life
+-- that moved on is another tree's block: the key's newest row is then not that move.
+create function public.qorpera_folder_erasure_moved_live(p_environment_id uuid, p_key text)
+returns boolean language plpgsql stable security definer set search_path = '' as $$
+declare v_key text := p_key; v_last record; v_to record; v_start record;
+begin
+	-- Each hop's newest row is later than the last, so the chain ends; the bound only guards it.
+	for i in 1..1000 loop
+		select v.op, v.commit_id, v.unit_no, v.prior_version into v_last
+		from public.qorpera_folder_path_versions v join public.qorpera_folder_commits c on c.id = v.commit_id
+		where v.environment_id = p_environment_id and v.key_sha256 = extensions.digest(v_key, 'sha256') and c.seq is not null
+		order by c.seq desc, v.unit_no desc, (v.op = 'move_in') desc
+		limit 1;
+		if not found or v_last.op <> 'move_out' then return false; end if;
+		select p.path, p.version into v_to from public.qorpera_folder_path_versions p
+		where p.commit_id = v_last.commit_id and p.unit_no = v_last.unit_no and p.prior_version = v_last.prior_version
+			and p.op = 'move_in';
+		if not found or public.qorpera_folder_key(v_to.path) = v_key then return false; end if;
+		v_key := public.qorpera_folder_key(v_to.path);
+		select * into v_start from public.qorpera_folder_erasure_life_start(p_environment_id, v_key);
+		if v_start.version is distinct from v_to.version then return false; end if;
+		if exists (select 1 from public.qorpera_folder_entries where environment_id = p_environment_id
+				and key_sha256 = extensions.digest(v_key, 'sha256') and kind <> 'claim') then
+			return true; end if;
+	end loop;
+	return false;
+end $$;
+revoke all on function public.qorpera_folder_erasure_moved_live(uuid, text) from public, anon, authenticated, service_role;
+
 -- 2. The request: qorpera_folder_erase with a memtree actor -----------------------------------------------------------
 
 select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
@@ -42,6 +76,7 @@ select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)':
 $old$,
 	$new$	v_proposals uuid[]; -- 20260930074000 (P40)
 	v_memtree jsonb; v_block_key text; v_cut_at timestamptz; v_total bigint := 0; -- 20260930120000 (W1a)
+	v_cut_op text; v_cut_gone boolean := false; v_cut_busy boolean := false; -- 20260930120000 (W1a)
 $new$);
 select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
 	$old$	if p_actor ->> 'kind' is distinct from 'member' or p_actor - array['kind','userId'] <> '{}'::jsonb
@@ -133,18 +168,34 @@ $old$,
 		if v_key = v_block_key and v_memtree ->> 'cutoffSeq' is not null then
 			select c.created_at into v_cut_at from public.qorpera_folder_commits c
 			where c.environment_id = p_environment_id and c.seq = (v_memtree ->> 'cutoffSeq')::bigint;
-			if v_cut_at is null or (v_memtree ->> 'cutoffSeq')::bigint > v_as_of or not exists (select 1
-					from public.qorpera_folder_path_versions v join public.qorpera_folder_commits c on c.id = v.commit_id
-					where v.environment_id = p_environment_id and v.key_sha256 = extensions.digest(v_key, 'sha256')
-						and c.seq = (v_memtree ->> 'cutoffSeq')::bigint and v.unit_no = (v_memtree ->> 'cutoffUnit')::integer
-						and v.op = 'delete') then
+			if v_cut_at is null or (v_memtree ->> 'cutoffSeq')::bigint > v_as_of then
 				raise exception 'Block-history cutoff is not the block''s delete' using errcode = '22023'; end if;
 			v_roots := v_roots || jsonb_build_array(jsonb_build_object('key', v_key, 'live', true,
 				'cutoffSeq', (v_memtree ->> 'cutoffSeq')::bigint, 'cutoffUnit', (v_memtree ->> 'cutoffUnit')::integer,
 				'cutoffAt', v_cut_at));
+			select v.op into v_cut_op from public.qorpera_folder_path_versions v
+			join public.qorpera_folder_commits c on c.id = v.commit_id
+			where v.environment_id = p_environment_id and v.key_sha256 = extensions.digest(v_key, 'sha256')
+				and c.seq = (v_memtree ->> 'cutoffSeq')::bigint and v.unit_no = (v_memtree ->> 'cutoffUnit')::integer
+			order by (v.op = 'delete') desc limit 1;
+			if v_cut_op <> 'delete' then
+				raise exception 'Block-history cutoff is not the block''s delete' using errcode = '22023'; end if;
+			-- No version there: an erasure with a later cutoff over the key (a later request for the block, or a member's
+			-- erasure) has erased the delete. Once it is past its versions phase nothing before the cutoff is left, and the
+			-- request answers nothing left; while that phase runs it is asked again (the count below decides). Read before
+			-- the count, so an erasure done in between has left nothing to count.
+			v_cut_gone := v_cut_op is null;
+			v_cut_busy := v_cut_gone and exists (select 1 from public.qorpera_folder_erasures e
+				cross join jsonb_array_elements(e.roots) r
+				where e.environment_id = p_environment_id and e.done_at is null
+					and public.qorpera_folder_erasure_covers(r ->> 'key', v_key)
+					and public.qorpera_folder_erasure_before(r, (v_memtree ->> 'cutoffSeq')::bigint,
+						(v_memtree ->> 'cutoffUnit')::integer));
 		else
 			v_roots := v_roots || jsonb_build_array(public.qorpera_folder_erasure_cutoff(p_environment_id, v_key, v_as_of, v_as_of_at));
-			if v_key = v_block_key and (v_roots -> -1 ->> 'live')::boolean then
+			-- Live again, or restored and renamed to a live path since step 1 deleted it: the same block, live.
+			if v_key = v_block_key and ((v_roots -> -1 ->> 'live')::boolean
+					or public.qorpera_folder_erasure_moved_live(p_environment_id, v_key)) then
 				raise exception 'Block is live again' using errcode = '55000'; end if;
 		end if;
 $new$);
@@ -152,6 +203,13 @@ select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)':
 	$old$		if (v_root ->> 'live')::boolean and v_versions = 0 and v_conflict = 0 then
 $old$,
 	$new$		v_total := v_total + v_versions + v_conflict; -- 20260930120000 (W1a)
+		-- 20260930120000 (W1a): the block's delete erased already, with versions or copies before it still here: asked
+		-- again while the erasure that took the delete runs its versions phase, else the cutoff was never the delete.
+		if v_cut_gone and v_root ->> 'key' = v_block_key and v_versions + v_conflict > 0 then
+			if v_cut_busy then
+				raise exception 'Block history is being erased; ask again' using errcode = '55006'; end if;
+			raise exception 'Block-history cutoff is not the block''s delete' using errcode = '22023';
+		end if;
 		if v_memtree is null and (v_root ->> 'live')::boolean and v_versions = 0 and v_conflict = 0 then
 $new$);
 select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
@@ -279,7 +337,8 @@ $new$);
 -- <table>:<id>:<the block's folded key>. Each call runs in the caller's transaction, at read committed. The answer is
 -- P18's reply (kind block-history, its for, every copy), or erasureId null when nothing is left to erase. P18's other
 -- refusals pass through: 55000 'Block is live again' (delete and rewrite the block first) or 'The company is being
--- deleted', 22023, and the 409 to retry when the company folder changed while the erasure began.
+-- deleted', 55006 'Block history is being erased; ask again', 22023, and the 409 to retry when the company folder
+-- changed while the erasure began.
 create function public.qorpera_folder_erase_block_history(p_environment_id uuid, p_user_id uuid, p_operation_key text,
 	p_block jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$

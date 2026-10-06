@@ -1,10 +1,13 @@
 -- @fixture 883_folder_core_erasure.test.sql until "-- 1. Refusals before anything changes"
 -- Agent memory tree, W1a (migration 20260930120000; deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §10 step 3): a
 -- block-history request erases one block's versions before the delete that cut it, as the platform's request for the
--- member who asked. Its refusals and its reserved key; the cutoff at the block's delete, the current life kept; a replay
--- before and after done (digest, copies and what it was for kept); partners through a renamed folder, added by the
--- wrapper; a life that moved on to a live path left alone; every copy named; no cutoff (every life, a live block
--- refused); nothing left (no erasure); no run noted; the grants. On 803's company; rolled back at the end.
+-- member who asked. Its refusals and its reserved key; the cutoff at the block's delete, the current life kept, past
+-- its versions phase from phase 2; a replay before and after done (digest, copies and what it was for kept); a delete
+-- erased already (asked again while that erasure runs, then nothing left); partners through a renamed folder, added by
+-- the wrapper; more than 20 paths, 21 named in one round; a life that moved on to a live path left alone; every copy
+-- named; no cutoff (every life; a live block, or one restored and renamed to a live path, refused; an older life that
+-- moved on left alone; another member's private path); nothing left (no erasure); no run noted; the grants. On 803's
+-- company; rolled back at the end.
 
 create function pg_temp.w1a_key(p_table text, p_id text, p_path text) returns text language sql as $$
 	select 'memtree:' || encode(extensions.digest(convert_to(p_table || ':' || p_id || ':' || public.qorpera_folder_key(p_path),
@@ -56,6 +59,8 @@ end $$;
 do $$
 declare b jsonb;
 begin
+	-- Another path with history before docs/a.md's delete (3).
+	perform pg_temp.w1a_put('w1a-b-01', 'docs/b.md', 'w1a b one');
 	perform pg_temp.w1a_put('w1a-a-01', 'docs/a.md', 'w1a a one');
 	perform pg_temp.w1a_put('w1a-a-02', 'docs/a.md', 'w1a a two');
 	perform pg_temp.w1a_del('w1a-a-03', 'docs/a.md');
@@ -108,6 +113,11 @@ begin
 	if v.block_history <> b or v.requested_by_user_id <> '70700000-0000-4000-8000-000000000001' then
 		raise exception 'The row keeps the request: %', to_jsonb(v); end if;
 	if public.qorpera_folder_erasure_past_versions(v_id) then raise exception 'Not past its versions phase yet'; end if;
+	for p in 2..7 loop
+		update public.qorpera_folder_erasures set phase = p where id = v_id;
+		if not public.qorpera_folder_erasure_past_versions(v_id) then raise exception 'Past its versions phase in phase %', p; end if;
+	end loop;
+	update public.qorpera_folder_erasures set phase = 1 where id = v_id;
 	if pg_temp.w1a_ask(b) is distinct from r then raise exception 'A replay answers the same'; end if;
 	perform pg_temp.is(pg_temp.message(format('select pg_temp.w1a_ask(%L)', b || '{"cutoffUnit":7}')),
 		'Operation key was used for another erasure', 'the same erase row and block with another cutoff');
@@ -152,7 +162,47 @@ begin
 		'Block-history cutoff is not the block''s delete', 'another path''s delete');
 end $$;
 
--- 4. Partners through a renamed folder, added by the wrapper; the member who asked need not erase ---------------------------
+-- 4. A delete erased already: asked again while that erasure runs its versions phase, nothing left after; never refused ------
+
+do $$
+declare b1 jsonb; b2 jsonb; r jsonb; v_at jsonb; v_id uuid;
+begin
+	-- A later cutoff's request for the same block (another message erase of the conversation) takes the first delete.
+	perform pg_temp.w1a_put('w1a-g-01', 'docs/g.md', 'w1a g one');
+	perform pg_temp.w1a_del('w1a-g-02', 'docs/g.md');
+	v_at := pg_temp.w1a_at('docs/g.md');
+	perform pg_temp.w1a_put('w1a-g-03', 'docs/g.md', 'w1a g two');
+	perform pg_temp.w1a_del('w1a-g-04', 'docs/g.md');
+	perform pg_temp.w1a_put('w1a-g-05', 'docs/g.md', 'w1a g rewritten');
+	b1 := pg_temp.w1a_block('docs/g.md', v_at, '95000000-0000-4000-8000-0000000000a4');
+	b2 := pg_temp.w1a_block('docs/g.md', pg_temp.w1a_at('docs/g.md'), '95000000-0000-4000-8000-0000000000a5');
+	r := pg_temp.w1a_ask(b2);
+	v_id := (r ->> 'erasureId')::uuid;
+	perform pg_temp.is(r -> 'roots' -> 0 ->> 'versions', '3', 'both writes and the first delete');
+	-- As if its versions phase had erased the first delete in a batch, and not yet the write before it.
+	delete from public.qorpera_folder_path_versions v using public.qorpera_folder_commits c
+	where c.id = v.commit_id and v.environment_id = '70700000-0000-4000-8000-000000000020' and v.path = 'docs/g.md'
+		and c.seq = (v_at ->> 'seq')::bigint and v.unit_no = (v_at ->> 'unit')::integer;
+	perform pg_temp.is(pg_temp.fails(format('select pg_temp.w1a_ask(%L)', b1)), '55006', 'asked again while it runs');
+	perform pg_temp.is(pg_temp.message(format('select pg_temp.w1a_ask(%L)', b1)), 'Block history is being erased; ask again',
+		'its message');
+	perform pg_temp.is((pg_temp.w1a_drain(v_id)).state, 'done', 'drained');
+	r := pg_temp.w1a_ask(b1);
+	if r ->> 'erasureId' is not null or r -> 'roots' -> 0 ->> 'versions' <> '0' then raise exception 'Nothing left after: %', r; end if;
+	-- A member's erasure of the deleted path takes every life, the delete with them.
+	perform pg_temp.w1a_put('w1a-h-01', 'docs/h.md', 'w1a h one');
+	perform pg_temp.w1a_del('w1a-h-02', 'docs/h.md');
+	v_at := pg_temp.w1a_at('docs/h.md');
+	perform pg_temp.w1a_put('w1a-h-03', 'docs/h.md', 'w1a h rewritten');
+	perform pg_temp.w1a_del('w1a-h-04', 'docs/h.md');
+	perform pg_temp.is((pg_temp.w1a_drain((pg_temp.erase(array['docs/h.md'], 'w1a-h-member') ->> 'erasureId')::uuid)).state,
+		'done', 'the member''s erasure drained');
+	r := pg_temp.w1a_ask(pg_temp.w1a_block('docs/h.md', v_at, '95000000-0000-4000-8000-0000000000a6'));
+	if r ->> 'erasureId' is not null or r -> 'roots' -> 0 ->> 'versions' <> '0' then
+		raise exception 'Nothing left after a member''s erasure: %', r; end if;
+end $$;
+
+-- 5. Partners through a renamed folder, added by the wrapper; the member who asked need not erase ---------------------------
 
 do $$
 declare b jsonb; r jsonb; v public.qorpera_folder_erasures%rowtype;
@@ -178,7 +228,38 @@ begin
 	perform pg_temp.is(pg_temp.versions_at('docs/f1')::text, '2', 'the folder''s own history is not the block''s');
 end $$;
 
--- 5. A life that moved on to a live path is another block: left alone, not refused ------------------------------------------
+-- 6. More than 20 paths: a block renamed 21 times, its 21 partners named in one round --------------------------------------
+
+do $$
+declare b jsonb; r jsonb; d jsonb; v public.qorpera_folder_erasures%rowtype;
+begin
+	perform pg_temp.w1a_put('w1a-z-00', 'docs/z00.md', 'w1a z one');
+	for i in 1..21 loop
+		perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w1a-z-' || lpad(i::text, 2, '0'), jsonb_build_array(pg_temp.mv(
+			format('docs/z%s.md', lpad((i - 1)::text, 2, '0')), format('docs/z%s.md', lpad(i::text, 2, '0'))))), 1, 'saved');
+	end loop;
+	perform pg_temp.w1a_del('w1a-z-22', 'docs/z21.md');
+	perform pg_temp.w1a_put('w1a-z-23', 'docs/z21.md', 'w1a z rewritten');
+	b := pg_temp.w1a_block('docs/z21.md', pg_temp.w1a_at('docs/z21.md'), '95000000-0000-4000-8000-0000000000b2');
+	d := pg_temp.detail(format('select public.qorpera_folder_erase(%L, %L, %L, %L)', '70700000-0000-4000-8000-000000000020',
+		jsonb_build_object('kind', 'memtree', 'userId', '70700000-0000-4000-8000-000000000001', 'block', b), '["docs/z21.md"]',
+		pg_temp.w1a_key('qorpera_memory_message_erases', '95000000-0000-4000-8000-0000000000b2', 'docs/z21.md')));
+	perform pg_temp.is(jsonb_array_length(d -> 'add')::text, '21', 'every partner in one round, past the member''s 20');
+	r := pg_temp.w1a_ask(b);
+	perform pg_temp.is(jsonb_array_length(r -> 'roots')::text, '22', 'the block and its 21 old names');
+	update public.qorpera_folder_upload_intents set expires_at = clock_timestamp() - interval '2 days'
+	where profile_id = '70700000-0000-4000-8000-000000000010';
+	for i in 1..60 loop
+		select * into v from public.qorpera_folder_erasures where id = (r ->> 'erasureId')::uuid;
+		exit when v.state <> 'working';
+		perform public.qorpera_folder_erasure_step();
+	end loop;
+	perform pg_temp.is(v.state, 'done', 'drained');
+	perform pg_temp.is((select sum(pg_temp.versions_at(format('docs/z%s.md', lpad(i::text, 2, '0')))) from generate_series(0, 20) i)::text
+		|| pg_temp.versions_at('docs/z21.md'), '02', 'every old name''s history goes; the delete and the rewrite stay');
+end $$;
+
+-- 7. A life that moved on to a live path is another block: left alone, not refused ------------------------------------------
 
 do $$
 declare b jsonb; r jsonb; d jsonb; v_y uuid;
@@ -202,7 +283,7 @@ begin
 	if pg_temp.version('docs/y.md') is distinct from v_y then raise exception 'The live path keeps its version'; end if;
 end $$;
 
--- 6. Every copy named, kept after done -----------------------------------------------------------------------------------------
+-- 8. Every copy named, kept after done -----------------------------------------------------------------------------------------
 
 do $$
 declare r jsonb; v_units jsonb; v public.qorpera_folder_erasures%rowtype;
@@ -222,10 +303,11 @@ begin
 	perform pg_temp.is(v.state || jsonb_array_length(v.reply -> 'copies'), 'done22', 'kept after done');
 end $$;
 
--- 7. No cutoff: every life of a block not live; a live block refused ------------------------------------------------------------
+-- 9. No cutoff: every life of a block not live; a live block, or one restored and renamed to a live path, refused -------------
 
 do $$
 declare r jsonb; v_user uuid := extensions.gen_random_uuid(); v public.qorpera_folder_erasures%rowtype;
+	c_private constant text := 'members/70700000-0000-4000-8000-000000000002/private/w1a.md';
 begin
 	perform pg_temp.w1a_put('w1a-n-01', 'docs/n.md', 'w1a n one');
 	perform pg_temp.w1a_del('w1a-n-02', 'docs/n.md');
@@ -244,9 +326,35 @@ begin
 		pg_temp.w1a_block('docs/l2.md', null, '95000000-0000-4000-8000-0000000000e3'))), '55000', 'a live block');
 	perform pg_temp.is(pg_temp.message(format('select pg_temp.w1a_ask(%L)',
 		pg_temp.w1a_block('docs/l2.md', null, '95000000-0000-4000-8000-0000000000e3'))), 'Block is live again', 'its message');
+	-- Restored and renamed since step 1 deleted it: the same block, live at another path (through one rename, then two).
+	perform pg_temp.w1a_put('w1a-m-01', 'docs/m.md', 'w1a m one');
+	perform pg_temp.w1a_del('w1a-m-02', 'docs/m.md');
+	perform pg_temp.w1a_put('w1a-m-03', 'docs/m.md', 'w1a m restored');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w1a-m-04', jsonb_build_array(pg_temp.mv('docs/m.md', 'docs/m2.md'))), 1, 'saved');
+	perform pg_temp.is(pg_temp.fails(format('select pg_temp.w1a_ask(%L)',
+		pg_temp.w1a_block('docs/m.md', null, '95000000-0000-4000-8000-0000000000e4'))), '55000', 'restored and renamed');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w1a-m-05', jsonb_build_array(pg_temp.mv('docs/m2.md', 'docs/m3.md'))), 1, 'saved');
+	perform pg_temp.is(pg_temp.message(format('select pg_temp.w1a_ask(%L)',
+		pg_temp.w1a_block('docs/m.md', null, '95000000-0000-4000-8000-0000000000e4'))), 'Block is live again', 'and renamed again');
+	-- An older life that moved on to a live path is another tree's block: left alone.
+	perform pg_temp.w1a_put('w1a-o-01', 'docs/o.md', 'w1a o one');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w1a-o-02', jsonb_build_array(pg_temp.mv('docs/o.md', 'docs/o2.md'))), 1, 'saved');
+	perform pg_temp.w1a_put('w1a-o-03', 'docs/o.md', 'w1a o two');
+	perform pg_temp.w1a_del('w1a-o-04', 'docs/o.md');
+	r := pg_temp.w1a_ask(pg_temp.w1a_block('docs/o.md', null, '95000000-0000-4000-8000-0000000000e5'));
+	perform pg_temp.is(r -> 'roots' -> 0 ->> 'versions', '4', 'both lives');
+	v := pg_temp.w1a_drain((r ->> 'erasureId')::uuid);
+	perform pg_temp.is(v.state || pg_temp.versions_at('docs/o.md') || pg_temp.versions_at('docs/o2.md'), 'done01',
+		'every life goes; the live path keeps its history');
+	-- Another member's private path does not stop the platform's request (a member's is refused).
+	perform pg_temp.is(pg_temp.fails(format('select pg_temp.erase(array[%L], %L)', c_private, 'w1a-p-member')), '42501',
+		'a member''s request');
+	r := pg_temp.w1a_ask(pg_temp.w1a_block(c_private, null, '95000000-0000-4000-8000-0000000000e6'));
+	if r ->> 'erasureId' is not null or r -> 'roots' -> 0 ->> 'path' <> c_private then
+		raise exception 'Another member''s private path: %', r; end if;
 end $$;
 
--- 8. No run noted: a member's erasure notes the run that wrote a file; a block-history request does not ---------------------
+-- 10. No run noted: a member's erasure notes the run that wrote a file; a block-history request does not ---------------------
 
 do $$
 declare r jsonb; v_member uuid; v_block uuid; v public.qorpera_folder_erasures%rowtype; v_run uuid := '95000000-0000-4000-8000-0000000000f1';
@@ -279,7 +387,7 @@ begin
 	end if;
 end $$;
 
--- 9. Grants ------------------------------------------------------------------------------------------------------------------
+-- 11. Grants -----------------------------------------------------------------------------------------------------------------
 
 do $$
 declare v_fn regprocedure;
@@ -289,6 +397,9 @@ begin
 		if not has_function_privilege('service_role', v_fn, 'execute') or has_function_privilege('anon', v_fn, 'execute')
 			or has_function_privilege('authenticated', v_fn, 'execute') then raise exception 'Grants of %', v_fn; end if;
 	end loop;
+	v_fn := 'public.qorpera_folder_erasure_moved_live(uuid,text)';
+	if has_function_privilege('service_role', v_fn, 'execute') or has_function_privilege('anon', v_fn, 'execute')
+		or has_function_privilege('authenticated', v_fn, 'execute') then raise exception 'Grants of %', v_fn; end if;
 end $$;
 
 rollback;
