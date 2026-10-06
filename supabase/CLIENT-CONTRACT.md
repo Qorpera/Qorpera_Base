@@ -809,6 +809,34 @@ Built switched off with plan logins. Show none of it while plan logins are switc
   three are null for any other version, so a later save clears them. Show it as "Resumed when <member> turned on
   work while away".
 
+- `qorpera_get_routine_payer(p_routine_id)` and `qorpera_set_routine_login(p_routine_id, p_connection_id)`
+  (20260930095000, folder-v2 routines; the payer never changes without permission). Get answers
+  `{schema: 'qorpera.routine-payer/v1', routineId, routineVersion, status, pauseReason, connectionId,
+  payer: 'member'|'company'|null, payerUserId (null for a company account), savedByUserId (the member the routine
+  runs for), canPay, waitsFor: 'login'|'usage_limit'|'sign_in'|null, since, changedByUserId,
+  changeReason: 'save'|'pick'|null}` to a member who may read the
+  routine's file. `payer` and `connectionId` are null when the routine's binding names no login any more (show no
+  "Paid by" line); `changedByUserId` and `changeReason` are null until a save or a pick has changed the payer, and
+  `since` is then when the routine was made. `canPay` is whether the login can pay now; `waitsFor` says why not:
+  `login` (the routine waits as `needs_model_account` until someone picks one), `usage_limit` (the routine keeps the
+  login, and its runs stop until the limit resets) or `sign_in` (its member must sign in to it again in Settings);
+  null when `canPay`. Show "Paid by <member or the company> since <since>", with that reason, and when `canPay`
+  is false a "Choose a login" control: set picks one of the caller's own
+  logins (the caller becomes the routine's saver; any member who may write the routine's file) or, for an owner or
+  admin, a company account (the saver stays), and answers the same shape. Set never consents a login: bind it for
+  work while away first (the editor's consent-and-bind step), else it answers 22023.
+  A routine that waited runs again. Refusals: 42501 "Routine is unavailable" (not a member who may write the
+  routine's file, or a retired routine), 42501 "This login cannot pay for this routine" (another member's login, or
+  a company account picked by a contributor), 22023 "This login cannot pay for this routine" (a login that cannot
+  pay for work while its member is away now), 22023 "This login has reached its usage limit", 22023 "This login needs
+  a new sign-in", 42501 "A ChatGPT plan cannot pay for a listener" (a plan for a routine with any trigger other than a
+  schedule or a single time, such as a file change), 55000 "Company execution is paused" (the company is stopped or
+  being deleted; nothing changed).
+- Member notification `routine_payer_changed` (subject `qorpera.member-notification.routine-payer-changed/v1`:
+  `routineId, routineVersion, staffAgentId, payer ('member'|'company'), payerUserId, changedByUserId (null when no
+  member made the change), reason ('save'|'pick'), at`): the member whose login paid for a routine before someone else's save or pick moved
+  it. Show "<agent>'s routine no longer runs on your login" with who moved it.
+
 ### The company folder for members (20260928469250_folder_core_member_reads)
 
 Folder-v2 companies only (folder core C4, P27a; `deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md`). Each call

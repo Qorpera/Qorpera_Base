@@ -356,8 +356,9 @@ else here.
   `workers: {due: 'qorpera_folder_workers_due', company: 'qorpera_folder_workers_company', maximum: 32}`,
   `human_tasks: {due: 'qorpera_folder_human_tasks_due', company: 'qorpera_folder_human_tasks_company', maximum: 32}`,
   `machine_events: {due: 'qorpera_folder_machine_events_due', company: 'qorpera_folder_machine_events_company',
-  maximum: 64}` and `coding_checkins: {due: 'qorpera_folder_coding_checkins_due', company:
-  'qorpera_folder_coding_checkins_company', maximum: 32}`;
+  maximum: 64}`, since C1c-3l part 2 `office_wakes: {due: 'qorpera_folder_office_wakes_due',
+  company: 'qorpera_folder_office_wakes_company', maximum: 40}` (C1C §6.18), and `coding_checkins: {due:
+  'qorpera_folder_coding_checkins_due', company: 'qorpera_folder_coding_checkins_company', maximum: 32}` (C3c);
 - two generic actions:
   - `folder_drain_due {orchestratorId, drain, afterEnvironmentId?, limit ≤ 500}` calls `due` with
     `{p_after_environment, p_limit}`;
@@ -368,7 +369,8 @@ else here.
 **The orchestrator** (`CloudFolderDrains` in `packages/runner-orchestrator/src/orchestrator.ts`):
 - `CLOUD_FOLDER_DRAINS` lists the drains in the order they run, each `{name, companyLimit}`: today
   `[{name: 'workers', companyLimit: 32}, {name: 'listen', companyLimit: 32}, {name: 'human_tasks', companyLimit: 32},
-  {name: 'machine_events', companyLimit: 8}, {name: 'coding_checkins', companyLimit: 8}]`;
+  {name: 'machine_events', companyLimit: 8}, {name: 'office_wakes', companyLimit: 16}, {name: 'coding_checkins',
+  companyLimit: 8}]`;
 - each reconcile pass (every 2 s) runs every drain in order, then `CloudFolderRunMaterializer`, so a wake a drain
   admits becomes a run in the same pass;
 - each drain pages through its due list, 100 at a time, and asks for each company in its own request;

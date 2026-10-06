@@ -312,6 +312,19 @@ describe("runner orchestrator boundary", () => {
 		assert.throws(() =>
 			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "machine_events", environmentId, limit: 65 }),
 		);
+		// C1c-3l part 2's office wakes: at most 40 waiters of one company per request (a subtransaction each).
+		assert.deepEqual(FOLDER_DRAINS.office_wakes, {
+			due: "qorpera_folder_office_wakes_due",
+			company: "qorpera_folder_office_wakes_company",
+			maximum: 40,
+		});
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "office_wakes", environmentId, limit: 40 }),
+			{ action: "folder_drain_company", orchestratorId, drain: "office_wakes", environmentId, limit: 40 },
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({ action: "folder_drain_company", orchestratorId, drain: "office_wakes", environmentId, limit: 41 }),
+		);
 		// A quiet coding session's check-in (C3c): its own RPCs, at most 32 sessions a step.
 		assert.deepEqual(FOLDER_DRAINS.coding_checkins, {
 			due: "qorpera_folder_coding_checkins_due",

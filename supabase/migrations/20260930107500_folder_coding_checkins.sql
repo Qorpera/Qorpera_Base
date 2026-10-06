@@ -16,7 +16,7 @@
 --   or with a continuation pending, asks nothing yet. One continuation of a parent at a time, as F2's revivals.
 -- * F2's cancel refuses a question's run once the session has a new turn since it was asked (55000), as archive does
 --   (C3b) and the legacy cancel did.
--- Every patched or new body carries the marker 20260930099000.
+-- Every patched or new body carries the marker 20260930107500.
 
 set local lock_timeout = '3s';
 
@@ -34,7 +34,7 @@ end $$;
 select pg_temp.c3c_replace('public.qorpera_folder_parent_continuation(uuid,text)',
 	$old$	if v_status = 'cancelled' or public.qorpera_machine_revival_stopped(v_run.id) then return 'stopped'; end if;$old$,
 	$new$	if v_status = 'cancelled' or (case when p_source_kind = 'worker-completion' then public.qorpera_worker_revival_stopped(v_run.id)
-		else public.qorpera_machine_revival_stopped(v_run.id) end) then return 'stopped'; end if; -- 20260930099000 (C3c)$new$);
+		else public.qorpera_machine_revival_stopped(v_run.id) end) then return 'stopped'; end if; -- 20260930107500 (C3c)$new$);
 
 -- 2. The check-ins drain -------------------------------------------------------------------------------------------------
 
@@ -44,7 +44,7 @@ select pg_temp.c3c_replace('public.qorpera_folder_parent_continuation(uuid,text)
 create function public.qorpera_folder_coding_checkin_due(p_session public.qorpera_coding_sessions,
 	p_worker public.qorpera_runtime_workers)
 returns boolean language sql stable security definer set search_path = '' as $$
-	-- 20260930099000 (C3c).
+	-- 20260930107500 (C3c).
 	select coalesce(p_session.archived_at is null and p_worker.id = p_session.worker_id and p_worker.state <> 'active'
 		and p_worker.completion_state <> 'waiting' and p_worker.steering_run_id is not null
 		and public.qorpera_coding_quiet_mark(greatest(p_session.updated_at, coalesce(p_session.busy_at, p_session.updated_at))) is not null
@@ -60,7 +60,7 @@ create function public.qorpera_folder_coding_checkins_due(p_after_environment uu
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_environments uuid[];
 begin
-	-- 20260930099000 (C3c).
+	-- 20260930107500 (C3c).
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Folder core authority is required' using errcode = '42501'; end if;
 	if p_limit is null or p_limit not between 1 and 500 then
@@ -97,7 +97,7 @@ declare
 	v_wake public.qorpera_wake_occurrences%rowtype;
 	v_asked integer := 0; v_suppressed integer := 0; v_undeliverable integer := 0; v_error text;
 begin
-	-- 20260930099000 (C3c).
+	-- 20260930107500 (C3c).
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Folder core authority is required' using errcode = '42501'; end if;
 	if current_setting('transaction_isolation') <> 'read committed' then
@@ -266,6 +266,6 @@ grant execute on function public.qorpera_folder_coding_checkins_due(uuid, intege
 
 select pg_temp.c3c_replace('public.qorpera_folder_cancel_agent_worker(jsonb,jsonb)',
 	$old$	perform public.qorpera_cancel_worker(v_worker, v_run.id, 'parent_cancelled');$old$,
-	$new$	if public.qorpera_coding_question_stale(v_run.id, v_worker) then -- 20260930099000 (C3c)
+	$new$	if public.qorpera_coding_question_stale(v_run.id, v_worker) then -- 20260930107500 (C3c)
 		raise exception 'The session has a new turn since you were asked; leave it' using errcode = '55000'; end if;
 	perform public.qorpera_cancel_worker(v_worker, v_run.id, 'parent_cancelled');$new$);

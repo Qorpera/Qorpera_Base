@@ -49,6 +49,16 @@ export const ErrorCode = {
 	viewClosed: "VIEW_CLOSED",
 	/** The view, its pass or the calling machine did not match. */
 	viewRefused: "VIEW_REFUSED",
+	// Writes (protocol 2): what a program on the machine sees as EEXIST, ENOTEMPTY, EPERM, EFBIG and EROFS.
+	exists: "EXISTS",
+	notEmpty: "NOT_EMPTY",
+	notPermitted: "NOT_PERMITTED",
+	tooLarge: "TOO_LARGE",
+	readOnly: "READ_ONLY",
+	/** EXDEV: a published path cannot go where nothing is published (a trash folder); a file manager then deletes. */
+	notHere: "NOT_HERE",
+	/** EBUSY: the change needed what was pending published first, and that could not be done now. */
+	busy: "BUSY",
 } as const;
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
 

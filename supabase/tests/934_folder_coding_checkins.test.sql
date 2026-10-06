@@ -1,5 +1,5 @@
 -- @fixture 928_folder_coding_dispatch.test.sql until "-- 1. The refusals"
--- C3c (migration 20260930099000, deploy/first-node/RUNTIME-COMPANY-FOLDER-LISTENER.md §9): the quiet coding check-ins on
+-- C3c (migration 20260930107500, deploy/first-node/RUNTIME-COMPANY-FOLDER-LISTENER.md §9): the quiet coding check-ins on
 -- folder-v2, the shared drains' `coding_checkins`. After 1, 3 and 7 quiet days the agent that started a session is asked
 -- once per mark, in 349850's words and report shape, as a worker-completion continuation of its run. Nothing is asked
 -- while the parent runs; one question of a parent at a time, longest quiet first; a worker retired or erased (before the
@@ -362,7 +362,7 @@ begin
 				'public.qorpera_folder_coding_checkin_due(public.qorpera_coding_sessions,public.qorpera_runtime_workers)', 'execute'),
 			'grants for ' || v_role);
 	end loop;
-	perform pg_temp.base_assert(pg_get_functiondef(p) like '%20260930099000%', 'the marker in ' || p::text)
+	perform pg_temp.base_assert(pg_get_functiondef(p) like '%20260930107500%', 'the marker in ' || p::text)
 	from unnest(array['public.qorpera_folder_parent_continuation(uuid,text)',
 		'public.qorpera_folder_coding_checkin_due(public.qorpera_coding_sessions,public.qorpera_runtime_workers)',
 		'public.qorpera_folder_coding_checkins_due(uuid,integer)', 'public.qorpera_folder_coding_checkins_company(uuid,integer)',
