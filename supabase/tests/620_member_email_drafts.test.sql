@@ -1,230 +1,167 @@
--- @fixture 150_runner_orchestrator.test.sql until "select public.qorpera_configure_session_execution("
-select public.qorpera_configure_session_execution(
- '15000000-0000-4000-8000-000000000055',
- (current_setting('qorpera_test.sponsor')::jsonb ->> 'binding_id')::uuid, 1,
- '15000000-0000-4000-8000-000000000080','agent_turn','agent_turn','automatic',null,'{}');
-reset role;
+-- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
+-- A member-reviewed email draft in an agent's thread on folder-v2 reaches Gmail only through its one-use capability and
+-- an authenticated broker (20260925126000): a browser cannot fabricate a "sent" answer; a second send is refused while
+-- one is pending, and a claimed action never executes twice; a wrong capability is refused; an expired ticket never
+-- executes, even after a newer action replaced it; an ambiguous outcome (an unconfirmed receipt, or a broker lost after
+-- its claim) locks the draft and is never retried (ported from snapshot-v1 in the legacy sweep). 662 §5 covers the sent
+-- email's answer reaching the agent. scripts/test-email-draft-e2e.mjs seeds from this file up to the first one-line
+-- jsonb do block below (its marker) and drives card …003 through the real client, broker and Gmail adapters.
+create function pg_temp.ed_card(p_binding jsonb, p_event uuid) returns jsonb language sql as $$
+	select public.qorpera_append_native_interaction_request((p_binding ->> 'leaseId')::uuid, (p_binding ->> 'runId')::uuid,
+		(p_binding ->> 'jobId')::uuid, (p_binding ->> 'runnerId')::uuid, (p_binding ->> 'assignmentId')::uuid,
+		(p_binding ->> 'credentialCapsuleId')::uuid, (p_binding ->> 'computeIdentityId')::uuid, 'openai', 'codex-cli', p_event,
+		'{"schema":"qorpera.interaction/v1","surface":"draft","title":"New email","payload":{"platform":"email","connectorId":"gmail","from":"sender@example.test","to":["before@example.test"],"subject":"Before","body":"Before"}}')
+$$;
+-- The owner's action on a card in Bob's thread, on the owner's sponsor.
+create function pg_temp.ed_prepare(p_interaction uuid, p_action uuid, p_kind text, p_ticket text) returns jsonb language sql as $$
+	select public.qorpera_prepare_email_draft_action(current_setting('qorpera_test.ed_thread')::uuid, p_interaction, p_action, p_kind,
+		'{"to":["edited@example.test"],"cc":[],"subject":"Edited","body":"Edited body"}', p_ticket,
+		(current_setting('qorpera_test.base_sponsor')::jsonb ->> 'binding_id')::uuid, 1)
+$$;
+create function pg_temp.ed_claim(p_action uuid, p_ticket text) returns jsonb language sql as $$
+	select public.qorpera_claim_email_draft_action('62000000-0000-4000-8000-000000000001', repeat('a', 64), p_action, p_ticket)
+$$;
+create function pg_temp.ed_finish(p_action uuid, p_ticket text, p_result jsonb) returns jsonb language sql as $$
+	select public.qorpera_finish_email_draft_action('62000000-0000-4000-8000-000000000001', repeat('a', 64), p_action, p_ticket, p_result)
+$$;
+
+select set_config('qorpera_test.ed_thread', (select session_id::text from public.qorpera_company_rooms
+	where id = pg_temp.base_thread('92400000-0000-4000-8000-000000000031')), true) \g /dev/null
+
+-- The company's Gmail account in the vault, its broker, and Bob's grants for every Gmail operation.
 insert into public.qorpera_cloud_secret_broker_authorities(id,profile_id,service_origin,key_id,capability_sha256)
-values('62000000-0000-4000-8000-000000000001','15000000-0000-4000-8000-000000000010','https://broker.example.test','test',repeat('a',64));
+values('62000000-0000-4000-8000-000000000001','92400000-0000-4000-8000-000000000010','https://broker.example.test','test',repeat('a',64));
 insert into public.qorpera_cloud_secrets(id,profile_id,environment_id,broker_authority_id,owner_kind,connector_id,secret_name,purpose,current_version,created_by_user_id,account_label)
-values('62000000-0000-4000-8000-000000000002','15000000-0000-4000-8000-000000000010','15000000-0000-4000-8000-000000000020','62000000-0000-4000-8000-000000000001','company','gmail','primary','Email',1,'15000000-0000-4000-8000-000000000001','sender@example.test');
+values('62000000-0000-4000-8000-000000000002','92400000-0000-4000-8000-000000000010','92400000-0000-4000-8000-000000000020','62000000-0000-4000-8000-000000000001','company','gmail','primary','Email',1,'92400000-0000-4000-8000-000000000001','sender@example.test');
 insert into public.qorpera_cloud_secret_versions(secret_id,version,broker_authority_id,key_id,encrypted_envelope,envelope_sha256,created_by_user_id)
-values('62000000-0000-4000-8000-000000000002',1,'62000000-0000-4000-8000-000000000001','test',decode('abcd','hex'),repeat('b',64),'15000000-0000-4000-8000-000000000001');
+values('62000000-0000-4000-8000-000000000002',1,'62000000-0000-4000-8000-000000000001','test',decode('abcd','hex'),repeat('b',64),'92400000-0000-4000-8000-000000000001');
 insert into public.qorpera_cloud_secret_operation_grants(profile_id,environment_id,secret_id,staff_agent_id,connector_id,operation_id,operation_version,tool_name,issued_by_user_id)
-select '15000000-0000-4000-8000-000000000010','15000000-0000-4000-8000-000000000020','62000000-0000-4000-8000-000000000002','15000000-0000-4000-8000-000000000054','gmail',operation_id,version,tool_name,'15000000-0000-4000-8000-000000000001'
+select '92400000-0000-4000-8000-000000000010','92400000-0000-4000-8000-000000000020','62000000-0000-4000-8000-000000000002','92400000-0000-4000-8000-000000000031','gmail',operation_id,version,tool_name,'92400000-0000-4000-8000-000000000001'
 from public.qorpera_cloud_connector_operations where connector_id='gmail' and status='active';
-insert into public.qorpera_session_events(session_id,sequence,event_id,event_type,actor_user_id,body,event_hash,created_at)
-values('15000000-0000-4000-8000-000000000055',2,'62000000-0000-4000-8000-000000000003','interaction_request','15000000-0000-4000-8000-000000000001',
-'{"entry":{"data":{"schema":"qorpera.interaction/v1","surface":"draft","title":"New email","payload":{"platform":"email","connectorId":"gmail","from":"sender@example.test","to":["before@example.test"],"subject":"Before","body":"Before"}}}}',repeat('c',64),statement_timestamp());
-select set_config('request.jwt.claims','{"sub":"15000000-0000-4000-8000-000000000001","role":"authenticated"}',false);
-set role authenticated;
+
+-- The owner's post in Bob's thread becomes a run, which raises four email drafts for the owner.
+do $$
+declare v_post jsonb; v_run uuid; v_binding jsonb; v_card text;
+begin
+	v_post := pg_temp.base_post('92400000-0000-4000-8000-000000000001', '92400000-0000-4000-8000-000000000031',
+		'Bob, draft the moving emails.');
+	perform pg_temp.base_materialize();
+	select run_id into strict v_run from public.qorpera_wake_occurrences where id = (v_post ->> 0)::uuid;
+	perform pg_temp.base_assert(v_run is not null, 'the post is a run');
+	v_binding := pg_temp.base_start(v_run);
+	foreach v_card in array array['003', '012', '020', '040'] loop
+		perform pg_temp.ed_card(v_binding, ('62000000-0000-4000-8000-000000000' || v_card)::uuid);
+	end loop;
+	-- The e2e harness finds the owner's sponsor by its client binding id.
+	perform pg_temp.base_assert((select id from public.qorpera_execution_sponsor_bindings
+		where profile_id = '92400000-0000-4000-8000-000000000010' and client_binding_id = '92400000-0000-4000-8000-000000000061')
+		= (current_setting('qorpera_test.base_sponsor')::jsonb ->> 'binding_id')::uuid, 'the owner''s sponsor has its client binding id');
+end
+$$;
+
+-- A browser cannot fabricate a "sent" answer; a second send is refused while one is pending.
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+set local role authenticated;
 do $$ declare v jsonb; begin
- v:=public.qorpera_get_email_draft('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000003');
- if v->>'from'<>'sender@example.test' or v->>'status'<>'ready' then raise exception 'wrong initial state %',v; end if;
- begin
-  perform public.qorpera_answer_interaction('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000011','62000000-0000-4000-8000-000000000003','sent','{}');
-  raise exception 'fabricated sent accepted';
- exception when insufficient_privilege then null; end;
- v:=public.qorpera_prepare_email_draft_action('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000003','62000000-0000-4000-8000-000000000004','send','{"to":["edited@example.test"],"cc":[],"subject":"Edited","body":"Edited body"}',repeat('d',64));
- if v->>'status'<>'sending' then raise exception 'not pending %',v; end if;
- begin
-  perform public.qorpera_prepare_email_draft_action('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000003','62000000-0000-4000-8000-000000000005','send','{"to":["edited@example.test"],"cc":[],"subject":"Edited","body":"Edited body"}',repeat('e',64));
-  raise exception 'concurrent send accepted';
- exception when object_not_in_prerequisite_state then null; end;
+	v := public.qorpera_get_email_draft(current_setting('qorpera_test.ed_thread')::uuid, '62000000-0000-4000-8000-000000000003');
+	perform pg_temp.base_assert(v ->> 'from' = 'sender@example.test' and v ->> 'status' = 'ready', 'wrong initial state ' || v::text);
+	perform pg_temp.base_error(format('select public.qorpera_answer_interaction(%L, %L, %L, %L, %L, %L, 1)',
+		current_setting('qorpera_test.ed_thread'), '62000000-0000-4000-8000-000000000011', '62000000-0000-4000-8000-000000000003',
+		'sent', '{}', current_setting('qorpera_test.base_sponsor')::jsonb ->> 'binding_id'),
+		'42501', 'Gmail completion requires a provider receipt');
+	v := pg_temp.ed_prepare('62000000-0000-4000-8000-000000000003', '62000000-0000-4000-8000-000000000004', 'send', repeat('d', 64));
+	perform pg_temp.base_assert(v ->> 'status' = 'sending', 'not pending ' || v::text);
+	perform pg_temp.base_error(format('select pg_temp.ed_prepare(%L, %L, %L, %L)', '62000000-0000-4000-8000-000000000003',
+		'62000000-0000-4000-8000-000000000005', 'send', repeat('e', 64)), '55000', 'email action already in progress or finished');
 end $$;
+reset role;
+
+-- The broker: a wrong capability is refused, and a claimed send never executes twice.
+set session authorization qorpera_secret_broker;
+do $$
+declare v jsonb;
+begin
+	perform pg_temp.base_error(format('select pg_temp.ed_claim(%L, %L)', '62000000-0000-4000-8000-000000000004', repeat('e', 64)),
+		'42501', 'email action unavailable');
+	v := pg_temp.ed_claim('62000000-0000-4000-8000-000000000004', repeat('d', 64));
+	perform pg_temp.base_assert(v -> 'execute' = 'true'::jsonb and v #>> '{content,body}' = 'Edited body', 'wrong claim ' || v::text);
+	v := pg_temp.ed_claim('62000000-0000-4000-8000-000000000004', repeat('d', 64));
+	perform pg_temp.base_assert(v -> 'execute' = 'false'::jsonb and not (v ? 'encryptedEnvelopeBase64'), 'second send allowed ' || v::text);
+end
+$$;
+reset session authorization;
+
+-- An expired ticket never executes, even after a newer action replaced it.
+set local role authenticated;
+select pg_temp.ed_prepare('62000000-0000-4000-8000-000000000012', '62000000-0000-4000-8000-000000000013', 'save', repeat('1', 64))
+\g /dev/null
+reset role;
+update public.qorpera_member_email_actions set expires_at = statement_timestamp() - interval '1 minute'
+where id = '62000000-0000-4000-8000-000000000013';
+set session authorization qorpera_secret_broker;
+do $$
+declare v jsonb := pg_temp.ed_claim('62000000-0000-4000-8000-000000000013', repeat('1', 64));
+begin
+	perform pg_temp.base_assert(v -> 'execute' = 'false'::jsonb and v #>> '{state,status}' = 'ready' and v #>> '{state,phase}' = 'failed',
+		'expired pending action unsafe ' || v::text);
+end
+$$;
+reset session authorization;
+set local role authenticated;
+select pg_temp.ed_prepare('62000000-0000-4000-8000-000000000012', '62000000-0000-4000-8000-000000000014', 'save', repeat('2', 64))
+\g /dev/null
+select pg_temp.base_error(format('select pg_temp.ed_prepare(%L, %L, %L, %L)', '62000000-0000-4000-8000-000000000012',
+	'62000000-0000-4000-8000-000000000013', 'save', repeat('1', 64)), '55000', 'email action superseded; refresh the card');
 reset role;
 set session authorization qorpera_secret_broker;
-do $$ declare v jsonb; begin
- begin
-  perform public.qorpera_claim_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000004',repeat('e',64));
-  raise exception 'bad capability accepted';
- exception when insufficient_privilege then null; end;
- v:=public.qorpera_claim_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000004',repeat('d',64));
- if v->'execute'<>'true'::jsonb or v#>>'{content,body}'<>'Edited body' then raise exception 'wrong claim %',v; end if;
- v:=public.qorpera_claim_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000004',repeat('d',64));
- if v->'execute'<>'false'::jsonb or v?'encryptedEnvelopeBase64' then raise exception 'second send allowed %',v; end if;
- v:=public.qorpera_finish_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000004',repeat('d',64),'{"message_id":"gmail1"}');
- if v->>'status'<>'sent' or v->>'messageId'<>'gmail1' then raise exception 'wrong sent receipt %',v; end if;
- v:=public.qorpera_finish_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000004',repeat('d',64),'{"message_id":"gmail1"}');
-end $$;
+select pg_temp.base_error(format('select pg_temp.ed_claim(%L, %L)', '62000000-0000-4000-8000-000000000013', repeat('1', 64)),
+	'55000', 'email action superseded');
 reset session authorization;
-do $$ begin
- if (select count(*) from public.qorpera_session_inputs where body->>'interactionId'='62000000-0000-4000-8000-000000000003')<>1
-  or not exists(select 1 from public.qorpera_session_inputs where body#>>'{answer,content,body}'='Edited body' and body#>>'{answer,messageId}'='gmail1') then raise exception 'truthful terminal answer missing'; end if;
-end $$;
--- Another member can read a company card, but cannot send it on its owner's behalf.
-select set_config('request.jwt.claims','{"sub":"15000000-0000-4000-8000-000000000002","role":"authenticated"}',false);
-set role authenticated;
-do $$ declare v jsonb; begin
- v:=public.qorpera_get_email_draft('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000003');
- if v->>'status'<>'sent' then raise exception 'reader cannot see receipt'; end if;
- begin
-  perform public.qorpera_prepare_email_draft_action('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000003','62000000-0000-4000-8000-000000000005','send','{"to":["edited@example.test"],"cc":[],"subject":"Edited","body":"Edited body"}',repeat('e',64));
-  raise exception 'other member send accepted';
- exception when insufficient_privilege then null; end;
-end $$;
-reset role;
--- A saved draft can be edited and sent; an expired ticket is never executed.
-insert into public.qorpera_session_events(session_id,sequence,event_id,event_type,actor_user_id,body,event_hash,created_at)
-select session_id,3,'62000000-0000-4000-8000-000000000012','interaction_request',actor_user_id,body,repeat('e',64),created_at
-from public.qorpera_session_events where event_id='62000000-0000-4000-8000-000000000003';
-select set_config('request.jwt.claims','{"sub":"15000000-0000-4000-8000-000000000001","role":"authenticated"}',false);
-set role authenticated;
-select public.qorpera_prepare_email_draft_action('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000012','62000000-0000-4000-8000-000000000013','save','{"to":["save@example.test"],"cc":[],"subject":"Saved","body":"Saved"}',repeat('1',64));
-reset role;
-update public.qorpera_member_email_actions set expires_at=statement_timestamp()-interval '1 minute' where id='62000000-0000-4000-8000-000000000013';
--- A fresh tab has no capability to post. Reading alone must recover an
--- expired action that the broker never claimed, without unlocking execution.
-set role authenticated;
-do $$ declare v jsonb; begin
- v:=public.qorpera_get_email_draft('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000012');
- if v->>'status'<>'ready' or v->>'phase'<>'failed' or v->>'error' is null then raise exception 'lost pending capability left draft locked %',v; end if;
-end $$;
+
+-- An unconfirmed receipt locks the draft: the send is never retried.
+set local role authenticated;
+select pg_temp.ed_prepare('62000000-0000-4000-8000-000000000020', '62000000-0000-4000-8000-000000000015', 'send', repeat('3', 64))
+\g /dev/null
 reset role;
 set session authorization qorpera_secret_broker;
-do $$ declare v jsonb; begin
- v:=public.qorpera_claim_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000013',repeat('1',64));
- if v->'execute'<>'false'::jsonb or v#>>'{state,status}'<>'ready' or v#>>'{state,phase}'<>'failed' then raise exception 'expired pending action unsafe %',v; end if;
-end $$;
+do $$
+declare v jsonb;
+begin
+	v := pg_temp.ed_claim('62000000-0000-4000-8000-000000000015', repeat('3', 64));
+	perform pg_temp.base_assert(v -> 'execute' = 'true'::jsonb, 'the send was not claimed ' || v::text);
+	v := pg_temp.ed_finish('62000000-0000-4000-8000-000000000015', repeat('3', 64), '{"status":"unconfirmed"}');
+	perform pg_temp.base_assert(v ->> 'status' = 'unconfirmed', 'uncertainty hidden ' || v::text);
+end
+$$;
 reset session authorization;
-set role authenticated;
-select public.qorpera_prepare_email_draft_action('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000012','62000000-0000-4000-8000-000000000014','save','{"to":["save@example.test"],"cc":[],"subject":"Saved","body":"Saved"}',repeat('2',64));
-do $$ begin
- begin
-  perform public.qorpera_prepare_email_draft_action('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000012','62000000-0000-4000-8000-000000000013','save','{"to":["save@example.test"],"cc":[],"subject":"Saved","body":"Saved"}',repeat('1',64));
-  raise exception 'old ticket returned a new capability target';
- exception when object_not_in_prerequisite_state then null; end;
-end $$;
+set local role authenticated;
+select pg_temp.base_error(format('select pg_temp.ed_prepare(%L, %L, %L, %L)', '62000000-0000-4000-8000-000000000020',
+	'62000000-0000-4000-8000-000000000016', 'send', repeat('4', 64)), '55000', 'email action already in progress or finished');
+reset role;
+
+-- A broker lost after its claim leaves the send unconfirmed: no new send, and a replayed claim never executes.
+set local role authenticated;
+select pg_temp.ed_prepare('62000000-0000-4000-8000-000000000040', '62000000-0000-4000-8000-000000000041', 'send', repeat('7', 64))
+\g /dev/null
 reset role;
 set session authorization qorpera_secret_broker;
-do $$ begin
- begin
-  perform public.qorpera_claim_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000013',repeat('1',64));
-  raise exception 'expired capability executed after recovery';
- exception when object_not_in_prerequisite_state then null; end;
-end $$;
-select public.qorpera_claim_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000014',repeat('2',64));
-select public.qorpera_finish_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000014',repeat('2',64),'{"draft_id":"draft1"}');
+select pg_temp.base_assert(pg_temp.ed_claim('62000000-0000-4000-8000-000000000041', repeat('7', 64)) -> 'execute' = 'true'::jsonb,
+	'crash fixture was not claimed');
 reset session authorization;
-set role authenticated;
-select public.qorpera_prepare_email_draft_action('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000012','62000000-0000-4000-8000-000000000017','send','{"to":["new@example.test"],"cc":[],"subject":"New","body":"New edits"}',repeat('9',64));
-reset role;
-update public.qorpera_member_email_actions set expires_at=statement_timestamp()-interval '1 minute' where id='62000000-0000-4000-8000-000000000017';
-set role authenticated;
-do $$ declare v jsonb; begin
- v:=public.qorpera_get_email_draft('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000012');
- if v->>'status'<>'saved' or v->>'draftId'<>'draft1' or v->>'phase'<>'failed' then raise exception 'expired pending action lost saved draft %',v; end if;
-end $$;
-reset role;
-set role authenticated;
-select public.qorpera_prepare_email_draft_action('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000012','62000000-0000-4000-8000-000000000015','send','{"to":["new@example.test"],"cc":[],"subject":"New","body":"New edits"}',repeat('3',64));
+update public.qorpera_member_email_actions set expires_at = statement_timestamp() - interval '1 minute'
+where id = '62000000-0000-4000-8000-000000000041';
+set local role authenticated;
+select pg_temp.base_error(format('select pg_temp.ed_prepare(%L, %L, %L, %L)', '62000000-0000-4000-8000-000000000040',
+	'62000000-0000-4000-8000-000000000042', 'send', repeat('8', 64)), '55000', 'email action already in progress or finished');
 reset role;
 set session authorization qorpera_secret_broker;
-do $$ declare v jsonb; begin
- v:=public.qorpera_claim_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000015',repeat('3',64));
- if v->>'draftId'<>'draft1' or v#>>'{content,body}'<>'New edits' then raise exception 'saved draft did not bind latest edits'; end if;
- v:=public.qorpera_finish_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000015',repeat('3',64),'{"status":"unconfirmed"}');
- if v->>'status'<>'unconfirmed' then raise exception 'uncertainty hidden'; end if;
- begin
-  perform public.qorpera_finish_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000014',repeat('2',64),'{"draft_id":"draft1"}');
-  raise exception 'stale save overwrote subsequent send';
- exception when object_not_in_prerequisite_state then null; end;
-end $$;
+do $$
+declare v jsonb := pg_temp.ed_claim('62000000-0000-4000-8000-000000000041', repeat('7', 64));
+begin
+	perform pg_temp.base_assert(v -> 'execute' = 'false'::jsonb and v #>> '{state,status}' = 'unconfirmed'
+		and not (v ? 'encryptedEnvelopeBase64'), 'expired claim replay can resend ' || v::text);
+end
+$$;
 reset session authorization;
-set role authenticated;
-do $$ begin
- begin
-  perform public.qorpera_prepare_email_draft_action('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000012','62000000-0000-4000-8000-000000000016','send','{"to":["new@example.test"],"cc":[],"subject":"New","body":"New edits"}',repeat('4',64));
-  raise exception 'ambiguous send retried';
- exception when object_not_in_prerequisite_state then null; end;
-end $$;
-reset role;
--- A Gmail success survives temporary wake/sponsor failure. Replaying the
--- provider receipt later publishes the answer without claiming Gmail again.
-insert into public.qorpera_session_events(session_id,sequence,event_id,event_type,actor_user_id,body,event_hash,created_at)
-select session_id,4,'62000000-0000-4000-8000-000000000020','interaction_request',actor_user_id,body,repeat('f',64),created_at
-from public.qorpera_session_events where event_id='62000000-0000-4000-8000-000000000003';
-create temp table email_test_binding as select * from public.qorpera_session_execution_bindings where session_id='15000000-0000-4000-8000-000000000055';
-delete from public.qorpera_session_execution_bindings where session_id='15000000-0000-4000-8000-000000000055';
-set role authenticated;
-select public.qorpera_prepare_email_draft_action('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000020','62000000-0000-4000-8000-000000000021','send','{"to":["new@example.test"],"cc":[],"subject":"New","body":"New edits"}',repeat('5',64));
-reset role;
-set session authorization qorpera_secret_broker;
-select public.qorpera_claim_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000021',repeat('5',64));
-do $$ declare v jsonb; begin
- v:=public.qorpera_finish_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000021',repeat('5',64),'{"message_id":"gmail2"}');
- if v->>'status'<>'sent' or v->'notificationPending'<>'true'::jsonb then raise exception 'wake failure lost provider success %',v; end if;
-end $$;
-reset session authorization;
-insert into public.qorpera_session_execution_bindings select * from email_test_binding;
-set session authorization qorpera_secret_broker;
-do $$ declare v jsonb; begin
- v:=public.qorpera_claim_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000021',repeat('5',64));
- if v->'execute'<>'false'::jsonb or v#>'{state,notificationPending}'<>'false'::jsonb or v#>>'{state,status}'<>'sent' then raise exception 'wake retry resent or did not deliver %',v; end if;
-end $$;
-reset session authorization;
--- In an agent's shared thread, the card's requester owns it, even when the
--- conversation was created by another member. Edits do not block Discard.
-update public.qorpera_company_rooms set bound_staff_agent_id=null,source_path_version='62000000-0000-4000-8000-000000000031',source_snapshot_id='15000000-0000-4000-8000-000000000040',source_file_sha256=repeat('f',64)
-where profile_id='15000000-0000-4000-8000-000000000010' and bound_staff_agent_id='15000000-0000-4000-8000-000000000054';
-insert into public.qorpera_company_rooms(id,profile_id,environment_id,room_key,name,purpose,status,session_id,version,source_path,source_path_version,source_snapshot_id,source_file_sha256,created_by_user_id,bound_staff_agent_id)
-values('62000000-0000-4000-8000-000000000030','15000000-0000-4000-8000-000000000010','15000000-0000-4000-8000-000000000020','agent-email','Email agent','Draft review','active','15000000-0000-4000-8000-000000000055',1,'organization/rooms/agent-email.json','62000000-0000-4000-8000-000000000031','15000000-0000-4000-8000-000000000040',repeat('f',64),'15000000-0000-4000-8000-000000000001','15000000-0000-4000-8000-000000000054');
-insert into public.qorpera_company_room_members(room_id,principal_kind,principal_id,status,source_path_version)
-values('62000000-0000-4000-8000-000000000030','member','15000000-0000-4000-8000-000000000002','active','62000000-0000-4000-8000-000000000031');
-insert into public.qorpera_session_events(session_id,sequence,event_id,event_type,actor_user_id,body,event_hash,created_at)
-select session_id,5,'62000000-0000-4000-8000-000000000032','interaction_request','15000000-0000-4000-8000-000000000002',body,repeat('e',64),created_at
-from public.qorpera_session_events where event_id='62000000-0000-4000-8000-000000000003';
-set role authenticated;
-do $$ begin
- begin
-  perform public.qorpera_prepare_email_draft_action('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000032','62000000-0000-4000-8000-000000000033','discard','{"to":[],"cc":[],"subject":"Edited before discard","body":""}',repeat('6',64));
-  raise exception 'thread creator answered another members card';
- exception when insufficient_privilege then null; end;
-end $$;
-reset role;
-select set_config('request.jwt.claims','{"sub":"15000000-0000-4000-8000-000000000002","role":"authenticated"}',false);
-set role authenticated;
-select public.qorpera_prepare_email_draft_action('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000032','62000000-0000-4000-8000-000000000033','discard','{"to":[],"cc":[],"subject":"Edited before discard","body":""}',repeat('6',64));
-reset role;
-set session authorization qorpera_secret_broker;
-do $$ declare v jsonb; begin
- v:=public.qorpera_claim_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000033',repeat('6',64));
- if v->'execute'<>'true'::jsonb or v->>'action'<>'discard' then raise exception 'contributor requester cannot discard %',v; end if;
- v:=public.qorpera_finish_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000033',repeat('6',64),'{"deleted":true}');
- if v->>'status'<>'discarded' then raise exception 'discard not confirmed'; end if;
-end $$;
-reset session authorization;
--- A broker crash after claim cannot leave Sending visible forever or unlock a
--- second send. A late, authenticated provider receipt can still resolve it.
-insert into public.qorpera_session_events(session_id,sequence,event_id,event_type,actor_user_id,body,event_hash,created_at)
-select session_id,6,'62000000-0000-4000-8000-000000000040','interaction_request','15000000-0000-4000-8000-000000000002',body,repeat('d',64),created_at
-from public.qorpera_session_events where event_id='62000000-0000-4000-8000-000000000003';
-set role authenticated;
-select public.qorpera_prepare_email_draft_action('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000040','62000000-0000-4000-8000-000000000041','send','{"to":["new@example.test"],"cc":[],"subject":"Crash regression","body":"Exact body"}',repeat('7',64));
-reset role;
-set session authorization qorpera_secret_broker;
-do $$ declare v jsonb; begin
- v:=public.qorpera_claim_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000041',repeat('7',64));
- if v->'execute'<>'true'::jsonb then raise exception 'crash fixture was not claimed'; end if;
-end $$;
-reset session authorization;
-update public.qorpera_member_email_actions set expires_at=statement_timestamp()-interval '1 minute' where id='62000000-0000-4000-8000-000000000041';
-set role authenticated;
-do $$ declare v jsonb; begin
- v:=public.qorpera_get_email_draft('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000040');
- if v->>'status'<>'unconfirmed' or v->>'phase'<>'unconfirmed' or v->>'error' is null then raise exception 'crashed send still looks active %',v; end if;
- begin
-  perform public.qorpera_prepare_email_draft_action('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000040','62000000-0000-4000-8000-000000000042','send','{"to":["new@example.test"],"cc":[],"subject":"Crash regression","body":"Exact body"}',repeat('8',64));
-  raise exception 'expired execution allowed a new send';
- exception when object_not_in_prerequisite_state then null; end;
-end $$;
-reset role;
-set session authorization qorpera_secret_broker;
-do $$ declare v jsonb; begin
- v:=public.qorpera_claim_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000041',repeat('7',64));
- if v->'execute'<>'false'::jsonb or v#>>'{state,status}'<>'unconfirmed' or v?'encryptedEnvelopeBase64' then raise exception 'expired claim replay can resend %',v; end if;
- v:=public.qorpera_finish_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000041',repeat('7',64),'{"message_id":"late-receipt"}');
- if v->>'status'<>'sent' or v->>'messageId'<>'late-receipt' then raise exception 'late provider receipt lost %',v; end if;
-end $$;
-reset session authorization;
+
 rollback;
