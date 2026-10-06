@@ -1,11 +1,19 @@
 import { type FileRef, folderKey, type LiveRef, type PendingFile, type PendingView, unpublished } from "./pending.ts";
 import { parentOf } from "./view-tree.ts";
 
+/** A structured file's parse for the commit's hook (`memberFolderStructured`, core §3 "Before the transaction"). */
+type Structured = { readonly structured?: readonly Record<string, unknown>[] };
+
 /** A change set's units, as `qorpera_folder_commit` takes them (core §3). */
 export type CommitUnit =
-	| { readonly op: "write"; readonly path: string; readonly file: FileRef; readonly expectedVersion?: string }
+	| ({
+			readonly op: "write";
+			readonly path: string;
+			readonly file: FileRef;
+			readonly expectedVersion?: string;
+	  } & Structured)
 	| { readonly op: "mkdir"; readonly path: string }
-	| {
+	| ({
 			readonly op: "new_folder";
 			readonly path: string;
 			readonly contents: readonly {
@@ -13,7 +21,7 @@ export type CommitUnit =
 				readonly kind: "file" | "folder";
 				readonly file?: FileRef;
 			}[];
-	  }
+	  } & Structured)
 	| { readonly op: "delete"; readonly path: string; readonly expectedVersion: string; readonly asOfSeq?: number }
 	| {
 			readonly op: "move";
