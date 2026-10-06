@@ -1,11 +1,14 @@
 import { supabaseServiceHeaders } from "@qorpera/cloud-client/cloud-request";
 import { UUID_PATTERN } from "@qorpera/contracts";
+import type { WebSocketLikeConstructor } from "@supabase/supabase-js";
 
-/** G2-2 and G2-3: the native host reaches the database without the service key. A call it makes inside a job goes
- * through the entry points of migration 20260928409985 with the publishable key and that job's lease token, so it acts
- * for that job's run only; a call it makes between jobs goes through qorpera_native_identity_call (migration
- * 20260930005000) with the holder's identity credential. Any other database call is refused here. Storage and
- * Realtime keep the service key until G2-4. */
+/** G2-2 to G2-4: the native host reaches the database, Storage and Realtime without the service key. A call it makes
+ * inside a job goes through the entry points of migration 20260928409985 with the publishable key and that job's lease
+ * token, so it acts for that job's run only; a call it makes between jobs goes through qorpera_native_identity_call
+ * (migration 20260930005000) with the holder's identity credential. Any other database call is refused here. A
+ * credential capsule's Storage request carries the publishable key and the holder's credential in the
+ * x-qorpera-identity header, which the capsule bucket's policies read (migration 20260930103000); so does the
+ * presence client's WebSocket (nativeHostRealtimeTransport). Any other Storage request is refused. */
 
 /** The native host's calls inside a job, and the entry point (statement budget) of each: qorpera_native_host_calls as
  * migrations 20260928409985, 20260928429982 (find_mail), 20260928429984 (save_attachment), 20260929999965
@@ -148,6 +151,10 @@ export interface NativeHostIdentityCredential {
 
 const RPC_PATH = /^\/rest\/v1\/rpc\/([a-z0-9_]{1,128})$/;
 const LEASE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+/** A credential capsule's object, as SupabaseNativeCredentialCapsuleStore names it: `<capsule id>.capsule`. */
+const CAPSULE_OBJECT_PATH = /^\/storage\/v1\/object\/qorpera-native-compute-capsules\/([^/]+)\.capsule$/;
+/** The request header the capsule bucket's and the presence topic's policies read the holder's credential from. */
+export const NATIVE_HOLDER_HEADER = "x-qorpera-identity";
 
 /** A publishable key: a modern `sb_publishable_` key, or a legacy JWT whose role is anon. Never a secret key. */
 export function isNativeHostPublishableKey(value: unknown): value is string {
@@ -211,11 +218,20 @@ export class NativeHostDispatch {
 		};
 	}
 
+	/** The holder's credential as the x-qorpera-identity header carries it: the current job's lease token while a job
+	 * runs, the holder's identity credential otherwise. */
+	holderHeader(): string {
+		const job = this.#job;
+		return job ? `job.${job.jobId}.${job.leaseToken}` : `identity.${this.#identity.credential}`;
+	}
+
 	async #dispatch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
 		const url = new URL(input instanceof Request ? input.url : input);
-		// Another origin, or Storage on the project's (until G2-4): sent as before. Any other path of the project's
-		// is a database call through an entry point or refused, so nothing else rides on the service key.
-		if (url.origin !== this.#origin || url.pathname.startsWith("/storage/v1/")) return this.#fetch(input, init);
+		// Another origin: sent as before. On the project's, a credential capsule's Storage request or a database call
+		// through an entry point, each with the publishable key; anything else is refused, so nothing rides on the
+		// service key.
+		if (url.origin !== this.#origin) return this.#fetch(input, init);
+		if (url.pathname.startsWith("/storage/v1/")) return this.#storage(url, input, init);
 		const name = RPC_PATH.exec(url.pathname)?.[1];
 		const identityCall = name !== undefined && NATIVE_HOST_IDENTITY_CALLS.has(name);
 		const budget = name === undefined || identityCall ? undefined : NATIVE_HOST_CALLS.get(name);
@@ -255,6 +271,41 @@ export class NativeHostDispatch {
 		const body = `{"p_job_id":${JSON.stringify(job.jobId)},"p_job_lease_token":${JSON.stringify(job.leaseToken)},"p_name":${JSON.stringify(name)},"p_args":${init.body}}`;
 		return this.#fetch(`${this.#origin}/rest/v1/rpc/${entry}`, { ...init, redirect: "error", headers, body });
 	}
+
+	/** A credential capsule's download or upload: the publishable key (Storage needs it as the bearer too) and the
+	 * holder's credential, which the bucket's policies hold to the holder's own capsules (migration 20260930103000). */
+	#storage(url: URL, input: string | URL | Request, init?: RequestInit): Promise<Response> {
+		const method = init?.method ?? "GET";
+		const capsule = CAPSULE_OBJECT_PATH.exec(url.pathname)?.[1];
+		if (
+			input instanceof Request ||
+			capsule === undefined ||
+			!UUID_PATTERN.test(capsule) ||
+			url.search ||
+			(method !== "GET" && method !== "POST")
+		)
+			throw new Error("Not a native host Storage call");
+		const publishableKey = this.#job?.publishableKey ?? this.#identity.publishableKey;
+		const headers = new Headers(init?.headers);
+		headers.set("apikey", publishableKey);
+		headers.set("authorization", `Bearer ${publishableKey}`);
+		headers.set(NATIVE_HOLDER_HEADER, this.holderHeader());
+		return this.#fetch(url.href, { ...init, redirect: "error", headers });
+	}
+}
+
+/** The presence client's WebSocket (Realtime's transport): Node's own, with the holder's credential on the upgrade
+ * request, which Realtime hands to the presence topic's policies (migration 20260930103000). Each connection, a
+ * reconnect included, carries the credential current when it opens. */
+export function nativeHostRealtimeTransport(dispatch: NativeHostDispatch): WebSocketLikeConstructor {
+	class NativeHostRealtimeSocket extends WebSocket {
+		constructor(address: string | URL, protocols?: string | string[]) {
+			super(address, { protocols, headers: { [NATIVE_HOLDER_HEADER]: dispatch.holderHeader() } });
+		}
+	}
+	// Node's WebSocket is the one realtime-js uses by default; only the declared types differ (undici's event listener
+	// overloads, and realtime-js's index signature on the constructor).
+	return NativeHostRealtimeSocket as unknown as WebSocketLikeConstructor;
 }
 
 /** The arguments are one JSON object, so splicing them in as sent adds no key to the entry point's own. */

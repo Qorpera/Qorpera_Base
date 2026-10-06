@@ -212,11 +212,7 @@ it.each(["PRIVATE_MALFORMED_JSON", "x".repeat(1024 * 1024 + 1)])(
 it.each(["get", "put"] as const)("bounds capsule %s even if Storage never returns", async (method) => {
 	vi.useFakeTimers();
 	const fetcher = vi.fn<typeof fetch>(async () => new Promise<Response>(() => {}));
-	const capsules = new SupabaseNativeCredentialCapsuleStore(
-		"https://cloud.example/",
-		"SYNTHETIC_SERVICE_KEY",
-		fetcher,
-	);
+	const capsules = new SupabaseNativeCredentialCapsuleStore("https://cloud.example/", fetcher);
 	const reference = `native-capsule/${randomUUID()}`;
 	const pending = method === "get" ? capsules.get(reference) : capsules.put(reference, new Uint8Array([1, 2, 3]));
 	const rejected = expect(pending).rejects.toThrow("request deadline");
@@ -232,7 +228,6 @@ it("bounds a stalled encrypted capsule body and cancels it on expiry", async () 
 	const cancel = vi.fn();
 	const capsules = new SupabaseNativeCredentialCapsuleStore(
 		"https://cloud.example/",
-		"SYNTHETIC_SERVICE_KEY",
 		async () => new Response(new ReadableStream({ cancel })),
 	);
 	const rejected = expect(capsules.get(`native-capsule/${randomUUID()}`)).rejects.toThrow("request deadline");
@@ -249,11 +244,7 @@ it("does not follow capsule redirects or trust an oversized declared body", asyn
 				headers: { "content-length": String(65 * 1024 * 1024 + 1) },
 			}),
 	);
-	const capsules = new SupabaseNativeCredentialCapsuleStore(
-		"https://cloud.example/",
-		"SYNTHETIC_SERVICE_KEY",
-		fetcher,
-	);
+	const capsules = new SupabaseNativeCredentialCapsuleStore("https://cloud.example/", fetcher);
 	await expect(capsules.get(`native-capsule/${randomUUID()}`)).rejects.toThrow("byte limit");
 	expect(fetcher.mock.calls[0][1]?.redirect).toBe("error");
 	expect(cancel).toHaveBeenCalledOnce();
@@ -265,7 +256,7 @@ it.each([
 	"https://cloud.example/other",
 	"http://cloud.example/",
 ])("rejects non-origin credential transport configuration", (url) => {
-	expect(() => new SupabaseNativeCredentialCapsuleStore(url, "key")).toThrow("HTTPS origin");
+	expect(() => new SupabaseNativeCredentialCapsuleStore(url, fetch)).toThrow("HTTPS origin");
 	expect(() => new SupabaseNativeProviderControlPlane(url, "key")).toThrow("HTTPS origin");
 });
 
