@@ -126,6 +126,8 @@ InaccessiblePaths=-/var/lib/qorpera-acceptance-phql-a1 -/run/credentials/qorpera
   but `1` (the service) and the check's own, fails on the gateway's, lists only `objects`, prints 1, and the `touch`
   fails with "Read-only file system" (were it to succeed, the bind is not read-only: remove the file as root).
 - `systemctl enable --now qorpera-folder-service.socket qorpera-folder-bridge.service`
+- Expected in the service's journal at each start: node's `Warning: disabling flag --expose_wasm due to conflicting
+  flags`. The unit's `--jitless` turns WebAssembly off, as it means to (`RUNTIME-FOLDER-SERVICE.md`).
 
 ## Execution host
 

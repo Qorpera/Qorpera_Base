@@ -96,8 +96,8 @@ but that the actor may not list itself is shown anyway, so the paths are reachab
 Bytes come from the storage server's share (`<storageRoot>/<profileId>/<sha256>`, where `storageRoot`,
 `/srv/qorpera/objects`, is the object gateway's store bound read-only into the service's own mount namespace), never
 through the gateway's byte routes. The service reads them as the gateway's account, `qorpera-objects`, the same uid
-on both nodes, in a process namespace of its own so it cannot reach the gateway's processes, and sees nothing of the
-share but the store (README: "Reading the objects"). The service reads the manifest the core named, checks
+on both nodes, in a process namespace of its own so it cannot reach the gateway's processes, and sees nothing of
+`/srv/qorpera` but the store (README: "Reading the objects"). The service reads the manifest the core named, checks
 its hash and that it matches the entry (v2; v1 for fixtures), then reads each chunk it needs, opened with
 `O_NOFOLLOW`, checked for size and hash before it is used or kept. Chunks and manifests are kept in a
 least-recently-used memory cache (1 GiB by default, at most 2 GiB within the unit's 3 GiB). Sixteen reads run at
