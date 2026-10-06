@@ -7,7 +7,7 @@ install reference. Every node and machine step is the coordinator's, at a cut.
 
 | File | Where it runs | What it is |
 | --- | --- | --- |
-| `qorpera-folder-service.cjs` | node host, `qorpera-folder` | The folder service (from `packages/object-gateway/src/folder-service/`). Holds the service credential; never talks to LXD. |
+| `qorpera-folder-service.cjs` | node host, `qorpera-objects` (a drop-in; see "Reading the objects") | The folder service (from `packages/object-gateway/src/folder-service/`). Holds the service credential; never talks to LXD. |
 | `qorpera-folder` | node host (`bridge`), machine (`mount`) | The folder program (from `crates/qorpera-folder/`), built by `scripts/build-folder-program.mjs`; its recorded build is `folder-program-linux-x64.json`. |
 | `qorpera-folder-service.socket` | node host | `/run/qorpera-folder/service.sock`, 0660, group `qorpera-folder-bridge`: only the bridge connects. |
 | `qorpera-folder-service.service` | node host | The service, started by its socket. |
@@ -41,7 +41,7 @@ Then, as root, without echoing anything secret:
 ```json
 {
 	"supabaseUrl": "https://<project>.supabase.co",
-	"storageRoot": "/srv/qorpera/canonical",
+	"storageRoot": "/srv/qorpera/canonical/<the object gateway's folder>/objects",
 	"cacheMiB": 1024,
 	"mounts": [
 		{
@@ -61,8 +61,41 @@ Then, as root, without echoing anything secret:
 empty until runs use the folder; any view kind presented from such a machine is accepted, so list only execution
 hosts.
 
-- Objects on the share are 0600, owned by the object gateway's account. Give the service that uid with a drop-in
-  (`User=`) or a read grant on the storage server, and check with `sudo -u <account> head -c1 <one object>`.
+`storageRoot` is the object gateway's store (its `QORPERA_OBJECT_GATEWAY_STORAGE_ROOT`, laid out
+`<profileId>/<sha256>`) as this host sees the share: today
+`/srv/qorpera/canonical/.qorpera-acceptance-phqlfrkcvstmxlebljcj-7cf936a4/objects` on both nodes. The share's top
+folder holds older objects that the core never names. The store is a folder under the share's mount, not a mount
+itself: check that `findmnt --target <storageRoot>` names `/srv/qorpera/canonical` from the storage server and that
+the folder holds profile folders. `RequiresMountsFor=/srv/qorpera/canonical` covers it. A share that is not mounted
+fails reads as unavailable (the company's profile folder is missing), so a page never looks empty.
+
+**Reading the objects.** The gateway writes them 0600, so the service reads them as the gateway's account:
+`qorpera-objects`, a system account with the same uid and gid on both nodes (no shell, no home, no other groups, no
+sudo, not a caller of the node's root helper). The gateway runs as it too. The unit keeps `ProtectSystem=strict` with
+no `ReadWritePaths`, so the service still cannot write the share.
+- Before the first use, probe on node 2 as root, in a scratch folder on the share: root can chown there (no root
+  squash); a 0600 file owned by the new uid is read by that uid from both nodes and refused to `qorpera-folder`. If
+  root cannot chown, the account takes the uid that owns the objects now (1002), after the account that holds it on
+  node 1 moves to another uid along with the root helper's caller rule.
+- Create the account on both nodes, with a uid and gid free on both; then move the gateway to it and chown its tree on
+  the share and its files on node 1 (the coordinator's lane).
+- `/etc/systemd/system/qorpera-folder-service.service.d/read-objects.conf`, the same on both nodes, hides the gateway's
+  tokens and log (on node 1's disk) and its state folder on the share from the service; `-` skips a path that is not
+  on this node. Hiding the state folder needs root to reach it, which the probe shows; with the uid 1002 fallback,
+  leave that path out (it holds object records and token hashes, no token):
+
+```ini
+[Service]
+User=qorpera-objects
+Group=qorpera-objects
+InaccessiblePaths=-/var/lib/qorpera-acceptance-phql-a1 -/srv/qorpera/canonical/.qorpera-acceptance-phqlfrkcvstmxlebljcj-7cf936a4/state -/run/credentials/qorpera-gateway-phql-a3.service
+```
+
+- Check on both nodes: `sudo -u qorpera-objects head -c1 <one object>` works and `sudo -u qorpera-folder head -c1 <the
+  same object>` is refused. On node 1 the service and the gateway share a uid, so the service could signal the
+  gateway (accepted: it holds the database's service key already) and read its start environment (the gateway's
+  launcher reads its tokens from its file, so none is there). The kernel must not let it read the gateway's memory:
+  `/proc/sys/kernel/yama/ptrace_scope` is 1 or more.
 - `systemctl enable --now qorpera-folder-service.socket qorpera-folder-bridge.service`
 
 ## Execution host
