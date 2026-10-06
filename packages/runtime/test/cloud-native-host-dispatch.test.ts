@@ -39,7 +39,6 @@ function dispatchFixture() {
 	});
 	const dispatch = new NativeHostDispatch({
 		supabaseUrl: ORIGIN,
-		serviceKey: SERVICE_KEY,
 		identity: { computeIdentityId: IDENTITY_ID, credential: IDENTITY_TOKEN, publishableKey: PUBLISHABLE_KEY },
 		fetch: fetcher,
 	});
@@ -192,7 +191,7 @@ it("gives the dispatch to every database client the host builds, and to its serv
 		"SupabaseNativeCredentialCapsuleStore",
 		"SupabaseNativeProviderControlPlane",
 	]);
-	expect(main).toMatch(/new SupabaseNativeProviderControlPlane\(\s*baseUrl,\s*serviceKey,\s*dispatch\.fetch,/);
+	expect(main).toMatch(/new SupabaseNativeProviderControlPlane\(\s*baseUrl,\s*publishableKey,\s*dispatch\.fetch,/);
 	expect(main).toMatch(/new HttpCloudCompanyPathControl\(\{[^}]*fetch: dispatch\.fetch[^}]*\}\)/);
 	expect(main).toMatch(/new HttpCloudCodingControl\(\{[^}]*fetch: dispatch\.fetch[^}]*\}\)/);
 	expect(main).toMatch(/new HttpCloudCompanyComputerRegistry\(\{[^}]*fetch: dispatch\.fetch[^}]*\}\)/);
@@ -203,7 +202,11 @@ it("gives the dispatch to every database client the host builds, and to its serv
 		/createClient\(baseUrl, publishableKey, \{[\s\S]*?realtime: \{ transport: nativeHostRealtimeTransport\(dispatch\) \}/,
 	);
 	expect(main).not.toMatch(/createClient\(baseUrl, serviceKey/);
-	expect(main).toMatch(/new NativeHostDispatch\(\{ supabaseUrl: baseUrl, serviceKey, identity \}\)/);
+	expect(main).toMatch(/new NativeHostDispatch\(\{ supabaseUrl: baseUrl, identity \}\)/);
+	// G2-5: the host reads no service key, gives its clients the publishable key, and refuses to start with one.
+	expect(main).not.toMatch(/\bserviceKey\b/);
+	expect(main).toMatch(/serviceRoleKey: publishableKey/);
+	expect(main).toMatch(/throw new Error\("A native host must hold no service key"\)/);
 	expect(main).not.toContain("QORPERA_NATIVE_HOST_DISPATCH");
 	expect(main).toMatch(/environment\.QORPERA_NATIVE_PROVIDER_TRUSTED_SOURCE,\s*dispatch,\s*\)/);
 });
@@ -405,7 +408,7 @@ it("keeps other origins as sent, and refuses any other call on the project's ori
 it("checks the holder's identity credential once, and an execution host's run replaces it with its machine's", async () => {
 	const identity = { computeIdentityId: IDENTITY_ID, credential: IDENTITY_TOKEN, publishableKey: PUBLISHABLE_KEY };
 	const build = (patch: Partial<typeof identity>) =>
-		new NativeHostDispatch({ supabaseUrl: ORIGIN, serviceKey: SERVICE_KEY, identity: { ...identity, ...patch } });
+		new NativeHostDispatch({ supabaseUrl: ORIGIN, identity: { ...identity, ...patch } });
 	for (const patch of [
 		{ computeIdentityId: "not-a-uuid" },
 		{ credential: "short" },

@@ -1777,10 +1777,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				path: "/var/lib/qorpera-bootstrap/credentials/qorpera-native-identity",
 				content: `${nativeIdentityCredentialFile(authority.computeIdentityId, credentials.nativeIdentityToken, this.#config.supabasePublishableKey)}\n`,
 			},
-			{
-				path: "/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key",
-				content: `${this.#config.supabaseServiceKey}\n`,
-			},
+			// G2-5: no service key; the guest's bootstrap refuses one.
 			...(runtime
 				? [
 						{
