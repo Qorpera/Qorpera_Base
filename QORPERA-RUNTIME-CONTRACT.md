@@ -5281,8 +5281,15 @@ own texts below carries a note "Amended 2026-10-06" in place.
     - **Block-history requests**, made by the platform for the tree's own erases, on the authority checked when the
       erase was accepted (the design, §10 step 3):
       - one request per block, with that block's partner paths, not held to the 20-path limit of members' requests;
-      - each block is named by its key, cut at the erase's delete of it, or with no cutoff when it was not live then
-        (refused if it is live again). A life of the key that moved on to a path that is live now is left alone;
+      - each block is named by its key, cut at the erase's delete of it, or with no cutoff when it was not live then or
+        lies under one of the conversation's earlier tree roots. With no cutoff it is refused if it is live again,
+        naming the live path and the key's newest life, and the platform asks again cut at that life's start, with
+        that life kept; that request is refused the same way if the key has had a newer life since, and the platform
+        goes round again;
+      - in a request with a cutoff or a life, or for an older life of the key, a life that moved on to a path that is
+        live now is left alone, not refused;
+      - a member's erasure that names a tree's `tree.toml` alone is refused: a message erase finds the conversation's
+        earlier tree roots by that file's bytes;
       - the run-log row reaches only steps that name a block's path and read it before the cutoff, found through the
         step index;
       - P18 reports when a request is past its versions phase. A tree erase's row waits only for that, while an
