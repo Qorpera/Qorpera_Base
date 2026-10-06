@@ -215,7 +215,9 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
 - **What a button may do.** A button does what its verb says and nothing more. It runs as the viewer, under the same
   review as doing it by hand:
   - `message` posts as the member, or sends a coworker message as the agent;
-  - `add`, `set`, `take`, `offer` and `release` save the table's file;
+  - `add`, `set`, `take` and `release` save the table's file;
+  - `offer` makes an offer record (§5 "Offers") and saves nothing; the member it goes to saves the cell when they
+    accept it;
   - `answer` uses the card's existing state machine (contract 16.2).
 - **`message`.** The prefilled text opens in the composer, and nothing is sent until the viewer sends it. A value
   filled in from outside content goes as a marked quote, never as the viewer's own words.
@@ -252,8 +254,8 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
     were looking.". A file that keeps changing past the retries also says "That changed while you were looking.". A
     refusal shows its problems.
   - A card stays where it is, saving, until the save has landed and the folder's feed shows the change.
-  - `offer` and `answer` are not drawn on a board until offers have their machinery. An area's `supervisor` is not
-    taken from a board; it waits for consent records (I9b).
+  - `offer` and `answer` are not drawn on a board until the web's offer step (I9c part 2). An area's `supervisor` is
+    not taken from a board; it waits for consent records (I9b).
 - **Never possible:** a link to another site, a script, or a request to any address.
 
 ## 4. Sources
