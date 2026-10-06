@@ -222,17 +222,21 @@ far more. So `X logs` (the logs' timer, every 5 minutes) tends them:
 
 The cap is 2 GiB and the floor 10% of the disk unless the node sets them in `/etc/default/qorpera-agent-exit`
 (`QORPERA_AGENT_EXIT_LOG_CAP_BYTES=<bytes>` and `QORPERA_AGENT_EXIT_LOG_FLOOR_PERCENT=<percent>` lines, read by the tool
-for the logger and the tender alike; the logger reads them when it starts). The logger checks
-both every 5 seconds: past the cap, or under the floor, it pauses. It writes no connection or refusal lines, only a gap
-line when it pauses and one when it goes on (with how many lines it did not write), empties `dns.log` every 5 seconds
-(dnsmasq answers on; a gap line says how much of the DNS record was not kept), and keeps
+for the logger and the tender alike; the logger reads them when it starts). The logger checks both every 5 seconds:
+past the cap, or under the floor, it pauses. It writes no connection, refusal or alive lines (below), only a gap line
+when it pauses and one when it goes on (with how many connection and refusal lines it did not write), empties
+`dns.log` every 5 seconds (dnsmasq answers on; a gap line says how much of the DNS record was not kept), and keeps
 `/run/qorpera-agent-exit/logger.pause` meanwhile, so `verify` fails: the node takes no new agent road machines (E2d)
 while its log cannot record, and its disk never fills. Traffic and refusals go on (the log-down rule of 3 October). It
-goes on under 95% of the cap and 2 points above the floor. A line it cannot write (a full disk, no inodes left) is
-counted and keeps `/run/qorpera-agent-exit/logger.failing` until a line can be written again (it tries every 5
-seconds), so `verify` fails meanwhile; the first line then written is a gap line saying how many it lost. On a disk
-filled by something else, the exit turns unhealthy at the floor: for node 2 (98 GB, 16 GB free on 4 October) that is
-90% used.
+goes on under 95% of the cap and 2 points above the floor. A line it cannot write (a full disk, no inodes left; an
+alive line too, so this shows also with no traffic) is counted and keeps `/run/qorpera-agent-exit/logger.failing`
+until a line can be written again (it tries every 5 seconds), so `verify` fails meanwhile; the first line then
+written is a gap line saying how many it lost. On a disk filled by something else, the exit turns unhealthy at the
+floor: for node 2 (98 GB, 16 GB free on 4 October) that is 90% used.
+
+While it logs (its readers alive in the exit's namespace, not paused), the logger writes an alive line into the
+connection log every minute (`{"event":"alive","ts":…}`). They go to the NAS with the rest, so a lookup on any node
+sees when a logger was not logging, also when no gap line says so yet (below). The counts skip them.
 
 `X counts [--from DAY] [--to DAY] [--json]` prints the founder's table: per company, the days with traffic, connections
 (all and the busiest day), the most machines on a day, the burst peaks, refused, unanswered and the most failed
@@ -259,7 +263,9 @@ Jonas approved the share, with root allowed to write, on 6 October. On the Synol
   before the file is on its disks). No other host;
 - after the first mount, its marker: `touch /srv/qorpera/agent-exit-logs/.qorpera-agent-exit-logs` (an empty file).
   The shipper writes only into a folder that holds it, so a share that is not mounted never fills the node's own disk
-  under the empty mount point, and the lookup says the NAS is not mounted.
+  under the empty mount point, and the lookup says the NAS is not mounted. A pass opens that folder once and does
+  every step on the NAS through it, so it never writes past an unmount: a plain one fails while a pass runs (busy),
+  and a lazy one leaves the pass on the share.
 
 ### The mount (each node, root)
 
@@ -331,10 +337,16 @@ machine had looked up for that address. Refused attempts in the window come afte
 
 What the logs cannot say is listed as not known, never as "no one": a gap line (the logger down or paused, events
 lost), a deleted file (its record), a file that should be there and is not, a node that has not shipped since before
-the window or has days not on the NAS yet, the NAS not mounted, a logger not running now, and time past 90 days. The
-answer is complete only when neither connections nor companies are unknown for that time; a gap only in the DNS record
-leaves names unknown. A starting logger writes `logger started` before its own pause line, so a pause that ended when
-the logger stopped is told apart from one still going.
+the window or has days not on the NAS yet, the NAS not mounted, this node's logger not running, paused or unable to
+write now (its heartbeat, `logger.pause` and `logger.failing`, which say since when), and time past 90 days. Also any
+stretch of more than 3 minutes with no alive line, on any node, from its first day of logs to now (or, for another
+node, to its last pass): the logger was down, paused or could not write then. That covers what no line read says: a
+logger stopped and not started again (on another node too, after its day went to the NAS), and an outage or pause
+that began before the days read and ended after them. A `paused: … DNS record not kept` line with no pause line before
+it (they come only while the logger pauses) is a pause that began before what was read. The answer is complete only
+when neither connections nor companies are unknown for that time; a gap only in the DNS record leaves names unknown. A
+starting logger writes `logger started` before its own pause line, so a pause that ended when the logger stopped is
+told apart from one still going.
 
 Limits:
 - Another node's lines that are not sealed yet (today's, and up to two hours of yesterday's) and its `dns.log` since
@@ -346,6 +358,12 @@ Limits:
 - DNS lines dnsmasq writes between a cut's copy and its truncate are lost without a gap line ("Cuts the DNS record",
   above); a name may be missing without a note. Names never decide whether an answer is complete.
 - A pause counts as unknown even when its `resumed` line says no line was missed.
+- A stop of under 3 minutes shows only through the gap line that ends it (`logger started`, `resumed`, `lines could
+  not be written`); until that line is written, only on the node itself (its heartbeat and markers).
+- A node's first day of logs is not known from 00:00 UTC to its logger's first line. On a node that ran the exit
+  before E3, the time before its logger first wrote alive lines is not known either.
+- dnsmasq stamps its lines in its local time; the exit runs it with `TZ=UTC`, so the names' times are UTC whatever the
+  node's zone.
 - A retired node's folder stays: its `status.json` keeps saying it has shipped nothing since its last pass, so answers
   for later times are not complete until its folder is moved off the share (by hand, after its 90 days).
 
@@ -356,7 +374,10 @@ The tool before E3 reads only numbers from `/etc/default/qorpera-agent-exit`, so
 2. `bash deploy/agent-exit/install-agent-exit.sh` from a checkout at the merged head, then at once
    `systemctl enable --now qorpera-agent-exit-ship.timer && systemctl start qorpera-agent-exit-ship.service`. Between
    the install and that first pass, `verify` fails ("the logs' shipper has not run"), so the health file may say
-   unhealthy for a turn or two. The running services need no restart (the logger's change is in how it starts).
+   unhealthy for a turn or two. Then `systemctl restart qorpera-agent-exit-log.service`: the new logger writes the
+   alive lines, and until it runs every lookup says the connection log is not known. Its few seconds down are marked
+   by its `logger started` line, and traffic goes on meanwhile. dnsmasq takes `TZ=UTC` at its next start; both nodes
+   run on UTC (read on 6 October), so nothing waits on that.
 3. Check: `X verify` says `healthy`; `ship.json` names no problem and no error; `$(hostname)/status.json` is on the
    NAS, and the node's sealed parts are in its day folders.
 4. Undo: install the earlier release's files again (`install-agent-exit.sh` from its checkout), then
@@ -371,8 +392,9 @@ cannot be counted, the DNS cut, a pass cut short while sealing, the report, the 
 90 days), the shipper (a pass and its read-back, a file on the NAS with other content and its wait past a day, no
 marker, a copy that reads back wrong, a shipped part's week on the node and its turn under pressure, 90 days on the
 NAS), the lookup across two nodes (the company, machine and name behind a connection, a refusal, and each kind of
-gap: lost events, a pause and the ways it ends, the DNS record not kept, a deleted file, a node's days not shipped, a
-logger not running, no NAS) and the plug tool: allocation under the creators' umask, twelve plugs at once, quarantine, and the
+gap: lost events, a pause and the ways it ends, the DNS record not kept, a pause begun before what was read, a deleted
+file, a node's days not shipped, a stretch with no alive line here and on another node that stopped after it shipped,
+a node whose logs begin later, a logger not running, paused or failing now, no NAS) and the plug tool: allocation under the creators' umask, twelve plugs at once, quarantine, and the
 reconciler against a stand-in for LXD (attribution only after a match, a forged claim, sleep, two misses before an unplug, a machine made again, an entry
 removed by hand, plugs never created, unusable entries and links never followed, the bridge sets, the twins it finds).
 On Linux with Docker it runs `test/proof.sh` in a privileged container with no network of its own (`ubuntu:26.04`
@@ -403,10 +425,11 @@ on the tailnet. It checks:
   (quarantine, no more DHCP, the address skipped), and plugs never created given up;
 - the logs on the node: the day's counts per company from the live logs, the tender sealing the open files and cutting
   `dns.log` while dnsmasq and the logger write on into new ones, a line the logger cannot write (unhealthy at once,
-  recovered by itself with a gap line), and the logger pausing past its cap (no lines, traffic and DNS on, `dns.log`
-  emptied, `verify` failing) and going on with a gap line saying what it missed;
-- the logs on the NAS (a folder with its marker): the shipper's copies, byte for byte, with their records, and the
-  lookup naming the company, machine and name behind a live connection;
+  the lookup saying so, recovered by itself with a gap line), and the logger pausing past its cap (no lines, traffic
+  and DNS on, `dns.log` emptied, `verify` failing, the lookup saying so) and going on with a gap line saying what it
+  missed;
+- the logs on the NAS (a folder with its marker): the shipper's copies, byte for byte, with their records, the
+  logger's alive lines, and the lookup naming the company, machine and name behind a live connection;
 - an interrupted rebuild: the logger leaves the old namespace by itself, and `verify` fails until DNS follows;
 - that `down` refuses with a machine plugged in, or only in the client map, and changes nothing; that with the
   exit's namespace gone the machine has no internet and no names; and that with nothing plugged in `down` removes

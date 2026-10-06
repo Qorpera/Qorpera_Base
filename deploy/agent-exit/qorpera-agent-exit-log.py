@@ -6,19 +6,21 @@ as it ends (with bytes each way), one line per refused flow from the exit's refu
 a "gap" line whenever events were lost (conntrack reports the kernel dropping them under load) or a read failed.
 Files are <log-dir>/flows-YYYY-MM-DD.jsonl (UTC). A heartbeat file is touched every few seconds while both readers
 are alive and the conntrack reader watches the exit's current namespace, for `verify`; when the namespace was
-replaced under it, the logger exits and its unit starts it again in the new one. Never content: only addresses,
-ports, protocol, times and byte counts. E3 joins these lines with the client map and the DNS log.
+replaced under it, the logger exits and its unit starts it again in the new one. Then, every minute, it writes an
+"alive" line into the log itself: so a stretch of the log with none (the logger down, paused or unable to write)
+shows wherever the log is read, on any node, also when nothing in that stretch says so. Never content: only
+addresses, ports, protocol, times and byte counts. E3 joins these lines with the client map and the DNS log.
 
 The node's disk comes first. Every 5 seconds the logger reads the logs' size (the log folder's files and the tender's
 deletion records in lost/) and the disk's free share; past either line (the logs over their cap, or the disk under its
-floor) it pauses: it writes no connection or refusal lines, only a gap line when it pauses and one when it goes on
-(with the number of lines it did not write); it empties
-dns.log every 5 seconds (dnsmasq goes on answering; a gap line says how much of the DNS record was not kept); and it
-keeps <pause-file> while it pauses, so `verify` fails and the node takes no new agent road machines. It goes on once
-the logs are under 95% of the cap and the disk 2 points above its floor (qorpera-agent-exit-logs.py `tend` deletes
-the oldest parts to get there). A line it cannot write (a full disk, no inodes left, say) is counted, it keeps
-<failing-file> (so `verify` fails) until a line can be written again, and the first line then written is a gap line
-that says how many it lost.
+floor) it pauses: it writes no connection, refusal or alive lines, only a gap line when it pauses and one when it goes
+on (with the number of connection and refusal lines it did not write); it empties dns.log every 5 seconds (dnsmasq
+goes on answering; a gap line says how much of the DNS record was not kept); and it keeps <pause-file> while it
+pauses, so `verify` fails and the node takes no new agent road machines. It goes on once the logs are under 95% of the
+cap and the disk 2 points above its floor (qorpera-agent-exit-logs.py `tend` deletes the oldest parts to get there).
+A line it cannot write (a full disk, no inodes left, say; an alive line too) is counted, it keeps <failing-file> (so
+`verify` fails) until a line can be written again, and the first line then written is a gap line that says how many
+it lost.
 
   qorpera-agent-exit-log.py --netns qexit --log-dir DIR --heartbeat FILE --pause-file FILE --failing-file FILE
                             [--cap-bytes N] [--floor-percent P]
@@ -54,6 +56,9 @@ CAP_BYTES = 2 * 1024 * 1024 * 1024
 FLOOR_PERCENT = 10.0
 # The tender's deletion records, one file per deleted file (qorpera-agent-exit-logs.py).
 RECORDS = "lost"
+# How often the logger writes its "alive" line; E3's lookup counts a stretch of 3 minutes without one as a time the log
+# may miss connections in.
+ALIVE_EVERY = 60.0
 
 
 def parse_conntrack(line):
@@ -225,7 +230,9 @@ class Writer:
     def write(self, record):
         with self.lock:
             if self.paused and record.get("event") != "gap":
-                self.held += 1
+                # An alive line is not a lost one: none while paused is what marks the pause.
+                if record.get("event") != "alive":
+                    self.held += 1
                 return
             try:
                 self.recover()
@@ -426,8 +433,10 @@ def main():
     ]
     for thread in threads:
         thread.start()
-    # The heartbeat is written only while both readers are alive, so a dead reader shows in `verify`.
+    # The heartbeat and the alive lines are written only while both readers are alive in the current namespace, so a
+    # dead reader shows in `verify` and in the log.
     elsewhere = 0
+    last_alive = None
     while True:
         time.sleep(min(5.0, args.interval))
         check_disk()
@@ -438,6 +447,9 @@ def main():
         if elsewhere >= 2:
             writer.gap("the exit's namespace was replaced; the logger starts again in the new one")
             sys.exit("the conntrack reader watches an old namespace")
+        if elsewhere == 0 and (last_alive is None or time.monotonic() - last_alive >= ALIVE_EVERY):
+            writer.write({"ts": time.time(), "event": "alive"})
+            last_alive = time.monotonic()
         with open(args.heartbeat, "w", encoding="utf-8") as f:
             f.write(f"{time.time():.0f}\n")
 

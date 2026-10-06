@@ -499,7 +499,7 @@ import json, sys
 records = [json.loads(line) for line in open(sys.argv[1])]
 site = [r for r in records if r["event"] == "destroy" and r.get("dst") == "1.1.1.1" and r.get("dport") == 443]
 assert site and site[0]["src"] == "10.210.1.1" and site[0]["bytes_out"] > 0 and site[0]["bytes_in"] > 0, site
-assert all(r["src"].startswith("10.210.") and r["src"] != "10.210.0.1" for r in records if r["event"] != "gap"), "not an agent's"
+assert all(r["src"].startswith("10.210.") and r["src"] != "10.210.0.1" for r in records if r["event"] not in ("gap", "alive")), "not an agent's"
 
 EOF
 for _ in $(seq 1 50); do
@@ -735,6 +735,8 @@ assert any(c["name"] == "rotated.test" for c in found), found
 EOF
 bash "$tool" lookup --agent 10.210.1.1 --at "$(date +%s)" >"$work/lookup.out" || fail "lookup: $(cat "$work/lookup.out")"
 grep -q "on $host: company c0, machine m0; 10.210.1.1:" "$work/lookup.out" || fail "lookup: $(cat "$work/lookup.out")"
+# The logger's alive lines, which the lookup reads for the times it was not logging.
+{ zcat "$LOG"/flows-*.jsonl.gz; cat "$LOG/flows-$today.jsonl"; } | grep '"event":"alive"' >/dev/null || fail "the logger wrote no alive line"
 pass "the shipper copies the sealed parts to the NAS; the lookup names the company, machine and name behind a connection"
 # A line the logger cannot write (here: a folder where its file goes) makes the exit unhealthy at once; once it can
 # write again it says how many lines it lost, and the exit is healthy again.
@@ -748,6 +750,10 @@ for _ in $(seq 1 50); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] && 
 [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] || fail "a line that could not be written left no mark: $(tail -3 "$work/log.out")"
 bash "$tool" verify 2>"$work/verify-failing.err" && fail "verify passed while the connection log could not be written"
 grep -q "cannot write the connection log: " "$work/verify-failing.err" || fail "verify: $(cat "$work/verify-failing.err")"
+# Its gap line comes only once it writes again: until then the lookup learns it from the mark.
+bash "$tool" lookup --remote 1.1.1.1 --at "$(date +%s)" --json >"$work/lookup-failing.json" || fail "lookup: $(cat "$work/lookup-failing.json")"
+grep -q '"why": "the connection logger is failing now: cannot write the connection log: ' "$work/lookup-failing.json" ||
+	fail "the lookup did not say the logger is failing: $(cat "$work/lookup-failing.json")"
 rmdir "$LOG/flows-$today.jsonl"
 for _ in $(seq 1 75); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] || break; sleep 0.2; done
 [[ ! -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] || fail "the logger did not recover once it could write"
@@ -770,6 +776,9 @@ for _ in $(seq 1 75); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] && br
 [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] || fail "the logger did not pause past its cap: $(tail -3 "$work/log.out")"
 bash "$tool" verify 2>"$work/verify-pause.err" && fail "verify passed while the connection log paused"
 grep -q "connection log paused: " "$work/verify-pause.err" || fail "verify: $(cat "$work/verify-pause.err")"
+bash "$tool" lookup --remote 1.1.1.1 --at "$(date +%s)" --json >"$work/lookup-pause.json" || fail "lookup: $(cat "$work/lookup-pause.json")"
+grep -q '"why": "the connection log is paused now: the node' "$work/lookup-pause.json" ||
+	fail "the lookup did not say the log is paused: $(cat "$work/lookup-pause.json")"
 written=$(grep -c '"event":"new"' "$LOG/flows-$today.jsonl" || true)
 connects agent 1.1.1.1 443 || fail "a machine's traffic stopped while the log paused"
 sleep 1

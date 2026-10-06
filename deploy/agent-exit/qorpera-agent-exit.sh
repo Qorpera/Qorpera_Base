@@ -257,6 +257,9 @@ dns() {
 		--dhcp-hostsdir="$state_dir/dhcp-hosts" --dhcp-leasefile="$run_dir/dnsmasq.leases"
 		--dhcp-option=option:router,"$GATEWAY" --dhcp-option=option:dns-server,"$GATEWAY"
 		--log-queries=extra --log-facility="$log_dir/dns.log" --log-async=50)
+	# dnsmasq stamps its log lines with the local time and no zone: UTC, whatever the node's zone, as the lookup reads
+	# them.
+	export TZ=UTC
 	if inside_exit; then exec "${command[@]}"; else exec ip netns exec "$NS" "${command[@]}"; fi
 }
 
@@ -423,7 +426,7 @@ ship) ship ;;
 counts) exec python3 "$logs_tool" report --log-dir "$log_dir" "${@:2}" ;;
 lookup)
 	exec python3 "$logs_tool" lookup --log-dir "$log_dir" --nas-dir "$nas_dir" --heartbeat "$run_dir/logger.heartbeat" \
-		"${@:2}"
+		--pause-file "$run_dir/logger.pause" --failing-file "$run_dir/logger.failing" "${@:2}"
 	;;
 verify) verify ;;
 health) health ;;

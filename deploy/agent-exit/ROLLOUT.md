@@ -27,25 +27,49 @@ Each check changes nothing. Every one must hold on both nodes before step 1.
 | The group does not exist yet, or is a system group | `getent group qorpera-agent-plug` | nothing, or a gid below 1000 |
 | The node's connection table | `cat /proc/sys/net/netfilter/nf_conntrack_max` | 262144 (as read on 2 October) |
 | Room on the root disk for the exit's logs (in `/var/log/qorpera-agent-exit`, at most 2 GiB; the exit turns unhealthy with less than 10% of the disk free) | `df --output=size,avail,pcent /` | under 85% used (node 2 read 83% on 4 October; at 85% the logs keep only today, at 90% the exit is unhealthy) |
+| The NAS share for the exit's logs (E3; once, for both nodes: `README.md`, "The share"): `qorpera-agent-exit-logs` on volume 1, NFS rules for 192.168.1.27 and 192.168.1.42 only, each read/write, Squash "No mapping", security `sys`, "Enable asynchronous" off | in DSM, Control Panel → Shared Folder → `qorpera-agent-exit-logs` → Edit → NFS Permissions | the two rules as listed, and no other host (step 1's mount proves the share from each node) |
 | No agents' or coding machines from before (the new executor refuses to stop or delete one that is not on `qagent0`) | `lxc list --project machines --format csv -c n; lxc list --project coding --format csv -c n` (the projects the machine and coding VM policies name; these are their defaults) | nothing (or `Project not found`): production's companies were wiped on 3 October |
 
 ## Step 1: the exit on node 1
+
+A node that already runs the exit from an earlier release takes E3 alone instead: `README.md`, "Adding E3 to a node
+that runs the exit" (its steps, check and undo).
+
+First the NAS for the logs (E3): the mount unit of `README.md`, "The mount", written to
+`/etc/systemd/system/srv-qorpera-agent\x2dexit\x2dlogs.mount`, then:
+
+```bash
+apt-get install -y --no-install-recommends nfs-common
+systemctl daemon-reload && systemctl enable --now 'srv-qorpera-agent\x2dexit\x2dlogs.mount'
+findmnt /srv/qorpera/agent-exit-logs
+# The share's marker (the shipper writes only where it is); there already on the second node.
+test -e /srv/qorpera/agent-exit-logs/.qorpera-agent-exit-logs || touch /srv/qorpera/agent-exit-logs/.qorpera-agent-exit-logs
+grep -q '^QORPERA_AGENT_EXIT_NAS_DIR=' /etc/default/qorpera-agent-exit 2>/dev/null ||
+	echo 'QORPERA_AGENT_EXIT_NAS_DIR=/srv/qorpera/agent-exit-logs' >>/etc/default/qorpera-agent-exit
+```
+
+`findmnt` shows `192.168.1.40:/volume1/qorpera-agent-exit-logs` with `nfs4` and `soft`. `/etc/default/qorpera-agent-exit`
+is root's, mode 0644. Then the exit:
 
 ```bash
 apt-get install -y --no-install-recommends dnsmasq-base conntrack python3
 getent group qorpera-agent-plug || groupadd --system qorpera-agent-plug
 bash deploy/agent-exit/install-agent-exit.sh
 systemctl enable --now qorpera-agent-exit.service qorpera-agent-exit-dns.service qorpera-agent-exit-log.service \
-	qorpera-agent-plug.service qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer
+	qorpera-agent-plug.service qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer qorpera-agent-exit-ship.timer
+systemctl start qorpera-agent-exit-ship.service
 ```
 
-The logs' timer is part of the exit, not optional: it keeps the exit's logs within their cap on the node's root disk
-(`README.md`, "The logs on the node"), and `verify` fails without it.
+The logs' and the shipper's timers are part of the exit, not optional: one keeps the exit's logs within their cap on
+the node's root disk (`README.md`, "The logs on the node"), the other gets them onto the NAS ("The logs on the NAS"),
+and `verify` fails without either. The shipper's first pass runs at once, so `verify` need not wait 5 minutes for it.
 
 Check, within 30 seconds:
 - `X verify` prints `qorpera-agent-exit: healthy`;
 - `cat /run/qorpera-agent-exit/logs.json` shows `"problems":[]`, a `capBytes` of 2147483648 and the disk's
   `freePercent`;
+- `cat /run/qorpera-agent-exit/ship.json` shows `"problems":[]` and `"errors":[]`, and
+  `cat /srv/qorpera/agent-exit-logs/$(hostname)/status.json` shows this node's `host` and a `through` of the pass;
 - `cat /run/qorpera-agent-exit/health.json` shows `"healthy": true` and a `checkedAt` under 20 seconds old (the check runs every 10 seconds);
 - `X status` lists `br0 10.210.0.1/16` and `up0 10.209.255.2/30`, no ports on `qagent0` and an empty client map;
 - `/usr/local/libexec/qorpera-guest-guard/qorpera-guest-guard.sh verify` still exits 0 (the guard and the exit
@@ -54,12 +78,15 @@ Check, within 30 seconds:
 Undo (nothing is plugged in yet):
 
 ```bash
-systemctl disable --now qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer qorpera-agent-exit.service && systemctl disable qorpera-agent-exit-dns.service qorpera-agent-exit-log.service qorpera-agent-plug.service
+systemctl disable --now qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer qorpera-agent-exit-ship.timer qorpera-agent-exit.service && systemctl disable qorpera-agent-exit-dns.service qorpera-agent-exit-log.service qorpera-agent-plug.service
 ```
+
+The mount and the `QORPERA_AGENT_EXIT_NAS_DIR` line may stay: nothing writes to the NAS without the shipper, and what
+is there stays.
 
 ## Step 2: the exit on node 2
 
-The same as step 1, on node 2, with the same checks and the same undo.
+The same as step 1, on node 2, with the same checks and the same undo. The share's marker is there already (step 1).
 
 ## Step 3: migration 20260930089000 (inert)
 

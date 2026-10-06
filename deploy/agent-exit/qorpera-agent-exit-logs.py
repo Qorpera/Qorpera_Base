@@ -40,15 +40,21 @@ it, synced, renamed, then read back from the NAS and compared (sha256). Only the
 say it went; the tender removes a shipped part from the node once it is a week old, or sooner under pressure (shipped
 parts first), with no deletion record: the NAS holds it. A file of that name already on the NAS with other content is
 never overwritten. <nas-dir> must hold the marker file .qorpera-agent-exit-logs (so an empty mount point is never
-written to). Each pass writes <nas-dir>/<host>/status.json: the time it covers ("through") and the days whose lines
-are not all on the NAS yet (the open files, dns.log, what waits). The NAS keeps 90 days too: each node removes its own
-day folders past them. <run-dir>/ship.json says when it last ran and what waits; `verify` fails while it is older than
-30 minutes, while no NAS folder is set, or while a file has waited more than 24 hours.
+written to). A pass opens <nas-dir> once, after it finds the marker there, and does every step on the NAS through that
+open folder and the folders it opens in it: an unmount meanwhile fails (the share is busy), and a lazy one leaves the
+pass writing to the NAS, never into the empty mount point. Each pass writes <nas-dir>/<host>/status.json: the time it
+covers ("through") and the days whose lines are not all on the NAS yet (the open files, dns.log, what waits). The NAS
+keeps 90 days too: each node removes its own day folders past them. <run-dir>/ship.json says when it last ran and what
+waits; `verify` fails while it is older than 30 minutes, while no NAS folder is set, or while a file has waited more
+than 24 hours.
 
 `lookup` answers "who used this address at this time": every connection from the agents to an address (or from an
 agent address) open around a time, on this node and on every node with a folder on the NAS, with the company, the
 machine and the name the machine looked up. Whatever the logs cannot say (a gap, a deleted file, a file not on the NAS
-yet, a node that has not shipped, a logger not running) is listed as not known: never as "no one".
+yet, a node that has not shipped, a logger paused, failing or not running now, a silence in the connection log) is
+listed as not known: never as "no one". The logger writes an "alive" line every minute while it logs (none while it
+pauses or cannot write), so a stretch of the connection log with none says the log may miss connections there,
+whatever the cause, also one that began before the days read or ends after them.
 
 An address belongs to a company from its "plugged" line to its "unplugged" one. Each counts file keeps who was
 plugged in when its day ended, so the newest one is the checkpoint the next day starts from (attribution.json is a
@@ -60,7 +66,8 @@ turns up afterwards.
   qorpera-agent-exit-logs.py report --log-dir DIR [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--json]
   qorpera-agent-exit-logs.py ship --log-dir DIR --nas-dir DIR --status FILE [--host NAME] [--now T]
   qorpera-agent-exit-logs.py lookup --log-dir DIR [--nas-dir DIR] --at TIME (--remote ADDR [--remote-port N] |
-      --agent ADDR) [--window SECONDS] [--days N] [--heartbeat FILE] [--host NAME] [--json]
+      --agent ADDR) [--window SECONDS] [--days N] [--heartbeat FILE] [--pause-file FILE] [--failing-file FILE]
+      [--host NAME] [--json]
 """
 
 import argparse
@@ -75,6 +82,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import sys
 import time
 
@@ -117,6 +125,9 @@ WAIT_LIMIT = DAY
 # A long pass writes its status again this often, so `verify` sees it alive.
 STATUS_EVERY = 60
 NO_NAS = "no NAS folder is set (QORPERA_AGENT_EXIT_NAS_DIR in /etc/default/qorpera-agent-exit)"
+# The logger's "alive" lines come every minute while it logs: a longer stretch without one is a time the connection log
+# may miss connections.
+SILENCE = 180
 
 
 def day_of(ts):
@@ -135,19 +146,20 @@ def iso(ts):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
-def write_atomic(path, data, mode=0o640):
+def write_atomic(path, data, mode=0o640, dir_fd=None):
+    """With dir_fd, path is a name in that open folder."""
     tmp = os.path.join(os.path.dirname(path), f".{os.path.basename(path)}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, mode)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, mode, dir_fd=dir_fd)
     with os.fdopen(fd, "wb") as f:
         f.write(data)
         f.flush()
         os.fsync(f.fileno())
-    os.chmod(tmp, mode)
-    os.replace(tmp, path)
+        os.fchmod(f.fileno(), mode)
+    os.replace(tmp, path, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
 
 
-def write_json(path, value, mode=0o640):
-    write_atomic(path, (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode(), mode)
+def write_json(path, value, mode=0o640, dir_fd=None):
+    write_atomic(path, (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode(), mode, dir_fd)
 
 
 def regular_files(log_dir):
@@ -449,6 +461,8 @@ def tally(flow_paths, intervals, client_records=()):
         event = record.get("event")
         if event == "unreadable":
             node["unreadableLines"] += record["count"]
+            continue
+        if event == "alive":
             continue
         node["records"] += 1
         if event == "gap":
@@ -835,11 +849,11 @@ class ShipError(Exception):
     """One file could not go (a different file of its name is on the NAS, or its copy read back wrong); the next goes."""
 
 
-def file_sha256(path, uncached=False):
+def file_sha256(path, uncached=False, dir_fd=None):
     """A file's sha256. `uncached` drops what the node's page cache holds of it first, so a copy on the NAS is read
-    back from the NAS, not from what this node just wrote."""
+    back from the NAS, not from what this node just wrote. With dir_fd, path is a name in that open folder."""
     digest = hashlib.sha256()
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd)
     with os.fdopen(fd, "rb") as f:
         if uncached and hasattr(os, "posix_fadvise"):
             os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
@@ -848,40 +862,49 @@ def file_sha256(path, uncached=False):
     return digest.hexdigest()
 
 
-def nas_folder(path):
-    if not os.path.isdir(path):
-        os.makedirs(path, mode=0o750, exist_ok=True)
-        sync_folder(os.path.dirname(path))
+def nas_open(parent_fd, name):
+    """Opens the folder `name` in the open NAS folder `parent_fd`, made first if it is not there (never a link)."""
+    try:
+        os.mkdir(name, 0o750, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    except FileExistsError:
+        pass
+    return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd)
 
 
-def nas_copy(source, folder, name):
-    """Copies `source` to <folder>/<name> on the NAS and returns its sha256: written beside it, synced, renamed into
-    place, then read back from the NAS. A file already there with the same content is kept; one with other content is
-    never overwritten (a ShipError). Only this node's pass writes in its folder (the lock)."""
-    final = os.path.join(folder, name)
-    tmp = os.path.join(folder, f".{name}.tmp")
+def nas_copy(source, folder_fd, name, where):
+    """Copies `source` to `name` in the open NAS folder `folder_fd` and returns its sha256: written beside it, synced,
+    renamed into place, then read back from the NAS. A file already there with the same content is kept; one with
+    other content is never overwritten (a ShipError). Only this node's pass writes in its folder (the lock). `where` is
+    the copy's path, for the messages."""
+    tmp = f".{name}.tmp"
     with contextlib.suppress(FileNotFoundError):
-        os.unlink(tmp)
-    if os.path.lexists(final):
-        ours, theirs = file_sha256(source), file_sha256(final, uncached=True)
+        os.unlink(tmp, dir_fd=folder_fd)
+    try:
+        os.stat(name, dir_fd=folder_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        ours, theirs = file_sha256(source), file_sha256(name, uncached=True, dir_fd=folder_fd)
         if ours != theirs:
-            raise ShipError(f"{final} is on the NAS with other content (sha256 {theirs[:12]}, ours {ours[:12]}): "
+            raise ShipError(f"{where} is on the NAS with other content (sha256 {theirs[:12]}, ours {ours[:12]}): "
                             "left as it is, and this file stays on the node")
         return ours
     digest = hashlib.sha256()
     with open(os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC), "rb") as src:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o640)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o640,
+                     dir_fd=folder_fd)
         with os.fdopen(fd, "wb") as dst:
             while chunk := src.read(1024 * 1024):
                 digest.update(chunk)
                 dst.write(chunk)
             dst.flush()
             os.fsync(dst.fileno())
-    os.rename(tmp, final)
-    sync_folder(folder)
-    if file_sha256(final, uncached=True) != digest.hexdigest():
-        os.unlink(final)
-        raise ShipError(f"{final} read back from the NAS is not what was written: removed, tried again next pass")
+    os.rename(tmp, name, src_dir_fd=folder_fd, dst_dir_fd=folder_fd)
+    os.fsync(folder_fd)
+    if file_sha256(name, uncached=True, dir_fd=folder_fd) != digest.hexdigest():
+        os.unlink(name, dir_fd=folder_fd)
+        raise ShipError(f"{where} read back from the NAS is not what was written: removed, tried again next pass")
     return digest.hexdigest()
 
 
@@ -981,20 +1004,35 @@ def ship_locked(log_dir, nas_dir, status, host, now):
 
     if nas_dir:
         interim()
+        # Every step on the NAS goes through folders opened in the one checked for the marker: an unmount meanwhile
+        # fails (busy), and a lazy one leaves these on the NAS, so nothing is ever written into the bare mount point.
+        fds = {}
+
+        def nas(*names):
+            if names not in fds:
+                fds[names] = nas_open(nas(*names[:-1]), names[-1])
+            return fds[names]
+
         try:
-            if not os.path.isfile(os.path.join(nas_dir, NAS_MARKER)):
+            fds[()] = os.open(nas_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            try:
+                marker = os.stat(NAS_MARKER, dir_fd=fds[()], follow_symlinks=False)
+            except FileNotFoundError:
+                marker = None
+            if marker is None or not stat.S_ISREG(marker.st_mode):
                 raise ShipError(f"{nas_dir} has no {NAS_MARKER}: the NAS is not mounted there")
-            host_dir = os.path.join(nas_dir, host)
-            nas_folder(host_dir)
+            host_fd = nas(host)
+            current = None
             for day, sub, name, path, _ in waiting:
-                folder = os.path.join(host_dir, day)
-                nas_folder(folder)
-                if sub:
-                    folder = os.path.join(folder, sub)
-                    nas_folder(folder)
+                if day != current:
+                    for key in [key for key in fds if len(key) > 1]:
+                        os.close(fds.pop(key))
+                    current = day
+                folder_fd = nas(host, day, sub) if sub else nas(host, day)
                 target = f"{name}.json" if sub else name
+                where = os.path.join(nas_dir, host, day, sub, target)
                 try:
-                    digest = nas_copy(path, folder, target)
+                    digest = nas_copy(path, folder_fd, target, where)
                     size = os.lstat(path).st_size
                 except ShipError as error:
                     errors.append(str(error)[:300])
@@ -1013,13 +1051,15 @@ def ship_locked(log_dir, nas_dir, status, host, now):
             # The other nodes' lookups read here what this node has not shipped yet.
             for kind, days in not_shipped(log_dir, now).items():
                 pending[kind] = sorted(set(pending.get(kind, [])) | set(days))
-            write_json(os.path.join(host_dir, "status.json"),
-                       {"schema": "qorpera.agent-exit-ship-host/v1", "host": host, "through": iso(now),
-                        "notShipped": pending}, 0o644)
-            result["removedFromNas"] = expire_nas(log_dir, host_dir, now)
+            write_json("status.json", {"schema": "qorpera.agent-exit-ship-host/v1", "host": host, "through": iso(now),
+                                       "notShipped": pending}, 0o644, dir_fd=host_fd)
+            result["removedFromNas"] = expire_nas(log_dir, host_fd, now)
         except (OSError, ShipError) as error:
             errors.append(f"{error}"[:300])
             print(f"qorpera-agent-exit-logs: ship: {error}", file=sys.stderr, flush=True)
+        finally:
+            for fd in fds.values():
+                os.close(fd)
         waiting = waiting_files(log_dir, now)
         problems = overdue(waiting, now, errors)
     result |= {"waiting": len(waiting), "oldestWaiting": iso(min(w[4] for w in waiting)) if waiting else None,
@@ -1028,15 +1068,16 @@ def ship_locked(log_dir, nas_dir, status, host, now):
     return result
 
 
-def expire_nas(log_dir, host_dir, now):
-    """This node's day folders on the NAS past their 90 days go, and the node's shipped records of them."""
+def expire_nas(log_dir, host_fd, now):
+    """This node's day folders on the NAS (the open folder `host_fd`) past their 90 days go, and the node's shipped
+    records of them."""
     oldest_kept = day_of(now - KEEP_DAYS * DAY)
     gone = 0
-    with os.scandir(host_dir) as entries:
+    with os.scandir(host_fd) as entries:
         old = sorted(entry.name for entry in entries
                      if DAY_NAME.match(entry.name) and entry.name < oldest_kept and entry.is_dir(follow_symlinks=False))
     for day in old:
-        shutil.rmtree(os.path.join(host_dir, day))
+        shutil.rmtree(day, dir_fd=host_fd)
         gone += 1
     for sub in ("", LOST):
         for name, record in shipped_records(log_dir, sub).items():
@@ -1124,8 +1165,9 @@ def cut_time(name):
 
 
 def dns_time(m, reference):
-    """A dnsmasq line's time. Its clock is the node's (UTC) and has no year: the year of `reference` (the file's cut,
-    or now), or the one before for a line that would then come more than a day after it."""
+    """A dnsmasq line's time. dnsmasq writes its local time, and runs with TZ=UTC (qorpera-agent-exit.sh dns), so it is
+    UTC whatever the node's zone. It has no year: the year of `reference` (the file's cut, or now), or the one before
+    for a line that would then come more than a day after it."""
     month = MONTHS.get(m.group(1))
     year = time.gmtime(reference).tm_year
     for each in (year, year - 1):
@@ -1167,8 +1209,9 @@ def resolutions(sources, clients, addresses):
 
 
 def flow_records(paths, needles):
-    """The connection log's lines that hold one of `needles` (a quick test; the caller matches exactly), and every
-    gap line, with the time of the line before it ("after"). A file, or one of those lines, that cannot be read is an
+    """The connection log's lines that hold one of `needles` (a quick test; the caller matches exactly), every gap
+    line, with the time of the line before it ("after"; an alive line, written at the clock's time while conntrack's
+    can lag, never counts as that), and every alive line. A file, or one of those lines, that cannot be read is an
     "unreadable" record."""
     previous = None
     for path in paths:
@@ -1176,8 +1219,8 @@ def flow_records(paths, needles):
         try:
             with opener(path, "rt", encoding="utf-8", errors="replace") as f:
                 for line in f:
-                    gap = '"event":"gap"' in line
-                    if gap or any(needle in line for needle in needles):
+                    gap, alive = '"event":"gap"' in line, '"event":"alive"' in line
+                    if gap or alive or any(needle in line for needle in needles):
                         record = read_line(line)
                         if record is None:
                             yield {"event": "unreadable", "path": path, "error": "a line that cannot be read"}
@@ -1186,7 +1229,8 @@ def flow_records(paths, needles):
                                 before = read_line(previous)
                                 record["after"] = before.get("ts") if before else None
                             yield record
-                    previous = line
+                    if not alive:
+                        previous = line
         except (OSError, EOFError) as error:
             yield {"event": "unreadable", "path": path, "error": str(error)}
 
@@ -1218,6 +1262,18 @@ def merged_spans(spans):
         else:
             joined.append((start, end, reason, 1))
     return joined
+
+
+def silences(beats, start, end, covered=()):
+    """The stretches from `start` to `end` of more than SILENCE seconds with no alive line (`beats`, their times), less
+    the (from, to) spans in `covered` (already not known): (from, to) pairs."""
+    if start >= end:
+        return []
+    points = sorted({start, end, *(beat for beat in beats if start < beat < end)})
+    pieces = list(zip(points, points[1:]))
+    for low, high in covered:
+        pieces = [piece for a, b in pieces for piece in ((a, min(b, low)), (max(a, high), b)) if piece[0] < piece[1]]
+    return [(a, b) for a, b in pieces if b - a > SILENCE]
 
 
 def nas_days(host_dir):
@@ -1271,19 +1327,23 @@ def counts_before(local_dir, host_dir, day):
 KIND_WHAT = {"flows": "connections", "clients": "companies", "dns": "names"}
 
 
-def lookup(log_dir, nas_dir, host, at, window, margin, remote, port, agent, now, heartbeat=None):
+def lookup(log_dir, nas_dir, host, at, window, margin, remote, port, agent, now, heartbeat=None, pause_file=None,
+           failing_file=None):
     """Who used an address at a time: the connections from the agents (to `remote`, from `agent`, or both) that were
     open within `window` seconds of `at`, on this node (its own logs, then the NAS) and on every node with a folder on
     the NAS, each with its company, machine and the name the machine had looked up. Read: the days from `margin` days
     before the window to `margin` days after (a connection is found by its start line or its end line in them). What
-    the logs cannot say (a gap, a deleted file, a file not on the NAS yet, a node that has not shipped, a logger not
-    running) is listed as not known, never as no one; the answer is complete only with no such gap for connections or
-    companies."""
+    the logs cannot say (a gap, a deleted file, a file not on the NAS yet, a node that has not shipped, a logger paused,
+    failing or not running now, a stretch with no alive line) is listed as not known, never as no one; the answer is
+    complete only with no such gap for connections or companies."""
     low, high = at - window, at + window
     first, last = day_of(low - margin * DAY), day_of(high + margin * DAY)
     scanned = days_between(first, last)
     oldest_kept = day_of(now - KEEP_DAYS * DAY)
     unknown, connections, refused = [], [], []
+    # Node ("*" for all) to the spans already not known for connections, wherever they are: no silence is listed again
+    # within one.
+    covered = {}
 
     def not_known(node, start, end, what, why):
         # Connections: where it touches the window. Companies: anywhere before the window ends (a plugged line missed
@@ -1292,6 +1352,9 @@ def lookup(log_dir, nas_dir, host, at, window, margin, remote, port, agent, now,
             touches = start is None or start <= high
         else:
             touches = (start is None or start <= high) and (end is None or end >= low - (DAY if what == "names" else 0))
+        if what == "connections":
+            covered.setdefault(node, []).append((-float("inf") if start is None else start,
+                                                 float("inf") if end is None else end))
         entry = {"node": node, "from": iso(start) if start is not None else None,
                  "to": iso(end) if end is not None else None, "what": what, "why": str(why)[:300]}
         if touches and entry not in unknown:
@@ -1322,6 +1385,23 @@ def lookup(log_dir, nas_dir, host, at, window, margin, remote, port, agent, now,
         if beat is None or beat < now - 60:
             not_known(host, beat, None, "connections", "the connection logger is not running now" +
                       (f" (its last sign of life: {iso(beat)})" if beat is not None else ""))
+    # The logger's markers: each there exactly while it pauses, or while it cannot write, and written when that began.
+    # Its gap line comes only when that ends, and a pause writes no alive lines from its start.
+    for marker, state in ((pause_file, "the connection log is paused now"),
+                          (failing_file, "the connection logger is failing now")):
+        if not marker:
+            continue
+        try:
+            since = os.stat(marker).st_mtime
+            with open(marker, encoding="utf-8", errors="replace") as f:
+                said = f.read(300).strip()
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            not_known(host, None, None, "connections", f"{marker} cannot be read ({error}): it is not known "
+                                                       f"whether {state}")
+            continue
+        not_known(host, since, None, "connections", f"{state}: {said}" if said else state)
     needles = [f'"{address}"' for address in (remote, agent) if address]
 
     def wanted(record):
@@ -1337,8 +1417,10 @@ def lookup(log_dir, nas_dir, host, at, window, margin, remote, port, agent, now,
         for day, why in unreadable:
             for what in ("connections", "companies", "names"):
                 not_known(name, day_start(day), day_start(day) + DAY, what, why)
-        earlier = {day for day in (nas_days(host_dir) if host_dir else ()) if day < first}
-        earlier |= {day for each in (regular_files(own_dir) if own_dir else ()) if (day := file_day(each)) and day < first}
+        # Every day the node has logs of, here or on the NAS.
+        kept = nas_days(host_dir) if host_dir else set()
+        kept |= {day for each in (regular_files(own_dir) if own_dir else ()) if (day := file_day(each))}
+        earlier = {day for day in kept if day < first}
         if counted_day is None and earlier:
             not_known(name, None, day_start(first), "companies", f"no counts before {first} say who was plugged in")
         # What should be there and is not: a deleted file (its record), a file the node shipped (the node's own
@@ -1358,6 +1440,7 @@ def lookup(log_dir, nas_dir, host, at, window, margin, remote, port, agent, now,
             if each not in names and each not in lost and kind_of(each) in KIND_WHAT and file_day(each) in scanned:
                 day = day_start(file_day(each))
                 not_known(name, day, day + DAY, KIND_WHAT[kind_of(each)], f"{each} is not on the node or the NAS")
+        through = None
         if not local:
             status = read_json(os.path.join(host_dir, "status.json")) or {}
             try:
@@ -1383,7 +1466,7 @@ def lookup(log_dir, nas_dir, host, at, window, margin, remote, port, agent, now,
             not_known(name, None, day_start(last) + DAY, "companies", "a client history line could not be read")
         intervals, _ = attribution_intervals(plugged, [r for r in client_records if r.get("ts") is not None])
 
-        opened, pairs, pause, dns_gaps = {}, [], None, []
+        opened, pairs, pause, dns_gaps, beats = {}, [], None, [], []
         cuts = sorted(cut_time(each) for each in [*names, *lost] if DNS_PART.match(each) or DNS_COPY.match(each))
         paths = [names[each] for day in scanned for each in day_names(names, "flows", day)]
         for record in flow_records(paths, needles):
@@ -1400,6 +1483,9 @@ def lookup(log_dir, nas_dir, host, at, window, margin, remote, port, agent, now,
                 if reason.startswith("paused: ") and "DNS record" in reason:
                     # What dnsmasq wrote since the last cut (or since the logger last emptied it): from that cut on.
                     dns_gaps.append((max((cut for cut in cuts if cut <= ts), default=None), ts, reason))
+                    if not pause:
+                        # Written only while the logger pauses: its pause began before what was read.
+                        pause = (None, f"the logger paused before what was read, its line says: {reason}")
                 elif reason.startswith("paused: "):
                     if pause:
                         # Two pauses with no "resumed" line between (not written so): the first ran until the second.
@@ -1413,6 +1499,8 @@ def lookup(log_dir, nas_dir, host, at, window, margin, remote, port, agent, now,
                     if reason == "logger started" or reason.startswith("resumed: "):
                         pause = None
                     not_known(name, begun, ts, "connections", reason)
+            elif event == "alive":
+                beats.append(ts)
             elif event in ("new", "destroy") and wanted(record):
                 key = tuple(record.get(field) for field in ("id", "src", "dst", "sport", "dport", "proto"))
                 if event == "new":
@@ -1431,6 +1519,16 @@ def lookup(log_dir, nas_dir, host, at, window, margin, remote, port, agent, now,
         for start, end, reason, lines in merged_spans(dns_gaps):
             not_known(name, start, end, "names", reason if lines == 1 else
                       f"{lines} gap lines say the DNS record was not kept, the last: {reason}")
+        # The logger writes an alive line every minute while it logs. A stretch with none, from the node's first log
+        # day on, to now or to what it has shipped, is a time it was down, paused or could not write: also when no
+        # line read says so (it stopped and has not started again, or its pause or outage began before the days read
+        # and ends after them). A node whose first log day is after the days read did not log then: nothing is missed.
+        born = min({day for each in [*names, *lost] if (day := file_day(each))} | kept, default=None)
+        known_from = day_start(max(first, born) if born else first)
+        known_to = min(now, day_start(last) + DAY, *(() if through is None else (through,)))
+        for a, b in silences(beats, known_from, known_to, covered.get(name, []) + covered.get("*", [])):
+            not_known(name, a, b, "connections", "the connection logger wrote no line then (it writes one every "
+                                                 "minute while it logs): it was down, paused or could not write")
         pairs += [(began, None) for began in opened.values()]
 
         found = []
@@ -1516,6 +1614,8 @@ def main():
     parser.add_argument("--remote-port", type=int)
     parser.add_argument("--agent")
     parser.add_argument("--heartbeat")
+    parser.add_argument("--pause-file")
+    parser.add_argument("--failing-file")
     parser.add_argument("--cap-bytes", type=int, default=CAP_BYTES)
     parser.add_argument("--floor-percent", type=float, default=FLOOR_PERCENT)
     parser.add_argument("--day")
@@ -1554,7 +1654,7 @@ def main():
             parser.error(f"--window must be 0 or more and --days between 0 and {KEEP_DAYS}")
         now = time.time() if args.now is None else args.now
         result = lookup(args.log_dir, args.nas_dir, args.host, at, args.window, args.margin, args.remote,
-                        args.remote_port, args.agent, now, args.heartbeat)
+                        args.remote_port, args.agent, now, args.heartbeat, args.pause_file, args.failing_file)
         if args.json:
             print(json.dumps(result, indent=2))
         else:

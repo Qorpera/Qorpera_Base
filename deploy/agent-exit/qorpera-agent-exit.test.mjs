@@ -1110,6 +1110,8 @@ describe("the logs on the NAS", { skip: pythonUsable ? false : "needs Python 3.1
 	const opened = (src, ts) => ({ event: "new", src, dst: "1.1.1.1", proto: "tcp", sport: 40000, dport: 443, ts });
 	const closed = (src, ts, bytes) => ({ event: "destroy", src, dst: "1.1.1.1", proto: "tcp", sport: 40000, dport: 443, packets_out: 5, bytes_out: bytes, packets_in: 4, bytes_in: 900, ts });
 	const gap = (reason, ts, since) => ({ event: "gap", reason, ts, ...(since === undefined ? {} : { since }) });
+	// The logger's alive lines, one a minute from `from` until before `to`.
+	const alive = (from, to) => Array.from({ length: Math.ceil((to - from) / 60) }, (_, i) => ({ event: "alive", ts: from + 60 * i }));
 	// A node: its log folder and status files, and the NAS (mounted: its marker is there), its own or another node's.
 	const node = (name, nas) => {
 		const root = mkdtempSync(join(dir, `${name}-`));
@@ -1229,8 +1231,8 @@ logs = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(logs)
 log_dir, nas_dir, status, now = sys.argv[2], sys.argv[3], sys.argv[4], float(sys.argv[5])
 real, wrong = logs.file_sha256, [True]
-def read_back(path, uncached=False):
-    return "0" * 64 if uncached and wrong[0] else real(path, uncached)
+def read_back(path, uncached=False, dir_fd=None):
+    return "0" * 64 if uncached and wrong[0] else real(path, uncached, dir_fd)
 logs.file_sha256 = read_back
 passes = []
 for each in (True, False):
@@ -1314,7 +1316,7 @@ print(json.dumps(passes))
 			writeFileSync(join(n.log, `clients-${day}.jsonl`), lines([machine("10.210.1.1", company, machineId, t0 + 100)]));
 			writeFileSync(
 				join(n.log, `flows-${day}.jsonl`),
-				lines([gap("logger started", t0 + 50), ...extra, opened("10.210.1.1", start), closed("10.210.1.1", start + 100, bytes)]),
+				lines([gap("logger started", t0 + 50), ...extra, opened("10.210.1.1", start), closed("10.210.1.1", start + 100, bytes), ...alive(t0 + 55, t0 + DAY)]),
 			);
 			writeFileSync(
 				join(n.log, "dns.log"),
@@ -1368,22 +1370,38 @@ print(json.dumps(passes))
 		const g = node("gaps");
 		const now = t0 + 3600;
 		writeFileSync(join(g.log, `clients-${day}.jsonl`), lines([machine("10.210.1.1", "cA", "mA", t0 + 100)]));
-		const unknownFor = (records, ...extra) => {
+		const unknownIn = (records, ...extra) => {
 			writeFileSync(join(g.log, `flows-${day}.jsonl`), lines(records));
 			const result = lookup(g, now, t0 + 900, ...extra);
 			return [result.unknown.map((u) => [u.node, u.from, u.to, u.what, u.why]), result.complete];
 		};
+		// The logger's alive lines all along, besides what the records say.
+		const unknownFor = (records, ...extra) => unknownIn([...alive(t0, now), ...records], ...extra);
 		const seen = [opened("10.210.1.1", t0 + 800), closed("10.210.1.1", t0 + 900, 500)];
 		assert.deepEqual(unknownFor(seen), [[], true]);
+		// A stretch of more than 3 minutes with no alive line, and no gap line to say why (the logger was stopped, or
+		// it stopped and has not started again): not known from its last line on.
+		const silent = "the connection logger wrote no line then (it writes one every minute while it logs): it was down, paused or could not write";
+		assert.deepEqual(unknownIn([...alive(t0, t0 + 700), ...seen, ...alive(t0 + 1000, now)]), [
+			[["node-a", iso(t0 + 660), iso(t0 + 1000), "connections", silent]],
+			false,
+		]);
+		assert.deepEqual(unknownIn(seen), [[["node-a", iso(t0), iso(now), "connections", silent]], false]);
+		// A pause as the logger writes it (no alive lines while paused): its own lines say so, once.
+		const paused = "paused: the logs hold 2147483648 bytes, past their cap";
+		const resumed = "resumed: 3 lines not written while paused";
+		assert.deepEqual(unknownIn([...alive(t0, t0 + 700), gap(paused, t0 + 700), gap(resumed, t0 + 1000, t0 + 700), ...alive(t0 + 1000, now)]), [
+			[["node-a", iso(t0 + 700), iso(t0 + 1000), "connections", resumed]],
+			false,
+		]);
 		// Events conntrack could not deliver: since the line before.
 		assert.deepEqual(unknownFor([opened("10.210.1.1", t0 + 100), gap("conntrack lost events", t0 + 860)]), [
 			[["node-a", iso(t0 + 100), iso(t0 + 860), "connections", "conntrack lost events"]],
 			false,
 		]);
 		// A pause, from its line to the one that says what it missed.
-		const paused = "paused: the logs hold 2147483648 bytes, past their cap";
-		assert.deepEqual(unknownFor([gap(paused, t0 + 700), gap("resumed: 3 lines not written while paused", t0 + 1000, t0 + 700)]), [
-			[["node-a", iso(t0 + 700), iso(t0 + 1000), "connections", "resumed: 3 lines not written while paused"]],
+		assert.deepEqual(unknownFor([gap(paused, t0 + 700), gap(resumed, t0 + 1000, t0 + 700)]), [
+			[["node-a", iso(t0 + 700), iso(t0 + 1000), "connections", resumed]],
 			false,
 		]);
 		// The logger stopped while it paused: its pause ends where the next logger starts.
@@ -1402,9 +1420,21 @@ print(json.dumps(passes))
 		// While paused, the logger empties dns.log every 5 seconds: the names since the last cut are not known, once.
 		writeFileSync(join(g.log, "dns-2026-09-01T000500Z.log.gz"), gzipSync(""));
 		const dropped = "paused: 120 bytes of the DNS record not kept";
-		assert.deepEqual(unknownFor([...seen, ...[0, 5, 10].map((s) => gap(dropped, t0 + 700 + s))]), [
-			[["node-a", iso(t0 + 300), iso(t0 + 710), "names", `3 gap lines say the DNS record was not kept, the last: ${dropped}`]],
-			true,
+		const emptied = [0, 5, 10].map((s) => gap(dropped, t0 + 700 + s));
+		assert.deepEqual(unknownFor([...seen, gap(paused, t0 + 690), ...emptied, gap(resumed, t0 + 1000, t0 + 690)]), [
+			[
+				["node-a", iso(t0 + 690), iso(t0 + 1000), "connections", resumed],
+				["node-a", iso(t0 + 300), iso(t0 + 710), "names", `3 gap lines say the DNS record was not kept, the last: ${dropped}`],
+			],
+			false,
+		]);
+		// Those lines come only while the logger pauses: with no pause line before them, it paused before what was read.
+		assert.deepEqual(unknownFor([...seen, ...emptied]), [
+			[
+				["node-a", null, null, "connections", `the logger paused before what was read, its line says: ${dropped} (and not resumed in what was read)`],
+				["node-a", iso(t0 + 300), iso(t0 + 710), "names", `3 gap lines say the DNS record was not kept, the last: ${dropped}`],
+			],
+			false,
 		]);
 		rmSync(join(g.log, "dns-2026-09-01T000500Z.log.gz"));
 		// A deleted part: its day, and the grace for late lines.
@@ -1427,6 +1457,37 @@ print(json.dumps(passes))
 			false,
 		]);
 		rmSync(join(g.nas, "node-b"), { recursive: true });
+		// Another node whose logger stopped, then shipped its day: no line on the NAS says so, its silence does, to
+		// what it has shipped.
+		mkdirSync(join(g.nas, "node-b", day), { recursive: true });
+		writeFileSync(join(g.nas, "node-b", "status.json"), JSON.stringify({ through: iso(t0 + 3000), notShipped: {} }));
+		writeFileSync(join(g.nas, "node-b", day, `flows-${day}.p001.jsonl.gz`), gzipSync(lines(alive(t0, t0 + 700))));
+		assert.deepEqual(unknownFor(seen), [[["node-b", iso(t0 + 660), iso(t0 + 3000), "connections", silent]], false]);
+		// A node whose logs begin after the days read did not log then.
+		rmSync(join(g.nas, "node-b", day), { recursive: true });
+		mkdirSync(join(g.nas, "node-b", "2026-09-05"));
+		assert.deepEqual(unknownFor(seen), [[], true]);
+		rmSync(join(g.nas, "node-b"), { recursive: true });
+		// The logger paused, or unable to write, now: its marker file, written when that began, says since when. (Its
+		// gap line comes only when that ends.)
+		const marker = join(g.root, "logger.marker");
+		const full = "the node's disk has 4.0% free (floor 10%) and the exit's logs hold 2147483648 bytes (cap 1073741824)";
+		writeFileSync(marker, `${full}\n`);
+		utimesSync(marker, t0 + 900, t0 + 900);
+		assert.deepEqual(unknownFor(seen, "--pause-file", marker), [
+			[["node-a", iso(t0 + 900), null, "connections", `the connection log is paused now: ${full}`]],
+			false,
+		]);
+		writeFileSync(marker, "cannot write the connection log: No space left on device\n");
+		utimesSync(marker, t0 + 1000, t0 + 1000);
+		assert.deepEqual(unknownFor(seen, "--failing-file", marker), [
+			[["node-a", iso(t0 + 1000), null, "connections", "the connection logger is failing now: cannot write the connection log: No space left on device"]],
+			false,
+		]);
+		utimesSync(marker, t0 + 2000, t0 + 2000);
+		assert.deepEqual(unknownFor(seen, "--failing-file", marker), [[], true], "begun after the window");
+		rmSync(marker);
+		assert.deepEqual(unknownFor(seen, "--pause-file", marker, "--failing-file", marker), [[], true]);
 		// The logger not running now (no sign of life for a minute): from its last one on, here within the window.
 		const beat = join(g.root, "logger.heartbeat");
 		writeFileSync(beat, "");
