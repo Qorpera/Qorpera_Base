@@ -339,7 +339,8 @@ runtime adapter, with no migration.
 
 **Activation checks** (test 761 §8 runs them; the coordinator may copy them into the activation file):
 - each of the four patched snapshot-v1 bodies, with its `folder-v2` line removed, has its reviewed digest, so the
-  snapshot-v1 text after the line stays byte-identical;
+  snapshot-v1 text after the line stays byte-identical (no snapshot-v1 digests since 3 October: legacy sweep A, #829,
+  removed this check from 761 §8);
 - none of the new functions contains `for update`, `for share`, `nowait`, `qorpera_lock_profile_gc_fence`,
   `qorpera_folder_fences` or `qorpera_runner_jobs`; `for no key update` appears only in
   `qorpera_folder_authorize_replication` (§6);
