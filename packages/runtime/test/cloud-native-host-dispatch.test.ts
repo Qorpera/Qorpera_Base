@@ -392,7 +392,7 @@ it("keeps other origins as sent, and refuses any other call on the project's ori
 	])
 		for (const name of ["qorpera_identity_recovery_runtime_state", "qorpera_describe_native_tool_authority"])
 			await expect(dispatch.fetch(`${ORIGIN}/rest/v1/rpc/${name}`, rpc(body))).rejects.toThrow("malformed");
-	expect(sent).toHaveLength(2);
+	expect(sent).toHaveLength(1);
 });
 
 it("checks the holder's identity credential once, and an execution host's run replaces it with its machine's", async () => {

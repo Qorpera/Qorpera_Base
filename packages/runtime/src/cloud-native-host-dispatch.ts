@@ -150,9 +150,8 @@ export interface NativeHostIdentityCredential {
 
 const RPC_PATH = /^\/rest\/v1\/rpc\/([a-z0-9_]{1,128})$/;
 const LEASE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
-/** A credential capsule's object, as SupabaseNativeCredentialCapsuleStore names it. */
-const CAPSULE_OBJECT_PATH =
-	/^\/storage\/v1\/object\/qorpera-native-compute-capsules\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.capsule$/;
+/** A credential capsule's object, as SupabaseNativeCredentialCapsuleStore names it: `<capsule id>.capsule`. */
+const CAPSULE_OBJECT_PATH = /^\/storage\/v1\/object\/qorpera-native-compute-capsules\/([^/]+)\.capsule$/;
 /** The request header the capsule bucket's and the presence topic's policies read the holder's credential from. */
 export const NATIVE_HOLDER_HEADER = "x-qorpera-identity";
 
@@ -276,9 +275,11 @@ export class NativeHostDispatch {
 	 * holder's credential, which the bucket's policies hold to the holder's own capsules (migration 20260930103000). */
 	#storage(url: URL, input: string | URL | Request, init?: RequestInit): Promise<Response> {
 		const method = init?.method ?? "GET";
+		const capsule = CAPSULE_OBJECT_PATH.exec(url.pathname)?.[1];
 		if (
 			input instanceof Request ||
-			!CAPSULE_OBJECT_PATH.test(url.pathname) ||
+			capsule === undefined ||
+			!UUID_PATTERN.test(capsule) ||
 			url.search ||
 			(method !== "GET" && method !== "POST")
 		)
