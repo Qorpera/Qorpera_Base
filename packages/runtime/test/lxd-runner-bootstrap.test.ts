@@ -574,7 +574,9 @@ describe("LXD native login guest bootstrap", () => {
 
 	it("refuses a login guest given the service key (G2-5)", async () => {
 		const { paths } = await loginFixture();
-		await writeFile(join(paths.credentialSource, "qorpera-supabase-service-key"), "service-key-test\n", { mode: 0o600 });
+		await writeFile(join(paths.credentialSource, "qorpera-supabase-service-key"), "service-key-test\n", {
+			mode: 0o600,
+		});
 		const uid = process.getuid?.() ?? 0;
 		const gid = process.getgid?.() ?? 0;
 		const started: string[] = [];
@@ -813,7 +815,9 @@ describe("governed native company guest bootstrap", () => {
 
 	it("refuses a runner guest given the service key before any service starts (G2-5)", async () => {
 		const paths = await companyFixture();
-		await writeFile(join(paths.credentialSource, "qorpera-supabase-service-key"), "service-key-test\n", { mode: 0o600 });
+		await writeFile(join(paths.credentialSource, "qorpera-supabase-service-key"), "service-key-test\n", {
+			mode: 0o600,
+		});
 		const started: string[] = [];
 		await expect(startCompanyFixture(paths, started)).rejects.toThrow("unexpected entries");
 		expect(started).toEqual([]);

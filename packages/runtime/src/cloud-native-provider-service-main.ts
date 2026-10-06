@@ -275,7 +275,10 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	const folderSearch = nativeFolderSearchConfiguration(environment);
 	const baseUrl = required(environment, "QORPERA_SUPABASE_URL");
 	// G2-5: a native host holds no service key. One delivered anyway (a credential or the environment) stops it.
-	if (environment.QORPERA_SUPABASE_SERVICE_KEY !== undefined || (await credentialPresent(environment, SERVICE_KEY_CREDENTIAL)))
+	if (
+		environment.QORPERA_SUPABASE_SERVICE_KEY !== undefined ||
+		(await credentialPresent(environment, SERVICE_KEY_CREDENTIAL))
+	)
 		throw new Error("A native host must hold no service key");
 	// Stateless Compute step 1: an identity whose login is kept by the vault has no key, volume or
 	// epoch file on this machine. Its host receives empty credential files and asks the vault.
@@ -397,9 +400,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			computerConfiguration &&
 			(!computerToken ||
 				!TOKEN_PATTERN.test(computerToken) ||
-				[masterKey, bridgeToken, identity.credential, objectToken, secretBrokerToken].includes(
-					computerToken,
-				))
+				[masterKey, bridgeToken, identity.credential, objectToken, secretBrokerToken].includes(computerToken))
 		)
 			throw new Error("Company Computer requires a distinct private systemd credential");
 		const codingToken = codingConfiguration
@@ -409,14 +410,9 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			codingConfiguration &&
 			(!codingToken ||
 				!TOKEN_PATTERN.test(codingToken) ||
-				[
-					masterKey,
-					bridgeToken,
-					identity.credential,
-					objectToken,
-					secretBrokerToken,
-					computerToken,
-				].includes(codingToken))
+				[masterKey, bridgeToken, identity.credential, objectToken, secretBrokerToken, computerToken].includes(
+					codingToken,
+				))
 		)
 			throw new Error("Coding command transport requires a distinct private systemd credential");
 		const pathControl = new HttpCloudCompanyPathControl({
