@@ -5,10 +5,13 @@
 // a `qorpera.run-work/v1` envelope standing where the run's earlier steps were (or, on a resumed run, would be).
 // Codex checks the reply against its own items before anything changes: it refuses a dropped instruction or user
 // message, a call kept without its output, a fold that is not the run's earlier steps, a work message out of place
-// or not a plain envelope, and kept text that passes for one. The composed input applies to that one request
-// only, so the work message never enters Codex's history; the result fence then runs over what was kept.
+// or not a plain envelope, and kept host-written text that passes for one. The composed input applies to that one
+// request only, so the work message never enters Codex's history; the result fence then runs over what was kept.
+// The reply may also set the request's prompt cache key (§6.2), a capability of its own.
 
 export const CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA = "qorpera.native-context-composition/v1";
+/** The patch's marker for a prompt cache key set by the composition's reply. */
+export const CLOUD_NATIVE_PROMPT_CACHE_KEY_CAPABILITY = "qorpera.native-prompt-cache-key/v1";
 /** The work message's bound, as the pinned Codex's. */
 export const CLOUD_NATIVE_WORK_MESSAGE_BYTES = 256 * 1024;
 const ID = /^[A-Za-z0-9_:.-]{1,160}$/;
@@ -66,7 +69,7 @@ export type CloudNativeContextEntry = { keep: number } | { work: string };
 
 export interface CloudNativeContextComposition {
 	input: CloudNativeContextEntry[];
-	/** `qorpera:` and a SHA-256 in lowercase hex (design §6.2); Codex's own key when absent. */
+	/** `qorpera:` and a SHA-256 in lowercase hex (design §6.2, its own capability); Codex's own key when absent. */
 	promptCacheKey?: string;
 }
 

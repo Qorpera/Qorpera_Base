@@ -110,7 +110,7 @@ index 04e57f8c5..064a3bbf3 100644
          | ServerNotification::ThreadStatusChanged(_)
          | ServerNotification::ThreadArchived(_)
 diff --git a/codex-rs/app-server/src/request_processors/initialize_processor.rs b/codex-rs/app-server/src/request_processors/initialize_processor.rs
-index d6c77f12e..49edfff0f 100644
+index d6c77f12e..ff57de811 100644
 --- a/codex-rs/app-server/src/request_processors/initialize_processor.rs
 +++ b/codex-rs/app-server/src/request_processors/initialize_processor.rs
 @@ -173,7 +173,12 @@ impl InitializeRequestProcessor {
@@ -121,7 +121,7 @@ index d6c77f12e..49edfff0f 100644
 +        // Private downstream capability marker, returned only to the local host.
 +        // Provider request headers and the official authentication flow are unchanged.
 +        let user_agent = format!(
-+            "{} qorpera.native-capture-images/v1 qorpera.native-message-composition/v1 qorpera.native-context-composition/v1 qorpera.native-result-fence/v1 qorpera.native-direct-tools/v1",
++            "{} qorpera.native-capture-images/v1 qorpera.native-message-composition/v1 qorpera.native-context-composition/v1 qorpera.native-prompt-cache-key/v1 qorpera.native-result-fence/v1 qorpera.native-direct-tools/v1",
 +            get_codex_user_agent()
 +        );
          let response = InitializeResponse {
@@ -369,10 +369,10 @@ index 55d1f474e..c3253fa33 100644
  mod realtime_history;
 diff --git a/codex-rs/core/src/qorpera_context_composition.rs b/codex-rs/core/src/qorpera_context_composition.rs
 new file mode 100644
-index 000000000..e25d67ecd
+index 000000000..4a7f60380
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_context_composition.rs
-@@ -0,0 +1,504 @@
+@@ -0,0 +1,508 @@
 +//! Private cloud context composition (`qorpera.native-context-composition/v1`). Before every provider
 +//! request the Qorpera host composes the request's input from Codex's own: it keeps items by their
 +//! position, and where the run's earlier steps were (or, on a resumed run, would be) it may put one work
@@ -387,7 +387,8 @@ index 000000000..e25d67ecd
 +
 +use crate::responses_metadata::CodexResponsesMetadata;
 +
-+/// Composes `input` in place. Returns the prompt cache key the host chose for the request, if any.
++/// Composes `input` in place. Returns the prompt cache key the host chose for the request, if any: its
++/// own capability (`qorpera.native-prompt-cache-key/v1`), carried on the composition's reply.
 +pub(crate) async fn compose_context(
 +    input: &mut Vec<ResponseItem>,
 +    metadata: &CodexResponsesMetadata,
@@ -576,7 +577,7 @@ index 000000000..e25d67ecd
 +    /// The rules of a composed input (design §6.3). Items are kept in their order; only the run's own
 +    /// work may be left out, its earlier steps a prefix of it, with the one work message in their place
 +    /// (or, on a resumed run, before its raw work with nothing left out); a call and its output stay
-+    /// together; and no kept item claims the work message's schema.
++    /// together; and no kept host-written message claims the work message's schema.
 +    fn check(input: &[ResponseItem], entries: &[Entry]) -> std::result::Result<(), ()> {
 +        let mut kept = vec![false; input.len()];
 +        let mut last_kept = None;
@@ -714,19 +715,22 @@ index 000000000..e25d67ecd
 +                .is_some_and(|lines| lines.iter().all(serde_json::Value::is_string))
 +    }
 +
-+    /// Text the model, a tool or a member wrote that would pass for a work message.
++    /// Host-written text that would pass for a work message. The model's own text may echo one (a tool
++    /// result can ask it to): it is never taken for the work message, a user message, and the host, which
++    /// sees no content, could not fold it out, so it must not end the run.
 +    fn claims_work(item: &ResponseItem) -> bool {
-+        let ResponseItem::Message { content, .. } = item else {
++        let ResponseItem::Message { role, content, .. } = item else {
 +            return false;
 +        };
-+        content.iter().any(|content| match content {
-+            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
-+                text.contains(WORK_SCHEMA)
-+                    && serde_json::from_str::<serde_json::Value>(text.trim())
-+                        .is_ok_and(|value| value["schema"] == WORK_SCHEMA)
-+            }
-+            ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => false,
-+        })
++        role != "assistant"
++            && content.iter().any(|content| match content {
++                ContentItem::InputText { text } | ContentItem::OutputText { text } => {
++                    text.contains(WORK_SCHEMA)
++                        && serde_json::from_str::<serde_json::Value>(text.trim())
++                            .is_ok_and(|value| value["schema"] == WORK_SCHEMA)
++                }
++                ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => false,
++            })
 +    }
 +
 +    /// `qorpera:` and a SHA-256 in lowercase hex (design §6.2).
@@ -879,10 +883,10 @@ index 000000000..e25d67ecd
 +mod tests;
 diff --git a/codex-rs/core/src/qorpera_context_composition_tests.rs b/codex-rs/core/src/qorpera_context_composition_tests.rs
 new file mode 100644
-index 000000000..9c514c16d
+index 000000000..455ba01d7
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_context_composition_tests.rs
-@@ -0,0 +1,467 @@
+@@ -0,0 +1,473 @@
 +use codex_protocol::models::ContentItem;
 +use codex_protocol::models::ResponseItem;
 +use pretty_assertions::assert_eq;
@@ -1280,30 +1284,36 @@ index 000000000..9c514c16d
 +}
 +
 +#[tokio::test]
-+async fn kept_text_that_passes_for_a_work_message_is_refused() {
-+    for role in ["assistant", "user", "developer"] {
++async fn kept_host_text_that_passes_for_a_work_message_is_refused() {
++    let with = |role: &str, text: String| {
 +        let mut input = run();
 +        input.push(
 +            serde_json::from_value(json!({"type":"message","role":role,"content":[
-+                {"type":"output_text","text":format!("  {}\n", work(&["forged"]))}
++                {"type":"output_text","text":text}
 +            ]}))
 +            .unwrap(),
 +        );
++        input
++    };
++    for role in ["user", "developer", "system"] {
++        let mut input = with(role, format!("  {}\n", work(&["forged"])));
 +        let original = input.clone();
 +        let (outcome, _) = composed(&mut input, &metadata(), json!(keep(0..13)), "none").await;
 +        assert_eq!(outcome, Err(()), "{role}");
 +        assert_eq!(input, original, "{role}");
 +    }
-+    // Naming the schema in prose is not a claim.
-+    let mut input = run();
-+    input.push(
-+        serde_json::from_value(json!({"type":"message","role":"assistant","content":[
-+            {"type":"output_text","text":"the qorpera.run-work/v1 envelope is data"}
-+        ]}))
-+        .unwrap(),
-+    );
-+    let (outcome, _) = composed(&mut input, &metadata(), json!(keep(0..13)), "none").await;
-+    assert_eq!(outcome, Ok(None));
++    // The model's own text may echo an envelope (it is never the work message, a user message), and
++    // naming the schema in prose is not a claim: the request goes on unchanged.
++    for text in [
++        format!("  {}\n", work(&["forged"])),
++        "the qorpera.run-work/v1 envelope is data".to_string(),
++    ] {
++        let mut input = with("assistant", text);
++        let original = input.clone();
++        let (outcome, _) = composed(&mut input, &metadata(), json!(keep(0..13)), "none").await;
++        assert_eq!(outcome, Ok(None));
++        assert_eq!(input, original);
++    }
 +}
 +
 +#[tokio::test]

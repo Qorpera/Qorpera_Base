@@ -113,7 +113,9 @@ may decrypt the capsule for the unmodified provider-native harness; Qorpera
 application and control-plane code must never receive the plaintext.
 
 Runtime Step 2 has one explicitly authorized exception to "unmodified": the
-pinned Codex result-only callback and governed direct-tool selection in
+pinned Codex callback (the result fence; since 2026-10-06 also context
+composition and the prompt cache key, each with its own marker) and governed
+direct-tool selection in
 [`../deploy/first-node/native-codex/README.md`](../deploy/first-node/native-codex/README.md).
 It does not change native authentication or credential/transport ownership.
 Direct tool selection applies only to the cloud-fenced native process; the host

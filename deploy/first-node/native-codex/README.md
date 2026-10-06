@@ -7,10 +7,12 @@ refresh, credential storage, provider transport, model metadata and provider
 request headers are unchanged. There is no credential-reading model proxy.
 
 `source.json` pins the upstream commit, patch, compiler and Cargo lock hashes.
-The patch adds a private result-only Unix-socket callback at the common
-Responses request builder (HTTP, WebSocket and compaction). A capability
-marker is returned to the local app-server client. Qorpera also requires an
-operator-pinned executable SHA-256; the marker alone is not artifact trust.
+The patch adds a private Unix-socket callback at the common Responses request
+builder (HTTP, WebSocket and compaction): the result fence and, since
+2026-10-06, context composition and the prompt cache key, each with its own
+capability marker. The markers are returned to the local app-server client.
+Qorpera also requires an operator-pinned executable SHA-256; a marker alone is
+not artifact trust.
 
 The separately authorized direct-tools extension selects `ToolMode::Direct`
 only when `QORPERA_NATIVE_RESULT_FENCE_SOCKET` is present. This prevents model
@@ -52,17 +54,25 @@ model, purpose and, for each item, its kind, role, call id, provider id and
 size, never its content. The host answers with the input to send: Codex's
 items kept by position, in order, and at most one work message, a
 `qorpera.run-work/v1` envelope with the run's earlier steps folded into
-lines, plus an optional `qorpera:` prompt cache key. Codex checks the answer
-before it changes anything. It refuses a dropped instruction or user message,
-a call kept without its output (or an output without its call), a fold that
-is not a run of the request's earlier work, a work message out of place, a
-work message that is not a plain envelope of at most 256 KiB, and kept text
-that passes for one. On a resumed run, whose earlier steps are only in the
-run log, the work message may stand with nothing folded, after the last kept
-item before the run's raw work. The composed input applies to that one
-request only: the work message never enters Codex's history, and the result
-fence then runs over the items that were kept. A reviewer thread's requests
-are never composed from the agent's run.
+lines. Codex checks the answer before it changes anything. It refuses a
+dropped instruction or user message, a call kept without its output (or an
+output without its call), a fold that is not a run of the request's earlier
+work, a work message out of place, a work message that is not a plain
+envelope of at most 256 KiB, and a kept user, developer or system message
+that passes for one. The model's own text may echo an envelope (a tool result
+can ask it to); the work message is a user message, so assistant text is never
+taken for it and an echo does not end the run. On a resumed run, whose earlier
+steps are only in the run log, the work message may stand with nothing folded,
+after the last kept item before the run's raw work. The composed input applies
+to that one request only: the work message never enters Codex's history, and
+the result fence then runs over the items that were kept. A reviewer thread's
+requests are never composed from the agent's run.
+
+The host also requires `qorpera.native-prompt-cache-key/v1` (design §6.2), a
+capability of its own. The composition's answer may set the request's
+`prompt_cache_key` to `qorpera:` and a SHA-256 in lowercase hex; Codex
+refuses any other form and keeps its own key when the answer sets none. The
+key travels on the composition's answer, so it needs that marker as well.
 
 ## Build
 
@@ -103,8 +113,10 @@ refresh was run and produced no lock diff.
 The host enables `QORPERA_NATIVE_RESULT_FENCE_SOCKET` only in a private native
 process. The socket is in a mode-0700 directory, mode 0600, never a provider
 endpoint. Each length-prefixed JSON request includes a random request ID,
-thread/turn, purpose and the exact result bodies. It contains no authentication
-headers, credentials, installation identity or session tokens.
+thread/turn and purpose. A fence request adds the exact result bodies; a
+composition request adds the model and the manifest of the request's items,
+never their content. Neither contains authentication headers, credentials,
+installation identity or session tokens.
 
 Every request, including an empty initial request, needs a live acknowledgement.
 Missing, malformed, mismatched or replayed replies fail closed, and a host that dies closes the socket at once.
@@ -113,8 +125,12 @@ Neither side times a reply out: the host's checks take as long as the database d
 side keeps a 10-minute backstop against a host that is alive but hung (until 5 Oct 2026 a fixed 5 s native and 4 s
 host deadline, which a database slowed to a few seconds per call turned into stopped turns). An exhaustive
 item match rejects unhandled tool-result kinds, unissued images and encrypted tool
-results. Native memory requests are not admitted in this adapter. Only result
-bodies can change; the reply cannot alter calls, instructions, models or roles.
+results. Native memory requests are not admitted in this adapter. A fence
+reply can change only result bodies. A composition reply can only leave out
+the run's own work (a call with its output, assistant text, reasoning, a
+compaction), add the one user-role work message and set the cache key.
+Neither can write a call, alter an instruction or a role, or change the tools
+or the model.
 
 The host owns the closed provenance envelope and rechecks live run authority
 before releasing results. Only an exact host-issued same-call envelope may

@@ -167,7 +167,7 @@ async function handle(message) {
 		// Far more diagnostics than the removed 16 MiB output cap; the turn still completes.
 		if (mode === "wire-flood") process.stderr.write("x".repeat(17 * 1024 * 1024));
 		if (mode === "missing-result") { write({ id: message.id }); return; }
-		write({ id: message.id, result: { userAgent: `qorpera_cloud_boundary/${mode === "wrong-version" ? "0.146.0" : "0.155.1"} (fixture)${mode === "capture-image" ? " qorpera.native-capture-images/v1" : ""}${mode === "missing-composition" ? "" : " qorpera.native-message-composition/v1"}${mode === "missing-context-composition" ? "" : " qorpera.native-context-composition/v1"}${mode === "missing-fence" ? "" : " qorpera.native-result-fence/v1"}${mode === "missing-fence" || mode === "missing-direct-tools" ? "" : " qorpera.native-direct-tools/v1"}` } });
+		write({ id: message.id, result: { userAgent: `qorpera_cloud_boundary/${mode === "wrong-version" ? "0.146.0" : "0.155.1"} (fixture)${mode === "capture-image" ? " qorpera.native-capture-images/v1" : ""}${mode === "missing-composition" ? "" : " qorpera.native-message-composition/v1"}${mode === "missing-context-composition" ? "" : " qorpera.native-context-composition/v1"}${mode === "missing-prompt-cache-key" ? "" : " qorpera.native-prompt-cache-key/v1"}${mode === "missing-fence" ? "" : " qorpera.native-result-fence/v1"}${mode === "missing-fence" || mode === "missing-direct-tools" ? "" : " qorpera.native-direct-tools/v1"}` } });
 	} else if (message.method === "config/read") {
 		if (mode === "unsafe-config") configuration.features.shell_tool = true;
 		if (mode === "extra-mcp") configuration.mcp_servers.uncontrolled = { url: "http://uncontrolled.invalid/mcp" };

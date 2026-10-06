@@ -16,6 +16,7 @@ import {
 import { CLOUD_NATIVE_CAPTURE_IMAGES_CAPABILITY } from "./cloud-native-capture-images.ts";
 import {
 	CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
+	CLOUD_NATIVE_PROMPT_CACHE_KEY_CAPABILITY,
 	type CloudNativeContextComposition,
 	type CloudNativeContextRequest,
 } from "./cloud-native-context-composition.ts";
@@ -1537,6 +1538,8 @@ async function startCloudCodexProcess(
 			throw new Error("Native boundary requires message composition support");
 		if (!initialized.userAgent.split(" ").includes(CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA))
 			throw new Error("Native boundary requires context composition support");
+		if (!initialized.userAgent.split(" ").includes(CLOUD_NATIVE_PROMPT_CACHE_KEY_CAPABILITY))
+			throw new Error("Native boundary requires prompt cache key support");
 		const userAgent = initialized.userAgent;
 		handshake.initialized();
 		progress.stage = "codex-configuration";

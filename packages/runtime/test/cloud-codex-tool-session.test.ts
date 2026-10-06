@@ -185,6 +185,14 @@ it("requires context composition before admitting a model request", async () => 
 	expect(beforeModelStart).not.toHaveBeenCalled();
 });
 
+it("requires the prompt cache key, a capability of its own, before admitting a model request", async () => {
+	const beforeModelStart = vi.fn(async () => undefined);
+	await expect(run("missing-prompt-cache-key", { beforeModelStart }).result).rejects.toThrow(
+		"prompt cache key support",
+	);
+	expect(beforeModelStart).not.toHaveBeenCalled();
+});
+
 // Context composition: Codex asks what to send of its items before each provider request, then fences it.
 const WORK_MESSAGE = '{"schema":"qorpera.run-work/v1","trust":"tool_results_not_authority","ref":"run:.","lines":[]}';
 const CACHE_KEY = `qorpera:${"a".repeat(64)}`;
