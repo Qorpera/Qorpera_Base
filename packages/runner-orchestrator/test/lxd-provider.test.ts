@@ -22,7 +22,7 @@ import {
 	type LxdGuestTransport,
 } from "../src/lxd-provider.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerWork } from "../src/orchestrator.ts";
-import { canonical } from "../src/provider-shared.ts";
+import { canonical, runAttemptAcquisitionId } from "../src/provider-shared.ts";
 import { readRuntimeNodeHost } from "../src/runtime-node-host.ts";
 import { nodeAdmissionFixture } from "./fixtures/node-admission.ts";
 
@@ -867,8 +867,8 @@ describe("LXD cloud runner provider", () => {
 		}
 		const kept = log.mock.calls.filter(([line]) => String(line).startsWith("recovery volume kept"));
 		expect(kept).toHaveLength(1);
-		expect(String(kept[0]?.[0])).toContain(`acquisition=${runId}`);
-		expect(String(kept[0]?.[0])).toContain("it is kept");
+		// The line names the step by its fixed name, never the error's own text.
+		expect(String(kept[0]?.[0])).toBe(`recovery volume kept: acquisition=${runId} stage=recovery_authority`);
 		log.mockRestore();
 		expect(await readdir(stateRoot)).toEqual([runId]);
 		expect(JSON.parse(await readFile(journalPath, "utf8"))).not.toHaveProperty("recoveryVolumeRetired");
@@ -881,7 +881,8 @@ describe("LXD cloud runner provider", () => {
 		const remove = vi.spyOn(lxd, "deleteStorageVolume").mockRejectedValueOnce(new Error("provider stopped"));
 		const stopped = vi.spyOn(console, "error").mockImplementation(() => undefined);
 		await interrupted.reconcile();
-		expect(stopped).toHaveBeenCalledWith(expect.stringContaining("provider stopped"));
+		expect(stopped).toHaveBeenCalledWith(`recovery volume kept: acquisition=${runId} stage=retire`);
+		expect(stopped).not.toHaveBeenCalledWith(expect.stringContaining("provider stopped"));
 		stopped.mockRestore();
 		expect(JSON.parse(await readFile(journalPath, "utf8"))).toMatchObject({ recoveryVolumeRetired: true });
 		expect(lxd.volumes.has(recovery)).toBe(true);
@@ -928,7 +929,7 @@ describe("LXD cloud runner provider", () => {
 		await new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([])).reconcile();
 		expect(await readdir(stateRoot)).toEqual([runId]);
 		expect(lxd.volumes.has(recovery)).toBe(true);
-		expect(log).toHaveBeenCalledWith(expect.stringContaining("did not delete"));
+		expect(log).toHaveBeenCalledWith(`recovery volume kept: acquisition=${runId} stage=retire_confirm`);
 		expect(JSON.parse(await readFile(journalPath, "utf8"))).toMatchObject({ recoveryVolumeRetired: true });
 		remove.mockRestore();
 		log.mockRestore();
@@ -1026,14 +1027,21 @@ describe("LXD cloud runner provider", () => {
 			return f.fetchImplementation(input, init);
 		};
 		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, fetcher);
-		await expect(backend.reconcile()).rejects.toThrow("release response lost");
+		// The stopped run's guest is gone, so a failed release never fails the pass (a failed pass stops the node's
+		// claims): the log names it, at most once an hour, and the next pass tries again.
+		const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		await expect(backend.reconcile()).resolves.toBeUndefined();
 		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).not.toHaveProperty("capacityReleased");
-		await expect(backend.reconcile()).rejects.toThrow("Machine capacity release was not confirmed");
+		await expect(backend.reconcile()).resolves.toBeUndefined();
 		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).not.toHaveProperty("capacityReleased");
 		await backend.reconcile();
 		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).toMatchObject({ capacityReleased: true });
 		await backend.reconcile();
 		expect(attempts).toBe(3);
+		expect(log.mock.calls.map(([line]) => String(line))).toEqual([
+			`dead journal kept: acquisition=${runId} stage=release`,
+		]);
+		log.mockRestore();
 	});
 
 	it("never marks capacity released while the journaled guest still exists", async () => {
@@ -1231,7 +1239,7 @@ describe("LXD cloud runner provider", () => {
 		expect(f.lxd.powerCalls).toEqual(["start"]);
 		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).toEqual(journal);
 	});
-	it("reconciles a lost journal whose guest and recovery volume never existed", async () => {
+	it("reconciles a lost or stopped journal whose guest and recovery volume are gone, not one that may start again", async () => {
 		const directory = await root();
 		const settings = governedConfig(join(directory, "state"));
 		const lxd = new FakeLxd();
@@ -1265,7 +1273,7 @@ describe("LXD cloud runner provider", () => {
 			physicalState: "lost",
 		});
 		expect(lxd.volumes.has(`native-recovery-${lostId}`)).toBe(false);
-		// A journal that is not lost still has to name its retained recovery volume.
+		// Nor does a stopped one: it never starts again, and nothing mounts its volume once its guest is gone.
 		const stoppedId = "10000000-0000-4000-8000-000000000004";
 		await mkdir(join(settings.stateRoot, stoppedId), { recursive: true, mode: 0o700 });
 		await writeFile(
@@ -1273,7 +1281,285 @@ describe("LXD cloud runner provider", () => {
 			JSON.stringify(variant(stoppedId, "stopped")),
 			{ mode: 0o600 },
 		);
+		await backend.reconcile();
+		expect(JSON.parse(await readFile(join(settings.stateRoot, stoppedId, "journal.json"), "utf8"))).toMatchObject({
+			physicalState: "stopped",
+		});
+		expect(lxd.volumes.has(`native-recovery-${stoppedId}`)).toBe(false);
+		// A journal that may start again still has to name its retained recovery volume.
+		const startingId = "10000000-0000-4000-8000-000000000005";
+		await mkdir(join(settings.stateRoot, startingId), { recursive: true, mode: 0o700 });
+		await writeFile(
+			join(settings.stateRoot, startingId, "journal.json"),
+			JSON.stringify(variant(startingId, "starting")),
+			{ mode: 0o600 },
+		);
+		const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
 		await expect(backend.reconcile()).rejects.toThrow("Native recovery volume is missing");
+		expect(log).toHaveBeenCalledWith(`reconcile failed: acquisition=${startingId} stage=recovery_volume`);
+		log.mockRestore();
+		expect(lxd.createVolumeCalls.map((call) => call.name)).not.toContain(`native-recovery-${startingId}`);
+	});
+	it("settles a stopped journal once its guest and recovery volume are gone, and checks the volume while the guest exists", async () => {
+		// 4–6 Oct 2026: node 1 claimed no run for two and a half days. Two stopped journals from before the 3 Oct wipe,
+		// their guests and recovery volumes gone, failed every pass over the missing volume, and a failed pass stops the
+		// node's claims.
+		const settings = governedConfig(join(await root(), "state"));
+		const lxd = new FakeLxd();
+		const fetcher = fetchProvisioner([], work(), true);
+		await new LxdCloudRunnerProviderBackend(settings, lxd, new FakeGuest(), fetcher).acquire(
+			runId,
+			work(),
+			new AbortController().signal,
+		);
+		const path = join(settings.stateRoot, runId, "journal.json");
+		const journal = JSON.parse(await readFile(path, "utf8"));
+		expect(journal).toMatchObject({
+			capacityRegistered: true,
+			nodeCapacity: expect.any(Object),
+			lxd: { loginCustody: "vault" },
+		});
+		expect(journal).not.toHaveProperty("capacityReleased");
+		await writeFile(path, JSON.stringify({ ...journal, physicalState: "stopped", stopReason: "idle" }), {
+			mode: 0o600,
+		});
+		lxd.volumes.clear();
+		lxd.volume = undefined;
+		lxd.instance = { ...lxd.instance!, status: "Stopped", statusCode: 102 };
+		const releases = () =>
+			vi.mocked(fetcher).mock.calls.filter(([url]) => String(url).includes("qorpera_release_runtime_machine"));
+		const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		// While its guest exists the run still has to name its recovery volume: the pass fails, and the log says where.
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, new FakeGuest(), fetcher);
+		await expect(backend.reconcile()).rejects.toThrow("Native recovery volume is missing");
+		expect(log.mock.calls.map(([line]) => String(line))).toEqual([
+			`reconcile failed: acquisition=${runId} stage=recovery_volume`,
+		]);
+		expect(lxd.instance).toBeDefined();
+		expect(releases()).toHaveLength(0);
+		// Once the guest is gone nothing mounts the volume again: the capacity is released and the journal settles.
+		lxd.instance = undefined;
+		log.mockClear();
+		await backend.reconcile();
+		await backend.reconcile();
+		expect(log).not.toHaveBeenCalled();
+		log.mockRestore();
+		expect(releases()).toHaveLength(1);
+		expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({ physicalState: "stopped", capacityReleased: true });
+		// A day later it is archived, with no volume to retire and none created.
+		const settled = JSON.parse(await readFile(path, "utf8"));
+		await writeFile(
+			path,
+			JSON.stringify({ ...settled, updatedAt: new Date(Date.now() - 25 * 60 * 60_000).toISOString() }),
+			{ mode: 0o600 },
+		);
+		await new LxdCloudRunnerProviderBackend(settings, lxd, new FakeGuest(), fetcher).reconcile();
+		expect(await readdir(settings.stateRoot)).toEqual(["archive"]);
+		expect(lxd.createVolumeCalls).toHaveLength(1);
+		expect(releases()).toHaveLength(1);
+	});
+	it("never lets a lost journal this build cannot read stop the node's work (node 2, 6 Oct 2026)", async () => {
+		// Node 2's kept journal, field for field: lost after an idle stop with its capacity registered, no node placement
+		// and no login custody (both came later), and its guest gone.
+		const templateRoot = join(await root(), "state");
+		await new LxdCloudRunnerProviderBackend(
+			governedConfig(templateRoot),
+			new FakeLxd(),
+			new FakeGuest(),
+			fetchProvisioner([]),
+		).acquire(runId, work(), new AbortController().signal);
+		const template = JSON.parse(await readFile(join(templateRoot, runId, "journal.json"), "utf8"));
+		const pick = (source: Record<string, unknown>, keys: readonly string[]) =>
+			Object.fromEntries(keys.map((key) => [key, source[key]]));
+		const shaped = (id: string, credentials: Record<string, unknown>) => ({
+			...pick(template, ["createdAt", "jobType", "schema", "updatedAt", "workSha256"]),
+			acquisitionId: id,
+			runId: id,
+			attempt: 1,
+			instanceName: `qorpera-${id.replaceAll("-", "")}`,
+			runner: { ...template.runner, runnerId: "10000000-0000-4000-8000-000000000008" },
+			physicalState: "lost",
+			stopReason: "idle",
+			capacityRegistered: true,
+			credentials,
+			lxd: {
+				...pick(template.lxd, [
+					"bootstrapSha256",
+					"identityVolume",
+					"identityVolumeSize",
+					"imageFingerprint",
+					"imageServer",
+					"policySha256",
+					"profiles",
+					"rootDiskSize",
+					"storagePool",
+					"type",
+				]),
+				project: "qn25b2",
+				companyRuntime: { ...template.lxd.companyRuntime, recoveryVolume: `native-recovery-${id}` },
+			},
+		});
+		// It has no digest of the identity credential G2-3bc added (v171), so this build cannot read it.
+		const { nativeIdentitySha256: _identity, ...credentials } = template.credentials;
+		const id = "10000000-0000-4000-8000-000000000006";
+		const written = `${JSON.stringify(shaped(id, credentials), null, 2)}\n`;
+		const journal = JSON.parse(written);
+		expect(Object.keys(journal).sort()).toEqual([
+			"acquisitionId",
+			"attempt",
+			"capacityRegistered",
+			"createdAt",
+			"credentials",
+			"instanceName",
+			"jobType",
+			"lxd",
+			"physicalState",
+			"runId",
+			"runner",
+			"schema",
+			"stopReason",
+			"updatedAt",
+			"workSha256",
+		]);
+		expect(Object.keys(journal.lxd).sort()).toEqual([
+			"bootstrapSha256",
+			"companyRuntime",
+			"identityVolume",
+			"identityVolumeSize",
+			"imageFingerprint",
+			"imageServer",
+			"policySha256",
+			"profiles",
+			"project",
+			"rootDiskSize",
+			"storagePool",
+			"type",
+		]);
+		expect(journal.runner.computeIdentityId).toBe(work().computeIdentityId);
+		expect(journal.credentials).not.toHaveProperty("nativeIdentitySha256");
+		// The same journal with the digest reads and passes: the digest is all this build misses.
+		const controlId = "10000000-0000-4000-8000-000000000007";
+		const stateRoot = join(await root(), "state");
+		for (const [acquisitionId, content] of [
+			[id, written],
+			[controlId, JSON.stringify(shaped(controlId, template.credentials))],
+		] as const) {
+			await mkdir(join(stateRoot, acquisitionId), { recursive: true, mode: 0o700 });
+			await writeFile(join(stateRoot, acquisitionId, "journal.json"), content, { mode: 0o600 });
+		}
+		const backend = new LxdCloudRunnerProviderBackend(
+			governedConfig(stateRoot),
+			new FakeLxd(),
+			new FakeGuest(),
+			fetchProvisioner([]),
+		);
+		const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		await expect(backend.reconcile()).resolves.toBeUndefined();
+		expect(log.mock.calls.map(([line]) => String(line))).toEqual([`dead journal kept: acquisition=${id} stage=journal`]);
+		// Nor does it hold up a start or a stop's runner lookup, and the log names it at most once an hour.
+		const runner = await backend.acquire(runId, work(), new AbortController().signal);
+		await backend.stop({ ...runner, runnerId: "20000000-0000-4000-8000-000000000099" }, "idle");
+		await backend.stop(runner, "idle");
+		expect(JSON.parse(await readFile(join(stateRoot, runId, "journal.json"), "utf8"))).toMatchObject({
+			physicalState: "stopped",
+		});
+		await backend.reconcile();
+		expect(log).toHaveBeenCalledTimes(1);
+		const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60 * 60_000);
+		try {
+			await backend.reconcile();
+		} finally {
+			clock.mockRestore();
+		}
+		expect(log.mock.calls.map(([line]) => String(line))).toEqual([
+			`dead journal kept: acquisition=${id} stage=journal`,
+			`dead journal kept: acquisition=${id} stage=journal`,
+		]);
+		log.mockRestore();
+		expect(await readFile(join(stateRoot, id, "journal.json"), "utf8")).toBe(written);
+	});
+	it("passes over a dead first attempt it cannot read when the run's next attempt starts, in attempt order", async () => {
+		const stateRoot = join(await root(), "state");
+		const settings = governedConfig(stateRoot);
+		const lxd = new FakeLxd();
+		const fetcher = fetchProvisioner([]);
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, new FakeGuest(), fetcher);
+		await backend.stop(await backend.acquire(runId, work(), new AbortController().signal), "idle");
+		// The first attempt's journal has no identity credential digest (before G2-3bc), and its guest is gone.
+		const path = join(stateRoot, runId, "journal.json");
+		const old = JSON.parse(await readFile(path, "utf8"));
+		delete old.credentials.nativeIdentitySha256;
+		await writeFile(path, JSON.stringify(old), { mode: 0o600 });
+		// A dead journal of a later attempt still refuses an earlier one.
+		const laterId = runAttemptAcquisitionId(runId, 3);
+		await mkdir(join(stateRoot, laterId), { recursive: true, mode: 0o700 });
+		await writeFile(
+			join(stateRoot, laterId, "journal.json"),
+			JSON.stringify({
+				...old,
+				acquisitionId: laterId,
+				attempt: 3,
+				instanceName: `qorpera-${laterId.replaceAll("-", "")}`,
+				lxd: {
+					...old.lxd,
+					companyRuntime: { ...old.lxd.companyRuntime, recoveryVolume: `native-recovery-${laterId}` },
+				},
+			}),
+			{ mode: 0o600 },
+		);
+		const restarted = new LxdCloudRunnerProviderBackend(settings, lxd, new FakeGuest(), fetcher);
+		await expect(restarted.acquire(runId, { ...work(), attempt: 2 }, new AbortController().signal)).rejects.toThrow(
+			"refuses an older run attempt",
+		);
+		expect(lxd.createCalls).toHaveLength(1);
+		await rm(join(stateRoot, laterId), { recursive: true });
+		await restarted.acquire(runId, { ...work(), attempt: 2 }, new AbortController().signal);
+		expect(lxd.createCalls).toHaveLength(2);
+		expect(lxd.createCalls[1]?.name).toBe(`qorpera-${runAttemptAcquisitionId(runId, 2).replaceAll("-", "")}`);
+	});
+	it("names each journal that fails a pass by its step and fixed codes, never by the error's text", async () => {
+		const f = await acquiredFixture();
+		const secret = `sb_secret_${"z".repeat(40)}`;
+		// One journal's machine reservation fails with a database answer, another's guest lookup with raw LXD text.
+		const journal = JSON.parse(await readFile(f.journalPath, "utf8"));
+		delete journal.capacityRegistered;
+		await writeFile(f.journalPath, JSON.stringify(journal), { mode: 0o600 });
+		const otherId = "10000000-0000-4000-8000-000000000009";
+		const otherInstance = `qorpera-${otherId.replaceAll("-", "")}`;
+		await mkdir(join(f.stateRoot, otherId), { recursive: true, mode: 0o700 });
+		await writeFile(
+			join(f.stateRoot, otherId, "journal.json"),
+			JSON.stringify({
+				...journal,
+				acquisitionId: otherId,
+				...(journal.runId === undefined ? {} : { runId: otherId }),
+				instanceName: otherInstance,
+			}),
+			{ mode: 0o600 },
+		);
+		const getInstance = f.lxd.getInstance.bind(f.lxd);
+		vi.spyOn(f.lxd, "getInstance").mockImplementation(async (project, name) => {
+			if (name === otherInstance) throw new Error(`LXD: Get "/1.0/instances/${name}?project=${project}": ${secret}`);
+			return getInstance(project, name);
+		});
+		const fetcher: typeof fetch = async (input, init) =>
+			String(input).includes("qorpera_reserve_runtime_machine")
+				? Response.json({ code: "PGRST301", message: `JWT ${secret} expired` }, { status: 503 })
+				: f.fetchImplementation(input, init);
+		const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, fetcher);
+		const failure = await backend.reconcile().then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		const lines = log.mock.calls.map(([line]) => String(line));
+		log.mockRestore();
+		expect(failure).toBeInstanceOf(AggregateError);
+		expect(lines.sort()).toEqual([
+			`reconcile failed: acquisition=${otherId} stage=instance`,
+			`reconcile failed: acquisition=${runId} stage=reserve rpc=qorpera_reserve_runtime_machine status=503 code=PGRST301`,
+		]);
+		expect(lines.join("\n")).not.toContain(secret);
 	});
 	it("reports a typed admission refusal from the reservation", async () => {
 		const directory = await root();
@@ -2546,8 +2832,18 @@ describe("LXD cloud runner provider", () => {
 				},
 			];
 			const restarted = new LxdCloudRunnerProviderBackend(rotated, lxd, guest, fetchProvisioner([]));
-			if (scope === "retired") await expect(restarted.reconcile()).resolves.toBeUndefined();
-			else await expect(restarted.reconcile()).rejects.toThrow("journal");
+			const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			if (scope === "live") await expect(restarted.reconcile()).rejects.toThrow("journal");
+			// A moved route leaves a stopped journal this build cannot read; its guest is gone, so it never fails the pass.
+			else await expect(restarted.reconcile()).resolves.toBeUndefined();
+			expect(log.mock.calls.map(([line]) => String(line))).toEqual(
+				scope === "retired"
+					? []
+					: [`${scope === "live" ? "reconcile failed" : "dead journal kept"}: acquisition=${runId} stage=journal`],
+			);
+			log.mockRestore();
+			if (scope === "retired-moved")
+				await expect(restarted.acquire(runId, work(), new AbortController().signal)).rejects.toThrow("journal");
 			// The journal keeps the digest of the credential its guest was given.
 			expect(await readFile(path, "utf-8")).toBe(before);
 		},
