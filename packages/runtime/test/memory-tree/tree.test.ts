@@ -98,3 +98,16 @@ it("writes a block's lines in (l, k) order, and a full block at the limit within
 	expect(() => memoryBlockText([line(0, 1), line(0, 1)])).toThrow(/once/);
 	expect(() => memoryBlockText([])).toThrow(/1 to 30/);
 });
+
+it("writes a run log's lines with no event at any level, and refuses one that names an event", () => {
+	const step: MemoryTreeLine = { l: 0, k: 12, free: true, text: "company_read sales/prices.md" };
+	expect(memoryLineJson(step, "run")).toBe('{"l":0,"k":12,"free":true,"text":"company_read sales/prices.md"}');
+	expect(() => memoryLineJson(step)).toThrow(/seq and hash/);
+	expect(memoryLineProblem({ ...step, seq: 1, hash: HASH }, "run")).toBe("a run log's line names no event");
+	const level2: MemoryTreeLine = { l: 2, k: 0, hash: HASH, free: false, tries: 1, text: "Read the prices." };
+	expect(memoryLineProblem(level2, "run")).toBe("a run log's line names no event");
+	const parent: MemoryTreeLine = { l: 1, k: 6, free: false, tries: 1, text: "Read the prices." };
+	const block = memoryBlockText([parent, step], "run");
+	expect(block).toBe(`${memoryLineJson(step, "run")}\n${memoryLineJson(parent, "run")}\n`);
+	expect(() => memoryBlockText([parent, step])).toThrow(/seq and hash/);
+});

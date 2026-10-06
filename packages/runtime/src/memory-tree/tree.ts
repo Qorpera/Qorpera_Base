@@ -45,7 +45,10 @@ export const LINE_BYTES = 2_048;
 /** What a line that is not built yet shows (§5.4). */
 export const PLACEHOLDER = "(not summarized yet: zoom it)";
 
-/** One stored line of a block (§4.2). Level-0 lines carry their event's transcript `seq` and `event_hash`. */
+/**
+ * One stored line of a block (§4.2). In a conversation's tree, level-0 lines carry their event's transcript `seq` and
+ * `event_hash`. A run log's lines carry neither at any level, and its level-0 `k` is the step's `j` (§4.5).
+ */
 export interface MemoryTreeLine {
 	readonly l: number;
 	readonly k: number;
@@ -104,13 +107,22 @@ function wholeNumber(value: unknown): value is number {
 	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-/** Why a line could not be stored, or null when M1a's checks accept it. */
-export function memoryLineProblem(line: MemoryTreeLine): string | null {
+/** Which tree a line is in: a conversation's, or a run log's (§4.5). */
+export type MemoryTreeKind = "conversation" | "run";
+
+/** Why a line could not be stored, or null when the commit's checks accept it (M1a's; W1b's for a run log). */
+export function memoryLineProblem(line: MemoryTreeLine, kind: MemoryTreeKind = "conversation"): string | null {
 	if (!wholeNumber(line.l) || line.l > 59) return "l is a level from 0 to 59";
 	if (!wholeNumber(line.k)) return "k is a whole number";
-	if (line.l === 0 && (!wholeNumber(line.seq) || typeof line.hash !== "string" || !HASH.test(line.hash)))
-		return "a level-0 line names its event's seq and hash";
-	if (line.l > 0 && (line.seq !== undefined || line.hash !== undefined)) return "only a level-0 line names an event";
+	const event = line.seq !== undefined || line.hash !== undefined;
+	if (kind === "run") {
+		if (event) return "a run log's line names no event";
+	} else if (line.l === 0) {
+		if (!wholeNumber(line.seq) || typeof line.hash !== "string" || !HASH.test(line.hash))
+			return "a level-0 line names its event's seq and hash";
+	} else if (event) {
+		return "only a level-0 line names an event";
+	}
 	if (line.free ? line.tries !== undefined : !(wholeNumber(line.tries) && line.tries >= 1 && line.tries <= TRIES))
 		return "tries is 1 to 3 exactly when the line is not free";
 	if (line.text !== memoryLineText(line.text)) return "a line's text has no control characters";
@@ -119,13 +131,13 @@ export function memoryLineProblem(line: MemoryTreeLine): string | null {
 }
 
 /** One line as its block stores it, keys in the order §4.2 shows. */
-export function memoryLineJson(line: MemoryTreeLine): string {
-	const problem = memoryLineProblem(line);
+export function memoryLineJson(line: MemoryTreeLine, kind: MemoryTreeKind = "conversation"): string {
+	const problem = memoryLineProblem(line, kind);
 	if (problem) throw new Error(`Invalid memory tree line ${memoryNodeAddress(line.l, line.k)}: ${problem}`);
 	return JSON.stringify({
 		l: line.l,
 		k: line.k,
-		...(line.l === 0 ? { seq: line.seq, hash: line.hash } : {}),
+		...(kind === "conversation" && line.l === 0 ? { seq: line.seq, hash: line.hash } : {}),
 		free: line.free,
 		text: line.text,
 		...(line.free ? {} : { tries: line.tries }),
@@ -136,7 +148,7 @@ export function memoryLineJson(line: MemoryTreeLine): string {
  * A block's text: its lines ordered by `(l, k)`, one per line, each ending in a newline. They must all belong to one
  * block, with no address twice.
  */
-export function memoryBlockText(lines: readonly MemoryTreeLine[]): string {
+export function memoryBlockText(lines: readonly MemoryTreeLine[], kind: MemoryTreeKind = "conversation"): string {
 	if (lines.length < 1 || lines.length > 30) throw new Error("A memory tree block holds 1 to 30 lines");
 	const path = memoryBlockPath(lines[0].l, lines[0].k);
 	const sorted = [...lines].sort((a, b) => a.l - b.l || a.k - b.k);
@@ -145,5 +157,5 @@ export function memoryBlockText(lines: readonly MemoryTreeLine[]): string {
 		if (index > 0 && sorted[index - 1].l === line.l && sorted[index - 1].k === line.k)
 			throw new Error("A memory tree block holds each line once");
 	}
-	return sorted.map((line) => `${memoryLineJson(line)}\n`).join("");
+	return sorted.map((line) => `${memoryLineJson(line, kind)}\n`).join("");
 }
