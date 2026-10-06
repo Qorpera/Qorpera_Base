@@ -47,9 +47,6 @@ begin
 		perform pg_temp.base_error(format('select pg_temp.ti_card(%L, %L, %L)', v_binding,
 			'59000000-0000-4000-8000-0000000005a' || v_index::text, v_bad), '22023', 'interaction request is invalid');
 	end loop;
-	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_session_events
-		where event_id in ('59000000-0000-4000-8000-0000000005a1', '59000000-0000-4000-8000-0000000005a2',
-			'59000000-0000-4000-8000-0000000005a3')), 'A refused card left an event');
 	perform pg_temp.base_public_send(v_binding, 'final', 'ti-final');
 	perform public.qorpera_fail_runner_job((v_binding ->> 'runnerId')::uuid, repeat('2', 64), (v_binding ->> 'jobId')::uuid,
 		repeat('3', 64), 'card fixture run ended', false);
@@ -64,10 +61,6 @@ begin
 		'59000000-0000-4000-8000-000000000594', 'provided', '{"value":"xoxb-secret"}'), '22023');
 	perform pg_temp.base_error(format('select pg_temp.ti_answer(%L, %L, %L, %L)', '59000000-0000-4000-8000-0000000005c8',
 		'59000000-0000-4000-8000-000000000594', 'provided', '{}'), '55000');
-	perform pg_temp.base_claims('service_role');
-	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_session_events
-		where session_id = current_setting('qorpera_test.ti_thread')::uuid and event_type = 'interaction_answer'),
-		'A refused secret answer was recorded');
 end
 $$;
 

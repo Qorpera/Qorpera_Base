@@ -160,6 +160,9 @@ declare v jsonb := pg_temp.ed_claim('62000000-0000-4000-8000-000000000041', repe
 begin
 	perform pg_temp.base_assert(v -> 'execute' = 'false'::jsonb and v #>> '{state,status}' = 'unconfirmed'
 		and not (v ? 'encryptedEnvelopeBase64'), 'expired claim replay can resend ' || v::text);
+	-- The provider's late receipt still lands: the send is recorded as sent, once.
+	v := pg_temp.ed_finish('62000000-0000-4000-8000-000000000041', repeat('7', 64), '{"message_id":"late-receipt"}');
+	perform pg_temp.base_assert(v ->> 'status' = 'sent' and v ->> 'messageId' = 'late-receipt', 'late provider receipt lost ' || v::text);
 end
 $$;
 reset session authorization;

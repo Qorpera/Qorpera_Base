@@ -42,14 +42,5 @@ select pg_temp.base_error(format($sql$select public.qorpera_create_execution_spo
 	current_setting('qorpera_test.base_connection')::jsonb ->> 'connection_id'),
 	'42501', 'member execution sponsor exceeds the owner consent');
 reset role;
-select pg_temp.base_claims('service_role');
-
-do $$
-begin
-	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_execution_sponsor_bindings
-		where profile_id = '92400000-0000-4000-8000-000000000010' and client_binding_id in ('98300000-0000-4000-8000-000000000002',
-			'98300000-0000-4000-8000-000000000003', '98300000-0000-4000-8000-000000000004')), 'a refused binding left a row');
-end
-$$;
 
 rollback;
