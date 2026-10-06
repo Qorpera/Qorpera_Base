@@ -161,7 +161,7 @@ select pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'mrace-hire-0001', jsonb_b
 select set_config('qorpera_test.nora_session', pg_temp.thread('94200000-0000-4000-8000-0000000000a1')::text, false) \g /dev/null
 select set_config('qorpera_test.otto_session', pg_temp.thread('94200000-0000-4000-8000-0000000000a2')::text, false) \g /dev/null
 -- Nora's tree, built at generation 0 (A) and at 1 (A2); Otto's, naming both conversations (B1).
-select set_config('qorpera_test.memory_a', pg_temp.sql_memory('mrace-a', pg_temp.new_tree('94200000-0000-4000-8000-0000000000a1', 'nora'),
+select set_config('qorpera_test.memory_a', pg_temp.sql_memory('mrace-a1',pg_temp.new_tree('94200000-0000-4000-8000-0000000000a1', 'nora'),
 	array[current_setting('qorpera_test.nora_session')::uuid], array[0]), false) \g /dev/null
 select set_config('qorpera_test.memory_a2', pg_temp.sql_memory('mrace-a2', pg_temp.new_tree('94200000-0000-4000-8000-0000000000a1', 'nora', 512),
 	array[current_setting('qorpera_test.nora_session')::uuid], array[1]), false) \g /dev/null
@@ -186,26 +186,30 @@ begin
 	loop
 		if current_setting('qorpera_test.pid_' || p_holder)::integer = any (pg_blocking_pids(current_setting('qorpera_test.pid_' || p_waiter)::integer)) then
 			return true; end if;
-		exit when clock_timestamp() > v_until;
+		exit when clock_timestamp() > v_until or dblink_is_busy(p_waiter) = 0;
 		perform pg_sleep(0.02);
 	end loop;
 	return false;
 end $$;
 
 -- A. An erase holds Nora's conversation and raises its generation. A batch built before it waits at the session step,
--- then reads the raised generation and is refused whole: the root too, which names no generation of its own.
+-- then reads the raised generation and is refused whole: the root too, which names no generation of its own. The
+-- tree.toml under that root is refused before the generation check, as its parent is refused.
 do $$
 declare v jsonb; ns uuid := current_setting('qorpera_test.nora_session')::uuid;
 begin
 	perform dblink_exec('mrace_hold', 'begin');
 	perform dblink_exec('mrace_hold', format('update public.qorpera_shared_sessions set memory_generation = memory_generation + 1 where id = %L', ns));
 	perform dblink_send_query('mrace_save', current_setting('qorpera_test.memory_a'));
-	if not pg_temp.waits_for('mrace_save', 'mrace_hold') then raise exception 'The batch must wait for the erase at the conversation'; end if;
+	if not pg_temp.waits_for('mrace_save', 'mrace_hold') then
+		perform dblink_exec('mrace_hold', 'rollback');
+		select r into v from dblink_get_result('mrace_save') as t(r jsonb);
+		raise exception 'The batch must wait for the erase at the conversation; it returned %', v; end if;
 	perform dblink_exec('mrace_hold', 'commit');
 	select r into v from dblink_get_result('mrace_save') as t(r jsonb);
 	perform * from dblink_get_result('mrace_save') as t(r jsonb);
 	perform pg_temp.expect(v, 1, 'refused', 'memory_generation_stale');
-	perform pg_temp.expect(v, 2, 'refused', 'memory_generation_stale');
+	perform pg_temp.expect(v, 2, 'refused', 'parent_missing');
 	if pg_temp.version('agents/nora/memory/thread') is not null
 		or exists (select 1 from public.qorpera_memory_trees where environment_id = '94200000-0000-4000-8000-000000000020') then
 		raise exception 'A refused batch writes nothing'; end if;

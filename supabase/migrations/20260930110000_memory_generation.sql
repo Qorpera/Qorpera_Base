@@ -172,7 +172,8 @@ select pg_temp.m1a_generation_replace(
 	-- 20260929999980 (H2b): human tasks' folders and files, and the contacts they name, for every unit.
 $old$,
 	$new$	v_key := public.qorpera_folder_key(p_eff_path);
-	-- 20260930110000 (M1a): a memory commit's request and generations, for every unit; a stale one refuses them all.
+	-- 20260930110000 (M1a): a memory commit's request and generations, for every unit that gets this far; a stale one
+	-- refuses each of them, so the commit is refused whole (a unit refused earlier keeps its own reason).
 	v_rule := public.qorpera_memory_generation_decide(p_environment_id, p_commit_id);
 	if v_rule is not null then return v_rule; end if;
 	-- 20260929999980 (H2b): human tasks' folders and files, and the contacts they name, for every unit.
