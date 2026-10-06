@@ -2,25 +2,16 @@
 -- Runtime Step 7 (bundle v87) on a folder-v2 company (ported from snapshot-v1 in the legacy sweep): a connection's
 -- grants hold only through a current owner or admin. On 924's folder-v2 company, with Alice's real run (claim, runner,
 -- assignment and native lease); the secret rows stand in for completed captures.
--- 1. The run's own broker passes the grant and ownership checks and still gets no effect without a begun effect receipt,
+-- 1. The run's own broker, with a live grant and a sealed version, still gets no effect without a begun effect receipt,
 --    and nothing is audited as authorized. (Another company's broker on the same origin is refused in 806 §3.)
 -- 2. The admin shares a company Google Drive connection; demoting that admin (folder-v2's member role change) kills the
 --    grants: the run loses the Drive tools and the connection list counts no live grant. The owner's re-share re-issues
 --    them under the owner, with a revocation trail; a second share issues nothing.
 -- 3. A contributor's hire, after the admin's demotion, receives the shared connection through grants issued by the owner.
 
-insert into auth.users(id,email) values ('39800000-0000-4000-8000-000000000001','routing-other-owner@example.test');
-insert into public.qorpera_profiles(id,name,created_by_user_id)
-values ('39800000-0000-4000-8000-000000000010','Other company','39800000-0000-4000-8000-000000000001');
-insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
-values ('39800000-0000-4000-8000-000000000010','39800000-0000-4000-8000-000000000001',
-	'routing-other-owner@example.test','Other owner','owner');
--- Both brokers share one public origin, as in production.
 insert into public.qorpera_cloud_secret_broker_authorities(id,profile_id,service_origin,key_id,capability_sha256) values
 	('39800000-0000-4000-8000-000000000040','92400000-0000-4000-8000-000000000010',
-		'https://company41-node-01.tailbb15c7.ts.net:10000','company-kek-1',repeat('c',64)),
-	('39800000-0000-4000-8000-000000000041','39800000-0000-4000-8000-000000000010',
-		'https://company41-node-01.tailbb15c7.ts.net:10000','other-kek-1',repeat('e',64));
+		'https://company41-node-01.tailbb15c7.ts.net:10000','company-kek-1',repeat('c',64));
 -- The run's company holds a company-owned Gmail connection, sealed by its own broker, granted to the run's agent (Alice)
 -- by the owner.
 insert into public.qorpera_cloud_secrets(id,profile_id,environment_id,broker_authority_id,owner_kind,owner_user_id,
@@ -28,6 +19,11 @@ insert into public.qorpera_cloud_secrets(id,profile_id,environment_id,broker_aut
 values ('39800000-0000-4000-8000-000000000050','92400000-0000-4000-8000-000000000010',
 	'92400000-0000-4000-8000-000000000020','39800000-0000-4000-8000-000000000040','company',null,
 	'gmail','primary','Gmail account',1,'92400000-0000-4000-8000-000000000001');
+-- Its sealed version, so the begun receipt is the only thing the call lacks.
+insert into public.qorpera_cloud_secret_versions(secret_id,version,broker_authority_id,key_id,encrypted_envelope,
+	envelope_sha256,created_by_user_id)
+values ('39800000-0000-4000-8000-000000000050',1,'39800000-0000-4000-8000-000000000040','company-kek-1','\x0102',
+	encode(extensions.digest('\x0102'::bytea,'sha256'),'hex'),'92400000-0000-4000-8000-000000000001');
 insert into public.qorpera_cloud_secret_operation_grants(id,profile_id,environment_id,secret_id,staff_agent_id,
 	connector_id,operation_id,operation_version,tool_name,issued_by_user_id)
 select '39800000-0000-4000-8000-000000000060','92400000-0000-4000-8000-000000000010',
@@ -70,7 +66,8 @@ reset session authorization;
 
 do $$
 begin
-	-- The run's own broker passes the grant and ownership checks and stops at the effect receipt the run never began.
+	-- The run's own broker passes the grant, ownership and operation checks and stops at the effect receipt the run never
+	-- began (the grant and the version exist, so only the receipt lookup finds no row).
 	if current_setting('qorpera_test.routing_own') <> 'P0002:query returned no rows' then
 		raise exception 'The run''s own broker did not reach the receipt check: %',current_setting('qorpera_test.routing_own');
 	end if;
