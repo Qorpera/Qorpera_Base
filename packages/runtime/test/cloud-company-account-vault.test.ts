@@ -397,7 +397,8 @@ describe("company accounts over the broker", () => {
 		const service = new HttpCloudSecretBrokerService(
 			new CloudSecretBroker({ authority, keyring: f.keyring, adapters: [] }),
 			runtimeToken,
-			{ codingExecutorToken },
+			// G2-6a: the database's lease proof stands in here; its own tests are 986 and the broker's.
+			{ codingExecutorToken, proveBinding: async () => undefined },
 		);
 		services.push(service);
 		const port = await service.start();
@@ -406,6 +407,7 @@ describe("company accounts over the broker", () => {
 				origin: `http://127.0.0.1:${port}`,
 				runtimeToken: token,
 				companyId,
+				holder: () => `job.${randomUUID()}.${"h".repeat(43)}`,
 				allowLoopback: true,
 			});
 		expect(await client().companyAccount(openRequest(), AbortSignal.timeout(5000))).toEqual({

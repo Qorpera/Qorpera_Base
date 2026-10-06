@@ -321,6 +321,9 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	const dispatch = new NativeHostDispatch({ supabaseUrl: baseUrl, identity });
 	// The clients below send the publishable key; the dispatch signs each of their requests with it anyway.
 	const publishableKey = identity.publishableKey;
+	// G2-6a: the object gateway's and the secret broker's clients prove their run's lease with each request, read from
+	// the dispatch when the request is made, so a warm host never sends a released job's token.
+	const holder = (): string => dispatch.holderHeader();
 	// A login guest may not read its identity's recovery state: its gateway read it and delivered it.
 	const loginGuest = nativeLoginGuestPurpose(environment);
 	const state = loginGuest
@@ -487,7 +490,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 						computerSession: createHttpCompanyComputerSessionFactory({
 							url: computerConfiguration.url,
 							token: computerToken,
-							objectGateway: { baseUrl: runtimeConfiguration.objectGatewayUrl, token: objectToken },
+							objectGateway: { baseUrl: runtimeConfiguration.objectGatewayUrl, token: objectToken, holder },
 							registry: new HttpCloudCompanyComputerRegistry({
 								supabaseUrl: baseUrl,
 								serviceRoleKey: publishableKey,
@@ -500,6 +503,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 											origin: secretBrokerOrigin,
 											runtimeToken: secretBrokerToken,
 											companyId: state.companyId,
+											holder,
 										}),
 									}
 								: {}),
@@ -513,6 +517,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 					baseUrl: runtimeConfiguration.objectGatewayUrl,
 					token: objectToken,
 					binding,
+					holder,
 					identity,
 					control: pathControl,
 				}),
@@ -523,6 +528,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 						token: objectToken,
 						companyId,
 						binding,
+						holder,
 						signal,
 					}),
 				),
@@ -536,6 +542,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 							origin: secretBrokerOrigin,
 							runtimeToken: secretBrokerToken,
 							companyId: state.companyId,
+							holder,
 						});
 						// The same broker serves the company's website accounts (A1-4).
 						return { secretBroker: broker, companyAccounts: broker };
@@ -545,7 +552,12 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 		// A vault login comes from this company's broker, under the same runtime token. A host that
 		// still holds a key serves a run whose login has just moved to the vault the same way.
 		if (secretBrokerOrigin && secretBrokerToken) {
-			const client = { origin: secretBrokerOrigin, runtimeToken: secretBrokerToken, companyId: state.companyId };
+			const client = {
+				origin: secretBrokerOrigin,
+				runtimeToken: secretBrokerToken,
+				companyId: state.companyId,
+				holder,
+			};
 			modelLogins = { issue: (request, signal) => issueModelLogin(client, request, signal) };
 		}
 	} else if (environment.QORPERA_CLOUD_SECRET_BROKER_URL || environment.QORPERA_CLOUD_SECRET_BROKER_TOKEN) {

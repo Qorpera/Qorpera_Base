@@ -6,6 +6,12 @@ import type { FileSystemObjectStore } from "./object-store.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 import type { AuthorizedObject } from "./supabase-authority.ts";
 
+/** G2-6a: whether the request's caller holds its binding's run lease (qorpera_native_binding_proven, migration
+ * 20260930152000). Refuses unless it does; the locked checks behind each route still run under their locks. */
+export interface NativeBindingProof {
+	proveNativeBinding(binding: Record<string, unknown>, holder: string): Promise<void>;
+}
+
 export interface NativeCompanyObjectAuthority {
 	authorizeNativeUpload(
 		binding: Record<string, unknown>,
@@ -53,6 +59,8 @@ export async function serveNativeCompanyObject(
 	if (!match || !UUID.test(match[1]!)) throw new ObjectDependencyError(404);
 	const companyId = match[1]!;
 	const sha256 = match[2]!;
+	// G2-6c (not yet): this route also serves the Company Computer's captures, which hold no run lease to prove, so its
+	// lease proof comes with the computer passing its run's holder along. The folder route proves it (folder-objects.ts).
 	const binding = nativeBinding(request);
 	if (request.method === "PUT") {
 		const declared = request.headers["content-length"];
@@ -122,6 +130,18 @@ export function assertNativeToken(request: IncomingMessage, token: string): void
 		)
 	)
 		throw new ObjectDependencyError(401);
+}
+
+/** The caller's holder credential (G2-6a): `job.<job id>.<lease token>` in x-qorpera-identity, as the native host's
+ * dispatch gives it. Malformed or missing is 401; the value never reaches a log or an error. */
+export function nativeHolder(request: IncomingMessage): string {
+	const holder = request.headers["x-qorpera-identity"];
+	if (
+		typeof holder !== "string" ||
+		!/^job\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9_-]{43}$/.test(holder)
+	)
+		throw new ObjectDependencyError(401);
+	return holder;
 }
 
 /** The run's binding from its header: canonical base64url JSON of its ten fields. */

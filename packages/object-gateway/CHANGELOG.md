@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+- `/v1/folder-objects` serves a native host's request only after it proves its run's lease (G2-6a; migration `20260930152000`; `deploy/first-node/RUNTIME-NATIVE-HOST-KEY.md` "G2-6"): the request sends `x-qorpera-identity: job.<job id>.<lease token>`, and the gateway asks `qorpera_native_binding_proven` before any other check of its binding. A missing or malformed holder is 401, a refused proof 403, and the value never reaches a log or a reply. `/v1/native-company-objects` keeps its old check until G2-6c (it also serves the Company Computer's captures).
+
 ### Added
 - The connection-file writer writes hooks' and mailboxes' files too (folder core C4, E1; migration `20260930060000`): a claim's `subjectKind` picks the kind, the settings' allow-list (never a hook's address or a secret), the file's prefix and the operation key; a new hook or mailbox file starts with its purpose (`body`); the finish names the kind. A claim without `subjectKind` (a database before E1) is a vault account's, and a vault account's finish names no kind, so the gateway can roll before the migration.
 

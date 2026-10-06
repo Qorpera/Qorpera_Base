@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
 	type CompanyAccountFillIdentity,
 	CompanyComputerFillKey,
@@ -280,7 +280,8 @@ describe("company account fill over the broker", () => {
 		const service = new HttpCloudSecretBrokerService(
 			new CloudSecretBroker({ authority, keyring: f.keyring, adapters: [] }),
 			runtimeToken,
-			{ codingExecutorToken },
+			// G2-6a: the database's lease proof stands in here; its own tests are 986 and the broker's.
+			{ codingExecutorToken, proveBinding: async () => undefined },
 		);
 		services.push(service);
 		const port = await service.start();
@@ -289,6 +290,7 @@ describe("company account fill over the broker", () => {
 				origin: `http://127.0.0.1:${port}`,
 				runtimeToken: token,
 				companyId,
+				holder: () => `job.${randomUUID()}.${"h".repeat(43)}`,
 				allowLoopback: true,
 			});
 		const answer = await client(runtimeToken).companyAccountFill(request(), AbortSignal.timeout(5000));
