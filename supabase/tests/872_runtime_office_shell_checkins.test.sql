@@ -1,5 +1,5 @@
 -- @fixture 648_folder_core_run_fence_concurrency.test.sql until "-- A. Two tool calls of one run"
--- 20260930091000: check-ins for the Company Computer's shells under one idle rule for every machine (the 2026-10-03
+-- 20260930098000: check-ins for the Company Computer's shells under one idle rule for every machine (the 2026-10-03
 -- amendment, item 5), on a folder-v2 company's computer (folder-v2 only, the founder's decision of 3 October). Asking: a
 -- shell that stays busy since its agent last worked with it has its agent asked after 1, 3 and 7 hours, then every 24,
 -- once per mark, in the conversation of the run that started each program still running; a question still stands only
@@ -612,7 +612,7 @@ select pg_temp.check(not exists (select 1 from unnest(array['public.qorpera_pin_
 	'public.qorpera_folder_wake_authorized(public.qorpera_wake_occurrences)', 'public.qorpera_folder_materialize_company(uuid,integer)',
 	'public.qorpera_folder_read_wake(jsonb)', 'public.qorpera_runtime_wake_policy_internal(uuid)',
 	'public.qorpera_run_continuation(public.qorpera_execution_runs)']) f(name)
-	where position('20260930091000' in pg_get_functiondef(f.name::regprocedure)) = 0), 'each patched function names this migration');
+	where position('20260930098000' in pg_get_functiondef(f.name::regprocedure)) = 0), 'each patched function names this migration');
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
 
