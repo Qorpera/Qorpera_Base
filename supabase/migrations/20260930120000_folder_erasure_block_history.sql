@@ -12,11 +12,18 @@
 --   erasure is past its versions phase: the request answers nothing left, or is asked again (55006) while that phase
 --   runs. It is never refused for good (§10.1).
 -- * With none, the block must not be live, and every life of it is erased; a block live again, or renamed to a live
---   path since step 1, is refused (55000), naming the live path and the delete before that life. It is the block
---   restored, or another tree's block at a name reused since the delete; the carrier tells them apart, and asks again
---   with that delete as its cutoff for the second.
--- * Moves are followed: the wrapper adds each partner P18 names and asks again. A life that moved on to a live path is
---   another tree's block and is left alone, not refused. There is no limit of 20 paths, and every copy is named.
+--   path since step 1, is refused (55000 'Block is live again'), naming the live path, the key's newest life and the
+--   newest delete before that life. It is the block restored, or another tree's block at a name reused since the
+--   delete. On that refusal the carrier runs step 1 again, and rewrites its own tree's blocks wherever they are live;
+--   for another tree's block it asks again with that delete as its cutoff and that life, or, with no delete (an
+--   erasure took it and every version before it), has nothing left at the name. While an erasure over the key is in its
+--   versions phase and no delete is left, it is asked again (55006).
+-- * A cutoff request that names a life is refused the same way, under the path lock, when the key has had a newer life
+--   since (the other tree's block deleted and this one restored, say); with no live path left, the carrier asks with
+--   no cutoff.
+-- * Moves are followed: the wrapper adds each partner P18 names and asks again. In a request with a cutoff, or for an
+--   older life, a life that moved on to a live path is another tree's block and is left alone, not refused. There is
+--   no limit of 20 paths, and every copy is named.
 -- * Nothing left to erase answers erasureId null, with no row (asking again erases nothing more).
 -- * Its P18 row notes no run in phases 1 to 3: the run-log row (W1d) reaches only the steps that showed its blocks.
 -- * qorpera_folder_erasure_past_versions tells a carrier when a request is past P18's versions phase (§10.1: a row
@@ -72,13 +79,20 @@ begin
 end $$;
 revoke all on function public.qorpera_folder_erasure_moved_live(uuid, text) from public, anon, authenticated, service_role;
 
--- What a block-history request refused as live again names (55000's detail): the live path, and the delete that ended
--- the block's life before its newest one began ({seq, unit}, or null when there was none). The carrier reads the live
--- tree's tree.toml: its own block restored is deleted and rewritten first; another tree's block, at a name reused since
--- the delete, is left alone, and the carrier asks again with that delete as its cutoff (§10 step 3).
+-- What a block-history request refused as live again names (55000's detail): the live path (null only when a named
+-- life has ended since), the key's newest life's start ({seq, unit}), and the newest delete at the key before that life
+-- began ({seq, unit}, or null when none is left). The carrier first runs step 1 again from the owner's row and deletes
+-- and rewrites its own tree's blocks wherever they are live (this one restored, or restored and renamed). Another
+-- tree's block, at a name reused since the delete, is left alone: the carrier asks again with that delete as its cutoff
+-- and that life; with no delete, the erasure that took it took every version before it, is past its versions phase
+-- (else 55006), and nothing of the block is left at the name; with no live path, it asks again with no cutoff
+-- (§10 step 3).
 create function public.qorpera_folder_erasure_live_again(p_environment_id uuid, p_key text, p_live text)
 returns jsonb language sql stable security definer set search_path = '' as $$
-	select jsonb_build_object('live', p_live, 'delete', (
+	select jsonb_build_object('live', p_live,
+		'life', (select jsonb_build_object('seq', s.seq, 'unit', s.unit_no)
+			from public.qorpera_folder_erasure_life_start(p_environment_id, p_key) s),
+		'delete', (
 		select jsonb_build_object('seq', c.seq, 'unit', v.unit_no)
 		from public.qorpera_folder_path_versions v join public.qorpera_folder_commits c on c.id = v.commit_id
 		cross join public.qorpera_folder_erasure_life_start(p_environment_id, p_key) s
@@ -97,6 +111,7 @@ $old$,
 	$new$	v_proposals uuid[]; -- 20260930074000 (P40)
 	v_memtree jsonb; v_block_key text; v_cut_at timestamptz; v_total bigint := 0; -- 20260930120000 (W1a)
 	v_cut_op text; v_cut_gone boolean := false; v_cut_busy boolean := false; v_live_path text; -- 20260930120000 (W1a)
+	v_live_again jsonb; v_life_now record; -- 20260930120000 (W1a)
 $new$);
 select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
 	$old$	if p_actor ->> 'kind' is distinct from 'member' or p_actor - array['kind','userId'] <> '{}'::jsonb
@@ -104,15 +119,21 @@ select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)':
 		raise exception 'Only a member erases' using errcode = '22023'; end if;
 $old$,
 	$new$	-- 20260930120000 (W1a): a block-history request is the platform's, for the member who asked:
-	-- {"kind":"memtree","userId":…,"block":{"path":…,"cutoffSeq":…,"cutoffUnit":…,"for":{"table":…,"id":…}}}, the
-	-- cutoff both parts or neither. Its operation keys are memtree:<sha256>, a prefix no other request may use.
+	-- {"kind":"memtree","userId":…,"block":{"path":…,"cutoffSeq":…,"cutoffUnit":…,"lifeSeq":…,"lifeUnit":…,
+	-- "for":{"table":…,"id":…}}}, the cutoff both parts or neither, the life both or neither and only with a cutoff.
+	-- Its operation keys are memtree:<sha256>, a prefix no other request may use.
 	if p_actor ->> 'kind' = 'memtree' then
 		v_memtree := p_actor -> 'block';
 		if p_actor - array['kind','userId','block'] <> '{}'::jsonb
 			or coalesce(p_actor ->> 'userId', '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 			or jsonb_typeof(v_memtree) is distinct from 'object' then
 			raise exception 'Block-history request is invalid' using errcode = '22023'; end if;
-		if v_memtree - array['path','cutoffSeq','cutoffUnit','for'] <> '{}'::jsonb
+		if (v_memtree ->> 'lifeSeq' is null) <> (v_memtree ->> 'lifeUnit' is null)
+			or (v_memtree ->> 'lifeSeq' is not null and (v_memtree ->> 'cutoffSeq' is null
+				or jsonb_typeof(v_memtree -> 'lifeSeq') <> 'number' or jsonb_typeof(v_memtree -> 'lifeUnit') <> 'number'
+				or (v_memtree ->> 'lifeSeq') !~ '^[1-9][0-9]{0,17}$' or (v_memtree ->> 'lifeUnit') !~ '^[1-9][0-9]{0,8}$')) then
+			raise exception 'Block-history request is invalid' using errcode = '22023'; end if;
+		if v_memtree - array['path','cutoffSeq','cutoffUnit','lifeSeq','lifeUnit','for'] <> '{}'::jsonb
 			or jsonb_typeof(v_memtree -> 'path') is distinct from 'string' or jsonb_typeof(v_memtree -> 'for') is distinct from 'object' then
 			raise exception 'Block-history request is invalid' using errcode = '22023'; end if;
 		if (v_memtree -> 'for') - array['table','id'] <> '{}'::jsonb
@@ -200,6 +221,19 @@ $old$,
 			order by (v.op = 'delete') desc limit 1;
 			if v_cut_op <> 'delete' then
 				raise exception 'Block-history cutoff is not the block''s delete' using errcode = '22023'; end if;
+			-- The life a carrier keeps, another tree's block at a reused name, as a 55000 named it: refused again, under the
+			-- path lock, when the key has had a newer life since (that tree's block deleted and this one restored, say).
+			if v_memtree ->> 'lifeSeq' is not null then
+				select * into v_life_now from public.qorpera_folder_erasure_life_start(p_environment_id, v_key);
+				if (v_life_now.seq, v_life_now.unit_no) is distinct from
+						((v_memtree ->> 'lifeSeq')::bigint, (v_memtree ->> 'lifeUnit')::integer) then
+					raise exception 'Block is live again' using errcode = '55000',
+						detail = public.qorpera_folder_erasure_live_again(p_environment_id, v_key,
+							coalesce((select e.path from public.qorpera_folder_entries e where e.environment_id = p_environment_id
+								and e.key_sha256 = extensions.digest(v_key, 'sha256') and e.kind <> 'claim'),
+								public.qorpera_folder_erasure_moved_live(p_environment_id, v_key)))::text;
+				end if;
+			end if;
 			-- No version there: an erasure with a later cutoff over the key (a later request for the block, or a member's
 			-- erasure) has erased the delete. Once it is past its versions phase nothing before the cutoff is left, and the
 			-- request answers nothing left; while that phase runs it is asked again (the count below decides). Read before
@@ -221,8 +255,16 @@ $old$,
 						and e.key_sha256 = extensions.digest(v_key, 'sha256'))
 					else public.qorpera_folder_erasure_moved_live(p_environment_id, v_key) end;
 				if v_live_path is not null then
-					raise exception 'Block is live again' using errcode = '55000',
-						detail = public.qorpera_folder_erasure_live_again(p_environment_id, v_key, v_live_path)::text; end if;
+					v_live_again := public.qorpera_folder_erasure_live_again(p_environment_id, v_key, v_live_path);
+					-- No delete left: an erasure took it with every version before it. While one over the key is in its
+					-- versions phase, some may still be here: asked again, so that a null delete means nothing is left.
+					if jsonb_typeof(v_live_again -> 'delete') = 'null' and exists (select 1 from public.qorpera_folder_erasures e
+							cross join jsonb_array_elements(e.roots) r
+							where e.environment_id = p_environment_id and e.done_at is null and e.phase = 1
+								and public.qorpera_folder_erasure_covers(r ->> 'key', v_key)) then
+						raise exception 'Block history is being erased; ask again' using errcode = '55006'; end if;
+					raise exception 'Block is live again' using errcode = '55000', detail = v_live_again::text;
+				end if;
 			end if;
 		end if;
 $new$);
@@ -360,13 +402,16 @@ $new$);
 
 -- 4. The wrapper: one block, its partners added as P18 names them ------------------------------------------------------
 
--- p_block: {"path", "cutoffSeq", "cutoffUnit", "for": {"table", "id"}}; the key is memtree: and the hex SHA-256 of
--- <table>:<id>:<the block's folded key>. Each call runs in the caller's transaction, at read committed. The answer is
--- P18's reply (kind block-history, its for, every copy), or erasureId null when nothing is left to erase. P18's other
--- refusals pass through: 55000 'Block is live again', whose detail is {"live": <path>, "delete": {seq, unit} or null}
--- (the carrier's own block restored: delete and rewrite it first; another tree's block at a reused name: ask again
--- with that delete as the cutoff), or 'The company is being deleted', 55006 'Block history is being erased; ask
--- again', 22023, and the 409 to retry when the company folder changed while the erasure began.
+-- p_block: {"path", "cutoffSeq", "cutoffUnit", "lifeSeq", "lifeUnit", "for": {"table", "id"}}; the key is memtree: and
+-- the hex SHA-256 of <table>:<id>:<the block's folded key>. Each call runs in the caller's transaction, at read
+-- committed. The answer is P18's reply (kind block-history, its for, every copy), or erasureId null when nothing is left
+-- to erase. P18's other refusals pass through: 55000 'Block is live again', whose detail is {"live": <path> or null,
+-- "life": {seq, unit}, "delete": {seq, unit} or null} (the carrier runs step 1 again and rewrites its own tree's live
+-- blocks first; for another tree's block at a reused name it asks again with that delete as the cutoff and that life,
+-- with no delete has nothing left at the name, and with no live path asks with no cutoff), 55000 'The company is being
+-- deleted' (no detail), 55006 'Block history is being erased; ask again', 22023, and the 409 to retry when the company
+-- folder changed while the erasure began. The life is not in the digest: a request asked again after it was accepted
+-- replays.
 create function public.qorpera_folder_erase_block_history(p_environment_id uuid, p_user_id uuid, p_operation_key text,
 	p_block jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$

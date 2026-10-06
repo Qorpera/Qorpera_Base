@@ -5,8 +5,10 @@
 -- its versions phase from phase 2; a replay before and after done (digest, copies and what it was for kept); a delete
 -- erased already (asked again while that erasure runs, then nothing left); partners through a renamed folder, added by
 -- the wrapper; more than 20 paths, 21 named in one round; a life that moved on to a live path left alone; every copy
--- named; no cutoff (every life; a live block, or one restored and renamed to a live path, refused, naming the live path
--- and the delete before it; a reused name asked again with that delete; an older life that moved on left alone;
+-- named; no cutoff (every life; a live block, or one restored and renamed to a live path, refused, naming the live path,
+-- the key's newest life and the delete before it; a reused name asked again with that delete and life, refused once a
+-- newer life began and, with no live path left, asked with no cutoff; or naming no delete once a member's erasure took
+-- it, asked again while that erasure is in its versions phase; an older life that moved on left alone;
 -- another member's private path); nothing left (no erasure); no run noted; the grants. On 803's company; rolled back at
 -- the end.
 
@@ -21,6 +23,11 @@ create function pg_temp.w1a_at(p_path text, p_op text default 'delete') returns 
 	where v.environment_id = '70700000-0000-4000-8000-000000000020' and public.qorpera_folder_key(v.path) = public.qorpera_folder_key(p_path)
 		and v.op = p_op
 	order by c.seq desc, v.unit_no desc limit 1
+$$;
+-- The key's newest life's start: {seq, unit}.
+create function pg_temp.w1a_life(p_path text) returns jsonb language sql as $$
+	select jsonb_build_object('seq', s.seq, 'unit', s.unit_no)
+	from public.qorpera_folder_erasure_life_start('70700000-0000-4000-8000-000000000020', public.qorpera_folder_key(p_path)) s
 $$;
 create function pg_temp.w1a_block(p_path text, p_at jsonb, p_id uuid, p_table text default 'qorpera_memory_message_erases')
 returns jsonb language sql as $$
@@ -83,6 +90,13 @@ begin
 		'Block-history request is invalid', 'a cutoff as a string');
 	perform pg_temp.is(pg_temp.message(format('select pg_temp.w1a_ask(%L)', b || '{"cutoffUnit":0}')),
 		'Block-history request is invalid', 'a unit below 1');
+	perform pg_temp.is(pg_temp.message(format('select pg_temp.w1a_ask(%L)', b || '{"lifeSeq":1}')),
+		'Block-history request is invalid', 'half a life');
+	perform pg_temp.is(pg_temp.message(format('select pg_temp.w1a_ask(%L)', (b - 'cutoffSeq' - 'cutoffUnit')
+			|| '{"lifeSeq":1,"lifeUnit":1}')),
+		'Block-history request is invalid', 'a life with no cutoff');
+	perform pg_temp.is(pg_temp.message(format('select pg_temp.w1a_ask(%L)', b || '{"lifeSeq":"1","lifeUnit":1}')),
+		'Block-history request is invalid', 'a life as a string');
 	perform pg_temp.is(pg_temp.message(format('select pg_temp.w1a_ask(%L)',
 			pg_temp.w1a_block('docs/a.md', pg_temp.w1a_at('docs/a.md'), '95000000-0000-4000-8000-0000000000a1', 'qorpera_folder_erasures'))),
 		'Block-history request is invalid', 'an erase row of another table');
@@ -307,8 +321,8 @@ end $$;
 -- 9. No cutoff: every life of a block not live; a live block, or one restored and renamed to a live path, refused -------------
 
 do $$
-declare r jsonb; v_user uuid := extensions.gen_random_uuid(); v public.qorpera_folder_erasures%rowtype;
-	c_private constant text := 'members/70700000-0000-4000-8000-000000000002/private/w1a.md';
+declare r jsonb; b jsonb; v_user uuid := extensions.gen_random_uuid(); v public.qorpera_folder_erasures%rowtype; v_at jsonb;
+	v_id uuid; c_private constant text := 'members/70700000-0000-4000-8000-000000000002/private/w1a.md';
 begin
 	perform pg_temp.w1a_put('w1a-n-01', 'docs/n.md', 'w1a n one');
 	perform pg_temp.w1a_del('w1a-n-02', 'docs/n.md');
@@ -337,13 +351,16 @@ begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w1a-m-05', jsonb_build_array(pg_temp.mv('docs/m2.md', 'docs/m3.md'))), 1, 'saved');
 	perform pg_temp.is(pg_temp.message(format('select pg_temp.w1a_ask(%L)',
 		pg_temp.w1a_block('docs/m.md', null, '95000000-0000-4000-8000-0000000000e4'))), 'Block is live again', 'and renamed again');
-	-- The detail names the live path and the delete before that life (none for a block never deleted).
+	-- The detail names the live path, the key's newest life and the delete before that life (none for a block never
+	-- deleted).
 	perform pg_temp.is(pg_temp.detail(format('select pg_temp.w1a_ask(%L)',
 		pg_temp.w1a_block('docs/l2.md', null, '95000000-0000-4000-8000-0000000000e3')))::text,
-		'{"live": "docs/l2.md", "delete": null}', 'a live block''s detail');
+		jsonb_build_object('live', 'docs/l2.md', 'life', pg_temp.w1a_life('docs/l2.md'), 'delete', null)::text,
+		'a live block''s detail');
 	perform pg_temp.is(pg_temp.detail(format('select pg_temp.w1a_ask(%L)',
 		pg_temp.w1a_block('docs/m.md', null, '95000000-0000-4000-8000-0000000000e4')))::text,
-		jsonb_build_object('live', 'docs/m3.md', 'delete', pg_temp.w1a_at('docs/m.md'))::text, 'the end of the renames');
+		jsonb_build_object('live', 'docs/m3.md', 'life', pg_temp.w1a_life('docs/m.md'), 'delete', pg_temp.w1a_at('docs/m.md'))::text,
+		'the end of the renames');
 	-- Another tree's block at a name reused since the delete: asked again with that delete as the cutoff, the old life
 	-- goes and the new one stays (kept at its name, or renamed).
 	perform pg_temp.w1a_put('w1a-q-01', 'docs/q.md', 'w1a q old tree');
@@ -351,23 +368,76 @@ begin
 	perform pg_temp.w1a_put('w1a-q-03', 'docs/q.md', 'w1a q new tree');
 	r := pg_temp.detail(format('select pg_temp.w1a_ask(%L)',
 		pg_temp.w1a_block('docs/q.md', null, '95000000-0000-4000-8000-0000000000e7')));
-	perform pg_temp.is(r::text, jsonb_build_object('live', 'docs/q.md', 'delete', pg_temp.w1a_at('docs/q.md'))::text,
-		'a reused name''s detail');
-	r := pg_temp.w1a_ask(pg_temp.w1a_block('docs/q.md', r -> 'delete', '95000000-0000-4000-8000-0000000000e7'));
+	perform pg_temp.is(r::text, jsonb_build_object('live', 'docs/q.md', 'life', pg_temp.w1a_life('docs/q.md'),
+		'delete', pg_temp.w1a_at('docs/q.md'))::text, 'a reused name''s detail');
+	r := pg_temp.w1a_ask(pg_temp.w1a_block('docs/q.md', r -> 'delete', '95000000-0000-4000-8000-0000000000e7')
+		|| jsonb_build_object('lifeSeq', r #> '{life,seq}', 'lifeUnit', r #> '{life,unit}'));
 	v := pg_temp.w1a_drain((r ->> 'erasureId')::uuid);
 	perform pg_temp.is(v.state || pg_temp.versions_at('docs/q.md'), 'done2', 'the old life goes, the new one stays');
+	-- The life it names ended since: that tree's block deleted and the old one restored before the carrier asked again.
+	-- Refused under the path lock, naming the new life; with no live path left, asked with no cutoff, every life goes.
+	perform pg_temp.w1a_put('w1a-t-01', 'docs/t.md', 'w1a t old tree');
+	perform pg_temp.w1a_del('w1a-t-02', 'docs/t.md');
+	perform pg_temp.w1a_put('w1a-t-03', 'docs/t.md', 'w1a t new tree');
+	r := pg_temp.detail(format('select pg_temp.w1a_ask(%L)',
+		pg_temp.w1a_block('docs/t.md', null, '95000000-0000-4000-8000-0000000000eb')));
+	b := pg_temp.w1a_block('docs/t.md', r -> 'delete', '95000000-0000-4000-8000-0000000000eb')
+		|| jsonb_build_object('lifeSeq', r #> '{life,seq}', 'lifeUnit', r #> '{life,unit}');
+	perform pg_temp.w1a_del('w1a-t-04', 'docs/t.md');
+	perform pg_temp.w1a_put('w1a-t-05', 'docs/t.md', 'w1a t old tree restored');
+	perform pg_temp.is(pg_temp.fails(format('select pg_temp.w1a_ask(%L)', b)), '55000', 'a newer life since');
+	perform pg_temp.is(pg_temp.detail(format('select pg_temp.w1a_ask(%L)', b))::text,
+		jsonb_build_object('live', 'docs/t.md', 'life', pg_temp.w1a_life('docs/t.md'), 'delete', pg_temp.w1a_at('docs/t.md'))::text,
+		'the newer life named');
+	v_at := pg_temp.w1a_at('docs/t.md');
+	perform pg_temp.w1a_del('w1a-t-06', 'docs/t.md');
+	perform pg_temp.is(pg_temp.detail(format('select pg_temp.w1a_ask(%L)', b))::text,
+		jsonb_build_object('live', null, 'life', pg_temp.w1a_life('docs/t.md'), 'delete', v_at)::text, 'no live path left');
+	r := pg_temp.w1a_ask(pg_temp.w1a_block('docs/t.md', null, '95000000-0000-4000-8000-0000000000eb'));
+	perform pg_temp.is(r -> 'roots' -> 0 ->> 'versions', '6', 'every life, asked with no cutoff');
+	v := pg_temp.w1a_drain((r ->> 'erasureId')::uuid);
+	perform pg_temp.is(v.state || pg_temp.versions_at('docs/t.md'), 'done0', 'nothing left at the name');
 	perform pg_temp.w1a_put('w1a-q2-01', 'docs/q2.md', 'w1a q2 old tree');
 	perform pg_temp.w1a_del('w1a-q2-02', 'docs/q2.md');
 	perform pg_temp.w1a_put('w1a-q2-03', 'docs/q2.md', 'w1a q2 new tree');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w1a-q2-04', jsonb_build_array(pg_temp.mv('docs/q2.md', 'docs/q3.md'))), 1, 'saved');
 	r := pg_temp.detail(format('select pg_temp.w1a_ask(%L)',
 		pg_temp.w1a_block('docs/q2.md', null, '95000000-0000-4000-8000-0000000000e8')));
-	perform pg_temp.is(r::text, jsonb_build_object('live', 'docs/q3.md', 'delete', pg_temp.w1a_at('docs/q2.md'))::text,
-		'a reused name renamed since');
+	perform pg_temp.is(r::text, jsonb_build_object('live', 'docs/q3.md', 'life', pg_temp.w1a_life('docs/q2.md'),
+		'delete', pg_temp.w1a_at('docs/q2.md'))::text, 'a reused name renamed since');
 	r := pg_temp.w1a_ask(pg_temp.w1a_block('docs/q2.md', r -> 'delete', '95000000-0000-4000-8000-0000000000e8'));
 	v := pg_temp.w1a_drain((r ->> 'erasureId')::uuid);
 	perform pg_temp.is(v.state || pg_temp.versions_at('docs/q2.md') || pg_temp.versions_at('docs/q3.md'), 'done31',
 		'the old life goes; the renamed life keeps its history');
+	-- A reused name after a member's erasure took the old life and its delete: asked again while that erasure is in its
+	-- versions phase, then no delete is named, as nothing of the old block is left at the name (kept or renamed).
+	perform pg_temp.w1a_put('w1a-s-01', 'docs/s.md', 'w1a s old tree');
+	perform pg_temp.w1a_del('w1a-s-02', 'docs/s.md');
+	v_at := pg_temp.w1a_at('docs/s.md');
+	perform pg_temp.w1a_put('w1a-s-03', 'docs/s.md', 'w1a s new tree');
+	v_id := (pg_temp.erase(array['docs/s.md'], 'w1a-s-member') ->> 'erasureId')::uuid;
+	-- As if its versions phase had erased the delete in a batch, and not yet the write before it.
+	delete from public.qorpera_folder_path_versions pv using public.qorpera_folder_commits c
+	where c.id = pv.commit_id and pv.environment_id = '70700000-0000-4000-8000-000000000020' and pv.path = 'docs/s.md'
+		and c.seq = (v_at ->> 'seq')::bigint and pv.unit_no = (v_at ->> 'unit')::integer;
+	perform pg_temp.is(pg_temp.fails(format('select pg_temp.w1a_ask(%L)',
+		pg_temp.w1a_block('docs/s.md', null, '95000000-0000-4000-8000-0000000000e9'))), '55006', 'asked again while it runs');
+	perform pg_temp.is((pg_temp.w1a_drain(v_id)).state, 'done', 'the member''s erasure drained');
+	perform pg_temp.is(pg_temp.detail(format('select pg_temp.w1a_ask(%L)',
+		pg_temp.w1a_block('docs/s.md', null, '95000000-0000-4000-8000-0000000000e9')))::text,
+		jsonb_build_object('live', 'docs/s.md', 'life', pg_temp.w1a_life('docs/s.md'), 'delete', null)::text,
+		'a reused name with nothing old left');
+	perform pg_temp.is(pg_temp.versions_at('docs/s.md')::text, '1', 'the new life stays');
+	perform pg_temp.w1a_put('w1a-s2-01', 'docs/s2.md', 'w1a s2 old tree');
+	perform pg_temp.w1a_del('w1a-s2-02', 'docs/s2.md');
+	perform pg_temp.is((pg_temp.w1a_drain((pg_temp.erase(array['docs/s2.md'], 'w1a-s2-member') ->> 'erasureId')::uuid)).state,
+		'done', 'the member''s erasure of the deleted name drained');
+	perform pg_temp.w1a_put('w1a-s2-03', 'docs/s2.md', 'w1a s2 new tree');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w1a-s2-04', jsonb_build_array(pg_temp.mv('docs/s2.md', 'docs/s3.md'))), 1, 'saved');
+	perform pg_temp.is(pg_temp.detail(format('select pg_temp.w1a_ask(%L)',
+		pg_temp.w1a_block('docs/s2.md', null, '95000000-0000-4000-8000-0000000000ea')))::text,
+		jsonb_build_object('live', 'docs/s3.md', 'life', pg_temp.w1a_life('docs/s2.md'), 'delete', null)::text,
+		'and renamed since');
 	-- An older life that moved on to a live path is another tree's block: left alone.
 	perform pg_temp.w1a_put('w1a-o-01', 'docs/o.md', 'w1a o one');
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w1a-o-02', jsonb_build_array(pg_temp.mv('docs/o.md', 'docs/o2.md'))), 1, 'saved');
