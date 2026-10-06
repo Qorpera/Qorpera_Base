@@ -20,6 +20,26 @@ export const BRANCH_MIN = 600;
 export const OVERFLOW = 1.25;
 /** Attempts to bring a compactor line under NODE (§7.2). */
 export const TRIES = 3;
+/** The company head and the agent head together (§5.6). */
+export const HEAD = 16_000;
+/** Pinned text in an agent head, once pins are built (§11). */
+export const PINS = 4_000;
+/** The run's own work: folded lines plus raw steps (§5.7). */
+export const RUN_VIEW = 64_000;
+/** A run commits its steps every STEP_COMMIT_STEPS steps or STEP_COMMIT_MS, whichever comes first, and at run end (§4.5). */
+export const STEP_COMMIT_STEPS = 16;
+export const STEP_COMMIT_MS = 30_000;
+/** The compactor's window: the previous group of WINDOW messages plus the current group up to the message (§7.3). */
+export const WINDOW = 16;
+/** The most raw text in that window, and the most of one event in it (§7.3). */
+export const COMPACT_CONTEXT = 32_000;
+export const COMPACT_EVENT = 1_024;
+/** Compactor threads at once in one run (§7). */
+export const JOBS = 4;
+/** The longest wait at run start for missing lines (§5.4). */
+export const SETTLE_MS = 20_000;
+/** The longest a run spends building lines after its last send (§7.1). */
+export const CLOSE_MS = 60_000;
 /** The most a line's text takes as stored in its block, JSON escaping included (§4.2). */
 export const LINE_BYTES = 2_048;
 /** What a line that is not built yet shows (§5.4). */
