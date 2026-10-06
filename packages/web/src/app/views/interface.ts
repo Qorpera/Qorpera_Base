@@ -1547,6 +1547,8 @@ function offerPicker(
 					type: "button",
 					class: "interface-button",
 					"data-focus-key": `offer-to:${offerKey}:${index}`,
+					// The picker closes as the offer goes; the card's Offer… stays drawn and takes the focus.
+					"data-focus-then": JSON.stringify([`offer:${offerKey}`]),
 					"aria-describedby": titleId,
 					onclick: () => void offerCard(context, part, item, member.id, offerKey),
 				},

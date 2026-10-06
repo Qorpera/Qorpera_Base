@@ -636,12 +636,20 @@ describe("offers on the Members board (I9c)", () => {
 			message: "Bea can't change the rows of this table.",
 		});
 		const { main } = await members(fake, "owner", offers);
-		buttonOf(card(main, "Call the bank"), "Offer…")!.click();
-		buttonOf(card(main, "Call the bank"), "Bea")!.click();
+		const call = () => card(main, "Call the bank");
+		buttonOf(call(), "Offer…")!.click();
+		// A click in the browser focuses the button; jsdom's doesn't. The picker closes as the offer goes, and the
+		// focus stays on the card's Offer…, not on the next card's Take.
+		buttonOf(call(), "Bea")!.focus();
+		buttonOf(call(), "Bea")!.click();
+		expect(document.activeElement).toBe(buttonOf(call(), "Offer…"));
+		expect(buttonOf(call(), "Offer…")?.getAttribute("aria-disabled")).toBe("true");
 		await vi.waitFor(() =>
 			expect(main.querySelector(".notice")?.textContent).toBe("Bea can't change the rows of this table."),
 		);
-		expect(card(main, "Call the bank").querySelector(".interface-card-offers")).toBeNull();
+		expect(call().querySelector(".interface-card-offers")).toBeNull();
+		expect(document.activeElement).toBe(buttonOf(call(), "Offer…"));
+		expect(buttonOf(call(), "Offer…")?.hasAttribute("aria-disabled")).toBe(false);
 	});
 
 	it("answers an offer to the member on the card: Accept writes only the holder cell, as the offer read it", async () => {
