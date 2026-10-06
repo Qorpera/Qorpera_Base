@@ -1,8 +1,9 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- The one-call native context fence (20260928339400) on a folder-v2 company (ported from snapshot-v1 in the legacy
 -- sweep), on 924's real native run of Alice's: only the service role may call it; a call without the service's claims,
--- or for a run whose lease is revoked, is refused; and once the owner revokes Alice's folder grant on a file her run read
--- and released, the next model request is refused and records no view.
+-- or for a run whose lease is revoked, whose assignment expired, whose job ended or whose sponsor binding is revoked, is
+-- refused; and once the owner revokes Alice's folder grant on a file her run read and released, the next model request
+-- is refused and records no view.
 
 -- Only the service role calls it, like each call it makes.
 reset role;
@@ -71,16 +72,35 @@ select pg_temp.base_error(pg_temp.fn_call('fn-claims'), '42501', 'Context fence 
 reset role;
 select pg_temp.base_claims('service_role');
 
--- A run whose lease is revoked is refused (the fence makes the run check). Rolled back.
+-- The fence makes the run check: a run whose lease is revoked, whose assignment expired, whose job ended or whose
+-- sponsor binding is revoked is refused and records no view. Each case is rolled back.
 do $$
+declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_case text;
 begin
-	update public.qorpera_native_provider_connection_leases set status = 'revoked', released_at = clock_timestamp()
-	where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'leaseId')::uuid;
-	set local role service_role;
-	perform pg_temp.base_error(pg_temp.fn_call('fn-lease'), '42501');
-	reset role;
-	raise exception using errcode = 'QTF01';
-exception when sqlstate 'QTF01' then reset role;
+	foreach v_case in array array['lease','assignment','job','sponsor'] loop
+		begin
+			if v_case = 'lease' then
+				update public.qorpera_native_provider_connection_leases set status = 'revoked', released_at = clock_timestamp()
+				where id = (v_binding ->> 'leaseId')::uuid;
+			elsif v_case = 'assignment' then
+				update public.qorpera_runner_assignments set expires_at = clock_timestamp() - interval '1 second'
+				where id = (v_binding ->> 'assignmentId')::uuid;
+			elsif v_case = 'job' then
+				set local role service_role;
+				perform public.qorpera_terminalize_runner_attempt((v_binding ->> 'jobId')::uuid, 'failed', 'Fence check', false);
+				reset role;
+			elsif v_case = 'sponsor' then
+				update public.qorpera_execution_sponsor_bindings set status = 'revoked'
+				where id = (current_setting('qorpera_test.base_sponsor')::jsonb ->> 'binding_id')::uuid;
+			end if;
+			set local role service_role;
+			perform pg_temp.base_error(pg_temp.fn_call('fn-' || v_case), '42501');
+			reset role;
+			perform pg_temp.base_assert(not pg_temp.fn_viewed('fn-' || v_case), 'A refused fence recorded its view: ' || v_case);
+			raise exception using errcode = 'QTF01';
+		exception when sqlstate 'QTF01' then reset role;
+		end;
+	end loop;
 end
 $$;
 
