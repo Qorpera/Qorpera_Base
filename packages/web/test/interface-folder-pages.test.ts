@@ -78,7 +78,7 @@ function company() {
 	const f = fixture();
 	const controller = new CompanyController(f.api, profileA, userA.id);
 	const me = { userId: userA.id, email: "a@example.invalid", displayName: "Account A", role: "owner" as const };
-	// Ada waits for the member; the Co-Founder's wake-up finished after.
+	// Ada waits for the member.
 	const activity: HostedStaffExecutionActivity[] = [
 		{
 			staffAgentId: ada.id,
@@ -87,14 +87,6 @@ function company() {
 			activity: "needs_attention",
 			jobStatus: "leased",
 			updatedAt: "2026-10-06T09:00:00Z",
-		},
-		{
-			staffAgentId: cofounder.id,
-			runId: id(82),
-			sourceKind: "wake",
-			activity: "waiting",
-			jobStatus: "completed",
-			updatedAt: "2026-10-06T09:30:00Z",
 		},
 	];
 	controller.store.set({

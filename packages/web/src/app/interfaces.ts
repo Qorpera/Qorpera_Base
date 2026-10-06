@@ -9,9 +9,10 @@
  *
  * Either way only the parts whose source the client can read are drawn: a part without its source is not drawn, and an
  * interface with no part to draw is not listed (the client contract's rule against rendering missing machinery). Today
- * those sources are Pulse's "Needs you", "Working now" and "What happened" and the company's members, read from the
- * company's live state, and the company's tables, its files that hold no outside content and its own files' sources
- * (`vision`, `agents`, `todos`..., app/interface-sources.ts), read from its folder. */
+ * those sources are Pulse's "Needs you" and "Working now" and the company's members, read from the company's live
+ * state, and the company's tables, its files that hold no outside content and its own files' sources (`vision`,
+ * `agents`, `todos`..., app/interface-sources.ts), read from its folder. Pulse's "What happened" waits for a read of
+ * past runs. */
 
 import { INTERFACE_LIBRARY } from "@qorpera/cloud-client/interface-library";
 import {
