@@ -118,8 +118,8 @@ const nativeError = (codexErrorInfo, willRetry, patch = {}) => write({ method: "
 	threadId, turnId, willRetry, error: { message: "PRIVATE_PROVIDER_ERROR", additionalDetails: "PRIVATE_PROVIDER_DETAILS", codexErrorInfo }, ...patch,
 } });
 const failed = (error = { message: "PRIVATE_PROVIDER_ERROR" }) => write({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "failed", error } } });
-const fence = (outputs = [], patch = {}) => new Promise((resolve, reject) => {
-	const request = Buffer.from(JSON.stringify({ schema: "qorpera.native-result-fence/v1", requestId: randomUUID(), threadId, turnId, purpose: "turn", outputs, ...patch }));
+const exchange = (body) => new Promise((resolve, reject) => {
+	const request = Buffer.from(JSON.stringify(body));
 	const size = Buffer.alloc(4);
 	size.writeUInt32BE(request.length);
 	const socket = connect(process.env.QORPERA_NATIVE_RESULT_FENCE_SOCKET);
@@ -137,6 +137,14 @@ const fence = (outputs = [], patch = {}) => new Promise((resolve, reject) => {
 	});
 	socket.on("close", () => { if (!completed) reject(new Error("Fence closed")); });
 });
+const fence = (outputs = [], patch = {}) => exchange({ schema: "qorpera.native-result-fence/v1", requestId: randomUUID(), threadId, turnId, purpose: "turn", outputs, ...patch });
+// Context composition: before its fence, a request's manifest (its items' kinds and sizes, never their content).
+const manifest = [
+	{ kind: "message", role: "developer", callId: null, id: null, bytes: 1200, media: 0 },
+	{ kind: "message", role: "user", callId: null, id: null, bytes: 18, media: 0 },
+];
+const compose = (patch = {}) => exchange({ schema: "qorpera.native-context-composition/v1", requestId: randomUUID(), threadId, turnId, purpose: "turn", model: "offline-probe", items: manifest, ...patch });
+const contextEvidence = { agent: null, reviewer: null };
 
 if (mode === "descendant") {
 	spawn(process.execPath, ["-e", `process.on('SIGTERM',()=>{});setTimeout(()=>require('node:fs').writeFileSync(${JSON.stringify(evidencePath)},'UNEXPECTED_DESCENDANT_EFFECT'),1500);setTimeout(()=>{},10000);`], { stdio: "ignore" });
@@ -159,7 +167,7 @@ async function handle(message) {
 		// Far more diagnostics than the removed 16 MiB output cap; the turn still completes.
 		if (mode === "wire-flood") process.stderr.write("x".repeat(17 * 1024 * 1024));
 		if (mode === "missing-result") { write({ id: message.id }); return; }
-		write({ id: message.id, result: { userAgent: `qorpera_cloud_boundary/${mode === "wrong-version" ? "0.146.0" : "0.155.1"} (fixture)${mode === "capture-image" ? " qorpera.native-capture-images/v1" : ""}${mode === "missing-composition" ? "" : " qorpera.native-message-composition/v1"}${mode === "missing-fence" ? "" : " qorpera.native-result-fence/v1"}${mode === "missing-fence" || mode === "missing-direct-tools" ? "" : " qorpera.native-direct-tools/v1"}` } });
+		write({ id: message.id, result: { userAgent: `qorpera_cloud_boundary/${mode === "wrong-version" ? "0.146.0" : "0.155.1"} (fixture)${mode === "capture-image" ? " qorpera.native-capture-images/v1" : ""}${mode === "missing-composition" ? "" : " qorpera.native-message-composition/v1"}${mode === "missing-context-composition" ? "" : " qorpera.native-context-composition/v1"}${mode === "missing-fence" ? "" : " qorpera.native-result-fence/v1"}${mode === "missing-fence" || mode === "missing-direct-tools" ? "" : " qorpera.native-direct-tools/v1"}` } });
 	} else if (message.method === "config/read") {
 		if (mode === "unsafe-config") configuration.features.shell_tool = true;
 		if (mode === "extra-mcp") configuration.mcp_servers.uncontrolled = { url: "http://uncontrolled.invalid/mcp" };
@@ -188,6 +196,7 @@ async function handle(message) {
 		reviewEvidence.reviewerTurn = message.params;
 		write({ id: message.id, result: { turn: { id: reviewTurnId } } });
 		write({ method: "turn/started", params: { threadId: reviewThreadId, turn: { id: reviewTurnId } } });
+		if (mode === "review-context") contextEvidence.reviewer = await compose({ threadId: reviewThreadId, turnId: reviewTurnId });
 		await fence([], { threadId: reviewThreadId, turnId: reviewTurnId });
 		// The reviewer's text never matters; only its verdict tool call does.
 		write({ method: "item/agentMessage/delta", params: { threadId: reviewThreadId, turnId: reviewTurnId, delta: "PRIVATE_REVIEW_CANARY" } });
@@ -231,6 +240,10 @@ async function handle(message) {
 		if (mode === "notify-first") write(notification);
 		write({ id: message.id, result: { turn: { id: turnId } } });
 		if (mode !== "notify-first") write(notification);
+		if (mode.startsWith("context-") || mode === "review-context") {
+			contextEvidence.agent = await compose(mode === "context-wrong-turn" ? { turnId: "other_turn" } : {});
+			if (mode.startsWith("context-")) writeFileSync(evidencePath, JSON.stringify({ context: contextEvidence }));
+		}
 		if (mode !== "fence-before-started" && mode !== "skip-fence") await fence([], {
 			...(mode === "wrong-fence-thread" ? { threadId: "other_thread" } : {}),
 			...(mode === "wrong-fence-turn" ? { turnId: "other_turn" } : {}),
@@ -387,7 +400,7 @@ async function handle(message) {
 		const mainFenced = await fence([{ kind: "function_call_output", callId: "email_1", output: message.result.contentItems[0].text }]);
 		// Readline handlers run concurrently: record the reviewer's closing fence before writing the evidence.
 		if (reviewClosingFence) reviewEvidence.closingFence = await reviewClosingFence;
-		writeFileSync(evidencePath, JSON.stringify({ ...reviewEvidence, mainThread: threadParameters, reply: message, mainFenced }));
+		writeFileSync(evidencePath, JSON.stringify({ ...reviewEvidence, context: contextEvidence, mainThread: threadParameters, reply: message, mainFenced }));
 		done();
 	} else if (message.method === "turn/interrupt") {
 		sendEvidence.interrupt = message.params;

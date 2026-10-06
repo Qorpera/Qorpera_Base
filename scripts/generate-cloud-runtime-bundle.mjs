@@ -149,7 +149,7 @@ export async function cloudRuntimeBundle(root = repository) {
 			contextComposer: component(runtime(["cloud-native-company-context", "cloud-runtime-hire-overlays", "cloud-company-formation", "cloud-company-path-gateway"])),
 			providerBootstrap: component(runtime(["cloud-codex-tool-session", "cloud-native-company-context", "cloud-runtime-constitution", "cloud-runtime-hire-overlays", "cloud-company-formation", "cloud-native-provider-host", "lxd-runner-bootstrap-main"])),
 			authorization: component([...files.keys()].filter((path) => path.startsWith("supabase/migrations/"))),
-			inboundSafety: component(runtime(["cloud-native-result-fence", "cloud-native-tool-boundary"])),
+			inboundSafety: component(runtime(["cloud-native-result-fence", "cloud-native-context-composition", "cloud-native-tool-boundary"])),
 			outboundSafety: component(runtime(["cloud-native-tool-operations", "cloud-secret-tools", "cloud-company-path-gateway"])),
 			interactionSurfaces: component(runtime(["cloud-agent-mouth", "cloud-native-company-runtime"])),
 			workerLifecycle: component([...runtime(["cloud-runner-worker", "cloud-native-provider-host", "cloud-worker-tools"]), ...[...files.keys()].filter((path) => path.startsWith("packages/runtime/src/cloud-coding-") || path.startsWith("packages/runner-orchestrator/src/coding-") || path.startsWith("packages/contracts/src/cloud-coding"))]),

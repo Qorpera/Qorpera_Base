@@ -45,6 +45,25 @@ v104 a request may carry any number of outputs: the frame is bounded at 64 MiB
 each way (it was 8 MiB, with fewer than 128 outputs and 1 MiB of result text),
 more than any model context holds.
 
+The host also requires `qorpera.native-context-composition/v1` (design
+`RUNTIME-AGENT-MEMORY-TREE.md` §6.3). Before each provider request, and before
+its fence, Codex sends the host a manifest on the same socket: the request's
+model, purpose and, for each item, its kind, role, call id, provider id and
+size, never its content. The host answers with the input to send: Codex's
+items kept by position, in order, and at most one work message, a
+`qorpera.run-work/v1` envelope with the run's earlier steps folded into
+lines, plus an optional `qorpera:` prompt cache key. Codex checks the answer
+before it changes anything. It refuses a dropped instruction or user message,
+a call kept without its output (or an output without its call), a fold that
+is not a run of the request's earlier work, a work message out of place, a
+work message that is not a plain envelope of at most 256 KiB, and kept text
+that passes for one. On a resumed run, whose earlier steps are only in the
+run log, the work message may stand with nothing folded, after the last kept
+item before the run's raw work. The composed input applies to that one
+request only: the work message never enters Codex's history, and the result
+fence then runs over the items that were kept. A reviewer thread's requests
+are never composed from the agent's run.
+
 ## Build
 
 Provision Rust 1.95.0, its `llvm-tools` component and the upstream platform

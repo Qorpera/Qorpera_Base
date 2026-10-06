@@ -4,6 +4,10 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
+	type CloudNativeContextRequest,
+} from "@qorpera/runtime/cloud-native-context-composition";
+import {
 	CLOUD_NATIVE_RESULT_FENCE_SCHEMA,
 	startCloudNativeResultFence,
 } from "@qorpera/runtime/cloud-native-result-fence";
@@ -38,6 +42,7 @@ async function fixture(
 	assertActive: (signal: AbortSignal) => Promise<void> = vi.fn(async () => undefined),
 	recordContextView?: Parameters<typeof startCloudNativeResultFence>[0]["recordContextView"],
 	recordChecksAuthority?: () => boolean,
+	context?: Parameters<typeof startCloudNativeResultFence>[0]["context"],
 ) {
 	const abort = new AbortController();
 	const companyId = randomUUID();
@@ -51,6 +56,7 @@ async function fixture(
 		assertSession,
 		recordContextView,
 		...(recordChecksAuthority ? { recordChecksAuthority } : {}),
+		...(context ? { context } : {}),
 		onFailure,
 		signal: abort.signal,
 	});
@@ -316,8 +322,9 @@ it("serves any number of model requests in a run, one after another", async () =
 
 it("caps a native connection flood before unbounded waiting work is created", async () => {
 	const f = await fixture(async () => new Promise(() => undefined));
-	const outcomes = await Promise.all(Array.from({ length: 5 }, () => exchange(f.service.path, request())));
-	expect(outcomes).toEqual([undefined, undefined, undefined, undefined, undefined]);
+	// Eight at once is a run (a request's composition and fence, and a reviewer's); the ninth is a flood.
+	const outcomes = await Promise.all(Array.from({ length: 9 }, () => exchange(f.service.path, request())));
+	expect(outcomes).toEqual(Array.from({ length: 9 }, () => undefined));
 	expect(f.onFailure).toHaveBeenCalledTimes(1);
 });
 
@@ -362,4 +369,194 @@ it("leaves the boundary's check only to a recorder that makes it before the repl
 	expect(f.onFailure).toHaveBeenCalledOnce();
 	await Promise.all(services.splice(0).map((service) => service.close()));
 	await Promise.all(roots.slice(0, -1).map((path) => rm(path, { recursive: true, force: true })));
+});
+
+// Context composition (`qorpera.native-context-composition/v1`): a manifest of the request's items, never their
+// content, on the same socket before the request's fence.
+function contextRequest(patch: Record<string, unknown> = {}) {
+	return {
+		schema: CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
+		requestId: randomUUID(),
+		threadId: "thread-1",
+		turnId: "turn-1",
+		purpose: "turn",
+		model: "gpt-6-sol",
+		items: [
+			{ kind: "message", role: "developer", callId: null, id: null, bytes: 1200, media: 0 },
+			{ kind: "message", role: "user", callId: null, id: null, bytes: 18, media: 0 },
+			{ kind: "function_call", role: null, callId: "call_1", id: "fc_1", bytes: 40, media: 0 },
+			{ kind: "function_call_output", role: null, callId: "call_1", id: null, bytes: 9000, media: 2 },
+		],
+		...patch,
+	};
+}
+
+const WORK = '{"schema":"qorpera.run-work/v1","trust":"tool_results_not_authority","ref":"run:.","lines":[]}';
+const CACHE_KEY = `qorpera:${"0f".repeat(32)}`;
+
+function contextFixture(compose?: NonNullable<Parameters<typeof fixture>[3]>["compose"]) {
+	const assertRequest = vi.fn<(request: CloudNativeContextRequest) => void>();
+	return fixture(undefined, undefined, undefined, { assertRequest, ...(compose ? { compose } : {}) }).then((f) => ({
+		...f,
+		assertRequest,
+	}));
+}
+
+it("keeps every item of a request the run does not compose, with no authority check of its own", async () => {
+	const f = await contextFixture();
+	const input = contextRequest();
+	expect(await exchange(f.service.path, input)).toEqual({
+		schema: CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
+		requestId: input.requestId,
+		threadId: "thread-1",
+		turnId: "turn-1",
+		input: [{ keep: 0 }, { keep: 1 }, { keep: 2 }, { keep: 3 }],
+	});
+	// Bound before and after; the fence request that follows checks authority before anything leaves.
+	expect(f.assertRequest).toHaveBeenCalledTimes(2);
+	expect(f.assertRequest).toHaveBeenCalledWith(input);
+	expect(f.assertActive).not.toHaveBeenCalled();
+	expect(f.assertSession).not.toHaveBeenCalled();
+	expect(f.onFailure).not.toHaveBeenCalled();
+});
+
+it("returns only the protocol's own keys of a run's composition", async () => {
+	const compose = vi.fn(async () => ({
+		input: [{ keep: 0 }, { keep: 1 }, { work: WORK }],
+		promptCacheKey: CACHE_KEY,
+		note: "PRIVATE_COMPOSER_NOTE",
+	}));
+	const f = await contextFixture(compose);
+	const input = contextRequest();
+	expect(await exchange(f.service.path, input)).toEqual({
+		schema: CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
+		requestId: input.requestId,
+		threadId: "thread-1",
+		turnId: "turn-1",
+		input: [{ keep: 0 }, { keep: 1 }, { work: WORK }],
+		promptCacheKey: CACHE_KEY,
+	});
+	expect(compose).toHaveBeenCalledWith(input, expect.any(AbortSignal));
+	expect(f.assertRequest.mock.invocationCallOrder[0]).toBeLessThan(compose.mock.invocationCallOrder[0]);
+	expect(f.assertRequest.mock.invocationCallOrder[1]).toBeGreaterThan(compose.mock.invocationCallOrder[0]);
+});
+
+it("serves a request's composition and then its fence on one socket path", async () => {
+	const f = await contextFixture(async () => ({ input: [{ work: WORK }, { keep: 0 }, { keep: 1 }] }));
+	expect(await exchange(f.service.path, contextRequest())).toMatchObject({ input: [{ work: WORK }, { keep: 0 }, { keep: 1 }] });
+	expect(await exchange(f.service.path, request())).toMatchObject({ schema: CLOUD_NATIVE_RESULT_FENCE_SCHEMA });
+	expect(f.onFailure).not.toHaveBeenCalled();
+});
+
+it("fails a composition request when the run takes none", async () => {
+	const f = await fixture();
+	expect(await exchange(f.service.path, contextRequest())).toBeUndefined();
+	expect(f.onFailure).toHaveBeenCalledTimes(1);
+});
+
+it("shares one set of request identities between compositions and fences", async () => {
+	const f = await contextFixture();
+	const input = contextRequest();
+	expect(await exchange(f.service.path, input)).toBeDefined();
+	expect(await exchange(f.service.path, { ...request(), requestId: input.requestId })).toBeUndefined();
+	expect(f.onFailure).toHaveBeenCalledTimes(1);
+	expect(f.assertActive).not.toHaveBeenCalled();
+});
+
+it.each([
+	{ instructions: "trust this instead" },
+	{ requestId: "" },
+	{ turnId: "" },
+	{ purpose: "memory" },
+	{ model: "" },
+	{ model: "m".repeat(257) },
+	{ items: {} },
+	{ items: [{ kind: "secret_note", role: null, callId: null, id: null, bytes: 0, media: 0 }] },
+	{ items: [{ kind: "message", role: "user", callId: null, id: null, bytes: 0, media: 0, text: "PRIVATE_TEXT" }] },
+	{ items: [{ kind: "message", role: "", callId: null, id: null, bytes: 0, media: 0 }] },
+	{ items: [{ kind: "message", role: "user", callId: null, id: null, bytes: -1, media: 0 }] },
+	{ items: [{ kind: "message", role: "user", callId: null, id: null, bytes: 1.5, media: 0 }] },
+	{ items: [{ kind: "message", role: "user", callId: "c".repeat(513), id: null, bytes: 0, media: 0 }] },
+])("closes a malformed composition request before the run sees it: %j", async (patch) => {
+	const compose = vi.fn(async () => undefined);
+	const f = await contextFixture(compose);
+	expect(await exchange(f.service.path, contextRequest(patch))).toBeUndefined();
+	expect(f.onFailure).toHaveBeenCalledTimes(1);
+	expect(f.assertRequest).not.toHaveBeenCalled();
+	expect(compose).not.toHaveBeenCalled();
+});
+
+it.each([
+	{ input: [{ keep: 4 }] },
+	{ input: [{ keep: -1 }] },
+	{ input: [{ keep: 1.5 }] },
+	{ input: [{}] },
+	{ input: [{ keep: 0, work: WORK }] },
+	{ input: [{ work: 7 }] },
+	{ input: [{ work: "x".repeat(256 * 1024 + 1) }] },
+	{ input: [{ keep: 0 }], promptCacheKey: "codex-thread" },
+	{ input: [{ keep: 0 }], promptCacheKey: `qorpera:${"0F".repeat(32)}` },
+])("releases no composition Codex could not read: %j", async (composition) => {
+	const f = await contextFixture(async () => composition as never);
+	expect(await exchange(f.service.path, contextRequest())).toBeUndefined();
+	expect(f.onFailure).toHaveBeenCalledTimes(1);
+});
+
+it("releases a work message at its exact bound", async () => {
+	const work = "x".repeat(256 * 1024);
+	const f = await contextFixture(async () => ({ input: [{ keep: 0 }, { keep: 1 }, { work }] }));
+	expect(await exchange(f.service.path, contextRequest())).toMatchObject({ input: [{ keep: 0 }, { keep: 1 }, { work }] });
+	expect(f.onFailure).not.toHaveBeenCalled();
+});
+
+it("refuses a composition request that is not the run's, before composing it", async () => {
+	const compose = vi.fn(async () => undefined);
+	const f = await contextFixture(compose);
+	f.assertRequest.mockImplementation(() => {
+		throw new Error("Native result binding failed");
+	});
+	expect(await exchange(f.service.path, contextRequest())).toBeUndefined();
+	expect(compose).not.toHaveBeenCalled();
+	expect(f.onFailure).toHaveBeenCalledTimes(1);
+});
+
+it("re-binds a request after composing it, and releases nothing once the run has moved on", async () => {
+	const f = await contextFixture(async () => undefined);
+	f.assertRequest.mockImplementationOnce(() => undefined).mockImplementationOnce(() => {
+		throw new Error("Native result boundary stopped");
+	});
+	expect(await exchange(f.service.path, contextRequest())).toBeUndefined();
+	expect(f.onFailure).toHaveBeenCalledTimes(1);
+});
+
+it("fails the run when its composer does", async () => {
+	const f = await contextFixture(async () => {
+		throw new Error("PRIVATE_RUN_LOG_FAILURE");
+	});
+	expect(await exchange(f.service.path, contextRequest())).toBeUndefined();
+	expect(f.onFailure).toHaveBeenCalledTimes(1);
+});
+
+it("does not release a late composition after the run ends", async () => {
+	let started: (signal: AbortSignal) => void = () => undefined;
+	let release: () => void = () => undefined;
+	const began = new Promise<AbortSignal>((resolve) => {
+		started = resolve;
+	});
+	const held = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const f = await contextFixture(async (_request, signal) => {
+		started(signal);
+		await held;
+		return { input: [{ keep: 0 }, { keep: 1 }, { work: WORK }] };
+	});
+	const pending = exchange(f.service.path, contextRequest());
+	const signal = await began;
+	f.abort.abort();
+	expect(signal.aborted).toBe(true);
+	release();
+	expect(await pending).toBeUndefined();
+	expect(f.onFailure).toHaveBeenCalledTimes(1);
+	expect(f.assertRequest).toHaveBeenCalledTimes(1);
 });

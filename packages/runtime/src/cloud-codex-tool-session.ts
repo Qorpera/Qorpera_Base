@@ -15,6 +15,11 @@ import {
 } from "./cloud-action-review.ts";
 import { CLOUD_NATIVE_CAPTURE_IMAGES_CAPABILITY } from "./cloud-native-capture-images.ts";
 import {
+	CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
+	type CloudNativeContextComposition,
+	type CloudNativeContextRequest,
+} from "./cloud-native-context-composition.ts";
+import {
 	type NativeRuntimeFailureStage,
 	type NativeRuntimeUsageSignal,
 	nativeRuntimeUsageSignal,
@@ -97,6 +102,11 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 /** What the reviewer's verdict call returns, and what an unknown reviewer output becomes. */
 const REVIEW_RECORDED_OUTPUT = JSON.stringify({ recorded: true });
 const REVIEW_UNAVAILABLE_OUTPUT = JSON.stringify({ recorded: false });
+
+/** What binds a model request: a context composition request has no outputs. */
+type ModelRequestIdentity = Pick<CloudNativeFenceRequest, "threadId" | "turnId" | "purpose"> & {
+	outputs: readonly unknown[];
+};
 
 interface ReviewThread {
 	readonly threadId: string;
@@ -660,7 +670,7 @@ class CodexBoundaryRpc {
 	}
 
 	/** A model request of a reviewer thread (auto-review). */
-	isReviewRequest(request: CloudNativeFenceRequest): boolean {
+	isReviewRequest(request: Pick<CloudNativeFenceRequest, "threadId" | "purpose">): boolean {
 		return (
 			request.threadId !== this.#threadId &&
 			request.threadId !== this.#prewarmThreadId &&
@@ -673,7 +683,7 @@ class CodexBoundaryRpc {
 	}
 
 	/** The reviewer's lane: its prewarm and its one turn, nothing of the agent's. */
-	#assertReviewRequest(request: CloudNativeFenceRequest): void {
+	#assertReviewRequest(request: ModelRequestIdentity): void {
 		if (request.purpose === "prewarm") {
 			if (request.outputs.length !== 0) throw new Error("Native review binding failed");
 			if (this.#startingReview && !this.#reviews.has(request.threadId) && !this.#endedReviews.has(request.threadId))
@@ -884,11 +894,13 @@ class CodexBoundaryRpc {
 		return true;
 	}
 
-	assertModelRequest(request: CloudNativeFenceRequest): void {
+	/** A model request's thread and turn: the run's, its prewarm's, or a reviewer's. Both requests Codex makes
+	 * before a provider request, its context composition and then its fence, are bound here. */
+	#bindModelRequest(request: ModelRequestIdentity): "review" | "prewarm" | "turn" {
 		if (this.#failure || this.#closed || this.#finished) throw new Error("Native result boundary stopped");
 		if (this.isReviewRequest(request)) {
 			this.#assertReviewRequest(request);
-			return;
+			return "review";
 		}
 		if (request.purpose === "prewarm") {
 			if (
@@ -899,8 +911,7 @@ class CodexBoundaryRpc {
 			)
 				throw new Error("Native prewarm binding failed");
 			this.#prewarmThreadId = request.threadId;
-			this.#observeFence(request);
-			return;
+			return "prewarm";
 		}
 		if (
 			!this.#threadId ||
@@ -910,6 +921,27 @@ class CodexBoundaryRpc {
 		)
 			throw new Error("Native result binding failed");
 		this.confirmTurn(request.turnId);
+		return "turn";
+	}
+
+	/** A context composition request (`qorpera.native-context-composition/v1`): bound as its fence request is, and
+	 * neither counted nor observed; the fence request that follows it is. */
+	assertContextRequest(request: CloudNativeContextRequest): void {
+		this.#bindModelRequest({
+			threadId: request.threadId,
+			turnId: request.turnId,
+			purpose: request.purpose,
+			outputs: [],
+		});
+	}
+
+	assertModelRequest(request: CloudNativeFenceRequest): void {
+		const lane = this.#bindModelRequest(request);
+		if (lane === "review") return;
+		if (lane === "prewarm") {
+			this.#observeFence(request);
+			return;
+		}
 		if (!this.#modelRequests.has(request.requestId)) {
 			this.#modelRequests.add(request.requestId);
 			this.#modelRequestCount++;
@@ -1272,7 +1304,15 @@ interface CloudCodexRunBinding {
 	) => Promise<void>;
 	/** recordContextView makes the run authority and read-set check itself, before release. */
 	recordChecksAuthority?: boolean;
+	/** Composes the agent's provider requests; every item is kept without it. */
+	composeContext?: CloudCodexContextComposer;
 }
+
+/** Composes one provider request's input from Codex's items (cloud-native-context-composition.ts). */
+export type CloudCodexContextComposer = (
+	request: CloudNativeContextRequest,
+	signal: AbortSignal,
+) => CloudNativeContextComposition | Promise<CloudNativeContextComposition>;
 
 /** A started, handshaken Codex app-server that no run has used: no thread, no provider request. */
 interface CloudCodexProcess {
@@ -1416,6 +1456,15 @@ async function startCloudCodexProcess(
 			},
 			releaseReviewOutputs: (request) =>
 				rpc?.isReviewRequest(request) ? rpc.releaseReviewOutputs(request) : undefined,
+			context: {
+				assertRequest: (request) => {
+					if (!rpc?.bound) throw new Error("Native result boundary not initialized");
+					rpc.assertContextRequest(request);
+				},
+				// A reviewer's request is its own, never composed from the agent's run.
+				compose: (request, composeSignal) =>
+					rpc?.isReviewRequest(request) ? undefined : binding.composeContext?.(request, composeSignal),
+			},
 			recordContextView: async (request, outputs, contextSignal) => {
 				await binding.recordContextView?.(request, outputs, contextSignal);
 				rpc?.contextRecorded(request.requestId);
@@ -1486,6 +1535,8 @@ async function startCloudCodexProcess(
 			throw new Error("Native boundary requires governed direct tools");
 		if (!initialized.userAgent.split(" ").includes(MESSAGE_COMPOSITION_CAPABILITY))
 			throw new Error("Native boundary requires message composition support");
+		if (!initialized.userAgent.split(" ").includes(CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA))
+			throw new Error("Native boundary requires context composition support");
 		const userAgent = initialized.userAgent;
 		handshake.initialized();
 		progress.stage = "codex-configuration";
@@ -1731,6 +1782,8 @@ export async function runCloudCodexToolSession(options: {
 	/** recordContextView checks run authority and the read set itself, in the same step
 	 * as recording and before release, so the result fence does not check first. */
 	recordChecksAuthority?: boolean;
+	/** Composes each of the agent's provider requests (design §6.3); every item is kept without it. */
+	composeContext?: CloudCodexContextComposer;
 	signal: AbortSignal;
 	timeoutMs?: number;
 	idleTimeoutMs?: number;
@@ -1804,6 +1857,7 @@ export async function runCloudCodexToolSession(options: {
 			started.binding.recordContextView = options.recordContextView;
 			started.binding.recordChecksAuthority = options.recordChecksAuthority === true;
 		}
+		if (options.composeContext) started.binding.composeContext = options.composeContext;
 		if (
 			options.boundary.captureImagesEnabled &&
 			!started.userAgent.split(" ").includes(CLOUD_NATIVE_CAPTURE_IMAGES_CAPABILITY)
