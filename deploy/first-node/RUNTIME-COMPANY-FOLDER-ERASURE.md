@@ -614,7 +614,7 @@ deletes a tree or log block, rewrites it, and asks P18 to erase the block's earl
     good either;
   - a cutoff request that names a life is refused the same way, under the path lock, when the key has had a newer life
     since the detail it came from (that life deleted and a new one begun in between): the detail names the newest
-    life, and the carrier goes round again;
+    life, and the carrier goes round again from the request with no cutoff, reading no `delete` from this refusal;
   - in a request with a cutoff, or for an older life, a life that moved on to a live path is another block: left
     alone, not refused;
   - no limit of 20 paths, and every copy is named;

@@ -410,12 +410,12 @@ $new$);
 -- the hex SHA-256 of <table>:<id>:<the block's folded key>. Each call runs in the caller's transaction, at read
 -- committed. The answer is P18's reply (kind block-history, its for, every copy), or erasureId null when nothing is left
 -- to erase. P18's other refusals pass through: 55000 'Block is live again', whose detail is {"live": <path> or null,
--- "life": {seq, unit}, "delete": {seq, unit} or null} (the carrier runs step 1 again and rewrites its own tree's live
--- blocks first; for another tree's block at a reused name it asks again with that delete as the cutoff and that life,
--- with no delete has nothing left at the name, and with no live path asks with no cutoff), 55000 'The company is being
--- deleted' (no detail), 55006 'Block history is being erased; ask again', 22023, and the 409 to retry when the company
--- folder changed while the erasure began. The life is not in the digest: a request asked again after it was accepted
--- replays.
+-- "life": {seq, unit}, "delete": {seq, unit} or null} (the life is the tree built again or another tree's block at a
+-- reused name: on a request with no cutoff, the carrier asks again with that delete as the cutoff and that life, or,
+-- with no delete, has nothing left at the name; on a request with a life, it goes round again with no cutoff), 55000
+-- 'The company is being deleted' (no detail), 55006 'Block history is being erased; ask again', 22023, and the 409 to
+-- retry when the company folder changed while the erasure began. The life is not in the digest: a request asked again
+-- after it was accepted replays.
 create function public.qorpera_folder_erase_block_history(p_environment_id uuid, p_user_id uuid, p_operation_key text,
 	p_block jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
