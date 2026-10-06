@@ -236,7 +236,7 @@ begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'refuse-shape-1', jsonb_build_array(jsonb_build_object('op','new_folder',
 		'path','notes/x','contents',jsonb_build_array(jsonb_build_object('path','memory','kind','folder'),
 			jsonb_build_object('path','memory/thread','kind','folder'),
-			jsonb_build_object('path','memory/thread/tree.toml','kind','file','file',pg_temp.stage(pg_temp.toml(ns)))))))), 1, 'saved');
+			jsonb_build_object('path','memory/thread/tree.toml','kind','file','file',pg_temp.stage(pg_temp.toml(ns))))))), 1, 'saved');
 
 	-- Each of these is the platform's, one unit per change set.
 	for r in select pg_temp.commit(pg_temp.owner(), 'refuse-owner-' || o, jsonb_build_array(u)) from unnest(array[
