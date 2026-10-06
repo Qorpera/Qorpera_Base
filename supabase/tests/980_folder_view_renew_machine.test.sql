@@ -66,10 +66,11 @@ begin
 exception when sqlstate 'QTF80' then null;
 end $$;
 
--- A coding session (as in 639): kind coding_session, and the machine is the allocation of the session's coding machine.
+-- A coding session (as in 639): kind coding_session, and the machine is the coding machine's allocation (which has the
+-- coding machine's id).
 do $$
 declare p jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); w uuid := extensions.gen_random_uuid();
-	tok uuid := extensions.gen_random_uuid(); cm uuid := extensions.gen_random_uuid(); al uuid := extensions.gen_random_uuid(); cv jsonb; r jsonb;
+	tok uuid := extensions.gen_random_uuid(); cm uuid := extensions.gen_random_uuid(); cv jsonb; r jsonb;
 	repo jsonb := '{"host":"github.com","owner":"acme","name":"app","baseBranch":"main"}';
 begin
 	set local session_replication_role = replica;
@@ -89,11 +90,11 @@ begin
 	values ('63200000-0000-4000-8000-000000000020', '63200000-0000-4000-8000-0000000000a1', repo, true);
 	insert into public.qorpera_coding_executors(environment_id, owner, enabled) values ('63200000-0000-4000-8000-000000000020', 'exec-1', true);
 	insert into public.qorpera_runtime_machine_allocations(id, profile_id, provider_adapter, instance_sha256, coding_machine_id, reserved_at)
-	values (al, '63200000-0000-4000-8000-000000000010', 'lxd', repeat('9', 64), cm, clock_timestamp());
+	values (cm, '63200000-0000-4000-8000-000000000010', 'lxd', repeat('9', 64), cm, clock_timestamp());
 	set local session_replication_role = origin;
 	cv := pg_temp.open('coding_session', jsonb_build_object('workerId', w, 'attachmentToken', tok));
 	r := public.qorpera_folder_view_renew((cv ->> 'viewId')::uuid, cv ->> 'pass');
-	if r ->> 'state' <> 'open' or r ->> 'kind' <> 'coding_session' or r ->> 'machineId' <> al::text then
+	if r ->> 'state' <> 'open' or r ->> 'kind' <> 'coding_session' or r ->> 'machineId' <> cm::text then
 		raise exception 'Coding session renewal: %', r; end if;
 	raise exception 'Undo' using errcode = 'QTF80';
 exception when sqlstate 'QTF80' then null;
