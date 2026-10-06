@@ -346,13 +346,15 @@ lxc exec qorpera-exec-node02 --project qn25b2 -- \
 Then, inside the host: write `/etc/qorpera/shared-execution.env` from
 `shared-execution.env.example`, place a fresh provider token,
 the object-gateway token, the secret-broker runtime token and CA and the
-office routes under `/etc/qorpera/shared-execution-credentials/`, never the service key, which the service refuses
-(G2-5) (the host's own
+office routes under `/etc/qorpera/shared-execution-credentials/` (the host's own
 `qorpera-execution-host` credential is minted and bound by `rebuild-exec-host.sh`, G2-3e), write
 `/etc/qorpera/runner-orchestrator.env` for an orchestrator enrolled with the
 node's native adapter id, and enable `qorpera-shared-execution.service` and
 `qorpera-runner-orchestrator.service`. Stop the node host's own orchestrator
-first: two orchestrators with the same adapter compete for the same jobs.
+first: two orchestrators with the same adapter compete for the same jobs. Never
+place the service key in the host (G2-5): no unit loads it, and the service
+refuses to start if it finds it in its credential source, its systemd
+credentials or its environment.
 
 Every newly pinned image needs the host rebuilt (its runner artifacts carry
 the bundle pin and the Codex fence): as root on the node host,

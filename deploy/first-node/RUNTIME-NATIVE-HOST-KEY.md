@@ -181,9 +181,11 @@ calls.
     refused before any service starts;
   - the native host refuses to start if it is given the key (as a credential or `QORPERA_SUPABASE_SERVICE_KEY`); its
     clients send the publishable key and `NativeHostDispatch` signs every request;
-  - the shared execution service refuses to start if it is given the key;
+  - the shared execution service refuses to start if it is given the key (a systemd credential, its environment, or
+    a file left in its credential source `/etc/qorpera/shared-execution-credentials/`, which no unit loads);
   - tests: no guest, slot or execution host unit names the key; the provider's and the gateway's pushes carry it in no
-    file; a slot's credentials are exactly the listed ones; the rebuild never pushes it.
+    file; a slot's credentials are exactly the listed ones; the rebuild never pushes it; the native host, the shared
+    execution service and the process provider's native host are each shown to refuse or never get it.
 
 ### Rollout (G2-5)
 
