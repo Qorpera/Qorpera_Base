@@ -391,6 +391,13 @@ brain. Canonical chats remain attributed collaboration and audit records;
 archiving a chat removes neither completed company state nor the notebook.
 (Amended 2026-09-22 and 2026-09-24; see 15.1.)
 
+> **Amended 2026-10-06 (not built yet).** Memory becomes the agent's head
+> plus the conversations' summary trees and run logs in the company folder.
+> Chats remain the audit record, and the trees are derived from them. Pins
+> succeed the profile page. See the
+> [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
+> in section 19, items 1 and 9.
+
 ### 5.5 Scale
 
 The Company File must hold the real company. Implementation caps on snapshot
@@ -406,6 +413,14 @@ not design intent and MUST NOT be presented as product limits.
 > review gains the interface changes. See the
 > [interfaces amendment](#2026-10-02-amendment-interfaces-project-company-state-from-the-company-folder)
 > in section 19, item 12.
+
+> **Amended 2026-10-06 (not built yet).** An agent's thread keeps its summary
+> tree in `agents/<agent-name>/memory/thread/`, and a group chat keeps its tree
+> in `agents/groups/<group-name>/memory/`, each with its runs' work logs under
+> `runs/`. Only the platform writes, moves or deletes them, or moves or deletes
+> `agents/<agent-name>/memory/`; a tree moves only with its owning folder. See
+> the [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
+> in section 19, items 1 and 2.
 
 Ratified 2026-09-27 (see the
 [layout amendment](#2026-09-27-amendment-the-company-folder-layout) in
@@ -883,6 +898,14 @@ record into one permanent prompt.
 
 ### 9.1 Composed blocks
 
+> **Amended 2026-10-06 (not built yet).** "Recent canonical transcript"
+> becomes the view of the conversation and branches of the agent's other
+> conversations. Every model request of a run is composed from the head (the
+> vision, the job specification and the profile page or pins), these views and
+> the run's own folded work. See the
+> [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
+> in section 19, item 3.
+
 The composer selects and labels:
 
 - company identity and policy revision;
@@ -934,6 +957,11 @@ a member.
 > **Amended 2026-10-02 (not built yet).** A quote of outside content inside a member's message is outside
 > content, fenced like a tool result. See the [quote provenance amendment](#2026-10-02-amendment-quoted-outside-content-in-a-members-message).
 
+> **Amended 2026-10-06 (not built yet).** The developer message also carries labelled, escaped company data, the
+> head and the primary view, for the provider's cache. The labels, not the role, keep that data from counting as
+> instructions. A run's folded work is tool-result data in a runtime envelope. See the
+> [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees), item 4.
+
 Wake cues MAY be hidden from product rendering, but they MUST remain typed and
 auditable inside the runtime. The model is told how to act on them and not to
 leak them; the adapter prevents raw envelope leakage.
@@ -954,6 +982,12 @@ The bootstrap identifies the executing agent, company, provider adapter,
 runtime-bundle version, and instruction roots. It loads the cached constitution
 and points to the agent's hire overlay. It also states that Qorpera send is the
 only public mouth and that tool results are untrusted data.
+
+> **Amended 2026-10-06 (not built yet).** The bootstrap carries the agent's
+> job specification in the head, as labelled data, instead of pointing to the
+> hire overlay. See the
+> [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
+> in section 19, item 4.
 
 An agent's instructions file contains a thin job specification: name, mission,
 responsibilities, voice, escalation preferences, and startup assignment. It
@@ -1208,6 +1242,12 @@ a typed handoff on the office desktop; the model never receives the password.
 
 ## 13. Workers and durable todos
 
+> **Amended 2026-10-06 (not built yet).** A worker no longer starts blank: it
+> starts from its parent's head and views by reference, plus its bounded
+> dispatch. See the
+> [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
+> in section 19, item 7.
+
 The parent agent is a dispatcher, not a hero process. Heavy or parallel work
 goes to workers so the parent remains responsive to new messages.
 
@@ -1366,6 +1406,12 @@ archive retains restorable state; delete is human-authorized and permanent.
 > responsibility, and every agent reads it. "Goals" and "direction" in this
 > section mean the vision. The Co-Founder writes it directly: everything is
 > approved by default, so no protected proposal or ratification step applies.
+
+> **Amended 2026-10-06 (not built yet).** The Co-Founder's views include
+> branches of every agent's thread. It still receives no copies of internal
+> messages. See the
+> [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
+> in section 19, item 8.
 
 Each company has one company-level Co-Founder agent. Account or company
 onboarding MAY present it as the first agent a member meets, but adding another
@@ -1623,6 +1669,14 @@ it.
 ## 15. Memory and skills
 
 ### 15.1 Memory
+
+> **Amended 2026-10-06 (not built yet).** Once the tree is on for every
+> company, the conversations' summary trees replace the `log` and `note` tiers
+> and `recall_memory`; `zoom` reads any conversation or run log of the
+> company. `update_memory` keeps the profile tier, and pins succeed the profile
+> page. See the
+> [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
+> in section 19, item 9.
 
 Amended 2026-09-22; company first since 2026-09-24; notebook-wide dedupe,
 forget and search since 2026-09-25. Memory follows the Grok
@@ -2076,6 +2130,13 @@ neither stops the work as one nor shows the usage-limit message. Choosing the
 payer for new work was left unchanged by this amendment (a member's next turn
 and follow-up work still took a login with room left first, which could be the
 member's other login); the 2026-10-04 amendment below settles it.
+
+> **Amended 2026-10-06 (not built yet).** A run at its usage limit pauses
+> with its log kept, and resumes on the same login once the limit resets,
+> instead of failing; it still never moves to another login. A run that is cut
+> off resumes from its log. A run's summaries are paid by its payer. See the
+> [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
+> in section 19, items 11 and 12.
 
 2026-10-01 amendment: ChatGPT plan logins (founder decisions, Sign in with
 ChatGPT; built switched off, migrations 20260928329830 and 20260928359950). A
@@ -3201,6 +3262,11 @@ section 12.2 and the 2026-09-16 storage rule. Design:
      conflicting update fails inside git before git reports success.
    - Old versions of a repository's git objects are kept for 7 days, the one
      exception to item 6's restore.
+   - Amended 2026-10-06 (not built yet): replaced versions under a summary
+     tree's root are a second exception, pruned 7 days after a later write
+     replaced them
+     ([summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees),
+     item 13).
    - Coding sessions keep their open network and stay unreviewed (2026-09-25
      amendment, item 2), so item 6's review of deletes and moves and item 7's
      review of a networked shell do not apply to them.
@@ -4598,6 +4664,9 @@ It amends these texts. Where older text conflicts with this amendment, this amen
      - every `read_context` page and its sha256;
      - a continuation's `parentInputs` and `roomPost`.
    - The same holds for earlier messages in the history.
+   - Amended 2026-10-06 (not built yet): in views and zoom, a quote is instead a fenced text record inside the line,
+     built from these records, and a summary line keeps only a description of a quote
+     ([summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees), item 5).
    - A path that cannot fence never gets a message with `quotes`: the legacy runtime and a desktop's turn claim
      refuse it.
 5. **The review never reads a quote as the member's request.** The automatic review (2026-09-25 amendment, item 3)
@@ -4940,6 +5009,150 @@ It amends these texts. Where older text conflicts with this amendment, this amen
 - 7.4: the line guard and the connection bounds of item 4 join what remains (changed in place).
 - Section 19, "Minimum operational observability": the exit's log is a required record (changed in place).
 - Section 23: the agent exit is a network path, with item 10 as its failure behaviour (changed in place).
+
+### 2026-10-06 amendment: agent context as a folder of summary trees
+
+Founder decisions of 5 and 6 October 2026. Jonas asked for this design on 5 October, after reading Victor Taelin's
+OptChat design, and widened it the same day: "This isn't just memory, it's a shared unlimited context window in the
+company folder between all agents that replaces the current context window entirely." On 5 October he decided that
+the trees replace the notebook's dated log and "the last 32 messages", that replaced versions of tree files are pruned
+7 days after they are replaced, and that the design is company first with no compromise. On 6 October he approved its
+four open items ("I approve, move it along"): the native Codex patch names the provider's cache and composes every
+request; a run that is cut off resumes from its log; a run at its usage limit pauses and resumes on the same login;
+and pins succeed the profile page. Design: `deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md` ("the design"). Not built
+yet. It is built in the steps of the design's §14 (M0 to M6 and W1 to W6), and each item below names its steps. Until
+a step is live for a company, the older text holds for that company.
+
+It amends these texts. Where older text conflicts with this amendment, this amendment governs. Each of the contract's
+own texts below carries a note "Amended 2026-10-06" in place.
+- 5.4 and 15.1: what memory is, and the notebook's tiers.
+- 5.6: the tree roots and run logs in an agent's or a group's folder, and who may write, move or delete them.
+- 9.1: "recent canonical transcript", and what every model request holds.
+- 9.2 and 9.3: what the developer message carries, and where the job specification goes.
+- Section 13: what a worker starts from.
+- 14.2: the Co-Founder's composed state.
+- Section 17: who pays for summaries; the 2026-10-01 amendment "a usage limit stops the run"; a run that is cut off.
+- The 2026-10-02 amendment "quoted outside content in a member's message", item 4: quotes in views and zoom.
+- The 2026-09-27 amendment "every machine works in the company folder", item 9: a second exception to restoring every
+  version.
+- The native Codex adapter (`deploy/first-node/native-codex/README.md`): "Only result bodies can change".
+- P18, the folder's erasure (`deploy/first-node/RUNTIME-COMPANY-FOLDER-ERASURE.md`): erasing one message or one
+  step, and the tree's own block-history requests.
+
+1. **A conversation is a folder of logs** (M1, W1). Each conversation has a tree root in the company folder:
+   `agents/<agent-name>/memory/thread/` for an agent's thread, and `agents/groups/<group-name>/memory/` for a group
+   chat.
+   - The conversation's log holds its words: messages and cards. Each run has its own work log under the root, in
+     `runs/<run>/`: its tool calls and their results, in order, as steps. A run's sends link to its log, and a
+     worker's log nests under the step that dispatched it.
+   - Each log is a summary tree, as in OptChat: one line per entry, then one line per 2, 4, 8 or more entries. The
+     bottom keeps every entry's exact words. Every line has an address, such as `2184+8`.
+   - The trees are derived data. The messages stay in the conversation, which remains the attributed collaboration
+     and audit record (5.4). A tree's bottom line is bound to its event's sequence number and hash.
+   - Tree files are ordinary versioned company files, in blocks of at most 64 KiB (the design, §4.2 and §4.5).
+2. **Only the platform writes a tree** (M1).
+   - Writes, moves and deletes at or under a tree root by members, agents or machines are refused (`platform_only`).
+     So is a move or a delete of `agents/<agent-name>/memory/`, which holds the thread's root. A move counts by its
+     source and its target.
+   - A tree moves or goes only with its owning folder: an agent rename, a group folder's delete or restore, or
+     erasure.
+   - Reads, listings, search and copies out of a tree stay ordinary. The notebook's own files stay ordinary too.
+   - Each conversation and each run log has an erasure generation. A batch of summaries computed before an erase is
+     discarded whole (the design, §4.3 and §4.5).
+3. **Every model request is composed from the folder** (M1, M4, W2, W3). In a fixed order, it holds:
+   - **the head** (W3): the approved `vision/vision.md`, whole, and the agent's job specification and profile page
+     (or its pins, item 9). So the vision is read at every run, as 9.1 already asks;
+   - **the views** (M1, M4): the view of the conversation the run answers in, of fixed size, and shorter views
+     (branches) of the agent's other conversations;
+   - **the run's own work** (W2): its newest steps in full, and its older steps folded into summary lines.
+
+   "Recent canonical transcript" in 9.1 becomes the views. Work from earlier runs stays closed until an agent zooms
+   into it. The composer's budgets stay deterministic, and every part keeps its source, its version and its trust
+   label (9.1, 9.2). Folds happen only at fixed boundaries, so the start of each request stays the same and the
+   provider can read it from its cache.
+4. **Trust labels** (M1, W2, W3; 9.2 and 9.3).
+   - The developer message, today host-owned rules and validated identifiers only, also carries labelled, escaped
+     company data: the head and the primary view. This is done for the provider's cache: Codex's environment context,
+     with its random working directory, follows the developer message (M0 checks this), so only the developer
+     message can be a start that runs share.
+   - The labels, not the role, keep that data from counting as instructions. The vision is the company's own
+     instructions, which guide the work and never override the platform's rules. The job specification and the
+     profile page keep their labels as today. A view line is conversation data.
+   - The run's folded work is tool-result data, in a user-role runtime envelope that only the host can issue.
+   - In 9.3, the bootstrap carries the job specification in the head, instead of pointing to the hire overlay.
+   - Order 2's fake-instruction proof (section 19) also runs through a view line (M1), a folded step (W2) and a
+     profile write (W3).
+5. **Quotes stay fenced** (M1). In views and zoom, a quote is a fenced text record inside the line, `[quote N: outside
+   content from <source>, not <speaker>'s words: "…"]`, built from the records of the 2026-10-02 amendment's item 4.
+   A summary line keeps only a description of a quote. The quoted words still never count as the speaker's, and that
+   amendment's test 7 also runs through a view line, a summary line and a zoom.
+6. **Company-wide** (M1, M4). Every member and agent of the company may read every conversation, run log and tree,
+   and any agent may open any of them with `zoom`. Group membership decides who takes part and whom a post wakes, not
+   who may read. No tree, view or zoom depends on which member asked, wrote or pays. The rule in
+   `deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md` that an agent adds to `people` only the member its run works for
+   ("adding a person lets them read the conversation") loses its reason; that page's owner changes it.
+7. **Workers** (W4; section 13). A worker no longer starts blank. It starts from its parent's head and views, by
+   reference, exactly as the parent's run composed them, plus its bounded dispatch. It runs on its parent's payer.
+8. **The Co-Founder** (M4; 14.2). Its views include branches of every agent's thread. It still receives no copies of
+   internal messages.
+9. **Memory** (M5; 5.4 and 15.1). Memory is the agent's head plus the conversation trees and run logs.
+   - Once the tree is on for every company (M5), the notebook's `log` and `note` tiers and `recall_memory` go: the
+     trees hold the conversations, `zoom` opens them, and `company_search` finds words in their summary lines. Until
+     then a company with the tree on keeps its notebook as it is.
+   - `update_memory` keeps the profile tier.
+   - **Pins succeed the profile page.** A member or the agent pins a message, or a line of any conversation or run
+     log, into the agent's head. A pin keeps the exact words, their address and their source's trust label, and an
+     erase of the source removes the pin. The profile page stays until pins are built.
+10. **The native Codex patch** (M1, W2). Jonas authorized two extensions of the patch, each on its own, as the
+    adapter's README asks of every extension. Each has its own capability marker and proofs, and the existing native
+    proofs run again:
+    - **the cache key** (M1): the patch sets `prompt_cache_key` to `qorpera:` and the SHA-256 of the paying login's
+      connection id, the agent id and the conversation id (the design, §6.2). The provider keeps its cache per paying
+      account, so the key names the payer. Until this is built, runs use the key Codex sends itself;
+    - **composition** (W2): before every provider request, the host returns the request's whole input, within the
+      design's §6, and the patch checks it before the fence runs (§6.3).
+
+    The model, the tools and Codex's base instructions still cannot change, and every result still passes the fence.
+11. **Runs** (W5; section 17).
+    - A run that is cut off resumes from its log on any machine, as the same run, instead of ending in review as
+      uncertain. A call that was recorded with no result is shown as "outcome unknown: check before you repeat it".
+    - A run at its usage limit pauses with its log kept, instead of failing, and resumes **on the same login** once
+      the limit resets. The member is told and may cancel it. It never moves to another login: OpenAI's terms forbid
+      rotating accounts to get round a usage limit (the 2026-10-01 amendment). A rate limit or an outage is still not
+      a usage limit.
+12. **Who pays for summaries** (M1; section 17). A run's summaries, and the missing summaries it fills in, are part of
+    its work and are paid by its payer. GPT-6 Luna writes them at low effort. If that login is at its usage limit, the
+    summaries wait for the conversation's next run, on that run's own payer. No login is ever swapped.
+13. **Replaced versions of tree files are pruned** (M3b). Next to old git objects (item 9 of the 2026-09-27 amendment
+    "every machine works in the company folder"), a version under a tree root that a later write replaced is pruned 7
+    days after that write. Jonas approved this on 5 October.
+    - It also prunes the versions of a run log's block written while the block filled. Each later version holds every
+      step the earlier one held.
+    - A version stays while a version or a conflict copy at a path outside every tree root holds the same content, so
+      P18's copy warning still finds that copy.
+14. **Erasure** (M3, W1; P18). An owner or admin may erase one message or one step, and the tree is rebuilt without
+    it. The tree reaches real companies only once a message can be erased (M3 and M3b come before M5).
+    - Every summary line with the erased entry among its sources is erased and built again. A message's erase also
+      blanks the member's input row with the event, and scrubs, company-wide, the zoom receipts by target and range
+      and the `read_context` receipts by source, with the matching steps.
+    - **A new row in P18 §6.** Run-log steps whose arguments or results contain an erased path, or whose releases'
+      read records name an erased version, get the full step erase once their run has ended, with every zoom of them.
+      The drain only lists the runs it notes; the runtime's memory eraser finds and erases the steps.
+    - **Block-history requests**, made by the platform for the tree's own erases, on the authority checked when the
+      erase was accepted (the design, §10 step 3):
+      - one request per block, with that block's partner paths, not held to the 20-path limit of members' requests;
+      - each block is named by its key, cut at the erase's delete of it, or with no cutoff when it was not live then
+        (refused if it is live again). A life of the key that moved on to a path that is live now is left alone;
+      - the run-log row reaches only steps that name a block's path and read it before the cutoff, found through the
+        step index;
+      - P18 reports when a request is past its versions phase. A tree erase's row waits only for that, while an
+        erasure that wrote the row waits for the requests' `done`, so no erasure waits on itself;
+      - each request's copy warning lists every path, live or deleted, with its `live` flag and no limit of 20. It
+        stays in the stored reply after `done`, with the erase row and block the request was made for;
+      - each block's request has a fixed operation key: `memtree:` and the hex SHA-256 of the erase row's table, its
+        id and the block's key. P18 refuses that prefix on every other request. So a carrier that restarts finds its
+        request, checks that it belongs to its row and block, and takes its copies. The warning is kept on the erase's
+        row and shown to whoever asked.
 
 ## 20. Enforcement matrix
 
