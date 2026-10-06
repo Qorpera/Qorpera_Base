@@ -351,7 +351,10 @@ describe("conversation UI boundaries", () => {
 		expect(
 			vi.mocked(fetch).mock.calls.filter(([url]) => !String(url).endsWith("/qorpera_list_member_notifications")),
 		).toHaveLength(0);
-		expect(f.cloud.rpc).not.toHaveBeenCalled();
+		// Only the company's mail is read while it is open (Interfaces step I5c).
+		expect(vi.mocked(f.cloud.rpc).mock.calls.filter(([name]) => !name.startsWith("qorpera_member_mail_"))).toEqual(
+			[],
+		);
 	});
 	it("keeps attachment drafts scoped to their conversation and releases previews on disposal", () => {
 		const f = setup();
