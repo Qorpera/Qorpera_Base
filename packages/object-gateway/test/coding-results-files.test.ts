@@ -262,7 +262,7 @@ describe("coding results text", () => {
 	});
 
 	it("writes the standing texts, its pull request kept, for a report the parser refuses", () => {
-		expect(parsed({ summary: "Bad byte" }).parse.summary).toBe(
+		expect(parsed({ summary: "Bad\u0000byte" }).parse.summary).toBe(
 			`${CODING_RESULTS_UNSHOWN_SUMMARY}\n\nPull request: ${pullRequest}`,
 		);
 		expect(parsed({ ...blocked, needs: "Lone \ud800 half" }).parse).toMatchObject({
