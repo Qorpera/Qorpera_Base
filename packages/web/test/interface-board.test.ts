@@ -157,8 +157,8 @@ async function members(fake: FolderFake, role: HostedProfileRole = "owner", offe
 }
 
 /** The open offers as the platform keeps them (supabase/CLIENT-CONTRACT.md "Offers of a claimed cell"): each one made
- * goes to the top, a decline or withdraw closes it. A save that changes the cell would settle it too; here it stays
- * listed, so the board must hide it by itself. */
+ * goes to the top, a decline or withdraw closes it. A save that changes the cell settles it too; here it stays listed
+ * unless a test settles it, so the board must hide it by itself. */
 type OffersFake = ReturnType<typeof offersFake>;
 function offersFake() {
 	let open: MemberInterfaceOffer[] = [];
@@ -175,11 +175,14 @@ function offersFake() {
 		open = [offer, ...open];
 		return offer;
 	};
-	const close = async (offer: string) => {
+	const settle = (offer: string) => {
 		open = open.filter((each) => each.id !== offer);
 	};
+	const close = async (offer: string) => settle(offer);
 	return {
 		add,
+		/** Settles an offer as the save that changes its cell does. */
+		settle,
 		calls: {
 			list: vi.fn(async (): Promise<MemberInterfaceOffers> => ({ offers: open, truncated: false })),
 			offer: vi.fn(
@@ -652,6 +655,8 @@ describe("offers on the Members board (I9c)", () => {
 		expect(texts(call(), ".interface-actions button")).toEqual(["Accept", "Not now"]);
 		const before = fake.version(CARDS);
 		const reads = offers.calls.list.mock.calls.length;
+		// A click in the browser focuses the button; jsdom's doesn't.
+		buttonOf(call(), "Accept")!.focus();
 		buttonOf(call(), "Accept")!.click();
 		await vi.waitFor(() => expect(fake.commits).toHaveLength(1));
 		expect(fake.commits[0]?.operationKey).toMatch(/^web:board-accept:[0-9a-f-]{36}$/);
@@ -660,11 +665,43 @@ describe("offers on the Members board (I9c)", () => {
 		]);
 		// The save settles the offer, so the offers are read again.
 		await vi.waitFor(() => expect(offers.calls.list.mock.calls.length).toBeGreaterThan(reads));
+		expect(document.activeElement).toBe(buttonOf(call(), "Accept"));
 		await hint();
 		await vi.waitFor(() => expect(titles(main, "You")).toEqual(["Sales", "Call the bank", "Send invoices"]));
 		// The fake still lists the offer, but the cell is no longer as it read, so no card draws it.
 		expect(main.querySelector(".interface-card-offers")).toBeNull();
 		expect(offers.calls.decline).not.toHaveBeenCalled();
+		// The card's own Release has the focus its answer had.
+		expect(document.activeElement).toBe(buttonOf(call(), "Release"));
+		expect(lane(main, "You").contains(document.activeElement)).toBe(true);
+	});
+
+	it("keeps an accepted offer on its card, and the focus on Accept, while the card saves, though the save settled it", async () => {
+		const fake = seeded(bea);
+		const offers = offersFake();
+		const offer = offers.add({ table: cardsTable(fake), key: [CALL], from: bea, to: me, was: bea });
+		const { main, hint, controller } = await members(fake, "owner", offers);
+		const call = () => card(main, "Call the bank");
+		const original = fake.folder.commit.getMockImplementation()!;
+		// The platform settles the offer with the save, as it does.
+		fake.folder.commit.mockImplementationOnce(async (...args) => {
+			const saved = await original(...args);
+			offers.settle(offer.id);
+			return saved;
+		});
+		buttonOf(call(), "Accept")!.focus();
+		buttonOf(call(), "Accept")!.click();
+		await vi.waitFor(() => expect(controller.store.get().interfaceOffers?.offers).toEqual([]));
+		// The offers no longer list it, but the card is still Bea's on screen, saving, with its answer.
+		expect(titles(main, "Bea")).toEqual(["Support", "Call the bank"]);
+		expect(call().querySelector(".interface-card-saving")?.textContent).toBe("Saving…");
+		expect(offerWords(call())).toEqual(["Bea offers it to you"]);
+		expect(buttonOf(call(), "Accept")?.getAttribute("aria-disabled")).toBe("true");
+		expect(document.activeElement).toBe(buttonOf(call(), "Accept"));
+		await hint();
+		await vi.waitFor(() => expect(titles(main, "You")).toEqual(["Sales", "Call the bank", "Send invoices"]));
+		expect(main.querySelector(".interface-card-offers")).toBeNull();
+		expect(document.activeElement).toBe(buttonOf(call(), "Release"));
 	});
 
 	it("declines an offer to the member with Not now, and writes nothing", async () => {
@@ -672,11 +709,15 @@ describe("offers on the Members board (I9c)", () => {
 		const offers = offersFake();
 		const offer = offers.add({ table: cardsTable(fake), key: [CALL], from: bea, to: me, was: bea });
 		const { main } = await members(fake, "owner", offers);
+		buttonOf(card(main, "Call the bank"), "Not now")!.focus();
 		buttonOf(card(main, "Call the bank"), "Not now")!.click();
 		await vi.waitFor(() => expect(card(main, "Call the bank").querySelector(".interface-card-offers")).toBeNull());
 		expect(offers.calls.decline).toHaveBeenCalledExactlyOnceWith(offer.id);
 		expect(fake.folder.commit).not.toHaveBeenCalled();
 		expect(titles(main, "Bea")).toEqual(["Support", "Call the bank"]);
+		// Bea's card has no control of its own left (a card opens no detail), so the focus goes on to the next control on
+		// the board: the Shared area's, which opens its detail.
+		expect(document.activeElement).toBe(card(main, "Brand").querySelector(".interface-card-open"));
 	});
 
 	it("says the card changed when its cell moved after the offer read it, and writes nothing", async () => {
@@ -745,6 +786,8 @@ describe("offers on Pulse (I9c)", () => {
 		[...main.querySelectorAll<HTMLElement>(".interface-item-row")].filter((row) =>
 			row.querySelector("strong")?.textContent?.includes(" offers you "),
 		);
+	const title = (main: HTMLElement, text: string) =>
+		[...main.querySelectorAll<HTMLElement>(".interface-block > h2")].find((each) => each.textContent === text);
 
 	it("lists an offer to the member under Needs you, accepted there", async () => {
 		const fake = seeded(bea);
@@ -760,6 +803,7 @@ describe("offers on Pulse (I9c)", () => {
 		const row = listed(main)[0]!;
 		expect(texts(row, ".interface-actions button")).toEqual(["Accept", "Not now"]);
 		const before = fake.version(CARDS);
+		buttonOf(row, "Accept")!.focus();
 		buttonOf(row, "Accept")!.click();
 		await vi.waitFor(() => expect(fake.commits).toHaveLength(1));
 		expect(fake.commits[0]?.operationKey).toMatch(/^web:board-accept:/);
@@ -768,17 +812,30 @@ describe("offers on Pulse (I9c)", () => {
 		]);
 		await hint();
 		await vi.waitFor(() => expect(listed(main)).toEqual([]));
+		// The page has no control left, so the focus goes to the block's title, not back to the top of the document.
+		expect(document.activeElement).toBe(title(main, "Needs you"));
 	});
 
-	it("declines an offer there with Not now", async () => {
-		const fake = seeded(bea);
+	it("declines an offer there with Not now, and the focus goes on to the next one", async () => {
+		const fake = seeded(bea, bea);
 		const offers = offersFake();
-		const offer = offers.add({ table: cardsTable(fake), key: [CALL], from: bea, to: me, was: bea });
+		const call = offers.add({ table: cardsTable(fake), key: [CALL], from: bea, to: me, was: bea });
+		const send = offers.add({ table: cardsTable(fake), key: [SEND], from: bea, to: me, was: bea });
 		const { main } = await members(fake, "owner", offers, "pulse");
-		buttonOf(listed(main)[0]!, "Not now")!.click();
-		await vi.waitFor(() => expect(listed(main)).toEqual([]));
-		expect(offers.calls.decline).toHaveBeenCalledExactlyOnceWith(offer.id);
+		expect(listed(main)).toHaveLength(2);
+		const [first] = listed(main);
+		const declined = first!.querySelector("strong")?.textContent?.includes("Call the bank") ? call : send;
+		buttonOf(first!, "Not now")!.focus();
+		buttonOf(first!, "Not now")!.click();
+		await vi.waitFor(() => expect(listed(main)).toHaveLength(1));
+		expect(offers.calls.decline).toHaveBeenCalledExactlyOnceWith(declined.id);
 		expect(fake.folder.commit).not.toHaveBeenCalled();
+		const [left] = listed(main);
+		expect(document.activeElement).toBe(buttonOf(left!, "Accept"));
+		// The last one leaves the page no control, so the focus goes to the block's title.
+		buttonOf(left!, "Not now")!.click();
+		await vi.waitFor(() => expect(listed(main)).toEqual([]));
+		expect(document.activeElement).toBe(title(main, "Needs you"));
 	});
 });
 
