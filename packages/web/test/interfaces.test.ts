@@ -80,9 +80,13 @@ describe("interface routes", () => {
 });
 
 describe("which interfaces a company lists", () => {
-	it("lists Pulse only: Mailbox needs a mailbox and Members needs folder tables this client can't read yet", () => {
+	it("lists Pulse, and Members once there is a team: Mailbox needs a mailbox", () => {
 		expect(companyInterfaces(company().controller).map((entry) => entry.name)).toEqual(["pulse"]);
-		expect(companyInterfaces(company([], { members: 3 }).controller).map((entry) => entry.name)).toEqual(["pulse"]);
+		// Without its folder tables, Members still draws its People view from the members themselves.
+		expect(companyInterfaces(company([], { members: 3 }).controller).map((entry) => entry.name)).toEqual([
+			"pulse",
+			"members",
+		]);
 	});
 
 	it("says a working run has made no progress, since its last progress (gap 4)", () => {

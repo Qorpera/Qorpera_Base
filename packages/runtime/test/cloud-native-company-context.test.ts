@@ -450,6 +450,32 @@ it("composes the whole profile, and degrades memory instead of failing when a no
 	expect(degraded.hireOverlay.agentId).toBe(context.agent.id);
 });
 
+it("shows the changes waiting for review just before the skills, only when the run listed some (P40b)", () => {
+	const f = nativeCompanyContextFixture();
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const proposals = {
+		waiting: [
+			{
+				proposalId: randomUUID(),
+				savedAt: "2026-10-05T10:00:00+00:00",
+				savedFrom: "a computer",
+				changes: [{ change: "Hire “Mira” as Bookkeeper", path: "agents/mira" }],
+			},
+		],
+	};
+	const prompt = JSON.parse(
+		composeCloudNativeCompanyPrompt(context, null, undefined, undefined, undefined, undefined, proposals),
+	);
+	expect(prompt.proposals).toEqual(proposals);
+	expect(Object.keys(prompt).slice(-4)).toEqual(["proposals", "skills", "memory", "hireOverlay"]);
+	expect(JSON.parse(composeCloudNativeCompanyPrompt(context))).not.toHaveProperty("proposals");
+	const instructions = compileCloudNativeCompanyInstructions(context);
+	expect(instructions).toContain(
+		"\n# Changes waiting for review\nWhen apply_proposal is offered, proposals lists changes you saved from a computer",
+	);
+	expect(instructions).toContain("never present a waiting change as done.");
+});
+
 it.each(["cofounder", "employee"] as const)(
 	"compiles %s behavior from the canonical discriminator, keeping the hire text out of platform instructions",
 	(kind) => {

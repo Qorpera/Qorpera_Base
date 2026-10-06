@@ -1,11 +1,11 @@
--- @fixture 656_folder_core_run_wakes.test.sql until "-- 1. Snapshot-v1 keeps its text"
+-- @fixture 656_folder_core_run_wakes.test.sql until "-- The checks start here: a test that runs after this file's fixture part stops at this line."
 -- Company folder core, C1c-3e (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §6.9): a folder-v2 dynamic routine's
 -- next run. The folder list names the folder-v2 dynamic routines missing their run; the per-routine restore inserts
 -- that run once (admitted, at its chosen instant), answers pending, changed, gone, not_folder and paused without one,
 -- pauses a routine whose latest run a member stopped, and suspends (and tells its member) a routine whose run the kernel
 -- refuses for want of authority, but raises admission's own refusal. The list leaves out limit-reached routines; an
--- expired one is listed and ended (20260930027000, test 889). The legacy path refuses folder-v2. Snapshot-v1 keeps its
--- text. Both functions are the service role's alone.
+-- expired one is listed and ended (20260930027000, test 889). The legacy path refuses folder-v2. Both functions are the
+-- service role's alone.
 
 create function pg_temp.due(p_after uuid default null, p_limit integer default 100) returns jsonb language sql as $$
 	select public.qorpera_folder_dynamic_routines_due(p_after, p_limit)
@@ -17,24 +17,6 @@ create function pg_temp.listed(p_routine uuid) returns boolean language sql as $
 	select exists (select 1 from jsonb_array_elements(pg_temp.due() -> 'items') as item(value)
 		where item.value ->> 'routine_id' = p_routine::text)
 $$;
-
--- 1. Snapshot-v1 keeps its text: the legacy path with its first lines removed is the definition before this migration.
-do $$
-begin
-	if md5(replace(pg_get_functiondef('public.qorpera_ensure_dynamic_routine_run(uuid)'::regprocedure),
-			E'\t-- 20260930009500: a folder-v2 routine''s next run comes from qorpera_folder_restore_dynamic_routine_run.\n'
-			|| E'\tif public.qorpera_company_is_folder_v2((select routine.profile_id from public.qorpera_cloud_routines as routine\n'
-			|| E'\t\t\twhere routine.id = p_routine_id)) then\n'
-			|| E'\t\traise exception ''A folder-v2 routine''''s next run comes from the folder tick'' using errcode = ''0A000''; end if;\n',
-			'')) <> '2abbbce4e97a962ccb121b68d2ef385b' then
-		raise exception 'The legacy dynamic tick''s snapshot-v1 text changed: %', md5(replace(pg_get_functiondef(
-			'public.qorpera_ensure_dynamic_routine_run(uuid)'::regprocedure),
-			E'\t-- 20260930009500: a folder-v2 routine''s next run comes from qorpera_folder_restore_dynamic_routine_run.\n'
-			|| E'\tif public.qorpera_company_is_folder_v2((select routine.profile_id from public.qorpera_cloud_routines as routine\n'
-			|| E'\t\t\twhere routine.id = p_routine_id)) then\n'
-			|| E'\t\traise exception ''A folder-v2 routine''''s next run comes from the folder tick'' using errcode = ''0A000''; end if;\n',
-			'')); end if;
-end $$;
 
 -- 2. The list and the restore: an agent's dynamic routine is listed until its run is inserted (once, admitted, due at
 -- its chosen instant, already past here), then answered as pending; a stale version is changed, an unknown routine

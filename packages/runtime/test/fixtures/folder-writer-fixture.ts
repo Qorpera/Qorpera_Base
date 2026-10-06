@@ -75,6 +75,10 @@ export async function folderWriterFixture(
 		/** The worker index by todo key (`qorpera_folder_agent_workers`, with each worker's folder); a todo not named is
 		 * one the run does not have (P0002), and a cancel finds its worker here. */
 		workers?: Record<string, Record<string, unknown>[]>;
+		/** Answers any other call (the proposal calls, P40); undefined leaves it unexpected. */
+		rpc?: (method: string, args: Record<string, unknown>) => unknown;
+		/** What `qorpera_folder_archive_coding_worker` raises instead of archiving (C3b). */
+		archiveError?: { code: string; message: string };
 	} = {},
 ) {
 	const { binding, authority } = nativeToolAuthorityFixture();
@@ -99,6 +103,7 @@ export async function folderWriterFixture(
 	// The worker tool's requests a worker commit carried (`qorpera_folder_worker_commit`), and the cancels.
 	const workerRequests: Record<string, unknown>[] = [];
 	const cancels: Record<string, unknown>[] = [];
+	const archives: Record<string, unknown>[] = [];
 	// Routine key → how the index runs it, where that differs from its file.
 	const routineStates = new Map<string, FolderWriterRoutineState>();
 	// Whether the requester's login pays, as the last login preparation found it.
@@ -241,6 +246,27 @@ export async function folderWriterFixture(
 					action: "cancel",
 					folder: request.folder,
 					worker: { ...worker, state: "cancelled" },
+				};
+			}
+			if (method === "qorpera_folder_archive_coding_worker") {
+				const request = args.p_request as { folder: string; operationKey: string };
+				archives.push(structuredClone(args));
+				if (options.archiveError)
+					throw new CloudCompanyFolderRpcError(options.archiveError.code, options.archiveError.message);
+				const found = Object.values(options.workers ?? {})
+					.flat()
+					.find((worker) => worker.folder === request.folder);
+				if (!found) throw new CloudCompanyFolderRpcError("P0002", "Worker is unavailable");
+				const { folder: _folder, ...worker } = found;
+				return {
+					schema: "qorpera.agent-worker-receipt/v1",
+					runId: (args.p_binding as { runId: string }).runId,
+					receiptId: uuidFrom(`archive:${request.operationKey}`),
+					action: "archive",
+					folder: request.folder,
+					archived: true,
+					worker: { ...worker, state: worker.state === "running" ? "cancelled" : worker.state },
+					phase: "cancelled",
 				};
 			}
 			if (method === "qorpera_folder_read") {
@@ -582,6 +608,8 @@ export async function folderWriterFixture(
 					replay: false,
 				};
 			}
+			const answer = options.rpc?.(method, args);
+			if (answer !== undefined) return answer;
 			throw new Error(`Unexpected ${method}`);
 		}),
 	};
@@ -661,6 +689,7 @@ export async function folderWriterFixture(
 		logins,
 		workerRequests,
 		cancels,
+		archives,
 		routineStates,
 		ledger,
 		operationControl,
