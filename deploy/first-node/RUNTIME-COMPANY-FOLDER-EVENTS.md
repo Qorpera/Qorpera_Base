@@ -286,8 +286,8 @@ hooks and mailboxes for its company.
 - **Locks:** E1's functions, entered from the run (`qorpera_folder_run_enter`), in the same order.
 
 E3 comes in three parts: **E3a** address hooks and mailboxes (migration `20260930106000`, SQL test 939), **E3b** GitHub
-and HMAC hooks with a secret the vault makes, and **E3c** Stripe's secret taken from the screen. The design below was
-sent to the coordinator on 6 October; the review class (§5.3) and the secrets (§5.5) are the parts to agree on.
+and HMAC hooks with a secret the vault makes, and **E3c** Stripe's secret taken from the screen. The coordinator agreed
+the design below on 6 October, with one change: no member pastes a Stripe secret in Settings (§5.5).
 
 ### 5.1 The tool
 
@@ -311,7 +311,7 @@ E1's connection file has none.
 - E1's checks are unchanged: the name and purpose rules, at most 50 hooks and 20 mailboxes, a mailbox needs the mail
   domain, and the reserved mailbox names.
 
-### 5.3 Review (to agree)
+### 5.3 Review (agreed)
 
 - **`create` is an outside effect (`external`)** and is reviewed like one. The card says "Open a hook" or "Open a
   mailbox", with the name, the purpose and, for a mailbox, its email address. The reviewer's steps apply unchanged:
@@ -339,7 +339,7 @@ with the binding's scope, as `qorpera_folder_cancel_agent_worker` is:
 The connection file follows the commit, through E1's marks. The receipt keeps the hook without its address, which is
 read from the hook row for each answer.
 
-### 5.5 Signed hooks (E3b and E3c, to agree)
+### 5.5 Signed hooks (E3b and E3c, agreed)
 
 E3a refuses any `proof` but `address`: "A signed hook comes later; use an address hook for now".
 - **GitHub and HMAC (E3b).** The secret broker makes the secret (32 random bytes). It seals it under the company's vault
@@ -348,8 +348,8 @@ E3a refuses any `proof` but `address`: "A signed hook comes later; use an addres
   form with the Company Computer's `vault_fill`, which gains a hook source: the hook's `signing_secret`, resealed to the
   computer's boot key as an account's password is. The model never sees it.
 - **Stripe (E3c).** Stripe makes the secret and shows it once. Moving it from the screen into the vault needs a new
-  Company Computer action, the fill's reverse (`vault_capture`). Until then, an owner or admin adds a Stripe hook's
-  secret in Settings (E4, through `qorpera_begin_cloud_secret_capture`).
+  Company Computer action, the fill's reverse (`vault_capture`). Until it lands, a Stripe hook is refused with a plain
+  reason. Members never copy a token by hand (Jonas, 23 September), so Settings offers no paste for it.
 
 ### 5.6 Tests (E3a)
 
