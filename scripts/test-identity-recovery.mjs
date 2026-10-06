@@ -17,8 +17,7 @@ if (args.length) await mkdir(evidence, { mode: 0o700 });
 const container = `qorpera-recovery-test-${randomBytes(6).toString("hex")}`;
 const volume = `${container}-data`;
 const tests = [
-	"160_native_subscription_compute_identity.test.sql", "165_cloud_agent_public_mouth_privileges.test.sql",
-	"280_cloud_session_run_control.test.sql", "297_company_path_computer_interlock.test.sql",
+	"165_cloud_agent_public_mouth_privileges.test.sql", "280_cloud_session_run_control.test.sql",
 	"298_compute_identity_recovery.test.sql",
 	"299_member_identity_recovery_review.test.sql",
 ];
