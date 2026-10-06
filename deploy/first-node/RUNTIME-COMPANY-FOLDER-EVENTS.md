@@ -268,7 +268,7 @@ The drain follows P29's contract (`RUNTIME-COMPANY-FOLDER-LISTENER.md` §9) and 
   `not_folder` rather than raising. Its bounds are W2's: one open wake per trigger, at most 20 deliveries per wake, and
   retries after 1, 4, 16 and 64 minutes before a delivery is left behind.
 - **Scheduling (E2b, as built):** one `FOLDER_DRAINS` entry (`events`, at most 64 a company step) in the edge function's
-  `runner-orchestrator.ts`, and one `CLOUD_FOLDER_DRAINS` entry after `office_wakes` (16 a step, as
+  `runner-orchestrator.ts`, and one `CLOUD_FOLDER_DRAINS` entry after `machine_checkins` (16 a step, as
   `qorpera_drain_event_wakes` took them). Re-pin the Runner Orchestrator, shared execution and LXD provider artifacts.
   Deploy the migration, then the edge function, then the orchestrator, then the runtime bundle, the object gateway and
   the web client: an edge function without the entry answers 400, which pauses that drain alone, and agents are offered
