@@ -332,7 +332,8 @@ lease, the hook, the cursor.
 The coordinator (4 October) made the orchestrator step shared: a **folder drains** step before the folder materializer,
 which each per-company drain plugs into as a due list and a per-company action. P29's `listen` is the first. F2-5b-3
 (the worker drain), S3's 3i-b (machine events, `machine_events`, built; the quiet coding check-ins follow coding
-dispatch on folder-v2 with C3) and A1's 3l-2 (office wakes) plug in the same way, adding one entry to two tables and
+dispatch on folder-v2 with C3), the one idle rule's check-ins (`machine_checkins`, 20260930098000) and A1's 3l-2
+(office wakes) plug in the same way, adding one entry to two tables and
 touching nothing else here.
 
 **SQL, per drain `<x>`** (both service_role only, revoked from every other role):
@@ -354,9 +355,11 @@ touching nothing else here.
 - the closed table `FOLDER_DRAINS` maps a drain name (`^[a-z][a-z0-9_]{0,31}$`) to `{due, company, maximum}`:
   today `listen: {due: 'qorpera_folder_listen_due', company: 'qorpera_folder_listen_company', maximum: 256}`,
   `workers: {due: 'qorpera_folder_workers_due', company: 'qorpera_folder_workers_company', maximum: 32}`,
+  `human_tasks: {due: 'qorpera_folder_human_tasks_due', company: 'qorpera_folder_human_tasks_company', maximum: 32}`,
   `machine_events: {due: 'qorpera_folder_machine_events_due', company: 'qorpera_folder_machine_events_company',
-  maximum: 64}` and, since C1c-3l part 2, `office_wakes: {due: 'qorpera_folder_office_wakes_due',
-  company: 'qorpera_folder_office_wakes_company', maximum: 40}` (C1C §6.18);
+  maximum: 64}`, since C1c-3l part 2 `office_wakes: {due: 'qorpera_folder_office_wakes_due',
+  company: 'qorpera_folder_office_wakes_company', maximum: 40}` (C1C §6.18), and `machine_checkins:
+  {due: 'qorpera_folder_machine_checkins_due', company: 'qorpera_folder_machine_checkins_company', maximum: 64}`;
 - two generic actions:
   - `folder_drain_due {orchestratorId, drain, afterEnvironmentId?, limit ≤ 500}` calls `due` with
     `{p_after_environment, p_limit}`;
@@ -366,8 +369,9 @@ touching nothing else here.
 
 **The orchestrator** (`CloudFolderDrains` in `packages/runner-orchestrator/src/orchestrator.ts`):
 - `CLOUD_FOLDER_DRAINS` lists the drains in the order they run, each `{name, companyLimit}`: today
-  `[{name: 'workers', companyLimit: 32}, {name: 'listen', companyLimit: 32}, {name: 'machine_events', companyLimit: 8},
-  {name: 'office_wakes', companyLimit: 16}]`;
+  `[{name: 'workers', companyLimit: 32}, {name: 'listen', companyLimit: 32}, {name: 'human_tasks', companyLimit: 32},
+  {name: 'machine_events', companyLimit: 8}, {name: 'office_wakes', companyLimit: 16},
+  {name: 'machine_checkins', companyLimit: 8}]`;
 - each reconcile pass (every 2 s) runs every drain in order, then `CloudFolderRunMaterializer`, so a wake a drain
   admits becomes a run in the same pass;
 - each drain pages through its due list, 100 at a time, and asks for each company in its own request;
@@ -394,6 +398,16 @@ being deleted, through the clock, the cursor and the failures.
 parent run is ready for it, has stopped or is gone, leaving out companies being deleted or paused (the step does
 nothing while paused). A parent still running, or one whose last continuation has not run yet, asks nothing, so a long
 run's events cost no request per pass. One step delivers up to 8 parents' events, a wake each.
+
+**The check-ins' due list** (`machine_checkins`, the 2026-10-03 amendment "one idle rule for every machine", item 5):
+the folder-v2 environments, not paused or being deleted, with a busy shell whose agent is due a question not asked yet
+(a mark of 1, 3 or 7 hours, then every 24, since the agent last worked with it), or with a waiting question whose
+parent run is ready, stopped or gone. Each question goes to the conversation of the run that started a program still
+running there. A step asks first (a new question goes out in the same step only if its parent was already due; the
+others wait for the next step), then continues up to 8 parents, a wake each with up to 8 questions that still stand. It
+reads each parent's state again under admission, so concurrent steps continue a parent once at a time. A question no
+longer standing is suppressed. The wake's source kind is `machine-checkin`, continued with C1c-3i-b's helpers as a
+machine event is.
 
 Commits do not nudge the orchestrator. A file wake waits one 2 s pass while one step's window covers the company's
 backlog; with N listeners a step reads 512/N seqs (at most 32), and each company gets one step per pass, so a large
