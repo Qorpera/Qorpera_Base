@@ -23,10 +23,12 @@ function safeHref(href: string): string | undefined {
 	return undefined;
 }
 
-function renderTokens(tokens: readonly MarkedToken[], depth = 0): Node[] {
+/** `links` false draws a link as its text and an image as its alt text: nothing leaves the page or is fetched. */
+function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true): Node[] {
 	if (depth > 32) return [document.createTextNode(tokens.map((token) => token.raw).join(""))];
 	return tokens.flatMap((token): Node[] => {
-		const children = () => renderTokens(("tokens" in token ? (token.tokens ?? []) : []) as MarkedToken[], depth + 1);
+		const children = () =>
+			renderTokens(("tokens" in token ? (token.tokens ?? []) : []) as MarkedToken[], depth + 1, links);
 		switch (token.type) {
 			case "space":
 			case "def":
@@ -71,7 +73,7 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0): Node[] {
 											"aria-label": t("Task status"),
 										})
 									: null,
-								renderTokens(item.tokens as MarkedToken[], depth + 1),
+								renderTokens(item.tokens as MarkedToken[], depth + 1, links),
 							),
 						),
 					),
@@ -82,7 +84,7 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0): Node[] {
 						h(
 							heading ? "th" : "td",
 							heading ? { scope: "col" } : null,
-							renderTokens(cell.tokens as MarkedToken[], depth + 1),
+							renderTokens(cell.tokens as MarkedToken[], depth + 1, links),
 						),
 					);
 				return [
@@ -100,6 +102,10 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0): Node[] {
 			}
 			case "link":
 			case "image": {
+				if (!links)
+					return token.type === "image"
+						? [document.createTextNode(decodeEntities(token.text))]
+						: [h("span", null, children())];
 				const href = safeHref(token.href);
 				const content =
 					token.type === "image"
@@ -122,14 +128,22 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0): Node[] {
 	});
 }
 
-export function markdown(source: string): HTMLElement {
+export interface MarkdownOptions {
+	/** False draws a link as its text and an image as its alt text (an interface's text block, §3.3). */
+	readonly links?: boolean;
+	/** Only the first block that isn't a heading or a rule: a text block's `show = "first-paragraph"`. */
+	readonly firstParagraph?: boolean;
+}
+
+export function markdown(source: string, options: MarkdownOptions = {}): HTMLElement {
 	try {
 		// This lexer has no extensions, so its output contains built-in tokens only.
-		return h(
-			"div",
-			{ class: "message-prose" },
-			renderTokens(Lexer.lex(source, { gfm: true, breaks: true }) as MarkedToken[]),
-		);
+		let tokens = Lexer.lex(source, { gfm: true, breaks: true }) as MarkedToken[];
+		if (options.firstParagraph) {
+			const first = tokens.find((token) => !["space", "def", "heading", "hr"].includes(token.type));
+			tokens = first ? [first] : [];
+		}
+		return h("div", { class: "message-prose" }, renderTokens(tokens, 0, options.links !== false));
 	} catch {
 		return h("div", { class: "text" }, source);
 	}
