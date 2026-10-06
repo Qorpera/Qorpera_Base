@@ -465,10 +465,13 @@ paths it may read. Its own change sets never wake it.
 an email to a mailbox) wakes the agent, with up to 20 deliveries a wake; with `only`, only deliveries of those types.
 - The save refuses a `hook` that is not a live hook or mailbox of the company, and a routine a ChatGPT plan would pay
   for.
-- The routine listens from its last save: **any save of the file, even one that changes nothing, drops the deliveries
-  it had not taken yet.** A resume is a save, so it starts again from the resume.
-- While the company is paused, its deliveries wait and wake the routine after the resume. A wake whose run does not take
-  its deliveries is tried again after 1, 4, 16 and 64 minutes; after the fifth try, its first delivery is left behind.
+- The routine listens from its current version (W2's cursor per version), unlike `file-change`. A save that makes a
+  new version drops the deliveries it had not taken yet: a change of title, instructions, `hook`, `only`, `timezone`,
+  `reply` or effort, a move to another agent, or a save after which another login pays. A resume drops them too. A
+  save that changes nothing else, or only `quiet`, `ends` or `runs`, keeps them.
+- While the company is paused, its deliveries wait and wake the routine after the resume; a delivery older than 7 days
+  is no longer waiting. A wake whose run does not take its deliveries is tried again after 1, 4, 16 and 64 minutes;
+  after the fifth try, its first delivery is left behind.
 
 **Ownership:**
 - A key of another `when` is refused by name.
@@ -1236,8 +1239,9 @@ then still says `active`. So:
   quiet hours carry their own); `report` → `reply` (absent: `optional`); `effort` (absent: the file's, else medium).
   `status: active`: a save revives a paused, concluded or expired routine (an expired one ends again while its end
   has passed, so an `ends` in the past is refused). A new file gets an id from the run and the operation key; an
-  existing one keeps its id. A missing `routines` folder is made in the same change set. `file_change` (core C4) and
-  `event` (F2-6b below) are refused with the arguments. An upsert that would save the unchanged file over the
+  existing one keeps its id. A missing `routines` folder is made in the same change set. `file_change` → `when:
+  file-change` (`watch`, `match`; core C4's P29) and `event` → `when: event` (`hook`, lowercased, and `only`; core C4's
+  E2b). An upsert that would save the unchanged file over the
   platform's pause (the same parse) answers before the receipt "nothing to change; to switch it back on, use resume",
   so the review sees a resume as one and a repeat of a saved edit is not refused.
 - `pause`: `status: paused` (a pause in the file). A file that already says `paused` answers "nothing to change" (no
@@ -1283,9 +1287,10 @@ then still says `active`. So:
   more). After a recorded review it is reported as not saved, with the instruction to decide again without the
   rewrite. The folder-v2 description stops saying the title and instructions cannot change.
 
-*Follow-up (F2-6b, F2's):* `when: event` in the parser and SQL's parse shape, the folder-v2 wake gate's event refusal
-lifted and the folder wake read's event batch (EVENT-INTAKE: "whichever of W2 and F2-6 lands second"; neither did).
-Event routines need hooks on folder-v2 and runs from folder wakes (C1c-3, C4) before they work end to end.
+*Follow-up (F2-6b, F2's; built by core C4's E2a and E2b, `RUNTIME-COMPANY-FOLDER-EVENTS.md`):* `when: event` in the
+parser and SQL's parse shape, the folder-v2 wake gate's event refusal lifted and the folder wake read's event batch
+(EVENT-INTAKE: "whichever of W2 and F2-6 lands second"; neither did). Event routines need hooks on folder-v2 and runs
+from folder wakes (C1c-3, C4) before they work end to end.
 
 *Tests.* SQL: the resume rule (an unchanged save ends a failure suspension, a Stop, and a login wait only with a paying
 login; an edit does not end a Stop or a suspension; the platform's save does not; a member without a paying login is refused; a member's own
