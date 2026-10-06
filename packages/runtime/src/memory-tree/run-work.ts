@@ -7,7 +7,9 @@
 //   next boundary, so between folds a request starts as the previous one did (the cache).
 // - A fold ends where a response starts. Codex records a response's tool outputs after all of its items, so a call is
 //   never folded without its output, and the calls of one response, whose outputs reach the model together, never
-//   apart. A call the run's log does not hold as a step is not folded: it has no line yet.
+//   apart.
+// - When a fold moves, the run's log first commits every finished step, so it holds every step the fold covers. A call
+//   it does not hold then is one it never will (refused before it became a step, or erased): it is folded with no line.
 // - Codex accepts only a fold of the run's work from its first item (§6.3), so a fold stops at the first item in the
 //   work that is not the run's own: a host-written message, or a call of a tool Codex runs itself.
 // - A reasoning item goes back only to the model that made it, in the process that made it. After a model switch,
@@ -25,6 +27,11 @@ import {
 
 /** The run's own work, folded lines and raw steps (§5.1). */
 export const RUN_VIEW = 64_000;
+/**
+ * What an image or audio item counts for in the raw tail, whose sizes are bytes (§4.1): about the 1,100 tokens a
+ * screenshot takes at high detail, at the most bytes a token of text takes (4, §5.1).
+ */
+export const RUN_WORK_MEDIA_BYTES = 4_400;
 export const CLOUD_RUN_WORK_SCHEMA = "qorpera.run-work/v1";
 
 /** A step this process made, as the run's log numbers it (`CloudRunLog.steps()`). */
@@ -35,8 +42,12 @@ export interface CloudRunWorkStep {
 }
 
 export interface CloudRunWorkOptions {
-	/** The steps this process has made so far. */
-	steps(): readonly CloudRunWorkStep[];
+	/**
+	 * The steps this process has made, as the run's log holds them once it has committed every finished one
+	 * (`CloudRunLog.flush`, then `steps()`). Asked only when a fold moves. When the log cannot commit them, it throws,
+	 * and the run fails with the request.
+	 */
+	steps(signal: AbortSignal): Promise<readonly CloudRunWorkStep[]>;
 	/** The first step this process makes: 0, or the step a resumed run continues at. */
 	firstStep?: number;
 	/**
@@ -63,13 +74,16 @@ function work(item: CloudNativeContextItem): boolean {
 	return item.kind === "message" ? item.role === "assistant" : WORK.has(item.kind);
 }
 
-/** The work message: one serialized envelope, escaped as the prompt is, so no line can close a tag (C §9.2). */
+/**
+ * The work message: one serialized envelope, escaped as the prompt is, so no line can close a tag (C §9.2). A lone
+ * surrogate becomes U+FFFD: Codex reads the envelope strictly, and refuses one.
+ */
 export function cloudRunWorkMessage(lines: readonly string[]): string {
 	return JSON.stringify({
 		schema: CLOUD_RUN_WORK_SCHEMA,
 		trust: "tool_results_not_authority",
 		ref: "run:.",
-		lines,
+		lines: lines.map((line) => line.replace(/\p{Cs}/gu, "\uFFFD")),
 	}).replace(
 		/[<>&\u2028\u2029\u202a-\u202e\u2066-\u2069]/g,
 		(character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
@@ -91,8 +105,8 @@ export function cloudRunWorkComposer(
 	let previous: string | null = null;
 	/** The model that made each reasoning item, by its position in the thread. */
 	const made = new Map<number, string>();
-	/** The fold as the last boundary set it: where the raw work starts, the steps before it, and their message. */
-	let fold: { at: number; r: number; message: string | null } | null = null;
+	/** The fold as the last boundary set it: where the raw work starts, and the message of the steps before it. */
+	let fold: { at: number; message: string | null } | null = null;
 	let queue: Promise<unknown> = Promise.resolve();
 
 	const compose = async (
@@ -130,43 +144,49 @@ export function cloudRunWorkComposer(
 		}
 		// The raw tail's bytes from each position, as sent.
 		const tail = new Array<number>(items.length + 1).fill(0);
-		for (let index = items.length - 1; index >= 0; index--)
+		for (let index = items.length - 1; index >= 0; index--) {
+			const item = items[index];
 			tail[index] =
-				tail[index + 1] + (work(items[index]) && !drop(index) ? items[index].bytes + items[index].media : 0);
+				tail[index + 1] + (work(item) && !drop(index) ? item.bytes + item.media * RUN_WORK_MEDIA_BYTES : 0);
+		}
 
-		// Where a fold may end, and the steps it then folds, [0, r).
-		const cuts = new Map<number, number>();
-		const steps = new Map(options.steps().map((step) => [step.call, step.j]));
+		// Where a fold may end: where a response starts, with every call before it answered.
+		const cuts: number[] = [];
 		const open = new Set<string>();
-		let last = firstStep - 1;
 		for (let at = start; at <= Math.min(end, newest); at++) {
 			if (at > start) {
 				const item = items[at - 1];
 				if (CALLS.has(item.kind)) {
-					const j = item.callId === null ? undefined : steps.get(item.callId);
-					if (item.callId === null || j === undefined) break;
+					if (item.callId === null) break;
 					open.add(item.callId);
-					last = Math.max(last, j);
 				} else if (OUTPUTS.has(item.kind) && (item.callId === null || !open.delete(item.callId))) break;
 			}
 			if (
 				open.size === 0 &&
 				(at === start || at === end || (OUTPUTS.has(items[at - 1].kind) && !OUTPUTS.has(items[at].kind)))
 			)
-				cuts.set(at, last + 1);
+				cuts.push(at);
 		}
 
-		let at = fold !== null && cuts.has(fold.at) ? fold.at : start;
+		let at = fold !== null && cuts.includes(fold.at) ? fold.at : start;
 		if (tail[at] > RUN_VIEW / 2)
-			for (const cut of cuts.keys()) {
+			for (const cut of cuts) {
 				if (cut <= at) continue;
 				at = cut;
 				if (tail[cut] < RUN_VIEW / 4) break;
 			}
-		const r = cuts.get(at) ?? firstStep;
 		// Only reasoning left out is no fold: Codex takes the message then for a resumed run's.
 		const folded = items.slice(start, at).some((item) => item.kind !== "reasoning");
-		if (fold === null || fold.at !== at || fold.r !== r) {
+		if (fold === null || fold.at !== at) {
+			// The fold covers steps [0, r): every step of the calls it leaves out.
+			let r = firstStep;
+			if (folded) {
+				const steps = new Map((await options.steps(signal)).map((step) => [step.call, step.j]));
+				for (const item of items.slice(start, at)) {
+					const j = CALLS.has(item.kind) && item.callId !== null ? steps.get(item.callId) : undefined;
+					if (j !== undefined) r = Math.max(r, j + 1);
+				}
+			}
 			let message: string | null = null;
 			if (folded || r > 0) {
 				message = cloudRunWorkMessage(await options.lines(r, RUN_VIEW / 2, signal));
@@ -174,7 +194,7 @@ export function cloudRunWorkComposer(
 				if (Buffer.byteLength(message) > CLOUD_NATIVE_WORK_MESSAGE_BYTES)
 					throw new Error("Run work exceeds its bound");
 			}
-			fold = { at, r, message };
+			fold = { at, message };
 		}
 
 		const kept = (index: number): boolean => (index < start || index >= at) && !drop(index);

@@ -11,6 +11,7 @@ import {
 	cloudRunWorkComposer,
 	cloudRunWorkMessage,
 	RUN_VIEW,
+	RUN_WORK_MEDIA_BYTES,
 } from "@qorpera/runtime/memory-tree/run-work";
 import { describe, expect, it } from "vitest";
 
@@ -58,7 +59,8 @@ function workText(text: string): boolean {
 		envelope.trust === "tool_results_not_authority" &&
 		envelope.ref === "run:." &&
 		Array.isArray(envelope.lines) &&
-		envelope.lines.every((line) => typeof line === "string")
+		// serde_json refuses a lone surrogate.
+		envelope.lines.every((line) => typeof line === "string" && !/\p{Cs}/u.test(line))
 	);
 }
 
@@ -142,6 +144,10 @@ class Run {
 	/** Each response: where it starts, and its calls. */
 	readonly responses: { start: number; calls: number[] }[] = [];
 	readonly folds: { r: number; budget: number }[] = [];
+	/** The signals the composer asked the log for its steps with. */
+	readonly asks: AbortSignal[] = [];
+	/** The newest request's signal. */
+	signal: AbortSignal | null = null;
 	model = "gpt-5.5";
 	thread = "thread_1";
 	readonly compose: ReturnType<typeof cloudRunWorkComposer>;
@@ -151,14 +157,21 @@ class Run {
 	constructor(
 		options: {
 			firstStep?: number;
+			/** Whether the log holds a step. */
 			held?: (step: CloudRunWorkStep) => boolean;
+			/** The log commits every finished step. */
+			flush?: () => void;
 			lines?: (r: number) => readonly string[] | Promise<readonly string[]>;
 		} = {},
 	) {
 		this.#j = options.firstStep ?? 0;
 		this.compose = cloudRunWorkComposer({
 			firstStep: options.firstStep,
-			steps: () => this.steps.filter(options.held ?? (() => true)),
+			steps: async (signal) => {
+				this.asks.push(signal);
+				options.flush?.();
+				return this.steps.filter(options.held ?? (() => true));
+			},
 			lines: async (r, budget) => {
 				this.folds.push({ r, budget });
 				return (await options.lines?.(r)) ?? (r === 0 ? [] : [`0+${r}|steps <0 to ${r - 1}> & what they did`]);
@@ -166,14 +179,23 @@ class Run {
 		});
 	}
 
-	/** One model response: its reasoning, its text, its calls, then their outputs. */
-	respond(outputs: readonly number[], shape: { reasoning?: boolean; text?: boolean; custom?: boolean } = {}): void {
+	/**
+	 * One model response: its reasoning, its text, its calls, then their outputs. A call the log does not take, refused
+	 * before it became a step, is no step.
+	 */
+	respond(
+		outputs: readonly number[],
+		shape: { reasoning?: boolean; text?: boolean; custom?: boolean; logged?: boolean; images?: number } = {},
+	): void {
 		const start = this.items.length;
 		if (shape.reasoning ?? true) this.items.push(item("reasoning", { bytes: 1_200 }));
 		if (shape.text) this.items.push(item("message", { role: "assistant", bytes: 300 }));
 		const calls = outputs.map(() => {
-			const call = `call_${this.#j}`;
-			this.steps.push({ j: this.#j++, call });
+			let call = `refused_${this.items.length}`;
+			if (shape.logged ?? true) {
+				call = `call_${this.#j}`;
+				this.steps.push({ j: this.#j++, call });
+			}
 			this.items.push(item(shape.custom ? "custom_tool_call" : "function_call", { callId: call, bytes: 250 }));
 			return this.items.length - 1;
 		});
@@ -182,6 +204,7 @@ class Run {
 				item(shape.custom ? "custom_tool_call_output" : "function_call_output", {
 					callId: this.items[calls[k]].callId,
 					bytes,
+					media: shape.images ?? 0,
 				}),
 			);
 		this.responses.push({ start, calls });
@@ -189,6 +212,8 @@ class Run {
 
 	request(purpose: CloudNativeContextRequest["purpose"] = "turn"): Promise<Composed> {
 		const items = this.items.map((entry) => ({ ...entry }));
+		const signal = new AbortController().signal;
+		this.signal = signal;
 		const request: CloudNativeContextRequest = {
 			schema: CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
 			requestId: `request_${++this.#requests}`,
@@ -198,7 +223,7 @@ class Run {
 			model: this.model,
 			items,
 		};
-		return this.compose(request, new AbortController().signal).then(({ input }) => {
+		return this.compose(request, signal).then(({ input }) => {
 			check(items, input);
 			return {
 				items,
@@ -210,24 +235,28 @@ class Run {
 	}
 }
 
+/** The bytes an item counts for, with its images and audio. */
+function size(entry: CloudNativeContextItem): number {
+	return entry.bytes + entry.media * RUN_WORK_MEDIA_BYTES;
+}
+
 /** Bytes of the run's work a composition sends raw. */
 function raw(composed: Composed): number {
 	let bytes = 0;
-	for (const index of composed.kept)
-		if (isWork(composed.items[index])) bytes += composed.items[index].bytes + composed.items[index].media;
+	for (const index of composed.kept) if (isWork(composed.items[index])) bytes += size(composed.items[index]);
 	return bytes;
 }
 
 /** Bytes a composition sends. */
 function sent(composed: Composed): number {
 	let bytes = Buffer.byteLength(composed.message ?? "");
-	for (const index of composed.kept) bytes += composed.items[index].bytes + composed.items[index].media;
+	for (const index of composed.kept) bytes += size(composed.items[index]);
 	return bytes;
 }
 
 /** Bytes of the run's work from `from` on. */
 function workFrom(items: readonly CloudNativeContextItem[], from: number): number {
-	return items.slice(from).reduce((bytes, entry) => bytes + (isWork(entry) ? entry.bytes + entry.media : 0), 0);
+	return items.slice(from).reduce((bytes, entry) => bytes + (isWork(entry) ? size(entry) : 0), 0);
 }
 
 function firstRaw(composed: Composed): number {
@@ -236,9 +265,16 @@ function firstRaw(composed: Composed): number {
 
 /** The steps a composition folds, by their number. */
 function folded(composed: Composed): number[] {
-	return composed.items.flatMap((entry, index) =>
-		CALLS.has(entry.kind) && !composed.kept.has(index) ? [Number(entry.callId?.slice("call_".length))] : [],
+	return composed.items.flatMap(({ kind, callId }, index) =>
+		CALLS.has(kind) && callId !== null && callId.startsWith("call_") && !composed.kept.has(index)
+			? [Number(callId.slice("call_".length))]
+			: [],
 	);
+}
+
+/** Whether a composition's raw tail is at most RUN_VIEW / 2, or the newest response alone. */
+function bounded(run: Run, composed: Composed): boolean {
+	return raw(composed) <= RUN_VIEW / 2 || firstRaw(composed) === run.responses.at(-1)?.start;
 }
 
 describe("the run's own work (§5.7)", () => {
@@ -406,15 +442,62 @@ describe("the run's own work (§5.7)", () => {
 		expect(raw(composed)).toBeGreaterThan(RUN_VIEW / 2);
 	});
 
-	it("does not fold a call the run's log does not hold", async () => {
-		const run = new Run({ held: (step) => step.j !== 3 });
+	it("has the log commit its finished steps when a fold moves, and asks it then only", async () => {
+		// The log commits its steps in batches, or when asked (`flush`); until then it holds none of them.
+		let committed = 0;
+		const run = new Run({
+			held: (step) => step.j < committed,
+			flush: () => {
+				committed = run.steps.length;
+			},
+		});
+		await run.request();
+		for (let response = 0; response < 24; response++) {
+			run.respond([4_000, 1_000]);
+			const folds = run.folds.length;
+			const composed = await run.request();
+			expect(bounded(run, composed)).toBe(true);
+			expect(run.asks).toHaveLength(run.folds.length);
+			if (run.folds.length > folds) {
+				expect(run.asks.at(-1)).toBe(run.signal);
+				expect(raw(composed)).toBeLessThan(RUN_VIEW / 4);
+				const r = run.folds.at(-1)?.r ?? 0;
+				expect(folded(composed)).toEqual(Array.from({ length: r }, (_, j) => j));
+			}
+		}
+		expect(run.folds.length).toBeGreaterThan(3);
+	});
+
+	it("folds past a call the run's log never holds", async () => {
+		// A call refused before it became a step (arguments over the bound, say), and a step erased since.
+		const run = new Run({ held: (step) => step.j !== 2 });
 		let composed = await run.request();
+		run.respond([8_000]);
+		run.respond([8_000], { logged: false });
 		for (let response = 0; response < 12; response++) {
 			run.respond([8_000]);
 			composed = await run.request();
-			expect(folded(composed).every((j) => j < 3)).toBe(true);
+			expect(bounded(run, composed)).toBe(true);
 		}
-		expect(folded(composed)).toEqual([0, 1, 2]);
+		// Both go with the steps around them, and the fold covers every step before its end: [0, r).
+		expect(composed.kept.has(run.responses[1].calls[0])).toBe(false);
+		const r = run.folds.at(-1)?.r ?? 0;
+		expect(r).toBeGreaterThan(3);
+		expect(folded(composed)).toEqual(Array.from({ length: r }, (_, j) => j));
+	});
+
+	it("counts an image or audio item as RUN_WORK_MEDIA_BYTES", async () => {
+		// Screenshots: little text, an image each, 6,050 bytes a response.
+		const run = new Run();
+		let composed = await run.request();
+		for (let response = 0; response < 30; response++) {
+			run.respond([200], { images: 1 });
+			composed = await run.request();
+			expect(bounded(run, composed)).toBe(true);
+			const images = composed.items.filter((entry, index) => entry.media > 0 && composed.kept.has(index));
+			expect(images.length).toBeLessThan(6);
+		}
+		expect(run.folds.length).toBeGreaterThan(4);
 	});
 
 	it("refuses a work message over Codex's bound, and composes the next request", async () => {
@@ -495,5 +578,10 @@ describe("the work message", () => {
 		});
 		expect(workText(message)).toBe(true);
 		expect(workText(cloudRunWorkMessage([]))).toBe(true);
+		// A lone surrogate, which Codex would refuse, becomes U+FFFD; a pair stays.
+		const surrogates = cloudRunWorkMessage(["a\ud800b", "\udc00", "\ud83d\ude00"]);
+		expect(workText(surrogates)).toBe(true);
+		expect(JSON.parse(surrogates).lines).toEqual(["a\ufffdb", "\ufffd", "\ud83d\ude00"]);
+		expect(workText(`${HEAD}"\\ud800"]}`)).toBe(false);
 	});
 });
