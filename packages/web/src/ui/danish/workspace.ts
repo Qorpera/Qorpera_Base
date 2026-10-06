@@ -103,11 +103,9 @@ export const WORKSPACE: Record<string, string> = {
 		"Intet interface er markeret som hovedinterface, så intet vises øverst. Markér ét som hovedinterface i dets fil.",
 	"{names} are all marked as the main interface, so none is shown on top. Keep the mark on just one of them.":
 		"{names} er alle markeret som hovedinterface, så intet vises øverst. Behold markeringen på kun ét af dem.",
-	// The folder sources, activity and the text, numbers and calendar blocks (app/interface-sources.ts,
+	// The folder sources and the text, numbers and calendar blocks (app/interface-sources.ts,
 	// app/views/interface-blocks.ts, app/views/interface.ts)
 	"This can't be read right now.": "Det kan ikke læses lige nu.",
-	"{name} finished": "{name} blev færdig",
-	"{name} stopped": "{name} stoppede",
 	Figure: "Figur",
 	Colour: "Farve",
 	Status: "Status",
@@ -131,8 +129,6 @@ export const WORKSPACE: Record<string, string> = {
 	Pending: "Afventer",
 	"Needs a person": "Kræver en person",
 	Off: "Slået fra",
-	Run: "Kørsel",
-	"Wake-up": "Vækning",
 	"Target {value}": "Mål {value}",
 	"{change} since {time}": "{change} siden {time}",
 	"No change since {time}": "Ingen ændring siden {time}",

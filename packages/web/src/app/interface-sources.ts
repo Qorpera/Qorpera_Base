@@ -10,7 +10,6 @@ import {
 	parseCompanyStateFile,
 } from "@qorpera/cloud-client/company-state-files";
 import { INTERFACE_SOURCE_COLUMNS, type TableRow } from "@qorpera/cloud-client/interfaces";
-import type { HostedRunRecovery, HostedStaffExecutionActivity } from "../cloud/types.ts";
 import { presentationLocale, t } from "../ui/preferences.ts";
 import type { CompanyController } from "./company.ts";
 import type { FolderPage, FolderProblem, InterfaceFolderState } from "./interface-folder.ts";
@@ -18,13 +17,13 @@ import type { InterfaceRow } from "./interfaces.ts";
 import { routineNextRun } from "./routine-next-run.ts";
 
 /* The interfaces' sources from the company folder's own files (RUNTIME-INTERFACES.md §4, "From the company folder"):
- * `vision`, `agents`, `groups`, `todos`, `routines`, `connections`, `contacts`, `human_tasks` and `interfaces`, and the
- * `activity` source from the company's live state. app/interface-folder.ts lists and reads the files the active pages'
- * drawn blocks name, with the member's own authority, through the same reader and change feed as the pages and tables;
- * this module says which folders and files those are, parses them with the cloud client's `parseCompanyStateFile`, and
- * turns them into rows. The `agents` and `groups` sources read the folder too, not the store: their rows are what the
- * files say, as every other folder source's are. A file that doesn't parse is left out and listed as its source's
- * problem; one that is too large or isn't text is left out, as I7 leaves out such a file. */
+ * `vision`, `agents`, `groups`, `todos`, `routines`, `connections`, `contacts`, `human_tasks` and `interfaces`.
+ * app/interface-folder.ts lists and reads the files the active pages' drawn blocks name, with the member's own
+ * authority, through the same reader and change feed as the pages and tables; this module says which folders and files
+ * those are, parses them with the cloud client's `parseCompanyStateFile`, and turns them into rows. The `agents` and
+ * `groups` sources read the folder too, not the store: their rows are what the files say, as every other folder
+ * source's are. A file that doesn't parse is left out and listed as its source's problem; one that is too large or
+ * isn't text is left out, as I7 leaves out such a file. */
 
 /** The sources read from the company folder's own files. */
 const FOLDER_SOURCES: ReadonlySet<string> = new Set([
@@ -52,7 +51,6 @@ const IDS: Readonly<Record<string, Readonly<Record<string, "agent" | "member" | 
 	todos: { agent: "agent", requested_by: "member" },
 	routines: { agent: "agent" },
 	human_tasks: { from: "agent", person: "member" },
-	activity: { agent: "agent", member: "member" },
 };
 
 /** A folder source's columns, §4's (the cloud client's `INTERFACE_SOURCE_COLUMNS`), and the column that is its time. */
@@ -63,7 +61,7 @@ export function folderSourceColumns(source: string): {
 	return { columns: INTERFACE_SOURCE_COLUMNS[source] ?? [], time: TIMES[source] ?? null };
 }
 
-/** What a folder source's (or `activity`'s) column holds the ids of, or null. */
+/** What a folder source's column holds the ids of, or null. */
 export function folderIdColumn(source: string, column: string): "agent" | "member" | "agents" | "members" | null {
 	const ids = Object.hasOwn(IDS, source) ? IDS[source] : undefined;
 	return ids && Object.hasOwn(ids, column) ? (ids[column] ?? null) : null;
@@ -74,6 +72,15 @@ export function folderIdColumn(source: string, column: string): "agent" | "membe
 export function rowInstant(text: string | null | undefined): string | null {
 	const at = text ? Date.parse(text) : Number.NaN;
 	return Number.isFinite(at) ? new Date(at).toISOString().replace(/\.\d{3}Z$/, "Z") : null;
+}
+
+/** A `file:` source's text: the file without its settings block (front matter), which is the file's settings, not its
+ * text (§3.2). A rule's or an agent's file starts with one, and so may any other markdown. The vision and sections files
+ * have none, so a leading `---` there is part of their text. */
+export function fileSourceText(path: string, text: string): string {
+	const kind = companyStatePath(path)?.kind;
+	if (kind === "vision" || kind === "sections") return text;
+	return text.replace(/^﻿?---[ \t]*\r?\n(?:[^\r\n]*\r?\n)*?---[ \t]*(?:\r?\n|$)/, "");
 }
 
 // ---- reading ---------------------------------------------------------------------
@@ -468,56 +475,4 @@ export function folderSourceRows(
 		default:
 			return undefined;
 	}
-}
-
-/** One plain sentence about a run, as the rest of the app says what an agent is doing: a run that needs a member reads
- * as the `waiting` source's rows do (`CompanyController.agentState`). */
-function activityLine(
-	item: HostedStaffExecutionActivity,
-	recovery: HostedRunRecovery | undefined,
-	name: string,
-): string {
-	if (item.activity === "needs_attention")
-		return item.jobStatus === "failed" && !recovery?.proposalId
-			? t("{name} has a run that did not finish", { name })
-			: t("{name} needs you", { name });
-	if (item.jobStatus === "queued") return t("{name} is starting", { name });
-	if (item.jobStatus === "leased")
-		return item.phase === "writing" ? t("{name} is writing", { name }) : t("{name} is working", { name });
-	if (item.jobStatus === "completed") return t("{name} finished", { name });
-	return t("{name} stopped", { name });
-}
-
-/** The `activity` source (§4): one row per run the company's live state reports for an agent that works here, newest
- * first, each with one plain sentence. A run is a `wake` when an agent or a routine woke it, else a `run`; `member` is
- * the member it was started for, where the run's details say so (today only a failed run's recovery does). */
-export function activityRows(company: CompanyController): InterfaceRow[] {
-	const state = company.store.get();
-	return state.activity
-		.flatMap((item): { at: number; row: InterfaceRow }[] => {
-			const agent = company.staffById(item.staffAgentId);
-			if (!agent || agent.employmentStatus !== "active") return [];
-			const at = rowInstant(item.updatedAt);
-			const recovery = state.recoveries[item.runId];
-			const href = agentHref(company, agent.id);
-			return [
-				{
-					at: at === null ? Number.NEGATIVE_INFINITY : Date.parse(at),
-					row: {
-						row: {
-							at,
-							kind: item.sourceKind === "wake" ? "wake" : "run",
-							agent: agent.id,
-							member: recovery?.requestedByUserId ?? null,
-							line: activityLine(item, recovery, agent.displayName),
-						},
-						key: `activity:${item.runId}`,
-						...(href ? { href } : {}),
-					},
-				},
-			];
-		})
-		.map((entry, index) => ({ ...entry, index }))
-		.sort((a, b) => b.at - a.at || a.index - b.index)
-		.map(({ row }) => row);
 }

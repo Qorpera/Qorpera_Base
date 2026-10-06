@@ -22,12 +22,11 @@ const DAY = 86_400_000;
 
 // ---- words ---------------------------------------------------------------------------
 
-/** The folder sources' and `activity`'s column names in the member's language, or undefined for one this module
- * doesn't name (views/interface.ts names the live state's). */
+/** The folder sources' column names in the member's language, or undefined for one this module doesn't name
+ * (views/interface.ts names the live state's). */
 export function folderColumnLabel(source: string, column: string): string | undefined {
-	if (!isFolderSource(source) && source !== "activity") return undefined;
+	if (!isFolderSource(source)) return undefined;
 	if (source === "agents" && column === "id") return t("Agent");
-	if (source === "activity" && column === "line") return t("What");
 	const label: Record<string, () => string> = {
 		agent: () => t("Agent"),
 		title: () => t("Title"),
@@ -53,18 +52,13 @@ export function folderColumnLabel(source: string, column: string): string | unde
 		about: () => t("About"),
 		emblem: () => t("Emblem"),
 		text: () => t("Text"),
-		at: () => t("Time"),
-		member: () => t("Member"),
 	};
 	return Object.hasOwn(label, column) ? label[column]?.() : undefined;
 }
 
-/** A folder source's status, or an `activity` row's kind, in the member's language; undefined for any other cell. */
+/** A folder source's status in the member's language; undefined for any other cell. */
 export function folderCellLabel(source: string, column: string, value: TableValue | undefined): string | undefined {
-	if (typeof value !== "string") return undefined;
-	if (source === "activity" && column === "kind")
-		return value === "wake" ? t("Wake-up") : value === "run" ? t("Run") : undefined;
-	if (column !== "status" || !isFolderSource(source)) return undefined;
+	if (typeof value !== "string" || column !== "status" || !isFolderSource(source)) return undefined;
 	const label: Record<string, () => string> = {
 		active: () => t("Active"),
 		archived: () => t("Archived"),
@@ -163,6 +157,21 @@ function unitOf(row: TableRow, column: TableColumn | undefined): string | null {
 	return column?.type === "percent" ? "%" : null;
 }
 
+/** When a tile's change is since: a `date` cell (`2026-09-01`) as that day, the same in every time zone, as a calendar
+ * draws one; a `time` cell as the app shows times. */
+function sinceLabel(when: string, now: number): string {
+	if (when.length !== 10) return fmtTime(when);
+	const at = interfaceInstant(when);
+	if (at === null) return "";
+	const thisYear = when.slice(0, 4) === presentationDay(new Date(now), timeZoneOption().timeZone).slice(0, 4);
+	return new Date(at).toLocaleDateString(presentationLocale(), {
+		...(thisYear ? {} : { year: "numeric" }),
+		month: "short",
+		day: "numeric",
+		timeZone: "UTC",
+	});
+}
+
 /** A numbers block's tiles (§3.2, proposed). Its tiles are the rows its query keeps: with `latest_by`, the newest row
  * of each group; without, the newest row of all, as one group. A tile's change is its value less the value of the row
  * before it in its group by the time column (the source's, else `trend.over`); its trend is its group's values over
@@ -200,7 +209,7 @@ export function numberTiles(
 		if (before && typeof value === "number" && typeof was === "number") {
 			const delta = Math.round((value - was) * 1e8) / 1e8;
 			const when = time === null ? null : interfaceCell(before.row, time);
-			const since = typeof when === "string" ? fmtTime(when) : "";
+			const since = typeof when === "string" ? sinceLabel(when, options.now) : "";
 			change =
 				delta === 0
 					? since

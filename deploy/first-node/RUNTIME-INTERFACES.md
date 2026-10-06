@@ -203,13 +203,17 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
     text the same way.
   - `show = "first-paragraph"` draws the first paragraph; headings and rules before it are skipped.
   - A `from` source with nothing to show says so quietly. A block's own `text` is drawn as it is.
+  - A `file:` source's `text` is the file without its settings block (front matter: the `---` lines and the settings
+    between them), as a rule's or an agent's file starts. The vision and sections files have none, so a leading `---`
+    there is part of the text.
   - A `file:` source under `hooks/` or `human-tasks/` (§4) is not read, and its block is not drawn, until blocks can
     show the outside-content mark (I7).
 - **Numbers (proposed, built with the folder pages):**
   - The tiles are the rows the block's query keeps. With `latest_by`, that is the newest row of each group, and the
     tile is labelled with the group's value. Without it, a block has one tile: the newest row of all.
   - A tile's change is its `value` less the value of the row before it in its group, by the source's time column, else
-    `trend.over`. It shows as "+€100 since" or "No change since" that row's time.
+    `trend.over`. It shows as "+€100 since" or "No change since" that row's time; a `date` is shown as its day, the
+    same in every time zone.
   - The unit is the row's `unit` cell, as the numbers table has one. Without one, a `money` column shows its currency
     and a `percent` column a percent sign. `count` is a plain number.
   - `target` names a column of the row; it shows as "Target €1,500".
@@ -781,8 +785,8 @@ reader lists and reads the folders the active pages' drawn blocks name, with the
 feed reads only the touched folders again. Each file is parsed with the cloud client's company-state parser; a file
 that doesn't parse is left out and listed under its block. `agents` and `groups` are what the files say, not the store.
 A routine's `next` follows the orchestrator's schedule rules from its file. A human task's `person` is a member's id,
-or a contact's name when the task is for a contact. The `activity` source is the live state's runs: one row per run or
-wake, with a `member` only where a run's details name one (today a failed run's recovery). The `working` and `waiting`
-rows give their times to the second, as every row does. Column and value labels are in the member's language. The
-`text`, `numbers` and `calendar` blocks follow §3.2's proposed rules, so Pulse draws all its blocks and the Members page
-draws `file:rules/shared-areas.md` when the file exists. Answers and changes in `activity` are not built.
+or a contact's name when the task is for a contact. The `working` and `waiting` rows give their times to the second, as
+every row does. Column and value labels are in the member's language. The `text`, `numbers` and `calendar` blocks follow
+§3.2's proposed rules, so Pulse draws all its blocks but "What happened" and the Members page draws
+`file:rules/shared-areas.md` when the file exists. The `activity` source is not built: the live state has only each
+agent's current run, not the runs that happened, so it waits for a read of past runs (with their answers and changes).

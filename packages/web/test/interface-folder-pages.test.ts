@@ -11,6 +11,7 @@ import {
 	writeGroupFile,
 	writeHumanTaskFile,
 	writeRoutineFile,
+	writeRuleFile,
 	writeSectionsFile,
 	writeTodoFile,
 	writeVisionFile,
@@ -29,8 +30,7 @@ import { fixture, id, profileA, session, staff, stubFigureMotion, team, timestam
 import { type FolderFake, folderFake } from "./folder-fake.ts";
 
 /* The interfaces' folder pages (RUNTIME-INTERFACES.md §10, "Built: folder pages"): the sources from the company
- * folder's own files, `activity`, and the text, numbers and calendar blocks, drawn from a member's folder
- * (folder-fake.ts). */
+ * folder's own files, and the text, numbers and calendar blocks, drawn from a member's folder (folder-fake.ts). */
 
 /** Tuesday 6 October 2026, 10:00 UTC. */
 const NOW = Date.parse("2026-10-06T10:00:00Z");
@@ -49,6 +49,8 @@ const ids = {
 	vat: id(752),
 	old: id(753),
 	events: id(761),
+	rule: id(771),
+	sales: id(781),
 };
 
 const cleanup: (() => void)[] = [];
@@ -525,36 +527,6 @@ describe("the folder's own sources", () => {
 	});
 });
 
-describe("the activity source", () => {
-	it("has one plain sentence per run, newest first, with its kind, agent and member", async () => {
-		const fake = bare(
-			page(`
-[[view.block]]
-kind = "table"
-title = "Runs"
-from = "activity"
-columns = ["kind", "agent", "line"]
-`),
-		);
-		const { controller } = company();
-		await follow(fake, controller);
-		expect(rowsOf(controller, "activity")).toEqual([
-			{ at: "2026-10-06T09:30:00Z", kind: "wake", agent: cofounder.id, member: null, line: "Co-Founder finished" },
-			{ at: "2026-10-06T09:00:00Z", kind: "run", agent: ada.id, member: null, line: "Ada needs you" },
-		]);
-		const block = titled(shown(controller), "Runs");
-		expect(texts(block, "thead th")).toEqual(["Kind", "Agent", "What"]);
-		expect(texts(block, "tbody td")).toEqual([
-			"Wake-up",
-			"Co-Founder",
-			"Co-Founder finished",
-			"Run",
-			"Ada",
-			"Ada needs you",
-		]);
-	});
-});
-
 describe("the text block", () => {
 	const TEXTS = page(`
 [[view.block]]
@@ -638,6 +610,38 @@ from = "vision"
 		expect(texts(text, "p")).toEqual([FIRST, "We answer within the hour."]);
 		expect(text.querySelector("a, img, b")).toBeNull();
 	});
+
+	it("draws a file's text without its settings block", async () => {
+		const fake = bare(
+			page(`
+[[view.block]]
+kind = "text"
+title = "Shared areas"
+from = "file:rules/shared-areas.md"
+
+[[view.block]]
+kind = "text"
+title = "Plan"
+from = "file:notes/plan.md"
+`),
+		);
+		fake.put(
+			"rules/shared-areas.md",
+			writeRuleFile({ id: ids.rule, outcome: "ask-first", text: "change a **shared** area." }),
+		);
+		fake.put("notes/plan.md", "---\ntitle: The plan\n---\nShip it.\n");
+		const { controller } = company();
+		await follow(fake, controller);
+		const main = shown(controller);
+		expect(texts(main, ".interface-block > h2")).toEqual(["Shared areas", "Plan"]);
+		const shared = titled(main, "Shared areas")!.querySelector(".message-prose")!;
+		expect(texts(shared, "p")).toEqual(["change a shared area."]);
+		expect(texts(shared, "strong")).toEqual(["shared"]);
+		const plan = titled(main, "Plan")!.querySelector(".message-prose")!;
+		expect(texts(plan, "p")).toEqual(["Ship it."]);
+		// Front matter drawn as markdown would be a rule and a heading.
+		expect(main.querySelector(".message-prose :is(h1, h2, h3, hr)")).toBeNull();
+	});
 });
 
 describe("the numbers block", () => {
@@ -709,6 +713,59 @@ fields = ["number", "value"]
 		expect(titled(main, "Numbers")?.querySelector("button.interface-number")?.classList.contains("is-open")).toBe(
 			true,
 		);
+	});
+
+	it("says a change since a date as that day, whatever the member's time zone", async () => {
+		setTimeZonePreference("America/Los_Angeles");
+		const fake = bare(
+			page(`
+[[view.block]]
+kind = "numbers"
+title = "Sales"
+from = "table:sales"
+latest_by = "shop"
+value = "total"
+`),
+		);
+		fake.put(
+			"tables/sales/table.toml",
+			`format = "qorpera.table/v0"
+
+[table]
+id = "${ids.sales}"
+name = "Sales"
+rows = "file"
+key = ["shop", "month"]
+time = "month"
+
+[[column]]
+name = "shop"
+type = "text"
+
+[[column]]
+name = "month"
+type = "date"
+
+[[column]]
+name = "total"
+type = "number"
+`,
+		);
+		fake.put(
+			"tables/sales/rows.csv",
+			"shop,month,total\nCity,2026-08-01,900\nCity,2026-09-01,1000\nHarbour,2025-12-01,50\nHarbour,2026-09-01,50\n",
+		);
+		const { controller } = company();
+		await follow(fake, controller);
+		const tiles = titled(shown(controller), "Sales")?.querySelectorAll(".interface-number-tiles li") ?? [];
+		const changes = Object.fromEntries(
+			[...tiles].map((tile) => [
+				tile.querySelector(".interface-number-label")?.textContent,
+				tile.querySelector(".interface-number-change")?.textContent,
+			]),
+		);
+		// Not "Jul 31, 5:00 PM": a date is that day, not UTC's midnight seen from the member's time zone.
+		expect(changes).toEqual({ City: "+100 since Aug 1", Harbour: "No change since Dec 1, 2025" });
 	});
 });
 
@@ -806,11 +863,11 @@ describe("Pulse from the folder", () => {
 		const { controller } = company();
 		await follow(fake, controller);
 		const main = shown(controller, "pulse");
+		// "What happened" waits for a read of past runs (§10).
 		expect(texts(main, ".interface-block > h2")).toEqual([
 			"Needs you",
 			"The numbers",
 			"Working now",
-			"What happened",
 			"The work",
 			"Coming up",
 		]);
@@ -818,10 +875,6 @@ describe("Pulse from the folder", () => {
 			"We make bookkeeping calm. A ledger <b>Always</b>.",
 		);
 		expect(texts(titled(main, "The numbers"), ".interface-number-value")).toEqual(["€1,200"]);
-		expect(texts(titled(main, "What happened"), ".interface-item strong")).toEqual([
-			"Co-Founder finished",
-			"Ada needs you",
-		]);
 		const work = titled(main, "The work");
 		expect(texts(work, ".interface-item strong")).toEqual(["Ada"]);
 		expect(texts(work, ".interface-item small")).toEqual(["Close the books"]);
@@ -839,12 +892,6 @@ describe("Pulse from the folder", () => {
 		const { controller } = company();
 		await follow(fake, controller);
 		const main = shown(controller, "pulse");
-		expect(texts(main, ".interface-block > h2")).toEqual([
-			"Needs you",
-			"Working now",
-			"What happened",
-			"The work",
-			"Coming up",
-		]);
+		expect(texts(main, ".interface-block > h2")).toEqual(["Needs you", "Working now", "The work", "Coming up"]);
 	});
 });

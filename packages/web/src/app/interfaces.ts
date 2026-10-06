@@ -30,7 +30,7 @@ import { presentationLocale, t } from "../ui/preferences.ts";
 import { type CompanyController, isAgentPairSession } from "./company.ts";
 import type { FolderPage, FolderProblem, FolderTable, InterfaceFolderState } from "./interface-folder.ts";
 import {
-	activityRows,
+	fileSourceText,
 	folderIdColumn,
 	folderSourceColumns,
 	folderSourceRows,
@@ -79,8 +79,6 @@ const LIVE_SOURCES: Readonly<Record<string, { readonly columns: readonly string[
 	// One row per member (§4): `id` is what a `member` cell holds, the member's account id, which is also what their
 	// `picture` is found by.
 	members: { columns: ["id", "name", "picture", "role", "here"], time: null },
-	// One row per run the live state reports, newest first (app/interface-sources.ts).
-	activity: { columns: ["at", "kind", "agent", "member", "line"], time: "at" },
 };
 /** Columns that hold an agent's id: drawn as the agent's name. A table's columns say what they hold by their type. */
 const AGENT_COLUMNS: ReadonlySet<string> = new Set(["agent", "from", "handled_by", "kept_by"]);
@@ -129,11 +127,14 @@ export function tableDefinition(company: CompanyController, source: string): Tab
 	return folderTable(company, source)?.table ?? null;
 }
 
-/** A `file:` source's text. A file whose text is outside content (under `hooks/` or `human-tasks/`, §4) is not read:
- * the blocks can't show it with its outside-content mark yet (the 2026-10-02 interfaces amendment, item 3). */
+/** A `file:` source's text, without its settings block. A file whose text is outside content (under `hooks/` or
+ * `human-tasks/`, §4) is not read: the blocks can't show it with its outside-content mark yet (the 2026-10-02 interfaces
+ * amendment, item 3). */
 function folderText(company: CompanyController, source: string): string | undefined {
 	if (!source.startsWith("file:") || interfaceOutsideColumns(source).length > 0) return undefined;
-	return company.store.get().interfaceFolder?.files.get(source.slice("file:".length));
+	const path = source.slice("file:".length);
+	const text = company.store.get().interfaceFolder?.files.get(path);
+	return text === undefined ? undefined : fileSourceText(path, text);
 }
 
 /** A source this client can read, or undefined: the live state's, and a folder-v2 company's tables, files and own
@@ -165,7 +166,7 @@ export function idColumn(
 	source: string,
 	column: string,
 ): "agent" | "member" | "agents" | "members" | null {
-	if (isFolderSource(source) || source === "activity") return folderIdColumn(source, column);
+	if (isFolderSource(source)) return folderIdColumn(source, column);
 	if (source.startsWith("table:")) {
 		const type = folderTable(company, source)?.table?.columns.find((candidate) => candidate.name === column)?.type;
 		return type === "agent" || type === "member" || type === "agents" ? type : null;
@@ -452,7 +453,6 @@ export function interfaceMainProblem(company: CompanyController): string | null 
 /** The rows of a source this client reads, or undefined when it can't read it. */
 export function interfaceRows(company: CompanyController, source: string): InterfaceRow[] | undefined {
 	const state = company.store.get();
-	if (source === "activity") return activityRows(company);
 	if (isFolderSource(source))
 		return folderSourceRows(company, state.interfaceFolder, source, () =>
 			companyInterfaces(company).map((entry) => entry.name),

@@ -136,11 +136,8 @@ describe("which interfaces a company lists", () => {
 			`#/c/${profileA.profileId}/staff/${cy.id}`,
 			`#/c/${profileA.profileId}/chat/${session.sessionId}`,
 		]);
-		expect(interfaceRows(controller, "activity")?.map(({ row }) => row.line)).toEqual([
-			"Ada is writing",
-			"Bo has a run that did not finish",
-			"Cy needs you",
-		]);
+		// The live state has each agent's current run only, not what happened: `activity` waits for a read of past runs.
+		expect(interfaceRows(controller, "activity")).toBeUndefined();
 		expect(interfaceRows(controller, "table:numbers")).toBeUndefined();
 		// The folder's own files are read only once the folder is: a company without it has none of them.
 		expect(interfaceRows(controller, "todos")).toBeUndefined();
@@ -154,11 +151,11 @@ describe("the Pulse page", () => {
 		document.body.append(main);
 		renderInterface(main, controller, "pulse");
 		expect(main.querySelector(".interface-title h1")?.textContent).toBe("Pulse");
-		// Without the folder, Pulse has its live sources: the vision, the numbers, the work and the calendar wait for it.
+		// Without the folder, Pulse has its live sources: the vision, the numbers, the work and the calendar wait for it,
+		// and what happened for a read of past runs.
 		expect([...main.querySelectorAll(".interface-block h2")].map((el) => el.textContent)).toEqual([
 			"Needs you",
 			"Working now",
-			"What happened",
 		]);
 		const working = main.querySelectorAll<HTMLAnchorElement>(".interface-block:nth-child(2) a.interface-item");
 		expect(working).toHaveLength(1);

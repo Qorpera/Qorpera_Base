@@ -15,13 +15,16 @@ import type { RoutineFile } from "@qorpera/cloud-client/company-state-files";
  * active, waits for a file change, or has no time zone where it needs one has no next run, and so has one whose
  * `once` time or `ends` has passed. Quiet hours and a routine's count of runs are the orchestrator's to apply. */
 
+const zoneFormats = new Map<string, Intl.DateTimeFormat>();
+
 /** A day's calendar date and clock time in a time zone. */
 function calendarParts(
 	instant: Date,
 	timeZone: string,
 ): { year: number; month: number; day: number; hour: number; minute: number } {
-	const values = new Map(
-		new Intl.DateTimeFormat("en-CA", {
+	let format = zoneFormats.get(timeZone);
+	if (!format) {
+		format = new Intl.DateTimeFormat("en-CA", {
 			timeZone,
 			hourCycle: "h23",
 			year: "numeric",
@@ -29,10 +32,10 @@ function calendarParts(
 			day: "2-digit",
 			hour: "2-digit",
 			minute: "2-digit",
-		})
-			.formatToParts(instant)
-			.map((part) => [part.type, part.value]),
-	);
+		});
+		zoneFormats.set(timeZone, format);
+	}
+	const values = new Map(format.formatToParts(instant).map((part) => [part.type, part.value]));
 	return {
 		year: Number(values.get("year")),
 		month: Number(values.get("month")),
