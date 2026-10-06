@@ -203,7 +203,9 @@ For step 2 (the run box), recorded now so they are planned:
   `unsaved_since` (timestamptz), with `state = 'open'` and `lease_until > now()` (20260928259230). Step 1 opens no
   view rows, so it gives the drain nothing to count; an in-place folder service update needs no drain.
 - **P8.** The runtime releases a command's reads with the run actor (only run releases can be cited by a context
-  view); a release over 10,000 reads is split, and a context output may need to cite several.
+  view); a release over 10,000 reads is split, and a context output may need to cite several. On a company machine,
+  step 4 replaces this: a command's reads are the folder program's, released with its view actor, and its output
+  cites no read ([RUNTIME-FOLDER-COMPANY-MACHINES.md](RUNTIME-FOLDER-COMPANY-MACHINES.md), "Reads").
 
 ## Rollout (coordinator)
 
