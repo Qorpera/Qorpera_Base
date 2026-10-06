@@ -304,6 +304,28 @@ it("asks only whether a quiet coding session can be archived on its check-in", (
 	expect(instructions).toContain("qorpera.worker-completion-continuation/v1");
 });
 
+it("asks only whether a busy program is still needed on a machine check-in", () => {
+	const f = nativeCompanyContextFixture();
+	const instructions = cloudCompanyRuntimeInstructions(
+		{
+			kind: "agent",
+			source: {
+				kind: "machine-checkin",
+				id: f.context.identity.runId,
+				occurrenceKey: `machine-checkin:${randomUUID()}`,
+			},
+		} as never,
+		false,
+	);
+	expect(instructions).toContain("# This wake: a busy program");
+	expect(instructions).toContain(
+		"find it with computer_shell action list and stop it, on a machine use machine_cancel",
+	);
+	expect(instructions).toContain("you are asked again later only while it stays busy");
+	expect(instructions).not.toContain("# This wake: your machine");
+	expect(instructions).toContain("qorpera.machine-checkin-continuation/v1");
+});
+
 it("tells the agent's next run what the platform stopped on its computer", () => {
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	expect(instructions).toContain("openWork.computerStopped");
@@ -448,6 +470,32 @@ it("composes the whole profile, and degrades memory instead of failing when a no
 	const degraded = JSON.parse(composeCloudNativeCompanyPrompt(context, null, undefined, memory(200)));
 	expect(degraded.memory).toMatchObject({ available: false, reason: "too_large", profile: { facts: [] } });
 	expect(degraded.hireOverlay.agentId).toBe(context.agent.id);
+});
+
+it("shows the changes waiting for review just before the skills, only when the run listed some (P40b)", () => {
+	const f = nativeCompanyContextFixture();
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const proposals = {
+		waiting: [
+			{
+				proposalId: randomUUID(),
+				savedAt: "2026-10-05T10:00:00+00:00",
+				savedFrom: "a computer",
+				changes: [{ change: "Hire “Mira” as Bookkeeper", path: "agents/mira" }],
+			},
+		],
+	};
+	const prompt = JSON.parse(
+		composeCloudNativeCompanyPrompt(context, null, undefined, undefined, undefined, undefined, proposals),
+	);
+	expect(prompt.proposals).toEqual(proposals);
+	expect(Object.keys(prompt).slice(-4)).toEqual(["proposals", "skills", "memory", "hireOverlay"]);
+	expect(JSON.parse(composeCloudNativeCompanyPrompt(context))).not.toHaveProperty("proposals");
+	const instructions = compileCloudNativeCompanyInstructions(context);
+	expect(instructions).toContain(
+		"\n# Changes waiting for review\nWhen apply_proposal is offered, proposals lists changes you saved from a computer",
+	);
+	expect(instructions).toContain("never present a waiting change as done.");
 });
 
 it.each(["cofounder", "employee"] as const)(
