@@ -36,7 +36,7 @@ export type MemberNotificationSubject =
 	  }
 	| {
 			/** A routine that ran on this member's login moved to another by someone else's save or pick
-			 * (20260930064000: a routine's payer never changes without permission). */
+			 * (20260930095000: a routine's payer never changes without permission). */
 			schema: "qorpera.member-notification.routine-payer-changed/v1";
 			routineId: string;
 			routineVersion: number;
