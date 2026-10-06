@@ -5,8 +5,9 @@
 -- lease that expired while a tool waited. A send or card for another run or assignment is refused; an expired lease
 -- replays no send; a job the owner cancelled neither replays nor delivers a final send. The owner's Disconnect revokes
 -- the login's connection, versions, capsules and leases and fails the next queued run it would pay for. A contributor
--- cannot make a company-scoped compute identity. The run is 924's run of Alice's on the owner's login (ported from
--- snapshot-v1 in the legacy sweep: 160's surviving checks).
+-- cannot make a company-scoped compute identity, and a viewer or an outsider cannot change an agent thread's model or
+-- speed (an outsider cannot read it either). The run is 924's run of Alice's on the owner's login (ported from
+-- snapshot-v1 in the legacy sweep: 160's surviving checks, and 580's and 584's role checks).
 
 -- 1. A contributor cannot make a company-scoped compute identity.
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000002');
@@ -241,5 +242,54 @@ begin
 		raise exception 'the owner''s Disconnect did not fail the next queued run it would pay for';
 	end if;
 end $$;
+
+-- 10. An agent's thread conversation (Carol's) takes its model and speed from the company's writers only: a contributor
+-- changes both; a viewer may read the choice but change neither; an outsider can neither read nor change it; the choice
+-- is unchanged after the refusals (580's and 584's role checks, on folder-v2).
+create function pg_temp.nl_choice() returns text language sql as $$
+	select coalesce((select format('%s/%s/%s/%s', choice.model_id, choice.service_tier, choice.version, choice.updated_by_user_id)
+		from public.qorpera_session_models as choice where choice.session_id = current_setting('qorpera_test.nl_session')::uuid), 'none')
+$$;
+select set_config('qorpera_test.nl_session', (select session_id::text from public.qorpera_company_rooms
+	where id = pg_temp.base_thread('92400000-0000-4000-8000-000000000032')), true) \g /dev/null
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000002');
+set local role authenticated;
+do $$
+declare v_session uuid := current_setting('qorpera_test.nl_session')::uuid; v_version bigint; v_result jsonb;
+begin
+	v_version := (public.qorpera_get_session_model(v_session) ->> 'version')::bigint;
+	v_result := public.qorpera_set_session_model(v_session, 'gpt-6-astra', v_version);
+	if v_result ->> 'model_id' <> 'gpt-6-astra' then raise exception 'a contributor could not choose the model: %', v_result; end if;
+	v_result := public.qorpera_set_session_service_tier(v_session, 'standard', v_version + 1);
+	if (v_result ->> 'version')::bigint <> v_version + 2 then
+		raise exception 'a contributor could not choose the speed: %', v_result; end if;
+	perform set_config('qorpera_test.nl_version', (v_version + 2)::text, true);
+end $$;
+reset role;
+select set_config('qorpera_test.nl_choice', pg_temp.nl_choice(), true) \g /dev/null
+select pg_temp.base_assert(current_setting('qorpera_test.nl_choice') = format('gpt-6-astra/standard/%s/%s',
+	current_setting('qorpera_test.nl_version'), '92400000-0000-4000-8000-000000000002'),
+	'the contributor''s choice is stored: ' || current_setting('qorpera_test.nl_choice'));
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000003');
+set local role authenticated;
+select pg_temp.base_assert(public.qorpera_get_session_model(current_setting('qorpera_test.nl_session')::uuid) ->> 'model_id'
+	= 'gpt-6-astra', 'a viewer reads the conversation''s model');
+select pg_temp.base_error(format('select public.qorpera_set_session_model(%L, %L, %s)', current_setting('qorpera_test.nl_session'),
+	'gpt-6-sol', current_setting('qorpera_test.nl_version')), '42501', 'Conversation model unavailable');
+select pg_temp.base_error(format('select public.qorpera_set_session_service_tier(%L, %L, %s)', current_setting('qorpera_test.nl_session'),
+	'fast', current_setting('qorpera_test.nl_version')), '42501', 'Conversation model unavailable');
+reset role;
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000005');
+set local role authenticated;
+select pg_temp.base_error(format('select public.qorpera_get_session_model(%L)', current_setting('qorpera_test.nl_session')),
+	'42501', 'Conversation model unavailable');
+select pg_temp.base_error(format('select public.qorpera_set_session_model(%L, %L, %s)', current_setting('qorpera_test.nl_session'),
+	'gpt-6-sol', current_setting('qorpera_test.nl_version')), '42501', 'Conversation model unavailable');
+select pg_temp.base_error(format('select public.qorpera_set_session_service_tier(%L, %L, %s)', current_setting('qorpera_test.nl_session'),
+	'fast', current_setting('qorpera_test.nl_version')), '42501', 'Conversation model unavailable');
+reset role;
+select pg_temp.base_claims('service_role');
+select pg_temp.base_assert(pg_temp.nl_choice() = current_setting('qorpera_test.nl_choice'),
+	'the refusals changed the conversation''s choice: ' || pg_temp.nl_choice());
 
 rollback;
