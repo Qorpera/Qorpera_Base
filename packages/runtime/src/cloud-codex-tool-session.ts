@@ -75,6 +75,9 @@ function forgetSettled<V extends { finished: boolean }>(entries: Map<string, V>)
 	}
 }
 const MAX_PROMPT_BYTES = 1024 * 1024;
+/** The developer instructions (RUNTIME-AGENT-MEMORY-TREE.md §6.1): the host-owned rules, about 25 KB, with the head
+ * (16,000 bytes, §5.6) and the primary view (96,000, M1) as labelled data, and room to spare. */
+const MAX_RUNTIME_INSTRUCTIONS_BYTES = 256 * 1024;
 const TOKEN_COUNTERS = [
 	"inputTokens",
 	"outputTokens",
@@ -1703,7 +1706,8 @@ export async function runCloudCodexToolSession(options: {
 	/** The run's admitted tier; anything that does not supply one runs at standard speed. */
 	serviceTier?: CloudRuntimeServiceTier;
 	prompt: string;
-	/** Versioned host-owned laws only; never job text, file content or model input. */
+	/** Versioned host-owned laws, and the head and views as escaped, labelled data
+	 * (RUNTIME-AGENT-MEMORY-TREE.md §6.1). */
 	runtimeInstructions?: string;
 	/** Only a fresh, host-restored Codex auth home is accepted; no user config, skills or hooks. */
 	identityRoot?: string;
@@ -1755,7 +1759,7 @@ export async function runCloudCodexToolSession(options: {
 		!/^[0-9a-f]{64}$/.test(options.binarySha256) ||
 		!isAbsolute(options.command[0]) ||
 		Buffer.byteLength(options.prompt) > MAX_PROMPT_BYTES ||
-		Buffer.byteLength(options.runtimeInstructions ?? "") > 32 * 1024 ||
+		Buffer.byteLength(options.runtimeInstructions ?? "") > MAX_RUNTIME_INSTRUCTIONS_BYTES ||
 		!isCloudRuntimeReasoningEffort(effort) ||
 		!isCloudRuntimeServiceTier(serviceTier)
 	)

@@ -8,6 +8,7 @@ import {
 	cloudActionReviewRequest,
 	cloudConnectorEffects,
 } from "./cloud-action-review.ts";
+import { composeCloudAgentHead, readCloudAgentHeadVision } from "./cloud-agent-head.ts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
 import {
 	type CloudChatGptPlanAuth,
@@ -381,8 +382,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				// The agent's own notebook (contract 15.1) and its skill catalog (15.2) are
 				// composed side by side through the trusted read lane; an unreadable one
 				// degrades to "unavailable" and the run still starts, because neither is a
-				// precondition of company work.
-				const [memory, skills] = await Promise.all([
+				// precondition of company work. The vision, for the head (RUNTIME-AGENT-MEMORY-TREE.md
+				// §5.6), is read beside them; a failed read fails the composition, as the head is never cut.
+				const [memory, skills, vision] = await Promise.all([
 					Promise.resolve()
 						.then(() =>
 							composeCloudAgentMemory(
@@ -402,18 +404,25 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							return unavailableCloudAgentSkills(cloudRuntimeErrorCategory(error, signal));
 						},
 					),
+					readCloudAgentHeadVision(notebooks?.composition ?? gateway, signal),
 				]);
-				return { initialPresence, gateway, memory, skills, openWork: await openWorkRequest };
+				return { initialPresence, gateway, memory, skills, vision, openWork: await openWorkRequest };
 			};
-			const { initialPresence, gateway, memory, skills, openWork } = await composeContext().catch(async (error) => {
-				await connectorTools();
-				throw error;
-			});
+			const { initialPresence, gateway, memory, skills, vision, openWork } = await composeContext().catch(
+				async (error) => {
+					await connectorTools();
+					throw error;
+				},
+			);
 			const connectorDescriptors = await connectorTools();
 			signal.throwIfAborted();
-			const prompt = composeCloudNativeCompanyPrompt(context, wake, initialPresence, memory, openWork, skills);
-			composition.finish("succeeded", { outputBytes: Buffer.byteLength(prompt) });
-			const contextSha256 = createHash("sha256").update(prompt).digest("hex");
+			const head = composeCloudAgentHead(context, vision, memory);
+			const prompt = composeCloudNativeCompanyPrompt(context, wake, initialPresence, memory, openWork, skills, head);
+			// The run's context is its head (in the developer instructions) and its context message, hashed together.
+			const composed = `${head.text}\n${prompt}`;
+			const contextBytes = Buffer.byteLength(composed);
+			composition.finish("succeeded", { outputBytes: contextBytes });
+			const contextSha256 = createHash("sha256").update(composed).digest("hex");
 			// What composition read from the folder is released under the composed context before any model request.
 			await notebooks?.releaseComposition(contextSha256, signal);
 			const mouth = new CloudAgentMouth(
@@ -553,7 +562,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								p_reasoning_policy_sha256: context.identity.reasoningPolicySha256,
 								p_tool_catalog_text: toolCatalogText,
 								p_context_sha256: contextSha256,
-								p_context_bytes: Buffer.byteLength(prompt),
+								p_context_bytes: contextBytes,
 							},
 							requestSignal,
 						);
@@ -568,7 +577,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							reasoningPolicySha256: context.identity.reasoningPolicySha256,
 							toolCatalogSha256: createHash("sha256").update(toolCatalogText).digest("hex"),
 							contextSha256,
-							contextBytes: Buffer.byteLength(prompt),
+							contextBytes,
 						};
 						if (
 							!started ||
@@ -588,7 +597,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					isolation: this.#isolation,
 					...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
 					prompt,
-					runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake),
+					runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake, { head: head.text }),
 					signal,
 					timeoutMs: this.#timeoutMs,
 					// Auto-review (v130): acting calls wait for the reviewer, or for a member's approval.
