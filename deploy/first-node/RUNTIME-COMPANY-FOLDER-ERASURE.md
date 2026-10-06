@@ -572,3 +572,37 @@ P17's conflict copies (20260930042000) are erased with their path (§2.5); the c
   commit read the clock before the winner committed; erasing the path has nothing to erase.
 
 **Not tested yet:** a run's copy (its run noted for phase 4); the phase 1 budget split between versions and copies.
+
+## 14. Built (W1a, migration 20260930120000, test 950)
+
+Agent memory tree W1a (`deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md` §10 step 3): a message erase or a step erase
+deletes a tree or log block, rewrites it, and asks P18 to erase the block's earlier versions, one request per block.
+
+- **The wrapper,** `qorpera_folder_erase_block_history(environment, user, key, block)`, service role only:
+  - it calls `qorpera_folder_erase` with a `memtree` actor (`{kind, userId, block}`), the platform's request for the
+    member who asked;
+  - the block is `{path, cutoffSeq?, cutoffUnit?, for: {table, id}}`, `table` one of `qorpera_memory_message_erases`
+    and `qorpera_memory_step_erases`;
+  - it adds each partner that "This history continues at other paths" names and asks again; each round adds a path or
+    the refusal stands;
+  - "nothing left" answers P18's reply shape with `erasureId` null and makes no row.
+- **The key** is `memtree:` and the hex SHA-256 of `<table>:<id>:<the block's folded key>`. The prefix is reserved: a
+  member's request with it is refused. The digest covers the block, its cutoff and `for`, not the partners, so a
+  widened request replays as the first.
+- **What differs from a member's request:**
+  - no role is asked, and the member may have left; it erases with owner authority through the platform actor, and
+    another member's private paths do not stop it;
+  - with a cutoff, the block is cut at the delete it names (`Block-history cutoff is not the block's delete`
+    otherwise); with none, a live block is refused (55000 `Block is live again`) and every life of it goes;
+  - a life that moved on to a live path is another block: left alone, not refused;
+  - no limit of 20 paths, and every copy is named;
+  - its row keeps `block_history`, and after done its digest, its copies and `for` (the roots still go);
+  - phases 1 to 3 note no run for it: the run-log row (W1d) reaches the steps that showed its blocks.
+- **`qorpera_folder_erasure_past_versions(id)`** is true once the request is done or past phase 1, and for no
+  erasure (null).
+
+**Tests (950, on 883's fixture):** the refusals and the reserved key; the cutoff at the delete, a replay before and
+after done, the same key with another cutoff, and nothing left; a cutoff at a write, a commit not yet made and another
+path's delete; partners through a renamed folder, for a contributor; a life moved on to a live path (a member's
+request is refused with it); 22 copies kept after done; no cutoff (every life, a member who left, a live block
+refused); a run's commit noted by a member's erasure and not by the block's; grants.

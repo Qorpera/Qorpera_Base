@@ -1,0 +1,330 @@
+-- Agent memory tree, W1a: block-history requests (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §10 step 3 and §16).
+-- A message erase or a step erase deletes a tree or log block and rewrites it, then asks P18 to erase the block's
+-- earlier versions, one request per block, through qorpera_folder_erase_block_history:
+-- * The request is the platform's, for the member who asked: no role is asked (the member may have left since), it
+--   erases with owner authority through the platform actor, and another member's private paths do not stop it.
+-- * Its operation key is fixed: memtree: and the hex SHA-256 of the erase row's table, its id and the block's folded
+--   key. The prefix is reserved: P18 refuses it on every other request. The digest covers the block, its cutoff and
+--   the erase row, not the partners, and is kept after done, with the copies and what the request was for, so a
+--   carrier that asks again after done finds them.
+-- * With a cutoff, the block is cut at the delete it names, live again or not, and the delete and all after it stay.
+--   With none, the block must not be live, and every life of it is erased; a block live again is refused (55000).
+-- * Moves are followed: the wrapper adds each partner P18 names and asks again. A life that moved on to a live path is
+--   another tree's block and is left alone, not refused. There is no limit of 20 paths, and every copy is named.
+-- * Nothing left to erase answers erasureId null, with no row (asking again erases nothing more).
+-- * Its P18 row notes no run in phases 1 to 3: the run-log row (W1d) reaches only the steps that showed its blocks.
+-- * qorpera_folder_erasure_past_versions tells a carrier when a request is past P18's versions phase (§10.1: a row
+--   waits only for that phase, never for the request's done).
+-- Every patched body carries the marker 20260930120000 for the deploy guard.
+
+set local lock_timeout = '3s';
+
+create function pg_temp.w1a_replace(p_function regprocedure, p_old text, p_new text, p_count integer default 1)
+returns void language plpgsql as $$
+declare v_definition text := pg_get_functiondef(p_function);
+begin
+	if p_old = '' or (length(v_definition) - length(replace(v_definition, p_old, ''))) / length(p_old) <> p_count then
+		raise exception 'W1a anchor differs in %: %', p_function, left(p_old, 80); end if;
+	execute replace(v_definition, p_old, p_new);
+end $$;
+
+-- 1. The request on the erasure row ----------------------------------------------------------------------------------
+
+alter table public.qorpera_folder_erasures
+	add column block_history jsonb check (block_history is null or jsonb_typeof(block_history) = 'object');
+comment on column public.qorpera_folder_erasures.block_history is
+	'A block-history request (RUNTIME-AGENT-MEMORY-TREE.md §10 step 3): {path, cutoffSeq, cutoffUnit, for: {table, id}}; null for a member''s erasure.';
+
+-- 2. The request: qorpera_folder_erase with a memtree actor -----------------------------------------------------------
+
+select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+	$old$	v_proposals uuid[]; -- 20260930074000 (P40)
+$old$,
+	$new$	v_proposals uuid[]; -- 20260930074000 (P40)
+	v_memtree jsonb; v_block_key text; v_cut_at timestamptz; v_total bigint := 0; -- 20260930120000 (W1a)
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+	$old$	if p_actor ->> 'kind' is distinct from 'member' or p_actor - array['kind','userId'] <> '{}'::jsonb
+		or coalesce(p_actor ->> 'userId', '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
+		raise exception 'Only a member erases' using errcode = '22023'; end if;
+$old$,
+	$new$	-- 20260930120000 (W1a): a block-history request is the platform's, for the member who asked:
+	-- {"kind":"memtree","userId":…,"block":{"path":…,"cutoffSeq":…,"cutoffUnit":…,"for":{"table":…,"id":…}}}, the
+	-- cutoff both parts or neither. Its operation keys are memtree:<sha256>, a prefix no other request may use.
+	if p_actor ->> 'kind' = 'memtree' then
+		v_memtree := p_actor -> 'block';
+		if p_actor - array['kind','userId','block'] <> '{}'::jsonb
+			or coalesce(p_actor ->> 'userId', '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+			or jsonb_typeof(v_memtree) is distinct from 'object' then
+			raise exception 'Block-history request is invalid' using errcode = '22023'; end if;
+		if v_memtree - array['path','cutoffSeq','cutoffUnit','for'] <> '{}'::jsonb
+			or jsonb_typeof(v_memtree -> 'path') is distinct from 'string' or jsonb_typeof(v_memtree -> 'for') is distinct from 'object' then
+			raise exception 'Block-history request is invalid' using errcode = '22023'; end if;
+		if (v_memtree -> 'for') - array['table','id'] <> '{}'::jsonb
+			or coalesce(v_memtree -> 'for' ->> 'table', '') not in ('qorpera_memory_message_erases','qorpera_memory_step_erases')
+			or jsonb_typeof(v_memtree -> 'for' -> 'id') is distinct from 'string'
+			or (v_memtree -> 'for' ->> 'id') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+			or (v_memtree ->> 'cutoffSeq' is null) <> (v_memtree ->> 'cutoffUnit' is null) then
+			raise exception 'Block-history request is invalid' using errcode = '22023'; end if;
+		if v_memtree ->> 'cutoffSeq' is not null and (jsonb_typeof(v_memtree -> 'cutoffSeq') <> 'number'
+				or jsonb_typeof(v_memtree -> 'cutoffUnit') <> 'number' or (v_memtree ->> 'cutoffSeq') !~ '^[1-9][0-9]{0,17}$'
+				or (v_memtree ->> 'cutoffUnit') !~ '^[1-9][0-9]{0,8}$') then
+			raise exception 'Block-history request is invalid' using errcode = '22023'; end if;
+	elsif p_actor ->> 'kind' is distinct from 'member' or p_actor - array['kind','userId'] <> '{}'::jsonb
+		or coalesce(p_actor ->> 'userId', '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
+		raise exception 'Only a member erases' using errcode = '22023';
+	elsif p_operation_key like 'memtree:%' then
+		raise exception 'Operation key is reserved for block-history requests' using errcode = '22023';
+	end if;
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+	$old$	if jsonb_typeof(p_paths) is distinct from 'array' or jsonb_array_length(p_paths) not between 1 and 20 then
+$old$,
+	$new$	-- 20260930120000 (W1a): a block-history request names its block and every partner P18 named, with no limit.
+	if jsonb_typeof(p_paths) is distinct from 'array' or jsonb_array_length(p_paths) < 1
+		or (v_memtree is null and jsonb_array_length(p_paths) > 20) then
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+	$old$				and split_part(v_key, '/', 3) in ('', 'private') then
+$old$,
+	$new$				and split_part(v_key, '/', 3) in ('', 'private')
+				and v_memtree is null then -- 20260930120000 (W1a): not for the platform's block-history request
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+	$old$	select role into v_role from public.qorpera_profile_members where profile_id = v_profile and user_id = v_user;
+	if v_role is null or v_role not in ('owner','admin') then
+		raise exception 'Only owners and admins erase' using errcode = '42501'; end if;
+	v_digest := encode(extensions.digest(convert_to(jsonb_build_object('userId', v_user, 'roots', to_jsonb(v_keys))::text, 'utf8'),
+		'sha256'), 'hex');
+$old$,
+	$new$	-- 20260930120000 (W1a): a block-history request asks no role. Its key is fixed by the erase row and the block, and
+	-- its digest covers the block, its cutoff and the erase row, not the partners: a request the wrapper widened replays
+	-- as the first.
+	if v_memtree is null then
+		select role into v_role from public.qorpera_profile_members where profile_id = v_profile and user_id = v_user;
+		if v_role is null or v_role not in ('owner','admin') then
+			raise exception 'Only owners and admins erase' using errcode = '42501'; end if;
+		v_digest := encode(extensions.digest(convert_to(jsonb_build_object('userId', v_user, 'roots', to_jsonb(v_keys))::text, 'utf8'),
+			'sha256'), 'hex');
+	else
+		v_block_key := public.qorpera_folder_key(v_memtree ->> 'path');
+		if not v_spellings ? v_block_key then
+			raise exception 'Block-history request is invalid' using errcode = '22023'; end if;
+		if p_operation_key <> 'memtree:' || encode(extensions.digest(convert_to((v_memtree -> 'for' ->> 'table') || ':'
+				|| (v_memtree -> 'for' ->> 'id') || ':' || v_block_key, 'utf8'), 'sha256'), 'hex') then
+			raise exception 'Operation key does not match the block-history request' using errcode = '22023'; end if;
+		v_digest := encode(extensions.digest(convert_to(jsonb_build_object('block', v_block_key,
+			'cutoffSeq', (v_memtree ->> 'cutoffSeq')::bigint, 'cutoffUnit', (v_memtree ->> 'cutoffUnit')::integer,
+			'for', v_memtree -> 'for')::text, 'utf8'), 'sha256'), 'hex');
+	end if;
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+	$old$	v_role := public.qorpera_folder_mutator_role(v_profile, p_actor);
+$old$,
+	$new$	-- 20260930120000 (W1a): a block-history request erases with the platform's authority.
+	v_role := public.qorpera_folder_mutator_role(v_profile,
+		case when v_memtree is null then p_actor else '{"kind":"platform"}'::jsonb end);
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+	$old$		v_roots := v_roots || jsonb_build_array(public.qorpera_folder_erasure_cutoff(p_environment_id, v_key, v_as_of, v_as_of_at));
+$old$,
+	$new$		-- 20260930120000 (W1a): a block-history request's block is cut at the delete it names, whatever came after it
+		-- (its partners at their own cutoffs); with none named the block must not be live, and every life of it goes.
+		if v_key = v_block_key and v_memtree ->> 'cutoffSeq' is not null then
+			select c.created_at into v_cut_at from public.qorpera_folder_commits c
+			where c.environment_id = p_environment_id and c.seq = (v_memtree ->> 'cutoffSeq')::bigint;
+			if v_cut_at is null or (v_memtree ->> 'cutoffSeq')::bigint > v_as_of or not exists (select 1
+					from public.qorpera_folder_path_versions v join public.qorpera_folder_commits c on c.id = v.commit_id
+					where v.environment_id = p_environment_id and v.key_sha256 = extensions.digest(v_key, 'sha256')
+						and c.seq = (v_memtree ->> 'cutoffSeq')::bigint and v.unit_no = (v_memtree ->> 'cutoffUnit')::integer
+						and v.op = 'delete') then
+				raise exception 'Block-history cutoff is not the block''s delete' using errcode = '22023'; end if;
+			v_roots := v_roots || jsonb_build_array(jsonb_build_object('key', v_key, 'live', true,
+				'cutoffSeq', (v_memtree ->> 'cutoffSeq')::bigint, 'cutoffUnit', (v_memtree ->> 'cutoffUnit')::integer,
+				'cutoffAt', v_cut_at));
+		else
+			v_roots := v_roots || jsonb_build_array(public.qorpera_folder_erasure_cutoff(p_environment_id, v_key, v_as_of, v_as_of_at));
+			if v_key = v_block_key and (v_roots -> -1 ->> 'live')::boolean then
+				raise exception 'Block is live again' using errcode = '55000'; end if;
+		end if;
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+	$old$		if (v_root ->> 'live')::boolean and v_versions = 0 and v_conflict = 0 then
+$old$,
+	$new$		v_total := v_total + v_versions + v_conflict; -- 20260930120000 (W1a)
+		if v_memtree is null and (v_root ->> 'live')::boolean and v_versions = 0 and v_conflict = 0 then
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+	$old$	-- §2.4: an unrevoked path resource at or under a deleted root is revoked first (a live root's governs its current file).
+$old$,
+	$new$	-- 20260930120000 (W1a): a block-history request with nothing left to erase is accepted with no erasure, as asking
+	-- again erases nothing more. It is raised, so that what step 5 claimed rolls back; the wrapper answers its detail.
+	if v_memtree is not null and v_total = 0 then
+		raise exception 'Nothing to erase at the block' using errcode = '22023', detail = jsonb_build_object(
+			'schema', 'qorpera.folder-erasure/v1', 'kind', 'block-history', 'erasureId', null, 'asOfSeq', v_as_of,
+			'roots', v_counts, 'copies', '[]'::jsonb,
+			'for', (v_memtree -> 'for') || jsonb_build_object('path', v_memtree -> 'path'))::text;
+	end if;
+	-- §2.4: an unrevoked path resource at or under a deleted root is revoked first (a live root's governs its current file).
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+	$old$	if jsonb_array_length(v_added) > 0 or jsonb_array_length(v_live) > 0 then
+$old$,
+	$new$	-- 20260930120000 (W1a): a block-history request leaves a life that moved on to a live path alone (another tree's
+	-- block, §10 step 3 there), and its wrapper adds every partner named here and asks again.
+	if jsonb_array_length(v_added) > 0 or (v_memtree is null and jsonb_array_length(v_live) > 0) then
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+	$old$					limit 20) t),
+$old$,
+	$new$					limit case when v_memtree is null then 20 end) t), -- 20260930120000 (W1a)
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+	$old$		limit 20) t;
+$old$,
+	$new$		limit case when v_memtree is null then 20 end) t; -- 20260930120000 (W1a): a block-history request names every copy
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+	$old$		'roots', v_counts, 'copies', v_copies, 'erased', v_erased);
+$old$,
+	$new$		'roots', v_counts, 'copies', v_copies, 'erased', v_erased);
+	-- 20260930120000 (W1a): a block-history request's reply names what it was for, kept after done with its copies.
+	if v_memtree is not null then
+		v_reply := v_reply || jsonb_build_object('kind', 'block-history',
+			'for', (v_memtree -> 'for') || jsonb_build_object('path', v_memtree -> 'path'));
+	end if;
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+	$old$		requested_by_user_id, as_of_seq, as_of_at, roots, reply)
+$old$,
+	$new$		requested_by_user_id, as_of_seq, as_of_at, roots, reply, block_history) -- 20260930120000 (W1a)
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+	$old$		(select jsonb_agg(r - 'live') from jsonb_array_elements(v_roots) r), v_reply)
+$old$,
+	$new$		(select jsonb_agg(r - 'live') from jsonb_array_elements(v_roots) r), v_reply, v_memtree)
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+	$old$	where p.id = any(v_proposals) and c.run_id is not null
+$old$,
+	$new$	where p.id = any(v_proposals) and c.run_id is not null and v_memtree is null -- 20260930120000 (W1a): no run noted
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+	$old$		perform public.qorpera_folder_authority_journal(v_env, p_actor, true, v_changes);
+$old$,
+	$new$		perform public.qorpera_folder_authority_journal(v_env, case when v_memtree is null then p_actor
+			else '{"kind":"platform"}'::jsonb end, true, v_changes); -- 20260930120000 (W1a)
+$new$);
+
+-- 3. The drain: no run noted for a block-history request; its digest and copies kept after done ----------------------
+
+select pg_temp.w1a_replace('public.qorpera_folder_erasure_step(integer,integer,integer)'::regprocedure,
+	$old$		if v_erasure.phase = 1 then
+$old$,
+	$new$		-- 20260930120000 (W1a): a block-history request notes no run here or in phases 2 and 3: its run-log row reaches
+		-- only the steps that showed its blocks, never a whole run (RUNTIME-AGENT-MEMORY-TREE.md §10.1).
+		if v_erasure.phase = 1 then
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erasure_step(integer,integer,integer)'::regprocedure,
+	$old$			select distinct v_erasure.id, c.run_id from jsonb_array_elements(v_batch) b
+			join public.qorpera_folder_commits c on c.id = (b ->> 'commitId')::uuid where c.run_id is not null
+$old$,
+	$new$			select distinct v_erasure.id, c.run_id from jsonb_array_elements(v_batch) b
+			join public.qorpera_folder_commits c on c.id = (b ->> 'commitId')::uuid
+			where c.run_id is not null and v_erasure.block_history is null
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erasure_step(integer,integer,integer)'::regprocedure,
+	$old$			where w.run_id is not null
+$old$,
+	$new$			where w.run_id is not null and v_erasure.block_history is null
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erasure_step(integer,integer,integer)'::regprocedure,
+	$old$				select distinct v_erasure.id, c.run_id from jsonb_array_elements(v_copy_batch) b
+				join public.qorpera_folder_commits c on c.id = (b ->> 'commitId')::uuid where c.run_id is not null
+$old$,
+	$new$				select distinct v_erasure.id, c.run_id from jsonb_array_elements(v_copy_batch) b
+				join public.qorpera_folder_commits c on c.id = (b ->> 'commitId')::uuid
+				where c.run_id is not null and v_erasure.block_history is null
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erasure_step(integer,integer,integer)'::regprocedure,
+	$old$						where w.source_kind = 'company-file' and w.source_id = v_commit.id and w.run_id is not null
+$old$,
+	$new$						where w.source_kind = 'company-file' and w.source_id = v_commit.id and w.run_id is not null
+							and v_erasure.block_history is null
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erasure_step(integer,integer,integer)'::regprocedure,
+	$old$if v_commit.run_id is not null then
+$old$,
+	$new$if v_commit.run_id is not null and v_erasure.block_history is null then
+$new$, 2);
+select pg_temp.w1a_replace('public.qorpera_folder_erasure_step(integer,integer,integer)'::regprocedure,
+	$old$				where v_erasure.first_erased_at is not null and rr.environment_id = v_erasure.environment_id
+$old$,
+	$new$				where v_erasure.first_erased_at is not null and v_erasure.block_history is null
+					and rr.environment_id = v_erasure.environment_id
+$new$);
+select pg_temp.w1a_replace('public.qorpera_folder_erasure_step(integer,integer,integer)'::regprocedure,
+	$old$				roots = null, request_sha256 = null, cursor = '{}'::jsonb, agents = null, reply = reply - 'roots' - 'copies'
+$old$,
+	$new$				roots = null, cursor = '{}'::jsonb, agents = null,
+				-- 20260930120000 (W1a): a block-history request keeps its digest, its copies and what it was for, so a
+				-- carrier that asks again after done finds them (RUNTIME-AGENT-MEMORY-TREE.md §10 step 3).
+				request_sha256 = case when block_history is not null then request_sha256 end,
+				reply = case when block_history is null then reply - 'roots' - 'copies' else reply - 'roots' end
+$new$);
+
+-- 4. The wrapper: one block, its partners added as P18 names them ------------------------------------------------------
+
+-- p_block: {"path", "cutoffSeq", "cutoffUnit", "for": {"table", "id"}}; the key is memtree: and the hex SHA-256 of
+-- <table>:<id>:<the block's folded key>. Each call runs in the caller's transaction, at read committed. The answer is
+-- P18's reply (kind block-history, its for, every copy), or erasureId null when nothing is left to erase. P18's other
+-- refusals pass through: 55000 'Block is live again' (delete and rewrite the block first) or 'The company is being
+-- deleted', 22023, and the 409 to retry when the company folder changed while the erasure began.
+create function public.qorpera_folder_erase_block_history(p_environment_id uuid, p_user_id uuid, p_operation_key text,
+	p_block jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_paths jsonb := jsonb_build_array(p_block -> 'path'); v_add jsonb; v_message text; v_detail text;
+begin
+	if auth.role() is distinct from 'service_role' then
+		raise exception 'Folder core authority is required' using errcode = '42501'; end if;
+	loop
+		begin
+			return public.qorpera_folder_erase(p_environment_id,
+				jsonb_build_object('kind', 'memtree', 'userId', p_user_id, 'block', p_block), v_paths, p_operation_key);
+		exception when sqlstate '22023' then
+			get stacked diagnostics v_message = message_text, v_detail = pg_exception_detail;
+			if v_message = 'Nothing to erase at the block' then return v_detail::jsonb; end if;
+			if v_message <> 'This history continues at other paths' then raise; end if;
+			-- Each round adds at least one path, or the refusal stands: the loop ends.
+			select coalesce(jsonb_agg(a.value order by a.ordinality), '[]'::jsonb) into v_add
+			from jsonb_array_elements(v_detail::jsonb -> 'add') with ordinality a
+			where not v_paths @> jsonb_build_array(a.value);
+			if jsonb_array_length(v_add) = 0 then raise; end if;
+			v_paths := v_paths || v_add;
+		end;
+	end loop;
+end $$;
+revoke all on function public.qorpera_folder_erase_block_history(uuid, uuid, text, jsonb) from public, anon, authenticated;
+grant execute on function public.qorpera_folder_erase_block_history(uuid, uuid, text, jsonb) to service_role;
+
+-- Whether a request is past P18's versions phase (phase 1 deletes the versions and the conflict copies): true once
+-- done or in a later phase, and for no erasure (erasureId null: nothing was left to erase).
+create function public.qorpera_folder_erasure_past_versions(p_erasure_id uuid)
+returns boolean language sql stable security definer set search_path = '' as $$
+	select coalesce((select e.done_at is not null or e.phase > 1 from public.qorpera_folder_erasures e where e.id = p_erasure_id),
+		true)
+$$;
+revoke all on function public.qorpera_folder_erasure_past_versions(uuid) from public, anon, authenticated;
+grant execute on function public.qorpera_folder_erasure_past_versions(uuid) to service_role;
+
+-- 5. The deploy guard: every patched body carries the marker ----------------------------------------------------------
+
+do $guard$
+declare v_fn regprocedure;
+begin
+	foreach v_fn in array array['public.qorpera_folder_erase(uuid,jsonb,jsonb,text)',
+			'public.qorpera_folder_erasure_step(integer,integer,integer)']::regprocedure[] loop
+		if strpos((select prosrc from pg_proc where oid = v_fn), '20260930120000') = 0 then
+			raise exception 'W1a did not reach %', v_fn; end if;
+	end loop;
+end $guard$;
