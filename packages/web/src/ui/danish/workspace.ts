@@ -186,7 +186,6 @@ export const WORKSPACE: Record<string, string> = {
 	State: "Status",
 	"Handled by": "Håndteres af",
 	Direction: "Retning",
-	Routine: "Rutine",
 	"Last 7 days": "Seneste 7 dage",
 	New: "Ny",
 	Handled: "Håndteret",
