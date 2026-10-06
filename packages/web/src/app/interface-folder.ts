@@ -435,7 +435,9 @@ export class CompanyInterfaceFolder {
 		// A folder is listed again when something in it, under it or above it changed: a new agent's folder shows in
 		// `agents/` whether or not the feed names the folder itself.
 		await this.#readFolderSources((folder) =>
-			touched.some((changed) => changed === folder || changed.startsWith(`${folder}/`) || folder.startsWith(`${changed}/`)),
+			touched.some(
+				(changed) => changed === folder || changed.startsWith(`${folder}/`) || folder.startsWith(`${changed}/`),
+			),
 		);
 		this.#forget();
 	}

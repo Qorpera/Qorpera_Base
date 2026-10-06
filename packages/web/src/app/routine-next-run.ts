@@ -72,7 +72,12 @@ function zonedInstant(
 /** The UTC date `offset` days from a zone's calendar day, as year, month and day. */
 function dayAfter(local: { year: number; month: number; day: number }, offset: number) {
 	const date = new Date(Date.UTC(local.year, local.month - 1, local.day + offset));
-	return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate(), weekday: date.getUTCDay() };
+	return {
+		year: date.getUTCFullYear(),
+		month: date.getUTCMonth() + 1,
+		day: date.getUTCDate(),
+		weekday: date.getUTCDay(),
+	};
 }
 
 function nextWeekly(trigger: CloudRoutineWeeklyTrigger, after: number): number | undefined {

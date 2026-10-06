@@ -173,7 +173,8 @@ function walk(names: ReadonlySet<string>, view: FolderView): Walk {
 				take(list(folder.path, ["groups"]), "group");
 	if (names.has("connections")) take(list("connections", ["connections"]), "connection");
 	// A human task names its contact by id: its rows show the contact's name.
-	if (names.has("contacts") || names.has("human_tasks")) take(list("contacts", ["contacts", "human_tasks"]), "contact");
+	if (names.has("contacts") || names.has("human_tasks"))
+		take(list("contacts", ["contacts", "human_tasks"]), "contact");
 	if (names.has("human_tasks")) take(list("human-tasks", ["human_tasks"]), "human-task");
 	return { folders: [...folders.values()], takes: [...takes.values()], unlisted };
 }
@@ -337,11 +338,9 @@ export function folderSourceRows(
 		case "agents": {
 			const sections = files("sections")[0]?.file.sections ?? [];
 			const place = new Map<string, { section: string; index: number }>();
-			sections.forEach((section, at) =>
-				section.members.forEach((member, index) =>
-					place.set(member.id, { section: section.name, index: at * 10_000 + index }),
-				),
-			);
+			for (const [at, section] of sections.entries())
+				for (const [index, member] of section.members.entries())
+					place.set(member.id, { section: section.name, index: at * 10_000 + index });
 			const collator = new Intl.Collator(presentationLocale(), { numeric: true, sensitivity: "base" });
 			return files("agent")
 				.sort(
@@ -421,7 +420,9 @@ export function folderSourceRows(
 		case "contacts":
 			return files("contact")
 				.sort(byPath)
-				.map(({ path, file }) => row(source, path, { id: file.id, name: file.name, organization: file.organization }));
+				.map(({ path, file }) =>
+					row(source, path, { id: file.id, name: file.name, organization: file.organization }),
+				);
 		case "human_tasks": {
 			// A task for a contact names the contact's file by id; the row shows its name.
 			const contacts = new Map(
@@ -471,7 +472,11 @@ export function folderSourceRows(
 
 /** One plain sentence about a run, as the rest of the app says what an agent is doing: a run that needs a member reads
  * as the `waiting` source's rows do (`CompanyController.agentState`). */
-function activityLine(item: HostedStaffExecutionActivity, recovery: HostedRunRecovery | undefined, name: string): string {
+function activityLine(
+	item: HostedStaffExecutionActivity,
+	recovery: HostedRunRecovery | undefined,
+	name: string,
+): string {
 	if (item.activity === "needs_attention")
 		return item.jobStatus === "failed" && !recovery?.proposalId
 			? t("{name} has a run that did not finish", { name })
