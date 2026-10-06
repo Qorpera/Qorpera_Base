@@ -1259,8 +1259,8 @@ a typed handoff on the office desktop; the model never receives the password.
 
 > **Amended 2026-10-06 (not built yet).** A worker no longer starts blank: it
 > starts from its parent's head and views by reference, plus its bounded
-> dispatch. A worker that touched a folder shared with only some agents leaves
-> beside its todo only that it finished. See the
+> dispatch. Its report stays beside its todo as today, also when it touched a
+> folder shared with only some agents; then only its own log is narrow. See the
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
 > in section 19, items 6 and 7.
 
@@ -2272,7 +2272,10 @@ Company File, rather than chat or a machine disk, is what that brain operates.
 
 > **Amended 2026-10-06 (not built yet).** Order 3: writes to summary trees and
 > run logs wake no one (item 2). Order 5: a worker no longer starts blank; it
-> starts from its parent's head and views plus its dispatch (item 7). Order 6:
+> starts from its parent's head and views plus its dispatch (item 7). Its
+> completion still reaches the parent with its report, also when it touched a
+> folder shared with only some agents; then only its own log is narrow
+> (item 6). Order 6:
 > once the tree is on for every company, the monthly log, the notes and
 > `recall_memory` go, and every turn composes the head and the views instead
 > of the recent log slice (item 9). The items are those of the
@@ -4557,8 +4560,8 @@ amendment governs.
    - These tools act with the run's own folder view. A folder shared with only
      some agents is there for those agents' runs (4.3).
    - Amended 2026-10-06 (not built yet): a run log keeps such a step without
-     its text, reads, arguments or result, only their keyed hashes, so other
-     agents do not read them there
+     its text or reads, and with only keyed hashes of its arguments and
+     result, so other agents do not read them there
      ([summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees),
      item 6).
    - Each answer is an authorized read in the run's read set (27 September,
@@ -4598,8 +4601,8 @@ amendment governs.
      commands. Today compute item 4 lets any agent of the company use any
      running machine.
    - Amended 2026-10-06 (not built yet): every step on a machine that mounts
-     such a folder is kept in the run's log without its content, only as keyed
-     hashes
+     such a folder is kept in the run's log without its text or reads, and
+     with only keyed hashes of its arguments and result
      ([summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees),
      item 6).
 5. **Folder work runs offline.**
@@ -5079,8 +5082,8 @@ own texts below carries a note "Amended 2026-10-06" in place.
   the company reads. Only a send is still a message.
 - 9.1: "recent canonical transcript", and what every model request holds.
 - 9.2 and 9.3: what the developer message carries, and where the job specification goes.
-- Section 13 and Order 5 (section 19): what a worker starts from, and what a worker that touched a folder shared with
-  only some agents leaves beside its todo.
+- Section 13 and Order 5 (section 19): what a worker starts from, and that a worker which touched a folder shared with
+  only some agents keeps only its own log narrow.
 - 14.1, and the 2026-10-02 amendment "light threads", items 2 and 4: what a run log keeps of folders shared with only
   some agents, and who may open a run log.
 - 14.2: the Co-Founder's composed state.
@@ -5150,16 +5153,17 @@ own texts below carries a note "Amended 2026-10-06" in place.
    - **Folders shared with only some agents keep their rules** (W1, W2; 14.1; light threads, items 2 and 4). A run
      log holds nothing from such a folder.
      - A step is **narrow** when its arguments or result name a path outside the part of the folder shared with every
-       agent, when its reads include one, or when it runs on a machine that mounts such a folder. A dispatch step is
-       narrow when its worker had a narrow step, and so is a step whose input carries that worker's report.
+       agent, when its reads include one, or when it runs on a machine that mounts such a folder.
      - After a run's first narrow step, every later step of that run, and every step of a worker it dispatches after
        that step, is narrow too, since the agent's text and arguments may repeat what was read.
      - A narrow step keeps only its tool, its call id, its step number, its time, whether it finished, its
        `releases`, and hashes of its arguments and result. The hashes are keyed with a key that the platform holds
        and no agent, member or machine reads, so no one can confirm a guess with them. It keeps no `text` and no
        `reads`. Its line, and every summary line over it, names neither the path nor what it held.
-     - A worker with a narrow step leaves beside its todo (section 13) only that it finished. Its report reaches the
-       parent only in the parent's memory.
+     - A worker's report is, like a send, its deliberate output. A worker with a narrow step still leaves beside its
+       todo (section 13) what it leaves today: its outcome, its summary, its `needs` if it is blocked, and its
+       outputs. Only its own log keeps its narrow steps narrow. A run that reads the report, such as the parent's
+       completion continuation or the worker's `followup`, is narrow only by the rules above.
      - The run itself still sees its narrow steps in full while it runs: the host keeps them, and the folded lines
        over them, in memory for that run's own requests (item 3) and stores them nowhere else.
      - So a run with a narrow step cannot resume from its log (item 11). If it is cut off, it ends in review as
@@ -5173,14 +5177,14 @@ own texts below carries a note "Amended 2026-10-06" in place.
      keeps), §8 (zoom's grant check), §9 (who opens a run log) and §14, whose W1 and W2 proofs add tests for:
      - a narrow step stored with only the fields above, and no path or content in any line over it;
      - later steps, and a worker dispatched after a narrow step, kept the same way;
-     - a dispatch whose worker had a narrow step making the parent narrow, and that worker's todo keeping only that
-       it finished;
+     - a worker with a narrow step keeping its own log narrow while its report (outcome, summary, `needs`, outputs)
+       stays beside its todo, and the parent's completion continuation not made narrow by reading it;
      - argument and result hashes that a guess cannot confirm without the platform's key;
      - a `zoom` into a run log refused without the default grant;
      - a cut-off run with a narrow step ending in review, and one at its usage limit failing.
 7. **Workers** (W4; section 13). A worker no longer starts blank. It starts from its parent's head and views, by
    reference, exactly as the parent's run composed them, plus its bounded dispatch. It runs on its parent's payer. A
-   worker with a narrow step leaves beside its todo only that it finished, and makes its parent narrow (item 6).
+   worker with a narrow step keeps only its own log narrow; its report stays beside its todo as today (item 6).
 8. **The Co-Founder** (M4; 14.2). Its views include branches of every agent's thread. It still receives no copies of
    internal messages.
 9. **Memory** (M5; 5.4 and 15.1). Memory is the agent's head plus the conversation trees and run logs.
