@@ -1403,8 +1403,10 @@ export class FolderService {
 		written: ReadonlyMap<string, string>,
 		moved: ReadonlyMap<string, MovedVersion>,
 	): void {
+		// One per version named at a path: a file moved away and back brings its save's version along again, and the
+		// version it has now replaces the one it had when it left.
 		const alias = (path: string, made: string, live: string): void => {
-			const aliases = view.published.get(path) ?? [];
+			const aliases = (view.published.get(path) ?? []).filter((p) => p.made !== made);
 			aliases.push({ made, live });
 			if (aliases.length > SUPERSEDED_PER_PATH + 1) aliases.shift();
 			view.published.set(path, aliases);

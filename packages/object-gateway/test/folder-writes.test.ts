@@ -501,6 +501,24 @@ describe("writes through the mount", () => {
 		expect(core.entries.get("e.md")).toMatchObject({ fileSha256: hashOf("c two"), executable: true });
 	});
 
+	it("bases a save on the version a file has now when it moved away and back after its own save", async () => {
+		const { root, core, open } = await fixture();
+		core.seed([await storeFile(root, "a.md", "one", 1, BIG)]);
+		const view = await open();
+		const made = await save(view, "a.md", "one two", core.entries.get("a.md")!.version);
+		await view.rename({ from: "a.md", fromBase: made, to: "t.md", noReplace: false });
+		await view.publish();
+		// Back at a.md, the machine's version map holds the save's version there again, as it did before the move.
+		await view.rename({ from: "t.md", fromBase: core.entries.get("t.md")!.version, to: "a.md", noReplace: false });
+		await save(view, "a.md", "one two three", made);
+		const back = core.entries.get("a.md")!.version;
+		expect((await view.publish()).paths).toEqual([{ path: "a.md", outcome: "saved" }]);
+		expect(core.commits.at(-1)!.units).toEqual([
+			expect.objectContaining({ op: "write", path: "a.md", expectedVersion: back }),
+		]);
+		expect(core.entries.get("a.md")?.fileSha256).toBe(hashOf("one two three"));
+	});
+
 	it("keeps a conflicting save pending until the core holds it on the receipt, a platform mount's too", async () => {
 		// The platform may download any catalogued object, so only the receipt's own rows say a copy was kept.
 		const { root, core, service, open } = await fixture({ platform: true });
