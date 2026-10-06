@@ -380,6 +380,22 @@ A `needs_yes` member column holds who has something: a card's holder, or an area
   `offer` button or `table_write`. The offer is a request card for that member (16.2, as amended) and changes
   nothing in the file. When they say yes, the platform saves the change as them, and the save is allowed because the
   open offer names them. Not now, a dismissal or no answer changes nothing.
+- **Offers (proposed, built in I9c):**
+  - The platform keeps offers as its own records, not as 16.2 review cards. An offer names the table by its id (so
+    it follows a moved folder), the row's key, the column, who made it (`from`), the cell as they read it (`was`:
+    them, or empty) and the member it is offered to (`to`). It is open, accepted, declined, withdrawn or lapsed.
+  - Only a `needs_yes` member column is offered, and not an area's `supervisor`, which waits for consent records
+    (I9b). Both members must be allowed to write the table's rows (`[write]`, rule 5, and the folder). A cell holds
+    one open offer per member it is offered to; offering it again answers the open one.
+  - Accepting is the member's own save of that cell (rule 8's accept). After every save of the table's rows or
+    definition, the platform settles its open offers: a cell that now names `to` accepts the offer, a cell still as it
+    was keeps it open, and anything else lapses it (another value, the row gone, the column no longer a claim). So a
+    cell released and taken again has lost its offers. Deleting the table's folder lapses them; moving it keeps them.
+  - `to` may decline an open offer and `from` may withdraw it. A closed offer stays closed.
+  - Every member who may read the table sees its open offers, between members of the company. An offer to or from a
+    member who left is not listed, and is not closed for it.
+  - In a paused company no offer is made; declining, withdrawing and the list still work.
+  - Agents offer for their supervisor when supervision is built (I9b).
 - **Agents act for their supervisor** (§5.1):
   - an agent may take for its supervisor, release what its supervisor holds, and offer what its supervisor holds or
     what is empty;
@@ -626,7 +642,7 @@ parser's codes for (1), `structured_rule` with these codes for the rest.
        - **accept:** a member putting *self* where an open offer names that row key, that column and *self*; the
          offer's `was` equals the cell as stored; and, unless `was` is empty, the offer's `from` equals `was`.
 
-       Offers are request cards the platform keeps. Until they exist, accept never passes.
+       Offers are request cards the platform keeps (§5, built in I9c). An agent never accepts one.
 9. **`tables/areas/`** (`areas`):
    - its `table.toml` keeps `owner` (`member`, `needs_yes`), `supervisor` (`member`, `needs_yes`) and `agents`
      (`agents`), each `optional`, by name and type;
@@ -742,3 +758,12 @@ end). A rows file with rows that don't fit its definition is not written. Lookup
 and the folder reader reads the tables that board parts and lookups name. The Members page's People view draws its
 table; its `file:rules/shared-areas.md` block is not drawn, since this client draws no `text` blocks yet. Offers,
 answers on a board, and supervision (I9b) are not built.
+
+**Built: I9c, the offers' machinery** (`supabase/migrations/20260930105000_interface_offers.sql`, test 938). Offers are
+kept in `qorpera_interface_offers` (§5 "Offers"). Members make, decline, withdraw and list them with four calls
+(`supabase/CLIENT-CONTRACT.md`, "Offers of a claimed cell"). Each call holds the table's index row against commits
+(FOR SHARE, the lock a save takes for update), so it reads the files as the last commit left them. Rule 8 gains its
+accept. The save hook's apply settles a table's open offers after its rows or definition change, and lapses them when
+its folder is deleted. Removing the table's index row (erasure) removes its offers. The web (an Offer button and a
+drop onto a member's lane, Accept and Not now as `answer`, and offers in `waiting`) comes next. There is no race test
+of an offer against a save yet.

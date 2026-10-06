@@ -852,6 +852,38 @@ a write under `human-tasks/` waits for P31.
   the caller's own actor `{kind: "member", userId}`. For the object gateway's member commit route, which calls it
   with the member's token; clients don't call it.
 
+### Offers of a claimed cell (20260930105000_interface_offers)
+
+Folder-v2 companies only (Interfaces I9c; `deploy/first-node/RUNTIME-INTERFACES.md` §5 "Offers"). A member offers a
+`needs_yes` member cell of a table to another member. The offer changes nothing in the file: the member it names
+accepts by saving themselves into that cell with the member commit route, which the claim rule allows while the offer
+is open and the cell is as the offer read it. Each call answers 42501 for a caller who is not a member of a folder-v2
+company with that environment, and 55000 while the company is being deleted. An offer is
+`{id, table, folder, key, column, from, was, to, state, at, closedAt}`: `table` is the table's id, `folder` its folder
+now, `key` the row's typed key (a JSON array, as the client's table parse gives it), `from`, `was` and `to` user ids
+(`was` null for an empty cell), `state` `open`, `accepted`, `declined`, `withdrawn` or `lapsed`. A closed offer has
+`key` and `column` null.
+
+- `qorpera_offer_interface_cell(environment, {table, key, column, was, to})`: `was` is the cell as the caller read
+  it. Answers `{schema: "qorpera.interface-offer/v1", ok: true, created, offer}`; `created` is false when the same
+  cell is already offered to `to`, with that open offer. A refusal is `{schema, ok: false, reason, message}`, show the
+  message:
+  - `gone`: "This table is gone." or "This row is gone.";
+  - `column`: "Only a member column that needs a yes can be offered." (also an area's `supervisor`);
+  - `changed`: "That changed while you were looking." (the cell is not `was`);
+  - `not_yours`: "Only the member it names can offer it.";
+  - `member`: "Offer it to another member of the company.";
+  - `write`: "You or they may not change this table's rows.".
+  A request of another shape is 22023, and a paused company 55000.
+- `qorpera_decline_interface_offer(environment, offer)` (the member it names) and
+  `qorpera_withdraw_interface_offer(environment, offer)` (the member who made it): `{schema, ok: true, changed,
+  offer}`; `changed` is false when the offer was already closed, with the offer as it is. Anyone else gets 42501, an
+  unknown offer 22023. Both work in a paused company.
+- `qorpera_member_interface_offers(environment)`: `{schema: "qorpera.member-interface-offers/v1", offers,
+  truncated}`, the open offers on live tables the caller may read, between members of the company, newest first, at
+  most 500. Every member who reads the table sees its offers. Read it again after a folder change to the table and on
+  focus; an offer settles with the save that changes its cell.
+
 ## 3. Realtime
 
 Every private topic's policies on `realtime.messages` also require the row's
