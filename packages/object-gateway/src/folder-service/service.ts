@@ -1,6 +1,7 @@
+import { timingSafeEqual } from "node:crypto";
 import { CoreRefusal, type FeedCursor, type FolderActor, type FolderCore } from "./core.ts";
 import type { Grant, MountGrants } from "./mounts.ts";
-import { type NasObjects, ObjectIntegrityError } from "./objects.ts";
+import { type NasObjects, ObjectIntegrityError, ObjectUnavailableError } from "./objects.ts";
 import {
 	type BridgeInfo,
 	ErrorCode,
@@ -9,8 +10,10 @@ import {
 	MAX_PAYLOAD,
 	ProtocolError,
 	type ReadRequest,
+	type SearchRequest,
 	type WireEntry,
 } from "./protocol.ts";
+import { type SearchAnswer, searchView } from "./search.ts";
 import { type TreeEntry, ViewTree } from "./view-tree.ts";
 
 /** What a machine's feed connection is sent. */
@@ -48,11 +51,23 @@ const RESYNC_OVER = 5_000;
 const SUPERSEDED_PER_PATH = 16;
 /** The machine's folder program treats 45 s without a frame as a dead link. */
 const HEARTBEAT_MS = 15_000;
+/** A core view's lease is 120 s; it is renewed every 40 s while a machine is connected (C1b-3a). */
+const RENEW_MS = 40_000;
+const LEASE_MS = 120_000;
 
 class View {
 	readonly key: string;
 	readonly environmentId: string;
-	readonly actor: FolderActor;
+	/** An operator mount's actor; a core view's is built from its lease (`actor`), so no copy of its pass is kept. */
+	readonly #operator: FolderActor | undefined;
+	readonly passSha256: Buffer;
+	/** A core view's id and pass, for renewals; dropped when the view closes. */
+	lease: Grant["lease"];
+	/** Until when the core confirmed a core view's lease (ms). Past it, nothing is served until a renewal succeeds. */
+	leaseUntil: number | undefined;
+	/** The pass was checked: an operator mount's by its configured hash, a core view's by the core (first listing and
+	 * renewal). Until then another pass may replace the view; after, it is refused. */
+	confirmed: boolean;
 	tree: ViewTree | undefined;
 	seq = 0;
 	cursor: FeedCursor | null = null;
@@ -72,7 +87,23 @@ class View {
 	constructor(grant: Grant) {
 		this.key = grant.key;
 		this.environmentId = grant.environmentId;
-		this.actor = grant.actor;
+		this.#operator = grant.lease ? undefined : grant.actor;
+		this.passSha256 = grant.passSha256;
+		this.lease = grant.lease;
+		this.leaseUntil = undefined;
+		this.confirmed = grant.lease === undefined;
+	}
+
+	/** A core view (a run's own, opened by the core), closed or not; an operator mount's view is not. */
+	get core(): boolean {
+		return this.#operator === undefined;
+	}
+
+	/** Who the core reads as. A core view's actor carries its pass, so it exists only while the view does. */
+	get actor(): FolderActor {
+		if (this.#operator) return this.#operator;
+		if (!this.lease) throw new ProtocolError(ErrorCode.viewClosed, this.closed ?? "The view is closed");
+		return { kind: "view", viewId: this.lease.viewId, pass: this.lease.pass };
 	}
 }
 
@@ -81,6 +112,8 @@ export interface ViewHandle {
 	readonly asOfSeq: number;
 	list(path: string, after: string | undefined): Promise<{ entries: readonly WireEntry[]; next: string | null }>;
 	read(request: ReadRequest): Promise<Buffer>;
+	/** One page of a search over the view (F3 `company_search`). */
+	search(request: SearchRequest): Promise<SearchAnswer>;
 	subscribe(sink: FeedSink): void;
 	release(): void;
 }
@@ -98,8 +131,10 @@ export class FolderService {
 	readonly #log: (line: string) => void;
 	readonly #views = new Map<string, View>();
 	readonly #profiles = new Map<string, string>();
+	readonly #profileLookups = new Map<string, Promise<string>>();
 	#timer: ReturnType<typeof setInterval> | undefined;
 	#heartbeat: ReturnType<typeof setInterval> | undefined;
+	#renewals: ReturnType<typeof setInterval> | undefined;
 	#polling = false;
 
 	constructor(options: FolderServiceOptions) {
@@ -116,19 +151,72 @@ export class FolderService {
 	start(): void {
 		this.#timer ??= setInterval(() => void this.poll(), this.#pollMs);
 		this.#heartbeat ??= setInterval(() => this.heartbeat(), HEARTBEAT_MS);
+		this.#renewals ??= setInterval(() => void this.renewLeases(), RENEW_MS);
 	}
 
 	stop(): void {
 		if (this.#timer) clearInterval(this.#timer);
 		if (this.#heartbeat) clearInterval(this.#heartbeat);
+		if (this.#renewals) clearInterval(this.#renewals);
 		this.#timer = undefined;
 		this.#heartbeat = undefined;
+		this.#renewals = undefined;
+	}
+
+	/** Renews the lease of every core view a machine is connected to; a view the core closed is closed on every
+	 * connection. A view no machine holds is not renewed: its lease runs out, unless the core closed it first (a run's
+	 * end closes its run box). A renewal that cannot reach the core leaves the confirmed lease to run out: past it the
+	 * view is not served (UNAVAILABLE) until a renewal succeeds. Exposed for tests. */
+	async renewLeases(): Promise<void> {
+		await Promise.all(
+			[...this.#views.values()]
+				.filter((view) => view.lease && view.tree && view.connections > 0 && !view.closed)
+				.map(async (view) => {
+					try {
+						await this.#renew(view);
+					} catch (error) {
+						this.#log(`folder-service: ${view.key}: lease not renewed now: ${(error as Error).message}`);
+					}
+				}),
+		);
+	}
+
+	/** One renewal: the confirmed lease moves on, or the view closes. Throws when the core could not answer. */
+	async #renew(view: View): Promise<void> {
+		const lease = view.lease;
+		if (!lease) return;
+		let renewal: Awaited<ReturnType<FolderCore["renewView"]>>;
+		const asked = this.#now();
+		try {
+			renewal = await this.#core.renewView(lease.viewId, lease.pass);
+		} catch (error) {
+			if (error instanceof CoreRefusal && error.reason === "denied")
+				return this.#close(view, "The view was refused");
+			throw error;
+		}
+		if (renewal.state === "closed") return this.#close(view, `The view was ${renewal.reason}`);
+		// The core's clock says until when; never trust it for longer than one lease from now.
+		view.leaseUntil = Math.min(Date.parse(renewal.leaseUntil), asked + LEASE_MS);
+		view.confirmed = true;
 	}
 
 	/** Checks a machine's hello and opens (or joins) its view. The first connection of a view lists its tree. */
 	async open(hello: Hello, bridge: BridgeInfo): Promise<ViewHandle> {
 		const grant = this.#grants.admit(hello, bridge);
 		let view = this.#views.get(grant.key);
+		// Joining an open view takes the pass, and the company folder, it was opened with. A hello the core has not
+		// checked yet never locks out another: while it is being checked the other is asked to try again, and an
+		// unchecked view is replaced.
+		if (
+			view &&
+			!view.closed &&
+			(view.environmentId !== grant.environmentId || !timingSafeEqual(view.passSha256, grant.passSha256))
+		) {
+			if (view.confirmed)
+				throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
+			if (view.loading) throw new ProtocolError(ErrorCode.unavailable, "The view is being checked; try again");
+			view = undefined;
+		}
 		if (!view || view.closed) {
 			view = new View(grant);
 			this.#views.set(grant.key, view);
@@ -142,7 +230,16 @@ export class FolderService {
 			released = true;
 			if (mine) view.sinks.delete(mine);
 			view.connections--;
-			if (view.connections === 0) view.idleSince = this.#now();
+			if (view.connections > 0) return;
+			view.idleSince = this.#now();
+			// A core view no machine holds is dropped at once (with its pass): its lease is not renewed while idle, so
+			// a machine that comes back lists it again and renews at once.
+			if (view.lease && this.#views.get(view.key) === view) {
+				this.#views.delete(view.key);
+				view.lease = undefined;
+				view.closed = "No machine holds the view";
+				view.tree = undefined;
+			}
 		};
 		try {
 			view.loading ??= this.#firstLoad(view);
@@ -156,6 +253,7 @@ export class FolderService {
 			asOfSeq: view.seq,
 			list: async (path, after) => this.#list(view, path, after),
 			read: async (request) => this.#read(view, request),
+			search: async (request) => this.#search(view, request),
 			subscribe: (sink) => {
 				if (released || view.closed) return sink.closed(ErrorCode.viewClosed, view.closed ?? "Released");
 				mine = sink;
@@ -230,6 +328,8 @@ export class FolderService {
 	}
 
 	#failed(view: View, error: unknown): void {
+		// Work that was already running when the view closed or was dropped: nothing to retry.
+		if (view.closed) return;
 		if (error instanceof CoreRefusal && error.reason === "denied") {
 			this.#close(view, "The view's owner may no longer read this folder");
 			return;
@@ -242,6 +342,9 @@ export class FolderService {
 	#close(view: View, reason: string): void {
 		view.closed = reason;
 		view.tree = undefined;
+		// The pass goes with it: a closed view makes no more calls.
+		view.lease = undefined;
+		if (this.#views.get(view.key) === view) this.#views.delete(view.key);
 		for (const sink of view.sinks) sink.closed(ErrorCode.viewClosed, reason);
 		view.sinks.clear();
 		this.#log(`folder-service: ${view.key} closed: ${reason}`);
@@ -250,10 +353,14 @@ export class FolderService {
 	async #firstLoad(view: View): Promise<void> {
 		try {
 			const { tree, seq } = await this.#listAll(view);
+			// A core view is served only under a lease the core confirmed: renewed at once, whenever its machine came.
+			await this.#renew(view);
+			if (view.closed) return;
 			view.tree = tree;
 			view.seq = seq;
 			view.cursor = null;
 			view.loadedAt = this.#now();
+			view.confirmed = true;
 			this.#log(`folder-service: ${view.key} listed: ${tree.size} paths at change ${seq}`);
 		} catch (error) {
 			view.loading = undefined;
@@ -384,6 +491,8 @@ export class FolderService {
 	#tree(view: View): ViewTree {
 		if (view.closed) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
 		if (!view.tree) throw new ProtocolError(ErrorCode.unavailable, "The view is not listed yet");
+		if (view.lease && (view.leaseUntil === undefined || this.#now() >= view.leaseUntil))
+			throw new ProtocolError(ErrorCode.unavailable, "The view's lease is not confirmed now; try again");
 		return view.tree;
 	}
 
@@ -417,12 +526,53 @@ export class FolderService {
 		}
 	}
 
+	/** A search over the view's tree as it is now: the files' bytes as reads give them. A path that is not in the view
+	 * is NOT_FOUND; a share that cannot be read now fails the whole page (UNAVAILABLE), so no answer leaves a file out
+	 * without saying so. */
+	async #search(view: View, request: SearchRequest): Promise<SearchAnswer> {
+		// A run's own view only (a core view): an operator mount's machine never searches through this service. A core
+		// view the core closed answers VIEW_CLOSED (from the tree), so its run opens another.
+		if (!view.core) throw new ProtocolError(ErrorCode.badRequest, "Search is for a run's own view");
+		const tree = this.#tree(view);
+		if (!tree.get(request.path)) throw new ProtocolError(ErrorCode.notFound, "No such path");
+		try {
+			return await searchView(
+				{
+					tree,
+					read: async (entry, offset, length) =>
+						this.#objects.read(await this.#profile(view, entry), entry, offset, length),
+					now: this.#now,
+					// The view closed or its lease lapsed while the page ran: the page stops (never one slice past it).
+					serving: () => void this.#tree(view),
+					log: this.#log,
+				},
+				request,
+			);
+		} catch (error) {
+			if (error instanceof ProtocolError) throw error;
+			if (error instanceof CoreRefusal) throw new ProtocolError(ErrorCode.denied, "The core refused the read");
+			if (!(error instanceof ObjectUnavailableError))
+				this.#log(`folder-service: ${view.key}: search failed: ${(error as Error).message}`);
+			throw new ProtocolError(ErrorCode.unavailable, "The folder could not be searched now; try again");
+		}
+	}
+
 	/** The company's storage profile, learnt once through the core's download check of an object this view reads. */
 	async #profile(view: View, entry: TreeEntry): Promise<string> {
 		const known = this.#profiles.get(view.environmentId);
 		if (known) return known;
-		const profileId = await this.#core.objectProfile(view.environmentId, view.actor, entry.manifestSha256!);
-		this.#profiles.set(view.environmentId, profileId);
-		return profileId;
+		// One lookup at a time per company: a search's reads ahead all wait for the same one.
+		let pending = this.#profileLookups.get(view.environmentId);
+		if (!pending) {
+			pending = this.#core
+				.objectProfile(view.environmentId, view.actor, entry.manifestSha256!)
+				.then((profileId) => {
+					this.#profiles.set(view.environmentId, profileId);
+					return profileId;
+				})
+				.finally(() => this.#profileLookups.delete(view.environmentId));
+			this.#profileLookups.set(view.environmentId, pending);
+		}
+		return pending;
 	}
 }
