@@ -47,7 +47,6 @@ also against a forged entry, and an address stays tied to its company as long as
   qorpera-agent-plug.py elements                      (nft statements that fill the bridge rules for `up`)
   qorpera-agent-plug.py reconcile [--once]            (root)
   qorpera-agent-plug.py --parse-conntrack             (test: stdin conntrack -L lines; stdout: twins as JSON lines)
-  qorpera-agent-plug.py --set-keys ADDRESS            (test: stdin nft -j list set/map; stdout: the keys to delete)
 """
 
 import argparse
@@ -71,10 +70,8 @@ RESERVED = ipaddress.ip_network("10.210.0.0/24")
 BRIDGE = "qagent0"
 EXIT_TABLE = ("inet", "qorpera_agent_exit")
 BRIDGE_TABLE = ("bridge", "qorpera_agent_exit_bridge")
-# The exit's per-machine sets: a machine's counts and refused flows go with it, and its place in the brake (E7).
-EXIT_SETS = ("new_by_client", "refused_by_client", "open_by_client", "refusal_rate", "refused_flows", "refused_other",
-             "tried")
-EXIT_MAPS = ("braked",)
+# The exit's per-machine sets: a machine's counts and refused flows go with it.
+EXIT_SETS = ("new_by_client", "refused_by_client", "open_by_client", "refusal_rate", "refused_flows", "refused_other")
 # The exit's side of its uplink: in phase 1 the node masquerades it, so each agent connection has a twin on the node.
 UPLINK = "10.209.255.2"
 KINDS = ("machine", "coding", "office")
@@ -563,14 +560,10 @@ def parse_twins(text):
 
 
 def set_keys(text, address):
-    """The keys of an `nft -j list set` or `list map` answer that belong to this address (alone, or first in a
-    concatenation)."""
+    """The keys of an `nft -j list set` answer that belong to this address (alone, or first in a concatenation)."""
     keys = []
     for item in json.loads(text).get("nftables", []):
-        found = item.get("set") or item.get("map") or {}
-        for elem in found.get("elem", []) or []:
-            # A map's element is [key, value].
-            elem = elem[0] if "map" in item and isinstance(elem, list) and elem else elem
+        for elem in item.get("set", {}).get("elem", []) or []:
             value = elem.get("elem", {}).get("val") if isinstance(elem, dict) and "elem" in elem else elem
             parts = value.get("concat") if isinstance(value, dict) else [value]
             if parts and parts[0] == address:
@@ -669,10 +662,12 @@ class Reconciler:
             return
         family, table = EXIT_TABLE
         statements = []
-        for kind, name in [("set", name) for name in EXIT_SETS] + [("map", name) for name in EXIT_MAPS]:
-            listed = self.run(["ip", "netns", "exec", self.args.netns, "nft", "-j", "list", kind, family, table, name])
+        for name in EXIT_SETS:
+            listed = self.run(["ip", "netns", "exec", self.args.netns, "nft", "-j", "list", "set", family, table, name])
             if listed.returncode == 0:
-                statements += [f"delete element {family} {table} {name} {{ {key} }}"
+                # destroy, not delete: an element that times out between the listing and this batch is no error, so
+                # it cannot keep the others in place.
+                statements += [f"destroy element {family} {table} {name} {{ {key} }}"
                                for key in set_keys(listed.stdout, address)]
         if statements:
             result = subprocess.run(["ip", "netns", "exec", self.args.netns, "nft", "-f", "-"],
@@ -913,15 +908,10 @@ def main():
                                                     "systemctl reload qorpera-agent-exit-dns.service"))
     parser.add_argument("--flush-log")
     parser.add_argument("--parse-conntrack", action="store_true")
-    parser.add_argument("--set-keys", metavar="ADDRESS")
     args = parser.parse_args()
     if args.parse_conntrack:
         for twin in parse_twins(sys.stdin.read()):
             print(json.dumps(list(twin)))
-        return
-    if args.set_keys:
-        # Test only: the keys forget() deletes for ADDRESS from an `nft -j list set` or `list map` answer on stdin.
-        print(json.dumps(set_keys(sys.stdin.read(), args.set_keys)))
         return
     paths = Paths(args.state_dir, args.run_dir, args.log_dir)
     if args.command == "plug":

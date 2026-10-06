@@ -415,23 +415,6 @@ describe("the brake", { skip: pythonUsable ? false : "needs Python 3.11 or later
 		assert.deepEqual([stopped.share, stopped.braked, stopped.status.on, stopped.status.braked], [[], {}, false, []]);
 		assert.deepEqual(stopped.status.problems, ["QORPERA_AGENT_EXIT_BRAKE_NEW_10S='x' is not a whole number from 0 to 1000000000"]);
 	});
-
-	test("the agent plug takes an unplugged machine out of the braked map and its tried flows", () => {
-		const keys = (answer) => {
-			const r = spawnSync("python3", [plugTool, "--set-keys", "10.210.1.10"], { input: JSON.stringify(answer), encoding: "utf8" });
-			assert.equal(r.status, 0, r.stderr);
-			return JSON.parse(r.stdout);
-		};
-		const braked = [
-			[{ elem: { val: "10.210.1.10", timeout: 62, expires: 50 } }, 1234567],
-			["10.210.1.11", 1234567],
-		];
-		assert.deepEqual(keys({ nftables: [{ metainfo: { version: "1.1.6" } }, { map: { name: "braked", elem: braked } }] }), ["10.210.1.10"]);
-		const flow = (src) => ({ elem: { val: { concat: [src, "1.1.1.1", "tcp", 40000, 443] }, timeout: 180, expires: 170 } });
-		assert.deepEqual(keys({ nftables: [{ set: { name: "tried", elem: [flow("10.210.1.10"), flow("10.210.1.11")] } }] }), [
-			"10.210.1.10 . 1.1.1.1 . tcp . 40000 . 443",
-		]);
-	});
 });
 
 describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or later" }, () => {

@@ -277,11 +277,13 @@ log() {
 	has_ns || die "the exit is not up"
 	install -d -m 0750 "$log_dir"
 	install -d -m 0755 "$run_dir"
+	# The brake's levels go with "=": one that looks like an option is a bad level (verify says so), not a logger that
+	# cannot start.
 	exec python3 "$logger" --netns "$NS" --log-dir "$log_dir" --heartbeat "$run_dir/logger.heartbeat" \
 		--pause-file "$run_dir/logger.pause" --failing-file "$run_dir/logger.failing" --cap-bytes "$log_cap" \
 		--floor-percent "$log_floor" --state-dir "$state_dir" --brake-status "$run_dir/brake.json" \
-		--brake-new-10s "$brake_new" --brake-failed-60s "$brake_failed" --brake-slow-10s "$brake_slow" \
-		--brake-minutes "$brake_minutes"
+		--brake-new-10s="$brake_new" --brake-failed-60s="$brake_failed" --brake-slow-10s="$brake_slow" \
+		--brake-minutes="$brake_minutes"
 }
 
 logs() {

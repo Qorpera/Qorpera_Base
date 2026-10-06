@@ -905,13 +905,16 @@ grep -Eq '10\.210\.1\.26 [^,}]*: (0x)?[0-9a-f]+' "$work/status.out" ||
 grep -q '"company": "cB"' "$work/status.out" || fail "status does not show the brake: $(cat "$work/status.out")"
 pass "past its share a braked company's new connections are dropped, each once however often resent, and hold the brake"
 pass "another company's machine is not braked; the exit stays healthy and status shows the brake"
-# Unplugged, the machine leaves the braked map and the flows it tried (the plug forgets it; the guard follows within
-# its 10 seconds); its company stays braked.
+# Unplugged, the machine's counts go with it (the plug destroys its elements: one already gone is no error), and it
+# leaves the braked map once the guard reads the entries again (within its 10 seconds); its company stays braked. Its
+# tried flows time out on their own, long before its address is given out again.
+ip netns exec qexit nft destroy element inet qorpera_agent_exit new_by_client '{ 10.210.9.9 }' ||
+	fail "destroying an element that is not there is an error here"
 python3 "$work/fixture.py" "$work/lxd.json" "$AGENT"
 wait_for "client_history | grep -q '\"address\":\"10.210.1.26\",\"company\":\"cB\",\"event\":\"unplugged\"'"
 grep -q "cannot clear 10.210.1.26" "$work/plug.out" && fail "plug: $(grep "cannot clear" "$work/plug.out")"
-ip netns exec qexit nft list set inet qorpera_agent_exit tried | grep -q "10.210.1.26 " &&
-	fail "the unplugged machine's tried flows stayed: $(ip netns exec qexit nft list set inet qorpera_agent_exit tried)"
+new_left=$(ip netns exec qexit nft list set inet qorpera_agent_exit new_by_client)
+grep -q '10\.210\.1\.26 ' <<<"$new_left" && fail "the unplugged machine's counts stayed: $new_left"
 for _ in $(seq 1 125); do rules_are dropped "r['machines'] == {}" && break; sleep 0.2; done
 rules_are dropped "r['machines'] == {}" ||
 	fail "an unplugged machine stayed braked: $(ip netns exec qexit nft list map inet qorpera_agent_exit braked)"
@@ -920,7 +923,7 @@ sleep 3
 rules_are dropped "r['machines'] == {}" || fail "the guard braked an unplugged machine again"
 ip link del bv0
 ip netns del braked
-pass "an unplugged machine leaves the braked map and its tried flows; its company stays braked"
+pass "an unplugged machine's counts go with it and it leaves the braked map; its company stays braked"
 # Without levels, a new logger ends the brake it kept (its status file) at once, and says what it dropped.
 kill "$logger_pid"
 wait "$logger_pid" 2>/dev/null || true
@@ -944,6 +947,18 @@ bash "$tool" verify 2>"$work/verify-brake.err" && fail "verify passed with a sha
 grep -q "the brake: QORPERA_AGENT_EXIT_BRAKE_SLOW_10S=5 is not under QORPERA_AGENT_EXIT_BRAKE_NEW_10S=5" \
 	"$work/verify-brake.err" || fail "verify: $(cat "$work/verify-brake.err")"
 rules_are dropped "r['share'] == []" || fail "the brake is on with a level that cannot be meant"
+# A level that looks like an option is a bad level too, not an argument the logger cannot start with.
+kill "$logger_pid"
+wait "$logger_pid" 2>/dev/null || true
+rm "$brake"
+QORPERA_AGENT_EXIT_BRAKE_NEW_10S=5 QORPERA_AGENT_EXIT_BRAKE_MINUTES=--5 bash "$tool" log >>"$work/log.out" 2>&1 &
+logger_pid=$!
+pids+=($!)
+wait_for "test -e $brake"
+bash "$tool" verify 2>"$work/verify-brake.err" && fail "verify passed with a level that looks like an option"
+grep -q "the brake: QORPERA_AGENT_EXIT_BRAKE_MINUTES='--5' is not a whole number from 1 to 1440" \
+	"$work/verify-brake.err" || fail "verify: $(cat "$work/verify-brake.err")"
+rules_are dropped "r['share'] == []" || fail "the brake is on with a level that looks like an option"
 kill "$logger_pid"
 wait "$logger_pid" 2>/dev/null || true
 bash "$tool" log >>"$work/log.out" 2>&1 &

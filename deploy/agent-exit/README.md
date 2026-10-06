@@ -439,9 +439,9 @@ How it is kept:
 - Each map element ends with its brake (its own timeout), so a brake ends on time also while the logger is down.
 - A reload of the rules (`up`) empties the map, and the guard fills it again within 2 seconds. A logger restart keeps
   the brakes that were running (from its status file); with the levels removed, it ends them at once.
-- An unplug takes the machine out of the map and its dropped flows out of `tried`, with its other per-machine sets.
-  The guard may put it back until it reads the entries again (up to about 12 seconds); the address is in quarantine
-  for 15 minutes meanwhile.
+- An unplugged machine leaves the map when the guard reads the entries again (within about 12 seconds), and its
+  dropped flows leave `tried` as they time out (3 minutes); its address is in quarantine for 15 minutes meanwhile. The
+  plug clears its other per-machine sets at once, as before; an element that times out meanwhile is no error.
 - `/run/qorpera-agent-exit/brake.json`, every 2 seconds: `on`, `levels`, `braked` (per company: its number, since,
   until, the reason, the connections dropped, its machines) and `problems`. `verify` fails when it is missing ("the
   brake not running"), older than 30 seconds, or names a problem (a bad level, rules the guard cannot read or write).
@@ -479,9 +479,8 @@ reconciler against a stand-in for LXD (attribution only after a match, a forged 
 removed by hand, plugs never created, unusable entries and links never followed, the bridge sets, the twins it finds).
 Then the brake on a stand-in for the exit's rules: the levels (off until set, and any problem turns it off), the
 braked map, the share chain and the counted sets as `nft -j` lists them, a company braked past either level, longer
-while it goes on (its dropped connections counted once) and let go after, a failed read or write and a restart that
-keeps the brake, and the plug taking an unplugged machine out of the map and `tried`; and the counts and the report
-with the brake's lines.
+while it goes on (its dropped connections counted once) and let go after, and a failed read or write and a restart
+that keep the brake; and the counts and the report with the brake's lines.
 On Linux with Docker it runs `test/proof.sh` in a privileged container with no network of its own (`ubuntu:26.04`
 with the packages above, built once and cached). The proof never leaves the container's namespaces and never unloads
 a kernel module (the kernel loads nftables' own on demand).
@@ -519,9 +518,10 @@ on the tailnet. It checks:
   company's machine past the level braked (a `braked` line, the machine in the map with its company's number), then
   of 10 new connections at once only 2 through and the rest dropped, each counted once however often resent, a
   dropped one let through on a later resend and counted in `resent`, the brake held longer, the agent machine's
-  company never braked and `verify` healthy throughout; an unplug taking the machine out of the map and `tried` for
-  good; a restart without levels ending the brake at once (an `unbraked` line with what it dropped); and a share as
-  large as its level leaving the brake off and `verify` failing;
+  company never braked and `verify` healthy throughout; an unplug taking the machine's counts with it (destroying an
+  element that is already gone is no error) and the machine out of the map for good, its company still braked; a
+  restart without levels ending the brake at once (an `unbraked` line with what it dropped); and a share as large as
+  its level, or a level that looks like an option, leaving the brake off and `verify` failing;
 - an interrupted rebuild: the logger leaves the old namespace by itself, and `verify` fails until DNS follows;
 - that `down` refuses with a machine plugged in, or only in the client map, and changes nothing; that with the
   exit's namespace gone the machine has no internet and no names; and that with nothing plugged in `down` removes
