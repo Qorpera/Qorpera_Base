@@ -22,20 +22,23 @@ declare b jsonb := pg_temp.open('run_box', '{}', pg_temp.run('human', '63200000-
 	v public.qorpera_folder_views%rowtype; t timestamptz := clock_timestamp() - interval '3 seconds';
 begin
 	r := public.qorpera_folder_view_renew((b ->> 'viewId')::uuid, b ->> 'pass', t);
-	if r ->> 'schema' <> 'qorpera.folder-view-renew/v1' or r ->> 'state' <> 'open' or r ->> 'kind' <> 'run_box'
-		or not r ? 'machineId' or jsonb_typeof(r -> 'machineId') <> 'null' or r ->> 'leaseUntil' is null then
+	-- Every check here is null-safe (`is distinct from`): a missing or null field fails it.
+	if r ->> 'schema' is distinct from 'qorpera.folder-view-renew/v1' or r ->> 'state' is distinct from 'open'
+		or r ->> 'kind' is distinct from 'run_box' or jsonb_typeof(r -> 'machineId') is distinct from 'null'
+		or r ->> 'leaseUntil' is null then
 		raise exception 'Run box renewal: %', r; end if;
 	if (select count(*) from jsonb_object_keys(r)) <> 5 then raise exception 'Run box renewal fields: %', r; end if;
 	select * into v from public.qorpera_folder_views where id = (b ->> 'viewId')::uuid;
-	if v.unsaved_since is distinct from t or v.lease_until <> (r ->> 'leaseUntil')::timestamptz then
+	if v.unsaved_since is distinct from t or v.lease_until is distinct from (r ->> 'leaseUntil')::timestamptz then
 		raise exception 'Run box renewal sets: %', to_jsonb(v); end if;
 	r := public.qorpera_folder_view_renew((b ->> 'viewId')::uuid, b ->> 'pass');
-	if r ->> 'kind' <> 'run_box' or (select unsaved_since from public.qorpera_folder_views where id = (b ->> 'viewId')::uuid) is not null then
+	if r ->> 'kind' is distinct from 'run_box'
+		or (select unsaved_since from public.qorpera_folder_views where id = (b ->> 'viewId')::uuid) is not null then
 		raise exception 'Run box renewal without unsaved changes: %', r; end if;
 	-- Closed: the answer is as it was, with no kind or machine.
 	perform public.qorpera_folder_view_close((b ->> 'viewId')::uuid, b ->> 'pass');
 	r := public.qorpera_folder_view_renew((b ->> 'viewId')::uuid, b ->> 'pass');
-	if r <> jsonb_build_object('schema','qorpera.folder-view-renew/v1','state','closed','reason','closed') then
+	if r is distinct from jsonb_build_object('schema','qorpera.folder-view-renew/v1','state','closed','reason','closed') then
 		raise exception 'Closed renewal: %', r; end if;
 end $$;
 
@@ -47,21 +50,25 @@ begin
 	perform pg_temp.hold(v);
 	d := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4','holderRunId',v ->> 'runId'));
 	r := public.qorpera_folder_view_renew((d ->> 'viewId')::uuid, d ->> 'pass');
-	if r ->> 'state' <> 'open' or r ->> 'kind' <> 'computer_desktop' or r ->> 'machineId' <> '63900000-0000-4000-8000-0000000000e1' then
+	if r ->> 'state' is distinct from 'open' or r ->> 'kind' is distinct from 'computer_desktop'
+		or r ->> 'machineId' is distinct from '63900000-0000-4000-8000-0000000000e1' then
 		raise exception 'Run-held desktop renewal: %', r; end if;
 	perform pg_temp.hold(null, '63200000-0000-4000-8000-000000000001');
 	m := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4',
 		'holderUserId','63200000-0000-4000-8000-000000000001'));
 	r := public.qorpera_folder_view_renew((m ->> 'viewId')::uuid, m ->> 'pass');
-	if r ->> 'state' <> 'open' or r ->> 'kind' <> 'computer_desktop' or r ->> 'machineId' <> '63900000-0000-4000-8000-0000000000e1' then
+	if r ->> 'state' is distinct from 'open' or r ->> 'kind' is distinct from 'computer_desktop'
+		or r ->> 'machineId' is distinct from '63900000-0000-4000-8000-0000000000e1' then
 		raise exception 'Member-held desktop renewal: %', r; end if;
 	-- The member's view superseded the run's.
 	r := public.qorpera_folder_view_renew((d ->> 'viewId')::uuid, d ->> 'pass');
-	if r ->> 'state' <> 'closed' or r ? 'kind' or r ? 'machineId' then raise exception 'Superseded desktop renewal: %', r; end if;
+	if r ->> 'state' is distinct from 'closed' or r ? 'kind' or r ? 'machineId' then
+		raise exception 'Superseded desktop renewal: %', r; end if;
 	perform pg_temp.fx('update public.qorpera_runtime_office_activations set superseded_at = clock_timestamp()
 		where activation_id = ''63900000-0000-4000-8000-0000000000e3''');
 	r := public.qorpera_folder_view_renew((m ->> 'viewId')::uuid, m ->> 'pass');
-	if r ->> 'state' <> 'closed' or r ? 'kind' or r ? 'machineId' then raise exception 'Desktop renewal after its activation: %', r; end if;
+	if r ->> 'state' is distinct from 'closed' or r ? 'kind' or r ? 'machineId' then
+		raise exception 'Desktop renewal after its activation: %', r; end if;
 	raise exception 'Undo' using errcode = 'QTF80';
 exception when sqlstate 'QTF80' then null;
 end $$;
@@ -94,7 +101,8 @@ begin
 	set local session_replication_role = origin;
 	cv := pg_temp.open('coding_session', jsonb_build_object('workerId', w, 'attachmentToken', tok));
 	r := public.qorpera_folder_view_renew((cv ->> 'viewId')::uuid, cv ->> 'pass');
-	if r ->> 'state' <> 'open' or r ->> 'kind' <> 'coding_session' or r ->> 'machineId' <> cm::text then
+	if r ->> 'state' is distinct from 'open' or r ->> 'kind' is distinct from 'coding_session'
+		or r ->> 'machineId' is distinct from cm::text then
 		raise exception 'Coding session renewal: %', r; end if;
 	raise exception 'Undo' using errcode = 'QTF80';
 exception when sqlstate 'QTF80' then null;
