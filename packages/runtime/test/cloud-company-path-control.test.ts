@@ -245,6 +245,28 @@ describe("Company File bounded control transport", () => {
 		expect(transport).toHaveBeenCalledTimes(1);
 	});
 
+	it("leaves the one-call fence's attempt to the run's retry, where every other call stops at 3 s (6 Oct 2026)", async () => {
+		vi.useFakeTimers();
+		let answer: (response: Response) => void = () => undefined;
+		const transport = vi.fn<typeof fetch>(async (input) =>
+			String(input).endsWith("/qorpera_fence_native_context")
+				? new Promise<Response>((resolve) => {
+						answer = resolve;
+					})
+				: new Promise<Response>(() => undefined),
+		);
+		const control = fixture(transport);
+		const fenced = control.call("qorpera_fence_native_context", {}, new AbortController().signal);
+		const read = control.call("qorpera_assert_company_path_reads", {}, new AbortController().signal);
+		const readRejected = expect(read).rejects.toThrow("unavailable");
+		// The run cuts the fence's attempt at 10 s at first and gives the next twice as long: 12 s here is not a cut.
+		await vi.advanceTimersByTimeAsync(12_000);
+		await readRejected;
+		vi.useRealTimers();
+		answer(Response.json({ kept: [] }));
+		await expect(fenced).resolves.toEqual({ kept: [] });
+	});
+
 	it("bounds responses and never interprets malformed errors as permission to retry", async () => {
 		for (const response of [
 			new Response("bad JSON", { status: 409 }),

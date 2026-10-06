@@ -37,6 +37,7 @@ import {
 } from "./cloud-company-path-refusal.ts";
 import type { CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
 import {
+	CLOUD_TOOL_REQUEST_MAX_MS,
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
 	cloudToolRequest,
@@ -343,11 +344,13 @@ export class CloudCompanyPathGateway {
 		argumentsValue: Record<string, unknown>,
 		signal: AbortSignal,
 		initialAdmission = false,
+		timeoutMs?: number,
 	): Promise<unknown> {
 		try {
 			return await cloudToolRequest(
 				(requestSignal) => this.#control.call(method, argumentsValue, requestSignal),
 				signal,
+				timeoutMs,
 			);
 		} catch (error) {
 			if (initialAdmission && error instanceof CloudCompanyPathRpcRefusal && !signal.aborted)
@@ -497,10 +500,13 @@ export class CloudCompanyPathGateway {
 		const paths = [...this.#unconfirmed];
 		let value: unknown;
 		try {
+			// The run's retry decides how long each attempt waits (CloudNativeToolRun.assertActiveWith).
 			value = await this.#call(
 				"qorpera_fence_native_context",
 				{ ...this.#bound(), p_paths: paths, p_view: view },
 				signal,
+				false,
+				CLOUD_TOOL_REQUEST_MAX_MS,
 			);
 		} catch (error) {
 			// Nothing ran: PostgREST found no such function.

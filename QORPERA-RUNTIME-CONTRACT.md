@@ -4119,6 +4119,16 @@ immediately before an effect, and section 9.1's context views, are unchanged.
    run with nothing released, as a lapsed fence did before. The database may
    still finish the call after the host has given up, so a view can be
    recorded for a request that never left.
+
+   > **Amended 2026-10-05** (control calls, part 2; the doubling 2026-10-06).
+   > There is no 3.5 s or 4 s budget, and a timeout no longer stops the run: no
+   > stopwatch ends a model request's fence. A lost or late answer is asked
+   > again for as long as the run's authority holds, which the run's own
+   > refresh keeps renewing. The first attempt waits 10 s, and each attempt cut
+   > at its deadline gives the next twice as long. Lost authority, a refusal or
+   > a stop still end the run with nothing released. Codex waits for the host's
+   > answer, with a 10-minute backstop against a host that is alive but hung.
+   > The last sentence of this item still holds.
 4. **Until the database has the call** the host makes the separate calls, all
    of them.
 

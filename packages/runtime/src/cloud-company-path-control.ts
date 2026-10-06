@@ -11,7 +11,7 @@ import {
 	CloudCompanyPathRpcRefusal,
 } from "./cloud-company-path-refusal.ts";
 import { CloudControlRpcRefused, cloudControlRefusalCode, cloudPostgrestError } from "./cloud-control-errors.ts";
-import { CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS, cloudToolRequest } from "./cloud-native-tool-authority.ts";
+import { CLOUD_TOOL_REQUEST_MAX_MS, cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 
 const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
@@ -293,9 +293,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 				return value;
 			},
 			signal,
-			// The one-call fence carries what four calls did before a model request: one attempt, asked again while the
-			// run's authority holds.
-			method === "qorpera_fence_native_context" ? CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS : 3000,
+			// The one-call fence carries what four calls did before a model request. The run's retry decides how long
+			// each attempt waits: 10 s at first, twice as long after one is cut (CloudNativeToolRun.assertActiveWith).
+			method === "qorpera_fence_native_context" ? CLOUD_TOOL_REQUEST_MAX_MS : 3000,
 		);
 	}
 }
