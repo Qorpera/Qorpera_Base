@@ -599,24 +599,22 @@ deletes a tree or log block, rewrites it, and asks P18 to erase the block's earl
     history is being erased; ask again` while it runs. So step 3 is never refused for good;
   - with none, every life of it goes. A live block is refused (55000 `Block is live again`), and so is one renamed
     to a live path since step 1 (`qorpera_folder_erasure_moved_live`: the key's newest row is a move whose chain of
-    renames ends at a live path, each life begun with its move). That live block is the block restored, or another
-    tree's block at a name reused since the delete (an agent's handle is free again once its folder is deleted). P18
-    cannot tell them apart, so the detail names what the carrier needs: `{"live": <the live path>, "life": {seq,
-    unit}, "delete": {seq, unit} or null}`, the key's newest life's start and the newest delete at the key before it
-    (`qorpera_folder_erasure_live_again`). On 55000 `Block is live again` (not 55000 `The company is being deleted`,
-    which has no detail) the carrier first runs step 1 again from the owner's row: wherever its own tree is live again
-    (this block restored, or restored and renamed), those blocks are deleted and rewritten as in step 2, each with its
-    own request and cutoff, and a request that moves follow reaches the lives left at the old names. Then, for another
-    tree's block at the named path (its `tree.toml` names another conversation), the carrier asks again with that
-    delete as its cutoff and that life, which erases the old lives and keeps the new one. With `delete` null, the
+    renames ends at a live path, each life begun with its move). That live block is a life begun after a delete: the
+    tree built again by the conversation's next run (a member's restore leaves out every path under a tree root, so it
+    never brings the old block back: contract, 2026-10-06 amendment, item 2), or another tree's block at a name reused
+    since (an agent's handle is free again once its folder is deleted). The detail names what the carrier needs:
+    `{"live": <the live path>, "life": {seq, unit}, "delete": {seq, unit} or null}`, the key's newest life's start and
+    the newest delete at the key before it (`qorpera_folder_erasure_live_again`). 55000 `The company is being deleted`
+    has no detail and is not this refusal. The carrier asks again with that delete as its cutoff and that life, which
+    erases the old lives and keeps the new one (`RUNTIME-AGENT-MEMORY-TREE.md` §10 step 3). With `delete` null, the
     erasure that took the delete took every version before it and is past its versions phase: nothing of the block is
     left at that name, and the request is done with nothing left. While an erasure over the key is still in its
-    versions phase and no delete is left, the request is asked again (55006) instead, so a null `delete` always means
-    that. So this refusal is not for good either;
+    versions phase and no delete is left, this refusal and the next are asked again (55006) instead
+    (`qorpera_folder_erasure_refuse_live_again`), so a null `delete` always means that. So this refusal is not for
+    good either;
   - a cutoff request that names a life is refused the same way, under the path lock, when the key has had a newer life
-    since (the other tree's block deleted and this one restored between the carrier's `tree.toml` read and its
-    request): the detail names the newest life, and the carrier goes round again. With `live` null (that life ended,
-    and nothing is live at the key or renamed from it) the carrier asks with no cutoff, and every life goes;
+    since the detail it came from (that life deleted and a new one begun in between): the detail names the newest
+    life, and the carrier goes round again;
   - in a request with a cutoff, or for an older life, a life that moved on to a live path is another block: left
     alone, not refused;
   - no limit of 20 paths, and every copy is named;
@@ -631,7 +629,8 @@ a write, a commit not yet made and another path's delete; a delete erased by a l
 while it runs, nothing left once it is done) and by a member's erasure; partners through a renamed folder, for a
 contributor; 22 paths through 21 renames, added in one round; a life moved on to a live path (a member's request is
 refused with it); 22 copies kept after done; no cutoff (every life, a member who left, a live block refused, a block
-restored and renamed once and twice refused, the detail's live path, life and delete, a reused name kept and renamed
-asked again with that delete and its new life kept, a named life ended since refused and then, with no live path,
-asked with no cutoff, an older life moved on left alone); another member's private path; a
-run's commit noted by a member's erasure and not by the block's; grants.
+written again and renamed once and twice refused, the detail's live path, life and delete, a reused name kept and
+renamed asked again with that delete and its new life kept, a named life ended since refused and then, with no live
+path, asked with no cutoff, a null delete asked again (55006) while a member's erasure is in its versions phase, with
+no cutoff and with a life ended since, an older life moved on left alone); another member's private path; a run's
+commit noted by a member's erasure and not by the block's; grants.
