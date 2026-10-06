@@ -196,6 +196,13 @@ it("gives the dispatch to every database client the host builds, and to its serv
 	expect(main).toMatch(/new HttpCloudCompanyPathControl\(\{[^}]*fetch: dispatch\.fetch[^}]*\}\)/);
 	expect(main).toMatch(/new HttpCloudCodingControl\(\{[^}]*fetch: dispatch\.fetch[^}]*\}\)/);
 	expect(main).toMatch(/new HttpCloudCompanyComputerRegistry\(\{[^}]*fetch: dispatch\.fetch[^}]*\}\)/);
+	// G2-4: the capsule store signs through the dispatch, and the presence client has the publishable key and the
+	// holder's transport, never the service key.
+	expect(main).toMatch(/new SupabaseNativeCredentialCapsuleStore\(baseUrl, dispatch\.fetch\)/);
+	expect(main).toMatch(
+		/createClient\(baseUrl, publishableKey, \{[\s\S]*?realtime: \{ transport: nativeHostRealtimeTransport\(dispatch\) \}/,
+	);
+	expect(main).not.toMatch(/createClient\(baseUrl, serviceKey/);
 	expect(main).toMatch(/new NativeHostDispatch\(\{ supabaseUrl: baseUrl, serviceKey, identity \}\)/);
 	expect(main).not.toContain("QORPERA_NATIVE_HOST_DISPATCH");
 	expect(main).toMatch(/environment\.QORPERA_NATIVE_PROVIDER_TRUSTED_SOURCE,\s*dispatch,\s*\)/);

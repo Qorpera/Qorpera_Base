@@ -290,9 +290,10 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	if ((masterKey !== undefined && !TOKEN_PATTERN.test(masterKey)) || !TOKEN_PATTERN.test(bridgeToken)) {
 		throw new Error("Native provider credentials must contain 32 base64url bytes");
 	}
-	// G2-3: the host's database calls go through its credentials, never the service key: a call inside a job through
-	// qorpera_native_host_call with that job's lease token, a call between jobs through qorpera_native_identity_call
-	// with this machine's identity credential. Storage and Realtime keep the key until G2-4.
+	// G2-3 and G2-4: the host's database, Storage and Realtime calls go through its credentials, never the service key:
+	// a call inside a job through qorpera_native_host_call with that job's lease token, a call between jobs through
+	// qorpera_native_identity_call with this machine's identity credential, and a capsule request or the presence
+	// socket with the publishable key and the same credential in the x-qorpera-identity header (dispatch.holderHeader).
 	const identity = parseNativeIdentityCredential(
 		await systemdCredential(environment, "qorpera-native-identity"),
 		computeIdentityId,

@@ -167,8 +167,8 @@ select pg_temp.expect(pg_temp.create_object(pg_temp.job_header(), pg_temp.object
 	pg_temp.object(current_setting('qorpera_test.capsule')), '2: a job creates its capsule''s object');
 rollback to savepoint fresh_object;
 
--- 3. Anything but the job's own valid token is anon's: nothing. An expired lease leaves the job nothing; a released
--- connection lease leaves it nothing to write back.
+-- 3. Anything but the job's own valid token is anon's: nothing. An expired lease, or a job that has left `leased`
+-- (its token is cleared then), leaves the job nothing; a released connection lease leaves it nothing to write back.
 do $$
 declare v_header text;
 begin
@@ -189,6 +189,16 @@ update public.qorpera_runner_jobs set lease_expires_at = clock_timestamp() - int
 where id = current_setting('qorpera_test.job')::uuid;
 select pg_temp.expect(pg_temp.readable(pg_temp.job_header()), '', '3: an expired lease reads nothing');
 rollback to savepoint lease_over;
+savepoint job_ended;
+set local session_replication_role = replica;
+update public.qorpera_runner_jobs set status = 'completed', result = '{}', finished_at = clock_timestamp(),
+	terminal_lease_token_sha256 = lease_token_sha256, lease_token_sha256 = null, lease_expires_at = null
+where id = current_setting('qorpera_test.job')::uuid;
+set local session_replication_role = origin;
+select pg_temp.expect(pg_temp.readable(pg_temp.job_header()), '', '3: a completed job reads nothing');
+select pg_temp.expect(pg_temp.write_object(pg_temp.job_header(), pg_temp.object(current_setting('qorpera_test.capsule'))), '',
+	'3: a completed job writes nothing back');
+rollback to savepoint job_ended;
 savepoint lease_released;
 update public.qorpera_native_provider_connection_leases set status = 'released', released_at = clock_timestamp()
 where job_id = current_setting('qorpera_test.job')::uuid;
@@ -196,7 +206,9 @@ select pg_temp.expect(pg_temp.write_object(pg_temp.job_header(), pg_temp.object(
 	'3: a released connection lease leaves nothing to write back');
 rollback to savepoint lease_released;
 
--- 4. An identity holder (a job guest): its identity's active capsules, read only.
+-- 4. An identity holder (a job guest, or an execution host's slot): its identity's active capsules, read only. The
+-- identity entry point's fences hold here too (860 checks them there): an identity disabled or in recovery, a runner
+-- revoked or behind the identity's recovery epoch, or a credential of another kind on this machine reads nothing.
 select pg_temp.expect(pg_temp.readable(pg_temp.job_guest()),
 	pg_temp.objects(array[current_setting('qorpera_test.capsule'), '90700000-0000-4000-8000-000000000061']),
 	'4: a job guest reads its identity''s capsules');
@@ -214,6 +226,44 @@ savepoint run_released;
 update public.qorpera_runtime_machine_allocations set released_at = clock_timestamp() where id = '90700000-0000-4000-8000-000000000081';
 select pg_temp.expect(pg_temp.readable(pg_temp.job_guest()), '', '4: a released machine''s credential reads nothing');
 rollback to savepoint run_released;
+savepoint exec_slot;
+update public.qorpera_native_identity_credentials set holder_kind = 'exec_slot' where allocation_id = '90700000-0000-4000-8000-000000000081';
+select pg_temp.expect(pg_temp.readable(pg_temp.job_guest()),
+	pg_temp.objects(array[current_setting('qorpera_test.capsule'), '90700000-0000-4000-8000-000000000061']),
+	'4: an execution host''s slot reads its identity''s capsules');
+select pg_temp.expect(pg_temp.write_object(pg_temp.job_guest(), pg_temp.object(current_setting('qorpera_test.capsule'))), '',
+	'4: an execution host''s slot writes no capsule');
+rollback to savepoint exec_slot;
+savepoint wrong_kind;
+update public.qorpera_native_identity_credentials set holder_kind = 'login_guest' where allocation_id = '90700000-0000-4000-8000-000000000081';
+select pg_temp.expect(pg_temp.readable(pg_temp.job_guest()), '', '4: a login guest''s credential on a run''s machine reads nothing');
+rollback to savepoint wrong_kind;
+savepoint in_recovery;
+set local session_replication_role = replica;
+update public.qorpera_member_compute_identities set recovery_pending_id = extensions.gen_random_uuid()
+where id = current_setting('qorpera_test.identity')::uuid;
+set local session_replication_role = origin;
+select pg_temp.expect(pg_temp.readable(pg_temp.job_guest()), '', '4: an identity in recovery reads nothing');
+rollback to savepoint in_recovery;
+savepoint disabled;
+set local session_replication_role = replica;
+update public.qorpera_member_compute_identities set status = 'disabled' where id = current_setting('qorpera_test.identity')::uuid;
+set local session_replication_role = origin;
+select pg_temp.expect(pg_temp.readable(pg_temp.job_guest()), '', '4: a disabled identity reads nothing');
+rollback to savepoint disabled;
+savepoint stale_runner;
+update public.qorpera_member_compute_identities set recovery_epoch = recovery_epoch + 1
+where id = current_setting('qorpera_test.identity')::uuid;
+select pg_temp.expect(pg_temp.readable(pg_temp.job_guest()), '', '4: a runner behind the identity''s recovery epoch reads nothing');
+rollback to savepoint stale_runner;
+savepoint revoked_runner;
+set local session_replication_role = replica;
+update public.qorpera_runners set status = 'revoked', revoked_at = clock_timestamp(),
+	revoked_by_user_id = '30000000-0000-4000-8000-000000000001', session_token_sha256 = null, session_expires_at = null
+where id = current_setting('qorpera_test.runner')::uuid;
+set local session_replication_role = origin;
+select pg_temp.expect(pg_temp.readable(pg_temp.job_guest()), '', '4: a revoked runner reads nothing');
+rollback to savepoint revoked_runner;
 
 -- 5. A sign-in's login guest: its sign-in's own capsule, created, read and written again while the sign-in is pending.
 select pg_temp.expect(pg_temp.readable(pg_temp.login_guest()), '', '5: the sign-in''s capsule is not there yet');
@@ -227,6 +277,15 @@ select pg_temp.expect(pg_temp.write_object(pg_temp.login_guest(), pg_temp.object
 	pg_temp.object(current_setting('qorpera_test.login_id')), '5: a login guest writes it again (a retry)');
 select pg_temp.expect(pg_temp.write_object(pg_temp.login_guest(), pg_temp.object('90700000-0000-4000-8000-000000000063')), '',
 	'5: a login guest writes no orphan');
+savepoint sign_in_expired;
+set local session_replication_role = replica;
+update public.qorpera_native_provider_login_sessions set expires_at = created_at + interval '1 millisecond'
+where id = current_setting('qorpera_test.login_id')::uuid;
+set local session_replication_role = origin;
+select pg_temp.expect(pg_temp.readable(pg_temp.login_guest()), '', '5: an expired sign-in''s login guest reads nothing');
+select pg_temp.expect(pg_temp.write_object(pg_temp.login_guest(), pg_temp.object(current_setting('qorpera_test.login_id'))), '',
+	'5: an expired sign-in''s login guest writes nothing');
+rollback to savepoint sign_in_expired;
 
 -- 6. The completion through the entry point must name the capsule for the sign-in; after it the login guest reaches
 -- nothing.

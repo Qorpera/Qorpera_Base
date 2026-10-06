@@ -131,7 +131,8 @@ edge, Storage, Realtime, PostgREST and Postgres logs).
   - Nothing deletes, nothing lists beyond its own names, nothing reaches another company; no header is plain anon.
 - **The native host.** `NativeHostDispatch` signs a capsule request (GET or POST of `<uuid>.capsule` in that bucket
   only; any other Storage request on the project's origin is refused) with the publishable key, as `apikey` and as
-  the bearer (hosted Storage needs both), and the header; the store holds no key. The presence client is
+  the bearer (the probe's shape; `apikey` alone also worked), and the header; the store holds no key. The presence
+  client is
   `createClient(url, publishableKey)` with `nativeHostRealtimeTransport`: Node's WebSocket with the header on the
   upgrade, read when each connection opens.
 - **The bucket's limit** becomes the client's encrypted maximum, 64 MiB + 1 MiB (it was 64 MiB, so the largest
@@ -143,11 +144,14 @@ edge, Storage, Realtime, PostgREST and Postgres logs).
 ### Rollout (G2-4)
 
 It ships whole on the release that carries it: the migration and the native host (guest image) together, the
-migration first (a guest image from before G2-4 still uses the key, so it is unaffected). No switch.
+migration first. No switch. On a guest image from before G2-4, jobs and the account loop are unaffected (they still use
+the key), but its sign-ins are refused at their completion: it names its capsule with a random id, which the patched
+identity entry point refuses. So sign-ins wait for the new guest image, and the sign-in check below needs it.
 The gates G2-2 and G2-3 needed are done (coordinator, 4 Oct, with #762 for v172): authenticator's
 `log_parameter_max_length`, `log_parameter_max_length_on_error` and `auto_explain.log_parameter_max_length` are 0 with
-its connections recycled, and the 8 s function budget is proven through PostgREST. The header itself is never a
-statement parameter.
+its connections recycled, and the 8 s function budget is proven through PostgREST. The header reaches the policies
+through Storage's and Realtime's own `request.headers` setting, not a PostgREST call; that no log keeps its value
+rests on the coordinator's log check (above), not on these gates.
 
 Check after the release: a job guest's run downloads and writes back its capsule and joins presence; a sign-in
 completes (its capsule is `<sign-in id>.capsule`); an account refresh reads its identity's capsule.
