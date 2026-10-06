@@ -52,14 +52,23 @@ Then, as root, without echoing anything secret:
 			"passSha256": "<sha256 of the pass in the machine's view file>"
 		}
 	],
-	"runBoxHosts": []
+	"runBoxHosts": [],
+	"companyMachineProjects": []
 }
 ```
 
 `runBoxHosts` (step 2a) names the machines on this node that may present the core's run box views, as
 `{"project", "name", "physicalId"}` (its execution host: `qn25b2`, `qorpera-exec-node02`, its `volatile.uuid`). It stays
-empty until runs use the folder; any view kind presented from such a machine is accepted, so list only execution
-hosts.
+empty until runs use the folder.
+
+`companyMachineProjects` (F3 step 4a, `deploy/first-node/RUNTIME-FOLDER-COMPANY-MACHINES.md`) names the LXD projects
+of this node's company machines. A machine there named `qorpera-office-<allocation id without dashes>` may present its
+own desktop's view. It stays empty until company machines use the folder (which projects: the plan's Q1).
+
+Which machine is served a core view is the core's to say: the view's first renewal says its kind and machine, and from
+then on a run box is served only to a `runBoxHosts` machine (read-only), a computer desktop only to the company machine
+named after its allocation (read-write), and any other kind to no machine yet. A renewal that says another kind or
+machine closes the view.
 
 **Writes through the mount (F3 step 3, `deploy/first-node/RUNTIME-FOLDER-WRITES.md`)** are off until both of these:
 - `"gatewayUrl": "https://<node 1's object gateway origin>"` in `config.json`, and the gateway's folder-service token
@@ -69,8 +78,9 @@ hosts.
 - a mount with `"write": true`, and for a desktop's save rule `"quietMs": 2000` (500–60000): its pending changes are
   published that long after the last change; without it, only when the machine asks (`qorpera-folder publish`).
 
-Only a member's or the platform's operator mount writes in step 3; core views stay read-only until steps 4–6. Writes
-need P17's conflict copies and their erasure live (#783, #798), and step 3a (#855) for big files' chunks.
+A member's or the platform's operator mount writes from step 3, and a company machine's desktop view from step 4a (it
+publishes 2 s after its last change, and when its last connection leaves); run box views stay read-only until steps
+5–6. Writes need P17's conflict copies and their erasure live (#783, #798), and step 3a (#855) for big files' chunks.
 
 - Objects on the share are 0600, owned by the object gateway's account. Give the service that uid with a drop-in
   (`User=`) or a read grant on the storage server, and check with `sudo -u <account> head -c1 <one object>`.

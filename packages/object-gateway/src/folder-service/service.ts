@@ -9,7 +9,7 @@ import {
 	type FolderActor,
 	type FolderCore,
 } from "./core.ts";
-import type { Grant, MountGrants } from "./mounts.ts";
+import type { CoreAccess, Grant, MountGrants } from "./mounts.ts";
 import { type NasObjects, ObjectIntegrityError, ObjectUnavailableError } from "./objects.ts";
 import { CHUNK_BYTES, type ChunkRef, type FileRef, type PendingFile, PendingView, PublishFirst } from "./pending.ts";
 import { type BoundaryPlan, type CommitUnit, planBoundary } from "./plan.ts";
@@ -158,9 +158,18 @@ class View {
 	closed: string | undefined;
 	/** Versions replaced on the feed, still readable by files opened before; newest last. */
 	readonly superseded = new Map<string, TreeEntry[]>();
-	/** The view may write (step 3: an operator mount configured so). */
-	readonly write: boolean;
-	readonly quietMs: number | undefined;
+	/** The view may write (step 3: an operator mount configured so; step 4: a computer desktop). A core view's is set at
+	 * its first renewal, from what the core says it is (`access`). */
+	write: boolean;
+	quietMs: number | undefined;
+	/** A core view's kind and machine, as its first renewal said them, and which machines it is served to. */
+	identity: { readonly kind: string; readonly machineId: string | null } | undefined;
+	access: CoreAccess | undefined;
+	/** Since when the view has had changes not published (ms): sent at each renewal, so the core counts a desktop's seat
+	 * in use while it has some. */
+	unsavedSince: number | undefined;
+	/** One renewal at a time, so an early one and a round's never cross. */
+	renewing: Promise<void> = Promise.resolve();
 	/** Its pending changes, once listed (a writable view only). */
 	pending: PendingView | undefined;
 	quiet: ReturnType<typeof setTimeout> | undefined;
@@ -199,6 +208,9 @@ class View {
 		this.confirmed = grant.lease === undefined;
 		this.write = grant.write;
 		this.quietMs = grant.quietMs;
+		this.identity = undefined;
+		this.access = undefined;
+		this.unsavedSince = undefined;
 	}
 
 	/** A core view (a run's own, opened by the core), closed or not; an operator mount's view is not. */
@@ -307,20 +319,44 @@ export class FolderService {
 		);
 	}
 
-	/** One renewal: the confirmed lease moves on, or the view closes. Throws when the core could not answer. */
-	async #renew(view: View): Promise<void> {
+	/** One renewal, after any running one: the confirmed lease moves on, or the view closes. Throws when the core could
+	 * not answer. */
+	#renew(view: View): Promise<void> {
+		const next = view.renewing.catch(() => undefined).then(() => this.#renewNow(view));
+		view.renewing = next;
+		return next;
+	}
+
+	async #renewNow(view: View): Promise<void> {
 		const lease = view.lease;
 		if (!lease) return;
+		if (!view.pending || view.pending.empty) view.unsavedSince = undefined;
+		else view.unsavedSince ??= this.#now();
 		let renewal: Awaited<ReturnType<FolderCore["renewView"]>>;
 		const asked = this.#now();
 		try {
-			renewal = await this.#core.renewView(lease.viewId, lease.pass);
+			renewal = await this.#core.renewView(
+				lease.viewId,
+				lease.pass,
+				view.unsavedSince === undefined ? null : new Date(view.unsavedSince).toISOString(),
+			);
 		} catch (error) {
 			if (error instanceof CoreRefusal && error.reason === "denied")
 				return this.#close(view, "The view was refused");
 			throw error;
 		}
+		// A view closed while the renewal ran (another answer, or no machine holds it) stays closed.
+		if (view.closed) return;
 		if (renewal.state === "closed") return this.#close(view, `The view was ${renewal.reason}`);
+		// The first answer says what the view is, and so how it is served and to which machines; a view never changes
+		// kind or machine.
+		if (!view.identity) {
+			view.identity = { kind: renewal.kind, machineId: renewal.machineId };
+			view.access = this.#grants.coreAccess(view.identity);
+			view.write = view.access?.write ?? false;
+			view.quietMs = view.access?.quietMs;
+		} else if (view.identity.kind !== renewal.kind || view.identity.machineId !== renewal.machineId)
+			return this.#close(view, "The view's kind or machine changed");
 		// The core's clock says until when; never trust it for longer than one lease from now.
 		view.leaseUntil = Math.min(Date.parse(renewal.leaseUntil), asked + LEASE_MS);
 		view.confirmed = true;
@@ -361,19 +397,27 @@ export class FolderService {
 			for (const handle of view.handles) this.#abandon(view, handle);
 			view.handles.clear();
 			view.idleSince = this.#now();
-			// A core view no machine holds is dropped at once (with its pass): its lease is not renewed while idle, so
-			// a machine that comes back lists it again and renews at once.
-			if (view.lease && this.#views.get(view.key) === view) {
-				this.#views.delete(view.key);
-				view.lease = undefined;
-				view.closed = "No machine holds the view";
-				view.tree = undefined;
+			// A core view no machine holds is dropped (with its pass): its lease is not renewed while idle, so a machine
+			// that comes back lists it again and renews at once. What it has pending is published first, under the lease
+			// it still has (a desktop that ended inside its quiet period); a machine that comes back meanwhile joins it.
+			if (!view.lease || this.#views.get(view.key) !== view) return;
+			if (!view.pending || view.pending.empty) {
+				this.#drop(view);
+				return;
 			}
+			if (view.quiet) clearTimeout(view.quiet);
+			view.quiet = undefined;
+			void this.#publishLogged(view).then(() => {
+				if (view.connections === 0) this.#drop(view);
+			});
 		};
 		try {
 			view.loading ??= this.#firstLoad(view);
 			await view.loading;
 			if (view.closed) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
+			// A core view is served only to the machines its kind and machine name: a desktop to its own company machine.
+			if (view.core && !view.access?.admits(bridge))
+				throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
 		} catch (error) {
 			release();
 			throw error;
@@ -544,6 +588,19 @@ export class FolderService {
 		for (const sink of view.sinks) sink.closed(ErrorCode.viewClosed, reason);
 		view.sinks.clear();
 		this.#log(`folder-service: ${view.key} closed: ${reason}`);
+	}
+
+	/** Forgets a core view no machine holds, with its pass and anything its last boundary kept pending. */
+	#drop(view: View): void {
+		if (view.closed) return;
+		if (this.#views.get(view.key) === view) this.#views.delete(view.key);
+		view.lease = undefined;
+		view.closed = "No machine holds the view";
+		view.tree = undefined;
+		view.pending?.clear();
+		view.intents.clear();
+		if (view.quiet) clearTimeout(view.quiet);
+		view.quiet = undefined;
 	}
 
 	async #firstLoad(view: View): Promise<void> {
@@ -863,24 +920,36 @@ export class FolderService {
 		return next;
 	}
 
-	/** A change restarts the quiet period of a mount that publishes on one. */
+	/** A change restarts the quiet period of a mount that publishes on one. A core view's first change not published
+	 * renews it at once, so the core counts a desktop's seat in use from then (C1B §9), not up to a round later. */
 	#touch(view: View): void {
+		if (view.lease && view.unsavedSince === undefined && view.pending && !view.pending.empty) {
+			view.unsavedSince = this.#now();
+			this.#renew(view).catch((error: unknown) =>
+				this.#log(`folder-service: ${view.key}: lease not renewed now: ${(error as Error).message}`),
+			);
+		}
 		if (view.quietMs === undefined) return;
 		if (view.quiet) clearTimeout(view.quiet);
 		view.quiet = setTimeout(() => {
 			view.quiet = undefined;
-			void this.#publish(view).then(
-				(report) => {
-					for (const entry of report.paths)
-						if (entry.outcome !== "saved")
-							this.#log(
-								`folder-service: ${view.key}: ${entry.path}: ${entry.outcome}${entry.reason ? ` (${entry.reason})` : ""}`,
-							);
-				},
-				(error: unknown) => this.#log(`folder-service: ${view.key}: publish failed: ${(error as Error).message}`),
-			);
+			void this.#publishLogged(view);
 		}, view.quietMs);
 		view.quiet.unref?.();
+	}
+
+	/** A boundary no machine asked for: what it did not save goes to the log, until step 4 routes it to the desktop. */
+	async #publishLogged(view: View): Promise<void> {
+		try {
+			const report = await this.#publish(view);
+			for (const entry of report.paths)
+				if (entry.outcome !== "saved")
+					this.#log(
+						`folder-service: ${view.key}: ${entry.path}: ${entry.outcome}${entry.reason ? ` (${entry.reason})` : ""}`,
+					);
+		} catch (error) {
+			this.#log(`folder-service: ${view.key}: publish failed: ${(error as Error).message}`);
+		}
 	}
 
 	#abandon(view: View, handle: number): void {
@@ -1260,7 +1329,10 @@ export class FolderService {
 		const copied = await this.#copied(view, plan, answer);
 		plan.units.forEach((planned, i) => {
 			const outcome = answer.units[i];
-			const kept = planned.bytes && outcome?.outcome !== "saved" && !copied.has(i);
+			// A parked unit is a proposal now (P40, C2 §8): the agent's next run reviews it, so the view lets it go and
+			// shows the live folder, as for a unit saved.
+			const parked = outcome?.outcome === "waiting_for_review" && outcome.reason === "parked";
+			const kept = planned.bytes && outcome?.outcome !== "saved" && !parked && !copied.has(i);
 			for (const path of planned.paths) {
 				if (kept) keep.add(path);
 				if (outcome?.outcome === "saved") saved.add(path);
@@ -1448,7 +1520,11 @@ export class FolderService {
 			}
 		const before = [...pending.nodes().keys()];
 		pending.settle(new Set([...keepAll].filter((p) => pending.nodes().has(p))));
-		if (pending.empty) view.intents.clear();
+		// Nothing left unsaved: the next renewal tells the core so, and the desktop's seat is free again.
+		if (pending.empty) {
+			view.intents.clear();
+			view.unsavedSince = undefined;
+		}
 		this.#push(view, [...new Set([...paths, ...before])]);
 	}
 
