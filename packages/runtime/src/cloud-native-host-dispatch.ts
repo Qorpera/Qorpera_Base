@@ -12,8 +12,8 @@ import type { WebSocketLikeConstructor } from "@supabase/supabase-js";
 
 /** The native host's calls inside a job, and the entry point (statement budget) of each: qorpera_native_host_calls as
  * migrations 20260928409985, 20260928429982 (find_mail), 20260928429984 (save_attachment), 20260929999965
- * (company_account) and 20260929999970 (the run's folder view) list them, without the two identity calls, which the
- * host makes between jobs (G2-3). */
+ * (company_account), 20260929999970 (the run's folder view) and 20260930093000 (proposals, P40b) list them, without the
+ * two identity calls, which the host makes between jobs (G2-3). */
 export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new Map<string, "standard" | "long">([
 	["qorpera_add_agent_review_rule", "standard"],
 	["qorpera_append_native_interaction_request", "standard"],
@@ -42,11 +42,14 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_fence_native_context", "standard"],
 	["qorpera_find_agent_mail", "standard"],
 	["qorpera_find_company_accounts", "standard"],
+	["qorpera_folder_agent_proposals", "standard"],
 	["qorpera_folder_agent_routines", "standard"],
 	["qorpera_folder_agent_todos", "standard"],
 	["qorpera_folder_agent_workers", "standard"],
-	["qorpera_folder_cancel_agent_worker", "standard"],
+	["qorpera_folder_apply_proposal", "standard"],
 	["qorpera_folder_archive_coding_worker", "standard"],
+	["qorpera_folder_cancel_agent_worker", "standard"],
+	["qorpera_folder_close_proposal", "standard"],
 	["qorpera_folder_commit", "standard"],
 	["qorpera_folder_complete_run_receipt", "standard"],
 	["qorpera_folder_list", "standard"],
