@@ -14,7 +14,11 @@ import {
 	type CloudSecretBrokerAuthority,
 	PostgresCloudSecretBrokerAuthority,
 } from "@qorpera/runtime/cloud-secret-broker";
-import { HttpCloudSecretBrokerClient, HttpCloudSecretBrokerService } from "@qorpera/runtime/cloud-secret-broker-http";
+import {
+	HttpCloudSecretBrokerClient,
+	HttpCloudSecretBrokerService,
+	type NativeBindingProof,
+} from "@qorpera/runtime/cloud-secret-broker-http";
 import { CloudSecretKeyring } from "@qorpera/runtime/cloud-secret-crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
@@ -394,35 +398,64 @@ describe("company accounts over the broker", () => {
 		};
 		const runtimeToken = randomBytes(32).toString("base64url");
 		const codingExecutorToken = randomBytes(32).toString("base64url");
+		// G2-6a: the database's lease proof stands in here (its own test is 986): only the run's own lease token, as
+		// `job.<the binding's job>.<lease token>`, proves a request's binding.
+		const lease = randomBytes(32).toString("base64url");
+		const holderOf = (request: { binding: object }) =>
+			`job.${(request.binding as { jobId: string }).jobId.toLowerCase()}.${lease}`;
+		const proveBinding = vi.fn<NativeBindingProof>(async (binding, presented) => {
+			if (presented !== holderOf({ binding })) throw new Error("native binding proof is refused");
+		});
 		const service = new HttpCloudSecretBrokerService(
 			new CloudSecretBroker({ authority, keyring: f.keyring, adapters: [] }),
 			runtimeToken,
-			// G2-6a: the database's lease proof stands in here; its own tests are 986 and the broker's.
-			{ codingExecutorToken, proveBinding: async () => undefined },
+			{ codingExecutorToken, proveBinding },
 		);
 		services.push(service);
 		const port = await service.start();
-		const client = (token = runtimeToken) =>
+		const client = (holder: string, token = runtimeToken) =>
 			new HttpCloudSecretBrokerClient({
 				origin: `http://127.0.0.1:${port}`,
 				runtimeToken: token,
 				companyId,
-				holder: () => `job.${randomUUID()}.${"h".repeat(43)}`,
+				holder: () => holder,
 				allowLoopback: true,
 			});
-		expect(await client().companyAccount(openRequest(), AbortSignal.timeout(5000))).toEqual({
+		const open = openRequest();
+		expect(await client(holderOf(open)).companyAccount(open, AbortSignal.timeout(5000))).toEqual({
 			schema: "qorpera.company-account-refusal/v1",
 			code: "23505",
 			message: "The company already has this account; use it",
 		});
 		const state = { ...call(), action: "state" as const, accountId, status: "connected" as const };
-		expect(await client().companyAccount(state, AbortSignal.timeout(5000))).toEqual(
+		expect(await client(holderOf(state)).companyAccount(state, AbortSignal.timeout(5000))).toEqual(
 			descriptor(accountId, "connected"),
 		);
+		expect(proveBinding).toHaveBeenCalledWith(
+			expect.objectContaining({ jobId: state.binding.jobId, runId: state.binding.runId }),
+			holderOf(state),
+		);
 		for (const token of [randomBytes(32).toString("base64url"), codingExecutorToken])
-			await expect(client(token).companyAccount(state, AbortSignal.timeout(5000))).rejects.toThrow(
+			await expect(client(holderOf(state), token).companyAccount(state, AbortSignal.timeout(5000))).rejects.toThrow(
 				"Cloud secret broker rejected the company account call",
 			);
+		// Without the run's own lease (a malformed holder, another run's, or another lease token for this run's job), an
+		// open or a state change is refused before the database is asked anything.
+		const describedOpens = vi.mocked(f.authority.describeCompanyAccountOpen).mock.calls.length;
+		for (const holder of [
+			"",
+			lease,
+			`identity.${lease}`,
+			`${holderOf(state)}x`,
+			`job.${randomUUID()}.${lease}`,
+			`job.${state.binding.jobId.toLowerCase()}.${"W".repeat(43)}`,
+		])
+			for (const request of [state, open])
+				await expect(client(holder).companyAccount(request, AbortSignal.timeout(5000))).rejects.toThrow(
+					"Cloud secret broker rejected the company account call",
+				);
+		expect(f.authority.describeCompanyAccountOpen).toHaveBeenCalledTimes(describedOpens);
+		expect(authority.openCompanyAccount).toHaveBeenCalledTimes(1);
 		expect(f.authority.setCompanyAccountState).toHaveBeenCalledTimes(1);
 		const raw = await fetch(`http://127.0.0.1:${port}/v1/company-accounts?company=${companyId}`, {
 			method: "POST",
