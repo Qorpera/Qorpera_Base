@@ -558,7 +558,7 @@ function closingReminder(context: CloudNativeCompanyContext, wake: CloudWakeEnve
 }
 
 /** What the developer instructions carry as labelled data (RUNTIME-AGENT-MEMORY-TREE.md §5.6, §6.1): the head
- * (cloud-agent-head.ts), and the primary view when M1 composes one. */
+ * (cloud-agent-head.ts), and the primary view when M1 composes one. Empty views add nothing. */
 export interface CloudNativeInstructionParts {
 	head: string;
 	views?: string;
@@ -589,7 +589,7 @@ export function compileCloudNativeCompanyInstructions(
 			hireOverlayRoot: "turn-context.hireOverlay",
 		}),
 		`\n${cloudRuntimeHireBehavior(context.agentKind)}`,
-		...(parts ? [HEAD_PROTOCOL, parts.head, ...(parts.views === undefined ? [] : [parts.views])] : []),
+		...(parts ? [HEAD_PROTOCOL, parts.head, ...(parts.views ? [parts.views] : [])] : []),
 		...wakeInstructions(wake, context.continuation !== null),
 		...closingReminder(context, wake),
 	].join("\n");

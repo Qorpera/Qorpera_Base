@@ -417,9 +417,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const connectorDescriptors = await connectorTools();
 			signal.throwIfAborted();
 			const head = composeCloudAgentHead(context, vision, memory);
+			// The primary view (M1, §5.3) goes after the head; none yet.
+			const views = "";
 			const prompt = composeCloudNativeCompanyPrompt(context, wake, initialPresence, memory, openWork, skills, head);
-			// The run's context is its head (in the developer instructions) and its context message, hashed together.
-			const composed = `${head.text}\n${prompt}`;
+			// The run's context is its head and views (in the developer instructions) and its context message, hashed
+			// together.
+			const composed = `${head.text}\n${views}\n${prompt}`;
 			const contextBytes = Buffer.byteLength(composed);
 			composition.finish("succeeded", { outputBytes: contextBytes });
 			const contextSha256 = createHash("sha256").update(composed).digest("hex");
@@ -597,7 +600,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					isolation: this.#isolation,
 					...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
 					prompt,
-					runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake, { head: head.text }),
+					runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake, { head: head.text, views }),
 					signal,
 					timeoutMs: this.#timeoutMs,
 					// Auto-review (v130): acting calls wait for the reviewer, or for a member's approval.

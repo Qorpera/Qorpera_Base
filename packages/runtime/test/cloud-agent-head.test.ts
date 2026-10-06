@@ -193,6 +193,10 @@ it("puts the head after everything an agent's runs share and before everything a
 	const withViews = compileCloudNativeCompanyInstructions(context, null, { head, views });
 	expect(withViews).toContain(`${head}\n${views}\n`);
 	expect(withViews.indexOf(views)).toBeLessThan(withViews.indexOf("# Standing work"));
+	// Empty views add nothing.
+	expect(compileCloudNativeCompanyInstructions(context, null, { head, views: "" })).toBe(
+		compileCloudNativeCompanyInstructions(context, null, { head }),
+	);
 });
 
 it("reads the vision whole, names one a trusted read cannot hold by its size, and has none if absent", async () => {

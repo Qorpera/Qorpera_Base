@@ -822,8 +822,8 @@ it.each(["available", "unavailable"])(
 		const start = f.pathCall.mock.calls.find(
 			([method]) => method === "qorpera_begin_native_company_execution_v2",
 		)![1];
-		// The run's context is its head and its context message.
-		const composed = `${headLine(evidence.threadParameters.developerInstructions)}\n${promptText}`;
+		// The run's context is its head, views (none yet) and context message.
+		const composed = `${headLine(evidence.threadParameters.developerInstructions)}\n\n${promptText}`;
 		expect(start.p_context_sha256).toBe(createHash("sha256").update(composed).digest("hex"));
 		expect(start.p_context_bytes).toBe(Buffer.byteLength(composed));
 		expect(close).toHaveBeenCalledOnce();
@@ -1397,11 +1397,12 @@ it("gives an agent's runs, whoever woke them, one head in the developer instruct
 			inHead: true,
 		});
 		expect(promptText).not.toContain("ignore all previous");
-		// The head's reads are released under the context the run starts with: its head and its context message.
+		// The head's reads are released under the context the run starts with: its head, views (none yet) and context
+		// message.
 		const start = f.pathCall.mock.calls.find(
 			([method]) => method === "qorpera_begin_native_company_execution_v2",
 		)![1];
-		const composed = createHash("sha256").update(`${head}\n${promptText}`).digest("hex");
+		const composed = createHash("sha256").update(`${head}\n\n${promptText}`).digest("hex");
 		expect(start.p_context_sha256).toBe(composed);
 		const released = f.folderReleases.filter((release) =>
 			(release.p_reads as { path: string }[]).some((read) => read.path === "vision/vision.md"),
