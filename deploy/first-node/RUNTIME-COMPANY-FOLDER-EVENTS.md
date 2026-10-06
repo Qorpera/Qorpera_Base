@@ -43,7 +43,7 @@ actor) and saving them (`ATT:155`).
 |---|---|---|
 | **E1** | Hooks and mailboxes on folder-v2: create, pause, remove, each with its connection file (§3) | P22 (merged), P22b writer |
 | **E2** | Event wakes: `when: event` in routine files, the folder event drain, the wake gate and the wake read (§4) | E1, P29's shared folder drains (merged) |
-| **E3** | Agents open hooks and mailboxes themselves (`manage_hook`, W3) (§5) | E1 |
+| **E3** | Agents open hooks and mailboxes themselves (`manage_hook`, W3): E3a address hooks and mailboxes, E3b and E3c signed hooks (§5) | E1 |
 | **E4** | Settings → Company connections lists hooks and mailboxes for owners and admins (§6) | E1 |
 | later | Events and mail as files, attachments, a mailbox at founding (§7) | E1–E2 |
 
@@ -285,8 +285,85 @@ hooks and mailboxes for its company.
   - Where the service shows a secret (Stripe), the agent captures it on the Company Computer with the vault's fill.
 - **Locks:** E1's functions, entered from the run (`qorpera_folder_run_enter`), in the same order.
 
-E3 gets its own short design section before it is built; the review class and the secret capture are the parts to
-agree on.
+E3 comes in three parts: **E3a** address hooks and mailboxes (migration `20260930106000`, SQL test 939), **E3b** GitHub
+and HMAC hooks with a secret the vault makes, and **E3c** Stripe's secret taken from the screen. The design below was
+sent to the coordinator on 6 October; the review class (§5.3) and the secrets (§5.5) are the parts to agree on.
+
+### 5.1 The tool
+
+`manage_hook` is offered on folder-v2 beside `list_hooks`, `read_event`, `find_mail` and `send_mail`:
+- `create` with `kind: hook` (`name`, `purpose`, and optionally `maxBodyBytes` and `perMinute`), or with
+  `kind: mailbox` (`localPart`, `purpose`);
+- `pause`, `resume` and `remove` with `hook`: a name `list_hooks` shows (a mailbox's hook is its `mail-…` name);
+- `operationKey` on every action: one change per key, and a retry with the same key gets the first answer.
+
+The answer is the hook as `list_hooks` shows it. A create's answer also carries the hook's address and URL, or the
+mailbox's email address, so the agent can give it to the service. The address is only in that answer, never in a file:
+E1's connection file has none.
+
+### 5.2 Who may
+
+- **The run's requester is an owner or admin**, as for E1's Settings calls, and as `list_hooks` shows addresses only to
+  such a run (`20260928269290:555-575`). The agent acts with its requester's authority, never more. Any other run is
+  refused: 42501 "Only owners and admins can open hooks; ask one of them".
+- Any agent of the company may, in any run such a member requested: a chat, a routine, an event wake.
+- The hook records the agent (`created_by_staff_agent_id`, which E1's file already shows as `createdBy`).
+- E1's checks are unchanged: the name and purpose rules, at most 50 hooks and 20 mailboxes, a mailbox needs the mail
+  domain, and the reserved mailbox names.
+
+### 5.3 Review (to agree)
+
+- **`create` is an outside effect (`external`)** and is reviewed like one. The card says "Open a hook" or "Open a
+  mailbox", with the name, the purpose and, for a mailbox, its email address. The reviewer's steps apply unchanged:
+  - a hook that only an email or a web page asks for is denied (`not_requested`);
+  - an Ask first rule that covers it (for example "ask before connecting new services") makes it ask;
+  - otherwise it is allowed.
+- **No new built-in check.** A "new connection" check would ask the member about every hook, a default gate no member
+  chose. Members add rules when they want one.
+- **`pause`, `resume` and `remove` are `internal`** and not reviewed: they only narrow, or restore, what a reviewed create
+  opened.
+
+### 5.4 Locks (E3a)
+
+One function, `qorpera_folder_manage_hook(p_binding, p_request)`. It is granted to the service role and host-dispatched
+with the binding's scope, as `qorpera_folder_cancel_agent_worker` is:
+1. The run check, `qorpera_folder_tool_run`. Its entry already holds the company row (rank 0) and the requester's
+   member row (rank 1) KEY SHARE. A pause, resume or remove adds the hook row at rank 5 FOR NO KEY UPDATE, as E1's
+   status change does.
+2. The role check, under those locks.
+3. The run receipt (`qorpera_folder_begin_run_receipt`, key `hook:<operationKey>`); a replay answers from it.
+4. A create takes E1's per-company claim `qorpera.event-hooks:<profile>` (rank 9). A mailbox then takes the mail domain
+   FOR SHARE, last, as in E1.
+5. The caps, the name, then the insert or the status change; then the receipt completes.
+
+The connection file follows the commit, through E1's marks. The receipt keeps the hook without its address, which is
+read from the hook row for each answer.
+
+### 5.5 Signed hooks (E3b and E3c, to agree)
+
+E3a refuses any `proof` but `address`: "A signed hook comes later; use an address hook for now".
+- **GitHub and HMAC (E3b).** The secret broker makes the secret (32 random bytes). It seals it under the company's vault
+  key and creates the hook with its `event_hook` secret (`h<hook id>`, field `signing_secret`) in one transaction, as A1's
+  account opening makes a password (`cloud-company-account-vault.ts` `#open`). The agent types it into the service's
+  form with the Company Computer's `vault_fill`, which gains a hook source: the hook's `signing_secret`, resealed to the
+  computer's boot key as an account's password is. The model never sees it.
+- **Stripe (E3c).** Stripe makes the secret and shows it once. Moving it from the screen into the vault needs a new
+  Company Computer action, the fill's reverse (`vault_capture`). Until then, an owner or admin adds a Stripe hook's
+  secret in Settings (E4, through `qorpera_begin_cloud_secret_capture`).
+
+### 5.6 Tests (E3a)
+
+- **SQL 939, on E1's fixture:**
+  - a hook and a mailbox created from an owner's run, with `created_by_staff_agent_id` and the file mark;
+  - a run a plain member requested is refused;
+  - the caps, the names, a missing mail domain, and a signed proof refused;
+  - a replay with the same key gives the same hook; the same key for other work is refused;
+  - pause, resume and remove, and a removed hook refused;
+  - the address in the answer and never in the receipt;
+  - the host call row and the grants.
+- **TypeScript:** the tool's schema and its description (under 4096 bytes), the effect classes and the card, the
+  allow-lists, and the folder client's answer checks.
+- **Deferred (needs Codex):** the live test (§8), where the Co-Founder sets up a hook.
 
 ## 6. E4: hooks and mailboxes in Settings
 
