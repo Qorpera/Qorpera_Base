@@ -1345,7 +1345,10 @@ describe("LXD cloud runner provider", () => {
 		expect(log).not.toHaveBeenCalled();
 		log.mockRestore();
 		expect(releases()).toHaveLength(1);
-		expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({ physicalState: "stopped", capacityReleased: true });
+		expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
+			physicalState: "stopped",
+			capacityReleased: true,
+		});
 		// A day later it is archived, with no volume to retire and none created.
 		const settled = JSON.parse(await readFile(path, "utf8"));
 		await writeFile(
@@ -1455,7 +1458,9 @@ describe("LXD cloud runner provider", () => {
 		);
 		const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
 		await expect(backend.reconcile()).resolves.toBeUndefined();
-		expect(log.mock.calls.map(([line]) => String(line))).toEqual([`dead journal kept: acquisition=${id} stage=journal`]);
+		expect(log.mock.calls.map(([line]) => String(line))).toEqual([
+			`dead journal kept: acquisition=${id} stage=journal`,
+		]);
 		// Nor does it hold up a start or a stop's runner lookup, and the log names it at most once an hour.
 		const runner = await backend.acquire(runId, work(), new AbortController().signal);
 		await backend.stop({ ...runner, runnerId: "20000000-0000-4000-8000-000000000099" }, "idle");
