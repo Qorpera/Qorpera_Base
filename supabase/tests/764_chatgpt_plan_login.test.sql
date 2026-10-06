@@ -328,9 +328,15 @@ select pg_temp.plan764_expect(pg_temp.plan764_commit('codex-shaped'::bytea),
 reset session authorization;
 update public.qorpera_chatgpt_plan_settings set enabled = true;
 
--- Ending a plan login nothing can use again: once the member disconnected, the vault takes it under a lock, OpenAI
--- ends it, and only the lock's holder marks it revoked. (The run's plan login, 050, is set aside.)
+-- Ending a plan login nothing can use again: while its connection is in use the vault leaves it; once the member
+-- disconnected, the vault takes it under a lock, OpenAI ends it, and only the lock's holder marks it revoked. (The run's
+-- plan login, 050, is set aside.)
 update public.qorpera_model_logins set status = 'revoked' where id = '76400000-0000-4000-8000-000000000050';
+set local session authorization qorpera_secret_broker;
+select pg_temp.plan764_expect(pg_temp.plan764_try(format('select public.qorpera_take_chatgpt_plan_revocation(%L,%L)::text',
+	'76400000-0000-4000-8000-000000000040',repeat('c',64))),'ok','a revocation pass');
+select pg_temp.plan764_expect((pg_temp.plan764_last() -> 'revocation')::text,'null','a plan login in use is never ended');
+reset session authorization;
 update public.qorpera_provider_connections set status = 'revoked'
 where id = (select version.connection_id from public.qorpera_provider_connection_versions version
 	join public.qorpera_model_logins login on login.credential_capsule_id = version.credential_capsule_id

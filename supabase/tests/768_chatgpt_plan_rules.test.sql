@@ -3,8 +3,8 @@
 -- ChatGPT, slice 1b, 20260928359950, with 20260930095000 and P29's file-change rule, 20260928479120): the kind and consent
 -- reads are the kernel's own; an agent's routine never consents a plan for its member and is prepared only on the login
 -- its run pays with; a member's file-change routine is never paid by their plan; a plan pays for nothing that follows a
--- listener run; it is never swapped at its usage limit and pays for follow-up work only of runs it pays for; one usable
--- plan per member; a coding worker takes the member's other login before a plan; plan use stops for a company being
+-- listener run; it is never swapped at its usage limit and pays for follow-up work only of runs it pays for; only its
+-- member retries a failed run it pays for; one usable plan per member; a coding worker takes the member's other login before a plan; plan use stops for a company being
 -- deleted. Test 764's fixture leaves the owner with a completed plan login (not consented for work while they are away)
 -- and a Codex vault login, next to 924's native login (the "capsule" login here), which pays for Alice's leased run
 -- through the base sponsor.
@@ -333,8 +333,49 @@ end $$;
 -- Back to the plan at its limit and the native login with room, for the checks below.
 delete from public.qorpera_native_provider_account_metadata where connection_id = pg_temp.r768('capsule');
 
--- (5. Retrying a failed run on the plan: qorpera_resolve_failed_execution_run retries only snapshot-v1 session turns, so
--- a folder-v2 run is retried by nobody, its plan's member included. 6. A snapshot-v1 proposal review's retry is gone.)
+-- 5. Only the member whose plan pays tries a failed run again. A folder-v2 first run is a session turn: Dana's hire has
+-- its kickoff made a run, which then fails on the owner's plan.
+select set_config('request.jwt.claims',
+	'{"sub":"00000000-0000-4000-8000-000000000000","role":"service_role"}',false);
+select pg_temp.base_commit(pg_temp.base_owner(), 'r768-hire-dana', jsonb_build_array(
+	pg_temp.base_hire('dana', '92400000-0000-4000-8000-000000000034', 'Dana'))) \g /dev/null
+do $$
+declare v_pass jsonb := pg_temp.base_materialize(); v_run public.qorpera_execution_runs;
+begin
+	perform pg_temp.base_assert(v_pass ->> 'state' = 'done', 'the materializer pass: ' || v_pass::text);
+	select * into strict v_run from public.qorpera_execution_runs
+	where staff_agent_id = '92400000-0000-4000-8000-000000000034';
+	perform pg_temp.base_assert(v_run.source_kind = 'session_turn'
+		and v_run.requested_by_user_id = '92400000-0000-4000-8000-000000000001',
+		'Dana''s first run is the owner''s session turn: ' || to_jsonb(v_run)::text);
+	perform set_config('qorpera_test.r768_first_run', v_run.id::text, false);
+	update public.qorpera_execution_runs set sponsor_binding_id = pg_temp.r768('planBinding'),
+		sponsor_version = (current_setting('qorpera_test.r768')::jsonb ->> 'planVersion')::bigint
+	where id = v_run.id;
+	update public.qorpera_runner_jobs set status = 'failed', finished_at = clock_timestamp(),
+		last_error = 'Native provider bridge request failed (422)'
+	where id = v_run.job_id;
+end $$;
+select set_config('request.jwt.claims',
+	'{"sub":"92400000-0000-4000-8000-000000000002","role":"authenticated"}',false);
+set role authenticated;
+select pg_temp.plan764_expect(pg_temp.plan764_try(format(
+	'select public.qorpera_resolve_failed_execution_run(%L,''retry'')::text', current_setting('qorpera_test.r768_first_run'))),
+	'55000:execution recovery action is unavailable', 'another member retries a run the plan pays for');
+-- Acknowledging it stays open to them: nothing runs.
+select pg_temp.plan764_expect(pg_temp.plan764_try(format(
+	'select public.qorpera_resolve_failed_execution_run(%L,''acknowledge'')::text', current_setting('qorpera_test.r768_first_run'))),
+	'ok', 'another member acknowledges it');
+reset role;
+select set_config('request.jwt.claims',
+	'{"sub":"92400000-0000-4000-8000-000000000001","role":"authenticated"}',false);
+set role authenticated;
+select pg_temp.plan764_expect(pg_temp.plan764_try(format(
+	'select public.qorpera_resolve_failed_execution_run(%L,''retry'')::text', current_setting('qorpera_test.r768_first_run'))),
+	'ok', 'the member retries their own run');
+reset role;
+
+-- (6. A snapshot-v1 proposal review's retry is gone: folder-v2 has no proposals.)
 
 -- 7. One usable plan per member: no second ChatGPT account is connected beside the member's plan login,
 -- neither when its sign-in begins nor when it completes (the first login lapsed in between, then came back).
