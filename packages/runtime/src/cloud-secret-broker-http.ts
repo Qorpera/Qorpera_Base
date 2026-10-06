@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, UUID_PATTERN } from "@qorpera/contracts";
 import { CHATGPT_PLAN_CONFIRM_ROUTE_MS, ChatGptPlanSignInError } from "./cloud-chatgpt-plan-sign-in.ts";
 import {
 	COMPANY_ACCOUNT_FILL_REQUEST_SCHEMA,
@@ -68,7 +68,10 @@ function exact(value: Record<string, unknown>, keys: readonly string[], label: s
 
 /** The caller's holder credential (G2-6a): `job.<job id>.<lease token>` in x-qorpera-identity, as the native host's
  * dispatch gives it. Its value never reaches a log, an error or a reply. */
-const HOLDER = /^job\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9_-]{43}$/;
+function isHolder(value: unknown): value is string {
+	const [kind, jobId, token, ...rest] = typeof value === "string" ? value.split(".") : [];
+	return kind === "job" && UUID_PATTERN.test(jobId ?? "") && /^[A-Za-z0-9_-]{43}$/.test(token ?? "") && !rest.length;
+}
 
 /** G2-6a: whether a native host's request holds its binding's run lease (qorpera_native_binding_proven, migration
  * 20260930152000), asked of the broker's database with its own principal. It resolves only for a proven binding. */
@@ -563,8 +566,7 @@ export class HttpCloudSecretBrokerService {
 	 * of the holder reaches the reply). */
 	async #proven(request: IncomingMessage, binding: object): Promise<void> {
 		const holder = request.headers["x-qorpera-identity"];
-		if (typeof holder !== "string" || !HOLDER.test(holder) || !this.#proveBinding)
-			throw new Error("Native binding proof is missing");
+		if (!isHolder(holder) || !this.#proveBinding) throw new Error("Native binding proof is missing");
 		await this.#proveBinding(binding, holder);
 	}
 

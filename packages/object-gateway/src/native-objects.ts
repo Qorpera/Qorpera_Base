@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { UUID_PATTERN } from "@qorpera/contracts";
 import { boundedObjectOperation, ObjectDependencyError } from "./dependency.ts";
 import type { FolderObjectAuthority } from "./folder-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
@@ -136,12 +137,10 @@ export function assertNativeToken(request: IncomingMessage, token: string): void
  * dispatch gives it. Malformed or missing is 401; the value never reaches a log or an error. */
 export function nativeHolder(request: IncomingMessage): string {
 	const holder = request.headers["x-qorpera-identity"];
-	if (
-		typeof holder !== "string" ||
-		!/^job\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9_-]{43}$/.test(holder)
-	)
+	const [kind, jobId, token, ...rest] = typeof holder === "string" ? holder.split(".") : [];
+	if (kind !== "job" || !UUID_PATTERN.test(jobId ?? "") || !/^[A-Za-z0-9_-]{43}$/.test(token ?? "") || rest.length)
 		throw new ObjectDependencyError(401);
-	return holder;
+	return holder as string;
 }
 
 /** The run's binding from its header: canonical base64url JSON of its ten fields. */
