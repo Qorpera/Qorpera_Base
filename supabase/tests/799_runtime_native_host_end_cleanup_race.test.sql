@@ -1,37 +1,45 @@
--- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- G2-2a (20260928419960): a job's ending takes no screen lock, and deletes its presence device only at commit, if the
--- row is free (skip locked); the supervisor releases an ended job's screen lease reading the job's status without a
--- lock. These run on separate connections against the presence heartbeat (register, which waits for the job row the
--- ending holds), a device row held by another, the supervisor's reap, the privacy fence and a fence-first lifecycle
--- (company row, office row, screens), with an ending of two jobs and an ending that goes on to take the company row.
--- None deadlocks (no 40P01). Office setup as in 405: a real office and screen lease for test 300's run (job A); job B
--- and its run are copies of job A's and its run's rows, with a second screen of the same office leased to job B (rows
--- only: replica mode skips the foreign keys this test does not build); only guest readiness is synthetic.
-select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+-- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
+-- G2-2a (20260928419960) on a folder-v2 company (ported from snapshot-v1 in the legacy sweep): a job's ending takes no
+-- screen lock, and deletes its presence device only at commit, if the row is free (skip locked); the supervisor
+-- releases an ended job's screen lease reading the job's status without a lock. These run on separate connections
+-- against the presence heartbeat (register, which waits for the job row the ending holds), a device row held by
+-- another, the supervisor's reap, the privacy fence and a fence-first lifecycle (company row, office row, screens), with
+-- an ending of two jobs and an ending that goes on to take the company row. None deadlocks (no 40P01). Office setup as
+-- in 405: a real office of the folder-v2 company and a screen lease for Alice's run of test 924 (a thread post the
+-- folder materializer turned into a run, which has acknowledged first, as a human wake requires; job A); job B and its
+-- run are copies of job A's and its run's rows, with a second screen of the same office leased to job B (rows only:
+-- replica mode skips the foreign keys this test does not build); only guest readiness is synthetic.
+select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
 set local role authenticated;
 select set_config('qorpera_test.office',public.qorpera_register_runtime_office(
-	'30000000-0000-4000-8000-000000000020','34000000-0000-4000-8000-000000000001',repeat('a',64),repeat('b',64),2)::text,true);
+	'92400000-0000-4000-8000-000000000020','79900000-0000-4000-8000-000000000001',repeat('a',64),repeat('b',64),2)::text,true);
 select set_config('qorpera_test.office_scope',(current_setting('qorpera_test.office')::jsonb-'state')::text,true);
 reset role;
-create function pg_temp.office_call(p_action text,p_lease jsonb default null)
+create function pg_temp.r799_office_call(p_action text,p_lease jsonb default null)
 returns jsonb language sql as $$
-	select public.qorpera_native_office_screen(current_setting('qorpera_test.wake_binding')::jsonb,
+	select public.qorpera_native_office_screen(current_setting('qorpera_test.base_binding')::jsonb,
 		current_setting('qorpera_test.office_scope')::jsonb,p_action,p_lease)
 $$;
 -- Synthetic guest readiness only. This is not a provider or Linux test.
 update public.qorpera_runtime_offices set state='active'
 where id=(current_setting('qorpera_test.office')::jsonb->>'companyComputerId')::uuid;
-select pg_temp.path_claims('service_role');
+select pg_temp.base_claims('service_role');
+select pg_temp.base_public_send(current_setting('qorpera_test.base_binding')::jsonb,'progress','r799-ack') \g /dev/null
 set local role service_role;
-select set_config('qorpera_test.office_lease',(pg_temp.office_call('acquire')->'lease')::text,true);
-select set_config('qorpera_test.binding',(current_setting('qorpera_test.office_lease')::jsonb->'binding')::text,true);
+do $$
+declare v_screen jsonb := pg_temp.r799_office_call('acquire');
+begin
+	perform pg_temp.base_assert(v_screen ->> 'state' = 'admitted', 'Alice''s screen is hers: ' || v_screen::text);
+	perform set_config('qorpera_test.office_lease',(v_screen->'lease')::text,true);
+	perform set_config('qorpera_test.binding',(v_screen->'lease'->'binding')::text,true);
+end $$;
 reset role;
 
 -- The run's presence device, as the host registers it.
-select pg_temp.path_claims('service_role');
+select pg_temp.base_claims('service_role');
 set local role service_role;
-select public.qorpera_native_presence_register(current_setting('qorpera_test.wake_binding')::jsonb,
-	'7e2a0000-0000-4000-8000-000000000001','MCowBQYDK2VwAyEA'||repeat('A',43)||'=');
+select public.qorpera_native_presence_register(current_setting('qorpera_test.base_binding')::jsonb,
+	'7e2a0000-0000-4000-8000-000000000001','MCowBQYDK2VwAyEA'||repeat('A',43)||'=') \g /dev/null
 reset role;
 select set_config('qorpera_test.job_b', '7e2a0000-0000-4000-8000-0000000000b1', false);
 select set_config('qorpera_test.run_b', '7e2a0000-0000-4000-8000-0000000000b2', false);
@@ -40,12 +48,12 @@ insert into public.qorpera_execution_runs
 select (jsonb_populate_record(null::public.qorpera_execution_runs, to_jsonb(run) || jsonb_build_object(
 	'id', current_setting('qorpera_test.run_b'), 'job_id', current_setting('qorpera_test.job_b'),
 	'source_id', extensions.gen_random_uuid()))).*
-from public.qorpera_execution_runs as run where run.id = (current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid;
+from public.qorpera_execution_runs as run where run.id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
 insert into public.qorpera_runner_jobs
 select (jsonb_populate_record(null::public.qorpera_runner_jobs, to_jsonb(job) || jsonb_build_object(
 	'id', current_setting('qorpera_test.job_b'), 'run_id', current_setting('qorpera_test.run_b'),
 	'client_job_id', extensions.gen_random_uuid(), 'client_lease_id', null))).*
-from public.qorpera_runner_jobs as job where job.id = (current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId')::uuid;
+from public.qorpera_runner_jobs as job where job.id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId')::uuid;
 insert into public.qorpera_runtime_office_screens(office_id, ordinal, staff_agent_id, power, lease_id, run_id, lease_expires_at,
 	grant_version, native_binding)
 select screen.office_id, screen.ordinal + 1, extensions.gen_random_uuid(), screen.power, extensions.gen_random_uuid(),
@@ -54,12 +62,12 @@ select screen.office_id, screen.ordinal + 1, extensions.gen_random_uuid(), scree
 from public.qorpera_runtime_office_screens as screen where screen.id = (current_setting('qorpera_test.binding')::jsonb ->> 'screenId')::uuid;
 set local session_replication_role = origin;
 
--- Row locks show only across connections, so the fixture is committed here and removed again at the end (the
--- harness of 602 and 746): the test refuses to run beside other connections to this database, whose rows the
+-- Row locks show only across connections, so 924's fixture and this one are committed here and removed again at the end
+-- (the harness of 602 and 746): the test refuses to run beside other connections to this database, whose rows the
 -- cleanup could not tell from its own.
 reset role;
 select set_config(name, current_setting(name), false)
-from unnest(array['qorpera_test.wake_binding','qorpera_test.office','qorpera_test.office_scope','qorpera_test.office_lease','qorpera_test.binding',
+from unnest(array['qorpera_test.base_binding','qorpera_test.office','qorpera_test.office_scope','qorpera_test.office_lease','qorpera_test.binding',
 	'qorpera_test.job_b','qorpera_test.run_b']) name;
 select set_config('qorpera_test.r799_first_xid', xid(pg_current_xact_id())::text, false);
 select dblink_connect('r799_holder', 'dbname=' || current_database());
@@ -159,12 +167,12 @@ end $$;
 -- The calls, each answering one jsonb value. The ending runs as the server's own paths do (the revoked runner).
 create function pg_temp.r799_end_sql() returns text language sql as $$
 	select format($q$select to_jsonb(public.qorpera_terminalize_runner_attempt(%L, 'failed', 'G2-2a race: the runner was revoked', false))$q$,
-		current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId')
+		current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId')
 $$;
 create function pg_temp.r799_heartbeat_sql() returns text language sql as $$
 	select format($q$select set_config('request.jwt.claims', '{"role":"service_role"}', true),
 		public.qorpera_native_presence_register(%L, '7e2a0000-0000-4000-8000-000000000001', %L)$q$,
-		current_setting('qorpera_test.wake_binding'), 'MCowBQYDK2VwAyEA' || repeat('A', 43) || '=')
+		current_setting('qorpera_test.base_binding'), 'MCowBQYDK2VwAyEA' || repeat('A', 43) || '=')
 $$;
 create function pg_temp.r799_supervisor_sql() returns text language sql as $$
 	select format($q$select set_config('request.jwt.claims', '{"role":"service_role"}', true),
@@ -212,7 +220,7 @@ create function pg_temp.r799_count(p_connection text, p_sql text) returns bigint
 $$;
 create function pg_temp.r799_device_sql() returns text language sql as $$
 	select format('select count(*) from public.qorpera_native_presence_devices where run_id = %L',
-		current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')
+		current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')
 $$;
 create function pg_temp.r799_expect(p_ok boolean, p_label text) returns void language plpgsql as $$
 declare v_name text;
@@ -261,7 +269,7 @@ create function pg_temp.r799_steps(p_steps text[]) returns text language sql as 
 $$;
 create function pg_temp.r799_end_a_step() returns text language sql as $$
 	select format($q$perform public.qorpera_terminalize_runner_attempt(%L, 'failed', 'G2-2a race: the runner was revoked', false)$q$,
-		current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId')
+		current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId')
 $$;
 create function pg_temp.r799_end_b_step() returns text language sql as $$
 	select format($q$update public.qorpera_runner_jobs set status = 'failed', lease_token_sha256 = null, lease_expires_at = null,
@@ -269,7 +277,7 @@ create function pg_temp.r799_end_b_step() returns text language sql as $$
 		current_setting('qorpera_test.job_b'))
 $$;
 create function pg_temp.r799_profile() returns uuid language sql as $$
-	select profile_id from public.qorpera_execution_runs where id = (current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid
+	select profile_id from public.qorpera_execution_runs where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid
 $$;
 create function pg_temp.r799_leased_sql() returns text language sql as $$
 	select format('select count(*) from public.qorpera_runtime_office_screens where id = %L and lease_id is not null',
@@ -303,7 +311,7 @@ declare v_flush text;
 begin
 	perform dblink_exec('r799_holder', 'begin');
 	perform * from dblink('r799_holder', format('select 1 from public.qorpera_native_presence_devices where run_id = %L for update',
-		current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')) as r(n integer);
+		current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')) as r(n integer);
 	perform dblink_exec('r799_ender', 'begin');
 	perform * from dblink('r799_ender', pg_temp.r799_end_sql()) as r(a jsonb);
 	perform pg_temp.r799_send('r799_ender', pg_temp.r799_flush_sql());

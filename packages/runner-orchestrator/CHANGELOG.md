@@ -22,6 +22,7 @@
 
 ### Added
 
+- The shared execution service gives each slot's native host the node's folder search when `QORPERA_SHARED_EXECUTION_FOLDER_SEARCH=on` (F3, "Light threads"): it starts the slot's `qorpera-folder-relay@N.socket` before the host and names it in the host's environment (`QORPERA_FOLDER_SEARCH_SOCKET`). Off by default.
 - F2's human-task wakes join the shared folder drains (H2c = P31; migration `20260930065000`): `CLOUD_FOLDER_DRAINS` runs `human_tasks` (company limit 32) after `listen`, which marks the task changes it wakes for, so a change is woken in the pass that heard it; the edge function's `FOLDER_DRAINS` maps `human_tasks` to `qorpera_folder_human_tasks_due` and `qorpera_folder_human_tasks_company` (maximum 32). An orchestrator ahead of its edge function gets the 400 and pauses that drain alone.
 
 - F2's worker drain joins the shared folder drains (F2-5b-3; migration `20260930003100`): `CLOUD_FOLDER_DRAINS` runs `workers` (company limit 32) before `listen`, so a worker started or a parent revived in a pass is materialized in the same pass, and the edge function's `FOLDER_DRAINS` maps `workers` to `qorpera_folder_workers_due` and `qorpera_folder_workers_company` (maximum 32). An orchestrator ahead of its edge function gets the 400 and pauses that drain alone.
