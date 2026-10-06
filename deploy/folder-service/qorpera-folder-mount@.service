@@ -1,0 +1,36 @@
+[Unit]
+Description=Qorpera company folder %i (read-only, from this node's folder service)
+ConditionPathExists=/etc/qorpera-folder/mounts/%i.json
+
+[Service]
+Type=exec
+# Only root can enter /srv/qorpera-folder, and the mount serves only the account that made it (no allow_other).
+ExecStartPre=/usr/bin/install -d -o root -g root -m 0700 /srv/qorpera-folder
+ExecStartPre=/usr/bin/install -d -o root -g root -m 0755 /srv/qorpera-folder/%i
+ExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file /etc/qorpera-folder/mounts/%i.json --mountpoint /srv/qorpera-folder/%i
+# A program killed hard leaves its mount behind; take it away.
+ExecStopPost=-/usr/bin/umount -l /srv/qorpera-folder/%i
+Restart=on-failure
+RestartSec=5s
+# 3: the node closed or refused the view. Starting again would only be refused again.
+RestartPreventExitStatus=3
+KillMode=mixed
+TimeoutStopSec=20s
+LimitCORE=0
+# The mount must appear in PID 1's mount namespace, so no option here makes a namespace of its own (ProtectSystem,
+# PrivateTmp, PrivateDevices, ProtectHome, ReadWritePaths, ProtectKernel*, ProtectControlGroups).
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SYS_ADMIN
+DevicePolicy=closed
+DeviceAllow=/dev/fuse rw
+RestrictAddressFamilies=AF_UNIX AF_VSOCK
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+MemoryMax=512M
+MemorySwapMax=0
+
+[Install]
+WantedBy=multi-user.target

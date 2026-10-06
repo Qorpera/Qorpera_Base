@@ -8,15 +8,17 @@ import { readFile } from "node:fs/promises";
 //   node scripts/machine-provider-policy.mjs <image-build.json> <owner> <node-id> <machine-id-sha256> \
 //     <provider-id> <max-cpus> <max-memory-gib> <machine-disk-gib> [project] [storage-pool] [network]
 //
-// machine-disk-gib is the disk the node's pool may promise machines in total.
+// machine-disk-gib is the disk the node's pool may promise machines in total. network is the agents' bridge,
+// qagent0 (deploy/agent-exit): machines are agent road machines, plugged into the node's agent exit.
 //
 // The provider policy digest covers everything a machine of this node is made
 // from, so a new image or helper is a new provider policy (and old machines
 // keep theirs until they are deleted).
-const [buildPath, owner, nodeId, machineIdSha256, providerId, maxCpus, maxMemoryGiB, diskGiB, project = "machines", storagePool, network = "machine-net"] =
+const [buildPath, owner, nodeId, machineIdSha256, providerId, maxCpus, maxMemoryGiB, diskGiB, project = "machines", storagePool, network = "qagent0"] =
 	process.argv.slice(2);
 if (!buildPath || !owner || !nodeId || !machineIdSha256 || !providerId || !maxCpus || !maxMemoryGiB || !diskGiB)
 	throw new Error("Usage: machine-provider-policy.mjs <image-build.json> <owner> <node-id> <machine-id-sha256> <provider-id> <max-cpus> <max-memory-gib> <machine-disk-gib> [project] [storage-pool] [network]");
+if (network !== "qagent0") throw new Error("Machines plug into the agents' bridge: network must be qagent0");
 const build = JSON.parse(await readFile(buildPath, "utf8"));
 if (build.schema !== "qorpera.machine-image-build/v1") throw new Error("Not a machine image build record");
 const cpuMillis = Number(maxCpus) * 1000;

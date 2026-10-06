@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import { join, relative } from "node:path";
+import { performance } from "node:perf_hooks";
 import {
 	assertCompanyComputerScreenBinding,
 	COMPANY_COMPUTER_UUID,
@@ -12,6 +13,7 @@ import {
 	type CompanyComputerToolContent,
 	companyComputerRequest,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import type { JsonValue } from "@qorpera/contracts";
 import type { BrowserContext, Page } from "playwright-core";
 import type { CompanyComputerFillKey } from "./cloud-company-account-fill-box.ts";
 import {
@@ -273,6 +275,72 @@ export class PersistentCompanyComputerBrowser {
 	}
 }
 
+/** One command in an agent's shell, as the model sees it. */
+export interface CompanyComputerShellCommandResult {
+	sessionId: string;
+	/** `stopped`: ended by a stop, or by the shell itself ending. */
+	state: "running" | "exited" | "stopped";
+	exitCode?: number;
+	signal?: string;
+	/** Output since the last reply, stdout and stderr in arrival order. */
+	output: string;
+	/** Output bytes this reply does not show: older than the kept tail, or cut from the middle. */
+	skippedBytes?: number;
+	/** Why the machine stopped it, when neither the command nor the agent did. */
+	note?: string;
+}
+
+export interface CompanyComputerShellListResult {
+	commands: {
+		sessionId: string;
+		command: string;
+		state: CompanyComputerShellCommandResult["state"];
+		exitCode?: number;
+		startedAt: string;
+		unreadBytes: number;
+	}[];
+	/** Older commands the list leaves out to stay small; `list` shows the newest first. */
+	omittedCommands?: number;
+	/** Processes running in the shell, including ones a command left behind. */
+	processes: number;
+}
+
+/**
+ * The agent's own long-running shell on its screen: one namespace, started on
+ * first use and kept until the screen closes, the computer powers off or
+ * `stop` without a session restarts it. Commands have no time limit and share
+ * its localhost and /tmp. start, write and stop are the effects and return at
+ * once; `result` only waits and reads, so a cancelled wait leaves nothing of
+ * the action running (the command itself was never the action's).
+ */
+export interface CompanyComputerGuestShell {
+	start(input: {
+		/** The effect receipt: a repeated delivery returns the same command. */
+		key: string;
+		command: string;
+		/** The run that started it, which is told when it stops and asked about it. */
+		runId: string;
+		signal: AbortSignal;
+	}): Promise<{ sessionId: string }>;
+	write(input: {
+		sessionId: string;
+		text: string;
+		endInput: boolean;
+		signal: AbortSignal;
+	}): Promise<{ sessionId: string }>;
+	/** Without a session: every process in the shell ends and the next start opens a fresh one. */
+	stop(input: { sessionId?: string; signal: AbortSignal }): Promise<{ sessionId: string } | { stopped: number }>;
+	/** Whether a command is known; unknown ids are refused before anything happens. */
+	known(sessionId: string): boolean;
+	/** Waits up to `waitMs` for the command to end, then returns what it wrote since the last reply. */
+	result(input: {
+		sessionId: string;
+		waitMs: number;
+		signal: AbortSignal;
+	}): Promise<CompanyComputerShellCommandResult>;
+	list(): CompanyComputerShellListResult;
+}
+
 export interface CompanyComputerGuestCommands {
 	/** Broker-only selected workbench read; no member or canonical paths. */
 	readFile?(input: { path: string; signal: AbortSignal }): Promise<Uint8Array>;
@@ -344,6 +412,7 @@ export class CompanyComputerGuestAutomation {
 	readonly #layout: CompanyComputerGuestLayout;
 	readonly #boundary: CompanyComputerGuestBoundary;
 	readonly #commands?: CompanyComputerGuestCommands;
+	readonly #shell?: CompanyComputerGuestShell;
 	readonly #browser?: CompanyComputerBrowserSession;
 	readonly #screenBrowser?: (signal: AbortSignal) => Promise<BrowserContext | undefined>;
 	readonly #screenshots: CompanyComputerScreenshotPublisher;
@@ -365,6 +434,7 @@ export class CompanyComputerGuestAutomation {
 		layout: CompanyComputerGuestLayout;
 		boundary: CompanyComputerGuestBoundary;
 		commands?: CompanyComputerGuestCommands;
+		shell?: CompanyComputerGuestShell;
 		browser?: CompanyComputerBrowserSession;
 		/** The browser window open on this screen now, whether or not this run drives it; it never opens one. */
 		screenBrowser?: (signal: AbortSignal) => Promise<BrowserContext | undefined>;
@@ -383,6 +453,7 @@ export class CompanyComputerGuestAutomation {
 		this.#layout = Object.freeze({ ...options.layout });
 		this.#boundary = options.boundary;
 		this.#commands = options.commands;
+		this.#shell = options.shell;
 		this.#browser = options.browser;
 		this.#screenBrowser = options.screenBrowser;
 		this.#screenshots = options.screenshots;
@@ -862,6 +933,44 @@ export class CompanyComputerGuestAutomation {
 			}
 			return { kind: "json", value: { action: action.action, tabId: this.#tabIds.get(page)!, completed: true } };
 		}
+		if (action.kind === "shell" && action.action !== undefined) {
+			const shell = this.#shell;
+			if (!shell) throw new Error("CONTAINED_COMPUTER_SHELL_UNAVAILABLE");
+			// Refused before anything happened: the action failed as its own.
+			const refusal = (error: unknown): never => {
+				if (
+					error instanceof Error &&
+					[
+						"OFFICE_SHELL_SESSION_UNKNOWN",
+						"OFFICE_SHELL_SESSION_ENDED",
+						"OFFICE_SHELL_INPUT_ENDED",
+						"OFFICE_SHELL_RESTARTING",
+						"OFFICE_SHELL_STARTING",
+					].includes(error.message)
+				)
+					throw new CompanyComputerActionFailedError(error);
+				throw error;
+			};
+			let value: JsonValue;
+			if (action.action === "start")
+				value = await shell
+					.start({ key: effect.receiptId, command: action.command, runId: effect.identity.runId, signal })
+					.catch(refusal);
+			else if (action.action === "read") {
+				if (!shell.known(action.sessionId)) refusal(new Error("OFFICE_SHELL_SESSION_UNKNOWN"));
+				value = { sessionId: action.sessionId };
+			} else if (action.action === "write")
+				value = await shell
+					.write({ sessionId: action.sessionId, text: action.text, endInput: action.endInput, signal })
+					.catch(refusal);
+			else if (action.action === "stop")
+				value = await shell
+					.stop({ ...(action.sessionId === undefined ? {} : { sessionId: action.sessionId }), signal })
+					.catch(refusal);
+			else value = shell.list() as unknown as JsonValue;
+			signal.throwIfAborted();
+			return { kind: "json", value };
+		}
 		if (!this.#commands) throw new Error("CONTAINED_COMPUTER_COMMANDS_UNAVAILABLE");
 		if (action.kind === "screenshot") {
 			// The whole screen shows the browser unmasked: no capture while a shown tab holds a private value,
@@ -917,7 +1026,12 @@ export class CompanyComputerGuestAutomation {
 				program: action.kind === "shell" ? "/bin/bash" : "/usr/bin/xdotool",
 				args,
 				...(action.kind === "desktop" && action.action === "type" ? { stdin: action.text } : {}),
-				environment: { DISPLAY: display, PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
+				// A shell command never gets the screen's display; xdotool does.
+				environment: {
+					...(action.kind === "shell" ? {} : { DISPLAY: display }),
+					PATH: "/usr/local/bin:/usr/bin:/bin",
+					LANG: "C.UTF-8",
+				},
 				workingDirectory: this.#layout.workbenchRoot,
 				timeoutMs: action.kind === "shell" ? action.timeoutMs : 5_000,
 				maxOutputBytes: 16_384,
@@ -943,6 +1057,36 @@ export class CompanyComputerGuestAutomation {
 		)
 			throw new Error("INVALID_COMPUTER_COMMAND_RESULT");
 		return { kind: "json", value: { code: output.code, stdout: output.stdout, stderr: output.stderr } };
+	}
+
+	/**
+	 * The passive half of a shell action, after its effect settled and outside
+	 * the screen's action gate: wait for the command, then read what it wrote.
+	 * Cancelling this stops nothing, so it never leaves the screen to drain.
+	 */
+	async settle(
+		value: CompanyComputerAction,
+		content: CompanyComputerToolContent,
+		signal: AbortSignal,
+		/** `performance.now()` by which the reply must be on its way back to the run. */
+		replyBy: number,
+	): Promise<CompanyComputerToolContent> {
+		const action = parseCompanyComputerAction(value);
+		if (action.kind !== "shell" || action.action === undefined || action.action === "list" || !this.#shell)
+			return content;
+		const started = content.kind === "json" ? (content.value as { sessionId?: unknown }) : undefined;
+		if (typeof started?.sessionId !== "string") return content;
+		const result = await this.#shell.result({
+			sessionId: started.sessionId,
+			// A stop sends SIGTERM, then SIGKILL two seconds later. A cold screen's
+			// start may have used part of the call's deadline: the wait gets the rest.
+			waitMs: Math.max(
+				0,
+				Math.min(action.action === "stop" ? 4000 : action.waitMs, Math.floor(replyBy - performance.now())),
+			),
+			signal,
+		});
+		return { kind: "json", value: result as unknown as JsonValue };
 	}
 
 	async #publish(

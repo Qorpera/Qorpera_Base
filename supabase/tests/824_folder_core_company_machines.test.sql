@@ -36,7 +36,7 @@ begin
 		repeat('f',64),8000,34359738368);
 	perform public.qorpera_configure_machine_executor('mx-824',repeat('8',64),true,jsonb_build_object('providerId','machine-824',
 		'providerPolicySha256',repeat('f',64),'project','machines','imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),
-		'storagePool','machines','network','machine-net'),322122547200);
+		'storagePool','machines','network','qagent0'),322122547200);
 end $$;
 
 -- Machines (committed). The folder-v2 company (10): c-run waits for room; c-member is a member's, stopped. The

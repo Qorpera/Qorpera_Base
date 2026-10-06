@@ -141,7 +141,7 @@ begin
 	if w ->> 'state' <> 'approved' then raise exception 'The holding call is approved: %', w; end if;
 	r := pg_temp.record(b, v_action, u);
 	if r ->> 'approvedBy' <> '63400000-0000-4000-8000-000000000002' or (select to_jsonb(f) - 'id' - 'environment_id' - 'run_id'
-			- 'change_set_sha256' - 'units' - 'created_at' from public.qorpera_folder_reviews f where id = (r ->> 'reviewId')::uuid)
+			- 'change_set_sha256' - 'units' - 'created_at' - 'proposal_id' from public.qorpera_folder_reviews f where id = (r ->> 'reviewId')::uuid)
 		<> jsonb_build_object('decision', 'ask', 'answer', 'allow', 'answered_by_user_id', '63400000-0000-4000-8000-000000000002',
 			'answered_at', (select answered_at from public.qorpera_action_reviews where id = v_action)) then
 		raise exception 'A card''s allow is recorded as its answer, with its member: %', r; end if;

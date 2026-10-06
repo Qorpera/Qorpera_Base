@@ -270,8 +270,12 @@ values ('30000000-0000-4000-8000-0000000007d1', '30000000-0000-4000-8000-0000000
 	'30000000-0000-4000-8000-000000000001');
 select public.qorpera_folder_enable('30000000-0000-4000-8000-0000000007d1');
 select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
-select pg_temp.wake_error($q$select public.qorpera_create_company_mailbox('30000000-0000-4000-8000-0000000007d0',
-	'30000000-0000-4000-8000-0000000007d1', 'folder', 'Folder mail')$q$, '0A000');
+-- 20260930060000 (E1): a folder company gets its mailbox, with its connection file (test 912 covers the folder side).
+do $$ begin
+	if public.qorpera_create_company_mailbox('30000000-0000-4000-8000-0000000007d0', '30000000-0000-4000-8000-0000000007d1',
+		'folder', 'Folder mail') ->> 'name' is distinct from 'mail-folder' then
+		raise exception 'A folder company has no mailbox'; end if;
+end $$;
 select pg_temp.path_claims('service_role');
 
 rollback;

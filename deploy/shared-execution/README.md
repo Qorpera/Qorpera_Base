@@ -13,7 +13,9 @@ What does **not** change:
 - the guest image: the execution host boots the pinned LXD runner guest image
   and runs its `qorpera-native-provider-host.mjs`, `qorpera-ephemeral-runner.mjs`
   and bubblewrap containment unchanged; this package only adds the service,
-  two unit templates, the slot accounts and the co-located orchestrator;
+  two unit templates, the slot accounts, the co-located orchestrator, and the
+  folder program with its mount unit (F3, `deploy/first-node/RUNTIME-FOLDER-SERVICE.md`:
+  installed, pinned, started by nothing here);
 - the control plane: the same runner rows (`qorpera_provision_execution_runner`),
   the same company-ceiling reservation per sandbox
   (`qorpera_reserve_runtime_machine` / `qorpera_release_runtime_machine`), the
@@ -37,6 +39,10 @@ What does **not** change:
 | `/var/lib/qorpera-shared-execution/slots/<n>/host` | `qorpera-shared-host-<n>` | native host scratch (capsule opened here, wiped after the run) |
 | `/var/lib/qorpera-shared-execution/slots/<n>/runner/{state,workspace}` | `qorpera-shared-runner-<n>` | runner authority state and workspace |
 | `/run/qorpera-shared-execution/slots/<n>/{credentials/*,native-provider.env}` | root 0600, tmpfs | what PID 1 hands to the two units (`LoadCredential=`, `EnvironmentFile=`) |
+| `/opt/qorpera-folder/qorpera-folder`, `/etc/systemd/system/qorpera-folder-mount@.service` | root | the folder program and its mount unit (F3; pinned, started by nothing in this package) |
+| `/etc/qorpera-folder/mounts/<id>.json` | root 0600 in 0700 | a mount's view file (its company folder, view id and pass) |
+| `/srv/qorpera-folder/<id>` | root 0755 in a root 0700 `/srv/qorpera-folder` | a mount (read-only, served to its mounting account only); hidden, with `/etc/qorpera-folder`, from both slot units |
+| `/etc/systemd/system/qorpera-folder-relay@.{socket,service}`, `/run/qorpera-folder-relay/<n>.sock` | the slot's native host account, 0600 | the node's folder search: the slot's relay to the node's folder service (F3, "Light threads"; started by the service before the host only while `QORPERA_SHARED_EXECUTION_FOLDER_SEARCH=on`) |
 
 Slot `n` listens on `portBase + 2n` (native host) and `portBase + 2n + 1`
 (assignment inbox), both loopback. The runner configuration is written into
@@ -329,7 +335,8 @@ for id in <computeIdentityId...>; do
     source="phql-a1-identity-${id}" path="/var/lib/qorpera/identities/${id}" --project qn25b2
 done
 lxc start qorpera-exec-node02 --project qn25b2
-# Stage the package (node scripts/package-shared-execution-service.mjs --out <dir>)
+# Stage the package (node scripts/build-folder-program.mjs --out <program>, then
+# node scripts/package-shared-execution-service.mjs --out <dir> --folder-program <program>)
 # under /var/lib/qorpera-bootstrap/shared-execution and run the installer.
 lxc file push --project qn25b2 -r <dir>/ qorpera-exec-node02/var/lib/qorpera-bootstrap/
 lxc exec qorpera-exec-node02 --project qn25b2 -- \
