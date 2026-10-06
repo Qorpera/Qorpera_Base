@@ -369,6 +369,7 @@ describe("the folder core's entry points (core C3)", () => {
 		"qorpera_folder_worker_commit",
 		"qorpera_folder_agent_workers",
 		"qorpera_folder_cancel_agent_worker",
+		"qorpera_folder_archive_coding_worker",
 		"qorpera_folder_manage_hook",
 	] as const;
 

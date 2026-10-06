@@ -1,8 +1,8 @@
 # Hooks, mailboxes and event wakes on the folder core (C4, Q1)
 
 Status: plan agreed 4 October 2026 (Q1, qorpera-cb, with the coordinator, F2 and A1; §10). **E1 built** (migration
-`20260930060000`, SQL test 912; the parser's two kinds; the writer by kind). E2 reserved: migration `20260930061000`, SQL
-test 913.
+`20260930060000`, SQL tests 912 and 919; the parser's two kinds; the writer by kind). **E2a built** (migration
+`20260930061000`, SQL tests 913 and 923; §4 as built). E2b (scheduling, the parser, the runtime) follows.
 
 ## 0. Why
 
@@ -209,17 +209,21 @@ This is the spelling W2 and F2-6 agreed (`REG:1948`, `RUNTIME-COMPANY-STATE-FILE
 
 ### 4.2 Rules and locks
 
-- **The routine rules** require `hook` to be a live hook of the same company and environment, on save, move and
-  handover. A problem `hook_unavailable` is reported as the file's structured problem; without this rule, W2's trigger
-  would abort the whole commit with 42501.
-  - The rule is checked twice: on the plain read, and again in decide, under the hook's lock. A hook removed between the
-    read and the lock refuses the save, rather than saving a routine whose listener can never fire (F2, 4 October).
+- **The routine rules** require `hook` to be a live hook of the same company and environment when the file is saved
+  (as built: the problem is "hook … is not a hook or mailbox of this company; list_hooks shows them"). They also refuse
+  a ChatGPT plan as payer, as P29's file-change routines do.
+  - The rules run in decide, under the hook's lock (the commit's rank-5 target). A hook removed before the lock refuses
+    the save, rather than saving a routine whose listener can never fire (F2, 4 October).
+  - Moves and handovers don't ask the rules. On folder-v2, W2's version trigger no longer raises 42501 for a removed hook
+    or a plan payer. Such a version gets a cursor that never wakes: the drain and the gate check the hook, and the gate
+    refuses a plan-paid listener's wakes. Raising would have refused the whole change set.
 - **The commit** takes each named hook row `FOR SHARE` at rank 5, through the structured-lock targets.
   - `qorpera_event_hooks` goes last in rank 5's table order, after routines and every other index table.
   - Every writer of a hook row takes it at that same place, after the routines it holds, and nothing after rank 5:
-    E1's create, pause and remove; E3's tool; the event drain's KEY SHARE.
-  - So a save and a removal serialize. Either the save sees the hook removed, or the removal waits for the save and then
-    deactivates the routine's cursor through the existing remove trigger.
+    E1's create, pause and remove; E3's tool; the event drain, also `FOR SHARE`. A `KEY SHARE` would not wait for a
+    removal's `FOR NO KEY UPDATE`.
+  - So a save and a removal serialize: either the save sees the hook removed, or the removal waits for the save. No
+    trigger deactivates the cursors of a removed hook. The due list, the drain and the gate all skip a removed hook.
 - **The compiled trigger** is byte-identical to the one W2 stores for old-core routines. So the cursor trigger, the event
   drain and the member mail reads (which join cursors) read one shape.
 
@@ -228,22 +232,35 @@ This is the spelling W2 and F2-6 agreed (`REG:1948`, `RUNTIME-COMPANY-STATE-FILE
 The drain follows P29's contract (`RUNTIME-COMPANY-FOLDER-LISTENER.md` §9) and #803's shape.
 
 - **The due list:** `qorpera_folder_event_wakes_due(p_after_environment, p_limit)` is a plain read. It lists the folder-v2
-  environments that have an active event cursor with a verified delivery after the cursor's mark and no open event wake
-  for that trigger. It leaves out companies being deleted and paused ones: paused events wait, as W2's drain skips paused
-  companies (`WAKES:277`).
-- **One company:** `qorpera_folder_event_wakes_company(p_environment_id, p_limit ≤ 64)`, in one transaction:
-  1. a plain read of the due cursors and their routine, requester, agent and execution authority;
-  2. `qorpera_folder_company_enter(…, refuse_paused => true)` with those targets: requesters at rank 1, agents at 2,
-     authorities at 3, each routine `FOR NO KEY UPDATE` and its hook `KEY SHARE` at rank 5;
-  3. the cursors `FOR UPDATE SKIP LOCKED`, as run-owned rows after rank 9;
-  4. the checks again under the locks: routine current and active, hook live, quiet hours;
-  5. the target sessions KEY SHARE;
-  6. `qorpera_folder_admit_wakes` only if a wake will be inserted;
-  7. the inserts in subtransactions. Each is a wake occurrence with `source_kind 'event'`, `source_id` the hook id, and
-     W2's occurrence key and payload. Then `qorpera_event_wake_deliveries`, then the cursor advance.
+  environments whose step would wake a listener now (as built, after review r1):
+  - a live listener: the routine's current version active, a valid trigger, its cursor active, its hook not removed, its
+    agent active and its requester a member;
+  - a verified delivery of a type it takes waiting (W2's `qorpera_event_listener_waiting`, with `only`);
+  - no wake pending for its trigger, and no retry waiting for that delivery (`qorpera_folder_event_wake_retry_waits`).
 
-  It answers `busy` on 55P03/40P01, and `paused`, `idle`, `deleting` or `not_folder` rather than raising. Its bounds are
-  W2's: one open wake per trigger, at most 20 deliveries per wake, retries after 1, 4, 16 and 64 minutes.
+  It leaves out companies being deleted and paused ones: paused events wait, as W2's drain skips paused companies
+  (`WAKES:277`). A company is still listed when a `required` reply has no public conversation; its step passes it over.
+- **One company:** `qorpera_folder_event_wakes_company(p_environment_id, p_limit ≤ 64)`, in one transaction (as built):
+  1. a plain read of the company's live listeners (least recently scanned first) and their routine, requester, agent and
+     trigger. Only live listeners (the routine current and active, a valid trigger, the hook not removed) are ordered and
+     counted against `p_limit`, so an active cursor that is no listener never takes a live one's place (review r1 F1);
+  2. `qorpera_folder_company_enter(…, false)` with those targets: requesters at rank 1, agents at 2, authorities at 3,
+     each routine `FOR NO KEY UPDATE` and its hook `FOR SHARE` at rank 5. Then `deleting`, or `paused` with nothing
+     written or moved: a paused company's events wait;
+  3. each cursor `FOR UPDATE SKIP LOCKED`, as run-owned rows after the ranks;
+  4. W2's checks under the locks: the routine current and active, the hook live, the agent active, no wake pending, the
+     first matching delivery (none: the cursor's mark moves past what `only` skips), the attempts and their waits, the
+     public conversation for a `required` reply, and the requester still a member;
+  5. the conversations KEY SHARE;
+  6. `qorpera_folder_admit_wakes` only if a wake will be inserted;
+  7. the inserts in subtransactions. Each is a wake occurrence with `source_kind 'event'`, `source_id` the hook id (the
+     pin trigger sets it), and W2's occurrence key (`event:<version>:<trigger>:<first delivery>:<attempt>`) and payload
+     (`hookId`, `firstDeliveryId`). The run's first read takes the deliveries (up to 20) and moves the mark, as W2's
+     read does. A known refusal (expired, at its limit, a requester or audience gone) is passed over.
+
+  It answers `busy` on 55P03/40P01 (or a conversation that moved at insert), and `paused`, `idle`, `deleting` or
+  `not_folder` rather than raising. Its bounds are W2's: one open wake per trigger, at most 20 deliveries per wake, and
+  retries after 1, 4, 16 and 64 minutes before a delivery is left behind.
 - **Scheduling:** one `FOLDER_DRAINS` entry (`events`) in `runner-orchestrator.ts`, and one `CLOUD_FOLDER_DRAINS` entry
   after `listen`. Re-pin the Runner Orchestrator, shared execution and LXD provider artifacts. Deploy the migration, then
   the edge function, then the orchestrator.
@@ -251,8 +268,12 @@ The drain follows P29's contract (`RUNTIME-COMPANY-FOLDER-LISTENER.md` §9) and 
 ### 4.4 The gate, the read, the runtime
 
 - **The gate:** `qorpera_folder_wake_authorized` drops `event` from its refusal list and checks that the hook is still
-  live, as W2's patch does on the old gate. This is an exact-text patch by its own anchor, so it composes with #803 and
-  3i-b, which drop other kinds.
+  live, as W2's patch does on the old gate. As built, `'event'` leaves the list by its own token. That works whatever
+  other kinds the list still holds (#803 and 3i-b drop theirs the same way).
+  - When nothing is left, the clause goes and a comment line of E2a's takes its place.
+  - The rest of the statement (`then return false; end if;`) stays on a line of its own, because the line before the
+    clause may be #803's comment. Removing the clause with its line break used to put that rest inside #803's comment.
+    This was found by applying all three together.
 - **The read:** `qorpera_folder_read_wake` adds W2's event batch (`qorpera_event_wake_payload`). The runtime already
   parses the envelope (`packages/runtime/src/cloud-wake-bus.ts:403-450`).
 - **The runtime:** `manage_routine` on folder-v2 accepts `event` and writes `when: event` into the routine file
@@ -260,6 +281,24 @@ The drain follows P29's contract (`RUNTIME-COMPANY-FOLDER-LISTENER.md` §9) and 
 
 ### 4.5 Tests (E2)
 
+E2 ships in two PRs:
+- **E2a** (migration `20260930061000`, SQL tests 913 and 923) carries the SQL. The drain functions stay inert until
+  scheduled.
+- **E2b** carries the `events` drain entry and the re-pins, the parser and the runtime. It comes after #803 and #816
+  have taken their drain slots and pins.
+
+As built, 913 runs on 708's company (P29's 887 uses the same). It covers:
+- the shape and W2's trigger, and the cursor;
+- both rules (a removed or unknown hook, a ChatGPT plan payer) and the rank-5 target;
+- one wake for a batch, with W2's key and payload, `only` filtering, and one open wake per trigger;
+- the gate, and the run's read: the batch is the wake's, and a late delivery makes the next wake;
+- a retry after its wait, a paused company's events waiting, a removed hook stopping, and the grants;
+- the due list: not due for a type the routine does not take, with a wake open, or while a retry waits;
+- a step with `p_limit` 1 whose oldest active cursor is on a removed hook: the live listener still wakes (review r1 F1).
+
+923 races a save against a removal, and the drain against a save.
+
+The plan's original list:
 - **SQL (on E1's fixture):**
   - a routine file with `when: event` indexes a cursor; a delivery to its hook makes one wake through the drain, and the
     run's read carries the batch;

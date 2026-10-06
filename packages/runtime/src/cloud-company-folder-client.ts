@@ -7,6 +7,7 @@ import {
 	parseCompanyStateFile,
 } from "@qorpera/cloud-client/company-state-files";
 import type { CloudFileReference } from "@qorpera/cloud-client/node/cloud-object-store";
+import type { CloudCodingRepository } from "@qorpera/contracts";
 import {
 	type CloudCompanyPathControl,
 	CloudCompanyPathNotText,
@@ -62,6 +63,12 @@ const RUN_EFFECTS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_prepare_routine_login",
 	"qorpera_folder_cancel_agent_worker",
 	"qorpera_folder_manage_hook",
+	"qorpera_folder_archive_coding_worker",
+]);
+/** A coding session's archive refusals, by SQL's message, with their SQLSTATE (C3b). */
+export const CODING_ARCHIVE_REFUSALS: ReadonlyMap<string, string> = new Map([
+	["Only a coding session can be archived", "22023"],
+	["The session has a new turn since you were asked; leave it", "55000"],
 ]);
 /** The answers of `qorpera_folder_manage_hook` (E3a, 20260930106000) the model reads, by SQLSTATE and SQL's message,
  * in the model's words: the request's rules, the company's state, the run's authority and the wake's refusals. Each is
@@ -389,6 +396,11 @@ export type CloudCompanyFolderWorkerRequest =
 			readonly doneWhen: string;
 			readonly context: string | null;
 			readonly sources: readonly string[];
+			/** A coding session's (C3a): the database checks them as the legacy dispatch did. */
+			readonly species?: "in-house" | "coding";
+			readonly harness?: string;
+			readonly repository?: CloudCodingRepository;
+			readonly owner?: string;
 	  }
 	/** `resultsVersion`: the results the follow-up removes, as read (null: none); other results now make it a conflict. */
 	| {
@@ -1148,6 +1160,46 @@ export class CloudCompanyFolderClient {
 			this.#uncertainHooks.add(request.operationKey);
 			throw refused === undefined ? error : new CloudCompanyFolderError("unknown");
 		}
+	}
+
+	/** Archives one of the run agent's coding sessions (C3b, `qorpera_folder_archive_coding_worker`): an active one is
+	 * cancelled first, and the session leaves its machine, keeping its files. A run effect under its own receipt, as
+	 * `cancelWorker`. A worker the agent does not have (P0002), one that is no coding session and one with a new turn
+	 * since the agent was asked are SQL's answers, kept for the caller. */
+	async archiveCodingWorker(
+		request: { readonly folder: string; readonly operationKey: string },
+		signal: AbortSignal,
+	): Promise<{
+		readonly receiptId: string;
+		readonly archived: boolean;
+		readonly phase: string;
+		readonly worker: CloudCompanyFolderWorker;
+	}> {
+		const input = record(
+			await this.#retried(
+				"qorpera_folder_archive_coding_worker",
+				{ p_binding: this.#binding, p_request: { folder: request.folder, operationKey: request.operationKey } },
+				RELEASE_RETRY,
+				signal,
+				(error) => error.code === "P0002" || CODING_ARCHIVE_REFUSALS.get(error.detail) === error.code,
+			),
+			["schema", "runId", "receiptId", "action", "folder", "archived", "worker", "phase"],
+		);
+		if (
+			input.schema !== "qorpera.agent-worker-receipt/v1" ||
+			input.runId !== this.#identity.runId ||
+			input.action !== "archive" ||
+			input.folder !== request.folder ||
+			typeof input.archived !== "boolean" ||
+			typeof input.phase !== "string"
+		)
+			invalid();
+		return {
+			receiptId: uuid(input.receiptId),
+			archived: input.archived,
+			phase: input.phase,
+			worker: folderWorker({ ...(input.worker as Record<string, unknown>), folder: request.folder }),
+		};
 	}
 
 	/** A page of the run agent's own file routines from the routine index, which the commit updates with the files (thin

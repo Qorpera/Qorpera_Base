@@ -62,22 +62,24 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 		const insert = text.slice(text.indexOf("insert into public.qorpera_native_host_calls(name, scope) values"));
 		return [...insert.slice(0, insert.indexOf(";\n")).matchAll(/\('(qorpera_[a-z0-9_]+)', '([a-z]+)'\)/g)];
 	};
-	// Found by name: a release re-slots the file.
-	const named = (suffix: string) =>
-		read(
-			readdirSync(new URL("../../../supabase/migrations/", import.meta.url)).find((name) => name.endsWith(suffix)) ??
-				`missing${suffix}`,
-		);
 	const rows = [
 		...rowsOf(migration),
 		...rowsOf(read("20260928429982_runtime_company_mail_find_and_tags.sql")),
 		...rowsOf(read("20260928429984_runtime_company_mail_attachments.sql")),
 		...rowsOf(read("20260928439965_runtime_company_account_tool.sql")),
 		...rowsOf(read("20260928439970_folder_run_view_open.sql")),
-		// The worker tools on folder-v2 (F2-5b-2).
-		...rowsOf(named("_folder_state_worker_files.sql")),
-		// Agents open hooks and mailboxes on folder-v2 (E3a).
-		...rowsOf(named("_folder_agent_manage_hook.sql")),
+		// The worker tools on folder-v2 (F2-5b-2), a coding session's archive (C3b) and agents' hooks and mailboxes (E3a),
+		// found by name: a release re-slots the file.
+		...["_folder_state_worker_files.sql", "_folder_coding_archive.sql", "_folder_agent_manage_hook.sql"].flatMap(
+			(suffix) =>
+				rowsOf(
+					read(
+						readdirSync(new URL("../../../supabase/migrations/", import.meta.url)).find((name) =>
+							name.endsWith(suffix),
+						) ?? `missing${suffix}`,
+					),
+				),
+		),
 	];
 	const long = new Set(
 		[...migration.matchAll(/set budget = 'long' where name = '(qorpera_[a-z0-9_]+)'/g)].map((m) => m[1]),
@@ -87,7 +89,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, , scope]) => scope !== "identity")
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(91);
+	expect(rows).toHaveLength(92);
 	expect(new Map(NATIVE_HOST_CALLS)).toEqual(expected);
 	expect([...NATIVE_HOST_CALLS].filter(([, budget]) => budget === "long")).toEqual([
 		["qorpera_validate_native_provider_execution_lease", "long"],

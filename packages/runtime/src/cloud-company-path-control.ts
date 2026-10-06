@@ -30,6 +30,7 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_worker_commit",
 	"qorpera_folder_agent_workers",
 	"qorpera_folder_cancel_agent_worker",
+	"qorpera_folder_archive_coding_worker",
 	"qorpera_folder_manage_hook",
 ]);
 
@@ -134,6 +135,8 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_folder_worker_commit",
 			"qorpera_folder_agent_workers",
 			"qorpera_folder_cancel_agent_worker",
+			// A coding session's archive (C3b).
+			"qorpera_folder_archive_coding_worker",
 			// Event wakes (W2), and a folder-v2 agent's own hooks and mailboxes (E3a).
 			"qorpera_list_agent_event_hooks",
 			"qorpera_read_agent_event",
