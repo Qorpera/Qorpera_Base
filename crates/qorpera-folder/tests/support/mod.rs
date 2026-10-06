@@ -152,7 +152,8 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 			let _ = error(&mut s, if st.closed { code::VIEW_CLOSED } else { code::VIEW_REFUSED });
 			return;
 		}
-		let ok = HelloOk { protocol: 1, view_id: hello.view_id.clone(), as_of_seq: st.seq, read_only: true };
+		// As the node does: the machine's protocol echoed.
+		let ok = HelloOk { protocol: hello.protocol, view_id: hello.view_id.clone(), as_of_seq: st.seq, read_only: true };
 		send_json(&mut s, kind::HELLO_OK, &ok).unwrap();
 	}
 	if hello.role == Role::Feed {
