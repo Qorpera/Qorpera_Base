@@ -2,6 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
+import { CodingResultsWriter } from "./coding-results-files.ts";
 import { CompanyFolderCreator } from "./company-folder-creation.ts";
 import { ConnectionFileWriter } from "./connection-files.ts";
 import { ObjectGatewayFolderGc } from "./folder-gc.ts";
@@ -62,6 +63,21 @@ const connectionFiles =
 				store,
 				replication,
 				readFallback: (profileId, sha256) => authority.readLegacyObject(profileId, sha256),
+			})
+		: undefined;
+// A coding turn's results.md writer (C3d): off unless QORPERA_CODING_RESULTS_WRITER=1; the coordinator turns it on. Its own
+// database client and its own loop, as the connection-file writer's.
+const codingResults =
+	process.env.QORPERA_CODING_RESULTS_WRITER === "1"
+		? new CodingResultsWriter({
+				workerId: process.env.QORPERA_CODING_RESULTS_WORKER_ID?.trim() || randomUUID(),
+				authority: new SupabaseMemberCompanyAuthority({
+					projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
+					publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
+					secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
+				}),
+				store,
+				replication,
 			})
 		: undefined;
 // Company creation's worker (P14b): off unless QORPERA_COMPANY_FOLDER_CREATOR=1; the coordinator turns it on. Its own
@@ -179,6 +195,23 @@ if (process.argv[2] === "migrate") {
 	const connectionFileWrites = setInterval(() => {
 		void writeConnectionFiles();
 	}, 15_000);
+	// The coding results writer's own loop, every 5 s (an agent's revival waits up to a minute for the file): one drain at
+	// a time, at most ten files and 30 s per tick.
+	let writingResults = false;
+	const writeCodingResults = async (): Promise<void> => {
+		if (!codingResults || writingResults) return;
+		writingResults = true;
+		try {
+			await codingResults.writeDue(10, AbortSignal.timeout(30_000));
+		} catch {
+			process.stderr.write("Coding results writer requires operator attention\n");
+		} finally {
+			writingResults = false;
+		}
+	};
+	const codingResultsWrites = setInterval(() => {
+		void writeCodingResults();
+	}, 5_000);
 	// Company creation's own loop: one drain at a time, at most five companies and 120 s per tick.
 	let creating = false;
 	const createCompanies = async (): Promise<void> => {
@@ -203,6 +236,7 @@ if (process.argv[2] === "migrate") {
 		process.on(signal, () => {
 			clearInterval(maintenance);
 			clearInterval(connectionFileWrites);
+			clearInterval(codingResultsWrites);
 			clearInterval(companyCreations);
 			server.close(() => process.exit(0));
 		});

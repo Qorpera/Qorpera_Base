@@ -50,6 +50,8 @@ const publisherOperations = [
 	"qorpera_stage_member_session_attachment",
 	"qorpera_claim_connection_file",
 	"qorpera_finish_connection_file",
+	"qorpera_claim_coding_results_file",
+	"qorpera_finish_coding_results_file",
 	"qorpera_folder_authorize_object_download",
 	"qorpera_folder_open_upload",
 	"qorpera_folder_authorize_object_upload",
