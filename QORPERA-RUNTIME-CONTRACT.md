@@ -5131,9 +5131,10 @@ own texts below carries a note "Amended 2026-10-06" in place.
    provider can read it from its cache.
 4. **Trust labels** (M1, W2, W3; 9.2 and 9.3).
    - The developer message, today host-owned rules and validated identifiers only, also carries labelled, escaped
-     company data: the head and the primary view. This is done for the provider's cache: Codex's environment context,
-     with its random working directory, follows the developer message (M0 checks this), so only the developer
-     message can be a start that runs share.
+     company data: the head and the primary view. This is done for the provider's cache: Codex's environment context
+     follows the developer message and holds the day, so only the developer message can be a start that runs on any
+     day share (the design's M0 report, read from Codex's source; the check against a real request waits for the
+     Codex tests).
    - The labels, not the role, keep that data from counting as instructions. The vision is the company's own
      instructions, which guide the work and never override the platform's rules. The job specification and the
      profile page keep their labels as today. A view line is conversation data.
@@ -5156,14 +5157,19 @@ own texts below carries a note "Amended 2026-10-06" in place.
        agent, when its reads include one, or when it runs on a machine that mounts such a folder.
      - After a run's first narrow step, every later step of that run, and every step of a worker it dispatches after
        that step, is narrow too, since the agent's text and arguments may repeat what was read.
+     - So is every step of a run that continues a run with a narrow step: a continuation after a worker's report, a
+       computer start or a machine command, which carries the earlier run's receipts, sends or command output
+       (section 13; the 2026-09-28 amendment "compute for agents"). It is narrow from its first step, and so are its
+       own continuations.
      - A narrow step keeps only its tool, its call id, its step number, its time, whether it finished, its
        `releases`, and hashes of its arguments and result. The hashes are keyed with a key that the platform holds
        and no agent, member or machine reads, so no one can confirm a guess with them. It keeps no `text` and no
        `reads`. Its line, and every summary line over it, names neither the path nor what it held.
      - A worker's report is, like a send, its deliberate output. A worker with a narrow step still leaves beside its
        todo (section 13) what it leaves today: its outcome, its summary, its `needs` if it is blocked, and its
-       outputs. Only its own log keeps its narrow steps narrow. A run that reads the report, such as the parent's
-       completion continuation or the worker's `followup`, is narrow only by the rules above.
+       outputs. Only its own log keeps its narrow steps narrow. Reading the report alone makes no run narrow: the
+       parent's completion continuation or the worker's `followup` is narrow only by the rules above, so a completion
+       continuation of a parent that had a narrow step is narrow, and one of a parent that had none is not.
      - The run itself still sees its narrow steps in full while it runs: the host keeps them, and the folded lines
        over them, in memory for that run's own requests (item 3) and stores them nowhere else.
      - So a run with a narrow step cannot resume from its log (item 11). If it is cut off, it ends in review as
@@ -5178,7 +5184,10 @@ own texts below carries a note "Amended 2026-10-06" in place.
      - a narrow step stored with only the fields above, and no path or content in any line over it;
      - later steps, and a worker dispatched after a narrow step, kept the same way;
      - a worker with a narrow step keeping its own log narrow while its report (outcome, summary, `needs`, outputs)
-       stays beside its todo, and the parent's completion continuation not made narrow by reading it;
+       stays beside its todo, and the parent's completion continuation not made narrow by reading the report alone;
+     - a machine-event continuation of a command on a machine that mounts such a folder, and a worker-completion
+       continuation of a parent with a narrow step, both narrow from their first step, with no path or output in
+       their logs;
      - argument and result hashes that a guess cannot confirm without the platform's key;
      - a `zoom` into a run log refused without the default grant;
      - a cut-off run with a narrow step ending in review, and one at its usage limit failing.
