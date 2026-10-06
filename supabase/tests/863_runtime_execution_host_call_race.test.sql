@@ -1,39 +1,40 @@
--- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- G2-3e (20260930011000): the execution host's entry points check its credential per call and with no lock, so a
--- refused call never waits for a transaction that holds the host's principal, the claim, its orchestrator, the job,
--- the assignment, the run, the runner or the run machine; a listed call's checks take no lock either; a rebind (a
--- rebuild) or a revocation takes effect on the next call. Test 300's fixture gives a run claimed by orchestrator 092
--- (adapter 'process') and its runner; this binds an execution host to 092, another to an orchestrator of another
--- adapter, and adds the run's machine allocation.
+-- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
+-- G2-3e (20260930011000) on a folder-v2 company (ported from snapshot-v1 in the legacy sweep): the execution host's
+-- entry points check its credential per call and with no lock, so a refused call never waits for a transaction that
+-- holds the host's principal, the claim, its orchestrator, the job, the assignment, the run, the runner or the run
+-- machine; a listed call's checks take no lock either; a rebind (a rebuild) or a revocation takes effect on the next
+-- call. Test 924's fixture gives Alice's run (a thread post the folder materializer turned into a run), claimed by
+-- orchestrator 092 (adapter 'process'), and its runner; this binds an execution host to 092, another to an
+-- orchestrator of another adapter, and adds the run's machine allocation.
 reset role;
-create function pg_temp.sha(p_value text) returns text language sql as $$
+create function pg_temp.r863_sha(p_value text) returns text language sql as $$
 	select encode(extensions.digest(convert_to(p_value, 'utf8'), 'sha256'), 'hex')
 $$;
-select set_config('qorpera_test.run', current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId', false);
-select set_config('qorpera_test.runner', current_setting('qorpera_test.wake_binding')::jsonb ->> 'runnerId', false);
+select set_config('qorpera_test.run', current_setting('qorpera_test.base_binding')::jsonb ->> 'runId', false);
+select set_config('qorpera_test.runner', current_setting('qorpera_test.base_binding')::jsonb ->> 'runnerId', false);
 select set_config('qorpera_test.host_credential', 'H' || repeat('h', 42), false);
 select set_config('qorpera_test.rebuilt_credential', 'N' || repeat('n', 42), false);
 select set_config('qorpera_test.other_credential', 'O' || repeat('o', 42), false);
 insert into public.qorpera_runtime_machine_allocations(id, profile_id, run_id, runner_id, provider_adapter, instance_sha256)
-values ('86300000-0000-4000-8000-000000000071', '30000000-0000-4000-8000-000000000010',
+values ('86300000-0000-4000-8000-000000000071', '92400000-0000-4000-8000-000000000010',
 	current_setting('qorpera_test.run')::uuid, current_setting('qorpera_test.runner')::uuid, 'process', repeat('7', 64));
-select set_config('qorpera_test.host_hash', pg_temp.sha(current_setting('qorpera_test.host_credential')), false);
-select set_config('qorpera_test.other_hash', pg_temp.sha(current_setting('qorpera_test.other_credential')), false);
-select pg_temp.path_claims('service_role');
+select set_config('qorpera_test.host_hash', pg_temp.r863_sha(current_setting('qorpera_test.host_credential')), false);
+select set_config('qorpera_test.other_hash', pg_temp.r863_sha(current_setting('qorpera_test.other_credential')), false);
+select pg_temp.base_claims('service_role');
 set local role service_role;
 select public.qorpera_register_runner_orchestrator('86300000-0000-4000-8000-0000000000b1', 'Another node', 'other-adapter',
 	repeat('5', 64), 3600);
-select public.qorpera_bind_execution_host_credential('qorpera-exec-test', 'process', '30000000-0000-4000-8000-000000000092',
+select public.qorpera_bind_execution_host_credential('qorpera-exec-test', 'process', '92400000-0000-4000-8000-000000000092',
 	current_setting('qorpera_test.host_hash'));
 select public.qorpera_bind_execution_host_credential('qorpera-exec-other', 'other-adapter', '86300000-0000-4000-8000-0000000000b1',
 	current_setting('qorpera_test.other_hash'));
 reset role;
 
--- Row locks show only across connections, so the fixture is committed here and removed again at the end (the
--- harness of 602, 746, 793 and 861): the test refuses to run beside other connections to this database, whose rows the
--- cleanup could not tell from its own.
+-- Row locks show only across connections, so 924's fixture and this one are committed here and removed again at the end
+-- (the harness of 602, 746, 793 and 861): the test refuses to run beside other connections to this database, whose rows
+-- the cleanup could not tell from its own.
 reset role;
-select set_config('qorpera_test.wake_binding', current_setting('qorpera_test.wake_binding'), false);
+select set_config('qorpera_test.base_binding', current_setting('qorpera_test.base_binding'), false);
 select set_config('qorpera_test.r863_first_xid', xid(pg_current_xact_id())::text, false);
 select dblink_connect('r863_holder', 'dbname=' || current_database());
 select dblink_connect('r863_caller', 'dbname=' || current_database());
@@ -197,9 +198,9 @@ begin
 	for v_row in select * from (values
 		('qorpera_execution_host_principals', 'host_id', 'qorpera-exec-test'),
 		('qorpera_runner_job_claims', 'run_id', current_setting('qorpera_test.run')),
-		('qorpera_runner_jobs', 'id', current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId'),
-		('qorpera_runner_assignments', 'id', current_setting('qorpera_test.wake_binding')::jsonb ->> 'assignmentId'),
-		('qorpera_runner_orchestrators', 'id', '30000000-0000-4000-8000-000000000092'),
+		('qorpera_runner_jobs', 'id', current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId'),
+		('qorpera_runner_assignments', 'id', current_setting('qorpera_test.base_binding')::jsonb ->> 'assignmentId'),
+		('qorpera_runner_orchestrators', 'id', '92400000-0000-4000-8000-000000000092'),
 		('qorpera_execution_runs', 'id', current_setting('qorpera_test.run')),
 		('qorpera_runners', 'id', current_setting('qorpera_test.runner')),
 		('qorpera_runtime_machine_allocations', 'id', '86300000-0000-4000-8000-000000000071')) as held(table_name, column_name, value) loop
@@ -222,7 +223,7 @@ begin
 		raise exception 'Another host''s release was not refused: %', v_outcome; end if;
 	v_outcome := pg_temp.r863_at_once(current_setting('qorpera_test.host_credential'), 'qorpera-exec-test',
 		'qorpera_identity_recovery_runtime_state', jsonb_build_object('p_compute_identity_id',
-			current_setting('qorpera_test.wake_binding')::jsonb ->> 'computeIdentityId', 'p_run_id', current_setting('qorpera_test.run')));
+			current_setting('qorpera_test.base_binding')::jsonb ->> 'computeIdentityId', 'p_run_id', current_setting('qorpera_test.run')));
 	if v_outcome ? 'error' then
 		perform dblink_exec('r863_holder', 'rollback');
 		raise exception 'The host''s identity call was refused: %', v_outcome; end if;
@@ -237,8 +238,8 @@ do $$
 declare v_outcome jsonb;
 begin
 	perform pg_temp.r863_begin('holder', 'service_role');
-	perform * from dblink('r863_holder', format($q$select public.qorpera_bind_execution_host_credential('qorpera-exec-test', 'process', '30000000-0000-4000-8000-000000000092', %L)$q$,
-		pg_temp.sha(current_setting('qorpera_test.rebuilt_credential')))) as bound(result jsonb);
+	perform * from dblink('r863_holder', format($q$select public.qorpera_bind_execution_host_credential('qorpera-exec-test', 'process', '92400000-0000-4000-8000-000000000092', %L)$q$,
+		pg_temp.r863_sha(current_setting('qorpera_test.rebuilt_credential')))) as bound(result jsonb);
 	v_outcome := pg_temp.r863_at_once(current_setting('qorpera_test.host_credential'));
 	if v_outcome ? 'error' then
 		perform dblink_exec('r863_holder', 'rollback');

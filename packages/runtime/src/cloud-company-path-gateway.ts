@@ -150,6 +150,8 @@ export type CloudCompanyPathRpc =
 	| "qorpera_folder_worker_commit"
 	| "qorpera_folder_agent_workers"
 	| "qorpera_folder_cancel_agent_worker"
+	// A coding session's archive (C3b).
+	| "qorpera_folder_archive_coding_worker"
 	// Event wakes (W2): the company's hooks and one event's body.
 	| "qorpera_list_agent_event_hooks"
 	| "qorpera_read_agent_event"
