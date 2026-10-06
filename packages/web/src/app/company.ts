@@ -48,6 +48,7 @@ import { attachmentProblemText } from "../ui/attachments.ts";
 import { isGroupChat } from "../ui/group-chat.ts";
 import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
+import type { MailState } from "./company-mail.ts";
 import type { InterfaceFolderState } from "./interface-folder.ts";
 import {
 	appendQuoted,
@@ -182,6 +183,8 @@ export interface CompanyState {
 	 * Unset until the first read lands, and while the folder keeps no `interfaces/order.md`: the Interfaces tab then
 	 * draws the library's definitions (app/interfaces.ts). */
 	interfaceFolder?: InterfaceFolderState;
+	/** The company's mail as the member reads it (Interfaces step I5c; app/company-mail.ts). Unset until it is read. */
+	mail?: MailState;
 	loading: boolean;
 	error?: string;
 	accessLost?: boolean;

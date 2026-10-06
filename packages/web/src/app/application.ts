@@ -24,6 +24,7 @@ import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
 import { AuthController } from "./auth.ts";
 import { CompanyController } from "./company.ts";
+import { CompanyMail } from "./company-mail.ts";
 import { FoundingController } from "./founding.ts";
 import { CompanyInterfaceFolder } from "./interface-folder.ts";
 import { MemberPictures } from "./member-pictures.ts";
@@ -215,6 +216,8 @@ export function mountApplication(
 	let notices: ExecutionNotices | undefined;
 	/** The open company's interfaces and tables, followed in its folder (Interfaces step I7). */
 	let interfaceFolder: CompanyInterfaceFolder | undefined;
+	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
+	let mail: CompanyMail | undefined;
 	let computer: WebCompanyComputer | undefined;
 	let computerPanels: ComputerPanels | undefined;
 	let liveFile: LiveCompanyFileView | undefined;
@@ -353,6 +356,8 @@ export function mountApplication(
 		notices = undefined;
 		interfaceFolder?.dispose();
 		interfaceFolder = undefined;
+		mail?.dispose();
+		mail = undefined;
 		executionNotices.replaceChildren();
 		unsubscribeCompany?.();
 		conversation?.dispose();
@@ -803,6 +808,8 @@ export function mountApplication(
 			notices = undefined;
 			interfaceFolder?.dispose();
 			interfaceFolder = undefined;
+			mail?.dispose();
+			mail = undefined;
 			liveFile?.dispose();
 			liveFile = undefined;
 			closeSettings(false);
@@ -915,6 +922,18 @@ export function mountApplication(
 				if (interfaceFolder === reader) controller.store.set({ interfaceFolder: folder });
 			});
 			interfaceFolder = reader;
+			void reader.open();
+		}
+		// The company's mail, read the same way: whether it is on (the Mailbox's `mail` need) and what waits for a person.
+		if (mail && !state.team?.capabilities.read) {
+			mail.dispose();
+			mail = undefined;
+		}
+		if (!mail && state.team?.capabilities.read) {
+			const reader = new CompanyMail(controller, cloud, (read) => {
+				if (mail === reader) controller.store.set({ mail: read });
+			});
+			mail = reader;
 			void reader.open();
 		}
 		if (route.section !== "chat") {

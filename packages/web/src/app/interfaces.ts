@@ -28,6 +28,7 @@ import {
 import { presentationLocale, t } from "../ui/preferences.ts";
 import { type CompanyController, isAgentPairSession } from "./company.ts";
 import type { FolderPage, FolderProblem, FolderTable, InterfaceFolderState } from "./interface-folder.ts";
+import { isMailSource, mailSource, mailSourceRows } from "./interface-mail.ts";
 
 /** An interface the Interfaces tab lists: its parse, or, for a text that doesn't parse, its problems. A broken page is
  * drawn with its name and its problems, never its blocks or buttons (§10, I7). */
@@ -52,8 +53,11 @@ export interface InterfaceRow {
 	readonly key: string;
 }
 
-/** The blocks this client draws today. A `detail` block is drawn only when a drawn block in its view opens it. */
-const DRAWN_BLOCKS: ReadonlySet<InterfaceBlock["kind"]> = new Set(["list", "table", "detail", "board"]);
+/** The blocks this client draws today. A `detail` or `mail` block is drawn only when a drawn block in its view opens
+ * it. */
+const DRAWN_BLOCKS: ReadonlySet<InterfaceBlock["kind"]> = new Set(["list", "table", "detail", "board", "mail"]);
+/** The blocks that show the row another block opens (`opens`, §3.2). */
+const OPENED_KINDS: ReadonlySet<InterfaceBlock["kind"]> = new Set(["detail", "mail"]);
 /** The sources this client reads from the company's live state: their columns, and the column `since` and ordering
  * use. */
 const LIVE_SOURCES: Readonly<Record<string, { readonly columns: readonly string[]; readonly time: string | null }>> = {
@@ -97,7 +101,7 @@ function libraryInterfaces(): { readonly name: string; readonly file: InterfaceF
 /** Whether a source's column names are the platform's (the live state's), so drawn in the member's language. A table's
  * own columns are the company's words. */
 export function isLiveSource(source: string): boolean {
-	return Object.hasOwn(LIVE_SOURCES, source);
+	return Object.hasOwn(LIVE_SOURCES, source) || isMailSource(source);
 }
 
 function folderTable(company: CompanyController, source: string): FolderTable | undefined {
@@ -122,6 +126,8 @@ function folderText(company: CompanyController, source: string): string | undefi
 export function interfaceSource(company: CompanyController, source: string): InterfaceSource | undefined {
 	const live = Object.hasOwn(LIVE_SOURCES, source) ? LIVE_SOURCES[source] : undefined;
 	if (live) return { ...live, readable: true, problems: [] };
+	const mail = mailSource(company, source);
+	if (mail) return { ...mail, readable: true, problems: [] };
 	const table = folderTable(company, source);
 	if (table)
 		return {
@@ -147,6 +153,7 @@ export function idColumn(
 		return type === "agent" || type === "member" || type === "agents" ? type : null;
 	}
 	if (source === "members") return column === "id" ? "member" : null;
+	if (source === "mail_addresses") return column === "handled_by" ? "agents" : null;
 	return AGENT_COLUMNS.has(column) ? "agent" : null;
 }
 
@@ -260,7 +267,7 @@ export function viewBlocks(view: InterfaceViewShape, company: CompanyController)
 			narrow.every((where) => Object.keys(where).every((column) => columns.includes(column)))
 		);
 	};
-	const drawn = view.blocks.filter((shown) => shown.block.kind !== "detail" && fits(shown));
+	const drawn = view.blocks.filter((shown) => !OPENED_KINDS.has(shown.block.kind) && fits(shown));
 	const opened = new Set(
 		drawn.flatMap(({ block, narrow }) =>
 			blockOpens(
@@ -272,7 +279,7 @@ export function viewBlocks(view: InterfaceViewShape, company: CompanyController)
 	return view.blocks.filter(
 		(shown) =>
 			drawn.includes(shown) ||
-			(shown.block.kind === "detail" && shown.block.id !== null && fits(shown) && opened.has(shown.block.id)),
+			(OPENED_KINDS.has(shown.block.kind) && shown.block.id !== null && fits(shown) && opened.has(shown.block.id)),
 	);
 }
 
@@ -311,7 +318,9 @@ function needsMet(file: InterfaceFile, company: CompanyController): boolean {
 		// listed and its table says it can't be read.
 		if (need.startsWith("table:"))
 			return company.store.get().interfaceFolder?.tables.has(need.slice("table:".length)) === true;
-		// No member can read the company's mail yet (Q1's member read, step I5a), nor its connections here.
+		// The company has a live mailbox when the member mail read lists an address (step I5c); its answer is empty while
+		// the company's mail is off. No member can read the company's connections here yet.
+		if (need === "mail") return (company.store.get().mail?.addresses.length ?? 0) > 0;
 		return false;
 	});
 }
@@ -412,6 +421,7 @@ export function interfaceMainProblem(company: CompanyController): string | null 
 
 /** The rows of a source this client reads, or undefined when it can't read it. */
 export function interfaceRows(company: CompanyController, source: string): InterfaceRow[] | undefined {
+	if (isMailSource(source)) return mailSourceRows(company, source);
 	const state = company.store.get();
 	const profileId = company.profile.profileId;
 	const agents = state.staff.filter((agent) => agent.employmentStatus === "active");
