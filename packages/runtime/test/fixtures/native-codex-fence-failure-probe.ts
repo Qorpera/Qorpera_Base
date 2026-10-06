@@ -135,10 +135,14 @@ export async function runNativeCodexFenceFailureProbe(binary: string, fault: "re
 		);
 		if (fixtureFailure) throw fixtureFailure;
 		assert(failure instanceof Error);
-		assert.match(
-			failure.message,
-			forgedMedia ? /Native boundary turn did not complete/ : /Native result boundary unavailable/,
-		);
+		const expected = {
+			revoked: /Native result boundary unavailable/,
+			// No stopwatch ends a model request's checks (5 Oct 2026), neither the host's nor Codex's, which keeps a
+			// 10-minute backstop: a stalled one holds the request until the run stops.
+			stalled: /Native boundary execution stopped/,
+			message_image: /Native boundary turn did not complete/,
+		}[fault];
+		assert.match(failure.message, expected);
 		if (forgedMedia) assert.equal(deniedChecks, 0);
 		else assert(deniedChecks > 0);
 		assert.deepEqual({ requests, effects }, { requests: 1, effects: 0 });
