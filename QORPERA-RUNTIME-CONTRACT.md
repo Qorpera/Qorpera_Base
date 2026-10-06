@@ -1259,9 +1259,10 @@ a typed handoff on the office desktop; the model never receives the password.
 
 > **Amended 2026-10-06 (not built yet).** A worker no longer starts blank: it
 > starts from its parent's head and views by reference, plus its bounded
-> dispatch. See the
+> dispatch. A worker that touched a folder shared with only some agents leaves
+> beside its todo only that it finished. See the
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
-> in section 19, item 7.
+> in section 19, items 6 and 7.
 
 The parent agent is a dispatcher, not a hero process. Heavy or parallel work
 goes to workers so the parent remains responsive to new messages.
@@ -2157,9 +2158,11 @@ member's other login); the 2026-10-04 amendment below settles it.
 > **Amended 2026-10-06 (not built yet).** A run at its usage limit pauses
 > with its log kept, and resumes on the same login once the limit resets,
 > instead of failing; it still never moves to another login. A run that is cut
-> off resumes from its log. A run's summaries are paid by its payer. See the
+> off resumes from its log. A run that touched a folder shared with only some
+> agents is the exception: it still fails or ends in review as today. A run's
+> summaries are paid by its payer. See the
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
-> in section 19, items 11 and 12.
+> in section 19, items 6, 11 and 12.
 
 2026-10-01 amendment: ChatGPT plan logins (founder decisions, Sign in with
 ChatGPT; built switched off, migrations 20260928329830 and 20260928359950). A
@@ -4553,8 +4556,9 @@ amendment governs.
    `company_read`, `company_search`).
    - These tools act with the run's own folder view. A folder shared with only
      some agents is there for those agents' runs (4.3).
-   - Amended 2026-10-06 (not built yet): a run log keeps such reads only as
-     hashes, so other agents do not read them there
+   - Amended 2026-10-06 (not built yet): a run log keeps such a step without
+     its text, reads, arguments or result, only their keyed hashes, so other
+     agents do not read them there
      ([summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees),
      item 6).
    - Each answer is an authorized read in the run's read set (27 September,
@@ -4594,7 +4598,8 @@ amendment governs.
      commands. Today compute item 4 lets any agent of the company use any
      running machine.
    - Amended 2026-10-06 (not built yet): every step on a machine that mounts
-     such a folder is kept in the run's log only as hashes
+     such a folder is kept in the run's log without its content, only as keyed
+     hashes
      ([summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees),
      item 6).
 5. **Folder work runs offline.**
@@ -5074,7 +5079,8 @@ own texts below carries a note "Amended 2026-10-06" in place.
   the company reads. Only a send is still a message.
 - 9.1: "recent canonical transcript", and what every model request holds.
 - 9.2 and 9.3: what the developer message carries, and where the job specification goes.
-- Section 13 and Order 5 (section 19): what a worker starts from.
+- Section 13 and Order 5 (section 19): what a worker starts from, and what a worker that touched a folder shared with
+  only some agents leaves beside its todo.
 - 14.1, and the 2026-10-02 amendment "light threads", items 2 and 4: what a run log keeps of folders shared with only
   some agents, and who may open a run log.
 - 14.2: the Co-Founder's composed state.
@@ -5113,7 +5119,8 @@ own texts below carries a note "Amended 2026-10-06" in place.
      (or its pins, item 9). So the vision is read at every run, as 9.1 already asks;
    - **the views** (M1, M4): the view of the conversation the run answers in, of fixed size, and shorter views
      (branches) of the agent's other conversations;
-   - **the run's own work** (W2): its newest steps in full, and its older steps folded into summary lines.
+   - **the run's own work** (W2): its newest steps in full, and its older steps folded into summary lines. A run's
+     narrow steps, and the lines over them, come from the host's memory (item 6).
 
    "Recent canonical transcript" in 9.1 becomes the views. Work from earlier runs stays closed until an agent zooms
    into it. The composer's budgets stay deterministic, and every part keeps its source, its version and its trust
@@ -5141,21 +5148,39 @@ own texts below carries a note "Amended 2026-10-06" in place.
    rule in `deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md` that an agent adds to `people` only the member its run
    works for ("adding a person lets them read the conversation") loses its reason; that page's owner changes it.
    - **Folders shared with only some agents keep their rules** (W1, W2; 14.1; light threads, items 2 and 4). A run
-     log holds nothing from such a folder. A step whose arguments or result name a path outside the part of the
-     folder shared with every agent, or whose reads include one, keeps only hashes of its arguments and result, as a
-     send's arguments are kept. Every step on a machine that mounts such a folder counts as one. The step's line,
-     and every summary line over it, names neither the path nor what it held.
-   - After a run's first such step, every later step of that run, and every step of a worker it dispatches after
-     that step, is kept the same way, since the agent's text and arguments may repeat what was read.
-   - The run itself still sees such steps in full while it runs: the host keeps them in memory for that run's own
-     requests and stores them nowhere else. A resume of the run (item 11) sees only that each such step ran and
-     whether it finished, and reads again what it needs.
+     log holds nothing from such a folder.
+     - A step is **narrow** when its arguments or result name a path outside the part of the folder shared with every
+       agent, when its reads include one, or when it runs on a machine that mounts such a folder. A dispatch step is
+       narrow when its worker had a narrow step, and so is a step whose input carries that worker's report.
+     - After a run's first narrow step, every later step of that run, and every step of a worker it dispatches after
+       that step, is narrow too, since the agent's text and arguments may repeat what was read.
+     - A narrow step keeps only its tool, its call id, its step number, its time, whether it finished, its
+       `releases`, and hashes of its arguments and result. The hashes are keyed with a key that the platform holds
+       and no agent, member or machine reads, so no one can confirm a guess with them. It keeps no `text` and no
+       `reads`. Its line, and every summary line over it, names neither the path nor what it held.
+     - A worker with a narrow step leaves beside its todo (section 13) only that it finished. Its report reaches the
+       parent only in the parent's memory.
+     - The run itself still sees its narrow steps in full while it runs: the host keeps them, and the folded lines
+       over them, in memory for that run's own requests (item 3) and stores them nowhere else.
+     - So a run with a narrow step cannot resume from its log (item 11). If it is cut off, it ends in review as
+       `native_execution_uncertain`. At its usage limit it fails. Both are as today.
    - A `zoom` into a run log also checks that the agent holds the company's default grant (14.1). An agent whose
      grant was revoked or has expired opens no run log.
    - Company machines still show only the part of the folder shared with every agent (the 2026-09-28 amendment
      "how machines reach the company folder", item 2).
+   - These rules go beyond the design as of #866 (3741c8a7f), which keeps every step whole and lets every agent open
+     every run log (its §4.5, §8 and §9). The design takes them up before W1 is built: §4.5 (what a narrow step
+     keeps), §8 (zoom's grant check), §9 (who opens a run log) and §14, whose W1 and W2 proofs add tests for:
+     - a narrow step stored with only the fields above, and no path or content in any line over it;
+     - later steps, and a worker dispatched after a narrow step, kept the same way;
+     - a dispatch whose worker had a narrow step making the parent narrow, and that worker's todo keeping only that
+       it finished;
+     - argument and result hashes that a guess cannot confirm without the platform's key;
+     - a `zoom` into a run log refused without the default grant;
+     - a cut-off run with a narrow step ending in review, and one at its usage limit failing.
 7. **Workers** (W4; section 13). A worker no longer starts blank. It starts from its parent's head and views, by
-   reference, exactly as the parent's run composed them, plus its bounded dispatch. It runs on its parent's payer.
+   reference, exactly as the parent's run composed them, plus its bounded dispatch. It runs on its parent's payer. A
+   worker with a narrow step leaves beside its todo only that it finished, and makes its parent narrow (item 6).
 8. **The Co-Founder** (M4; 14.2). Its views include branches of every agent's thread. It still receives no copies of
    internal messages.
 9. **Memory** (M5; 5.4 and 15.1). Memory is the agent's head plus the conversation trees and run logs.
@@ -5183,6 +5208,8 @@ own texts below carries a note "Amended 2026-10-06" in place.
       the limit resets. The member is told and may cancel it. It never moves to another login: OpenAI's terms forbid
       rotating accounts to get round a usage limit (the 2026-10-01 amendment). A rate limit or an outage is still not
       a usage limit.
+    - A run with a narrow step (item 6) is the exception: its log does not hold what a resume needs. Cut off, it
+      still ends in review as `native_execution_uncertain`, and at its usage limit it still fails.
 12. **Who pays for summaries** (M1; section 17). A run's summaries, and the missing summaries it fills in, are part of
     its work and are paid by its payer. GPT-6 Luna writes them at low effort. If that login is at its usage limit, the
     summaries wait for the conversation's next run, on that run's own payer. No login is ever swapped.
