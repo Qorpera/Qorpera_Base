@@ -905,25 +905,29 @@ grep -Eq '10\.210\.1\.26 [^,}]*: (0x)?[0-9a-f]+' "$work/status.out" ||
 grep -q '"company": "cB"' "$work/status.out" || fail "status does not show the brake: $(cat "$work/status.out")"
 pass "past its share a braked company's new connections are dropped, each once however often resent, and hold the brake"
 pass "another company's machine is not braked; the exit stays healthy and status shows the brake"
-# Unplugged, the machine's counts go with it (the plug destroys its elements: one already gone is no error), and it
-# leaves the braked map once the guard reads the entries again (within its 10 seconds); its company stays braked. Its
-# tried flows time out on their own, long before its address is given out again.
+# Unplugged, the machine's counts go with it and it leaves the braked map at once, also while the logger (and its
+# guard) is down: the plug destroys its elements (one already gone is no error). Its company stays braked. Its tried
+# flows time out on their own, long before its address is given out again.
 ip netns exec qexit nft destroy element inet qorpera_agent_exit new_by_client '{ 10.210.9.9 }' ||
 	fail "destroying an element that is not there is an error here"
+kill "$logger_pid"
+wait "$logger_pid" 2>/dev/null || true
 python3 "$work/fixture.py" "$work/lxd.json" "$AGENT"
 wait_for "client_history | grep -q '\"address\":\"10.210.1.26\",\"company\":\"cB\",\"event\":\"unplugged\"'"
 grep -q "cannot clear 10.210.1.26" "$work/plug.out" && fail "plug: $(grep "cannot clear" "$work/plug.out")"
 new_left=$(ip netns exec qexit nft list set inet qorpera_agent_exit new_by_client)
 grep -q '10\.210\.1\.26 ' <<<"$new_left" && fail "the unplugged machine's counts stayed: $new_left"
-for _ in $(seq 1 125); do rules_are dropped "r['machines'] == {}" && break; sleep 0.2; done
 rules_are dropped "r['machines'] == {}" ||
 	fail "an unplugged machine stayed braked: $(ip netns exec qexit nft list map inet qorpera_agent_exit braked)"
+QORPERA_AGENT_EXIT_SETTINGS=$work/settings bash "$tool" log >>"$work/log.out" 2>&1 &
+logger_pid=$!
+pids+=($!)
 wait_for "brake_is \"[(b['company'], b['machines']) for b in s['braked']] == [('cB', 0)]\""
 sleep 3
 rules_are dropped "r['machines'] == {}" || fail "the guard braked an unplugged machine again"
 ip link del bv0
 ip netns del braked
-pass "an unplugged machine's counts go with it and it leaves the braked map; its company stays braked"
+pass "an unplugged machine's counts go with it and it leaves the braked map at once, guard or not; its company stays braked"
 # Without levels, a new logger ends the brake it kept (its status file) at once, and says what it dropped.
 kill "$logger_pid"
 wait "$logger_pid" 2>/dev/null || true

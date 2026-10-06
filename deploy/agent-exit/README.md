@@ -89,7 +89,7 @@ Everything after that is the reconciler's (`qorpera-agent-plug.service`, root), 
 - a machine that stops (asleep) keeps its address and entry; its connections are flushed once;
 - a machine that is gone (missing from two reads of LXD in a row after it was seen, or never created within an hour
   of its last plug) is unplugged under the plug lock: quarantined for 15 minutes first, then it loses its lease (dnsmasq
-  reloads), its connections, the exit's per-machine counts and refused flows, and its entry. A failed flush is
+  reloads), its connections, the exit's per-machine counts, refused flows and brake, and its entry. A failed flush is
   tried again every pass; the address is not given out before it succeeds. An entry removed by hand is unplugged
   the same way, from the reconciler's own copy;
 - a flush ends the address's connections in the exit's table and their masqueraded twins in the node's (TCP, UDP and
@@ -439,9 +439,10 @@ How it is kept:
 - Each map element ends with its brake (its own timeout), so a brake ends on time also while the logger is down.
 - A reload of the rules (`up`) empties the map, and the guard fills it again within 2 seconds. A logger restart keeps
   the brakes that were running (from its status file); with the levels removed, it ends them at once.
-- An unplugged machine leaves the map when the guard reads the entries again (within about 12 seconds), and its
-  dropped flows leave `tried` as they time out (3 minutes); its address is in quarantine for 15 minutes meanwhile. The
-  plug clears its other per-machine sets at once, as before; an element that times out meanwhile is no error.
+- The plug takes an unplugged machine out of the map at once, also while the logger is down (a brake can be longer
+  than the 15 minutes its address is in quarantine). Until the guard reads the entries again (within about 12 seconds)
+  it may put the machine back for those seconds. Its dropped flows leave `tried` as they time out (3 minutes). The plug
+  clears its other per-machine sets at once, as before; an element that is gone already is no error.
 - `/run/qorpera-agent-exit/brake.json`, every 2 seconds: `on`, `levels`, `braked` (per company: its number, since,
   until, the reason, the connections dropped, its machines) and `problems`. `verify` fails when it is missing ("the
   brake not running"), older than 30 seconds, or names a problem (a bad level, rules the guard cannot read or write).
@@ -519,7 +520,8 @@ on the tailnet. It checks:
   of 10 new connections at once only 2 through and the rest dropped, each counted once however often resent, a
   dropped one let through on a later resend and counted in `resent`, the brake held longer, the agent machine's
   company never braked and `verify` healthy throughout; an unplug taking the machine's counts with it (destroying an
-  element that is already gone is no error) and the machine out of the map for good, its company still braked; a
+  element that is already gone is no error) and the machine out of the map at once with the logger down and for good
+  after, its company still braked; a
   restart without levels ending the brake at once (an `unbraked` line with what it dropped); and a share as large as
   its level, or a level that looks like an option, leaving the brake off and `verify` failing;
 - an interrupted rebuild: the logger leaves the old namespace by itself, and `verify` fails until DNS follows;
