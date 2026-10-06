@@ -9,8 +9,9 @@ import { ConversationView } from "../src/app/views/conversation.ts";
 import { NewConversationView } from "../src/app/views/new-conversation.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
+import type { CodingSession } from "../src/cloud/coding-session.ts";
 import { createWebSessionRunControl } from "../src/cloud/session-run-control.ts";
-import type { TranscriptMessage } from "../src/cloud/transcript.ts";
+import type { TranscriptItem, TranscriptMessage } from "../src/cloud/transcript.ts";
 import appCss from "../src/styles/app.css?raw";
 import conversationCss from "../src/styles/conversation.css?raw";
 import tokensCss from "../src/styles/tokens.css?raw";
@@ -1915,6 +1916,254 @@ describe("messages between two agents (contract 14.6)", () => {
 		expect(f.view.el.querySelector(".pair-transcript")).toBeNull();
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
 		expect(document.activeElement).toBe(chip);
+	});
+
+	describe("in a row, on one line", () => {
+		const helper = { ...staff, id: id(97), displayName: "Helper" };
+		const nova = { ...staff, id: id(87), displayName: "Nova" };
+		const ada = { ...staff, id: id(77), displayName: "Ada" };
+		const pairs = new Map([
+			[helper.id, id(98)],
+			[nova.id, id(88)],
+			[ada.id, id(78)],
+		]);
+		const link = (
+			sequence: number,
+			coworker: typeof staff,
+			direction: "in" | "out",
+			extra: { held?: boolean; createdAt?: string } = {},
+		): TranscriptItem => ({
+			kind: "peer_link",
+			id: id(300 + sequence),
+			sequence,
+			direction,
+			counterpartStaffId: coworker.id,
+			pairSessionId: pairs.get(coworker.id)!,
+			createdAt: timestamp,
+			...extra,
+		});
+		async function thread(items: TranscriptItem[]) {
+			const f = setup();
+			f.company.store.set({ staff: [staff, helper, nova, ada] });
+			await f.company.loadConversation(session.sessionId);
+			const show = (shown: TranscriptItem[]) => {
+				f.company.conversation(session.sessionId).set({
+					loading: false,
+					projection: { items: shown, hiddenCount: 0, lastSequence: shown.length },
+				});
+				f.view.update();
+			};
+			show(items);
+			return { ...f, show, lines: () => [...f.view.el.querySelectorAll<HTMLElement>(".peer-link")] };
+		}
+		const words = (line: HTMLElement) =>
+			[...line.children].map((part) =>
+				part.matches(".peer-chip") ? `[${part.getAttribute("aria-label")}]` : part.textContent,
+			);
+
+		it("names each coworker once, in a chip that opens its own transcript", async () => {
+			const f = await thread([link(1, helper, "out"), link(2, nova, "out")]);
+			const [line] = f.lines();
+			expect(f.lines()).toHaveLength(1);
+			expect(line!.classList.contains("peer-group")).toBe(true);
+			expect(words(line!)).toEqual([
+				"Messaged",
+				"[Helper. Open the conversation]",
+				"and",
+				"[Nova. Open the conversation]",
+			]);
+			expect(line!.getAttribute("aria-label")).toBe("Messaged Helper and Nova");
+			const chip = line!.querySelectorAll<HTMLButtonElement>(".peer-chip")[1]!;
+			expect(chip.querySelector(".figure")?.nextElementSibling?.textContent).toBe("Nova");
+			expect(chip.title).toBe(`Nova · ${fmtTime(timestamp)}`);
+			chip.click();
+			await settle();
+			const panel = f.view.el.querySelector<HTMLElement>(".pair-transcript")!;
+			expect(panel.querySelector(".pair-header")?.textContent).toBe(`${staff.displayName}⇄Nova`);
+			button(panel, "Close Chat").click();
+			expect(document.activeElement).toBe(chip);
+		});
+
+		it("says who wrote and counts the messages when there are more than coworkers", async () => {
+			const f = await thread([link(1, helper, "out"), link(2, helper, "in"), link(3, nova, "out")]);
+			expect(words(f.lines()[0]!)).toEqual([
+				"Talked with",
+				"[Helper. Open the conversation]",
+				"and",
+				"[Nova. Open the conversation]",
+				"· 3 messages",
+			]);
+			f.show([link(1, helper, "in"), link(2, nova, "in")]);
+			expect(f.lines()[0]!.getAttribute("aria-label")).toBe("Messages from Helper and Nova");
+			f.show([link(1, helper, "out", { held: true }), link(2, helper, "out", { held: true })]);
+			expect(words(f.lines()[0]!)).toEqual(["Left notes for", "[Helper. Open the conversation]", "· 2 messages"]);
+			f.show([link(1, helper, "in", { held: true }), link(2, nova, "in")]);
+			expect(f.lines()[0]!.getAttribute("aria-label")).toBe("Messages from Helper and Nova");
+		});
+
+		it("shows three or more coworkers by their figures, named in their labels", async () => {
+			const f = await thread([
+				link(1, helper, "out"),
+				link(2, nova, "out"),
+				link(3, ada, "out"),
+				link(4, nova, "in"),
+			]);
+			const line = f.lines()[0]!;
+			expect(words(line)).toEqual([
+				"Talked with",
+				"[Helper. Open the conversation]",
+				"[Nova. Open the conversation]",
+				"[Ada. Open the conversation]",
+				"· 4 messages",
+			]);
+			expect(line.getAttribute("aria-label")).toBe("Talked with Helper, Nova, and Ada · 4 messages");
+			for (const chip of line.querySelectorAll(".peer-chip")) {
+				expect(chip.classList.contains("figure-only")).toBe(true);
+				expect(chip.querySelector(":scope > span:not(.figure)")).toBeNull();
+			}
+		});
+
+		it("puts the chips where Danish puts the names", async () => {
+			setLanguagePreference("da");
+			const f = await thread([link(1, helper, "out"), link(2, nova, "out"), link(3, nova, "out")]);
+			expect(words(f.lines()[0]!)).toEqual([
+				"Skrev til",
+				"[Helper. Åbn samtalen]",
+				"og",
+				"[Nova. Åbn samtalen]",
+				"· 3 beskeder",
+			]);
+		});
+
+		it("keeps a line of its own for one message, and for what a message or a pause stands between", async () => {
+			const later = "2026-09-05T10:10:00Z";
+			const reply: TranscriptMessage = {
+				kind: "agent",
+				id: id(400),
+				sequence: 3,
+				text: "Asked them both.",
+				attachmentCount: 0,
+				phase: "final",
+				runId: id(401),
+				createdAt: timestamp,
+			};
+			const f = await thread([
+				link(1, helper, "out"),
+				link(2, nova, "out"),
+				reply,
+				link(4, helper, "in"),
+				link(5, nova, "in", { createdAt: later }),
+			]);
+			const lines = f.lines();
+			expect(lines.map((line) => line.classList.contains("peer-group"))).toEqual([true, false, false]);
+			expect(lines[1]!.querySelector(".peer-chip")?.getAttribute("aria-label")).toBe(
+				"Message from Helper. Open the conversation",
+			);
+			// Ten minutes on, a time stands before the last line.
+			expect(lines[2]!.previousElementSibling?.matches("time.conversation-timestamp")).toBe(true);
+		});
+
+		it("measures the next time from the line's last message", async () => {
+			const at = (minute: number) => `2026-09-05T10:0${minute}:00Z`;
+			const reply: TranscriptMessage = {
+				kind: "agent",
+				id: id(400),
+				sequence: 4,
+				text: "Both answered.",
+				attachmentCount: 0,
+				phase: "final",
+				runId: id(401),
+				createdAt: at(8),
+			};
+			const f = await thread([
+				link(1, helper, "out", { createdAt: at(0) }),
+				link(2, helper, "in", { createdAt: at(3) }),
+				link(3, nova, "in", { createdAt: at(6) }),
+				reply,
+			]);
+			expect(f.lines()).toHaveLength(1);
+			// Eight minutes after the line's first message, two after its last: no time between them.
+			expect(f.view.el.querySelectorAll("time.conversation-timestamp")).toHaveLength(1);
+		});
+
+		it("takes in the next message with the coworker's chip springing in and the keyboard kept", async () => {
+			Element.prototype.getAnimations = () => [];
+			try {
+				const f = await thread([link(1, helper, "out")]);
+				f.show([link(1, helper, "out")]);
+				const single = f.lines()[0]!.querySelector<HTMLButtonElement>(".peer-chip")!;
+				single.focus();
+				f.show([link(1, helper, "out"), link(2, nova, "out")]);
+				const line = f.lines()[0]!;
+				const [first, second] = line.querySelectorAll<HTMLButtonElement>(".peer-chip");
+				expect(document.activeElement).toBe(first);
+				expect(first!.classList.contains("is-joining")).toBe(false);
+				expect(second!.classList.contains("is-joining")).toBe(true);
+				expect(line.classList.contains("is-arriving")).toBe(false);
+				second!.focus();
+				f.show([link(1, helper, "out"), link(2, nova, "out"), link(3, nova, "in")]);
+				const grown = f.lines()[0]!;
+				expect(document.activeElement).toBe(grown.querySelectorAll(".peer-chip")[1]);
+				expect(grown.querySelector(".peer-count")?.classList.contains("is-joining")).toBe(true);
+				expect(grown.querySelector(".peer-chip.is-joining")).toBeNull();
+			} finally {
+				delete (Element.prototype as { getAnimations?: unknown }).getAnimations;
+			}
+		});
+
+		it("finds the coworker's chip again when a coding session splits the line", async () => {
+			const at = (minute: number) => `2026-09-05T10:0${minute}:00Z`;
+			// Started between the two messages: it stands between them once the thread learns of it.
+			const coding: CodingSession = {
+				workerId: id(500),
+				workerKey: "fix-send",
+				title: "Fix the delay after send",
+				agentId: staff.id,
+				ownerUserId: userA.id,
+				harness: "codex",
+				repository: { host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" },
+				branch: `qorpera/coding/${id(500)}`,
+				sequence: 1,
+				workerState: "succeeded",
+				phase: "completed",
+				filesChanged: 0,
+				checks: [],
+				artifacts: [],
+				updatedAt: at(1),
+				createdAt: at(1),
+				sessionId: session.sessionId,
+				standby: true,
+				attached: false,
+				runningCommands: 0,
+				machineAsleep: false,
+			};
+			const f = await thread([
+				link(1, helper, "out", { createdAt: at(0) }),
+				link(2, nova, "out", { createdAt: at(2) }),
+			]);
+			const sessions = (codingSessions: CodingSession[]) => {
+				f.company.conversation(session.sessionId).set({ codingSessions });
+				f.view.update();
+			};
+			const novaChip = () =>
+				f.view.el.querySelector<HTMLButtonElement>(`.peer-chip[data-pair-session-id="${pairs.get(nova.id)}"]`)!;
+			expect(f.lines()).toHaveLength(1);
+			novaChip().click();
+			await settle();
+			sessions([coding]);
+			expect(f.lines().map((line) => line.classList.contains("coding-line"))).toEqual([false, true, false]);
+			// Closing Nova's transcript goes back to Nova, now on a line of its own.
+			button(f.view.el.querySelector<HTMLElement>(".pair-transcript")!, "Close Chat").click();
+			expect(document.activeElement).toBe(novaChip());
+			expect(novaChip().getAttribute("aria-label")).toBe("Messaged Nova. Open the conversation");
+			// And a keyboard user on Nova's chip stays on it as the line splits.
+			sessions([]);
+			expect(f.lines()).toHaveLength(1);
+			novaChip().focus();
+			sessions([coding]);
+			expect(f.lines()).toHaveLength(3);
+			expect(document.activeElement).toBe(novaChip());
+		});
 	});
 });
 

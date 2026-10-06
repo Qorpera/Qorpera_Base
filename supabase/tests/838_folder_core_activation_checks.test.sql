@@ -72,10 +72,9 @@ insert into p13_allowed(name, kind, reason) values
 	('qorpera_reject_gc_artifact_retention_hold', 'legacy', 'Trigger on artifact retention holds; hold creation refuses folder-v2, and it has no artifacts.'),
 	('qorpera_reject_graph_completion_during_gc', 'legacy', 'Trigger on reachability graphs; graph completion refuses folder-v2, whose roots (artifacts, snapshots) do not exist.'),
 	('qorpera_claim_artifact_gc_plans', 'legacy', 'Artifact GC plans need an artifact; folder-v2 has none, and the object claim retains a folder-v2 plan''s objects (20260928120000).'),
-	('qorpera_renew_artifact_gc_lease', 'legacy', 'Artifact GC plans need an artifact; folder-v2 has none.'),
-	-- Folder-v2 sites still to move (C1c-3 inventory §16, the review of #779, and the office slices). Owners named by the
-	-- coordinator, 4 October 2026.
-	('qorpera_office_waiter_authorized', 'open', 'Office activation wakes (A1, C1c-3l).');
+	('qorpera_renew_artifact_gc_lease', 'legacy', 'Artifact GC plans need an artifact; folder-v2 has none.');
+-- No folder-v2 site is left to move: the last one, the office waiter check, tests the core first since C1c-3l part 2
+-- (20260930030100).
 -- A run's own machines and the node machine's kinds all test the core since C1c-3n (20260930046000) and P13's sign-in
 -- machines (20260930035000): no partial entry is left.
 

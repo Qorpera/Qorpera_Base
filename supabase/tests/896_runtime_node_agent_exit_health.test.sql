@@ -1,20 +1,22 @@
--- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
+-- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- Agent exit E2d part 1 (20260930089000): the node observer posts the exit's own health check
 -- (qorpera_observe_runtime_node_agent_exit), and a node's exit is ready while its latest answer is healthy and
 -- current. Only the observer's service role may post or read it; a healthy answer needs the exit's check and no
 -- problem; the host and policy must be the node's; an answer that is not current, or older than the one kept, never
--- replaces it; the answer goes stale 60 seconds after either the observation or the exit's check.
-select pg_temp.path_claims('service_role');
+-- replaces it; the answer goes stale 60 seconds after either the observation or the exit's check. The exit guards
+-- agents' egress (security), so the whole test moved onto the folder-v2 base in the legacy sweep: it never used 300's
+-- company, only its helpers.
+select pg_temp.base_claims('service_role');
 reset role;
 -- The real exit health only: the test databases' shim (supabase/tests/bootstrap.sql) stays out of this transaction.
 select set_config('qorpera_test.agent_exit_real', 'on', true);
 
-select pg_temp.wake_assert(not has_function_privilege(r, 'public.qorpera_observe_runtime_node_agent_exit(jsonb)', 'EXECUTE')
+select pg_temp.base_assert(not has_function_privilege(r, 'public.qorpera_observe_runtime_node_agent_exit(jsonb)', 'EXECUTE')
 	and not has_function_privilege(r, 'public.qorpera_runtime_node_agent_exit_ready(uuid)', 'EXECUTE')
 	and not has_function_privilege(r, 'public.qorpera_assert_runtime_node_agent_exit(jsonb)', 'EXECUTE'),
 	'The API role ' || r || ' can neither post nor read the agent exit''s health')
 from unnest(array['anon', 'authenticated']) r;
-select pg_temp.wake_assert(has_function_privilege('service_role', 'public.qorpera_observe_runtime_node_agent_exit(jsonb)', 'EXECUTE')
+select pg_temp.base_assert(has_function_privilege('service_role', 'public.qorpera_observe_runtime_node_agent_exit(jsonb)', 'EXECUTE')
 	and has_function_privilege('service_role', 'public.qorpera_runtime_node_agent_exit_ready(uuid)', 'EXECUTE')
 	and not has_table_privilege('service_role', 'public.qorpera_runtime_node_agent_exit', 'SELECT'),
 	'The service role posts and asks through the functions only');
@@ -36,7 +38,7 @@ select set_config('qorpera_test.exit_policy', (select encode(extensions.digest(p
 	from public.qorpera_runtime_node_inventory_policies where node_id = '89600000-0000-4000-8000-000000000010'), true);
 select set_config('qorpera_test.exit_policy_stored', (select policy_sha256 from public.qorpera_runtime_node_inventory_policies
 	where node_id = '89600000-0000-4000-8000-000000000010'), true);
-select pg_temp.wake_assert(current_setting('qorpera_test.exit_policy') <> current_setting('qorpera_test.exit_policy_stored'),
+select pg_temp.base_assert(current_setting('qorpera_test.exit_policy') <> current_setting('qorpera_test.exit_policy_stored'),
 	'The two digests differ, so both are tried');
 
 create function pg_temp.ms(p_at timestamptz) returns text language sql as $$
@@ -75,16 +77,16 @@ end
 $$;
 
 set local role service_role;
-select pg_temp.wake_assert(not pg_temp.exit_ready(), 'A node that never reported its exit has none');
-select pg_temp.wake_assert(not public.qorpera_runtime_node_agent_exit_ready('89600000-0000-4000-8000-000000000099'),
+select pg_temp.base_assert(not pg_temp.exit_ready(), 'A node that never reported its exit has none');
+select pg_temp.base_assert(not public.qorpera_runtime_node_agent_exit_ready('89600000-0000-4000-8000-000000000099'),
 	'An unknown node has no exit');
 
 -- 1. A healthy answer makes the exit ready.
-select pg_temp.wake_assert(pg_temp.exit_post(pg_temp.exit_report(true, 3, 0)) ->> 'healthy' = 'true', 'Healthy answer kept');
-select pg_temp.wake_assert(pg_temp.exit_ready(), 'A healthy, current answer: ready');
+select pg_temp.base_assert(pg_temp.exit_post(pg_temp.exit_report(true, 3, 0)) ->> 'healthy' = 'true', 'Healthy answer kept');
+select pg_temp.base_assert(pg_temp.exit_ready(), 'A healthy, current answer: ready');
 
 -- 2. Malformed or untrue answers are refused and change nothing.
-select pg_temp.wake_assert(pg_temp.exit_refusal(r.report) = r.state, r.what || ': ' || pg_temp.exit_refusal(r.report))
+select pg_temp.base_assert(pg_temp.exit_refusal(r.report) = r.state, r.what || ': ' || pg_temp.exit_refusal(r.report))
 from (values
 	(pg_temp.exit_report(true, null, 0), '22023', 'healthy without the exit''s check'),
 	(pg_temp.exit_report(true, 3, 2), '22023', 'healthy with problems'),
@@ -99,28 +101,28 @@ from (values
 	(pg_temp.exit_report(true, 3, 0, 0, jsonb_build_object('policySha256', repeat('9',64))), '42501', 'another policy'),
 	(pg_temp.exit_report(true, 3, 0, 0, '{"nodeId":"89600000-0000-4000-8000-000000000099"}'), '42501', 'an unknown node')
 ) as r(report, state, what);
-select pg_temp.wake_assert(pg_temp.exit_ready(), 'Refused answers left the healthy one in place');
-select pg_temp.wake_assert(pg_temp.exit_refusal(pg_temp.exit_report(true, 3, 0, 0,
+select pg_temp.base_assert(pg_temp.exit_ready(), 'Refused answers left the healthy one in place');
+select pg_temp.base_assert(pg_temp.exit_refusal(pg_temp.exit_report(true, 3, 0, 0,
 	jsonb_build_object('policySha256', current_setting('qorpera_test.exit_policy_stored')))) = 'ok',
 	'The stored digest names the policy too');
 
 -- 3. An unhealthy answer (or one the observer could not read: no check) stops the exit being ready.
 select pg_temp.exit_post(pg_temp.exit_report(false, 2, 3));
-select pg_temp.wake_assert(not pg_temp.exit_ready(), 'Unhealthy: not ready');
+select pg_temp.base_assert(not pg_temp.exit_ready(), 'Unhealthy: not ready');
 select pg_temp.exit_post(pg_temp.exit_report(true, 1, 0));
-select pg_temp.wake_assert(pg_temp.exit_ready(), 'Healthy again: ready');
+select pg_temp.base_assert(pg_temp.exit_ready(), 'Healthy again: ready');
 select pg_temp.exit_post(pg_temp.exit_report(false, null, 0));
-select pg_temp.wake_assert(not pg_temp.exit_ready(), 'An answer the observer could not read: not ready');
+select pg_temp.base_assert(not pg_temp.exit_ready(), 'An answer the observer could not read: not ready');
 
 -- 4. A late, older answer never replaces a newer one, and a replay changes nothing.
 select pg_temp.exit_post(pg_temp.exit_report(true, 1, 0));
 select set_config('qorpera_test.exit_kept', pg_temp.exit_post(pg_temp.exit_report(false, 12, 4, 10))::text, true);
-select pg_temp.wake_assert(current_setting('qorpera_test.exit_kept')::jsonb ->> 'healthy' = 'true' and pg_temp.exit_ready(),
+select pg_temp.base_assert(current_setting('qorpera_test.exit_kept')::jsonb ->> 'healthy' = 'true' and pg_temp.exit_ready(),
 	'An older unhealthy answer arriving late is ignored: ' || current_setting('qorpera_test.exit_kept'));
 select set_config('qorpera_test.exit_replay', pg_temp.exit_report(false, 2, 1)::text, true);
 select pg_temp.exit_post(current_setting('qorpera_test.exit_replay')::jsonb);
 select pg_temp.exit_post(pg_temp.exit_report(true, 1, 0));
-select pg_temp.wake_assert(pg_temp.exit_post(current_setting('qorpera_test.exit_replay')::jsonb) ->> 'healthy' = 'true'
+select pg_temp.base_assert(pg_temp.exit_post(current_setting('qorpera_test.exit_replay')::jsonb) ->> 'healthy' = 'true'
 	and pg_temp.exit_ready(), 'A replay of an older answer changes nothing');
 reset role;
 
@@ -128,18 +130,18 @@ reset role;
 update public.qorpera_runtime_node_agent_exit set checked_at = clock_timestamp() - interval '61 seconds'
 where node_id = '89600000-0000-4000-8000-000000000010';
 set local role service_role;
-select pg_temp.wake_assert(not pg_temp.exit_ready(), 'An exit whose own check is over a minute old: not ready');
+select pg_temp.base_assert(not pg_temp.exit_ready(), 'An exit whose own check is over a minute old: not ready');
 reset role;
 update public.qorpera_runtime_node_agent_exit set checked_at = clock_timestamp(), observed_at = clock_timestamp() - interval '61 seconds'
 where node_id = '89600000-0000-4000-8000-000000000010';
 set local role service_role;
-select pg_temp.wake_assert(not pg_temp.exit_ready(), 'An observation over a minute old: not ready');
+select pg_temp.base_assert(not pg_temp.exit_ready(), 'An observation over a minute old: not ready');
 select pg_temp.exit_post(pg_temp.exit_report(true, 1, 0));
-select pg_temp.wake_assert(pg_temp.exit_ready(), 'A fresh healthy answer: ready again');
+select pg_temp.base_assert(pg_temp.exit_ready(), 'A fresh healthy answer: ready again');
 reset role;
 
 -- 6. Nothing but healthy, a count and the times is kept.
-select pg_temp.wake_assert((select array_agg(column_name::text order by ordinal_position) from information_schema.columns
+select pg_temp.base_assert((select array_agg(column_name::text order by ordinal_position) from information_schema.columns
 	where table_schema = 'public' and table_name = 'qorpera_runtime_node_agent_exit')
 	= array['node_id','observation_id','observed_at','checked_at','healthy','problem_count','received_at'],
 	'The table keeps no problem text');

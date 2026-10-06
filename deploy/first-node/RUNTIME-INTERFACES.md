@@ -178,10 +178,60 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
 
 - **Lookup columns** (table): a column of `columns` that the source does not have may be an inline table
   `{ from = "table:<t>", match = "<column>", show = "<column>" }` or `{ …, count = true }`. It lists or counts the rows
-  of that table whose `match` column holds this row's id. That is the only join.
+  of that table whose `match` column holds this row's id. That is the only join. This row's id is its `id`, or its
+  table's key when that is one column. A listed member or agent id shows as a name. A lookup whose table can't be read
+  is empty.
 - **Board parts:** each `[[view.block.part]]` has `title`, `from` (a table), `card = { title, line, figures, note }`
   and an optional `opens`. The lane of a row is its table's `holder` column (§5): a member's lane, the Shared lane
-  when the `shared` column says yes, or the open pile when it is empty. Dragging a card is a take or an offer.
+  when the `shared` column says yes, or the open pile when it is empty. Dragging a card is a take or a release
+  (offers come later).
+- **Board lanes (proposed, built in I9a):**
+  - `lanes = "members"`: one lane per member, the viewer's own first, then the others by name.
+  - Then the **Shared** lane, when the block names `shared`: rows whose `shared` column says yes, whoever holds them.
+    A part whose table has no such column has no shared rows.
+  - Then the **open pile**, when `open_pile = true`: rows whose holder cell is empty.
+  - Last, a row whose holder is no longer a member: a lane titled with that person's name when the client knows it,
+    else "Someone who left". Its cards have no Take or Release.
+  - `lanes = "<column>"` (a `choice` column): one lane per choice, in the column's order. Such a board has no Shared
+    lane, open pile, Take or Release.
+  - A card's lane comes from its own table's `holder` (§5). A part whose table has no `holder` draws its cards in the
+    open pile when there is one, else not at all.
+  - An empty lane keeps its title and says so quietly. On a phone the lanes stack.
+- **Text (proposed, built with the folder pages):**
+  - Markdown, drawn with the client's own renderer and no HTML. A link is drawn as its text and an image as its alt
+    text, so nothing leaves the page and nothing is fetched (§4, "Nothing remote"). A `detail` block draws a row's
+    text the same way.
+  - `show = "first-paragraph"` draws the first paragraph; headings and rules before it are skipped.
+  - A `from` source with nothing to show says so quietly. A block's own `text` is drawn as it is.
+  - A `file:` source's `text` is the file without its settings block (front matter: the `---` lines and the settings
+    between them), as a rule's or an agent's file starts. The vision and sections files have none, so a leading `---`
+    there is part of the text.
+  - A `file:` source under `hooks/` or `human-tasks/` (§4) is not read, and its block is not drawn, until blocks can
+    show the outside-content mark (I7).
+- **Numbers (proposed, built with the folder pages):**
+  - The tiles are the rows the block's query keeps. With `latest_by`, that is the newest row of each group, and the
+    tile is labelled with the group's value. Without it, a block has one tile: the newest row of all.
+  - A tile's change is its `value` less the value of the row before it in its group, by the source's time column, else
+    `trend.over`. It shows as "+€100 since" or "No change since" that row's time; a `date` is shown as its day, the
+    same in every time zone.
+  - The unit is the row's `unit` cell, as the numbers table has one. Without one, a `money` column shows its currency
+    and a `percent` column a percent sign. `count` is a plain number.
+  - `target` names a column of the row; it shows as "Target €1,500".
+  - The trend line draws the group's values over `trend.over` in the last `trend.weeks` weeks, when there are at least
+    two.
+  - With `opens`, each tile is a button that opens its row in the detail.
+- **Calendar (proposed, built with the folder pages):**
+  - `from` may name several sources. The calendar is drawn when at least one of them exists, from those that do, and
+    lists the problems of each.
+  - A source's dates: a routine's `next`; a human task's `due`, while the task is open or returned; a table's time
+    column, else its first `time` or `date` column.
+  - The block's `where` applies to each source with the columns it has. A source without a column its view narrows by
+    is left out. A calendar has no `order`, `limit` or `latest_by`.
+  - It shows `days` days from today, 14 when the block doesn't say, in the member's time zone. A day with nothing on it
+    is left out. Days are titled Today, Tomorrow, then by weekday and date.
+  - Each thing shows its title (its `title`, else its `name`, else its table's first text column), its time, and what
+    it is: Routine, Task, or its table's name. A thing with a date and no time comes first on its day. Its figure is
+    the agent of the source's first agent column.
 - **`opens`** names a `detail` block, or a `mail` block for a thread, in the same view. On a wide screen it opens
   beside the list; on a phone it opens as the next screen.
 
@@ -220,6 +270,25 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
   outside effects keep their own review.
 - **Built-in verbs.** A block that lists a built-in verb (`answer`, `take`, `offer`, `release`) shows that button, so
   adding one to a block counts as adding a button (§7).
+- **Take and release on a board (proposed, built in I9a).** They act on each card's own table `holder` column, so a
+  board's verbs need no `table` or `column`.
+  - **Take** shows on a card whose holder cell is empty, and **Release** on a card whose holder cell names the viewer,
+    in whichever lane the card is: the open pile and the viewer's own lane, and the Shared lane too. Each shows only
+    when the block lists it, the board has member lanes (`lanes = "members"`), and the viewer may write the table's
+    rows (`[write] members`: `all`, or `owners` for owners and admins).
+  - Dragging an open-pile card to the viewer's own lane takes it, and dragging the viewer's own card to the open pile
+    releases it. No other drop does anything, and a Shared card, which stays in the Shared lane either way, has no
+    drag. Only the lane a card may land in is marked while it is dragged. The buttons stay the way on a phone and from
+    the keyboard.
+  - The write reads `tables/<t>/rows.csv`, parses it against the current `table.toml`, changes only that cell's text
+    (every other byte stays as written), checks the claim rule (§5) before sending, and names the version it read.
+    When the file changed meanwhile, it is read and checked again: a cell no longer empty (take) or no longer the
+    viewer's (release) stops the write, and the board says "Someone else took it first." or "That changed while you
+    were looking.". A file that keeps changing past the retries also says "That changed while you were looking.". A
+    refusal shows its problems.
+  - A card stays where it is, saving, until the save has landed and the folder's feed shows the change.
+  - `offer` and `answer` are not drawn on a board until offers have their machinery. An area's `supervisor` is not
+    taken from a board; it waits for consent records (I9b).
 - **Never possible:** a link to another site, a script, or a request to any address.
 
 ## 4. Sources
@@ -697,3 +766,27 @@ owners and admins see a quiet line about it. The folder's feed keeps it live: on
 `resync` reads everything. A `file:` source whose text is outside content (§4) stays undrawn until blocks can show the
 outside-content mark. A company whose folder has no `interfaces/order.md`, or whose first read fails, keeps the
 library's definitions.
+
+**Built: I9a** (web; `packages/web/src/app/interface-board.ts`, `app/interface-claims.ts`, `app/views/interface.ts`,
+`ui/board-drag.ts`). The `members` source is live: one row per member with `id`, `name`, `picture` (their account id,
+drawn as their picture), `role` and `here`. The viewer is here whenever the company's presence is joined, and nobody is
+when it isn't. A board draws its parts' cards in the proposed lanes of §3.2, and a part's `opens` opens its detail.
+Take and release (§3.3) write the member's own rows with the folder's member client. They change only the holder
+field's text in `rows.csv` and keep every other byte as written (a first line without the holder column gets it at its
+end). A rows file with rows that don't fit its definition is not written. Lookup columns are drawn as names or a count,
+and the folder reader reads the tables that board parts and lookups name. The Members page's People view draws its
+table; its `file:rules/shared-areas.md` block is not drawn, since this client draws no `text` blocks yet. Offers,
+answers on a board, and supervision (I9b) are not built.
+
+**Built: folder pages** (web; `packages/web/src/app/interface-sources.ts`, `app/routine-next-run.ts`,
+`app/interface-folder.ts`, `app/views/interface-blocks.ts`, `ui/markdown.ts`). The folder's own sources of §4 are live:
+`vision`, `agents`, `groups`, `todos`, `routines`, `connections`, `contacts`, `human_tasks` and `interfaces`. The I7
+reader lists and reads the folders the active pages' drawn blocks name, with the member's own reads, and the change
+feed reads only the touched folders again. Each file is parsed with the cloud client's company-state parser; a file
+that doesn't parse is left out and listed under its block. `agents` and `groups` are what the files say, not the store.
+A routine's `next` follows the orchestrator's schedule rules from its file. A human task's `person` is a member's id,
+or a contact's name when the task is for a contact. The `working` and `waiting` rows give their times to the second, as
+every row does. Column and value labels are in the member's language. The `text`, `numbers` and `calendar` blocks follow
+§3.2's proposed rules, so Pulse draws all its blocks but "What happened" and the Members page draws
+`file:rules/shared-areas.md` when the file exists. The `activity` source is not built: the live state has only each
+agent's current run, not the runs that happened, so it waits for a read of past runs (with their answers and changes).

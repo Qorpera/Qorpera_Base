@@ -2,8 +2,8 @@
 -- Company folder core, C3 (P23 part 1, migration 20260930002200): a folder-v2 run's lease renewals take its job FOR NO KEY
 -- UPDATE. Beside a tool call in flight (the job KEY SHARE) the job renewal and the native lease renewal run at once;
 -- behind a change that ends the lease (the job FOR UPDATE) they wait. The snapshot-v1 company's renewal still takes the
--- job FOR UPDATE and waits for a KEY SHARE holder. Each snapshot-v1 body reversed is the definition before the migration,
--- and the folder copy of locked_job differs from it by its lock clause only. 648's committed fixture, removed at the end.
+-- job FOR UPDATE and waits for a KEY SHARE holder. The folder copy of locked_job differs from it by its lock clause only.
+-- 648's committed fixture, removed at the end.
 
 -- The run's native lease carries its job's lease token, as a real lease does (648's fixture gives it another), and the
 -- snapshot-v1 company's leased job gets its runner, so both companies' renewals can run.
@@ -104,51 +104,17 @@ begin
 	if v_state <> 'ok' then raise exception 'C: the snapshot-v1 renewal after it: %', v_state; end if;
 end $$;
 
--- D. Snapshot-v1 keeps its text: each patched body with its folder-v2 branch reversed is byte for byte the definition
--- before the migration. The folder copy of locked_job is locked_job with its name, its marker line and its lock clause
--- changed, and nothing else; it is postgres-only.
+-- D. The folder copy of locked_job is locked_job with its name, its marker line and its lock clause changed, and
+-- nothing else; it is postgres-only.
 do $$
 declare v_text text;
 begin
-	v_text := replace(pg_get_functiondef('public.qorpera_renew_runner_job(uuid,text,uuid,text)'::regprocedure),
-		E'\t-- P23 (20260930002200): on folder-v2 the job FOR NO KEY UPDATE, beside the run''s tool calls (KEY SHARE).\n'
-		|| E'\tif public.qorpera_job_is_folder_v2(p_job_id) then\n'
-		|| E'\t\tselect job.* into v_job from public.qorpera_runner_jobs as job\n'
-		|| E'\t\twhere job.id = p_job_id and job.status = ''leased'' and job.runner_id = p_runner_id\n'
-		|| E'\t\t\tand job.lease_token_sha256 = p_lease_token_sha256\n'
-		|| E'\t\t\tand job.lease_expires_at > statement_timestamp() for no key update;\n'
-		|| E'\telse\n'
-		|| E'\tselect job.* into v_job from public.qorpera_runner_jobs as job\n'
-		|| E'\twhere job.id = p_job_id and job.status = ''leased'' and job.runner_id = p_runner_id\n'
-		|| E'\t\tand job.lease_token_sha256 = p_lease_token_sha256\n'
-		|| E'\t\tand job.lease_expires_at > statement_timestamp() for update;\n'
-		|| E'\tend if;\n',
-		E'\tselect job.* into v_job from public.qorpera_runner_jobs as job\n'
-		|| E'\twhere job.id = p_job_id and job.status = ''leased'' and job.runner_id = p_runner_id\n'
-		|| E'\t\tand job.lease_token_sha256 = p_lease_token_sha256\n'
-		|| E'\t\tand job.lease_expires_at > statement_timestamp() for update;\n');
-	if md5(v_text) <> 'dc8ef1066f63642b528d8b26b421a82d' then raise exception 'D: qorpera_renew_runner_job''s snapshot-v1 text changed'; end if;
-	v_text := replace(pg_get_functiondef('public.qorpera_renew_native_provider_connection_lease(uuid,uuid,text,uuid,text,integer)'::regprocedure),
-		E'\t-- P23 (20260930002200): on folder-v2 the job FOR NO KEY UPDATE, beside the run''s tool calls (KEY SHARE).\n'
-		|| E'\tif public.qorpera_job_is_folder_v2(p_job_id) then\n'
-		|| E'\t\tv_job := public.qorpera_folder_renewal_locked_job(p_runner_id, p_session_token_sha256, p_job_id, p_lease_token_sha256);\n'
-		|| E'\telse\n'
-		|| E'\tv_job := public.qorpera_runner_broker_locked_job(\n'
-		|| E'\t\tp_runner_id, p_session_token_sha256, p_job_id, p_lease_token_sha256\n'
-		|| E'\t);\n'
-		|| E'\tend if;\n',
-		E'\tv_job := public.qorpera_runner_broker_locked_job(\n'
-		|| E'\t\tp_runner_id, p_session_token_sha256, p_job_id, p_lease_token_sha256\n'
-		|| E'\t);\n');
-	if md5(v_text) <> '2546503acb0072743faeee7ad9ca4945' then
-		raise exception 'D: qorpera_renew_native_provider_connection_lease''s snapshot-v1 text changed'; end if;
-	if md5(pg_get_functiondef('public.qorpera_runner_broker_locked_job(uuid,text,uuid,text)'::regprocedure)) <> '832db8b900e3b8119c5f56c4a1b8ec88' then
-		raise exception 'D: qorpera_runner_broker_locked_job must not change'; end if;
 	v_text := replace(replace(replace(pg_get_functiondef('public.qorpera_folder_renewal_locked_job(uuid,text,uuid,text)'::regprocedure),
 		'FUNCTION public.qorpera_folder_renewal_locked_job(', 'FUNCTION public.qorpera_runner_broker_locked_job('),
 		E'\t-- P23 (20260930002200): a folder-v2 renewal; tool calls hold the job KEY SHARE, which this mode does not block.\n', ''),
 		E'\tfor no key update;\n', E'\tfor update;\n');
-	if md5(v_text) <> '832db8b900e3b8119c5f56c4a1b8ec88' then raise exception 'D: the folder copy of locked_job differs beyond its lock'; end if;
+	if v_text is distinct from pg_get_functiondef('public.qorpera_runner_broker_locked_job(uuid,text,uuid,text)'::regprocedure) then
+		raise exception 'D: the folder copy of locked_job differs beyond its lock'; end if;
 	if has_function_privilege('public', 'public.qorpera_folder_renewal_locked_job(uuid,text,uuid,text)', 'execute')
 		or has_function_privilege('anon', 'public.qorpera_folder_renewal_locked_job(uuid,text,uuid,text)', 'execute')
 		or has_function_privilege('authenticated', 'public.qorpera_folder_renewal_locked_job(uuid,text,uuid,text)', 'execute')

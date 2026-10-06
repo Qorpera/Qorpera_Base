@@ -267,6 +267,8 @@ async function fixture(
 	let machinesAnswer: unknown = true;
 	const folderReads: string[] = [];
 	const folderReleases: Record<string, unknown>[] = [];
+	/** The kernel's page of the run's open proposals (P40b); none set: the list is refused, as for a run with none. */
+	let proposalsAnswer: unknown;
 	const folderFiles = new Map<string, string>();
 	const folderSha = (text: string) => createHash("sha256").update(text).digest("hex");
 	const folderEntry = (path: string) => {
@@ -335,6 +337,7 @@ async function fixture(
 					replay: false,
 				};
 			}
+			if (method === "qorpera_folder_agent_proposals" && proposalsAnswer !== undefined) return proposalsAnswer;
 			expect(args.p_binding).toEqual(f.binding);
 			if (method === "qorpera_begin_native_company_execution_v2") {
 				if (nativeStarted) throw new Error("Earlier native execution requires reconciliation");
@@ -701,6 +704,9 @@ async function fixture(
 		pathCall,
 		machinesAnswer: (value: unknown) => {
 			machinesAnswer = value;
+		},
+		proposalsAnswer: (value: unknown) => {
+			proposalsAnswer = value;
 		},
 		decisions,
 		folderReads,
@@ -1286,6 +1292,53 @@ it("releases what a folder-v2 run's composition read under the composed context,
 	expect(released).toBeGreaterThanOrEqual(0);
 	expect(released).toBeLessThan(start);
 	// Under exactly the context the run starts with.
+	expect((calls[released]![1] as { p_output_sha256: string }).p_output_sha256).toBe(
+		(calls[start]![1] as { p_context_sha256: string }).p_context_sha256,
+	);
+});
+
+it("releases the paths of the proposals a folder-v2 run's context shows with that context, before the model starts (P40b)", async () => {
+	const f = await fixture("company-dynamic", false, undefined, false, true);
+	f.context.folder = { agent: "nora", coworkers: {} };
+	const authority = { resourceId: randomUUID(), resourceRevision: 4, grantId: null, grantRevision: null };
+	f.proposalsAnswer({
+		schema: "qorpera.folder-agent-proposals/v1",
+		proposals: [
+			{
+				proposalId: randomUUID(),
+				createdAt: "2026-10-05T10:00:00+00:00",
+				viewKind: "computer_desktop",
+				effect: "destructive",
+				createsAgent: false,
+				unitCount: 1,
+				units: [{ unit: 1, op: "move", path: "docs/draft.md", to: "docs/final.md" }],
+				moreUnits: 0,
+				reads: [
+					{ path: "docs/draft.md", authority },
+					{ path: "docs/final.md", authority },
+				],
+			},
+		],
+		moreProposals: 0,
+		nextCursor: null,
+	});
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const calls = f.pathCall.mock.calls;
+	const start = calls.findIndex(([method]) => method === "qorpera_begin_native_company_execution_v2");
+	const released = calls.findIndex(
+		([method, args]) =>
+			method === "qorpera_folder_record_release" &&
+			(args as { p_reads: { path: string }[] }).p_reads.some((read) => read.path === "docs/draft.md"),
+	);
+	expect(released).toBeGreaterThanOrEqual(0);
+	expect(released).toBeLessThan(start);
+	// Named, not read: no version, the authority the list was decided on.
+	expect((calls[released]![1] as { p_reads: unknown[] }).p_reads).toEqual(
+		expect.arrayContaining([
+			{ path: "docs/draft.md", version: null, authority },
+			{ path: "docs/final.md", version: null, authority },
+		]),
+	);
 	expect((calls[released]![1] as { p_output_sha256: string }).p_output_sha256).toBe(
 		(calls[start]![1] as { p_context_sha256: string }).p_context_sha256,
 	);
