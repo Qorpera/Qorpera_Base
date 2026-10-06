@@ -10,6 +10,16 @@ export type FolderActor =
 	| { readonly kind: "platform" }
 	| { readonly kind: "view"; readonly viewId: string; readonly pass: string };
 
+/** The authority an agent's listing names for an entry (C1b-2 `qorpera_folder_read_receipt`). A run box's mount
+ * logs it with each read and the run's native host releases it, so the core files the read without checking the path
+ * again; a stale or missing one only costs the core that check. Members and the platform get none. */
+export interface CoreReceipt {
+	readonly resourceId: string;
+	readonly resourceRevision: number;
+	readonly grantId: string | null;
+	readonly grantRevision: number | null;
+}
+
 /** An entry as `qorpera_folder_entry_json` gives it (20260928120000). */
 export interface CoreEntry {
 	readonly path: string;
@@ -22,6 +32,8 @@ export interface CoreEntry {
 	readonly mediaType?: string;
 	readonly executable?: boolean;
 	readonly updatedAt?: string;
+	/** Only in an agent's listing (a run box's view). */
+	readonly authority?: CoreReceipt;
 }
 
 export interface ListPage {
@@ -68,6 +80,28 @@ export interface FolderCore {
 	/** The company's storage profile, through the core's download check of one object the actor may read. The check
 	 * also refuses a company being deleted, for every actor. */
 	objectProfile(environmentId: string, actor: FolderActor, sha256: string, signal?: AbortSignal): Promise<string>;
+	/** Extends a machine view's lease (120 s) or learns that it closed (C1b-3a `qorpera_folder_view_renew`). */
+	renewView(viewId: string, pass: string, signal?: AbortSignal): Promise<ViewRenewal>;
+}
+
+export type ViewRenewal =
+	| { readonly state: "open"; readonly leaseUntil: string }
+	| { readonly state: "closed"; readonly reason: "closed" | "superseded" | "ended" | "expired" };
+
+export function parseViewRenewal(value: unknown): ViewRenewal {
+	const answer = answerRecord(value, "view renewal");
+	if (answer.schema !== "qorpera.folder-view-renew/v1") invalidAnswer("view renewal");
+	if (answer.state === "open" && typeof answer.leaseUntil === "string" && !Number.isNaN(Date.parse(answer.leaseUntil)))
+		return { state: "open", leaseUntil: answer.leaseUntil };
+	if (
+		answer.state === "closed" &&
+		(answer.reason === "closed" ||
+			answer.reason === "superseded" ||
+			answer.reason === "ended" ||
+			answer.reason === "expired")
+	)
+		return { state: "closed", reason: answer.reason };
+	invalidAnswer("view renewal");
 }
 
 /** The core refused: `denied` (42501, the actor may not read this any more), `stopped` (55000, the company is paused
@@ -117,8 +151,28 @@ function seqOf(value: unknown, what: string): number {
 	return value;
 }
 
-/** An entry or a feed change, checked field by field; unknown fields (receipts, seq, priorVersion) are dropped. A
- * removal on the feed names no content. */
+/** A receipt, checked whole: the core gives exactly these four, the grant's two together (a rules path has none). */
+function receiptOf(value: unknown): CoreReceipt {
+	const r = answerRecord(value, "receipt");
+	const keys = Object.keys(r).sort().join();
+	const revision = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+	if (
+		keys !== "grantId,grantRevision,resourceId,resourceRevision" ||
+		!isUuid(r.resourceId) ||
+		!revision(r.resourceRevision) ||
+		(r.grantId === null ? r.grantRevision !== null : !isUuid(r.grantId) || !revision(r.grantRevision))
+	)
+		invalidAnswer("receipt");
+	return {
+		resourceId: r.resourceId as string,
+		resourceRevision: r.resourceRevision as number,
+		grantId: r.grantId as string | null,
+		grantRevision: r.grantRevision as number | null,
+	};
+}
+
+/** An entry or a feed change, checked field by field; unknown fields (seq, priorVersion) are dropped. A removal on the
+ * feed names no content. An agent's listing gives each entry its receipt (null where the path has no resource). */
 function entryOf(value: unknown, removal = false): CoreEntry {
 	const e = answerRecord(value, "entry");
 	if (typeof e.path !== "string" || e.path === "" || (e.kind !== "file" && e.kind !== "folder"))
@@ -133,7 +187,9 @@ function entryOf(value: unknown, removal = false): CoreEntry {
 		mediaType?: string;
 		executable?: boolean;
 		updatedAt?: string;
+		authority?: CoreReceipt;
 	} = { path: e.path, kind: e.kind, version: versionOf(e.version) };
+	if (e.authority !== undefined && e.authority !== null) out.authority = receiptOf(e.authority);
 	if (e.manifestSha256 !== undefined) {
 		if (typeof e.manifestSha256 !== "string" || !SHA256_HEX_PATTERN.test(e.manifestSha256)) invalidAnswer("manifest");
 		out.manifestSha256 = e.manifestSha256;
@@ -323,6 +379,17 @@ export class SupabaseFolderCore implements FolderCore {
 		)
 			invalidAnswer("download check");
 		return answer.profileId;
+	}
+
+	async renewView(viewId: string, pass: string, signal?: AbortSignal): Promise<ViewRenewal> {
+		// Nothing is unsaved in a read-only view: p_unsaved_since stays null.
+		return parseViewRenewal(
+			await this.#rpc(
+				"qorpera_folder_view_renew",
+				{ p_view_id: viewId, p_pass: pass, p_unsaved_since: null },
+				signal,
+			),
+		);
 	}
 
 	async #rpc(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
