@@ -9,8 +9,9 @@
  *
  * Either way only the parts whose source the client can read are drawn: a part without its source is not drawn, and an
  * interface with no part to draw is not listed (the client contract's rule against rendering missing machinery). Today
- * those sources are Pulse's "Needs you" and "Working now" and the company's members, read from the company's live
- * state, the company's tables, and its files that hold no outside content. */
+ * those sources are Pulse's "Needs you", "Working now" and "What happened" and the company's members, read from the
+ * company's live state, and the company's tables, its files that hold no outside content and its own files' sources
+ * (`vision`, `agents`, `todos`..., app/interface-sources.ts), read from its folder. */
 
 import { INTERFACE_LIBRARY } from "@qorpera/cloud-client/interface-library";
 import {
@@ -28,6 +29,13 @@ import {
 import { presentationLocale, t } from "../ui/preferences.ts";
 import { type CompanyController, isAgentPairSession } from "./company.ts";
 import type { FolderPage, FolderProblem, FolderTable, InterfaceFolderState } from "./interface-folder.ts";
+import {
+	activityRows,
+	folderIdColumn,
+	folderSourceColumns,
+	folderSourceRows,
+	isFolderSource,
+} from "./interface-sources.ts";
 
 /** An interface the Interfaces tab lists: its parse, or, for a text that doesn't parse, its problems. A broken page is
  * drawn with its name and its problems, never its blocks or buttons (§10, I7). */
@@ -53,7 +61,15 @@ export interface InterfaceRow {
 }
 
 /** The blocks this client draws today. A `detail` block is drawn only when a drawn block in its view opens it. */
-const DRAWN_BLOCKS: ReadonlySet<InterfaceBlock["kind"]> = new Set(["list", "table", "detail", "board"]);
+const DRAWN_BLOCKS: ReadonlySet<InterfaceBlock["kind"]> = new Set([
+	"list",
+	"table",
+	"detail",
+	"board",
+	"text",
+	"numbers",
+	"calendar",
+]);
 /** The sources this client reads from the company's live state: their columns, and the column `since` and ordering
  * use. */
 const LIVE_SOURCES: Readonly<Record<string, { readonly columns: readonly string[]; readonly time: string | null }>> = {
@@ -62,6 +78,8 @@ const LIVE_SOURCES: Readonly<Record<string, { readonly columns: readonly string[
 	// One row per member (§4): `id` is what a `member` cell holds, the member's account id, which is also what their
 	// `picture` is found by.
 	members: { columns: ["id", "name", "picture", "role", "here"], time: null },
+	// One row per run the live state reports, newest first (app/interface-sources.ts).
+	activity: { columns: ["at", "kind", "agent", "member", "line"], time: "at" },
 };
 /** Columns that hold an agent's id: drawn as the agent's name. A table's columns say what they hold by their type. */
 const AGENT_COLUMNS: ReadonlySet<string> = new Set(["agent", "from", "handled_by", "kept_by"]);
@@ -94,10 +112,10 @@ function libraryInterfaces(): { readonly name: string; readonly file: InterfaceF
 	return library;
 }
 
-/** Whether a source's column names are the platform's (the live state's), so drawn in the member's language. A table's
- * own columns are the company's words. */
+/** Whether a source's column names are the platform's (the live state's and the folder's own files'), so drawn in the
+ * member's language. A table's own columns are the company's words. */
 export function isLiveSource(source: string): boolean {
-	return Object.hasOwn(LIVE_SOURCES, source);
+	return Object.hasOwn(LIVE_SOURCES, source) || isFolderSource(source);
 }
 
 function folderTable(company: CompanyController, source: string): FolderTable | undefined {
@@ -117,11 +135,15 @@ function folderText(company: CompanyController, source: string): string | undefi
 	return company.store.get().interfaceFolder?.files.get(source.slice("file:".length));
 }
 
-/** A source this client can read, or undefined: the live state's, and a folder-v2 company's tables and files once its
- * folder is read. */
+/** A source this client can read, or undefined: the live state's, and a folder-v2 company's tables, files and own
+ * files' sources (`vision`, `agents`, ...) once its folder is read. */
 export function interfaceSource(company: CompanyController, source: string): InterfaceSource | undefined {
 	const live = Object.hasOwn(LIVE_SOURCES, source) ? LIVE_SOURCES[source] : undefined;
 	if (live) return { ...live, readable: true, problems: [] };
+	if (isFolderSource(source)) {
+		const read = company.store.get().interfaceFolder?.sources.get(source);
+		return read && { ...folderSourceColumns(source), readable: read.readable, problems: read.problems };
+	}
 	const table = folderTable(company, source);
 	if (table)
 		return {
@@ -135,13 +157,14 @@ export function interfaceSource(company: CompanyController, source: string): Int
 	return undefined;
 }
 
-/** What a column's values are the ids of, so a page shows names: the live sources' agent columns, and a table's
- * `agent`, `member` and `agents` columns (§5: "a stable id; the client shows the name"). */
+/** What a column's values are the ids of, so a page shows names: the live sources' agent columns, the folder sources'
+ * id columns, and a table's `agent`, `member` and `agents` columns (§5: "a stable id; the client shows the name"). */
 export function idColumn(
 	company: CompanyController,
 	source: string,
 	column: string,
-): "agent" | "member" | "agents" | null {
+): "agent" | "member" | "agents" | "members" | null {
+	if (isFolderSource(source) || source === "activity") return folderIdColumn(source, column);
 	if (source.startsWith("table:")) {
 		const type = folderTable(company, source)?.table?.columns.find((candidate) => candidate.name === column)?.type;
 		return type === "agent" || type === "member" || type === "agents" ? type : null;
@@ -167,47 +190,56 @@ export function drawnParts(
 }
 
 /** Whether this client can draw a block: its kind is drawn here and it reads one source the client has; a board, when
- * it can read one of its parts' tables. */
+ * it can read one of its parts' tables; a text block with its own text, always; a calendar, when it can read one of
+ * its sources (§3.2, proposed: it draws from those it can). */
 export function drawableBlock(block: InterfaceBlock, company: CompanyController): boolean {
 	if (block.kind === "board") return drawnParts(block, company).length > 0;
-	return (
-		DRAWN_BLOCKS.has(block.kind) &&
-		block.from.length === 1 &&
-		interfaceSource(company, block.from[0] ?? "") !== undefined
-	);
+	if (!DRAWN_BLOCKS.has(block.kind)) return false;
+	if (block.kind === "text" && block.text !== null) return true;
+	const has = (source: string) => interfaceSource(company, source) !== undefined;
+	if (block.kind === "calendar") return block.from.some(has);
+	return block.from.length === 1 && has(block.from[0] ?? "");
 }
 
-/** The details a block opens: a list's or a table's `opens`, and each board part's. */
+/** The details a block opens: a list's, a table's or a numbers block's `opens`, and each board part's. */
 function blockOpens(block: InterfaceBlock, parts: readonly InterfaceBoardPart[] = block.parts): string[] {
 	if (block.kind === "board") return parts.flatMap((part) => (part.opens === null ? [] : [part.opens]));
-	return (block.kind === "list" || block.kind === "table") && block.opens !== null ? [block.opens] : [];
+	return (block.kind === "list" || block.kind === "table" || block.kind === "numbers") && block.opens !== null
+		? [block.opens]
+		: [];
 }
 
-/** The folder sources a page's drawn blocks could read, which app/interface-folder.ts reads: the tables of its list,
- * table and detail blocks, of its boards' parts, of its tables' lookup columns and of its `needs`, and the files of
- * those blocks that hold no outside content. A detail block counts only where a list, table or board part in its view
- * opens it, as `viewBlocks` draws it. */
-export function folderSources(file: InterfaceFile): { readonly tables: string[]; readonly files: string[] } {
+/** The folder sources a page's drawn blocks could read, which app/interface-folder.ts reads: the tables of its drawn
+ * blocks, of its boards' parts, of its tables' lookup columns and of its `needs`, the files of those blocks that hold
+ * no outside content, and the folder's own files' sources they name (`sources`: `vision`, `agents`, ...). A detail
+ * block counts only where a block in its view opens it, as `viewBlocks` draws it. */
+export function folderSources(file: InterfaceFile): {
+	readonly tables: string[];
+	readonly files: string[];
+	readonly sources: string[];
+} {
 	const tables = new Set<string>();
 	const files = new Set<string>();
+	const sources = new Set<string>();
 	for (const need of file.needs) if (need.startsWith("table:")) tables.add(need.slice("table:".length));
 	for (const view of file.views) {
 		const opened = new Set(view.blocks.flatMap((block) => blockOpens(block)));
 		for (const block of view.blocks) {
 			if (!DRAWN_BLOCKS.has(block.kind) || (block.kind === "detail" && !opened.has(block.id ?? ""))) continue;
-			const sources = [
+			const named = [
 				...block.from,
 				...(block.kind === "board" ? block.parts.map((part) => part.from) : []),
 				...(block.kind === "table" ? Object.values(block.lookups).map((lookup) => lookup.from) : []),
 			];
-			for (const source of sources) {
+			for (const source of named) {
 				if (source.startsWith("table:")) tables.add(source.slice("table:".length));
 				else if (source.startsWith("file:") && interfaceOutsideColumns(source).length === 0)
 					files.add(source.slice("file:".length));
+				else if (isFolderSource(source)) sources.add(source);
 			}
 		}
 	}
-	return { tables: [...tables], files: [...files] };
+	return { tables: [...tables], files: [...files], sources: [...sources] };
 }
 
 /** The column of each quote source's rows that names the record its outside values came from, which a quote of them
@@ -254,11 +286,17 @@ export function interfaceViews(file: InterfaceFile): InterfaceViewShape[] {
 export function viewBlocks(view: InterfaceViewShape, company: CompanyController): ViewBlock[] {
 	const fits = ({ block, narrow }: ViewBlock) => {
 		if (block.kind === "board") return drawnParts(block, company, narrow).length > 0;
-		const columns = interfaceSource(company, block.from[0] ?? "")?.columns ?? [];
-		return (
-			drawableBlock(block, company) &&
-			narrow.every((where) => Object.keys(where).every((column) => columns.includes(column)))
-		);
+		if (!drawableBlock(block, company)) return false;
+		// A text block's own text has no rows to narrow; a calendar narrows each source it can.
+		if (block.kind === "text" && block.text !== null) return true;
+		const has = (source: string) => {
+			const columns = interfaceSource(company, source)?.columns;
+			return (
+				columns !== undefined &&
+				narrow.every((where) => Object.keys(where).every((column) => columns.includes(column)))
+			);
+		};
+		return block.kind === "calendar" ? block.from.some(has) : has(block.from[0] ?? "");
 	};
 	const drawn = view.blocks.filter((shown) => shown.block.kind !== "detail" && fits(shown));
 	const opened = new Set(
@@ -413,6 +451,11 @@ export function interfaceMainProblem(company: CompanyController): string | null 
 /** The rows of a source this client reads, or undefined when it can't read it. */
 export function interfaceRows(company: CompanyController, source: string): InterfaceRow[] | undefined {
 	const state = company.store.get();
+	if (source === "activity") return activityRows(company);
+	if (isFolderSource(source))
+		return folderSourceRows(company, state.interfaceFolder, source, () =>
+			companyInterfaces(company).map((entry) => entry.name),
+		);
 	const profileId = company.profile.profileId;
 	const agents = state.staff.filter((agent) => agent.employmentStatus === "active");
 	const agentHref = (agentId: string) =>

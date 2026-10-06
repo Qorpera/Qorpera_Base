@@ -1,5 +1,9 @@
-import type { CloudMemberFolderClient, CloudMemberFolderFeedPosition } from "@qorpera/cloud-client/cloud-member-folder";
-import { companyPathKey } from "@qorpera/cloud-client/company-state-files";
+import type {
+	CloudMemberFolderClient,
+	CloudMemberFolderEntry,
+	CloudMemberFolderFeedPosition,
+} from "@qorpera/cloud-client/cloud-member-folder";
+import { COMPANY_STATE_FILE_MAX_BYTES, companyPathKey } from "@qorpera/cloud-client/company-state-files";
 import {
 	decodeInterfaceFile,
 	INTERFACE_FILE_MAX_BYTES,
@@ -16,12 +20,20 @@ import {
 	type TableFile,
 	type TableRow,
 } from "@qorpera/cloud-client/interfaces";
+import {
+	type FolderSource,
+	type FolderSourceRead,
+	type FolderView,
+	folderSourcePlan,
+	folderSourceState,
+} from "./interface-sources.ts";
 import { folderSources } from "./interfaces.ts";
 
 /* A folder-v2 company's interfaces and tables, read from its folder (Interfaces step I7; deploy/first-node/
  * RUNTIME-INTERFACES.md §2–§5, §8 and §10). Every `interfaces/<name>/interface.toml` is read with `interfaces/order.md`,
- * and the tables and files the pages' drawn blocks read (app/interfaces.ts, `folderSources`), all with the member's
- * own authority. app/interfaces.ts turns what is read into the Interfaces tab and the pages.
+ * and the tables and files the pages' drawn blocks read (app/interfaces.ts, `folderSources`), with the folders and files
+ * of the company folder's own sources they name (`vision`, `agents`, `todos`…; app/interface-sources.ts), all with the
+ * member's own authority. app/interfaces.ts turns what is read into the Interfaces tab and the pages.
  *
  * Every text is parsed here with the cloud client's parsers each time it is read, never taken from a stored parse
  * (§6.1 rule 1). A page whose text doesn't parse is kept with its problems: a broken page, whose buttons never render.
@@ -66,6 +78,9 @@ export interface InterfaceFolderState {
 	/** The `file:` sources the pages' drawn blocks read, by the path the source names; a file that isn't there is left
 	 * out. */
 	readonly files: ReadonlyMap<string, string>;
+	/** The company folder's own sources the pages' drawn blocks name (`vision`, `agents`, `todos`…, app/
+	 * interface-sources.ts), as their files were last listed and read. */
+	readonly sources: ReadonlyMap<string, FolderSource>;
 }
 
 /** What this reader needs from the product: the member's folder, its hint, and the company's lifetime. */
@@ -141,6 +156,14 @@ export class CompanyInterfaceFolder {
 	readonly #reads = new Map<string, Read>();
 	/** Each page text's parse, kept while its read is: a pass parses a text once. */
 	readonly #parses = new WeakMap<NonNullable<Read>, FolderPage>();
+	/** The folders the company folder's own sources list, by their key, as last listed. */
+	readonly #lists = new Map<string, readonly CloudMemberFolderEntry[]>();
+	/** Those sources' files, by their path's key, as last read at the version their listing named. */
+	readonly #taken = new Map<string, FolderSourceRead>();
+	readonly #view: FolderView = {
+		listed: (folder) => this.#lists.get(companyPathKey(folder)),
+		read: (path) => this.#taken.get(companyPathKey(path)),
+	};
 	/** The versions last published; nothing is published while they stay the same. */
 	#shown: string | undefined;
 
@@ -274,6 +297,69 @@ export class CompanyInterfaceFolder {
 		}
 	}
 
+	/** Lists a folder a company folder source reads, every page of it. A listing that fails keeps the last one and marks
+	 * the pass; a folder that isn't there lists empty. */
+	async #list(folder: string): Promise<void> {
+		try {
+			const entries: CloudMemberFolderEntry[] = [];
+			let after: string | null = null;
+			for (;;) {
+				const page = await this.#client!.list(folder, after, LIST_PAGE, this.#signal());
+				this.#live();
+				this.#oldest = Math.min(this.#oldest ?? page.asOfSeq, page.asOfSeq);
+				entries.push(...page.entries);
+				if (page.next === null || entries.length >= MAX_LISTED) break;
+				after = page.next;
+			}
+			this.#lists.set(companyPathKey(folder), entries);
+		} catch {
+			this.#live();
+			this.#failed += 1;
+			this.#stale = true;
+		}
+	}
+
+	/** Reads a listed file of a company folder source at the version its listing names. One larger than the folder's
+	 * state files may be, or not text, reads as null. */
+	async #take(entry: CloudMemberFolderEntry): Promise<void> {
+		const key = companyPathKey(entry.path);
+		try {
+			if (!entry.file || entry.file.bytes > COMPANY_STATE_FILE_MAX_BYTES) {
+				this.#taken.set(key, { version: entry.version, text: null });
+				return;
+			}
+			const bytes = await this.#client!.readFile(entry.file, this.#signal(), COMPANY_STATE_FILE_MAX_BYTES);
+			this.#live();
+			this.#taken.set(key, { version: entry.version, text: markdownText(bytes) });
+		} catch {
+			this.#live();
+			this.#failed += 1;
+			this.#stale = true;
+		}
+	}
+
+	/** Lists and reads what the company folder sources the pages' drawn blocks name read: the folders `again` names and
+	 * those not listed yet, then each listed file whose version is not the one last read. An agent's folder is found by
+	 * listing `agents/`, its `todos/` by listing the agent's folder, so the listing goes a level deeper each round. */
+	async #readFolderSources(again: (folderKey: string) => boolean): Promise<void> {
+		const { sources } = this.#sources();
+		if (sources.size === 0) return;
+		const listed = new Set<string>();
+		for (let round = 0; round < 4; round++) {
+			const folders = folderSourcePlan(sources, this.#view).folders.filter((folder) => {
+				const key = companyPathKey(folder);
+				return !listed.has(key) && (again(key) || !this.#lists.has(key));
+			});
+			if (folders.length === 0) break;
+			for (const folder of folders) listed.add(companyPathKey(folder));
+			await each(folders, (folder) => this.#list(folder));
+		}
+		const takes = folderSourcePlan(sources, this.#view).takes.filter(
+			(entry) => this.#taken.get(companyPathKey(entry.path))?.version !== entry.version,
+		);
+		await each(takes, (entry) => this.#take(entry));
+	}
+
 	/** Reads everything: the order file, every page, and what their drawn blocks read. The order file and the listing
 	 * must be read; a page that can't be read is left out (or keeps its last read), unless none can. */
 	async #reload(): Promise<void> {
@@ -287,6 +373,7 @@ export class CompanyInterfaceFolder {
 		if (names.length > 0 && this.#failed === names.length) throw new Error("No interface could be read");
 		this.#names = names;
 		await this.#readSources(() => true);
+		await this.#readFolderSources(() => true);
 		this.#forget();
 		this.#stale = this.#failed > 0;
 		this.#position = { afterSeq: this.#oldest ?? 0, cursor: null };
@@ -345,6 +432,11 @@ export class CompanyInterfaceFolder {
 		// A folder whose page is gone (deleted, moved away, never written) lists no page; one that failed to read stays.
 		this.#names = pages.filter((name) => this.#readOf(pagePath(name)) !== null);
 		await this.#readSources(hit);
+		// A folder is listed again when something in it, under it or above it changed: a new agent's folder shows in
+		// `agents/` whether or not the feed names the folder itself.
+		await this.#readFolderSources((folder) =>
+			touched.some((changed) => changed === folder || changed.startsWith(`${folder}/`) || folder.startsWith(`${changed}/`)),
+		);
 		this.#forget();
 	}
 
@@ -385,22 +477,24 @@ export class CompanyInterfaceFolder {
 		});
 	}
 
-	/** The tables and files the active pages' drawn blocks and needs name. */
-	#sources(): { tables: string[]; files: string[] } {
+	/** The tables, files and company folder sources the active pages' drawn blocks and needs name. */
+	#sources(): { tables: string[]; files: string[]; sources: Set<string> } {
 		const tables = new Set<string>();
 		const files = new Set<string>();
+		const named = new Set<string>();
 		for (const page of this.#pages()) {
 			if (page.file === null || page.file.status !== "active") continue;
 			const sources = folderSources(page.file);
 			for (const name of sources.tables) tables.add(name);
 			for (const path of sources.files) files.add(path);
+			for (const name of sources.sources) named.add(name);
 		}
-		return { tables: [...tables].sort(), files: [...files].sort() };
+		return { tables: [...tables].sort(), files: [...files].sort(), sources: named };
 	}
 
 	/** Drops what no page reads any more. */
 	#forget(): void {
-		const { tables, files } = this.#sources();
+		const { tables, files, sources } = this.#sources();
 		const kept = new Set(
 			[
 				ORDER,
@@ -410,6 +504,11 @@ export class CompanyInterfaceFolder {
 			].map(companyPathKey),
 		);
 		for (const key of [...this.#reads.keys()]) if (!kept.has(key)) this.#reads.delete(key);
+		const plan = folderSourcePlan(sources, this.#view);
+		const folders = new Set(plan.folders.map(companyPathKey));
+		const takes = new Set(plan.takes.map((entry) => companyPathKey(entry.path)));
+		for (const key of [...this.#lists.keys()]) if (!folders.has(key)) this.#lists.delete(key);
+		for (const key of [...this.#taken.keys()]) if (!takes.has(key)) this.#taken.delete(key);
 	}
 
 	/** What the folder says, or undefined while it keeps no order file (a company seeded before P16b, of which there
@@ -419,7 +518,7 @@ export class CompanyInterfaceFolder {
 		if (!order) return undefined;
 		// An order file that doesn't parse lists nothing: every interface follows by name (§8).
 		const listed = parseInterfaceOrderFile(order.text);
-		const { tables: tableNames, files: filePaths } = this.#sources();
+		const { tables: tableNames, files: filePaths, sources } = this.#sources();
 		const tables = new Map<string, FolderTable>();
 		// Every file a source names has been tried by now: undefined is a read that failed, which is not a file that
 		// isn't there (null). A table whose files could not be read can't be read until the next sync reads them.
@@ -452,14 +551,23 @@ export class CompanyInterfaceFolder {
 			const read = this.#readOf(path);
 			if (read) files.set(path, read.text);
 		}
-		return { order: listed.ok ? listed.file.ids : [], pages: this.#pages(), tables, files };
+		const pages = this.#pages();
+		return {
+			order: listed.ok ? listed.file.ids : [],
+			pages,
+			tables,
+			files,
+			sources: folderSourceState(sources, this.#view, pages),
+		};
 	}
 
-	/** Publishes what the folder says when a file it was read from changed. */
+	/** Publishes what the folder says when a file it was read from, or a folder it listed, changed. */
 	#show(): void {
 		const versions = JSON.stringify([
 			this.#names,
 			[...this.#reads.entries()].map(([key, read]) => [key, read?.version ?? null]).sort(),
+			[...this.#lists.entries()].map(([key, entries]) => [key, entries.map((entry) => entry.version)]).sort(),
+			[...this.#taken.entries()].map(([key, read]) => [key, read.version]).sort(),
 		]);
 		if (versions === this.#shown) return;
 		this.#shown = versions;
