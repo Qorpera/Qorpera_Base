@@ -342,7 +342,9 @@ lost), a deleted file (its record), a file that should be there and is not, a no
 the window or has days not on the NAS yet, the NAS not mounted, this node's logger not running, paused or unable to
 write now (its heartbeat, `logger.pause` and `logger.failing`, which say since when), and time past 90 days. Also any
 stretch of more than 3 minutes with no line that says the logger was logging (an alive line, or its `logger started`,
-`paused: …` or `resumed: …` line; not the other gap lines, which a paused logger writes too), on any node, from its first day of logs to now (or, for another node, to its last pass):
+`paused: …` or `resumed: …` line, where `paused: …` is the pause itself, not `paused: … DNS record not kept`; not the
+other gap lines, which a paused logger writes too), on any node, from its first day of logs to now (or, for another
+node, to its last pass):
 the logger was down, paused or could not write then. That covers what no line read says: a logger stopped and not
 started again (on another node too, after its day went to the NAS), and an outage or pause that began before the days
 read and ended after them. Each stretch is judged at its full length: one across the edge of the days read runs from
