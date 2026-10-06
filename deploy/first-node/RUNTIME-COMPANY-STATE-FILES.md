@@ -467,8 +467,10 @@ an email to a mailbox) wakes the agent, with up to 20 deliveries a wake; with `o
   for.
 - The routine listens from its current version (W2's cursor per version), unlike `file-change`. A save that makes a
   new version drops the deliveries it had not taken yet: a change of title, instructions, `hook`, `only`, `timezone`,
-  `reply` or effort, a move to another agent, or a save after which another login pays. A resume drops them too. A
-  save that changes nothing else, or only `quiet`, `ends` or `runs`, keeps them.
+  `reply` or effort, a move to another agent, or a save after which another login pays. So does a save that makes
+  the routine run again, and it listens from then: a resume (an unchanged save over the platform's pause is one), a
+  reopen of a concluded routine, or a later `ends` or more `runs` that bring back an ended one. While the routine
+  runs, a save that changes nothing else, or only `quiet`, `quiet_timezone`, `ends` or `runs`, keeps them.
 - While the company is paused, its deliveries wait and wake the routine after the resume; a delivery older than 7 days
   is no longer waiting. A wake whose run does not take its deliveries is tried again after 1, 4, 16 and 64 minutes;
   after the fifth try, its first delivery is left behind.
