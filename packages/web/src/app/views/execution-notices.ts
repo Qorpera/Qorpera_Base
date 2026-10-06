@@ -73,7 +73,7 @@ function sentence(
 	const subject = item.subject;
 	switch (subject.schema) {
 		case "qorpera.member-notification.routine-payer-changed/v1": {
-			// Someone else's save or pick moved a routine off this member's login (20260930064000).
+			// Someone else's save or pick moved a routine off this member's login (20260930095000).
 			const agent = agentName?.(subject.staffAgentId) ?? t("An agent");
 			const member = (subject.changedByUserId && memberName?.(subject.changedByUserId)) || t("A member");
 			if (subject.payer === "company")

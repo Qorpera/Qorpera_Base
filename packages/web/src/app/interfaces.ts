@@ -9,17 +9,19 @@
  *
  * Either way only the parts whose source the client can read are drawn: a part without its source is not drawn, and an
  * interface with no part to draw is not listed (the client contract's rule against rendering missing machinery). Today
- * those sources are Pulse's "Needs you" and "Working now", read from the company's live state, the company's tables,
- * and its files that hold no outside content. */
+ * those sources are Pulse's "Needs you" and "Working now" and the company's members, read from the company's live
+ * state, the company's tables, and its files that hold no outside content. */
 
 import { INTERFACE_LIBRARY } from "@qorpera/cloud-client/interface-library";
 import {
 	type InterfaceBlock,
+	type InterfaceBoardPart,
 	type InterfaceButton,
 	type InterfaceFile,
 	type InterfaceQuery,
 	interfaceOutsideColumns,
 	parseInterfaceFile,
+	type TableFile,
 	type TableRow,
 	tableRowKey,
 } from "@qorpera/cloud-client/interfaces";
@@ -51,12 +53,15 @@ export interface InterfaceRow {
 }
 
 /** The blocks this client draws today. A `detail` block is drawn only when a drawn block in its view opens it. */
-const DRAWN_BLOCKS: ReadonlySet<InterfaceBlock["kind"]> = new Set(["list", "table", "detail"]);
+const DRAWN_BLOCKS: ReadonlySet<InterfaceBlock["kind"]> = new Set(["list", "table", "detail", "board"]);
 /** The sources this client reads from the company's live state: their columns, and the column `since` and ordering
  * use. */
 const LIVE_SOURCES: Readonly<Record<string, { readonly columns: readonly string[]; readonly time: string | null }>> = {
 	working: { columns: ["agent", "what", "since"], time: "since" },
 	waiting: { columns: ["id", "kind", "title", "from", "due"], time: "due" },
+	// One row per member (§4): `id` is what a `member` cell holds, the member's account id, which is also what their
+	// `picture` is found by.
+	members: { columns: ["id", "name", "picture", "role", "here"], time: null },
 };
 /** Columns that hold an agent's id: drawn as the agent's name. A table's columns say what they hold by their type. */
 const AGENT_COLUMNS: ReadonlySet<string> = new Set(["agent", "from", "handled_by", "kept_by"]);
@@ -100,6 +105,11 @@ function folderTable(company: CompanyController, source: string): FolderTable | 
 	return company.store.get().interfaceFolder?.tables.get(source.slice("table:".length));
 }
 
+/** A table source's definition as last read from the folder, or null. */
+export function tableDefinition(company: CompanyController, source: string): TableFile | null {
+	return folderTable(company, source)?.table ?? null;
+}
+
 /** A `file:` source's text. A file whose text is outside content (under `hooks/` or `human-tasks/`, §4) is not read:
  * the blocks can't show it with its outside-content mark yet (the 2026-10-02 interfaces amendment, item 3). */
 function folderText(company: CompanyController, source: string): string | undefined {
@@ -136,11 +146,30 @@ export function idColumn(
 		const type = folderTable(company, source)?.table?.columns.find((candidate) => candidate.name === column)?.type;
 		return type === "agent" || type === "member" || type === "agents" ? type : null;
 	}
+	if (source === "members") return column === "id" ? "member" : null;
 	return AGENT_COLUMNS.has(column) ? "agent" : null;
 }
 
-/** Whether this client can draw a block: its kind is drawn here and it reads one source the client has. */
+/** A board's parts this client draws, with their place among the block's parts: those whose table it can read, and
+ * that have every column a view built from another narrows by. */
+export function drawnParts(
+	block: InterfaceBlock,
+	company: CompanyController,
+	narrow: readonly NonNullable<InterfaceQuery["where"]>[] = [],
+): { readonly part: InterfaceBoardPart; readonly index: number }[] {
+	return block.parts.flatMap((part, index) => {
+		const columns = interfaceSource(company, part.from)?.columns;
+		return columns !== undefined &&
+			narrow.every((where) => Object.keys(where).every((name) => columns.includes(name)))
+			? [{ part, index }]
+			: [];
+	});
+}
+
+/** Whether this client can draw a block: its kind is drawn here and it reads one source the client has; a board, when
+ * it can read one of its parts' tables. */
 export function drawableBlock(block: InterfaceBlock, company: CompanyController): boolean {
+	if (block.kind === "board") return drawnParts(block, company).length > 0;
 	return (
 		DRAWN_BLOCKS.has(block.kind) &&
 		block.from.length === 1 &&
@@ -148,22 +177,30 @@ export function drawableBlock(block: InterfaceBlock, company: CompanyController)
 	);
 }
 
+/** The details a block opens: a list's or a table's `opens`, and each board part's. */
+function blockOpens(block: InterfaceBlock, parts: readonly InterfaceBoardPart[] = block.parts): string[] {
+	if (block.kind === "board") return parts.flatMap((part) => (part.opens === null ? [] : [part.opens]));
+	return (block.kind === "list" || block.kind === "table") && block.opens !== null ? [block.opens] : [];
+}
+
 /** The folder sources a page's drawn blocks could read, which app/interface-folder.ts reads: the tables of its list,
- * table and detail blocks and of its `needs`, and the files of those blocks that hold no outside content. A detail
- * block counts only where a list or table block in its view opens it, as `viewBlocks` draws it. */
+ * table and detail blocks, of its boards' parts, of its tables' lookup columns and of its `needs`, and the files of
+ * those blocks that hold no outside content. A detail block counts only where a list, table or board part in its view
+ * opens it, as `viewBlocks` draws it. */
 export function folderSources(file: InterfaceFile): { readonly tables: string[]; readonly files: string[] } {
 	const tables = new Set<string>();
 	const files = new Set<string>();
 	for (const need of file.needs) if (need.startsWith("table:")) tables.add(need.slice("table:".length));
 	for (const view of file.views) {
-		const opened = new Set(
-			view.blocks.flatMap((block) =>
-				(block.kind === "list" || block.kind === "table") && block.opens !== null ? [block.opens] : [],
-			),
-		);
+		const opened = new Set(view.blocks.flatMap((block) => blockOpens(block)));
 		for (const block of view.blocks) {
 			if (!DRAWN_BLOCKS.has(block.kind) || (block.kind === "detail" && !opened.has(block.id ?? ""))) continue;
-			for (const source of block.from) {
+			const sources = [
+				...block.from,
+				...(block.kind === "board" ? block.parts.map((part) => part.from) : []),
+				...(block.kind === "table" ? Object.values(block.lookups).map((lookup) => lookup.from) : []),
+			];
+			for (const source of sources) {
 				if (source.startsWith("table:")) tables.add(source.slice("table:".length));
 				else if (source.startsWith("file:") && interfaceOutsideColumns(source).length === 0)
 					files.add(source.slice("file:".length));
@@ -212,10 +249,11 @@ export function interfaceViews(file: InterfaceFile): InterfaceViewShape[] {
 }
 
 /** The blocks of a view this client draws, in their order: the drawable ones, and a `detail` block that one of
- * them opens. A block a view narrows by a column its source doesn't have is left out of that view: it could only
- * ever look empty. */
+ * them (or a board part drawn) opens. A block a view narrows by a column its source doesn't have is left out of that
+ * view: it could only ever look empty. A board is left out when none of its parts has the columns. */
 export function viewBlocks(view: InterfaceViewShape, company: CompanyController): ViewBlock[] {
 	const fits = ({ block, narrow }: ViewBlock) => {
+		if (block.kind === "board") return drawnParts(block, company, narrow).length > 0;
 		const columns = interfaceSource(company, block.from[0] ?? "")?.columns ?? [];
 		return (
 			drawableBlock(block, company) &&
@@ -223,13 +261,18 @@ export function viewBlocks(view: InterfaceViewShape, company: CompanyController)
 		);
 	};
 	const drawn = view.blocks.filter((shown) => shown.block.kind !== "detail" && fits(shown));
+	const opened = new Set(
+		drawn.flatMap(({ block, narrow }) =>
+			blockOpens(
+				block,
+				drawnParts(block, company, narrow).map(({ part }) => part),
+			),
+		),
+	);
 	return view.blocks.filter(
 		(shown) =>
 			drawn.includes(shown) ||
-			(shown.block.kind === "detail" &&
-				shown.block.id !== null &&
-				fits(shown) &&
-				drawn.some((opener) => opener.block.opens === shown.block.id)),
+			(shown.block.kind === "detail" && shown.block.id !== null && fits(shown) && opened.has(shown.block.id)),
 	);
 }
 
@@ -240,8 +283,9 @@ export type DrawnButton =
 	| { readonly verb: "open"; readonly label: string; readonly target: string };
 
 /** The buttons a block shows here. A member draws only what a member can do: `who = "agents"` is left out, and so
- * are the verbs whose machinery this client lacks today (add, set, take, offer, release write tables; `open file:`
- * needs a file route). */
+ * are the verbs whose machinery this client lacks today (add, set, offer and a file's own take and release buttons
+ * write tables; `open file:` needs a file route). A board draws its built-in take and release itself (views/
+ * interface.ts), and never offer or answer (step I9a). */
 export function blockButtons(file: InterfaceFile, block: InterfaceBlock): DrawnButton[] {
 	return block.buttons.flatMap((name): DrawnButton[] => {
 		if (name === "answer") return [{ verb: "answer", label: t("Answer") }];
@@ -276,6 +320,13 @@ function needsMet(file: InterfaceFile, company: CompanyController): boolean {
 function ownerOrAdmin(company: CompanyController): boolean {
 	const role = company.store.get().team?.role;
 	return role === "owner" || role === "admin";
+}
+
+/** Whether this member may change a table's rows: a member who may write at all, where `[write] members` is `all`,
+ * or `owners` and they are an owner or admin (§5; the save check's rule 5). */
+export function memberMayWriteRows(company: CompanyController, table: TableFile): boolean {
+	if (company.store.get().team?.capabilities.write !== true) return false;
+	return table.write.members === "all" || (table.write.members === "owners" && ownerOrAdmin(company));
 }
 
 /** Whether `[access] members` lets this member see the page. It only narrows: the data is read with the
@@ -435,6 +486,27 @@ export function interfaceRows(company: CompanyController, source: string): Inter
 			});
 		}
 		return rows;
+	}
+	if (source === "members") {
+		// Who is here comes from presence, which lists the others; the member looking is here too. Alone, the company
+		// joins no presence, and nobody is.
+		const here = state.here;
+		const collator = new Intl.Collator(presentationLocale(), { sensitivity: "base" });
+		return (state.team?.members ?? [])
+			.map((member) => ({ member, name: member.displayName || member.email }))
+			.sort((a, b) => collator.compare(a.name, b.name) || (a.member.userId < b.member.userId ? -1 : 1))
+			.map(({ member, name }) => ({
+				row: {
+					id: member.userId,
+					name,
+					picture: member.userId,
+					role: member.role,
+					here:
+						here !== undefined &&
+						(member.userId === company.userId || here.some((present) => present.userId === member.userId)),
+				},
+				key: `members:${member.userId}`,
+			}));
 	}
 	// A table's rows that fit its definition, each known by its key, so an open row stays open while its other
 	// columns change.
