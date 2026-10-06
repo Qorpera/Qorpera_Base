@@ -1,4 +1,4 @@
-# Agent exit (E1, E2, E3, and the node's half of E7)
+# Agent exit (E1, E2, E3 and E7)
 
 The exit that agent road machines' internet traffic leaves through, one per node, the same on every node. Design and
 decisions: `deploy/first-node/RUNTIME-AGENT-EXIT.md` and the contract's "2026-10-03 amendment: agent traffic leaves
@@ -6,7 +6,8 @@ through the agent exit". E1 built the exit itself. E2 adds the node's side of th
 creators call, its reconciler, the bridge rules that tie each port to its MAC and each MAC to its address, `notrack`
 for the bridged leg, and the health file the node observer reads. The logs' tender keeps the exit's logs on the node
 small and safe for its disk, and counts each day per company for the line guard (below). E3 ships the logs to the
-NAS, keeps them 90 days there, and answers "who used this address at that time" across the nodes. Nothing is plugged in until
+NAS, keeps them 90 days there, and answers "who used this address at that time" across the nodes. E7's brake slows a
+company's new connections past the founder's levels, and is off until they are set. Nothing is plugged in until
 the creators call `plug` (E2c); with no users and no legacy machines (founder decision, 3 October) there are no
 switches and nothing to migrate. Nothing is installed in production before a milestone release.
 
@@ -30,10 +31,10 @@ own and removes the node's masquerade.
 
 | File | What |
 | --- | --- |
-| `qorpera-agent-exit.nft` | rules inside `qexit` (`inet qorpera_agent_exit`): our own networks and TCP port 25 refused at once; IPv6, invalid packets and sources outside 10.210.0.0/16 dropped; at most 16,384 open connections per machine and 98,304 in all (decided 3 October; per address, and the bridge rules pin each machine to one); a closed agent TCP connection held 30 s, not 120 (`ct timeout agent_tcp`); plain DNS to any resolver redirected to the exit; new connections and refusals counted per machine (`new_by_client`, `refused_by_client`); refused flows kept an hour for the log (`refused_flows`, `refused_other`), each machine's share rate-limited; masquerade out of `up0`; the exit answers DHCP, and DNS and ping from the agent range, only |
+| `qorpera-agent-exit.nft` | rules inside `qexit` (`inet qorpera_agent_exit`): our own networks and TCP port 25 refused at once; IPv6, invalid packets and sources outside 10.210.0.0/16 dropped; at most 16,384 open connections per machine and 98,304 in all (decided 3 October; per address, and the bridge rules pin each machine to one); a closed agent TCP connection held 30 s, not 120 (`ct timeout agent_tcp`); plain DNS to any resolver redirected to the exit; new connections and refusals counted per machine (`new_by_client`, `refused_by_client`); refused flows kept an hour for the log (`refused_flows`, `refused_other`), each machine's share rate-limited; the brake's map, sets and chains (E7, below); masquerade out of `up0`; the exit answers DHCP, and DNS and ping from the agent range, only |
 | `qorpera-agent-exit-host.nft` | the node's second line (`inet qorpera_agent_exit_host`): nothing is routed into or out of `qagent0`, and the node does not track what enters from it (`notrack`; the exit tracks and bounds it); the masqueraded leg of a closed agent TCP connection is held 30 s, not 120; `qx-up` reaches public addresses only, never port 25 or the tailnet, and nothing on the node; nothing starts a connection into `qx-up`; the uplink's addresses are refused anywhere else; phase 1's masquerade, to public addresses only |
 | `qorpera-agent-exit.sh` | `check`, `up`, `down`, `dns`, `log`, `plug`, `logs`, `ship`, `verify`, `health`, `status`, `counts`, `lookup` |
-| `qorpera-agent-exit-log.py` | the connection log: conntrack's start and end of each agent connection (with bytes each way), each refused flow, and a gap line whenever events were lost, a read failed or a line could not be written; one JSON line each in `/var/log/qorpera-agent-exit/flows-YYYY-MM-DD.jsonl` (mode 0640); never content. It exits when its reader watches a namespace the exit replaced, and its unit starts it in the new one. It pauses past the logs' cap or under the disk's floor (below) |
+| `qorpera-agent-exit-log.py` | the connection log: conntrack's start and end of each agent connection (with bytes each way), each refused flow, and a gap line whenever events were lost, a read failed or a line could not be written; one JSON line each in `/var/log/qorpera-agent-exit/flows-YYYY-MM-DD.jsonl` (mode 0640); never content. It exits when its reader watches a namespace the exit replaced, and its unit starts it in the new one. It pauses past the logs' cap or under the disk's floor (below). Its line guard is the brake (E7, below) |
 | `qorpera-agent-exit-logs.py` | the logs' tool: the tender (`tend`) seals and compresses the logs, cuts `dns.log`, counts each closed day per company, keeps 90 days and the cap; the shipper (`ship`, E3) copies the sealed logs, the counts and the deletion records to the NAS, each read back and compared, and keeps 90 days there; `lookup` (E3) answers who used an address, on every node; `count` (a day's numbers, writing nothing) and `report` (the founder's table) |
 | `qorpera-agent-exit-bridge.nft` | the agents' bridge's own rules (`bridge qorpera_agent_exit_bridge`, on the node): before the bridge learns a MAC, a machine's port sends only its own MAC (`ports`, from LXD), so no machine takes another's or the exit's; then only ARP (its sender fields too) and IPv4 from a MAC and address pair in the client map, and DHCP only through one rule per machine (its own MAC, from no address or its own, naming its own MAC as the client), so no machine can take, release or decline another's lease; the node takes nothing from the bridge. `up` loads it filled with the entries LXD backed and the ports it held, in one transaction; the reconciler keeps it equal to LXD |
 | `qorpera-agent-plug.py` | the agent plug (below): `plug` for machine creators, `reconcile` for the plug unit, `elements`, `list` |
@@ -164,9 +165,10 @@ machine and the exit is bridged and would be refused as a private destination.
 `X verify` exits 0 only when the namespace, the bridge (not forwarding, a reverse-path filter on, not answering ARP),
 both addresses, the default route, the three rule tables, LLDP forwarded through the bridge rules, DNS on
 10.210.0.1:53 (from a name service in the exit's current namespace), a logger heartbeat younger than 30 seconds with
-the logger neither paused nor failing to write, a reconciler status younger than 30 seconds with no problem, a
-logs' tender status younger than 15 minutes with no problem, and a shipper status younger than 30 minutes with no
-problem (a NAS folder set, and no file waiting more than 24 hours to go to the NAS) are all there. The heartbeat is
+the logger neither paused nor failing to write, a brake status younger than 30 seconds with no problem (also while
+the brake is off), a reconciler status younger than 30 seconds with no problem, a logs' tender status younger than 15
+minutes with no problem, and a shipper status younger than 30 minutes with no problem (a NAS folder set, and no file
+waiting more than 24 hours to go to the NAS) are all there. The heartbeat is
 written only while both of the logger's readers are alive. A NAS that is away for less than a day does not make the
 exit unhealthy: the files wait on the node (under the cap and the floor, as always) and go when it is back. Past a day,
 `verify` fails until they have gone. If the exit is down, its agent road machines have no internet; nothing falls back to
@@ -196,14 +198,15 @@ far more. So `X logs` (the logs' timer, every 5 minutes) tends them:
   files are sealed; its counts never change after. The numbers are the line guard's (`RUNTIME-AGENT-EXIT.md` §8):
   machines, new connections (by protocol), the most new connections in one 10-second step (the company's and one
   machine's), refused flows (by rule), unanswered connections, distinct failed destinations (unanswered or refused) and
-  the most of them in one minute, and per node the gap lines. An address belongs to a company from its `plugged` line
+  the most of them in one minute, how often the brake held the company and how many new connections it dropped (its
+  `braked` and `unbraked` lines, below), and per node the gap lines. An address belongs to a company from its `plugged` line
   to its `unplugged` one. Each counts file keeps the parts it counted and who was plugged in when its day ended: the
   newest one is the checkpoint the next day starts from (`attribution.json` is a copy), and the counts file, written
   whole and then renamed, is the one commit point. A part that turns up for a day already counted (after the plug's
   reconciler was down, its `plugged` line can be days back) is counted with the next day the tender counts, under its
   own day (`late`, with its own numbers per company); the day it belongs to never changes. Traffic from an address with
   no company at that moment counts as `unattributed`, also when a late plug for it turns up afterwards. Counting never
-  slows or refuses anything: the brake waits for the founder's levels. A closed day the tender cannot count (a part it
+  slows or refuses anything; the brake does, at the founder's levels (below). A closed day the tender cannot count (a part it
   cannot seal) is a problem in `logs.json`, so `verify` fails.
 - **Keeps the disk safe.** 90 days are kept. A part the NAS holds (the shipper's record of it, below) goes from the
   node a week after its day, with no deletion record: the NAS has it. Past 80% of the cap, or with less than the floor
@@ -239,8 +242,8 @@ connection log every minute (`{"event":"alive","ts":…}`). They go to the NAS w
 sees when a logger was not logging, also when no gap line says so yet (below). The counts skip them.
 
 `X counts [--from DAY] [--to DAY] [--json]` prints the founder's table: per company, the days with traffic, connections
-(all and the busiest day), the most machines on a day, the burst peaks, refused, unanswered and the most failed
-destinations in a minute. `qorpera-agent-exit-logs.py count --log-dir … --day DAY` shows one day (also today) from what
+(all and the busiest day), the most machines on a day, the burst peaks, refused, unanswered, the most failed
+destinations in a minute, the times braked and the new connections the brake dropped. `qorpera-agent-exit-logs.py count --log-dir … --day DAY` shows one day (also today) from what
 is there.
 
 ## The logs on the NAS (E3)
@@ -392,6 +395,72 @@ The tool before E3 reads only numbers from `/etc/default/qorpera-agent-exit`, so
 4. Undo: install the earlier release's files again (`install-agent-exit.sh` from its checkout), then
    `systemctl disable --now qorpera-agent-exit-ship.timer`. What is on the NAS stays.
 
+## The brake (E7)
+
+The line guard's brake (`RUNTIME-AGENT-EXIT.md` §8) is off until the founder sets its levels, after two weeks of
+counts (`X counts`, above). It lives in the logger, which sees each new and each failed connection as it writes its
+line, and counts them as the counts do.
+
+The levels are lines in `/etc/default/qorpera-agent-exit` (root's, mode 0644):
+
+| Line | What | Unset |
+| --- | --- | --- |
+| `QORPERA_AGENT_EXIT_BRAKE_NEW_10S=N` | a company with more than N new connections in one 10-second step (all its machines; the steps of the counts' `peak10s`) is braked | not used |
+| `QORPERA_AGENT_EXIT_BRAKE_FAILED_60S=F` | a company with more than F failed destinations (unanswered or refused, each counted once) in one minute is braked | not used |
+| `QORPERA_AGENT_EXIT_BRAKE_SLOW_10S=S` | while braked, the company's machines share S new connections per 10 seconds; S must be under N | 50 |
+| `QORPERA_AGENT_EXIT_BRAKE_MINUTES=M` | a brake lasts M minutes (1 to 1440) from the last moment the company was past a level | 10 |
+
+With neither N nor F set (or both 0) the brake is off. A line that is not a whole number in range, or an S not under
+N, also turns it off, and `verify` fails ("the brake: …") until the line is fixed: a level that was not meant never
+brakes a company. The logger reads the levels when it starts, so after a change: `systemctl restart
+qorpera-agent-exit-log.service`. Its few seconds down are marked by its `logger started` line, and traffic goes on.
+
+While a company is braked:
+- Each new connection of its machines towards the internet (a connection's first packet, of any protocol) takes one of
+  the company's S per 10 seconds; a new brake starts with all S. Past them the packet is dropped, as on a busy line.
+  TCP sends its first packet again after 1, 3 and 7 seconds (Linux) and goes through once there is room; a UDP program
+  asks again or not, as it would anywhere.
+- Open connections go on untouched, and so does what goes to the exit itself (names, DHCP, ping). Refusals and the
+  bounds on open connections hold as before. Other companies are not touched: each braked company has its own share.
+- A dropped connection counts as a new one of its company, once however often its first packet comes again (the exit
+  keeps each dropped flow 3 minutes, `tried`), and not again when a resend goes through (`resent`). So a company that
+  keeps pushing stays braked, and one that slows down is let go M minutes after it was last past a level.
+
+The guard writes a `braked` line into the connection log when a brake starts (`company`, `reason`, `until`,
+`slow10s`) and an `unbraked` line when it ends (`company`, `since`, and `dropped`: the new connections it dropped that
+never went through), also while the logger pauses. They go to the NAS with the rest. The day's counts carry `brakes`
+and `droppedByBrake` per company, and `X counts` shows them.
+
+How it is kept:
+- Every 2 seconds (at once when a brake starts) the guard keeps the exit's rules equal to its brakes: the `braked` map
+  holds each machine of a braked company with the company's number, and the `share` chain one rule with S (`slow S`)
+  while the brake is on. A machine's company is the plug's own copy of its entry, and only for an entry the plug
+  verified (as for the client history, above); the guard reads them again every 10 seconds.
+- Each map element ends with its brake (its own timeout), so a brake ends on time also while the logger is down.
+- A reload of the rules (`up`) empties the map, and the guard fills it again within 2 seconds. A logger restart keeps
+  the brakes that were running (from its status file); with the levels removed, it ends them at once.
+- An unplug takes the machine out of the map and its dropped flows out of `tried`, with its other per-machine sets.
+  The guard may put it back until it reads the entries again (up to about 12 seconds); the address is in quarantine
+  for 15 minutes meanwhile.
+- `/run/qorpera-agent-exit/brake.json`, every 2 seconds: `on`, `levels`, `braked` (per company: its number, since,
+  until, the reason, the connections dropped, its machines) and `problems`. `verify` fails when it is missing ("the
+  brake not running"), older than 30 seconds, or names a problem (a bad level, rules the guard cannot read or write).
+- `X status` lists the braked machines, each number's dropped connections, and `brake.json`.
+
+### Adding E7 to a node that runs the exit
+
+1. `bash deploy/agent-exit/install-agent-exit.sh` from a checkout at the merged head, then at once
+   `systemctl reload qorpera-agent-exit.service` (the rules with the brake's map, sets and chains, in place), then
+   `systemctl restart qorpera-agent-exit-log.service qorpera-agent-plug.service`. Between the install and the logger's
+   restart, `verify` fails ("the brake not running"), so the health file may say unhealthy for a turn.
+2. Check: `X verify` says `healthy`; `/run/qorpera-agent-exit/brake.json` shows `"on": false` and `"problems": []`.
+3. The levels, only once the founder has decided them: their lines in `/etc/default/qorpera-agent-exit`, then
+   `systemctl restart qorpera-agent-exit-log.service`. Check: `brake.json` shows `"on": true`, the levels as written
+   and `"problems": []`, and `X verify` says `healthy`. Undo: remove the lines and restart the logger; running brakes
+   end at once.
+4. Undo of the install: install the earlier release's files again, then `systemctl reload qorpera-agent-exit.service`
+   and `systemctl restart qorpera-agent-exit-log.service qorpera-agent-plug.service`.
+
 ## Test
 
 `qorpera-agent-exit.test.mjs` checks the pins, the logger's parsers and pause decision, the logs' tender (a day sealed
@@ -408,6 +477,11 @@ other gap lines, which are no sign that it logged, a node whose logs begin later
 (`--nas-any-folder`). Then the plug tool: allocation under the creators' umask, twelve plugs at once, quarantine, and the
 reconciler against a stand-in for LXD (attribution only after a match, a forged claim, sleep, two misses before an unplug, a machine made again, an entry
 removed by hand, plugs never created, unusable entries and links never followed, the bridge sets, the twins it finds).
+Then the brake on a stand-in for the exit's rules: the levels (off until set, and any problem turns it off), the
+braked map, the share chain and the counted sets as `nft -j` lists them, a company braked past either level, longer
+while it goes on (its dropped connections counted once) and let go after, a failed read or write and a restart that
+keeps the brake, and the plug taking an unplugged machine out of the map and `tried`; and the counts and the report
+with the brake's lines.
 On Linux with Docker it runs `test/proof.sh` in a privileged container with no network of its own (`ubuntu:26.04`
 with the packages above, built once and cached). The proof never leaves the container's namespaces and never unloads
 a kernel module (the kernel loads nftables' own on demand).
@@ -441,6 +515,13 @@ on the tailnet. It checks:
   missed;
 - the logs on the NAS (a tmpfs mounted in the container, with its marker): the shipper's copies, byte for byte, with their records, the
   logger's alive lines, and the lookup naming the company, machine and name behind a live connection;
+- the brake, with levels in a settings file (5 new connections in 10 seconds, a share of 2, 5 minutes): a second
+  company's machine past the level braked (a `braked` line, the machine in the map with its company's number), then
+  of 10 new connections at once only 2 through and the rest dropped, each counted once however often resent, a
+  dropped one let through on a later resend and counted in `resent`, the brake held longer, the agent machine's
+  company never braked and `verify` healthy throughout; an unplug taking the machine out of the map and `tried` for
+  good; a restart without levels ending the brake at once (an `unbraked` line with what it dropped); and a share as
+  large as its level leaving the brake off and `verify` failing;
 - an interrupted rebuild: the logger leaves the old namespace by itself, and `verify` fails until DNS follows;
 - that `down` refuses with a machine plugged in, or only in the client map, and changes nothing; that with the
   exit's namespace gone the machine has no internet and no names; and that with nothing plugged in `down` removes

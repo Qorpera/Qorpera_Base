@@ -208,6 +208,232 @@ test("the logger names refusals with the same private ranges the exit refuses", 
 const pythonUsable =
 	spawnSync("python3", ["-c", "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)"]).status === 0;
 
+describe("the brake", { skip: pythonUsable ? false : "needs Python 3.11 or later" }, () => {
+	const t0 = 1790990000;
+	const iso = (ts) => new Date(ts * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+	let dir;
+	before(() => {
+		dir = mkdtempSync(join(tmpdir(), "agent-exit-brake-"));
+	});
+	after(() => rmSync(dir, { recursive: true, force: true }));
+	const levels = (raw) => {
+		const r = spawnSync("python3", [logger, "--brake-levels"], { input: JSON.stringify(raw), encoding: "utf8" });
+		assert.equal(r.status, 0, r.stderr);
+		return JSON.parse(r.stdout);
+	};
+	// A state folder as the agent plug keeps it: each machine's entry, and verified/ for those it matched with LXD.
+	const stateDir = (machines) => {
+		const state = mkdtempSync(join(dir, "state-"));
+		mkdirSync(join(state, "seen"));
+		mkdirSync(join(state, "verified"));
+		for (const [address, company, verified = true] of machines) {
+			writeFileSync(join(state, "seen", address), JSON.stringify({ address, company }));
+			if (verified) writeFileSync(join(state, "verified", address), "");
+		}
+		return state;
+	};
+	// The guard on a stand-in for the exit's rules; one answer per step with `step: true`.
+	const guard = (state, raw, steps) => {
+		const r = spawnSync("python3", [logger, "--guard-test", "--state-dir", state], {
+			input: JSON.stringify({ levels: raw, steps }),
+			encoding: "utf8",
+		});
+		assert.equal(r.status, 0, r.stderr);
+		return r.stdout
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line));
+	};
+	const opened = (src, n) => Array.from({ length: n }, (_, i) => ({ event: "new", src, dst: "1.1.1.1", proto: "tcp", sport: 40000 + i, dport: 443 }));
+	const failed = (src, dst, extra = {}) => ({ event: "destroy", src, dst, proto: "tcp", packets_out: 1, bytes_out: 60, packets_in: 0, bytes_in: 0, ...extra });
+	const off = { new10s: 0, failed60s: 0, slow10s: 50, minutes: 10, on: false };
+
+	test("the levels: off until set, and any problem turns the brake off", () => {
+		assert.deepEqual(levels({}), [off, []]);
+		assert.deepEqual(levels({ new10s: "", failed60s: null }), [off, []]);
+		assert.deepEqual(levels({ new10s: " 200 " }), [{ ...off, new10s: 200, on: true }, []]);
+		assert.deepEqual(
+			levels({ failed60s: "30", slow10s: "80", minutes: "5" }),
+			[{ new10s: 0, failed60s: 30, slow10s: 80, minutes: 5, on: true }, []],
+			"with no level for new connections the share may be anything",
+		);
+		assert.deepEqual(levels({ new10s: "100", slow10s: "100" }), [
+			{ ...off, new10s: 100, slow10s: 100 },
+			["QORPERA_AGENT_EXIT_BRAKE_SLOW_10S=100 is not under QORPERA_AGENT_EXIT_BRAKE_NEW_10S=100"],
+		]);
+		assert.deepEqual(levels({ new10s: "1e3", failed60s: "-1", slow10s: "0", minutes: "1441" }), [
+			off,
+			[
+				"QORPERA_AGENT_EXIT_BRAKE_NEW_10S='1e3' is not a whole number from 0 to 1000000000",
+				"QORPERA_AGENT_EXIT_BRAKE_FAILED_60S='-1' is not a whole number from 0 to 1000000000",
+				"QORPERA_AGENT_EXIT_BRAKE_SLOW_10S='0' is not a whole number from 1 to 1000000000",
+				"QORPERA_AGENT_EXIT_BRAKE_MINUTES='1441' is not a whole number from 1 to 1440",
+			],
+		]);
+	});
+
+	test("the braked map, the share chain and the counted sets read as nft -j lists them", () => {
+		const table = { family: "inet", table: "qorpera_agent_exit" };
+		const r = spawnSync("python3", [logger, "--parse-brake"], {
+			input: JSON.stringify({
+				map: {
+					nftables: [
+						{ metainfo: { version: "1.1.6" } },
+						{
+							map: {
+								...table,
+								name: "braked",
+								type: "ipv4_addr",
+								map: "mark",
+								flags: ["timeout"],
+								elem: [
+									[{ elem: { val: "10.210.1.10", timeout: 62, expires: 58 } }, 1234567],
+									[{ elem: { val: "10.210.1.11", timeout: 62, expires: 58 } }, "0x12d687"],
+									["10.210.1.12", "77"],
+								],
+							},
+						},
+					],
+				},
+				chain: {
+					nftables: [
+						{ chain: { ...table, name: "share", handle: 9 } },
+						{ rule: { ...table, chain: "share", handle: 40, comment: "slow 5", expr: [] } },
+					],
+				},
+				set: {
+					nftables: [
+						{
+							set: {
+								...table,
+								name: "dropped",
+								type: "mark",
+								elem: [
+									{ elem: { val: 1234567, timeout: 3600, expires: 3500, counter: { packets: 40, bytes: 2400 } } },
+									{ elem: { val: "0x4d", timeout: 3600, expires: 3000, counter: { packets: 3, bytes: 180 } } },
+								],
+							},
+						},
+					],
+				},
+			}),
+			encoding: "utf8",
+		});
+		assert.equal(r.status, 0, r.stderr);
+		assert.deepEqual(JSON.parse(r.stdout), {
+			machines: { "10.210.1.10": 1234567, "10.210.1.11": 1234567, "10.210.1.12": 77 },
+			share: ["slow 5"],
+			counters: { 1234567: 40, 77: 3 },
+		});
+	});
+
+	test("a company past the level for new connections is braked, longer while it goes on, and let go after", () => {
+		const state = stateDir([
+			["10.210.1.10", "c1"],
+			["10.210.1.11", "c1"],
+			["10.210.1.20", "c2", false],
+			["10.210.1.30", "c3"],
+		]);
+		const reason = "6 new connections in 10 seconds (level 5)";
+		const [started, held, ended] = guard(state, { new10s: "5", slow10s: "2", minutes: "1" }, [
+			// Six new connections from one of c1's machines; nine from a machine the plug has not matched; three from c3.
+			{ at: t0, see: [...opened("10.210.1.10", 6), ...opened("10.210.1.20", 9), ...opened("10.210.1.30", 3)], step: true },
+			// Ten new connections dropped, three of them let through later on a resend: seven more, past the level again.
+			{ at: t0 + 30, dropped: { c1: 10 }, resent: { c1: 3 }, step: true },
+			{ at: t0 + 95, step: true },
+		]);
+		assert.deepEqual(started.lines, [{ ts: t0, event: "braked", company: "c1", reason, until: t0 + 60, slow10s: 2 }]);
+		assert.deepEqual(started.share, ["slow 2"]);
+		assert.deepEqual(started.braked, { "10.210.1.10": "c1", "10.210.1.11": "c1" }, "every machine of c1, and no other");
+		assert.deepEqual(started.ends, { "10.210.1.10": 62, "10.210.1.11": 62 }, "the brake ends in the exit also without the guard");
+		assert.deepEqual(started.status, {
+			schema: "qorpera.agent-exit-brake/v1",
+			at: iso(t0),
+			on: true,
+			levels: { new10s: 5, failed60s: 0, slow10s: 2, minutes: 1 },
+			braked: [{ company: "c1", number: "c1", since: t0, until: t0 + 60, reason, dropped: 0, machines: 2 }],
+			problems: [],
+		});
+		assert.deepEqual(held.lines, [], "a brake that goes on writes no second line");
+		assert.deepEqual([held.status.braked[0].until, held.status.braked[0].dropped], [t0 + 90, 7]);
+		assert.deepEqual(held.ends, { "10.210.1.10": 62, "10.210.1.11": 62 }, "the exit's timeouts move with it");
+		assert.deepEqual(ended.lines, [{ ts: t0 + 95, event: "unbraked", company: "c1", since: t0, dropped: 7 }]);
+		assert.deepEqual([ended.braked, ended.ends, ended.status.braked], [{}, {}, []]);
+		assert.deepEqual(ended.share, ["slow 2"], "the share rule stays while the brake is on");
+	});
+
+	test("a company past the level for failed destinations in a minute is braked", () => {
+		const state = stateDir([["10.210.1.30", "c3"]]);
+		const [under, past] = guard(state, { failed60s: "3" }, [
+			{
+				at: t0 + 120,
+				see: [
+					failed("10.210.1.30", "1.1.1.1"),
+					failed("10.210.1.30", "1.1.1.1"),
+					failed("10.210.1.30", "3.3.3.3", { packets_in: 5, bytes_in: 900 }),
+					{ event: "refused", src: "10.210.1.30", dst: "2.2.2.2", proto: "tcp", dport: 25, rule: "mail" },
+					failed("10.210.1.30", "4.4.4.4"),
+				],
+				step: true,
+			},
+			{ at: t0 + 125, see: [{ event: "refused", src: "10.210.1.30", dst: "5.5.5.5", proto: "tcp", dport: 25, rule: "mail" }], step: true },
+		]);
+		assert.deepEqual(under.lines, [], "three failed destinations: one counted once, an answered one not at all");
+		assert.deepEqual(under.share, ["slow 50"]);
+		assert.deepEqual(past.lines, [
+			{ ts: t0 + 125, event: "braked", company: "c3", reason: "more than 3 failed destinations in a minute", until: t0 + 725, slow10s: 50 },
+		]);
+		assert.deepEqual(past.braked, { "10.210.1.30": "c3" });
+	});
+
+	test("a failed write or read is a problem in the status; the rules are written again, and a restart keeps the brake", () => {
+		const state = stateDir([["10.210.1.10", "c1"]]);
+		const reason = "6 new connections in 10 seconds (level 5)";
+		const [started, unwritten, rewritten, unread, restarted] = guard(state, { new10s: "5", slow10s: "2", minutes: "1" }, [
+			{ at: t0, see: opened("10.210.1.10", 6), step: true },
+			// The rules loaded again (empty), and the guard's write fails.
+			{ at: t0 + 2, reload: true, fail: "write", step: true },
+			{ at: t0 + 4, fail: null, step: true },
+			{ at: t0 + 6, fail: "read", step: true },
+			{ at: t0 + 8, fail: null, restart: true, step: true },
+		]);
+		assert.equal(started.lines.length, 1);
+		assert.deepEqual(unwritten.status.problems, ["cannot write the brake's rules: Error: Could not process rule"]);
+		assert.deepEqual([unwritten.share, unwritten.braked], [[], {}]);
+		assert.deepEqual([rewritten.share, rewritten.braked, rewritten.ends], [["slow 2"], { "10.210.1.10": "c1" }, { "10.210.1.10": 58 }]);
+		assert.deepEqual(rewritten.status.problems, []);
+		assert.deepEqual(unread.status.problems, ["cannot read the brake's rules: Error: No such file or directory"]);
+		assert.equal(unread.status.braked.length, 1, "a brake goes on while the rules cannot be read");
+		assert.deepEqual(restarted.lines, [], "a new logger takes the brake over from its status file, with no new line");
+		assert.deepEqual(restarted.status.braked, [{ company: "c1", number: "c1", since: t0, until: t0 + 60, reason, dropped: 0, machines: 1 }]);
+		assert.deepEqual([restarted.braked, restarted.ends], [{ "10.210.1.10": "c1" }, { "10.210.1.10": 54 }]);
+
+		// The brake turned off (here a level that is not a number) ends every brake at once, and counts nothing.
+		const [stopped] = guard(state, { new10s: "x" }, [{ at: t0 + 10, see: opened("10.210.1.10", 20), step: true }]);
+		assert.deepEqual(stopped.lines, [{ ts: t0 + 10, event: "unbraked", company: "c1", since: t0, dropped: 0 }]);
+		assert.deepEqual([stopped.share, stopped.braked, stopped.status.on, stopped.status.braked], [[], {}, false, []]);
+		assert.deepEqual(stopped.status.problems, ["QORPERA_AGENT_EXIT_BRAKE_NEW_10S='x' is not a whole number from 0 to 1000000000"]);
+	});
+
+	test("the agent plug takes an unplugged machine out of the braked map and its tried flows", () => {
+		const keys = (answer) => {
+			const r = spawnSync("python3", [plugTool, "--set-keys", "10.210.1.10"], { input: JSON.stringify(answer), encoding: "utf8" });
+			assert.equal(r.status, 0, r.stderr);
+			return JSON.parse(r.stdout);
+		};
+		const braked = [
+			[{ elem: { val: "10.210.1.10", timeout: 62, expires: 50 } }, 1234567],
+			["10.210.1.11", 1234567],
+		];
+		assert.deepEqual(keys({ nftables: [{ metainfo: { version: "1.1.6" } }, { map: { name: "braked", elem: braked } }] }), ["10.210.1.10"]);
+		const flow = (src) => ({ elem: { val: { concat: [src, "1.1.1.1", "tcp", 40000, 443] }, timeout: 180, expires: 170 } });
+		assert.deepEqual(keys({ nftables: [{ set: { name: "tried", elem: [flow("10.210.1.10"), flow("10.210.1.11")] } }] }), [
+			"10.210.1.10 . 1.1.1.1 . tcp . 40000 . 443",
+		]);
+	});
+});
+
 describe("the agent plug", { skip: pythonUsable ? false : "needs Python 3.11 or later" }, () => {
 	let dir;
 	let state;
@@ -666,6 +892,9 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 				...Array.from({ length: 5 }, (_, i) => ({ event: "destroy", src: "10.210.1.1", dst: `203.0.113.${i}`, proto: "tcp", packets_out: 1, bytes_out: 60, packets_in: 0, bytes_in: 0, ts: t0 + 1985 + i })),
 				{ event: "destroy", src: "10.210.1.1", dst: "1.1.1.1", proto: "tcp", packets_out: 5, bytes_out: 500, packets_in: 4, bytes_in: 900, ts: t0 + 1989 },
 				{ event: "refused", src: "10.210.1.1", dst: "192.168.1.40", proto: "tcp", dport: 2049, rule: "our_networks", ts: t0 + 1990 },
+				// The brake's lines: counted per company, never as connections; an unbraked line says what it dropped.
+				{ event: "braked", company: "cA", reason: "12 new connections in 10 seconds (level 10)", until: t0 + 1601, slow10s: 5, ts: t0 + 1001 },
+				{ event: "unbraked", company: "cA", since: t0 + 1001, dropped: 40, ts: t0 + 1602 },
 			],
 			"not json\n",
 		);
@@ -682,7 +911,7 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 		assert.equal(closed.result.daysCounted, 1);
 		assert.ok(!files().includes(`flows-${day}.jsonl`) && !files().includes(`clients-${day}.jsonl`));
 		const part = gunzipSync(readFileSync(join(log, `flows-${day}.p001.jsonl.gz`))).toString("utf8");
-		assert.equal(part.split("\n").filter(Boolean).length, 25, "every line, the unreadable one too");
+		assert.equal(part.split("\n").filter(Boolean).length, 27, "every line, the unreadable one too");
 		assert.equal(statSync(join(log, `flows-${day}.p001.jsonl.gz`)).mode & 0o777, 0o640);
 		const c = counts(day);
 		assert.deepEqual(c.companies.cA, {
@@ -699,6 +928,8 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 			failedDestinationsAtLeast: false,
 			peakFailedDestinations60s: 6,
 			peakFailedDestinations60sAt: "2026-09-01T00:33:00Z",
+			brakes: 1,
+			droppedByBrake: 40,
 		});
 		// The address goes from cB to cC the moment it is plugged in again; one never matched (dropped) has no company.
 		assert.equal(c.companies.cB.connections, 1);
@@ -706,7 +937,8 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 		assert.equal(c.companies.unattributed.connections, 1);
 		assert.equal(c.companies.unattributed.machines, 0);
 		assert.equal(c.companies.cZ, undefined);
-		assert.deepEqual(c.node, { records: 24, gaps: 1, gapReasons: { "logger started": 1 }, unreadableLines: 1 });
+		assert.deepEqual([c.companies.cB.brakes, c.companies.cB.droppedByBrake], [0, 0]);
+		assert.deepEqual(c.node, { records: 26, gaps: 1, gapReasons: { "logger started": 1 }, unreadableLines: 1 });
 		assert.deepEqual(c.parts, [`clients-${day}.p001.jsonl.gz`, `flows-${day}.p001.jsonl.gz`]);
 		assert.deepEqual(c.late, []);
 		assert.equal(c.pluggedInAtEnd["10.210.1.2"].company, "cC");
@@ -758,12 +990,18 @@ describe("the logs on the node", { skip: pythonUsable ? false : "needs Python 3.
 		const report = JSON.parse(r.stdout);
 		assert.equal(report.node.days, 2);
 		assert.deepEqual(
-			{ days: report.companies.cA.days, connections: report.companies.cA.connections, peak: report.companies.cA.peakNew10s },
-			{ days: 2, connections: 14, peak: 12 },
+			{
+				days: report.companies.cA.days,
+				connections: report.companies.cA.connections,
+				peak: report.companies.cA.peakNew10s,
+				brakes: report.companies.cA.brakes,
+				dropped: report.companies.cA.droppedByBrake,
+			},
+			{ days: 2, connections: 14, peak: 12, brakes: 1, dropped: 40 },
 		);
 		const text = spawnSync("python3", [logsTool, "report", "--log-dir", log], { encoding: "utf8" });
 		assert.equal(text.status, 0, text.stderr);
-		assert.match(text.stdout, /^cA\s+2\s+14\s+13\s+1\s+12\s+12\s+1\s+5\s+6$/m);
+		assert.match(text.stdout, /^cA\s+2\s+14\s+13\s+1\s+12\s+12\s+1\s+5\s+6\s+1\s+40$/m);
 	});
 
 	test("over the cap the oldest counted parts go first, the client history last; never an uncounted part", () => {

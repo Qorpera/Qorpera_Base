@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Qorpera agent exit: the logs (E3: on the node, on the NAS, and who used an address) and the line guard's counts
-(E7, counting only).
+(E7; the brake itself is in the logger).
 
 The exit writes its logs on the node's own disk, in <log-dir> (/var/log/qorpera-agent-exit): the connection log
 flows-YYYY-MM-DD.jsonl (the logger), the client history clients-YYYY-MM-DD.jsonl (the agent plug) and dns.log (dnsmasq).
@@ -15,7 +15,8 @@ flows-YYYY-MM-DD.jsonl (the logger), the client history clients-YYYY-MM-DD.jsonl
   writes on from the start, and what it wrote between the copy's end and the truncate is lost;
 - it counts each closed day once, per company, from that day's parts (counts-YYYY-MM-DD.json): the line guard's
   numbers (RUNTIME-AGENT-EXIT.md §8: new connections, refusals, bursts and failed connections to many addresses),
-  which the founder reads (`report`) to set the brake's levels. Counting never slows or refuses anything. A day is
+  which the founder reads (`report`) to set the brake's levels, and how often the brake held each company and how many
+  new connections it dropped (its "braked" and "unbraked" lines). Counting never slows or refuses anything. A day is
   counted once all its files are sealed, and its counts never change after. A part that turns up for a day already
   counted (the plug's reconciler was down for a while, say) is counted with the next day the tender counts, under its
   own day ("late"); it never changes the day it belongs to;
@@ -441,7 +442,7 @@ def tally(flow_paths, intervals, client_records=()):
         if key not in companies:
             companies[key] = {"machines": set(), "connections": 0, "byProto": {}, "buckets": {}, "refused": 0,
                               "refusedByRule": {}, "unanswered": 0, "failed": set(), "failedPast": False,
-                              "peakFailed60s": 0, "peakFailed60sAt": None}
+                              "peakFailed60s": 0, "peakFailed60sAt": None, "brakes": 0, "droppedByBrake": 0}
         return key, companies[key]
 
     def failed(key, entry, ts, dst):
@@ -470,6 +471,15 @@ def tally(flow_paths, intervals, client_records=()):
             node["gaps"] += 1
             reason = normalised(record.get("reason"))
             node["gapReasons"][reason] = node["gapReasons"].get(reason, 0) + 1
+            continue
+        if event in ("braked", "unbraked"):
+            # The brake's own lines (qorpera-agent-exit-log.py) name the company; an unbraked line says how many new
+            # connections the brake dropped, so they count on the day the brake ended.
+            key, entry = company(record)
+            if event == "braked":
+                entry["brakes"] += 1
+            elif isinstance(record.get("dropped"), int) and record["dropped"] > 0:
+                entry["droppedByBrake"] += record["dropped"]
             continue
         src = record.get("src")
         who = who_at(intervals, src, record["ts"]) if isinstance(src, str) else None
@@ -520,6 +530,8 @@ def tally(flow_paths, intervals, client_records=()):
             "failedDestinationsAtLeast": entry["failedPast"],
             "peakFailedDestinations60s": entry["peakFailed60s"],
             "peakFailedDestinations60sAt": entry["peakFailed60sAt"],
+            "brakes": entry["brakes"],
+            "droppedByBrake": entry["droppedByBrake"],
         }
     return {"companies": dict(sorted(result.items())), "node": node}
 
@@ -1120,7 +1132,8 @@ def report(log_dir, start, end, as_json):
         for own, company, c in ((own, company, c) for own, each in booked for company, c in each.items()):
             total = companies.setdefault(company, {"days": 0, "connections": 0, "maxConnectionsDay": 0, "maxMachines": 0,
                                                    "peakNew10s": 0, "peakNew10sOneMachine": 0, "refused": 0,
-                                                   "unanswered": 0, "peakFailedDestinations60s": 0})
+                                                   "unanswered": 0, "peakFailedDestinations60s": 0, "brakes": 0,
+                                                   "droppedByBrake": 0})
             total["connections"] += c["connections"]
             if own:
                 total["days"] += 1
@@ -1130,6 +1143,9 @@ def report(log_dir, start, end, as_json):
                 total[key] = max(total[key], c[key])
             total["refused"] += c["refused"]
             total["unanswered"] += c["unanswered"]
+            # Days counted before the brake have neither.
+            total["brakes"] += c.get("brakes", 0)
+            total["droppedByBrake"] += c.get("droppedByBrake", 0)
     result = {"from": days[0] if days else start, "to": days[-1] if days else end, "node": node,
               "companies": dict(sorted(companies.items(), key=lambda item: -item[1]["connections"]))}
     if as_json:
@@ -1139,13 +1155,14 @@ def report(log_dir, start, end, as_json):
           f"{node['gaps']} gap lines, {node['deletedEarly']} files deleted before their 90 days.")
     print("Per company: days with traffic, new connections (all days, busiest day), most machines on a day, the most new")
     print("connections in 10 seconds (the company, one machine), refused, unanswered, the most failed destinations in")
-    print("one minute.")
+    print("one minute, times braked, new connections the brake dropped.")
     header = ("company", "days", "conns", "busiest", "machines", "peak10s", "machine10s", "refused", "unanswered",
-              "failed60s")
+              "failed60s", "brakes", "dropped")
     print("  ".join(f"{h:>10}" if i else f"{h:<36}" for i, h in enumerate(header)))
     for company, t in result["companies"].items():
         row = (company, t["days"], t["connections"], t["maxConnectionsDay"], t["maxMachines"], t["peakNew10s"],
-               t["peakNew10sOneMachine"], t["refused"], t["unanswered"], t["peakFailedDestinations60s"])
+               t["peakNew10sOneMachine"], t["refused"], t["unanswered"], t["peakFailedDestinations60s"], t["brakes"],
+               t["droppedByBrake"])
         print("  ".join(f"{v:>10}" if i else f"{v:<36}" for i, v in enumerate(row)))
 
 
@@ -1226,9 +1243,9 @@ def resolutions(sources, clients, addresses):
 
 def flow_records(paths, needles):
     """The connection log's lines that hold one of `needles` (a quick test; the caller matches exactly), every gap
-    line, with the time of the line before it ("after"; an alive line, written at the clock's time while conntrack's
-    can lag, never counts as that), and every alive line. A file, or one of those lines, that cannot be read is an
-    "unreadable" record."""
+    line, with the time of the line before it ("after"; an alive line or the brake's line, written at the clock's time
+    while conntrack's can lag, never counts as that), and every alive line. A file, or one of those lines, that cannot
+    be read is an "unreadable" record."""
     previous = None
     for path in paths:
         opener = gzip.open if path.endswith(".gz") else open
@@ -1236,7 +1253,8 @@ def flow_records(paths, needles):
             with opener(path, "rt", encoding="utf-8", errors="replace") as f:
                 for line in f:
                     gap, alive = '"event":"gap"' in line, '"event":"alive"' in line
-                    if gap or alive or any(needle in line for needle in needles):
+                    brake = '"event":"braked"' in line or '"event":"unbraked"' in line
+                    if gap or alive or (not brake and any(needle in line for needle in needles)):
                         record = read_line(line)
                         if record is None:
                             yield {"event": "unreadable", "path": path, "error": "a line that cannot be read"}
@@ -1245,7 +1263,7 @@ def flow_records(paths, needles):
                                 before = read_line(previous)
                                 record["after"] = before.get("ts") if before else None
                             yield record
-                    if not alive:
+                    if not alive and not brake:
                         previous = line
         except (OSError, EOFError) as error:
             yield {"event": "unreadable", "path": path, "error": str(error)}

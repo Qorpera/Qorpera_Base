@@ -821,7 +821,8 @@ subscriptions, which self-limit.
 > 64 MiB fence frame (more than any model context holds), and a view row is
 > bounded at 16 MiB as storage.
 
-> **Amended 2026-10-03 (not built yet).** What remains also holds the agent
+> **Amended 2026-10-03 (built in E1 and E7; the brake is off until the
+> founder sets its levels).** What remains also holds the agent
 > exit's line guard: TCP port 25 is refused, and a brake on bursts of new
 > connections, whose levels the founder decides after two weeks of counting.
 > It guards the shared line and never counts a run's work ("agent traffic
@@ -4908,6 +4909,9 @@ It amends these texts. Where older text conflicts with this amendment, this amen
      flood), and failed connections to many addresses (a scan).
    - The founder sees the numbers and decides the brake's levels before it is switched on, well above normal use.
      Past them, that company's new connections are slowed for a while. The brake never stops normal work.
+   - Slowed means a share of new connections per 10 seconds. Past it, the company's new connections are dropped and
+     its machines try again a little later, as on a busy line; nothing is refused for good. Open connections, the
+     exit's own names and other companies are never touched. Each brake's start and end are in the exit's log.
    - It guards the shared line, which the line provider may cut for spam or port scans whoever caused them.
    - It is not a limit on the work: 7.4's rule that a run has no count on its work stands.
 10. **Updates never stop a machine, and the exit fails closed.**

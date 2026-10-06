@@ -33,7 +33,8 @@ Each check changes nothing. Every one must hold on both nodes before step 1.
 ## Step 1: the exit on node 1
 
 A node that already runs the exit from an earlier release takes E3 alone instead: `README.md`, "Adding E3 to a node
-that runs the exit" (its steps, check and undo).
+that runs the exit" (its steps, check and undo). One that runs E3 already takes E7 alone: "Adding E7 to a node that
+runs the exit". A fresh node gets E7 with this step, its brake off (step 4c).
 
 First the NAS for the logs (E3): the mount unit of `README.md`, "The mount", written to
 `/etc/systemd/system/srv-qorpera-agent\x2dexit\x2dlogs.mount`, then:
@@ -181,9 +182,37 @@ into `/var/log/qorpera-agent-exit/counts-YYYY-MM-DD.json`. The two weeks of coun
 ```
 
 It prints, per company, the days with traffic, new connections (all and the busiest day), the most machines on a day,
-the most new connections in 10 seconds (the company's and one machine's), refused, unanswered, and the most failed
-destinations in one minute. Check: after the first closed day, `ls /var/log/qorpera-agent-exit/counts-*.json` lists it.
-Undo: none needed (reading changes nothing).
+the most new connections in 10 seconds (the company's and one machine's), refused, unanswered, the most failed
+destinations in one minute, and (from step 4c on) the times braked and the new connections the brake dropped. Check:
+after the first closed day, `ls /var/log/qorpera-agent-exit/counts-*.json` lists it. Undo: none needed (reading
+changes nothing).
+
+## Step 4c (later): the brake's levels
+
+Only once the founder has read the counts (step 4b, two weeks) and decided the levels, well above normal use. Until
+then the brake is installed and off: `/run/qorpera-agent-exit/brake.json` shows `"on": false` and `"problems": []`.
+On node 1 (root), with the founder's numbers (`README.md`, "The brake": any of the four lines may be left out; with
+neither of the first two the brake stays off):
+
+```bash
+cat >>/etc/default/qorpera-agent-exit <<'EOF'
+QORPERA_AGENT_EXIT_BRAKE_NEW_10S=<N>
+QORPERA_AGENT_EXIT_BRAKE_FAILED_60S=<F>
+QORPERA_AGENT_EXIT_BRAKE_SLOW_10S=<S, under N>
+QORPERA_AGENT_EXIT_BRAKE_MINUTES=<M>
+EOF
+systemctl restart qorpera-agent-exit-log.service
+```
+
+The logger reads the levels when it starts; its few seconds down are marked in the log, and traffic goes on.
+
+Check, within 10 seconds: `cat /run/qorpera-agent-exit/brake.json` shows `"on": true`, the levels as written and
+`"problems": []`; `X verify` prints `qorpera-agent-exit: healthy`;
+`ip netns exec qexit nft list chain inet qorpera_agent_exit share` shows one rule, with `comment "slow S"`. A line that is not well formed shows in `problems`, and `verify` fails until it is fixed (the brake stays
+off meanwhile). Then node 2, the same way.
+
+Undo: remove the four lines, then `systemctl restart qorpera-agent-exit-log.service`. Running brakes end at once, each
+with an `unbraked` line in the connection log.
 
 ## Step 5: the node release of the release head, node 1 then node 2
 
