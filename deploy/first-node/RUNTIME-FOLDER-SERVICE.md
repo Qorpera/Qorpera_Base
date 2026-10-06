@@ -383,8 +383,12 @@ computer desktop's view, which the core opens for an office screen (C1b-3a):
   when its machine asks, and when its last connection leaves: what is pending then is published under the lease it
   still has, and the view is dropped after. A machine that comes back meanwhile joins it.
 - **The seat in use.** Each renewal tells the core since when the view has had changes not published
-  (`p_unsaved_since`, C1b-3 §9), or null. The first change not published renews the lease at once, so the core counts
-  the desktop's seat in use from then, not up to 40 s later; a boundary that leaves nothing pending clears it.
+  (`p_unsaved_since`, C1b-3 §9), or null. Unsaved means what a boundary publishes: a removal, or a new, moved or
+  changed file or folder. A lock, swap, backup or trash name a program holds is never published and is none, nor is a
+  file opened but not changed. The first change not published renews the lease at once, so the core counts the
+  desktop's seat in use from then, not up to 40 s later. A boundary that leaves nothing unsaved clears it at the next
+  renewal, and a view its machine lets go, if the core last heard it had unsaved changes, renews once with null before
+  it is dropped, so the seat is free then, not when the lease ends.
 - **Parked changes.** A unit the core parks for review (`waiting_for_review`, reason `parked`: P40, an agent's change
   that needs a member's) is a proposal now, and the agent's next run reviews it. The view lets it go and shows the
   live folder, as for a unit saved. Until step 4's report reaches the desktop, the service logs every outcome of a
@@ -394,5 +398,4 @@ computer desktop's view, which the core opens for an office screen (C1b-3a):
 
 ## Not here
 
-Writes; the `company_search` tool; company, coding and test machines (where commands run, each with its own mount).
-Each is a later step.
+Commands on company machines, coding machines and test machines (each with its own mount). Each is a later step.

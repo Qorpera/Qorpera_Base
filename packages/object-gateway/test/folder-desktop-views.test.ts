@@ -182,6 +182,45 @@ describe("company machines' desktops", () => {
 		expect(desk.unsaved).toEqual([null, since, since, null]);
 	});
 
+	it("counts no lock name a program still holds as unsaved, before or after the save", async () => {
+		const clock = { now: Date.parse("2026-10-06T12:00:00.000Z") };
+		const { core, service, open, desk } = await company({}, () => clock.now);
+		const view = await open();
+		// The program's lock file alone renews nothing early, and the round says nothing is unsaved.
+		await write(view, "docs/.~lock.report.odt#", "lock");
+		await service.renewLeases();
+		expect(desk.unsaved).toEqual([null, null]);
+		clock.now += 5_000;
+		const since = new Date(clock.now).toISOString();
+		await write(view, "docs/report.odt", "r");
+		await until(() => desk.unsaved.length === 3);
+		expect(desk.unsaved[2]).toBe(since);
+		// Saved: the lock file stays in the view while the document is open, and the core hears nothing is unsaved.
+		await view.publish();
+		expect(core.entries.has("docs/report.odt")).toBe(true);
+		expect(await names(view, "docs")).toContain(".~lock.report.odt#");
+		await service.renewLeases();
+		expect(desk.unsaved[3]).toBeNull();
+	});
+
+	it("tells the core nothing is unsaved when its machine lets go, then forgets the view", async () => {
+		const { core, open, desk } = await company();
+		const view = await open();
+		await write(view, "docs/last.md", "l");
+		await until(() => desk.unsaved.length === 2);
+		expect(desk.unsaved[1]).not.toBeNull();
+		view.release();
+		// Published, then one renewal says so before the view goes: the seat is free now, not when the lease ends.
+		await until(() => core.entries.has("docs/last.md") && desk.unsaved.length === 3);
+		expect(desk.unsaved[2]).toBeNull();
+		// A view the core last heard nothing unsaved of goes without one.
+		const again = await open();
+		const renewals = desk.unsaved.length;
+		again.release();
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(desk.unsaved.length).toBe(renewals);
+	});
+
 	it("publishes what a desktop has pending when its machine lets go, then forgets the view", async () => {
 		const { core, open } = await company();
 		const view = await open();
