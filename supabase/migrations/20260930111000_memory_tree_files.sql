@@ -300,7 +300,7 @@ begin
 		if v_parsed is null then
 			return jsonb_build_object('problem', 'this line is not a summary line', 'line', v_no); end if;
 		v_l := (v_parsed ->> 'l')::integer; v_k := (v_parsed ->> 'k')::bigint;
-		if octet_length(v_line) > case when v_l = 0 then 2212 else 2113 end then
+		if octet_length(v_line) > (case when v_l = 0 then 2212 else 2113 end) then
 			return jsonb_build_object('problem', 'this line is longer than a summary line can be', 'line', v_no); end if;
 		if v_l < 4 * v_t or v_l > 4 * v_t + 3 or (v_k >> (4 * v_t + 4 - v_l)) <> v_b then
 			return jsonb_build_object('problem', 'this line does not belong in this block', 'line', v_no); end if;
