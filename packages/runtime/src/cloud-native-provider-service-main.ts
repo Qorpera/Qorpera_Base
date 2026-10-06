@@ -27,7 +27,7 @@ import { createHttpCloudMachineCommandGateway } from "./cloud-machine-command-ht
 import { CloudNativeCodingRuntime } from "./cloud-native-coding-runtime.ts";
 import { HttpNativeCompanyObjectTransport } from "./cloud-native-company-objects.ts";
 import { CloudNativeCompanyRuntime } from "./cloud-native-company-runtime.ts";
-import { NativeHostDispatch } from "./cloud-native-host-dispatch.ts";
+import { NativeHostDispatch, nativeHostRealtimeTransport } from "./cloud-native-host-dispatch.ts";
 import { parseNativeIdentityCredential, parseNativeIdentityState } from "./cloud-native-identity-credential.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import {
@@ -300,6 +300,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	if ([bridgeToken, masterKey, serviceKey].includes(identity.credential) || identity.publishableKey === serviceKey)
 		throw new Error("The native identity credential must be independent");
 	const dispatch = new NativeHostDispatch({ supabaseUrl: baseUrl, serviceKey, identity });
+	const publishableKey = identity.publishableKey;
 	// A login guest may not read its identity's recovery state: its gateway read it and delivered it.
 	const loginGuest = nativeLoginGuestPurpose(environment);
 	const state = loginGuest
@@ -446,8 +447,10 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 							identity,
 							signal,
 							control: pathControl,
-							client: createClient(baseUrl, serviceKey, {
+							// G2-4: the publishable key, and the job's lease token on the WebSocket's upgrade.
+							client: createClient(baseUrl, publishableKey, {
 								auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+								realtime: { transport: nativeHostRealtimeTransport(dispatch) },
 							}),
 						})
 					: undefined,
@@ -543,7 +546,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	const warmIdleMs = cloudRuntime ? nativeWarmIdleMs(environment.QORPERA_NATIVE_WARM_IDLE_MS) : undefined;
 	const host = new NativeProviderHost({
 		controlPlane,
-		capsules: new SupabaseNativeCredentialCapsuleStore(baseUrl, serviceKey),
+		capsules: new SupabaseNativeCredentialCapsuleStore(baseUrl, dispatch.fetch),
 		harness: new OfficialCliNativeHarnessDriver(
 			runtimeConfiguration?.command[0] ?? environment.QORPERA_CODEX_PATH ?? "codex",
 			environment.QORPERA_CLAUDE_PATH ?? "claude",

@@ -733,16 +733,16 @@ export class SupabaseNativeProviderControlPlane
 	}
 }
 
+/** The identity's credential capsules in Storage (bucket qorpera-native-compute-capsules, `<capsule id>.capsule`). Its
+ * fetch is the native host's NativeHostDispatch, which signs each request with the publishable key and the holder's
+ * credential (G2-4); the store itself holds no key. */
 export class SupabaseNativeCredentialCapsuleStore implements NativeCredentialCapsuleStore {
 	readonly #objectUrl: string;
-	readonly #serviceKey: string;
 	readonly #fetch: typeof fetch;
 
-	constructor(baseUrl: string, serviceKey: string, fetchImplementation: typeof fetch = fetch) {
+	constructor(baseUrl: string, fetchImplementation: typeof fetch) {
 		const url = new URL(`/storage/v1/object/${CAPSULE_BUCKET}/`, nativeCloudBaseUrl(baseUrl));
-		if (!serviceKey.trim() || /[\0\r\n]/.test(serviceKey)) throw new Error("Native capsule service key is invalid");
 		this.#objectUrl = url.href;
-		this.#serviceKey = serviceKey;
 		this.#fetch = fetchImplementation;
 	}
 
@@ -752,11 +752,7 @@ export class SupabaseNativeCredentialCapsuleStore implements NativeCredentialCap
 			async (requestSignal) => {
 				const response = await this.#fetch(this.#url(reference), {
 					method: "POST",
-					headers: {
-						...supabaseServiceHeaders(this.#serviceKey),
-						"content-type": "application/octet-stream",
-						"x-upsert": "true",
-					},
+					headers: { "content-type": "application/octet-stream", "x-upsert": "true" },
 					body: Uint8Array.from(bytes).buffer,
 					redirect: "error",
 					signal: requestSignal,
@@ -774,7 +770,6 @@ export class SupabaseNativeCredentialCapsuleStore implements NativeCredentialCap
 		return withCloudDeadline(
 			async (requestSignal) => {
 				const response = await this.#fetch(this.#url(reference), {
-					headers: supabaseServiceHeaders(this.#serviceKey),
 					redirect: "error",
 					signal: requestSignal,
 				});
