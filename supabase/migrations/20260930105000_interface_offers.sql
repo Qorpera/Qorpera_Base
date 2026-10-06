@@ -5,8 +5,9 @@
 --    folder), a row key, a needs_yes member column, who offered it (`from`), the cell as it was (`was`) and the member
 --    it is offered to (`to`). It changes nothing in the file. An open offer holds its key and column; a closed one
 --    keeps only who and when.
--- 2. Members offer, decline and withdraw through four calls, under the table's index row FOR SHARE, so they wait for a
---    commit that holds it (rank 5, FOR NO KEY UPDATE) and read the files as that commit left them.
+-- 2. Members offer, decline and withdraw through three calls, each under the table's index row FOR SHARE, so they wait
+--    for a commit that holds it (rank 5, FOR NO KEY UPDATE) and read the files as that commit left them. A fourth
+--    lists the open offers; it reads no files, so it takes no lock.
 -- 3. Rule 8's accept: a member putting self where an open offer names that row key, that column and self; the offer's
 --    `was` equals the cell as stored; and, unless `was` is empty, the offer's `from` equals `was`.
 -- 4. Apply settles a table's open offers after its definition or rows change: a cell that now names `to` accepts the
@@ -50,12 +51,14 @@ create table public.qorpera_interface_offers (
 -- One open offer of a cell to a member.
 create unique index qorpera_interface_offers_open on public.qorpera_interface_offers
 	(environment_id, table_id, md5(row_key::text), column_name, to_user) where state = 'open';
+-- Every offer of a table, closed ones too, for the cascade when its index row goes (erasure, a company's deletion).
+create index qorpera_interface_offers_table on public.qorpera_interface_offers (environment_id, table_id);
 alter table public.qorpera_interface_offers enable row level security;
 revoke all on public.qorpera_interface_offers from public, anon, authenticated, service_role;
 grant select on public.qorpera_interface_offers to service_role;
 comment on table public.qorpera_interface_offers is
-	'I9c: offers of a needs_yes member cell of a table (RUNTIME-INTERFACES.md §5); request cards the platform keeps, '
-	'never in the file.';
+	'I9c: offers of a needs_yes member cell of a table (RUNTIME-INTERFACES.md §5); the platform''s own records, never in '
+	'the file.';
 
 -- An offer as members see it.
 create function public.qorpera_interface_offer_json(p_offer public.qorpera_interface_offers, p_folder text)
