@@ -787,6 +787,32 @@ from = "mail"
 		);
 	});
 
+	it("draws a mail block only from mail: from another source it would have no thread to read", () => {
+		const file = parse(`
+[[view]]
+name = "Inbox"
+
+[[view.block]]
+kind = "list"
+from = "waiting"
+line = "{title}"
+opens = "thread"
+
+[[view.block]]
+id = "thread"
+kind = "mail"
+from = "waiting"
+`);
+		const { controller } = company([run(cy.id, 3, { activity: "needs_attention", jobStatus: "leased" })]);
+		const main = mount();
+		renderInterfaceFile(main, controller, `mail-from-${Math.random()}`, file);
+		expect(main.querySelector(".interface-mail")).toBeNull();
+		expect(main.querySelector("button.interface-item")).toBeNull();
+		expect(main.querySelector("a.interface-item")?.getAttribute("href")).toBe(
+			`#/c/${profileA.profileId}/staff/${cy.id}`,
+		);
+	});
+
 	it("draws Answer only where a card waits: never on working rows or mentions", () => {
 		const file = parse(`
 [[view]]

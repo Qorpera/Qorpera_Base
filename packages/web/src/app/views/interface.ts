@@ -842,7 +842,7 @@ function blockFrame(
 	block: InterfaceBlock,
 	key: string,
 	extra: string,
-	title: string | null,
+	title: string | HTMLElement | null,
 	...children: (Node | null)[]
 ): HTMLElement {
 	return h(
@@ -916,6 +916,13 @@ function listWords(tag: "strong" | "small", words: ListText, id?: string): HTMLE
 	return words.outside ? outside(element) : element;
 }
 
+/** Words that fill in a template, marked when it fills in a column that carries outside content: a detail's title, a
+ * button's label. */
+function filledWords(template: string, row: TableRow, drawn: DrawnBlock): string | HTMLElement {
+	const text = fillInterfaceText(template, row, drawn.nameOf);
+	return text && fillsOutside(template, drawn.source) ? outside(h("span", null, text)) : text;
+}
+
 /** A member's picture, for the `members` source's `picture` column (their account id). */
 function memberPicture(drawn: DrawnBlock, column: string, row: TableRow): HTMLElement | null {
 	const id = row[column];
@@ -940,6 +947,8 @@ function listBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 	const cards = block.layout === "cards";
 	const buttons = blockButtons(context.file, block);
 	const opened = opens === null ? undefined : context.page.open[opens];
+	// A status from a column that carries outside content is marked, as a line is.
+	const outsideStatus = block.status !== null && interfaceOutsideColumns(drawn.source).includes(block.status);
 	const items = rows.map((item) => {
 		const { row, href, live } = item;
 		const agentId = block.figure ? row[block.figure] : undefined;
@@ -954,7 +963,8 @@ function listBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		};
 		const { line, sub } =
 			drawn.source === "mail" ? mailListText(context.company, row, filled.line, filled.sub) : filled;
-		const status = block.status ? cellText(drawn, block.status, row[block.status]) : "";
+		const statusText = block.status ? cellText(drawn, block.status, row[block.status]) : "";
+		const status = statusText ? h("span", { class: "interface-item-status" }, statusText) : null;
 		const byAgent = typeof agentId === "string" && block.figure === "agent";
 		const lineId = domId("line", key, item.key);
 		const unread = drawn.source === "mail" && row.unread === true;
@@ -967,7 +977,7 @@ function listBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 				byAgent ? h("strong", { id: lineId }, nameOf("agent", agentId)) : listWords("strong", line, lineId),
 				byAgent ? listWords("small", line) : sub.text ? listWords("small", sub) : null,
 			),
-			status ? h("span", { class: "interface-item-status" }, status) : null,
+			status && outsideStatus ? outside(status) : status,
 			live ? h("span", { class: "interface-dots", "aria-hidden": "true" }, h("i"), h("i"), h("i")) : null,
 		];
 		const isOpen = opened !== undefined && item.key === opened;
@@ -1160,11 +1170,13 @@ function detailBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 	const text = interfaceCell(open.row, "text");
 	const lineId = domId("line", key, open.key);
 	const actions = rowButtons(blockButtons(context.file, block), open, drawn, context, lineId);
+	// What the title and fields fill in from outside content is marked as such.
+	const outsideColumns = interfaceOutsideColumns(source);
 	return blockFrame(
 		block,
 		key,
 		" interface-detail is-open",
-		block.title === null ? null : fillInterfaceText(block.title, open.row, nameOf),
+		block.title === null ? null : filledWords(block.title, open.row, drawn),
 		h(
 			"button",
 			{
@@ -1178,10 +1190,13 @@ function detailBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		h(
 			"dl",
 			{ class: "interface-fields", id: lineId },
-			...fields.flatMap((column) => [
-				h("dt", null, columnLabel(source, column)),
-				h("dd", null, cellText(drawn, column, interfaceCell(open.row, column))),
-			]),
+			...fields.flatMap((column) => {
+				const value = cellText(drawn, column, interfaceCell(open.row, column));
+				return [
+					h("dt", null, columnLabel(source, column)),
+					h("dd", null, value && outsideColumns.includes(column) ? outside(h("span", null, value)) : value),
+				];
+			}),
 		),
 		typeof text === "string" && text ? h("div", { class: "interface-detail-text" }, markdown(text)) : null,
 		actions,
@@ -1530,7 +1545,7 @@ function rowButtons(
 	context: BlockContext,
 	lineId: string,
 ): HTMLElement | null {
-	const label = (text: string) => fillInterfaceText(text, item.row, drawn.nameOf);
+	const label = (text: string) => filledWords(text, item.row, drawn);
 	const focus = (index: number) => `action:${drawn.key}:${item.key}:${index}`;
 	const describe = { "aria-describedby": lineId };
 	const drawnButtons = buttons.flatMap((drawnButton, index): HTMLElement[] => {

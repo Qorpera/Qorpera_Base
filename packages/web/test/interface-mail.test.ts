@@ -233,11 +233,12 @@ function company(role: HostedProfileRole = "owner", activity: HostedStaffExecuti
 	return { f, controller };
 }
 
-/** The company's folder as at founding, followed as the app does. */
-async function follow(controller: CompanyController) {
+/** The company's folder as at founding, followed as the app does; `edit` changes its Mailbox. */
+async function follow(controller: CompanyController, edit: (text: string) => string = (text) => text) {
 	const fake = folderFake({ seed: [] });
 	let next = 500;
-	for (const [path, text] of Object.entries(interfaceLibraryFiles(() => id(++next)))) fake.put(path, text);
+	for (const [path, text] of Object.entries(interfaceLibraryFiles(() => id(++next))))
+		fake.put(path, path === "interfaces/mailbox/interface.toml" ? edit(text) : text);
 	const stop = new AbortController();
 	const reader = new CompanyInterfaceFolder(
 		{
@@ -264,13 +265,18 @@ async function readMail(
 	return reader;
 }
 
-/** The Mailbox on screen, drawn again on every change. `setup` fills the mail before it is read. */
-async function mailbox(setup: (fake: MailFake) => void, role: HostedProfileRole = "owner") {
+/** The Mailbox on screen, drawn again on every change. `setup` fills the mail before it is read; `edit` changes the
+ * page's file. */
+async function mailbox(
+	setup: (fake: MailFake) => void,
+	role: HostedProfileRole = "owner",
+	edit?: (text: string) => string,
+) {
 	const { f, controller } = company(role);
 	const fake = mailFake(f);
 	fake.addresses = [ADDRESS];
 	setup(fake);
-	await follow(controller);
+	await follow(controller, edit);
 	const accounts = accountsFake();
 	await readMail(controller, f, accounts);
 	const main = h("main");
@@ -814,6 +820,8 @@ describe("the message buttons", () => {
 		await vi.waitFor(() => expect(rows(main)).toHaveLength(1));
 		rows(main)[0]!.click();
 		await vi.waitFor(() => expect(button(main, "Ask Ada")).toBeDefined());
+		// Its label fills in no outside words, so it is not marked.
+		expect(button(main, "Ask Ada")!.querySelector(".interface-outside")).toBeNull();
 		button(main, "Ask Ada")!.click();
 		await vi.waitFor(() => expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${ada.id}`));
 		expect(open).toHaveBeenCalledWith(expect.objectContaining({ id: ada.id }));
@@ -854,6 +862,52 @@ describe("the message buttons", () => {
 			"Please have another agent handle hello@acme.example: ",
 		);
 		expect(controller.draftQuotes(session.sessionId)).toEqual([]);
+	});
+});
+
+describe("outside words in the page's other blocks (§4)", () => {
+	it("marks a list's status, a detail's title and fields, and a button's label where they fill in outside words", async () => {
+		// The Inbox edited: its list shows the subject as its status and opens a detail block.
+		const detail = [
+			"[[view.block]]",
+			'id = "info"',
+			'kind = "detail"',
+			'from = "mail"',
+			'title = "{subject}"',
+			'fields = ["from_name", "address", "state"]',
+			'buttons = ["ask-handler"]',
+			'width = "two-thirds"',
+			"",
+			"[[view.block]]",
+			'id = "thread"',
+		].join("\n");
+		const { main } = await mailbox(
+			(mail) => {
+				mail.threads = [summary(1, { subject: "Invoice 42", fromName: "Jane" })];
+			},
+			"owner",
+			(text) =>
+				text
+					.replace('status = "state"', 'status = "subject"')
+					.replace('opens = "thread"', 'opens = "info"')
+					.replace('[[view.block]]\nid = "thread"', detail)
+					.replace('label = "Ask {handled_by}"', 'label = "Ask about {subject}"'),
+		);
+		await vi.waitFor(() => expect(rows(main)).toHaveLength(1));
+		const status = main.querySelector(".interface-item-status")!;
+		expect(status.textContent).toBe("Invoice 42");
+		expect(status.classList.contains("interface-outside")).toBe(true);
+		rows(main)[0]!.click();
+		await vi.waitFor(() => expect(main.querySelector(".interface-detail.is-open")).not.toBeNull());
+		const open = main.querySelector<HTMLElement>(".interface-detail.is-open")!;
+		expect(open.querySelector("h2")?.textContent).toBe("Invoice 42");
+		expect(open.querySelector("h2 .interface-outside")?.textContent).toBe("Invoice 42");
+		expect(texts(open, "dd")).toEqual(["Jane", "hello@acme.example", "New"]);
+		// The company's own address and the thread's state are not outside content.
+		expect(texts(open, "dd .interface-outside")).toEqual(["Jane"]);
+		const ask = button(open, "Ask about Invoice 42")!;
+		expect(ask.querySelector(".interface-outside")?.textContent).toBe("Ask about Invoice 42");
+		expect(button(open, "Back")!.querySelector(".interface-outside")).toBeNull();
 	});
 });
 

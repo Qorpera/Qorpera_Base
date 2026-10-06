@@ -174,12 +174,13 @@ export function drawnParts(
 }
 
 /** Whether this client can draw a block: its kind is drawn here and it reads one source the client has; a board, when
- * it can read one of its parts' tables. */
+ * it can read one of its parts' tables. A `mail` block draws a mail thread, so it reads `mail` and nothing else. */
 export function drawableBlock(block: InterfaceBlock, company: CompanyController): boolean {
 	if (block.kind === "board") return drawnParts(block, company).length > 0;
 	return (
 		DRAWN_BLOCKS.has(block.kind) &&
 		block.from.length === 1 &&
+		(block.kind !== "mail" || block.from[0] === "mail") &&
 		interfaceSource(company, block.from[0] ?? "") !== undefined
 	);
 }
@@ -201,7 +202,13 @@ export function folderSources(file: InterfaceFile): { readonly tables: string[];
 	for (const view of file.views) {
 		const opened = new Set(view.blocks.flatMap((block) => blockOpens(block)));
 		for (const block of view.blocks) {
-			if (!DRAWN_BLOCKS.has(block.kind) || (block.kind === "detail" && !opened.has(block.id ?? ""))) continue;
+			// A `mail` block reads only `mail`, which is not in the folder.
+			if (
+				!DRAWN_BLOCKS.has(block.kind) ||
+				block.kind === "mail" ||
+				(block.kind === "detail" && !opened.has(block.id ?? ""))
+			)
+				continue;
 			const sources = [
 				...block.from,
 				...(block.kind === "board" ? block.parts.map((part) => part.from) : []),
