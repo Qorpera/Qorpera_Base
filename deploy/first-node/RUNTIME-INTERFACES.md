@@ -135,6 +135,8 @@ label = "Ask {kept_by} about it"    # required; 1–40 characters
   - `team`: the company has two or more members;
   - `connection:<service>`: a connected account of that service;
   - `table:<name>`: the table exists.
+- **`badge`** (proposed, built in I5c): how many of the source's rows its `where` keeps, drawn on the rail row's
+  emblem (99+ above 99) and read out as "{n} waiting". Nothing is drawn at 0 or while the source can't be read.
 - **`status = "off"`** hides the interface for everyone. The file stays.
 - **`[access]`** only narrows. `members` decides who sees the page in the rail; `agents` decides which agents may read
   it with `interface_read`. Neither changes what anyone may read: every block reads with the viewer's own authority.
@@ -199,6 +201,19 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
   - An empty lane keeps its title and says so quietly. On a phone the lanes stack.
 - **`opens`** names a `detail` block, or a `mail` block for a thread, in the same view. On a wide screen it opens
   beside the list; on a phone it opens as the next screen.
+- **Mail lists and threads (proposed, built in I5c):**
+  - A block from `mail` reads the threads 50 at a time, newest first, with "Show older" for the next page. When the
+    view's and the block's `where` all give `state` or `address` one text, the threads call is asked for just those.
+    Any other column, such as `direction`, is filtered on the threads already read.
+  - An unread thread is marked in the list. Opening it in a `mail` block reads it and marks it read; the mark goes
+    when that lands, and each new opening marks it again. A thread the cloud no longer has says it is gone.
+  - The `mail` block draws each message's From, To, Cc, Subject, attachment names and plain text. A received
+    message's values all keep the outside-content mark (§4). A thread longer than its read says so; older messages
+    are not read yet.
+  - There is no change signal for mail, so the client polls. The addresses and the sends that wait are read when the
+    company opens, every minute while the app is in front, and when it comes back to the front. A page's first pages
+    and open threads are read every 20 seconds while it is on screen. A read that fails keeps what was drawn; a list
+    never read says so, with Try again.
 
 ### 3.3 Buttons
 
@@ -231,6 +246,10 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
     client's `outside_value` check (I5d-4a) and the web composer (I5d-4). In the web, a message button fills each
     outside value in as a quote with its mail thread as the record. A row without its thread id gets no button, so a
     value never goes as the viewer's own words.
+- **`answer` on a `mail` block (proposed, built in I5c).** Each send in the open thread that waits for a person is
+  drawn as the client's email review card. Send email and Don't send (allow once, deny) show only when the block
+  lists `answer`, the viewer may write, and the send's review sits in a conversation. There is no "Always allow"
+  here. A refusal shows on the card and keeps its buttons; the card goes when the next read no longer lists the send.
 - **Confirmations.** The client draws every confirmation itself, never from the file. Money, sending and other
   outside effects keep their own review.
 - **Built-in verbs.** A block that lists a built-in verb (`answer`, `take`, `offer`, `release`) shows that button, so
@@ -289,6 +308,12 @@ not exist yet is not drawn: the client contract's rule against rendering missing
 | `working` | agent, what, since |
 | `activity` | at, kind, agent, member, line: one plain sentence per run, wake, answer or change |
 | `waiting` | id, kind (`review`, `question`, `mail`, `task`, `offer`, `run` for a run that did not finish, `mention`), title, from, due |
+
+- **Mail in `waiting` (proposed, built in I5c).** The `mail` rows are the sends the member mail read's waiting call
+  lists, one per review, and only a `badge` counts them. A block from `waiting` doesn't draw them: the agent whose
+  send waits is already there as a `review` row, so nothing shows twice.
+- **`mail_addresses.handled_by`** (proposed, built in I5c) lists agent ids, drawn as names, and `routine` names the
+  routines that read the address.
 
 - **Outside content** (contract 11.1), such as an email, keeps its outside-content mark in every block. These are
   outside content:
@@ -742,3 +767,12 @@ end). A rows file with rows that don't fit its definition is not written. Lookup
 and the folder reader reads the tables that board parts and lookups name. The Members page's People view draws its
 table; its `file:rules/shared-areas.md` block is not drawn, since this client draws no `text` blocks yet. Offers,
 answers on a board, and supervision (I9b) are not built.
+
+**Built: I5c** (web; `packages/web/src/cloud/mail.ts`, `app/company-mail.ts`, `app/interface-mail.ts`,
+`app/interface-badge.ts`, `app/views/interface-mail.ts`). The `mail` and `mail_addresses` sources read the member mail
+calls of I5a, and the `mail` need holds while the addresses call lists one. The Mailbox page draws its views: lists
+that page and poll, a thread with its outside-content marks and account mail kept back (I5b), the sends that wait
+with their answer, and the Addresses table, all in the proposed rules of §3.2, §3.3 and §4. Its message buttons put
+outside values in as quotes (I5d). The rail row shows the page's badge. Not built: `chips`, a thread's older
+messages (the thread call has no next page), and a `direction` filter in the threads call, so Sent shows the sent
+threads of the pages read.
