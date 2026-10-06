@@ -71,6 +71,17 @@ import {
 	viewBlocks,
 } from "../interfaces.ts";
 import type { QuotedText } from "../quotes.ts";
+import {
+	type BlockExtra,
+	type CalendarSource,
+	calendarColumn,
+	calendarDays,
+	calendarQuery,
+	drawExtraBlock,
+	folderCellLabel,
+	folderColumnLabel,
+	numberTiles,
+} from "./interface-blocks.ts";
 import { type ListText, mailListFooter, mailListText, mailThreadParts, outside, unreadMark } from "./interface-mail.ts";
 import { roleLabel } from "./team.ts";
 
@@ -161,6 +172,8 @@ function domId(...parts: string[]): string {
 
 /** The platform's column names, in the member's language. A table's own columns are the company's words. */
 function columnLabel(source: string, column: string): string {
+	const folder = folderColumnLabel(source, column);
+	if (folder !== undefined) return folder;
 	if (isLiveSource(source)) {
 		const label: Record<string, () => string> = {
 			agent: () => t("Agent"),
@@ -354,6 +367,10 @@ interface DrawnBlock {
 	readonly board?: { readonly parts: readonly DrawnPart[]; readonly lanes: readonly BoardLane[] };
 	/** A block from `mail`: the list its view reads (undefined while it is being read). */
 	readonly mail?: { readonly request: MailListRequest; readonly list: MailList | undefined };
+	/** A numbers block's tiles or a calendar's days (views/interface-blocks.ts). */
+	readonly extra?: BlockExtra;
+	/** A calendar's sources as drawn, each with its rows. */
+	readonly calendar?: readonly CalendarSource[];
 }
 
 /** One board part as drawn: its table's rows, as the block's query keeps them, and what the member may do with them. */
@@ -420,6 +437,8 @@ export function renderInterfaceFile(
 			if (ids === "member" && typeof value === "string") return memberName(value) ?? value;
 			if (ids === "agents" && Array.isArray(value))
 				return value.map((id: string) => company.staffById(id)?.displayName ?? id).join(", ");
+			if (ids === "members" && Array.isArray(value))
+				return value.map((id: string) => memberName(id) ?? id).join(", ");
 			return plainText(value as never);
 		};
 	/** A table block's lookup columns (§3.2) on each row: for the row's id (its `id`, or its table's one key), the
@@ -531,13 +550,51 @@ export function renderInterfaceFile(
 		return { parts, lanes };
 	};
 	const mailOf = (request: MailListRequest) => ({ request, list: mailList(company, request) });
+	/** A calendar's sources: those it can read that have every column its view narrows by (§3.2, proposed). */
+	const calendarOf = ({ block, narrow }: ViewBlock): CalendarSource[] =>
+		block.from.flatMap((from) => {
+			const read = interfaceSource(company, from);
+			if (!read || !narrow.every((where) => Object.keys(where).every((column) => read.columns.includes(column))))
+				return [];
+			const definition = tableDefinition(company, from);
+			const kind = from === "routines" ? t("Routine") : from === "human_tasks" ? t("Task") : definition?.name;
+			return [
+				{
+					source: from,
+					rows: sourceRows(from, narrow, calendarQuery(block, read.columns)),
+					column: calendarColumn(read.time, definition),
+					kind: kind ?? from,
+					agent: read.columns.find((column) => idColumn(company, from, column) === "agent") ?? null,
+					definition,
+				},
+			];
+		});
 	const blocks: DrawnBlock[] = view.blocks.map((shown, index) => {
 		const { block } = shown;
 		const key = block.id ?? `${view.name}#${index}`;
 		const source = block.from[0] ?? "";
 		const board = block.kind === "board" ? boardOf(shown) : undefined;
-		const rows = board ? [] : sourceRows(source, shown.narrow, block.query, block);
+		const calendar = block.kind === "calendar" ? calendarOf(shown) : undefined;
+		const rows = board || calendar ? [] : sourceRows(source, shown.narrow, block.query, block);
 		const read = interfaceSource(company, source);
+		// A calendar can be read while one of its sources can; it lists every source's problems.
+		const reads = calendar ? calendar.map((part) => interfaceSource(company, part.source)) : [read];
+		// A numbers block's tiles are its query's rows; their change and trend come from every row its query keeps.
+		const all = { ...block.query, order: null, limit: null, latestBy: null };
+		const extra: BlockExtra | undefined =
+			block.kind === "numbers"
+				? {
+						kind: "numbers",
+						tiles: numberTiles(block, rows, sourceRows(source, shown.narrow, all), {
+							time: read?.time ?? null,
+							definition: tableDefinition(company, source),
+							nameOf: namesFor(source),
+							now: clock.now,
+						}),
+					}
+				: calendar
+					? { kind: "calendar", days: calendarDays(block, calendar, clock.now) }
+					: undefined;
 		const drawn = {
 			block,
 			source,
@@ -546,12 +603,14 @@ export function renderInterfaceFile(
 			// A row opens only into a detail drawn here; otherwise it keeps its own link.
 			opens: block.opens !== null && details.has(block.opens) ? block.opens : null,
 			nameOf: namesFor(source),
-			readable: read?.readable ?? true,
-			problems: read?.problems ?? [],
+			readable: reads.length === 0 || reads.some((candidate) => candidate?.readable ?? true),
+			problems: reads.flatMap((candidate) => candidate?.problems ?? []),
 			...(board ? { board } : {}),
 			...(source === "mail" && block.kind !== "mail"
 				? { mail: mailOf(mailRequest(shown.narrow, block.query.where)) }
 				: {}),
+			...(extra ? { extra } : {}),
+			...(calendar ? { calendar } : {}),
 		};
 		if ((block.kind !== "detail" && block.kind !== "mail") || block.id === null) return drawn;
 		const opened = page.open[block.id];
@@ -577,8 +636,8 @@ export function renderInterfaceFile(
 		),
 	);
 	const drawnSources = blocks.flatMap(
-		({ source, rows, board }): { source: string; rows: readonly InterfaceRow[] }[] =>
-			board ? [...board.parts] : [{ source, rows }],
+		({ source, rows, board, calendar }): { source: string; rows: readonly InterfaceRow[] }[] =>
+			board ? [...board.parts] : calendar ? [...calendar] : [{ source, rows }],
 	);
 	const named = (want: "agent" | "member") =>
 		drawnSources.flatMap(({ source, rows }) =>
@@ -586,6 +645,7 @@ export function renderInterfaceFile(
 				Object.entries(row).flatMap(([column, value]): string[] => {
 					const ids = idColumn(company, source, column);
 					if (ids === "agents" && want === "agent" && Array.isArray(value)) return [...value];
+					if (ids === "members" && want === "member" && Array.isArray(value)) return [...value];
 					return ids === want && typeof value === "string" ? [value] : [];
 				}),
 			),
@@ -657,9 +717,10 @@ export function renderInterfaceFile(
 			: null,
 		// Each block's source as drawn beside its rows: whether it can be read (a table that recovers with no rows
 		// still draws again) and what its columns hold, which a table's definition says outside the page's.
-		blocks.map(({ block, source, rows, open, readable, problems, board }) => [
+		blocks.map(({ block, source, rows, open, readable, problems, board, extra }) => [
 			block.title,
 			rows,
+			extra ?? null,
 			open?.key ?? null,
 			readable,
 			problems,
@@ -835,6 +896,21 @@ function drawBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 	if (drawn.block.kind === "detail") return detailBlock(drawn, context);
 	if (drawn.block.kind === "mail") return mailBlock(drawn, context);
 	if (drawn.block.kind === "board") return boardBlock(drawn, context);
+	const kind = drawn.block.kind;
+	if (kind === "text" || kind === "numbers" || kind === "calendar") {
+		const { block, key, opens } = drawn;
+		return drawExtraBlock(drawn, {
+			frame: (extra, ...children) => blockFrame(block, key, extra, block.title, ...children),
+			note: sourceNote(drawn),
+			readable: drawn.readable,
+			figureOf: context.figureOf,
+			opens,
+			opened: opens === null ? undefined : context.page.open[opens],
+			open: (item) => {
+				if (opens !== null) openRow(context, opens, item);
+			},
+		});
+	}
 	return listBlock(drawn, context);
 }
 
@@ -878,6 +954,8 @@ function cellText(drawn: DrawnBlock, column: string, value: TableValue | undefin
 	if (typeof value === "boolean") return value ? t("Yes") : t("No");
 	if (typeof value === "string" && INSTANT.test(value)) return fmtTime(value) || value;
 	if (drawn.source === "waiting" && column === "kind" && typeof value === "string") return kindLabel(value);
+	const label = folderCellLabel(drawn.source, column, value);
+	if (label !== undefined) return label;
 	if (drawn.source === "members" && column === "picture") return "";
 	if (drawn.source === "mail" && (column === "state" || column === "direction") && typeof value === "string")
 		return mailWord(value);
@@ -931,13 +1009,17 @@ function memberPicture(drawn: DrawnBlock, column: string, row: TableRow): HTMLEl
 }
 
 /** A source's own problems at the top of its block: the rows of a table that don't fit its definition are left out
- * and listed here, and a table that can't be read at all shows only this (with no list when its read failed). */
+ * and listed here, and a table that can't be read at all shows only this (with no list when its read failed). A
+ * folder source's bad files are listed the same way. */
 function sourceNote(drawn: DrawnBlock): HTMLElement | null {
 	if (drawn.readable && !drawn.problems.length) return null;
+	const unread = drawn.source.startsWith("table:")
+		? t("This table can't be read.")
+		: t("This can't be read right now.");
 	return h(
 		"div",
 		{ class: "interface-note" },
-		h("p", null, drawn.readable ? t("Some rows can't be shown.") : t("This table can't be read.")),
+		h("p", null, drawn.readable ? t("Some rows can't be shown.") : unread),
 		drawn.problems.length ? problemList(drawn.problems) : null,
 	);
 }
@@ -1207,7 +1289,9 @@ function detailBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 				];
 			}),
 		),
-		typeof text === "string" && text ? h("div", { class: "interface-detail-text" }, markdown(text)) : null,
+		typeof text === "string" && text
+			? h("div", { class: "interface-detail-text" }, markdown(text, { links: false }))
+			: null,
 		actions,
 	);
 }

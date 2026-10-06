@@ -161,3 +161,36 @@ grant usage on schema realtime to anon, authenticated, service_role;
 grant execute on function realtime.topic() to anon, authenticated, service_role;
 grant select, insert on realtime.messages to anon, authenticated, service_role;
 grant execute on function storage.foldername(text) to anon, authenticated, service_role;
+
+-- Test databases only (never a migration): every node the tests observe also reports a healthy agent exit
+-- (deploy/agent-exit; migration 20260930089000). From 20260930089100 on, a node without one takes no new Company
+-- Computer or agent's machine and no new coding machine, so without this every test that places one would need its
+-- own exit report. The node's observation row is the moment: each insert or update of it reports a healthy exit for
+-- that node, as current as the observation (a test that ages the observation ages the exit with it). Tests of the exit's health itself switch this off for their transaction with
+-- `select set_config('qorpera_test.agent_exit_real', 'on', true);` (supabase/tests/896, 897).
+create schema qorpera_test_support;
+create function qorpera_test_support.agent_exit_healthy() returns trigger language plpgsql as $$
+begin
+	if to_regclass('public.qorpera_runtime_node_agent_exit') is not null
+		and current_setting('qorpera_test.agent_exit_real', true) is distinct from 'on' then
+		insert into public.qorpera_runtime_node_agent_exit (node_id, observation_id, observed_at, checked_at, healthy, problem_count)
+		values (new.node_id, extensions.gen_random_uuid(), new.observed_at, new.observed_at, true, 0)
+		on conflict (node_id) do update set observation_id = excluded.observation_id, observed_at = excluded.observed_at,
+			checked_at = excluded.checked_at, healthy = true, problem_count = 0, received_at = clock_timestamp();
+	end if;
+	return new;
+end
+$$;
+create function qorpera_test_support.attach_agent_exit_healthy() returns event_trigger language plpgsql as $$
+begin
+	if exists (select 1 from pg_event_trigger_ddl_commands() c
+		where c.command_tag = 'CREATE TABLE' and c.object_identity = 'public.qorpera_runtime_node_observations') then
+		create trigger qorpera_test_agent_exit_healthy after insert or update on public.qorpera_runtime_node_observations
+			for each row execute function qorpera_test_support.agent_exit_healthy();
+		-- Also for the fixtures that write nodes with session_replication_role = replica.
+		alter table public.qorpera_runtime_node_observations enable always trigger qorpera_test_agent_exit_healthy;
+	end if;
+end
+$$;
+create event trigger qorpera_test_attach_agent_exit_healthy on ddl_command_end when tag in ('CREATE TABLE')
+	execute function qorpera_test_support.attach_agent_exit_healthy();

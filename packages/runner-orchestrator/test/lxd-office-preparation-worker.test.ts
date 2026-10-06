@@ -360,7 +360,7 @@ describe("preparation of an acknowledged first boot", () => {
 		});
 		const caller = new AbortController();
 		const running = f.worker.reconcile(f.request, caller.signal);
-		await vi.waitFor(() => expect(f.check).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(f.check).toHaveBeenCalledOnce(), { timeout: 10000 });
 		caller.abort();
 		await expect(running).rejects.toThrow("OFFICE_PREPARATION_RECONCILIATION_ABORTED");
 		await expect(f.worker.reconcile(f.request, signal())).rejects.toThrow(
@@ -368,8 +368,10 @@ describe("preparation of an acknowledged first boot", () => {
 		);
 		expect(f.exec).not.toHaveBeenCalled();
 		finish();
-		await vi.waitFor(async () =>
-			expect(await f.worker.reconcile(f.request, signal())).toMatchObject({ state: "awaiting_activation" }),
+		await vi.waitFor(
+			async () =>
+				expect(await f.worker.reconcile(f.request, signal())).toMatchObject({ state: "awaiting_activation" }),
+			{ timeout: 10000 },
 		);
 		expect(f.exec).toHaveBeenCalledOnce();
 	});

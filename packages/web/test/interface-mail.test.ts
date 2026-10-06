@@ -958,6 +958,44 @@ describe("outside words in the page's other blocks (§4)", () => {
 		button(block(), "Try again")!.click();
 		await vi.waitFor(() => expect(tableRows()).toHaveLength(1));
 	});
+
+	it("draws no text, numbers or calendar block from mail, which is read a page at a time", async () => {
+		// The Inbox edited: a numbers block, a calendar and a text block from `mail` above the list, and a numbers
+		// block from the addresses, which is drawn.
+		const blocks = [
+			"[[view.block]]",
+			'kind = "numbers"',
+			'from = "mail"',
+			'value = "subject"',
+			"",
+			"[[view.block]]",
+			'kind = "calendar"',
+			'from = ["routines", "mail"]',
+			"",
+			"[[view.block]]",
+			'kind = "text"',
+			'from = "mail"',
+			"",
+			"[[view.block]]",
+			'kind = "numbers"',
+			'from = "mail_addresses"',
+			'value = "last_7_days"',
+			"",
+			"[[view.block]]",
+			'id = "threads"',
+		].join("\n");
+		const { main } = await mailbox(
+			(mail) => {
+				mail.threads = [summary(1, { subject: "Invoice 42", lastAt: new Date().toISOString() })];
+			},
+			"owner",
+			(text) => text.replace('[[view.block]]\nid = "threads"', blocks),
+		);
+		await vi.waitFor(() => expect(rows(main)).toHaveLength(1));
+		expect(texts(main, ".interface-numbers .interface-number-value")).toEqual(["12"]);
+		expect(main.querySelector(".interface-calendar")).toBeNull();
+		expect(main.querySelector(".interface-text")).toBeNull();
+	});
 });
 
 describe("the Mailbox's badge (§3 badge)", () => {

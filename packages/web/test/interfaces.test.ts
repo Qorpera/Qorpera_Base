@@ -100,6 +100,19 @@ describe("which interfaces a company lists", () => {
 		]);
 	});
 
+	it("gives a run's time to the second, as every row's time is, though the live state's carry milliseconds", () => {
+		const { controller } = company([
+			run(ada.id, 1, { noProgressSince: "2026-10-02T09:20:00.250Z", noProgressMinutes: 15 }),
+			run(bo.id, 2, { updatedAt: "2026-10-02T09:44:10.999Z" }),
+			run(cy.id, 3, { activity: "needs_attention", jobStatus: "failed", updatedAt: "2026-10-02T09:50:00.5Z" }),
+		]);
+		expect(interfaceRows(controller, "working")?.map(({ row }) => row.since)).toEqual([
+			"2026-10-02T09:20:00Z",
+			"2026-10-02T09:44:10Z",
+		]);
+		expect(interfaceRows(controller, "waiting")?.map(({ row }) => row.due)).toEqual(["2026-10-02T09:50:00Z"]);
+	});
+
 	it("reads who is working and what waits for the member from the company's live state", () => {
 		const { controller } = company(
 			[
@@ -123,8 +136,11 @@ describe("which interfaces a company lists", () => {
 			`#/c/${profileA.profileId}/staff/${cy.id}`,
 			`#/c/${profileA.profileId}/chat/${session.sessionId}`,
 		]);
+		// The live state has each agent's current run only, not what happened: `activity` waits for a read of past runs.
 		expect(interfaceRows(controller, "activity")).toBeUndefined();
 		expect(interfaceRows(controller, "table:numbers")).toBeUndefined();
+		// The folder's own files are read only once the folder is: a company without it has none of them.
+		expect(interfaceRows(controller, "todos")).toBeUndefined();
 	});
 });
 
@@ -135,6 +151,8 @@ describe("the Pulse page", () => {
 		document.body.append(main);
 		renderInterface(main, controller, "pulse");
 		expect(main.querySelector(".interface-title h1")?.textContent).toBe("Pulse");
+		// Without the folder, Pulse has its live sources: the vision, the numbers, the work and the calendar wait for it,
+		// and what happened for a read of past runs.
 		expect([...main.querySelectorAll(".interface-block h2")].map((el) => el.textContent)).toEqual([
 			"Needs you",
 			"Working now",
