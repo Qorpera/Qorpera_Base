@@ -54,9 +54,6 @@ export interface InterfaceOfferCalls {
 	withdraw(offer: string): Promise<void>;
 }
 
-/** A table's id: any hex uuid, as the platform writes it. */
-const TABLE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
 const nullable = <T>(value: unknown, parse: (value: unknown) => T): T | null =>
 	value === null || value === undefined ? null : parse(value);
 
@@ -69,10 +66,10 @@ function keyValue(value: unknown): TableValue {
 
 export function parseInterfaceOffer(value: unknown): MemberInterfaceOffer {
 	const item = record(value, "offer");
-	if (typeof item.table !== "string" || !TABLE_ID.test(item.table)) throw new CloudShapeError("offer table");
 	return {
 		id: uuid(item.id, "offer id"),
-		table: item.table,
+		// The table's id as its table.md gives it: a lowercase uuid (interfaces.ts `table.id`), as the database prints it.
+		table: uuid(item.table, "offer table"),
 		folder: nullable(item.folder, (folder) => nonEmptyString(folder, "offer folder")),
 		key: nullable(item.key, (key) => array(key, "offer key").map(keyValue)),
 		column: nullable(item.column, (column) => nonEmptyString(column, "offer column", 200)),
