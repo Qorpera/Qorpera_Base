@@ -45,7 +45,8 @@ end $$;
 alter table public.qorpera_folder_erasures
 	add column block_history jsonb check (block_history is null or jsonb_typeof(block_history) = 'object');
 comment on column public.qorpera_folder_erasures.block_history is
-	'A block-history request (RUNTIME-AGENT-MEMORY-TREE.md §10 step 3): {path, cutoffSeq, cutoffUnit, lifeSeq, lifeUnit, for: {table, id}}, with a cutoff, a life or neither; null for a member''s erasure.';
+	'A block-history request (RUNTIME-AGENT-MEMORY-TREE.md §10 step 3): {path, cutoffSeq, cutoffUnit, lifeSeq, lifeUnit, '
+	'for: {table, id}}, with a cutoff, a life or neither; null for a member''s erasure.';
 
 -- The live path a key's newest life moved on to, through renames, when that path's life began with those moves; else
 -- null. For a block that is not live, that is the tree built again and renamed since step 1 deleted it, or a reused
