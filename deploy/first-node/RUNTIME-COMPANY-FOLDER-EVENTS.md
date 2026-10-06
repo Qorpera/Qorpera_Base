@@ -316,7 +316,8 @@ The plan's original list:
 This builds `RUNTIME-EVENT-INTAKE.md:123-127` on folder-v2: an agent's `manage_hook` tool can create, pause and remove
 hooks and mailboxes for its company.
 
-- **Review:** a new hook or mailbox is reviewed as a new connection. Pausing and removing are not reviewed.
+- **Review:** a new hook or mailbox is reviewed as a new connection. Pausing and resuming are not reviewed; removing is
+  (§5.3).
 - **The address:** the agent receives it in the tool's result, so it can register the address with the service it
   connects (for example GitHub's webhook settings). The address stays in the run and never goes into a file.
 - **Signed hooks:** signing secrets go to the vault through A1's fill path, never through the model.
@@ -346,6 +347,10 @@ E1's connection file has none.
   such a run (`20260928269290:555-575`). The agent acts with its requester's authority, never more. Any other run is
   refused: 42501 "Only owners and admins can open hooks; ask one of them".
 - Any agent of the company may, in any run such a member requested: a chat, a routine, an event wake.
+- **A run that a hook's event woke may pause that hook, never remove it** (after E3a's review r2). E2a's gate refuses a
+  run once its wake's hook is removed, and the receipt's completion checks the run again, so the removal would roll
+  back. It is refused first: 55000 "A run this hook woke cannot remove it; pause it instead". Any other run, a chat for
+  example, may remove it.
 - The hook records the agent (`created_by_staff_agent_id`, which E1's file already shows as `createdBy`).
 - E1's checks are unchanged: the name and purpose rules, at most 50 hooks and 20 mailboxes, a mailbox needs the mail
   domain, and the reserved mailbox names.
@@ -403,6 +408,8 @@ E3a refuses any `proof` but `address`: "A signed hook comes later; use an addres
   - pause, resume and remove, and a removed hook refused;
   - the address in the answer and never in the receipt;
   - the host call row and the grants.
+- **SQL 985, on E2's fixture (913):** a run that a hook's event woke may pause and resume that hook but not remove it,
+  and may remove another hook.
 - **TypeScript:** the tool's schema and its description (under 4096 bytes), the effect classes and the card, the
   allow-lists, and the folder client's answer checks.
 - **Deferred (needs Codex):** the live test (§8), where the Co-Founder sets up a hook.

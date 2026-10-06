@@ -13,6 +13,8 @@
 --   records the agent (created_by_staff_agent_id), which E1's connection file shows as createdBy.
 -- * The request is checked before the receipt (its shape, then E1's name, purpose and limit rules, word for word); the
 --   company's state after it (the caps, a taken name or address, the mail domain, the hook by name).
+-- * A run that a hook's event woke may pause that hook but not remove it: E2a's gate refuses the run once its wake's hook
+--   is removed, and the receipt's completion checks the run again.
 -- * Signed hooks come later (E3b: GitHub and HMAC with a secret the vault makes; E3c: Stripe's secret taken from the
 --   screen): any proof but address is refused.
 -- * A create's answer carries the hook's address, path and URL, read from the hook row for each answer; the receipt keeps
@@ -204,6 +206,11 @@ begin
 				raise exception 'No hook has this name' using errcode = 'P0002'; end if;
 			if v_hook.status = 'removed' then
 				raise exception 'This hook was removed' using errcode = '55000'; end if;
+			-- E2a's gate refuses a run whose event wake's hook is removed, and the receipt's completion checks the run again:
+			-- the run this hook woke may pause it, never remove it.
+			if v_action = 'remove' and exists (select 1 from public.qorpera_wake_occurrences as wake where wake.run_id = v_run.id
+				and wake.source_kind = 'event' and wake.source_id = v_hook.id) then
+				raise exception 'A run this hook woke cannot remove it; pause it instead' using errcode = '55000'; end if;
 			v_status := case v_action when 'pause' then 'paused' when 'resume' then 'active' else 'removed' end;
 			if v_hook.status <> v_status then
 				update public.qorpera_event_hooks

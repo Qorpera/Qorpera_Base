@@ -90,6 +90,7 @@ export const CLOUD_HOOK_REFUSALS: ReadonlyMap<string, string> = new Map([
 			["0A000", "Company mail is not set up yet"],
 			["P0002", "No hook has this name"],
 			["55000", "This hook was removed"],
+			["55000", "A run this hook woke cannot remove it; pause it instead"],
 			["54000", "A company has at most 20 mailboxes"],
 			["54000", "A company has at most 50 hooks"],
 			["23505", "This address is taken"],

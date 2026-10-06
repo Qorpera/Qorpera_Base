@@ -1330,6 +1330,11 @@ describe("hooks (E3a)", () => {
 			["P0002", "No hook has this name", "No hook has this name"],
 			["55000", "This hook was removed", "This hook was removed"],
 			[
+				"55000",
+				"A run this hook woke cannot remove it; pause it instead",
+				"A run this hook woke cannot remove it; pause it instead",
+			],
+			[
 				"42501",
 				"Only owners and admins can open hooks; ask one of them",
 				"Only owners and admins can open hooks; ask one of them",
