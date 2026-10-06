@@ -1,4 +1,4 @@
--- @fixture 647_folder_core_run_fence.test.sql until "-- 1. Snapshot-v1 keeps its text"
+-- @fixture 647_folder_core_run_fence.test.sql until "-- The checks start here: a test that runs after this file's fixture part stops at this line."
 -- Company folder core, C2 R1 (deploy/first-node/RUNTIME-COMPANY-FOLDER-C2.md §2, §3, §6): the review recorder. A run's
 -- approved action review (its own allow, or a card's allow it used) is recorded as the folder review of one change set,
 -- bound to the commit's own digest, and the commit then saves the run's deletion units. Everything else is refused: an

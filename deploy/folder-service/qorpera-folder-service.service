@@ -13,8 +13,8 @@ StartLimitIntervalSec=0
 Type=exec
 User=qorpera-folder
 Group=qorpera-folder
-# The objects on the share are written 0600 by the object gateway's account. Reading them needs that uid (a drop-in
-# User=, decided at install) or a read grant on the storage server; see README.md.
+# The objects on the share are written 0600 by the object gateway's account, qorpera-objects. A drop-in gives the
+# service that account and a process namespace of its own, and hides the gateway's tokens and state; see README.md.
 LoadCredential=qorpera-folder-config:/etc/qorpera-folder-service/config.json
 LoadCredential=qorpera-supabase-service-key:/etc/qorpera-folder-service/supabase-key
 # Object reads run on libuv's pool; a hung NFS read holds a thread until it returns.

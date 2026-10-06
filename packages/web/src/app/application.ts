@@ -1287,7 +1287,11 @@ export function mountApplication(
 				);
 				return;
 			case "interface":
-				renderInterface(main, controller, route.id ?? "");
+				// A board's take and release write the member's own rows with the same rechecks (step I9a).
+				renderInterface(main, controller, route.id ?? "", {
+					folder: () => memberFolder(companyCurrent, t("Company access changed.")),
+					current: companyCurrent,
+				});
 				return;
 			case "team":
 				renderTeam(

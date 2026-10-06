@@ -2267,7 +2267,7 @@ describe("routines on a ChatGPT plan (shown only when the member has one)", () =
 	});
 });
 
-describe("who pays for a routine (20260930064000)", () => {
+describe("who pays for a routine (20260930095000)", () => {
 	const MEMBER = "10000000-0000-4000-8000-000000000041";
 	const OTHER_MEMBER = "10000000-0000-4000-8000-000000000042";
 	const GET = "qorpera_get_routine_payer";
@@ -2332,10 +2332,18 @@ describe("who pays for a routine (20260930064000)", () => {
 			payerUserId: MEMBER,
 			savedByUserId: MEMBER,
 			canPay: true,
+			waitsFor: null,
 			since: SINCE,
 			changedByUserId: null,
 			changeReason: null,
 		});
+		// A login that can't pay says why; a cloud that does not say reads as no reason.
+		expect(paid({ canPay: false, waitsFor: "usage_limit" })).toMatchObject({
+			canPay: false,
+			waitsFor: "usage_limit",
+		});
+		expect(paid({ ...waits, waitsFor: "login" })).toMatchObject({ canPay: false, waitsFor: "login" });
+		expect(paid(waits)).toMatchObject({ canPay: false, waitsFor: null });
 		// A company account names no member; a routine with no login behind it has no payer.
 		expect(
 			paid({ payer: "company", payerUserId: null, changedByUserId: OTHER_MEMBER, changeReason: "pick" }),
@@ -2362,6 +2370,9 @@ describe("who pays for a routine (20260930064000)", () => {
 			answer({ connectionId: null }),
 			answer({ savedByUserId: null }),
 			answer({ canPay: "no" }),
+			answer({ waitsFor: "usage_limit" }),
+			answer({ canPay: false, waitsFor: null }),
+			answer({ canPay: false, waitsFor: "quota" }),
 			answer({ since: "yesterday" }),
 			answer({ since: null }),
 			answer({ changedByUserId: MEMBER }),
@@ -2456,6 +2467,46 @@ describe("who pays for a routine (20260930064000)", () => {
 		await vi.waitFor(() => expect(whoPays(cards(failing.view.el)[1]!)).not.toBeNull());
 		expect(whoPays(cards(failing.view.el)[0]!)).toBeNull();
 		expect(failing.view.el.querySelector(".surface-status")).toBeNull();
+	});
+
+	it("says why a kept login can't pay now, and offers a choice", async () => {
+		const date = fmtDate(SINCE);
+		for (const [update, words] of [
+			[{ waitsFor: "usage_limit" }, "Paid by you since {date}Runs wait until this login's usage limit resets."],
+			[
+				{ waitsFor: "sign_in" },
+				"Paid by you since {date}Sign in to this login again in Settings → My connections to let it run.",
+			],
+			[
+				{ waitsFor: "sign_in", payerUserId: OTHER_MEMBER },
+				"Paid by Anna since {date}Runs wait until Anna signs in to this login again.",
+			],
+			[
+				// A member the team list does not name.
+				{ waitsFor: "sign_in", payerUserId: "10000000-0000-4000-8000-000000000043" },
+				"Paid by a member since {date}Runs wait until this login is signed in again.",
+			],
+		] as const) {
+			const routines = mocked([routine()]);
+			routines.payer.mockResolvedValue(paid({ canPay: false, ...update }));
+			const stop = new AbortController();
+			const view = new AgentRoutines(
+				() => staff,
+				{
+					routines,
+					accounts: async () => ({ connections: [account] }),
+					canManage: () => true,
+					memberId: MEMBER,
+					memberName: (userId) => (userId === OTHER_MEMBER ? "Anna" : undefined),
+				},
+				stop.signal,
+			);
+			document.body.append(view.el);
+			await vi.waitFor(() => expect(whoPays(cards(view.el)[0]!)).not.toBeNull());
+			expect(whoPays(cards(view.el)[0]!)?.textContent).toBe(`${words.replace("{date}", date)}Choose a login`);
+			stop.abort();
+			document.body.replaceChildren();
+		}
 	});
 
 	it("chooses a login for a routine whose login can't pay: consent and binding, then the pick, then the list again", async () => {
@@ -2579,7 +2630,10 @@ describe("who pays for a routine (20260930064000)", () => {
 			["42501", "Routine is unavailable", "unavailable"],
 			["42501", "This login cannot pay for this routine", "not_yours"],
 			["22023", "This login cannot pay for this routine", "cannot_pay"],
+			["22023", "This login has reached its usage limit", "usage_limit"],
+			["22023", "This login needs a new sign-in", "sign_in"],
 			["42501", "A ChatGPT plan cannot pay for a listener", "plan_listener"],
+			["55000", "Company execution is paused", "stopped"],
 		] as const) {
 			reply = refused(code, message);
 			const error = await f.routines.setLogin(ROUTINE_ID, account).catch((caught: unknown) => caught);
@@ -2615,9 +2669,12 @@ describe("who pays for a routine (20260930064000)", () => {
 		expect(f.routines.setEnabled).not.toHaveBeenCalled();
 		f.stop.abort();
 		document.body.replaceChildren();
-		// A login that pays, a cloud without the read, and a read that failed: the switch resumes as before.
+		// A login that pays, one only at its usage limit or needing a new sign-in (the routine runs on it once it can
+		// pay), a cloud without the read, and a read that failed: the switch resumes as before.
 		for (const read of [
 			async () => paid({ ...waits, canPay: true }),
+			async () => paid({ ...waits, waitsFor: "usage_limit" }),
+			async () => paid({ ...waits, waitsFor: "sign_in" }),
 			async () => null,
 			async (): Promise<WebRoutinePayer | null> => {
 				throw new Error("offline");

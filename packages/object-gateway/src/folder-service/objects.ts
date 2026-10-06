@@ -145,7 +145,8 @@ class ByteCache {
 }
 
 export interface NasObjectsOptions {
-	/** The storage server's object share, e.g. `/srv/qorpera/canonical`. */
+	/** The object gateway's store on the storage server's share, laid out `<profileId>/<sha256>`, e.g.
+	 * `/srv/qorpera/canonical/<the gateway's folder>/objects`. */
 	readonly root: string;
 	/** Memory for chunks and manifests. */
 	readonly cacheBytes: number;
