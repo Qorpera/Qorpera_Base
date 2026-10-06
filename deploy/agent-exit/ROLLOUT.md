@@ -42,14 +42,17 @@ First the NAS for the logs (E3): the mount unit of `README.md`, "The mount", wri
 apt-get install -y --no-install-recommends nfs-common
 systemctl daemon-reload && systemctl enable --now 'srv-qorpera-agent\x2dexit\x2dlogs.mount'
 findmnt /srv/qorpera/agent-exit-logs
-# The share's marker (the shipper writes only where it is); there already on the second node.
-test -e /srv/qorpera/agent-exit-logs/.qorpera-agent-exit-logs || touch /srv/qorpera/agent-exit-logs/.qorpera-agent-exit-logs
+# The share's marker (the shipper writes only into a mount point that holds it); there already on the second node.
+# Only on the mounted share: a mount that failed leaves the bare folder, which must never get one.
+mountpoint -q /srv/qorpera/agent-exit-logs &&
+	{ test -e /srv/qorpera/agent-exit-logs/.qorpera-agent-exit-logs || touch /srv/qorpera/agent-exit-logs/.qorpera-agent-exit-logs; }
 grep -q '^QORPERA_AGENT_EXIT_NAS_DIR=' /etc/default/qorpera-agent-exit 2>/dev/null ||
 	echo 'QORPERA_AGENT_EXIT_NAS_DIR=/srv/qorpera/agent-exit-logs' >>/etc/default/qorpera-agent-exit
 ```
 
-`findmnt` shows `192.168.1.40:/volume1/qorpera-agent-exit-logs` with `nfs4` and `soft`. `/etc/default/qorpera-agent-exit`
-is root's, mode 0644. Then the exit:
+`findmnt` shows `192.168.1.40:/volume1/qorpera-agent-exit-logs` with `nfs4` and `soft`, and
+`ls -A /srv/qorpera/agent-exit-logs` lists `.qorpera-agent-exit-logs`. If `findmnt` shows nothing, stop and fix the mount
+first. `/etc/default/qorpera-agent-exit` is root's, mode 0644. Then the exit:
 
 ```bash
 apt-get install -y --no-install-recommends dnsmasq-base conntrack python3

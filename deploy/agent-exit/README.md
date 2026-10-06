@@ -261,11 +261,12 @@ Jonas approved the share, with root allowed to write, on 6 October. On the Synol
   mapping" (root writes as root: the logs are root's, mode 0640 files in 0750 folders), security `sys`, and
   "Enable asynchronous" off (the shipper syncs each file before it counts it as shipped; with it on, the NAS answers
   before the file is on its disks). No other host;
-- after the first mount, its marker: `touch /srv/qorpera/agent-exit-logs/.qorpera-agent-exit-logs` (an empty file).
-  The shipper writes only into a folder that holds it, so a share that is not mounted never fills the node's own disk
-  under the empty mount point, and the lookup says the NAS is not mounted. A pass opens that folder once and does
-  every step on the NAS through it, so it never writes past an unmount: a plain one fails while a pass runs (busy),
-  and a lazy one leaves the pass on the share.
+- after the first mount, its marker (an empty file), only once the share is mounted:
+  `mountpoint -q /srv/qorpera/agent-exit-logs && touch /srv/qorpera/agent-exit-logs/.qorpera-agent-exit-logs`.
+  The shipper writes only into a mount point that holds it, so a share that is not mounted never fills the node's own
+  disk under the empty mount point (not even with a marker left there by mistake), and the lookup says the NAS is not
+  mounted. A pass opens that folder once and does every step on the NAS through it, so it never writes past an
+  unmount: a plain one fails while a pass runs (busy), and a lazy one leaves the pass on the share.
 
 ### The mount (each node, root)
 
@@ -314,7 +315,8 @@ read-back and tried again next pass.
 
 `/run/qorpera-agent-exit/ship.json` (mode 0644) is the last pass: `shipped`, `waiting`, `oldestWaiting`,
 `removedFromNas`, `errors` (the last 20) and `problems`. A pass writes it when it starts (`"shipping": true`) and every
-minute while it runs. Errors do not make the exit unhealthy by themselves: the NAS not mounted (no marker), a file on
+minute while it runs. Errors do not make the exit unhealthy by themselves: the NAS not mounted (no mount point there, or
+no marker in it), a file on
 the NAS with other content, a copy that read back wrong, the NAS not answering, a pass that did not finish. Problems
 do: no NAS folder set, or a file that has waited more than 24 hours (with the last error).
 
@@ -339,10 +341,15 @@ What the logs cannot say is listed as not known, never as "no one": a gap line (
 lost), a deleted file (its record), a file that should be there and is not, a node that has not shipped since before
 the window or has days not on the NAS yet, the NAS not mounted, this node's logger not running, paused or unable to
 write now (its heartbeat, `logger.pause` and `logger.failing`, which say since when), and time past 90 days. Also any
-stretch of more than 3 minutes with no alive line, on any node, from its first day of logs to now (or, for another
-node, to its last pass): the logger was down, paused or could not write then. That covers what no line read says: a
-logger stopped and not started again (on another node too, after its day went to the NAS), and an outage or pause
-that began before the days read and ended after them. A `paused: … DNS record not kept` line with no pause line before
+stretch of more than 3 minutes with no line of the logger's own (an alive line, or a gap line, which a running logger
+writes at the clock's time), on any node, from its first day of logs to now (or, for another node, to its last pass):
+the logger was down, paused or could not write then. That covers what no line read says: a logger stopped and not
+started again (on another node too, after its day went to the NAS), and an outage or pause that began before the days
+read and ended after them. Each stretch is judged at its full length: one across the edge of the days read runs from
+the logger's last line of the day before to its first of the day after (those two days are read for that alone), so a
+stop that crosses midnight is listed in full within the days read, however little of it falls there. A stretch the
+answer already lists as not known (a gap line's span, a day not on the NAS yet) is not listed again. A
+`paused: … DNS record not kept` line with no pause line before
 it (they come only while the logger pauses) is a pause that began before what was read. The answer is complete only
 when neither connections nor companies are unknown for that time; a gap only in the DNS record leaves names unknown. A
 starting logger writes `logger started` before its own pause line, so a pause that ended when the logger stopped is
@@ -389,12 +396,14 @@ The tool before E3 reads only numbers from `/etc/default/qorpera-agent-exit`, so
 and counted only once closed, a company carried from an earlier day, an address that changes company, parts by size, a
 late part counted with the next day under its own day, a pass cut short after the counts file, a closed day that
 cannot be counted, the DNS cut, a pass cut short while sealing, the report, the cap's order of deletion, the floor,
-90 days), the shipper (a pass and its read-back, a file on the NAS with other content and its wait past a day, no
-marker, a copy that reads back wrong, a shipped part's week on the node and its turn under pressure, 90 days on the
-NAS), the lookup across two nodes (the company, machine and name behind a connection, a refusal, and each kind of
-gap: lost events, a pause and the ways it ends, the DNS record not kept, a pause begun before what was read, a deleted
-file, a node's days not shipped, a stretch with no alive line here and on another node that stopped after it shipped,
-a node whose logs begin later, a logger not running, paused or failing now, no NAS) and the plug tool: allocation under the creators' umask, twelve plugs at once, quarantine, and the
+90 days), the shipper (a pass and its read-back, a file on the NAS with other content and its wait past a day, a NAS
+folder that is no mount point or has no marker, a copy that reads back wrong, a shipped part's week on the node and its
+turn under pressure, 90 days on the NAS), the lookup across two nodes (the company, machine and name behind a
+connection, a refusal, and each kind of gap: lost events, a pause and the ways it ends, the DNS record not kept, a
+pause begun before what was read, a deleted file, a node's days not shipped, a stretch with no alive line here and on
+another node that stopped after it shipped, one across midnight at either edge of the days read, a node whose logs
+begin later, a logger not running, paused or failing now, no NAS or one not mounted). The tests' NAS is a plain folder
+(`--nas-any-folder`). Then the plug tool: allocation under the creators' umask, twelve plugs at once, quarantine, and the
 reconciler against a stand-in for LXD (attribution only after a match, a forged claim, sleep, two misses before an unplug, a machine made again, an entry
 removed by hand, plugs never created, unusable entries and links never followed, the bridge sets, the twins it finds).
 On Linux with Docker it runs `test/proof.sh` in a privileged container with no network of its own (`ubuntu:26.04`
@@ -428,7 +437,7 @@ on the tailnet. It checks:
   the lookup saying so, recovered by itself with a gap line), and the logger pausing past its cap (no lines, traffic
   and DNS on, `dns.log` emptied, `verify` failing, the lookup saying so) and going on with a gap line saying what it
   missed;
-- the logs on the NAS (a folder with its marker): the shipper's copies, byte for byte, with their records, the
+- the logs on the NAS (a tmpfs mounted in the container, with its marker): the shipper's copies, byte for byte, with their records, the
   logger's alive lines, and the lookup naming the company, machine and name behind a live connection;
 - an interrupted rebuild: the logger leaves the old namespace by itself, and `verify` fails until DNS follows;
 - that `down` refuses with a machine plugged in, or only in the client map, and changes nothing; that with the
@@ -438,7 +447,7 @@ on the tailnet. It checks:
 Where the kernel has br_netfilter loaded, the proof also checks that the node does not track the bridged leg; the
 test machines do not load it, so it prints a SKIP line there. Not covered here: br_netfilter, LXD's own MAC and IPv6
 filters and port isolation, LXD's API as the reconciler reads it, systemd's handling of the units, a real NFS mount
-(the proofs' NAS is a folder; the shipper reads each copy back), and running
+(the proofs' NAS is a tmpfs; the shipper reads each copy back), and running
 beside the guest guard, LXD and Tailscale on a real node. E2b's proof, in a throwaway VM with its own LXD inside a
 test machine, covers the first three.
 

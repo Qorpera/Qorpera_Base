@@ -16,12 +16,16 @@ export QORPERA_AGENT_EXIT_RUN_DIR=$work/run QORPERA_AGENT_EXIT_STATE_DIR=$work/s
 export QORPERA_AGENT_EXIT_LOG_DIR=$work/log QORPERA_AGENT_EXIT_UPSTREAMS=9.9.9.9
 # The logs' disk floor is off here, so the proof never depends on the test machine's free space; the cap is tested.
 export QORPERA_AGENT_EXIT_LOG_FLOOR_PERCENT=0
-# The NAS: a folder with its marker, as the mounted share has it.
+# The NAS: a mount point with its marker, as the mounted share has it (a tmpfs in this container's own mounts).
 export QORPERA_AGENT_EXIT_NAS_DIR=$work/nas
 mkdir "$work/nas"
+mount -t tmpfs -o size=64m,mode=0755 qorpera-test-nas "$work/nas"
 touch "$work/nas/.qorpera-agent-exit-logs"
 pids=()
-cleanup() { for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done; }
+cleanup() {
+	for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
+	umount "$work/nas" 2>/dev/null || true
+}
 trap cleanup EXIT
 # A command that stops the proof on its own (set -e) names itself.
 trap 'echo "FAIL: line $LINENO: $BASH_COMMAND" >&2' ERR

@@ -113,8 +113,9 @@ TEMPORARY = re.compile(r"^\..+\.tmp$")
 DAY_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 HOST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
 
-# The NAS (E3): an empty file of this name in the NAS folder says the NAS is mounted there (an empty mount point has
-# none, so nothing is ever written into the node's own disk by mistake).
+# The NAS (E3): the NAS folder is a mount point, and an empty file of this name in it says the NAS is mounted there.
+# The bare folder under the mount has none, and with one left in it by mistake it is still no mount point, so nothing
+# is ever written into the node's own disk by mistake.
 NAS_MARKER = ".qorpera-agent-exit-logs"
 # shipped/<name>.json (shipped/lost/<name>.json for a deletion record): what went to the NAS, with its sha256.
 SHIPPED = "shipped"
@@ -862,6 +863,17 @@ def file_sha256(path, uncached=False, dir_fd=None):
     return digest.hexdigest()
 
 
+def is_mount(path, fd=None):
+    """Whether the folder `path` (open as `fd`, if given) is a mount point: the share mounted there, not the bare
+    folder under it on the node's own disk (where a marker left by mistake would otherwise pass)."""
+    try:
+        here = os.fstat(fd) if fd is not None else os.stat(path)
+        parent = os.stat(os.path.join(path, ".."))
+    except OSError:
+        return False
+    return here.st_dev != parent.st_dev or here.st_ino == parent.st_ino
+
+
 def nas_open(parent_fd, name):
     """Opens the folder `name` in the open NAS folder `parent_fd`, made first if it is not there (never a link)."""
     try:
@@ -948,8 +960,9 @@ def not_shipped(log_dir, now, waiting=True):
     return {kind: sorted(each) for kind, each in sorted(days.items())}
 
 
-def ship(log_dir, nas_dir, status, host, now=None):
-    """One pass. Returns its record, or None when another pass holds the lock."""
+def ship(log_dir, nas_dir, status, host, now=None, mount_check=True):
+    """One pass. Returns its record, or None when another pass holds the lock. Without `mount_check` (tests), the NAS
+    folder need not be a mount point."""
     lock = os.open(os.path.join(log_dir, ".ship.lock"), os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -957,7 +970,7 @@ def ship(log_dir, nas_dir, status, host, now=None):
         os.close(lock)
         return None
     try:
-        return ship_locked(log_dir, nas_dir, status, host, now)
+        return ship_locked(log_dir, nas_dir, status, host, now, mount_check)
     finally:
         os.close(lock)
 
@@ -971,7 +984,7 @@ def overdue(waiting, now, errors):
             f"{iso(min(late))}{last}"[:600]]
 
 
-def ship_locked(log_dir, nas_dir, status, host, now):
+def ship_locked(log_dir, nas_dir, status, host, now, mount_check=True):
     now = time.time() if now is None else now
     result = {"schema": "qorpera.agent-exit-ship/v1", "ranAt": iso(time.time()), "host": host, "nasDir": nas_dir,
               "shipped": 0}
@@ -1004,8 +1017,9 @@ def ship_locked(log_dir, nas_dir, status, host, now):
 
     if nas_dir:
         interim()
-        # Every step on the NAS goes through folders opened in the one checked for the marker: an unmount meanwhile
-        # fails (busy), and a lazy one leaves these on the NAS, so nothing is ever written into the bare mount point.
+        # Every step on the NAS goes through folders opened in the one checked as a mount point holding the marker (a
+        # marker left on the bare folder under it does not pass): an unmount meanwhile fails (busy), and a lazy one
+        # leaves these on the NAS, so nothing is ever written into the bare mount point.
         fds = {}
 
         def nas(*names):
@@ -1015,6 +1029,8 @@ def ship_locked(log_dir, nas_dir, status, host, now):
 
         try:
             fds[()] = os.open(nas_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            if mount_check and not is_mount(nas_dir, fds[()]):
+                raise ShipError(f"{nas_dir} is not a mount point: the NAS is not mounted there")
             try:
                 marker = os.stat(NAS_MARKER, dir_fd=fds[()], follow_symlinks=False)
             except FileNotFoundError:
@@ -1264,16 +1280,55 @@ def merged_spans(spans):
     return joined
 
 
-def silences(beats, start, end, covered=()):
-    """The stretches from `start` to `end` of more than SILENCE seconds with no alive line (`beats`, their times), less
-    the (from, to) spans in `covered` (already not known): (from, to) pairs."""
-    if start >= end:
+def silences(beats, start, end, covered=(), outer=None):
+    """The stretches of more than SILENCE seconds with no line of the logger's own (`beats`, their times), each judged
+    at its full length within `outer` (from its last line before `start` to its first after `end`, or as far as is
+    known; `start` and `end` unless given), then cut to `start`..`end`, less the (from, to) spans in `covered` (already
+    not known): (from, to) pairs, however short what is left of one."""
+    low, high = outer or (start, end)
+    if start >= end or low >= high:
         return []
-    points = sorted({start, end, *(beat for beat in beats if start < beat < end)})
-    pieces = list(zip(points, points[1:]))
-    for low, high in covered:
-        pieces = [piece for a, b in pieces for piece in ((a, min(b, low)), (max(a, high), b)) if piece[0] < piece[1]]
-    return [(a, b) for a, b in pieces if b - a > SILENCE]
+    points = sorted({low, high, *(beat for beat in beats if low < beat < high)})
+    # The spans already not known, joined, so each stretch is cut by the few it meets.
+    spans = []
+    for a, b in sorted(covered):
+        if spans and a <= spans[-1][1]:
+            spans[-1] = (spans[-1][0], max(spans[-1][1], b))
+        else:
+            spans.append((a, b))
+    ends = [b for _, b in spans]
+    found = []
+    for a, b in zip(points, points[1:]):
+        if b - a <= SILENCE:
+            continue
+        a, b = max(a, start), min(b, end)
+        for index in range(bisect.bisect_right(ends, a), len(spans)):
+            span_from, span_to = spans[index]
+            if a >= b or span_from >= b:
+                break
+            if span_from > a:
+                found.append((a, span_from))
+            a = span_to
+        if a < b:
+            found.append((a, b))
+    return found
+
+
+def first_sign(paths):
+    """The time of the first line of the logger's own (alive or gap, written at the clock's time) in these files."""
+    for record in flow_records(paths, []):
+        if record.get("event") in ("alive", "gap"):
+            return record["ts"]
+    return None
+
+
+def last_sign(paths):
+    """The time of the last line of the logger's own in these files (the last that holds one is read)."""
+    for path in reversed(paths):
+        times = [record["ts"] for record in flow_records([path], []) if record.get("event") in ("alive", "gap")]
+        if times:
+            return max(times)
+    return None
 
 
 def nas_days(host_dir):
@@ -1328,7 +1383,7 @@ KIND_WHAT = {"flows": "connections", "clients": "companies", "dns": "names"}
 
 
 def lookup(log_dir, nas_dir, host, at, window, margin, remote, port, agent, now, heartbeat=None, pause_file=None,
-           failing_file=None):
+           failing_file=None, mount_check=True):
     """Who used an address at a time: the connections from the agents (to `remote`, from `agent`, or both) that were
     open within `window` seconds of `at`, on this node (its own logs, then the NAS) and on every node with a folder on
     the NAS, each with its company, machine and the name the machine had looked up. Read: the days from `margin` days
@@ -1361,9 +1416,13 @@ def lookup(log_dir, nas_dir, host, at, window, margin, remote, port, agent, now,
             unknown.append(entry)
 
     hosts = [(host, True)]
-    nas_ok = bool(nas_dir) and os.path.isfile(os.path.join(nas_dir, NAS_MARKER))
+    mounted = bool(nas_dir) and (not mount_check or is_mount(nas_dir))
+    nas_ok = mounted and os.path.isfile(os.path.join(nas_dir, NAS_MARKER))
     if not nas_dir:
         not_known("*", low, high, "connections", f"{NO_NAS}: the other nodes were not searched")
+    elif not mounted:
+        not_known("*", low, high, "connections", f"{nas_dir} is not a mount point: the NAS is not mounted, so the "
+                                                 "other nodes and what this one shipped were not searched")
     elif not nas_ok:
         not_known("*", low, high, "connections", f"{nas_dir} has no {NAS_MARKER}: the NAS is not mounted, so the "
                                                  "other nodes and what this one shipped were not searched")
@@ -1476,6 +1535,8 @@ def lookup(log_dir, nas_dir, host, at, window, margin, remote, port, agent, now,
                 not_known(name, day_start(day), day_start(day) + DAY, "connections",
                           f"{record['path']}: {record['error']}")
             elif event == "gap":
+                # Written by a running logger at the clock's time, like an alive line.
+                beats.append(ts)
                 reason = str(record.get("reason"))
                 since = record.get("since") if isinstance(record.get("since"), (int, float)) else None
                 begun = since if since is not None else record.get("after")
@@ -1519,14 +1580,25 @@ def lookup(log_dir, nas_dir, host, at, window, margin, remote, port, agent, now,
         for start, end, reason, lines in merged_spans(dns_gaps):
             not_known(name, start, end, "names", reason if lines == 1 else
                       f"{lines} gap lines say the DNS record was not kept, the last: {reason}")
-        # The logger writes an alive line every minute while it logs. A stretch with none, from the node's first log
-        # day on, to now or to what it has shipped, is a time it was down, paused or could not write: also when no
-        # line read says so (it stopped and has not started again, or its pause or outage began before the days read
-        # and ends after them). A node whose first log day is after the days read did not log then: nothing is missed.
+        # The logger writes an alive line every minute while it logs. A stretch of more than 3 minutes with no line of
+        # its own, from the node's first log day on, to now or to what it has shipped, is a time it was down, paused
+        # or could not write: also when no line read says so (it stopped and has not started again, or its pause or
+        # outage began before the days read and ends after them). A node whose first log day is after the days read
+        # did not log then: nothing is missed. Each stretch is judged at its full length, so one across the edge of
+        # the days read is not cut short: from the logger's last line of the day before (none there: a long one) to
+        # its first of the day after (none there: now, or what the node has shipped).
         born = min({day for each in [*names, *lost] if (day := file_day(each))} | kept, default=None)
         known_from = day_start(max(first, born) if born else first)
         known_to = min(now, day_start(last) + DAY, *(() if through is None else (through,)))
-        for a, b in silences(beats, known_from, known_to, covered.get(name, []) + covered.get("*", [])):
+        before = None
+        if born and born < first:
+            earlier, _, _ = host_index(own_dir, host_dir, [next_day(first, -1)])
+            before = last_sign([earlier[each] for each in day_names(earlier, "flows", next_day(first, -1))])
+            before = known_from - SILENCE if before is None else before
+        after = first_sign([names[each] for each in day_names(names, "flows", next_day(last))])
+        outer = (known_from if before is None else before,
+                 min(now, *(() if through is None else (through,))) if after is None else after)
+        for a, b in silences(beats, known_from, known_to, covered.get(name, []) + covered.get("*", []), outer):
             not_known(name, a, b, "connections", "the connection logger wrote no line then (it writes one every "
                                                  "minute while it logs): it was down, paused or could not write")
         pairs += [(began, None) for began in opened.values()]
@@ -1622,11 +1694,13 @@ def main():
     parser.add_argument("--from", dest="start")
     parser.add_argument("--to", dest="end")
     parser.add_argument("--json", action="store_true")
-    # Tests: a fixed clock, smaller parts, no wait for lines in flight, and the disk's free share.
+    # Tests: a fixed clock, smaller parts, no wait for lines in flight, the disk's free share, and a NAS folder that is
+    # not a mount point.
     parser.add_argument("--now", type=float)
     parser.add_argument("--part-bytes", type=int, default=PART_BYTES)
     parser.add_argument("--settle", type=float, default=SETTLE_SECONDS)
     parser.add_argument("--free-percent", type=float)
+    parser.add_argument("--nas-any-folder", action="store_true")
     args = parser.parse_args()
     if not HOST_NAME.match(args.host):
         parser.error(f"--host {args.host!r} is not a host name")
@@ -1635,7 +1709,7 @@ def main():
     if args.command == "ship":
         if not args.status:
             parser.error("ship needs --status")
-        result = ship(args.log_dir, args.nas_dir, args.status, args.host, args.now)
+        result = ship(args.log_dir, args.nas_dir, args.status, args.host, args.now, not args.nas_any_folder)
         if result is None:
             print("qorpera-agent-exit-logs: another pass is running", file=sys.stderr)
             return
@@ -1654,7 +1728,8 @@ def main():
             parser.error(f"--window must be 0 or more and --days between 0 and {KEEP_DAYS}")
         now = time.time() if args.now is None else args.now
         result = lookup(args.log_dir, args.nas_dir, args.host, at, args.window, args.margin, args.remote,
-                        args.remote_port, args.agent, now, args.heartbeat, args.pause_file, args.failing_file)
+                        args.remote_port, args.agent, now, args.heartbeat, args.pause_file, args.failing_file,
+                        not args.nas_any_folder)
         if args.json:
             print(json.dumps(result, indent=2))
         else:

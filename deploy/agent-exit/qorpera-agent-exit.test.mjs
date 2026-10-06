@@ -1113,6 +1113,7 @@ describe("the logs on the NAS", { skip: pythonUsable ? false : "needs Python 3.1
 	// The logger's alive lines, one a minute from `from` until before `to`.
 	const alive = (from, to) => Array.from({ length: Math.ceil((to - from) / 60) }, (_, i) => ({ event: "alive", ts: from + 60 * i }));
 	// A node: its log folder and status files, and the NAS (mounted: its marker is there), its own or another node's.
+	// The NAS here is a plain folder, not a mount point: the helpers below say a folder will do (--nas-any-folder).
 	const node = (name, nas) => {
 		const root = mkdtempSync(join(dir, `${name}-`));
 		mkdirSync(join(root, "log"));
@@ -1128,9 +1129,9 @@ describe("the logs on the NAS", { skip: pythonUsable ? false : "needs Python 3.1
 	};
 	const tend = (n, now, ...extra) =>
 		python(["tend", "--log-dir", n.log, "--status", join(n.root, "logs.json"), "--now", String(now), "--settle", "0", "--free-percent", "50", ...extra]);
-	const ship = (n, now, host = "node-a", nas = n.nas) =>
-		python(["ship", "--log-dir", n.log, "--nas-dir", nas, "--status", join(n.root, "ship.json"), "--host", host, "--now", String(now)]);
-	const lookupArgs = (n, now, at) => ["lookup", "--log-dir", n.log, "--nas-dir", n.nas, "--host", "node-a", "--now", String(now), "--at", String(at), "--remote", "1.1.1.1", "--remote-port", "443"];
+	const shipArgs = (n, now, host = "node-a", nas = n.nas) => ["ship", "--log-dir", n.log, "--nas-dir", nas, "--status", join(n.root, "ship.json"), "--host", host, "--now", String(now)];
+	const ship = (...args) => python([...shipArgs(...args), "--nas-any-folder"]);
+	const lookupArgs = (n, now, at) => ["lookup", "--log-dir", n.log, "--nas-dir", n.nas, "--host", "node-a", "--now", String(now), "--at", String(at), "--remote", "1.1.1.1", "--remote-port", "443", "--nas-any-folder"];
 	const lookup = (n, now, at, ...extra) => {
 		const r = python([...lookupArgs(n, now, at), "--json", ...extra]);
 		assert.equal(r.status, 0, r.stderr);
@@ -1200,11 +1201,17 @@ describe("the logs on the NAS", { skip: pythonUsable ? false : "needs Python 3.1
 		assert.deepEqual([fixed.status, fixed.result.shipped, fixed.result.problems], [0, 1, []]);
 	});
 
-	test("a NAS folder without its marker is never written to; no NAS folder is a problem at once", () => {
+	test("a NAS folder that is not a mount point, or has no marker, is never written to; no NAS folder is a problem at once", () => {
 		const a = node("unmounted");
-		rmSync(join(a.nas, ".qorpera-agent-exit-logs"));
 		writeFileSync(join(a.log, `flows-${day}.jsonl`), lines([opened("10.210.1.1", t0 + 150)]));
 		assert.equal(tend(a, t0 + DAY + 3 * 3600).status, 0);
+		// The bare folder under the mount point, a marker left in it by mistake: the share is not mounted there.
+		const bare = python(shipArgs(a, t0 + DAY + 4 * 3600));
+		assert.equal(bare.status, 0, bare.stderr);
+		assert.deepEqual([bare.result.shipped, bare.result.waiting], [0, 2]);
+		assert.match(bare.result.errors[0], /is not a mount point: the NAS is not mounted there$/);
+		assert.deepEqual(readdirSync(a.nas), [".qorpera-agent-exit-logs"]);
+		rmSync(join(a.nas, ".qorpera-agent-exit-logs"));
 		// A pass cut short (the NAS stopped answering) left its status saying it was shipping.
 		writeFileSync(join(a.root, "ship.json"), JSON.stringify({ shipping: true }));
 		const r = ship(a, t0 + DAY + 4 * 3600);
@@ -1237,7 +1244,7 @@ logs.file_sha256 = read_back
 passes = []
 for each in (True, False):
     wrong[0] = each
-    result = logs.ship(log_dir, nas_dir, status, "node-a", now)
+    result = logs.ship(log_dir, nas_dir, status, "node-a", now, mount_check=False)
     passes.append({"shipped": result["shipped"], "errors": result["errors"],
                    "nas": sorted(os.listdir(os.path.join(nas_dir, "node-a", "2026-09-01"))),
                    "records": sorted(os.listdir(os.path.join(log_dir, "shipped")))})
@@ -1500,13 +1507,74 @@ print(json.dumps(passes))
 		]);
 		rmSync(beat);
 		assert.deepEqual(unknownFor(seen, "--heartbeat", beat), [[["node-a", null, null, "connections", "the connection logger is not running now"]], false]);
-		// No NAS, or one not mounted: the other nodes are not searched.
+		// No NAS, or one not mounted (no mount point there, or no marker in it): the other nodes are not searched.
 		const alone = lookup({ ...g, nas: "" }, now, t0 + 900);
 		assert.equal(alone.connections.length, 1);
 		assert.deepEqual(alone.unknown.map((u) => [u.node, u.from, u.to, u.what]), [["*", iso(t0 + 600), iso(t0 + 1200), "connections"]]);
 		assert.match(alone.unknown[0].why, /^no NAS folder is set .*: the other nodes were not searched$/);
+		const bare = python([...lookupArgs(g, now, t0 + 900).filter((arg) => arg !== "--nas-any-folder"), "--json"]);
+		assert.equal(bare.status, 0, bare.stderr);
+		assert.equal(bare.result.connections.length, 1);
+		assert.deepEqual(bare.result.unknown.map((u) => [u.node, u.from, u.to, u.what]), [["*", iso(t0 + 600), iso(t0 + 1200), "connections"]]);
+		assert.match(bare.result.unknown[0].why, /is not a mount point: the NAS is not mounted, so the other nodes and what this one shipped were not searched$/);
 		rmSync(join(g.nas, ".qorpera-agent-exit-logs"));
 		assert.match(lookup(g, now, t0 + 900).unknown[0].why, /has no \.qorpera-agent-exit-logs: the NAS is not mounted, so the other nodes/);
+	});
+
+	test("lookup judges a silence at its full length, also where it crosses the edge of the days read", () => {
+		const a = node("midnight");
+		const now = t0 + DAY + 3 * 3600;
+		// Both loggers stop after their alive line of 23:57:10; this node's starts again at 00:02 the next day, which it
+		// has not shipped yet. The other node's stop runs past what it has shipped of the next day.
+		const stopped = t0 + DAY - 170;
+		writeFileSync(join(a.log, `flows-${day}.jsonl`), lines(alive(t0 + 10, stopped + 1)));
+		writeFileSync(join(a.log, `flows-${next}.jsonl`), lines([gap("logger started", t0 + DAY + 120, stopped), ...alive(t0 + DAY + 125, now)]));
+		mkdirSync(join(a.nas, "node-b", day), { recursive: true });
+		writeFileSync(join(a.nas, "node-b", day, `flows-${day}.p001.jsonl.gz`), gzipSync(lines(alive(t0 + 10, stopped + 1))));
+		const through = iso(now - 300);
+		writeFileSync(join(a.nas, "node-b", "status.json"), JSON.stringify({ through, notShipped: { flows: [next] } }));
+		// Each day's counts say who was plugged in at its end, so a read from the next day on knows the companies.
+		writeFileSync(join(a.log, `counts-${day}.json`), JSON.stringify({ pluggedInAtEnd: {} }));
+		writeFileSync(join(a.nas, "node-b", day, `counts-${day}.json`), JSON.stringify({ pluggedInAtEnd: {} }));
+		const silent = "the connection logger wrote no line then (it writes one every minute while it logs): it was down, paused or could not write";
+		const unknownAt = (at, ...extra) => {
+			const result = lookup(a, now, at, "--window", "60", ...extra);
+			return [result.unknown.map((u) => [u.node, u.from, u.to, u.what, u.why]), result.complete];
+		};
+		// Asked about 23:58:30: 170 seconds of the stop fall in the day, the rest past midnight, which node-b has not
+		// shipped (listed on its own, from midnight on).
+		assert.deepEqual(unknownAt(t0 + DAY - 90), [
+			[
+				["node-a", iso(stopped), iso(t0 + DAY + 120), "connections", "logger started"],
+				["node-b", iso(stopped), iso(t0 + DAY), "connections", silent],
+			],
+			false,
+		]);
+		// Only that day read: the line that ends this node's stop is in the next, read only for that.
+		assert.deepEqual(unknownAt(t0 + DAY - 90, "--days", "0"), [
+			[
+				["node-a", iso(stopped), iso(t0 + DAY), "connections", silent],
+				["node-b", iso(stopped), iso(t0 + DAY), "connections", silent],
+			],
+			false,
+		]);
+		// The start of the days read: node-b has shipped the next day, its first line there at 00:02. Its stop began in
+		// the day before, read only for its last line.
+		mkdirSync(join(a.nas, "node-b", next));
+		writeFileSync(join(a.nas, "node-b", next, `flows-${next}.p001.jsonl.gz`), gzipSync(lines(alive(t0 + DAY + 120, now))));
+		writeFileSync(join(a.nas, "node-b", "status.json"), JSON.stringify({ through, notShipped: {} }));
+		assert.deepEqual(unknownAt(t0 + DAY + 60, "--days", "0"), [
+			[
+				["node-a", iso(stopped), iso(t0 + DAY + 120), "connections", "logger started"],
+				["node-b", iso(t0 + DAY), iso(t0 + DAY + 120), "connections", silent],
+			],
+			false,
+		]);
+		// With every line there, a stop of under 3 minutes across midnight is no silence.
+		writeFileSync(join(a.log, `flows-${next}.jsonl`), lines(alive(stopped + 170, now)));
+		writeFileSync(join(a.nas, "node-b", next, `flows-${next}.p001.jsonl.gz`), gzipSync(lines(alive(stopped + 170, now))));
+		assert.deepEqual(unknownAt(t0 + DAY - 90, "--days", "0"), [[], true]);
+		assert.deepEqual(unknownAt(t0 + DAY + 60, "--days", "0"), [[], true]);
 	});
 });
 

@@ -60,10 +60,11 @@ for part in /run/netns/qexit /sys/class/net/qagent0; do [[ ! -e $part ]] || fail
 work=$(mktemp -d)
 chmod 0755 "$work"
 export QORPERA_AGENT_EXIT_RUN_DIR=$work/run QORPERA_AGENT_EXIT_STATE_DIR=$work/state QORPERA_AGENT_EXIT_LOG_DIR=$work/log
-# The logs' disk floor is off, so the proof never depends on this VM's free space; the NAS is a folder with its
-# marker, as the mounted share has it.
+# The logs' disk floor is off, so the proof never depends on this VM's free space; the NAS is a mount point (a tmpfs
+# in this VM) with its marker, as the mounted share has it.
 export QORPERA_AGENT_EXIT_LOG_FLOOR_PERCENT=0 QORPERA_AGENT_EXIT_NAS_DIR=$work/nas
 mkdir "$work/nas"
+mount -t tmpfs -o size=64m,mode=0755 qorpera-test-nas "$work/nas"
 touch "$work/nas/.qorpera-agent-exit-logs"
 pids=()
 plug_pid=
@@ -71,6 +72,7 @@ cleanup() {
 	set +e
 	for pid in "${pids[@]}" $plug_pid; do kill "$pid" 2>/dev/null; done
 	for m in $(lxc --project "$PROJECT" list -c n -f csv 2>/dev/null </dev/null); do lx delete --force "$m" >/dev/null 2>&1; done
+	umount "$work/nas" 2>/dev/null
 }
 trap cleanup EXIT
 
