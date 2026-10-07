@@ -1,7 +1,7 @@
 -- @fixture 700_folder_state_vision_agents.test.sql until "-- 2. The vision: a new name"
 -- Summary trees M1a (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §3, §4.2-§4.4; 20260930110000, 20260930111000):
 -- the helpers, a tree built, rewritten and pruned by qorpera_folder_memory_commit, and its index following the files: an
--- agent's rename, its folder's delete and restore, and a group chat's tree and rename.
+-- agent's rename, its folder's delete and restore, a group chat's tree and rename, and erasure of a retired tree.
 
 create function pg_temp.same(p_got jsonb, p_want jsonb, p_what text) returns void language plpgsql as $$
 begin
@@ -96,11 +96,10 @@ begin
 		'notes/memory/thread']) with ordinality x(p, o)),
 		'["agents/nora/memory/thread","agents/nora/memory/thread",null,null,"agents/groups/launch/memory",'
 		'"agents/groups/launch/memory",null,null,null]', 'Tree roots');
-	perform pg_temp.same((select jsonb_agg(public.qorpera_memory_platform_only_path(p, m) order by o) from (values
-		(1, 'agents/nora/memory', false), (2, 'agents/nora/memory', true), (3, 'agents/nora/memory/notes.md', true),
-		(4, 'agents/nora/memory/thread/t0', false), (5, 'agents/groups/launch/memory', false), (6, 'agents/groups/memory', true),
-		(7, 'agents/nora', true)) x(o, p, m)),
-		'[false,true,false,true,true,false,false]', 'Platform paths');
+	perform pg_temp.same((select jsonb_agg(public.qorpera_memory_platform_only_path(p) order by o) from unnest(array[
+		'agents/nora/memory', 'agents/nora/memory/notes.md', 'agents/nora/memory/thread', 'agents/nora/memory/thread/t0',
+		'agents/groups/launch/memory', 'agents/groups/memory', 'agents/nora']) with ordinality x(p, o)),
+		'[false,false,true,true,true,false,false]', 'Platform paths');
 	perform pg_temp.same((select jsonb_agg(public.qorpera_memory_tree_path_allowed(r, k, op) order by o) from (values
 		(1, '', 'folder', 'mkdir'), (2, '', 'folder', 'new_folder'), (3, '', 'folder', 'delete'), (4, 'tree.toml', 'file', 'write'),
 		(5, 'tree.toml', 'file', 'delete'), (6, 't0', 'folder', 'mkdir'), (7, 't14', 'folder', 'new_folder'), (8, 't15', 'folder', 'mkdir'),
@@ -294,6 +293,29 @@ begin
 		or (select block_path from public.qorpera_memory_tree_nodes where session_id = s) is distinct from 'agents/groups/launch-team/memory/t0/00000000.jsonl'
 		or public.qorpera_memory_owner_root('70000000-0000-4000-8000-000000000020', 'group', launch) is distinct from t.root_path then
 		raise exception 'A group chat''s tree follows its rename: %', to_jsonb(t); end if;
+end $$;
+
+-- 5. Erasing a deleted agent folder deletes its retired tree row, and no other tree's ----------------------------------
+
+do $$
+declare
+	vera constant uuid := '70000000-0000-4000-8000-0000000000a4'; s uuid; r jsonb; n bigint;
+	root constant text := 'agents/vera/memory/thread';
+begin
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tree-erase-1', jsonb_build_array(pg_temp.hire('vera', vera, 'Vera'))), 1, 'saved');
+	s := pg_temp.thread(vera);
+	r := pg_temp.memory('tree-erase-2', jsonb_build_array(jsonb_build_object('op','mkdir','path',root),
+		pg_temp.tree_file(root || '/tree.toml', pg_temp.toml(s))), array[s]);
+	perform pg_temp.expect(r, 1, 'saved');
+	perform pg_temp.expect(r, 2, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'tree-erase-3', jsonb_build_array(jsonb_build_object('op','delete',
+		'path','agents/vera','expectedVersion',pg_temp.version('agents/vera'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
+	if (pg_temp.tree(s)).retired_at is null then raise exception 'Fixture: Vera''s tree is retired'; end if;
+	n := (select count(*) from public.qorpera_memory_trees where environment_id = '70000000-0000-4000-8000-000000000020');
+	r := public.qorpera_folder_erase('70000000-0000-4000-8000-000000000020', pg_temp.owner(), '["agents/vera"]', 'tree-erase-4');
+	if r ->> 'erasureId' is null or exists (select 1 from public.qorpera_memory_trees where session_id = s)
+		or (select count(*) from public.qorpera_memory_trees where environment_id = '70000000-0000-4000-8000-000000000020') <> n - 1 then
+		raise exception 'Erasure deletes the retired tree under its root, and only that one: %', r; end if;
 end $$;
 
 rollback;

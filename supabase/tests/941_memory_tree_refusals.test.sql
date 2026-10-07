@@ -197,6 +197,7 @@ do $$
 declare
 	nora constant uuid := '70000000-0000-4000-8000-0000000000a1'; otto constant uuid := '70000000-0000-4000-8000-0000000000a2';
 	launch constant uuid := '70000000-0000-4000-8000-0000000000b1'; ns uuid; gs uuid; r jsonb; i integer;
+	pia constant uuid := '70000000-0000-4000-8000-0000000000a3'; ps uuid;
 	root constant text := 'agents/nora/memory/thread';
 begin
 	r := pg_temp.commit(pg_temp.owner(), 'refuse-hire-1', jsonb_build_array(pg_temp.hire('nora', nora, 'Nora'),
@@ -281,6 +282,37 @@ begin
 	if pg_temp.version(root || '/tree.toml') is null or pg_temp.version('agents/x') is not null or pg_temp.version('agents/nora-copy') is not null
 		or pg_temp.version('agents/otto/memory/thread') is not null then
 		raise exception 'Nothing refused changed the folder'; end if;
+
+	-- Until it holds the root, agents/<agent>/memory is the agent's: Pia clears it away, puts a file there, makes it
+	-- again spelled otherwise and moves it out and back. Then the memory commit makes her root, and it is the platform's.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'refuse-pia-1', jsonb_build_array(pg_temp.hire('pia', pia, 'Pia'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'refuse-pia-2', jsonb_build_array(jsonb_build_object('op','delete',
+		'path','agents/pia/memory','expectedVersion',pg_temp.version('agents/pia/memory'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'refuse-pia-3', jsonb_build_array(pg_temp.plain('agents/pia/memory', 'A file.'))),
+		1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'refuse-pia-4', jsonb_build_array(jsonb_build_object('op','delete',
+		'path','agents/pia/memory','expectedVersion',pg_temp.version('agents/pia/memory')))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'refuse-pia-5', jsonb_build_array(
+		jsonb_build_object('op','mkdir','path','agents/pia/Memory'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'refuse-pia-6', jsonb_build_array(jsonb_build_object('op','move',
+		'from','agents/pia/Memory','to','agents/pia/notebook','expectedVersion',pg_temp.version('agents/pia/memory'),
+		'asOfSeq',pg_temp.seq()))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'refuse-pia-7', jsonb_build_array(jsonb_build_object('op','move',
+		'from','agents/pia/notebook','to','agents/pia/memory','expectedVersion',pg_temp.version('agents/pia/notebook'),
+		'asOfSeq',pg_temp.seq()))), 1, 'saved');
+	ps := pg_temp.thread(pia);
+	r := pg_temp.memory('refuse-pia-tree', jsonb_build_array(jsonb_build_object('op','mkdir','path','agents/pia/memory/thread'),
+		pg_temp.tree_file('agents/pia/memory/thread/tree.toml', pg_temp.toml(ps))), array[ps]);
+	for i in 1..2 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	for r in select pg_temp.commit(pg_temp.owner(), 'refuse-pia-' || (7 + o), jsonb_build_array(u)) from unnest(array[
+		jsonb_build_object('op','delete','path','agents/pia/memory','expectedVersion',pg_temp.version('agents/pia/memory'),
+			'asOfSeq',pg_temp.seq()),
+		jsonb_build_object('op','move','from','agents/pia/memory','to','agents/pia/notebook','expectedVersion',
+			pg_temp.version('agents/pia/memory'),'asOfSeq',pg_temp.seq())]) with ordinality x(u, o) order by o loop
+		perform pg_temp.refused(r, 1, 'platform_only', 'summary trees are written by the platform only');
+	end loop;
+	if pg_temp.version('agents/pia/memory/thread/tree.toml') is null or pg_temp.version('agents/pia/notebook') is not null then
+		raise exception 'Pia''s tree stays where it is'; end if;
 end $$;
 
 -- 3. Inside the memory commit: only a tree's own files, each naming its conversation at its current generation --------

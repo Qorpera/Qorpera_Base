@@ -123,8 +123,9 @@ begin
 	if cardinality(v_ids) = 0 then return; end if;
 	if exists (select 1 from public.qorpera_shared_sessions where id = any (v_ids) and environment_id <> p_environment_id) then
 		raise exception 'A session target belongs to another company' using errcode = 'XX000'; end if;
-	-- 20260930110000 (M1a): a memory commit's generations FOR SHARE; a session any target writes FOR UPDATE.
-	for v_target in select (t ->> 'key')::uuid as id, bool_or(t ->> 'mode' = 'update') as writes
+	-- 20260930110000 (M1a): a memory commit's generations FOR SHARE; a session any other target names FOR UPDATE, as
+	-- before (a target with no mode too).
+	for v_target in select (t ->> 'key')::uuid as id, bool_or(coalesce(t ->> 'mode', 'update') <> 'share') as writes
 		from jsonb_array_elements(coalesce(p_targets, '[]'::jsonb)) t where t ->> 'rank' = '11'
 		group by 1 order by 1 loop
 		if v_target.writes then
