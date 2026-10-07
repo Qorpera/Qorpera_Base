@@ -445,8 +445,9 @@ t2/…                       tier 2: levels 8–11 of 4,096 messages each
 
 - **`tree.toml`** is exactly three lines, in this order and spelling, each ending in a newline: `format = 1`,
   `conversation = "<session uuid>"` (lower-case) and `node_bytes = <n>`, n from 1 to 1,024 with no leading zero
-  (M1a's `qorpera_memory_tree_toml`). `node_bytes` is NODE when the tree was written. So its bytes follow from the
-  conversation and `node_bytes` alone, which a message erase uses to find a conversation's earlier roots (§10 step 1).
+  (M1a's `qorpera_memory_tree_toml`). `node_bytes` is NODE when the tree was written. It is always written as
+  `application/toml`, not executable (§4.3). So its bytes, and its file manifest, follow from the conversation and
+  `node_bytes` alone, which a message erase uses to find a conversation's earlier roots (§10 step 1).
 - **Tier `t`, block `b`** holds the nodes of levels `4t` to `4t+3` that cover messages `[b·16^(t+1), (b+1)·16^(t+1))`.
   That is 16 + 8 + 4 + 2 = 30 nodes at most, about 10 KB.
 - A block is final once all 30 nodes are built. After that it changes only through erasure.
@@ -489,6 +490,8 @@ the tree holds the same content.
     through the GC helper beside the git-object prune (§10, GC).
   - The first batch of a tree creates its root folder and `tree.toml`. That `mkdir` names no generation; the batch's
     `sessionGenerations` still covers it, so a root made before an erase is refused with the rest.
+  - The tree writer passes the media type itself, never the folder client's guess from the file name: every write of
+    `tree.toml` is `application/toml` with the executable bit off, in every bundle (§10 step 1 relies on it).
 - **Erasure generation.** `qorpera_shared_sessions` gets `memory_generation`, a counter per conversation. The
   single-message erase (§10) raises it in the same transaction that blanks the event and deletes the blocks.
   - A compactor batch reads the generation before it reads any event or line, and keeps it with its results.
@@ -1298,8 +1301,9 @@ Then, for event `i` of conversation C:
      move back to the old root, so the moves step 3 follows never reach it. So the erase finds C's roots from C
      itself, not from a tree, so it needs none built at the current root. Every `tree.toml` M1a accepts for C is one
      of 1,024 byte strings: `format = 1`, C's id and a `node_bytes` from 1 to 1,024, in one exact layout (§4.2). Only
-     the platform writes under a tree root (§4.3), always with the same media type and no executable bit, and a file
-     manifest covers the bytes, the media type and the bit (core §7). So C's `tree.toml` has one of 1,024 manifests,
+     the platform writes under a tree root (§4.3), and it writes `tree.toml` always as `application/toml` with no
+     executable bit (§4.2, §4.3). A file manifest covers the bytes, the media type and the bit (core §7). So C's
+     `tree.toml` has one of 1,024 manifests,
      whichever bundle wrote it and whatever NODE was then. The erase computes all 1,024 from C's id and looks them up
      in the manifest index of path versions (`qorpera_folder_path_versions_manifest`, which P18's copy warning uses),
      which lists every path that ever held one. Each such path that is a tree root's `tree.toml`
@@ -1307,14 +1311,16 @@ Then, for event `i` of conversation C:
      root above, is an earlier root. Each candidate block under it that has versions is recorded by key alone, live
      or not: a live one there is another tree's block at a reused name, and step 3 keeps its life. A root that a
      rename moved on to the current one is found too, and its requests overlap the current root's, which P18
-     allows. Every root whose blocks have versions keeps a version of its `tree.toml`, so it is found:
+     allows once each accepted request has committed (step 3, one request per transaction). Every root whose blocks
+     have versions keeps a version of its `tree.toml`, so it is found:
      - the 7-day prune (GC, below) never takes the start of a life, and every life of a root's `tree.toml` starts
        with a version M1a accepted for C. The git-object prune takes only paths under
        `code/<owner>/<name>/repo.git/objects/` (core §2), never a tree path;
      - P18 refuses a member's erasure that names a tree's `tree.toml` alone (`RUNTIME-COMPANY-FOLDER-ERASURE.md`
        §14), and a block-history request names only blocks. So an erasure takes a root's `tree.toml` only with its
        folder or tree root, and its blocks with it;
-     - a later format of `tree.toml` adds its byte strings to this lookup, and none is ever dropped from it.
+     - a later format of `tree.toml`, or a later media type for it, adds its manifests to this lookup, and none is
+       ever dropped from it.
 
    A compactor batch or zoom that read before this commit now fails its generation check (§4.3, §8), so nothing
    computed from the old text can be written back. One that checks first holds the session `FOR SHARE`, and the
@@ -1405,6 +1411,12 @@ Then, for event `i` of conversation C:
      left would be answered too soon. That phase locks nothing a request holds, and an erasure begun over the path
      later waits for the request's path lock, so the erase is never refused for good (`RUNTIME-COMPANY-FOLDER-ERASURE.md`
      §14).
+   - **One request per transaction.** The erase asks each block's request in a transaction of its own, and commits
+     an accepted one before it asks the next. An erasure P18 has just accepted is
+     in its versions phase, and only pg_cron's drain moves it on, which sees it only once it commits. So a request
+     over an overlapping path (the same block's earlier root, or a partner of another block) asked in the same
+     transaction would get 55006 every time, and the erase would roll back the accepted one with it. A 55006 is asked
+     again in a later transaction.
    - **A cutoff whose delete is gone.** When a later erasure over the key (a later erase's request for the block, or a
      member's erasure) has erased step 1's delete, P18 answers the request with nothing left once that erasure is past
      its versions phase.
@@ -1533,8 +1545,8 @@ compactor's window holds only the same run's raw steps (§7.5), so step `j` is a
     asks P18 for the old versions (step 3), and only then clears the mark and sets the row to `requested`. The
     request is cut at step 1's delete (§10 step 3), so the version the rewrite wrote stays, and so does every later
     one. With the mark held, no other erase of the run starts and the run does not resume until this erase's step 3
-    is in. Step 3 cannot be refused for good: it is the platform's request, sent one block at a time and not held to
-    P18's path limit, it never needs its path to be live, and a refusal with nothing left to erase counts as
+    is in. Step 3 cannot be refused for good: it is the platform's request, sent one block per transaction and not
+    held to P18's path limit, it never needs its path to be live, and a refusal with nothing left to erase counts as
     accepted;
   - **retries.** A step 1 that finds a lease, or another erase's id in the mark, rolls back whole, without claiming
     its operation key (core §3 step 1), so a retry is a new attempt and never replays a refusal. The erase stays
@@ -1918,7 +1930,9 @@ the rules for folders shared with only some agents (§4.5, §8, §9). It changes
   - in a request with a cutoff or a life, or for an older life of the key, a life that moved on to a path that is
     live now is left alone, not refused;
   - while another erasure is still erasing the versions at a path the request names, the request is asked again
-    later, never refused for good, so it never answers nothing left before the block's history is gone (§10 step 3);
+    later, never refused for good, so it never answers nothing left before the block's history is gone (§10 step 3).
+    The platform asks one request per transaction, and commits each accepted one before it asks the next, so an
+    erasure it has just begun never holds up its own next request;
   - a member's erasure that names a tree's `tree.toml` alone is refused: a message erase finds the conversation's
     earlier tree roots by that file's bytes (§10 step 1);
   - the run-log row reaches only steps that name a block's path and read it before the cutoff, found through the step

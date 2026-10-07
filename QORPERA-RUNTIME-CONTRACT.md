@@ -5292,7 +5292,9 @@ own texts below carries a note "Amended 2026-10-06" in place.
       - in a request with a cutoff or a life, or for an older life of the key, a life that moved on to a path that is
         live now is left alone, not refused;
       - while another erasure is still erasing the versions at a path the request names, the request is asked again
-        later, never refused for good, so it never answers nothing left before the block's history is gone;
+        later, never refused for good, so it never answers nothing left before the block's history is gone. The
+        platform asks one request per transaction, and commits each accepted one before it asks the next, so an
+        erasure it has just begun never holds up its own next request;
       - a member's erasure that names a tree's `tree.toml` alone is refused: a message erase finds the conversation's
         earlier tree roots by that file's bytes;
       - the run-log row reaches only steps that name a block's path and read it before the cutoff, found through the
