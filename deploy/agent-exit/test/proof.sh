@@ -333,10 +333,11 @@ pass "up twice"
 if bash "$tool" verify 2>"$work/verify.err"; then fail "verify passed without DNS and the logger"; fi
 grep -q "no DNS on 10.210.0.1:53" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
 grep -q "logger not running" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
+grep -q "the brake not running" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
 grep -q "the agent plug's reconciler not running" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
 grep -q "the logs' tender has not run" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
 grep -q "the logs' shipper has not run" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
-pass "verify fails while DNS, the logger, the plug's reconciler and the logs' tender and shipper are not running"
+pass "verify fails while DNS, the logger (and its brake), the plug's reconciler and the logs' tender and shipper are not running"
 
 background - "$work/node.out" python3 "$work/serve.py" "$work/node-peers" 192.168.1.42:22 10.209.255.1:22
 background - "$work/nodeudp.out" python3 "$work/udpseen.py" "$work/node-udp" 192.168.1.42 9999
@@ -803,8 +804,171 @@ pass "past its cap the logger pauses (traffic goes on, the exit is unhealthy), t
 kill "$logger_pid"
 wait "$logger_pid" 2>/dev/null || true
 bash "$tool" log >>"$work/log.out" 2>&1 &
+logger_pid=$!
 pids+=($!)
 wait_for "bash $tool verify >/dev/null 2>&1"
+
+# --- The brake (E7) -----------------------------------------------------------------------------------------------
+# Company cB's machine, plugged in as in the plug's part above, goes past the founder's levels; the agent machine
+# (company c0) does not.
+cat >"$work/burst.py" <<'EOF'
+import socket, sys, threading
+# argv: host port count timeout; opens count connections at once and prints how many connected.
+host, port, count, timeout = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4])
+connected = []
+def one():
+    s = socket.socket()
+    s.settimeout(timeout)
+    try:
+        s.connect((host, port))
+        connected.append(1)
+    except OSError:
+        pass
+    finally:
+        s.close()
+threads = [threading.Thread(target=one) for _ in range(count)]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+print(len(connected))
+EOF
+brake=$QORPERA_AGENT_EXIT_RUN_DIR/brake.json
+# A Python expression over the guard's status (s), printed as JSON, or tested.
+brake_get() { python3 -c 'import json, sys; s = json.load(open(sys.argv[1])); print(json.dumps(eval(sys.argv[2])))' "$brake" "$1"; }
+brake_is() { [[ $(brake_get "$1" 2>/dev/null) == true ]]; }
+# A Python expression tested over what the exit's brake rules hold, read as the guard reads them (r: machines, share,
+# and counters, the counts by number in the set named first).
+rules_are() {
+	local list=(ip netns exec qexit nft -j list)
+	printf '{"map": %s, "chain": %s, "set": %s}' "$("${list[@]}" map inet qorpera_agent_exit braked)" \
+		"$("${list[@]}" chain inet qorpera_agent_exit share)" "$("${list[@]}" set inet qorpera_agent_exit "$1")" |
+		python3 "$here/qorpera-agent-exit-log.py" --parse-brake |
+		python3 -c 'import json, sys; r = json.load(sys.stdin); sys.exit(0 if eval(sys.argv[1]) else 1)' "$2"
+}
+braked_plug=$(as_creator python3 "$plug_tool" plug --kind machine --company cB --machine mB --project qp --instance vmB)
+[[ $braked_plug == '{"address": "10.210.1.26", "hwaddr": "0e:51:0a:d2:01:1a"}' ]] || fail "plug: $braked_plug"
+ip netns add braked
+ip -n braked link set lo up
+ip link add bv0 type veth peer name eth0 netns braked
+ip -n braked link set eth0 address 0e:51:0a:d2:01:1a
+ip link set bv0 master qagent0 up
+ip -n braked link set eth0 up
+ip -n braked addr add 10.210.1.26/16 dev eth0
+ip -n braked route add default via 10.210.0.1
+python3 "$work/fixture.py" "$work/lxd.json" "$AGENT" "qp/vmB:Running:10.210.1.26:cB:mB::bv0"
+wait_for "client_history | grep -q '\"address\":\"10.210.1.26\",\"company\":\"cB\",\"event\":\"plugged\"'"
+wait_for "connects braked 1.1.1.1 443"
+# The founder's levels, in the node's settings: past 5 new connections in 10 seconds a company is braked for 5 minutes,
+# with a share of 2 new connections per 10 seconds. The logger reads them when it starts.
+printf '%s\n' QORPERA_AGENT_EXIT_BRAKE_NEW_10S=5 QORPERA_AGENT_EXIT_BRAKE_SLOW_10S=2 QORPERA_AGENT_EXIT_BRAKE_MINUTES=5 \
+	>"$work/settings"
+kill "$logger_pid"
+wait "$logger_pid" 2>/dev/null || true
+QORPERA_AGENT_EXIT_SETTINGS=$work/settings bash "$tool" log >>"$work/log.out" 2>&1 &
+logger_pid=$!
+pids+=($!)
+wait_for "brake_is \"s['on'] and s['levels'] == {'new10s': 5, 'failed60s': 0, 'slow10s': 2, 'minutes': 5}\""
+wait_for "rules_are dropped \"r['share'] == ['slow 2'] and r['machines'] == {}\""
+bash "$tool" verify >/dev/null || fail "verify with the brake on: $(bash "$tool" verify 2>&1)"
+pass "the founder's levels in the node's settings switch the brake on: its share rule is in the exit, nothing braked yet"
+
+[[ $(ip netns exec braked python3 "$work/burst.py" 1.1.1.1 443 12 3) == 12 ]] || fail "a burst before the brake did not all get through"
+wait_for "grep -q '\"company\":\"cB\",\"event\":\"braked\",\"reason\":\"[0-9]* new connections in 10 seconds (level 5)\"' $LOG/flows-$today.jsonl"
+wait_for "brake_is \"[(b['company'], b['machines']) for b in s['braked']] == [('cB', 1)]\""
+number=$(brake_get "s['braked'][0]['number']")
+until_before=$(brake_get "s['braked'][0]['until']")
+wait_for "rules_are dropped \"r['machines'] == {'10.210.1.26': $number}\""
+pass "a company past a level is braked: a braked line, and its machine in the exit's braked map with its number"
+# Its share: 2 of 10 new connections at once get through, the rest are dropped (and resent once, at 1 second, before
+# they give up), each counted once. Another company's machine is not braked.
+let_through=$(ip netns exec braked python3 "$work/burst.py" 1.1.1.1 443 10 2)
+[[ $let_through == 2 ]] || fail "a braked company got $let_through of 10 new connections at once through, not its share of 2"
+for _ in 1 2 3; do connects agent 1.1.1.1 443 || fail "another company's machine was braked"; done
+rules_are dropped "r['counters'] == {'$number': 8}" ||
+	fail "dropped: $(ip netns exec qexit nft list set inet qorpera_agent_exit dropped)"
+[[ $(ip netns exec qexit nft -j list counter inet qorpera_agent_exit dropped_braked |
+	python3 -c 'import json, sys; print([i["counter"]["packets"] for i in json.load(sys.stdin)["nftables"] if "counter" in i][0])') -gt 8 ]] ||
+	fail "no resent first packet was dropped: $(ip netns exec qexit nft list counter inet qorpera_agent_exit dropped_braked)"
+# A dropped connection whose machine goes on resending gets through once the share has room again: dropped once, and
+# let through once on a resend, it is not counted as dropped.
+[[ $(ip netns exec braked python3 "$work/burst.py" 1.1.1.1 443 1 20) == 1 ]] || fail "a resent connection never got through"
+rules_are dropped "r['counters'] == {'$number': 9}" ||
+	fail "dropped: $(ip netns exec qexit nft list set inet qorpera_agent_exit dropped)"
+wait_for "rules_are resent \"r['counters'] == {'$number': 1}\""
+# The dropped ones count as new connections: the brake is held longer.
+wait_for "brake_is \"s['braked'][0]['dropped'] == 8 and s['braked'][0]['until'] > $until_before\""
+bash "$tool" verify >/dev/null || fail "verify with a company braked: $(bash "$tool" verify 2>&1)"
+bash "$tool" status >"$work/status.out"
+grep -Eq '10\.210\.1\.26 [^,}]*: (0x)?[0-9a-f]+' "$work/status.out" ||
+	fail "status does not show the braked machine: $(cat "$work/status.out")"
+grep -q '"company": "cB"' "$work/status.out" || fail "status does not show the brake: $(cat "$work/status.out")"
+pass "past its share a braked company's new connections are dropped, each once however often resent, and hold the brake"
+pass "another company's machine is not braked; the exit stays healthy and status shows the brake"
+# Unplugged, the machine's counts go with it and it leaves the braked map at once, also while the logger (and its
+# guard) is down: the plug destroys its elements (one already gone is no error). Its company stays braked. Its tried
+# flows time out on their own, long before its address is given out again.
+ip netns exec qexit nft destroy element inet qorpera_agent_exit new_by_client '{ 10.210.9.9 }' ||
+	fail "destroying an element that is not there is an error here"
+kill "$logger_pid"
+wait "$logger_pid" 2>/dev/null || true
+python3 "$work/fixture.py" "$work/lxd.json" "$AGENT"
+wait_for "client_history | grep -q '\"address\":\"10.210.1.26\",\"company\":\"cB\",\"event\":\"unplugged\"'"
+grep -q "cannot clear 10.210.1.26" "$work/plug.out" && fail "plug: $(grep "cannot clear" "$work/plug.out")"
+new_left=$(ip netns exec qexit nft list set inet qorpera_agent_exit new_by_client)
+grep -q '10\.210\.1\.26 ' <<<"$new_left" && fail "the unplugged machine's counts stayed: $new_left"
+rules_are dropped "r['machines'] == {}" ||
+	fail "an unplugged machine stayed braked: $(ip netns exec qexit nft list map inet qorpera_agent_exit braked)"
+QORPERA_AGENT_EXIT_SETTINGS=$work/settings bash "$tool" log >>"$work/log.out" 2>&1 &
+logger_pid=$!
+pids+=($!)
+wait_for "brake_is \"[(b['company'], b['machines']) for b in s['braked']] == [('cB', 0)]\""
+sleep 3
+rules_are dropped "r['machines'] == {}" || fail "the guard braked an unplugged machine again"
+ip link del bv0
+ip netns del braked
+pass "an unplugged machine's counts go with it and it leaves the braked map at once, guard or not; its company stays braked"
+# Without levels, a new logger ends the brake it kept (its status file) at once, and says what it dropped.
+kill "$logger_pid"
+wait "$logger_pid" 2>/dev/null || true
+bash "$tool" log >>"$work/log.out" 2>&1 &
+logger_pid=$!
+pids+=($!)
+wait_for "grep -q '\"company\":\"cB\",\"dropped\":8,\"event\":\"unbraked\"' $LOG/flows-$today.jsonl"
+wait_for "rules_are dropped \"r['share'] == [] and r['machines'] == {}\""
+wait_for "brake_is \"not s['on'] and s['braked'] == [] and s['problems'] == []\""
+wait_for "bash $tool verify >/dev/null 2>&1"
+pass "with its levels gone the logger ends the brake it kept at once, with an unbraked line that says what it dropped"
+# A level that cannot be meant (a share as large as the level) leaves the brake off and the exit unhealthy.
+kill "$logger_pid"
+wait "$logger_pid" 2>/dev/null || true
+rm "$brake"
+QORPERA_AGENT_EXIT_BRAKE_NEW_10S=5 QORPERA_AGENT_EXIT_BRAKE_SLOW_10S=5 bash "$tool" log >>"$work/log.out" 2>&1 &
+logger_pid=$!
+pids+=($!)
+wait_for "test -e $brake"
+bash "$tool" verify 2>"$work/verify-brake.err" && fail "verify passed with a share as large as its level"
+grep -q "the brake: QORPERA_AGENT_EXIT_BRAKE_SLOW_10S=5 is not under QORPERA_AGENT_EXIT_BRAKE_NEW_10S=5" \
+	"$work/verify-brake.err" || fail "verify: $(cat "$work/verify-brake.err")"
+rules_are dropped "r['share'] == []" || fail "the brake is on with a level that cannot be meant"
+# A level that looks like an option is a bad level too, not an argument the logger cannot start with.
+kill "$logger_pid"
+wait "$logger_pid" 2>/dev/null || true
+rm "$brake"
+QORPERA_AGENT_EXIT_BRAKE_NEW_10S=5 QORPERA_AGENT_EXIT_BRAKE_MINUTES=--5 bash "$tool" log >>"$work/log.out" 2>&1 &
+logger_pid=$!
+pids+=($!)
+wait_for "test -e $brake"
+bash "$tool" verify 2>"$work/verify-brake.err" && fail "verify passed with a level that looks like an option"
+grep -q "the brake: QORPERA_AGENT_EXIT_BRAKE_MINUTES='--5' is not a whole number from 1 to 1440" \
+	"$work/verify-brake.err" || fail "verify: $(cat "$work/verify-brake.err")"
+rules_are dropped "r['share'] == []" || fail "the brake is on with a level that looks like an option"
+kill "$logger_pid"
+wait "$logger_pid" 2>/dev/null || true
+bash "$tool" log >>"$work/log.out" 2>&1 &
+pids+=($!)
+wait_for "bash $tool verify >/dev/null 2>&1"
+pass "a level that cannot be meant leaves the brake off and the exit unhealthy until it is fixed"
 
 # --- An interrupted rebuild -------------------------------------------------------------------------------------
 # The exit's namespace is replaced while its name service and logger still run in the old one, as after an up that
@@ -847,7 +1011,7 @@ wait_for "test -z \"\$(ls $clients_dir)\""
 # A machine asleep has no port on the bridge; its client map entry still keeps the exit up.
 python3 "$plug_tool" plug --kind machine --company c5 --machine m5 --project qp --instance asleep >/dev/null
 if bash "$tool" down 2>"$work/down2.err"; then fail "down went ahead with a machine in the client map"; fi
-grep -q "running or asleep (client map: 10.210.1.26 " "$work/down2.err" || fail "down: $(cat "$work/down2.err")"
+grep -q "running or asleep (client map: 10.210.1.27 " "$work/down2.err" || fail "down: $(cat "$work/down2.err")"
 pass "down refuses while the client map has a machine, also one asleep with no port"
 python3 "$work/age.py" "$clients_dir"
 wait_for "test -z \"\$(ls $clients_dir)\""

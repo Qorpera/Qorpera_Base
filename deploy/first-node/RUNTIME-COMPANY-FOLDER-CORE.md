@@ -1007,10 +1007,12 @@ C1c-3i), which ran on tmpfs, drove one sequential agent and excused 55P03. It mu
 - check for authority leaks, missing parents and lost bytes; and
 - measure stop latency and admission skips; and
 - time a re-resolution over a run that read 25,000 paths, which must fit
-  inside the 4-second result fence.
+  inside 4 seconds (the old result fence, kept as a latency target).
 
 It passes only with no deadlocks, no leaks or losses, and tool-call waits well
-under the 4-second result fence (`cloud-native-result-fence.ts`).
+under 4 seconds. That was the result fence's budget until 5 October 2026; it
+stays the load test's latency target, while the runtime now waits for a slow
+database for as long as the run's authority holds (`cloud-native-result-fence.ts`).
 
 **As built (C1e, P24):** `scripts/load-folder-core.mjs` and `.sql`, a new
 script rather than an extension of the snapshot-era one. It covers everything
