@@ -182,8 +182,11 @@ export class CloudCompanyHeadConflict extends Error {
 /** A verified file that is not UTF-8 text (or, for a trusted whole-file read,
  * larger than a text write). The bytes are intact; they are just not text here. */
 export class CloudCompanyPathNotText extends Error {
-	constructor(message = "Company File range is not UTF-8 text") {
+	/** The whole file's size, from the entry a trusted whole-file read found; null for a range. */
+	readonly bytes: number | null;
+	constructor(message = "Company File range is not UTF-8 text", bytes: number | null = null) {
 		super(message);
+		this.bytes = bytes;
 	}
 }
 
@@ -730,7 +733,7 @@ export class CloudCompanyPathGateway {
 	 * and may run before the first acknowledgement. An absent path keeps the
 	 * version a deletion left (null if it never existed): recreating it must
 	 * name that version. Bounded to MAX_WRITE_BYTES so a notebook file can be
-	 * rewritten; a larger or non-text file is CloudCompanyPathNotText. */
+	 * rewritten; a larger or non-text file is CloudCompanyPathNotText, with its size. */
 	async readTrusted(
 		pathValue: string,
 		signal: AbortSignal,
@@ -755,11 +758,18 @@ export class CloudCompanyPathGateway {
 		const current = version(input.version)!;
 		if (found.kind !== "file") return { path, version: current, kind: "directory", text: "", fileSha256: null };
 		if (found.file.bytes > MAX_WRITE_BYTES)
-			throw new CloudCompanyPathNotText("Company File notebook exceeds its bound");
+			throw new CloudCompanyPathNotText("Company File notebook exceeds its bound", found.file.bytes);
 		const manifestSize = integer(input.manifestBytes, 1, 8 * 1024 * 1024);
-		const { text, included } = await this.#fileText(found.file, manifestSize, 0, MAX_WRITE_BYTES, signal);
-		if (included !== found.file.bytes) throw new CloudCompanyPathNotText();
-		return { path, version: current, kind: "file", text, fileSha256: found.file.fileSha256 };
+		let read: { text: string; included: number };
+		try {
+			read = await this.#fileText(found.file, manifestSize, 0, MAX_WRITE_BYTES, signal);
+		} catch (error) {
+			if (error instanceof CloudCompanyPathNotText)
+				throw new CloudCompanyPathNotText(error.message, found.file.bytes);
+			throw error;
+		}
+		if (read.included !== found.file.bytes) throw new CloudCompanyPathNotText(undefined, found.file.bytes);
+		return { path, version: current, kind: "file", text: read.text, fileSha256: found.file.fileSha256 };
 	}
 
 	/** Trusted directory listing (see readTrusted): every child, page after page

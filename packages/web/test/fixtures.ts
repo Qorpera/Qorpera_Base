@@ -242,6 +242,8 @@ export function fixture() {
 	vi.spyOn(api, "answerCodingSession").mockRejectedValue(new Error("No coding session in this fixture"));
 	vi.spyOn(api, "delegateCodingSession").mockRejectedValue(new Error("No coding session in this fixture"));
 	vi.spyOn(api, "archiveCodingSession").mockRejectedValue(new Error("No coding session in this fixture"));
+	vi.spyOn(api, "listAgentProposals").mockResolvedValue({ proposals: [], moreProposals: 0 });
+	vi.spyOn(api, "discardProposal").mockRejectedValue(new Error("No proposal in this fixture"));
 	vi.spyOn(api, "getCompanyFile").mockResolvedValue(file);
 	vi.spyOn(api, "getCompanyComputerHours").mockResolvedValue({
 		profileId: file.profileId,

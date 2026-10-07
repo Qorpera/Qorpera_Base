@@ -782,6 +782,12 @@ export class PendingView {
 		return this.#nodes;
 	}
 
+	/** What a file open for writing goes back to if its last handle is abandoned (its last close or truncating open):
+	 * bytes the service must keep holding while the file is open. */
+	fixedState(node: PendingFile): Pick<PendingFile, "content" | "staged"> | undefined {
+		return this.#fixed.get(node);
+	}
+
 	/** Live entries the view removed, by live path. */
 	removed(): ReadonlyMap<string, LiveRef> {
 		return this.#removed;
