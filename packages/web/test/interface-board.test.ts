@@ -163,7 +163,9 @@ type OffersFake = ReturnType<typeof offersFake>;
 function offersFake() {
 	let open: MemberInterfaceOffer[] = [];
 	let made = 900;
-	const add = (fields: Pick<MemberInterfaceOffer, "table" | "key" | "from" | "to" | "was">) => {
+	const add = (
+		fields: Pick<MemberInterfaceOffer, "table" | "key" | "from" | "to" | "was"> & { readonly at?: string },
+	) => {
 		const offer: MemberInterfaceOffer = {
 			id: id(++made),
 			folder: "tables/cards",
@@ -822,6 +824,22 @@ describe("offers on Pulse (I9c)", () => {
 		await vi.waitFor(() => expect(listed(main)).toEqual([]));
 		// The page has no control left, so the focus goes to the block's title, not back to the top of the document.
 		expect(document.activeElement).toBe(title(main, "Needs you"));
+	});
+
+	it("gives an offer's time to the second, though the cloud's carries microseconds", async () => {
+		const fake = seeded(bea);
+		const offers = offersFake();
+		offers.add({
+			table: cardsTable(fake),
+			key: [CALL],
+			from: bea,
+			to: me,
+			was: bea,
+			at: "2026-10-07T09:14:49.123456Z",
+		});
+		const { controller } = await members(fake, "owner", offers, "pulse");
+		const offered = interfaceRows(controller, "waiting")?.filter(({ row }) => row.kind === "offer");
+		expect(offered?.map(({ row }) => row.due)).toEqual(["2026-10-07T09:14:49Z"]);
 	});
 
 	it("declines an offer there with Not now, and the focus goes on to the next one", async () => {

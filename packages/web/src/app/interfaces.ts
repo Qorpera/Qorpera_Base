@@ -594,7 +594,8 @@ export function interfaceRows(company: CompanyController, source: string): Inter
 						table: definition.name || offered.table,
 					}),
 					from: null,
-					due: offer.at,
+					// The cloud's time is to the microsecond; a row's is to the second, so `since` and ordering read it.
+					due: rowInstant(offer.at),
 				},
 				key: `offer:${offer.id}`,
 			});
