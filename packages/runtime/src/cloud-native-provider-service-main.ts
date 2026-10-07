@@ -321,8 +321,8 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	const dispatch = new NativeHostDispatch({ supabaseUrl: baseUrl, identity });
 	// The clients below send the publishable key; the dispatch signs each of their requests with it anyway.
 	const publishableKey = identity.publishableKey;
-	// G2-6a: the object gateway's and the secret broker's clients prove their run's lease with each request, read from
-	// the dispatch when the request is made, so a warm host never sends a released job's token.
+	// G2-6a/b: the object gateway's, the secret broker's and the coding executor's clients prove their run's lease with
+	// each request, read from the dispatch when the request is made, so a warm host never sends a released job's token.
 	const holder = (): string => dispatch.holderHeader();
 	// A login guest may not read its identity's recovery state: its gateway read it and delivered it.
 	const loginGuest = nativeLoginGuestPurpose(environment);
@@ -442,6 +442,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 								url: codingConfiguration.url,
 								token: codingToken,
 								binding,
+								holder,
 								// The executor re-authorizes every command against the turn in SQL; the
 								// runner's own check is the continuous turn authority.
 								authorize: async () => {},
@@ -482,6 +483,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 								url: codingConfiguration.url,
 								token: codingToken,
 								binding,
+								holder,
 							}),
 					}
 				: {}),

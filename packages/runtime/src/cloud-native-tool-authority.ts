@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { UUID_PATTERN } from "@qorpera/contracts";
 import { cloudControlBackoffMs, cloudControlPause, cloudControlRetryable } from "./cloud-control-errors.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 import { type CloudRuntimeReasoningEffort, isCloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
@@ -96,6 +97,14 @@ export function parseCloudNativeToolBinding(value: unknown): CloudNativeToolBind
 		nativeHarness: "codex-cli",
 		model: input.model,
 	});
+}
+
+/** The holder credential a native host sends with a run's request (G2-6): `job.<job id>.<lease token>` in
+ * x-qorpera-identity, as NativeHostDispatch.holderHeader() gives it while the job runs. A server proves it against
+ * the request's binding with qorpera_native_binding_proven; its value never reaches a log, an error or a reply. */
+export function isNativeJobHolder(value: unknown): value is string {
+	const [kind, jobId, token, ...rest] = typeof value === "string" ? value.split(".") : [];
+	return kind === "job" && UUID_PATTERN.test(jobId ?? "") && /^[A-Za-z0-9_-]{43}$/.test(token ?? "") && !rest.length;
 }
 
 export function parseCloudNativeToolAuthority(

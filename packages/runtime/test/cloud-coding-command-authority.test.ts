@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { authorizeCodingCommand } from "../../../deploy/coding-worker/command-authority.ts";
+import { authorizeCodingCommand, proveNativeBinding } from "../../../deploy/coding-worker/command-authority.ts";
 import type { CloudCodingCommandHttpRequest } from "../src/cloud-coding-command-http.ts";
 import { cloudNativeToolOperationEnvelope } from "../src/cloud-native-tool-operations.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
@@ -66,5 +66,31 @@ describe("coding command receipt binding", () => {
 				f.signal,
 			),
 		).toEqual({ inputSha256: f.inputSha256 });
+	});
+});
+
+describe("the guest-facing listener's lease proof (G2-6b)", () => {
+	it("asks the database only whether the holder proves the binding, and holds only on its plain yes", async () => {
+		const { binding } = nativeToolAuthorityFixture();
+		const holder = `job.${binding.jobId}.${"L".repeat(43)}`;
+		const signal = new AbortController().signal;
+		const call = vi.fn(
+			async (_method: string, _args: Record<string, unknown>, _signal: AbortSignal): Promise<unknown> => true,
+		);
+		await proveNativeBinding({ call }, binding, holder, signal);
+		expect(call).toHaveBeenCalledWith(
+			"qorpera_native_binding_proven",
+			{ p_binding: binding, p_holder: holder },
+			signal,
+		);
+		for (const answer of [false, null, "true", { proven: true }]) {
+			call.mockResolvedValueOnce(answer);
+			await expect(proveNativeBinding({ call }, binding, holder, signal)).rejects.toThrow("CODING_COMMAND_UNPROVEN");
+		}
+		// The database's refusal is a refusal, and nothing of the holder is in what this side throws.
+		call.mockRejectedValueOnce(new Error("CODING_CONTROL_UNCONFIRMED"));
+		const refused = await proveNativeBinding({ call }, binding, holder, signal).catch((error: unknown) => error);
+		expect(refused).toBeInstanceOf(Error);
+		expect(String((refused as Error).message)).not.toContain("L".repeat(43));
 	});
 });
