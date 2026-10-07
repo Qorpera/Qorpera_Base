@@ -3,11 +3,13 @@
 -- answers only the service role (never a token of another role behind it), describes the run as a closed projection
 -- with no secret in it, and refuses a binding with any field of another run, as it refuses an expired assignment or a
 -- lease that expired while a tool waited. The login holds no secret, and its lease hands the runner exactly the
--- payer's capsule. A send or card for another run or assignment is refused; an expired lease replays no send; a job the owner cancelled neither replays nor delivers a final send. The owner's Disconnect revokes
--- the login's connection, versions, capsules and leases and fails the next queued run it would pay for. A contributor
--- cannot make a company-scoped compute identity, and a viewer or an outsider cannot change an agent thread's model or
--- speed (an outsider cannot read it either). The run is 924's run of Alice's on the owner's login (ported from
--- snapshot-v1 in the legacy sweep: 160's surviving checks, and 580's and 584's role checks).
+-- payer's capsule, even beside a newer login on the same identity. A send or card for another run or assignment is
+-- refused; an expired lease replays no send; a job the owner cancelled neither replays nor delivers a final send. The
+-- owner's Disconnect revokes the login's connection, versions, capsules and leases and fails the next queued run it
+-- would pay for. A contributor cannot make a company-scoped compute identity, and a viewer or an outsider cannot
+-- change an agent thread's model or speed (an outsider cannot read it either). The run is 924's run of Alice's on the
+-- owner's login (ported from snapshot-v1 in the legacy sweep: 160's surviving checks, and 580's and 584's role
+-- checks).
 
 -- 1. A contributor cannot make a company-scoped compute identity; the owner can, with the same arguments, and a login on
 -- it is the company's (rolled back).
@@ -91,7 +93,8 @@ begin
 end $$;
 reset role;
 -- The login holds no secret: its versions name only the owner's capsule, and its login sessions have no column for
--- one. The run's sponsor pays with that capsule, and the lease hands the runner exactly it (rolled back).
+-- one. The run's sponsor pays with that capsule, and the lease hands the runner exactly it, even once a newer login
+-- sits on the same identity (rolled back).
 do $$
 declare
 	v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb;
@@ -127,6 +130,13 @@ begin
 				and version.credential_capsule_id = '92400000-0000-4000-8000-000000000060'),
 		'the run''s sponsor does not pay with the owner''s capsule');
 	begin
+		-- A second active login on the run's identity, newer than the payer's: the lease must not take the identity's
+		-- newest capsule.
+		insert into public.qorpera_native_credential_capsules
+		select (jsonb_populate_record(null::public.qorpera_native_credential_capsules, to_jsonb(capsule) || jsonb_build_object(
+			'id', '98400000-0000-4000-8000-000000000084', 'created_at', clock_timestamp(),
+			'encrypted_capsule_reference', 'object://native-capsules/98400000-0000-4000-8000-000000000084'))).*
+		from public.qorpera_native_credential_capsules as capsule where capsule.id = '92400000-0000-4000-8000-000000000060';
 		v_lease := public.qorpera_acquire_native_provider_connection_lease((v_binding ->> 'runId')::uuid,
 			(v_binding ->> 'runnerId')::uuid, repeat('2', 64), (v_binding ->> 'assignmentId')::uuid, repeat('3', 64), 120);
 		if v_lease ->> 'lease_id' is distinct from v_binding ->> 'leaseId'
