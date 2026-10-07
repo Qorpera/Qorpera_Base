@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -18,6 +19,10 @@ import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 //   (psql). Read-only checks only; with `--write` it also writes under `acceptance/<stamp>/` (folders and copies of an
 //   existing file, so no bytes are staged) and deletes that folder again. The folder service's search reads bytes from
 //   QORPERA_ACCEPTANCE_OBJECT_ROOT (the storage server's object share), when set. Nothing here prints the URL.
+//
+// The hosted run also proves F3 step 3 (deploy/first-node/RUNTIME-FOLDER-WRITES.md), one line per item: the node
+// folder service, as built, takes a machine's writes through its view, stages them through the object gateway's
+// folder service route, and publishes each boundary with the real commit, all through a PostgREST stand-in.
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const databaseName = "qorpera_folder_acceptance";
@@ -30,6 +35,8 @@ const literal = (value) =>
 		: typeof value === "number" || typeof value === "boolean"
 			? String(value)
 			: `'${(typeof value === "object" ? JSON.stringify(value) : String(value)).replaceAll("'", "''")}'${typeof value === "object" ? "::jsonb" : ""}`;
+
+const sha256hex = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 /** One database, through psql. `claims` set the JWT the functions read (auth.role(), auth.uid()) for that call. */
 class Database {
@@ -47,13 +54,15 @@ class Database {
 		return out ? JSON.parse(out) : null;
 	}
 
-	/** `select to_jsonb(public.<method>(p_a => …))` with the given claims, in one transaction. */
+	/** `select to_jsonb(public.<method>(p_a => …))` with the given claims, in one transaction. An error names its
+	 * SQLSTATE (`ERROR:  42501: …`), as PostgREST's `code` does. */
 	rpc(method, args, claims = SERVICE) {
 		const parameters = Object.entries(args).map(([name, value]) => {
 			assert(/^p_[a-z][a-z0-9_]*$/.test(name));
 			return `${name}=>${literal(value)}`;
 		});
-		return this.json(`begin;
+		return this.json(`\\set VERBOSITY verbose
+			begin;
 			select set_config('request.jwt.claims', ${literal(JSON.stringify(claims))}, true) \\g /dev/null
 			select to_jsonb(public.${method}(${parameters.join(",")}));
 			commit;`);
@@ -84,8 +93,8 @@ class Database {
 	}
 }
 
-/** The code the checks drive, as built: the creation worker, the member route's staging and structured entries, and
- * the node folder service's tree, object reads and search. */
+/** The code the checks drive, as built: the creation worker, the member route's staging and structured entries, the
+ * node folder service (its tree, object reads, search, and writes with their staging) and the object gateway. */
 async function bundle(scratch) {
 	const modulePath = join(scratch, "acceptance.mjs");
 	await build({
@@ -100,7 +109,12 @@ async function bundle(scratch) {
 				'export {NasObjects} from "./packages/object-gateway/src/folder-service/objects.ts";',
 				'export {ViewTree} from "./packages/object-gateway/src/folder-service/view-tree.ts";',
 				'export {searchView} from "./packages/object-gateway/src/folder-service/search.ts";',
-				'export {parseListPage, parseFeedPage} from "./packages/object-gateway/src/folder-service/core.ts";',
+				'export {parseListPage, parseFeedPage, SupabaseFolderCore} from "./packages/object-gateway/src/folder-service/core.ts";',
+				'export {FolderService} from "./packages/object-gateway/src/folder-service/service.ts";',
+				'export {FolderStaging, GatewayUploads} from "./packages/object-gateway/src/folder-service/staging.ts";',
+				'export {MountGrants, parseOperatorMounts} from "./packages/object-gateway/src/folder-service/mounts.ts";',
+				'export {createObjectGatewayHandler} from "./packages/object-gateway/src/service.ts";',
+				'export {SupabaseObjectAuthority} from "./packages/object-gateway/src/supabase-authority.ts";',
 				'export {companyStateSeedTree} from "./packages/cloud-client/src/company-state-files.ts";',
 			].join("\n"),
 		},
@@ -191,6 +205,57 @@ async function searchFolder(db, code, objectRoot, environmentId, actor, query) {
 	return { hits, searched };
 }
 
+/** PostgREST's HTTP status for an error's SQLSTATE (its error table). */
+function postgrestStatus(code) {
+	if (code === "42501") return 403;
+	if (code === "23503" || code === "23505") return 409;
+	if (code === "P0001") return 400;
+	if (code === "42883" || code === "42P01") return 404;
+	const group = code.slice(0, 2);
+	if (group === "08" || group === "53") return 503;
+	if (["0L", "0P", "28"].includes(group)) return 403;
+	if (["09", "25", "2D", "38", "39", "3B", "40", "54", "55", "57", "58", "F0", "HV", "P0", "XX"].includes(group)) return 500;
+	return 400;
+}
+
+/** PostgREST in front of the database, for the clients the folder service and the object gateway run as built
+ * (SupabaseFolderCore's transport, SupabaseObjectAuthority's fetch): a function as the service role, and the folder
+ * clocks' read. An error answers PostgREST's status with its SQLSTATE as the `code`, which the clients read. */
+function postgrest(db) {
+	const answer = (method, url, body) => {
+		try {
+			const rpc = /^\/rest\/v1\/rpc\/(qorpera_[a-z0-9_]+)$/.exec(url.pathname);
+			if (method === "POST" && rpc) return { status: 200, value: db.rpc(rpc[1], JSON.parse(body ?? "{}")) };
+			if (method === "GET" && url.pathname === "/rest/v1/qorpera_folder_clocks") {
+				assert.equal(url.searchParams.get("select"), "environment_id,last_seq");
+				const ids = /^in\.\(([0-9a-f,-]+)\)$/.exec(url.searchParams.get("environment_id") ?? "");
+				assert(ids, "the clocks are read by environment");
+				return {
+					status: 200,
+					value: db.json(`select coalesce(jsonb_agg(jsonb_build_object('environment_id', environment_id,
+						'last_seq', last_seq)), '[]') from public.qorpera_folder_clocks
+						where environment_id = any(${literal(`{${ids[1]}}`)}::uuid[])`),
+				};
+			}
+			return { status: 404, value: { code: "PGRST202", details: null, hint: null, message: `No ${method} ${url.pathname}` } };
+		} catch (error) {
+			const failed = /ERROR:\s+([0-9A-Z]{5}):\s*(.*)/.exec(error?.message ?? "");
+			if (!failed) throw error;
+			return { status: postgrestStatus(failed[1]), value: { code: failed[1], details: null, hint: null, message: failed[2] } };
+		}
+	};
+	return {
+		transport: async (url, request) => {
+			const { status, value } = answer(request.method, url, request.body);
+			return { status, body: Buffer.from(JSON.stringify(value)) };
+		},
+		fetch: async (input, init = {}) => {
+			const { status, value } = answer(init.method ?? "GET", new URL(String(input)), init.body);
+			return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
+		},
+	};
+}
+
 /** The C5 lines, in the core document's order. */
 const LINES = [
 	"the seeded tree exists, and creation wrote exactly one kickoff and its turn request; the first-run wake once P28 materializes it",
@@ -208,11 +273,27 @@ const LINES = [
 	"the launch items of the layout amendment that do not need the mount pass: 3, 4, 5, 11, 15, 17, 19 and 21",
 ];
 
+/** F3 step 3's lines: the folder service's writes through a machine's view (RUNTIME-FOLDER-WRITES.md). */
+const SERVICE_LINES = [
+	"new files written through a machine's view are staged through the object gateway, published as one change set, catalogued and read back",
+	"an edit in place, based on the version the machine read, saves",
+	"a stale save is kept as a conflict copy on its receipt, and the live file stays the other writer's",
+	"a boundary whose answer was lost is asked again under the same key, and saves once",
+	"a new folder, a move and deletes publish as the core's units",
+];
+
 class Report {
 	results = new Map();
 	/** What the company mode's cleanup left in place, and why; and, on the hosted run, whether it kept a member's write. */
 	cleanup = [];
 	cleanupFailure = null;
+	/** Lines printed after the results (the folder service's log, when a line failed). */
+	notes = [];
+
+	constructor(prefix = "C5", lines = LINES) {
+		this.prefix = prefix;
+		this.lines = lines;
+	}
 
 	async check(n, fn) {
 		try {
@@ -229,11 +310,12 @@ class Report {
 
 	print() {
 		let failed = 0;
-		LINES.forEach((text, index) => {
+		this.lines.forEach((text, index) => {
 			const result = this.results.get(index + 1) ?? { state: "NOT RUN", detail: "not reached" };
 			if (result.state === "FAIL") failed++;
-			process.stdout.write(`C5-${String(index + 1).padStart(2, "0")} ${result.state.padEnd(7)} ${text}${result.detail ? ` — ${result.detail}` : ""}\n`);
+			process.stdout.write(`${this.prefix}-${String(index + 1).padStart(2, "0")} ${result.state.padEnd(7)} ${text}${result.detail ? ` — ${result.detail}` : ""}\n`);
 		});
+		for (const line of this.notes) process.stdout.write(`${line}\n`);
 		for (const line of this.cleanup) process.stdout.write(`Cleanup: ${line}\n`);
 		if (this.cleanupFailure) {
 			failed++;
@@ -625,6 +707,18 @@ async function hosted(report) {
 
 		report.notRun(13, "the launch items are proven on the proof company (P38); run this script with --company there");
 
+		// F3 step 3: a machine's writes through the folder service, on the same company.
+		const service = new Report("F3-3c", SERVICE_LINES);
+		report.serviceReport = service;
+		try {
+			await serviceWrites(service, { db, code, objectRoot, store, replication, env, profileId, member, commit, writeUnit, entry, saved });
+		} catch (error) {
+			const detail = `the folder service did not start: ${(error?.message ?? String(error)).split("\n")[0].slice(0, 300)}`;
+			SERVICE_LINES.forEach((_, index) => {
+				if (!service.results.has(index + 1)) service.results.set(index + 1, { state: "FAIL", detail });
+			});
+		}
+
 		// The --company mode's own checks, on the company founded here (with --write), so they run on every suite.
 		// While it runs, a member writes a note under its scratch folder before the script's next commits: the cleanup
 		// must leave the folder, and the note, in place.
@@ -644,6 +738,250 @@ async function hosted(report) {
 	} finally {
 		if (scratch) await rm(scratch, { recursive: true, force: true });
 		database.close();
+	}
+}
+
+/** F3 step 3 on the company founded above (RUNTIME-FOLDER-WRITES.md): the node folder service as built, with a writable
+ * operator mount, takes a machine's writes through its view (the calls the protocol's frames make), stages their bytes
+ * through the object gateway's folder service route (served here, over HTTP), and publishes each boundary with the real
+ * commit. Both reach the database through `postgrest(db)`, as their clients call PostgREST. */
+async function serviceWrites(report, context) {
+	const { db, code, objectRoot, store, replication, env, profileId, member, commit, writeUnit, entry, saved } = context;
+	const CHUNK = 4 * 1024 * 1024;
+	const PART = 1024 * 1024;
+	const origin = "https://postgrest.acceptance.invalid";
+	const standIn = "acceptance-stand-in";
+	const stand = postgrest(db);
+	const authority = new code.SupabaseObjectAuthority({
+		projectUrl: origin,
+		publishableKey: standIn,
+		secretKey: standIn,
+		fetch: stand.fetch,
+	});
+	const token = () => randomBytes(32).toString("base64url");
+	const serviceToken = token();
+	const gateway = code.createObjectGatewayHandler({
+		store,
+		authority,
+		controlToken: token(),
+		verifierToken: token(),
+		replication,
+		folderServiceObjects: { token: serviceToken, authority },
+	});
+	let puts = 0;
+	const server = createServer((request, response) => {
+		response.once("finish", () => {
+			if (request.url?.startsWith("/v1/folder-service-objects/") && [200, 201].includes(response.statusCode)) puts++;
+		});
+		gateway(request, response);
+	});
+	await new Promise((listening, failed) => {
+		server.once("error", failed);
+		server.listen(0, "127.0.0.1", listening);
+	});
+	const logs = [];
+	let service;
+	let view;
+	let finished = false;
+	try {
+		// The core as built, but an answer can be lost on its way back (line 4): the commit has run when one is.
+		const core = new (class extends code.SupabaseFolderCore {
+			lose = 0;
+			commits = [];
+			async commit(environmentId, actor, operationKey, units, signal) {
+				const answer = await super.commit(environmentId, actor, operationKey, units, signal);
+				this.commits.push({ key: operationKey, commitId: answer.commitId, ops: units.map((unit) => unit.op) });
+				if (this.lose > 0) {
+					this.lose--;
+					throw new Error("the answer was lost on its way back");
+				}
+				return answer;
+			}
+		})({ projectUrl: origin, secretKey: standIn, transport: stand.transport });
+		const objects = new code.NasObjects({ root: objectRoot, cacheBytes: 64 * 1024 * 1024 });
+		const uploads = new code.GatewayUploads({ url: `http://127.0.0.1:${server.address().port}/`, token: serviceToken });
+		const machine = { project: "acceptance", name: "acceptance-machine", physicalId: "90300000-0000-4000-8000-0000000000c1" };
+		const pass = token();
+		const grants = new code.MountGrants(
+			code.parseOperatorMounts([
+				{ id: "acceptance", environmentId: env, actor: member, machine, passSha256: sha256hex(pass), write: true },
+			]),
+		);
+		service = new code.FolderService({
+			core,
+			objects,
+			grants,
+			staging: new code.FolderStaging(core, uploads, objects),
+			log: (line) => logs.push(line),
+		});
+		view = await service.open(
+			{ protocol: 2, environmentId: env, viewId: "acceptance", pass, role: "io" },
+			{ cid: 3, lookup: "found", machine },
+		);
+		assert(view.writable, "the operator mount's view takes writes");
+
+		// As the machine's program writes a file: open, each 4 MiB chunk in parts of at most 1 MiB, close.
+		const save = async (path, bytes, base) => {
+			const { handle } = await view.open({ path, ...(base ? { base } : {}), create: true, exclusive: false, truncate: true });
+			for (let index = 0; index * CHUNK < bytes.length; index++) {
+				const chunk = bytes.subarray(index * CHUNK, (index + 1) * CHUNK);
+				const sha256 = sha256hex(chunk);
+				for (let offset = 0; offset < chunk.length; offset += PART)
+					await view.chunk({ handle, index, sha256, bytes: chunk.length, offset, data: chunk.subarray(offset, offset + PART) });
+			}
+			return view.close(handle, bytes.length);
+		};
+		const listed = async (folder) => new Map((await view.list(folder, undefined)).entries.map((e) => [e.name, e]));
+		const readBack = async (folder, name) => {
+			const file = (await listed(folder)).get(name);
+			assert(file, `${folder}/${name} is not listed`);
+			const parts = [];
+			for (let offset = 0; offset < file.size; offset += PART)
+				parts.push(await view.read({ path: `${folder}/${name}`, version: file.version, offset, length: Math.min(PART, file.size - offset) }));
+			return Buffer.concat(parts);
+		};
+		const published = async (what) => {
+			const answer = await view.publish();
+			if (!answer.paths.length || answer.paths.some((p) => p.outcome !== "saved"))
+				throw new Error(`${what} did not save: ${JSON.stringify(answer)}`);
+			return answer;
+		};
+		/** The units of the boundary's own commit. */
+		const ops = (answer) => {
+			const last = core.commits.at(-1);
+			assert.equal(last?.commitId, answer.commitId, "the boundary's own commit");
+			return last.ops;
+		};
+		const live = (path) => entry(env, path);
+		const chunksOf = (manifest) =>
+			db.json(`select coalesce(jsonb_agg(chunk_sha256 order by chunk_sha256), '[]') from public.qorpera_folder_file_chunks
+				where profile_id = ${literal(profileId)} and manifest_sha256 = ${literal(manifest)}`);
+
+		const small = Buffer.from("# Machine notes\n\nWritten on the machine.\n");
+		const data = randomBytes(CHUNK + 100 * 1024);
+		await report.check(1, async () => {
+			await view.mkdir("machine");
+			await save("machine/small.md", small);
+			await save("machine/data.bin", data);
+			const answer = await published("the machine's new folder");
+			assert.deepEqual(ops(answer), ["new_folder"], "a new folder with new content is one unit");
+			assert.equal(live("machine/small.md")?.file_sha256, sha256hex(small), "small.md's bytes");
+			const stored = live("machine/data.bin");
+			assert.equal(stored?.file_sha256, sha256hex(data), "data.bin's bytes");
+			assert.deepEqual(
+				chunksOf(stored.manifest_sha256),
+				[sha256hex(data.subarray(0, CHUNK)), sha256hex(data.subarray(CHUNK))].sort(),
+				"data.bin's two chunks",
+			);
+			const uncatalogued = db.json(`select coalesce(jsonb_agg(h), '[]') from (
+					select e.manifest_sha256 h from public.qorpera_folder_entries e
+					where e.environment_id = ${literal(env)} and e.kind = 'file' and e.path like 'machine/%'
+					union
+					select c.chunk_sha256 from public.qorpera_folder_entries e
+					join public.qorpera_folder_file_chunks c on c.profile_id = ${literal(profileId)} and c.manifest_sha256 = e.manifest_sha256
+					where e.environment_id = ${literal(env)} and e.kind = 'file' and e.path like 'machine/%'
+				) objects
+				where not exists (select 1 from public.qorpera_profile_objects o where o.profile_id = ${literal(profileId)} and o.sha256 = h)`);
+			assert.deepEqual(uncatalogued, [], "every manifest and chunk is catalogued");
+			assert(puts > 0, "nothing was put through the gateway's folder service route");
+			assert(small.equals(await readBack("machine", "small.md")), "small.md reads back");
+			assert(data.equals(await readBack("machine", "data.bin")), "data.bin reads back");
+			return `${puts} objects put through the gateway's folder service route, change set ${answer.seq}`;
+		});
+
+		const edited = Buffer.from("# Machine notes\n\nEdited on the machine.\n");
+		await report.check(2, async () => {
+			const base = (await listed("machine")).get("small.md")?.version;
+			assert.equal(base, live("machine/small.md")?.version, "the view lists the live version");
+			await save("machine/small.md", edited, base);
+			const answer = await published("the edit");
+			assert.deepEqual(ops(answer), ["write"]);
+			assert.equal(live("machine/small.md")?.file_sha256, sha256hex(edited), "the edit's bytes");
+			assert(edited.equals(await readBack("machine", "small.md")), "the edit reads back");
+		});
+
+		await report.check(3, async () => {
+			saved(await commit(env, "machine-stale-1", [await writeUnit(env, "machine/stale.md", "One.\n")]), "stale.md");
+			await service.poll();
+			await service.settled();
+			const read = (await listed("machine")).get("stale.md")?.version;
+			assert.equal(read, live("machine/stale.md")?.version, "the view caught up with the feed");
+			saved(await commit(env, "machine-stale-2", [await writeUnit(env, "machine/stale.md", "Two.\n", read)]), "the other save");
+			const mine = Buffer.from("Mine, written from One.\n");
+			await save("machine/stale.md", mine, read);
+			const answer = await view.publish();
+			assert.equal(answer.paths.length, 1, JSON.stringify(answer));
+			const [conflict] = answer.paths;
+			assert.equal(conflict.outcome, "conflict", JSON.stringify(answer));
+			assert.equal(conflict.reason, "version_changed");
+			assert(answer.commitId && conflict.receipt === answer.commitId, `no receipt: ${JSON.stringify(answer)}`);
+			assert(!conflict.kept, "the copy keeps the bytes, so the view does not");
+			const copies = db.json(`select coalesce(jsonb_agg(c.file_sha256), '[]') from public.qorpera_folder_conflict_copies c
+				where c.commit_id = ${literal(answer.commitId)}`);
+			assert.deepEqual(copies, [sha256hex(mine)], "one conflict copy on the receipt, of the machine's bytes");
+			assert.equal(live("machine/stale.md")?.file_sha256, sha256hex(Buffer.from("Two.\n")), "the live file is the other save");
+			await service.poll();
+			await service.settled();
+			assert.equal((await listed("machine")).get("stale.md")?.version, live("machine/stale.md")?.version, "the view shows it");
+			return `receipt ${answer.commitId}`;
+		});
+
+		await report.check(4, async () => {
+			core.lose = 3;
+			const lost = Buffer.from("Saved once.\n");
+			await save("machine/lost.md", lost);
+			const first = await view.publish();
+			assert(
+				first.paths.length > 0 &&
+					first.paths.every((p) => p.outcome === "not_applied" && p.reason === "the save did not get through yet" && p.kept),
+				`not kept for later: ${JSON.stringify(first)}`,
+			);
+			assert.equal(live("machine/lost.md")?.file_sha256, sha256hex(lost), "the commit ran, though its answer was lost");
+			const key = core.commits.at(-1).key;
+			await published("the boundary asked again");
+			const asked = core.commits.filter((c) => c.key === key);
+			assert.equal(asked.length, 4, "three lost answers, then one that came back");
+			assert.equal(new Set(asked.map((c) => c.commitId)).size, 1, "every ask answered the one change set");
+			assert.equal(
+				db.query(`select count(*) from public.qorpera_folder_commits where environment_id = ${literal(env)}
+					and operation_key = ${literal(key)}`),
+				"1",
+			);
+			assert(logs.some((line) => line.includes("commit not answered")), "the lost answers were logged");
+			assert(lost.equals(await readBack("machine", "lost.md")), "lost.md reads back");
+		});
+
+		await report.check(5, async () => {
+			await view.mkdir("machine/fresh");
+			await save("machine/fresh/inside.md", Buffer.from("Inside a new folder.\n"));
+			assert.deepEqual(ops(await published("the new folder")), ["new_folder"]);
+			const before = await listed("machine");
+			await view.rename({ from: "machine/small.md", fromBase: before.get("small.md")?.version, to: "machine/fresh/moved.md", noReplace: true });
+			await view.unlink("machine/data.bin", before.get("data.bin")?.version);
+			assert.deepEqual([...ops(await published("the move and the delete"))].sort(), ["delete", "move"]);
+			assert.equal(live("machine/small.md"), null, "small.md moved away");
+			assert.equal(live("machine/data.bin"), null, "data.bin is deleted");
+			assert.equal(live("machine/fresh/moved.md")?.file_sha256, sha256hex(edited), "the moved file keeps its bytes");
+			const fresh = await listed("machine/fresh");
+			await view.unlink("machine/fresh/inside.md", fresh.get("inside.md")?.version);
+			await view.unlink("machine/fresh/moved.md", fresh.get("moved.md")?.version);
+			await view.rmdir("machine/fresh", (await listed("machine")).get("fresh")?.version);
+			assert.deepEqual(ops(await published("the folder's removal")), ["delete"], "one delete for the removed folder");
+			assert.equal(
+				db.query(`select count(*) from public.qorpera_folder_entries where environment_id = ${literal(env)} and kind <> 'claim'
+					and (path = 'machine/fresh' or path like 'machine/fresh/%')`),
+				"0",
+				"the folder and its files are gone",
+			);
+		});
+		finished = true;
+	} finally {
+		view?.release();
+		service?.stop();
+		server.closeAllConnections();
+		await new Promise((closed) => server.close(closed));
+		if (!finished || [...report.results.values()].some((r) => r.state === "FAIL"))
+			report.notes.push(...logs.map((line) => `Folder service: ${line}`));
 	}
 }
 
@@ -862,6 +1200,10 @@ async function main() {
 		await hosted(report);
 	}
 	let failed = report.print();
+	if (report.serviceReport) {
+		process.stdout.write("The folder service's writes through a machine's view (F3 step 3), on the company founded above:\n");
+		failed += report.serviceReport.print();
+	}
 	if (report.companyReport) {
 		process.stdout.write("The --company --write checks, on the company founded above:\n");
 		failed += report.companyReport.print();

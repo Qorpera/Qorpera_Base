@@ -164,7 +164,6 @@ async function fixture(): Promise<{
 		["qorpera-native-bridge", "c".repeat(43)],
 		["qorpera-runner-activation", "d".repeat(43)],
 		["qorpera-runner-assignment", "e".repeat(43)],
-		["qorpera-supabase-service-key", "service-key-test"],
 	] as const) {
 		await writeFile(join(paths.credentialSource, name), `${value}\n`, { mode: 0o600 });
 	}
@@ -225,9 +224,6 @@ async function loginFixture(): Promise<{ root: string; paths: LxdNativeLoginBoot
 	);
 	await writeFile(join(paths.credentialSource, "qorpera-identity-recovery-ca"), identityRecoveryCa, { mode: 0o600 });
 	await writeFile(join(paths.credentialSource, "qorpera-native-bridge"), `${"c".repeat(43)}\n`, { mode: 0o600 });
-	await writeFile(join(paths.credentialSource, "qorpera-supabase-service-key"), "service-key-test\n", {
-		mode: 0o600,
-	});
 	await writeFile(join(paths.credentialSource, "qorpera-native-identity"), identityCredentialText(), { mode: 0o600 });
 	await writeFile(
 		join(paths.credentialSource, "qorpera-native-identity-state"),
@@ -576,6 +572,29 @@ describe("LXD native login guest bootstrap", () => {
 		).rejects.toThrow("unexpected entries");
 	});
 
+	it("refuses a login guest given the service key (G2-5)", async () => {
+		const { paths } = await loginFixture();
+		await writeFile(join(paths.credentialSource, "qorpera-supabase-service-key"), "service-key-test\n", {
+			mode: 0o600,
+		});
+		const uid = process.getuid?.() ?? 0;
+		const gid = process.getgid?.() ?? 0;
+		const started: string[] = [];
+		await expect(
+			runLxdNativeLoginBootstrap({
+				paths,
+				identityRuntimeState: async () => fixtureState,
+				expectedRootUid: uid,
+				expectedRootGid: gid,
+				nativeServiceIdentity: { uid, gid },
+				startService: async (service) => {
+					started.push(service);
+				},
+			}),
+		).rejects.toThrow("unexpected entries");
+		expect(started).toEqual([]);
+	});
+
 	it("reads its identity's recovery state from the state its gateway delivered, never from the database", async () => {
 		const { paths } = await loginFixture();
 		const uid = process.getuid?.() ?? 0;
@@ -792,6 +811,16 @@ describe("governed native company guest bootstrap", () => {
 		const paths = await companyFixture();
 		await writeFile(join(paths.runnerHomeDirectory, "unreconciled.json"), "uncertain outcome");
 		await expect(startCompanyFixture(paths, [])).rejects.toThrow("operator reconciliation");
+	});
+
+	it("refuses a runner guest given the service key before any service starts (G2-5)", async () => {
+		const paths = await companyFixture();
+		await writeFile(join(paths.credentialSource, "qorpera-supabase-service-key"), "service-key-test\n", {
+			mode: 0o600,
+		});
+		const started: string[] = [];
+		await expect(startCompanyFixture(paths, started)).rejects.toThrow("unexpected entries");
+		expect(started).toEqual([]);
 	});
 
 	it("reads its identity's recovery state through its identity credential, never with the service key", async () => {

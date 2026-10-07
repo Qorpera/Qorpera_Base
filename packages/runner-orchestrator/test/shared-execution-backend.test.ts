@@ -243,7 +243,6 @@ async function fixture(
 		adapterId: "native26-test",
 		hostId: "qorpera-exec-test",
 		supabaseUrl: "https://project.supabase.test",
-		supabaseServiceKey: "service-key",
 		supabasePublishableKey: "publishable-key",
 		stateRoot,
 		runRoot,
@@ -418,10 +417,10 @@ describe("shared execution provider backend", () => {
 		const f = await fixture({ executionHostCredential: credential });
 		const signal = new AbortController().signal;
 		const runner = await f.backend.acquire(runId, work(), signal);
-		// The service key still reaches the slot's native host (until G2-5), never a call of the service's own.
-		expect(
-			await readFile(join(f.runRoot, "slots", "0", "credentials", "qorpera-supabase-service-key"), "utf-8"),
-		).toBe("service-key\n");
+		// G2-5: no service key reaches the slot.
+		await expect(
+			stat(join(f.runRoot, "slots", "0", "credentials", "qorpera-supabase-service-key")),
+		).rejects.toMatchObject({ code: "ENOENT" });
 		await f.backend.deliver(runner, delivery(token()));
 		f.units.activeUnits.delete("qorpera-shared-runner@0.service");
 		await f.backend.reconcile();
@@ -523,7 +522,6 @@ describe("shared execution provider backend", () => {
 			"qorpera-office-native",
 			"qorpera-runner-activation",
 			"qorpera-runner-assignment",
-			"qorpera-supabase-service-key",
 		]);
 		for (const name of credentials) expect((await stat(join(slotRun, "credentials", name))).mode & 0o077).toBe(0);
 		// G2-3: the run's machine's identity credential, bound by its hash only, for the slot's native host.
