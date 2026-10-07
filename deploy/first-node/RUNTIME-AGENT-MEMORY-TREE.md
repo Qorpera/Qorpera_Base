@@ -215,7 +215,8 @@ amendment (#877).
 # Part 2: technical spec
 
 Paths below are relative to the repository root. `C:n` is a line of `QORPERA-RUNTIME-CONTRACT.md`. `mig/` is
-`supabase/migrations/`, and `rt/` is `packages/runtime/src/`. Line numbers are from master `215c2798a`.
+`supabase/migrations/`, and `rt/` is `packages/runtime/src/`. `rt/` and `mig/` line numbers are from master
+`215c2798a`; `C:n` lines are from the contract as #919 left it (on master `5fb0193e6`).
 
 ## 1. Facts this design rests on
 
