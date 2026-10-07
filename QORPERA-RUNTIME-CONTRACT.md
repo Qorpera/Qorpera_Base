@@ -1258,8 +1258,8 @@ a typed handoff on the office desktop; the model never receives the password.
 ## 13. Workers and durable todos
 
 > **Amended 2026-10-06 (not built yet).** A worker no longer starts blank: it
-> starts from its parent's head and views by reference, plus its bounded
-> dispatch. Its report stays beside its todo as today, also when it touched a
+> starts from its own head and its parent's views by reference, plus its
+> bounded dispatch. Its report stays beside its todo as today, also when it touched a
 > folder shared with only some agents; then only its own log is narrow. See the
 > [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
 > in section 19, items 6 and 7.
@@ -2293,7 +2293,7 @@ Company File, rather than chat or a machine disk, is what that brain operates.
 
 > **Amended 2026-10-06 (not built yet).** Order 3: writes to summary trees and
 > run logs wake no one (item 2). Order 5: a worker no longer starts blank; it
-> starts from its parent's head and views plus its dispatch (item 7). Its
+> starts from its own head and its parent's views plus its dispatch (item 7). Its
 > completion still reaches the parent with its report, also when it touched a
 > folder shared with only some agents; then only its own log is narrow
 > (item 6). Order 6:
@@ -5222,11 +5222,12 @@ own texts below carries a note "Amended 2026-10-06" in place.
      - argument and result hashes that a guess cannot confirm without the platform's key;
      - a `zoom` into a run log refused without the default grant;
      - a cut-off run with a narrow step ending in review, and one at its usage limit failing.
-7. **Workers** (W4; section 13). A worker no longer starts blank. It starts from its parent's head and views, by
-   reference, exactly as the parent's run composed them, plus its bounded dispatch. If an erase (item 14) raised the
-   generation of any conversation in those views since the parent composed them, the worker composes from the trees
-   as they are now instead. It runs on its parent's payer. A worker with a narrow step keeps only its own log narrow;
-   its report stays beside its todo as today (item 6).
+7. **Workers** (W4; section 13). A worker no longer starts blank. It starts from its own head as it is now and its
+   parent's views, by reference, exactly as the parent's run composed them, plus its bounded dispatch. It composes
+   from the trees as they are now instead if an erase (item 14) raised the generation of any conversation in those
+   views since the parent read it, or if a referenced block can no longer be read or a folder erasure (P18) accepted
+   since covers it. It runs on its parent's payer. A worker with a narrow step keeps only its own log narrow; its
+   report stays beside its todo as today (item 6).
 8. **The Co-Founder** (M4; 14.2). Its views include branches of every agent's thread. It still receives no copies of
    internal messages.
 9. **Memory** (M5; 5.4 and 15.1). Memory is the agent's head plus the conversation trees and run logs.
