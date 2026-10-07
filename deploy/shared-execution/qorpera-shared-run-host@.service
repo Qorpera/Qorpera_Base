@@ -18,7 +18,6 @@ Environment=NODE_EXTRA_CA_CERTS=%d/qorpera-cloud-secret-ca
 EnvironmentFile=/run/qorpera-shared-execution/slots/%i/native-provider.env
 # Every secret arrives from PID 1. The identity volumes, the service journals
 # and the slot material are unreachable from inside this unit.
-LoadCredential=qorpera-supabase-service-key:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-supabase-service-key
 LoadCredential=qorpera-native-bridge:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-native-bridge
 LoadCredential=qorpera-native-identity:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-native-identity
 LoadCredential=qorpera-native-object-token:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-native-object-token

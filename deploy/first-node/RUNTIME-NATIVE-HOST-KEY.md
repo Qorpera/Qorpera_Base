@@ -18,8 +18,11 @@ rollouts or fallbacks that only keep live companies running: each ships whole, o
   created that way.
 - G2-4 (migration `20260930103000`, SQL test 907): Storage and Realtime, the login guest's capsule put and get
   included, with the holder's credential in a request header (below).
-- G2-5: the key leaves the guests, the bootstrap and the units, with a guard that it stays out.
-- G2-6: the node-level object-gateway and broker runtime tokens narrowed per run.
+- G2-5 (no SQL): the key leaves the guests, the slots, the execution host, the bootstrap and the units, with guards
+  that it stays out (below).
+- G2-6: the node-level tokens bound to one run by a proof of its lease (below): 6a (migration `20260930152000`, SQL test
+  986) the secret brokers' runtime routes and the object gateway's folder route; 6b the coding executor; 6c the office
+  receiver and the object gateway's native-objects route.
 
 ## G2-3: the identity credential
 
@@ -163,6 +166,93 @@ Revert the runtime and the migration together: drop the five policies (`qorpera_
 `qorpera_native_identity_dispatch`'s completion check without the sign-in's id. A guest image from before G2-4 still
 holds the key and works without them. Keep the bucket's new limit.
 
+## G2-5: no service key in a guest, a slot or the execution host
+
+After G2-4 nothing in a guest used the key, but it was still delivered. G2-5 stops that and refuses it if it comes
+back. The node hosts (the LXD provider, the login gateway, `rebuild-exec-host.sh`) keep their own key for their own
+calls.
+
+- **Not delivered:** the LXD provider and the login gateway push no `qorpera-supabase-service-key` into a guest; the
+  shared execution service writes none into a slot; `rebuild-exec-host.sh` pushes every staged credential into the
+  execution host except the key (it still reads the staged key for its own registration, bind and bundle calls); the
+  process provider passes none to its local native host.
+- **Not loaded:** no unit loads it: the three guest native host units, the slot's `qorpera-shared-run-host@`, and the
+  execution host's `qorpera-shared-execution.service`.
+- **Guards that it stays out:**
+  - the guest bootstrap's exact credential lists no longer name the key, so a job, company or login guest given it is
+    refused before any service starts;
+  - the native host refuses to start if it is given the key (as a credential or `QORPERA_SUPABASE_SERVICE_KEY`); its
+    clients send the publishable key and `NativeHostDispatch` signs every request;
+  - the shared execution service refuses to start if it is given the key (a systemd credential, its environment, or
+    a file left in its credential source `/etc/qorpera/shared-execution-credentials/`, which no unit loads);
+  - tests: no guest, slot or execution host unit names the key; the provider's and the gateway's pushes carry it in no
+    file; a slot's credentials are exactly the listed ones; the rebuild never pushes it; the native host, the shared
+    execution service and the process provider's native host are each shown to refuse or never get it.
+
+### Rollout (G2-5)
+
+It ships with the release after G2-4's (it needs G2-4's runtime: before it, the native host used the key for Storage
+and Realtime). Order on each node: the guest image (bootstrap, units, native host), then the node host (LXD provider
+and login gateway), then the execution host's rebuild. A node host updated before the guest image is fine: an old
+image's bootstrap refuses a guest without the key, so its runs fail until the new image is in, as the no-compatibility
+decision (3 Oct) allows. Journals written before G2-5 carry a bootstrap digest that includes the key's file, so their
+guests are refused "bootstrap no longer matches".
+
+Check after the release (deferred, needs Codex): a job guest, a sign-in, an account refresh and an exec slot run each
+start without the key.
+
+### Undo (G2-5)
+
+Revert it whole (runtime, guest image, node host and the execution host's package): the key is delivered and loaded
+again. Nothing in the database changes.
+
+## G2-6: a guest request proves its run's lease
+
+Four node-level tokens reach a company guest or an execution host's slot: the object gateway's native token, the
+secret brokers' runtime token, the coding executor's command token and a company computer's office token. Each server
+compared the bearer and then re-checked the request's run binding against the database with its own key. But the
+binding is only ids, and the checks behind it read the job's stored lease hash themselves, so the node-level token and
+any live run's ids were enough to act for that run, including `/v1/model-logins`, which hands out the run's model
+access token.
+
+Now the caller also proves it holds that run's job lease token, which only the run's own native host has. With each
+request it sends `x-qorpera-identity: job.<job id>.<lease token>` (`NativeHostDispatch.holderHeader()`, read per
+request, so a warm host never sends a released job's token). The server asks
+`qorpera_native_binding_proven(binding, holder)` before anything else about the binding:
+- the job by its primary key, leased, an agent turn, the lease unexpired;
+- the token's hash;
+- the binding's job and run being that job and its run.
+
+It is stable, so it takes no row lock, and only the servers' roles may call it (service_role for the object gateway,
+qorpera_secret_broker for the brokers; test 001 keeps it off the API roles). It is a gate only: the locked functions
+behind each request still check the run and its lease under their locks, so a lease that ends between the proof and
+the work is still refused. A server never logs the header or puts it in an error, and every refusal is a plain 401 or
+403. The node-level tokens stay as transport checks for now.
+
+- **6a** (migration `20260930152000`, SQL test 986):
+  - the secret brokers and the shared vault prove the lease on `/v1/operations`, `/v1/company-accounts`,
+    `/v1/company-account-fills` and `/v1/model-logins`, through their own database principal;
+  - the object gateway proves it on `/v1/folder-objects`;
+  - the native host's broker client, model login client and folder bytes client send the header, as do its
+    native-objects clients (the object store and the Company Computer's capture paths), which 6c's check will read.
+- **6c, not yet:** `/v1/native-company-objects` also serves the company computer's captures, file imports and exports,
+  which the computer makes for a run without holding its lease. Its proof comes with the native host passing its
+  holder to the computer with each operation (a company computer image rebuild), together with the office receiver's
+  own proof.
+- **6b, not yet:** the coding executor.
+
+### Rollout (G2-6a)
+
+The migration first, then the object gateway and the brokers (node 1), with the guest image of the same release. A
+guest from before G2-6a sends no header, so its broker and folder requests are refused until the new image is in (no
+compatibility path, 3 Oct). Check after the release (deferred, needs Codex): a run's connector operation, company
+account, account fill, vault model login and folder read and write each go through.
+
+### Undo (G2-6a)
+
+Revert the servers (they stop asking), then the guest and the migration (`drop function
+public.qorpera_native_binding_proven(jsonb, text)`).
+
 ## G2-3e: the execution host's own calls
 
 The shared execution host's service (`shared-execution-cli.ts`, root in the execution host VM, not its slots) holds
@@ -172,7 +262,7 @@ bind. The execution host runs every company's sandboxes, so the key must not be 
 (any company's run on that node), so a per-holder credential cannot cover them: the host gets one credential of its
 own. G2-3e removes the service's own use only: the service still copies the key into each slot
 (`shared-execution-backend.ts`, the slot's `qorpera-supabase-service-key`), which its native host no longer uses since
-G2-4; G2-5 removes that copy, and only then does the VM hold no key.
+G2-4; G2-5 removed that copy, so the VM holds no key.
 
 - **SQL (migration `20260928469230`, renumbered from `20260930011000` at the v171 cut; SQL tests 862 and 863):**
   - `qorpera_execution_host_call(p_host_id, p_credential, p_name, p_args)` (8 s) and `_long` (25 s, the release,
@@ -206,8 +296,8 @@ G2-4; G2-5 removes that copy, and only then does the VM hold no key.
 ### Rollout (G2-3e)
 
 The SQL and the package ship together on the next release; node 2's execution host is rebuilt with it (pausing
-node 2's runs meanwhile is fine). Check: its first runs start, reserve and release through the entry points. The key
-still reaches the slots (for their native hosts) until G2-5, when **no service key is staged** at all. A later
+node 2's runs meanwhile is fine). Check: its first runs start, reserve and release through the entry points. Since
+G2-5 **no service key enters the host**: the staged key stays on the node host for the script's own calls. A later
 execution host (node 1's fast host is dropped for now, 3 Oct) is created the same way.
 
 ### Undo (G2-3e)

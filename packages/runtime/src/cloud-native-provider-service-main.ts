@@ -1,5 +1,5 @@
 import { constants, realpathSync } from "node:fs";
-import { open, readFile } from "node:fs/promises";
+import { lstat, open, readFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -105,6 +105,23 @@ async function systemdCredential(environment: NodeJS.ProcessEnv, name: string): 
 	} finally {
 		await handle.close();
 	}
+}
+
+/** The service key's credential name, which no native host may be given (G2-5). */
+const SERVICE_KEY_CREDENTIAL = "qorpera-supabase-service-key";
+
+/** Whether systemd gave this process a credential of that name. */
+async function credentialPresent(environment: NodeJS.ProcessEnv, name: string): Promise<boolean> {
+	const directory = environment.CREDENTIALS_DIRECTORY;
+	if (!directory) return false;
+	if (!isAbsolute(directory)) throw new Error("CREDENTIALS_DIRECTORY must be absolute");
+	return lstat(join(directory, name)).then(
+		() => true,
+		(error: NodeJS.ErrnoException) => {
+			if (error.code === "ENOENT") return false;
+			throw error;
+		},
+	);
 }
 
 async function credentialOrEnvironment(
@@ -257,11 +274,12 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	const codingConfiguration = nativeCodingConfiguration(environment);
 	const folderSearch = nativeFolderSearchConfiguration(environment);
 	const baseUrl = required(environment, "QORPERA_SUPABASE_URL");
-	const serviceKey = await credentialOrEnvironment(
-		environment,
-		"qorpera-supabase-service-key",
-		"QORPERA_SUPABASE_SERVICE_KEY",
-	);
+	// G2-5: a native host holds no service key. One delivered anyway (a credential or the environment) stops it.
+	if (
+		environment.QORPERA_SUPABASE_SERVICE_KEY !== undefined ||
+		(await credentialPresent(environment, SERVICE_KEY_CREDENTIAL))
+	)
+		throw new Error("A native host must hold no service key");
 	// Stateless Compute step 1: an identity whose login is kept by the vault has no key, volume or
 	// epoch file on this machine. Its host receives empty credential files and asks the vault.
 	const loginCustody = environment.QORPERA_NATIVE_LOGIN_CUSTODY ?? "node";
@@ -290,7 +308,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	if ((masterKey !== undefined && !TOKEN_PATTERN.test(masterKey)) || !TOKEN_PATTERN.test(bridgeToken)) {
 		throw new Error("Native provider credentials must contain 32 base64url bytes");
 	}
-	// G2-3 and G2-4: the host's database, Storage and Realtime calls go through its credentials, never the service key:
+	// G2-3 to G2-5: the host's database, Storage and Realtime calls go through its credentials, and it holds no service key:
 	// a call inside a job through qorpera_native_host_call with that job's lease token, a call between jobs through
 	// qorpera_native_identity_call with this machine's identity credential, and a capsule request or the presence
 	// socket with the publishable key and the same credential in the x-qorpera-identity header (dispatch.holderHeader).
@@ -298,10 +316,14 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 		await systemdCredential(environment, "qorpera-native-identity"),
 		computeIdentityId,
 	);
-	if ([bridgeToken, masterKey, serviceKey].includes(identity.credential) || identity.publishableKey === serviceKey)
+	if ([bridgeToken, masterKey].includes(identity.credential))
 		throw new Error("The native identity credential must be independent");
-	const dispatch = new NativeHostDispatch({ supabaseUrl: baseUrl, serviceKey, identity });
+	const dispatch = new NativeHostDispatch({ supabaseUrl: baseUrl, identity });
+	// The clients below send the publishable key; the dispatch signs each of their requests with it anyway.
 	const publishableKey = identity.publishableKey;
+	// G2-6a: the object gateway's and the secret broker's clients prove their run's lease with each request, read from
+	// the dispatch when the request is made, so a warm host never sends a released job's token.
+	const holder = (): string => dispatch.holderHeader();
 	// A login guest may not read its identity's recovery state: its gateway read it and delivered it.
 	const loginGuest = nativeLoginGuestPurpose(environment);
 	const state = loginGuest
@@ -342,7 +364,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	}
 	const controlPlane = new SupabaseNativeProviderControlPlane(
 		baseUrl,
-		serviceKey,
+		publishableKey,
 		dispatch.fetch,
 		{ computeIdentityId, epoch: state.epoch },
 		{ connectionConcurrency: optionalConcurrency(environment.QORPERA_NATIVE_CONNECTION_CONCURRENCY) },
@@ -381,9 +403,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			computerConfiguration &&
 			(!computerToken ||
 				!TOKEN_PATTERN.test(computerToken) ||
-				[masterKey, bridgeToken, identity.credential, objectToken, serviceKey, secretBrokerToken].includes(
-					computerToken,
-				))
+				[masterKey, bridgeToken, identity.credential, objectToken, secretBrokerToken].includes(computerToken))
 		)
 			throw new Error("Company Computer requires a distinct private systemd credential");
 		const codingToken = codingConfiguration
@@ -393,24 +413,18 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			codingConfiguration &&
 			(!codingToken ||
 				!TOKEN_PATTERN.test(codingToken) ||
-				[
-					masterKey,
-					bridgeToken,
-					identity.credential,
-					objectToken,
-					serviceKey,
-					secretBrokerToken,
-					computerToken,
-				].includes(codingToken))
+				[masterKey, bridgeToken, identity.credential, objectToken, secretBrokerToken, computerToken].includes(
+					codingToken,
+				))
 		)
 			throw new Error("Coding command transport requires a distinct private systemd credential");
 		const pathControl = new HttpCloudCompanyPathControl({
 			supabaseUrl: baseUrl,
-			serviceRoleKey: serviceKey,
+			serviceRoleKey: publishableKey,
 			fetch: dispatch.fetch,
 		});
 		const codingControl = codingConfiguration
-			? new HttpCloudCodingControl({ supabaseUrl: baseUrl, serviceRoleKey: serviceKey, fetch: dispatch.fetch })
+			? new HttpCloudCodingControl({ supabaseUrl: baseUrl, serviceRoleKey: publishableKey, fetch: dispatch.fetch })
 			: undefined;
 		const coding =
 			codingConfiguration && codingToken && codingControl
@@ -476,10 +490,10 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 						computerSession: createHttpCompanyComputerSessionFactory({
 							url: computerConfiguration.url,
 							token: computerToken,
-							objectGateway: { baseUrl: runtimeConfiguration.objectGatewayUrl, token: objectToken },
+							objectGateway: { baseUrl: runtimeConfiguration.objectGatewayUrl, token: objectToken, holder },
 							registry: new HttpCloudCompanyComputerRegistry({
 								supabaseUrl: baseUrl,
-								serviceRoleKey: serviceKey,
+								serviceRoleKey: publishableKey,
 								fetch: dispatch.fetch,
 							}),
 							// A vault_fill asks this company's vault, which seals the value to the computer (A1-3).
@@ -489,6 +503,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 											origin: secretBrokerOrigin,
 											runtimeToken: secretBrokerToken,
 											companyId: state.companyId,
+											holder,
 										}),
 									}
 								: {}),
@@ -502,6 +517,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 					baseUrl: runtimeConfiguration.objectGatewayUrl,
 					token: objectToken,
 					binding,
+					holder,
 					identity,
 					control: pathControl,
 				}),
@@ -512,6 +528,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 						token: objectToken,
 						companyId,
 						binding,
+						holder,
 						signal,
 					}),
 				),
@@ -525,6 +542,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 							origin: secretBrokerOrigin,
 							runtimeToken: secretBrokerToken,
 							companyId: state.companyId,
+							holder,
 						});
 						// The same broker serves the company's website accounts (A1-4).
 						return { secretBroker: broker, companyAccounts: broker };
@@ -534,7 +552,12 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 		// A vault login comes from this company's broker, under the same runtime token. A host that
 		// still holds a key serves a run whose login has just moved to the vault the same way.
 		if (secretBrokerOrigin && secretBrokerToken) {
-			const client = { origin: secretBrokerOrigin, runtimeToken: secretBrokerToken, companyId: state.companyId };
+			const client = {
+				origin: secretBrokerOrigin,
+				runtimeToken: secretBrokerToken,
+				companyId: state.companyId,
+				holder,
+			};
 			modelLogins = { issue: (request, signal) => issueModelLogin(client, request, signal) };
 		}
 	} else if (environment.QORPERA_CLOUD_SECRET_BROKER_URL || environment.QORPERA_CLOUD_SECRET_BROKER_TOKEN) {

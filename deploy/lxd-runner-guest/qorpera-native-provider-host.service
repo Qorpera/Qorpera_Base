@@ -19,7 +19,6 @@ Environment=GIT_CONFIG_COUNT=1
 Environment=GIT_CONFIG_KEY_0=safe.directory
 Environment=GIT_CONFIG_VALUE_0=*
 EnvironmentFile=/var/lib/qorpera-bootstrap/native-provider.env
-LoadCredential=qorpera-supabase-service-key:/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key
 LoadCredential=qorpera-native-bridge:/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge
 LoadCredential=qorpera-native-identity:/var/lib/qorpera-bootstrap/credentials/qorpera-native-identity
 LoadCredential=qorpera-native-provider-master-key:/var/lib/qorpera/identity/qorpera-native-provider-master-key

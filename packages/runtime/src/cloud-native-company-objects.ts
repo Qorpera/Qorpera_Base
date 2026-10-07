@@ -38,6 +38,7 @@ export class HttpNativeCompanyObjectTransport implements CloudObjectTransport {
 	readonly #token: string;
 	readonly #companyId: string;
 	readonly #binding: string;
+	readonly #holder: (() => string) | undefined;
 	readonly #signal: AbortSignal;
 	readonly #fetch: typeof fetch;
 	readonly #timeoutMs: number;
@@ -47,6 +48,9 @@ export class HttpNativeCompanyObjectTransport implements CloudObjectTransport {
 		token: string;
 		companyId: string;
 		binding: CloudNativeToolBinding;
+		/** G2-6a: the run's holder credential, read per request (NativeHostDispatch.holderHeader). The native host sends
+		 * it; the Company Computer, which holds no run lease, has none until G2-6c, and the route proves it from then. */
+		holder?: () => string;
 		signal: AbortSignal;
 		fetch?: typeof fetch;
 		timeoutMs?: number;
@@ -67,6 +71,7 @@ export class HttpNativeCompanyObjectTransport implements CloudObjectTransport {
 		this.#token = options.token;
 		this.#companyId = options.companyId;
 		this.#binding = Buffer.from(JSON.stringify(parseCloudNativeToolBinding(options.binding))).toString("base64url");
+		this.#holder = options.holder;
 		this.#signal = options.signal;
 		this.#fetch = options.fetch ?? fetch;
 		this.#timeoutMs = options.timeoutMs ?? 8000;
@@ -151,6 +156,7 @@ export class HttpNativeCompanyObjectTransport implements CloudObjectTransport {
 								...init.headers,
 								authorization: `Bearer ${this.#token}`,
 								"x-qorpera-native-binding": this.#binding,
+								...(this.#holder ? { "x-qorpera-identity": this.#holder() } : {}),
 							},
 						});
 						if (response.ok) return await this.#read(response, maximum, attempt);

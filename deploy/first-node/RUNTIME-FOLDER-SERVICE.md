@@ -76,7 +76,10 @@ A save's base is the version the machine's version map holds: the newest it read
 save made (the `version` of `C` or `X`). Once that save is published, the service reads such a base as the version
 the save's change set gave the path, so the machine's next save is based on its own published save and not on a
 pending id the core never knew; a read naming it reads that version too, so a file held open since the save goes on
-reading the same bytes. A base naming any other version is passed on as it is.
+reading the same bytes. The same goes for a file this view moved: until the move is published its new path shows the
+version it had before, which the machine may read and take as its base; once published, the service reads that
+version as the one the move gave the file (the change set's `move_in` names both). A base naming any other version is
+passed on as it is.
 
 Error codes and what a program on the machine sees: `NOT_FOUND` ENOENT, `NOT_A_FOLDER` ENOTDIR, `NOT_A_FILE` EISDIR,
 `STALE` ESTALE, `DENIED` EACCES, `BAD_REQUEST` EINVAL, `UNAVAILABLE` EIO; for writes `EXISTS` EEXIST, `NOT_EMPTY`
@@ -125,10 +128,11 @@ On a view's first connection the service lists the actor's whole tree: `qorpera_
 pages listed later are caught up harmlessly. Listings are served from that tree. A folder that holds readable paths
 but that the actor may not list itself is shown anyway, so the paths are reachable.
 
-Bytes come from the storage server's share (`<storageRoot>/<profileId>/<sha256>`, where `storageRoot` is the object
-gateway's store as the node host sees it), never through the gateway's byte routes. The service reads them as the
-gateway's account, `qorpera-objects`, the same uid on both nodes, in a process namespace of its own so it cannot
-reach the gateway's processes (README: "Reading the objects"). The service reads the manifest the core named, checks
+Bytes come from the storage server's share (`<storageRoot>/<profileId>/<sha256>`, where `storageRoot`,
+`/srv/qorpera/objects`, is the object gateway's store bound read-only into the service's own mount namespace), never
+through the gateway's byte routes. The service reads them as the gateway's account, `qorpera-objects`, the same uid
+on both nodes, in a process namespace of its own so it cannot reach the gateway's processes, and sees nothing of
+`/srv/qorpera` but the store (README: "Reading the objects"). The service reads the manifest the core named, checks
 its hash and that it matches the entry (v2; v1 for fixtures), then reads each chunk it needs, opened with
 `O_NOFOLLOW`, checked for size and hash before it is used or kept. Chunks and manifests are kept in a
 least-recently-used memory cache (1 GiB by default, at most 2 GiB within the unit's 3 GiB). Sixteen reads run at
@@ -238,7 +242,9 @@ For step 2 (the run box), recorded now so they are planned:
   `unsaved_since` (timestamptz), with `state = 'open'` and `lease_until > now()` (20260928259230). Step 1 opens no
   view rows, so it gives the drain nothing to count; an in-place folder service update needs no drain.
 - **P8.** The runtime releases a command's reads with the run actor (only run releases can be cited by a context
-  view); a release over 10,000 reads is split, and a context output may need to cite several.
+  view); a release over 10,000 reads is split, and a context output may need to cite several. On a company machine,
+  step 4 replaces this: a command's reads are the folder program's, released with its view actor, and its output
+  cites no read ([RUNTIME-FOLDER-COMPANY-MACHINES.md](RUNTIME-FOLDER-COMPANY-MACHINES.md), "Reads").
 
 ## Rollout (coordinator)
 
@@ -250,10 +256,10 @@ program in the pinned Rust image and passes it to the shared-execution packager 
 
 1. Read-only prechecks, both nodes:
    - `ss -l --vsock` shows nothing on port 5250; `lsmod | grep vhost_vsock`.
-   - `findmnt --target <storageRoot>` names `/srv/qorpera/canonical` from the storage server.
-   - The coordinator's account change is done (README: "Reading the objects": the probe, the account, the gateway
-     moved to it, its files chowned): `stat -c '%U %a' <storageRoot>/<a profile>/<an object>` shows
-     `qorpera-objects 600`.
+   - As root, `findmnt --target <the store>` (the gateway's store as the host sees it, README) names
+     `/srv/qorpera/canonical` from the storage server.
+   - The coordinator's account change is done (README: "Reading the objects": the account, the gateway moved to it,
+     its files chowned): as root, `stat -c '%U %a' <the store>/<a profile>/<an object>` shows `qorpera-objects 600`.
    - In the execution host: `ls -l /dev/fuse; grep fuse /proc/filesystems`.
    - `lxc config get qorpera-exec-node02 volatile.uuid --project qn25b2`.
 2. Build and package on the node 2 test machine from the release commit (README); the build's record must equal the

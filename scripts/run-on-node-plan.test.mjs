@@ -89,7 +89,29 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 		"packages/object-gateway/src/folder-service/view-tree.ts",
 	])
 		assert.ok(names([file]).includes("hosted-db"), file);
-	assert.ok(!names(["packages/object-gateway/src/folder-service/server.ts"]).includes("hosted-db"));
+	// The folder core's acceptance script (F3-3c): the folder service's write path and the gateway parts it puts through.
+	for (const file of [
+		"scripts/test-folder-core-acceptance.mjs",
+		"packages/object-gateway/src/folder-service/https-request.ts",
+		"packages/object-gateway/src/folder-service/service.ts",
+		"packages/object-gateway/src/folder-service/staging.ts",
+		"packages/object-gateway/src/folder-service/mounts.ts",
+		"packages/object-gateway/src/folder-service/machines.ts",
+		"packages/object-gateway/src/folder-service/plan.ts",
+		"packages/object-gateway/src/folder-service/pending.ts",
+		"packages/object-gateway/src/folder-service/protocol.ts",
+		"packages/object-gateway/src/folder-service/objects.ts",
+		"packages/object-gateway/src/folder-service/search.ts",
+		"packages/object-gateway/src/service.ts",
+		"packages/object-gateway/src/supabase-authority.ts",
+		"packages/object-gateway/src/supabase-headers.ts",
+		"packages/object-gateway/src/folder-service-objects.ts",
+		"packages/object-gateway/src/folder-objects.ts",
+		"packages/object-gateway/src/member-folder-commits.ts",
+	])
+		assert.ok(names([file]).includes("hosted-db"), file);
+	for (const file of ["packages/object-gateway/src/folder-service/server.ts", "packages/object-gateway/src/folder-service/cli.ts"])
+		assert.ok(!names([file]).includes("hosted-db"), file);
 	// The rolling update rehearsal and the packets it runs.
 	for (const file of ["scripts/test-runtime-roll.mjs", "scripts/runtime-roll.mjs"]) assert.ok(names([file]).includes("hosted-db"), file);
 	assert.ok(!names(["packages/runtime/test/fixtures/company-computer-guest.ts"]).includes("hosted-db"));

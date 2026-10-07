@@ -545,4 +545,14 @@ begin
 		raise exception 'An agent on the roster never becomes the Co-Founder: %', r; end if;
 end $$;
 
+-- 12. The Co-Founder record is the platform's alone: no API role reads or writes it (from 310, legacy sweep).
+do $$
+declare v_role text;
+begin
+	foreach v_role in array array['anon','authenticated','service_role'] loop
+		if has_table_privilege(v_role, 'public.qorpera_company_cofounders', 'SELECT,INSERT,UPDATE,DELETE') then
+			raise exception 'qorpera_company_cofounders is exposed to %', v_role; end if;
+	end loop;
+end $$;
+
 rollback;

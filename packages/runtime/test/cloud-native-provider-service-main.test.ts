@@ -1,8 +1,12 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	nativeCompanyComputerConfiguration,
 	nativeCompanyRuntimeConfiguration,
 	nativeFolderSearchConfiguration,
 	nativeWarmIdleMs,
+	runNativeProviderHostServiceMain,
 } from "@qorpera/runtime/cloud-native-provider-service-main";
 import { systemdCredentialMetadataIsSafe } from "@qorpera/runtime/systemd-credential";
 import { describe, expect, it } from "vitest";
@@ -133,5 +137,28 @@ describe("warm conversation window", () => {
 		expect(nativeWarmIdleMs("300000")).toBe(300_000);
 		for (const value of ["0", "-1", "1.5", "1e3", " 300000", "300001"])
 			expect(() => nativeWarmIdleMs(value)).toThrow("QORPERA_NATIVE_WARM_IDLE_MS is invalid");
+	});
+});
+
+describe("the native host's service key guard (G2-5)", () => {
+	it("refuses to start with a service key in its environment or as a systemd credential", async () => {
+		const base = { QORPERA_SUPABASE_URL: "https://project.supabase.test" };
+		await expect(runNativeProviderHostServiceMain({ ...base, QORPERA_SUPABASE_SERVICE_KEY: "" })).rejects.toThrow(
+			"A native host must hold no service key",
+		);
+		const credentials = await mkdtemp(join(tmpdir(), "qorpera-native-host-credentials-"));
+		try {
+			await writeFile(join(credentials, "qorpera-supabase-service-key"), "service-key\n", { mode: 0o600 });
+			await expect(
+				runNativeProviderHostServiceMain({ ...base, CREDENTIALS_DIRECTORY: credentials }),
+			).rejects.toThrow("A native host must hold no service key");
+			// Without it the host goes on to its own credentials (here: the empty directory has none).
+			await rm(join(credentials, "qorpera-supabase-service-key"));
+			await expect(
+				runNativeProviderHostServiceMain({ ...base, CREDENTIALS_DIRECTORY: credentials }),
+			).rejects.not.toThrow("A native host must hold no service key");
+		} finally {
+			await rm(credentials, { recursive: true, force: true });
+		}
 	});
 });

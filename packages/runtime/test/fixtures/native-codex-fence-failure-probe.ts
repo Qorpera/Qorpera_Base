@@ -25,7 +25,11 @@ export async function runNativeCodexFenceFailureProbe(binary: string, fault: "re
 			signal.throwIfAborted();
 			if (requests === 0 || forgedMedia) return;
 			deniedChecks++;
-			if (fault === "stalled") await new Promise<void>(() => undefined);
+			if (fault === "stalled") {
+				// Held past the 4 s host and 5 s native deadlines there were until 5 Oct 2026; then the run stops.
+				setTimeout(() => abort.abort(), 6_000).unref();
+				await new Promise<void>(() => undefined);
+			}
 			throw new Error("PRIVATE_REVOKED_AUTHORITY_DETAIL");
 		},
 		tools: [
@@ -135,10 +139,15 @@ export async function runNativeCodexFenceFailureProbe(binary: string, fault: "re
 		);
 		if (fixtureFailure) throw fixtureFailure;
 		assert(failure instanceof Error);
-		assert.match(
-			failure.message,
-			forgedMedia ? /Native boundary turn did not complete/ : /Native result boundary unavailable/,
-		);
+		const expected = {
+			revoked: /Native result boundary unavailable/,
+			// No stopwatch ends a model request's checks (5 Oct 2026), neither the host's nor Codex's, which keeps a
+			// 10-minute backstop: a stalled one holds the request until the run stops. Either old deadline would have
+			// failed the run first, with another message.
+			stalled: /Native boundary execution stopped/,
+			message_image: /Native boundary turn did not complete/,
+		}[fault];
+		assert.match(failure.message, expected);
 		if (forgedMedia) assert.equal(deniedChecks, 0);
 		else assert(deniedChecks > 0);
 		assert.deepEqual({ requests, effects }, { requests: 1, effects: 0 });
