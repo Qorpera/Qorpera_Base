@@ -69,7 +69,8 @@ of company work.
   workers; trusted notebook reads through the fake control plane.
 - `cloud-company-path-control.test.ts`: the HTTP control permits the two
   trusted read RPCs.
-- `supabase/tests/320_runtime_operational_observability.test.sql` records an
-  observation for both tool names; `scripts/check-runtime-observation-vocabulary.test.mjs`
-  keeps the SQL and TypeScript vocabularies equal.
+- `supabase/tests/320_runtime_operational_observability.test.sql` recorded an
+  observation for both tool names (deleted with snapshot-v1 in the legacy sweep, B2b);
+  `scripts/check-runtime-observation-vocabulary.test.mjs` keeps the SQL and TypeScript
+  vocabularies equal.
 - Not run here: any live turn. Bundle v85 has not been cut or applied.

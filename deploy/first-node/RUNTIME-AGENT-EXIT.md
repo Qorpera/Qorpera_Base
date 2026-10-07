@@ -193,7 +193,7 @@ healthy exit (E2).
   another company's name on traffic, and an address stays tied to its company also after the machine is gone.
 - A sleeping machine keeps its address and its entry; its connections are flushed when it sleeps, so stale entries
   never hold its connection bound. When a machine goes away (missing from two reads of LXD in a row after it was seen,
-  or never created within an hour of its plug), the reconciler unplugs it under the plug lock: its address is
+  or never created within an hour of its last plug), the reconciler unplugs it under the plug lock: its address is
   quarantined first, then its lease is removed (dnsmasq reloads), its connections and the exit's per-machine counts
   and refused flows are cleared, and its entry is removed. A machine made again under the same name gets its entry
   back from `plug` with a new time, and is not unplugged in between. A flush that fails is tried again every pass, and
@@ -274,6 +274,23 @@ visible to the exit (they matter for the "only listed" mode, §10).
 - The founder sees the numbers and decides the brake's levels, well above normal use.
 - Past those levels, that company's new connections are slowed for a while.
 - The brake never stops normal work and is not a count on a run's work (contract 7.4).
+
+E7 built the brake (`deploy/agent-exit/README.md`, "The brake"). It is off on each node until the levels are set there:
+- **The levels.** N new connections in 10 seconds and F failed destinations (unanswered or refused) in a minute; either
+  may be left out. While braked, the company's machines share S new connections per 10 seconds (S under N), for M
+  minutes.
+- **The guard** lives in the connection logger and counts each company's lines as the counts do. A company past a
+  level is braked for M minutes, and longer while it stays past one. A machine's company is the plug's own copy of its
+  entry, as for the log.
+- **Braked**, a company's new connections past its share are dropped, and its machines try again a little later, as on
+  a busy line. Nothing is refused for good. Open connections and what goes to the exit itself (names, DHCP, ping) are
+  never touched, and other companies neither.
+- **A dropped connection counts as a new one,** once however often it is resent. So a company that keeps pushing stays
+  braked, and one that slows down is let go.
+- **In the log:** a "braked" line when a brake starts and an "unbraked" line, with how many connections it dropped,
+  when it ends. The day's counts carry both.
+- **Failure.** A brake ends on time in the exit's rules also while the logger is down. A level that is not well formed
+  turns the brake off and makes the exit unhealthy until it is fixed.
 
 ## 9. What the exit is not
 
@@ -366,7 +383,7 @@ allow = []             # used when mode is "only-listed"
 | E4 | Agents' machines use the agent plug | made with it |
 | E5 | Coding machines use the agent plug | made with it |
 | E6 | Company Computer: a second network card for the browser, shells, terminal and desktop (with the next image) | made with it |
-| E7 | Line guard: counting, then the brake at the levels the founder decides | after his decision |
+| E7 | Line guard: counting (with E3's tender), then the brake, built and off, at the levels the founder decides | after his decision |
 | E8 | Company rules | rules work |
 | E9 | The address block: switch-over per node, reverse names, info page | new address |
 | E10 | Each company's own log view (its own interfaces amendment) | companies see it |
@@ -376,6 +393,6 @@ machine. The coordinator merges and installs.
 
 E2 lands in four PRs: E2a, the node's side (the plug tool and its reconciler, the bridge rules that tie each MAC
 to its address, `notrack` for the bridged leg, the health file); E2b, the proof on LXD in a throwaway VM inside a
-test machine (the NIC filters, port isolation, the spoofs, the floods and the tables); E2c, the plug in the three
-creators' plans; E2d, exit health in placement. With no users and no legacy machines (founder decision, 3 October),
+test machine (the NIC filters, port isolation, the spoofs, the floods and the tables); E2c, the plug in the agents' and
+coding machines' creators (the Company Computer's card comes with E6 and its next image); E2d, exit health in placement. With no users and no legacy machines (founder decision, 3 October),
 neither keeps a switch.

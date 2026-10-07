@@ -1,4 +1,4 @@
--- @fixture 647_folder_core_run_fence.test.sql until "-- 1. Snapshot-v1 keeps its text"
+-- @fixture 647_folder_core_run_fence.test.sql until "-- The checks start here: a test that runs after this file's fixture part stops at this line."
 -- Company folder core, C1c-2b part 2 (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §5.6): a folder-v2 run's public
 -- effects on the folder fence. The native send, the interaction request and the action-review card write the run's
 -- conversation through the folder transcript append after the recheck and the session; only the folder send may add a
@@ -31,57 +31,6 @@ end $$;
 create function pg_temp.events(p_run text) returns bigint language sql as $$
 	select count(*) from public.qorpera_session_events where execution_id = p_run::uuid
 $$;
-create function pg_temp.without_guard(p_definition text) returns text language plpgsql as $$
-declare v_body integer := position('$function$' in p_definition); v_at integer; v_end integer;
-begin
-	v_at := v_body + position(E'\nbegin\n' in substr(p_definition, v_body)) - 1 + length(E'\nbegin\n');
-	v_end := v_at + position(E'\n' in substr(p_definition, v_at));
-	return substr(p_definition, 1, v_at - 1) || substr(p_definition, v_end);
-end $$;
-
--- 1. Snapshot-v1 keeps its text: each body with the inserted line removed, and the card patch reversed, is the
--- definition before this migration. (The native send's and the interaction request's lines replace C1c-2a's; 647
--- checks those bodies.)
-do $$
-declare v_text text;
-begin
-	if md5(pg_temp.without_guard(pg_get_functiondef('public.qorpera_enforce_company_context_send()'::regprocedure))) <> 'acedca3ff14f235bfd188ae7f8a1f7f8'
-		or md5(pg_temp.without_guard(pg_get_functiondef('public.qorpera_assert_company_path_reads(uuid,jsonb,text[])'::regprocedure))) <> '2cb4f2f127555ff9378174104f126a8c'
-		or md5(pg_temp.without_guard(pg_get_functiondef('public.qorpera_record_native_context_view(uuid,jsonb,jsonb)'::regprocedure))) <> '56ec8e1bc65921dbaec844e6a10476ce'
-		or md5(pg_temp.without_guard(pg_get_functiondef('public.qorpera_add_agent_review_rule(jsonb,jsonb)'::regprocedure))) <> 'fd95657f89aedcabd4bc7cc400ecdeb4' then
-		raise exception 'A snapshot-v1 body changed'; end if;
-	v_text := replace(pg_get_functiondef('public.qorpera_record_action_review(jsonb,jsonb)'::regprocedure),
-		E'\tif v_card and public.qorpera_environment_is_folder_v2(v_run.environment_id) then\n'
-		|| E'\t\tperform public.qorpera_folder_run_reads_current(v_run.environment_id, v_run.profile_id,\n'
-		|| E'\t\t\tpublic.qorpera_folder_run_reader(v_run.profile_id, v_run.id));\n'
-		|| E'\t\tperform 1 from public.qorpera_shared_sessions where id = v_run.session_id for update;\n'
-		|| E'\tend if;\n', '');
-	v_text := replace(v_text,
-		E'\t\tif public.qorpera_environment_is_folder_v2(v_run.environment_id) then\n'
-		|| E'\t\t\tperform public.qorpera_folder_append_transcript_event(v_run, (p_binding ->> ''assignmentId'')::uuid, v_review.id,\n'
-		|| E'\t\t\t\t''authorization_request'', v_body);\n'
-		|| E'\t\telse\n', '');
-	v_text := replace(v_text, E'\t\t\t''authorization_request'', v_body);\n\t\tend if;\n', E'\t\t\t''authorization_request'', v_body);\n');
-	-- W4a (20260928399940): a folder-v2 run's restricted hire asks the owners and admins.
-	v_text := replace(v_text, E'; v_restricted boolean := false;\n', E';\n');
-	v_text := replace(v_text,
-		E'\t-- On a folder-v2 company, a hire by an agent that cannot delegate the new agent''s default Company File access\n'
-		|| E'\t-- waits for a member (contract 14.1): it asks the owners and admins, as an access check no rule lifts.\n'
-		|| E'\tif p_review ->> ''tool'' = ''hire_agent'' and v_decision <> ''deny''\n'
-		|| E'\t\tand public.qorpera_environment_is_folder_v2(v_run.environment_id)\n'
-		|| E'\t\tand not public.qorpera_folder_agent_delegates_default(v_run.profile_id, v_run.staff_agent_id) then\n'
-		|| E'\t\t-- A finding that the hire was not asked for stays on the record (it is the owners'' and admins'' too).\n'
-		|| E'\t\tv_restricted := true; v_decision := ''ask'';\n'
-		|| E'\t\tv_built_in := case when v_built_in = ''not_requested'' then v_built_in else ''access_change'' end;\n'
-		|| E'\tend if;\n', '');
-	v_text := replace(v_text, E'v_decision = ''ask'' and not v_restricted and v_built_in in', E'v_decision = ''ask'' and v_built_in in');
-	v_text := replace(v_text, E'v_built_in, case when v_restricted\n'
-		|| E'\t\t\tthen left(''This agent''''s own Company File access is limited, so an owner or admin approves the agents it hires.''\n'
-		|| E'\t\t\t\t|| case when p_review ->> ''decision'' = ''allow'' and not v_retry then ''''\n'
-		|| E'\t\t\t\t\telse '' The review: '' || btrim(p_review ->> ''reason'') end, 500)\n'
-		|| E'\t\t\telse left(btrim(p_review ->> ''reason''), 500) end,', E'v_built_in, left(btrim(p_review ->> ''reason''), 500),');
-	if md5(v_text) <> 'a9f30463bc0fcbba9f9a403449f5271d' then raise exception 'The action review''s snapshot-v1 text changed'; end if;
-end $$;
 
 -- 2. The native send: an acknowledgement, then the final report; a replay; the wake policy; the run's conversation
 -- through the folder append (its event, the run's budget); "already final".
@@ -257,7 +206,8 @@ begin
 		array[]::text[]), '42501', 'Company File authority is unavailable');
 end $$;
 
--- 8. The context view: outputs cite this run's releases; the ordinal and the replay; office captures refused.
+-- 8. The context view: outputs cite this run's releases; the ordinal and the replay; a malformed screenshot refused (a
+--    real one is recorded since P06d, test 910).
 do $$
 declare
 	c_env constant uuid := '63400000-0000-4000-8000-000000000020';
@@ -289,8 +239,8 @@ begin
 		jsonb_set(jsonb_set(v_view, '{requestId}', '"req-4"'), '{outputs,0,readId}', to_jsonb(extensions.gen_random_uuid()))), '42501',
 		'Context read provenance differs');
 	perform pg_temp.raises_like(format('select public.qorpera_record_native_context_view(%L, %L, %L)', c_env, b,
-		jsonb_set(jsonb_set(v_view, '{requestId}', '"req-5"'), '{outputs,0,capture}', '{"assetId":"x"}')), '0A000',
-		'This Company File path does not serve folder-v2 companies');
+		jsonb_set(jsonb_set(v_view, '{requestId}', '"req-5"'), '{outputs,0,capture}', '{"assetId":"x"}')), '22023',
+		'Native capture invalid');
 	-- The release id in upper case is the same release.
 	if public.qorpera_record_native_context_view(c_env, b, jsonb_set(jsonb_set(v_view, '{requestId}', '"req-6"'), '{outputs,0,readId}',
 		to_jsonb(upper(v_release::text)))) ->> 'ordinal' <> '3' then raise exception 'An upper-case release id'; end if;

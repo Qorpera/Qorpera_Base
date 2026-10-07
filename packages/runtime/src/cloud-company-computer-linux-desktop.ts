@@ -20,6 +20,11 @@ import {
 	companyComputerLinuxSandboxArgs,
 	openCompanyComputerLinuxDirectory,
 } from "./cloud-company-computer-linux-host.ts";
+import {
+	COMPANY_COMPUTER_HOSTS,
+	COMPANY_COMPUTER_RESOLV_CONF,
+	plumbCompanyComputerNetwork,
+} from "./cloud-company-computer-linux-network.ts";
 import { spawnCompanyComputerLinuxProcess } from "./cloud-company-computer-linux-process.ts";
 import {
 	type CompanyComputerScreenLauncher,
@@ -107,6 +112,7 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 		limits: CompanyComputerCommandLimits;
 		runtimeRoot: string;
 		boundary: CompanyComputerGuestBoundary;
+		plumbSocket?: string;
 	};
 	readonly #desktops = new Map<number, Desktop>();
 	readonly #stop = new AbortController();
@@ -121,6 +127,8 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 		/** Existing private local directory with root-owned ancestors; never persistent screen state. */
 		runtimeRoot: string;
 		boundary: CompanyComputerGuestBoundary;
+		/** Test seam for the root plumber's socket. */
+		plumbSocket?: string;
 	}) {
 		assertCompanyComputerScope(options.scope, options.scope);
 		assertCompanyComputerGuestLayout(options.layout);
@@ -249,6 +257,9 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 				flag: "wx",
 			});
 			files.push(await open(join(temporary, "machine-id"), constants.O_RDONLY | constants.O_NOFOLLOW));
+			// The desktop's own network, for its Terminal and what it starts.
+			await writeFile(join(temporary, "hosts"), COMPANY_COMPUTER_HOSTS, { mode: 0o444, flag: "wx" });
+			await writeFile(join(temporary, "resolv.conf"), COMPANY_COMPUTER_RESOLV_CONF, { mode: 0o444, flag: "wx" });
 			const args = [
 				...companyComputerLinuxSandboxArgs(),
 				"--bind-fd",
@@ -273,20 +284,25 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 				"33554432",
 				"--tmpfs",
 				"/var/tmp",
+				"--ro-bind",
+				join(temporary, "hosts"),
+				"/etc/hosts",
+				"--ro-bind",
+				join(temporary, "resolv.conf"),
+				"/etc/resolv.conf",
 			];
-			for (const path of [
-				"/etc/passwd",
-				"/etc/group",
-				"/etc/nsswitch.conf",
-				"/etc/fonts",
-				"/etc/xdg",
-				"/etc/X11",
-				"/etc/dbus-1",
-			]) {
-				await assertCompanyComputerImageArtifact(
-					path,
-					!path.endsWith(".conf") && !["/etc/passwd", "/etc/group"].includes(path),
-				);
+			// The public CA store too: the Terminal's curl, git and the like check certificates against it.
+			for (const [path, directory] of [
+				["/etc/passwd", false],
+				["/etc/group", false],
+				["/etc/nsswitch.conf", false],
+				["/etc/fonts", true],
+				["/etc/xdg", true],
+				["/etc/X11", true],
+				["/etc/dbus-1", true],
+				["/etc/ssl/certs", true],
+			] as const) {
+				await assertCompanyComputerImageArtifact(path, directory);
 				args.push("--ro-bind", path, path);
 			}
 			args.push("--symlink", "../usr/lib/os-release", "/etc/os-release");
@@ -307,6 +323,16 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 				args,
 				files,
 				stdin: "ignore",
+				// Its own filtered network before the session starts; without the
+				// plumber the desktop starts with loopback only.
+				beforeStart: async (pid) => {
+					await plumbCompanyComputerNetwork({
+						ordinal: binding.screenOrdinal,
+						role: "desktop",
+						pid,
+						...(this.#options.plumbSocket ? { socket: this.#options.plumbSocket } : {}),
+					});
+				},
 				command: [
 					"/usr/local/bin/qorpera-screen-session",
 					binding.screenId,

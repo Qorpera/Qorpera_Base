@@ -14,9 +14,21 @@ work=$(mktemp -d)
 chmod 0755 "$work"
 export QORPERA_AGENT_EXIT_RUN_DIR=$work/run QORPERA_AGENT_EXIT_STATE_DIR=$work/state
 export QORPERA_AGENT_EXIT_LOG_DIR=$work/log QORPERA_AGENT_EXIT_UPSTREAMS=9.9.9.9
+# The logs' disk floor is off here, so the proof never depends on the test machine's free space; the cap is tested.
+export QORPERA_AGENT_EXIT_LOG_FLOOR_PERCENT=0
+# The NAS: a mount point with its marker, as the mounted share has it (a tmpfs in this container's own mounts).
+export QORPERA_AGENT_EXIT_NAS_DIR=$work/nas
+mkdir "$work/nas"
+mount -t tmpfs -o size=64m,mode=0755 qorpera-test-nas "$work/nas"
+touch "$work/nas/.qorpera-agent-exit-logs"
 pids=()
-cleanup() { for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done; }
+cleanup() {
+	for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
+	umount "$work/nas" 2>/dev/null || true
+}
 trap cleanup EXIT
+# A command that stops the proof on its own (set -e) names itself.
+trap 'echo "FAIL: line $LINENO: $BASH_COMMAND" >&2' ERR
 
 fail() {
 	echo "FAIL: $*" >&2
@@ -321,8 +333,11 @@ pass "up twice"
 if bash "$tool" verify 2>"$work/verify.err"; then fail "verify passed without DNS and the logger"; fi
 grep -q "no DNS on 10.210.0.1:53" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
 grep -q "logger not running" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
+grep -q "the brake not running" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
 grep -q "the agent plug's reconciler not running" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
-pass "verify fails while DNS, the logger and the plug's reconciler are not running"
+grep -q "the logs' tender has not run" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
+grep -q "the logs' shipper has not run" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
+pass "verify fails while DNS, the logger (and its brake), the plug's reconciler and the logs' tender and shipper are not running"
 
 background - "$work/node.out" python3 "$work/serve.py" "$work/node-peers" 192.168.1.42:22 10.209.255.1:22
 background - "$work/nodeudp.out" python3 "$work/udpseen.py" "$work/node-udp" 192.168.1.42 9999
@@ -343,8 +358,11 @@ bash "$tool" dns >"$work/dns.out" 2>&1 &
 pids+=($!)
 wait_for "ip netns exec qexit ss -lnu | grep -q '10.210.0.1:53 '"
 bash "$tool" log >"$work/log.out" 2>&1 &
+logger_pid=$!
 pids+=($!)
 wait_for "test -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.heartbeat"
+bash "$tool" logs >"$work/logs.out" || fail "the logs' tender: $(cat "$work/logs.out")"
+bash "$tool" ship >"$work/ship.out" || fail "the logs' shipper: $(cat "$work/ship.out")"
 AGENT="qp/agent:Running:10.210.1.1:c0:m0::va0"
 python3 "$work/fixture.py" "$work/lxd.json" "$AGENT"
 QORPERA_AGENT_PLUG_LXD_FIXTURE=$work/lxd.json QORPERA_AGENT_PLUG_RELOAD_DNS="pkill -HUP -x dnsmasq" \
@@ -486,7 +504,7 @@ import json, sys
 records = [json.loads(line) for line in open(sys.argv[1])]
 site = [r for r in records if r["event"] == "destroy" and r.get("dst") == "1.1.1.1" and r.get("dport") == 443]
 assert site and site[0]["src"] == "10.210.1.1" and site[0]["bytes_out"] > 0 and site[0]["bytes_in"] > 0, site
-assert all(r["src"].startswith("10.210.") and r["src"] != "10.210.0.1" for r in records if r["event"] != "gap"), "not an agent's"
+assert all(r["src"].startswith("10.210.") and r["src"] != "10.210.0.1" for r in records if r["event"] not in ("gap", "alive")), "not an agent's"
 
 EOF
 for _ in $(seq 1 50); do
@@ -669,6 +687,289 @@ ip link del pv0
 ip netns del plugged
 pass "plugs whose machines never appear are given up after an hour, as dropped: never attributed"
 
+# --- The logs on the node ------------------------------------------------------------------------------------------
+logs_tool=$here/qorpera-agent-exit-logs.py
+LOG=$QORPERA_AGENT_EXIT_LOG_DIR
+today=$(date -u +%F)
+bash "$tool" logs >"$work/logs.out" || fail "the logs' tender: $(cat "$work/logs.out")"
+python3 "$logs_tool" count --log-dir "$LOG" --day "$today" >"$work/count.json" || fail "count: $(cat "$work/count.json")"
+python3 - "$work/count.json" >"$work/countcheck.out" 2>&1 <<'EOF' || fail "counts: $(cat "$work/countcheck.out") $(cat "$work/count.json")"
+import json, sys
+c = json.load(open(sys.argv[1]))["companies"]
+assert c["c0"]["connections"] > 0 and c["c0"]["machines"] == 1, c
+assert c["c0"]["refusedByRule"].get("our_networks", 0) > 0, c
+# The plugged machine's TCP to 8443, its ping and its UDP, under the company its plugged line names.
+assert c["c1"]["connections"] >= 3 and set(c["c1"]["byProto"]) >= {"tcp", "udp", "icmp"}, c
+EOF
+pass "the counts tie each machine's connections and refusals to its company"
+# Parts of one byte: today's open files are sealed, and dns.log is cut while dnsmasq writes on into it.
+python3 "$logs_tool" tend --log-dir "$LOG" --status "$QORPERA_AGENT_EXIT_RUN_DIR/logs.json" --part-bytes 1 --settle 0.5 \
+	>"$work/tend.out" || fail "tend: $(cat "$work/tend.out")"
+[[ -e $LOG/flows-$today.p001.jsonl.gz && -e $LOG/clients-$today.p001.jsonl.gz ]] || fail "not sealed: $(ls "$LOG")"
+[[ ! -s $LOG/dns.log ]] || fail "dns.log was not cut: $(wc -c <"$LOG/dns.log")"
+zcat "$LOG"/dns-*.log.gz | grep -q 'query\[A\] example.test from 10.210.1.1' || fail "the DNS part lacks the earlier queries"
+[[ $(ip netns exec agent python3 "$work/ask.py" 10.210.0.1 rotated.test) == 1.1.1.1 ]] || fail "DNS after the cut"
+wait_for "grep -q 'query\[A\] rotated.test from 10.210.1.1' $LOG/dns.log"
+[[ $(head -c 1 "$LOG/dns.log" | od -An -tx1 | tr -d ' ') != 00 ]] || fail "dnsmasq wrote past a hole after the cut"
+connects agent 1.1.1.1 443 || fail "the agent cannot connect after the cut"
+wait_for "grep -q '\"event\":\"new\"' $LOG/flows-$today.jsonl"
+python3 "$logs_tool" count --log-dir "$LOG" --day "$today" >"$work/count2.json" || fail "count: $(cat "$work/count2.json")"
+python3 -c 'import json, sys; a, b = (json.load(open(f))["companies"]["c0"]["connections"] for f in sys.argv[1:]); assert b > a, (a, b)' \
+	"$work/count.json" "$work/count2.json" || fail "the count after sealing lost lines"
+pass "the tender seals open files into parts and cuts dns.log; the writers go on in new files, and counts read all"
+# The parts go to the NAS under this node's name and their day, each read back; the lookup finds the agent's
+# connection there and on the node, with its company, machine and the name it looked up.
+host=$(python3 -c 'import socket; print(socket.gethostname())')
+bash "$tool" ship >"$work/ship.out" || fail "ship: $(cat "$work/ship.out")"
+for part in "flows-$today.p001.jsonl.gz" "clients-$today.p001.jsonl.gz" "$(cd "$LOG" && ls dns-*.log.gz | head -1)"; do
+	cmp -s "$LOG/$part" "$work/nas/$host/$today/$part" || fail "$part is not on the NAS: $(ls -R "$work/nas")"
+	[[ -e $LOG/shipped/$part.json ]] || fail "no shipped record for $part: $(ls "$LOG/shipped")"
+done
+bash "$tool" lookup --remote 1.1.1.1 --remote-port 443 --at "$(date +%s)" --json >"$work/lookup.json" ||
+	fail "lookup: $(cat "$work/lookup.json")"
+python3 - "$work/lookup.json" "$work/nas/$host/status.json" "$host" "$today" >"$work/lookupcheck.out" 2>&1 <<'EOF' || fail "lookup: $(cat "$work/lookupcheck.out") $(cat "$work/lookup.json")"
+import json, sys
+r, status = (json.load(open(path)) for path in sys.argv[1:3])
+host, today = sys.argv[3:]
+# Today's open connection log and dns.log since the cut are on the node only: the other nodes' lookups read that here.
+assert status["host"] == host and today in status["notShipped"]["flows"] and today in status["notShipped"]["dns"], status
+assert r["nodes"] == [host], r["nodes"]
+found = [c for c in r["connections"] if c["src"] == "10.210.1.1"]
+assert found and all((c["company"], c["machine"]) == ("c0", "m0") for c in found), found
+assert any(c["name"] == "rotated.test" for c in found), found
+EOF
+bash "$tool" lookup --agent 10.210.1.1 --at "$(date +%s)" >"$work/lookup.out" || fail "lookup: $(cat "$work/lookup.out")"
+grep -q "on $host: company c0, machine m0; 10.210.1.1:" "$work/lookup.out" || fail "lookup: $(cat "$work/lookup.out")"
+# The logger's alive lines, which the lookup reads for the times it was not logging.
+{ zcat "$LOG"/flows-*.jsonl.gz; cat "$LOG/flows-$today.jsonl"; } | grep '"event":"alive"' >/dev/null || fail "the logger wrote no alive line"
+pass "the shipper copies the sealed parts to the NAS; the lookup names the company, machine and name behind a connection"
+# A line the logger cannot write (here: a folder where its file goes) makes the exit unhealthy at once; once it can
+# write again it says how many lines it lost, and the exit is healthy again.
+for i in $(seq 1 20); do
+	mv -f "$LOG/flows-$today.jsonl" "$work/flows-moved-$i" 2>/dev/null || true
+	mkdir "$LOG/flows-$today.jsonl" 2>/dev/null && break
+done
+[[ -d $LOG/flows-$today.jsonl ]] || fail "could not put a folder where the connection log goes"
+connects agent 1.1.1.1 443 || fail "the agent cannot connect"
+for _ in $(seq 1 50); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] && break; sleep 0.2; done
+[[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] || fail "a line that could not be written left no mark: $(tail -3 "$work/log.out")"
+bash "$tool" verify 2>"$work/verify-failing.err" && fail "verify passed while the connection log could not be written"
+grep -q "cannot write the connection log: " "$work/verify-failing.err" || fail "verify: $(cat "$work/verify-failing.err")"
+# Its gap line comes only once it writes again: until then the lookup learns it from the mark.
+bash "$tool" lookup --remote 1.1.1.1 --at "$(date +%s)" --json >"$work/lookup-failing.json" || fail "lookup: $(cat "$work/lookup-failing.json")"
+grep -q '"why": "the connection logger is failing now: cannot write the connection log: ' "$work/lookup-failing.json" ||
+	fail "the lookup did not say the logger is failing: $(cat "$work/lookup-failing.json")"
+rmdir "$LOG/flows-$today.jsonl"
+for _ in $(seq 1 75); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] || break; sleep 0.2; done
+[[ ! -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] || fail "the logger did not recover once it could write"
+grep -Eq '"reason":"[1-9][0-9]* lines could not be written \(' "$LOG/flows-$today.jsonl" ||
+	fail "no gap line for the lines lost: $(grep gap "$LOG/flows-$today.jsonl" | tail -3)"
+wait_for "bash $tool verify >/dev/null 2>&1"
+pass "a line the logger cannot write makes the exit unhealthy at once; it recovers by itself and says what it lost"
+# Past its cap the logger pauses: no connection lines, traffic goes on, the exit is unhealthy; it goes on once there is
+# room, with a gap line that says how many lines it did not write.
+kill "$logger_pid"
+wait "$logger_pid" 2>/dev/null || true
+size=$(python3 -c 'import os, sys; print(sum(e.stat().st_size for e in os.scandir(sys.argv[1]) if e.is_file(follow_symlinks=False)))' "$LOG")
+QORPERA_AGENT_EXIT_LOG_CAP_BYTES=$((size + 2000000)) bash "$tool" log >>"$work/log.out" 2>&1 &
+logger_pid=$!
+pids+=($!)
+wait_for "test \$(grep -c 'logger started' $LOG/flows-$today.jsonl) -ge 1"
+wait_for "bash $tool verify >/dev/null 2>&1"
+head -c 4000000 /dev/zero >"$LOG/filler"
+for _ in $(seq 1 75); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] && break; sleep 0.2; done
+[[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] || fail "the logger did not pause past its cap: $(tail -3 "$work/log.out")"
+bash "$tool" verify 2>"$work/verify-pause.err" && fail "verify passed while the connection log paused"
+grep -q "connection log paused: " "$work/verify-pause.err" || fail "verify: $(cat "$work/verify-pause.err")"
+bash "$tool" lookup --remote 1.1.1.1 --at "$(date +%s)" --json >"$work/lookup-pause.json" || fail "lookup: $(cat "$work/lookup-pause.json")"
+grep -q '"why": "the connection log is paused now: the node' "$work/lookup-pause.json" ||
+	fail "the lookup did not say the log is paused: $(cat "$work/lookup-pause.json")"
+written=$(grep -c '"event":"new"' "$LOG/flows-$today.jsonl" || true)
+connects agent 1.1.1.1 443 || fail "a machine's traffic stopped while the log paused"
+sleep 1
+[[ $(grep -c '"event":"new"' "$LOG/flows-$today.jsonl" || true) == "$written" ]] || fail "the paused logger wrote a connection line"
+# DNS goes on answering, and its record is emptied while the log pauses.
+[[ $(ip netns exec agent python3 "$work/ask.py" 10.210.0.1 paused.test) == 1.1.1.1 ]] || fail "DNS while the log pauses"
+for _ in $(seq 1 75); do grep -Eq '"reason":"paused: [1-9][0-9]* bytes of the DNS record not kept"' "$LOG/flows-$today.jsonl" && break; sleep 0.2; done
+grep -Eq '"reason":"paused: [1-9][0-9]* bytes of the DNS record not kept"' "$LOG/flows-$today.jsonl" ||
+	fail "dns.log was not emptied while the log paused: $(wc -c <"$LOG/dns.log")"
+rm "$LOG/filler"
+for _ in $(seq 1 75); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] || break; sleep 0.2; done
+[[ ! -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] || fail "the logger did not go on with room again"
+grep -q '"event":"gap".*"reason":"paused: ' "$LOG/flows-$today.jsonl" || fail "no gap line for the pause"
+grep -Eq '"reason":"resumed: [1-9][0-9]* lines not written while paused"' "$LOG/flows-$today.jsonl" ||
+	fail "no gap line saying what the pause missed: $(grep gap "$LOG/flows-$today.jsonl" | tail -3)"
+wait_for "bash $tool verify >/dev/null 2>&1"
+pass "past its cap the logger pauses (traffic goes on, the exit is unhealthy), then goes on and says what it missed"
+kill "$logger_pid"
+wait "$logger_pid" 2>/dev/null || true
+bash "$tool" log >>"$work/log.out" 2>&1 &
+logger_pid=$!
+pids+=($!)
+wait_for "bash $tool verify >/dev/null 2>&1"
+
+# --- The brake (E7) -----------------------------------------------------------------------------------------------
+# Company cB's machine, plugged in as in the plug's part above, goes past the founder's levels; the agent machine
+# (company c0) does not.
+cat >"$work/burst.py" <<'EOF'
+import socket, sys, threading
+# argv: host port count timeout; opens count connections at once and prints how many connected.
+host, port, count, timeout = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4])
+connected = []
+def one():
+    s = socket.socket()
+    s.settimeout(timeout)
+    try:
+        s.connect((host, port))
+        connected.append(1)
+    except OSError:
+        pass
+    finally:
+        s.close()
+threads = [threading.Thread(target=one) for _ in range(count)]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+print(len(connected))
+EOF
+brake=$QORPERA_AGENT_EXIT_RUN_DIR/brake.json
+# A Python expression over the guard's status (s), printed as JSON, or tested.
+brake_get() { python3 -c 'import json, sys; s = json.load(open(sys.argv[1])); print(json.dumps(eval(sys.argv[2])))' "$brake" "$1"; }
+brake_is() { [[ $(brake_get "$1" 2>/dev/null) == true ]]; }
+# A Python expression tested over what the exit's brake rules hold, read as the guard reads them (r: machines, share,
+# and counters, the counts by number in the set named first).
+rules_are() {
+	local list=(ip netns exec qexit nft -j list)
+	printf '{"map": %s, "chain": %s, "set": %s}' "$("${list[@]}" map inet qorpera_agent_exit braked)" \
+		"$("${list[@]}" chain inet qorpera_agent_exit share)" "$("${list[@]}" set inet qorpera_agent_exit "$1")" |
+		python3 "$here/qorpera-agent-exit-log.py" --parse-brake |
+		python3 -c 'import json, sys; r = json.load(sys.stdin); sys.exit(0 if eval(sys.argv[1]) else 1)' "$2"
+}
+braked_plug=$(as_creator python3 "$plug_tool" plug --kind machine --company cB --machine mB --project qp --instance vmB)
+[[ $braked_plug == '{"address": "10.210.1.26", "hwaddr": "0e:51:0a:d2:01:1a"}' ]] || fail "plug: $braked_plug"
+ip netns add braked
+ip -n braked link set lo up
+ip link add bv0 type veth peer name eth0 netns braked
+ip -n braked link set eth0 address 0e:51:0a:d2:01:1a
+ip link set bv0 master qagent0 up
+ip -n braked link set eth0 up
+ip -n braked addr add 10.210.1.26/16 dev eth0
+ip -n braked route add default via 10.210.0.1
+python3 "$work/fixture.py" "$work/lxd.json" "$AGENT" "qp/vmB:Running:10.210.1.26:cB:mB::bv0"
+wait_for "client_history | grep -q '\"address\":\"10.210.1.26\",\"company\":\"cB\",\"event\":\"plugged\"'"
+wait_for "connects braked 1.1.1.1 443"
+# The founder's levels, in the node's settings: past 5 new connections in 10 seconds a company is braked for 5 minutes,
+# with a share of 2 new connections per 10 seconds. The logger reads them when it starts.
+printf '%s\n' QORPERA_AGENT_EXIT_BRAKE_NEW_10S=5 QORPERA_AGENT_EXIT_BRAKE_SLOW_10S=2 QORPERA_AGENT_EXIT_BRAKE_MINUTES=5 \
+	>"$work/settings"
+kill "$logger_pid"
+wait "$logger_pid" 2>/dev/null || true
+QORPERA_AGENT_EXIT_SETTINGS=$work/settings bash "$tool" log >>"$work/log.out" 2>&1 &
+logger_pid=$!
+pids+=($!)
+wait_for "brake_is \"s['on'] and s['levels'] == {'new10s': 5, 'failed60s': 0, 'slow10s': 2, 'minutes': 5}\""
+wait_for "rules_are dropped \"r['share'] == ['slow 2'] and r['machines'] == {}\""
+bash "$tool" verify >/dev/null || fail "verify with the brake on: $(bash "$tool" verify 2>&1)"
+pass "the founder's levels in the node's settings switch the brake on: its share rule is in the exit, nothing braked yet"
+
+[[ $(ip netns exec braked python3 "$work/burst.py" 1.1.1.1 443 12 3) == 12 ]] || fail "a burst before the brake did not all get through"
+wait_for "grep -q '\"company\":\"cB\",\"event\":\"braked\",\"reason\":\"[0-9]* new connections in 10 seconds (level 5)\"' $LOG/flows-$today.jsonl"
+wait_for "brake_is \"[(b['company'], b['machines']) for b in s['braked']] == [('cB', 1)]\""
+number=$(brake_get "s['braked'][0]['number']")
+until_before=$(brake_get "s['braked'][0]['until']")
+wait_for "rules_are dropped \"r['machines'] == {'10.210.1.26': $number}\""
+pass "a company past a level is braked: a braked line, and its machine in the exit's braked map with its number"
+# Its share: 2 of 10 new connections at once get through, the rest are dropped (and resent once, at 1 second, before
+# they give up), each counted once. Another company's machine is not braked.
+let_through=$(ip netns exec braked python3 "$work/burst.py" 1.1.1.1 443 10 2)
+[[ $let_through == 2 ]] || fail "a braked company got $let_through of 10 new connections at once through, not its share of 2"
+for _ in 1 2 3; do connects agent 1.1.1.1 443 || fail "another company's machine was braked"; done
+rules_are dropped "r['counters'] == {'$number': 8}" ||
+	fail "dropped: $(ip netns exec qexit nft list set inet qorpera_agent_exit dropped)"
+[[ $(ip netns exec qexit nft -j list counter inet qorpera_agent_exit dropped_braked |
+	python3 -c 'import json, sys; print([i["counter"]["packets"] for i in json.load(sys.stdin)["nftables"] if "counter" in i][0])') -gt 8 ]] ||
+	fail "no resent first packet was dropped: $(ip netns exec qexit nft list counter inet qorpera_agent_exit dropped_braked)"
+# A dropped connection whose machine goes on resending gets through once the share has room again: dropped once, and
+# let through once on a resend, it is not counted as dropped.
+[[ $(ip netns exec braked python3 "$work/burst.py" 1.1.1.1 443 1 20) == 1 ]] || fail "a resent connection never got through"
+rules_are dropped "r['counters'] == {'$number': 9}" ||
+	fail "dropped: $(ip netns exec qexit nft list set inet qorpera_agent_exit dropped)"
+wait_for "rules_are resent \"r['counters'] == {'$number': 1}\""
+# The dropped ones count as new connections: the brake is held longer.
+wait_for "brake_is \"s['braked'][0]['dropped'] == 8 and s['braked'][0]['until'] > $until_before\""
+bash "$tool" verify >/dev/null || fail "verify with a company braked: $(bash "$tool" verify 2>&1)"
+bash "$tool" status >"$work/status.out"
+grep -Eq '10\.210\.1\.26 [^,}]*: (0x)?[0-9a-f]+' "$work/status.out" ||
+	fail "status does not show the braked machine: $(cat "$work/status.out")"
+grep -q '"company": "cB"' "$work/status.out" || fail "status does not show the brake: $(cat "$work/status.out")"
+pass "past its share a braked company's new connections are dropped, each once however often resent, and hold the brake"
+pass "another company's machine is not braked; the exit stays healthy and status shows the brake"
+# Unplugged, the machine's counts go with it and it leaves the braked map at once, also while the logger (and its
+# guard) is down: the plug destroys its elements (one already gone is no error). Its company stays braked. Its tried
+# flows time out on their own, long before its address is given out again.
+ip netns exec qexit nft destroy element inet qorpera_agent_exit new_by_client '{ 10.210.9.9 }' ||
+	fail "destroying an element that is not there is an error here"
+kill "$logger_pid"
+wait "$logger_pid" 2>/dev/null || true
+python3 "$work/fixture.py" "$work/lxd.json" "$AGENT"
+wait_for "client_history | grep -q '\"address\":\"10.210.1.26\",\"company\":\"cB\",\"event\":\"unplugged\"'"
+grep -q "cannot clear 10.210.1.26" "$work/plug.out" && fail "plug: $(grep "cannot clear" "$work/plug.out")"
+new_left=$(ip netns exec qexit nft list set inet qorpera_agent_exit new_by_client)
+grep -q '10\.210\.1\.26 ' <<<"$new_left" && fail "the unplugged machine's counts stayed: $new_left"
+rules_are dropped "r['machines'] == {}" ||
+	fail "an unplugged machine stayed braked: $(ip netns exec qexit nft list map inet qorpera_agent_exit braked)"
+QORPERA_AGENT_EXIT_SETTINGS=$work/settings bash "$tool" log >>"$work/log.out" 2>&1 &
+logger_pid=$!
+pids+=($!)
+wait_for "brake_is \"[(b['company'], b['machines']) for b in s['braked']] == [('cB', 0)]\""
+sleep 3
+rules_are dropped "r['machines'] == {}" || fail "the guard braked an unplugged machine again"
+ip link del bv0
+ip netns del braked
+pass "an unplugged machine's counts go with it and it leaves the braked map at once, guard or not; its company stays braked"
+# Without levels, a new logger ends the brake it kept (its status file) at once, and says what it dropped.
+kill "$logger_pid"
+wait "$logger_pid" 2>/dev/null || true
+bash "$tool" log >>"$work/log.out" 2>&1 &
+logger_pid=$!
+pids+=($!)
+wait_for "grep -q '\"company\":\"cB\",\"dropped\":8,\"event\":\"unbraked\"' $LOG/flows-$today.jsonl"
+wait_for "rules_are dropped \"r['share'] == [] and r['machines'] == {}\""
+wait_for "brake_is \"not s['on'] and s['braked'] == [] and s['problems'] == []\""
+wait_for "bash $tool verify >/dev/null 2>&1"
+pass "with its levels gone the logger ends the brake it kept at once, with an unbraked line that says what it dropped"
+# A level that cannot be meant (a share as large as the level) leaves the brake off and the exit unhealthy.
+kill "$logger_pid"
+wait "$logger_pid" 2>/dev/null || true
+rm "$brake"
+QORPERA_AGENT_EXIT_BRAKE_NEW_10S=5 QORPERA_AGENT_EXIT_BRAKE_SLOW_10S=5 bash "$tool" log >>"$work/log.out" 2>&1 &
+logger_pid=$!
+pids+=($!)
+wait_for "test -e $brake"
+bash "$tool" verify 2>"$work/verify-brake.err" && fail "verify passed with a share as large as its level"
+grep -q "the brake: QORPERA_AGENT_EXIT_BRAKE_SLOW_10S=5 is not under QORPERA_AGENT_EXIT_BRAKE_NEW_10S=5" \
+	"$work/verify-brake.err" || fail "verify: $(cat "$work/verify-brake.err")"
+rules_are dropped "r['share'] == []" || fail "the brake is on with a level that cannot be meant"
+# A level that looks like an option is a bad level too, not an argument the logger cannot start with.
+kill "$logger_pid"
+wait "$logger_pid" 2>/dev/null || true
+rm "$brake"
+QORPERA_AGENT_EXIT_BRAKE_NEW_10S=5 QORPERA_AGENT_EXIT_BRAKE_MINUTES=--5 bash "$tool" log >>"$work/log.out" 2>&1 &
+logger_pid=$!
+pids+=($!)
+wait_for "test -e $brake"
+bash "$tool" verify 2>"$work/verify-brake.err" && fail "verify passed with a level that looks like an option"
+grep -q "the brake: QORPERA_AGENT_EXIT_BRAKE_MINUTES='--5' is not a whole number from 1 to 1440" \
+	"$work/verify-brake.err" || fail "verify: $(cat "$work/verify-brake.err")"
+rules_are dropped "r['share'] == []" || fail "the brake is on with a level that looks like an option"
+kill "$logger_pid"
+wait "$logger_pid" 2>/dev/null || true
+bash "$tool" log >>"$work/log.out" 2>&1 &
+pids+=($!)
+wait_for "bash $tool verify >/dev/null 2>&1"
+pass "a level that cannot be meant leaves the brake off and the exit unhealthy until it is fixed"
+
 # --- An interrupted rebuild -------------------------------------------------------------------------------------
 # The exit's namespace is replaced while its name service and logger still run in the old one, as after an up that
 # rebuilt the links and stopped before it restarted them. The logger notices by itself; verify fails until the name
@@ -710,7 +1011,7 @@ wait_for "test -z \"\$(ls $clients_dir)\""
 # A machine asleep has no port on the bridge; its client map entry still keeps the exit up.
 python3 "$plug_tool" plug --kind machine --company c5 --machine m5 --project qp --instance asleep >/dev/null
 if bash "$tool" down 2>"$work/down2.err"; then fail "down went ahead with a machine in the client map"; fi
-grep -q "running or asleep (client map: 10.210.1.26 " "$work/down2.err" || fail "down: $(cat "$work/down2.err")"
+grep -q "running or asleep (client map: 10.210.1.27 " "$work/down2.err" || fail "down: $(cat "$work/down2.err")"
 pass "down refuses while the client map has a machine, also one asleep with no port"
 python3 "$work/age.py" "$clients_dir"
 wait_for "test -z \"\$(ls $clients_dir)\""

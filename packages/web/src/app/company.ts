@@ -15,6 +15,8 @@ import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganiz
 import type { PageCursor } from "../cloud/pagination.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
 import type { CloudPresenceHandle, PresenceMember } from "../cloud/presence.ts";
+import type { FolderProposalPage } from "../cloud/proposals.ts";
+import { type MessageQuote, QUOTES_MAX, sameQuotes } from "../cloud/quotes.ts";
 import {
 	type RealtimePhase,
 	type RealtimeResource,
@@ -47,6 +49,18 @@ import { attachmentProblemText } from "../ui/attachments.ts";
 import { isGroupChat } from "../ui/group-chat.ts";
 import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
+import type { MailState } from "./company-mail.ts";
+import type { InterfaceFolderState } from "./interface-folder.ts";
+import {
+	appendQuoted,
+	brokenQuotes,
+	type FieldEdit,
+	keepQuotesWhole,
+	placeQuotes,
+	type QuotedText,
+	type QuoteRecord,
+	takeQuoteRecords,
+} from "./quotes.ts";
 import { RoomDrafts } from "./room-drafts.ts";
 import { debounce, Store, throttle } from "./state.ts";
 
@@ -114,11 +128,16 @@ function retryRefusal(error: unknown): string {
 	return t("It could not be tried again. Send the message again instead.");
 }
 
+/** Whether a card's answer was refused for want of the member's model account: in an agent's thread an answer runs
+ * the agent on it. */
+export function needsModelAccount(error: unknown): boolean {
+	return /sponsor|model account/i.test(error instanceof Error ? error.message : "");
+}
+
 /** Why the cloud would not take a card's answer, in the member's words. */
 function answerRefusal(error: unknown): string {
 	const message = error instanceof Error ? error.message : "";
-	// In an agent's thread an answer runs the agent on the member's own model account.
-	if (/sponsor|model account/i.test(message)) return t("Select an active model account, then try again.");
+	if (needsModelAccount(error)) return t("Select an active model account, then try again.");
 	if (/paused/i.test(message)) return t("Agents are paused for a moment while Qorpera updates. Try again shortly.");
 	return describeError(error);
 }
@@ -166,6 +185,12 @@ export interface CompanyState {
 	waitingForHours?: boolean;
 	/** The deployed cloud cannot say yet whether the company waits for computer hours. */
 	hoursWaitUnavailable?: boolean;
+	/** The company's interfaces and tables as its folder holds them (Interfaces step I7; app/interface-folder.ts).
+	 * Unset until the first read lands, and while the folder keeps no `interfaces/order.md`: the Interfaces tab then
+	 * draws the library's definitions (app/interfaces.ts). */
+	interfaceFolder?: InterfaceFolderState;
+	/** The company's mail as the member reads it (Interfaces step I5c; app/company-mail.ts). Unset until it is read. */
+	mail?: MailState;
 	loading: boolean;
 	error?: string;
 	accessLost?: boolean;
@@ -182,6 +207,13 @@ export interface ConversationState {
 	sending: boolean;
 	sendError?: string;
 	draft?: string;
+	/** The records of the quotes the draft holds, and of those it held since it was last sent: wherever their words
+	 * stand in «» marks in the draft, that is the quote (app/quotes.ts; `draftQuotes`). */
+	quoteRecords?: readonly QuoteRecord[];
+	/** Counts each change to the draft or its records from outside the member's own edits in a composer: a teammate's
+	 * words merged in, the cloud's draft, a send, a message button. A composer's undo history starts again at each
+	 * (`draftReplaced`; app/views/composer-quotes.ts). */
+	draftEpoch?: number;
 	/** Local selected bytes, staged only after an explicit send. */
 	attachments?: File[];
 	executionSponsor?: SessionExecutionSponsor;
@@ -189,6 +221,8 @@ export interface ConversationState {
 		clientInputId: string;
 		clientRequestId: string;
 		text: string;
+		/** The text's quotes: a retry sends exactly these. */
+		quotes?: readonly MessageQuote[];
 		files: File[];
 		executionSponsor: SessionExecutionSponsor;
 		roomTarget?: RoomMessageTarget;
@@ -197,11 +231,17 @@ export interface ConversationState {
 	 * oldest first; absent until the first listing, empty when the cloud has none
 	 * or does not carry coding sessions yet. */
 	codingSessions?: CodingSession[];
+	/** The member's open proposals of the thread's agent (P40c): changes its runs saved that wait for review. Its first
+	 * page, without those this browser discarded; absent until the first listing, and outside the agent's thread. */
+	proposals?: FolderProposalPage;
+	/** Proposals whose discard this browser is sending. */
+	discardingProposals?: readonly string[];
 	/** Inputs this browser appended that the cloud has not listed back yet. */
 	optimistic: {
 		clientInputId: string;
 		inputId?: string;
 		text: string;
+		quotes?: readonly MessageQuote[];
 		attachmentCount?: number;
 		createdAt: string;
 		authorUserId: string;
@@ -216,6 +256,12 @@ export interface ConversationState {
 	/** "Show earlier" is reading, or why it could not. */
 	earlierLoading?: boolean;
 	earlierError?: string;
+}
+
+/** A change to a conversation's draft, or its records, from outside the member's own edits: it says so, and the
+ * composer's undo history starts again there. */
+export function draftReplaced(state: Pick<ConversationState, "draftEpoch">): Pick<ConversationState, "draftEpoch"> {
+	return { draftEpoch: (state.draftEpoch ?? 0) + 1 };
 }
 
 /** Drop optimistic card answers once the projection carries them, or once their
@@ -437,6 +483,8 @@ export class CompanyController {
 	/** Taken inputs a thread has read back for once: never again (a run queued for hours stays taken
 	 * without an event, and each load would read further back). */
 	readonly #readBackFor = new Set<string>();
+	/** Proposals this browser discarded: a listing read before the discard landed does not show them again. */
+	readonly #discardedProposals = new Set<string>();
 	/** Per failed run: when its details may be read next (performance.now()), and
 	 * the latest request, so an older answer never replaces a newer one. */
 	readonly #recoveryReads = new Map<string, { due: number; request: number }>();
@@ -457,7 +505,16 @@ export class CompanyController {
 		this.roomDrafts = new RoomDrafts(api, userId, this.#abort.signal, {
 			sharedRoom: (sessionId) => this.#sharedDraftRoom(sessionId),
 			draft: (sessionId) => this.conversation(sessionId).get().draft ?? "",
-			setDraft: (sessionId, text) => this.conversation(sessionId).set({ draft: text }),
+			quotes: (sessionId) => this.draftQuotes(sessionId),
+			broken: (sessionId) => this.draftBroken(sessionId),
+			// The merged draft's quotes take their words over: a record kept here never outlives the email its
+			// words now come from (another tab removed one quote and quoted the same words from another email).
+			setDraft: (sessionId, text, quotes) =>
+				this.conversation(sessionId).set((state) => ({
+					draft: text,
+					quoteRecords: takeQuoteRecords(state.quoteRecords ?? [], text, quotes),
+					...draftReplaced(state),
+				})),
 		});
 		this.#writeInput =
 			writeInput ??
@@ -515,7 +572,14 @@ export class CompanyController {
 		this.#abort.abort();
 		this.#emailDraftEditors.clear();
 		for (const store of this.conversations.values())
-			store.set({ draft: "", attachments: [], retrySend: undefined, executionSponsor: undefined });
+			store.set((state) => ({
+				draft: "",
+				quoteRecords: undefined,
+				...draftReplaced(state),
+				attachments: [],
+				retrySend: undefined,
+				executionSponsor: undefined,
+			}));
 		this.#realtime?.stop();
 		this.#sidebarRealtime?.stop();
 		void this.#presence?.stop().catch(() => {});
@@ -649,17 +713,19 @@ export class CompanyController {
 					recoveries: {},
 				});
 				for (const store of this.conversations.values())
-					store.set({
+					store.set((state) => ({
 						events: [],
 						pending: [],
 						optimistic: [],
 						draft: "",
+						quoteRecords: undefined,
+						...draftReplaced(state),
 						attachments: [],
 						projection: { items: [], hiddenCount: 0, lastSequence: 0 },
 						hasEarlier: false,
 						earlierLoading: false,
 						earlierError: undefined,
-					});
+					}));
 				this.stop();
 			} else this.store.set({ error: describeError(error) });
 		}
@@ -1531,16 +1597,24 @@ export class CompanyController {
 			};
 			// "Show earlier" may have read older events meanwhile: both stay.
 			const current = () => (store.get().events === known.events ? events : mergeEvents(store.get().events, events));
+			// The member's open proposals of the agent wait in the agent's thread (not a group chat, a routine's or a
+			// worker's session).
+			const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
+			const agent = session && isPrimaryStaffSession(session) ? session : undefined;
 			try {
-				// The history, the waiting inputs and the coding sessions do not depend on one
-				// another: they are read side by side, and the thread draws once, when all landed.
-				const [complete, read, listed] = await Promise.all([
+				// The history, the waiting inputs, the coding sessions and the proposals do not depend on
+				// one another: they are read side by side, and the thread draws once, when all landed.
+				const [complete, read, listed, proposals] = await Promise.all([
 					readEvents(),
-					// New events only: the waiting inputs and coding sessions stay as last read.
+					// New events only: the waiting inputs, coding sessions and proposals stay as last read.
 					full ? readPending() : Promise.resolve(undefined),
 					// The listing is optional: a cloud without Order 9 answers with a missing
 					// RPC, and a refused or failed listing keeps what the thread already shows.
 					full ? this.#api.listCodingSessions(sessionId).catch(() => undefined) : Promise.resolve(undefined),
+					// So are the proposals: a company not on folder-v2 refuses, a cloud before P40c has no RPC.
+					full && agent?.staffAgentId
+						? this.#api.listAgentProposals(agent.environmentId, agent.staffAgentId).catch(() => undefined)
+						: Promise.resolve(undefined),
 				]);
 				const pending = full ? read : store.get().pending;
 				if (this.#stopped || !complete || !pending) return;
@@ -1579,6 +1653,7 @@ export class CompanyController {
 					optimistic,
 					interactionAnswers: reconcileInteractionAnswers(store.get().interactionAnswers, projection, pending),
 					codingSessions,
+					...(proposals ? { proposals: this.#withoutDiscarded(proposals) } : {}),
 					hasEarlier: earlier,
 				});
 			} catch (error) {
@@ -1968,6 +2043,37 @@ export class CompanyController {
 		this.#watchWork(20_000);
 	}
 
+	/** Discard one of the member's open proposals in an agent's thread (P40c): the agent's run cannot apply it anymore.
+	 * The core decides who may (the member it waits for, owners and admins). One that is gone (decided, or erased with
+	 * its run) leaves the thread as a discarded one does. */
+	async discardProposal(sessionId: string, proposalId: string): Promise<void> {
+		const store = this.conversation(sessionId);
+		const id = proposalId.toLowerCase();
+		const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
+		if (!session || store.get().discardingProposals?.includes(id)) return;
+		store.set({ discardingProposals: [...(store.get().discardingProposals ?? []), id], interactionError: undefined });
+		try {
+			await this.#api.discardProposal(session.environmentId, id).catch((error: unknown) => {
+				if (!(error instanceof CloudRpcError && error.code === "P0002")) throw error;
+			});
+			this.#discardedProposals.add(id);
+			const proposals = store.get().proposals;
+			if (proposals) store.set({ proposals: this.#withoutDiscarded(proposals) });
+		} catch (error) {
+			store.set({ interactionError: describeError(error) });
+			throw error;
+		} finally {
+			const discarding = store.get().discardingProposals?.filter((item) => item !== id) ?? [];
+			store.set({ discardingProposals: discarding.length ? discarding : undefined });
+			void this.loadConversation(sessionId);
+		}
+	}
+
+	#withoutDiscarded(page: FolderProposalPage): FolderProposalPage {
+		const proposals = page.proposals.filter((proposal) => !this.#discardedProposals.has(proposal.proposalId));
+		return proposals.length === page.proposals.length ? page : { ...page, proposals };
+	}
+
 	/** An answer runs the agent the way a message there does, on the member's
 	 * selected model account: like a post in an agent's shared thread (bundle
 	 * v100), like a turn request in a plain conversation (bundle v105). */
@@ -2026,6 +2132,50 @@ export class CompanyController {
 		await this.answerInteraction(sessionId, interactionId, "provided", {});
 	}
 
+	/** The quotes of outside content in a conversation's draft: its records' words wherever they stand in «» marks. */
+	draftQuotes(sessionId: string): MessageQuote[] {
+		const state = this.conversation(sessionId, false).get();
+		return placeQuotes(state.draft ?? "", state.quoteRecords ?? []);
+	}
+
+	/** The draft holds a quote's words with only one of their marks (app/quotes.ts, brokenQuotes): it is neither saved
+	 * nor sent until the member mends or removes them, so the words never go as their own. */
+	draftBroken(sessionId: string): boolean {
+		const state = this.conversation(sessionId, false).get();
+		return brokenQuotes(state.draft ?? "", state.quoteRecords ?? []).length > 0;
+	}
+
+	/** The member changed the draft's text in a composer; `caret` is where theirs stands. A change that reaches into a
+	 * quote removes the whole quote (app/quotes.ts). Returns the text kept, which the composer shows, and its caret. */
+	editDraft(
+		sessionId: string,
+		text: string,
+		caret?: number,
+		edit?: FieldEdit,
+	): { text: string; caret: number | undefined } {
+		const store = this.conversation(sessionId, false);
+		const before = store.get().draft ?? "";
+		const kept = keepQuotesWhole(before, store.get().quoteRecords ?? [], text, caret, edit);
+		store.set({ draft: kept.text });
+		return kept;
+	}
+
+	/** Put a message button's text after the conversation's draft, its outside values as quotes. Nothing is sent. */
+	addToDraft(sessionId: string, addition: QuotedText): void {
+		const store = this.conversation(sessionId);
+		const state = store.get();
+		const next = appendQuoted(state.draft ?? "", state.quoteRecords ?? [], addition);
+		if (!next)
+			throw new Error(
+				t("That message already quotes the same words from another email. Send it or remove that quote first."),
+			);
+		if (placeQuotes(next.text, next.records).length > QUOTES_MAX)
+			throw new Error(t("That message already quotes as much as one message can. Send it or remove a quote first."));
+		store.set((now) => ({ draft: next.text, quoteRecords: next.records, ...draftReplaced(now) }));
+		// A shared draft shares it at once, as if the member had typed it.
+		this.roomDrafts.input(sessionId);
+	}
+
 	async sendPrompt(sessionId: string, text: string, viewSignal?: AbortSignal): Promise<boolean> {
 		if (this.#stopped || viewSignal?.aborted) return false;
 		try {
@@ -2035,8 +2185,21 @@ export class CompanyController {
 		}
 		const store = this.conversation(sessionId);
 		const trimmed = text.trim();
+		// The quotes of the text as sent: its records' words in their marks, counted from the trimmed start.
+		const quotes = placeQuotes(trimmed, store.get().quoteRecords ?? []);
 		const files = [...(store.get().attachments ?? [])];
 		if ((!trimmed && !files.length) || store.get().sending) return false;
+		// The last guard: a quote's words with one mark gone never go as the member's own.
+		if (brokenQuotes(trimmed, store.get().quoteRecords ?? []).length) {
+			store.set({ sendError: t("A quote is missing one of its « » marks. Remove it, or put the mark back.") });
+			return false;
+		}
+		if (quotes.length > QUOTES_MAX) {
+			store.set({
+				sendError: t("A message can hold at most {count} quotes. Remove some to send it.", { count: QUOTES_MAX }),
+			});
+			return false;
+		}
 		const problem = sessionAttachmentProblem(files);
 		if (problem) {
 			store.set({ sendError: attachmentProblemText(problem) });
@@ -2045,7 +2208,8 @@ export class CompanyController {
 		const retry = store.get().retrySend;
 		const sameFiles = (other: readonly File[]) =>
 			other.length === files.length && other.every((file, index) => file === files[index]);
-		const sameRequest = retry?.text === trimmed && sameFiles(retry.files);
+		// The cloud compares a repeated call's whole body, quotes included.
+		const sameRequest = retry?.text === trimmed && sameFiles(retry.files) && sameQuotes(retry.quotes ?? [], quotes);
 		if (retry && !sameRequest) {
 			store.set({
 				draft: text,
@@ -2108,6 +2272,7 @@ export class CompanyController {
 				{
 					clientInputId,
 					text: trimmed,
+					...(quotes.length ? { quotes } : {}),
 					attachmentCount: files.length,
 					createdAt: new Date().toISOString(),
 					authorUserId: this.#userId,
@@ -2116,23 +2281,40 @@ export class CompanyController {
 		}));
 		try {
 			const signal = AbortSignal.any([this.signal, ...(viewSignal ? [viewSignal] : [])]);
-			const receipt = roomTarget
-				? await this.#writeInput(sessionId, clientInputId, trimmed, signal, files, executionSponsor, roomTarget)
-				: await this.#writeInput(sessionId, clientInputId, trimmed, signal, files, executionSponsor);
+			const receipt = quotes.length
+				? await this.#writeInput(
+						sessionId,
+						clientInputId,
+						trimmed,
+						signal,
+						files,
+						executionSponsor,
+						roomTarget,
+						quotes,
+					)
+				: roomTarget
+					? await this.#writeInput(sessionId, clientInputId, trimmed, signal, files, executionSponsor, roomTarget)
+					: await this.#writeInput(sessionId, clientInputId, trimmed, signal, files, executionSponsor);
 			if (this.#stopped) return false;
 			signal.throwIfAborted();
-			store.set((state) => ({
-				sending: false,
-				retrySend: undefined,
-				draft: this.roomDrafts.sent(sessionId, text, state.draft ?? "", true),
-				attachments: sameFiles(state.attachments ?? []) ? [] : state.attachments,
-				optimistic: reconcileOptimistic({
-					...state,
-					optimistic: state.optimistic.map((item) =>
-						item.clientInputId === clientInputId ? { ...item, inputId: receipt.inputId } : item,
-					),
-				}),
-			}));
+			store.set((state) => {
+				const rest = this.roomDrafts.sent(sessionId, text, state.draft ?? "", true);
+				return {
+					sending: false,
+					retrySend: undefined,
+					draft: rest,
+					// The records go with the sent text; words another member added meanwhile keep theirs.
+					quoteRecords: rest ? state.quoteRecords : undefined,
+					...draftReplaced(state),
+					attachments: sameFiles(state.attachments ?? []) ? [] : state.attachments,
+					optimistic: reconcileOptimistic({
+						...state,
+						optimistic: state.optimistic.map((item) =>
+							item.clientInputId === clientInputId ? { ...item, inputId: receipt.inputId } : item,
+						),
+					}),
+				};
+			});
 			this.roomDrafts.settle(sessionId);
 			this.#dismissFailureFor(sessionId);
 			await this.loadConversation(sessionId);
@@ -2150,6 +2332,7 @@ export class CompanyController {
 					clientInputId,
 					clientRequestId,
 					text: trimmed,
+					...(quotes.length ? { quotes } : {}),
 					files,
 					executionSponsor,
 					...(roomTarget ? { roomTarget } : {}),

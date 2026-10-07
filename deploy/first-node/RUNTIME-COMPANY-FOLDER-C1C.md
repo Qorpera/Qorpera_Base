@@ -271,7 +271,8 @@ within 63 characters.
 
 As in C1c-1, a line inserted at the start of each function sends `folder-v2` to its new body. The snapshot-v1 text
 after that line stays byte-identical, and its digest (the body without the line, or with a text patch reversed) is
-checked by each slice's functional test (647, 652, 656, 658).
+checked by each slice's functional test (647, 652, 656, 658). No snapshot-v1 digests since 3 October: legacy sweep A,
+#829, removed them from these tests.
 
 | Function | `folder-v2` | Slice |
 | --- | --- | --- |
@@ -281,12 +282,12 @@ checked by each slice's functional test (647, 652, 656, 658).
 | `company_path_assert_context` | by the company's core: `run_reads_current`, never the loop | 2a |
 | the five "unchanged" callers (§3) | a text patch: their actor call becomes `company_run_actor`; `begin_native_company_execution_v2` also takes the run mutex; the digest is of the patched text | 2a |
 | the read-type branches: `describe_company_run_context` (company name from `qorpera_folder_company_index`; its session check stays `FOR SHARE`, after rank 10's recheck at the sessions rank of §5.7; and F2's folder facts: `|| case when v_folder is null then '{}' else jsonb_build_object('folder', v_folder) end`, with `v_folder := qorpera_company_state_run_folder(env, staff, <the coworker ids the body lists>)`, called by name at run time so snapshot-v1 never needs it. It is given the same ids the body puts in `coworkers` and names no others, so `folder` never names an unlisted coworker even when a roster change lands between the two statements; a coworker whose folder retired in between is left out, as one without a folder is. From F2-1b's migration 20260929440000 on #534; the runtime's closed parser checks that every coworker in `folder` is listed, and memory and skills then use `agents/<handle>`), the presence functions (a folder `presence_path_routes` on `qorpera_folder_path_resource` and `folder_actor_allowed`; a refusal is 42501, which `native_presence_subject` reads as "absent"), `native_company_object_actor`, `member_file_export_source` (no gc fence) | their `folder-v2` body | 2a |
-| `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order (served since 3f, §6.5). The office start and its descriptor serve folder-v2 since 3l (§6.16). A screenshot never reaches `_capture` on folder-v2: its operation is refused at authorize since 3l part 3 (§6.22) | 2a |
+| `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order (served since 3f, §6.5). The office start and its descriptor serve folder-v2 since 3l (§6.16). The capture serves folder-v2 since P06d part 2 (§6.21), storing nothing (3l part 3 refused screenshots before it, §6.22) | 2a |
 | `send_native_agent_message`, `send_runner_agent_message`, `append_native_interaction_request`, `append_runner_transcript_event`, `begin_`/`complete_native_tool_operation`, `begin_`/`complete_run_operation_receipt` | 2a: refuse 0A000. 2b-1: the folder receipts (`begin_`/`complete_native_tool_operation`). 2b-2: the folder native send and interaction request. The runner broker's `append_runner_transcript_event`, its send and its direct receipt calls keep refusing (C3) | 2a, 2b |
 | `record_action_review` | 2a: under the mutex; its card path refuses through the transcript append. 2b: the folder card path (§5.6) | 2a, 2b |
 | `assert_company_path_reads`, `record_native_context_view`, `add_agent_review_rule` | their `folder-v2` body (§5.6) | 2b |
 | `enforce_company_context_send` | requires the marker the folder send sets; refuses without it | 2b |
-| `pin_wake_occurrence`, `routine_occurrence_lifecycle` | their `folder-v2` modes (§5.6): text patches, each keeping the legacy statement as its `else` branch; the digest is of the patched text with the patch reversed | 2c part 1 |
+| `pin_wake_occurrence`, `routine_occurrence_lifecycle` | their `folder-v2` modes (§5.6): text patches, each keeping the legacy statement as its `else` branch; the digest was of the patched text with the patch reversed (removed since 3 October, as above) | 2c part 1 |
 | `send_coworker_message`, `read_native_wake` | their `folder-v2` bodies (§5.6), by a first line | 2c part 1 |
 | `enqueue_routine_wake` (routine firing) | its `folder-v2` mode in place of the gc fence, after its argument checks (§5.6); moved here from C1c-3 because part 1 closes the legacy path (F2-6's test 709 fires file routines) | 2c part 1 |
 | the legacy multi-company loops: `materialize_wake_execution_runs`, the drains (`office_activation`, `worker`, `machine`, `company_file` with the dynamic-routine tick), `materialize_session_execution_runs` | skip `folder-v2` companies in the scan's `WHERE` clause, before their first lock. `materialize_session_turn_requests` needs no skip: its scan requires the company's head snapshot, which a `folder-v2` company never has (`qorpera_company_files_core_head`) | 2c part 1 |
@@ -542,7 +543,8 @@ checked by each slice's functional test (647, 652, 656, 658).
     (every existing row met the old one, which the new one only widens).
 - **`handoff_run_sponsor`** refuses a run whose revision receipts have no snapshot. Its `folder-v2` mode accepts
   receipts satisfied by commits (C1c-2c part 2: one more condition, `folder_commit_id is null`, which only
-  `folder-v2` receipts can fail).
+  `folder-v2` receipts can fail). Removed by 20260930059000 (the payer never changes without the member; test 658's
+  handoff part went with it).
 - **Receipt recovery** (2c part 2). `terminalize_runner_attempt_before_native_start` needs no change: it marks
   executing receipts ambiguous on either core. `resolve_run_operation_receipt` dispatches a `folder-v2` receipt to
   `qorpera_folder_resolve_run_receipt`: `confirmed_completed` records the commit that carries the receipt (one per
@@ -635,7 +637,7 @@ Concurrency tests (dblink, with `current_database()`), by slice:
   5. `assert_context` with a revoked read refuses rather than passing, and so does `run_wake_authorized` for a coworker
      wake whose parent's reads are no longer readable.
   6. Every `folder-v2` refusal, a run with no budget row included, and a snapshot-v1 control for every dispatcher, plus
-     a digest of each snapshot-v1 body.
+     a digest of each snapshot-v1 body (no snapshot-v1 digests since 3 October: legacy sweep A, #829, removed them).
 - **C1c-2b:**
   7. Concurrent receipt begins leave one `executing` receipt.
   7b. Concurrent context views of one run get ordinals 1 and 2.
@@ -994,7 +996,7 @@ Decisions:
   admission takes (824 B shows it runs beside a folder effect). Its final authority check takes the same rows again in the
   same modes.
 - **Snapshot-v1** keeps each patched statement in the `else` branch. Each body with its branch reversed is byte for byte
-  the definition before 3f (824 H).
+  the definition before 3f (824 H until 3 October; legacy sweep A, #829, removed that digest).
 - **Decided with 3f** (§6.1): the machine-event drain on `folder-v2` goes with 3i; the worker drain is F2's (F2-5b-3,
   the shared folder drains' `workers`). Both deliver to a
   parent run and need the per-company admission loop (`qorpera_drain_machine_wakes` skips `folder-v2`; until 3i, a
@@ -1065,7 +1067,8 @@ Decisions:
   for the threads (817 §2); a changed title is still written (817 §3).
 - **#581 N2:** an answer to a card and a member change meet at the thread room, in both orders (818 C).
 - Snapshot-v1 keeps every path: each patched body with its patch reversed is the definition before (817 §1; 664 §1 now
-  strips the join's new prelude text).
+  strips the join's new prelude text). No snapshot-v1 digests since 3 October: legacy sweep A, #829, removed 817 §1's
+  and 664 §1's.
 - Not in 3d-1:
   - A joiner still misses an agent thread created at the same moment (on master too). The hire is an effect (the fence
     and the member rows `KEY SHARE`) and the joiner's member row does not exist yet, so nothing both lock conflicts. It
@@ -1199,10 +1202,11 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
   whose purge wants the fence row (it deletes it by cascade): a 40P01 that heals on retry, as §6.4 notes for 3f. 3g's
   drain takes the fence `FOR UPDATE` before the company row and closes it.
 - **Snapshot-v1** keeps each statement in its `else` branch, so the activation markers of 20260925123000 stay in each
-  body. Each body reversed is master's text (826 D; the digests came from a test VM run of the reversal), and the
+  body. Each body reversed is master's text (826 D until 3 October: legacy sweep A, #829, removed the digests and kept
+  the markers check), and the
   snapshot-v1 company still waits for a
   holder of its company row (826 C). 824 B2 is flipped: a `folder-v2` coding reservation no longer waits for the company
-  row `KEY SHARE`, and 824 H reverses 3h's line before 3f's.
+  row `KEY SHARE`, and 824 H reversed 3h's line before 3f's (no digests since 3 October; legacy sweep A, #829).
 - **Inert until C3:** `manage_agent_worker` refuses `folder-v2` (the path actor), so no `folder-v2` coding session can be
   created yet. 3i brings the turn's admission (`begin_coding_turn`) and the machine-event drain; F2-5b-3 the worker drain.
 - **Coding view saves** (the inventory lists tests against them for 3h): attach is unchanged, so they go with 3i's
@@ -1248,8 +1252,8 @@ again after its first. 3e gives it a `folder-v2` path with one company per trans
   reconciler then reports it and asks again after ten minutes, as it does for the first-slot advance.
 - **Deploy order:** the migration, then the edge function, then the orchestrator. An older orchestrator never calls the
   actions, and a `folder-v2` dynamic routine waits for it.
-- Snapshot-v1 keeps its path: `ensure` with its first lines removed is the definition before (819 §1). The legacy tick
-  is unchanged.
+- Snapshot-v1 keeps its path: `ensure` with its first lines removed is the definition before (819 §1 until 3 October:
+  legacy sweep A, #829, removed that digest). The legacy tick is unchanged.
 - Not in 3e: the run itself (materializing a `folder-v2` wake) is C4's materializer (P28). Until then the inserted wake
   stays `queued`, and the list skips the routine (its run is pending). Like the legacy tick, the restore inserts the
   wake even when the company has no computer hours left; P28's materializer holds it ("Waiting for computer hours"),
@@ -1552,7 +1556,8 @@ reverse of core §3's order, and on `folder-v2` a stall of every effect of the c
 - **Snapshot-v1:** the reservations', releases' and node reservation's old statements stay in their `else` branches.
   The member removal's prelude is `folder-v2` only. The account metadata's new order holds on both cores (every other
   path also takes the model login before the identity). 900 I checks that each patched branch is present, with no
-  snapshot-v1 text pins (since 3 Oct); 824 H reverses the node reservation's new layer first.
+  snapshot-v1 text pins (since 3 Oct); 824 H reversed the node reservation's new layer first (no digests since 3
+  October; legacy sweep A, #829).
 - **A window P13's second part closed** (20260930049000, test 901, §6.17): `qorpera_request_login_identity_recovery` and
   `_account_refresh_identity_recovery` took the sign-in `FOR SHARE` and then the gc fence, the reverse of the new
   reservation (the row `KEY SHARE`, then the sign-in `FOR UPDATE`). They could deadlock on one sign-in when two gateway
@@ -1624,7 +1629,7 @@ A company that is not `folder-v2` keeps the gc fence in each `else` branch, unte
   the company, and no error recorded.
 - F: the markers.
 
-824 H gains this migration's layer, undone first.
+824 H gains this migration's layer, undone first (no digests since 3 October; legacy sweep A, #829, removed 824 H's).
 
 ### 6.16 C1c-3l part 1 as built: an agent starts the Company Computer (migration 20260930030000, test 890)
 
@@ -1685,10 +1690,84 @@ each `else`.
   - E1 and E4 set a lock timeout, so a wait there fails the test instead of hanging it;
   - F: the descriptor's new computer waits at the agents before the seat lock;
   - G: exactly 5 bodies name the migration.
-- **Not here (part 2, 20260930030100, test 892):** the office-activation wake that wakes the agent once its computer is
-  up. That covers the per-company drain plugged into the shared folder-drains step (P29a), the waiter check's plain
-  folder branch, and the `'office-activation'` token in `pin_wake_occurrence`, `folder_wake_authorized` (with its
-  ancestry) and `folder_run_resolve`. Until then an agent's start records its waiter, and nothing delivers it.
+- **Not here (part 2, §6.18):** the office-activation wake that wakes the agent once its computer is up.
+
+### 6.18 C1c-3l part 2 as built: the agent wakes when its computer is up (migration 20260930030100, test 892)
+
+The coordinator's P06c, second PR. When an agent's `computer_start` has to wait for the computer, its start records a
+waiter (§6.16). Once the agent's turn has ended and the computer is up, a wake continues the agent's work. On folder-v2
+that wake was refused, and nothing delivered the waiter. Folder-v2 only: the statement that was there before stays in
+each `else`.
+
+- **The drain** (`office_wakes`), plugged into the shared folder-drains step (P29a, `RUNTIME-COMPANY-FOLDER-LISTENER.md`
+  §9) after `listen`:
+  - A waiter is due (`qorpera_folder_office_waiter_due`, plain reads) once its start's turn has ended and the drain can
+    act on it: deliver it (the computer is up under the start's activation) or cancel it (the turn failed or was
+    cancelled, the start is gone or cancelled, or the computer was replaced). A waiter whose computer is still coming
+    up waits, so its company is not listed on every pass.
+  - `qorpera_folder_office_wakes_due(p_after_environment, p_limit)` lists the folder-v2 companies with a due waiter. It
+    is plain reads, and leaves out companies that are paused or being deleted. `has_more` is true only for a full page,
+    which alone carries the next cursor (LISTENER §9).
+  - `qorpera_folder_office_wakes_company(p_environment_id, p_limit ≤ 40)` handles one company in one transaction, with
+    a 2 s lock budget (each waiter writes in its own subtransaction, under core §3's 64), in rank order:
+    1. it reads the work without a lock;
+    2. it takes the folder fence and the company row `KEY SHARE`, then the starts' requesters, agents and their execution
+       authorities `KEY SHARE` (`qorpera_folder_company_enter`, as the materializer does);
+    3. it takes the waiters `FOR UPDATE SKIP LOCKED`, so a second drain of the company skips them, and then the
+       admission;
+    4. per waiter:
+       - a failed or cancelled start, or a replaced computer, cancels it;
+       - a computer not yet up, or a pause, skips it. A stop's first phase writes its pause without waiting for the
+         fence, so a pause can land during the drain; the waiter then waits for a later pass, as with the old drain;
+       - a waiter whose authority is gone (for example its agent's access was revoked) is cancelled;
+       - an authorized one gets a queued `office-activation` wake, and the waiter is delivered. If the pin cancels the
+         wake (a pause that lands inside the insert), the insert is undone and the waiter skipped, so no cancelled row
+         keeps its key.
+
+    It answers `busy` when a lock is not free within the budget, `paused`, `idle`, `deleting` or `not_folder`,
+    otherwise `{state: "drained", delivered, cancelled, skipped}`. No computer row is locked. The wake's authority is
+    read again when it becomes a run, and on every tool call of that run.
+  - The edge function's `FOLDER_DRAINS` gets `office_wakes` (maximum 40), and the orchestrator's `CLOUD_FOLDER_DRAINS`
+    gets `{name: "office_wakes", companyLimit: 16}`.
+  - Since P28a nothing calls the old drain (`qorpera_drain_office_activation_wakes`). It stays until the legacy removal.
+- **The waiter check.** `qorpera_folder_office_waiter_authorized(waiter)` makes the checks of
+  `qorpera_office_waiter_authorized` as plain reads, and that function answers with it on folder-v2. A folder-v2 write's
+  completed receipt counts as having its revision when it names its folder commit. The old check took
+  the company row and every row `NOWAIT`. That would turn a screen heartbeat (the computer `FOR UPDATE`) into a refused
+  tool call of the woken run.
+- **The wake source.** `'office-activation'` leaves the folder-v2 refusal lists of `qorpera_pin_wake_occurrence`,
+  `qorpera_folder_wake_authorized` and `qorpera_folder_run_resolve`. `qorpera_folder_wake_authorized` checks an
+  office-activation wake's ancestry (`qorpera_office_activation_wake_ancestry`). Each list is found by its own opening
+  and its own raise or return. Only the `'office-activation'` token and its comma go, with a marker line before the
+  statement, and a list left empty drops its whole statement. 3i-b's `'machine-event'` edit (S3) does the same, so the
+  two apply in either order.
+- **Test 892** (648's committed fixture; Ada's start waits for the company's computer, which comes up):
+  - A: nothing is due while Ada's turn runs; once it has ended the company is due, unless it is paused, being deleted,
+    or its computer is not up. A page that is not full has no next cursor; a full one names its last company;
+  - B: the drain waits behind a folder stop at the fence, holding neither the waiter nor the admission, and behind a
+    member change at the start's requester, likewise. It then delivers one queued wake for Ada, scheduled at the
+    activation, and a second drain is idle;
+  - C: with the computer held `FOR UPDATE` (a screen heartbeat), the folder wake check answers at once. Once the computer
+    is no longer active, the wake is not authorized;
+  - D: the run the wake becomes resolves as Ada's agent run for that wake;
+  - H: a fence held past the 2 s budget answers `busy` and changes nothing;
+  - I: two drains at once: the second skips the waiter the first holds, and one wake comes;
+  - J: with the admission row held, the drain waits there holding the waiter and no computer; a pause that commits
+    meanwhile leaves the waiter waiting (skipped), and after the pause it is delivered;
+  - K: a wake the pin cancels is undone; the waiter waits, and the next pass delivers it;
+  - L: a waiter whose agent lost its access to the computer is cancelled;
+  - M: with the computer held `FOR UPDATE` (a screen heartbeat), the drain delivers at once;
+  - N: the admission held past the budget also answers `busy`, and the waiter waits;
+  - O: a turn that also saved a company file (its write's receipt names its folder commit) still wakes its agent;
+  - E: a start whose turn failed is cancelled, not woken;
+  - F: only the service role lists and drains, and a page over 500 or a company limit over 40 is refused;
+  - G: exactly the patched and new functions name the migration.
+- **Other tests:**
+  - 656 now reverses the pin trigger's new marker line;
+  - 838 takes `qorpera_office_waiter_authorized` off P13's list of open folder-v2 sites: it tests the core first now;
+  - 656 and 634 check that a machine event is still refused on folder-v2 (634 also checks that a hand-built office
+    activation with no waiter behind it is refused by its ancestry);
+  - the edge function's and the orchestrator's tests cover the new entries.
 
 ### 6.17 P13 part 2 as built: identity recovery and retirement (migration 20260930049000, test 901)
 
@@ -1793,7 +1872,7 @@ machine lock in L.
 The coordinator approved the P06d design on 4 October: on folder-v2 nothing stores a screenshot. Its PNG goes from the
 office service to the native host in the screenshot's own perform answer, and the model gets it from the host's memory.
 The screenshot's receipt is its record. This part is the runtime. Part 2 (SQL) lifts 3l part 3's refusal (§6.22) and
-gives the capture its folder-v2 authority. Until then nothing reaches this path.
+gives the capture its folder-v2 authority (§6.21). Until then nothing reaches this path.
 
 - **The office service** (`CloudCompanyComputerScreenshots.publish`):
   - when the capture's authorize answers `{state: "authorized", storage: "none"}`, it uploads nothing;
@@ -1837,7 +1916,137 @@ gives the capture its folder-v2 authority. Until then nothing reaches this path.
     - `image` on a non-screenshot answer, on an identity naming another receipt, on text content, or as malformed
       base64 is refused before anything is kept.
 
+### 6.20 C1c-3i part b as built: machine events reach their runs (migration 20260930058000, test 848)
+
+**Before.** A company machine's events (`qorpera_company_machine_events`: a command that ended, a machine that runs, one
+stopped before it ran) never reached a folder-v2 run:
+- the pin trigger refused a `machine-event` wake (0A000);
+- `qorpera_folder_wake_authorized` answered false for it;
+- `qorpera_folder_run_resolve` refused its run (0A000);
+- the legacy drain skipped folder-v2, and since P28 nothing calls it.
+
+**The source kind on folder-v2.**
+- The three refusals lose the `'machine-event'` token only. Each list is found by its own statement and count-checked.
+  A list left empty (A1's C1c-3l removes `'office-activation'`, in either order) drops its whole statement.
+- `qorpera_folder_wake_authorized` admits the event in a parent's room conversation, as a worker's completion is, and
+  checks its chain with `qorpera_machine_wake_ancestry`.
+- The pin trigger's agent branch already takes the parent's conversation, starter sponsor and ancestry for it, and
+  P28's materializer copies the parent's capability and publication.
+
+**Continuing a parent run** (two helpers, for any drain that continues one):
+- `qorpera_folder_parent_continuation(parent, source_kind)`, with no locks:
+  - `ready`;
+  - `running` (its job is queued or leased: wait);
+  - `pending` (a wake of that kind for it is queued, or materialized with its job missing, queued or leased: one at a
+    time);
+  - `stopped` (job cancelled, or revivals stopped: suppress);
+  - `gone` (no run or job: undeliverable).
+- `qorpera_folder_insert_continuation(parent, source_kind, source_id, payload)`: the agent wake, under the caller's
+  admission. The pin trigger fills the conversation, requester, payer and causal chain.
+
+**The drain** (`machine_events` in the shared folder drains, LISTENER §9):
+- **`qorpera_folder_machine_events_due`** lists the folder-v2 environments, not deleting and not paused, with a waiting
+  event whose parent is ready, stopped or gone. A new partial index on waiting events by environment serves it.
+- **`qorpera_folder_machine_events_company(environment, limit ≤ 64)`:**
+  1. plain reads of the parents (oldest event first), each classified;
+  2. the folder fence `KEY SHARE`, rank 0, and the ready parents' requesters, agents and authorities `KEY SHARE`
+     (ranks 1 to 3, as the listener's wakes);
+  3. `deleting` / `paused` answers;
+  4. each parent's events `FOR UPDATE SKIP LOCKED` (run-owned rows, at most 8, oldest first), in parent-id order,
+     classified again under them;
+  5. the parents' conversations `KEY SHARE` in id order, then admission once;
+  6. one wake per parent, its events in at most 6 KiB (as the legacy drain cut them).
+
+  A queued wake marks its events delivered. A pause at admission leaves them waiting. A stopped parent's events are
+  suppressed, and a gone parent's, or one whose wake is refused (42501, P0002, 55000, check, unique, size), are
+  undeliverable; the answer names the last refusal (`lastError`). 55P03 and 40P01 answer `busy`.
+
+**No cycle.** It takes nothing stronger than `KEY SHARE` before its events, and its events are its own rows:
+- effects never wait for it, and it never waits for them;
+- a stop's second phase, a resume or a deletion's finisher (the fence `FOR UPDATE`) makes it wait at the fence while it
+  holds nothing;
+- two steps of one company skip each other's events.
+
+**Not here: quiet coding check-ins.** On folder-v2 they wait for coding dispatch, which `qorpera_company_state_worker_rules`
+refuses ("coding workers come to the company folder with coding machines") until C3. **Hand-over:** whoever opens
+coding dispatch on folder-v2 adds the check-in drain. A check-in is a `worker-completion` wake (folder-v2 serves that
+kind already) for the worker's steering run, through the two helpers above, with the legacy
+`qorpera_ask_quiet_coding_sessions` rules: quiet sessions, a mark so each question is asked once, skipping a pending
+revival.
+
+**b9's machine check-ins** (#800, stacked later) use the same helpers with a new source kind, `machine-checkin`, which
+they add to the pin trigger's agent branch, the wake checks and the materializer's parent copy.
+
+**Tests.** 848, on 648's committed fixture:
+- A: no folder-v2 refusal names the kind, and a continuation without admission is refused.
+- B: the drain:
+  - a running parent's events wait;
+  - an ended one's oldest 8 go in one authorized wake into its conversation, under one admission;
+  - one continuation at a time, then the rest;
+  - a long batch is cut to 6 KiB;
+  - cancelled and gone parents;
+  - a paused company is left alone, then served after the resume.
+- C: locks:
+  - beside an effect, no wait;
+  - behind a stop's second phase, it waits at the fence holding no event or member row;
+  - held events are skipped;
+  - a lock timeout answers `busy`.
+- D: grants, bounds and the page.
+- E: markers.
+
+656 §1 no longer pins the pin trigger's snapshot-v1 text (no snapshot-v1 pins since 3 October).
+
+### 6.21 P06d part 2 as built: screenshots on folder-v2, stored nowhere (migration 20260930057000, test 910)
+
+The SQL half of P06d (design approved by the coordinator on 4 October; the runtime half is §6.19). It lifts 3l part 3's
+refusal (§6.22): an agent's screenshot on a folder-v2 company now works, and nothing stores it. **Apply it only after
+every office runs the P06d part 1 office code** (v172 or later, by package or image): an older office service fails
+on `storage: none` and leaves its receipt open. The coordinator settles the office lane before v173.
+
+- **The operation.** `qorpera_native_office_operation` no longer refuses a screenshot on folder-v2. At begin, a folder-v2
+  screenshot's office resource keeps the resources it is taken under, in a new column `target_resources`: the office
+  grant and its version, the privacy version, and the browser profile, grant and version for a browser screenshot.
+- **The capture** (`qorpera_native_office_capture`), folder-v2 branch:
+  - authorize answers `{state: "authorized", storage: "none"}`, so the office service uploads nothing;
+  - publish answers the screenshot's identity under the operation's receipt (`assetId` is the receipt id), after the
+    operation's own check, as the stored path does;
+  - no artifact, capture row, retention hold or company object is made. The receipt, completed with that identity, is
+    the screenshot's record.
+- **The check** (`qorpera_folder_office_captures_checked(binding, authority, assets)`, plain reads, no lock). The caller
+  reads the run's authority once for the whole set (review r1's H1 on #793: per-screenshot reads took about 3 s for
+  64). Each screenshot must be:
+  - this run's completed `computer_screenshot:` receipt, with exactly that identity as its answer;
+  - with its office resource drained, on the same run and screen;
+  - taken under resources that are still current: the computer still the company's and shared, at the same privacy
+    version; the agent's access active at the same grant and version; for a browser screenshot, the browser grant
+    still active at the same version on the same prepared profile (review r1's M1).
+
+  It does **not** ask that the computer be running (the coordinator's decision of 4 October): an idle power-off must
+  not end a run that took a screenshot. A grant change, a privacy change or a member's private session still withdraws
+  it, because the image may show private data; the run then ends at its next model request, as on the stored path.
+- **Its users.** The capture read and the capture-set check answer through it on folder-v2. The folder-v2 context view
+  (`qorpera_folder_record_context_view`) now takes a screenshot output: it checks the output's shape in its loop
+  (22023 "Native capture invalid") and the view's screenshots as one set after it. Before, it refused any screenshot
+  with 0A000.
+- **Tests:**
+  - 910 (648's committed fixture; the computer up and Ada's screen acquired):
+    - A: Ada's desktop screenshot runs through the operation and the capture with nothing stored, and its resource
+      keeps the descriptor's resources;
+    - B: the read and the set check answer it; a changed identity, an unknown one, and another run's screenshot (its
+      receipt and resource both naming that run) are refused;
+    - C: a computer that is not running does not withdraw it;
+    - D: a privacy version change, a private session, a changed grant version, a revoked access, and a browser grant
+      it was taken under that is no longer active each withdraw it;
+    - E: the context view records a view with it and refuses a changed one;
+    - F: a set of 64 is checked within 2 s;
+    - G: the markers.
+  - 652's screenshot case now expects the shape refusal; 647 no longer pins the capture;
+  - 891 (3l part 3's refusal) is retired.
+
 ### 6.22 C1c-3l part 3 as built: no screenshot on folder-v2 yet (migration 20260930030200, test 891)
+
+P06d part 2 (§6.21) lifts this refusal and replaces test 891 with 910. The runtime's relay of a refusal at authorize
+(`CloudToolAuthorizeRefusal`) stays for any later use.
 
 The coordinator's P06c, third PR. Before, an agent's `computer_screenshot` on a folder-v2 company was authorized and its
 receipt began; only then did `qorpera_native_office_capture` refuse with 0A000. The receipt stayed open, and an open
@@ -1883,6 +2092,68 @@ receipt fences the run's later operations.
     key answers it again with no receipt. A plain `CloudToolRefusal` there, or the refusal after the receipt began,
     stays an unknown outcome and keeps its fence;
   - `cloud-native-tool-boundary.test.ts`: the model gets `REFUSED: <message>`.
+
+### 6.23 Company accounts on folder-v2 as built (migration 20260930072000, test 925)
+
+A1-7, the design `a1-scratch/accounts-folder-v2-design.md`, approved by the coordinator on 4 October with three
+conditions (below). Until now every account function refused a folder-v2 company (0A000, "Accounts for folder companies
+come with their connection file"); since 3 October every company is folder-v2, so accounts were unusable. Each ported
+function now serves folder-v2 only and refuses any other company with 0A000 "Accounts need a company on the company
+folder", read before any lock: through the run's job (the broker calls and the agent's read) or the account's
+environment (a removal). No snapshot-v1 path is left, and no account function reaches the gc fence. The connection file
+already worked on folder-v2 (P22): opening marks it, closing revokes the secret and the writer deletes the file.
+
+| Function | Order on folder-v2 |
+|---|---|
+| `qorpera_company_account_call` (every broker call but the fill) | plain reads (the switch, the authority, the job of the authority's company), the core through the job, the run check (`qorpera_native_tool_locked_run` → `qorpera_folder_tool_run`: the run mutex, the job and the fence `KEY SHARE`, the company row `KEY SHARE` at rank 0, the run's principals), then the call's own arguments. It no longer reads the receipt. |
+| `qorpera_company_account_receipt` (new, internal) | the receipt `FOR UPDATE` with exactly the call's old checks: this run's executing `cloud_tool` receipt, the input and downstream digests, the key `company_account:<action>:<account>:<key>`, every comparison null-safe |
+| use, a new version, the state | the call; the secret, then the account (`qorpera_company_account_locked`, rank 8); then the receipt; then the work. A close of a closed account answers it after checking its receipt, with no vault row locked |
+| describe-open | the call, then the receipt (no vault row) |
+| open | the call; the company's account claim (rank 9); under it the repeat, the id, the todo, the duplicate login and the vault name; the receipt; the inserts. A repeat answers its account after checking its receipt |
+| fill | plain reads and the core as the call; the envelope; the run check; the computer (office, screen, activation) by plain reads; the secret, then the account; then the receipt |
+| find | the core through the job (a job of the old core is answered `refused` 0A000; a binding that names no job raises 42501), then the run check (a folder-v2 binding is now validated: the refusal came first until now), then plain reads |
+| remove (owner, admin) | plain checks (the role, the account, the core); `qorpera_folder_company_enter` (the pause refused, the fence `KEY SHARE` with the pause read again, the company row `KEY SHARE` at rank 0, the caller's member row `KEY SHARE` at rank 1, required); the deletion and the role again; the secret, then the account `FOR UPDATE`; the revoke and close as before |
+
+Unchanged: the list, `qorpera_company_account_mail`, the triggers, the descriptor, `qorpera_company_account_locked`, and
+the operator switch (`qorpera_company_account_settings.enabled`). The runtime still hides the `company_account` tool on
+folder companies (`!context.folder`); offering it is the next PR (TypeScript, a later train).
+
+- **The receipt after the vault rows.** Core §3 puts run-owned rows after rank 9 (§5.7); the account calls locked the
+  receipt first. No path held a secret and then waited for a receipt, so this keeps one order rather than fixing a known
+  deadlock. The call still refuses a missing receipt id, digest or (after the opening) account before any vault row,
+  with the receipt's refusal, so "a missing account is a broker fault, never 'no such account'" (794) holds.
+- **The company's account claim** (the coordinator's conditions): `pg_advisory_xact_lock(hashtextextended(
+  'qorpera.company-accounts:' || <company>, 0))`, transaction-scoped, built as E1's per-company lock for hooks and
+  mailboxes (`'qorpera.event-hooks:' || <company>`, #815) so the two namespaces never share a key. E1 has no shared helper,
+  so each names its namespace once, inline. It is listed in core §3 step 4 at rank 9: test 838 lists no lock-order sites
+  or advisory locks (its checks are the gc fence, the job, the run mutex, the folder fence's modes and deferred
+  constraints), so the rank list is the record. It replaces the old company lock that kept the duplicate check and the
+  vault-name loop free of races. A race now waits for the claim and answers "already has this account" or the replay.
+- **The unique indexes stay the final guard.** A 23505 on `qorpera_company_accounts_open_login` or
+  `qorpera_cloud_secrets_active_name` (a writer that took no claim) answers the duplicate check's own refusal, 23505
+  "The company already has this account; use it"; any other conflict (the secret's primary key: the broker's chosen id)
+  stays a broker fault in Postgres' words.
+- **Error order.** A call that is not its receipt's is still refused, now after the vault rows (use, version, state,
+  fill) or after the checks under the claim (open): an opening for a login the company already has answers "already has
+  this account" before its receipt is checked. Nothing is written before the receipt.
+- **Tests.**
+  - **925** (924's base: Alice's leased run): A, every function end to end (describe, open with Alice's todo and a live
+    company mailbox, find, use, a version, connected, needs_person, a fill into the computer, the list, closed, an
+    owner's removal; the connection files marked); B, a real snapshot-v1 company (its own authority, job and account) is
+    refused by each ported function, writing nothing; C, a 23505 on either index answers the duplicate's refusal, forced in
+    one session by a `BEFORE INSERT` trigger that writes the conflicting row after the plain check (and the primary key
+    stays raw); D, the bodies: exactly the ten functions name the migration, the core before any lock, the vault rows
+    before the receipt, the claim before the receipt and the inserts, the removal's enter before its vault rows; E, a
+    removal on a paused company is refused (55000) and changes nothing.
+  - **794, 813, 807** move onto 924's base in place (807 keeps its directly written computer rows: the fill only reads
+    them), each with its cases; the folder-v2 refusal they checked is now the old core's refusal. 809 moves in B3 (#841).
+  - **797** moves onto 648's committed fixture: 1 and 2 as before; 3, a removal against a use: the use's run check no
+    longer takes the company row `FOR UPDATE`, so they meet at rank 8 in one order (the removal holds the secret and waits
+    for the account, the use waits for the secret holding neither the account nor its receipt), the removal lands and
+    the use is refused; 4, a held secret makes a use wait before it locks its receipt (a `NOWAIT` probe finds the receipt
+    free); 5, a held claim makes an opening wait with its receipt free, and it answers its replay (5a) or "already has this
+    account" (5b); a writer without the claim is caught by the login's (5c) and the vault name's (5d) indexes, their
+    23505 answered the same way.
 
 ## 7. Traps for C1c-2 and C1c-3
 

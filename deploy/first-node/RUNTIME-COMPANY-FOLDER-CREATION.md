@@ -334,7 +334,8 @@ ready, the proof company appears in the owner's hub.
 ## 8. Patches, PRs, tests
 
 **Shared live functions P14a patches**, each with the body marker `<slot>` and an exact anchor, and a snapshot-v1
-reversal test (as #705's 817 §1):
+reversal test (as #705's 817 §1; no snapshot-v1 reversal tests since 3 October: legacy sweep A, #829, removed 856 §7's
+and 817 §1's):
 - `qorpera_folder_structured_apply` (the first run);
 - `qorpera_list_hosted_profiles` (hiding);
 - `qorpera_guard_founder_departure` and `qorpera_profile_team_info` (`leave`);

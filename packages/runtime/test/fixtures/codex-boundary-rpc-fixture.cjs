@@ -277,6 +277,22 @@ async function handle(message) {
 			tokenUpdate(usage({}, { inputTokens: 0, outputTokens: 0, totalTokens: 9000 }));
 			done();
 			if (mode === "usage-after-completion") tokenUpdate(usage({ inputTokens: 999, totalTokens: 1006 }));
+		} else if (mode === "per-request-usage") {
+			// Codex adds each response's usage to total and sends it as last (append_last_usage).
+			const counters = (inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens, totalTokens) =>
+				({ inputTokens, outputTokens, cachedInputTokens, cacheWriteInputTokens: 0, reasoningOutputTokens, totalTokens });
+			const first = counters(40, 5, 0, 1, 45);
+			const second = counters(60, 4, 38, 0, 64);
+			const both = counters(100, 9, 38, 1, 109);
+			tokenUpdate(usage(first, first));
+			tokenUpdate(usage(both, second));
+			// A repeat (rate limits), a compaction estimate and a filled context window do not add up.
+			tokenUpdate(usage(both, second));
+			tokenUpdate(usage(both, counters(0, 0, 0, 0, 9000)));
+			tokenUpdate(usage(counters(0, 0, 0, 0, 8192), counters(0, 0, 0, 0, 8083)));
+			const third = counters(70, 3, 60, 0, 73);
+			tokenUpdate(usage({ ...third, totalTokens: 8192 + 73 }, third));
+			done();
 		} else if (mode.startsWith("invalid-usage-")) {
 			const invalid = usage();
 			const fault = mode.slice("invalid-usage-".length);

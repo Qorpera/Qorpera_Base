@@ -34,7 +34,9 @@ import {
 	writeConnectionFile,
 	writeContactFile,
 	writeGroupFile,
+	writeHookFile,
 	writeHumanTaskFile,
+	writeMailboxFile,
 	writeRoutineFile,
 	writeRuleFile,
 	writeSectionsFile,
@@ -120,6 +122,11 @@ describe("companyStatePath", () => {
 				"agents/anna-berg/todos/pricing-page/w1/results.md",
 				"agents/groups/launch-team/group.md",
 				"connections/gmail-sales-nordlys-dk.md",
+				"connections/hook-stripe-payments.md",
+				"connections/mailbox-support.md",
+				"Connections/Hook-Forms.MD",
+				"connections/hooks.md",
+				"connections/mailbox.md",
 				"rules/ask-before-emailing-customers.md",
 				"human-tasks/fit-disk-node-2.md",
 				"contacts/maria-jensen.md",
@@ -151,6 +158,11 @@ describe("companyStatePath", () => {
 			"agents/anna-berg/todos/pricing-page/w1/results.md": "worker-results",
 			"agents/groups/launch-team/group.md": "group",
 			"connections/gmail-sales-nordlys-dk.md": "connection",
+			"connections/hook-stripe-payments.md": "hook",
+			"connections/mailbox-support.md": "mailbox",
+			"Connections/Hook-Forms.MD": "hook",
+			"connections/hooks.md": "connection",
+			"connections/mailbox.md": "connection",
 			"rules/ask-before-emailing-customers.md": "rule",
 			"human-tasks/fit-disk-node-2.md": "human-task",
 			"contacts/maria-jensen.md": "contact",
@@ -606,6 +618,88 @@ Plan and ship version 2 by 1 November.
 	});
 });
 
+describe("hook and mailbox files (E1)", () => {
+	const hook = {
+		id: ID,
+		name: "stripe-payments",
+		proof: "stripe" as const,
+		status: "active" as const,
+		maxBodyBytes: 65536,
+		perMinute: 60,
+		createdBy: JONAS,
+		createdAt: "2026-10-04T08:00:00.5Z",
+		purpose: "Payments from Stripe wake the Analyst.",
+	};
+	const box = {
+		id: ID,
+		address: "support@inbox.qorpera.com",
+		status: "paused" as const,
+		createdBy: JONAS,
+		createdAt: "2026-10-04T08:00:00Z",
+		purpose: "",
+	};
+
+	it("reads a hook and a mailbox and writes them back, with the parse the database checks", () => {
+		const parsed = ok("connections/hook-stripe-payments.md", writeHookFile(hook));
+		expect(parsed).toStrictEqual({ kind: "hook", ...hook });
+		// The keys the database's parse shape names (20260930060000).
+		expect(Object.keys(parsed).sort()).toEqual(
+			[
+				"createdAt",
+				"createdBy",
+				"id",
+				"kind",
+				"maxBodyBytes",
+				"name",
+				"perMinute",
+				"proof",
+				"purpose",
+				"status",
+			].sort(),
+		);
+		const mail = ok("connections/mailbox-support.md", writeMailboxFile(box));
+		expect(mail).toStrictEqual({ kind: "mailbox", ...box });
+		expect(Object.keys(mail).sort()).toEqual(
+			["address", "createdAt", "createdBy", "id", "kind", "purpose", "status"].sort(),
+		);
+		// A name YAML would read as something else is quoted, and reads back the same.
+		expect(ok("connections/hook-yes.md", writeHookFile({ ...hook, name: "yes" }))).toMatchObject({ name: "yes" });
+		expect(ok("connections/hook-x.md", writeHookFile({ ...hook, name: "a--b-" }))).toMatchObject({ name: "a--b-" });
+	});
+
+	it("refuses settings outside the hook's own rules, and any other key", () => {
+		const text = writeHookFile(hook);
+		const problems = (from: string, to: string) => keys(refused("connections/hook-p.md", text.replace(from, to)));
+		expect(problems("proof: stripe", "proof: paypal")).toEqual([["proof", "value"]]);
+		expect(problems("status: active", "status: removed")).toEqual([["status", "value"]]);
+		expect(problems("max_body_bytes: 65536", "max_body_bytes: 1023")).toEqual([["max_body_bytes", "value"]]);
+		expect(problems("max_body_bytes: 65536", 'max_body_bytes: "65536"')).toEqual([["max_body_bytes", "value"]]);
+		expect(problems("per_minute: 60", "per_minute: 121")).toEqual([["per_minute", "value"]]);
+		expect(problems("name: stripe-payments", "name: Stripe")).toEqual([["name", "value"]]);
+		expect(problems("per_minute: 60", "per_minute: 60\naddress: x")).toEqual([["address", "unknown_key"]]);
+		expect(problems(`created_by: ${JONAS}`, "created_by: someone")).toEqual([["created_by", "value"]]);
+		const mail = writeMailboxFile(box);
+		expect(keys(refused("connections/mailbox-s.md", mail.replace("support@inbox.qorpera.com", "Support@x")))).toEqual(
+			[["address", "value"]],
+		);
+		expect(
+			keys(refused("connections/mailbox-s.md", mail.replace("status: paused", "status: active\nproof: mail"))),
+		).toEqual([["proof", "unknown_key"]]);
+		// A vault connection's file at a hook's name is read as a hook's file, which it is not.
+		const vault = writeConnectionFile({
+			id: ID,
+			service: "gmail",
+			account: "a@b.dk",
+			status: "connected",
+			actions: [],
+			connectedBy: JONAS,
+			connectedAt: "2026-10-04T08:00:00Z",
+			purpose: "",
+		});
+		expect(keys(refused("connections/hook-gmail.md", vault))).toContainEqual(["service", "unknown_key"]);
+	});
+});
+
 describe("connections, rules, todos and worker files", () => {
 	it("reads a connection and writes it back", () => {
 		const file = {
@@ -832,6 +926,53 @@ describe("connections, rules, todos and worker files", () => {
 			});
 			expect(twice).not.toContain("fourth");
 			expect(() => appendWorkerFollowUp(PATH, "nope", "x", "2026-10-03T10:00:00Z")).toThrow("does not parse");
+		});
+
+		it("names a coding session's harness and repository, and only a coding brief does (C3a)", () => {
+			const coding: Omit<WorkerBriefFile, "kind"> = {
+				...brief,
+				species: "coding",
+				harness: "codex",
+				repository: { host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "release/v1.2" },
+				...workerStandingTexts({ species: "coding", access: "read", revival: "batch" }),
+			};
+			const text = writeWorkerBriefFile(coding);
+			expect(text).toContain("species: coding\nharness: codex\n");
+			expect(text).toMatch(
+				/\nrepository: "?github\.com\/Qorpera\/Qorpera_Base"?\nbase_branch: "?release\/v1\.2"?\n/,
+			);
+			// The parse is the one the database checks: the repository as the coding tables hold it.
+			expect(ok(PATH, text)).toEqual({ kind: "worker-brief", ...coding });
+			const followed = appendWorkerFollowUp(PATH, text, "Fix the test too.", "2026-10-03T09:00:00Z");
+			expect(ok(PATH, followed)).toMatchObject({ harness: "codex", repository: coding.repository, followUps: 1 });
+			// An in-house brief's parse has no such keys.
+			expect(Object.keys(ok(PATH, writeWorkerBriefFile(brief)) as object)).not.toContain("harness");
+			const head = (lines: string) =>
+				`---\nid: ${ID}\ntitle: T\n${lines}\naccess: read\nrevival: batch\ndispatched_at: 2026-10-03T08:00:00Z\nfollow_ups: 0\n---\n${sections()}`;
+			expect(refused(PATH, head("species: coding\nharness: codex"))).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ key: "repository", message: "repository is required" }),
+					expect.objectContaining({ key: "base_branch", message: "base_branch is required" }),
+				]),
+			);
+			expect(
+				refused(PATH, head('species: coding\nharness: cursor\nrepository: "github.com/a/b"\nbase_branch: main'))[0]
+					?.key,
+			).toBe("harness");
+			for (const repository of ["gitlab.com/a/b", "github.com/a", "github.com/a/b/c", "github.com/-a/b"])
+				expect(
+					refused(PATH, head(`species: coding\nharness: codex\nrepository: "${repository}"\nbase_branch: main`)),
+				).toEqual([expect.objectContaining({ key: "repository" })]);
+			for (const branch of ["a..b", "a/.b", "x.lock", "-x"])
+				expect(
+					refused(
+						PATH,
+						head(`species: coding\nharness: codex\nrepository: "github.com/a/b"\nbase_branch: "${branch}"`),
+					),
+				).toEqual([expect.objectContaining({ key: "base_branch" })]);
+			expect(refused(PATH, head("species: in-house\nharness: codex"))).toEqual([
+				expect.objectContaining({ key: "harness", message: "harness belongs to a coding session's brief" }),
+			]);
 		});
 
 		it("refuses a brief's missing, misplaced and unbalanced sections", () => {
@@ -1778,7 +1919,8 @@ describe("companyStateSeedTree", () => {
 				);
 		}
 		for (const seeded of COMPANY_STATE_SEEDED_PATHS) expect(paths).toContain(seeded);
-		// The fixed folders of contract 5.6 in its order, human-tasks/ and contacts/ among them (Jonas, 2 Oct).
+		// The fixed folders of contract 5.6 in its order, human-tasks/ and contacts/ among them (Jonas, 2 Oct), then
+		// interfaces/ and tables/ with the library (P16).
 		expect(paths.filter((path) => !path.includes("/"))).toEqual([
 			"vision",
 			"agents",
@@ -1787,6 +1929,8 @@ describe("companyStateSeedTree", () => {
 			"contacts",
 			"skills",
 			"rules",
+			"interfaces",
+			"tables",
 		]);
 		const skill = tree.find((entry) => entry.path === COMPANY_STATE_HUMAN_TASK_SKILL_PATH)?.text ?? "";
 		expect(skill).toMatch(/^---\nname: human-task\ndescription: .+\n---\n# Human tasks\n/);
@@ -1805,6 +1949,83 @@ describe("companyStateSeedTree", () => {
 			kind: "sections",
 			sections: [],
 		});
+	});
+
+	it("seeds the library's interfaces and tables, each with the id it is given, Pulse main", () => {
+		let n = 0;
+		const ids: string[] = [];
+		const newId = () => {
+			const id = `5b0e7c52-2f4e-4c1e-9d0a-${String(++n).padStart(12, "0")}`;
+			ids.push(id);
+			return id;
+		};
+		const tree = companyStateSeedTree({ companyName: "Nordlys Studio", cofounderId: ANNA, newId });
+		const library = tree.filter((entry) => /^(interfaces|tables)(\/|$)/.test(entry.path));
+		expect(library.map((entry) => `${entry.kind} ${entry.path}`)).toEqual([
+			"folder interfaces",
+			"folder interfaces/pulse",
+			"file interfaces/pulse/interface.toml",
+			"folder interfaces/mailbox",
+			"file interfaces/mailbox/interface.toml",
+			"folder interfaces/members",
+			"file interfaces/members/interface.toml",
+			"file interfaces/order.md",
+			"folder tables",
+			"folder tables/numbers",
+			"file tables/numbers/table.toml",
+			"file tables/numbers/rows.csv",
+			"folder tables/areas",
+			"file tables/areas/table.toml",
+			"file tables/areas/rows.csv",
+			"folder tables/cards",
+			"file tables/cards/table.toml",
+			"file tables/cards/rows.csv",
+		]);
+		const parsed = (path: string) => {
+			const result = parseCompanyStateFile(path, tree.find((entry) => entry.path === path)?.text ?? "");
+			if (!result?.ok) throw new Error(`${path} does not parse`);
+			return result.file;
+		};
+		expect(ids).toHaveLength(6);
+		const pulse = parsed("interfaces/pulse/interface.toml");
+		expect(pulse).toMatchObject({ kind: "interface", main: true });
+		expect(parsed("interfaces/mailbox/interface.toml")).toMatchObject({ kind: "interface", main: false });
+		expect(parsed("interfaces/order.md")).toMatchObject({ kind: "interface-order" });
+		expect(parsed("tables/areas/rows.csv")).toEqual({ kind: "table-rows", header: expect.any(Array), rows: [] });
+		// Every id the library drew is in its files, and the order lists the three pages.
+		const drawn = library.flatMap((entry) => ids.filter((id) => entry.text?.includes(id)));
+		expect(new Set(drawn)).toEqual(new Set(ids));
+		expect(ids).toContain((pulse as { id: string }).id);
+	});
+
+	it("reads interfaces and tables by the path's shape, with their own parser and names", () => {
+		expect(companyStatePath("interfaces/order.md")?.kind).toBe("interface-order");
+		expect(companyStatePath("interfaces/pulse/interface.toml")).toMatchObject({ kind: "interface", name: "pulse" });
+		expect(companyStatePath("Interfaces/Bad_Name/interface.toml")).toMatchObject({
+			kind: "interface",
+			name: "bad_name",
+		});
+		expect(companyStatePath("tables/numbers/table.toml")).toMatchObject({ kind: "table", name: "numbers" });
+		expect(companyStatePath("tables/numbers/rows.csv")).toMatchObject({ kind: "table-rows", name: "numbers" });
+		for (const path of [
+			"interfaces/pulse/README.md",
+			"interfaces/a/b/interface.toml",
+			"tables/rows.csv",
+			"drafts/x/table.toml",
+		])
+			expect(companyStatePath(path)).toBeNull();
+		// Named by their kind: no .md rule; the folder's name follows the naming rule.
+		expect(companyStatePathProblems("tables/numbers/rows.csv")).toEqual([]);
+		expect(companyStatePathProblems("interfaces/Bad_Name/interface.toml")[0]?.message).toMatch(
+			/^the name of an interface's folder \(Bad_Name\)/,
+		);
+		expect(companyStatePathProblems("tables/x_y", true)[0]?.message).toMatch(/^the name of a table's folder \(x_y\)/);
+		expect(companyStatePathProblems("interfaces", true)).toEqual([]);
+		expect(companyStatePathProblems("tables/x/y", true)).toEqual([]);
+		// The dispatch gives parseInterfaceStateFile's answer.
+		const rows = parseCompanyStateFile("tables/numbers/rows.csv", "number,at\nVisits,2026-10-02T09:44Z\n");
+		expect(rows).toMatchObject({ ok: true, path: { kind: "table-rows", name: "numbers" } });
+		expect(parseCompanyStateFile("tables/numbers/table.toml", "format = 1\n")).toMatchObject({ ok: false });
 	});
 
 	it("seeds the founding table's vision, roles and the Co-Founder's first todo", () => {

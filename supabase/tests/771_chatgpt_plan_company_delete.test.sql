@@ -1,7 +1,11 @@
--- @fixture 764_chatgpt_plan_login.test.sql until "-- A plan login is never listed for the account record the node switch-off reads; the Codex login is."
--- Sign in with ChatGPT, slice 1c (20260928359960): deleting a company ends its members' ChatGPT plan logins
--- at OpenAI before the purge. Test 764's fixture leaves the company with a member's plan login and a
--- Codex vault login, and the company's broker. (Test 773 races the revocation against a run's lease check.)
+-- @fixture 764_chatgpt_plan_login.test.sql until "-- The plan login's own checks start here"
+-- Deleting a folder-v2 company ends its members' ChatGPT plan logins at OpenAI before the purge (ported from
+-- snapshot-v1 in the legacy sweep; Sign in with ChatGPT, slice 1c, 20260928359960): only the kernel calls the plan
+-- deletion helpers; a plan connection that pays a queued or leased job stays until that job ends; the finisher revokes
+-- the deleting company's plan connection only (not a Codex login's, not another company's), waits for the vault for 6
+-- hours at most, then counts the login left open and purges it with the company; the vault takes and ends the login.
+-- Test 764's fixture leaves the company with a member's plan login, a Codex vault login and the company's broker; the
+-- base run of 924 is the leased job. (Test 773 races the revocation against a run's lease check.)
 reset role;
 select set_config('request.jwt.claims',
 	'{"sub":"00000000-0000-4000-8000-000000000000","role":"service_role"}',false);
@@ -15,7 +19,7 @@ begin
 	join public.qorpera_model_logins as login on login.credential_capsule_id = version.credential_capsule_id
 	where login.id = '76400000-0000-4000-8000-000000000250' and version.version = 1;
 	perform set_config('qorpera_test.r771', jsonb_build_object('plan', v_plan, 'codex', v_codex)::text, false);
-	-- Nobody but the kernel calls the new functions.
+	-- Nobody but the kernel calls the plan deletion helpers.
 	if exists (select 1 from unnest(array['anon','authenticated','service_role']) as role(name)
 		cross join unnest(array['public.qorpera_revoke_company_chatgpt_plan_logins(uuid)',
 			'public.qorpera_company_chatgpt_plan_logins_open(uuid)',
@@ -25,6 +29,26 @@ begin
 end $$;
 
 -- The company is being deleted.
+-- Another open job of the company, paid by another connection: the owner's post in Bob's thread on a sponsor of its
+-- own (the base login), queued by one materializer pass.
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+set local role authenticated;
+select set_config('qorpera_test.r771_other_binding', public.qorpera_create_member_execution_sponsor(
+	'92400000-0000-4000-8000-000000000010', '77100000-0000-4000-8000-0000000000b1',
+	(current_setting('qorpera_test.base_connection')::jsonb ->> 'connection_id')::uuid, 2, true) ->> 'binding_id', false);
+reset role;
+do $$
+declare v_pass jsonb;
+begin
+	perform pg_temp.base_post('92400000-0000-4000-8000-000000000001', '92400000-0000-4000-8000-000000000031',
+		'Check the company note.', current_setting('qorpera_test.r771_other_binding')::uuid, 1);
+	v_pass := pg_temp.base_materialize();
+	if v_pass ->> 'state' <> 'done' or jsonb_array_length(v_pass -> 'run_ids') <> 1 then
+		raise exception 'Bob''s run was not queued: %', v_pass; end if;
+end $$;
+reset role;
+select set_config('request.jwt.claims',
+	'{"sub":"00000000-0000-4000-8000-000000000000","role":"service_role"}',false);
 -- Another company's plan login stays as it is: the same member's plan login, copied (its own rows only, so
 -- nothing of this company is left depending on it) onto the fixture's other company.
 set local session_replication_role = replica;
@@ -44,17 +68,17 @@ select (jsonb_populate_record(login, jsonb_build_object('id', '77100000-0000-400
 	'sign_in_session_id', '77100000-0000-4000-8000-000000000005', 'compute_identity_id', '77100000-0000-4000-8000-000000000006',
 	'broker_authority_id', '77100000-0000-4000-8000-000000000007'))).*
 from public.qorpera_model_logins as login where login.id = '76400000-0000-4000-8000-000000000150';
--- A run the plan pays for is still leased (what slice 4 enables): the fixture's leased job.
+-- A run the plan pays for is still leased (what slice 4 enables): the base run's job.
 update public.qorpera_execution_sponsor_versions as sponsor
 set provider_connection_id = (current_setting('qorpera_test.r771')::jsonb ->> 'plan')::uuid, provider_connection_version = 1
 from public.qorpera_execution_runs as run join public.qorpera_runner_jobs as job on job.id = run.job_id
 where sponsor.binding_id = run.sponsor_binding_id and sponsor.version = run.sponsor_version and job.status = 'leased'
-	and run.profile_id = '16000000-0000-4000-8000-000000000010';
+	and run.profile_id = '92400000-0000-4000-8000-000000000010';
 set local session_replication_role = origin;
 -- Both companies are being deleted; each pass counts its own company's logins only.
 insert into public.qorpera_company_deletions(profile_id, requested_by_user_id)
-values ('16000000-0000-4000-8000-000000000010', '16000000-0000-4000-8000-000000000001'),
-	('76400000-0000-4000-8000-000000000010', '16000000-0000-4000-8000-000000000001');
+values ('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000001'),
+	('76400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000001');
 do $$
 begin
 	if not exists (select 1 from public.qorpera_runner_jobs as job
@@ -65,7 +89,7 @@ begin
 		raise exception 'the fixture has no leased job on the plan'; end if;
 	-- The revocation leaves a connection alone while a job it pays is queued or leased: the stop left that job
 	-- because a runtime call holds it, and the connection's trigger would wait for the job under the fence.
-	perform public.qorpera_revoke_company_chatgpt_plan_logins('16000000-0000-4000-8000-000000000010');
+	perform public.qorpera_revoke_company_chatgpt_plan_logins('92400000-0000-4000-8000-000000000010');
 	if (select status from public.qorpera_provider_connections
 		where id = (current_setting('qorpera_test.r771')::jsonb ->> 'plan')::uuid) <> 'active' then
 		raise exception 'the plan connection was revoked while it paid a leased job'; end if;
@@ -87,7 +111,7 @@ select pg_temp.r771_job_status('queued');
 set local session_replication_role = origin;
 do $$
 begin
-	perform public.qorpera_revoke_company_chatgpt_plan_logins('16000000-0000-4000-8000-000000000010');
+	perform public.qorpera_revoke_company_chatgpt_plan_logins('92400000-0000-4000-8000-000000000010');
 	if (select status from public.qorpera_provider_connections
 		where id = (current_setting('qorpera_test.r771')::jsonb ->> 'plan')::uuid) <> 'active' then
 		raise exception 'the plan connection was revoked while it paid a queued job'; end if;
@@ -95,7 +119,7 @@ end $$;
 set local session_replication_role = replica;
 select pg_temp.r771_job_status('leased');
 set local session_replication_role = origin;
--- Only the plan connection's own jobs hold it back: once they end, another connection's open job does not.
+-- Only the plan connection's own jobs hold it back: once they end, another connection's open job (Bob's) does not.
 savepoint r771_other_job;
 do $$
 begin
@@ -105,9 +129,9 @@ begin
 		on sponsor.binding_id = run.sponsor_binding_id and sponsor.version = run.sponsor_version
 	where job.status in ('queued', 'leased') and sponsor.provider_connection_id = (current_setting('qorpera_test.r771')::jsonb ->> 'plan')::uuid;
 	if not exists (select 1 from public.qorpera_runner_jobs as job join public.qorpera_execution_runs as run on run.job_id = job.id
-		where job.status in ('queued', 'leased') and run.profile_id = '16000000-0000-4000-8000-000000000010') then
+		where job.status in ('queued', 'leased') and run.profile_id = '92400000-0000-4000-8000-000000000010') then
 		raise exception 'the fixture has no other open job of the company'; end if;
-	perform public.qorpera_revoke_company_chatgpt_plan_logins('16000000-0000-4000-8000-000000000010');
+	perform public.qorpera_revoke_company_chatgpt_plan_logins('92400000-0000-4000-8000-000000000010');
 	if (select status from public.qorpera_provider_connections
 		where id = (current_setting('qorpera_test.r771')::jsonb ->> 'plan')::uuid) <> 'revoked' then
 		raise exception 'another connection''s open job held the plan connection back'; end if;
@@ -118,7 +142,7 @@ rollback to savepoint r771_other_job;
 -- connection (the Codex login's stays, for the purge, and so does the other company's plan login), and waits
 -- for the vault to end the login.
 do $$
-declare v_result jsonb := public.qorpera_finish_company_deletion('16000000-0000-4000-8000-000000000010');
+declare v_result jsonb := public.qorpera_finish_company_deletion('92400000-0000-4000-8000-000000000010');
 begin
 	if v_result ->> 'state' <> 'waiting' or v_result #>> '{holdings,chatgpt_plan_logins}' <> '1' then
 		raise exception 'the finisher does not wait for the plan login: %', v_result; end if;
@@ -137,8 +161,8 @@ end $$;
 create function pg_temp.r771_open(p_requested_ago interval) returns bigint language plpgsql as $$
 begin
 	update public.qorpera_company_deletions set requested_at = clock_timestamp() - p_requested_ago
-	where profile_id = '16000000-0000-4000-8000-000000000010';
-	return public.qorpera_company_chatgpt_plan_logins_open('16000000-0000-4000-8000-000000000010');
+	where profile_id = '92400000-0000-4000-8000-000000000010';
+	return public.qorpera_company_chatgpt_plan_logins_open('92400000-0000-4000-8000-000000000010');
 end $$;
 update public.qorpera_model_logins set status = 'needs_sign_in' where id = '76400000-0000-4000-8000-000000000150';
 do $$
@@ -163,12 +187,12 @@ begin
 	if position('perform public.qorpera_abandon_company_chatgpt_plan_logins(p_profile_id);'
 		in pg_get_functiondef('public.qorpera_finish_company_deletion(uuid)'::regprocedure)) = 0 then
 		raise exception 'the purging pass does not count plan logins left open'; end if;
-	if public.qorpera_abandon_company_chatgpt_plan_logins('16000000-0000-4000-8000-000000000010') <> 1 then
+	if public.qorpera_abandon_company_chatgpt_plan_logins('92400000-0000-4000-8000-000000000010') <> 1 then
 		raise exception 'the plan login left open is not counted'; end if;
 	update public.qorpera_model_logins set status = 'needs_sign_in' where id = '76400000-0000-4000-8000-000000000150';
-	if public.qorpera_abandon_company_chatgpt_plan_logins('16000000-0000-4000-8000-000000000010') <> 1 then
+	if public.qorpera_abandon_company_chatgpt_plan_logins('92400000-0000-4000-8000-000000000010') <> 1 then
 		raise exception 'a plan login left open that needs a new sign-in is not counted'; end if;
-	v_result := public.qorpera_finish_company_deletion('16000000-0000-4000-8000-000000000010');
+	v_result := public.qorpera_finish_company_deletion('92400000-0000-4000-8000-000000000010');
 	if v_result ->> 'state' <> 'purged'
 		or exists (select 1 from public.qorpera_model_logins where id = '76400000-0000-4000-8000-000000000150') then
 		raise exception 'the plan login past 6 hours was not deleted with the company: %', v_result; end if;
@@ -198,11 +222,11 @@ declare v_result jsonb;
 begin
 	if (select status from public.qorpera_model_logins where id = '76400000-0000-4000-8000-000000000150') <> 'revoked' then
 		raise exception 'the plan login was not marked revoked'; end if;
-	if public.qorpera_company_chatgpt_plan_logins_open('16000000-0000-4000-8000-000000000010') <> 0 then
+	if public.qorpera_company_chatgpt_plan_logins_open('92400000-0000-4000-8000-000000000010') <> 0 then
 		raise exception 'the finisher still waits for an ended plan login'; end if;
-	if public.qorpera_abandon_company_chatgpt_plan_logins('16000000-0000-4000-8000-000000000010') <> 0 then
+	if public.qorpera_abandon_company_chatgpt_plan_logins('92400000-0000-4000-8000-000000000010') <> 0 then
 		raise exception 'an ended plan login is counted as left open'; end if;
-	v_result := public.qorpera_finish_company_deletion('16000000-0000-4000-8000-000000000010');
+	v_result := public.qorpera_finish_company_deletion('92400000-0000-4000-8000-000000000010');
 	if v_result ->> 'state' <> 'purged' then
 		raise exception 'the finisher did not purge once the plan login ended: %', v_result; end if;
 end $$;

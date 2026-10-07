@@ -104,7 +104,7 @@ try {
 							"-c",
 							"test ! -e /srv/screens/.qorpera-import-canary && test ! -e /proc/1/root/srv/screens/.qorpera-import-canary",
 						],
-						environment: { DISPLAY: ":1", PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
+						environment: { PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
 						workingDirectory: layout.workbenchRoot,
 						timeoutMs: 5000,
 						maxOutputBytes: 16384,

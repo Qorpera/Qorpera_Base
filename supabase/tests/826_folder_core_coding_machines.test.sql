@@ -3,8 +3,8 @@
 -- fence and the company row KEY SHARE (qorpera_folder_machine_fence), never the gc fence's row FOR UPDATE. A folder effect
 -- (the fence and the row KEY SHARE) never makes them wait; a stop's second phase (the fence FOR UPDATE) does, before any
 -- coding row. Each call here is refused after its locks for its own reasons (no lease, no custody), which is enough to
--- see where it waits. The snapshot-v1 company keeps the gc fence, and each patched body reversed is the definition before
--- this migration. 648's committed fixture with a coding worker and machine in each company, removed at the end.
+-- see where it waits. The snapshot-v1 company keeps the gc fence. 648's committed fixture with a coding worker and
+-- machine in each company, removed at the end.
 
 -- Coding rows (committed): a coding worker and a member's coding machine in the folder-v2 company (10) and in the
 -- snapshot-v1 company (11). Foreign keys and triggers are off only while they go in.
@@ -135,46 +135,9 @@ begin
 	end loop;
 end $$;
 
--- D. Snapshot-v1 keeps its text: each patched body with its folder-v2 branches reversed is byte for byte the definition
--- before this migration (master digests from a node 2 probe). The reservation's widened branch is reversed in 824 H.
-create temporary table c1c3h_patches(n serial, fn text, digest text, patched text, original text) on commit preserve rows;
-insert into c1c3h_patches(fn, digest, patched, original)
-select fn, digest,
-	E'\t-- C1c-3h (20260930002300): on folder-v2 the folder fence and the company row KEY SHARE.\n'
-	|| E'\tif public.qorpera_company_is_folder_v2((select ' || alias || '.profile_id from public.' || tbl || ' ' || alias || ' where ' || alias || '.id = ' || arg || E')) then\n'
-	|| E'\t\tperform public.qorpera_folder_machine_fence(' || alias || '.profile_id) from public.' || tbl || ' ' || alias || ' where ' || alias || '.id = ' || arg || E';\n'
-	|| E'\telse\n'
-	|| E'\tperform public.qorpera_lock_profile_gc_fence(' || alias || '.profile_id) from public.' || tbl || ' ' || alias || ' where ' || alias || '.id = ' || arg || E';\n'
-	|| E'\tend if;\n',
-	E'\tperform public.qorpera_lock_profile_gc_fence(' || alias || '.profile_id) from public.' || tbl || ' ' || alias || ' where ' || alias || '.id = ' || arg || E';\n'
-from (values
-	('qorpera_authorize_coding_machine_run(uuid,uuid,text,jsonb,text)', 'd28bfed0aafa0709b6aa8f9ea5530b54', 'qorpera_runtime_workers', 'worker', 'p_worker_id'),
-	('qorpera_plan_coding_machine(uuid,uuid,text)', '57c7240563593e4e4fece0c232c90e7b', 'qorpera_runtime_workers', 'worker', 'p_worker_id'),
-	('qorpera_suspend_coding_machine(uuid,text,text,text)', 'e194cac1233db67c1e9dec1f9ed4074e', 'qorpera_coding_machines', 'machine', 'p_machine_id'),
-	('qorpera_release_coding_machine(uuid,text,text,text)', '036105eb7b1633e4c11bc84fec395d6f', 'qorpera_coding_machines', 'machine', 'p_machine_id'))
-	as site(fn, digest, tbl, alias, arg);
-insert into c1c3h_patches(fn, digest, patched, original) values
-	('qorpera_plan_coding_machine(uuid,uuid,text)', '57c7240563593e4e4fece0c232c90e7b',
-		E'\t\t\t-- C1c-3h (20260930002300): on folder-v2 the same KEY SHARE locks again; nothing upgrades them.\n'
-		|| E'\t\t\tif public.qorpera_company_is_folder_v2(v_worker.profile_id) then\n'
-		|| E'\t\t\t\tperform public.qorpera_folder_machine_fence(v_worker.profile_id);\n'
-		|| E'\t\t\telse\n'
-		|| E'\t\t\tperform public.qorpera_lock_profile_gc_fence(v_worker.profile_id);\n'
-		|| E'\t\t\tend if;\n',
-		E'\t\t\tperform public.qorpera_lock_profile_gc_fence(v_worker.profile_id);\n');
+-- D. The activation markers of 20260925123000 stay in each body.
 do $$
-declare v record; p record; v_text text; v_bad text[] := '{}';
 begin
-	for v in select fn, min(digest) as digest from c1c3h_patches group by fn loop
-		v_text := pg_get_functiondef(('public.' || v.fn)::regprocedure);
-		for p in select * from c1c3h_patches where fn = v.fn order by n loop
-			if position(p.patched in v_text) = 0 then v_bad := v_bad || (v.fn || ' (a patch is missing)'); end if;
-			v_text := replace(v_text, p.patched, p.original);
-		end loop;
-		if md5(v_text) <> v.digest then v_bad := v_bad || (v.fn || ' ' || md5(v_text)); end if;
-	end loop;
-	if cardinality(v_bad) > 0 then raise exception 'D: snapshot-v1 text changed in: %', v_bad; end if;
-	-- The activation markers of 20260925123000 stay in each body.
 	if position('qorpera_lock_profile_gc_fence(worker.profile_id) from public.qorpera_runtime_workers worker where worker.id = p_worker_id'
 			in pg_get_functiondef('public.qorpera_authorize_coding_machine_run(uuid,uuid,text,jsonb,text)'::regprocedure)) = 0
 		or position('qorpera_lock_profile_gc_fence(machine.profile_id) from public.qorpera_coding_machines machine where machine.id = p_machine_id'

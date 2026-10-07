@@ -742,6 +742,34 @@ it.each(["observed-usage", "usage-after-completion"])(
 	},
 );
 
+it("records each provider response's usage once, without repeats, estimates or a filled context window", async () => {
+	const { rows, observability } = observationCollector();
+	await expect(run("per-request-usage", { observability }).result).resolves.toMatchObject({ fencedRequests: 1 });
+	await observability.close();
+	const turn = rows.find((row) => row.operation === "model_turn" && row.phase === "finish");
+	expect(turn).toMatchObject({ status: "succeeded", inputTokens: 70, cachedInputTokens: 60, totalTokens: 8265 });
+	const requests = rows.filter((row) => row.operation === "model_request");
+	expect(requests.filter((row) => row.phase === "start")).toHaveLength(3);
+	expect(requests.every((row) => row.parentAttemptId === turn?.attemptId)).toBe(true);
+	expect(
+		requests
+			.filter((row) => row.phase === "finish")
+			.map((row) => [
+				row.status,
+				row.inputTokens,
+				row.outputTokens,
+				row.cachedInputTokens,
+				row.cacheWriteInputTokens,
+				row.reasoningOutputTokens,
+				row.totalTokens,
+			]),
+	).toEqual([
+		["succeeded", 40, 5, 0, 0, 1, 45],
+		["succeeded", 60, 4, 38, 0, 0, 64],
+		["succeeded", 70, 3, 60, 0, 0, 73],
+	]);
+});
+
 it("preserves explicit native zero counters while absent usage remains unknown", async () => {
 	const { rows, observability } = observationCollector();
 	await run("observed-zero-usage", { observability }).result;

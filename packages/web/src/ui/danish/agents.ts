@@ -65,6 +65,32 @@ export const AGENTS: Record<string, string> = {
 	"Has not run yet": "Har ikke kørt endnu",
 	Resumed: "Genoptaget",
 	"When {name} turned on “Work while you're away”": "Da {name} slog “Arbejd, mens du er væk” til",
+	"Who pays": "Hvem betaler",
+	"Paid by you since {date}": "Betalt af dig siden {date}",
+	"Paid by the company since {date}": "Betalt af virksomheden siden {date}",
+	"Paid by {name} since {date}": "Betalt af {name} siden {date}",
+	"Choose a login": "Vælg et login",
+	Login: "Login",
+	"Use this login": "Brug dette login",
+	"Choosing a login lets {name} use it for this routine while you are away. Pause the routine to stop it.":
+		"Når du vælger et login, kan {name} bruge det til rutinen, mens du er væk. Sæt rutinen på pause for at stoppe den.",
+	"This login can't pay for work while you're away right now. Choose another one.":
+		"Dette login kan ikke betale for arbejde, mens du er væk, lige nu. Vælg et andet.",
+	"This login has reached its usage limit. Choose another one, or wait until it resets.":
+		"Dette login har nået sin forbrugsgrænse. Vælg et andet, eller vent til den nulstilles.",
+	"Sign in to this login again in Settings → My connections, or choose another one.":
+		"Log ind på dette login igen under Indstillinger → Mine forbindelser, eller vælg et andet.",
+	"Runs wait until this login's usage limit resets.": "Kørslerne venter, til loginnets forbrugsgrænse nulstilles.",
+	"Sign in to this login again in Settings → My connections to let it run.":
+		"Log ind på dette login igen under Indstillinger → Mine forbindelser, så rutinen kan køre.",
+	"Runs wait until {name} signs in to this login again.":
+		"Kørslerne venter, til {name} logger ind på dette login igen.",
+	"Runs wait until this login is signed in again.": "Kørslerne venter, til der er logget ind på dette login igen.",
+	"The company is stopped, so its routines can't change now.":
+		"Virksomheden er stoppet, så dens rutiner kan ikke ændres nu.",
+	"You can only choose one of your own logins.": "Du kan kun vælge et af dine egne login.",
+	"You can't change who pays for this routine.": "Du kan ikke ændre, hvem der betaler for rutinen.",
+	"The login could not be chosen. Try again.": "Login kunne ikke vælges. Prøv igen.",
 	Ended: "Afsluttet",
 	Done: "Færdig",
 	"Runs until {name} decides it is done": "Kører, indtil {name} beslutter, at den er færdig",

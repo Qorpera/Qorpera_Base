@@ -17,7 +17,9 @@ https://claude.ai/artifact/GfmXyKyFSC4M5ULeTBC72e ("Company Accounts").
   sms`), the status (`pending|connected|needs_person|closed`), and for an agent's account the open todo that
   needed it (`opened_for_todo_id`), the agent and the opening receipt. A member's hand-over names no todo.
 - The account file `connections/<stem>.md` (F2 format, written by the vault's writer, A1-7) shows `site`,
-  `two_step` and `opened_for`; folder-v2 companies are refused until then.
+  `two_step` and `opened_for`. Since A1-7 (migration `20260930072000`, `RUNTIME-COMPANY-FOLDER-C1C.md` §6.23) accounts
+  serve only companies on the company folder; any other company is refused (0A000 "Accounts need a company on the
+  company folder").
 
 ## A1-1: the vault's records (migration `20260928419970`, SQL tests 794 and 797)
 
@@ -31,13 +33,14 @@ Every call is bound to the agent's tool call: the run binding (the native lease,
 `qorpera_native_tool_locked_run`, job first) and the run's `executing` effect receipt, whose logical operation
 key must be `company_account:open:<key>` for an opening and `company_account:<action>:<account id>:<key>` for
 the other actions (the receipt names the account, as a connector receipt names its grant). Shared checks in
-`qorpera_company_account_call`, in lock order: the switch (0A000 when off), the folder kind (0A000 for
-folder-v2), the broker authority by plain read (42501 unless active with this capability), the run's job by
-plain read (42501 unless it is the authority's company: another company's run is refused before any of its rows
-is locked), the run, the authority's company equals the run's (42501), then the receipt `FOR UPDATE` (42501
-unless executing, cloud_tool, same input and downstream digests, this action and account). Every check is
-null-safe: a missing capability, digest or (for use, version and state) account id refuses (42501), never
-passes as unknown.
+`qorpera_company_account_call`, in lock order: the switch (0A000 when off), the broker authority by plain read
+(42501 unless active with this capability), the run's job by plain read (42501 unless it is the authority's
+company: another company's run is refused before any of its rows is locked), the company's core through that job
+(0A000 unless it is on the company folder, A1-7), the run (`qorpera_folder_tool_run`), the authority's company
+equals the run's (42501), and the call's own arguments. The receipt `FOR UPDATE` (42501 unless executing,
+cloud_tool, same input and downstream digests, this action and account) is `qorpera_company_account_receipt`'s,
+taken after the account's vault rows since A1-7. Every check is null-safe: a missing capability, digest or (for
+use, version and state) account id refuses (42501), never passes as unknown.
 
 | Function | Action | What it does |
 | --- | --- | --- |
@@ -47,12 +50,14 @@ passes as unknown.
 | `qorpera_add_company_account_version(…, account, base_version, two_step, key_id, envelope, envelope_sha256)` | `version` | Compare-and-swap over `base_version` (55000 "read it again" when it moved; never 40001). A repeat finds its own version by digest. May set `two_step`. `account_version_added` event. |
 | `qorpera_set_company_account_state(…, account, status)` | `state` | `connected`, `needs_person` or `closed`; `connected_at` once, `closed_at` on close. Closing revokes the vault row, which wipes every envelope (20260928429975); a repeat close answers the closed account. A closed account is never used again and frees its login for a new account. `account_state_changed` event (`operation_id` = the new status). |
 
-The account row and its secret are locked `FOR UPDATE` (secret first) only by the version, state and use calls,
-after the receipt, and only when the secret is this company's `website` secret: any other id (another company's
-account, a Gmail secret) is refused without being locked. The opening call inserts, taking the foreign keys'
-key-share locks. The 5 s `lock_timeout` covers the vault rows; the lease validator's company fence keeps its own
-wait (up to 25 s), as for every native tool call. Through the vault the database pool cancels a statement after
-4 s, so a longer wait ends as "outcome unconfirmed" and rolls back; the tool call's next attempt repeats it.
+The account row and its secret are locked `FOR UPDATE` (secret first) only by the version, state, use and fill
+calls, before the receipt (A1-7: vault rows at rank 8, then run-owned rows), and only when the secret is this
+company's `website` secret: any other id (another company's account, a Gmail secret) is refused without being
+locked. The opening call takes the company's account claim (a transaction advisory lock at rank 9), reads the
+duplicate login and the vault name under it, takes the receipt, then inserts, taking the foreign keys' key-share
+locks. The 5 s `lock_timeout` covers the vault rows and the claim. Through the vault the database pool cancels a
+statement after 4 s, so a longer wait ends as "outcome unconfirmed" and rolls back; the tool call's next attempt
+repeats it.
 
 ### Member calls
 
@@ -61,12 +66,14 @@ wait (up to 25 s), as for every native tool call. Through the vault the database
   todo it was opened for (id and title), who opened it (agent name or member), created, connected, last used and
   by whom, closed. No envelope, key id or value.
 - `qorpera_remove_company_account(profile, account)`: owners and admins (42501 otherwise, checked by plain read
-  before any lock). Then, in lock order: the company row `FOR KEY SHARE` (rank 0, which the audit row's key needs
-  anyway), the member row, the secret, the account. Revokes the secret (the trigger below wipes the envelopes and
-  closes the account), records `removed_by_user_id`, and audits `account_removed` once; a repeat changes nothing.
-  Taking the company row's key share first means a broker call that holds the company row through its lease
-  waits for the removal instead of deadlocking with it (test 797). The account on the website stays open; no
-  agent can use it any more.
+  before any lock; 0A000 for a company not on the company folder). Then, in lock order (A1-7):
+  `qorpera_folder_company_enter` (a paused company refused with 55000, the folder fence `KEY SHARE` with the pause
+  read again, the company row `KEY SHARE` at rank 0, which the audit row's key needs, the caller's member row
+  `KEY SHARE` at rank 1), the deletion and the role read again, then the secret and the account. Revokes the secret
+  (the trigger below wipes the envelopes and closes the account), records `removed_by_user_id`, and audits
+  `account_removed` once; a repeat changes nothing. A broker call on the same account meets the removal at the
+  secret, in the same order, and waits there holding neither the account nor its receipt (test 797). The account on
+  the website stays open; no agent can use it any more.
 
 ### Elsewhere
 
@@ -98,15 +105,17 @@ carries only the sealed box beside the action. Plaintext exists only in the vaul
 - `qorpera_valid_office_browser_action`: `vault_fill {role: textbox|spinbutton, name, account, field:
   login|password|code}`. The value never appears in the action, its receipt or a transcript.
 - `qorpera_fill_company_account(authority, capability, binding, receipt, envelope, downstream)` (broker only):
-  the checks of the account calls in the same order and null-safe (switch, folder kind, authority by plain read,
-  job by plain read, the run, the company), the call's operation envelope read before any lock (a `vault_fill` of
-  `computer_browser`, 22023 otherwise), then the receipt `FOR UPDATE`: executing, `cloud_tool`, input digest =
-  SHA-256 of that envelope, the downstream digest, logical key `computer_browser:<the envelope's key>` (42501).
-  Then, by plain read: the computer the envelope names is the run's company's, at its current generation, and the
+  the checks of the account calls in the same order and null-safe (switch, authority by plain read, job by plain
+  read, the core: 0A000 unless the company is on the company folder, the run, the company), the call's operation
+  envelope read before any lock (a `vault_fill` of `computer_browser`, 22023 otherwise). Then, by plain read: the
+  computer the envelope names is the run's company's, at its current generation, and the
   run's own unexpired screen lease is on it (42501 'company computer lease is unavailable'); its current active,
   not superseded activation has a key (0A000 otherwise: the agent is told the computer cannot type account values
-  right now, because it is still starting or needs a restart on a newer version). Then the account as `use` reads it (this company's open website account,
-  locked; 22023 'no such open account'), its current version, last use and an `account_used` event. Answers
+  right now, because it is still starting or needs a restart on a newer version). Then the account as `use` locks it
+  (this company's open website account, the secret then the row; 22023 'no such open account'), and only then (A1-7)
+  the receipt `FOR UPDATE`: executing, `cloud_tool`, input digest = SHA-256 of that envelope, the downstream digest,
+  logical key `computer_browser:<the envelope's key>` (42501); its current version, last use and an `account_used`
+  event. Answers
   `qorpera.company-account-fill-context/v1`: the account's facts, the envelope with its associated data, and what
   the box is bound to (receipt, field, computer, generation, the key).
 - Neither function is on the native host's call list (`qorpera_native_host_calls`, test 807), so once G2-2's switch
@@ -195,7 +204,8 @@ offered and accounts are switched on.
   - the company's mailbox addresses (removed ones left out), for the tagged login;
   - with `todo` (a todo key), that todo's id, when it is this agent's own open or blocked todo (22023 otherwise):
     agents know a todo by its key, and the opening names it by id.
-  It refuses 0A000 while accounts are switched off and for folder-v2 companies, and 22023 for any other request
+  It answers `refused` 0A000 while accounts are switched off and for a company not on the company folder (since
+  A1-7, 20260930072000), and 22023 for any other request
   shape. Granted to the service role only.
 - An agent's account signs up with a tagged address of one of the company's mailboxes. A trigger on
   `qorpera_company_accounts` (before insert, for an agent's opening only) refuses any other login with 22023,
@@ -205,8 +215,8 @@ offered and accounts are switched on.
   letter case. A member's hand-over (A1-6) keeps any login. With no mail domain or no mailbox, no agent opens an
   account: an owner adds a mailbox first.
 - Observations name the tool `company_account` (`qorpera_record_runtime_observation`, an exact-text patch after
-  `'find_mail','save_attachment',`, which later patches anchored there still find), as the runtime's list and test
-  320 do (`scripts/check-runtime-observation-vocabulary.test.mjs` checks all three).
+  `'find_mail','save_attachment',`, which later patches anchored there still find), as the runtime's list does
+  (`scripts/check-runtime-observation-vocabulary.test.mjs` checks both).
 
 ## A1-4b: the agent's tool (`company_account`, runtime only)
 
@@ -263,10 +273,17 @@ accounts are switched off (the read answers "switched off"). `cloud-company-acco
   - The mail wait asks find_mail for the tagged address only (`to:`), so a site that accepts the tag but mails
     the bare address is noticed (no code arrives): the account goes `needs_person`, and the bare mailbox is never
     searched for its code.
-- Folder-v2 (A1-7): these calls lock the receipt before vault rows, the reverse of the folder core's ranks. On
-  today's companies the lease validator's exclusive company fence serialises them, which also keeps the
-  duplicate check and the vault-name loop free of races; folder-v2 has no such fence, so A1-7 must order them
-  by rank and take the unique checks under it.
+- Folder-v2 (A1-7, done: migration `20260930072000`, test 925; `RUNTIME-COMPANY-FOLDER-C1C.md` §6.23). The calls
+  locked the receipt before the vault rows, the reverse of the folder core's ranks, and the old lease validator's
+  exclusive company fence serialised them, which also kept the duplicate check and the vault-name loop free of
+  races. Folder-v2 has no such fence, so the calls now take core §3's order: the run check (the company row only
+  `KEY SHARE`), the account's secret and then its row (rank 8), and only then the receipt (a run-owned row,
+  `qorpera_company_account_receipt`); an opening takes the company's account claim
+  (`qorpera.company-accounts:<company>`, a transaction advisory lock at rank 9, built as E1's
+  `qorpera.event-hooks:<company>`), reads the duplicate login and the vault name under it, then takes the receipt and
+  inserts. The unique indexes stay the final guard: a 23505 on either answers "The company already has this account;
+  use it". A removal enters the company (the pause, the folder fence, the company row and the member, all
+  `KEY SHARE`) before the secret and the account. Companies that are not on the company folder are refused.
 - A repeated version save is recognised only while it is still the newest version.
 
 ## Next steps

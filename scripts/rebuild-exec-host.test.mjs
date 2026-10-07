@@ -87,7 +87,14 @@ function setup({ runners = "", hosts = "", journals = "" } = {}) {
 	writeFileSync(join(state, "journals"), journals);
 	writeFileSync(join(state, "orchestrator"), "active\n");
 	writeFileSync(join(state, "log"), "");
-	for (const file of ["qorpera-shared-execution-service.mjs", "install-shared-execution-guest.sh", "manifest.json"]) writeFileSync(join(pkg, file), "");
+	// Every file the script requires of the package (its own list), and a folder program the installer pins.
+	const required = /for file in ([^;]*); do\n\t\[\[ -f \$\{PACKAGE\}/.exec(readFileSync(script, "utf8"))?.[1] ?? "";
+	for (const file of required.split(/[\s\\]+/).filter(Boolean)) writeFileSync(join(pkg, file), "");
+	writeFileSync(join(pkg, "qorpera-folder"), "folder program");
+	writeFileSync(
+		join(pkg, "install-shared-execution-guest.sh"),
+		`EXPECTED_FOLDER_PROGRAM_SHA256="${createHash("sha256").update("folder program").digest("hex")}"\n`,
+	);
 	writeFileSync(
 		join(staging, "shared-execution.env"),
 		"QORPERA_SHARED_EXECUTION_SLOTS=2\nQORPERA_SHARED_EXECUTION_HOST_ID=qorpera-exec-node02\nQORPERA_SUPABASE_URL=https://db.example\nQORPERA_RUNNER_PROVIDER_ADAPTER=native-b\nQORPERA_NATIVE_CODEX_FENCE_SHA256=0\n",
@@ -264,6 +271,9 @@ test("every rebuild mints the host's own credential, binds only its hash, and pu
 		);
 		assert.ok(order.every((at, index) => at >= 0 && (index === 0 || order[index - 1] < at)), result.log);
 		assert.ok(!existsSync(join(fixture.staging, "credentials", "qorpera-execution-host")), "never staged");
+		// G2-5: the staged service key serves the script's own calls and never enters the host.
+		assert.match(result.log, /shared-execution-credentials\/qorpera-runner-provider/);
+		assert.doesNotMatch(result.log, /qorpera-supabase-service-key/);
 	} finally {
 		rmSync(fixture.dir, { recursive: true, force: true });
 	}

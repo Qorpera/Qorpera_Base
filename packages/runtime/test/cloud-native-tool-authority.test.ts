@@ -29,6 +29,27 @@ async function admit() {
 	return { ...fixture, reader, abort, run };
 }
 
+/** Fake timers and performance.now move together, in small steps, so a timer set late in a step still fires in the next. */
+function fakeClock() {
+	vi.useFakeTimers();
+	const clock = {
+		now: 0,
+		async tick(ms: number) {
+			for (let passed = 0; passed < ms; passed += 50) {
+				clock.now += 50;
+				await vi.advanceTimersByTimeAsync(50);
+			}
+		},
+	};
+	vi.spyOn(performance, "now").mockImplementation(() => clock.now);
+	return clock;
+}
+
+/** An answer that arrives `ms` from now on the fake clock. */
+function after<T>(ms: number, value: T): Promise<T> {
+	return new Promise((resolve) => setTimeout(() => resolve(value), ms));
+}
+
 it("projects distinct cloud principals without credentials or model-selectable authority", async () => {
 	const { run, binding, authority, reader } = await admit();
 	expect(run.identity).toEqual(authority.identity);
@@ -162,14 +183,15 @@ it("bounds an uncooperative authority transport before admission, asking again w
 	);
 	const opened = CloudNativeToolRun.open(binding, { describeToolAuthority: request }, new AbortController().signal);
 	const rejected = expect(opened).rejects.toThrow("Cloud tool authority unavailable");
-	// Each attempt waits 5 s, then pauses 250 ms doubling to 2 s; the window is 30 s from the first: attempts start at
-	// 0, 5.25, 10.75, 16.75 and 23.75 s, and the fifth's end (28.75 s) plus its pause would pass the window.
+	// The first attempt waits 5 s, and each one cut at its deadline gives the next twice as long, pausing 250 ms doubling
+	// to 2 s, all within the 30 s window from the first: attempts start at 0, 5.25 and 15.75 s, and the third, given
+	// 20 s, is cut at the window's end (30 s).
 	for (let step = 0; step < 130; step += 1) {
 		now += 250;
 		await vi.advanceTimersByTimeAsync(250);
 	}
 	await rejected;
-	expect(request).toHaveBeenCalledTimes(5);
+	expect(request).toHaveBeenCalledTimes(3);
 	expect(request.mock.calls.every((call) => call[1].aborted)).toBe(true);
 	expect(vi.getTimerCount()).toBe(0);
 });
@@ -247,34 +269,91 @@ it("closes at once on a refusal, and asks no more once the authority would lapse
 });
 
 it("keeps a model request's fence asking while a slow database answers, for as long as the lease holds (5 Oct 2026)", async () => {
-	vi.useFakeTimers();
-	let now = 0;
-	vi.spyOn(performance, "now").mockImplementation(() => now);
-	// Both clocks move together, in small steps, so a timer set late in a step still fires in the next.
-	const tick = async (ms: number) => {
-		for (let passed = 0; passed < ms; passed += 50) {
-			now += 50;
-			await vi.advanceTimersByTimeAsync(50);
-		}
-	};
+	const clock = fakeClock();
 	const { run, reader, authority } = await admit();
-	// The fence's reads hang for 40 s, past the 30 s authority read at the start; the run's refresh keeps renewing it.
+	// The database answers the fence's reads only at 40 s, past the 30 s authority read at the start; the run's refresh
+	// keeps renewing it. Attempts are cut at 10 s and then 20 s; the third (from 30.75 s) gets the answer.
 	const fence = vi.fn<(signal: AbortSignal) => Promise<unknown>>(async () =>
-		now < 40_000 ? new Promise<never>(() => undefined) : structuredClone(authority),
+		after(Math.max(0, 40_000 - clock.now), structuredClone(authority)),
 	);
 	let settled = false;
 	const fenced = run.assertActiveWith(fence, run.signal, CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS).finally(() => {
 		settled = true;
 	});
-	for (let second = 0; second < 50 && !settled; second += 1) await tick(1_000);
+	for (let second = 0; second < 50 && !settled; second += 1) await clock.tick(1_000);
 	await expect(fenced).resolves.toBe(true);
-	expect(now).toBeGreaterThanOrEqual(40_000);
-	expect(fence.mock.calls.length).toBeGreaterThanOrEqual(5);
+	expect(clock.now).toBeGreaterThanOrEqual(40_000);
+	expect(fence).toHaveBeenCalledTimes(3);
 	expect(reader.describeToolAuthority.mock.calls.length).toBeGreaterThanOrEqual(4);
 	expect(run.signal.aborted).toBe(false);
 	// Its answer renewed the authority as a refresh does: the run goes on.
-	await tick(25_000);
+	await clock.tick(25_000);
 	expect(run.signal.aborted).toBe(false);
+});
+
+it("gives a fence read slower than one attempt twice as long next, so it lands behind the one it cut (6 Oct 2026)", async () => {
+	const clock = fakeClock();
+	const { run, authority } = await admit();
+	// Every fence read takes 12 s, and the database runs them one after another: the first attempt's read goes on
+	// after it is cut at 10 s, and the second (from 10.25 s) waits for it before its own 12 s. Given 20 s, it lands at
+	// 24 s; given 10 s again, every attempt would be cut and the fence would never land. This models a delay outside
+	// the statement (a connection pool wait): in the database each attempt is one statement under the native host
+	// entry's 8 s budget, which a cancelled attempt does not grow.
+	let busyUntil = 0;
+	const fence = vi.fn<(signal: AbortSignal) => Promise<unknown>>(async () => {
+		busyUntil = Math.max(clock.now, busyUntil) + 12_000;
+		return after(busyUntil - clock.now, structuredClone(authority));
+	});
+	let settled = false;
+	const fenced = run.assertActiveWith(fence, run.signal, CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS).finally(() => {
+		settled = true;
+	});
+	for (let second = 0; second < 50 && !settled; second += 1) await clock.tick(1_000);
+	await expect(fenced).resolves.toBe(true);
+	expect(fence).toHaveBeenCalledTimes(2);
+	expect(clock.now).toBeGreaterThanOrEqual(24_000);
+	expect(clock.now).toBeLessThan(30_000);
+	expect(run.signal.aborted).toBe(false);
+});
+
+it("never lets an older fence answer shorten the authority a later refresh read, but still closes on a changed identity", async () => {
+	const clock = fakeClock();
+	const { run, reader, authority } = await admit();
+	await clock.tick(5_000);
+	// A fence read starts at 5 s and sees 8 s left (a lease near its end); the refresh at 10 s reads 30 s. The fence's
+	// answer arrives at 12 s: applied, it would end the run at 13 s.
+	let answer: ((value: unknown) => void) | undefined;
+	const fence = vi.fn<(signal: AbortSignal) => Promise<unknown>>(
+		() =>
+			new Promise((resolve) => {
+				answer = resolve;
+			}),
+	);
+	const fenced = run.assertActiveWith(fence, run.signal, CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS);
+	await clock.tick(7_000);
+	expect(reader.describeToolAuthority).toHaveBeenCalledTimes(2);
+	answer?.({ ...structuredClone(authority), validForMs: 8_000 });
+	await expect(fenced).resolves.toBe(true);
+	await clock.tick(3_000);
+	expect(run.signal.aborted).toBe(false);
+	// The identity is checked before the order: an older answer with another identity still closes the run (the same
+	// timeline, from 15 s).
+	const second = await admit();
+	await clock.tick(5_000);
+	const stale = second.run.assertActiveWith(
+		() =>
+			new Promise((resolve) => {
+				answer = resolve;
+			}),
+		second.run.signal,
+		CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS,
+	);
+	const rejected = expect(stale).rejects.toThrow("Cloud tool authority unavailable");
+	await clock.tick(7_000);
+	expect(second.reader.describeToolAuthority).toHaveBeenCalledTimes(2);
+	answer?.({ ...structuredClone(second.authority), identity: { ...second.authority.identity, sessionId: null } });
+	await rejected;
+	expect(second.run.signal.aborted).toBe(true);
 });
 
 it("stops a model request's fence at once when the run's authority is lost meanwhile", async () => {
