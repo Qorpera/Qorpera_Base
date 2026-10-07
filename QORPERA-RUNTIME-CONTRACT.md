@@ -851,7 +851,8 @@ subscriptions, which self-limit.
 > 64 MiB fence frame (more than any model context holds), and a view row is
 > bounded at 16 MiB as storage.
 
-> **Amended 2026-10-03 (not built yet).** What remains also holds the agent
+> **Amended 2026-10-03 (built in E1 and E7; the brake is off until the
+> founder sets its levels).** What remains also holds the agent
 > exit's line guard: TCP port 25 is refused, and a brake on bursts of new
 > connections, whose levels the founder decides after two weeks of counting.
 > It guards the shared line and never counts a run's work ("agent traffic
@@ -5047,6 +5048,9 @@ It amends these texts. Where older text conflicts with this amendment, this amen
      flood), and failed connections to many addresses (a scan).
    - The founder sees the numbers and decides the brake's levels before it is switched on, well above normal use.
      Past them, that company's new connections are slowed for a while. The brake never stops normal work.
+   - Slowed means a share of new connections per 10 seconds. Past it, the company's new connections are dropped and
+     its machines try again a little later, as on a busy line; nothing is refused for good. Open connections, the
+     exit's own names and other companies are never touched. Each brake's start and end are in the exit's log.
    - It guards the shared line, which the line provider may cut for spam or port scans whoever caused them.
    - It is not a limit on the work: 7.4's rule that a run has no count on its work stands.
 10. **Updates never stop a machine, and the exit fails closed.**
@@ -5196,8 +5200,13 @@ own texts below carries a note "Amended 2026-10-06" in place.
      log holds nothing from such a folder.
      - A step is **narrow** when its arguments or result name a path outside the part of the folder shared with every
        agent, when its reads include one, or when it runs on a machine that mounts such a folder.
-     - After a run's first narrow step, every later step of that run, and every step of a worker it dispatches after
-       that step, is narrow too, since the agent's text and arguments may repeat what was read.
+     - After a run's first narrow step, every later step of that run is narrow too, since the agent's text and
+       arguments may repeat what was read. So is every step of a worker run whose dispatching step is narrow: a
+       worker dispatched, or started again by a `followup` with new text, at or after the sending run's first narrow
+       step, or by a run that is narrow from its first step (below). A `followup` may come from another run than the
+       first dispatch, such as the parent's completion continuation, so each worker run names its own dispatching
+       step. A worker run that a `followup` starts continues the worker's previous run, so it is also narrow when
+       that run had a narrow step (next point).
      - So is every step of a run that continues a run with a narrow step, whatever woke it: a worker's report, a
        computer start, a machine event (a machine that started or stopped, or a command that ended, including a
        machine that had to wait for room) or any other continuation. Each carries the earlier run's receipts, sends
@@ -5210,8 +5219,8 @@ own texts below carries a note "Amended 2026-10-06" in place.
      - A worker's report is, like a send, its deliberate output. A worker with a narrow step still leaves beside its
        todo (section 13) what it leaves today: its outcome, its summary, its `needs` if it is blocked, and its
        outputs. Only its own log keeps its narrow steps narrow. Reading the report alone makes no run narrow: the
-       parent's completion continuation or the worker's `followup` is narrow only by the rules above, so a completion
-       continuation of a parent that had a narrow step is narrow, and one of a parent that had none is not.
+       parent's completion continuation is narrow only by the rules above, so a completion continuation of a parent
+       that had a narrow step is narrow, and one of a parent that had none is not.
      - The run itself still sees its narrow steps in full while it runs: the host keeps them, and the folded lines
        over them, in memory for that run's own requests (item 3) and stores them nowhere else.
      - So a run with a narrow step cannot resume from its log (item 11). If it is cut off, it ends in review as
@@ -5224,7 +5233,10 @@ own texts below carries a note "Amended 2026-10-06" in place.
      every run log (its §4.5, §8 and §9). The design takes them up before W1 is built: §4.5 (what a narrow step
      keeps), §8 (zoom's grant check), §9 (who opens a run log) and §14, whose W1 and W2 proofs add tests for:
      - a narrow step stored with only the fields above, and no path or content in any line over it;
-     - later steps, and a worker dispatched after a narrow step, kept the same way;
+     - later steps, and a worker dispatched at or after a narrow step or by a run narrow from its first step, kept
+       the same way;
+     - a worker's next run started by a `followup` sent at or after a narrow step, and one started by a `followup`
+       to a worker whose earlier run had a narrow step, both narrow from their first step;
      - a worker with a narrow step keeping its own log narrow while its report (outcome, summary, `needs`, outputs)
        stays beside its todo, and the parent's completion continuation not made narrow by reading the report alone;
      - a machine-event continuation of a command on a machine that mounts such a folder, and a worker-completion

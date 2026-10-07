@@ -58,6 +58,9 @@ struct Node {
 	listed: bool,
 	/// Replaced by a newer version: unreachable by name, attributes frozen.
 	detached: bool,
+	/// Removed or replaced by this program's own change (a removal, a move, a file made over it): its path holds
+	/// another file now, or none.
+	removed: bool,
 }
 
 /// One entry of a listing as the kernel gets it.
@@ -105,6 +108,7 @@ impl Tree {
 				lookups: 1,
 				listed: false,
 				detached: false,
+				removed: false,
 			},
 		);
 		let mut by_path = HashMap::new();
@@ -129,9 +133,26 @@ impl Tree {
 		self.nodes.get(&ino).and_then(|n| n.attr.clone())
 	}
 
+	/// The attributes the inode was last seen with, known to be current or not: a file's inode stands for one version
+	/// of it, so its version is the one it had then.
+	pub fn last_seen(&self, ino: u64) -> Option<Attr> {
+		self.nodes.get(&ino).map(|n| n.seen.clone())
+	}
+
 	#[cfg(test)]
 	fn knows(&self, ino: u64) -> bool {
 		self.nodes.contains_key(&ino)
+	}
+
+	/// Whether the inode is what its path shows now (not a version a newer one replaced, nor a removed name).
+	pub fn current(&self, ino: u64) -> bool {
+		self.nodes.get(&ino).is_some_and(|n| !n.detached && self.by_path.get(&n.path) == Some(&ino))
+	}
+
+	/// Whether this program's own change removed or replaced the inode's file, so nothing written through it has a
+	/// path to go to (a newer version arriving from the node does not count: its path is still the same file's).
+	pub fn removed_here(&self, ino: u64) -> bool {
+		self.nodes.get(&ino).is_none_or(|n| n.removed)
 	}
 
 	/// The cached listing of a folder.
@@ -186,6 +207,7 @@ impl Tree {
 							lookups: 0,
 							listed: false,
 							detached: false,
+							removed: false,
 						},
 					);
 					self.by_path.insert(path, ino);
@@ -324,7 +346,7 @@ impl Tree {
 		let Some(dir_path) = self.nodes.get(&dir).map(|n| n.path.clone()) else { return 0 };
 		let path = join(&dir_path, name);
 		if let Some(old) = self.by_path.get(&path).copied() {
-			self.detach(old);
+			self.remove_here(old);
 		}
 		if self.dirs.contains_key(&dir) {
 			self.drop_listing(dir);
@@ -333,7 +355,16 @@ impl Tree {
 		self.next_ino += 1;
 		self.nodes.insert(
 			ino,
-			Node { path: path.clone(), parent: dir, attr: Some(attr.clone()), seen: attr, lookups: 1, listed: false, detached: false },
+			Node {
+				path: path.clone(),
+				parent: dir,
+				attr: Some(attr.clone()),
+				seen: attr,
+				lookups: 1,
+				listed: false,
+				detached: false,
+				removed: false,
+			},
 		);
 		self.by_path.insert(path, ino);
 		ino
@@ -361,7 +392,7 @@ impl Tree {
 		let gone: Vec<u64> =
 			self.by_path.iter().filter(|(p, _)| p.as_str() == path || p.starts_with(&prefix)).map(|(_, i)| *i).collect();
 		for ino in gone {
-			self.detach(ino);
+			self.remove_here(ino);
 		}
 	}
 
@@ -370,7 +401,7 @@ impl Tree {
 	pub fn renamed_local(&mut self, from: &str, to: &str, to_dir: u64) {
 		self.changes += 1;
 		if let Some(old) = self.by_path.get(to).copied() {
-			self.detach(old);
+			self.remove_here(old);
 		}
 		for path in [from, to] {
 			if let Some(&parent) = self.by_path.get(split(path).0) {
@@ -400,6 +431,14 @@ impl Tree {
 			// No longer named by the old folder's listing (dropped above).
 			n.listed = false;
 		}
+	}
+
+	/// This program removed or replaced the node's file: detached, and marked so.
+	fn remove_here(&mut self, ino: u64) {
+		if let Some(n) = self.nodes.get_mut(&ino) {
+			n.removed = true;
+		}
+		self.detach(ino);
 	}
 
 	/// A newer version of the node's path arrived: the node keeps its version for whoever holds it. Its folder's
@@ -697,6 +736,11 @@ mod tests {
 		t.removed_local("e");
 		assert!(!t.by_path.contains_key("e") && !t.by_path.contains_key("e/x"));
 		assert_eq!(t.attr(x).unwrap().version, "1");
+		// Removed here, unlike a version a newer one from the node replaced, and unlike the file renamed over above.
+		assert!(t.removed_here(x) && t.removed_here(f) && !t.removed_here(n));
+		let (kids, _) = t.install(ROOT, vec![file("f", 9, "p3")], t.changes(), true, Some("f"));
+		assert_ne!(ino_of(&kids, "f"), n);
+		assert!(!t.current(n) && !t.removed_here(n));
 	}
 
 	#[test]

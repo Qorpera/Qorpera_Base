@@ -433,6 +433,92 @@ describe("writes through the mount", () => {
 		]);
 	});
 
+	it("bases a save on what this view's move published when it names the version the file showed before", async () => {
+		const { root, core, service, open } = await fixture();
+		core.seed([
+			folder("reports"),
+			folder("reports/2026"),
+			await storeFile(root, "reports/2026/q1.md", "q1 first", 1, BIG),
+			folder("archive"),
+			await storeFile(root, "notes.md", "notes first", 2, BIG),
+		]);
+		const view = await open();
+		const [q1, notes] = [core.entries.get("reports/2026/q1.md")!.version, core.entries.get("notes.md")!.version];
+		await view.rename({ from: "reports/2026", to: "archive/2026", noReplace: false });
+		await view.rename({ from: "notes.md", fromBase: notes, to: "notes-old.md", noReplace: false });
+		// While the moves are pending, the files show at their new paths the versions they had: what the machine reads,
+		// and what its version map takes as their bases.
+		expect((await view.list("archive/2026", undefined)).entries.find((e) => e.name === "q1.md")?.version).toBe(q1);
+		expect((await view.read({ path: "archive/2026/q1.md", version: q1, offset: 0, length: 16 })).toString()).toBe(
+			"q1 first",
+		);
+		// Saves in place: each publishes the move first, which gives the file a new version; the save is based on it.
+		await save(view, "archive/2026/q1.md", "q1 second", q1);
+		await save(view, "notes-old.md", "notes second", notes);
+		const [movedQ1, movedNotes] = [
+			core.entries.get("archive/2026/q1.md")!.version,
+			core.entries.get("notes-old.md")!.version,
+		];
+		expect([movedQ1, movedNotes]).not.toContain(q1);
+		expect(movedNotes).not.toBe(notes);
+		expect(byPath((await view.publish()).paths)).toEqual([
+			{ path: "archive/2026/q1.md", outcome: "saved" },
+			{ path: "notes-old.md", outcome: "saved" },
+		]);
+		expect(byPath(core.commits.at(-1)!.units as readonly { path: string }[])).toEqual([
+			expect.objectContaining({ op: "write", path: "archive/2026/q1.md", expectedVersion: movedQ1 }),
+			expect.objectContaining({ op: "write", path: "notes-old.md", expectedVersion: movedNotes }),
+		]);
+		// Another machine's change after the move: a save based on the version from before the move is a conflict.
+		core.write(await storeFile(root, "archive/2026/q1.md", "theirs", 50, BIG));
+		await service.poll();
+		await service.settled();
+		await save(view, "archive/2026/q1.md", "q1 third", q1);
+		expect((await view.publish()).paths).toEqual([
+			{ path: "archive/2026/q1.md", outcome: "conflict", reason: "version_changed", receipt: expect.any(String) },
+		]);
+	});
+
+	it("bases a save on what this view's move published when it names the version its own save made before", async () => {
+		const { root, core, open } = await fixture();
+		core.seed([await storeFile(root, "a.md", "one", 1, BIG), await storeFile(root, "c.md", "c one", 2, BIG)]);
+		const view = await open();
+		// A save, then a move of the file it saved: the machine's version map takes the version the save made along to
+		// the new name. The move publishes the save first, and the next save there publishes the move first.
+		const made = await save(view, "a.md", "one two", core.entries.get("a.md")!.version);
+		await view.rename({ from: "a.md", fromBase: made, to: "b.md", noReplace: false });
+		await save(view, "b.md", "one two three", made);
+		expect((await view.publish()).paths).toEqual([{ path: "b.md", outcome: "saved" }]);
+		expect(core.entries.has("a.md")).toBe(false);
+		expect(core.entries.get("b.md")?.fileSha256).toBe(hashOf("one two three"));
+		// Twice over: a file saved, moved, published, and moved on.
+		const madeC = await save(view, "c.md", "c two", core.entries.get("c.md")!.version);
+		await view.rename({ from: "c.md", fromBase: madeC, to: "d.md", noReplace: false });
+		await view.publish();
+		await view.rename({ from: "d.md", fromBase: madeC, to: "e.md", noReplace: false });
+		await view.setExecutable("e.md", true, madeC);
+		expect((await view.publish()).paths).toEqual([{ path: "e.md", outcome: "saved" }]);
+		expect(core.entries.get("e.md")).toMatchObject({ fileSha256: hashOf("c two"), executable: true });
+	});
+
+	it("bases a save on the version a file has now when it moved away and back after its own save", async () => {
+		const { root, core, open } = await fixture();
+		core.seed([await storeFile(root, "a.md", "one", 1, BIG)]);
+		const view = await open();
+		const made = await save(view, "a.md", "one two", core.entries.get("a.md")!.version);
+		await view.rename({ from: "a.md", fromBase: made, to: "t.md", noReplace: false });
+		await view.publish();
+		// Back at a.md, the machine's version map holds the save's version there again, as it did before the move.
+		await view.rename({ from: "t.md", fromBase: core.entries.get("t.md")!.version, to: "a.md", noReplace: false });
+		await save(view, "a.md", "one two three", made);
+		const back = core.entries.get("a.md")!.version;
+		expect((await view.publish()).paths).toEqual([{ path: "a.md", outcome: "saved" }]);
+		expect(core.commits.at(-1)!.units).toEqual([
+			expect.objectContaining({ op: "write", path: "a.md", expectedVersion: back }),
+		]);
+		expect(core.entries.get("a.md")?.fileSha256).toBe(hashOf("one two three"));
+	});
+
 	it("keeps a conflicting save pending until the core holds it on the receipt, a platform mount's too", async () => {
 		// The platform may download any catalogued object, so only the receipt's own rows say a copy was kept.
 		const { root, core, service, open } = await fixture({ platform: true });

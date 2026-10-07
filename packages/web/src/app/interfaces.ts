@@ -30,6 +30,7 @@ import {
 import { presentationLocale, t } from "../ui/preferences.ts";
 import { type CompanyController, isAgentPairSession } from "./company.ts";
 import type { FolderPage, FolderProblem, FolderTable, InterfaceFolderState } from "./interface-folder.ts";
+import { isMailSource, mailSource, mailSourceRows } from "./interface-mail.ts";
 import {
 	fileSourceText,
 	folderIdColumn,
@@ -62,16 +63,20 @@ export interface InterfaceRow {
 	readonly key: string;
 }
 
-/** The blocks this client draws today. A `detail` block is drawn only when a drawn block in its view opens it. */
+/** The blocks this client draws today. A `detail` or `mail` block is drawn only when a drawn block in its view opens
+ * it. */
 const DRAWN_BLOCKS: ReadonlySet<InterfaceBlock["kind"]> = new Set([
 	"list",
 	"table",
 	"detail",
 	"board",
+	"mail",
 	"text",
 	"numbers",
 	"calendar",
 ]);
+/** The blocks that show the row another block opens (`opens`, §3.2). */
+const OPENED_KINDS: ReadonlySet<InterfaceBlock["kind"]> = new Set(["detail", "mail"]);
 /** The sources this client reads from the company's live state: their columns, and the column `since` and ordering
  * use. */
 const LIVE_SOURCES: Readonly<Record<string, { readonly columns: readonly string[]; readonly time: string | null }>> = {
@@ -112,10 +117,10 @@ function libraryInterfaces(): { readonly name: string; readonly file: InterfaceF
 	return library;
 }
 
-/** Whether a source's column names are the platform's (the live state's and the folder's own files'), so drawn in the
- * member's language. A table's own columns are the company's words. */
+/** Whether a source's column names are the platform's (the live state's, the mail's and the folder's own files'), so
+ * drawn in the member's language. A table's own columns are the company's words. */
 export function isLiveSource(source: string): boolean {
-	return Object.hasOwn(LIVE_SOURCES, source) || isFolderSource(source);
+	return Object.hasOwn(LIVE_SOURCES, source) || isMailSource(source) || isFolderSource(source);
 }
 
 function folderTable(company: CompanyController, source: string): FolderTable | undefined {
@@ -143,6 +148,8 @@ function folderText(company: CompanyController, source: string): string | undefi
 export function interfaceSource(company: CompanyController, source: string): InterfaceSource | undefined {
 	const live = Object.hasOwn(LIVE_SOURCES, source) ? LIVE_SOURCES[source] : undefined;
 	if (live) return { ...live, readable: true, problems: [] };
+	const mail = mailSource(company, source);
+	if (mail) return { ...mail, readable: true, problems: [] };
 	if (isFolderSource(source)) {
 		const read = company.store.get().interfaceFolder?.sources.get(source);
 		return read && { ...folderSourceColumns(source), readable: read.readable, problems: read.problems };
@@ -173,6 +180,7 @@ export function idColumn(
 		return type === "agent" || type === "member" || type === "agents" ? type : null;
 	}
 	if (source === "members") return column === "id" ? "member" : null;
+	if (source === "mail_addresses") return column === "handled_by" ? "agents" : null;
 	return AGENT_COLUMNS.has(column) ? "agent" : null;
 }
 
@@ -194,11 +202,17 @@ export function drawnParts(
 
 /** Whether this client can draw a block: its kind is drawn here and it reads one source the client has; a board, when
  * it can read one of its parts' tables; a text block with its own text, always; a calendar, when it can read one of
- * its sources (§3.2, proposed: it draws from those it can). */
+ * its sources (§3.2, proposed: it draws from those it can). A `mail` block draws a mail thread, so it reads `mail` and
+ * nothing else. A text, numbers or calendar block doesn't read `mail`: a thread has no text, the threads are read a page
+ * at a time, so a tile or a day would count only those read so far, and neither marks the outside values it would show
+ * (§4). */
 export function drawableBlock(block: InterfaceBlock, company: CompanyController): boolean {
 	if (block.kind === "board") return drawnParts(block, company).length > 0;
 	if (!DRAWN_BLOCKS.has(block.kind)) return false;
 	if (block.kind === "text" && block.text !== null) return true;
+	if (block.kind === "mail" && block.from[0] !== "mail") return false;
+	if ((block.kind === "text" || block.kind === "numbers" || block.kind === "calendar") && block.from.includes("mail"))
+		return false;
 	const has = (source: string) => interfaceSource(company, source) !== undefined;
 	if (block.kind === "calendar") return block.from.some(has);
 	return block.from.length === 1 && has(block.from[0] ?? "");
@@ -228,7 +242,13 @@ export function folderSources(file: InterfaceFile): {
 	for (const view of file.views) {
 		const opened = new Set(view.blocks.flatMap((block) => blockOpens(block)));
 		for (const block of view.blocks) {
-			if (!DRAWN_BLOCKS.has(block.kind) || (block.kind === "detail" && !opened.has(block.id ?? ""))) continue;
+			// A `mail` block reads only `mail`, which is not in the folder.
+			if (
+				!DRAWN_BLOCKS.has(block.kind) ||
+				block.kind === "mail" ||
+				(block.kind === "detail" && !opened.has(block.id ?? ""))
+			)
+				continue;
 			const named = [
 				...block.from,
 				...(block.kind === "board" ? block.parts.map((part) => part.from) : []),
@@ -283,8 +303,8 @@ export function interfaceViews(file: InterfaceFile): InterfaceViewShape[] {
 	return resolved;
 }
 
-/** The blocks of a view this client draws, in their order: the drawable ones, and a `detail` block that one of
- * them (or a board part drawn) opens. A block a view narrows by a column its source doesn't have is left out of that
+/** The blocks of a view this client draws, in their order: the drawable ones, and a `detail` or `mail` block that one
+ * of them (or a board part drawn) opens. A block a view narrows by a column its source doesn't have is left out of that
  * view: it could only ever look empty. A board is left out when none of its parts has the columns. */
 export function viewBlocks(view: InterfaceViewShape, company: CompanyController): ViewBlock[] {
 	const fits = ({ block, narrow }: ViewBlock) => {
@@ -301,7 +321,7 @@ export function viewBlocks(view: InterfaceViewShape, company: CompanyController)
 		};
 		return block.kind === "calendar" ? block.from.some(has) : has(block.from[0] ?? "");
 	};
-	const drawn = view.blocks.filter((shown) => shown.block.kind !== "detail" && fits(shown));
+	const drawn = view.blocks.filter((shown) => !OPENED_KINDS.has(shown.block.kind) && fits(shown));
 	const opened = new Set(
 		drawn.flatMap(({ block, narrow }) =>
 			blockOpens(
@@ -313,7 +333,7 @@ export function viewBlocks(view: InterfaceViewShape, company: CompanyController)
 	return view.blocks.filter(
 		(shown) =>
 			drawn.includes(shown) ||
-			(shown.block.kind === "detail" && shown.block.id !== null && fits(shown) && opened.has(shown.block.id)),
+			(OPENED_KINDS.has(shown.block.kind) && shown.block.id !== null && fits(shown) && opened.has(shown.block.id)),
 	);
 }
 
@@ -352,7 +372,9 @@ function needsMet(file: InterfaceFile, company: CompanyController): boolean {
 		// listed and its table says it can't be read.
 		if (need.startsWith("table:"))
 			return company.store.get().interfaceFolder?.tables.has(need.slice("table:".length)) === true;
-		// No member can read the company's mail yet (Q1's member read, step I5a), nor its connections here.
+		// The company has a live mailbox when the member mail read lists an address (step I5c); its answer is empty while
+		// the company's mail is off. No member can read the company's connections here yet.
+		if (need === "mail") return (company.store.get().mail?.addresses.length ?? 0) > 0;
 		return false;
 	});
 }
@@ -453,6 +475,7 @@ export function interfaceMainProblem(company: CompanyController): string | null 
 
 /** The rows of a source this client reads, or undefined when it can't read it. */
 export function interfaceRows(company: CompanyController, source: string): InterfaceRow[] | undefined {
+	if (isMailSource(source)) return mailSourceRows(company, source);
 	const state = company.store.get();
 	if (isFolderSource(source))
 		return folderSourceRows(company, state.interfaceFolder, source, () =>

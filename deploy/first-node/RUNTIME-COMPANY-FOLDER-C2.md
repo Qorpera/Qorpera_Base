@@ -322,7 +322,7 @@ counts them (`erased.proposals`). A live root whose only history is a proposal s
   under a root in between makes it retry (QRC01);
 - the parking commit only inserts.
 
-**The runtime (P40b, migration `20260930093000`, SQL tests 320, 926 and 927 extended; `CloudFolderProposals`):**
+**The runtime (P40b, migration `20260930093000`, SQL tests 320 (since deleted with snapshot-v1, legacy sweep B2b), 926 and 927 extended; `CloudFolderProposals`):**
 - At the start of a turn, a run that can raise a card lists the first page: a folder-v2 company run with a session,
   not a worker, and not a wake from a room other than its own thread. The prompt gets a `proposals` block just before
   `skills`: each proposal's id, when and from where it was saved, and its first 20 changes as one line each with its

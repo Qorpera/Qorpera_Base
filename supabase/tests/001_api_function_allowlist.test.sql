@@ -134,6 +134,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_create_shared_session_v3(uuid,uuid,text,text,uuid,jsonb)', false, true, 'internal: self-scoped or pure helper'),
 	('public.qorpera_create_shared_session_v4(uuid,uuid,text,text,uuid,jsonb,uuid,bigint)', false, true, 'member: self-scoped or pure helper'),
 	('public.qorpera_decide_member_identity_recovery(uuid,uuid,uuid,text,text,uuid,text)', false, true, 'internal: self-scoped or pure helper'),
+	('public.qorpera_decline_interface_offer(uuid,uuid)', false, true, 'member: auth.uid() + membership of a folder-v2 company; only the member the offer names (I9c)'),
 	('public.qorpera_decline_profile_invitation(uuid)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
 	('public.qorpera_delegate_coding_session(uuid,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_delete_hosted_profile(uuid)', false, true, 'member: auth.uid() + membership/ownership'),
@@ -255,6 +256,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_member_folder_path_history(uuid,text,uuid,integer)', false, true, 'member: auth.uid() + membership of a folder-v2 company, read only (C4 P27a)'),
 	('public.qorpera_member_folder_read(uuid,text)', false, true, 'member: auth.uid() + membership of a folder-v2 company, read only (C4 P27a)'),
 	('public.qorpera_member_folder_writer(uuid)', false, true, 'member: auth.uid() + membership of a folder-v2 company; answers only the caller''s own actor, read only (C4 P34a)'),
+	('public.qorpera_member_interface_offers(uuid)', false, true, 'member: auth.uid() + membership of a folder-v2 company; open offers on tables the caller reads (I9c)'),
 	('public.qorpera_member_mail_addresses(uuid)', false, true, 'member: auth.uid() + membership, before any lock (I5a)'),
 	('public.qorpera_member_mail_thread(uuid,text)', false, true, 'member: auth.uid() + membership, before any lock (I5a)'),
 	('public.qorpera_member_mail_threads(uuid,jsonb)', false, true, 'member: auth.uid() + membership, before any lock (I5a)'),
@@ -272,6 +274,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_execution_host_call(text,text,text,jsonb)', true, false, 'execution host (G2-3e): the host''s credential is checked first, with no lock; only the listed calls, each held to the host''s provider adapter'),
 	('public.qorpera_execution_host_call_long(text,text,text,jsonb)', true, false, 'execution host (G2-3e): as qorpera_execution_host_call, for the release''s 25 s budget'),
 	('public.qorpera_native_run_model_authority(uuid,uuid,text,uuid,text)', true, true, 'internal: runner broker: service_role or secret-broker session + runner session token + job lease token; anon only through the platform default, authenticated only through the platform default'),
+	('public.qorpera_offer_interface_cell(uuid,jsonb)', false, true, 'member: auth.uid() + membership of a folder-v2 company, not paused; the caller offers their own or an empty cell (I9c)'),
 	('public.qorpera_open_company_founding(uuid,text)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_open_runtime_office_screen(jsonb,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_own_member_picture_objects()', false, true, 'member: auth.uid() + membership/ownership'),
@@ -404,6 +407,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_upsert_logical_computer(uuid,uuid,text,text,text,jsonb,jsonb,text)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
 	('public.qorpera_upsert_member_compute_identity(uuid,uuid,text,text,text,jsonb,jsonb)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_upsert_scoped_compute_identity(uuid,uuid,text,text,text,text,text,jsonb,jsonb)', false, true, 'member: auth.uid() + membership/ownership'),
+	('public.qorpera_withdraw_interface_offer(uuid,uuid)', false, true, 'member: auth.uid() + membership of a folder-v2 company; only the member who made the offer (I9c)'),
 	('public.qorpera_withdraw_runtime_office_wake(jsonb,bigint,uuid)', false, true, 'member: auth.uid() + membership/ownership');
 
 do $$
