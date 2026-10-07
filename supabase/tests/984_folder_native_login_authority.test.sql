@@ -9,12 +9,28 @@
 -- speed (an outsider cannot read it either). The run is 924's run of Alice's on the owner's login (ported from
 -- snapshot-v1 in the legacy sweep: 160's surviving checks, and 580's and 584's role checks).
 
--- 1. A contributor cannot make a company-scoped compute identity.
+-- 1. A contributor cannot make a company-scoped compute identity; the owner can, with the same arguments (rolled back).
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000002');
 set local role authenticated;
 select pg_temp.base_error($q$select public.qorpera_upsert_scoped_compute_identity('92400000-0000-4000-8000-000000000010',
 	'98400000-0000-4000-8000-000000000056', 'company', null, 'Unauthorized company identity', 'qorpera-company-linux', 'v1',
 	'["agent_turn"]', '{}')$q$, '22023');
+reset role;
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+set local role authenticated;
+do $$
+declare v_identity jsonb;
+begin
+	begin
+		v_identity := public.qorpera_upsert_scoped_compute_identity('92400000-0000-4000-8000-000000000010',
+			'98400000-0000-4000-8000-000000000056', 'company', null, 'Unauthorized company identity', 'qorpera-company-linux', 'v1',
+			'["agent_turn"]', '{}');
+		if v_identity ->> 'ownership_kind' is distinct from 'company' then
+			raise exception 'the owner could not make the company identity: %', v_identity; end if;
+		raise exception using errcode = 'QTP01';
+	exception when sqlstate 'QTP01' then null;
+	end;
+end $$;
 reset role;
 select pg_temp.base_claims('service_role');
 
@@ -103,9 +119,10 @@ reset role;
 -- The run's durable acknowledgement comes before any tool operation.
 select pg_temp.base_public_send(current_setting('qorpera_test.base_binding')::jsonb, 'progress', 'progress-1') \g /dev/null
 
--- 5. Clock time, not statement start, refuses a lease that expires while a tool waits (rolled back).
+-- 5. Clock time, not statement start, refuses a lease that expires while a tool waits; the same operation begins while
+-- the lease is live (both rolled back).
 do $$
-declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb;
+declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_begin jsonb;
 begin
 	begin
 		update public.qorpera_native_provider_connection_leases set expires_at = clock_timestamp() + interval '20 milliseconds'
@@ -118,6 +135,15 @@ begin
 			raise exception 'operation used statement time after authority expired';
 		exception when insufficient_privilege then null;
 		end;
+		raise exception using errcode = 'QTP01';
+	exception when sqlstate 'QTP01' then null;
+	end;
+	begin
+		set local role service_role;
+		v_begin := public.qorpera_begin_native_tool_operation(v_binding, '98400000-0000-4000-8000-0000000000b1',
+			'expired-at-effect', repeat('a', 64), repeat('b', 64), false);
+		if v_begin ->> 'state' is distinct from 'executing' then
+			raise exception 'the operation did not begin under the live lease: %', v_begin; end if;
 		raise exception using errcode = 'QTP01';
 	exception when sqlstate 'QTP01' then null;
 	end;
@@ -141,11 +167,15 @@ begin
 end $$;
 select pg_temp.base_claims('service_role');
 
--- 6. A send or a card for another run (Bob's), and a send for another assignment, are refused.
+-- 6. A send or a card for another run (Bob's), and a send for another assignment, are refused; the same card for
+-- Alice's own run is appended (rolled back).
 set local role service_role;
 do $$
 declare
 	v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb;
+	v_card_data jsonb := jsonb_build_object('schema', 'qorpera.interaction/v1', 'surface', 'takeover', 'title', 'Computer',
+		'payload', jsonb_build_object('instruction', 'Finish the sign-in.', 'reason', 'sign_in'));
+	v_card jsonb;
 begin
 	begin
 		perform pg_temp.base_public_send(v_binding || jsonb_build_object('runId', current_setting('qorpera_test.nl_queued')),
@@ -157,11 +187,19 @@ begin
 		perform public.qorpera_append_native_interaction_request((v_binding ->> 'leaseId')::uuid,
 			current_setting('qorpera_test.nl_queued')::uuid, (v_binding ->> 'jobId')::uuid, (v_binding ->> 'runnerId')::uuid,
 			(v_binding ->> 'assignmentId')::uuid, (v_binding ->> 'credentialCapsuleId')::uuid,
-			(v_binding ->> 'computeIdentityId')::uuid, 'openai', 'codex-cli', '98400000-0000-4000-8000-0000000000c1',
-			jsonb_build_object('schema', 'qorpera.interaction/v1', 'surface', 'takeover', 'title', 'Computer',
-				'payload', jsonb_build_object('instruction', 'Finish the sign-in.', 'reason', 'sign_in')));
+			(v_binding ->> 'computeIdentityId')::uuid, 'openai', 'codex-cli', '98400000-0000-4000-8000-0000000000c1', v_card_data);
 		raise exception 'card accepted another run audience';
 	exception when insufficient_privilege then null;
+	end;
+	begin
+		v_card := public.qorpera_append_native_interaction_request((v_binding ->> 'leaseId')::uuid,
+			(v_binding ->> 'runId')::uuid, (v_binding ->> 'jobId')::uuid, (v_binding ->> 'runnerId')::uuid,
+			(v_binding ->> 'assignmentId')::uuid, (v_binding ->> 'credentialCapsuleId')::uuid,
+			(v_binding ->> 'computeIdentityId')::uuid, 'openai', 'codex-cli', '98400000-0000-4000-8000-0000000000c1', v_card_data);
+		if v_card ->> 'event_type' is distinct from 'interaction_request' then
+			raise exception 'the card was not appended for the run''s own audience: %', v_card; end if;
+		raise exception using errcode = 'QTP01';
+	exception when sqlstate 'QTP01' then null;
 	end;
 	begin
 		perform pg_temp.base_public_send(v_binding || '{"assignmentId":"92400000-0000-4000-8000-000000000010"}', 'progress',
