@@ -252,6 +252,7 @@ export function cloudFolderFileTools(options: {
 				return {
 					content: { kind: "text", value: mutationText(tool, request, receiptId, unit) },
 					folderCommitId: committed.commitId,
+					...(unit.outcome === "waiting_for_review" ? { proposed: true as const } : {}),
 				};
 			},
 			signal: context.signal,

@@ -7,7 +7,7 @@ install reference. Every node and machine step is the coordinator's, at a cut.
 
 | File | Where it runs | What it is |
 | --- | --- | --- |
-| `qorpera-folder-service.cjs` | node host, `qorpera-folder` | The folder service (from `packages/object-gateway/src/folder-service/`). Holds the service credential; never talks to LXD. |
+| `qorpera-folder-service.cjs` | node host, `qorpera-objects` (a drop-in; see "Reading the objects") | The folder service (from `packages/object-gateway/src/folder-service/`). Holds the service credential; never talks to LXD. |
 | `qorpera-folder` | node host (`bridge`), machine (`mount`) | The folder program (from `crates/qorpera-folder/`), built by `scripts/build-folder-program.mjs`; its recorded build is `folder-program-linux-x64.json`. |
 | `qorpera-folder-service.socket` | node host | `/run/qorpera-folder/service.sock`, 0660, group `qorpera-folder-bridge`: only the bridge connects. |
 | `qorpera-folder-service.service` | node host | The service, started by its socket. |
@@ -41,7 +41,7 @@ Then, as root, without echoing anything secret:
 ```json
 {
 	"supabaseUrl": "https://<project>.supabase.co",
-	"storageRoot": "/srv/qorpera/canonical",
+	"storageRoot": "/srv/qorpera/objects",
 	"cacheMiB": 1024,
 	"mounts": [
 		{
@@ -70,6 +70,19 @@ then on a run box is served only to a `runBoxHosts` machine (read-only), a compu
 named after its allocation (read-write), and any other kind to no machine yet. A renewal that says another kind or
 machine closes the view.
 
+`storageRoot` is where the service sees the object gateway's store: `/srv/qorpera/objects`, a path inside the
+service's own mount namespace. The drop-in below binds the store there ("Reading the objects"). The store is the
+gateway's `QORPERA_OBJECT_GATEWAY_STORAGE_ROOT`, laid out `<profileId>/<sha256>`. On the host it is today
+`/srv/qorpera/canonical/.qorpera-acceptance-phqlfrkcvstmxlebljcj-7cf936a4/objects` on both nodes (below, "the
+store"). The share's top folder holds older objects that the core never names. The store is a folder under the
+share's mount, not a mount itself: as root on the host, check that `findmnt --target <the store>` names
+`/srv/qorpera/canonical` from the storage server and that the folder holds profile folders.
+`RequiresMountsFor=/srv/qorpera/canonical` starts the service only after the share is mounted. If the store is not
+there when the service starts, the bind fails, so the service does not start: systemd tries again every 5 s
+(`RestartSec=5s`, no start limit) and machines get no answer meanwhile, never an empty page. The bind keeps the mount
+the service started on. Stopping the share's mount through systemd stops the service first, and the socket's next
+connection starts it again on the new mount; after the share is mounted again by hand, restart the service.
+
 **Writes through the mount (F3 step 3, `deploy/first-node/RUNTIME-FOLDER-WRITES.md`)** are off until both of these:
 - `"gatewayUrl": "https://<node 1's object gateway origin>"` in `config.json`, and the gateway's folder-service token
   (`QORPERA_OBJECT_GATEWAY_FOLDER_SERVICE_TOKEN` on the gateway, #859) at `/etc/qorpera-folder-service/gateway-token`
@@ -82,9 +95,60 @@ A member's or the platform's operator mount writes from step 3, and a company ma
 publishes 2 s after its last change, and when its last connection leaves); run box views stay read-only until steps
 5–6. Writes need P17's conflict copies and their erasure live (#783, #798), and step 3a (#855) for big files' chunks.
 
-- Objects on the share are 0600, owned by the object gateway's account. Give the service that uid with a drop-in
-  (`User=`) or a read grant on the storage server, and check with `sudo -u <account> head -c1 <one object>`.
+**Reading the objects.** The gateway writes them 0600, so the service reads them as the gateway's account:
+`qorpera-objects`, a system account with the same uid and gid on both nodes (1500; no shell, no home, no other groups,
+no sudo, not a caller of the node's root helper). The gateway runs as it too, and its tree on the share and its files
+on node 1 are chowned to it (the coordinator's lane, 6 Oct: root on the host can chown on the share, there is no root
+squash). A new node makes the account with the same uid and gid.
+
+The storage server refuses a non-root uid a lookup in the share's top folder (`/srv/qorpera/canonical`), whatever the
+uid. A non-root uid gets through it only for some 20 s after root walked it, while the client's cached names last; then
+`stat` and `open` fail with `EACCES`. So the service never walks the host path, as the gateway never does (its unit
+binds its own folder elsewhere). The drop-in gives the service the store alone: an empty read-only `/srv/qorpera`,
+with the store bound read-only at `/srv/qorpera/objects`, its `storageRoot`. In the service's namespace
+`/srv/qorpera` holds only `objects`: the share's top folder, the gateway's state folder and any other mount under
+`/srv/qorpera` are not there. The unit also keeps `ProtectSystem=strict` with no `ReadWritePaths`, so the service
+cannot write the share.
+- `/etc/systemd/system/qorpera-folder-service.service.d/read-objects.conf`, the same on both nodes, gives the service
+  the account, the store and a process namespace of its own, and hides the gateway's tokens and log (on node 1's
+  disk); `-` skips a path that is not on this node. The bind's source has no `-`: a missing store fails the start
+  (above), where a service started without it would keep that view until a restart, even after the share came back.
+  - On node 1 the service shares the gateway's uid. The kernel lets a process follow `/proc/<pid>/root`, `cwd` and
+    `fd` of any process with its own uid, and signal it. Through the gateway's `root` the service would reach the
+    gateway's writable mount of the share and the paths the drop-in hides. `PrivatePIDs=` shows the service no
+    process but its own. It needs systemd 257 or later; an older one ignores the line, which the last check below
+    shows. A user namespace alone (`PrivateUsers=`) would close the `/proc` links (the kernel's capability check
+    wants the same user namespace) but not signals, which compare uids only; `PrivatePIDs=` closes both.
+  - The service is ready to be its namespace's first process: it handles `SIGTERM`, starts no other process, and
+    systemd sets `LISTEN_PID` to 1 inside the namespace, which is what the service checks.
+
+```ini
+[Service]
+User=qorpera-objects
+Group=qorpera-objects
+PrivatePIDs=yes
+TemporaryFileSystem=/srv/qorpera:ro
+BindReadOnlyPaths=/srv/qorpera/canonical/.qorpera-acceptance-phqlfrkcvstmxlebljcj-7cf936a4/objects:/srv/qorpera/objects
+InaccessiblePaths=-/var/lib/qorpera-acceptance-phql-a1 -/run/credentials/qorpera-gateway-phql-a3.service
+```
+
+- Check on both nodes, through the same bind (`sudo -u` on the host path fails for every non-root uid, above):
+  `sudo systemd-run --wait --pipe --quiet --collect -p User=qorpera-objects -p Group=qorpera-objects -p
+  TemporaryFileSystem=/srv/qorpera:ro -p BindReadOnlyPaths=<the store>:/srv/qorpera/objects head -c1
+  /srv/qorpera/objects/<a profile>/<an object> | wc -c` prints 1; the same as `qorpera-folder` (`User=` and `Group=`)
+  is refused and prints 0.
+- Check on node 1 that nothing else of the gateway's is left to the account: `sudo find / /run /dev/shm -xdev \(
+  -user qorpera-objects -o -group qorpera-objects \)` (and `/var` or `/opt` if either is its own filesystem) lists
+  only paths under the hidden ones.
+- Check on both nodes from inside the running service's sandbox (`systemctl start qorpera-folder-service.service`
+  first): `sudo nsenter -t <its MainPID> -m -p -S "$(id -u qorpera-objects)" -G "$(id -g qorpera-objects)" sh -c 'ls
+  /proc; ls /proc/<the gateway's MainPID>/root/; ls -A /srv/qorpera; head -c1 /srv/qorpera/objects/<a profile>/<an
+  object> | wc -c; touch /srv/qorpera/objects/probe'` (on node 2, without the gateway's `ls`). It lists no process
+  but `1` (the service) and the check's own, fails on the gateway's, lists only `objects`, prints 1, and the `touch`
+  fails with "Read-only file system" (were it to succeed, the bind is not read-only: remove the file as root).
 - `systemctl enable --now qorpera-folder-service.socket qorpera-folder-bridge.service`
+- Expected in the service's journal at each start: node's `Warning: disabling flag --expose_wasm due to conflicting
+  flags`. The unit's `--jitless` turns WebAssembly off, as it means to (`RUNTIME-FOLDER-SERVICE.md`).
 
 ## Execution host
 

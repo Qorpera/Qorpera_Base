@@ -145,7 +145,8 @@ class ByteCache {
 }
 
 export interface NasObjectsOptions {
-	/** The storage server's object share, e.g. `/srv/qorpera/canonical`. */
+	/** The object gateway's store on the storage server's share, laid out `<profileId>/<sha256>`, e.g.
+	 * `/srv/qorpera/objects` (the store bound into the service's namespace; README "Reading the objects"). */
 	readonly root: string;
 	/** Memory for chunks and manifests. */
 	readonly cacheBytes: number;
@@ -261,8 +262,8 @@ export class NasObjects {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code === "ELOOP") throw new ObjectIntegrityError("Object is a link");
 			if (code === "ENOENT") {
-				// Missing only when the company's objects are there: with no profile folder at all (a share that is not
-				// mounted shows an empty mountpoint) nothing can be read now, and the page fails rather than look empty.
+				// Missing only when the company's objects are there: with no profile folder at all (the store is not
+				// bound here, e.g. the drop-in is missing) nothing can be read now, and the page fails rather than look empty.
 				if (!(await this.#profileThere(profileId)))
 					throw new ObjectUnavailableError("The company's objects are not on the storage server now");
 				throw new ObjectMissingError("Object is not on the storage server");
