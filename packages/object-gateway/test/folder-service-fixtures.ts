@@ -430,7 +430,7 @@ export class FakeCore implements FolderCore {
 							version: v(this.#nextVersion++),
 						};
 						this.entries.set(moved.path, moved);
-						changes.push({ ...moved, op: "move_in" });
+						changes.push({ ...moved, op: "move_in", priorVersion: old.version });
 						if (p === u.from) version = moved.version;
 					}
 					return { unit, outcome: "saved", reason: null, version };

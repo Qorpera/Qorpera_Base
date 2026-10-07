@@ -103,9 +103,10 @@ impl VersionMap {
 		self.map.is_empty()
 	}
 
-	/// The mount read `version` of `path`: the caller tells only of reads of the version the path shows now (a file
-	/// still open from before a newer version arrived reads an older one, which is not the newest the mount has seen).
-	/// Reading back what its own save made keeps it marked as made.
+	/// The mount read `version` of `path`: the caller tells only of reads of the version the path shows now, or of an
+	/// older one a file still open from before a newer version arrived reads while nothing is held for the path (it is
+	/// then the only version the mount read; otherwise it is not the newest). Reading back what its own save made keeps
+	/// it marked as made.
 	pub fn read(&mut self, path: &str, version: &str) {
 		if self.map.get(path).is_some_and(|e| e.version == version) {
 			return;

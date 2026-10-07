@@ -105,13 +105,13 @@ function gateway(folder: CloudCompanyFolderClient, reads: Reads, changes: Change
 			if (entry.kind === "folder")
 				return { path, version: entry.version, kind: "directory", text: "", fileSha256: null };
 			if (entry.file.bytes > MAX_TEXT_BYTES)
-				throw new CloudCompanyPathNotText("Company folder file exceeds its bound");
+				throw new CloudCompanyPathNotText("Company folder file exceeds its bound", entry.file.bytes);
 			const bytes = await folder.readRange(entry, 0, entry.file.bytes, signal);
 			let text: string;
 			try {
 				text = TEXT.decode(bytes);
 			} catch {
-				throw new CloudCompanyPathNotText();
+				throw new CloudCompanyPathNotText(undefined, entry.file.bytes);
 			}
 			return { path, version: entry.version, kind: "file", text, fileSha256: entry.file.fileSha256 };
 		},

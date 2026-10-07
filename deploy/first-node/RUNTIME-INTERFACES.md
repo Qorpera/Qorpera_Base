@@ -250,7 +250,9 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
 - **What a button may do.** A button does what its verb says and nothing more. It runs as the viewer, under the same
   review as doing it by hand:
   - `message` posts as the member, or sends a coworker message as the agent;
-  - `add`, `set`, `take`, `offer` and `release` save the table's file;
+  - `add`, `set`, `take` and `release` save the table's file;
+  - `offer` makes an offer record (§5 "Offers") and saves nothing; the member it goes to saves the cell when they
+    accept it;
   - `answer` uses the card's existing state machine (contract 16.2).
 - **`message`.** The prefilled text opens in the composer, and nothing is sent until the viewer sends it. A value
   filled in from outside content goes as a marked quote, never as the viewer's own words.
@@ -287,8 +289,8 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
     were looking.". A file that keeps changing past the retries also says "That changed while you were looking.". A
     refusal shows its problems.
   - A card stays where it is, saving, until the save has landed and the folder's feed shows the change.
-  - `offer` and `answer` are not drawn on a board until offers have their machinery. An area's `supervisor` is not
-    taken from a board; it waits for consent records (I9b).
+  - `offer` and `answer` are not drawn on a board until the web's offer step (I9c part 2). An area's `supervisor` is
+    not taken from a board; it waits for consent records (I9b).
 - **Never possible:** a link to another site, a script, or a request to any address.
 
 ## 4. Sources
@@ -411,10 +413,26 @@ A `needs_yes` member column holds who has something: a card's holder, or an area
 
 - **Take:** a member may put their own id in an empty cell.
 - **Release:** a member may clear a cell that names them.
-- **Offer:** the member a cell names, or anyone when the cell is empty, may offer it to a member, through the
-  `offer` button or `table_write`. The offer is a request card for that member (16.2, as amended) and changes
-  nothing in the file. When they say yes, the platform saves the change as them, and the save is allowed because the
-  open offer names them. Not now, a dismissal or no answer changes nothing.
+- **Offer:** the member a cell names, or anyone when the cell is empty, may offer it to another member, through the
+  `offer` button (an agent through `table_write` once supervision is built, I9b). The platform keeps the offer as
+  its own record (below); it changes nothing in the file. When they say yes, they save the cell with their own id,
+  and the save is allowed because the open offer names them. Not now, a dismissal or no answer changes nothing.
+- **Offers (built in I9c):**
+  - The platform keeps offers as its own records, not as 16.2 review cards. An offer names the table by its id (so
+    it follows a moved folder), the row's key, the column, who made it (`from`), the cell as they read it (`was`:
+    them, or empty) and the member it is offered to (`to`). It is open, accepted, declined, withdrawn or lapsed.
+  - Only a `needs_yes` member column is offered, and not an area's `supervisor`, which waits for consent records
+    (I9b). Both members must be allowed to write the table's rows (`[write]`, rule 5, and the folder). A cell holds
+    one open offer per member it is offered to; offering it again answers the open one.
+  - Accepting is the member's own save of that cell (rule 8's accept). After every save of the table's rows or
+    definition, the platform settles its open offers: a cell that now names `to` accepts the offer, a cell still as it
+    was keeps it open, and anything else lapses it (another value, the row gone, the column no longer a claim). So a
+    cell released and taken again has lost its offers. Deleting the table's folder lapses them; moving it keeps them.
+  - `to` may decline an open offer and `from` may withdraw it. A closed offer stays closed.
+  - Every member who may read the table sees its open offers, between members of the company. An offer to or from a
+    member who left is not listed, and is not closed for it.
+  - In a paused company no offer is made; declining, withdrawing and the list still work.
+  - Agents offer for their supervisor when supervision is built (I9b).
 - **Agents act for their supervisor** (§5.1):
   - an agent may take for its supervisor, release what its supervisor holds, and offer what its supervisor holds or
     what is empty;
@@ -661,7 +679,7 @@ parser's codes for (1), `structured_rule` with these codes for the rest.
        - **accept:** a member putting *self* where an open offer names that row key, that column and *self*; the
          offer's `was` equals the cell as stored; and, unless `was` is empty, the offer's `from` equals `was`.
 
-       Offers are request cards the platform keeps. Until they exist, accept never passes.
+       Offers are records the platform keeps (§5, built in I9c). An agent never accepts one.
 9. **`tables/areas/`** (`areas`):
    - its `table.toml` keeps `owner` (`member`, `needs_yes`), `supervisor` (`member`, `needs_yes`) and `agents`
      (`agents`), each `optional`, by name and type;
@@ -790,3 +808,13 @@ every row does. Column and value labels are in the member's language. The `text`
 §3.2's proposed rules, so Pulse draws all its blocks but "What happened" and the Members page draws
 `file:rules/shared-areas.md` when the file exists. The `activity` source is not built: the live state has only each
 agent's current run, not the runs that happened, so it waits for a read of past runs (with their answers and changes).
+
+**Built: I9c, the offers' machinery** (`supabase/migrations/20260930105000_interface_offers.sql`, test 938). Offers are
+kept in `qorpera_interface_offers` (§5 "Offers"). Members make, decline, withdraw and list them with four calls
+(`supabase/CLIENT-CONTRACT.md`, "Offers of a claimed cell"). Offer, decline and withdraw hold the table's index row
+FOR SHARE, so they wait for a save that holds it (FOR NO KEY UPDATE) and read the files as the last commit left
+them; the list reads no files and takes no lock. Rule 8 gains its accept. The save hook's apply settles a table's open offers after its rows or definition change, and lapses them when
+its folder is deleted. Removing the table's index row (erasure) removes its offers. The web (an Offer button and a
+drop onto a member's lane, Accept and Not now as `answer`, and offers in `waiting`) comes next. Test 866 races an
+offer against a rows save both ways: an offer behind a save reads the cell the save left, and a save behind an offer
+settles it.

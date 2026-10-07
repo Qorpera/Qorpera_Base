@@ -3,7 +3,8 @@
 -- index and the locks"): a rows save and a definition change both take the table's index row at rank 5, so each waits
 -- for the other and never decides on what the other is about to replace; a save that named no row (the table was made
 -- after it read its locks) answers version_changed; a table's move or delete and a rows save wait for each other. Two
--- promotions take no lock, so both pass and leave two mains, the price of no company-wide lock. 648's committed fixture,
+-- promotions take no lock, so both pass and leave two mains, the price of no company-wide lock. An offer (I9c) holds the
+-- row FOR SHARE: behind a rows save it reads the cell the save left; a save behind it settles it. 648's committed fixture,
 -- removed at the end. Waits are detected with pg_blocking_pids, never by wall-clock time.
 
 create function pg_temp.owner() returns jsonb language sql as $$
@@ -300,6 +301,90 @@ begin
 	perform pg_temp.expect(pg_temp.result('fence_two')::jsonb, 1, 'saved');
 	if (select count(*) from public.qorpera_interface_mains('64800000-0000-4000-8000-000000000020')) <> 2 then
 		raise exception 'Two promotions at once leave two mains'; end if;
+end $$;
+
+-- I9c's offers (migration 20260930105000) hold the table's row FOR SHARE. Two claims tables, each row's owner cell the
+-- member's own; a save that releases it, staged, held and committed as above.
+create function pg_temp.offer_def(p_id uuid) returns jsonb language sql as $$
+	select jsonb_build_object('kind','table','id',p_id,'name','Claims','about',null,'rows','file','key','["task"]'::jsonb,'holder','owner',
+		'time',null,'write','{"agents":"all","members":"all"}'::jsonb,'columns',jsonb_build_array(
+			jsonb_build_object('name','task','type','text','optional',false,'needsYes',false,'max',60,'choices','[]'::jsonb,'currency',null,'to',null),
+			jsonb_build_object('name','owner','type','member','optional',true,'needsYes',true,'max',null,'choices','[]'::jsonb,'currency',null,
+				'to',null)))
+$$;
+create function pg_temp.offer_rows(p_owner text) returns jsonb language sql as $$
+	select jsonb_build_object('kind','table-rows','header','["task","owner"]'::jsonb,'rows',
+		jsonb_build_array(jsonb_build_object('line', 2, 'fields', jsonb_build_array('t1', p_owner))))
+$$;
+-- The member's offer of the cell, as they read it, to the owner, for another connection.
+create function pg_temp.sql_offer(p_table uuid) returns text language sql as $$
+	select format('select public.qorpera_offer_interface_cell(%L, %L)::text', '64800000-0000-4000-8000-000000000020',
+		jsonb_build_object('table', p_table, 'key', '["t1"]'::jsonb, 'column', 'owner', 'was', pg_temp.member() ->> 'userId',
+			'to', pg_temp.owner() ->> 'userId'))
+$$;
+-- A connection calls as the member (they call as themselves), or as the service again.
+create function pg_temp.claims_as(p_conn text, p_member boolean) returns void language sql as $$
+	select dblink_exec(p_conn, format('set request.jwt.claims = %L', case when p_member
+		then jsonb_build_object('role', 'authenticated', 'sub', pg_temp.member() ->> 'userId')::text else '{"role":"service_role"}' end))
+$$;
+-- (The member makes them: they may put themselves in an empty cell; the platform only clears one.)
+select pg_temp.expect(pg_temp.commit(pg_temp.member(), 'i9c-race-seed', jsonb_build_array(
+	pg_temp.table_folder('tables/offer-a', pg_temp.offer_def('86600000-0000-4000-8000-000000000011'),
+		pg_temp.offer_rows(pg_temp.member() ->> 'userId')),
+	pg_temp.table_folder('tables/offer-b', pg_temp.offer_def('86600000-0000-4000-8000-000000000012'),
+		pg_temp.offer_rows(pg_temp.member() ->> 'userId')))), 2, 'saved') \g /dev/null
+select set_config('qorpera_test.oa_rows', jsonb_build_array(pg_temp.w('tables/offer-a/rows.csv', pg_temp.offer_rows('')))::text,
+	false) \g /dev/null
+select set_config('qorpera_test.ob_rows', jsonb_build_array(pg_temp.w('tables/offer-b/rows.csv', pg_temp.offer_rows('')))::text,
+	false) \g /dev/null
+select pg_temp.possess('64800000-0000-4000-8000-000000000020', pg_temp.member(), current_setting('qorpera_test.' || name)::jsonb)
+from unnest(array['oa_rows','ob_rows']) name \g /dev/null
+
+-- I. A rows save that releases the cell holds the table's row; the member's offer of the cell waits there, then reads
+-- the cell the save left: changed, and no offer is kept ----------------------------------------------------------------
+do $$
+declare r jsonb;
+begin
+	perform dblink_exec('fence_one', 'begin');
+	r := (select x::jsonb from dblink('fence_one', pg_temp.sql_commit(pg_temp.member(), 'i9c-race-a-rows',
+		current_setting('qorpera_test.oa_rows')::jsonb)) as t(x text));
+	perform pg_temp.expect(r, 1, 'saved');
+	perform pg_temp.claims_as('fence_two', true);
+	perform dblink_send_query('fence_two', pg_temp.sql_offer('86600000-0000-4000-8000-000000000011'));
+	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'An offer must wait for a rows save'; end if;
+	if pg_temp.queued_on('fence_two') is distinct from 'public.qorpera_folder_table_index'::regclass then
+		raise exception 'The offer must queue on the table''s row, not on %', pg_temp.queued_on('fence_two'); end if;
+	perform dblink_exec('fence_one', 'commit');
+	r := pg_temp.result('fence_two')::jsonb;
+	perform pg_temp.claims_as('fence_two', false);
+	if r ->> 'ok' is distinct from 'false' or r ->> 'reason' is distinct from 'changed' then
+		raise exception 'An offer behind a save that released the cell: %', r; end if;
+	if exists (select 1 from public.qorpera_interface_offers o where o.table_id = '86600000-0000-4000-8000-000000000011') then
+		raise exception 'An offer of a released cell was kept'; end if;
+end $$;
+
+-- J. The member's offer holds the table's row; a rows save that releases the cell waits there, then settles the offer
+-- it now sees: lapsed ---------------------------------------------------------------------------------------------------
+do $$
+declare r jsonb;
+begin
+	perform pg_temp.claims_as('fence_one', true);
+	perform dblink_exec('fence_one', 'begin');
+	r := (select x::jsonb from dblink('fence_one', pg_temp.sql_offer('86600000-0000-4000-8000-000000000012')) as t(x text));
+	if r ->> 'created' is distinct from 'true' or r -> 'offer' ->> 'state' is distinct from 'open' then
+		raise exception 'The offer: %', r; end if;
+	perform dblink_send_query('fence_two', pg_temp.sql_commit(pg_temp.member(), 'i9c-race-b-rows',
+		current_setting('qorpera_test.ob_rows')::jsonb));
+	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'A rows save must wait for an offer'; end if;
+	if pg_temp.queued_on('fence_two') is distinct from 'public.qorpera_folder_table_index'::regclass then
+		raise exception 'The rows save must queue on the table''s row, not on %', pg_temp.queued_on('fence_two'); end if;
+	perform dblink_exec('fence_one', 'commit');
+	perform pg_temp.claims_as('fence_one', false);
+	perform pg_temp.expect(pg_temp.result('fence_two')::jsonb, 1, 'saved');
+	-- (Read in a statement of its own: the save committed before it.)
+	if (select o.state from public.qorpera_interface_offers o where o.id = (r -> 'offer' ->> 'id')::uuid) is distinct from 'lapsed' then
+		raise exception 'An offer behind which a save released the cell: %',
+			(select o.state from public.qorpera_interface_offers o where o.id = (r -> 'offer' ->> 'id')::uuid); end if;
 end $$;
 
 -- Remove the fixture: every row of the company, its environment, its runs, jobs, sessions, rooms and login.
