@@ -380,13 +380,19 @@ describe("machine check-in envelopes", () => {
 		}),
 		(wake: CloudWakeEnvelope) => ({
 			...wake,
-			payload: { ...wake.payload, checkins: [first(wake), { ...second(wake), running: [{ command: "make", turn: 0 }] }] },
+			payload: {
+				...wake.payload,
+				checkins: [first(wake), { ...second(wake), running: [{ command: "make", turn: 0 }] }],
+			},
 		}),
 		(wake: CloudWakeEnvelope) => ({
 			...wake,
 			payload: {
 				...wake.payload,
-				checkins: [first(wake), { ...second(wake), running: [{ command: "make", startedAt: "2026-10-04T04:30:00Z" }] }],
+				checkins: [
+					first(wake),
+					{ ...second(wake), running: [{ command: "make", startedAt: "2026-10-04T04:30:00Z" }] },
+				],
 			},
 		}),
 		(wake: CloudWakeEnvelope) => ({
