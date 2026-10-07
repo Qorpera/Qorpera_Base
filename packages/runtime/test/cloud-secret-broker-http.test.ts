@@ -12,6 +12,7 @@ import {
 	captureCloudSecret,
 	HttpCloudSecretBrokerClient,
 	HttpCloudSecretBrokerService,
+	type NativeBindingProof,
 } from "@qorpera/runtime/cloud-secret-broker-http";
 import { CloudSecretKeyring } from "@qorpera/runtime/cloud-secret-crypto";
 import { afterEach, expect, it, vi } from "vitest";
@@ -118,9 +119,14 @@ function fixture(reflectSecret = false) {
 	const broker = new CloudSecretBroker({ authority, keyring, adapters: [adapter] });
 	const runtimeToken = randomBytes(32).toString("base64url");
 	const codingExecutorToken = randomBytes(32).toString("base64url");
-	const service = new HttpCloudSecretBrokerService(broker, runtimeToken, { codingExecutorToken });
-	services.push(service);
 	const binding = nativeToolAuthorityFixture().binding;
+	// G2-6a: the run's own lease proves its binding; the database's proof stands in here.
+	const holder = `job.${binding.jobId.toLowerCase()}.${randomBytes(32).toString("base64url")}`;
+	const proveBinding = vi.fn<NativeBindingProof>(async (_binding, presented) => {
+		if (presented !== holder) throw new Error("native binding proof is refused");
+	});
+	const service = new HttpCloudSecretBrokerService(broker, runtimeToken, { codingExecutorToken, proveBinding });
+	services.push(service);
 	const operation: CloudSecretOperationRequest = {
 		binding,
 		receiptId: randomUUID(),
@@ -145,6 +151,8 @@ function fixture(reflectSecret = false) {
 		broker,
 		service,
 		operation,
+		holder,
+		proveBinding,
 	};
 }
 
@@ -206,6 +214,7 @@ it("requires the private runtime credential and fences reflected secret material
 		origin: `http://127.0.0.1:${port}`,
 		runtimeToken: f.runtimeToken,
 		companyId: companyId.toUpperCase(),
+		holder: () => f.holder,
 		allowLoopback: true,
 		fetch: (input, init) => {
 			requested.push(String(input));
@@ -235,9 +244,51 @@ it("requires the private runtime credential and fences reflected secret material
 				origin: `http://127.0.0.1:${port}`,
 				runtimeToken: f.runtimeToken,
 				companyId: "../other",
+				holder: () => f.holder,
 				allowLoopback: true,
 			}),
 	).toThrow("company is invalid");
+	f.wrappingKey.fill(0);
+	f.keyring.close();
+});
+
+it("serves a runtime route only after the run's own lease proves its binding (G2-6a)", async () => {
+	const f = fixture();
+	const port = await f.service.start();
+	await captureCloudSecret(
+		"https://secrets.qorpera.test",
+		{ ticketId: f.ticketId, captureCapability: f.capability, fields: { token: "lin_api_PROOF" } },
+		new AbortController().signal,
+		(input, init) => fetch(`http://127.0.0.1:${port}${new URL(String(input)).pathname}`, init),
+	);
+	const send = (holder: string | undefined) =>
+		fetch(`http://127.0.0.1:${port}/v1/operations?company=${randomUUID()}`, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${f.runtimeToken}`,
+				"content-type": "application/json",
+				...(holder === undefined ? {} : { "x-qorpera-identity": holder }),
+			},
+			body: JSON.stringify({ schema: "qorpera.cloud-secret-operation-request/v1", ...f.operation }),
+		});
+	// No holder, a malformed one, or another run's lease: refused before the broker authorizes anything, and the reply
+	// carries nothing of the holder.
+	const lease = f.holder.split(".")[2] as string;
+	for (const holder of [undefined, "", lease, `identity.${lease}`, `${f.holder}x`, `job.${randomUUID()}.${lease}`]) {
+		const refused = await send(holder);
+		expect(refused.status).toBe(403);
+		expect(await refused.text()).not.toContain(lease);
+	}
+	expect(f.authority.authorizeOperation).not.toHaveBeenCalled();
+	// Only a well-formed holder reaches the proof, which gets the request's binding.
+	expect(f.proveBinding).toHaveBeenCalledTimes(1);
+	expect(f.proveBinding.mock.calls[0]?.[0]).toMatchObject({
+		jobId: f.operation.binding.jobId,
+		runId: f.operation.binding.runId,
+	});
+	// The run's own lease is served.
+	expect((await send(f.holder)).status).toBe(200);
+	expect(f.authority.authorizeOperation).toHaveBeenCalledTimes(1);
 	f.wrappingKey.fill(0);
 	f.keyring.close();
 });
@@ -255,6 +306,7 @@ it("refuses an operation the database does not authorize for this broker, whatev
 		origin: `http://127.0.0.1:${port}`,
 		runtimeToken: f.runtimeToken,
 		companyId: randomUUID(),
+		holder: () => f.holder,
 		allowLoopback: true,
 	});
 	await expect(client.execute(f.operation, new AbortController().signal)).rejects.toThrow(

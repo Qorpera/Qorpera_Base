@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
 	type CompanyAccountFillIdentity,
 	CompanyComputerFillKey,
@@ -16,7 +16,11 @@ import {
 	type CloudSecretBrokerAuthority,
 	PostgresCloudSecretBrokerAuthority,
 } from "@qorpera/runtime/cloud-secret-broker";
-import { HttpCloudSecretBrokerClient, HttpCloudSecretBrokerService } from "@qorpera/runtime/cloud-secret-broker-http";
+import {
+	HttpCloudSecretBrokerClient,
+	HttpCloudSecretBrokerService,
+	type NativeBindingProof,
+} from "@qorpera/runtime/cloud-secret-broker-http";
 import { CloudSecretKeyring } from "@qorpera/runtime/cloud-secret-crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
@@ -277,26 +281,53 @@ describe("company account fill over the broker", () => {
 		};
 		const runtimeToken = randomBytes(32).toString("base64url");
 		const codingExecutorToken = randomBytes(32).toString("base64url");
+		// G2-6a: the database's lease proof stands in here (its own test is 986): only the run's own lease token, as
+		// `job.<the binding's job>.<lease token>`, proves a request's binding.
+		const fill = request();
+		const lease = randomBytes(32).toString("base64url");
+		const own = `job.${fill.binding.jobId.toLowerCase()}.${lease}`;
+		const proveBinding = vi.fn<NativeBindingProof>(async (binding, presented) => {
+			if (presented !== `job.${(binding as { jobId: string }).jobId.toLowerCase()}.${lease}`)
+				throw new Error("native binding proof is refused");
+		});
 		const service = new HttpCloudSecretBrokerService(
 			new CloudSecretBroker({ authority, keyring: f.keyring, adapters: [] }),
 			runtimeToken,
-			{ codingExecutorToken },
+			{ codingExecutorToken, proveBinding },
 		);
 		services.push(service);
 		const port = await service.start();
-		const client = (token: string) =>
+		const client = (token: string, holder = own) =>
 			new HttpCloudSecretBrokerClient({
 				origin: `http://127.0.0.1:${port}`,
 				runtimeToken: token,
 				companyId,
+				holder: () => holder,
 				allowLoopback: true,
 			});
-		const answer = await client(runtimeToken).companyAccountFill(request(), AbortSignal.timeout(5000));
+		const answer = await client(runtimeToken).companyAccountFill(fill, AbortSignal.timeout(5000));
 		expect(
 			f.computer.open((answer as { box: Record<string, string> }).box, f.identity("password"), Date.now()).value,
 		).toBe(password);
+		expect(proveBinding).toHaveBeenCalledWith(
+			expect.objectContaining({ jobId: fill.binding.jobId, runId: fill.binding.runId }),
+			own,
+		);
 		for (const token of [randomBytes(32).toString("base64url"), codingExecutorToken])
-			await expect(client(token).companyAccountFill(request(), AbortSignal.timeout(5000))).rejects.toThrow(
+			await expect(client(token).companyAccountFill(fill, AbortSignal.timeout(5000))).rejects.toThrow(
+				"Cloud secret broker rejected the company account fill",
+			);
+		// Without the run's own lease (a malformed holder, another run's, or another lease token for this run's job), the
+		// fill is refused before the database is asked anything.
+		for (const holder of [
+			"",
+			lease,
+			`identity.${lease}`,
+			`${own}x`,
+			`job.${randomUUID()}.${lease}`,
+			`job.${fill.binding.jobId.toLowerCase()}.${"W".repeat(43)}`,
+		])
+			await expect(client(runtimeToken, holder).companyAccountFill(fill, AbortSignal.timeout(5000))).rejects.toThrow(
 				"Cloud secret broker rejected the company account fill",
 			);
 		expect(f.authority.readCompanyAccountFill).toHaveBeenCalledTimes(1);

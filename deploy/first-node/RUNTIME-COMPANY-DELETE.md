@@ -181,8 +181,8 @@ records what it waits for.
   empty, and its `user.qorpera.run_id`, `profile_id`, `runner_id` and `compute_identity_id` match that archived
   journal. A volume the provider kept (in use or drifted) is named in its log as `recovery volume kept:
   acquisition=…` once an hour; its journal stays in the state root until the volume can go. Do not delete a kept
-  volume by hand while its journal is in the state root (a restart would then stop the node's claims): fix the cause
-  (detach it, or restore its keys) and the provider deletes it within a minute. An execution-host rebuild that runs while a device is retired stops with "lost
+  volume by hand: fix the cause (detach it, or restore its keys) and the provider deletes it within a minute. A kept
+  volume that is gone anyway does not stop the node's claims: its journal is settled, so the provider archives it. An execution-host rebuild that runs while a device is retired stops with "lost
   Compute Identity devices": check the volume is gone (retired), then run it again.
   Rollout: the LXD provider build on every node (node-agent `provider` role) after the release carrying
   the migration is live. Before that, the due list 404s (logged once a minute) and a company with node
