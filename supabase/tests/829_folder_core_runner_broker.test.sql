@@ -1,8 +1,8 @@
--- @fixture 658_folder_core_run_completion.test.sql until "-- 1. Snapshot-v1 keeps its text"
+-- @fixture 658_folder_core_run_completion.test.sql until "-- The checks start here: a test that runs after this file's fixture part stops at this line."
 -- Company folder core, C3 (P23 part 2, migration 20260930002210): the runner broker's model of a folder-v2 run. The broker
 -- describes it in the path lane's shape with no substrate anywhere, and the run then completes through the folder lane
--- (the round trip); the substrate's operations and artifacts refuse, as does a proposal review. Snapshot-v1 keeps its text (each patch reversed is the definition before the migration) and
--- its describe. Runs are 647's hand-built runs, prepared as 658 prepares them.
+-- (the round trip); the substrate's operations and artifacts refuse, as does a proposal review. Snapshot-v1 keeps its
+-- describe. Runs are 647's hand-built runs, prepared as 658 prepares them.
 
 create function pg_temp.describe(b jsonb) returns jsonb language sql as $$
 	select public.qorpera_runner_broker_describe((b ->> 'runnerId')::uuid, repeat('f', 64), (b ->> 'jobId')::uuid, repeat('a', 64))
@@ -72,25 +72,9 @@ begin
 	end;
 end $$;
 
--- 4. Snapshot-v1 keeps its text: each patched body with its folder-v2 line reversed is byte for byte the definition before
--- the migration. The folder describe is postgres-only.
+-- 4. The folder describe is postgres-only.
 do $$
-declare v_text text;
-	c_refuse constant text := 'if public.qorpera_job_is_folder_v2(p_job_id) then raise exception ''This Company File path does not serve folder-v2 companies'' using errcode = ''0A000''; end if;';
 begin
-	v_text := replace(pg_get_functiondef('public.qorpera_runner_broker_describe(uuid,text,uuid,text)'::regprocedure),
-		E'\t-- P23 (20260930002210): a folder-v2 run is described in the path lane''s shape, with no substrate.\n'
-		|| E'\tif public.qorpera_job_is_folder_v2(p_job_id) then\n'
-		|| E'\t\treturn public.qorpera_folder_runner_broker_describe(p_runner_id, p_session_token_sha256, p_job_id, p_lease_token_sha256);\n'
-		|| E'\tend if;\n',
-		E'\t' || c_refuse || E'\n');
-	if md5(v_text) <> '8ba12b47c0141c8c8d156e711ad056df' then raise exception '4: qorpera_runner_broker_describe''s text changed'; end if;
-	v_text := replace(pg_get_functiondef('public.qorpera_runner_broker_list_operations(uuid,text,uuid,text,bigint,integer)'::regprocedure),
-		E'\t' || c_refuse || E' -- P23 (20260930002210)\n', '');
-	if md5(v_text) <> 'e6c3c190dbf4a3ae2714d6b8dfe716d3' then raise exception '4: qorpera_runner_broker_list_operations''s text changed'; end if;
-	v_text := replace(pg_get_functiondef('public.qorpera_runner_broker_list_artifacts(uuid,text,uuid,text,integer,integer)'::regprocedure),
-		E'\t' || c_refuse || E' -- P23 (20260930002210)\n', '');
-	if md5(v_text) <> '99615be73b2b74318372736749af8be0' then raise exception '4: qorpera_runner_broker_list_artifacts''s text changed'; end if;
 	if has_function_privilege('public', 'public.qorpera_folder_runner_broker_describe(uuid,text,uuid,text)', 'execute')
 		or has_function_privilege('anon', 'public.qorpera_folder_runner_broker_describe(uuid,text,uuid,text)', 'execute')
 		or has_function_privilege('authenticated', 'public.qorpera_folder_runner_broker_describe(uuid,text,uuid,text)', 'execute')

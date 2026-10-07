@@ -16,8 +16,16 @@ export QORPERA_AGENT_EXIT_RUN_DIR=$work/run QORPERA_AGENT_EXIT_STATE_DIR=$work/s
 export QORPERA_AGENT_EXIT_LOG_DIR=$work/log QORPERA_AGENT_EXIT_UPSTREAMS=9.9.9.9
 # The logs' disk floor is off here, so the proof never depends on the test machine's free space; the cap is tested.
 export QORPERA_AGENT_EXIT_LOG_FLOOR_PERCENT=0
+# The NAS: a mount point with its marker, as the mounted share has it (a tmpfs in this container's own mounts).
+export QORPERA_AGENT_EXIT_NAS_DIR=$work/nas
+mkdir "$work/nas"
+mount -t tmpfs -o size=64m,mode=0755 qorpera-test-nas "$work/nas"
+touch "$work/nas/.qorpera-agent-exit-logs"
 pids=()
-cleanup() { for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done; }
+cleanup() {
+	for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
+	umount "$work/nas" 2>/dev/null || true
+}
 trap cleanup EXIT
 # A command that stops the proof on its own (set -e) names itself.
 trap 'echo "FAIL: line $LINENO: $BASH_COMMAND" >&2' ERR
@@ -327,7 +335,8 @@ grep -q "no DNS on 10.210.0.1:53" "$work/verify.err" || fail "verify: $(cat "$wo
 grep -q "logger not running" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
 grep -q "the agent plug's reconciler not running" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
 grep -q "the logs' tender has not run" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
-pass "verify fails while DNS, the logger, the plug's reconciler and the logs' tender are not running"
+grep -q "the logs' shipper has not run" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
+pass "verify fails while DNS, the logger, the plug's reconciler and the logs' tender and shipper are not running"
 
 background - "$work/node.out" python3 "$work/serve.py" "$work/node-peers" 192.168.1.42:22 10.209.255.1:22
 background - "$work/nodeudp.out" python3 "$work/udpseen.py" "$work/node-udp" 192.168.1.42 9999
@@ -352,6 +361,7 @@ logger_pid=$!
 pids+=($!)
 wait_for "test -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.heartbeat"
 bash "$tool" logs >"$work/logs.out" || fail "the logs' tender: $(cat "$work/logs.out")"
+bash "$tool" ship >"$work/ship.out" || fail "the logs' shipper: $(cat "$work/ship.out")"
 AGENT="qp/agent:Running:10.210.1.1:c0:m0::va0"
 python3 "$work/fixture.py" "$work/lxd.json" "$AGENT"
 QORPERA_AGENT_PLUG_LXD_FIXTURE=$work/lxd.json QORPERA_AGENT_PLUG_RELOAD_DNS="pkill -HUP -x dnsmasq" \
@@ -493,7 +503,7 @@ import json, sys
 records = [json.loads(line) for line in open(sys.argv[1])]
 site = [r for r in records if r["event"] == "destroy" and r.get("dst") == "1.1.1.1" and r.get("dport") == 443]
 assert site and site[0]["src"] == "10.210.1.1" and site[0]["bytes_out"] > 0 and site[0]["bytes_in"] > 0, site
-assert all(r["src"].startswith("10.210.") and r["src"] != "10.210.0.1" for r in records if r["event"] != "gap"), "not an agent's"
+assert all(r["src"].startswith("10.210.") and r["src"] != "10.210.0.1" for r in records if r["event"] not in ("gap", "alive")), "not an agent's"
 
 EOF
 for _ in $(seq 1 50); do
@@ -706,6 +716,32 @@ python3 "$logs_tool" count --log-dir "$LOG" --day "$today" >"$work/count2.json" 
 python3 -c 'import json, sys; a, b = (json.load(open(f))["companies"]["c0"]["connections"] for f in sys.argv[1:]); assert b > a, (a, b)' \
 	"$work/count.json" "$work/count2.json" || fail "the count after sealing lost lines"
 pass "the tender seals open files into parts and cuts dns.log; the writers go on in new files, and counts read all"
+# The parts go to the NAS under this node's name and their day, each read back; the lookup finds the agent's
+# connection there and on the node, with its company, machine and the name it looked up.
+host=$(python3 -c 'import socket; print(socket.gethostname())')
+bash "$tool" ship >"$work/ship.out" || fail "ship: $(cat "$work/ship.out")"
+for part in "flows-$today.p001.jsonl.gz" "clients-$today.p001.jsonl.gz" "$(cd "$LOG" && ls dns-*.log.gz | head -1)"; do
+	cmp -s "$LOG/$part" "$work/nas/$host/$today/$part" || fail "$part is not on the NAS: $(ls -R "$work/nas")"
+	[[ -e $LOG/shipped/$part.json ]] || fail "no shipped record for $part: $(ls "$LOG/shipped")"
+done
+bash "$tool" lookup --remote 1.1.1.1 --remote-port 443 --at "$(date +%s)" --json >"$work/lookup.json" ||
+	fail "lookup: $(cat "$work/lookup.json")"
+python3 - "$work/lookup.json" "$work/nas/$host/status.json" "$host" "$today" >"$work/lookupcheck.out" 2>&1 <<'EOF' || fail "lookup: $(cat "$work/lookupcheck.out") $(cat "$work/lookup.json")"
+import json, sys
+r, status = (json.load(open(path)) for path in sys.argv[1:3])
+host, today = sys.argv[3:]
+# Today's open connection log and dns.log since the cut are on the node only: the other nodes' lookups read that here.
+assert status["host"] == host and today in status["notShipped"]["flows"] and today in status["notShipped"]["dns"], status
+assert r["nodes"] == [host], r["nodes"]
+found = [c for c in r["connections"] if c["src"] == "10.210.1.1"]
+assert found and all((c["company"], c["machine"]) == ("c0", "m0") for c in found), found
+assert any(c["name"] == "rotated.test" for c in found), found
+EOF
+bash "$tool" lookup --agent 10.210.1.1 --at "$(date +%s)" >"$work/lookup.out" || fail "lookup: $(cat "$work/lookup.out")"
+grep -q "on $host: company c0, machine m0; 10.210.1.1:" "$work/lookup.out" || fail "lookup: $(cat "$work/lookup.out")"
+# The logger's alive lines, which the lookup reads for the times it was not logging.
+{ zcat "$LOG"/flows-*.jsonl.gz; cat "$LOG/flows-$today.jsonl"; } | grep '"event":"alive"' >/dev/null || fail "the logger wrote no alive line"
+pass "the shipper copies the sealed parts to the NAS; the lookup names the company, machine and name behind a connection"
 # A line the logger cannot write (here: a folder where its file goes) makes the exit unhealthy at once; once it can
 # write again it says how many lines it lost, and the exit is healthy again.
 for i in $(seq 1 20); do
@@ -718,6 +754,10 @@ for _ in $(seq 1 50); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] && 
 [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] || fail "a line that could not be written left no mark: $(tail -3 "$work/log.out")"
 bash "$tool" verify 2>"$work/verify-failing.err" && fail "verify passed while the connection log could not be written"
 grep -q "cannot write the connection log: " "$work/verify-failing.err" || fail "verify: $(cat "$work/verify-failing.err")"
+# Its gap line comes only once it writes again: until then the lookup learns it from the mark.
+bash "$tool" lookup --remote 1.1.1.1 --at "$(date +%s)" --json >"$work/lookup-failing.json" || fail "lookup: $(cat "$work/lookup-failing.json")"
+grep -q '"why": "the connection logger is failing now: cannot write the connection log: ' "$work/lookup-failing.json" ||
+	fail "the lookup did not say the logger is failing: $(cat "$work/lookup-failing.json")"
 rmdir "$LOG/flows-$today.jsonl"
 for _ in $(seq 1 75); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] || break; sleep 0.2; done
 [[ ! -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.failing ]] || fail "the logger did not recover once it could write"
@@ -740,6 +780,9 @@ for _ in $(seq 1 75); do [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] && br
 [[ -e $QORPERA_AGENT_EXIT_RUN_DIR/logger.pause ]] || fail "the logger did not pause past its cap: $(tail -3 "$work/log.out")"
 bash "$tool" verify 2>"$work/verify-pause.err" && fail "verify passed while the connection log paused"
 grep -q "connection log paused: " "$work/verify-pause.err" || fail "verify: $(cat "$work/verify-pause.err")"
+bash "$tool" lookup --remote 1.1.1.1 --at "$(date +%s)" --json >"$work/lookup-pause.json" || fail "lookup: $(cat "$work/lookup-pause.json")"
+grep -q '"why": "the connection log is paused now: the node' "$work/lookup-pause.json" ||
+	fail "the lookup did not say the log is paused: $(cat "$work/lookup-pause.json")"
 written=$(grep -c '"event":"new"' "$LOG/flows-$today.jsonl" || true)
 connects agent 1.1.1.1 443 || fail "a machine's traffic stopped while the log paused"
 sleep 1

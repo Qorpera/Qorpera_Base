@@ -160,7 +160,7 @@ describe("the Interfaces tab from the folder (I7)", () => {
 		fake.put("interfaces/order.md", order(fake, ids.gamma, ids.alpha));
 		const { f, controller } = company();
 		await follow(fake, controller);
-		// Mailbox needs mail and Members has no part this client draws: neither is listed.
+		// Mailbox needs mail and Members a team of two: neither is listed.
 		expect(names(controller)).toEqual(["pulse", "gamma", "alpha", "delta", "beta"]);
 		expect(companyInterfaces(controller).map((entry) => entry.main)).toEqual([true, false, false, false, false]);
 		// Every text is the company's own copy, parsed here: Pulse carries the folder's id, never the library's.
@@ -325,8 +325,8 @@ fields = ["number", "value", "unit"]
 			const { controller } = company();
 			await follow(fake, controller);
 			expect(read(fake)).toEqual(expect.arrayContaining(["tables/numbers/table.toml", "tables/numbers/rows.csv"]));
-			// The founding tables no drawn block reads are never read.
-			expect(read(fake)).not.toContain("tables/areas/rows.csv");
+			// The founding tables Members' board and lookups read are read too, for its page (step I9a).
+			expect(read(fake)).toEqual(expect.arrayContaining(["tables/areas/rows.csv", "tables/cards/rows.csv"]));
 			const main = h("main");
 			renderInterface(main, controller, "ledger");
 			const table = main.querySelectorAll<HTMLElement>(".interface-block")[1]!;

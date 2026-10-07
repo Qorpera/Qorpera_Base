@@ -288,7 +288,7 @@ describe("company notices", () => {
 		expect(unnamed.view.el.querySelector("p")?.textContent).toBe("An agent has made no progress for 15 minutes.");
 	});
 
-	it("says who moved a routine off the member's login, and dismisses it like any line (20260930064000)", async () => {
+	it("says who moved a routine off the member's login, and dismisses it like any line (20260930095000)", async () => {
 		type Moved = Extract<
 			MemberNotification["subject"],
 			{ schema: "qorpera.member-notification.routine-payer-changed/v1" }
