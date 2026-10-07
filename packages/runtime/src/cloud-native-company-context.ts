@@ -164,7 +164,8 @@ function wakeProtocol(wake: CloudWakeEnvelope | null): readonly string[] {
 
 /** The host-owned law that varies by wake. A worker, which speaks to no one, gets no staff judgement; only the
  * admitted wake's reply rules are included; continuation rules appear only when a continuation exists. It follows
- * everything an agent's runs share (RUNTIME-AGENT-MEMORY-TREE.md §6.1), so a worker's prefix is its parent's (§12).
+ * everything an agent's runs share (RUNTIME-AGENT-MEMORY-TREE.md §6.1), a worker's run included. A worker's tools
+ * differ from its parent's, so it shares no cached prefix with its parent (§6.2, §12).
  */
 function wakeInstructions(wake: CloudWakeEnvelope | null, hasContinuation: boolean): string[] {
 	return [
