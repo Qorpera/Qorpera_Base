@@ -3,9 +3,11 @@
 -- run log on the same login after the limit resets; never on another login, and never at once. Test 924's run of
 -- Alice's records its native start and acknowledges; the native host records the usage limit for the attempt, and the
 -- runner reports the run failed. With the gate on (as W5a-2 turns it on), the job is queued again but held until the
--- reset, the pause is not an attempt, and its day in the queue counts from the reset. The next attempt starts on the
--- same login and may reach the limit again: its own signal pauses it again, also when its lease runs out after the
--- signal. A member may still stop a paused run, and a paused run whose login is gone fails. The cut-off is 991.
+-- reset, the pause is not an attempt, and its day in the queue counts from the reset. The next attempt still has a new
+-- number (its machine's name). It starts on the same login and may reach the limit again: its own signal pauses it
+-- again, also when its lease runs out after the signal, and a reset time already past or only moments away never
+-- re-queues it at once. A member may still stop a paused run, and a paused run whose login is gone fails. The
+-- cut-off is 991.
 
 create function pg_temp.rp_begin(p_binding jsonb) returns jsonb language plpgsql as $$
 declare v_identity jsonb;
@@ -129,7 +131,40 @@ select pg_temp.base_assert((select status = 'failed' from public.qorpera_runner_
 	where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId')::uuid), 'a paused run whose login is gone fails') \g /dev/null
 rollback to savepoint rp_login_gone;
 
--- 5. The limit resets: the next attempt is claimed and starts on the same login.
+-- 5. After the reset the claim gives attempt 2, not the paused attempt's 1 again: the number names the attempt's
+--    machine and runner, and attempt 1's are spent. A start that fails on attempt 2's released machine moves the run
+--    past attempt 2.
+savepoint rp_number;
+update public.qorpera_runner_jobs set queued_at = statement_timestamp() - interval '1 minute',
+	dispatch_deferred_until = statement_timestamp() - interval '1 minute'
+where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId')::uuid;
+do $$
+declare v_run uuid := (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid; v_claim jsonb; v_runner jsonb;
+	v_release jsonb;
+begin
+	perform pg_temp.base_claims('service_role');
+	v_claim := public.qorpera_claim_runner_job_for_orchestrator('92400000-0000-4000-8000-000000000092', extensions.gen_random_uuid(), 120);
+	perform pg_temp.base_assert(v_claim #>> '{work,run_id}' = v_run::text and v_claim #>> '{work,attempt}' = '2',
+		'the attempt after the pause has a new number: ' || coalesce(v_claim::text, 'none'));
+	v_runner := public.qorpera_provision_execution_runner(v_run, public.qorpera_run_attempt_acquisition_id(v_run, 2), 'process', repeat('1', 64));
+	insert into public.qorpera_runtime_machine_allocations (id, profile_id, run_id, runner_id, provider_adapter, instance_sha256, released_at)
+	select public.qorpera_run_attempt_acquisition_id(v_run, 2), run.profile_id, run.id, (v_runner ->> 'runner_id')::uuid, 'process',
+		repeat('9', 64), clock_timestamp()
+	from public.qorpera_execution_runs as run where run.id = v_run;
+	v_release := public.qorpera_release_runner_job_claim('92400000-0000-4000-8000-000000000092', (v_claim ->> 'claim_id')::uuid,
+		extensions.gen_random_uuid(), 'Runner provider request failed (422) [code=PROVIDER_ACQUIRE]');
+	perform pg_temp.base_assert((v_release ->> 'attempt_abandoned')::boolean
+		and (select attempt_count = 1 and status = 'queued' from public.qorpera_runner_jobs where run_id = v_run)
+		and (select status = 'revoked' from public.qorpera_runners where id = (v_runner ->> 'runner_id')::uuid)
+		and (select payload ->> 'attempt_abandoned' = '2' from public.qorpera_execution_run_events
+			where run_id = v_run and event_type = 'infrastructure_retry' order by id desc limit 1),
+		'the release finds attempt 2''s machine and moves on: ' || v_release::text);
+	perform pg_temp.base_assert(public.qorpera_run_attempt_number(v_run, 1) = 3, 'the attempt after that is attempt 3');
+end
+$$;
+rollback to savepoint rp_number;
+
+-- 6. The limit resets: the next attempt is claimed and starts on the same login.
 update public.qorpera_runner_jobs set queued_at = statement_timestamp() - interval '1 minute',
 	dispatch_deferred_until = statement_timestamp() - interval '1 minute'
 where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId')::uuid;
@@ -148,7 +183,35 @@ begin
 end
 $$;
 
--- 6. The next attempt reaches the limit again, with no reset time: its own signal (not a replay of the first), and a
+-- 7. A reset time already past is no reset time (6 hours from the signal), and one only moments away still holds the
+--    run a minute: a pause never queues the run again at once, to reach the limit again.
+savepoint rp_past;
+do $$
+declare v_next jsonb := current_setting('qorpera_test.rp_next')::jsonb; v_signal jsonb; v_job public.qorpera_runner_jobs;
+begin
+	v_signal := pg_temp.rp_signal(v_next, clock_timestamp() - interval '1 hour');
+	perform pg_temp.rp_fail(v_next, 'Native provider bridge request failed (429) [usage limit, reset past]');
+	select * into strict v_job from public.qorpera_runner_jobs where id = (v_next ->> 'jobId')::uuid;
+	perform pg_temp.base_assert(v_job.status = 'queued' and v_job.dispatch_deferred_until = v_job.queued_at
+		and v_job.queued_at = (select observed_at + interval '6 hours' from public.qorpera_provider_connection_usage_signals
+			where id = (v_signal ->> 'signalId')::uuid), 'a reset time already past holds the run 6 hours: ' || to_jsonb(v_job)::text);
+end
+$$;
+rollback to savepoint rp_past;
+savepoint rp_soon;
+do $$
+declare v_next jsonb := current_setting('qorpera_test.rp_next')::jsonb; v_job public.qorpera_runner_jobs;
+begin
+	perform pg_temp.rp_signal(v_next, clock_timestamp() + interval '5 seconds');
+	perform pg_temp.rp_fail(v_next, 'Native provider bridge request failed (429) [usage limit, reset soon]');
+	select * into strict v_job from public.qorpera_runner_jobs where id = (v_next ->> 'jobId')::uuid;
+	perform pg_temp.base_assert(v_job.status = 'queued' and v_job.dispatch_deferred_until = v_job.queued_at
+		and v_job.queued_at = statement_timestamp() + interval '1 minute', 'a reset moments away holds the run a minute: ' || to_jsonb(v_job)::text);
+end
+$$;
+rollback to savepoint rp_soon;
+
+-- 8. The next attempt reaches the limit again, with no reset time: its own signal (not a replay of the first), and a
 --    pause of 6 hours.
 do $$
 declare v_next jsonb := current_setting('qorpera_test.rp_next')::jsonb; v_signal jsonb;
@@ -173,7 +236,7 @@ end
 $$;
 rollback to savepoint rp_again;
 
--- 7. A lease that runs out after the signal is a pause too, not a cut-off.
+-- 9. A lease that runs out after the signal is a pause too, not a cut-off.
 savepoint rp_expired;
 do $$
 declare v_next jsonb := current_setting('qorpera_test.rp_next')::jsonb;
@@ -189,7 +252,7 @@ end
 $$;
 rollback to savepoint rp_expired;
 
--- 8. The resumed run answers and completes on the same login.
+-- 10. The resumed run answers and completes on the same login.
 do $$
 declare v_next jsonb := current_setting('qorpera_test.rp_next')::jsonb; v_done jsonb; v_sends integer; v_final text;
 begin

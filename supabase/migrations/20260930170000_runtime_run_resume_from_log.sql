@@ -7,9 +7,11 @@
 --   the step, under a new key), its native lease moves to history, a run_cut_off event supersedes its start, and the
 --   job is queued again, as a pristine retry is. The cut-off counts as an attempt (8 at most).
 -- * A usage limit (the native adapter recorded a usage_limit signal for this attempt): the same, with a run_paused
---   event, and the job waits until the login's reset (6 hours when the provider gave no time). A pause is not an
---   attempt. The run never moves to another login (Jonas, 4 Oct: who pays never switches): the next attempt's launch
---   is accepted only on the same sponsor version and the same login.
+--   event, and the job waits until the login's reset (6 hours when the provider gave no time or a time already past;
+--   a minute at least). A pause is not an attempt, but the attempt's number still rises: it names the attempt's
+--   machine and runner (runAttemptAcquisitionId), and the paused attempt's are spent. The run never moves to another
+--   login (Jonas, 4 Oct: who pays never switches): the next attempt's launch is accepted only on the same sponsor
+--   version and the same login.
 -- * Usage signals are kept per attempt (assignment), so a second limit after a resume is a new signal.
 -- * A failed run's recovery does not retry work whose outcome is unknown, as it does not retry completed work.
 -- Every inserted text names this migration (20260930170000), for the deploy guard.
@@ -127,7 +129,9 @@ begin
 		and signal.signal_kind = 'usage_limit' and signal.assignment_id = v_job.client_lease_id;
 	if found then
 		v_kind := 'paused';
-		v_until := greatest(coalesce(v_signal.resets_at, v_signal.observed_at + interval '6 hours'), statement_timestamp());
+		-- A reset time already past is no reset time; and the run never comes back at once, to reach the limit again.
+		v_until := greatest(case when v_signal.resets_at > statement_timestamp() then v_signal.resets_at
+			else v_signal.observed_at + interval '6 hours' end, statement_timestamp() + interval '1 minute');
 	elsif p_cut_off and v_job.attempt_count < 8 then
 		v_kind := 'cut_off';
 	else
@@ -173,6 +177,23 @@ begin
 	return v_kind;
 end
 $$;
+
+-- The number of a run's next attempt: its attempts so far, and its pauses (not attempts, but each spent its number).
+-- The number names the attempt's machine and runner (runAttemptAcquisitionId), so it never repeats.
+create function public.qorpera_run_attempt_number(p_run_id uuid, p_attempt_count integer)
+returns integer language sql stable security definer set search_path = '' as $$
+	-- 20260930170000 (W5a-1)
+	select p_attempt_count + 1 + (select count(*)::integer from public.qorpera_execution_run_events as paused
+		where paused.run_id = p_run_id and paused.event_type = 'run_paused')
+$$;
+select pg_temp.w5a_replace('public.qorpera_execution_work_json(public.qorpera_runner_job_claims)'::regprocedure,
+	$old$'attempt', job.attempt_count + 1,$old$,
+	$new$'attempt', public.qorpera_run_attempt_number(run.id, job.attempt_count), -- 20260930170000 (W5a-1): a pause spent one$new$);
+select pg_temp.w5a_replace('public.qorpera_release_runner_job_claim(uuid,uuid,uuid,text)'::regprocedure,
+	$old$select job.attempt_count + 1 into v_attempt from public.qorpera_runner_jobs as job where job.id = v_claim.job_id for update;$old$,
+	$new$-- 20260930170000 (W5a-1): the number the claim gave, which counts the run's pauses.
+	select public.qorpera_run_attempt_number(job.run_id, job.attempt_count) into v_attempt
+	from public.qorpera_runner_jobs as job where job.id = v_claim.job_id for update;$new$);
 
 -- A cut-off: the lease ran out, or the runner was revoked or reset (each passes a pristine retry).
 select pg_temp.w5a_replace('public.qorpera_terminalize_runner_attempt(uuid,text,text,boolean)'::regprocedure,
@@ -258,7 +279,8 @@ select pg_temp.w5a_replace('public.qorpera_retry_room_delivery(uuid,uuid,bigint)
 
 -- 6. Grants and the deploy guard -----------------------------------------------------------------------------------------
 
-revoke all on function public.qorpera_run_resumes_from_log(uuid), public.qorpera_resume_run_from_log(uuid, text, boolean)
+revoke all on function public.qorpera_run_resumes_from_log(uuid), public.qorpera_resume_run_from_log(uuid, text, boolean),
+	public.qorpera_run_attempt_number(uuid, integer)
 	from public, anon, authenticated, service_role;
 
 do $guard$
@@ -266,6 +288,9 @@ declare v_function regprocedure;
 begin
 	foreach v_function in array array[
 		'public.qorpera_run_resumes_from_log(uuid)', 'public.qorpera_resume_run_from_log(uuid,text,boolean)',
+		'public.qorpera_run_attempt_number(uuid,integer)',
+		'public.qorpera_execution_work_json(public.qorpera_runner_job_claims)',
+		'public.qorpera_release_runner_job_claim(uuid,uuid,uuid,text)',
 		'public.qorpera_run_native_start_superseded(uuid)', 'public.qorpera_guard_native_company_execution_start()',
 		'public.qorpera_record_provider_usage_signal(jsonb,text,timestamp with time zone)',
 		'public.qorpera_terminalize_runner_attempt(uuid,text,text,boolean)',
