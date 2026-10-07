@@ -223,8 +223,8 @@ request, so a warm host never sends a released job's token). The server asks
 - the token's hash;
 - the binding's job and run being that job and its run.
 
-It is stable, so it takes no row lock, and only the servers' roles may call it (service_role for the object gateway,
-qorpera_secret_broker for the brokers; test 001 keeps it off the API roles). It is a gate only: the locked functions
+It is stable, so it takes no row lock, and only the servers' roles may call it (service_role for the object gateway and
+the coding executor, qorpera_secret_broker for the brokers; test 001 keeps it off the API roles). It is a gate only: the locked functions
 behind each request still check the run and its lease under their locks, so a lease that ends between the proof and
 the work is still refused. A server never logs the header or puts it in an error, and every refusal is a plain 401 or
 403. The node-level tokens stay as transport checks for now.
@@ -239,7 +239,13 @@ the work is still refused. A server never logs the header or puts it in an error
   which the computer makes for a run without holding its lease. Its proof comes with the native host passing its
   holder to the computer with each operation (a company computer image rebuild), together with the office receiver's
   own proof.
-- **6b, not yet:** the coding executor.
+- **6b** (no SQL: the coding executor already calls the database as service_role):
+  - the executor's guest-facing listener (`commandPort`) proves the lease on `/v1/coding-commands/*` and
+    `/v1/machine-commands/*`, before the command's own authorization (a machine start's authorization already records
+    the command);
+  - the native host's coding and machine command gateways send the header;
+  - the executors' peer listener (`peerCommandPort`) takes none: only executors hold its token, and the forwarding
+    executor proved the guest's holder at its own ingress.
 
 ### Rollout (G2-6a)
 
@@ -250,8 +256,22 @@ account, account fill, vault model login and folder read and write each go throu
 
 ### Undo (G2-6a)
 
-Revert the servers (they stop asking), then the guest and the migration (`drop function
+Undo G2-6b first if it is in (below): its coding executors ask the same function and need the guests' header. Then
+revert the servers (they stop asking), then the guest and the migration (`drop function
 public.qorpera_native_binding_proven(jsonb, text)`).
+
+### Rollout (G2-6b)
+
+After 6a's migration: the guest image first (an executor from before 6b ignores the header), then each node's coding
+executor. A guest from before 6b sends no header, so a 6b executor refuses its coding and machine commands. The HTTPS
+proxy in front of `commandPort` must pass `x-qorpera-identity` through (nginx passes request headers by default; no
+`proxy_set_header` may clear it). Check after the release (deferred, needs Codex): a coding turn's command and a company
+machine's command each go through, both on the node that holds the machine and through a peer.
+
+### Undo (G2-6b)
+
+Revert the executors (they stop asking), then the guest. Undo 6b before 6a: a 6b executor refuses every command once
+the function is dropped or a guest from before 6a sends no header.
 
 ## G2-3e: the execution host's own calls
 

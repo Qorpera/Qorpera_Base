@@ -1,7 +1,20 @@
 import { createHash } from "node:crypto";
 import type { CloudCodingCommandHttpRequest } from "../../packages/runtime/src/cloud-coding-command-http.ts";
-import { parseCloudNativeToolAuthority } from "../../packages/runtime/src/cloud-native-tool-authority.ts";
+import { type CloudNativeToolBinding, parseCloudNativeToolAuthority } from "../../packages/runtime/src/cloud-native-tool-authority.ts";
 import { cloudNativeToolOperationEnvelope } from "../../packages/runtime/src/cloud-native-tool-operations.ts";
+
+/** G2-6b: whether a guest's request holds its binding's run lease (its x-qorpera-identity holder, proven by
+ * qorpera_native_binding_proven, migration 20260930152000). A gate only: the command's own authorization still checks
+ * the run under its lock. The holder goes only into this call's body, never into a log or an error. */
+export async function proveNativeBinding(
+	control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> },
+	binding: CloudNativeToolBinding,
+	holder: string,
+	signal: AbortSignal,
+): Promise<void> {
+	if (await control.call("qorpera_native_binding_proven", { p_binding: binding, p_holder: holder }, signal) !== true)
+		throw new Error("CODING_COMMAND_UNPROVEN");
+}
 
 export async function authorizeCodingCommand(
 	control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> },

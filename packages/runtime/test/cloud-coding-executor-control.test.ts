@@ -31,6 +31,12 @@ describe("dedicated coding executor control", () => {
 			"https://project.supabase.co/rest/v1/rpc/qorpera_route_coding_command",
 			expect.objectContaining({ redirect: "error", method: "POST" }),
 		);
+		// G2-6b: the guest-facing listener's lease proof.
+		await control.call("qorpera_native_binding_proven", {}, new AbortController().signal);
+		expect(fetcher).toHaveBeenLastCalledWith(
+			"https://project.supabase.co/rest/v1/rpc/qorpera_native_binding_proven",
+			expect.objectContaining({ redirect: "error", method: "POST" }),
+		);
 		// The per-session VM authority is gone.
 		await expect(control.call("qorpera_describe_coding_cleanup", {}, new AbortController().signal)).rejects.toThrow(
 			"METHOD_INVALID",
