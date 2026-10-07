@@ -204,17 +204,20 @@ impl Writer {
 			return Ok(());
 		}
 		let count = size.div_ceil(CHUNK);
+		// The new last chunk ends inside: it is cut, and sent again. It is loaded before anything changes, so a cut that
+		// fails leaves the file as it was.
+		let inside = count > 0 && size % CHUNK != 0;
+		if inside {
+			self.load(store, count - 1)?;
+		}
 		if self.current.as_ref().is_some_and(|c| c.index >= count) {
 			self.current = None;
 		}
 		self.held.truncate(count as usize);
 		self.size = size;
-		if count > 0 && size % CHUNK != 0 {
-			// The new last chunk ends inside: it is cut, and sent again.
-			let index = count - 1;
-			self.load(store, index)?;
+		if inside {
 			let current = self.current.as_mut().expect("loaded");
-			current.data.truncate(chunk_len(size, index) as usize);
+			current.data.truncate(chunk_len(size, count - 1) as usize);
 			current.dirty = true;
 		}
 		Ok(())
@@ -226,17 +229,16 @@ impl Writer {
 		Ok(self.size)
 	}
 
-	/// The size the chunks the node holds make up whole, for a close after a chunk could not be sent: the file keeps
-	/// what reached the node, and the node's handle is closed rather than left open.
-	pub fn held_size(&self) -> u64 {
-		let mut size = 0;
-		for len in &self.held {
-			size += len;
-			if *len != CHUNK {
-				break;
-			}
+	/// The writer of a file the node closed, for the file opened again (as `handle`) at the version that close made: the
+	/// chunk in memory stays, so the next write does not read it back.
+	pub fn reopened(mut self, handle: u32) -> Writer {
+		let count = self.size.div_ceil(CHUNK);
+		self.held.truncate(count as usize);
+		if self.current.as_ref().is_some_and(|c| c.index >= count) {
+			self.current = None;
 		}
-		size
+		self.handle = handle;
+		self
 	}
 }
 
@@ -251,6 +253,8 @@ mod tests {
 		chunks: RefCell<Vec<Vec<u8>>>,
 		puts: RefCell<Vec<u32>>,
 		gets: RefCell<usize>,
+		/// The link is down: every chunk asked back fails.
+		failing: std::cell::Cell<bool>,
 	}
 
 	impl Store {
@@ -286,6 +290,9 @@ mod tests {
 		}
 		fn get(&self, _handle: u32, index: u32, offset: u64, length: u64) -> Result<Vec<u8>, Fail> {
 			assert!(length <= MAX_READ as u64);
+			if self.failing.get() {
+				return Err(Fail::Link(std::io::Error::other("the link is down")));
+			}
 			*self.gets.borrow_mut() += 1;
 			let chunks = self.chunks.borrow();
 			let c = &chunks[index as usize];
@@ -377,18 +384,35 @@ mod tests {
 	}
 
 	#[test]
-	fn the_held_size_is_what_the_node_holds_whole() {
+	fn a_cut_that_cannot_read_its_last_chunk_back_leaves_the_file_as_it_was() {
 		let content = bytes(10 * 1024 * 1024, 4);
 		let store = Store::with(&content);
 		let mut w = Writer::new(1, content.len() as u64);
-		assert_eq!(w.held_size(), content.len() as u64);
-		// Unsent bytes are not the node's.
-		w.write(&store, content.len() as u64, b"more").unwrap();
-		assert_eq!(w.held_size(), content.len() as u64);
-		// A cut the node has not had yet: its chunks still make up 8 MiB whole, and a close there is one it takes.
-		w.truncate(&store, 5 * 1024 * 1024 + 7).unwrap();
-		assert_eq!(w.held_size(), 8 * 1024 * 1024);
-		assert_eq!(store.file(w.held_size()), &content[..8 * 1024 * 1024]);
+		store.failing.set(true);
+		assert!(w.truncate(&store, 5 * 1024 * 1024 + 7).is_err());
+		assert_eq!(w.size(), content.len() as u64);
+		store.failing.set(false);
+		assert_eq!(w.finish(&store).unwrap(), content.len() as u64);
+		assert!(store.puts.borrow().is_empty());
+		assert_eq!(store.file(content.len() as u64), content);
+	}
+
+	#[test]
+	fn a_file_opened_again_goes_on_from_the_chunk_in_memory() {
+		let store = Store::default();
+		let mut w = Writer::new(1, 0);
+		let data = bytes(5 * 1024 * 1024 + 3, 5);
+		w.write(&store, 0, &data).unwrap();
+		let size = w.finish(&store).unwrap();
+		// Closed at the node, then opened again at the version that close made: the next write goes on, with nothing
+		// read back.
+		let mut w = w.reopened(2);
+		assert_eq!(w.handle, 2);
+		w.write(&store, size, b"more").unwrap();
+		assert_eq!(w.read(&store, size - 3, 7).unwrap(), [&data[data.len() - 3..], b"more"].concat());
+		assert_eq!(w.finish(&store).unwrap(), size + 4);
+		assert_eq!(*store.gets.borrow(), 0);
+		assert_eq!(store.file(size + 4), [&data[..], b"more"].concat());
 	}
 
 	#[test]

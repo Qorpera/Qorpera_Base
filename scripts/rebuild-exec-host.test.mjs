@@ -271,6 +271,9 @@ test("every rebuild mints the host's own credential, binds only its hash, and pu
 		);
 		assert.ok(order.every((at, index) => at >= 0 && (index === 0 || order[index - 1] < at)), result.log);
 		assert.ok(!existsSync(join(fixture.staging, "credentials", "qorpera-execution-host")), "never staged");
+		// G2-5: the staged service key serves the script's own calls and never enters the host.
+		assert.match(result.log, /shared-execution-credentials\/qorpera-runner-provider/);
+		assert.doesNotMatch(result.log, /qorpera-supabase-service-key/);
 	} finally {
 		rmSync(fixture.dir, { recursive: true, force: true });
 	}
