@@ -250,7 +250,7 @@ Runtime:
 - The SQL and the runtime ship in one cut. The runtime calls the recorder only from a writer, and none does before W4,
   so the change is inert until then.
 
-## 8. R2: change sets no tool call carried (P40a and P40b built; P40c, the web, next)
+## 8. R2: change sets no tool call carried (P40a, P40b and P40c built)
 
 An agent can also change delegation paths without a reviewed tool: a computer or shell edit saved through a view
 (C1b-3). Until P40 such units were denied. The coordinator chose shape B on 4 October 2026 (registry 05:51Z): the
@@ -305,7 +305,7 @@ delegation path keeps "use the tool made for it" (no P40d).
   proposal with a denial of its `apply_proposal` call (the reviewer's deny, or a member's on the card). Without one, the
   run discards it.
 - `qorpera_folder_member_discard_proposal(env, member, proposalId)`: the member the proposal waits for, an owner or an
-  admin discards it. Members have no list yet (P40c, with the web).
+  admin discards it. Since P40c it also takes a member's own actor (`qorpera_folder_caller_allowed`), for the web.
 - A decided proposal answers as it stands.
 
 **Erasure:** erasing a path erases the open proposals that name a path under it before the root's cutoff. A proposal
@@ -370,8 +370,25 @@ counts them (`erased.proposals`). A live root whose only history is a proposal s
 - The migration lets the native host make the run's three calls (the list and the apply with the folder scope, the
   close with the binding's; G2-1's scopes) and names the two tools in observations. No table and no lock.
 
-**Left for P40c and later:**
-- P40c (web): open proposals in the agent's thread, and a member's discard.
+**The web (P40c, migration `20260930102000`, SQL test 937; `packages/web`):**
+- `qorpera_member_folder_agent_proposals(env, staffAgentId, {cursor?})` (authenticated) lists the caller's open
+  proposals of one agent as the run's list does: oldest first, 4 per page, each with its first 50 units, listed (and
+  counted) only while the member may read every path it names. Each structured file carries only the strings of its
+  parse a card names it by (`name`, `title`, `role`, `status`), never its content.
+- `qorpera_member_folder_discard_proposal(env, proposalId)` (authenticated) is the core's discard as the caller's own
+  actor: the member it waits for, owners and admins (42501 otherwise); an unknown or erased proposal is P0002, and a
+  company being deleted refuses (55000). A decided proposal answers as it stands.
+- The agent's own thread (an open company thread with the agent, not a routine, a room, a group chat or a sub-session)
+  reads the first page with the thread and shows each proposal as an approval card after the messages: one change as
+  the headline, or "N saved changes" with the first 8 changes and the rest counted, then where it was saved ("From a
+  computer. Not in the Company File yet.") and Discard. The changes are worded as the runtime's card words them, never
+  as paths. More than 4 adds a note that more wait. A discard hides the card at once, even from a listing read before
+  it landed; an unknown proposal counts as gone, and any other refusal keeps the card and shows the reason.
+- Applying stays the agent's (its next run reviews the proposal through the gate). A listing that fails keeps the
+  cards shown last.
+
+**Left for later:**
 - A proposal waiting for a removed member, or for an archived agent, stays open until an owner or admin discards it.
+  Their list of such proposals is later work.
 
 R2 is F2's (the coordinator's plan of 2 October 2026; shape B on 4 October 2026).
