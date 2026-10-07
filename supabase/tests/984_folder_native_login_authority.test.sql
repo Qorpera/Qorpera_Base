@@ -2,14 +2,15 @@
 -- A member's native login on folder-v2 lends its run nothing beyond the run's own binding: the native tool authority
 -- answers only the service role (never a token of another role behind it), describes the run as a closed projection
 -- with no secret in it, and refuses a binding with any field of another run, as it refuses an expired assignment or a
--- lease that expired while a tool waited. A send or card for another run or assignment is refused; an expired lease
--- replays no send; a job the owner cancelled neither replays nor delivers a final send. The owner's Disconnect revokes
+-- lease that expired while a tool waited. The login holds no secret, and its lease hands the runner exactly the
+-- payer's capsule. A send or card for another run or assignment is refused; an expired lease replays no send; a job the owner cancelled neither replays nor delivers a final send. The owner's Disconnect revokes
 -- the login's connection, versions, capsules and leases and fails the next queued run it would pay for. A contributor
 -- cannot make a company-scoped compute identity, and a viewer or an outsider cannot change an agent thread's model or
 -- speed (an outsider cannot read it either). The run is 924's run of Alice's on the owner's login (ported from
 -- snapshot-v1 in the legacy sweep: 160's surviving checks, and 580's and 584's role checks).
 
--- 1. A contributor cannot make a company-scoped compute identity; the owner can, with the same arguments (rolled back).
+-- 1. A contributor cannot make a company-scoped compute identity; the owner can, with the same arguments, and a login on
+-- it is the company's (rolled back).
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000002');
 set local role authenticated;
 select pg_temp.base_error($q$select public.qorpera_upsert_scoped_compute_identity('92400000-0000-4000-8000-000000000010',
@@ -19,7 +20,7 @@ reset role;
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 set local role authenticated;
 do $$
-declare v_identity jsonb;
+declare v_identity jsonb; v_login jsonb; v_connection jsonb;
 begin
 	begin
 		v_identity := public.qorpera_upsert_scoped_compute_identity('92400000-0000-4000-8000-000000000010',
@@ -27,6 +28,23 @@ begin
 			'["agent_turn"]', '{}');
 		if v_identity ->> 'ownership_kind' is distinct from 'company' then
 			raise exception 'the owner could not make the company identity: %', v_identity; end if;
+		-- A login on the company identity gives the company, not the owner, its capsule and connection.
+		v_login := public.qorpera_begin_native_provider_login('92400000-0000-4000-8000-000000000010',
+			'98400000-0000-4000-8000-000000000081', '98400000-0000-4000-8000-000000000082',
+			(v_identity ->> 'compute_identity_id')::uuid, 'openai', 'codex-cli', repeat('e', 64), 900);
+		perform pg_temp.base_claims('service_role');
+		set local role service_role;
+		v_connection := public.qorpera_complete_native_provider_login((v_login ->> 'login_id')::uuid, repeat('e', 64),
+			'98400000-0000-4000-8000-000000000083', 'object://native-capsules/98400000-0000-4000-8000-000000000083', repeat('f', 64),
+			'company-openai-account', 'company-subscription', 'qorpera-native-provider-consent/v1',
+			'{"monthly_microusd":2000000,"reservation_microusd":100000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":1}');
+		reset role;
+		if not exists (select 1 from public.qorpera_native_credential_capsules as capsule
+				where capsule.id = '98400000-0000-4000-8000-000000000083' and capsule.ownership_kind = 'company'
+					and capsule.owner_user_id is null and capsule.owner_scope_key is null)
+			or not exists (select 1 from public.qorpera_provider_connections as connection
+				where connection.id = (v_connection ->> 'connection_id')::uuid and connection.owner_user_id is null) then
+			raise exception 'the company login''s capsule or connection is not the company''s'; end if;
 		raise exception using errcode = 'QTP01';
 	exception when sqlstate 'QTP01' then null;
 	end;
@@ -72,6 +90,55 @@ begin
 	end if;
 end $$;
 reset role;
+-- The login holds no secret: its versions name only the owner's capsule, and its login sessions have no column for
+-- one. The run's sponsor pays with that capsule, and the lease hands the runner exactly it (rolled back).
+do $$
+declare
+	v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb;
+	v_connection uuid := (current_setting('qorpera_test.base_connection')::jsonb ->> 'connection_id')::uuid;
+	v_lease jsonb;
+begin
+	perform pg_temp.base_assert(v_binding ->> 'credentialCapsuleId' = '92400000-0000-4000-8000-000000000060'
+		and exists (select 1 from public.qorpera_provider_connection_versions where connection_id = v_connection)
+		and not exists (select 1 from public.qorpera_provider_connection_versions as version
+			where version.connection_id = v_connection
+				and (version.authentication_mode <> 'native_subscription' or version.secret_reference is not null
+					or version.credential_capsule_id is distinct from '92400000-0000-4000-8000-000000000060')),
+		'the login''s versions hold a secret or another capsule');
+	perform pg_temp.base_assert(exists (select 1 from public.qorpera_native_credential_capsules as capsule
+			where capsule.id = '92400000-0000-4000-8000-000000000060' and capsule.status = 'active'
+				and capsule.ownership_kind = 'member' and capsule.owner_user_id = '92400000-0000-4000-8000-000000000001'
+				and capsule.owner_scope_key is null)
+		and exists (select 1 from public.qorpera_provider_connections as connection
+			where connection.id = v_connection and connection.owner_user_id = '92400000-0000-4000-8000-000000000001'),
+		'the login''s capsule or connection is not the owner''s');
+	perform pg_temp.base_assert(not exists (select 1 from information_schema.columns
+			where table_schema = 'public' and table_name = 'qorpera_native_provider_login_sessions'
+				and column_name ~ '(token|secret|credential)'),
+		'the login sessions table has a credential-bearing column');
+	perform pg_temp.base_assert(exists (select 1 from public.qorpera_execution_runs as run
+			join public.qorpera_execution_sponsor_versions as sponsor
+				on sponsor.binding_id = run.sponsor_binding_id and sponsor.version = run.sponsor_version
+			join public.qorpera_provider_connection_versions as version
+				on version.connection_id = sponsor.provider_connection_id and version.version = sponsor.provider_connection_version
+			where run.id = (v_binding ->> 'runId')::uuid
+				and run.sponsor_binding_id = (current_setting('qorpera_test.base_sponsor')::jsonb ->> 'binding_id')::uuid
+				and sponsor.provider_connection_id = v_connection
+				and version.credential_capsule_id = '92400000-0000-4000-8000-000000000060'),
+		'the run''s sponsor does not pay with the owner''s capsule');
+	begin
+		v_lease := public.qorpera_acquire_native_provider_connection_lease((v_binding ->> 'runId')::uuid,
+			(v_binding ->> 'runnerId')::uuid, repeat('2', 64), (v_binding ->> 'assignmentId')::uuid, repeat('3', 64), 120);
+		if v_lease ->> 'lease_id' is distinct from v_binding ->> 'leaseId'
+			or v_lease ->> 'credential_capsule_id' is distinct from '92400000-0000-4000-8000-000000000060'
+			or v_lease ->> 'encrypted_capsule_reference' is distinct from 'object://native-capsules/92400000-0000-4000-8000-000000000060'
+			or v_lease ->> 'credential_ownership_kind' is distinct from 'member'
+			or v_lease ->> 'credential_owner_user_id' is distinct from '92400000-0000-4000-8000-000000000001' then
+			raise exception 'the lease did not hand the runner the payer''s own capsule: %', v_lease; end if;
+		raise exception using errcode = 'QTP01';
+	exception when sqlstate 'QTP01' then null;
+	end;
+end $$;
 
 -- 3. Any field of another run is refused.
 set local role service_role;
