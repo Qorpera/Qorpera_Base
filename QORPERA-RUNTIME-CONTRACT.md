@@ -4304,8 +4304,8 @@ immediately before an effect, and section 9.1's context views, are unchanged.
    still finish the call after the host has given up, so a view can be
    recorded for a request that never left.
 
-   > **Amended 2026-10-05** (control calls, part 2; the doubling and the
-   > database's budget 2026-10-06).
+   > **Amended 2026-10-05** (control calls, part 2; the doubling, the
+   > database's budget and the long entry point 2026-10-06).
    > There is no 3.5 s or 4 s budget, and a timeout no longer stops the run: no
    > host stopwatch ends a model request's fence. A lost or late answer is asked
    > again for as long as the run's authority holds, which the run's own
@@ -4314,11 +4314,13 @@ immediately before an effect, and section 9.1's context views, are unchanged.
    > a stop still end the run with nothing released. Codex waits for the host's
    > answer, with a 10-minute backstop against a host that is alive but hung.
    > The database still bounds each attempt: the fence is one statement under
-   > the native host entry's 8 s statement and lock budget
-   > (`qorpera_native_host_call`), and an attempt the database cancels is asked
-   > again like a lost one. So the doubling helps only a delay outside the
-   > statement (a connection pool wait), and a fence that needs more than 8 s
-   > in the database never lands: the request ends at Codex's backstop.
+   > the native host's long entry point, as the lease validator is: 25 s for
+   > the statement and 8 s for a lock wait (`qorpera_native_host_call_long`,
+   > migration `20260930109500`; 8 s for both before). An attempt the database
+   > cancels is asked again like a lost one. So the doubling helps a delay
+   > outside the statement (a connection pool wait) and a statement within
+   > 25 s, and a fence that needs more than 25 s in the database never lands:
+   > the request ends at Codex's backstop.
    > The last sentence of this item still holds.
 4. **Until the database has the call** the host makes the separate calls, all
    of them.
