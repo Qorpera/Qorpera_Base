@@ -2,12 +2,12 @@ import { supabaseServiceHeaders } from "@qorpera/cloud-client/cloud-request";
 import { UUID_PATTERN } from "@qorpera/contracts";
 import type { WebSocketLikeConstructor } from "@supabase/supabase-js";
 
-/** G2-2 to G2-4: the native host reaches the database, Storage and Realtime without the service key. A call it makes
- * inside a job goes through the entry points of migration 20260928409985 with the publishable key and that job's lease
- * token, so it acts for that job's run only; a call it makes between jobs goes through qorpera_native_identity_call
- * (migration 20260930005000) with the holder's identity credential. Any other database call is refused here. A
- * credential capsule's Storage request carries the publishable key and the holder's credential in the
- * x-qorpera-identity header, which the capsule bucket's policies read (migration 20260930103000); so does the
+/** G2-2 to G2-5: the native host reaches the database, Storage and Realtime without the service key, and holds none
+ * (G2-5). A call it makes inside a job goes through the entry points of migration 20260928409985 with the publishable
+ * key and that job's lease token, so it acts for that job's run only; a call it makes between jobs goes through
+ * qorpera_native_identity_call (migration 20260930005000) with the holder's identity credential. Any other database
+ * call is refused here. A credential capsule's Storage request carries the publishable key and the holder's credential
+ * in the x-qorpera-identity header, which the capsule bucket's policies read (migration 20260930103000); so does the
  * presence client's WebSocket (nativeHostRealtimeTransport). Any other Storage request is refused. */
 
 /** The native host's calls inside a job, and the entry point (statement budget) of each: qorpera_native_host_calls as
@@ -179,20 +179,13 @@ export function isNativeHostPublishableKey(value: unknown): value is string {
 export class NativeHostDispatch {
 	readonly fetch: typeof fetch;
 	readonly #origin: string;
-	readonly #serviceKey: string;
 	readonly #fetch: typeof fetch;
 	#identity: NativeHostIdentityCredential;
 	#job: { jobId: string; leaseToken: string; publishableKey: string } | undefined;
 
-	constructor(options: {
-		supabaseUrl: string;
-		serviceKey: string;
-		identity: NativeHostIdentityCredential;
-		fetch?: typeof fetch;
-	}) {
+	constructor(options: { supabaseUrl: string; identity: NativeHostIdentityCredential; fetch?: typeof fetch }) {
 		this.#origin = new URL(options.supabaseUrl).origin;
-		this.#serviceKey = options.serviceKey;
-		this.#identity = checkedIdentity(options.identity, options.serviceKey);
+		this.#identity = checkedIdentity(options.identity);
 		this.#fetch = options.fetch ?? fetch;
 		this.fetch = (input, init) => this.#dispatch(input, init);
 	}
@@ -203,7 +196,7 @@ export class NativeHostDispatch {
 	begin(jobId: string, credential: NativeHostJobCredential | undefined): () => void {
 		if (!UUID_PATTERN.test(jobId) || !credential || !LEASE_TOKEN.test(credential.leaseToken))
 			throw new NativeHostCredentialError("NATIVE_HOST_CREDENTIAL", "Native host calls need the job's lease token");
-		if (!isNativeHostPublishableKey(credential.publishableKey) || credential.publishableKey === this.#serviceKey)
+		if (!isNativeHostPublishableKey(credential.publishableKey))
 			throw new NativeHostCredentialError(
 				"NATIVE_HOST_CREDENTIAL",
 				"Native host calls need the project's publishable key",
@@ -322,13 +315,12 @@ function isJsonObject(body: string): boolean {
 }
 
 /** The holder's identity credential, checked once: a uuid identity, a 43-character credential and the project's
- * publishable key, never the service key. */
-function checkedIdentity(identity: NativeHostIdentityCredential, serviceKey: string): NativeHostIdentityCredential {
+ * publishable key (never a secret key: isNativeHostPublishableKey takes only a publishable key or an anon JWT). */
+function checkedIdentity(identity: NativeHostIdentityCredential): NativeHostIdentityCredential {
 	if (
 		!UUID_PATTERN.test(identity.computeIdentityId) ||
 		!LEASE_TOKEN.test(identity.credential) ||
-		!isNativeHostPublishableKey(identity.publishableKey) ||
-		identity.publishableKey === serviceKey
+		!isNativeHostPublishableKey(identity.publishableKey)
 	)
 		throw new NativeHostCredentialError("NATIVE_HOST_CREDENTIAL", "Native host identity credential is invalid");
 	return { ...identity };
