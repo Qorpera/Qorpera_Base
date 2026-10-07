@@ -20,7 +20,7 @@ import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
  *   brings back an erased step, and it never fills in a line marked erased.
  * - An effectful call (anything `cloudActionEffect` does not class as a read) is committed before it runs, as a step
  *   with no result yet, once no call before it is still waiting for its answer. The call runs only once that commit
- *   has landed.
+ *   has landed. A denied call that closes what it stood for (P40b) is committed the same way before it closes it.
  * - A send, a card or a `send_mail` keeps no copy of its arguments: `args` is "", and `args_bytes` and `args_hash`
  *   stay. For now its `args_hash` is the boundary's plain digest of the call, as for every step, so a guess of its
  *   words can be checked against it. W1c-2 replaces it with the platform's keyed hash before any run is built with a

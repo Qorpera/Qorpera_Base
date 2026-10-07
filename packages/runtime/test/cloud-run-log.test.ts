@@ -7,6 +7,7 @@ import type {
 } from "@qorpera/runtime/cloud-company-folder-client";
 import type { CloudNativeCaptureImages } from "@qorpera/runtime/cloud-native-capture-images";
 import {
+	type CloudNativeActionReview,
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
 	type CloudToolResult,
@@ -669,6 +670,8 @@ describe("the tool boundary with a work log", () => {
 			log?: Partial<ConstructorParameters<typeof CloudRunLog>[0]>;
 			/** The release check a call's answer passes before it goes back to the model. */
 			release?: () => Promise<void>;
+			/** The automatic review every call passes before it runs. */
+			review?: CloudNativeActionReview;
 		} = {},
 	) {
 		const { runId, folder, log, signal } = runLog(options.log);
@@ -704,6 +707,12 @@ describe("the tool boundary with a work log", () => {
 				expect(lines.at(-1)).toMatchObject({ tool: "company_write", result: null, releases: [] });
 				return { kind: "text", value: "Written" } as const;
 			}),
+			// What the call stood for is closed after a denial (P40b), once its step is in the log with no result yet.
+			denied: vi.fn(async () => {
+				order.push("denied");
+				expect(folder.all().at(-1)).toMatchObject({ tool: "company_write", result: null, releases: [] });
+				return "Closed.";
+			}),
 		};
 		const boundary = new CloudNativeToolBoundary({
 			companyId,
@@ -712,6 +721,7 @@ describe("the tool boundary with a work log", () => {
 			assertActive: async () => undefined,
 			signal,
 			runLog: log,
+			...(options.review ? { review: options.review } : {}),
 			// Only the capture images' release check is used here.
 			...(options.release
 				? { captures: { assertReadable: options.release } as unknown as CloudNativeCaptureImages }
@@ -802,6 +812,36 @@ describe("the tool boundary with a work log", () => {
 		expect(f.writeTool.execute).not.toHaveBeenCalled();
 		expect(f.readTool.execute).not.toHaveBeenCalled();
 		expect(f.folder.files.size).toBe(0);
+	});
+
+	it("commits a denied call before its denial closes what it stood for, else closes nothing", async () => {
+		const DENIAL = "DENIED: The member said no.";
+		const f = fixture({
+			review: {
+				check: async ({ tool }) =>
+					tool.name === "company_write"
+						? { run: false, text: DENIAL, deniedReviewId: randomUUID() }
+						: { run: true },
+			},
+		});
+		const closed = await f.call("call_w1", "company_write", { path: "a.md", text: "a" });
+		expect(closed.result).toMatchObject({ status: "denied", content: { text: `${DENIAL} Closed.` } });
+		expect(f.order).toEqual(["denied"]);
+		expect(f.folder.commits).toHaveLength(1);
+
+		// A pre-commit that cannot land closes nothing: the denial stands as it is.
+		f.folder.refuse = "memory_erase_open";
+		const refused = await f.call("call_w2", "company_write", { path: "a.md", text: "b" });
+		expect(refused.result).toMatchObject({ status: "denied", content: { text: DENIAL } });
+		f.folder.refuse = null;
+		f.folder.gone = true;
+		const gone = await f.call("call_w3", "company_write", { path: "a.md", text: "c" });
+		expect(gone.result).toMatchObject({ status: "denied", content: { text: DENIAL } });
+		expect(f.log.gone).toBe(true);
+		expect(f.writeTool.denied).toHaveBeenCalledOnce();
+		expect(f.writeTool.execute).not.toHaveBeenCalled();
+		// Only the step whose pre-commit landed is in the log; the log was gone before its answer was filled in.
+		expect(f.folder.all()).toEqual([expect.objectContaining({ j: 0, call: "call_w1", result: null })]);
 	});
 
 	it("keeps a step for every call the model sees, also one refused before it runs", async () => {

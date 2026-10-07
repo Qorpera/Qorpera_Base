@@ -776,6 +776,7 @@ export class CloudNativeToolBoundary {
 			...(this.#identity ? { identity: this.#identity } : {}),
 			...(observation ? { observation } : {}),
 		};
+		const runLog = this.#runLog;
 		let actionReviewId: string | undefined;
 		if (this.#review) {
 			// Auto-review (v130): an acting call runs only after the reviewer lets it, or a
@@ -798,6 +799,9 @@ export class CloudNativeToolBoundary {
 				if (gate.deniedReviewId && tool.denied) {
 					const deniedReviewId = gate.deniedReviewId;
 					try {
+						// Closing it is an effect too: with a work log, the step is committed first, as for a call that runs.
+						if (runLog && step !== undefined && runLog.effectful(tool, parsed))
+							await untilStopped(() => runLog.precommit(step, this.#signal), this.#signal);
 						const closed = await untilStopped(
 							() => tool.denied!(parsed, { ...context, actionReviewId: deniedReviewId }),
 							this.#signal,
@@ -821,7 +825,6 @@ export class CloudNativeToolBoundary {
 		}
 		// An acting call is committed to the work log, with no result yet, before it runs. If that cannot land, it does
 		// not run: the log must show every effect the run had.
-		const runLog = this.#runLog;
 		if (runLog && step !== undefined && runLog.effectful(tool, parsed)) {
 			try {
 				await untilStopped(() => runLog.precommit(step, this.#signal), this.#signal);
