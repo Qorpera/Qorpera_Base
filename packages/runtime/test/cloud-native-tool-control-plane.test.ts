@@ -194,8 +194,9 @@ it("bounds an uncooperative success-body read and cancels the stream", async () 
 		"SYNTHETIC_SERVICE_KEY",
 		request,
 	);
-	// A late answer is asked again within the authority window (control calls, 4 Oct 2026): five attempts of 5 s, each
-	// cancelled. Both clocks move together.
+	// A late answer is asked again within the authority window (control calls, 4 Oct 2026), and an attempt cut at its
+	// deadline gives the next twice as long (6 Oct 2026): attempts of 5 s, 10 s and the 14.25 s left of the 30 s window,
+	// each cancelled. Both clocks move together.
 	let now = 0;
 	vi.spyOn(performance, "now").mockImplementation(() => now);
 	const rejected = expect(CloudNativeToolRun.open(binding, control, new AbortController().signal)).rejects.toThrow(
@@ -206,8 +207,8 @@ it("bounds an uncooperative success-body read and cancels the stream", async () 
 		await vi.advanceTimersByTimeAsync(250);
 	}
 	await rejected;
-	expect(cancel).toHaveBeenCalledTimes(5);
-	expect(request).toHaveBeenCalledTimes(5);
+	expect(cancel).toHaveBeenCalledTimes(3);
+	expect(request).toHaveBeenCalledTimes(3);
 	expect(vi.getTimerCount()).toBe(0);
 });
 
