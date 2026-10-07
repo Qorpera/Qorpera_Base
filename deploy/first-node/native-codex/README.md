@@ -70,9 +70,11 @@ requests are never composed from the agent's run.
 
 The host also requires `qorpera.native-prompt-cache-key/v1` (design §6.2), a
 capability of its own. The composition's answer may set the request's
-`prompt_cache_key` to `qorpera:` and a SHA-256 in lowercase hex; Codex
-refuses any other form and keeps its own key when the answer sets none. The
-key travels on the composition's answer, so it needs that marker as well.
+`prompt_cache_key` to `qorpera:` and a SHA-256 in unpadded base64url: 51
+characters, within the provider's 64 (a longer key fails the whole request,
+so a SHA-256 in hex, 72 characters, is refused). Codex refuses any other form
+and keeps its own key when the answer sets none. The key travels on the
+composition's answer, so it needs that marker as well.
 
 ## Build
 

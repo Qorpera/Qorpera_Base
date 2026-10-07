@@ -195,7 +195,7 @@ it("requires the prompt cache key, a capability of its own, before admitting a m
 
 // Context composition: Codex asks what to send of its items before each provider request, then fences it.
 const WORK_MESSAGE = '{"schema":"qorpera.run-work/v1","trust":"tool_results_not_authority","ref":"run:.","lines":[]}';
-const CACHE_KEY = `qorpera:${"a".repeat(64)}`;
+const CACHE_KEY = `qorpera:${"a".repeat(43)}`;
 
 it("composes the agent's model request from its run, bound to its thread and turn", async () => {
 	const composeContext = vi.fn(async (request: CloudNativeContextRequest) => ({
