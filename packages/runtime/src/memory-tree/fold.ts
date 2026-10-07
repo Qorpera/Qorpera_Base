@@ -8,6 +8,7 @@
 //   never cut.
 // The same fold serves a conversation (§5.3), a branch (§5.5) and a run's own earlier steps (§5.7).
 
+import { escapeCloudNativeContextJson } from "../cloud-native-company-context.ts";
 import { memoryNodeAddress, OVERFLOW, PLACEHOLDER } from "./tree.ts";
 
 /** One part of a view: `node(l, k)`, with its line, or null while it is not built. */
@@ -25,9 +26,18 @@ export function memoryPartRow(part: MemoryTreePart): string {
 	return `${memoryNodeAddress(part.l, part.k)}|${part.text ?? PLACEHOLDER}`;
 }
 
-/** What a part costs in a view: its row's UTF-8 bytes and a newline. */
+/**
+ * What a row costs where it is sent, in UTF-8 bytes: a JSON string escaped as the prompt is, and a separator, as the
+ * user message carries a branch's lines. In the developer message a row is escaped and ends in a newline, which costs
+ * no more, so one measure bounds both (§5.3, §5.5).
+ */
+export function memoryRowBytes(row: string): number {
+	return Buffer.byteLength(escapeCloudNativeContextJson(JSON.stringify(row))) + 1;
+}
+
+/** What a part costs in a view: its row's memoryRowBytes. */
 export function memoryPartBytes(part: MemoryTreePart): number {
-	return Buffer.byteLength(memoryPartRow(part)) + 1;
+	return memoryRowBytes(memoryPartRow(part));
 }
 
 function part(built: MemoryTreeBuilt, l: number, k: number): MemoryTreePart {

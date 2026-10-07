@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import type { MemoryTreeBuilt, MemoryTreePart } from "@qorpera/runtime/memory-tree/fold";
+import { escapeCloudNativeContextJson } from "@qorpera/runtime/cloud-native-company-context";
+import { type MemoryTreeBuilt, type MemoryTreePart, memoryRowBytes } from "@qorpera/runtime/memory-tree/fold";
 import { BRANCHES, PLACEHOLDER } from "@qorpera/runtime/memory-tree/tree";
 import {
 	MEMORY_VIEW_TRUST,
@@ -8,7 +9,6 @@ import {
 	memoryBranchLines,
 	memoryConversationView,
 	memoryPromptCacheKey,
-	memoryViewEscape,
 	VIEW_DOC,
 } from "@qorpera/runtime/memory-tree/view";
 import { expect, it } from "vitest";
@@ -21,16 +21,17 @@ function escaped(code: number): string {
 }
 
 function used(lines: readonly string[] | undefined): number {
-	return (lines ?? []).reduce((total, row) => total + Buffer.byteLength(row) + 1, 0);
+	return (lines ?? []).reduce((total, row) => total + memoryRowBytes(row), 0);
 }
 
-it("escapes a view's text as the prompt does, so it cannot close its tag or turn its direction", () => {
+it("escapes a view's rows as the prompt does, so they cannot close their tag or turn their direction", () => {
 	const override = String.fromCharCode(0x202e);
 	const separator = String.fromCharCode(0x2028);
-	expect(memoryViewEscape(`a<b>&${override}${separator}c`)).toBe(
-		`a${escaped(0x3c)}b${escaped(0x3e)}${escaped(0x26)}${escaped(0x202e)}${escaped(0x2028)}c`,
+	const rows = (text: string) => memoryConversationView("Ada", [{ l: 0, k: 0, text }]).split("\n");
+	expect(rows(`a<b>&${override}${separator}c`)).toContain(
+		`0+1|a${escaped(0x3c)}b${escaped(0x3e)}${escaped(0x26)}${escaped(0x202e)}${escaped(0x2028)}c`,
 	);
-	expect(memoryViewEscape('plain "text" æøå')).toBe('plain "text" æøå');
+	expect(rows('plain "text" æøå')).toContain('0+1|plain "text" æøå');
 });
 
 it("puts the primary view after VIEW_DOC, between tags that hold only its ref and name, with no dates", () => {
@@ -55,7 +56,7 @@ it("puts the primary view after VIEW_DOC, between tags that hold only its ref an
 
 it("folds a branch within its share, merging into placeholders at once and naming what still does not fit", () => {
 	expect(memoryBranchLines(3, () => "x", 1_000)).toEqual(["0+1|x", "1+1|x", "2+1|x"]);
-	// Eight messages of 105 bytes each, with no parent built: the oldest pairs merge into placeholders until 400 fits.
+	// Eight messages costing 107 bytes each, with no parent built: the oldest pairs merge into placeholders until 400 fits.
 	const leavesOnly: MemoryTreeBuilt = (l) => (l === 0 ? "y".repeat(100) : undefined);
 	expect(memoryBranchLines(8, leavesOnly, 400)).toEqual([
 		`0+4|${PLACEHOLDER}`,
@@ -63,10 +64,17 @@ it("folds a branch within its share, merging into placeholders at once and namin
 		`6+1|${"y".repeat(100)}`,
 		`7+1|${"y".repeat(100)}`,
 	]);
-	// Every line built and 305 bytes: 0+4, 4+2 and 6+1 have no siblings left, so the oldest are named instead.
+	// Every line built and costing 307 bytes: 0+4, 4+2 and 6+1 have no siblings left, so the oldest are named instead.
 	const long: MemoryTreeBuilt = () => "z".repeat(300);
 	expect(memoryBranchLines(7, long, 400)).toEqual(["earlier|zoom 0+4, 4+2", `6+1|${"z".repeat(300)}`]);
 	expect(memoryBranchLines(7, long, 300)).toBeNull();
+});
+
+it("counts a branch's rows as they are sent, escaped, so markup cannot push it past its share", () => {
+	const markup = "<".repeat(50);
+	const lines = memoryBranchLines(4, () => markup, 700);
+	expect(lines).toEqual([`0+2|${markup}`, `2+2|${markup}`]);
+	expect(Buffer.byteLength(escapeCloudNativeContextJson(JSON.stringify(lines)))).toBeLessThanOrEqual(700);
 });
 
 it("gives the most recent branch half of BRANCHES, the next a quarter, each at least BRANCH_MIN, and lists the rest", () => {
@@ -88,7 +96,7 @@ it("gives the most recent branch half of BRANCHES, the next a quarter, each at l
 	expect(used(third.lines)).toBeLessThanOrEqual(BRANCHES / 8);
 	expect(third.ref).toBe("thread:ada");
 
-	// One row of 505 bytes each: after 47 branches less than BRANCH_MIN is left, and the rest are listed.
+	// One row costing 507 bytes each: after 47 branches less than BRANCH_MIN is left, and the rest are listed.
 	const many: MemoryBranchSource[] = Array.from({ length: 60 }, (_, index) => ({
 		ref: `thread:agent-${index}`,
 		name: `Agent ${index}`,
@@ -103,11 +111,12 @@ it("gives the most recent branch half of BRANCHES, the next a quarter, each at l
 	expect(branches.reduce((total, branch) => total + used(branch.lines), 0)).toBeLessThanOrEqual(BRANCHES);
 });
 
-it("keys the prompt cache by the payer's login, the agent and the conversation", () => {
+it("keys the prompt cache by the payer's login, the agent and the conversation, within 64 characters", () => {
 	const source = { payerLoginConnectionId: "login-1", agentId: "agent-1", conversationId: "thread-1" };
 	const key = memoryPromptCacheKey(source);
-	expect(key).toMatch(/^qorpera:[0-9a-f]{64}$/);
-	expect(key).toBe(`qorpera:${createHash("sha256").update('["login-1","agent-1","thread-1"]').digest("hex")}`);
+	expect(key).toMatch(/^qorpera:[A-Za-z0-9_-]{43}$/);
+	expect(key.length).toBeLessThanOrEqual(64);
+	expect(key).toBe(`qorpera:${createHash("sha256").update('["login-1","agent-1","thread-1"]').digest("base64url")}`);
 	expect(memoryPromptCacheKey({ ...source })).toBe(key);
 	expect(memoryPromptCacheKey({ ...source, payerLoginConnectionId: "login-2" })).not.toBe(key);
 	expect(memoryPromptCacheKey({ ...source, agentId: "agent-2" })).not.toBe(key);

@@ -20,8 +20,7 @@ export const BRANCH_MIN = 600;
 export const OVERFLOW = 1.25;
 /** Attempts to bring a compactor line under NODE (§7.2). */
 export const TRIES = 3;
-/** The company head and the agent head together (§5.6). */
-export const HEAD = 16_000;
+// HEAD, the company head and the agent head together (§5.6), is CLOUD_AGENT_HEAD_BYTES in cloud-agent-head.ts.
 /** Pinned text in an agent head, once pins are built (§11). */
 export const PINS = 4_000;
 /** The run's own work: folded lines plus raw steps (§5.7). */

@@ -5,6 +5,7 @@ import {
 	memoryOverflow,
 	memoryPartBytes,
 	memoryPartRow,
+	memoryRowBytes,
 	memoryView,
 } from "@qorpera/runtime/memory-tree/fold";
 import { OVERFLOW, PLACEHOLDER, VIEW } from "@qorpera/runtime/memory-tree/tree";
@@ -71,11 +72,19 @@ it("shows every message as itself while the view fits", () => {
 });
 
 it("merges the pair furthest from the end in its own size", () => {
-	// Each row here is 6 bytes with its newline, so 18 bytes hold three.
-	expect(fold(4, () => "x", 18).map(memoryPartRow)).toEqual(["0+2|x", "2+1|x", "3+1|x"]);
-	expect(fold(5, () => "x", 18).map(memoryPartRow)).toEqual(["0+2|x", "2+2|x", "4+1|x"]);
+	// Each row here costs 8 bytes as a JSON string with its separator, so 24 bytes hold three.
+	expect(fold(4, () => "x", 24).map(memoryPartRow)).toEqual(["0+2|x", "2+1|x", "3+1|x"]);
+	expect(fold(5, () => "x", 24).map(memoryPartRow)).toEqual(["0+2|x", "2+2|x", "4+1|x"]);
 	// At 6, 0+2 and 2+2 are 3 of their size from the end and 4+1 and 5+1 only 2 of theirs.
-	expect(fold(6, () => "x", 18).map(memoryPartRow)).toEqual(["0+4|x", "4+1|x", "5+1|x"]);
+	expect(fold(6, () => "x", 24).map(memoryPartRow)).toEqual(["0+4|x", "4+1|x", "5+1|x"]);
+});
+
+it("counts a row as the prompt sends it: a JSON string, escaped, and a separator", () => {
+	expect(memoryRowBytes("0+1|x")).toBe(8);
+	// `<` and `>` are sent as six characters each, each `"` as two, and æ is two bytes.
+	expect(memoryRowBytes('0+1|<b>"æ"')).toBe(26);
+	expect(memoryPartBytes({ l: 2, k: 1, text: "<&>" })).toBe(memoryRowBytes("4+4|<&>"));
+	expect(memoryPartBytes({ l: 2, k: 1, text: null })).toBe(memoryRowBytes(`4+4|${PLACEHOLDER}`));
 });
 
 it("matches §5.2 as written, for lines built at random", () => {
