@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { constants, realpathSync } from "node:fs";
-import { open } from "node:fs/promises";
+import { lstat, open } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { lxdNativeCompanyRuntimeFromEnvironment } from "./lxd-company-runtime.ts";
@@ -61,6 +61,27 @@ async function systemdCredential(name: string): Promise<string | undefined> {
 	}
 }
 
+/** The service key's credential name, which the execution host may not hold (G2-5). */
+const SERVICE_KEY_CREDENTIAL = "qorpera-supabase-service-key";
+
+/** Where rebuild-exec-host.sh puts the host's credentials, which qorpera-shared-execution.service loads from. */
+function credentialSource(): string {
+	const directory =
+		process.env.QORPERA_SHARED_EXECUTION_CREDENTIAL_SOURCE ?? "/etc/qorpera/shared-execution-credentials";
+	if (!isAbsolute(directory)) throw new Error("QORPERA_SHARED_EXECUTION_CREDENTIAL_SOURCE must be absolute");
+	return directory;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+	return lstat(path).then(
+		() => true,
+		(error: NodeJS.ErrnoException) => {
+			if (error.code === "ENOENT") return false;
+			throw error;
+		},
+	);
+}
+
 async function credential(credentialName: string, environmentName: string): Promise<string> {
 	const value = (await systemdCredential(credentialName)) ?? process.env[environmentName];
 	if (!value || /[\0\r\n]/.test(value)) throw new Error(`${environmentName} is required as a systemd credential`);
@@ -73,11 +94,18 @@ export async function sharedExecutionConfigFromEnvironment(): Promise<{
 	host: string;
 	port: number;
 }> {
+	// G2-5: the execution host holds no service key, and gives its slots none. One delivered anyway (a systemd
+	// credential, the environment, or a file left in the host's credential source, which no unit loads) stops it.
+	if (
+		process.env.QORPERA_SUPABASE_SERVICE_KEY !== undefined ||
+		(await systemdCredential(SERVICE_KEY_CREDENTIAL)) !== undefined ||
+		(await pathExists(join(credentialSource(), SERVICE_KEY_CREDENTIAL)))
+	)
+		throw new Error("The shared execution service must hold no service key");
 	const nativeCompanyRuntime = lxdNativeCompanyRuntimeFromEnvironment(process.env);
 	if (!nativeCompanyRuntime) throw new Error("Shared execution requires the governed company-path-v1 runtime");
-	const serviceKey = await credential("qorpera-supabase-service-key", "QORPERA_SUPABASE_SERVICE_KEY");
 	// G2-3e: the execution host's own credential, minted and bound by the node host (create-/rebuild-exec-host.sh).
-	// The service's own database calls use it; the service key above only reaches the slots, until G2-5.
+	// The service's own database calls use it.
 	const executionHostCredential = await credential("qorpera-execution-host", "QORPERA_EXECUTION_HOST_CREDENTIAL");
 	if (!TOKEN_PATTERN.test(executionHostCredential))
 		throw new Error("The execution host credential must contain 32 base64url bytes");
@@ -91,7 +119,6 @@ export async function sharedExecutionConfigFromEnvironment(): Promise<{
 		adapterId: required("QORPERA_RUNNER_PROVIDER_ADAPTER"),
 		hostId: required("QORPERA_SHARED_EXECUTION_HOST_ID"),
 		supabaseUrl: required("QORPERA_SUPABASE_URL"),
-		supabaseServiceKey: serviceKey,
 		supabasePublishableKey: required("QORPERA_SUPABASE_PUBLISHABLE_KEY"),
 		executionHostCredential,
 		stateRoot: resolve(process.env.QORPERA_SHARED_EXECUTION_STATE_ROOT ?? "/var/lib/qorpera-shared-execution"),

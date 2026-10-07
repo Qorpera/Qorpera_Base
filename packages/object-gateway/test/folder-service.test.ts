@@ -196,7 +196,10 @@ describe("folder protocol", () => {
 		expect(parseHello(json({ protocol: 1, environmentId: ENV, viewId: "proof", pass: "p", role: "io" })).role).toBe(
 			"io",
 		);
-		expect(() => parseHello(json({ protocol: 2, environmentId: ENV, viewId: "v", pass: "p", role: "io" }))).toThrow();
+		expect(parseHello(json({ protocol: 2, environmentId: ENV, viewId: "v", pass: "p", role: "io" })).protocol).toBe(
+			2,
+		);
+		expect(() => parseHello(json({ protocol: 3, environmentId: ENV, viewId: "v", pass: "p", role: "io" }))).toThrow();
 		expect(() =>
 			parseHello(json({ protocol: 1, environmentId: ENV, viewId: "v", pass: "p", role: "io", x: 1 })),
 		).toThrow();
@@ -693,7 +696,7 @@ describe("folder service", () => {
 		expect(await io.read("docs/plan.md", 1, 4, 4)).toEqual(Buffer.from("plan"));
 		// The feed orders a change set's changes by version: here the folder's own move comes before its file's.
 		const plan = core.entries.get("docs/plan.md")!;
-		core.commit([
+		core.commitChanges([
 			{ ...folder("docs"), op: "move_out" },
 			{ ...plan, op: "move_out" },
 			{ ...folder("archive", 3), op: "move_in" },
@@ -706,7 +709,7 @@ describe("folder service", () => {
 		// A folder deleted before its files: the files opened before still read.
 		expect(await io.read("private/salary.md", 1, 0, 6)).toEqual(Buffer.from("secret"));
 		const salary = core.entries.get("private/salary.md")!;
-		core.commit([
+		core.commitChanges([
 			{ ...core.entries.get("private")!, op: "delete" },
 			{ ...salary, op: "delete" },
 		]);

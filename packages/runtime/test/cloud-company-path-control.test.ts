@@ -369,8 +369,26 @@ describe("the folder core's entry points (core C3)", () => {
 		"qorpera_folder_worker_commit",
 		"qorpera_folder_agent_workers",
 		"qorpera_folder_cancel_agent_worker",
+		"qorpera_folder_agent_proposals",
+		"qorpera_folder_apply_proposal",
+		"qorpera_folder_close_proposal",
 		"qorpera_folder_archive_coding_worker",
 	] as const;
+
+	it("reads a page of proposals and a proposal's apply up to 16 MiB, where a proposal's close stops at 256 KiB", async () => {
+		const answer = { schema: "fixture", proposals: ["x".repeat(2 * 1024 * 1024)] };
+		const transport = vi.fn<typeof fetch>(async () => Response.json(answer));
+		for (const method of ["qorpera_folder_agent_proposals", "qorpera_folder_apply_proposal"] as const) {
+			await expect(fixture(transport).call(method, {}, new AbortController().signal)).resolves.toEqual(answer);
+		}
+		await expect(
+			fixture(transport).call("qorpera_folder_close_proposal", {}, new AbortController().signal),
+		).rejects.toThrow("Company File control response too large");
+		const over = vi.fn<typeof fetch>(async () => Response.json({ proposals: ["x".repeat(16 * 1024 * 1024)] }));
+		await expect(
+			fixture(over).call("qorpera_folder_agent_proposals", {}, new AbortController().signal),
+		).rejects.toThrow("Company File control response too large");
+	});
 
 	it("reads one routine whole, up to a megabyte, where other folder reads stop at 256 KiB", async () => {
 		const answer = { schema: "fixture", routines: ["x".repeat(300 * 1024)] };

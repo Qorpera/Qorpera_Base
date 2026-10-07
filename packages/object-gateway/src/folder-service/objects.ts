@@ -145,7 +145,8 @@ class ByteCache {
 }
 
 export interface NasObjectsOptions {
-	/** The storage server's object share, e.g. `/srv/qorpera/canonical`. */
+	/** The object gateway's store on the storage server's share, laid out `<profileId>/<sha256>`, e.g.
+	 * `/srv/qorpera/objects` (the store bound into the service's namespace; README "Reading the objects"). */
 	readonly root: string;
 	/** Memory for chunks and manifests. */
 	readonly cacheBytes: number;
@@ -195,6 +196,45 @@ export class NasObjects {
 		);
 	}
 
+	/** `length` bytes from `offset` of a file given as its chunks (a view's pending bytes, F3 step 3: every chunk is on the
+	 * share, put under the view's own intents). */
+	async readChunks(
+		profileId: string,
+		chunks: readonly { readonly sha256: string; readonly bytes: number }[],
+		offset: number,
+		length: number,
+	): Promise<Buffer> {
+		const parts: Buffer[] = [];
+		let start = 0;
+		const end = offset + length;
+		const reads: Promise<Buffer>[] = [];
+		const cuts: [number, number][] = [];
+		for (const c of chunks) {
+			if (c.bytes < 1 || c.bytes > CHUNK_BYTES) throw new ObjectIntegrityError("Chunk is invalid");
+			if (start < end && start + c.bytes > offset) {
+				reads.push(this.#object(profileId, c.sha256, c.bytes, c.bytes));
+				cuts.push([Math.max(0, offset - start), Math.min(c.bytes, end - start)]);
+			}
+			start += c.bytes;
+		}
+		const got = await Promise.all(reads);
+		for (const [i, bytes] of got.entries()) parts.push(bytes.subarray(cuts[i]![0], cuts[i]![1]));
+		return Buffer.concat(parts);
+	}
+
+	/** One chunk's bytes, checked against its hash and size. */
+	chunk(profileId: string, sha256: string, bytes: number): Promise<Buffer> {
+		if (bytes < 1 || bytes > CHUNK_BYTES) return Promise.reject(new ObjectIntegrityError("Chunk is invalid"));
+		return this.#object(profileId, sha256, bytes, bytes);
+	}
+
+	/** The chunks of a live file's manifest, checked against its entry. */
+	async manifestChunks(profileId: string, entry: TreeEntry): Promise<{ sha256: string; bytes: number }[]> {
+		if (entry.kind !== "file" || entry.manifestSha256 === undefined) throw new Error("Only files have bytes");
+		const manifest = parseManifest(await this.#object(profileId, entry.manifestSha256, MAX_MANIFEST_BYTES), entry);
+		return manifest.chunks.map((c) => ({ sha256: c.sha256, bytes: c.bytes }));
+	}
+
 	/** One object, from memory or the share, checked against its hash (and its size when known). */
 	#object(profileId: string, hash: string, maximum: number, exact?: number): Promise<Buffer> {
 		const key = `${profileId}/${hash}`;
@@ -222,8 +262,8 @@ export class NasObjects {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code === "ELOOP") throw new ObjectIntegrityError("Object is a link");
 			if (code === "ENOENT") {
-				// Missing only when the company's objects are there: with no profile folder at all (a share that is not
-				// mounted shows an empty mountpoint) nothing can be read now, and the page fails rather than look empty.
+				// Missing only when the company's objects are there: with no profile folder at all (the store is not
+				// bound here, e.g. the drop-in is missing) nothing can be read now, and the page fails rather than look empty.
 				if (!(await this.#profileThere(profileId)))
 					throw new ObjectUnavailableError("The company's objects are not on the storage server now");
 				throw new ObjectMissingError("Object is not on the storage server");
