@@ -953,7 +953,8 @@ deferred probe and M1's shared-key check (§14, §17).
 - It names the payer login because the provider keeps a cache per paying account: provider-side context is never
   pooled across logins (C:2570). That is a provider fact. The tree itself is the same for every member.
 - Without a stable key, every run's new thread id would route it away from the previous run's cache.
-- A worker uses its parent's key, so its first request can read the parent's prefix from the cache (§12, W4).
+- A worker uses its parent's key (§12, W4). It reads none of its parent's prefix from the cache: the tools come first
+  (§6.1), and a worker's are not its parent's (contract 13).
 
 ### 6.3 The composition patch (W2)
 
@@ -1633,7 +1634,9 @@ item 9, #877).
   steps, on its own payer.
 - **Workers** (W4). Today they start blank with a bounded dispatch (contract 13). After W4 a worker's first request is
   composed from the head and its parent's views, exactly as the parent's run composed them at dispatch, by reference,
-  with its dispatch as the current input. The prefix is the parent's, so on the same payer it is read from the cache.
+  with its dispatch as the current input. If an erase raised the conversation's generation since, it composes from
+  the tree as it is now. Its tools stay a worker's (contract 13), and the tools come first in a request (§6.1), so it
+  shares no cached prefix with its parent. The reference saves composing and gives it what its parent saw.
   A worker runs on its parent's payer, as work that follows from it (C:2035-2044). Its run log nests under the
   dispatching step (§4.5). Its report comes back as today, and its work stays one zoom away.
 - **Coding sessions** (W6) are their own Codex sessions on coding machines. Their turns become child logs of the step
@@ -1747,7 +1750,7 @@ after 6 October (Jonas, 6 October); each PR lists its own under "Deferred (needs
 | **W2** | Every request composed from the tree (§6): first the compose probe (§6.4), then the composition capability in the Codex patch, in-run folding of the run's own work (§5.7) in its runtime envelope, step lines built during the run. Jonas signed off on the patch scope (§16) on 6 October | the native proofs run again with the new capability; runtime tests for pairing after composition, a run's narrow steps composed in full into its own requests and stored in no line, view or log (§4.5), a forged work message refused, folds only at boundaries, the raw tail within RUN_VIEW / 2 or the newest model response, a response with parallel calls never split by a fold, folded lines within §5.7's bound, reasoning dropped after a model or payer switch, and Codex's own compaction never reached; contract Order 2's fake-instruction proof (C:2136) through a tool result that has been folded into a step line; the work probe and the swap probe without restarts |
 | **W3** | The head (§5.6): vision, job specification and profile page in the stable prefix, as labelled data | runtime test that the head is byte-identical across runs and members, and that its text is escaped; contract Order 2's fake-instruction proof (C:2136) through a profile write that a fetched page asked for; the memory probe's standing instruction |
 | **M4** | Group chats, branches of every conversation the agent takes part in, and the Co-Founder's branches of every agent's thread | runtime tests for branch choice and budget; probe: a fact said in a group chat is recalled in the agent's own thread, and the Co-Founder recalls a fact from another agent's thread |
-| **W4** | Workers start from their parent's view by reference, and their logs nest under the dispatching step (§12) | runtime test: a worker's first request shares the parent's prefix and reads it from the cache on the same payer; zoom from the parent's step into the worker's log |
+| **W4** | Workers start from their parent's view by reference, and their logs nest under the dispatching step (§12) | runtime test: a worker's first request holds the head and views its parent's run composed at dispatch (the tree as it is now after an erase), on the parent's payer and key; zoom from the parent's step into the worker's log |
 | **M5** | On for every folder-v2 company; notebook trimmed to its profile page (§11) | the probe on a fresh company |
 | **W5** | A cut-off run resumes from its log, and a run at its usage limit pauses and resumes on the same login after the reset (§12). Contract change; Jonas signed off on 6 October (§16). A run with a narrow step never resumes or pauses | SQL: the gate `qorpera_run_resumes_from_log` refusing a run that `qorpera_run_log_narrow` marks, one with an erase open and one with no log; a dblink race of a resume's lease claim against step 1 of a step erase, which ends with no deadlock: either the resume lands first and the erase stays pending until the run ends, or the erase lands first and the claim rolls back until the erase clears `erase_open`; with two erases open one after the other, the run resumes only after both rewrites. Live: kill the machine mid-run twice, and run a test login to its limit; each run finishes without repeating an action; a paused run whose log has an erase between its delete and its rewrite does not resume until the rewrite lands, and then sends a pending mail only after checking it; the swap probe with restarts |
 | **W6** | Coding sessions as child logs of the step that started them (§12) | to design with W6 |
