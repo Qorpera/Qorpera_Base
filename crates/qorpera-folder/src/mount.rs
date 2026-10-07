@@ -1,7 +1,7 @@
-//! The folder at a mount point inside a machine, read-only. Names and attributes come from folder
-//! listings the node sends on demand; bytes come from the node as programs read them. The node's feed
-//! tells the program what changed, and the kernel is told to drop exactly that. The kernel's page cache
-//! and this program's memory are the only caches: nothing is written to the machine's disk.
+//! The folder at a mount point inside a machine. Names and attributes come from folder listings the node sends on
+//! demand; bytes come from the node as programs read them. The node's feed tells the program what changed, and the
+//! kernel is told to drop exactly that. The kernel's page cache and this program's memory are the only caches: nothing
+//! is written to the machine's disk.
 //!
 //! While the feed is down nothing is cached at all (every lookup asks the node), so a machine never
 //! shows a version older than the node's.
@@ -9,22 +9,32 @@
 //! A lookup answered from what this program held just before a change can reach the kernel after the change's own
 //! drop: the kernel does not find a name it is still making, and would keep the old name or version for the whole
 //! TTL. So a change also drops every name such a lookup answered, again and again for a while (`chase`).
+//!
+//! A view the node lets write (protocol 2; deploy/first-node/RUNTIME-FOLDER-WRITES.md) is mounted read-write. Each
+//! change goes to the node as it is made and stays pending in the view until a boundary publishes it: the node shows
+//! this mount its own pending changes, other machines only what is published. A file open for writing keeps the one
+//! chunk being written in memory (`writer.rs`), and the mount's version map (`versions.rs`) gives each save its base.
+//! The kernel makes, moves and drops its own names for the changes it asks for, so a change made here only brings this
+//! program's tree in step; the kernel is never told from inside a request (it holds the folder's lock then).
 
 use crate::link::{Fail, Link};
-use crate::proto::{code, valid_name, valid_path, EntryKind, MAX_READ};
+use crate::proto::{code, join, valid_name, valid_path, EntryKind, OpenRequest, RenameRequest, MAX_READ};
 use crate::tree::{Attr, Child, Inval, Tree, ROOT};
+use crate::versions::VersionMap;
+use crate::writer::Writer;
 use fuser::{
 	Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags,
-	KernelConfig, LockOwner, MountOption, Notifier, OpenAccMode, OpenFlags, ReplyAttr, ReplyData, ReplyDirectory,
-	ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, Request, SessionACL,
+	KernelConfig, LockOwner, MountOption, Notifier, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate,
+	ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, Request, SessionACL,
+	TimeOrNow, WriteFlags,
 };
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// A raced name is dropped again at 1, 2, 4 … ms after its change, CHASE_STEPS times (the last about 16 s after it);
 /// a lookup's answer counts as possibly not yet in the kernel for as long.
@@ -78,6 +88,9 @@ pub struct Options {
 	/// Let every account on the machine read the folder (a box's account, from step 2). Without it only the
 	/// account that mounted it can, root included only if it mounted it.
 	pub allow_other: bool,
+	/// The folder the mount's version map is kept in (under /run/qorpera-folder/), so a program started again for the
+	/// mount bases saves on what was read before; None keeps it in memory.
+	pub state: Option<PathBuf>,
 }
 
 /// Why the program stopped.
@@ -93,7 +106,36 @@ pub enum Stop {
 
 enum Handle {
 	Dir(Vec<(u64, FileType, String)>),
-	File { path: String, version: String, size: u64 },
+	File { ino: u64, path: String, version: String, size: u64 },
+	/// Open for writing: the file's writer, which every handle writing it shares, and the process that opened the
+	/// handle.
+	Write { ino: u64, open: Arc<Mutex<Open>>, opener: u32 },
+}
+
+/// A file open for writing in this mount: the node's handle and the one chunk in memory. Every handle that writes the
+/// file shares it, as they would share its pages.
+///
+/// The kernel's release of a handle comes after the program's close returns, so the node closes the file at the close
+/// (flush) of its last writing handle by the process that opened it: a boundary asked for right after the close
+/// publishes it. A write that still comes on that handle (a duplicated descriptor, a child that inherited it, a mapped
+/// page written back) opens the file at the node again.
+///
+/// Each file's lock is held over the node's calls for it (its open, chunks and close), never the lock of the map of
+/// open files: a slow call holds up that file alone.
+struct Open {
+	/// None while the node has the file closed, and while it is first opened there.
+	writer: Option<Writer>,
+	/// The writer of the node's last close of the file, with the version that close made: opened again at that
+	/// version, it goes on from that writer, so its chunk in memory is not read back.
+	closed: Option<(String, Writer)>,
+	/// Handles open on it for writing.
+	handles: u32,
+}
+
+impl Open {
+	fn new() -> Arc<Mutex<Open>> {
+		Arc::new(Mutex::new(Open { writer: None, closed: None, handles: 0 }))
+	}
 }
 
 struct Shared {
@@ -106,6 +148,14 @@ struct Shared {
 	next_fh: AtomicU64,
 	ttl: Duration,
 	answered: Mutex<Answered>,
+	/// The node lets this view write.
+	writable: bool,
+	/// Who the files show as owned by: the account that mounted the folder (a read-only view shows root).
+	owner: (u32, u32),
+	versions: Mutex<VersionMap>,
+	/// Files open for writing, by inode. Held only to look one up, add or remove it: never while a file's own lock is
+	/// waited for (the order is a file's lock, then this map).
+	writing: Mutex<HashMap<u64, Arc<Mutex<Open>>>>,
 }
 
 impl Shared {
@@ -208,6 +258,228 @@ impl Shared {
 		self.handles.lock().unwrap().insert(fh, h);
 		FileHandle(fh)
 	}
+
+	fn path_of(&self, ino: u64) -> Result<String, i32> {
+		self.tree.lock().unwrap().path(ino).map(str::to_string).ok_or(libc::ENOENT)
+	}
+
+	/// The attributes the kernel gets: a file open for writing here is as long as its writer says.
+	fn shown(&self, ino: u64, mut attr: Attr) -> Attr {
+		let open = self.writing.lock().unwrap().get(&ino).cloned();
+		if let Some(writer) = open.as_ref().and_then(|o| o.lock().unwrap().writer.as_ref().map(Writer::size)) {
+			attr.size = writer;
+		}
+		attr
+	}
+
+	fn file_attr(&self, ino: u64, a: &Attr) -> FileAttr {
+		let t = UNIX_EPOCH + Duration::from_millis(a.mtime_ms.max(0) as u64);
+		let (kind, perm, size) = match (a.kind, self.writable) {
+			(EntryKind::Folder, false) => (FileType::Directory, 0o555, 0),
+			(EntryKind::File, false) => (FileType::RegularFile, if a.executable { 0o555 } else { 0o444 }, a.size),
+			(EntryKind::Folder, true) => (FileType::Directory, 0o755, 0),
+			(EntryKind::File, true) => (FileType::RegularFile, if a.executable { 0o755 } else { 0o644 }, a.size),
+		};
+		FileAttr {
+			ino: INodeNo(ino),
+			size,
+			blocks: size.div_ceil(512),
+			atime: t,
+			mtime: t,
+			ctime: t,
+			crtime: t,
+			kind,
+			perm,
+			nlink: if kind == FileType::Directory { 2 } else { 1 },
+			uid: self.owner.0,
+			gid: self.owner.1,
+			rdev: 0,
+			flags: 0,
+			blksize: 128 * 1024,
+		}
+	}
+
+	/// What a name in a folder shows now (listing the folder if need be).
+	fn child(&self, dir: u64, name: &str) -> Result<Child, i32> {
+		let (children, _) = self.children(dir, None)?;
+		children.into_iter().find(|c| c.name == name).ok_or(libc::ENOENT)
+	}
+
+	/// Opens `ino` (at `path`, showing `attr`) for writing at the node, or joins the handles already writing it (or a
+	/// file whose close the node has not taken yet). Only this file's lock is held over the node's open: two opens of it
+	/// never make two node handles, and nothing else waits.
+	fn open_write(&self, ino: u64, path: &str, attr: &Attr, truncate: bool) -> Result<Arc<Mutex<Open>>, i32> {
+		loop {
+			let open = self.writing.lock().unwrap().entry(ino).or_insert_with(Open::new).clone();
+			let mut o = open.lock().unwrap();
+			if !self.writes(ino, &open) {
+				// Closed and let go meanwhile, or its first open failed: start again.
+				continue;
+			}
+			if o.handles > 0 || o.writer.is_some() {
+				if truncate {
+					self.writer(ino, &mut o)?.truncate(&self.link, 0).map_err(|f| f.errno())?;
+				}
+				o.handles += 1;
+				drop(o);
+				return Ok(open);
+			}
+			let base = self.versions.lock().unwrap().base(path);
+			let request = OpenRequest { path: path.to_string(), base, create: false, exclusive: false, truncate };
+			let opened = match self.link.open_write(&request) {
+				Ok(opened) => opened,
+				Err(f) => {
+					self.let_go(ino, &open);
+					return Err(f.errno());
+				}
+			};
+			o.writer = Some(Writer::new(opened.handle, opened.size));
+			o.handles = 1;
+			// The node's version of it now (a truncate made one at once), on the same inode; before the file's lock goes,
+			// so a close through another handle never sees its version taken back.
+			self.tree.lock().unwrap().set_local(ino, Attr { size: opened.size, version: opened.version, ..attr.clone() });
+			drop(o);
+			return Ok(open);
+		}
+	}
+
+	/// Whether `open` is what the map holds for `ino` (called with the file's lock held).
+	fn writes(&self, ino: u64, open: &Arc<Mutex<Open>>) -> bool {
+		self.writing.lock().unwrap().get(&ino).is_some_and(|o| Arc::ptr_eq(o, open))
+	}
+
+	/// The file is no longer written here (called with its lock held, no handle on it and the node's closed).
+	fn let_go(&self, ino: u64, open: &Arc<Mutex<Open>>) {
+		let mut writing = self.writing.lock().unwrap();
+		if writing.get(&ino).is_some_and(|o| Arc::ptr_eq(o, open)) {
+			writing.remove(&ino);
+		}
+	}
+
+	/// The file's writer, opening it at the node again if the node closed it (a write after its last close). Opened
+	/// again at the version that close made, it goes on from the writer it closed.
+	fn writer<'a>(&self, ino: u64, open: &'a mut Open) -> Result<&'a mut Writer, i32> {
+		if open.writer.is_none() {
+			let path = {
+				let tree = self.tree.lock().unwrap();
+				// A file this mount removed, or replaced, since takes no more writes: its path holds another file now, or
+				// none. (One a newer version from the node replaced is still that path's file: a log published while a
+				// program that inherited its descriptor is quiet; the base tells the node which version it was.)
+				if tree.removed_here(ino) {
+					return Err(libc::ESTALE);
+				}
+				tree.path(ino).map(str::to_string).ok_or(libc::ENOENT)?
+			};
+			let base = self.versions.lock().unwrap().base(&path);
+			let opened = self
+				.link
+				.open_write(&OpenRequest { path, base, create: false, exclusive: false, truncate: false })
+				.map_err(|f| f.errno())?;
+			open.writer = Some(match open.closed.take() {
+				Some((version, w)) if version == opened.version && w.size() == opened.size => w.reopened(opened.handle),
+				_ => Writer::new(opened.handle, opened.size),
+			});
+		}
+		Ok(open.writer.as_mut().expect("opened above"))
+	}
+
+	/// What is left goes to the node, which closes the file; the version it made is the version map's and the tree's.
+	/// When the node does not take it, the writer stays, with its chunk in memory, for the next try: the node's handle is
+	/// never closed at a size the program did not write.
+	fn close_at_node(&self, ino: u64, open: &mut Open) -> Result<(), Fail> {
+		let Some(writer) = open.writer.as_mut() else { return Ok(()) };
+		let size = writer.finish(&self.link)?;
+		let version = self.link.close_write(writer.handle, size)?;
+		let writer = open.writer.take().expect("held above");
+		{
+			let mut tree = self.tree.lock().unwrap();
+			// Only for the file its path shows: one removed, or renamed over, while open saved a version no path has.
+			if tree.current(ino) {
+				if let Some(path) = tree.path(ino) {
+					self.versions.lock().unwrap().saved(path, &version);
+				}
+				// Known again if a change had made them unknown: the path shows this mount's pending file.
+				if let Some(attr) = tree.last_seen(ino) {
+					tree.set_local(ino, Attr { size, version: version.clone(), mtime_ms: now_ms(), ..attr });
+				}
+			}
+		}
+		open.closed = Some((version, writer));
+		Ok(())
+	}
+
+	/// A handle writing `ino` let go. The last one closes the file at the node, and the file is no longer written here.
+	/// A close the node does not take now (BUSY while a boundary settles, the link down, the company paused) is tried
+	/// again until it does, so the node's handle is never left open; a handle opened on the file meanwhile takes it
+	/// over.
+	fn leave(self: &Arc<Self>, ino: u64, open: Arc<Mutex<Open>>) {
+		{
+			let mut o = open.lock().unwrap();
+			o.handles -= 1;
+			if o.handles > 0 {
+				return;
+			}
+		}
+		let Err(f) = self.try_close(ino, &open) else { return };
+		eprintln!("qorpera-folder: the node did not take a file's close now ({f}); trying again");
+		let s = self.clone();
+		std::thread::spawn(move || {
+			let mut wait = Duration::from_millis(100);
+			loop {
+				std::thread::sleep(wait);
+				if s.try_close(ino, &open).is_ok() {
+					return;
+				}
+				wait = (wait * 2).min(Duration::from_secs(10));
+			}
+		});
+	}
+
+	/// One try at closing a file no handle writes at the node. Ok once nothing more is to be done: it closed, a new
+	/// handle took it over, or the node will never take the close (it no longer knows the handle, or the view closed;
+	/// what it holds of the file then goes when the view's connections end).
+	fn try_close(&self, ino: u64, open: &Arc<Mutex<Open>>) -> Result<(), Fail> {
+		let mut o = open.lock().unwrap();
+		if o.handles > 0 {
+			return Ok(());
+		}
+		match self.close_at_node(ino, &mut o) {
+			Ok(()) => {}
+			Err(f) if again(&f) => return Err(f),
+			Err(f) => {
+				eprintln!("qorpera-folder: a file could not be closed at the node: {f}");
+				o.writer = None;
+			}
+		}
+		self.let_go(ino, open);
+		Ok(())
+	}
+}
+
+/// A failure the node may get past: a request it could not take now.
+fn again(f: &Fail) -> bool {
+	match f {
+		Fail::Link(_) => true,
+		Fail::Remote(e) => [code::BUSY, code::UNAVAILABLE, code::DENIED].contains(&e.code.as_str()),
+	}
+}
+
+/// The process a request came from. The kernel names the thread; a process's threads open and close its files alike.
+/// The thread itself when /proc does not say.
+fn process_of(thread: u32) -> u32 {
+	std::fs::read_to_string(format!("/proc/{thread}/status"))
+		.ok()
+		.and_then(|status| status.lines().find_map(|l| l.strip_prefix("Tgid:")).and_then(|t| t.trim().parse().ok()))
+		.unwrap_or(thread)
+}
+
+fn now_ms() -> i64 {
+	SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+}
+
+/// A name the folder may hold, or EINVAL.
+fn name_of(name: &OsStr) -> Result<&str, Errno> {
+	name.to_str().filter(|n| valid_name(n)).ok_or(Errno::EINVAL)
 }
 
 /// QORPERA_FOLDER_DEBUG=1 logs every listing fetched and every change applied.
@@ -223,33 +495,50 @@ fn file_type(kind: EntryKind) -> FileType {
 	}
 }
 
-fn file_attr(ino: u64, a: &Attr) -> FileAttr {
-	let t = UNIX_EPOCH + Duration::from_millis(a.mtime_ms.max(0) as u64);
-	let (kind, perm, size) = match a.kind {
-		EntryKind::Folder => (FileType::Directory, 0o555, 0),
-		EntryKind::File => (FileType::RegularFile, if a.executable { 0o555 } else { 0o444 }, a.size),
-	};
-	FileAttr {
-		ino: INodeNo(ino),
-		size,
-		blocks: size.div_ceil(512),
-		atime: t,
-		mtime: t,
-		ctime: t,
-		crtime: t,
-		kind,
-		perm,
-		nlink: if kind == FileType::Directory { 2 } else { 1 },
-		uid: 0,
-		gid: 0,
-		rdev: 0,
-		flags: 0,
-		blksize: 128 * 1024,
-	}
-}
-
 struct FolderFs {
 	s: Arc<Shared>,
+}
+
+/// An errno from a failed call to the node.
+fn errno(f: Fail) -> Errno {
+	Errno::from_i32(f.errno())
+}
+
+impl FolderFs {
+	/// A name this program changes: its folder's path and its own, or EROFS when the view does not write.
+	fn place(&self, parent: INodeNo, name: &OsStr) -> Result<(String, String), Errno> {
+		if !self.s.writable {
+			return Err(Errno::EROFS);
+		}
+		let name = name_of(name)?;
+		let dir = self.s.path_of(parent.0).map_err(Errno::from_i32)?;
+		Ok((join(&dir, name), name.to_string()))
+	}
+
+	fn reply_attr(&self, ino: u64, reply: ReplyAttr) {
+		match self.s.attr(ino) {
+			Ok((a, kept)) => {
+				let a = self.s.shown(ino, a);
+				reply.attr(&self.s.ttl(kept), &self.s.file_attr(ino, &a))
+			}
+			Err(e) => reply.error(Errno::from_i32(e)),
+		}
+	}
+
+	/// A file cut short or grown (`truncate`, `ftruncate`): as through a writing handle of its own, which closes the file
+	/// at the node after unless another handle still writes it. A cut to nothing is the node's, at the open.
+	fn resize(&self, ino: u64, attr: &Attr, size: u64) -> Result<(), Errno> {
+		let path = self.s.path_of(ino).map_err(Errno::from_i32)?;
+		let open = self.s.open_write(ino, &path, attr, size == 0).map_err(Errno::from_i32)?;
+		let cut = if size == 0 {
+			Ok(())
+		} else {
+			let mut o = open.lock().unwrap();
+			self.s.writer(ino, &mut o).map_err(Errno::from_i32).and_then(|w| w.truncate(&self.s.link, size).map_err(errno))
+		};
+		self.s.leave(ino, open);
+		cut
+	}
 }
 
 impl Filesystem for FolderFs {
@@ -257,6 +546,10 @@ impl Filesystem for FolderFs {
 		let _ = config.set_max_readahead(MAX_READ);
 		let _ = config.set_max_background(64);
 		let _ = config.add_capabilities(InitFlags::FUSE_PARALLEL_DIROPS);
+		if self.s.writable {
+			// open(O_TRUNC) comes to `open` whole, so a truncating save is one node open, not a setattr and an open.
+			let _ = config.add_capabilities(InitFlags::FUSE_ATOMIC_O_TRUNC);
+		}
 		eprintln!("qorpera-folder: kernel FUSE ABI {:?}", config.kernel_abi());
 		Ok(())
 	}
@@ -265,7 +558,10 @@ impl Filesystem for FolderFs {
 		let Some(name) = name.to_str().filter(|n| valid_name(n)) else { return reply.error(Errno::ENOENT) };
 		match self.s.children(parent.0, Some(name)) {
 			Ok((children, kept)) => match children.iter().find(|c| c.name == name) {
-				Some(c) => reply.entry(&self.s.ttl(kept), &file_attr(c.ino, &c.attr), Generation(0)),
+				Some(c) => {
+					let a = self.s.shown(c.ino, c.attr.clone());
+					reply.entry(&self.s.ttl(kept), &self.s.file_attr(c.ino, &a), Generation(0))
+				}
 				None => reply.error(Errno::ENOENT),
 			},
 			Err(e) => reply.error(Errno::from_i32(e)),
@@ -277,10 +573,7 @@ impl Filesystem for FolderFs {
 	}
 
 	fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
-		match self.s.attr(ino.0) {
-			Ok((a, kept)) => reply.attr(&self.s.ttl(kept), &file_attr(ino.0, &a)),
-			Err(e) => reply.error(Errno::from_i32(e)),
-		}
+		self.reply_attr(ino.0, reply);
 	}
 
 	fn opendir(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
@@ -314,8 +607,10 @@ impl Filesystem for FolderFs {
 		reply.ok();
 	}
 
-	fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
-		if flags.acc_mode() != OpenAccMode::O_RDONLY {
+	fn open(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
+		// O_RDONLY with O_TRUNC cuts the file too (the kernel leaves the cut to `open` here, FUSE_ATOMIC_O_TRUNC).
+		let write = flags.acc_mode() != OpenAccMode::O_RDONLY || flags.0 & libc::O_TRUNC != 0;
+		if write && !self.s.writable {
 			return reply.error(Errno::EROFS);
 		}
 		let (attr, kept) = match self.s.attr(ino.0) {
@@ -325,13 +620,74 @@ impl Filesystem for FolderFs {
 		if attr.kind == EntryKind::Folder {
 			return reply.error(Errno::EISDIR);
 		}
-		let Some(path) = self.s.tree.lock().unwrap().path(ino.0).map(str::to_string) else {
-			return reply.error(Errno::ENOENT);
+		let path = match self.s.path_of(ino.0) {
+			Ok(p) => p,
+			Err(e) => return reply.error(Errno::from_i32(e)),
 		};
-		// Keep cached pages across opens while the feed is up. They are this version's only: a newer version is
-		// another inode (tree.rs).
-		let flags = if self.s.ttl(kept).is_zero() { FopenFlags::empty() } else { FopenFlags::FOPEN_KEEP_CACHE };
-		reply.opened(self.s.handle(Handle::File { path, version: attr.version, size: attr.size }), flags);
+		if write {
+			return match self.s.open_write(ino.0, &path, &attr, flags.0 & libc::O_TRUNC != 0) {
+				Ok(open) => {
+					let handle = Handle::Write { ino: ino.0, open, opener: process_of(req.pid()) };
+					reply.opened(self.s.handle(handle), FopenFlags::empty())
+				}
+				Err(e) => reply.error(Errno::from_i32(e)),
+			};
+		}
+		// Keep cached pages across opens while the feed is up and nothing writes the file here. They are this
+		// version's only: a newer version is another inode (tree.rs), and this program's own saves are what was written
+		// through this inode.
+		let writing = self.s.writing.lock().unwrap().contains_key(&ino.0);
+		let flags =
+			if self.s.ttl(kept).is_zero() || writing { FopenFlags::empty() } else { FopenFlags::FOPEN_KEEP_CACHE };
+		reply.opened(self.s.handle(Handle::File { ino: ino.0, path, version: attr.version, size: attr.size }), flags);
+	}
+
+	fn create(&self, req: &Request, parent: INodeNo, name: &OsStr, mode: u32, umask: u32, flags: i32, reply: ReplyCreate) {
+		let (path, name) = match self.place(parent, name) {
+			Ok(p) => p,
+			Err(e) => return reply.error(e),
+		};
+		let base = self.s.versions.lock().unwrap().base(&path);
+		let request = OpenRequest {
+			path: path.clone(),
+			base,
+			create: true,
+			exclusive: flags & libc::O_EXCL != 0,
+			truncate: flags & libc::O_TRUNC != 0,
+		};
+		let opened = match self.s.link.open_write(&request) {
+			Ok(o) => o,
+			Err(f) => return reply.error(errno(f)),
+		};
+		let mut attr =
+			Attr { kind: EntryKind::File, size: opened.size, mtime_ms: now_ms(), executable: false, version: opened.version };
+		let ino = self.s.tree.lock().unwrap().add_local(parent.0, &name, attr.clone());
+		let open = Open::new();
+		{
+			let mut o = open.lock().unwrap();
+			o.writer = Some(Writer::new(opened.handle, opened.size));
+			o.handles = 1;
+		}
+		self.s.writing.lock().unwrap().insert(ino, open.clone());
+		// A program that makes a file executable at create (a checkout, `cp` of a script) gets the bit at once.
+		if mode & !umask & 0o100 != 0 {
+			match self.s.link.set_executable(&path, None, true) {
+				Ok(version) => {
+					attr.executable = true;
+					attr.version = version;
+					self.s.tree.lock().unwrap().set_local(ino, attr.clone());
+				}
+				Err(f) => {
+					// The file is made, but the program gets no handle on it: it is closed at the node, and the kernel
+					// holds no entry for it.
+					self.s.leave(ino, open);
+					self.s.tree.lock().unwrap().forget(ino, 1);
+					return reply.error(errno(f));
+				}
+			}
+		}
+		let fh = self.s.handle(Handle::Write { ino, open, opener: process_of(req.pid()) });
+		reply.created(&self.s.ttl(true), &self.s.file_attr(ino, &attr), Generation(0), fh, FopenFlags::empty());
 	}
 
 	fn read(
@@ -345,16 +701,67 @@ impl Filesystem for FolderFs {
 		_lock_owner: Option<LockOwner>,
 		reply: ReplyData,
 	) {
-		let (path, version, file_size) = match self.s.handles.lock().unwrap().get(&fh.0) {
-			Some(Handle::File { path, version, size }) => (path.clone(), version.clone(), *size),
+		let (ino, file, written) = match self.s.handles.lock().unwrap().get(&fh.0) {
+			Some(Handle::File { ino, path, version, size }) => (*ino, Some((path.clone(), version.clone(), *size)), None),
+			Some(Handle::Write { ino, open, .. }) => (*ino, None, Some(open.clone())),
 			_ => return reply.error(Errno::EBADF),
+		};
+		// A file being written here reads as written, whichever handle reads it (once the node has closed it, it reads as
+		// the version that close made).
+		let writing = written.or_else(|| self.s.writing.lock().unwrap().get(&ino).cloned());
+		if let Some(open) = writing {
+			let mut o = open.lock().unwrap();
+			if let Some(writer) = o.writer.as_mut() {
+				let length = size.min(MAX_READ) as u64;
+				return match writer.read(&self.s.link, offset, length) {
+					Ok(data) => reply.data(&data),
+					Err(f) => reply.error(errno(f)),
+				};
+			}
+		}
+		// An inode this program saved goes on as the version it saved (the same inode); any other is the version it
+		// was opened at.
+		let current = {
+			let tree = self.s.tree.lock().unwrap();
+			match (tree.path(ino), tree.attr(ino)) {
+				(Some(p), Some(a)) if a.kind == EntryKind::File => Some((p.to_string(), a.version, a.size)),
+				_ => None,
+			}
+		};
+		let (path, version, file_size) = match current.or(file) {
+			Some(f) => f,
+			// A writing handle on a file the node has closed, whose attributes a change made unknown since: listed again.
+			None => match self.s.attr(ino) {
+				Ok((a, _)) if a.kind == EntryKind::File => match self.s.path_of(ino) {
+					Ok(path) => (path, a.version, a.size),
+					Err(e) => return reply.error(Errno::from_i32(e)),
+				},
+				Ok(_) => return reply.error(Errno::EISDIR),
+				Err(e) => return reply.error(Errno::from_i32(e)),
+			},
 		};
 		if offset >= file_size {
 			return reply.data(&[]);
 		}
 		let len = (file_size - offset).min(size.min(MAX_READ) as u64) as u32;
 		match self.s.link.read(&path, &version, offset, len) {
-			Ok(data) => reply.data(&data),
+			Ok(data) => {
+				// The version map: the newest version this mount read of the path, a save's base. A read of the version the
+				// path's inode stands for, through that inode (its version, not its attributes: a change on the feed makes
+				// those unknown until the folder is listed again). A read under way while this mount saves the file read the
+				// version before the save, and is not taken. A file still open from before a newer version arrived reads an
+				// older one: taken only while the map holds nothing for the path, when it is the only version the mount read.
+				if self.s.writable {
+					let tree = self.s.tree.lock().unwrap();
+					let mut versions = self.s.versions.lock().unwrap();
+					let its = tree.path(ino) == Some(path.as_str())
+						&& tree.last_seen(ino).is_some_and(|a| a.version == version);
+					if its && (tree.current(ino) || (!tree.removed_here(ino) && versions.get(&path).is_none())) {
+						versions.read(&path, &version);
+					}
+				}
+				reply.data(&data)
+			}
 			Err(f) => {
 				if matches!(&f, Fail::Remote(e) if e.code == code::STALE) {
 					// The file changed under this open file. Forget it here; the kernel hears from the
@@ -363,8 +770,76 @@ impl Filesystem for FolderFs {
 				} else {
 					eprintln!("qorpera-folder: read failed: {f}");
 				}
-				reply.error(Errno::from_i32(f.errno()))
+				reply.error(errno(f))
 			}
+		}
+	}
+
+	fn write(
+		&self,
+		_req: &Request,
+		_ino: INodeNo,
+		fh: FileHandle,
+		offset: u64,
+		data: &[u8],
+		_write_flags: WriteFlags,
+		_flags: OpenFlags,
+		_lock_owner: Option<LockOwner>,
+		reply: ReplyWrite,
+	) {
+		let (ino, open) = match self.s.handles.lock().unwrap().get(&fh.0) {
+			Some(Handle::Write { ino, open, .. }) => (*ino, open.clone()),
+			_ => return reply.error(Errno::EBADF),
+		};
+		let result = {
+			let mut o = open.lock().unwrap();
+			self.s
+				.writer(ino, &mut o)
+				.map_err(Errno::from_i32)
+				.and_then(|w| w.write(&self.s.link, offset, data).map_err(errno))
+		};
+		match result {
+			Ok(()) => reply.written(data.len() as u32),
+			Err(e) => reply.error(e),
+		}
+	}
+
+	/// Each close of a descriptor: what was written goes to the node, so a failure reaches the program's close. The
+	/// last handle writing the file closes it at the node, so a boundary right after the close publishes it.
+	///
+	/// A close by another process than the one that opened the handle (a child that inherited the descriptor, exiting)
+	/// leaves it all to the opener's close, or to the release: children closing one by one would each close the file at
+	/// the node, and stage it there.
+	fn flush(&self, req: &Request, _ino: INodeNo, fh: FileHandle, _lock_owner: LockOwner, reply: ReplyEmpty) {
+		let (ino, open, opener) = match self.s.handles.lock().unwrap().get(&fh.0) {
+			Some(Handle::Write { ino, open, opener }) => (*ino, open.clone(), *opener),
+			_ => return reply.ok(),
+		};
+		if process_of(req.pid()) != opener {
+			return reply.ok();
+		}
+		let mut o = open.lock().unwrap();
+		let result = if o.handles == 1 {
+			self.s.close_at_node(ino, &mut o)
+		} else {
+			o.writer.as_mut().map_or(Ok(()), |w| w.flush(&self.s.link))
+		};
+		match result {
+			Ok(()) => reply.ok(),
+			Err(f) => reply.error(errno(f)),
+		}
+	}
+
+	/// What was written goes to the node; the file stays open (nothing is published until a boundary).
+	fn fsync(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, _datasync: bool, reply: ReplyEmpty) {
+		let open = match self.s.handles.lock().unwrap().get(&fh.0) {
+			Some(Handle::Write { open, .. }) => open.clone(),
+			_ => return reply.ok(),
+		};
+		let result = open.lock().unwrap().writer.as_mut().map_or(Ok(()), |w| w.flush(&self.s.link));
+		match result {
+			Ok(()) => reply.ok(),
+			Err(f) => reply.error(errno(f)),
 		}
 	}
 
@@ -378,13 +853,179 @@ impl Filesystem for FolderFs {
 		_flush: bool,
 		reply: ReplyEmpty,
 	) {
-		self.s.handles.lock().unwrap().remove(&fh.0);
+		let handle = self.s.handles.lock().unwrap().remove(&fh.0);
+		if let Some(Handle::Write { ino, open, .. }) = handle {
+			self.s.leave(ino, open);
+		}
 		reply.ok();
+	}
+
+	#[allow(clippy::too_many_arguments)]
+	fn setattr(
+		&self,
+		_req: &Request,
+		ino: INodeNo,
+		mode: Option<u32>,
+		uid: Option<u32>,
+		gid: Option<u32>,
+		size: Option<u64>,
+		_atime: Option<TimeOrNow>,
+		_mtime: Option<TimeOrNow>,
+		_ctime: Option<SystemTime>,
+		_fh: Option<FileHandle>,
+		_crtime: Option<SystemTime>,
+		_chgtime: Option<SystemTime>,
+		_bkuptime: Option<SystemTime>,
+		_flags: Option<fuser::BsdFileFlags>,
+		reply: ReplyAttr,
+	) {
+		if !self.s.writable && (mode.is_some() || size.is_some() || uid.is_some() || gid.is_some()) {
+			return reply.error(Errno::EROFS);
+		}
+		// The folder keeps no owners: the files are the mount's.
+		if uid.is_some_and(|u| u != self.s.owner.0) || gid.is_some_and(|g| g != self.s.owner.1) {
+			return reply.error(Errno::EPERM);
+		}
+		let attr = match self.s.attr(ino.0) {
+			Ok((a, _)) => a,
+			Err(e) => return reply.error(Errno::from_i32(e)),
+		};
+		if let Some(size) = size {
+			if attr.kind == EntryKind::Folder {
+				return reply.error(Errno::EISDIR);
+			}
+			if let Err(e) = self.resize(ino.0, &attr, size) {
+				return reply.error(e);
+			}
+		}
+		if let Some(mode) = mode {
+			// The folder keeps the executable bit alone; other bits are the mount's.
+			let executable = mode & 0o100 != 0;
+			let current = self.s.attr(ino.0).map(|(a, _)| a).unwrap_or(attr);
+			if current.kind == EntryKind::File && executable != current.executable {
+				let path = match self.s.path_of(ino.0) {
+					Ok(p) => p,
+					Err(e) => return reply.error(Errno::from_i32(e)),
+				};
+				let base = self.s.versions.lock().unwrap().base(&path);
+				match self.s.link.set_executable(&path, base, executable) {
+					Ok(version) => {
+						self.s.versions.lock().unwrap().saved(&path, &version);
+						self.s.tree.lock().unwrap().set_local(ino.0, Attr { executable, version, ..current });
+					}
+					Err(f) => return reply.error(errno(f)),
+				}
+			}
+		}
+		// Times are the folder's: a `touch` of an existing file changes nothing, and is not an error.
+		self.reply_attr(ino.0, reply);
+	}
+
+	fn mkdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, _mode: u32, _umask: u32, reply: ReplyEntry) {
+		let (path, name) = match self.place(parent, name) {
+			Ok(p) => p,
+			Err(e) => return reply.error(e),
+		};
+		if let Err(f) = self.s.link.mkdir(&path) {
+			return reply.error(errno(f));
+		}
+		let attr = Attr { kind: EntryKind::Folder, size: 0, mtime_ms: now_ms(), executable: false, version: String::new() };
+		let ino = self.s.tree.lock().unwrap().add_local(parent.0, &name, attr.clone());
+		reply.entry(&self.s.ttl(true), &self.s.file_attr(ino, &attr), Generation(0));
+	}
+
+	fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+		self.remove(parent, name, false, reply);
+	}
+
+	fn rmdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+		self.remove(parent, name, true, reply);
+	}
+
+	fn rename(
+		&self,
+		_req: &Request,
+		parent: INodeNo,
+		name: &OsStr,
+		newparent: INodeNo,
+		newname: &OsStr,
+		flags: RenameFlags,
+		reply: ReplyEmpty,
+	) {
+		// Exchanging two names has no unit of its own.
+		if flags.intersects(RenameFlags::RENAME_EXCHANGE | RenameFlags::RENAME_WHITEOUT) {
+			return reply.error(Errno::EINVAL);
+		}
+		let ((from, from_name), (to, _)) = match (self.place(parent, name), self.place(newparent, newname)) {
+			(Ok(a), Ok(b)) => (a, b),
+			(Err(e), _) | (_, Err(e)) => return reply.error(e),
+		};
+		// A move's base is the version the name showed; a file renamed over is a save of the target, based on the
+		// version the mount holds for it.
+		let source = match self.s.child(parent.0, &from_name) {
+			Ok(c) => c,
+			Err(e) => return reply.error(Errno::from_i32(e)),
+		};
+		let folder = source.attr.kind == EntryKind::Folder;
+		let from_base = (!folder).then(|| source.attr.version.clone());
+		let to_base = self.s.versions.lock().unwrap().base(&to);
+		let request = RenameRequest {
+			from: from.clone(),
+			from_base,
+			to: to.clone(),
+			to_base,
+			no_replace: flags.contains(RenameFlags::RENAME_NOREPLACE),
+		};
+		if let Err(f) = self.s.link.rename(&request) {
+			return reply.error(errno(f));
+		}
+		self.s.versions.lock().unwrap().renamed(&from, &to, folder);
+		self.s.tree.lock().unwrap().renamed_local(&from, &to, newparent.0);
+		reply.ok();
+	}
+
+	fn mknod(&self, _req: &Request, _parent: INodeNo, _name: &OsStr, _mode: u32, _umask: u32, _rdev: u32, reply: ReplyEntry) {
+		// The folder holds files and folders only.
+		reply.error(if self.s.writable { Errno::EPERM } else { Errno::EROFS });
+	}
+
+	fn symlink(&self, _req: &Request, _parent: INodeNo, _link_name: &OsStr, _target: &Path, reply: ReplyEntry) {
+		reply.error(if self.s.writable { Errno::EPERM } else { Errno::EROFS });
+	}
+
+	fn link(&self, _req: &Request, _ino: INodeNo, _newparent: INodeNo, _newname: &OsStr, reply: ReplyEntry) {
+		reply.error(if self.s.writable { Errno::EPERM } else { Errno::EROFS });
 	}
 
 	fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
 		let files = self.s.tree.lock().unwrap().known() as u64;
-		reply.statfs(0, 0, 0, files, 0, 128 * 1024, 255, 128 * 1024);
+		// Room is the company's, not this machine's: a writable mount says there is plenty, so programs that check
+		// before they save do save; the node and the core refuse what does not fit.
+		let (blocks, free) = if self.s.writable { (1 << 32, 1 << 31) } else { (0, 0) };
+		reply.statfs(blocks, free, free, files, 0, 128 * 1024, 255, 128 * 1024);
+	}
+}
+
+impl FolderFs {
+	/// unlink and rmdir: the base is the version the name showed.
+	fn remove(&self, parent: INodeNo, name: &OsStr, folder: bool, reply: ReplyEmpty) {
+		let (path, name) = match self.place(parent, name) {
+			Ok(p) => p,
+			Err(e) => return reply.error(e),
+		};
+		let base = match self.s.child(parent.0, &name) {
+			Ok(c) if folder && c.attr.kind != EntryKind::Folder => return reply.error(Errno::ENOTDIR),
+			Ok(c) if !folder && c.attr.kind == EntryKind::Folder => return reply.error(Errno::EISDIR),
+			Ok(c) => (!c.attr.version.is_empty()).then_some(c.attr.version),
+			Err(e) => return reply.error(Errno::from_i32(e)),
+		};
+		let result = if folder { self.s.link.rmdir(&path, base) } else { self.s.link.unlink(&path, base) };
+		if let Err(f) = result {
+			return reply.error(errno(f));
+		}
+		self.s.versions.lock().unwrap().removed(&path);
+		self.s.tree.lock().unwrap().removed_local(&path);
+		reply.ok();
 	}
 }
 
@@ -562,7 +1203,21 @@ pub fn run(link: Link, options: Options) -> Result<Stop, Failed> {
 			Failed::Other(format!("could not reach the node's folder service: {f}"))
 		}
 	})?;
-	eprintln!("qorpera-folder: view {} accepted at change {}", ok.view_id, ok.as_of_seq);
+	let writable = !ok.read_only;
+	eprintln!(
+		"qorpera-folder: view {} accepted at change {}, {}",
+		ok.view_id,
+		ok.as_of_seq,
+		if writable { "read-write" } else { "read-only" }
+	);
+	// The version map outlives this program (and the node's service), as the buffers it protects do.
+	let versions = match (&options.state, writable) {
+		(Some(dir), true) => VersionMap::open(dir)
+			.map_err(|e| Failed::Other(format!("the version map in {}: {e}", dir.display())))?,
+		_ => VersionMap::memory(),
+	};
+	// SAFETY: geteuid and getegid have no preconditions.
+	let owner = if writable { unsafe { (libc::geteuid(), libc::getegid()) } } else { (0, 0) };
 	let shared = Arc::new(Shared {
 		tree: Mutex::new(Tree::new()),
 		link,
@@ -573,10 +1228,14 @@ pub fn run(link: Link, options: Options) -> Result<Stop, Failed> {
 		next_fh: AtomicU64::new(1),
 		ttl: options.ttl,
 		answered: Mutex::new(Answered::default()),
+		writable,
+		owner,
+		versions: Mutex::new(versions),
+		writing: Mutex::new(HashMap::new()),
 	});
 	let mut config = Config::default();
 	config.mount_options = vec![
-		MountOption::RO,
+		if writable { MountOption::RW } else { MountOption::RO },
 		MountOption::NoSuid,
 		MountOption::NoDev,
 		MountOption::NoAtime,
