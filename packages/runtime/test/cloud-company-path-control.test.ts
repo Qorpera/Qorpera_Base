@@ -245,6 +245,28 @@ describe("Company File bounded control transport", () => {
 		expect(transport).toHaveBeenCalledTimes(1);
 	});
 
+	it("leaves the one-call fence's attempt to the run's retry, where every other call stops at 3 s (6 Oct 2026)", async () => {
+		vi.useFakeTimers();
+		let answer: (response: Response) => void = () => undefined;
+		const transport = vi.fn<typeof fetch>(async (input) =>
+			String(input).endsWith("/qorpera_fence_native_context")
+				? new Promise<Response>((resolve) => {
+						answer = resolve;
+					})
+				: new Promise<Response>(() => undefined),
+		);
+		const control = fixture(transport);
+		const fenced = control.call("qorpera_fence_native_context", {}, new AbortController().signal);
+		const read = control.call("qorpera_assert_company_path_reads", {}, new AbortController().signal);
+		const readRejected = expect(read).rejects.toThrow("unavailable");
+		// The run cuts the fence's attempt at 10 s at first and gives the next twice as long: 12 s here is not a cut.
+		await vi.advanceTimersByTimeAsync(12_000);
+		await readRejected;
+		vi.useRealTimers();
+		answer(Response.json({ kept: [] }));
+		await expect(fenced).resolves.toEqual({ kept: [] });
+	});
+
 	it("bounds responses and never interprets malformed errors as permission to retry", async () => {
 		for (const response of [
 			new Response("bad JSON", { status: 409 }),
@@ -369,7 +391,26 @@ describe("the folder core's entry points (core C3)", () => {
 		"qorpera_folder_worker_commit",
 		"qorpera_folder_agent_workers",
 		"qorpera_folder_cancel_agent_worker",
+		"qorpera_folder_agent_proposals",
+		"qorpera_folder_apply_proposal",
+		"qorpera_folder_close_proposal",
+		"qorpera_folder_archive_coding_worker",
 	] as const;
+
+	it("reads a page of proposals and a proposal's apply up to 16 MiB, where a proposal's close stops at 256 KiB", async () => {
+		const answer = { schema: "fixture", proposals: ["x".repeat(2 * 1024 * 1024)] };
+		const transport = vi.fn<typeof fetch>(async () => Response.json(answer));
+		for (const method of ["qorpera_folder_agent_proposals", "qorpera_folder_apply_proposal"] as const) {
+			await expect(fixture(transport).call(method, {}, new AbortController().signal)).resolves.toEqual(answer);
+		}
+		await expect(
+			fixture(transport).call("qorpera_folder_close_proposal", {}, new AbortController().signal),
+		).rejects.toThrow("Company File control response too large");
+		const over = vi.fn<typeof fetch>(async () => Response.json({ proposals: ["x".repeat(16 * 1024 * 1024)] }));
+		await expect(
+			fixture(over).call("qorpera_folder_agent_proposals", {}, new AbortController().signal),
+		).rejects.toThrow("Company File control response too large");
+	});
 
 	it("reads one routine whole, up to a megabyte, where other folder reads stop at 256 KiB", async () => {
 		const answer = { schema: "fixture", routines: ["x".repeat(300 * 1024)] };

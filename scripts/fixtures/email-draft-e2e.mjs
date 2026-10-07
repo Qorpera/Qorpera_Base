@@ -14,11 +14,11 @@ import { EmailDraftClient } from "../../packages/web/src/cloud/email-drafts.ts";
 const [container, temporary] = process.argv.slice(2);
 // Only a disposable container its driver started: its own, or the hosted-db suite's.
 if (!/^qorpera-(email-e2e|hosted-db)-[0-9]+-[a-f0-9]{8}$/.test(container ?? "")) throw new Error("An owned isolated E2E container is required");
-const owner = "15000000-0000-4000-8000-000000000001";
-const session = "15000000-0000-4000-8000-000000000055";
+// The 924 folder-v2 company: its owner reviews a draft Bob raised in Bob's thread.
+const owner = "92400000-0000-4000-8000-000000000001";
 const interaction = "62000000-0000-4000-8000-000000000003";
 const brokerId = "62000000-0000-4000-8000-000000000001";
-const identity = { companyId: "15000000-0000-4000-8000-000000000010", environmentId: "15000000-0000-4000-8000-000000000020", secretId: "62000000-0000-4000-8000-000000000002", version: 1, keyId: "test" };
+const identity = { companyId: "92400000-0000-4000-8000-000000000010", environmentId: "92400000-0000-4000-8000-000000000020", secretId: "62000000-0000-4000-8000-000000000002", version: 1, keyId: "test" };
 const brokerCapability = randomBytes(32).toString("base64url");
 const keyring = new CloudSecretKeyring({ test: randomBytes(32) });
 const refreshToken = "synthetic-e2e-refresh-token";
@@ -92,6 +92,9 @@ try {
 		.replace("decode('abcd','hex'),repeat('b',64)", `decode('${envelope.toString("hex")}','hex'),${literal(createHash("sha256").update(envelope).digest("hex"))}`);
 	assert(!seed.includes("decode('abcd','hex')"));
 	sql(`${seed}\nreset role; commit;`);
+	const session = sql("select session_id from public.qorpera_company_rooms where bound_staff_agent_id='92400000-0000-4000-8000-000000000031';");
+	// The owner's sponsor from the 924 fixture pays for the answer that wakes Bob.
+	const sponsor = { sponsorBindingId: sql("select id from public.qorpera_execution_sponsor_bindings where client_binding_id='92400000-0000-4000-8000-000000000061';"), sponsorVersion: 1 };
 	const memberPrefix = `set request.jwt.claims=${literal(JSON.stringify({ sub: owner, role: "authenticated" }))}; set role authenticated;`;
 	const cloud = { config: { projectUrl: "https://isolated-postgres.example.test" }, async rpc(name, args) {
 		assert(["qorpera_get_email_draft", "qorpera_prepare_email_draft_action"].includes(name));
@@ -102,15 +105,15 @@ try {
 	const initial = await client.read(session, interaction);
 	assert.equal(initial.status, "ready");
 	assert.equal(initial.from, "sender@example.test");
-	const saved = await client.act(session, interaction, "save", initial.content);
+	const saved = await client.act(session, interaction, "save", initial.content, sponsor);
 	assert.equal(saved.status, "saved");
 	assert.equal(saved.draftId, "draft-e2e");
 	const edited = { to: ["henrik@example.test"], cc: ["copy@example.test"], subject: "Om Qorpera", body: "Hej Henrik,\n\nÆndret tekst om Qorpera.\nMed venlig hilsen" };
-	const updated = await client.act(session, interaction, "save", edited);
+	const updated = await client.act(session, interaction, "save", edited, sponsor);
 	assert.equal(updated.status, "saved");
 	assert.deepEqual(updated.content, edited);
 	const final = { ...edited, to: ["final@example.test"], body: "Den endelige tekst, godkendt af medlemmet.\nHere's the approved text." };
-	const sent = await client.act(session, interaction, "send", final);
+	const sent = await client.act(session, interaction, "send", final, sponsor);
 	assert.equal(sent.status, "sent");
 	assert.equal(sent.messageId, "sent-e2e");
 	assert.equal(sent.notificationPending, false);

@@ -196,7 +196,10 @@ describe("folder protocol", () => {
 		expect(parseHello(json({ protocol: 1, environmentId: ENV, viewId: "proof", pass: "p", role: "io" })).role).toBe(
 			"io",
 		);
-		expect(() => parseHello(json({ protocol: 2, environmentId: ENV, viewId: "v", pass: "p", role: "io" }))).toThrow();
+		expect(parseHello(json({ protocol: 2, environmentId: ENV, viewId: "v", pass: "p", role: "io" })).protocol).toBe(
+			2,
+		);
+		expect(() => parseHello(json({ protocol: 3, environmentId: ENV, viewId: "v", pass: "p", role: "io" }))).toThrow();
 		expect(() =>
 			parseHello(json({ protocol: 1, environmentId: ENV, viewId: "v", pass: "p", role: "io", x: 1 })),
 		).toThrow();
@@ -281,7 +284,10 @@ describe("folder core answers", () => {
 					seq: 9,
 					kind: "change_set",
 					commitId: v(77),
-					changes: [{ unitNo: 1, op: "delete", kind: "file", path: "a.md", version: v(3), priorVersion: v(2) }],
+					changes: [
+						{ unitNo: 1, op: "delete", kind: "file", path: "a.md", version: v(3), priorVersion: v(2) },
+						{ unitNo: 2, op: "move_in", kind: "folder", path: "b", version: v(5), priorVersion: v(4) },
+					],
 				},
 			],
 			next: { afterSeq: 8, cursor: { unitNo: 1, version: v(3) } },
@@ -290,7 +296,11 @@ describe("folder core answers", () => {
 		expect(feed.events[1]).toEqual({
 			seq: 9,
 			kind: "change_set",
-			changes: [{ path: "a.md", kind: "file", version: v(3), op: "delete" }],
+			// A move's arrival keeps the version the path had where it came from; anything else drops it.
+			changes: [
+				{ path: "a.md", kind: "file", version: v(3), op: "delete" },
+				{ path: "b", kind: "folder", version: v(5), op: "move_in", priorVersion: v(4) },
+			],
 		});
 		expect(feed.next).toEqual({ afterSeq: 8, cursor: { unitNo: 1, version: v(3) } });
 		const resync = parseFeedPage({
@@ -693,7 +703,7 @@ describe("folder service", () => {
 		expect(await io.read("docs/plan.md", 1, 4, 4)).toEqual(Buffer.from("plan"));
 		// The feed orders a change set's changes by version: here the folder's own move comes before its file's.
 		const plan = core.entries.get("docs/plan.md")!;
-		core.commit([
+		core.commitChanges([
 			{ ...folder("docs"), op: "move_out" },
 			{ ...plan, op: "move_out" },
 			{ ...folder("archive", 3), op: "move_in" },
@@ -706,7 +716,7 @@ describe("folder service", () => {
 		// A folder deleted before its files: the files opened before still read.
 		expect(await io.read("private/salary.md", 1, 0, 6)).toEqual(Buffer.from("secret"));
 		const salary = core.entries.get("private/salary.md")!;
-		core.commit([
+		core.commitChanges([
 			{ ...core.entries.get("private")!, op: "delete" },
 			{ ...salary, op: "delete" },
 		]);

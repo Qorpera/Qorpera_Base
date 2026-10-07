@@ -1,7 +1,7 @@
 -- No run, machine or API-key caps (runtime v92, 2026-09-24). A company has no
 -- running-machine limit (node capacity is the only bound), an API-key
 -- connection has no monthly budget and no per-run call, token or cost cap
--- (its concurrency stays; see SQL 330), and a run has no deadline: neither a
+-- (its concurrency stays), and a run has no deadline: neither a
 -- run nor its native connection lease is bounded by 24 hours, and usage of a
 -- run longer than a day is recorded as is. A run reads, asks its model, hires
 -- and opens group chats without a count.
@@ -57,7 +57,7 @@ begin
 			like '%86400000%' then
 		raise exception 'Usage of a run longer than a day would be refused'; end if;
 
-	-- No per-run count on reads, model requests, hires or group chats (SQL 334 and 375 run them).
+	-- No per-run count on reads, model requests, hires or group chats.
 	if exists (select 1 from pg_proc procedure join pg_namespace namespace on namespace.oid = procedure.pronamespace
 		where namespace.nspname = 'public'
 			and (procedure.prosrc like '%Read observation budget exceeded%'

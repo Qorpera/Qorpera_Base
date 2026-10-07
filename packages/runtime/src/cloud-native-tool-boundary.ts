@@ -100,8 +100,16 @@ export interface CloudNativeTool {
 	readonly inputSchema: { [key: string]: JsonValue };
 	/** A required, closed parser: native provider schema hints are not validation. */
 	parseArguments(value: JsonValue): JsonValue;
+	/** Everything a call would change, in full, for the automatic review, when its arguments only name it and its card
+	 * is cut to a bound (P40b: a proposal's every change). It throws when it cannot give all of it: the call is then
+	 * never reviewed on a part. */
+	reviewContents?(parsed: JsonValue): JsonValue;
 	/** The cloud adapter still owns effect-time authorization, durable receipts and secret handling. */
 	execute(argumentsValue: JsonValue, context: CloudToolContext): Promise<CloudToolContent>;
+	/** After the automatic review denied the call (the reviewer, or a member on its card), with the denial's id: a call
+	 * that stands for a waiting change closes it (P40b: `apply_proposal` declines its proposal). Its text follows the
+	 * denial. It never runs the call; if it fails, the denial stands as it is. */
+	denied?(argumentsValue: JsonValue, context: CloudToolContext & { readonly actionReviewId: string }): Promise<string>;
 }
 
 export type CloudToolContent = ({ kind: "text"; value: string } | { kind: "json"; value: JsonValue }) & {
@@ -759,6 +767,15 @@ export class CloudNativeToolBoundary {
 		} catch {
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
 		}
+		const context: CloudToolContext = {
+			companyId: this.#companyId,
+			runId: this.#runId,
+			callId,
+			argumentSha256: digest,
+			signal: this.#signal,
+			...(this.#identity ? { identity: this.#identity } : {}),
+			...(observation ? { observation } : {}),
+		};
 		let actionReviewId: string | undefined;
 		if (this.#review) {
 			// Auto-review (v130): an acting call runs only after the reviewer lets it, or a
@@ -775,7 +792,23 @@ export class CloudNativeToolBoundary {
 					value: "REVIEW_UNAVAILABLE: The safety review of this action could not run, so it did not happen. You may try the identical call once more; if it fails again, tell the member.",
 				});
 			}
-			if (!gate.run) return this.#result(callId, tool, digest, "denied", { kind: "text", value: gate.text });
+			if (!gate.run) {
+				let text = gate.text;
+				// A denied call that stands for a waiting change closes it (P40b); a failure leaves the denial as it is.
+				if (gate.deniedReviewId && tool.denied) {
+					const deniedReviewId = gate.deniedReviewId;
+					try {
+						const closed = await untilStopped(
+							() => tool.denied!(parsed, { ...context, actionReviewId: deniedReviewId }),
+							this.#signal,
+						);
+						if (closed) text = `${text} ${closed}`;
+					} catch {
+						// The denial stands, and what the call stood for stays open until a later denial or a discard.
+					}
+				}
+				return this.#result(callId, tool, digest, "denied", { kind: "text", value: text });
+			}
 			actionReviewId = gate.reviewId;
 			// The call may have waited for an approval: authority is checked again right before the effect (contract 4.3).
 			try {
@@ -801,17 +834,7 @@ export class CloudNativeToolBoundary {
 		}
 		try {
 			const content = await untilStopped(
-				() =>
-					tool.execute(parsed, {
-						companyId: this.#companyId,
-						runId: this.#runId,
-						callId,
-						argumentSha256: digest,
-						signal: this.#signal,
-						...(this.#identity ? { identity: this.#identity } : {}),
-						...(actionReviewId ? { actionReviewId } : {}),
-						...(observation ? { observation } : {}),
-					}),
+				() => tool.execute(parsed, { ...context, ...(actionReviewId ? { actionReviewId } : {}) }),
 				this.#signal,
 			);
 			const response = this.#result(callId, tool, digest, "ok", content);

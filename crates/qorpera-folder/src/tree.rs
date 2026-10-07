@@ -58,6 +58,9 @@ struct Node {
 	listed: bool,
 	/// Replaced by a newer version: unreachable by name, attributes frozen.
 	detached: bool,
+	/// Removed or replaced by this program's own change (a removal, a move, a file made over it): its path holds
+	/// another file now, or none.
+	removed: bool,
 }
 
 /// One entry of a listing as the kernel gets it.
@@ -105,6 +108,7 @@ impl Tree {
 				lookups: 1,
 				listed: false,
 				detached: false,
+				removed: false,
 			},
 		);
 		let mut by_path = HashMap::new();
@@ -129,9 +133,26 @@ impl Tree {
 		self.nodes.get(&ino).and_then(|n| n.attr.clone())
 	}
 
+	/// The attributes the inode was last seen with, known to be current or not: a file's inode stands for one version
+	/// of it, so its version is the one it had then.
+	pub fn last_seen(&self, ino: u64) -> Option<Attr> {
+		self.nodes.get(&ino).map(|n| n.seen.clone())
+	}
+
 	#[cfg(test)]
 	fn knows(&self, ino: u64) -> bool {
 		self.nodes.contains_key(&ino)
+	}
+
+	/// Whether the inode is what its path shows now (not a version a newer one replaced, nor a removed name).
+	pub fn current(&self, ino: u64) -> bool {
+		self.nodes.get(&ino).is_some_and(|n| !n.detached && self.by_path.get(&n.path) == Some(&ino))
+	}
+
+	/// Whether this program's own change removed or replaced the inode's file, so nothing written through it has a
+	/// path to go to (a newer version arriving from the node does not count: its path is still the same file's).
+	pub fn removed_here(&self, ino: u64) -> bool {
+		self.nodes.get(&ino).is_none_or(|n| n.removed)
 	}
 
 	/// The cached listing of a folder.
@@ -186,6 +207,7 @@ impl Tree {
 							lookups: 0,
 							listed: false,
 							detached: false,
+							removed: false,
 						},
 					);
 					self.by_path.insert(path, ino);
@@ -310,6 +332,113 @@ impl Tree {
 			out.push(Inval::Entry(node.parent, split(&node.path).1.to_string()));
 		}
 		out
+	}
+
+	// ---- This program's own changes (writes, protocol 2) ------------------------------------------------------------
+	//
+	// The kernel makes, moves and drops its own names for the changes it asks for, so these only bring the tree in
+	// step; the folder's cached listing goes, and the node lists it again with the view's pending changes. A file this
+	// program changes keeps its inode across the versions it makes: the kernel's pages of it are what was written.
+
+	/// The node of a name this program made (a file created or a folder made), held by the kernel's lookup.
+	pub fn add_local(&mut self, dir: u64, name: &str, attr: Attr) -> u64 {
+		self.changes += 1;
+		let Some(dir_path) = self.nodes.get(&dir).map(|n| n.path.clone()) else { return 0 };
+		let path = join(&dir_path, name);
+		if let Some(old) = self.by_path.get(&path).copied() {
+			self.remove_here(old);
+		}
+		if self.dirs.contains_key(&dir) {
+			self.drop_listing(dir);
+		}
+		let ino = self.next_ino;
+		self.next_ino += 1;
+		self.nodes.insert(
+			ino,
+			Node {
+				path: path.clone(),
+				parent: dir,
+				attr: Some(attr.clone()),
+				seen: attr,
+				lookups: 1,
+				listed: false,
+				detached: false,
+				removed: false,
+			},
+		);
+		self.by_path.insert(path, ino);
+		ino
+	}
+
+	/// A node's attributes after this program changed it (a version its own save made): kept as current, and as the
+	/// version the next listing is compared with, so it is not taken for someone else's newer version.
+	pub fn set_local(&mut self, ino: u64, attr: Attr) {
+		self.changes += 1;
+		let Some(n) = self.nodes.get_mut(&ino).filter(|n| !n.detached) else { return };
+		n.attr = Some(attr.clone());
+		n.seen = attr.clone();
+		// A lookup answers from the folder's cached listing: it names the inode with what it is now.
+		let parent = n.parent;
+		if let Some(child) = self.dirs.get_mut(&parent).and_then(|l| l.iter_mut().find(|c| c.ino == ino)) {
+			child.attr = attr;
+		}
+	}
+
+	/// This program removed `path`: its folder lists again, and it (with everything under it) is no longer reachable by
+	/// name. A file still open keeps reading the version it had.
+	pub fn removed_local(&mut self, path: &str) {
+		self.invalidate([path]);
+		let prefix = format!("{path}/");
+		let gone: Vec<u64> =
+			self.by_path.iter().filter(|(p, _)| p.as_str() == path || p.starts_with(&prefix)).map(|(_, i)| *i).collect();
+		for ino in gone {
+			self.remove_here(ino);
+		}
+	}
+
+	/// This program moved `from` to `to` (in the folder `to_dir`): the node and everything under it keep their inodes
+	/// at their new paths; whatever was at `to` is replaced, and both folders list again.
+	pub fn renamed_local(&mut self, from: &str, to: &str, to_dir: u64) {
+		self.changes += 1;
+		if let Some(old) = self.by_path.get(to).copied() {
+			self.remove_here(old);
+		}
+		for path in [from, to] {
+			if let Some(&parent) = self.by_path.get(split(path).0) {
+				if self.dirs.contains_key(&parent) {
+					self.drop_listing(parent);
+				}
+			}
+		}
+		let Some(moved) = self.by_path.get(from).copied() else { return };
+		let prefix = format!("{from}/");
+		let under: Vec<(String, u64)> = self
+			.by_path
+			.iter()
+			.filter(|(p, _)| p.as_str() == from || p.starts_with(&prefix))
+			.map(|(p, i)| (p.clone(), *i))
+			.collect();
+		for (path, ino) in under {
+			let next = format!("{to}{}", &path[from.len()..]);
+			self.by_path.remove(&path);
+			if let Some(n) = self.nodes.get_mut(&ino) {
+				n.path = next.clone();
+			}
+			self.by_path.insert(next, ino);
+		}
+		if let Some(n) = self.nodes.get_mut(&moved) {
+			n.parent = to_dir;
+			// No longer named by the old folder's listing (dropped above).
+			n.listed = false;
+		}
+	}
+
+	/// This program removed or replaced the node's file: detached, and marked so.
+	fn remove_here(&mut self, ino: u64) {
+		if let Some(n) = self.nodes.get_mut(&ino) {
+			n.removed = true;
+		}
+		self.detach(ino);
 	}
 
 	/// A newer version of the node's path arrived: the node keeps its version for whoever holds it. Its folder's
@@ -571,6 +700,47 @@ mod tests {
 		t.invalidate(["d"]);
 		assert!(t.listing(d).is_none());
 		assert!(!t.by_path.contains_key("d/g"));
+	}
+
+	#[test]
+	fn this_programs_own_changes_keep_their_inodes() {
+		let mut t = Tree::new();
+		let (root, _) = t.install(ROOT, vec![folder("d"), file("f", 1, "v1")], t.changes(), true, None);
+		let (d, f) = (ino_of(&root, "d"), ino_of(&root, "f"));
+		t.hold(d);
+		t.hold(f);
+		// A file made here: held by the kernel's lookup; its folder lists again.
+		let new = Attr { kind: EntryKind::File, size: 0, mtime_ms: 5, executable: false, version: "p0".into() };
+		let n = t.add_local(d, "new.md", new);
+		assert_eq!(t.path(n), Some("d/new.md"));
+		// Its save keeps the inode, and a listing that shows that version does too.
+		t.set_local(n, Attr { size: 3, version: "p1".into(), ..t.attr(n).unwrap() });
+		let (kids, _) = t.install(d, vec![file("new.md", 3, "p1")], t.changes(), true, Some("new.md"));
+		assert_eq!(ino_of(&kids, "new.md"), n);
+		// A save of a file its folder's cached listing names: a lookup from that listing gives what the save made.
+		t.set_local(n, Attr { size: 9, version: "p2".into(), ..t.attr(n).unwrap() });
+		let listed = t.listing(d).unwrap().iter().find(|c| c.ino == n).unwrap();
+		assert_eq!((listed.attr.size, listed.attr.version.as_str()), (9, "p2"));
+		// A rename keeps the inode at its new path; the file it replaced keeps its version for whoever holds it.
+		t.renamed_local("d/new.md", "f", ROOT);
+		assert_eq!(t.path(n), Some("f"));
+		assert_eq!(t.attr(f).unwrap().version, "v1");
+		let (kids, _) = t.install(ROOT, vec![folder("d"), file("f", 9, "p2")], t.changes(), true, Some("f"));
+		assert_eq!(ino_of(&kids, "f"), n);
+		// A folder's move takes what is under it along.
+		let (kids, _) = t.install(d, vec![file("x", 1, "1")], t.changes(), true, Some("x"));
+		let x = ino_of(&kids, "x");
+		t.renamed_local("d", "e", ROOT);
+		assert_eq!((t.path(d), t.path(x)), (Some("e"), Some("e/x")));
+		// A removal: no longer reachable by name, still readable by its holder.
+		t.removed_local("e");
+		assert!(!t.by_path.contains_key("e") && !t.by_path.contains_key("e/x"));
+		assert_eq!(t.attr(x).unwrap().version, "1");
+		// Removed here, unlike a version a newer one from the node replaced, and unlike the file renamed over above.
+		assert!(t.removed_here(x) && t.removed_here(f) && !t.removed_here(n));
+		let (kids, _) = t.install(ROOT, vec![file("f", 9, "p3")], t.changes(), true, Some("f"));
+		assert_ne!(ino_of(&kids, "f"), n);
+		assert!(!t.current(n) && !t.removed_here(n));
 	}
 
 	#[test]

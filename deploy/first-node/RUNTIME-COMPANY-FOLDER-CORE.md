@@ -1007,10 +1007,12 @@ C1c-3i), which ran on tmpfs, drove one sequential agent and excused 55P03. It mu
 - check for authority leaks, missing parents and lost bytes; and
 - measure stop latency and admission skips; and
 - time a re-resolution over a run that read 25,000 paths, which must fit
-  inside the 4-second result fence.
+  inside 4 seconds (the old result fence, kept as a latency target).
 
 It passes only with no deadlocks, no leaks or losses, and tool-call waits well
-under the 4-second result fence (`cloud-native-result-fence.ts`).
+under 4 seconds. That was the result fence's budget until 5 October 2026; it
+stays the load test's latency target, while the runtime now waits for a slow
+database for as long as the run's authority holds (`cloud-native-result-fence.ts`).
 
 **As built (C1e, P24):** `scripts/load-folder-core.mjs` and `.sql`, a new
 script rather than an extension of the snapshot-era one. It covers everything
@@ -1296,6 +1298,23 @@ For `folder-v2` companies:
 
 Items 6, 13 and 14 need the mount and the Company Computer, and are proven in
 the mount steps.
+
+`scripts/test-folder-core-acceptance.mjs` (P36) walks this list: one line per
+item, PASS, FAIL or NOT RUN with its reason.
+- In the hosted-db step it founds a company the real way (the creation worker,
+  the founder's own model login) and proves every item the database and the
+  node folder service's code can. Items that need a real coding session, live
+  runs, the load test or the launch items say NOT RUN. So does item 11: its
+  races are SQL test 767's; the script runs the collector's steps one after
+  another and fails if they lose a live object.
+- With `--company <profileId>` it checks an existing company (P38's proof
+  company, a founder's first company) through `QORPERA_ACCEPTANCE_DATABASE_URL`:
+  read-only, or with `--write` under a scratch folder of its own. It deletes
+  that folder again only while every entry in it is one of its own commits',
+  as of the clock it read that from, so anything someone else wrote there
+  leaves the folder in place. The suite runs that mode too, on the company it
+  founded, with a member's note written into the scratch folder midway, which
+  the cleanup must keep.
 
 ### C6. Removal
 

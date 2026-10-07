@@ -510,13 +510,6 @@ async function identityRuntimeState(
 	else {
 		const dispatch = new NativeHostDispatch({
 			supabaseUrl: baseUrl,
-			serviceKey: (
-				await credential(
-					"qorpera-supabase-service-key",
-					"Native authority credential",
-					MAX_SERVICE_CREDENTIAL_BYTES,
-				)
-			).trim(),
 			identity: parseNativeIdentityCredential(
 				await credential("qorpera-native-identity", "Native identity credential", MAX_SERVICE_CREDENTIAL_BYTES),
 				computeIdentityId,
@@ -761,22 +754,20 @@ async function verifyCredentialSource(
 					...(boundary === "company-runner" ? ["qorpera-office-native"] : []),
 					"qorpera-runner-activation",
 					"qorpera-runner-assignment",
-					"qorpera-supabase-service-key",
 				]
 			: [
 					"qorpera-identity-recovery-ca",
 					"qorpera-native-bridge",
 					"qorpera-native-identity",
 					"qorpera-native-identity-state",
-					"qorpera-supabase-service-key",
 				];
+	// Exactly these: a guest given the service key (qorpera-supabase-service-key), or anything else, is refused (G2-5).
 	if (JSON.stringify(entries) !== JSON.stringify(expected)) {
 		throw new Error("LXD runner credential source contains unexpected entries");
 	}
 	const tokens = new Set<string>();
 	for (const name of expected.filter(
 		(entry) =>
-			entry !== "qorpera-supabase-service-key" &&
 			entry !== "qorpera-cloud-secret-ca" &&
 			entry !== "qorpera-office-native" &&
 			entry !== "qorpera-coding-command" &&
@@ -849,20 +840,6 @@ async function verifyCredentialSource(
 			"Identity recovery CA",
 		);
 	}
-	const serviceKey = (
-		await readOwnedFile(
-			`${path}/qorpera-supabase-service-key`,
-			MAX_SERVICE_CREDENTIAL_BYTES,
-			"LXD native provider service credential",
-			expectedUid,
-			true,
-		)
-	).trim();
-	if (!serviceKey || /[\0\r\n]/.test(serviceKey)) {
-		throw new Error("LXD native provider service credential is invalid");
-	}
-	if (boundary === "company-runner" && tokens.has(serviceKey))
-		throw new Error("Governed credentials must be independent");
 	// G2-3: the holder's identity credential, for the native host's calls between jobs; independent of every other
 	// credential here. A login guest's identity state is its gateway's reading of the recovery authority.
 	const identity = parseNativeIdentityCredential(
@@ -875,8 +852,7 @@ async function verifyCredentialSource(
 		),
 		computeIdentityId,
 	);
-	if (tokens.has(identity.credential) || identity.credential === serviceKey || identity.publishableKey === serviceKey)
-		throw new Error("The native identity credential must be independent");
+	if (tokens.has(identity.credential)) throw new Error("The native identity credential must be independent");
 	if (boundary === "native-login")
 		parseNativeIdentityState(
 			await readOwnedFile(

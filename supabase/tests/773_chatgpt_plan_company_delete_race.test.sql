@@ -1,18 +1,18 @@
 -- @fixture 771_chatgpt_plan_company_delete.test.sql until "-- The company is being deleted."
--- Sign in with ChatGPT, slice 1c (20260928359960): the deletion finisher never waits for a run's job while it
--- holds the company fence. A run host's lease check locks its job and then takes the fence (job before fence,
--- 20260912000400); the finisher's stop skips a job one of them holds. Revoking the plan connection that pays
--- for that job would end it through the connection's status trigger, which would wait for the job under the
--- fence: a deadlock with the lease check. So the revocation leaves that connection for a later pass.
+-- A folder-v2 company's deletion finisher never waits for a run's job while it holds the folder fence (ported from
+-- snapshot-v1 in the legacy sweep; Sign in with ChatGPT, slice 1c, 20260928359960, on the drain of 20260928469280): a
+-- run host holds its job and then takes the folder fence (the folder run entry: job, then fence KEY SHARE); the
+-- finisher's stop skips a job one of them holds. Revoking the plan connection that pays for that job would end it
+-- through the connection's status trigger, which would wait for the job under the fence: so the revocation leaves that
+-- connection for a later pass, which ends the job and revokes it.
 
--- The fixture's leased job is paid by the member's plan (what slice 4 enables), and the company is being
--- deleted.
+-- The base run's leased job is paid by the member's plan (what slice 4 enables), and the company is being deleted.
 set local session_replication_role = replica;
 update public.qorpera_execution_sponsor_versions as sponsor
 set provider_connection_id = (current_setting('qorpera_test.r771')::jsonb ->> 'plan')::uuid, provider_connection_version = 1
 from public.qorpera_execution_runs as run join public.qorpera_runner_jobs as job on job.id = run.job_id
 where sponsor.binding_id = run.sponsor_binding_id and sponsor.version = run.sponsor_version and job.status = 'leased'
-	and run.profile_id = '16000000-0000-4000-8000-000000000010';
+	and run.profile_id = '92400000-0000-4000-8000-000000000010';
 set local session_replication_role = origin;
 select set_config('qorpera_test.r773_job', (select job.id::text from public.qorpera_runner_jobs as job
 	join public.qorpera_execution_runs as run on run.job_id = job.id
@@ -20,7 +20,7 @@ select set_config('qorpera_test.r773_job', (select job.id::text from public.qorp
 		on sponsor.binding_id = run.sponsor_binding_id and sponsor.version = run.sponsor_version
 	where job.status = 'leased' and sponsor.provider_connection_id = (current_setting('qorpera_test.r771')::jsonb ->> 'plan')::uuid), false);
 insert into public.qorpera_company_deletions(profile_id, requested_by_user_id)
-values ('16000000-0000-4000-8000-000000000010', '16000000-0000-4000-8000-000000000001');
+values ('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000001');
 
 -- Row locks show only across connections, so the fixture is committed here and removed again at the end (the
 -- harness of 602 and 746): the test refuses to run beside other connections to this database, whose rows the
@@ -126,9 +126,9 @@ begin
 	if cardinality(v_wrong) > 0 then raise exception 'Plan deletion race cleanup left other row counts: %', v_wrong; end if;
 end $$;
 
--- 1. A run host's lease check holds the job. A pass of the finisher runs meanwhile: its stop skips the job,
---    and it leaves the plan connection that pays for it, without waiting for the holder. The lease check then
---    gets the company fence: no deadlock.
+-- 1. A run host holds the job. A pass of the finisher runs meanwhile: its stop skips the job, and it leaves the plan
+--    connection that pays for it, without waiting for the holder. The run host then gets the folder fence (the run
+--    entry's KEY SHARE, after the finisher's drain committed): no deadlock.
 do $$
 declare v_finish jsonb; v_fence jsonb;
 begin
@@ -136,10 +136,10 @@ begin
 	perform * from dblink('r773_holder', format('select 1 from public.qorpera_runner_jobs where id = %L for update',
 		current_setting('qorpera_test.r773_job'))) as held(held integer);
 	perform dblink_send_query('r773_finisher',
-		'select public.qorpera_finish_company_deletion(''16000000-0000-4000-8000-000000000010'')');
+		'select public.qorpera_finish_company_deletion(''92400000-0000-4000-8000-000000000010'')');
 	if pg_temp.r773_waited_for('finisher', current_setting('qorpera_test.r773_holder_pid')::integer) then
 		perform dblink_exec('r773_holder', 'rollback');
-		raise exception 'Plan deletion race: the finisher waited for a job a lease check holds: %', pg_temp.r773_collect('r773_finisher'); end if;
+		raise exception 'Plan deletion race: the finisher waited for a job a run host holds: %', pg_temp.r773_collect('r773_finisher'); end if;
 	v_finish := pg_temp.r773_collect('r773_finisher');
 	if v_finish ? 'error' or v_finish #>> '{result,state}' <> 'waiting'
 		or v_finish #>> '{result,holdings,chatgpt_plan_logins}' <> '1' then
@@ -148,10 +148,12 @@ begin
 	if pg_temp.r773_plan_status() <> 'active' then
 		perform dblink_exec('r773_holder', 'rollback');
 		raise exception 'Plan deletion race: the plan connection was revoked while its job was held'; end if;
-	perform dblink_send_query('r773_holder', $q$select to_jsonb(public.qorpera_lock_profile_gc_fence('16000000-0000-4000-8000-000000000010'))$q$);
+	perform dblink_send_query('r773_holder', $q$select to_jsonb(revision) from public.qorpera_folder_fences
+		where profile_id = '92400000-0000-4000-8000-000000000010' for key share$q$);
 	v_fence := pg_temp.r773_collect('r773_holder');
 	perform dblink_exec('r773_holder', 'rollback');
-	if v_fence ? 'error' then raise exception 'Plan deletion race: the lease check did not get the fence: %', v_fence; end if;
+	if v_fence ? 'error' or v_fence -> 'result' is null or v_fence -> 'result' = 'null'::jsonb then
+		raise exception 'Plan deletion race: the run host did not get the folder fence: %', v_fence; end if;
 end $$;
 
 -- 2. The next pass ends the job, which nothing holds now, and revokes the plan connection.
@@ -159,11 +161,11 @@ do $$
 declare v_finish jsonb;
 begin
 	perform dblink_send_query('r773_finisher',
-		'select public.qorpera_finish_company_deletion(''16000000-0000-4000-8000-000000000010'')');
+		'select public.qorpera_finish_company_deletion(''92400000-0000-4000-8000-000000000010'')');
 	v_finish := pg_temp.r773_collect('r773_finisher');
 	if v_finish ? 'error' or v_finish #>> '{result,state}' <> 'waiting' or pg_temp.r773_plan_status() <> 'revoked'
 		or (select status from public.qorpera_runner_jobs where id = current_setting('qorpera_test.r773_job')::uuid) in ('queued', 'leased') then
-		raise exception 'Plan deletion race: the pass after the lease check: %, plan connection %', v_finish, pg_temp.r773_plan_status(); end if;
+		raise exception 'Plan deletion race: the pass after the run host: %, plan connection %', v_finish, pg_temp.r773_plan_status(); end if;
 end $$;
 
 select pg_temp.r773_cleanup();

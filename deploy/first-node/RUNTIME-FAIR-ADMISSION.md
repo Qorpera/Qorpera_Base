@@ -59,6 +59,7 @@ source identity remain protected.
 
 Run the added driver with
 `node scripts/test-runtime-fair-admission.mjs --report /absolute/path/report.json`.
+(The driver was deleted with snapshot-v1 in the legacy sweep, B2b: it ran on SQL 335's plain-session queue.)
 It refuses to overwrite a report. Tests use disposable PostgreSQL with network
 access disabled; no real provider or recovery service is called.
 

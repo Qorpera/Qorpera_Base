@@ -1,17 +1,12 @@
--- 20260928279570: internal functions are not callable over the API.
+-- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
+-- 20260928279570: internal functions are not callable over the API, on a folder-v2 company.
 -- Supabase's default privileges grant EXECUTE on every new public function to anon, authenticated and
 -- service_role. The functions below were revoked from PUBLIC only, so in production the publishable key
 -- could call them. The migration names the roles. This suite pins each function's API roles by exact
--- signature, shows that the grant is the only gate in front of the worst of them, and runs their real
--- callers as the real roles: the invitation email worker as service_role, and member RPCs that reach the
--- revoked functions SQL-to-SQL as the owner.
+-- signature, shows that the grant is the only gate in front of the worst of them, and runs the invitation
+-- email worker as service_role on the folder-v2 company (ported from snapshot-v1 in the legacy sweep).
 -- The suite mirrors the platform's function defaults (platform-function-defaults.sql), so part 1 fails
 -- without the migration's revokes.
-begin;
-reset role;
--- Counts the calls of every function below, so part 4 can show the real callers reached them.
-set local track_functions = 'all';
-
 create function pg_temp.grants_assert(p_ok boolean, p_message text) returns void language plpgsql as $$
 begin
 	if p_ok is not true then raise exception 'API role grants: %', p_message; end if;
@@ -92,33 +87,27 @@ begin
 end
 $$;
 
--- Fixtures: a company made the members' way (qorpera_create_cloud_company), and two invitations
--- whose emails are due. Other suites may have left due invitations too; the worker claims those as well.
-insert into auth.users (id, email, email_confirmed_at) values
-	('74900000-0000-4000-8000-000000000001', 'grants-owner@example.test', statement_timestamp()),
-	('74900000-0000-4000-8000-000000000002', 'grants-invitee@example.test', statement_timestamp());
-select set_config('request.jwt.claims', '{"sub":"74900000-0000-4000-8000-000000000001","email":"grants-owner@example.test","role":"authenticated"}', false);
-set role authenticated;
-select set_config('qorpera_test.grants_company',
-	public.qorpera_create_cloud_company('74900000-0000-4000-8000-0000000000c1', 'API Grants QA', 2) ->> 'profile_id', false);
+-- Fixtures: the folder-v2 company of 924, two invitations from its owner whose emails are due, and Bob's thread.
+-- Other suites may have left due invitations too; the worker claims those as well.
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+set local role authenticated;
 select set_config('qorpera_test.grants_invitation',
-	public.qorpera_invite_profile_member(current_setting('qorpera_test.grants_company')::uuid,
-		'grants-invitee@example.test', 'contributor') ->> 'id', false);
+	public.qorpera_invite_profile_member('92400000-0000-4000-8000-000000000010',
+		'grants-invitee@example.test', 'contributor') ->> 'id', true);
 select set_config('qorpera_test.grants_second_invitation',
-	public.qorpera_invite_profile_member(current_setting('qorpera_test.grants_company')::uuid,
-		'grants-second@example.test', 'viewer') ->> 'id', false);
+	public.qorpera_invite_profile_member('92400000-0000-4000-8000-000000000010',
+		'grants-second@example.test', 'viewer') ->> 'id', true);
 reset role;
-select set_config('request.jwt.claims', '', false);
+select pg_temp.base_claims('service_role');
 update public.qorpera_profile_invitation_deliveries
 set next_attempt_at = statement_timestamp() - interval '1 day'
 where invitation_id in (current_setting('qorpera_test.grants_invitation')::uuid,
 	current_setting('qorpera_test.grants_second_invitation')::uuid);
-select set_config('qorpera_test.grants_session', (select session.id::text from public.qorpera_shared_sessions session
-	where session.profile_id = current_setting('qorpera_test.grants_company')::uuid order by session.created_at limit 1), false);
-select pg_temp.grants_assert(current_setting('qorpera_test.grants_company', true) <> ''
-	and current_setting('qorpera_test.grants_invitation', true) <> ''
+select set_config('qorpera_test.grants_session', (select session_id::text from public.qorpera_company_rooms
+	where id = pg_temp.base_thread('92400000-0000-4000-8000-000000000031')), true);
+select pg_temp.grants_assert(current_setting('qorpera_test.grants_invitation', true) <> ''
 	and current_setting('qorpera_test.grants_second_invitation', true) <> ''
-	and current_setting('qorpera_test.grants_session', true) <> '', 'fixtures: company, invitations and member session');
+	and current_setting('qorpera_test.grants_session', true) <> '', 'fixtures: invitations and Bob''s thread');
 
 -- 2. The five worst are refused to anon (the publishable key) and to a member of the company, before
 -- their bodies run: the error is PostgreSQL's own privilege error, not a check inside the function.
@@ -129,9 +118,8 @@ create function pg_temp.grants_calls() returns table(label text, statement text)
 			current_setting('qorpera_test.grants_invitation'))),
 		('fail an invitation email', format('select public.qorpera_fail_profile_invitation_delivery(%L, ''74900000-0000-4000-8000-0000000000e1'', ''fake'', false)',
 			current_setting('qorpera_test.grants_invitation'))),
-		('append a company operation', format('select public.qorpera_append_company_operation(%L, null, ''staff_state'', ''74900000-0000-4000-8000-0000000000e2'', 1, ''{}'', null)',
-			current_setting('qorpera_test.grants_company'))),
-		('lock the company GC fence', format('select public.qorpera_lock_profile_gc_fence(%L)', current_setting('qorpera_test.grants_company')))
+		('append a company operation', 'select public.qorpera_append_company_operation(''92400000-0000-4000-8000-000000000010'', null, ''staff_state'', ''74900000-0000-4000-8000-0000000000e2'', 1, ''{}'', null)'),
+		('lock the company GC fence', 'select public.qorpera_lock_profile_gc_fence(''92400000-0000-4000-8000-000000000010'')')
 	) as calls(label, statement)
 $$;
 create function pg_temp.grants_refused(p_label text, p_statement text) returns void language plpgsql as $$
@@ -146,49 +134,46 @@ begin
 end
 $$;
 
-select set_config('request.jwt.claims', '{"role":"anon"}', false);
-set role anon;
+select pg_temp.base_claims('anon');
+set local role anon;
 select pg_temp.grants_assert(current_user = 'anon', 'running as anon');
 select pg_temp.grants_refused(label, statement) from pg_temp.grants_calls();
 select pg_temp.grants_refused('read a session''s company',
 	format('select public.qorpera_session_profile_id(%L)', current_setting('qorpera_test.grants_session')));
 reset role;
 
-select set_config('request.jwt.claims', '{"sub":"74900000-0000-4000-8000-000000000001","email":"grants-owner@example.test","role":"authenticated"}', false);
-set role authenticated;
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+set local role authenticated;
 select pg_temp.grants_assert(current_user = 'authenticated', 'running as authenticated');
 select pg_temp.grants_refused(label, statement) from pg_temp.grants_calls();
 reset role;
 
-select set_config('request.jwt.claims', '{"role":"service_role"}', false);
-set role service_role;
+select pg_temp.base_claims('service_role');
+set local role service_role;
 select pg_temp.grants_refused(label, statement) from pg_temp.grants_calls()
 where label in ('append a company operation', 'lock the company GC fence');
 reset role;
-select set_config('request.jwt.claims', '', false);
 
 -- 3. The grant is the only gate. With the grant the platform default gave (inside a savepoint), the
 -- publishable key leases every due invitation email, across companies, with no company id.
 savepoint grants_platform_default;
 grant execute on function public.qorpera_claim_profile_invitation_deliveries(integer, uuid) to anon;
-select set_config('request.jwt.claims', '{"role":"anon"}', false);
-set role anon;
+select pg_temp.base_claims('anon');
+set local role anon;
 select pg_temp.grants_assert(exists (
 	select 1 from jsonb_array_elements(public.qorpera_claim_profile_invitation_deliveries(50, '74900000-0000-4000-8000-0000000000e1')) job
 	where job ->> 'recipient_email' = 'grants-invitee@example.test'), 'with the default grant anon leases the invitation email');
 reset role;
 rollback to savepoint grants_platform_default;
-select set_config('request.jwt.claims', '', false);
+select pg_temp.base_claims('service_role');
 select pg_temp.grants_assert(not has_function_privilege('anon', 'public.qorpera_claim_profile_invitation_deliveries(integer, uuid)', 'EXECUTE')
 	and (select status from public.qorpera_profile_invitation_deliveries
 		where invitation_id = current_setting('qorpera_test.grants_invitation')::uuid) = 'pending',
 	'the savepoint undid the grant and the lease');
 
--- 4. The real callers still work.
--- The invitation email worker (profile-invitation-email, a secret key: service_role) claims, then
+-- 4. The invitation email worker (profile-invitation-email, a secret key: service_role) claims, then
 -- completes one email and records a retryable failure for the other.
-select set_config('request.jwt.claims', '{"role":"service_role"}', false);
-set role service_role;
+set local role service_role;
 do $$
 declare
 	v_invitation uuid := current_setting('qorpera_test.grants_invitation')::uuid;
@@ -204,35 +189,10 @@ begin
 end
 $$;
 reset role;
-select set_config('request.jwt.claims', '', false);
 select pg_temp.grants_assert((select status = 'delivered' and provider_message_id = 'grants-message-1'
 	from public.qorpera_profile_invitation_deliveries where invitation_id = current_setting('qorpera_test.grants_invitation')::uuid),
 	'the worker completed the first email');
 select pg_temp.grants_assert((select status = 'retrying' from public.qorpera_profile_invitation_deliveries
 	where invitation_id = current_setting('qorpera_test.grants_second_invitation')::uuid), 'the worker recorded the second email''s failure');
-
--- Members: sending to the company's session takes the GC fence, the session's company is readable to a
--- member, and the invitee lists the invitation. Creating the company above appended its operations and
--- inviting built the delivery rows, all SQL-to-SQL.
-select set_config('request.jwt.claims', '{"sub":"74900000-0000-4000-8000-000000000001","email":"grants-owner@example.test","role":"authenticated"}', false);
-set role authenticated;
-select public.qorpera_append_session_input(current_setting('qorpera_test.grants_session')::uuid,
-	'74900000-0000-4000-8000-0000000000d1', 'user_message', '{"schema":"qorpera.session-prompt/v1","text":"hello","images":[]}');
-select pg_temp.grants_assert(public.qorpera_session_profile_id(current_setting('qorpera_test.grants_session')::uuid)
-	= current_setting('qorpera_test.grants_company')::uuid, 'a member reads the session''s company');
-reset role;
-select set_config('request.jwt.claims', '{"sub":"74900000-0000-4000-8000-000000000002","email":"grants-invitee@example.test","role":"authenticated"}', false);
-set role authenticated;
-select pg_temp.grants_assert(public.qorpera_list_profile_invitations()::text like '%API Grants QA%', 'the invitee lists the invitation');
-reset role;
-select set_config('request.jwt.claims', '', false);
-
--- The member paths reached the revoked functions.
-select pg_temp.grants_assert((select count(*) from pg_stat_xact_user_functions stat
-	where stat.schemaname = 'public' and stat.calls > 0 and stat.funcname in ('qorpera_append_company_operation',
-		'qorpera_lock_profile_gc_fence', 'qorpera_profile_invitation_delivery_json', 'qorpera_current_email_verified')) = 4,
-	format('member paths called the revoked functions: %s', (select jsonb_object_agg(funcname, calls)
-		from pg_stat_xact_user_functions where schemaname = 'public' and funcname in ('qorpera_append_company_operation',
-			'qorpera_lock_profile_gc_fence', 'qorpera_profile_invitation_delivery_json', 'qorpera_current_email_verified'))));
 
 rollback;
