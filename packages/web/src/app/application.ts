@@ -407,7 +407,7 @@ export function mountApplication(
 			}
 			const userId = auth.userId;
 			if (!current() || !profile || !userId) return undefined;
-			const controller = new CompanyController(
+			const controller: CompanyController = new CompanyController(
 				api,
 				profile,
 				userId,
