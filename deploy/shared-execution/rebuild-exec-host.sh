@@ -244,12 +244,15 @@ os.replace(temporary, path)' "${STAGING}/runner-orchestrator.env"
 unset control_token
 push "${STAGING}/runner-orchestrator.env" /etc/qorpera/runner-orchestrator.env 0600
 for name in "${STAGING}"/credentials/*; do
+	# G2-5: the service key stays on the node host, for this script's own calls; the host and its slots hold none
+	# (the service refuses one).
+	[[ $(basename "${name}") == qorpera-supabase-service-key ]] && continue
 	mode=0600
 	[[ ${name} == *.crt ]] && mode=0644
 	push "${name}" "/etc/qorpera/shared-execution-credentials/$(basename "${name}")" "${mode}"
 done
 exec_in chmod 700 /etc/qorpera/shared-execution-credentials
-# G2-3e: the host's own credential (migration 20260930011000), for the service's own database calls. Minted here at
+# G2-3e: the host's own credential (migration 20260928469230), for the service's own database calls. Minted here at
 # every rebuild (the old one fails at once), bound by its sha256 to the host's adapter and orchestrator, written into
 # the host straight from a private temporary directory: never into staging, onto a command line or into this
 # script's output.

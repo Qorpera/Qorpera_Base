@@ -232,12 +232,14 @@ export const STEPS = [
 			/^packages\/runtime\/test\/fixtures\/wake-policies\.json$/,
 			/^packages\/runner-orchestrator\/src\/lxd-office-[a-z-]+-control\.ts$/,
 			/^packages\/web\/src\/cloud\/email-drafts\.ts$/,
-			// The folder service's parsers and tree, checked against the folder core's own answers.
-			/^packages\/object-gateway\/src\/folder-service\/(core|view-tree)\.ts$/,
+			// The folder service's parsers and tree, checked against the folder core's own answers. The folder core's
+			// acceptance script (F3-3c) also runs its writes, staging and mounts on the real commit. Not server.ts or cli.ts.
+			/^packages\/object-gateway\/src\/folder-service\/(core|view-tree|https-request|service|staging|mounts|machines|plan|pending|protocol|objects|search)\.ts$/,
 			/^scripts\/test-runtime-wake-envelope\.mjs$/,
 			// The connection-file writer's script runs the gateway's writer and the shared state-file parser on SQL.
-			// So does company creation's worker script (P14b).
-			/^packages\/object-gateway\/src\/(connection-files|company-folder-creation|platform-folder-writer|object-store|native-objects|dependency)\.ts$/,
+			// So does company creation's worker script (P14b). The folder core's acceptance script also runs the
+			// gateway's handler, its folder service route and its Supabase authority (F3-3c), and member folder commits.
+			/^packages\/object-gateway\/src\/(connection-files|company-folder-creation|platform-folder-writer|object-store|native-objects|dependency|service|supabase-authority|supabase-headers|folder-service-objects|folder-objects|member-folder-commits)\.ts$/,
 			/^packages\/cloud-client\/src\/company-state-files\.ts$/,
 			// The rolling update rehearsal runs this generator's packets.
 			/^scripts\/runtime-roll\.mjs$/,
