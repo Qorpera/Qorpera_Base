@@ -256,7 +256,8 @@ account, account fill, vault model login and folder read and write each go throu
 
 ### Undo (G2-6a)
 
-Revert the servers (they stop asking), then the guest and the migration (`drop function
+Undo G2-6b first if it is in (below): its coding executors ask the same function and need the guests' header. Then
+revert the servers (they stop asking), then the guest and the migration (`drop function
 public.qorpera_native_binding_proven(jsonb, text)`).
 
 ### Rollout (G2-6b)
@@ -269,7 +270,8 @@ machine's command each go through, both on the node that holds the machine and t
 
 ### Undo (G2-6b)
 
-Revert the executors (they stop asking), then the guest.
+Revert the executors (they stop asking), then the guest. Undo 6b before 6a: a 6b executor refuses every command once
+the function is dropped or a guest from before 6a sends no header.
 
 ## G2-3e: the execution host's own calls
 
