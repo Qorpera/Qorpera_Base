@@ -63,10 +63,12 @@ begin
 		and c.conname = 'qorpera_cloud_secret_audit_events_event_type_check';
 	if v_types is null or not 'account_removed' = any(v_types) or 'hook_secret_made' = any(v_types) then
 		raise exception 'E3b: the audit event types differ: %', v_types; end if;
+	-- An in (…) list, as A1's rebuilt it: it reads back as ARRAY['…'::text, …], which the reader above parses.
 	execute format('alter table public.qorpera_cloud_secret_audit_events
 		drop constraint qorpera_cloud_secret_audit_events_event_type_check,
-		add constraint qorpera_cloud_secret_audit_events_event_type_check check (event_type = any (%L::text[]))',
-		v_types || array['hook_secret_made', 'hook_secret_used']);
+		add constraint qorpera_cloud_secret_audit_events_event_type_check check (event_type in (%s))',
+		(select string_agg(quote_literal(t), ', ' order by o)
+			from unnest(v_types || array['hook_secret_made', 'hook_secret_used']) with ordinality as u(t, o)));
 end $$;
 
 -- 2. The run effect, with or without the vault ----------------------------------------------------------------------------
@@ -306,8 +308,10 @@ begin
 		end if;
 		v_result := jsonb_build_object('schema', 'qorpera.agent-hook-receipt/v1', 'runId', v_run.id, 'receiptId', v_receipt_id,
 			'action', v_action, 'hook', public.qorpera_event_hook_descriptor(v_hook, false))
-			-- 20260930160000 (E3b): where a signed hook's secret may be typed (a host, kept in the receipt).
-			|| case when v_hook.secret_site is not null then jsonb_build_object('secretSite', v_hook.secret_site) else '{}'::jsonb end;
+			-- 20260930160000 (E3b): a signed create's answer names where the hook's secret may be typed (a host, kept in the
+			-- receipt); a pause, resume or removal answers as E3a's do.
+			|| case when v_action = 'create' and v_hook.secret_site is not null
+				then jsonb_build_object('secretSite', v_hook.secret_site) else '{}'::jsonb end;
 		perform public.qorpera_folder_complete_run_receipt(p_binding, v_receipt_id, v_digest, v_result, null);
 	end if;
 	-- A create's answer: the hook's address, path and URL, from the row (never from the receipt), while the hook is live.

@@ -435,7 +435,8 @@ p_vault, …)`, granted to no role, with E3a's order and checks word for word. I
 - `qorpera_folder_open_signed_hook`, the broker's, passes the vault. In the hook's own step it inserts the hook's
   `event_hook` secret (W1b's name `h<hook id>`, the company's, created by the run's requester), version 1 (the broker's
   envelope under this authority's key) and an audit row `hook_secret_made` with the run and the receipt. A replay answers
-  from the receipt and stores nothing. The vault opens only a signed create: an address hook, a mailbox or a status
+  from the receipt and stores nothing. A signed create's answer adds `secretSite`; a pause, resume or removal of a signed
+  hook answers as E3a's do. The vault opens only a signed create: an address hook, a mailbox or a status
   change is refused (22023).
 
 `qorpera_folder_describe_signed_hook` runs the same checks and returns what the envelope's associated data needs (the
@@ -446,14 +447,15 @@ company, the environment and the authority's key). `qorpera_fill_event_hook_secr
 - a live signed hook of the run's company, with a site, whose secret is active and sealed for this authority's key;
 - a requester who is an owner or admin.
 
-It writes `hook_secret_used`. A paused hook's secret is still typed; a removed hook's is not, and E1's trigger revokes it.
+It writes `hook_secret_used`. A paused hook's secret is still typed; a removed hook's is not, and W1b's trigger
+(`qorpera_event_hooks_revoke_signing_secret`) revokes it.
 It is not gated by A1's switch (that one is the accounts'), and A1's fill refuses a hook's call as no such account.
 
 **Who may, and the locks.** The three broker functions are granted to `qorpera_secret_broker` only, and run A1's checks
 before any lock: the broker's session and capability, a job of the authority's company, and folder-v2 only ("Hooks need
-a company on the company folder"). Then E3a's run check (§5.4); the effect checks the envelope (the broker's id, the
-authority's key, 1 byte to 128 KiB with its digest, the run's company and environment) before it. The opening keeps E3a's
-order: the receipt, the company's hook claim (rank 9), the caps and the name, then the inserts. The fill holds the hook
+a company on the company folder"). The effect checks the envelope (the broker's id, the authority's key, 1 byte to
+128 KiB with its digest) before E3a's run check (§5.4), and the run's company and environment after it. The opening
+keeps E3a's order: the receipt, the company's hook claim (rank 9), the caps and the name, then the inserts. The fill holds the hook
 (rank 5, FOR SHARE) through the run check, then its secret FOR SHARE, then the receipt FOR UPDATE.
 
 **E3b-2, the broker and the runtime.** The runtime sends a signed `create` to the broker's route instead of the host's.

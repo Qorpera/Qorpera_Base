@@ -657,7 +657,10 @@ begin
 		'C: the fill: ' || current_setting('qorpera_test.e3b_fill11'));
 	perform pg_temp.base_assert(current_setting('qorpera_test.e3b_fill11_done') = '42501:hook secret fill receipt is unavailable',
 		'C: a finished receipt: ' || current_setting('qorpera_test.e3b_fill11_done'));
+	-- A signed hook's pause answers as E3a's do: no secretSite, which only a create's answer has.
 	perform pg_temp.base_assert(pg_temp.e3b_answer(current_setting('qorpera_test.e3b_pause')) #>> '{hook,status}' = 'paused'
+			and (select array_agg(k order by k) from jsonb_object_keys(pg_temp.e3b_answer(current_setting('qorpera_test.e3b_pause'))) k)
+				= array['action', 'hook', 'receiptId', 'runId', 'schema']
 			and pg_temp.e3b_answer(current_setting('qorpera_test.e3b_fill12')) ->> 'hookId' = v_github::text
 			and pg_temp.e3b_answer(current_setting('qorpera_test.e3b_fill12')) ->> 'receiptId' = '98700000-0000-4000-8000-000000000112',
 		'C: a paused hook''s fill: ' || current_setting('qorpera_test.e3b_pause') || ' / ' || current_setting('qorpera_test.e3b_fill12'));
@@ -675,6 +678,7 @@ begin
 			and current_setting('qorpera_test.e3b_a1_on') = '22023:The company has no such open account',
 		'C: A1''s fill: ' || current_setting('qorpera_test.e3b_a1_off') || ' / ' || current_setting('qorpera_test.e3b_a1_on'));
 	perform pg_temp.base_assert(pg_temp.e3b_answer(current_setting('qorpera_test.e3b_remove')) #>> '{hook,status}' = 'removed'
+			and not pg_temp.e3b_answer(current_setting('qorpera_test.e3b_remove')) ? 'secretSite'
 			and current_setting('qorpera_test.e3b_fill_removed') = '55000:This hook was removed',
 		'C: a removed hook: ' || current_setting('qorpera_test.e3b_remove') || ' / ' || current_setting('qorpera_test.e3b_fill_removed'));
 	perform pg_temp.base_assert((select status from public.qorpera_cloud_secrets where id = '98700000-0000-4000-8000-000000000203') = 'revoked'
