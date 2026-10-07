@@ -2,7 +2,12 @@
 //! in memory that a test changes while machines watch it.
 
 use qorpera_folder::frame::{kind, read_frame, write_frame};
-use qorpera_folder::proto::{code, Change, Entry, EntryKind, ErrorReply, Hello, HelloOk, ListRequest, Listing, ReadRequest, Role};
+use qorpera_folder::proto::{
+	code, Change, ChunkHeader, CloseRequest, Entry, EntryKind, ErrorReply, ExecutableRequest, GetChunk, Hello, HelloOk,
+	ListRequest, Listing, OpenRequest, Opened, PathRequest, ReadRequest, RemoveRequest, RenameRequest, Report, Role,
+	CHUNK,
+};
+use sha2::{Digest, Sha256};
 use qorpera_folder::transport::Stream;
 use std::collections::BTreeMap;
 use std::os::unix::net::UnixListener;
@@ -19,6 +24,12 @@ struct Node {
 	executable: bool,
 }
 
+/// A file open for writing: its path and its chunks as the node holds them.
+struct Open {
+	path: String,
+	chunks: Vec<Vec<u8>>,
+}
+
 #[derive(Default)]
 struct State {
 	entries: BTreeMap<String, Node>,
@@ -28,6 +39,20 @@ struct State {
 	feeds: Vec<Stream>,
 	reads: usize,
 	closed: bool,
+	/// The view takes writes (protocol 2). Writes change the tree at once; a publish only counts.
+	writable: bool,
+	handles: std::collections::HashMap<u32, Open>,
+	next_handle: u32,
+	parts: std::collections::HashMap<(u32, u32), Vec<u8>>,
+	/// Every open for writing: its path and the base it named.
+	opens: Vec<(String, Option<String>)>,
+	renames: Vec<RenameRequest>,
+	publishes: usize,
+	/// Chunks asked back.
+	gets: usize,
+	/// How many of the next chunks and closes to answer BUSY (a boundary settling).
+	busy_chunks: usize,
+	busy_closes: usize,
 }
 
 pub struct FakeNode {
@@ -128,6 +153,62 @@ impl FakeNode {
 	pub fn reads(&self) -> usize {
 		self.state.lock().unwrap().reads
 	}
+
+	/// A node whose view takes writes.
+	pub fn writable() -> FakeNode {
+		let node = FakeNode::start();
+		node.state.lock().unwrap().writable = true;
+		node
+	}
+
+	/// The view opens again after `close_view` (a mount started again).
+	pub fn reopen_view(&self) {
+		self.state.lock().unwrap().closed = false;
+	}
+
+	pub fn content(&self, path: &str) -> Option<Vec<u8>> {
+		self.state.lock().unwrap().entries.get(path).filter(|n| !n.folder).map(|n| n.content.clone())
+	}
+
+	pub fn exists(&self, path: &str) -> bool {
+		self.state.lock().unwrap().entries.contains_key(path)
+	}
+
+	pub fn executable(&self, path: &str) -> bool {
+		self.state.lock().unwrap().entries.get(path).is_some_and(|n| n.executable)
+	}
+
+	pub fn opens(&self) -> Vec<(String, Option<String>)> {
+		self.state.lock().unwrap().opens.clone()
+	}
+
+	pub fn renames(&self) -> Vec<RenameRequest> {
+		self.state.lock().unwrap().renames.clone()
+	}
+
+	pub fn publishes(&self) -> usize {
+		self.state.lock().unwrap().publishes
+	}
+
+	pub fn version(&self, path: &str) -> Option<String> {
+		self.state.lock().unwrap().entries.get(path).map(version_of)
+	}
+
+	pub fn gets(&self) -> usize {
+		self.state.lock().unwrap().gets
+	}
+
+	/// Files open for writing at the node.
+	pub fn open_handles(&self) -> usize {
+		self.state.lock().unwrap().handles.len()
+	}
+
+	/// The next `chunks` chunks and `closes` closes are answered BUSY.
+	pub fn busy(&self, chunks: usize, closes: usize) {
+		let mut s = self.state.lock().unwrap();
+		s.busy_chunks = chunks;
+		s.busy_closes = closes;
+	}
 }
 
 impl Drop for FakeNode {
@@ -153,7 +234,8 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 			return;
 		}
 		// As the node does: the machine's protocol echoed.
-		let ok = HelloOk { protocol: hello.protocol, view_id: hello.view_id.clone(), as_of_seq: st.seq, read_only: true };
+		let ok =
+			HelloOk { protocol: hello.protocol, view_id: hello.view_id.clone(), as_of_seq: st.seq, read_only: !st.writable };
 		send_json(&mut s, kind::HELLO_OK, &ok).unwrap();
 	}
 	if hello.role == Role::Feed {
@@ -212,11 +294,176 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 					_ => error(&mut s, code::NOT_FOUND),
 				}
 			}
-			_ => error(&mut s, code::BAD_REQUEST),
+			_ if !st.writable => error(&mut s, code::READ_ONLY),
+			_ => write(&mut st, &mut s, k, &body),
 		};
 		drop(st);
 		if result.is_err() {
 			return;
 		}
+	}
+}
+
+fn version_of(n: &Node) -> String {
+	format!("v{}", n.version)
+}
+
+/// A write request, applied to the tree at once.
+fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<()> {
+	let folder = |st: &State, p: &str| p.is_empty() || st.entries.get(p).is_some_and(|n| n.folder);
+	match k {
+		kind::OPEN => {
+			let req: OpenRequest = serde_json::from_slice(body).unwrap();
+			st.opens.push((req.path.clone(), req.base.clone()));
+			match st.entries.get(&req.path).cloned() {
+				Some(n) if n.folder => return error(s, code::NOT_A_FILE),
+				Some(_) if req.exclusive => return error(s, code::EXISTS),
+				None if !req.create => return error(s, code::NOT_FOUND),
+				None if !folder(st, parent(&req.path)) => return error(s, code::NOT_FOUND),
+				None => {
+					st.entries.insert(req.path.clone(), Node { folder: false, version: 1, content: Vec::new(), executable: false });
+				}
+				Some(n) if req.truncate && !n.content.is_empty() => {
+					st.old.insert((req.path.clone(), version_of(&n)), n.content.clone());
+					let e = st.entries.get_mut(&req.path).unwrap();
+					e.content.clear();
+					e.version += 1;
+				}
+				Some(_) => {}
+			}
+			let n = st.entries[&req.path].clone();
+			let chunks = n.content.chunks(CHUNK as usize).map(<[u8]>::to_vec).collect();
+			st.next_handle += 1;
+			let handle = st.next_handle;
+			st.handles.insert(handle, Open { path: req.path, chunks });
+			send_json(s, kind::OPENED, &Opened { handle, size: n.content.len() as u64, version: version_of(&n) })
+		}
+		kind::CHUNK => {
+			let len = u32::from_be_bytes(body[..4].try_into().unwrap()) as usize;
+			let header: ChunkHeader = serde_json::from_slice(&body[4..4 + len]).unwrap();
+			if header.offset == 0 && st.busy_chunks > 0 {
+				st.busy_chunks -= 1;
+				return error(s, code::BUSY);
+			}
+			let data = &body[4 + len..];
+			let key = (header.handle, header.index);
+			let sofar = st.parts.entry(key).or_default();
+			if header.offset == 0 {
+				sofar.clear();
+			}
+			assert_eq!(header.offset as usize, sofar.len(), "parts in order");
+			sofar.extend_from_slice(data);
+			if sofar.len() as u64 == header.bytes {
+				let chunk = st.parts.remove(&key).unwrap();
+				let digest: String = Sha256::digest(&chunk).iter().map(|b| format!("{b:02x}")).collect();
+				assert_eq!(digest, header.sha256, "the chunk's hash");
+				let open = st.handles.get_mut(&header.handle).expect("an open handle");
+				let index = header.index as usize;
+				assert!(index <= open.chunks.len(), "a chunk before {index} is missing");
+				if index == open.chunks.len() {
+					open.chunks.push(chunk);
+				} else {
+					open.chunks[index] = chunk;
+				}
+			}
+			write_frame(s, kind::DONE, b"{}")
+		}
+		kind::GET_CHUNK => {
+			let req: GetChunk = serde_json::from_slice(body).unwrap();
+			st.gets += 1;
+			let c = &st.handles[&req.handle].chunks[req.index as usize];
+			let start = (req.offset as usize).min(c.len());
+			let end = (start + req.length as usize).min(c.len());
+			write_frame(s, kind::DATA, &c[start..end])
+		}
+		kind::CLOSE => {
+			let req: CloseRequest = serde_json::from_slice(body).unwrap();
+			if st.busy_closes > 0 {
+				st.busy_closes -= 1;
+				return error(s, code::BUSY);
+			}
+			let open = st.handles.remove(&req.handle).expect("an open handle");
+			let count = req.size.div_ceil(CHUNK) as usize;
+			assert!(open.chunks.len() >= count, "the chunks do not make up the size");
+			for (i, c) in open.chunks[..count].iter().enumerate() {
+				let want = if i + 1 < count { CHUNK } else { req.size - (count as u64 - 1) * CHUNK };
+				assert_eq!(c.len() as u64, want, "chunk {i} does not tile the size");
+			}
+			let content = open.chunks[..count].concat();
+			let n = st.entries.get(&open.path).cloned().expect("the file");
+			if n.content != content {
+				st.old.insert((open.path.clone(), version_of(&n)), n.content.clone());
+				let e = st.entries.get_mut(&open.path).unwrap();
+				e.content = content;
+				e.version += 1;
+			}
+			let version = version_of(&st.entries[&open.path]);
+			send_json(s, kind::DONE, &serde_json::json!({ "version": version }))
+		}
+		kind::MKDIR => {
+			let req: PathRequest = serde_json::from_slice(body).unwrap();
+			if st.entries.contains_key(&req.path) {
+				return error(s, code::EXISTS);
+			}
+			if !folder(st, parent(&req.path)) {
+				return error(s, code::NOT_FOUND);
+			}
+			st.entries.insert(req.path, Node { folder: true, version: 1, content: Vec::new(), executable: false });
+			write_frame(s, kind::DONE, b"{}")
+		}
+		kind::UNLINK | kind::RMDIR => {
+			let req: RemoveRequest = serde_json::from_slice(body).unwrap();
+			let Some(n) = st.entries.get(&req.path).cloned() else { return error(s, code::NOT_FOUND) };
+			if n.folder != (k == kind::RMDIR) {
+				return error(s, if n.folder { code::NOT_A_FILE } else { code::NOT_A_FOLDER });
+			}
+			let prefix = format!("{}/", req.path);
+			if n.folder && st.entries.keys().any(|p| p.starts_with(&prefix)) {
+				return error(s, code::NOT_EMPTY);
+			}
+			st.entries.remove(&req.path);
+			write_frame(s, kind::DONE, b"{}")
+		}
+		kind::RENAME => {
+			let req: RenameRequest = serde_json::from_slice(body).unwrap();
+			st.renames.push(req.clone());
+			let Some(n) = st.entries.get(&req.from).cloned() else { return error(s, code::NOT_FOUND) };
+			if let Some(t) = st.entries.get(&req.to) {
+				if req.no_replace {
+					return error(s, code::EXISTS);
+				}
+				if t.folder != n.folder {
+					return error(s, if t.folder { code::NOT_A_FILE } else { code::NOT_A_FOLDER });
+				}
+			}
+			let from = format!("{}/", req.from);
+			let moved: Vec<(String, Node)> = st
+				.entries
+				.iter()
+				.filter(|(p, _)| **p == req.from || p.starts_with(&from))
+				.map(|(p, n)| (p.clone(), n.clone()))
+				.collect();
+			st.entries.remove(&req.to);
+			for (p, n) in moved {
+				st.entries.remove(&p);
+				st.entries.insert(format!("{}{}", req.to, &p[req.from.len()..]), n);
+			}
+			write_frame(s, kind::DONE, b"{}")
+		}
+		kind::EXECUTABLE => {
+			let req: ExecutableRequest = serde_json::from_slice(body).unwrap();
+			let Some(n) = st.entries.get_mut(&req.path) else { return error(s, code::NOT_FOUND) };
+			if n.executable != req.executable {
+				n.executable = req.executable;
+				n.version += 1;
+			}
+			let version = version_of(n);
+			send_json(s, kind::DONE, &serde_json::json!({ "version": version }))
+		}
+		kind::PUBLISH => {
+			st.publishes += 1;
+			send_json(s, kind::REPORT, &Report { commit_id: Some("c".into()), seq: Some(st.seq), paths: Vec::new() })
+		}
+		_ => error(s, code::BAD_REQUEST),
 	}
 }

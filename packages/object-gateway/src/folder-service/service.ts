@@ -114,6 +114,12 @@ interface HeldIntent {
 	readonly staged?: FileRef;
 }
 
+/** A file a published move took to its path: the version it had where it came from, and the one the move gave it. */
+interface MovedVersion {
+	readonly prior: string;
+	readonly version: string;
+}
+
 /** A boundary the core answered, while the view waits for the feed to bring its change set: until then the view keeps
  * its pending changes as they were, and nothing changes (BUSY). */
 interface Settlement {
@@ -171,9 +177,10 @@ class View {
 		| undefined;
 	/** A boundary answered but not settled yet (the feed has not brought its change set). */
 	unsettled: Settlement | undefined;
-	/** What this view's saves published, by path, newest last (as many as the readable versions kept per path): the
-	 * version a save made while pending (the one the machine's version map holds after it) and the version its change
-	 * set gave the path. */
+	/** What this view's saves and moves published, by path, newest last (as many as the readable versions kept per
+	 * path): the version the path showed the machine while pending (a save's own, the one the machine's version map
+	 * holds after it; or, for a file this view moved there, the one it had before) and the version the change set gave
+	 * the path. */
 	readonly published = new Map<string, { readonly made: string; readonly live: string }[]>();
 	readonly uploads = new Map<string, ChunkUpload>();
 	/** The intents that root the bytes of its pending files, by id. */
@@ -624,7 +631,8 @@ export class FolderService {
 
 	/** A base as the machine sent it, except that the version one of this view's saves made, published since, is read
 	 * as the version its change set gave the path: the machine's version map holds the first (RUNTIME-FOLDER-WRITES.md,
-	 * "After a save the map holds the version the save made"). */
+	 * "After a save the map holds the version the save made"). Likewise the version a file this view moved showed at its
+	 * new path before the move was published: the move gave it a new one. */
 	#base(view: View, path: string, base: string | undefined): string | undefined {
 		if (base === undefined) return undefined;
 		return view.published.get(path)?.find((p) => p.made === base)?.live ?? base;
@@ -1316,47 +1324,66 @@ export class FolderService {
 			if (view.seq < seq) return;
 		}
 		// A write's version is in the core's answer; a new folder's files' are only in its change set, which is read
-		// when one of them was saved.
+		// when one of them was saved. So are the versions a move gave what it moved.
 		const written = new Map<string, string>();
 		settlement.plan.units.forEach((planned, i) => {
 			const outcome = settlement.answer.units[i];
 			if (planned.unit.op === "write" && outcome?.outcome === "saved" && outcome.version)
 				written.set(planned.unit.path, outcome.version);
 		});
-		if ([...settlement.made.keys()].some((path) => settlement.saved.has(path) && !written.has(path)))
+		let moved: ReadonlyMap<string, MovedVersion> = new Map();
+		const someMoved = settlement.plan.units.some(
+			(planned, i) => planned.unit.op === "move" && settlement.answer.units[i]?.outcome === "saved",
+		);
+		if (someMoved || [...settlement.made.keys()].some((path) => settlement.saved.has(path) && !written.has(path)))
 			try {
-				for (const [path, version] of await this.#changeSetWrites(view, seq))
-					if (!written.has(path)) written.set(path, version);
+				const changeSet = await this.#changeSet(view, seq);
+				for (const [path, version] of changeSet.writes) if (!written.has(path)) written.set(path, version);
+				moved = changeSet.moved;
 			} catch (error) {
 				this.#log(
 					`folder-service: ${view.key}: change set ${seq} could not be read now: ${(error as Error).message}`,
 				);
 				return;
 			}
-		if (view.unsettled === settlement) this.#finishSettle(view, settlement, written);
+		if (view.unsettled === settlement) this.#finishSettle(view, settlement, written, moved);
 	}
 
-	/** The versions change set `seq` wrote, read from the feed just before it: whatever the view's own rounds did since
-	 * (a full listing included), the change set says exactly. A feed that no longer serves that position gives none. */
-	async #changeSetWrites(view: View, seq: number): Promise<Map<string, string>> {
+	/** The versions change set `seq` wrote, and those its moves gave (with the version each path had where it came
+	 * from), read from the feed just before it: whatever the view's own rounds did since (a full listing included), the
+	 * change set says exactly. A feed that no longer serves that position gives none. */
+	async #changeSet(
+		view: View,
+		seq: number,
+	): Promise<{ writes: Map<string, string>; moved: Map<string, MovedVersion> }> {
 		const writes = new Map<string, string>();
+		const moved = new Map<string, MovedVersion>();
 		let position: { afterSeq: number; cursor: FeedCursor | null } = { afterSeq: seq - 1, cursor: null };
 		for (;;) {
 			const page = await this.#core.feed(view.environmentId, view.actor, position.afterSeq, position.cursor);
-			if (page.resync || !page.next) return writes;
+			if (page.resync || !page.next) return { writes, moved };
 			for (const event of page.events) {
-				if (event.seq > seq) return writes;
+				if (event.seq > seq) return { writes, moved };
 				if (event.seq === seq && event.kind === "change_set")
-					for (const change of event.changes) if (change.op === "write") writes.set(change.path, change.version);
+					for (const change of event.changes) {
+						if (change.op === "write") writes.set(change.path, change.version);
+						if (change.op === "move_in" && change.kind === "file" && change.priorVersion)
+							moved.set(change.path, { prior: change.priorVersion, version: change.version });
+					}
 			}
-			if (!page.more) return writes;
+			if (!page.more) return { writes, moved };
 			position = page.next;
 		}
 	}
 
-	#finishSettle(view: View, settlement: Settlement, written: ReadonlyMap<string, string>): void {
+	#finishSettle(
+		view: View,
+		settlement: Settlement,
+		written: ReadonlyMap<string, string>,
+		moved: ReadonlyMap<string, MovedVersion> = new Map(),
+	): void {
 		view.unsettled = undefined;
-		this.#notePublished(view, settlement, written);
+		this.#notePublished(view, settlement, written, moved);
 		this.#settleNodes(
 			view,
 			settlement.keep,
@@ -1365,16 +1392,41 @@ export class FolderService {
 		);
 	}
 
-	/** The versions this boundary's saves published, for bases and reads naming the versions they made. As many are
-	 * kept per path as versions of it stay readable: the current one and the replaced ones. */
-	#notePublished(view: View, settlement: Settlement, written: ReadonlyMap<string, string>): void {
-		for (const [path, made] of settlement.made) {
-			const live = settlement.saved.has(path) ? written.get(path) : undefined;
-			if (!live) continue;
-			const aliases = view.published.get(path) ?? [];
+	/** The versions this boundary's saves published, for bases and reads naming the versions they made; and the versions
+	 * its moves gave the files they moved, for bases and reads naming the version a file showed at its new path while
+	 * the move was pending (the one it had before), or a version this view's own save made of it before the move (the
+	 * machine's version map takes a save's version along when it renames the file). As many are kept per path as
+	 * versions of it stay readable: the current one and the replaced ones. */
+	#notePublished(
+		view: View,
+		settlement: Settlement,
+		written: ReadonlyMap<string, string>,
+		moved: ReadonlyMap<string, MovedVersion>,
+	): void {
+		// One per version named at a path: a file moved away and back brings its save's version along again, and the
+		// version it has now replaces the one it had when it left.
+		const alias = (path: string, made: string, live: string): void => {
+			const aliases = (view.published.get(path) ?? []).filter((p) => p.made !== made);
 			aliases.push({ made, live });
 			if (aliases.length > SUPERSEDED_PER_PATH + 1) aliases.shift();
 			view.published.set(path, aliases);
+		};
+		for (const [path, made] of settlement.made) {
+			const live = settlement.saved.has(path) ? written.get(path) : undefined;
+			if (live) alias(path, made, live);
+		}
+		if (moved.size === 0) return;
+		// The versions this view's saves made, by the version they published (at any path, before the moves).
+		const madeOf = new Map<string, string[]>();
+		for (const aliases of view.published.values())
+			for (const { made, live } of aliases) {
+				const versions = madeOf.get(live);
+				if (versions) versions.push(made);
+				else madeOf.set(live, [made]);
+			}
+		for (const [path, { prior, version }] of moved) {
+			alias(path, prior, version);
+			for (const made of madeOf.get(prior) ?? []) if (made !== prior) alias(path, made, version);
 		}
 	}
 
