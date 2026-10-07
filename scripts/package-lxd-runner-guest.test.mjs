@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -156,6 +156,17 @@ test("packages the complete pinned LXD runner guest contract", async (t) => {
 		assert.match(companyRunner, /^User=qorpera-company-runner$/m);
 		assert.match(companyRunner, /^AssertPathIsMountPoint=\/var\/lib\/qorpera-runner$/m);
 		assert.doesNotMatch(companyRunner, /LoadCredential=qorpera-(?:supabase-service-key|native-object-token)/);
+		// G2-5: no guest unit is given the service key.
+		const guestUnits = (await readdir(join(repositoryRoot, "deploy/lxd-runner-guest"))).filter((name) =>
+			name.endsWith(".service"),
+		);
+		assert.ok(guestUnits.length >= 3);
+		for (const name of guestUnits)
+			assert.doesNotMatch(
+				await readFile(join(repositoryRoot, "deploy/lxd-runner-guest", name), "utf-8"),
+				/supabase-service-key|SUPABASE_SERVICE_KEY/,
+				name,
+			);
 
 		const builderPath = join(repositoryRoot, "deploy/first-node/build-lxd-runner-image-candidate.sh");
 		const builder = await readFile(builderPath, "utf-8");
