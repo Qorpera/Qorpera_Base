@@ -49,6 +49,7 @@ import { attachmentProblemText } from "../ui/attachments.ts";
 import { isGroupChat } from "../ui/group-chat.ts";
 import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
+import type { MailState } from "./company-mail.ts";
 import type { InterfaceFolderState } from "./interface-folder.ts";
 import {
 	appendQuoted,
@@ -127,11 +128,16 @@ function retryRefusal(error: unknown): string {
 	return t("It could not be tried again. Send the message again instead.");
 }
 
+/** Whether a card's answer was refused for want of the member's model account: in an agent's thread an answer runs
+ * the agent on it. */
+export function needsModelAccount(error: unknown): boolean {
+	return /sponsor|model account/i.test(error instanceof Error ? error.message : "");
+}
+
 /** Why the cloud would not take a card's answer, in the member's words. */
 function answerRefusal(error: unknown): string {
 	const message = error instanceof Error ? error.message : "";
-	// In an agent's thread an answer runs the agent on the member's own model account.
-	if (/sponsor|model account/i.test(message)) return t("Select an active model account, then try again.");
+	if (needsModelAccount(error)) return t("Select an active model account, then try again.");
 	if (/paused/i.test(message)) return t("Agents are paused for a moment while Qorpera updates. Try again shortly.");
 	return describeError(error);
 }
@@ -183,6 +189,8 @@ export interface CompanyState {
 	 * Unset until the first read lands, and while the folder keeps no `interfaces/order.md`: the Interfaces tab then
 	 * draws the library's definitions (app/interfaces.ts). */
 	interfaceFolder?: InterfaceFolderState;
+	/** The company's mail as the member reads it (Interfaces step I5c; app/company-mail.ts). Unset until it is read. */
+	mail?: MailState;
 	loading: boolean;
 	error?: string;
 	accessLost?: boolean;

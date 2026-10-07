@@ -1247,6 +1247,27 @@ describe("cloud Company File path gateway", () => {
 		]);
 	});
 
+	it("leaves the one call's attempt to the run's retry, adding no deadline of its own (6 Oct 2026)", async () => {
+		const f = fixture();
+		await f.seed("a.md", "A");
+		const { authority, fence, frame } = keptFence(f);
+		await f.gateway.read("a.md", 0, 64, f.signal);
+		// The run cuts each attempt (10 s at first, twice as long after one is cut); the gateway's other calls stop at 5 s.
+		let answer: () => void = () => undefined;
+		f.overrides.set("qorpera_fence_native_context", async (args) => {
+			await new Promise<void>((resolve) => {
+				answer = resolve;
+			});
+			return fence(args);
+		});
+		vi.useFakeTimers();
+		const fenced = f.gateway.fenceContextView(frame("request-1"), [], f.signal);
+		await vi.advanceTimersByTimeAsync(12_000);
+		vi.useRealTimers();
+		answer();
+		await expect(fenced).resolves.toEqual(authority);
+	});
+
 	it("exposes only closed path operations with cloud-derived identity", async () => {
 		const f = fixture();
 		expect(f.gateway.tools().map((tool) => tool.name)).toEqual([

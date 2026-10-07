@@ -851,7 +851,8 @@ subscriptions, which self-limit.
 > 64 MiB fence frame (more than any model context holds), and a view row is
 > bounded at 16 MiB as storage.
 
-> **Amended 2026-10-03 (not built yet).** What remains also holds the agent
+> **Amended 2026-10-03 (built in E1 and E7; the brake is off until the
+> founder sets its levels).** What remains also holds the agent
 > exit's line guard: TCP port 25 is refused, and a brake on bursts of new
 > connections, whose levels the founder decides after two weeks of counting.
 > It guards the shared line and never counts a run's work ("agent traffic
@@ -4302,6 +4303,23 @@ immediately before an effect, and section 9.1's context views, are unchanged.
    run with nothing released, as a lapsed fence did before. The database may
    still finish the call after the host has given up, so a view can be
    recorded for a request that never left.
+
+   > **Amended 2026-10-05** (control calls, part 2; the doubling and the
+   > database's budget 2026-10-06).
+   > There is no 3.5 s or 4 s budget, and a timeout no longer stops the run: no
+   > host stopwatch ends a model request's fence. A lost or late answer is asked
+   > again for as long as the run's authority holds, which the run's own
+   > refresh keeps renewing. The first attempt waits 10 s, and each attempt cut
+   > at its deadline gives the next twice as long. Lost authority, a refusal or
+   > a stop still end the run with nothing released. Codex waits for the host's
+   > answer, with a 10-minute backstop against a host that is alive but hung.
+   > The database still bounds each attempt: the fence is one statement under
+   > the native host entry's 8 s statement and lock budget
+   > (`qorpera_native_host_call`), and an attempt the database cancels is asked
+   > again like a lost one. So the doubling helps only a delay outside the
+   > statement (a connection pool wait), and a fence that needs more than 8 s
+   > in the database never lands: the request ends at Codex's backstop.
+   > The last sentence of this item still holds.
 4. **Until the database has the call** the host makes the separate calls, all
    of them.
 
@@ -5028,6 +5046,9 @@ It amends these texts. Where older text conflicts with this amendment, this amen
      flood), and failed connections to many addresses (a scan).
    - The founder sees the numbers and decides the brake's levels before it is switched on, well above normal use.
      Past them, that company's new connections are slowed for a while. The brake never stops normal work.
+   - Slowed means a share of new connections per 10 seconds. Past it, the company's new connections are dropped and
+     its machines try again a little later, as on a busy line; nothing is refused for good. Open connections, the
+     exit's own names and other companies are never touched. Each brake's start and end are in the exit's log.
    - It guards the shared line, which the line provider may cut for spam or port scans whoever caused them.
    - It is not a limit on the work: 7.4's rule that a run has no count on its work stands.
 10. **Updates never stop a machine, and the exit fails closed.**
