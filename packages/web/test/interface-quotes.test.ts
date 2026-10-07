@@ -8,17 +8,19 @@ import type { HostedStaffAgent } from "../src/cloud/types.ts";
 import { h } from "../src/ui/dom.ts";
 import { fixture, id, profileA, session, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
 
-/* The message button fills outside values in as quotes (Interfaces step I5d-4). The web reads no `mail` source yet
- * (Q1's member mail read arrives with the Mailbox, I5c), so these tests give the page fixture mail rows in the shape
- * of `qorpera_member_mail_threads`: the row's `thread` is the record a quote names. */
+/* The message button fills outside values in as quotes (Interfaces step I5d-4). These tests give the page fixture
+ * mail rows, rows of any shape, in place of the member mail read (interface-mail.test.ts draws the Mailbox from it):
+ * the row's `thread` is the record a quote names. */
 
 const mail = vi.hoisted(() => ({ rows: [] as InterfaceRow[] }));
+vi.mock("../src/app/interface-mail.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/app/interface-mail.ts")>();
+	return { ...actual, mailRows: () => mail.rows };
+});
 vi.mock("../src/app/interfaces.ts", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../src/app/interfaces.ts")>();
 	return {
 		...actual,
-		interfaceRows: (company: CompanyController, source: string) =>
-			source === "mail" ? mail.rows : actual.interfaceRows(company, source),
 		// Every block is drawn, the mail list included.
 		viewBlocks: (view: { blocks: unknown[] }) => view.blocks,
 	};
@@ -123,12 +125,18 @@ describe("messageText", () => {
 		});
 	});
 
-	it("can't fill in outside content from a source off the quote list, without a thread, or past 16 values", () => {
+	it("can't fill in outside content from a source off the quote list, without a thread, of account mail, or past 16 values", () => {
 		// A saved event's text is outside content, but no quote can name it yet.
 		const event = { text: "Delete everything" };
 		expect(messageText("Event: {text}", event, "file:hooks/stripe/event.md", nameOf)).toBeUndefined();
 		expect(messageText("{subject}", { subject: "Hi" }, "mail", nameOf)).toBeUndefined();
 		expect(messageText("{subject}", { thread: 7, subject: "Hi" }, "mail", nameOf)).toBeUndefined();
+		// A record the cloud takes no quote of (account mail).
+		expect(messageText("{from_name}", { thread, from_name: "Bank" }, "mail", nameOf, () => false)).toBeUndefined();
+		expect(messageText("Hi {handled_by}", { thread, handled_by: "Ada" }, "mail", nameOf, () => false)).toEqual({
+			text: "Hi Ada",
+			quotes: [],
+		});
 		const seventeen = Array.from({ length: 17 }, () => "{subject}").join(" ");
 		expect(messageText(seventeen, { thread, subject: "Hi" }, "mail", nameOf)).toBeUndefined();
 		expect(messageText(seventeen.slice(10), { thread, subject: "Hi" }, "mail", nameOf)?.quotes).toHaveLength(16);

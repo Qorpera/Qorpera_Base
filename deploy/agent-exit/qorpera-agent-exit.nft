@@ -4,7 +4,8 @@
 # machine to 16,384 open connections and the exit to 98,304 (decided 3 October), holds a closed agent connection 30
 # seconds instead of the kernel's 120 (the bounds do not count closed ones), counts new connections and refusals per
 # machine, keeps each refused flow an hour for the log, and answers names and DHCP itself (dnsmasq on 10.210.0.1).
-# Plain DNS a machine sends elsewhere is redirected to it.
+# Plain DNS a machine sends elsewhere is redirected to it. The brake (E7) slows the new connections of a company the
+# line guard put in the braked map; it is off until the founder sets its levels, and never touches open connections.
 #
 # Load it with qorpera-agent-exit.sh, never with `nft -f` alone. The same file runs on every node. See README.md and
 # deploy/first-node/RUNTIME-AGENT-EXIT.md.
@@ -21,7 +22,7 @@ table inet qorpera_agent_exit {
 		}
 	}
 
-	# Per machine: new connections and refusals, counted (the line guard's counts, E7).
+	# Per machine: new connections and refusals, counted.
 	set new_by_client {
 		type ipv4_addr
 		flags dynamic
@@ -65,6 +66,45 @@ table inet qorpera_agent_exit {
 		size 16384
 	}
 
+	# The brake (E7). The line guard in the connection logger fills braked: each machine of a braked company, with the
+	# company's number, until its brake ends (the element's timeout, so a brake ends also without the guard); a reload
+	# empties it and the guard fills it again within seconds. A company's number keys its share in slowed, its count of
+	# the new connections the brake dropped in dropped, and of those let through later on a resend in resent. tried
+	# holds each dropped flow 3 minutes (a machine resends a first packet for about 2), so it counts once.
+	map braked {
+		type ipv4_addr : mark
+		flags timeout
+		size 65536
+	}
+
+	set slowed {
+		type mark
+		flags dynamic, timeout
+		timeout 1m
+		size 65536
+	}
+
+	set dropped {
+		type mark
+		flags dynamic, timeout
+		timeout 1h
+		size 65536
+	}
+
+	set resent {
+		type mark
+		flags dynamic, timeout
+		timeout 1h
+		size 65536
+	}
+
+	set tried {
+		type ipv4_addr . ipv4_addr . inet_proto . inet_service . inet_service
+		flags dynamic, timeout
+		timeout 3m
+		size 65536
+	}
+
 	counter refused_internal {
 	}
 
@@ -84,6 +124,9 @@ table inet qorpera_agent_exit {
 	}
 
 	counter dropped_invalid {
+	}
+
+	counter dropped_braked {
 	}
 
 	# Agent TCP connections: a closed one (TIME_WAIT) is kept 30 seconds, not the kernel's 120. The open-connection
@@ -123,7 +166,37 @@ table inet qorpera_agent_exit {
 		# The per-machine bound first: a machine at its own bound never reaches the shared total's list.
 		add @open_by_client { ip saddr ct count over 16384 } counter name "refused_open_limit" goto refuse
 		ct count over 98304 counter name "refused_open_limit" goto refuse
+		jump brake
 		accept
+	}
+
+	# The brake (E7): a braked company's machines get its number as their mark, and go through its share. Only a
+	# connection's first packet: a resent one of a connection let through is confirmed already, and passes.
+	chain brake {
+		ct status confirmed return
+		meta mark set ip saddr map @braked goto slow
+	}
+
+	# Under its share a new connection goes on (and is let through); past it, it is dropped and the machine tries again a
+	# little later, as on any busy line. One let through after it was dropped is counted in resent.
+	chain slow {
+		jump share
+		meta l4proto { tcp, udp } ip saddr . ip daddr . meta l4proto . th sport . th dport @tried update @resent { meta mark counter }
+	}
+
+	# The line guard writes one rule here while the brake is on, with the founder's share S (new connections per 10
+	# seconds): `update @slowed { meta mark limit rate over 6S/minute burst S packets } goto braked_drop comment
+	# "slow S"`.
+	chain share {
+	}
+
+	# A dropped connection counts once in dropped, however often its machine resends the first packet.
+	chain braked_drop {
+		counter name "dropped_braked"
+		meta l4proto { tcp, udp } ip saddr . ip daddr . meta l4proto . th sport . th dport @tried drop
+		meta l4proto { tcp, udp } add @tried { ip saddr . ip daddr . meta l4proto . th sport . th dport }
+		update @dropped { meta mark counter }
+		drop
 	}
 
 	chain refuse {

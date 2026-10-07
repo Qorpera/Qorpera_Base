@@ -665,13 +665,22 @@ class Reconciler:
         for name in EXIT_SETS:
             listed = self.run(["ip", "netns", "exec", self.args.netns, "nft", "-j", "list", "set", family, table, name])
             if listed.returncode == 0:
-                statements += [f"delete element {family} {table} {name} {{ {key} }}"
+                # destroy, not delete: an element that times out between the listing and this batch is no error, so
+                # it cannot keep the others in place.
+                statements += [f"destroy element {family} {table} {name} {{ {key} }}"
                                for key in set_keys(listed.stdout, address)]
         if statements:
             result = subprocess.run(["ip", "netns", "exec", self.args.netns, "nft", "-f", "-"],
                                     input="\n".join(statements) + "\n", capture_output=True, text=True)
             if result.returncode != 0:
                 print(f"cannot clear {address} from the exit's sets: {result.stderr.strip()[:200]}", flush=True)
+        # The brake's map too, without a listing (destroying no element is no error): while the guard is down, a
+        # machine's element can outlive the quarantine and brake the next machine at this address. On its own, so
+        # rules without the map still have their sets cleared.
+        result = self.run(["ip", "netns", "exec", self.args.netns, "nft", "destroy", "element", family, table, "braked",
+                           f"{{ {address} }}"])
+        if result.returncode != 0:
+            print(f"cannot clear {address} from the exit's braked map: {result.stderr.strip()[:200]}", flush=True)
 
     def bridge_state(self):
         """What the bridge rules hold now: the ports and pairs sets, the dhcp chain's per-machine rules (by their
