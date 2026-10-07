@@ -47,7 +47,8 @@ A release **rolls** when both of these hold:
 - Every service both nodes share works with both bundles. The secret broker, the object gateway,
   the web API and the edge functions (such as `runner-orchestrator`) serve both nodes at once, so
   they cannot be updated one node at a time. A release that changes one of them is deployed at
-  step 2 only if the new version works with both bundles; otherwise the release pauses. A node 1
+  step 2 (or right after the switch, step 2's exception) only if the new version works with both
+  bundles; otherwise the release pauses. A node 1
   shared service that restarts (the secret broker, the vault's nginx on node 1, the object gateway)
   briefly stops new runs from starting on both nodes, so its update goes outside the roll, in its own
   quiet minute (v166's broker update did). A new broker endpoint is reachable only once the vault's
@@ -174,6 +175,13 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
    - Deploy the release's changed edge functions now, and only if they work with both bundles (see
      "Does a release roll or pause?"). A changed node 1 service that restarts (the secret broker, the
      vault's nginx, the object gateway) goes outside the roll, in its own quiet minute.
+   - One exception: an edge function change that lets node A's new orchestrator make runs that N's
+     code can't read (for example a new folder drain whose work becomes runs) waits until right after
+     the switch (step 6.6). Node A runs N+1 code from step 5, but a run it makes before the switch
+     binds to N, and B runs it on N code. Until the deploy, the old edge function answers the new
+     drain with 400: the orchestrator pauses that drain alone for ten minutes, and its claims and
+     heartbeats go on. v174 deployed `runner-orchestrator` after the switch for its
+     `machine_checkins` drain.
    - Rehearse first: `05-rehearse-migrations` (dry-run only) applies every release migration in
      order in one transaction and rolls back, so every exact-text patch is checked before anything
      commits. It refuses if a guard the roll relies on is missing after them: then commit nothing, and
@@ -307,6 +315,8 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
    4. Return A: `qorpera_set_runtime_node_runs(A, true, …)`, and `qorpera_set_runtime_node_serving(A, true, …)`
       if step 4 switched A off fully. It takes the waiting N+1 runs.
    5. Renew packaged offices' packages for N+1, as today's cut does.
+   6. Deploy the edge function changes that step 2 held back (its exception), if any. A's paused
+      drains start again when their ten-minute wait ends, not at once.
 
    Check that one new run completes on A.
 7. **Let node B finish N.** Watch `qorpera_runtime_bundle_roll_status()` until N has 0 queued and
