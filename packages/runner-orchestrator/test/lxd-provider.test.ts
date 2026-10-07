@@ -1499,7 +1499,7 @@ describe("LXD cloud runner provider", () => {
 				bootstrapSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
 			},
 		});
-		expect(lxd.filePushes).toHaveLength(8);
+		expect(lxd.filePushes).toHaveLength(7);
 		expect(lxd.filePushes.every((file) => file.mode === 0o600)).toBe(true);
 		expect(lxd.filePushes.map((file) => file.path)).toEqual([
 			"/var/lib/qorpera-bootstrap/bootstrap.json",
@@ -1509,8 +1509,9 @@ describe("LXD cloud runner provider", () => {
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-runner-assignment",
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge",
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-native-identity",
-			"/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key",
 		]);
+		// G2-5: the guest gets no service key, in any file.
+		for (const file of lxd.filePushes) expect(file.content).not.toContain(config(stateRoot).supabaseServiceKey);
 		expect(
 			JSON.parse(lxd.filePushes.find((file) => file.path.endsWith("qorpera-native-identity"))?.content ?? "{}"),
 		).toEqual({
@@ -1529,7 +1530,7 @@ describe("LXD cloud runner provider", () => {
 		expect(lxd.createCalls).toHaveLength(1);
 		expect(requests).toHaveLength(1);
 		expect(lxd.createVolumeCalls).toHaveLength(1);
-		expect(lxd.filePushes).toHaveLength(8);
+		expect(lxd.filePushes).toHaveLength(7);
 		expect(lxd.execCalls).toHaveLength(2);
 
 		await restarted.deliver(runner, delivery(request));

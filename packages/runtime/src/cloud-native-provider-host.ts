@@ -1975,7 +1975,8 @@ export class NativeProviderHost {
 			const completed = await state.handle.completed;
 			stage = "identity-key-backup";
 			await this.#backupIdentityKey?.(state.request);
-			const capsuleId = randomUUID();
+			// Named for its sign-in: the one capsule the sign-in's login guest may write (G2-4, migration 20260930103000).
+			const capsuleId = state.request.loginId;
 			const reference = `native-capsule/${capsuleId}`;
 			stage = "credential-sealing";
 			const capsule = await sealNativeCredentialCapsule(

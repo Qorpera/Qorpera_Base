@@ -192,16 +192,28 @@ removal, the version the name showed):
 | Type | Request | Reply |
 | --- | --- | --- |
 | `O` | open for writing `{path, base?, create, exclusive, truncate}` | `{handle, size, version}` |
-| `K` | a chunk `{handle, index, sha256, bytes}`, then its bytes in `d` frames | `{}` once the gateway has it |
-| `G` | read back a pending chunk `{handle, index}` | its bytes |
-| `C` | close `{handle, size, chunks}` (the last chunk sent with it) | `{}` once staged |
-| `T` | truncate a path that is not open `{path, base?, size}` | `{}` |
+| `K` | one part of a chunk: a header `{handle, index, sha256, bytes, offset}` and up to 1 MiB of its bytes | `{}`; after the last part, once the gateway has the chunk |
+| `G` | part of a chunk the open file has `{handle, index, offset, length}` (at most 1 MiB) | its bytes |
+| `C` | close `{handle, size}` | `{version}` once staged |
 | `M`, `U`, `D` | mkdir, unlink, rmdir `{path, base?}` | `{}` |
 | `N` | rename `{from, fromBase?, to, toBase?, noReplace}` | `{}` |
-| `X` | the executable bit `{path, base?, executable}` | `{}` |
+| `X` | the executable bit `{path, base?, executable}` | `{version}` |
 | `P` | publish | the report |
 
-Frames stay at most 2 MiB, so a 4 MiB chunk is three frames. The service still handles one request at a time per
+As built (3c-2): a truncate of a file not open is an `O`, the chunk that ends it when the cut is inside a chunk, and a
+`C`, so there is no `T`; a cut on the grid, or to nothing, sends no chunk, and the close cuts the file's chunks (from its
+origin's when none of it was sent). A
+chunk is changed by its index on the 4 MiB grid, which every version-2 manifest's chunks are on; a file laid out
+otherwise is changed whole. A write handle belongs to the view, not to the connection that opened it, since the
+program pools its connections. The version map holds the `version` of a close or the bit after a save; once that save
+is published, the service reads a base or a read naming it as the version the save's change set gave the path (a
+write's from the core's answer, a new folder's files' from that change set on the feed). A conflict's bytes leave the view only once the receipt lists every file of the
+unit (`qorpera_folder_conflict_copies_of`, migration `20260930101000`): the commit's answer does not say what P17 kept.
+An answered boundary settles only once the view's feed has its change set; until then the view takes no change (BUSY).
+The intents that hold pending bytes are renewed while the bytes are needed and replaced if they lapse. The wire shapes
+are in [RUNTIME-FOLDER-SERVICE.md](RUNTIME-FOLDER-SERVICE.md) ("Protocol 2").
+
+Frames stay at most 2 MiB, so a 4 MiB chunk is four frames. The service still handles one request at a time per
 connection, with the socket paused, so a machine can never make it buffer more than one frame of its bytes.
 
 ## The gateway's route for the folder service
@@ -230,7 +242,7 @@ extend it.
 | --- | --- | --- |
 | 3a | SQL: an upload holds its actor's own puts (migration `20260930083000`, test 931) | a chunk put under one intent is `present` in the same actor's next intent and not in another actor's; the whole file then seals and commits; an expired intent does not count; a marked object still refuses |
 | 3b | Gateway: the folder service's byte route and token | put and refusal paths as `folder-objects.ts`'s tests; the native token is refused there, and the folder service's token on the native routes |
-| 3c | Folder service: protocol v2, pending changes, base versions, staging, boundaries, the report | the service's tests with a stand-in core that commits (conflicts, unseen changes, refusals, replays) and a stand-in gateway: a stale save (v1 read, v2 published, then saved in place and by renaming a temporary file over it) is a conflict, also when the service restarted between the read and the save; a lost reply replays under the same key; each change that must publish first does, and every boundary, applied to a model of the core's rules (folded keys included), ends as the view showed it; with each unit failing in turn no byte the view held is lost (it is live, kept as a conflict copy, or still pending); the hosted-db script runs the real commit on boundaries the service builds |
+| 3c | Folder service: protocol v2, pending changes, base versions, staging, boundaries, the report (built as 3c-1, the pending changes and the boundary plan, #861; 3c-2, the protocol, staging and boundaries, #867; 3c-3, the hosted-db run, `scripts/test-folder-core-acceptance.mjs`'s F3-3c lines, #876) | the service's tests with a stand-in core that commits (conflicts, unseen changes, refusals, replays) and a stand-in gateway: a stale save (v1 read, v2 published, then saved in place and by renaming a temporary file over it) is a conflict, also when the service restarted between the read and the save; a lost reply replays under the same key; each change that must publish first does, and every boundary, applied to a model of the core's rules (folded keys included), ends as the view showed it; with each unit failing in turn no byte the view held is lost (it is live, kept as a conflict copy, or still pending); the hosted-db script runs the real commit on boundaries the service builds |
 | 3d | Folder program: write operations, chunks, read-back, `publish` | FUSE tests on the test machine (a file written across chunks, a write inside a sent chunk, rename over a file, `rm -rf`, an open file left out, lock names; the version map kept across a restart of the program and of the service); the end-to-end test against the service: a stale save after a service restart, in place and by rename, is a conflict |
 | 3e | Live proof (coordinator runs it): read-write operator mounts in a machine on each node, one test company | below |
 

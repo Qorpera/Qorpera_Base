@@ -66,6 +66,12 @@
 .message .bubble { transition: opacity var(--motion-base) var(--ease-out); }
 .message-caption { animation: caption-in var(--motion-base) var(--ease-out) both; }
 @keyframes caption-in { from { opacity: 0; } }
+/* A line of messages with coworkers takes in another: a coworker new to it springs in beside the
+ * others, and the count ticks over. */
+.peer-group > .peer-chip.is-joining { animation: peer-join var(--motion-spring) var(--ease-spring) both; }
+@keyframes peer-join { from { opacity: 0; transform: scale(0.6); } }
+.peer-group > .peer-count.is-joining { animation: peer-tick var(--motion-base) var(--ease-out) both; }
+@keyframes peer-tick { from { opacity: 0; transform: translateY(4px); } }
 
 /* ---- the composer ---- */
 

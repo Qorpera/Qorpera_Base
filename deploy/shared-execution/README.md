@@ -344,14 +344,17 @@ lxc exec qorpera-exec-node02 --project qn25b2 -- \
 ```
 
 Then, inside the host: write `/etc/qorpera/shared-execution.env` from
-`shared-execution.env.example`, place the service key, a fresh provider token,
+`shared-execution.env.example`, place a fresh provider token,
 the object-gateway token, the secret-broker runtime token and CA and the
 office routes under `/etc/qorpera/shared-execution-credentials/` (the host's own
 `qorpera-execution-host` credential is minted and bound by `rebuild-exec-host.sh`, G2-3e), write
 `/etc/qorpera/runner-orchestrator.env` for an orchestrator enrolled with the
 node's native adapter id, and enable `qorpera-shared-execution.service` and
 `qorpera-runner-orchestrator.service`. Stop the node host's own orchestrator
-first: two orchestrators with the same adapter compete for the same jobs.
+first: two orchestrators with the same adapter compete for the same jobs. Never
+place the service key in the host (G2-5): no unit loads it, and the service
+refuses to start if it finds it in its credential source, its systemd
+credentials or its environment.
 
 Every newly pinned image needs the host rebuilt (its runner artifacts carry
 the bundle pin and the Codex fence): as root on the node host,
@@ -359,11 +362,12 @@ the bundle pin and the Codex fence): as root on the node host,
 sandbox runs, rebuilds the instance in place, reinstalls the package, takes
 the fence digest from the image, pushes the staged configuration and starts
 the service; the orchestrator is started by hand once the cut is live.
-It also mints the host's own credential (G2-3e, migration `20260930011000`),
+It also mints the host's own credential (G2-3e, migration `20260928469230`),
 binds its sha256 to the host's adapter and orchestrator with the staged service
 key and pushes it into the host: the service's own database calls use it, never
-the service key (`deploy/first-node/RUNTIME-NATIVE-HOST-KEY.md` "G2-3e"); the
-slots still receive the key until G2-5.
+the service key (`deploy/first-node/RUNTIME-NATIVE-HOST-KEY.md` "G2-3e"). Since
+G2-5 the staged service key stays on the node host, for the script's own calls:
+neither the host nor its slots hold it.
 
 When the policy lists the host exactly, the node's inventory observer pins the
 host's configuration digest (it includes the `image.*` keys), so a rebuild makes

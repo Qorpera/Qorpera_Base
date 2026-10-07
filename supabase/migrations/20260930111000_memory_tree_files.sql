@@ -3,11 +3,11 @@
 -- 1. Two structured kinds: a tree's tree.toml ('memory-tree') and its blocks t<tier>/<8 digits>.jsonl ('memory-block'),
 --    under an agent's thread root agents/<agent>/memory/thread or a group chat's root agents/groups/<group>/memory.
 -- 2. Platform-only paths (§4.3): outside qorpera_folder_memory_commit, nothing is written, moved or deleted at or under a
---    tree root, and agents/<agent>/memory itself never moves or goes alone (platform_only). A tree moves or goes only
---    with its owning folder. A copy out of a tree is a read and stays allowed. Inside the memory commit only tree.toml,
---    t<n> folders and block files are written, only block files deleted, and every tree.toml or t<n> unit names its
---    conversation's generation. The root itself is made without one: it holds no summary, and a run log's first batch
---    (§4.5, W1) makes it on the way to runs/.
+--    tree root, and agents/<agent>/memory never moves or goes alone while it holds the thread's root (platform_only).
+--    A tree moves or goes only with its owning folder. A copy out of a tree is a read and stays allowed. Inside the
+--    memory commit only tree.toml, t<n> folders and block files are written, only block files deleted, and every
+--    tree.toml or t<n> unit names its conversation's generation. The root itself is made without one: it holds no
+--    summary, and a run log's first batch (§4.5, W1) makes it on the way to runs/.
 -- 3. The checks: tree.toml names the owner's own conversation; a block's lines are closed, sized, in order and in their
 --    block, and each level-0 line matches its event (seq, hash and message number).
 -- 4. The index (§4.4): qorpera_memory_trees (one row per tree) and qorpera_memory_tree_nodes (one row per line), kept by
@@ -15,6 +15,7 @@
 -- 5. qorpera_memory_read_receipts, the zoom and read_context receipts erasure matches by target and range (§8, §10);
 --    M1b fills it.
 -- 6. P29: a tree file wakes nobody (§4.3).
+-- 7. Erasure deletes the retired tree rows under its roots (§4.4).
 -- Every patched body carries the marker 20260930111000 for the deploy guard.
 
 set local lock_timeout = '3s';
@@ -141,14 +142,24 @@ returns text language sql immutable parallel safe set search_path = '' as $$
 $$;
 revoke all on function public.qorpera_memory_tree_root_key(text) from public, anon, authenticated, service_role;
 
--- Whether a key is the platform's: at or under a tree root; for a move or a delete, also an agent's notebook folder
--- agents/<agent>/memory itself, which holds the thread's root.
-create function public.qorpera_memory_platform_only_path(p_key text, p_move_or_delete boolean)
+-- Whether a key is the platform's: at or under a tree root.
+create function public.qorpera_memory_platform_only_path(p_key text)
 returns boolean language sql immutable set search_path = '' as $$
 	select public.qorpera_memory_tree_root_key(p_key) is not null
-		or (p_move_or_delete and p_key ~ '^agents/[^/]+/memory$' and p_key !~ '^agents/groups/')
 $$;
-revoke all on function public.qorpera_memory_platform_only_path(text, boolean) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_memory_platform_only_path(text) from public, anon, authenticated, service_role;
+
+-- Whether a key is an agent's notebook folder agents/<agent>/memory while it holds the thread's root. Only then is it
+-- the platform's to move or delete: a file there, or a folder spelled otherwise, can still be cleared away before the
+-- root is made. Decided under the path locks: the unit holds the key FOR UPDATE, and a commit that makes the root holds
+-- it FOR KEY SHARE.
+create function public.qorpera_memory_notebook_holds_root(p_environment_id uuid, p_key text)
+returns boolean language sql stable set search_path = '' as $$
+	select p_key ~ '^agents/[^/]+/memory$' and p_key !~ '^agents/groups/' and exists (select 1
+		from public.qorpera_folder_entries e where e.environment_id = p_environment_id
+			and e.key_sha256 = extensions.digest(p_key || '/thread', 'sha256') and e.kind <> 'claim')
+$$;
+revoke all on function public.qorpera_memory_notebook_holds_root(uuid, text) from public, anon, authenticated, service_role;
 
 -- What a memory commit may do at a path relative to its root ('' is the root): make the root and t<n> folders, write
 -- tree.toml, write and delete blocks. W1 adds a run log's paths.
@@ -329,14 +340,17 @@ begin
 			if exists (select 1 from (select p_key as key union all
 					select public.qorpera_folder_key(c.path) from public.qorpera_folder_spelled_contents(p_eff_path,
 						case when p_op = 'new_folder' then p_unit -> 'contents' else '[]'::jsonb end) c) t
-				where public.qorpera_memory_platform_only_path(t.key, false)) then
+				where public.qorpera_memory_platform_only_path(t.key)) then
 				return v_platform_only; end if;
 		elsif p_op = 'delete' then
-			if public.qorpera_memory_platform_only_path(p_key, true) then return v_platform_only; end if;
+			if public.qorpera_memory_platform_only_path(p_key)
+				or public.qorpera_memory_notebook_holds_root(p_environment_id, p_key) then return v_platform_only; end if;
 		elsif p_op = 'move' then
 			-- A move counts by its source and its target, and by what it carries: a folder that holds a tree root may move
 			-- only where each of its paths keeps the same place in a root of the same kind (an agent's rename, a group's).
-			if public.qorpera_memory_platform_only_path(p_key, true) or public.qorpera_memory_platform_only_path(p_to_key, true) then
+			if public.qorpera_memory_platform_only_path(p_key) or public.qorpera_memory_platform_only_path(p_to_key)
+				or public.qorpera_memory_notebook_holds_root(p_environment_id, p_key)
+				or public.qorpera_memory_notebook_holds_root(p_environment_id, p_to_key) then
 				return v_platform_only; end if;
 			if (p_key ~ '^agents(/|$)' or p_to_key ~ '^agents(/|$)') and exists (select 1
 				from public.qorpera_folder_entries e
@@ -351,7 +365,7 @@ begin
 				return v_platform_only; end if;
 		elsif p_op = 'copy' then
 			-- A copy out of a tree is a read; nothing is copied into one.
-			if public.qorpera_memory_platform_only_path(p_to_key, false) then return v_platform_only; end if;
+			if public.qorpera_memory_platform_only_path(p_to_key) then return v_platform_only; end if;
 			if p_to_key ~ '^agents(/|$)' and exists (select 1 from public.qorpera_folder_entries e
 				where e.environment_id = p_environment_id and e.kind <> 'claim'
 					and e.key_text > (p_key || '/') collate "C" and e.key_text < (p_key || '0') collate "C"
@@ -719,3 +733,22 @@ select pg_temp.m1a_tree_files_replace(
 	$new$where v.commit_id = p_commit_id
 				and public.qorpera_memory_tree_root_key(public.qorpera_folder_key(v.path)) is null /* 20260930111000 (M1a) */$new$,
 	3);
+
+-- Erasure (§4.4; RUNTIME-COMPANY-FOLDER-ERASURE.md §5): the retired tree rows under its roots, as E1's hook rows. A tree
+-- row holds paths and a version, no text; its lines' rows went with their blocks.
+select pg_temp.m1a_tree_files_replace('public.qorpera_folder_erase(uuid,jsonb,jsonb,text)'::regprocedure,
+	$old$delete from public.qorpera_folder_hook_index i using jsonb_array_elements(v_roots) r
+	where i.environment_id = p_environment_id and i.retired_at is not null
+		and public.qorpera_folder_erasure_covers(r ->> 'key', i.folder_key)
+		and public.qorpera_folder_erasure_row_before(r, i.commit_id, i.folder_path_version);
+$old$,
+	$new$delete from public.qorpera_folder_hook_index i using jsonb_array_elements(v_roots) r
+	where i.environment_id = p_environment_id and i.retired_at is not null
+		and public.qorpera_folder_erasure_covers(r ->> 'key', i.folder_key)
+		and public.qorpera_folder_erasure_row_before(r, i.commit_id, i.folder_path_version);
+	-- 20260930111000 (M1a): the summary tree rows, retired, whose root went before its erase root's cutoff.
+	delete from public.qorpera_memory_trees t using jsonb_array_elements(v_roots) r
+	where t.environment_id = p_environment_id and t.retired_at is not null
+		and public.qorpera_folder_erasure_covers(r ->> 'key', t.root_key)
+		and public.qorpera_folder_erasure_row_before(r, t.commit_id, t.toml_path_version);
+$new$);

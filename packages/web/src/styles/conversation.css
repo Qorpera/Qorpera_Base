@@ -328,6 +328,10 @@
 .review-always label { display: grid; gap: 6px; margin-top: 10px; color: var(--text-muted); font-size: 11px; }
 .review-rule-input { width: 100%; padding: 8px 10px; border: 1px solid #dfdfdb; border-radius: 8px; background: #fff; color: var(--text); font: inherit; font-size: 13px; }
 .review-waiting { margin: 12px 0 0; font-size: 12px; color: var(--text-muted); }
+/* A change an agent saved that waits for review (P40c, proposal-card.ts) wears the approval card: its changes, where
+ * it was saved, and Discard. */
+.proposal-card { overflow-wrap: anywhere; }
+.proposal-more { color: var(--text-muted); }
 .decision-details { border-top: 1px solid var(--border); margin-top: 14px; padding-top: 4px; font-size: 11px; }
 .decision-details > summary { color: var(--text-muted); font-weight: 400; }
 .decision-details .kv { grid-template-columns: minmax(0, 1fr); }
@@ -890,6 +894,12 @@
 .peer-chip:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .peer-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .peer-chip .figure { flex: none; width: 16px; height: 16px; }
+/* Messages with coworkers in a row: one line, the words between the chips; from three coworkers on, figures alone. */
+.peer-group { flex-wrap: wrap; align-items: center; color: var(--text-muted); font-size: 12px; font-weight: 500; line-height: 16px; }
+.peer-group > .peer-words, .peer-group > .peer-count { padding: 3px 2px; white-space: nowrap; }
+.peer-group > .peer-count { padding-left: 4px; color: var(--text-soft); }
+.peer-group > .peer-chip { padding-inline: 4px; }
+.peer-group > .peer-chip.figure-only { padding: 3px; }
 .conversation-note { flex: none; align-self: center; max-width: min(80%, 560px); margin: 10px 0; color: var(--text-muted); font-size: 12px; line-height: 1.45; text-align: center; overflow-wrap: anywhere; }
 .pair-transcript { position: absolute; inset: 0; z-index: 30; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); outline: none; animation: pair-enter 160ms ease both; }
 @keyframes pair-enter { from { opacity: 0; } to { opacity: 1; } }
