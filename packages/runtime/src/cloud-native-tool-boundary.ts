@@ -304,6 +304,22 @@ export function cloudToolJsonText(value: unknown, limit = MAX_ARGUMENT_BYTES): s
 	return encode(value, 0);
 }
 
+/** A call's arguments as the work log keeps them when the boundary refused them as unreadable or too large. */
+function loggedArguments(value: unknown): string {
+	try {
+		return cloudToolJsonText(value, MAX_SOURCE_BYTES);
+	} catch {
+		return "";
+	}
+}
+
+/** A call this boundary started, kept for an exact repeat of it. */
+interface CloudNativeCall {
+	readonly digest: string;
+	readonly result: Promise<CloudDynamicToolResponse>;
+	readonly observation?: CloudRuntimeObservationSpan;
+}
+
 function untilStopped<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
 	if (signal.aborted) return Promise.reject(new Error("Cloud tool boundary stopped"));
 	return new Promise<T>((resolve, reject) => {
@@ -332,10 +348,7 @@ export class CloudNativeToolBoundary {
 	readonly #runLog?: CloudRunLog;
 	readonly #stop = new AbortController();
 	readonly #signal: AbortSignal;
-	readonly #calls = new Map<
-		string,
-		{ digest: string; result: Promise<CloudDynamicToolResponse>; observation?: CloudRuntimeObservationSpan }
-	>();
+	readonly #calls = new Map<string, CloudNativeCall>();
 	readonly #issuedResults = new Set<string>();
 	readonly #nativeResults = new Map<string, { digest: string; output: string; imageSha256?: string }>();
 	#pending: Promise<void> = Promise.resolve();
@@ -590,23 +603,66 @@ export class CloudNativeToolBoundary {
 	): Promise<CloudDynamicToolResponse> {
 		if (!CALL_ID.test(callId)) throw new Error("Invalid cloud tool call id");
 		const tool = namespace === "qorpera" ? this.#tools.get(name) : undefined;
-		let argumentsText: string;
+		let argumentsText: string | null;
 		try {
 			argumentsText = cloudToolJsonText(argumentsValue);
 			if (Buffer.byteLength(argumentsText) > MAX_ARGUMENT_BYTES) throw new Error("Oversized tool arguments");
 		} catch {
-			return this.#result(callId, tool, null, "denied", { kind: "text", value: "INVALID_ARGUMENTS" });
+			argumentsText = null;
 		}
-		const digest = createHash("sha256")
-			.update(JSON.stringify([namespace, name, argumentsText]))
-			.digest("hex");
+		const digest =
+			argumentsText === null
+				? null
+				: createHash("sha256")
+						.update(JSON.stringify([namespace, name, argumentsText]))
+						.digest("hex");
+		const previous = tool && digest !== null ? this.#calls.get(callId) : undefined;
+		const runLog = this.#runLog;
+		// A repeated call is the step it repeats.
+		if (!runLog || previous?.digest === digest)
+			return this.#respond(callId, tool, argumentsText, digest, previous, observation);
+		// Every call the model sees is a step of the run's work log, in the order the calls came, kept with the envelope
+		// it got and every release its result was issued under (RUNTIME-AGENT-MEMORY-TREE.md §4.5). `args_hash` is the
+		// call's digest, as receipts and reviews have it.
+		const step = runLog.step({
+			call: callId,
+			tool: tool?.name ?? (namespace === "qorpera" && TOOL_NAME.test(name) ? name : "unrecognized"),
+			argumentsText: argumentsText ?? loggedArguments(argumentsValue),
+			argumentSha256: digest,
+		});
+		const releases: CloudRunLogRelease[] = [];
+		let response: CloudDynamicToolResponse | undefined;
+		try {
+			response = await this.#respond(callId, tool, argumentsText, digest, previous, observation, { step, releases });
+			return response;
+		} finally {
+			// The answer the model got, after the release check. A call that threw ends its turn unconfirmed, with nothing
+			// released to the model.
+			const answer =
+				response ??
+				this.#result(callId, tool, digest, "unconfirmed", { kind: "text", value: "TOOL_OUTCOME_UNCONFIRMED" });
+			runLog.finish(step, answer.contentItems[0].text, response ? releases : []);
+		}
+	}
+
+	async #respond(
+		callId: string,
+		tool: CloudNativeTool | undefined,
+		argumentsText: string | null,
+		digest: string | null,
+		previous: CloudNativeCall | undefined,
+		observation?: CloudRuntimeObservationSpan,
+		logged?: { step: number; releases: CloudRunLogRelease[] },
+	): Promise<CloudDynamicToolResponse> {
+		if (argumentsText === null || digest === null)
+			return this.#result(callId, tool, null, "denied", { kind: "text", value: "INVALID_ARGUMENTS" });
 		if (!tool) return this.#result(callId, undefined, digest, "denied", { kind: "text", value: "TOOL_UNAVAILABLE" });
-		const previous = this.#calls.get(callId);
 		if (previous && previous.digest !== digest) {
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "CALL_ID_REUSED" });
 		}
 		const result =
-			previous?.result ?? this.#pending.then(() => this.#execute(callId, tool, digest, argumentsText, observation));
+			previous?.result ??
+			this.#pending.then(() => this.#execute(callId, tool, digest, argumentsText, observation, logged));
 		if (!previous) {
 			this.#calls.set(callId, { digest, result, observation });
 			// Calls run one after another, so what this forgets has long settled.
@@ -648,6 +704,8 @@ export class CloudNativeToolBoundary {
 			return reply;
 		} catch {
 			release?.finish("denied", { errorCategory: "authority_unavailable" });
+			// The model gets only the denial: its step keeps no reads or releases of the result held back.
+			logged?.releases.splice(0);
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
 		}
 	}
@@ -658,29 +716,15 @@ export class CloudNativeToolBoundary {
 		digest: string,
 		argumentsText: string,
 		observation?: CloudRuntimeObservationSpan,
+		logged?: { step: number; releases: CloudRunLogRelease[] },
 	): Promise<CloudDynamicToolResponse> {
-		const runLog = this.#runLog;
-		if (!runLog) return this.#act(callId, tool, digest, argumentsText, observation);
-		if (runLog.gone) return this.#result(callId, tool, digest, "denied", { kind: "text", value: WORK_LOG_GONE });
-		// Every call is a step of the run's work log, kept with the envelope it got and every release its result was
-		// issued under (RUNTIME-AGENT-MEMORY-TREE.md §4.5). `args_hash` is the call's digest, as receipts and reviews have it.
-		const step = runLog.step({ call: callId, tool: tool.name, argumentsText, argumentSha256: digest });
-		const releases: CloudRunLogRelease[] = [];
-		let response: CloudDynamicToolResponse;
-		try {
-			response = await cloudRunLogReleases(releases, () =>
-				this.#act(callId, tool, digest, argumentsText, observation, step),
-			);
-		} catch (error) {
-			const unconfirmed = this.#result(callId, tool, digest, "unconfirmed", {
-				kind: "text",
-				value: "TOOL_OUTCOME_UNCONFIRMED",
-			});
-			runLog.finish(step, unconfirmed.contentItems[0].text, releases);
-			throw error;
-		}
-		runLog.finish(step, response.contentItems[0].text, releases);
-		return response;
+		if (!logged) return this.#act(callId, tool, digest, argumentsText, observation);
+		if (this.#runLog?.gone)
+			return this.#result(callId, tool, digest, "denied", { kind: "text", value: WORK_LOG_GONE });
+		// Every release the call makes is kept with its step.
+		return cloudRunLogReleases(logged.releases, () =>
+			this.#act(callId, tool, digest, argumentsText, observation, logged.step),
+		);
 	}
 
 	async #act(
