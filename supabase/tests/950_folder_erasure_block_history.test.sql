@@ -42,6 +42,8 @@ create function pg_temp.w1a_ask(p_block jsonb, p_key text default null,
 		coalesce(p_key, pg_temp.w1a_key(p_block -> 'for' ->> 'table', p_block -> 'for' ->> 'id', p_block ->> 'path')), p_block)
 $$;
 -- Drained to done: the upload intents (which root their objects for a day after they end) made older than that first.
+-- It drains in the test's own transaction, standing in for pg_cron's drain after the request committed; a carrier
+-- commits each accepted request before asking an overlapping one (the migration's header).
 create function pg_temp.w1a_drain(p_id uuid) returns public.qorpera_folder_erasures language plpgsql as $$
 begin
 	update public.qorpera_folder_upload_intents set expires_at = clock_timestamp() - interval '2 days'

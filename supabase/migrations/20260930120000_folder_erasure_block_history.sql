@@ -12,7 +12,10 @@
 --   takes its versions in batches with no order: it can have taken the block's delete, its life's start or the moves
 --   that name its other paths, and not yet the versions they lead to, so nothing left, or an erasure of what is left,
 --   would end before the block's history does. That phase locks nothing a request holds (RUNTIME-COMPANY-FOLDER-ERASURE.md
---   §4.3), and an erasure begun over the path later waits for this request's path lock, so it is never refused for good.
+--   §4.3), and an erasure begun over the path later waits for this request's path lock, so it is never refused for
+--   good, as long as the carrier commits each request P18 accepted before it asks one over an overlapping path, and
+--   asks a 55006 again in a later transaction: an accepted erasure stays in that phase until pg_cron's drain, which
+--   sees it only once it commits, moves it on, so in its own transaction it refuses every overlapping request.
 -- * With a cutoff (step 1's own delete), the block is cut at the delete it names, live again or not, and the delete and
 --   all after it stay.
 --   A delete already erased (by a later cutoff's request or a member's erasure) leaves nothing before it once that
@@ -408,6 +411,9 @@ $new$);
 -- block at a reused name: on a request with neither, the carrier asks again with that life; on a request with a life,
 -- it goes round again with neither), 55000 'The company is being deleted' (no detail), 55006 'Block history is being
 -- erased; ask again', 22023, and the 409 to retry when the company folder changed while the erasure began.
+-- One request per transaction: commit a request P18 accepted before asking one over an overlapping path (an erasure
+-- in its versions phase answers that one 55006 until pg_cron's drain moves it on, which it does only once committed),
+-- and ask a 55006 again in a later transaction.
 create function public.qorpera_folder_erase_block_history(p_environment_id uuid, p_user_id uuid, p_operation_key text,
 	p_block jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$

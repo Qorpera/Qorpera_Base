@@ -593,8 +593,10 @@ deletes a tree or log block, rewrites it, and asks P18 to erase the block's earl
   `agents/<agent>/memory/thread/tree.toml` or `agents/groups/<group>/memory/tree.toml` itself is refused (22023 `A
   tree's tree.toml is erased with its tree`); naming the tree root or a folder above it erases the file with the
   blocks. A message erase finds a conversation's earlier tree roots by that file's bytes
-  (`RUNTIME-AGENT-MEMORY-TREE.md` §10 step 1), and only an erasure removes a path version, so erasing it alone would
-  hide a root whose blocks still hold an erased line.
+  (`RUNTIME-AGENT-MEMORY-TREE.md` §10 step 1). No prune takes the start of a life of a tree path (the tree's 7-day
+  prune keeps it, same §10, GC; the git-object prune takes only paths under `repo.git/objects/`), so every life of
+  that file keeps a version until an erasure takes it; erasing it alone would hide a root whose blocks still hold an
+  erased line.
 - **What differs from a member's request:**
   - no role is asked, and the member may have left; it erases with owner authority through the platform actor, and
     another member's private paths do not stop it;
@@ -604,7 +606,11 @@ deletes a tree or log block, rewrites it, and asks P18 to erase the block's earl
     versions in batches with no order (§4.3): it can have taken the block's delete, its life's start or the moves that
     name its other paths, and not yet the versions they lead to, so nothing left, or an erasure of what is left, would
     end before the block's history does. That phase locks nothing a request holds, and an erasure begun over the path
-    later waits for the request's path lock, so step 3 is never refused for good;
+    later waits for the request's path lock, so step 3 is never refused for good, as long as its carrier asks one
+    request per transaction: it commits a request P18 accepted before it asks one over an overlapping path, and asks
+    a 55006 again in a later transaction. An accepted erasure starts in its versions phase, and only pg_cron's drain
+    moves it on, which sees it only once it commits; so inside the transaction that made it, every overlapping request
+    gets 55006;
   - with a cutoff (step 1's own delete), the block is cut at the delete it names. `Block-history cutoff is not the
     block's delete` (22023) refuses a cutoff at another op, at no commit, or past the request, or with no version
     there and versions or copies before it. When a later erasure over the key (a later cutoff's request, or a member's
