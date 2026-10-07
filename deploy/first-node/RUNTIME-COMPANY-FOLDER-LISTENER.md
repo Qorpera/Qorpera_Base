@@ -414,9 +414,9 @@ machine event is.
 session busy now (attached, and the guest reported it busy within 90 seconds) whose worker is not active and has been
 for a mark since its last turn ended (`qorpera_coding_session_turns.settled_at`), with the question not asked yet. The
 question (`machine_kind` `coding`) goes to the conversation of the worker's steering run and names the session's
-`todoKey` and `workerKey`, which `manage_worker` archive takes. A session waiting on its agent's decision, an erased or
-retired worker, a staff member who is not active, and a session whose quiet question (`coding-quiet:…`, C3c) is still
-pending are not asked. A question stands while the session stays busy since the same turn; once a new turn starts, it
+`todoKey` and `workerKey`, which `manage_worker` archive takes. A session whose worker's report still waits to reach
+its steering run (`completion_state` `waiting`), an erased or retired worker, a staff member who is not active, and a
+session whose quiet question (`coding-quiet:…`, C3c) is still pending are not asked. A question stands while the session stays busy since the same turn; once a new turn starts, it
 is suppressed, and an archive from its run refuses (`qorpera_coding_question_stale`).
 
 Commits do not nudge the orchestrator. A file wake waits one 2 s pass while one step's window covers the company's
