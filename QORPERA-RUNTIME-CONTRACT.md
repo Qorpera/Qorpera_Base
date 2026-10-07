@@ -5223,8 +5223,10 @@ own texts below carries a note "Amended 2026-10-06" in place.
      - a `zoom` into a run log refused without the default grant;
      - a cut-off run with a narrow step ending in review, and one at its usage limit failing.
 7. **Workers** (W4; section 13). A worker no longer starts blank. It starts from its parent's head and views, by
-   reference, exactly as the parent's run composed them, plus its bounded dispatch. It runs on its parent's payer. A
-   worker with a narrow step keeps only its own log narrow; its report stays beside its todo as today (item 6).
+   reference, exactly as the parent's run composed them, plus its bounded dispatch. If an erase (item 14) raised the
+   generation of any conversation in those views since the parent composed them, the worker composes from the trees
+   as they are now instead. It runs on its parent's payer. A worker with a narrow step keeps only its own log narrow;
+   its report stays beside its todo as today (item 6).
 8. **The Co-Founder** (M4; 14.2). Its views include branches of every agent's thread. It still receives no copies of
    internal messages.
 9. **Memory** (M5; 5.4 and 15.1). Memory is the agent's head plus the conversation trees and run logs.
