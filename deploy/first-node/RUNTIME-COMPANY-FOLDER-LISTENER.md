@@ -388,8 +388,8 @@ entry, whose place in the list is its place in the pass (core §11 C4 puts F2's 
 re-pin the Runner Orchestrator, shared execution and LXD provider artifacts (run
 `node --test scripts/package-*.test.mjs scripts/test-jitless-services.test.mjs` on a node for the values). Deploy
 order: the migration, then the edge function, then the orchestrator roll. In a rolling cut, a drain whose wakes the
-previous bundle's runtime can't read deploys its edge entry right after the switch instead
-(`RUNTIME-ROLLING-UPDATE.md` step 2's exception, step 6.6). An orchestrator that is ahead of its edge function gets the
+previous bundle's runtime can't read deploys the edge function right after the switch instead, with every other change
+in it (`RUNTIME-ROLLING-UPDATE.md` step 2's exception, step 6.6). An orchestrator that is ahead of its edge function gets the
 400 and pauses only that drain.
 
 **P29's due list:** `qorpera_folder_listen_due` lists the folder-v2 environments whose clock is ahead of their cursor

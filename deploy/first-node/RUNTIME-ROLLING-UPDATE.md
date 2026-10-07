@@ -180,8 +180,11 @@ Never run `qorpera_configure_runtime_node` on a node switched off fully during a
      the switch (step 6.6). Node A runs N+1 code from step 5, but a run it makes before the switch
      binds to N, and B runs it on N code. Until the deploy, the old edge function answers the new
      drain with 400: the orchestrator pauses that drain alone for ten minutes, and its claims and
-     heartbeats go on. v174 deployed `runner-orchestrator` after the switch for its
-     `machine_checkins` drain.
+     heartbeats go on. This holds back the whole edge function, every change in it, so N's version
+     keeps serving both nodes from step 2 to step 6.6. Use the exception only if N's version works
+     with the release's migrations and with N+1's orchestrator (apart from the new drain's 400s);
+     otherwise the release pauses. v174 deployed `runner-orchestrator` after the switch for its
+     `machine_checkins` drain (its only edge change was the two new drain entries).
    - Rehearse first: `05-rehearse-migrations` (dry-run only) applies every release migration in
      order in one transaction and rolls back, so every exact-text patch is checked before anything
      commits. It refuses if a guard the roll relies on is missing after them: then commit nothing, and
