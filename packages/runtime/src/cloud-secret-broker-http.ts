@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
-import type { JsonValue } from "@qorpera/contracts";
+import { type JsonValue, UUID_PATTERN } from "@qorpera/contracts";
 import { CHATGPT_PLAN_CONFIRM_ROUTE_MS, ChatGptPlanSignInError } from "./cloud-chatgpt-plan-sign-in.ts";
 import {
 	COMPANY_ACCOUNT_FILL_REQUEST_SCHEMA,
@@ -65,6 +65,17 @@ function record(value: unknown, label: string): Record<string, unknown> {
 function exact(value: Record<string, unknown>, keys: readonly string[], label: string): void {
 	if (Object.keys(value).sort().join() !== [...keys].sort().join()) throw new Error(`${label} is invalid`);
 }
+
+/** The caller's holder credential (G2-6a): `job.<job id>.<lease token>` in x-qorpera-identity, as the native host's
+ * dispatch gives it. Its value never reaches a log, an error or a reply. */
+function isHolder(value: unknown): value is string {
+	const [kind, jobId, token, ...rest] = typeof value === "string" ? value.split(".") : [];
+	return kind === "job" && UUID_PATTERN.test(jobId ?? "") && /^[A-Za-z0-9_-]{43}$/.test(token ?? "") && !rest.length;
+}
+
+/** G2-6a: whether a native host's request holds its binding's run lease (qorpera_native_binding_proven, migration
+ * 20260930152000), asked of the broker's database with its own principal. It resolves only for a proven binding. */
+export type NativeBindingProof = (binding: object, holder: string) => Promise<void>;
 
 function tokenMatches(expected: string, authorization: string | undefined): boolean {
 	if (!authorization?.startsWith("Bearer ")) return false;
@@ -417,6 +428,9 @@ export interface HttpCloudSecretBrokerServiceOptions {
 	 * 404. The runtime token never opens that route, and this token never opens
 	 * `/v1/operations`. */
 	readonly codingExecutorToken?: string;
+	/** The lease proof every runtime-token route asks before it serves a run binding (G2-6a). Absent, those routes
+	 * refuse every request. */
+	readonly proveBinding?: NativeBindingProof;
 	/** Model logins in the vault (Stateless Compute step 1): `/v1/model-logins` hands a live
 	 * run its login under the runtime token and the database's check of the run's exact native
 	 * lease. Absent means the route answers 404. */
@@ -458,6 +472,7 @@ export class HttpCloudSecretBrokerService {
 	readonly #memberOrigins: ReadonlySet<string>;
 	readonly #oauth: CloudConnectorOAuthFlows | undefined;
 	readonly #codingExecutorToken: string | undefined;
+	readonly #proveBinding: NativeBindingProof | undefined;
 	readonly #modelLogins: CloudModelLoginVault | undefined;
 	readonly #modelLoginSignIns: CloudModelLoginSignIns | undefined;
 	readonly #modelLoginUsage: CloudModelLoginUsage | undefined;
@@ -500,6 +515,7 @@ export class HttpCloudSecretBrokerService {
 		this.#memberOrigins = new Set(origins.map(parseMemberOrigin));
 		this.#oauth = options.oauth;
 		this.#codingExecutorToken = options.codingExecutorToken;
+		this.#proveBinding = options.proveBinding;
 		this.#modelLogins = options.modelLogins;
 		this.#modelLoginSignIns = options.modelLoginSignIns;
 		this.#modelLoginUsage = options.modelLoginUsage;
@@ -544,6 +560,14 @@ export class HttpCloudSecretBrokerService {
 		}
 		if (companyId === undefined || !UUID.test(companyId)) return undefined;
 		return companies.resolve(companyId, AbortSignal.timeout(10_000));
+	}
+
+	/** G2-6a: the request holds its binding's run lease, or it is refused (the caller's catch answers 403, and nothing
+	 * of the holder reaches the reply). */
+	async #proven(request: IncomingMessage, binding: object): Promise<void> {
+		const holder = request.headers["x-qorpera-identity"];
+		if (!isHolder(holder) || !this.#proveBinding) throw new Error("Native binding proof is missing");
+		await this.#proveBinding(binding, holder);
 	}
 
 	async #handle(request: IncomingMessage, reply: ServerResponse): Promise<void> {
@@ -711,30 +735,27 @@ export class HttpCloudSecretBrokerService {
 				return;
 			}
 			if (path === "/v1/operations" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
-				const result = await scope.broker.execute(
-					parseOperation(await readRequest(request)),
-					AbortSignal.timeout(35_000),
-				);
+				const operation = parseOperation(await readRequest(request));
+				await this.#proven(request, operation.binding);
+				const result = await scope.broker.execute(operation, AbortSignal.timeout(35_000));
 				response(reply, 200, result as unknown as JsonValue);
 				return;
 			}
 			// An agent's company_account tool call (company accounts A1): an account's facts or the
 			// database's refusal; a value never leaves here. Same token and company routing as operations.
 			if (path === "/v1/company-accounts" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
-				const answer = await scope.broker.companyAccount(
-					parseCompanyAccountRequest(await readRequest(request)),
-					AbortSignal.timeout(35_000),
-				);
+				const accountRequest = parseCompanyAccountRequest(await readRequest(request));
+				await this.#proven(request, accountRequest.binding);
+				const answer = await scope.broker.companyAccount(accountRequest, AbortSignal.timeout(35_000));
 				response(reply, 200, answer as unknown as JsonValue);
 				return;
 			}
 			// An agent's vault_fill of the Company Computer's browser (A1-3): the value sealed to that computer's boot
 			// key, which only its office service opens; the host only carries the box. Same token and routing.
 			if (path === "/v1/company-account-fills" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
-				const answer = await scope.broker.companyAccountFill(
-					parseCompanyAccountFillRequest(await readRequest(request)),
-					AbortSignal.timeout(35_000),
-				);
+				const fillRequest = parseCompanyAccountFillRequest(await readRequest(request));
+				await this.#proven(request, fillRequest.binding);
+				const answer = await scope.broker.companyAccountFill(fillRequest, AbortSignal.timeout(35_000));
 				response(reply, 200, answer as unknown as JsonValue);
 				return;
 			}
@@ -848,10 +869,9 @@ export class HttpCloudSecretBrokerService {
 				scope.modelLogins !== undefined &&
 				tokenMatches(this.#runtimeToken, request.headers.authorization)
 			) {
-				const login = await scope.modelLogins.issue(
-					parseModelLoginRequest(await readRequest(request)),
-					AbortSignal.timeout(60_000),
-				);
+				const loginRequest = parseModelLoginRequest(await readRequest(request));
+				await this.#proven(request, loginRequest.binding);
+				const login = await scope.modelLogins.issue(loginRequest, AbortSignal.timeout(60_000));
 				response(reply, 200, { ...login });
 				return;
 			}
@@ -950,12 +970,15 @@ export class HttpCloudSecretBrokerClient {
 	readonly #origin: string;
 	readonly #runtimeToken: string;
 	readonly #companyId: string;
+	readonly #holder: () => string;
 	readonly #fetch: typeof fetch;
 
 	constructor(options: {
 		origin: string;
 		runtimeToken: string;
 		companyId: string;
+		/** G2-6a: the run's holder credential, read per request (NativeHostDispatch.holderHeader). */
+		holder: () => string;
 		allowLoopback?: boolean;
 		fetch?: typeof fetch;
 	}) {
@@ -965,6 +988,7 @@ export class HttpCloudSecretBrokerClient {
 			throw new Error("Cloud secret broker client company is invalid");
 		this.#runtimeToken = options.runtimeToken;
 		this.#companyId = options.companyId.toLowerCase();
+		this.#holder = options.holder;
 		this.#fetch = options.fetch ?? fetch;
 	}
 
@@ -976,6 +1000,7 @@ export class HttpCloudSecretBrokerClient {
 					redirect: "error",
 					headers: {
 						authorization: `Bearer ${this.#runtimeToken}`,
+						"x-qorpera-identity": this.#holder(),
 						"content-type": "application/json",
 					},
 					body: cloudToolJsonText({ schema: "qorpera.cloud-secret-operation-request/v1", ...request }),
@@ -1013,6 +1038,7 @@ export class HttpCloudSecretBrokerClient {
 						redirect: "error",
 						headers: {
 							authorization: `Bearer ${this.#runtimeToken}`,
+							"x-qorpera-identity": this.#holder(),
 							"content-type": "application/json",
 						},
 						body: cloudToolJsonText({ schema: COMPANY_ACCOUNT_FILL_REQUEST_SCHEMA, ...request }),
@@ -1049,6 +1075,7 @@ export class HttpCloudSecretBrokerClient {
 					redirect: "error",
 					headers: {
 						authorization: `Bearer ${this.#runtimeToken}`,
+						"x-qorpera-identity": this.#holder(),
 						"content-type": "application/json",
 					},
 					body: cloudToolJsonText({ schema: COMPANY_ACCOUNT_REQUEST_SCHEMA, ...request }),
@@ -1076,7 +1103,15 @@ export class HttpCloudSecretBrokerClient {
 /** The run host's model login client (Stateless Compute step 1). Same origin, token and
  * company routing as operations; the answer is never cached and holds no renewal token. */
 export async function issueModelLogin(
-	options: { origin: string; runtimeToken: string; companyId: string; allowLoopback?: boolean; fetch?: typeof fetch },
+	options: {
+		origin: string;
+		runtimeToken: string;
+		companyId: string;
+		/** G2-6a: the run's holder credential, read per request (NativeHostDispatch.holderHeader). */
+		holder: () => string;
+		allowLoopback?: boolean;
+		fetch?: typeof fetch;
+	},
 	request: ModelLoginIssueRequest,
 	signal: AbortSignal,
 ): Promise<ModelLoginIssue> {
@@ -1095,7 +1130,11 @@ export async function issueModelLogin(
 				{
 					method: "POST",
 					redirect: "error",
-					headers: { authorization: `Bearer ${options.runtimeToken}`, "content-type": "application/json" },
+					headers: {
+						authorization: `Bearer ${options.runtimeToken}`,
+						"x-qorpera-identity": options.holder(),
+						"content-type": "application/json",
+					},
 					body,
 					signal: requestSignal,
 				},

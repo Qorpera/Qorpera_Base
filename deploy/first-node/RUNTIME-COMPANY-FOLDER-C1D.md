@@ -249,7 +249,8 @@ that the Storage mirror inserted is still served.
 ## 8. The gateway and the runtime
 
 - **Gateway** (`packages/object-gateway`): `/v1/folder-objects/<environmentId>/<sha256>`, on the native token, with
-  the run's binding (its actor) and, for a put, `x-qorpera-upload-intent`. The folder service's puts for its views (F3
+  the run's binding (its actor), the run's lease as `x-qorpera-identity: job.<job id>.<lease token>` (G2-6a; see
+  `RUNTIME-NATIVE-HOST-KEY.md`, "G2-6") and, for a put, `x-qorpera-upload-intent`. The folder service's puts for its views (F3
   step 3, `RUNTIME-FOLDER-WRITES.md`, slice 3b) go to `PUT /v1/folder-service-objects/<environmentId>/<sha256>`, on
   the folder service's own token (`QORPERA_OBJECT_GATEWAY_FOLDER_SERVICE_TOKEN`, distinct from every other; the route
   is off without it), naming the actor in `x-qorpera-folder-actor` (canonical base64url JSON of exactly a member's,

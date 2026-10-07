@@ -638,19 +638,36 @@ it("serves the route only with the runtime token, uncached, and the client reads
 	};
 	const broker = new CloudSecretBroker({ authority: brokerAuthority, keyring: f.keyring, adapters: [] });
 	const runtimeToken = randomBytes(32).toString("base64url");
+	// G2-6a: only the run's own lease proves its binding (the database's proof stands in here).
+	const holder = `job.${f.run.jobId.toLowerCase()}.${randomBytes(32).toString("base64url")}`;
 	const withLogins = new HttpCloudSecretBrokerService(broker, runtimeToken, {
 		modelLogins: new CloudModelLoginVault({ authority: f.authority, keyring: f.keyring }),
+		proveBinding: async (binding, presented) => {
+			if (presented !== holder || (binding as { jobId?: string }).jobId !== f.run.jobId)
+				throw new Error("native binding proof is refused");
+		},
 	});
 	const without = new HttpCloudSecretBrokerService(broker, runtimeToken, {});
 	services.push(withLogins, without);
 	const port = await withLogins.start();
-	const post = (servicePort: number, authorization: string) =>
+	// `null` sends no holder (an omitted argument sends the run's own).
+	const post = (servicePort: number, authorization: string, identity: string | null = holder) =>
 		fetch(`http://127.0.0.1:${servicePort}/v1/model-logins?company=${f.companyId}`, {
 			method: "POST",
-			headers: { authorization, "content-type": "application/json" },
+			headers: {
+				authorization,
+				"content-type": "application/json",
+				...(identity === null ? {} : { "x-qorpera-identity": identity }),
+			},
 			body: JSON.stringify({ schema: "qorpera.model-login-request/v1", binding: f.run, knownVersion: null }),
 		});
 	expect((await post(port, `Bearer ${randomBytes(32).toString("base64url")}`)).status).toBe(404);
+	// Without the run's own lease no login is handed out, and the vault is not even asked.
+	for (const identity of [null, `job.${f.run.jobId.toLowerCase()}.${"w".repeat(43)}`]) {
+		const refused = await post(port, `Bearer ${runtimeToken}`, identity);
+		expect(refused.status).toBe(403);
+	}
+	expect(f.authority.issueModelLogin).not.toHaveBeenCalled();
 	expect((await post(await without.start(), `Bearer ${runtimeToken}`)).status).toBe(404);
 	const served = await post(port, `Bearer ${runtimeToken}`);
 	expect(served.status).toBe(200);
@@ -659,7 +676,13 @@ it("serves the route only with the runtime token, uncached, and the client reads
 	const text = await served.text();
 	expect(text).not.toContain("rt-stored");
 	const client = await issueModelLogin(
-		{ origin: `http://127.0.0.1:${port}`, runtimeToken, companyId: f.companyId, allowLoopback: true },
+		{
+			origin: `http://127.0.0.1:${port}`,
+			runtimeToken,
+			companyId: f.companyId,
+			holder: () => holder,
+			allowLoopback: true,
+		},
 		{ binding: f.run, knownVersion: null },
 		new AbortController().signal,
 	);
@@ -672,7 +695,11 @@ it("serves the route only with the runtime token, uncached, and the client reads
 	]) {
 		const invalid = await fetch(`http://127.0.0.1:${port}/v1/model-logins?company=${f.companyId}`, {
 			method: "POST",
-			headers: { authorization: `Bearer ${runtimeToken}`, "content-type": "application/json" },
+			headers: {
+				authorization: `Bearer ${runtimeToken}`,
+				"content-type": "application/json",
+				"x-qorpera-identity": holder,
+			},
 			body: JSON.stringify(body),
 		});
 		expect(invalid.status).toBe(403);

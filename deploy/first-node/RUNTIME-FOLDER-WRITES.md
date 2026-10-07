@@ -234,7 +234,8 @@ connection, with the socket paused, so a machine can never make it buffer more t
 
 ## The gateway's route for the folder service
 
-Today's folder byte route (`/v1/folder-objects/`) takes a run's binding on the native token. The folder service gets
+Today's folder byte route (`/v1/folder-objects/`) takes a run's binding on the native token, with the run's lease in
+`x-qorpera-identity` (G2-6a, `RUNTIME-NATIVE-HOST-KEY.md`). The folder service gets
 a route of its own, `/v1/folder-service-objects/<environmentId>/<sha256>`, on a token only the folder service holds,
 naming the view's actor in a header (`member`, `platform`, and later `view`). The gateway passes that actor to the
 same SQL checks (`qorpera_folder_authorize_object_upload` and `_confirm_object`) and stores through

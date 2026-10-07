@@ -65,6 +65,8 @@ async function fixture(options: { upperCaseBinding?: boolean; productionCircuit?
 	const environmentId = f.authority.identity.environmentId;
 	const companyId = f.authority.identity.companyId;
 	const token = randomBytes(32).toString("base64url");
+	// G2-6a: the run's own lease, which the gateway's proof (answered below) accepts.
+	const holder = `job.${f.binding.jobId.toLowerCase()}.${"h".repeat(43)}`;
 	const root = await mkdtemp(join(tmpdir(), "qorpera-folder-bytes-test-"));
 	await mkdir(join(root, "objects"), { mode: 0o700 });
 	const actor = JSON.stringify({
@@ -121,6 +123,10 @@ async function fixture(options: { upperCaseBinding?: boolean; productionCircuit?
 		if (method === "qorpera_list_profile_objects_for_migration") return Response.json([]);
 		if (["qorpera_authorize_profile_object_replication", "qorpera_confirm_profile_object_replica"].includes(method))
 			return Response.json(true);
+		if (method === "qorpera_native_binding_proven")
+			return args.p_holder === holder
+				? Response.json(true)
+				: Response.json({ code: "42501", message: "native binding proof is refused" }, { status: 403 });
 		gatewayCalls.push(method);
 		if (args.p_environment_id !== environmentId || JSON.stringify(args.p_actor) !== actor)
 			return Response.json({ code: "42501" }, { status: 403 });
@@ -294,6 +300,7 @@ async function fixture(options: { upperCaseBinding?: boolean; productionCircuit?
 		baseUrl: origin,
 		token,
 		binding,
+		holder: () => holder,
 		identity: { ...f.authority.identity, runId: binding.runId, jobId: binding.jobId },
 		control,
 		now: () => clock,
@@ -312,6 +319,7 @@ async function fixture(options: { upperCaseBinding?: boolean; productionCircuit?
 		root,
 		origin,
 		token,
+		holder,
 		authority,
 		control,
 		store,
@@ -473,7 +481,7 @@ it("stops when the company's work stops, without taking the gateway's database o
 });
 
 it("serves the folder route only on the native credential, with a run binding and an intent", async () => {
-	const { origin, token, binding, sql } = await fixture();
+	const { origin, token, binding, sql, holder } = await fixture();
 	const url = `${origin}/v1/folder-objects/${randomUUID()}/${sha("x")}`;
 	const encoded = Buffer.from(JSON.stringify(binding)).toString("base64url");
 	expect((await fetch(url, { method: "GET" })).status).toBe(401);
@@ -483,7 +491,11 @@ it("serves the folder route only on the native credential, with a run binding an
 			await fetch(url, {
 				method: "PUT",
 				body: "x",
-				headers: { authorization: `Bearer ${token}`, "x-qorpera-native-binding": encoded },
+				headers: {
+					authorization: `Bearer ${token}`,
+					"x-qorpera-native-binding": encoded,
+					"x-qorpera-identity": holder,
+				},
 			})
 		).status,
 	).toBe(400);
@@ -491,7 +503,11 @@ it("serves the folder route only on the native credential, with a run binding an
 		(
 			await fetch(url, {
 				method: "DELETE",
-				headers: { authorization: `Bearer ${token}`, "x-qorpera-native-binding": encoded },
+				headers: {
+					authorization: `Bearer ${token}`,
+					"x-qorpera-native-binding": encoded,
+					"x-qorpera-identity": holder,
+				},
 			})
 		).status,
 	).toBe(405);
@@ -517,7 +533,7 @@ it("writes the canonical manifest text the folder core checks", async () => {
 });
 
 it("refuses a body that is not the object it names, before the folder core confirms it", async () => {
-	const { origin, token, binding, control, environmentId, actor, gatewayCalls, puts } = await fixture();
+	const { origin, token, binding, control, environmentId, actor, gatewayCalls, puts, holder } = await fixture();
 	const text = `{"schema":"qorpera.cloud-file-manifest/v2","fileSha256":"${sha("right")}","bytes":5,"mediaType":"text/plain","executable":false,"chunks":[{"sha256":"${sha("right")}","bytes":5}]}`;
 	const open = (await control.call(
 		"qorpera_folder_open_upload",
@@ -531,6 +547,7 @@ it("refuses a body that is not the object it names, before the folder core confi
 		headers: {
 			authorization: `Bearer ${token}`,
 			"x-qorpera-native-binding": Buffer.from(JSON.stringify(binding)).toString("base64url"),
+			"x-qorpera-identity": holder,
 			"x-qorpera-upload-intent": open.intentId,
 			"content-type": "application/octet-stream",
 		},
