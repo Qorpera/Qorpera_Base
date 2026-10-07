@@ -8,14 +8,22 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 const USAGE: &str = "Usage:
-  qorpera-folder mount --view-file <file> --mountpoint <dir> [--connect vsock:2:5250] [--threads 16] [--ttl-seconds 3600] [--allow-other yes]
+  qorpera-folder mount --view-file <file> --mountpoint <dir> [--connect vsock:2:5250] [--threads 16] [--ttl-seconds 3600] [--allow-other yes] [--state-dir /run/qorpera-folder/<viewId>]
+  qorpera-folder publish --view-file <file> [--connect vsock:2:5250]
   qorpera-folder bridge --service unix:<socket> [--listen vsock:any:5250] [--per-machine 512] [--lxd-socket <path>]
   qorpera-folder relay --listen systemd|unix:<socket> [--connect vsock:2:5250]
   qorpera-folder version
 
 mount: shows the view named in <file> (JSON {\"environmentId\", \"viewId\", \"pass\"}; a regular file owned by this
-account, mode 0600 or tighter) at <dir>, read-only, until a signal, the view's end or an unmount.
+account, mode 0600 or tighter) at <dir> until a signal, the view's end or an unmount: read-write when the node lets the
+view write, else read-only. A writable mount keeps its version map in <state-dir>, so a mount started again bases saves
+on what was read before.
 Exit codes: 0 stopped, 1 failed, 2 usage, 3 the node closed or refused the view.
+
+publish: publishes what the view in <file> has pending, as one change set, and prints each path's outcome.
+Exit codes: 0 every path saved (or nothing was pending), 1 failed (when no answer came after the request went out,
+whether the boundary ran is unknown: publish again to see what is still pending), 2 usage, 3 the view is closed, 4 a
+path was not saved (a conflict, a refusal, or a file still open).
 
 relay: carries each connection to <socket> (systemd: the one its socket unit passed) to the node's folder service,
 byte for byte (the execution host's native hosts, which cannot open vsock).";
@@ -27,6 +35,7 @@ fn main() -> ExitCode {
 	let args: Vec<String> = std::env::args().skip(1).collect();
 	let result = match args.first().map(String::as_str) {
 		Some("mount") => mount(&args[1..]),
+		Some("publish") => publish(&args[1..]),
 		Some("bridge") => bridge(&args[1..]),
 		Some("relay") => relay(&args[1..]),
 		Some("version" | "--version") => {
@@ -71,7 +80,7 @@ fn number<T: std::str::FromStr>(o: &std::collections::HashMap<String, String>, k
 }
 
 fn mount(args: &[String]) -> Result<ExitCode, Usage> {
-	let o = options(args, &["view-file", "mountpoint", "connect", "threads", "ttl-seconds", "allow-other"])?;
+	let o = options(args, &["view-file", "mountpoint", "connect", "threads", "ttl-seconds", "allow-other", "state-dir"])?;
 	let view_file = o.get("view-file").ok_or_else(|| Usage("--view-file is required".into()))?;
 	let mountpoint = PathBuf::from(o.get("mountpoint").ok_or_else(|| Usage("--mountpoint is required".into()))?);
 	let addr = o.get("connect").cloned().unwrap_or_else(|| format!("vsock:2:{}", proto::VSOCK_PORT));
@@ -92,8 +101,16 @@ fn mount(args: &[String]) -> Result<ExitCode, Usage> {
 			return Ok(ExitCode::FAILURE);
 		}
 	};
+	let state = match o.get("state-dir") {
+		Some(dir) => PathBuf::from(dir),
+		None => match state_dir(&view.view_id) {
+			Some(dir) => dir,
+			None => return Err(Usage("this view id needs a --state-dir".into())),
+		},
+	};
 	let link = link::Link::new(addr, view, threads);
-	match mount::run(link, mount::Options { mountpoint, threads, ttl: Duration::from_secs(ttl), allow_other }) {
+	let options = mount::Options { mountpoint, threads, ttl: Duration::from_secs(ttl), allow_other, state: Some(state) };
+	match mount::run(link, options) {
 		Ok(mount::Stop::ViewClosed) => {
 			eprintln!("qorpera-folder: the node closed the view; unmounted");
 			Ok(ExitCode::from(EXIT_VIEW_CLOSED))
@@ -116,6 +133,55 @@ fn mount(args: &[String]) -> Result<ExitCode, Usage> {
 			Ok(ExitCode::FAILURE)
 		}
 	}
+}
+
+/// The mount's own folder under /run/qorpera-folder/ (a memory file system): its version map lives there, and goes when
+/// the machine restarts.
+fn state_dir(view_id: &str) -> Option<PathBuf> {
+	let fine = !view_id.is_empty()
+		&& view_id != "."
+		&& view_id != ".."
+		&& view_id.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+	fine.then(|| PathBuf::from("/run/qorpera-folder").join(view_id))
+}
+
+/// Publishes the view's pending changes and prints the report.
+fn publish(args: &[String]) -> Result<ExitCode, Usage> {
+	let o = options(args, &["view-file", "connect"])?;
+	let view_file = o.get("view-file").ok_or_else(|| Usage("--view-file is required".into()))?;
+	let addr = o.get("connect").cloned().unwrap_or_else(|| format!("vsock:2:{}", proto::VSOCK_PORT));
+	let view = match read_view(view_file) {
+		Ok(v) => v,
+		Err(e) => {
+			eprintln!("qorpera-folder: view file {view_file}: {e}");
+			return Ok(ExitCode::FAILURE);
+		}
+	};
+	let report = match link::Link::new(addr, view, 1).publish() {
+		Ok(r) => r,
+		Err(f) if f.view_closed() => {
+			eprintln!("qorpera-folder: the view is closed: {f}");
+			return Ok(ExitCode::from(EXIT_VIEW_CLOSED));
+		}
+		Err(f) => {
+			eprintln!("qorpera-folder: could not publish: {f}");
+			return Ok(ExitCode::FAILURE);
+		}
+	};
+	if report.paths.is_empty() {
+		println!("nothing to publish");
+	}
+	for entry in &report.paths {
+		let mut why = entry.reason.clone().unwrap_or_default();
+		if let Some(receipt) = &entry.receipt {
+			why = format!("{why}; this version is kept on receipt {receipt}");
+		}
+		if entry.kept {
+			why = format!("{why}; still pending here");
+		}
+		println!("{:<12} {}{}", entry.outcome, entry.path, if why.is_empty() { String::new() } else { format!("  ({})", why.trim_start_matches("; ")) });
+	}
+	Ok(if report.paths.iter().all(|e| e.outcome == "saved") { ExitCode::SUCCESS } else { ExitCode::from(4) })
 }
 
 /// The view's id and pass. The file must be this account's own, a regular file, and readable by no one

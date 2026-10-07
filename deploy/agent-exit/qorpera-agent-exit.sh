@@ -37,8 +37,9 @@ run_dir=${QORPERA_AGENT_EXIT_RUN_DIR:-/run/qorpera-agent-exit}
 state_dir=${QORPERA_AGENT_EXIT_STATE_DIR:-/var/lib/qorpera-agent-exit}
 log_dir=${QORPERA_AGENT_EXIT_LOG_DIR:-/var/log/qorpera-agent-exit}
 # The logs may hold at most this many bytes of the node's disk, and leave at least this share of it free. A node may
-# set its own in /etc/default/qorpera-agent-exit, and its NAS folder (E3): KEY=number lines for the numbers, and
-# KEY=/absolute/path for the folder; nothing else is read from it.
+# set its own in /etc/default/qorpera-agent-exit, its NAS folder (E3) and the brake's levels (E7): KEY=number lines for
+# the numbers, KEY=/absolute/path for the folder, and the levels as written (the logger says what is wrong with one);
+# nothing else is read from it.
 settings=${QORPERA_AGENT_EXIT_SETTINGS:-/etc/default/qorpera-agent-exit}
 setting() {
 	[[ -r $settings ]] || return 0
@@ -54,6 +55,15 @@ log_floor=${QORPERA_AGENT_EXIT_LOG_FLOOR_PERCENT:-$(setting QORPERA_AGENT_EXIT_L
 log_floor=${log_floor:-10}
 # The NAS folder the logs go to (README.md, "The logs on the NAS"); empty: none, and `verify` fails.
 nas_dir=${QORPERA_AGENT_EXIT_NAS_DIR-$(path_setting QORPERA_AGENT_EXIT_NAS_DIR)}
+brake_setting() {
+	[[ -r $settings ]] || return 0
+	sed -n "s/^$1=\(.*\)\$/\1/p" "$settings" | tail -1
+}
+# The brake's levels (README.md, "The brake"); none set: the brake is off.
+brake_new=${QORPERA_AGENT_EXIT_BRAKE_NEW_10S-$(brake_setting QORPERA_AGENT_EXIT_BRAKE_NEW_10S)}
+brake_failed=${QORPERA_AGENT_EXIT_BRAKE_FAILED_60S-$(brake_setting QORPERA_AGENT_EXIT_BRAKE_FAILED_60S)}
+brake_slow=${QORPERA_AGENT_EXIT_BRAKE_SLOW_10S-$(brake_setting QORPERA_AGENT_EXIT_BRAKE_SLOW_10S)}
+brake_minutes=${QORPERA_AGENT_EXIT_BRAKE_MINUTES-$(brake_setting QORPERA_AGENT_EXIT_BRAKE_MINUTES)}
 
 NS=qexit
 BRIDGE=qagent0
@@ -267,9 +277,13 @@ log() {
 	has_ns || die "the exit is not up"
 	install -d -m 0750 "$log_dir"
 	install -d -m 0755 "$run_dir"
+	# The brake's levels go with "=": one that looks like an option is a bad level (verify says so), not a logger that
+	# cannot start.
 	exec python3 "$logger" --netns "$NS" --log-dir "$log_dir" --heartbeat "$run_dir/logger.heartbeat" \
 		--pause-file "$run_dir/logger.pause" --failing-file "$run_dir/logger.failing" --cap-bytes "$log_cap" \
-		--floor-percent "$log_floor"
+		--floor-percent "$log_floor" --state-dir "$state_dir" --brake-status "$run_dir/brake.json" \
+		--brake-new-10s="$brake_new" --brake-failed-60s="$brake_failed" --brake-slow-10s="$brake_slow" \
+		--brake-minutes="$brake_minutes"
 }
 
 logs() {
@@ -353,6 +367,19 @@ verify() {
 	else
 		problems+=("the logs' shipper has not run")
 	fi
+	# The brake (E7): the logger's guard alive (it writes its status every 2 seconds), its levels well formed, and the
+	# exit's brake rules readable and as it decided.
+	local brake_status="$run_dir/brake.json"
+	if [[ -e $brake_status ]]; then
+		age=$(($(date +%s) - $(stat -c %Y "$brake_status")))
+		((age < 30)) || problems+=("the brake silent for ${age}s")
+		while IFS= read -r problem; do
+			[[ -z $problem ]] || problems+=("the brake: $problem")
+		done < <(python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["problems"]))' \
+			"$brake_status" 2>/dev/null || echo "cannot read $brake_status")
+	else
+		problems+=("the brake not running")
+	fi
 	# The agent plug's reconciler: alive, and the client map true to LXD (qorpera-agent-plug.py).
 	local plug_status="$run_dir/plug.json" problem
 	if [[ -e $plug_status ]]; then
@@ -404,6 +431,10 @@ status() {
 	in_exit nft list counters table $EXIT_TABLE
 	in_exit nft list set $EXIT_TABLE new_by_client
 	in_exit nft list set $EXIT_TABLE refused_by_client
+	# The brake (E7): the machines braked now (with their company's number) and each number's dropped connections.
+	in_exit nft list map $EXIT_TABLE braked
+	in_exit nft list set $EXIT_TABLE dropped
+	[[ ! -e $run_dir/brake.json ]] || cat "$run_dir/brake.json"
 }
 
 case "${1:-}" in

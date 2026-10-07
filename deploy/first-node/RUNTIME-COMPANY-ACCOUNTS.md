@@ -215,8 +215,8 @@ offered and accounts are switched on.
   letter case. A member's hand-over (A1-6) keeps any login. With no mail domain or no mailbox, no agent opens an
   account: an owner adds a mailbox first.
 - Observations name the tool `company_account` (`qorpera_record_runtime_observation`, an exact-text patch after
-  `'find_mail','save_attachment',`, which later patches anchored there still find), as the runtime's list and test
-  320 do (`scripts/check-runtime-observation-vocabulary.test.mjs` checks all three).
+  `'find_mail','save_attachment',`, which later patches anchored there still find), as the runtime's list does
+  (`scripts/check-runtime-observation-vocabulary.test.mjs` checks both).
 
 ## A1-4b: the agent's tool (`company_account`, runtime only)
 

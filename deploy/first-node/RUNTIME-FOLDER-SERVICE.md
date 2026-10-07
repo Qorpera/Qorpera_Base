@@ -76,7 +76,10 @@ A save's base is the version the machine's version map holds: the newest it read
 save made (the `version` of `C` or `X`). Once that save is published, the service reads such a base as the version
 the save's change set gave the path, so the machine's next save is based on its own published save and not on a
 pending id the core never knew; a read naming it reads that version too, so a file held open since the save goes on
-reading the same bytes. A base naming any other version is passed on as it is.
+reading the same bytes. The same goes for a file this view moved: until the move is published its new path shows the
+version it had before, which the machine may read and take as its base; once published, the service reads that
+version as the one the move gave the file (the change set's `move_in` names both). A base naming any other version is
+passed on as it is.
 
 Error codes and what a program on the machine sees: `NOT_FOUND` ENOENT, `NOT_A_FOLDER` ENOTDIR, `NOT_A_FILE` EISDIR,
 `STALE` ESTALE, `DENIED` EACCES, `BAD_REQUEST` EINVAL, `UNAVAILABLE` EIO; for writes `EXISTS` EEXIST, `NOT_EMPTY`
@@ -239,7 +242,9 @@ For step 2 (the run box), recorded now so they are planned:
   `unsaved_since` (timestamptz), with `state = 'open'` and `lease_until > now()` (20260928259230). Step 1 opens no
   view rows, so it gives the drain nothing to count; an in-place folder service update needs no drain.
 - **P8.** The runtime releases a command's reads with the run actor (only run releases can be cited by a context
-  view); a release over 10,000 reads is split, and a context output may need to cite several.
+  view); a release over 10,000 reads is split, and a context output may need to cite several. On a company machine,
+  step 4 replaces this: a command's reads are the folder program's, released with its view actor, and its output
+  cites no read ([RUNTIME-FOLDER-COMPANY-MACHINES.md](RUNTIME-FOLDER-COMPANY-MACHINES.md), "Reads").
 
 ## Rollout (coordinator)
 

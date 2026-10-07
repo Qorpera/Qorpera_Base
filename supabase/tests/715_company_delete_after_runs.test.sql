@@ -526,6 +526,8 @@ $$;
 -- 8. Outside a purge, history stays immutable.
 select pg_temp.del_refused($q$delete from public.qorpera_runner_usage_observations
 	where profile_id = '92400000-0000-4000-8000-000000000010'$q$, '55000', 'usage observations are immutable');
+select pg_temp.del_refused($q$update public.qorpera_runner_usage_observations set execution_ms = execution_ms
+	where profile_id = '92400000-0000-4000-8000-000000000010'$q$, '55000', 'usage observations are immutable');
 select pg_temp.del_refused($q$delete from public.qorpera_runtime_bundles
 	where id = (select runtime_bundle_id from public.qorpera_active_runtime_bundle)$q$, '42501', 'Runtime bundles are immutable');
 
