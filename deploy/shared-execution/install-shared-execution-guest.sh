@@ -3,17 +3,23 @@
 # host VM that was booted from the pinned LXD runner guest image. The image
 # already carries the runner, native provider host, isolation helper and the
 # official harness; this adds the service, the two slot unit templates, one
-# account pair per slot and the co-located orchestrator. Nothing in the pinned
-# image is replaced.
+# account pair per slot, the co-located orchestrator, and the folder program
+# with its mount unit (F3). Nothing in the pinned image is replaced.
 set -euo pipefail
 
-EXPECTED_SERVICE_SHA256="70eeae7dfd8a659351db1f21fc14777cd6ee1e6721355bf3b22681dc021e435b"
-EXPECTED_SERVICE_UNIT_SHA256="10ae874ab6602babdd0f8eff1e84280e03d8b9d2c8a143066f7558b1eafd62d8"
-EXPECTED_HOST_UNIT_SHA256="c552c0d0f57e1a5224e61fa897e2cc067ce2b07d7037156c7a29fb748eeb6c0b"
-EXPECTED_RUNNER_UNIT_SHA256="826b7d6046771334d712df85c13b2052ef4adfe1ecff26778593d2bf50b508ef"
-EXPECTED_ENV_EXAMPLE_SHA256="b7042964ee5d65f398945f83d3cdeefc2a795973c578bb47b8efff1a775582a6"
-EXPECTED_ORCHESTRATOR_SHA256="25c9dc748f7101b4ad146fb206dd3bc78a3cdd413e506c9ffe8e6bc056f92c45"
+EXPECTED_SERVICE_SHA256="8c4e9644a64d81592a43073c8cbd03e2532947721a229bbe159ba1a0d78880f9"
+EXPECTED_SERVICE_UNIT_SHA256="915fef453788ce0c0c788b4139814b15ccfdb717f877e790da7b191ae99c3479"
+EXPECTED_HOST_UNIT_SHA256="819647591890c2ca2a1133449af6e3aa31f6357cffdaac0e1bdc0613c40966dd"
+EXPECTED_RUNNER_UNIT_SHA256="09070c9dd6d8f1a4c2dd5aab25f251e5e3da1735ce9dab50f6591d9b59becbfd"
+EXPECTED_ENV_EXAMPLE_SHA256="b3a820668e1cf14944776cf28b43eb0903705e08151f32ce579ba22ad63166cb"
+EXPECTED_ORCHESTRATOR_SHA256="2b821606a0453841dbf2a3e1a9860cdeb58f09fec87240fd7f4e19d14e856c0b"
 EXPECTED_ORCHESTRATOR_UNIT_SHA256="12128aaf4be23d759e940407bf32c99b145aa8e927fe31f730a15ce7c447f4df"
+# The folder program's recorded build (deploy/folder-service/folder-program-linux-x64.json) and its mount unit.
+EXPECTED_FOLDER_PROGRAM_SHA256="d608f95fa164c7afc9572f11bff1b0002d32690be282470d2f42f9c4233763c0"
+EXPECTED_FOLDER_MOUNT_UNIT_SHA256="77b56d0e10600dc2e2b5a600a73261d904637128e83b9400d876a27feafec17c"
+# The folder search relay (F3): a socket per slot to the node's folder service, started by the service when it is on.
+EXPECTED_FOLDER_RELAY_SOCKET_SHA256="0ca111b290e8b6dd6783c45fe420d96bd2f84e92d1e1a5645fafd8366ace0738"
+EXPECTED_FOLDER_RELAY_UNIT_SHA256="ce97d2d0840bacc269e4c43abc63f921acadd86cb4bc049ff3b794fcbcd8c56b"
 STAGING_ROOT="/var/lib/qorpera-bootstrap/shared-execution"
 SLOT_COUNT="${QORPERA_SHARED_EXECUTION_SLOTS:-16}"
 INSTALL_ROOT="/opt/qorpera/shared-execution"
@@ -40,6 +46,10 @@ for unit in qorpera-shared-execution.service qorpera-runner-orchestrator.service
 		exit 1
 	fi
 done
+if systemctl list-units --state=active --plain --no-legend 'qorpera-folder-mount@*' | grep -q .; then
+	echo "Refusing to replace the folder program under a running mount." >&2
+	exit 1
+fi
 for artifact in qorpera-ephemeral-runner.mjs qorpera-native-provider-host.mjs qorpera-native-isolation-child.mjs; do
 	if [[ ! -f /opt/qorpera-runner/${artifact} ]]; then
 		echo "This guest is not the pinned runner image: /opt/qorpera-runner/${artifact} is missing." >&2
@@ -69,6 +79,10 @@ verify_sha256 "${STAGING_ROOT}/qorpera-shared-runner@.service" "${EXPECTED_RUNNE
 verify_sha256 "${STAGING_ROOT}/shared-execution.env.example" "${EXPECTED_ENV_EXAMPLE_SHA256}"
 verify_sha256 "${STAGING_ROOT}/qorpera-runner-orchestrator.mjs" "${EXPECTED_ORCHESTRATOR_SHA256}"
 verify_sha256 "${STAGING_ROOT}/qorpera-runner-orchestrator.service" "${EXPECTED_ORCHESTRATOR_UNIT_SHA256}"
+verify_sha256 "${STAGING_ROOT}/qorpera-folder" "${EXPECTED_FOLDER_PROGRAM_SHA256}"
+verify_sha256 "${STAGING_ROOT}/qorpera-folder-mount@.service" "${EXPECTED_FOLDER_MOUNT_UNIT_SHA256}"
+verify_sha256 "${STAGING_ROOT}/qorpera-folder-relay@.socket" "${EXPECTED_FOLDER_RELAY_SOCKET_SHA256}"
+verify_sha256 "${STAGING_ROOT}/qorpera-folder-relay@.service" "${EXPECTED_FOLDER_RELAY_UNIT_SHA256}"
 
 # A long-lived host must stay the pinned image: no unattended package upgrades,
 # no needrestart restarting the sandboxes under a run.
@@ -111,12 +125,26 @@ install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-shared-run-host@.servic
 install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-shared-runner@.service" /etc/systemd/system/qorpera-shared-runner@.service
 install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-runner-orchestrator.service" /etc/systemd/system/qorpera-runner-orchestrator.service
 install -o root -g root -m 0600 "${STAGING_ROOT}/shared-execution.env.example" /etc/qorpera/shared-execution.env.example
+# The folder program (F3): mounts live under /srv/qorpera-folder (root only; the slot units also hide it), each from
+# a view file in /etc/qorpera-folder/mounts. No mount starts here.
+install -d -o root -g root -m 0755 /opt/qorpera-folder
+install -o root -g root -m 0555 "${STAGING_ROOT}/qorpera-folder" /opt/qorpera-folder/qorpera-folder
+install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-folder-mount@.service" /etc/systemd/system/qorpera-folder-mount@.service
+install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-folder-relay@.socket" /etc/systemd/system/qorpera-folder-relay@.socket
+install -o root -g root -m 0644 "${STAGING_ROOT}/qorpera-folder-relay@.service" /etc/systemd/system/qorpera-folder-relay@.service
+install -d -o root -g root -m 0700 /etc/qorpera-folder /etc/qorpera-folder/mounts /srv/qorpera-folder
+/opt/qorpera-folder/qorpera-folder version
+if [[ ! -c /dev/fuse ]] || ! grep -qw fuse /proc/filesystems; then
+	# Runs do not need it yet; a folder mount will not start until the image has FUSE.
+	echo "Warning: this host has no FUSE (/dev/fuse or the fuse filesystem is missing); folder mounts cannot start."
+fi
 
 /usr/bin/node --check "${INSTALL_ROOT}/qorpera-shared-execution-service.mjs"
 /usr/bin/node --check "${ORCHESTRATOR_ROOT}/qorpera-runner-orchestrator.mjs"
 /usr/bin/systemd-analyze verify /etc/systemd/system/qorpera-shared-execution.service \
 	/etc/systemd/system/qorpera-shared-run-host@.service /etc/systemd/system/qorpera-shared-runner@.service \
-	/etc/systemd/system/qorpera-runner-orchestrator.service
+	/etc/systemd/system/qorpera-runner-orchestrator.service /etc/systemd/system/qorpera-folder-relay@.socket \
+	/etc/systemd/system/qorpera-folder-relay@.service
 systemctl daemon-reload
 # Nothing starts here. The operator writes /etc/qorpera/shared-execution.env,
 # the credentials directory and /etc/qorpera/runner-orchestrator.env, attaches

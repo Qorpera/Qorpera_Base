@@ -96,12 +96,11 @@ export interface SharedExecutionProviderConfig {
 	/** Stable name of this execution host; part of every sandbox's instance digest. */
 	hostId: string;
 	supabaseUrl: string;
-	supabaseServiceKey: string;
 	supabasePublishableKey: string;
 	/**
 	 * G2-3e: the execution host's own credential, which the node host bound to `hostId`. The service's own database
-	 * calls go through the execution host's entry points with it and the publishable key, never the service key, which
-	 * only reaches the slots, until G2-5.
+	 * calls go through the execution host's entry points with it and the publishable key. Neither the service nor its
+	 * slots hold the service key (G2-5).
 	 */
 	executionHostCredential: string;
 	/** Journals and per-slot scratch state (disk). */
@@ -131,7 +130,16 @@ export interface SharedExecutionProviderConfig {
 	 * host keeps the run's opened capsule for as long. Absent: every run retires its slot.
 	 */
 	warmIdleMs?: number;
+	/**
+	 * The node's folder search (F3 `company_search`; founder decision "Light threads", 2 October 2026): each slot's
+	 * native host gets its relay socket to the node's folder service, started before the host. Absent: off.
+	 */
+	folderSearch?: boolean;
 }
+
+/** The execution host's relay to its node's folder service, one socket per slot (deploy/shared-execution). */
+export const FOLDER_RELAY_DIRECTORY = "/run/qorpera-folder-relay";
+const folderRelayUnit = (slot: number): string => `qorpera-folder-relay@${slot}.socket`;
 
 /** A slot whose native host outlived its run, waiting for the same conversation's next run. */
 interface SharedExecutionWarmSlot {
@@ -811,6 +819,15 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			// its start and its retry starts a fresh sandbox.
 			if (current.reusedHost && !(await this.#units.active(this.#unit("host", current.slot), timeout)))
 				throw new Error("The warm slot's native host is no longer running");
+			// The relay is a socket the native host connects to at its first search: asked for before the host. A relay
+			// that does not start costs the run its search (the tool answers that the folder cannot be searched), never
+			// the run itself.
+			if (this.#config.folderSearch && !(await this.#units.active(folderRelayUnit(current.slot), timeout)))
+				await this.#units.start(folderRelayUnit(current.slot), timeout).catch((error: unknown) => {
+					console.error(
+						`shared-execution: slot ${current.slot}: the folder relay did not start: ${String(error)}`,
+					);
+				});
 			// A replay after a restart may find either unit not yet started. The runner
 			// unit is ordered after the host unit's start (After=, BindsTo=), not after its
 			// health: it boots and activates while the host loads. The assignment is
@@ -1286,6 +1303,9 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				: []),
 			...(office ? [`QORPERA_COMPANY_COMPUTER_URL=${office.url}`] : []),
 			...(coding ? [`QORPERA_CODING_COMMAND_URL=${coding.origin}`] : []),
+			...(this.#config.folderSearch
+				? [`QORPERA_FOLDER_SEARCH_SOCKET=${FOLDER_RELAY_DIRECTORY}/${current.slot}.sock`]
+				: []),
 			...(vaultLogin ? ["QORPERA_NATIVE_LOGIN_CUSTODY=vault"] : []),
 			"",
 		].join("\n");
@@ -1307,7 +1327,6 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		if (!identity && !vaultState) return undefined;
 		const files: Array<[string, string]> = [
 			[join(slotRun, "native-provider.env"), nativeProviderEnvironment],
-			[join(credentialDirectory, "qorpera-supabase-service-key"), `${this.#config.supabaseServiceKey}\n`],
 			[join(credentialDirectory, "qorpera-native-object-token"), `${runtime.objectGatewayToken}\n`],
 			[join(credentialDirectory, "qorpera-cloud-secret-runtime"), `${runtime.secretBroker.runtimeToken}\n`],
 			[join(credentialDirectory, "qorpera-cloud-secret-ca"), runtime.secretBroker.caCertificate],

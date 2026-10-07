@@ -88,12 +88,15 @@ A save's base (a file opened for writing, its bit set, or a file renamed over it
 A move's or removal's base is the version the name showed when it was made (what `mv` or `rm` saw), and a moved or
 removed folder records the view's position in the feed (`asOfSeq`) then. The feed keeps moving underneath: a pending
 path keeps showing the view's own version, and the commit decides (a removed file another machine changes shows
-again: "A boundary" below). After a save the map holds the version the save made.
+again: "A boundary" below). After a save the map holds the version the save made. A file this view moved shows its
+version from before the move at its new path until the move is published, and a read there takes that version into
+the map; the published move gives the file a new one, and the service reads the old one as the new one, as it does a
+save's.
 
 **The map lives as long as the programs it protects.** An editor's buffer outlives a restart of the folder service
 or of the folder program, so the map must too; otherwise a save after the restart would take the newest version as
 its base and overwrite it. So the program keeps the map in memory and writes each new entry through to a file under
-`/run/qorpera-folder/<mount>/` (a memory file system, root's only), and a program started again for the same mount
+`/run/qorpera-folder/<view id>/` (a memory file system, root's only), and a program started again for the same mount
 reads it back. It holds paths and version ids, never content, at most one entry per path the mount read, and goes when
 the machine restarts, together with every process whose buffer it protected. A restart of the service loses the
 pending changes (below), never the map.
@@ -107,7 +110,7 @@ This replaces §2's "saved with each command's read record": step 3 has no comma
 
 A boundary publishes the view's pending changes as one change set.
 
-**When.** In step 3: when the machine asks (`qorpera-folder publish <mount>`), for a mount configured with a quiet
+**When.** In step 3: when the machine asks (`qorpera-folder publish --view-file <file>`), for a mount configured with a quiet
 period about two seconds after the last change (the desktop rule of §2), and before a change that needs what is
 pending published first (below). Steps 4–6 add theirs: command end and output reads, and per-desktop quiet periods.
 
@@ -192,16 +195,41 @@ removal, the version the name showed):
 | Type | Request | Reply |
 | --- | --- | --- |
 | `O` | open for writing `{path, base?, create, exclusive, truncate}` | `{handle, size, version}` |
-| `K` | a chunk `{handle, index, sha256, bytes}`, then its bytes in `d` frames | `{}` once the gateway has it |
-| `G` | read back a pending chunk `{handle, index}` | its bytes |
-| `C` | close `{handle, size, chunks}` (the last chunk sent with it) | `{}` once staged |
-| `T` | truncate a path that is not open `{path, base?, size}` | `{}` |
+| `K` | one part of a chunk: a header `{handle, index, sha256, bytes, offset}` and up to 1 MiB of its bytes | `{}`; after the last part, once the gateway has the chunk |
+| `G` | part of a chunk the open file has `{handle, index, offset, length}` (at most 1 MiB) | its bytes |
+| `C` | close `{handle, size}` | `{version}` once staged |
 | `M`, `U`, `D` | mkdir, unlink, rmdir `{path, base?}` | `{}` |
 | `N` | rename `{from, fromBase?, to, toBase?, noReplace}` | `{}` |
-| `X` | the executable bit `{path, base?, executable}` | `{}` |
+| `X` | the executable bit `{path, base?, executable}` | `{version}` |
 | `P` | publish | the report |
 
-Frames stay at most 2 MiB, so a 4 MiB chunk is three frames. The service still handles one request at a time per
+As built (3c-2): a truncate of a file not open is an `O`, the chunk that ends it when the cut is inside a chunk, and a
+`C`, so there is no `T`; a cut on the grid, or to nothing, sends no chunk, and the close cuts the file's chunks (from its
+origin's when none of it was sent). A
+chunk is changed by its index on the 4 MiB grid, which every version-2 manifest's chunks are on; a file laid out
+otherwise is changed whole. A write handle belongs to the view, not to the connection that opened it, since the
+program pools its connections. The version map holds the `version` of a close or the bit after a save; once that save
+is published, the service reads a base or a read naming it as the version the save's change set gave the path (a
+write's from the core's answer, a new folder's files' from that change set on the feed); likewise a version a file this
+view moved showed at its new path before the move was published (from the change set's `move_in`, its `priorVersion`).
+A conflict's bytes leave the view only once the receipt lists every file of the
+unit (`qorpera_folder_conflict_copies_of`, migration `20260930101000`): the commit's answer does not say what P17 kept.
+An answered boundary settles only once the view's feed has its change set; until then the view takes no change (BUSY).
+The intents that hold pending bytes are renewed while the bytes are needed and replaced if they lapse. The wire shapes
+are in [RUNTIME-FOLDER-SERVICE.md](RUNTIME-FOLDER-SERVICE.md) ("Protocol 2").
+
+As built (3d-2), the program: a file's last writing handle closes it at the node at the close (flush) of the process
+that opened it, so a boundary right after the close publishes it; a child that inherited the descriptor leaves it
+open. A write after that opens it again, going on from the chunk in memory. A close the node does not take
+(`BUSY` while a boundary settles, the link down) leaves the file open there, and the program tries again until it is
+taken: the node's handle is never left open, nor closed at a size the program did not write. Every change waits for
+its answer as long as the node takes (a boundary it waits for or publishes first), so a change the node made is never
+taken for one it did not. `P` goes out once, and waits likewise; when no answer comes, `publish` says the outcome is
+unknown. A read takes its version into the map when the path's file is that version; a file still open from before a
+newer version arrived counts too while the map holds nothing for the path, so an editor's save of what it opened is a
+conflict, not an overwrite.
+
+Frames stay at most 2 MiB, so a 4 MiB chunk is four frames. The service still handles one request at a time per
 connection, with the socket paused, so a machine can never make it buffer more than one frame of its bytes.
 
 ## The gateway's route for the folder service
@@ -230,7 +258,7 @@ extend it.
 | --- | --- | --- |
 | 3a | SQL: an upload holds its actor's own puts (migration `20260930083000`, test 931) | a chunk put under one intent is `present` in the same actor's next intent and not in another actor's; the whole file then seals and commits; an expired intent does not count; a marked object still refuses |
 | 3b | Gateway: the folder service's byte route and token | put and refusal paths as `folder-objects.ts`'s tests; the native token is refused there, and the folder service's token on the native routes |
-| 3c | Folder service: protocol v2, pending changes, base versions, staging, boundaries, the report | the service's tests with a stand-in core that commits (conflicts, unseen changes, refusals, replays) and a stand-in gateway: a stale save (v1 read, v2 published, then saved in place and by renaming a temporary file over it) is a conflict, also when the service restarted between the read and the save; a lost reply replays under the same key; each change that must publish first does, and every boundary, applied to a model of the core's rules (folded keys included), ends as the view showed it; with each unit failing in turn no byte the view held is lost (it is live, kept as a conflict copy, or still pending); the hosted-db script runs the real commit on boundaries the service builds |
+| 3c | Folder service: protocol v2, pending changes, base versions, staging, boundaries, the report (built as 3c-1, the pending changes and the boundary plan, #861; 3c-2, the protocol, staging and boundaries, #867; 3c-3, the hosted-db run, `scripts/test-folder-core-acceptance.mjs`'s F3-3c lines, #876) | the service's tests with a stand-in core that commits (conflicts, unseen changes, refusals, replays) and a stand-in gateway: a stale save (v1 read, v2 published, then saved in place and by renaming a temporary file over it) is a conflict, also when the service restarted between the read and the save; a lost reply replays under the same key; each change that must publish first does, and every boundary, applied to a model of the core's rules (folded keys included), ends as the view showed it; with each unit failing in turn no byte the view held is lost (it is live, kept as a conflict copy, or still pending); the hosted-db script runs the real commit on boundaries the service builds |
 | 3d | Folder program: write operations, chunks, read-back, `publish` | FUSE tests on the test machine (a file written across chunks, a write inside a sent chunk, rename over a file, `rm -rf`, an open file left out, lock names; the version map kept across a restart of the program and of the service); the end-to-end test against the service: a stale save after a service restart, in place and by rename, is a conflict |
 | 3e | Live proof (coordinator runs it): read-write operator mounts in a machine on each node, one test company | below |
 

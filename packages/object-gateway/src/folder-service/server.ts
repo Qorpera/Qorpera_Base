@@ -8,13 +8,23 @@ import {
 	FrameReader,
 	HELLO_MAX_PAYLOAD,
 	Kind,
-	PROTOCOL,
+	MAX_PAYLOAD,
 	ProtocolError,
 	parseAck,
 	parseBridge,
+	parseChunkPart,
+	parseClose,
+	parseExecutable,
+	parseGetChunk,
 	parseHello,
 	parseList,
+	parseMkdir,
+	parseOpen,
+	parsePublish,
 	parseRead,
+	parseRemove,
+	parseRename,
+	parseSearch,
 	REQUEST_MAX_PAYLOAD,
 } from "./protocol.ts";
 import type { ChangeMessage, FolderService, ViewHandle } from "./service.ts";
@@ -40,6 +50,8 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 	let bridge: BridgeInfo | undefined;
 	let handle: ViewHandle | undefined;
 	let role: "io" | "feed" | undefined;
+	/** The machine speaks protocol 2 and its view takes writes. */
+	let writes = false;
 	let busy = false;
 	let opening = false;
 	let ended = false;
@@ -127,13 +139,17 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 				return;
 			}
 			role = hello.role;
-			reader.limit = REQUEST_MAX_PAYLOAD;
+			writes = hello.protocol >= 2 && handle.writable && role === "io";
+			// A chunk's parts are up to 1 MiB: a writing connection takes frames up to the protocol's limit. `readOnly`
+			// says whether the view takes writes, on either role: the folder program learns it from its feed's hello and
+			// mounts read-write, and its writes then go on `io` connections only.
+			reader.limit = writes ? MAX_PAYLOAD : REQUEST_MAX_PAYLOAD;
 			send(
 				encodeJson(Kind.helloOk, {
-					protocol: PROTOCOL,
+					protocol: hello.protocol,
 					viewId: hello.viewId,
 					asOfSeq: handle.asOfSeq,
-					readOnly: true,
+					readOnly: !(hello.protocol >= 2 && handle.writable),
 				}),
 			);
 			if (role === "feed")
@@ -170,9 +186,70 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 				send(encodeFrame(Kind.data, bytes));
 				return;
 			}
-			default:
-				throw new ProtocolError(ErrorCode.badRequest, "Unknown request", true);
+			case Kind.search:
+				send(encodeJson(Kind.found, await handle.search(parseSearch(frame.payload))));
+				return;
 		}
+		// Writes (protocol 2), on a writing connection only.
+		const write = [
+			Kind.open,
+			Kind.chunk,
+			Kind.getChunk,
+			Kind.close,
+			Kind.mkdir,
+			Kind.unlink,
+			Kind.rmdir,
+			Kind.rename,
+			Kind.executable,
+			Kind.publish,
+		] as number[];
+		if (!write.includes(frame.kind)) throw new ProtocolError(ErrorCode.badRequest, "Unknown request", true);
+		if (!writes) throw new ProtocolError(ErrorCode.readOnly, "This view is read-only");
+		switch (frame.kind) {
+			case Kind.open:
+				send(encodeJson(Kind.opened, await handle.open(parseOpen(frame.payload))));
+				return;
+			case Kind.chunk:
+				await handle.chunk(parseChunkPart(frame.payload));
+				break;
+			case Kind.getChunk: {
+				const request = parseGetChunk(frame.payload);
+				const bytes = await handle.getChunk(request.handle, request.index);
+				send(encodeFrame(Kind.data, bytes.subarray(request.offset, request.offset + request.length)));
+				return;
+			}
+			case Kind.close: {
+				const request = parseClose(frame.payload);
+				send(encodeJson(Kind.done, await handle.close(request.handle, request.size)));
+				return;
+			}
+			case Kind.mkdir:
+				await handle.mkdir(parseMkdir(frame.payload).path);
+				break;
+			case Kind.unlink: {
+				const request = parseRemove(frame.payload);
+				await handle.unlink(request.path, request.base);
+				break;
+			}
+			case Kind.rmdir: {
+				const request = parseRemove(frame.payload);
+				await handle.rmdir(request.path, request.base);
+				break;
+			}
+			case Kind.rename:
+				await handle.rename(parseRename(frame.payload));
+				break;
+			case Kind.executable: {
+				const request = parseExecutable(frame.payload);
+				send(encodeJson(Kind.done, await handle.setExecutable(request.path, request.executable, request.base)));
+				return;
+			}
+			case Kind.publish:
+				parsePublish(frame.payload);
+				send(encodeJson(Kind.report, await handle.publish()));
+				return;
+		}
+		send(encodeJson(Kind.done, {}));
 	};
 
 	socket.on("data", (data: Buffer) => {
@@ -193,13 +270,5 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 
 /** Errors about one request; the connection carries on. */
 function requestError(code: ErrorCode): boolean {
-	return (
-		code === ErrorCode.notFound ||
-		code === ErrorCode.notAFolder ||
-		code === ErrorCode.notAFile ||
-		code === ErrorCode.stale ||
-		code === ErrorCode.denied ||
-		code === ErrorCode.unavailable ||
-		code === ErrorCode.badRequest
-	);
+	return code !== ErrorCode.viewClosed && code !== ErrorCode.viewRefused;
 }

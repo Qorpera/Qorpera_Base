@@ -219,6 +219,7 @@ export interface CloudWakeEnvelope {
 			| "worker-dispatch"
 			| "worker-completion"
 			| "machine-event"
+			| "machine-checkin"
 			| "event"
 			| "human-task";
 		id: string;
@@ -657,6 +658,61 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			)
 				throw new Error("Invalid machine event wake");
 			uuid(event.machineId);
+		}
+	} else if (wake.kind === "agent" && source.kind === "machine-checkin") {
+		// A typed internal continuation of the agent's own run: a program it started has kept a machine busy for hours
+		// since it last worked with it (the one idle rule's check-in, amendment of 2026-10-03, item 5). A notice: the
+		// program keeps running until the agent stops it.
+		const asked = closed(payloadBody, ["schema", "parentRunId", "checkins", "stillWaiting"]);
+		if (
+			asked.schema !== "qorpera.machine-checkin/v1" ||
+			parentRunId === null ||
+			uuidKey(parentRunId) === uuidKey(identity.runId) ||
+			uuid(asked.parentRunId) !== parentRunId ||
+			actorStaffId !== null ||
+			actorUserId !== null ||
+			audience.kind !== "company" ||
+			wake.routine !== null ||
+			(audience.sessionId === null && policy.final !== "forbidden") ||
+			!source.occurrenceKey.startsWith("machine-checkin:") ||
+			!Number.isSafeInteger(asked.stillWaiting) ||
+			(asked.stillWaiting as number) < 0 ||
+			!Array.isArray(asked.checkins) ||
+			asked.checkins.length < 1 ||
+			asked.checkins.length > 8
+		)
+			throw new Error("Invalid machine check-in wake");
+		for (const [index, item] of asked.checkins.entries()) {
+			const checkin = closed(item, [
+				"checkinId",
+				"machineKind",
+				"since",
+				"askedAt",
+				"machine",
+				"busyHours",
+				"running",
+				"more",
+			]);
+			if (
+				(index === 0 && uuid(checkin.checkinId) !== source.id) ||
+				!["computer", "machine", "coding"].includes(checkin.machineKind as string) ||
+				typeof checkin.since !== "string" ||
+				typeof checkin.askedAt !== "string" ||
+				typeof checkin.machine !== "string" ||
+				!Number.isSafeInteger(checkin.busyHours) ||
+				(checkin.busyHours as number) < 1 ||
+				!Number.isSafeInteger(checkin.more) ||
+				(checkin.more as number) < 0 ||
+				!Array.isArray(checkin.running) ||
+				checkin.running.length > 8
+			)
+				throw new Error("Invalid machine check-in wake");
+			uuid(checkin.checkinId);
+			for (const running of checkin.running) {
+				const program = closed(running, ["command", "startedAt"]);
+				if (typeof program.command !== "string" || typeof program.startedAt !== "string")
+					throw new Error("Invalid machine check-in wake");
+			}
 		}
 	} else if (wake.kind === "agent" && source.kind === "human-task") {
 		// A human task the agent asked for (H2c): someone else changed it, or its due passed. No parent run and no message:

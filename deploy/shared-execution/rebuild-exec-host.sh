@@ -90,9 +90,17 @@ if [[ -n ${BUNDLE} && ! ${BUNDLE} =~ ^[0-9a-f]{64}$ ]]; then
 	echo "EXEC_RUNTIME_BUNDLE_SHA256 must be a sha256." >&2
 	exit 1
 fi
-for file in qorpera-shared-execution-service.mjs install-shared-execution-guest.sh manifest.json; do
+for file in qorpera-shared-execution-service.mjs install-shared-execution-guest.sh manifest.json qorpera-folder qorpera-folder-mount@.service \
+	qorpera-folder-relay@.socket qorpera-folder-relay@.service; do
 	[[ -f ${PACKAGE}/${file} ]] || { echo "Package is incomplete: ${PACKAGE}/${file}" >&2; exit 1; }
 done
+# The installer refuses a folder program other than the pinned build, but only after the root disk is replaced:
+# check it here, before anything stops.
+pinned=$(sed -n 's/^EXPECTED_FOLDER_PROGRAM_SHA256="\([0-9a-f]\{64\}\)"$/\1/p' "${PACKAGE}/install-shared-execution-guest.sh")
+if [[ -z ${pinned} || $(sha256sum "${PACKAGE}/qorpera-folder" | cut -d' ' -f1) != "${pinned}" ]]; then
+	echo "${PACKAGE}/qorpera-folder is not the folder program the installer pins (${pinned:-none}); build it with scripts/build-folder-program.mjs from this commit." >&2
+	exit 1
+fi
 for file in shared-execution.env runner-orchestrator.env credentials/qorpera-runner-provider credentials/qorpera-supabase-service-key; do
 	[[ -f ${STAGING}/${file} ]] || { echo "Staging is incomplete: ${STAGING}/${file}" >&2; exit 1; }
 done
@@ -236,12 +244,15 @@ os.replace(temporary, path)' "${STAGING}/runner-orchestrator.env"
 unset control_token
 push "${STAGING}/runner-orchestrator.env" /etc/qorpera/runner-orchestrator.env 0600
 for name in "${STAGING}"/credentials/*; do
+	# G2-5: the service key stays on the node host, for this script's own calls; the host and its slots hold none
+	# (the service refuses one).
+	[[ $(basename "${name}") == qorpera-supabase-service-key ]] && continue
 	mode=0600
 	[[ ${name} == *.crt ]] && mode=0644
 	push "${name}" "/etc/qorpera/shared-execution-credentials/$(basename "${name}")" "${mode}"
 done
 exec_in chmod 700 /etc/qorpera/shared-execution-credentials
-# G2-3e: the host's own credential (migration 20260930011000), for the service's own database calls. Minted here at
+# G2-3e: the host's own credential (migration 20260928469230), for the service's own database calls. Minted here at
 # every rebuild (the old one fails at once), bound by its sha256 to the host's adapter and orchestrator, written into
 # the host straight from a private temporary directory: never into staging, onto a command line or into this
 # script's output.

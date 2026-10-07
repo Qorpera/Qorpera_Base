@@ -8,6 +8,7 @@ import {
 	cloudActionReviewRequest,
 	cloudConnectorEffects,
 } from "./cloud-action-review.ts";
+import { composeCloudAgentHead, readCloudAgentHeadVision } from "./cloud-agent-head.ts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
 import {
 	type CloudChatGptPlanAuth,
@@ -29,6 +30,7 @@ import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
 import { CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
 import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import { CloudFolderNotebooks } from "./cloud-folder-notebooks.ts";
+import { CloudFolderProposals } from "./cloud-folder-proposals.ts";
 import { CloudFolderRoutineDecision } from "./cloud-folder-routine-decision.ts";
 import { CloudFolderRoutines } from "./cloud-folder-routines.ts";
 import { CloudFolderSearch, cloudFolderSearchTool } from "./cloud-folder-search-tool.ts";
@@ -378,11 +380,22 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					context.identity.audienceKind === "company" && !cloudWorkerToolFilter(wake).isWorker
 						? describeCloudAgentOpenWork(binding, this.#paths, signal).catch(() => undefined)
 						: Promise.resolve(undefined);
+				// Changes the agent saved from a computer that wait for review (P40): listed only where it can
+				// raise a card (its own conversation or thread, not a worker), the same rule the folder core keeps.
+				const proposalsRequest =
+					folder &&
+					context.identity.audienceKind === "company" &&
+					context.identity.sessionId !== null &&
+					!cloudWorkerToolFilter(wake).isWorker &&
+					(wake.kind !== "room" || cloudWakeIsOwnThread(wake))
+						? CloudFolderProposals.list(folder.client, signal)
+						: Promise.resolve(undefined);
 				// The agent's own notebook (contract 15.1) and its skill catalog (15.2) are
 				// composed side by side through the trusted read lane; an unreadable one
 				// degrades to "unavailable" and the run still starts, because neither is a
-				// precondition of company work.
-				const [memory, skills] = await Promise.all([
+				// precondition of company work. The vision, for the head (RUNTIME-AGENT-MEMORY-TREE.md
+				// §5.6), is read beside them; a failed read fails the composition, as the head is never cut.
+				const [memory, skills, vision] = await Promise.all([
 					Promise.resolve()
 						.then(() =>
 							composeCloudAgentMemory(
@@ -402,20 +415,48 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							return unavailableCloudAgentSkills(cloudRuntimeErrorCategory(error, signal));
 						},
 					),
+					readCloudAgentHeadVision(notebooks?.composition ?? gateway, signal),
 				]);
-				return { initialPresence, gateway, memory, skills, openWork: await openWorkRequest };
+				return {
+					initialPresence,
+					gateway,
+					memory,
+					skills,
+					vision,
+					openWork: await openWorkRequest,
+					proposals: await proposalsRequest,
+				};
 			};
-			const { initialPresence, gateway, memory, skills, openWork } = await composeContext().catch(async (error) => {
-				await connectorTools();
-				throw error;
-			});
+			const { initialPresence, gateway, memory, skills, vision, openWork, proposals } = await composeContext().catch(
+				async (error) => {
+					await connectorTools();
+					throw error;
+				},
+			);
 			const connectorDescriptors = await connectorTools();
 			signal.throwIfAborted();
-			const prompt = composeCloudNativeCompanyPrompt(context, wake, initialPresence, memory, openWork, skills);
-			composition.finish("succeeded", { outputBytes: Buffer.byteLength(prompt) });
-			const contextSha256 = createHash("sha256").update(prompt).digest("hex");
-			// What composition read from the folder is released under the composed context before any model request.
-			await notebooks?.releaseComposition(contextSha256, signal);
+			const head = composeCloudAgentHead(context, vision, memory);
+			// The primary view (M1, §5.3) goes after the head; none yet.
+			const views = "";
+			const prompt = composeCloudNativeCompanyPrompt(
+				context,
+				wake,
+				initialPresence,
+				memory,
+				openWork,
+				skills,
+				proposals?.context,
+				head,
+			);
+			// The run's context is its head and views (in the developer instructions) and its context message, hashed
+			// together.
+			const composed = `${head.text}\n${views}\n${prompt}`;
+			const contextBytes = Buffer.byteLength(composed);
+			composition.finish("succeeded", { outputBytes: contextBytes });
+			const contextSha256 = createHash("sha256").update(composed).digest("hex");
+			// What composition read from the folder is released under the composed context before any model request, with
+			// the paths of the proposals it shows (P40b).
+			await notebooks?.releaseComposition(contextSha256, signal, proposals?.reads);
 			const mouth = new CloudAgentMouth(
 				binding.runId,
 				async (input) => {
@@ -553,7 +594,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								p_reasoning_policy_sha256: context.identity.reasoningPolicySha256,
 								p_tool_catalog_text: toolCatalogText,
 								p_context_sha256: contextSha256,
-								p_context_bytes: Buffer.byteLength(prompt),
+								p_context_bytes: contextBytes,
 							},
 							requestSignal,
 						);
@@ -568,7 +609,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							reasoningPolicySha256: context.identity.reasoningPolicySha256,
 							toolCatalogSha256: createHash("sha256").update(toolCatalogText).digest("hex"),
 							contextSha256,
-							contextBytes: Buffer.byteLength(prompt),
+							contextBytes,
 						};
 						if (
 							!started ||
@@ -588,7 +629,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					isolation: this.#isolation,
 					...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
 					prompt,
-					runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake),
+					runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake, { head: head.text, views }),
 					signal,
 					timeoutMs: this.#timeoutMs,
 					// Auto-review (v130): acting calls wait for the reviewer, or for a member's approval.
@@ -661,9 +702,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											broker: this.#secretBroker,
 										})
 									: []),
-								// The company's own website accounts (A1-4): not a worker's, and a folder company's come
-								// with its connection files (A1-7).
-								...(this.#companyAccounts && !work.isWorker && !context.folder
+								// The company's own website accounts (A1-4): not a worker's. They serve companies on the
+								// company folder only (A1-7, migration 20260930072000), whose vault writes their connection files.
+								...(this.#companyAccounts && !work.isWorker && context.folder
 									? [
 											cloudCompanyAccountTool({
 												binding,
@@ -851,6 +892,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								!work.isWorker
 									? [ask]
 									: []),
+								// Listed only for a run that may raise their cards (composeContext).
+								...(proposals ? proposals.tools(operations) : []),
 							],
 							assertContext: (requestSignal) => gateway.assertReadableContext(requestSignal),
 							recordContextView: (frame, outputs, requestSignal) =>

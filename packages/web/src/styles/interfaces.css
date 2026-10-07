@@ -241,6 +241,35 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 	/* On a phone the lanes stack, each as wide as the page. */
 	.interface-board { grid-auto-flow: row; grid-auto-columns: auto; overflow-x: visible; }
 }
+
+/* Text, numbers and a calendar (folder pages): prose, quiet tiles with a small trend line, and days with their things. */
+.interface-text .message-prose { font-size: 13.5px; overflow-wrap: anywhere; }
+.interface-text .message-prose > :first-child { margin-top: 0; }
+.interface-text .message-prose > :last-child { margin-bottom: 0; }
+.interface-number-tiles {
+	display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin: 0; padding: 0;
+	list-style: none;
+}
+.interface-number {
+	display: grid; gap: 2px; width: 100%; height: 100%; padding: 9px 10px; border: 1px solid var(--border);
+	border-radius: 10px; background: var(--bg); color: var(--text); font: inherit; text-align: left;
+}
+button.interface-number { cursor: pointer; }
+button.interface-number:hover, .interface-number.is-open { background: var(--hover); }
+button.interface-number:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: 1px; }
+.interface-number-label { color: var(--text-muted); font-size: 12px; font-weight: 600; }
+.interface-number-value { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.interface-number-change, .interface-number-target { color: var(--text-muted); font-size: 11.5px; }
+.interface-trend { display: block; width: 100%; height: 32px; margin-top: 4px; color: var(--composer-accent); }
+.interface-days { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.interface-day h3 { margin: 0 0 2px; color: var(--text-muted); font-size: 12px; font-weight: 600; }
+.interface-day-items { display: grid; margin: 0; padding: 0; list-style: none; }
+.interface-day-items .interface-item { padding: 5px 4px; }
+.interface-day-items .interface-item-figure .figure { width: 22px; height: 22px; }
+@media (max-width: 760px) {
+	/* On a phone the tiles stack. */
+	.interface-number-tiles { grid-template-columns: minmax(0, 1fr); }
+}
 @media (prefers-reduced-motion: reduce) {
 	.interface-emblem .emblem-beat, .interface-live-dot, .interface-dots i { animation: none; }
 	.interface-lane, .interface-card, .interface-card.is-settling { transition: none; }

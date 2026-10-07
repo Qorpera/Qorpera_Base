@@ -161,11 +161,17 @@ function pauseWords(reason: string | undefined, agentName: string): string | nul
 	}
 }
 
-/** Why a login was refused for a routine, in plain words (20260930064000). */
+/** Why a login was refused for a routine, in plain words (20260930095000). */
 function refusalWords(reason: WebRoutineLoginRefusal): string {
 	switch (reason) {
+		case "stopped":
+			return t("The company is stopped, so its routines can't change now.");
 		case "cannot_pay":
 			return t("This login can't pay for work while you're away right now. Choose another one.");
+		case "usage_limit":
+			return t("This login has reached its usage limit. Choose another one, or wait until it resets.");
+		case "sign_in":
+			return t("Sign in to this login again in Settings → My connections, or choose another one.");
 		case "plan_listener":
 			return t("A ChatGPT plan can't pay for routines that start on a file change or a webhook.");
 		case "not_yours":
@@ -276,7 +282,7 @@ export class AgentRoutines {
 	/** The routines whose file this member finds: only those have a switch and Edit. */
 	#files: ReadonlySet<string> = new Set();
 	#accounts: WebMemberConnection[] = [];
-	/** Who pays for each listed routine, read after each list read (20260930064000). A routine whose read failed, or
+	/** Who pays for each listed routine, read after each list read (20260930095000). A routine whose read failed, or
 	 * a cloud without the read, has none, and its card says nothing of it. */
 	#payers: ReadonlyMap<string, WebRoutinePayer> = new Map();
 	/** The routine whose "Choose a login" is open: the member's own logins that can pay for it, the one chosen, and
@@ -468,7 +474,7 @@ export class AgentRoutines {
 			routine.status === "paused" && !this.#runsNow(routine)
 				? pauseWords(routine.pauseReason, this.#agent().displayName)
 				: null;
-		// Who pays, and since when (20260930064000). A routine whose login cannot pay waits for one: a member who may
+		// Who pays, and since when (20260930095000). A routine whose login cannot pay waits for one: a member who may
 		// write chooses one of their own logins here.
 		const paid = this.#payers.get(id);
 		const choice = paid && !paid.canPay && this.#mayChoose() && known && !ended ? this.#loginChoice(routine) : null;
@@ -598,7 +604,12 @@ export class AgentRoutines {
 									)
 								: null,
 							paid && (paid.payer || choice)
-								? fact(t("Who pays"), paid.payer ? this.#paidBy(paid) : null, choice)
+								? fact(
+										t("Who pays"),
+										paid.payer ? this.#paidBy(paid) : null,
+										paid.payer ? this.#waitWords(paid) : null,
+										choice,
+									)
 								: null,
 							fact(t("Last run"), last ? runLabel(last) : t("Has not run yet")),
 						),
@@ -616,6 +627,23 @@ export class AgentRoutines {
 			name: (paid.payerUserId && this.#access?.memberName?.(paid.payerUserId)) || t("a member"),
 			date,
 		});
+	}
+	/** Why the routine's login can't pay now, under "Paid by" (20260930095000); null when there is nothing to add. The
+	 * routine keeps the login, and its runs wait until it can pay again. */
+	#waitWords(paid: WebRoutinePayer): HTMLElement | null {
+		if (paid.waitsFor === "usage_limit")
+			return h("small", null, t("Runs wait until this login's usage limit resets."));
+		if (paid.waitsFor !== "sign_in") return null;
+		if (paid.payerUserId === this.#access?.memberId)
+			return h("small", null, t("Sign in to this login again in Settings → My connections to let it run."));
+		const name = paid.payerUserId && this.#access?.memberName?.(paid.payerUserId);
+		return h(
+			"small",
+			null,
+			name
+				? t("Runs wait until {name} signs in to this login again.", { name })
+				: t("Runs wait until this login is signed in again."),
+		);
 	}
 	/** "Choose a login" for a routine whose login cannot pay: a button, and once pressed, the member's own logins that
 	 * can pay for it, or what to do when none can. */
@@ -855,9 +883,11 @@ export class AgentRoutines {
 		// place it was moved to whose change no read has confirmed yet.
 		const previous = this.#flipped.get(id);
 		const enabled = !this.#runsNow(routine);
-		// A routine whose login can't pay keeps it on a resume and goes on waiting (20260930064000): the switch opens
-		// its card on "Choose a login" instead. Without that read, the switch resumes as before.
-		if (enabled && this.#payers.get(id)?.canPay === false) {
+		// A routine whose login can't pay keeps it on a resume and goes on waiting (20260930095000): the switch opens
+		// its card on "Choose a login" instead. Without that read, the switch resumes as before, and so it does for a
+		// login that is only at its usage limit or needs a new sign-in: the routine runs on it once it can pay again.
+		const paid = this.#payers.get(id);
+		if (enabled && paid?.canPay === false && paid.waitsFor !== "usage_limit" && paid.waitsFor !== "sign_in") {
 			if (this.#open !== id) this.#expand(id);
 			if (this.#choosing?.routineId === id) this.#focusChoice(id);
 			else void this.#openChoice(routine);

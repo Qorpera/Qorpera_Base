@@ -54,6 +54,12 @@ import {
 	UUID_PATTERN,
 } from "./parse.ts";
 import { type CloudPresenceHandle, joinCompanyPresence, type PresenceHealth, type PresenceMember } from "./presence.ts";
+import {
+	type FolderProposalPage,
+	type FolderProposalStatus,
+	parseFolderProposalDiscard,
+	parseFolderProposalPage,
+} from "./proposals.ts";
 import type { MessageQuote } from "./quotes.ts";
 import type { RealtimePhase } from "./realtime.ts";
 import { type ActionReviewAnswer, type ActionReviewReceipt, parseActionReviewReceipt } from "./review-rules.ts";
@@ -594,6 +600,28 @@ export class CloudApi {
 				p_client_request_id: requiredUuid(clientRequestId, "Client request id"),
 			})
 			.then((value) => parseCodingSession(value, asked));
+	}
+
+	/** The first page of the caller's open proposals of one agent: changes its runs saved that wait for review (P40c). */
+	listAgentProposals(environmentId: string, staffAgentId: string): Promise<FolderProposalPage> {
+		return this.cloud
+			.rpc("qorpera_member_folder_agent_proposals", {
+				p_environment_id: requiredUuid(environmentId, "Company id"),
+				p_staff_agent_id: requiredUuid(staffAgentId, "Staff agent id"),
+				p_request: {},
+			})
+			.then(parseFolderProposalPage);
+	}
+
+	/** The member discards a proposal; the answer is how it stands now (a decided one answers as it was decided). */
+	discardProposal(environmentId: string, proposalId: string): Promise<FolderProposalStatus> {
+		const id = requiredUuid(proposalId, "Proposal id");
+		return this.cloud
+			.rpc("qorpera_member_folder_discard_proposal", {
+				p_environment_id: requiredUuid(environmentId, "Company id"),
+				p_proposal_id: id,
+			})
+			.then((value) => parseFolderProposalDiscard(value, id));
 	}
 
 	listSessionInputs(sessionId: string, afterPosition = 0, limit = 100): Promise<PendingSessionInputPage> {

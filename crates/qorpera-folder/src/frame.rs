@@ -20,6 +20,23 @@ pub mod kind {
 	pub const CHANGE: u8 = b'c';
 	pub const ACK: u8 = b'a';
 	pub const ERROR: u8 = b'e';
+	// Writes (protocol 2).
+	pub const OPEN: u8 = b'O';
+	pub const OPENED: u8 = b'o';
+	/// One part of a chunk: `[u32 header length][header JSON][bytes]`.
+	pub const CHUNK: u8 = b'K';
+	/// Part of an open file's chunk back (answered with `d`).
+	pub const GET_CHUNK: u8 = b'G';
+	pub const CLOSE: u8 = b'C';
+	pub const MKDIR: u8 = b'M';
+	pub const UNLINK: u8 = b'U';
+	pub const RMDIR: u8 = b'D';
+	pub const RENAME: u8 = b'N';
+	pub const EXECUTABLE: u8 = b'X';
+	/// A write request's answer.
+	pub const DONE: u8 = b'k';
+	pub const PUBLISH: u8 = b'P';
+	pub const REPORT: u8 = b'p';
 }
 
 pub fn write_frame(w: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {

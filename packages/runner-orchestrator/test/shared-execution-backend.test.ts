@@ -17,6 +17,7 @@ import {
 	type SharedExecutionUnitControl,
 	sharedExecutionAcquisitionId,
 } from "../src/shared-execution-backend.ts";
+import { folderSearch } from "../src/shared-execution-cli.ts";
 import type { SharedExecutionIdentityState } from "../src/shared-execution-identity.ts";
 
 const roots: string[] = [];
@@ -106,8 +107,11 @@ class FakeUnits implements SharedExecutionUnitControl {
 	readonly unkillable = new Set<string>();
 	/** Running units whose health endpoint does not answer yet (still loading). */
 	readonly loading = new Set<string>();
+	/** Units whose start fails. */
+	readonly failing = new Set<string>();
 	async start(unit: string): Promise<void> {
 		this.log.push(`start ${unit}`);
+		if (this.failing.has(unit)) throw new Error(`${unit} failed`);
 		this.activeUnits.add(unit);
 	}
 	async stop(unit: string): Promise<void> {
@@ -165,6 +169,7 @@ async function fixture(
 		codingCommand?: { origin: string; token: string };
 		mountInfoPath?: string;
 		warmIdleMs?: number;
+		folderSearch?: boolean;
 		executionHostCredential?: string;
 	} = {},
 ): Promise<Fixture> {
@@ -238,7 +243,6 @@ async function fixture(
 		adapterId: "native26-test",
 		hostId: "qorpera-exec-test",
 		supabaseUrl: "https://project.supabase.test",
-		supabaseServiceKey: "service-key",
 		supabasePublishableKey: "publishable-key",
 		stateRoot,
 		runRoot,
@@ -258,6 +262,7 @@ async function fixture(
 		nativeCompanyRuntime: runtime,
 		startTimeoutMs: 5000,
 		...(options.warmIdleMs === undefined ? {} : { warmIdleMs: options.warmIdleMs }),
+		...(options.folderSearch ? { folderSearch: true } : {}),
 		executionHostCredential: options.executionHostCredential ?? hostCredential,
 	};
 	const fakeFetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
@@ -412,10 +417,10 @@ describe("shared execution provider backend", () => {
 		const f = await fixture({ executionHostCredential: credential });
 		const signal = new AbortController().signal;
 		const runner = await f.backend.acquire(runId, work(), signal);
-		// The service key still reaches the slot's native host (until G2-5), never a call of the service's own.
-		expect(
-			await readFile(join(f.runRoot, "slots", "0", "credentials", "qorpera-supabase-service-key"), "utf-8"),
-		).toBe("service-key\n");
+		// G2-5: no service key reaches the slot.
+		await expect(
+			stat(join(f.runRoot, "slots", "0", "credentials", "qorpera-supabase-service-key")),
+		).rejects.toMatchObject({ code: "ENOENT" });
 		await f.backend.deliver(runner, delivery(token()));
 		f.units.activeUnits.delete("qorpera-shared-runner@0.service");
 		await f.backend.reconcile();
@@ -454,6 +459,34 @@ describe("shared execution provider backend", () => {
 		expect(environment).not.toContain(gateway.token);
 	});
 
+	it("gives the native host the node's folder search when it is on: the slot's relay socket, started first", async () => {
+		const f = await fixture({ folderSearch: true });
+		await f.backend.acquire(runId, work(), new AbortController().signal);
+		expect(f.units.log).toEqual([
+			"start qorpera-folder-relay@0.socket",
+			"start qorpera-shared-run-host@0.service",
+			"start qorpera-shared-runner@0.service",
+		]);
+		const environment = await readFile(join(f.runRoot, "slots", "0", "native-provider.env"), "utf-8");
+		expect(environment).toContain("QORPERA_FOLDER_SEARCH_SOCKET=/run/qorpera-folder-relay/0.sock\n");
+		// Off unless on; anything else is refused at start.
+		expect(folderSearch({})).toBe(false);
+		expect(folderSearch({ QORPERA_SHARED_EXECUTION_FOLDER_SEARCH: "off" })).toBe(false);
+		expect(folderSearch({ QORPERA_SHARED_EXECUTION_FOLDER_SEARCH: "on" })).toBe(true);
+		expect(() => folderSearch({ QORPERA_SHARED_EXECUTION_FOLDER_SEARCH: "yes" })).toThrow("on or off");
+		// A relay that does not start costs the run its search, never the run.
+		const broken = await fixture({ folderSearch: true });
+		broken.units.failing.add("qorpera-folder-relay@0.socket");
+		await expect(broken.backend.acquire(runId, work(), new AbortController().signal)).resolves.toMatchObject({
+			runnerId,
+		});
+		const off = await fixture();
+		await off.backend.acquire(runId, work(), new AbortController().signal);
+		expect(await readFile(join(off.runRoot, "slots", "0", "native-provider.env"), "utf-8")).not.toContain(
+			"QORPERA_FOLDER_SEARCH_SOCKET",
+		);
+	});
+
 	it("starts a sandbox pair on a free slot, delivers the assignment, and retires the slot when the runner exits", async () => {
 		const f = await fixture();
 		const signal = new AbortController().signal;
@@ -489,7 +522,6 @@ describe("shared execution provider backend", () => {
 			"qorpera-office-native",
 			"qorpera-runner-activation",
 			"qorpera-runner-assignment",
-			"qorpera-supabase-service-key",
 		]);
 		for (const name of credentials) expect((await stat(join(slotRun, "credentials", name))).mode & 0o077).toBe(0);
 		// G2-3: the run's machine's identity credential, bound by its hash only, for the slot's native host.

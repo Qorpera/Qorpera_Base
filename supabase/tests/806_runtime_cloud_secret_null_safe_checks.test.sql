@@ -1,17 +1,19 @@
--- @fixture 290_company_file_path_gateway.test.sql until "create function pg_temp.path_plan("
--- 20260928429988: the vault's functions refuse a missing proof. The shared vault's database login
--- (qorpera_secret_broker) serves every company, and the capability hash is the only proof that a call is for one.
--- `a <> b` and `x !~ p` are unknown, not true, when a side is NULL, and an unknown condition skipped the refusal:
--- a NULL capability, capture capability, digest, envelope or operation fact passed. Real admission, assignment and
--- native lease from the 290 fixture, a real capture ticket and a real executing effect receipt.
+-- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
+-- 20260928429988 on a folder-v2 company (ported from snapshot-v1 in the legacy sweep): the vault's functions refuse a
+-- missing proof. The shared vault's database login (qorpera_secret_broker) serves every company, and the capability
+-- hash is the only proof that a call is for one. `a <> b` and `x !~ p` are unknown, not true, when a side is NULL, and an
+-- unknown condition skipped the refusal: a NULL capability, capture capability, digest, envelope or operation fact
+-- passed. On 924's folder-v2 company: Alice's run (a real claim, runner, assignment and native lease), a real capture
+-- ticket begun by the owner and a real executing effect receipt.
 -- 1. Describing a capture ticket: a NULL or wrong broker capability, a NULL or wrong capture capability, and another
 --    company's broker with its own real capability.
 -- 2. Sealing it: the same, plus a NULL, malformed or other envelope's digest and a NULL or empty envelope, on the
 --    pending ticket and again on the committed one (a repeat after a lost answer); the six-argument form too.
 --    Nothing is sealed until the right call, which then seals once.
--- 3. Authorizing an agent's connector call: a NULL or wrong broker capability, another company's broker, each of the
---    five operation facts the broker pins NULL or wrong, a NULL or wrong input digest, a NULL, malformed or wrong
---    downstream digest. Nothing is audited as authorized until the right call, which hands out the envelope once.
+-- 3. Authorizing an agent's connector call: a NULL or wrong broker capability, another company's broker on the same
+--    service origin, each of the five operation facts the broker pins NULL or wrong, a NULL or wrong input digest, a
+--    NULL, malformed or wrong downstream digest. Nothing is audited as authorized until the right call, which hands out
+--    the envelope once.
 -- Each NULL is refused with the error the wrong non-NULL value gets.
 
 insert into auth.users(id,email) values ('80600000-0000-4000-8000-000000000001','null-safe-other-owner@example.test');
@@ -20,8 +22,9 @@ values ('80600000-0000-4000-8000-000000000010','Other company','80600000-0000-40
 insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
 values ('80600000-0000-4000-8000-000000000010','80600000-0000-4000-8000-000000000001',
 	'null-safe-other-owner@example.test','Other owner','owner');
+-- Both brokers share one public origin, as in production.
 insert into public.qorpera_cloud_secret_broker_authorities(id,profile_id,service_origin,key_id,capability_sha256) values
-	('80600000-0000-4000-8000-000000000040','29000000-0000-4000-8000-000000000010',
+	('80600000-0000-4000-8000-000000000040','92400000-0000-4000-8000-000000000010',
 		'https://company41-node-01.tailbb15c7.ts.net:10000','company-kek-1',repeat('c',64)),
 	('80600000-0000-4000-8000-000000000041','80600000-0000-4000-8000-000000000010',
 		'https://company41-node-01.tailbb15c7.ts.net:10000','other-kek-1',repeat('e',64));
@@ -48,10 +51,10 @@ $$;
 grant execute on function pg_temp.ns_try(text), pg_temp.ns_expect(text,text,text) to qorpera_secret_broker;
 
 -- 1. and 2. The owner starts a company connection's capture; the broker holds the ticket's capability.
-select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
+select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
 set local role authenticated;
 select set_config('qorpera_test.ns_capture',public.qorpera_begin_cloud_secret_capture(
-	'29000000-0000-4000-8000-000000000010','29000000-0000-4000-8000-000000000020','company',null,
+	'92400000-0000-4000-8000-000000000010','92400000-0000-4000-8000-000000000020','company',null,
 	'linear','primary','Company Linear connection')::text,true);
 reset role;
 select set_config('qorpera_test.ns_ticket',current_setting('qorpera_test.ns_capture')::jsonb->>'ticketId',true);
@@ -172,23 +175,23 @@ begin
 end
 $$;
 
--- 3. The run's company holds a Gmail connection sealed by its own broker and granted to the run's agent; the run
--- acknowledges its wake and begins the tool call's effect receipt, as the runtime does.
+-- 3. The run's company holds a Gmail connection sealed by its own broker and granted to the run's agent (Alice); the
+-- run acknowledges its wake and begins the tool call's effect receipt, as the runtime does.
 insert into public.qorpera_cloud_secrets(id,profile_id,environment_id,broker_authority_id,owner_kind,owner_user_id,
 	connector_id,secret_name,purpose,current_version,created_by_user_id)
-values ('80600000-0000-4000-8000-000000000050','29000000-0000-4000-8000-000000000010',
-	'29000000-0000-4000-8000-000000000020','80600000-0000-4000-8000-000000000040','company',null,
-	'gmail','primary','Gmail account',1,'29000000-0000-4000-8000-000000000001');
+values ('80600000-0000-4000-8000-000000000050','92400000-0000-4000-8000-000000000010',
+	'92400000-0000-4000-8000-000000000020','80600000-0000-4000-8000-000000000040','company',null,
+	'gmail','primary','Gmail account',1,'92400000-0000-4000-8000-000000000001');
 insert into public.qorpera_cloud_secret_versions(secret_id,version,broker_authority_id,key_id,encrypted_envelope,
 	envelope_sha256,created_by_user_id)
 values ('80600000-0000-4000-8000-000000000050',1,'80600000-0000-4000-8000-000000000040','company-kek-1','\x0102',
-	encode(extensions.digest('\x0102'::bytea,'sha256'),'hex'),'29000000-0000-4000-8000-000000000001');
+	encode(extensions.digest('\x0102'::bytea,'sha256'),'hex'),'92400000-0000-4000-8000-000000000001');
 insert into public.qorpera_cloud_secret_operation_grants(id,profile_id,environment_id,secret_id,staff_agent_id,
 	connector_id,operation_id,operation_version,tool_name,issued_by_user_id)
-select '80600000-0000-4000-8000-000000000060','29000000-0000-4000-8000-000000000010',
-	'29000000-0000-4000-8000-000000000020','80600000-0000-4000-8000-000000000050',
-	'29000000-0000-4000-8000-000000000030',operation.connector_id,operation.operation_id,operation.version,
-	operation.tool_name,'29000000-0000-4000-8000-000000000001'
+select '80600000-0000-4000-8000-000000000060','92400000-0000-4000-8000-000000000010',
+	'92400000-0000-4000-8000-000000000020','80600000-0000-4000-8000-000000000050',
+	'92400000-0000-4000-8000-000000000030',operation.connector_id,operation.operation_id,operation.version,
+	operation.tool_name,'92400000-0000-4000-8000-000000000001'
 from public.qorpera_cloud_connector_operations as operation
 where operation.connector_id = 'gmail' and operation.operation_id = 'search_messages' and operation.status = 'active';
 select set_config('qorpera_test.ns_operation',(select jsonb_build_object('version',version,'adapter',adapter_sha256,
@@ -196,15 +199,12 @@ select set_config('qorpera_test.ns_operation',(select jsonb_build_object('versio
 	from public.qorpera_cloud_connector_operations
 	where connector_id = 'gmail' and operation_id = 'search_messages' and status = 'active'),true);
 
-select pg_temp.path_claims('service_role');
+select pg_temp.base_claims('service_role');
 set local role service_role;
 do $$
-declare b jsonb := current_setting('qorpera_test.path_binding')::jsonb;
+declare b jsonb := current_setting('qorpera_test.base_binding')::jsonb;
 begin
-	perform public.qorpera_send_native_agent_message((b ->> 'leaseId')::uuid,(b ->> 'runId')::uuid,
-		(b ->> 'jobId')::uuid,(b ->> 'runnerId')::uuid,(b ->> 'assignmentId')::uuid,
-		(b ->> 'credentialCapsuleId')::uuid,(b ->> 'computeIdentityId')::uuid,
-		'openai','codex-cli','null-safe-ack','Checking the mailbox.','progress');
+	perform pg_temp.base_public_send(b,'progress','null-safe-ack');
 	perform public.qorpera_begin_native_tool_operation(b,'80600000-0000-4000-8000-000000000070',
 		(current_setting('qorpera_test.ns_operation')::jsonb ->> 'tool') || ':80600000-0000-4000-8000-000000000060:k1',
 		repeat('a',64),repeat('b',64),false);
@@ -219,7 +219,7 @@ returns text language plpgsql as $$
 begin
 	return pg_temp.ns_try(format('select public.qorpera_authorize_cloud_secret_operation(%L,%L,%L::jsonb,%L,%L,%L,%L,'
 		'%L,%L,%L,%L,%L)',
-		p_authority,p_broker,current_setting('qorpera_test.path_binding'),
+		p_authority,p_broker,current_setting('qorpera_test.base_binding'),
 		'80600000-0000-4000-8000-000000000070',p_input,p_downstream,'80600000-0000-4000-8000-000000000060',
 		p_connector,p_operation,p_version,p_adapter,p_origin));
 end

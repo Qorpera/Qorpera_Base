@@ -13,6 +13,7 @@
  *
  * Release candidates still run the full `test` suite before a cut. */
 
+import { CARGO_BUILD } from "./folder-program-artifact.mjs";
 import { HOSTED_DB_SCRIPTS } from "./test-hosted-db.mjs";
 
 /** The function tests the old workflows ran (web-client and step2-lxd), and the artifact GC worker's (its folder phase,
@@ -183,11 +184,16 @@ export const STEPS = [
 	{
 		name: "folder-program",
 		why: "crates/qorpera-folder and the folder service: unit and FUSE tests in the pinned Rust image, then the built program against the service in Node (root and /dev/fuse in containers; vsock is proven live)",
-		paths: [/^crates\/qorpera-folder\//, /^packages\/object-gateway\/(src\/folder-service\/|test\/folder-)/],
+		paths: [
+			/^crates\/qorpera-folder\//,
+			/^packages\/object-gateway\/(src\/folder-service\/|test\/folder-)/,
+			/^deploy\/folder-service\/folder-program-linux-x64\.json$/,
+			/^scripts\/folder-program-artifact\.mjs$/,
+		],
 		// Crates are cached in a named volume between runs; the built program passes between the two containers in
 		// a volume of this run's own, removed at the end.
 		commands: [
-			`v=qorpera-folder-$(date +%s%N); docker volume create "$v" >/dev/null && docker run --rm ${FUSE} -e QORPERA_FOLDER_FUSE_TESTS=1 -e CARGO_TARGET_DIR=/tmp/target -v qorpera-cargo-registry:/usr/local/cargo/registry -v "$PWD/crates/qorpera-folder:/src:ro" -v "$v:/out" -w /src ${RUST_IMAGE} sh -c 'cargo test --locked && cargo build --locked --release && cp /tmp/target/release/qorpera-folder /out/' && docker run --rm ${FUSE} -e QORPERA_FOLDER_MOUNT_BIN=/out/qorpera-folder -v "$v:/out:ro" -v "$PWD:/repo" -w /repo/packages/object-gateway ${NODE_IMAGE} node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts; s=$?; docker volume rm "$v" >/dev/null; exit $s`,
+			`v=qorpera-folder-$(date +%s%N); docker volume create "$v" >/dev/null && docker run --rm ${FUSE} -e QORPERA_FOLDER_FUSE_TESTS=1 -e CARGO_TARGET_DIR=/tmp/target -v qorpera-cargo-registry:/usr/local/cargo/registry -v "$PWD/crates/qorpera-folder:/src:ro" -v "$v:/out" -w /src ${RUST_IMAGE} sh -c 'cargo test --locked && ${CARGO_BUILD} && cp /tmp/target/release/qorpera-folder /out/' && docker run --rm ${FUSE} -e QORPERA_FOLDER_MOUNT_BIN=/out/qorpera-folder -v "$v:/out:ro" -v "$PWD:/repo" -w /repo/packages/object-gateway ${NODE_IMAGE} sh -c 'node ../../scripts/folder-program-artifact.mjs --check /out/qorpera-folder && node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts'; s=$?; docker volume rm "$v" >/dev/null; exit $s`,
 		],
 	},
 	{
@@ -226,15 +232,19 @@ export const STEPS = [
 			/^packages\/runtime\/test\/fixtures\/wake-policies\.json$/,
 			/^packages\/runner-orchestrator\/src\/lxd-office-[a-z-]+-control\.ts$/,
 			/^packages\/web\/src\/cloud\/email-drafts\.ts$/,
-			// The folder service's parsers and tree, checked against the folder core's own answers.
-			/^packages\/object-gateway\/src\/folder-service\/(core|view-tree)\.ts$/,
+			// The folder service's parsers and tree, checked against the folder core's own answers. The folder core's
+			// acceptance script (F3-3c) also runs its writes, staging and mounts on the real commit. Not server.ts or cli.ts.
+			/^packages\/object-gateway\/src\/folder-service\/(core|view-tree|https-request|service|staging|mounts|machines|plan|pending|protocol|objects|search)\.ts$/,
 			/^scripts\/test-runtime-wake-envelope\.mjs$/,
 			// The connection-file writer's script runs the gateway's writer and the shared state-file parser on SQL.
-			// So does company creation's worker script (P14b).
-			/^packages\/object-gateway\/src\/(connection-files|company-folder-creation|platform-folder-writer|object-store|native-objects|dependency)\.ts$/,
+			// So does company creation's worker script (P14b). The folder core's acceptance script also runs the
+			// gateway's handler, its folder service route and its Supabase authority (F3-3c), and member folder commits.
+			/^packages\/object-gateway\/src\/(connection-files|company-folder-creation|platform-folder-writer|object-store|native-objects|dependency|service|supabase-authority|supabase-headers|folder-service-objects|folder-objects|member-folder-commits)\.ts$/,
 			/^packages\/cloud-client\/src\/company-state-files\.ts$/,
 			// The rolling update rehearsal runs this generator's packets.
 			/^scripts\/runtime-roll\.mjs$/,
+			// The agent exit's placement undo (test-agent-exit-placement-undo).
+			/^deploy\/agent-exit\/undo-\d{14}\.sql$/,
 			...HOSTED_DB_SCRIPTS.map(regex),
 		],
 		// Those two import the runtime's TypeScript, which imports built packages.
