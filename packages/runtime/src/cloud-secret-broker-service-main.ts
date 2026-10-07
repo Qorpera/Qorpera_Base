@@ -25,7 +25,11 @@ import {
 	PostgresCloudSecretBrokerAuthority,
 	PostgresCloudSecretBrokerPrincipal,
 } from "./cloud-secret-broker.ts";
-import { HttpCloudSecretBrokerService, parseMemberOrigin } from "./cloud-secret-broker-http.ts";
+import {
+	HttpCloudSecretBrokerService,
+	type NativeBindingProof,
+	parseMemberOrigin,
+} from "./cloud-secret-broker-http.ts";
 import { SharedCloudSecretBrokerCompanies } from "./cloud-secret-broker-shared.ts";
 import { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
 import { systemdCredentialMetadataIsSafe } from "./systemd-credential.ts";
@@ -310,6 +314,15 @@ export async function runCloudSecretBrokerServiceMain(
 			return pool.query<Row>(text, [...values]);
 		},
 	};
+	// G2-6a: a native host's request holds its run's lease before a runtime-token route serves its binding. The holder
+	// travels as a bound parameter, never in the statement text.
+	const proveBinding: NativeBindingProof = async (binding, holder) => {
+		const result = await databaseClient.query<{ proven: boolean }>(
+			"select public.qorpera_native_binding_proven($1::jsonb, $2) as proven",
+			[JSON.stringify(binding), holder],
+		);
+		if (result.rows[0]?.proven !== true) throw new Error("Native binding proof is refused");
+	};
 	if (shared) {
 		try {
 			await runSharedVault({
@@ -324,6 +337,7 @@ export async function runCloudSecretBrokerServiceMain(
 				chatGptPlan,
 				revoker: connectors?.revoker ?? new CloudConnectorTokenRevoker(),
 				runtimeToken,
+				proveBinding,
 				port: config.port as number,
 				memberOrigins,
 				oauth: connectors?.oauth,
@@ -386,6 +400,7 @@ export async function runCloudSecretBrokerServiceMain(
 			host: "127.0.0.1",
 			port: config.port as number,
 			memberOrigins,
+			proveBinding,
 			...(connectors ? { oauth: connectors.oauth } : {}),
 			...(codingExecutorToken ? { codingExecutorToken } : {}),
 			modelLogins,
@@ -436,6 +451,7 @@ async function runSharedVault(options: {
 	chatGptPlan: ChatGptPlanOAuth | undefined;
 	revoker: CloudConnectorTokenRevoker;
 	runtimeToken: string;
+	proveBinding: NativeBindingProof;
 	port: number;
 	memberOrigins: readonly string[];
 	oauth: CloudConnectorOAuthFlows | undefined;
@@ -453,6 +469,7 @@ async function runSharedVault(options: {
 		host: "127.0.0.1",
 		port: options.port,
 		memberOrigins: options.memberOrigins,
+		proveBinding: options.proveBinding,
 		...(options.oauth ? { oauth: options.oauth } : {}),
 		...(options.codingExecutorToken ? { codingExecutorToken: options.codingExecutorToken } : {}),
 	});
