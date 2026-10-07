@@ -25,6 +25,7 @@ import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
 import { AuthController } from "./auth.ts";
 import { CompanyController } from "./company.ts";
+import { CompanyMail } from "./company-mail.ts";
 import { FoundingController } from "./founding.ts";
 import { CompanyInterfaceFolder } from "./interface-folder.ts";
 import { CompanyInterfaceOffers } from "./interface-offers.ts";
@@ -219,6 +220,8 @@ export function mountApplication(
 	let interfaceFolder: CompanyInterfaceFolder | undefined;
 	/** The company's open offers of claimed cells, read with its interfaces (Interfaces step I9c). */
 	let interfaceOffers: CompanyInterfaceOffers | undefined;
+	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
+	let mail: CompanyMail | undefined;
 	let computer: WebCompanyComputer | undefined;
 	let computerPanels: ComputerPanels | undefined;
 	let liveFile: LiveCompanyFileView | undefined;
@@ -359,6 +362,8 @@ export function mountApplication(
 		interfaceFolder = undefined;
 		interfaceOffers?.dispose();
 		interfaceOffers = undefined;
+		mail?.dispose();
+		mail = undefined;
 		executionNotices.replaceChildren();
 		unsubscribeCompany?.();
 		conversation?.dispose();
@@ -811,6 +816,8 @@ export function mountApplication(
 			interfaceFolder = undefined;
 			interfaceOffers?.dispose();
 			interfaceOffers = undefined;
+			mail?.dispose();
+			mail = undefined;
 			liveFile?.dispose();
 			liveFile = undefined;
 			closeSettings(false);
@@ -938,6 +945,36 @@ export function mountApplication(
 			interfaceFolder = reader;
 			interfaceOffers = offers;
 			offers.open();
+			void reader.open();
+		}
+		// The company's mail, read the same way: whether it is on (the Mailbox's `mail` need) and what waits for a person.
+		if (mail && !state.team?.capabilities.read) {
+			mail.dispose();
+			mail = undefined;
+		}
+		if (!mail && state.team?.capabilities.read) {
+			// A waiting send's answer runs its agent on the member's model account, chosen as the agent's thread chooses it.
+			const accounts = createWebNativeSubscription(
+				cloud,
+				controller.profile.profileId,
+				controller.userId,
+				controller.signal,
+				() => {
+					const now = controller.store.get();
+					if (
+						disposed ||
+						company !== controller ||
+						auth.userId !== controller.userId ||
+						now.accessLost ||
+						!now.team?.capabilities.read
+					)
+						throw new Error(t("Company access changed."));
+				},
+			);
+			const reader = new CompanyMail(controller, cloud, accounts, (read) => {
+				if (mail === reader) controller.store.set({ mail: read });
+			});
+			mail = reader;
 			void reader.open();
 		}
 		if (route.section !== "chat") {
