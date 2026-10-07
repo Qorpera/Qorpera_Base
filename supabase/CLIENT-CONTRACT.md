@@ -880,7 +880,7 @@ a write under `human-tasks/` waits for P31.
   the caller's own actor `{kind: "member", userId}`. For the object gateway's member commit route, which calls it
   with the member's token; clients don't call it.
 - `qorpera_member_folder_agent_proposals(environment, staffAgentId, request)` (P40c,
-  `20260930102000_folder_proposals_member`): the changes one agent saved through a view for the caller that wait for
+  `20260928499170_folder_proposals_member`): the changes one agent saved through a view for the caller that wait for
   review (`deploy/first-node/RUNTIME-COMPANY-FOLDER-C2.md` §8). `request` is `{}` or `{cursor}` (22023 otherwise; a
   cursor that is not the caller's proposal of that agent is P0002). The answer is
   `{schema: "qorpera.member-folder-proposals/v1", proposals, moreProposals, nextCursor}`: oldest first, at most 4,
