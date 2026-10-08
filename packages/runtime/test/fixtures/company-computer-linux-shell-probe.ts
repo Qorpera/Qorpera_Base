@@ -5,6 +5,8 @@ import { constants } from "node:fs";
 import { lstat, mkdtemp, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
+import { startCompanyComputerBrowserEgress } from "../../src/cloud-company-computer-browser-egress.ts";
+import { companyComputerAgentPlugAddress } from "../../src/cloud-company-computer-linux-network.ts";
 import {
 	CompanyComputerLinuxShell,
 	CompanyComputerShellPressureGuard,
@@ -12,8 +14,6 @@ import {
 	createCompanyComputerLinuxShellLauncher,
 	readCompanyComputerShellUsage,
 } from "../../src/cloud-company-computer-linux-shell.ts";
-import { startCompanyComputerBrowserEgress } from "../../src/cloud-company-computer-browser-egress.ts";
-import { companyComputerAgentPlugAddress } from "../../src/cloud-company-computer-linux-network.ts";
 import { parseRecoveryDirectoryMount } from "../../src/cloud-identity-recovery-filesystems.ts";
 import { computerBinding } from "./company-computer.ts";
 

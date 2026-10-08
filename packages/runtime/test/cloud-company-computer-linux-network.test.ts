@@ -104,9 +104,9 @@ describe("the machine's agent card", () => {
 
 	it("finds the one address the node's plug tool gave the card", () => {
 		expect(companyComputerAgentPlugAddress({ qagent: [card("10.210.1.1")] })).toBe("10.210.1.1");
-		expect(
-			companyComputerAgentPlugAddress({ enp5s0: [card("10.40.0.7")], qagent: [card("10.210.255.254")] }),
-		).toBe("10.210.255.254");
+		expect(companyComputerAgentPlugAddress({ enp5s0: [card("10.40.0.7")], qagent: [card("10.210.255.254")] })).toBe(
+			"10.210.255.254",
+		);
 	});
 
 	it.each([
