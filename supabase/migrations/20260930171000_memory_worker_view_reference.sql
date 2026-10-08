@@ -2,7 +2,8 @@
 -- views by reference. The SQL keeps and checks the reference; the runtime (W4b) composes from it.
 -- * manage_worker's dispatch and follow-up requests to qorpera_folder_worker_commit may name `parentStep` (the parent's
 --   step whose answer made the call, an integer from 0) and `view` (the parent's views by reference, 256 KiB at most:
---   {asOfSeq, conversations: [{sessionId, generation, through, blocks: [{path, version}]}]}). Other actions take neither.
+--   {asOfSeq, conversations: [{sessionId, generation, through, blocks: [{path, version}]}]}, one entry for each
+--   conversation in the views, its own and each branch's, with no count but the size). Other actions take neither.
 --   A view is checked before the commit (a forged one is 22023) and carried in its own setting,
 --   qorpera.folder_worker_view, so the request every rule reads stays small.
 -- * The index keeps them per dispatch and per follow-up in qorpera_runtime_worker_parents (worker, sequence). The sending
@@ -35,11 +36,12 @@ end $$;
 
 -- 1. The table -----------------------------------------------------------------------------------------------------------
 
--- A dispatch's or follow-up's parent step and view reference, one row per worker sequence that named either. No foreign
--- key on the parent run: its KEY SHARE would come in the index step, after the paths.
+-- A dispatch's or follow-up's parent step and view reference, one row per worker sequence that named either (a worker
+-- takes any number of follow-ups, as qorpera_runtime_workers does). No foreign key on the parent run: its KEY SHARE
+-- would come in the index step, after the paths.
 create table public.qorpera_runtime_worker_parents (
 	worker_id uuid not null references public.qorpera_runtime_workers(id) on delete cascade,
-	sequence integer not null check (sequence between 1 and 12),
+	sequence integer not null check (sequence >= 1),
 	parent_run_id uuid not null,
 	parent_step integer check (parent_step >= 0),
 	parent_view jsonb check (parent_view is null or jsonb_typeof(parent_view) = 'object'),
@@ -55,9 +57,9 @@ comment on table public.qorpera_runtime_worker_parents is
 
 -- 2. The reference's shape ---------------------------------------------------------------------------------------------
 
--- {asOfSeq, conversations: [{sessionId, generation, through, blocks: [{path, version}]}]}: closed keys, 1 to 64
--- conversations each named once, counts as JSON integers from 0, lowercase uuids. One check per IF: an OR may evaluate
--- jsonb_object_keys or jsonb_array_length on the wrong type first.
+-- {asOfSeq, conversations: [{sessionId, generation, through, blocks: [{path, version}]}]}: closed keys, at least one
+-- conversation and each named once (the 256 KiB is the only bound on their number), counts as JSON integers from 0,
+-- lowercase uuids. One check per IF: an OR may evaluate jsonb_object_keys or jsonb_array_length on the wrong type first.
 create function public.qorpera_memory_view_reference_valid(p_view jsonb)
 returns boolean language plpgsql immutable set search_path = '' as $$
 -- 20260930171000 (W4a-1)
@@ -71,7 +73,7 @@ begin
 		is distinct from array['asOfSeq','conversations'] then return false; end if;
 	if jsonb_typeof(p_view -> 'asOfSeq') <> 'number' or (p_view ->> 'asOfSeq') !~ c_count then return false; end if;
 	if jsonb_typeof(p_view -> 'conversations') <> 'array' then return false; end if;
-	if jsonb_array_length(p_view -> 'conversations') not between 1 and 64 then return false; end if;
+	if jsonb_array_length(p_view -> 'conversations') = 0 then return false; end if;
 	for v_conversation in select value from jsonb_array_elements(p_view -> 'conversations') loop
 		if jsonb_typeof(v_conversation) <> 'object' then return false; end if;
 		if (select array_agg(k order by k collate "C") from jsonb_object_keys(v_conversation) k)
@@ -235,7 +237,9 @@ begin
 	select * into v_worker from public.qorpera_runtime_workers where id = v_wake.source_id;
 	if v_worker.id is null or v_worker.folder_environment_id is distinct from p_environment_id then
 		raise exception 'Worker authority is unavailable' using errcode = '42501'; end if;
-	v_sequence := case when (v_wake.payload ->> 'sequence') ~ '^[1-9][0-9]?$' then (v_wake.payload ->> 'sequence')::integer end;
+	-- Any sequence a worker row can hold (a positive integer); the inner case casts only what fits.
+	v_sequence := case when (v_wake.payload ->> 'sequence') ~ '^[1-9][0-9]{0,9}$' then
+		case when (v_wake.payload ->> 'sequence')::bigint <= 2147483647 then (v_wake.payload ->> 'sequence')::integer end end;
 	select * into v_parent from public.qorpera_runtime_worker_parents
 	where worker_id = v_worker.id and sequence = v_sequence and parent_run_id = v_wake.parent_run_id;
 	return jsonb_build_object('schema', 'qorpera.folder-worker-parent/v1', 'workerId', v_worker.id, 'sequence', v_sequence,

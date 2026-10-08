@@ -4,7 +4,7 @@
 -- worker sequence; the worker's own run reads them back (qorpera_folder_worker_parent); and
 -- qorpera_memory_view_reference_check answers whether the reference still stands. 840's fixture leaves Ada's run with
 -- an open todo, plan-the-trip, that has no folder yet. Ada's conversation gets a summary tree here by hand: its row and
--- two block versions in one platform commit.
+-- two block versions in one platform commit. The same commit saves a group chat's block for §1.
 
 select set_config('request.jwt.claims', '{"role":"service_role"}', true) \g /dev/null
 -- A reference to Ada's conversation (or another) at this folder clock and generation.
@@ -61,6 +61,7 @@ declare
 	s uuid := (select session_id from public.qorpera_execution_runs where id = (ada -> 'actor' ->> 'runId')::uuid);
 	n bigint := (select last_seq + 1 from public.qorpera_folder_clocks where environment_id = '63400000-0000-4000-8000-000000000020');
 	c uuid := extensions.gen_random_uuid(); v1 uuid := extensions.gen_random_uuid(); v2 uuid := extensions.gen_random_uuid();
+	v3 uuid := extensions.gen_random_uuid();
 begin
 	if s is null then raise exception 'Ada''s run has no conversation'; end if;
 	set local session_replication_role = replica;
@@ -70,8 +71,8 @@ begin
 	update public.qorpera_folder_clocks set last_seq = n where environment_id = env;
 	insert into public.qorpera_folder_path_versions(version, environment_id, path, key_sha256, op, kind, commit_id, unit_no)
 	select b.version, env, b.path, extensions.digest(public.qorpera_folder_key(b.path), 'sha256'), 'write', 'file', c, b.unit
-	from (values (v1, 'agents/ada/memory/thread/t0/00000000.jsonl', 1), (v2, 'agents/ada/memory/thread/t1/00000000.jsonl', 2))
-		b(version, path, unit);
+	from (values (v1, 'agents/ada/memory/thread/t0/00000000.jsonl', 1), (v2, 'agents/ada/memory/thread/t1/00000000.jsonl', 2),
+		(v3, 'agents/groups/trip/memory/t0/00000000.jsonl', 3)) b(version, path, unit);
 	insert into public.qorpera_memory_trees(environment_id, session_id, root_path, root_key, owner_kind, owner_id, node_bytes,
 		toml_path_version, commit_id)
 	values (env, s, 'agents/ada/memory/thread', 'agents/ada/memory/thread', 'agent', '84000000-0000-4000-8000-0000000000e1', 1024,
@@ -81,6 +82,7 @@ begin
 	perform set_config('qorpera_test.w4_seq', n::text, false);
 	perform set_config('qorpera_test.w4_v1', v1::text, false);
 	perform set_config('qorpera_test.w4_v2', v2::text, false);
+	perform set_config('qorpera_test.w4_v3', v3::text, false);
 end $$;
 
 -- 1. The check's answers: ok, then generation_moved before block_gone before erasure_covers ------------------------------
@@ -91,6 +93,7 @@ declare
 		where id = (current_setting('qorpera_test.ben')::jsonb -> 'actor' ->> 'runId')::uuid);
 	b1 jsonb := pg_temp.w4_block(1); b2 jsonb := pg_temp.w4_block(2);
 	gone jsonb := jsonb_build_object('path', 'agents/ada/memory/thread/t0/00000000.jsonl', 'version', extensions.gen_random_uuid());
+	g jsonb := jsonb_build_object('path', 'agents/groups/trip/memory/t0/00000000.jsonl', 'version', current_setting('qorpera_test.w4_v3'));
 	e uuid;
 begin
 	if ben is null or ben = s then raise exception 'Ben''s run has its own conversation'; end if;
@@ -142,6 +145,22 @@ begin
 		'63400000-0000-4000-8000-0000000000ff', e));
 	perform pg_temp.w4_same(pg_temp.w4_check(pg_temp.w4_view(n, 0, jsonb_build_array(b1))), 'ok', 'Another company''s erasure');
 	perform pg_temp.fx(format('delete from public.qorpera_folder_erasures where id = %L', e));
+	-- A group chat's tree (agents/groups/<chat>/memory, its blocks one level down) counts as an agent's does. Ben's
+	-- conversation stands in for the chat: the check reads only the conversation's tree row.
+	perform pg_temp.fx(format('insert into public.qorpera_memory_trees(environment_id, session_id, root_path, root_key, owner_kind,
+		owner_id, node_bytes, toml_path_version, commit_id) values (%L, %L, %L, %L, %L, %L, 1024, %L, %L)',
+		'63400000-0000-4000-8000-000000000020', ben, 'agents/groups/trip/memory', 'agents/groups/trip/memory', 'group',
+		extensions.gen_random_uuid(), extensions.gen_random_uuid(), extensions.gen_random_uuid()));
+	perform pg_temp.w4_same(pg_temp.w4_check(pg_temp.w4_view(n, 0, jsonb_build_array(g), ben)), 'ok', 'A group chat''s block');
+	perform pg_temp.w4_same(pg_temp.w4_check(pg_temp.w4_view(n, 0, jsonb_build_array(g))), 'block_gone',
+		'A group chat''s block under Ada''s conversation');
+	e := pg_temp.w4_erasure(jsonb_build_array(pg_temp.w4_root('agents/groups/trip', 4)));
+	perform pg_temp.w4_same(pg_temp.w4_check(pg_temp.w4_view(n, 0, jsonb_build_array(g), ben)), 'erasure_covers',
+		'An erasure of the group chat');
+	delete from public.qorpera_folder_erasures where id = e;
+	perform pg_temp.fx(format('update public.qorpera_memory_trees set retired_at = clock_timestamp() where session_id = %L', ben));
+	perform pg_temp.w4_same(pg_temp.w4_check(pg_temp.w4_view(n, 0, jsonb_build_array(g), ben)), 'block_gone', 'A retired group chat');
+	perform pg_temp.fx(format('delete from public.qorpera_memory_trees where session_id = %L', ben));
 end $$;
 
 -- 2. A reference no parent could have composed: its shape, then the folder -----------------------------------------------
@@ -153,8 +172,9 @@ begin
 	foreach v in array array[
 		base,
 		jsonb_build_object('asOfSeq', 0, 'conversations', jsonb_build_array(c || '{"generation":0,"through":0,"blocks":[]}'::jsonb)),
+		-- A thousand conversations (about 200 KiB): the size is the only bound on their number.
 		jsonb_build_object('asOfSeq', n, 'conversations', (select jsonb_agg(c || jsonb_build_object('sessionId', extensions.gen_random_uuid()))
-			from generate_series(1, 64))),
+			from generate_series(1, 1000))),
 		jsonb_build_object('asOfSeq', n, 'conversations', jsonb_build_array(c || jsonb_build_object('blocks',
 			jsonb_build_array(b1 || jsonb_build_object('path', repeat('a', 1024)))))),
 		jsonb_build_object('asOfSeq', n, 'conversations', jsonb_build_array(c || jsonb_build_object('blocks',
@@ -170,8 +190,9 @@ begin
 		base || '{"asOfSeq":"5"}'::jsonb, base || '{"asOfSeq":-1}'::jsonb, base || '{"asOfSeq":1.5}'::jsonb,
 		base || '{"asOfSeq":1234567890123456789}'::jsonb, base || '{"conversations":{}}'::jsonb,
 		base || '{"conversations":[]}'::jsonb,
+		-- 1400 conversations: over 256 KiB.
 		jsonb_build_object('asOfSeq', n, 'conversations', (select jsonb_agg(c || jsonb_build_object('sessionId', extensions.gen_random_uuid()))
-			from generate_series(1, 65))),
+			from generate_series(1, 1400))),
 		jsonb_build_object('asOfSeq', n, 'conversations', '["x"]'::jsonb),
 		jsonb_build_object('asOfSeq', n, 'conversations', jsonb_build_array(c || '{"extra":1}'::jsonb)),
 		jsonb_build_object('asOfSeq', n, 'conversations', jsonb_build_array(c - 'through')),
@@ -349,7 +370,8 @@ declare
 	ada jsonb := current_setting('qorpera_test.ada')::jsonb; x jsonb := current_setting('qorpera_test.w4_scout')::jsonb;
 	n bigint := current_setting('qorpera_test.w4_seq')::bigint; s uuid := current_setting('qorpera_test.w4_session')::uuid;
 	f text := 'agents/ada/todos/plan-the-trip/scout'; v jsonb := pg_temp.w4_view(n, 0, jsonb_build_array(pg_temp.w4_block(2)));
-	ada2 jsonb; base jsonb; next jsonb; u jsonb; q jsonb; r jsonb; w public.qorpera_runtime_worker_parents%rowtype; y jsonb; got jsonb;
+	ada2 jsonb; base jsonb; next jsonb; u jsonb; q jsonb; r jsonb; w public.qorpera_runtime_worker_parents%rowtype; y jsonb; z jsonb;
+	got jsonb;
 begin
 	perform pg_temp.expect(pg_temp.wc(x -> 'actor', 'w4-report-0001', jsonb_build_array(pg_temp.f2_write(x -> 'actor', f || '/results.md',
 		pg_temp.results('blocked'))), jsonb_build_object('action','report','folder',f)), 1, 'saved');
@@ -382,6 +404,30 @@ begin
 		or got -> 'parentStep' is distinct from '3'::jsonb
 		or got -> 'view' is distinct from pg_temp.w4_view(n, 0, jsonb_build_array(pg_temp.w4_block(1), pg_temp.w4_block(2))) then
 		raise exception 'The first run''s parent changed: %', got; end if;
+	-- No count on follow-ups: the run of sequence 2 reports, the worker has had many follow-ups since (set by hand), and
+	-- the next one, at the highest sequence a worker row holds, keeps its parent and reads it back.
+	perform pg_temp.expect(pg_temp.wc(y -> 'actor', 'w4-report-0002', jsonb_build_array(pg_temp.f2_write(y -> 'actor', f || '/results.md',
+		pg_temp.results('blocked'))), jsonb_build_object('action','report','folder',f)), 1, 'saved');
+	perform pg_temp.fx(format('update public.qorpera_runtime_workers set sequence = 2147483646 where id = %L',
+		'99300000-0000-4000-8000-000000000001'));
+	base := (select pv.structured -> 'parse' from public.qorpera_folder_path_versions pv where pv.version = pg_temp.f2_version(f || '/brief.md'));
+	next := base || jsonb_build_object('followUps', 2147483646, 'followedUpAt', to_char(clock_timestamp() at time zone 'UTC',
+		'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'followUp', 'Once more.');
+	u := jsonb_build_array(pg_temp.f2_write(ada2 -> 'actor', f || '/brief.md', next),
+		jsonb_build_object('op','delete','path',f || '/results.md','expectedVersion',pg_temp.f2_version(f || '/results.md')));
+	q := jsonb_build_object('action','followup','folder',f,'text','Once more.','resultsVersion',pg_temp.f2_version(f || '/results.md'),
+		'parentStep',9);
+	perform pg_temp.expect(pg_temp.wc(ada2 -> 'actor', 'w4-followup-0002', u, q, pg_temp.reviewed(ada2, 'w4-call-0011', u)), 1, 'saved');
+	w := pg_temp.w4_row('99300000-0000-4000-8000-000000000001', 2147483647);
+	if w.parent_run_id is distinct from (ada2 -> 'actor' ->> 'runId')::uuid or w.parent_step is distinct from 9 or w.parent_view is not null
+		or (pg_temp.worker_row(f)).sequence is distinct from 2147483647 then
+		raise exception 'The last follow-up''s parent: %', to_jsonb(w); end if;
+	z := pg_temp.worker_run(ada2, '99300000-0000-4000-8000-000000000001');
+	perform pg_temp.w4_wake_sequence(z, 2147483647);
+	got := pg_temp.w4_parent(z -> 'actor');
+	if got -> 'sequence' is distinct from '2147483647'::jsonb or got -> 'parentStep' is distinct from '9'::jsonb
+		or got -> 'view' is distinct from 'null'::jsonb or got ->> 'parentRunId' is distinct from ada2 -> 'actor' ->> 'runId' then
+		raise exception 'The last follow-up''s run reads: %', got; end if;
 end $$;
 
 -- 6. Grants and the deploy guard's markers ---------------------------------------------------------------------------------
@@ -399,6 +445,10 @@ begin
 		or exists (select 1 from unnest(array['anon','authenticated','service_role']) r(name)
 			where has_table_privilege(r.name, 'public.qorpera_runtime_worker_parents', 'select, insert, update, delete')) then
 		raise exception 'The grants'; end if;
+	-- No count on a worker's sequences (test 332 keeps it so).
+	if (select pg_get_constraintdef(oid) from pg_constraint where conname = 'qorpera_runtime_worker_parents_sequence_check')
+		is distinct from 'CHECK ((sequence >= 1))' then
+		raise exception 'The sequence check'; end if;
 	foreach v_function in array array[
 		'public.qorpera_memory_view_reference_valid(jsonb)', 'public.qorpera_memory_view_reference_check(uuid,jsonb)',
 		'public.qorpera_folder_worker_parent_keep(uuid,integer,uuid,jsonb)', 'public.qorpera_folder_worker_parent(uuid,jsonb)',
