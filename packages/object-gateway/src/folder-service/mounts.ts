@@ -27,13 +27,28 @@ export interface Grant {
 	readonly actor: FolderActor;
 	readonly passSha256: Buffer;
 	readonly lease?: { readonly viewId: string; readonly pass: string };
-	/** The view may write (step 3: an operator mount configured so; core views are read-only until steps 4–6). */
+	/** The view may write (step 3: an operator mount configured so). A core view's grant never writes: whether it may
+	 * is learned from the core at its first renewal (`coreAccess`). */
 	readonly write: boolean;
 	readonly quietMs?: number;
 }
 
+/** What a core view of a given kind and machine is served as, and to which machines. */
+export interface CoreAccess {
+	readonly write: boolean;
+	readonly quietMs?: number;
+	/** Whether the calling machine may present the view. */
+	admits(bridge: BridgeInfo): boolean;
+}
+
 /** The core's view passes: 32 random bytes, base64url without padding (C1b-3a `qorpera_folder_view_new_pass`). */
 const CORE_PASS = /^[A-Za-z0-9_-]{43}$/;
+
+/** A company machine: the node names it after its allocation (`lxd-office-guest.ts`). */
+const OFFICE = /^qorpera-office-[0-9a-f]{32}$/;
+
+/** A desktop publishes this long after its last change (RUNTIME-COMPANY-FOLDER.md §2: "one to two seconds"). */
+export const DESKTOP_QUIET_MS = 2_000;
 
 const ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
@@ -83,11 +98,41 @@ export function parseOperatorMounts(value: unknown): OperatorMount[] {
 export class MountGrants {
 	readonly #mounts: Map<string, OperatorMount>;
 	readonly #runBoxHosts: readonly MachineRef[];
+	readonly #companyMachineProjects: readonly string[];
 
-	/** `runBoxHosts`: the machines on this node that may present the core's run box views (the execution host). */
-	constructor(mounts: readonly OperatorMount[], runBoxHosts: readonly MachineRef[] = []) {
+	/** `runBoxHosts`: the machines on this node that may present the core's run box views (the execution host).
+	 * `companyMachineProjects`: the LXD projects of this node's company machines, each of which may present its own
+	 * desktop views. */
+	constructor(
+		mounts: readonly OperatorMount[],
+		runBoxHosts: readonly MachineRef[] = [],
+		companyMachineProjects: readonly string[] = [],
+	) {
 		this.#mounts = new Map(mounts.map((m) => [m.id, m]));
 		this.#runBoxHosts = runBoxHosts;
+		this.#companyMachineProjects = companyMachineProjects;
+	}
+
+	/** How a core view the core says is `kind`, on machine allocation `machineId`, is served; none for a kind this node
+	 * does not serve yet (a coding session's: step 5). A run box view is read-only, from a run box host. A computer
+	 * desktop's is served to its own company machine alone (named after the view's allocation, in a company machine
+	 * project) and writes, publishing after a quiet period. */
+	coreAccess(identity: { readonly kind: string; readonly machineId: string | null }): CoreAccess | undefined {
+		if (identity.kind === "run_box")
+			return { write: false, admits: (bridge) => this.#runBoxHosts.some((host) => isMachine(bridge, host)) };
+		if (identity.kind === "computer_desktop" && identity.machineId !== null && isUuid(identity.machineId)) {
+			const name = `qorpera-office-${identity.machineId.replaceAll("-", "")}`;
+			return {
+				write: true,
+				quietMs: DESKTOP_QUIET_MS,
+				admits: (bridge) =>
+					bridge.lookup === "found" &&
+					bridge.machine !== undefined &&
+					this.#companyMachineProjects.includes(bridge.machine.project) &&
+					bridge.machine.name === name,
+			};
+		}
+		return undefined;
 	}
 
 	/** A wrong pass, environment or machine is refused, all alike. When LXD could not say which machine called,
@@ -113,16 +158,23 @@ export class MountGrants {
 		};
 	}
 
-	/** A view the core opened (step 2: a run's box, opened by the execution host's service). The core checks the pass
-	 * when the view is first listed and at every renewal (40 s); between them the service serves from memory, never
-	 * past the lease the core confirmed. Here only the pass's shape, and that the calling machine may present a core
-	 * view at all: which views a host may hold, and their kind, are the core's (P7 adds the node). */
+	/** A view the core opened (step 2: a run's box, opened by the execution host's service; step 4: a computer desktop,
+	 * by its company machine). The core checks the pass when the view is first listed and at every renewal (40 s);
+	 * between them the service serves from memory, never past the lease the core confirmed. Here only the pass's shape,
+	 * and that the calling machine may present a core view at all (a run box host, or a company machine). The view's
+	 * kind and machine are the core's: the first renewal says them, and the service then admits only the machines
+	 * `coreAccess` names (P7 adds the node). */
 	#coreView(hello: Hello, bridge: BridgeInfo): Grant {
 		if (!CORE_PASS.test(hello.pass))
 			throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
 		if (bridge.lookup === "unavailable")
 			throw new ProtocolError(ErrorCode.unavailable, "This node could not tell which machine is calling");
-		if (!this.#runBoxHosts.some((host) => isMachine(bridge, host)))
+		const companyMachine =
+			bridge.lookup === "found" &&
+			bridge.machine !== undefined &&
+			this.#companyMachineProjects.includes(bridge.machine.project) &&
+			OFFICE.test(bridge.machine.name);
+		if (!companyMachine && !this.#runBoxHosts.some((host) => isMachine(bridge, host)))
 			throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
 		return {
 			key: `view:${hello.viewId}`,

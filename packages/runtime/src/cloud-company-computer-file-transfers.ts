@@ -144,7 +144,7 @@ export function createHttpCompanyComputerFileExports(options: {
 	run: CloudNativeToolRun;
 	scope: CompanyComputerScope;
 	registry: Pick<HttpCloudCompanyComputerRegistry, "call">;
-	objectGateway: { baseUrl: string; token: string; fetch?: typeof fetch };
+	objectGateway: { baseUrl: string; token: string; holder?: () => string; fetch?: typeof fetch };
 }): CloudCompanyComputerFileExports {
 	return new CloudCompanyComputerFileExports({
 		...options,

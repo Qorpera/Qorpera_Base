@@ -105,6 +105,8 @@ describe("coding commands follow SQL machine placement", () => {
 				headers: expect.objectContaining({ authorization: `Bearer ${Buffer.alloc(32, 3).toString("base64url")}` }),
 			}),
 		);
+		// The peer listener takes no holder: this executor proved the guest's at its own ingress (G2-6b).
+		expect(new Headers(f.fetcher.mock.calls[0]?.[1]?.headers).has("x-qorpera-identity")).toBe(false);
 		expect(f.executeLocal).not.toHaveBeenCalled();
 		expect(f.call).toHaveBeenLastCalledWith(
 			"qorpera_route_coding_command",

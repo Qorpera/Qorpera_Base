@@ -51,6 +51,7 @@ import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
 import type { MailState } from "./company-mail.ts";
 import type { InterfaceFolderState } from "./interface-folder.ts";
+import type { InterfaceOffersState } from "./interface-offers.ts";
 import {
 	appendQuoted,
 	brokenQuotes,
@@ -189,6 +190,9 @@ export interface CompanyState {
 	 * Unset until the first read lands, and while the folder keeps no `interfaces/order.md`: the Interfaces tab then
 	 * draws the library's definitions (app/interfaces.ts). */
 	interfaceFolder?: InterfaceFolderState;
+	/** The company's open offers of claimed cells (Interfaces step I9c; app/interface-offers.ts). Unset until the first
+	 * read lands, and on a cloud without them: no page draws an offer then. */
+	interfaceOffers?: InterfaceOffersState;
 	/** The company's mail as the member reads it (Interfaces step I5c; app/company-mail.ts). Unset until it is read. */
 	mail?: MailState;
 	loading: boolean;
