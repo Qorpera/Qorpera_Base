@@ -2,6 +2,7 @@
 import { createHash, webcrypto } from "node:crypto";
 import { cloudFileBytesSha256 } from "@qorpera/cloud-client/cloud-file-bytes";
 import { writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
+import { interfaceLibraryFiles } from "@qorpera/cloud-client/interface-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { AuthController } from "../src/app/auth.ts";
@@ -28,6 +29,7 @@ import {
 	userB,
 	visibleText,
 } from "./fixtures.ts";
+import { folderFake } from "./folder-fake.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {
@@ -813,6 +815,39 @@ describe("account and route ownership", () => {
 		expect(page?.isConnected).toBe(false);
 		expect(list).toHaveBeenCalledTimes(2);
 		expect(f.api.getCompanyFile).not.toHaveBeenCalled();
+	});
+
+	it("reads the offers again each time the company's folder changes, and stops once the member signs out", async () => {
+		const fake = folderFake({ seed: [] });
+		let next = 500;
+		for (const [path, text] of Object.entries(interfaceLibraryFiles(() => id(++next)))) fake.put(path, text);
+		const hints: ((seq: number) => void)[] = [];
+		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue(fake.folder as never);
+		vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockImplementation((onHint) => {
+			hints.push(onHint);
+			return { close: async () => {} } as never;
+		});
+		const f = mounted(`#/c/${profileA.profileId}`);
+		await draw();
+		// The fixture's cloud answers no RPC, so each read fails and the reader keeps what it had; the calls are counted.
+		const reads = () =>
+			vi.mocked(f.cloud.rpc).mock.calls.filter(([name]) => name === "qorpera_member_interface_offers").length;
+		const opened = reads();
+		expect(opened).toBeGreaterThan(0);
+		expect(hints).toHaveLength(1);
+		fake.put("interfaces/order.md", fake.text("interfaces/order.md")!);
+		hints[0]!(fake.seq);
+		await vi.advanceTimersByTimeAsync(1000);
+		await draw();
+		expect(reads()).toBeGreaterThan(opened);
+		const changed = reads();
+		f.auth(null);
+		await draw();
+		fake.put("interfaces/order.md", fake.text("interfaces/order.md")!);
+		hints[0]!(fake.seq);
+		await vi.advanceTimersByTimeAsync(120_000);
+		await draw();
+		expect(reads()).toBe(changed);
 	});
 
 	it("says why the Company File cannot open when membership could not be read", async () => {

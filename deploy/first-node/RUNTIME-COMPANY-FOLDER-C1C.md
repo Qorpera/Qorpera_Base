@@ -2002,7 +2002,8 @@ and admission last.
 - C: a lock timeout answers `busy` and marks nothing.
 
 **b9's machine check-ins** (#800, stacked later) use the same helpers with a new source kind, `machine-checkin`, which
-they add to the pin trigger's agent branch, the wake checks and the materializer's parent copy.
+they add to the pin trigger's agent branch, the wake checks and the materializer's parent copy. Busy coding sessions'
+check-ins (20260930109000) ride the same kind to the worker's steering run.
 
 **Tests.** 848, on 648's committed fixture:
 - A: no folder-v2 refusal names the kind, and a continuation without admission is refused.

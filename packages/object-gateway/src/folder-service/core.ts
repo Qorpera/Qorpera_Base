@@ -82,8 +82,10 @@ export interface FolderCore {
 	/** The company's storage profile, through the core's download check of one object the actor may read. The check
 	 * also refuses a company being deleted, for every actor. */
 	objectProfile(environmentId: string, actor: FolderActor, sha256: string, signal?: AbortSignal): Promise<string>;
-	/** Extends a machine view's lease (120 s) or learns that it closed (C1b-3a `qorpera_folder_view_renew`). */
-	renewView(viewId: string, pass: string, signal?: AbortSignal): Promise<ViewRenewal>;
+	/** Extends a machine view's lease (120 s) or learns that it closed (C1b-3a `qorpera_folder_view_renew`). An open
+	 * answer says what the view is and which machine it belongs to (F3 4a). `unsavedSince`: since when the view has
+	 * had changes not published (an ISO time), or null; a desktop's keeps its seat in use. */
+	renewView(viewId: string, pass: string, unsavedSince: string | null, signal?: AbortSignal): Promise<ViewRenewal>;
 	/** Opens an upload intent for a manifest (C1D §3.1): which of its objects the actor holds already. */
 	openUpload(environmentId: string, actor: FolderActor, manifest: string, signal?: AbortSignal): Promise<UploadOpen>;
 	/** The company an intent's object goes to (C1D §3.2's authorization, a plain read): the storage profile, for a view
@@ -238,15 +240,29 @@ export function parseConflictCopies(value: unknown): ConflictCopy[] {
 	});
 }
 
+/** An open view's `kind` (`run_box`, `computer_desktop`, `coding_session`, …) and `machineId`: the machine allocation
+ * it was opened on (migration 20260930104000), null for a run box. */
 export type ViewRenewal =
-	| { readonly state: "open"; readonly leaseUntil: string }
+	| {
+			readonly state: "open";
+			readonly leaseUntil: string;
+			readonly kind: string;
+			readonly machineId: string | null;
+	  }
 	| { readonly state: "closed"; readonly reason: "closed" | "superseded" | "ended" | "expired" };
 
 export function parseViewRenewal(value: unknown): ViewRenewal {
 	const answer = answerRecord(value, "view renewal");
 	if (answer.schema !== "qorpera.folder-view-renew/v1") invalidAnswer("view renewal");
-	if (answer.state === "open" && typeof answer.leaseUntil === "string" && !Number.isNaN(Date.parse(answer.leaseUntil)))
-		return { state: "open", leaseUntil: answer.leaseUntil };
+	if (
+		answer.state === "open" &&
+		typeof answer.leaseUntil === "string" &&
+		!Number.isNaN(Date.parse(answer.leaseUntil)) &&
+		typeof answer.kind === "string" &&
+		answer.kind !== "" &&
+		(answer.machineId === null || (typeof answer.machineId === "string" && isUuid(answer.machineId)))
+	)
+		return { state: "open", leaseUntil: answer.leaseUntil, kind: answer.kind, machineId: answer.machineId };
 	if (
 		answer.state === "closed" &&
 		(answer.reason === "closed" ||
@@ -540,12 +556,16 @@ export class SupabaseFolderCore implements FolderCore {
 		return answer.profileId;
 	}
 
-	async renewView(viewId: string, pass: string, signal?: AbortSignal): Promise<ViewRenewal> {
-		// Nothing is unsaved in a read-only view: p_unsaved_since stays null.
+	async renewView(
+		viewId: string,
+		pass: string,
+		unsavedSince: string | null,
+		signal?: AbortSignal,
+	): Promise<ViewRenewal> {
 		return parseViewRenewal(
 			await this.#rpc(
 				"qorpera_folder_view_renew",
-				{ p_view_id: viewId, p_pass: pass, p_unsaved_since: null },
+				{ p_view_id: viewId, p_pass: pass, p_unsaved_since: unsavedSince },
 				signal,
 			),
 		);

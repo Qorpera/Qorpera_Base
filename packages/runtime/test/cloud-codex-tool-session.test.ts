@@ -26,6 +26,7 @@ import {
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { CloudRunLog } from "@qorpera/runtime/cloud-run-log";
 import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -59,13 +60,15 @@ function run(
 		observability?: CloudRuntimeObservability;
 		tools?: CloudNativeTool[];
 		recordContextView?: Parameters<typeof runCloudCodexToolSession>[0]["recordContextView"];
+		runLog?: CloudRunLog;
 	} = {},
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => new Promise(() => undefined));
 	const signal = options.signal ?? new AbortController().signal;
 	const boundary = new CloudNativeToolBoundary({
 		companyId: randomUUID(),
-		runId: randomUUID(),
+		runId: options.runLog?.runId ?? randomUUID(),
+		...(options.runLog ? { runLog: options.runLog } : {}),
 		signal,
 		assertActive: async () => undefined,
 		tools: options.tools ?? [
@@ -1033,6 +1036,64 @@ it("ends an unfinished composition when its turn completes", async () => {
 		["finish", "unconfirmed"],
 	]);
 	expect(f.execute).not.toHaveBeenCalled();
+});
+
+it("keeps the agent's own words, never its reasoning, with the next step of its work log", async () => {
+	const runId = randomUUID();
+	const files = new Map<string, string>();
+	const log = new CloudRunLog({
+		runId,
+		conversationId: randomUUID(),
+		signal: new AbortController().signal,
+		folder: {
+			locate: async () => ({ path: `runs/${runId}`, exists: true, missing: [], last: null, generation: 0 }),
+			read: async (path) => (files.has(path) ? { version: path, text: files.get(path)! } : null),
+			commit: async (_key, units) => ({
+				commitId: randomUUID(),
+				seq: 1,
+				replay: false,
+				units: units.map((unit, index) => {
+					if (unit.op !== "write" || !("text" in unit.content)) throw new Error("Unexpected unit");
+					files.set(unit.path, unit.content.text);
+					return {
+						unit: index,
+						op: unit.op,
+						path: unit.path,
+						to: null,
+						version: unit.path,
+						outcome: "saved" as const,
+						reason: null,
+						problems: [],
+					};
+				}),
+			}),
+		},
+	});
+	const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Delivered" }));
+	const { result, evidence } = run("composition-replayed", {
+		runLog: log,
+		tools: [
+			{
+				name: "send_message",
+				source: "runtime",
+				description: "Public reply fixture",
+				inputSchema: { type: "object", properties: { text: { type: "string" } }, additionalProperties: false },
+				parseArguments: () => ({}),
+				execute,
+			},
+		],
+	});
+	await vi.waitFor(async () => expect(JSON.parse(await readFile(evidence, "utf8"))).toEqual({ stage: "composing" }));
+	await writeFile(`${evidence}.continue`, "continue");
+	await result;
+	await log.close(new AbortController().signal);
+	expect(execute).toHaveBeenCalledOnce();
+	expect(log.steps()).toEqual([
+		expect.objectContaining({ tool: "send_message", args: "", hashOnly: true, text: "PRIVATE_OUTPUT_CANARY" }),
+	]);
+	const stored = [...files.values()].join("");
+	expect(stored).toContain("PRIVATE_OUTPUT_CANARY");
+	expect(stored).not.toMatch(/PRIVATE_REASONING_CANARY|PUBLIC_REPLY_CANARY/);
 });
 
 it("clears writing and its renewal timer when composition is cancelled", async () => {

@@ -322,6 +322,10 @@ it("asks only whether a busy program is still needed on a machine check-in", () 
 		"find it with computer_shell action list and stop it, on a machine use machine_cancel",
 	);
 	expect(instructions).toContain("you are asked again later only while it stays busy");
+	expect(instructions).toContain(
+		"A coding session (machineKind coding) you archive with manage_worker action archive, using the todoKey and workerKey of its check-in",
+	);
+	expect(instructions).toContain("If its state is active again (a new turn started), leave it.");
 	expect(instructions).not.toContain("# This wake: your machine");
 	expect(instructions).toContain("qorpera.machine-checkin-continuation/v1");
 });

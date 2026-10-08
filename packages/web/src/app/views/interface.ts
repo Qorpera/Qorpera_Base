@@ -27,6 +27,7 @@ import {
 } from "@qorpera/cloud-client/interfaces";
 import { describeError } from "../../cloud/client.ts";
 import { WebCompanyFolderRejectedError } from "../../cloud/company-folder-writes.ts";
+import type { MemberInterfaceOffer } from "../../cloud/interface-offers.ts";
 import { type MessageQuote, QUOTE_MAX_CHARACTERS, quoteRefFits } from "../../cloud/quotes.ts";
 import type { HostedProfileRole, HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
@@ -64,6 +65,7 @@ import {
 	interfaceViews,
 	isLiveSource,
 	memberMayWriteRows,
+	offeredRow,
 	QUOTE_RECORD_COLUMNS,
 	rowHasCard,
 	tableDefinition,
@@ -89,15 +91,22 @@ import { roleLabel } from "./team.ts";
  * page, so a redraw is skipped only while that element is still the one on screen. */
 const shownIn = new WeakMap<HTMLElement, { key: string; element: Element }>();
 
+/** A block's title (`blockFrame`). It takes the focus from a control that went when the page has none left (`show`),
+ * so it can be focused, though not tabbed to. */
+const BLOCK_TITLE = ".interface-block > h2";
+
 /** Draws `build()` unless the same key is on screen. Every control names itself with `data-focus-key`, so the
- * one that had keyboard focus (and an input's caret) has it again after the redraw; `moveFocus` names another. A
- * page redrawn in the same view keeps its scroll position (`data-scroll-key`). */
+ * one that had keyboard focus (and an input's caret) has it again after the redraw; `moveFocus` names another. In a
+ * redraw of the same view, a focused control that is gone hands the focus on: to the first of its `data-focus-then`
+ * keys (a JSON list) still drawn, else to the nearest control after it that is still there, else before it, else to
+ * its block's title (a page left with no control). A page redrawn in the same view keeps its scroll position
+ * (`data-scroll-key`). */
 function show(container: HTMLElement, key: string, build: () => HTMLElement, moveFocus?: string): void {
 	const shown = shownIn.get(container);
 	if (shown?.key === key && container.firstElementChild === shown.element && shown.element.isConnected) return;
 	const active = document.activeElement;
-	const focusKey =
-		moveFocus ?? (active instanceof HTMLElement && container.contains(active) ? active.dataset.focusKey : undefined);
+	const focused = active instanceof HTMLElement && container.contains(active) ? active : null;
+	const focusKey = focused?.dataset.focusKey;
 	const caret =
 		active instanceof HTMLInputElement ? ([active.selectionStart, active.selectionEnd] as const) : undefined;
 	const scrolled =
@@ -105,17 +114,35 @@ function show(container: HTMLElement, key: string, build: () => HTMLElement, mov
 			? shown.element.querySelector<HTMLElement>("[data-scroll-key]")
 			: null;
 	const element = build();
+	const scroller = element.querySelector<HTMLElement>("[data-scroll-key]");
+	const sameView = scrolled !== null && scroller !== null && scroller.dataset.scrollKey === scrolled.dataset.scrollKey;
+	const keyed = (root: ParentNode) => [...root.querySelectorAll<HTMLElement>("[data-focus-key]")];
+	const controls = new Map<string, HTMLElement>();
+	for (const each of keyed(element)) {
+		const named = each.dataset.focusKey;
+		if (named !== undefined && !controls.has(named)) controls.set(named, each);
+	}
+	const control = (named: string | undefined) => (named === undefined ? undefined : controls.get(named));
+	let again = control(moveFocus) ?? control(focusKey);
+	if (!again && focused && focusKey !== undefined && sameView) {
+		// Read from the page still on screen, before it goes.
+		const then = focused.dataset.focusThen ? (JSON.parse(focused.dataset.focusThen) as string[]) : [];
+		const old = keyed(container);
+		const at = old.indexOf(focused);
+		const near = [...old.slice(at + 1), ...old.slice(0, at).reverse()]
+			.filter((each) => !each.matches(BLOCK_TITLE))
+			.map((each) => each.dataset.focusKey);
+		const block = focused.closest(".interface-block");
+		const title = old.find((each) => each.parentElement === block && each.matches(BLOCK_TITLE))?.dataset.focusKey;
+		again = [...then, ...near, title].map(control).find((each) => each !== undefined && !each.matches(":disabled"));
+	}
 	replace(container, element);
 	shownIn.set(container, { key, element });
-	const scroller = element.querySelector<HTMLElement>("[data-scroll-key]");
-	if (scrolled && scroller && scroller.dataset.scrollKey === scrolled.dataset.scrollKey)
-		scroller.scrollTop = scrolled.scrollTop;
-	if (focusKey === undefined) return;
-	const again = [...element.querySelectorAll<HTMLElement>("[data-focus-key]")].find(
-		(candidate) => candidate.dataset.focusKey === focusKey,
-	);
+	if (sameView) scroller.scrollTop = scrolled.scrollTop;
 	again?.focus({ preventScroll: true });
-	if (again instanceof HTMLInputElement && caret && again === document.activeElement)
+	// The caret goes back only into the input that had it.
+	const same = again?.dataset.focusKey === focusKey;
+	if (again instanceof HTMLInputElement && same && caret && again === document.activeElement)
 		again.setSelectionRange(caret[0], caret[1]);
 }
 
@@ -134,8 +161,14 @@ interface PageState {
 	/** The message buttons whose thread is still opening: they stay disabled through redraws. */
 	pending: string[];
 	/** The board cards whose take or release is on its way, by card, with their holder cell as it was (as JSON). A card
-	 * stays where it was, saving, until its save lands and the board shows the change (or a little after the save). */
-	claiming: Record<string, { readonly was: string; readonly landed: boolean }>;
+	 * stays where it was, saving, until its save lands and the board shows the change (or a little after the save). An
+	 * accept keeps the offer it answers: its line stays on the card till then, though the save settled it (step I9c). */
+	claiming: Record<
+		string,
+		{ readonly was: string; readonly landed: boolean; readonly offer?: MemberInterfaceOffer | undefined }
+	>;
+	/** The board card whose Offer lists the members it may go to (step I9c), by block and card. */
+	offering: string | null;
 	/** A refused save's problems, listed under the error. */
 	errorProblems: string[];
 	/** A control the next draw focuses: the tab an arrow key chose, the Back button or the row a detail closed to. */
@@ -155,6 +188,7 @@ function pageState(key: string): PageState {
 			errors: 0,
 			pending: [],
 			claiming: {},
+			offering: null,
 			errorProblems: [],
 			focus: null,
 		};
@@ -657,6 +691,8 @@ export function renderInterfaceFile(
 	const memberNames = [...new Set(named("member"))].map((id) => [id, memberName(id)]);
 	const live = state.realtime === "connected";
 	const canWrite = state.team?.capabilities.write === true;
+	// Offers are drawn only where the page can make and answer them, once they are read (step I9c).
+	const offers = writes?.offers && state.interfaceOffers ? state.interfaceOffers.offers : null;
 	const listed = companyInterfaces(company).map((entry) => entry.name);
 	const cofounder = company.cofounderId();
 	const moveFocus = page.focus ?? undefined;
@@ -698,7 +734,17 @@ export function renderInterfaceFile(
 		page.errors,
 		page.pending,
 		page.claiming,
+		page.offering,
 		canWrite,
+		// The offers, the members they name and may go to, and whether each may be accepted where it is listed.
+		offers,
+		offers === null
+			? null
+			: (state.team?.members ?? []).map((member) => [member.userId, member.displayName, member.email, member.role]),
+		offers?.map((offer) => {
+			const offered = offeredRow(company, offer);
+			return offered ? [offered.table, memberMayWriteRows(company, offered.definition)] : null;
+		}) ?? null,
 		listed,
 		cofounder,
 		widths,
@@ -751,6 +797,7 @@ export function renderInterfaceFile(
 		redraw,
 		canWrite,
 		...(writes ? { writes } : {}),
+		offers,
 		stillShown: () => {
 			const shown = container.firstElementChild;
 			return shown instanceof HTMLElement && shown.dataset.interface === name && shown.dataset.profile === profileId;
@@ -887,6 +934,9 @@ interface BlockContext {
 	readonly canWrite: boolean;
 	/** Where a board's take and release write; without it, a board draws neither. */
 	readonly writes?: InterfaceWrites;
+	/** The company's open offers (step I9c), or null when the page can't make or answer them or they aren't read yet:
+	 * then no offer is drawn. */
+	readonly offers: readonly MemberInterfaceOffer[] | null;
 	/** Whether this page is still the one on screen, for work that finishes after a click. */
 	readonly stillShown: () => boolean;
 }
@@ -924,7 +974,7 @@ function blockFrame(
 	return h(
 		"section",
 		{ class: `interface-block interface-width-${block.width}${extra}` },
-		title ? h("h2", { id: domId("title", key) }, title) : null,
+		title ? h("h2", { id: domId("title", key), tabindex: "-1", "data-focus-key": `title:${key}` }, title) : null,
 		...children,
 	);
 }
@@ -1361,19 +1411,26 @@ function partBlock(drawn: DrawnBlock, part: DrawnPart): DrawnBlock {
 	};
 }
 
-/** Where a board's cards may move to: the member's own lane and the open pile, when the board has them. */
+/** Where a board's cards may move to: the member's own lane and the open pile, when the board has them, and the other
+ * members' lanes, where a card is offered. */
 interface BoardPlaces {
 	readonly own: BoardLane | undefined;
 	readonly pile: BoardLane | undefined;
+	readonly others: readonly BoardLane[];
 }
 
 /** A board (§3.2): its lanes side by side (stacked on a phone), each with its cards, part by part. A card in the open
  * pile can be taken and one in the member's own lane released, with its button or by dragging it to the other; the card
- * stays where it is, saving, until the save has landed. */
+ * stays where it is, saving, until the save has landed. Either can be offered to another member, with Offer or by
+ * dragging it to their lane, and a card offered to the member accepted (step I9c). */
 function boardBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 	const { block, key } = drawn;
 	const { parts, lanes } = drawn.board ?? { parts: [], lanes: [] };
-	const places = { own: lanes.find((lane) => lane.own), pile: lanes.find((lane) => lane.kind === "open") };
+	const places = {
+		own: lanes.find((lane) => lane.own),
+		pile: lanes.find((lane) => lane.kind === "open"),
+		others: lanes.filter((lane) => lane.kind === "member" && !lane.own && lane.member !== null),
+	};
 	const several = parts.length > 1;
 	const notes = parts.flatMap((part) => {
 		const note = sourceNote(partBlock(drawn, part));
@@ -1504,7 +1561,7 @@ function boardCard(
 				)
 			: h("div", { class: "interface-card-body" }, ...body);
 	// Take on a card no one holds, Release on the member's own, in any lane of a members board (a Shared card too),
-	// where the block lists them and the table lets members write; offer and answer are not drawn on a board (step I9a).
+	// where the block lists them and the table lets members write; the platform's own answer is not drawn on a board.
 	const verbs = new Set(drawn.block.buttons);
 	const holder = part.definition?.holder ?? null;
 	const claimable =
@@ -1537,9 +1594,41 @@ function boardCard(
 					},
 					verb === "take" ? t("Take") : t("Release"),
 				);
+	// Offer on a card no one holds or the member's own, to each other member who may change its table's rows and hasn't
+	// been offered it yet, where the block lists offer (step I9c).
+	const offers = cardOffers(context, part, item);
+	const offerKey = `${drawn.key}|${card}`;
+	const candidates =
+		claimable && context.offers !== null && verbs.has("offer") && (emptyCell(held) || held === context.company.userId)
+			? offerCandidates(context, part, offers)
+			: [];
+	const offerBusy = context.page.pending.includes(`offer:${offerKey}`);
+	const offering = candidates.length > 0 && context.page.offering === offerKey;
+	const offer =
+		candidates.length === 0
+			? null
+			: h(
+					"button",
+					{
+						type: "button",
+						class: "interface-button",
+						"data-focus-key": `offer:${offerKey}`,
+						"aria-describedby": titleId,
+						"aria-expanded": String(offering),
+						"aria-disabled": saving || offerBusy ? "true" : null,
+						onclick: () => {
+							if (saving || offerBusy) return;
+							context.page.offering = offering ? null : offerKey;
+							context.page.focus = offering ? `offer:${offerKey}` : `offer-to:${offerKey}:0`;
+							context.redraw();
+						},
+					},
+					t("Offer…"),
+				);
 	const buttons = blockButtons(context.file, drawn.block).filter((button) => button.verb !== "answer");
 	const actions = rowButtons(buttons, item, partBlock(drawn, part), context, titleId);
-	if (claim) actions?.prepend(claim);
+	const own = [claim, offer].filter((button) => button !== null);
+	if (own.length) actions?.prepend(...own);
 	const element = h(
 		"li",
 		{
@@ -1547,30 +1636,312 @@ function boardCard(
 			"aria-busy": saving ? "true" : null,
 		},
 		main,
-		actions ?? (claim ? h("span", { class: "interface-actions" }, claim) : null),
+		offerLines(
+			context,
+			part,
+			item,
+			offers,
+			titleId,
+			{
+				claim: `claim:${drawn.key}:${card}`,
+				offer: `offer:${offerKey}`,
+				open: opens === null ? null : `open:${opens}:${item.key}`,
+			},
+			claimable ? holder : null,
+		),
+		actions ?? (own.length ? h("span", { class: "interface-actions" }, ...own) : null),
+		offering ? offerPicker(context, part, item, candidates, offerKey, titleId) : null,
 		saving ? h("small", { class: "interface-card-saving" }, t("Saving…")) : null,
 	);
-	// Dragging is the same take or release: from the open pile to the member's own lane, or back. A Shared card stays in
-	// the Shared lane either way, so it has no drag.
+	// Dragging is the same take or release: from the open pile to the member's own lane, or back; and the same offer, to
+	// another member's lane. A Shared card stays in the Shared lane either way, so it has no drag.
 	const target =
 		lane.kind === "shared" ? undefined : verb === "take" ? places.own : verb === "release" ? places.pile : undefined;
-	if (verb !== null && target && !saving)
-		boardDrag(element, { targets: [target.id], drop: () => void claimCard(context, part, item, verb) });
+	const offerLanes =
+		lane.kind === "shared"
+			? []
+			: places.others.filter((other) => candidates.some((member) => member.id === other.member));
+	const targets = [...(verb !== null && target ? [target.id] : []), ...offerLanes.map((other) => other.id)];
+	if (!saving && !offerBusy)
+		boardDrag(element, {
+			targets,
+			drop: (dropped) => {
+				const to = offerLanes.find((other) => other.id === dropped)?.member;
+				if (to) void offerCard(context, part, item, to, offerKey);
+				else if (verb !== null && dropped === target?.id) void claimCard(context, part, item, verb);
+			},
+		});
 	return element;
+}
+
+/** A member's name on the page, or "A member" for one the company no longer lists. */
+function memberLabel(context: BlockContext, id: string): string {
+	const member = context.company.store.get().team?.members.find((each) => each.userId === id);
+	return member?.displayName || member?.email || t("A member");
+}
+
+/** A card's open offers (step I9c): those of its holder cell while the cell is as they read it, and the one an accept
+ * on its way answers, which its save settled, till the card moves. */
+function cardOffers(context: BlockContext, part: DrawnPart, item: InterfaceRow): MemberInterfaceOffer[] {
+	const { definition } = part;
+	const holder = definition?.holder ?? null;
+	if (context.offers === null || definition === null || holder === null) return [];
+	const table = definition.id.toLowerCase();
+	const key = tableRowKey(definition, item.row);
+	const held = item.row[holder];
+	const was = typeof held === "string" && held !== "" ? held : null;
+	const listed = context.offers.filter(
+		(offer) =>
+			offer.state === "open" &&
+			offer.table === table &&
+			offer.column === holder &&
+			offer.key !== null &&
+			JSON.stringify(offer.key) === key &&
+			offer.was === was,
+	);
+	const accepting = context.page.claiming[cardKey(part, item)]?.offer;
+	return accepting && !listed.some((offer) => offer.id === accepting.id) ? [...listed, accepting] : listed;
+}
+
+/** The members a card may be offered to: each other member who may change its table's rows (§5; a viewer may change
+ * none), but those it is offered to already. */
+function offerCandidates(
+	context: BlockContext,
+	part: DrawnPart,
+	offers: readonly MemberInterfaceOffer[],
+): { readonly id: string; readonly name: string }[] {
+	const write = part.definition?.write.members;
+	return (context.company.store.get().team?.members ?? [])
+		.filter(
+			(member) =>
+				member.userId !== context.company.userId &&
+				member.role !== "viewer" &&
+				(write === "all" || (write === "owners" && (member.role === "owner" || member.role === "admin"))) &&
+				!offers.some((offer) => offer.to === member.userId),
+		)
+		.map((member) => ({ id: member.userId, name: member.displayName || member.email }));
+}
+
+/** A card's open offers as lines, each with what the member may do: withdraw their own, accept (where they may take
+ * the card) or decline one to them; or null when it has none. An answer whose line goes hands the focus to the card's
+ * own controls: Offer… first after a withdraw, Take or Release first after an accept or decline (`show`). */
+function offerLines(
+	context: BlockContext,
+	part: DrawnPart,
+	item: InterfaceRow,
+	offers: readonly MemberInterfaceOffer[],
+	titleId: string,
+	/** The card's own controls, by their focus keys. */
+	controls: { readonly claim: string; readonly offer: string; readonly open: string | null },
+	/** The cell an accept writes, the holder's, when the member may take the card; else null. */
+	accepts: string | null,
+): HTMLElement | null {
+	if (!offers.length) return null;
+	const me = context.company.userId;
+	// Nothing is answered while the card saves: a take or accept on its way settles its offers.
+	const saving = Object.hasOwn(context.page.claiming, cardKey(part, item));
+	const lines = offers.map((offer) => {
+		const busy = saving || context.page.pending.includes(`offer:${offer.id}`);
+		const answer = (name: string, label: string, then: readonly (string | null)[], act: () => void) =>
+			h(
+				"button",
+				{
+					type: "button",
+					class: "interface-button",
+					"data-focus-key": `${name}:${offer.id}`,
+					"data-focus-then": JSON.stringify(then.filter((key) => key !== null)),
+					"aria-describedby": titleId,
+					"aria-disabled": busy ? "true" : null,
+					onclick: () => {
+						if (!busy) act();
+					},
+				},
+				label,
+			);
+		const from = memberLabel(context, offer.from);
+		const to = memberLabel(context, offer.to);
+		let words = t("{from} offered it to {to}", { from, to });
+		const answers: HTMLElement[] = [];
+		const afterAnswer = [controls.claim, controls.offer, controls.open];
+		if (offer.from === me) {
+			words = t("Offered to {name}", { name: to });
+			answers.push(
+				answer("withdraw", t("Withdraw"), [controls.offer, controls.claim, controls.open], () => {
+					void closeOffer(context, offer, "withdraw");
+				}),
+			);
+		} else if (offer.to === me) {
+			words = t("{name} offers it to you", { name: from });
+			if (accepts !== null) {
+				const column = accepts;
+				answers.push(
+					answer(
+						"accept",
+						t("Accept"),
+						afterAnswer,
+						() => void claimCard(context, part, item, "accept", { column, offer }),
+					),
+				);
+			}
+			answers.push(answer("decline", t("Not now"), afterAnswer, () => void closeOffer(context, offer, "decline")));
+		}
+		return h(
+			"li",
+			{ class: "interface-card-offer" },
+			h("span", null, words),
+			answers.length ? h("span", { class: "interface-actions" }, ...answers) : null,
+		);
+	});
+	return h("ul", { class: "interface-card-offers" }, ...lines);
+}
+
+/** The members a card may go to, each a button that offers it, and Cancel; Escape closes it too. */
+function offerPicker(
+	context: BlockContext,
+	part: DrawnPart,
+	item: InterfaceRow,
+	candidates: readonly { readonly id: string; readonly name: string }[],
+	offerKey: string,
+	titleId: string,
+): HTMLElement {
+	const close = () => {
+		context.page.offering = null;
+		context.page.focus = `offer:${offerKey}`;
+		context.redraw();
+	};
+	const picker = h(
+		"span",
+		{ class: "interface-actions interface-offer-picker", role: "group", "aria-label": t("Offer to") },
+		h("span", { class: "interface-offer-picker-label", "aria-hidden": "true" }, t("Offer to")),
+		...candidates.map((member, index) =>
+			h(
+				"button",
+				{
+					type: "button",
+					class: "interface-button",
+					"data-focus-key": `offer-to:${offerKey}:${index}`,
+					// The picker closes as the offer goes; the card's Offer… stays drawn and takes the focus.
+					"data-focus-then": JSON.stringify([`offer:${offerKey}`]),
+					"aria-describedby": titleId,
+					onclick: () => void offerCard(context, part, item, member.id, offerKey),
+				},
+				member.name,
+			),
+		),
+		h(
+			"button",
+			{ type: "button", class: "interface-button", "data-focus-key": `offer-to:${offerKey}:cancel`, onclick: close },
+			t("Cancel"),
+		),
+	);
+	picker.addEventListener("keydown", (event) => {
+		if (event.key !== "Escape") return;
+		event.preventDefault();
+		close();
+	});
+	return picker;
+}
+
+/** The page's error, said once and counted, so the same words failing again are said again. */
+function pageError(page: PageState, message: string, problems: readonly string[] = []): void {
+	page.error = message;
+	page.errorProblems = [...problems];
+	page.errorShown = false;
+	page.errors += 1;
+}
+
+/** Offers a card's holder cell, as the card shows it, to another member (step I9c). A refusal says why. */
+async function offerCard(
+	context: BlockContext,
+	part: DrawnPart,
+	item: InterfaceRow,
+	to: string,
+	offerKey: string,
+): Promise<void> {
+	const { page, writes } = context;
+	const busy = `offer:${offerKey}`;
+	const { definition } = part;
+	const holder = definition?.holder ?? null;
+	if (page.pending.includes(busy) || !writes?.offers || definition === null || holder === null) return;
+	page.pending = [...page.pending, busy];
+	page.offering = null;
+	page.error = null;
+	page.errorProblems = [];
+	context.redraw();
+	const held = item.row[holder];
+	try {
+		const answer = await writes.offers.offer({
+			table: definition.id.toLowerCase(),
+			key: JSON.parse(tableRowKey(definition, item.row)) as TableValue[],
+			column: holder,
+			was: typeof held === "string" && held !== "" ? held : null,
+			to,
+		});
+		// The offer is read again before the answer comes, so its Withdraw is drawn to take the focus.
+		if (answer.ok) page.focus = `withdraw:${answer.offer.id}`;
+		else pageError(page, answer.message);
+	} catch (error) {
+		pageError(page, describeError(error));
+	}
+	page.pending = page.pending.filter((key) => key !== busy);
+	if (context.stillShown()) context.redraw();
+}
+
+/** Declines an offer made to the member, or withdraws one they made (step I9c). The line goes once the offers are read
+ * again, and its button hands the focus on (`show`): on the board to its card's `data-focus-then`, on Pulse to the next
+ * control or the block's title. */
+async function closeOffer(
+	context: BlockContext,
+	offer: MemberInterfaceOffer,
+	how: "decline" | "withdraw",
+): Promise<void> {
+	const { page, writes } = context;
+	const busy = `offer:${offer.id}`;
+	if (page.pending.includes(busy) || !writes?.offers) return;
+	page.pending = [...page.pending, busy];
+	page.error = null;
+	page.errorProblems = [];
+	context.redraw();
+	try {
+		await (how === "decline" ? writes.offers.decline(offer.id) : writes.offers.withdraw(offer.id));
+	} catch (error) {
+		pageError(page, describeError(error));
+	}
+	page.pending = page.pending.filter((key) => key !== busy);
+	if (context.stillShown()) context.redraw();
 }
 
 /** How long a card whose save landed may stay where it was, saving, waiting for the board to show it moved. */
 const CLAIM_LANDED_WAIT = 10_000;
 
-/** Takes or releases a card (§3.3): writes its holder cell with the version it read. The card stays where it was,
- * saving, until the save has landed and the board shows the change; a card someone else changed meanwhile says so,
- * and a refused save lists why. */
-async function claimCard(context: BlockContext, part: DrawnPart, item: InterfaceRow, verb: ClaimVerb): Promise<void> {
+/** A failed take, release or accept as the page's error: a cell someone else changed says so, and a refused save lists
+ * why. */
+function claimError(page: PageState, verb: ClaimVerb, error: unknown): void {
+	const rejected = error instanceof WebCompanyFolderRejectedError ? error : null;
+	// Every read found the cell still free (or still the member's, or as the offer read it), so the file kept changing
+	// elsewhere; a cell that was lost says so itself (ClaimLostError).
+	if (rejected?.reason === "version_changed") pageError(page, t("That changed while you were looking."));
+	else if (rejected?.problems.length) pageError(page, claimFailure(verb), rejected.problems);
+	else pageError(page, describeError(error));
+}
+
+/** Takes or releases a card (§3.3), or accepts the offer of it (step I9c): writes its holder cell with the version it
+ * read. The card stays where it was, saving, until the save has landed and the board shows the change; a card someone
+ * else changed meanwhile says so, and a refused save lists why. A save settles the cell's offers, so they are read
+ * again; the offer an accept answers stays on the card meanwhile. */
+async function claimCard(
+	context: BlockContext,
+	part: DrawnPart,
+	item: InterfaceRow,
+	verb: ClaimVerb,
+	accepted?: { readonly column: string; readonly offer: MemberInterfaceOffer },
+): Promise<void> {
 	const { page, company, writes } = context;
 	const card = cardKey(part, item);
 	if (Object.hasOwn(page.claiming, card)) return;
 	const was = holderCell(part, item);
-	page.claiming = { ...page.claiming, [card]: { was, landed: false } };
+	const answers = accepted ? { offer: accepted.offer } : {};
+	page.claiming = { ...page.claiming, [card]: { was, landed: false, ...answers } };
 	page.error = null;
 	page.errorProblems = [];
 	context.redraw();
@@ -1582,6 +1953,9 @@ async function claimCard(context: BlockContext, part: DrawnPart, item: Interface
 			table: part.table,
 			key: tableRowKey(part.definition, item.row),
 			verb,
+			...(accepted
+				? { offer: { column: accepted.column, from: accepted.offer.from, was: accepted.offer.was } }
+				: {}),
 			memberId: company.userId,
 			signal: company.signal,
 			check: () => {
@@ -1590,20 +1964,12 @@ async function claimCard(context: BlockContext, part: DrawnPart, item: Interface
 			},
 		});
 	} catch (error) {
-		const rejected = error instanceof WebCompanyFolderRejectedError ? error : null;
-		// Every read found the cell still free (or still the member's), so the file kept changing elsewhere; a cell that
-		// was lost says so itself (ClaimLostError).
-		if (rejected?.reason === "version_changed") page.error = t("That changed while you were looking.");
-		else if (rejected?.problems.length) {
-			page.error = claimFailure(verb);
-			page.errorProblems = [...rejected.problems];
-		} else page.error = describeError(error);
-		page.errorShown = false;
-		page.errors += 1;
+		claimError(page, verb, error);
 	}
 	const without = () => Object.fromEntries(Object.entries(page.claiming).filter(([other]) => other !== card));
 	if (wrote) {
-		const landed = { was, landed: true };
+		void writes?.offers?.refresh();
+		const landed = { was, landed: true, ...answers };
 		page.claiming = { ...without(), [card]: landed };
 		// A feed that is slow to show the change doesn't keep the card saving.
 		setTimeout(() => {
@@ -1643,6 +2009,8 @@ function rowButtons(
 	const describe = { "aria-describedby": lineId };
 	const drawnButtons = buttons.flatMap((drawnButton, index): HTMLElement[] => {
 		if (drawnButton.verb === "answer") {
+			// An offer of a cell is answered on its row (step I9c).
+			if (drawn.source === "waiting" && item.row.kind === "offer") return offerAnswers(context, item, lineId);
 			// The platform's own card waits in its thread; the button takes the member there.
 			if (!item.href || !context.canWrite || !rowHasCard(drawn.source, item.row)) return [];
 			return [
@@ -1725,6 +2093,68 @@ function rowButtons(
 		return [action];
 	});
 	return drawnButtons.length ? h("span", { class: "interface-actions" }, ...drawnButtons) : null;
+}
+
+/** A waiting offer's answers (step I9c): Accept, where the member may change its table's rows, and Not now. */
+function offerAnswers(context: BlockContext, item: InterfaceRow, lineId: string): HTMLElement[] {
+	const offer = context.offers?.find((candidate) => candidate.id === item.row.id);
+	const offered = offer && offeredRow(context.company, offer);
+	if (!offer || !offered) return [];
+	const busy = context.page.pending.includes(`offer:${offer.id}`);
+	const answer = (name: string, label: string, act: () => void) =>
+		h(
+			"button",
+			{
+				type: "button",
+				class: "interface-button",
+				"data-focus-key": `${name}:${offer.id}`,
+				"aria-describedby": lineId,
+				"aria-disabled": busy ? "true" : null,
+				onclick: () => {
+					if (!busy) act();
+				},
+			},
+			label,
+		);
+	return [
+		memberMayWriteRows(context.company, offered.definition)
+			? answer("accept", t("Accept"), () => void acceptOffer(context, offer, offered.table))
+			: null,
+		answer("decline", t("Not now"), () => void closeOffer(context, offer, "decline")),
+	].filter((each) => each !== null);
+}
+
+/** Accepts an offer where it waits (step I9c): saves the member into the cell it names while that is as the offer read
+ * it, then reads the offers again, which the save settled. */
+async function acceptOffer(context: BlockContext, offer: MemberInterfaceOffer, table: string): Promise<void> {
+	const { page, company, writes } = context;
+	const busy = `offer:${offer.id}`;
+	const { key, column } = offer;
+	if (page.pending.includes(busy) || !writes || key === null || column === null) return;
+	page.pending = [...page.pending, busy];
+	page.error = null;
+	page.errorProblems = [];
+	context.redraw();
+	try {
+		await claimTableCell({
+			folder: writes.folder(),
+			table,
+			key: JSON.stringify(key),
+			verb: "accept",
+			offer: { column, from: offer.from, was: offer.was },
+			memberId: company.userId,
+			signal: company.signal,
+			check: () => {
+				company.signal.throwIfAborted();
+				writes.current();
+			},
+		});
+		await writes.offers?.refresh();
+	} catch (error) {
+		claimError(page, "accept", error);
+	}
+	page.pending = page.pending.filter((other) => other !== busy);
+	if (context.stillShown()) context.redraw();
 }
 
 /** Where an `open` button leads: an agent's thread (`agent:{column}` or `agent:<id>`), or another interface this

@@ -424,9 +424,11 @@ not design intent and MUST NOT be presented as product limits.
 > tree in `agents/<agent-name>/memory/thread/`, and a group chat keeps its tree
 > in `agents/groups/<group-name>/memory/`, each with its runs' work logs under
 > `runs/`. Only the platform writes, moves or deletes them, or moves or deletes
-> `agents/<agent-name>/memory/`; a tree moves only with its owning folder. See
-> the [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
-> in section 19, items 1 and 2.
+> `agents/<agent-name>/memory/`; a tree moves only with its owning folder. A
+> member's permanent erasure that names a tree's `tree.toml` alone is refused:
+> it is erased with its tree. See the
+> [summary-tree amendment](#2026-10-06-amendment-agent-context-as-a-folder-of-summary-trees)
+> in section 19, items 1, 2 and 14.
 
 Ratified 2026-09-27 (see the
 [layout amendment](#2026-09-27-amendment-the-company-folder-layout) in
@@ -4304,8 +4306,8 @@ immediately before an effect, and section 9.1's context views, are unchanged.
    still finish the call after the host has given up, so a view can be
    recorded for a request that never left.
 
-   > **Amended 2026-10-05** (control calls, part 2; the doubling and the
-   > database's budget 2026-10-06).
+   > **Amended 2026-10-05** (control calls, part 2; the doubling, the
+   > database's budget and the long entry point 2026-10-06).
    > There is no 3.5 s or 4 s budget, and a timeout no longer stops the run: no
    > host stopwatch ends a model request's fence. A lost or late answer is asked
    > again for as long as the run's authority holds, which the run's own
@@ -4314,11 +4316,13 @@ immediately before an effect, and section 9.1's context views, are unchanged.
    > a stop still end the run with nothing released. Codex waits for the host's
    > answer, with a 10-minute backstop against a host that is alive but hung.
    > The database still bounds each attempt: the fence is one statement under
-   > the native host entry's 8 s statement and lock budget
-   > (`qorpera_native_host_call`), and an attempt the database cancels is asked
-   > again like a lost one. So the doubling helps only a delay outside the
-   > statement (a connection pool wait), and a fence that needs more than 8 s
-   > in the database never lands: the request ends at Codex's backstop.
+   > the native host's long entry point, as the lease validator is: 25 s for
+   > the statement and 8 s for a lock wait (`qorpera_native_host_call_long`,
+   > migration `20260930109500`; 8 s for both before). An attempt the database
+   > cancels is asked again like a lost one. So the doubling helps a delay
+   > outside the statement (a connection pool wait) and a statement within
+   > 25 s, and a fence that needs more than 25 s in the database never lands:
+   > the request ends at Codex's backstop.
    > The last sentence of this item still holds.
 4. **Until the database has the call** the host makes the separate calls, all
    of them.
@@ -5135,7 +5139,8 @@ own texts below carries a note "Amended 2026-10-06" in place.
   version.
 - The native Codex adapter (`deploy/first-node/native-codex/README.md`): "Only result bodies can change".
 - P18, the folder's erasure (`deploy/first-node/RUNTIME-COMPANY-FOLDER-ERASURE.md`): erasing one message or one
-  step, and the tree's own block-history requests.
+  step, the tree's own block-history requests, and the refusal of a member's erasure that names a tree's `tree.toml`
+  alone (with 5.6's permanent erasure).
 
 1. **A conversation is a folder of logs** (M1, W1). Each conversation has a tree root in the company folder:
    `agents/<agent-name>/memory/thread/` for an agent's thread, and `agents/groups/<group-name>/memory/` for a group
@@ -5305,8 +5310,21 @@ own texts below carries a note "Amended 2026-10-06" in place.
     - **Block-history requests**, made by the platform for the tree's own erases, on the authority checked when the
       erase was accepted (the design, §10 step 3):
       - one request per block, with that block's partner paths, not held to the 20-path limit of members' requests;
-      - each block is named by its key, cut at the erase's delete of it, or with no cutoff when it was not live then
-        (refused if it is live again). A life of the key that moved on to a path that is live now is left alone;
+      - each block is named by its key, cut at the erase's delete of it, or with no cutoff when it was not live then or
+        lies under one of the conversation's earlier tree roots. With no cutoff it is refused if it is live again,
+        naming the live path and the key's newest life, and the platform asks again cut at that life's start, with
+        that life kept; that request is refused the same way if the key has had a newer life since, and the platform
+        goes round again;
+      - in a request with a cutoff or a life, or for an older life of the key, a life that moved on to a path that is
+        live now is left alone, not refused;
+      - while another erasure is still erasing the versions at a path the request names, the request is asked again
+        later, never refused for good, so it never answers nothing left before the block's history is gone. The
+        platform asks one request per transaction, and commits each accepted one before it asks the next. Until
+        P18's drain moves an accepted request past its versions phase, a next request over an overlapping path is
+        answered 55006 and asked again later, so an erasure the platform has just begun holds up its own next request
+        for a while, never for good;
+      - a member's erasure that names a tree's `tree.toml` alone is refused: a message erase finds the conversation's
+        earlier tree roots by that file's bytes;
       - the run-log row reaches only steps that name a block's path and read it before the cutoff, found through the
         step index;
       - P18 reports when a request is past its versions phase. A tree erase's row waits only for that, while an

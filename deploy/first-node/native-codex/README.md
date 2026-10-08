@@ -93,8 +93,9 @@ Neither side times a reply out: the host's checks take as long as the database d
 (its authority or lease gone, a refusal, a stop), asking a lost or late fence call again meanwhile. The native
 side keeps a 10-minute backstop against a host that is alive but hung (until 5 Oct 2026 a fixed 5 s native and 4 s
 host deadline, which a database slowed to a few seconds per call turned into stopped turns). The database still
-bounds each fence attempt: it is one statement under `qorpera_native_host_call`'s 8 s budget, asked again when
-cancelled, so a fence that needs more than 8 s in the database never lands and the request ends at the backstop. An exhaustive
+bounds each fence attempt: it is one statement under `qorpera_native_host_call_long`'s 25 s budget (8 s until
+migration `20260930109500`), asked again when cancelled, so a fence that needs more than 25 s in the database never
+lands and the request ends at the backstop. An exhaustive
 item match rejects unhandled tool-result kinds, unissued images and encrypted tool
 results. Native memory requests are not admitted in this adapter. Only result
 bodies can change; the reply cannot alter calls, instructions, models or roles.
