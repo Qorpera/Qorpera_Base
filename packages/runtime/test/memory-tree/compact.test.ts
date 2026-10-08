@@ -118,6 +118,10 @@ it("sizes its scale lines to NODE, shares rules 3 to 5, and uses auto-review's m
 	const rules = (prompt: string) => prompt.slice(prompt.indexOf("3. Keep items findable."));
 	expect(rules(COMPACT)).toBe(rules(COMPACT_STEP));
 	expect(rules(COMPACT)).toContain("[quote N]");
+	const backslash = String.fromCharCode(92);
+	expect(rules(COMPACT)).toContain(
+		`${backslash}u003c stands for <, ${backslash}u003e for > and ${backslash}u0026 for &: write the characters themselves.`,
+	);
 	expect([COMPACT_MODEL, COMPACT_EFFORT]).toEqual(["gpt-6-luna", "low"]);
 });
 
@@ -409,6 +413,26 @@ it("closes a thread that opens only after the deadline", async () => {
 		},
 	});
 	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(closed).toBe(1);
+});
+
+it("drops a thread whose close throws, and keeps its line", async () => {
+	let closed = 0;
+	const call: MemoryCompactCall = async () => ({
+		send: async () => ({ text: "Jonas: hi" }),
+		close: () => {
+			closed += 1;
+			throw new Error("app-server gone");
+		},
+	});
+	const { lines, stats } = await memoryCompact(source([long("E0")]), call, {
+		lane: new MemoryCompactLane(),
+		signal: deadline(),
+	});
+	// An unhandled rejection from the close would fail this run.
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(lines).toEqual([{ l: 0, k: 0, seq: 100, hash: HASH, free: false, tries: 1, text: "Jonas: hi" }]);
+	expect(stats).toMatchObject({ calls: 1, failures: 0 });
 	expect(closed).toBe(1);
 });
 
