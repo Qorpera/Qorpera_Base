@@ -9,8 +9,10 @@
 // - A node the compactor failed on, with its inputs at hand, stays missing for the rest of the run (§7.2): the next
 //   run builds it. A stopped lane, an abort or an unreadable step is no failure.
 // - Lines are derived, so they are stored only at the run's generation as the writer read it before its first step or
-//   line (§4.3). Once a commit comes back `stale`, or the generation moved, the batch is discarded whole and nothing
-//   more is stored in the run: what was built serves this run's own view, and the next run builds it again.
+//   line (§4.3). Once a commit is refused for that generation, or it moved, the batch is discarded whole and nothing
+//   more is stored in the run: what was built serves this run's own view, and the next run builds it again. A commit
+//   refused because a block is not at the version it was read at (another writer's, or a log that moved under it) is
+//   read and committed again.
 // - This process's narrow steps are in full in its own view, and no line over them is stored (§4.5). An earlier
 //   process's narrow steps are their tool's name, as their records are, and are stored like the others.
 // - A request whose fold needs lines not built yet waits up to SETTLE for them, then shows placeholders (§5.4, §5.7).
@@ -45,7 +47,7 @@ const CHANGE_SET_FILES = 64;
 const CHANGE_SET_BYTES = 1024 * 1024;
 /** A tier's block: levels 4t to 4t + 3, 16 + 8 + 4 + 2 lines at most (§4.2). */
 const BLOCK_LINES = 30;
-/** Times a pass reads its steps and blocks while the log is found anew under them. */
+/** Times a pass reads its steps and blocks, or commits its lines, while the log changes under them. */
 const READS = 3;
 
 /** A step as the log gives it. `narrow` comes with W1c-3's narrow steps (§4.5). */
@@ -144,7 +146,7 @@ export class CloudRunStepLines {
 	#finishing: AbortSignal | null = null;
 	/** The run's generation as the writer read it before its first step or line: every line it stores is at it. */
 	#generation: number | null = null;
-	/** True once a commit came back `stale` or the generation moved: nothing more is stored in the run (§4.3). */
+	/** True once a commit was refused for the generation, or it moved: nothing more is stored in the run (§4.3). */
 	#stale = false;
 	#done = false;
 	#gone = false;
@@ -457,13 +459,21 @@ export class CloudRunStepLines {
 	}
 
 	/**
-	 * Commits the lines not stored yet at `generation`, the writer's: each block read again, its stored lines kept, in
-	 * change sets within core §5's bounds.
+	 * Commits the lines not stored yet at `generation`, the writer's. A change set refused because a block is not at
+	 * the version it was read at is read and committed again, up to READS times; what is left waits for the next pass.
 	 */
 	async #commit(generation: number, signal: AbortSignal): Promise<void> {
+		for (let attempt = 1; attempt <= READS; attempt++) if (await this.#store(generation, signal)) return;
+	}
+
+	/**
+	 * Commits the lines not stored yet, each block read again and its stored lines kept, in change sets within core
+	 * §5's bounds. False when a block changed under a change set, which is then to be read again.
+	 */
+	async #store(generation: number, signal: AbortSignal): Promise<boolean> {
 		if (this.#stale) {
 			this.#unstored.clear();
-			return;
+			return true;
 		}
 		const byPath = new Map<string, MemoryTreeLine[]>();
 		for (const line of this.#unstored.values()) {
@@ -521,12 +531,23 @@ export class CloudRunStepLines {
 			);
 			if (outcome === "gone") throw new CloudRunLogGone();
 			if (outcome === "stale") {
-				// Discarded whole, with every line over it: nothing more is stored in this run (§4.3).
+				// A block not at the version it was read at is read again. Refused for its generation, or while an erase
+				// is open, the change set landed nothing: it is discarded whole, with every line over it, and nothing
+				// more is stored in this run (§4.3).
+				if (await this.#changed(writes, signal)) return false;
 				this.#stale = true;
 				this.#unstored.clear();
-				return;
+				return true;
 			}
 			for (const write of writes) for (const key of write.keys) this.#unstored.delete(key);
 		}
+		return true;
+	}
+
+	/** Whether a block of a refused change set is no longer at the version it was read at. */
+	async #changed(writes: readonly { readonly block: CloudRunTreeBlock }[], signal: AbortSignal): Promise<boolean> {
+		for (const { block } of writes)
+			if (((await this.#log.treeRead(block.path, signal))?.version ?? null) !== block.version) return true;
+		return false;
 	}
 }

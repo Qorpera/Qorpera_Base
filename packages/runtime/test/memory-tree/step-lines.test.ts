@@ -49,6 +49,8 @@ class FakeLog implements CloudRunStepLinesLog {
 	readonly commits: { key: string; blocks: readonly CloudRunTreeBlock[]; generation: number }[] = [];
 	/** What every commit answers, when set. */
 	answer: "stale" | "gone" | null = null;
+	/** Tree reads that find nothing, as at a place the log has just left. */
+	left = 0;
 	#versions = 0;
 	readonly #listeners = new Set<(batch: CloudRunLogCommitted) => void>();
 
@@ -67,6 +69,10 @@ class FakeLog implements CloudRunStepLinesLog {
 	}
 	async flush(): Promise<void> {}
 	async treeRead(path: string): Promise<{ version: string; text: string } | null> {
+		if (this.left > 0) {
+			this.left -= 1;
+			return null;
+		}
 		return this.files.get(path) ?? null;
 	}
 	async commitTree(
@@ -76,13 +82,13 @@ class FakeLog implements CloudRunStepLinesLog {
 	): Promise<"landed" | "stale" | "gone"> {
 		this.commits.push({ key, blocks, generation });
 		if (this.answer) return this.answer;
-		if (
-			generation !== this.database ||
-			blocks.some((block) => (this.files.get(block.path)?.version ?? null) !== block.version)
-		)
-			return "stale";
-		for (const block of blocks) this.files.set(block.path, { version: `v${++this.#versions}`, text: block.text });
-		return "landed";
+		if (generation !== this.database) return "stale";
+		// Each block lands or not on its own.
+		let stale = false;
+		for (const block of blocks)
+			if ((this.files.get(block.path)?.version ?? null) !== block.version) stale = true;
+			else this.files.set(block.path, { version: `v${++this.#versions}`, text: block.text });
+		return stale ? "stale" : "landed";
 	}
 	onCommitted(listener: (batch: CloudRunLogCommitted) => void): () => void {
 		this.#listeners.add(listener);
@@ -335,6 +341,32 @@ it("stores nothing more once the generation moved past the one its lines were re
 	expect(lines.built(1, 0)).toBe(`${a} ${b}`);
 	expect(log.commits).toHaveLength(1);
 	expect(log.lines()).toEqual([{ l: 0, k: 0, free: true, text: a }]);
+});
+
+it("reads a block again when the log moved under a commit, and goes on storing", async () => {
+	const log = new FakeLog();
+	const lines = writer(log, fake(named).call);
+	log.commit(step(0, "a"));
+	await vi.waitFor(() => expect(log.commits).toHaveLength(1));
+	// The agent's folder moved: the block is read at the place the log left, and the commit conflicts at the new one.
+	log.left = 1;
+	log.commit(step(1, "b"));
+	await vi.waitFor(() => expect(log.commits).toHaveLength(3));
+	log.commit(step(2, "c"));
+	await lines.finish(open());
+	expect(log.commits.map(({ blocks, generation }) => [generation, blocks.map((block) => block.version)])).toEqual([
+		[0, [null]],
+		[0, [null]],
+		[0, ["v1"]],
+		[0, ["v2"]],
+	]);
+	const [a, b, c] = ["a", "b", "c"].map((text) => memoryFreeLeaf(rendered(text)) as string);
+	expect(log.lines()).toEqual([
+		{ l: 0, k: 0, free: true, text: a },
+		{ l: 0, k: 1, free: true, text: b },
+		{ l: 0, k: 2, free: true, text: c },
+		{ l: 1, k: 0, free: true, text: `${a} ${b}` },
+	]);
 });
 
 it("reads a resumed run's steps and blocks again when its first read found the log", async () => {
