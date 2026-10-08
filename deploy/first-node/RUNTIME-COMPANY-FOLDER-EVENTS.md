@@ -474,6 +474,12 @@ host's:
   envelope and the bytes are zeroed after. Its answer is the hook's receipt or the database's refusal (by SQLSTATE,
   message at most 512 characters); anything else is "outcome unconfirmed". A retry's new id and envelope are never
   stored: the receipt answers.
+- **Rollout:** after E3b-1's migration, the secret broker (it serves `/v1/event-hooks`), then the vault's nginx on node 1
+  (the `:10000` server block in `RUNTIME-STEP-7-CLOUD-CONNECTORS.md`, which `QORPERA_CLOUD_SECRET_BROKER_URL` names):
+  `location = /v1/event-hooks` (POST only), proxied through `$qorpera_operations_broker` as `/v1/company-accounts` is
+  (the client sends `?company=<profileId>`), checked with `nginx -t` before the reload; then the runtime bundle. Until
+  both are in place a signed create gets an error status, which the folder client takes as a lost answer: it asks again
+  with the same key, then reports the outcome as unknown, and nothing is written.
 The model never sees the secret.
 
 **E3b-3, the fill.** The Company Computer's `vault_fill` gains the hook source: the broker reads the hook's
