@@ -1250,10 +1250,10 @@ export class LxdUnixClient
 		this.#operationTimeoutSeconds = operationTimeoutSeconds;
 	}
 
-	async #officeMetadata(path: string, signal: AbortSignal): Promise<Record<string, unknown>> {
+	async #officeMetadata(path: string, signal: AbortSignal, maximumBytes = 65536): Promise<Record<string, unknown>> {
 		const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
 		checked.throwIfAborted();
-		const result = await this.#requestPayload("GET", path, undefined, undefined, checked, 65536);
+		const result = await this.#requestPayload("GET", path, undefined, undefined, checked, maximumBytes);
 		checked.throwIfAborted();
 		const envelope = record(result.body, "office metadata");
 		if (result.status !== 200 || envelope.type !== "sync" || envelope.status_code !== 200)
@@ -1451,8 +1451,9 @@ export class LxdUnixClient
 			const n = await this.#officeMetadata(projectPath(`/1.0/networks/${network}`, project), checked);
 			const s = await this.#officeMetadata(`/1.0/storage-pools/${storagePool}`, checked);
 			// The computer's second card is a port of the node's agents' bridge (agent-plug.ts): a bridge LXD does not
-			// manage, which the agent exit owns (deploy/agent-exit). LXD shows such a bridge in its default project.
-			const a = await this.#officeMetadata(`/1.0/networks/${AGENT_BRIDGE}`, checked);
+			// manage, which the agent exit owns (deploy/agent-exit). LXD shows such a bridge in its default project,
+			// with every plugged machine of the node in its used_by (unread), so its record is not held to 64 KiB.
+			const a = await this.#officeMetadata(`/1.0/networks/${AGENT_BRIDGE}`, checked, MAX_RESPONSE_BYTES);
 			const pc = stringRecord(p.config, "project config");
 			const nc = stringRecord(n.config, "network config");
 			const sc = stringRecord(s.config, "storage pool config");
@@ -1461,6 +1462,9 @@ export class LxdUnixClient
 			if (
 				p.name !== project ||
 				replicaMode !== "" ||
+				// A restricted project refuses the agent card (a NIC with a parent, not a network) unless it allows
+				// every NIC; LXD would refuse it only at the create, after the journal's claim.
+				(pc.restricted === "true" && pc["restricted.devices.nic"] !== "allow") ||
 				n.name !== network ||
 				n.type !== "bridge" ||
 				n.managed !== true ||

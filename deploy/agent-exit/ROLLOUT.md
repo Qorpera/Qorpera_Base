@@ -280,5 +280,32 @@ The demand's refusal list keeps `NODE_AGENT_EXIT_UNHEALTHY`; nothing writes it o
   whose observer stopped reads as unobserved first (`NODE_OBSERVATION_UNAVAILABLE`), so its sleeping machines get the
   usual grace before they move. When no node has a healthy exit, a new agent's machine waits as for room (no
   candidate is left). Repair: `systemctl reload qorpera-agent-exit.service` (`README.md`, "Health and failure").
-- The Company Computer's second card comes with E6 and the next office image; until then its browser keeps its own
-  network.
+- The Company Computer's second card comes with E6 and the next office image (step 7); until then its browser keeps
+  its own network.
+
+## Step 7 (E6): the Company Computer's agent card, with the next office image
+
+E6 is two PRs that merge together: #925 (the office provider) and #926 (the office image). They go out with the next
+office image (#411's), node 1 then node 2, after steps 1–6. Per node:
+1. The exit is healthy (`X verify`). Both office units join the group `qorpera-agent-plug` and fail to start without it.
+2. The offices project allows the agent card. If `lxc project get offices restricted` is `true`, set
+   `lxc project set offices restricted.devices.nic=allow`: the card names a parent (`qagent0`), not a network, which
+   `managed` refuses. The office gate refuses a restricted project without it (`LXD_OFFICE_INFRASTRUCTURE_UNCONFIRMED`),
+   before any create is claimed. The project's config is in the office policy's digest: re-enrol the policy after.
+3. The new office image. Its network configures the first card (`enp5s0`) only; the plug, which the image names
+   `qagent` by its MAC, never gets DHCP.
+4. The node release with the new office provider (`install-lxd-provider-host.sh`) and fleet units. The installer
+   refuses an installed unit that differs and never replaces it: stop the office services and remove their installed
+   units first.
+
+A Company Computer made before has one card and the guest check refuses it (`LXD_OFFICE_GUEST_DRIFTED`); delete it
+(production's companies were wiped on 3 October).
+
+Check, per node, on a new Company Computer (or the next reset):
+- within a minute `X status` shows its `office` entry in the client map and a port on `qagent0`, and `X verify` stays
+  healthy; `tail -1 /var/log/qorpera-agent-exit/clients-$(date -u +%F).jsonl` shows its `plugged` line;
+- in the computer, `ip -4 -o addr show qagent` shows one `10.210.*/16` address, `ip rule` shows the rules 1000–1002,
+  and a shell's `/etc/resolv.conf` names `10.210.0.1` only.
+
+Undo: roll the node back to its previous release and office image. A plugged Company Computer keeps its entry until it
+is deleted.

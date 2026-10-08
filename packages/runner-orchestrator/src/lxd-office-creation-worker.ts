@@ -114,7 +114,7 @@ export class LxdOfficeCreationWorker {
 		if (!["provisioning", "recovering"].includes(status.officeState))
 			return { state: "held", reason: "office_state" };
 		const physical = await this.#gate.inspect(signal);
-		const checked = AbortSignal.any([signal, physical.signal]);
+		let checked = AbortSignal.any([signal, physical.signal]);
 		checked.throwIfAborted();
 		const identity = await openLxdOfficeCreationIdentity(
 			this.#policy,
@@ -147,9 +147,14 @@ export class LxdOfficeCreationWorker {
 			return { state: "capacity_refused", intentId, allocationId: binding.allocationId };
 		let operation = await journal.observe(createCommandId, "create", checked);
 		if (operation.state === "not_dispatched") {
-			// The computer's agent card is plugged in right before its create, before the fresh authority so the
-			// plug's time costs none of it. A plug never followed by a create is the same entry again next time.
-			const hwaddr = await this.#plug(lxdOfficeAgentPlugClaim(binding), checked);
+			// An existing VM is never adopted as evidence of an unrecorded create, nor given an agent card.
+			if (await this.#client.getInstance(binding.project, request.name, checked))
+				throw new Error("OFFICE_CREATION_INSTANCE_ALREADY_EXISTS");
+			// The computer's agent card is plugged in right before its create. The plug can wait on the node's
+			// reconciler, so it runs outside the physical gate's window, and the gate is inspected again after it.
+			// A plug never followed by a create is the same entry again next time.
+			const hwaddr = await this.#plug(lxdOfficeAgentPlugClaim(binding), signal);
+			checked = AbortSignal.any([signal, (await this.#gate.inspect(signal)).signal]);
 			checked.throwIfAborted();
 			const authority = await control.check(checked);
 			const node = await reserveLxdOfficeNodeMachine(this.#policy, binding, this.#registry, authority.signal);

@@ -125,6 +125,38 @@ describe("read-only physical office metadata over Unix HTTP", () => {
 			f.client.inspectOfficeInfrastructure("offices", "office-net", "office-pool", new AbortController().signal),
 		).rejects.toThrow("LXD_OFFICE_INFRASTRUCTURE_UNCONFIRMED");
 	});
+	it("reads the agents' bridge however many machines are plugged into it", async () => {
+		const { infrastructure } = officePhysicalFixture();
+		const used = Array.from(
+			{ length: 2000 },
+			(_, i) => `/1.0/instances/qorpera-coding-machine-${i.toString(16).padStart(32, "0")}?project=machines`,
+		);
+		const f = await fixture((request, response) =>
+			send(response, infrastructureReply(request, infrastructure, { ...agentBridge(), used_by: used })),
+		);
+		await expect(
+			f.client.inspectOfficeInfrastructure("offices", "office-net", "office-pool", new AbortController().signal),
+		).resolves.toEqual(infrastructure);
+	});
+	it.each([
+		[{ restricted: "true" }, false],
+		[{ restricted: "true", "restricted.devices.nic": "managed" }, false],
+		[{ restricted: "true", "restricted.devices.nic": "block" }, false],
+		[{ restricted: "true", "restricted.devices.nic": "allow" }, true],
+		[{ restricted: "false", "restricted.devices.nic": "managed" }, true],
+	])("allows the agent card only in a project that allows it: %j", async (restrictions, allowed) => {
+		const { infrastructure: i } = officePhysicalFixture();
+		Object.assign(i.project.config, restrictions);
+		const f = await fixture((request, response) => send(response, infrastructureReply(request, i)));
+		const inspected = f.client.inspectOfficeInfrastructure(
+			"offices",
+			"office-net",
+			"office-pool",
+			new AbortController().signal,
+		);
+		if (allowed) await expect(inspected).resolves.toEqual(i);
+		else await expect(inspected).rejects.toThrow("LXD_OFFICE_INFRASTRUCTURE_UNCONFIRMED");
+	});
 	it("refuses a node without the agents' bridge", async () => {
 		const { infrastructure } = officePhysicalFixture();
 		const f = await fixture((request, response) =>

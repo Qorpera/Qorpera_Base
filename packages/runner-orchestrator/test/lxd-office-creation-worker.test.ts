@@ -199,6 +199,34 @@ describe("durable office creation from retained cloud intent", () => {
 		await f.worker().reconcile(signal());
 		expect(f.plug).toHaveBeenCalledOnce();
 	});
+	it("plugs in outside the physical gate's window and inspects the gate again before the create", async () => {
+		const f = await fixture();
+		const lapsed = new AbortController();
+		f.inspect.mockImplementationOnce(async () => ({
+			signal: lapsed.signal,
+			validForMs: 5000,
+			hostBootId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+		}));
+		// The first window lapses while the plug waits on the node's reconciler.
+		f.plug.mockImplementationOnce(async (claim, plugSignal) => {
+			lapsed.abort();
+			return testAgentPlug(claim, plugSignal);
+		});
+		await expect(f.worker().reconcile(signal())).resolves.toHaveProperty("state", "awaiting_adoption");
+		expect(f.inspect).toHaveBeenCalledTimes(2);
+		expect(f.inspect.mock.invocationCallOrder[1]).toBeGreaterThan(f.plug.mock.invocationCallOrder[0]!);
+		expect(f.submit).toHaveBeenCalledOnce();
+	});
+	it("never plugs a card in for an unrecorded VM of the computer's name", async () => {
+		const f = await fixture();
+		await f.worker().reconcile(signal());
+		const unrecorded = f.state.instance;
+		const g = await fixture();
+		g.state.instance = unrecorded;
+		await expect(g.worker().reconcile(signal())).rejects.toThrow("OFFICE_CREATION_INSTANCE_ALREADY_EXISTS");
+		expect(g.plug).not.toHaveBeenCalled();
+		expect(g.submit).not.toHaveBeenCalled();
+	});
 	it("creates nothing while the plug refuses, then the same identity once it plugs in", async () => {
 		const f = await fixture();
 		f.plug.mockRejectedValueOnce(new Error("PLUGGED_IN_FOR_ANOTHER_MACHINE"));
