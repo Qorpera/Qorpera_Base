@@ -953,7 +953,9 @@ deferred probe and M1's shared-key check (§14, §17).
 ### 6.2 The cache key
 
 - Our Codex patch sets `prompt_cache_key` to
-  `qorpera:` + sha256(payer login connection id, agent id, conversation id).
+  `qorpera:` + sha256(payer login connection id, agent id, conversation id), the digest in unpadded base64url: 51
+  characters, within the provider's 64. A longer key fails the whole request, so the hex digest (72 characters) would
+  not do. The patch and the host refuse any other form (W2a).
 - Setting it is a new capability of the patch. Jonas said yes on 6 October (§16). Until the patch sets it, runs use
   the key Codex sends itself, the run's own thread id (M0), and reuse each other's cache only as far as the provider
   allows without a shared key.
