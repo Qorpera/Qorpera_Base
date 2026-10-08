@@ -13,6 +13,7 @@ import {
 	parseCompanyComputerResetConfigurationRequest,
 } from "@qorpera/contracts";
 import { expect, vi } from "vitest";
+import type { AgentPlug } from "../../src/agent-plug.ts";
 import type { LxdHostInventory } from "../../src/lxd-client.ts";
 import { officeCanonical, officeDigest } from "../../src/lxd-office-image-provenance.ts";
 import type { LxdOfficeResetSuccessorLane } from "../../src/lxd-office-reset-successor-lane.ts";
@@ -22,6 +23,7 @@ import {
 	LxdOfficeResetWorker,
 } from "../../src/lxd-office-reset-worker.ts";
 import { lxdOfficeProviderBindingSha256 } from "../../src/lxd-office-start-control.ts";
+import { testAgentPlug } from "../helpers/agent-plug.ts";
 import { nodeAdmissionFixture } from "./node-admission.ts";
 import { officeCodePackageMaterialFixture } from "./office-code-package-material.ts";
 import { officeImagePackageBytes, officeImagePackageFixture } from "./office-image-package.ts";
@@ -30,6 +32,8 @@ import { officeStopWorkerFixture } from "./office-stop-worker.ts";
 
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 const signal = (): AbortSignal => new AbortController().signal;
+/** The worker's ports a test may swap: its successor lane (null for none) and its agent plug. */
+type ResetPorts = { successorLane?: LxdOfficeResetSuccessorLane | null; plug?: AgentPlug };
 type GuestFile = { content: Buffer; uid: number; gid: number; mode: number };
 const OUTBOX = "/var/lib/qorpera-office-events";
 function outboxCanonical(value: unknown): unknown {
@@ -570,7 +574,7 @@ export async function officeResetWorkerFixture(roots: string[], predecessorRootI
 		imagePackageManifestPath,
 		codePackageLanePath,
 	};
-	const create = (ports: { successorLane?: LxdOfficeResetSuccessorLane | null } = {}) =>
+	const create = (ports: ResetPorts = {}) =>
 		new LxdOfficeResetWorker(
 			{ policy: f.policy, check: f.check },
 			{ call: registry.call },
@@ -584,10 +588,10 @@ export async function officeResetWorkerFixture(roots: string[], predecessorRootI
 				readArtifact: packageMaterial.ports.readArtifact,
 				codePackageLane: () => packageLane,
 				successorLane: ports.successorLane === null ? undefined : (ports.successorLane ?? lane),
+				plug: ports.plug ?? testAgentPlug,
 			},
 		);
-	const run = (ports?: { successorLane?: LxdOfficeResetSuccessorLane | null }, s: AbortSignal = signal()) =>
-		create(ports).reconcile(input, s);
+	const run = (ports?: ResetPorts, s: AbortSignal = signal()) => create(ports).reconcile(input, s);
 	/** Advance phase by phase until the requested state or a hold. */
 	const until = async (target: string, limit = 12) => {
 		let result = await run();

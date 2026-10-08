@@ -1,7 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
+import { type AgentPlug, runAgentPlug } from "./agent-plug.ts";
 import { type LxdTrackedClient, LxdUnixClient } from "./lxd-client.ts";
 import { openLxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts";
-import { assertLxdOfficeGuestInstance, lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
+import { assertLxdOfficeGuestInstance, lxdOfficeAgentPlugClaim, lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
 import { reserveLxdOfficeNodeMachine } from "./lxd-office-node-admission.ts";
 import { LxdOfficeOperationJournal } from "./lxd-office-operations.ts";
 import { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
@@ -44,12 +45,14 @@ export class LxdOfficeCreationWorker {
 	readonly #registry: LxdOfficeCreationRegistry;
 	readonly #provider: LxdOfficeProviderControl;
 	readonly #client: LxdTrackedClient;
+	readonly #plug: AgentPlug;
 	#busy = false;
-	constructor(gate: Gate, registry: LxdOfficeCreationRegistry, client?: LxdTrackedClient) {
+	constructor(gate: Gate, registry: LxdOfficeCreationRegistry, client?: LxdTrackedClient, plug?: AgentPlug) {
 		this.#gate = gate;
 		this.#policy = parseLxdOfficePhysicalPolicy(gate.policy);
 		this.#registry = registry;
 		this.#client = client ?? new LxdUnixClient(this.#policy.host.socketPath);
+		this.#plug = plug ?? runAgentPlug;
 		const g = this.#policy.guest;
 		this.#provider = new LxdOfficeProviderControl(
 			{
@@ -144,6 +147,10 @@ export class LxdOfficeCreationWorker {
 			return { state: "capacity_refused", intentId, allocationId: binding.allocationId };
 		let operation = await journal.observe(createCommandId, "create", checked);
 		if (operation.state === "not_dispatched") {
+			// The computer's agent card is plugged in right before its create, before the fresh authority so the
+			// plug's time costs none of it. A plug never followed by a create is the same entry again next time.
+			const hwaddr = await this.#plug(lxdOfficeAgentPlugClaim(binding), checked);
+			checked.throwIfAborted();
 			const authority = await control.check(checked);
 			const node = await reserveLxdOfficeNodeMachine(this.#policy, binding, this.#registry, authority.signal);
 			if (node.state === "refused")
@@ -153,7 +160,7 @@ export class LxdOfficeCreationWorker {
 			if (await this.#client.getInstance(binding.project, request.name, authorized))
 				throw new Error("OFFICE_CREATION_INSTANCE_ALREADY_EXISTS");
 			authorized.throwIfAborted();
-			operation = await journal.reconcile(createCommandId, "create", authorized);
+			operation = await journal.reconcile(createCommandId, "create", authorized, hwaddr);
 		}
 		const result = {
 			intentId,

@@ -2,10 +2,13 @@ import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { COMPANY_COMPUTER_RESET_PHASES } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AgentPlugClaim } from "../src/agent-plug.ts";
+import { lxdOfficeAgentPlugClaim } from "../src/lxd-office-guest.ts";
 import { LxdOfficeOperationJournal } from "../src/lxd-office-operations.ts";
 import { recoverOfficeResetDelete } from "./fixtures/office-reset-delete-recovery.ts";
 import { officeResetWorkerFixture } from "./fixtures/office-reset-worker.ts";
 import { serviceStartId as id } from "./fixtures/office-service-start.ts";
+import { testAgentMac, testAgentPlug } from "./helpers/agent-plug.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -47,6 +50,36 @@ describe("serialized office root reset worker", () => {
 			await recovery.preserved();
 		},
 	);
+	it("plugs the new root's agent card in right before its create, once the old root is gone", async () => {
+		const f = await fixture();
+		const submitted = () => f.submit.mock.calls.map(([, action]) => action.action);
+		const plug = vi.fn(async (claim: AgentPlugClaim, signal: AbortSignal) => {
+			expect(submitted()).toEqual(["stop", "delete"]);
+			return testAgentPlug(claim, signal);
+		});
+		let result = await f.run({ plug });
+		while (result.state === "progressed" && result.phase !== "root_deleted") result = await f.run({ plug });
+		expect(result).toMatchObject({ state: "progressed", phase: "root_deleted" });
+		expect(plug).not.toHaveBeenCalled();
+		// A refused plug dispatches nothing; the same create goes out once the plug answers.
+		const refused = vi.fn(async () => {
+			throw new Error("PLUGGED_IN_FOR_ANOTHER_MACHINE");
+		});
+		await expect(f.run({ plug: refused })).rejects.toMatchObject({
+			cause: { message: "PLUGGED_IN_FOR_ANOTHER_MACHINE" },
+		});
+		expect(refused).toHaveBeenCalledOnce();
+		expect(submitted()).toEqual(["stop", "delete"]);
+		await expect(f.run({ plug })).resolves.toMatchObject({ state: "progressed", phase: "root_created" });
+		expect(plug).toHaveBeenCalledExactlyOnceWith(lxdOfficeAgentPlugClaim(f.binding), expect.any(AbortSignal));
+		const [, create] = f.submit.mock.calls[2];
+		expect(create.action === "create" && create.request.devices.plug.hwaddr).toBe(testAgentMac);
+		// A dispatched create is never plugged in again.
+		await expect(f.run({ plug })).resolves.toMatchObject({ state: "progressed", phase: "restored" });
+		expect(plug).toHaveBeenCalledOnce();
+		await expect(f.until("active")).resolves.toMatchObject({ state: "active" });
+		expect(submitted()).toEqual(["stop", "delete", "create", "start"]);
+	});
 	it("refuses a historical reset root without retained signed package provenance before enrollment", async () => {
 		const f = await officeResetWorkerFixture(roots, id(649));
 		await expect(f.run()).rejects.toMatchObject({

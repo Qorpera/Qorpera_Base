@@ -19,6 +19,7 @@ import {
 	type CompanyComputerPreparationCommand,
 	parseCompanyComputerPreparationCommand,
 } from "@qorpera/contracts";
+import { AGENT_BRIDGE } from "./agent-plug.ts";
 import { lxdMacAddress } from "./lxd-guest-network.ts";
 import { OFFICE_CODE_PACKAGE_LOADER, officeCodePackageStage } from "./lxd-office-code-package-loader.ts";
 import { parseLxdProcUptime } from "./lxd-proc-uptime.ts";
@@ -1449,6 +1450,9 @@ export class LxdUnixClient
 			const p = await this.#officeMetadata(`/1.0/projects/${project}`, checked);
 			const n = await this.#officeMetadata(projectPath(`/1.0/networks/${network}`, project), checked);
 			const s = await this.#officeMetadata(`/1.0/storage-pools/${storagePool}`, checked);
+			// The computer's second card is a port of the node's agents' bridge (agent-plug.ts): a bridge LXD does not
+			// manage, which the agent exit owns (deploy/agent-exit). LXD shows such a bridge in its default project.
+			const a = await this.#officeMetadata(`/1.0/networks/${AGENT_BRIDGE}`, checked);
 			const pc = stringRecord(p.config, "project config");
 			const nc = stringRecord(n.config, "network config");
 			const sc = stringRecord(s.config, "storage pool config");
@@ -1467,6 +1471,9 @@ export class LxdUnixClient
 				nc["ipv4.firewall"] === "false" ||
 				nc["bridge.external_interfaces"] ||
 				nc["security.acls"] ||
+				a.name !== AGENT_BRIDGE ||
+				a.type !== "bridge" ||
+				a.managed !== false ||
 				s.name !== storagePool ||
 				s.status !== "Created" ||
 				!["dir", "btrfs", "lvm", "zfs"].includes(s.driver as string)

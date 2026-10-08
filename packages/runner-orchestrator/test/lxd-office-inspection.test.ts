@@ -42,6 +42,20 @@ const imageRecord = () => ({
 	auto_update: false,
 	profiles: [],
 });
+// The agents' bridge as LXD shows a bridge it does not manage, in its default project.
+const agentBridge = () => ({ name: "qagent0", type: "bridge", managed: false, status: "", config: {}, used_by: [] });
+function infrastructureReply(
+	request: IncomingMessage,
+	i: { project: unknown; network: unknown; storagePool: unknown },
+	agent: unknown = agentBridge(),
+) {
+	if (request.url === "/1.0/networks/qagent0") return agent;
+	return request.url?.includes("/projects/")
+		? i.project
+		: request.url?.includes("/networks/")
+			? i.network
+			: i.storagePool;
+}
 function send(response: ServerResponse, metadata: unknown, status = 200) {
 	response.writeHead(status, { "content-type": "application/json" });
 	response.end(JSON.stringify({ type: "sync", status_code: 200, metadata }));
@@ -81,11 +95,10 @@ describe("read-only physical office metadata over Unix HTTP", () => {
 		const f = await fixture((request, response) =>
 			send(
 				response,
-				request.url?.includes("/projects/")
-					? { ...infrastructure.project, replica_mode: "", used_by: ["ignored"] }
-					: request.url?.includes("/networks/")
-						? infrastructure.network
-						: infrastructure.storagePool,
+				infrastructureReply(request, {
+					...infrastructure,
+					project: { ...infrastructure.project, replica_mode: "", used_by: ["ignored"] },
+				}),
 			),
 		);
 		await expect(
@@ -95,7 +108,34 @@ describe("read-only physical office metadata over Unix HTTP", () => {
 			"GET /1.0/projects/offices",
 			"GET /1.0/networks/office-net?project=offices",
 			"GET /1.0/storage-pools/office-pool",
+			"GET /1.0/networks/qagent0",
 		]);
+	});
+	it.each([
+		["name", "other-bridge"],
+		["type", "physical"],
+		["managed", true],
+		["managed", undefined],
+	])("refuses an agents' bridge whose %s is %s", async (field, value) => {
+		const { infrastructure } = officePhysicalFixture();
+		const f = await fixture((request, response) =>
+			send(response, infrastructureReply(request, infrastructure, { ...agentBridge(), [field]: value })),
+		);
+		await expect(
+			f.client.inspectOfficeInfrastructure("offices", "office-net", "office-pool", new AbortController().signal),
+		).rejects.toThrow("LXD_OFFICE_INFRASTRUCTURE_UNCONFIRMED");
+	});
+	it("refuses a node without the agents' bridge", async () => {
+		const { infrastructure } = officePhysicalFixture();
+		const f = await fixture((request, response) =>
+			request.url === "/1.0/networks/qagent0"
+				? send(response, null, 404)
+				: send(response, infrastructureReply(request, infrastructure)),
+		);
+		await expect(
+			f.client.inspectOfficeInfrastructure("offices", "office-net", "office-pool", new AbortController().signal),
+		).rejects.toThrow("LXD_OFFICE_INFRASTRUCTURE_UNCONFIRMED");
+		expect(f.calls.at(-1)).toBe("GET /1.0/networks/qagent0");
 	});
 	it.each([
 		["project", "name", "another-project"],
@@ -115,16 +155,7 @@ describe("read-only physical office metadata over Unix HTTP", () => {
 			...infrastructure,
 			[section as string]: { ...infrastructure[section as keyof typeof infrastructure], [field as string]: value },
 		};
-		const f = await fixture((request, response) =>
-			send(
-				response,
-				request.url?.includes("/projects/")
-					? changed.project
-					: request.url?.includes("/networks/")
-						? changed.network
-						: changed.storagePool,
-			),
-		);
+		const f = await fixture((request, response) => send(response, infrastructureReply(request, changed)));
 		await expect(
 			f.client.inspectOfficeInfrastructure("offices", "office-net", "office-pool", new AbortController().signal),
 		).rejects.toThrow("LXD_OFFICE_INFRASTRUCTURE_UNCONFIRMED");
@@ -138,16 +169,7 @@ describe("read-only physical office metadata over Unix HTTP", () => {
 	])("refuses an unsupported effective bridge option %s", async (key, value) => {
 		const { infrastructure: i } = officePhysicalFixture();
 		i.network.config[key] = value;
-		const f = await fixture((request, response) =>
-			send(
-				response,
-				request.url?.includes("/projects/")
-					? i.project
-					: request.url?.includes("/networks/")
-						? i.network
-						: i.storagePool,
-			),
-		);
+		const f = await fixture((request, response) => send(response, infrastructureReply(request, i)));
 		await expect(
 			f.client.inspectOfficeInfrastructure("offices", "office-net", "office-pool", new AbortController().signal),
 		).rejects.toThrow();

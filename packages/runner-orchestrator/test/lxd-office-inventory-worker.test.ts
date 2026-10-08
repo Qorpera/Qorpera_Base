@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type LxdInstanceRecord, LxdUnixClient } from "../src/lxd-client.ts";
 import { openLxdOfficeCreationIdentity } from "../src/lxd-office-creation-journal.ts";
-import { lxdOfficeGuestPlan } from "../src/lxd-office-guest.ts";
 import { officeDigest } from "../src/lxd-office-image-provenance.ts";
 import { LxdOfficeInventoryWorker } from "../src/lxd-office-inventory-worker.ts";
 import { readRecord } from "../src/lxd-office-journal-files.ts";
@@ -16,6 +15,7 @@ import {
 	parseOfficeInventoryLimits,
 } from "../src/lxd-office-storage-inventory.ts";
 import { officePhysicalFixture } from "./fixtures/office-physical-policy.ts";
+import { pluggedOfficeRequest, testAgentMac } from "./helpers/agent-plug.ts";
 
 const intentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const operationId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -43,9 +43,9 @@ async function fixture(create: "succeeded" | "pending" | "failed" | null = "succ
 	vi.spyOn(client, "inspectInstanceOperation").mockResolvedValue(create ?? "pending");
 	const identity = await openLxdOfficeCreationIdentity(policy, intentId, false, client, signal());
 	const journal = await LxdOfficeOperationJournal.open(root, intentId, identity.binding, client, true);
-	if (create) await journal.reconcile(identity.createCommandId, "create", signal());
+	if (create) await journal.reconcile(identity.createCommandId, "create", signal(), testAgentMac);
 	submit.mockClear();
-	const { request } = lxdOfficeGuestPlan(identity.binding);
+	const request = pluggedOfficeRequest(identity.binding);
 	const instance: LxdInstanceRecord = {
 		name: request.name,
 		type: "virtual-machine",

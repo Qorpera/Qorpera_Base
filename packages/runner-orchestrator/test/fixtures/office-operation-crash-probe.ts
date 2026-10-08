@@ -11,6 +11,7 @@ import { type LxdOfficeGuestBinding, lxdOfficeGuestPlan } from "../../src/lxd-of
 import { LxdOfficeOperationJournal } from "../../src/lxd-office-operations.ts";
 import { LxdOfficePreparationJournal } from "../../src/lxd-office-preparation-journal.ts";
 import { LxdOfficeServiceStartJournal } from "../../src/lxd-office-service-start-journal.ts";
+import { testAgentMac } from "../helpers/agent-plug.ts";
 
 const id = (number: number) => `00000000-0000-4000-8000-${String(number).padStart(12, "0")}`;
 const binding: LxdOfficeGuestBinding = {
@@ -66,6 +67,7 @@ if (process.argv[2] === "--child") {
 				id(10),
 				"create",
 				AbortSignal.timeout(12000),
+				testAgentMac,
 			);
 	process.stdout.write(`${JSON.stringify(result)}\n`);
 } else {
