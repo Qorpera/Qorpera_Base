@@ -66,10 +66,13 @@ const RUN_EFFECTS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_close_proposal",
 	"qorpera_folder_archive_coding_worker",
 ]);
+/** SQL's refusal (55000) of an archive or a cancel by the run that was asked about a quiet coding session, once the
+ * session has a new turn (`qorpera_coding_question_stale`). */
+export const CODING_QUESTION_STALE = "The session has a new turn since you were asked; leave it";
 /** A coding session's archive refusals, by SQL's message, with their SQLSTATE (C3b). */
 export const CODING_ARCHIVE_REFUSALS: ReadonlyMap<string, string> = new Map([
 	["Only a coding session can be archived", "22023"],
-	["The session has a new turn since you were asked; leave it", "55000"],
+	[CODING_QUESTION_STALE, "55000"],
 ]);
 /** The recorder's answer for a proposal that is no longer open for the run (P40a): an answer, not a defect. */
 const PROPOSAL_NOT_OPEN = "This proposal is not open for this run";
@@ -1037,7 +1040,8 @@ export class CloudCompanyFolderClient {
 
 	/** Cancels one of the run agent's workers (F2-5b, `qorpera_folder_cancel_agent_worker`), a run effect under its own
 	 * receipt, keyed by the operation key: a retry with the same key replays it. A worker that changed while the cancel
-	 * waited (QRC01) is asked again; one the agent does not have is SQL's P0002, kept for the caller. */
+	 * waited (QRC01) is asked again; one the agent does not have is SQL's P0002, and a coding session with a new turn
+	 * since the agent was asked about it (C3c) is SQL's 55000, both kept for the caller. */
 	async cancelWorker(
 		request: { readonly folder: string; readonly operationKey: string },
 		signal: AbortSignal,
@@ -1048,7 +1052,7 @@ export class CloudCompanyFolderClient {
 				{ p_binding: this.#binding, p_request: { folder: request.folder, operationKey: request.operationKey } },
 				RELEASE_RETRY,
 				signal,
-				(error) => error.code === "P0002",
+				(error) => error.code === "P0002" || (error.code === "55000" && error.detail === CODING_QUESTION_STALE),
 			),
 			["schema", "runId", "receiptId", "action", "folder", "worker"],
 		);
