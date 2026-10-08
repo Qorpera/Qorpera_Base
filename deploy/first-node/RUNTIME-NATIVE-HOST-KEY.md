@@ -267,9 +267,8 @@ account, account fill, vault model login and folder read and write each go throu
 ### Undo (G2-6a)
 
 Undo G2-6b and G2-6c first if they are in (below): their coding executors and office receivers ask the same function
-and need the guests' header. Then
-revert the servers (they stop asking), then the guest and the migration (`drop function
-public.qorpera_native_binding_proven(jsonb, text)`).
+and need the guests' header. Then revert the servers (they stop asking), then the guest and the migration (`drop
+function public.qorpera_native_binding_proven(jsonb, text)`).
 
 ### Rollout (G2-6b)
 
