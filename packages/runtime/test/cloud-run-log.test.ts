@@ -734,10 +734,13 @@ describe("a resumed run's earlier steps", () => {
 		folder.rewrite(folder.blocks()[1]!, (lines) =>
 			lines.map((line) => line.replace('"result":null', `"result":${envelope("OUTCOME_UNKNOWN")}`)),
 		);
+		folder.generation = 4;
 
 		const { log, signal } = runLog({ runId: first.runId, folder, firstStep: 20 });
 		const earlier = await log.earlier(signal);
 		expect(earlier.map((entry) => entry.j)).toEqual(Array.from({ length: 20 }, (_, j) => j));
+		// The erase moved the run's generation, and finding the log read it.
+		expect(log.generation()).toBe(4);
 		expect(earlier[0]).toEqual({
 			j: 0,
 			call: committed[0]!.call,
@@ -907,7 +910,7 @@ describe("the run's tree beside its log", () => {
 		expect(folder.files.has(`${folder.path}/${T1}`)).toBe(false);
 	});
 
-	it("discards a batch whole when the run's generation moved, a step erase is open, or a block changed", async () => {
+	it("refuses a batch when the run's generation moved or a step erase is open, and a block that changed", async () => {
 		const { folder, log, signal } = await landed();
 		folder.generation = 4;
 		expect(await log.commitTree("steplines:0001", t0(null, "a"), 3, signal)).toBe("stale");
@@ -925,6 +928,28 @@ describe("the run's tree beside its log", () => {
 		folder.rewrite(`${folder.path}/${T0}`, (lines) => lines);
 		expect(await log.commitTree("steplines:0005", t0(file!.version, "c"), 3, signal)).toBe("stale");
 		expect(folder.files.get(`${folder.path}/${T0}`)!.text).toBe(block("a"));
+
+		// Each block lands or not on its own: the changed block is refused, and the new block beside it lands.
+		const upper = memoryBlockText([{ l: 4, k: 0, free: true, text: "a" }], "run");
+		const split = [...t0(file!.version, "c"), { path: T1, text: upper, version: null }];
+		expect(await log.commitTree("steplines:0006", split, 3, signal)).toBe("stale");
+		expect(folder.files.get(`${folder.path}/${T0}`)!.text).toBe(block("a"));
+		expect(folder.files.get(`${folder.path}/${T1}`)!.text).toBe(upper);
+		// Both are read again before the batch is built again.
+		const [low, high] = [await log.treeRead(T0, signal), await log.treeRead(T1, signal)];
+		const both = memoryBlockText([{ l: 4, k: 0, free: true, text: "a and c" }], "run");
+		expect(
+			await log.commitTree(
+				"steplines:0007",
+				[
+					{ path: T0, text: block("a", "c"), version: low!.version },
+					{ path: T1, text: both, version: high!.version },
+				],
+				3,
+				signal,
+			),
+		).toBe("landed");
+		expect(folder.files.get(`${folder.path}/${T1}`)!.text).toBe(both);
 
 		// Step batches are never discarded: they name no generation.
 		folder.generation = 9;
@@ -972,6 +997,20 @@ describe("the run's tree beside its log", () => {
 		expect(folder.commits).toHaveLength(commits);
 	});
 
+	it("commits a resumed run's step lines at the generation its log was found at", async () => {
+		const first = await landed();
+		await first.log.close(first.signal);
+		// A step erase between the pause and the resume moved the generation.
+		first.folder.generation = 5;
+		const { folder } = first;
+		const { log, signal } = runLog({ runId: first.runId, folder, firstStep: 1 });
+		expect(log.generation()).toBe(0);
+		expect(await log.treeRead(T0, signal)).toBeNull();
+		expect(log.generation()).toBe(5);
+		expect(await log.commitTree("steplines:0001", t0(null, "read"), log.generation(), signal)).toBe("landed");
+		expect(folder.commits.at(-1)!.preconditions.runGenerations).toEqual([{ runId: first.runId, generation: 5 }]);
+	});
+
 	it("keeps reading and committing step lines after the log is closed, until the run ends", async () => {
 		const { folder, log, signal } = runLog();
 		log.finish(step(log, "company_read"), envelope("one"), []);
@@ -1002,6 +1041,8 @@ describe("the run's tree beside its log", () => {
 			"t0/0000000.jsonl",
 			"t0/00000000.json",
 			"t01/00000000.jsonl",
+			"t15/00000000.jsonl",
+			"t0/000000000.jsonl",
 			"log/00000000.jsonl",
 			"/t0/00000000.jsonl",
 			"t0/../log/00000000.jsonl",

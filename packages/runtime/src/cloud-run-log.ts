@@ -29,7 +29,7 @@ import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
  *   brings their line shape, with the platform's keyed hashes, before any run is built with a log.
  * - The run's tree, its step lines (§7.5), sits beside the log in `runs/<run>/t<n>/`. W2's step-line writer reads and
  *   commits its blocks through `treeRead` and `commitTree`, also after `close`, for the lines built at closing. Only
- *   its batches check the run's generation: they are derived, and are discarded whole when it moved.
+ *   its batches check the run's generation: they are derived, and are refused when it moved.
  */
 
 export const CLOUD_RUN_LOG_BLOCK_STEPS = 16;
@@ -52,8 +52,9 @@ const CHANGE_SET_FILES = 64;
 const ATTEMPTS = 4;
 /** Calls whose words are already in the conversation, on a card or in the outbox row: their arguments are not copied. */
 const HASH_ONLY_TOOLS = new Set(["send_message", "send_coworker_message", "ask_member", "send_mail"]);
-/** A block of the run's tree under the log's folder, as `memoryBlockPath` names it: tier `t<n>`, block `<8 digits>`. */
-const TREE_PATH = /^t(?:0|[1-9]\d?)\/\d{8,16}\.jsonl$/;
+/** A block of the run's tree under the log's folder, as `memoryBlockPath` names it: tier `t0` to `t14`, block
+ * `<8 digits>`. */
+const TREE_PATH = /^t(?:[0-9]|1[0-4])\/\d{8}\.jsonl$/;
 /** A tree batch's operation key, with room for the try it is on (the folder's keys are 8 to 200 characters). */
 const TREE_KEY = /^[A-Za-z0-9._:-]{8,190}$/;
 
@@ -386,7 +387,8 @@ export class CloudRunLog {
 		return this.#gone;
 	}
 
-	/** The run's generation as its log's last placement read it. Step-line batches check it (`runGenerations`). */
+	/** The run's generation as the log was last found, by a step batch, `earlier` or a tree read or commit. Step-line
+	 * batches check it (`runGenerations`). */
 	generation(): number {
 		return this.#generation;
 	}
@@ -565,12 +567,14 @@ export class CloudRunLog {
 	}
 
 	/**
-	 * Commits blocks of the run's tree (§7.5) as one change set, with the run's generation as the batch read it, and
-	 * makes the tier folders they need. "stale" when the generation moved, a step erase is open, or a block is not at
-	 * the version it was read at: the batch is discarded whole, to be read again and built again. "gone" once the log
-	 * is gone. A moved log is found again and the batch tried again, under `<operationKey>:2` to `:4`, so a batch's
-	 * key never ends in one of those. Any other refusal throws CloudRunLogUnavailable, and a failed call throws as it
-	 * failed.
+	 * Commits blocks of the run's tree (§7.5) as a change set, with the run's generation as the batch read it, and
+	 * makes the tier folders they need. Each block lands or not on its own (core §3: a unit applies whole or not at
+	 * all), so a batch that did not land whole may still have landed some of its blocks: before a caller builds the
+	 * batch again, it reads every block of it again. "stale" when the generation moved or a step erase is open (that
+	 * change set landed nothing), or when a block is not at the version it was read at (that block was refused, and
+	 * the others may have landed). "gone" once the log is gone. A moved log is found again and the blocks that did not
+	 * land are tried again, under `<operationKey>:2` to `:4`, so a batch's key never ends in one of those. Any other
+	 * refusal throws CloudRunLogUnavailable, and a failed call throws as it failed.
 	 */
 	async commitTree(
 		operationKey: string,
@@ -783,6 +787,7 @@ export class CloudRunLog {
 			throw error;
 		}
 		if (place.exists) this.#root = place.path;
+		this.#generation = place.generation;
 		return place;
 	}
 
@@ -801,7 +806,6 @@ export class CloudRunLog {
 		if (!this.#place) {
 			const place = await this.#locate(signal);
 			this.#place = place;
-			this.#generation = place.generation;
 			if (place.exists && place.last !== null && !this.#blocks.has(place.last))
 				this.#blocks.set(place.last, { first: place.last, version: null, lines: [], stale: true });
 		}
