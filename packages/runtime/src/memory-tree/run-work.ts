@@ -24,9 +24,8 @@ import {
 	type CloudNativeContextRequest,
 	cloudNativeContextIdentity,
 } from "../cloud-native-context-composition.ts";
+import { RUN_VIEW } from "./tree.ts";
 
-/** The run's own work, folded lines and raw steps (§5.1). */
-export const RUN_VIEW = 64_000;
 /**
  * What an image or audio item counts for in the raw tail, whose sizes are bytes (§4.1): about the 1,100 tokens a
  * screenshot takes at high detail, at the most bytes a token of text takes (4, §5.1).

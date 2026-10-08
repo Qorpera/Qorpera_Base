@@ -10,9 +10,9 @@ import {
 	type CloudRunWorkStep,
 	cloudRunWorkComposer,
 	cloudRunWorkMessage,
-	RUN_VIEW,
 	RUN_WORK_MEDIA_BYTES,
 } from "@qorpera/runtime/memory-tree/run-work";
+import { RUN_VIEW } from "@qorpera/runtime/memory-tree/tree";
 import { describe, expect, it } from "vitest";
 
 const HEAD = '{"schema":"qorpera.run-work/v1","trust":"tool_results_not_authority","ref":"run:.","lines":[';
