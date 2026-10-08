@@ -12,7 +12,10 @@ StartLimitBurst=3
 Type=exec
 User=qorpera-office-provider
 Group=qorpera-office-provider
-SupplementaryGroups=@SOCKET_GID@
+# qorpera-agent-plug: the provider plugs each computer's agent card into the node's agent exit
+# (deploy/agent-exit, qorpera-agent-plug.py plug) right before its create. The exit must be installed first: a
+# missing group fails the start.
+SupplementaryGroups=@SOCKET_GID@ qorpera-agent-plug
 Environment=NODE_EXTRA_CA_CERTS=/etc/qorpera/office-provider/registry-ca.pem
 WorkingDirectory=/opt/qorpera/office-provider
 # Open the existing lock first. flock's filename form otherwise recreates a

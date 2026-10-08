@@ -176,6 +176,22 @@ describe("running the plug tool", () => {
 		const machine = { ...claim, kind: "machine" as const, memberUserId: null };
 		await plug(machine, new AbortController().signal);
 		expect(JSON.parse(await readFile(join(root, "seen.json"), "utf8")).argv).not.toContain("--member");
+		// A Company Computer: its id is the machine, and it has no member.
+		const office = { ...claim, kind: "office" as const, memberUserId: null, project: "office" };
+		await plug(office, new AbortController().signal);
+		expect(JSON.parse(await readFile(join(root, "seen.json"), "utf8")).argv).toEqual([
+			"plug",
+			"--kind",
+			"office",
+			"--company",
+			id(1),
+			"--machine",
+			id(2),
+			"--project",
+			"office",
+			"--instance",
+			claim.instance,
+		]);
 	});
 	it("refuses a claim that is not one, without running anything", async () => {
 		const { path, root } = await tool('open(seen, "w").write("ran")');
@@ -185,7 +201,8 @@ describe("running the plug tool", () => {
 			{ ...claim, kind: "machine" as const },
 			{ ...claim, companyId: "../x" },
 			{ ...claim, instance: "a_b" },
-			{ ...claim, kind: "office" as unknown as "coding" },
+			{ ...claim, kind: "office" as const },
+			{ ...claim, kind: "computer" as unknown as "coding" },
 		])
 			await expect(plug(bad, new AbortController().signal)).rejects.toThrow("AGENT_PLUG_CLAIM_INVALID");
 		await expect(readFile(join(root, "seen.json"), "utf8")).rejects.toThrow();
