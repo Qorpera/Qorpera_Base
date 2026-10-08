@@ -522,8 +522,9 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 							runtimeToken: secretBrokerToken,
 							companyId: state.companyId,
 						});
-						// The same broker serves the company's website accounts (A1-4).
-						return { secretBroker: broker, companyAccounts: broker };
+						// The same broker serves the company's website accounts (A1-4) and opens its signed hooks
+						// (E3b-2).
+						return { secretBroker: broker, companyAccounts: broker, eventHooks: broker };
 					})()
 				: {}),
 		});

@@ -17,7 +17,11 @@ import {
 } from "./cloud-codex-tool-session.ts";
 import { type CloudCompanyAccountClient, cloudCompanyAccountTool } from "./cloud-company-account-tools.ts";
 import type { CloudCompanyComputerSessionFactory } from "./cloud-company-computer-control.ts";
-import { type CloudCompanyFolderBytes, CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
+import {
+	type CloudCompanyFolderBytes,
+	CloudCompanyFolderClient,
+	type CloudCompanyFolderSignedHooks,
+} from "./cloud-company-folder-client.ts";
 import { type CloudCompanyPathControl, CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
 import {
 	type CloudCompanyPathPresence,
@@ -130,6 +134,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #chatGptPlanAuth: CloudChatGptPlanAuth | undefined;
 	readonly #secretBroker: CloudSecretOperationClient | undefined;
 	readonly #companyAccounts: CloudCompanyAccountClient | undefined;
+	readonly #eventHooks: CloudCompanyFolderSignedHooks | undefined;
 	readonly #computerSession: CloudCompanyComputerSessionFactory | undefined;
 	readonly #coding: CloudNativeCodingDriver | undefined;
 	readonly #machines: ((binding: CloudNativeToolBinding) => CloudMachineCommandGateway) | undefined;
@@ -156,6 +161,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		secretBroker?: CloudSecretOperationClient;
 		/** The vault's company accounts route (A1-4): without it no run is offered company_account. */
 		companyAccounts?: CloudCompanyAccountClient;
+		/** The vault's event hooks route (E3b-2): without it a run's GitHub or HMAC hook is refused as unavailable. */
+		eventHooks?: CloudCompanyFolderSignedHooks;
 		/** Explicit cloud-office adapter; no local execution or inferred resource grant. */
 		computerSession?: CloudCompanyComputerSessionFactory;
 		/** The coding composition (Order 9): only a node with the coding command
@@ -184,6 +191,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#chatGptPlanAuth = options.chatGptPlanAuth;
 		this.#secretBroker = options.secretBroker;
 		this.#companyAccounts = options.companyAccounts;
+		this.#eventHooks = options.eventHooks;
 		this.#computerSession = options.computerSession;
 		this.#coding = options.coding;
 		this.#machines = options.machines;
@@ -334,6 +342,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								identity: context.identity,
 								control: this.#paths,
 								bytes: this.#folderBytes(binding, context.identity),
+								...(this.#eventHooks ? { signedHooks: this.#eventHooks } : {}),
 							}),
 							handle: context.folder.agent,
 						}

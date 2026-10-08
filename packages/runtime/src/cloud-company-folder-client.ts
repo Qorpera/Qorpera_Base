@@ -14,6 +14,7 @@ import {
 	type CloudCompanyPathRpc,
 } from "./cloud-company-path-gateway.ts";
 import { CloudCompanyFolderRpcError } from "./cloud-company-path-refusal.ts";
+import { type EventHookAnswer, type EventHookCreate, isEventHookRefusal } from "./cloud-event-hook-vault.ts";
 import {
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -57,6 +58,8 @@ const RELEASE_RETRY = new Set(["QRC01", "40P01"]);
 /** A review recording is retried when its answer was lost or it met a deadlock: a replay of the same change set returns
  * the record. 23505 (the approval stands for another change set) and 42501 are answers. */
 const RECORD_RETRY = new Set(["40P01"]);
+/** One try of a signed hook's creation through the secret broker: its 15 s, which hold the broker's 12 s. */
+const SIGNED_HOOK_MS = 20_000;
 /** The run effects called with exactly the arguments given (the run's binding), not as the folder actor. */
 const RUN_EFFECTS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_record_review",
@@ -70,9 +73,10 @@ export const CODING_ARCHIVE_REFUSALS: ReadonlyMap<string, string> = new Map([
 	["Only a coding session can be archived", "22023"],
 	["The session has a new turn since you were asked; leave it", "55000"],
 ]);
-/** The answers of `qorpera_folder_manage_hook` (E3a, 20260930106000) the model reads, by SQLSTATE and SQL's message,
- * in the model's words: the request's rules, the company's state, the run's authority and the wake's refusals. Each is
- * raised in the call's one transaction, so that call changed nothing. Any other error is a failure. */
+/** The answers of `qorpera_folder_manage_hook` (E3a, 20260930106000) and of the secret broker's signed path (E3b,
+ * 20260930160000) the model reads, by SQLSTATE and SQL's message, in the model's words: the request's rules, the
+ * company's state, the run's authority and the wake's refusals. Each is raised in the call's one transaction, so that
+ * call changed nothing. Any other error is a failure. */
 export const CLOUD_HOOK_REFUSALS: ReadonlyMap<string, string> = new Map([
 	...(
 		[
@@ -83,6 +87,10 @@ export const CLOUD_HOOK_REFUSALS: ReadonlyMap<string, string> = new Map([
 			["22023", "A hook needs a purpose of one line, 1 to 512 characters"],
 			["22023", "A hook body limit is between 1 KiB and 256 KiB"],
 			["22023", "A hook accepts between 1 and 120 deliveries a minute"],
+			["22023", "Only a signed hook names the site its secret is typed into"],
+			["22023", "An HMAC hook names the site its secret is typed into"],
+			["22023", "A site is a host name such as github.com"],
+			["0A000", "A Stripe hook comes later: its secret is taken from Stripe's screen"],
 			["22023", "A mailbox name is 1 to 64 lowercase letters, digits, dots, hyphens and underscores"],
 			["22023", "This mailbox name is reserved"],
 			["22023", "A mailbox name that reads as Qorpera is reserved"],
@@ -249,7 +257,8 @@ export type CloudCompanyFolderRoutineLogin =
 	| { readonly refused: "acknowledgement" | "final" | "paused" };
 
 /** A run agent's change to its company's hooks (E3a): an address hook or a mailbox opened, or one, by its name, paused,
- * resumed or removed. A creation leaves out a limit to take SQL's default. */
+ * resumed or removed. A creation leaves out a limit to take SQL's default. A signed hook (E3b) names its proof and the
+ * site its secret may be typed into, and is opened through the secret broker, which makes the secret. */
 export type CloudCompanyFolderHookRequest =
 	| {
 			readonly action: "create";
@@ -260,6 +269,7 @@ export type CloudCompanyFolderHookRequest =
 			readonly perMinute?: number;
 			readonly operationKey: string;
 	  }
+	| (EventHookCreate & { readonly site: string })
 	| {
 			readonly action: "create";
 			readonly kind: "mailbox";
@@ -269,14 +279,25 @@ export type CloudCompanyFolderHookRequest =
 	  }
 	| { readonly action: "pause" | "resume" | "remove"; readonly hook: string; readonly operationKey: string };
 
-/** The hook a change left, under the change's receipt, or why it was refused, in the model's words. */
+/** The hook a change left, under the change's receipt, or why it was refused, in the model's words. A signed hook's
+ * creation also names the site its secret may be typed into. */
 export type CloudCompanyFolderHookAnswer =
 	| {
 			readonly receiptId: string;
 			readonly action: CloudCompanyFolderHookRequest["action"];
 			readonly hook: Readonly<Record<string, unknown>>;
+			readonly secretSite?: string;
 	  }
 	| { readonly refused: string };
+
+/** The company's secret broker, which opens a signed hook with the secret it makes (E3b-2): the hook's receipt, or the
+ * database's refusal. */
+export interface CloudCompanyFolderSignedHooks {
+	eventHook(
+		request: { readonly binding: CloudNativeToolBinding; readonly request: EventHookCreate },
+		signal: AbortSignal,
+	): Promise<EventHookAnswer>;
+}
 
 /** The run's own view of the folder, for the node's folder service (its pass opens the view there). */
 export interface CloudCompanyFolderRunView {
@@ -856,6 +877,7 @@ export class CloudCompanyFolderClient {
 	readonly #control: CloudCompanyPathControl;
 	readonly #bytes: CloudCompanyFolderBytes;
 	readonly #actor: CloudCompanyFolderRunActor;
+	readonly #signedHooks: CloudCompanyFolderSignedHooks | undefined;
 	/** Hook changes, by operation key, whose call ended without an answer: they may have committed. */
 	readonly #uncertainHooks = new Set<string>();
 
@@ -864,6 +886,8 @@ export class CloudCompanyFolderClient {
 		identity: CloudNativeToolIdentity;
 		control: CloudCompanyPathControl;
 		bytes: CloudCompanyFolderBytes;
+		/** The company's secret broker, for signed hooks; without it they are unavailable. */
+		signedHooks?: CloudCompanyFolderSignedHooks;
 	}) {
 		this.#binding = parseCloudNativeToolBinding(options.binding);
 		if (
@@ -878,6 +902,7 @@ export class CloudCompanyFolderClient {
 		this.#identity = Object.freeze({ ...options.identity });
 		this.#control = options.control;
 		this.#bytes = options.bytes;
+		this.#signedHooks = options.signedHooks;
 		this.#actor = cloudCompanyFolderRunActor(this.#binding);
 	}
 
@@ -907,9 +932,42 @@ export class CloudCompanyFolderClient {
 	 * timeout or a dropped connection: the transaction may have committed, and a replay returns its outcome). An error
 	 * `kept` names is thrown as SQL gave it, for the caller to read; after a lost answer it says nothing of the try that
 	 * lost it, which may have committed, so the outcome is unknown. */
-	async #retried(
+	#retried(
 		method: CloudCompanyPathRpc,
 		args: Record<string, unknown>,
+		retryable: ReadonlySet<string>,
+		signal: AbortSignal,
+		kept?: (error: CloudCompanyFolderRpcError) => boolean,
+	): Promise<unknown> {
+		return this.#resent((trySignal) => this.#call(method, args, trySignal), retryable, signal, kept);
+	}
+
+	/** A signed hook's creation through the company's secret broker (E3b-2), which makes the hook's secret and opens the
+	 * hook with it in one database step. The database's refusal comes back as SQL's error. Any other failure of the
+	 * broker is a lost answer: the step may have committed, and the same key asked again answers from its receipt. */
+	#signedHook(request: EventHookCreate, signal: AbortSignal): Promise<unknown> {
+		const hooks = this.#signedHooks;
+		if (!hooks) return Promise.reject(new CloudCompanyFolderError("unavailable"));
+		return cloudToolRequest(
+			async (requestSignal) => {
+				let answer: EventHookAnswer;
+				try {
+					answer = await hooks.eventHook({ binding: this.#binding, request }, requestSignal);
+				} catch (error) {
+					if (error instanceof CloudRuntimeDiagnosticError) throw error;
+					throw new CloudRuntimeDiagnosticError("transport_unavailable", "Cloud tool authority unavailable");
+				}
+				if (isEventHookRefusal(answer)) throw new CloudCompanyFolderRpcError(answer.code, answer.message);
+				return answer;
+			},
+			signal,
+			SIGNED_HOOK_MS,
+		);
+	}
+
+	/** {@link #retried}'s tries, each sent by `send`. */
+	async #resent(
+		send: (signal: AbortSignal) => Promise<unknown>,
 		retryable: ReadonlySet<string>,
 		signal: AbortSignal,
 		kept?: (error: CloudCompanyFolderRpcError) => boolean,
@@ -922,7 +980,7 @@ export class CloudCompanyFolderClient {
 				throw new CloudRuntimeDiagnosticError("cancelled", "Cloud tool authority unavailable");
 			}
 			try {
-				return await this.#call(method, args, signal);
+				return await send(signal);
 			} catch (error) {
 				// Cancelled while a try was sent (cloudToolRequest answers a cancel): that try may have committed.
 				if (error instanceof CloudRuntimeDiagnosticError && error.category === "cancelled" && signal.aborted)
@@ -1102,7 +1160,9 @@ export class CloudCompanyFolderClient {
 	 * run effect under its own receipt, keyed by the operation key: a retry with the same key replays it, and a
 	 * creation's replay reads the address from the hook again. A change that met a changed authority (QRC01) or a
 	 * deadlock is asked again. SQL's refusals come back as `refused`, unless an earlier call with the key ended without
-	 * a checked answer: that call may have changed the hook, so the outcome is unknown. */
+	 * a checked answer: that call may have changed the hook, so the outcome is unknown. A signed hook's creation goes
+	 * through the secret broker, which makes its secret and opens it under the same key (E3b-2); its answer names the
+	 * site the secret may be typed into, and the hook's secret is there. */
 	async manageHook(
 		request: CloudCompanyFolderHookRequest,
 		signal: AbortSignal,
@@ -1111,19 +1171,26 @@ export class CloudCompanyFolderClient {
 			error instanceof CloudCompanyFolderRpcError
 				? CLOUD_HOOK_REFUSALS.get(`${error.code} ${error.detail}`)
 				: undefined;
+		const kept = (error: CloudCompanyFolderRpcError) => refusal(error) !== undefined;
+		const signed = request.action === "create" && request.kind === "hook" && "proof" in request ? request : undefined;
+		// Without the company's secret broker a signed hook cannot be opened: nothing is sent.
+		if (signed && !this.#signedHooks) throw new CloudCompanyFolderError("unavailable");
 		try {
 			const input = record(
-				await this.#retried(
-					"qorpera_folder_manage_hook",
-					{ p_binding: this.#binding, p_request: request },
-					RELEASE_RETRY,
-					signal,
-					(error) => refusal(error) !== undefined,
-				),
+				await (signed
+					? this.#resent((trySignal) => this.#signedHook(signed, trySignal), RELEASE_RETRY, signal, kept)
+					: this.#retried(
+							"qorpera_folder_manage_hook",
+							{ p_binding: this.#binding, p_request: request },
+							RELEASE_RETRY,
+							signal,
+							kept,
+						)),
 				["schema", "runId", "receiptId", "action", "hook"],
+				signed ? ["secretSite"] : [],
 			);
 			const hook = record(input.hook, HOOK_KEYS, HOOK_OPTIONAL);
-			const { address, path, url } = hook;
+			const { address, path, url, signingSecret } = hook;
 			if (
 				input.schema !== "qorpera.agent-hook-receipt/v1" ||
 				input.runId !== this.#identity.runId ||
@@ -1132,10 +1199,22 @@ export class CloudCompanyFolderClient {
 				hook.companyId !== this.#identity.companyId ||
 				hook.environmentId !== this.#identity.environmentId ||
 				hook.status !== HOOK_STATUS[request.action] ||
+				// A signed hook's creation names the site its secret may be typed into, and the secret is the hook's own and
+				// there; an unsigned creation has none. A change to a hook already open may find either.
+				(signed
+					? input.secretSite !== signed.site ||
+						!signingSecret ||
+						typeof signingSecret !== "object" ||
+						Array.isArray(signingSecret) ||
+						Object.keys(signingSecret).length !== 3 ||
+						(signingSecret as Record<string, unknown>).connectorId !== "event_hook" ||
+						(signingSecret as Record<string, unknown>).secretName !== `h${String(hook.id).replaceAll("-", "")}` ||
+						(signingSecret as Record<string, unknown>).ready !== true
+					: request.action === "create" && signingSecret !== undefined) ||
 				(request.action !== "create"
 					? hook.name !== request.hook || address !== undefined
 					: request.kind === "hook"
-						? hook.name !== request.name || hook.proof !== "address"
+						? hook.name !== request.name || hook.proof !== (signed ? signed.proof : "address")
 						: typeof hook.name !== "string" ||
 							!hook.name.startsWith("mail-") ||
 							hook.proof !== "mail" ||
@@ -1154,7 +1233,12 @@ export class CloudCompanyFolderClient {
 			)
 				invalid();
 			uuid(hook.id);
-			return { receiptId: uuid(input.receiptId), action: request.action, hook };
+			return {
+				receiptId: uuid(input.receiptId),
+				action: request.action,
+				hook,
+				...(signed ? { secretSite: signed.site } : {}),
+			};
 		} catch (error) {
 			const refused = refusal(error);
 			if (refused !== undefined && !this.#uncertainHooks.has(request.operationKey)) return { refused };

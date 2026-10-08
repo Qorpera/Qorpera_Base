@@ -97,6 +97,20 @@ describe("which calls are reviewed", () => {
 			{ action: "create", kind: "mailbox", localPart: "sales", purpose: "Sales.", operationKey: "k" },
 			"external",
 		],
+		// A signed hook too: the vault makes its secret, for one site (E3b).
+		[
+			"manage_hook",
+			{
+				action: "create",
+				kind: "hook",
+				name: "github-pushes",
+				purpose: "Pushes.",
+				proof: "github",
+				site: "github.com",
+				operationKey: "k",
+			},
+			"external",
+		],
 		["manage_hook", { action: "pause", hook: "site-form", operationKey: "k" }, "internal"],
 		["manage_hook", { action: "resume", hook: "site-form", operationKey: "k" }, "internal"],
 		["manage_hook", { action: "remove", hook: "site-form", operationKey: "k" }, "destructive"],
@@ -278,6 +292,38 @@ describe("what the card shows", () => {
 			title: "Remove a hook",
 			target: "mail-sales",
 			details: { effect: "Ends it for good; a mailbox's address is free for any company to take" },
+		});
+	});
+
+	it("names who signs a signed hook and the one site its secret may be typed into (E3b)", () => {
+		const signed = {
+			action: "create",
+			kind: "hook",
+			name: "github-pushes",
+			purpose: "Pushes to the website's repository.",
+			proof: "github",
+			site: "github.com",
+			operationKey: "k",
+		};
+		const effect =
+			"The vault makes the hook's secret, which no one sees, to be typed only on the site; events signed with it can wake the company's routines";
+		expect(describeCloudAction(tool("manage_hook"), signed)).toEqual({
+			title: "Open a hook",
+			target: "github-pushes",
+			details: { purpose: "Pushes to the website's repository.", "signed by": "GitHub", site: "github.com", effect },
+		});
+		expect(
+			describeCloudAction(tool("manage_hook"), {
+				...signed,
+				name: "billing-events",
+				proof: "hmac-sha256",
+				site: "app.billing.example.com",
+			}).details,
+		).toEqual({
+			purpose: "Pushes to the website's repository.",
+			"signed by": "The sender, with HMAC-SHA256",
+			site: "app.billing.example.com",
+			effect,
 		});
 	});
 

@@ -6,6 +6,7 @@ import {
 	CloudCompanyFolderClient,
 	CloudCompanyFolderError,
 	type CloudCompanyFolderFile,
+	type CloudCompanyFolderSignedHooks,
 	cloudCompanyFolderRelease,
 } from "@qorpera/runtime/cloud-company-folder-client";
 import {
@@ -38,7 +39,10 @@ function folderEntry(path: string, file?: CloudCompanyFolderFile) {
 	};
 }
 
-function fixture(handle: (method: CloudCompanyPathRpc, args: Record<string, unknown>) => unknown) {
+function fixture(
+	handle: (method: CloudCompanyPathRpc, args: Record<string, unknown>) => unknown,
+	signedHooks?: CloudCompanyFolderSignedHooks,
+) {
 	const { binding, authority } = nativeToolAuthorityFixture();
 	const stored = new Map<string, Uint8Array>();
 	const bytes: CloudCompanyFolderBytes = {
@@ -69,7 +73,13 @@ function fixture(handle: (method: CloudCompanyPathRpc, args: Record<string, unkn
 			return handle(method, args);
 		}),
 	};
-	const client = new CloudCompanyFolderClient({ binding, identity: authority.identity, control, bytes });
+	const client = new CloudCompanyFolderClient({
+		binding,
+		identity: authority.identity,
+		control,
+		bytes,
+		...(signedHooks ? { signedHooks } : {}),
+	});
 	return { client, calls, bytes, stored, binding, identity: authority.identity };
 }
 
@@ -1263,6 +1273,40 @@ describe("hooks (E3a)", () => {
 		action,
 		hook: answered,
 	});
+	const GITHUB = {
+		...CREATE,
+		name: "github-pushes",
+		proof: "github",
+		site: "github.com",
+		operationKey: "gh-1",
+	} as const;
+	/** The hook's secret, as the descriptor names it (never its value), as test 987 pins it. */
+	const SECRET = {
+		connectorId: "event_hook",
+		secretName: `h${"73900000-0000-4000-8000-0000000000a1".replaceAll("-", "")}`,
+		ready: true,
+	} as const;
+	/** The secret broker's answer to a signed creation (qorpera_folder_open_signed_hook), as test 987 pins it. */
+	const signedReceipt = (
+		f: Fixture,
+		request: { readonly name: string; readonly proof: string; readonly site: string },
+	) => ({
+		...receipt(
+			f,
+			"create",
+			hook(f, { name: request.name, proof: request.proof, signingSecret: SECRET, address: ADDRESS, path: PATH }),
+		),
+		secretSite: request.site,
+	});
+	const brokerRefusal = (code: string, message: string) => ({
+		schema: "qorpera.event-hook-refusal/v1",
+		code,
+		message,
+	});
+	/** A signed hook is never opened through SQL. */
+	const noSql = () => {
+		throw new Error("A signed hook never goes through SQL");
+	};
 
 	it("opens a hook as a run effect, asks again after a deadlock, and answers with its address", async () => {
 		let tries = 0;
@@ -1458,6 +1502,143 @@ describe("hooks (E3a)", () => {
 		] as const) {
 			const f: Fixture = fixture(() => answer(f));
 			await expect(f.client.manageHook(request, signal()), JSON.stringify(answer(f))).rejects.toThrow(
+				"Company folder response is invalid",
+			);
+		}
+		// An address hook's creation has no secret and names no site.
+		const secretless: Fixture = fixture(() => ({
+			...receipt(secretless, "create", hook(secretless, live)),
+			secretSite: "github.com",
+		}));
+		await expect(secretless.client.manageHook(CREATE, signal())).rejects.toThrow(
+			"Company folder response is invalid",
+		);
+		const withSecret: Fixture = fixture(() =>
+			receipt(withSecret, "create", hook(withSecret, { ...live, signingSecret: SECRET })),
+		);
+		await expect(withSecret.client.manageHook(CREATE, signal())).rejects.toThrow(
+			"Company folder response is invalid",
+		);
+	});
+
+	it("opens a signed hook through the secret broker, never through SQL, and names the site its secret is typed into", async () => {
+		const HMAC = { ...CREATE, name: "billing", proof: "hmac-sha256", site: "app.billing.example.com" } as const;
+		for (const request of [GITHUB, HMAC]) {
+			const eventHook = vi.fn<CloudCompanyFolderSignedHooks["eventHook"]>(async () => signedReceipt(f, request));
+			const f: Fixture = fixture(noSql, { eventHook });
+			await expect(f.client.manageHook(request, signal())).resolves.toEqual({
+				receiptId: "73900000-0000-4000-8000-0000000000c1",
+				action: "create",
+				hook: hook(f, {
+					name: request.name,
+					proof: request.proof,
+					signingSecret: SECRET,
+					address: ADDRESS,
+					path: PATH,
+				}),
+				secretSite: request.site,
+			});
+			// The run's binding and the request as the tool checked it.
+			expect(eventHook.mock.calls.map(([sent]) => sent)).toEqual([{ binding: f.binding, request }]);
+			expect(f.calls).toEqual([]);
+		}
+		// A replay after the hook was removed: the receipt's hook, its secret and site, no address.
+		const removed: Fixture = fixture(noSql, {
+			eventHook: async () => ({
+				...receipt(removed, "create", hook(removed, { name: GITHUB.name, proof: "github", signingSecret: SECRET })),
+				secretSite: "github.com",
+			}),
+		});
+		await expect(removed.client.manageHook(GITHUB, signal())).resolves.toMatchObject({ secretSite: "github.com" });
+	});
+
+	it("refuses a signed hook as unavailable without the secret broker, and sends nothing", async () => {
+		const f = fixture(noSql);
+		await expect(f.client.manageHook(GITHUB, signal())).rejects.toMatchObject({ failure: "unavailable" });
+		expect(f.calls).toEqual([]);
+	});
+
+	it("names the broker's refusals in the model's words, and asks again with the same key after a lost answer", async () => {
+		for (const message of [
+			"Only a signed hook names the site its secret is typed into",
+			"An HMAC hook names the site its secret is typed into",
+			"A site is a host name such as github.com",
+			"A hook with this name already exists",
+		]) {
+			const eventHook = vi.fn<CloudCompanyFolderSignedHooks["eventHook"]>(async () =>
+				brokerRefusal(message.startsWith("A hook") ? "23505" : "22023", message),
+			);
+			const f = fixture(noSql, { eventHook });
+			await expect(f.client.manageHook(GITHUB, signal())).resolves.toEqual({ refused: message });
+			expect(eventHook).toHaveBeenCalledTimes(1);
+		}
+		const stripe = fixture(noSql, {
+			eventHook: async () =>
+				brokerRefusal("0A000", "A Stripe hook comes later: its secret is taken from Stripe's screen"),
+		});
+		await expect(stripe.client.manageHook(GITHUB, signal())).resolves.toEqual({
+			refused: "A Stripe hook comes later: its secret is taken from Stripe's screen",
+		});
+		// A refusal the model has no words for is the database's error.
+		const malformed = fixture(noSql, { eventHook: async () => brokerRefusal("22023", "Hook request is invalid") });
+		await expect(malformed.client.manageHook(GITHUB, signal())).rejects.toBeInstanceOf(CloudCompanyFolderRpcError);
+		// The broker's own failure (its HTTP client throws a plain error) or a timeout loses the answer: the step may
+		// have committed, so the same request is asked again, and its receipt answers.
+		for (const lost of [
+			new Error("Cloud secret broker rejected the event hook call"),
+			new CloudRuntimeDiagnosticError("timeout", "Cloud tool authority unavailable"),
+		]) {
+			let tries = 0;
+			const eventHook = vi.fn<CloudCompanyFolderSignedHooks["eventHook"]>(async () => {
+				if (++tries === 1) throw lost;
+				return signedReceipt(f, GITHUB);
+			});
+			const f: Fixture = fixture(noSql, { eventHook });
+			await expect(f.client.manageHook(GITHUB, signal())).resolves.toMatchObject({ secretSite: "github.com" });
+			expect(eventHook.mock.calls.map(([sent]) => sent)).toEqual([
+				{ binding: f.binding, request: GITHUB },
+				{ binding: f.binding, request: GITHUB },
+			]);
+		}
+		// A lost answer, then the broker refusing the replay: the first try may have opened the hook, now and later.
+		let tries = 0;
+		const uncertain = fixture(noSql, {
+			eventHook: async () => {
+				if (++tries === 1) throw new Error("Cloud secret broker returned invalid data");
+				return brokerRefusal("23505", "A hook with this name already exists");
+			},
+		});
+		await expect(uncertain.client.manageHook(GITHUB, signal())).rejects.toMatchObject({ failure: "unknown" });
+		await expect(uncertain.client.manageHook(GITHUB, signal())).rejects.toMatchObject({ failure: "unknown" });
+		await expect(uncertain.client.manageHook({ ...GITHUB, operationKey: "gh-2" }, signal())).resolves.toEqual({
+			refused: "A hook with this name already exists",
+		});
+	});
+
+	it("refuses a signed answer whose site or secret is not this hook's", async () => {
+		const live = { name: GITHUB.name, proof: "github", address: ADDRESS, path: PATH };
+		for (const answer of [
+			(f: Fixture) => receipt(f, "create", hook(f, { ...live, signingSecret: SECRET })),
+			(f: Fixture) => ({ ...signedReceipt(f, GITHUB), secretSite: "gitlab.com" }),
+			(f: Fixture) => ({ ...receipt(f, "create", hook(f, live)), secretSite: "github.com" }),
+			(f: Fixture) => signedReceipt(f, { ...GITHUB, proof: "hmac-sha256" }),
+			(f: Fixture) => signedReceipt(f, { ...GITHUB, proof: "address" }),
+			...[
+				{ ...SECRET, connectorId: "github" },
+				{ ...SECRET, secretName: `${SECRET.secretName.slice(0, -1)}2` },
+				{ ...SECRET, secretName: "73900000-0000-4000-8000-0000000000a1" },
+				{ ...SECRET, ready: false },
+				{ ...SECRET, value: "whsec" },
+				{ connectorId: "event_hook", secretName: SECRET.secretName },
+				SECRET.secretName,
+				[SECRET],
+			].map((signingSecret) => (f: Fixture) => ({
+				...receipt(f, "create", hook(f, { ...live, signingSecret })),
+				secretSite: "github.com",
+			})),
+		]) {
+			const f: Fixture = fixture(noSql, { eventHook: async () => answer(f) });
+			await expect(f.client.manageHook(GITHUB, signal()), JSON.stringify(answer(f))).rejects.toThrow(
 				"Company folder response is invalid",
 			);
 		}
