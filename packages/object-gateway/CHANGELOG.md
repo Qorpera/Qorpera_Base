@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Breaking Changes
+- `/v1/native-company-objects` is gone (legacy removal, step C; migration `20260930190000`): it served only snapshot-v1 companies' run objects (the native host's object store and the Company Computer's captures, file imports and exports). Its three authority methods (`authorizeNativeUpload`, `confirmNativeUpload`, `authorizeNativeDownload`), the `nativeObjects` option's `authority`, and the `code: "lock_conflict"` retry hint in its 409 answers go with it; `nativeObjects` keeps its token, and its `folder` is now required, for `/v1/folder-objects`. Rolls with the next object gateway release.
 - `/v1/folder-objects` serves a native host's request only after it proves its run's lease (G2-6a; migration `20260930152000`; `deploy/first-node/RUNTIME-NATIVE-HOST-KEY.md` "G2-6"): the request sends `x-qorpera-identity: job.<job id>.<lease token>`, and the gateway asks `qorpera_native_binding_proven` before any other check of its binding. A missing or malformed holder is 401, a refused proof 403, and the value never reaches a log or a reply. `/v1/native-company-objects` keeps its old check until G2-6c (it also serves the Company Computer's captures).
 
 ### Added

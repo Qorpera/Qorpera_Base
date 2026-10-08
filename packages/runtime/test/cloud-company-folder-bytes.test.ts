@@ -272,7 +272,7 @@ async function fixture(options: { upperCaseBinding?: boolean; productionCircuit?
 			replication,
 			controlToken: "synthetic-cleanup",
 			verifierToken: "synthetic-verifier",
-			nativeObjects: { token, authority, folder: authority },
+			nativeObjects: { token, folder: authority },
 		}),
 	);
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

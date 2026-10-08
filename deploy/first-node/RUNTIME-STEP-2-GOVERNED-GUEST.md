@@ -117,12 +117,13 @@ proposal semantics. The runtime advertises only implemented tools. It does
 not pretend that memory skills, computer control, hiring, routines, rooms or
 coworker messaging are available because a prompt mentions them.
 
-`20260828008000_native_company_object_staging.sql`,
-`cloud-native-company-objects.ts` and gateway `native-objects.ts` implement
-exact-object native reads/staging. The trusted host holds the independent
-gateway credential; the harness does not. Each bounded object request binds
-the current run and exact hash/size, with authorization before and after
-transport. Staging bytes is not a canonical Company File mutation.
+Exact-object native reads/staging
+(`20260828008000_native_company_object_staging.sql` and
+`cloud-native-company-objects.ts`) are gone (legacy removal, step C;
+migration `20260930190000`): they served only snapshot-v1 companies. A run's
+bytes move through the company folder's routes, whose native credential
+gateway `native-objects.ts` checks. The trusted host holds that credential;
+the harness does not.
 
 ### Execution, public delivery and recovery
 

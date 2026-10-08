@@ -113,7 +113,6 @@ const handler = createObjectGatewayHandler({
 		? {
 				nativeObjects: {
 					token: required(process.env, "QORPERA_OBJECT_GATEWAY_NATIVE_TOKEN"),
-					authority,
 					folder: authority,
 				},
 			}

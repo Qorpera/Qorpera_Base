@@ -1004,7 +1004,6 @@ only after durable storage.
   against its hash and the whole against the file's.
 - `/v1/member-session-attachments/…` — attachments on canonical sessions
 - `POST /v1/read-leases/revoke` — revoke a read lease
-- `/v1/native-company-objects/…` — runner-only, not for clients
 - `/healthz`, `/livez`, `/readyz`
 
 Uploads and downloads are always explicit, typed member interactions

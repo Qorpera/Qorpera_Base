@@ -36,6 +36,8 @@ const bytes = Buffer.from("Company bytes for the circuit test.");
 const sha256 = createHash("sha256").update(bytes).digest("hex");
 const memberToken = "synthetic-member-jwt";
 const nativeToken = randomBytes(32).toString("base64url");
+const holder = `job.40000000-0000-4000-8000-000000000103.${randomBytes(32).toString("base64url")}`;
+const intent = "40000000-0000-4000-8000-000000000401";
 const binding = Buffer.from(
 	JSON.stringify({
 		leaseId: "40000000-0000-4000-8000-000000000101",
@@ -122,9 +124,17 @@ async function gateway() {
 			const company = companyOf(args);
 			state.rpcCalls.push({ name, company });
 			if (company && state.fail?.company === company) return state.fail.respond(init!.signal!);
-			if (name === "qorpera_authorize_native_company_object_download")
-				return Response.json({ backend: "nas-object-gateway", bytes: bytes.length });
-			if (name.includes("native_company_object")) return Response.json(true);
+			if (name === "qorpera_native_binding_proven") return Response.json(true);
+			if (name === "qorpera_folder_authorize_object_download")
+				return Response.json({
+					schema: "qorpera.folder-object-download/v1",
+					profileId: companies[company!].companyId,
+					bytes: bytes.length,
+				});
+			if (name === "qorpera_folder_authorize_object_upload")
+				return Response.json({ schema: "qorpera.folder-object-upload/v1", profileId: companies[company!].companyId });
+			if (name === "qorpera_folder_confirm_object")
+				return Response.json({ schema: "qorpera.folder-object/v1", sha256, bytes: bytes.length });
 			if (["qorpera_authorize_profile_object_replication", "qorpera_confirm_profile_object_replica"].includes(name))
 				return Response.json(true);
 			if (name === "qorpera_list_profile_objects_for_migration") return Response.json([]);
@@ -153,7 +163,7 @@ async function gateway() {
 			authority,
 			replication,
 			memberObjects: authority,
-			nativeObjects: { token: nativeToken, authority },
+			nativeObjects: { token: nativeToken, folder: authority },
 			controlToken: "synthetic-control",
 			verifierToken: "synthetic-verifier",
 		}),
@@ -168,14 +178,23 @@ async function gateway() {
 		await rm(root, { recursive: true, force: true });
 	});
 	const routes = {
-		"native read": (company: Company) =>
-			fetch(`${origin}/v1/native-company-objects/${companies[company].companyId}/${sha256}`, {
-				headers: { authorization: `Bearer ${nativeToken}`, "x-qorpera-native-binding": binding },
+		"folder read": (company: Company) =>
+			fetch(`${origin}/v1/folder-objects/${companies[company].environmentId}/${sha256}`, {
+				headers: {
+					authorization: `Bearer ${nativeToken}`,
+					"x-qorpera-native-binding": binding,
+					"x-qorpera-identity": holder,
+				},
 			}),
-		"native write": (company: Company) =>
-			fetch(`${origin}/v1/native-company-objects/${companies[company].companyId}/${sha256}`, {
+		"folder write": (company: Company) =>
+			fetch(`${origin}/v1/folder-objects/${companies[company].environmentId}/${sha256}`, {
 				method: "PUT",
-				headers: { authorization: `Bearer ${nativeToken}`, "x-qorpera-native-binding": binding },
+				headers: {
+					authorization: `Bearer ${nativeToken}`,
+					"x-qorpera-native-binding": binding,
+					"x-qorpera-identity": holder,
+					"x-qorpera-upload-intent": intent,
+				},
 				body: bytes,
 			}),
 		"member read": (company: Company) =>
@@ -193,8 +212,8 @@ async function gateway() {
 	return { authority, journal, replication, state, routes, profileRead };
 }
 
-type Route = "native read" | "native write" | "member read";
-const routes: Route[] = ["native read", "native write", "member read"];
+type Route = "folder read" | "folder write" | "member read";
+const routes: Route[] = ["folder read", "folder write", "member read"];
 const served = (response: Response) => [200, 201].includes(response.status);
 
 describe("one company's database state and the shared circuit", () => {
@@ -214,19 +233,15 @@ describe("one company's database state and the shared circuit", () => {
 		state.fail = { company: "a", respond: async () => postgrest(code) };
 		const refused = await routes[route]("a");
 		expect(refused.status).toBe(status);
-		// A lock conflict on the native object route says so: the native object transport may send the same request
-		// again. A stop does not, and neither does a member route, whose earlier steps may have committed.
-		expect(await refused.json()).toEqual({
-			error: "Object authority rejected the operation",
-			...(status === 409 && route !== "member read" ? { code: "lock_conflict" } : {}),
-		});
+		expect(await refused.json()).toEqual({ error: "Object authority rejected the operation" });
 		expect(authority.health().api.status).toBe("healthy");
-		// Within the cooldown, another company's request reaches the database and is served.
+		// Within the cooldown, another company's request reaches the database and is served. (The folder route's lease
+		// proof names no company.)
 		const before = state.rpcCalls.length;
 		const other = await routes[route]("b");
 		expect(served(other)).toBe(true);
-		expect(state.rpcCalls.slice(before).every((call) => call.company === "b")).toBe(true);
-		expect(state.rpcCalls.length).toBeGreaterThan(before);
+		expect(state.rpcCalls.slice(before).some((call) => call.company === "b")).toBe(true);
+		expect(state.rpcCalls.slice(before).some((call) => call.company === "a")).toBe(false);
 		// And the same company is asked again, not refused by the gateway.
 		state.fail = undefined;
 		expect(served(await routes[route]("a"))).toBe(true);
@@ -261,20 +276,20 @@ describe("one company's database state and the shared circuit", () => {
 				return postgrest("57014");
 			},
 		};
-		const slow = routes["native read"]("a");
+		const slow = routes["folder read"]("a");
 		await expect.poll(() => state.rpcCalls.some((call) => call.company === "a")).toBe(true);
 		expect(served(await routes["member read"]("b"))).toBe(true);
 		release();
 		expect((await slow).status).toBe(503);
 		expect(authority.health().api.status).toBe("healthy");
-		expect(served(await routes["native read"]("b"))).toBe(true);
+		expect(served(await routes["folder read"]("b"))).toBe(true);
 
 		// With no success while it ran, a statement timeout is the database being slow for everyone.
 		state.fail = { company: "a", respond: async () => postgrest("57014") };
 		expect((await routes["member read"]("a")).status).toBe(503);
 		expect(authority.health().api.status).toBe("unavailable");
 		const before = state.rpcCalls.length;
-		expect((await routes["native read"]("b")).status).toBe(503);
+		expect((await routes["folder read"]("b")).status).toBe(503);
 		expect(state.rpcCalls.length).toBe(before);
 	});
 
@@ -284,7 +299,7 @@ describe("one company's database state and the shared circuit", () => {
 			// The reconciler blocks an object for good on any refusal that is not "unavailable", so a lock conflict
 			// on these RPCs stays a 503 to the reconciler, and it leaves the shared circuit closed.
 			const { authority, replication, state, routes } = await gateway();
-			for (const company of ["a", "b"] as const) expect((await routes["native write"](company)).status).toBe(200);
+			for (const company of ["a", "b"] as const) expect((await routes["folder write"](company)).status).toBe(200);
 			state.fail = { company: "a", respond: async () => postgrest(code) };
 			const failure = await authority
 				.authorizeReplication(companies.a.companyId, sha256, bytes.length)
@@ -295,7 +310,7 @@ describe("one company's database state and the shared circuit", () => {
 			expect(await replication.status()).toMatchObject({ pending: 1, blocked: 0 });
 			expect([...state.replicas.keys()]).toEqual([`${companies.b.companyId}/${sha256}`]);
 			expect(authority.health().api.status).toBe("healthy");
-			expect(served(await routes["native read"]("b"))).toBe(true);
+			expect(served(await routes["folder read"]("b"))).toBe(true);
 			// Once A's rows are free, the same object replicates.
 			state.fail = undefined;
 			await replication.reconcile();
@@ -305,7 +320,7 @@ describe("one company's database state and the shared circuit", () => {
 	);
 
 	it.each(["55P03", "40P01", "40001"])("keeps a %s on a profile read a plain 503", async (code) => {
-		// The lock conflict stays circuit-neutral (ObjectLockConflict), but only the native object route names it.
+		// The lock conflict stays circuit-neutral (ObjectLockConflict).
 		const { authority, profileRead, state } = await gateway();
 		state.fail = { company: "a", respond: async () => postgrest(code) };
 		const refused = await profileRead("a");
@@ -324,14 +339,14 @@ describe("one company's database state and the shared circuit", () => {
 		["a stop (55000)", async () => postgrest("55000")],
 		["a statement timeout (57014)", async () => postgrest("57014")],
 		["another 500", async () => postgrest("XX000")],
-	] as const)("names nothing else a lock conflict: %s", async (_label, respond) => {
+	] as const)("answers %s with nothing but its error", async (_label, respond) => {
 		const { state, routes: send } = await gateway();
 		state.fail = { company: "a", respond };
 		for (const route of routes)
 			expect(Object.keys((await (await send[route]("a")).json()) as object)).toEqual(["error"]);
 	});
 
-	it("does not call a write during the same object's deletion a lock conflict", async () => {
+	it("refuses a write during the same object's deletion with nothing but its error", async () => {
 		const { journal, routes } = await gateway();
 		// The deletion lane owns the object until it ends: 409, and not a request to send again at once.
 		await journal.write(`pending/${companies.a.companyId}-${sha256}`, {
@@ -341,7 +356,7 @@ describe("one company's database state and the shared circuit", () => {
 			state: "delete",
 			authorizationId: "40000000-0000-4000-8000-000000000301",
 		});
-		const refused = await routes["native write"]("a");
+		const refused = await routes["folder write"]("a");
 		expect(refused.status).toBe(409);
 		expect(await refused.json()).toEqual({ error: "Object authority rejected the operation" });
 	});
@@ -368,7 +383,6 @@ describe("folder core byte RPCs", () => {
 		runnerId: "40000000-0000-4000-8000-000000000104",
 		assignmentId: "40000000-0000-4000-8000-000000000105",
 	};
-	const intent = "40000000-0000-4000-8000-000000000401";
 	function folderAuthority(fail: (signal: AbortSignal) => Promise<Response>) {
 		const calls: Company[] = [];
 		const authority = new SupabaseObjectAuthority({
