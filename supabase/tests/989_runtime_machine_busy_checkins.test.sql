@@ -10,10 +10,10 @@
 -- 4. What restarts the count (a new command, a new boot) and who is not asked (a machine not found busy lately,
 --    always-on, stopped, an archived agent, a company not on folder-v2).
 -- 5. Who is asked: a worker's command in the conversation that dispatched it; each conversation about its own commands;
---    with no command running, the agent that started the machine.
+--    each agent counted from its own last command there; with no command running, the agent that started the machine.
 -- 6. Delivery by the folder drain's step, once the parent ended; a question no longer standing is suppressed, a gone
 --    parent's undeliverable.
--- 7. Bounds, the longest question, privileges and markers. The fixture is removed at the end.
+-- 7. Bounds, the longest question, the most commands listed, privileges and markers. The fixture is removed at the end.
 
 create function pg_temp.check(p_ok boolean, p_message text) returns void language plpgsql as $$
 begin if p_ok is distinct from true then raise exception 'Machine check-in: %', p_message; end if; end
@@ -102,11 +102,12 @@ create function pg_temp.command(p_n integer) returns uuid language sql as $$
 	select ('98900000-0000-4000-8000-000000000' || lpad(p_n::text, 3, '0'))::uuid
 $$;
 -- A command as qorpera_authorize_machine_command records its start (Ada's, by Ada's run unless another is named).
-create function pg_temp.started(p_n integer, p_head text, p_run uuid default '64800000-0000-4000-8000-0000000000f1') returns void
+create function pg_temp.started(p_n integer, p_head text, p_run uuid default '64800000-0000-4000-8000-0000000000f1',
+	p_agent uuid default '64800000-0000-4000-8000-0000000000a1') returns void
 language sql as $$
 	insert into public.qorpera_company_machine_commands(id, machine_id, run_id, staff_agent_id, placement_id, command_head, notify,
 		requested_by_user_id)
-	values (pg_temp.command(p_n), '98900000-0000-4000-8000-0000000000a1', p_run, '64800000-0000-4000-8000-0000000000a1',
+	values (pg_temp.command(p_n), '98900000-0000-4000-8000-0000000000a1', p_run, p_agent,
 		(pg_temp.placement()).id, p_head, false, '64800000-0000-4000-8000-000000000002')
 $$;
 create function pg_temp.command_row(p_n integer) returns public.qorpera_company_machine_commands language sql as $$
@@ -309,6 +310,47 @@ select pg_temp.ended(4);
 select pg_temp.check((select bool_and(public.qorpera_machine_checkin_current(q) = (q.parent_run_id = (pg_temp.run()).id))
 	from public.qorpera_machine_checkins q), 'when the build ends, its question no longer stands; the crawl''s still does');
 rollback;
+-- Another agent on the same machine (any agent of the company may use it): Bea, a second agent with her own
+-- conversation (9d1), starts the tests there while Ada's crawl runs. Each agent's count is its own: Bea's command leaves
+-- Ada's question standing, and Bea is asked in her own conversation, counted from her own command. Once both commands
+-- ended and the machine stays busy, the agent that started the machine is asked, counted from her own last command.
+begin;
+set local session_replication_role = replica;
+insert into public.qorpera_profile_staff(profile_id, staff_agent_id, display_name, role, charter, appearance_color, appearance_shape,
+	employment_status, lifecycle_state, created_at, updated_at, updated_by_user_id)
+values ('64800000-0000-4000-8000-000000000010', '98900000-0000-4000-8000-0000000009d0', 'Bea', 'Tests', 'Help.', 'native', 'round',
+	'active', 'active', statement_timestamp(), statement_timestamp(), '64800000-0000-4000-8000-000000000001');
+insert into public.qorpera_execution_runs
+select (jsonb_populate_record(pg_temp.run(), jsonb_build_object('id', '98900000-0000-4000-8000-0000000009d1',
+	'job_id', extensions.gen_random_uuid(), 'source_id', extensions.gen_random_uuid(), 'session_id', '98900000-0000-4000-8000-0000000009d2',
+	'staff_agent_id', '98900000-0000-4000-8000-0000000009d0'))).*;
+set local session_replication_role = origin;
+select pg_temp.started(6, 'npm test', '98900000-0000-4000-8000-0000000009d1', '98900000-0000-4000-8000-0000000009d0');
+select pg_temp.check((pg_temp.command_row(6)).conversation_run_id = '98900000-0000-4000-8000-0000000009d1'
+	and public.qorpera_machine_checkin_current(pg_temp.question(3)), 'another agent''s command leaves Ada''s question standing');
+select pg_temp.age('61 minutes');
+select pg_temp.busy();
+select pg_temp.check(pg_temp.asked_again(), 'with both agents'' commands running, the machine is asked about');
+select pg_temp.check((select count(*) = 2 from public.qorpera_machine_checkins q)
+	and (select q.staff_agent_id = '64800000-0000-4000-8000-0000000000a1' and q.since = (pg_temp.command_row(1)).started_at
+		and q.mark_hours = 3 and q.body -> 'running' = jsonb_build_array(jsonb_build_object('command', 'python crawl.py',
+			'startedAt', (pg_temp.command_row(1)).started_at, 'commandId', pg_temp.command(1)))
+		from public.qorpera_machine_checkins q where q.parent_run_id = (pg_temp.run()).id)
+	and (select q.staff_agent_id = '98900000-0000-4000-8000-0000000009d0' and q.since = (pg_temp.command_row(6)).started_at
+		and q.mark_hours = 1 and q.body -> 'running' = jsonb_build_array(jsonb_build_object('command', 'npm test',
+			'startedAt', (pg_temp.command_row(6)).started_at, 'commandId', pg_temp.command(6)))
+		from public.qorpera_machine_checkins q where q.parent_run_id = '98900000-0000-4000-8000-0000000009d1'),
+	'Ada from her crawl, Bea in her own conversation from her own command: '
+		|| (select jsonb_agg(to_jsonb(q)) from public.qorpera_machine_checkins q)::text);
+select pg_temp.ended(1);
+select pg_temp.ended(6);
+select pg_temp.check(pg_temp.asked_again(), 'busy after both commands ended, the machine is asked about');
+select pg_temp.check((select count(*) = 1 and bool_and(q.parent_run_id = (pg_temp.machine()).started_conversation_run_id
+		and q.staff_agent_id = (pg_temp.machine()).started_by_staff_agent_id and q.since = (pg_temp.command_row(1)).started_at
+		and q.body -> 'running' = '[]'::jsonb)
+	from public.qorpera_machine_checkins q), 'the agent that started it is asked, counted from her own last command, not Bea''s: '
+		|| (select jsonb_agg(to_jsonb(q)) from public.qorpera_machine_checkins q)::text);
+rollback;
 -- Busy outside its commands: the crawl ended and the machine stays busy (containers, a program left behind). Ada's
 -- question still stands, from the same start; asked anew, the agent that started the machine is asked in the
 -- conversation that started it, with nothing running.
@@ -431,7 +473,7 @@ begin
 end $$;
 rollback;
 
--- 7. Bounds, the longest question, privileges and markers.
+-- 7. Bounds, the longest question, the most commands listed, privileges and markers.
 select pg_temp.refused(format('select public.qorpera_ask_busy_company_machines(%L, %s)', bad.environment_id, bad.bound), '22023',
 	'Machine check-in bound is invalid')
 from (values ('64800000-0000-4000-8000-000000000020', '0'), ('64800000-0000-4000-8000-000000000020', '257'),
@@ -455,6 +497,18 @@ select pg_temp.check((select count(*) = 1 and bool_and(octet_length(q.body::text
 	'the longest question fits, its commands cut and the rest counted: '
 		|| (select string_agg(octet_length(q.body::text)::text || ' bytes, ' || (q.body ->> 'more') || ' more', '; ')
 			from public.qorpera_machine_checkins q));
+rollback;
+-- Nine short commands: eight are listed, the ninth counted.
+begin;
+select pg_temp.ended(1);
+select pg_temp.started(n, 'echo ' || n) from generate_series(21, 29) n \g /dev/null
+select pg_temp.age('61 minutes');
+select pg_temp.busy();
+select pg_temp.check(pg_temp.asked_again(), 'nine short commands are asked about');
+select pg_temp.check((select count(*) = 1 and bool_and(jsonb_array_length(q.body -> 'running') = 8 and (q.body ->> 'more')::integer = 1
+		and q.body #>> '{running,0,commandId}' = pg_temp.command(21)::text and q.body #>> '{running,7,commandId}' = pg_temp.command(28)::text)
+	from public.qorpera_machine_checkins q), 'eight are listed, the ninth counted: '
+		|| (select jsonb_agg(q.body) from public.qorpera_machine_checkins q)::text);
 rollback;
 select pg_temp.check(not exists (select 1 from unnest(array['anon','authenticated','service_role','qorpera_secret_broker']) r(role)
 	cross join unnest(array['public.qorpera_company_machine_busy_since(public.qorpera_company_machines)',
