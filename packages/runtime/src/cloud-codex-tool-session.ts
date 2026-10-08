@@ -1252,6 +1252,18 @@ class CodexBoundaryRpc {
 			this.#observeDiagnostic(message.method, message.params);
 		} else if (message.method === "qorpera/messageComposition") {
 			this.#observeComposition(message.params);
+		} else if (message.method === "item/agentMessage/delta") {
+			// The agent's own words go into the run's work log with its next step (RUNTIME-AGENT-MEMORY-TREE.md §4.5).
+			// Reasoning deltas are a different method and are never kept.
+			const params = object(message.params);
+			if (
+				this.#turnId &&
+				!this.#finished &&
+				params.threadId === this.#threadId &&
+				params.turnId === this.#turnId &&
+				typeof params.delta === "string"
+			)
+				this.#boundary?.runLog?.agentText(params.delta);
 		}
 		// Assistant text, reasoning, diffs, tool events and diagnostics are never delivered or returned.
 	}

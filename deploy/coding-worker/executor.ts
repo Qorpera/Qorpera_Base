@@ -16,7 +16,7 @@ import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-c
 import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-coding-guest-configuration.ts";
 import { LxdCompanyMachineHost } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
 import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../packages/runner-orchestrator/src/company-machine.ts";
-import { authorizeCodingCommand } from "./command-authority.ts";
+import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
 import { authorizeMachineCommand } from "./machine-command-authority.ts";
 import { MachineCommandRouter } from "./machine-command-routing.ts";
 import { CodingCommandRouter, type CodingCommandPeer } from "./command-routing.ts";
@@ -235,6 +235,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	}
 	const commands = new HttpCloudCodingCommandService({
 		token: commandToken, port: config.commandPort,
+		// G2-6b: a guest's request proves its run's lease before anything else is asked about its binding.
+		proveBinding: (binding, holder, signal) => proveNativeBinding(control, binding, holder, signal),
 		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
 		execute: (request, signal) => router.execute(request, signal),
 		machines: {
@@ -244,6 +246,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	});
 	const peerCommands = new HttpCloudCodingCommandService({
 		token: peerToken, port: config.peerCommandPort,
+		// Only executors hold the peer token, and the forwarding one proved the guest's holder at its own ingress.
+		proveBinding: null,
 		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
 		execute: (request, signal) => router.execute(request, signal, true),
 		machines: {

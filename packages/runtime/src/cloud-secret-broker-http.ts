@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
-import { type JsonValue, UUID_PATTERN } from "@qorpera/contracts";
+import type { JsonValue } from "@qorpera/contracts";
 import { CHATGPT_PLAN_CONFIRM_ROUTE_MS, ChatGptPlanSignInError } from "./cloud-chatgpt-plan-sign-in.ts";
 import {
 	COMPANY_ACCOUNT_FILL_REQUEST_SCHEMA,
@@ -29,7 +29,7 @@ import {
 } from "./cloud-model-login-vault.ts";
 import type { CloudModelLoginSignIns } from "./cloud-model-login-vault-sign-in.ts";
 import type { CloudModelLoginUsage } from "./cloud-model-login-vault-usage.ts";
-import { parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
+import { isNativeJobHolder, parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import { type CloudToolContent, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 import {
 	CloudSecretBroker,
@@ -64,13 +64,6 @@ function record(value: unknown, label: string): Record<string, unknown> {
 
 function exact(value: Record<string, unknown>, keys: readonly string[], label: string): void {
 	if (Object.keys(value).sort().join() !== [...keys].sort().join()) throw new Error(`${label} is invalid`);
-}
-
-/** The caller's holder credential (G2-6a): `job.<job id>.<lease token>` in x-qorpera-identity, as the native host's
- * dispatch gives it. Its value never reaches a log, an error or a reply. */
-function isHolder(value: unknown): value is string {
-	const [kind, jobId, token, ...rest] = typeof value === "string" ? value.split(".") : [];
-	return kind === "job" && UUID_PATTERN.test(jobId ?? "") && /^[A-Za-z0-9_-]{43}$/.test(token ?? "") && !rest.length;
 }
 
 /** G2-6a: whether a native host's request holds its binding's run lease (qorpera_native_binding_proven, migration
@@ -566,7 +559,7 @@ export class HttpCloudSecretBrokerService {
 	 * of the holder reaches the reply). */
 	async #proven(request: IncomingMessage, binding: object): Promise<void> {
 		const holder = request.headers["x-qorpera-identity"];
-		if (!isHolder(holder) || !this.#proveBinding) throw new Error("Native binding proof is missing");
+		if (!isNativeJobHolder(holder) || !this.#proveBinding) throw new Error("Native binding proof is missing");
 		await this.#proveBinding(binding, holder);
 	}
 

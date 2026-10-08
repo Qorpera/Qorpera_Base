@@ -45,6 +45,8 @@ export class CodingCommandRouter {
 		if (!peer) throw new Error("CODING_COMMAND_ROUTE_UNAVAILABLE");
 		const gateway = createHttpCloudCodingCommandGateway({
 			url: peer.origin, token: await this.#options.credential(peer.tokenCredential), binding: request.binding,
+			// The peer listener takes no holder: this executor proved the guest's at its own ingress.
+			holder: null,
 			authorize: async (scope, _identity, checked) => {
 				if (!isDeepStrictEqual(scope, request.scope)) throw new Error("CODING_COMMAND_REQUEST_CHANGED");
 				await authorizeCodingCommand(this.#options.control, request, checked);
