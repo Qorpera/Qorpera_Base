@@ -20,7 +20,9 @@ rollouts or fallbacks that only keep live companies running: each ships whole, o
   included, with the holder's credential in a request header (below).
 - G2-5 (no SQL): the key leaves the guests, the slots, the execution host, the bootstrap and the units, with guards
   that it stays out (below).
-- G2-6: the node-level object-gateway and broker runtime tokens narrowed per run.
+- G2-6: the node-level tokens bound to one run by a proof of its lease (below): 6a (migration `20260930152000`, SQL test
+  986) the secret brokers' runtime routes and the object gateway's folder route; 6b the coding executor; 6c the office
+  receiver and the object gateway's native-objects route.
 
 ## G2-3: the identity credential
 
@@ -203,6 +205,53 @@ start without the key.
 
 Revert it whole (runtime, guest image, node host and the execution host's package): the key is delivered and loaded
 again. Nothing in the database changes.
+
+## G2-6: a guest request proves its run's lease
+
+Four node-level tokens reach a company guest or an execution host's slot: the object gateway's native token, the
+secret brokers' runtime token, the coding executor's command token and a company computer's office token. Each server
+compared the bearer and then re-checked the request's run binding against the database with its own key. But the
+binding is only ids, and the checks behind it read the job's stored lease hash themselves, so the node-level token and
+any live run's ids were enough to act for that run, including `/v1/model-logins`, which hands out the run's model
+access token.
+
+Now the caller also proves it holds that run's job lease token, which only the run's own native host has. With each
+request it sends `x-qorpera-identity: job.<job id>.<lease token>` (`NativeHostDispatch.holderHeader()`, read per
+request, so a warm host never sends a released job's token). The server asks
+`qorpera_native_binding_proven(binding, holder)` before anything else about the binding:
+- the job by its primary key, leased, an agent turn, the lease unexpired;
+- the token's hash;
+- the binding's job and run being that job and its run.
+
+It is stable, so it takes no row lock, and only the servers' roles may call it (service_role for the object gateway,
+qorpera_secret_broker for the brokers; test 001 keeps it off the API roles). It is a gate only: the locked functions
+behind each request still check the run and its lease under their locks, so a lease that ends between the proof and
+the work is still refused. A server never logs the header or puts it in an error, and every refusal is a plain 401 or
+403. The node-level tokens stay as transport checks for now.
+
+- **6a** (migration `20260930152000`, SQL test 986):
+  - the secret brokers and the shared vault prove the lease on `/v1/operations`, `/v1/company-accounts`,
+    `/v1/company-account-fills` and `/v1/model-logins`, through their own database principal;
+  - the object gateway proves it on `/v1/folder-objects`;
+  - the native host's broker client, model login client and folder bytes client send the header, as do its
+    native-objects clients (the object store and the Company Computer's capture paths), which 6c's check will read.
+- **6c, not yet:** `/v1/native-company-objects` also serves the company computer's captures, file imports and exports,
+  which the computer makes for a run without holding its lease. Its proof comes with the native host passing its
+  holder to the computer with each operation (a company computer image rebuild), together with the office receiver's
+  own proof.
+- **6b, not yet:** the coding executor.
+
+### Rollout (G2-6a)
+
+The migration first, then the object gateway and the brokers (node 1), with the guest image of the same release. A
+guest from before G2-6a sends no header, so its broker and folder requests are refused until the new image is in (no
+compatibility path, 3 Oct). Check after the release (deferred, needs Codex): a run's connector operation, company
+account, account fill, vault model login and folder read and write each go through.
+
+### Undo (G2-6a)
+
+Revert the servers (they stop asking), then the guest and the migration (`drop function
+public.qorpera_native_binding_proven(jsonb, text)`).
 
 ## G2-3e: the execution host's own calls
 

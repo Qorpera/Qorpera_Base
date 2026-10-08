@@ -348,7 +348,7 @@ export function createHttpCompanyComputerSessionFactory(options: {
 	token: string;
 	registry: HttpCloudCompanyComputerRegistry;
 	fetch?: typeof fetch;
-	objectGateway?: { baseUrl: string; token: string; fetch?: typeof fetch };
+	objectGateway?: { baseUrl: string; token: string; holder?: () => string; fetch?: typeof fetch };
 	/** The vault, for vault_fill (A1-3); without it every fill is refused before the office. */
 	accountFills?: CompanyComputerAccountFills;
 }): CloudCompanyComputerSessionFactory {
