@@ -48,6 +48,7 @@ import {
 	CloudRuntimeDiagnosticError,
 	type CloudRuntimeErrorCategory,
 	type CloudRuntimeObservability,
+	type CloudRuntimeObservationDetails,
 	type CloudRuntimeObservationSpan,
 	type CloudRuntimeOutcome,
 	cloudRuntimeErrorCategory,
@@ -81,6 +82,9 @@ function forgetSettled<V extends { finished: boolean }>(entries: Map<string, V>)
 	}
 }
 const MAX_PROMPT_BYTES = 1024 * 1024;
+/** The developer instructions (RUNTIME-AGENT-MEMORY-TREE.md §6.1): the host-owned rules, about 25 KB, with the head
+ * (16,000 bytes, §5.6) and the primary view (96,000, M1) as labelled data, and room to spare. */
+const MAX_RUNTIME_INSTRUCTIONS_BYTES = 256 * 1024;
 const TOKEN_COUNTERS = [
 	"inputTokens",
 	"outputTokens",
@@ -89,6 +93,18 @@ const TOKEN_COUNTERS = [
 	"reasoningOutputTokens",
 	"totalTokens",
 ] as const;
+
+/** A validated native usage snapshot as observation counters. */
+function tokenCounters(snapshot: Record<string, unknown>): CloudRuntimeObservationDetails {
+	return {
+		inputTokens: snapshot.inputTokens as number,
+		outputTokens: snapshot.outputTokens as number,
+		cachedInputTokens: snapshot.cachedInputTokens as number,
+		cacheWriteInputTokens: snapshot.cacheWriteInputTokens as number,
+		reasoningOutputTokens: snapshot.reasoningOutputTokens as number,
+		totalTokens: snapshot.totalTokens as number,
+	};
+}
 
 /** Waits for a promise unless the signal stops the wait first. */
 function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -468,6 +484,8 @@ class CodexBoundaryRpc {
 		{ span?: CloudRuntimeObservationSpan; contextRecorded: boolean; finished: boolean }
 	>();
 	#turnObservation?: CloudRuntimeObservationSpan;
+	/** The turn's last valid cumulative usage snapshot, to tell a model request's usage from a repeat. */
+	#usageTotal?: Record<string, unknown>;
 	readonly #compositions = new Map<
 		string,
 		{ span?: CloudRuntimeObservationSpan; timer?: ReturnType<typeof setTimeout>; finished: boolean }
@@ -1128,16 +1146,22 @@ class CodexBoundaryRpc {
 				)
 					return;
 			}
-			// Native cumulative snapshots can be replayed/recomputed. Never sum updates,
-			// infer a request count, or label these counters billing-exact provider usage.
-			this.#turnObservation.update({
-				inputTokens: total.inputTokens as number,
-				outputTokens: total.outputTokens as number,
-				cachedInputTokens: total.cachedInputTokens as number,
-				cacheWriteInputTokens: total.cacheWriteInputTokens as number,
-				reasoningOutputTokens: total.reasoningOutputTokens as number,
-				totalTokens: total.totalTokens as number,
-			});
+			// Native cumulative snapshots can be replayed/recomputed. Never sum updates
+			// or label these counters billing-exact provider usage.
+			this.#turnObservation.update(tokenCounters(total));
+			// Codex adds each completed provider response's usage to `total` and sends it as `last`
+			// (codex-rs `TokenUsageInfo::append_last_usage`), from zero on a new thread. Repeats,
+			// estimates and a filled context window do not add up that way, so only a report with input
+			// whose total grew by exactly `last` is recorded as one model request's usage.
+			const previous = this.#usageTotal;
+			this.#usageTotal = total;
+			if (
+				(last.inputTokens as number) > 0 &&
+				TOKEN_COUNTERS.every(
+					(key) => (total[key] as number) === ((previous?.[key] as number) ?? 0) + (last[key] as number),
+				)
+			)
+				this.#turnObservation.child("model_request").finish("succeeded", tokenCounters(last));
 		} catch {
 			// Malformed optional diagnostics remain unavailable; protocol enforcement is unchanged.
 		}
@@ -1261,6 +1285,18 @@ class CodexBoundaryRpc {
 			this.#observeDiagnostic(message.method, message.params);
 		} else if (message.method === "qorpera/messageComposition") {
 			this.#observeComposition(message.params);
+		} else if (message.method === "item/agentMessage/delta") {
+			// The agent's own words go into the run's work log with its next step (RUNTIME-AGENT-MEMORY-TREE.md §4.5).
+			// Reasoning deltas are a different method and are never kept.
+			const params = object(message.params);
+			if (
+				this.#turnId &&
+				!this.#finished &&
+				params.threadId === this.#threadId &&
+				params.turnId === this.#turnId &&
+				typeof params.delta === "string"
+			)
+				this.#boundary?.runLog?.agentText(params.delta);
 		}
 		// Assistant text, reasoning, diffs, tool events and diagnostics are never delivered or returned.
 	}
@@ -1757,7 +1793,8 @@ export async function runCloudCodexToolSession(options: {
 	/** The run's admitted tier; anything that does not supply one runs at standard speed. */
 	serviceTier?: CloudRuntimeServiceTier;
 	prompt: string;
-	/** Versioned host-owned laws only; never job text, file content or model input. */
+	/** Versioned host-owned laws, and the head and views as escaped, labelled data
+	 * (RUNTIME-AGENT-MEMORY-TREE.md §6.1). */
 	runtimeInstructions?: string;
 	/** Only a fresh, host-restored Codex auth home is accepted; no user config, skills or hooks. */
 	identityRoot?: string;
@@ -1811,7 +1848,7 @@ export async function runCloudCodexToolSession(options: {
 		!/^[0-9a-f]{64}$/.test(options.binarySha256) ||
 		!isAbsolute(options.command[0]) ||
 		Buffer.byteLength(options.prompt) > MAX_PROMPT_BYTES ||
-		Buffer.byteLength(options.runtimeInstructions ?? "") > 32 * 1024 ||
+		Buffer.byteLength(options.runtimeInstructions ?? "") > MAX_RUNTIME_INSTRUCTIONS_BYTES ||
 		!isCloudRuntimeReasoningEffort(effort) ||
 		!isCloudRuntimeServiceTier(serviceTier)
 	)

@@ -1331,7 +1331,7 @@ by a machine.
 - **Takeover drains the whole computer** (#411), so it ends the agent's
   commands. The folder design says so.
 - **Findings sent to #411's session on 2026-09-29.** The first was a real
-  bug, fixed in #411 at 3822194a1 (migration 20260929070200): the new shell
+  bug, fixed in #411 at 3822194a1 (now in migration 20260930029000): the new shell
   arguments were refused by the live `qorpera_native_office_operation`. The
   second is that a takeover ends the command. #411's session keeps that,
   because a command left running could still use the screen the member now
@@ -1463,7 +1463,8 @@ by a machine.
   13 ms at p50, 108 ms at p95 and 343 ms at most while 16 clients committed
   without pause (3.8 ms idle). C1e adds revoke latency to its pass criteria,
   and the latency of a release of thousands of paths, which now resolves each
-  path once, against the 4-second result fence.
+  path once, against 4 seconds (the result fence's budget until 5 October
+  2026, now the load test's latency target).
   If the tail grows at 32 to 64 clients, point the folder tables' foreign
   keys at a dedicated anchor row that is never locked exclusively, not at
   `qorpera_company_files` (its upload quota trigger locks that row

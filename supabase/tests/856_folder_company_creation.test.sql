@@ -2,8 +2,8 @@
 -- company on folder-v2 with nothing seeded; Start records one creation; the worker's claim, release, fail and the one
 -- creation transaction (completed, retry, failed, stale, replay) with the Co-Founder and its silent first run (the
 -- kickoff's exact shape, the first-run row, the turn request with and without a usable login, no wake); ready, the
--- founders' setup state and the hub; the guards (departure, the old chain, enabling, delete); requeue; snapshot-v1 keeps
--- every patched text. The operator path is in 858, races in 857.
+-- founders' setup state and the hub; the guards (departure, the old chain, enabling, delete); requeue; each patch is in
+-- place. The operator path is in 858, races in 857.
 begin;
 
 insert into auth.users(id,email,email_confirmed_at,raw_user_meta_data) values
@@ -837,12 +837,12 @@ begin
 	end;
 end $$;
 
--- 7. Snapshot-v1 (and P22a's claim) keep their text: each body with its patch reversed is the definition before this
--- migration (the hub's with P15's change to it, 20260930022000; structured_apply is folder-v2 only and P15 patches it
--- again, so it has no pin) -----------
+-- 7. P14a's patches are in place (the hub's with P15's change to it, 20260930022000). structured_apply is folder-v2
+-- only, and E1 (20260930060000) writes P22a's claim whole, keeping P14a's guard. No snapshot-v1 text is pinned (the
+-- founder's decision of 3 October; legacy sweep A) -----------
 
 do $$
-declare v_case record; v_definition text;
+declare v_case record;
 begin
 	for v_case in select * from (values
 		('public.qorpera_list_hosted_profiles()',
@@ -851,10 +851,7 @@ begin
 		and (not exists (select 1 from public.qorpera_company_files as file where file.profile_id = profile.id and file.core = 'folder-v2')
 			-- 20260930022000 (P15): and its Co-Founder's subject has converged.
 			or public.qorpera_folder_company_ready(profile.id))
-$n$,
-			$o$		and not exists (select 1 from public.qorpera_company_deletions as deletion where deletion.profile_id = profile.id)
-$o$,
-			'42227354f79c284a0e59719e4b7957f5'),
+$n$),
 		('public.qorpera_guard_founder_departure()',
 			$n$		raise exception 'Company setup must finish before the founder it runs for leaves or steps down'
 			using errcode = '42501';
@@ -867,13 +864,7 @@ $o$,
 			using errcode = '42501';
 	end if;
 	return coalesce(new, old);
-$n$,
-			$o$		raise exception 'Company setup must finish before the founder it runs for leaves or steps down'
-			using errcode = '42501';
-	end if;
-	return coalesce(new, old);
-$o$,
-			'107578f7d129849f06f64e9c6f1079e7'),
+$n$),
 		('public.qorpera_profile_team_info(uuid)',
 			$n$					where job.profile_id = p_profile_id and job.created_by_user_id = auth.uid()
 						and job.state in ('queued', 'leased'))
@@ -881,11 +872,7 @@ $o$,
 				and not exists (select 1 from public.qorpera_folder_company_creations as creation
 					where creation.profile_id = p_profile_id and creation.kickoff_user_id = auth.uid()
 						and creation.state in ('queued', 'leased')),
-$n$,
-			$o$					where job.profile_id = p_profile_id and job.created_by_user_id = auth.uid()
-						and job.state in ('queued', 'leased')),
-$o$,
-			'847a09a707ce895c5aca913418d96ff1'),
+$n$),
 		('public.qorpera_stop_company_work(uuid)',
 			$n$	where profile_id = p_profile_id and state in ('queued', 'leased');
 	-- 20260930010000 (P14a): a folder-v2 creation not yet made is blocked. One a worker holds now (its row sits before
@@ -897,58 +884,26 @@ $o$,
 	where id in (select creation.id from public.qorpera_folder_company_creations as creation
 		where creation.profile_id = p_profile_id and creation.state in ('queued', 'leased') for update skip locked);
 
-	-- Coding:$n$,
-			$o$	where profile_id = p_profile_id and state in ('queued', 'leased');
-
-	-- Coding:$o$,
-			'9485f077055b7b316ced0c28ef47d0fb'),
+	-- Coding:$n$),
 		('public.qorpera_enqueue_company_bootstrap(uuid,boolean)',
 			$n$	v_job public.qorpera_company_bootstrap_jobs%rowtype; v_owner uuid;
 begin
 	-- 20260930010000 (P14a): a folder-v2 company never runs the old chain.
 	if public.qorpera_company_is_folder_v2(p_profile_id) then
 		raise exception 'The folder core sets this company up' using errcode = '55000'; end if;
-$n$,
-			$o$	v_job public.qorpera_company_bootstrap_jobs%rowtype; v_owner uuid;
-begin
-$o$,
-			'2db1d98ee2066cda83f8c41743f86c65'),
+$n$),
 		('public.qorpera_company_founding_json(uuid)',
 			$n$'companyReady',public.qorpera_folder_company_ready(p_profile_id),
 			-- 20260930010000 (P14a): pending, ready or failed.
-			'companySetup',public.qorpera_folder_company_setup(p_profile_id)) end);$n$,
-			$o$'companyReady',public.qorpera_folder_company_ready(p_profile_id)) end);$o$,
-			'ea4506f6503174c2d7a28f904afacb4f'),
-		('public.qorpera_claim_connection_file(uuid,integer)',
-			$n$		and (work.lease_until is null or work.lease_until < clock_timestamp())
-		and (work.not_before is null or work.not_before <= clock_timestamp())
-		-- 20260930010000 (P14a): not while the company's folder-v2 creation is not made yet.
-		and not exists (select 1 from public.qorpera_folder_company_creations as creation
-			where creation.profile_id = work.profile_id and creation.state is distinct from 'completed')
-$n$,
-			$o$		and (work.lease_until is null or work.lease_until < clock_timestamp())
-		and (work.not_before is null or work.not_before <= clock_timestamp())
-$o$,
-			'6447847d7aa0ffc3ab138d82a8de7e51')) as c(signature, inserted, original, md5) loop
-		v_definition := pg_get_functiondef(v_case.signature::regprocedure);
-		-- C1c-3g (20260930015000) patches stop_company_work after P14a: reverse that patch here first.
-		if v_case.signature = 'public.qorpera_stop_company_work(uuid)' then
-			v_definition := replace(v_definition,
-				E'\tif found and not public.qorpera_company_is_folder_v2(p_profile_id) then -- C1c-3g (20260930015000)\n',
-				E'\tif found then\n');
-		end if;
-		-- The lobby hardening (20260930039000) adds firstRun after P14a's companySetup: reverse that patch here first.
-		if v_case.signature = 'public.qorpera_company_founding_json(uuid)' then
-			v_definition := replace(v_definition,
-				E'\'companySetup\',public.qorpera_folder_company_setup(p_profile_id),\n'
-				|| E'\t\t\t-- 20260930039000: how the Co-Founder\'s first run stands.\n'
-				|| E'\t\t\t\'firstRun\',public.qorpera_folder_company_first_run_state(p_profile_id)) end);',
-				E'\'companySetup\',public.qorpera_folder_company_setup(p_profile_id)) end);');
-		end if;
-		if position(v_case.inserted in v_definition) = 0
-			or md5(replace(v_definition, v_case.inserted, v_case.original)) <> v_case.md5 then
-			raise exception 'The patch of % is not the only change', v_case.signature; end if;
+			'companySetup',public.qorpera_folder_company_setup(p_profile_id)$n$)) as c(signature, inserted) loop
+		if position(v_case.inserted in pg_get_functiondef(v_case.signature::regprocedure)) = 0 then
+			raise exception 'The patch of % is missing', v_case.signature; end if;
 	end loop;
+	-- The connection-file claim is written whole by E1 (20260930060000), with P14a's guard kept: no pin of its old text
+	-- (founder decision, 3 October 2026), only the guard.
+	if position('creation.state is distinct from ''completed''' in
+			pg_get_functiondef('public.qorpera_claim_connection_file(uuid,integer)'::regprocedure)) = 0 then
+		raise exception 'The connection-file claim lost P14a''s creation guard'; end if;
 	-- qorpera_folder_enable is replaced whole: a role check around the internal body.
 	if position('20260930010000' in pg_get_functiondef('public.qorpera_folder_enable(uuid)'::regprocedure)) = 0
 		or position('qorpera_folder_enable_internal(p_environment_id)' in pg_get_functiondef('public.qorpera_folder_enable(uuid)'::regprocedure)) = 0 then

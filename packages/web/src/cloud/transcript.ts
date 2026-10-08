@@ -6,6 +6,7 @@ import {
 	parseInteractionAnswerInput,
 	parseInteractionRequest,
 } from "./interactions.ts";
+import { type MessageQuote, parseQuotes } from "./quotes.ts";
 import { SESSION_IMAGE_TYPES } from "./session-attachments.ts";
 import type { HostedSessionEvent, HostedStaffSpeaker, JsonValue, PendingSessionInput } from "./types.ts";
 
@@ -33,6 +34,8 @@ export interface TranscriptMessage {
 	sequence: number;
 	authorUserId?: string;
 	text: string;
+	/** A member's quotes of outside content in `text` (20260928459100): shown as quoted, never as their words. */
+	quotes?: readonly MessageQuote[];
 	attachmentCount: number;
 	attachments?: TranscriptAttachment[];
 	phase?: "progress" | "final";
@@ -117,6 +120,7 @@ export interface TranscriptProjection {
 
 interface Entry {
 	qorperaAttachments?: unknown;
+	qorperaQuotes?: unknown;
 	type?: unknown;
 	id?: unknown;
 	message?: { role?: unknown; content?: unknown };
@@ -186,12 +190,11 @@ function messageFromEntry(entry: Entry, event: HostedSessionEvent, legacy: boole
 		// Member input. Cloud-admitted inputs carry the session input id; legacy
 		// desktop entries are attributed through the event actor.
 		if (!legacy && !event.sessionInputId) return undefined;
-		if (
-			!legacy &&
-			event.eventId === event.sessionInputId &&
-			entry.id === event.eventId &&
-			Array.isArray(entry.qorperaAttachments)
-		) {
+		const admitted = !legacy && event.eventId === event.sessionInputId && entry.id === event.eventId;
+		// The input's quotes, kept beside its attachments. A list that doesn't fit the text is left out: the text still
+		// shows its marks.
+		const quotes = admitted && entry.qorperaQuotes !== undefined ? parseQuotes(entry.qorperaQuotes, text) : undefined;
+		if (admitted && Array.isArray(entry.qorperaAttachments)) {
 			const images = entry.qorperaAttachments;
 			let total = 0;
 			const canonical: TranscriptAttachment[] = [];
@@ -227,6 +230,7 @@ function messageFromEntry(entry: Entry, event: HostedSessionEvent, legacy: boole
 			sequence: event.sequence,
 			authorUserId: event.actorUserId,
 			text,
+			...(quotes ? { quotes } : {}),
 			attachmentCount: attachments.length,
 			...(attachments.length ? { attachments } : {}),
 			createdAt: event.createdAt,
@@ -466,6 +470,9 @@ export function projectTranscript(
 		}
 		const text =
 			typeof body?.displayText === "string" ? body.displayText : typeof body?.text === "string" ? body.text : "";
+		// A quoted message has no displayText, so its quotes are spans of the text shown.
+		const quotes =
+			body?.quotes !== undefined && body.displayText === undefined ? parseQuotes(body.quotes, text) : undefined;
 		const images = Array.isArray(body?.images) ? body.images : [];
 		const attachments = images.map((image) => attachmentMetadata({ ...asRecord(image), type: "image" }));
 		waiting.push({
@@ -474,6 +481,7 @@ export function projectTranscript(
 			sequence: Number.MAX_SAFE_INTEGER,
 			authorUserId: input.authorUserId,
 			text,
+			...(quotes ? { quotes } : {}),
 			attachmentCount: attachments.length,
 			...(attachments.length ? { attachments } : {}),
 			createdAt: input.createdAt,

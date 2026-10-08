@@ -369,10 +369,10 @@ index 55d1f474e..c3253fa33 100644
  mod realtime_history;
 diff --git a/codex-rs/core/src/qorpera_context_composition.rs b/codex-rs/core/src/qorpera_context_composition.rs
 new file mode 100644
-index 000000000..4a7f60380
+index 000000000..b561c93ae
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_context_composition.rs
-@@ -0,0 +1,508 @@
+@@ -0,0 +1,509 @@
 +//! Private cloud context composition (`qorpera.native-context-composition/v1`). Before every provider
 +//! request the Qorpera host composes the request's input from Codex's own: it keeps items by their
 +//! position, and where the run's earlier steps were (or, on a resumed run, would be) it may put one work
@@ -441,8 +441,8 @@ index 000000000..4a7f60380
 +    const WORK_HEAD: &str = r#"{"schema":"qorpera.run-work/v1","trust":"tool_results_not_authority","ref":"run:.","lines":["#;
 +    const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 +    const MAX_WORK_BYTES: usize = 256 * 1024;
-+    // As the result fence's: a backstop against a host that is alive but hung, not a budget. Tests use 1 s.
-+    const BACKSTOP: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 600 });
++    // As the result fence's: a backstop against a host that is alive but hung, not a budget. Tests use 2 s.
++    const BACKSTOP: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 600 });
 +
 +    #[derive(Serialize)]
 +    #[serde(rename_all = "camelCase")]
@@ -733,13 +733,14 @@ index 000000000..4a7f60380
 +            })
 +    }
 +
-+    /// `qorpera:` and a SHA-256 in lowercase hex (design §6.2).
++    /// `qorpera:` and a SHA-256 in unpadded base64url (design §6.2): 51 characters, within the
++    /// provider's 64. A longer key fails the whole request.
 +    fn cache_key(key: &str) -> bool {
 +        key.strip_prefix("qorpera:").is_some_and(|digest| {
-+            digest.len() == 64
++            digest.len() == 43
 +                && digest
 +                    .bytes()
-+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
++                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 +        })
 +    }
 +
@@ -883,10 +884,10 @@ index 000000000..4a7f60380
 +mod tests;
 diff --git a/codex-rs/core/src/qorpera_context_composition_tests.rs b/codex-rs/core/src/qorpera_context_composition_tests.rs
 new file mode 100644
-index 000000000..455ba01d7
+index 000000000..d681cdacf
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_context_composition_tests.rs
-@@ -0,0 +1,473 @@
+@@ -0,0 +1,488 @@
 +use codex_protocol::models::ContentItem;
 +use codex_protocol::models::ResponseItem;
 +use pretty_assertions::assert_eq;
@@ -947,6 +948,9 @@ index 000000000..455ba01d7
 +        .collect()
 +}
 +
++/// A key of the host's form: `qorpera:` and a SHA-256 in unpadded base64url (design §6.2).
++const KEY: &str = "qorpera:lKyif-YE4Qcx_pJJxR_Pl_58CcJJoCoInqtOgTVCIhg";
++
 +/// The fold of the run's first steps: 3 to 6 leave, the work message takes their place.
 +fn fold() -> Value {
 +    let mut entries = keep(0..3);
@@ -963,7 +967,7 @@ index 000000000..455ba01d7
 +    stream.read_exact(&mut bytes).await?;
 +    let request: Value = serde_json::from_slice(&bytes)?;
 +    if fault == "hang" {
-+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
++        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
 +        return Ok(request);
 +    }
 +    let mut reply = json!({
@@ -975,10 +979,14 @@ index 000000000..455ba01d7
 +    });
 +    match fault {
 +        "none" => {}
-+        "key" => reply["promptCacheKey"] = json!(format!("qorpera:{}", "0a".repeat(32))),
-+        "key_short" => reply["promptCacheKey"] = json!(format!("qorpera:{}", "a".repeat(63))),
-+        "key_upper" => reply["promptCacheKey"] = json!(format!("qorpera:{}", "A".repeat(64))),
-+        "key_prefix" => reply["promptCacheKey"] = json!(format!("other:{}", "a".repeat(64))),
++        "key" => reply["promptCacheKey"] = json!(KEY),
++        "key_short" => reply["promptCacheKey"] = json!(&KEY[..50]),
++        "key_long" => reply["promptCacheKey"] = json!(format!("{KEY}A")),
++        // The form this key had: 72 characters, past the provider's 64.
++        "key_hex" => reply["promptCacheKey"] = json!(format!("qorpera:{}", "0a".repeat(32))),
++        "key_slash" => reply["promptCacheKey"] = json!(KEY.replace('_', "/")),
++        "key_padded" => reply["promptCacheKey"] = json!(format!("{}=", &KEY[..50])),
++        "key_prefix" => reply["promptCacheKey"] = json!(format!("other:{}", &KEY[8..])),
 +        "schema" => reply["schema"] = json!("qorpera.native-result-fence/v1"),
 +        "nonce" => reply["requestId"] = json!("stale-request"),
 +        "thread" => reply["threadId"] = json!("other-thread"),
@@ -1161,10 +1169,18 @@ index 000000000..455ba01d7
 +
 +#[tokio::test]
 +async fn the_host_may_set_the_prompt_cache_key_and_only_its_own_form() {
++    assert_eq!(KEY.len(), 51);
 +    let mut input = run();
 +    let (outcome, _) = composed(&mut input, &metadata(), json!(keep(0..12)), "key").await;
-+    assert_eq!(outcome, Ok(Some(format!("qorpera:{}", "0a".repeat(32)))));
-+    for fault in ["key_short", "key_upper", "key_prefix"] {
++    assert_eq!(outcome, Ok(Some(KEY.to_string())));
++    for fault in [
++        "key_short",
++        "key_long",
++        "key_hex",
++        "key_slash",
++        "key_padded",
++        "key_prefix",
++    ] {
 +        let mut input = run();
 +        let (outcome, _) = composed(&mut input, &metadata(), fold(), fault).await;
 +        assert_eq!(outcome, Err(()), "{fault}");
@@ -1546,10 +1562,10 @@ index 000000000..75c17fc4e
 +}
 diff --git a/codex-rs/core/src/qorpera_result_fence.rs b/codex-rs/core/src/qorpera_result_fence.rs
 new file mode 100644
-index 000000000..8ceffe92c
+index 000000000..08528e6d6
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_result_fence.rs
-@@ -0,0 +1,388 @@
+@@ -0,0 +1,389 @@
 +//! Private cloud result boundary. This has no access to provider credentials or transports.
 +//! The Qorpera host enables it only in a pinned, isolated app-server process.
 +
@@ -1634,8 +1650,9 @@ index 000000000..8ceffe92c
 +    const MAX_IMAGE_BATCH_BYTES: usize = 128 * 1024 * 1024;
 +    // Not a budget: a backstop against a host that is alive but hung. The host decides when a model
 +    // request's checks fail (lost authority or lease, or a refusal; never a slow database), and a host
-+    // that dies closes the socket at once (Qorpera, 5 Oct 2026). Tests use 1 s.
-+    const BACKSTOP: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 600 });
++    // that dies closes the socket at once (Qorpera, 5 Oct 2026). Tests use 2 s: room for the 2 MB
++    // request's round trip in a debug build, and well past their 250 ms guard on early rejection.
++    const BACKSTOP: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 600 });
 +
 +    #[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
 +    #[serde(rename_all = "snake_case")]
@@ -1940,10 +1957,10 @@ index 000000000..8ceffe92c
 +mod tests;
 diff --git a/codex-rs/core/src/qorpera_result_fence_tests.rs b/codex-rs/core/src/qorpera_result_fence_tests.rs
 new file mode 100644
-index 000000000..4a79a4d76
+index 000000000..380de0692
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_result_fence_tests.rs
-@@ -0,0 +1,398 @@
+@@ -0,0 +1,400 @@
 +use anyhow::Context;
 +use base64::Engine;
 +use base64::engine::general_purpose::STANDARD;
@@ -2200,10 +2217,12 @@ index 000000000..4a79a4d76
 +        let original = input.clone();
 +        // A listening socket with no accepting host distinguishes rejection
 +        // from a connection error: malformed content must not wait for timeout.
++        // The guard is well inside the 2 s test backstop, so a request that
++        // reached the socket would fail it rather than pass as a rejection.
 +        let listener = UnixListener::bind(&path).unwrap();
 +        assert_eq!(
 +            tokio::time::timeout(
-+                std::time::Duration::from_secs(1),
++                std::time::Duration::from_millis(250),
 +                fence(&mut input, &metadata(), &path)
 +            )
 +            .await
@@ -2320,7 +2339,7 @@ index 000000000..4a79a4d76
 +        fence(&mut history().unwrap(), &metadata(), &path).await,
 +        Err(())
 +    );
-+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
++    assert!(started.elapsed() < std::time::Duration::from_secs(4));
 +    host.abort();
 +}
 +

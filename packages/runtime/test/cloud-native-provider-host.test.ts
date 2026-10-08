@@ -423,16 +423,17 @@ describe("native provider host", () => {
 			fetchImplementation,
 		);
 		await control.describeLogin(loginId, capability);
-		const capsules = new SupabaseNativeCredentialCapsuleStore(
-			"https://project.supabase.co",
-			"sb_secret_private",
-			fetchImplementation,
-		);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.headers.get("apikey")).toBe("sb_secret_private");
+		expect(calls[0]?.headers.get("authorization")).toBeNull();
+		// G2-4: the capsule store holds no key; the native host's dispatch signs its requests.
+		const capsules = new SupabaseNativeCredentialCapsuleStore("https://project.supabase.co", fetchImplementation);
 		await capsules.get(`native-capsule/${loginId}`);
-		for (const call of calls) {
-			expect(call.headers.get("apikey")).toBe("sb_secret_private");
-			expect(call.headers.get("authorization")).toBeNull();
-		}
+		expect(calls[1]?.url).toBe(
+			`https://project.supabase.co/storage/v1/object/qorpera-native-compute-capsules/${loginId}.capsule`,
+		);
+		expect(calls[1]?.headers.get("apikey")).toBeNull();
+		expect(calls[1]?.headers.get("authorization")).toBeNull();
 	});
 
 	it("rejects native requests that did not arrive from the configured infrastructure source", async () => {
@@ -578,6 +579,9 @@ describe("native provider host", () => {
 		expect(completed[0]).toMatchObject({
 			loginId,
 			capability,
+			// Named for the sign-in: the one capsule its login guest may write (G2-4).
+			capsuleId: loginId,
+			encryptedCapsuleReference: `native-capsule/${loginId}`,
 			providerAccountReference: "ChatGPT subscription",
 		});
 		const capsule = capsules.values.get(completed[0]?.encryptedCapsuleReference as string);

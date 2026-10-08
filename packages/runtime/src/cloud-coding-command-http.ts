@@ -13,7 +13,11 @@ import {
 	type CloudMachineCommandServiceOptions,
 	serveCloudMachineCommand,
 } from "./cloud-machine-command-http.ts";
-import { type CloudNativeToolBinding, parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
+import {
+	type CloudNativeToolBinding,
+	isNativeJobHolder,
+	parseCloudNativeToolBinding,
+} from "./cloud-native-tool-authority.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HASH = /^[0-9a-f]{64}$/;
@@ -119,6 +123,9 @@ export function createHttpCloudCodingCommandGateway(options: {
 	url: string;
 	token: string;
 	binding: CloudNativeToolBinding;
+	/** G2-6b: the run's holder credential, read per request (NativeHostDispatch.holderHeader). Null only for an
+	 * executor forwarding to its peer, which holds no run's lease. */
+	holder: (() => string) | null;
 	authorize: CloudCodingCommandGateway["authorize"];
 	allowLoopback?: boolean;
 	fetch?: typeof fetch;
@@ -127,6 +134,7 @@ export function createHttpCloudCodingCommandGateway(options: {
 	if (!validToken(options.token)) throw new Error(ERROR);
 	const token = options.token;
 	const binding = parseCloudNativeToolBinding(options.binding);
+	const holder = options.holder;
 	const transport = options.fetch ?? fetch;
 	const request = async (
 		action: "start" | "read" | "cancel",
@@ -147,7 +155,11 @@ export function createHttpCloudCodingCommandGateway(options: {
 						method: "POST",
 						redirect: "error",
 						signal: requestSignal,
-						headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+						headers: {
+							authorization: `Bearer ${token}`,
+							"content-type": "application/json",
+							...(holder ? { "x-qorpera-identity": holder() } : {}),
+						},
 						body,
 					});
 					if (!response.ok || response.status !== 200) {
@@ -189,6 +201,11 @@ export function createHttpCloudCodingCommandGateway(options: {
 
 export interface CloudCodingCommandServiceOptions {
 	token: string;
+	/** G2-6b: whether the request's holder credential (x-qorpera-identity) holds its binding's run lease
+	 * (qorpera_native_binding_proven), asked before anything else about the binding. It resolves only for a proven
+	 * binding. Null only on the executors' peer listener: its own token is held by executors alone, and each proved the
+	 * guest's holder at its own ingress before forwarding. */
+	proveBinding: ((binding: CloudNativeToolBinding, holder: string, signal: AbortSignal) => Promise<void>) | null;
 	/** Recheck the current native binding, request lease, worker/VM/turn and
 	 * original command receipt. For start also compare command+timeout against
 	 * its canonical admitted arguments. Return the original command input hash. */
@@ -319,25 +336,32 @@ export class HttpCloudCodingCommandService {
 			const machineRoute = this.#options.machines
 				? /^\/v1\/machine-commands\/(start|read|cancel)$/.exec(request.url ?? "")
 				: null;
+			const holder = request.headers["x-qorpera-identity"];
 			if (
 				request.method !== "POST" ||
 				(!route && !machineRoute) ||
 				request.headers["content-type"] !== "application/json" ||
 				authorization.length !== this.#token.length ||
-				!timingSafeEqual(authorization, this.#token)
+				!timingSafeEqual(authorization, this.#token) ||
+				(this.#options.proveBinding !== null && !isNativeJobHolder(holder))
 			)
 				throw new Error(ERROR);
+			const body = await readRequest(request, controller.signal);
+			// G2-6b: the run's own lease proves the binding before either route asks anything about it (a machine
+			// start's authorization already records the command).
+			if (this.#options.proveBinding !== null)
+				await this.#options.proveBinding(
+					parseCloudNativeToolBinding((body as { binding?: unknown } | null)?.binding),
+					holder as string,
+					controller.signal,
+				);
+			controller.signal.throwIfAborted();
 			if (machineRoute && this.#options.machines) {
 				try {
 					replyJson(
 						reply,
 						200,
-						await serveCloudMachineCommand(
-							this.#options.machines,
-							await readRequest(request, controller.signal),
-							machineRoute[1],
-							controller.signal,
-						),
+						await serveCloudMachineCommand(this.#options.machines, body, machineRoute[1], controller.signal),
 					);
 				} catch (error) {
 					// Only a refusal the agent can act on is told apart, by its fixed code.
@@ -347,7 +371,7 @@ export class HttpCloudCodingCommandService {
 				return;
 			}
 			if (!route) throw new Error(ERROR);
-			const admitted = parseRequest(await readRequest(request, controller.signal), route[1]);
+			const admitted = parseRequest(body, route[1]);
 			const authority = await this.#options.authorize(admitted, controller.signal);
 			if (
 				!HASH.test(authority.inputSha256) ||

@@ -6,6 +6,7 @@ import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
 import { takeConnectorReturn } from "../cloud/connectors.ts";
+import { interfaceOfferCalls } from "../cloud/interface-offers.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { createWebRoutines } from "../cloud/routines.ts";
@@ -24,7 +25,10 @@ import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
 import { AuthController } from "./auth.ts";
 import { CompanyController } from "./company.ts";
+import { CompanyMail } from "./company-mail.ts";
 import { FoundingController } from "./founding.ts";
+import { CompanyInterfaceFolder } from "./interface-folder.ts";
+import { CompanyInterfaceOffers } from "./interface-offers.ts";
 import { MemberPictures } from "./member-pictures.ts";
 import { PlanPayments, takeCheckoutReturn } from "./plan-payments.ts";
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
@@ -212,6 +216,12 @@ export function mountApplication(
 
 	let company: CompanyController | undefined;
 	let notices: ExecutionNotices | undefined;
+	/** The open company's interfaces and tables, followed in its folder (Interfaces step I7). */
+	let interfaceFolder: CompanyInterfaceFolder | undefined;
+	/** The company's open offers of claimed cells, read with its interfaces (Interfaces step I9c). */
+	let interfaceOffers: CompanyInterfaceOffers | undefined;
+	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
+	let mail: CompanyMail | undefined;
 	let computer: WebCompanyComputer | undefined;
 	let computerPanels: ComputerPanels | undefined;
 	let liveFile: LiveCompanyFileView | undefined;
@@ -348,6 +358,12 @@ export function mountApplication(
 		settingsAfterHome = undefined;
 		notices?.dispose();
 		notices = undefined;
+		interfaceFolder?.dispose();
+		interfaceFolder = undefined;
+		interfaceOffers?.dispose();
+		interfaceOffers = undefined;
+		mail?.dispose();
+		mail = undefined;
 		executionNotices.replaceChildren();
 		unsubscribeCompany?.();
 		conversation?.dispose();
@@ -396,7 +412,7 @@ export function mountApplication(
 			}
 			const userId = auth.userId;
 			if (!current() || !profile || !userId) return undefined;
-			const controller = new CompanyController(
+			const controller: CompanyController = new CompanyController(
 				api,
 				profile,
 				userId,
@@ -796,6 +812,12 @@ export function mountApplication(
 		if (state.accessLost) {
 			notices?.dispose();
 			notices = undefined;
+			interfaceFolder?.dispose();
+			interfaceFolder = undefined;
+			interfaceOffers?.dispose();
+			interfaceOffers = undefined;
+			mail?.dispose();
+			mail = undefined;
 			liveFile?.dispose();
 			liveFile = undefined;
 			closeSettings(false);
@@ -875,8 +897,85 @@ export function mountApplication(
 				plan,
 				(staffAgentId) => controller.store.get().staff.find((agent) => agent.id === staffAgentId)?.displayName,
 				api,
+				(userId) => controller.store.get().team?.members.find((member) => member.userId === userId)?.displayName,
 			);
 			executionNotices.append(notices.el);
+		}
+		// The company's interfaces come from its folder, read with the member's own access as the Company File page
+		// reads it, and followed while the company is open; until the first read lands the rail draws the library's.
+		if (interfaceFolder && !state.team?.capabilities.read) {
+			interfaceFolder.dispose();
+			interfaceFolder = undefined;
+			interfaceOffers?.dispose();
+			interfaceOffers = undefined;
+		}
+		if (!interfaceFolder && state.team?.capabilities.read) {
+			const files = new WebCompanyFiles(
+				cloud,
+				controller.profile,
+				controller.userId,
+				state.team.role,
+				controller.signal,
+				() => {
+					const now = controller.store.get();
+					if (
+						disposed ||
+						company !== controller ||
+						auth.userId !== controller.userId ||
+						now.accessLost ||
+						!now.team?.capabilities.read
+					)
+						throw new Error(t("Company access changed."));
+				},
+			);
+			// The offers of claimed cells are read with them, and again each time the folder the pages read changes,
+			// since the save that changes a cell settles its offers (step I9c).
+			const offers = new CompanyInterfaceOffers(
+				interfaceOfferCalls(cloud, controller.profile.environmentId),
+				(next) => {
+					if (interfaceOffers === offers) controller.store.set({ interfaceOffers: next });
+				},
+				controller.signal,
+			);
+			const reader = new CompanyInterfaceFolder(files, (folder) => {
+				if (interfaceFolder !== reader) return;
+				controller.store.set({ interfaceFolder: folder });
+				void offers.refresh();
+			});
+			interfaceFolder = reader;
+			interfaceOffers = offers;
+			offers.open();
+			void reader.open();
+		}
+		// The company's mail, read the same way: whether it is on (the Mailbox's `mail` need) and what waits for a person.
+		if (mail && !state.team?.capabilities.read) {
+			mail.dispose();
+			mail = undefined;
+		}
+		if (!mail && state.team?.capabilities.read) {
+			// A waiting send's answer runs its agent on the member's model account, chosen as the agent's thread chooses it.
+			const accounts = createWebNativeSubscription(
+				cloud,
+				controller.profile.profileId,
+				controller.userId,
+				controller.signal,
+				() => {
+					const now = controller.store.get();
+					if (
+						disposed ||
+						company !== controller ||
+						auth.userId !== controller.userId ||
+						now.accessLost ||
+						!now.team?.capabilities.read
+					)
+						throw new Error(t("Company access changed."));
+				},
+			);
+			const reader = new CompanyMail(controller, cloud, accounts, (read) => {
+				if (mail === reader) controller.store.set({ mail: read });
+			});
+			mail = reader;
+			void reader.open();
 		}
 		if (route.section !== "chat") {
 			conversation?.dispose();
@@ -1248,7 +1347,13 @@ export function mountApplication(
 				);
 				return;
 			case "interface":
-				renderInterface(main, controller, route.id ?? "");
+				// A board's take and release write the member's own rows with the same rechecks (step I9a); its offers go
+				// through the company's offers reader (step I9c).
+				renderInterface(main, controller, route.id ?? "", {
+					folder: () => memberFolder(companyCurrent, t("Company access changed.")),
+					current: companyCurrent,
+					...(interfaceOffers ? { offers: interfaceOffers } : {}),
+				});
 				return;
 			case "team":
 				renderTeam(

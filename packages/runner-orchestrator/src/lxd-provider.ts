@@ -28,6 +28,7 @@ import {
 	nativeIdentityCredentialFile,
 	ProviderAdmissionRefused,
 	ProviderRpcFailed,
+	ProviderStepFailed,
 	providerRpcErrorCode,
 	providerStepFailure,
 	record,
@@ -811,6 +812,44 @@ interface AcquireStep {
 		| "ready";
 }
 
+/** The step a reconcile pass is at for one journal; the provider's log names it when the journal fails. A journal
+ * whose guest is still starting goes through its acquisition's own steps. */
+interface ReconcileStep {
+	stage:
+		| AcquireStep["stage"]
+		| "instance"
+		| "release"
+		| "retire"
+		| "settle"
+		| "archive"
+		| "recovery_authority"
+		| "retire_confirm";
+}
+
+/** A journal's failure as the provider's log may name it: its step's fixed name and, for a failed database call or an
+ * admission answer, their fixed codes. Never the error's own text, which may hold a raw LXD answer, a host path or a
+ * credential. */
+function reconcileFailure(stage: string, failure: unknown): string {
+	if (failure instanceof ProviderStepFailed) {
+		return [
+			`stage=${/^[a-z][a-z_]{1,39}$/.test(failure.stage) ? failure.stage : stage}`,
+			...(failure.rpc && /^qorpera_[a-z0-9_]{1,80}$/.test(failure.rpc) ? [`rpc=${failure.rpc}`] : []),
+			...(failure.rpcStatus !== undefined &&
+			Number.isSafeInteger(failure.rpcStatus) &&
+			failure.rpcStatus >= 100 &&
+			failure.rpcStatus <= 599
+				? [`status=${failure.rpcStatus}`]
+				: []),
+			...(failure.rpcCode && /^(?:[0-9A-Z]{5}|PGRST[0-9X][0-9]{2})$/.test(failure.rpcCode)
+				? [`code=${failure.rpcCode}`]
+				: []),
+		].join(" ");
+	}
+	if (failure instanceof ProviderAdmissionRefused && /^[A-Z_]{3,64}$/.test(failure.reason))
+		return `stage=${stage} admission=${failure.state} reason=${failure.reason}`;
+	return `stage=${stage}`;
+}
+
 /** The company ceiling or the node chooser refused or deferred a machine start. The
  * orchestrator releases its claim without spending an infrastructure retry on it. */
 export class LxdMachineAdmissionRefused extends ProviderAdmissionRefused {
@@ -840,6 +879,9 @@ const SETTLED_JOURNAL_RETENTION_MS = 24 * 60 * 60_000;
  * log at most once an hour (company delete D4's identity retirement keeps the same minute). */
 const RECOVERY_RETIREMENT_RETRY_MS = 60_000;
 const RECOVERY_RETIREMENT_REPORT_MS = 60 * 60_000;
+/** A journal that never starts again and whose guest is gone, but which reconcile cannot finish (see #reconcileEntry),
+ * is named in the log at most this often. */
+const DEAD_JOURNAL_REPORT_MS = 60 * 60_000;
 /** Journals one reconcile pass works on side by side. */
 const RECONCILE_CONCURRENCY = 8;
 /** A guest waiting this long for (or on) its one assignment is asked about at most once per
@@ -894,6 +936,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	/** When each settled journal whose recovery volume could not be retired was last tried, and last named in the log. */
 	readonly #retirementTried = new Map<string, number>();
 	readonly #retirementReported = new Map<string, number>();
+	/** When each dead journal reconcile cannot finish was last named in the log. */
+	readonly #deadReported = new Map<string, number>();
 	#endedRunnersCheckedAt = 0;
 	readonly adapterId: string;
 	readonly #config: LxdCloudRunnerProviderConfig;
@@ -931,7 +975,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	 * progress (for example a reserving acquisition the node ceiling refuses while another guest still
 	 * holds the slot, or an unreadable one) must not stop the retirement of finished guests beside it,
 	 * or the slot is never released and the provider livelocks. Failures are still reported after the
-	 * pass; an abort stops it. */
+	 * pass, each named in the log by its acquisition and step; an abort stops it. A failed pass stops the
+	 * node's claims, so a journal that never starts again and whose guest is gone never fails it (see
+	 * #reportJournalFailure). */
 	async reconcile(signal?: AbortSignal): Promise<void> {
 		await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
 		await chmod(this.#config.stateRoot, 0o700);
@@ -974,10 +1020,23 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 
 	/** One journal's share of a reconcile pass; the caller holds its lock. */
 	async #reconcileEntry(acquisitionId: string, signal?: AbortSignal): Promise<void> {
+		const step: ReconcileStep = { stage: "journal" };
+		try {
+			await this.#reconcileSettling(acquisitionId, step, signal);
+		} catch (error) {
+			await this.#reportJournalFailure(acquisitionId, step.stage, error, signal);
+			return;
+		}
+		this.#deadReported.delete(acquisitionId);
+	}
+
+	async #reconcileSettling(acquisitionId: string, step: ReconcileStep, signal?: AbortSignal): Promise<void> {
 		if (!this.#settled.has(acquisitionId)) {
+			step.stage = "journal";
 			const current = await this.#readJournal(acquisitionId);
 			if (!current) return;
-			await this.#reconcileJournal(current, signal);
+			await this.#reconcileJournal(current, signal, step);
+			step.stage = "settle";
 			const settledAt = await this.#settledAt(acquisitionId, signal);
 			if (settledAt !== undefined) this.#settled.set(acquisitionId, settledAt);
 		}
@@ -987,9 +1046,10 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		// keeps its journal for an operator, named in the log at most once an hour, and is tried again each minute.
 		const triedAt = this.#retirementTried.get(acquisitionId);
 		if (triedAt !== undefined && Date.now() - triedAt < RECOVERY_RETIREMENT_RETRY_MS) return;
+		const retirement: ReconcileStep = { stage: "journal" };
 		let retired: boolean;
 		try {
-			retired = await this.#retireRecoveryVolume(acquisitionId, signal);
+			retired = await this.#retireRecoveryVolume(acquisitionId, retirement, signal);
 		} catch (error) {
 			if (signal?.aborted) throw error;
 			this.#retirementTried.set(acquisitionId, Date.now());
@@ -997,15 +1057,82 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			if (reportedAt === undefined || Date.now() - reportedAt >= RECOVERY_RETIREMENT_REPORT_MS) {
 				this.#retirementReported.set(acquisitionId, Date.now());
 				console.error(
-					`recovery volume kept: acquisition=${acquisitionId} reason=${error instanceof Error ? error.message : "unknown"}`,
+					`recovery volume kept: acquisition=${acquisitionId} ${reconcileFailure(retirement.stage, providerStepFailure(retirement.stage, error))}`,
 				);
 			}
 			return;
 		}
 		if (retired) {
+			step.stage = "archive";
 			await this.#archive(acquisitionId);
 			this.#retirementTried.delete(acquisitionId);
 			this.#retirementReported.delete(acquisitionId);
+		}
+	}
+
+	/** A journal that failed its share of a reconcile pass (or the retirement of its ended runner). A failed pass stops
+	 * the node's claims, so a journal that never starts again and whose guest is gone (see #deadJournal) never fails it:
+	 * its failure is named in the log at most once an hour, the journal stays as it is for an operator, and the next pass
+	 * tries it again (4–6 Oct 2026: two stopped journals from before the 3 Oct wipe, their guests and recovery volumes
+	 * gone, kept node 1 from claiming any run for two and a half days). Any other failure is named in the log and thrown
+	 * for the pass to report. Either line holds the acquisition and the failed step's fixed name, never the error's text. */
+	async #reportJournalFailure(
+		acquisitionId: string,
+		stage: string,
+		error: unknown,
+		signal?: AbortSignal,
+	): Promise<void> {
+		if (signal?.aborted) throw error;
+		const failure = providerStepFailure(stage, error);
+		const reason = reconcileFailure(stage, failure);
+		if (await this.#deadJournal(acquisitionId, signal)) {
+			const reportedAt = this.#deadReported.get(acquisitionId);
+			if (reportedAt === undefined || Date.now() - reportedAt >= DEAD_JOURNAL_REPORT_MS) {
+				this.#deadReported.set(acquisitionId, Date.now());
+				console.error(`dead journal kept: acquisition=${acquisitionId} ${reason}`);
+			}
+			return;
+		}
+		console.error(`reconcile failed: acquisition=${acquisitionId} ${reason}`);
+		throw failure;
+	}
+
+	/** Whether a journal is dead: it never starts again (stopping, stopped or lost), it names this acquisition's own
+	 * guest, and LXD has no such guest. It is read as plain JSON, so a journal this build can no longer read (one written
+	 * before G2-3bc's identity credential, or bound to an office route that has since moved) is still known for what it
+	 * is. Any doubt (an unreadable file, a field out of shape, an LXD that does not answer) answers no. */
+	async #deadJournal(acquisitionId: string, signal?: AbortSignal): Promise<Record<string, unknown> | undefined> {
+		try {
+			const journal = record(
+				JSON.parse(await readFile(this.#journalPath(acquisitionId), "utf-8")) as unknown,
+				"LXD provider journal",
+			);
+			const lxd = record(journal.lxd, "LXD provider journal identity");
+			const instanceName = this.#instanceName(acquisitionId);
+			if (
+				journal.acquisitionId !== acquisitionId ||
+				journal.instanceName !== instanceName ||
+				!["stopping", "stopped", "lost"].includes(String(journal.physicalState)) ||
+				typeof lxd.project !== "string" ||
+				!PROFILE_PATTERN.test(lxd.project)
+			)
+				return undefined;
+			return (await this.#lxd.getInstance(lxd.project, instanceName, signal)) ? undefined : journal;
+		} catch (error) {
+			if (signal?.aborted) throw error;
+			return undefined;
+		}
+	}
+
+	/** A journal a scan outside reconcile (the capacity inventory before a start, a stop's runner lookup) reads. A dead
+	 * journal this build cannot read is passed over: its guest is gone and never comes back, and reconcile names it in
+	 * the log. Any other unreadable journal still stops the scan. */
+	async #scanJournal(acquisitionId: string, signal?: AbortSignal): Promise<LxdProviderJournal | undefined> {
+		try {
+			return await this.#readJournal(acquisitionId);
+		} catch (error) {
+			if (signal?.aborted || !(await this.#deadJournal(acquisitionId, signal))) throw error;
+			return undefined;
 		}
 	}
 
@@ -1055,7 +1182,21 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
 				for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
 					if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name) || entry.name === acquisitionId) continue;
-					const prior = await this.#readJournal(entry.name);
+					let prior: LxdProviderJournal | undefined;
+					try {
+						prior = await this.#readJournal(entry.name);
+					} catch (error) {
+						// A dead journal this build cannot read has no guest to wait for; only its attempt still counts.
+						const dead = await this.#deadJournal(entry.name, signal);
+						if (!dead) throw error;
+						const attempt = dead.attempt ?? 1;
+						if (
+							(dead.runId ?? dead.acquisitionId) === work.runId &&
+							(typeof attempt !== "number" || attempt >= work.attempt)
+						)
+							throw new Error("LXD provider refuses an older run attempt");
+						continue;
+					}
 					if (!prior || (prior.runId ?? prior.acquisitionId) !== work.runId) continue;
 					if ((prior.attempt ?? 1) >= work.attempt) throw new Error("LXD provider refuses an older run attempt");
 					for (;;) {
@@ -1250,7 +1391,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		reason: "delivery_failed" | "idle" | "revoked",
 		signal?: AbortSignal,
 	): Promise<void> {
-		const found = await this.#findJournalByRunner(runner.runnerId);
+		const found = await this.#findJournalByRunner(runner.runnerId, signal);
 		if (!found) return;
 		await this.#journals.run(found.acquisitionId, async () => {
 			// Read again under the lock: an acquisition, delivery or reconcile pass may have moved it meanwhile.
@@ -1309,22 +1450,34 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		// The database answers at most 512 ids per call.
 		const asked = waiting.slice(0, 512);
 		if (asked.length === 0) return;
-		const ended = await this.#endedRunners(
-			asked.map((journal) => journal.runner.runnerId),
-			signal,
-		);
+		let ended: ReadonlySet<string>;
+		try {
+			ended = await this.#endedRunners(
+				asked.map((journal) => journal.runner.runnerId),
+				signal,
+			);
+		} catch (error) {
+			if (signal?.aborted) throw error;
+			const failure = providerStepFailure("ended_runners", error);
+			console.error(`reconcile failed: ${reconcileFailure("ended_runners", failure)}`);
+			throw failure;
+		}
 		const failures: unknown[] = [];
 		for (const journal of asked) {
 			// A journal an acquisition, delivery or stop holds is theirs to move; the next check sees it again.
 			if (!ended.has(journal.runner.runnerId) || this.#journals.held(journal.acquisitionId)) continue;
 			try {
 				await this.#journals.run(journal.acquisitionId, async () => {
-					const current = await this.#readJournal(journal.acquisitionId);
-					if (
-						current?.runner.runnerId === journal.runner.runnerId &&
-						(current.physicalState === "registered" || current.physicalState === "assigned")
-					)
-						await this.#stopJournal(current, "revoked", signal);
+					try {
+						const current = await this.#readJournal(journal.acquisitionId);
+						if (
+							current?.runner.runnerId === journal.runner.runnerId &&
+							(current.physicalState === "registered" || current.physicalState === "assigned")
+						)
+							await this.#stopJournal(current, "revoked", signal);
+					} catch (error) {
+						await this.#reportJournalFailure(journal.acquisitionId, "ended_runner", error, signal);
+					}
 				});
 			} catch (error) {
 				if (signal?.aborted) throw error;
@@ -1396,7 +1549,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		current: LxdProviderJournal,
 		credentials: ProviderCredentials,
 		signal?: AbortSignal,
-		step: AcquireStep = { stage: "reserve" },
+		step: AcquireStep | ReconcileStep = { stage: "reserve" },
 	): Promise<LxdProviderJournal> {
 		const computeIdentityId = current.runner.computeIdentityId;
 		if (!computeIdentityId) throw new Error("Journaled LXD guest is missing Compute Identity authority");
@@ -1777,10 +1930,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				path: "/var/lib/qorpera-bootstrap/credentials/qorpera-native-identity",
 				content: `${nativeIdentityCredentialFile(authority.computeIdentityId, credentials.nativeIdentityToken, this.#config.supabasePublishableKey)}\n`,
 			},
-			{
-				path: "/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key",
-				content: `${this.#config.supabaseServiceKey}\n`,
-			},
+			// G2-5: no service key; the guest's bootstrap refuses one.
 			...(runtime
 				? [
 						{
@@ -1907,7 +2057,12 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		}
 	}
 
-	async #reconcileJournal(current: LxdProviderJournal, signal?: AbortSignal): Promise<void> {
+	async #reconcileJournal(
+		current: LxdProviderJournal,
+		signal?: AbortSignal,
+		step: ReconcileStep = { stage: "authority" },
+	): Promise<void> {
+		step.stage = "authority";
 		if (!current.runner.computeIdentityId) {
 			throw new Error("Journaled LXD guest is missing Compute Identity authority");
 		}
@@ -1916,13 +2071,16 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			// a reservation the ceiling or the chooser refused (16 Sep 2026: refused journals of
 			// terminal runs were re-tried on every pass); a stale one is retired.
 			if (Date.now() - Date.parse(current.updatedAt) < RESERVING_RETIREMENT_MS) return;
+			step.stage = "release";
 			if (current.capacityRegistered || current.nodeCapacity) await this.#releaseMachine(current, signal);
+			step.stage = "journal";
 			await this.#writeJournal({ ...current, physicalState: "lost", stopReason: "idle" });
 			return;
 		}
 		// A run that never starts again needs no identity volume: stopped or lost, or its guest's
 		// deletion or capacity release already recorded. A deleted company's volume may be retired
 		// (company delete D4) while its journal is kept for a day.
+		step.stage = "identity_volume";
 		if (
 			current.lxd.loginCustody !== "vault" &&
 			current.physicalState !== "stopped" &&
@@ -1931,37 +2089,49 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			!this.#capacityReleased(current)
 		)
 			await this.#ensureIdentityVolume(current, current.runner.computeIdentityId, signal);
+		step.stage = "instance";
 		const instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
-		// A lost run never restarts. When its guest is gone as well, a recovery volume that was never
-		// created (the run was lost before its first start) is not a fault; every other journal still
-		// has to name its retained recovery volume.
-		if (instance || current.physicalState !== "lost") await this.#ensureRecoveryVolume(current, signal);
+		// A run that never starts again (stopping, stopped or lost) needs no recovery volume once its guest is gone:
+		// nothing mounts it again. A missing one is no fault there (the run was lost before its first start, or the
+		// volume went with its guest, as in the 3 Oct 2026 wipe; 4–6 Oct node 1 claimed nothing over two such stopped
+		// journals). A journal whose guest exists, or that may start again, still has to name its retained volume.
+		step.stage = "recovery_volume";
+		if (instance || !["stopping", "stopped", "lost"].includes(current.physicalState))
+			await this.#ensureRecoveryVolume(current, signal);
 		if (!instance) {
 			// A timed-out create/start may still be pending in LXD. Missing is
 			// deletion proof only after a fully registered or retired guest.
+			step.stage = "release";
 			if (current.deletionConfirmed || ["registered", "assigned", "stopped"].includes(current.physicalState))
 				await this.#releaseMachine(current, signal);
+			step.stage = "journal";
 			if (current.physicalState !== "stopped" && current.physicalState !== "lost") {
 				await this.#writeJournal({ ...current, physicalState: "lost" });
 			}
 			return;
 		}
+		step.stage = "authority";
 		this.#assertInstanceAuthority(current, instance);
 		if (current.physicalState === "stopped") {
+			step.stage = "retire";
 			if (instance.status !== "Stopped") throw new Error("Stopped LXD journal names a running guest");
 			// A guest left behind by an earlier provider build is removed on sight.
 			await this.#lxd.deleteInstance(current.lxd.project, current.instanceName, signal);
+			step.stage = "release";
 			await this.#releaseMachine(current, signal);
 			return;
 		}
 		if (current.physicalState === "stopping") {
+			step.stage = "retire";
 			await this.#retire(current, instance.status, signal);
+			step.stage = "journal";
 			await this.#writeJournal({ ...current, physicalState: "stopped" });
 			return;
 		}
 		if (instance.status === "Stopped" && current.physicalState !== "creating") {
 			// Only a guest with no start intent can be started. A one-run guest
 			// that powered off before registration has still used its one attempt.
+			step.stage = "retire";
 			await this.#retirePoweredOff(current, signal);
 			return;
 		}
@@ -1970,15 +2140,18 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			current.physicalState === "starting" ||
 			current.physicalState === "bootstrapping"
 		) {
+			step.stage = "credentials";
 			const credentials = await this.#credentials(current.acquisitionId);
 			this.#validateCredentialHashes(current, credentials);
-			await this.#ensureReady(current, credentials, signal);
+			await this.#ensureReady(current, credentials, signal, step);
 			return;
 		}
 		if (instance.status !== "Running") {
+			step.stage = "journal";
 			await this.#writeJournal({ ...current, physicalState: "lost" });
 			return;
 		}
+		step.stage = "reserve";
 		if (!current.capacityRegistered) await this.#reserveMachine(current, signal);
 		else if (!current.nodeCapacity) await this.#reserveNodeMachine(current, signal);
 	}
@@ -2114,23 +2287,29 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	 * operator, and so does its journal (the caller logs it and goes on). The journal records the retirement before
 	 * the delete, so a provider that stops between the two does not demand the volume back. Answers whether the
 	 * journal may be archived: not while it is no longer settled (its guest exists again, say). */
-	async #retireRecoveryVolume(acquisitionId: string, signal?: AbortSignal): Promise<boolean> {
+	async #retireRecoveryVolume(acquisitionId: string, step: ReconcileStep, signal?: AbortSignal): Promise<boolean> {
+		step.stage = "journal";
 		const journal = await this.#readJournal(acquisitionId);
 		const company = journal?.lxd.companyRuntime;
 		if (!journal || !company) return true;
 		// Still settled: stopped or lost, its capacity released, and no guest (one LXD call, as when it settled).
+		step.stage = "settle";
 		if ((await this.#settledAt(acquisitionId, signal)) === undefined) {
 			this.#settled.delete(acquisitionId);
 			return false;
 		}
 		const { project, storagePool } = journal.lxd;
+		step.stage = "recovery_volume";
 		const volume = await this.#lxd.getStorageVolume(project, storagePool, company.recoveryVolume, signal);
 		if (!volume) return true;
+		step.stage = "recovery_authority";
 		if (!this.#isRecoveryVolume(company, this.#recoveryVolumeAuthority(journal, company), volume)) {
 			throw new Error("Native recovery volume drifted from immutable company and run authority; it is kept");
 		}
+		step.stage = "retire";
 		if (!journal.recoveryVolumeRetired) await this.#writeJournal({ ...journal, recoveryVolumeRetired: true });
 		await this.#lxd.deleteStorageVolume(project, storagePool, company.recoveryVolume, signal);
+		step.stage = "retire_confirm";
 		if (await this.#lxd.getStorageVolume(project, storagePool, company.recoveryVolume, signal))
 			throw new Error("LXD did not delete the settled run's recovery volume");
 		return true;
@@ -2274,11 +2453,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		this.#settled.delete(acquisitionId);
 	}
 
-	async #findJournalByRunner(runnerId: string): Promise<LxdProviderJournal | undefined> {
+	async #findJournalByRunner(runnerId: string, signal?: AbortSignal): Promise<LxdProviderJournal | undefined> {
 		await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
 		for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
 			if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name)) continue;
-			const journal = await this.#readJournal(entry.name);
+			const journal = await this.#scanJournal(entry.name, signal);
 			if (journal?.runner.runnerId === runnerId) return journal;
 		}
 		return undefined;
@@ -2300,7 +2479,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
 		for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
 			if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name)) continue;
-			const journal = await this.#readJournal(entry.name);
+			const journal = await this.#scanJournal(entry.name, signal);
 			if (!journal || (journal.capacityRegistered && journal.nodeCapacity) || journal.physicalState === "reserving")
 				continue;
 			if (

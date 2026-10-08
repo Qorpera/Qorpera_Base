@@ -152,10 +152,18 @@
 .composer-shell .composer-input { white-space: pre-wrap; overflow-wrap: break-word; }
 .composer-highlight { position: absolute; inset: 0; overflow: hidden; pointer-events: none; visibility: hidden; padding: 11px 0 8px; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; white-space: pre-wrap; overflow-wrap: break-word; }
 .composer-shell.is-expanded .composer-highlight { padding: 0; }
-.composer-field.has-skills .composer-highlight { visibility: visible; }
-.composer-field.has-skills .composer-input { color: transparent; caret-color: var(--text); }
-.composer-field.has-skills .composer-input::selection { color: HighlightText; background: Highlight; }
+.composer-field:is(.has-skills, .has-quotes) .composer-highlight { visibility: visible; }
+.composer-field:is(.has-skills, .has-quotes) .composer-input { color: transparent; caret-color: var(--text); }
+.composer-field:is(.has-skills, .has-quotes) .composer-input::selection { color: HighlightText; background: Highlight; }
 .composer-skill { color: var(--blue); }
+/* A quote of outside content (an email's words) lies in the same copy: one piece in its «» marks, tinted as quoted.
+ * Only colours change, never the font or spacing, so the copy keeps the field's wrapping. */
+.composer-quote { color: var(--text-muted); background: var(--hover); border-radius: 4px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.composer-quote-note { margin: 6px 6px 0; color: var(--text-muted); font-size: 12px; line-height: 16px; }
+.composer-quote-note[hidden] { display: none; }
+/* The same quotes in written messages: set apart as quoted, never read as the member's own words. */
+.message-quote { padding: 0 3px; border-radius: 5px; background: var(--hover); color: var(--text-muted); box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.mine .message-quote { background: rgb(255 255 255 / 18%); color: inherit; font-style: italic; }
 /* The same names in written messages: blue in an agent's or another member's bubble; in the
  * member's own bubble, whose colour the member picks (blue, green or grey), a light chip in the
  * bubble's own text colour, which reads on any of them. */
@@ -250,6 +258,11 @@
 .draft-panel-close { flex: none; width: 28px; height: 28px; min-height: 28px; }
 .draft-panel-status { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 16px; }
 .draft-panel-status[hidden] { display: none; }
+.draft-panel-quotes { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 16px; }
+.draft-panel-quotes[hidden] { display: none; }
+/* The member's own draft when the cloud won't take it as it is, or when a quote gave way: one line above the composer. */
+.draft-own-note { margin: 0 6px; color: var(--text-muted); font-size: 12px; line-height: 16px; }
+.draft-own-note[hidden] { display: none; }
 .draft-panel-input { display: block; width: 100%; min-height: 21px; max-height: 147px; padding: 0 4px 0 0; border: 0; border-radius: 0; background: transparent; outline: 0; resize: none; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; }
 /* The Model panel (models, effort and speed) fits without scrolling on an ordinary window. */
 .composer-menu:has(> .composer-models:not([hidden])) { max-height: min(452px, 72dvh); }
@@ -315,6 +328,10 @@
 .review-always label { display: grid; gap: 6px; margin-top: 10px; color: var(--text-muted); font-size: 11px; }
 .review-rule-input { width: 100%; padding: 8px 10px; border: 1px solid #dfdfdb; border-radius: 8px; background: #fff; color: var(--text); font: inherit; font-size: 13px; }
 .review-waiting { margin: 12px 0 0; font-size: 12px; color: var(--text-muted); }
+/* A change an agent saved that waits for review (P40c, proposal-card.ts) wears the approval card: its changes, where
+ * it was saved, and Discard. */
+.proposal-card { overflow-wrap: anywhere; }
+.proposal-more { color: var(--text-muted); }
 .decision-details { border-top: 1px solid var(--border); margin-top: 14px; padding-top: 4px; font-size: 11px; }
 .decision-details > summary { color: var(--text-muted); font-weight: 400; }
 .decision-details .kv { grid-template-columns: minmax(0, 1fr); }
@@ -604,7 +621,11 @@
 .routine-card-when { display: flex; gap: 6px; }
 .routine-card-when > .icon { flex: none; width: 14px; height: 14px; margin-top: 2px; color: var(--text-muted); }
 .routine-card-trigger { display: block; }
-.routine-card-when small { display: block; color: var(--text-muted); font-size: 11.5px; line-height: 17px; }
+.routine-card-when small, .routine-login small, .routine-login p { display: block; margin: 0; color: var(--text-muted); font-size: 11.5px; line-height: 17px; }
+/* "Choose a login" under who pays, for a routine whose login cannot pay. */
+.routine-login { display: grid; justify-items: start; gap: 6px; margin-top: 6px; }
+.routine-login select { width: 100%; min-width: 0; font-size: 12.5px; }
+.routine-login-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .routine-list-footer { padding-top: 16px; }
 .agent-routines > .surface-status { margin: 0 0 12px; }
 .routine-editor { display: grid; gap: 14px; font-size: 12px; }
@@ -873,6 +894,12 @@
 .peer-chip:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .peer-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .peer-chip .figure { flex: none; width: 16px; height: 16px; }
+/* Messages with coworkers in a row: one line, the words between the chips; from three coworkers on, figures alone. */
+.peer-group { flex-wrap: wrap; align-items: center; color: var(--text-muted); font-size: 12px; font-weight: 500; line-height: 16px; }
+.peer-group > .peer-words, .peer-group > .peer-count { padding: 3px 2px; white-space: nowrap; }
+.peer-group > .peer-count { padding-left: 4px; color: var(--text-soft); }
+.peer-group > .peer-chip { padding-inline: 4px; }
+.peer-group > .peer-chip.figure-only { padding: 3px; }
 .conversation-note { flex: none; align-self: center; max-width: min(80%, 560px); margin: 10px 0; color: var(--text-muted); font-size: 12px; line-height: 1.45; text-align: center; overflow-wrap: anywhere; }
 .pair-transcript { position: absolute; inset: 0; z-index: 30; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); outline: none; animation: pair-enter 160ms ease both; }
 @keyframes pair-enter { from { opacity: 0; } to { opacity: 1; } }

@@ -162,7 +162,7 @@ declare v_role text;
 begin
 	foreach v_role in array array['anon','authenticated'] loop
 		if has_function_privilege(v_role, 'public.qorpera_claim_connection_file(uuid,integer)', 'EXECUTE')
-			or has_function_privilege(v_role, 'public.qorpera_finish_connection_file(uuid,uuid,bigint,text)', 'EXECUTE') then
+			or has_function_privilege(v_role, 'public.qorpera_finish_connection_file(uuid,uuid,bigint,text,text)', 'EXECUTE') then
 			raise exception 'Only the platform claims and finishes (%)', v_role; end if;
 	end loop;
 	if has_table_privilege('service_role', 'public.qorpera_folder_connection_file_marks', 'SELECT')

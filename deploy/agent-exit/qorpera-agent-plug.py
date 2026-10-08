@@ -20,13 +20,13 @@ LXD backs get into them: a claim LXD does not back gets no traffic at all.
 
 A creator calls `plug` right before each create, after the old instance (if any) is gone, and never reuses an address
 it stored: `plug` is the only source of a machine's address. A repeated `plug` for the
-same instance returns its entry, with a new time when the machine it was given to has been seen (it is being made
-again).
+same instance returns its entry with a new time: the machine is about to be made (again), so one that was seen is not
+unplugged as gone, and one never seen has a new hour to appear.
 
 The reconciler (root, the plug unit) reads LXD every few seconds and keeps the map true:
 - a machine that stopped (asleep) keeps its address and its entry, and its connections are flushed once;
 - a machine that is gone (missing from two reads of LXD in a row after it was seen, or never created within an hour of
-  its plug) is unplugged under the plug lock: its address is quarantined for 15 minutes first, then its lease is
+  its last plug) is unplugged under the plug lock: its address is quarantined for 15 minutes first, then its lease is
   removed (dnsmasq reloads), its connections and the exit's per-machine counts are cleared, and its entry is removed;
 - every entry is checked against its machine's LXD config, a running machine's card must be a port of qagent0, and
   every machine on qagent0 must have an entry. Anything else is a problem, and a problem makes the exit unhealthy
@@ -306,14 +306,14 @@ def plug(paths, kind, company, machine, member, project, instance):
             wanted = {"kind": kind, "company": company, "machine": machine, "member": member}
             if any(entry.get(key) != value for key, value in wanted.items()):
                 raise SystemExit(f"{project}/{instance} is already plugged in for another machine ({entry['address']})")
-            if seen_since(paths, entry["address"]) == entry["since"]:
-                # Its machine was seen, and the creator plugs it again: the machine is being made again. A new time
-                # tells the reconciler that this entry's machine is a new one, so it is not unplugged as gone.
-                entry = dict(entry, since=now_iso(max(at, parse_iso(entry["since"]) + 1)))
-                try:
-                    write_replace(paths.entry(entry["address"]), json.dumps(entry, sort_keys=True) + "\n")
-                except PermissionError:
-                    raise SystemExit(f"{project}/{instance}'s entry belongs to another creator") from None
+            # The creator plugs it again: the machine is about to be made (again). A new time tells the reconciler so.
+            # A machine it saw is a new one, not unplugged as gone; one it never saw has a new hour to appear, so a
+            # create retried late is not unplugged as never created while it lands.
+            entry = dict(entry, since=now_iso(max(at, parse_iso(entry["since"]) + 1)))
+            try:
+                write_replace(paths.entry(entry["address"]), json.dumps(entry, sort_keys=True) + "\n")
+            except PermissionError:
+                raise SystemExit(f"{project}/{instance}'s entry belongs to another creator") from None
             ensure_lease(paths, entry)
             return entry
         for address in candidates():
@@ -665,13 +665,22 @@ class Reconciler:
         for name in EXIT_SETS:
             listed = self.run(["ip", "netns", "exec", self.args.netns, "nft", "-j", "list", "set", family, table, name])
             if listed.returncode == 0:
-                statements += [f"delete element {family} {table} {name} {{ {key} }}"
+                # destroy, not delete: an element that times out between the listing and this batch is no error, so
+                # it cannot keep the others in place.
+                statements += [f"destroy element {family} {table} {name} {{ {key} }}"
                                for key in set_keys(listed.stdout, address)]
         if statements:
             result = subprocess.run(["ip", "netns", "exec", self.args.netns, "nft", "-f", "-"],
                                     input="\n".join(statements) + "\n", capture_output=True, text=True)
             if result.returncode != 0:
                 print(f"cannot clear {address} from the exit's sets: {result.stderr.strip()[:200]}", flush=True)
+        # The brake's map too, without a listing (destroying no element is no error): while the guard is down, a
+        # machine's element can outlive the quarantine and brake the next machine at this address. On its own, so
+        # rules without the map still have their sets cleared.
+        result = self.run(["ip", "netns", "exec", self.args.netns, "nft", "destroy", "element", family, table, "braked",
+                           f"{{ {address} }}"])
+        if result.returncode != 0:
+            print(f"cannot clear {address} from the exit's braked map: {result.stderr.strip()[:200]}", flush=True)
 
     def bridge_state(self):
         """What the bridge rules hold now: the ports and pairs sets, the dhcp chain's per-machine rules (by their

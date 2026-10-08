@@ -1,0 +1,13 @@
+[Unit]
+Description=Qorpera agent exit: copy the sealed logs to the NAS (each read back and compared)
+Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/agent-exit/README.md
+
+[Service]
+Type=oneshot
+# The tool reads the node's NAS folder from /etc/default/qorpera-agent-exit (QORPERA_AGENT_EXIT_NAS_DIR); a folder
+# without the NAS's marker file is never written to.
+ExecStart=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh ship
+Nice=10
+IOSchedulingClass=idle
+# A pass that hangs on the NAS ends here; the next one goes on from where it stopped.
+TimeoutStartSec=15min

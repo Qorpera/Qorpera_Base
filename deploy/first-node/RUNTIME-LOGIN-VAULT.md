@@ -71,7 +71,8 @@ Founder approval: 28 September 2026, page "Logins in the Vault"
   its own 15 s deadline. Every way out gives the lock back: refused or unsaved (the old renewal token
   is spent) as permanent, anything else as transient. The run always keeps the newest pass it has
   that has not ended.
-- `POST /v1/model-logins?company=<profile>` under the runtime token, body
+- `POST /v1/model-logins?company=<profile>` under the runtime token, with the run's lease as
+  `x-qorpera-identity: job.<job id>.<lease token>` (G2-6a; see `RUNTIME-NATIVE-HOST-KEY.md`, "G2-6"), body
   `{schema: "qorpera.model-login-request/v1", binding, knownVersion}`, answer
   `{schema: "qorpera.model-login/v1", version, accessExpiresAt, authJson | null}`, never cached,
   no CORS. Client: `issueModelLogin` in `cloud-secret-broker-http.ts`.
@@ -236,7 +237,8 @@ no database login and no service key; it sees a login only for one operation and
   anchor-checked (exactly one match). The identity runtime state keeps its exact shape (older nodes
   parse it with a fixed field list).
 - The native host: a run whose authority names a `model-login/` capsule asks `POST /v1/model-logins`
-  (binding = its lease, run, job, runner, assignment, capsule and identity) instead of opening a
+  (binding = its lease, run, job, runner, assignment, capsule and identity; since G2-6a also the job's lease
+  token in `x-qorpera-identity`, from `NativeHostDispatch.holderHeader()`) instead of opening a
   capsule, refuses a copy that carries a renewal token, writes the copy as `codex/auth.json` in the
   run's private root (staged beside the Codex home, which must hold `auth.json` alone, then renamed
   into it), asks again every minute with the version it holds, and swaps the file whenever the vault
@@ -688,6 +690,15 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
     active node Codex connection of the same member that is older than the member's vault connection
     and whose current login (the node capsule its latest version uses) was recorded as the same account;
     a record of an earlier login of the connection never counts (at most 4 per pass).
+    Since `20260930059000` (the payer never changes without the member) it finds an older vault
+    connection the same way: one whose current vault login (active, or needing a new sign-in) is of the
+    same kind (Codex or ChatGPT plan) and was recorded as the same account. Every sign-in makes a new
+    connection, so this is how a member who signs in to the vault again keeps their conversations,
+    follow-up work and routines: their pins follow to the same account's new login. A ChatGPT plan
+    login's account is recorded too: sha256 of `openai-subject:` + OpenAI's verified subject, a
+    namespace of its own, so it pairs only with another plan login of the same person (the broker's
+    `recordAccounts` reads it from the plan envelope; the secret broker needs that build). A login that
+    needs a new sign-in before its account was read is still listed for it, so it can be paired.
   - It moves the member's pins to the vault connection first (`qorpera_move_member_login_pins`, #450:
     routines, coding sessions and agent work follow).
   - Once no queued or leased job, live lease, queued wake, queued turn or queued change review names

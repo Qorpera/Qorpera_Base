@@ -347,6 +347,8 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 export function parseCompanyComputerCaptureGateway(options: {
 	baseUrl: string;
 	token: string;
+	/** G2-6a: the run's holder credential, read per request (NativeHostDispatch.holderHeader); the native host's. */
+	holder?: () => string;
 	fetch?: typeof fetch;
 }): Readonly<typeof options> {
 	const gateway = { ...options };
@@ -359,6 +361,7 @@ export function parseCompanyComputerCaptureGateway(options: {
 		url.hash ||
 		url.pathname !== "/" ||
 		!/^[A-Za-z0-9_-]{43}$/.test(gateway.token) ||
+		(gateway.holder !== undefined && typeof gateway.holder !== "function") ||
 		(gateway.fetch !== undefined && typeof gateway.fetch !== "function")
 	)
 		throw new Error("INVALID_OFFICE_CAPTURE_GATEWAY");
@@ -369,7 +372,7 @@ export function createHttpCompanyComputerScreenshots(options: {
 	run: CloudNativeToolRun;
 	scope: CompanyComputerScope;
 	registry: Pick<HttpCloudCompanyComputerRegistry, "call">;
-	objectGateway: { baseUrl: string; token: string; fetch?: typeof fetch };
+	objectGateway: { baseUrl: string; token: string; holder?: () => string; fetch?: typeof fetch };
 }): CloudCompanyComputerScreenshots {
 	const gateway = parseCompanyComputerCaptureGateway(options.objectGateway);
 	const companyId = options.scope.companyId;

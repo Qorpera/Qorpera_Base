@@ -69,7 +69,10 @@ export type CloudNativeContextEntry = { keep: number } | { work: string };
 
 export interface CloudNativeContextComposition {
 	input: CloudNativeContextEntry[];
-	/** `qorpera:` and a SHA-256 in lowercase hex (design §6.2, its own capability); Codex's own key when absent. */
+	/**
+	 * `qorpera:` and a SHA-256 in unpadded base64url, 51 characters within the provider's 64 (design §6.2,
+	 * its own capability); Codex's own key when absent.
+	 */
 	promptCacheKey?: string;
 }
 
@@ -167,7 +170,7 @@ export function cloudNativeContextReply(
 			return { work: entry.work };
 		throw new Error("Invalid native context composition");
 	});
-	if (composition.promptCacheKey !== undefined && !/^qorpera:[0-9a-f]{64}$/.test(composition.promptCacheKey))
+	if (composition.promptCacheKey !== undefined && !/^qorpera:[A-Za-z0-9_-]{43}$/.test(composition.promptCacheKey))
 		throw new Error("Invalid native context composition");
 	return {
 		schema: CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,

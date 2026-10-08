@@ -9,7 +9,7 @@ import {
 	unavailableStateFailure,
 } from "./dependency.ts";
 import type { FolderGcAuthority } from "./folder-gc.ts";
-import type { FolderObjectAuthority, FolderRunActor } from "./folder-objects.ts";
+import type { FolderActor, FolderObjectAuthority } from "./folder-objects.ts";
 import type {
 	AuthorizedMemberCompanyObject,
 	MemberCompanyObjectAuthority,
@@ -325,6 +325,20 @@ export class SupabaseObjectAuthority
 		);
 	}
 
+	/** G2-6a: the caller holds the binding's run lease (migration 20260930152000), before any other check of it. A
+	 * refusal is the function's 42501, which PostgREST answers 403. The holder is sent in the body only. */
+	async proveNativeBinding(binding: Record<string, unknown>, holder: string): Promise<void> {
+		if (
+			(await this.#rpc(
+				"qorpera_native_binding_proven",
+				{ p_binding: binding, p_holder: holder },
+				undefined,
+				this.#secretKey,
+			)) !== true
+		)
+			throw new ObjectDependencyError(403);
+	}
+
 	async authorizeNativeUpload(
 		binding: Record<string, unknown>,
 		profileId: string,
@@ -393,7 +407,7 @@ export class SupabaseObjectAuthority
 
 	async authorizeFolderUpload(
 		environmentId: string,
-		actor: FolderRunActor,
+		actor: FolderActor,
 		intentId: string,
 		sha256: string,
 		bytes: number,
@@ -419,7 +433,7 @@ export class SupabaseObjectAuthority
 
 	async confirmFolderObject(
 		environmentId: string,
-		actor: FolderRunActor,
+		actor: FolderActor,
 		intentId: string,
 		sha256: string,
 		bytes: number,
@@ -437,7 +451,7 @@ export class SupabaseObjectAuthority
 
 	async authorizeFolderDownload(
 		environmentId: string,
-		actor: FolderRunActor,
+		actor: FolderActor,
 		sha256: string,
 	): Promise<{ profileId: string; bytes: number }> {
 		const value = (await this.#rpc(

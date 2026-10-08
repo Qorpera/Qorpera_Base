@@ -1,318 +1,88 @@
--- The NAS gateway must be the only path that can convert verified bytes into
--- catalog authority. Client roles authorize operations but cannot confirm or
--- delete catalog rows themselves.
+-- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
+-- A deleted folder-v2 company's bytes are removed only under a durable, exact deletion authorization (20260821009000,
+-- 20260913000200): the service role cannot call the retired post-delete RPC; an unknown authorization is refused for a
+-- catalogued object; a cleanup lease that holds nothing authorizes nothing; the live deleted-company cleanup lease
+-- authorizes the deletion and the catalog row stays until storage confirms; finalize removes it once and is idempotent
+-- (ported from snapshot-v1 in the legacy sweep).
 
-select set_config(
-	'request.jwt.claims',
-	'{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}',
-	false
-);
-set role authenticated;
-select set_config(
-	'qorpera_test.nas_profile',
-	public.qorpera_create_hosted_profile('NAS gateway', 'main', 1) ->> 'profile_id',
-	false
-);
-
+-- The company is deleted and purged, as 922 does it; its folder objects' catalog rows outlive the purge as the
+-- deleted-company cleanup's queue.
 do $$
-declare
-	v_authority jsonb;
-	v_denied boolean := false;
+declare v_result jsonb;
 begin
-	v_authority := public.qorpera_authorize_profile_object_upload(
-		current_setting('qorpera_test.nas_profile')::uuid,
-		repeat('9', 64),
-		23
-	);
-	if (v_authority ->> 'allowed')::boolean is not true
-		or (v_authority ->> 'exists')::boolean is not false then
-		raise exception 'member upload authority is invalid: %', v_authority;
-	end if;
-	begin
-		perform public.qorpera_confirm_profile_object_upload(
-			current_setting('qorpera_test.nas_profile')::uuid,
-			repeat('9', 64),
-			23,
-			'nas-object-gateway'
-		);
-	exception when insufficient_privilege then
-		v_denied := true;
-	end;
-	if not v_denied then
-		raise exception 'authenticated member can confirm an object catalog row';
-	end if;
-	v_denied := false;
-	begin
-		perform public.qorpera_authorize_profile_object_deletion(
-			current_setting('qorpera_test.nas_profile')::uuid,
-			repeat('9', 64),
-			23,
-			'nas-object-gateway',
-			'99000000-0000-4000-8000-000000000001'
-		);
-	exception when insufficient_privilege then
-		v_denied := true;
-	end;
-	if not v_denied then
-		raise exception 'authenticated member can authorize physical object deletion';
-	end if;
+	perform pg_temp.base_assert((select count(*) from public.qorpera_profile_objects
+		where profile_id = '92400000-0000-4000-8000-000000000010' and backend = 'nas-object-gateway') > 0,
+		'the company holds catalogued folder objects');
+	perform public.qorpera_request_company_deletion('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000001');
+	v_result := public.qorpera_finish_company_deletion('92400000-0000-4000-8000-000000000010');
+	perform pg_temp.base_assert(v_result ->> 'state' = 'purged'
+		and not exists (select 1 from public.qorpera_profiles where id = '92400000-0000-4000-8000-000000000010'),
+		'the company is purged: ' || v_result::text);
 end
 $$;
 
-reset role;
-select set_config(
-	'request.jwt.claims',
-	'{"sub":"00000000-0000-4000-8000-000000000000","role":"service_role"}',
-	false
-);
-set role service_role;
-select public.qorpera_confirm_profile_object_upload(
-	current_setting('qorpera_test.nas_profile')::uuid,
-	repeat('9', 64),
-	23,
-	'nas-object-gateway'
-);
-reset role;
-select set_config('request.jwt.claims', '', false);
-
+-- The deleted-company cleanup claims it (other deleted companies may come first) under a live lease.
+select pg_temp.base_claims('service_role');
+set local role service_role;
 do $$
-declare
-	v_backend text;
-	v_bytes bigint;
+declare v_job jsonb; v_lease uuid; v_attempts integer := 0;
 begin
-	select object.backend, object.bytes into v_backend, v_bytes
-	from public.qorpera_profile_objects as object
-	where object.profile_id = current_setting('qorpera_test.nas_profile')::uuid
-		and object.sha256 = repeat('9', 64);
-	if v_backend is distinct from 'nas-object-gateway' or v_bytes is distinct from 23 then
-		raise exception 'gateway confirmation did not create the exact NAS catalog row';
-	end if;
+	loop
+		v_attempts := v_attempts + 1;
+		v_lease := ('19000000-0000-4000-8000-' || lpad(v_attempts::text, 12, '0'))::uuid;
+		v_job := public.qorpera_claim_deleted_profile_object_gc(100, v_lease);
+		exit when v_job is null or v_job ->> 'profile_id' = '92400000-0000-4000-8000-000000000010' or v_attempts > 50;
+	end loop;
+	perform pg_temp.base_assert(v_job ->> 'profile_id' = '92400000-0000-4000-8000-000000000010',
+		'the deleted-company cleanup claims the company: ' || coalesce(v_job::text, 'nothing'));
+	perform set_config('qorpera_test.og_lease', v_lease::text, true);
+	perform set_config('qorpera_test.og_object', v_job -> 'objects' ->> 0, true);
 end
 $$;
-
--- Legacy catalog rows are exposed only to the service migration cursor.
-insert into storage.objects (bucket_id, name, metadata)
-values (
-	'qorpera-profile-objects',
-	current_setting('qorpera_test.nas_profile') || '/' || repeat('8', 64),
-	'{"size":"11"}'
-);
-select set_config(
-	'request.jwt.claims',
-	'{"sub":"00000000-0000-4000-8000-000000000000","role":"service_role"}',
-	false
-);
-set role service_role;
-do $$
-declare
-	v_batch jsonb;
-begin
-	v_batch := public.qorpera_list_profile_objects_for_migration(
-		current_setting('qorpera_test.nas_profile')::uuid,
-		repeat('7', 64),
-		10
-	);
-	if jsonb_array_length(v_batch) < 1
-		or v_batch -> 0 ->> 'profile_id' <> current_setting('qorpera_test.nas_profile')
-		or v_batch -> 0 ->> 'sha256' <> repeat('8', 64)
-		or (v_batch -> 0 ->> 'bytes')::bigint <> 11 then
-		raise exception 'legacy object migration cursor is invalid: %', v_batch;
-	end if;
-end
-$$;
-reset role;
-select set_config('request.jwt.claims', '', false);
-
--- A legacy duplicate can exist during migration. Its mirror may neither flip
--- nor delete the authoritative NAS row, and drift excludes the migrated row.
-insert into storage.objects (bucket_id, name, metadata)
-values (
-	'qorpera-profile-objects',
-	current_setting('qorpera_test.nas_profile') || '/' || repeat('9', 64),
-	'{"size":"23"}'
-);
-delete from storage.objects
-where bucket_id = 'qorpera-profile-objects'
-	and name = current_setting('qorpera_test.nas_profile') || '/' || repeat('9', 64);
-
-do $$
-declare
-	v_backend text;
-begin
-	select object.backend into v_backend
-	from public.qorpera_profile_objects as object
-	where object.profile_id = current_setting('qorpera_test.nas_profile')::uuid
-		and object.sha256 = repeat('9', 64);
-	if v_backend is distinct from 'nas-object-gateway' then
-		raise exception 'legacy Storage deletion removed or changed the NAS catalog row';
-	end if;
-	if public.qorpera_object_catalog_drift() <> 0 then
-		raise exception 'NAS catalog rows are incorrectly reported as Storage drift';
-	end if;
-end
-$$;
-
--- The owner can resolve the object location; an unrelated account cannot.
-select set_config(
-	'request.jwt.claims',
-	'{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}',
-	false
-);
-set role authenticated;
-do $$
-declare
-	v_authority jsonb;
-begin
-	v_authority := public.qorpera_authorize_profile_object_download(
-		current_setting('qorpera_test.nas_profile')::uuid,
-		repeat('9', 64)
-	);
-	if v_authority ->> 'backend' <> 'nas-object-gateway'
-		or (v_authority ->> 'bytes')::bigint <> 23 then
-		raise exception 'member download authority is invalid: %', v_authority;
-	end if;
-end
-$$;
-reset role;
-
-select set_config(
-	'request.jwt.claims',
-	'{"sub":"80000000-0000-4000-8000-00000000000b","email":"sep-owner-b@example.test","role":"authenticated","user_metadata":{}}',
-	false
-);
-set role authenticated;
-do $$
-declare
-	v_denied boolean := false;
-begin
-	begin
-		perform public.qorpera_authorize_profile_object_download(
-			current_setting('qorpera_test.nas_profile')::uuid,
-			repeat('9', 64)
-		);
-	exception when insufficient_privilege then
-		v_denied := true;
-	end;
-	if not v_denied then
-		raise exception 'unrelated member can authorize a NAS object read';
-	end if;
-end
-$$;
-reset role;
-select set_config('request.jwt.claims', '', false);
 
 -- Physical deletion is accepted only after a durable exact authorization.
-insert into public.qorpera_company_object_gc_leases (profile_id, lease_id, lease_expires_at)
-values (
-	current_setting('qorpera_test.nas_profile')::uuid,
-	'99000000-0000-4000-8000-000000000001',
-	statement_timestamp() + interval '10 minutes'
-);
-insert into public.qorpera_company_object_gc_entries (profile_id, lease_id, object_sha256, bytes)
-values (
-	current_setting('qorpera_test.nas_profile')::uuid,
-	'99000000-0000-4000-8000-000000000001',
-	repeat('9', 64),
-	23
-);
-
-select set_config(
-	'request.jwt.claims',
-	'{"sub":"00000000-0000-4000-8000-000000000000","role":"service_role"}',
-	false
-);
-set role service_role;
 do $$
 declare
+	v_lease uuid := current_setting('qorpera_test.og_lease')::uuid;
+	v_sha text := current_setting('qorpera_test.og_object')::jsonb ->> 'sha256';
+	v_bytes bigint := (current_setting('qorpera_test.og_object')::jsonb ->> 'bytes')::bigint;
+	v_backend text := current_setting('qorpera_test.og_object')::jsonb ->> 'backend';
 	v_authorization jsonb;
 	v_authorization_id uuid;
-	v_denied boolean := false;
 begin
-	if has_function_privilege(
-		'service_role',
-		'public.qorpera_confirm_profile_object_deletion(uuid,text,bigint,text,uuid)',
-		'EXECUTE'
-	) then
-		raise exception 'service role can call the retired post-delete authorization RPC';
-	end if;
-	begin
-		perform public.qorpera_describe_profile_object_deletion_authorization(
-			'99000000-0000-4000-8000-000000000098',
-			current_setting('qorpera_test.nas_profile')::uuid,
-			repeat('9', 64),
-			23,
-			'nas-object-gateway'
-		);
-	exception when object_not_in_prerequisite_state then
-		v_denied := true;
-	end;
-	if not v_denied then
-		raise exception 'unknown deletion authorization was accepted for a catalogued object';
-	end if;
-	v_denied := false;
-	begin
-		perform public.qorpera_authorize_profile_object_deletion(
-			current_setting('qorpera_test.nas_profile')::uuid,
-			repeat('9', 64),
-			23,
-			'nas-object-gateway',
-			'99000000-0000-4000-8000-000000000099'
-		);
-	exception when sqlstate 'PGRST' then
-		v_denied := true;
-	end;
-	if not v_denied then
-		raise exception 'stale cleanup lease authorized physical deletion';
-	end if;
-	v_authorization := public.qorpera_authorize_profile_object_deletion(
-		current_setting('qorpera_test.nas_profile')::uuid,
-		repeat('9', 64),
-		23,
-		'nas-object-gateway',
-		'99000000-0000-4000-8000-000000000001'
-	);
+	perform pg_temp.base_assert(not has_function_privilege('service_role',
+		'public.qorpera_confirm_profile_object_deletion(uuid,text,bigint,text,uuid)', 'EXECUTE'),
+		'service role can call the retired post-delete authorization RPC');
+	perform pg_temp.base_error(format('select public.qorpera_describe_profile_object_deletion_authorization(%L, %L, %L, %s, %L)',
+		'19000000-0000-4000-8000-000000000098', '92400000-0000-4000-8000-000000000010', v_sha, v_bytes, v_backend),
+		'55000', 'object deletion authorization is unavailable');
+	perform pg_temp.base_error(format('select public.qorpera_authorize_profile_object_deletion(%L, %L, %s, %L, %L)',
+		'92400000-0000-4000-8000-000000000010', v_sha, v_bytes, v_backend, '19000000-0000-4000-8000-000000000099'), 'PGRST');
+	v_authorization := public.qorpera_authorize_profile_object_deletion('92400000-0000-4000-8000-000000000010', v_sha, v_bytes,
+		v_backend, v_lease);
 	v_authorization_id := (v_authorization ->> 'authorization_id')::uuid;
-	if v_authorization ->> 'state' <> 'authorized' or v_authorization_id is null then
-		raise exception 'live cleanup lease did not create durable deletion authority: %', v_authorization;
-	end if;
-	if not exists (
-		select 1 from public.qorpera_profile_objects as object
-		where object.profile_id = current_setting('qorpera_test.nas_profile')::uuid
-			and object.sha256 = repeat('9', 64)
-	) then
-		raise exception 'deletion authorization removed the catalog before storage confirmation';
-	end if;
-	if not public.qorpera_finalize_profile_object_deletion(
-		v_authorization_id,
-		current_setting('qorpera_test.nas_profile')::uuid,
-		repeat('9', 64),
-		23,
-		'nas-object-gateway'
-	) then
-		raise exception 'authorized physical deletion did not finalize the NAS catalog row';
-	end if;
-	if public.qorpera_finalize_profile_object_deletion(
-		v_authorization_id,
-		current_setting('qorpera_test.nas_profile')::uuid,
-		repeat('9', 64),
-		23,
-		'nas-object-gateway'
-	) then
-		raise exception 'deletion finalization was not idempotent';
-	end if;
+	perform pg_temp.base_assert(v_authorization ->> 'state' = 'authorized' and v_authorization_id is not null,
+		'live cleanup lease did not create durable deletion authority: ' || v_authorization::text);
+	perform pg_temp.base_assert(exists (select 1 from public.qorpera_profile_objects as object
+		where object.profile_id = '92400000-0000-4000-8000-000000000010' and object.sha256 = v_sha),
+		'deletion authorization removed the catalog before storage confirmation');
+	perform pg_temp.base_assert(public.qorpera_finalize_profile_object_deletion(v_authorization_id,
+		'92400000-0000-4000-8000-000000000010', v_sha, v_bytes, v_backend),
+		'authorized physical deletion did not finalize the NAS catalog row');
+	perform pg_temp.base_assert(not public.qorpera_finalize_profile_object_deletion(v_authorization_id,
+		'92400000-0000-4000-8000-000000000010', v_sha, v_bytes, v_backend),
+		'deletion finalization was not idempotent');
 end
 $$;
 reset role;
-select set_config('request.jwt.claims', '', false);
 
 do $$
 begin
-	if exists (
-		select 1 from public.qorpera_profile_objects as object
-		where object.profile_id = current_setting('qorpera_test.nas_profile')::uuid
-			and object.sha256 = repeat('9', 64)
-	) then
-		raise exception 'NAS catalog row survived confirmed cleanup';
-	end if;
+	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_profile_objects as object
+		where object.profile_id = '92400000-0000-4000-8000-000000000010'
+			and object.sha256 = current_setting('qorpera_test.og_object')::jsonb ->> 'sha256'),
+		'NAS catalog row survived confirmed cleanup');
 end
 $$;
+
+rollback;

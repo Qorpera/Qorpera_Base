@@ -70,9 +70,11 @@ requests are never composed from the agent's run.
 
 The host also requires `qorpera.native-prompt-cache-key/v1` (design §6.2), a
 capability of its own. The composition's answer may set the request's
-`prompt_cache_key` to `qorpera:` and a SHA-256 in lowercase hex; Codex
-refuses any other form and keeps its own key when the answer sets none. The
-key travels on the composition's answer, so it needs that marker as well.
+`prompt_cache_key` to `qorpera:` and a SHA-256 in unpadded base64url: 51
+characters, within the provider's 64 (a longer key fails the whole request,
+so a SHA-256 in hex, 72 characters, is refused). Codex refuses any other form
+and keeps its own key when the answer sets none. The key travels on the
+composition's answer, so it needs that marker as well.
 
 ## Build
 
@@ -123,7 +125,10 @@ Missing, malformed, mismatched or replayed replies fail closed, and a host that 
 Neither side times a reply out: the host's checks take as long as the database does and end only with the run
 (its authority or lease gone, a refusal, a stop), asking a lost or late fence call again meanwhile. The native
 side keeps a 10-minute backstop against a host that is alive but hung (until 5 Oct 2026 a fixed 5 s native and 4 s
-host deadline, which a database slowed to a few seconds per call turned into stopped turns). An exhaustive
+host deadline, which a database slowed to a few seconds per call turned into stopped turns). The database still
+bounds each fence attempt: it is one statement under `qorpera_native_host_call_long`'s 25 s budget (8 s until
+migration `20260930109500`), asked again when cancelled, so a fence that needs more than 25 s in the database never
+lands and the request ends at the backstop. An exhaustive
 item match rejects unhandled tool-result kinds, unissued images and encrypted tool
 results. Native memory requests are not admitted in this adapter. A fence
 reply can change only result bodies. A composition reply can only leave out

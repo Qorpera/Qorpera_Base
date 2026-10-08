@@ -48,12 +48,18 @@ async function setup(f = fixture()) {
 	await draw();
 	return { ...f, root };
 }
-/** The SDK RPCs Settings made, besides General's rules list (its only one until Company connections opens). */
+/** The SDK RPCs Settings made, besides General's rules list (its only one until Company connections opens) and the
+ * company's mail and offers reads, which run while it is open (Interfaces steps I5c and I9c). */
 function sdkRpcs(f: { cloud: Cloud }): string[] {
 	return vi
 		.mocked(f.cloud.rpc)
 		.mock.calls.map(([name]) => name)
-		.filter((name) => name !== "qorpera_list_review_rules");
+		.filter(
+			(name) =>
+				name !== "qorpera_list_review_rules" &&
+				!name.startsWith("qorpera_member_mail_") &&
+				name !== "qorpera_member_interface_offers",
+		);
 }
 function click(root: Element, selector: string) {
 	root.querySelector<HTMLButtonElement>(selector)!.click();

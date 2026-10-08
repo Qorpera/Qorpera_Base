@@ -51,6 +51,10 @@
 /* The Interfaces tab: the main interface stands on top like the Co-Founder, the rest are rows. */
 .rail-interfaces .interface-home { margin: calc(var(--lift) + 16px) 9px 18.5px; width: auto; }
 .rail-compact .rail-interfaces .interface-home { margin: 6px 0 3px; }
+/* The owners' quiet line when no interface is the main one, or several are; a page that has a problem. */
+.rail-interfaces .rail-note { margin: 12px 10px 4px; color: var(--rail-small); font-size: 12px; line-height: 1.4; }
+.rail-compact .rail-interfaces .rail-note { display: none; }
+.rail-row-interface.is-broken .interface-emblem { opacity: 0.55; }
 .interface-stand { display: grid; place-items: center; }
 /* An emblem floats; it keeps its own soft shadow and no ground shadow. */
 .interface-stand::before { display: none; }
@@ -105,6 +109,12 @@ a.interface-item:hover { background: var(--hover); text-decoration: none; }
 .interface-cards .interface-item { padding: 10px 12px; border-radius: 12px; background: var(--warning-soft); }
 .interface-empty { margin: 4px 0 2px; color: var(--text-soft); font-size: 12.5px; }
 .interface-missing { display: grid; gap: 8px; padding: 32px; color: var(--text-muted); }
+/* A page or a table that has a problem: a plain sentence, then the parser's own words, line by line. */
+.interface-problem p, .interface-note p { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+.interface-note { margin: 2px 0 8px; color: var(--text-muted); }
+.interface-note p { font-size: 12.5px; }
+.interface-problems { margin: 0; padding-left: 18px; color: var(--text-muted); font-size: 12.5px; overflow-wrap: anywhere; }
+.interface-problems li + li { margin-top: 2px; }
 /* A page's views, as tabs under its head. */
 .interface-views {
 	flex: none; display: flex; gap: 2px; padding: 4px 14px 0; overflow-x: auto;
@@ -173,6 +183,128 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 	.interface-page:not(.has-open) > .interface-detail { display: none; }
 	.interface-back { display: inline-flex; }
 }
+
+/* A board (step I9a): lanes side by side that scroll sideways when there are many, each a quiet column of cards. The
+ * member's own lane is tinted; while a card is dragged, the lanes it may land in are outlined and the one under it
+ * shaded. A card being saved stays put, dimmed, until the save has landed; a dropped card settles back into place. */
+.interface-board { display: grid; grid-auto-columns: minmax(220px, 1fr); grid-auto-flow: column; gap: 10px; overflow-x: auto; padding-bottom: 2px; }
+.interface-lane {
+	display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 8px; border: 1px solid transparent;
+	border-radius: 12px; background: var(--pane-strong);
+	transition: border-color var(--motion-fast) ease, background-color var(--motion-fast) ease;
+}
+.interface-lane.is-own { background: var(--hover); }
+.interface-lane-title { display: flex; align-items: baseline; gap: 6px; margin: 0 2px; font-size: 12.5px; font-weight: 650; }
+.interface-lane-count { color: var(--text-soft); font-size: 11.5px; font-weight: 600; }
+.interface-lane-part { margin: 4px 2px 0; color: var(--text-muted); font-size: 11.5px; font-weight: 600; }
+.interface-lane .interface-empty { margin: 2px; }
+.interface-lane-cards { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.interface-card {
+	display: grid; gap: 6px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg);
+	transition: opacity var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
+}
+.interface-card.is-open { border-color: var(--composer-accent); }
+.interface-card-open, .interface-card-body {
+	display: grid; gap: 3px; padding: 0; border: 0; background: transparent; color: var(--text); font: inherit;
+	text-align: left; overflow-wrap: anywhere;
+}
+.interface-card-open { cursor: pointer; }
+.interface-card-open:hover .interface-card-title { text-decoration: underline; }
+.interface-card-open:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: 3px; border-radius: 6px; }
+.interface-card-title { font-size: 13px; font-weight: 600; }
+.interface-card-line { color: var(--text-muted); font-size: 12.5px; }
+.interface-card-note { color: var(--text-soft); font-size: 11.5px; }
+.interface-card-figures { display: flex; flex-wrap: wrap; gap: 2px; }
+.interface-card-figures .figure { width: 22px; height: 22px; }
+.interface-card .interface-actions { justify-self: start; }
+.interface-card .interface-button { height: 26px; }
+.interface-button[aria-disabled="true"] { opacity: 0.6; cursor: default; }
+.interface-card-saving { color: var(--text-soft); font-size: 11.5px; }
+.interface-card.is-saving { opacity: 0.7; }
+.interface-card.is-draggable { cursor: grab; touch-action: auto; }
+.interface-card.is-dragging {
+	position: relative; z-index: 2; cursor: grabbing; box-shadow: 0 6px 18px rgb(0 0 0 / 14%); pointer-events: none;
+	user-select: none;
+}
+.interface-card.is-settling { transition: transform var(--motion-base) var(--ease-spring), box-shadow var(--motion-fast) ease; }
+.interface-board.is-dragging { user-select: none; }
+.interface-lane.is-drop-target { border-color: var(--composer-accent); border-style: dashed; }
+.interface-lane.is-drop-over { background: var(--hover); border-style: solid; }
+/* An offer of a card (step I9c): a quiet line on the card with its answers, and the members it may go to. */
+.interface-card-offers { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.interface-card-offer {
+	display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--text-muted); font-size: 12px;
+}
+.interface-offer-picker { align-items: center; }
+.interface-offer-picker-label { color: var(--text-soft); font-size: 11.5px; }
+@media (max-width: 760px) {
+	/* On a phone the lanes stack, each as wide as the page. */
+	.interface-board { grid-auto-flow: row; grid-auto-columns: auto; overflow-x: visible; }
+}
+
+/* Text, numbers and a calendar (folder pages): prose, quiet tiles with a small trend line, and days with their things. */
+.interface-text .message-prose { font-size: 13.5px; overflow-wrap: anywhere; }
+.interface-text .message-prose > :first-child { margin-top: 0; }
+.interface-text .message-prose > :last-child { margin-bottom: 0; }
+.interface-number-tiles {
+	display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin: 0; padding: 0;
+	list-style: none;
+}
+.interface-number {
+	display: grid; gap: 2px; width: 100%; height: 100%; padding: 9px 10px; border: 1px solid var(--border);
+	border-radius: 10px; background: var(--bg); color: var(--text); font: inherit; text-align: left;
+}
+button.interface-number { cursor: pointer; }
+button.interface-number:hover, .interface-number.is-open { background: var(--hover); }
+button.interface-number:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: 1px; }
+.interface-number-label { color: var(--text-muted); font-size: 12px; font-weight: 600; }
+.interface-number-value { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.interface-number-change, .interface-number-target { color: var(--text-muted); font-size: 11.5px; }
+.interface-trend { display: block; width: 100%; height: 32px; margin-top: 4px; color: var(--composer-accent); }
+.interface-days { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.interface-day h3 { margin: 0 0 2px; color: var(--text-muted); font-size: 12px; font-weight: 600; }
+.interface-day-items { display: grid; margin: 0; padding: 0; list-style: none; }
+.interface-day-items .interface-item { padding: 5px 4px; }
+.interface-day-items .interface-item-figure .figure { width: 22px; height: 22px; }
+@media (max-width: 760px) {
+	/* On a phone the tiles stack. */
+	.interface-number-tiles { grid-template-columns: minmax(0, 1fr); }
+}
 @media (prefers-reduced-motion: reduce) {
 	.interface-emblem .emblem-beat, .interface-live-dot, .interface-dots i { animation: none; }
+	.interface-lane, .interface-card, .interface-card.is-settling { transition: none; }
+}
+
+/* The Mailbox (step I5c). Words from outside the company carry a quiet tint, the way a quote does in a message. A
+ * thread with unread mail has a dot and a stronger line. An open thread is the email card the conversations use, a
+ * size smaller; on a phone it is the next screen, as a detail is. An interface's badge on its rail row is a count. */
+.interface-outside { padding: 0 3px; border-radius: 5px; background: var(--hover); box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.interface-table td.interface-outside { padding: 7px 8px; border-radius: 0; }
+.review-email-body.interface-outside { padding: 13px 16px; border-radius: 0; }
+.interface-unread { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--composer-accent); }
+.interface-mail-list li:not(.is-unread) .interface-item { padding-left: 22px; }
+.interface-mail-list li.is-unread strong { font-weight: 700; }
+.interface-mail-older { display: grid; justify-items: start; gap: 4px; margin-top: 8px; }
+.interface-mail-head { display: grid; gap: 4px; margin-bottom: 12px; }
+.interface-block h2.interface-mail-subject { justify-self: start; margin: 0; color: var(--text); font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+.interface-mail-meta { margin: 0; color: var(--text-muted); font-size: 12.5px; overflow-wrap: anywhere; }
+.interface-mail-head .interface-actions { margin-top: 4px; }
+.interface-mail-messages { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.interface-mail .interaction-card.email-draft-card { width: 100%; margin-top: 0; padding: 12px; border-radius: 16px; }
+.interface-mail .interface-mail-waiting { margin-top: 10px; }
+.interface-mail .interface-mail-thread { margin-top: 8px; }
+.interface-mail .email-draft-heading { flex-wrap: wrap; gap: 6px 10px; margin-bottom: 8px; }
+.interface-mail .email-draft-heading h3 { min-width: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.interface-mail-when { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.interface-mail .email-draft-status { padding: 2px 9px; font-size: 12px; }
+.interface-mail .email-draft-row { min-height: 0; margin: 0 12px; padding: 6px 0; font-size: 13px; }
+.interface-mail .email-draft-row .interface-outside { color: var(--text); }
+.interface-mail .review-email .review-email-body { padding: 10px 12px; font-size: 13.5px; }
+.interface-mail .email-draft-actions .btn { min-height: 32px; padding: 5px 11px; font-size: 13.5px; }
+.interface-mail-message.is-account .email-draft-heading { margin-bottom: 0; }
+.interface-mail-notes { margin: 8px 2px 0; font-size: 12px; }
+.rail-count { width: auto; min-width: 18px; padding: 0 5px; border-radius: 9px; box-sizing: border-box; }
+@media (max-width: 760px) {
+	.interface-mail .email-draft-heading { flex-direction: column; align-items: flex-start; }
+	.interface-mail .email-draft-row { flex-direction: column; align-items: flex-start; gap: 2px; }
 }

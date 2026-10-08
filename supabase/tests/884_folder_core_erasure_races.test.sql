@@ -280,6 +280,36 @@ begin
 	if v.state <> 'done' or v_scrubbed <> 80 then raise exception 'Every receipt is scrubbed: % %', v.state, v_scrubbed; end if;
 end $$;
 
+-- E7 (P18d, 20260930045000). Two members create one path at once: the one that waits on the other's path lock finds it
+-- taken and keeps a conflict copy. Its commit read the clock before the first committed, but its time is after the
+-- first's: the copy belongs to the live file's current life, so erasing the path has nothing to erase.
+select set_config('qorpera_test.sql_z1', pg_temp.sql_commit(pg_temp.member(1), 'erace-z-one',
+	jsonb_build_array(jsonb_build_object('op','write','path','er/z.md','file',pg_temp.stage('z one')))), false);
+select set_config('qorpera_test.sql_z2', pg_temp.sql_commit(pg_temp.member(1), 'erace-z-two',
+	jsonb_build_array(jsonb_build_object('op','write','path','er/z.md','file',pg_temp.stage('z two')))), false);
+do $$
+declare r jsonb; v_message text;
+begin
+	perform dblink_exec('auth_one', 'begin');
+	perform * from dblink('auth_one', current_setting('qorpera_test.sql_z1')) as t(x jsonb);
+	perform dblink_send_query('auth_two', current_setting('qorpera_test.sql_z2'));
+	if not pg_temp.waits_for('auth_two', 'auth_one') then raise exception 'The second creator waits for the first'; end if;
+	perform dblink_exec('auth_one', 'commit');
+	r := pg_temp.result('auth_two');
+	if r -> 'units' -> 0 ->> 'outcome' is distinct from 'conflict' or not exists (select 1 from public.qorpera_folder_conflict_copies
+			where commit_id = (r ->> 'commitId')::uuid) then raise exception 'The second keeps a copy: %', r; end if;
+	if not coalesce((select as_of_seq from public.qorpera_folder_commits where id = (r ->> 'commitId')::uuid)
+			< (select seq from public.qorpera_folder_commits where operation_key = 'erace-z-one'), false) then
+		raise exception 'Its clock was read before the first committed'; end if;
+	begin
+		perform public.qorpera_folder_erase('63500000-0000-4000-8000-000000000020', pg_temp.member(1), '["er/z.md"]', 'erace-erase-z');
+		v_message := 'accepted';
+	exception when sqlstate '22023' then get stacked diagnostics v_message = message_text;
+	end;
+	if v_message is distinct from 'Nothing to erase at er/z.md' then
+		raise exception 'A copy of the current life is no past: %', v_message; end if;
+end $$;
+
 select dblink_disconnect(name) from unnest(array['auth_one','auth_two','auth_three']) name;
 
 -- The committed fixture leaves the shared suite database, as 767 does.
@@ -310,6 +340,7 @@ delete from public.qorpera_folder_journal where environment_id = '63500000-0000-
 delete from public.qorpera_folder_path_versions where environment_id = '63500000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_entries where environment_id = '63500000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_reviews where environment_id = '63500000-0000-4000-8000-000000000020';
+delete from public.qorpera_folder_conflict_copies where environment_id = '63500000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_commits where environment_id = '63500000-0000-4000-8000-000000000020';
 delete from public.qorpera_folder_operation_keys where environment_id = '63500000-0000-4000-8000-000000000020';
 delete from public.qorpera_wake_occurrences where profile_id = '63500000-0000-4000-8000-000000000010';

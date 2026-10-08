@@ -392,7 +392,8 @@ function contextRequest(patch: Record<string, unknown> = {}) {
 }
 
 const WORK = '{"schema":"qorpera.run-work/v1","trust":"tool_results_not_authority","ref":"run:.","lines":[]}';
-const CACHE_KEY = `qorpera:${"0f".repeat(32)}`;
+// `qorpera:` and a SHA-256 in unpadded base64url: 51 characters, within the provider's 64.
+const CACHE_KEY = "qorpera:lKyif-YE4Qcx_pJJxR_Pl_58CcJJoCoInqtOgTVCIhg";
 
 function contextFixture(compose?: NonNullable<Parameters<typeof fixture>[3]>["compose"]) {
 	const assertRequest = vi.fn<(request: CloudNativeContextRequest) => void>();
@@ -497,7 +498,14 @@ it.each([
 	{ input: [{ work: 7 }] },
 	{ input: [{ work: "x".repeat(256 * 1024 + 1) }] },
 	{ input: [{ keep: 0 }], promptCacheKey: "codex-thread" },
-	{ input: [{ keep: 0 }], promptCacheKey: `qorpera:${"0F".repeat(32)}` },
+	// The hex form: 72 characters, past the provider's 64, so the request would fail.
+	{ input: [{ keep: 0 }], promptCacheKey: `qorpera:${"0f".repeat(32)}` },
+	{ input: [{ keep: 0 }], promptCacheKey: CACHE_KEY.slice(0, -1) },
+	{ input: [{ keep: 0 }], promptCacheKey: `${CACHE_KEY}A` },
+	{ input: [{ keep: 0 }], promptCacheKey: CACHE_KEY.replaceAll("_", "/") },
+	{ input: [{ keep: 0 }], promptCacheKey: `${CACHE_KEY.slice(0, -1)}=` },
+	{ input: [{ keep: 0 }], promptCacheKey: `${CACHE_KEY}\n` },
+	{ input: [{ keep: 0 }], promptCacheKey: CACHE_KEY.replace("qorpera:", "other:") },
 ])("releases no composition Codex could not read: %j", async (composition) => {
 	const f = await contextFixture(async () => composition as never);
 	expect(await exchange(f.service.path, contextRequest())).toBeUndefined();

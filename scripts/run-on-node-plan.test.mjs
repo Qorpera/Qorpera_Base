@@ -84,8 +84,34 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 		"packages/runtime/src/cloud-native-company-context.ts",
 		"packages/runtime/src/cloud-wake-bus.ts",
 		"packages/runtime/test/fixtures/wake-policies.json",
+		"scripts/test-folder-service-core-shapes.mjs",
+		"packages/object-gateway/src/folder-service/core.ts",
+		"packages/object-gateway/src/folder-service/view-tree.ts",
 	])
 		assert.ok(names([file]).includes("hosted-db"), file);
+	// The folder core's acceptance script (F3-3c): the folder service's write path and the gateway parts it puts through.
+	for (const file of [
+		"scripts/test-folder-core-acceptance.mjs",
+		"packages/object-gateway/src/folder-service/https-request.ts",
+		"packages/object-gateway/src/folder-service/service.ts",
+		"packages/object-gateway/src/folder-service/staging.ts",
+		"packages/object-gateway/src/folder-service/mounts.ts",
+		"packages/object-gateway/src/folder-service/machines.ts",
+		"packages/object-gateway/src/folder-service/plan.ts",
+		"packages/object-gateway/src/folder-service/pending.ts",
+		"packages/object-gateway/src/folder-service/protocol.ts",
+		"packages/object-gateway/src/folder-service/objects.ts",
+		"packages/object-gateway/src/folder-service/search.ts",
+		"packages/object-gateway/src/service.ts",
+		"packages/object-gateway/src/supabase-authority.ts",
+		"packages/object-gateway/src/supabase-headers.ts",
+		"packages/object-gateway/src/folder-service-objects.ts",
+		"packages/object-gateway/src/folder-objects.ts",
+		"packages/object-gateway/src/member-folder-commits.ts",
+	])
+		assert.ok(names([file]).includes("hosted-db"), file);
+	for (const file of ["packages/object-gateway/src/folder-service/server.ts", "packages/object-gateway/src/folder-service/cli.ts"])
+		assert.ok(!names([file]).includes("hosted-db"), file);
 	// The rolling update rehearsal and the packets it runs.
 	for (const file of ["scripts/test-runtime-roll.mjs", "scripts/runtime-roll.mjs"]) assert.ok(names([file]).includes("hosted-db"), file);
 	assert.ok(!names(["packages/runtime/test/fixtures/company-computer-guest.ts"]).includes("hosted-db"));
@@ -100,10 +126,24 @@ test("a migration, the folder load test or its fixture puts one folder-v2 compan
 		"supabase/tests/648_folder_core_run_fence_concurrency.test.sql",
 	])
 		assert.ok(names([file]).includes("folder-core-load"), file);
-	assert.ok(!names(["supabase/tests/745_company_fence_shared_readers.test.sql"]).includes("folder-core-load"));
+	assert.ok(!names(["supabase/tests/850_folder_core_vault_lock_order.test.sql"]).includes("folder-core-load"));
 	assert.ok(!names(["packages/runtime/src/cloud-company-path-control.ts"]).includes("folder-core-load"));
 	const load = STEPS.find((step) => step.name === "folder-core-load").commands.join(" ");
 	assert.equal(load, "node scripts/load-folder-core.mjs --runs 16 --seconds 30 --big-paths 5000 --check");
+});
+
+test("the folder program runs its own step in the pinned Rust image", () => {
+	const plan = planChanged(["crates/qorpera-folder/src/mount.rs", "crates/qorpera-folder/Cargo.lock"]);
+	assert.equal(plan.full, false);
+	assert.ok(names(["crates/qorpera-folder/src/mount.rs"]).includes("folder-program"));
+	assert.ok(!names(["packages/object-gateway/src/cli.ts"]).includes("folder-program"));
+	const command = STEPS.find((step) => step.name === "folder-program").commands.join(" ");
+	assert.match(command, /rust:1\.95\.0-slim-bookworm@sha256:[0-9a-f]{64} sh -c 'cargo test --locked && cargo build/);
+	assert.match(command, /node:24\.21\.0-bookworm-slim@sha256:[0-9a-f]{64} sh -c 'node \.\.\/\.\.\/scripts\/folder-program-artifact\.mjs --check \/out\/qorpera-folder && node .* test\/folder-mount-e2e\.test\.ts'/);
+	// A changed build record is checked against a build of today's source.
+	assert.ok(names(["deploy/folder-service/folder-program-linux-x64.json"]).includes("folder-program"));
+	assert.match(command, /--device \/dev\/fuse/);
+	assert.ok(names(["packages/object-gateway/src/folder-service/service.ts"]).includes("folder-program"));
 });
 
 test("shared configuration and unknown paths run every step", () => {

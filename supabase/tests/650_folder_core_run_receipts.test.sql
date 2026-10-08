@@ -1,4 +1,4 @@
--- @fixture 647_folder_core_run_fence.test.sql until "-- 1. Snapshot-v1 keeps its text"
+-- @fixture 647_folder_core_run_fence.test.sql until "-- The checks start here: a test that runs after this file's fixture part stops at this line."
 -- Company folder core, C1c-2b part 1 (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §5.6): a folder-v2 run's operation
 -- receipts, and the commits that satisfy them. A receipt begins and completes on the folder fence; a commit carries at
 -- most one receipt and a receipt is satisfied by at most one commit, whatever its outcomes; completion names the commit.

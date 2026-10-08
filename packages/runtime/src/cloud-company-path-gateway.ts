@@ -37,6 +37,7 @@ import {
 } from "./cloud-company-path-refusal.ts";
 import type { CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
 import {
+	CLOUD_TOOL_REQUEST_MAX_MS,
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
 	cloudToolRequest,
@@ -146,6 +147,16 @@ export type CloudCompanyPathRpc =
 	// A folder-v2 run's own routines from the routine index, and the login a routine save pins (thin writers W4c).
 	| "qorpera_folder_agent_routines"
 	| "qorpera_prepare_routine_login"
+	// A folder-v2 run's workers: their files under the worker tool's request, a todo's workers, and a cancel (F2-5b).
+	| "qorpera_folder_worker_commit"
+	| "qorpera_folder_agent_workers"
+	| "qorpera_folder_cancel_agent_worker"
+	// Changes a view saved that wait for review (P40): a run's list, its apply and its close.
+	| "qorpera_folder_agent_proposals"
+	| "qorpera_folder_apply_proposal"
+	| "qorpera_folder_close_proposal"
+	// A coding session's archive (C3b).
+	| "qorpera_folder_archive_coding_worker"
 	// Event wakes (W2): the company's hooks and one event's body.
 	| "qorpera_list_agent_event_hooks"
 	| "qorpera_read_agent_event"
@@ -172,8 +183,11 @@ export class CloudCompanyHeadConflict extends Error {
 /** A verified file that is not UTF-8 text (or, for a trusted whole-file read,
  * larger than a text write). The bytes are intact; they are just not text here. */
 export class CloudCompanyPathNotText extends Error {
-	constructor(message = "Company File range is not UTF-8 text") {
+	/** The whole file's size, from the entry a trusted whole-file read found; null for a range. */
+	readonly bytes: number | null;
+	constructor(message = "Company File range is not UTF-8 text", bytes: number | null = null) {
 		super(message);
+		this.bytes = bytes;
 	}
 }
 
@@ -343,11 +357,13 @@ export class CloudCompanyPathGateway {
 		argumentsValue: Record<string, unknown>,
 		signal: AbortSignal,
 		initialAdmission = false,
+		timeoutMs?: number,
 	): Promise<unknown> {
 		try {
 			return await cloudToolRequest(
 				(requestSignal) => this.#control.call(method, argumentsValue, requestSignal),
 				signal,
+				timeoutMs,
 			);
 		} catch (error) {
 			if (initialAdmission && error instanceof CloudCompanyPathRpcRefusal && !signal.aborted)
@@ -497,10 +513,13 @@ export class CloudCompanyPathGateway {
 		const paths = [...this.#unconfirmed];
 		let value: unknown;
 		try {
+			// The run's retry decides how long each attempt waits (CloudNativeToolRun.assertActiveWith).
 			value = await this.#call(
 				"qorpera_fence_native_context",
 				{ ...this.#bound(), p_paths: paths, p_view: view },
 				signal,
+				false,
+				CLOUD_TOOL_REQUEST_MAX_MS,
 			);
 		} catch (error) {
 			// Nothing ran: PostgREST found no such function.
@@ -720,7 +739,7 @@ export class CloudCompanyPathGateway {
 	 * and may run before the first acknowledgement. An absent path keeps the
 	 * version a deletion left (null if it never existed): recreating it must
 	 * name that version. Bounded to MAX_WRITE_BYTES so a notebook file can be
-	 * rewritten; a larger or non-text file is CloudCompanyPathNotText. */
+	 * rewritten; a larger or non-text file is CloudCompanyPathNotText, with its size. */
 	async readTrusted(
 		pathValue: string,
 		signal: AbortSignal,
@@ -745,11 +764,18 @@ export class CloudCompanyPathGateway {
 		const current = version(input.version)!;
 		if (found.kind !== "file") return { path, version: current, kind: "directory", text: "", fileSha256: null };
 		if (found.file.bytes > MAX_WRITE_BYTES)
-			throw new CloudCompanyPathNotText("Company File notebook exceeds its bound");
+			throw new CloudCompanyPathNotText("Company File notebook exceeds its bound", found.file.bytes);
 		const manifestSize = integer(input.manifestBytes, 1, 8 * 1024 * 1024);
-		const { text, included } = await this.#fileText(found.file, manifestSize, 0, MAX_WRITE_BYTES, signal);
-		if (included !== found.file.bytes) throw new CloudCompanyPathNotText();
-		return { path, version: current, kind: "file", text, fileSha256: found.file.fileSha256 };
+		let read: { text: string; included: number };
+		try {
+			read = await this.#fileText(found.file, manifestSize, 0, MAX_WRITE_BYTES, signal);
+		} catch (error) {
+			if (error instanceof CloudCompanyPathNotText)
+				throw new CloudCompanyPathNotText(error.message, found.file.bytes);
+			throw error;
+		}
+		if (read.included !== found.file.bytes) throw new CloudCompanyPathNotText(undefined, found.file.bytes);
+		return { path, version: current, kind: "file", text: read.text, fileSha256: found.file.fileSha256 };
 	}
 
 	/** Trusted directory listing (see readTrusted): every child, page after page
