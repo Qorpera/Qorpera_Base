@@ -331,11 +331,9 @@ lease, the hook, the cursor.
 
 The coordinator (4 October) made the orchestrator step shared: a **folder drains** step before the folder materializer,
 which each per-company drain plugs into as a due list and a per-company action. P29's `listen` is the first. F2-5b-3
-(the worker drain), S3's 3i-b (machine events, `machine_events`, built; the quiet coding check-ins follow coding
-dispatch on folder-v2 with C3), the one idle rule's check-ins (`machine_checkins`, 20260930098000; coding sessions
-20260930109000) and A1's 3l-2
-(office wakes) plug in the same way, adding one entry to two tables and
-touching nothing else here.
+(the worker drain), S3's 3i-b (machine events, `machine_events`, built; the quiet coding check-ins, `coding_checkins`,
+built with C3c), the one idle rule's check-ins (`machine_checkins`, 20260930098000; coding sessions 20260930109000) and
+A1's 3l-2 (office wakes) plug in the same way, adding one entry to two tables and touching nothing else here.
 
 **SQL, per drain `<x>`** (both service_role only, revoked from every other role):
 - **The due list:** `qorpera_folder_<x>_due(p_after_environment uuid default null, p_limit integer default 100) returns
@@ -359,8 +357,10 @@ touching nothing else here.
   `human_tasks: {due: 'qorpera_folder_human_tasks_due', company: 'qorpera_folder_human_tasks_company', maximum: 32}`,
   `machine_events: {due: 'qorpera_folder_machine_events_due', company: 'qorpera_folder_machine_events_company',
   maximum: 64}`, since C1c-3l part 2 `office_wakes: {due: 'qorpera_folder_office_wakes_due',
-  company: 'qorpera_folder_office_wakes_company', maximum: 40}` (C1C §6.18), and `machine_checkins:
-  {due: 'qorpera_folder_machine_checkins_due', company: 'qorpera_folder_machine_checkins_company', maximum: 64}`;
+  company: 'qorpera_folder_office_wakes_company', maximum: 40}` (C1C §6.18), `machine_checkins:
+  {due: 'qorpera_folder_machine_checkins_due', company: 'qorpera_folder_machine_checkins_company', maximum: 64}`, and
+  `coding_checkins: {due: 'qorpera_folder_coding_checkins_due', company: 'qorpera_folder_coding_checkins_company',
+  maximum: 32}` (C3c);
 - two generic actions:
   - `folder_drain_due {orchestratorId, drain, afterEnvironmentId?, limit ≤ 500}` calls `due` with
     `{p_after_environment, p_limit}`;
@@ -372,7 +372,7 @@ touching nothing else here.
 - `CLOUD_FOLDER_DRAINS` lists the drains in the order they run, each `{name, companyLimit}`: today
   `[{name: 'workers', companyLimit: 32}, {name: 'listen', companyLimit: 32}, {name: 'human_tasks', companyLimit: 32},
   {name: 'machine_events', companyLimit: 8}, {name: 'office_wakes', companyLimit: 16},
-  {name: 'machine_checkins', companyLimit: 8}]`;
+  {name: 'machine_checkins', companyLimit: 8}, {name: 'coding_checkins', companyLimit: 8}]`;
 - each reconcile pass (every 2 s) runs every drain in order, then `CloudFolderRunMaterializer`, so a wake a drain
   admits becomes a run in the same pass;
 - each drain pages through its due list, 100 at a time, and asks for each company in its own request;
@@ -431,6 +431,11 @@ it. Each question lists that conversation's running commands with the `commandId
 member who is not active is not asked; an always-on machine is left to its weekly check-in. A question stands while the
 same agent would be asked about the machine in the same conversation from the same start; a new command of that agent
 there, a new boot, a stop, or that conversation's commands ending while others still run suppress it.
+
+**C3c's due list** (`coding_checkins`, C1C §6.20, STATE-FILES §8): the folder-v2 environments, not being deleted, not
+paused and not out of computer hours, with a coding session due a quiet question (1, 3 or 7 quiet days, that mark not
+yet asked) whose worker is neither erased nor retired and whose parent run is ready, has stopped or is gone. One step
+looks at up to 8 sessions, longest quiet first, and asks each parent one question at a time.
 
 Commits do not nudge the orchestrator. A file wake waits one 2 s pass while one step's window covers the company's
 backlog; with N listeners a step reads 512/N seqs (at most 32), and each company gets one step per pass, so a large
