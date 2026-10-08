@@ -2409,7 +2409,28 @@ worker suites (379, 385, 387, 388, 395–399, 600–606, 656) after the new colu
     lock, as every coding-session writer takes it (3i-a's claim, begin and complete, the cancel, the drain).
 - **C3b (the runtime):** `cloud-folder-workers.ts` dispatches and follows up coding sessions (the brief's coding
   fields, the request's), and the dispatch's answer names the session's phase.
-- **C3c:** the quiet coding check-ins as a drain, on #816's continuation helpers (C1C §6.20's hand-over).
+- **C3c (migration 20260930107500, SQL tests 934 and 936; the drain `coding_checkins`, LISTENER §9, C1C §6.20's hand-over):**
+  349850's quiet check-ins on folder-v2. After 1, 3 and 7 quiet days, the agent that started a coding session is asked
+  once per mark whether it can be archived. The legacy ask (`qorpera_ask_quiet_coding_sessions`) still skips folder-v2
+  (026000) and stays for the executor's scan.
+  - **Due** (`qorpera_folder_coding_checkin_due`, 349850's rule): an open session whose worker is not active and has
+    no report on its way, with a steering run, a mark reached and not asked in this quiet period, and an executor to
+    archive it. The due list and the step leave out erased and retired workers (`qorpera_coding_worker_retired`), and
+    parents still running or with a continuation pending (`qorpera_folder_parent_continuation`).
+  - **The question** is a `worker-completion` wake for the worker's steering run, longest quiet first, one continuation
+    of a parent at a time. It has the report shape the agent already reads (`qorpera_worker_completion_payload`), with
+    349850's question as the summary, and the legacy key `coding-quiet:<worker>:<quiet since, ms>:<mark>`:
+    - a new turn withdraws a queued question (`qorpera_open_coding_turn`);
+    - a member who stops a question's run stops only that question: `qorpera_worker_revival_stopped` skips the key,
+      and `qorpera_folder_parent_continuation` now uses it for `worker-completion`. That session is not asked again in
+      that quiet period (its mark goes to 7).
+
+    The session's event says "Quiet for N days; asked the agent whether it can be archived".
+  - **Marks.** An erased or retired worker found under the locks, or a stopped parent, has its mark counted as asked
+    (`suppressed`). A gone parent, or a wake refused (the same key again, no one to pay), is `undeliverable`, and the
+    answer names the last refusal. Either way the executor's automatic archive (after 30 quiet days) remains.
+  - **F2's cancel**, like C3b's archive, refuses a question's run once the session has a new turn since it was asked
+    (55000, `qorpera_coding_question_stale`). `manage_worker` answers it in SQL's words.
 - **C3d:** a coding turn's result written to `results.md`.
 
 **Plan (P16): interfaces and tables on the folder core** (the coordinator's slice P16, RUNTIME-INTERFACES.md
