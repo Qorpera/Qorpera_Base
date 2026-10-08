@@ -36,7 +36,9 @@ export class MachineCommandRouter {
 		const peer = this.#options.peers.find((entry) => entry.owner === authority.executorOwner && entry.providerId === authority.providerId);
 		if (!peer) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
 		const gateway = createHttpCloudMachineCommandGateway({
-			url: peer.origin, token: await this.#options.credential(peer.tokenCredential), binding: request.binding, fetch: this.#options.fetch,
+			url: peer.origin, token: await this.#options.credential(peer.tokenCredential), binding: request.binding,
+			// The peer listener takes no holder: this executor proved the guest's at its own ingress.
+			holder: null, fetch: this.#options.fetch,
 		});
 		// No retry: an uncertain start remains uncertain. The receiving peer has
 		// its own credential, rechecks SQL and may only execute locally; its

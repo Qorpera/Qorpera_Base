@@ -56,6 +56,8 @@ const HUMAN_TASK_STATUSES: ReadonlySet<string> = new Set([
 	"cancelled",
 ]);
 const WAKE_TIME = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/;
+/** A todo's or a worker's key, as manage_worker takes it. */
+const WORK_KEY = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 function closed(value: unknown, keys: readonly string[]): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid cloud wake");
@@ -662,7 +664,8 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 	} else if (wake.kind === "agent" && source.kind === "machine-checkin") {
 		// A typed internal continuation of the agent's own run: a program it started has kept a machine busy for hours
 		// since it last worked with it (the one idle rule's check-in, amendment of 2026-10-03, item 5). A notice: the
-		// program keeps running until the agent stops it.
+		// program keeps running until the agent stops it. A coding session's check-in also names the session as
+		// manage_worker does (todoKey, workerKey), and each running command the turn that started it.
 		const asked = closed(payloadBody, ["schema", "parentRunId", "checkins", "stillWaiting"]);
 		if (
 			asked.schema !== "qorpera.machine-checkin/v1" ||
@@ -683,6 +686,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		)
 			throw new Error("Invalid machine check-in wake");
 		for (const [index, item] of asked.checkins.entries()) {
+			const coding = (item as { machineKind?: unknown } | null)?.machineKind === "coding";
 			const checkin = closed(item, [
 				"checkinId",
 				"machineKind",
@@ -692,10 +696,16 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 				"busyHours",
 				"running",
 				"more",
+				...(coding ? ["todoKey", "workerKey"] : []),
 			]);
 			if (
 				(index === 0 && uuid(checkin.checkinId) !== source.id) ||
 				!["computer", "machine", "coding"].includes(checkin.machineKind as string) ||
+				(coding &&
+					(typeof checkin.todoKey !== "string" ||
+						!WORK_KEY.test(checkin.todoKey as string) ||
+						typeof checkin.workerKey !== "string" ||
+						!WORK_KEY.test(checkin.workerKey as string))) ||
 				typeof checkin.since !== "string" ||
 				typeof checkin.askedAt !== "string" ||
 				typeof checkin.machine !== "string" ||
@@ -709,8 +719,13 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 				throw new Error("Invalid machine check-in wake");
 			uuid(checkin.checkinId);
 			for (const running of checkin.running) {
-				const program = closed(running, ["command", "startedAt"]);
-				if (typeof program.command !== "string" || typeof program.startedAt !== "string")
+				const program = closed(running, ["command", coding ? "turn" : "startedAt"]);
+				if (
+					typeof program.command !== "string" ||
+					(coding
+						? !Number.isSafeInteger(program.turn) || (program.turn as number) < 1
+						: typeof program.startedAt !== "string")
+				)
 					throw new Error("Invalid machine check-in wake");
 			}
 		}

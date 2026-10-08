@@ -293,7 +293,7 @@ program in the pinned Rust image and passes it to the shared-execution packager 
   test step checks a fresh build gives the recorded bytes.
 - **The folder service takes the core's run box views.** A hello whose view id is a uuid is a core view: its pass must
   have the core's shape (43 base64url characters), the calling machine must be one of this node's `runBoxHosts` (the
-  execution host; any view kind from it is accepted until P7 adds the view's own node), and the core checks the pass
+  execution host; from step 4a only for a view the core says is a run box, below), and the core checks the pass
   when the view is first listed and at every renewal (a wrong first pass closes it). The service renews the lease at
   once on the first listing, then every 40 s while a machine is connected (`qorpera_folder_view_renew`), and serves
   the view only until the lease the core confirmed: past it, during a database outage, every call is `UNAVAILABLE`
@@ -372,7 +372,40 @@ service, so the execution host stays small:
     must reach the node's folder service (socket activation, the dynamic user and the vsock connect on the real host).
 - The `company_search` tool itself is the runtime's (its own PR).
 
+## Step 4a: company machines' desktops
+
+F3 step 4 puts the company folder on every company machine
+([RUNTIME-FOLDER-COMPANY-MACHINES.md](RUNTIME-FOLDER-COMPANY-MACHINES.md)). In slice 4a the folder service serves a
+computer desktop's view, which the core opens for an office screen (C1b-3a):
+
+- **Which machine.** A core view's hello is also taken from a company machine: a machine in one of this node's
+  `companyMachineProjects` (its office project; which ones is the plan's Q1) named `qorpera-office-<32 hex>`, as the
+  node names a company machine after its allocation (`lxd-office-guest.ts`). The view's first renewal says its kind
+  and machine allocation (#880), and from then on the service serves:
+  - a run box only to a `runBoxHosts` machine, read-only;
+  - a computer desktop only to the company machine named after its allocation, read-write;
+  - any other kind (a coding session's: step 5) to no machine yet.
+  A hello from any other machine is `VIEW_REFUSED`, like every refusal, also when it joins a view that is open. The
+  core never changes a view's kind or machine; a renewal that says otherwise closes the view, losing what it had
+  pending.
+- **Writes.** A desktop's view writes as an operator mount with `write` does (RUNTIME-FOLDER-WRITES.md), acting as the
+  view. It publishes 2 s after its last change (`DESKTOP_QUIET_MS`, the desktop rule of RUNTIME-COMPANY-FOLDER.md §2),
+  when its machine asks, and when its last connection leaves: what is pending then is published under the lease it
+  still has, and the view is dropped after. A machine that comes back meanwhile joins it.
+- **The seat in use.** Each renewal tells the core since when the view has had changes not published
+  (`p_unsaved_since`, C1b-3 §9), or null. Unsaved means what a boundary publishes: a removal, or a new, moved or
+  changed file or folder. A lock, swap, backup or trash name a program holds is never published and is none, nor is a
+  file opened but not changed. The first change not published renews the lease at once, so the core counts the
+  desktop's seat in use from then, not up to 40 s later. A boundary that leaves nothing unsaved clears it at the next
+  renewal, and a view its machine lets go, if the core last heard it had unsaved changes, renews once with null before
+  it is dropped, so the seat is free then, not when the lease ends.
+- **Parked changes.** A unit the core parks for review (`waiting_for_review`, reason `parked`: P40, an agent's change
+  that needs a member's) is a proposal now, and the agent's next run reviews it. The view lets it go and shows the
+  live folder, as for a unit saved. Until step 4's report reaches the desktop, the service logs every outcome of a
+  boundary no machine asked for that did not save.
+- **Tests.** `packages/object-gateway/test/folder-desktop-views.test.ts`, with the stand-in core; the core shapes script
+  checks a run box's renewal says `run_box` on no machine.
+
 ## Not here
 
-Writes; the `company_search` tool; company, coding and test machines (where commands run, each with its own mount).
-Each is a later step.
+Commands on company machines, coding machines and test machines (each with its own mount). Each is a later step.

@@ -91,6 +91,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 	readonly #origin: string;
 	readonly #token: string;
 	readonly #binding: string;
+	readonly #holder: () => string;
 	readonly #environmentId: string;
 	readonly #actor: CloudCompanyFolderRunActor;
 	readonly #control: CloudCompanyPathControl;
@@ -102,6 +103,8 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 		baseUrl: string;
 		token: string;
 		binding: CloudNativeToolBinding;
+		/** G2-6a: the run's holder credential, read per request (NativeHostDispatch.holderHeader). */
+		holder: () => string;
 		identity: CloudNativeToolIdentity;
 		control: CloudCompanyPathControl;
 		fetch?: typeof fetch;
@@ -126,6 +129,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 		this.#origin = url.origin;
 		this.#token = options.token;
 		this.#binding = Buffer.from(JSON.stringify(binding)).toString("base64url");
+		this.#holder = options.holder;
 		this.#environmentId = options.identity.environmentId;
 		this.#actor = cloudCompanyFolderRunActor(binding);
 		this.#control = options.control;
@@ -441,6 +445,7 @@ export class HttpCloudCompanyFolderBytes implements CloudCompanyFolderBytes {
 						...init.headers,
 						authorization: `Bearer ${this.#token}`,
 						"x-qorpera-native-binding": this.#binding,
+						"x-qorpera-identity": this.#holder(),
 					},
 				}).catch(() => {
 					throw new CloudRuntimeDiagnosticError("transport_unavailable", "Company folder bytes unavailable");
