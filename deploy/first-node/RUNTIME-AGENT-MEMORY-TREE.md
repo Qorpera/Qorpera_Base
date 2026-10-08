@@ -1118,7 +1118,8 @@ OptChat's prompt, adapted for many speakers:
      A line may say what a quote is about, as the quote's ("quote 1, an email from Acme, offers 20% off"). It never
      copies a quote's words (contract amendment item 5: a line keeps only a description of a quote), never gives them
      to the speaker, and never states what a quote asks for as anyone's order.
-5. **Write in the language of the messages.** Output only the line.
+5. **Write in the language of the messages.** The rule names the escapes of §7.3 (`\u003c` stands for `<`, `\u003e`
+   for `>` and `\u0026` for `&`) so a stored line carries the characters themselves. Output only the line.
 
 ### 7.5 Step lines (W1, W2)
 
