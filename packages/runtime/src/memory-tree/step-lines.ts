@@ -2,14 +2,17 @@
 // run's lane as its steps commit, stored beside the log in `runs/<run>/t<n>/`, and folded into the run's work message
 // (§5.7). One writer serves one run in one process.
 // - Each batch of steps the log commits starts a pass: it builds every line `[0, T)` is missing, leaves and the merges
-//   above them (`memoryCompact`), and commits them through the log's `commitTree` at the run's generation as the pass
-//   read it. Passes run one at a time; a pass asked for while one runs follows it.
+//   above them (`memoryCompact`), and commits them through the log's `commitTree`. Passes run one at a time; a pass
+//   asked for while one runs follows it.
 // - A resumed run's earlier steps are this run's too: their missing lines are built like the others, and the windows
 //   of its first steps reach back into them (`CloudRunLog.earlier`).
 // - A node the compactor failed on, with its inputs at hand, stays missing for the rest of the run (§7.2): the next
 //   run builds it. A stopped lane, an abort or an unreadable step is no failure.
-// - A batch of lines is derived, so it is discarded whole when the run's generation moved (`stale`, §4.5). No erase
-//   reaches a live run's log, so its lines still serve this run's own view; the next run builds them again.
+// - Lines are derived, so they are stored only at the run's generation as the writer read it before its first step or
+//   line (§4.3). Once a commit comes back `stale`, or the generation moved, the batch is discarded whole and nothing
+//   more is stored in the run: what was built serves this run's own view, and the next run builds it again.
+// - This process's narrow steps are in full in its own view, and no line over them is stored (§4.5). An earlier
+//   process's narrow steps are their tool's name, as their records are, and are stored like the others.
 // - A request whose fold needs lines not built yet waits up to SETTLE for them, then shows placeholders (§5.4, §5.7).
 //   At run end, `finish` builds what is left within CLOSE (§7.1).
 
@@ -42,6 +45,8 @@ const CHANGE_SET_FILES = 64;
 const CHANGE_SET_BYTES = 1024 * 1024;
 /** A tier's block: levels 4t to 4t + 3, 16 + 8 + 4 + 2 lines at most (§4.2). */
 const BLOCK_LINES = 30;
+/** Times a pass reads its steps and blocks while the log is found anew under them. */
+const READS = 3;
 
 /** A step as the log gives it. `narrow` comes with W1c-3's narrow steps (§4.5). */
 export type CloudRunStepLinesStep = CloudRunLogStep & { readonly narrow?: true };
@@ -49,12 +54,13 @@ export type CloudRunStepLinesStep = CloudRunLogStep & { readonly narrow?: true }
 /**
  * A step as its level-0 line sees it (§7.5), or null while it cannot be rendered: a step of this process still
  * waiting for its result.
- * - A narrow step is its tool's name, exactly: its line, and every line over it, names nothing else (§4.5).
+ * - A narrow step an earlier process left is its tool's name, exactly: its record holds nothing else, and its line,
+ *   and every line over it, names nothing else (§4.5). This process's own narrow steps are in full.
  * - An erased step is its tool and `(erased)` (§10.1), as zoom shows it.
  * - A step an earlier process of the run left with no result is shown as its outcome unknown (§12).
  */
 export function cloudRunStepText(step: CloudRunStepLinesStep, earlier: boolean): string | null {
-	if (step.narrow) return step.tool;
+	if (step.narrow && earlier) return step.tool;
 	if (step.erased) return `${step.tool}: (erased)`;
 	const result = step.result ?? (earlier ? RUN_STEP_OUTCOME_UNKNOWN : null);
 	if (result === null) return null;
@@ -123,8 +129,10 @@ export class CloudRunStepLines {
 	readonly #nonce = Math.random().toString(36).slice(2, 10).padEnd(8, "0");
 	/** Lines built, stored or not, by `l:k`. */
 	readonly #known = new Map<string, string>();
-	/** Lines not stored yet, with the generation they were built at. */
-	readonly #unstored = new Map<string, { readonly line: MemoryTreeLine; readonly generation: number }>();
+	/** Lines built for this run's view only, never stored: those over a narrow step of this process (§4.5). */
+	readonly #viewOnly = new Set<string>();
+	/** Lines built and not stored yet. */
+	readonly #unstored = new Map<string, MemoryTreeLine>();
 	/** Nodes the compactor failed on: missing for the rest of the run. */
 	readonly #failed = new Set<string>();
 	/** Blocks read into `#known`. */
@@ -134,6 +142,10 @@ export class CloudRunStepLines {
 	readonly #close = new AbortController();
 	readonly #unsubscribe: () => void;
 	#finishing: AbortSignal | null = null;
+	/** The run's generation as the writer read it before its first step or line: every line it stores is at it. */
+	#generation: number | null = null;
+	/** True once a commit came back `stale` or the generation moved: nothing more is stored in the run (§4.3). */
+	#stale = false;
 	#done = false;
 	#gone = false;
 	#commits = 0;
@@ -192,6 +204,8 @@ export class CloudRunStepLines {
 		} finally {
 			clearTimeout(timer);
 			signal.removeEventListener("abort", close);
+			// A pass asked for before now builds nothing after it.
+			this.#close.abort();
 			this.#done = true;
 			this.#unsubscribe();
 		}
@@ -281,21 +295,50 @@ export class CloudRunStepLines {
 		if (io.aborted) return;
 		const build = finishing ? this.#close.signal : AbortSignal.any([this.#signal, this.#close.signal]);
 		try {
-			const { T, texts } = await this.#texts(io);
-			await this.#load(T, io);
-			// As the log was last found: by a step batch, or by these reads on a resumed run's first pass.
-			const generation = this.#log.generation();
+			const read = await this.#read(io);
+			// Before the run's first step there is nothing to read; a log that kept moving is read by the next pass.
+			if (!read?.T) return;
+			const { generation, T, texts, narrow } = read;
+			this.#generation ??= generation;
+			// What was read at one generation is never stored at another (§4.3).
+			if (generation !== this.#generation) this.#stale = true;
 			const scope = this.#scope(T);
-			if (scope.leaves.length && !build.aborted) await this.#build(T, texts, scope, generation, build);
-			await this.#commit(generation, io);
+			if (scope.leaves.length && !build.aborted) await this.#build(T, texts, narrow, scope, build);
+			await this.#commit(this.#generation, io);
 		} catch (error) {
 			// What was built stays, and the next pass tries again; a gone log ends the writer.
 			if (error instanceof CloudRunLogGone) this.#gone = true;
 		}
 	}
 
-	/** Every step `[0, T)` as its line sees it: the earlier process's, then this one's in order as committed. */
-	async #texts(signal: AbortSignal): Promise<{ T: number; texts: (string | null)[] }> {
+	/**
+	 * The run's generation, then the steps `[0, T)` and the blocks not read yet, read after it (§4.3). Reads that found
+	 * the log anew (a resumed run's first, or after a move) may straddle it, so they are read again at the generation
+	 * it found. Null when it moved under every read.
+	 */
+	async #read(
+		signal: AbortSignal,
+	): Promise<{ generation: number; T: number; texts: (string | null)[]; narrow: boolean[] } | null> {
+		for (let attempt = 1; attempt <= READS; attempt++) {
+			const generation = this.#log.generation();
+			const { T, texts, narrow } = await this.#texts(signal);
+			const blocks = await this.#blocks(T, signal);
+			if (this.#log.generation() !== generation) continue;
+			for (const [path, lines] of blocks) {
+				for (const line of lines)
+					if (!this.#known.has(nodeKey(line.l, line.k))) this.#known.set(nodeKey(line.l, line.k), line.text);
+				this.#loaded.add(path);
+			}
+			return { generation, T, texts, narrow };
+		}
+		return null;
+	}
+
+	/**
+	 * Every step `[0, T)` as its line sees it: the earlier process's, then this one's in order as committed; and which
+	 * of them are this process's narrow steps.
+	 */
+	async #texts(signal: AbortSignal): Promise<{ T: number; texts: (string | null)[]; narrow: boolean[] }> {
 		const own = this.#log.steps() as readonly CloudRunStepLinesStep[];
 		let T = this.#first;
 		for (const step of own) {
@@ -303,6 +346,7 @@ export class CloudRunStepLines {
 			T += 1;
 		}
 		const texts = new Array<string | null>(T).fill(null);
+		const narrow = new Array<boolean>(T).fill(false);
 		if (this.#first > 0) {
 			try {
 				for (const step of (await this.#log.earlier(signal)) as readonly CloudRunStepLinesStep[])
@@ -312,23 +356,30 @@ export class CloudRunStepLines {
 				if (error instanceof CloudRunLogGone) throw error;
 			}
 		}
-		for (const step of own) if (step.j < T) texts[step.j] = cloudRunStepText(step, false);
-		return { T, texts };
+		for (const step of own) {
+			if (step.j >= T) continue;
+			texts[step.j] = cloudRunStepText(step, false);
+			narrow[step.j] = step.narrow === true;
+		}
+		return { T, texts, narrow };
 	}
 
-	/** Reads each block `[0, T)` has nodes in, once. A block that does not parse is read as empty. */
-	async #load(T: number, signal: AbortSignal): Promise<void> {
+	/**
+	 * The stored lines of each block `[0, T)` has nodes in, of those not read yet. A block that does not parse is read
+	 * as empty.
+	 */
+	async #blocks(T: number, signal: AbortSignal): Promise<Map<string, MemoryTreeLine[]>> {
+		const blocks = new Map<string, MemoryTreeLine[]>();
 		for (let tier = 0; 2 ** (4 * tier) <= T; tier++) {
 			const span = 16 ** (tier + 1);
 			for (let block = 0; block * span + 2 ** (4 * tier) <= T; block++) {
 				const path = memoryBlockPath(4 * tier, block * 16);
 				if (this.#loaded.has(path)) continue;
 				const stored = await this.#log.treeRead(path, signal);
-				for (const line of (stored && cloudRunTreeBlockLines(stored.text, path)) ?? [])
-					if (!this.#known.has(nodeKey(line.l, line.k))) this.#known.set(nodeKey(line.l, line.k), line.text);
-				this.#loaded.add(path);
+				blocks.set(path, (stored && cloudRunTreeBlockLines(stored.text, path)) ?? []);
 			}
 		}
+		return blocks;
 	}
 
 	/**
@@ -352,8 +403,8 @@ export class CloudRunStepLines {
 	async #build(
 		T: number,
 		texts: readonly (string | null)[],
+		narrow: readonly boolean[],
 		scope: { leaves: number[]; nodes: [number, number][] },
-		generation: number,
 		signal: AbortSignal,
 	): Promise<void> {
 		const { lines, stats } = await memoryCompact(
@@ -371,11 +422,19 @@ export class CloudRunStepLines {
 			this.#call,
 			{ lane: this.#lane, signal },
 		);
+		// Children first: a leaf whose step or window holds a narrow step of this process, and a merge over a line for
+		// the view only, are for the view only too.
 		for (const line of lines) {
 			const key = nodeKey(line.l, line.k);
 			if (this.#known.has(key)) continue;
 			this.#known.set(key, line.text);
-			this.#unstored.set(key, { line, generation });
+			const viewOnly =
+				line.l === 0
+					? narrow.slice(memoryWindowStart(line.k), line.k + 1).includes(true)
+					: this.#viewOnly.has(nodeKey(line.l - 1, 2 * line.k)) ||
+						this.#viewOnly.has(nodeKey(line.l - 1, 2 * line.k + 1));
+			if (viewOnly) this.#viewOnly.add(key);
+			else if (!this.#stale) this.#unstored.set(key, line);
 		}
 		if (stats.calls || stats.free || stats.failures) {
 			try {
@@ -398,13 +457,16 @@ export class CloudRunStepLines {
 	}
 
 	/**
-	 * Commits the lines not stored yet, built at `generation`: each block read again, its stored lines kept, in change
-	 * sets within core §5's bounds. Lines built at another generation are dropped.
+	 * Commits the lines not stored yet at `generation`, the writer's: each block read again, its stored lines kept, in
+	 * change sets within core §5's bounds.
 	 */
 	async #commit(generation: number, signal: AbortSignal): Promise<void> {
-		for (const [key, entry] of this.#unstored) if (entry.generation !== generation) this.#unstored.delete(key);
+		if (this.#stale) {
+			this.#unstored.clear();
+			return;
+		}
 		const byPath = new Map<string, MemoryTreeLine[]>();
-		for (const { line } of this.#unstored.values()) {
+		for (const line of this.#unstored.values()) {
 			const path = memoryBlockPath(line.l, line.k);
 			byPath.set(path, [...(byPath.get(path) ?? []), line]);
 		}
@@ -459,7 +521,8 @@ export class CloudRunStepLines {
 			);
 			if (outcome === "gone") throw new CloudRunLogGone();
 			if (outcome === "stale") {
-				// Discarded whole: none of these lines is stored, nor tried again in this run.
+				// Discarded whole, with every line over it: nothing more is stored in this run (§4.3).
+				this.#stale = true;
 				this.#unstored.clear();
 				return;
 			}
