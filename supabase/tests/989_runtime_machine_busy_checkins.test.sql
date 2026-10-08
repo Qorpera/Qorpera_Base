@@ -11,7 +11,8 @@
 --    always-on, stopped, an archived agent, a company not on folder-v2).
 -- 5. Who is asked: a worker's command in the conversation that dispatched it; each conversation about its own commands;
 --    with no command running, the agent that started the machine.
--- 6. Delivery by the folder drain's step, once the parent ended; a question no longer standing is suppressed.
+-- 6. Delivery by the folder drain's step, once the parent ended; a question no longer standing is suppressed, a gone
+--    parent's undeliverable.
 -- 7. Bounds, the longest question, privileges and markers. The fixture is removed at the end.
 
 create function pg_temp.check(p_ok boolean, p_message text) returns void language plpgsql as $$
@@ -405,6 +406,30 @@ begin
 		or (pg_temp.question(7)).delivery is distinct from 'suppressed' or exists (select 1 from pg_temp.wakes()) then
 		raise exception 'Delivery: a question for a machine no longer busy is suppressed: %', v_answer; end if;
 end $$;
+-- A gone parent's question that still stands is undeliverable. Another run of Ada's (9c1), whose job is gone, started
+-- the tests there; an hour on, both conversations are asked. The next step continues Ada's conversation, and the gone
+-- one's question is undeliverable.
+begin;
+set local session_replication_role = replica;
+insert into public.qorpera_execution_runs
+select (jsonb_populate_record(pg_temp.run(), jsonb_build_object('id', '98900000-0000-4000-8000-0000000009c1',
+	'job_id', extensions.gen_random_uuid(), 'source_id', extensions.gen_random_uuid()))).*;
+set local session_replication_role = origin;
+select pg_temp.started(5, 'make test', '98900000-0000-4000-8000-0000000009c1');
+select pg_temp.age('61 minutes');
+select pg_temp.busy();
+do $$
+declare v_answer jsonb := pg_temp.step();
+begin
+	if (v_answer ->> 'asked')::integer <> 2 or (v_answer ->> 'delivered')::integer <> 0 then
+		raise exception 'Delivery: both conversations are asked: %', v_answer; end if;
+	v_answer := pg_temp.step();
+	if (v_answer ->> 'delivered')::integer <> 1 or (v_answer ->> 'undeliverable')::integer <> 1
+		or (v_answer ->> 'suppressed')::integer <> 0 or (select q.delivery from public.qorpera_machine_checkins q
+			where q.parent_run_id = '98900000-0000-4000-8000-0000000009c1') is distinct from 'undeliverable' then
+		raise exception 'Delivery: a gone parent''s standing question is undeliverable: %', v_answer; end if;
+end $$;
+rollback;
 
 -- 7. Bounds, the longest question, privileges and markers.
 select pg_temp.refused(format('select public.qorpera_ask_busy_company_machines(%L, %s)', bad.environment_id, bad.bound), '22023',
