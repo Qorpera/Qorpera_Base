@@ -158,6 +158,9 @@ export function createHttpCloudMachineCommandGateway(options: {
 	url: string;
 	token: string;
 	binding: CloudNativeToolBinding;
+	/** G2-6b: the run's holder credential, read per request (NativeHostDispatch.holderHeader). Null only for an
+	 * executor forwarding to its peer, which holds no run's lease. */
+	holder: (() => string) | null;
 	allowLoopback?: boolean;
 	fetch?: typeof fetch;
 }): CloudMachineCommandGateway {
@@ -184,7 +187,11 @@ export function createHttpCloudMachineCommandGateway(options: {
 						method: "POST",
 						redirect: "error",
 						signal: requestSignal,
-						headers: { authorization: `Bearer ${options.token}`, "content-type": "application/json" },
+						headers: {
+							authorization: `Bearer ${options.token}`,
+							"content-type": "application/json",
+							...(options.holder ? { "x-qorpera-identity": options.holder() } : {}),
+						},
 						body,
 					});
 					if (response.status !== 200) {

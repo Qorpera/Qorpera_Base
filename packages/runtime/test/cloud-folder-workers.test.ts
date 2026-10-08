@@ -502,6 +502,37 @@ it("cancels a worker as a run effect under its own receipt", async () => {
 			.change({ action: "cancel", operationKey: "cancel-2", todoKey: "market-scan", workerKey: "other" }, f.context),
 		"You have no worker",
 	);
+	// A coding session with a new turn since the agent was asked about it is left alone, in SQL's words (C3c); the
+	// cancel's other 55000 is no refusal of the model's.
+	const stale = await fixture(
+		{},
+		{ cancelError: { code: "55000", message: "The session has a new turn since you were asked; leave it" } },
+	);
+	await refuses(
+		stale
+			.workers()
+			.change(
+				{ action: "cancel", operationKey: "cancel-3", todoKey: "market-scan", workerKey: "prices" },
+				stale.context,
+			),
+		"The session has a new turn since you were asked; leave it",
+	);
+	const reconciling = await fixture(
+		{},
+		{ cancelError: { code: "55000", message: "Worker operation needs reconciliation" } },
+	);
+	const error = await reconciling
+		.workers()
+		.change(
+			{ action: "cancel", operationKey: "cancel-4", todoKey: "market-scan", workerKey: "prices" },
+			reconciling.context,
+		)
+		.then(
+			() => null,
+			(thrown: unknown) => thrown,
+		);
+	expect(error).toBeInstanceOf(Error);
+	expect(error).not.toBeInstanceOf(CloudToolRefusal);
 });
 
 it("archives a coding session as a run effect under its own receipt, and relays its refusals (C3b)", async () => {
@@ -574,8 +605,24 @@ it("routes manage_worker and report_work to the folder writer, and says how work
 	expect(manage?.description).toContain("holds brief.md");
 	// Coding sessions and their archive are this company's too (C3b).
 	expect(manage?.description).toContain("A coding session is a worker with species coding");
+	// The one idle rule: a busy session keeps its machine awake and brings check-ins (20260930109000).
+	expect(manage?.description).toContain(
+		"Only a busy program keeps it awake; a session busy for hours after a turn brings you check-ins.",
+	);
 	expect(manage?.description).toContain("Actions: dispatch, status, followup, cancel, decide, archive.");
 	expect(manage?.description).not.toContain("without todoKey, those of open todos");
+	// The longest text a run gets: folder-v2 on a node that serves machines. The tool boundary refuses over 4096 bytes.
+	const [, withMachines] = cloudWorkerTools(
+		f.binding,
+		f.identity,
+		control,
+		gateway,
+		{ kind: "human", source: { kind: "input", id: f.identity.runId, occurrenceKey: "x" } } as never,
+		{ machines: true, folderWorkers: f.workers() },
+	);
+	expect(withMachines?.description).toContain("running tests or builds on the company's machines");
+	expect(withMachines?.description).toContain("a session busy for hours after a turn brings you check-ins");
+	for (const tool of [manage, withMachines]) expect(Buffer.byteLength(tool!.description)).toBeLessThanOrEqual(4096);
 	// As the model sends them: JSON, without the empty context.
 	const { context: _context, ...sent } = DISPATCH;
 	const request = manage?.parseArguments(JSON.parse(JSON.stringify(sent)));

@@ -3,6 +3,14 @@ import { createServer, type Socket } from "node:net";
 import { isAbsolute, join } from "node:path";
 import type { JsonValue } from "@qorpera/contracts";
 import {
+	CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
+	type CloudNativeContextComposition,
+	type CloudNativeContextRequest,
+	cloudNativeContextIdentity,
+	cloudNativeContextReply,
+	parseCloudNativeContextRequest,
+} from "./cloud-native-context-composition.ts";
+import {
 	CLOUD_NATIVE_FENCE_FRAME_BYTES,
 	type CloudNativeFencedResult,
 	type CloudNativeResultInput,
@@ -16,8 +24,13 @@ const MAX_FRAME_BYTES = CLOUD_NATIVE_FENCE_FRAME_BYTES;
 // A run is not capped by its number of model requests or their total size
 // (founder, 2026-09-24); replayed request ids are tracked in a rolling window.
 const TRACKED_REQUESTS = 16_384;
-/** From a request's connection to its reply: the checks before release and the reply. */
-export const CLOUD_NATIVE_RESULT_FENCE_DEADLINE_MS = 4_000;
+// Connections open at once: a model request makes two, its context composition and then its fence, and a
+// prewarm or a reviewer's request may overlap the agent's. More is a flood, not a run.
+const MAX_CONNECTIONS = 8;
+// No stopwatch from a request's connection to its reply (5 Oct 2026; 4 s here and 5 s in Codex until then): the
+// checks before release take as long as the database does, and only the run's end stops them (`signal`: its
+// authority or lease gone, a refusal, a stop). The pinned Codex keeps a 10-minute backstop against a host that is
+// alive but hung (0001-cloud-result-fence.patch), and a host that dies closes the socket at once.
 const ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 
 export interface CloudNativeFenceRequest {
@@ -108,6 +121,18 @@ export async function startCloudNativeResultFence(options: {
 	 * records the view: the boundary then leaves its own first check to that call. Asked per
 	 * request, because a spare process is bound to its run later. */
 	recordChecksAuthority?: () => boolean;
+	/** Context composition (`qorpera.native-context-composition/v1`, cloud-native-context-composition.ts): before
+	 * every provider request Codex asks on this socket what to send of its items. Without it such a request fails
+	 * the fence. */
+	context?: {
+		/** The request's thread and turn are the run's (or a reviewer's), as for its fence request. */
+		assertRequest: (request: CloudNativeContextRequest) => void;
+		/** Every item kept, unchanged, when absent or when it returns undefined. */
+		compose?: (
+			request: CloudNativeContextRequest,
+			signal: AbortSignal,
+		) => CloudNativeContextComposition | undefined | Promise<CloudNativeContextComposition | undefined>;
+	};
 	onFailure: () => void;
 	signal: AbortSignal;
 }): Promise<{ path: string; close: () => Promise<void> }> {
@@ -126,14 +151,39 @@ export async function startCloudNativeResultFence(options: {
 		for (const socket of sockets) socket.destroy();
 		options.onFailure();
 	};
+	// One identity per request, composition or fence, in a rolling window.
+	const track = (requestId: string): void => {
+		if (requestIds.has(requestId)) throw new Error("Native result request replayed");
+		requestIds.add(requestId);
+		if (requestIds.size > TRACKED_REQUESTS) requestIds.delete(requestIds.values().next().value as string);
+	};
+	const reply = (socket: Socket, value: unknown): void => {
+		const wire = Buffer.from(JSON.stringify(value));
+		if (wire.length > MAX_FRAME_BYTES) throw new Error("Native result frame too large");
+		const size = Buffer.alloc(4);
+		size.writeUInt32BE(wire.length);
+		socket.end(Buffer.concat([size, wire]));
+	};
+	const compose = (socket: Socket, request: CloudNativeContextRequest): void => {
+		const context = options.context;
+		if (!context) throw new Error("Native context composition unavailable");
+		track(request.requestId);
+		context.assertRequest(request);
+		void Promise.resolve(context.compose?.(request, options.signal))
+			.then((composition) => {
+				if (stopped || socket.destroyed || options.signal.aborted) return;
+				context.assertRequest(request);
+				reply(socket, cloudNativeContextReply(request, composition ?? cloudNativeContextIdentity(request)));
+			}, fail)
+			.catch(fail);
+	};
 	const server = createServer((socket) => {
-		if (stopped || sockets.size >= 4) {
+		if (stopped || sockets.size >= MAX_CONNECTIONS) {
 			socket.destroy();
 			fail();
 			return;
 		}
 		sockets.add(socket);
-		const timer = setTimeout(fail, CLOUD_NATIVE_RESULT_FENCE_DEADLINE_MS);
 		let headerBytes = 0;
 		const header = Buffer.alloc(4);
 		let frame: Buffer | undefined;
@@ -141,7 +191,6 @@ export async function startCloudNativeResultFence(options: {
 		let processing = false;
 		socket.on("error", fail);
 		socket.on("close", () => {
-			clearTimeout(timer);
 			sockets.delete(socket);
 		});
 		socket.on("data", (chunk: Buffer) => {
@@ -162,10 +211,17 @@ export async function startCloudNativeResultFence(options: {
 				frameBytes += chunk.copy(frame, frameBytes, offset);
 				if (frameBytes !== frame.length) return;
 				processing = true;
-				const request = parseRequest(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(frame)));
-				if (requestIds.has(request.requestId)) throw new Error("Native result request replayed");
-				requestIds.add(request.requestId);
-				if (requestIds.size > TRACKED_REQUESTS) requestIds.delete(requestIds.values().next().value as string);
+				const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(frame));
+				if (
+					value &&
+					typeof value === "object" &&
+					(value as { schema?: unknown }).schema === CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA
+				) {
+					compose(socket, parseCloudNativeContextRequest(value));
+					return;
+				}
+				const request = parseRequest(value);
+				track(request.requestId);
 				options.assertSession(request);
 				const review = options.releaseReviewOutputs?.(request);
 				// Nothing below reaches the socket before recordContextView has returned, so when that
@@ -185,19 +241,13 @@ export async function startCloudNativeResultFence(options: {
 						if (!review) await options.recordContextView?.(request, outputs, options.signal);
 						if (stopped || socket.destroyed || options.signal.aborted) return;
 						options.assertSession(request);
-						const wire = Buffer.from(
-							JSON.stringify({
-								schema: CLOUD_NATIVE_RESULT_FENCE_SCHEMA,
-								requestId: request.requestId,
-								threadId: request.threadId,
-								turnId: request.turnId,
-								outputs: outputs.map(({ capture: _capture, ...output }) => output),
-							}),
-						);
-						if (wire.length > MAX_FRAME_BYTES) throw new Error("Native result frame too large");
-						const size = Buffer.alloc(4);
-						size.writeUInt32BE(wire.length);
-						socket.end(Buffer.concat([size, wire]));
+						reply(socket, {
+							schema: CLOUD_NATIVE_RESULT_FENCE_SCHEMA,
+							requestId: request.requestId,
+							threadId: request.threadId,
+							turnId: request.turnId,
+							outputs: outputs.map(({ capture: _capture, ...output }) => output),
+						});
 					}, fail)
 					.catch(fail);
 			} catch {

@@ -1,10 +1,10 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- G2-1 (20260928409985) on a folder-v2 company (ported from snapshot-v1 in the legacy sweep): the guest's native host
 -- reaches the database with the publishable key through two entry points, qorpera_native_host_call (8 s) and
--- qorpera_native_host_call_long (25 s, the lease validator), and the runner job's lease token. Test 924's fixture leases
--- the job of Alice's run (a thread post the folder materializer turned into a run) on a runner; its lease token's hash
--- is set here to a known token's. The scope examples are folder-v2 calls; the profile scope, whose only listed calls
--- are the old Company File gateway's, is shown with a call listed for this test only.
+-- qorpera_native_host_call_long (25 s, the lease validator and the fence), and the runner job's lease token. Test 924's
+-- fixture leases the job of Alice's run (a thread post the folder materializer turned into a run) on a runner; its lease
+-- token's hash is set here to a known token's. The scope examples are folder-v2 calls; the profile scope, whose only
+-- listed calls are the old Company File gateway's, is shown with a call listed for this test only.
 reset role;
 select set_config('qorpera_test.g2_token', 'g2-lease-token-0123456789abcdef', false);
 update public.qorpera_runner_jobs
@@ -453,8 +453,8 @@ end $$;
 
 -- 7. Budgets: PostgREST (12 and later; production runs 14.5) applies a called function's statement_timeout to its
 --    request (db-hoisted-tx-settings), so a call through an entry point gets that entry point's budget, not the
---    publishable key's 3 s: 8 s (authenticator's), or 25 s for the lease validator. lock_timeout is the entry
---    point's own setting for the length of the call. Here the caller's own budgets are 1 s, the entry point's
+--    publishable key's 3 s: 8 s (authenticator's), or 25 s for the lease validator and the fence. lock_timeout is the
+--    entry point's own setting for the length of the call. Here the caller's own budgets are 1 s, the entry point's
 --    statement_timeout is applied as PostgREST applies it, and a call of 1.2 s completes and sees its entry point's
 --    budgets. Without the setting the statement would be cancelled after 1 s (57014), which no handler here catches.
 set local statement_timeout = '1s';

@@ -71,7 +71,8 @@ Founder approval: 28 September 2026, page "Logins in the Vault"
   its own 15 s deadline. Every way out gives the lock back: refused or unsaved (the old renewal token
   is spent) as permanent, anything else as transient. The run always keeps the newest pass it has
   that has not ended.
-- `POST /v1/model-logins?company=<profile>` under the runtime token, body
+- `POST /v1/model-logins?company=<profile>` under the runtime token, with the run's lease as
+  `x-qorpera-identity: job.<job id>.<lease token>` (G2-6a; see `RUNTIME-NATIVE-HOST-KEY.md`, "G2-6"), body
   `{schema: "qorpera.model-login-request/v1", binding, knownVersion}`, answer
   `{schema: "qorpera.model-login/v1", version, accessExpiresAt, authJson | null}`, never cached,
   no CORS. Client: `issueModelLogin` in `cloud-secret-broker-http.ts`.
@@ -236,7 +237,8 @@ no database login and no service key; it sees a login only for one operation and
   anchor-checked (exactly one match). The identity runtime state keeps its exact shape (older nodes
   parse it with a fixed field list).
 - The native host: a run whose authority names a `model-login/` capsule asks `POST /v1/model-logins`
-  (binding = its lease, run, job, runner, assignment, capsule and identity) instead of opening a
+  (binding = its lease, run, job, runner, assignment, capsule and identity; since G2-6a also the job's lease
+  token in `x-qorpera-identity`, from `NativeHostDispatch.holderHeader()`) instead of opening a
   capsule, refuses a copy that carries a renewal token, writes the copy as `codex/auth.json` in the
   run's private root (staged beside the Codex home, which must hold `auth.json` alone, then renamed
   into it), asks again every minute with the version it holds, and swaps the file whenever the vault

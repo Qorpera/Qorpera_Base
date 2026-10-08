@@ -159,7 +159,11 @@ async function main() {
 		// The feed carries no receipts: its replay builds the listing's content.
 		const unreceipted = { ...boxList, entries: boxList.entries.map(({ authority: _receipt, ...entry }) => entry) };
 		assert.deepEqual(ViewTree.diff(caughtUp(emptyBox, [boxFeed]), caughtUp(unreceipted, [])), [], "the view's feed replays to its listing");
-		assert.equal(parseViewRenewal(boxed.get("box-renew")).state, "open");
+		const renewal = parseViewRenewal(boxed.get("box-renew"));
+		assert.equal(renewal.state, "open");
+		// The open answer says what the view is (F3 4a): a run box, on no machine.
+		assert.equal(renewal.kind, "run_box");
+		assert.equal(renewal.machineId, null);
 		assert.deepEqual(boxed.get("box-close"), { schema: "qorpera.folder-view-close/v1", state: "closed", reason: "closed" });
 		assert.equal(parseViewRenewal(boxed.get("box-renew-closed")).state, "closed");
 		assert.equal(boxed.get("box-after-close"), "refused");

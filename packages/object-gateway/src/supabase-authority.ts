@@ -325,6 +325,20 @@ export class SupabaseObjectAuthority
 		);
 	}
 
+	/** G2-6a: the caller holds the binding's run lease (migration 20260930152000), before any other check of it. A
+	 * refusal is the function's 42501, which PostgREST answers 403. The holder is sent in the body only. */
+	async proveNativeBinding(binding: Record<string, unknown>, holder: string): Promise<void> {
+		if (
+			(await this.#rpc(
+				"qorpera_native_binding_proven",
+				{ p_binding: binding, p_holder: holder },
+				undefined,
+				this.#secretKey,
+			)) !== true
+		)
+			throw new ObjectDependencyError(403);
+	}
+
 	async authorizeNativeUpload(
 		binding: Record<string, unknown>,
 		profileId: string,
