@@ -1082,6 +1082,17 @@ function stringRecord(value: unknown, label: string): Record<string, string> {
 	return Object.fromEntries(entries) as Record<string, string>;
 }
 
+/** Whether a project's instances may have the agent card, a bridged NIC whose parent is the agents' bridge (not a
+ * network LXD manages). This is LXD's own rule (lxd/project/permissions.go, the NIC check and `NetworkAllowed`):
+ * LXD enforces the restrictions unless `restricted` is empty or false, then needs every NIC allowed and the bridge
+ * among the project's networks, if it lists any. */
+function projectAllowsAgentCard(config: Readonly<Record<string, string>>): boolean {
+	if (["", "false", "0", "no", "off"].includes((config.restricted ?? "").toLowerCase())) return true;
+	if (config["restricted.devices.nic"] !== "allow") return false;
+	const networks = config["restricted.networks.access"] ?? "";
+	return networks === "" || networks.split(",").some((name) => name.trim() === AGENT_BRIDGE);
+}
+
 function devices(value: unknown): Record<string, Readonly<Record<string, string>>> {
 	const entries = plainEntries(value, "LXD instance devices");
 	if (entries.some(([name]) => !DEVICE_NAME.test(name))) throw new Error("LXD instance devices is invalid");
@@ -1462,9 +1473,8 @@ export class LxdUnixClient
 			if (
 				p.name !== project ||
 				replicaMode !== "" ||
-				// A restricted project refuses the agent card (a NIC with a parent, not a network) unless it allows
-				// every NIC; LXD would refuse it only at the create, after the journal's claim.
-				(pc.restricted === "true" && pc["restricted.devices.nic"] !== "allow") ||
+				// LXD would refuse the agent card only at the create, after the journal's claim.
+				!projectAllowsAgentCard(pc) ||
 				n.name !== network ||
 				n.type !== "bridge" ||
 				n.managed !== true ||

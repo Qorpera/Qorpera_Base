@@ -143,7 +143,17 @@ describe("read-only physical office metadata over Unix HTTP", () => {
 		[{ restricted: "true", "restricted.devices.nic": "managed" }, false],
 		[{ restricted: "true", "restricted.devices.nic": "block" }, false],
 		[{ restricted: "true", "restricted.devices.nic": "allow" }, true],
+		[{ restricted: "true", "restricted.devices.nic": "allow", "restricted.networks.access": "office-net" }, false],
+		[
+			{ restricted: "true", "restricted.devices.nic": "allow", "restricted.networks.access": "office-net, qagent0" },
+			true,
+		],
+		[{ restricted: "1" }, false],
+		[{ restricted: "on", "restricted.devices.nic": "managed" }, false],
+		[{ restricted: "1", "restricted.devices.nic": "allow" }, true],
 		[{ restricted: "false", "restricted.devices.nic": "managed" }, true],
+		[{ restricted: "0", "restricted.devices.nic": "block", "restricted.networks.access": "office-net" }, true],
+		[{ restricted: "", "restricted.devices.nic": "managed" }, true],
 	])("allows the agent card only in a project that allows it: %j", async (restrictions, allowed) => {
 		const { infrastructure: i } = officePhysicalFixture();
 		Object.assign(i.project.config, restrictions);

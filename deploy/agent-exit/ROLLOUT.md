@@ -29,6 +29,7 @@ Each check changes nothing. Every one must hold on both nodes before step 1.
 | Room on the root disk for the exit's logs (in `/var/log/qorpera-agent-exit`, at most 2 GiB; the exit turns unhealthy with less than 10% of the disk free) | `df --output=size,avail,pcent /` | under 85% used (node 2 read 83% on 4 October; at 85% the logs keep only today, at 90% the exit is unhealthy) |
 | The NAS share for the exit's logs (E3; once, for both nodes: `README.md`, "The share"): `qorpera-agent-exit-logs` on volume 1, NFS rules for 192.168.1.27 and 192.168.1.42 only, each read/write, Squash "No mapping", security `sys`, "Enable asynchronous" off | in DSM, Control Panel → Shared Folder → `qorpera-agent-exit-logs` → Edit → NFS Permissions | the two rules as listed, and no other host (step 1's mount proves the share from each node) |
 | No agents' or coding machines from before (the new executor refuses to stop or delete one that is not on `qagent0`) | `lxc list --project machines --format csv -c n; lxc list --project coding --format csv -c n` (the projects the machine and coding VM policies name; these are their defaults) | nothing (or `Project not found`): production's companies were wiped on 3 October |
+| The machine and coding projects allow the agent card: a bridged NIC whose parent is `qagent0`, not a network. LXD refuses it in a restricted project unless the project allows every NIC and its network list is empty or names `qagent0` (`lxd/project/permissions.go`), and only at the create; no gate checks it before | `for p in machines coding; do echo "$p: $(lxc project get $p restricted) $(lxc project get $p restricted.devices.nic) [$(lxc project get $p restricted.networks.access)]"; done` | `restricted` empty or false (`false`, `0`, `no`, `off`), or `allow` with `[]` or a list naming `qagent0` (or `Project not found`; `deploy/machine/README.md` makes `machines` unrestricted). Node 2's `coding` read `true managed []` on 8 October: run `lxc project set coding restricted.devices.nic=allow` before step 5. No policy digests these projects' config |
 
 ## Step 1: the exit on node 1
 
@@ -288,10 +289,13 @@ The demand's refusal list keeps `NODE_AGENT_EXIT_UNHEALTHY`; nothing writes it o
 E6 is two PRs that merge together: #925 (the office provider) and #926 (the office image). They go out with the next
 office image (#411's), node 1 then node 2, after steps 1–6. Per node:
 1. The exit is healthy (`X verify`). Both office units join the group `qorpera-agent-plug` and fail to start without it.
-2. The offices project allows the agent card. If `lxc project get offices restricted` is `true`, set
-   `lxc project set offices restricted.devices.nic=allow`: the card names a parent (`qagent0`), not a network, which
-   `managed` refuses. The office gate refuses a restricted project without it (`LXD_OFFICE_INFRASTRUCTURE_UNCONFIRMED`),
-   before any create is claimed. The project's config is in the office policy's digest: re-enrol the policy after.
+2. The offices project allows the agent card, as step 0 asks of the machine and coding projects. LXD enforces a
+   project's restrictions unless `lxc project get offices restricted` is empty or false (`false`, `0`, `no`, `off`).
+   If it does, set `lxc project set offices restricted.devices.nic=allow` (the card names a parent, `qagent0`, not a
+   network, which `managed` refuses), and if `lxc project get offices restricted.networks.access` lists networks, add
+   `qagent0` to the list. The office gate refuses a project that would refuse the card
+   (`LXD_OFFICE_INFRASTRUCTURE_UNCONFIRMED`), before any create is claimed. The project's config is in the office
+   policy's digest: re-enrol the policy after.
 3. The new office image. Its network configures the first card (`enp5s0`) only; the plug, which the image names
    `qagent` by its MAC, never gets DHCP.
 4. The node release with the new office provider (`install-lxd-provider-host.sh`) and fleet units. The installer
