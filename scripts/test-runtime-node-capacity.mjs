@@ -169,8 +169,10 @@ try {
 	const loginOwner='92400000-0000-4000-8000-000000000001',loginAdmin='92400000-0000-4000-8000-000000000004',companyIdentity=randomUUID();
 	sql(`insert into public.qorpera_member_compute_identities(id,profile_id,ownership_kind,client_identity_id,display_name)
 	 values('${companyIdentity}','${profile}','company','${companyIdentity}','Login race fixture');`);
-	// Login reserve and release take the company's row lock first (inside qorpera_lock_profile_gc_fence); the barriers
-	// below hold that same row, so each contender waits on a real SQL lock.
+	// On folder-v2, login reserve and release first take the folder fence and the company row KEY SHARE
+	// (qorpera_folder_machine_fence, inside qorpera_folder_sign_in_machine_locks, 20260928479220), then the sign-in row FOR
+	// UPDATE. The identity barrier below holds the company row, so both reserves wait on a real SQL lock and the identity's
+	// advisory lock then lets exactly one through; the closure barrier holds the sign-in row.
 	const companyLock=`select 1 from public.qorpera_profiles where id='${profile}' for update;`;
 	const newLogin=(member=loginOwner,computeIdentity=identity)=>JSON.parse(sql(`set request.jwt.claims='{"role":"authenticated","sub":"${member}"}'; set role authenticated;
 	 select public.qorpera_begin_native_provider_login('${profile}','${randomUUID()}','${randomUUID()}','${computeIdentity}','openai','codex-cli',repeat('8',64),900);`)).login_id;
@@ -199,9 +201,10 @@ try {
 	sql(`${service} ${loginRelease(winner)}`);
 	assert.equal(JSON.parse(sql(`${service} select public.qorpera_runtime_node_capacity('${node}');`)).pendingRequests,0,'closed unstarted login is not a waiting node request');
 	assert.equal(JSON.parse(sql(`${service} ${loginReserve(loser)}`)).state,'reserved');sql(`${service} ${loginRelease(loser)}`);
-	// Force release to own the login row before a delayed first reservation.
+	// Force release to own the login row before a delayed first reservation: both queue on the sign-in row the barrier
+	// holds (KEY SHARE on the company row lets both past the fence), the release first, so it takes the row first.
 	// Both wait on real SQL locks, not sleeps or guessed transport ordering.
-	const closeBarrier=session();closeBarrier.child.stdin.write(`begin; ${companyLock} select 'LOGIN_CLOSURE_LOCKED';\n`);
+	const closeBarrier=session();closeBarrier.child.stdin.write(`begin; select 1 from public.qorpera_native_provider_login_sessions where id='${logins[2].loginId}' for update; select 'LOGIN_CLOSURE_LOCKED';\n`);
 	await until(()=>closeBarrier.output().includes('LOGIN_CLOSURE_LOCKED'));
 	const closing=session();closing.child.stdin.end(`${service} set application_name='login-close-first'; ${loginRelease(logins[2])}`);
 	await until(()=>sql("select count(*) from pg_stat_activity where application_name='login-close-first' and wait_event_type='Lock';")==='1');

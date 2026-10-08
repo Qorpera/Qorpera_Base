@@ -1,5 +1,5 @@
 -- A frozen copy of the wake fixture of 300_runtime_wake_bus.test.sql (its part before "-- END WAKE FIXTURE"), kept because
--- test-runtime-room-history.mjs replays the 13 Sep room-history upgrade on that schema; 300 was deleted in the legacy sweep.
+-- test-runtime-room-history.mjs replays the 13 Sep room-history upgrade on that schema; the legacy sweep deletes 300 in D3.
 -- Real admission, assignment and native-lease contracts; no substituted
 -- authority helper. Storage fixtures below stand in only for verified bytes.
 begin;

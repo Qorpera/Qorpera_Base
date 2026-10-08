@@ -245,13 +245,16 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
  // PostgreSQL superuser is not required: actual managed operator role shape.
  execute('grant authenticated,service_role to postgres; alter role postgres nosuperuser bypassrls;');
  assert.equal(execute("select rolsuper from pg_roles where rolname='postgres';"),'f');
- // One dispose (ported from snapshot-v1 in the legacy sweep). The concurrent exact replay is left out: on folder-v2 the
- // folder machine fence is KEY SHARE, so a second identical call passes the replay check before the first commits and
- // then fails "Disposition reset snapshot differs" (42501) instead of returning the receipt. The exact replay after the
- // commit is still checked below.
- const results=await race([`${owner}${dispose()}`]);
- for(const result of results)assert.equal(result.code,0,result.error);
- const received=JSON.parse(results[0].output.split('\n').at(-1));
+ // Two identical disposes at once (ported from snapshot-v1 in the legacy sweep): one returns the receipt and one
+ // disposition is written. The other returns the same receipt, or fails closed: on folder-v2 the folder machine fence is
+ // KEY SHARE, so it can pass the replay check before the first commits and then fail "Disposition reset snapshot
+ // differs" (42501), a known gap the legacy sweep's step G closes. The exact replay after the commit is checked below.
+ const results=await race([`${owner}${dispose()}`,`${owner}${dispose()}`]);
+ const disposed=results.filter(result=>result.code===0);
+ assert.ok(disposed.length>=1,results.map(result=>result.error).join('\n'));
+ for(const result of results)if(result.code!==0)assert.match(result.error,/Disposition reset snapshot differs/);
+ const received=JSON.parse(disposed[0].output.split('\n').at(-1));
+ for(const result of disposed.slice(1))assert.deepEqual(JSON.parse(result.output.split('\n').at(-1)),received);
  assert.equal(received.originalOutcome,'unknown');assert.equal(received.cleanResetAcceptance,false);
  assert.equal(received.dispositionSha256,createHash('sha256').update(JSON.stringify(document)).digest('hex'));
  assert.equal(received.phaseEvidenceSha256,officeDigest(received.phaseEvidence));
