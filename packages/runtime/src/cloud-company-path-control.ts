@@ -11,7 +11,7 @@ import {
 	CloudCompanyPathRpcRefusal,
 } from "./cloud-company-path-refusal.ts";
 import { CloudControlRpcRefused, cloudControlRefusalCode, cloudPostgrestError } from "./cloud-control-errors.ts";
-import { CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS, cloudToolRequest } from "./cloud-native-tool-authority.ts";
+import { CLOUD_TOOL_REQUEST_MAX_MS, cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 
 const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
@@ -30,6 +30,9 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_worker_commit",
 	"qorpera_folder_agent_workers",
 	"qorpera_folder_cancel_agent_worker",
+	"qorpera_folder_agent_proposals",
+	"qorpera_folder_apply_proposal",
+	"qorpera_folder_close_proposal",
 	"qorpera_folder_archive_coding_worker",
 ]);
 
@@ -134,6 +137,10 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_folder_worker_commit",
 			"qorpera_folder_agent_workers",
 			"qorpera_folder_cancel_agent_worker",
+			// Changes a view saved that wait for review (P40): a run's list, its apply and its close.
+			"qorpera_folder_agent_proposals",
+			"qorpera_folder_apply_proposal",
+			"qorpera_folder_close_proposal",
 			// A coding session's archive (C3b).
 			"qorpera_folder_archive_coding_worker",
 			// Event wakes (W2).
@@ -187,7 +194,12 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 								response.ok && method === "qorpera_folder_list"
 								? 2 * 1024 * 1024
 								: response.ok &&
-										(method === "qorpera_folder_commit" || method === "qorpera_folder_worker_commit")
+										(method === "qorpera_folder_commit" ||
+											method === "qorpera_folder_worker_commit" ||
+											// A proposal's apply is its commit; a page of proposals carries up to 200 units with their
+											// structured files' whole parses, which SQL does not cut.
+											method === "qorpera_folder_apply_proposal" ||
+											method === "qorpera_folder_agent_proposals")
 									? 16 * 1024 * 1024
 									: // One routine whole (32 KiB of instructions, each character escaped at worst), or a
 										// page of 32 with theirs cut; a page of 16 workers with their outputs' paths.
@@ -306,8 +318,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 				return value;
 			},
 			signal,
-			// The one-call fence carries what four calls did before a model request, within the same 4 s budget.
-			method === "qorpera_fence_native_context" ? CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS : 3000,
+			// The one-call fence carries what four calls did before a model request. The run's retry decides how long
+			// each attempt waits: 10 s at first, twice as long after one is cut (CloudNativeToolRun.assertActiveWith).
+			method === "qorpera_fence_native_context" ? CLOUD_TOOL_REQUEST_MAX_MS : 3000,
 		);
 	}
 }

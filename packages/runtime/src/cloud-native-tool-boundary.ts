@@ -12,6 +12,7 @@ import {
 import { CloudControlRpcRefused } from "./cloud-control-errors.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
+import { type CloudRunLog, CloudRunLogGone, type CloudRunLogRelease, cloudRunLogReleases } from "./cloud-run-log.ts";
 import {
 	type CloudRuntimeObservability,
 	type CloudRuntimeObservationSpan,
@@ -38,6 +39,11 @@ export const CLOUD_TOOL_RESULT_INSTRUCTIONS =
 /** Fixed wording for a definite stale-version refusal of a Company File mutation. */
 const COMPANY_FILE_VERSION_CHANGED =
 	"COMPANY_FILE_VERSION_CHANGED: nothing was written; the path changed since your version. Read it again and make the change on its current version.";
+/** An acting call is recorded in the run's work log before it runs (RUNTIME-AGENT-MEMORY-TREE.md §4.5). */
+const WORK_LOG_UNAVAILABLE =
+	"WORK_LOG_UNAVAILABLE: The platform could not record this action in the run's work log first, so it did not run. You may try the identical call once more; if it fails again, tell the member.";
+const WORK_LOG_GONE =
+	"WORK_LOG_GONE: This conversation's folder was deleted, so this run can record no more work and the action did not run. Stop working on this run.";
 
 /** Prefix for a formation write the organization projection would refuse; the gateway's reason follows. */
 const COMPANY_FORMATION_REFUSED = "COMPANY_FORMATION_REFUSED: nothing was written; ";
@@ -94,8 +100,16 @@ export interface CloudNativeTool {
 	readonly inputSchema: { [key: string]: JsonValue };
 	/** A required, closed parser: native provider schema hints are not validation. */
 	parseArguments(value: JsonValue): JsonValue;
+	/** Everything a call would change, in full, for the automatic review, when its arguments only name it and its card
+	 * is cut to a bound (P40b: a proposal's every change). It throws when it cannot give all of it: the call is then
+	 * never reviewed on a part. */
+	reviewContents?(parsed: JsonValue): JsonValue;
 	/** The cloud adapter still owns effect-time authorization, durable receipts and secret handling. */
 	execute(argumentsValue: JsonValue, context: CloudToolContext): Promise<CloudToolContent>;
+	/** After the automatic review denied the call (the reviewer, or a member on its card), with the denial's id: a call
+	 * that stands for a waiting change closes it (P40b: `apply_proposal` declines its proposal). Its text follows the
+	 * denial. It never runs the call; if it fails, the denial stands as it is. */
+	denied?(argumentsValue: JsonValue, context: CloudToolContext & { readonly actionReviewId: string }): Promise<string>;
 }
 
 export type CloudToolContent = ({ kind: "text"; value: string } | { kind: "json"; value: JsonValue }) & {
@@ -298,6 +312,22 @@ export function cloudToolJsonText(value: unknown, limit = MAX_ARGUMENT_BYTES): s
 	return encode(value, 0);
 }
 
+/** A call's arguments as the work log keeps them when the boundary refused them as unreadable or too large. */
+function loggedArguments(value: unknown): string {
+	try {
+		return cloudToolJsonText(value, MAX_SOURCE_BYTES);
+	} catch {
+		return "";
+	}
+}
+
+/** A call this boundary started, kept for an exact repeat of it. */
+interface CloudNativeCall {
+	readonly digest: string;
+	readonly result: Promise<CloudDynamicToolResponse>;
+	readonly observation?: CloudRuntimeObservationSpan;
+}
+
 function untilStopped<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
 	if (signal.aborted) return Promise.reject(new Error("Cloud tool boundary stopped"));
 	return new Promise<T>((resolve, reject) => {
@@ -323,12 +353,10 @@ export class CloudNativeToolBoundary {
 	readonly #assertActive: (signal: AbortSignal) => Promise<void>;
 	readonly #captures?: CloudNativeCaptureImages;
 	readonly #review?: CloudNativeActionReview;
+	readonly #runLog?: CloudRunLog;
 	readonly #stop = new AbortController();
 	readonly #signal: AbortSignal;
-	readonly #calls = new Map<
-		string,
-		{ digest: string; result: Promise<CloudDynamicToolResponse>; observation?: CloudRuntimeObservationSpan }
-	>();
+	readonly #calls = new Map<string, CloudNativeCall>();
 	readonly #issuedResults = new Set<string>();
 	readonly #nativeResults = new Map<string, { digest: string; output: string; imageSha256?: string }>();
 	#pending: Promise<void> = Promise.resolve();
@@ -344,8 +372,14 @@ export class CloudNativeToolBoundary {
 		captures?: CloudNativeCaptureImages;
 		/** Auto-review before acting calls; absent in compositions that review nothing (coding sessions). */
 		review?: CloudNativeActionReview;
+		/** The run's work log: every call is a step, and an acting call is committed before it runs. */
+		runLog?: CloudRunLog;
 	}) {
-		if (!UUID.test(options.companyId) || !UUID.test(options.runId)) {
+		if (
+			!UUID.test(options.companyId) ||
+			!UUID.test(options.runId) ||
+			(options.runLog && options.runLog.runId !== options.runId)
+		) {
 			throw new Error("Invalid cloud tool boundary");
 		}
 		this.#companyId = options.companyId;
@@ -360,6 +394,7 @@ export class CloudNativeToolBoundary {
 		this.#assertActive = options.assertActive;
 		this.#captures = options.captures;
 		this.#review = options.review;
+		this.#runLog = options.runLog;
 		this.#signal = AbortSignal.any([options.signal, this.#stop.signal]);
 		for (const tool of options.tools) {
 			if (
@@ -376,6 +411,11 @@ export class CloudNativeToolBoundary {
 			}
 			this.#tools.set(tool.name, { ...tool, inputSchema: structuredClone(tool.inputSchema) });
 		}
+	}
+
+	/** The run's work log, which the session feeds the agent's own text as it streams. */
+	get runLog(): CloudRunLog | undefined {
+		return this.#runLog;
 	}
 
 	/** Matches the pinned Codex 0.147.0 DynamicToolSpec, without exposing server identity as arguments. */
@@ -545,6 +585,8 @@ export class CloudNativeToolBoundary {
 					COMPANY_FILE_VERSION_CHANGED: "stale_version",
 					COMPANY_FILE_PARENT_MISSING: "parent_missing",
 					COMPANY_FORMATION_REFUSED: "invalid_arguments",
+					WORK_LOG_UNAVAILABLE: "transport_unavailable",
+					WORK_LOG_GONE: "authority_unavailable",
 				} as const;
 				observation?.finish(envelope.status, {
 					errorCategory:
@@ -569,23 +611,66 @@ export class CloudNativeToolBoundary {
 	): Promise<CloudDynamicToolResponse> {
 		if (!CALL_ID.test(callId)) throw new Error("Invalid cloud tool call id");
 		const tool = namespace === "qorpera" ? this.#tools.get(name) : undefined;
-		let argumentsText: string;
+		let argumentsText: string | null;
 		try {
 			argumentsText = cloudToolJsonText(argumentsValue);
 			if (Buffer.byteLength(argumentsText) > MAX_ARGUMENT_BYTES) throw new Error("Oversized tool arguments");
 		} catch {
-			return this.#result(callId, tool, null, "denied", { kind: "text", value: "INVALID_ARGUMENTS" });
+			argumentsText = null;
 		}
-		const digest = createHash("sha256")
-			.update(JSON.stringify([namespace, name, argumentsText]))
-			.digest("hex");
+		const digest =
+			argumentsText === null
+				? null
+				: createHash("sha256")
+						.update(JSON.stringify([namespace, name, argumentsText]))
+						.digest("hex");
+		const previous = tool && digest !== null ? this.#calls.get(callId) : undefined;
+		const runLog = this.#runLog;
+		// A repeated call is the step it repeats.
+		if (!runLog || previous?.digest === digest)
+			return this.#respond(callId, tool, argumentsText, digest, previous, observation);
+		// Every call the model sees is a step of the run's work log, in the order the calls came, kept with the envelope
+		// it got and every release its result was issued under (RUNTIME-AGENT-MEMORY-TREE.md §4.5). `args_hash` is the
+		// call's digest, as receipts and reviews have it.
+		const step = runLog.step({
+			call: callId,
+			tool: tool?.name ?? (namespace === "qorpera" && TOOL_NAME.test(name) ? name : "unrecognized"),
+			argumentsText: argumentsText ?? loggedArguments(argumentsValue),
+			argumentSha256: digest,
+		});
+		const releases: CloudRunLogRelease[] = [];
+		let response: CloudDynamicToolResponse | undefined;
+		try {
+			response = await this.#respond(callId, tool, argumentsText, digest, previous, observation, { step, releases });
+			return response;
+		} finally {
+			// The answer the model got, after the release check. A call that threw ends its turn unconfirmed, with nothing
+			// released to the model.
+			const answer =
+				response ??
+				this.#result(callId, tool, digest, "unconfirmed", { kind: "text", value: "TOOL_OUTCOME_UNCONFIRMED" });
+			runLog.finish(step, answer.contentItems[0].text, response ? releases : []);
+		}
+	}
+
+	async #respond(
+		callId: string,
+		tool: CloudNativeTool | undefined,
+		argumentsText: string | null,
+		digest: string | null,
+		previous: CloudNativeCall | undefined,
+		observation?: CloudRuntimeObservationSpan,
+		logged?: { step: number; releases: CloudRunLogRelease[] },
+	): Promise<CloudDynamicToolResponse> {
+		if (argumentsText === null || digest === null)
+			return this.#result(callId, tool, null, "denied", { kind: "text", value: "INVALID_ARGUMENTS" });
 		if (!tool) return this.#result(callId, undefined, digest, "denied", { kind: "text", value: "TOOL_UNAVAILABLE" });
-		const previous = this.#calls.get(callId);
 		if (previous && previous.digest !== digest) {
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "CALL_ID_REUSED" });
 		}
 		const result =
-			previous?.result ?? this.#pending.then(() => this.#execute(callId, tool, digest, argumentsText, observation));
+			previous?.result ??
+			this.#pending.then(() => this.#execute(callId, tool, digest, argumentsText, observation, logged));
 		if (!previous) {
 			this.#calls.set(callId, { digest, result, observation });
 			// Calls run one after another, so what this forgets has long settled.
@@ -627,6 +712,8 @@ export class CloudNativeToolBoundary {
 			return reply;
 		} catch {
 			release?.finish("denied", { errorCategory: "authority_unavailable" });
+			// The model gets only the denial: its step keeps no reads or releases of the result held back.
+			logged?.releases.splice(0);
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
 		}
 	}
@@ -637,6 +724,24 @@ export class CloudNativeToolBoundary {
 		digest: string,
 		argumentsText: string,
 		observation?: CloudRuntimeObservationSpan,
+		logged?: { step: number; releases: CloudRunLogRelease[] },
+	): Promise<CloudDynamicToolResponse> {
+		if (!logged) return this.#act(callId, tool, digest, argumentsText, observation);
+		if (this.#runLog?.gone)
+			return this.#result(callId, tool, digest, "denied", { kind: "text", value: WORK_LOG_GONE });
+		// Every release the call makes is kept with its step.
+		return cloudRunLogReleases(logged.releases, () =>
+			this.#act(callId, tool, digest, argumentsText, observation, logged.step),
+		);
+	}
+
+	async #act(
+		callId: string,
+		tool: CloudNativeTool,
+		digest: string,
+		argumentsText: string,
+		observation?: CloudRuntimeObservationSpan,
+		step?: number,
 	): Promise<CloudDynamicToolResponse> {
 		if (tool.name === "computer_screenshot" && tool.source === "runtime" && !this.#captures)
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "TOOL_UNAVAILABLE" });
@@ -662,6 +767,16 @@ export class CloudNativeToolBoundary {
 		} catch {
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
 		}
+		const context: CloudToolContext = {
+			companyId: this.#companyId,
+			runId: this.#runId,
+			callId,
+			argumentSha256: digest,
+			signal: this.#signal,
+			...(this.#identity ? { identity: this.#identity } : {}),
+			...(observation ? { observation } : {}),
+		};
+		const runLog = this.#runLog;
 		let actionReviewId: string | undefined;
 		if (this.#review) {
 			// Auto-review (v130): an acting call runs only after the reviewer lets it, or a
@@ -678,7 +793,26 @@ export class CloudNativeToolBoundary {
 					value: "REVIEW_UNAVAILABLE: The safety review of this action could not run, so it did not happen. You may try the identical call once more; if it fails again, tell the member.",
 				});
 			}
-			if (!gate.run) return this.#result(callId, tool, digest, "denied", { kind: "text", value: gate.text });
+			if (!gate.run) {
+				let text = gate.text;
+				// A denied call that stands for a waiting change closes it (P40b); a failure leaves the denial as it is.
+				if (gate.deniedReviewId && tool.denied) {
+					const deniedReviewId = gate.deniedReviewId;
+					try {
+						// Closing it is an effect too: with a work log, the step is committed first, as for a call that runs.
+						if (runLog && step !== undefined && runLog.effectful(tool, parsed))
+							await untilStopped(() => runLog.precommit(step, this.#signal), this.#signal);
+						const closed = await untilStopped(
+							() => tool.denied!(parsed, { ...context, actionReviewId: deniedReviewId }),
+							this.#signal,
+						);
+						if (closed) text = `${text} ${closed}`;
+					} catch {
+						// The denial stands, and what the call stood for stays open until a later denial or a discard.
+					}
+				}
+				return this.#result(callId, tool, digest, "denied", { kind: "text", value: text });
+			}
 			actionReviewId = gate.reviewId;
 			// The call may have waited for an approval: authority is checked again right before the effect (contract 4.3).
 			try {
@@ -689,19 +823,21 @@ export class CloudNativeToolBoundary {
 				return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
 			}
 		}
+		// An acting call is committed to the work log, with no result yet, before it runs. If that cannot land, it does
+		// not run: the log must show every effect the run had.
+		if (runLog && step !== undefined && runLog.effectful(tool, parsed)) {
+			try {
+				await untilStopped(() => runLog.precommit(step, this.#signal), this.#signal);
+			} catch (error) {
+				return this.#result(callId, tool, digest, "denied", {
+					kind: "text",
+					value: error instanceof CloudRunLogGone ? WORK_LOG_GONE : WORK_LOG_UNAVAILABLE,
+				});
+			}
+		}
 		try {
 			const content = await untilStopped(
-				() =>
-					tool.execute(parsed, {
-						companyId: this.#companyId,
-						runId: this.#runId,
-						callId,
-						argumentSha256: digest,
-						signal: this.#signal,
-						...(this.#identity ? { identity: this.#identity } : {}),
-						...(actionReviewId ? { actionReviewId } : {}),
-						...(observation ? { observation } : {}),
-					}),
+				() => tool.execute(parsed, { ...context, ...(actionReviewId ? { actionReviewId } : {}) }),
 				this.#signal,
 			);
 			const response = this.#result(callId, tool, digest, "ok", content);

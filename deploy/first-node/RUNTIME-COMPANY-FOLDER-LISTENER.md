@@ -332,8 +332,8 @@ lease, the hook, the cursor.
 The coordinator (4 October) made the orchestrator step shared: a **folder drains** step before the folder materializer,
 which each per-company drain plugs into as a due list and a per-company action. P29's `listen` is the first. F2-5b-3
 (the worker drain), S3's 3i-b (machine events, `machine_events`, built; the quiet coding check-ins, `coding_checkins`,
-built with C3c) and A1's 3l-2 (office wakes) plug in the same way, adding one entry to two tables and touching nothing
-else here.
+built with C3c), the one idle rule's check-ins (`machine_checkins`, 20260930098000; coding sessions 20260930109000) and
+A1's 3l-2 (office wakes) plug in the same way, adding one entry to two tables and touching nothing else here.
 
 **SQL, per drain `<x>`** (both service_role only, revoked from every other role):
 - **The due list:** `qorpera_folder_<x>_due(p_after_environment uuid default null, p_limit integer default 100) returns
@@ -356,8 +356,11 @@ else here.
   `workers: {due: 'qorpera_folder_workers_due', company: 'qorpera_folder_workers_company', maximum: 32}`,
   `human_tasks: {due: 'qorpera_folder_human_tasks_due', company: 'qorpera_folder_human_tasks_company', maximum: 32}`,
   `machine_events: {due: 'qorpera_folder_machine_events_due', company: 'qorpera_folder_machine_events_company',
-  maximum: 64}` and `coding_checkins: {due: 'qorpera_folder_coding_checkins_due', company:
-  'qorpera_folder_coding_checkins_company', maximum: 32}`;
+  maximum: 64}`, since C1c-3l part 2 `office_wakes: {due: 'qorpera_folder_office_wakes_due',
+  company: 'qorpera_folder_office_wakes_company', maximum: 40}` (C1C §6.18), `machine_checkins:
+  {due: 'qorpera_folder_machine_checkins_due', company: 'qorpera_folder_machine_checkins_company', maximum: 64}`, and
+  `coding_checkins: {due: 'qorpera_folder_coding_checkins_due', company: 'qorpera_folder_coding_checkins_company',
+  maximum: 32}` (C3c);
 - two generic actions:
   - `folder_drain_due {orchestratorId, drain, afterEnvironmentId?, limit ≤ 500}` calls `due` with
     `{p_after_environment, p_limit}`;
@@ -368,7 +371,8 @@ else here.
 **The orchestrator** (`CloudFolderDrains` in `packages/runner-orchestrator/src/orchestrator.ts`):
 - `CLOUD_FOLDER_DRAINS` lists the drains in the order they run, each `{name, companyLimit}`: today
   `[{name: 'workers', companyLimit: 32}, {name: 'listen', companyLimit: 32}, {name: 'human_tasks', companyLimit: 32},
-  {name: 'machine_events', companyLimit: 8}, {name: 'coding_checkins', companyLimit: 8}]`;
+  {name: 'machine_events', companyLimit: 8}, {name: 'office_wakes', companyLimit: 16},
+  {name: 'machine_checkins', companyLimit: 8}, {name: 'coding_checkins', companyLimit: 8}]`;
 - each reconcile pass (every 2 s) runs every drain in order, then `CloudFolderRunMaterializer`, so a wake a drain
   admits becomes a run in the same pass;
 - each drain pages through its due list, 100 at a time, and asks for each company in its own request;
@@ -384,8 +388,10 @@ else here.
 entry, whose place in the list is its place in the pass (core §11 C4 puts F2's worker drain before `listen`); then
 re-pin the Runner Orchestrator, shared execution and LXD provider artifacts (run
 `node --test scripts/package-*.test.mjs scripts/test-jitless-services.test.mjs` on a node for the values). Deploy
-order: the migration, then the edge function, then the orchestrator roll. An orchestrator that is ahead of its edge
-function gets the 400 and pauses only that drain.
+order: the migration, then the edge function, then the orchestrator roll. In a rolling cut, a drain whose wakes the
+previous bundle's runtime can't read deploys the edge function right after the switch instead, with every other change
+in it (`RUNTIME-ROLLING-UPDATE.md` step 2's exception, step 6.6). An orchestrator that is ahead of its edge function gets the
+400 and pauses only that drain.
 
 **P29's due list:** `qorpera_folder_listen_due` lists the folder-v2 environments whose clock is ahead of their cursor
 (an absent cursor counts as behind) or that have a recorded hook failure whose wait is over (§8), leaving out companies
@@ -395,6 +401,25 @@ being deleted, through the clock, the cursor and the failures.
 parent run is ready for it, has stopped or is gone, leaving out companies being deleted or paused (the step does
 nothing while paused). A parent still running, or one whose last continuation has not run yet, asks nothing, so a long
 run's events cost no request per pass. One step delivers up to 8 parents' events, a wake each.
+
+**The check-ins' due list** (`machine_checkins`, the 2026-10-03 amendment "one idle rule for every machine", item 5):
+the folder-v2 environments, not paused or being deleted, with a busy shell whose agent is due a question not asked yet
+(a mark of 1, 3 or 7 hours, then every 24, since the agent last worked with it), or with a waiting question whose
+parent run is ready, stopped or gone. Each question goes to the conversation of the run that started a program still
+running there. A step asks first (a new question goes out in the same step only if its parent was already due; the
+others wait for the next step), then continues up to 8 parents, a wake each with up to 8 questions that still stand. It
+reads each parent's state again under admission, so concurrent steps continue a parent once at a time. A question no
+longer standing is suppressed. The wake's source kind is `machine-checkin`, continued with C1c-3i-b's helpers as a
+machine event is.
+
+**Coding sessions in the same drain** (20260930109000, SQL test 988): the due list and the step also count a coding
+session busy now (attached, and the guest reported it busy within 90 seconds) whose worker is not active and has been
+for a mark since its last turn ended (`qorpera_coding_session_turns.settled_at`), with the question not asked yet. The
+question (`machine_kind` `coding`) goes to the conversation of the worker's steering run and names the session's
+`todoKey` and `workerKey`, which `manage_worker` archive takes. A session whose worker's report still waits to reach
+its steering run (`completion_state` `waiting`), an erased or retired worker, a staff member who is not active, and a
+session whose quiet question (`coding-quiet:…`, C3c) is still pending are not asked. A question stands while the session stays busy since the same turn; once a new turn starts, it
+is suppressed, and an archive from its run refuses (`qorpera_coding_question_stale`).
 
 **C3c's due list** (`coding_checkins`, C1C §6.20, STATE-FILES §8): the folder-v2 environments, not being deleted, not
 paused and not out of computer hours, with a coding session due a quiet question (1, 3 or 7 quiet days, that mark not

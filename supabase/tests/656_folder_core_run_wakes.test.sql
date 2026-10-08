@@ -1,4 +1,4 @@
--- @fixture 647_folder_core_run_fence.test.sql until "-- 1. Snapshot-v1 keeps its text"
+-- @fixture 647_folder_core_run_fence.test.sql until "-- The checks start here: a test that runs after this file's fixture part stops at this line."
 -- Company folder core, C1c-2c part 1 (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §5.6): wake admission and
 -- coworker messages on the folder fence. A folder-v2 wake needs the folder admission mark and its pin trigger locks
 -- nothing; the routine lifecycle keeps its rules; a run's coworker message and its recipient's wake read have folder
@@ -26,13 +26,6 @@ $$;
 create function pg_temp.admitted() returns bigint language sql as $$
 	select admitted from public.qorpera_folder_admissions where profile_id = '63400000-0000-4000-8000-000000000010'
 $$;
-create function pg_temp.without_guard(p_definition text) returns text language plpgsql as $$
-declare v_body integer := position('$function$' in p_definition); v_at integer; v_end integer;
-begin
-	v_at := v_body + position(E'\nbegin\n' in substr(p_definition, v_body)) - 1 + length(E'\nbegin\n');
-	v_end := v_at + position(E'\n' in substr(p_definition, v_at));
-	return substr(p_definition, 1, v_at - 1) || substr(p_definition, v_end);
-end $$;
 -- A hand-built routine of agent A (a one-time run, as an agent's dynamic routine is), with its version.
 create function pg_temp.routine(p_origin text default 'member', p_max integer default null) returns uuid language plpgsql as $$
 declare v_id uuid := extensions.gen_random_uuid();
@@ -63,79 +56,7 @@ begin
 	return v_id;
 end $$;
 
--- 1. Snapshot-v1 keeps its text: the two dispatchers with their first line removed, and every text patch reversed, are
--- byte for byte the definitions before this migration. A later change to one of them updates its digest here, once
--- its folder-v2 branch is checked to still come first.
-do $$
-declare v_text text; v_def text;
-begin
-	v_def := pg_get_functiondef('public.qorpera_send_coworker_message(jsonb,uuid,text,text,boolean)'::regprocedure);
-	if position(E'\nbegin\n\tif public.qorpera_binding_is_folder_v2(p_binding) then return public.qorpera_folder_send_coworker_message(' in v_def) = 0
-		or md5(pg_temp.without_guard(v_def)) <> '09808f56843222eb50199c97b17640bc' then
-		raise exception 'The coworker message''s snapshot-v1 body changed'; end if;
-	v_def := pg_get_functiondef('public.qorpera_read_native_wake(jsonb)'::regprocedure);
-	if position(E'\nbegin\n\tif public.qorpera_binding_is_folder_v2(p_binding) then return public.qorpera_folder_read_wake(p_binding); end if;' in v_def) = 0
-		or md5(pg_temp.without_guard(v_def)) <> '38c1993cf99b1aba48809bdc9bee678a' then
-		raise exception 'The wake read''s snapshot-v1 body changed'; end if;
-	-- The pin trigger's snapshot-v1 text is no longer pinned (C1c-3i-b, 20260930058000: no snapshot-v1 pins since 3 Oct).
-	v_text := replace(pg_get_functiondef('public.qorpera_routine_occurrence_lifecycle()'::regprocedure),
-		E'\tif public.qorpera_company_is_folder_v2(new.profile_id) then\n'
-		|| E'\t\tselect * into v_routine from public.qorpera_cloud_routines where id = new.routine_id for no key update;\n'
-		|| E'\telse\n'
-		|| E'\tselect * into v_routine from public.qorpera_cloud_routines where id = new.routine_id for update;\n'
-		|| E'\tend if;\n',
-		E'\tselect * into v_routine from public.qorpera_cloud_routines where id = new.routine_id for update;\n');
-	if md5(v_text) <> '7d57b1f875d2d5dc884d40e3f6593084' then raise exception 'The routine lifecycle''s snapshot-v1 text changed'; end if;
-	if md5(replace(pg_get_functiondef('public.qorpera_materialize_wake_execution_runs(integer)'::regprocedure),
-			E'\t\t\tand not public.qorpera_company_is_folder_v2(profile_id)\n', '')) <> '74f0959bb20aab0d1ad2f9807b2e82d9'
-		or md5(replace(pg_get_functiondef('public.qorpera_drain_office_activation_wakes(integer)'::regprocedure),
-			E'  and not exists (select 1 from public.qorpera_execution_runs parent\n'
-			|| E'   where parent.id = qorpera_runtime_office_start_waiters.parent_run_id and public.qorpera_company_is_folder_v2(parent.profile_id))\n',
-			'')) <> '84d0aeb8230aac17df23f3135f59eb4d'
-		-- Gap 4b (20260930002800) adds the member_stopped reason; reversed beside this slice's line.
-		or md5(replace(replace(replace(pg_get_functiondef('public.qorpera_drain_worker_wakes(integer)'::regprocedure),
-			E'where (state = ''active'' or completion_state = ''waiting'')\n\t\tand not public.qorpera_company_is_folder_v2(profile_id)\n',
-			E'where state = ''active'' or completion_state = ''waiting''\n'),
-			E'''reason'', case when public.qorpera_worker_run_member_stopped(v_worker.occurrence_id)\n'
-			|| E'\t\t\t\t\t\t\t\t\tthen ''member_stopped'' -- gap 4b (20260930002800)\n'
-			|| E'\t\t\t\t\t\t\t\twhen v_wake_status',
-			E'''reason'', case when v_wake_status'),
-			E'''summary'', case when public.qorpera_worker_run_member_stopped(v_worker.occurrence_id)\n'
-			|| E'\t\t\t\t\t\t\t\t\tthen ''A member stopped the background work.'' -- gap 4b (20260930002800)\n'
-			|| E'\t\t\t\t\t\t\t\twhen v_wake_status',
-			E'''summary'', case when v_wake_status')) <> '5c07d21a200ca25b3c287d333d9657c3'
-		or md5(replace(pg_get_functiondef('public.qorpera_drain_machine_wakes(integer)'::regprocedure),
-			E'\t\tand not public.qorpera_company_is_folder_v2(profile_id)\n', '')) <> '321660ab090981a2d9c00a465fcee245'
-		or md5(replace(pg_get_functiondef('public.qorpera_drain_company_file_wakes_before_lifecycle(integer)'::regprocedure),
-			E'\t\t\tand not public.qorpera_environment_is_folder_v2(c.environment_id)\n', '')) <> 'c8e5412280656f0daa565cf7f3e2a87b'
-		or md5(replace(pg_get_functiondef('public.qorpera_drain_event_wakes(integer)'::regprocedure),
-			E'\t\t\tand not public.qorpera_company_is_folder_v2(cursor.profile_id)\n', '')) <> 'a593a6c77a98730ebfcb5857b0ea6b16'
-		or md5(replace(pg_get_functiondef('public.qorpera_restore_dynamic_routine_runs()'::regprocedure),
-			E'\t\t\tand not public.qorpera_company_is_folder_v2(routine.profile_id)\n', '')) <> 'b38842ca5c8c3a8d2f834ba947685773'
-		or md5(replace(pg_get_functiondef('public.qorpera_materialize_session_execution_runs(integer)'::regprocedure),
-			E'\t\t\tand not public.qorpera_company_is_folder_v2(session.profile_id)\n', '')) <> '9ac8c9293d0e1dc1efa19ecb0a37e861'
-		or md5(pg_get_functiondef('public.qorpera_materialize_session_turn_requests(integer)'::regprocedure))
-			<> '61c8e5025e60e568e45fcaf5c7ef5c96' then
-		raise exception 'A legacy loop''s snapshot-v1 text changed'; end if;
-	if md5(replace(pg_get_functiondef('public.qorpera_enqueue_routine_wake(uuid,bigint,uuid,text,text,timestamp with time zone,timestamp with time zone,timestamp with time zone,jsonb)'::regprocedure),
-			E'\tif public.qorpera_company_is_folder_v2((select profile_id from public.qorpera_cloud_routines where id = p_routine_id)) then\n'
-			|| E'\t\treturn public.qorpera_folder_enqueue_routine_wake(p_routine_id, p_expected_version, p_occurrence_id, p_occurrence_key,\n'
-			|| E'\t\t\tp_trigger_id, p_scheduled_for, p_expected_last_scheduled_for, p_next_due_at, p_payload);\n'
-			|| E'\tend if;\n', '')) <> '34767af5c81374abb47dbcd413c64d90' then
-		raise exception 'The scheduler''s snapshot-v1 text changed'; end if;
-	if md5(replace(pg_get_functiondef('public.qorpera_advance_routine_next_due(uuid,bigint,text,timestamp with time zone,timestamp with time zone)'::regprocedure),
-			E'\tif public.qorpera_company_is_folder_v2(v_profile_id) then\n'
-			|| E'\t\tperform 1 from public.qorpera_profiles where id = v_profile_id for key share;\n'
-			|| E'\telse\n'
-			|| E'\tperform public.qorpera_lock_profile_gc_fence(v_profile_id);\n'
-			|| E'\tend if;\n',
-			E'\tperform public.qorpera_lock_profile_gc_fence(v_profile_id);\n')) <> '4f905dad99d07aea0198c2ff744cfa47' then
-		raise exception 'The schedule advance''s snapshot-v1 text changed'; end if;
-	v_def := pg_get_functiondef('public.qorpera_agent_threads_on_member()'::regprocedure);
-	if position(E'\nbegin\n\tif public.qorpera_company_is_folder_v2(v_profile) then perform public.qorpera_folder_lock_agent_threads(v_profile); end if;' in v_def) = 0
-		or md5(pg_temp.without_guard(v_def)) <> '8411201170b8aacb963cc5d9e3690e9b' then
-		raise exception 'The member trigger''s snapshot-v1 body changed'; end if;
-end $$;
+-- The checks start here: a test that runs after this file's fixture part stops at this line.
 
 -- 2. Admission: the admission row counts, and marks the transaction for its company. A folder-v2 wake without the mark
 -- refuses, whatever else is wrong with it; a snapshot-v1 wake never asks for it.
@@ -183,11 +104,16 @@ begin
 		wake_schema, trigger_id, occurrence_key, scheduled_for, not_before, payload)
 		values (extensions.gen_random_uuid(), %L, %L, 'agent', 'coworker', 'qorpera.unknown/v1', 'coworker', 'folder-control',
 			clock_timestamp(), clock_timestamp(), '{}')$f$, c_profile, c_env), '55000', 'Folder wake admission is required');
-	-- Sources whose ancestry checks lock rows refuse on folder-v2 until they get folder modes, admitted or not.
+	-- An office activation (C1c-3l part 2, 20260930030100) and a machine event (C1c-3i-b, 20260930058000) serve folder-v2:
+	-- an admitted one meets its own ancestry check, so these hand-built ones, with no waiter or event behind them, are
+	-- refused there, not as an unsupported source.
 	perform public.qorpera_folder_admit_wakes(c_profile);
 	perform pg_temp.raises_like(replace(replace(replace(v_sql, '''agent'', ''coworker''', '''agent'', ''office-activation'''),
 		'65600000-0000-4000-8000-0000000000e1', '65600000-0000-4000-8000-0000000000e3'), 'admission-test', 'admission-office'),
-		'0A000', 'This wake source does not serve folder-v2 yet');
+		'55000', 'Wake causal ancestry is fenced');
+	perform pg_temp.raises_like(replace(replace(replace(v_sql, '''agent'', ''coworker''', '''agent'', ''machine-event'''),
+		'65600000-0000-4000-8000-0000000000e1', '65600000-0000-4000-8000-0000000000e4'), 'admission-test', 'admission-machine'),
+		'55000', 'Wake causal ancestry is fenced');
 	perform set_config('qorpera.folder_wake_admission', '', true);
 	-- A company that is not folder-v2 has no admission row.
 	perform pg_temp.raises_like('select public.qorpera_folder_admit_wakes(''64700000-0000-4000-8000-000000000011'')', '42501',

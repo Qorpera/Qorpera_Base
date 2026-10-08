@@ -1,10 +1,9 @@
--- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Deleting an account removes only what is the person's own (20260928249180). A delete on auth.users
--- never deletes company data; the last founder of a company with others and the only member of a
--- company are refused; a company being deleted lets its members go; plan records stay. The fixture
--- company has its creator and only founder (…001), a contributor (…002) and a viewer (…003), with
--- agents, conversations and runs.
-reset role;
+-- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
+-- Deleting an account removes only what is the person's own (20260928249180), on folder-v2 companies (ported from
+-- snapshot-v1 in the legacy sweep). A delete on auth.users never deletes company data; the last founder of a company with
+-- others and the only member of a company are refused; a company being deleted lets its members go; plan records stay.
+-- The base company has its creator and only founder (…001), a contributor (…002), a viewer (…003) and an admin (…004),
+-- with agents, their threads and a run.
 
 create function pg_temp.acct_assert(p_ok boolean, p_what text) returns void language plpgsql as $$
 begin
@@ -63,17 +62,17 @@ select pg_temp.acct_assert(not exists (
 select pg_temp.acct_assert(not has_function_privilege(role_name, 'public.qorpera_guard_founder_departure()', 'EXECUTE'),
 	'the founder guard is callable by no API role') from unnest(array['anon', 'authenticated', 'service_role']) role_name;
 
--- A member whose only trace is one message in a conversation: refused, and the message stays (before,
+-- A member whose only trace is one message in a conversation (Alice's thread): refused, and the message stays (before,
 -- the message went with the account).
 insert into auth.users(id, email) values
 	('72000000-0000-4000-8000-000000000006', 'acct-talker@example.test'),
 	('72000000-0000-4000-8000-000000000007', 'acct-left@example.test'),
 	('72000000-0000-4000-8000-000000000008', 'acct-stays@example.test');
 insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role)
-values ('30000000-0000-4000-8000-000000000010', '72000000-0000-4000-8000-000000000006', 'acct-talker@example.test', 'Talker', 'contributor');
+values ('92400000-0000-4000-8000-000000000010', '72000000-0000-4000-8000-000000000006', 'acct-talker@example.test', 'Talker', 'contributor');
 insert into public.qorpera_session_inputs(session_id, client_input_id, author_user_id, body)
-values ('30000000-0000-4000-8000-000000000040', '72000000-0000-4000-8000-000000000042', '72000000-0000-4000-8000-000000000006',
-	'{"text":"Hello"}');
+select session_id, '72000000-0000-4000-8000-000000000042', '72000000-0000-4000-8000-000000000006', '{"text":"Hello"}'
+from public.qorpera_company_rooms where id = pg_temp.base_thread('92400000-0000-4000-8000-000000000030');
 select pg_temp.acct_refused($q$delete from auth.users where id = '72000000-0000-4000-8000-000000000006'$q$, array['23503'],
 	'update or delete on table "users" violates foreign key constraint "qorpera_session_inputs_author_user_id_fkey"',
 	'deleting a member whose message is in a conversation');
@@ -95,54 +94,59 @@ select pg_temp.acct_assert(exists (select 1 from public.qorpera_profile_members
 -- The creator and only founder, with others in the company and a history in it: refused, and the
 -- company keeps everything.
 create temp table acct_before on commit drop as
-select (select count(*) from public.qorpera_profile_members where profile_id = '30000000-0000-4000-8000-000000000010') as members,
-	(select count(*) from public.qorpera_shared_sessions where profile_id = '30000000-0000-4000-8000-000000000010') as sessions,
+select (select count(*) from public.qorpera_profile_members where profile_id = '92400000-0000-4000-8000-000000000010') as members,
+	(select count(*) from public.qorpera_shared_sessions where profile_id = '92400000-0000-4000-8000-000000000010') as sessions,
 	(select count(*) from public.qorpera_session_inputs input join public.qorpera_shared_sessions session on session.id = input.session_id
-		where session.profile_id = '30000000-0000-4000-8000-000000000010') as inputs,
-	(select count(*) from public.qorpera_execution_runs where profile_id = '30000000-0000-4000-8000-000000000010') as runs;
-select pg_temp.acct_assert(sessions > 0 and runs > 0, 'the fixture company has conversations and runs') from acct_before;
-select pg_temp.acct_refused($q$delete from auth.users where id = '30000000-0000-4000-8000-000000000001'$q$,
+		where session.profile_id = '92400000-0000-4000-8000-000000000010') as inputs,
+	(select count(*) from public.qorpera_execution_runs where profile_id = '92400000-0000-4000-8000-000000000010') as runs,
+	(select count(*) from public.qorpera_folder_commits commit_row join public.qorpera_company_environments environment
+		on environment.id = commit_row.environment_id where environment.profile_id = '92400000-0000-4000-8000-000000000010') as commits;
+select pg_temp.acct_assert(sessions > 0 and inputs > 0 and runs > 0 and commits > 0,
+	'the fixture company has conversations, messages, runs and folder commits') from acct_before;
+select pg_temp.acct_refused($q$delete from auth.users where id = '92400000-0000-4000-8000-000000000001'$q$,
 	array['23503', '42501'], null, 'deleting the creator and only founder');
 
 -- With a co-founder, the creator can leave; their account still cannot be erased, because the company
 -- and its history name them, and the company stays whole.
-select pg_temp.acct_as('30000000-0000-4000-8000-000000000001');
+select pg_temp.acct_as('92400000-0000-4000-8000-000000000001');
 set local role authenticated;
-select public.qorpera_update_profile_member_role('30000000-0000-4000-8000-000000000010',
-	'30000000-0000-4000-8000-000000000002', 'owner');
+select public.qorpera_update_profile_member_role('92400000-0000-4000-8000-000000000010',
+	'92400000-0000-4000-8000-000000000002', 'owner') \g /dev/null
 reset role;
-select pg_temp.acct_refused($q$delete from auth.users where id = '30000000-0000-4000-8000-000000000001'$q$,
+select pg_temp.acct_refused($q$delete from auth.users where id = '92400000-0000-4000-8000-000000000001'$q$,
 	array['23503'], null, 'deleting the creator while a co-founder stays');
-select pg_temp.acct_as('30000000-0000-4000-8000-000000000001');
+select pg_temp.acct_as('92400000-0000-4000-8000-000000000001');
 set local role authenticated;
-select public.qorpera_leave_hosted_profile('30000000-0000-4000-8000-000000000010');
+select public.qorpera_leave_hosted_profile('92400000-0000-4000-8000-000000000010') \g /dev/null
 reset role;
-select pg_temp.acct_refused($q$delete from auth.users where id = '30000000-0000-4000-8000-000000000001'$q$,
+select pg_temp.acct_refused($q$delete from auth.users where id = '92400000-0000-4000-8000-000000000001'$q$,
 	array['23503'], null, 'deleting a creator who has left');
 select pg_temp.acct_assert(
-	exists (select 1 from public.qorpera_profiles where id = '30000000-0000-4000-8000-000000000010')
-	and (select count(*) from public.qorpera_shared_sessions where profile_id = '30000000-0000-4000-8000-000000000010') = before.sessions
+	exists (select 1 from public.qorpera_profiles where id = '92400000-0000-4000-8000-000000000010')
+	and (select count(*) from public.qorpera_shared_sessions where profile_id = '92400000-0000-4000-8000-000000000010') = before.sessions
 	and (select count(*) from public.qorpera_session_inputs input join public.qorpera_shared_sessions session on session.id = input.session_id
-		where session.profile_id = '30000000-0000-4000-8000-000000000010') = before.inputs
-	and (select count(*) from public.qorpera_execution_runs where profile_id = '30000000-0000-4000-8000-000000000010') = before.runs
-	and (select count(*) from public.qorpera_profile_members where profile_id = '30000000-0000-4000-8000-000000000010') = before.members - 1,
-	'the company keeps its conversations, messages and runs') from acct_before as before;
+		where session.profile_id = '92400000-0000-4000-8000-000000000010') = before.inputs
+	and (select count(*) from public.qorpera_execution_runs where profile_id = '92400000-0000-4000-8000-000000000010') = before.runs
+	and (select count(*) from public.qorpera_folder_commits commit_row join public.qorpera_company_environments environment
+		on environment.id = commit_row.environment_id where environment.profile_id = '92400000-0000-4000-8000-000000000010') = before.commits
+	and (select count(*) from public.qorpera_profile_members where profile_id = '92400000-0000-4000-8000-000000000010') = before.members - 1,
+	'the company keeps its conversations, messages, runs and folder history') from acct_before as before;
 
 -- A member without a history goes, with their own things; the company stays.
 insert into public.qorpera_friendships(user_low, user_high, requested_by, status)
-values ('30000000-0000-4000-8000-000000000002', '30000000-0000-4000-8000-000000000003', '30000000-0000-4000-8000-000000000003', 'accepted');
+values ('92400000-0000-4000-8000-000000000002', '92400000-0000-4000-8000-000000000003', '92400000-0000-4000-8000-000000000003', 'accepted');
 insert into public.qorpera_product_feedback(user_id, client_feedback_id, category, details, include_diagnostics)
-values ('30000000-0000-4000-8000-000000000003', gen_random_uuid(), 'other', 'Account deletion fixture', false);
-delete from auth.users where id = '30000000-0000-4000-8000-000000000003';
+values ('92400000-0000-4000-8000-000000000003', gen_random_uuid(), 'other', 'Account deletion fixture', false);
+delete from auth.users where id = '92400000-0000-4000-8000-000000000003';
 select pg_temp.acct_assert(
-	not exists (select 1 from public.qorpera_profile_members where user_id = '30000000-0000-4000-8000-000000000003')
-	and not exists (select 1 from public.qorpera_friendships where user_high = '30000000-0000-4000-8000-000000000003')
-	and not exists (select 1 from public.qorpera_product_feedback where user_id = '30000000-0000-4000-8000-000000000003')
-	and exists (select 1 from public.qorpera_profile_members where profile_id = '30000000-0000-4000-8000-000000000010'
-		and user_id = '30000000-0000-4000-8000-000000000002' and role = 'owner'),
+	not exists (select 1 from public.qorpera_profile_members where user_id = '92400000-0000-4000-8000-000000000003')
+	and not exists (select 1 from public.qorpera_friendships where user_high = '92400000-0000-4000-8000-000000000003')
+	and not exists (select 1 from public.qorpera_product_feedback where user_id = '92400000-0000-4000-8000-000000000003')
+	and exists (select 1 from public.qorpera_profile_members where profile_id = '92400000-0000-4000-8000-000000000010'
+		and user_id = '92400000-0000-4000-8000-000000000002' and role = 'owner'),
 	'a member without a history leaves with their own things');
 
--- A company without any history: its creator (…7201), a founder (…7202) and a contributor (…7203).
+-- A folder-v2 company without any history: its creator (…7201), a founder (…7202) and a contributor (…7203).
 insert into auth.users(id, email) values
 	('72000000-0000-4000-8000-000000000001', 'acct-creator@example.test'),
 	('72000000-0000-4000-8000-000000000002', 'acct-founder@example.test'),
@@ -155,6 +159,9 @@ values ('72000000-0000-4000-8000-000000000010', '72000000-0000-4000-8000-0000000
 insert into public.qorpera_company_environments(id, profile_id, name, contract_version, created_by_user_id)
 values ('72000000-0000-4000-8000-000000000020', '72000000-0000-4000-8000-000000000010', 'Environment', 1,
 	'72000000-0000-4000-8000-000000000001');
+select pg_temp.base_claims('service_role');
+select public.qorpera_folder_enable('72000000-0000-4000-8000-000000000020') \g /dev/null
+select pg_temp.acct_assert(public.qorpera_company_is_folder_v2('72000000-0000-4000-8000-000000000010'), 'the second company is folder-v2');
 
 -- Alone in it: the account stays until the company is deleted.
 select pg_temp.acct_refused($q$delete from auth.users where id = '72000000-0000-4000-8000-000000000001'$q$,
@@ -167,7 +174,7 @@ insert into public.qorpera_profile_members(profile_id, user_id, email, display_n
 	('72000000-0000-4000-8000-000000000010', '72000000-0000-4000-8000-000000000003', 'acct-member@example.test', 'Member', 'contributor');
 select pg_temp.acct_as('72000000-0000-4000-8000-000000000001');
 set local role authenticated;
-select public.qorpera_leave_hosted_profile('72000000-0000-4000-8000-000000000010');
+select public.qorpera_leave_hosted_profile('72000000-0000-4000-8000-000000000010') \g /dev/null
 reset role;
 select pg_temp.acct_refused($q$delete from auth.users where id = '72000000-0000-4000-8000-000000000002'$q$,
 	array['42501'], 'The last founder cannot leave while others remain', 'deleting the last founder while others remain');
@@ -176,7 +183,7 @@ select pg_temp.acct_refused($q$delete from auth.users where id = '72000000-0000-
 -- leaves the company with nobody in it.
 select pg_temp.acct_as('72000000-0000-4000-8000-000000000002');
 set local role authenticated;
-select public.qorpera_remove_profile_member('72000000-0000-4000-8000-000000000010', '72000000-0000-4000-8000-000000000003');
+select public.qorpera_remove_profile_member('72000000-0000-4000-8000-000000000010', '72000000-0000-4000-8000-000000000003') \g /dev/null
 reset role;
 select pg_temp.acct_refused($q$delete from auth.users where id = '72000000-0000-4000-8000-000000000002'$q$,
 	array['42501'], 'The last member cannot leave; delete the company instead', 'deleting the last member');
@@ -193,21 +200,14 @@ select pg_temp.acct_assert(exists (select 1 from public.qorpera_profile_members
 	where profile_id = '72000000-0000-4000-8000-000000000010' and user_id = '72000000-0000-4000-8000-000000000002'),
 	'the last member is still in the company');
 
--- A company being deleted lets its last member go. Company delete (20260928249150) records the request
--- in qorpera_company_deletions and answers qorpera_company_deleting; where that table is not in the
--- database yet, a stand-in function for this test (rolled back) answers for this company. With the
--- table present the guard must use company delete's own function, so a rename there fails this test.
-do $$
-begin
-	if to_regclass('public.qorpera_company_deletions') is null then
-		execute $f$create function public.qorpera_company_deleting(p_profile_id uuid) returns boolean language sql as
-			'select p_profile_id = ''72000000-0000-4000-8000-000000000010''::uuid'$f$;
-	else
-		execute $f$insert into public.qorpera_company_deletions (profile_id)
-			values ('72000000-0000-4000-8000-000000000010')$f$;
-	end if;
-end
-$$;
+-- A company being deleted lets its last member go. Company delete (20260928249150) records the request in
+-- qorpera_company_deletions and answers qorpera_company_deleting; here the request is recorded without a member (as the
+-- operator's would be), so no row of the company names the member but their membership. The guard must use company
+-- delete's own function, so a rename there fails this test.
+select public.qorpera_request_company_deletion('72000000-0000-4000-8000-000000000010', null) \g /dev/null
+select pg_temp.acct_assert(public.qorpera_company_deleting('72000000-0000-4000-8000-000000000010')
+	and exists (select 1 from public.qorpera_company_deletions where profile_id = '72000000-0000-4000-8000-000000000010'
+		and purged_at is null), 'the deletion is requested');
 -- The creator's account still waits for the company's row to go.
 select pg_temp.acct_refused($q$delete from auth.users where id = '72000000-0000-4000-8000-000000000001'$q$,
 	array['23503'], null, 'deleting the creator of a company awaiting its purge');
@@ -215,8 +215,12 @@ delete from auth.users where id = '72000000-0000-4000-8000-000000000002';
 select pg_temp.acct_assert(exists (select 1 from public.qorpera_profiles where id = '72000000-0000-4000-8000-000000000010')
 	and not exists (select 1 from public.qorpera_profile_members where profile_id = '72000000-0000-4000-8000-000000000010'),
 	'the last member of a company being deleted goes');
--- Once the company is gone, so can its creator's account.
-delete from public.qorpera_profiles where id = '72000000-0000-4000-8000-000000000010';
+-- Once the company is purged, so can its creator's account.
+select set_config('qorpera_test.acct_purge', public.qorpera_finish_company_deletion('72000000-0000-4000-8000-000000000010')::text, true)
+\g /dev/null
+select pg_temp.acct_assert(current_setting('qorpera_test.acct_purge')::jsonb ->> 'state' = 'purged'
+	and not exists (select 1 from public.qorpera_profiles where id = '72000000-0000-4000-8000-000000000010'),
+	'the company is purged: ' || current_setting('qorpera_test.acct_purge'));
 delete from auth.users where id = '72000000-0000-4000-8000-000000000001';
 select pg_temp.acct_assert(not exists (select 1 from auth.users where id = '72000000-0000-4000-8000-000000000001'),
 	'the creator of a deleted company can be deleted');
@@ -225,7 +229,7 @@ select pg_temp.acct_assert(not exists (select 1 from auth.users where id = '7200
 select set_config('request.jwt.claims', jsonb_build_object('role', 'service_role')::text, true);
 set local role service_role;
 select public.qorpera_set_account_entitlement('72000000-0000-4000-8000-000000000005', 'internal', 'complimentary', 'all',
-	'unlimited', 'account-deletion-test', 'Account deletion fixture');
+	'unlimited', 'account-deletion-test', 'Account deletion fixture') \g /dev/null
 reset role;
 select pg_temp.acct_refused($q$delete from auth.users where id = '72000000-0000-4000-8000-000000000005'$q$,
 	array['23503'], null, 'deleting an account with plan records');

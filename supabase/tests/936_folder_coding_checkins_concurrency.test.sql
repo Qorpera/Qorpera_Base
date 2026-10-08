@@ -1,5 +1,5 @@
 -- @fixture 648_folder_core_run_fence_concurrency.test.sql until "-- A. Two tool calls of one run"
--- C3c (migration 20260930099000, RUNTIME-COMPANY-FOLDER-C1C.md §6.20 "No cycle, for the check-ins"): the quiet coding
+-- C3c (migration 20260930107500, RUNTIME-COMPANY-FOLDER-C1C.md §6.20 "No cycle, for the check-ins"): the quiet coding
 -- check-ins step against other connections. Beside a folder effect it never waits; behind a stop's second phase it waits
 -- at the fence holding no session, worker or member row; a lock timeout answers busy and marks nothing. One continuation
 -- of a parent at a time across transactions: a check-in step and F2's worker drain, or two check-in steps holding

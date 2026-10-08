@@ -74,8 +74,8 @@ returns at most 8 MiB of verified pending content. Manifest and chunk reads use
 the existing current member object authority, followed by a final command or
 proposal check. The response is binary, non-cacheable and carries
 `x-qorpera-plan-sha256`; clients verify that digest plus full file size/hash.
-This does not publish the file or approve its plan. The SQL/HTTP/Chromium
-composition is covered by `scripts/test-member-company-file-upload.mjs`.
+This does not publish the file or approve its plan. (Its SQL/HTTP/Chromium
+script, `test-member-company-file-upload.mjs`, ran on snapshot-v1 and was deleted in the legacy sweep, B2b.)
 
 The vault's connection-file writer (P22b) is off by default. With `QORPERA_CONNECTION_FILE_WRITER=1` it writes, every 15 s in a loop of its own, up to ten due `connections/<name>.md` files of folder-v2 companies as the platform, from the vault's allow-listed settings only (`qorpera_claim_connection_file` / `qorpera_finish_connection_file`); `QORPERA_CONNECTION_FILE_WORKER_ID` names the worker (a random id otherwise). A company whose creation has not completed is skipped until it has (P14a). The vault stays the authority: no tool reads these files to act.
 

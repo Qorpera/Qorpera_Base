@@ -37,7 +37,9 @@ begin
 	-- read, completing a plan sign-in, saving a plan renewal, and taking and finishing a plan login's
 	-- revocation. Company accounts (20260928419970) add reading what an opening seals, opening, using, versioning
 	-- and recording the state of a company website account, each bound to the agent's effect receipt; filling
-	-- one into the Company Computer (20260928429975) adds reading it for a vault_fill browser call.
+	-- one into the Company Computer (20260928429975) adds reading it for a vault_fill browser call. G2-6a
+	-- (20260930152000) adds the lease proof the runtime routes ask before they serve a run binding; it takes no
+	-- principal, because it only answers whether the caller's lease token is that run's job's.
 	select array_agg(function.oid::regprocedure::text order by function.oid::regprocedure::text collate "C") into v_functions
 	from pg_proc as function
 	join pg_namespace as namespace on namespace.oid = function.pronamespace
@@ -73,6 +75,7 @@ begin
 		'qorpera_issue_model_login(uuid,text,jsonb,bigint,boolean)',
 		'qorpera_model_login_broker_company(uuid,text)',
 		'qorpera_model_logins_without_account(uuid,text)',
+		'qorpera_native_binding_proven(jsonb,text)',
 		'qorpera_open_company_account(uuid,text,jsonb,uuid,text,text,uuid,uuid,uuid,text,text[],text,text,uuid,text,bytea,text)',
 		'qorpera_record_model_login_account(uuid,text,uuid,text)',
 		'qorpera_record_model_login_account_metadata(uuid,text,uuid,text,uuid,uuid,bigint,text,jsonb,text)',

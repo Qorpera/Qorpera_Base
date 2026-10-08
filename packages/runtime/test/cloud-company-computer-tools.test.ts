@@ -596,6 +596,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			"Only a busy shell (over about 5% of one core, or moving data) keeps the machine awake",
 		);
 		expect(shell.description).toContain("your next run is told");
+		expect(shell.description).toContain("one busy for hours brings check-ins");
 	});
 
 	it("keeps every computer tool's description within a tool registration's 4 KiB", () => {

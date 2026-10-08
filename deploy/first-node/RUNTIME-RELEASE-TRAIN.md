@@ -167,9 +167,9 @@ Enforced only when `QORPERA_ENFORCE_RUNTIME_BUNDLE=1`:
   `check:runtime-bundle` as its own step, only when enforced.
 
 Nothing else changed. The generator, `check:runtime-bundle`, every production
-packager, the rollout gates (`scripts/test-runtime-context-parity.mjs`,
-`scripts/test-runtime-provenance.mjs`) and the activation SQL guards still
-refuse a stale bundle.
+packager and the activation SQL guards still refuse a stale bundle. (The rollout
+gates `scripts/test-runtime-context-parity.mjs` and `scripts/test-runtime-provenance.mjs`
+ran on snapshot-v1 companies and were deleted in the legacy sweep, B2b.)
 
 ## Cloudflare Pages
 

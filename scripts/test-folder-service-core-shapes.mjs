@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { parseFeedPage, parseListPage } from "../packages/object-gateway/src/folder-service/core.ts";
+import { parseFeedPage, parseListPage, parseViewRenewal } from "../packages/object-gateway/src/folder-service/core.ts";
 import { ViewTree } from "../packages/object-gateway/src/folder-service/view-tree.ts";
 import { expandTestFixture } from "./test-hosted-db.mjs";
 import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
@@ -37,6 +37,40 @@ function feedSql() {
 		// Seq 3 holds 26 changes: a page of 5 from seq 2 stops inside it, with a cursor.
 		call("feed-cursor", `public.qorpera_folder_feed('${ENV}', ${platform}, 2, 5, null)`) +
 		call("feed-resync", `public.qorpera_folder_feed('${ENV}', ${platform}, 99, 10, null)`) +
+		"rollback;\n"
+	);
+}
+
+/** A run's box (F3 step 2): the views test's company (639 on 632), a leased run of agent A, its run box view, and
+ * what the folder service calls with it: list and feed as the view actor, renew, then close. */
+function boxSql() {
+	const read = (name) => readFileSync(join(root, "supabase/tests", name), "utf8");
+	const fixture = expandTestFixture("639_folder_core_views.test.sql", read);
+	const end = fixture.indexOf("-- A run box: opened by its run");
+	if (end < 0) throw new Error("The views test's run box section moved: update this script");
+	const env = "63200000-0000-4000-8000-000000000020";
+	const call = (label, sql) => `select '@@shape-${label} ' || (${sql})::text;\n`;
+	const box = "(select b from shape_box)";
+	const actor = `pg_temp.vactor(${box})`;
+	const id = `(${box} ->> 'viewId')::uuid`;
+	const pass = `${box} ->> 'pass'`;
+	return (
+		`\\pset format unaligned\n\\pset tuples_only on\n${fixture.slice(0, end)}\n` +
+		`create temp table shape_box as select public.qorpera_folder_view_open('${env}', r, 'run_box', '{}') as b
+			from (select pg_temp.run('human', '63200000-0000-4000-8000-000000000002') as r) x;\n` +
+		`create function pg_temp.box_list_refused() returns text language plpgsql as $$
+		begin
+			perform public.qorpera_folder_list('${env}', ${actor}, '', null, 10, true);
+			return 'served';
+		exception when insufficient_privilege then return 'refused';
+		end $$;\n` +
+		call("box-open", box) +
+		call("box-list", `public.qorpera_folder_list('${env}', ${actor}, '', null, 1000, true)`) +
+		call("box-feed", `public.qorpera_folder_feed('${env}', ${actor}, 0, 1000, null)`) +
+		call("box-renew", `public.qorpera_folder_view_renew(${id}, ${pass})`) +
+		call("box-close", `public.qorpera_folder_view_close(${id}, ${pass})`) +
+		call("box-renew-closed", `public.qorpera_folder_view_renew(${id}, ${pass})`) +
+		`select '@@shape-box-after-close "' || pg_temp.box_list_refused() || '"';\n` +
 		"rollback;\n"
 	);
 }
@@ -107,8 +141,34 @@ async function main() {
 		const resync = parseFeedPage(got.get("feed-resync"));
 		assert.equal(resync.resync, true);
 		assert.equal(resync.next, null);
+
+		// A run box view, as the folder service uses it.
+		const boxed = answers(database.cluster.psql(databaseName, boxSql()));
+		const opened = boxed.get("box-open");
+		assert.equal(opened.schema, "qorpera.folder-view/v1");
+		assert.match(opened.viewId, /^[0-9a-f-]{36}$/);
+		assert.match(opened.pass, /^[A-Za-z0-9_-]{43}$/, "the pass the service's grant accepts");
+		const boxList = parseListPage(boxed.get("box-list"));
+		const boxPaths = boxList.entries.map((e) => e.path);
+		assert.ok(boxPaths.includes("shared/a.txt") && boxPaths.includes("secret/s.txt"), boxPaths.join(","));
+		// The view acts as the run's agent: the core lists every entry with its read receipt (2b-2), a member none.
+		for (const entry of boxList.entries) assert.match(entry.authority?.resourceId ?? "", /^[0-9a-f-]{36}$/, entry.path);
+		assert.ok(memberList.entries.every((e) => e.authority === undefined));
+		const boxFeed = parseFeedPage(boxed.get("box-feed"));
+		const emptyBox = { asOfSeq: 0, entries: [], next: null };
+		// The feed carries no receipts: its replay builds the listing's content.
+		const unreceipted = { ...boxList, entries: boxList.entries.map(({ authority: _receipt, ...entry }) => entry) };
+		assert.deepEqual(ViewTree.diff(caughtUp(emptyBox, [boxFeed]), caughtUp(unreceipted, [])), [], "the view's feed replays to its listing");
+		const renewal = parseViewRenewal(boxed.get("box-renew"));
+		assert.equal(renewal.state, "open");
+		// The open answer says what the view is (F3 4a): a run box, on no machine.
+		assert.equal(renewal.kind, "run_box");
+		assert.equal(renewal.machineId, null);
+		assert.deepEqual(boxed.get("box-close"), { schema: "qorpera.folder-view-close/v1", state: "closed", reason: "closed" });
+		assert.equal(parseViewRenewal(boxed.get("box-renew-closed")).state, "closed");
+		assert.equal(boxed.get("box-after-close"), "refused");
 		process.stdout.write(
-			`Folder service core shapes passed (${list.entries.length} paths, ${feed.events.length} feed events; list, member list, paging, feed, cursor, resync)\n`,
+			`Folder service core shapes passed (${list.entries.length} paths, ${feed.events.length} feed events; list, member list, paging, feed, cursor, resync; a run box view: list, feed, renew, close)\n`,
 		);
 	} finally {
 		database.close();

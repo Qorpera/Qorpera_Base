@@ -1,13 +1,15 @@
--- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- G2-1 (20260928409985): the guest's native host reaches the database with the publishable key through two entry
--- points, qorpera_native_host_call (8 s) and qorpera_native_host_call_long (25 s, the lease validator), and the runner
--- job's lease token. Test 300's fixture leases a run's job on a runner; its lease token's hash is set here to a known
--- token's.
+-- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
+-- G2-1 (20260928409985) on a folder-v2 company (ported from snapshot-v1 in the legacy sweep): the guest's native host
+-- reaches the database with the publishable key through two entry points, qorpera_native_host_call (8 s) and
+-- qorpera_native_host_call_long (25 s, the lease validator and the fence), and the runner job's lease token. Test 924's
+-- fixture leases the job of Alice's run (a thread post the folder materializer turned into a run) on a runner; its lease
+-- token's hash is set here to a known token's. The scope examples are folder-v2 calls; the profile scope, whose only
+-- listed calls are the old Company File gateway's, is shown with a call listed for this test only.
 reset role;
 select set_config('qorpera_test.g2_token', 'g2-lease-token-0123456789abcdef', false);
 update public.qorpera_runner_jobs
 set lease_token_sha256 = encode(extensions.digest(convert_to(current_setting('qorpera_test.g2_token'), 'utf8'), 'sha256'), 'hex')
-where id = (current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId')::uuid;
+where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId')::uuid;
 
 -- The outcome of a call as the publishable key's role, on the entry point's RPC path: 'ok:<result>', 'refused' (the
 -- entry point's own refusal) or '<sqlstate>'.
@@ -28,10 +30,10 @@ begin
 	return 'ok:' || coalesce(v_result::text, 'null');
 end $$;
 create function pg_temp.g2_job() returns uuid language sql as $$
-	select (current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId')::uuid
+	select (current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId')::uuid
 $$;
 create function pg_temp.g2_run() returns uuid language sql as $$
-	select (current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid
+	select (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid
 $$;
 create function pg_temp.g2_env() returns uuid language sql as $$
 	select environment_id from public.qorpera_execution_runs where id = pg_temp.g2_run()
@@ -110,7 +112,7 @@ end $$;
 -- 2. A listed call in the run's scope runs as the platform's service caller does today, its own errors come back as
 --    they are, and the caller's claims and RPC path are back afterwards.
 do $$
-declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_direct jsonb; v_outcome text;
+declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_direct jsonb; v_outcome text;
 begin
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	v_direct := public.qorpera_describe_native_tool_authority(v_binding);
@@ -130,8 +132,8 @@ end $$;
 --    another job, an unlisted or unknown call, an argument out of the run's scope, an undeclared argument, a folder
 --    actor that is not this run.
 do $$
-declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb;
-	v_token text := current_setting('qorpera_test.g2_token'); v_other uuid := '30000000-0000-4000-8000-0000000000ff';
+declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb;
+	v_token text := current_setting('qorpera_test.g2_token'); v_other uuid := '92400000-0000-4000-8000-0000000000ff';
 	v_batch jsonb := jsonb_build_object('p_run_id', pg_temp.g2_run(), 'p_observations', '[]'::jsonb);
 begin
 	perform pg_temp.g2_expect(pg_temp.g2_call(pg_temp.g2_job(), null, 'qorpera_record_runtime_observation_batch', v_batch),
@@ -158,9 +160,9 @@ begin
 		'refused', 'a call the native host never makes');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_record_runtime_observation_batch', v_batch || '{"p_extra":1}'),
 		'refused', 'an undeclared argument');
-	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_read_company_path',
-		jsonb_build_object('p_environment_id', v_other, 'p_path', 'notes.md', 'p_binding', v_binding)), 'refused',
-		'another environment beside the run''s own binding');
+	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_company_presence_scope',
+		jsonb_build_object('p_environment_id', v_other, 'p_binding', v_binding, 'p_paths', '["vision/vision.md"]'::jsonb)),
+		'refused', 'another environment beside the run''s own binding');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_describe_native_tool_authority',
 		jsonb_build_object('p_binding', v_binding, 'p_run_id', v_other)), 'refused', 'another run beside the run''s own binding');
 	perform pg_temp.g2_expect(pg_temp.g2_own('public.qorpera_record_runtime_observation_batch', v_batch), 'refused',
@@ -182,13 +184,20 @@ begin
 end $$;
 
 -- 4. Each scope, in and out of the run's reach. 'not refused' is the called function's own answer, whatever it is.
+--    The profile scope's listed calls are the old Company File gateway's: a call that answers its company is listed with
+--    that scope for this test only (rolled back).
+create function public.qorpera_g2t_company(p_profile_id uuid) returns uuid language sql security definer
+	set search_path = '' as $f$ select p_profile_id $f$;
+insert into public.qorpera_native_host_calls(name, scope) values ('qorpera_g2t_company', 'profile');
 do $$
-declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_other uuid := '30000000-0000-4000-8000-0000000000ff';
-	v_run public.qorpera_execution_runs%rowtype; v_actor jsonb; v_lease jsonb; v_mine uuid := extensions.gen_random_uuid();
-	v_theirs uuid := extensions.gen_random_uuid();
+declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_other uuid := '92400000-0000-4000-8000-0000000000ff';
+	v_run public.qorpera_execution_runs%rowtype; v_actor jsonb; v_lease jsonb;
 begin
 	select * into v_run from public.qorpera_execution_runs where id = pg_temp.g2_run();
-	-- binding: the in-scope call is section 2's.
+	-- binding: the in-scope call is section 2's; a binding call that also names the run's own environment is in scope.
+	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_company_presence_scope', jsonb_build_object('p_environment_id',
+		v_run.environment_id, 'p_binding', v_binding, 'p_paths', '["vision/vision.md"]'::jsonb)), 'ok',
+		'a binding call in the run''s environment');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_describe_native_tool_authority',
 		jsonb_build_object('p_binding', v_binding || jsonb_build_object('runId', v_other))), 'refused', 'a binding of another run');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_describe_native_tool_authority',
@@ -222,33 +231,34 @@ begin
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_list_native_provider_account_refreshes',
 		jsonb_build_object('p_compute_identity_id', v_other, 'p_recovery_epoch', 0)), 'refused', 'another compute identity');
 	-- profile
-	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_verify_company_path_tree',
-		jsonb_build_object('p_profile_id', v_run.profile_id, 'p_manifest_text', '')), 'not refused', 'a company call');
-	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_verify_company_path_tree',
-		jsonb_build_object('p_profile_id', v_other, 'p_manifest_text', '')), 'refused', 'another company');
+	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_g2t_company', jsonb_build_object('p_profile_id', v_run.profile_id)),
+		'ok:' || to_jsonb(v_run.profile_id)::text, 'a company call');
+	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_g2t_company', jsonb_build_object('p_profile_id', v_other)), 'refused',
+		'another company');
 	-- folder
 	v_actor := jsonb_build_object('kind', 'run', 'runId', v_binding ->> 'runId', 'jobId', v_binding ->> 'jobId',
 		'runnerId', v_binding ->> 'runnerId', 'assignmentId', v_binding ->> 'assignmentId');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_folder_read',
-		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_actor', v_actor, 'p_path', 'notes.md')), 'not refused',
+		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_actor', v_actor, 'p_path', 'vision/vision.md')), 'ok',
 		'a folder call');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_folder_read',
-		jsonb_build_object('p_environment_id', v_other, 'p_actor', v_actor, 'p_path', 'notes.md')), 'refused',
+		jsonb_build_object('p_environment_id', v_other, 'p_actor', v_actor, 'p_path', 'vision/vision.md')), 'refused',
 		'a folder call in another environment');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_folder_read',
-		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_actor', '{"kind":"platform"}'::jsonb, 'p_path', 'notes.md')),
-		'refused', 'a platform folder actor');
+		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_actor', '{"kind":"platform"}'::jsonb,
+			'p_path', 'vision/vision.md')), 'refused', 'a platform folder actor');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_folder_read',
 		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_actor', v_actor || jsonb_build_object('kind', 'member',
-			'userId', v_other), 'p_path', 'notes.md')), 'refused', 'a member folder actor');
+			'userId', v_other), 'p_path', 'vision/vision.md')), 'refused', 'a member folder actor');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_folder_read',
 		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_actor', v_actor || jsonb_build_object('runId', v_other),
-			'p_path', 'notes.md')), 'refused', 'a folder actor of another run');
+			'p_path', 'vision/vision.md')), 'refused', 'a folder actor of another run');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_folder_read',
 		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_actor', v_actor || jsonb_build_object('jobId', v_other),
-			'p_path', 'notes.md')), 'refused', 'a folder actor of another job');
+			'p_path', 'vision/vision.md')), 'refused', 'a folder actor of another job');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_folder_read',
-		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_path', 'notes.md')), 'refused', 'a folder call without its actor');
+		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_path', 'vision/vision.md')), 'refused',
+		'a folder call without its actor');
 	-- environment
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_native_presence_subject',
 		jsonb_build_object('p_environment_id', v_run.environment_id, 'p_client_id', v_other, 'p_paths', '[]'::jsonb)), 'not refused',
@@ -256,33 +266,15 @@ begin
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_native_presence_subject',
 		jsonb_build_object('p_environment_id', v_other, 'p_client_id', v_other, 'p_paths', '[]'::jsonb)), 'refused',
 		'another environment');
-	-- proposal: one this run left, and one another run left in the same environment (rows only; replica mode skips
-	-- the foreign keys this test does not build).
-	set local session_replication_role = replica;
-	insert into public.qorpera_company_path_proposals(id, environment_id, run_id, receipt_id, plan, plan_sha256, resource_id,
-		resource_version)
-	values (v_mine, v_run.environment_id, v_run.id, extensions.gen_random_uuid(), '{}', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid()),
-		(v_theirs, v_run.environment_id, v_other, extensions.gen_random_uuid(), '{}', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid());
-	set local session_replication_role = origin;
-	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_prepare_company_path_approval',
-		jsonb_build_object('p_proposal_id', v_mine, 'p_plan_sha256', repeat('a', 64))), 'not refused', 'a proposal of this run');
-	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_prepare_company_path_approval',
-		jsonb_build_object('p_proposal_id', v_theirs, 'p_plan_sha256', repeat('a', 64))), 'refused', 'a proposal of another run');
-	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_prepare_company_path_approval',
-		jsonb_build_object('p_proposal_id', 'not-a-uuid', 'p_plan_sha256', repeat('a', 64))), 'refused', 'a malformed proposal');
-	delete from public.qorpera_company_path_proposals where id in (v_mine, v_theirs);
 	-- A call without the argument its scope ties to the run.
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_describe_native_tool_authority', '{}'), 'refused', 'a binding call without its binding');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_record_runtime_observation_batch', '{"p_observations":[]}'), 'refused',
 		'a run call without its run');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_list_native_provider_account_refreshes', '{"p_recovery_epoch":0}'),
 		'refused', 'an identity call without its identity');
-	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_verify_company_path_tree', '{"p_manifest_text":""}'), 'refused',
-		'a company call without its company');
+	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_g2t_company', '{}'), 'refused', 'a company call without its company');
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_native_presence_subject',
 		jsonb_build_object('p_client_id', v_other, 'p_paths', '[]'::jsonb)), 'refused', 'an environment call without its environment');
-	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_prepare_company_path_approval', jsonb_build_object('p_plan_sha256', repeat('a', 64))),
-		'refused', 'a proposal call without its proposal');
 	-- none: the in-scope call is section 2's.
 	perform pg_temp.g2_expect(pg_temp.g2_own('qorpera_company_machines_available', '{"p_x":1}'), 'refused',
 		'arguments to a call that takes none');
@@ -461,8 +453,8 @@ end $$;
 
 -- 7. Budgets: PostgREST (12 and later; production runs 14.5) applies a called function's statement_timeout to its
 --    request (db-hoisted-tx-settings), so a call through an entry point gets that entry point's budget, not the
---    publishable key's 3 s: 8 s (authenticator's), or 25 s for the lease validator. lock_timeout is the entry
---    point's own setting for the length of the call. Here the caller's own budgets are 1 s, the entry point's
+--    publishable key's 3 s: 8 s (authenticator's), or 25 s for the lease validator and the fence. lock_timeout is the
+--    entry point's own setting for the length of the call. Here the caller's own budgets are 1 s, the entry point's
 --    statement_timeout is applied as PostgREST applies it, and a call of 1.2 s completes and sees its entry point's
 --    budgets. Without the setting the statement would be cancelled after 1 s (57014), which no handler here catches.
 set local statement_timeout = '1s';

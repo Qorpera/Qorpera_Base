@@ -56,6 +56,8 @@ const HUMAN_TASK_STATUSES: ReadonlySet<string> = new Set([
 	"cancelled",
 ]);
 const WAKE_TIME = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/;
+/** A todo's or a worker's key, as manage_worker takes it. */
+const WORK_KEY = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 function closed(value: unknown, keys: readonly string[]): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid cloud wake");
@@ -219,6 +221,7 @@ export interface CloudWakeEnvelope {
 			| "worker-dispatch"
 			| "worker-completion"
 			| "machine-event"
+			| "machine-checkin"
 			| "event"
 			| "human-task";
 		id: string;
@@ -657,6 +660,74 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			)
 				throw new Error("Invalid machine event wake");
 			uuid(event.machineId);
+		}
+	} else if (wake.kind === "agent" && source.kind === "machine-checkin") {
+		// A typed internal continuation of the agent's own run: a program it started has kept a machine busy for hours
+		// since it last worked with it (the one idle rule's check-in, amendment of 2026-10-03, item 5). A notice: the
+		// program keeps running until the agent stops it. A coding session's check-in also names the session as
+		// manage_worker does (todoKey, workerKey), and each running command the turn that started it.
+		const asked = closed(payloadBody, ["schema", "parentRunId", "checkins", "stillWaiting"]);
+		if (
+			asked.schema !== "qorpera.machine-checkin/v1" ||
+			parentRunId === null ||
+			uuidKey(parentRunId) === uuidKey(identity.runId) ||
+			uuid(asked.parentRunId) !== parentRunId ||
+			actorStaffId !== null ||
+			actorUserId !== null ||
+			audience.kind !== "company" ||
+			wake.routine !== null ||
+			(audience.sessionId === null && policy.final !== "forbidden") ||
+			!source.occurrenceKey.startsWith("machine-checkin:") ||
+			!Number.isSafeInteger(asked.stillWaiting) ||
+			(asked.stillWaiting as number) < 0 ||
+			!Array.isArray(asked.checkins) ||
+			asked.checkins.length < 1 ||
+			asked.checkins.length > 8
+		)
+			throw new Error("Invalid machine check-in wake");
+		for (const [index, item] of asked.checkins.entries()) {
+			const coding = (item as { machineKind?: unknown } | null)?.machineKind === "coding";
+			const checkin = closed(item, [
+				"checkinId",
+				"machineKind",
+				"since",
+				"askedAt",
+				"machine",
+				"busyHours",
+				"running",
+				"more",
+				...(coding ? ["todoKey", "workerKey"] : []),
+			]);
+			if (
+				(index === 0 && uuid(checkin.checkinId) !== source.id) ||
+				!["computer", "machine", "coding"].includes(checkin.machineKind as string) ||
+				(coding &&
+					(typeof checkin.todoKey !== "string" ||
+						!WORK_KEY.test(checkin.todoKey as string) ||
+						typeof checkin.workerKey !== "string" ||
+						!WORK_KEY.test(checkin.workerKey as string))) ||
+				typeof checkin.since !== "string" ||
+				typeof checkin.askedAt !== "string" ||
+				typeof checkin.machine !== "string" ||
+				!Number.isSafeInteger(checkin.busyHours) ||
+				(checkin.busyHours as number) < 1 ||
+				!Number.isSafeInteger(checkin.more) ||
+				(checkin.more as number) < 0 ||
+				!Array.isArray(checkin.running) ||
+				checkin.running.length > 8
+			)
+				throw new Error("Invalid machine check-in wake");
+			uuid(checkin.checkinId);
+			for (const running of checkin.running) {
+				const program = closed(running, ["command", coding ? "turn" : "startedAt"]);
+				if (
+					typeof program.command !== "string" ||
+					(coding
+						? !Number.isSafeInteger(program.turn) || (program.turn as number) < 1
+						: typeof program.startedAt !== "string")
+				)
+					throw new Error("Invalid machine check-in wake");
+			}
 		}
 	} else if (wake.kind === "agent" && source.kind === "human-task") {
 		// A human task the agent asked for (H2c): someone else changed it, or its due passed. No parent run and no message:

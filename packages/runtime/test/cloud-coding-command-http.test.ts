@@ -45,7 +45,17 @@ async function fixture(changes: Partial<CloudCodingCommandServiceOptions> = {}) 
 		return { inputSha256: input.inputSha256 };
 	});
 	const execute = vi.fn<CloudCodingCommandServiceOptions["execute"]>(async () => receipt);
-	const service = new HttpCloudCodingCommandService({ token, authorize, execute, ...changes });
+	// G2-6b: the database's lease proof stands in here (its own test is 986): only the run's own lease token, as
+	// `job.<the binding's job>.<lease token>`, proves a request's binding.
+	const lease = randomBytes(32).toString("base64url");
+	const holder = `job.${binding.jobId}.${lease}`;
+	const proveBinding = vi.fn<NonNullable<CloudCodingCommandServiceOptions["proveBinding"]>>(
+		async (presented, identity) => {
+			if (identity !== `job.${presented.jobId.toLowerCase()}.${lease}`)
+				throw new Error("native binding proof is refused");
+		},
+	);
+	const service = new HttpCloudCodingCommandService({ token, proveBinding, authorize, execute, ...changes });
 	const port = await service.start();
 	cleanups.push(() => service.close());
 	const url = `http://127.0.0.1:${port}`;
@@ -54,16 +64,44 @@ async function fixture(changes: Partial<CloudCodingCommandServiceOptions> = {}) 
 		url,
 		token,
 		binding,
+		holder: () => holder,
 		authorize: clientAuthorize,
 		allowLoopback: true,
 	});
 	const request = { schema: "qorpera.coding-command-http/v1", binding, scope, action: "start", input };
-	return { token, binding, scope, input, receipt, authorize, execute, service, url, client, clientAuthorize, request };
+	return {
+		token,
+		binding,
+		scope,
+		input,
+		receipt,
+		authorize,
+		execute,
+		service,
+		url,
+		client,
+		clientAuthorize,
+		request,
+		lease,
+		holder,
+		proveBinding,
+	};
 }
-async function raw(f: Awaited<ReturnType<typeof fixture>>, value: unknown, route = "start", token = f.token) {
+async function raw(
+	f: Awaited<ReturnType<typeof fixture>>,
+	value: unknown,
+	route = "start",
+	token = f.token,
+	// `null` sends no holder (an omitted argument sends the run's own).
+	identity: string | null = f.holder,
+) {
 	return fetch(`${f.url}/v1/coding-commands/${route}`, {
 		method: "POST",
-		headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+		headers: {
+			authorization: `Bearer ${token}`,
+			"content-type": "application/json",
+			...(identity === null ? {} : { "x-qorpera-identity": identity }),
+		},
 		body: JSON.stringify(value),
 	});
 }
@@ -110,6 +148,46 @@ describe("isolated coding command HTTP gateway", () => {
 		).toBe(403);
 		expect(f.authorize).not.toHaveBeenCalled();
 		expect(f.execute).not.toHaveBeenCalled();
+	});
+	it("serves a command only after the run's own lease proves its binding (G2-6b)", async () => {
+		const f = await fixture();
+		// No holder, a malformed one, another run's, or another lease token for this run's job: refused before the
+		// command's authorization is asked anything, and the reply carries nothing of the holder.
+		for (const identity of [
+			null,
+			"",
+			f.lease,
+			`identity.${f.lease}`,
+			`${f.holder}x`,
+			`job.${f.binding.jobId.toUpperCase()}.${f.lease}`,
+			`job.${randomUUID()}.${f.lease}`,
+			`job.${f.binding.jobId}.${"W".repeat(43)}`,
+		])
+			for (const route of ["start", "read", "cancel"]) {
+				const input = route === "start" ? f.input : { commandId: f.input.commandId };
+				const refused = await raw(f, { ...f.request, action: route, input }, route, f.token, identity);
+				expect(refused.status).toBe(403);
+				expect(await refused.text()).not.toContain(f.lease);
+			}
+		expect(f.authorize).not.toHaveBeenCalled();
+		expect(f.execute).not.toHaveBeenCalled();
+		// Only a well-formed holder reaches the proof, with the request's own binding.
+		expect(f.proveBinding).toHaveBeenCalledTimes(6);
+		expect(
+			f.proveBinding.mock.calls.every(([binding]) => JSON.stringify(binding) === JSON.stringify(f.binding)),
+		).toBe(true);
+		// The run's own lease is served, its proof first.
+		f.proveBinding.mockClear();
+		expect(await f.client.start(f.scope, f.input, new AbortController().signal)).toEqual(f.receipt);
+		expect(f.proveBinding).toHaveBeenCalledWith(f.binding, f.holder, expect.any(AbortSignal));
+		expect(f.proveBinding.mock.invocationCallOrder[0]).toBeLessThan(f.authorize.mock.invocationCallOrder[0] ?? 0);
+	});
+	it("takes no holder on the executors' peer listener, whose token only executors hold", async () => {
+		const f = await fixture({ proveBinding: null });
+		const response = await raw(f, f.request, "start", f.token, null);
+		expect(response.status).toBe(200);
+		expect(f.authorize).toHaveBeenCalledTimes(2);
+		expect(f.proveBinding).not.toHaveBeenCalled();
 	});
 	it("never dispatches with a wrong bearer token or a noncanonical route", async () => {
 		const f = await fixture();
@@ -187,6 +265,7 @@ describe("isolated coding command HTTP gateway", () => {
 			() =>
 				new HttpCloudCodingCommandService({
 					token: "z".repeat(43),
+					proveBinding: null,
 					authorize: async () => ({ inputSha256: "a".repeat(64) }),
 					execute: async () => null,
 				}),
@@ -214,6 +293,7 @@ describe("isolated coding command HTTP gateway", () => {
 			url: `http://127.0.0.1:${address.port}`,
 			token: f.token,
 			binding: f.binding,
+			holder: () => f.holder,
 			authorize: f.clientAuthorize,
 			allowLoopback: true,
 		});

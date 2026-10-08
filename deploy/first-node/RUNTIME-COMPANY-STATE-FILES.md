@@ -468,8 +468,18 @@ paths it may read. Its own change sets never wake it.
   (a member's, or a run's requester's; the rule of `qorpera_agent_routine_sponsor`, read without
   its lock on the login) pays for a new version and for work a save starts or extends: a resume,
   a reopen, reviving an expired routine, more runs, a later end, a handover to another agent. A
-  version on another login moves to the saver's. A pause, a conclusion, fewer runs, an earlier
-  end or new quiet hours need no login.
+  pause, a conclusion, fewer runs, an earlier end or new quiet hours need no login.
+- Since `20260930095000` (the payer never changes without permission) a routine keeps a payer that
+  serves its saver (their own login or a company account), also when it cannot pay: it waits as
+  `needs_model_account` until someone picks a login with `qorpera_set_routine_login` (a member their
+  own, an owner or admin a company account). A save by someone that payer does not serve (a new
+  routine, another member's save) is their own first choice: their own login, or the saving run's.
+  A changed payer is recorded (`qorpera_routine_payer_changes`, read by `qorpera_get_routine_payer`)
+  and the member whose login paid before gets a `routine_payer_changed` notice. A login at its usage
+  limit or needing a new sign-in is kept too (its runs stop at the limit); the read says why
+  (`waitsFor`), and a pick refuses such a login, a ChatGPT plan for any trigger other than a
+  schedule or a single time, and any pick while the company is stopped or being deleted (the
+  member-action entry, `qorpera_folder_company_enter`).
 - A member without such a login cannot make those saves, and neither can an agent acting with no
   run (a coding session, or a desktop whose run ended: C1b-3a's views) for a member without one. A
   run whose requester has none pins the run's login, and the routine waits (`needs_model_account`). Unlike an agent's save today, the
@@ -2399,7 +2409,7 @@ worker suites (379, 385, 387, 388, 395–399, 600–606, 656) after the new colu
     lock, as every coding-session writer takes it (3i-a's claim, begin and complete, the cancel, the drain).
 - **C3b (the runtime):** `cloud-folder-workers.ts` dispatches and follows up coding sessions (the brief's coding
   fields, the request's), and the dispatch's answer names the session's phase.
-- **C3c (migration 20260930099000, SQL tests 934 and 936; the drain `coding_checkins`, LISTENER §9, C1C §6.20's hand-over):**
+- **C3c (migration 20260930107500, SQL tests 934 and 936; the drain `coding_checkins`, LISTENER §9, C1C §6.20's hand-over):**
   349850's quiet check-ins on folder-v2. After 1, 3 and 7 quiet days, the agent that started a coding session is asked
   once per mark whether it can be archived. The legacy ask (`qorpera_ask_quiet_coding_sessions`) still skips folder-v2
   (026000) and stays for the executor's scan.

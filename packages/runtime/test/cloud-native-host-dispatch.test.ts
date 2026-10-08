@@ -1,10 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import {
 	isNativeHostPublishableKey,
 	NATIVE_HOST_CALLS,
 	NATIVE_HOST_IDENTITY_CALLS,
 	NativeHostDispatch,
+	nativeHostRealtimeTransport,
 } from "@qorpera/runtime/cloud-native-host-dispatch";
 import { HttpNativeProviderComputerBridge } from "@qorpera/runtime/cloud-native-provider";
 import { NativeProviderHost } from "@qorpera/runtime/cloud-native-provider-host";
@@ -36,7 +39,6 @@ function dispatchFixture() {
 	});
 	const dispatch = new NativeHostDispatch({
 		supabaseUrl: ORIGIN,
-		serviceKey: SERVICE_KEY,
 		identity: { computeIdentityId: IDENTITY_ID, credential: IDENTITY_TOKEN, publishableKey: PUBLISHABLE_KEY },
 		fetch: fetcher,
 	});
@@ -53,7 +55,7 @@ function rpc(body: string, extra: Omit<RequestInit, "body"> = {}): RequestInit &
 	};
 }
 
-it("lists exactly the calls the host makes inside a job, with the long budget for the lease validator only", () => {
+it("lists exactly the calls the host makes inside a job, with the long budget for the lease validator and the fence", () => {
 	const read = (name: string) =>
 		readFileSync(new URL(`../../../supabase/migrations/${name}`, import.meta.url), "utf8");
 	const migration = read("20260928409985_runtime_native_host_call.sql");
@@ -68,29 +70,37 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 		...rowsOf(read("20260928429984_runtime_company_mail_attachments.sql")),
 		...rowsOf(read("20260928439965_runtime_company_account_tool.sql")),
 		...rowsOf(read("20260928439970_folder_run_view_open.sql")),
-		// The worker tools on folder-v2 (F2-5b-2) and a coding session's archive (C3b), found by name: a release re-slots
-		// the file.
-		...["_folder_state_worker_files.sql", "_folder_coding_archive.sql"].flatMap((suffix) =>
-			rowsOf(
-				read(
-					readdirSync(new URL("../../../supabase/migrations/", import.meta.url)).find((name) =>
-						name.endsWith(suffix),
-					) ?? `missing${suffix}`,
+		// The worker tools on folder-v2 (F2-5b-2), a coding session's archive (C3b) and the proposal calls (P40b), found
+		// by name: a release re-slots the file.
+		...["_folder_state_worker_files.sql", "_folder_coding_archive.sql", "_folder_proposals_runtime.sql"].flatMap(
+			(suffix) =>
+				rowsOf(
+					read(
+						readdirSync(new URL("../../../supabase/migrations/", import.meta.url)).find((name) =>
+							name.endsWith(suffix),
+						) ?? `missing${suffix}`,
+					),
 				),
-			),
 		),
 	];
+	// The model request's fence moved to the long budget (#839's follow-up), found by name: a release re-slots the file.
+	const fenceLong = readdirSync(new URL("../../../supabase/migrations/", import.meta.url)).find((name) =>
+		name.endsWith("_runtime_fence_long_budget.sql"),
+	);
 	const long = new Set(
-		[...migration.matchAll(/set budget = 'long' where name = '(qorpera_[a-z0-9_]+)'/g)].map((m) => m[1]),
+		[migration, read(fenceLong ?? "missing_runtime_fence_long_budget.sql")].flatMap((text) =>
+			[...text.matchAll(/set budget = 'long' where name = '(qorpera_[a-z0-9_]+)'/g)].map((m) => m[1]),
+		),
 	);
 	const expected = new Map(
 		rows
 			.filter(([, , scope]) => scope !== "identity")
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(91);
+	expect(rows).toHaveLength(94);
 	expect(new Map(NATIVE_HOST_CALLS)).toEqual(expected);
 	expect([...NATIVE_HOST_CALLS].filter(([, budget]) => budget === "long")).toEqual([
+		["qorpera_fence_native_context", "long"],
 		["qorpera_validate_native_provider_execution_lease", "long"],
 	]);
 });
@@ -192,11 +202,22 @@ it("gives the dispatch to every database client the host builds, and to its serv
 		"SupabaseNativeCredentialCapsuleStore",
 		"SupabaseNativeProviderControlPlane",
 	]);
-	expect(main).toMatch(/new SupabaseNativeProviderControlPlane\(\s*baseUrl,\s*serviceKey,\s*dispatch\.fetch,/);
+	expect(main).toMatch(/new SupabaseNativeProviderControlPlane\(\s*baseUrl,\s*publishableKey,\s*dispatch\.fetch,/);
 	expect(main).toMatch(/new HttpCloudCompanyPathControl\(\{[^}]*fetch: dispatch\.fetch[^}]*\}\)/);
 	expect(main).toMatch(/new HttpCloudCodingControl\(\{[^}]*fetch: dispatch\.fetch[^}]*\}\)/);
 	expect(main).toMatch(/new HttpCloudCompanyComputerRegistry\(\{[^}]*fetch: dispatch\.fetch[^}]*\}\)/);
-	expect(main).toMatch(/new NativeHostDispatch\(\{ supabaseUrl: baseUrl, serviceKey, identity \}\)/);
+	// G2-4: the capsule store signs through the dispatch, and the presence client has the publishable key and the
+	// holder's transport, never the service key.
+	expect(main).toMatch(/new SupabaseNativeCredentialCapsuleStore\(baseUrl, dispatch\.fetch\)/);
+	expect(main).toMatch(
+		/createClient\(baseUrl, publishableKey, \{[\s\S]*?realtime: \{ transport: nativeHostRealtimeTransport\(dispatch\) \}/,
+	);
+	expect(main).not.toMatch(/createClient\(baseUrl, serviceKey/);
+	expect(main).toMatch(/new NativeHostDispatch\(\{ supabaseUrl: baseUrl, identity \}\)/);
+	// G2-5: the host reads no service key, gives its clients the publishable key, and refuses to start with one.
+	expect(main).not.toMatch(/\bserviceKey\b/);
+	expect(main).toMatch(/serviceRoleKey: publishableKey/);
+	expect(main).toMatch(/throw new Error\("A native host must hold no service key"\)/);
 	expect(main).not.toContain("QORPERA_NATIVE_HOST_DISPATCH");
 	expect(main).toMatch(/environment\.QORPERA_NATIVE_PROVIDER_TRUSTED_SOURCE,\s*dispatch,\s*\)/);
 });
@@ -218,9 +239,11 @@ it("sends a listed call through the entry point with the job's token and the pub
 	const args = '{"p_binding":{"jobId":"x"},"p_limit":9007199254740993}';
 	await dispatch.fetch(`${ORIGIN}/rest/v1/rpc/qorpera_describe_native_tool_authority`, rpc(args, { signal }));
 	await dispatch.fetch(new URL(`${ORIGIN}/rest/v1/rpc/qorpera_validate_native_provider_execution_lease`), rpc("{}"));
+	await dispatch.fetch(`${ORIGIN}/rest/v1/rpc/qorpera_fence_native_context`, rpc("{}"));
 	release();
 	expect(sent.map((call) => call.url)).toEqual([
 		`${ORIGIN}/rest/v1/rpc/qorpera_native_host_call`,
+		`${ORIGIN}/rest/v1/rpc/qorpera_native_host_call_long`,
 		`${ORIGIN}/rest/v1/rpc/qorpera_native_host_call_long`,
 	]);
 	const first = sent[0]!.init!;
@@ -236,6 +259,7 @@ it("sends a listed call through the entry point with the job's token and the pub
 	expect(JSON.parse(sent[1]!.init!.body as string)).toMatchObject({
 		p_name: "qorpera_validate_native_provider_execution_lease",
 	});
+	expect(JSON.parse(sent[2]!.init!.body as string)).toMatchObject({ p_name: "qorpera_fence_native_context" });
 });
 
 it("sends a between-job call through the identity entry point with the holder's credential, inside a job or not", async () => {
@@ -273,17 +297,90 @@ it("sends a between-job call through the identity entry point with the holder's 
 	expect(JSON.stringify(sent)).not.toContain(TOKEN_A);
 });
 
-it("keeps Storage and other origins as sent, and refuses any other call on the project's origin", async () => {
+it("signs a capsule's Storage request with the publishable key and the holder's credential", async () => {
+	const { dispatch, sent } = dispatchFixture();
+	const capsule = `${ORIGIN}/storage/v1/object/qorpera-native-compute-capsules/${IDENTITY_ID}.capsule`;
+	// Between jobs: the holder's identity credential. Whatever key or holder header the caller sent is replaced.
+	await dispatch.fetch(capsule, {
+		headers: { apikey: SERVICE_KEY, authorization: `Bearer ${SERVICE_KEY}`, "x-qorpera-identity": "job.forged" },
+	});
+	// In a job: that job's lease token; the upload's own headers and body pass as sent.
+	const release = dispatch.begin(JOB_ID, { leaseToken: TOKEN_A, publishableKey: PUBLISHABLE_KEY });
+	const body = new Uint8Array([1, 2, 3]);
+	await dispatch.fetch(capsule, {
+		method: "POST",
+		headers: { "content-type": "application/octet-stream", "x-upsert": "true" },
+		body,
+	});
+	release();
+	await dispatch.fetch(capsule, { method: "GET" });
+	expect(sent.map((call) => call.url)).toEqual([capsule, capsule, capsule]);
+	const [between, inJob, after] = sent.map((call) => new Headers(call.init?.headers));
+	for (const headers of [between, inJob, after]) {
+		expect(headers?.get("apikey")).toBe(PUBLISHABLE_KEY);
+		expect(headers?.get("authorization")).toBe(`Bearer ${PUBLISHABLE_KEY}`);
+	}
+	expect(between?.get("x-qorpera-identity")).toBe(`identity.${IDENTITY_TOKEN}`);
+	expect(inJob?.get("x-qorpera-identity")).toBe(`job.${JOB_ID}.${TOKEN_A}`);
+	expect(after?.get("x-qorpera-identity")).toBe(`identity.${IDENTITY_TOKEN}`);
+	expect(inJob?.get("content-type")).toBe("application/octet-stream");
+	expect(inJob?.get("x-upsert")).toBe("true");
+	expect(sent[1]!.init?.body).toBe(body);
+	expect(sent.every((call) => call.init?.redirect === "error")).toBe(true);
+	expect(dispatch.holderHeader()).toBe(`identity.${IDENTITY_TOKEN}`);
+	// Any other Storage request is refused: another bucket or name, a listing, a query, a deletion, a Request.
+	for (const [url, init] of [
+		[`${ORIGIN}/storage/v1/object/qorpera-identity-recovery/${IDENTITY_ID}.capsule`, { method: "GET" }],
+		[`${ORIGIN}/storage/v1/object/qorpera-native-compute-capsules/x.capsule`, { method: "GET" }],
+		[
+			`${ORIGIN}/storage/v1/object/qorpera-native-compute-capsules/${IDENTITY_ID.toUpperCase()}.capsule`,
+			{ method: "GET" },
+		],
+		[`${ORIGIN}/storage/v1/object/list/qorpera-native-compute-capsules`, { method: "POST", body: "{}" }],
+		[`${capsule}?download=1`, { method: "GET" }],
+		[capsule, { method: "DELETE" }],
+		[capsule, { method: "PUT", body }],
+		[`${ORIGIN}/storage/v1/bucket`, { method: "GET" }],
+	] as const)
+		await expect(dispatch.fetch(url, init)).rejects.toThrow("Not a native host Storage call");
+	await expect(dispatch.fetch(new Request(capsule))).rejects.toThrow("Not a native host Storage call");
+	expect(sent).toHaveLength(3);
+});
+
+it("puts the holder's credential on the presence WebSocket's upgrade", async () => {
+	const { dispatch } = dispatchFixture();
+	const server = createServer();
+	const seen: (string | undefined)[] = [];
+	server.on("upgrade", (request, socket) => {
+		seen.push(request.headers["x-qorpera-identity"] as string | undefined);
+		socket.destroy();
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const { port } = server.address() as AddressInfo;
+	const Transport = nativeHostRealtimeTransport(dispatch);
+	const open = async () => {
+		const socket = new Transport(`ws://127.0.0.1:${port}/realtime/v1/websocket`);
+		await new Promise((resolve) => socket.addEventListener("close", resolve));
+	};
+	try {
+		const release = dispatch.begin(JOB_ID, { leaseToken: TOKEN_A, publishableKey: PUBLISHABLE_KEY });
+		await open();
+		release();
+		await open();
+	} finally {
+		server.close();
+	}
+	// Each connection carries the credential current when it opens.
+	expect(seen).toEqual([`job.${JOB_ID}.${TOKEN_A}`, `identity.${IDENTITY_TOKEN}`]);
+});
+
+it("keeps other origins as sent, and refuses any other call on the project's origin", async () => {
 	const { dispatch, sent } = dispatchFixture();
 	dispatch.begin(JOB_ID, { leaseToken: TOKEN_A, publishableKey: PUBLISHABLE_KEY });
-	const storage = { method: "GET" };
-	await dispatch.fetch(`${ORIGIN}/storage/v1/object/qorpera-native-compute-capsules/x.capsule`, storage);
 	await dispatch.fetch("https://elsewhere.example/rest/v1/rpc/qorpera_describe_native_tool_authority", rpc("{}"));
 	expect(sent.map((call) => call.url)).toEqual([
-		`${ORIGIN}/storage/v1/object/qorpera-native-compute-capsules/x.capsule`,
 		"https://elsewhere.example/rest/v1/rpc/qorpera_describe_native_tool_authority",
 	]);
-	expect(sent[0]!.init).toBe(storage);
 	expect(JSON.stringify(sent)).not.toContain(TOKEN_A);
 	expect(JSON.stringify(sent)).not.toContain(IDENTITY_TOKEN);
 	for (const path of [
@@ -295,7 +392,7 @@ it("keeps Storage and other origins as sent, and refuses any other call on the p
 		"/rest/v1/qorpera_runner_jobs",
 		"/rest/v1/rpc/QORPERA_DESCRIBE_NATIVE_TOOL_AUTHORITY",
 		"/rest/v1/rpc/QORPERA_LIST_NATIVE_PROVIDER_ACCOUNT_REFRESHES",
-		// Only Storage passes on the project's origin: no other service gets the key.
+		// Only a capsule's Storage request and the entry points go on the project's origin.
 		"/graphql/v1",
 		"/auth/v1/user",
 		"/functions/v1/anything",
@@ -319,13 +416,13 @@ it("keeps Storage and other origins as sent, and refuses any other call on the p
 	])
 		for (const name of ["qorpera_identity_recovery_runtime_state", "qorpera_describe_native_tool_authority"])
 			await expect(dispatch.fetch(`${ORIGIN}/rest/v1/rpc/${name}`, rpc(body))).rejects.toThrow("malformed");
-	expect(sent).toHaveLength(2);
+	expect(sent).toHaveLength(1);
 });
 
 it("checks the holder's identity credential once, and an execution host's run replaces it with its machine's", async () => {
 	const identity = { computeIdentityId: IDENTITY_ID, credential: IDENTITY_TOKEN, publishableKey: PUBLISHABLE_KEY };
 	const build = (patch: Partial<typeof identity>) =>
-		new NativeHostDispatch({ supabaseUrl: ORIGIN, serviceKey: SERVICE_KEY, identity: { ...identity, ...patch } });
+		new NativeHostDispatch({ supabaseUrl: ORIGIN, identity: { ...identity, ...patch } });
 	for (const patch of [
 		{ computeIdentityId: "not-a-uuid" },
 		{ credential: "short" },
