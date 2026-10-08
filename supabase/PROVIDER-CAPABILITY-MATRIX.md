@@ -43,8 +43,10 @@ compute. Revocation, sponsor handoff, user removal, quota exhaustion, or
 provider-policy change invalidates future leases. Existing run history retains
 the original sponsor, provider, credential ownership, and compute identity.
 
-Technical exception authorized on 2026-08-28: the pinned Codex result-only
-callback and cloud-fenced direct-tool selection documented in
+Technical exception authorized on 2026-08-28: the pinned Codex callback (the
+result fence; since 2026-10-06 also context composition and the prompt cache
+key, each with its own marker) and cloud-fenced direct-tool selection
+documented in
 [`../deploy/first-node/native-codex/README.md`](../deploy/first-node/native-codex/README.md)
 may be used after its runtime gates pass. Native login and provider traffic
 remain inside the same credential boundary; no subscription proxy is added.
