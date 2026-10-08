@@ -80,7 +80,8 @@ begin
 				or procedure.prosrc like '%cardinality(v_agents) >= 16%'
 				or procedure.prosrc like '%Office continuation ancestry exceeds its bound%between 0 and 7%'))
 		or exists (select 1 from pg_constraint where conname in ('qorpera_runtime_workers_sequence_check',
-			'qorpera_runtime_worker_events_sequence_check') and pg_get_constraintdef(oid) ~ '<=') then
+			'qorpera_runtime_worker_events_sequence_check', 'qorpera_runtime_worker_parents_sequence_check')
+			and pg_get_constraintdef(oid) ~ '<=') then
 		raise exception 'A worker or chain count remains'; end if;
 	-- Waiting to start is bounded from the last time a job was queued, which every requeue records.
 	-- (The usage-limit handoff, the other requeue path, is gone since 20260930059000.)
