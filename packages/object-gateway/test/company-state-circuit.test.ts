@@ -132,7 +132,10 @@ async function gateway() {
 					bytes: bytes.length,
 				});
 			if (name === "qorpera_folder_authorize_object_upload")
-				return Response.json({ schema: "qorpera.folder-object-upload/v1", profileId: companies[company!].companyId });
+				return Response.json({
+					schema: "qorpera.folder-object-upload/v1",
+					profileId: companies[company!].companyId,
+				});
 			if (name === "qorpera_folder_confirm_object")
 				return Response.json({ schema: "qorpera.folder-object/v1", sha256, bytes: bytes.length });
 			if (["qorpera_authorize_profile_object_replication", "qorpera_confirm_profile_object_replica"].includes(name))
