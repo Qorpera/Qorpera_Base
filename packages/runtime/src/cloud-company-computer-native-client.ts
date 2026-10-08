@@ -37,7 +37,7 @@ import {
 } from "./cloud-company-computer-start.ts";
 import type { CompanyComputerCloudEndpoint } from "./cloud-company-computer-tools.ts";
 import { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
-import { type CloudNativeToolRun, cloudToolRequest } from "./cloud-native-tool-authority.ts";
+import { type CloudNativeToolRun, cloudToolRequest, isNativeJobHolder } from "./cloud-native-tool-authority.ts";
 import { cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations.ts";
 
 /** The vault, for a vault_fill (company accounts A1-3): HttpCloudSecretBrokerClient. */
@@ -124,6 +124,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 	readonly #effects: CloudCompanyComputerEffectControl;
 	readonly #url: string;
 	readonly #token: string;
+	readonly #holder: () => string;
 	readonly #fetch: typeof fetch;
 	readonly #accountFills: CompanyComputerAccountFills | undefined;
 	readonly #screenshots: Pick<CloudCompanyComputerScreenshots, "holdInline"> | undefined;
@@ -135,6 +136,8 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		descriptor: CompanyComputerNativeDescriptor;
 		url: string;
 		token: string;
+		/** G2-6c: the run's holder credential, read per request (NativeHostDispatch.holderHeader). */
+		holder: () => string;
 		registry: HttpCloudCompanyComputerRegistry;
 		fetch?: typeof fetch;
 		accountFills?: CompanyComputerAccountFills;
@@ -154,6 +157,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		this.#run = options.run;
 		this.#url = endpoint.url;
 		this.#token = options.token;
+		this.#holder = options.holder;
 		this.#fetch = options.fetch ?? fetch;
 		this.#accountFills = options.accountFills;
 		this.#screenshots = options.screenshots;
@@ -205,6 +209,9 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		});
 		if (Buffer.byteLength(encoded) > COMPANY_COMPUTER_NATIVE_MAX_REQUEST)
 			throw new Error("OFFICE_NATIVE_REQUEST_TOO_LARGE");
+		// G2-6c: a perform proves the run's lease; a release needs no proof, so it carries no credential. Only the job's
+		// own holder goes to the computer, never the identity credential the dispatch gives between jobs.
+		const holder = body.action === "perform" ? this.#holder() : undefined;
 		try {
 			return await cloudToolRequest(
 				async (s) => {
@@ -212,7 +219,11 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 						method: "POST",
 						redirect: "error",
 						signal: s,
-						headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" },
+						headers: {
+							authorization: `Bearer ${this.#token}`,
+							"content-type": "application/json",
+							...(isNativeJobHolder(holder) ? { "x-qorpera-identity": holder } : {}),
+						},
 						body: encoded,
 					});
 					if (!response.ok) {
@@ -346,6 +357,8 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 export function createHttpCompanyComputerSessionFactory(options: {
 	url: string;
 	token: string;
+	/** G2-6c: the run's holder credential, read per request (NativeHostDispatch.holderHeader). */
+	holder: () => string;
 	registry: HttpCloudCompanyComputerRegistry;
 	fetch?: typeof fetch;
 	objectGateway?: { baseUrl: string; token: string; holder?: () => string; fetch?: typeof fetch };

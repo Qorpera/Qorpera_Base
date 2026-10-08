@@ -21,8 +21,9 @@ rollouts or fallbacks that only keep live companies running: each ships whole, o
 - G2-5 (no SQL): the key leaves the guests, the slots, the execution host, the bootstrap and the units, with guards
   that it stays out (below).
 - G2-6: the node-level tokens bound to one run by a proof of its lease (below): 6a (migration `20260930152000`, SQL test
-  986) the secret brokers' runtime routes and the object gateway's folder route; 6b the coding executor; 6c the office
-  receiver and the object gateway's native-objects route.
+  986) the secret brokers' runtime routes and the object gateway's folder route; 6b the coding executor; 6c the Company
+  Computer's office receiver. The object gateway's native-objects route serves no folder-v2 company and is deleted in
+  the legacy sweep instead.
 
 ## G2-3: the identity credential
 
@@ -234,11 +235,10 @@ the work is still refused. A server never logs the header or puts it in an error
     `/v1/company-account-fills` and `/v1/model-logins`, through their own database principal;
   - the object gateway proves it on `/v1/folder-objects`;
   - the native host's broker client, model login client and folder bytes client send the header, as do its
-    native-objects clients (the object store and the Company Computer's capture paths), which 6c's check will read.
-- **6c, not yet:** `/v1/native-company-objects` also serves the company computer's captures, file imports and exports,
-  which the computer makes for a run without holding its lease. Its proof comes with the native host passing its
-  holder to the computer with each operation (a company computer image rebuild), together with the office receiver's
-  own proof.
+    native-objects clients (the object store and the Company Computer's capture paths).
+- **Not proved: `/v1/native-company-objects`.** Both SQL checks behind it refuse every folder-v2 company
+  (`20260928259430`), folder-v2 screenshots travel inline, and file export is refused, so the route serves nothing we
+  build. The legacy sweep (step C) deletes it with the Company Computer's object publishers, instead of a proof.
 - **6b** (no SQL: the coding executor already calls the database as service_role):
   - the executor's guest-facing listener (`commandPort`) proves the lease on `/v1/coding-commands/*` and
     `/v1/machine-commands/*`, before the command's own authorization (a machine start's authorization already records
@@ -246,6 +246,16 @@ the work is still refused. A server never logs the header or puts it in an error
   - the native host's coding and machine command gateways send the header;
   - the executors' peer listener (`peerCommandPort`) takes none: only executors hold its token, and the forwarding
     executor proved the guest's holder at its own ingress.
+- **6c** (no SQL; a Company Computer service revision):
+  - the office receiver (`POST /office/<companyComputerId>/native`) proves the lease with its own registry key
+    (service_role, which may call the proof) before anything else about the binding, on the session's open and on
+    every perform. A release needs none: it only closes a session this binding opened under the same lease;
+  - the native host's computer endpoint sends the header with each perform, and only the job's own holder, never the
+    identity credential the dispatch gives between jobs. A release carries none;
+  - the route's token is the company's, shared by all its computers, so the proof binds each action to its run within
+    the company;
+  - **carry it over:** the later G2 office step, which takes the service-role key out of the office VM, must keep this
+    proof with whatever key replaces it.
 
 ### Rollout (G2-6a)
 
@@ -256,7 +266,8 @@ account, account fill, vault model login and folder read and write each go throu
 
 ### Undo (G2-6a)
 
-Undo G2-6b first if it is in (below): its coding executors ask the same function and need the guests' header. Then
+Undo G2-6b and G2-6c first if they are in (below): their coding executors and office receivers ask the same function
+and need the guests' header. Then
 revert the servers (they stop asking), then the guest and the migration (`drop function
 public.qorpera_native_binding_proven(jsonb, text)`).
 
@@ -272,6 +283,18 @@ machine's command each go through, both on the node that holds the machine and t
 
 Revert the executors (they stop asking), then the guest. Undo 6b before 6a: a 6b executor refuses every command once
 the function is dropped or a guest from before 6a sends no header.
+
+### Rollout (G2-6c)
+
+After 6a's migration: the guest image first (a receiver from before 6c ignores the header), then the Company
+Computer's service as a governed office software revision (`deploy/lxd-company-computer-guest/README.md`). A guest
+from before 6c sends no header, so a 6c receiver refuses its computer actions. Whatever sits between a guest and a
+computer (the node's office passthrough, a front at the route's origin) must pass `x-qorpera-identity` through. Check
+after the release (deferred, needs Codex): an agent's computer start, a shell action and a screenshot each go through.
+
+### Undo (G2-6c)
+
+Revert the office software revision (the receiver stops asking), then the guest. Undo 6c before 6a, as 6b.
 
 ## G2-3e: the execution host's own calls
 

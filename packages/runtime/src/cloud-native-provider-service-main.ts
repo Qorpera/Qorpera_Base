@@ -321,8 +321,9 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	const dispatch = new NativeHostDispatch({ supabaseUrl: baseUrl, identity });
 	// The clients below send the publishable key; the dispatch signs each of their requests with it anyway.
 	const publishableKey = identity.publishableKey;
-	// G2-6a/b: the object gateway's, the secret broker's and the coding executor's clients prove their run's lease with
-	// each request, read from the dispatch when the request is made, so a warm host never sends a released job's token.
+	// G2-6: the object gateway's, the secret broker's, the coding executor's and the Company Computer's clients prove their
+	// run's lease with each request, read from the dispatch when the request is made, so a warm host never sends a
+	// released job's token.
 	const holder = (): string => dispatch.holderHeader();
 	// A login guest may not read its identity's recovery state: its gateway read it and delivered it.
 	const loginGuest = nativeLoginGuestPurpose(environment);
@@ -492,6 +493,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 						computerSession: createHttpCompanyComputerSessionFactory({
 							url: computerConfiguration.url,
 							token: computerToken,
+							holder,
 							objectGateway: { baseUrl: runtimeConfiguration.objectGatewayUrl, token: objectToken, holder },
 							registry: new HttpCloudCompanyComputerRegistry({
 								supabaseUrl: baseUrl,

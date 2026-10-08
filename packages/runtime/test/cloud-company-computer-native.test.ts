@@ -135,6 +135,11 @@ async function fixture(
 		target: { realm: "company_computer", binding: lease.binding, resources: descriptor.resources },
 	};
 	const order: string[] = [];
+	// G2-6c: the database's lease proof stands in here (its own test is 986): only the run's own lease token, as
+	// `job.<the binding's job>.<lease token>`, proves its binding. Each proof notes how many other calls came before it.
+	const leaseToken = randomBytes(32).toString("base64url");
+	const holder = `job.${source.binding.jobId.toLowerCase()}.${leaseToken}`;
+	const proofs: { holder: unknown; binding: unknown; at: number }[] = [];
 	const consumed = new Map<string, string>();
 	let revoked = false;
 	let released = false;
@@ -142,6 +147,13 @@ async function fixture(
 	const sql = vi.fn(async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
 		const method = String(input).split("/").at(-1);
 		const body = JSON.parse(String(init?.body));
+		if (method === "qorpera_native_binding_proven") {
+			proofs.push({ holder: body.p_holder, binding: body.p_binding, at: order.length });
+			return body.p_holder === `job.${String(body.p_binding?.jobId).toLowerCase()}.${leaseToken}` &&
+				body.p_binding?.jobId === source.binding.jobId
+				? Response.json(true)
+				: Response.json({ code: "42501", message: "native binding proof is refused" }, { status: 403 });
+		}
 		order.push(`${method}:${body.p_action ?? "read"}`);
 		if (method === "qorpera_describe_native_tool_authority") return Response.json(revoked ? {} : source.authority);
 		if (method === "qorpera_native_office_descriptor")
@@ -264,6 +276,7 @@ async function fixture(
 		descriptor,
 		url,
 		token,
+		holder: () => holder,
 		registry,
 		...(options.accountFills ? { accountFills: options.accountFills } : {}),
 	});
@@ -281,13 +294,18 @@ async function fixture(
 		lease,
 		receipt: { receiptId: context.receiptId, idempotencyKey: context.idempotencyKey },
 	});
-	const post = (value: unknown, options: { token?: string; origin?: string; suffix?: string } = {}) =>
+	// `identity: null` sends no holder; by default a post carries the run's own.
+	const post = (
+		value: unknown,
+		options: { token?: string; origin?: string; suffix?: string; identity?: string | null } = {},
+	) =>
 		fetch(url + (options.suffix ?? ""), {
 			method: "POST",
 			headers: {
 				authorization: `Bearer ${options.token ?? token}`,
 				"content-type": "application/json",
 				...(options.origin ? { origin: options.origin } : {}),
+				...(options.identity === null ? {} : { "x-qorpera-identity": options.identity ?? holder }),
 			},
 			body: JSON.stringify(value),
 		});
@@ -312,6 +330,9 @@ async function fixture(
 		post,
 		url,
 		token,
+		leaseToken,
+		holder,
+		proofs,
 		revoke: () => {
 			revoked = true;
 		},
@@ -341,7 +362,12 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 				}),
 			};
 			const operations = new CloudNativeToolOperations(f.run, control);
-			const factory = createHttpCompanyComputerSessionFactory({ url: f.url, token: f.token, registry: f.registry });
+			const factory = createHttpCompanyComputerSessionFactory({
+				url: f.url,
+				token: f.token,
+				holder: () => f.holder,
+				registry: f.registry,
+			});
 			const session = await factory(f.run, operations);
 			if (!session) throw new Error("Missing admitted office session");
 			cleanups.push(session.close);
@@ -382,7 +408,12 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 			"Screenshots are not available on this computer yet. For a web page, use a browser snapshot instead.";
 		const f = await fixture({ capabilities: ["shell", "browser"], refuseScreenshots: message });
 		const control = { beginToolOperation: vi.fn(), completeToolOperation: vi.fn() };
-		const factory = createHttpCompanyComputerSessionFactory({ url: f.url, token: f.token, registry: f.registry });
+		const factory = createHttpCompanyComputerSessionFactory({
+			url: f.url,
+			token: f.token,
+			holder: () => f.holder,
+			registry: f.registry,
+		});
 		const session = await factory(f.run, new CloudNativeToolOperations(f.run, control));
 		if (!session) throw new Error("Missing admitted office session");
 		cleanups.push(session.close);
@@ -446,6 +477,7 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		const factory = createHttpCompanyComputerSessionFactory({
 			url: f.url,
 			token: f.token,
+			holder: () => f.holder,
 			registry: f.registry,
 			objectGateway: {
 				baseUrl: "https://objects.qorpera.test",
@@ -508,6 +540,7 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 				descriptor: f.descriptor,
 				url: f.url,
 				token: f.token,
+				holder: () => f.holder,
 				registry: f.registry,
 				fetch: vi.fn(async () => Response.json(body)),
 				screenshots: { holdInline },
@@ -538,7 +571,12 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		const route = f.url.replace(f.scope.companyComputerId, "{companyComputerId}");
 		expect(route).not.toBe(f.url);
 		const control = { beginToolOperation: vi.fn(), completeToolOperation: vi.fn() };
-		const factory = createHttpCompanyComputerSessionFactory({ url: route, token: f.token, registry: f.registry });
+		const factory = createHttpCompanyComputerSessionFactory({
+			url: route,
+			token: f.token,
+			holder: () => f.holder,
+			registry: f.registry,
+		});
 		const session = await factory(f.run, new CloudNativeToolOperations(f.run, control));
 		if (!session) throw new Error("Missing admitted office session");
 		cleanups.push(session.close);
@@ -546,13 +584,23 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		await session.close();
 		// A one-computer route never reaches another computer: the run gets no computer tools.
 		const other = f.url.replace(f.scope.companyComputerId, randomUUID());
-		const pinned = createHttpCompanyComputerSessionFactory({ url: other, token: f.token, registry: f.registry });
+		const pinned = createHttpCompanyComputerSessionFactory({
+			url: other,
+			token: f.token,
+			holder: () => f.holder,
+			registry: f.registry,
+		});
 		expect(await pinned(f.run, new CloudNativeToolOperations(f.run, control))).toBeUndefined();
 	});
 	it("omits office tools for unavailable offices and never queries office metadata for private runs", async () => {
 		const f = await fixture({ unavailable: true });
 		const control = { beginToolOperation: vi.fn(), completeToolOperation: vi.fn() };
-		const factory = createHttpCompanyComputerSessionFactory({ url: f.url, token: f.token, registry: f.registry });
+		const factory = createHttpCompanyComputerSessionFactory({
+			url: f.url,
+			token: f.token,
+			holder: () => f.holder,
+			registry: f.registry,
+		});
 		expect(await factory(f.run, new CloudNativeToolOperations(f.run, control))).toBeUndefined();
 		const source = nativeToolAuthorityFixture();
 		const privateAuthority = {
@@ -841,6 +889,7 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 			registry: f.registry,
 			url: f.url,
 			token: f.token,
+			holder: () => f.holder,
 			fetch: transport,
 		});
 		await expect(endpoint.perform(f.operation, f.lease, f.context)).rejects.toThrow("OFFICE_NATIVE_UNCONFIRMED");
@@ -862,6 +911,79 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		expect(f.createSession).toHaveBeenCalledOnce();
 		expect(f.perform).not.toHaveBeenCalled();
 		expect(f.order).not.toContain("qorpera_native_office_screen:release");
+	});
+	it("proves the run's lease before a session opens and on every perform, and never for a release (G2-6c)", async () => {
+		const f = await fixture();
+		// No holder, a malformed one, another run's, or another lease token for this run's job: refused before the run's
+		// authority, the descriptor or the guest is asked anything, and the answer carries nothing of the holder.
+		for (const identity of [
+			null,
+			"",
+			f.leaseToken,
+			`identity.${f.leaseToken}`,
+			`${f.holder}x`,
+			`job.${f.source.binding.jobId.toUpperCase()}.${f.leaseToken}`,
+			`job.${randomUUID()}.${f.leaseToken}`,
+			`job.${f.source.binding.jobId}.${"W".repeat(43)}`,
+		]) {
+			const refused = await f.post(f.body(), { identity });
+			expect(refused.status).toBe(503);
+			expect(await refused.text()).not.toContain(f.leaseToken);
+		}
+		expect(f.order).toEqual([]);
+		expect(f.createSession).not.toHaveBeenCalled();
+		// Only the two well-formed holders reached the proof, each with the request's own binding.
+		expect(f.proofs.map((proof) => proof.binding)).toEqual([f.source.binding, f.source.binding]);
+		// The run's own lease opens the session, its proof before anything else; a second perform proves it again.
+		f.proofs.splice(0);
+		expect(await f.endpoint.perform(f.operation, f.lease, f.context)).toEqual({ kind: "text", value: "test" });
+		expect(f.proofs).toEqual([{ holder: f.holder, binding: f.source.binding, at: 0 }]);
+		const before = f.order.length;
+		await f.endpoint.perform(f.operation, f.lease, {
+			...f.context,
+			receiptId: randomUUID(),
+			idempotencyKey: "c".repeat(64),
+		});
+		expect(f.proofs).toHaveLength(2);
+		expect(f.proofs[1]).toEqual({ holder: f.holder, binding: f.source.binding, at: before });
+		expect(f.perform).toHaveBeenCalledTimes(2);
+		// A release carries no holder and asks for no proof: it only closes the session this lease opened.
+		const release = await f.post(
+			{ schema: COMPANY_COMPUTER_NATIVE_SCHEMA, action: "release", nativeBinding: f.source.binding, lease: f.lease },
+			{ identity: null },
+		);
+		expect(release.status).toBe(200);
+		expect(f.proofs).toHaveLength(2);
+	});
+	it("sends the job's holder only with a perform, and never a credential that is not the job's (G2-6c)", async () => {
+		const f = await fixture();
+		const sent: (string | null)[] = [];
+		let current = f.holder;
+		const transport = vi.fn<typeof fetch>(async (input, init) => {
+			sent.push(new Headers(init?.headers).get("x-qorpera-identity"));
+			return fetch(input, init);
+		});
+		const endpoint = new HttpCompanyComputerNativeEndpoint({
+			run: f.run,
+			descriptor: f.descriptor,
+			registry: f.registry,
+			url: f.url,
+			token: f.token,
+			holder: () => current,
+			fetch: transport,
+		});
+		await endpoint.perform(f.operation, f.lease, f.context);
+		// Between jobs the dispatch gives the holder's identity credential: it never goes to the computer.
+		current = `identity.${f.leaseToken}`;
+		await expect(
+			endpoint.perform(f.operation, f.lease, {
+				...f.context,
+				receiptId: randomUUID(),
+				idempotencyKey: "d".repeat(64),
+			}),
+		).rejects.toThrow("OFFICE_NATIVE_UNCONFIRMED");
+		await endpoint.close();
+		expect(sent).toEqual([f.holder, null, null]);
 	});
 	it("rejects browser origins, incorrect host credentials and query-bearing paths before authority or guest work", async () => {
 		const f = await fixture();
