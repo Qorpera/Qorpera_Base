@@ -1,7 +1,7 @@
--- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
+-- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- G2-4 (20260930103000): the native host reaches its credential capsules and its company's presence topic as anon,
 -- with its holder credential in the x-qorpera-identity request header (Storage and Realtime hand request headers to
--- the row policies as request.headers). Test 300's fixture leases a run's job with a native connection lease of the
+-- the row policies as request.headers). Test 924's fixture leases a run's job with a native connection lease of the
 -- identity's capsule; this test gives the job a known lease token, names the capsule as the native host does
 -- (native-capsule/<id>), adds a second capsule of the identity and one of another identity, their objects, a pending
 -- sign-in and a refresh request with their login guests' allocations, and binds an identity credential to each holder
@@ -9,12 +9,12 @@
 -- platform privileges on storage.objects (Storage's own schema grants them; the bootstrap does not).
 reset role;
 grant select, insert, update, delete on storage.objects to anon;
-select set_config('qorpera_test.job', current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId', false);
-select set_config('qorpera_test.run', current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId', false);
-select set_config('qorpera_test.runner', current_setting('qorpera_test.wake_binding')::jsonb ->> 'runnerId', false);
-select set_config('qorpera_test.identity', current_setting('qorpera_test.wake_binding')::jsonb ->> 'computeIdentityId', false);
-select set_config('qorpera_test.capsule', current_setting('qorpera_test.wake_binding')::jsonb ->> 'credentialCapsuleId', false);
-select set_config('qorpera_test.profile', '30000000-0000-4000-8000-000000000010', false);
+select set_config('qorpera_test.job', current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId', false);
+select set_config('qorpera_test.run', current_setting('qorpera_test.base_binding')::jsonb ->> 'runId', false);
+select set_config('qorpera_test.runner', current_setting('qorpera_test.base_binding')::jsonb ->> 'runnerId', false);
+select set_config('qorpera_test.identity', current_setting('qorpera_test.base_binding')::jsonb ->> 'computeIdentityId', false);
+select set_config('qorpera_test.capsule', current_setting('qorpera_test.base_binding')::jsonb ->> 'credentialCapsuleId', false);
+select set_config('qorpera_test.profile', '92400000-0000-4000-8000-000000000010', false);
 select set_config('qorpera_test.token', 'T' || repeat('t', 42), false);
 create function pg_temp.sha(p_value text) returns text language sql as $$
 	select encode(extensions.digest(convert_to(p_value, 'utf8'), 'sha256'), 'hex')
@@ -50,16 +50,16 @@ values ('qorpera-native-compute-capsules', current_setting('qorpera_test.capsule
 
 -- A pending sign-in of the identity, by its member, and a refresh request (as qorpera_begin_native_account_refresh
 -- leaves it).
-select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 set local role authenticated;
 select set_config('qorpera_test.login_id', public.qorpera_begin_native_provider_login(
-	'30000000-0000-4000-8000-000000000010', '90700000-0000-4000-8000-000000000051', '90700000-0000-4000-8000-000000000052',
+	'92400000-0000-4000-8000-000000000010', '90700000-0000-4000-8000-000000000051', '90700000-0000-4000-8000-000000000052',
 	current_setting('qorpera_test.identity')::uuid, 'openai', 'codex-cli', pg_temp.sha('login-capability'), 900) ->> 'login_id', false);
 reset role;
 insert into public.qorpera_native_account_refresh_requests(id, profile_id, client_request_id, compute_identity_id,
 	requested_by_user_id, capability_sha256, compute_recovery_epoch)
 select '90700000-0000-4000-8000-000000000071', current_setting('qorpera_test.profile')::uuid, extensions.gen_random_uuid(),
-	identity.id, '30000000-0000-4000-8000-000000000001', pg_temp.sha('refresh-capability'), identity.recovery_epoch
+	identity.id, '92400000-0000-4000-8000-000000000001', pg_temp.sha('refresh-capability'), identity.recovery_epoch
 from public.qorpera_member_compute_identities as identity where identity.id = current_setting('qorpera_test.identity')::uuid;
 
 -- The holders' allocations and credentials: the run's machine (a job guest) and the sign-in's login guest. The
@@ -259,7 +259,7 @@ rollback to savepoint stale_runner;
 savepoint revoked_runner;
 set local session_replication_role = replica;
 update public.qorpera_runners set status = 'revoked', revoked_at = clock_timestamp(),
-	revoked_by_user_id = '30000000-0000-4000-8000-000000000001', session_token_sha256 = null, session_expires_at = null
+	revoked_by_user_id = '92400000-0000-4000-8000-000000000001', session_token_sha256 = null, session_expires_at = null
 where id = current_setting('qorpera_test.runner')::uuid;
 set local session_replication_role = origin;
 select pg_temp.expect(pg_temp.readable(pg_temp.job_guest()), '', '4: a revoked runner reads nothing');
@@ -350,7 +350,7 @@ select pg_temp.expect(pg_temp.topic(pg_temp.job_header(), 'qorpera-presence-' ||
 	'8: no presence before the run''s device');
 insert into public.qorpera_native_presence_devices(client_id, profile_id, environment_id, run_id, user_id, binding, public_key, expires_at)
 select '90700000-0000-4000-8000-000000000091', run.profile_id, run.environment_id, run.id, run.requested_by_user_id,
-	current_setting('qorpera_test.wake_binding')::jsonb, 'MCowBQYDK2VwAyEA' || repeat('A', 43) || '=', clock_timestamp() + interval '30 seconds'
+	current_setting('qorpera_test.base_binding')::jsonb, 'MCowBQYDK2VwAyEA' || repeat('A', 43) || '=', clock_timestamp() + interval '30 seconds'
 from public.qorpera_execution_runs as run where run.id = current_setting('qorpera_test.run')::uuid;
 select pg_temp.expect(pg_temp.topic(pg_temp.job_header(), 'qorpera-presence-' || current_setting('qorpera_test.profile'), false), '1',
 	'8: a job receives on its company''s presence topic');
