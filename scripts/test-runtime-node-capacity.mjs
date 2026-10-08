@@ -1,5 +1,7 @@
 // Local PostgreSQL only. Real admission functions, fixture hardware observations
 // and company objects; no physical provider, hosted database or cloud calls.
+// On 924's folder-v2 runtime base (ported from snapshot-v1 in the legacy sweep): its company's computer and Alice's
+// leased run, and a second folder-v2 company made as 724 makes one.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -53,11 +55,11 @@ const reserve = allocation => `select public.qorpera_reserve_runtime_node_machin
 try {
 	const migrations = migrationNames();
 	sql(read("supabase/tests/fixtures/runtime-node-inventory-observer.sql"));
-	const wake = read("supabase/tests/300_runtime_wake_bus.test.sql").split("-- END WAKE FIXTURE");
-	assert.equal(wake.length, 2);
+	const base = read("supabase/tests/924_folder_runtime_base.test.sql").split("-- The checks start here");
+	assert.equal(base.length, 2);
 	const office = read("supabase/tests/fixtures/runtime-office-registry-cases.sql").split("set local role service_role;\nselect set_config('qorpera_test.office_lease'");
 	assert.equal(office.length, 2);
-	const setup = `${wake[0]}\n${office[0]}\n${read("supabase/tests/fixtures/runtime-node-capacity-setup.sql")}`;
+	const setup = `${base[0]}\n${office[0]}\n${read("supabase/tests/fixtures/runtime-node-capacity-setup.sql")}`;
 	sql(`${setup}\n${read("supabase/tests/fixtures/runtime-login-machine-capacity-cases.sql")}\nrollback;`);
 	console.log("PASS: real login allocation, shared node budget, native/login identity exclusion, revocation/expiry cleanup and exact release");
 	sql(`${setup}\n${read("supabase/tests/fixtures/runtime-node-capacity-cases.sql")}\nrollback;`);
@@ -65,16 +67,28 @@ try {
 	sql(`${setup}\n${read("supabase/tests/fixtures/runtime-node-demand-suspension-cases.sql")}\nrollback;`);
 	console.log("PASS: a confirmed power-off suspends the company computer's slot, resume re-admits it only when it fits, a requested resume keeps it");
 	sql(`${setup}\ncommit;`);
-	// A second company's real governed-file setup and office registration. The
-	// cached object bytes remain the same catalog fixture used by the wake test.
-	const secondCompany = wake[0].split("insert into public.qorpera_shared_sessions")[0]
-		.replaceAll("30000000", "30100000").replaceAll("path-", "second-path-")
-		.replaceAll("where sha256 = current_setting", "where profile_id='30100000-0000-4000-8000-000000000010' and sha256 = current_setting");
-	const secondOffice = office[0].split("create function pg_temp.office_call")[0]
-		.replaceAll("30000000", "30100000").replaceAll("34000000", "34100000");
-	// The office setup invokes assertions; include the existing actual helpers.
-	const helpers = wake[0].split("-- BEGIN WAKE HELPERS")[1].split("create function pg_temp.wake_routine")[0];
-	sql(`${secondCompany}\n${helpers}\n${secondOffice}\n${service}
+	// A second folder-v2 company (as 724 makes one: owner and contributor added directly, then folder_enable). The
+	// office fixture's registration checks run on it with its ids, up to the agent grant (it hires no agents); 924's
+	// claim, assert and error helpers come along.
+	const second = "92410000-0000-4000-8000-0000000000";
+	const helpers = base[0].match(/create function pg_temp\.base_claims[\s\S]*?\$\$;\n/)[0]
+		+ base[0].split("-- BEGIN BASE HELPERS")[1].split("create function pg_temp.base_owner")[0];
+	const secondOffice = office[0].split("-- Every active agent already holds the default grant");
+	assert.equal(secondOffice.length, 2);
+	sql(`begin;
+	 insert into auth.users(id,email) values('${second}01','second-owner@example.test'),('${second}02','second-member@example.test');
+	 insert into public.qorpera_profiles(id,name,created_by_user_id) values('${second}10','Second company','${second}01');
+	 insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
+	 values('${second}10','${second}01','second-owner@example.test','Owner','owner'),
+	  ('${second}10','${second}02','second-member@example.test','Member','contributor');
+	 insert into public.qorpera_company_environments(id,profile_id,name,contract_version,created_by_user_id)
+	 values('${second}20','${second}10','Environment',1,'${second}01');
+	 ${helpers}
+	 select pg_temp.base_claims('service_role');
+	 select public.qorpera_folder_enable('${second}20');
+	 ${secondOffice[0].replaceAll("92400000-0000-4000-8000-", "92410000-0000-4000-8000-").replaceAll("34000000", "34100000")}
+	 reset role;
+	 ${service}
 	 select public.qorpera_set_runtime_office_provider(current_setting('qorpera_test.office_scope')::jsonb,1,
 	 '36000000-0000-4000-8000-000000000001',repeat('e',64),0,true);
 	 select public.qorpera_enroll_runtime_node_provider('${node}',repeat('c',64),'office','36000000-0000-4000-8000-000000000001',repeat('e',64),2000,2147483648);
@@ -147,16 +161,17 @@ try {
 	for(const allocation of offices) assert.equal(JSON.parse(sql(`${service} ${reserve(allocation)}`)).state,"reserved");
 	const capacity = JSON.parse(sql(`${service} select public.qorpera_runtime_node_capacity('${node}');`));
 	assert.equal(capacity.allocatedComputers,2); assert.equal(capacity.allocatedCompanies,2); assert.equal(capacity.admissibleSlots,0);
-	const profile="30000000-0000-4000-8000-000000000010";
+	const profile="92400000-0000-4000-8000-000000000010";
 	const identity=sql(`select compute_identity_id from public.qorpera_runners where client_runner_id='${native.id}';`);
 	// A new sign-in replaces the same member's unfinished one (2026-09-17 login supersede amendment), so two pending
 	// logins for one identity now exist only when two authorizing members sign a company-owned identity in. The
-	// identity race uses exactly that; the third login stays the owner's own member identity.
-	const loginOwner='30000000-0000-4000-8000-000000000001',loginAdmin=randomUUID(),companyIdentity=randomUUID();
-	sql(`insert into auth.users(id) values('${loginAdmin}');
-	 insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role) values('${profile}','${loginAdmin}','login-admin@example.test','Login admin','admin');
-	 insert into public.qorpera_member_compute_identities(id,profile_id,ownership_kind,client_identity_id,display_name)
+	// identity race uses exactly that (924's owner and admin); the third login stays the owner's own member identity.
+	const loginOwner='92400000-0000-4000-8000-000000000001',loginAdmin='92400000-0000-4000-8000-000000000004',companyIdentity=randomUUID();
+	sql(`insert into public.qorpera_member_compute_identities(id,profile_id,ownership_kind,client_identity_id,display_name)
 	 values('${companyIdentity}','${profile}','company','${companyIdentity}','Login race fixture');`);
+	// Login reserve and release take the company's row lock first (inside qorpera_lock_profile_gc_fence); the barriers
+	// below hold that same row, so each contender waits on a real SQL lock.
+	const companyLock=`select 1 from public.qorpera_profiles where id='${profile}' for update;`;
 	const newLogin=(member=loginOwner,computeIdentity=identity)=>JSON.parse(sql(`set request.jwt.claims='{"role":"authenticated","sub":"${member}"}'; set role authenticated;
 	 select public.qorpera_begin_native_provider_login('${profile}','${randomUUID()}','${randomUUID()}','${computeIdentity}','openai','codex-cli',repeat('8',64),900);`)).login_id;
 	const supersededLogin=newLogin(loginOwner,companyIdentity);
@@ -166,7 +181,7 @@ try {
 	const loginReserve=entry=>`select public.qorpera_reserve_runtime_login_machine('${entry.allocationId}','lxd','${entry.instance}','${entry.loginId}',repeat('8',64));`;
 	const loginRelease=entry=>`select public.qorpera_release_runtime_login_machine('${entry.allocationId}','lxd','${entry.instance}','${entry.loginId}');`;
 	const identityBarrier=session();
-	identityBarrier.child.stdin.write(`begin; select public.qorpera_lock_profile_gc_fence('${profile}'); select 'LOGIN_IDENTITY_LOCKED';\n`);
+	identityBarrier.child.stdin.write(`begin; ${companyLock} select 'LOGIN_IDENTITY_LOCKED';\n`);
 	await until(()=>identityBarrier.output().includes('LOGIN_IDENTITY_LOCKED'));
 	const loginRaces=logins.slice(0,2).map((entry,index)=>{
 	 const contender=session();contender.child.stdin.end(`${service} set application_name='login-capacity-race-${index}'; ${loginReserve(entry)}`);return contender;
@@ -186,7 +201,7 @@ try {
 	assert.equal(JSON.parse(sql(`${service} ${loginReserve(loser)}`)).state,'reserved');sql(`${service} ${loginRelease(loser)}`);
 	// Force release to own the login row before a delayed first reservation.
 	// Both wait on real SQL locks, not sleeps or guessed transport ordering.
-	const closeBarrier=session();closeBarrier.child.stdin.write(`begin; select public.qorpera_lock_profile_gc_fence('${profile}'); select 'LOGIN_CLOSURE_LOCKED';\n`);
+	const closeBarrier=session();closeBarrier.child.stdin.write(`begin; ${companyLock} select 'LOGIN_CLOSURE_LOCKED';\n`);
 	await until(()=>closeBarrier.output().includes('LOGIN_CLOSURE_LOCKED'));
 	const closing=session();closing.child.stdin.end(`${service} set application_name='login-close-first'; ${loginRelease(logins[2])}`);
 	await until(()=>sql("select count(*) from pg_stat_activity where application_name='login-close-first' and wait_event_type='Lock';")==='1');

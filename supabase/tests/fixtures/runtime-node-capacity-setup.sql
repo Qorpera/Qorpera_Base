@@ -1,17 +1,17 @@
--- Following the real wake and office registration fixture. Physical readiness
--- and hardware measurements are synthetic; all reservation RPCs are real.
+-- Following 924's folder-v2 runtime base and the office registration fixture (ported from snapshot-v1 in the legacy
+-- sweep). Physical readiness and hardware measurements are synthetic; all reservation RPCs are real.
 reset role;
 update public.qorpera_runtime_offices set state='provisioning'
  where id=(current_setting('qorpera_test.office_scope')::jsonb->>'companyComputerId')::uuid;
-select pg_temp.path_claims('service_role');
+select pg_temp.base_claims('service_role');
 set local role service_role;
 select public.qorpera_set_runtime_office_provider(current_setting('qorpera_test.office_scope')::jsonb,1,
  '36000000-0000-4000-8000-000000000001',repeat('f',64),0,true);
 reset role;
 select set_config('qorpera_test.machine_id',(select client_runner_id::text from public.qorpera_runners
- where id=(current_setting('qorpera_test.wake_binding')::jsonb->>'runnerId')::uuid),true);
+ where id=(current_setting('qorpera_test.base_binding')::jsonb->>'runnerId')::uuid),true);
 select set_config('qorpera_test.machine_provider',(select provider_adapter from public.qorpera_runners
- where id=(current_setting('qorpera_test.wake_binding')::jsonb->>'runnerId')::uuid),true);
+ where id=(current_setting('qorpera_test.base_binding')::jsonb->>'runnerId')::uuid),true);
 create function pg_temp.node_policy(p_enabled boolean default true) returns jsonb language sql as $$
  select jsonb_build_object('schema','qorpera.runtime-node-policy/v1','nodeId','36000000-0000-4000-8000-000000000010',
   'machineIdSha256',repeat('c',64),'label','node-fixture','cpuMillis',6000,'memoryBytes',8589934592,
@@ -34,13 +34,13 @@ $$;
 create function pg_temp.node_capacity() returns jsonb language sql as $$
  select public.qorpera_runtime_node_capacity('36000000-0000-4000-8000-000000000010')
 $$;
-select pg_temp.path_claims('service_role');
+select pg_temp.base_claims('service_role');
 set local role service_role;
 select public.qorpera_reserve_runtime_machine(current_setting('qorpera_test.machine_id')::uuid,current_setting('qorpera_test.machine_provider'),repeat('a',64),
- (current_setting('qorpera_test.wake_binding')::jsonb->>'runId')::uuid,(current_setting('qorpera_test.wake_binding')::jsonb->>'runnerId')::uuid);
+ (current_setting('qorpera_test.base_binding')::jsonb->>'runId')::uuid,(current_setting('qorpera_test.base_binding')::jsonb->>'runnerId')::uuid);
 select public.qorpera_reserve_runtime_machine('34000000-0000-4000-8000-000000000088','lxd',repeat('b',64),null,null,
  (current_setting('qorpera_test.office_scope')::jsonb->>'companyComputerId')::uuid,1);
-select pg_temp.wake_assert(pg_temp.node_reserve()->>'reason'='NODE_PROVIDER_UNCONFIGURED','company allocation does not imply node admission');
+select pg_temp.base_assert(pg_temp.node_reserve()->>'reason'='NODE_PROVIDER_UNCONFIGURED','company allocation does not imply node admission');
 select public.qorpera_configure_runtime_node(pg_temp.node_policy(),0);
 select public.qorpera_enroll_runtime_node_provider('36000000-0000-4000-8000-000000000010',repeat('c',64),
  'native',current_setting('qorpera_test.machine_provider'),repeat('f',64),3000,2147483648);
