@@ -429,10 +429,41 @@ describe("a view's pending changes", () => {
 		expect(f.view.get("docs/long.log")).toBeDefined();
 		expect(f.view.get("docs/.~lock.report.odt#")).toBeDefined();
 		f.view.close(handle, 0);
+		// The closed file goes at the next boundary; the lock name stays pending, but is no unsaved work.
+		expect(f.view.unsaved).toBe(true);
+		expect(f.publish()).toEqual([expect.objectContaining({ op: "write", path: "docs/long.log" })]);
+		expect(f.view.empty).toBe(false);
+		expect(f.view.unsaved).toBe(false);
 		// A folder with a file open inside it moves only after the file is published.
 		const g = setup({ A: null, "A/f": "f" });
 		g.view.openWrite("A/f", { create: false, exclusive: false, truncate: false });
 		publishFirst(() => g.view.rename("A", "B"));
+	});
+
+	it("counts as unsaved what a boundary publishes, not names never published or a file only opened", () => {
+		const f = setup({ docs: null, "docs/a.md": "a", "docs/b.md": "b", "run.sh": "#!" });
+		write(f.view, "docs/.~lock.a.md#", "lock");
+		write(f.view, "docs/a.md~", "backup");
+		f.view.mkdir(".Trash-1000");
+		const { handle } = f.view.openWrite("docs/a.md", { create: false, exclusive: false, truncate: false });
+		expect(f.view.unsaved).toBe(false);
+		f.view.close(handle, 1);
+		expect(f.view.unsaved).toBe(false);
+		const changes: Array<() => void> = [
+			() => write(f.view, "docs/a.md", "a2"),
+			() => write(f.view, "docs/new.md", "n"),
+			() => f.view.mkdir("docs/sub"),
+			() => f.view.rename("docs/b.md", "docs/c.md"),
+			() => f.view.unlink("docs/c.md"),
+			() => f.view.setExecutable("run.sh", true),
+		];
+		for (const change of changes) {
+			change();
+			expect(f.view.unsaved).toBe(true);
+			f.publish();
+			expect(f.view.unsaved).toBe(false);
+			expect(f.view.empty).toBe(false);
+		}
 	});
 
 	it("keeps published paths out of trash folders; new files may go there", () => {

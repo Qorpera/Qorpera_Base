@@ -135,6 +135,8 @@ label = "Ask {kept_by} about it"    # required; 1–40 characters
   - `team`: the company has two or more members;
   - `connection:<service>`: a connected account of that service;
   - `table:<name>`: the table exists.
+- **`badge`** (proposed, built in I5c): how many of the source's rows its `where` keeps, drawn on the rail row's
+  emblem (99+ above 99) and read out as "{n} waiting". Nothing is drawn at 0 or while the source can't be read.
 - **`status = "off"`** hides the interface for everyone. The file stays.
 - **`[access]`** only narrows. `members` decides who sees the page in the rail; `agents` decides which agents may read
   it with `interface_read`. Neither changes what anyone may read: every block reads with the viewer's own authority.
@@ -183,8 +185,8 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
   is empty.
 - **Board parts:** each `[[view.block.part]]` has `title`, `from` (a table), `card = { title, line, figures, note }`
   and an optional `opens`. The lane of a row is its table's `holder` column (§5): a member's lane, the Shared lane
-  when the `shared` column says yes, or the open pile when it is empty. Dragging a card is a take or a release
-  (offers come later).
+  when the `shared` column says yes, or the open pile when it is empty. Dragging a card is a take or a release, or
+  an offer when it lands in another member's lane (§3.3, built in I9c).
 - **Board lanes (proposed, built in I9a):**
   - `lanes = "members"`: one lane per member, the viewer's own first, then the others by name.
   - Then the **Shared** lane, when the block names `shared`: rows whose `shared` column says yes, whoever holds them.
@@ -222,7 +224,7 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
   - With `opens`, each tile is a button that opens its row in the detail.
 - **Calendar (proposed, built with the folder pages):**
   - `from` may name several sources. The calendar is drawn when at least one of them exists, from those that do, and
-    lists the problems of each.
+    lists the problems of each. A calendar that names `mail` is not drawn at all (see "Mail lists and threads").
   - A source's dates: a routine's `next`; a human task's `due`, while the task is open or returned; a table's time
     column, else its first `time` or `date` column.
   - The block's `where` applies to each source with the columns it has. A source without a column its view narrows by
@@ -234,6 +236,24 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
     the agent of the source's first agent column.
 - **`opens`** names a `detail` block, or a `mail` block for a thread, in the same view. On a wide screen it opens
   beside the list; on a phone it opens as the next screen.
+- **Mail lists and threads (proposed, built in I5c):**
+  - A block from `mail` reads the threads 50 at a time, newest first, with "Show older" for the next page. When the
+    view's and the block's `where` all give `state` or `address` one text, the threads call is asked for just those.
+    Any other column, such as `direction`, is filtered on the threads already read.
+  - A `text`, `numbers` or `calendar` block that names `mail` is not drawn, even beside other sources. The threads
+    are read a page at a time, so a tile or a day would count only those read so far, and neither block marks an
+    email's words.
+  - A thread's `last_at`, and a waiting send's `due` among the `waiting` rows, are to the second, as every row's time
+    is, so `since` and ordering read them.
+  - An unread thread is marked in the list. Opening it in a `mail` block reads it and marks it read; the mark goes
+    when that lands, and each new opening marks it again. A thread the cloud no longer has says it is gone.
+  - The `mail` block draws each message's From, To, Cc, Subject, attachment names and plain text. A received
+    message's values all keep the outside-content mark (§4). A thread longer than its read says so; older messages
+    are not read yet.
+  - There is no change signal for mail, so the client polls. The addresses and the sends that wait are read when the
+    company opens, every minute while the app is in front, and when it comes back to the front. A page's first pages
+    and open threads are read every 20 seconds while it is on screen. A read that fails keeps what was drawn; a list
+    never read says so, with Try again.
 
 ### 3.3 Buttons
 
@@ -250,7 +270,9 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
 - **What a button may do.** A button does what its verb says and nothing more. It runs as the viewer, under the same
   review as doing it by hand:
   - `message` posts as the member, or sends a coworker message as the agent;
-  - `add`, `set`, `take`, `offer` and `release` save the table's file;
+  - `add`, `set`, `take` and `release` save the table's file;
+  - `offer` makes an offer record (§5 "Offers") and saves nothing; the member it goes to saves the cell when they
+    accept it;
   - `answer` uses the card's existing state machine (contract 16.2).
 - **`message`.** The prefilled text opens in the composer, and nothing is sent until the viewer sends it. A value
   filled in from outside content goes as a marked quote, never as the viewer's own words.
@@ -266,6 +288,10 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
     client's `outside_value` check (I5d-4a) and the web composer (I5d-4). In the web, a message button fills each
     outside value in as a quote with its mail thread as the record. A row without its thread id gets no button, so a
     value never goes as the viewer's own words.
+- **`answer` on a `mail` block (proposed, built in I5c).** Each send in the open thread that waits for a person is
+  drawn as the client's email review card. Send email and Don't send (allow once, deny) show only when the block
+  lists `answer`, the viewer may write, and the send's review sits in a conversation. There is no "Always allow"
+  here. A refusal shows on the card and keeps its buttons; the card goes when the next read no longer lists the send.
 - **Confirmations.** The client draws every confirmation itself, never from the file. Money, sending and other
   outside effects keep their own review.
 - **Built-in verbs.** A block that lists a built-in verb (`answer`, `take`, `offer`, `release`) shows that button, so
@@ -287,8 +313,18 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
     were looking.". A file that keeps changing past the retries also says "That changed while you were looking.". A
     refusal shows its problems.
   - A card stays where it is, saving, until the save has landed and the folder's feed shows the change.
-  - `offer` and `answer` are not drawn on a board until offers have their machinery. An area's `supervisor` is not
-    taken from a board; it waits for consent records (I9b).
+  - An area's `supervisor` is not taken from a board; it waits for consent records (I9b).
+- **Offer and its answers on a board (built in I9c).** They act on each card's own `holder` column too.
+  - **Offer** shows where Take or Release could (a card no one holds, or the viewer's own) when the block lists it. It
+    opens the members the card may go to: each other member who may change the table's rows, but those it is offered
+    to already. Dragging the card onto one of their lanes offers it as well; a Shared card has no drag.
+  - The card shows its open offers, those that read the cell as it is now: "Offered to …" with Withdraw for the
+    viewer's own, "… offers it to you" with Accept (where the viewer may take it) and Not now for one to the viewer,
+    and "… offered it to …" for the rest.
+  - **Accept** is the take's write with the offer's claim (§5 rule 8 accept): the viewer goes into the cell while it is
+    as the offer read it; a cell that changed says "That changed while you were looking.".
+  - `answer` is not drawn on a board: a waiting offer's answers are on its card. In `waiting` (§4) an offer to the
+    viewer is a row of kind `offer`, and its `answer` button is Accept and Not now.
 - **Never possible:** a link to another site, a script, or a request to any address.
 
 ## 4. Sources
@@ -324,6 +360,12 @@ not exist yet is not drawn: the client contract's rule against rendering missing
 | `working` | agent, what, since |
 | `activity` | at, kind, agent, member, line: one plain sentence per run, wake, answer or change |
 | `waiting` | id, kind (`review`, `question`, `mail`, `task`, `offer`, `run` for a run that did not finish, `mention`), title, from, due |
+
+- **Mail in `waiting` (proposed, built in I5c).** The `mail` rows are the sends the member mail read's waiting call
+  lists, one per review, and only a `badge` counts them. A block from `waiting` doesn't draw them: the agent whose
+  send waits is already there as a `review` row, so nothing shows twice.
+- **`mail_addresses.handled_by`** (proposed, built in I5c) lists agent ids, drawn as names, and `routine` names the
+  routines that read the address.
 
 - **Outside content** (contract 11.1), such as an email, keeps its outside-content mark in every block. These are
   outside content:
@@ -411,10 +453,26 @@ A `needs_yes` member column holds who has something: a card's holder, or an area
 
 - **Take:** a member may put their own id in an empty cell.
 - **Release:** a member may clear a cell that names them.
-- **Offer:** the member a cell names, or anyone when the cell is empty, may offer it to a member, through the
-  `offer` button or `table_write`. The offer is a request card for that member (16.2, as amended) and changes
-  nothing in the file. When they say yes, the platform saves the change as them, and the save is allowed because the
-  open offer names them. Not now, a dismissal or no answer changes nothing.
+- **Offer:** the member a cell names, or anyone when the cell is empty, may offer it to another member, through the
+  `offer` button (an agent through `table_write` once supervision is built, I9b). The platform keeps the offer as
+  its own record (below); it changes nothing in the file. When they say yes, they save the cell with their own id,
+  and the save is allowed because the open offer names them. Not now, a dismissal or no answer changes nothing.
+- **Offers (built in I9c):**
+  - The platform keeps offers as its own records, not as 16.2 review cards. An offer names the table by its id (so
+    it follows a moved folder), the row's key, the column, who made it (`from`), the cell as they read it (`was`:
+    them, or empty) and the member it is offered to (`to`). It is open, accepted, declined, withdrawn or lapsed.
+  - Only a `needs_yes` member column is offered, and not an area's `supervisor`, which waits for consent records
+    (I9b). Both members must be allowed to write the table's rows (`[write]`, rule 5, and the folder). A cell holds
+    one open offer per member it is offered to; offering it again answers the open one.
+  - Accepting is the member's own save of that cell (rule 8's accept). After every save of the table's rows or
+    definition, the platform settles its open offers: a cell that now names `to` accepts the offer, a cell still as it
+    was keeps it open, and anything else lapses it (another value, the row gone, the column no longer a claim). So a
+    cell released and taken again has lost its offers. Deleting the table's folder lapses them; moving it keeps them.
+  - `to` may decline an open offer and `from` may withdraw it. A closed offer stays closed.
+  - Every member who may read the table sees its open offers, between members of the company. An offer to or from a
+    member who left is not listed, and is not closed for it.
+  - In a paused company no offer is made; declining, withdrawing and the list still work.
+  - Agents offer for their supervisor when supervision is built (I9b).
 - **Agents act for their supervisor** (§5.1):
   - an agent may take for its supervisor, release what its supervisor holds, and offer what its supervisor holds or
     what is empty;
@@ -661,7 +719,7 @@ parser's codes for (1), `structured_rule` with these codes for the rest.
        - **accept:** a member putting *self* where an open offer names that row key, that column and *self*; the
          offer's `was` equals the cell as stored; and, unless `was` is empty, the offer's `from` equals `was`.
 
-       Offers are request cards the platform keeps. Until they exist, accept never passes.
+       Offers are records the platform keeps (§5, built in I9c). An agent never accepts one.
 9. **`tables/areas/`** (`areas`):
    - its `table.toml` keeps `owner` (`member`, `needs_yes`), `supervisor` (`member`, `needs_yes`) and `agents`
      (`agents`), each `optional`, by name and type;
@@ -775,8 +833,26 @@ Take and release (§3.3) write the member's own rows with the folder's member cl
 field's text in `rows.csv` and keep every other byte as written (a first line without the holder column gets it at its
 end). A rows file with rows that don't fit its definition is not written. Lookup columns are drawn as names or a count,
 and the folder reader reads the tables that board parts and lookups name. The Members page's People view draws its
-table; its `file:rules/shared-areas.md` block is not drawn, since this client draws no `text` blocks yet. Offers,
-answers on a board, and supervision (I9b) are not built.
+table; its `file:rules/shared-areas.md` block came with the folder pages (below). Offers came with I9c (below);
+supervision (I9b) is not built.
+
+**Built: I5c** (web; `packages/web/src/cloud/mail.ts`, `app/company-mail.ts`, `app/interface-mail.ts`,
+`app/interface-badge.ts`, `app/views/interface-mail.ts`). The `mail` and `mail_addresses` sources read the member mail
+calls of I5a, and the `mail` need holds while the addresses call lists one. The Mailbox page draws its views: lists
+that page and poll, a thread with its outside-content marks and account mail kept back (I5b), the sends that wait
+with their answer, and the Addresses table, all in the proposed rules of §3.2, §3.3 and §4. A value filled in from
+outside content keeps its mark in every block: a list's line, sub and status, a table's cells (the one whose button
+opens the row too), a detail's title and fields, and a button's label. A `mail` block is drawn only from `mail`. A
+table from `mail` reads as a list does: it says while it reads or why it can't, and has "Show older". A `text`,
+`numbers` or `calendar` block that names `mail` is not drawn, even beside other sources: the threads are read a page at
+a time, so a tile or a day would count only those read so far, and neither marks an email's words. A thread's
+`last_at` and a waiting send's `due` are to the second, as every row's time is, so `since` reads them. An answer first
+chooses the conversation's model account as its thread does (never another one while a message is on its way); one refused
+for want of an account points to the agent's thread. Shown text is clipped to the cloud's bounds in characters, never
+refused. Its message buttons put outside values in as quotes (I5d), and draw none for account mail, which the cloud
+takes no quote of. The rail row shows the page's badge. Not built: `chips`, a thread's older
+messages (the thread call has no next page), and a `direction` filter in the threads call, so Sent shows the sent
+threads of the pages read.
 
 **Built: folder pages** (web; `packages/web/src/app/interface-sources.ts`, `app/routine-next-run.ts`,
 `app/interface-folder.ts`, `app/views/interface-blocks.ts`, `ui/markdown.ts`). The folder's own sources of §4 are live:
@@ -790,3 +866,21 @@ every row does. Column and value labels are in the member's language. The `text`
 §3.2's proposed rules, so Pulse draws all its blocks but "What happened" and the Members page draws
 `file:rules/shared-areas.md` when the file exists. The `activity` source is not built: the live state has only each
 agent's current run, not the runs that happened, so it waits for a read of past runs (with their answers and changes).
+
+**Built: I9c, the offers' machinery** (`supabase/migrations/20260930105000_interface_offers.sql`, test 938). Offers are
+kept in `qorpera_interface_offers` (§5 "Offers"). Members make, decline, withdraw and list them with four calls
+(`supabase/CLIENT-CONTRACT.md`, "Offers of a claimed cell"). Offer, decline and withdraw hold the table's index row
+FOR SHARE, so they wait for a save that holds it (FOR NO KEY UPDATE) and read the files as the last commit left
+them; the list reads no files and takes no lock. Rule 8 gains its accept. The save hook's apply settles a table's open
+offers after its rows or definition change, and lapses them when its folder is deleted. Removing the table's index row
+(erasure) removes its offers. Test 866 races an offer against a rows save both ways: an offer behind a save reads the
+cell the save left, and a save behind an offer settles it.
+
+**Built: I9c, the web** (`packages/web/src/cloud/interface-offers.ts`, `app/interface-offers.ts`,
+`app/interface-claims.ts`, `app/views/interface.ts`). The client reads the company's open offers when it opens, after
+each change to the folder its pages read (the save that changes a cell settles its offers), when the window comes back
+and each minute; making, declining or withdrawing one reads them again. A board draws Offer, its member list and the
+drop onto a member's lane, each card's offer lines, and Withdraw, Accept and Not now on them (§3.3). An accept is the
+take's write with the offer passed to the claim rule. Pulse's `waiting` lists each open offer to the viewer whose cell
+the folder read still shows as the offer read it, with Accept and Not now. A cloud without the calls, or a member they
+don't answer, draws no offer.

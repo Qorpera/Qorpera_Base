@@ -93,10 +93,19 @@ export class FakeCore implements FolderCore {
 	deny = false;
 	listCalls = 0;
 	profileCalls = 0;
-	/** Core views (run boxes): id to pass and state, as C1b-3a keeps them. */
+	/** Core views, as C1b-3a keeps them: id to pass and state, the view's kind and the machine allocation it was opened
+	 * on (null for a run box: 20260930104000), and what each renewal said was unsaved since. */
 	readonly views = new Map<
 		string,
-		{ pass: string; state: "open" | "closed"; renewals: number; environmentId: string }
+		{
+			pass: string;
+			state: "open" | "closed";
+			renewals: number;
+			environmentId: string;
+			kind: string;
+			machineId: string | null;
+			unsaved: (string | null)[];
+		}
 	>();
 	renewalFails = false;
 	/** The database's clock, for leases. */
@@ -106,8 +115,21 @@ export class FakeCore implements FolderCore {
 	/** The read receipt an agent's listing gives each path (a run box view acts as an agent); the feed gives none. */
 	receipts: ((path: string) => CoreReceipt | undefined) | undefined;
 
-	openView(viewId: string, pass: string, environmentId = ENV): void {
-		this.views.set(viewId, { pass, state: "open", renewals: 0, environmentId });
+	/** A run box, unless `kind` says otherwise. */
+	openView(
+		viewId: string,
+		pass: string,
+		options: { environmentId?: string; kind?: string; machineId?: string | null } = {},
+	): void {
+		this.views.set(viewId, {
+			pass,
+			state: "open",
+			renewals: 0,
+			environmentId: options.environmentId ?? ENV,
+			kind: options.kind ?? "run_box",
+			machineId: options.machineId ?? null,
+			unsaved: [],
+		});
 	}
 
 	/** A view actor reads only in its own company folder, with its own pass, and only while its view is open
@@ -241,6 +263,8 @@ export class FakeCore implements FolderCore {
 	#nextVersion = 1000;
 	/** A path's units the core refuses (no write authority there). */
 	refuse: (path: string) => boolean = () => false;
+	/** A path's units the core parks for review, applying nothing (P40: an agent's change that needs a member's). */
+	park: (path: string) => boolean = () => false;
 	/** Whether a conflicting write or new folder keeps its files on the receipt (P17 keeps them only when their bytes
 	 * would have passed); the copies kept, by commit. */
 	copyConflicts = true;
@@ -340,6 +364,7 @@ export class FakeCore implements FolderCore {
 			});
 			const path = u.op === "move" ? u.to : u.path;
 			if (this.refuse(path) || (u.op === "move" && this.refuse(u.from))) return no("denied", "denied");
+			if (this.park(path)) return no("waiting_for_review", "parked");
 			const conflict = (reason: string): CommitOutcome => {
 				const files =
 					u.op === "write"
@@ -430,7 +455,7 @@ export class FakeCore implements FolderCore {
 							version: v(this.#nextVersion++),
 						};
 						this.entries.set(moved.path, moved);
-						changes.push({ ...moved, op: "move_in" });
+						changes.push({ ...moved, op: "move_in", priorVersion: old.version });
 						if (p === u.from) version = moved.version;
 					}
 					return { unit, outcome: "saved", reason: null, version };
@@ -458,13 +483,19 @@ export class FakeCore implements FolderCore {
 		return this.copies.get(commitId) ?? [];
 	}
 
-	async renewView(viewId: string, pass: string): Promise<ViewRenewal> {
+	async renewView(viewId: string, pass: string, unsavedSince: string | null): Promise<ViewRenewal> {
 		const view = this.views.get(viewId);
 		if (!view || view.pass !== pass) throw new CoreRefusal("denied");
 		if (this.renewalFails) throw new Error("The database did not answer");
 		view.renewals++;
+		view.unsaved.push(unsavedSince);
 		return view.state === "open"
-			? { state: "open", leaseUntil: new Date(this.now() + 120_000).toISOString() }
+			? {
+					state: "open",
+					leaseUntil: new Date(this.now() + 120_000).toISOString(),
+					kind: view.kind,
+					machineId: view.machineId,
+				}
 			: { state: "closed", reason: "ended" };
 	}
 }
@@ -489,6 +520,21 @@ export function grants(): MountGrants {
 		]),
 		[EXEC_HOST],
 	);
+}
+
+/** The node's office project, where its company machines run (F3 4a). */
+export const OFFICE_PROJECT = "qn25b2-office";
+/** A company machine's allocation, and the machine the node made for it, named after it (`lxd-office-guest.ts`). */
+export const ALLOCATION = "c0ffee00-1111-4222-8333-444455556666";
+export const OFFICE: MachineRef = {
+	project: OFFICE_PROJECT,
+	name: `qorpera-office-${ALLOCATION.replaceAll("-", "")}`,
+	physicalId: "cccccccc-dddd-4eee-8fff-000000000000",
+};
+
+/** No operator mount: the execution host presents run boxes, and the office project's machines their desktops. */
+export function companyGrants(): MountGrants {
+	return new MountGrants([], [EXEC_HOST], [OFFICE_PROJECT]);
 }
 
 /** The object gateway's route for the folder service, onto the stand-in share: each put checked against its hash,

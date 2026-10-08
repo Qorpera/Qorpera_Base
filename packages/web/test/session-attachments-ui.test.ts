@@ -206,7 +206,10 @@ describe("actual product conversation attachments", () => {
 		button(f.root, "Preview Image attachment").click();
 		await vi.waitFor(() => expect(document.querySelector("dialog img")).not.toBeNull());
 		expect(f.requests()).toHaveLength(3);
-		expect(f.cloud.rpc).not.toHaveBeenCalled();
+		// Only the company's mail and offers are read while it is open (Interfaces steps I5c and I9c).
+		const companyRead = (name: string) =>
+			name.startsWith("qorpera_member_mail_") || name === "qorpera_member_interface_offers";
+		expect(vi.mocked(f.cloud.rpc).mock.calls.filter(([name]) => !companyRead(name))).toEqual([]);
 	});
 	it("retains files and the exact input ID after a lost sponsored response without replaying automatically", async () => {
 		const f = await setup(),

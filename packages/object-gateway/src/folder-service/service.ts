@@ -9,7 +9,7 @@ import {
 	type FolderActor,
 	type FolderCore,
 } from "./core.ts";
-import type { Grant, MountGrants } from "./mounts.ts";
+import type { CoreAccess, Grant, MountGrants } from "./mounts.ts";
 import { type NasObjects, ObjectIntegrityError, ObjectUnavailableError } from "./objects.ts";
 import { CHUNK_BYTES, type ChunkRef, type FileRef, type PendingFile, PendingView, PublishFirst } from "./pending.ts";
 import { type BoundaryPlan, type CommitUnit, planBoundary } from "./plan.ts";
@@ -114,6 +114,12 @@ interface HeldIntent {
 	readonly staged?: FileRef;
 }
 
+/** A file a published move took to its path: the version it had where it came from, and the one the move gave it. */
+interface MovedVersion {
+	readonly prior: string;
+	readonly version: string;
+}
+
 /** A boundary the core answered, while the view waits for the feed to bring its change set: until then the view keeps
  * its pending changes as they were, and nothing changes (BUSY). */
 interface Settlement {
@@ -152,9 +158,20 @@ class View {
 	closed: string | undefined;
 	/** Versions replaced on the feed, still readable by files opened before; newest last. */
 	readonly superseded = new Map<string, TreeEntry[]>();
-	/** The view may write (step 3: an operator mount configured so). */
-	readonly write: boolean;
-	readonly quietMs: number | undefined;
+	/** The view may write (step 3: an operator mount configured so; step 4: a computer desktop). A core view's is set at
+	 * its first renewal, from what the core says it is (`access`). */
+	write: boolean;
+	quietMs: number | undefined;
+	/** A core view's kind and machine, as its first renewal said them, and which machines it is served to. */
+	identity: { readonly kind: string; readonly machineId: string | null } | undefined;
+	access: CoreAccess | undefined;
+	/** Since when the view has had changes not published (ms): sent at each renewal, so the core counts a desktop's seat
+	 * in use while it has some. */
+	unsavedSince: number | undefined;
+	/** The core may count it so: a renewal sent a time, and none answered has sent null since. */
+	unsavedSent = false;
+	/** One renewal at a time, so an early one and a round's never cross. */
+	renewing: Promise<void> = Promise.resolve();
 	/** Its pending changes, once listed (a writable view only). */
 	pending: PendingView | undefined;
 	quiet: ReturnType<typeof setTimeout> | undefined;
@@ -171,9 +188,10 @@ class View {
 		| undefined;
 	/** A boundary answered but not settled yet (the feed has not brought its change set). */
 	unsettled: Settlement | undefined;
-	/** What this view's saves published, by path, newest last (as many as the readable versions kept per path): the
-	 * version a save made while pending (the one the machine's version map holds after it) and the version its change
-	 * set gave the path. */
+	/** What this view's saves and moves published, by path, newest last (as many as the readable versions kept per
+	 * path): the version the path showed the machine while pending (a save's own, the one the machine's version map
+	 * holds after it; or, for a file this view moved there, the one it had before) and the version the change set gave
+	 * the path. */
 	readonly published = new Map<string, { readonly made: string; readonly live: string }[]>();
 	readonly uploads = new Map<string, ChunkUpload>();
 	/** The intents that root the bytes of its pending files, by id. */
@@ -192,6 +210,9 @@ class View {
 		this.confirmed = grant.lease === undefined;
 		this.write = grant.write;
 		this.quietMs = grant.quietMs;
+		this.identity = undefined;
+		this.access = undefined;
+		this.unsavedSince = undefined;
 	}
 
 	/** A core view (a run's own, opened by the core), closed or not; an operator mount's view is not. */
@@ -300,20 +321,43 @@ export class FolderService {
 		);
 	}
 
-	/** One renewal: the confirmed lease moves on, or the view closes. Throws when the core could not answer. */
-	async #renew(view: View): Promise<void> {
+	/** One renewal, after any running one: the confirmed lease moves on, or the view closes. Throws when the core could
+	 * not answer. `lettingGo`: the view is about to be dropped with whatever it has pending, so nothing is unsaved. */
+	#renew(view: View, lettingGo = false): Promise<void> {
+		const next = view.renewing.catch(() => undefined).then(() => this.#renewNow(view, lettingGo));
+		view.renewing = next;
+		return next;
+	}
+
+	async #renewNow(view: View, lettingGo: boolean): Promise<void> {
 		const lease = view.lease;
 		if (!lease) return;
+		if (lettingGo || !view.pending?.unsaved) view.unsavedSince = undefined;
+		else view.unsavedSince ??= this.#now();
+		const unsaved = view.unsavedSince === undefined ? null : new Date(view.unsavedSince).toISOString();
+		if (unsaved !== null) view.unsavedSent = true;
 		let renewal: Awaited<ReturnType<FolderCore["renewView"]>>;
 		const asked = this.#now();
 		try {
-			renewal = await this.#core.renewView(lease.viewId, lease.pass);
+			renewal = await this.#core.renewView(lease.viewId, lease.pass, unsaved);
 		} catch (error) {
 			if (error instanceof CoreRefusal && error.reason === "denied")
 				return this.#close(view, "The view was refused");
 			throw error;
 		}
+		if (unsaved === null) view.unsavedSent = false;
+		// A view closed while the renewal ran (another answer, or no machine holds it) stays closed.
+		if (view.closed) return;
 		if (renewal.state === "closed") return this.#close(view, `The view was ${renewal.reason}`);
+		// The first answer says what the view is, and so how it is served and to which machines; a view never changes
+		// kind or machine.
+		if (!view.identity) {
+			view.identity = { kind: renewal.kind, machineId: renewal.machineId };
+			view.access = this.#grants.coreAccess(view.identity);
+			view.write = view.access?.write ?? false;
+			view.quietMs = view.access?.quietMs;
+		} else if (view.identity.kind !== renewal.kind || view.identity.machineId !== renewal.machineId)
+			return this.#close(view, "The view's kind or machine changed");
 		// The core's clock says until when; never trust it for longer than one lease from now.
 		view.leaseUntil = Math.min(Date.parse(renewal.leaseUntil), asked + LEASE_MS);
 		view.confirmed = true;
@@ -354,19 +398,25 @@ export class FolderService {
 			for (const handle of view.handles) this.#abandon(view, handle);
 			view.handles.clear();
 			view.idleSince = this.#now();
-			// A core view no machine holds is dropped at once (with its pass): its lease is not renewed while idle, so
-			// a machine that comes back lists it again and renews at once.
-			if (view.lease && this.#views.get(view.key) === view) {
-				this.#views.delete(view.key);
-				view.lease = undefined;
-				view.closed = "No machine holds the view";
-				view.tree = undefined;
+			// A core view no machine holds is dropped (with its pass): its lease is not renewed while idle, so a machine
+			// that comes back lists it again and renews at once. What it has pending is published first, under the lease
+			// it still has (a desktop that ended inside its quiet period); a machine that comes back meanwhile joins it.
+			if (!view.lease || this.#views.get(view.key) !== view) return;
+			if (!view.pending || view.pending.empty) {
+				this.#letGo(view);
+				return;
 			}
+			if (view.quiet) clearTimeout(view.quiet);
+			view.quiet = undefined;
+			void this.#publishLogged(view).then(() => this.#letGo(view));
 		};
 		try {
 			view.loading ??= this.#firstLoad(view);
 			await view.loading;
 			if (view.closed) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
+			// A core view is served only to the machines its kind and machine name: a desktop to its own company machine.
+			if (view.core && !view.access?.admits(bridge))
+				throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
 		} catch (error) {
 			release();
 			throw error;
@@ -539,6 +589,36 @@ export class FolderService {
 		this.#log(`folder-service: ${view.key} closed: ${reason}`);
 	}
 
+	/** Drops a core view no machine holds (after its last boundary). A core that may count it as having unsaved changes
+	 * hears first that it has none, so a desktop's seat is free now, not when the lease ends (C1B §9). */
+	#letGo(view: View): void {
+		if (view.connections > 0) return;
+		if (!view.unsavedSent || !view.lease) {
+			this.#drop(view);
+			return;
+		}
+		void this.#renew(view, true)
+			.catch((error: unknown) =>
+				this.#log(`folder-service: ${view.key}: lease not renewed now: ${(error as Error).message}`),
+			)
+			.then(() => {
+				if (view.connections === 0) this.#drop(view);
+			});
+	}
+
+	/** Forgets a core view no machine holds, with its pass and anything its last boundary kept pending. */
+	#drop(view: View): void {
+		if (view.closed) return;
+		if (this.#views.get(view.key) === view) this.#views.delete(view.key);
+		view.lease = undefined;
+		view.closed = "No machine holds the view";
+		view.tree = undefined;
+		view.pending?.clear();
+		view.intents.clear();
+		if (view.quiet) clearTimeout(view.quiet);
+		view.quiet = undefined;
+	}
+
 	async #firstLoad(view: View): Promise<void> {
 		try {
 			const { tree, seq } = await this.#listAll(view);
@@ -624,7 +704,8 @@ export class FolderService {
 
 	/** A base as the machine sent it, except that the version one of this view's saves made, published since, is read
 	 * as the version its change set gave the path: the machine's version map holds the first (RUNTIME-FOLDER-WRITES.md,
-	 * "After a save the map holds the version the save made"). */
+	 * "After a save the map holds the version the save made"). Likewise the version a file this view moved showed at its
+	 * new path before the move was published: the move gave it a new one. */
 	#base(view: View, path: string, base: string | undefined): string | undefined {
 		if (base === undefined) return undefined;
 		return view.published.get(path)?.find((p) => p.made === base)?.live ?? base;
@@ -855,24 +936,36 @@ export class FolderService {
 		return next;
 	}
 
-	/** A change restarts the quiet period of a mount that publishes on one. */
+	/** A change restarts the quiet period of a mount that publishes on one. A core view's first change not published
+	 * renews it at once, so the core counts a desktop's seat in use from then (C1B §9), not up to a round later. */
 	#touch(view: View): void {
+		if (view.lease && view.unsavedSince === undefined && view.pending?.unsaved) {
+			view.unsavedSince = this.#now();
+			this.#renew(view).catch((error: unknown) =>
+				this.#log(`folder-service: ${view.key}: lease not renewed now: ${(error as Error).message}`),
+			);
+		}
 		if (view.quietMs === undefined) return;
 		if (view.quiet) clearTimeout(view.quiet);
 		view.quiet = setTimeout(() => {
 			view.quiet = undefined;
-			void this.#publish(view).then(
-				(report) => {
-					for (const entry of report.paths)
-						if (entry.outcome !== "saved")
-							this.#log(
-								`folder-service: ${view.key}: ${entry.path}: ${entry.outcome}${entry.reason ? ` (${entry.reason})` : ""}`,
-							);
-				},
-				(error: unknown) => this.#log(`folder-service: ${view.key}: publish failed: ${(error as Error).message}`),
-			);
+			void this.#publishLogged(view);
 		}, view.quietMs);
 		view.quiet.unref?.();
+	}
+
+	/** A boundary no machine asked for: what it did not save goes to the log, until step 4 routes it to the desktop. */
+	async #publishLogged(view: View): Promise<void> {
+		try {
+			const report = await this.#publish(view);
+			for (const entry of report.paths)
+				if (entry.outcome !== "saved")
+					this.#log(
+						`folder-service: ${view.key}: ${entry.path}: ${entry.outcome}${entry.reason ? ` (${entry.reason})` : ""}`,
+					);
+		} catch (error) {
+			this.#log(`folder-service: ${view.key}: publish failed: ${(error as Error).message}`);
+		}
 	}
 
 	#abandon(view: View, handle: number): void {
@@ -1252,7 +1345,10 @@ export class FolderService {
 		const copied = await this.#copied(view, plan, answer);
 		plan.units.forEach((planned, i) => {
 			const outcome = answer.units[i];
-			const kept = planned.bytes && outcome?.outcome !== "saved" && !copied.has(i);
+			// A parked unit is a proposal now (P40, C2 §8): the agent's next run reviews it, so the view lets it go and
+			// shows the live folder, as for a unit saved.
+			const parked = outcome?.outcome === "waiting_for_review" && outcome.reason === "parked";
+			const kept = planned.bytes && outcome?.outcome !== "saved" && !parked && !copied.has(i);
 			for (const path of planned.paths) {
 				if (kept) keep.add(path);
 				if (outcome?.outcome === "saved") saved.add(path);
@@ -1316,47 +1412,66 @@ export class FolderService {
 			if (view.seq < seq) return;
 		}
 		// A write's version is in the core's answer; a new folder's files' are only in its change set, which is read
-		// when one of them was saved.
+		// when one of them was saved. So are the versions a move gave what it moved.
 		const written = new Map<string, string>();
 		settlement.plan.units.forEach((planned, i) => {
 			const outcome = settlement.answer.units[i];
 			if (planned.unit.op === "write" && outcome?.outcome === "saved" && outcome.version)
 				written.set(planned.unit.path, outcome.version);
 		});
-		if ([...settlement.made.keys()].some((path) => settlement.saved.has(path) && !written.has(path)))
+		let moved: ReadonlyMap<string, MovedVersion> = new Map();
+		const someMoved = settlement.plan.units.some(
+			(planned, i) => planned.unit.op === "move" && settlement.answer.units[i]?.outcome === "saved",
+		);
+		if (someMoved || [...settlement.made.keys()].some((path) => settlement.saved.has(path) && !written.has(path)))
 			try {
-				for (const [path, version] of await this.#changeSetWrites(view, seq))
-					if (!written.has(path)) written.set(path, version);
+				const changeSet = await this.#changeSet(view, seq);
+				for (const [path, version] of changeSet.writes) if (!written.has(path)) written.set(path, version);
+				moved = changeSet.moved;
 			} catch (error) {
 				this.#log(
 					`folder-service: ${view.key}: change set ${seq} could not be read now: ${(error as Error).message}`,
 				);
 				return;
 			}
-		if (view.unsettled === settlement) this.#finishSettle(view, settlement, written);
+		if (view.unsettled === settlement) this.#finishSettle(view, settlement, written, moved);
 	}
 
-	/** The versions change set `seq` wrote, read from the feed just before it: whatever the view's own rounds did since
-	 * (a full listing included), the change set says exactly. A feed that no longer serves that position gives none. */
-	async #changeSetWrites(view: View, seq: number): Promise<Map<string, string>> {
+	/** The versions change set `seq` wrote, and those its moves gave (with the version each path had where it came
+	 * from), read from the feed just before it: whatever the view's own rounds did since (a full listing included), the
+	 * change set says exactly. A feed that no longer serves that position gives none. */
+	async #changeSet(
+		view: View,
+		seq: number,
+	): Promise<{ writes: Map<string, string>; moved: Map<string, MovedVersion> }> {
 		const writes = new Map<string, string>();
+		const moved = new Map<string, MovedVersion>();
 		let position: { afterSeq: number; cursor: FeedCursor | null } = { afterSeq: seq - 1, cursor: null };
 		for (;;) {
 			const page = await this.#core.feed(view.environmentId, view.actor, position.afterSeq, position.cursor);
-			if (page.resync || !page.next) return writes;
+			if (page.resync || !page.next) return { writes, moved };
 			for (const event of page.events) {
-				if (event.seq > seq) return writes;
+				if (event.seq > seq) return { writes, moved };
 				if (event.seq === seq && event.kind === "change_set")
-					for (const change of event.changes) if (change.op === "write") writes.set(change.path, change.version);
+					for (const change of event.changes) {
+						if (change.op === "write") writes.set(change.path, change.version);
+						if (change.op === "move_in" && change.kind === "file" && change.priorVersion)
+							moved.set(change.path, { prior: change.priorVersion, version: change.version });
+					}
 			}
-			if (!page.more) return writes;
+			if (!page.more) return { writes, moved };
 			position = page.next;
 		}
 	}
 
-	#finishSettle(view: View, settlement: Settlement, written: ReadonlyMap<string, string>): void {
+	#finishSettle(
+		view: View,
+		settlement: Settlement,
+		written: ReadonlyMap<string, string>,
+		moved: ReadonlyMap<string, MovedVersion> = new Map(),
+	): void {
 		view.unsettled = undefined;
-		this.#notePublished(view, settlement, written);
+		this.#notePublished(view, settlement, written, moved);
 		this.#settleNodes(
 			view,
 			settlement.keep,
@@ -1365,16 +1480,41 @@ export class FolderService {
 		);
 	}
 
-	/** The versions this boundary's saves published, for bases and reads naming the versions they made. As many are
-	 * kept per path as versions of it stay readable: the current one and the replaced ones. */
-	#notePublished(view: View, settlement: Settlement, written: ReadonlyMap<string, string>): void {
-		for (const [path, made] of settlement.made) {
-			const live = settlement.saved.has(path) ? written.get(path) : undefined;
-			if (!live) continue;
-			const aliases = view.published.get(path) ?? [];
+	/** The versions this boundary's saves published, for bases and reads naming the versions they made; and the versions
+	 * its moves gave the files they moved, for bases and reads naming the version a file showed at its new path while
+	 * the move was pending (the one it had before), or a version this view's own save made of it before the move (the
+	 * machine's version map takes a save's version along when it renames the file). As many are kept per path as
+	 * versions of it stay readable: the current one and the replaced ones. */
+	#notePublished(
+		view: View,
+		settlement: Settlement,
+		written: ReadonlyMap<string, string>,
+		moved: ReadonlyMap<string, MovedVersion>,
+	): void {
+		// One per version named at a path: a file moved away and back brings its save's version along again, and the
+		// version it has now replaces the one it had when it left.
+		const alias = (path: string, made: string, live: string): void => {
+			const aliases = (view.published.get(path) ?? []).filter((p) => p.made !== made);
 			aliases.push({ made, live });
 			if (aliases.length > SUPERSEDED_PER_PATH + 1) aliases.shift();
 			view.published.set(path, aliases);
+		};
+		for (const [path, made] of settlement.made) {
+			const live = settlement.saved.has(path) ? written.get(path) : undefined;
+			if (live) alias(path, made, live);
+		}
+		if (moved.size === 0) return;
+		// The versions this view's saves made, by the version they published (at any path, before the moves).
+		const madeOf = new Map<string, string[]>();
+		for (const aliases of view.published.values())
+			for (const { made, live } of aliases) {
+				const versions = madeOf.get(live);
+				if (versions) versions.push(made);
+				else madeOf.set(live, [made]);
+			}
+		for (const [path, { prior, version }] of moved) {
+			alias(path, prior, version);
+			for (const made of madeOf.get(prior) ?? []) if (made !== prior) alias(path, made, version);
 		}
 	}
 
@@ -1397,6 +1537,9 @@ export class FolderService {
 		const before = [...pending.nodes().keys()];
 		pending.settle(new Set([...keepAll].filter((p) => pending.nodes().has(p))));
 		if (pending.empty) view.intents.clear();
+		// Nothing left unsaved (a lock or swap file a program still holds is none): the next renewal tells the core so,
+		// and the desktop's seat is free again.
+		if (!pending.unsaved) view.unsavedSince = undefined;
 		this.#push(view, [...new Set([...paths, ...before])]);
 	}
 

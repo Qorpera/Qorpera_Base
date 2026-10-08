@@ -29,6 +29,12 @@ export function parseMachineRef(value: unknown): MachineRef {
 	return { project: m.project, name: m.name, physicalId: m.physicalId };
 }
 
+/** An LXD project's name, as a machine reference has it. */
+export function parseMachineProject(value: unknown): string {
+	if (typeof value !== "string" || !NAME.test(value)) throw new Error("A machine project is an LXD project's name");
+	return value;
+}
+
 /** Whether the bridge found exactly this machine behind the connection. */
 export function isMachine(bridge: BridgeInfo, machine: MachineRef): boolean {
 	return (

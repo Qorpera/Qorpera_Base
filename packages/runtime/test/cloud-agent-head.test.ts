@@ -167,7 +167,8 @@ it("leaves out of the context message only what the head shows, and names the pr
 it("puts the head after everything an agent's runs share and before everything a wake changes", () => {
 	const { f, context } = setup();
 	const head = composeCloudAgentHead(context, vision("# Vision"), memory(["I am Nora"])).text;
-	// A worker shares its parent's prefix (RUNTIME-AGENT-MEMORY-TREE.md §12); a continuation changes only what follows.
+	// A worker's developer message matches its parent's up to the head (RUNTIME-AGENT-MEMORY-TREE.md §6.1), though its
+	// tools differ, so it reads no cached prefix (§12); a continuation changes only what follows.
 	// Only the wake's source kind matters to the instructions here.
 	const worker = { kind: "agent", source: { kind: "worker-dispatch" } } as unknown as CloudWakeEnvelope;
 	const continued = parseCloudNativeCompanyContext(
