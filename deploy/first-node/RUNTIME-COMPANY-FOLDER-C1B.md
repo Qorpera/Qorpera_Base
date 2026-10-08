@@ -1463,7 +1463,8 @@ by a machine.
   13 ms at p50, 108 ms at p95 and 343 ms at most while 16 clients committed
   without pause (3.8 ms idle). C1e adds revoke latency to its pass criteria,
   and the latency of a release of thousands of paths, which now resolves each
-  path once, against the 4-second result fence.
+  path once, against 4 seconds (the result fence's budget until 5 October
+  2026, now the load test's latency target).
   If the tail grows at 32 to 64 clients, point the folder tables' foreign
   keys at a dedicated anchor row that is never locked exclusively, not at
   `qorpera_company_files` (its upload quota trigger locks that row

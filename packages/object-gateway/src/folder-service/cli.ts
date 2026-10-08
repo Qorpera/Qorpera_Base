@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SupabaseFolderCore } from "./core.ts";
-import { parseMachineRef } from "./machines.ts";
+import { parseMachineProject, parseMachineRef } from "./machines.ts";
 import { MountGrants, parseOperatorMounts } from "./mounts.ts";
 import { NasObjects } from "./objects.ts";
 import { createFolderServer } from "./server.ts";
@@ -26,6 +26,8 @@ interface Config {
 	readonly mounts: unknown;
 	/** The machines on this node that may present the core's run box views: its execution host. */
 	readonly runBoxHosts?: unknown;
+	/** The LXD projects of this node's company machines: each machine there may present its own desktop views (F3 4a). */
+	readonly companyMachineProjects?: unknown;
 	/** Writes through the mount (F3 step 3): the object gateway that stores the views' bytes. Without it, every view is
 	 * read-only. Its token is the credential qorpera-folder-gateway-token. */
 	readonly gatewayUrl?: string;
@@ -33,7 +35,15 @@ interface Config {
 
 function config(): Config {
 	const value = JSON.parse(credential("qorpera-folder-config")) as Record<string, unknown>;
-	const known = ["supabaseUrl", "storageRoot", "cacheMiB", "mounts", "runBoxHosts", "gatewayUrl"];
+	const known = [
+		"supabaseUrl",
+		"storageRoot",
+		"cacheMiB",
+		"mounts",
+		"runBoxHosts",
+		"companyMachineProjects",
+		"gatewayUrl",
+	];
 	for (const key of Object.keys(value)) if (!known.includes(key)) throw new Error(`Unknown configuration key ${key}`);
 	if (typeof value.supabaseUrl !== "string" || typeof value.storageRoot !== "string")
 		throw new Error("supabaseUrl and storageRoot are required");
@@ -43,6 +53,8 @@ function config(): Config {
 		throw new Error("cacheMiB must be a whole number from 16 to 2048");
 	if (value.runBoxHosts !== undefined && !Array.isArray(value.runBoxHosts))
 		throw new Error("runBoxHosts must be a list");
+	if (value.companyMachineProjects !== undefined && !Array.isArray(value.companyMachineProjects))
+		throw new Error("companyMachineProjects must be a list");
 	if (value.gatewayUrl !== undefined && typeof value.gatewayUrl !== "string")
 		throw new Error("gatewayUrl must be a URL");
 	return value as unknown as Config;
@@ -72,6 +84,7 @@ const service = new FolderService({
 	grants: new MountGrants(
 		parseOperatorMounts(settings.mounts),
 		Array.isArray(settings.runBoxHosts) ? settings.runBoxHosts.map(parseMachineRef) : [],
+		Array.isArray(settings.companyMachineProjects) ? settings.companyMachineProjects.map(parseMachineProject) : [],
 	),
 	log,
 });

@@ -88,12 +88,15 @@ A save's base (a file opened for writing, its bit set, or a file renamed over it
 A move's or removal's base is the version the name showed when it was made (what `mv` or `rm` saw), and a moved or
 removed folder records the view's position in the feed (`asOfSeq`) then. The feed keeps moving underneath: a pending
 path keeps showing the view's own version, and the commit decides (a removed file another machine changes shows
-again: "A boundary" below). After a save the map holds the version the save made.
+again: "A boundary" below). After a save the map holds the version the save made. A file this view moved shows its
+version from before the move at its new path until the move is published, and a read there takes that version into
+the map; the published move gives the file a new one, and the service reads the old one as the new one, as it does a
+save's.
 
 **The map lives as long as the programs it protects.** An editor's buffer outlives a restart of the folder service
 or of the folder program, so the map must too; otherwise a save after the restart would take the newest version as
 its base and overwrite it. So the program keeps the map in memory and writes each new entry through to a file under
-`/run/qorpera-folder/<mount>/` (a memory file system, root's only), and a program started again for the same mount
+`/run/qorpera-folder/<view id>/` (a memory file system, root's only), and a program started again for the same mount
 reads it back. It holds paths and version ids, never content, at most one entry per path the mount read, and goes when
 the machine restarts, together with every process whose buffer it protected. A restart of the service loses the
 pending changes (below), never the map.
@@ -107,7 +110,7 @@ This replaces §2's "saved with each command's read record": step 3 has no comma
 
 A boundary publishes the view's pending changes as one change set.
 
-**When.** In step 3: when the machine asks (`qorpera-folder publish <mount>`), for a mount configured with a quiet
+**When.** In step 3: when the machine asks (`qorpera-folder publish --view-file <file>`), for a mount configured with a quiet
 period about two seconds after the last change (the desktop rule of §2), and before a change that needs what is
 pending published first (below). Steps 4–6 add theirs: command end and output reads, and per-desktop quiet periods.
 
@@ -207,18 +210,32 @@ chunk is changed by its index on the 4 MiB grid, which every version-2 manifest'
 otherwise is changed whole. A write handle belongs to the view, not to the connection that opened it, since the
 program pools its connections. The version map holds the `version` of a close or the bit after a save; once that save
 is published, the service reads a base or a read naming it as the version the save's change set gave the path (a
-write's from the core's answer, a new folder's files' from that change set on the feed). A conflict's bytes leave the view only once the receipt lists every file of the
+write's from the core's answer, a new folder's files' from that change set on the feed); likewise a version a file this
+view moved showed at its new path before the move was published (from the change set's `move_in`, its `priorVersion`).
+A conflict's bytes leave the view only once the receipt lists every file of the
 unit (`qorpera_folder_conflict_copies_of`, migration `20260930101000`): the commit's answer does not say what P17 kept.
 An answered boundary settles only once the view's feed has its change set; until then the view takes no change (BUSY).
 The intents that hold pending bytes are renewed while the bytes are needed and replaced if they lapse. The wire shapes
 are in [RUNTIME-FOLDER-SERVICE.md](RUNTIME-FOLDER-SERVICE.md) ("Protocol 2").
+
+As built (3d-2), the program: a file's last writing handle closes it at the node at the close (flush) of the process
+that opened it, so a boundary right after the close publishes it; a child that inherited the descriptor leaves it
+open. A write after that opens it again, going on from the chunk in memory. A close the node does not take
+(`BUSY` while a boundary settles, the link down) leaves the file open there, and the program tries again until it is
+taken: the node's handle is never left open, nor closed at a size the program did not write. Every change waits for
+its answer as long as the node takes (a boundary it waits for or publishes first), so a change the node made is never
+taken for one it did not. `P` goes out once, and waits likewise; when no answer comes, `publish` says the outcome is
+unknown. A read takes its version into the map when the path's file is that version; a file still open from before a
+newer version arrived counts too while the map holds nothing for the path, so an editor's save of what it opened is a
+conflict, not an overwrite.
 
 Frames stay at most 2 MiB, so a 4 MiB chunk is four frames. The service still handles one request at a time per
 connection, with the socket paused, so a machine can never make it buffer more than one frame of its bytes.
 
 ## The gateway's route for the folder service
 
-Today's folder byte route (`/v1/folder-objects/`) takes a run's binding on the native token. The folder service gets
+Today's folder byte route (`/v1/folder-objects/`) takes a run's binding on the native token, with the run's lease in
+`x-qorpera-identity` (G2-6a, `RUNTIME-NATIVE-HOST-KEY.md`). The folder service gets
 a route of its own, `/v1/folder-service-objects/<environmentId>/<sha256>`, on a token only the folder service holds,
 naming the view's actor in a header (`member`, `platform`, and later `view`). The gateway passes that actor to the
 same SQL checks (`qorpera_folder_authorize_object_upload` and `_confirm_object`) and stores through

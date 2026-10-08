@@ -212,6 +212,20 @@ export class PendingView {
 		return this.#nodes.size === 0 && this.#removed.size === 0;
 	}
 
+	/** Some change a boundary publishes, or waits to: a removal, or a new, moved or changed file or folder. Names never
+	 * published (they stay until the view closes) and files opened but not changed are no unsaved work. */
+	get unsaved(): boolean {
+		if (this.#removed.size > 0) return true;
+		for (const [path, node] of this.#nodes) {
+			if (node.kind === "gone" || unpublished(path)) continue;
+			const origin = node.origin;
+			if (!origin || origin.path !== path) return true;
+			if (node.kind === "file" && (node.content !== undefined || node.executable !== origin.entry?.executable))
+				return true;
+		}
+		return false;
+	}
+
 	/** What `path` shows in this view, or undefined when it is absent. */
 	resolve(path: string): Resolved | undefined {
 		if (path === "") return { kind: "live", path: "", entry: this.#live().get("")!, source: "" };

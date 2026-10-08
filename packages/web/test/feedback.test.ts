@@ -46,6 +46,14 @@ async function open() {
 		submit: dialog.querySelector<HTMLButtonElement>('[type="submit"]')!,
 	};
 }
+/** The RPCs made, besides the company's mail and offers reads, which run while it is open (Interfaces steps I5c and
+ * I9c). */
+function rpcs(f: ReturnType<typeof fixture>): string[] {
+	return vi
+		.mocked(f.cloud.rpc)
+		.mock.calls.map(([name]) => name)
+		.filter((name) => !name.startsWith("qorpera_member_mail_") && name !== "qorpera_member_interface_offers");
+}
 function fill(details: HTMLTextAreaElement, value = "The sidebar is clearer."): void {
 	details.value = value;
 	details.dispatchEvent(new Event("input"));
@@ -66,12 +74,7 @@ describe("profile feedback", () => {
 		expect(f.root.querySelector(".settings-feedback")).toBeNull();
 		expect(f.root.querySelector(".settings-dialog")?.textContent).not.toContain("Share feedback");
 		// General's only RPC is the chosen company's rules list.
-		expect(
-			vi
-				.mocked(f.cloud.rpc)
-				.mock.calls.map(([name]) => name)
-				.filter((name) => name !== "qorpera_list_review_rules"),
-		).toEqual([]);
+		expect(rpcs(f).filter((name) => name !== "qorpera_list_review_rules")).toEqual([]);
 	});
 	it("requires details, permits deselecting a category, and submits through the account feedback RPC only", async () => {
 		const f = await open();
@@ -79,7 +82,7 @@ describe("profile feedback", () => {
 		fill(f.details, "   ");
 		expect(f.submit.disabled).toBe(true);
 		f.form.dispatchEvent(new Event("submit", { cancelable: true }));
-		expect(f.cloud.rpc).not.toHaveBeenCalled();
+		expect(rpcs(f)).toEqual([]);
 		const bug = f.dialog.querySelector<HTMLButtonElement>(".feedback-category")!;
 		bug.click();
 		expect(bug.getAttribute("aria-pressed")).toBe("true");
@@ -89,13 +92,14 @@ describe("profile feedback", () => {
 		vi.mocked(f.cloud.rpc).mockResolvedValue(undefined);
 		f.submit.click();
 		await settle();
-		expect(f.cloud.rpc).toHaveBeenCalledExactlyOnceWith("qorpera_submit_product_feedback", {
+		expect(f.cloud.rpc).toHaveBeenCalledWith("qorpera_submit_product_feedback", {
 			p_client_feedback_id: expect.any(String),
 			p_category: "other",
 			p_details: "A useful detail.",
 			p_include_diagnostics: false,
 			p_diagnostics: {},
 		});
+		expect(rpcs(f)).toEqual(["qorpera_submit_product_feedback"]);
 		expect(f.dialog.textContent).toContain("Feedback sent. Thank you.");
 		expect(f.submit.textContent).toBe("Sent");
 		await vi.advanceTimersByTimeAsync(899);

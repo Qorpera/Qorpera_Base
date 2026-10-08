@@ -27,6 +27,7 @@ import {
 } from "@qorpera/cloud-client/interfaces";
 import { describeError } from "../../cloud/client.ts";
 import { WebCompanyFolderRejectedError } from "../../cloud/company-folder-writes.ts";
+import type { MemberInterfaceOffer } from "../../cloud/interface-offers.ts";
 import { type MessageQuote, QUOTE_MAX_CHARACTERS, quoteRefFits } from "../../cloud/quotes.ts";
 import type { HostedProfileRole, HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
@@ -37,9 +38,20 @@ import { isPhoneLayout } from "../../ui/layout.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { presentationLocale, presentationTimeZone, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
+import { CompanyMail, type MailList, type MailListRequest } from "../company-mail.ts";
 import { type BoardLane, boardLanes } from "../interface-board.ts";
 import { type ClaimVerb, claimFailure, claimTableCell, type InterfaceWrites } from "../interface-claims.ts";
 import type { FolderProblem } from "../interface-folder.ts";
+import {
+	isAccountMail,
+	isMailSource,
+	mailList,
+	mailRequest,
+	mailRows,
+	mailSummary,
+	openedMailRow,
+	rowThread,
+} from "../interface-mail.ts";
 import {
 	blockButtons,
 	companyInterface,
@@ -53,6 +65,7 @@ import {
 	interfaceViews,
 	isLiveSource,
 	memberMayWriteRows,
+	offeredRow,
 	QUOTE_RECORD_COLUMNS,
 	rowHasCard,
 	tableDefinition,
@@ -71,21 +84,29 @@ import {
 	folderColumnLabel,
 	numberTiles,
 } from "./interface-blocks.ts";
+import { type ListText, mailListFooter, mailListText, mailThreadParts, outside, unreadMark } from "./interface-mail.ts";
 import { roleLabel } from "./team.ts";
 
 /** What each container last showed, and the element that shows it. The page area is shared with every other
  * page, so a redraw is skipped only while that element is still the one on screen. */
 const shownIn = new WeakMap<HTMLElement, { key: string; element: Element }>();
 
+/** A block's title (`blockFrame`). It takes the focus from a control that went when the page has none left (`show`),
+ * so it can be focused, though not tabbed to. */
+const BLOCK_TITLE = ".interface-block > h2";
+
 /** Draws `build()` unless the same key is on screen. Every control names itself with `data-focus-key`, so the
- * one that had keyboard focus (and an input's caret) has it again after the redraw; `moveFocus` names another. A
- * page redrawn in the same view keeps its scroll position (`data-scroll-key`). */
+ * one that had keyboard focus (and an input's caret) has it again after the redraw; `moveFocus` names another. In a
+ * redraw of the same view, a focused control that is gone hands the focus on: to the first of its `data-focus-then`
+ * keys (a JSON list) still drawn, else to the nearest control after it that is still there, else before it, else to
+ * its block's title (a page left with no control). A page redrawn in the same view keeps its scroll position
+ * (`data-scroll-key`). */
 function show(container: HTMLElement, key: string, build: () => HTMLElement, moveFocus?: string): void {
 	const shown = shownIn.get(container);
 	if (shown?.key === key && container.firstElementChild === shown.element && shown.element.isConnected) return;
 	const active = document.activeElement;
-	const focusKey =
-		moveFocus ?? (active instanceof HTMLElement && container.contains(active) ? active.dataset.focusKey : undefined);
+	const focused = active instanceof HTMLElement && container.contains(active) ? active : null;
+	const focusKey = focused?.dataset.focusKey;
 	const caret =
 		active instanceof HTMLInputElement ? ([active.selectionStart, active.selectionEnd] as const) : undefined;
 	const scrolled =
@@ -93,17 +114,35 @@ function show(container: HTMLElement, key: string, build: () => HTMLElement, mov
 			? shown.element.querySelector<HTMLElement>("[data-scroll-key]")
 			: null;
 	const element = build();
+	const scroller = element.querySelector<HTMLElement>("[data-scroll-key]");
+	const sameView = scrolled !== null && scroller !== null && scroller.dataset.scrollKey === scrolled.dataset.scrollKey;
+	const keyed = (root: ParentNode) => [...root.querySelectorAll<HTMLElement>("[data-focus-key]")];
+	const controls = new Map<string, HTMLElement>();
+	for (const each of keyed(element)) {
+		const named = each.dataset.focusKey;
+		if (named !== undefined && !controls.has(named)) controls.set(named, each);
+	}
+	const control = (named: string | undefined) => (named === undefined ? undefined : controls.get(named));
+	let again = control(moveFocus) ?? control(focusKey);
+	if (!again && focused && focusKey !== undefined && sameView) {
+		// Read from the page still on screen, before it goes.
+		const then = focused.dataset.focusThen ? (JSON.parse(focused.dataset.focusThen) as string[]) : [];
+		const old = keyed(container);
+		const at = old.indexOf(focused);
+		const near = [...old.slice(at + 1), ...old.slice(0, at).reverse()]
+			.filter((each) => !each.matches(BLOCK_TITLE))
+			.map((each) => each.dataset.focusKey);
+		const block = focused.closest(".interface-block");
+		const title = old.find((each) => each.parentElement === block && each.matches(BLOCK_TITLE))?.dataset.focusKey;
+		again = [...then, ...near, title].map(control).find((each) => each !== undefined && !each.matches(":disabled"));
+	}
 	replace(container, element);
 	shownIn.set(container, { key, element });
-	const scroller = element.querySelector<HTMLElement>("[data-scroll-key]");
-	if (scrolled && scroller && scroller.dataset.scrollKey === scrolled.dataset.scrollKey)
-		scroller.scrollTop = scrolled.scrollTop;
-	if (focusKey === undefined) return;
-	const again = [...element.querySelectorAll<HTMLElement>("[data-focus-key]")].find(
-		(candidate) => candidate.dataset.focusKey === focusKey,
-	);
+	if (sameView) scroller.scrollTop = scrolled.scrollTop;
 	again?.focus({ preventScroll: true });
-	if (again instanceof HTMLInputElement && caret && again === document.activeElement)
+	// The caret goes back only into the input that had it.
+	const same = again?.dataset.focusKey === focusKey;
+	if (again instanceof HTMLInputElement && same && caret && again === document.activeElement)
 		again.setSelectionRange(caret[0], caret[1]);
 }
 
@@ -122,8 +161,14 @@ interface PageState {
 	/** The message buttons whose thread is still opening: they stay disabled through redraws. */
 	pending: string[];
 	/** The board cards whose take or release is on its way, by card, with their holder cell as it was (as JSON). A card
-	 * stays where it was, saving, until its save lands and the board shows the change (or a little after the save). */
-	claiming: Record<string, { readonly was: string; readonly landed: boolean }>;
+	 * stays where it was, saving, until its save lands and the board shows the change (or a little after the save). An
+	 * accept keeps the offer it answers: its line stays on the card till then, though the save settled it (step I9c). */
+	claiming: Record<
+		string,
+		{ readonly was: string; readonly landed: boolean; readonly offer?: MemberInterfaceOffer | undefined }
+	>;
+	/** The board card whose Offer lists the members it may go to (step I9c), by block and card. */
+	offering: string | null;
 	/** A refused save's problems, listed under the error. */
 	errorProblems: string[];
 	/** A control the next draw focuses: the tab an arrow key chose, the Back button or the row a detail closed to. */
@@ -143,6 +188,7 @@ function pageState(key: string): PageState {
 			errors: 0,
 			pending: [],
 			claiming: {},
+			offering: null,
 			errorProblems: [],
 			focus: null,
 		};
@@ -171,6 +217,22 @@ function columnLabel(source: string, column: string): string {
 			title: () => t("Title"),
 			from: () => t("From"),
 			due: () => t("Due"),
+			...(source === "mail" || source === "mail_addresses"
+				? {
+						thread: () => t("Thread"),
+						address: () => t("Address"),
+						from_name: () => t("From"),
+						from_address: () => t("From address"),
+						subject: () => t("Subject"),
+						last_at: () => t("Last message"),
+						state: () => t("State"),
+						handled_by: () => t("Handled by"),
+						direction: () => t("Direction"),
+						unread: () => t("Unread"),
+						routine: () => t("Routine"),
+						last_7_days: () => t("Last 7 days"),
+					}
+				: {}),
 			...(source === "members"
 				? {
 						id: () => t("Member"),
@@ -337,6 +399,8 @@ interface DrawnBlock {
 	readonly problems: readonly FolderProblem[];
 	/** A board's parts drawn and its lanes. */
 	readonly board?: { readonly parts: readonly DrawnPart[]; readonly lanes: readonly BoardLane[] };
+	/** A block from `mail`: the list its view reads (undefined while it is being read). */
+	readonly mail?: { readonly request: MailListRequest; readonly list: MailList | undefined };
 	/** A numbers block's tiles or a calendar's days (views/interface-blocks.ts). */
 	readonly extra?: BlockExtra;
 	/** A calendar's sources as drawn, each with its rows. */
@@ -456,7 +520,10 @@ export function renderInterfaceFile(
 	) => {
 		const time = interfaceSource(company, source)?.time ?? null;
 		// A view built from another narrows the rows first; the block's own query then filters, orders and limits them.
-		let rows = interfaceRows(company, source) ?? [];
+		// A `mail` block reads the threads its view asks the threads call for, and narrows them here like any rows.
+		let rows =
+			(source === "mail" ? mailRows(company, mailRequest(narrow, query.where)) : interfaceRows(company, source)) ??
+			[];
 		for (const where of narrow) {
 			const kept = new Set(
 				queryInterfaceRows(
@@ -477,7 +544,9 @@ export function renderInterfaceFile(
 		).flatMap((row) => byRow.get(row) ?? []);
 	};
 	const details = new Set(
-		view.blocks.flatMap(({ block }) => (block.kind === "detail" && block.id !== null ? [block.id] : [])),
+		view.blocks.flatMap(({ block }) =>
+			(block.kind === "detail" || block.kind === "mail") && block.id !== null ? [block.id] : [],
+		),
 	);
 	const nameOf = namesFor("");
 	// A board's lanes are the company's members now; a holder who left is named where presence still knows them.
@@ -514,6 +583,7 @@ export function renderInterfaceFile(
 		);
 		return { parts, lanes };
 	};
+	const mailOf = (request: MailListRequest) => ({ request, list: mailList(company, request) });
 	/** A calendar's sources: those it can read that have every column its view narrows by (§3.2, proposed). */
 	const calendarOf = ({ block, narrow }: ViewBlock): CalendarSource[] =>
 		block.from.flatMap((from) => {
@@ -570,12 +640,20 @@ export function renderInterfaceFile(
 			readable: reads.length === 0 || reads.some((candidate) => candidate?.readable ?? true),
 			problems: reads.flatMap((candidate) => candidate?.problems ?? []),
 			...(board ? { board } : {}),
+			...(source === "mail" && block.kind !== "mail"
+				? { mail: mailOf(mailRequest(shown.narrow, block.query.where)) }
+				: {}),
 			...(extra ? { extra } : {}),
 			...(calendar ? { calendar } : {}),
 		};
-		if (block.kind !== "detail" || block.id === null) return drawn;
+		if ((block.kind !== "detail" && block.kind !== "mail") || block.id === null) return drawn;
 		const opened = page.open[block.id];
-		const open = opened === undefined ? undefined : rows.find((row) => row.key === opened);
+		// An open thread stays open when its view's list no longer holds it (a send answered under "Waiting for you").
+		const open =
+			opened === undefined
+				? undefined
+				: (rows.find((row) => row.key === opened) ??
+					(block.kind === "mail" ? openedMailRow(company, opened) : undefined));
 		return { ...drawn, ...(open ? { open } : {}) };
 	});
 	// A part-width block whose neighbours have no source today stands alone, so it takes the whole row.
@@ -613,6 +691,8 @@ export function renderInterfaceFile(
 	const memberNames = [...new Set(named("member"))].map((id) => [id, memberName(id)]);
 	const live = state.realtime === "connected";
 	const canWrite = state.team?.capabilities.write === true;
+	// Offers are drawn only where the page can make and answer them, once they are read (step I9c).
+	const offers = writes?.offers && state.interfaceOffers ? state.interfaceOffers.offers : null;
 	const listed = companyInterfaces(company).map((entry) => entry.name);
 	const cofounder = company.cofounderId();
 	const moveFocus = page.focus ?? undefined;
@@ -627,6 +707,12 @@ export function renderInterfaceFile(
 		Object.entries(page.claiming).filter(([card, claim]) => !claim.landed || cards.get(card) === claim.was),
 	);
 	const hasOpen = blocks.some((drawn) => drawn.open !== undefined);
+	const readsMail = blocks.some(({ source }) => isMailSource(source));
+	const mailLists = blocks.flatMap(({ mail }) => (mail ? [mail.request] : []));
+	const mailThreads = blocks.flatMap(({ block, open }) => {
+		const thread = block.kind === "mail" && open ? rowThread(open.row) : undefined;
+		return thread === undefined ? [] : [thread];
+	});
 	// The whole definition, so a change to anything drawn from it (a table's columns, a list's line, a button's
 	// text) draws the page again with the handlers of the new one, even when the rows and titles stay the same.
 	const key = JSON.stringify([
@@ -648,12 +734,33 @@ export function renderInterfaceFile(
 		page.errors,
 		page.pending,
 		page.claiming,
+		page.offering,
 		canWrite,
+		// The offers, the members they name and may go to, and whether each may be accepted where it is listed.
+		offers,
+		offers === null
+			? null
+			: (state.team?.members ?? []).map((member) => [member.userId, member.displayName, member.email, member.role]),
+		offers?.map((offer) => {
+			const offered = offeredRow(company, offer);
+			return offered ? [offered.table, memberMayWriteRows(company, offered.definition)] : null;
+		}) ?? null,
 		listed,
 		cofounder,
 		widths,
 		agentLooks,
 		memberNames,
+		// The company's mail where a block draws it: the lists drawn, each open thread as read with its summary, the
+		// answers, the addresses and the waiting sends; not the other lists and threads read before.
+		readsMail && state.mail
+			? [
+					state.mail.addresses,
+					state.mail.waiting,
+					state.mail.answers,
+					mailLists.map((request) => mailList(company, request) ?? null),
+					mailThreads.map((thread) => [state.mail?.threads[thread] ?? null, mailSummary(company, thread) ?? null]),
+				]
+			: null,
 		// Each block's source as drawn beside its rows: whether it can be read (a table that recovers with no rows
 		// still draws again) and what its columns hold, which a table's definition says outside the page's.
 		blocks.map(({ block, source, rows, open, readable, problems, board, extra }) => [
@@ -690,6 +797,7 @@ export function renderInterfaceFile(
 		redraw,
 		canWrite,
 		...(writes ? { writes } : {}),
+		offers,
 		stillShown: () => {
 			const shown = container.firstElementChild;
 			return shown instanceof HTMLElement && shown.dataset.interface === name && shown.dataset.profile === profileId;
@@ -758,6 +866,8 @@ export function renderInterfaceFile(
 		moveFocus,
 	);
 	if (errorFirst) page.errorShown = true;
+	// The mail this page draws is read, and read again while it stays on screen (app/company-mail.ts).
+	if (readsMail) CompanyMail.of(company)?.watch(mailLists, mailThreads, context.stillShown);
 }
 
 /** The page's views as tabs. A view changes the blocks shown and closes what was open; the route stays. */
@@ -824,6 +934,9 @@ interface BlockContext {
 	readonly canWrite: boolean;
 	/** Where a board's take and release write; without it, a board draws neither. */
 	readonly writes?: InterfaceWrites;
+	/** The company's open offers (step I9c), or null when the page can't make or answer them or they aren't read yet:
+	 * then no offer is drawn. */
+	readonly offers: readonly MemberInterfaceOffer[] | null;
 	/** Whether this page is still the one on screen, for work that finishes after a click. */
 	readonly stillShown: () => boolean;
 }
@@ -831,6 +944,7 @@ interface BlockContext {
 function drawBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 	if (drawn.block.kind === "table") return tableBlock(drawn, context);
 	if (drawn.block.kind === "detail") return detailBlock(drawn, context);
+	if (drawn.block.kind === "mail") return mailBlock(drawn, context);
 	if (drawn.block.kind === "board") return boardBlock(drawn, context);
 	const kind = drawn.block.kind;
 	if (kind === "text" || kind === "numbers" || kind === "calendar") {
@@ -854,13 +968,13 @@ function blockFrame(
 	block: InterfaceBlock,
 	key: string,
 	extra: string,
-	title: string | null,
+	title: string | HTMLElement | null,
 	...children: (Node | null)[]
 ): HTMLElement {
 	return h(
 		"section",
 		{ class: `interface-block interface-width-${block.width}${extra}` },
-		title ? h("h2", { id: domId("title", key) }, title) : null,
+		title ? h("h2", { id: domId("title", key), tabindex: "-1", "data-focus-key": `title:${key}` }, title) : null,
 		...children,
 	);
 }
@@ -893,11 +1007,48 @@ function cellText(drawn: DrawnBlock, column: string, value: TableValue | undefin
 	const label = folderCellLabel(drawn.source, column, value);
 	if (label !== undefined) return label;
 	if (drawn.source === "members" && column === "picture") return "";
+	if (drawn.source === "mail" && (column === "state" || column === "direction") && typeof value === "string")
+		return mailWord(value);
 	if (drawn.source === "members" && column === "role" && typeof value === "string") {
 		const role = roleLabel(value as HostedProfileRole);
 		return role.charAt(0).toLocaleUpperCase(presentationLocale()) + role.slice(1);
 	}
 	return drawn.nameOf(column, value);
+}
+
+/** A thread's state and direction, in the member's language. */
+function mailWord(value: string): string {
+	const word: Record<string, () => string> = {
+		new: () => t("New"),
+		handled: () => t("Handled"),
+		waiting: () => t("Waiting"),
+		received: () => t("Received"),
+		sent: () => t("Sent"),
+	};
+	return word[value]?.() ?? value;
+}
+
+/** Whether a template fills in a column that carries outside content in its source (§4): what it shows is marked. */
+function fillsOutside(template: string | null, source: string): boolean {
+	const columns = interfaceOutsideColumns(source);
+	return (
+		template !== null &&
+		columns.length > 0 &&
+		[...template.matchAll(TEMPLATE_COLUMN)].some((match) => columns.includes(match[1] ?? ""))
+	);
+}
+
+/** A list's words as drawn, with the outside-content mark when they hold any. */
+function listWords(tag: "strong" | "small", words: ListText, id?: string): HTMLElement {
+	const element = h(tag, id ? { id } : null, words.text);
+	return words.outside ? outside(element) : element;
+}
+
+/** Words that fill in a template, marked when it fills in a column that carries outside content: a detail's title, a
+ * button's label. */
+function filledWords(template: string, row: TableRow, drawn: DrawnBlock): string | HTMLElement {
+	const text = fillInterfaceText(template, row, drawn.nameOf);
+	return text && fillsOutside(template, drawn.source) ? outside(h("span", null, text)) : text;
 }
 
 /** A member's picture, for the `members` source's `picture` column (their account id). */
@@ -928,23 +1079,37 @@ function listBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 	const cards = block.layout === "cards";
 	const buttons = blockButtons(context.file, block);
 	const opened = opens === null ? undefined : context.page.open[opens];
+	// A status from a column that carries outside content is marked, as a line is.
+	const outsideStatus = block.status !== null && interfaceOutsideColumns(drawn.source).includes(block.status);
 	const items = rows.map((item) => {
 		const { row, href, live } = item;
 		const agentId = block.figure ? row[block.figure] : undefined;
-		const line = fillInterfaceText(block.line ?? "{title}", row, nameOf);
-		const sub = block.sub ? fillInterfaceText(block.sub, row, nameOf) : "";
-		const status = block.status ? cellText(drawn, block.status, row[block.status]) : "";
+		const template = block.line ?? "{title}";
+		// What a line fills in from outside content is marked as such; a mail row says who wrote when it names nobody.
+		const filled = {
+			line: { text: fillInterfaceText(template, row, nameOf), outside: fillsOutside(template, drawn.source) },
+			sub: {
+				text: block.sub ? fillInterfaceText(block.sub, row, nameOf) : "",
+				outside: fillsOutside(block.sub, drawn.source),
+			},
+		};
+		const { line, sub } =
+			drawn.source === "mail" ? mailListText(context.company, row, filled.line, filled.sub) : filled;
+		const statusText = block.status ? cellText(drawn, block.status, row[block.status]) : "";
+		const status = statusText ? h("span", { class: "interface-item-status" }, statusText) : null;
 		const byAgent = typeof agentId === "string" && block.figure === "agent";
 		const lineId = domId("line", key, item.key);
+		const unread = drawn.source === "mail" && row.unread === true;
 		const body = [
+			unread ? unreadMark() : null,
 			typeof agentId === "string" ? h("span", { class: "interface-item-figure" }, context.figureOf(agentId)) : null,
 			h(
 				"span",
 				{ class: "interface-item-copy" },
-				h("strong", { id: lineId }, byAgent ? nameOf("agent", agentId) : line),
-				byAgent ? h("small", null, line) : sub ? h("small", null, sub) : null,
+				byAgent ? h("strong", { id: lineId }, nameOf("agent", agentId)) : listWords("strong", line, lineId),
+				byAgent ? listWords("small", line) : sub.text ? listWords("small", sub) : null,
 			),
-			status ? h("span", { class: "interface-item-status" }, status) : null,
+			status && outsideStatus ? outside(status) : status,
 			live ? h("span", { class: "interface-dots", "aria-hidden": "true" }, h("i"), h("i"), h("i")) : null,
 		];
 		const isOpen = opened !== undefined && item.key === opened;
@@ -965,19 +1130,26 @@ function listBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 					? h("a", { class: "interface-item", href, "data-focus-key": `item:${key}:${item.key}` }, ...body)
 					: h("div", { class: "interface-item" }, ...body);
 		const actions = rowButtons(buttons, item, drawn, context, lineId);
-		return h("li", null, actions ? h("div", { class: "interface-item-row" }, main, actions) : main);
+		return h(
+			"li",
+			unread ? { class: "is-unread" } : null,
+			actions ? h("div", { class: "interface-item-row" }, main, actions) : main,
+		);
 	});
+	// A mail list says it is being read, or why it can't be, instead of being empty; then whether older mail is there.
+	const reading = drawn.mail !== undefined && drawn.mail.list?.status !== "ready";
 	return blockFrame(
 		block,
 		key,
-		cards ? " interface-cards" : "",
+		`${cards ? " interface-cards" : ""}${drawn.source === "mail" ? " interface-mail-list" : ""}`,
 		block.title,
 		sourceNote(drawn),
 		items.length
 			? h("ul", { class: "interface-list" }, ...items)
-			: drawn.readable
+			: drawn.readable && !reading
 				? h("p", { class: "interface-empty" }, t("Nothing here right now."))
 				: null,
+		drawn.mail ? mailListFooter(context.company, drawn.mail.request, drawn.mail.list, key) : null,
 	);
 }
 
@@ -1012,6 +1184,7 @@ function tableBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		});
 	}
 	const opened = opens === null ? undefined : context.page.open[opens];
+	const outsideColumns = interfaceOutsideColumns(source);
 	const header = h(
 		"tr",
 		null,
@@ -1046,23 +1219,26 @@ function tableBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		const lineId = domId("line", key, item.key);
 		const cells = columns.map((column, index) => {
 			const value = text(item.row, column);
-			if (index === 0 && opens !== null)
-				return h(
-					"td",
-					{ id: lineId },
-					h(
-						"button",
-						{
-							type: "button",
-							class: "interface-row-open",
-							"aria-current": isOpen ? "true" : null,
-							"data-focus-key": `open:${opens}:${item.key}`,
-							onclick: () => openRow(context, opens, item),
-						},
-						value || t("Open"),
-					),
-				);
-			return h("td", index === 0 ? { id: lineId } : null, memberPicture(drawn, column, item.row) ?? value);
+			const cell =
+				index === 0 && opens !== null
+					? h(
+							"td",
+							{ id: lineId },
+							h(
+								"button",
+								{
+									type: "button",
+									class: "interface-row-open",
+									"aria-current": isOpen ? "true" : null,
+									"data-focus-key": `open:${opens}:${item.key}`,
+									onclick: () => openRow(context, opens, item),
+								},
+								value || t("Open"),
+							),
+						)
+					: h("td", index === 0 ? { id: lineId } : null, memberPicture(drawn, column, item.row) ?? value);
+			// A cell that shows outside content is marked as such, the one whose button opens the row too.
+			return value && outsideColumns.includes(column) ? outside(cell) : cell;
 		});
 		const actions = rowButtons(buttons, item, drawn, context, lineId);
 		return h("tr", { class: isOpen ? "is-open" : null }, ...cells, actions ? h("td", null, actions) : null);
@@ -1084,6 +1260,8 @@ function tableBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		if (!(event as InputEvent).isComposing) applyFilter();
 	});
 	filterField.addEventListener("compositionend", applyFilter);
+	// A mail table says it is being read, or why it can't be, instead of being empty; then whether older mail is there.
+	const reading = drawn.mail !== undefined && drawn.mail.list?.status !== "ready";
 	const listing = shown.length
 		? h(
 				"div",
@@ -1098,7 +1276,11 @@ function tableBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 					h("tbody", null, ...body),
 				),
 			)
-		: h("p", { class: "interface-empty" }, drawn.rows.length ? t("No rows match.") : t("Nothing here right now."));
+		: drawn.rows.length
+			? h("p", { class: "interface-empty" }, t("No rows match."))
+			: reading
+				? null
+				: h("p", { class: "interface-empty" }, t("Nothing here right now."));
 	return blockFrame(
 		block,
 		key,
@@ -1108,6 +1290,7 @@ function tableBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		drawn.rows.length ? filterField : null,
 		// A table that can't be read shows only its problems.
 		drawn.readable ? listing : null,
+		drawn.mail ? mailListFooter(context.company, drawn.mail.request, drawn.mail.list, key) : null,
 	);
 }
 
@@ -1128,11 +1311,13 @@ function detailBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 	const text = interfaceCell(open.row, "text");
 	const lineId = domId("line", key, open.key);
 	const actions = rowButtons(blockButtons(context.file, block), open, drawn, context, lineId);
+	// What the title and fields fill in from outside content is marked as such.
+	const outsideColumns = interfaceOutsideColumns(source);
 	return blockFrame(
 		block,
 		key,
 		" interface-detail is-open",
-		block.title === null ? null : fillInterfaceText(block.title, open.row, nameOf),
+		block.title === null ? null : filledWords(block.title, open.row, drawn),
 		h(
 			"button",
 			{
@@ -1146,15 +1331,69 @@ function detailBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 		h(
 			"dl",
 			{ class: "interface-fields", id: lineId },
-			...fields.flatMap((column) => [
-				h("dt", null, columnLabel(source, column)),
-				h("dd", null, cellText(drawn, column, interfaceCell(open.row, column))),
-			]),
+			...fields.flatMap((column) => {
+				const value = cellText(drawn, column, interfaceCell(open.row, column));
+				return [
+					h("dt", null, columnLabel(source, column)),
+					h("dd", null, value && outsideColumns.includes(column) ? outside(h("span", null, value)) : value),
+				];
+			}),
 		),
 		typeof text === "string" && text
 			? h("div", { class: "interface-detail-text" }, markdown(text, { links: false }))
 			: null,
 		actions,
+	);
+}
+
+/** A `mail` block (step I5c): the thread the list opened, drawn by views/interface-mail.ts, with a way back on a
+ * phone and the block's message buttons. Its `answer` is drawn on each waiting send, not as a button that leads
+ * away. */
+function mailBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
+	const { block, open, key, nameOf } = drawn;
+	const target = block.id ?? "";
+	if (!open)
+		return blockFrame(
+			block,
+			key,
+			" interface-detail interface-mail is-empty",
+			block.title === null ? null : fillInterfaceText(block.title, {}, nameOf),
+			h("p", { class: "interface-empty" }, t("Choose one to see it here.")),
+		);
+	const lineId = domId("line", key, open.key);
+	const buttons = blockButtons(context.file, block);
+	const actions = rowButtons(
+		buttons.filter((drawnButton) => drawnButton.verb !== "answer"),
+		open,
+		drawn,
+		context,
+		lineId,
+	);
+	return blockFrame(
+		block,
+		key,
+		" interface-detail interface-mail is-open",
+		null,
+		h(
+			"button",
+			{
+				type: "button",
+				class: "interface-back",
+				"data-focus-key": `back:${target}`,
+				onclick: () => openRow(context, target, null),
+			},
+			t("Back"),
+		),
+		...mailThreadParts({
+			company: context.company,
+			row: open.row,
+			lineId,
+			blockKey: key,
+			actions,
+			answerable: buttons.some((drawnButton) => drawnButton.verb === "answer"),
+			canWrite: context.canWrite,
+			agentName: (agentId, given) => context.company.staffById(agentId)?.displayName ?? given ?? agentId,
+		}),
 	);
 }
 
@@ -1172,19 +1411,26 @@ function partBlock(drawn: DrawnBlock, part: DrawnPart): DrawnBlock {
 	};
 }
 
-/** Where a board's cards may move to: the member's own lane and the open pile, when the board has them. */
+/** Where a board's cards may move to: the member's own lane and the open pile, when the board has them, and the other
+ * members' lanes, where a card is offered. */
 interface BoardPlaces {
 	readonly own: BoardLane | undefined;
 	readonly pile: BoardLane | undefined;
+	readonly others: readonly BoardLane[];
 }
 
 /** A board (§3.2): its lanes side by side (stacked on a phone), each with its cards, part by part. A card in the open
  * pile can be taken and one in the member's own lane released, with its button or by dragging it to the other; the card
- * stays where it is, saving, until the save has landed. */
+ * stays where it is, saving, until the save has landed. Either can be offered to another member, with Offer or by
+ * dragging it to their lane, and a card offered to the member accepted (step I9c). */
 function boardBlock(drawn: DrawnBlock, context: BlockContext): HTMLElement {
 	const { block, key } = drawn;
 	const { parts, lanes } = drawn.board ?? { parts: [], lanes: [] };
-	const places = { own: lanes.find((lane) => lane.own), pile: lanes.find((lane) => lane.kind === "open") };
+	const places = {
+		own: lanes.find((lane) => lane.own),
+		pile: lanes.find((lane) => lane.kind === "open"),
+		others: lanes.filter((lane) => lane.kind === "member" && !lane.own && lane.member !== null),
+	};
 	const several = parts.length > 1;
 	const notes = parts.flatMap((part) => {
 		const note = sourceNote(partBlock(drawn, part));
@@ -1315,7 +1561,7 @@ function boardCard(
 				)
 			: h("div", { class: "interface-card-body" }, ...body);
 	// Take on a card no one holds, Release on the member's own, in any lane of a members board (a Shared card too),
-	// where the block lists them and the table lets members write; offer and answer are not drawn on a board (step I9a).
+	// where the block lists them and the table lets members write; the platform's own answer is not drawn on a board.
 	const verbs = new Set(drawn.block.buttons);
 	const holder = part.definition?.holder ?? null;
 	const claimable =
@@ -1348,9 +1594,41 @@ function boardCard(
 					},
 					verb === "take" ? t("Take") : t("Release"),
 				);
+	// Offer on a card no one holds or the member's own, to each other member who may change its table's rows and hasn't
+	// been offered it yet, where the block lists offer (step I9c).
+	const offers = cardOffers(context, part, item);
+	const offerKey = `${drawn.key}|${card}`;
+	const candidates =
+		claimable && context.offers !== null && verbs.has("offer") && (emptyCell(held) || held === context.company.userId)
+			? offerCandidates(context, part, offers)
+			: [];
+	const offerBusy = context.page.pending.includes(`offer:${offerKey}`);
+	const offering = candidates.length > 0 && context.page.offering === offerKey;
+	const offer =
+		candidates.length === 0
+			? null
+			: h(
+					"button",
+					{
+						type: "button",
+						class: "interface-button",
+						"data-focus-key": `offer:${offerKey}`,
+						"aria-describedby": titleId,
+						"aria-expanded": String(offering),
+						"aria-disabled": saving || offerBusy ? "true" : null,
+						onclick: () => {
+							if (saving || offerBusy) return;
+							context.page.offering = offering ? null : offerKey;
+							context.page.focus = offering ? `offer:${offerKey}` : `offer-to:${offerKey}:0`;
+							context.redraw();
+						},
+					},
+					t("Offer…"),
+				);
 	const buttons = blockButtons(context.file, drawn.block).filter((button) => button.verb !== "answer");
 	const actions = rowButtons(buttons, item, partBlock(drawn, part), context, titleId);
-	if (claim) actions?.prepend(claim);
+	const own = [claim, offer].filter((button) => button !== null);
+	if (own.length) actions?.prepend(...own);
 	const element = h(
 		"li",
 		{
@@ -1358,30 +1636,312 @@ function boardCard(
 			"aria-busy": saving ? "true" : null,
 		},
 		main,
-		actions ?? (claim ? h("span", { class: "interface-actions" }, claim) : null),
+		offerLines(
+			context,
+			part,
+			item,
+			offers,
+			titleId,
+			{
+				claim: `claim:${drawn.key}:${card}`,
+				offer: `offer:${offerKey}`,
+				open: opens === null ? null : `open:${opens}:${item.key}`,
+			},
+			claimable ? holder : null,
+		),
+		actions ?? (own.length ? h("span", { class: "interface-actions" }, ...own) : null),
+		offering ? offerPicker(context, part, item, candidates, offerKey, titleId) : null,
 		saving ? h("small", { class: "interface-card-saving" }, t("Saving…")) : null,
 	);
-	// Dragging is the same take or release: from the open pile to the member's own lane, or back. A Shared card stays in
-	// the Shared lane either way, so it has no drag.
+	// Dragging is the same take or release: from the open pile to the member's own lane, or back; and the same offer, to
+	// another member's lane. A Shared card stays in the Shared lane either way, so it has no drag.
 	const target =
 		lane.kind === "shared" ? undefined : verb === "take" ? places.own : verb === "release" ? places.pile : undefined;
-	if (verb !== null && target && !saving)
-		boardDrag(element, { targets: [target.id], drop: () => void claimCard(context, part, item, verb) });
+	const offerLanes =
+		lane.kind === "shared"
+			? []
+			: places.others.filter((other) => candidates.some((member) => member.id === other.member));
+	const targets = [...(verb !== null && target ? [target.id] : []), ...offerLanes.map((other) => other.id)];
+	if (!saving && !offerBusy)
+		boardDrag(element, {
+			targets,
+			drop: (dropped) => {
+				const to = offerLanes.find((other) => other.id === dropped)?.member;
+				if (to) void offerCard(context, part, item, to, offerKey);
+				else if (verb !== null && dropped === target?.id) void claimCard(context, part, item, verb);
+			},
+		});
 	return element;
+}
+
+/** A member's name on the page, or "A member" for one the company no longer lists. */
+function memberLabel(context: BlockContext, id: string): string {
+	const member = context.company.store.get().team?.members.find((each) => each.userId === id);
+	return member?.displayName || member?.email || t("A member");
+}
+
+/** A card's open offers (step I9c): those of its holder cell while the cell is as they read it, and the one an accept
+ * on its way answers, which its save settled, till the card moves. */
+function cardOffers(context: BlockContext, part: DrawnPart, item: InterfaceRow): MemberInterfaceOffer[] {
+	const { definition } = part;
+	const holder = definition?.holder ?? null;
+	if (context.offers === null || definition === null || holder === null) return [];
+	const table = definition.id.toLowerCase();
+	const key = tableRowKey(definition, item.row);
+	const held = item.row[holder];
+	const was = typeof held === "string" && held !== "" ? held : null;
+	const listed = context.offers.filter(
+		(offer) =>
+			offer.state === "open" &&
+			offer.table === table &&
+			offer.column === holder &&
+			offer.key !== null &&
+			JSON.stringify(offer.key) === key &&
+			offer.was === was,
+	);
+	const accepting = context.page.claiming[cardKey(part, item)]?.offer;
+	return accepting && !listed.some((offer) => offer.id === accepting.id) ? [...listed, accepting] : listed;
+}
+
+/** The members a card may be offered to: each other member who may change its table's rows (§5; a viewer may change
+ * none), but those it is offered to already. */
+function offerCandidates(
+	context: BlockContext,
+	part: DrawnPart,
+	offers: readonly MemberInterfaceOffer[],
+): { readonly id: string; readonly name: string }[] {
+	const write = part.definition?.write.members;
+	return (context.company.store.get().team?.members ?? [])
+		.filter(
+			(member) =>
+				member.userId !== context.company.userId &&
+				member.role !== "viewer" &&
+				(write === "all" || (write === "owners" && (member.role === "owner" || member.role === "admin"))) &&
+				!offers.some((offer) => offer.to === member.userId),
+		)
+		.map((member) => ({ id: member.userId, name: member.displayName || member.email }));
+}
+
+/** A card's open offers as lines, each with what the member may do: withdraw their own, accept (where they may take
+ * the card) or decline one to them; or null when it has none. An answer whose line goes hands the focus to the card's
+ * own controls: Offer… first after a withdraw, Take or Release first after an accept or decline (`show`). */
+function offerLines(
+	context: BlockContext,
+	part: DrawnPart,
+	item: InterfaceRow,
+	offers: readonly MemberInterfaceOffer[],
+	titleId: string,
+	/** The card's own controls, by their focus keys. */
+	controls: { readonly claim: string; readonly offer: string; readonly open: string | null },
+	/** The cell an accept writes, the holder's, when the member may take the card; else null. */
+	accepts: string | null,
+): HTMLElement | null {
+	if (!offers.length) return null;
+	const me = context.company.userId;
+	// Nothing is answered while the card saves: a take or accept on its way settles its offers.
+	const saving = Object.hasOwn(context.page.claiming, cardKey(part, item));
+	const lines = offers.map((offer) => {
+		const busy = saving || context.page.pending.includes(`offer:${offer.id}`);
+		const answer = (name: string, label: string, then: readonly (string | null)[], act: () => void) =>
+			h(
+				"button",
+				{
+					type: "button",
+					class: "interface-button",
+					"data-focus-key": `${name}:${offer.id}`,
+					"data-focus-then": JSON.stringify(then.filter((key) => key !== null)),
+					"aria-describedby": titleId,
+					"aria-disabled": busy ? "true" : null,
+					onclick: () => {
+						if (!busy) act();
+					},
+				},
+				label,
+			);
+		const from = memberLabel(context, offer.from);
+		const to = memberLabel(context, offer.to);
+		let words = t("{from} offered it to {to}", { from, to });
+		const answers: HTMLElement[] = [];
+		const afterAnswer = [controls.claim, controls.offer, controls.open];
+		if (offer.from === me) {
+			words = t("Offered to {name}", { name: to });
+			answers.push(
+				answer("withdraw", t("Withdraw"), [controls.offer, controls.claim, controls.open], () => {
+					void closeOffer(context, offer, "withdraw");
+				}),
+			);
+		} else if (offer.to === me) {
+			words = t("{name} offers it to you", { name: from });
+			if (accepts !== null) {
+				const column = accepts;
+				answers.push(
+					answer(
+						"accept",
+						t("Accept"),
+						afterAnswer,
+						() => void claimCard(context, part, item, "accept", { column, offer }),
+					),
+				);
+			}
+			answers.push(answer("decline", t("Not now"), afterAnswer, () => void closeOffer(context, offer, "decline")));
+		}
+		return h(
+			"li",
+			{ class: "interface-card-offer" },
+			h("span", null, words),
+			answers.length ? h("span", { class: "interface-actions" }, ...answers) : null,
+		);
+	});
+	return h("ul", { class: "interface-card-offers" }, ...lines);
+}
+
+/** The members a card may go to, each a button that offers it, and Cancel; Escape closes it too. */
+function offerPicker(
+	context: BlockContext,
+	part: DrawnPart,
+	item: InterfaceRow,
+	candidates: readonly { readonly id: string; readonly name: string }[],
+	offerKey: string,
+	titleId: string,
+): HTMLElement {
+	const close = () => {
+		context.page.offering = null;
+		context.page.focus = `offer:${offerKey}`;
+		context.redraw();
+	};
+	const picker = h(
+		"span",
+		{ class: "interface-actions interface-offer-picker", role: "group", "aria-label": t("Offer to") },
+		h("span", { class: "interface-offer-picker-label", "aria-hidden": "true" }, t("Offer to")),
+		...candidates.map((member, index) =>
+			h(
+				"button",
+				{
+					type: "button",
+					class: "interface-button",
+					"data-focus-key": `offer-to:${offerKey}:${index}`,
+					// The picker closes as the offer goes; the card's Offer… stays drawn and takes the focus.
+					"data-focus-then": JSON.stringify([`offer:${offerKey}`]),
+					"aria-describedby": titleId,
+					onclick: () => void offerCard(context, part, item, member.id, offerKey),
+				},
+				member.name,
+			),
+		),
+		h(
+			"button",
+			{ type: "button", class: "interface-button", "data-focus-key": `offer-to:${offerKey}:cancel`, onclick: close },
+			t("Cancel"),
+		),
+	);
+	picker.addEventListener("keydown", (event) => {
+		if (event.key !== "Escape") return;
+		event.preventDefault();
+		close();
+	});
+	return picker;
+}
+
+/** The page's error, said once and counted, so the same words failing again are said again. */
+function pageError(page: PageState, message: string, problems: readonly string[] = []): void {
+	page.error = message;
+	page.errorProblems = [...problems];
+	page.errorShown = false;
+	page.errors += 1;
+}
+
+/** Offers a card's holder cell, as the card shows it, to another member (step I9c). A refusal says why. */
+async function offerCard(
+	context: BlockContext,
+	part: DrawnPart,
+	item: InterfaceRow,
+	to: string,
+	offerKey: string,
+): Promise<void> {
+	const { page, writes } = context;
+	const busy = `offer:${offerKey}`;
+	const { definition } = part;
+	const holder = definition?.holder ?? null;
+	if (page.pending.includes(busy) || !writes?.offers || definition === null || holder === null) return;
+	page.pending = [...page.pending, busy];
+	page.offering = null;
+	page.error = null;
+	page.errorProblems = [];
+	context.redraw();
+	const held = item.row[holder];
+	try {
+		const answer = await writes.offers.offer({
+			table: definition.id.toLowerCase(),
+			key: JSON.parse(tableRowKey(definition, item.row)) as TableValue[],
+			column: holder,
+			was: typeof held === "string" && held !== "" ? held : null,
+			to,
+		});
+		// The offer is read again before the answer comes, so its Withdraw is drawn to take the focus.
+		if (answer.ok) page.focus = `withdraw:${answer.offer.id}`;
+		else pageError(page, answer.message);
+	} catch (error) {
+		pageError(page, describeError(error));
+	}
+	page.pending = page.pending.filter((key) => key !== busy);
+	if (context.stillShown()) context.redraw();
+}
+
+/** Declines an offer made to the member, or withdraws one they made (step I9c). The line goes once the offers are read
+ * again, and its button hands the focus on (`show`): on the board to its card's `data-focus-then`, on Pulse to the next
+ * control or the block's title. */
+async function closeOffer(
+	context: BlockContext,
+	offer: MemberInterfaceOffer,
+	how: "decline" | "withdraw",
+): Promise<void> {
+	const { page, writes } = context;
+	const busy = `offer:${offer.id}`;
+	if (page.pending.includes(busy) || !writes?.offers) return;
+	page.pending = [...page.pending, busy];
+	page.error = null;
+	page.errorProblems = [];
+	context.redraw();
+	try {
+		await (how === "decline" ? writes.offers.decline(offer.id) : writes.offers.withdraw(offer.id));
+	} catch (error) {
+		pageError(page, describeError(error));
+	}
+	page.pending = page.pending.filter((key) => key !== busy);
+	if (context.stillShown()) context.redraw();
 }
 
 /** How long a card whose save landed may stay where it was, saving, waiting for the board to show it moved. */
 const CLAIM_LANDED_WAIT = 10_000;
 
-/** Takes or releases a card (§3.3): writes its holder cell with the version it read. The card stays where it was,
- * saving, until the save has landed and the board shows the change; a card someone else changed meanwhile says so,
- * and a refused save lists why. */
-async function claimCard(context: BlockContext, part: DrawnPart, item: InterfaceRow, verb: ClaimVerb): Promise<void> {
+/** A failed take, release or accept as the page's error: a cell someone else changed says so, and a refused save lists
+ * why. */
+function claimError(page: PageState, verb: ClaimVerb, error: unknown): void {
+	const rejected = error instanceof WebCompanyFolderRejectedError ? error : null;
+	// Every read found the cell still free (or still the member's, or as the offer read it), so the file kept changing
+	// elsewhere; a cell that was lost says so itself (ClaimLostError).
+	if (rejected?.reason === "version_changed") pageError(page, t("That changed while you were looking."));
+	else if (rejected?.problems.length) pageError(page, claimFailure(verb), rejected.problems);
+	else pageError(page, describeError(error));
+}
+
+/** Takes or releases a card (§3.3), or accepts the offer of it (step I9c): writes its holder cell with the version it
+ * read. The card stays where it was, saving, until the save has landed and the board shows the change; a card someone
+ * else changed meanwhile says so, and a refused save lists why. A save settles the cell's offers, so they are read
+ * again; the offer an accept answers stays on the card meanwhile. */
+async function claimCard(
+	context: BlockContext,
+	part: DrawnPart,
+	item: InterfaceRow,
+	verb: ClaimVerb,
+	accepted?: { readonly column: string; readonly offer: MemberInterfaceOffer },
+): Promise<void> {
 	const { page, company, writes } = context;
 	const card = cardKey(part, item);
 	if (Object.hasOwn(page.claiming, card)) return;
 	const was = holderCell(part, item);
-	page.claiming = { ...page.claiming, [card]: { was, landed: false } };
+	const answers = accepted ? { offer: accepted.offer } : {};
+	page.claiming = { ...page.claiming, [card]: { was, landed: false, ...answers } };
 	page.error = null;
 	page.errorProblems = [];
 	context.redraw();
@@ -1393,6 +1953,9 @@ async function claimCard(context: BlockContext, part: DrawnPart, item: Interface
 			table: part.table,
 			key: tableRowKey(part.definition, item.row),
 			verb,
+			...(accepted
+				? { offer: { column: accepted.column, from: accepted.offer.from, was: accepted.offer.was } }
+				: {}),
 			memberId: company.userId,
 			signal: company.signal,
 			check: () => {
@@ -1401,20 +1964,12 @@ async function claimCard(context: BlockContext, part: DrawnPart, item: Interface
 			},
 		});
 	} catch (error) {
-		const rejected = error instanceof WebCompanyFolderRejectedError ? error : null;
-		// Every read found the cell still free (or still the member's), so the file kept changing elsewhere; a cell that
-		// was lost says so itself (ClaimLostError).
-		if (rejected?.reason === "version_changed") page.error = t("That changed while you were looking.");
-		else if (rejected?.problems.length) {
-			page.error = claimFailure(verb);
-			page.errorProblems = [...rejected.problems];
-		} else page.error = describeError(error);
-		page.errorShown = false;
-		page.errors += 1;
+		claimError(page, verb, error);
 	}
 	const without = () => Object.fromEntries(Object.entries(page.claiming).filter(([other]) => other !== card));
 	if (wrote) {
-		const landed = { was, landed: true };
+		void writes?.offers?.refresh();
+		const landed = { was, landed: true, ...answers };
 		page.claiming = { ...without(), [card]: landed };
 		// A feed that is slow to show the change doesn't keep the card saving.
 		setTimeout(() => {
@@ -1449,11 +2004,13 @@ function rowButtons(
 	context: BlockContext,
 	lineId: string,
 ): HTMLElement | null {
-	const label = (text: string) => fillInterfaceText(text, item.row, drawn.nameOf);
+	const label = (text: string) => filledWords(text, item.row, drawn);
 	const focus = (index: number) => `action:${drawn.key}:${item.key}:${index}`;
 	const describe = { "aria-describedby": lineId };
 	const drawnButtons = buttons.flatMap((drawnButton, index): HTMLElement[] => {
 		if (drawnButton.verb === "answer") {
+			// An offer of a cell is answered on its row (step I9c).
+			if (drawn.source === "waiting" && item.row.kind === "offer") return offerAnswers(context, item, lineId);
 			// The platform's own card waits in its thread; the button takes the member there.
 			if (!item.href || !context.canWrite || !rowHasCard(drawn.source, item.row)) return [];
 			return [
@@ -1493,7 +2050,11 @@ function rowButtons(
 		}
 		const agent = messageTarget(context, drawnButton.to, item.row);
 		// A row whose outside values can't travel as quotes gets no button (messageText says why).
-		if (!agent || !context.canWrite || !messageText(drawnButton.text, item.row, drawn.source, drawn.nameOf))
+		if (
+			!agent ||
+			!context.canWrite ||
+			!messageText(drawnButton.text, item.row, drawn.source, drawn.nameOf, quotable(context, drawn.source))
+		)
 			return [];
 		const pendingKey = focus(index);
 		const pending = () => context.page.pending.includes(pendingKey);
@@ -1532,6 +2093,68 @@ function rowButtons(
 		return [action];
 	});
 	return drawnButtons.length ? h("span", { class: "interface-actions" }, ...drawnButtons) : null;
+}
+
+/** A waiting offer's answers (step I9c): Accept, where the member may change its table's rows, and Not now. */
+function offerAnswers(context: BlockContext, item: InterfaceRow, lineId: string): HTMLElement[] {
+	const offer = context.offers?.find((candidate) => candidate.id === item.row.id);
+	const offered = offer && offeredRow(context.company, offer);
+	if (!offer || !offered) return [];
+	const busy = context.page.pending.includes(`offer:${offer.id}`);
+	const answer = (name: string, label: string, act: () => void) =>
+		h(
+			"button",
+			{
+				type: "button",
+				class: "interface-button",
+				"data-focus-key": `${name}:${offer.id}`,
+				"aria-describedby": lineId,
+				"aria-disabled": busy ? "true" : null,
+				onclick: () => {
+					if (!busy) act();
+				},
+			},
+			label,
+		);
+	return [
+		memberMayWriteRows(context.company, offered.definition)
+			? answer("accept", t("Accept"), () => void acceptOffer(context, offer, offered.table))
+			: null,
+		answer("decline", t("Not now"), () => void closeOffer(context, offer, "decline")),
+	].filter((each) => each !== null);
+}
+
+/** Accepts an offer where it waits (step I9c): saves the member into the cell it names while that is as the offer read
+ * it, then reads the offers again, which the save settled. */
+async function acceptOffer(context: BlockContext, offer: MemberInterfaceOffer, table: string): Promise<void> {
+	const { page, company, writes } = context;
+	const busy = `offer:${offer.id}`;
+	const { key, column } = offer;
+	if (page.pending.includes(busy) || !writes || key === null || column === null) return;
+	page.pending = [...page.pending, busy];
+	page.error = null;
+	page.errorProblems = [];
+	context.redraw();
+	try {
+		await claimTableCell({
+			folder: writes.folder(),
+			table,
+			key: JSON.stringify(key),
+			verb: "accept",
+			offer: { column, from: offer.from, was: offer.was },
+			memberId: company.userId,
+			signal: company.signal,
+			check: () => {
+				company.signal.throwIfAborted();
+				writes.current();
+			},
+		});
+		await writes.offers?.refresh();
+	} catch (error) {
+		claimError(page, "accept", error);
+	}
+	page.pending = page.pending.filter((other) => other !== busy);
+	if (context.stillShown()) context.redraw();
 }
 
 /** Where an `open` button leads: an agent's thread (`agent:{column}` or `agent:<id>`), or another interface this
@@ -1577,20 +2200,26 @@ function quotedWords(shown: string): string {
 		: flat;
 }
 
+/** Whether the cloud takes a quote of a source's record: of a mail thread, unless it is account mail. */
+const quotable = (context: BlockContext, source: string) => (ref: string) =>
+	source !== "mail" || !isAccountMail(context.company, ref);
+
 /** The text a `message` button puts in the composer, with its quotes. A value from a column that carries outside
  * content (RUNTIME-INTERFACES.md §4) goes as a quote (contract, the 2026-10-02 amendment "quoted outside content in
  * a member's message"): in «» marks on the same line, with where it came from, so the platform fences those words
  * and the review never reads them as the member's own. An empty value fills in nothing.
  *
  * Undefined when a value from outside content can't travel as a quote: its source is not on the contract's quote
- * list, or the row doesn't name the record it came from (a mail row without its thread id). The button is then not
- * drawn for that row (rowButtons): filling the value in as the member's own words is what a quote is there to
- * prevent, and leaving it out would put in less than the button says, with nothing to tell the member. */
+ * list, the row doesn't name the record it came from (a mail row without its thread id), or the cloud takes no quote
+ * of that record (`quotable`: account mail). The button is then not drawn for that row (rowButtons): filling the value
+ * in as the member's own words is what a quote is there to prevent, and leaving it out would put in less than the
+ * button says, with nothing to tell the member. */
 export function messageText(
 	text: string,
 	row: TableRow,
 	source: string,
 	nameOf: (column: string, value: unknown) => string,
+	quotable: (ref: string) => boolean = () => true,
 ): QuotedText | undefined {
 	const outside = interfaceOutsideColumns(source);
 	const recordColumn = Object.hasOwn(QUOTE_RECORD_COLUMNS, source) ? QUOTE_RECORD_COLUMNS[source] : undefined;
@@ -1620,6 +2249,7 @@ export function messageText(
 			!INTERFACE_QUOTE_SOURCES.includes(source) ||
 			typeof ref !== "string" ||
 			!quoteRefFits(source, ref) ||
+			!quotable(ref) ||
 			quotes.length >= INTERFACE_OUTSIDE_VALUES_MAX
 		)
 			return undefined;
@@ -1645,7 +2275,7 @@ async function messageAgent(
 ): Promise<void> {
 	const { company, profileId } = context;
 	// The button is drawn only for a row whose values can travel (rowButtons); this holds the line if one can't.
-	const text = messageText(drawnButton.text, row, drawn.source, drawn.nameOf);
+	const text = messageText(drawnButton.text, row, drawn.source, drawn.nameOf, quotable(context, drawn.source));
 	if (!text) throw new Error(t("This row's email can't be quoted in a message."));
 	const from = location.hash;
 	const cofounderId = company.cofounderId();
