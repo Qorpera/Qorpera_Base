@@ -209,9 +209,9 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		});
 		if (Buffer.byteLength(encoded) > COMPANY_COMPUTER_NATIVE_MAX_REQUEST)
 			throw new Error("OFFICE_NATIVE_REQUEST_TOO_LARGE");
-		// G2-6c: a perform proves the run's lease; a release needs no proof, so it carries no credential. Only the job's
-		// own holder goes to the computer, never the identity credential the dispatch gives between jobs.
-		const holder = body.action === "perform" ? this.#holder() : undefined;
+		// G2-6c: every perform and release proves the run's lease. Only the job's own holder goes to the computer, never
+		// the identity credential the dispatch gives between jobs (the run's close releases inside its job).
+		const holder = this.#holder();
 		try {
 			return await cloudToolRequest(
 				async (s) => {

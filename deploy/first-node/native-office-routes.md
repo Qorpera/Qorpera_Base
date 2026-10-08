@@ -55,11 +55,12 @@ LXD metadata or the journal. Other offices' credentials remain on the provider.
 The guest checks the bootstrap URL, digest and credential independence before
 starting native execution. Descriptor, run and effect-time resource checks
 remain responsible for tool authority; possessing the transport token alone
-does not grant browser or Company File access. Since G2-6c, each action also
-carries the run's job lease as `x-qorpera-identity`, which the computer proves
-with its registry key before anything else, so the route's token without the
-run's own lease is refused. Anything between the guest and the computer must
-pass that header through (`RUNTIME-NATIVE-HOST-KEY.md`, "G2-6").
+does not grant browser or Company File access. Since G2-6c, each action and
+each release also carries the run's job lease as `x-qorpera-identity`, which
+the computer proves with its registry key before anything else, so the route's
+token without the run's own lease is refused. Anything between the guest and
+the computer must pass that header through (`RUNTIME-NATIVE-HOST-KEY.md`,
+"G2-6").
 
 Without a matching route, the guest has no office URL and receives an empty
 credential source. This keeps the fixed systemd unit startable while granting

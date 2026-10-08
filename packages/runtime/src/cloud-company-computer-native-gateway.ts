@@ -27,6 +27,7 @@ import {
 import type { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-registry-http.ts";
 import { parseCompanyComputerAction } from "./cloud-company-computer-tools.ts";
 import {
+	type CloudNativeToolBinding,
 	CloudNativeToolRun,
 	cloudToolRequest,
 	isNativeJobHolder,
@@ -284,6 +285,23 @@ export class CompanyComputerNativeGateway {
 			});
 		return session.reopening;
 	}
+	/**
+	 * G2-6c: the run's own lease proves the binding (its x-qorpera-identity holder, qorpera_native_binding_proven with
+	 * this computer's registry key) before anything else is asked about it: on every perform, the session's open
+	 * included, and on every release, which ends the session and records its screen lease's release. A gate only; the
+	 * descriptor and the effect receipts still check the run. The holder never reaches a log or an error.
+	 */
+	async #prove(binding: CloudNativeToolBinding, holder: unknown, signal: AbortSignal): Promise<void> {
+		if (
+			!isNativeJobHolder(holder) ||
+			(await this.#registry.call(
+				"qorpera_native_binding_proven",
+				{ p_binding: binding, p_holder: holder },
+				signal,
+			)) !== true
+		)
+			throw new Error("OFFICE_NATIVE_UNPROVEN");
+	}
 	async #dispatch(value: unknown, holder: unknown, signal: AbortSignal): Promise<unknown> {
 		const action = value && typeof value === "object" && "action" in value ? value.action : undefined;
 		// A vault_fill carries the box the vault sealed to this computer (company accounts A1-3), nothing else does.
@@ -304,6 +322,7 @@ export class CompanyComputerNativeGateway {
 		if (!COMPANY_COMPUTER_UUID.test(lease.leaseId)) throw new Error("INVALID_OFFICE_LEASE");
 		const key = `${JSON.stringify(binding)}:${lease.leaseId}`;
 		if (action === "release") {
+			await this.#prove(binding, holder, signal);
 			const pending = this.#sessions.get(key);
 			if (!pending) throw new Error("OFFICE_NATIVE_SESSION_UNCONFIRMED");
 			const session = await pending;
@@ -345,19 +364,7 @@ export class CompanyComputerNativeGateway {
 			!/^[0-9a-f]{64}$/.test(receipt.idempotencyKey)
 		)
 			throw new Error("INVALID_OFFICE_RECEIPT");
-		// G2-6c: the run's own lease proves the binding (its x-qorpera-identity holder, qorpera_native_binding_proven with
-		// this computer's registry key) before anything else is asked about it: on the session's open and on every
-		// perform. A gate only; the descriptor and the effect receipts still check the run. A release needs none: it only
-		// closes a session this binding opened under the same lease. The holder never reaches a log or an error.
-		if (
-			!isNativeJobHolder(holder) ||
-			(await this.#registry.call(
-				"qorpera_native_binding_proven",
-				{ p_binding: binding, p_holder: holder },
-				signal,
-			)) !== true
-		)
-			throw new Error("OFFICE_NATIVE_UNPROVEN");
+		await this.#prove(binding, holder, signal);
 		let pending = this.#sessions.get(key);
 		if (!pending) {
 			if (this.#activeSessions >= 64) throw new Error("OFFICE_NATIVE_CAPACITY_EXHAUSTED");

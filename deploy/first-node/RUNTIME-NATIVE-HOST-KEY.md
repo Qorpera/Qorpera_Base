@@ -224,11 +224,12 @@ request, so a warm host never sends a released job's token). The server asks
 - the token's hash;
 - the binding's job and run being that job and its run.
 
-It is stable, so it takes no row lock, and only the servers' roles may call it (service_role for the object gateway and
-the coding executor, qorpera_secret_broker for the brokers; test 001 keeps it off the API roles). It is a gate only: the locked functions
-behind each request still check the run and its lease under their locks, so a lease that ends between the proof and
-the work is still refused. A server never logs the header or puts it in an error, and every refusal is a plain 401 or
-403. The node-level tokens stay as transport checks for now.
+It is stable, so it takes no row lock, and only the servers' roles may call it (service_role for the object gateway,
+the coding executor and the Company Computer's office receiver, qorpera_secret_broker for the brokers; test 001 keeps
+it off the API roles). It is a gate only: the locked functions behind each request still check the run and its lease
+under their locks, so a lease that ends between the proof and the work is still refused. A server never logs the header
+or puts it in an error. Every refusal is a plain 401 or 403, except at the office receiver, which refuses with the
+empty 503 it gives every refused request. The node-level tokens stay as transport checks for now.
 
 - **6a** (migration `20260930152000`, SQL test 986):
   - the secret brokers and the shared vault prove the lease on `/v1/operations`, `/v1/company-accounts`,
@@ -248,10 +249,12 @@ the work is still refused. A server never logs the header or puts it in an error
     executor proved the guest's holder at its own ingress.
 - **6c** (no SQL; a Company Computer service revision):
   - the office receiver (`POST /office/<companyComputerId>/native`) proves the lease with its own registry key
-    (service_role, which may call the proof) before anything else about the binding, on the session's open and on
-    every perform. A release needs none: it only closes a session this binding opened under the same lease;
-  - the native host's computer endpoint sends the header with each perform, and only the job's own holder, never the
-    identity credential the dispatch gives between jobs. A release carries none;
+    (service_role, which may call the proof) before anything else about the binding: on every perform, the session's
+    open included, and on every release, since a release ends the run's session and records its screen lease's
+    release. A refused release closes nothing; the receiver's own watch on the run closes the session once the run's
+    authority lapses;
+  - the native host's computer endpoint sends the header with each perform and release (the run's close releases
+    inside its job), and only the job's own holder, never the identity credential the dispatch gives between jobs;
   - the route's token is the company's, shared by all its computers, so the proof binds each action to its run within
     the company;
   - **carry it over:** the later G2 office step, which takes the service-role key out of the office VM, must keep this
@@ -287,9 +290,10 @@ the function is dropped or a guest from before 6a sends no header.
 
 After 6a's migration: the guest image first (a receiver from before 6c ignores the header), then the Company
 Computer's service as a governed office software revision (`deploy/lxd-company-computer-guest/README.md`). A guest
-from before 6c sends no header, so a 6c receiver refuses its computer actions. Whatever sits between a guest and a
-computer (the node's office passthrough, a front at the route's origin) must pass `x-qorpera-identity` through. Check
-after the release (deferred, needs Codex): an agent's computer start, a shell action and a screenshot each go through.
+from before 6c sends no header, so a 6c receiver refuses its computer actions and releases. Whatever sits between a
+guest and a computer (the node's office passthrough, a front at the route's origin) must pass `x-qorpera-identity`
+through. Check after the release (deferred, needs Codex): an agent's computer start, a shell action and a screenshot
+each go through, and the run's end releases its computer.
 
 ### Undo (G2-6c)
 

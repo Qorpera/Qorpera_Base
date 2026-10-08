@@ -671,9 +671,11 @@ describe("headless office service lifetime (TLS listeners, synthetic physical ad
 		});
 		try {
 			expect((await post(body)).status).toBe(503);
-			expect(
-				(await post({ schema: body.schema, action: "release", nativeBinding: source.binding, lease }, null)).status,
-			).toBe(200);
+			// G2-6c: the release proves the run's lease too; without its holder it closes nothing.
+			const release = { schema: body.schema, action: "release", nativeBinding: source.binding, lease };
+			expect((await post(release, null)).status).toBe(503);
+			expect(physicalClose).not.toHaveBeenCalled();
+			expect((await post(release)).status).toBe(200);
 			expect(perform).toHaveBeenCalledOnce();
 			expect(physicalClose).toHaveBeenCalledOnce();
 			expect(f.order.indexOf("native:physical-close")).toBeLessThan(f.order.indexOf("native:sql-release"));

@@ -850,12 +850,15 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 			expect((await f.post(invalid)).status).toBe(503);
 		expect((await f.post(release, { token: randomBytes(32).toString("base64url") })).status).toBe(403);
 		expect(f.physicalClose).not.toHaveBeenCalled();
-		expect(f.sql).not.toHaveBeenCalled();
+		// A well-formed release proves the run's lease before anything else (G2-6c); nothing else was asked.
+		const proven = "qorpera_native_binding_proven";
+		const asked = () => f.sql.mock.calls.map(([input]) => String(input).split("/").at(-1));
+		expect(asked()).toEqual([proven, proven]);
 		expect((await f.post(release)).status).toBe(200);
 		expect((await f.post(release)).status).toBe(200);
 		expect(f.physicalClose).toHaveBeenCalledOnce();
 		expect(f.order.indexOf("guest:close")).toBeLessThan(f.order.indexOf("qorpera_native_office_screen:release"));
-		expect(f.sql).toHaveBeenCalledOnce();
+		expect(asked()).toEqual([proven, proven, proven, "qorpera_native_office_screen", proven]);
 		expect(f.createSession).toHaveBeenCalledOnce();
 	});
 	it("never dispatches a receipt twice and never reopens a released session", async () => {
@@ -912,7 +915,7 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		expect(f.perform).not.toHaveBeenCalled();
 		expect(f.order).not.toContain("qorpera_native_office_screen:release");
 	});
-	it("proves the run's lease before a session opens and on every perform, and never for a release (G2-6c)", async () => {
+	it("proves the run's lease before a session opens, on every perform and on every release (G2-6c)", async () => {
 		const f = await fixture();
 		// No holder, a malformed one, another run's, or another lease token for this run's job: refused before the run's
 		// authority, the descriptor or the guest is asked anything, and the answer carries nothing of the holder.
@@ -947,15 +950,29 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		expect(f.proofs).toHaveLength(2);
 		expect(f.proofs[1]).toEqual({ holder: f.holder, binding: f.source.binding, at: before });
 		expect(f.perform).toHaveBeenCalledTimes(2);
-		// A release carries no holder and asks for no proof: it only closes the session this lease opened.
-		const release = await f.post(
-			{ schema: COMPANY_COMPUTER_NATIVE_SCHEMA, action: "release", nativeBinding: f.source.binding, lease: f.lease },
-			{ identity: null },
-		);
-		expect(release.status).toBe(200);
-		expect(f.proofs).toHaveLength(2);
+		// A release ends the session and records its screen lease's release, so it proves the lease too: without the
+		// run's own holder it closes nothing, and the answer carries nothing of the holder.
+		const release = {
+			schema: COMPANY_COMPUTER_NATIVE_SCHEMA,
+			action: "release",
+			nativeBinding: f.source.binding,
+			lease: f.lease,
+		};
+		for (const identity of [null, `identity.${f.leaseToken}`, `job.${f.source.binding.jobId}.${"W".repeat(43)}`]) {
+			const refused = await f.post(release, { identity });
+			expect(refused.status).toBe(503);
+			expect(await refused.text()).not.toContain(f.leaseToken);
+		}
+		expect(f.physicalClose).not.toHaveBeenCalled();
+		expect(f.order).not.toContain("qorpera_native_office_screen:release");
+		expect(f.proofs).toHaveLength(3);
+		const beforeRelease = f.order.length;
+		expect((await f.post(release)).status).toBe(200);
+		expect(f.proofs[3]).toEqual({ holder: f.holder, binding: f.source.binding, at: beforeRelease });
+		expect(f.physicalClose).toHaveBeenCalledOnce();
+		expect(f.order).toContain("qorpera_native_office_screen:release");
 	});
-	it("sends the job's holder only with a perform, and never a credential that is not the job's (G2-6c)", async () => {
+	it("sends only the job's own holder, with every perform and release (G2-6c)", async () => {
 		const f = await fixture();
 		const sent: (string | null)[] = [];
 		let current = f.holder;
@@ -982,8 +999,14 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 				idempotencyKey: "d".repeat(64),
 			}),
 		).rejects.toThrow("OFFICE_NATIVE_UNCONFIRMED");
+		// Nor with a release, so the computer keeps the session.
+		await expect(endpoint.close()).rejects.toThrow("OFFICE_NATIVE_UNCONFIRMED");
+		expect(f.physicalClose).not.toHaveBeenCalled();
+		// The run's close releases inside its job, with the job's own holder.
+		current = f.holder;
 		await endpoint.close();
-		expect(sent).toEqual([f.holder, null, null]);
+		expect(f.physicalClose).toHaveBeenCalledOnce();
+		expect(sent).toEqual([f.holder, null, null, f.holder]);
 	});
 	it("rejects browser origins, incorrect host credentials and query-bearing paths before authority or guest work", async () => {
 		const f = await fixture();
@@ -1082,7 +1105,9 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		const extra = await f.post({ ...f.body(), command: "ignored bypass" });
 		expect(extra.status).toBe(503);
 		expect(f.createSession).not.toHaveBeenCalled();
-		expect(f.sql).not.toHaveBeenCalled();
+		// Only the release's lease proof was asked (G2-6c).
+		expect(f.sql).toHaveBeenCalledOnce();
+		expect(f.proofs).toHaveLength(1);
 	});
 	it("parses only scoped descriptors and fixed configured HTTPS routes", async () => {
 		const f = await fixture();
