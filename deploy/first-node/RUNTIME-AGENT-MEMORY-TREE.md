@@ -1194,15 +1194,16 @@ folder.
   - Its receipt input keeps the target conversation's session id, or the run log's run id (not the ref, which a
     rename changes), `start`, `size` and `from`. Erasure matches receipts by these (§10). A call without `line` is kept with `start` 0 and
     `size` T: the whole conversation, so any erasure in it matches.
-  - It reads the conversation's `memory_generation` (§4.3) before it reads, and stores its receipt in a transaction
-    that checks the generation again. If the generation moved, that transaction rolls back, and zoom reads again and
-    answers from the new state. So no receipt that holds erased text is stored after the erase.
-  - That transaction keeps core §3's order: the run's rows first (a receipt takes the run mutex, step 2), then the
+  - It stores its receipt in the transaction that reads, and reads in the statements after the receipt and the lock.
+    That transaction keeps core §3's order: the run's rows first (a receipt takes the run mutex, step 2), then the
     receipt row with the other run-owned rows, and the target session `FOR SHARE` last, at the session step. It
-    takes no principal or path lock after the session. The erase takes the session at that same step, so the two
-    wait in one order.
-  - A zoom into a run log checks that log's generation the same way, with its `qorpera_memory_run_generations` row
-    taken `FOR SHARE` among the run-owned rows, where a step erase takes it `FOR UPDATE` (§4.5, §10.1).
+    takes no principal or path lock after the session.
+  - The erase takes the session `FOR UPDATE` at that same step and scans receipts in a later statement (§10). So
+    either the erase waits for the zoom and finds its receipt, or the zoom waits for the erase and reads what the
+    erase left. Nothing is retried, and no generation is checked: no receipt that holds erased text is stored after
+    the erase. (M1b part 3 replaced a generation recheck with this order.)
+  - A zoom into a run log takes its `qorpera_memory_run_generations` row `FOR SHARE` the same way, among the
+    run-owned rows, where a step erase takes it `FOR UPDATE` (§4.5, §10.1).
 - **Light threads.** It runs on the server, with no shell.
 
 ## 9. Company-wide, with no reader rules
