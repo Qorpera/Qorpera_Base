@@ -2,9 +2,8 @@ export class ObjectDependencyError extends Error {
 	readonly status: number;
 	readonly unavailable: boolean;
 	/** The database call that answered rolled back on a serialization failure, deadlock or lock timeout on one
-	 * company's rows (40001, 40P01, 55P03), and committed nothing. On the native object route, whose request can be
-	 * sent again whole, the error body says so with `code: "lock_conflict"`, the only detail an error body carries,
-	 * and the native object transport retries on it. */
+	 * company's rows (40001, 40P01, 55P03), and committed nothing. The platform folder workers report it as
+	 * `lock_conflict`; an error body never says so. */
 	readonly lockConflict: boolean;
 
 	constructor(status: number, lockConflict = false) {

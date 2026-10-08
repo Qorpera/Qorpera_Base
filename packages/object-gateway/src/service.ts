@@ -19,7 +19,7 @@ import {
 	parseMemberObservationQuery,
 } from "./member-observability.ts";
 import { serveMemberSessionAttachment } from "./member-session-attachments.ts";
-import { type NativeCompanyObjectOptions, serveNativeCompanyObject } from "./native-objects.ts";
+import type { NativeCompanyObjectOptions } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 import type { ObjectReadLeases } from "./read-lease.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
@@ -351,7 +351,7 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 					return;
 				}
 				if (request.url?.startsWith("/v1/folder-objects/")) {
-					if (!options.nativeObjects?.folder || !options.replication) throw new HttpError(404, "Not found");
+					if (!options.nativeObjects || !options.replication) throw new HttpError(404, "Not found");
 					await serveFolderObject(
 						request,
 						response,
@@ -376,17 +376,6 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 					// 200 with the outcome. 503: the NAS lanes are busy or a dependency is down, and the worker stops for
 					// this run. 409: a lock conflict on this object (the mark is given up, or expires if the begin met it).
 					json(response, 200, { outcome: await options.folderGc.collect(match[1]!, match[2]!, leaseId) });
-					return;
-				}
-				if (request.url?.startsWith("/v1/native-company-objects/")) {
-					if (!options.nativeObjects || !options.replication) throw new HttpError(404, "Not found");
-					await serveNativeCompanyObject(
-						request,
-						response,
-						options.nativeObjects,
-						options.store,
-						options.replication,
-					);
 					return;
 				}
 				const { profileId, sha256 } = objectIdentity(request);
@@ -528,16 +517,7 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 					return;
 				}
 				if (error instanceof ObjectDependencyError) {
-					// Only a native object request may be sent again whole after a lock conflict: its one write is
-					// content-addressed and its last database call is the one that rolled back. Composite routes (a
-					// member's review, then its apply) may have committed an earlier step, so they never say so.
-					const retryable = error.lockConflict && request.url?.startsWith("/v1/native-company-objects/") === true;
-					json(
-						response,
-						error.unavailable ? 503 : error.status,
-						retryable ? { error: error.message, code: "lock_conflict" } : { error: error.message },
-						observation,
-					);
+					json(response, error.unavailable ? 503 : error.status, { error: error.message }, observation);
 					return;
 				}
 				json(response, 503, { error: "Object gateway operation failed" }, observation);

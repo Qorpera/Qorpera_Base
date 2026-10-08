@@ -200,7 +200,6 @@ function linuxFixture(f: ReturnType<typeof fixture>) {
 				...f.options,
 				screenLifecycle,
 				...(startup ? { startup } : {}),
-				captureObjectGateway: { baseUrl: "https://objects.example", token: "x".repeat(43) },
 				linux: {
 					layout: {
 						workbenchRoot: "/srv/workbench",
