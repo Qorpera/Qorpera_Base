@@ -813,7 +813,10 @@ describe("the run's tree beside its log", () => {
 	const T0 = memoryBlockPath(0, 0);
 	const T1 = memoryBlockPath(4, 0);
 	const block = (...texts: string[]) =>
-		memoryBlockText(texts.map((text, k) => ({ l: 0, k, free: true, text })), "run");
+		memoryBlockText(
+			texts.map((text, k) => ({ l: 0, k, free: true, text })),
+			"run",
+		);
 
 	const t0 = (version: string | null, ...texts: string[]): CloudRunTreeBlock[] => [
 		{ path: T0, text: block(...texts), version },
