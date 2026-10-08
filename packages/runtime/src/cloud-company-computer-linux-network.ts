@@ -1,10 +1,29 @@
 import { createConnection } from "node:net";
+import { networkInterfaces } from "node:os";
 
 /** The office account's private door to the root plumber (qorpera-computer-plumb.socket). */
 export const COMPANY_COMPUTER_PLUMB_SOCKET = "/run/qorpera-computer-network/plumb.sock";
 
-/** Name servers of a computer's own network: public ones, since the machine's own are unreachable from it. */
-export const COMPANY_COMPUTER_RESOLV_CONF = "nameserver 1.1.1.1\nnameserver 8.8.8.8\noptions timeout:2 attempts:2\n";
+/** The node's agent exit: the gateway and name server behind the machine's agent card. */
+export const COMPANY_COMPUTER_AGENT_EXIT_DNS = "10.210.0.1";
+
+/** Name servers of a computer's own network: the agent exit's, the one address of
+ * the agents' network its filters let it reach (port 53 only). */
+export const COMPANY_COMPUTER_RESOLV_CONF = `nameserver ${COMPANY_COMPUTER_AGENT_EXIT_DNS}\noptions timeout:2 attempts:2\n`;
+
+/**
+ * The address of the machine's agent card (`qagent`), which qorpera-computer-plumb
+ * takes from the MAC the node's plug tool gave it. The browser's relay binds its
+ * lookups and connections to it, so they leave by the agent exit; without exactly
+ * one such address it carries nothing.
+ */
+export function companyComputerAgentPlugAddress(interfaces = networkInterfaces()): string {
+	const addresses = (interfaces.qagent ?? []).filter((entry) => entry.family === "IPv4");
+	const address = addresses.length === 1 ? addresses[0]!.address : "";
+	const match = /^10\.210\.([1-9][0-9]{0,2})\.([1-9][0-9]{0,2})$/.exec(address);
+	if (!match || Number(match[1]) > 255 || Number(match[2]) > 254) throw new Error("OFFICE_BROWSER_EGRESS_UNAVAILABLE");
+	return address;
+}
 
 /** `localhost` without DNS, inside a computer's namespace. */
 export const COMPANY_COMPUTER_HOSTS = "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n";
