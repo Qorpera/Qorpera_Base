@@ -275,13 +275,46 @@ in reach. Each computer may hold 16,384 connections at once and all together
 196,608 (the table holds 262,144), far above real work, so that computers
 cannot fill the machine's connection table. Redirects are off everywhere.
 Stopping the service (`--down`) removes every computer's link before the
-firewall. Name servers are public. The browser keeps its own device-less
-namespace and relay, so profiles, sign-ins and credentials stay out of the
-shell. This needs a new image (the units, the firewall, the plumber, and the
-`iproute2`, `nftables` and `iputils-ping` packages); the installer takes the
-five network files together or not at all. The shell's init is a mode
-(`--shell-host`) of `office-browser-child.mjs`. Without the plumber a computer
-starts with loopback only, never with an unfiltered network.
+firewall. The browser keeps its own device-less namespace and relay, so
+profiles, sign-ins and credentials stay out of the shell. This needs a new
+image (the units, the firewall, the plumber, and the `iproute2`, `nftables` and
+`iputils-ping` packages); the installer takes the five network files together
+or not at all. The shell's init is a mode (`--shell-host`) of
+`office-browser-child.mjs`. Without the plumber a computer starts with loopback
+only, never with an unfiltered network.
+
+**The agent card (E6, 2026-10-08).** The machine has a second card, a port of
+the node's agents' bridge `qagent0` (`deploy/agent-exit/`). The office provider
+plugs it in right before each create, and the node's plug tool gives it a MAC
+`0e:51:0a:d2:XX:YY` and the address `10.210.XX.YY` (decimal). Everything the
+computers and the browser's relay send leaves by this card, through the node's
+agent exit; the machine's own services (database, object gateway, NAS
+workbench) keep the first card on the office network.
+- `qorpera-agent-plug.rules` names the card `qagent` by its MAC, before any
+  network configuration sees it. `qorpera-agent-plug.network` keeps
+  systemd-networkd off it, and `qorpera-agent-plug-networkd.conf` keeps
+  networkd from removing the plumber's rules and routes. The image's netplan
+  configures the first card (`enp5s0`) only.
+- `--up` gives the card its address without a prefix route, and table 210 the
+  card's network and a default route via the exit (`10.210.0.1`). Rule 1000
+  keeps the computers' own network (`10.253.0.0/16`) in the main table; rules
+  1001 and 1002 send the computers' traffic and anything from the card's
+  address to table 210. The computers' traffic is masqueraded to the card's
+  address. Without the card (no `qagent` with a plug's MAC), `--up` fails and
+  nothing is plumbed.
+- Should the rules or table 210 go, the firewall drops the computers' traffic
+  and the card's address on any other card, so the way out fails closed. The
+  plumber also refuses to plumb a computer while the card's address or rule
+  1001 is missing. `--up` restores both.
+- Name servers are the exit's (`10.210.0.1`), for the computers'
+  `resolv.conf` and the relay's lookups. The exit's name server is the one
+  address of `10.0.0.0/8` the computers reach, and only on port 53, in the
+  machine's firewall and each computer's own.
+- The managed browser policy keeps encrypted ClientHello off, so the exit sees
+  each TLS connection's server name.
+
+The installer takes the three agent card files together or not at all, and
+only with the computers' network files.
 
 The wrapper is not an authorization or sandbox implementation. Directory-name
 validation cannot detect bind mounts, NAS aliases, unsafe inherited image

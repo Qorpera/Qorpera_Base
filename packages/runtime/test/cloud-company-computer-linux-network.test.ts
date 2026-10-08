@@ -1,8 +1,12 @@
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
-import { tmpdir } from "node:os";
+import { type NetworkInterfaceInfo, tmpdir } from "node:os";
 import { join } from "node:path";
-import { plumbCompanyComputerNetwork } from "@qorpera/runtime/cloud-company-computer-linux-network";
+import {
+	COMPANY_COMPUTER_RESOLV_CONF,
+	companyComputerAgentPlugAddress,
+	plumbCompanyComputerNetwork,
+} from "@qorpera/runtime/cloud-company-computer-linux-network";
 import { afterEach, describe, expect, it } from "vitest";
 
 // The client side of the root plumber; the plumber, the firewall and the
@@ -79,5 +83,42 @@ describe("asking the root plumber for a computer's network", () => {
 		const p = await plumber(() => "ok 10.253.1.2\n");
 		expect(await plumbCompanyComputerNetwork({ ordinal, role: "shell", pid, socket: p.path })).toBe(undefined);
 		expect(p.requests).toEqual([]);
+	});
+});
+
+describe("the machine's agent card", () => {
+	const card = (address: string, family: "IPv4" | "IPv6" = "IPv4"): NetworkInterfaceInfo =>
+		({
+			address,
+			netmask: family === "IPv4" ? "255.255.0.0" : "ffff:ffff:ffff:ffff::",
+			family,
+			mac: "0e:51:0a:d2:01:01",
+			internal: false,
+			cidr: `${address}/${family === "IPv4" ? 16 : 64}`,
+			...(family === "IPv6" ? { scopeid: 0 } : {}),
+		}) as NetworkInterfaceInfo;
+
+	it("gives computers the agent exit's name server only", () => {
+		expect(COMPANY_COMPUTER_RESOLV_CONF).toBe("nameserver 10.210.0.1\noptions timeout:2 attempts:2\n");
+	});
+
+	it("finds the one address the node's plug tool gave the card", () => {
+		expect(companyComputerAgentPlugAddress({ qagent: [card("10.210.1.1")] })).toBe("10.210.1.1");
+		expect(
+			companyComputerAgentPlugAddress({ enp5s0: [card("10.40.0.7")], qagent: [card("10.210.255.254")] }),
+		).toBe("10.210.255.254");
+	});
+
+	it.each([
+		["no card", { enp5s0: [card("10.40.0.7")] }],
+		["no IPv4 address", { qagent: [card("fe80::c51:aff:fed2:101", "IPv6")] }],
+		["two addresses", { qagent: [card("10.210.1.1"), card("10.210.1.2")] }],
+		["the exit's own network", { qagent: [card("10.210.0.9")] }],
+		["the exit's address", { qagent: [card("10.210.0.1")] }],
+		["a broadcast address", { qagent: [card("10.210.3.255")] }],
+		["another network", { qagent: [card("10.211.1.1")] }],
+		["a padded address", { qagent: [card("10.210.01.1")] }],
+	])("carries nothing with %s", (_, interfaces) => {
+		expect(() => companyComputerAgentPlugAddress(interfaces)).toThrow("OFFICE_BROWSER_EGRESS_UNAVAILABLE");
 	});
 });

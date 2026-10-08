@@ -123,6 +123,8 @@ const controls = {
 	"test-firewall flush": ["nft", ["delete", "table", "inet", "qorpera_computers"]],
 	"test-firewall down": [plumber, ["--down"]],
 	"test-firewall up": [plumber, ["--up"]],
+	// The agent card's routing gone (an accident): its address and firewall stay.
+	"test-route fault": ["sh", ["-c", "ip rule del priority 1001 && ip rule del priority 1002"]],
 };
 // Like systemd's accepted socket: a client that has finished sending still gets its answer.
 const server = createServer({ allowHalfOpen: true }, (socket) => {
@@ -155,8 +157,14 @@ server.listen("/run/qorpera-computer-network/plumb.sock", () => {
 import { createServer as createHttp } from "node:http";
 import { createServer } from "node:net";
 const name = process.argv[2];
-// High ports: the container keeps no right to bind low ones.
-createHttp((request, response) => response.end(name + ":" + request.url)).listen(8080, "0.0.0.0");
+// High ports: the container keeps no right to bind low ones (only the public
+// host's namespace lets it, for the browser relay's port 443).
+// /from answers with the address the request came from.
+createHttp((request, response) => response.end(name + ":" + (request.url === "/from" ? request.socket.remoteAddress : request.url))).listen(8080, "0.0.0.0");
+if (name === "public") createServer((socket) => {
+	socket.on("error", () => undefined);
+	socket.end("relay:" + socket.remoteAddress);
+}).listen(443, process.argv[3]);
 createServer((socket) => {
 	// A client may hang up as soon as it has read enough.
 	socket.on("error", () => undefined);
@@ -166,6 +174,31 @@ const udp = createSocket("udp4");
 udp.on("message", (message, from) => udp.send(Buffer.concat([Buffer.from(name + ":"), message]), from.port, from.address));
 // Answers from the host's own address, as a real server does, so the reply matches.
 udp.bind(5353, process.argv[3]);
+`);
+		// The node's agent exit as far as the machine sees it: its name server,
+		// which knows pub.example (the public host) and no other name.
+		await writeFile(join(root, "exit-dns.mjs"), `import { createSocket } from "node:dgram";
+import { createServer } from "node:net";
+const dns = createSocket("udp4");
+dns.on("message", (query, from) => {
+	let end = 12;
+	const labels = [];
+	while (end < query.length && query[end]) {
+		labels.push(query.subarray(end + 1, end + 1 + query[end]).toString("latin1"));
+		end += query[end] + 1;
+	}
+	if (end + 5 > query.length) return;
+	const known = labels.join(".").toLowerCase() === "pub.example";
+	const address = known && query.readUInt16BE(end + 1) === 1;
+	const header = Buffer.from([query[0], query[1], 0x81, known ? 0x80 : 0x83, 0, 1, 0, address ? 1 : 0, 0, 0, 0, 0]);
+	const answer = address ? Buffer.from([0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 93, 184, 216, 34]) : Buffer.alloc(0);
+	dns.send(Buffer.concat([header, query.subarray(12, end + 5), answer]), from.port, from.address);
+});
+dns.bind(53, "10.210.0.1");
+createServer((socket) => {
+	socket.on("error", () => undefined);
+	socket.end("exit-dns");
+}).listen(53, "10.210.0.1");
 `);
 		runningImage = `qorpera-office-shell-probe:${randomUUID()}`;
 		await run(["build", "--tag", runningImage, root]);
@@ -219,7 +252,9 @@ ${desktop ? "dpkg-query -W tigervnc-standalone-server xfce4-session xfwm4 xfdesk
 ${browser ? "/usr/lib/qorpera-chromium/chrome --version" : ""}
 ${boundary ? "node /opt/probe/probe.mjs --prepare" : ""}
 ${shell ? `# The machine: the computers' firewall, a public and a private host behind it, the plumber.
-/usr/local/lib/qorpera/qorpera-computer-plumb --up
+# Without its agent card the machine's network does not come up at all.
+if /usr/local/lib/qorpera/qorpera-computer-plumb --up 2>/dev/null; then echo "network up without an agent card" >&2; exit 1; fi
+if nft list table inet qorpera_computers >/dev/null 2>&1; then echo "firewall loaded without an agent card" >&2; exit 1; fi
 ip link set lo up
 for side in pub:1:93.184.216.34 priv:5:10.9.9.9; do
 	netns=\${side%%:*}; rest=\${side#*:}; low=\${rest%%:*}; address=\${rest#*:}
@@ -236,8 +271,29 @@ for side in pub:1:93.184.216.34 priv:5:10.9.9.9; do
 done
 ip -n priv addr add 169.254.169.254/32 dev lo
 ip route add 169.254.169.254/32 via 192.0.2.6
+# The machine's first card: its own way to everything else.
+ip route add default via 192.0.2.2
+# The agent card (the plug's MAC for 10.210.1.1), a port of the node's agents'
+# network, where the agent exit (10.210.0.1) reaches the public host.
+ip netns add exit
+ip -n exit link set lo up
+ip link add qagent address 0e:51:0a:d2:01:01 type veth peer name eth0 netns exit
+ip -n exit addr add 10.210.0.1/16 dev eth0
+ip -n exit link set eth0 up
+ip -n exit link add eth1 type veth peer name eth1 netns pub
+ip -n exit addr add 192.0.2.9/30 dev eth1
+ip -n exit link set eth1 up
+ip -n pub addr add 192.0.2.10/30 dev eth1
+ip -n pub link set eth1 up
+ip -n exit route add 93.184.216.34/32 via 192.0.2.10
+ip -n pub route add 10.210.0.0/16 via 192.0.2.9
+ip netns exec exit sysctl -q -w net.ipv4.ip_forward=1 net.ipv4.ip_unprivileged_port_start=0
+ip netns exec pub sysctl -q -w net.ipv4.ip_unprivileged_port_start=0
+/usr/local/lib/qorpera/qorpera-computer-plumb --up
 ip netns exec pub node /opt/probe/stand-in.mjs public 93.184.216.34 &
 ip netns exec priv node /opt/probe/stand-in.mjs private 10.9.9.9 &
+ip netns exec exit node /opt/probe/stand-in.mjs exit 10.210.0.1 &
+ip netns exec exit node /opt/probe/exit-dns.mjs &
 node /opt/probe/plumb-socket.mjs "$(getent passwd 1000 | cut -d: -f1)" &
 sleep 1
 ` : ""}exec setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all node /opt/probe/probe.mjs

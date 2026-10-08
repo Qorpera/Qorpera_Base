@@ -89,6 +89,8 @@ describe("what a member sees when the company browser opens", () => {
 			"javascript://*",
 			"view-source:*",
 		]);
+		// Server names stay visible to the node's agent exit.
+		expect(policy.EncryptedClientHelloEnabled).toBe(false);
 	});
 
 	it("hides the Chrome for Testing bar and names the window without weakening the browser", () => {
