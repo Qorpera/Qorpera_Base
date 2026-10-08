@@ -232,6 +232,8 @@ export const CLOUD_FOLDER_DRAINS: readonly CloudFolderDrainSpec[] = Object.freez
 	Object.freeze({ name: "office_wakes", companyLimit: 16 }),
 	// The one idle rule's check-ins: it asks about busy programs, then continues up to 8 parents a step.
 	Object.freeze({ name: "machine_checkins", companyLimit: 8 }),
+	// A quiet coding session's check-in question, to the run that started it (C3c): up to 8 sessions a step.
+	Object.freeze({ name: "coding_checkins", companyLimit: 8 }),
 	// Event wakes (E2): W2's listeners on hooks and mailboxes, up to 16 a step, as qorpera_drain_event_wakes took them.
 	Object.freeze({ name: "events", companyLimit: 16 }),
 ]);
