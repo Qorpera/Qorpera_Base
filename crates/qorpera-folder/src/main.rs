@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 const USAGE: &str = "Usage:
-  qorpera-folder mount --view-file <file> --mountpoint <dir> [--connect vsock:2:5250] [--threads 16] [--ttl-seconds 3600] [--allow-other yes] [--state-dir /run/qorpera-folder/<viewId>]
+  qorpera-folder mount --view-file <file> --mountpoint <dir> [--connect vsock:2:5250] [--threads 16] [--ttl-seconds 3600] [--allow-other yes] [--owner-uid <uid> --owner-gid <gid>] [--state-dir /run/qorpera-folder/<viewId>]
   qorpera-folder publish --view-file <file> [--connect vsock:2:5250]
   qorpera-folder bridge --service unix:<socket> [--listen vsock:any:5250] [--per-machine 512] [--lxd-socket <path>]
   qorpera-folder relay --listen systemd|unix:<socket> [--connect vsock:2:5250]
@@ -17,7 +17,9 @@ const USAGE: &str = "Usage:
 mount: shows the view named in <file> (JSON {\"environmentId\", \"viewId\", \"pass\"}; a regular file owned by this
 account, mode 0600 or tighter) at <dir> until a signal, the view's end or an unmount: read-write when the node lets the
 view write, else read-only. A writable mount keeps its version map in <state-dir>, so a mount started again bases saves
-on what was read before.
+on what was read before. --owner-uid and --owner-gid together set the virtual owner of writable files and folders;
+by default they belong to the mounting account. Another account also needs --allow-other yes. These options do not
+change the daemon account or ownership of its private view file and state directory. Read-only views stay root-owned.
 Exit codes: 0 stopped, 1 failed, 2 usage, 3 the node closed or refused the view.
 
 publish: publishes what the view in <file> has pending, as one change set, and prints each path's outcome.
@@ -80,12 +82,13 @@ fn number<T: std::str::FromStr>(o: &std::collections::HashMap<String, String>, k
 }
 
 fn mount(args: &[String]) -> Result<ExitCode, Usage> {
-	let o = options(args, &["view-file", "mountpoint", "connect", "threads", "ttl-seconds", "allow-other", "state-dir"])?;
+	let o = options(args, &["view-file", "mountpoint", "connect", "threads", "ttl-seconds", "allow-other", "state-dir", "owner-uid", "owner-gid"])?;
 	let view_file = o.get("view-file").ok_or_else(|| Usage("--view-file is required".into()))?;
 	let mountpoint = PathBuf::from(o.get("mountpoint").ok_or_else(|| Usage("--mountpoint is required".into()))?);
 	let addr = o.get("connect").cloned().unwrap_or_else(|| format!("vsock:2:{}", proto::VSOCK_PORT));
 	let threads: usize = number(&o, "threads", 16)?;
 	let ttl: u64 = number(&o, "ttl-seconds", 3600)?;
+	let owner = mount_owner(&o)?;
 	let allow_other = match o.get("allow-other").map(String::as_str) {
 		None | Some("no") => false,
 		Some("yes") => true,
@@ -109,7 +112,7 @@ fn mount(args: &[String]) -> Result<ExitCode, Usage> {
 		},
 	};
 	let link = link::Link::new(addr, view, threads);
-	let options = mount::Options { mountpoint, threads, ttl: Duration::from_secs(ttl), allow_other, state: Some(state) };
+	let options = mount::Options { mountpoint, threads, ttl: Duration::from_secs(ttl), allow_other, owner, state: Some(state) };
 	match mount::run(link, options) {
 		Ok(mount::Stop::ViewClosed) => {
 			eprintln!("qorpera-folder: the node closed the view; unmounted");
@@ -132,6 +135,23 @@ fn mount(args: &[String]) -> Result<ExitCode, Usage> {
 			eprintln!("qorpera-folder: {e}");
 			Ok(ExitCode::FAILURE)
 		}
+	}
+}
+
+/// Virtual inode ownership only: the daemon keeps its identity and sole access to the view pass and state.
+fn mount_owner(o: &std::collections::HashMap<String, String>) -> Result<Option<(u32, u32)>, Usage> {
+	match (o.get("owner-uid"), o.get("owner-gid")) {
+		(None, None) => Ok(None),
+		(Some(_), Some(_)) => {
+			let uid: u32 = number(o, "owner-uid", 0)?;
+			let gid: u32 = number(o, "owner-gid", 0)?;
+			// Linux reserves the all-ones value as an invalid uid/gid.
+			if uid == u32::MAX || gid == u32::MAX {
+				return Err(Usage("--owner-uid and --owner-gid must be less than 4294967295".into()));
+			}
+			Ok(Some((uid, gid)))
+		}
+		_ => Err(Usage("--owner-uid and --owner-gid must be given together".into())),
 	}
 }
 
@@ -255,6 +275,45 @@ fn relay(args: &[String]) -> Result<ExitCode, Usage> {
 		Err(e) => {
 			eprintln!("qorpera-folder relay: {e}");
 			Ok(ExitCode::FAILURE)
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn mount_owner_defaults_to_the_mounting_account_and_accepts_an_explicit_pair() {
+		let mut o = std::collections::HashMap::new();
+		assert!(matches!(mount_owner(&o), Ok(None)));
+		o.insert("owner-uid".into(), "1000".into());
+		o.insert("owner-gid".into(), "1001".into());
+		assert!(matches!(mount_owner(&o), Ok(Some((1000, 1001)))));
+		o.insert("owner-uid".into(), "0".into());
+		o.insert("owner-gid".into(), "0".into());
+		assert!(matches!(mount_owner(&o), Ok(Some((0, 0)))));
+	}
+
+	#[test]
+	fn mount_owner_rejects_a_half_pair() {
+		for key in ["owner-uid", "owner-gid"] {
+			let o = std::collections::HashMap::from([(key.to_string(), "1000".to_string())]);
+			assert!(mount_owner(&o).is_err(), "{key}");
+		}
+	}
+
+	#[test]
+	fn mount_owner_rejects_invalid_and_out_of_range_ids() {
+		for key in ["owner-uid", "owner-gid"] {
+			for value in ["-1", "nobody", "", "4294967295", "4294967296"] {
+				let mut o = std::collections::HashMap::from([
+					("owner-uid".to_string(), "1000".to_string()),
+					("owner-gid".to_string(), "1000".to_string()),
+				]);
+				o.insert(key.to_string(), value.to_string());
+				assert!(mount_owner(&o).is_err(), "{key}={value}");
+			}
 		}
 	}
 }

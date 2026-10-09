@@ -10,6 +10,10 @@ The company folder inside a Qorpera machine, and the node side of its link.
   its base.
   Reading an existing empty file records its version at the read-only open, because the kernel can answer EOF
   without asking the program for bytes. A stale save still conflicts, both in place and through a temporary file.
+  Writable files and folders belong to the mounting account by default. A root daemon can give their virtual
+  attributes an explicit owner with `--owner-uid <uid> --owner-gid <gid>`; both are required together, and another
+  account still needs `--allow-other yes` to access the mount. Only virtual ownership changes: the daemon keeps its
+  identity and private view credentials and state files. Read-only views stay root-owned, with no writable bits.
 - `qorpera-folder publish`: asks the node to publish what the view has pending, and prints each path's outcome.
 - `qorpera-folder bridge`: on a node host, takes machines' vsock connections and hands them to the folder service's
   Unix socket, naming each machine's CID.
