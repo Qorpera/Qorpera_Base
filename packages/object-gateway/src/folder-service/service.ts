@@ -164,12 +164,14 @@ function held(
 /** The report of a boundary whose commit got no answer: every path it planned stays pending, to be asked again. */
 function notYet(plan: BoundaryPlan): ReportEntry[] {
 	return plan.units.flatMap((u) =>
-		u.paths.map((path): ReportEntry => ({
-			path,
-			outcome: "not_applied",
-			reason: "the save did not get through yet",
-			kept: true,
-		})),
+		u.paths.map(
+			(path): ReportEntry => ({
+				path,
+				outcome: "not_applied",
+				reason: "the save did not get through yet",
+				kept: true,
+			}),
+		),
 	);
 }
 
