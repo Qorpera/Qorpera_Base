@@ -415,65 +415,6 @@ function companyOperationRecord() {
 	};
 }
 
-function companyProposalRecord(status: "open" | "accepted" | "rejected" = "open") {
-	return {
-		proposal_id: objectGraphId,
-		profile_id: profileId,
-		environment_id: environmentId,
-		client_proposal_id: clientArtifactId,
-		base_snapshot_id: snapshotId,
-		proposal_snapshot: {
-			...snapshotRecord(),
-			snapshot_id: artifactId,
-			parent_snapshot_id: snapshotId,
-			tree_contract_version: 3,
-			publication_state: "prepared",
-		},
-		execution_kind: "turn",
-		execution_id: eventId,
-		execution_claimant_id: objectProofId,
-		session_id: sessionId,
-		trail_end_sequence: 4,
-		reason: "policy",
-		policy_key: "directional-research",
-		title: "Review directional research",
-		reviewer_staff_ids: [artifactIndexId],
-		review_revision: 1,
-		reviews: [
-			{
-				assignment_id: objectProofId,
-				proposal_revision: 1,
-				reviewer_staff_agent_id: artifactIndexId,
-				reviewer_name: "Legal reviewer",
-				status: "approved",
-				run_id: eventId,
-				comment_id: artifactGcPlanId,
-				failure_reason: null,
-				created_at: createdAt,
-				started_at: createdAt,
-				completed_at: createdAt,
-			},
-		],
-		status,
-		created_by_user_id: actorUserId,
-		created_by_name: "Jonas",
-		created_at: createdAt,
-		resolved_by_user_id: status === "open" ? null : actorUserId,
-		resolved_at: status === "open" ? null : createdAt,
-	};
-}
-
-function companyProposalCommentRecord() {
-	return {
-		comment_id: artifactGcPlanId,
-		proposal_id: objectGraphId,
-		body: "Verify the volume assumptions.",
-		author_user_id: actorUserId,
-		author_name: "Jonas",
-		created_at: createdAt,
-	};
-}
-
 function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrimaryTransport {
 	return {
 		getCompanyOrganization: vi.fn(async () => companyOrganizationRecord()),
@@ -587,33 +528,6 @@ function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrima
 		appendAccountEvent: vi.fn(async (input) => eventRecord(input.p_event_type)),
 		readSessionEvents: vi.fn(async () => [eventRecord()]),
 		getCompanyFile: vi.fn(async () => companyFileRecord()),
-		prepareCompanyFileRevision: vi.fn(async () => ({ ...snapshotRecord(), tree_contract_version: 3 })),
-		prepareCompanyFileProposal: vi.fn(async () => companyProposalRecord().proposal_snapshot),
-		publishCompanyFileRevision: vi.fn(async () => ({ ...snapshotRecord(), tree_contract_version: 3 })),
-		submitCompanyProposal: vi.fn(async () => companyProposalRecord()),
-		listCompanyProposals: vi.fn(async () => ({
-			items: [companyProposalRecord()],
-			has_more: false,
-			next_created_at: createdAt,
-			next_id: objectGraphId,
-		})),
-		rebaseCompanyProposal: vi.fn(async () => companyProposalRecord()),
-		acceptCompanyProposal: vi.fn(async () => companyProposalRecord("accepted")),
-		retryCompanyProposalReview: vi.fn(async (input) => ({
-			assignment_id: input.p_assignment_id,
-			proposal_id: objectGraphId,
-			proposal_revision: 1,
-			status: "queued",
-		})),
-		rejectCompanyProposal: vi.fn(async () => companyProposalRecord("rejected")),
-		getCompanyProposal: vi.fn(async () => companyProposalRecord()),
-		appendCompanyProposalComment: vi.fn(async () => companyProposalCommentRecord()),
-		listCompanyProposalComments: vi.fn(async () => ({
-			items: [companyProposalCommentRecord()],
-			has_more: false,
-			next_created_at: createdAt,
-			next_id: artifactGcPlanId,
-		})),
 		ensureCompanyWorkspace: vi.fn(async () => workspaceRecord()),
 		commitCompanySnapshot: vi.fn(async () => snapshotRecord()),
 		getCompanySnapshot: vi.fn(async () => snapshotRecord()),
@@ -1119,7 +1033,7 @@ describe("Qorpera hosted primary", () => {
 		expect(fake.listCompanySnapshots).toHaveBeenCalledWith({ p_workspace_id: workspaceId, p_limit: 50 });
 	});
 
-	it("reads and advances the one canonical Company File head", async () => {
+	it("reads the one canonical Company File head", async () => {
 		const fake = transport();
 		const primary = new QorperaHostedPrimary(fake);
 		await expect(primary.getCompanyFile(environmentId)).resolves.toMatchObject({
@@ -1127,112 +1041,6 @@ describe("Qorpera hosted primary", () => {
 			headSnapshotId: snapshotId,
 			state: "ready",
 			storageLimitBytes: 50 * 1024 * 1024 * 1024,
-		});
-		await expect(
-			primary.prepareCompanyFileRevision({
-				environmentId,
-				clientRevisionId: clientSnapshotId,
-				expectedHeadSnapshotId: snapshotId,
-				tree: {
-					manifestSha256: treeManifestSha256,
-					manifestBytes: 1024,
-					contractVersion: 3,
-					fileCount: 3,
-					totalBytes: 4096,
-				},
-			}),
-		).resolves.toMatchObject({ snapshotId, workspaceId });
-		expect(fake.prepareCompanyFileRevision).toHaveBeenCalledWith({
-			p_environment_id: environmentId,
-			p_client_revision_id: clientSnapshotId,
-			p_expected_head_snapshot_id: snapshotId,
-			p_tree_manifest_sha256: treeManifestSha256,
-			p_tree_manifest_bytes: 1024,
-			p_tree_contract_version: 3,
-			p_file_count: 3,
-			p_total_bytes: 4096,
-		});
-		await expect(primary.publishCompanyFileRevision(environmentId, snapshotId, snapshotId)).resolves.toMatchObject({
-			snapshotId,
-			workspaceId,
-		});
-		expect(fake.publishCompanyFileRevision).toHaveBeenCalledWith({
-			p_environment_id: environmentId,
-			p_snapshot_id: snapshotId,
-			p_expected_head_snapshot_id: snapshotId,
-		});
-	});
-
-	it("prepares and submits a cloud-durable reviewed Company File proposal", async () => {
-		const fake = transport();
-		const primary = new QorperaHostedPrimary(fake);
-		await expect(
-			primary.prepareCompanyFileProposal({
-				environmentId,
-				clientRevisionId: clientSnapshotId,
-				baseSnapshotId: snapshotId,
-				tree: {
-					manifestSha256: treeManifestSha256,
-					manifestBytes: 1024,
-					contractVersion: 3,
-					fileCount: 3,
-					totalBytes: 4096,
-				},
-			}),
-		).resolves.toMatchObject({ snapshotId: artifactId, parentSnapshotId: snapshotId });
-		await expect(
-			primary.submitCompanyProposal({
-				environmentId,
-				clientProposalId: clientArtifactId,
-				proposalSnapshotId: artifactId,
-				execution: { kind: "turn", id: eventId, claimantId: objectProofId },
-				sessionId,
-				trailEndSequence: 4,
-				reason: "policy",
-				policyKey: "directional-research",
-				title: "Review directional research",
-				reviewerStaffIds: [artifactIndexId],
-			}),
-		).resolves.toMatchObject({
-			proposalId: objectGraphId,
-			status: "open",
-			proposalSnapshot: { snapshotId: artifactId },
-		});
-		await expect(primary.listCompanyProposals(environmentId)).resolves.toMatchObject({
-			items: [
-				{
-					proposalId: objectGraphId,
-					reviews: [{ reviewerName: "Legal reviewer", status: "approved" }],
-				},
-			],
-			hasMore: false,
-		});
-		await expect(
-			primary.rebaseCompanyProposal(objectGraphId, artifactId, snapshotId, clientSnapshotId),
-		).resolves.toMatchObject({ proposalId: objectGraphId, status: "open" });
-		await expect(primary.acceptCompanyProposal(objectGraphId, artifactId)).resolves.toMatchObject({
-			status: "accepted",
-		});
-		expect(fake.acceptCompanyProposal).toHaveBeenCalledWith({
-			p_proposal_id: objectGraphId,
-			p_expected_proposal_snapshot_id: artifactId,
-		});
-		await expect(primary.retryCompanyProposalReview(objectProofId)).resolves.toBeUndefined();
-		expect(fake.retryCompanyProposalReview).toHaveBeenCalledWith({ p_assignment_id: objectProofId });
-		await expect(primary.rejectCompanyProposal(objectGraphId, artifactId)).resolves.toMatchObject({
-			status: "rejected",
-		});
-		expect(fake.rejectCompanyProposal).toHaveBeenCalledWith({
-			p_proposal_id: objectGraphId,
-			p_expected_proposal_snapshot_id: artifactId,
-		});
-		await expect(primary.getCompanyProposal(objectGraphId)).resolves.toMatchObject({ proposalId: objectGraphId });
-		await expect(
-			primary.appendCompanyProposalComment(objectGraphId, clientArtifactGcPlanId, "Verify the volume assumptions."),
-		).resolves.toMatchObject({ commentId: artifactGcPlanId, authorName: "Jonas" });
-		await expect(primary.listCompanyProposalComments(objectGraphId)).resolves.toMatchObject({
-			items: [{ commentId: artifactGcPlanId, body: "Verify the volume assumptions." }],
-			hasMore: false,
 		});
 	});
 
