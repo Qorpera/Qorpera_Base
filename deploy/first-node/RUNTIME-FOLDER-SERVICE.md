@@ -519,17 +519,23 @@ keeps the mount UUID, consecutive entries and synced released markers. Threads a
 lock on `reads.lock`, whose inode stays fixed across journal compaction. A program restart reopens the same log; a
 new mount starts with empty state. `/run` outlives these processes, not a VM restart.
 
-Before each mutation and `P`, on that same connection, the program sends every entry it has not heard released and
-waits for `i.taken`. The lock spans that handover and the mutation's send, so no earlier completed open can be left
-behind. A dropped acknowledgement is replayed before the mutation; `taken` is never durable proof. Only a synced
+Before each mutation and `P`, on that same connection, the program sends entries beyond both the durable released
+prefix and that connection's `i.taken`. Each new connection starts without a taken watermark, and sends at least one
+intake, including an empty log's lost flag. Later empty intakes are skipped unless the journal becomes lost. The lock
+spans that handover and the mutation's send, so no earlier completed open can be left behind. Batches index directly
+into the consecutive retained suffix. A dropped acknowledgement is replayed before the mutation; `taken` is never durable proof. Only a synced
 released marker permits prefix compaction. A missing or corrupt journal leaves a permanent lost marker, reports
 `lost: true` after reconnects and refuses further opens; a torn unanswered last append alone can be trimmed.
 
 `publish --view-file <file> --state-dir <dir> [--final] [--json]` reads that same journal, even after the mount died.
+It never creates a missing state directory: that fails locally, without contacting or poisoning the healthy view.
+Missing proof inside an existing state directory still marks the journal lost.
 An ordinary boundary's report is followed by an empty `I` to prove the captured prefix released: an unanswered
 no-write release otherwise has the same empty paths as a successful one. A final's success requires `closed: true`.
 JSON mode prints only the report to stdout and diagnostics to stderr. Exit 0 is success, 1 failed/unknown, 2 usage,
-3 closed/refused view and 4 a boundary or path refused. Exit 1 or 3 can have no report; the helper must use the code.
+3 closed/refused view and 4 a boundary or path refused. An answered report remains printed if a later release poll or
+closure check fails, with exit 1: its receipts remain useful, but completion is unproven. Exit 1 or 3 can have no report;
+the helper must use the code.
 
 Tests: Rust journal, CLI, link and actual FUSE tests; `folder-mount-e2e.test.ts` runs the built program against the
 actual service with a stand-in core and share. It covers cached/empty/listing receipts, a lost intake answer before a

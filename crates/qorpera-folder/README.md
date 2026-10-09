@@ -16,11 +16,14 @@ The company folder inside a Qorpera machine, and the node side of its link.
   identity and private view credentials and state files. Read-only views stay root-owned, with no writable bits.
 - `qorpera-folder publish --view-file <file> --state-dir <dir> [--final] [--json]`: hands over the mount's retained
   read log, then asks the node to publish what the view has pending. This works after the mount program died too.
+  Use the mount's exact existing state directory: a missing directory fails locally without contacting the node or
+  creating lost proof. A missing or damaged journal inside an existing state directory still marks that mount lost.
   `--final` asks a command's last boundary, and success requires its answered `closed: true` report. By default each
   path's outcome is printed; `--json` prints only the service report on stdout, with diagnostics on stderr. Exit 0
   means every path saved and the captured read prefix was released, 1 is failed or unknown, 2 is usage, 3 means the
   node closed/refused the view, and 4 means a path or the boundary was refused (including an unproven read log).
-  Exit 1 or 3 may have no JSON report; the exit code remains authoritative. A boundary without an answer is retried
+  An answered report is preserved even if its release poll or final closure check fails (exit 1), so unique conflict
+  receipts and parked outcomes reach the caller. Exit 1 or 3 may have no JSON report; the exit code remains authoritative. A boundary without an answer is retried
   by the caller, never silently treated as an empty success.
 - `qorpera-folder bridge`: on a node host, takes machines' vsock connections and hands them to the folder service's
   Unix socket, naming each machine's CID.
@@ -36,7 +39,9 @@ keeps one UUID and consecutive sequence in the private state folder, syncing eac
 mount threads and separate publishers across processes. The journal lock covers the same-connection `I`/`i` exchange
 and every subsequent mutation's send, so every earlier completed open is taken before any save derived from it.
 
-`taken` is only service memory: reconnects resend every retained entry. Only a synced `released` marker permits
+Each connection sends only the reads beyond both its own `taken` watermark and the journal's released prefix. It
+sends an initial intake even when empty, then skips empty intakes unless the journal becomes lost. Batches jump
+directly to their consecutive suffix. `taken` is only service memory: reconnects resend every retained entry. Only a synced `released` marker permits
 forgetting a prefix; compaction replaces the journal while preserving the lock inode. After an ordinary `P`, an empty
 `I` polls the released watermark before reporting success, including no-write boundaries. A torn unanswered final
 append is trimmed, but a missing or damaged journal is permanently marked lost and sent as `lost: true` after each

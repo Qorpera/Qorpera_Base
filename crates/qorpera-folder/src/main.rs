@@ -24,8 +24,10 @@ change the daemon account or ownership of its private view file and state direct
 Exit codes: 0 stopped, 1 failed, 2 usage, 3 the node closed or refused the view.
 
 publish: hands over the mount's durable read log from <state-dir> before publishing its pending changes, even after
-the mount program exited. --final asks the command's last boundary to close its view. --json prints only the exact
-structured report on stdout; diagnostics stay on stderr. Otherwise prints each path's outcome.
+the mount program exited. Use the mount's exact existing state directory; a missing directory fails locally without
+contacting the node. --final asks the command's last boundary to close its view. --json prints only the exact
+structured report on stdout; diagnostics stay on stderr. Otherwise prints each path's outcome. An answered report
+is printed even if its later release or closure check fails; exit 1 still means completion is unproven.
 Exit codes: 0 every path saved (or nothing was pending), 1 failed (when no answer came after the request went out,
 whether the boundary ran is unknown: publish again to see what is still pending), 2 usage, 3 the view is closed, 4 a
 path was not saved or the boundary was refused (including an unproven read log). In JSON mode exit 1 or 3 can have no
@@ -198,14 +200,22 @@ fn publish(args: &[String]) -> Result<ExitCode, Usage> {
 	let reads = match ReadLog::open(&state, false) {
 		Ok(reads) => Arc::new(reads),
 		Err(e) => {
-			eprintln!("qorpera-folder: read journal cannot be proven complete: {e}");
+			eprintln!("qorpera-folder: cannot open the mount's state directory: {e}; use its exact --state-dir");
+			if e.kind() == std::io::ErrorKind::NotFound {
+				return Ok(ExitCode::FAILURE);
+			}
 			let report = proto::Report { refused: Some("unproven".into()), ..Default::default() };
 			return Ok(print_report(&report, o.contains_key("json")));
 		}
 	};
 	let report = match link::Link::new(addr, view, 1).with_reads(reads.clone()).publish_final(o.contains_key("final")) {
 		Ok(r) => r,
-		Err(f) if f.view_closed() => {
+		Err(f) if f.report.is_some() => {
+			eprintln!("qorpera-folder: publication report received, but completion is unproven: {f}");
+			print_report(f.report.as_ref().unwrap(), o.contains_key("json"));
+			return Ok(ExitCode::FAILURE);
+		}
+		Err(f) if f.failure.view_closed() => {
 			eprintln!("qorpera-folder: the view is closed: {f}");
 			return Ok(ExitCode::from(EXIT_VIEW_CLOSED));
 		}

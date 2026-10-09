@@ -58,7 +58,9 @@ impl ReadLog {
 	/// `fresh` allows initialization only in a genuinely unused state folder. A publisher passes false: a missing
 	/// journal is missing proof, never an invitation to start a new log. The helper gives each new mount empty state.
 	pub fn open(dir: &Path, fresh: bool) -> io::Result<ReadLog> {
-		std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+		if fresh {
+			std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+		}
 		let meta = std::fs::symlink_metadata(dir)?;
 		// The stable lock and journal names are meaningful only inside a directory the daemon alone can replace.
 		// SAFETY: geteuid has no preconditions.
@@ -154,7 +156,10 @@ impl Locked<'_> {
 		let mut reads = Vec::new();
 		let mut bytes = 256;
 		if !state.lost {
-			for read in state.reads.iter().filter(|r| r.seq > after) {
+			// The deque is consecutive and starts immediately after the released prefix. Jump directly to
+			// the requested suffix instead of rescanning every retained read before every batch or mutation.
+			let start = after.saturating_sub(state.released).min(state.reads.len() as u64) as usize;
+			for read in state.reads.range(start..) {
 				let size = serde_json::to_vec(read).expect("a read serializes").len() + 1;
 				if bytes + size > MAX_PAYLOAD || reads.len() == 10_000 {
 					break;
@@ -491,8 +496,8 @@ mod tests {
 	fn missing_journals_and_impossible_acknowledgements_are_never_an_empty_success() {
 		for existing_versions in [false, true] {
 			let dir = Temp::new();
+			std::fs::DirBuilder::new().mode(0o700).create(&dir.0).unwrap();
 			if existing_versions {
-				std::fs::DirBuilder::new().mode(0o700).create(&dir.0).unwrap();
 				std::fs::write(dir.0.join("versions.jsonl"), b"").unwrap();
 			}
 			let log = ReadLog::open(&dir.0, existing_versions).unwrap();
@@ -505,6 +510,16 @@ mod tests {
 		let id = held.request(0).log;
 		assert!(held.acknowledge(&ReadsAnswer { log: id, taken: 1, released: 2 }).is_err());
 		assert!(held.lost());
+	}
+
+	#[test]
+	fn a_publisher_never_creates_missing_state_or_a_lost_marker_there() {
+		let dir = Temp::new();
+		assert!(matches!(ReadLog::open(&dir.0, false), Err(e) if e.kind() == io::ErrorKind::NotFound));
+		assert!(!dir.0.exists());
+		let nested = dir.0.join("wrong/state");
+		assert!(ReadLog::open(&nested, false).is_err());
+		assert!(!dir.0.exists());
 	}
 
 	#[test]

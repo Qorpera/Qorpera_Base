@@ -590,6 +590,7 @@ async function loggedMount(kind = "computer_shell_command") {
 			.map((line) => JSON.parse(line));
 	return {
 		core,
+		root,
 		viewId,
 		receipt,
 		company,
@@ -608,6 +609,46 @@ async function loggedMount(kind = "computer_shell_command") {
 }
 
 describe.skipIf(!program)("durable read proof through a real FUSE mount", () => {
+	it("refuses a nonexistent publisher state directory locally without poisoning the healthy mount", async () => {
+		const m = await loggedMount();
+		await readFile(join(m.company, "docs/plan.md"));
+		const missing = join(m.state, "wrong", "state");
+		const before = m.requests.length;
+		const refused = await m.publish(false, missing);
+		expect(refused).toMatchObject({ code: 1, stdout: "" });
+		expect(refused.stderr).toContain("exact --state-dir");
+		expect(m.requests).toHaveLength(before);
+		await expect(stat(join(m.state, "wrong"))).rejects.toMatchObject({ code: "ENOENT" });
+		await writeFile(join(m.company, "docs/healthy.md"), "still healthy");
+		expect((await m.publish()).code).toBe(0);
+		expect(m.core.entries.get("docs/healthy.md")?.fileSha256).toBe(hashOf("still healthy"));
+	}, 15_000);
+
+	it("retains a unique conflict receipt when its report arrives but the release poll answer is lost", async () => {
+		const m = await loggedMount();
+		await readFile(join(m.company, "docs/plan.md"));
+		m.core.write(await storeFile(m.root, "docs/plan.md", "newer live bytes", 2));
+		await writeFile(join(m.company, "docs/plan.md"), "my stale bytes");
+		m.faults.dropPollAnswer = true;
+		const uncertain = await m.publish();
+		expect(uncertain.code).toBe(1);
+		expect(uncertain.stderr).toContain("completion is unproven");
+		const report = JSON.parse(uncertain.stdout);
+		expect(report.paths).toEqual([
+			{
+				path: "docs/plan.md",
+				outcome: "conflict",
+				reason: "version_changed",
+				receipt: expect.any(String),
+			},
+		]);
+		expect(m.core.copies.has(report.paths[0].receipt)).toBe(true);
+		expect(m.core.entries.get("docs/plan.md")?.fileSha256).toBe(hashOf("newer live bytes"));
+		const retried = await m.publish();
+		expect(retried.code).toBe(0);
+		expect(JSON.parse(retried.stdout).paths).toEqual([]);
+	}, 15_000);
+
 	it("journals cached and empty opens with receipts, replays a lost acknowledgement before a write, and keeps released prefixes across service restarts", async () => {
 		const m = await loggedMount();
 		await readdir(m.company); // The root itself is never logged.
@@ -701,7 +742,7 @@ describe.skipIf(!program)("durable read proof through a real FUSE mount", () => 
 		m.core.releaseFailures = { mode: "down", count: 3 };
 		const unknown = await m.publish();
 		expect(unknown.code).toBe(1);
-		expect(unknown.stdout).toBe("");
+		expect(JSON.parse(unknown.stdout).paths).toEqual([]);
 		expect(unknown.stderr).toContain("release did not complete");
 		expect(unknown.stderr).not.toContain(CORE_PASS);
 		expect((await m.publish()).code).toBe(0);
@@ -713,7 +754,7 @@ describe.skipIf(!program)("durable read proof through a real FUSE mount", () => 
 		m.core.commitFailures = { mode: "down", count: 3 };
 		const unfinished = await m.publish(true);
 		expect(unfinished.code).toBe(1);
-		expect(unfinished.stdout).toBe("");
+		expect(JSON.parse(unfinished.stdout).closed).toBeUndefined();
 		expect(unfinished.stderr).toContain("did not close");
 		const final = await m.publish(true);
 		expect(final.code).toBe(0);
@@ -743,7 +784,7 @@ describe.skipIf(!program)("durable read proof through a real FUSE mount", () => 
 		m.faults.dropPollAnswer = true;
 		const unknown = await m.publish();
 		expect(unknown.code).toBe(1);
-		expect(unknown.stdout).toBe("");
+		expect(JSON.parse(unknown.stdout).paths).toEqual([]);
 		expect((await m.journal()).some((line) => line.t === "released")).toBe(false);
 		await m.restart();
 		expect((await m.publish()).code).toBe(0);
@@ -769,7 +810,6 @@ describe.skipIf(!program)("durable read proof through a real FUSE mount", () => 
 		expect(JSON.parse(stillRefused.stdout).refused).toBe("unproven");
 		expect(m.core.commits).toHaveLength(0);
 		const missing = await m.publish(false, join(m.state, "missing"));
-		expect(missing.code).toBe(4);
-		expect(JSON.parse(missing.stdout).refused).toBe("unproven");
+		expect(missing).toMatchObject({ code: 1, stdout: "" });
 	}, 15_000);
 });
