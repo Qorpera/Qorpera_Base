@@ -245,16 +245,22 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
  // PostgreSQL superuser is not required: actual managed operator role shape.
  execute('grant authenticated,service_role to postgres; alter role postgres nosuperuser bypassrls;');
  assert.equal(execute("select rolsuper from pg_roles where rolname='postgres';"),'f');
- // Two identical disposes at once (ported from snapshot-v1 in the legacy sweep): one returns the receipt and one
- // disposition is written. The other returns the same receipt, or fails closed: on folder-v2 the folder machine fence is
- // KEY SHARE, so it can pass the replay check before the first commits and then fail "Disposition reset snapshot
- // differs" (42501), a known gap the legacy sweep's step G closes. The exact replay after the commit is checked below.
- const results=await race([`${owner}${dispose()}`,`${owner}${dispose()}`]);
- const disposed=results.filter(result=>result.code===0);
- assert.ok(disposed.length>=1,results.map(result=>result.error).join('\n'));
- for(const result of results)if(result.code!==0)assert.match(result.error,/Disposition reset snapshot differs/);
- const received=JSON.parse(disposed[0].output.split('\n').at(-1));
- for(const result of disposed.slice(1))assert.deepEqual(JSON.parse(result.output.split('\n').at(-1)),received);
+ // Two identical disposes at once (ported from snapshot-v1 in the legacy sweep): both return the same receipt and one
+ // disposition is written. A session holding the operator's member row lines both up at the membership check, so
+ // both pass the folder machine fence (KEY SHARE) and leave that check together. The office row lock comes before the
+ // replay check (20260930241000): the second waits for the first to commit and replays its receipt instead of failing
+ // "Disposition reset snapshot differs". The exact replay after the commit is checked below.
+ const gate=session();
+ gate.child.stdin.write(`begin;select 1 from public.qorpera_profile_members where user_id='${document.operator.principalId}' for update;select 'ADMIN_GATE_HELD';\n`);
+ await until(()=>gate.output().includes('ADMIN_GATE_HELD'));
+ const pending=race([`${owner}${dispose()}`,`${owner}${dispose()}`]);
+ await until(()=>Number(execute(`select count(*) from pg_stat_activity where pid<>pg_backend_pid() and wait_event_type='Lock'
+  and query like '%qorpera_administratively_dispose_office_reset_delete%';`))===2);
+ gate.child.stdin.end('commit;');assert.equal((await gate.done).code,0);
+ const results=await pending;
+ for(const result of results)assert.equal(result.code,0,result.error);
+ const received=JSON.parse(results[0].output.split('\n').at(-1));
+ assert.deepEqual(JSON.parse(results[1].output.split('\n').at(-1)),received);
  assert.equal(received.originalOutcome,'unknown');assert.equal(received.cleanResetAcceptance,false);
  assert.equal(received.dispositionSha256,createHash('sha256').update(JSON.stringify(document)).digest('hex'));
  assert.equal(received.phaseEvidenceSha256,officeDigest(received.phaseEvidence));
