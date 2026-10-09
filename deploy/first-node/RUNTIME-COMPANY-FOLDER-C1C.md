@@ -1589,11 +1589,12 @@ reverse of core §3's order, and on `folder-v2` a stall of every effect of the c
   path also takes the model login before the identity). 900 I checks that each patched branch is present, with no
   snapshot-v1 text pins (since 3 Oct); 824 H reversed the node reservation's new layer first (no digests since 3
   October; legacy sweep A, #829).
-- **Legacy sweep F2d (20260930293000)** removed those `else` branches: `qorpera_folder_sign_in_machine_locks` takes the
-  fence for a sign-in or refresh of any company and answers null only for an unknown one, so a company without a folder
-  fails at the fence (42501 "Company folder is unavailable", 900 G). A release whose sign-in appears between the
-  helper's read and its own select is now refused (42501) instead of taking the gc fence; the reservation made that
-  row, so it does not happen.
+- **Legacy sweep F2d (20260930293000)** removed the reservations' and releases' `else` branches (the node
+  reservation's went in F2c, 20260930292000): `qorpera_folder_sign_in_machine_locks` takes the fence for a sign-in or
+  refresh of any company and answers null only for an unknown one, so a company without a folder fails at the fence
+  (42501 "Company folder is unavailable", 900 G). A release whose sign-in appears between the helper's read and its own
+  select is now refused (42501) instead of taking the gc fence; a sign-in is committed by its begin call before the
+  gateway has its id, so this does not happen.
 - **A window P13's second part closed** (20260930049000, test 901, §6.17): `qorpera_request_login_identity_recovery` and
   `_account_refresh_identity_recovery` took the sign-in `FOR SHARE` and then the gc fence, the reverse of the new
   reservation (the row `KEY SHARE`, then the sign-in `FOR UPDATE`). They could deadlock on one sign-in when two gateway
