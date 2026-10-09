@@ -2038,7 +2038,13 @@ export function companyStatePathProblems(path: string, folder = false): CompanyS
 	if (folder) {
 		let end = written.length;
 		while (end > 1 && written[end - 1] === "") end--;
-		const places = structuredFolderNames(companyPathKey(written.slice(0, end).join("/")).split("/"));
+		const key = companyPathKey(written.slice(0, end).join("/"));
+		// The network rules' path is a file's.
+		if (key === NETWORK_RULES_PATH) {
+			problems.add("name", null, null, `${NETWORK_RULES_PATH} is the name of the network rules file, not a folder`);
+			return problems.list;
+		}
+		const places = structuredFolderNames(key.split("/"));
 		if (places === null) return [];
 		for (const [index, what] of places) named.push([written[index], what]);
 	} else {

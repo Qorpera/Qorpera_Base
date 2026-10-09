@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCompanyStateFile } from "../src/company-state-files.ts";
+import { companyStatePathProblems, parseCompanyStateFile } from "../src/company-state-files.ts";
 import {
 	isNetworkRulesName,
 	NETWORK_RULES_MAX_NAMES,
@@ -309,5 +309,20 @@ describe("rules/network.toml as a company state file", () => {
 	it("leaves a review rule a review rule", () => {
 		expect(parseCompanyStateFile("rules/network.md", "x")?.path.kind).toBe("rule");
 		expect(parseCompanyStateFile("rules/other.toml", 'mode = "open"\n')).toBeNull();
+	});
+
+	it("keeps its path for the file: no folder takes the name", () => {
+		for (const folder of ["rules/network.toml", "Rules/Network.TOML/", "rules/network.toml//"])
+			expect(companyStatePathProblems(folder, true)).toEqual([
+				{
+					line: null,
+					key: null,
+					code: "name",
+					message: "rules/network.toml is the name of the network rules file, not a folder",
+				},
+			]);
+		expect(companyStatePathProblems("rules/network.toml")).toEqual([]);
+		expect(companyStatePathProblems("rules/network", true)).toEqual([]);
+		expect(companyStatePathProblems("rules/drafts/network.toml", true)).toEqual([]);
 	});
 });

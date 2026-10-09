@@ -1,7 +1,8 @@
 -- The agent exit, E8a (deploy/first-node/RUNTIME-AGENT-EXIT.md §10): a company's network rules on the folder core.
 -- rules/network.toml is its own structured kind; owners and admins write, delete and restore it, and agents read it;
--- it never moves; the database checks its parse's shape and keeps one row per environment, which verify checks; the
--- nodes' login (qorpera_agent_exit) calls one function, the rules of the companies it asks for, the latest save first.
+-- it never moves, and no folder takes its name; the database checks its parse's shape and keeps one row per
+-- environment, which verify checks; the nodes' login (qorpera_agent_exit) calls one function, the rules of the companies
+-- it asks for, the latest save first.
 begin;
 
 insert into auth.users(id,email) values
@@ -335,7 +336,7 @@ begin
 		raise exception 'Agents and members read the rules; owners and admins write them'; end if;
 end $$;
 
--- 5. The file never moves ---------------------------------------------------------------------------------------------------
+-- 5. The file never moves, and no folder takes its name ---------------------------------------------------------------------
 
 do $$
 declare r jsonb; x public.qorpera_company_network_rules := pg_temp.row();
@@ -357,7 +358,30 @@ begin
 		jsonb_build_object('op','copy','from','rules/draft.toml','to','rules/network.toml')));
 	perform pg_temp.expect(r, 1, 'refused', 'kind_change'); perform pg_temp.expect(r, 2, 'refused', 'structured_copy');
 	if pg_temp.row() is not null or pg_temp.version('rules/network.toml') is not null then raise exception 'Nothing reached the path'; end if;
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'move-0004', jsonb_build_array(pg_temp.network(
+	-- Nor does a folder take its name: made there, or moved or copied there.
+	r := pg_temp.commit(pg_temp.owner(), 'move-0004', jsonb_build_array(
+		jsonb_build_object('op','mkdir','path','rules/network.toml'),
+		jsonb_build_object('op','new_folder','path','Rules/Network.TOML','contents','[]'::jsonb),
+		jsonb_build_object('op','mkdir','path','rules/drafts')));
+	perform pg_temp.expect(r, 1, 'refused', 'structured_invalid'); perform pg_temp.expect(r, 2, 'refused', 'structured_invalid');
+	perform pg_temp.expect(r, 3, 'saved');
+	if r -> 'units' -> 0 -> 'problems' is distinct from jsonb_build_array(jsonb_build_object('code','name',
+		'message','rules/network.toml is the name of the network rules file, not a folder')) then
+		raise exception 'A folder at the path is refused by its name: %', r; end if;
+	r := pg_temp.commit(pg_temp.owner(), 'move-0005', jsonb_build_array(
+		jsonb_build_object('op','move','from','rules/drafts','to','rules/network.toml','expectedVersion',pg_temp.version('rules/drafts'),
+			'asOfSeq',pg_temp.seq()),
+		jsonb_build_object('op','copy','from','rules/drafts','to','rules/network.toml')));
+	perform pg_temp.expect(r, 1, 'refused', 'structured_invalid'); perform pg_temp.expect(r, 2, 'refused', 'structured_invalid');
+	if pg_temp.version('rules/network.toml') is not null then raise exception 'No folder reached the path'; end if;
+	-- Another folder in rules/ still moves, with a file of that name in it.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'move-0006', jsonb_build_array(jsonb_build_object('op','write',
+		'path','rules/drafts/network.toml','file',pg_temp.stage(E'mode = "open"\n')))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'move-0007', jsonb_build_array(jsonb_build_object('op','move',
+		'from','rules/drafts','to','rules/old-drafts','expectedVersion',pg_temp.version('rules/drafts'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
+	if pg_temp.version('rules/old-drafts/network.toml') is null or pg_temp.row() is not null then
+		raise exception 'A folder with a network.toml in it moves as any folder'; end if;
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'move-0008', jsonb_build_array(pg_temp.network(
 		pg_temp.rules(x.mode, to_jsonb(x.block), to_jsonb(x.allow))))), 1, 'saved');
 	if (pg_temp.row()).mode is distinct from x.mode or (pg_temp.row()).block is distinct from x.block or (pg_temp.row()).allow is distinct from x.allow then
 		raise exception 'The rules are back'; end if;
