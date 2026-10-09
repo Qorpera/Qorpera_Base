@@ -841,9 +841,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											}),
 											...cloudReviewRuleTools(binding, identity, this.#paths),
 											// The agent changes the company's hooks through its folder client (E3a).
-											// save_attachment, which wrote through the path gateway, is not offered:
-											// no company run uses that gateway's files (M2c-1).
-											...cloudEventTools(binding, identity, this.#paths, undefined, folder.client),
+											...cloudEventTools(binding, identity, this.#paths, folder.client),
 										]),
 								// Machines are the company's: any agent run in a company conversation may start and
 								// use them and hears about them in that conversation; a worker uses them like its agent
@@ -881,7 +879,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									? [
 											...(work.isWorker
 												? []
-												: cloudHiringTools(gateway, identity, undefined, {
+												: cloudHiringTools(identity, {
 														folderHiring: new CloudFolderHiring({
 															folder: folder.client,
 															operations,
