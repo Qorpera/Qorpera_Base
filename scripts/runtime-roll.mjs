@@ -26,7 +26,7 @@
 //   61-drain-b        dry-run only: node B's drain status
 //   70-return-b       node B declared N+1, gate, node B runs on
 //   80-finish         every declaration cleared, both nodes serving runs
-//   90-pause-now      emergency only: every company paused (founder or folder pause), no quiet gate
+//   90-pause-now      emergency only: every folder-v2 company paused (folder pause), no quiet gate
 //   91-reverse        emergency only: the active bundle back to N (after 90); declarations stay
 //   92-clear-declarations  emergency only: once every node runs N again
 //   93-resume         emergency only: the companies 90 paused resume
