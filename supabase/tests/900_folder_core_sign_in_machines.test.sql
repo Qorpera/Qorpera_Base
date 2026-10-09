@@ -4,9 +4,10 @@
 -- the sign-in. No gc fence: a folder effect holding the fence and the company row KEY SHARE never makes them wait, a
 -- stop's second phase (the fence FOR UPDATE) does, before the sign-in is locked. Two machines of one identity serialize
 -- on the identity's machine lock and the second is refused. Rank 5 in C1B §8's order: a member removal and the account
--- metadata take the model login before the identity, so neither deadlocks with a sign-in's completion. A snapshot-v1
--- company keeps the gc fence, and every patched body carries its branch. The fixture is committed so the connections
--- can see it, and removed at the end. Waits are detected with pg_blocking_pids.
+-- metadata take the model login before the identity, so neither deadlocks with a sign-in's completion. A company without
+-- a folder takes no gc fence since the legacy sweep's F2d (20260930293000): its machines are refused at the fence. Every
+-- patched body carries its branch. The fixture is committed so the connections can see it, and removed at the end. Waits
+-- are detected with pg_blocking_pids.
 
 insert into auth.users(id,email) values ('09000000-0000-4000-8000-000000000001','p13-owner@example.test'),
 	('09000000-0000-4000-8000-000000000002','p13-member@example.test');
@@ -21,7 +22,7 @@ insert into public.qorpera_company_environments(id,profile_id,name,contract_vers
 values ('09000000-0000-4000-8000-000000000020','09000000-0000-4000-8000-000000000010','Environment',1,'09000000-0000-4000-8000-000000000001');
 select set_config('request.jwt.claims', '{"role":"service_role"}', false) \g /dev/null
 select public.qorpera_folder_enable('09000000-0000-4000-8000-000000000020') \g /dev/null
--- The members' identities: the owner's and the member's on the folder-v2 company, the owner's on the snapshot one.
+-- The members' identities: the owner's and the member's on the folder-v2 company, the owner's on the one without a folder.
 insert into public.qorpera_member_compute_identities(id, profile_id, ownership_kind, owner_user_id, client_identity_id, display_name) values
 	('09000000-0000-4000-8000-000000000031','09000000-0000-4000-8000-000000000010','member','09000000-0000-4000-8000-000000000001',
 		extensions.gen_random_uuid(),'Owner identity'),
@@ -51,7 +52,7 @@ create function pg_temp.refresh_request(p_id text) returns void language sql as 
 		pg_temp.cap(p_id), identity.recovery_epoch
 	from public.qorpera_member_compute_identities as identity where identity.id = '09000000-0000-4000-8000-000000000031'
 $$;
--- The member's pending sign-in of their identity, and the owner's on the snapshot company.
+-- The member's pending sign-in of their identity, and the owner's on the company without a folder.
 insert into public.qorpera_native_provider_login_sessions(id, profile_id, compute_identity_id, client_login_id, client_connection_id,
 	provider, native_harness, capability_sha256, requested_by_user_id, expires_at) values
 	('09000000-0000-4000-8000-000000000043','09000000-0000-4000-8000-000000000010','09000000-0000-4000-8000-000000000032',
@@ -350,19 +351,23 @@ begin
 	if v_value like 'error %' then raise exception 'F: the completion must finish: %', v_value; end if;
 end $$;
 
--- G. The snapshot-v1 company keeps the gc fence: its reservation waits behind a holder of its company row KEY SHARE.
+-- G. A company without a folder takes no gc fence (the legacy sweep's F2d, 20260930293000): beside a holder of its
+-- company row KEY SHARE, its reservation and its release are refused at once at the fence.
 do $$
-declare v_value text;
+declare v_call text; v_value text;
 begin
 	perform dblink_exec('p13_a', 'begin');
 	perform dblink_exec('p13_a', $q$do $d$ begin perform 1 from public.qorpera_profiles where id = '09000000-0000-4000-8000-000000000011' for key share; end $d$ $q$);
-	perform dblink_send_query('p13_b', pg_temp.reserve('09000000-0000-4000-8000-000000000076', 'login',
-		'09000000-0000-4000-8000-000000000044', pg_temp.sha('p13-login-s')));
-	if not pg_temp.waits_for('p13_b', 'p13_a') then raise exception 'G: the snapshot-v1 reservation must take the gc fence'; end if;
+	foreach v_call in array array[pg_temp.reserve('09000000-0000-4000-8000-000000000076', 'login', '09000000-0000-4000-8000-000000000044',
+		pg_temp.sha('p13-login-s')), pg_temp.release('09000000-0000-4000-8000-000000000076', 'login', '09000000-0000-4000-8000-000000000044')] loop
+		perform dblink_send_query('p13_b', v_call);
+		if not pg_temp.finishes_unblocked('p13_b', 'p13_a') then
+			raise exception 'G: a machine of a company without a folder waited for its row: %', left(v_call, 60); end if;
+		v_value := pg_temp.result('p13_b');
+		if v_value is distinct from 'error 42501 Company folder is unavailable' then
+			raise exception 'G: a machine of a company without a folder must be refused at the fence, not %', v_value; end if;
+	end loop;
 	perform dblink_exec('p13_a', 'rollback');
-	v_value := pg_temp.state(pg_temp.result('p13_b'));
-	if v_value is distinct from 'reserved' then raise exception 'G: the snapshot-v1 reservation must go on: %', v_value; end if;
-	perform * from dblink('p13_b', pg_temp.release('09000000-0000-4000-8000-000000000076', 'login', '09000000-0000-4000-8000-000000000044')) as t(r text);
 end $$;
 
 -- H. A paused folder-v2 company refuses a new machine and still releases one (no pause read before the locks).
@@ -391,9 +396,10 @@ delete from public.qorpera_company_execution_pauses where profile_id = '09000000
 
 -- I. Each patched body carries its folder-v2 branch (or, for the member removal and the account metadata, its new
 -- order) exactly once: a later create or replace that drops one fails here (folder-v2 only since 3 Oct, so no
--- snapshot-v1 text pins). The node reservation's fence has no branch since the legacy sweep's F2c: every kind on every
--- company takes it. The helper is postgres-only, refuses a reservation's unknown sign-in or wrong capability
--- before any lock, and returns nothing (locking nothing) for a release of an unknown sign-in or a snapshot-v1 company.
+-- snapshot-v1 text pins). The node reservation's fence has no branch since the legacy sweep's F2c, and the sign-in
+-- machines' none since its F2d: every kind on every company takes it. The helper is postgres-only, refuses a
+-- reservation's unknown sign-in or wrong capability before any lock, returns nothing (locking nothing) for a release of
+-- an unknown sign-in, and refuses a sign-in of a company without a folder at the fence.
 create temporary table p13_patches(n serial, fn text, patched text) on commit preserve rows;
 insert into p13_patches(fn, patched) values
 	('qorpera_reserve_runtime_login_machine(uuid,text,text,uuid,text)',
@@ -406,9 +412,8 @@ $p13new$),
  select * into v_login from public.qorpera_native_provider_login_sessions where id=p_login_id for update;
  if not found or v_login.capability_sha256 is distinct from p_capability_sha256 then
   raise exception 'Login machine authority unavailable' using errcode='42501'; end if;
- if v_folder is null then
- perform public.qorpera_lock_profile_gc_fence(v_login.profile_id);
- elsif v_folder is distinct from jsonb_build_object('profileId',v_login.profile_id,'computeIdentityId',v_login.compute_identity_id,
+ -- 20260930293000 (legacy sweep F2d): the locks above took the folder fence (folder-v2 only, every company).
+ if v_folder is distinct from jsonb_build_object('profileId',v_login.profile_id,'computeIdentityId',v_login.compute_identity_id,
   'requestedByUserId',v_login.requested_by_user_id) then
   raise exception 'Login machine authority unavailable' using errcode='42501'; end if;
 $p13new$),
@@ -422,9 +427,8 @@ $p13new$),
  select * into v_login from public.qorpera_native_account_refresh_requests where id=p_request_id for update;
  if not found or v_login.capability_sha256 is distinct from p_capability_sha256 then
   raise exception 'Login machine authority unavailable' using errcode='42501'; end if;
- if v_folder is null then
- perform public.qorpera_lock_profile_gc_fence(v_login.profile_id);
- elsif v_folder is distinct from jsonb_build_object('profileId',v_login.profile_id,'computeIdentityId',v_login.compute_identity_id,
+ -- 20260930293000 (legacy sweep F2d): the locks above took the folder fence (folder-v2 only, every company).
+ if v_folder is distinct from jsonb_build_object('profileId',v_login.profile_id,'computeIdentityId',v_login.compute_identity_id,
   'requestedByUserId',v_login.requested_by_user_id) then
   raise exception 'Login machine authority unavailable' using errcode='42501'; end if;
 $p13new$),
@@ -436,9 +440,9 @@ $p13new$),
  -- read, so a paused company's sign-in machines are released.
  v_folder:=public.qorpera_folder_sign_in_machine_locks('login',p_login_id,null,false);
  select * into strict v_login from public.qorpera_native_provider_login_sessions where id=p_login_id for update;
- if v_folder is null then
- perform public.qorpera_lock_profile_gc_fence(v_login.profile_id);
- elsif (v_folder->>'profileId')::uuid is distinct from v_login.profile_id then
+ -- 20260930293000 (legacy sweep F2d): the locks above took the folder fence (folder-v2 only, every company); a
+ -- sign-in they did not find yet is refused here.
+ if (v_folder->>'profileId')::uuid is distinct from v_login.profile_id then
   raise exception 'Login machine deletion identity differs' using errcode='42501'; end if;
 $p13new$),
 	('qorpera_release_runtime_account_refresh_machine(uuid,text,text,uuid)',
@@ -449,9 +453,9 @@ $p13new$),
  -- read, so a paused company's sign-in machines are released.
  v_folder:=public.qorpera_folder_sign_in_machine_locks('account_refresh',p_request_id,null,false);
  select * into strict v_login from public.qorpera_native_account_refresh_requests where id=p_request_id for update;
- if v_folder is null then
- perform public.qorpera_lock_profile_gc_fence(v_login.profile_id);
- elsif (v_folder->>'profileId')::uuid is distinct from v_login.profile_id then
+ -- 20260930293000 (legacy sweep F2d): the locks above took the folder fence (folder-v2 only, every company); a
+ -- sign-in they did not find yet is refused here.
+ if (v_folder->>'profileId')::uuid is distinct from v_login.profile_id then
   raise exception 'Login machine deletion identity differs' using errcode='42501'; end if;
 $p13new$),
 	('qorpera_folder_member_change_enter(uuid,uuid,text)',
@@ -480,6 +484,13 @@ $p13new$),
       and i.status = 'active' and i.recovery_pending_id is null and i.recovery_epoch = p_recovery_epoch for share;
     if not found then raise exception 'Account metadata identity unavailable' using errcode = '42501'; end if;
 $p13new$),
+	('qorpera_folder_sign_in_machine_locks(text,uuid,text,boolean)',
+		$p13new$	-- 20260930293000 (legacy sweep F2d): folder-v2 only, so a sign-in of any company takes the fence below, and one
+	-- of a company without a folder fails in it (42501). Null now means only that the sign-in is unknown.
+	if v_profile is null then
+		return null; end if;
+	perform public.qorpera_folder_machine_fence(v_profile);
+$p13new$),
 	('qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)',
 		$p13new$ -- office kind. 20260930035000: a sign-in's or refresh's login machine too (the gateway's own call, after the
  -- company reservation). C1c-3n (20260930046000): a run's machine (its company reservation took the identity's
@@ -489,7 +500,7 @@ $p13new$);
 do $$
 declare v_bad text[]; v_value text;
 begin
-	if (select count(*) from p13_patches) <> 11 then raise exception 'I: the patch table is incomplete'; end if;
+	if (select count(*) from p13_patches) <> 12 then raise exception 'I: the patch table is incomplete'; end if;
 	select array_agg(fn order by n) into v_bad from p13_patches
 	where (length(pg_get_functiondef(('public.' || fn)::regprocedure))
 		- length(replace(pg_get_functiondef(('public.' || fn)::regprocedure), patched, ''))) / length(patched) <> 1;
@@ -498,9 +509,14 @@ begin
 		or has_function_privilege('authenticated', 'public.qorpera_folder_sign_in_machine_locks(text,uuid,text,boolean)', 'execute')
 		or has_function_privilege('service_role', 'public.qorpera_folder_sign_in_machine_locks(text,uuid,text,boolean)', 'execute') then
 		raise exception 'I: the helper must be postgres-only'; end if;
-	if public.qorpera_folder_sign_in_machine_locks('login', '09000000-0000-4000-8000-000000000044', pg_temp.sha('p13-login-s'), true) is not null
-		or public.qorpera_folder_sign_in_machine_locks('login', extensions.gen_random_uuid(), null, false) is not null then
-		raise exception 'I: a snapshot-v1 sign-in or a release of an unknown sign-in takes no folder lock'; end if;
+	if public.qorpera_folder_sign_in_machine_locks('login', extensions.gen_random_uuid(), null, false) is not null then
+		raise exception 'I: a release of an unknown sign-in takes no folder lock'; end if;
+	begin
+		perform public.qorpera_folder_sign_in_machine_locks('login', '09000000-0000-4000-8000-000000000044', pg_temp.sha('p13-login-s'), true);
+		raise exception 'I: a sign-in of a company without a folder must be refused at the fence';
+	exception when sqlstate '42501' then
+		if sqlerrm <> 'Company folder is unavailable' then raise; end if;
+	end;
 	foreach v_value in array array['09000000-0000-4000-8000-000000000107', extensions.gen_random_uuid()::text] loop
 		begin
 			perform public.qorpera_folder_sign_in_machine_locks('login', v_value::uuid, pg_temp.sha('wrong'), true);

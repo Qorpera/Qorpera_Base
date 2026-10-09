@@ -1589,6 +1589,11 @@ reverse of core §3's order, and on `folder-v2` a stall of every effect of the c
   path also takes the model login before the identity). 900 I checks that each patched branch is present, with no
   snapshot-v1 text pins (since 3 Oct); 824 H reversed the node reservation's new layer first (no digests since 3
   October; legacy sweep A, #829).
+- **Legacy sweep F2d (20260930293000)** removed those `else` branches: `qorpera_folder_sign_in_machine_locks` takes the
+  fence for a sign-in or refresh of any company and answers null only for an unknown one, so a company without a folder
+  fails at the fence (42501 "Company folder is unavailable", 900 G). A release whose sign-in appears between the
+  helper's read and its own select is now refused (42501) instead of taking the gc fence; the reservation made that
+  row, so it does not happen.
 - **A window P13's second part closed** (20260930049000, test 901, §6.17): `qorpera_request_login_identity_recovery` and
   `_account_refresh_identity_recovery` took the sign-in `FOR SHARE` and then the gc fence, the reverse of the new
   reservation (the row `KEY SHARE`, then the sign-in `FOR UPDATE`). They could deadlock on one sign-in when two gateway
@@ -1863,7 +1868,10 @@ recovery requests also took the sign-in before it (§6.14's window).
   - Against a sign-in's or a run's machine reservation (the fence, rank 0, the requester's member row, the identity's
     machine lock, the sign-in `FOR UPDATE`, the identity `FOR SHARE`): the member locks are compatible, recovery takes
     neither the machine lock nor the sign-in, and the backup takes the sign-in before the identity, as they do (901 J).
-- **Snapshot-v1** keeps the gc fence in each `else` branch, untested (`folder-v2` only since 3 Oct).
+- **Snapshot-v1** keeps the gc fence in each `else` branch, untested (`folder-v2` only since 3 Oct). Legacy sweep F2d
+  (20260930293000) removed those branches and the decision's `folder-v2` condition: every company takes these paths,
+  and one without a folder fails at its fence (42501 "Company folder is unavailable", 901 M). A key backup's and a
+  login's or refresh's recovery request no longer hold their sign-in `FOR SHARE` on any company.
 
 **Tests.** 901 (dblink, waits checked through `pg_blocking_pids`, locks probed `NOWAIT`):
 - A: beside a folder effect (the fence and the company row `KEY SHARE`), every call finishes: target registration, backup
@@ -1890,6 +1898,7 @@ recovery requests also took the sign-in before it (§6.14's window).
   deletion requested, its machines ended over ten minutes ago), serialize on the identity's machine lock; the second
   replays the first's target or receipt.
 - K: each patched branch is present, with no snapshot-v1 text pins.
+- M: on a company without a folder, the owner's recovery member role and recovery decision fail at the fence (F2d).
 
 Fault runs (a temporary driver on the test machine), 26 faults, each caught where intended: a site or the helper that
 keeps the gc fence in A; the login's request holding its sign-in in B (or, without B, in C); a dropped re-check, or the
