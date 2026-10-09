@@ -30,7 +30,7 @@ async function fixture(seed: Parameters<typeof folderWriterFixture>[0] = {}) {
 		agentFolder: "agents/nora",
 	});
 	const tools = [
-		...notebooks.tools((files) => cloudMemoryTools(files, f.identity, () => NOW, PLACE), f.operations()),
+		...notebooks.tools((files) => cloudMemoryTools(files, f.identity, PLACE, () => NOW), f.operations()),
 		...notebooks.tools((files) => cloudSkillTools(files, f.identity, PLACE), f.operations()),
 	];
 	const call = async (name: string, value: JsonValue) => {

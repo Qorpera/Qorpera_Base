@@ -25,11 +25,9 @@
  * rest of the agent's folder. There is no per-member memory; what an agent
  * learns about a member is a fact in its own notebook. The tools only ever
  * address the executing agent's own notebook. The agent's folder is
- * cloudAgentFolder's: agents/<staffAgentId> today, agents/<handle> in a folder-v2
- * company. */
+ * cloudAgentFolder's: agents/<handle>. */
 import { createHash } from "node:crypto";
 import {
-	CLOUD_AGENT_FOLDER_BY_ID,
 	type CloudAgentFolderPlace,
 	cloudAgentFolder,
 	isCloudAgentFolder,
@@ -418,8 +416,8 @@ export async function ensureCloudCompanyFolders(
 export function cloudMemoryTools(
 	gateway: CloudMemoryGateway,
 	identity: CloudNativeToolIdentity,
+	place: CloudAgentFolderPlace,
 	now: () => Date = () => new Date(),
-	place: CloudAgentFolderPlace = CLOUD_AGENT_FOLDER_BY_ID,
 ): readonly CloudNativeTool[] {
 	const expected = Object.freeze({ ...identity });
 	const agentFolder = cloudAgentFolder(expected.companyId, expected.staffAgentId, place);

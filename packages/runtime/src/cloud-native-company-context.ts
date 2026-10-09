@@ -1,9 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-	CLOUD_AGENT_FOLDER_BY_ID,
-	type CloudAgentFolderPlace,
-	cloudAgentFolder,
-} from "@qorpera/cloud-client/cloud-agent-folder";
+import { type CloudAgentFolderPlace, cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
 import type { CompanyPathPresenceView } from "@qorpera/cloud-client/company-path-presence";
 import type { JsonValue } from "@qorpera/contracts";
 import type { CloudAgentHead } from "./cloud-agent-head.ts";
@@ -245,19 +241,18 @@ export interface CloudNativeCompanyContext {
 	/** Named only for runs admitted under a bundle with fast mode. It travels
 	 * here, not in the shared tool identity, which company computers also read. */
 	serviceTier?: CloudRuntimeServiceTier;
-	/** Only for a company whose storage core is folder-v2 (workstream F2), whose agents' folders are
-	 * named: this agent's folder name, and its listed coworkers' by id. Absent for every company today,
-	 * whose agents' folders are their ids. */
-	folder?: CloudCompanyContextFolders;
+	/** Every company run is on the company folder (folder-v2, workstream F2), whose agents' folders are
+	 * named: this agent's folder name, and its listed coworkers' by id. */
+	folder: CloudCompanyContextFolders;
 }
 
-/** The folder names of a folder-v2 company's agents (agents/<handle>/). */
+/** The folder names of the company's agents (agents/<handle>/). */
 export interface CloudCompanyContextFolders {
 	agent: string;
 	coworkers: Readonly<Record<string, string>>;
 }
 
-/** A coworker as the prompt shows it: in a folder-v2 company, with its folder when it has one. */
+/** A coworker as the prompt shows it: with its folder when the context names one. */
 function withFolder(
 	coworker: ContextAgent,
 	folders: CloudCompanyContextFolders,
@@ -266,9 +261,9 @@ function withFolder(
 	return handle ? { ...coworker, folder: `agents/${handle}` } : coworker;
 }
 
-/** Where this run's company keeps its agents' folders, for cloudAgentFolder. */
+/** Where this run's agent keeps its folder, for cloudAgentFolder: its folder name. */
 export function cloudAgentFolderPlace(context: CloudNativeCompanyContext): CloudAgentFolderPlace {
-	return context.folder ? { core: "folder-v2", handle: context.folder.agent } : CLOUD_AGENT_FOLDER_BY_ID;
+	return { core: "folder-v2", handle: context.folder.agent };
 }
 
 function closed(value: unknown, keys: readonly string[]): Record<string, unknown> {
@@ -404,12 +399,12 @@ export function parseCloudNativeCompanyContext(
 	value: unknown,
 	binding: CloudNativeToolBinding,
 ): CloudNativeCompanyContext {
-	// Two keys are present only for some runs: serviceTier (fast mode) and folder (a folder-v2 company).
+	// One key is present only for some runs: serviceTier (fast mode). Every run names its agent's folder: every
+	// company is on the company folder (legacy sweep step C, C-P9).
 	const record =
 		value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 	const tiered = record !== null && Object.hasOwn(record, "serviceTier");
-	const foldered = record !== null && Object.hasOwn(record, "folder");
-	const { serviceTier, folder: folderValue, ...always } = record ?? {};
+	const { serviceTier, ...always } = record ?? {};
 	if (tiered && !isCloudRuntimeServiceTier(serviceTier)) throw new Error("Invalid cloud company context");
 	const data = closed(record ? always : value, [
 		"schema",
@@ -431,6 +426,7 @@ export function parseCloudNativeCompanyContext(
 		"job",
 		"jobSpecification",
 		"continuation",
+		"folder",
 	]);
 	if (
 		data.schema !== CLOUD_NATIVE_COMPANY_CONTEXT_SCHEMA ||
@@ -502,7 +498,7 @@ export function parseCloudNativeCompanyContext(
 				continuation.content.offset !== 0))
 	)
 		throw new Error("Cloud context does not match its admitted run");
-	const folder = foldered ? contextFolders(folderValue, identity, coworkers) : undefined;
+	const folder = contextFolders(data.folder, identity, coworkers);
 	return {
 		schema: CLOUD_NATIVE_COMPANY_CONTEXT_SCHEMA,
 		identity,
@@ -524,12 +520,12 @@ export function parseCloudNativeCompanyContext(
 		jobSpecification,
 		continuation,
 		...(tiered ? { serviceTier: serviceTier as CloudRuntimeServiceTier } : {}),
-		...(folder ? { folder } : {}),
+		folder,
 	};
 }
 
-/** A folder-v2 company's folder names: the agent's own, and one for each listed coworker that has a
- * folder (cloudAgentFolder checks each name). */
+/** The company's folder names: the agent's own, and one for each listed coworker that has a folder
+ * (cloudAgentFolder checks each name). */
 function contextFolders(
 	value: unknown,
 	identity: CloudNativeToolIdentity,
@@ -660,7 +656,7 @@ export function composeCloudNativeCompanyPrompt(
 		initialAcknowledgementSatisfied: context.initialAcknowledgementSatisfied,
 		beforeWork: acknowledgementRequired ? "acknowledge" : context.continuation ? "read_continuation" : "work",
 	};
-	// A folder-v2 company's agents have named folders; every other prompt is unchanged.
+	// The agent's folder, and each listed coworker's that the context names.
 	const folders = context.folder;
 	// The view covers the history up to its last message. When it covers some of it, the rest follows on from the view.
 	const last = tree?.lastSequence ?? null;
@@ -670,7 +666,7 @@ export function composeCloudNativeCompanyPrompt(
 		schema: CLOUD_NATIVE_COMPANY_CONTEXT_SCHEMA,
 		identity: {
 			company: context.company,
-			agent: folders ? { ...context.agent, folder: `agents/${folders.agent}` } : context.agent,
+			agent: { ...context.agent, folder: `agents/${folders.agent}` },
 			execution: "pure_cloud",
 			companyFile: "live_path_gateway",
 			audience: context.audience,
@@ -713,7 +709,7 @@ export function composeCloudNativeCompanyPrompt(
 		...(tree ? { branches: tree.branches } : {}),
 		history,
 		historyTruncated,
-		coworkers: folders ? context.coworkers.map((coworker) => withFolder(coworker, folders)) : context.coworkers,
+		coworkers: context.coworkers.map((coworker) => withFolder(coworker, folders)),
 		coworkersTruncated: context.coworkersTruncated,
 		job: context.job,
 		continuation: context.continuation,
