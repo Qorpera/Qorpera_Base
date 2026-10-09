@@ -162,16 +162,11 @@ they answer 42501 "native host call is refused".
     anything else, alike whether or not the connection is a plan, and for a
     revoked one), and its answer is the consent call's:
     `{connection_id, version, allow_autonomous, changed, ...}`, with the version
-    to bind, plus `resumed_routines` (20260928369985). Turning the plan on also
-    starts the agents' routines that wait only for it: paused with
-    `needs_model_account`, running for the caller (`runs_for_user_id`) and paid
-    by this same plan, whose agent is active, with no listener, not a routine
-    file, not past its end, and not in a company being deleted or on the folder
-    core (folder-v2). Each moves to the plan's unattended
-    binding and resumes; its content, schedule and agent stay as they were.
-    `resumed_routines` lists their ids (`[]` when none, and always when turning
-    off). A routine that another call holds at that moment stays waiting, so
-    re-read the routine list instead of assuming the card's routine started.
+    to bind, plus `resumed_routines` (20260928369985), always `[]`: turning the
+    plan on resumes no routine (the snapshot-v1 resume went in the legacy
+    sweep's F3a, 20260930294000; on the folder core the agents write routine
+    files). Re-read the routine list instead of assuming the card's routine
+    started.
     The call waits at most 2 s for any one lock (an agent's call in flight, a
     deletion, the GC) and then answers 55P03 "Busy right now. Try again in a
     moment." with nothing changed; a rare deadlock PostgreSQL breaks on the
@@ -824,7 +819,8 @@ Built switched off with plan logins. Show none of it while plan logins are switc
   routine that waits for a payer) and `runs_for_user_id` (the member its current version runs for: that
   version's creator). When its current version is a resume (20260928369985), `resume_reason` is
   `plan_turned_on`, `resumed_by_user_id` the member who turned on work while away and `resumed_at` when; all
-  three are null for any other version, so a later save clears them. Show it as "Resumed when <member> turned on
+  three are null for any other version, so a later save clears them. No new version is a resume since the legacy
+  sweep's F3a (20260930294000). Show it as "Resumed when <member> turned on
   work while away".
 
 - `qorpera_get_routine_payer(p_routine_id)` and `qorpera_set_routine_login(p_routine_id, p_connection_id)`
