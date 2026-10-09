@@ -1,10 +1,13 @@
 -- 20260930291000: the legacy sweep, step F2b (a company computer in use). Twenty functions keep only their folder-v2
 -- path (folder-v2 only, the founder's decision of 3 October). Each is patched in place from its live text, so its
 -- header, its grants and the other migrations' changes to it stay; each anchor must occur exactly once.
--- 1. A member's computer panel and catalog, a member's screen, the access grant and its status, a new agent's default
---    access, an agent's start and its descriptor, and the screen observer's events and retention take the folder fence
---    and the folder-v2 locks on every company; the snapshot-v1 branch, the profile gc fence, goes. A company without a
---    folder now fails in the fence ("Company folder is unavailable", 42501) or in the folder tool run.
+-- 1. A member's computer panel, catalog and screen, the access grant and its status, a new agent's default access, an
+--    agent's start and its descriptor, and the screen observer's events and retention keep only their folder-v2 path;
+--    the snapshot-v1 branch (the profile gc fence, where there was one) goes. The catalog, a screen's open, the access
+--    grant, the screen events and observations, and a member's new computer take the folder fence on every company, so
+--    a company without a folder fails in it ("Company folder is unavailable", 42501); an agent's start fails in its
+--    folder tool run. The access status is plain reads, the start descriptor shares the active agents, and a hire's
+--    default access takes the seat locks.
 -- 2. The Company File a computer needs (the shared surface, an agent's screen, the start descriptor) is the folder
 --    core's (core = 'folder-v2'); the old path gateway's file (path_gateway_version = 1) goes.
 -- 3. A screenshot's receipt is its record on every company: the capture stores nothing, and reading or checking
