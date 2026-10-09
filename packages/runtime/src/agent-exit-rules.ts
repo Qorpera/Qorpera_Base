@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { type FileHandle, open, readdir, readFile, rename, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { isNetworkRulesName, NETWORK_RULES_MAX_NAMES } from "@qorpera/cloud-client/network-rules";
+import { isUuid } from "@qorpera/contracts";
 
 /**
  * The agent exit's rules reader (RUNTIME-AGENT-EXIT.md §10, E8b). Every 2 seconds it reads the companies of the
@@ -26,8 +27,6 @@ const PASS_EVERY_MS = 2000;
 /** The most companies one call may ask about (the function refuses more). */
 const COMPANIES_PER_CALL = 10_000;
 const MAX_ENTRY_BYTES = 64 * 1024;
-/** A uuid as the database writes it: a company (its profile id), or a rules version. */
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const CODE = /^[A-Z0-9_]{1,32}$/;
 const MODES = new Set(["open", "only-listed"]);
 const SQL =
@@ -64,8 +63,11 @@ export interface AgentExitRulesStatus {
 
 /** A failure at one step, with the code it is reported by. */
 class PassError extends Error {
-	constructor(readonly code: string) {
+	readonly code: string;
+
+	constructor(code: string) {
 		super(code);
+		this.code = code;
 	}
 }
 
@@ -83,7 +85,7 @@ export class AgentExitRulesReader {
 	/** The state last logged: "ok", or a problem code. */
 	#logged: string | undefined;
 	#timer: ReturnType<typeof setTimeout> | undefined;
-	#running: Promise<void> | undefined;
+	#running: Promise<unknown> | undefined;
 	#started = false;
 	#closed = false;
 
@@ -177,7 +179,7 @@ export class AgentExitRulesReader {
 				return new Map();
 			const rules = new Map<string, AgentExitCompanyRules | null>();
 			for (const [company, entry] of Object.entries(value.companies)) {
-				if (!UUID.test(company)) return new Map();
+				if (!isUuid(company)) return new Map();
 				if (entry === null) rules.set(company, null);
 				else {
 					const parsed = companyRules(entry);
@@ -215,7 +217,7 @@ export class AgentExitRulesReader {
 				if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") continue;
 				company = undefined;
 			}
-			if (typeof company === "string" && UUID.test(company)) companies.add(company);
+			if (isUuid(company)) companies.add(company);
 			else skipped += 1;
 		}
 		return { companies: [...companies].sort(), skipped };
@@ -294,7 +296,7 @@ export class AgentExitRulesReader {
 export function companyRules(value: unknown): AgentExitCompanyRules | null {
 	if (!isRecord(value) || Object.keys(value).sort().join() !== "allow,block,mode,version") return null;
 	const { version, mode, block, allow } = value;
-	if (typeof version !== "string" || !UUID.test(version)) return null;
+	if (!isUuid(version)) return null;
 	if (typeof mode !== "string" || !MODES.has(mode)) return null;
 	const names = (list: unknown): string[] | null =>
 		Array.isArray(list) &&

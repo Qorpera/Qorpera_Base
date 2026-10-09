@@ -153,7 +153,10 @@ it("keeps the last rules when the database fails, and reports and logs only a co
 	let now = Date.parse("2026-10-09T12:00:00.000Z");
 	let answer: Row[] | Error = [row(A, V1, ["casino.example"])];
 	const clock = () => now;
-	const exit = reader(database(() => answer), clock);
+	const exit = reader(
+		database(() => answer),
+		clock,
+	);
 	await exit.pass();
 	const kept = await readFile(rulesFile, "utf8");
 	expect(log).toHaveBeenCalledExactlyOnceWith("Agent exit rules: reading the rules.");
