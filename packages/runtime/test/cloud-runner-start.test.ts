@@ -12,7 +12,6 @@ import {
 	NATIVE_AUTHORITY_LEASE_SECONDS,
 } from "@qorpera/runtime/cloud-runner-broker";
 import { DisposableCloudRunner } from "@qorpera/runtime/cloud-runner-control";
-import type { CloudRunnerSandboxBackend } from "@qorpera/runtime/cloud-runner-sandbox";
 import { EphemeralCloudRunnerWorker } from "@qorpera/runtime/cloud-runner-worker";
 import { describe, expect, it, vi } from "vitest";
 
@@ -342,12 +341,8 @@ async function nativeWorker(start: Parameters<typeof controlTransport>[1]) {
 	const worker = new EphemeralCloudRunnerWorker({
 		runner,
 		brokerTransport: broker,
-		backend: {} as CloudRunnerSandboxBackend,
 		nativeProviderBridge: {
 			executionGuarantees: nativeProviderExecutionGuarantees("virtual_machine"),
-			start: async () => {
-				throw new Error("The legacy route must not run");
-			},
 			startCompany,
 		},
 		platform: "linux-x64",

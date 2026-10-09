@@ -173,6 +173,27 @@ describe("what the card shows", () => {
 		expect(description).toEqual({ title: "Click in the browser", target: 'button "Pay now – $12.98"', details: {} });
 	});
 
+	it("names a signed hook and its secret's field for a vault_fill of the hook's secret, never a value (E3b-3)", () => {
+		const hook = "98700000-0000-4000-8000-000000000060";
+		expect(
+			describeCloudAction(tool("computer_browser"), {
+				operationKey: "k",
+				action: {
+					kind: "browser",
+					action: "vault_fill",
+					role: "textbox",
+					name: "Signing secret",
+					hook,
+					field: "signing_secret",
+				},
+			}),
+		).toEqual({
+			title: "Type a hook's signing secret into a web page",
+			target: 'textbox "Signing secret"',
+			details: { hook, field: "signing_secret" },
+		});
+	});
+
 	it("names an email draft action and every recipient", () => {
 		expect(
 			describeCloudAction(tool("gmail_send_draft", "connector"), {

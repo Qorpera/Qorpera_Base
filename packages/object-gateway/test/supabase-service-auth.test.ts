@@ -33,14 +33,6 @@ const objectOperations: Array<{ name: string; call: (authority: SupabaseObjectAu
 ];
 
 const publisherOperations = [
-	"qorpera_prepare_member_company_path_command",
-	"qorpera_apply_member_company_path_command_v3",
-	"qorpera_stage_member_company_path_object",
-	"qorpera_prepare_company_path_approval",
-	"qorpera_apply_company_path_approval_v3",
-	"qorpera_stage_company_path_approval_object",
-	"qorpera_verify_company_path_file",
-	"qorpera_verify_company_path_tree",
 	"qorpera_stage_member_session_attachment",
 	"qorpera_claim_connection_file",
 	"qorpera_finish_connection_file",
@@ -139,7 +131,7 @@ describe.each(credentials)("$name gateway service authority", ({ secretKey, publ
 		};
 		await new SupabaseObjectAuthority(options).authorizeUpload("member-jwt", profileId, sha256, 7);
 		await new SupabaseMemberCompanyAuthority(options).member(
-			"qorpera_get_member_company_path_command",
+			"qorpera_member_folder_writer",
 			"member-jwt",
 			{},
 			new AbortController().signal,
@@ -166,7 +158,7 @@ describe.each(credentials)("$name gateway service authority", ({ secretKey, publ
 				},
 			});
 			const error: unknown = await authority
-				.member("qorpera_get_member_company_path_command", "member-jwt", {}, new AbortController().signal)
+				.member("qorpera_member_folder_writer", "member-jwt", {}, new AbortController().signal)
 				.catch((failure: unknown) => failure);
 			expect(error).toBeInstanceOf(ObjectDependencyError);
 			expect(error).toMatchObject({ status });

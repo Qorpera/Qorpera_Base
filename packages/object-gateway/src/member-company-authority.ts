@@ -5,19 +5,13 @@ import {
 	postgrestErrorCode,
 	readBoundedObjectResponse,
 } from "./dependency.ts";
+import type { FileSystemObjectStore } from "./object-store.ts";
+import type { ObjectGatewayReplication } from "./replication.ts";
 import { supabaseRequestHeaders } from "./supabase-headers.ts";
 
 export type MemberCompanyRpc =
 	| "qorpera_company_presence_scope"
 	| "qorpera_member_file_export_source"
-	| "qorpera_begin_member_company_file_upload"
-	| "qorpera_begin_member_company_path_command"
-	| "qorpera_get_member_company_path_command"
-	| "qorpera_review_member_company_path_command"
-	| "qorpera_describe_member_company_path_proposal"
-	| "qorpera_review_company_path_proposal"
-	| "qorpera_authorize_member_company_command_object"
-	| "qorpera_authorize_member_company_proposal_object"
 	| "qorpera_begin_member_session_attachment_upload"
 	| "qorpera_authorize_member_session_attachment"
 	// The member commit route's writer check (folder core C4, P34a): the member's own actor, from their token.
@@ -25,14 +19,6 @@ export type MemberCompanyRpc =
 
 export type MemberCompanyPublisherRpc =
 	| "qorpera_native_presence_subject"
-	| "qorpera_prepare_member_company_path_command"
-	| "qorpera_apply_member_company_path_command_v3"
-	| "qorpera_stage_member_company_path_object"
-	| "qorpera_prepare_company_path_approval"
-	| "qorpera_apply_company_path_approval_v3"
-	| "qorpera_stage_company_path_approval_object"
-	| "qorpera_verify_company_path_file"
-	| "qorpera_verify_company_path_tree"
 	| "qorpera_stage_member_session_attachment"
 	// The vault's connection-file writer (connection-files.ts, P22b): its claim and finish, and the folder core's
 	// platform staging, read and commit.
@@ -67,11 +53,12 @@ export interface MemberCompanyAuthority {
 	publisher(method: MemberCompanyPublisherRpc, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
 }
 
-/** Only an explicit, rolled-back SQL head conflict permits rebuilding a tree. */
-export class MemberCompanyHeadConflict extends ObjectDependencyError {
-	constructor() {
-		super(409);
-	}
+/** What the member export and session attachment routes read and write through. */
+export interface MemberCompanyFileOptions {
+	authority: MemberCompanyAuthority;
+	store: FileSystemObjectStore;
+	replication: ObjectGatewayReplication;
+	readLegacyObject(companyId: string, sha256: string): Promise<Uint8Array>;
 }
 
 export class SupabaseMemberCompanyAuthority implements MemberCompanyAuthority {
@@ -137,12 +124,11 @@ export class SupabaseMemberCompanyAuthority implements MemberCompanyAuthority {
 				signal: combined,
 			});
 			if (!response.ok) {
-				// Never inspect a denial body. A very short, bounded error-code read distinguishes an atomic head
-				// conflict from a stale path, and one company's state or lock conflict from the database's health.
-				// A missing or unreadable body cannot authorize a rebuild and stays a dependency failure.
+				// Never inspect a denial body. A very short, bounded error-code read distinguishes one company's
+				// state or lock conflict from the database's health; a missing or unreadable body stays a
+				// dependency failure.
 				if (response.status === 500) throw companyStateFailure(await postgrestErrorCode(response, combined));
-				if (response.status !== 409) void response.body?.cancel().catch(() => undefined);
-				else if ((await postgrestErrorCode(response, combined)) === "PT409") throw new MemberCompanyHeadConflict();
+				void response.body?.cancel().catch(() => undefined);
 				throw new ObjectDependencyError(response.status);
 			}
 			if (response.status === 204) return null;

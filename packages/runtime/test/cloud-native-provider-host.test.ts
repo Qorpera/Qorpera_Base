@@ -7,11 +7,15 @@ import type {
 	CloudAgentSendInput,
 	CloudAgentSendReceipt,
 } from "@qorpera/runtime/cloud-agent-mouth";
+import { tagNativeRuntimeFailure } from "@qorpera/runtime/cloud-native-failure";
 import { HttpNativeProviderComputerBridge } from "@qorpera/runtime/cloud-native-provider";
 import {
 	type CompleteNativeProviderLoginInput,
+	type NativeCloudExecutionDriver,
+	type NativeCompanyExecutionRequest,
 	type NativeCredentialCapsuleStore,
 	type NativeHarnessDriver,
+	type NativeProviderExecutionAuthority,
 	type NativeProviderExecutionRequest,
 	NativeProviderHost,
 	type NativeProviderLoginDescription,
@@ -129,6 +133,44 @@ async function waitFor(check: () => boolean): Promise<void> {
 		await new Promise((resolve) => setTimeout(resolve, 5));
 	}
 	throw new Error("condition was not reached");
+}
+
+/** A folder-v2 company execution: no paths, no payload; the company runtime reads its folder itself. */
+function companyRequest(
+	capsuleId: string,
+	authority: Partial<NativeProviderExecutionAuthority> = {},
+): NativeCompanyExecutionRequest {
+	return {
+		runtime: "company-path-v1",
+		authority: {
+			leaseId: "10000000-0000-4000-8000-000000000007",
+			runId: chatContext.run.runId,
+			credentialCapsuleId: capsuleId,
+			encryptedCapsuleReference: `native-capsule/${capsuleId}`,
+			attestationPolicySha256: "b".repeat(64),
+			computeIdentityId,
+			runnerId,
+			assignmentId,
+			provider: "openai",
+			nativeHarness: "codex-cli",
+			model: "gpt-test",
+			expiresAt,
+			...authority,
+		},
+		job: {
+			jobId: chatContext.run.jobId,
+			jobType: "agent_turn",
+			requiredCapability: "agent_turn",
+			attemptCount: 1,
+			payload: null,
+		},
+	};
+}
+
+/** Matches exactly this message, so nothing private can ride along after it. */
+function exactly(message: string): RegExp {
+	const escaped = message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return new RegExp(`^${escaped}$`);
 }
 
 describe("native provider usage signal", () => {
@@ -357,6 +399,85 @@ describe("native provider host", () => {
 			).rejects.toThrow(new RegExp(`^Provider harness exited with 7 \\(${category} unavailable\\)$`));
 		}
 		expect((await readdir(identity)).some((name) => name.startsWith(".qorpera-last-message-"))).toBe(false);
+	});
+
+	// Folder-v2 twin of the login half above (legacy sweep step C, C-R2). Login stays on both lanes; the
+	// company lane's Codex process is covered by cloud-codex-tool-session.test.ts.
+	it("drives the official Codex login process contract inside the identity root", async () => {
+		const identity = await temporaryRoot("qorpera-official-codex-login-");
+		await writeFile(
+			join(identity, "login"),
+			[
+				'const fs = require("node:fs");',
+				'const path = require("node:path");',
+				"const [action] = process.argv.slice(2);",
+				'if (process.env.TERM === "dumb") process.exit(4);',
+				'if (process.env.DISABLE_AUTOUPDATER !== "1") process.exit(6);',
+				'if (action === "--device-auth" && fs.existsSync("diagnostic")) {',
+				'  console.error(fs.readFileSync("diagnostic", "utf8"));',
+				"  process.exit(7);",
+				"}",
+				'if (action === "--device-auth") {',
+				"  for (const directory of [process.env.HOME, process.env.CODEX_HOME, process.env.CLAUDE_CONFIG_DIR, process.env.XDG_CONFIG_HOME, process.env.XDG_DATA_HOME, process.env.XDG_CACHE_HOME]) {",
+				"    if (!fs.statSync(directory).isDirectory()) process.exit(7);",
+				"  }",
+				'  fs.writeFileSync(path.join(process.env.CODEX_HOME, "auth.json"), JSON.stringify({ refresh_token: "private" }));',
+				'  console.log("Follow these steps to sign in with ChatGPT using device code authorization:\\n1. Open this link in your browser\\n   \\u001b[4mhttps://auth.openai.com/device\\u001b[0m\\n2. Enter this one-time code (expires in 15 minutes)\\n   \\u001b[1mABCD-EFGHI\\u001b[0m");',
+				'} else if (action === "status") {',
+				'  console.log("ChatGPT subscription test account");',
+				"} else { process.exitCode = 2; }",
+			].join("\n"),
+			"utf-8",
+		);
+		const driver = new OfficialCliNativeHarnessDriver(process.execPath, process.execPath);
+		const login = await driver.beginLogin("codex-cli", identity);
+		await expect(login.prompt).resolves.toEqual({
+			interactionUrl: "https://auth.openai.com/device",
+			userCode: "ABCD-EFGHI",
+		});
+		await expect(login.completed).resolves.toEqual({
+			providerAccountReference: `codex-cli:${createHash("sha256")
+				.update("ChatGPT subscription test account")
+				.digest("hex")}`,
+		});
+		await expect(readFile(join(identity, "codex", "auth.json"), "utf-8")).resolves.toContain("private");
+		// A failed official process is reported as a fixed category, never with its output.
+		for (const [diagnostic, category] of [
+			["MCP startup failed: connection timeout", "public message transport"],
+			["Error loading config.toml: invalid value", "harness configuration"],
+			[
+				JSON.stringify({ error: { code: "invalid_function_parameters", message: "invalid schema" } }),
+				"provider tool schema",
+			],
+			[JSON.stringify({ error: { type: "invalid_request_error", message: "invalid input" } }), "provider request"],
+			[JSON.stringify({ type: "error", message: "401 Unauthorized" }), "authentication"],
+			["403 Forbidden", "provider authorization"],
+			["Refresh token was already used", "authentication"],
+			["Your access token could not be refreshed. Please log out and sign in again.", "authentication"],
+			["You've hit your usage limit. Try again later.", "provider allowance"],
+			["Your workspace is out of credits. Add credits to continue.", "provider allowance"],
+			["You hit your spend cap set in your workspace.", "provider allowance"],
+			[JSON.stringify({ error: { type: "usage_limit_reached" } }), "provider allowance"],
+			["Selected model is at capacity. Please try a different model.", "provider capacity"],
+			["We're currently experiencing high demand, which may cause temporary errors.", "provider capacity"],
+			["Codex ran out of room in the model's context window.", "provider context"],
+			["context_window_exceeded", "provider context"],
+			["content_filter", "provider policy"],
+			["stream disconnected before completion", "provider network"],
+			["internal error; agent loop died unexpectedly", "harness internal"],
+			["Missing environment variable: PRIVATE_NAME", "harness configuration"],
+			["duplicate tool: PRIVATE_NAME", "provider tool schema"],
+			["opaque", undefined],
+		] as const) {
+			await writeFile(join(identity, "diagnostic"), `${diagnostic}\nprivate-token-must-not-leak`);
+			const failed = await driver.beginLogin("codex-cli", identity);
+			await failed.prompt;
+			await expect(failed.completed).rejects.toThrow(
+				category
+					? new RegExp(`^Provider harness exited with 7 \\(${category} unavailable\\)$`)
+					: /^Provider harness exited with 7$/,
+			);
+		}
 	});
 
 	it("wires the existing Claude driver to the same mouth without exposing ordinary output", async () => {
@@ -738,6 +859,133 @@ describe("native provider host", () => {
 		});
 	});
 
+	// Folder-v2 twin of the case above (legacy sweep step C, C-R2): the company runtime gets the identity
+	// root and nothing else; prompts, the public mouth and the final-send rule are the company runtime's own.
+	it("restores the capsule only for the company runtime and returns transcript-safe output", async () => {
+		const root = await temporaryRoot("qorpera-native-company-execution-");
+		const identity = await temporaryRoot("qorpera-native-company-identity-");
+		const capsules = new MemoryCapsules();
+		const capsuleId = "10000000-0000-4000-8000-000000000006";
+		const reference = `native-capsule/${capsuleId}`;
+		await mkdir(join(identity, "codex"), { recursive: true });
+		await writeFile(join(identity, "codex", "auth.json"), '{"access_token":"private"}\n');
+		await writeFile(join(identity, "codex", "config.toml"), 'model = "not-credential-state"\n');
+		const original = await sealNativeCredentialCapsule(identity, masterKey, capsuleId);
+		await capsules.put(reference, original);
+		let completion: Awaited<ReturnType<NativeCloudExecutionDriver["execute"]>> = {
+			providerSessionId: "session-1",
+			delivery: { messageCount: 1, finalMessageId: connectionId },
+		};
+		const execute = vi.fn<NativeCloudExecutionDriver["execute"]>(async (request, identityRoot) => {
+			expect(request).toMatchObject({ runtime: "company-path-v1", job: { payload: null } });
+			expect(request).not.toHaveProperty("input");
+			expect(request).not.toHaveProperty("outputRoot");
+			// Only the login itself is opened: no configuration, hooks or sessions reach the harness.
+			expect(await readdir(identityRoot)).toEqual(["codex"]);
+			expect(await readdir(join(identityRoot, "codex"))).toEqual(["auth.json"]);
+			expect(await readFile(join(identityRoot, "codex", "auth.json"), "utf-8")).toContain("private");
+			await writeFile(join(identityRoot, "codex", "auth.json"), '{"access_token":"refreshed-private"}\n');
+			await mkdir(join(identityRoot, "codex", "sessions"), { recursive: true });
+			await writeFile(join(identityRoot, "codex", "sessions", "transient.jsonl"), "runtime-only\n");
+			// Whatever else a runtime hands back never reaches the result.
+			const returned = { ...completion, privateFinalText: "private final text must never be delivered" };
+			return returned;
+		});
+		const validateExecution = vi.fn();
+		const sendMessage = vi.fn(sendReceipt);
+		const legacyExecute = vi.fn<NativeHarnessDriver["execute"]>();
+		const host = new NativeProviderHost({
+			controlPlane: {
+				describeLogin: vi.fn(),
+				completeLogin: vi.fn(),
+				validateExecution,
+				sendMessage,
+			},
+			capsules,
+			harness: { beginLogin: vi.fn(), execute: legacyExecute },
+			cloudRuntime: { execute },
+			masterKey,
+			computeIdentityId,
+			temporaryRoot: root,
+		});
+		const executionRequest = companyRequest(capsuleId);
+		await expect(
+			host.execute(companyRequest(capsuleId, { computeIdentityId: otherComputeIdentityId })),
+		).rejects.toThrow("another Compute Identity");
+		expect(execute).not.toHaveBeenCalled();
+		const result = await host.execute(executionRequest);
+		expect(result).toEqual({
+			schema: "qorpera.native-harness-result/v2",
+			run_id: executionRequest.authority.runId,
+			message_count: 1,
+			final_message_id: connectionId,
+			provider_session_id: "session-1",
+		});
+		expect(JSON.stringify(result)).not.toContain("private");
+		expect(validateExecution).toHaveBeenCalledTimes(2);
+		expect(validateExecution).toHaveBeenLastCalledWith(executionRequest, expect.any(AbortSignal));
+		// The renewed login is saved, pruned to the login itself.
+		const refreshedIdentity = await temporaryRoot("qorpera-native-company-refreshed-identity-");
+		await openNativeCredentialCapsule(await capsules.get(reference), refreshedIdentity, masterKey, capsuleId);
+		expect(await readdir(join(refreshedIdentity, "codex"))).toEqual(["auth.json"]);
+		expect(await readFile(join(refreshedIdentity, "codex", "auth.json"), "utf-8")).toContain("refreshed-private");
+		expect(await readdir(root)).toEqual([]);
+
+		// Authority revoked before the end: the renewal is not saved.
+		await capsules.put(reference, original);
+		validateExecution.mockReset();
+		validateExecution.mockResolvedValueOnce(undefined);
+		validateExecution.mockRejectedValueOnce(new Error("private revoked authority"));
+		await expect(host.execute(executionRequest)).rejects.toThrow(
+			exactly("Native provider execution completion-authority-validation stage failed"),
+		);
+		expect(Buffer.from(await capsules.get(reference)).equals(Buffer.from(original))).toBe(true);
+
+		// The stored login is the original again, so this run's renewal is a change to save.
+		const uploadFailureHost = new NativeProviderHost({
+			controlPlane: {
+				describeLogin: vi.fn(),
+				completeLogin: vi.fn(),
+				validateExecution: vi.fn(),
+				sendMessage,
+			},
+			capsules: {
+				get: async (capsuleReference) => capsules.get(capsuleReference),
+				put: async () => {
+					throw new Error("private storage response");
+				},
+			},
+			harness: { beginLogin: vi.fn(), execute: legacyExecute },
+			cloudRuntime: { execute },
+			masterKey,
+			computeIdentityId,
+			temporaryRoot: root,
+		});
+		await expect(uploadFailureHost.execute(executionRequest)).rejects.toThrow(
+			exactly("Native provider execution credential-upload stage failed"),
+		);
+
+		// A turn without its final send fails in the company runtime (cloud-native-company-runtime.test.ts,
+		// "requires a final send when there is an audience"); the host passes only its stage on.
+		execute.mockRejectedValueOnce(
+			tagNativeRuntimeFailure(new Error("Native agent turn ended without a final send"), "public-completion"),
+		);
+		await expect(host.execute(executionRequest)).rejects.toThrow(
+			exactly("Native provider execution failed (stage=public-completion, category=unknown) [mouth=uninitialized]"),
+		);
+		completion = { providerSessionId: "silent-job", delivery: { messageCount: 0, finalMessageId: null } };
+		await expect(host.execute(executionRequest)).resolves.toEqual({
+			schema: "qorpera.native-harness-result/v2",
+			run_id: executionRequest.authority.runId,
+			message_count: 0,
+			final_message_id: null,
+			provider_session_id: "silent-job",
+		});
+		expect(sendMessage).not.toHaveBeenCalled();
+		expect(legacyExecute).not.toHaveBeenCalled();
+		expect(await readdir(root)).toEqual([]);
+	});
+
 	it.each(["provider_failed", "missing_final", "revoked", "cancelled"] as const)(
 		"preserves rotated credentials after %s only while the execution remains authorized",
 		async (outcome) => {
@@ -825,6 +1073,76 @@ describe("native provider host", () => {
 			expect(validateExecution).toHaveBeenCalledTimes(outcome === "cancelled" ? 1 : 2);
 			expect(sendMessage).not.toHaveBeenCalled();
 			const restored = await temporaryRoot("qorpera-native-failure-restored-");
+			await openNativeCredentialCapsule(await capsules.get(reference), restored, masterKey, capsuleId);
+			expect(JSON.parse(await readFile(join(restored, "codex", "auth.json"), "utf-8"))).toEqual({
+				refresh_token: shouldRefresh ? "rotated-private" : "original-private",
+			});
+			await expect(lstat(join(restored, "codex", "sessions"))).rejects.toMatchObject({ code: "ENOENT" });
+			expect(await readdir(root)).toEqual([]);
+		},
+	);
+
+	// Folder-v2 twin of the cases above (legacy sweep step C, C-R2).
+	it.each(["provider_failed", "missing_final", "revoked", "cancelled"] as const)(
+		"preserves rotated credentials after a company %s only while the execution remains authorized",
+		async (outcome) => {
+			const root = await temporaryRoot("qorpera-native-company-failure-");
+			const identity = await temporaryRoot("qorpera-native-company-failure-identity-");
+			const capsules = new MemoryCapsules();
+			const capsuleId = "10000000-0000-4000-8000-000000000006";
+			const reference = `native-capsule/${capsuleId}`;
+			await mkdir(join(identity, "codex"));
+			await writeFile(join(identity, "codex", "auth.json"), '{"refresh_token":"original-private"}\n');
+			await capsules.put(reference, await sealNativeCredentialCapsule(identity, masterKey, capsuleId));
+			const put = vi.spyOn(capsules, "put");
+			const controller = new AbortController();
+			let authorized = true;
+			const validateExecution = vi.fn(async () => {
+				if (!authorized) throw new Error("revoked-private");
+			});
+			const sendMessage = vi.fn(sendReceipt);
+			const legacyExecute = vi.fn<NativeHarnessDriver["execute"]>();
+			const host = new NativeProviderHost({
+				controlPlane: { describeLogin: vi.fn(), completeLogin: vi.fn(), validateExecution, sendMessage },
+				capsules,
+				harness: { beginLogin: vi.fn(), execute: legacyExecute },
+				cloudRuntime: {
+					execute: vi.fn<NativeCloudExecutionDriver["execute"]>(async (_request, identityRoot, signal) => {
+						await writeFile(join(identityRoot, "codex", "auth.json"), '{"refresh_token":"rotated-private"}\n');
+						await mkdir(join(identityRoot, "codex", "sessions"));
+						await writeFile(join(identityRoot, "codex", "sessions", "private.jsonl"), "PRIVATE_REASONING\n");
+						if (outcome === "revoked") authorized = false;
+						if (outcome === "cancelled") {
+							controller.abort(new Error("Native execution cancelled"));
+							signal.throwIfAborted();
+						}
+						if (outcome === "missing_final")
+							throw tagNativeRuntimeFailure(
+								new Error("Native agent turn ended without a final send"),
+								"public-completion",
+							);
+						throw new Error("Provider harness exited with 1 (provider network unavailable)");
+					}),
+				},
+				masterKey,
+				computeIdentityId,
+				temporaryRoot: root,
+			});
+			await expect(host.execute(companyRequest(capsuleId), controller.signal)).rejects.toThrow(
+				exactly(
+					outcome === "missing_final"
+						? "Native provider execution failed (stage=public-completion, category=unknown) [mouth=uninitialized]"
+						: outcome === "cancelled"
+							? "Native provider execution harness-execution stage failed (cancelled) [mouth=uninitialized]"
+							: "Provider harness exited with 1 (provider network unavailable) [mouth=uninitialized]",
+				),
+			);
+			const shouldRefresh = outcome === "provider_failed" || outcome === "missing_final";
+			expect(put).toHaveBeenCalledTimes(shouldRefresh ? 1 : 0);
+			expect(validateExecution).toHaveBeenCalledTimes(outcome === "cancelled" ? 1 : 2);
+			expect(sendMessage).not.toHaveBeenCalled();
+			expect(legacyExecute).not.toHaveBeenCalled();
+			const restored = await temporaryRoot("qorpera-native-company-failure-restored-");
 			await openNativeCredentialCapsule(await capsules.get(reference), restored, masterKey, capsuleId);
 			expect(JSON.parse(await readFile(join(restored, "codex", "auth.json"), "utf-8"))).toEqual({
 				refresh_token: shouldRefresh ? "rotated-private" : "original-private",
@@ -1068,6 +1386,245 @@ describe("native provider host", () => {
 			await vi.waitFor(() => expect(headersAt).toBeGreaterThan(0));
 			fail();
 			await expect(failing.result).rejects.toThrow("Native provider bridge request failed (422)");
+		} finally {
+			await service.close();
+		}
+	});
+
+	// Folder-v2 twin of the case above (legacy sweep step C, C-R2): a company execution carries no paths and no
+	// payload; the company runtime has no public mouth on this host, so every failure reads [mouth=uninitialized].
+	it("runs login and company execution through the standalone cloud bridge and fences revoked authority", async () => {
+		const root = await temporaryRoot("qorpera-native-company-service-");
+		const capsules = new MemoryCapsules();
+		const completed: CompleteNativeProviderLoginInput[] = [];
+		let finishLogin: (() => void) | undefined;
+		let authorized = true;
+		const legacyExecute = vi.fn<NativeHarnessDriver["execute"]>();
+		const harness: NativeHarnessDriver = {
+			beginLogin: vi.fn(async (_harness, identityRoot) => {
+				await mkdir(join(identityRoot, "codex"), { recursive: true });
+				await writeFile(join(identityRoot, "codex", "auth.json"), '{"refresh_token":"private"}\n');
+				return {
+					prompt: Promise.resolve({
+						interactionUrl: "https://auth.openai.com/device",
+						userCode: "ABCD-EFGH",
+					}),
+					completed: new Promise<{ providerAccountReference?: string }>((resolveLogin) => {
+						finishLogin = () => resolveLogin({ providerAccountReference: "ChatGPT subscription" });
+					}),
+					cancel: async () => undefined,
+				};
+			}),
+			execute: legacyExecute,
+		};
+		const execute = vi.fn<NativeCloudExecutionDriver["execute"]>(async (request, identityRoot) => {
+			const credential = completed[0] as CompleteNativeProviderLoginInput;
+			// The bridge's closed company schema arrives as exactly this request: no paths, no copied payload.
+			expect(request).toEqual(
+				companyRequest(credential.capsuleId, {
+					encryptedCapsuleReference: credential.encryptedCapsuleReference,
+					attestationPolicySha256: credential.attestationPolicySha256,
+				}),
+			);
+			expect(await readFile(join(identityRoot, "codex", "auth.json"), "utf-8")).toContain("private");
+			return { providerSessionId: "native-session-1", delivery: { messageCount: 1, finalMessageId: connectionId } };
+		});
+		const host = new NativeProviderHost({
+			controlPlane: {
+				describeLogin: vi.fn(async () => description()),
+				completeLogin: vi.fn(async (value) => {
+					completed.push(value);
+				}),
+				validateExecution: vi.fn(async () => {
+					if (!authorized) throw new Error("native authority revoked");
+				}),
+				sendMessage: vi.fn(sendReceipt),
+			},
+			capsules,
+			harness,
+			cloudRuntime: { execute },
+			masterKey,
+			computeIdentityId,
+			temporaryRoot: root,
+		});
+		const bridgeToken = randomBytes(32).toString("base64url");
+		const service = new HttpNativeProviderHostService(host, bridgeToken);
+		const port = await service.start();
+		try {
+			const bridge = new HttpNativeProviderComputerBridge(`http://127.0.0.1:${port}/`, bridgeToken, fetch, {
+				executionBoundary: "virtual_machine",
+			});
+			await expect(
+				bridge.beginLogin({
+					loginId,
+					clientLoginId: "10000000-0000-4000-8000-000000000014",
+					clientConnectionId: connectionId,
+					computeIdentityId,
+					computeIdentityOwnershipKind: "member",
+					computeIdentityOwnerUserId: ownerUserId,
+					provider: "openai",
+					nativeHarness: "codex-cli",
+					capability,
+					expiresAt,
+				}),
+			).resolves.toMatchObject({ status: "awaiting_member", userCode: "ABCD-EFGH" });
+			finishLogin?.();
+			await waitFor(() => completed.length === 1);
+			const credential = completed[0] as CompleteNativeProviderLoginInput;
+			const nativeAuthority = {
+				leaseId: "10000000-0000-4000-8000-000000000007",
+				runId: chatContext.run.runId,
+				providerConnectionId: connectionId,
+				providerConnectionVersion: 1,
+				credentialCapsuleId: credential.capsuleId,
+				encryptedCapsuleReference: credential.encryptedCapsuleReference,
+				attestationPolicySha256: credential.attestationPolicySha256,
+				computeIdentityId,
+				computeIdentityOwnershipKind: "member" as const,
+				computeIdentityOwnerUserId: ownerUserId,
+				credentialOwnershipKind: "member" as const,
+				credentialOwnerUserId: ownerUserId,
+				provider: "openai",
+				authenticationMode: "native_subscription" as const,
+				nativeHarness: "codex-cli" as const,
+				model: "gpt-test",
+				runnerId,
+				assignmentId,
+				expiresAt,
+			};
+			const job = { jobId: chatContext.run.jobId, attemptCount: 1 };
+			const execution = await bridge.startCompany(nativeAuthority, job);
+			await expect(execution.result).resolves.toEqual({
+				schema: "qorpera.native-harness-result/v2",
+				run_id: chatContext.run.runId,
+				message_count: 1,
+				final_message_id: connectionId,
+				provider_session_id: "native-session-1",
+			});
+
+			// Revoked authority stops the run before the company runtime starts, and says only its stage.
+			authorized = false;
+			const revokedLogged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			try {
+				const revoked = await bridge.startCompany({ ...nativeAuthority, leaseId: loginId }, job);
+				await expect(revoked.result).rejects.toThrow(
+					exactly("Native provider bridge request failed (422) [code=NATIVE_INITIAL_AUTHORITY_VALIDATION]"),
+				);
+				expect(revokedLogged).toHaveBeenCalledWith(
+					"Native provider request rejected: Native provider execution initial-authority-validation stage failed [code=NATIVE_INITIAL_AUTHORITY_VALIDATION]",
+				);
+				expect(revokedLogged.mock.calls.flat().join("\n")).not.toContain("native authority revoked");
+			} finally {
+				revokedLogged.mockRestore();
+			}
+			expect(execute).toHaveBeenCalledTimes(1);
+
+			authorized = true;
+			const privateDiagnostic = "opaque private-token-must-not-leak";
+			const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			try {
+				execute.mockRejectedValueOnce(Object.assign(new Error(privateDiagnostic), { code: "EACCES" }));
+				const denied = await bridge.startCompany({ ...nativeAuthority, leaseId: otherComputeIdentityId }, job);
+				await expect(denied.result).rejects.toThrow(
+					exactly(
+						"Native provider bridge request failed (422) [code=NATIVE_HARNESS_EXECUTION:FILESYSTEM_PERMISSION]",
+					),
+				);
+				expect(logged).toHaveBeenLastCalledWith(
+					"Native provider request rejected: Native provider execution harness-execution stage failed (filesystem-permission) [mouth=uninitialized] [code=NATIVE_HARNESS_EXECUTION:FILESYSTEM_PERMISSION]",
+				);
+				// The company runtime tags its failures; only the stage and category travel on.
+				execute.mockRejectedValueOnce(
+					tagNativeRuntimeFailure(new Error(privateDiagnostic), "codex-turn-completion", "provider_failed"),
+				);
+				const tagged = await bridge.startCompany({ ...nativeAuthority, leaseId: otherComputeIdentityId }, job);
+				await expect(tagged.result).rejects.toThrow(
+					exactly(
+						"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]",
+					),
+				);
+				expect(logged).toHaveBeenLastCalledWith(
+					"Native provider request rejected: Native provider execution failed (stage=codex-turn-completion, category=provider_failed) [code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]",
+				);
+				execute.mockRejectedValueOnce(
+					new Error("Provider harness exited with 1 (provider authorization unavailable)"),
+				);
+				const exited = await bridge.startCompany({ ...nativeAuthority, leaseId: otherComputeIdentityId }, job);
+				await expect(exited.result).rejects.toThrow(
+					exactly("Native provider bridge request failed (422) [code=HARNESS_EXITED:PROVIDER_AUTHORIZATION]"),
+				);
+				expect(logged).toHaveBeenLastCalledWith(
+					"Native provider request rejected: Provider harness exited with 1 (provider authorization unavailable) [mouth=uninitialized] [code=HARNESS_EXITED:PROVIDER_AUTHORIZATION]",
+				);
+				expect(logged).toHaveBeenCalledTimes(3);
+				expect(logged.mock.calls.flat().join("\n")).not.toContain(privateDiagnostic);
+			} finally {
+				logged.mockRestore();
+			}
+
+			// A run has no deadline: the host answers the execution's headers at once (and keeps
+			// the body alive), so an HTTP client's five-minute header timeout never applies.
+			let release: () => void = () => undefined;
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			execute.mockImplementationOnce(async () => {
+				await gate;
+				return {
+					providerSessionId: "native-session-long",
+					delivery: { messageCount: 1, finalMessageId: connectionId },
+				};
+			});
+			let headersAt = 0;
+			const timed = new HttpNativeProviderComputerBridge(
+				`http://127.0.0.1:${port}/`,
+				bridgeToken,
+				async (input, init) => {
+					const response = await fetch(input, init);
+					headersAt = Date.now();
+					return response;
+				},
+				{ executionBoundary: "virtual_machine" },
+			);
+			const long = await timed.startCompany(nativeAuthority, job);
+			await vi.waitFor(() => expect(headersAt).toBeGreaterThan(0));
+			const releasedAt = Date.now();
+			release();
+			await expect(long.result).resolves.toEqual({
+				schema: "qorpera.native-harness-result/v2",
+				run_id: chatContext.run.runId,
+				message_count: 1,
+				final_message_id: connectionId,
+				provider_session_id: "native-session-long",
+			});
+			expect(headersAt).toBeLessThanOrEqual(releasedAt);
+
+			// A failure after those early headers still reaches the bridge as a refusal, never a result.
+			let fail: () => void = () => undefined;
+			const failGate = new Promise<void>((resolve) => {
+				fail = resolve;
+			});
+			execute.mockImplementationOnce(async () => {
+				await failGate;
+				throw new Error("harness stopped");
+			});
+			headersAt = 0;
+			const lateLogged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+			try {
+				const failing = await timed.startCompany(nativeAuthority, job);
+				await vi.waitFor(() => expect(headersAt).toBeGreaterThan(0));
+				fail();
+				await expect(failing.result).rejects.toThrow(
+					exactly("Native provider bridge request failed (422) [code=NATIVE_HARNESS_EXECUTION:UNKNOWN]"),
+				);
+				expect(lateLogged).toHaveBeenCalledWith(
+					"Native provider request rejected: Native provider execution harness-execution stage failed (unknown) [mouth=uninitialized] [code=NATIVE_HARNESS_EXECUTION:UNKNOWN]",
+				);
+			} finally {
+				lateLogged.mockRestore();
+			}
+			expect(legacyExecute).not.toHaveBeenCalled();
+			expect(await readdir(root)).toEqual([]);
 		} finally {
 			await service.close();
 		}
