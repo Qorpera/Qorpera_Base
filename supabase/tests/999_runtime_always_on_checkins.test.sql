@@ -1,5 +1,5 @@
 -- @fixture 648_folder_core_run_fence_concurrency.test.sql until "-- A. Two tool calls of one run"
--- 20260930182000: the weekly check-in for always-on machines under one idle rule for every machine (the 2026-10-03
+-- 20260930201000: the weekly check-in for always-on machines under one idle rule for every machine (the 2026-10-03
 -- amendment, item 6), on a folder-v2 company (folder-v2 only, the founder's decision of 3 October). 648's committed
 -- fixture with a machine node and executor as 989 makes them: Ada's run started the always-on machine m-999, placed on
 -- node A and running in boot b1. Covered:
@@ -348,7 +348,7 @@ select pg_temp.check(not exists (select 1 from unnest(array[
 		'public.qorpera_folder_machine_checkins_due(uuid,integer)', 'public.qorpera_folder_machine_checkins_company(uuid,integer)',
 		'public.qorpera_company_machine_always_on_since(public.qorpera_company_machines)',
 		'public.qorpera_company_machine_always_on_checkins_unasked(uuid)', 'public.qorpera_ask_always_on_company_machines(uuid,integer)']) f(name)
-	where position('20260930182000' in pg_get_functiondef(f.name::regprocedure)) = 0), 'each new or patched function names this migration');
+	where position('20260930201000' in pg_get_functiondef(f.name::regprocedure)) = 0), 'each new or patched function names this migration');
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
 

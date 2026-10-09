@@ -1,10 +1,11 @@
--- 20260930182000: the weekly check-in for always-on machines under one idle rule for every machine (the 2026-10-03
+-- 20260930201000: the weekly check-in for always-on machines under one idle rule for every machine (the 2026-10-03
 -- amendment, item 6). Folder-v2 only by the founder's decision of 3 October. An always-on machine is the explicit way to
 -- stay up: this rule never puts it to sleep. The agent that started it is asked once a week whether it still needs it,
 -- counted from the machine's start, in the conversation of the run that started it (a worker's: the conversation that
 -- dispatched it), busy or not. It may stop the machine or leave it. A question is a notice, never a stop. It rides
 -- 20260930098000's check-ins: one qorpera_machine_checkins row per question (the new kind 'always-on', the machine as its
--- subject), asked and delivered by the same folder drain (machine_checkins, LISTENER §9), after 20260930181000's.
+-- subject), asked and delivered by the same folder drain (machine_checkins, LISTENER §9), after 20260930181000's. (The
+-- cuts re-slotted those two to 20260928499150 and 20260928519140; their bodies keep the original markers.)
 -- 1. When: from the machine's start (wanted_at: its last start, by an agent or a member; a move to another node keeps
 --    it), at each full week while it should run (168 hours, 336, ...). Only the latest week passed is asked: after
 --    downtime or a late drain the agent is asked once, never for each week it missed.
@@ -14,7 +15,7 @@
 -- 3. Delivery: a question still stands only while the machine is still always-on, wanted running since the same start,
 --    by an agent, and the same agent would be asked in the same conversation; one that no longer stands, or one a later
 --    week replaced, is suppressed.
--- Every patched or new body names this migration (20260930182000).
+-- Every patched or new body names this migration (20260930201000).
 
 set local lock_timeout = '3s';
 
@@ -49,7 +50,7 @@ end $$;
 create function public.qorpera_company_machine_always_on_since(p_machine public.qorpera_company_machines)
 returns table (staff_agent_id uuid, conversation_run_id uuid, since timestamptz)
 language sql stable security definer set search_path = '' as $$
-	-- 20260930182000.
+	-- 20260930201000.
 	select p_machine.started_by_staff_agent_id, p_machine.started_conversation_run_id, p_machine.wanted_at
 	where p_machine.lifetime = 'always-on' and p_machine.desired_state = 'running' and p_machine.desired_by = 'agent'
 		and p_machine.removed_at is null and p_machine.started_conversation_run_id is not null
@@ -64,7 +65,7 @@ create function public.qorpera_company_machine_always_on_checkins_unasked(p_envi
 returns table (machine_id uuid, profile_id uuid, environment_id uuid, staff_agent_id uuid, conversation_run_id uuid,
 	since timestamptz, mark integer)
 language sql stable security definer set search_path = '' as $$
-	-- 20260930182000.
+	-- 20260930201000.
 	select asking.* from (
 		select machine.id as machine_id, machine.profile_id, machine.environment_id, wanted.staff_agent_id, wanted.conversation_run_id,
 			wanted.since, 168 * floor(extract(epoch from clock_timestamp() - wanted.since) / 604800)::integer as mark
@@ -90,7 +91,7 @@ create function public.qorpera_ask_always_on_company_machines(p_environment_id u
 returns integer language plpgsql security definer set search_path = '' as $$
 declare v_wanted record; v_asked integer := 0; v_count integer;
 begin
-	-- 20260930182000.
+	-- 20260930201000.
 	if p_environment_id is null or p_limit is null or p_limit not between 1 and 256 then
 		raise exception 'Machine check-in bound is invalid' using errcode = '22023'; end if;
 	for v_wanted in select * from public.qorpera_company_machine_always_on_checkins_unasked(p_environment_id) unasked
@@ -128,7 +129,7 @@ select pg_temp.always_on_patch('public.qorpera_machine_checkin_current(public.qo
 			when 'always-on' then exists (select 1 from public.qorpera_company_machines machine
 				cross join lateral public.qorpera_company_machine_always_on_since(machine) wanted
 				where machine.id = p_checkin.subject_id and wanted.staff_agent_id = p_checkin.staff_agent_id
-					and wanted.conversation_run_id = p_checkin.parent_run_id and wanted.since = p_checkin.since) -- 20260930182000
+					and wanted.conversation_run_id = p_checkin.parent_run_id and wanted.since = p_checkin.since) -- 20260930201000
 			-- Other machines judge their questions when they ask them.
 			else true end$new$);
 
@@ -140,17 +141,17 @@ select pg_temp.always_on_patch('public.qorpera_folder_machine_checkins_due(uuid,
 		union$old$,
 	$new$		select unasked.environment_id, unasked.profile_id from public.qorpera_company_machine_busy_checkins_unasked(null) unasked -- 20260930181000
 		union
-		select unasked.environment_id, unasked.profile_id from public.qorpera_company_machine_always_on_checkins_unasked(null) unasked -- 20260930182000
+		select unasked.environment_id, unasked.profile_id from public.qorpera_company_machine_always_on_checkins_unasked(null) unasked -- 20260930201000
 		union$new$);
 -- The company's step asks the always-on machines' questions with the others.
 select pg_temp.always_on_patch('public.qorpera_folder_machine_checkins_company(uuid,integer)'::regprocedure,
 	$old$		and not exists (select 1 from public.qorpera_company_machine_busy_checkins_unasked(p_environment_id)) then -- 20260930181000$old$,
 	$new$		and not exists (select 1 from public.qorpera_company_machine_busy_checkins_unasked(p_environment_id)) -- 20260930181000
-		and not exists (select 1 from public.qorpera_company_machine_always_on_checkins_unasked(p_environment_id)) then -- 20260930182000$new$);
+		and not exists (select 1 from public.qorpera_company_machine_always_on_checkins_unasked(p_environment_id)) then -- 20260930201000$new$);
 select pg_temp.always_on_patch('public.qorpera_folder_machine_checkins_company(uuid,integer)'::regprocedure,
 	$old$			+ public.qorpera_ask_busy_company_machines(p_environment_id, 64); -- 20260930181000$old$,
 	$new$			+ public.qorpera_ask_busy_company_machines(p_environment_id, 64) -- 20260930181000
-			+ public.qorpera_ask_always_on_company_machines(p_environment_id, 64); -- 20260930182000$new$);
+			+ public.qorpera_ask_always_on_company_machines(p_environment_id, 64); -- 20260930201000$new$);
 
 -- The patched functions may have a private owner in production: it reaches what their new text uses.
 do $$ declare v_owner name; begin
