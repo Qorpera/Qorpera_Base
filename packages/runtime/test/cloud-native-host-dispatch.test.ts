@@ -687,6 +687,16 @@ it("refuses an execution without a valid credential with a fixed code and never 
 			expect(refused.status).toBe(422);
 			expect(await refused.json()).toEqual({ error: "request rejected", code: "NATIVE_HOST_CREDENTIAL" });
 		}
+		// Only the company request is accepted: the whole-tree schema, or a host-supplied input or payload, is refused.
+		for (const body of [
+			{ ...valid, schema: "qorpera.native-provider-execution/v1" },
+			{ ...valid, input: { company_root: "/x" } },
+			{ ...valid, job: { ...job, payload: {} } },
+		]) {
+			const refused = await post(body);
+			expect(refused.status).toBe(422);
+			expect(await refused.json()).toEqual({ error: "request rejected", code: "UNCLASSIFIED" });
+		}
 		expect(f.execute).not.toHaveBeenCalled();
 		// A second execution while one still holds the host is refused as busy.
 		const first = await post(valid);
