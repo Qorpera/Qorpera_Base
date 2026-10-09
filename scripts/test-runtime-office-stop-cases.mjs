@@ -67,7 +67,7 @@ export async function testOfficeStopAcknowledgement({request,revocation,lease,sc
 	const privacy={state:'private',version:11,challenge:{schema:'synthetic-retained-private-challenge',nonce:randomUUID()}};
 	execute(`update public.qorpera_runtime_offices set privacy_state='${privacy.state}',privacy_version=${privacy.version},privacy_challenge=${literal(privacy.challenge)},revision=revision+1;
 		update public.qorpera_runtime_office_providers set preparation_enabled=false;
-		insert into public.qorpera_company_execution_pauses(profile_id,paused_by_user_id) values('${scope.companyId}','30000000-0000-4000-8000-000000000001');`);
+		insert into public.qorpera_company_execution_pauses(profile_id,paused_by_user_id) values('${scope.companyId}','92400000-0000-4000-8000-000000000001');`);
 	const methods=[];let loseAck=true;
 	const control=new LxdOfficeStopControl(stopRequest,command,{call:async(method,args,signal)=>{
 		signal.throwIfAborted();methods.push(method);
