@@ -26,9 +26,7 @@ import {
 import { CloudCompanyComputerEffectControl } from "./cloud-company-computer-effect-control.ts";
 import type { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-registry-http.ts";
 import {
-	type CloudCompanyComputerScreenshots,
-	createHttpCompanyComputerScreenshots,
-	parseCompanyComputerCaptureGateway,
+	CloudCompanyComputerScreenshots,
 	parseCompanyComputerScreenshotAsset,
 } from "./cloud-company-computer-screenshots.ts";
 import {
@@ -37,7 +35,7 @@ import {
 } from "./cloud-company-computer-start.ts";
 import type { CompanyComputerCloudEndpoint } from "./cloud-company-computer-tools.ts";
 import { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
-import { type CloudNativeToolRun, cloudToolRequest } from "./cloud-native-tool-authority.ts";
+import { type CloudNativeToolRun, cloudToolRequest, isNativeJobHolder } from "./cloud-native-tool-authority.ts";
 import { cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations.ts";
 
 /** The vault, for a vault_fill (company accounts A1-3): HttpCloudSecretBrokerClient. */
@@ -124,6 +122,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 	readonly #effects: CloudCompanyComputerEffectControl;
 	readonly #url: string;
 	readonly #token: string;
+	readonly #holder: () => string;
 	readonly #fetch: typeof fetch;
 	readonly #accountFills: CompanyComputerAccountFills | undefined;
 	readonly #screenshots: Pick<CloudCompanyComputerScreenshots, "holdInline"> | undefined;
@@ -135,6 +134,8 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		descriptor: CompanyComputerNativeDescriptor;
 		url: string;
 		token: string;
+		/** G2-6c: the run's holder credential, read per request (NativeHostDispatch.holderHeader). */
+		holder: () => string;
 		registry: HttpCloudCompanyComputerRegistry;
 		fetch?: typeof fetch;
 		accountFills?: CompanyComputerAccountFills;
@@ -154,6 +155,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		this.#run = options.run;
 		this.#url = endpoint.url;
 		this.#token = options.token;
+		this.#holder = options.holder;
 		this.#fetch = options.fetch ?? fetch;
 		this.#accountFills = options.accountFills;
 		this.#screenshots = options.screenshots;
@@ -205,6 +207,9 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		});
 		if (Buffer.byteLength(encoded) > COMPANY_COMPUTER_NATIVE_MAX_REQUEST)
 			throw new Error("OFFICE_NATIVE_REQUEST_TOO_LARGE");
+		// G2-6c: every perform and release proves the run's lease. Only the job's own holder goes to the computer, never
+		// the identity credential the dispatch gives between jobs (the run's close releases inside its job).
+		const holder = this.#holder();
 		try {
 			return await cloudToolRequest(
 				async (s) => {
@@ -212,7 +217,11 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 						method: "POST",
 						redirect: "error",
 						signal: s,
-						headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" },
+						headers: {
+							authorization: `Bearer ${this.#token}`,
+							"content-type": "application/json",
+							...(isNativeJobHolder(holder) ? { "x-qorpera-identity": holder } : {}),
+						},
 						body: encoded,
 					});
 					if (!response.ok) {
@@ -346,9 +355,10 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 export function createHttpCompanyComputerSessionFactory(options: {
 	url: string;
 	token: string;
+	/** G2-6c: the run's holder credential, read per request (NativeHostDispatch.holderHeader). */
+	holder: () => string;
 	registry: HttpCloudCompanyComputerRegistry;
 	fetch?: typeof fetch;
-	objectGateway?: { baseUrl: string; token: string; holder?: () => string; fetch?: typeof fetch };
 	/** The vault, for vault_fill (A1-3); without it every fill is refused before the office. */
 	accountFills?: CompanyComputerAccountFills;
 }): CloudCompanyComputerSessionFactory {
@@ -356,7 +366,6 @@ export function createHttpCompanyComputerSessionFactory(options: {
 	const route = parseCompanyComputerNativeRoute(options.url);
 	const reaches = (companyComputerId: string) =>
 		route.companyComputerId === null || route.companyComputerId === companyComputerId;
-	const objectGateway = options.objectGateway ? parseCompanyComputerCaptureGateway(options.objectGateway) : undefined;
 	if (!/^[A-Za-z0-9_-]{43}$/.test(options.token)) throw new Error("INVALID_OFFICE_NATIVE_CONFIGURATION");
 	return async (run, operations) => {
 		if (run.identity.audienceKind !== "company") return undefined;
@@ -387,20 +396,17 @@ export function createHttpCompanyComputerSessionFactory(options: {
 		if (!reaches(descriptor.scope.companyComputerId)) return undefined;
 		const url = route.urlFor(descriptor.scope.companyComputerId);
 		// One capture reader for the run: the endpoint keeps a screenshot's pixels there, and the boundary reads them.
-		const screenshots = objectGateway
-			? createHttpCompanyComputerScreenshots({
-					run,
-					scope: descriptor.scope,
-					registry: options.registry,
-					objectGateway,
-				})
-			: undefined;
+		const screenshots = new CloudCompanyComputerScreenshots({
+			run,
+			scope: descriptor.scope,
+			registry: options.registry,
+		});
 		const remote = new HttpCompanyComputerNativeEndpoint({
 			...options,
 			url,
 			run,
 			descriptor,
-			...(screenshots ? { screenshots } : {}),
+			screenshots,
 		});
 		const session = createCloudCompanyComputerSession({
 			run,
@@ -411,7 +417,7 @@ export function createHttpCompanyComputerSessionFactory(options: {
 		});
 		return {
 			tools: session.tools,
-			...(screenshots ? { captures: new CloudNativeCaptureImages(screenshots) } : {}),
+			captures: new CloudNativeCaptureImages(screenshots),
 			close: async () => {
 				try {
 					await remote.close();

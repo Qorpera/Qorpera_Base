@@ -113,7 +113,7 @@ export async function serveFolderObject(
 	}
 	if (bytes.byteLength !== authority.bytes || createHash("sha256").update(bytes).digest("hex") !== sha256)
 		throw new ObjectDependencyError(503);
-	// Recheck after potentially slow NAS I/O, as the native route does.
+	// Recheck after potentially slow NAS I/O.
 	const current = await options.authority.authorizeFolderDownload(environmentId, actor, sha256);
 	if (current.profileId !== authority.profileId || current.bytes !== authority.bytes)
 		throw new ObjectDependencyError(503);

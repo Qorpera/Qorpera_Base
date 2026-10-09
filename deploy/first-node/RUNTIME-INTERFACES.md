@@ -867,7 +867,7 @@ every row does. Column and value labels are in the member's language. The `text`
 `file:rules/shared-areas.md` when the file exists. The `activity` source is not built: the live state has only each
 agent's current run, not the runs that happened, so it waits for a read of past runs (with their answers and changes).
 
-**Built: I9c, the offers' machinery** (`supabase/migrations/20260930105000_interface_offers.sql`, test 938). Offers are
+**Built: I9c, the offers' machinery** (`supabase/migrations/20260928509110_interface_offers.sql`, test 938). Offers are
 kept in `qorpera_interface_offers` (§5 "Offers"). Members make, decline, withdraw and list them with four calls
 (`supabase/CLIENT-CONTRACT.md`, "Offers of a claimed cell"). Offer, decline and withdraw hold the table's index row
 FOR SHARE, so they wait for a save that holds it (FOR NO KEY UPDATE) and read the files as the last commit left
@@ -884,3 +884,14 @@ drop onto a member's lane, each card's offer lines, and Withdraw, Accept and Not
 take's write with the offer passed to the claim rule. Pulse's `waiting` lists each open offer to the viewer whose cell
 the folder read still shows as the offer read it, with Accept and Not now. A cloud without the calls, or a member they
 don't answer, draws no offer.
+
+**Built: I8a, the read tools** (`packages/runtime/src/cloud-folder-interface-tools.ts`,
+`supabase/migrations/20260930200000_interface_agent_tools.sql`). A folder-v2 run has `interface_read` and `table_read`
+as Company File tools. Each reads the files as they are now, with the run's own reads (§4), parses each text itself and
+releases exactly its answer with the files it shows. `interface_read` gives one view a page at a time: the interface's
+settings and buttons first, then each block in order (a board's part and a calendar's source are each one item), with
+a table's rows as the page keeps them, a file's text, and for anything it can't show a note: mail, the folder's own
+todos and routines and outside content name where to read them, and live state is noted as not shown. An interface
+whose access lists other agents shows nothing. `table_read` gives a table's rows kept by a `where`, a page at a time by
+key; its first page holds each column's type, the table's problems and who may write it. An answer too long for one
+result is cut and says how much more there is. The migration names all four tools in a run's observations; I8b adds `table_write` and `save_interface`.

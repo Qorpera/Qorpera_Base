@@ -81,6 +81,10 @@ describe("office provider installation boundary", () => {
 		);
 		expect(result.unit).not.toContain("@JOURNAL_MOUNT@");
 		expect(result.unit).not.toContain("@WORKBENCH_MOUNT@");
+		// The LXD socket's group, and the agent plug's: each computer's agent card is plugged in before its create.
+		expect(result.unit).toMatch(
+			new RegExp(`^SupplementaryGroups=${f.policy.host.socketGid} qorpera-agent-plug$`, "m"),
+		);
 	});
 	it("refuses templates that omit or duplicate a required mount dependency binding", () => {
 		const f = fixture();

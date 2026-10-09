@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { createOfficeCombinedControl } from "./test-runtime-office-combined-control.mjs";
 
 // Explicit local Linux proof. No provider APIs, production paths or host home
 // mounts. Set QORPERA_OFFICE_TEST_IMAGE to an already prepared test image.
@@ -16,49 +15,31 @@ const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 process.umask(0o022);
 const root = await mkdtemp(join(tmpdir(), "qorpera-office-linux-"));
 await chmod(root, 0o755);
-const rebuild = process.argv.slice(2).includes("--combined-rebuild");
-const combined = rebuild || process.argv.slice(2).includes("--combined");
-const guest = combined || process.argv.slice(2).includes("--guest");
+// The combined modes (--combined, --combined-rebuild) are gone: they ran a snapshot-v1 company's objects through the
+// native object route (legacy removal, step C).
+const guest = process.argv.slice(2).includes("--guest");
 const boundary = process.argv.slice(2).includes("--boundary");
 const privateSurface = guest || boundary || process.argv.slice(2).includes("--private");
 const browser = privateSurface || process.argv.slice(2).includes("--browser");
 const desktop = browser || process.argv.slice(2).includes("--desktop");
 // The long-running shell alone: its namespace, relay and namespace entry file.
 const shell = process.argv.slice(2).includes("--shell");
-if (process.argv.slice(2).some((arg) => !["--desktop", "--browser", "--private", "--guest", "--boundary", "--combined", "--combined-rebuild", "--shell"].includes(arg))) throw new Error("Unsupported Linux proof mode");
+if (process.argv.slice(2).some((arg) => !["--desktop", "--browser", "--private", "--guest", "--boundary", "--shell"].includes(arg))) throw new Error("Unsupported Linux proof mode");
 if (shell && process.argv.length !== 3) throw new Error("The shell proof runs alone");
 const image = process.env.QORPERA_OFFICE_TEST_IMAGE || `qorpera-office-linux-test:step4-${browser ? "browser" : desktop ? "desktop" : shell ? "shell" : "commands"}`;
 if (!/^[a-zA-Z0-9_./:@-]+$/.test(image)) throw new Error("Invalid local test image reference");
 let runningImage = image;
-let combinedControl;
 const base = "ubuntu:26.04@sha256:2260313b31c8c011cd2eebe728008efac1b3982be73eb71348ea2648d2c0e09b";
 const container = `qorpera-office-probe-${randomUUID()}`;
 const boundaryVolume = `qorpera-office-boundary-${randomUUID()}`;
 const screenEventsVolume = `qorpera-office-screen-events-${randomUUID()}`;
-const canonicalVolume = `qorpera-office-canonical-${randomUUID()}`;
 const stop = new AbortController();
 const interrupted = () => stop.abort();
 process.once("SIGINT", interrupted);
 process.once("SIGTERM", interrupted);
-async function run(args, rpc = false) {
+async function run(args) {
 	await new Promise((resolveRun, reject) => {
-		const child = spawn("docker", args, { stdio: rpc ? ["pipe", "pipe", "inherit"] : "inherit", signal: stop.signal });
-		if (rpc) {
-			let buffer = "";
-			child.stdout.on("data", bytes => {
-				buffer += bytes;
-				if (buffer.length > 8*1024*1024) { child.kill(); reject(new Error("Combined proof output limit")); return; }
-				let newline;
-				while ((newline = buffer.indexOf("\n")) !== -1) {
-					const line = buffer.slice(0, newline); buffer = buffer.slice(newline+1);
-					if (!line.startsWith('{"rpc":')) { console.log(line); continue; }
-					const request = JSON.parse(line);
-					try { child.stdin.write(`${JSON.stringify({id:request.id,value:combinedControl.rpc(request.rpc,request.args)})}\n`); }
-					catch (error) { child.stdin.write(`${JSON.stringify({id:request.id,error:error.message})}\n`); }
-				}
-			});
-			child.stdin.on("error", reject);
-		}
+		const child = spawn("docker", args, { stdio: "inherit", signal: stop.signal });
 		child.once("error", reject);
 		child.once("exit", (code, signal) => code === 0 ? resolveRun() : reject(new Error(`docker failed (${code ?? signal})`)));
 	});
@@ -123,6 +104,8 @@ const controls = {
 	"test-firewall flush": ["nft", ["delete", "table", "inet", "qorpera_computers"]],
 	"test-firewall down": [plumber, ["--down"]],
 	"test-firewall up": [plumber, ["--up"]],
+	// The agent card's routing gone (an accident): its address and firewall stay.
+	"test-route fault": ["sh", ["-c", "ip rule del priority 1001 && ip rule del priority 1002"]],
 };
 // Like systemd's accepted socket: a client that has finished sending still gets its answer.
 const server = createServer({ allowHalfOpen: true }, (socket) => {
@@ -155,8 +138,14 @@ server.listen("/run/qorpera-computer-network/plumb.sock", () => {
 import { createServer as createHttp } from "node:http";
 import { createServer } from "node:net";
 const name = process.argv[2];
-// High ports: the container keeps no right to bind low ones.
-createHttp((request, response) => response.end(name + ":" + request.url)).listen(8080, "0.0.0.0");
+// High ports: the container keeps no right to bind low ones (only the public
+// host's namespace lets it, for the browser relay's port 443).
+// /from answers with the address the request came from.
+createHttp((request, response) => response.end(name + ":" + (request.url === "/from" ? request.socket.remoteAddress : request.url))).listen(8080, "0.0.0.0");
+if (name === "public") createServer((socket) => {
+	socket.on("error", () => undefined);
+	socket.end("relay:" + socket.remoteAddress);
+}).listen(443, process.argv[3]);
 createServer((socket) => {
 	// A client may hang up as soon as it has read enough.
 	socket.on("error", () => undefined);
@@ -167,6 +156,31 @@ udp.on("message", (message, from) => udp.send(Buffer.concat([Buffer.from(name + 
 // Answers from the host's own address, as a real server does, so the reply matches.
 udp.bind(5353, process.argv[3]);
 `);
+		// The node's agent exit as far as the machine sees it: its name server,
+		// which knows pub.example (the public host) and no other name.
+		await writeFile(join(root, "exit-dns.mjs"), `import { createSocket } from "node:dgram";
+import { createServer } from "node:net";
+const dns = createSocket("udp4");
+dns.on("message", (query, from) => {
+	let end = 12;
+	const labels = [];
+	while (end < query.length && query[end]) {
+		labels.push(query.subarray(end + 1, end + 1 + query[end]).toString("latin1"));
+		end += query[end] + 1;
+	}
+	if (end + 5 > query.length) return;
+	const known = labels.join(".").toLowerCase() === "pub.example";
+	const address = known && query.readUInt16BE(end + 1) === 1;
+	const header = Buffer.from([query[0], query[1], 0x81, known ? 0x80 : 0x83, 0, 1, 0, address ? 1 : 0, 0, 0, 0, 0]);
+	const answer = address ? Buffer.from([0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 93, 184, 216, 34]) : Buffer.alloc(0);
+	dns.send(Buffer.concat([header, query.subarray(12, end + 5), answer]), from.port, from.address);
+});
+dns.bind(53, "10.210.0.1");
+createServer((socket) => {
+	socket.on("error", () => undefined);
+	socket.end("exit-dns");
+}).listen(53, "10.210.0.1");
+`);
 		runningImage = `qorpera-office-shell-probe:${randomUUID()}`;
 		await run(["build", "--tag", runningImage, root]);
 	}
@@ -174,27 +188,8 @@ udp.bind(5353, process.argv[3]);
 		await mkdir(join(root, "node_modules"));
 		await cp(join(repository, "node_modules/playwright-core"), join(root, "node_modules/playwright-core"), { recursive: true });
 	}
-	await build({ absWorkingDir: repository, entryPoints: [combined ? "packages/runtime/test/fixtures/company-computer-linux-combined-probe.mjs" : `packages/runtime/test/fixtures/company-computer-linux-${boundary ? "boundary-" : guest ? "guest-" : privateSurface ? "private-" : browser ? "browser-" : desktop ? "desktop-" : shell ? "shell-" : ""}probe.ts`],
-		outfile: join(root, "probe.mjs"), platform: "node", format: "esm", target: "node22.19", bundle: true, external: browser ? ["playwright-core"] : [],
-		...(combined ? {banner:{js:'import {createRequire} from "node:module"; const require=createRequire(import.meta.url);'},
-			plugins:[{name:"disposable-browser-content",setup(builder) {
-				// Intercept only page content in this test bundle. The unmodified
-				// production launch, namespace, browser control and input code run.
-				builder.onLoad({filter:/\/cloud-company-computer-linux-browser\.ts$/},async ({path}) => {
-					const source = await readFile(path,"utf8");
-					const anchor = "return { context: contexts[0], close };";
-					if (source.split(anchor).length !== 2) throw new Error("Browser fixture anchor changed");
-					const body = '<!doctype html><title>Office reconciliation</title><label>First total<input aria-label="First total"></label><label>Second total<input aria-label="Second total"></label><button onclick="document.querySelector(\'output\').textContent=Number(document.querySelectorAll(\'input\')[0].value)+Number(document.querySelectorAll(\'input\')[1].value)">Reconcile</button><output>Pending</output>';
-					return {contents:source.replace(anchor,`await contexts[0].route("https://office.example/**", route => route.fulfill({contentType:"text/html",body:${JSON.stringify(body)}}));\n${anchor}`),loader:"ts"};
-				});
-			}}]} : {}) });
-	if (combined) {
-		const cert = spawnSync("openssl", ["req","-x509","-newkey","rsa:2048","-nodes","-keyout",join(root,"key.pem"),"-out",join(root,"cert.pem"),"-days","1","-subj","/CN=localhost","-addext","subjectAltName=DNS:localhost,IP:127.0.0.1"], {encoding:"utf8",timeout:15000});
-		if (cert.status !== 0) throw new Error(cert.stderr);
-		await chmod(join(root,"key.pem"),0o644);
-		combinedControl = await createOfficeCombinedControl(repository,{rebuild});
-		await writeFile(join(root,"combined-setup.json"),JSON.stringify(combinedControl.setup));
-	}
+	await build({ absWorkingDir: repository, entryPoints: [`packages/runtime/test/fixtures/company-computer-linux-${boundary ? "boundary-" : guest ? "guest-" : privateSurface ? "private-" : browser ? "browser-" : desktop ? "desktop-" : shell ? "shell-" : ""}probe.ts`],
+		outfile: join(root, "probe.mjs"), platform: "node", format: "esm", target: "node22.19", bundle: true, external: browser ? ["playwright-core"] : [] });
 	await writeFile(join(root, "start.sh"), `#!/bin/sh
 set -eu
 mkdir -p /srv/workbench /srv/desktop /srv/screens /srv/profiles /tmp/.X11-unix /tmp/office-x
@@ -211,15 +206,14 @@ chown 1000:1000 /srv
 chmod 700 /var/lib/qorpera-office-events
 chown 1000:1000 /var/lib/qorpera-office-events` : ""}
 chmod 1777 /tmp/.X11-unix
-${combined ? `mkdir -p /var/lib/qorpera-proof-canonical
-chmod 700 /var/lib/qorpera-proof-canonical
-chown 1000:1000 /var/lib/qorpera-proof-canonical` : ""}
 dpkg-query -W nodejs bubblewrap tini xvfb xdotool scrot
 ${desktop ? "dpkg-query -W tigervnc-standalone-server xfce4-session xfwm4 xfdesktop4" : ""}
 ${browser ? "/usr/lib/qorpera-chromium/chrome --version" : ""}
 ${boundary ? "node /opt/probe/probe.mjs --prepare" : ""}
 ${shell ? `# The machine: the computers' firewall, a public and a private host behind it, the plumber.
-/usr/local/lib/qorpera/qorpera-computer-plumb --up
+# Without its agent card the machine's network does not come up at all.
+if /usr/local/lib/qorpera/qorpera-computer-plumb --up 2>/dev/null; then echo "network up without an agent card" >&2; exit 1; fi
+if nft list table inet qorpera_computers >/dev/null 2>&1; then echo "firewall loaded without an agent card" >&2; exit 1; fi
 ip link set lo up
 for side in pub:1:93.184.216.34 priv:5:10.9.9.9; do
 	netns=\${side%%:*}; rest=\${side#*:}; low=\${rest%%:*}; address=\${rest#*:}
@@ -236,8 +230,29 @@ for side in pub:1:93.184.216.34 priv:5:10.9.9.9; do
 done
 ip -n priv addr add 169.254.169.254/32 dev lo
 ip route add 169.254.169.254/32 via 192.0.2.6
+# The machine's first card: its own way to everything else.
+ip route add default via 192.0.2.2
+# The agent card (the plug's MAC for 10.210.1.1), a port of the node's agents'
+# network, where the agent exit (10.210.0.1) reaches the public host.
+ip netns add exit
+ip -n exit link set lo up
+ip link add qagent address 0e:51:0a:d2:01:01 type veth peer name eth0 netns exit
+ip -n exit addr add 10.210.0.1/16 dev eth0
+ip -n exit link set eth0 up
+ip -n exit link add eth1 type veth peer name eth1 netns pub
+ip -n exit addr add 192.0.2.9/30 dev eth1
+ip -n exit link set eth1 up
+ip -n pub addr add 192.0.2.10/30 dev eth1
+ip -n pub link set eth1 up
+ip -n exit route add 93.184.216.34/32 via 192.0.2.10
+ip -n pub route add 10.210.0.0/16 via 192.0.2.9
+ip netns exec exit sysctl -q -w net.ipv4.ip_forward=1 net.ipv4.ip_unprivileged_port_start=0
+ip netns exec pub sysctl -q -w net.ipv4.ip_unprivileged_port_start=0
+/usr/local/lib/qorpera/qorpera-computer-plumb --up
 ip netns exec pub node /opt/probe/stand-in.mjs public 93.184.216.34 &
 ip netns exec priv node /opt/probe/stand-in.mjs private 10.9.9.9 &
+ip netns exec exit node /opt/probe/stand-in.mjs exit 10.210.0.1 &
+ip netns exec exit node /opt/probe/exit-dns.mjs &
 node /opt/probe/plumb-socket.mjs "$(getent passwd 1000 | cut -d: -f1)" &
 sleep 1
 ` : ""}exec setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all node /opt/probe/probe.mjs
@@ -246,7 +261,7 @@ sleep 1
 	// the node 2 test machine) and proc masks block nested user/PID namespaces.
 	// The outer container permits that setup; the real bwrap boundary then runs
 	// as uid 1000 with no capabilities, no network, and finite cgroup ceilings.
-	const guestArgs = ["run", ...(combined ? ["-i"] : []), "--rm", "--name", container, "--network", "none", "--read-only", "--memory", browser ? "2g" : desktop ? "1g" : shell ? "640m" : "512m", "--memory-swap", browser ? "2g" : desktop ? "1g" : shell ? "640m" : "512m",
+	const guestArgs = ["run", "--rm", "--name", container, "--network", "none", "--read-only", "--memory", browser ? "2g" : desktop ? "1g" : shell ? "640m" : "512m", "--memory-swap", browser ? "2g" : desktop ? "1g" : shell ? "640m" : "512m",
 		"--pids-limit", browser ? "512" : desktop || shell ? "256" : "128", "--cpus", desktop ? "2" : "1", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "SETUID", "--cap-add", "SETGID", "--cap-add", "SETPCAP",
 		// The shell proof's root plumber and machine firewall; the probe itself drops them.
 		...(shell ? ["--cap-add", "NET_ADMIN", "--cap-add", "SYS_ADMIN", "--cap-add", "SYS_PTRACE",
@@ -263,26 +278,9 @@ sleep 1
 		...(boundary ? ["--tmpfs", "/run/office-attestation:rw,nosuid,nodev,noexec,size=1m,mode=755"] : []),
 		...(desktop ? ["--mount", `type=bind,source=${join(root, "artifacts")},target=/opt/probe-artifacts`] : []),
 		...(guest ? ["--mount", `type=volume,source=${screenEventsVolume},target=/var/lib/qorpera-office-events`] : []),
-		...(combined ? ["--mount", `type=volume,source=${canonicalVolume},target=/var/lib/qorpera-proof-canonical`] : []),
 		"--mount", `type=bind,source=${root},target=/opt/probe,readonly`, runningImage, "sh", "/opt/probe/start.sh"];
-	await run(guestArgs,combined);
-	if (rebuild) {
-		const deadline = Date.now()+5000;
-		for (;;) {
-			const remaining = spawnSync("docker",["ps","-aq","--filter",`name=^/${container}$`],{encoding:"utf8",timeout:5000});
-			if (remaining.status !== 0) throw new Error(`Guest removal query failed: ${remaining.stderr}`);
-			if (!remaining.stdout.trim()) break;
-			if (Date.now() >= deadline) throw new Error(`Prior guest removal not confirmed: ${remaining.stdout.trim()}`);
-			await new Promise(resolve=>setTimeout(resolve,100));
-		}
-		const next = await combinedControl.prepareRebuild();
-		await writeFile(join(root,"combined-setup.json"),JSON.stringify(next));
-		// New container and empty /srv tmpfs: neither old desktops nor old
-		// workbench bytes survive. Only the separate canonical volume persists.
-		await run(guestArgs,combined);
-	}
-	if (combined) combinedControl.verify();
-	if (desktop && !boundary && !combined && process.env.QORPERA_OFFICE_TEST_OUTPUT) {
+	await run(guestArgs);
+	if (desktop && !boundary && process.env.QORPERA_OFFICE_TEST_OUTPUT) {
 		const output = resolve(process.env.QORPERA_OFFICE_TEST_OUTPUT);
 		await mkdir(output, { recursive: true, mode: 0o700 });
 		for (const name of guest ? ["guest.png"] : privateSurface ? ["private.png"] : browser ? ["desktop.png", "browser.png"] : ["desktop.png"]) {
@@ -293,12 +291,10 @@ sleep 1
 		}
 	}
 } finally {
-	combinedControl?.close();
 	// Only this invocation's unique disposable container, including interrupted runs.
 	spawnSync("docker", ["rm", "--force", container], { stdio: "ignore", timeout: 10000 });
 	if (boundary) spawnSync("docker", ["volume", "rm", boundaryVolume], { stdio: "ignore", timeout: 10000 });
 	if (guest) spawnSync("docker", ["volume", "rm", screenEventsVolume], { stdio: "ignore", timeout: 10000 });
-	if (combined) spawnSync("docker", ["volume", "rm", canonicalVolume], { stdio: "ignore", timeout: 10000 });
 	if (runningImage !== image) spawnSync("docker", ["image", "rm", runningImage], { stdio: "ignore", timeout: 10000 });
 	process.removeListener("SIGINT", interrupted);
 	process.removeListener("SIGTERM", interrupted);

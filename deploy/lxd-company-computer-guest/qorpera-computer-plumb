@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Root. Each computer's own network: a veth whose machine end is
-# qcmp<ordinal><s|d>, filtered by qorpera-computer-network.nft.
+# qcmp<ordinal><s|d>, filtered by qorpera-computer-network.nft. Computers leave
+# by the machine's agent card `qagent` (its second card, a port of the node's
+# agents' bridge), through the node's agent exit, never by its first card.
 #
-#   qorpera-computer-plumb --up     load the firewall, then turn forwarding on
-#   qorpera-computer-plumb --down   remove every computer's link, then the firewall
+#   qorpera-computer-plumb --up     load the firewall, address and route the agent card, then turn forwarding on
+#   qorpera-computer-plumb --down   remove every computer's link, the agent card's routes and address, then the firewall
 #   qorpera-computer-plumb          one request on stdin (qorpera-computer-plumb.socket):
 #     request: plumb <ordinal 1-32> <shell|desktop> <pid in that namespace>
 #     answer:  ok <address>   or   refused <reason>
@@ -13,8 +15,8 @@
 # program still waits at its start gate. Only such a namespace of the office
 # account is plumbed: under /usr/bin/bwrap (never the browser's own copy, whose
 # network is its relay), not this machine's own, with no link yet. Nothing is
-# plumbed without the machine's firewall, and every computer also gets a filter
-# of its own inside its namespace, which it cannot change.
+# plumbed without the machine's firewall and agent card, and every computer
+# also gets a filter of its own inside its namespace, which it cannot change.
 #
 # One step at a time on this machine (requests, --up and --down), so a late
 # request never undoes a newer one. The lock is this file itself, which only
@@ -31,11 +33,37 @@ refuse() {
 links() {
 	ip -o link show | sed -n 's/^[0-9]*: \(qcmp[0-9]*[sd]\)@.*/\1/p'
 }
+# The agent card's address, from its MAC: the node's plug tool gives a machine
+# 10.210.X.Y with the MAC 0e:51:0a:d2:XX:YY (agent-plug.ts), and the exit lets
+# that MAC speak for that address only. Nothing without a card it gave.
+plug_address() {
+	local mac
+	mac=$(</sys/class/net/qagent/address) || return 1
+	[[ ${mac} =~ ^0e:51:0a:d2:([0-9a-f]{2}):([0-9a-f]{2})$ ]] || return 1
+	local third=$((16#${BASH_REMATCH[1]})) fourth=$((16#${BASH_REMATCH[2]}))
+	((third > 0 && fourth > 0 && fourth < 255)) || return 1
+	printf '10.210.%d.%d' "${third}" "${fourth}"
+}
+# The agent card's routing, at fixed priorities: replies to the computers stay
+# on this machine's own routes; the computers' and the card's own traffic use
+# table 210, whose only way out is the exit (10.210.0.1). Should these go, that
+# traffic finds the first card's route and the firewall drops it there.
+unroute() {
+	local priority
+	for priority in 1000 1001 1002; do
+		while ip rule del priority "${priority}" 2>/dev/null; do :; done
+	done
+	ip route flush table 210 2>/dev/null || true
+}
 exec 9<"${BASH_SOURCE[0]}"
 
 case ${1-} in
 --up)
 	flock 9
+	plug=$(plug_address) || {
+		echo "qorpera-computer-plumb: no agent card (qagent with a plug's MAC)" >&2
+		exit 1
+	}
 	nft -f "${nft_file}"
 	# Room for every computer's connections (the firewall bounds them) and the
 	# machine's own. Only the machine's own kernel may raise it.
@@ -43,6 +71,21 @@ case ${1-} in
 	# No redirects from any interface: the kernel ORs "all" with each one's own.
 	sysctl -q -w net.ipv4.conf.default.send_redirects=0
 	for setting in /proc/sys/net/ipv4/conf/*/send_redirects; do printf 0 >"${setting}"; done
+	# The card answers and asks ARP for its own address only (the exit checks
+	# both), and has no IPv6. Its address has no route in the main table.
+	sysctl -q -w net.ipv6.conf.qagent.disable_ipv6=1 net.ipv4.conf.qagent.arp_ignore=1 \
+		net.ipv4.conf.qagent.arp_announce=2
+	ip link set qagent up
+	while read -r _ _ _ address _; do
+		[[ ${address} == "${plug}/16" ]] || ip addr del "${address}" dev qagent
+	done < <(ip -o -4 addr show dev qagent)
+	ip addr replace "${plug}/16" dev qagent noprefixroute
+	unroute
+	ip route add 10.210.0.0/16 dev qagent src "${plug}" table 210
+	ip route add default via 10.210.0.1 dev qagent src "${plug}" table 210
+	ip rule add priority 1000 to 10.253.0.0/16 lookup main
+	ip rule add priority 1001 from 10.253.0.0/16 lookup 210
+	ip rule add priority 1002 from "${plug}" lookup 210
 	sysctl -q -w net.ipv4.ip_forward=1
 	exit 0
 	;;
@@ -50,6 +93,9 @@ case ${1-} in
 	flock 9
 	for link in $(links); do ip link del "${link}" 2>/dev/null || true; done
 	sysctl -q -w net.ipv4.ip_forward=0
+	# The card's way out goes before the firewall that keeps it to the card.
+	unroute
+	ip -4 addr flush dev qagent 2>/dev/null || true
 	nft delete table inet qorpera_computers 2>/dev/null || true
 	exit 0
 	;;
@@ -64,11 +110,18 @@ role=${BASH_REMATCH[2]}
 pid=${BASH_REMATCH[3]}
 flock -w 10 9 || refuse busy
 
-# The machine's firewall is loaded: its input and forward chains as shipped.
+# The machine's firewall is loaded: its input, forward and output chains as shipped.
 input=$(nft list chain inet qorpera_computers input 2>/dev/null) || refuse firewall
 forward=$(nft list chain inet qorpera_computers forward 2>/dev/null) || refuse firewall
+output=$(nft list chain inet qorpera_computers output 2>/dev/null) || refuse firewall
 nft list chain inet qorpera_computers postrouting >/dev/null 2>&1 || refuse firewall
 [[ ${input} == *'iifname "qcmp*" drop'* && ${forward} == *'policy drop;'* ]] || refuse firewall
+[[ ${forward} == *'iifname "qcmp*" oifname != "qagent" drop'* ]] || refuse firewall
+[[ ${output} == *'ip saddr 10.210.0.0/16 oifname != "qagent" drop'* ]] || refuse firewall
+# The agent card has its address and the computers' way out through it.
+plug=$(plug_address) || refuse plug
+[[ $(ip -o -4 addr show dev qagent) == *" inet ${plug}/16 "* ]] || refuse plug
+[[ $(ip rule show priority 1001) == *'from 10.253.0.0/16 lookup 210'* ]] || refuse plug
 # Our addresses overlap nothing else on this machine.
 while read -r _ name _ address _; do
 	[[ ${name} =~ ^qcmp[0-9]+[sd]$ || ${address} != 10.253.* ]] || refuse addresses
@@ -128,6 +181,8 @@ table inet qorpera_computer {
 		type filter hook output priority filter; policy accept;
 		oifname "lo" accept
 		meta nfproto ipv6 drop
+		ip daddr 10.210.0.1 udp dport 53 accept
+		ip daddr 10.210.0.1 tcp dport 53 accept
 		ip daddr @blocked drop
 	}
 }
