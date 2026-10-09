@@ -373,7 +373,8 @@ export class FakeCore implements FolderCore {
 		const view = this.#check(actor, environmentId);
 		if (final && view?.kind !== "computer_shell_command") throw new CoreRefusal("invalid");
 		if (units.length === 0 && !final) throw new CoreRefusal("invalid");
-		if (view?.kind === "computer_shell_command" && view.ended && !final) throw new CoreRefusal("denied", COMMAND_ENDED);
+		if (view?.kind === "computer_shell_command" && view.ended && !final)
+			throw new CoreRefusal("denied", COMMAND_ENDED);
 		// The view's read set is checked again before its save (20260928469330): a read it no longer sees refuses it.
 		if (actor.kind === "view" && [...(this.readSets.get(actor.viewId)?.keys() ?? [])].some((p) => this.hidden(p)))
 			throw new CoreRefusal("denied", "A read is no longer readable");
