@@ -232,7 +232,11 @@ export type TableRead =
 
 /** A table as its files say now: its definition, and the rows of its rows file that fit it, with the problems of
  * those that don't. A table without a rows file has no rows yet. */
-export async function readTable(folder: CloudCompanyFolderClient, name: string, signal: AbortSignal): Promise<TableRead> {
+export async function readTable(
+	folder: CloudCompanyFolderClient,
+	name: string,
+	signal: AbortSignal,
+): Promise<TableRead> {
 	const file = await readFile(folder, `tables/${name}/table.toml`, TABLE_FILE_MAX_BYTES, signal);
 	if (file.kind === "absent") return file;
 	if (file.kind === "not_text") return { kind: "broken", entry: file.entry, problems: [`table.toml ${file.why}`] };

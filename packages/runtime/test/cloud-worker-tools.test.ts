@@ -743,6 +743,15 @@ describe("agent todo and worker tools", () => {
 			),
 		).toEqual(["company_read", "company_list"]);
 		expect(writer.companyFile(tool("company_write")) && parent.companyFile(tool("company_delete"))).toBe(true);
+		// Rows of a table are written as files are; an interface save is never a worker's, whatever its access.
+		const interfaces = ["interface_read", "table_read", "table_write", "save_interface"];
+		expect(interfaces.filter((name) => readOnly.companyFile(tool(name)))).toEqual(["interface_read", "table_read"]);
+		expect(interfaces.filter((name) => writer.companyFile(tool(name)))).toEqual([
+			"interface_read",
+			"table_read",
+			"table_write",
+		]);
+		expect(interfaces.filter((name) => parent.companyFile(tool(name)))).toEqual(interfaces);
 	});
 });
 

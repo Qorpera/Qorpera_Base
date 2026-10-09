@@ -444,7 +444,8 @@ members = "all"                     # all | owners | none
   at a time, so two files never change as one. Changes therefore go in steps, each its own save, and `save_interface`
   makes them in order:
   - to add a required column, add it as optional, fill the rows, then make it required;
-  - to remove a column, make it optional, drop it from the rows, then remove it.
+  - to remove a column, make it optional, drop it from the rows, then remove it. `save_interface` drops it from
+    the rows itself once it is optional and empty in every row; an agent fills and empties rows with `table_write`.
 - The database holds the rows only as the folder's index of the file, like every structured file (contract 5.6).
 
 ### The claim rule ("nobody assigns anybody")
@@ -895,3 +896,21 @@ todos and routines and outside content name where to read them, and live state i
 whose access lists other agents shows nothing. `table_read` gives a table's rows kept by a `where`, a page at a time by
 key; its first page holds each column's type, the table's problems and who may write it. An answer too long for one
 result is cut and says how much more there is. The migration names all four tools in a run's observations; I8b adds `table_write` and `save_interface`.
+
+**Built: I8b, the write tools** (`packages/runtime/src/cloud-folder-interface-writes.ts`). A folder-v2 run has
+`save_interface` and `table_write` as Company File tools; a worker has `table_write` only, and a read-only worker neither.
+Both write through the folder core with the run's own authority, under the call's receipt, and the save check (§6.1)
+decides each unit. `save_interface` saves interfaces' and tables' settings, READMEs and the order of the interfaces as
+one change set. Before its review it reads the files it replaces (the tool boundary's new `prepare` step) and gives
+the review a card that says what changes, never the files: a new interface or table, a button, an access, columns or
+`[write]` is a delegation and runs only with the review's approval; anything else applies at once. Its units go in
+the order the folder core needs: an interface that stops being main before the one that becomes main, and a rows file
+a removed column leaves before the definition without it. A file that already holds the call's text is named as
+unchanged. `table_write` sets and removes rows by key and edits `rows.csv` in place: the fields it changes, the rows it
+removes, the rows it adds after the last row, and every other byte, line end and the byte order mark as they were. A
+new row may leave out an id column; the id is made from the run, the operation key and the row's place, and the answer
+gives it. A row write refuses a claim (the agent has no supervisor to act for), a table whose `[write]` doesn't name
+the agent, a table whose rows don't all fit, and rows over 64 KiB, before its receipt. Every answer that says what a
+file holds is released with the entries it read. A replay of a saved call finds its change made and answers that
+nothing changed (a made id is made again, so it finds its own row); a call that waited for a member or failed at its
+commit replays from its receipt.

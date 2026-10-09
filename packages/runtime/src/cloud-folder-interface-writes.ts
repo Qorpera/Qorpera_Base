@@ -16,6 +16,9 @@
  *   (§6.1 rule 3), and a rows file a column leaves before the definition without it (§5).
  * - `table_write` edits the rows file in place: the fields it changes, the rows it adds or removes, and every other
  *   byte as it was.
+ * - A replay of a call whose change was saved finds the files or rows holding it and answers that nothing changed (an
+ *   id `table_write` made is made again, so it finds its own row and names the id once more); a call that waits for a
+ *   review or failed at its commit replays from its receipt.
  */
 
 import { createHash } from "node:crypto";
@@ -450,7 +453,9 @@ function delegates(item: Planned): boolean {
 	if (item.place.kind === "table") {
 		const next = item.next as TableFile;
 		const base = item.base as TableFile | null;
-		return !base || canonical(next.columns) !== canonical(base.columns) || canonical(next.write) !== canonical(base.write);
+		return (
+			!base || canonical(next.columns) !== canonical(base.columns) || canonical(next.write) !== canonical(base.write)
+		);
 	}
 	return false;
 }
@@ -515,6 +520,7 @@ async function planSave(
 		};
 		planned.push(item);
 		const holder = at.of && at.name ? holders.get(`${at.of}/${at.name}`) : undefined;
+		let ownersOnly = false;
 		if (at.of && at.name && holder) {
 			if (holder.entry?.kind === "file") {
 				block(item, "not_a_folder");
@@ -527,27 +533,21 @@ async function planSave(
 				else item.inNewFolder = true;
 				continue;
 			}
-			// An interface only its owners edit is never changed by an agent (§6.1 rule 4).
+			// An interface only its owners edit is never changed by an agent (§6.1 rule 4), though a file that already holds
+			// the call's text is unchanged, as a replay of the call that made it finds it.
 			const live = settings.get(`${at.of}/${at.name}`) as InterfaceFile | null | undefined;
-			if (at.of === "interfaces" && live?.access.edit === "owners") {
-				block(item, "owners_only");
-				continue;
-			}
+			ownersOnly = at.of === "interfaces" && live?.access.edit === "owners";
 		}
 		const current =
 			at.kind === "interface" || at.kind === "table"
 				? (holder?.settings ?? { kind: "absent" as const })
 				: await read(file.path, at.kind === "order" ? INTERFACE_ORDER_MAX_BYTES : README_MAX_BYTES);
-		if (current.kind === "absent") {
+		if (current.kind !== "absent") item.entry = current.entry;
+		if (current.kind === "text" && current.text === file.text) item.state = "unchanged";
+		else if (ownersOnly) block(item, "owners_only");
+		else if (current.kind === "absent") {
 			if (file.expectedVersion !== null) block(item, "missing");
-			continue;
-		}
-		item.entry = current.entry;
-		if (current.kind === "text" && current.text === file.text) {
-			item.state = "unchanged";
-			continue;
-		}
-		if (current.entry.kind === "folder") block(item, "not_a_file");
+		} else if (current.entry.kind === "folder") block(item, "not_a_file");
 		else if (file.expectedVersion === null) block(item, "exists");
 		else if (current.entry.version !== file.expectedVersion) block(item, "version_changed");
 		else {
@@ -619,11 +619,20 @@ async function planSave(
 		}
 		const now = parseTableRows(next, text);
 		if (!now.readable || now.problems.length > 0) {
-			block(item, "rows_do_not_fit", now.problems.map((problem) => problemText("rows.csv", problem)));
+			block(
+				item,
+				"rows_do_not_fit",
+				now.problems.map((problem) => problemText("rows.csv", problem)),
+			);
 			continue;
 		}
 		const claims = tableDefinitionProblems(base ?? { ...next, columns: [] }, next, now.rows);
-		if (claims.length > 0) block(item, "claim", claims.map((problem) => problemText("table.toml", problem)));
+		if (claims.length > 0)
+			block(
+				item,
+				"claim",
+				claims.map((problem) => problemText("table.toml", problem)),
+			);
 	}
 
 	const blocked = planned.some((item) => item.state === "blocked");
@@ -829,10 +838,11 @@ function saveCard(plan: SavePlan): Card {
 		if (own && tables) tableDetails(own.next as TableFile, own.base as TableFile | null, add);
 		else if (own) interfaceDetails(own.next as InterfaceFile, own.base as InterfaceFile | null, add);
 		const readme = items.find((item) => item.place.kind === "readme");
-		if (readme && readme.file.text.trim()) add(10, "what it is for", readme.file.text, true);
+		if (readme?.file.text.trim()) add(10, "what it is for", readme.file.text, true);
 	}
 	if (several)
-		title = kinds.size > 1 ? "Change interfaces and tables" : kinds.has("tables") ? "Change tables" : "Change interfaces";
+		title =
+			kinds.size > 1 ? "Change interfaces and tables" : kinds.has("tables") ? "Change tables" : "Change interfaces";
 	const details: CardDetail[] = [];
 	for (const item of ranked.sort((a, b) => a.rank - b.rank)) {
 		const value = head(item.value, item.quoted ? QUOTE_BYTES : DETAIL_BYTES);
@@ -870,8 +880,7 @@ const BLOCKED_NEXT: Readonly<Record<Blocked, string>> = {
 		"Nothing was saved. The table's rows do not fit the new definition. Change it in steps: add a required column as optional, fill it in every row with table_write, then make it required; to remove a column, make it optional and empty it in every row with table_write, then remove it.",
 	rows_not_writable:
 		"Nothing was saved. Removing the column changes the table's rows, which you may not write ([write] agents): tell the member.",
-	claim:
-		"Nothing was saved. The change would take the claim protection (needs_yes) off a column, or put it on one, while a row holds someone in it: leave it as it is, or tell the member.",
+	claim: "Nothing was saved. The change would take the claim protection (needs_yes) off a column, or put it on one, while a row holds someone in it: leave it as it is, or tell the member.",
 };
 
 const problemLine = (problem: { line: number | null; message: string }): string =>
@@ -1006,7 +1015,9 @@ function changeRows(
 		let fits = true;
 		for (const [name, value] of Object.entries(item)) {
 			const column = columns.get(name);
-			const read = column ? tableFieldValue(column, rawCell(value)) : { problem: `${name} is not a column of this table` };
+			const read = column
+				? tableFieldValue(column, rawCell(value))
+				: { problem: `${name} is not a column of this table` };
 			if ("problem" in read) {
 				problems.push(`${where}: ${read.problem}`);
 				fits = false;
@@ -1028,41 +1039,40 @@ function changeRows(
 			problems.push(`${where}: name the row's key (${table.key.join(", ")}); only an id is made for a new row`);
 			return;
 		}
-		const existing = unnamed.length === 0 ? index.get(tableRowKey(table, given)) : undefined;
-		if (existing === undefined) {
-			const row: TableRow = {};
-			for (const column of table.columns) {
-				const value = given[column.name] ?? null;
-				if (value !== null) row[column.name] = value;
-				else if (column.type === "id") {
-					const id = hashedId(ROW_ID, runId, `${request.operationKey}:${at}:${column.name}`);
-					row[column.name] = id;
-					ids.push({ set: at, column: column.name, id });
-				} else row[column.name] = null;
-			}
-			const lacking = table.columns.filter((column) => !column.optional && row[column.name] === null);
-			if (lacking.length > 0) {
-				problems.push(`${where}: a new row needs ${lacking.map((column) => column.name).join(", ")}`);
-				return;
-			}
-			const key = tableRowKey(table, row);
-			if (touched.has(key) || index.has(key)) {
-				problems.push(`${where}: another row in set has the same key`);
-				return;
-			}
-			touched.add(key);
-			added.push(row);
-			return;
-		}
-		const key = tableRowKey(table, given);
+		// An id is made from the call, so a replay of the call makes the same one and finds the row it added: a key id
+		// names that row, and another id the row holds is still the one this call made.
+		const made = (column: string) => hashedId(ROW_ID, runId, `${request.operationKey}:${at}:${column}`);
+		const filled: Record<string, TableValue> = { ...given };
+		for (const name of unnamed) filled[name] = made(name);
+		const key = tableRowKey(table, filled);
 		if (touched.has(key)) {
 			problems.push(`${where}: another row in set has the same key`);
 			return;
 		}
 		touched.add(key);
-		const was = before[existing] as TableRow;
+		const existing = index.get(key);
+		const was = existing === undefined ? null : (before[existing] as TableRow);
+		for (const column of table.columns) {
+			if (column.type !== "id" || (given[column.name] ?? null) !== null) continue;
+			const id = made(column.name);
+			if (was && was[column.name] !== id) continue;
+			filled[column.name] = id;
+			ids.push({ set: at, column: column.name, id });
+		}
+		if (existing === undefined || !was) {
+			const row: TableRow = Object.fromEntries(
+				table.columns.map((column) => [column.name, filled[column.name] ?? null]),
+			);
+			const lacking = table.columns.filter((column) => !column.optional && row[column.name] === null);
+			if (lacking.length > 0) {
+				problems.push(`${where}: a new row needs ${lacking.map((column) => column.name).join(", ")}`);
+				return;
+			}
+			added.push(row);
+			return;
+		}
 		const changed = new Map(
-			Object.entries(given).filter(([name, value]) => canonical(was[name] ?? null) !== canonical(value)),
+			Object.entries(filled).filter(([name, value]) => canonical(was[name] ?? null) !== canonical(value)),
 		);
 		if (changed.size > 0) updates.set(existing, changed);
 	});
@@ -1138,7 +1148,9 @@ function editRows(table: TableFile, text: string | null, change: RowsChange): st
 	lines.splice(last + 1, 0, ...added);
 	const lineEnd = header.end || "\n";
 	const finalEnd = records[records.length - 1]?.end ?? "";
-	return bom + lines.map((line, at) => line.text + (at === lines.length - 1 ? finalEnd : line.end || lineEnd)).join("");
+	return (
+		bom + lines.map((line, at) => line.text + (at === lines.length - 1 ? finalEnd : line.end || lineEnd)).join("")
+	);
 }
 
 /** A row write's answer, its problems and new ids cut to fit one tool result. */
@@ -1192,8 +1204,7 @@ const ROWS_NEXT = {
 	not_a_writer:
 		"Nothing was saved. You may not write this table's rows (its [write] agents do not name you): tell the member what you would change.",
 	invalid: "Nothing was saved. Fix the problems listed and call again with a new operationKey.",
-	claim:
-		"Nothing was saved. A needs_yes cell (a claim) is not yours to change: leave it as it is, or tell the member.",
+	claim: "Nothing was saved. A needs_yes cell (a claim) is not yours to change: leave it as it is, or tell the member.",
 	too_large:
 		"Nothing was saved. The rows would be larger than 64 KiB, the most a table holds for now: remove rows first, or tell the member.",
 } as const;
@@ -1298,8 +1309,7 @@ export function cloudInterfaceWriteTools(options: {
 			context.observation?.update({ inputBytes: bytes });
 			// Planned again on the folder as it is now: it may have changed since the review.
 			const plan = await planSave(folder, agent, request.files, context.signal);
-			if (plan.blocked || plan.units.length === 0)
-				return show(context, saveText(request, plan, null), plan.reads);
+			if (plan.blocked || plan.units.length === 0) return show(context, saveText(request, plan, null), plan.reads);
 			const review = context.actionReviewId;
 			if (plan.effect === "delegation" && review === undefined)
 				throw new CloudToolRefusal(
@@ -1411,14 +1421,19 @@ export function cloudInterfaceWriteTools(options: {
 			const change = changeRows(definition, table.rows, request, identity.runId);
 			if (change.problems.length > 0) return refused("invalid", change.problems);
 			if (change.updates.size + change.added.length + change.removed.size === 0) {
-				const gone = change.notFound > 0 ? ", and the rows to remove that are not in the table (notFound) are gone" : "";
+				const gone =
+					change.notFound > 0 ? ", and the rows to remove that are not in the table (notFound) are gone" : "";
 				const next = `Nothing changed: the rows already hold these values${gone}.`;
 				return show(context, rowsText(request, { state: "unchanged", version, change, next }), reads);
 			}
 			// Without a supervisor to act for, an agent changes no claim (§5): said before the folder core refuses it.
 			const actor = { kind: "agent" as const, agentId: agent, supervisorId: null };
 			const claims = tableClaimProblems(definition, table.rows, change.after, actor, { folder: request.table });
-			if (claims.length > 0) return refused("claim", claims.map((problem) => problem.message));
+			if (claims.length > 0)
+				return refused(
+					"claim",
+					claims.map((problem) => problem.message),
+				);
 			const text = editRows(definition, table.rowsText, change);
 			if (Buffer.byteLength(text) > TABLE_ROWS_MAX_BYTES) return refused("too_large");
 			const check = parseTableRows(definition, text);
