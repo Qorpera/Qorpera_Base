@@ -1,5 +1,5 @@
 -- @fixture 648_folder_core_run_fence_concurrency.test.sql until "-- A. Two tool calls of one run"
--- Summary trees M1b part 3 (migration 20260930112000) under concurrency: a zoom and an erase of the conversation it reads
+-- Summary trees M1b part 3 (migration 20260930202000) under concurrency: a zoom and an erase of the conversation it reads
 -- (RUNTIME-AGENT-MEMORY-TREE.md §8, §10). The zoom stores its receipt, then takes the session FOR SHARE and reads in the
 -- statements after; the erase takes the session FOR UPDATE and scans receipts in a later statement. So an erase first
 -- makes the zoom wait and read what it left, and a zoom first makes the erase wait and find its receipt. A role change

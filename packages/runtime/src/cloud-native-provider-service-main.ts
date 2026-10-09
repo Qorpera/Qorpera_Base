@@ -4,7 +4,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
-import { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
+import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
 import { createClient } from "@supabase/supabase-js";
 import type { CloudChatGptPlanAuth } from "./cloud-codex-tool-session.ts";
 import { createHttpCloudCodingCommandGateway, parseCloudCodingCommandUrl } from "./cloud-coding-command-http.ts";
@@ -25,7 +25,6 @@ import {
 } from "./cloud-identity-recovery-guest.ts";
 import { createHttpCloudMachineCommandGateway } from "./cloud-machine-command-http.ts";
 import { CloudNativeCodingRuntime } from "./cloud-native-coding-runtime.ts";
-import { HttpNativeCompanyObjectTransport } from "./cloud-native-company-objects.ts";
 import { CloudNativeCompanyRuntime } from "./cloud-native-company-runtime.ts";
 import { NativeHostDispatch, nativeHostRealtimeTransport } from "./cloud-native-host-dispatch.ts";
 import { parseNativeIdentityCredential, parseNativeIdentityState } from "./cloud-native-identity-credential.ts";
@@ -50,6 +49,10 @@ import {
 
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_CREDENTIAL_BYTES = 8192;
+const NO_COMPANY_OBJECTS: CloudObjectTransport = {
+	put: () => Promise.reject(new Error("Company objects are no longer served")),
+	get: () => Promise.reject(new Error("Company objects are no longer served")),
+};
 
 export function systemdCredentialMetadataIsSafe(
 	metadata: SystemdCredentialMetadata,
@@ -321,8 +324,9 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	const dispatch = new NativeHostDispatch({ supabaseUrl: baseUrl, identity });
 	// The clients below send the publishable key; the dispatch signs each of their requests with it anyway.
 	const publishableKey = identity.publishableKey;
-	// G2-6a/b: the object gateway's, the secret broker's and the coding executor's clients prove their run's lease with
-	// each request, read from the dispatch when the request is made, so a warm host never sends a released job's token.
+	// G2-6: the object gateway's, the secret broker's, the coding executor's and the Company Computer's clients prove their
+	// run's lease with each request, read from the dispatch when the request is made, so a warm host never sends a
+	// released job's token.
 	const holder = (): string => dispatch.holderHeader();
 	// A login guest may not read its identity's recovery state: its gateway read it and delivered it.
 	const loginGuest = nativeLoginGuestPurpose(environment);
@@ -492,7 +496,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 						computerSession: createHttpCompanyComputerSessionFactory({
 							url: computerConfiguration.url,
 							token: computerToken,
-							objectGateway: { baseUrl: runtimeConfiguration.objectGatewayUrl, token: objectToken, holder },
+							holder,
 							registry: new HttpCloudCompanyComputerRegistry({
 								supabaseUrl: baseUrl,
 								serviceRoleKey: publishableKey,
@@ -523,17 +527,8 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 					identity,
 					control: pathControl,
 				}),
-			objectStore: (companyId, binding, signal) =>
-				new CloudContentAddressedStore(
-					new HttpNativeCompanyObjectTransport({
-						baseUrl: runtimeConfiguration.objectGatewayUrl,
-						token: objectToken,
-						companyId,
-						binding,
-						holder,
-						signal,
-					}),
-				),
+			// Company objects are gone (legacy removal, step C): a snapshot-v1 path's bytes are refused here.
+			objectStore: () => new CloudContentAddressedStore(NO_COMPANY_OBJECTS),
 			...(secretBrokerOrigin && secretBrokerToken
 				? (() => {
 						// The company routes the request to this company's broker behind the

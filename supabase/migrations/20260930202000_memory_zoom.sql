@@ -11,16 +11,16 @@
 --    target and range, the target session FOR SHARE, then the read. This replaces §8's generation recheck: an erase
 --    takes the session FOR UPDATE at the same step and scans receipts after it, so each finds the other done.
 -- 5. 'zoom' joins the observation vocabulary.
--- Every patched body carries the marker 20260930112000 for the deploy guard.
+-- Every patched body carries the marker 20260930202000 for the deploy guard.
 
 set local lock_timeout = '3s';
 
 -- A second run stops here, before anything changes; M1a comes first.
 do $$ begin
 	if to_regprocedure('public.qorpera_memory_zoom(jsonb,jsonb)') is not null then
-		raise exception 'M1b-3 (20260930112000) is already applied'; end if;
+		raise exception 'M1b-3 (20260930202000) is already applied'; end if;
 	if to_regclass('public.qorpera_memory_read_receipts') is null then
-		raise exception 'M1b-3 (20260930112000) needs M1a (20260928509150)'; end if;
+		raise exception 'M1b-3 (20260930202000) needs M1a (20260928509150)'; end if;
 end $$;
 
 create function pg_temp.m1b3_replace(p_function regprocedure, p_old text, p_new text)
@@ -305,6 +305,6 @@ insert into public.qorpera_native_host_calls(name, scope) values ('qorpera_memor
 -- Observations name the tool, after the proposals'.
 select pg_temp.m1b3_replace('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure,
 	$old$'apply_proposal','discard_proposal',$old$,
-	$new$'apply_proposal','discard_proposal',/* 20260930112000 (M1b-3) */'zoom',$new$);
+	$new$'apply_proposal','discard_proposal',/* 20260930202000 (M1b-3) */'zoom',$new$);
 
 drop function pg_temp.m1b3_replace(regprocedure, text, text);

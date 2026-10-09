@@ -1,5 +1,5 @@
 -- @fixture 769_folder_core_review_recorder.test.sql until "-- The files the runs delete"
--- Summary trees M1b-3 (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §8, §10; 20260930112000): zoom, a native host
+-- Summary trees M1b-3 (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §8, §10; 20260930202000): zoom, a native host
 -- call. The refs (`.`, thread:<agent>, group:<group>) and the ones that name nothing; a line's checks; the two lines
 -- below a line, with their dates, text and block; one event as the transcript holds it (its speaker, a quoted message
 -- fenced, attachments, a card, an erased event); a zoom with no line and the tree it reads; the receipt by target and
@@ -446,7 +446,7 @@ begin
 	perform pg_temp.same((select to_jsonb(array[c.scope, c.budget]) from public.qorpera_native_host_calls c where c.name = 'qorpera_memory_zoom'),
 		'["binding", "standard"]', 'The call list');
 	if pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure)
-		not like '%''apply_proposal'',''discard_proposal'',/* 20260930112000 (M1b-3) */''zoom'',%' then
+		not like '%''apply_proposal'',''discard_proposal'',/* 20260930202000 (M1b-3) */''zoom'',%' then
 		raise exception 'zoom joins the observation vocabulary'; end if;
 end $$;
 

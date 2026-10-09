@@ -17,7 +17,6 @@ import type {
 } from "./member-company-objects.ts";
 import type { MemberFolderObjectAuthority } from "./member-folder-objects.ts";
 import type { LegacyObjectMigrationItem } from "./migration.ts";
-import type { NativeCompanyObjectAuthority } from "./native-objects.ts";
 import { type ObjectReadLease, parseObjectReadLease } from "./read-lease.ts";
 import { supabaseRequestHeaders } from "./supabase-headers.ts";
 
@@ -106,7 +105,6 @@ function deletionAuthorization(value: unknown): ObjectDeletionAuthorization {
 export class SupabaseObjectAuthority
 	implements
 		ObjectGatewayAuthority,
-		NativeCompanyObjectAuthority,
 		FolderObjectAuthority,
 		FolderGcAuthority,
 		MemberCompanyObjectAuthority,
@@ -337,72 +335,6 @@ export class SupabaseObjectAuthority
 			)) !== true
 		)
 			throw new ObjectDependencyError(403);
-	}
-
-	async authorizeNativeUpload(
-		binding: Record<string, unknown>,
-		profileId: string,
-		sha256: string,
-		bytes: number,
-	): Promise<void> {
-		if (
-			(await this.#rpc(
-				"qorpera_authorize_native_company_object_upload",
-				{
-					p_binding: binding,
-					p_profile_id: profileId,
-					p_sha256: sha256,
-					p_bytes: bytes,
-				},
-				undefined,
-				this.#secretKey,
-				true,
-			)) !== true
-		)
-			throw new ObjectDependencyError(403);
-	}
-
-	async confirmNativeUpload(
-		binding: Record<string, unknown>,
-		profileId: string,
-		sha256: string,
-		bytes: number,
-	): Promise<void> {
-		if (
-			(await this.#rpc(
-				"qorpera_confirm_native_company_object_upload",
-				{
-					p_binding: binding,
-					p_profile_id: profileId,
-					p_sha256: sha256,
-					p_bytes: bytes,
-				},
-				undefined,
-				this.#secretKey,
-				true,
-			)) !== true
-		)
-			throw new ObjectDependencyError(403);
-	}
-
-	async authorizeNativeDownload(
-		binding: Record<string, unknown>,
-		profileId: string,
-		sha256: string,
-	): Promise<AuthorizedObject> {
-		return this.#authorizedObject(
-			await this.#rpc(
-				"qorpera_authorize_native_company_object_download",
-				{
-					p_binding: binding,
-					p_profile_id: profileId,
-					p_sha256: sha256,
-				},
-				undefined,
-				this.#secretKey,
-				true,
-			),
-		);
 	}
 
 	async authorizeFolderUpload(

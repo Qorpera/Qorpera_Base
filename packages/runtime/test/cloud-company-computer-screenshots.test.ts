@@ -3,8 +3,6 @@ import type { CompanyComputerOperation } from "@qorpera/cloud-client/cloud-compa
 import {
 	CloudCompanyComputerScreenshots,
 	CompanyComputerInlineScreenshots,
-	createHttpCompanyComputerScreenshots,
-	parseCompanyComputerCaptureGateway,
 	parseCompanyComputerScreenshotAsset,
 } from "@qorpera/runtime/cloud-company-computer-screenshots";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
@@ -60,8 +58,9 @@ async function fixture() {
 		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS1sAAAAASUVORK5CYII=",
 		"base64",
 	);
+	// A capture is stored nowhere: the receipt names it.
 	const asset = {
-		assetId: randomUUID(),
+		assetId: context.receiptId,
 		sha256: createHash("sha256").update(bytes).digest("hex"),
 		bytes: bytes.length,
 		mediaType: "image/png" as const,
@@ -74,18 +73,9 @@ async function fixture() {
 	const call = vi.fn(async (method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> => {
 		signal.throwIfAborted();
 		calls.push(`${method}:${args.p_action ?? "read"}`);
-		return args.p_action === "authorize" ? { state: "authorized" } : { ...asset };
+		return args.p_action === "authorize" ? { state: "authorized", storage: "none" } : { ...asset };
 	});
-	const put = vi.fn(async () => {
-		calls.push("put");
-		return "stored" as const;
-	});
-	const get = vi.fn(async () => {
-		calls.push("get");
-		return Uint8Array.from(bytes);
-	});
-	const objects = vi.fn((_signal: AbortSignal) => ({ put, get }));
-	const screenshots = new CloudCompanyComputerScreenshots({ run, scope, registry: { call }, objects });
+	const screenshots = new CloudCompanyComputerScreenshots({ run, scope, registry: { call } });
 	return {
 		source,
 		run,
@@ -97,9 +87,6 @@ async function fixture() {
 		asset,
 		call,
 		calls,
-		put,
-		get,
-		objects,
 		screenshots,
 		stop,
 		publish: () => screenshots.publish(bytes, lease, context, operation),
@@ -107,22 +94,10 @@ async function fixture() {
 }
 
 describe("receipt-bound immutable office captures", () => {
-	it.each([
-		"http://objects.example",
-		"https://user:password@objects.example",
-		"https://objects.example/path",
-		"https://objects.example?token=secret",
-	])("rejects unsafe object gateway %s before startup", (baseUrl) => {
-		expect(() => parseCompanyComputerCaptureGateway({ baseUrl, token: "x".repeat(43) })).toThrow();
-	});
-	it("stages bytes between exact receipt checks and returns the catalog identity", async () => {
+	it("publishes between exact receipt checks and returns the catalog identity", async () => {
 		const f = await fixture();
 		await expect(f.publish()).resolves.toEqual(f.asset);
-		expect(f.calls).toEqual([
-			"qorpera_native_office_capture:authorize",
-			"put",
-			"qorpera_native_office_capture:publish",
-		]);
+		expect(f.calls).toEqual(["qorpera_native_office_capture:authorize", "qorpera_native_office_capture:publish"]);
 		expect(f.call.mock.calls[0][1]).toEqual({
 			p_binding: f.run.binding,
 			p_scope: f.scope,
@@ -133,11 +108,6 @@ describe("receipt-bound immutable office captures", () => {
 			p_action: "authorize",
 			p_image: { sha256: f.asset.sha256, bytes: f.bytes.length, mediaType: "image/png", width: 1, height: 1 },
 		});
-		expect(f.put).toHaveBeenCalledWith(
-			`${f.scope.companyId}/${f.asset.sha256}`,
-			Uint8Array.from(f.bytes),
-			"image/png",
-		);
 	});
 	it("copies caller bytes and operation metadata before awaiting authority", async () => {
 		const f = await fixture();
@@ -149,11 +119,7 @@ describe("receipt-bound immutable office captures", () => {
 		f.lease.binding.screenId = randomUUID();
 		(f.operation.target.resources as Record<string, unknown>).browserGrantVersion = 99;
 		await expect(pending).resolves.toEqual(f.asset);
-		expect(f.put).toHaveBeenCalledWith(
-			`${f.scope.companyId}/${f.asset.sha256}`,
-			Uint8Array.from(expected),
-			"image/png",
-		);
+		expect(f.screenshots.takeInline(receiptId)).toEqual(Uint8Array.from(expected));
 		expect(f.call.mock.calls[1][1].p_receipt_id).toBe(receiptId);
 		expect(
 			JSON.parse(f.call.mock.calls[1][1].p_envelope as string).operation.target.resources.browserGrantVersion,
@@ -170,7 +136,6 @@ describe("receipt-bound immutable office captures", () => {
 			if (change === "operation") (f.operation as { tool: string }).tool = "computer_shell";
 			await expect(f.publish()).rejects.toThrow();
 			expect(f.call).not.toHaveBeenCalled();
-			expect(f.put).not.toHaveBeenCalled();
 		},
 	);
 	it.each(["signature", "width", "height", "length"])("rejects invalid PNG %s before I/O", async (change) => {
@@ -184,67 +149,46 @@ describe("receipt-bound immutable office captures", () => {
 			"INVALID_OFFICE_CAPTURE",
 		);
 		expect(f.call).not.toHaveBeenCalled();
-		expect(f.put).not.toHaveBeenCalled();
 	});
-	it("does not stage without current capture authority", async () => {
+	it("does not publish without current capture authority", async () => {
 		const f = await fixture();
-		f.call.mockResolvedValueOnce({ state: "denied" });
+		f.call.mockResolvedValueOnce({ state: "denied", storage: "none" });
 		await expect(f.publish()).rejects.toThrow();
-		expect(f.put).not.toHaveBeenCalled();
-	});
-	it("does not publish or retry an uncertain upload", async () => {
-		const f = await fixture();
-		f.put.mockRejectedValueOnce(new Error("connection lost after write"));
-		await expect(f.publish()).rejects.toThrow();
-		expect(f.put).toHaveBeenCalledOnce();
 		expect(f.call).toHaveBeenCalledOnce();
 	});
-	it("cancels after storage without registering an asset", async () => {
+	it("cancels after authority without registering an asset", async () => {
 		const f = await fixture();
-		f.put.mockImplementationOnce(async () => {
+		f.call.mockImplementationOnce(async () => {
 			f.stop.abort();
-			return "stored";
+			return { state: "authorized", storage: "none" };
 		});
 		await expect(f.publish()).rejects.toThrow();
 		expect(f.call).toHaveBeenCalledOnce();
-		expect(f.objects.mock.calls[0][0].aborted).toBe(true);
+		expect(f.screenshots.takeInline(f.asset.assetId)).toBeUndefined();
 	});
 	it.each([{ sha256: "0".repeat(64) }, { width: 2 }, { screenId: randomUUID() }, { extra: true }, { bytes: 99 }])(
 		"rejects changed publication metadata %j",
 		async (changed) => {
 			const f = await fixture();
-			f.call.mockResolvedValueOnce({ state: "authorized" }).mockResolvedValueOnce({ ...f.asset, ...changed });
+			f.call
+				.mockResolvedValueOnce({ state: "authorized", storage: "none" })
+				.mockResolvedValueOnce({ ...f.asset, ...changed });
 			await expect(f.publish()).rejects.toThrow();
-			expect(f.put).toHaveBeenCalledOnce();
+			expect(f.screenshots.takeInline(f.asset.assetId)).toBeUndefined();
 		},
 	);
-	it("checks a completed capture both before and after fetching its exact immutable object", async () => {
+	it("does not take the pixels without a completed authorized receipt", async () => {
 		const f = await fixture();
-		await expect(f.screenshots.read(f.asset, f.stop.signal)).resolves.toEqual(Uint8Array.from(f.bytes));
-		expect(f.calls).toEqual([
-			"qorpera_read_native_office_capture:read",
-			"get",
-			"qorpera_read_native_office_capture:read",
-		]);
-	});
-	it("does not fetch an asset without a completed authorized receipt", async () => {
-		const f = await fixture();
+		f.screenshots.holdInline(f.asset, f.bytes);
 		f.call.mockRejectedValueOnce(new Error("denied"));
 		await expect(f.screenshots.read(f.asset, f.stop.signal)).rejects.toThrow();
-		expect(f.get).not.toHaveBeenCalled();
+		expect(f.screenshots.takeInline(f.asset.assetId)).toEqual(Uint8Array.from(f.bytes));
 	});
-	it("rejects authority revocation during object I/O", async () => {
+	it("rejects authority revoked after the pixels are taken", async () => {
 		const f = await fixture();
+		f.screenshots.holdInline(f.asset, f.bytes);
 		f.call.mockResolvedValueOnce(f.asset).mockRejectedValueOnce(new Error("revoked"));
 		await expect(f.screenshots.read(f.asset, f.stop.signal)).rejects.toThrow("revoked");
-		expect(f.get).toHaveBeenCalledOnce();
-	});
-	it("rejects altered stored bytes", async () => {
-		const f = await fixture();
-		const altered = Buffer.from(f.bytes);
-		altered[30] ^= 1;
-		f.get.mockResolvedValueOnce(altered);
-		await expect(f.screenshots.read(f.asset, f.stop.signal)).rejects.toThrow("OFFICE_CAPTURE_CHANGED");
 	});
 	it("rejects an expired run even with cached artifact metadata", async () => {
 		const f = await fixture();
@@ -264,7 +208,6 @@ describe("receipt-bound immutable office captures", () => {
 			{ p_binding: f.run.binding, p_assets: [f.asset] },
 			expect.any(AbortSignal),
 		);
-		expect(f.objects).not.toHaveBeenCalled();
 	});
 	it.each(["changed", "revoked", "abort"])("withholds capture-set authority on %s", async (fault) => {
 		const f = await fixture();
@@ -275,7 +218,6 @@ describe("receipt-bound immutable office captures", () => {
 		});
 		await expect(f.screenshots.assertReadable([f.asset], f.stop.signal)).rejects.toThrow();
 		expect(f.call).toHaveBeenCalledTimes(1);
-		expect(f.objects).not.toHaveBeenCalled();
 	});
 	it("refuses an oversized capture batch before contacting authority", async () => {
 		const f = await fixture();
@@ -287,31 +229,6 @@ describe("receipt-bound immutable office captures", () => {
 		).rejects.toThrow("INVALID_OFFICE_CAPTURE_BATCH");
 		expect(f.call).not.toHaveBeenCalled();
 	});
-	it("uses the existing authenticated object route without exposing its credential in the asset", async () => {
-		const f = await fixture();
-		const token = "x".repeat(43);
-		const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-			expect(init?.headers).toMatchObject({
-				authorization: `Bearer ${token}`,
-				"x-qorpera-native-binding": Buffer.from(JSON.stringify(f.run.binding)).toString("base64url"),
-			});
-			return new Response(
-				JSON.stringify({ status: "stored", sha256: f.asset.sha256, bytes: f.bytes.length, replication: "pending" }),
-				{ status: 201 },
-			);
-		});
-		const screenshots = createHttpCompanyComputerScreenshots({
-			run: f.run,
-			scope: f.scope,
-			registry: { call: f.call },
-			objectGateway: { baseUrl: "https://objects.example", token, fetch: fetcher },
-		});
-		await expect(screenshots.publish(f.bytes, f.lease, f.context, f.operation)).resolves.toEqual(f.asset);
-		expect(fetcher.mock.calls[0][0]).toBe(
-			`https://objects.example/v1/native-company-objects/${f.scope.companyId}/${f.asset.sha256}`,
-		);
-		expect(JSON.stringify(f.asset)).not.toContain(token);
-	});
 	it("parses only immutable image references, never URLs or paths", async () => {
 		const f = await fixture();
 		expect(() => parseCompanyComputerScreenshotAsset({ ...f.asset, url: "file:///secret" })).toThrow();
@@ -319,47 +236,37 @@ describe("receipt-bound immutable office captures", () => {
 });
 
 describe("captures stored nowhere (folder-v2, P06d)", () => {
-	const unstored = (f: Awaited<ReturnType<typeof fixture>>) =>
-		f.call.mockImplementation(async (method, args) => {
-			f.calls.push(`${method}:${args.p_action ?? "read"}`);
-			return args.p_action === "authorize"
-				? { state: "authorized", storage: "none" }
-				: { ...f.asset, assetId: f.context.receiptId };
-		});
-	it("uploads nothing, names the receipt and keeps the pixels once for the perform answer", async () => {
+	it("names the receipt and keeps the pixels once for the perform answer", async () => {
 		const f = await fixture();
-		unstored(f);
-		await expect(f.publish()).resolves.toEqual({ ...f.asset, assetId: f.context.receiptId });
-		expect(f.calls).toEqual(["qorpera_native_office_capture:authorize", "qorpera_native_office_capture:publish"]);
-		expect(f.objects).not.toHaveBeenCalled();
+		await expect(f.publish()).resolves.toEqual(f.asset);
 		expect(f.screenshots.takeInline(f.context.receiptId)).toEqual(Uint8Array.from(f.bytes));
 		expect(f.screenshots.takeInline(f.context.receiptId)).toBeUndefined();
 	});
-	it("refuses a capture stored nowhere that does not name its receipt, and any other storage answer", async () => {
+	it("refuses a capture that does not name its receipt, and any answer but storage none", async () => {
 		const f = await fixture();
-		unstored(f);
+		const other = randomUUID();
 		f.call.mockImplementationOnce(async () => ({ state: "authorized", storage: "none" }));
-		f.call.mockImplementationOnce(async () => ({ ...f.asset }));
+		f.call.mockImplementationOnce(async () => ({ ...f.asset, assetId: other }));
 		await expect(f.publish()).rejects.toThrow("OFFICE_CAPTURE_UNCONFIRMED");
-		expect(f.screenshots.takeInline(f.asset.assetId)).toBeUndefined();
+		expect(f.screenshots.takeInline(other)).toBeUndefined();
+		// A stored capture (snapshot-v1's answer, without storage) is gone with company objects.
 		for (const answer of [
+			{ state: "authorized" },
 			{ state: "authorized", storage: "object" },
 			{ state: "denied", storage: "none" },
 		]) {
 			f.call.mockImplementationOnce(async () => answer);
 			await expect(f.publish()).rejects.toThrow();
 		}
-		expect(f.objects).not.toHaveBeenCalled();
+		expect(f.screenshots.takeInline(f.asset.assetId)).toBeUndefined();
 	});
-	it("reads pixels that came in the perform answer once, between both authority checks, and never fetches them", async () => {
+	it("reads pixels that came in the perform answer once, between both authority checks", async () => {
 		const f = await fixture();
 		f.screenshots.holdInline(f.asset, f.bytes);
 		await expect(f.screenshots.read(f.asset, f.stop.signal)).resolves.toEqual(Uint8Array.from(f.bytes));
 		expect(f.calls).toEqual(["qorpera_read_native_office_capture:read", "qorpera_read_native_office_capture:read"]);
-		expect(f.objects).not.toHaveBeenCalled();
-		// Read once: a second read goes to the object store, as a stored capture does.
-		await f.screenshots.read(f.asset, f.stop.signal);
-		expect(f.get).toHaveBeenCalledOnce();
+		// Read once: they are kept nowhere else.
+		await expect(f.screenshots.read(f.asset, f.stop.signal)).rejects.toThrow("OFFICE_CAPTURE_UNAVAILABLE");
 	});
 	it("keeps no pixels that are not exactly the published capture's", async () => {
 		const f = await fixture();
@@ -368,8 +275,7 @@ describe("captures stored nowhere (folder-v2, P06d)", () => {
 		expect(() => f.screenshots.holdInline(f.asset, altered)).toThrow("OFFICE_CAPTURE_CHANGED");
 		expect(() => f.screenshots.holdInline({ ...f.asset, width: 2 }, f.bytes)).toThrow("OFFICE_CAPTURE_CHANGED");
 		expect(() => f.screenshots.holdInline({ ...f.asset, url: "file:///x" } as never, f.bytes)).toThrow();
-		await f.screenshots.read(f.asset, f.stop.signal);
-		expect(f.get).toHaveBeenCalledOnce();
+		await expect(f.screenshots.read(f.asset, f.stop.signal)).rejects.toThrow("OFFICE_CAPTURE_UNAVAILABLE");
 	});
 	it("keeps at most four screenshots, each for at most a minute on its own timer", () => {
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -397,7 +303,6 @@ describe("captures stored nowhere (folder-v2, P06d)", () => {
 	});
 	it("lets a waiting screenshot go when its run ends, on either side, and keeps none after", async () => {
 		const f = await fixture();
-		unstored(f);
 		await f.publish();
 		f.screenshots.holdInline(f.asset, f.bytes);
 		f.run.close();
@@ -408,7 +313,6 @@ describe("captures stored nowhere (folder-v2, P06d)", () => {
 	});
 	it("keeps nothing when the run ends while the capture is being published", async () => {
 		const f = await fixture();
-		unstored(f);
 		f.call.mockImplementationOnce(async () => ({ state: "authorized", storage: "none" }));
 		f.call.mockImplementationOnce(async () => {
 			f.run.close();

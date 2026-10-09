@@ -58,6 +58,8 @@ const policy = {
 	URLBlocklist: ["file://*", "chrome://*", "chrome-untrusted://*", "devtools://*", "javascript://*", "view-source:*"],
 	// Chromium 151 uses this internal route for its ordinary new-tab page.
 	URLAllowlist: ["chrome://newtab/", "chrome://new-tab-page/"],
+	// Server names stay visible to the node's agent exit, which may admit listed sites only.
+	EncryptedClientHelloEnabled: false,
 };
 
 /**

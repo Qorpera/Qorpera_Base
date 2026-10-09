@@ -194,6 +194,9 @@ export function cloudActionEffect(
 		case "list_hooks":
 		case "read_event":
 		case "find_mail":
+		// Interfaces (I8): a page and a table, read with the run's own authority.
+		case "interface_read":
+		case "table_read":
 		// Summary trees (M1b-3): a conversation's lines and messages, as read_context reads the run's own.
 		case "zoom":
 			return "read";

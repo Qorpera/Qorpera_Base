@@ -39,7 +39,8 @@ StartLimitBurst=3
 Type=${stage ? "oneshot" : "exec"}
 User=${policy.workbench.uid}
 Group=${policy.workbench.gid}
-SupplementaryGroups=${policy.host.socketGid}
+# qorpera-agent-plug: the computer's agent card is plugged into the node's agent exit right before its create.
+SupplementaryGroups=${policy.host.socketGid} qorpera-agent-plug
 Environment=${officeSystemdPath(registryCaPath, "dependency").replace(/^"/, '"NODE_EXTRA_CA_CERTS=')}
 # An existing lock inode is mandatory. The final Node process owns the flock.
 ExecStart=/usr/bin/bash --noprofile --norc -c 'exec 3<"$$1" || exit 1; exec /usr/bin/flock --exclusive --nonblock --no-fork /proc/self/fd/3 /usr/bin/node --jitless --disable-proto=throw --disallow-code-generation-from-strings "$$2" ${stage ? "--stage" : "--config"} "$$3"' qorpera-office-fleet ${officeSystemdPath(`${policy.journal.path}/adoption.lock`)} ${officeSystemdPath(binaryPath)} ${officeSystemdPath(configPath)}

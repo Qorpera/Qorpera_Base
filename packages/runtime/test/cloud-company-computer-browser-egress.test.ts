@@ -279,4 +279,15 @@ describe("office browser public HTTPS relay", () => {
 		await chmod(f.root, 0o700);
 		await expect(startCompanyComputerBrowserEgress({ ...f.options, signal: AbortSignal.abort() })).rejects.toThrow();
 	});
+	it("carries nothing on a machine without its agent card", async () => {
+		// Test machines have no `qagent`: the relay's own lookups and connections
+		// would otherwise leave by the machine's first card.
+		const f = await fixture();
+		await f.relay.close();
+		f.assertActive.mockClear();
+		await expect(startCompanyComputerBrowserEgress({ ...f.options, transport: undefined })).rejects.toThrow(
+			"OFFICE_BROWSER_EGRESS_UNAVAILABLE",
+		);
+		expect(f.assertActive).not.toHaveBeenCalled();
+	});
 });

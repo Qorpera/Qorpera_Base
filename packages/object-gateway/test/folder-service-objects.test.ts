@@ -76,7 +76,7 @@ async function fixture() {
 			replication,
 			controlToken: "synthetic-control",
 			verifierToken: "synthetic-verifier",
-			nativeObjects: { token: nativeToken, authority, folder: authority },
+			nativeObjects: { token: nativeToken, folder: authority },
 			folderServiceObjects: { token, authority },
 		}),
 	);
@@ -149,18 +149,11 @@ describe("the folder service's byte route", () => {
 	});
 
 	it("refuses another credential, and its own credential on the other routes", async () => {
-		const { sql, put, nativeToken, token, origin } = await fixture();
+		const { sql, put, nativeToken } = await fixture();
 		sql.listed.set(sha("x"), 1);
 		expect((await put("x", { bearer: nativeToken })).status).toBe(401);
 		expect((await put("x", { bearer: "synthetic-control" })).status).toBe(401);
 		expect((await put("x", { route: "/v1/folder-objects" })).status).toBe(401);
-		expect(
-			(
-				await fetch(`${origin}/v1/native-company-objects/${companyId}/${sha("x")}`, {
-					headers: { authorization: `Bearer ${token}` },
-				})
-			).status,
-		).toBe(401);
 		expect(sql.calls).toEqual([]);
 	});
 
@@ -251,7 +244,7 @@ describe("the folder service's credential", () => {
 			createObjectGatewayHandler({
 				...base,
 				replication,
-				nativeObjects: { token, authority, folder: authority },
+				nativeObjects: { token, folder: authority },
 				folderServiceObjects: { token, authority },
 			}),
 		).toThrow();
