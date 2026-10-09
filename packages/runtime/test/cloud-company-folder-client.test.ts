@@ -323,6 +323,7 @@ describe("reads and listings", () => {
 			...extra,
 		});
 		const todos = [todo("b", { detailTruncated: true }), todo("a")];
+		const { cursor: _cursor, ...uncursored } = todo("a");
 		const answers: unknown[] = [];
 		const { client, calls } = fixture(() => answers.shift());
 		answers.push({ schema: "qorpera.folder-agent-todos/v1", todos, moreTodos: 3, nextCursor: todos[1]?.cursor });
@@ -364,9 +365,78 @@ describe("reads and listings", () => {
 				nextCursor: null,
 			},
 			{ schema: "qorpera.folder-list/v1", todos: [], moreTodos: 0, nextCursor: null },
+			// A count and a cursor the page cannot have (the kernel todo tool's checks, legacy sweep C-P2).
+			{ schema: "qorpera.folder-agent-todos/v1", todos, moreTodos: -1, nextCursor: null },
+			{ schema: "qorpera.folder-agent-todos/v1", todos, moreTodos: 1, nextCursor: "not-a-cursor" },
+			{ schema: "qorpera.folder-agent-todos/v1", todos, moreTodos: 1, nextCursor: randomUUID() },
+			{ schema: "qorpera.folder-agent-todos/v1", todos, moreTodos: 0 },
+			{ schema: "qorpera.folder-agent-todos/v1", todos: [uncursored], moreTodos: 0, nextCursor: null },
+			{
+				schema: "qorpera.folder-agent-todos/v1",
+				todos: [todo("a", { cursor: "page-2" })],
+				moreTodos: 0,
+				nextCursor: null,
+			},
 		]) {
 			answers.push(answer);
 			await expect(client.agentTodos({}, signal())).rejects.toThrow("Company folder response is invalid");
+		}
+	});
+
+	it("pages one todo's workers from the worker index, refusing a count or cursor the page cannot have", async () => {
+		const worker = (workerKey: string, extra: Record<string, unknown> = {}) => ({
+			workerKey,
+			title: `Worker ${workerKey}`,
+			state: "running",
+			sequence: 1,
+			access: "read",
+			revival: "batch",
+			outcome: null,
+			summary: null,
+			needs: null,
+			outputs: [],
+			reportedAt: null,
+			decision: null,
+			folder: `agents/nora/todos/market-scan/${workerKey}`,
+			cursor: randomUUID(),
+			...extra,
+		});
+		const workers = [worker("b"), worker("a")];
+		const { cursor: _cursor, ...uncursored } = worker("a");
+		const page = (extra: Record<string, unknown>) => ({
+			schema: "qorpera.folder-agent-workers/v1",
+			todoKey: "market-scan",
+			workers,
+			...extra,
+		});
+		const answers: unknown[] = [];
+		const { client, calls } = fixture(() => answers.shift());
+		answers.push(page({ moreWorkers: 2, nextCursor: workers[1]?.cursor }));
+		await expect(client.agentWorkers({ todoKey: "market-scan", state: "active" }, signal())).resolves.toMatchObject({
+			workers: [{ workerKey: "b", cursor: workers[0]?.cursor }, { workerKey: "a" }],
+			moreWorkers: 2,
+			nextCursor: workers[1]?.cursor,
+		});
+		expect(calls).toMatchObject([
+			{ method: "qorpera_folder_agent_workers", args: { p_request: { todoKey: "market-scan", state: "active" } } },
+		]);
+		for (const answer of [
+			page({ moreWorkers: 2, nextCursor: null }),
+			page({ moreWorkers: 0, nextCursor: workers[1]?.cursor }),
+			page({ moreWorkers: 2, nextCursor: workers[0]?.cursor }),
+			page({ moreWorkers: -1, nextCursor: null }),
+			page({ moreWorkers: 1, nextCursor: "not-a-cursor" }),
+			page({ moreWorkers: 1, nextCursor: randomUUID() }),
+			page({ moreWorkers: 0 }),
+			page({ todoKey: "other", moreWorkers: 0, nextCursor: null }),
+			page({ workers: [uncursored], moreWorkers: 0, nextCursor: null }),
+			page({ workers: [worker("a", { cursor: "page-2" })], moreWorkers: 0, nextCursor: null }),
+			page({ workers: Array.from({ length: 17 }, (_, i) => worker(`w${i}`)), moreWorkers: 0, nextCursor: null }),
+		]) {
+			answers.push(answer);
+			await expect(client.agentWorkers({ todoKey: "market-scan" }, signal())).rejects.toThrow(
+				"Company folder response is invalid",
+			);
 		}
 	});
 });
