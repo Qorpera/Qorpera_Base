@@ -28,8 +28,6 @@ const workspaceId = "22222222-2222-4222-8222-222222222222";
 const clientWorkspaceId = "33333333-3333-4333-8333-333333333333";
 const snapshotId = "44444444-4444-4444-8444-444444444444";
 const clientSnapshotId = "55555555-5555-4555-8555-555555555555";
-const substrateVersionId = "66666666-6666-4666-8666-666666666666";
-const clientSubstrateVersionId = "77777777-7777-4777-8777-777777777777";
 const artifactId = "88888888-8888-4888-8888-888888888888";
 const clientArtifactId = "99999999-9999-4999-8999-999999999999";
 const artifactIndexId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -41,7 +39,6 @@ const objectProofId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 const artifactGcPlanId = "12121212-1212-4121-8121-121212121212";
 const clientArtifactGcPlanId = "13131313-1313-4131-8131-131313131313";
 const treeManifestSha256 = "b".repeat(64);
-const substrateContentSha256 = "c".repeat(64);
 const artifactContentSha256 = "d".repeat(64);
 const artifactIndexContentSha256 = "e".repeat(64);
 
@@ -271,24 +268,6 @@ function accountEntitlementRecord() {
 	};
 }
 
-function substrateVersionRecord() {
-	return {
-		version_id: substrateVersionId,
-		profile_id: profileId,
-		environment_id: environmentId,
-		company_snapshot_id: snapshotId,
-		client_version_id: clientSubstrateVersionId,
-		contract_version: 1,
-		operation_sequence: 2,
-		operation_count: 2,
-		artifact_index_id: artifactIndexId,
-		artifact_manifest_sha256: artifactIndexContentSha256,
-		content_sha256: substrateContentSha256,
-		created_by_user_id: actorUserId,
-		created_at: createdAt,
-	};
-}
-
 function artifactRecord() {
 	return {
 		artifact_id: artifactId,
@@ -397,21 +376,6 @@ function artifactHoldRecord(released = false) {
 		created_at: createdAt,
 		released_by_user_id: released ? actorUserId : null,
 		released_at: released ? "2026-08-17T12:00:00.000Z" : null,
-	};
-}
-
-function companyOperationRecord() {
-	return {
-		profile_id: profileId,
-		sequence: 2,
-		environment_id: environmentId,
-		operation_type: "session_event",
-		entity_id: sessionId,
-		entity_version: 1,
-		content_sha256: eventHash,
-		payload: { session_id: sessionId, sequence: 1, event_hash: eventHash },
-		actor_user_id: actorUserId,
-		created_at: createdAt,
 	};
 }
 
@@ -570,9 +534,6 @@ function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrima
 		getObjectReachabilityGraph: vi.fn(async () => objectGraphRecord()),
 		verifyCompanySnapshotClosure: vi.fn(async () => ({ verified: true })),
 		createObjectRestoreProof: vi.fn(async () => objectProofRecord()),
-		captureCompanySubstrateVersion: vi.fn(async () => substrateVersionRecord()),
-		getCompanySubstrateVersion: vi.fn(async () => substrateVersionRecord()),
-		listCompanySubstrateOperations: vi.fn(async () => [companyOperationRecord()]),
 		...overrides,
 	};
 }
@@ -1041,63 +1002,6 @@ describe("Qorpera hosted primary", () => {
 			headSnapshotId: snapshotId,
 			state: "ready",
 			storageLimitBytes: 50 * 1024 * 1024 * 1024,
-		});
-	});
-
-	it("captures and resolves immutable cross-layer substrate versions", async () => {
-		const fake = transport();
-		const primary = new QorperaHostedPrimary(fake);
-		await expect(
-			primary.captureCompanySubstrateVersion({
-				snapshotId,
-				clientVersionId: clientSubstrateVersionId,
-				artifactIndexId,
-			}),
-		).resolves.toEqual({
-			versionId: substrateVersionId,
-			profileId,
-			environmentId,
-			companySnapshotId: snapshotId,
-			clientVersionId: clientSubstrateVersionId,
-			contractVersion: 1,
-			operationSequence: 2,
-			operationCount: 2,
-			artifactIndexId,
-			artifactManifestSha256: artifactIndexContentSha256,
-			contentSha256: substrateContentSha256,
-			createdByUserId: actorUserId,
-			createdAt,
-		});
-		expect(fake.captureCompanySubstrateVersion).toHaveBeenCalledWith({
-			p_snapshot_id: snapshotId,
-			p_client_version_id: clientSubstrateVersionId,
-			p_contract_version: 1,
-			p_artifact_index_id: artifactIndexId,
-		});
-
-		await expect(primary.getCompanySubstrateVersion(substrateVersionId)).resolves.toMatchObject({
-			versionId: substrateVersionId,
-			companySnapshotId: snapshotId,
-			operationSequence: 2,
-		});
-		await expect(primary.listCompanySubstrateOperations(substrateVersionId, 0, 50)).resolves.toEqual([
-			{
-				profileId,
-				sequence: 2,
-				environmentId,
-				operationType: "session_event",
-				entityId: sessionId,
-				entityVersion: 1,
-				contentSha256: eventHash,
-				payload: { session_id: sessionId, sequence: 1, event_hash: eventHash },
-				actorUserId,
-				createdAt,
-			},
-		]);
-		expect(fake.listCompanySubstrateOperations).toHaveBeenCalledWith({
-			p_version_id: substrateVersionId,
-			p_after_sequence: 0,
-			p_limit: 50,
 		});
 	});
 
