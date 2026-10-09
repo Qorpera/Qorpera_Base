@@ -5,9 +5,9 @@
 //   branches come from qorpera_memory_branches (M4).
 // - The blocks whose lines the view and the branches show are released as platform reads under the composed context's
 //   SHA-256 (qorpera_memory_release, M1b-3b), before any model request, so no call here keeps a receipt.
-// - The run then records its first request (memory_view, §13). The record's answer, the folder clock after the trees
-//   were read, is the view reference's asOfSeq (W4a-1): each conversation shown, with its generation, its T and the
-//   blocks shown, for a worker the run dispatches.
+// - The run then records its first request (memory_view, §13), once per attempt. The record's answer, the folder clock
+//   after the trees were read, is the view reference's asOfSeq (W4a-1): each conversation shown, with its generation,
+//   its T and the blocks shown, for a worker the run dispatches. A failed record leaves the run without one.
 // - Every request of the run carries the conversation's prompt cache key (§6.2).
 
 import { isUuid, parseClosedRecord, parseInteger, WireValueError } from "@qorpera/contracts";
@@ -16,6 +16,7 @@ import type { CloudCompanyPathControl } from "../cloud-company-path-gateway.ts";
 import { type CloudNativeConversationTree, escapeCloudNativeContextJson } from "../cloud-native-company-context.ts";
 import { cloudNativeContextIdentity } from "../cloud-native-context-composition.ts";
 import { type CloudNativeToolBinding, cloudToolRequest } from "../cloud-native-tool-authority.ts";
+import { cloudRuntimeErrorCategory } from "../cloud-runtime-observability.ts";
 import {
 	type MemoryTreeBlock,
 	type MemoryTreeRead,
@@ -35,7 +36,7 @@ export const MEMORY_VIEW_SCHEMA = "qorpera.memory-view/v1";
 export const MEMORY_VIEW_RECORD_SCHEMA = "qorpera.memory-view-record/v1";
 /** The call a composition's release is named by: the run's first request. */
 export const MEMORY_COMPOSITION_CALL = "composition:0";
-/** A view reference's bound in bytes (W4a-1). */
+/** A view reference's bound in bytes of its jsonb text (W4a-1). */
 export const MEMORY_VIEW_REFERENCE_BYTES = 262_144;
 
 /** A run's primary view and branches, composed before its context is hashed. */
@@ -165,9 +166,40 @@ export async function memoryComposeView(
 }
 
 /**
+ * The bytes of `value`'s text as jsonb writes it, by which W4a-1 bounds a view reference: JSON with a space after each
+ * `:` and `,`, its strings and numbers as JSON.stringify writes them.
+ */
+export function memoryJsonbTextBytes(value: unknown): number {
+	if (Array.isArray(value))
+		return value.reduce((bytes: number, item, index) => bytes + (index > 0 ? 2 : 0) + memoryJsonbTextBytes(item), 2);
+	if (value !== null && typeof value === "object")
+		return Object.entries(value).reduce(
+			(bytes: number, [key, item], index) =>
+				bytes + (index > 0 ? 2 : 0) + Buffer.byteLength(JSON.stringify(key)) + 2 + memoryJsonbTextBytes(item),
+			2,
+		);
+	return Buffer.byteLength(JSON.stringify(value));
+}
+
+/** qorpera_memory_view_record's answer to the request of `step`: its asOfSeq. */
+function recordedSeq(value: unknown, step: number): number {
+	try {
+		const read = parseClosedRecord(value, "the answer", ["schema", "step", "asOfSeq"]);
+		if (read.schema !== MEMORY_VIEW_RECORD_SCHEMA || read.step !== step) throw new WireValueError("its step");
+		return parseInteger(read.asOfSeq, "its asOfSeq", 0, Number.MAX_SAFE_INTEGER);
+	} catch (error) {
+		if (error instanceof WireValueError) {
+			throw new Error(`Invalid memory view record answer: ${error.message}`, { cause: error });
+		}
+		throw error;
+	}
+}
+
+/**
  * After the run's context is composed and hashed: releases the blocks the view and the branches show, under the
  * context's SHA-256, then records the run's first request (memory_view, §13). Answers the view reference, or null when
- * it passes its bound. A failure throws: no model request may see lines that were not released.
+ * the record failed or the reference passes its bound. A failed release throws: no model request may see lines that
+ * were not released. A failed record is logged, and the run goes on.
  */
 export async function memoryCommitView(
 	control: CloudCompanyPathControl,
@@ -195,24 +227,21 @@ export async function memoryCommitView(
 		folded: false,
 		stablePrefixSha256: measures.stablePrefixSha256,
 	};
-	const recorded = await cloudToolRequest(
-		(requestSignal) =>
-			control.call("qorpera_memory_view_record", { p_binding: binding, p_request: request }, requestSignal),
-		signal,
-	);
 	let asOfSeq: number;
 	try {
-		const read = parseClosedRecord(recorded, "the answer", ["schema", "step", "asOfSeq"]);
-		if (read.schema !== MEMORY_VIEW_RECORD_SCHEMA || read.step !== request.step) throw new WireValueError("its step");
-		asOfSeq = parseInteger(read.asOfSeq, "its asOfSeq", 0, Number.MAX_SAFE_INTEGER);
+		const recorded = await cloudToolRequest(
+			(requestSignal) =>
+				control.call("qorpera_memory_view_record", { p_binding: binding, p_request: request }, requestSignal),
+			signal,
+		);
+		asOfSeq = recordedSeq(recorded, request.step);
 	} catch (error) {
-		if (error instanceof WireValueError) {
-			throw new Error(`Invalid memory view record answer: ${error.message}`, { cause: error });
-		}
-		throw error;
+		signal.throwIfAborted();
+		console.error(`Memory view was not recorded (${cloudRuntimeErrorCategory(error, signal)})`);
+		return null;
 	}
 	const reference = { asOfSeq, conversations: composed.conversations };
-	return Buffer.byteLength(JSON.stringify(reference)) <= MEMORY_VIEW_REFERENCE_BYTES ? reference : null;
+	return memoryJsonbTextBytes(reference) <= MEMORY_VIEW_REFERENCE_BYTES ? reference : null;
 }
 
 /**

@@ -240,7 +240,8 @@ async function handle(message) {
 		if (mode === "notify-first") write(notification);
 		write({ id: message.id, result: { turn: { id: turnId } } });
 		if (mode !== "notify-first") write(notification);
-		if (mode.startsWith("context-") || mode === "review-context") {
+		// A company run's request is composed too: its evidence keeps the reply (the prompt cache key a run sets).
+		if (mode.startsWith("context-") || mode === "review-context" || mode === "company-context") {
 			contextEvidence.agent = await compose(mode === "context-wrong-turn" ? { turnId: "other_turn" } : {});
 			if (mode.startsWith("context-")) writeFileSync(evidencePath, JSON.stringify({ context: contextEvidence }));
 		}
@@ -376,7 +377,7 @@ async function handle(message) {
 		const fenced = await fence(companyOutputs);
 		if (index + 1 < companyCalls.length) companyCall(index + 1);
 		else {
-			writeFileSync(evidencePath, JSON.stringify({ threadParameters, turnParameters, configuration, fenced, outputs: companyOutputs, cwd: process.cwd(), environmentKeys: Object.keys(process.env) }));
+			writeFileSync(evidencePath, JSON.stringify({ threadParameters, turnParameters, configuration, fenced, outputs: companyOutputs, context: contextEvidence, cwd: process.cwd(), environmentKeys: Object.keys(process.env) }));
 			write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "PRIVATE_OUTPUT_CANARY" } });
 			write({ method: "item/reasoning/summaryTextDelta", params: { threadId, turnId, delta: "PRIVATE_REASONING_CANARY" } });
 			done();

@@ -1788,7 +1788,7 @@ item 9, #877).
 **Recorded per run** (existing records, plus new observation kinds):
 - `model_turn` (exists): `inputTokens`, `cachedInputTokens`, `reasoningOutputTokens` and `totalTokens`.
   `context_bytes` on the launch (exists).
-- `memory_view` (new), **per composed request** (§6):
+- `memory_view` (new), **per composed request** (§6) of each attempt (a retry or a resume of a run composes again):
   - the step number, `T`, and the bytes of the head, the view, the branches and the run view;
   - raw steps, placeholders, the wait in ms, and the lines built while waiting;
   - whether the run view folded at this request;

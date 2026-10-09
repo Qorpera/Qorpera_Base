@@ -2,9 +2,9 @@
 -- Summary trees M1b-4a (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §5.3, §13; 20260930204000): the primary view and
 -- its record, native host calls. The gate (a listed company, a conversation of the run's environment); T, the included
 -- events before the inputs that woke the run (the run's own, or those its wake names, as a room post's), or up to the
--- transcript start with no such event; the tree. A record per step, with the folder clock as the view reference's
--- asOfSeq: replays, a different request, malformed requests; the run check first; the grants and the call list. On
--- 970's fixture: Nora's thread has a message at 10 and a card at 11, Otto's tree one line.
+-- transcript start with no such event; the tree. A record per step of an attempt, with the folder clock as the view
+-- reference's asOfSeq: replays, a different request, a new attempt, malformed requests; the run check first; the grants
+-- and the call list. On 970's fixture: Nora's thread has a message at 10 and a card at 11, Otto's tree one line.
 
 -- A view call by Nora's or Otto's run, a record call, and a record request.
 create function pg_temp.view(p_who text) returns jsonb language sql as $$
@@ -97,24 +97,26 @@ begin
 	perform pg_temp.fx(format('update public.qorpera_wake_occurrences set payload = %L where run_id = %L', wake, pg_temp.run_id('nora')));
 end $$;
 
--- 3. The record: one row per step, with the folder clock as asOfSeq; a replay answers the same, a different request
--- refuses (23505). The reference it makes stands ------------------------------------------------------------------------
+-- 3. The record: one row per step of an attempt, with the folder clock as asOfSeq; a replay answers the same, a
+-- different request refuses (23505), a new attempt records afresh. The reference it makes stands ----------------------
 
 do $$
 declare
 	env constant uuid := '63400000-0000-4000-8000-000000000020'; otto uuid := pg_temp.thread('otto');
 	clock bigint := (select last_seq from public.qorpera_folder_clocks where environment_id = '63400000-0000-4000-8000-000000000020');
 	answer jsonb; tree jsonb := pg_temp.view('otto') -> 'tree'; claims text := current_setting('request.jwt.claims', true);
+	first jsonb := pg_temp.b('otto'); assignment uuid := extensions.gen_random_uuid();
 begin
 	if coalesce(clock, 0) = 0 then raise exception 'The fixture has commits'; end if;
 	answer := pg_temp.record_view('otto', pg_temp.request(0));
 	perform pg_temp.same(answer, jsonb_build_object('schema', 'qorpera.memory-view-record/v1', 'step', 0, 'asOfSeq', clock),
 		'The record, at the folder clock');
 	perform pg_temp.same((select to_jsonb(v) - 'recorded_at' from public.qorpera_memory_views v where v.run_id = pg_temp.run_id('otto')),
-		jsonb_build_object('run_id', pg_temp.run_id('otto'), 'step', 0, 'profile_id', '63400000-0000-4000-8000-000000000010',
-			'environment_id', env, 'staff_agent_id', pg_temp.id('otto'), 'session_id', otto, 'messages', 1, 'head_bytes', 2048,
-			'view_bytes', 512, 'branches_bytes', 128, 'run_view_bytes', 0, 'raw_steps', 0, 'placeholders', 1, 'wait_ms', 40,
-			'waited_lines', 1, 'folded', false, 'stable_prefix_sha256', repeat('ab', 32), 'as_of_seq', clock), 'The row');
+		jsonb_build_object('run_id', pg_temp.run_id('otto'), 'assignment_id', first ->> 'assignmentId', 'step', 0,
+			'profile_id', '63400000-0000-4000-8000-000000000010', 'environment_id', env, 'staff_agent_id', pg_temp.id('otto'),
+			'session_id', otto, 'messages', 1, 'head_bytes', 2048, 'view_bytes', 512, 'branches_bytes', 128, 'run_view_bytes', 0,
+			'raw_steps', 0, 'placeholders', 1, 'wait_ms', 40, 'waited_lines', 1, 'folded', false,
+			'stable_prefix_sha256', repeat('ab', 32), 'as_of_seq', clock), 'The row');
 
 	-- The clock moves on: a replay keeps its asOfSeq, the next step records the new one.
 	perform pg_temp.fx(format('update public.qorpera_folder_clocks set last_seq = last_seq + 1 where environment_id = %L', env));
@@ -130,6 +132,24 @@ begin
 			'blocks', tree -> 'blocks'))))), '"ok"', 'The reference stands');
 	perform set_config('request.jwt.claims', coalesce(claims, ''), true);
 	if jsonb_array_length(tree -> 'blocks') <> 1 then raise exception 'Otto''s tree has one block'; end if;
+
+	-- A pristine retry or a resume of the run is a new attempt (its lease's assignment): it records step 0 afresh, at
+	-- the clock now, though its request differs. The old attempt's binding is refused.
+	perform pg_temp.fx(format('update public.qorpera_folder_clocks set last_seq = last_seq + 1 where environment_id = %L', env));
+	perform pg_temp.fx(format('update public.qorpera_runner_jobs set client_lease_id = %L where client_lease_id = %L', assignment,
+		first ->> 'assignmentId'));
+	perform pg_temp.fx(format('update public.qorpera_native_provider_connection_leases set assignment_id = %L where assignment_id = %L',
+		assignment, first ->> 'assignmentId'));
+	perform pg_temp.fx(format('update public.qorpera_runner_assignments set id = %L where id = %L', assignment,
+		first ->> 'assignmentId'));
+	perform set_config('qorpera_test.binding_otto', (first || jsonb_build_object('assignmentId', assignment))::text, true);
+	perform pg_temp.same(pg_temp.record_view('otto', pg_temp.request(0, 2)),
+		jsonb_build_object('schema', 'qorpera.memory-view-record/v1', 'step', 0, 'asOfSeq', clock + 2), 'A new attempt');
+	perform pg_temp.same((select jsonb_agg(jsonb_build_array(v.assignment_id, v.step, v.placeholders, v.as_of_seq)
+		order by v.as_of_seq) from public.qorpera_memory_views v), jsonb_build_array(
+		jsonb_build_array(first ->> 'assignmentId', 0, 1, clock), jsonb_build_array(first ->> 'assignmentId', 1, 1, clock + 1),
+		jsonb_build_array(assignment, 0, 2, clock + 2)), 'Three rows, two attempts');
+	perform pg_temp.raises(format('select public.qorpera_memory_view_record(%L, %L)', first, pg_temp.request(2)), '42501');
 end $$;
 
 -- 4. Malformed requests refuse (22023); the run check comes first -----------------------------------------------------

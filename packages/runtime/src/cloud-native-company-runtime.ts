@@ -368,8 +368,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				: undefined;
 			// Summary trees (RUNTIME-AGENT-MEMORY-TREE.md §5.3, M1b-4a): an agent's run in its own thread may see the
 			// primary view of its conversation, with the branches (§5.5), instead of the history before it. The host call
-			// answers whether it does (the company is listed once its trees are written); such a run has zoom and the
-			// conversation's prompt cache key (§6.2). A worker is not one; it gets its parent's view (W4).
+			// answers whether it does (the company is listed once its trees are written); a run that has the view has zoom
+			// and the conversation's prompt cache key (§6.2). A worker is not one; it gets its parent's view (W4).
 			const memoryTree =
 				folder !== undefined &&
 				context.identity.audienceKind === "company" &&
@@ -414,7 +414,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					(wake.kind !== "room" || cloudWakeIsOwnThread(wake))
 						? CloudFolderProposals.list(folder.client, signal)
 						: Promise.resolve(undefined);
-				// The primary view and branches, asked alongside the notebook. A failure keeps the history, and zoom.
+				// The primary view and branches, asked alongside the notebook. A failure keeps the history, with no zoom.
 				const viewRequest = memoryTree
 					? memoryComposeView(this.#paths, binding, signal).catch((error) => {
 							if (!signal.aborted)
@@ -491,7 +491,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// the paths of the proposals it shows (P40b).
 			await notebooks?.releaseComposition(contextSha256, signal, proposals?.reads);
 			// So are the summary lines the view and the branches show, and the run's first request is recorded (§13). A
-			// failure fails the run. The answer, the view reference (W4a-1), is for the workers the run dispatches (W4b).
+			// failed release fails the run. A failed record leaves it without the answer, the view reference (W4a-1),
+			// which is for the workers the run dispatches (W4b).
 			if (view)
 				await memoryCommitView(
 					this.#paths,
@@ -679,8 +680,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
 					prompt,
 					runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake, { head: head.text, views }),
-					// Every request of an agent's run in its conversation shares the conversation's cache key (§6.2).
-					...(memoryTree && context.identity.sessionId !== null
+					// Every request of a run with the view shares its conversation's cache key (§6.2).
+					...(view && context.identity.sessionId !== null
 						? {
 								composeContext: memoryCacheKeyComposer(
 									memoryPromptCacheKey({
@@ -761,7 +762,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										]
 									: []),
 								cloudCompanyContextTool(context, binding, this.#paths),
-								...(memoryTree ? [memoryZoomTool(binding, identity, this.#paths)] : []),
+								...(view ? [memoryZoomTool(binding, identity, this.#paths)] : []),
 								// A worker has no outbound effects: no mouth, no connectors.
 								...(this.#secretBroker && !work.isWorker
 									? cloudSecretTools({

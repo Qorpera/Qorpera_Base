@@ -7,8 +7,9 @@
 --    included events before the inputs that woke the run), the sequence of T's last event, and the live tree
 --    (qorpera_memory_tree_read).
 -- 3. qorpera_memory_views and qorpera_memory_view_record, a native host call (scope binding): one row per composed
---    request (§13, memory_view), with the folder clock it was recorded at. The runtime records after it has read the
---    trees, so that clock is the view reference's asOfSeq (W4a-1).
+--    request (§13, memory_view) of an attempt, with the folder clock it was recorded at. The runtime records after it
+--    has read the trees, so that clock is the view reference's asOfSeq (W4a-1). A retry or a resume of the run is
+--    another attempt, recorded afresh.
 -- The runtime releases the blocks a view shows with qorpera_memory_release (M1b-3b), so no call here keeps a receipt.
 
 set local lock_timeout = '3s';
@@ -87,7 +88,9 @@ grant execute on function public.qorpera_memory_view(jsonb) to service_role;
 
 create table public.qorpera_memory_views (
 	run_id uuid not null references public.qorpera_execution_runs(id) on delete cascade,
-	-- The model request of the run, from 0.
+	-- The attempt: its lease's assignment. A pristine retry or a resume of the run composes again under a new one.
+	assignment_id uuid not null,
+	-- The model request of the attempt, from 0.
 	step integer not null check (step >= 0),
 	profile_id uuid not null,
 	environment_id uuid not null,
@@ -112,29 +115,33 @@ create table public.qorpera_memory_views (
 	-- The company's folder clock when it was recorded: the view reference's asOfSeq.
 	as_of_seq bigint not null check (as_of_seq >= 0),
 	recorded_at timestamptz not null default clock_timestamp(),
-	primary key (run_id, step)
+	primary key (run_id, assignment_id, step)
 );
 alter table public.qorpera_memory_views enable row level security;
 revoke all on public.qorpera_memory_views from public, anon, authenticated, service_role;
 grant select on public.qorpera_memory_views to service_role;
 comment on table public.qorpera_memory_views is
-	'Summary trees (RUNTIME-AGENT-MEMORY-TREE.md §13): memory_view, one row per composed model request of a run. Written '
-	'by qorpera_memory_view_record.';
+	'Summary trees (RUNTIME-AGENT-MEMORY-TREE.md §13): memory_view, one row per composed model request of a run''s '
+	'attempt. Written by qorpera_memory_view_record.';
 
--- A composed request's memory_view (§13) for the binding's run. The request is {step, messages, headBytes, viewBytes,
--- branchesBytes, runViewBytes, rawSteps, placeholders, waitMs, waitedLines, folded, stablePrefixSha256}: counts as JSON
--- integers from 0 to 999,999,999, folded a boolean, the hash lowercase hex. Answers {schema, step, asOfSeq}, with the
--- company's folder clock (0 before its first commit). A step is recorded once: the same request replays its answer,
--- another refuses (23505). The run check comes first. A malformed request refuses (22023). One check per IF: an OR may
--- evaluate jsonb_object_keys on the wrong type first.
+-- A composed request's memory_view (§13) for the binding's run and attempt (its assignment). The request is {step,
+-- messages, headBytes, viewBytes, branchesBytes, runViewBytes, rawSteps, placeholders, waitMs, waitedLines, folded,
+-- stablePrefixSha256}: counts as JSON integers from 0 to 999,999,999, folded a boolean, the hash lowercase hex. Answers
+-- {schema, step, asOfSeq}, with the company's folder clock (0 before its first commit). A step is recorded once per
+-- attempt: the same request replays its answer, another refuses (23505). A new attempt records afresh, at the clock
+-- then. The run check comes first. A malformed request refuses (22023). One check per IF: an OR may evaluate
+-- jsonb_object_keys on the wrong type first.
 create function public.qorpera_memory_view_record(p_binding jsonb, p_request jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	c_schema constant text := 'qorpera.memory-view-record/v1';
 	c_count constant text := '^(0|[1-9][0-9]{0,8})$';
-	v_run public.qorpera_execution_runs%rowtype; v_key text; v_row public.qorpera_memory_views%rowtype;
+	v_tool jsonb; v_run public.qorpera_execution_runs%rowtype; v_assignment uuid; v_key text;
+	v_row public.qorpera_memory_views%rowtype;
 begin
-	v_run := jsonb_populate_record(null::public.qorpera_execution_runs, public.qorpera_folder_tool_run(p_binding, '[]'::jsonb) -> 'run');
+	v_tool := public.qorpera_folder_tool_run(p_binding, '[]'::jsonb);
+	v_run := jsonb_populate_record(null::public.qorpera_execution_runs, v_tool -> 'run');
+	v_assignment := (v_tool #>> '{actor,assignmentId}')::uuid;
 	if jsonb_typeof(p_request) is distinct from 'object' then
 		raise exception 'memory view record is malformed' using errcode = '22023'; end if;
 	if (select array_agg(k order by k collate "C") from jsonb_object_keys(p_request) k) is distinct from array['branchesBytes',
@@ -151,18 +158,18 @@ begin
 	if jsonb_typeof(p_request -> 'stablePrefixSha256') <> 'string' or (p_request ->> 'stablePrefixSha256') !~ '^[0-9a-f]{64}$' then
 		raise exception 'memory view record is malformed' using errcode = '22023'; end if;
 
-	insert into public.qorpera_memory_views(run_id, step, profile_id, environment_id, staff_agent_id, session_id, messages,
+	insert into public.qorpera_memory_views(run_id, assignment_id, step, profile_id, environment_id, staff_agent_id, session_id, messages,
 		head_bytes, view_bytes, branches_bytes, run_view_bytes, raw_steps, placeholders, wait_ms, waited_lines, folded,
 		stable_prefix_sha256, as_of_seq)
-	values (v_run.id, (p_request ->> 'step')::integer, v_run.profile_id, v_run.environment_id, v_run.staff_agent_id,
+	values (v_run.id, v_assignment, (p_request ->> 'step')::integer, v_run.profile_id, v_run.environment_id, v_run.staff_agent_id,
 		v_run.session_id, (p_request ->> 'messages')::bigint, (p_request ->> 'headBytes')::integer,
 		(p_request ->> 'viewBytes')::integer, (p_request ->> 'branchesBytes')::integer, (p_request ->> 'runViewBytes')::integer,
 		(p_request ->> 'rawSteps')::integer, (p_request ->> 'placeholders')::integer, (p_request ->> 'waitMs')::integer,
 		(p_request ->> 'waitedLines')::integer, (p_request -> 'folded')::boolean, p_request ->> 'stablePrefixSha256',
 		coalesce((select c.last_seq from public.qorpera_folder_clocks c where c.environment_id = v_run.environment_id), 0))
-	on conflict (run_id, step) do nothing;
+	on conflict (run_id, assignment_id, step) do nothing;
 	select * into strict v_row from public.qorpera_memory_views v
-	where v.run_id = v_run.id and v.step = (p_request ->> 'step')::integer;
+	where v.run_id = v_run.id and v.assignment_id = v_assignment and v.step = (p_request ->> 'step')::integer;
 	if jsonb_build_object('step', v_row.step, 'messages', v_row.messages, 'headBytes', v_row.head_bytes,
 		'viewBytes', v_row.view_bytes, 'branchesBytes', v_row.branches_bytes, 'runViewBytes', v_row.run_view_bytes,
 		'rawSteps', v_row.raw_steps, 'placeholders', v_row.placeholders, 'waitMs', v_row.wait_ms,

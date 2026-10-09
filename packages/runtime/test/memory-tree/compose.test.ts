@@ -14,6 +14,7 @@ import {
 	memoryCacheKeyComposer,
 	memoryCommitView,
 	memoryComposeView,
+	memoryJsonbTextBytes,
 } from "@qorpera/runtime/memory-tree/compose";
 import { memoryView } from "@qorpera/runtime/memory-tree/fold";
 import { memoryBlockPath, VIEW } from "@qorpera/runtime/memory-tree/tree";
@@ -276,37 +277,87 @@ describe("memory view composition", () => {
 		});
 	});
 
-	it("fails on a record answer that differs, and leaves out a view reference past its bound", async () => {
+	it("fails on a release that fails, before the record", async () => {
+		const h = host(viewed(12, 40, treeOf(SESSION, ROOT, 12, 8)));
 		const signal = new AbortController().signal;
-		for (const recorded of [
-			{ schema: MEMORY_VIEW_RECORD_SCHEMA, step: 1, asOfSeq: 42 },
-			{ schema: MEMORY_VIEW_RECORD_SCHEMA, step: 0, asOfSeq: -1 },
-			{ schema: "qorpera.memory-view-record/v2", step: 0, asOfSeq: 42 },
-			{ schema: MEMORY_VIEW_RECORD_SCHEMA, step: 0, asOfSeq: 42, replay: true },
-			null,
-		]) {
-			const h = host(viewed(0, null, treeOf(SESSION, ROOT, 0)), { recorded: () => recorded });
-			const composed = (await memoryComposeView(h.control, h.binding, signal)) as MemoryComposedView;
-			await expect(memoryCommitView(h.control, h.binding, composed, MEASURES, signal)).rejects.toThrow(
-				"Invalid memory view record answer",
-			);
+		const composed = (await memoryComposeView(h.control, h.binding, signal)) as MemoryComposedView;
+		h.call.mockRejectedValueOnce(new Error("release refused"));
+		await expect(memoryCommitView(h.control, h.binding, composed, MEASURES, signal)).rejects.toThrow(
+			"release refused",
+		);
+		expect(h.requests("qorpera_memory_view_record")).toEqual([]);
+	});
+
+	it("goes on without a view reference when the record fails or answers otherwise", async () => {
+		const signal = new AbortController().signal;
+		const failures: ((request: Record<string, unknown>) => unknown)[] = [
+			...[
+				{ schema: MEMORY_VIEW_RECORD_SCHEMA, step: 1, asOfSeq: 42 },
+				{ schema: MEMORY_VIEW_RECORD_SCHEMA, step: 0, asOfSeq: -1 },
+				{ schema: "qorpera.memory-view-record/v2", step: 0, asOfSeq: 42 },
+				{ schema: MEMORY_VIEW_RECORD_SCHEMA, step: 0, asOfSeq: 42, replay: true },
+				null,
+			].map((recorded) => () => recorded),
+			() => {
+				throw new Error("memory view step was recorded otherwise");
+			},
+		];
+		const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		try {
+			for (const recorded of failures) {
+				const h = host(viewed(12, 40, treeOf(SESSION, ROOT, 12, 8)), { recorded });
+				const composed = (await memoryComposeView(h.control, h.binding, signal)) as MemoryComposedView;
+				await expect(memoryCommitView(h.control, h.binding, composed, MEASURES, signal)).resolves.toBeNull();
+				expect(h.requests("qorpera_memory_release")).toHaveLength(1);
+			}
+			expect(logged.mock.calls).toEqual(failures.map(() => ["Memory view was not recorded (unknown)"]));
+		} finally {
+			logged.mockRestore();
 		}
+		// A cancelled run stops there.
+		const h = host(viewed(0, null, treeOf(SESSION, ROOT, 0)));
+		const composed = (await memoryComposeView(h.control, h.binding, signal)) as MemoryComposedView;
+		const cancelled = new AbortController();
+		cancelled.abort();
+		await expect(memoryCommitView(h.control, h.binding, composed, MEASURES, cancelled.signal)).rejects.toMatchObject({
+			name: "AbortError",
+		});
+	});
+
+	it("leaves out a view reference past its bound in jsonb's text, which spaces each : and ,", async () => {
+		expect(memoryJsonbTextBytes({ a: [1, "x"], b: {}, c: null, d: true, e: [] })).toBe(
+			Buffer.byteLength('{"a": [1, "x"], "b": {}, "c": null, "d": true, "e": []}'),
+		);
 		const h = host(null);
-		const blocks = Array.from({ length: 3000 }, (_, index) => ({
-			path: `${ROOT}/t0/${index}.jsonl`,
-			version: version(index),
-		}));
-		const large: MemoryComposedView = {
+		const signal = new AbortController().signal;
+		const view = (count: number): MemoryComposedView => ({
 			views: "",
 			tree: { conversationMessages: 0, lastSequence: null, branches: [] },
 			placeholders: 0,
-			conversations: [{ sessionId: SESSION, generation: 3, through: 0, blocks }],
+			conversations: [
+				{
+					sessionId: SESSION,
+					generation: 3,
+					through: 0,
+					blocks: Array.from({ length: count }, (_, index) => ({
+						path: `${ROOT}/t0/${String(index).padStart(5, "0")}.jsonl`,
+						version: version(index),
+					})),
+				},
+			],
 			blocks: [],
-		};
-		expect(Buffer.byteLength(JSON.stringify({ asOfSeq: 42, conversations: large.conversations }))).toBeGreaterThan(
-			MEMORY_VIEW_REFERENCE_BYTES,
-		);
+		});
+		// Within the bound as JSON.stringify writes it, past it as jsonb does.
+		const large = view(2544);
+		const reference = { asOfSeq: 42, conversations: large.conversations };
+		expect(Buffer.byteLength(JSON.stringify(reference))).toBeLessThanOrEqual(MEMORY_VIEW_REFERENCE_BYTES);
+		expect(memoryJsonbTextBytes(reference)).toBeGreaterThan(MEMORY_VIEW_REFERENCE_BYTES);
 		await expect(memoryCommitView(h.control, h.binding, large, MEASURES, signal)).resolves.toBeNull();
+		const within = view(2400);
+		await expect(memoryCommitView(h.control, h.binding, within, MEASURES, signal)).resolves.toEqual({
+			asOfSeq: 42,
+			conversations: within.conversations,
+		});
 	});
 
 	it("gives every request of the run the conversation's prompt cache key", async () => {
