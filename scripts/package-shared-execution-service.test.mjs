@@ -75,6 +75,9 @@ test("packages and pins the shared execution service", async () => {
 		}
 		const hostUnit = contents.get("qorpera-shared-run-host@.service").toString("utf-8");
 		const runnerUnit = contents.get("qorpera-shared-runner@.service").toString("utf-8");
+		// G2-5: neither the execution host's service nor a slot's units are given the service key.
+		for (const unit of [contents.get("qorpera-shared-execution.service").toString("utf-8"), hostUnit, runnerUnit])
+			assert.doesNotMatch(unit, /supabase-service-key|SUPABASE_SERVICE_KEY/);
 		assert.match(hostUnit, /^User=qorpera-shared-host-%i$/m);
 		assert.match(hostUnit, /^LoadCredential=qorpera-native-provider-master-key:\/run\/qorpera-shared-execution\/slots\/%i\/credentials\/qorpera-native-provider-master-key$/m);
 		assert.match(hostUnit, /^InaccessiblePaths=\/var\/lib\/qorpera\/identities /m);

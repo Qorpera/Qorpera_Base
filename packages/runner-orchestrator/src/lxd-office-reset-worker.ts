@@ -32,6 +32,7 @@ import {
 	parseCompanyComputerStartupIdentity,
 	parseCompanyComputerStopHistoryManifest,
 } from "@qorpera/contracts";
+import { type AgentPlug, runAgentPlug } from "./agent-plug.ts";
 import {
 	type LxdHostInventoryClient,
 	type LxdOfficeCodePackageClient,
@@ -60,6 +61,7 @@ import {
 	assertLxdOfficeGuestInstance,
 	inspectLxdOfficeGuestBoot,
 	type LxdOfficeGuestBinding,
+	lxdOfficeAgentPlugClaim,
 	lxdOfficeGuestPlan,
 } from "./lxd-office-guest.ts";
 import { officeCanonical, officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
@@ -135,6 +137,8 @@ interface Ports {
 	) => LxdOfficeResetCodePackageLane;
 	/** Trusted test port only; production holds the real NAS descriptors. */
 	nasCustody?: typeof openLxdOfficeResetNasCustody;
+	/** Trusted test port only; production runs the node's plug tool. */
+	plug?: AgentPlug;
 }
 export interface LxdOfficeResetInput {
 	intentId: string;
@@ -796,12 +800,18 @@ export class LxdOfficeResetWorker {
 						);
 					if (lineage.reached !== expected || (expected !== "none" && !lineage.settled && !administrativeCreate))
 						throw new Error("reset lineage differs");
+					// The new root's agent card is plugged in right before its create, once the old root is gone, and
+					// before the dispatch window so the plug's time costs none of it.
+					const hwaddr =
+						action === "create"
+							? await (this.#ports.plug ?? runAgentPlug)(lxdOfficeAgentPlugClaim(binding), signal)
+							: undefined;
 					const window = await challenge(phase, officeDigest({ dispatch: commandId, action }), "dispatch");
 					const checked = await guarded(window.signal);
 					await precondition(checked);
 					checked.throwIfAborted();
 					if (performance.now() >= window.deadline) throw new Error("reset dispatch window expired");
-					operation = await operations.reconcile(commandId, action, checked);
+					operation = await operations.reconcile(commandId, action, checked, hwaddr);
 				}
 				return operation;
 			};

@@ -18,9 +18,6 @@ const credentials = [
 const objectOperations: Array<{ name: string; call: (authority: SupabaseObjectAuthority) => Promise<unknown> }> = [
 	{ name: "service download", call: (authority) => authority.authorizeServiceDownload(profileId, sha256) },
 	{ name: "upload receipt", call: (authority) => authority.confirmUpload(profileId, sha256, 7) },
-	{ name: "native upload", call: (authority) => authority.authorizeNativeUpload({}, profileId, sha256, 7) },
-	{ name: "native upload receipt", call: (authority) => authority.confirmNativeUpload({}, profileId, sha256, 7) },
-	{ name: "native download", call: (authority) => authority.authorizeNativeDownload({}, profileId, sha256) },
 	{
 		name: "delete authorization",
 		call: (authority) => authority.authorizeDelete(profileId, sha256, 7, authorizationId),
@@ -50,6 +47,8 @@ const publisherOperations = [
 	"qorpera_stage_member_session_attachment",
 	"qorpera_claim_connection_file",
 	"qorpera_finish_connection_file",
+	"qorpera_claim_coding_results_file",
+	"qorpera_finish_coding_results_file",
 	"qorpera_folder_authorize_object_download",
 	"qorpera_folder_open_upload",
 	"qorpera_folder_authorize_object_upload",

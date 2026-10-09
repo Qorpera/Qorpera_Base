@@ -250,7 +250,7 @@ Runtime:
 - The SQL and the runtime ship in one cut. The runtime calls the recorder only from a writer, and none does before W4,
   so the change is inert until then.
 
-## 8. R2: change sets no tool call carried (P40a built; P40b, the runtime, next)
+## 8. R2: change sets no tool call carried (P40a, P40b and P40c built)
 
 An agent can also change delegation paths without a reviewed tool: a computer or shell edit saved through a view
 (C1b-3). Until P40 such units were denied. The coordinator chose shape B on 4 October 2026 (registry 05:51Z): the
@@ -305,7 +305,7 @@ delegation path keeps "use the tool made for it" (no P40d).
   proposal with a denial of its `apply_proposal` call (the reviewer's deny, or a member's on the card). Without one, the
   run discards it.
 - `qorpera_folder_member_discard_proposal(env, member, proposalId)`: the member the proposal waits for, an owner or an
-  admin discards it. Members have no list yet (P40c, with the web).
+  admin discards it. Since P40c it also takes a member's own actor (`qorpera_folder_caller_allowed`), for the web.
 - A decided proposal answers as it stands.
 
 **Erasure:** erasing a path erases the open proposals that name a path under it before the root's cutoff. A proposal
@@ -322,11 +322,73 @@ counts them (`erased.proposals`). A live root whose only history is a proposal s
   under a root in between makes it retry (QRC01);
 - the parking commit only inserts.
 
-**Left for P40b and later:**
-- P40b (runtime): list at the start of a turn, review each proposal through the gate with an action summary built from
-  the changes (not a file list), record, apply, and tell the agent. It also fixes the boundary's "proposed" observation
-  for folder-v2 results.
-- P40c (web): open proposals in the agent's thread, and a member's discard.
+**The runtime (P40b, migration `20260930093000`, SQL tests 320 (since deleted with snapshot-v1, legacy sweep B2b), 926 and 927 extended; `CloudFolderProposals`):**
+- At the start of a turn, a run that can raise a card lists the first page: a folder-v2 company run with a session,
+  not a worker, and not a wake from a room other than its own thread. The prompt gets a `proposals` block just before
+  `skills`: each proposal's id, when and from where it was saved, and its first 20 changes as one line each with its
+  path ("Hire “Mira” as Bookkeeper", "Delete “Q3 plan” from “Old”"; a path is cut at 512 bytes), with the rest counted
+  (`moreChanges`, `moreWaiting`). A listing that fails or is malformed leaves the block and the tools out.
+- The listing gives each proposal's `reads`: every path it names, with the authority the list was decided on, in the
+  same snapshot as the filter that lists only what the member can read (`qorpera_folder_proposal_reads`). The run
+  releases them with no version (no file was read) under the composed context's hash, with what composition read,
+  before its first model request. `record_release` and the run's fence then treat them as any read: a grant revoked
+  after the listing fails the release (the turn fails closed), or fences the run's later operations once released.
+- The tools `apply_proposal` and `discard_proposal` exist only for a run that listed something, and take only a listed
+  id (lower case). Their arguments are exactly `{"proposalId":"<id>"}`, so the boundary's digest is the one the
+  layering checks.
+- `apply_proposal` goes through the gate with the proposal's effect (`delegation` or `destructive`). Its card is built
+  from the changes, never from the files: one change shows as its own card (a hire's title, name, role and intent);
+  more show "Apply N changes saved from …", the first 8 changes in order, the rest counted, and each shown change's
+  quoted text. The reviewer also reads the proposal in full beside the card: every change with its files' whole
+  parses, and each item a new folder contains by path and kind (the listing's `contains`, from the proposal's path
+  rows; a plain file is named only, as it would save without review on its own). This is the tool's new
+  `reviewContents` hook, which the gate adds to the action as `contents`; a tool that cannot give all of it fails the
+  review closed. A proposal the list carries only in part (over 50 units) is never applied
+  on a review of a part: its arguments are refused, and it can still be discarded. An allow records the review with the proposal
+  (`qorpera_folder_record_review`, before the receipt), then applies it as one operation (`apply:<id>`, tool version
+  `folder-v2/1`, the company's revision required) and tells the agent what saved, whom it hired (to wake with
+  `send_coworker_message`), and up to 20 units that did not save, with their reasons. A proposal that is no longer open
+  answers that nothing was applied now, and starts nothing.
+- A member's discard (or an erasure) can land after the review is recorded and before the apply commits. The apply
+  then finds the proposal decided without its commit, cancels the call's own receipt (executing, of this run, with the
+  key `apply_proposal:apply:<id>`, and carried by no commit) and answers
+  `{schema: "qorpera.folder-proposal-unapplied/v1", proposalId, status, receiptId}` (`status` is `erased` for an
+  erased one). The executor finishes that call as failed (`stale_version`) through `CloudToolOperationSettled`, and
+  the agent hears that nothing was applied. A receipt that stayed executing would fence the run's later operations.
+  A discard that commits while the apply waits for the proposal's lock instead leaves a commit under the receipt that
+  saved nothing (every unit `denied`, `review_required`, and no proposal): a retry of the same call replays that
+  commit, the receipt completes with it, and the agent hears the same "nothing was applied". The not-open path locks
+  the receipt before it looks for that commit, so a retry that overlaps the apply waits for it there.
+- A deny (the reviewer's, or a member's on the card) calls the tool's new `denied` hook with the denial's id, and the
+  hook closes the proposal as declined (`qorpera_folder_close_proposal` with `actionReviewId`). The boundary passes
+  the id on each denying path; if the hook cannot close it, the denial stands as it was.
+- `discard_proposal` closes without a review id (an internal effect). A decided proposal says how it was decided, and
+  nothing changes.
+- A change that waits for review is observed as `proposed` (`protected_path`), not `succeeded`: a folder-v2 file tool
+  tells the operation executor before it finishes the call's observation, and the boundary reads the path gateway's
+  `qorpera.company-path-result/v1` answer.
+- The migration lets the native host make the run's three calls (the list and the apply with the folder scope, the
+  close with the binding's; G2-1's scopes) and names the two tools in observations. No table and no lock.
+
+**The web (P40c, migration `20260930102000`, SQL test 937; `packages/web`):**
+- `qorpera_member_folder_agent_proposals(env, staffAgentId, {cursor?})` (authenticated) lists the caller's open
+  proposals of one agent as the run's list does: oldest first, 4 per page, each with its first 50 units, listed (and
+  counted) only while the member may read every path it names. Each structured file carries only the strings of its
+  parse a card names it by (`name`, `title`, `role`, `status`), never its content.
+- `qorpera_member_folder_discard_proposal(env, proposalId)` (authenticated) is the core's discard as the caller's own
+  actor: the member it waits for, owners and admins (42501 otherwise); an unknown or erased proposal is P0002, and a
+  company being deleted refuses (55000). A decided proposal answers as it stands.
+- The agent's own thread (an open company thread with the agent, not a routine, a room, a group chat or a sub-session)
+  reads the first page with the thread and shows each proposal as an approval card after the messages: one change as
+  the headline, or "N saved changes" with the first 8 changes and the rest counted, then where it was saved ("From a
+  computer. Not in the Company File yet.") and Discard. The changes are worded as the runtime's card words them, never
+  as paths. More than 4 adds a note that more wait. A discard hides the card at once, even from a listing read before
+  it landed; an unknown proposal counts as gone, and any other refusal keeps the card and shows the reason.
+- Applying stays the agent's (its next run reviews the proposal through the gate). A listing that fails keeps the
+  cards shown last.
+
+**Left for later:**
 - A proposal waiting for a removed member, or for an archived agent, stays open until an owner or admin discards it.
+  Their list of such proposals is later work.
 
 R2 is F2's (the coordinator's plan of 2 October 2026; shape B on 4 October 2026).

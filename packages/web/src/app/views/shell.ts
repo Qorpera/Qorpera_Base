@@ -27,6 +27,7 @@ import { RailSelection } from "../../ui/rail-selection.ts";
 import { railListSkeleton } from "../../ui/skeleton.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import { type AgentState, type CompanyController, isAgentPairSession } from "../company.ts";
+import { interfaceBadge } from "../interface-badge.ts";
 import { type CompanyInterface, companyInterfaces, interfaceMainProblem } from "../interfaces.ts";
 import type { Route } from "../router.ts";
 import { GroupParticipantsError, GroupUpdateNotWrittenError } from "../update-group.ts";
@@ -1303,11 +1304,13 @@ function drawInterfaces(
 		.filter((entry) => !query || (entry.file?.name ?? entry.name).toLowerCase().includes(query))
 		.map((entry) => {
 			const { name, file } = entry;
+			const count = file ? interfaceBadge(company, file) : 0;
 			const model = JSON.stringify(
-				file ? [name, file.name, file.about, file.emblem, file.colour, entry.main] : [name, "broken"],
+				file ? [name, file.name, file.about, file.emblem, file.colour, entry.main, count] : [name, "broken"],
 			);
 			const kept = parts.interfaceRows.get(name);
-			const element = kept?.shown === model ? kept.element : interfaceRailRow(entry, `#/c/${profileId}/i/${name}`);
+			const element =
+				kept?.shown === model ? kept.element : interfaceRailRow(entry, `#/c/${profileId}/i/${name}`, count);
 			rows.set(name, { shown: model, element });
 			element.classList.toggle("active", name === activeName);
 			if (name === activeName) element.setAttribute("aria-current", "page");
@@ -1325,8 +1328,15 @@ function drawInterfaces(
 	]);
 }
 
+/** An interface's badge on its emblem (§3 `badge`): how many of its rows wait, said in its label too. */
+function countBadge(count: number): HTMLElement | null {
+	return count > 0
+		? h("span", { class: "rail-mention rail-count", "aria-hidden": "true" }, count > 99 ? "99+" : String(count))
+		: null;
+}
+
 /** An interface in the tab: the main one's card, another's row, or the row of a page whose text doesn't parse. */
-function interfaceRailRow(entry: CompanyInterface, href: string): HTMLElement {
+function interfaceRailRow(entry: CompanyInterface, href: string, count: number): HTMLElement {
 	const file = entry.file;
 	if (!file)
 		return h(
@@ -1340,6 +1350,8 @@ function interfaceRailRow(entry: CompanyInterface, href: string): HTMLElement {
 				h("small", null, t("This page has a problem.")),
 			),
 		);
+	const waiting = count > 0 ? t("{count} waiting", { count }) : null;
+	const label = waiting ? `${file.name}, ${waiting}` : file.name;
 	if (entry.main)
 		return h(
 			"a",
@@ -1348,9 +1360,14 @@ function interfaceRailRow(entry: CompanyInterface, href: string): HTMLElement {
 				href,
 				draggable: "false",
 				title: file.about ?? file.name,
-				"aria-label": file.name,
+				"aria-label": label,
 			},
-			h("span", { class: "cofounder-stand interface-stand" }, interfaceEmblem(file.emblem, file.colour, 64)),
+			h(
+				"span",
+				{ class: "cofounder-stand interface-stand" },
+				interfaceEmblem(file.emblem, file.colour, 64),
+				countBadge(count),
+			),
 			h("strong", null, file.name),
 		);
 	return h(
@@ -1360,8 +1377,9 @@ function interfaceRailRow(entry: CompanyInterface, href: string): HTMLElement {
 			href,
 			draggable: "false",
 			title: file.about ?? file.name,
+			...(waiting ? { "aria-label": label } : {}),
 		},
-		h("span", { class: "rail-row-stand" }, interfaceEmblem(file.emblem, file.colour, 40)),
+		h("span", { class: "rail-row-stand" }, interfaceEmblem(file.emblem, file.colour, 40), countBadge(count)),
 		h(
 			"span",
 			{ class: "rail-row-copy" },

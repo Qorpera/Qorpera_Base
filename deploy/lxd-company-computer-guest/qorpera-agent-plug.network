@@ -1,0 +1,8 @@
+# The machine's agent card is qorpera-computer-plumb's alone: no DHCP, no
+# addresses, routes or link-local addresses from systemd-networkd. Sorted
+# before netplan's files, so no wider match of theirs reaches it.
+[Match]
+Name=qagent
+
+[Link]
+Unmanaged=yes

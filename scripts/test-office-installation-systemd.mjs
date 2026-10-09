@@ -37,7 +37,8 @@ try {
 		args.push("--mount", `type=bind,src=${source},dst=${target},readonly`);
 	// Only the container's own cgroup namespace is remounted. No host cgroup or
 	// block-device bind is passed; the probe mounts its own autoclearing loop file.
-	args.push(image, "/bin/bash", "-c", systemdContainerBoot("groupadd --gid 1101 office-lxd-test"));
+	// The agent exit's installer makes the plug group on a node; the provider unit fails to start without it.
+	args.push(image, "/bin/bash", "-c", systemdContainerBoot("groupadd --gid 1101 office-lxd-test && groupadd --gid 1102 qorpera-agent-plug"));
 	container = command("docker", args);
 	let ready = false;
 	for (let i = 0; i < 40; i++) {

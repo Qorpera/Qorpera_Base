@@ -152,7 +152,10 @@ describe("office fleet service installation", () => {
 			expect(unit.text).toContain("Requires=qorpera-node-host-namespace.service");
 			expect(unit.text).toContain("After=network-online.target qorpera-node-host-namespace.service");
 			expect(unit.text).not.toContain("qorpera-office-host-namespace");
-			expect(unit.text).toContain(`SupplementaryGroups=${policy.host.socketGid}`);
+			// The LXD socket's group, and the agent plug's: each computer's agent card is plugged in before its create.
+			expect(unit.text).toMatch(
+				new RegExp(`^SupplementaryGroups=${policy.host.socketGid} qorpera-agent-plug$`, "m"),
+			);
 			expect(unit.text).toContain(`"${policy.journal.path}/adoption.lock"`);
 			expect(unit.text).toContain("NoNewPrivileges=yes");
 			expect(unit.text).toContain('Environment="NODE_EXTRA_CA_CERTS=/etc/qorpera/registry-ca.pem"');

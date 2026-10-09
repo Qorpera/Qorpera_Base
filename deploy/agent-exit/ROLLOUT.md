@@ -27,25 +27,54 @@ Each check changes nothing. Every one must hold on both nodes before step 1.
 | The group does not exist yet, or is a system group | `getent group qorpera-agent-plug` | nothing, or a gid below 1000 |
 | The node's connection table | `cat /proc/sys/net/netfilter/nf_conntrack_max` | 262144 (as read on 2 October) |
 | Room on the root disk for the exit's logs (in `/var/log/qorpera-agent-exit`, at most 2 GiB; the exit turns unhealthy with less than 10% of the disk free) | `df --output=size,avail,pcent /` | under 85% used (node 2 read 83% on 4 October; at 85% the logs keep only today, at 90% the exit is unhealthy) |
+| The NAS share for the exit's logs (E3; once, for both nodes: `README.md`, "The share"): `qorpera-agent-exit-logs` on volume 1, NFS rules for 192.168.1.27 and 192.168.1.42 only, each read/write, Squash "No mapping", security `sys`, "Enable asynchronous" off | in DSM, Control Panel → Shared Folder → `qorpera-agent-exit-logs` → Edit → NFS Permissions | the two rules as listed, and no other host (step 1's mount proves the share from each node) |
 | No agents' or coding machines from before (the new executor refuses to stop or delete one that is not on `qagent0`) | `lxc list --project machines --format csv -c n; lxc list --project coding --format csv -c n` (the projects the machine and coding VM policies name; these are their defaults) | nothing (or `Project not found`): production's companies were wiped on 3 October |
+| The machine and coding projects allow the agent card: a bridged NIC whose parent is `qagent0`, not a network. LXD refuses it in a restricted project unless the project allows every NIC and its network list is empty or names `qagent0` (`lxd/project/permissions.go`), and only at the create; no gate checks it before | `for p in machines coding; do echo "$p: $(lxc project get $p restricted) $(lxc project get $p restricted.devices.nic) [$(lxc project get $p restricted.networks.access)]"; done` | `restricted` empty or false (`false`, `0`, `no`, `off`), or `allow` with `[]` or a list naming `qagent0` (or `Project not found`; `deploy/machine/README.md` makes `machines` unrestricted). Both nodes' `coding` read `true managed []` on 8 October: run `lxc project set coding restricted.devices.nic=allow` (this row alone may wait until right before step 5, the first create with the card). No policy digests these projects' config |
 
 ## Step 1: the exit on node 1
+
+A node that already runs the exit from an earlier release takes E3 alone instead: `README.md`, "Adding E3 to a node
+that runs the exit" (its steps, check and undo). One that runs E3 already takes E7 alone: "Adding E7 to a node that
+runs the exit". A fresh node gets E7 with this step, its brake off (step 4c).
+
+First the NAS for the logs (E3): the mount unit of `README.md`, "The mount", written to
+`/etc/systemd/system/srv-qorpera-agent\x2dexit\x2dlogs.mount`, then:
+
+```bash
+apt-get install -y --no-install-recommends nfs-common
+systemctl daemon-reload && systemctl enable --now 'srv-qorpera-agent\x2dexit\x2dlogs.mount'
+findmnt /srv/qorpera/agent-exit-logs
+# The share's marker (the shipper writes only into a mount point that holds it); there already on the second node.
+# Only on the mounted share: a mount that failed leaves the bare folder, which must never get one.
+mountpoint -q /srv/qorpera/agent-exit-logs &&
+	{ test -e /srv/qorpera/agent-exit-logs/.qorpera-agent-exit-logs || touch /srv/qorpera/agent-exit-logs/.qorpera-agent-exit-logs; }
+grep -q '^QORPERA_AGENT_EXIT_NAS_DIR=' /etc/default/qorpera-agent-exit 2>/dev/null ||
+	echo 'QORPERA_AGENT_EXIT_NAS_DIR=/srv/qorpera/agent-exit-logs' >>/etc/default/qorpera-agent-exit
+```
+
+`findmnt` shows `192.168.1.40:/volume1/qorpera-agent-exit-logs` with `nfs4` and `soft`, and
+`ls -A /srv/qorpera/agent-exit-logs` lists `.qorpera-agent-exit-logs`. If `findmnt` shows nothing, stop and fix the mount
+first. `/etc/default/qorpera-agent-exit` is root's, mode 0644. Then the exit:
 
 ```bash
 apt-get install -y --no-install-recommends dnsmasq-base conntrack python3
 getent group qorpera-agent-plug || groupadd --system qorpera-agent-plug
 bash deploy/agent-exit/install-agent-exit.sh
 systemctl enable --now qorpera-agent-exit.service qorpera-agent-exit-dns.service qorpera-agent-exit-log.service \
-	qorpera-agent-plug.service qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer
+	qorpera-agent-plug.service qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer qorpera-agent-exit-ship.timer
+systemctl start qorpera-agent-exit-ship.service
 ```
 
-The logs' timer is part of the exit, not optional: it keeps the exit's logs within their cap on the node's root disk
-(`README.md`, "The logs on the node"), and `verify` fails without it.
+The logs' and the shipper's timers are part of the exit, not optional: one keeps the exit's logs within their cap on
+the node's root disk (`README.md`, "The logs on the node"), the other gets them onto the NAS ("The logs on the NAS"),
+and `verify` fails without either. The shipper's first pass runs at once, so `verify` need not wait 5 minutes for it.
 
 Check, within 30 seconds:
 - `X verify` prints `qorpera-agent-exit: healthy`;
 - `cat /run/qorpera-agent-exit/logs.json` shows `"problems":[]`, a `capBytes` of 2147483648 and the disk's
   `freePercent`;
+- `cat /run/qorpera-agent-exit/ship.json` shows `"problems":[]` and `"errors":[]`, and
+  `cat /srv/qorpera/agent-exit-logs/$(hostname)/status.json` shows this node's `host` and a `through` of the pass;
 - `cat /run/qorpera-agent-exit/health.json` shows `"healthy": true` and a `checkedAt` under 20 seconds old (the check runs every 10 seconds);
 - `X status` lists `br0 10.210.0.1/16` and `up0 10.209.255.2/30`, no ports on `qagent0` and an empty client map;
 - `/usr/local/libexec/qorpera-guest-guard/qorpera-guest-guard.sh verify` still exits 0 (the guard and the exit
@@ -54,12 +83,15 @@ Check, within 30 seconds:
 Undo (nothing is plugged in yet):
 
 ```bash
-systemctl disable --now qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer qorpera-agent-exit.service && systemctl disable qorpera-agent-exit-dns.service qorpera-agent-exit-log.service qorpera-agent-plug.service
+systemctl disable --now qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer qorpera-agent-exit-ship.timer qorpera-agent-exit.service && systemctl disable qorpera-agent-exit-dns.service qorpera-agent-exit-log.service qorpera-agent-plug.service
 ```
+
+The mount and the `QORPERA_AGENT_EXIT_NAS_DIR` line may stay: nothing writes to the NAS without the shipper, and what
+is there stays.
 
 ## Step 2: the exit on node 2
 
-The same as step 1, on node 2, with the same checks and the same undo.
+The same as step 1, on node 2, with the same checks and the same undo. The share's marker is there already (step 1).
 
 ## Step 3: migration 20260930089000 (inert)
 
@@ -151,9 +183,37 @@ into `/var/log/qorpera-agent-exit/counts-YYYY-MM-DD.json`. The two weeks of coun
 ```
 
 It prints, per company, the days with traffic, new connections (all and the busiest day), the most machines on a day,
-the most new connections in 10 seconds (the company's and one machine's), refused, unanswered, and the most failed
-destinations in one minute. Check: after the first closed day, `ls /var/log/qorpera-agent-exit/counts-*.json` lists it.
-Undo: none needed (reading changes nothing).
+the most new connections in 10 seconds (the company's and one machine's), refused, unanswered, the most failed
+destinations in one minute, and (from step 4c on) the times braked and the new connections the brake dropped. Check:
+after the first closed day, `ls /var/log/qorpera-agent-exit/counts-*.json` lists it. Undo: none needed (reading
+changes nothing).
+
+## Step 4c (later): the brake's levels
+
+Only once the founder has read the counts (step 4b, two weeks) and decided the levels, well above normal use. Until
+then the brake is installed and off: `/run/qorpera-agent-exit/brake.json` shows `"on": false` and `"problems": []`.
+On node 1 (root), with the founder's numbers (`README.md`, "The brake": any of the four lines may be left out; with
+neither of the first two the brake stays off):
+
+```bash
+cat >>/etc/default/qorpera-agent-exit <<'EOF'
+QORPERA_AGENT_EXIT_BRAKE_NEW_10S=<N>
+QORPERA_AGENT_EXIT_BRAKE_FAILED_60S=<F>
+QORPERA_AGENT_EXIT_BRAKE_SLOW_10S=<S, under N>
+QORPERA_AGENT_EXIT_BRAKE_MINUTES=<M>
+EOF
+systemctl restart qorpera-agent-exit-log.service
+```
+
+The logger reads the levels when it starts; its few seconds down are marked in the log, and traffic goes on.
+
+Check, within 10 seconds: `cat /run/qorpera-agent-exit/brake.json` shows `"on": true`, the levels as written and
+`"problems": []`; `X verify` prints `qorpera-agent-exit: healthy`;
+`ip netns exec qexit nft list chain inet qorpera_agent_exit share` shows one rule, with `comment "slow S"`. A line that is not well formed shows in `problems`, and `verify` fails until it is fixed (the brake stays
+off meanwhile). Then node 2, the same way.
+
+Undo: remove the four lines, then `systemctl restart qorpera-agent-exit-log.service`. Running brakes end at once, each
+with an `unbraked` line in the connection log.
 
 ## Step 5: the node release of the release head, node 1 then node 2
 
@@ -221,5 +281,36 @@ The demand's refusal list keeps `NODE_AGENT_EXIT_UNHEALTHY`; nothing writes it o
   whose observer stopped reads as unobserved first (`NODE_OBSERVATION_UNAVAILABLE`), so its sleeping machines get the
   usual grace before they move. When no node has a healthy exit, a new agent's machine waits as for room (no
   candidate is left). Repair: `systemctl reload qorpera-agent-exit.service` (`README.md`, "Health and failure").
-- The Company Computer's second card comes with E6 and the next office image; until then its browser keeps its own
-  network.
+- The Company Computer's second card comes with E6 and the next office image (step 7); until then its browser keeps
+  its own network.
+
+## Step 7 (E6): the Company Computer's agent card, with the next office image
+
+E6 is two PRs that merge together: #925 (the office provider) and #926 (the office image). They go out with the next
+office image (#411's), node 1 then node 2, after steps 1–6. Per node:
+1. The exit is healthy (`X verify`). Both office units join the group `qorpera-agent-plug` and fail to start without it.
+2. The offices project allows the agent card, as step 0 asks of the machine and coding projects. `P` is the project
+   the office policy names (`guest.project`; no node has a project called `offices`). LXD enforces a project's
+   restrictions unless `lxc project get P restricted` is empty or false (`false`, `0`, `no`, `off`). If it does, set
+   `lxc project set P restricted.devices.nic=allow` (the card names a parent, `qagent0`, not a network, which
+   `managed` refuses), and if `lxc project get P restricted.networks.access` lists networks, add `qagent0` to the
+   list. The office gate refuses a project that would refuse the card
+   (`LXD_OFFICE_INFRASTRUCTURE_UNCONFIRMED`), before any create is claimed. The project's config is in the office
+   policy's digest: re-enrol the policy after.
+3. The new office image. Its network configures the first card (`enp5s0`) only; the plug, which the image names
+   `qagent` by its MAC, never gets DHCP.
+4. The node release with the new office provider (`install-lxd-provider-host.sh`) and fleet units. The installer
+   refuses an installed unit that differs and never replaces it: stop the office services and remove their installed
+   units first.
+
+A Company Computer made before has one card and the guest check refuses it (`LXD_OFFICE_GUEST_DRIFTED`); delete it
+(production's companies were wiped on 3 October).
+
+Check, per node, on a new Company Computer (or the next reset):
+- within a minute `X status` shows its `office` entry in the client map and a port on `qagent0`, and `X verify` stays
+  healthy; `tail -1 /var/log/qorpera-agent-exit/clients-$(date -u +%F).jsonl` shows its `plugged` line;
+- in the computer, `ip -4 -o addr show qagent` shows one `10.210.*/16` address, `ip rule` shows the rules 1000–1002,
+  and a shell's `/etc/resolv.conf` names `10.210.0.1` only.
+
+Undo: roll the node back to its previous release and office image. A plugged Company Computer keeps its entry until it
+is deleted.

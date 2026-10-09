@@ -20,6 +20,7 @@ import {
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
+import { recordCloudRunLogRelease } from "./cloud-run-log.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 
 /*
@@ -62,13 +63,17 @@ const RUN_EFFECTS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_record_review",
 	"qorpera_prepare_routine_login",
 	"qorpera_folder_cancel_agent_worker",
+	"qorpera_folder_close_proposal",
 	"qorpera_folder_manage_hook",
 	"qorpera_folder_archive_coding_worker",
 ]);
+/** SQL's refusal (55000) of an archive or a cancel by the run that was asked about a quiet coding session, once the
+ * session has a new turn (`qorpera_coding_question_stale`). */
+export const CODING_QUESTION_STALE = "The session has a new turn since you were asked; leave it";
 /** A coding session's archive refusals, by SQL's message, with their SQLSTATE (C3b). */
 export const CODING_ARCHIVE_REFUSALS: ReadonlyMap<string, string> = new Map([
 	["Only a coding session can be archived", "22023"],
-	["The session has a new turn since you were asked; leave it", "55000"],
+	[CODING_QUESTION_STALE, "55000"],
 ]);
 /** The answers of `qorpera_folder_manage_hook` (E3a, 20260930106000) the model reads, by SQLSTATE and SQL's message,
  * in the model's words: the request's rules, the company's state, the run's authority and the wake's refusals. Each is
@@ -128,6 +133,9 @@ const HOOK_KEYS = [
 ] as const;
 const HOOK_OPTIONAL = ["email", "lastReceivedAt", "signingSecret", "address", "path", "url"] as const;
 const HOOK_STATUS = { create: "active", pause: "paused", resume: "active", remove: "removed" } as const;
+/** The recorder's answer for a proposal that is no longer open for the run (P40a): an answer, not a defect. */
+const PROPOSAL_NOT_OPEN = "This proposal is not open for this run";
+const PROPOSAL_STATUSES = ["applied", "not_applied", "declined", "discarded"] as const;
 /** The wake's refusals of work (`qorpera_assert_wake_work_allowed`), by SQL's message. */
 const WAKE_REFUSALS: ReadonlyMap<string, "acknowledgement" | "final" | "paused"> = new Map([
 	["Wake requires an acknowledgement before work", "acknowledgement"],
@@ -240,6 +248,46 @@ export interface CloudCompanyFolderRoutinePage {
 	readonly routines: readonly CloudCompanyFolderRoutine[];
 	/** How many more there are after this page; `nextCursor` (the last routine's cursor) continues it. */
 	readonly moreRoutines: number;
+	readonly nextCursor: string | null;
+}
+
+/** One unit of an open proposal as its run's list shows it (P40, `qorpera_folder_agent_proposals`): the op, its path (a
+ * move's or copy's source) and target, a new folder's item count and items (each path and kind, P40b), and the
+ * structured files it writes with their parses (SQL leaves out a parse's null fields). */
+export interface CloudCompanyFolderProposalUnit {
+	readonly unit: number;
+	readonly op: CloudCompanyFolderUnit["op"];
+	readonly path: string;
+	readonly to: string | null;
+	readonly items: number | null;
+	readonly contains: readonly { readonly path: string; readonly kind: "file" | "folder" }[];
+	readonly structured: readonly {
+		readonly path: string;
+		readonly kind: string;
+		readonly parse: Readonly<Record<string, unknown>>;
+	}[];
+}
+
+/** A change set the agent saved through a view (a computer, a shell command, a coding session) that needed review, parked
+ * until it is applied, declined or discarded (P40a): its first 50 units, and whether it makes an agent. */
+export interface CloudCompanyFolderProposal {
+	readonly proposalId: string;
+	readonly createdAt: string;
+	readonly viewKind: string;
+	readonly effect: "delegation" | "destructive";
+	readonly createsAgent: boolean;
+	readonly unitCount: number;
+	readonly units: readonly CloudCompanyFolderProposalUnit[];
+	readonly moreUnits: number;
+	/** Every path it names, as the run releases them with the context that shows them (P40b): a revoked grant then
+	 * fences the run as for any read. */
+	readonly reads: readonly CloudCompanyFolderRelease[];
+}
+
+export interface CloudCompanyFolderProposalPage {
+	readonly proposals: readonly CloudCompanyFolderProposal[];
+	/** How many more there are after this page; `nextCursor` (the last proposal's id) continues it. */
+	readonly moreProposals: number;
 	readonly nextCursor: string | null;
 }
 
@@ -384,6 +432,12 @@ export interface CloudCompanyFolderCommitResult {
 	readonly units: readonly CloudCompanyFolderUnitResult[];
 }
 
+/** `applyProposal`'s answer for a proposal decided or erased before the apply reached it (a member discarded it after
+ * the run recorded its review): nothing applied, and the kernel cancelled the call's receipt. */
+export interface CloudCompanyFolderProposalUnapplied {
+	readonly unapplied: "applied" | "not_applied" | "declined" | "discarded" | "erased";
+}
+
 /** A worker tool's request, which the folder core's hook checks against exactly the units it names (F2-5b §3): the
  * worker's folder `agents/<agent>/todos/<todo>/<worker>`, and the action's own fields as the files hold them. */
 export type CloudCompanyFolderWorkerRequest =
@@ -447,7 +501,8 @@ export interface CloudCompanyFolderWorkerPage {
 /** A read released to the model: its path, the version read, and the receipt it was read under. */
 export interface CloudCompanyFolderRelease {
 	readonly path: string;
-	readonly version: string;
+	/** The version read; null for a path the context names without reading a file (a proposal's, P40b). */
+	readonly version: string | null;
 	readonly authority: CloudCompanyFolderAuthority;
 	/** Audit data only (contract 9.1): the file's content hash, when a file's content was released. */
 	readonly fileSha256?: string;
@@ -703,11 +758,19 @@ function problems(value: unknown): CompanyStateProblem[] {
 
 const OUTCOMES: readonly CloudCompanyFolderOutcome[] = ["saved", "conflict", "refused", "denied", "waiting_for_review"];
 
-function unitResult(value: unknown, index: number, sent: CloudCompanyFolderUnit): CloudCompanyFolderUnitResult {
+const OPS: readonly CloudCompanyFolderUnit["op"][] = ["write", "mkdir", "new_folder", "delete", "move", "copy"];
+
+/** A commit's answer for one unit, whose op is the one sent (undefined: a proposal's unit past its list, any op). */
+function unitResult(
+	value: unknown,
+	index: number,
+	op: CloudCompanyFolderUnit["op"] | undefined,
+): CloudCompanyFolderUnitResult {
 	const input = record(value, ["unit", "op", "path", "outcome"], ["to", "version", "reason", "problems"]);
 	if (
 		input.unit !== index + 1 ||
-		input.op !== sent.op ||
+		!OPS.includes(input.op as CloudCompanyFolderUnit["op"]) ||
+		(op !== undefined && input.op !== op) ||
 		typeof input.path !== "string" ||
 		!OUTCOMES.includes(input.outcome as CloudCompanyFolderOutcome) ||
 		(input.to !== undefined && typeof input.to !== "string") ||
@@ -717,7 +780,7 @@ function unitResult(value: unknown, index: number, sent: CloudCompanyFolderUnit)
 		invalid();
 	return {
 		unit: index + 1,
-		op: sent.op,
+		op: input.op as CloudCompanyFolderUnit["op"],
 		path: input.path,
 		to: (input.to as string | undefined) ?? null,
 		version: input.version === undefined ? null : uuid(input.version),
@@ -1070,7 +1133,8 @@ export class CloudCompanyFolderClient {
 
 	/** Cancels one of the run agent's workers (F2-5b, `qorpera_folder_cancel_agent_worker`), a run effect under its own
 	 * receipt, keyed by the operation key: a retry with the same key replays it. A worker that changed while the cancel
-	 * waited (QRC01) is asked again; one the agent does not have is SQL's P0002, kept for the caller. */
+	 * waited (QRC01) is asked again; one the agent does not have is SQL's P0002, and a coding session with a new turn
+	 * since the agent was asked about it (C3c) is SQL's 55000, both kept for the caller. */
 	async cancelWorker(
 		request: { readonly folder: string; readonly operationKey: string },
 		signal: AbortSignal,
@@ -1081,7 +1145,7 @@ export class CloudCompanyFolderClient {
 				{ p_binding: this.#binding, p_request: { folder: request.folder, operationKey: request.operationKey } },
 				RELEASE_RETRY,
 				signal,
-				(error) => error.code === "P0002",
+				(error) => error.code === "P0002" || (error.code === "55000" && error.detail === CODING_QUESTION_STALE),
 			),
 			["schema", "runId", "receiptId", "action", "folder", "worker"],
 		);
@@ -1283,6 +1347,254 @@ export class CloudCompanyFolderClient {
 		if (input.login === null) return { login: null };
 		const login = record(input.login, ["bindingId", "version"]);
 		return { login: { bindingId: uuid(login.bindingId), version: counter(login.version) } };
+	}
+
+	/** A page of the open proposals of the run's agent for the run's member (P40a, `qorpera_folder_agent_proposals`):
+	 * oldest first, 4 at most, each with its first 50 units. SQL lists them only to a run that can raise a card, and
+	 * only while the run may read every path one names. */
+	async agentProposals(request: { cursor?: string }, signal: AbortSignal): Promise<CloudCompanyFolderProposalPage> {
+		const input = record(await this.#once("qorpera_folder_agent_proposals", { p_request: request }, signal), [
+			"schema",
+			"proposals",
+			"moreProposals",
+			"nextCursor",
+		]);
+		if (
+			input.schema !== "qorpera.folder-agent-proposals/v1" ||
+			!Array.isArray(input.proposals) ||
+			input.proposals.length > 4
+		)
+			invalid();
+		const proposals = input.proposals.map((value): CloudCompanyFolderProposal => {
+			const proposal = record(value, [
+				"proposalId",
+				"createdAt",
+				"viewKind",
+				"effect",
+				"createsAgent",
+				"unitCount",
+				"units",
+				"moreUnits",
+				"reads",
+			]);
+			if (
+				!Array.isArray(proposal.reads) ||
+				proposal.reads.length < 1 ||
+				typeof proposal.createdAt !== "string" ||
+				typeof proposal.viewKind !== "string" ||
+				(proposal.effect !== "delegation" && proposal.effect !== "destructive") ||
+				typeof proposal.createsAgent !== "boolean" ||
+				!Array.isArray(proposal.units) ||
+				proposal.units.length < 1 ||
+				proposal.units.length > 50
+			)
+				invalid();
+			const units = proposal.units.map((item, index): CloudCompanyFolderProposalUnit => {
+				const unit = record(item, ["unit", "op", "path"], ["to", "items", "contains", "structured"]);
+				if (
+					unit.unit !== index + 1 ||
+					!OPS.includes(unit.op as CloudCompanyFolderUnit["op"]) ||
+					typeof unit.path !== "string" ||
+					(unit.to !== undefined && typeof unit.to !== "string") ||
+					(unit.contains !== undefined && (unit.op !== "new_folder" || !Array.isArray(unit.contains))) ||
+					(unit.structured !== undefined && !Array.isArray(unit.structured))
+				)
+					invalid();
+				return {
+					unit: index + 1,
+					op: unit.op as CloudCompanyFolderUnit["op"],
+					path: unit.path,
+					to: (unit.to as string | undefined) ?? null,
+					items: unit.items === undefined ? null : counter(unit.items),
+					contains: ((unit.contains as unknown[] | undefined) ?? []).map((entry) => {
+						const contained = record(entry, ["path", "kind"]);
+						if (
+							typeof contained.path !== "string" ||
+							!contained.path ||
+							(contained.kind !== "file" && contained.kind !== "folder")
+						)
+							invalid();
+						return { path: contained.path, kind: contained.kind };
+					}),
+					structured: ((unit.structured as unknown[] | undefined) ?? []).map((file) => {
+						const entry = record(file, ["path", "kind", "parse"]);
+						if (
+							typeof entry.path !== "string" ||
+							typeof entry.kind !== "string" ||
+							!entry.parse ||
+							typeof entry.parse !== "object" ||
+							Array.isArray(entry.parse)
+						)
+							invalid();
+						return {
+							path: entry.path,
+							kind: entry.kind,
+							parse: entry.parse as Readonly<Record<string, unknown>>,
+						};
+					}),
+				};
+			});
+			const moreUnits = counter(proposal.moreUnits);
+			const unitCount = counter(proposal.unitCount);
+			if (unitCount !== units.length + moreUnits) invalid();
+			// Each path it names, with the authority the list was decided on: no file was read, so no version.
+			const reads = (proposal.reads as unknown[]).map((item): CloudCompanyFolderRelease => {
+				const read = record(item, ["path", "authority"]);
+				if (typeof read.path !== "string" || !read.path) invalid();
+				return { path: read.path, version: null, authority: authority(read.authority) };
+			});
+			return {
+				proposalId: uuid(proposal.proposalId),
+				createdAt: proposal.createdAt,
+				viewKind: proposal.viewKind,
+				effect: proposal.effect,
+				createsAgent: proposal.createsAgent,
+				unitCount,
+				units,
+				moreUnits,
+				reads,
+			};
+		});
+		const moreProposals = counter(input.moreProposals);
+		const nextCursor = input.nextCursor === null ? null : uuid(input.nextCursor);
+		if (
+			moreProposals > 0 !== (nextCursor !== null) ||
+			(nextCursor !== null && nextCursor !== proposals.at(-1)?.proposalId)
+		)
+			invalid();
+		return { proposals, moreProposals, nextCursor };
+	}
+
+	/** Records the automatic review's approval of an `apply_proposal` call as the review of that proposal's own units
+	 * (P40a, `qorpera_folder_record_review` with `proposalId`), and returns the id the apply sends: null when the
+	 * proposal is no longer open for this run (applied, declined, discarded or erased since the list). A replay returns
+	 * the same record, so a lost answer is asked again. */
+	async recordProposalReview(
+		approval: { readonly actionReviewId: string; readonly argumentSha256: string },
+		proposal: Pick<CloudCompanyFolderProposal, "proposalId" | "unitCount">,
+		signal: AbortSignal,
+	): Promise<string | null> {
+		if (!UUID.test(approval.actionReviewId) || !SHA.test(approval.argumentSha256) || !UUID.test(proposal.proposalId))
+			throw new Error("Invalid action review");
+		const notOpen = (error: unknown) =>
+			error instanceof CloudCompanyFolderRpcError && error.code === "42501" && error.detail === PROPOSAL_NOT_OPEN;
+		let value: unknown;
+		try {
+			value = await this.#retried(
+				"qorpera_folder_record_review",
+				{
+					p_binding: this.#binding,
+					p_request: {
+						actionReviewId: approval.actionReviewId,
+						tool: "apply_proposal",
+						argumentSha256: approval.argumentSha256,
+						proposalId: proposal.proposalId,
+					},
+				},
+				RECORD_RETRY,
+				signal,
+				notOpen,
+			);
+		} catch (error) {
+			if (notOpen(error)) return null;
+			throw error;
+		}
+		const input = record(value, ["schema", "reviewId", "approvedBy", "units"]);
+		if (
+			input.schema !== "qorpera.folder-review/v1" ||
+			input.units !== proposal.unitCount ||
+			(input.approvedBy !== null && (typeof input.approvedBy !== "string" || !UUID.test(input.approvedBy)))
+		)
+			invalid();
+		return uuid(input.reviewId);
+	}
+
+	/** Applies an open proposal's units as the run, with the review `recordProposalReview` made of them (P40a,
+	 * `qorpera_folder_apply_proposal`): one commit decides each unit (a moved base is a conflict, kept as a copy where a
+	 * file's bytes differ) and closes the proposal, applied when a unit saved, else not applied. A proposal decided before
+	 * the apply reached it applies nothing: the kernel cancels the call's receipt and answers with the proposal's status
+	 * (P40b). One decided while the apply waited for it commits nothing under the receipt, each unit denied as
+	 * `review_required`. A retry with the same key, review and receipt replays any of these; this call retries a lost
+	 * answer as `commit` does. */
+	async applyProposal(
+		operationKey: string,
+		proposal: Pick<CloudCompanyFolderProposal, "proposalId" | "unitCount" | "units">,
+		options: { readonly reviewId: string; readonly receiptId: string },
+		signal: AbortSignal,
+	): Promise<CloudCompanyFolderCommitResult | CloudCompanyFolderProposalUnapplied> {
+		checkCommit(operationKey, options);
+		if (!UUID.test(proposal.proposalId)) throw new Error("Invalid Company folder proposal");
+		const answer = await this.#retried(
+			"qorpera_folder_apply_proposal",
+			{
+				p_operation_key: operationKey,
+				p_proposal_id: proposal.proposalId,
+				p_review_id: options.reviewId,
+				p_receipt_id: options.receiptId,
+			},
+			COMMIT_RETRY,
+			signal,
+		);
+		if ((answer as { schema?: unknown } | null)?.schema === "qorpera.folder-proposal-unapplied/v1") {
+			const unapplied = record(answer, ["schema", "proposalId", "status", "receiptId"]);
+			const status = unapplied.status as CloudCompanyFolderProposalUnapplied["unapplied"];
+			if (
+				unapplied.proposalId !== proposal.proposalId ||
+				unapplied.receiptId !== options.receiptId ||
+				!(status === "erased" || (PROPOSAL_STATUSES as readonly unknown[]).includes(status))
+			)
+				invalid();
+			return { unapplied: status };
+		}
+		const input = record(answer, ["schema", "commitId", "seq", "replay", "units"]);
+		if (
+			input.schema !== "qorpera.folder-commit/v1" ||
+			typeof input.replay !== "boolean" ||
+			!Array.isArray(input.units) ||
+			input.units.length !== proposal.unitCount
+		)
+			invalid();
+		const results = input.units.map((value, index) => unitResult(value, index, proposal.units[index]?.op));
+		const seq = input.seq === null ? null : counter(input.seq);
+		if ((seq === null) !== results.every((unit) => unit.outcome !== "saved")) invalid();
+		return { commitId: uuid(input.commitId), seq, replay: input.replay, units: results };
+	}
+
+	/** Closes an open proposal of the run's agent for its member (P40a, `qorpera_folder_close_proposal`, a run effect):
+	 * declined with `actionReviewId`, the denial of its `apply_proposal` call, else discarded. A decided proposal answers
+	 * with its status as it stands; null when it is not this run's to close (erased, or another agent's or member's). */
+	async closeProposal(
+		proposalId: string,
+		actionReviewId: string | undefined,
+		signal: AbortSignal,
+	): Promise<(typeof PROPOSAL_STATUSES)[number] | null> {
+		if (!UUID.test(proposalId) || (actionReviewId !== undefined && !UUID.test(actionReviewId)))
+			throw new Error("Invalid Company folder proposal");
+		const unavailable = (error: unknown) => error instanceof CloudCompanyFolderRpcError && error.code === "P0002";
+		let value: unknown;
+		try {
+			value = await this.#retried(
+				"qorpera_folder_close_proposal",
+				{
+					p_binding: this.#binding,
+					p_request: { proposalId, ...(actionReviewId === undefined ? {} : { actionReviewId }) },
+				},
+				RECORD_RETRY,
+				signal,
+				unavailable,
+			);
+		} catch (error) {
+			if (unavailable(error)) return null;
+			throw error;
+		}
+		const input = record(value, ["schema", "proposalId", "status"]);
+		if (
+			input.schema !== "qorpera.folder-proposal/v1" ||
+			input.proposalId !== proposalId ||
+			!PROPOSAL_STATUSES.includes(input.status as (typeof PROPOSAL_STATUSES)[number])
+		)
+			invalid();
+		return input.status as (typeof PROPOSAL_STATUSES)[number];
 	}
 
 	/** A file's text, checked against its entry, or null when nothing is at the path. A folder, a file larger than
@@ -1498,7 +1810,7 @@ export class CloudCompanyFolderClient {
 			input.units.length !== units.length
 		)
 			invalid();
-		const results = input.units.map((value, index) => unitResult(value, index, units[index]!));
+		const results = input.units.map((value, index) => unitResult(value, index, units[index]!.op));
 		const seq = input.seq === null ? null : counter(input.seq);
 		if ((seq === null) !== results.every((unit) => unit.outcome !== "saved")) invalid();
 		return { commitId: uuid(input.commitId), seq, replay: input.replay, units: results };
@@ -1613,7 +1925,10 @@ export class CloudCompanyFolderClient {
 		if (!UUID.test(releaseId) || !SHA.test(outputSha256) || reads.length > MAX_RELEASED)
 			throw new Error("Invalid Company folder release");
 		const sent = reads.map((read) => {
-			if (!UUID.test(read.version) || (read.fileSha256 !== undefined && !SHA.test(read.fileSha256)))
+			if (
+				(read.version !== null && !UUID.test(read.version)) ||
+				(read.fileSha256 !== undefined && !SHA.test(read.fileSha256))
+			)
 				throw new Error("Invalid Company folder release");
 			return {
 				path: parseCloudCompanyPath(read.path),
@@ -1643,6 +1958,8 @@ export class CloudCompanyFolderClient {
 			typeof input.replay !== "boolean"
 		)
 			invalid();
+		// The run's work log keeps every release id of the step that made it (RUNTIME-AGENT-MEMORY-TREE.md §4.5).
+		recordCloudRunLogRelease(releaseId, reads);
 		return { releaseId, reads: reads.length, replay: input.replay };
 	}
 }

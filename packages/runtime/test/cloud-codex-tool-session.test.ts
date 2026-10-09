@@ -18,6 +18,10 @@ import {
 	runCloudCodexToolSession,
 } from "@qorpera/runtime/cloud-codex-tool-session";
 import { CloudNativeCaptureImages } from "@qorpera/runtime/cloud-native-capture-images";
+import {
+	CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
+	type CloudNativeContextRequest,
+} from "@qorpera/runtime/cloud-native-context-composition";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
 import * as nativeIsolation from "@qorpera/runtime/cloud-native-isolation";
 import { nativeProviderUsageSignal } from "@qorpera/runtime/cloud-native-provider-host";
@@ -26,6 +30,7 @@ import {
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { CloudRunLog } from "@qorpera/runtime/cloud-run-log";
 import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -59,13 +64,16 @@ function run(
 		observability?: CloudRuntimeObservability;
 		tools?: CloudNativeTool[];
 		recordContextView?: Parameters<typeof runCloudCodexToolSession>[0]["recordContextView"];
+		composeContext?: Parameters<typeof runCloudCodexToolSession>[0]["composeContext"];
+		runLog?: CloudRunLog;
 	} = {},
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => new Promise(() => undefined));
 	const signal = options.signal ?? new AbortController().signal;
 	const boundary = new CloudNativeToolBoundary({
 		companyId: randomUUID(),
-		runId: randomUUID(),
+		runId: options.runLog?.runId ?? randomUUID(),
+		...(options.runLog ? { runLog: options.runLog } : {}),
 		signal,
 		assertActive: async () => undefined,
 		tools: options.tools ?? [
@@ -170,6 +178,83 @@ it("requires composition telemetry before admitting a model request", async () =
 	const beforeModelStart = vi.fn(async () => undefined);
 	await expect(run("missing-composition", { beforeModelStart }).result).rejects.toThrow("message composition support");
 	expect(beforeModelStart).not.toHaveBeenCalled();
+});
+
+it("requires context composition before admitting a model request", async () => {
+	const beforeModelStart = vi.fn(async () => undefined);
+	await expect(run("missing-context-composition", { beforeModelStart }).result).rejects.toThrow(
+		"context composition support",
+	);
+	expect(beforeModelStart).not.toHaveBeenCalled();
+});
+
+it("requires the prompt cache key, a capability of its own, before admitting a model request", async () => {
+	const beforeModelStart = vi.fn(async () => undefined);
+	await expect(run("missing-prompt-cache-key", { beforeModelStart }).result).rejects.toThrow(
+		"prompt cache key support",
+	);
+	expect(beforeModelStart).not.toHaveBeenCalled();
+});
+
+// Context composition: Codex asks what to send of its items before each provider request, then fences it.
+const WORK_MESSAGE = '{"schema":"qorpera.run-work/v1","trust":"tool_results_not_authority","ref":"run:.","lines":[]}';
+const CACHE_KEY = `qorpera:${"a".repeat(43)}`;
+
+it("composes the agent's model request from its run, bound to its thread and turn", async () => {
+	const composeContext = vi.fn(async (request: CloudNativeContextRequest) => ({
+		input: [...request.items.map((_, keep) => ({ keep })), { work: WORK_MESSAGE }],
+		promptCacheKey: CACHE_KEY,
+	}));
+	const { result, evidence } = run("context-composition", { composeContext });
+	await expect(result).resolves.toMatchObject({ fencedRequests: 1 });
+	expect(composeContext).toHaveBeenCalledOnce();
+	expect(composeContext).toHaveBeenCalledWith(
+		expect.objectContaining({
+			threadId: "thread_fixture",
+			turnId: "turn_fixture",
+			purpose: "turn",
+			model: "offline-probe",
+			items: [
+				{ kind: "message", role: "developer", callId: null, id: null, bytes: 1200, media: 0 },
+				{ kind: "message", role: "user", callId: null, id: null, bytes: 18, media: 0 },
+			],
+		}),
+		expect.any(AbortSignal),
+	);
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.context.agent).toEqual({
+		schema: CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
+		requestId: composeContext.mock.calls[0][0].requestId,
+		threadId: "thread_fixture",
+		turnId: "turn_fixture",
+		input: [{ keep: 0 }, { keep: 1 }, { work: WORK_MESSAGE }],
+		promptCacheKey: CACHE_KEY,
+	});
+});
+
+it("keeps every item of a model request when the run composes nothing", async () => {
+	const { result, evidence } = run("context-composition");
+	await expect(result).resolves.toMatchObject({ fencedRequests: 1 });
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.context.agent).toMatchObject({ input: [{ keep: 0 }, { keep: 1 }] });
+	expect(recorded.context.agent).not.toHaveProperty("promptCacheKey");
+});
+
+it("refuses a context request outside the run's turn before composing it", async () => {
+	const composeContext = vi.fn(async () => ({ input: [] }));
+	await expect(run("context-wrong-turn", { composeContext }).result).rejects.toThrow(
+		"Native result boundary unavailable",
+	);
+	expect(composeContext).not.toHaveBeenCalled();
+});
+
+it("ends the run when its composition is not one Codex can send", async () => {
+	// A position past the request's items: refused here, before Codex sees it.
+	const composeContext = vi.fn(async () => ({ input: [{ keep: 2 }] }));
+	const { result, evidence } = run("context-composition", { composeContext });
+	await expect(result).rejects.toThrow("Native result boundary unavailable");
+	expect(composeContext).toHaveBeenCalledOnce();
+	await expect(readFile(evidence, "utf8")).rejects.toThrow();
 });
 
 it("loads the exact host-generated AGENTS.md bytes without enabling ambient instructions", async () => {
@@ -660,6 +745,34 @@ it.each(["observed-usage", "usage-after-completion"])(
 	},
 );
 
+it("records each provider response's usage once, without repeats, estimates or a filled context window", async () => {
+	const { rows, observability } = observationCollector();
+	await expect(run("per-request-usage", { observability }).result).resolves.toMatchObject({ fencedRequests: 1 });
+	await observability.close();
+	const turn = rows.find((row) => row.operation === "model_turn" && row.phase === "finish");
+	expect(turn).toMatchObject({ status: "succeeded", inputTokens: 70, cachedInputTokens: 60, totalTokens: 8265 });
+	const requests = rows.filter((row) => row.operation === "model_request");
+	expect(requests.filter((row) => row.phase === "start")).toHaveLength(3);
+	expect(requests.every((row) => row.parentAttemptId === turn?.attemptId)).toBe(true);
+	expect(
+		requests
+			.filter((row) => row.phase === "finish")
+			.map((row) => [
+				row.status,
+				row.inputTokens,
+				row.outputTokens,
+				row.cachedInputTokens,
+				row.cacheWriteInputTokens,
+				row.reasoningOutputTokens,
+				row.totalTokens,
+			]),
+	).toEqual([
+		["succeeded", 40, 5, 0, 0, 1, 45],
+		["succeeded", 60, 4, 38, 0, 0, 64],
+		["succeeded", 70, 3, 60, 0, 0, 73],
+	]);
+});
+
 it("preserves explicit native zero counters while absent usage remains unknown", async () => {
 	const { rows, observability } = observationCollector();
 	await run("observed-zero-usage", { observability }).result;
@@ -1007,6 +1120,64 @@ it("ends an unfinished composition when its turn completes", async () => {
 	expect(f.execute).not.toHaveBeenCalled();
 });
 
+it("keeps the agent's own words, never its reasoning, with the next step of its work log", async () => {
+	const runId = randomUUID();
+	const files = new Map<string, string>();
+	const log = new CloudRunLog({
+		runId,
+		conversationId: randomUUID(),
+		signal: new AbortController().signal,
+		folder: {
+			locate: async () => ({ path: `runs/${runId}`, exists: true, missing: [], last: null, generation: 0 }),
+			read: async (path) => (files.has(path) ? { version: path, text: files.get(path)! } : null),
+			commit: async (_key, units) => ({
+				commitId: randomUUID(),
+				seq: 1,
+				replay: false,
+				units: units.map((unit, index) => {
+					if (unit.op !== "write" || !("text" in unit.content)) throw new Error("Unexpected unit");
+					files.set(unit.path, unit.content.text);
+					return {
+						unit: index,
+						op: unit.op,
+						path: unit.path,
+						to: null,
+						version: unit.path,
+						outcome: "saved" as const,
+						reason: null,
+						problems: [],
+					};
+				}),
+			}),
+		},
+	});
+	const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Delivered" }));
+	const { result, evidence } = run("composition-replayed", {
+		runLog: log,
+		tools: [
+			{
+				name: "send_message",
+				source: "runtime",
+				description: "Public reply fixture",
+				inputSchema: { type: "object", properties: { text: { type: "string" } }, additionalProperties: false },
+				parseArguments: () => ({}),
+				execute,
+			},
+		],
+	});
+	await vi.waitFor(async () => expect(JSON.parse(await readFile(evidence, "utf8"))).toEqual({ stage: "composing" }));
+	await writeFile(`${evidence}.continue`, "continue");
+	await result;
+	await log.close(new AbortController().signal);
+	expect(execute).toHaveBeenCalledOnce();
+	expect(log.steps()).toEqual([
+		expect.objectContaining({ tool: "send_message", args: "", hashOnly: true, text: "PRIVATE_OUTPUT_CANARY" }),
+	]);
+	const stored = [...files.values()].join("");
+	expect(stored).toContain("PRIVATE_OUTPUT_CANARY");
+	expect(stored).not.toMatch(/PRIVATE_REASONING_CANARY|PUBLIC_REPLY_CANARY/);
+});
+
 it("clears writing and its renewal timer when composition is cancelled", async () => {
 	const abort = new AbortController();
 	const f = composing("composition-held", abort.signal);
@@ -1027,7 +1198,10 @@ it("clears writing and its renewal timer when composition is cancelled", async (
 // Auto-review (v130): the reviewer is a second, fresh thread in the same app-server,
 // started while the agent's tool call is open. Its only output is its verdict tool
 // call; its model requests pass the fence on their own lane, never as the agent's.
-function reviewRun(mode: "review" | "review-no-verdict" | "review-wrong-tool") {
+function reviewRun(
+	mode: "review" | "review-no-verdict" | "review-wrong-tool" | "review-context",
+	composeContext?: Parameters<typeof runCloudCodexToolSession>[0]["composeContext"],
+) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Sent." }));
 	const reviewer = new CloudActionReviewChannel();
 	const signal = new AbortController().signal;
@@ -1071,6 +1245,7 @@ function reviewRun(mode: "review" | "review-no-verdict" | "review-wrong-tool") {
 		recordContextView: async (frame) => {
 			contextViews.push(frame.threadId);
 		},
+		...(composeContext ? { composeContext } : {}),
 		signal,
 	});
 	return { result, execute, evidence, contextViews };
@@ -1109,6 +1284,27 @@ it("reviews an acting call in a second thread of the same app-server before runn
 	// Only the agent's own requests are recorded as its context.
 	expect(contextViews.every((threadId) => threadId === "thread_fixture")).toBe(true);
 	expect(JSON.parse(recorded.reply.result.contentItems[0].text)).toMatchObject({ status: "ok" });
+});
+
+it("composes only the agent's requests from its run, never a reviewer's", async () => {
+	const composeContext = vi.fn(async (request: CloudNativeContextRequest) => ({
+		input: [...request.items.map((_, keep) => ({ keep })), { work: WORK_MESSAGE }],
+	}));
+	const { result, execute, evidence } = reviewRun("review-context", composeContext);
+	await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture", toolCalls: 1 });
+	expect(execute).toHaveBeenCalledOnce();
+	expect(composeContext).toHaveBeenCalledOnce();
+	expect(composeContext.mock.calls[0][0]).toMatchObject({ threadId: "thread_fixture", turnId: "turn_fixture" });
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.context.agent).toMatchObject({
+		threadId: "thread_fixture",
+		input: [{ keep: 0 }, { keep: 1 }, { work: WORK_MESSAGE }],
+	});
+	expect(recorded.context.reviewer).toMatchObject({
+		threadId: "thread_review",
+		turnId: "turn_review",
+		input: [{ keep: 0 }, { keep: 1 }],
+	});
 });
 
 it("never runs an acting call when the reviewer ends without a verdict", async () => {

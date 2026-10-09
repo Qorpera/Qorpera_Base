@@ -14,7 +14,6 @@ Type=exec
 User=root
 Group=root
 EnvironmentFile=/etc/qorpera/shared-execution.env
-LoadCredential=qorpera-supabase-service-key:/etc/qorpera/shared-execution-credentials/qorpera-supabase-service-key
 LoadCredential=qorpera-runner-provider:/etc/qorpera/shared-execution-credentials/qorpera-runner-provider
 # G2-3e: the host's own credential, which rebuild-exec-host.sh mints and binds.
 LoadCredential=qorpera-execution-host:/etc/qorpera/shared-execution-credentials/qorpera-execution-host

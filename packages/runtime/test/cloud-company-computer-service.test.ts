@@ -200,7 +200,6 @@ function linuxFixture(f: ReturnType<typeof fixture>) {
 				...f.options,
 				screenLifecycle,
 				...(startup ? { startup } : {}),
-				captureObjectGateway: { baseUrl: "https://objects.example", token: "x".repeat(43) },
 				linux: {
 					layout: {
 						workbenchRoot: "/srv/workbench",
@@ -622,9 +621,14 @@ describe("headless office service lifetime (TLS listeners, synthetic physical ad
 			endpoint: { capabilities: ["shell"], resourceTarget: resources, authorize: async () => undefined, perform },
 			close: physicalClose,
 		});
+		const holder = `job.${source.binding.jobId.toLowerCase()}.${randomBytes(32).toString("base64url")}`;
 		const original = f.sql.getMockImplementation()!;
 		f.sql.mockImplementation(async (url, init) => {
 			const method = String(url).split("/").at(-1);
+			if (method === "qorpera_native_binding_proven")
+				return JSON.parse(String(init?.body)).p_holder === holder
+					? Response.json(true)
+					: Response.json({ code: "42501" }, { status: 403 });
 			if (method === "qorpera_describe_native_tool_authority") return Response.json(source.authority);
 			if (method === "qorpera_native_office_descriptor")
 				return Response.json({ state: "available", scope, capabilities: ["shell"], resources });
@@ -637,10 +641,14 @@ describe("headless office service lifetime (TLS listeners, synthetic physical ad
 		});
 		const service = await startCompanyComputerOfficeService(f.options);
 		cleanups.push(service.close);
-		const post = (body: unknown) =>
+		const post = (body: unknown, identity: string | null = holder) =>
 			fetch(`https://127.0.0.1:${service.nativePort}/office/${scope.companyComputerId}/native`, {
 				method: "POST",
-				headers: { authorization: `Bearer ${f.options.native.token}`, "content-type": "application/json" },
+				headers: {
+					authorization: `Bearer ${f.options.native.token}`,
+					"content-type": "application/json",
+					...(identity === null ? {} : { "x-qorpera-identity": identity }),
+				},
 				body: JSON.stringify(body),
 			});
 		const body = {
@@ -662,9 +670,11 @@ describe("headless office service lifetime (TLS listeners, synthetic physical ad
 		});
 		try {
 			expect((await post(body)).status).toBe(503);
-			expect(
-				(await post({ schema: body.schema, action: "release", nativeBinding: source.binding, lease })).status,
-			).toBe(200);
+			// G2-6c: the release proves the run's lease too; without its holder it closes nothing.
+			const release = { schema: body.schema, action: "release", nativeBinding: source.binding, lease };
+			expect((await post(release, null)).status).toBe(503);
+			expect(physicalClose).not.toHaveBeenCalled();
+			expect((await post(release)).status).toBe(200);
 			expect(perform).toHaveBeenCalledOnce();
 			expect(physicalClose).toHaveBeenCalledOnce();
 			expect(f.order.indexOf("native:physical-close")).toBeLessThan(f.order.indexOf("native:sql-release"));

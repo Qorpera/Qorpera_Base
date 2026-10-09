@@ -3,7 +3,8 @@ import { isUuid } from "@qorpera/contracts";
 import type { LxdCreateInstanceRequest } from "./lxd-client.ts";
 
 /** The agents' bridge on every node: an agent road machine's only network card is a port of it, and its traffic
- * leaves through the node's agent exit (deploy/agent-exit). Never a platform network. */
+ * leaves through the node's agent exit (deploy/agent-exit). Never a platform network. The Company Computer's agent
+ * card is its second card; its first stays on the office network for its own services. */
 export const AGENT_BRIDGE = "qagent0";
 /** The node's plug tool, installed by deploy/agent-exit/install-agent-exit.sh. Run as the creator's own user (a
  * member of the group qorpera-agent-plug); it gives the machine its address and the MAC that carries it. */
@@ -11,10 +12,11 @@ export const AGENT_PLUG_TOOL = "/usr/local/libexec/qorpera-agent-exit/qorpera-ag
 const LXD_NAME = /^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/;
 
 /** What a machine is, for the exit's client map: the plug tool records it, and its reconciler checks it against the
- * machine's own LXD config (user.qorpera.company_id, machine_id, member_user_id). */
+ * machine's own LXD config (user.qorpera.company_id, machine_id or a Company Computer's office_id, member_user_id). */
 export interface AgentPlugClaim {
-	readonly kind: "machine" | "coding";
+	readonly kind: "machine" | "coding" | "office";
 	readonly companyId: string;
+	/** A Company Computer's id for `office`. */
 	readonly machineId: string;
 	/** A coding machine's member; null for every other kind. */
 	readonly memberUserId: string | null;
@@ -130,7 +132,7 @@ function plugWith(
 	signal: AbortSignal,
 ): Promise<string> {
 	if (
-		(claim.kind !== "machine" && claim.kind !== "coding") ||
+		(claim.kind !== "machine" && claim.kind !== "coding" && claim.kind !== "office") ||
 		!isUuid(claim.companyId) ||
 		!isUuid(claim.machineId) ||
 		(claim.kind === "coding") !== (claim.memberUserId !== null) ||

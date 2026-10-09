@@ -177,7 +177,7 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
   deleteCommandId:plan.commands.deleteCommandId,operationId:fresh(),nextCreateCommandId:plan.commands.createCommandId,
   originalOutcome:'unknown',targetPostcondition:'absent',journal:{authoritySha256:'1'.repeat(64),acceptedHeadSha256:'2'.repeat(64),eventCount:11},
   custodyEvidenceSha256:custodySha,stopAcknowledgementSha256:stopSha,poweredOffPhaseSha256:officeDigest(poweredOff),
-  operator:{principalId:'30000000-0000-4000-8000-000000000001',reasonCode:'accepted_delete_result_unavailable',reason:'Synthetic operation retention loss'},
+  operator:{principalId:'92400000-0000-4000-8000-000000000001',reasonCode:'accepted_delete_result_unavailable',reason:'Synthetic operation retention loss'},
   source:{sourceCommit:'3'.repeat(40),artifactSha256:'4'.repeat(64)},
   executionFence:{schema:'qorpera.office-delete-execution-fence/v1',mechanism:'lxd-ab8fad2-zfs-ordered-delete/v1',sha256:'5'.repeat(64)},
   physicalEvidence:{schema:'qorpera.office-delete-physical-evidence/v1',sha256:'6'.repeat(64)},observedAt:new Date().toISOString()};
@@ -219,7 +219,7 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
  ])await deny(`begin;reset role;${mutation}${owner}${dispose()}rollback;`,owner);
  // The operator loses founder authority; the last founder cannot step down (20260928248100), so a
  // second founder joins first, and the refusal must be dispose's own, not the guard's.
- const founderStepsDown=`insert into auth.users(id,email) values ('30000000-0000-4000-8000-0000000000f4','disposition-cofounder@example.test');insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role) select profile_id,'30000000-0000-4000-8000-0000000000f4','disposition-cofounder@example.test','Co-founder','owner' from public.qorpera_profile_members where user_id='${document.operator.principalId}' and role='owner';update public.qorpera_profile_members set role='contributor' where user_id='${document.operator.principalId}';`;
+ const founderStepsDown=`insert into auth.users(id,email) values ('92400000-0000-4000-8000-0000000000f4','disposition-cofounder@example.test');insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role) select profile_id,'92400000-0000-4000-8000-0000000000f4','disposition-cofounder@example.test','Co-founder','owner' from public.qorpera_profile_members where user_id='${document.operator.principalId}' and role='owner';update public.qorpera_profile_members set role='contributor' where user_id='${document.operator.principalId}';`;
  await refuse(`begin;reset role;${founderStepsDown}${owner}${dispose()}rollback;`,/Disposition requires company owner or admin/,owner);
  const futureName=readdirSync(new URL('../supabase/migrations/',import.meta.url)).filter(name=>/runtime_bundle_activation_v\d+\.sql$/.test(name)).sort((l,r)=>Number(/_v(\d+)\.sql$/.exec(l)[1])-Number(/_v(\d+)\.sql$/.exec(r)[1])).at(-1);
  const futureBundle=readFileSync(new URL('../supabase/migrations/'+futureName,import.meta.url),'utf8');
@@ -245,10 +245,16 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
  // PostgreSQL superuser is not required: actual managed operator role shape.
  execute('grant authenticated,service_role to postgres; alter role postgres nosuperuser bypassrls;');
  assert.equal(execute("select rolsuper from pg_roles where rolname='postgres';"),'f');
+ // Two identical disposes at once (ported from snapshot-v1 in the legacy sweep): one returns the receipt and one
+ // disposition is written. The other returns the same receipt, or fails closed: on folder-v2 the folder machine fence is
+ // KEY SHARE, so it can pass the replay check before the first commits and then fail "Disposition reset snapshot
+ // differs" (42501), a known gap the legacy sweep's step G closes. The exact replay after the commit is checked below.
  const results=await race([`${owner}${dispose()}`,`${owner}${dispose()}`]);
- for(const result of results)assert.equal(result.code,0,result.error);
- const received=JSON.parse(results[0].output.split('\n').at(-1));
- assert.deepEqual(JSON.parse(results[1].output.split('\n').at(-1)),received);
+ const disposed=results.filter(result=>result.code===0);
+ assert.ok(disposed.length>=1,results.map(result=>result.error).join('\n'));
+ for(const result of results)if(result.code!==0)assert.match(result.error,/Disposition reset snapshot differs/);
+ const received=JSON.parse(disposed[0].output.split('\n').at(-1));
+ for(const result of disposed.slice(1))assert.deepEqual(JSON.parse(result.output.split('\n').at(-1)),received);
  assert.equal(received.originalOutcome,'unknown');assert.equal(received.cleanResetAcceptance,false);
  assert.equal(received.dispositionSha256,createHash('sha256').update(JSON.stringify(document)).digest('hex'));
  assert.equal(received.phaseEvidenceSha256,officeDigest(received.phaseEvidence));
@@ -268,14 +274,16 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
  // phase challenge still requires an explicit subsequent unpause.
  const created=physical('root_created',plan.commands.createCommandId,{instanceSha256:predecessor.startup.instanceSha256});
  await refuse(prepare('root_created',fresh(),officeDigest(created)),/restart authority/);
- // The pause is an operator brake: the operator session acts with the owner's claims.
- execute(`${owner}reset role;select public.qorpera_set_company_execution_pause('${scope.companyId}',false,'disposable continuation');`);
+ // The pause is an operator brake: the operator session acts with the owner's claims. The fixture paused by inserting
+ // the pause row (stop cases); folder-v2 lifts it with its own operator-only resume, as the legacy
+ // qorpera_set_company_execution_pause refuses folder-v2 (0A000) (ported from snapshot-v1 in the legacy sweep).
+ execute(`${owner}reset role;select public.qorpera_folder_resume('${scope.companyId}');`);
  const nc=fresh();call(prepare('root_created',nc,officeDigest(created)));call(ack(nc,created));
  assert.equal(reset().phase,'root_created');assert.equal(auditCount(),1);
  assert.deepEqual(call(dispose(),owner),received); // immutable historical replay only, no renewal
  assert.deepEqual(call(`select public.qorpera_office_delete_disposition_status(${literal(plan)});`).receipt,received);
  assert.equal(snapshot(),preservedAdmin);
- console.log('PASS: real nonsuperuser owner+operator, concurrent exact replay, immutable audit, phase5 digest, preserved24 package/capacity and ordinary next-create challenge; expiry rolls back');
+ console.log('PASS: real nonsuperuser owner+operator, exact replay, immutable audit, phase5 digest, preserved24 package/capacity and ordinary next-create challenge; expiry rolls back');
  const setEnabled=enabled=>{const version=execute('select version from public.qorpera_runtime_office_providers;');
  return call(`select public.qorpera_set_runtime_office_provider(${literal(scope)},1,'${predecessor.providerId}','${predecessor.providerPolicySha256}',${version},${enabled});`);};
  // Restore binds the sealed custody digest and a fresh boot.

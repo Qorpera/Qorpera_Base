@@ -62,7 +62,7 @@ export const CLOUD_MACHINE_START_DESCRIPTION =
 	"Start a machine: a whole Linux virtual machine on the company's own servers, for tests, builds, Docker stacks and long jobs. " +
 	"You are root inside. Docker with Compose, Node 24, Python 3, Git and build tools are installed; install anything else. " +
 	"Pick its size: cpus, memoryGiB and diskGiB (defaults 2, 4 and 40); only what one server holds limits it. " +
-	"lifetime task (the default) sleeps after an hour with no use and no busy program, and is deleted after 30 days asleep: only a busy program (over about 5% of one core, or moving data) keeps it awake; a server that only waits stops when it sleeps, and your next run is told. always-on keeps running until an agent or a member stops it: use it to keep a server up. " +
+	"lifetime task (the default) sleeps after an hour with no use and no busy program, and is deleted after 30 days asleep: only a busy program (over about 5% of one core, or moving data) keeps it awake, and one busy for hours brings check-ins; a server that only waits stops when it sleeps, and your next run is told. always-on keeps running until an agent or a member stops it: use it to keep a server up; the agent that started it is asked once a week whether the work still needs it. " +
 	"Its disk is scratch space: it is kept while the machine sleeps, but a machine that wakes when its server is full or gone, or after its disk was given to another machine, starts fresh with an empty disk. Keep what matters in the company's files. " +
 	"repositoryWorker attaches a coding session's repository read-only at /mnt/repository: copy it to the machine's own disk before you build. " +
 	"To wake a stopped machine, pass only machine with its name. " +

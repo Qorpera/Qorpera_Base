@@ -611,7 +611,7 @@ describe("LXD native login gateway", () => {
 		expect(second.status).toBe(200);
 		expect(await second.json()).toMatchObject({ status: "awaiting_member", user_code: "SLOW-CODE" });
 		expect(lxd.createCalls).toHaveLength(1);
-		expect(lxd.filePushes).toHaveLength(7);
+		expect(lxd.filePushes).toHaveLength(6);
 		expect(boundary.requests.filter((request) => request.url.endsWith("/login"))).toHaveLength(1);
 	});
 	it("shares one pending route across authorized callers with independent response bodies", async () => {
@@ -660,7 +660,7 @@ describe("LXD native login gateway", () => {
 				user_code: "SHARED-CODE",
 			});
 		}
-		expect(lxd.filePushes).toHaveLength(7);
+		expect(lxd.filePushes).toHaveLength(6);
 		expect(boundary.requests.filter((request) => request.url.endsWith("/login"))).toHaveLength(1);
 	});
 	it("restores an established identity on a fresh volume before the bootstrap (2026-09-17 amendment)", async () => {
@@ -1391,9 +1391,10 @@ describe("LXD native login gateway", () => {
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-identity-recovery-ca",
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-native-bridge",
 			"/var/lib/qorpera-bootstrap/credentials/qorpera-native-identity",
-			"/var/lib/qorpera-bootstrap/credentials/qorpera-supabase-service-key",
 		]);
 		expect(lxd.filePushes.every((file) => file.mode === 0o600)).toBe(true);
+		// G2-5: the login guest gets no service key, in any file.
+		for (const file of lxd.filePushes) expect(file.content).not.toContain("sb_secret_private");
 		const pushed = (name: string) => lxd.filePushes.find((file) => file.path.endsWith(name))?.content ?? "";
 		expect(JSON.parse(pushed("qorpera-native-identity-state"))).toMatchObject({ computeIdentityId, blocked: false });
 		expect(pushed("native-provider.env")).toContain("QORPERA_NATIVE_LOGIN_GUEST=sign_in\n");

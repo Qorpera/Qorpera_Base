@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
+import { startCompanyComputerBrowserEgress } from "../../src/cloud-company-computer-browser-egress.ts";
+import { companyComputerAgentPlugAddress } from "../../src/cloud-company-computer-linux-network.ts";
 import {
 	CompanyComputerLinuxShell,
 	CompanyComputerShellPressureGuard,
@@ -22,7 +24,8 @@ const SHELL_RUN = "00000000-0000-4000-8000-0000000000c1";
 // the office's namespace entry file) as the unprivileged office account, with
 // the image's own firewall and root plumber set up by the runner. The
 // container has no internet: "public" (93.184.216.34) and "private"
-// (10.9.9.9, 169.254.169.254) hosts are stand-ins behind this machine.
+// (10.9.9.9, 169.254.169.254) hosts are stand-ins behind this machine, and so
+// is the node's agent exit (10.210.0.1) behind its agent card (10.210.1.1).
 assert.equal(process.platform, "linux");
 assert.equal(process.getuid?.(), 1000);
 const status = await readFile("/proc/self/status", "utf8");
@@ -125,7 +128,8 @@ test -z "\${QORPERA_SYNTHETIC_SECRET-}"
 test "$HOME" = /home/qorpera
 test "$(pwd)" = /srv/workbench
 test -z "\${HTTPS_PROXY-}\${http_proxy-}"
-test "$(head -n 1 /etc/resolv.conf)" = "nameserver 1.1.1.1"
+test "$(head -n 1 /etc/resolv.conf)" = "nameserver 10.210.0.1"
+test "$(grep -c '^nameserver' /etc/resolv.conf)" = 1
 test ! -e /srv/profiles/credential-canary
 test ! -e /run/office-screens
 test ! -e /sys/fs/cgroup
@@ -169,6 +173,13 @@ printf isolated`),
 		const pinged = await settled(pinging.sessionId, pinging);
 		assert.notEqual(pinged.exitCode, 0, `${address}: ${pinged.output}`);
 	}
+	// Out by the machine's agent card, through the node's agent exit, which also
+	// names hosts. Its name server is the one address of the agents' network a
+	// computer reaches, and only on port 53.
+	assert.equal(await done("curl -sS --max-time 10 http://pub.example:8080/from"), "public:10.210.1.1");
+	assert.equal(await done("timeout 5 bash -c 'exec 3<>/dev/tcp/10.210.0.1/53; head -c 8 <&3'"), "exit-dns");
+	const exitPort = await run("curl -sS --max-time 4 http://10.210.0.1:8080/");
+	assert.equal((await settled(exitPort.sessionId, exitPort)).exitCode, 28, "the exit's other ports");
 
 	// Computers are separate: another computer's server is out of reach, its own is not.
 	const other = new CompanyComputerLinuxShell(
@@ -224,6 +235,56 @@ printf isolated`),
 	for (const pid of [tini, monitor, process.pid])
 		assert.equal(await ask(`plumb 1 shell ${pid}`), "refused process\n", `pid ${pid}`);
 	assert.match(await done("cat /proc/net/dev"), /^ *eth0:/m);
+
+	// The browser's relay looks names up and connects by the agent card too.
+	assert.equal(companyComputerAgentPlugAddress(), "10.210.1.1");
+	const relayStop = new AbortController();
+	const relay = await startCompanyComputerBrowserEgress({
+		root: await mkdtemp("/tmp/egress-"),
+		assertActive: async () => undefined,
+		signal: relayStop.signal,
+		onFailure: () => undefined,
+	});
+	const relayed = () =>
+		new Promise<string>((resolve) => {
+			const socket = createConnection(relay.path);
+			let answer = "";
+			socket.setEncoding("utf8");
+			socket.on("data", (text: string) => {
+				answer += text;
+			});
+			socket.on("error", () => undefined);
+			socket.on("close", () => resolve(answer));
+			socket.setTimeout(8000, () => socket.destroy());
+			socket.write("CONNECT pub.example:443 HTTP/1.1\r\nHost: pub.example:443\r\n\r\n");
+		});
+	const relayedAnswer = "HTTP/1.1 200 Connection Established\r\n\r\nrelay:10.210.1.1";
+	assert.equal(await relayed(), relayedAnswer);
+	// Without the card's routing (an accident) nothing leaves by the machine's
+	// first card either: its firewall drops what would, so the way out fails closed.
+	assert.equal(await ask("test-route fault"), "done\n");
+	try {
+		const leaking = await run("curl -sS --max-time 4 http://93.184.216.34:8080/from");
+		assert.equal((await settled(leaking.sessionId, leaking)).exitCode, 28, "a computer without the card's routing");
+		assert.equal(await relayed(), "", "the relay without the card's routing");
+		const direct = await new Promise<string>((resolve) => {
+			const socket = createConnection({ host: "93.184.216.34", port: 443, localAddress: "10.210.1.1" });
+			const settle = (outcome: string): void => {
+				socket.destroy();
+				resolve(outcome);
+			};
+			socket.once("connect", () => settle("connected"));
+			socket.once("error", (error: NodeJS.ErrnoException) => settle(error.code ?? "error"));
+			socket.setTimeout(3000, () => settle("timeout"));
+		});
+		assert.notEqual(direct, "connected", "the card's address without its routing");
+	} finally {
+		assert.equal(await ask("test-firewall up"), "done\n");
+	}
+	assert.equal(await relayed(), relayedAnswer);
+	assert.equal(await done("curl -sS --max-time 10 http://93.184.216.34:8080/from"), "public:10.210.1.1");
+	relayStop.abort();
+	await relay.close();
 
 	// Without the machine's firewall (an accident), each computer's own filter
 	// still keeps every private address and the machine out of reach, and a new

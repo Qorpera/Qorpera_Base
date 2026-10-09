@@ -41,8 +41,9 @@ import { buildContainerName, expandTestFixture, POSTGRES_IMAGE, sortMigrationNam
  *
  * --check exits 1 on: any deadlock; any statement timeout or unexpected failure; an authority leak (a restricted read
  * that succeeded after the agent's revoke committed and before its next grant began); an entry without its parent; a
- * file whose bytes are gone; a run's tool call or context fence over the 4 s result fence (cloud-native-result-fence.ts);
- * the big run's context fence over its 3.5 s call budget (CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS).
+ * file whose bytes are gone; a run's tool call or context fence over 4 s, or the big run's context fence over 3.5 s
+ * (the result fence's and the fence call's budgets until 5 Oct 2026, kept here as the load test's latency targets; the
+ * runtime now waits for a slow database for as long as the run's authority holds, cloud-native-result-fence.ts).
  */
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const options = {
@@ -87,8 +88,8 @@ const COMPANY = "64800000-0000-4000-8000-000000000010";
 const OWNER = "64800000-0000-4000-8000-000000000001";
 const MEMBER = JSON.stringify({ kind: "member", userId: OWNER });
 const SERVICE_CLAIMS = JSON.stringify({ role: "service_role" });
-// The runtime's budgets: the result fence (cloud-native-result-fence.ts), the context fence's call
-// (cloud-native-tool-authority.ts), the path gateway's RPCs and tool receipts.
+// The load test's latency targets: the result fence's and the context fence call's old budgets (4 s and 3.5 s), the
+// path gateway's RPCs and tool receipts.
 const RESULT_FENCE_MS = 4000;
 const FENCE_CALL_MS = 3500;
 const PATH_DEADLINE = 3000;
@@ -1086,13 +1087,13 @@ try {
 		leaked ? `${leaked} restricted reads leaked` : "",
 		missingParents ? `${missingParents} entries without their parent` : "",
 		lostBytes ? `${lostBytes} files whose bytes are gone` : "",
-		slowTools ? `${slowTools} run calls over the 4 s result fence` : "",
+		slowTools ? `${slowTools} run calls over the 4 s latency target (the old result fence)` : "",
 		stuck ? `${stuck} revokes never landed` : "",
 		unresolved ? `${unresolved} receipts left unresolved` : "",
-		slowBig ? `${slowBig} big-run context fences over the 3.5 s call budget` : "",
+		slowBig ? `${slowBig} big-run context fences over the 3.5 s latency target (the old call budget)` : "",
 		bigFailed ? `${bigFailed} big-run context fences failed` : "",
 		bigRow && quiet.fenceAfterRegrantMs > FENCE_CALL_MS
-			? `the big run's context fence after a re-grant took ${quiet.fenceAfterRegrantMs} ms alone (budget ${FENCE_CALL_MS} ms)`
+			? `the big run's context fence after a re-grant took ${quiet.fenceAfterRegrantMs} ms alone (target ${FENCE_CALL_MS} ms)`
 			: "",
 		// C1e's target for the re-resolution itself (the coordinator's, 3 Oct): under 1 s at 25,000 paths.
 		bigRow && quiet.readSetCheckAfterRegrantMs > 1000

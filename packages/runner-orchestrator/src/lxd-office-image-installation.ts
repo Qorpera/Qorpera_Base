@@ -73,6 +73,15 @@ export const OFFICE_IMAGE_NETWORK_PACKAGE_FILES = [
 	"qorpera-computer-plumb@.service",
 ] as const;
 
+/** The machine's agent card (E6, 2026-10-08): its name, and systemd-networkd
+ * kept off it and off the plumber's routes. Admitted by newer packages, only
+ * with each computer's own network. */
+export const OFFICE_IMAGE_AGENT_PLUG_PACKAGE_FILES = [
+	"qorpera-agent-plug.rules",
+	"qorpera-agent-plug.network",
+	"qorpera-agent-plug-networkd.conf",
+] as const;
+
 export const OFFICE_IMAGE_RESET_PACKAGE_FILES = [
 	"qorpera-company-computer-reset-configuration-control.mjs",
 	"qorpera-company-computer-reset-service-start-control.mjs",
@@ -155,6 +164,14 @@ export function officeImageDestination(file: string): { path: string; mode: numb
 		)
 	)
 		return { path: `/etc/systemd/system/${file}`, mode: 0o644 };
+	// Sorted before the image's own network configuration (udev's
+	// 80-net-setup-link, netplan's 10-netplan-*).
+	if (file === "qorpera-agent-plug.rules")
+		return { path: "/etc/udev/rules.d/70-qorpera-agent-plug.rules", mode: 0o644 };
+	if (file === "qorpera-agent-plug.network")
+		return { path: "/etc/systemd/network/00-qorpera-agent-plug.network", mode: 0o644 };
+	if (file === "qorpera-agent-plug-networkd.conf")
+		return { path: "/etc/systemd/networkd.conf.d/qorpera-agent-plug.conf", mode: 0o644 };
 	// Static figure plus the optional hourly tone-on-tone frames (-00 .. -23).
 	if (/^wallpapers\/qorpera-screen-[a-z]+(?:-(?:[01][0-9]|2[0-3]))?\.png$/.test(file))
 		return { path: `/usr/share/backgrounds/${posix.basename(file)}`, mode: 0o444 };
@@ -229,7 +246,12 @@ export function parseOfficeImagePackage(value: unknown) {
 		// firewall, or a firewall without its stop, is no computer network.
 		![0, OFFICE_IMAGE_NETWORK_PACKAGE_FILES.length].includes(
 			OFFICE_IMAGE_NETWORK_PACKAGE_FILES.filter((f) => files.has(f)).length,
-		)
+		) ||
+		// So do the agent card's, and only with the network they carry.
+		![0, OFFICE_IMAGE_AGENT_PLUG_PACKAGE_FILES.length].includes(
+			OFFICE_IMAGE_AGENT_PLUG_PACKAGE_FILES.filter((f) => files.has(f)).length,
+		) ||
+		(files.has(OFFICE_IMAGE_AGENT_PLUG_PACKAGE_FILES[0]) && !files.has(OFFICE_IMAGE_NETWORK_PACKAGE_FILES[0]))
 	)
 		throw new Error("OFFICE_IMAGE_PACKAGE_INCOMPLETE");
 	return { artifacts, playwright: r.playwright };
