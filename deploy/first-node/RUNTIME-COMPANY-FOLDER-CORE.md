@@ -226,7 +226,10 @@ All tables are keyed by company environment.
   read saw, plus the command's output digest. Writing once keeps a run's
   parallel reads from serializing on a shared row. A whole-company search is therefore a few
   rows, as RUNTIME-COMPANY-FOLDER.md §3 requires. SQL reads the list only when
-  it re-resolves (§4).
+  it re-resolves (§4). A record under the nil resource is the platform's read
+  of summary-tree blocks (`qorpera_memory_release`,
+  RUNTIME-AGENT-MEMORY-TREE.md §9): it has no read-set row, no recheck
+  re-resolves it, and a wake's read copy copies it as it is.
 - **Objects** (`qorpera_profile_objects`, shared) gain two columns:
   `unreferenced_since`, and a `deleting` mark (§8).
 - **Storage usage** (`qorpera_folder_storage_usage`) is updated outside the
