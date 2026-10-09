@@ -1132,11 +1132,11 @@ $old$,
 			then 'memory-run-block'
 $new$);
 
--- Run log files end in .toml and .jsonl too.
+-- Run log files end in .toml and .jsonl too. Right after M1a's kinds, so later kinds (E8a's network rules) stay after.
 select pg_temp.w1b_run_logs_replace('public.qorpera_company_state_path_problems(text,boolean)'::regprocedure,
-	$old$'memory-tree','memory-block' /* 20260930111000 (M1a) */)$old$,
+	$old$'memory-tree','memory-block' /* 20260930111000 (M1a) */$old$,
 	$new$'memory-tree','memory-block' /* 20260930111000 (M1a) */,
-		'memory-run','memory-steps','memory-run-block' /* 20260930231000 (W1b) */)$new$);
+		'memory-run','memory-steps','memory-run-block' /* 20260930231000 (W1b) */$new$);
 
 -- A copy out of a run log is a read, as out of a tree.
 select pg_temp.w1b_run_logs_replace(
