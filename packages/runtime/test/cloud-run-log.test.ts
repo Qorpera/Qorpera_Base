@@ -56,14 +56,20 @@ function rpcProtection(runId: string, logNarrow: () => boolean = () => false): C
 		environmentId: randomUUID(),
 		jobId: randomUUID(),
 		runId,
-		call: async (method, args) =>
-			method === "qorpera_memory_step_hashes"
-				? (args.p_digests as string[]).map((digest) => keyed(runId, digest))
-				: {
-						log: logNarrow(),
-						machine: false,
-						restricted: (args.p_paths as string[]).filter((path) => path.startsWith("restricted/")),
-					},
+		call: async (method, args) => {
+			if (method === "qorpera_memory_step_hashes")
+				return (args.p_digests as string[]).map((digest) => keyed(runId, digest));
+			const paths = args.p_paths as string[];
+			// PostgreSQL rejects these JSONB strings before the classification function can ignore non-paths.
+			if (paths.some((path) => path.includes("\u0000")))
+				throw new Error("22P05: unsupported Unicode escape sequence");
+			if (paths.some((path) => !path.isWellFormed())) throw new Error("22P02: invalid input syntax for type json");
+			return {
+				log: logNarrow(),
+				machine: false,
+				restricted: paths.filter((path) => path.startsWith("restricted/")),
+			};
+		},
 	});
 }
 
@@ -1593,6 +1599,43 @@ describe("the tool boundary with a work log", () => {
 			expect(f.folder.all().every((line) => line.result !== null)).toBe(true);
 		},
 	);
+
+	it.each([
+		{ source: "arguments", path: "a\u0000b", kind: "NUL" },
+		{ source: "arguments", path: "a\ud800b", kind: "lone high surrogate" },
+		{ source: "arguments", path: "a\udc00b", kind: "lone low surrogate" },
+		{ source: "JSON text result", path: "a\u0000b", kind: "NUL" },
+		{ source: "JSON text result", path: "a\ud800b", kind: "lone high surrogate" },
+		{ source: "JSON text result", path: "a\udc00b", kind: "lone low surrogate" },
+	])("a $kind needle in $source does not block a later write or closing the log", async ({ source, path }) => {
+		const runId = randomUUID();
+		const f = fixture({
+			log: { runId, protection: rpcProtection(runId) },
+			...(source === "arguments"
+				? {
+						parseRead: () => {
+							throw new Error("invalid path");
+						},
+					}
+				: {}),
+		});
+		if (source === "JSON text result")
+			vi.mocked(f.readTool.execute).mockResolvedValueOnce({ kind: "text", value: JSON.stringify({ path }) });
+		const reading = await f.call("invalid_unicode", "company_read", {
+			path: source === "arguments" ? path : "sales/a.md",
+		});
+		expect(reading.result.status).toBe(source === "arguments" ? "denied" : "ok");
+		const writing = await f.call("later_effect", "company_write", { path: "sales/b.md", text: "written" });
+		expect(writing.result.status).toBe("ok");
+		expect(f.writeTool.execute).toHaveBeenCalledOnce();
+		await f.log.close(f.signal);
+		expect(f.folder.all().map((line) => [line.j, line.result])).toEqual([
+			[0, reading.result],
+			[1, writing.result],
+		]);
+		if (source === "arguments") expect(f.folder.all()[0]!.args).toBe(JSON.stringify({ path }));
+		else expect(reading.result.content.text).toBe(JSON.stringify({ path }));
+	});
 
 	it("logs every call with the envelope it got and every release it made", async () => {
 		const f = fixture();
