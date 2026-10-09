@@ -213,11 +213,7 @@ it("returns the blocks of the lines it shows, each once; a placeholder and earli
 			ref: "group:launch",
 			name: "Launch (group chat)",
 			messages: 8,
-			lines: [
-				`0+2|${PLACEHOLDER}`,
-				`2+2|${PLACEHOLDER}`,
-				...[4, 5, 6, 7].map((k) => `${k}+1|${"y".repeat(100)}`),
-			],
+			lines: [`0+2|${PLACEHOLDER}`, `2+2|${PLACEHOLDER}`, ...[4, 5, 6, 7].map((k) => `${k}+1|${"y".repeat(100)}`)],
 		},
 		{ ref: "group:ops", name: "Ops (group chat)", messages: 3 },
 	]);

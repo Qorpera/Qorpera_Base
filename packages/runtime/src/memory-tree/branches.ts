@@ -134,7 +134,9 @@ function answer(value: unknown, sessions: readonly string[]): { branches: Listed
 		const trees = new Map<string, Tree>();
 		for (const item of list(read.trees, "its trees")) {
 			const [sessionId, found] = tree(item);
-			if (!sessions.includes(sessionId) || trees.has(sessionId)) throw new WireValueError("a tree", "was not asked for");
+			if (!sessions.includes(sessionId) || trees.has(sessionId)) {
+				throw new WireValueError("a tree", "was not asked for or is there twice");
+			}
 			trees.set(sessionId, found);
 		}
 		return { branches, trees };
