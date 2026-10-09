@@ -72,6 +72,10 @@ operator provenance, not an automatic attestation of every installed file.
   in transient units, followed by the runtime's bubblewrap namespace pattern.
   The write allowance is the probe's `/run` directory. The office application,
   graphical desktop, credentials and production startup bindings do not run.
+  The copied `InaccessiblePaths` value contains `%b`, which `systemd-run
+  --property` does not expand; those boot-specific paths are therefore not a
+  proof of the production unit's expanded path restrictions. The credential
+  preflight requires this disposable guest to contain no office credentials.
 - One client binds the FUSE root directly. After the daemon is killed, detached
   and remounted, its fresh pathname lookup must fail with `ENOTCONN`: the negative
   control. The other binds the shared parent and uses `/company` as a symlink to
@@ -80,7 +84,8 @@ operator provenance, not an automatic attestation of every installed file.
   Mountinfo and daemon/unit logs are retained to diagnose propagation failures.
 - Old open descriptors are recorded separately. They remain associated with the
   old FUSE connection; pathname recovery does not rescue their buffered writes.
-  This probe does not resolve the plan's Q3 loss-policy decision.
+  Q3's loss-policy decision remains necessary whichever remount mechanism is
+  chosen: a successful new pathname lookup does not recover old descriptors.
 - The offline shell keeps only `CAP_SYS_ADMIN` in its own user namespace, creates
   a child mount/network namespace and waits. A root candidate helper joins only
   the network namespace and raises `lo`. The command drops effective, permitted,
@@ -93,6 +98,10 @@ operator provenance, not an automatic attestation of every installed file.
   these two processes only, without changing a sysctl. Both remain in the initial
   user namespace. Production helper peer/target authorization and command mount
   attachment are outside this candidate primitive.
+  These denials alone do not establish helper protection: this candidate lacks
+  a dumpable positive control under the same confinement. A denial can come
+  from AppArmor regardless of the helper. The ptrace claim remains unproven
+  until that control is implemented and passes; no current record proves it.
 
 `result: passed` requires every listed mechanism check. `failed` includes a
 mechanism failure; `harness-error` includes setup, execution or cleanup failure.
@@ -134,6 +143,15 @@ namespace, and writes before and after remount. Its earlier root-default run
 recovered lookups but returned `EACCES` for writes. In both modes, a cached old
 descriptor read succeeded while closing that old descriptor returned `ENOTCONN`;
 only fresh lookups and new writes count as recovery.
+
+The mapped-ownership evidence is node01 run
+`20261009T131030-53082-28d87d18`, source snapshot SHA-256
+`ba9fe6cb6ce18f6774310dff37b42ba6b4cd5cf4ec0b1fa560cae7fadc6dcb70`.
+It used prepared Ubuntu image
+`fca42260aab1da12d0e0cf4cdd96ae36487daa94da0aec601d2cfe1275c1ca2e`
+and nested VM UUID `23e92732-4975-49c3-9ebd-71bde3d63e55`.
+The host-side run record and extracted JSON were retained in the Codex handoff
+as `acceptance-vm-3.json` and `acceptance-vm-3.evidence.json`.
 
 The offline candidate remains **unproven**. Its namespace creation returned
 `EPERM`. The process retained `SYS_ADMIN` in its effective, permitted, inheritable

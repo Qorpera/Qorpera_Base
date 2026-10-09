@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Authored by OpenAI Codex. Claude-Review: Pending.
+# Authored by OpenAI Codex.
 # Preliminary F3 4d substrate proof in an offline, disposable nested VM. This is not
 # acceptance of a built office image. The production office unit is copied exactly;
 # the harness records image-kind=prepared-substrate and synthetic service authority.
@@ -130,6 +130,8 @@ lx exec "$vm" -- test -c /dev/fuse
 cd "$repo"
 node scripts/build-folder-program.mjs --out "$work/qorpera-folder" >"$work/build-record.json"
 folder_sha=$(sha256sum "$work/qorpera-folder" | awk '{print $1}')
+expected_folder_sha=$(jq -er '.sha256 | select(test("^[0-9a-f]{64}$"))' "$repo/deploy/folder-service/folder-program-linux-x64.json")
+[[ "$folder_sha" == "$expected_folder_sha" ]] || fail "built folder binary differs from the checked-in artifact record"
 echo "Nested candidate VM: $project/$vm UUID=$uuid image=$fingerprint folder=$folder_sha"
 node scripts/test-office-folder-substrate.mjs --project "$project" --vm "$vm" \
 	--uuid "$uuid" --image "$fingerprint" --image-kind prepared-substrate \
