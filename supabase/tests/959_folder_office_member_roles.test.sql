@@ -86,14 +86,19 @@ rollback to savepoint mr_rejoined;
 -- 3. V5: a shared viewer for the viewer and the contributor (section 1: the viewer may watch).
 select pg_temp.mr_refused(m, pg_temp.mr_mint('shared'), 'Office viewer mode unavailable') from unnest(array['03', '02']) m;
 
--- 4. V6: the admin's shared input is admitted; demoted to contributor, their next input is refused.
+-- 4. V6: the admin's shared input is admitted, and so are the input windows section 1 refuses on a watch grant (the
+-- same arguments, one sequence on); demoted to contributor, their next input is refused.
 savepoint mr_demoted;
 select pg_temp.mr_keep('mr_grant', pg_temp.mr_as(null, pg_temp.mr_redeem(pg_temp.mr_as('04', pg_temp.mr_mint('shared')))));
 select pg_temp.base_assert(pg_temp.mr_as(null, $q$select public.qorpera_admit_runtime_office_viewer_input(pg_temp.mr('mr_grant'), 1,
 	repeat('e', 64))$q$) ->> 'state' = 'admitted', 'the admin''s shared input is admitted');
+select pg_temp.base_assert(pg_temp.mr_as(null, $q$select public.qorpera_admit_runtime_office_viewer_input_window(pg_temp.mr('mr_grant'), 2, 0,
+	null)$q$) ->> 'state' = 'admitted', 'the admin''s empty input window is admitted');
+select pg_temp.base_assert(pg_temp.mr_as(null, $q$select public.qorpera_admit_runtime_office_viewer_input_window(pg_temp.mr('mr_grant'), 2, 1,
+	repeat('1', 64))$q$) ->> 'state' = 'admitted', 'the admin''s input window is admitted');
 update public.qorpera_profile_members set role = 'contributor'
 where profile_id = '92400000-0000-4000-8000-000000000010' and user_id = '92400000-0000-4000-8000-000000000004';
-select pg_temp.mr_refused(null, $q$select public.qorpera_admit_runtime_office_viewer_input(pg_temp.mr('mr_grant'), 2, repeat('e', 64))$q$,
+select pg_temp.mr_refused(null, $q$select public.qorpera_admit_runtime_office_viewer_input(pg_temp.mr('mr_grant'), 3, repeat('e', 64))$q$,
 	'Office viewer mode unavailable');
 rollback to savepoint mr_demoted;
 
