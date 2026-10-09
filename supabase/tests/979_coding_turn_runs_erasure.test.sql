@@ -117,7 +117,7 @@ do $$
 begin
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	perform public.qorpera_folder_enable('70700000-0000-4000-8000-000000000022');
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w6-dir', jsonb_build_array(pg_temp.mkdir('w6'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w6-folder', jsonb_build_array(pg_temp.mkdir('w6'))), 1, 'saved');
 	for n in 1..9 loop
 		perform pg_temp.w6_turn(n, 1, true);
 		perform pg_temp.w6_turn(n, 2, true);
@@ -133,41 +133,41 @@ begin
 	-- b8 read the path before its first erased version: outside the reads' window.
 	perform pg_temp.w6_read(8, 'w6/a.md');
 	-- b1's view wrote the version (phase 1); b8's wrote another path (no phase notes it).
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w6-k1', jsonb_build_array(pg_temp.put('w6/a.md', 'w6 a one'))), 1, 'saved');
-	perform pg_temp.w6_as_view('w6-k1', 1);
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w6-k0', jsonb_build_array(pg_temp.put('w6/other.md', 'w6 other'))), 1,
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w6-key-1', jsonb_build_array(pg_temp.put('w6/a.md', 'w6 a one'))), 1, 'saved');
+	perform pg_temp.w6_as_view('w6-key-1', 1);
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w6-key-0', jsonb_build_array(pg_temp.put('w6/other.md', 'w6 other'))), 1,
 		'saved');
-	perform pg_temp.w6_as_view('w6-k0', 8);
+	perform pg_temp.w6_as_view('w6-key-0', 8);
 	-- b6's first turn's run read the path (phase 3's runs); b7's view read another path twice (phase 3's views, step 1).
 	perform pg_temp.w6_run_read(pg_temp.w6_run(6, 1), 'w6/a.md');
 	perform pg_temp.w6_read(7, 'w6/other.md');
 	perform pg_temp.w6_read(7, 'w6/other.md');
 	-- b2's view wrote a stale version: a conflict copy, in a change set that saved nothing (phase 1's copies).
-	r := pg_temp.commit(pg_temp.owner(), 'w6-k2', jsonb_build_array(pg_temp.put('w6/a.md', 'w6 a stale')
+	r := pg_temp.commit(pg_temp.owner(), 'w6-key-2', jsonb_build_array(pg_temp.put('w6/a.md', 'w6 a stale')
 		|| jsonb_build_object('expectedVersion', extensions.gen_random_uuid())));
 	perform pg_temp.expect(r, 1, 'conflict', 'version_changed');
-	if (pg_temp.w6_commit('w6-k2')).seq is not null or pg_temp.w6_copies('w6-k2') <> 1 then
+	if (pg_temp.w6_commit('w6-key-2')).seq is not null or pg_temp.w6_copies('w6-key-2') <> 1 then
 		raise exception 'Fixture: an unsaved change set with a copy: %', r; end if;
-	perform pg_temp.w6_as_view('w6-k2', 2);
+	perform pg_temp.w6_as_view('w6-key-2', 2);
 	-- b5's view read the path, after b7's reads (phase 3's views, step 2).
 	perform pg_temp.w6_read(5, 'w6/a.md');
 	-- b3's view saved a change set whose delete of the path conflicted (phase 2's saved change sets); b4's saved nothing
 	-- (phase 2's unsaved ones). Neither keeps a copy.
-	r := pg_temp.commit(pg_temp.owner(), 'w6-k3', jsonb_build_array(pg_temp.put('w6/c3.md', 'w6 c3'),
+	r := pg_temp.commit(pg_temp.owner(), 'w6-key-3', jsonb_build_array(pg_temp.put('w6/c3.md', 'w6 c3'),
 		jsonb_build_object('op', 'delete', 'path', 'w6/a.md', 'expectedVersion', extensions.gen_random_uuid(), 'asOfSeq', pg_temp.seq())));
 	perform pg_temp.expect(r, 1, 'saved');
 	perform pg_temp.expect(r, 2, 'conflict', 'version_changed');
-	if (pg_temp.w6_commit('w6-k3')).seq is null or pg_temp.w6_copies('w6-k3') <> 0 then
+	if (pg_temp.w6_commit('w6-key-3')).seq is null or pg_temp.w6_copies('w6-key-3') <> 0 then
 		raise exception 'Fixture: a saved change set without a copy: %', r; end if;
-	perform pg_temp.w6_as_view('w6-k3', 3);
-	r := pg_temp.commit(pg_temp.owner(), 'w6-k4', jsonb_build_array(jsonb_build_object('op', 'delete', 'path', 'w6/a.md',
+	perform pg_temp.w6_as_view('w6-key-3', 3);
+	r := pg_temp.commit(pg_temp.owner(), 'w6-key-4', jsonb_build_array(jsonb_build_object('op', 'delete', 'path', 'w6/a.md',
 		'expectedVersion', extensions.gen_random_uuid(), 'asOfSeq', pg_temp.seq())));
 	perform pg_temp.expect(r, 1, 'conflict', 'version_changed');
-	if (pg_temp.w6_commit('w6-k4')).seq is not null or pg_temp.w6_copies('w6-k4') <> 0 then
+	if (pg_temp.w6_commit('w6-key-4')).seq is not null or pg_temp.w6_copies('w6-key-4') <> 0 then
 		raise exception 'Fixture: an unsaved change set without a copy: %', r; end if;
-	perform pg_temp.w6_as_view('w6-k4', 4);
+	perform pg_temp.w6_as_view('w6-key-4', 4);
 	-- The owner deletes it, and erases it.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w6-k5', jsonb_build_array(pg_temp.del('w6/a.md'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w6-key-5', jsonb_build_array(pg_temp.del('w6/a.md'))), 1, 'saved');
 	r := pg_temp.erase(array['w6/a.md'], 'w6-erase-a');
 	perform pg_temp.is(r -> 'roots' -> 0 ->> 'versions', '2', 'the write and the delete');
 	e := (r ->> 'erasureId')::uuid;
@@ -205,11 +205,11 @@ do $$
 declare r jsonb; b uuid; v public.qorpera_folder_erasures%rowtype;
 begin
 	-- b9's view wrote w6/b.md and read it; its first turn's run read it too.
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w6-b-1', jsonb_build_array(pg_temp.put('w6/b.md', 'w6 b one'))), 1, 'saved');
-	perform pg_temp.w6_as_view('w6-b-1', 9);
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w6-block-1', jsonb_build_array(pg_temp.put('w6/b.md', 'w6 b one'))), 1, 'saved');
+	perform pg_temp.w6_as_view('w6-block-1', 9);
 	perform pg_temp.w6_read(9, 'w6/b.md');
 	perform pg_temp.w6_run_read(pg_temp.w6_run(9, 1), 'w6/b.md');
-	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w6-b-2', jsonb_build_array(pg_temp.del('w6/b.md'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'w6-block-2', jsonb_build_array(pg_temp.del('w6/b.md'))), 1, 'saved');
 	r := pg_temp.w6_block('w6/b.md', '97900000-0000-4000-8000-0000000000f1');
 	perform pg_temp.is(r ->> 'kind' || (r -> 'roots' -> 0 ->> 'versions'), 'block-history1', 'the write before the delete');
 	b := (r ->> 'erasureId')::uuid;
