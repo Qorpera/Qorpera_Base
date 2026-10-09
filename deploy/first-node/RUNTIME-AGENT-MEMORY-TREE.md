@@ -653,6 +653,14 @@ A run log is read company-wide (§9), so it holds nothing from a folder that onl
     are both effectful, so that step is committed before the worker's run exists (below), and the check reads its own
     `narrow` flag. For a worker's later run, the check finds the worker's previous run from the worker's own record,
     so a `run.toml` that leaves `continues` out is refused too.
+  - A coding session's turn is a run of its own on the session's machine (W6a). The machine check is
+    `qorpera_memory_run_machine_narrow(environment, run)` (W1 made it, false for every run; W6a fills it in): it is
+    true for a turn's run once that turn or an earlier turn of its session is narrow, or, while the turn is open, once
+    the session's coding view has read a path outside the every-agent part. A turn is marked narrow by its begin and its
+    end when the view has, and in between by F3's view refresh (`qorpera_coding_turn_mark_narrow`); the flag only goes
+    from false to true and is frozen once the turn ended, so the answer for a run never changes after it. The run's
+    origin ORs the machine check in for the run, and `qorpera_run_log_narrow` for the turn run a later turn
+    `continues`.
 - **What a narrow step keeps:**
   `{"j":…,"tool":"…","call":"…","at":"…","finished":true,"releases":[…],"args_hash":"…","result_hash":"…","narrow":true}`,
   and nothing else: no `args`, `result`, `reads` or `text`. `result_hash` is there only once the call finished. Its
@@ -1849,7 +1857,7 @@ after 6 October (Jonas, 6 October); each PR lists its own under "Deferred (needs
 | **W4** | Workers start from their parent's view by reference, and their logs nest under the dispatching step (§12) | runtime test: a worker's first request holds its head as it is now and the views its parent's run composed, on the parent's payer and key; it composes from the trees as they are now after an erase landing during the parent's composition, one in its parent's conversation between the parent's start and its dispatch, one in a branch's conversation and one landing while it reads the reference, and when a referenced block was pruned or its folder erased; zoom from the parent's step into the worker's log |
 | **M5** | On for every folder-v2 company; notebook trimmed to its profile page (§11) | the probe on a fresh company |
 | **W5** | A cut-off run resumes from its log, and a run at its usage limit pauses and resumes on the same login after the reset (§12). Contract change; Jonas signed off on 6 October (§16). A run with a narrow step never resumes or pauses | SQL: the gate `qorpera_run_resumes_from_log` refusing a run that `qorpera_run_log_narrow` marks, one with an erase open and one with no log; a dblink race of a resume's lease claim against step 1 of a step erase, which ends with no deadlock: either the resume lands first and the erase stays pending until the run ends, or the erase lands first and the claim rolls back until the erase clears `erase_open`; with two erases open one after the other, the run resumes only after both rewrites. Live: kill the machine mid-run twice, and run a test login to its limit; each run finishes without repeating an action; a paused run whose log has an erase between its delete and its rewrite does not resume until the rewrite lands, and then sends a pending mail only after checking it; the swap probe with restarts |
-| **W6** | Coding sessions as child logs of the step that started them (§12) | to design with W6 |
+| **W6** | Coding sessions as child logs of the step that started them (§12). W6a (SQL): each turn is a run of its own and keeps its begin's occurrence, its report names its run, narrow turns and sessions, the run log's machine check, a narrow session's busy check-in, and P18 noting a session's turn runs. W6b (runtime): coding logs and the narrow check before each batch | W6a: SQL tests 921 and 979: a turn's occurrence set once and its report naming its run; F3's refresh marking the open turn narrow, never back, frozen at the end; a read of the view outside the every-agent part making the open turn's run narrow at once, the turn's end and the next begin marking the turn; the machine check true for a narrow turn's run and false for other runs; a narrow session's check-in naming no title, repository, branch or command text; P18 noting a session's turn runs from its view's commits, change sets and read records, and a noted turn run's other turns. W6b: runtime tests; live (deferred, needs Codex) |
 | **M6** | Agent pair transcripts | — |
 
 **Gates.**

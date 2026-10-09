@@ -1,24 +1,36 @@
--- Agent memory tree, W6a-1: a coding session's turns as runs of their own, in SQL (the W6 note, agreed 9 Oct by
--- OptChat, W4 and W1; deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §4.5, §10.1 and §12).
+-- Agent memory tree, W6a: a coding session's turns as runs of their own, in SQL (the W6 note, agreed 9 Oct by
+-- OptChat, W4 and W1; deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §4.5, §10.1 and §12). Stacked on W1b-1
+-- (20260930231000), whose run logs it feeds.
 -- * Each turn keeps the wake occurrence its begin made (qorpera_begin_coding_turn), so the turn row leads to the
 --   turn's run, and the turn's report names that run (runId), as an in-house worker's report does. The `reported`
 --   worker event carries it in its body; its run_id column stays null, as for every coding report.
--- * A turn is narrow once its session's view holds a path outside the every-agent part: F3 step 5's view refresh
---   calls qorpera_coding_turn_mark_narrow, which marks the session's open turn. The flag only goes from false to true
---   and is frozen once the turn ended. A session is narrow while any of its turns is (qorpera_coding_session_narrow):
---   each turn resumes the session's conversation.
+-- * A turn is narrow once its session's view holds a path outside the every-agent part. Its begin marks it when the
+--   session's coding view has read one (qorpera_coding_view_narrow: the open view carries its predecessor's read set),
+--   and F3 step 5's view refresh calls qorpera_coding_turn_mark_narrow while it is open; its settle marks it when the
+--   view is narrow by then. The flag only goes from false to true and is frozen once the turn ended. A session is narrow while any of its turns or its view is
+--   (qorpera_coding_session_narrow): each turn resumes the session's conversation.
+-- * The run log's side: qorpera_memory_run_machine_narrow (W1b-1's, false until now) is true for a coding turn's run
+--   when that turn or an earlier one of its session is narrow, or, while the turn is open, when its session's view is.
+--   qorpera_memory_run_origin already ORs it in for the run itself, and qorpera_run_log_narrow for the run a later
+--   turn continues, so neither changes.
 -- * A narrow session's busy check-in names neither its title, repository nor branch, and each running command only by
 --   its commandId and turn: what is left is ids, ages and counts (the note's §2).
 -- * P18 notes a session's turn runs (each that began before the erasure's newest cutoff) wherever it notes the session
 --   (the note's §4): a version or conflict copy its view's commit wrote (phase 1), a change set of its view (phase 2),
 --   and a read record of its view (phase 3, after the runs' read records, in the same budget). Last in phase 3, a
 --   noted turn run (its own read records, a commit or wake of its run) notes its session's other turn runs.
--- W6a-2, stacked on W1b-1, adds the run log's side: the turn's flag at begin from the view, `create or replace` of
--- qorpera_memory_run_origin and qorpera_memory_run_machine_narrow, and the view's narrowness now in
--- qorpera_coding_session_narrow (between turns no turn is open to mark).
--- Every patched body carries the marker 20260930250000 for the deploy guard.
+-- Every new or patched body carries the marker 20260930250000 for the deploy guard (section 6).
 
 set local lock_timeout = '3s';
+
+-- A second run stops here, before anything changes.
+do $$ begin
+	if exists (select 1 from pg_attribute where attrelid = 'public.qorpera_coding_session_turns'::regclass
+			and attname = 'occurrence_id' and not attisdropped) then
+		raise exception 'W6a (20260930250000) is already applied'; end if;
+	if to_regclass('public.qorpera_memory_run_logs') is null then
+		raise exception 'W6a (20260930250000) needs W1b (20260930231000)'; end if;
+end $$;
 
 create function pg_temp.w6a_replace(p_function regprocedure, p_old text, p_new text, p_count integer default 1)
 returns void language plpgsql as $$
@@ -68,9 +80,24 @@ $$;
 
 -- 2. Narrow turns ----------------------------------------------------------------------------------------------------
 
+-- Whether a coding session's view has read a path outside the every-agent part: a read of any of its coding views, open
+-- or closed (each open one carries its predecessor's read set on the same machine, and the conversation keeps what an
+-- earlier one read), names a resource that not every agent reads, or one that is gone. Plain reads.
+create function public.qorpera_coding_view_narrow(p_worker_id uuid)
+returns boolean language sql stable security definer set search_path = '' as $$
+	-- 20260930250000 (W6a).
+	select exists (select 1 from public.qorpera_folder_views fv
+		join public.qorpera_folder_view_reads vr on vr.view_id = fv.id
+		left join public.qorpera_company_path_resources r on r.id = vr.resource_id and r.environment_id = vr.environment_id
+		where fv.worker_id = p_worker_id and fv.kind = 'coding_session'
+			and case when r.id is null then true
+				else not coalesce(public.qorpera_folder_path_every_agent(vr.environment_id, r.path), false) end)
+$$;
+revoke all on function public.qorpera_coding_view_narrow(uuid) from public, anon, authenticated, service_role, qorpera_secret_broker;
+
 -- F3 step 5's view refresh calls this whenever a coding session's new view holds a path outside the every-agent part:
 -- the session's open turn is narrow from then on. Returns whether the session now has an open narrow turn. False means
--- no turn is open: between turns (W6a-2's begin then reads the view), or the turn ended first, and it stays as it
+-- no turn is open: between turns (the next begin then reads the view), or the turn ended first, and it stays as it
 -- ended. Takes only the open turn's row lock (the caller's own locks come first; a settle takes the session, then the
 -- turn).
 create function public.qorpera_coding_turn_mark_narrow(p_worker_id uuid)
@@ -83,11 +110,12 @@ end $$;
 revoke all on function public.qorpera_coding_turn_mark_narrow(uuid) from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 -- Whether a coding session read files only some agents may read: one of its turns is narrow, and each turn resumes the
--- session's conversation. W6a-2 adds whether its view holds such a path now.
+-- session's conversation, or its view is (between turns no turn is open to mark).
 create function public.qorpera_coding_session_narrow(p_worker_id uuid)
 returns boolean language sql stable security definer set search_path = '' as $$
 	-- 20260930250000 (W6a).
 	select exists (select 1 from public.qorpera_coding_session_turns turn where turn.worker_id = p_worker_id and turn.narrow)
+		or public.qorpera_coding_view_narrow(p_worker_id)
 $$;
 revoke all on function public.qorpera_coding_session_narrow(uuid) from public, anon, authenticated, service_role, qorpera_secret_broker;
 
@@ -108,9 +136,21 @@ select pg_temp.w6a_replace('public.qorpera_begin_coding_turn(uuid,uuid,jsonb)'::
 	$old$	update public.qorpera_coding_sessions set phase = 'running', claim_after = null, updated_at = clock_timestamp() where worker_id = v_worker.id;
 $old$,
 	$new$	update public.qorpera_coding_sessions set phase = 'running', claim_after = null, updated_at = clock_timestamp() where worker_id = v_worker.id;
-	-- 20260930250000 (W6a): the turn keeps its run's occurrence.
-	update public.qorpera_coding_session_turns set occurrence_id = v_occurrence where worker_id = v_worker.id and sequence = v_worker.sequence;
+	-- 20260930250000 (W6a): the turn keeps its run's occurrence, and is narrow from its start when the session's view is.
+	update public.qorpera_coding_session_turns set occurrence_id = v_occurrence,
+		narrow = narrow or public.qorpera_coding_view_narrow(v_worker.id)
+	where worker_id = v_worker.id and sequence = v_worker.sequence;
 $new$);
+
+-- Whatever ends a turn settles it here: a turn that ends while its session's view is narrow ends narrow, so its frozen
+-- flag holds what its run's machine answered while it was open.
+select pg_temp.w6a_replace('public.qorpera_settle_coding_turn()'::regprocedure,
+	$old$		settled_at = clock_timestamp()
+	where worker_id = new.id and sequence = old.sequence and outcome is null;$old$,
+	$new$		settled_at = clock_timestamp(),
+		-- 20260930250000 (W6a).
+		narrow = narrow or public.qorpera_coding_view_narrow(new.id)
+	where worker_id = new.id and sequence = old.sequence and outcome is null;$new$);
 
 select pg_temp.w6a_replace('public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)'::regprocedure,
 	$old$		'pullRequest', coalesce(p_pull_request, v_session.pull_request), 'runId', null, 'sequence', v_worker.sequence)
@@ -119,6 +159,22 @@ $old$,
 		-- 20260930250000 (W6a): the turn's run (null until its wake started one).
 		'runId', (select o.run_id from public.qorpera_wake_occurrences o where o.id = v_worker.occurrence_id), 'sequence', v_worker.sequence)
 $new$);
+
+-- Whether a run's machine made it narrow (§4.5): a coding turn's run when that turn or an earlier one of its session is
+-- narrow, or, while the turn is open, when its session's view is. The settle folds the view into the turn's flag, and
+-- once the turn ended its flags are frozen, so the answer never changes after the run's end. False for other runs. qorpera_memory_run_origin ORs it in for the run, and qorpera_run_log_narrow for the
+-- run a later turn continues.
+create or replace function public.qorpera_memory_run_machine_narrow(p_environment_id uuid, p_run_id uuid)
+returns boolean language sql stable set search_path = '' as $$
+	-- 20260930231000 (W1b)
+	-- 20260930250000 (W6a): a coding turn's run.
+	select coalesce((select exists (select 1 from public.qorpera_coding_session_turns earlier
+				where earlier.worker_id = turn.worker_id and earlier.sequence <= turn.sequence and earlier.narrow)
+			or (turn.outcome is null and public.qorpera_coding_view_narrow(turn.worker_id))
+		from public.qorpera_wake_occurrences o
+		join public.qorpera_coding_session_turns turn on turn.occurrence_id = o.id
+		where o.run_id = p_run_id and o.environment_id = p_environment_id), false)
+$$;
 
 -- 4. A narrow session's busy check-in --------------------------------------------------------------------------------
 
@@ -347,3 +403,25 @@ $new$);
 
 -- The coding views' read records by time, as the runs' (20260928469190).
 create index qorpera_folder_view_read_records_time on public.qorpera_folder_view_read_records(environment_id, created_at);
+
+-- 6. The deploy guard ---------------------------------------------------------------------------------------------------
+
+do $guard$
+declare v_function regprocedure;
+begin
+	foreach v_function in array array[
+		'public.qorpera_coding_session_turn_guard()', 'public.qorpera_coding_view_narrow(uuid)',
+		'public.qorpera_coding_turn_mark_narrow(uuid)', 'public.qorpera_coding_session_narrow(uuid)',
+		'public.qorpera_coding_turn_runs(uuid,timestamp with time zone)', 'public.qorpera_begin_coding_turn(uuid,uuid,jsonb)',
+		'public.qorpera_settle_coding_turn()', 'public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)',
+		'public.qorpera_memory_run_machine_narrow(uuid,uuid)', 'public.qorpera_ask_busy_coding_sessions(uuid,integer)',
+		'public.qorpera_folder_erasure_step(integer,integer,integer)'
+	]::regprocedure[] loop
+		if strpos((select prosrc from pg_proc where oid = v_function), '20260930250000') = 0 then
+			raise exception 'W6a marker is missing in %', v_function; end if;
+	end loop;
+	-- W1b's guard reads its own marker in the function W6a fills in.
+	if strpos((select prosrc from pg_proc where oid = 'public.qorpera_memory_run_machine_narrow(uuid,uuid)'::regprocedure),
+			'20260930231000') = 0 then
+		raise exception 'W1b marker is missing in qorpera_memory_run_machine_narrow'; end if;
+end $guard$;

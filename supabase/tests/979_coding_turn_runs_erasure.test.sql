@@ -1,11 +1,12 @@
 -- @fixture 883_folder_core_erasure.test.sql until "-- 1. Refusals before anything changes"
--- W6a-1 (migration 20260930250000; deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §4.5, §10.1; the W6 note of 9 Oct): P18
+-- W6a (migration 20260930250000; deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §4.5, §10.1; the W6 note of 9 Oct): P18
 -- notes a coding session's turn runs, each that began before the erasure's newest cutoff, wherever it finds the session:
 -- a version or conflict copy its view's commit wrote (phase 1), its view's change set, saved or not (phase 2), its
 -- view's read record (phase 3, after the runs' read records, paging across steps), and a noted turn run's session (last
 -- in phase 3). The controls: a read before the first erased version, a read of another path, a read after the cutoff,
 -- a change set of another path, and turns that began after the request. A block-history request notes none. Sessions
--- b1..b9 are rows alone (triggers off): two ended turns each, and a view each but b6's. On 803's company; rolled back
+-- b1..b9 are turn rows alone (their occurrences and turns written with triggers off): two ended turns each, and a view
+-- each but b6's. On 803's company; rolled back
 -- at the end.
 
 create function pg_temp.w6_worker(p_n integer) returns uuid language sql as $$
