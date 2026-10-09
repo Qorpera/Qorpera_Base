@@ -8,7 +8,7 @@
 --    42501). A computer that does not exist still gets the scope refusal it got before.
 -- 2. The Company File a start needs (registration, start source, guest binding, restart surfaces) is the folder core's
 --    (core = 'folder-v2'); the old path gateway's file (path_gateway_version = 1) goes.
--- 3. An agent's start source shares the agent and its access without waiting, as on folder-v2; the waiting share goes.
+-- 3. An agent's start source shares its access, and the agent without waiting, as on folder-v2; the waiting share goes.
 -- 4. qorpera_office_waiter_authorized answers with qorpera_folder_office_waiter_authorized (plain reads); its locked
 --    snapshot-v1 checks go.
 -- 5. A member's start status poll is plain reads; its locked snapshot-v1 reads go.
@@ -216,7 +216,7 @@ select pg_temp.f2a_patch('public.qorpera_check_runtime_office_restart_surfaces(p
 $old$(path_gateway_version=1 or core='folder-v2' /* C1c-3k 20260930019000 */)$old$,
 $new$core='folder-v2' /* C1c-3k 20260930019000; only it since 20260930290000 */$new$);
 
--- 3. An agent's start source shares the agent and its access without waiting. -----------------------------------------
+-- 3. An agent's start source shares its access, and the agent without waiting. ----------------------------------------
 
 select pg_temp.f2a_patch('public.qorpera_assert_runtime_office_start_source(public.qorpera_runtime_offices,public.qorpera_runtime_office_start_intents)'::regprocedure,
 $old$		if public.qorpera_company_is_folder_v2(p_office.profile_id) then

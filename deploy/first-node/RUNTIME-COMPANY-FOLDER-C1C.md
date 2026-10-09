@@ -1148,9 +1148,10 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
 | A hire's default access (`runtime_office_default_access_for_staff`) | offices in scan order | offices by id (both cores) |
 
 - **Legacy sweep F2a (20260930290000)** left the start chain only its folder-v2 mode: the assertion, provider set,
-  member start, cancel, withdrawal and status, the provider's reserve and check, the fleet offer and placement,
-  activation, its startup lock and registration lost their gc fence branch, so a company without a folder fails in the
-  machine fence (42501). Registration, start source, guest binding and restart surfaces accept only a ready folder-v2
+  member start, cancel and withdrawal, the provider's reserve and check, the fleet offer and placement, activation, its
+  startup lock and registration lost their gc fence branch, so a company without a folder fails in the machine fence
+  (42501). A member's start status is plain reads on every company, so a member of such a company gets an answer.
+  Registration, start source, guest binding and restart surfaces accept only a ready folder-v2
   Company File (`path_gateway_version = 1` is gone), and adoption refuses a non-empty mapping on every company.
   `member_office_catalog` and the office reservation follow in later F2 steps.
 - **Who creates a folder-v2 office** (the coordinator, 3 October): the folder mode of `qorpera_register_runtime_office`,
