@@ -2,6 +2,8 @@
 // office/wake fixtures, real activation, replace revocation and stop, then the
 // full reset phase chain through the actual provider adapters. Every VM, root
 // and archive observation is synthetic; no LXD, NAS, node or hosted database.
+// On 924's folder-v2 runtime base (ported from snapshot-v1 in the legacy sweep): its company's computer and
+// Alice's leased run (qorpera_test.base_binding) stand where 300's wake fixture stood.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -13,7 +15,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { hostedDatabase, migrationNames, newestBundleActivation } from "./test-hosted-db-cluster.mjs";
 import { testOfficeActivation } from "./test-runtime-office-activation-cases.mjs";
-import { testOfficeAdoptionAuthority } from "./test-runtime-office-adoption-cases.mjs";
+import { seedOfficeAdoptionFixture } from "./test-runtime-office-adoption-cases.mjs";
 import { testOfficeLifecycleRevocation } from "./test-runtime-office-lifecycle-cases.mjs";
 import { testOfficeResetChain } from "./test-runtime-office-delete-disposition-cases.mjs";
 import { testOfficeStopAcknowledgement } from "./test-runtime-office-stop-cases.mjs";
@@ -61,7 +63,7 @@ async function race(statements) {
 const sqlText = (value) => `'${value.replaceAll("'", "''")}'`;
 const literal = (value) => `${sqlText(JSON.stringify(value))}::jsonb`;
 const service = `set request.jwt.claims='{"role":"service_role"}'; set role service_role;`;
-const owner = `set request.jwt.claims='{"role":"authenticated","sub":"30000000-0000-4000-8000-000000000001"}'; set role authenticated;`;
+const owner = `set request.jwt.claims='{"role":"authenticated","sub":"92400000-0000-4000-8000-000000000001"}'; set role authenticated;`;
 // This focused SQL lane reuses fixture checkpoints without container restarts.
 // Restarting a container clears its disposable tmpfs; reboot proof belongs to the existing driver.
 console.log("FOCUSED_PROOF_SCOPE: reused fixture log restart labels are inherited; this tmpfs driver performs no database/container restart and claims no restart proof.");
@@ -102,16 +104,16 @@ try {
 	database = await hostedDatabase("office", { skip: [future], alterablePostgres: true });
 	psql = database.cluster.psqlArgs("office", ["-qAt"]);
 	docker(psql, readFileSync(join(root, "supabase/tests/fixtures/runtime-node-inventory-observer.sql"), "utf8"));
-	const wake = readFileSync(join(root, "supabase/tests/300_runtime_wake_bus.test.sql"), "utf8").split("-- END WAKE FIXTURE");
+	const base = readFileSync(join(root, "supabase/tests/924_folder_runtime_base.test.sql"), "utf8").split("-- The checks start here");
 	const office = readFileSync(join(root, "supabase/tests/fixtures/runtime-office-registry-cases.sql"), "utf8").split("-- Synthetic guest readiness only.");
-	assert.equal(wake.length, 2);
+	assert.equal(base.length, 2);
 	assert.equal(office.length, 2);
-	const setup = JSON.parse(docker(psql, `${wake[0]}\n${office[0]}
+	const setup = JSON.parse(docker(psql, `${base[0]}\n${office[0]}
 		set local role service_role;
-		select pg_temp.wake_public_send(current_setting('qorpera_test.wake_binding')::jsonb,'progress');
-		select jsonb_build_object('binding',current_setting('qorpera_test.wake_binding')::jsonb,
-			'descriptor',public.qorpera_native_office_start_descriptor(current_setting('qorpera_test.wake_binding')::jsonb),
-			'identity',public.qorpera_describe_native_tool_authority(current_setting('qorpera_test.wake_binding')::jsonb)->'identity'); commit;`).split("\n").at(-1));
+		select pg_temp.base_public_send(current_setting('qorpera_test.base_binding')::jsonb,'progress','office-delete-disposition');
+		select jsonb_build_object('binding',current_setting('qorpera_test.base_binding')::jsonb,
+			'descriptor',public.qorpera_native_office_start_descriptor(current_setting('qorpera_test.base_binding')::jsonb),
+			'identity',public.qorpera_describe_native_tool_authority(current_setting('qorpera_test.base_binding')::jsonb)->'identity'); commit;`).split("\n").at(-1));
 	assert.equal(setup.descriptor.state, "available");
 	const renewWakeBinding = () => renewOfficeWakeBinding({ setup, service, execute: (sql) => docker(psql, sql) });
 	renewWakeBinding();
@@ -153,10 +155,11 @@ try {
 	const recovered = await provider.status(new AbortController().signal);
 	assert.equal(recovered.officeState, "provisioning");
 	const instanceSha256 = recovered.reservation.instanceSha256;
-	// Adoption authority registers the synthetic pre-existing screen/profile
-	// mappings that the screen, stop and reset fixtures later bind to.
-	await testOfficeAdoptionAuthority({ scope, control, service, owner, sqlCall, race, session, until, execute: (sql) => docker(psql, sql), literal });
-	console.log("PASS: real office fixture, provider enrollment, member start intent, adoption authority and one charged allocation");
+	// The synthetic pre-existing screen/profile mappings that the screen, stop and reset fixtures later bind to. Folder-v2
+	// refuses every adoption mapping (0A000), so only the empty adoption check runs, not the adoption authority cases.
+	await control.checkAdoption([], new AbortController().signal);
+	seedOfficeAdoptionFixture({ scope, execute: (sql) => docker(psql, sql) });
+	console.log("PASS: real office fixture, provider enrollment, member start intent, empty adoption check and one charged allocation");
 	const { CompanyComputerStartupControl } = await load("startup");
 	const { LxdOfficeActivationControl } = await load("activation");
 	const activationResult = await testOfficeActivation({ scope, binding, instanceSha256, providerBindingSha256, intent, service, owner, race, session, until, execute: (sql) => docker(psql, sql), literal, CompanyComputerStartupControl, LxdOfficeActivationControl });

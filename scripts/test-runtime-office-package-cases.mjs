@@ -86,7 +86,7 @@ export async function officePackageSqlFixture({resetPlan,service,owner,call,exec
     `update public.qorpera_runtime_offices set privacy_version=privacy_version+1;`,
     `update public.qorpera_runtime_offices set revision=revision+1;`,
     `delete from public.qorpera_active_runtime_bundle;`,
-    `insert into public.qorpera_company_execution_pauses(profile_id,paused_by_user_id) values('${resetPlan.predecessor.startup.scope.companyId}','30000000-0000-4000-8000-000000000001');`,
+    `insert into public.qorpera_company_execution_pauses(profile_id,paused_by_user_id) values('${resetPlan.predecessor.startup.scope.companyId}','92400000-0000-4000-8000-000000000001');`,
    ])await deny(changed(mutation,check()));
    const authorized=call(check());assert(authorized.validForMs>0&&authorized.validForMs<=5000);
    assert.equal(authorized.requestSha256,sha(canonical(request)));assert.deepEqual(authorized.request,request);
