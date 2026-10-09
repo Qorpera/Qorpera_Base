@@ -34,7 +34,7 @@ describe("serialized provider stop worker", () => {
 		});
 		expect(f.activation.exec).toHaveBeenCalledOnce();
 	});
-	it.each([true, false])("never resubmits an uncertain stop (completion present: %s)", async (physical) => {
+	it.each([true, false])("does not immediately resubmit an uncertain stop (completion present: %s)", async (physical) => {
 		const f = await fixture(),
 			original = f.exec.getMockImplementation()!;
 		f.state.physical = physical;

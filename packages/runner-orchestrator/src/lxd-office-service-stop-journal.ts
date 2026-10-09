@@ -5,10 +5,12 @@ export interface LxdOfficeServiceStopIdentity extends LxdOfficeControlIdentity {
 	transitionId: string;
 	revocationSha256: string;
 	startObservationSha256: string;
+	attempt?: number;
 }
 /** One durable stop dispatch for one explicit lifecycle transition. Requires
  * the supervisor's kernel lock, retained SQL revocation and current physical
- * authority. An uncertain submission is only observed, never repeated. */
+ * authority. Each journal only observes an uncertain submission. The stop worker may create a
+ * separate retry attempt of the same command after its durable backoff. */
 export class LxdOfficeServiceStopJournal {
 	readonly #journal: LxdOfficeControlJournal;
 	private constructor(journal: LxdOfficeControlJournal) {
@@ -29,7 +31,7 @@ export class LxdOfficeServiceStopJournal {
 					inspect: (...args) => client.inspectOfficeServiceStop(...args),
 				},
 				existing,
-				"service-stop",
+				identity.attempt === undefined ? "service-stop" : "service-stop-retry",
 			),
 		);
 	}
