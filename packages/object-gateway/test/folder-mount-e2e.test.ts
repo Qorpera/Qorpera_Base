@@ -177,6 +177,8 @@ describe.skipIf(!program)("folder program against the folder service", () => {
 			folder("docs"),
 			await storeFile(root, "docs/plan.md", "plan one", 1, BIG),
 			await storeFile(root, "docs/other.md", "other one", 1, BIG),
+			await storeFile(root, "docs/empty-in-place.md", "", 1, BIG),
+			await storeFile(root, "docs/empty-rename.md", "", 1, BIG),
 			folder("reports"),
 			await storeFile(root, "reports/q1.md", "q1 one", 1, BIG),
 		]);
@@ -336,14 +338,24 @@ describe.skipIf(!program)("folder program against the folder service", () => {
 		expect(core.entries.has("docs/new.md")).toBe(false);
 		expect(core.entries.get("docs/renamed.md")?.fileSha256).toBe(hashOf("hello again and more"));
 
-		// Two editors read their files (the version map takes version one of each); then the node's service restarts,
-		// and another machine saves both meanwhile.
+		// Editors read their files (the version map takes version one of each); then the node's service restarts,
+		// and another machine saves them meanwhile.
 		expect(await readFile(join(company, "docs/plan.md"), "utf8")).toBe("plan one");
 		expect(await readFile(join(company, "docs/other.md"), "utf8")).toBe("other one");
+		// Empty content is an observation too, even when the kernel answers EOF without a FUSE read.
+		expect(await readFile(join(company, "docs/empty-in-place.md"), "utf8")).toBe("");
+		expect(await readFile(join(company, "docs/empty-rename.md"), "utf8")).toBe("");
 		await stopService();
 		await startService();
 		core.write(await storeFile(root, "docs/plan.md", "plan theirs", 2, BIG));
 		core.write(await storeFile(root, "docs/other.md", "other theirs", 2, BIG));
+		core.write(await storeFile(root, "docs/empty-in-place.md", "empty in-place theirs", 2, BIG));
+		core.write(await storeFile(root, "docs/empty-rename.md", "empty rename theirs", 2, BIG));
+		// Let the newer sizes reach the kernel without reading their content into the version map.
+		expect(
+			await eventually(async () => (await stat(join(company, "docs/empty-in-place.md"))).size > 0, 10_000),
+			output,
+		).toBe(true);
 		// One saves in place, the other through a temporary file renamed over: both are based on what they read.
 		expect(
 			await eventually(async () => {
@@ -354,14 +366,32 @@ describe.skipIf(!program)("folder program against the folder service", () => {
 		).toBe(true);
 		await writeFile(join(company, "docs/.other.md.tmp"), "other mine");
 		await rename(join(company, "docs/.other.md.tmp"), join(company, "docs/other.md"));
+		await writeFile(join(company, "docs/empty-in-place.md"), "empty in-place mine");
+		await writeFile(join(company, "docs/.empty-rename.md.tmp"), "empty rename mine");
+		await rename(join(company, "docs/.empty-rename.md.tmp"), join(company, "docs/empty-rename.md"));
 		published = await publish();
 		expect(published.code, published.text + output).toBe(4);
 		expect(published.text).toMatch(/conflict\s+docs\/plan\.md/);
 		expect(published.text).toMatch(/conflict\s+docs\/other\.md/);
+		expect(published.text).toMatch(/conflict\s+docs\/empty-in-place\.md/);
+		expect(published.text).toMatch(/conflict\s+docs\/empty-rename\.md/);
 		// The other machine's versions stay; this machine's are kept on the receipt, and the mount shows the live ones.
 		expect(core.entries.get("docs/plan.md")?.fileSha256).toBe(hashOf("plan theirs"));
 		expect(core.entries.get("docs/other.md")?.fileSha256).toBe(hashOf("other theirs"));
 		expect(core.entries.has("docs/.other.md.tmp")).toBe(false);
+		expect(core.entries.get("docs/empty-in-place.md")?.fileSha256).toBe(hashOf("empty in-place theirs"));
+		expect(core.entries.get("docs/empty-rename.md")?.fileSha256).toBe(hashOf("empty rename theirs"));
+		expect(core.entries.has("docs/.empty-rename.md.tmp")).toBe(false);
+		const copies = [...core.copies.values()].flat();
+		for (const path of ["docs/empty-in-place.md", "docs/empty-rename.md"]) {
+			const copy = copies.find((copy) => copy.path === path);
+			expect(copy, path).toBeDefined();
+			const unit = core.commits
+				.flatMap((commit) => commit.units)
+				.find((unit) => unit.op === "write" && unit.path === path);
+			expect(unit?.op).toBe("write");
+			if (unit?.op === "write") expect(copy?.manifestSha256).toBe(unit.file.manifestSha256);
+		}
 		expect(
 			await eventually(async () => (await readFile(join(company, "docs/plan.md"), "utf8")) === "plan theirs", 5_000),
 		).toBe(true);

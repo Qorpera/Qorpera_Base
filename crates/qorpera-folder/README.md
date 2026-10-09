@@ -8,6 +8,8 @@ The company folder inside a Qorpera machine, and the node side of its link.
   made and stays pending until a boundary publishes it; a file open for writing keeps only the chunk being written in
   memory (`src/writer.rs`); the mount's version map (`src/versions.rs`, in `--state-dir`, under `/run`) gives each save
   its base.
+  Reading an existing empty file records its version at the read-only open, because the kernel can answer EOF
+  without asking the program for bytes. A stale save still conflicts, both in place and through a temporary file.
 - `qorpera-folder publish`: asks the node to publish what the view has pending, and prints each path's outcome.
 - `qorpera-folder bridge`: on a node host, takes machines' vsock connections and hands them to the folder service's
   Unix socket, naming each machine's CID.
