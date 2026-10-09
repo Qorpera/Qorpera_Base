@@ -34,6 +34,7 @@ import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
 import { CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
 import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import { cloudInterfaceTools } from "./cloud-folder-interface-tools.ts";
+import { cloudInterfaceWriteTools } from "./cloud-folder-interface-writes.ts";
 import { CloudFolderNotebooks } from "./cloud-folder-notebooks.ts";
 import { CloudFolderProposals } from "./cloud-folder-proposals.ts";
 import { CloudFolderRoutineDecision } from "./cloud-folder-routine-decision.ts";
@@ -729,7 +730,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							tools: [
 								...(computer?.tools ?? []),
 								// A run's file tools act through the folder core with its own authority (P19), and so do the
-								// tools that read its interfaces and tables (Interfaces I8a).
+								// tools that read and write its interfaces and tables (Interfaces I8a, I8b).
 								...[
 									...cloudFolderFileTools({ folder: folder.client, operations, identity }),
 									...cloudInterfaceTools({
@@ -737,6 +738,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										identity,
 										timeZone: wake.time.timeZone,
 									}),
+									...cloudInterfaceWriteTools({ folder: folder.client, operations, identity }),
 								].filter(work.companyFile),
 								...(folderSearch
 									? [

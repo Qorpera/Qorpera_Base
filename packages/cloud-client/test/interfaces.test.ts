@@ -42,6 +42,7 @@ import {
 	type TableRow,
 	tableClaimProblems,
 	tableDefinitionProblems,
+	tableNumberText,
 	tableRowKey,
 	writeInterfaceOrderFile,
 	writeTableRows,
@@ -566,6 +567,25 @@ type = "choice"
 		];
 		const text = writeTableRows(cards, rows);
 		expect(parseTableRows(cards, text)).toEqual({ rows, problems: [], readable: true });
+	});
+
+	it("writes a number as decimal text, never in exponent form, which the reader refuses", () => {
+		expect([5e-7, -1.2e-7, 0.00000001, 0, 123.45, 1e21, -1.5e22].map((value) => tableNumberText(value))).toEqual([
+			"0.0000005",
+			"-0.00000012",
+			"0.00000001",
+			"0",
+			"123.45",
+			`1${"0".repeat(21)}`,
+			`-15${"0".repeat(21)}`,
+		]);
+		const numbers = table(NUMBERS_TABLE);
+		const rows: TableRow[] = [
+			{ number: "drift", at: "2026-10-01T09:00:00Z", value: 5e-7, unit: "%", target: 0.00000012, kept_by: SOFIE },
+		];
+		const text = writeTableRows(numbers, rows);
+		expect(text).toContain(",0.0000005,%,0.00000012,");
+		expect(parseTableRows(numbers, text)).toEqual({ rows, problems: [], readable: true });
 	});
 
 	it("knows instants and refuses impossible ones", () => {

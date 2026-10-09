@@ -922,6 +922,8 @@ it.each([
 				"company_write",
 				"interface_read",
 				"table_read",
+				"save_interface",
+				"table_write",
 				"company_account",
 				"ask_member",
 				"create_group_chat",
@@ -1252,7 +1254,7 @@ it.each([
 	expect(names.includes("company_search")).toBe(offered);
 });
 
-it("gives a company run the folder core's file tools, and Interfaces' read tools through it", async () => {
+it("gives a company run the folder core's file tools, and Interfaces' tools through it", async () => {
 	const f = await fixture("company-dynamic");
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
@@ -1263,7 +1265,16 @@ it("gives a company run the folder core's file tools, and Interfaces' read tools
 	const list = tools.find((tool) => tool.name === "company_list");
 	// The folder core pages a folder by its last path; no listing pins a snapshot.
 	expect(list?.inputSchema.required).toEqual(["path", "after", "limit"]);
-	const files = ["company_read", "company_write", "company_mkdir", "company_delete", "interface_read", "table_read"];
+	const files = [
+		"company_read",
+		"company_write",
+		"company_mkdir",
+		"company_delete",
+		"interface_read",
+		"table_read",
+		"save_interface",
+		"table_write",
+	];
 	for (const name of files) expect(tools.some((tool) => tool.name === name)).toBe(true);
 	expect(tools.some((tool) => tool.name === "save_attachment")).toBe(false);
 });
@@ -2490,15 +2501,16 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 	expect(wave("qorpera_record_native_context_view")).toBe(10);
 });
 
-it("keeps a company run's tool catalog byte for byte as it was before the snapshot-v1 path went", async () => {
+it("pins a company run's tool catalog byte for byte", async () => {
 	const f = await fixture();
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
 	const start = f.pathCall.mock.calls.find(([method]) => method === "qorpera_begin_native_company_execution_v2")?.[1];
 	const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-	// master's folder-v2 values at a2d6cb27a (legacy sweep step C, C-P1): the names in their order, each
-	// name with its description, and the catalog text the run's start hashes (it holds no ids).
+	// master's folder-v2 values at a2d6cb27a, which the legacy sweep (step C, C-P1) kept byte for byte, with
+	// Interfaces' save_interface and table_write (I8b) after table_read: the names in their order, each name with
+	// its description, and the catalog text the run's start hashes (it holds no ids).
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2507,6 +2519,8 @@ it("keeps a company run's tool catalog byte for byte as it was before the snapsh
 		"company_delete",
 		"interface_read",
 		"table_read",
+		"save_interface",
+		"table_write",
 		"read_context",
 		"company_account",
 		"send_coworker_message",
@@ -2531,9 +2545,9 @@ it("keeps a company run's tool catalog byte for byte as it was before the snapsh
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"b286a75c9efe55edc40fe341ede866d80f3fe2a8e2f4d1bf87af21fb2771c546",
+		"14114dd3cfb74a57eaf4c5164d670b78057ef1d8ce7fb1ff17ca019d6d7b1bd1",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"fca34c0f0ff49f4f168bff3c69d2771460704ea4553951d01221e355cc10c9d0",
+		"0985c7a9953be185bdf7c3a2dcae60469d47a20364da7bb3ebdb15e2b446fb03",
 	);
 });
