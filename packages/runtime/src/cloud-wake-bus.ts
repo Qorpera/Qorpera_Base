@@ -665,9 +665,11 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		// A typed internal continuation of the agent's own run: a program it started has kept a machine busy for hours
 		// since it last worked with it (the one idle rule's check-in, amendment of 2026-10-03, item 5). A notice: the
 		// program keeps running until the agent stops it. A coding session's check-in also names the session as
-		// manage_worker does (todoKey, workerKey), and each running command the turn that started it; an agent's
-		// machine's, each running command's handle, as machine_cancel takes it. An always-on machine the agent started is
-		// asked about once a week since its start, busy or not (item 6): how many weeks, and nothing running.
+		// manage_worker does (todoKey, workerKey), and each running command the turn that started it; a session that
+		// read files only some agents may read names neither its repository nor a command's text, only each command's
+		// commandId (W6a). An agent's machine's names each running command's handle, as machine_cancel takes it. An
+		// always-on machine the agent started is asked about once a week since its start, busy or not (item 6): how many
+		// weeks, and nothing running.
 		const asked = closed(payloadBody, ["schema", "parentRunId", "checkins", "stillWaiting"]);
 		if (
 			asked.schema !== "qorpera.machine-checkin/v1" ||
@@ -736,19 +738,22 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 				throw new Error("Invalid machine check-in wake");
 			uuid(checkin.checkinId);
 			for (const running of checkin.running) {
+				// A session that read files only some agents may read names each command by its commandId alone (W6a).
+				const narrow =
+					coding && typeof running === "object" && running !== null && !Object.hasOwn(running, "command");
 				const program = closed(running, [
-					"command",
+					narrow ? "commandId" : "command",
 					coding ? "turn" : "startedAt",
 					...(machine ? ["commandId"] : []),
 				]);
 				if (
-					typeof program.command !== "string" ||
+					(!narrow && typeof program.command !== "string") ||
 					(coding
 						? !Number.isSafeInteger(program.turn) || (program.turn as number) < 1
 						: typeof program.startedAt !== "string")
 				)
 					throw new Error("Invalid machine check-in wake");
-				if (machine) uuid(program.commandId);
+				if (machine || narrow) uuid(program.commandId);
 			}
 		}
 	} else if (wake.kind === "agent" && source.kind === "human-task") {
