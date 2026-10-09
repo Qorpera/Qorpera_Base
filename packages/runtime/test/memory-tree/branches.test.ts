@@ -49,7 +49,10 @@ function listing(conversation: Conversation, index: number) {
 	return { ref, kind: kind(ref), name, sessionId: session(index), messages };
 }
 
-/** Its live tree as qorpera_memory_tree_read reads it, each line in the block `blockOf(l, k)` under its root. */
+/**
+ * Its live tree as qorpera_memory_tree_read reads it, each line in the block `blockOf(l, k)` under its root, at erase
+ * generation `index + 1`, so each branch's differs.
+ */
 function treeOf(conversation: Conversation, index: number, blockOf = memoryBlockPath) {
 	const blocks: { path: string; version: string }[] = [];
 	const lines: { l: number; k: number; text: string; block: number }[] = [];
@@ -64,7 +67,7 @@ function treeOf(conversation: Conversation, index: number, blockOf = memoryBlock
 		}
 	return {
 		sessionId: session(index),
-		generation: 0,
+		generation: index + 1,
 		messages: conversation.messages,
 		root: root(conversation.ref),
 		nodeBytes: 512,
@@ -119,6 +122,15 @@ async function lazily(conversations: readonly Conversation[]) {
 		loaded += call.length;
 	}
 	expect(loaded === conversations.length || room < BRANCH_MIN).toBe(true);
+	// Each branch read, in order, with its own tree's generation and count; the blocks to release are theirs.
+	const entries = conversations.slice(0, loaded).map((conversation, index) => ({
+		sessionId: session(index),
+		generation: index + 1,
+		through: conversation.messages,
+	}));
+	const got = result.conversations.map(({ sessionId, generation, through }) => ({ sessionId, generation, through }));
+	expect(got).toEqual(entries);
+	expect(result.blocks).toEqual(result.conversations.flatMap((conversation) => conversation.blocks));
 	return { result, expected, calls, loaded };
 }
 
@@ -188,7 +200,7 @@ it("equals memoryBranches with every tree read, whatever the conversations", asy
 	}
 });
 
-it("returns the blocks of the lines it shows, each once; a placeholder and earlier|zoom show none", async () => {
+it("returns each branch read with the blocks its lines show; placeholders and earlier|zoom show none", async () => {
 	// Every line in a block of its own, named by its address. Bo's thread has every line built and too long for its
 	// share, so its oldest parts are named on one line; the launch chat has no parent built, so its oldest pairs merge
 	// into placeholders. Less than BRANCH_MIN is then left, and the ops chat is listed.
@@ -201,7 +213,7 @@ it("returns the blocks of the lines it shows, each once; a placeholder and earli
 	};
 	const ops: Conversation = { ref: "group:ops", name: "Ops", messages: 3, text: () => "o" };
 	const { read, calls } = host([bo, launch, ops], (l, k) => `${2 ** l * k}+${2 ** l}`);
-	const { branches, blocks } = await memoryRunBranches(read, 1_200);
+	const { branches, conversations, blocks } = await memoryRunBranches(read, 1_200);
 	expect(branches).toEqual([
 		{
 			ref: "thread:bo",
@@ -213,13 +225,26 @@ it("returns the blocks of the lines it shows, each once; a placeholder and earli
 			ref: "group:launch",
 			name: "Launch (group chat)",
 			messages: 8,
-			lines: [
-				`0+2|${PLACEHOLDER}`,
-				`2+2|${PLACEHOLDER}`,
-				...[4, 5, 6, 7].map((k) => `${k}+1|${"y".repeat(100)}`),
-			],
+			lines: [`0+2|${PLACEHOLDER}`, `2+2|${PLACEHOLDER}`, ...[4, 5, 6, 7].map((k) => `${k}+1|${"y".repeat(100)}`)],
 		},
 		{ ref: "group:ops", name: "Ops (group chat)", messages: 3 },
+	]);
+	// Every tree was read in one call; the ops chat's shows no line.
+	expect(calls).toEqual([[], [session(0), session(1), session(2)]]);
+	expect(conversations).toEqual([
+		{
+			sessionId: session(0),
+			generation: 1,
+			through: 7,
+			blocks: [{ path: "agents/bo/memory/thread/6+1", version: version(6) }],
+		},
+		{
+			sessionId: session(1),
+			generation: 2,
+			through: 8,
+			blocks: [4, 5, 6, 7].map((k) => ({ path: `agents/groups/launch/memory/${k}+1`, version: version(k) })),
+		},
+		{ sessionId: session(2), generation: 3, through: 3, blocks: [] },
 	]);
 	expect(blocks.map((block) => block.path)).toEqual([
 		"agents/bo/memory/thread/6+1",
@@ -228,7 +253,6 @@ it("returns the blocks of the lines it shows, each once; a placeholder and earli
 		"agents/groups/launch/memory/6+1",
 		"agents/groups/launch/memory/7+1",
 	]);
-	expect(calls).toEqual([[], [session(0), session(1), session(2)]]);
 
 	// Lines in one block at one version name it once.
 	const shared = await memoryRunBranches(host([{ ...ops, messages: 4 }]).read);
@@ -236,16 +260,18 @@ it("returns the blocks of the lines it shows, each once; a placeholder and earli
 	expect(shared.blocks).toEqual([{ path: "agents/groups/ops/memory/t0/00000000.jsonl", version: version(0) }]);
 });
 
-it("keeps the first list's branches: a later tree brings its own count, a branch gone shows none built", async () => {
+it("keeps the first list's branches: a later tree brings its count and generation, a branch gone none", async () => {
 	const bo: Conversation = { ref: "thread:bo", name: "Bo", messages: 3, text: () => "x" };
 	const launch: Conversation = { ref: "group:launch", name: "Launch", messages: 4, text: () => "y" };
-	// By the second call Bo's thread has two more messages and the launch chat is no longer a branch.
+	// By the second call Bo's thread has two more messages, an erase raised its generation, and the launch chat is no
+	// longer a branch.
 	const grown = { ...bo, messages: 5 };
+	const tree = { ...treeOf(grown, 0), generation: 7 };
 	const read: MemoryBranchesRead = async (sessions) =>
 		sessions.length === 0
 			? { schema: MEMORY_BRANCHES_SCHEMA, branches: [listing(bo, 0), listing(launch, 1)], trees: [] }
-			: { schema: MEMORY_BRANCHES_SCHEMA, branches: [listing(grown, 0)], trees: [treeOf(grown, 0)] };
-	const { branches, blocks } = await memoryRunBranches(read);
+			: { schema: MEMORY_BRANCHES_SCHEMA, branches: [listing(grown, 0)], trees: [tree] };
+	const { branches, conversations, blocks } = await memoryRunBranches(read);
 	expect(branches).toEqual([
 		{ ref: "thread:bo", name: "Bo (thread)", messages: 5, lines: [0, 1, 2, 3, 4].map((k) => `${k}+1|x`) },
 		{
@@ -255,12 +281,14 @@ it("keeps the first list's branches: a later tree brings its own count, a branch
 			lines: [0, 1, 2, 3].map((k) => `${k}+1|${PLACEHOLDER}`),
 		},
 	]);
-	expect(blocks).toEqual([{ path: "agents/bo/memory/thread/t0/00000000.jsonl", version: version(0) }]);
+	const block = { path: "agents/bo/memory/thread/t0/00000000.jsonl", version: version(0) };
+	expect(conversations).toEqual([{ sessionId: session(0), generation: 7, through: 5, blocks: [block] }]);
+	expect(blocks).toEqual([block]);
 });
 
 it("asks only for the list when there is no branch", async () => {
 	const { read, calls } = host([]);
-	expect(await memoryRunBranches(read)).toEqual({ branches: [], blocks: [] });
+	expect(await memoryRunBranches(read)).toEqual({ branches: [], conversations: [], blocks: [] });
 	expect(calls).toEqual([[]]);
 });
 

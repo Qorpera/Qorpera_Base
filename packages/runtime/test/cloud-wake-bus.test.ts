@@ -366,6 +366,24 @@ function machineCheckinWakeFixture() {
 	};
 }
 
+/** An always-on machine's weekly question after it, as qorpera_ask_always_on_company_machines builds it. */
+function alwaysOnCheckinWakeFixture() {
+	const { identity, wake } = checkinWakeFixture();
+	const shell = (wake.payload.checkins as Record<string, unknown>[])[0];
+	const weekly = {
+		checkinId: randomUUID(),
+		machineKind: "always-on",
+		since: "2026-09-20T05:00:00.000000+00:00",
+		askedAt: "2026-10-04T05:00:01.000000+00:00",
+		machine: "docs-1",
+		weeks: 2,
+	};
+	return {
+		identity,
+		wake: { ...wake, payload: { ...wake.payload, checkins: [shell, weekly] } } as CloudWakeEnvelope,
+	};
+}
+
 describe("machine check-in envelopes", () => {
 	it("admits a check-in as an internal continuation in its parent's conversation", () => {
 		const { identity, wake } = checkinWakeFixture();
@@ -479,6 +497,47 @@ describe("machine check-in envelopes", () => {
 		}),
 	])("rejects an agent's machine's check-in that is not exactly what the kernel admits %#", (mutate) => {
 		const { identity, wake } = machineCheckinWakeFixture();
+		expect(() => parseCloudWakeEnvelope(wake, identity)).not.toThrow();
+		expect(() => parseCloudWakeEnvelope(mutate(wake), identity)).toThrow();
+	});
+	it("admits an always-on machine's weekly question, first or after another, with its weeks and nothing running", () => {
+		const { identity, wake } = alwaysOnCheckinWakeFixture();
+		expect(second(parseCloudWakeEnvelope(wake, identity))).toEqual(second(wake));
+		const alone = {
+			...wake,
+			source: { ...wake.source, id: second(wake).checkinId as string },
+			payload: { ...wake.payload, checkins: [second(wake)] },
+		};
+		expect(first(parseCloudWakeEnvelope(alone, identity))).toMatchObject({ machineKind: "always-on", weeks: 2 });
+	});
+	const weekly = (wake: CloudWakeEnvelope, change: Record<string, unknown>) => ({
+		...wake,
+		payload: { ...wake.payload, checkins: [first(wake), { ...second(wake), ...change }] },
+	});
+	it.each([
+		(wake: CloudWakeEnvelope) => weekly(wake, { weeks: 0 }),
+		(wake: CloudWakeEnvelope) => weekly(wake, { weeks: 1.5 }),
+		(wake: CloudWakeEnvelope) => weekly(wake, { weeks: "2" }),
+		(wake: CloudWakeEnvelope) => weekly(wake, { busyHours: 336 }),
+		(wake: CloudWakeEnvelope) => weekly(wake, { running: [], more: 0 }),
+		(wake: CloudWakeEnvelope) => weekly(wake, { machine: null }),
+		(wake: CloudWakeEnvelope) => weekly(wake, { since: null }),
+		(wake: CloudWakeEnvelope) => weekly(wake, { checkinId: "docs-1" }),
+		(wake: CloudWakeEnvelope) => {
+			const { weeks: _, ...rest } = second(wake);
+			return { ...wake, payload: { ...wake.payload, checkins: [first(wake), rest] } };
+		},
+		(wake: CloudWakeEnvelope) => weekly(wake, { machineKind: "machine" }),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: { ...wake.payload, checkins: [{ ...first(wake), weeks: 1 }, second(wake)] },
+		}),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: { ...wake.payload, checkins: [second(wake), first(wake)] },
+		}),
+	])("rejects an always-on machine's question that is not exactly what the kernel admits %#", (mutate) => {
+		const { identity, wake } = alwaysOnCheckinWakeFixture();
 		expect(() => parseCloudWakeEnvelope(wake, identity)).not.toThrow();
 		expect(() => parseCloudWakeEnvelope(mutate(wake), identity)).toThrow();
 	});

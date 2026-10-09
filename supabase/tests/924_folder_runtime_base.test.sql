@@ -955,4 +955,250 @@ begin
 end
 $$;
 
+-- Sections 17 to 23 are the checks of 300's wake-bus and production-review scripts that guard native authority, consent
+-- and leases (security or money), ported to folder-v2 in the legacy sweep. Their helpers are bc_*.
+
+-- A member's unattended-work consent on the owner's login (the owner unless named); answers the consent.
+create function pg_temp.bc_consent(p_allow boolean, p_user uuid default '92400000-0000-4000-8000-000000000001') returns jsonb
+language plpgsql as $$
+declare v jsonb;
+begin
+	perform pg_temp.base_claims('authenticated', p_user);
+	set local role authenticated;
+	v := public.qorpera_consent_provider_connection_autonomous('92400000-0000-4000-8000-000000000010',
+		(current_setting('qorpera_test.base_connection')::jsonb ->> 'connection_id')::uuid, p_allow);
+	reset role;
+	perform pg_temp.base_claims('service_role');
+	return v;
+end
+$$;
+-- The owner's new member sponsor on a version of their login.
+create function pg_temp.bc_sponsor(p_version bigint) returns jsonb language plpgsql as $$
+declare v jsonb;
+begin
+	perform pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+	set local role authenticated;
+	v := public.qorpera_create_member_execution_sponsor('92400000-0000-4000-8000-000000000010', extensions.gen_random_uuid(),
+		(current_setting('qorpera_test.base_connection')::jsonb ->> 'connection_id')::uuid, p_version, true);
+	reset role;
+	perform pg_temp.base_claims('service_role');
+	return v;
+end
+$$;
+-- A routine's slot, admitted and started: the run's binding.
+create function pg_temp.bc_routine_run(p_routine uuid, p_key text) returns jsonb language plpgsql as $$
+declare v_wake uuid := pg_temp.wb_slot(p_routine, p_key);
+begin
+	perform pg_temp.base_materialize();
+	return pg_temp.base_start(pg_temp.wb_wake_run(v_wake));
+end
+$$;
+-- Alice's delivery hands Carol a note: the binding of Carol's started run (an agent wake, paid by the owner, who started
+-- the chain).
+create function pg_temp.bc_agent_run(p_key text) returns jsonb language plpgsql as $$
+declare v_alice jsonb := pg_temp.wb_posted('92400000-0000-4000-8000-000000000030', 'Hand Carol the note.'); v_message jsonb;
+begin
+	perform pg_temp.base_public_send(v_alice, 'progress', p_key || '-ack');
+	v_message := public.qorpera_send_coworker_message(v_alice, '92400000-0000-4000-8000-000000000032', p_key, 'Examine this note.');
+	perform pg_temp.base_materialize();
+	return pg_temp.base_start(pg_temp.wb_wake_run((v_message ->> 'occurrenceId')::uuid));
+end
+$$;
+
+-- 17. A finished attempt keeps no native authority: terminalizing a started delivery's attempt (a lost worker) releases
+--     its native lease, and its binding can no longer read its wake.
+savepoint bc_finished;
+do $$
+declare v_binding jsonb := pg_temp.wb_posted('92400000-0000-4000-8000-000000000032', 'Check the totals.');
+begin
+	perform public.qorpera_read_native_wake(v_binding);
+	perform public.qorpera_terminalize_runner_attempt((v_binding ->> 'jobId')::uuid, 'failed', 'Disposable worker-loss fixture', false);
+	perform pg_temp.base_assert((select status <> 'active' and released_at is not null from public.qorpera_native_provider_connection_leases
+		where id = (v_binding ->> 'leaseId')::uuid), 'a terminalized attempt releases its native lease');
+	perform pg_temp.base_error(format('select public.qorpera_read_native_wake(%L)', v_binding), '42501');
+end
+$$;
+rollback to bc_finished;
+
+-- 18. A released, revoked or expired native lease is never acquired again: the base run's runner and assignment are
+--     refused, and the lease stays exactly as it was.
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_status text; v_before jsonb;
+begin
+	foreach v_status in array array['released', 'revoked', 'expired'] loop
+		begin
+			if v_status = 'expired' then
+				update public.qorpera_native_provider_connection_leases set created_at = clock_timestamp() - interval '1 hour',
+					expires_at = clock_timestamp() - interval '1 second' where id = (v_binding ->> 'leaseId')::uuid;
+			else
+				perform public.qorpera_release_native_provider_connection_lease((v_binding ->> 'leaseId')::uuid,
+					(v_binding ->> 'runnerId')::uuid, repeat('2', 64), (v_binding ->> 'jobId')::uuid, repeat('3', 64), v_status);
+			end if;
+			select to_jsonb(lease) into strict v_before from public.qorpera_native_provider_connection_leases lease
+			where id = (v_binding ->> 'leaseId')::uuid;
+			perform pg_temp.base_error(format('select public.qorpera_acquire_native_provider_connection_lease(%L, %L, %L, %L, %L, 120)',
+				v_binding ->> 'runId', v_binding ->> 'runnerId', repeat('2', 64), v_binding ->> 'assignmentId', repeat('3', 64)), '55000',
+				'native provider lease is terminal or expired');
+			perform pg_temp.base_assert((select to_jsonb(lease) = v_before from public.qorpera_native_provider_connection_leases lease
+				where id = (v_binding ->> 'leaseId')::uuid), 'a refused acquire leaves the ' || v_status || ' lease as it was');
+			raise sqlstate 'PZ001';
+		exception when sqlstate 'PZ001' then null; end;
+	end loop;
+end
+$$;
+
+-- 19. Withdrawing unattended-work consent on the login a routine pays with cancels its queued wake: no run is admitted.
+savepoint bc_withdrawn_wake;
+select pg_temp.base_commit(pg_temp.base_owner(), 'bc-withdrawn', jsonb_build_array(pg_temp.wb_routine('agents/alice/routines/withdrawn.md',
+	pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000f1', 'Withdrawn', pg_temp.wb_every())))) \g /dev/null
+do $$
+declare v_wake uuid := pg_temp.wb_slot('92400000-0000-4000-8000-0000000000f1', 'before-withdrawal');
+begin
+	perform pg_temp.bc_consent(false);
+	perform pg_temp.base_materialize();
+	perform pg_temp.base_assert((select status = 'cancelled' and run_id is null from public.qorpera_wake_occurrences where id = v_wake),
+		'a withdrawn login admits no run for a queued wake');
+end
+$$;
+rollback to bc_withdrawn_wake;
+
+-- 20. Unattended-work consent on a login is its owner's alone, and each change is a new version of the login.
+--     Withdrawing it fences a routine run already started on it: its sponsor can't reserve again and the run loses its
+--     native tool authority, which a renewed consent does not give back. The withdrawn version, and the version the run
+--     pinned, sponsor nothing; the renewed version does, and its sponsor carries the consent. This is the serial form of
+--     300's consent races (a version admitted before a withdrawal is refused after it, the renewed one too): the races
+--     need rows committed for other connections, which this one-transaction fixture can't give dblink.
+savepoint bc_consent;
+select pg_temp.base_commit(pg_temp.base_owner(), 'bc-consented', jsonb_build_array(pg_temp.wb_routine('agents/alice/routines/consented.md',
+	pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000f2', 'Consented', pg_temp.wb_every())))) \g /dev/null
+do $$
+declare v_binding jsonb := pg_temp.bc_routine_run('92400000-0000-4000-8000-0000000000f2', 'before-withdrawal'); v_consent jsonb;
+	v_connection uuid := (current_setting('qorpera_test.base_connection')::jsonb ->> 'connection_id')::uuid; v_sponsor jsonb;
+begin
+	perform public.qorpera_describe_native_tool_authority(v_binding);
+	perform pg_temp.base_error($q$select pg_temp.bc_consent(true, '92400000-0000-4000-8000-000000000002')$q$, '42501');
+	perform pg_temp.base_assert(public.qorpera_provider_autonomous_authority(v_connection, 2), 'the pinned version is consented');
+	v_consent := pg_temp.bc_consent(false);
+	perform pg_temp.base_assert((v_consent ->> 'changed')::boolean and not (v_consent ->> 'allow_autonomous')::boolean,
+		'a withdrawal is a new version: ' || v_consent::text);
+	perform pg_temp.base_assert(not public.qorpera_provider_autonomous_authority(v_connection, 2), 'the withdrawal fences the pinned version');
+	perform pg_temp.base_assert(not public.qorpera_reserve_execution_sponsor_authority((v_binding ->> 'runId')::uuid),
+		'an existing reservation does not restore the consent');
+	perform pg_temp.base_error(format('select public.qorpera_describe_native_tool_authority(%L)', v_binding), '42501');
+	perform pg_temp.base_error(format('select pg_temp.bc_sponsor(%s)', v_consent ->> 'version'), '42501');
+	v_consent := pg_temp.bc_consent(true);
+	perform pg_temp.base_assert((v_consent ->> 'changed')::boolean and (v_consent ->> 'allow_autonomous')::boolean,
+		'a renewed consent is a new version: ' || v_consent::text);
+	perform pg_temp.base_error(format('select public.qorpera_describe_native_tool_authority(%L)', v_binding), '42501');
+	perform pg_temp.base_assert(not public.qorpera_provider_autonomous_authority(v_connection, 2)
+		and public.qorpera_provider_autonomous_authority(v_connection, (v_consent ->> 'version')::bigint), 'only the renewed version is consented');
+	perform pg_temp.base_error('select pg_temp.bc_sponsor(2)', '42501');
+	v_sponsor := pg_temp.bc_sponsor((v_consent ->> 'version')::bigint);
+	perform pg_temp.base_assert((select allow_autonomous from public.qorpera_execution_sponsor_versions
+		where binding_id = (v_sponsor ->> 'binding_id')::uuid and version = (v_sponsor ->> 'version')::bigint), 'the sponsor carries the consent');
+	perform pg_temp.bc_consent(false);
+	perform pg_temp.base_assert(not public.qorpera_provider_autonomous_authority(v_connection, (v_consent ->> 'version')::bigint),
+		'a later withdrawal fences the renewed version');
+end
+$$;
+rollback to bc_consent;
+
+-- 21. Withdrawing consent fences an agent's run already reading its wake: a coworker message's run, paid by the member
+--     who started the chain, can no longer read its wake, message a coworker or finish.
+savepoint bc_agent;
+do $$
+declare v_binding jsonb := pg_temp.bc_agent_run('bc-agent');
+begin
+	perform public.qorpera_read_native_wake(v_binding);
+	perform pg_temp.bc_consent(false);
+	perform pg_temp.base_error(format('select public.qorpera_read_native_wake(%L)', v_binding), '42501',
+		'native provider execution authority is unavailable');
+	perform pg_temp.base_error(format('select public.qorpera_send_coworker_message(%L, %L, %L, %L)', v_binding,
+		'92400000-0000-4000-8000-000000000030', 'revoked-send', 'Must not deliver'), '42501',
+		'native provider execution authority is unavailable');
+	perform pg_temp.base_error(format('select public.qorpera_complete_runner_job_v6(%L, repeat(''2'', 64), %L, repeat(''3'', 64), '
+		'extensions.gen_random_uuid(), extensions.gen_random_uuid(), null, %L)', v_binding ->> 'runnerId', v_binding ->> 'jobId',
+		jsonb_build_object('schema', 'qorpera.runner-result/v1', 'runtime', 'company-path-v1', 'backend', 'native-company-runtime',
+			'native_lease_id', v_binding ->> 'leaseId', 'output_count', 0, 'output_bytes', 0, 'publication', null)), '42501',
+		'runner execution sponsor is unavailable');
+end
+$$;
+rollback to bc_agent;
+
+-- 22. The vault's broker hands a run a connector secret only while the run's authority stands: a routine run, an
+--     agent's run and a member's delivery are each authorized (the controls), but a routine run not once its routine is
+--     paused or its login's consent is withdrawn; an agent's run not once the member who started its chain withdraws
+--     consent; a member's delivery not once it has sent its final report. A refused call audits nothing as authorized.
+--     (300's founder stop is the legacy pause: dropped.)
+savepoint bc_broker;
+select pg_temp.base_commit(pg_temp.base_owner(), 'bc-broker', jsonb_build_array(pg_temp.wb_routine('agents/alice/routines/broker.md',
+	pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000f3', 'Broker', pg_temp.wb_every())))) \g /dev/null
+insert into public.qorpera_cloud_secret_broker_authorities(id, profile_id, service_origin, key_id, capability_sha256)
+values ('92400000-0000-4000-8000-0000000000b0', '92400000-0000-4000-8000-000000000010', 'https://broker.example.test', 'bc-kek',
+	repeat('c', 64));
+insert into public.qorpera_cloud_secrets(id, profile_id, environment_id, broker_authority_id, owner_kind, owner_user_id, connector_id,
+	secret_name, purpose, current_version, created_by_user_id)
+values ('92400000-0000-4000-8000-0000000000b1', '92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
+	'92400000-0000-4000-8000-0000000000b0', 'company', null, 'gmail', 'primary', 'Gmail account', 1, '92400000-0000-4000-8000-000000000001');
+insert into public.qorpera_cloud_secret_versions(secret_id, version, broker_authority_id, key_id, encrypted_envelope, envelope_sha256,
+	created_by_user_id)
+values ('92400000-0000-4000-8000-0000000000b1', 1, '92400000-0000-4000-8000-0000000000b0', 'bc-kek', '\x0102',
+	encode(extensions.digest('\x0102'::bytea, 'sha256'), 'hex'), '92400000-0000-4000-8000-000000000001');
+do $$
+declare v_case text[]; b jsonb; v_op public.qorpera_cloud_connector_operations; v_grant uuid; v_receipt uuid; v_state text;
+	v_message text;
+begin
+	select * into strict v_op from public.qorpera_cloud_connector_operations
+	where connector_id = 'gmail' and operation_id = 'search_messages' and status = 'active';
+	foreach v_case slice 1 in array array[['routine', 'none', '', ''],
+		['routine', 'standing_authority', '42501', 'Admitted wake authority is unavailable'],
+		['routine', 'consent', '42501', 'native provider execution authority is unavailable'],
+		['agent', 'none', '', ''], ['agent', 'consent', '42501', 'native provider execution authority is unavailable'],
+		['room', 'none', '', ''], ['room', 'final', '55000', 'Wake public output is already final']] loop
+		v_state := null; v_message := null; v_grant := extensions.gen_random_uuid(); v_receipt := extensions.gen_random_uuid();
+		begin
+			if v_case[1] = 'routine' then b := pg_temp.bc_routine_run('92400000-0000-4000-8000-0000000000f3', 'bc-broker-' || v_case[2]);
+			elsif v_case[1] = 'agent' then b := pg_temp.bc_agent_run('bc-broker');
+			else b := pg_temp.wb_posted('92400000-0000-4000-8000-000000000032', 'Check the totals.');
+			end if;
+			insert into public.qorpera_cloud_secret_operation_grants(id, profile_id, environment_id, secret_id, staff_agent_id, connector_id,
+				operation_id, operation_version, tool_name, issued_by_user_id)
+			select v_grant, profile_id, environment_id, '92400000-0000-4000-8000-0000000000b1', staff_agent_id, 'gmail', 'search_messages',
+				v_op.version, v_op.tool_name, '92400000-0000-4000-8000-000000000001'
+			from public.qorpera_execution_runs where id = (b ->> 'runId')::uuid;
+			perform public.qorpera_begin_native_tool_operation(b, v_receipt, v_op.tool_name || ':' || v_grant || ':k1', repeat('a', 64),
+				repeat('b', 64), false);
+			if v_case[2] = 'standing_authority' then
+				perform pg_temp.base_commit(pg_temp.base_owner(), 'bc-broker-pause', jsonb_build_array(pg_temp.wb_routine(
+					'agents/alice/routines/broker.md', pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000f3', 'Broker', pg_temp.wb_every())
+						|| '{"status":"paused"}')));
+			elsif v_case[2] = 'consent' then perform pg_temp.bc_consent(false);
+			elsif v_case[2] = 'final' then perform pg_temp.base_public_send(b, 'final', 'bc-broker-final');
+			end if;
+			perform set_config('request.jwt.claims', '{}', true);
+			execute 'set local session authorization qorpera_secret_broker';
+			begin
+				perform public.qorpera_authorize_cloud_secret_operation('92400000-0000-4000-8000-0000000000b0', repeat('c', 64), b, v_receipt,
+					repeat('a', 64), repeat('b', 64), v_grant, 'gmail', 'search_messages', v_op.version, v_op.adapter_sha256,
+					v_op.destination_origin);
+			exception when others then v_state := sqlstate; v_message := sqlerrm;
+			end;
+			execute 'reset session authorization';
+			perform pg_temp.base_claims('service_role');
+			perform pg_temp.base_assert(case when v_case[2] = 'none' then v_state is null
+					else v_state = v_case[3] and v_message = v_case[4] end
+				and (select count(*) from public.qorpera_cloud_secret_audit_events where receipt_id = v_receipt
+					and event_type = 'effect_authorized') = case when v_case[2] = 'none' then 1 else 0 end,
+				'the broker and ' || v_case[1:2]::text || ': ' || coalesce(v_state || ' ' || v_message, 'authorized'));
+			raise sqlstate 'PZ001';
+		exception when sqlstate 'PZ001' then null; end;
+	end loop;
+end
+$$;
+rollback to bc_broker;
+
+-- 23. The wake policy's internal helper is not service_role's to call (anon and authenticated: 001; the broker: 306).
+select pg_temp.base_assert(not has_function_privilege('service_role', 'public.qorpera_runtime_wake_policy_internal(uuid)', 'execute'),
+	'service_role can''t call the wake policy''s internal helper');
+
 rollback;

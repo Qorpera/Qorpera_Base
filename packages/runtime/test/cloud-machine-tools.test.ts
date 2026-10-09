@@ -189,6 +189,9 @@ describe("machine tools", () => {
 					"a server that only waits stops when it sleeps, and your next run is told",
 				);
 				expect(start.description).toContain("use it to keep a server up");
+				expect(start.description).toContain(
+					"the agent that started it is asked once a week whether the work still needs it",
+				);
 				expect(run.description).toContain("keep a server up on an always-on machine");
 				for (const tool of tools) expect(Buffer.byteLength(tool.description)).toBeLessThanOrEqual(4096);
 			}

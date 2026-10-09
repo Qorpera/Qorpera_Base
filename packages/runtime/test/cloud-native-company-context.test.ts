@@ -331,8 +331,16 @@ it("asks only whether a busy program is still needed on a machine check-in", () 
 	expect(instructions).toContain(
 		"A machine whose running is empty is busy outside its commands (containers, or programs left behind): stop it with machine_stop",
 	);
+	expect(instructions).toContain("# This wake: a busy program or an always-on machine");
+	expect(instructions).toContain(
+		"An always-on machine you started (machineKind always-on) is asked about once a week since you last started it, busy or not",
+	);
+	expect(instructions).toContain(
+		"Stop it with machine_stop when the work no longer needs it; otherwise leave it, and you are asked again next week.",
+	);
 	expect(instructions).not.toContain("# This wake: your machine");
 	expect(instructions).toContain("qorpera.machine-checkin-continuation/v1");
+	expect(instructions).toContain("or an always-on machine you started ran another week");
 });
 
 it("tells the agent's next run what the platform stopped on its computer", () => {
