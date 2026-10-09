@@ -129,6 +129,12 @@ test("the emergency packets: per-company savepoints, folder-v2 companies, declar
 	}
 	assert.ok(packets["90-pause-now.sql"].includes("qorpera_folder_pause("));
 	assert.ok(packets["93-resume.sql"].includes("qorpera_folder_resume("));
+	// Only the folder core pauses (20260930240000 dropped the snapshot-v1 pause); a company with no folder is not pausable.
+	assert.ok(!packets["90-pause-now.sql"].includes("qorpera_folder_resume("), "90 resumes nobody");
+	assert.ok(!packets["93-resume.sql"].includes("qorpera_folder_pause("), "93 pauses nobody");
+	for (const [name, text] of Object.entries(packets)) assert.ok(!text.includes("qorpera_set_company_execution_pause"), name);
+	for (const name of ["90-pause-now.sql", "91-reverse.sql", "93-resume.sql"])
+		assert.ok(packets[name].includes("public.qorpera_company_is_folder_v2(profile.id) and not public.qorpera_company_deleting(profile.id)"), name);
 	// 91 keeps the declarations; it declares only when none is left (an emergency after 80-finish).
 	assert.ok(!packets["91-reverse.sql"].includes(", null)"), "91 clears no declaration");
 	assert.match(packets["91-reverse.sql"], /qorpera_declare_runtime_node_bundle\('[^']+'::uuid, '[0-9a-f]{64}'\) as roll_declare_b\nwhere not exists \(select 1 from public\.qorpera_runner_orchestrators where status <> 'revoked' and runtime_bundle_sha256 is not null\);/);

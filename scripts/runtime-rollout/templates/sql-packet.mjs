@@ -72,8 +72,7 @@ const finalInterfaces = `${activeBundle}=${q(F.bundle)}
   and to_regprocedure('public.qorpera_drain_company_file_wakes(integer)') is not null
   and to_regprocedure('public.qorpera_post_company_room_message(uuid,uuid,jsonb,uuid,bigint)') is not null
   and to_regprocedure('public.qorpera_list_company_rooms(uuid)') is not null
-  and to_regprocedure('public.qorpera_set_company_execution_pause(uuid,boolean,text)') is not null
-  and not has_function_privilege('authenticated','public.qorpera_set_company_execution_pause(uuid,boolean,text)','EXECUTE')
+  and to_regprocedure('public.qorpera_set_company_execution_pause(uuid,boolean,text)') is null
   and to_regprocedure('public.qorpera_set_company_execution_ceiling(uuid,bigint,bigint,bigint,bigint)') is null
   and to_regprocedure('public.qorpera_set_company_execution_ceiling(uuid,bigint,bigint,bigint)') is null
   and to_regclass('public.qorpera_company_execution_ceilings') is null

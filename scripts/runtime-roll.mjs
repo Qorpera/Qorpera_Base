@@ -421,18 +421,19 @@ end $roll_queued$;`,
 	// Emergency, after the switch (RUNTIME-ROLLING-UPDATE.md "If something goes wrong"): pause every company
 	// with no quiet gate (today's pause refuses unless nothing runs), move the active pointer back to N, roll
 	// the nodes back to N (by hand), clear the declarations, resume. A company stop is a founder's call: each
-	// company is paused under one of its owners or admins; a folder-v2 company through its operator pause.
+	// company is paused through the folder core's operator pause, in the name of one of its owners or admins.
+	// A company with no company folder has no pause and is listed as not pausable, so it never blocks 91.
 	// A company being deleted is left alone, and one company's failure (a busy lock) never stops the others:
 	// each is tried in its own savepoint and the result names what did not change; run the packet again.
-	const PAUSABLE = `not public.qorpera_company_deleting(profile.id) and exists (select 1 from public.qorpera_profile_members member
-			where member.profile_id = profile.id and member.role in ('owner','admin'))`;
+	const PAUSABLE = `public.qorpera_company_is_folder_v2(profile.id) and not public.qorpera_company_deleting(profile.id)
+			and exists (select 1 from public.qorpera_profile_members member where member.profile_id = profile.id and member.role in ('owner','admin'))`;
 	const companies = (paused) => `set local lock_timeout = '2s';
 create temporary table roll_companies(profile_id uuid, outcome text) on commit drop;
 do $roll_companies$
 declare v_company record;
 begin
 	for v_company in
-		select profile.id, public.qorpera_company_is_folder_v2(profile.id) folder_v2,
+		select profile.id,
 			(select member.user_id from public.qorpera_profile_members member
 			where member.profile_id = profile.id and member.role in ('owner','admin') order by member.role = 'owner' desc, member.user_id limit 1) founder
 		from public.qorpera_profiles profile
@@ -441,12 +442,7 @@ begin
 		order by profile.id
 	loop
 		begin
-			if v_company.folder_v2 then
-				perform ${paused ? `public.qorpera_folder_pause(v_company.id, v_company.founder, ${literal(reason)})` : "public.qorpera_folder_resume(v_company.id)"};
-			else
-				perform set_config('request.jwt.claims', jsonb_build_object('sub', v_company.founder, 'role', 'authenticated')::text, true);
-				perform public.qorpera_set_company_execution_pause(v_company.id, ${paused}, ${paused ? literal(reason) : "null"});
-			end if;
+			perform ${paused ? `public.qorpera_folder_pause(v_company.id, v_company.founder, ${literal(reason)})` : "public.qorpera_folder_resume(v_company.id)"};
 			insert into roll_companies values (v_company.id, 'done');
 		exception when others then
 			insert into roll_companies values (v_company.id, left(sqlerrm, 200));
