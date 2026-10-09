@@ -51,13 +51,6 @@ transport. Configure the same exact public web origin at the deployment proxy,
 which must forward OPTIONS and preserve the gateway's CORS and Vary headers;
 hosted proxy/TLS acceptance is a separate deployment gate.
 
-`scripts/test-member-file-cors-browser.mjs` verifies the shared member reader in
-Chromium against the actual gateway and disk store on a separate local origin.
-It exercises native preflights, exposed headers, denied origins/private routes,
-corrupt bytes and access revoked during storage I/O. Authority and control RPC
-responses remain fixtures. Set `QORPERA_FILE_TEST_BROWSER` to an installed
-Chromium executable; no deployment or external credentials are used.
-
 Member binary uploads use `PUT /v1/member-company-file/<environment>/uploads`
 with a bearer token, `application/octet-stream`, exact content length and the
 canonical base64url UTF-8 `x-qorpera-company-upload` metadata. The shared client
