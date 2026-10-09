@@ -348,12 +348,12 @@ node, and its login; E8b-2, per-company names on each node's exit; E8c, "only li
     hands to the reader with `LoadCredential`, then the role's login as a SCRAM verifier made where the script runs,
     so the password never reaches the database or the Supabase API. Nobody reads, copies or prints it; the script
     prints file names, sizes, a hash comparison and `ok`. Running it again makes a new login.
-- **Per-company names (E8b).** One dnsmasq cannot hold a list per company. E8b runs a small dnsmasq for each company
-  that has rules, in the exit's namespace: its servers file answers a blocked name with "no such name" and sends the
-  rest to the exit's upstreams, and a changed list reloads it without a restart. The exit sends each machine's
-  lookups to its company's resolver, by the client map (a machine's company is its LXD `user.qorpera.company_id`).
-  A machine whose company has rules gets no answers until that resolver runs. A blocked name lands in the
-  name-lookup record.
+- **Per-company names (E8b-2).** One dnsmasq cannot hold a list per company. E8b-2 runs a small dnsmasq for each
+  company that has rules, in the exit's namespace: its servers file answers a blocked name with "no such name" and
+  sends the rest to the exit's upstreams, and a changed list reloads it without a restart. The exit sends each
+  machine's lookups to its company's resolver, by the client map (a machine's company is its LXD
+  `user.qorpera.company_id`). A machine whose company has rules gets no answers until that resolver runs. A blocked
+  name lands in the name-lookup record.
 - **Block list:** the exit's DNS refuses a blocked name for that company's machines. No address is blocked, so other
   sites behind the same CDN are untouched. A machine that reaches a site by address, or through its own encrypted
   DNS, gets past a block list.

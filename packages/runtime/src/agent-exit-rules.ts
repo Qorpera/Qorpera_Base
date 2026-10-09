@@ -51,7 +51,7 @@ export interface AgentExitRulesStatus {
 	readonly readAt: string | null;
 	/** This pass read the database and every row was usable. */
 	readonly ok: boolean;
-	/** What is wrong, as a code: a SQLSTATE or system error code, TIMEOUT, DATABASE, CLIENTS, WRITE or BAD_ROWS. */
+	/** What is wrong, as a code: a SQLSTATE or system error code, TIMEOUT, DATABASE, CLIENTS, WRITE, BAD_ROWS or INTERNAL. */
 	readonly problem: string | null;
 	/** Companies in the rules file, with rules, and rows refused by this pass. */
 	readonly companies: number;
