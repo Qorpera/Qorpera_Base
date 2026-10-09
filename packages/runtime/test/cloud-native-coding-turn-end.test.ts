@@ -229,6 +229,9 @@ async function fixture() {
 		objectStore: () => {
 			throw new Error("A coding turn has no Company File");
 		},
+		folderBytes: () => {
+			throw new Error("A coding turn has no company folder");
+		},
 		command,
 		binarySha256,
 		timeoutMs: 10_000,
