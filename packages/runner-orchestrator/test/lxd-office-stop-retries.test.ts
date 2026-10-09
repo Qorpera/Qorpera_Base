@@ -1,6 +1,7 @@
 import { chmod, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { LxdOfficeControlJournal } from "../src/lxd-office-control-journal.ts";
 import { observeLxdOfficeControlJournals } from "../src/lxd-office-control-observer.ts";
 import { serviceStartId as id } from "./fixtures/office-service-start.ts";
 import { officeStopWorkerFixture } from "./fixtures/office-stop-worker.ts";
@@ -123,24 +124,38 @@ describe("durable provider stop retries", () => {
 		expect(f.exec).toHaveBeenCalledTimes(3);
 	});
 
-	it("treats a retry removed during the observer's pass as gone", async () => {
+	it("treats a retry retired before the observer opens it as gone", async () => {
 		const f = await fixture();
 		f.poll.mockResolvedValueOnce("failed").mockResolvedValue("pending");
 		await f.run();
 		f.advance(30000);
 		await f.run();
+		const observe = LxdOfficeControlJournal.observeExisting;
+		let retired = false;
+		vi.spyOn(LxdOfficeControlJournal, "observeExisting").mockImplementation(async (...args) => {
+			if (args[1] === basename(f.retry(1))) {
+				await rename(f.retry(1), join(f.root, `.retired-${args[1]}`));
+				retired = true;
+			}
+			return observe(...args);
+		});
 		await expect(
-			observeLxdOfficeControlJournals(
-				f.root,
-				{
-					inspectOfficePreparation: async (reference) => {
-						if (reference.operationId === id(1001)) await rm(f.retry(1), { recursive: true });
-						return "failed";
-					},
-				},
-				signal(),
-			),
+			observeLxdOfficeControlJournals(f.root, { inspectOfficePreparation: async () => "failed" }, signal()),
 		).resolves.toBeUndefined();
+		expect(retired).toBe(true);
+	});
+
+	it("refuses a surviving retry directory whose authority is missing", async () => {
+		const f = await fixture();
+		f.poll.mockResolvedValueOnce("failed").mockResolvedValue("pending");
+		await f.run();
+		f.advance(30000);
+		await f.run();
+		await rm(join(f.retry(1), "authority.json"));
+		await expect(
+			observeLxdOfficeControlJournals(f.root, { inspectOfficePreparation: async () => "failed" }, signal()),
+		).rejects.toThrow("OFFICE_CONTROL_OBSERVATION_UNCONFIRMED");
+		expect(await readdir(f.root)).toContain(basename(f.retry(1)));
 	});
 
 	it.each(["record", "journal", "authority", "attempt", "identity"] as const)(

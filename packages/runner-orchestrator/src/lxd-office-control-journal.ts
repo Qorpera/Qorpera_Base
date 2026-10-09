@@ -74,8 +74,10 @@ export interface LxdOfficeControlOperationResult {
  * the completed preparation observation; service start binds acknowledged configuration.
  * Stop binds the retained revocation and original start observation, with its
  * own transition directory so later lifecycle transitions cannot reuse it.
- * Durable records survive provider restarts; an unknown submission is never
- * retried, even after a reboot, a missing operation or an apparent report.
+ * Durable records survive provider restarts. Each journal dispatches at most
+ * once, including after an unknown submission. The stop worker may open a
+ * separate retry journal for the same command after its current attempt is no
+ * longer pending and its durable backoff expires.
  * The supervisor must hold the kernel lifecycle lock, serialize all phases,
  * retain the identity before effects, and check the phase's current physical
  * and cloud authority before reconciliation. This journal does none of those
