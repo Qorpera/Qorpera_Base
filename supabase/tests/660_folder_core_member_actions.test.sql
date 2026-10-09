@@ -78,10 +78,11 @@ begin
 	perform pg_temp.path_claims('authenticated', '64700000-0000-4000-8000-0000000000ff');
 	perform pg_temp.raises_like(format('select pg_temp.post(%L, %L, %L)', v_room, extensions.gen_random_uuid(), pg_temp.prompt('Hi')),
 		'42501', 'Room is unavailable');
-	-- The snapshot-v1 post is not refused as folder-v2 (the control company has no room: its own refusal).
+	-- Folder-v2 only since legacy sweep F1e (20260930248000): a snapshot-v1 member's post goes to the folder core, which
+	-- does not find the room.
 	perform pg_temp.path_claims('authenticated', '63400000-0000-4000-8000-000000000001');
-	perform pg_temp.not_refused(format('select pg_temp.post(%L, %L, %L)', extensions.gen_random_uuid(), extensions.gen_random_uuid(),
-		pg_temp.prompt('Hi')));
+	perform pg_temp.raises_like(format('select pg_temp.post(%L, %L, %L)', extensions.gen_random_uuid(), extensions.gen_random_uuid(),
+		pg_temp.prompt('Hi')), '42501', 'Room is unavailable');
 	perform pg_temp.path_claims('service_role');
 end $$;
 
