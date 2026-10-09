@@ -4196,7 +4196,11 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    the vault holds (Stripe, GitHub, or HMAC-SHA256 for the company's own
    senders). Agents never see a signing secret. A hook holds no account, so
    5.6's rule that connecting an account is a member action through the vault
-   applies only to its signing secret: a member captures it. Owners, admins
+   applies only to its signing secret: a member captures it. For `folder-v2`
+   companies no member gives a signing secret (amended 9 October 2026, E3b
+   and E4b): the vault makes a GitHub or HMAC hook's secret when an agent
+   opens the hook, and takes a Stripe hook's from Stripe's screen (E3c), so
+   owners and admins open only address hooks there. Owners, admins
    and agents create and remove hooks; an agent's new hook passes the
    automatic review as a new connection. For `folder-v2` companies a hook is
    described by its connection file, `connections/hook-<name>.md` (5.6), and

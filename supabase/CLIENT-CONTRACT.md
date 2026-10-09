@@ -713,7 +713,11 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   until the first delivery). Owners and admins only (42501); 23505 for a
   name in use, 54000 past 50 live hooks, 22023 for a bad environment, name
   (names beginning `mail-` belong to mailboxes, from 20260928299650),
-  purpose, proof or limit.
+  purpose, proof or limit. From 20260930280000 (E4b) a `folder-v2` company
+  then refuses a `stripe`, `github` or `hmac-sha256` proof with 0A000 ("A
+  Stripe hook comes later: its secret is taken from Stripe's screen", or "A
+  signed hook is opened through the vault") and makes nothing: its signed
+  hooks are opened by agents through the vault (E3b, E3c).
 - `qorpera_set_event_hook_status(p_hook_id, p_status)` with `active`,
   `paused` or `removed` → the same descriptor. Removing is final (55000
   afterwards) and frees the name. Owners and admins only.
@@ -728,15 +732,19 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
 - Signed hooks (20260928409980_runtime_event_signed_hooks, step W1b): the
   descriptor of a `stripe`, `github` or `hmac-sha256` (Standard Webhooks,
   also Svix's headers) hook carries `signingSecret` (`connectorId`
-  `event_hook`, `secretName` `h<hook id without hyphens>`, `ready`). An owner
-  or admin saves the sender's signing secret with
+  `event_hook`, `secretName` `h<hook id without hyphens>`, `ready`). On a
+  snapshot-v1 company an owner or admin saves the sender's signing secret with
   `qorpera_begin_cloud_secret_capture(company, environment, 'company', null,
   'event_hook', secretName, purpose)` and then
   `POST <serviceOrigin>/v1/captures/<ticketId>?company=<profileId>` with
   `{"schema": "qorpera.cloud-secret-capture-request/v1", "captureCapability":
   <the ticket's captureCapability>, "fields": {"signing_secret": "<secret>"}}`
   (exactly these keys); passing the existing secret id to the begin call
-  replaces it. An `hmac-sha256` secret is a Standard Webhooks one
+  replaces it. From 20260930280000 (E4b) a `folder-v2` company refuses the
+  `event_hook` connector in that begin call with 0A000 ("A hook's signing
+  secret comes from the vault"), after its own checks: the vault makes or
+  takes the secret when an agent opens the hook (E3b, E3c), and no member
+  pastes one. An `hmac-sha256` secret is a Standard Webhooks one
   (`whsec_<base64>`). Until `ready` is true the hook answers senders
   `not_ready`. A signed delivery is listed `received` until the vault checks
   it (seconds), then `verified` with `deliveryKey` (an id the signature
