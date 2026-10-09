@@ -22,8 +22,10 @@ import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
  *   with no result yet, once no call before it is still waiting for its answer. The call runs only once that commit
  *   has landed. A denied call that closes what it stood for (P40b) is committed the same way before it closes it.
  * - A send, a card, a `send_mail`, a report (`report_work`, `coding_finish`) or a coding session's question
- *   (`coding_ask`) keeps no copy of its arguments: `args` is "", and `args_bytes` and `args_hash` stay. For now its `args_hash` is the boundary's plain digest of the call, as for every step, so a guess of its
- *   words can be checked against it. W1c-3 replaces it with the platform's keyed hash before any run is built with a
+ *   (`coding_ask`) keeps no copy of its arguments: `args` is "", and `args_bytes` and `args_hash` stay. A report's or
+ *   a question's result holds none of its words either (a coding turn's receipt leaves them out). For now its
+ *   `args_hash` is the boundary's plain digest of the call, as for every step, so a guess of its words can be checked
+ *   against it. W1c-3 replaces it with the platform's keyed hash before any run is built with a
  *   log.
  * - Narrow steps, for folders not shared with every agent, are not built here: every step keeps its full line. W1c-3
  *   brings their line shape, with the platform's keyed hashes, before any run is built with a log.
@@ -51,7 +53,8 @@ const CHANGE_SET_FILES = 64;
 /** Tries of one batch: a conflict, a moved log or a missing parent is read again and done again. */
 const ATTEMPTS = 4;
 /** Calls whose words are already in the conversation, on a card, in the outbox row, or in the worker's report and its
- * results file (a coding turn's row too): their arguments are not copied, so the copy outlives no erasure of those. */
+ * results file (a coding turn's row too): their arguments are not copied. A report's or a coding turn's result holds
+ * none of its words either (the coding receipt leaves them out), so no copy of those outlives their erasure. */
 const HASH_ONLY_TOOLS = new Set([
 	"send_message",
 	"send_coworker_message",
