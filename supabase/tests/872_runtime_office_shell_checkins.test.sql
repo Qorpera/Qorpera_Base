@@ -142,8 +142,9 @@ $$;
 create function pg_temp.receipt(p_n integer) returns uuid language sql as $$
 	select ('87200000-0000-4000-8000-000000001' || lpad(p_n::text, 3, '0'))::uuid
 $$;
+-- A command's row by the guest's session id (the row's key is its start's receipt, 20260930183000).
 create function pg_temp.command_row(p_n integer) returns public.qorpera_runtime_office_shell_commands language sql as $$
-	select * from public.qorpera_runtime_office_shell_commands where id = pg_temp.command(p_n)
+	select * from public.qorpera_runtime_office_shell_commands where command_id = pg_temp.command(p_n)
 $$;
 create function pg_temp.at(p_ago interval) returns text language sql as $$
 	select to_char((clock_timestamp() - p_ago) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
@@ -245,7 +246,7 @@ select pg_temp.check(public.qorpera_ask_busy_office_shells('64800000-0000-4000-8
 	'a snapshot-v1 environment asks nothing');
 
 -- 3. At three busy hours it is asked again, and the hour-one question no longer stands.
-update public.qorpera_runtime_office_shell_commands set worked_at = worked_at - interval '2 hours' where id = pg_temp.command(5);
+update public.qorpera_runtime_office_shell_commands set worked_at = worked_at - interval '2 hours' where command_id = pg_temp.command(5);
 select pg_temp.check(pg_temp.ask() = 1, 'at three busy hours it is asked again');
 select pg_temp.check((select count(*) from public.qorpera_machine_checkins where mark_hours = 3) = 1, 'for the three-hour mark');
 select pg_temp.check(not public.qorpera_machine_checkin_current(q), 'a question a later mark replaced no longer stands')
@@ -280,10 +281,10 @@ where id = current_setting('qorpera_test.screen')::uuid;
 select pg_temp.check(not pg_temp.asked_again(), 'nobody is asked about a shell whose seat changed hands');
 -- The new holder's own busy command counts from the new holder's own work, whatever the previous one did there.
 update public.qorpera_runtime_office_shell_commands set ended_at = clock_timestamp(), end_reason = 'closed',
-	worked_at = clock_timestamp() - interval '10 minutes' where id = pg_temp.command(5);
-insert into public.qorpera_runtime_office_shell_commands(id, office_id, computer_generation, screen_id, staff_agent_id, run_id,
-	receipt_id, conversation_run_id, session_id, command, started_at, worked_at)
-values ('87200000-0000-4000-8000-0000000000c5', (pg_temp.office()).id, (pg_temp.office()).generation,
+	worked_at = clock_timestamp() - interval '10 minutes' where command_id = pg_temp.command(5);
+insert into public.qorpera_runtime_office_shell_commands(id, command_id, office_id, computer_generation, screen_id, staff_agent_id,
+	run_id, receipt_id, conversation_run_id, session_id, command, started_at, worked_at)
+values ('87200000-0000-4000-8000-0000000000d5', '87200000-0000-4000-8000-0000000000c5', (pg_temp.office()).id, (pg_temp.office()).generation,
 	current_setting('qorpera_test.screen')::uuid, '64800000-0000-4000-8000-0000000000c0', (pg_temp.run()).id,
 	'87200000-0000-4000-8000-0000000000d5', (pg_temp.run()).id, (pg_temp.run()).session_id, 'make all',
 	clock_timestamp() - interval '2 hours', clock_timestamp() - interval '2 hours');
@@ -309,7 +310,7 @@ rollback;
 begin;
 update public.qorpera_runtime_office_shell_commands set run_id = '87200000-0000-4000-8000-0000000009a2',
 	conversation_run_id = '64800000-0000-4000-8000-0000000000f1'
-where id = pg_temp.command(5);
+where command_id = pg_temp.command(5);
 select pg_temp.check(pg_temp.asked_again(), 'a worker''s busy command is asked about');
 select pg_temp.check((select parent_run_id = '64800000-0000-4000-8000-0000000000f1' from public.qorpera_machine_checkins),
 	'the question goes to the run whose conversation is asked');
@@ -324,21 +325,21 @@ insert into public.qorpera_execution_runs
 select (jsonb_populate_record(pg_temp.run(), jsonb_build_object('id', '87200000-0000-4000-8000-0000000009b1',
 	'job_id', extensions.gen_random_uuid(), 'source_id', extensions.gen_random_uuid(), 'session_id', '87200000-0000-4000-8000-0000000009b2'))).*;
 set local session_replication_role = origin;
-insert into public.qorpera_runtime_office_shell_commands(id, office_id, computer_generation, screen_id, staff_agent_id, run_id,
-	receipt_id, conversation_run_id, session_id, command, started_at, worked_at, ended_at, end_reason)
-values ('87200000-0000-4000-8000-0000000000c6', (pg_temp.office()).id, (pg_temp.office()).generation,
+insert into public.qorpera_runtime_office_shell_commands(id, command_id, office_id, computer_generation, screen_id, staff_agent_id,
+	run_id, receipt_id, conversation_run_id, session_id, command, started_at, worked_at, ended_at, end_reason)
+values ('87200000-0000-4000-8000-0000000000d6', '87200000-0000-4000-8000-0000000000c6', (pg_temp.office()).id, (pg_temp.office()).generation,
 	current_setting('qorpera_test.screen')::uuid, (pg_temp.run()).staff_agent_id, '87200000-0000-4000-8000-0000000009b1',
 	'87200000-0000-4000-8000-0000000000d6', '87200000-0000-4000-8000-0000000009b1', '87200000-0000-4000-8000-0000000009b2', 'git status',
 	clock_timestamp() - interval '2 hours', clock_timestamp() - interval '2 hours', clock_timestamp() - interval '119 minutes', 'exited');
 select pg_temp.check(pg_temp.asked_again(), 'a busy crawl is asked about after another conversation''s short command');
 select pg_temp.check((select count(*) = 1 and bool_and(q.parent_run_id = (pg_temp.run()).id and q.mark_hours = 1
-		and q.since = (select c.worked_at from public.qorpera_runtime_office_shell_commands c where c.id = '87200000-0000-4000-8000-0000000000c6')
+		and q.since = (select c.worked_at from public.qorpera_runtime_office_shell_commands c where c.command_id = '87200000-0000-4000-8000-0000000000c6')
 		and q.body -> 'running' = jsonb_build_array(jsonb_build_object('command', 'python crawl.py', 'startedAt', (pg_temp.command_row(5)).started_at)))
 	from public.qorpera_machine_checkins q),
 	'in the conversation that started the crawl, counted from the other conversation''s work');
-insert into public.qorpera_runtime_office_shell_commands(id, office_id, computer_generation, screen_id, staff_agent_id, run_id,
-	receipt_id, conversation_run_id, session_id, command, started_at, worked_at)
-values ('87200000-0000-4000-8000-0000000000c7', (pg_temp.office()).id, (pg_temp.office()).generation,
+insert into public.qorpera_runtime_office_shell_commands(id, command_id, office_id, computer_generation, screen_id, staff_agent_id,
+	run_id, receipt_id, conversation_run_id, session_id, command, started_at, worked_at)
+values ('87200000-0000-4000-8000-0000000000d7', '87200000-0000-4000-8000-0000000000c7', (pg_temp.office()).id, (pg_temp.office()).generation,
 	current_setting('qorpera_test.screen')::uuid, (pg_temp.run()).staff_agent_id, '87200000-0000-4000-8000-0000000009b1',
 	'87200000-0000-4000-8000-0000000000d7', '87200000-0000-4000-8000-0000000009b1', '87200000-0000-4000-8000-0000000009b2', 'npm run build',
 	clock_timestamp() - interval '150 minutes', clock_timestamp() - interval '150 minutes');
@@ -348,12 +349,12 @@ select pg_temp.check((select body -> 'running' = jsonb_build_array(jsonb_build_o
 		'startedAt', (pg_temp.command_row(5)).started_at)) and (body ->> 'more')::integer = 0
 	from public.qorpera_machine_checkins where parent_run_id = (pg_temp.run()).id)
 	and (select body -> 'running' = jsonb_build_array(jsonb_build_object('command', 'npm run build',
-		'startedAt', (select c.started_at from public.qorpera_runtime_office_shell_commands c where c.id = '87200000-0000-4000-8000-0000000000c7')))
+		'startedAt', (select c.started_at from public.qorpera_runtime_office_shell_commands c where c.command_id = '87200000-0000-4000-8000-0000000000c7')))
 		and (body ->> 'more')::integer = 0
 	from public.qorpera_machine_checkins where parent_run_id = '87200000-0000-4000-8000-0000000009b1'),
 	'each conversation is asked about its own program only');
 update public.qorpera_runtime_office_shell_commands set ended_at = clock_timestamp(), end_reason = 'exited'
-where id = '87200000-0000-4000-8000-0000000000c7';
+where command_id = '87200000-0000-4000-8000-0000000000c7';
 select pg_temp.check((select bool_and(public.qorpera_machine_checkin_current(q) = (q.parent_run_id = (pg_temp.run()).id))
 	from public.qorpera_machine_checkins q), 'when the build ends, its question no longer stands; the crawl''s still does');
 rollback;
@@ -363,28 +364,29 @@ rollback;
 -- clean-up takes that row too.
 begin;
 update public.qorpera_runtime_office_shell_commands set started_at = clock_timestamp() - interval '9 days',
-	worked_at = clock_timestamp() - interval '9 days' where id = pg_temp.command(5);
-insert into public.qorpera_runtime_office_shell_commands(id, office_id, computer_generation, screen_id, staff_agent_id, run_id,
-	receipt_id, conversation_run_id, session_id, command, started_at, worked_at, ended_at, end_reason)
-select ('87200000-0000-4000-8000-0000000000' || x.n)::uuid, (pg_temp.office()).id, (pg_temp.office()).generation,
+	worked_at = clock_timestamp() - interval '9 days' where command_id = pg_temp.command(5);
+insert into public.qorpera_runtime_office_shell_commands(id, command_id, office_id, computer_generation, screen_id, staff_agent_id,
+	run_id, receipt_id, conversation_run_id, session_id, command, started_at, worked_at, ended_at, end_reason)
+select ('87200000-0000-4000-8000-0000000000d' || right(x.n, 1))::uuid, ('87200000-0000-4000-8000-0000000000' || x.n)::uuid,
+	(pg_temp.office()).id, (pg_temp.office()).generation,
 	current_setting('qorpera_test.screen')::uuid, (pg_temp.run()).staff_agent_id, (pg_temp.run()).id,
 	('87200000-0000-4000-8000-0000000000d' || right(x.n, 1))::uuid, (pg_temp.run()).id, (pg_temp.run()).session_id, x.command,
 	clock_timestamp() - x.ago, clock_timestamp() - x.ago, clock_timestamp() - x.ago + interval '1 minute', 'exited'
 from (values ('c8', 'git status', interval '8 days'), ('c9', 'ls', interval '10 days')) x(n, command, ago);
 select pg_temp.check(pg_temp.asked_again(), 'a crawl busy for days is asked about');
 select pg_temp.check((select since = (select c.worked_at from public.qorpera_runtime_office_shell_commands c
-		where c.id = '87200000-0000-4000-8000-0000000000c8') from public.qorpera_machine_checkins),
+		where c.command_id = '87200000-0000-4000-8000-0000000000c8') from public.qorpera_machine_checkins),
 	'counted from her last work, the git status');
 select pg_temp.shells(true, jsonb_build_array(pg_temp.open_item(5, 'python crawl.py', '9 days', '9 days'))) \g /dev/null
 select pg_temp.check((select array_agg(c.command order by c.command) from public.qorpera_runtime_office_shell_commands c
-		where c.id in ('87200000-0000-4000-8000-0000000000c8', '87200000-0000-4000-8000-0000000000c9')) = array['git status'],
+		where c.command_id in ('87200000-0000-4000-8000-0000000000c8', '87200000-0000-4000-8000-0000000000c9')) = array['git status'],
 	'the weekly clean-up keeps the row of her last work while the crawl runs, and takes the older one');
 select pg_temp.check(pg_temp.ask() = 0, 'so nothing new is asked');
 select pg_temp.check(public.qorpera_machine_checkin_current(q), 'and her question still stands') from public.qorpera_machine_checkins q;
-update public.qorpera_runtime_office_shell_commands set ended_at = clock_timestamp(), end_reason = 'exited' where id = pg_temp.command(5);
+update public.qorpera_runtime_office_shell_commands set ended_at = clock_timestamp(), end_reason = 'exited' where command_id = pg_temp.command(5);
 select pg_temp.shells(false) \g /dev/null
 select pg_temp.check(not exists (select 1 from public.qorpera_runtime_office_shell_commands c
-		where c.id = '87200000-0000-4000-8000-0000000000c8'), 'once the crawl ended, the clean-up takes that row too');
+		where c.command_id = '87200000-0000-4000-8000-0000000000c8'), 'once the crawl ended, the clean-up takes that row too');
 rollback;
 
 -- 5. Delivery, by the drain's step (C1c-3i-b's helpers). The company's login may pay for autonomous work: a check-in
@@ -487,7 +489,7 @@ rollback;
 -- At seven busy hours it is asked again: the step asks, and the question waits for the next step, here behind the
 -- queued continuation; once that ran, it is delivered.
 select pg_temp.still_busy();
-update public.qorpera_runtime_office_shell_commands set worked_at = worked_at - interval '4 hours' where id = pg_temp.command(5);
+update public.qorpera_runtime_office_shell_commands set worked_at = worked_at - interval '4 hours' where command_id = pg_temp.command(5);
 do $$
 declare v_answer jsonb := pg_temp.step();
 begin
@@ -503,7 +505,7 @@ end $$;
 -- A question no longer standing when its parent is ready is suppressed: the shell stopped being busy. (The count is
 -- moved to 31 hours, a new mark.)
 select pg_temp.still_busy();
-update public.qorpera_runtime_office_shell_commands set worked_at = clock_timestamp() - interval '31 hours' where id = pg_temp.command(5);
+update public.qorpera_runtime_office_shell_commands set worked_at = clock_timestamp() - interval '31 hours' where command_id = pg_temp.command(5);
 do $$
 declare v_answer jsonb;
 begin
@@ -518,7 +520,7 @@ begin
 end $$;
 -- A cancelled parent's questions are suppressed; a gone parent's undeliverable; nothing is admitted for either.
 select pg_temp.still_busy();
-update public.qorpera_runtime_office_shell_commands set worked_at = clock_timestamp() - interval '55 hours' where id = pg_temp.command(5);
+update public.qorpera_runtime_office_shell_commands set worked_at = clock_timestamp() - interval '55 hours' where command_id = pg_temp.command(5);
 select pg_temp.job('cancelled') \g /dev/null
 do $$
 declare v_answer jsonb;
@@ -548,7 +550,7 @@ end $$;
 select pg_temp.forget() \g /dev/null
 delete from public.qorpera_machine_checkins;
 select pg_temp.still_busy() \g /dev/null
-update public.qorpera_runtime_office_shell_commands set worked_at = clock_timestamp() - interval '90 minutes' where id = pg_temp.command(5);
+update public.qorpera_runtime_office_shell_commands set worked_at = clock_timestamp() - interval '90 minutes' where command_id = pg_temp.command(5);
 select pg_temp.check(pg_temp.ask() = 1, 'the hour-one question waits for the ended parent');
 select dblink_exec('fence_four', 'begin') \g /dev/null
 select * from dblink('fence_four', $q$select 1 from public.qorpera_folder_admissions where profile_id = '64800000-0000-4000-8000-000000000010'
@@ -556,7 +558,7 @@ select * from dblink('fence_four', $q$select 1 from public.qorpera_folder_admiss
 select dblink_send_query('fence_one', format('select public.qorpera_folder_machine_checkins_company(%L, 8)::text',
 	'64800000-0000-4000-8000-000000000020')) \g /dev/null
 select pg_temp.check(pg_temp.waits_for('fence_one', 'fence_four'), 'the first step holds the hour-one question and waits at admission');
-update public.qorpera_runtime_office_shell_commands set worked_at = worked_at - interval '2 hours' where id = pg_temp.command(5);
+update public.qorpera_runtime_office_shell_commands set worked_at = worked_at - interval '2 hours' where command_id = pg_temp.command(5);
 select dblink_send_query('fence_three', format('select public.qorpera_folder_machine_checkins_company(%L, 8)::text',
 	'64800000-0000-4000-8000-000000000020')) \g /dev/null
 select pg_temp.check(pg_temp.blocked('fence_three'), 'the second step asks the three-hour question, holds it and waits behind');
@@ -579,7 +581,7 @@ delete from public.qorpera_machine_checkins;
 -- A paused company is left alone: its step answers paused, and its questions wait.
 begin;
 select pg_temp.still_busy();
-update public.qorpera_runtime_office_shell_commands set worked_at = clock_timestamp() - interval '79 hours' where id = pg_temp.command(5);
+update public.qorpera_runtime_office_shell_commands set worked_at = clock_timestamp() - interval '79 hours' where command_id = pg_temp.command(5);
 insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id)
 values ('64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000001');
 select pg_temp.check(pg_temp.step() ->> 'state' = 'paused' and pg_temp.due() -> 'items' = '[]'::jsonb

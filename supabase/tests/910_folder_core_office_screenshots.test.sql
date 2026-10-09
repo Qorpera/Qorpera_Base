@@ -5,7 +5,7 @@
 -- capture-set check and the context view accept it while the agent's access, the computer's privacy and the browser
 -- grant are as they were, also with the computer not running, and refuse it once any of them changed, for another
 -- run's receipt, or a changed identity. Folder-v2 only (the founder's decision of 3 October). 648's committed fixture;
--- everything is removed at the end.
+-- everything is removed at the end. H (20260930183000): a shell start's begin on the same screen makes its command's row.
 
 create function pg_temp.claims(p_conn text, p_role text, p_user text default null) returns void language plpgsql as $$
 begin
@@ -308,6 +308,48 @@ begin
 	if (select count(*) from pg_proc where prosrc ~ '20260930057000') <> 6 then
 		raise exception 'G: 5 patched functions and 1 new one name 20260930057000 (found %)',
 			(select count(*) from pg_proc where prosrc ~ '20260930057000'); end if;
+end $$;
+
+-- H. 20260930183000 (C1B §8): a shell start's begin makes its command's row before the guest runs anything, keyed by
+--    the start's receipt, with the screen's generation, the run's member and whether the command uses the network
+--    (absent: it does not); the office's report fills in the guest's session id later. The older one-shot form and
+--    the other shell actions make no row.
+do $$
+declare v_envelope text; v_answer text; v_receipt uuid; v_n integer := 0; v_arguments jsonb;
+	v_run public.qorpera_execution_runs; v_office public.qorpera_runtime_offices; v_screen public.qorpera_runtime_office_screens;
+begin
+	select * into v_run from public.qorpera_execution_runs where id = '64800000-0000-4000-8000-0000000000f1';
+	select * into v_office from public.qorpera_runtime_offices where id = current_setting('qorpera_test.office_id')::uuid;
+	select * into v_screen from public.qorpera_runtime_office_screens
+	where id = (current_setting('qorpera_test.lease')::jsonb #>> '{binding,screenId}')::uuid;
+	foreach v_arguments in array array[
+		'{"kind":"shell","action":"start","command":"make all","waitMs":0}',
+		'{"kind":"shell","action":"start","command":"npm ci","network":true,"waitMs":10000}',
+		'{"kind":"shell","action":"start","command":"make test","network":false,"waitMs":0}',
+		'{"kind":"shell","command":"ls","timeoutMs":1000}',
+		'{"kind":"shell","action":"list"}']::jsonb[] loop
+		v_n := v_n + 1;
+		v_receipt := ('91000000-0000-4000-8000-0000000000f' || v_n)::uuid;
+		v_envelope := pg_temp.envelope('shell-' || v_n, v_arguments);
+		v_answer := pg_temp.operation(v_envelope, 'authorize', null);
+		if v_answer is distinct from '{"state": "authorized"}' then raise exception 'H: % is authorized: %', v_arguments, v_answer; end if;
+		perform public.qorpera_begin_native_tool_operation(current_setting('qorpera_test.binding')::jsonb, v_receipt,
+			'computer_shell:shell-' || v_n, pg_temp.sha(v_envelope), repeat('9', 64), false);
+		v_answer := pg_temp.operation(v_envelope, 'begin', v_receipt);
+		if v_answer !~ '"state": "admitted"' then raise exception 'H: % begins: %', v_arguments, v_answer; end if;
+		if v_arguments ->> 'action' is distinct from 'start' then
+			if exists (select 1 from public.qorpera_runtime_office_shell_commands where id = v_receipt or receipt_id = v_receipt) then
+				raise exception 'H: % makes no row', v_arguments; end if;
+		elsif not exists (select 1 from public.qorpera_runtime_office_shell_commands c
+			where c.id = v_receipt and c.receipt_id = v_receipt and c.command_id is null and c.office_id = v_office.id
+				and c.computer_generation = v_office.generation and c.screen_id = v_screen.id and c.screen_generation = v_screen.generation
+				and c.staff_agent_id = v_run.staff_agent_id and c.run_id = v_run.id
+				and c.requested_by_user_id is not distinct from v_run.requested_by_user_id and c.conversation_run_id = v_run.id
+				and c.session_id is not distinct from v_run.session_id and c.command = v_arguments ->> 'command'
+				and c.network = coalesce((v_arguments ->> 'network')::boolean, false) and c.ended_at is null and c.told_at is null) then
+			raise exception 'H: % makes its row: %', v_arguments, (select to_jsonb(c) from public.qorpera_runtime_office_shell_commands c
+				where c.id = v_receipt); end if;
+	end loop;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
