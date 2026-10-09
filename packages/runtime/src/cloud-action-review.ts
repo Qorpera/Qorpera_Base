@@ -342,6 +342,16 @@ function fileName(path: string): string {
 /** The same for other cards' facts (cloud-folder-proposals.ts). */
 export const cloudActionFileName = fileName;
 
+/** An event routine's trigger, from its `only` types: "When a hook receives “a” and “b” events". */
+function eventWhen(only: unknown): string {
+	const types = Array.isArray(only) ? only.filter((type): type is string => typeof type === "string") : [];
+	return types.length > 0
+		? `When a hook receives ${list(types.map((type) => `“${type}”`))} events`
+		: "When a hook receives an event";
+}
+/** The same for a routine file's `when: event` (cloud-folder-proposals.ts). */
+export const cloudActionEventWhen = eventWhen;
+
 /** A time zone this host can read, if the value is one. */
 function knownZone(value: JsonValue | undefined): string | undefined {
 	if (typeof value !== "string" || !value) return undefined;
@@ -380,11 +390,7 @@ function routineSchedule(args: Record<string, JsonValue>, fallbackZone: string):
 	const timeZone = knownZone(trigger.timeZone) ?? fallbackZone;
 	let words: string;
 	if (trigger.kind === "once") words = "The agent picks each next run";
-	else if (trigger.kind === "listener" && trigger.source === "event")
-		words =
-			Array.isArray(trigger.only) && trigger.only.length > 0
-				? `When a hook receives ${list(trigger.only.filter((type): type is string => typeof type === "string").map((type) => `“${type}”`))} events`
-				: "When a hook receives an event";
+	else if (trigger.kind === "listener" && trigger.source === "event") words = eventWhen(trigger.only);
 	else if (trigger.kind === "listener" && typeof trigger.path === "string")
 		words =
 			trigger.match === "subtree"

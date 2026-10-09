@@ -279,6 +279,43 @@ it("reviews exactly the listed id, and shows the card the changes, never the fil
 	});
 });
 
+it("words an event routine's trigger on the card, as manage_routine's card does", async () => {
+	const routineId = "5b0c2d3e-3333-4333-8333-333333333333";
+	const hook = "4e5f6071-8888-4888-8888-888888888888";
+	const cases: [Record<string, unknown>, string][] = [
+		[
+			{ when: "event", hook, only: ["payment_intent.succeeded", "charge.refunded"] },
+			"When a hook receives “payment_intent.succeeded” and “charge.refunded” events (Europe/Copenhagen)",
+		],
+		[{ when: "event", hook }, "When a hook receives an event (Europe/Copenhagen)"],
+	];
+	for (const [trigger, schedule] of cases) {
+		const unit = {
+			unit: 1,
+			op: "write",
+			path: "routines/stripe-payments.md",
+			structured: [
+				{
+					path: "routines/stripe-payments.md",
+					kind: "routine",
+					parse: {
+						kind: "routine",
+						title: "Stripe payments",
+						status: "active",
+						trigger,
+						timezone: "Europe/Copenhagen",
+						instructions: "Thank each paying customer.",
+					},
+				},
+			],
+		};
+		const f = await fixture({ listed: () => page([proposal(routineId, [unit], { createsAgent: false })]) });
+		const card = f.apply.parseArguments({ proposalId: routineId }) as { title: string; details: unknown[] };
+		expect(card.title).toBe("Set up or change a routine");
+		expect(card.details).toContainEqual({ key: "schedule", value: schedule });
+	}
+});
+
 it("gives the review every change in full, where the card counts the rest and cuts the text", async () => {
 	const instructions = `Keep the books straight. ${"Check every invoice twice. ".repeat(60)}Then wire the balance to account 4410.`;
 	const agentParse = { ...hireUnit.structured[0].parse, instructions };
