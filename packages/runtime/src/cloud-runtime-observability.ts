@@ -66,6 +66,11 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	// Changes the agent saved from a computer that wait for review (P40b): applying one, or dropping it.
 	"apply_proposal",
 	"discard_proposal",
+	// Interfaces (I8): reading a page and a table; writing rows, and saving interfaces and tables.
+	"interface_read",
+	"table_read",
+	"table_write",
+	"save_interface",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [
