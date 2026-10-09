@@ -235,6 +235,9 @@
 :root[data-theme="dark"] .service-card .service-agents, :root[data-theme="dark"] .service-token-form small { color: #a3a39e; }
 :root[data-theme="dark"] .service-outcome.is-ok { color: #8fc7b3; }
 :root[data-theme="dark"] .service-outcome.is-error { color: #ff8a4c; }
+:root[data-theme="dark"] .hook-icon { background: #3d3d3c; color: #c9c8c3; }
+:root[data-theme="dark"] :is(.hook-card .hook-state, .hook-address small, .hook-form small, .hook-domain) { color: #a3a39e; }
+:root[data-theme="dark"] .hook-address code { background: #2a2a29; }
 
 /* ---- Company File on folder-v2 (company-folder.css) ------------------------------------ */
 :root[data-theme="dark"] .files-page { --files-folder: #e2ad55; --files-code: rgba(255, 255, 255, 0.045); }
