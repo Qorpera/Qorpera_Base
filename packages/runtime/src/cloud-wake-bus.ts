@@ -666,7 +666,8 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		// since it last worked with it (the one idle rule's check-in, amendment of 2026-10-03, item 5). A notice: the
 		// program keeps running until the agent stops it. A coding session's check-in also names the session as
 		// manage_worker does (todoKey, workerKey), and each running command the turn that started it; an agent's
-		// machine's, each running command's handle, as machine_cancel takes it.
+		// machine's, each running command's handle, as machine_cancel takes it. An always-on machine the agent started is
+		// asked about once a week since its start, busy or not (item 6): how many weeks, and nothing running.
 		const asked = closed(payloadBody, ["schema", "parentRunId", "checkins", "stillWaiting"]);
 		if (
 			asked.schema !== "qorpera.machine-checkin/v1" ||
@@ -687,6 +688,20 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		)
 			throw new Error("Invalid machine check-in wake");
 		for (const [index, item] of asked.checkins.entries()) {
+			if ((item as { machineKind?: unknown } | null)?.machineKind === "always-on") {
+				const weekly = closed(item, ["checkinId", "machineKind", "since", "askedAt", "machine", "weeks"]);
+				if (
+					(index === 0 && uuid(weekly.checkinId) !== source.id) ||
+					typeof weekly.since !== "string" ||
+					typeof weekly.askedAt !== "string" ||
+					typeof weekly.machine !== "string" ||
+					!Number.isSafeInteger(weekly.weeks) ||
+					(weekly.weeks as number) < 1
+				)
+					throw new Error("Invalid machine check-in wake");
+				uuid(weekly.checkinId);
+				continue;
+			}
 			const coding = (item as { machineKind?: unknown } | null)?.machineKind === "coding";
 			const machine = (item as { machineKind?: unknown } | null)?.machineKind === "machine";
 			const checkin = closed(item, [

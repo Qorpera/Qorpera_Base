@@ -70,17 +70,21 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 		...rowsOf(read("20260928429984_runtime_company_mail_attachments.sql")),
 		...rowsOf(read("20260928439965_runtime_company_account_tool.sql")),
 		...rowsOf(read("20260928439970_folder_run_view_open.sql")),
-		// The worker tools on folder-v2 (F2-5b-2), a coding session's archive (C3b) and the proposal calls (P40b), found
-		// by name: a release re-slots the file.
-		...["_folder_state_worker_files.sql", "_folder_coding_archive.sql", "_folder_proposals_runtime.sql"].flatMap(
-			(suffix) =>
-				rowsOf(
-					read(
-						readdirSync(new URL("../../../supabase/migrations/", import.meta.url)).find((name) =>
-							name.endsWith(suffix),
-						) ?? `missing${suffix}`,
-					),
+		// The worker tools on folder-v2 (F2-5b-2), a coding session's archive (C3b), the proposal calls (P40b) and agents'
+		// hooks and mailboxes (E3a), found by name: a release re-slots the file.
+		...[
+			"_folder_state_worker_files.sql",
+			"_folder_coding_archive.sql",
+			"_folder_proposals_runtime.sql",
+			"_folder_agent_manage_hook.sql",
+		].flatMap((suffix) =>
+			rowsOf(
+				read(
+					readdirSync(new URL("../../../supabase/migrations/", import.meta.url)).find((name) =>
+						name.endsWith(suffix),
+					) ?? `missing${suffix}`,
 				),
+			),
 		),
 	];
 	// The model request's fence moved to the long budget (#839's follow-up), found by name: a release re-slots the file.
@@ -97,7 +101,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, , scope]) => scope !== "identity")
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(94);
+	expect(rows).toHaveLength(95);
 	expect(new Map(NATIVE_HOST_CALLS)).toEqual(expected);
 	expect([...NATIVE_HOST_CALLS].filter(([, budget]) => budget === "long")).toEqual([
 		["qorpera_fence_native_context", "long"],
@@ -131,8 +135,8 @@ it("classifies every database call the host's clients can make: inside a job, be
 		"cloud-native-coding-runtime.ts",
 		"cloud-company-computer-registry-http.ts",
 	];
-	// In the clients' closed lists but never called by the native host: the office VM's own registry calls, and the
-	// wake checks only SQL completion makes. The dispatch refuses them.
+	// In the clients' closed lists but never called by the native host: the office VM's own registry calls (G2-6c: with
+	// the lease proof its receiver asks), and the wake checks only SQL completion makes. The dispatch refuses them.
 	const neverByHost = new Set([
 		"qorpera_ack_runtime_office_drain",
 		"qorpera_ack_runtime_office_privacy",
@@ -146,6 +150,7 @@ it("classifies every database call the host's clients can make: inside a job, be
 		"qorpera_check_runtime_office_start",
 		"qorpera_check_runtime_office_startup",
 		"qorpera_check_runtime_office_viewer",
+		"qorpera_native_binding_proven",
 		"qorpera_native_office_browser_grant",
 		"qorpera_native_office_file_export",
 		"qorpera_native_office_file_import",

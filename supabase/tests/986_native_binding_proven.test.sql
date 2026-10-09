@@ -1,10 +1,10 @@
--- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
+-- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- G2-6a (20260930152000): the object gateway and the secret brokers ask qorpera_native_binding_proven whether a native
 -- host's request holds its run's job lease token (the holder header `job.<job id>.<lease token>`) before they serve the
--- run binding it carries. Test 300's fixture leases a run's job; this test gives the job a known lease token.
+-- run binding it carries. 924's fixture leases Alice's run's job; this test gives the job a known lease token.
 reset role;
-select set_config('qorpera_test.job', current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId', false);
-select set_config('qorpera_test.run', current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId', false);
+select set_config('qorpera_test.job', current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId', false);
+select set_config('qorpera_test.run', current_setting('qorpera_test.base_binding')::jsonb ->> 'runId', false);
 select set_config('qorpera_test.token', 'P' || repeat('p', 42), false);
 update public.qorpera_runner_jobs
 set lease_token_sha256 = encode(extensions.digest(convert_to(current_setting('qorpera_test.token'), 'utf8'), 'sha256'), 'hex')
@@ -12,7 +12,7 @@ where id = current_setting('qorpera_test.job')::uuid;
 create function pg_temp.holder(p_token text default null) returns text language sql as $$
 	select 'job.' || current_setting('qorpera_test.job') || '.' || coalesce(p_token, current_setting('qorpera_test.token'))
 $$;
-create function pg_temp.binding() returns jsonb language sql as $$ select current_setting('qorpera_test.wake_binding')::jsonb $$;
+create function pg_temp.binding() returns jsonb language sql as $$ select current_setting('qorpera_test.base_binding')::jsonb $$;
 -- A proof as the role: 'proven', 'refused' (its own 42501) or the sqlstate of anything else.
 create function pg_temp.prove(p_role text, p_binding jsonb, p_holder text) returns text language plpgsql as $$
 declare v_result boolean;

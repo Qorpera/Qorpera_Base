@@ -9,6 +9,7 @@ import {
 import {
 	CloudToolAuthorizeRefusal,
 	type CloudToolContent,
+	CloudToolOutcomeUnknown,
 	type CloudToolRefusal,
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
@@ -25,6 +26,16 @@ class RefusedBeforeReceipt extends Error {
 	constructor(refusal: CloudToolAuthorizeRefusal) {
 		super("Cloud tool operation refused before its receipt");
 		this.refusal = refusal;
+	}
+}
+
+/** The kernel's answer for a key whose receipt a resume settled as outcome_unknown (W5), kept apart from any error the
+ * effect could throw. */
+class SettledOutcomeUnknown extends Error {
+	readonly receiptId: string;
+	constructor(receiptId: string) {
+		super("Cloud tool receipt outcome is unknown");
+		this.receiptId = receiptId;
 	}
 }
 
@@ -350,7 +361,7 @@ export class CloudNativeToolOperations {
 					};
 				}
 				if (
-					["executing", "ambiguous", "cancelled"].includes(begun.state as string) &&
+					["executing", "ambiguous", "cancelled", "outcome_unknown"].includes(begun.state as string) &&
 					begun.result == null &&
 					begun.output_snapshot_id == null &&
 					begun.proposal_id == null &&
@@ -359,6 +370,8 @@ export class CloudNativeToolOperations {
 					// Retain a validated fence even when it forbids another effect. Never use a broker payload ID.
 					receipt.id = begun.receipt_id;
 					options.observation?.update({ receiptId: receipt.id });
+					// The run was cut off while this call ran, and its resume settled the receipt (W5): never run again.
+					if (begun.state === "outcome_unknown") throw new SettledOutcomeUnknown(begun.receipt_id);
 				}
 				if (
 					begun.state !== "executing" ||
@@ -500,6 +513,16 @@ export class CloudNativeToolOperations {
 			) {
 				options.observation?.finish("failed", { receiptId: receipt.id, errorCategory: "stale_version" });
 				throw error.refusal;
+			}
+			// Settled as outcome unknown by a resume: the effect may have happened, so the model checks before repeating it.
+			if (
+				error instanceof SettledOutcomeUnknown &&
+				receipt.id !== null &&
+				error.receiptId === receipt.id &&
+				!signal.aborted
+			) {
+				options.observation?.finish("unconfirmed", { receiptId: receipt.id, errorCategory: "ambiguous_effect" });
+				throw new CloudToolOutcomeUnknown();
 			}
 			options.observation?.finish("unconfirmed", {
 				receiptId: receipt.id,

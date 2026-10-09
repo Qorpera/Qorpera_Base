@@ -244,6 +244,10 @@ export function cloudActionEffect(
 		// An email from a company mailbox leaves the company (M2b).
 		case "send_mail":
 			return "external";
+		// A new hook or mailbox lets the outside reach the company (E3a); pausing or resuming one only changes what the
+		// company takes in. Removing one ends it for good, and a removed mailbox's address is free for any company.
+		case "manage_hook":
+			return args.action === "create" ? "external" : args.action === "remove" ? "destructive" : "internal";
 		case "computer_browser":
 			return ["snapshot", "list_tabs", "select_tab"].includes(action.action as string) ? "read" : "external";
 		// A company account (A1-4): finding one is a read; opening one acts on a website; recording the website's
@@ -349,6 +353,16 @@ function fileName(path: string): string {
 /** The same for other cards' facts (cloud-folder-proposals.ts). */
 export const cloudActionFileName = fileName;
 
+/** An event routine's trigger, from its `only` types: "When a hook receives “a” and “b” events". */
+function eventWhen(only: unknown): string {
+	const types = Array.isArray(only) ? only.filter((type): type is string => typeof type === "string") : [];
+	return types.length > 0
+		? `When a hook receives ${list(types.map((type) => `“${type}”`))} events`
+		: "When a hook receives an event";
+}
+/** The same for a routine file's `when: event` (cloud-folder-proposals.ts). */
+export const cloudActionEventWhen = eventWhen;
+
 /** A time zone this host can read, if the value is one. */
 function knownZone(value: JsonValue | undefined): string | undefined {
 	if (typeof value !== "string" || !value) return undefined;
@@ -387,11 +401,7 @@ function routineSchedule(args: Record<string, JsonValue>, fallbackZone: string):
 	const timeZone = knownZone(trigger.timeZone) ?? fallbackZone;
 	let words: string;
 	if (trigger.kind === "once") words = "The agent picks each next run";
-	else if (trigger.kind === "listener" && trigger.source === "event")
-		words =
-			Array.isArray(trigger.only) && trigger.only.length > 0
-				? `When a hook receives ${list(trigger.only.filter((type): type is string => typeof type === "string").map((type) => `“${type}”`))} events`
-				: "When a hook receives an event";
+	else if (trigger.kind === "listener" && trigger.source === "event") words = eventWhen(trigger.only);
 	else if (trigger.kind === "listener" && typeof trigger.path === "string")
 		words =
 			trigger.match === "subtree"
@@ -516,6 +526,28 @@ export function describeCloudAction(
 		if (typeof args.inReplyTo === "string") add("thread", "A reply to an email the company received");
 		// The company files that leave with it.
 		add("attachments", addresses(args.attachments));
+	} else if (tool.name === "manage_hook") {
+		title =
+			args.action === "create"
+				? args.kind === "mailbox"
+					? "Open a mailbox"
+					: "Open a hook"
+				: args.action === "pause"
+					? "Pause a hook"
+					: args.action === "resume"
+						? "Resume a hook"
+						: "Remove a hook";
+		target = text(args.name) || text(args.localPart) || text(args.hook) || null;
+		add("purpose", args.purpose);
+		if (args.action === "create")
+			add(
+				"effect",
+				args.kind === "mailbox"
+					? "Anyone may send email to this address; what arrives can wake the company's routines"
+					: "Anyone with the hook's address may send it events; what arrives can wake the company's routines",
+			);
+		if (args.action === "remove")
+			add("effect", "Ends it for good; a mailbox's address is free for any company to take");
 	} else if (tool.name === "company_account") {
 		title =
 			args.action === "open"

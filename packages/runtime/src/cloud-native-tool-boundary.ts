@@ -33,6 +33,7 @@ export const CLOUD_TOOL_RESULT_INSTRUCTIONS =
 	"COMPANY_FILE_PARENT_MISSING is not a block either: nothing was written. When a member or your assignment named that folder, or a category of files needs it as its home, create it with company_mkdir and repeat the call; otherwise put a single file in an existing folder where it fits, and if none fits, create one named for its category (contracts/, not acme-nda/). Never replace a file to make a folder. " +
 	"REFUSED: the tool did nothing, for the reason it gives; change what you ask (under a new operation key) or tell the member why it cannot be done. " +
 	"An action whose result you did not see may already have happened: retry it only as its tool describes, with the same operation key and arguments, never under a new key or by another route. " +
+	"OUTCOME_UNKNOWN is the one exception: your run was cut off while that action ran, so it may or may not have happened, and its operation key cannot run it again. Check whether it happened before you repeat it, and repeat it only if it did not, under a new operation key. " +
 	"An action that completed without showing its response still completed. After a safety block, a genuinely safer way to the same legitimate goal is fine; rewording the blocked action, or reaching a denied result by another route, is not. " +
 	"Members' rules can make an action wait for approval (APPROVAL_PENDING): the platform has raised the card, so do not ask again in chat; do other work meanwhile. When you are woken because such a card was approved, call the same tool again with the card's `call` field as its arguments, value for value: not its `arguments` text, which is the same call escaped (use that only when the card has no `call`); if the card's entry is cut short, read the rest of it first. It then runs once, without another review.";
 
@@ -44,6 +45,9 @@ const WORK_LOG_UNAVAILABLE =
 	"WORK_LOG_UNAVAILABLE: The platform could not record this action in the run's work log first, so it did not run. You may try the identical call once more; if it fails again, tell the member.";
 const WORK_LOG_GONE =
 	"WORK_LOG_GONE: This conversation's folder was deleted, so this run can record no more work and the action did not run. Stop working on this run.";
+/** The answer to a repeat of a call its run was cut off in (W5, RUNTIME-AGENT-MEMORY-TREE.md §12). */
+const OUTCOME_UNKNOWN =
+	"OUTCOME_UNKNOWN: Your run was cut off while this action ran, so it may or may not have happened, and this operation key cannot run it again. Check whether it happened before you repeat it; repeat it only if it did not, under a new operation key.";
 
 /** Prefix for a formation write the organization projection would refuse; the gateway's reason follows. */
 const COMPANY_FORMATION_REFUSED = "COMPANY_FORMATION_REFUSED: nothing was written; ";
@@ -212,6 +216,16 @@ export class CloudToolAuthorizeRefusal extends CloudToolRefusal {
 	constructor(message: string) {
 		super(message);
 		this.name = "CloudToolAuthorizeRefusal";
+	}
+}
+/**
+ * The operation executor's answer to a repeat of a call whose run was cut off while it ran (W5): the resume settled its
+ * receipt as `outcome_unknown`, final, so its key never runs it again. Not a refusal: the action may have happened.
+ */
+export class CloudToolOutcomeUnknown extends Error {
+	constructor() {
+		super("Cloud tool operation outcome unknown");
+		this.name = "CloudToolOutcomeUnknown";
 	}
 }
 /** Printable ASCII and Latin-1 letters: no control, invisible, bidi or separator character. */
@@ -934,6 +948,11 @@ export class CloudNativeToolBoundary {
 					kind: "text",
 					value: `${COMPANY_FORMATION_REFUSED}${error.reason}`,
 				});
+			}
+			// A call its run was cut off in: it may have happened, and its key is spent, so the model checks first.
+			if (error instanceof CloudToolOutcomeUnknown && !this.#signal.aborted) {
+				observation?.finish("unconfirmed", { errorCategory: "ambiguous_effect" });
+				return this.#result(callId, tool, digest, "unconfirmed", { kind: "text", value: OUTCOME_UNKNOWN });
 			}
 			// A tool's own refusal before any effect: nothing happened, and the model is told why.
 			if (error instanceof CloudToolRefusal && !this.#signal.aborted) {

@@ -3376,7 +3376,8 @@ export interface PendingSessionInputPage {
 export interface HostedOperationRecoveryReceipt {
 	operationId: string;
 	operationKind: string;
-	status: "executing" | "completed" | "ambiguous" | "cancelled";
+	/** `outcome_unknown`: the run was cut off while it ran, and a resume settled it (W5). */
+	status: "executing" | "completed" | "ambiguous" | "cancelled" | "outcome_unknown";
 	recoveryResolution?: "confirmed_completed" | "confirmed_not_run";
 	createdAt: string;
 }
@@ -3565,7 +3566,9 @@ function parseSessionRecoveryPage(value: unknown): HostedSessionRecoveryPage {
 					recoveryResolution === "confirmed_completed" || recoveryResolution === "confirmed_not_run"
 						? recoveryResolution
 						: undefined;
-				if (!["executing", "completed", "ambiguous", "cancelled"].includes(String(receipt.status))) {
+				if (
+					!["executing", "completed", "ambiguous", "cancelled", "outcome_unknown"].includes(String(receipt.status))
+				) {
 					throw new Error("Hosted primary returned invalid session recovery receipt status");
 				}
 				return {
@@ -3629,7 +3632,7 @@ function parseExecutionRunRecovery(value: unknown): HostedExecutionRunRecovery {
 		"execution run recovery operations",
 	).map((entry) => {
 		const receipt = record(entry, "execution run recovery operation");
-		if (!["executing", "completed", "ambiguous", "cancelled"].includes(String(receipt.status))) {
+		if (!["executing", "completed", "ambiguous", "cancelled", "outcome_unknown"].includes(String(receipt.status))) {
 			throw new Error("Hosted primary returned an invalid execution run recovery operation");
 		}
 		const recoveryResolution = receipt.recovery_resolution;

@@ -37,6 +37,8 @@ const methods = [
 	"qorpera_check_runtime_office_viewer",
 	"qorpera_admit_runtime_office_viewer_input_window",
 	"qorpera_release_runtime_office_viewer",
+	// G2-6c: the office receiver's lease proof (migration 20260930152000); it answers a plain true.
+	"qorpera_native_binding_proven",
 ] as const;
 export type CompanyComputerRegistryMethod = (typeof methods)[number];
 
@@ -171,7 +173,10 @@ export class HttpCloudCompanyComputerRegistry {
 					} catch {
 						value = undefined;
 					}
-					if (!value || typeof value !== "object" || Array.isArray(value))
+					if (
+						!(value && typeof value === "object" && !Array.isArray(value)) &&
+						!(method === "qorpera_native_binding_proven" && value === true)
+					)
 						throw Object.assign(new Error("invalid response"), { answered: true });
 					return value;
 				},
