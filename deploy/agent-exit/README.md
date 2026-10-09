@@ -722,7 +722,7 @@ Afterwards the test machine is compared with before, as for E2b. A read that suc
 script's last step proves it on the nodes.
 
 Result (9 October 2026, node 1's test machine, Ubuntu 26.04.1 with kernel 7.0.0-30; run
-20261009T120215-62742-dd9ca761 on 2dfac2b2f, 263 s): ALL PASSED. Inside an Ubuntu 26.04 VM with Node v22.22.1 from
+20261009T123312-96953-09e441db on 00a02c2de, 220 s): ALL PASSED. Inside an Ubuntu 26.04 VM with Node v22.22.1 from
 `nodejs` 22.22.1+dfsg+~cs22.19.15-1ubuntu1, the reader ran as dynamic user 61859. Seen from outside its namespace,
 its two credentials were 0440 and root's, and it read both. Its state folder was uid 65534 on disk and its own in its namespace. It refused
 the stand-in's certificate (`DEPTH_ZERO_SELF_SIGNED_CERT`) after asking it for TLS. Its journal had its one state
