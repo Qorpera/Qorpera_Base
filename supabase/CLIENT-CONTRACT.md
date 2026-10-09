@@ -979,16 +979,21 @@ is invalid" (no input id, or an image outside the limits above), 42501 "Member a
 (not a member of the open conversation's room), 42501 "Submitted input attachments cannot change" (the input is posted),
 55000 "Attachment folder is unavailable" (no root), 23505 "Attachment input id is bound to another member" and 54000
 "Member attachment capacity is reached" (a sixth image, or more than 8 MiB; the same image again does not count). The
-commit refuses the same way, with the service role's authority and the exact `file` keys, and 55000 "Member attachment
-could not be saved" when the folder refused the write. The download's refusals: 42501
+commit's refusals: 42501 "Member attachment authority is required" (not the service role), 22023 "Member attachment is
+invalid" (`file` other than exactly those five keys with `executable` false, or an image outside the limits), 42501
+"Member attachment session is unavailable" (no such conversation, an input id nobody began, another member's input, or
+the member no longer in the room), 42501 "Submitted input attachments cannot change" (the input was posted, before or
+during the save), 55000 "Attachment folder is unavailable" (no root), 54000 "Member attachment capacity is reached" and
+55000 "Member attachment could not be saved" (the folder refused the write). The download's refusals: 42501
 "Chat attachment access is unavailable", "Canonical chat input is unavailable" (no such member prompt in the
 transcript, or its message erased) and "Attachment does not belong to this canonical input", and 55000 "Attachment
 object is unavailable" (the file is gone).
 
-Images no input lists are deleted a day after the input's last upload, by an hourly sweep
-(`qorpera_room_image_orphan_sweep`, pg_cron job `qorpera-room-image-sweep`): the whole folder of an input never posted,
-and the images a posted input does not list. An erase of the conversation (memory step M3) deletes its images with
-its blocks. The memory zoom's `attachments` give each member image's `path`, for an agent to open.
+Images no input lists are deleted a day after the input's last upload, by a sweep every minute
+(`qorpera_room_image_orphan_sweep`, pg_cron job `qorpera-room-image-sweep`, at most one folder commit per call): the
+whole folder of an input never posted, and the images a posted input does not list. An erase of the conversation
+(memory step M3) deletes its images with its blocks. The memory zoom's `attachments` stay `{mediaType, bytes}` for
+now; an image's path comes to the zoom with the runtime that opens it.
 
 ## 3. Realtime
 

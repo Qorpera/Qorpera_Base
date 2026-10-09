@@ -443,7 +443,16 @@ t0/00000000.jsonl          tier 0, block 0: levels 0–3 of messages 0–15
 t0/00000001.jsonl          tier 0, block 1: levels 0–3 of messages 16–31
 t1/00000000.jsonl          tier 1, block 0: levels 4–7 of messages 0–255
 t2/…                       tier 2: levels 8–11 of 4,096 messages each
+images/<clientInputId>/<sha256>.<png|jpg|gif|webp>
+                           a member's chat image (20260930260000)
 ```
+
+- **`images/`** holds the members' chat images (`supabase/CLIENT-CONTRACT.md`, "Chat images"). It is not part of the
+  tree: the tree writer never reads, writes or deletes under it. Only the platform writes there, through the same
+  memory commit, and every change names the conversation's generation, as a block's does. The object gateway's save
+  (`qorpera_room_image_commit`) writes an image; the orphan sweep (`qorpera_room_image_orphan_sweep`) deletes the
+  images no input lists, a day after the input's last upload; an erase of the conversation deletes them with its
+  blocks.
 
 - **`tree.toml`** is exactly three lines, in this order and spelling, each ending in a newline: `format = 1`,
   `conversation = "<session uuid>"` (lower-case) and `node_bytes = <n>`, n from 1 to 1,024 with no leading zero
@@ -491,7 +500,9 @@ the tree holds the same content.
   - The 7-day prune commits nothing. It never touches a path's current version: it removes only replaced versions,
     through the GC helper beside the git-object prune (§10, GC).
   - The first batch of a tree creates its root folder and `tree.toml`. That `mkdir` names no generation; the batch's
-    `sessionGenerations` still covers it, so a root made before an erase is refused with the rest.
+    `sessionGenerations` still covers it, so a root made before an erase is refused with the rest. The root may
+    already exist, made by an image's save (§4.2, `images/`) before the first batch: a `mkdir` of the root that is
+    refused `exists` is no failure, and the batch goes on.
   - The tree writer passes the media type itself, never the folder client's guess from the file name: every write of
     `tree.toml` is `application/toml` with the executable bit off, in every bundle (§10 step 1 relies on it).
 - **Erasure generation.** `qorpera_shared_sessions` gets `memory_generation`, a counter per conversation. The

@@ -15,19 +15,17 @@
 -- 4. The post and the input trigger: each image of a new folder-v2 input is a live file that this member uploaded for
 --    this input (42501 otherwise), and a submitted input's images do not change. Their snapshot-v1 arms stay the legacy
 --    sweep's; step D drops the snapshot-v1 attachment upload with them.
--- 5. qorpera_memory_event: a member's attachment carries its path, so the zoom names the file an agent opens.
--- 6. qorpera_room_image_orphan_sweep, hourly through pg_cron: a day after an input's last upload, the images that no
---    input lists are deleted, and the row with them.
--- Every patched body carries the marker 20260930260000 for the deploy guard.
+-- 5. qorpera_room_image_orphan_sweep, every minute through pg_cron: a day after an input's last upload, the images that
+--    no input lists are deleted, and the row with them; at most one folder commit per call.
+-- The zoom does not name an image's path yet: the runtime reads an attachment's mediaType and bytes only, so the path
+-- comes with the runtime that opens it. Every patched body carries the marker 20260930260000 for the deploy guard.
 
 set local lock_timeout = '3s';
 
--- A second run stops here, before anything changes; the zoom comes first.
+-- A second run stops here, before anything changes.
 do $$ begin
 	if to_regprocedure('public.qorpera_room_image_begin(uuid,uuid,text,bigint,text)') is not null then
 		raise exception 'Chat images (20260930260000) is already applied'; end if;
-	if to_regprocedure('public.qorpera_memory_zoom(jsonb,jsonb)') is null then
-		raise exception 'Chat images (20260930260000) needs M1b-3 (20260930202000)'; end if;
 end $$;
 
 create function pg_temp.chat_images_replace(p_function regprocedure, p_old text, p_new text)
@@ -180,6 +178,8 @@ begin
 	v_path := public.qorpera_room_image_path(p_session_id, p_client_input_id, v_image);
 	if v_path is null then
 		raise exception 'Attachment folder is unavailable' using errcode = '55000'; end if;
+	-- The company first (KEY SHARE, rank 0), as the commit and the sweep take it.
+	perform 1 from public.qorpera_profiles where id = v_room.profile_id for key share;
 	insert into public.qorpera_room_image_uploads(session_id, client_input_id, environment_id, user_id)
 	values (p_session_id, p_client_input_id, v_room.environment_id, v_user)
 	on conflict (session_id, client_input_id) do nothing;
@@ -198,10 +198,17 @@ begin
 		'mediaType', p_media_type, 'path', v_path);
 end $$;
 
--- The object gateway's save of one staged image (service role; the bytes staged by the platform actor): the member's
--- upload row FOR UPDATE, the room again, the limits again, then one memory commit as the platform that makes the
--- folders still missing and writes the file, naming the conversation's generation (retried on a raise in between, up to
--- three times). An input posted meanwhile refuses it. The same file again answers as saved.
+-- The object gateway's save of one staged image (service role; the bytes staged by the platform actor): the company
+-- KEY SHARE, then the member's upload row FOR UPDATE, the room again, the limits again, then one memory commit as the
+-- platform that makes the folders still missing and writes the file, naming the conversation's generation. An input
+-- posted meanwhile refuses it. The same file again answers as saved.
+--
+-- Locks: the company row comes first (rank 0), so a purge, which holds it FOR UPDATE before its cascade reaches the
+-- conversation and this row, is met there and never in the other order. The upload row comes before the memory
+-- commit's own locks (its operation key is new each time, then the conversation FOR SHARE at rank 11, the paths and
+-- the clock). A commit that finds the generation raised (an erase between the read and the conversation's lock) saves
+-- nothing and leaves the clock alone; the second attempt holds the conversation's lock from the first, so it reads the
+-- generation that stays.
 create function public.qorpera_room_image_commit(p_user_id uuid, p_session_id uuid, p_client_input_id uuid, p_file jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
@@ -219,6 +226,10 @@ begin
 	v_image := jsonb_build_object('objectSha256', p_file -> 'fileSha256', 'bytes', p_file -> 'bytes', 'mediaType', p_file -> 'mediaType');
 	if not public.qorpera_room_post_images_valid(jsonb_build_object('images', jsonb_build_array(v_image)), true) then
 		raise exception 'Member attachment is invalid' using errcode = '22023'; end if;
+	perform 1 from public.qorpera_profiles
+	where id = (select profile_id from public.qorpera_shared_sessions where id = p_session_id) for key share;
+	if not found then
+		raise exception 'Member attachment session is unavailable' using errcode = '42501'; end if;
 	select * into v_upload from public.qorpera_room_image_uploads
 	where session_id = p_session_id and client_input_id = p_client_input_id for update;
 	select * into v_room from public.qorpera_room_image_room(p_session_id, p_user_id);
@@ -248,7 +259,7 @@ begin
 				'chat-image:' || p_client_input_id::text || ':' || extensions.gen_random_uuid()::text, v_units,
 				jsonb_build_object('sessionGenerations', jsonb_build_array(jsonb_build_object('sessionId', p_session_id,
 					'generation', (select memory_generation from public.qorpera_shared_sessions where id = p_session_id)))));
-			exit when v_attempt >= 3 or not exists (select 1 from jsonb_array_elements(v_result -> 'units') u
+			exit when v_attempt >= 2 or not exists (select 1 from jsonb_array_elements(v_result -> 'units') u
 				where u.value ->> 'reason' = 'memory_generation_stale');
 		end loop;
 		-- A folder made meanwhile is no failure; the file must be there now.
@@ -294,7 +305,7 @@ begin
 		'manifestSha256', v_entry.manifest_sha256, 'fileSha256', v_entry.file_sha256, 'path', v_entry.path);
 end $$;
 
--- 5. The post, the input trigger and the zoom ---------------------------------------------------------------------------
+-- 5. The post and the input trigger ------------------------------------------------------------------------------------
 
 -- The post checks the images before the sponsor and the locks, for a clear refusal; the trigger's check below decides.
 select pg_temp.chat_images_replace('public.qorpera_folder_post_room_message(uuid,uuid,jsonb,uuid,bigint)'::regprocedure,
@@ -329,35 +340,41 @@ select pg_temp.chat_images_replace('public.qorpera_require_member_session_attach
 	|| E'\t\treturn new;\n'
 	|| E'\tend if;');
 
--- The zoom: a member's image carries its path (none for an agent's attachment).
-select pg_temp.chat_images_replace('public.qorpera_memory_event(uuid,public.qorpera_session_events,bigint)'::regprocedure,
-	E'\t\tv_attachments := (select jsonb_agg(jsonb_build_object(''mediaType'', a.value -> ''mediaType'', ''bytes'', a.value -> ''bytes'') order by a.n)\n',
-	E'\t\t-- 20260930260000: a member''s image is a folder file; its path, for an agent to open.\n'
-	|| E'\t\tv_attachments := (select jsonb_agg(jsonb_build_object(''mediaType'', a.value -> ''mediaType'', ''bytes'', a.value -> ''bytes'')\n'
-	|| E'\t\t\t\t|| jsonb_strip_nulls(jsonb_build_object(''path'',\n'
-	|| E'\t\t\t\t\tpublic.qorpera_room_image_path(p_event.session_id, v_input.client_input_id, a.value))) order by a.n)\n');
-
 -- 6. The orphan sweep ---------------------------------------------------------------------------------------------------
 
 -- A day after an input's last upload: with no input, its images folder is deleted; with one, the images it does not
--- list. One memory commit per input as the platform, naming the conversation's generation, then the row goes. Rows
--- another transaction holds are skipped (a commit in flight); a failure leaves its row for the next hour. An input
--- posted while the sweep deleted waits for the conversation's lock and is then refused, or is found after the commit
--- and undoes it.
+-- list; then the row goes. A row with nothing to delete just goes, many in one call. A deletion is one memory commit as
+-- the platform, naming the conversation's generation, and the first that saves ends the call: its locks, the company's
+-- clock last, stay held to the end of the transaction, and nothing is locked after the clock. A commit that fails is
+-- rolled back with every lock it took, and its row waits for a later call.
+-- Each row takes its company KEY SHARE first (rank 0; skipped while a purge holds it, and a company being deleted is no
+-- candidate), then the row FOR UPDATE (skipped while a begin or a commit holds it). An input posted while the sweep
+-- deletes waits for the conversation's lock and is then refused, or is found after the commit and undoes it.
 create function public.qorpera_room_image_orphan_sweep(p_limit integer default 100)
 returns integer language plpgsql security definer set search_path = '' set lock_timeout = '5s' as $$
 declare
-	v_row public.qorpera_room_image_uploads%rowtype; v_input public.qorpera_session_inputs%rowtype;
+	v_candidate record; v_row public.qorpera_room_image_uploads%rowtype; v_input public.qorpera_session_inputs%rowtype;
 	v_root text; v_dir text; v_folder public.qorpera_folder_entries%rowtype; v_units jsonb; v_result jsonb;
-	v_claims text; v_claim_role text; v_done integer := 0;
+	v_claims text; v_claim_role text; v_saved boolean; v_done integer := 0;
 begin
 	if current_setting('transaction_isolation') <> 'read committed' then
 		raise exception 'The chat image sweep runs at read committed' using errcode = '25000'; end if;
-	for v_row in select * from public.qorpera_room_image_uploads where updated_at < clock_timestamp() - interval '24 hours'
-		order by updated_at limit greatest(coalesce(p_limit, 100), 0) for update skip locked
+	for v_candidate in select u.session_id, u.client_input_id, s.profile_id
+		from public.qorpera_room_image_uploads u join public.qorpera_shared_sessions s on s.id = u.session_id
+		where u.updated_at < clock_timestamp() - interval '24 hours'
+			and not exists (select 1 from public.qorpera_company_deletions d where d.profile_id = s.profile_id)
+		order by u.updated_at limit greatest(coalesce(p_limit, 100), 0)
 	loop
+		perform 1 from public.qorpera_profiles where id = v_candidate.profile_id for key share skip locked;
+		if not found then continue; end if;
+		select * into v_row from public.qorpera_room_image_uploads
+		where session_id = v_candidate.session_id and client_input_id = v_candidate.client_input_id
+			and updated_at < clock_timestamp() - interval '24 hours'
+		for update skip locked;
+		if not found then continue; end if;
+		v_units := '[]'::jsonb; v_saved := false;
 		begin
-			v_input := null; v_folder := null; v_units := '[]'::jsonb;
+			v_input := null; v_folder := null;
 			select * into v_input from public.qorpera_session_inputs
 			where session_id = v_row.session_id and client_input_id = v_row.client_input_id;
 			v_root := public.qorpera_room_image_root(v_row.session_id);
@@ -405,14 +422,16 @@ begin
 			delete from public.qorpera_room_image_uploads
 			where session_id = v_row.session_id and client_input_id = v_row.client_input_id;
 			v_done := v_done + 1;
+			v_saved := jsonb_array_length(v_units) > 0;
 		exception when others then
 			raise warning 'Chat image sweep left input % of conversation % for later: %', v_row.client_input_id, v_row.session_id, sqlerrm;
 		end;
+		exit when v_saved;
 	end loop;
 	return v_done;
 end $$;
 
--- Hourly through pg_cron, with its run log kept a day, as the folder erasure (20260928469190).
+-- Every minute through pg_cron, with its run log kept a day, as the folder erasure (20260928469190).
 create function public.qorpera_schedule_room_image_sweep()
 returns jsonb language plpgsql set search_path = '' as $$
 declare v_step bigint; v_clean bigint;
@@ -422,7 +441,7 @@ begin
 		return jsonb_build_object('schema', 'qorpera.room-image-sweep-schedule/v1', 'scheduled', false);
 	end if;
 	begin
-		v_step := cron.schedule('qorpera-room-image-sweep', '41 * * * *', 'select public.qorpera_room_image_orphan_sweep()');
+		v_step := cron.schedule('qorpera-room-image-sweep', '* * * * *', 'select public.qorpera_room_image_orphan_sweep()');
 		v_clean := cron.schedule('qorpera-room-image-sweep-log', '29 3 * * *',
 			$q$delete from cron.job_run_details where jobid = (select jobid from cron.job where jobname = 'qorpera-room-image-sweep')
 				and end_time < now() - interval '1 day'$q$);
