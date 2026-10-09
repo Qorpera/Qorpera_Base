@@ -9,6 +9,7 @@ import type {
 	CompanyComputerOperation,
 	CompanyComputerToolContent,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import type { JsonValue } from "@qorpera/contracts";
 import { CompanyComputerGuestEndpoint } from "@qorpera/runtime/cloud-company-computer-endpoint";
 import { CompanyComputerScreenActionGate } from "@qorpera/runtime/cloud-company-computer-leases";
 import {
@@ -343,66 +344,95 @@ async function fixture(
 }
 
 describe("native runtime to office transport (real TLS, synthetic SQL and guest effects)", () => {
-	it.each(["shell", "transfer"] as const)(
-		"connects %s through the service factory, native ledger and TLS guest boundary",
-		async (kind) => {
-			const f = await fixture();
-			const control: CloudNativeToolOperationControlPlane = {
-				beginToolOperation: vi.fn(async (binding, input) => ({
-					run_id: binding.runId,
-					receipt_id: input.receiptId,
-					state: "executing",
-					result: null,
-					output_snapshot_id: null,
-					proposal_id: null,
-				})),
-				completeToolOperation: vi.fn(async (binding, input) => {
-					f.order.push("native:complete");
-					return { run_id: binding.runId, receipt_id: input.receiptId, state: "completed", result: input.result };
-				}),
-			};
-			const operations = new CloudNativeToolOperations(f.run, control);
-			const factory = createHttpCompanyComputerSessionFactory({
-				url: f.url,
-				token: f.token,
-				holder: () => f.holder,
-				registry: f.registry,
-			});
-			const session = await factory(f.run, operations);
-			if (!session) throw new Error("Missing admitted office session");
-			cleanups.push(session.close);
-			expect(session.tools.map((tool) => tool.name)).toEqual([
-				"computer_screen",
-				"computer_shell",
-				"computer_transfer",
-			]);
-			const tool = session.tools.find((tool) => tool.name === `computer_${kind}`)!;
-			const context = { companyId: f.run.identity.companyId, runId: f.run.identity.runId, signal: f.run.signal };
-			const action =
-				kind === "shell"
-					? f.operation.arguments
-					: {
-							kind: "transfer",
-							action: "export",
-							source: { realm: "company_computer", path: "reports/$(literal).bin" },
-							destination: { realm: "object_storage" },
-							mediaType: "application/octet-stream",
-						};
-			const args = { operationKey: "native-office:1", action };
-			expect(await tool.execute(args, context)).toEqual({ kind: "text", value: "test" });
-			expect(await tool.execute(args, context)).toEqual({ kind: "text", value: "test" });
-			expect(f.perform).toHaveBeenCalledOnce();
-			expect(f.perform.mock.calls[0][0]).toEqual(action);
-			expect(control.beginToolOperation).toHaveBeenCalledOnce();
-			expect(control.completeToolOperation).toHaveBeenCalledOnce();
-			expect(f.order.indexOf("qorpera_native_office_operation:finish")).toBeLessThan(
-				f.order.indexOf("native:complete"),
-			);
-			f.run.close();
-			await session.close();
-			expect(f.physicalClose).toHaveBeenCalledOnce();
+	it("connects shell through the service factory, native ledger and TLS guest boundary", async () => {
+		const f = await fixture();
+		const control: CloudNativeToolOperationControlPlane = {
+			beginToolOperation: vi.fn(async (binding, input) => ({
+				run_id: binding.runId,
+				receipt_id: input.receiptId,
+				state: "executing",
+				result: null,
+				output_snapshot_id: null,
+				proposal_id: null,
+			})),
+			completeToolOperation: vi.fn(async (binding, input) => {
+				f.order.push("native:complete");
+				return { run_id: binding.runId, receipt_id: input.receiptId, state: "completed", result: input.result };
+			}),
+		};
+		const operations = new CloudNativeToolOperations(f.run, control);
+		const factory = createHttpCompanyComputerSessionFactory({
+			url: f.url,
+			token: f.token,
+			holder: () => f.holder,
+			registry: f.registry,
+		});
+		const session = await factory(f.run, operations);
+		if (!session) throw new Error("Missing admitted office session");
+		cleanups.push(session.close);
+		expect(session.tools.map((tool) => tool.name)).toEqual([
+			"computer_screen",
+			"computer_shell",
+			"computer_transfer",
+		]);
+		const tool = session.tools.find((tool) => tool.name === "computer_shell")!;
+		const context = { companyId: f.run.identity.companyId, runId: f.run.identity.runId, signal: f.run.signal };
+		const action = f.operation.arguments;
+		const args = { operationKey: "native-office:1", action };
+		expect(await tool.execute(args, context)).toEqual({ kind: "text", value: "test" });
+		expect(await tool.execute(args, context)).toEqual({ kind: "text", value: "test" });
+		expect(f.perform).toHaveBeenCalledOnce();
+		expect(f.perform.mock.calls[0][0]).toEqual(action);
+		expect(control.beginToolOperation).toHaveBeenCalledOnce();
+		expect(control.completeToolOperation).toHaveBeenCalledOnce();
+		expect(f.order.indexOf("qorpera_native_office_operation:finish")).toBeLessThan(
+			f.order.indexOf("native:complete"),
+		);
+		f.run.close();
+		await session.close();
+		expect(f.physicalClose).toHaveBeenCalledOnce();
+	});
+	// Company objects carried a transfer's bytes and are gone (legacy removal, step C): the tool's answer is a refusal.
+	const transfers: { [key: string]: JsonValue }[] = [
+		{
+			kind: "transfer",
+			action: "export",
+			source: { realm: "company_computer", path: "reports/$(literal).bin" },
+			destination: { realm: "object_storage" },
+			mediaType: "application/octet-stream",
 		},
-	);
+		{
+			kind: "transfer",
+			action: "import",
+			source: { realm: "object_storage", assetId: "6f1d2c3b-4a59-4e8f-9b7a-1c2d3e4f5a6b", sha256: "a".repeat(64) },
+			destination: { realm: "company_computer", path: "inbox/report.bin" },
+		},
+	];
+	it.each(transfers)("refuses a file transfer ($action) before the database and any receipt", async (action) => {
+		const f = await fixture();
+		const control = { beginToolOperation: vi.fn(), completeToolOperation: vi.fn() };
+		const factory = createHttpCompanyComputerSessionFactory({
+			url: f.url,
+			token: f.token,
+			holder: () => f.holder,
+			registry: f.registry,
+		});
+		const session = await factory(f.run, new CloudNativeToolOperations(f.run, control));
+		if (!session) throw new Error("Missing admitted office session");
+		cleanups.push(session.close);
+		const tool = session.tools.find((tool) => tool.name === "computer_transfer")!;
+		const refused = tool.execute(
+			{ operationKey: "native-office:transfer", action },
+			{ companyId: f.run.identity.companyId, runId: f.run.identity.runId, signal: f.run.signal },
+		);
+		await expect(refused).rejects.toBeInstanceOf(CloudToolAuthorizeRefusal);
+		await expect(refused).rejects.toThrow("File transfer is not available on this computer yet.");
+		expect(control.beginToolOperation).not.toHaveBeenCalled();
+		expect(f.createSession).not.toHaveBeenCalled();
+		expect(f.perform).not.toHaveBeenCalled();
+		expect(f.order).not.toContain("qorpera_native_office_operation:authorize");
+		expect(f.order).not.toContain("qorpera_native_office_operation:begin");
+	});
 	it("tells the model why the database refused a screenshot at its authorize, before any receipt or office work", async () => {
 		const message =
 			"Screenshots are not available on this computer yet. For a web page, use a browser snapshot instead.";

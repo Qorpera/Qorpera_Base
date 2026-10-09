@@ -36,6 +36,7 @@ import {
 import type { CompanyComputerCloudEndpoint } from "./cloud-company-computer-tools.ts";
 import { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
 import { type CloudNativeToolRun, cloudToolRequest, isNativeJobHolder } from "./cloud-native-tool-authority.ts";
+import { CloudToolAuthorizeRefusal } from "./cloud-native-tool-boundary.ts";
 import { cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations.ts";
 
 /** The vault, for a vault_fill (company accounts A1-3): HttpCloudSecretBrokerClient. */
@@ -193,6 +194,10 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 	): Promise<void> {
 		this.#validate(operation, lease);
 		if (!isDeepStrictEqual(identity, this.#run.identity)) throw new Error("OFFICE_NATIVE_IDENTITY_CHANGED");
+		// Company objects carried a transfer's bytes and are gone (legacy removal, step C). The refusal is the tool's
+		// answer, in words for the model, before the database or any receipt, as the database refuses a screenshot.
+		if (operation.tool === "computer_transfer")
+			throw new CloudToolAuthorizeRefusal("File transfer is not available on this computer yet.");
 		await this.#effects.assertAuthorized({ operation, identity, lease, receipt: null }, signal);
 	}
 	async #call(
