@@ -11,7 +11,6 @@ import type { JsonValue } from "@qorpera/contracts";
 import { planCompanyComputerStateAdoption } from "@qorpera/runtime/cloud-company-computer-adoption";
 import { CompanyComputerBrowserNetworkPausedError } from "@qorpera/runtime/cloud-company-computer-browser-control";
 import { CompanyComputerGuestEndpoint } from "@qorpera/runtime/cloud-company-computer-endpoint";
-import type { CompanyComputerFileExportPublisher } from "@qorpera/runtime/cloud-company-computer-file-transfers";
 import {
 	assertCompanyComputerGuestLayout,
 	type CompanyComputerBrowserAccess,
@@ -407,22 +406,7 @@ function automationFixture(
 		run: vi.fn(async () => ({ code: 0, stdout: "ok", stderr: "" })),
 		capturePng: vi.fn(async () => captureBytes()),
 		readFile: vi.fn(async () => new Uint8Array([0, 255, 10])),
-	};
-	const fileExports: CompanyComputerFileExportPublisher = {
-		publish: vi.fn<CompanyComputerFileExportPublisher["publish"]>(async (bytes, lease, _effect, operation) => ({
-			schema: "qorpera.file-transfer-asset/v1",
-			assetId: computerId(51),
-			sha256: createHash("sha256").update(bytes).digest("hex"),
-			bytes: bytes.length,
-			mediaType: "application/octet-stream",
-			source: {
-				realm: "company_computer",
-				companyComputerId: lease.binding.companyComputerId,
-				screenId: lease.binding.screenId,
-				path: (operation.arguments as { source: { path: string } }).source.path,
-			},
-			destination: { realm: "object_storage" },
-		})),
+		writeFile: vi.fn(async () => undefined),
 	};
 	const screenshots: CompanyComputerScreenshotPublisher = {
 		publish: vi.fn(async (bytes: Uint8Array) => ({
@@ -437,7 +421,6 @@ function automationFixture(
 		layout,
 		boundary,
 		screenshots,
-		fileExports,
 		...(withBrowser ? { browser } : {}),
 		...(withCommands ? { commands } : {}),
 		...(screenBrowser ? { screenBrowser } : {}),
@@ -473,7 +456,6 @@ function automationFixture(
 		browser,
 		commands,
 		screenshots,
-		fileExports,
 		effects,
 		gate,
 		perform,
@@ -578,46 +560,32 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 		expect(f.context.close).toHaveBeenCalledOnce();
 	});
 
-	it("exports binary bytes from a literal workbench path with the original receipt and no shell", async () => {
-		const f = automationFixture(false);
-		const action: CompanyComputerAction = {
-			kind: "transfer",
-			action: "export",
-			source: { realm: "company_computer", path: "reports/$(literal); 'file'.bin" },
-			destination: { realm: "object_storage" },
-			mediaType: "application/octet-stream",
-		};
-		const effect = computerEffect(),
-			lease = computerLease();
-		const result = await f.perform(action, lease, effect);
-		expect(f.commands.readFile).toHaveBeenCalledOnce();
-		expect(f.commands.readFile).toHaveBeenCalledWith({ path: action.source.path, signal: expect.any(AbortSignal) });
-		expect(f.commands.run).not.toHaveBeenCalled();
-		expect(f.fileExports.publish).toHaveBeenCalledExactlyOnceWith(
-			new Uint8Array([0, 255, 10]),
-			lease,
-			expect.objectContaining({
-				receiptId: effect.receiptId,
-				idempotencyKey: effect.idempotencyKey,
-				identity: effect.identity,
-			}),
-			{ ...computerOperation(), tool: "computer_transfer", arguments: action },
-		);
-		expect(result).toEqual({ kind: "json", value: await vi.mocked(f.fileExports.publish).mock.results[0].value });
-	});
-	it("does not publish an export after file reading fails", async () => {
-		const f = automationFixture(false);
-		vi.mocked(f.commands.readFile!).mockRejectedValue(new Error("WORKBENCH_FILE_CHANGED"));
-		await expect(
-			f.perform({
+	// The office carries no file import or export (legacy removal, step C); the tool stays in the catalog.
+	it.each<[string, CompanyComputerAction]>([
+		[
+			"OFFICE_FILE_EXPORT_UNAVAILABLE",
+			{
 				kind: "transfer",
 				action: "export",
-				source: { realm: "company_computer", path: "file.bin" },
+				source: { realm: "company_computer", path: "reports/$(literal); 'file'.bin" },
 				destination: { realm: "object_storage" },
 				mediaType: "application/octet-stream",
-			}),
-		).rejects.toThrow("WORKBENCH_FILE_CHANGED");
-		expect(f.fileExports.publish).not.toHaveBeenCalled();
+			},
+		],
+		[
+			"OFFICE_FILE_IMPORT_UNAVAILABLE",
+			{
+				kind: "transfer",
+				action: "import",
+				source: { realm: "object_storage", assetId: computerId(51), sha256: "a".repeat(64) },
+				destination: { realm: "company_computer", path: "incoming/$(literal).bin" },
+			},
+		],
+	])("answers a file transfer with %s and reads, writes or runs nothing", async (code, action) => {
+		const f = automationFixture(false);
+		await expect(f.perform(action)).rejects.toThrow(code);
+		expect(f.commands.readFile).not.toHaveBeenCalled();
+		expect(f.commands.writeFile).not.toHaveBeenCalled();
 		expect(f.commands.run).not.toHaveBeenCalled();
 	});
 	it.each(["target", "tab"] as const)(
