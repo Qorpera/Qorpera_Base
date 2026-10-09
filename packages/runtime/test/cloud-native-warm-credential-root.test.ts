@@ -81,9 +81,6 @@ async function fixture(warmIdleMs?: number) {
 			async beginLogin() {
 				throw new Error("No login expected");
 			},
-			async execute() {
-				throw new Error("Legacy execution forbidden");
-			},
 		},
 		cloudRuntime: { execute, prepareSpare, disposeSpares },
 		masterKey: key,

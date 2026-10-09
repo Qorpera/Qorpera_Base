@@ -8,13 +8,8 @@ import {
 import type { JsonValue } from "@qorpera/contracts";
 import { isNativeHostPublishableKey } from "./cloud-native-host-dispatch.ts";
 import type { CloudRunnerNativeAuthority } from "./cloud-runner-broker.ts";
-import type {
-	CloudRunnerSandboxGuarantees,
-	CloudRunnerSandboxProcess,
-	CloudRunnerSandboxRequest,
-} from "./cloud-runner-sandbox.ts";
+import type { CloudRunnerSandboxGuarantees, CloudRunnerSandboxProcess } from "./cloud-runner-sandbox.ts";
 
-const BRIDGE_REQUEST_SCHEMA = "qorpera.native-provider-execution/v1";
 const BRIDGE_CANCEL_SCHEMA = "qorpera.native-provider-cancel/v1";
 const BRIDGE_RESPONSE_SCHEMA = "qorpera.native-provider-result/v1";
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -164,42 +159,6 @@ function bridgeAuthorityProjection(authority: CloudRunnerNativeAuthority): JsonV
 	};
 }
 
-function bridgeProjection(authority: CloudRunnerNativeAuthority, request: CloudRunnerSandboxRequest): JsonValue {
-	return {
-		schema: BRIDGE_REQUEST_SCHEMA,
-		authority: bridgeAuthorityProjection(authority),
-		job: {
-			job_id: request.job.jobId,
-			job_type: request.job.jobType,
-			required_capability: request.job.requiredCapability,
-			attempt_count: request.job.attemptCount,
-			payload: request.job.payload,
-		},
-		input: {
-			company_base_root: request.input.companyBaseRoot,
-			company_root: request.input.companyRoot,
-			proposal_root: request.input.proposalRoot ?? null,
-			execution_context_path: request.input.executionContextPath,
-			queued_inputs_path: request.input.queuedInputsPath,
-			transcript_path: request.input.transcriptPath,
-			substrate_manifest_path: request.input.substrateManifestPath,
-			operations_path: request.input.operationsPath,
-			artifacts_root: request.input.artifactsRoot,
-			attachments_root: request.input.attachmentsRoot,
-			output_root: request.outputRoot,
-		},
-		limits: {
-			wall_time_ms: request.limits.wallTimeMs,
-			memory_bytes: request.limits.memoryBytes,
-			cpu_count: request.limits.cpuCount,
-			max_pids: request.limits.maxPids,
-			max_input_bytes: request.limits.maxInputBytes,
-			max_output_bytes: request.limits.maxOutputBytes,
-			max_result_bytes: request.limits.maxResultBytes,
-		},
-	};
-}
-
 /** The fixed code a provider's refusal carries (nativeProviderFailureCode), if well formed. */
 function bridgeRefusalCode(value: unknown): string | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
@@ -270,23 +229,6 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 		return new HttpNativeProviderIdentityBridge(this.#loginUrl, this.#fetch, { signal: this.#signal }).beginLogin(
 			authorization,
 		);
-	}
-
-	/** The snapshot-v1 execution request. No runner sends it any more; it goes with the native
-	 * host's legacy lane and the tests that still drive that lane (legacy sweep step C, C-R3). */
-	async start(
-		authority: CloudRunnerNativeAuthority,
-		request: CloudRunnerSandboxRequest,
-	): Promise<CloudRunnerSandboxProcess> {
-		if (
-			!this.#bridgeToken ||
-			authority.authenticationMode !== "native_subscription" ||
-			request.job.jobType !== "agent_turn" ||
-			request.job.requiredCapability !== "agent_turn"
-		) {
-			throw new Error("Native provider bridge received an unsupported execution");
-		}
-		return this.#startExecution(authority, bridgeProjection(authority, request));
 	}
 
 	async startCompany(

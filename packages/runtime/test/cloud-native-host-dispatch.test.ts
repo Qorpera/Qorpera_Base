@@ -574,9 +574,6 @@ async function hostServiceFixture(outcome: "succeed" | "fail" | "wait" = "succee
 			beginLogin: async () => {
 				throw new Error("No login");
 			},
-			execute: async () => {
-				throw new Error("No model");
-			},
 		},
 	});
 	const { dispatch, sent } = dispatchFixture();
