@@ -976,9 +976,11 @@ The steps, through the object gateway's `/v1/member-session-attachments` routes 
 
 The begin's refusals: 42501 "Member attachment authority is required" (not a member's token), 22023 "Member attachment
 is invalid" (no input id, or an image outside the limits above), 42501 "Member attachment session is unavailable"
-(not a member of the open conversation's room), 42501 "Submitted input attachments cannot change" (the input is posted),
-55000 "Attachment folder is unavailable" (no root), 23505 "Attachment input id is bound to another member" and 54000
-"Member attachment capacity is reached" (a sixth image, or more than 8 MiB; the same image again does not count). The
+(not a member of the open conversation's room, or the company was deleted meanwhile), 42501 "Submitted input
+attachments cannot change" (the input is posted), 55000 "Attachment folder is unavailable" (no root), 55000 "Member
+attachment could not be saved" (the sweep removed the input's uploads meanwhile; begin again), 23505 "Attachment input
+id is bound to another member" and 54000 "Member attachment capacity is reached" (a sixth image, or more than 8 MiB;
+the same image again does not count). The
 commit's refusals: 42501 "Member attachment authority is required" (not the service role), 22023 "Member attachment is
 invalid" (`file` other than exactly those five keys with `executable` false, or an image outside the limits), 42501
 "Member attachment session is unavailable" (no such conversation, an input id nobody began, another member's input, or
@@ -991,8 +993,8 @@ object is unavailable" (the file is gone).
 
 Images no input lists are deleted a day after the input's last upload, by a sweep every minute
 (`qorpera_room_image_orphan_sweep`, pg_cron job `qorpera-room-image-sweep`, at most one folder commit per call): the
-whole folder of an input never posted, and the images a posted input does not list. An erase of the conversation
-(memory step M3) deletes its images with its blocks. The memory zoom's `attachments` stay `{mediaType, bytes}` for
+whole folder of an input never posted, and the images a posted input does not list. Erasing a message (memory step
+M3) deletes that message's images (its input's folder) with its lines. The memory zoom's `attachments` stay `{mediaType, bytes}` for
 now; an image's path comes to the zoom with the runtime that opens it.
 
 ## 3. Realtime

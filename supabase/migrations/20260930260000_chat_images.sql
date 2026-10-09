@@ -180,6 +180,8 @@ begin
 		raise exception 'Attachment folder is unavailable' using errcode = '55000'; end if;
 	-- The company first (KEY SHARE, rank 0), as the commit and the sweep take it.
 	perform 1 from public.qorpera_profiles where id = v_room.profile_id for key share;
+	if not found then
+		raise exception 'Member attachment session is unavailable' using errcode = '42501'; end if;
 	insert into public.qorpera_room_image_uploads(session_id, client_input_id, environment_id, user_id)
 	values (p_session_id, p_client_input_id, v_room.environment_id, v_user)
 	on conflict (session_id, client_input_id) do nothing;

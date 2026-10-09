@@ -451,8 +451,8 @@ images/<clientInputId>/<sha256>.<png|jpg|gif|webp>
   tree: the tree writer never reads, writes or deletes under it. Only the platform writes there, through the same
   memory commit, and every change names the conversation's generation, as a block's does. The object gateway's save
   (`qorpera_room_image_commit`) writes an image; the orphan sweep (`qorpera_room_image_orphan_sweep`) deletes the
-  images no input lists, a day after the input's last upload; an erase of the conversation deletes them with its
-  blocks.
+  images no input lists, a day after the input's last upload; erasing a message (M3) deletes that message's images
+  (its input's folder) with its lines.
 
 - **`tree.toml`** is exactly three lines, in this order and spelling, each ending in a newline: `format = 1`,
   `conversation = "<session uuid>"` (lower-case) and `node_bytes = <n>`, n from 1 to 1,024 with no leading zero
