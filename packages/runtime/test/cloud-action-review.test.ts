@@ -65,6 +65,8 @@ describe("which calls are reviewed", () => {
 		["list_hooks", {}, "read"],
 		["read_event", { deliveryId: "73100000-0000-4000-8000-00000000000a" }, "read"],
 		["find_mail", { to: "agents+stripe@northwind.qorpera.mail", waitSeconds: 30 }, "read"],
+		// Summary trees (M1b-3): zoom reads a conversation.
+		["zoom", { conversation: "thread:ada", line: "0+8" }, "read"],
 		// A received attachment saved into the company folder, through the governed gateway (M2c-1).
 		[
 			"save_attachment",

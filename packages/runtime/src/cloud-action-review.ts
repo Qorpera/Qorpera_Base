@@ -197,6 +197,8 @@ export function cloudActionEffect(
 		// Interfaces (I8): a page and a table, read with the run's own authority.
 		case "interface_read":
 		case "table_read":
+		// Summary trees (M1b-3): a conversation's lines and messages, as read_context reads the run's own.
+		case "zoom":
 			return "read";
 		// A skill is guidance in the Company File, written through the same governed gateway; deleting one is a
 		// deletion, as company_delete (and on folder-v2 its approval is recorded the same way, P20).
