@@ -163,6 +163,8 @@ export class FakeCore implements FolderCore {
 	/** When set, the storage profile of an upload waits for it, and so does a commit. */
 	uploadProfileGate: Promise<void> | undefined;
 	commitGate: Promise<void> | undefined;
+	/** Called before each commit is asked, with how many were asked before it: it may hold it. */
+	commitHook: ((asked: number) => Promise<void> | undefined) | undefined;
 
 	seed(entries: CoreEntry[]): void {
 		for (const e of entries) this.entries.set(e.path, e);
@@ -351,6 +353,7 @@ export class FakeCore implements FolderCore {
 	 * not, and may be empty; once its command has ended, the view saves nothing else (42501). */
 	async commit(environmentId: string, actor: CommitActor, key: string, units: readonly unknown[]) {
 		await this.commitGate;
+		await this.commitHook?.(this.commits.length);
 		const final = "final" in actor;
 		const request = JSON.stringify({ final, units });
 		this.commits.push({ key, units: units as CommitUnit[], final });

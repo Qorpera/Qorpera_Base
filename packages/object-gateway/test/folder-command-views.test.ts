@@ -259,6 +259,8 @@ describe("shell commands' views", () => {
 			code: "VIEW_CLOSED",
 			message: "The view was ended",
 		});
+		// A publish that is not final does nothing there.
+		await expect(view.publish()).rejects.toMatchObject({ code: "VIEW_CLOSED", message: "The view was ended" });
 		// The machine asks again: the replay's answer is the report.
 		expect(await view.publish(true)).toEqual({
 			commitId: expect.any(String),
@@ -289,6 +291,7 @@ describe("shell commands' views", () => {
 		const last = await again.open();
 		await expect(last.list("", undefined)).rejects.toMatchObject({ code: "VIEW_CLOSED" });
 		await expect(last.mkdir("docs/more")).rejects.toMatchObject({ code: "VIEW_CLOSED" });
+		await expect(last.publish()).rejects.toMatchObject({ code: "VIEW_CLOSED" });
 		expect(await last.publish(true)).toMatchObject({
 			paths: [{ path: "docs/end.txt", outcome: "saved" }],
 			closed: true,
@@ -296,6 +299,62 @@ describe("shell commands' views", () => {
 		expect(new Set(again.core.commits.map((c) => c.key)).size).toBe(1);
 		// Answered, the view is gone: a machine that comes back hears it closed.
 		await expect(again.open()).rejects.toMatchObject({ code: "VIEW_CLOSED" });
+	});
+
+	it("keeps a view a renewal closes while its final is still being asked, for the final to be asked again", async () => {
+		const { core, service, open, cmd } = await company();
+		const first = await open();
+		await write(first, "docs/end.txt", "e");
+		// The core applies the final, which closes the view, and no try gets its answer; before the second try, a renewal
+		// hears the view closed.
+		core.commitFailures = { mode: "lost", count: 3 };
+		core.commitHook = (asked) => (asked === 1 ? service.renewLeases() : undefined);
+		expect(await first.publish(true)).toEqual({
+			commitId: null,
+			seq: null,
+			paths: [
+				{ path: "docs/end.txt", outcome: "not_applied", reason: "the save did not get through yet", kept: true },
+			],
+		});
+		core.commitHook = undefined;
+		expect(cmd.state).toBe("closed");
+		await expect(first.list("", undefined)).rejects.toMatchObject({
+			code: "VIEW_CLOSED",
+			message: "The view was ended",
+		});
+		// The command's program let go: its last call joins the view, with its pass, and the replay's answer is the
+		// report.
+		first.release();
+		await settle();
+		const last = await open();
+		await expect(last.publish()).rejects.toMatchObject({ code: "VIEW_CLOSED", message: "The view was ended" });
+		expect(await last.publish(true)).toEqual({
+			commitId: expect.any(String),
+			seq: expect.any(Number),
+			paths: [{ path: "docs/end.txt", outcome: "saved" }],
+			closed: true,
+		});
+		expect(core.commits).toHaveLength(4);
+		expect(new Set(core.commits.map((c) => c.key)).size).toBe(1);
+		expect(core.entries.get("docs/end.txt")?.fileSha256).toBe(hashOf("e"));
+		await expect(open()).rejects.toMatchObject({ code: "VIEW_CLOSED" });
+		// A final the core never applied, refused once a renewal heard the view closed otherwise: it did not close the
+		// view, which goes, and the machine hears why it closed.
+		const ended = await company();
+		const view = await ended.open();
+		await write(view, "docs/end.txt", "e");
+		ended.core.commitHook = async () => {
+			ended.cmd.state = "closed";
+			await ended.service.renewLeases();
+		};
+		await expect(view.publish(true)).rejects.toMatchObject({ code: "VIEW_CLOSED", message: "The view was ended" });
+		expect(ended.core.commits).toHaveLength(1);
+		expect(ended.core.entries.has("docs/end.txt")).toBe(false);
+		view.release();
+		await expect(ended.open()).rejects.toMatchObject({
+			code: "VIEW_CLOSED",
+			message: "The view's owner may not read this folder",
+		});
 	});
 
 	it("reports a final the core refuses whole, and why: the view stays open, with what it has pending", async () => {

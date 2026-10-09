@@ -421,17 +421,20 @@ In slice 4b the core opens a view of its own for an offline shell command (`comp
   closed.
 - **No answer.** A final whose commit got no answer is asked again, final, under its key and as the actor it was asked
   as, before anything else; until then the report says each path's save did not get through yet. The core may have
-  applied it, and so closed the view, and a renewal may then close the view here before the answer comes. The view
-  then stays, with that final, until it has an answer or the view has been idle as long as any other: the next `P`
-  with `final: true`, on the same connection or on a new one with the view's pass, asks the final again, and since the
-  core answers a replay on a closed view, given its pass, its answer is the report (`closed`). A new connection to
-  such a view does nothing else (`VIEW_CLOSED`), and a hello with another pass is `VIEW_REFUSED`.
+  applied it, and so closed the view, and a renewal may then close the view here before the answer comes, while the
+  final is still being asked or after. The view then stays, with that final, until it has an answer or the view has
+  been idle as long as any other: the next `P` with `final: true`, on the same connection or on a new one with the
+  view's pass, asks the final again, and since the core answers a replay on a closed view, given its pass, its answer
+  is the report (`closed`). If the core refuses it instead, the final did not close the view: the view goes, and the
+  machine hears `VIEW_CLOSED` with why it closed. Such a view does nothing else (`VIEW_CLOSED`, a `P` without `final`
+  included), and a hello with another pass is `VIEW_REFUSED`.
 - **Refused whole.** The core may refuse a change set whole, a final included: `denied` (42501: among others, a read
   of the command's that is no longer readable, or a change set other than the final once the command has ended),
   `stopped` (55000: the company is paused) or `invalid` (22023: among others, more than the core's 1000 units in one
   change set). The report then has `refused` with that reason, `commitId` and `seq` null, and each path `refused` and
   kept pending. The view stays open, so a final refused while the company is paused can be asked again once the pause
-  lifts. A boundary is never split: a final carrying more than 1000 units is refused `invalid` every time, and, as
+  lifts; but a final refused after a renewal closed the view meanwhile did not close it, and the machine hears
+  `VIEW_CLOSED` with why it closed. A boundary is never split: a final carrying more than 1000 units is refused `invalid` every time, and, as
   after any final refused for good, the office service closes that view itself (slice 4d,
   RUNTIME-FOLDER-COMPANY-MACHINES.md).
 - **The command's end.** Once the command's end is recorded (C1B §8), the core saves only the final. A change set it
@@ -441,8 +444,9 @@ In slice 4b the core opens a view of its own for an offline shell command (`comp
   does. Its renewals always say nothing is unsaved (no seat waits on a command).
 - **Tests.** `packages/object-gateway/test/folder-command-views.test.ts`, with the stand-in core, which saves only the
   final of a view whose command ended, closes the view with the final, and answers a replay on a closed view given its
-  pass, as the core does. Among them: a final refused whole, empty or not, and a final whose answers were all lost
-  until a renewal closed the view, asked again on the same connection and on a new one.
+  pass, as the core does. Among them: a final refused whole, empty or not; a final whose answers were all lost while
+  a renewal closed the view, after its tries or between them, asked again on the same connection and on a new one; and
+  a final refused once a renewal closed the view between its ask and its answer.
 
 ## Not here
 

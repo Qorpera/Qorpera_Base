@@ -236,6 +236,9 @@ class View {
 				readonly final: boolean;
 		  }
 		| undefined;
+	/** A final's commit is being asked: a renewal that closes the view meanwhile keeps it, as for a final with no
+	 * answer. */
+	askingFinal = false;
 	/** A boundary answered but not settled yet (the feed has not brought its change set). */
 	unsettled: Settlement | undefined;
 	/** What this view's saves and moves published, by path, newest last (as many as the readable versions kept per
@@ -268,6 +271,11 @@ class View {
 	/** A core view (a run's own, opened by the core), closed or not; an operator mount's view is not. */
 	get core(): boolean {
 		return this.#operator === undefined;
+	}
+
+	/** A final of its is out (being asked, or with no answer): it may be what closed the view, which stays for it. */
+	get finalOut(): boolean {
+		return this.askingFinal || this.unanswered?.final === true;
 	}
 
 	/** Who the core reads as. A core view's actor carries its pass, so it exists only while the view does (a boundary
@@ -421,8 +429,8 @@ export class FolderService {
 	async open(hello: Hello, bridge: BridgeInfo): Promise<ViewHandle> {
 		const grant = this.#grants.admit(hello, bridge);
 		let view = this.#views.get(grant.key);
-		// A view that closed while a final of its had no answer stays, joined only to ask that final again.
-		const asksFinal = view?.closed !== undefined && view.unanswered?.final === true;
+		// A view that closed while a final of its was out stays, joined only to ask that final again.
+		const asksFinal = view?.closed !== undefined && view.finalOut;
 		// Joining an open view (or one kept for its final) takes the pass, and the company folder, it was opened with. A
 		// hello the core has not checked yet never locks out another: while it is being checked the other is asked to try
 		// again, and an unchecked view is replaced.
@@ -471,7 +479,7 @@ export class FolderService {
 		try {
 			view.loading ??= this.#firstLoad(view);
 			await view.loading;
-			if (view.closed && !view.unanswered?.final) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
+			if (view.closed && !view.finalOut) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
 			// A core view is served only to the machines its kind and machine name: a desktop to its own company machine.
 			if (view.core && !view.access?.admits(bridge))
 				throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
@@ -657,14 +665,25 @@ export class FolderService {
 		view.unsettled = undefined;
 		// The pass goes with it: a closed view makes no more calls, but a final with no answer asked again as it was.
 		view.lease = undefined;
-		// That final may be what closed the view: the view stays where its machine finds it again, until it has been idle
-		// as long as any other.
-		if (view.unanswered?.final) {
-			if (view.connections === 0) view.idleSince ??= this.#now();
-		} else if (this.#views.get(view.key) === view) this.#views.delete(view.key);
+		this.#forgetClosed(view);
 		for (const sink of view.sinks) sink.closed(ErrorCode.viewClosed, reason);
 		view.sinks.clear();
 		this.#log(`folder-service: ${view.key} closed: ${reason}`);
+	}
+
+	/** Forgets a closed view, unless a final of its is out: that final may be what closed it, so the view stays where its
+	 * machine finds it again, until it has been idle as long as any other. */
+	#forgetClosed(view: View): void {
+		if (view.finalOut) {
+			if (view.connections === 0) view.idleSince ??= this.#now();
+		} else if (this.#views.get(view.key) === view) this.#views.delete(view.key);
+	}
+
+	/** A final that did not close its view, which closed otherwise (a renewal heard why): the view goes now, as any
+	 * closed one, and the machine hears why it closed. */
+	#closedOtherwise(view: View): ProtocolError {
+		this.#forgetClosed(view);
+		return new ProtocolError(ErrorCode.viewClosed, view.closed ?? "The view is closed");
 	}
 
 	/** Drops a core view no machine holds (after its last boundary). A core that may count it as having unsaved changes
@@ -1254,12 +1273,12 @@ export class FolderService {
 				if (!answer) return { commitId: null, seq: null, paths: notYet(earlier.plan) };
 				view.unanswered = undefined;
 				if (answer.commitId) return await this.#closedBy(view, earlier.plan, answer, []);
-				// Refused: the final did not close the view, which goes now, as any closed one.
-				if (this.#views.get(view.key) === view) this.#views.delete(view.key);
 			}
-			// A final that finds its view closed otherwise did not close it: the machine hears why it closed.
-			throw new ProtocolError(ErrorCode.viewClosed, view.closed);
+			// Refused, or a final that finds its view closed otherwise: it did not close the view.
+			throw this.#closedOtherwise(view);
 		}
+		// A view kept for its final takes nothing else.
+		if (view.closed && view.finalOut) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
 		if (!pending || view.closed) return { commitId: null, seq: null, paths: [] };
 		return await this.#boundaryOf(view, pending, final);
 	}
@@ -1282,6 +1301,8 @@ export class FolderService {
 			if (!answer) return { commitId: null, seq: null, paths: notYet(earlier.plan) };
 			view.unanswered = undefined;
 			if (earlier.final && answer.commitId) return await this.#closedBy(view, earlier.plan, answer, []);
+			// A final refused once a renewal had closed the view meanwhile did not close it.
+			if (earlier.final && view.closed) throw this.#closedOtherwise(view);
 			// A command's change set refused whole is not settled: what it carried stays pending, and this boundary plans
 			// it again.
 			if (answer.commitId || !view.access?.command) {
@@ -1329,14 +1350,22 @@ export class FolderService {
 					if (node?.kind === "file") made.set(path, node.version);
 				}
 		// The actor is read once: a renewal that closes the view between two tries of a final (which closed it) does not
-		// stop the next try, which the core answers as a replay.
+		// stop the next try, which the core answers as a replay. Nor does it drop the view, which stays for the final.
 		const actor = view.actor;
-		const answer = await this.#commit(view, actor, key, units, final);
+		view.askingFinal = final;
+		let answer: Answer | undefined;
+		try {
+			answer = await this.#commit(view, actor, key, units, final);
+		} finally {
+			view.askingFinal = false;
+		}
 		if (!answer) {
 			view.unanswered = { key, actor, units, plan, made, final };
 			return { commitId: null, seq: null, paths: [...entries, ...dropped, ...notYet(plan)] };
 		}
 		if (final && answer.commitId) return await this.#closedBy(view, plan, answer, [...entries, ...dropped]);
+		// A final refused once a renewal had closed the view meanwhile did not close it.
+		if (final && view.closed) throw this.#closedOtherwise(view);
 		// A command's change set refused whole (its command ended, so only the final saves; or a final the core refused)
 		// is not settled: what it carried stays pending, for the final to carry, and the report says why. A desktop's is
 		// let go.
