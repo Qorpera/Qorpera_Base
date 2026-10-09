@@ -132,7 +132,7 @@ do $$
 declare
 	c_env constant uuid := '63400000-0000-4000-8000-000000000020'; c_profile constant uuid := '63400000-0000-4000-8000-000000000010';
 	c_a constant uuid := '63400000-0000-4000-8000-0000000000a1'; c_member constant uuid := '63400000-0000-4000-8000-000000000002';
-	p jsonb; b jsonb; r public.qorpera_execution_runs%rowtype; t jsonb; a jsonb; l jsonb; o jsonb;
+	p jsonb; b jsonb; r public.qorpera_execution_runs%rowtype; t jsonb; a jsonb; l jsonb; o jsonb; k text; v jsonb; e timestamptz;
 begin
 	p := pg_temp.run(c_a, 'human', c_member);
 	b := pg_temp.native(p);
@@ -180,6 +180,20 @@ begin
 	perform pg_temp.raises_like(format('select pg_temp.ntlr(%L)', b || '{"model":"gpt-other"}'), '42501', 'native tool run is unavailable');
 	perform pg_temp.raises_like(format('select pg_temp.ntlr(%L)', b || jsonb_build_object('leaseId', extensions.gen_random_uuid())),
 		'42501', 'native execution binding is unavailable');
+	-- Any other field of the lease check's tuple, changed, is refused too (from the native authority locks script).
+	foreach k in array array['runId', 'jobId', 'runnerId', 'assignmentId', 'credentialCapsuleId', 'computeIdentityId',
+		'provider', 'nativeHarness'] loop
+		v := b || '{"provider":"openai","nativeHarness":"codex-cli"}'
+			|| jsonb_build_object(k, case when k like '%Id' then extensions.gen_random_uuid()::text else 'other' end);
+		perform pg_temp.raises(format('select public.qorpera_validate_native_provider_execution_lease(%L::uuid, %L::uuid, %L::uuid,
+			%L::uuid, %L::uuid, %L::uuid, %L::uuid, %L, %L)', v ->> 'leaseId', v ->> 'runId', v ->> 'jobId', v ->> 'runnerId',
+			v ->> 'assignmentId', v ->> 'credentialCapsuleId', v ->> 'computeIdentityId', v ->> 'provider', v ->> 'nativeHarness'), '42501');
+	end loop;
+	-- So is a job whose lease ran out (before this block began: the check reads the statement's time).
+	select lease_expires_at into strict e from public.qorpera_runner_jobs where id = (b ->> 'jobId')::uuid;
+	perform pg_temp.fx(format('update public.qorpera_runner_jobs set lease_expires_at = statement_timestamp() - interval ''1 second'' where id = %L', b ->> 'jobId'));
+	perform pg_temp.raises_like(format('select pg_temp.lease(%L)', b), '42501', 'native provider execution authority is unavailable');
+	perform pg_temp.fx(format('update public.qorpera_runner_jobs set lease_expires_at = %L where id = %L', e, b ->> 'jobId'));
 	perform pg_temp.fx(format('update public.qorpera_native_provider_connection_leases set created_at = clock_timestamp() - interval ''1 hour'', expires_at = clock_timestamp() - interval ''1 second'' where id = %L', b ->> 'leaseId'));
 	perform pg_temp.raises_like(format('select pg_temp.ntlr(%L)', b), '42501', 'native provider execution authority is unavailable');
 	perform pg_temp.raises_like(format('select pg_temp.lease(%L)', b), '42501', 'native provider execution authority is unavailable');
@@ -399,6 +413,13 @@ begin
 	if public.qorpera_native_presence_subject(c_env, v_client, array['shared/doc.md']) is not null then
 		raise exception 'A refused presence subject must be absent'; end if;
 	perform pg_temp.fx(format('update public.qorpera_profile_staff set employment_status = ''active'' where staff_agent_id = %L', c_a));
+	-- So is the device for another company's environment, and once the run's lease is revoked (from the presence scripts).
+	if public.qorpera_native_presence_subject('64700000-0000-4000-8000-000000000021', v_client, array['shared/doc.md']) is not null then
+		raise exception 'A presence device must be absent in another company''s environment'; end if;
+	perform pg_temp.fx(format('update public.qorpera_native_provider_connection_leases set status = ''revoked'', released_at = clock_timestamp() where id = %L', b ->> 'leaseId'));
+	if public.qorpera_native_presence_subject(c_env, v_client, array['shared/doc.md']) is not null then
+		raise exception 'A presence device must be absent once its run''s lease is revoked'; end if;
+	perform pg_temp.fx(format('update public.qorpera_native_provider_connection_leases set status = ''active'', released_at = null where id = %L', b ->> 'leaseId'));
 	-- A folder actor for another company is refused.
 	perform pg_temp.raises_like(format('select public.qorpera_folder_presence_routes(%L, %L, false)',
 		jsonb_set(public.qorpera_company_run_actor(c_env, b), '{companyId}', '"64700000-0000-4000-8000-000000000011"'), array['shared/doc.md']),
