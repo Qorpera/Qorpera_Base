@@ -13,6 +13,9 @@ import {
 	describeCloudAction,
 	parseCloudActionVerdict,
 } from "@qorpera/runtime/cloud-action-review";
+import type { CloudCompanyFolderClient } from "@qorpera/runtime/cloud-company-folder-client";
+import { CloudFolderGroupChats } from "@qorpera/runtime/cloud-folder-group-chats";
+import { CloudFolderHiring } from "@qorpera/runtime/cloud-folder-hiring";
 import { cloudHiringTools } from "@qorpera/runtime/cloud-hiring-tools";
 import type { CloudNativeCompanyContext } from "@qorpera/runtime/cloud-native-company-context";
 import { type CloudNativeToolBinding, CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
@@ -22,6 +25,7 @@ import {
 	CloudToolRefusal,
 	type CloudToolResult,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
+import type { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "@qorpera/runtime/cloud-routine-tools";
 import type { CloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { describe, expect, it, vi } from "vitest";
@@ -68,18 +72,6 @@ describe("which calls are reviewed", () => {
 		["find_mail", { to: "agents+stripe@northwind.qorpera.mail", waitSeconds: 30 }, "read"],
 		// Summary trees (M1b-3): zoom reads a conversation.
 		["zoom", { conversation: "thread:ada", line: "0+8" }, "read"],
-		// A received attachment saved into the company folder, through the governed gateway (M2c-1).
-		[
-			"save_attachment",
-			{
-				deliveryId: "73100000-0000-4000-8000-00000000000a",
-				attachment: 1,
-				path: "finance/invoice.pdf",
-				operationKey: "save-1",
-				expectedVersion: null,
-			},
-			"internal",
-		],
 		// The node's folder search (F3): a read with the run's own view.
 		["company_search", { query: "plan" }, "read"],
 		// An email from a company mailbox leaves the company (M2b).
@@ -518,10 +510,19 @@ describe("what the card shows for delegation", () => {
 			new AbortController().signal,
 		);
 		const control = { call: vi.fn() };
+		// Parsing reads no files: the hiring tools' writers check the files from the arguments alone.
+		const writer = {
+			folder: {} as CloudCompanyFolderClient,
+			operations: {} as CloudNativeToolOperations,
+			identity: run.identity,
+		};
 		const tools = [
 			...cloudRoutineTools(binding, run.identity, control),
 			cloudRoutineDecisionTool(binding, run.identity, control, { decisionOwed: () => true, decided: () => {} }),
-			...cloudHiringTools({ mutate: vi.fn(), applyOwnOrganizationDocument: vi.fn() }, run.identity),
+			...cloudHiringTools(run.identity, {
+				folderHiring: new CloudFolderHiring(writer),
+				folderGroupChats: new CloudFolderGroupChats(writer),
+			}),
 		];
 		return (name: string, value: Record<string, unknown>) => {
 			const found = tools.find((item) => item.name === name);
