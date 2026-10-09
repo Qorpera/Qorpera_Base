@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { CARDS_TABLE, NUMBERS_TABLE, PULSE_INTERFACE } from "@qorpera/cloud-client/interface-library";
 import type { JsonValue } from "@qorpera/contracts";
+import { CloudCompanyFolderError } from "@qorpera/runtime/cloud-company-folder-client";
 import { cloudInterfaceWriteTools } from "@qorpera/runtime/cloud-folder-interface-writes";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
@@ -12,7 +13,7 @@ import {
 	cloudToolJsonText,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { fitsOneResult } from "@qorpera/runtime/cloud-worker-tools";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
 
 const runs: CloudNativeToolRun[] = [];
@@ -66,6 +67,17 @@ async function refuses(call: Promise<unknown>, type: typeof CloudToolRefusal, te
 	);
 	expect(error).toBeInstanceOf(type);
 	expect((error as Error).message).toContain(text);
+}
+/** A call that ended after its commit without its answer: never a refusal, which says nothing happened, so the boundary
+ * answers TOOL_OUTCOME_UNCONFIRMED and the model repeats the same call. */
+async function unconfirmed(call: Promise<unknown>) {
+	const error = await call.then(
+		() => null,
+		(thrown: unknown) => thrown,
+	);
+	expect(error).toBeInstanceOf(Error);
+	expect(error).not.toBeInstanceOf(CloudToolRefusal);
+	expect((error as Error).cause).toBeInstanceOf(CloudToolRefusal);
 }
 /** The arguments are refused as they are parsed, before anything is read. */
 function refusesArguments(f: Fixture, name: string, value: JsonValue, text: string) {
@@ -301,12 +313,14 @@ it("renames an interface at once, with a card released with the file it replaces
 		"interfaces/notes",
 		NOTES,
 	]);
-	const renamed = read(await f.call("save_interface", value, f.direct));
-	expect(renamed).toMatchObject({
+	const renamed = await f.call("save_interface", value, f.direct);
+	expect(read(renamed)).toMatchObject({
 		state: "applied",
 		files: [{ path: NOTES, outcome: "saved", version: f.version(NOTES) }],
 		next: [],
 	});
+	// The commit's answer is released too, with what the save read.
+	cites(f, renamed, ["interfaces/notes", NOTES]);
 	expect(f.recordings).toEqual([]);
 	expect(f.commits[0]?.key).toBe(`save_interface:${sha("rename-1")}`);
 	expect(f.commits[0]?.units).toMatchObject([{ op: "write", path: NOTES, expectedVersion }]);
@@ -596,6 +610,30 @@ it("writes a table's first rows as a new rows file", async () => {
 	expect(f.text("tables/cards/rows.csv")).toBe(`${CARDS_HEAD}\n${made},First,,,open,,\n`);
 });
 
+it("writes a number as decimal text, never in exponent form, given as text or as a JSON number", async () => {
+	const rowsFile = "tables/numbers/rows.csv";
+	const f = await fixture({ files: { "tables/numbers/table.toml": NUMBERS_TABLE, [rowsFile]: `${NUMBERS_HEAD}\n` } });
+	const at = (day: number) => `2026-10-0${day}T09:00:00Z`;
+	const answer = await f.call(
+		"table_write",
+		rows("numbers", "numbers-1", [
+			{ number: "drift", at: at(1), value: "0.0000005", unit: "%", target: 0.00000012, kept_by: AGENT },
+			{ number: "drift", at: at(2), value: 5e-7, unit: "%", kept_by: AGENT },
+		]),
+	);
+	expect(read(answer)).toMatchObject({ state: "applied", changed: { updated: 0, added: 2, removed: 0 } });
+	// String(5e-7) is "5e-7", which the reader refuses.
+	expect(f.text(rowsFile)).toBe(
+		`${NUMBERS_HEAD}\ndrift,${at(1)},0.0000005,%,0.00000012,${AGENT}\ndrift,${at(2)},0.0000005,%,,${AGENT}\n`,
+	);
+	// They read back as the numbers written: a row that holds one already is unchanged.
+	const again = await f.call(
+		"table_write",
+		rows("numbers", "numbers-2", [{ number: "drift", at: at(2), value: 5e-7 }]),
+	);
+	expect(read(again)).toMatchObject({ state: "unchanged" });
+});
+
 it("changes nothing when the rows already hold the values", async () => {
 	const f = await fixture({ files: CARDS });
 	const answer = await f.call("table_write", rows("cards", "cards-1", [{ id: C1, card: "Bake", state: "open" }]));
@@ -611,6 +649,33 @@ it("changes nothing when the rows already hold the values", async () => {
 	});
 	cites(f, answer, CARDS_FILES);
 	expect(f.commits).toEqual([]);
+});
+
+it("answers a save or row write as unconfirmed when its answer cannot be released after the commit", async () => {
+	const rowsFile = "tables/cards/rows.csv";
+	const f = await fixture({ files: CARDS });
+	const value = rows("cards", "cards-1", [{ id: C1, state: "done" }]);
+	vi.spyOn(f.folder, "release").mockRejectedValueOnce(new CloudCompanyFolderError("unavailable"));
+	await unconfirmed(f.call("table_write", value));
+	expect(f.commits).toHaveLength(1);
+	expect(f.text(rowsFile)).toBe(`${CARDS_HEAD}\n${C1},Bake,sales,,done,,\n${C2},Sell,sales,,open,,\n`);
+	// The same call again finds its change made.
+	const again = await f.call("table_write", value);
+	expect(read(again)).toMatchObject({ state: "unchanged", changed: { updated: 0, added: 0, removed: 0 } });
+	cites(f, again, CARDS_FILES);
+	expect(f.commits).toHaveLength(1);
+
+	const s = await fixture({ files: { [NOTES]: page("Notes") } });
+	const rename = save("rename-1", [{ path: NOTES, expectedVersion: s.version(NOTES), text: page("Notebook") }]);
+	const prepared = await s.prepare(rename, s.direct);
+	vi.spyOn(s.folder, "release").mockRejectedValueOnce(new CloudCompanyFolderError("read_revoked"));
+	await unconfirmed(s.tool("save_interface").execute(prepared, s.direct));
+	expect(s.commits).toHaveLength(1);
+	expect(s.text(NOTES)).toBe(page("Notebook"));
+	const saved = await s.call("save_interface", rename, s.direct);
+	expect(read(saved)).toMatchObject({ state: "unchanged", files: [], unchanged: [NOTES] });
+	cites(s, saved, ["interfaces/notes", NOTES]);
+	expect(s.commits).toHaveLength(1);
 });
 
 it("saves no rows that do not fit, and says why with the files it read", async () => {

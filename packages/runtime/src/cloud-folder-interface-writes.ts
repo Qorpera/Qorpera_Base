@@ -43,6 +43,7 @@ import {
 	tableClaimProblems,
 	tableDefinitionProblems,
 	tableFieldValue,
+	tableNumberText,
 	tableRowKey,
 	writeTableRows,
 } from "@qorpera/cloud-client/interfaces";
@@ -999,6 +1000,7 @@ interface RowsChange {
 function rawCell(value: JsonValue | undefined): string {
 	if (value === null || value === undefined) return "";
 	if (typeof value === "boolean") return value ? "yes" : "no";
+	if (typeof value === "number") return tableNumberText(value);
 	return Array.isArray(value) ? value.join(" ") : String(value);
 }
 
@@ -1246,6 +1248,17 @@ export function cloudInterfaceWriteTools(options: {
 	const agent = identity.staffAgentId.toLowerCase();
 	const show = (context: CloudToolContext, text: string, reads: readonly CloudCompanyFolderEntry[]) =>
 		released(folder, identity.runId, context, text, reads.map(cloudCompanyFolderRelease));
+	// After the receipt the change is made or settled, so an answer that cannot be released is unconfirmed, never a
+	// refusal (which says nothing happened): the model repeats the same call, and its replay answers.
+	const showCommitted = async (context: CloudToolContext, text: string, reads: readonly CloudCompanyFolderEntry[]) => {
+		try {
+			return await show(context, text, reads);
+		} catch (error) {
+			if (error instanceof CloudToolRefusal)
+				throw new Error("A committed answer could not be released", { cause: error });
+			throw error;
+		}
+	};
 	// A commit no one can complete would fence this run's later operations: refuse before writing anything.
 	const writable = () => {
 		if (!operations.completesFolderCommits) throw new Error("This run cannot complete folder writes");
@@ -1315,7 +1328,7 @@ export function cloudInterfaceWriteTools(options: {
 				throw new CloudToolRefusal(
 					"This change needs the automatic review's approval of this call, and it has none: call again, and if this repeats tell the member",
 				);
-			return operations.execute({
+			const content = await operations.execute({
 				operation: {
 					tool: "save_interface",
 					toolVersion: TOOL_VERSION,
@@ -1356,6 +1369,9 @@ export function cloudInterfaceWriteTools(options: {
 				signal: context.signal,
 				...(context.observation ? { observation: context.observation } : {}),
 			});
+			// The commit's answer can quote what the save read, a table's rows in its problems: released with it.
+			if (content.kind !== "text") throw new Error("A save answered no text");
+			return showCommitted(context, content.value, plan.reads);
 		},
 	};
 
@@ -1470,7 +1486,7 @@ export function cloudInterfaceWriteTools(options: {
 				...(context.observation ? { observation: context.observation } : {}),
 			});
 			if (content.kind !== "text") throw new Error("A row write answered no text");
-			return show(context, content.value, reads);
+			return showCommitted(context, content.value, reads);
 		},
 	};
 

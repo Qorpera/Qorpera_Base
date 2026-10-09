@@ -907,10 +907,12 @@ the review a card that says what changes, never the files: a new interface or ta
 the order the folder core needs: an interface that stops being main before the one that becomes main, and a rows file
 a removed column leaves before the definition without it. A file that already holds the call's text is named as
 unchanged. `table_write` sets and removes rows by key and edits `rows.csv` in place: the fields it changes, the rows it
-removes, the rows it adds after the last row, and every other byte, line end and the byte order mark as they were. A
-new row may leave out an id column; the id is made from the run, the operation key and the row's place, and the answer
-gives it. A row write refuses a claim (the agent has no supervisor to act for), a table whose `[write]` doesn't name
-the agent, a table whose rows don't all fit, and rows over 64 KiB, before its receipt. Every answer that says what a
-file holds is released with the entries it read. A replay of a saved call finds its change made and answers that
-nothing changed (a made id is made again, so it finds its own row); a call that waited for a member or failed at its
-commit replays from its receipt.
+removes, the rows it adds after the last row, and every other byte, line end and the byte order mark as they were. It
+writes a number as decimal text, never in exponent form (`5e-7`), which the reader refuses. A new row may leave out an
+id column; the id is made from the run, the operation key and the row's place, and the answer gives it. A row write
+refuses a claim (the agent has no supervisor to act for), a table whose `[write]` doesn't name the agent, a table whose
+rows don't all fit, and rows over 64 KiB, before its receipt. Every answer that says what a file holds is released
+with the entries it read, the commit's answer too; one that cannot be released after the commit is unconfirmed, never
+a refusal (which says nothing happened), so the model repeats the same call. A replay of a saved call finds its change
+made and answers that nothing changed (a made id is made again, so it finds its own row); a call that waited for a
+member or failed at its commit replays from its receipt.
