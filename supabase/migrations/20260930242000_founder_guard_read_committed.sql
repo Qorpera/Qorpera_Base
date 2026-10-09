@@ -24,8 +24,8 @@ begin
 	-- members go with it.
 	if not found or public.qorpera_company_deleting(old.profile_id) then return coalesce(new, old); end if;
 	-- 20260930242000: the other founders are read at read committed only. Under repeatable read, the lock below fails
-	-- (40001) after a delete or a FOR UPDATE then update since the snapshot, and after a plain update of the role it
-	-- locks the snapshot's old row and reads a founder who has already stepped down.
+	-- after a delete or a FOR UPDATE then update since the snapshot ("could not serialize access"), and after a plain
+	-- update of the role it locks the snapshot's old row and reads a founder who has already stepped down.
 	if current_setting('transaction_isolation') <> 'read committed' then
 		raise exception 'Founder changes run at read committed' using errcode = '25000';
 	end if;
