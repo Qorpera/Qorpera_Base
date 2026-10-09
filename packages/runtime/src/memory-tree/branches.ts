@@ -10,6 +10,7 @@
 // - The composer releases the blocks whose lines the branches show with the primary view's (§8, M1b-4), so the call
 //   keeps no receipt. Branches are relevance, never a permission (§9).
 
+import { isUuid, parseClosedRecord, parseInteger, WireValueError } from "@qorpera/contracts";
 import type { MemoryTreeBuilt } from "./fold.ts";
 import { BRANCH_MIN, BRANCHES, memoryNodeAddress } from "./tree.ts";
 import {
@@ -55,95 +56,94 @@ interface Tree {
 	readonly lines: ReadonlyMap<string, { readonly text: string; readonly block: MemoryTreeBlock }>;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
-function invalid(what: string): Error {
-	return new Error(`Invalid memory branches answer: ${what}`);
-}
-
-/** `value` as an object with exactly `keys`. */
-function record(value: unknown, keys: readonly string[], what: string): Record<string, unknown> {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) throw invalid(what);
-	const own = Object.keys(value);
-	if (own.length !== keys.length || own.some((key) => !keys.includes(key))) throw invalid(what);
-	return value as Record<string, unknown>;
-}
-
-function list(value: unknown, what: string): unknown[] {
-	if (!Array.isArray(value)) throw invalid(what);
+/** `value` as a list; a WireValueError names `label` otherwise. */
+function list(value: unknown, label: string): unknown[] {
+	if (!Array.isArray(value)) throw new WireValueError(label);
 	return value;
 }
 
-function whole(value: unknown, what: string): number {
-	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw invalid(what);
+function whole(value: unknown, label: string, maximum = Number.MAX_SAFE_INTEGER): number {
+	return parseInteger(value, label, 0, maximum);
+}
+
+function text(value: unknown, label: string): string {
+	if (typeof value !== "string" || value === "") throw new WireValueError(label);
 	return value;
 }
 
-function text(value: unknown, what: string): string {
-	if (typeof value !== "string" || value === "") throw invalid(what);
-	return value;
-}
-
-function uuid(value: unknown, what: string): string {
-	if (typeof value !== "string" || !UUID.test(value)) throw invalid(what);
+/** A uuid as the database prints it (`isUuid`). */
+function id(value: unknown, label: string): string {
+	if (!isUuid(value)) throw new WireValueError(label);
 	return value;
 }
 
 function listed(value: unknown): Listed {
-	const branch = record(value, ["ref", "kind", "name", "sessionId", "messages"], "a branch");
+	const branch = parseClosedRecord(value, "a branch", ["ref", "kind", "name", "sessionId", "messages"]);
 	const kind = branch.kind;
-	if (kind !== "thread" && kind !== "group") throw invalid("a branch's kind");
+	if (kind !== "thread" && kind !== "group") throw new WireValueError("a branch's kind");
 	const ref = text(branch.ref, "a branch's ref");
-	if (!ref.startsWith(`${kind}:`) || ref.length === kind.length + 1) throw invalid("a branch's ref");
+	if (!ref.startsWith(`${kind}:`) || ref.length === kind.length + 1) throw new WireValueError("a branch's ref");
 	return {
 		ref,
 		kind,
 		name: text(branch.name, "a branch's name"),
-		sessionId: uuid(branch.sessionId, "a branch's session"),
+		sessionId: id(branch.sessionId, "a branch's session"),
 		messages: whole(branch.messages, "a branch's messages"),
 	};
 }
 
 function tree(value: unknown): [string, Tree] {
-	const read = record(
-		value,
-		["sessionId", "generation", "messages", "root", "nodeBytes", "blocks", "lines"],
-		"a tree",
-	);
+	const read = parseClosedRecord(value, "a tree", [
+		"sessionId",
+		"generation",
+		"messages",
+		"root",
+		"nodeBytes",
+		"blocks",
+		"lines",
+	]);
 	whole(read.generation, "a tree's generation");
 	if (read.root !== null) text(read.root, "a tree's root");
 	if (read.nodeBytes !== null) whole(read.nodeBytes, "a tree's node bytes");
 	const blocks = list(read.blocks, "a tree's blocks").map((item) => {
-		const block = record(item, ["path", "version"], "a tree's block");
-		return { path: text(block.path, "a block's path"), version: uuid(block.version, "a block's version") };
+		const block = parseClosedRecord(item, "a tree's block", ["path", "version"]);
+		return { path: text(block.path, "a block's path"), version: id(block.version, "a block's version") };
 	});
 	const lines = new Map<string, { text: string; block: MemoryTreeBlock }>();
 	for (const item of list(read.lines, "a tree's lines")) {
-		const line = record(item, ["l", "k", "text", "block"], "a tree's line");
-		const l = whole(line.l, "a line's level");
-		if (l > 59) throw invalid("a line's level");
-		const address = memoryNodeAddress(l, whole(line.k, "a line's k"));
+		const line = parseClosedRecord(item, "a tree's line", ["l", "k", "text", "block"]);
+		const address = memoryNodeAddress(whole(line.l, "a line's level", 59), whole(line.k, "a line's k"));
 		const block = blocks[whole(line.block, "a line's block")];
-		if (!block || lines.has(address)) throw invalid("a tree's line");
-		if (typeof line.text !== "string") throw invalid("a line's text");
+		if (!block) throw new WireValueError("a line's block");
+		if (lines.has(address)) throw new WireValueError("a tree's line", "is there twice");
+		if (typeof line.text !== "string") throw new WireValueError("a line's text");
 		lines.set(address, { text: line.text, block });
 	}
-	return [uuid(read.sessionId, "a tree's session"), { messages: whole(read.messages, "a tree's messages"), lines }];
+	return [id(read.sessionId, "a tree's session"), { messages: whole(read.messages, "a tree's messages"), lines }];
 }
 
 /** An answer to a call for the trees of `sessions`: the branches, and the trees by session. */
 function answer(value: unknown, sessions: readonly string[]): { branches: Listed[]; trees: Map<string, Tree> } {
-	const read = record(value, ["schema", "branches", "trees"], "the answer");
-	if (read.schema !== MEMORY_BRANCHES_SCHEMA) throw invalid("its schema");
-	const branches = list(read.branches, "its branches").map(listed);
-	if (new Set(branches.map((branch) => branch.sessionId)).size !== branches.length) throw invalid("a branch twice");
-	const trees = new Map<string, Tree>();
-	for (const item of list(read.trees, "its trees")) {
-		const [sessionId, found] = tree(item);
-		if (!sessions.includes(sessionId) || trees.has(sessionId)) throw invalid("a tree it was not asked for");
-		trees.set(sessionId, found);
+	try {
+		const read = parseClosedRecord(value, "the answer", ["schema", "branches", "trees"]);
+		if (read.schema !== MEMORY_BRANCHES_SCHEMA) throw new WireValueError("its schema");
+		const branches = list(read.branches, "its branches").map(listed);
+		if (new Set(branches.map((branch) => branch.sessionId)).size !== branches.length) {
+			throw new WireValueError("a branch", "is there twice");
+		}
+		const trees = new Map<string, Tree>();
+		for (const item of list(read.trees, "its trees")) {
+			const [sessionId, found] = tree(item);
+			if (!sessions.includes(sessionId) || trees.has(sessionId)) throw new WireValueError("a tree", "was not asked for");
+			trees.set(sessionId, found);
+		}
+		return { branches, trees };
+	} catch (error) {
+		if (error instanceof WireValueError) {
+			throw new Error(`Invalid memory branches answer: ${error.message}`, { cause: error });
+		}
+		throw error;
 	}
-	return { branches, trees };
 }
 
 /** A branch listed by its name as it is shown and its count. */
