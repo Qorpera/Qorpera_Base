@@ -1,3 +1,4 @@
+/// <reference lib="es2024.string" />
 import { isUuid, parseClosedRecord, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import { cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import { type CloudRunLogProtection, CloudRunLogUnavailable, cloudRunLogPaths } from "./cloud-run-log.ts";
@@ -66,12 +67,18 @@ export class CloudRunLogRpcProtection implements CloudRunLogProtection {
 		this.#assertRun(runId, signal);
 		// No clipping: the full arguments, pre-envelope result needles, and all released reads participate. SQL
 		// deliberately ignores strings that are not valid company paths. Strip its /company/ prefix before applying
-		// the byte bound of qorpera_company_path_valid: oversized strings cannot name paths, even in refused calls.
+		// the bounds of qorpera_company_path_valid: empty, oversized or control-bearing strings cannot name paths.
+		// Unpaired UTF-16 surrogates cannot be PostgreSQL text either. Filter them and NUL before JSONB decoding,
+		// which would otherwise refuse the RPC before SQL can ignore the invalid needle, wedging later log steps.
 		const needles = [...cloudRunLogPaths(step.argumentsText), ...step.resultPaths, ...step.readPaths];
 		if (needles.some((path) => typeof path !== "string"))
 			throw new CloudRunLogUnavailable("protection_paths_invalid");
 		const paths = [...new Set(needles.map((path) => (path.startsWith("/company/") ? path.slice(9) : path)))].filter(
-			(path) => path.length > 0 && Buffer.byteLength(path) <= 4096,
+			(path) =>
+				path.length > 0 &&
+				path.isWellFormed() &&
+				!/[\u0000-\u001f\u007f]/.test(path) &&
+				Buffer.byteLength(path) <= 4096,
 		);
 		let narrow = false;
 		let log = false;

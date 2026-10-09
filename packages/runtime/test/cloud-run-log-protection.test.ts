@@ -151,6 +151,45 @@ describe("lease-bound run log protection", () => {
 		expect(call).toHaveBeenCalledOnce();
 	});
 
+	it("ignores controls and malformed UTF-16 in every needle source without changing valid Unicode paths", async () => {
+		const invalid = [
+			...Array.from({ length: 32 }, (_, code) => `a${String.fromCharCode(code)}b`),
+			"a\u007fb",
+			"a\ud800b",
+			"a\udc00b",
+			"a\ud800\ud800b",
+		];
+		const valid = ["restricted/\u{1f600}.md", "a\ufffdb"];
+		const { call, protection } = setup(async () => ({ ...plain, restricted: [valid[0]] }));
+		expect(
+			await protection.narrow(
+				binding.runId,
+				{
+					...step,
+					argumentsText: JSON.stringify({ paths: invalid, path: valid[0] }),
+					resultPaths: [...invalid.map((path) => `/company/${path}`), valid[1]!],
+					readPaths: [...invalid, ...valid],
+				},
+				signal,
+			),
+		).toEqual({ log: false, narrow: true });
+		expect(call.mock.calls[0]?.[1].p_paths).toEqual(valid);
+		expect(call).toHaveBeenCalledOnce();
+	});
+
+	it("still checks machine and log flags when every needle is invalid Unicode or a control", async () => {
+		const { call, protection } = setup(async () => ({ ...plain, log: true, machine: true }));
+		expect(
+			await protection.narrow(
+				binding.runId,
+				{ ...step, argumentsText: '{"path":"a\\u0000b"}', resultPaths: ["\ud800"], readPaths: ["\u007f"] },
+				signal,
+			),
+		).toEqual({ log: true, narrow: true });
+		expect(call.mock.calls[0]?.[1].p_paths).toEqual([]);
+		expect(call).toHaveBeenCalledOnce();
+	});
+
 	it("cancels an in-flight transport that ignores its signal without starting later batches", async () => {
 		const stop = new AbortController();
 		let release: (value: unknown) => void = () => undefined;
