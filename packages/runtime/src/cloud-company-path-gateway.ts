@@ -134,6 +134,10 @@ export type CloudCompanyPathRpc =
 	| "qorpera_folder_read"
 	| "qorpera_folder_list"
 	| "qorpera_folder_commit"
+	| "qorpera_folder_memory_commit"
+	| "qorpera_memory_run_log_place"
+	| "qorpera_memory_step_narrow"
+	| "qorpera_memory_step_hashes"
 	| "qorpera_folder_record_release"
 	| "qorpera_folder_run_view_open"
 	// Staging a folder-v2 file's bytes (core C1d).

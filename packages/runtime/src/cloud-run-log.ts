@@ -28,7 +28,7 @@ import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
  *   comes from the platform's per-run keyed-hash service, never from a plain digest.
  * - The protection port classifies every step before any bytes are staged. A narrow step and every later step keep
  *   only keyed hashes and receipt identifiers in the folder; their full content stays in this process. Production
- *   wiring still needs the folder adapter and origin/refusal handling before any run is built with a log.
+ *   wiring remains gated on the matching SQL, closing/compaction and erasure support before a run is built with a log.
  * - The run's tree, its step lines (§7.5), sits beside the log in `runs/<run>/t<n>/`. W2's step-line writer reads and
  *   commits its blocks through `treeRead` and `commitTree`, also after `close`, for the lines built at closing. Only
  *   its batches check the run's generation: they are derived, and are refused when it moved.
@@ -91,6 +91,14 @@ export class CloudRunLogUnavailable extends Error {
 }
 
 /** Where a run's log is now. */
+export interface CloudRunLogOrigin {
+	readonly conversation: string;
+	readonly parent: string | null;
+	readonly step: number | null;
+	readonly continues: string | null;
+	readonly narrow: boolean;
+}
+
 export interface CloudRunLogPlace {
 	/** The log's folder, `<tree root>/runs/<run>`: the path `qorpera_memory_run_logs` gives the run now, or for a log not
 	 * yet created, the tree root of the run's conversation at its owner's current path. */
@@ -103,6 +111,9 @@ export interface CloudRunLogPlace {
 	readonly last: number | null;
 	/** `qorpera_memory_run_generations.memory_generation` (0 before the first batch). */
 	readonly generation: number;
+	/** The platform's current origin, or the existing run.toml read as this run. The concrete folder adapter always
+	 * supplies it; an in-memory port may instead use the constructor's already trusted origin. */
+	readonly origin?: CloudRunLogOrigin;
 }
 
 /** The memory commit's preconditions for a change set of a run log's folder. */
@@ -399,10 +410,7 @@ function loggedStep(line: Line): CloudRunLogStep {
 
 export class CloudRunLog {
 	readonly #runId: string;
-	readonly #conversationId: string;
-	readonly #parent?: { readonly runId: string; readonly step: number };
-	readonly #continues?: string;
-	readonly #startNarrow: boolean;
+	#origin: CloudRunLogOrigin;
 	readonly #protection: CloudRunLogProtection;
 	readonly #folder: CloudRunLogFolder;
 	readonly #effectful: (tool: Pick<CloudNativeTool, "name" | "source">, parsed: JsonValue) => boolean;
@@ -468,12 +476,15 @@ export class CloudRunLog {
 		)
 			throw new Error("Invalid run log protection");
 		this.#runId = options.runId;
-		this.#conversationId = options.conversationId;
-		this.#parent = options.parent ? { ...options.parent } : undefined;
-		this.#continues = options.continues;
-		this.#startNarrow = options.narrow === true;
+		this.#origin = {
+			conversation: options.conversationId,
+			parent: options.parent?.runId ?? null,
+			step: options.parent?.step ?? null,
+			continues: options.continues ?? null,
+			narrow: options.narrow === true,
+		};
 		this.#protection = options.protection;
-		if (this.#startNarrow) this.#narrowFrom = 0;
+		if (this.#origin.narrow) this.#narrowFrom = 0;
 		this.#folder = options.folder;
 		this.#effectful = options.effectful ?? ((tool, parsed) => cloudActionEffect(tool, parsed) !== "read");
 		this.#signal = options.signal;
@@ -919,10 +930,17 @@ export class CloudRunLog {
 	}
 
 	async #batch(signal: AbortSignal, precommit?: number): Promise<void> {
+		const retried = new Set<string>();
 		for (let attempt = 1; ; attempt++) {
 			await this.#refresh(signal);
 			const outcome = await this.#attempt(signal, precommit);
 			if (outcome === "done") return;
+			// W1's two precise races have one retry each. Any other structured refusal is a bug, not a reason to
+			// change the origin or discard content. Ordinary location/version contention keeps its existing bound.
+			if (outcome === "origin_changed" || outcome === "machine_narrow") {
+				if (retried.has(outcome)) throw new CloudRunLogUnavailable(outcome);
+				retried.add(outcome);
+			}
 			if (attempt >= ATTEMPTS) throw new CloudRunLogUnavailable(outcome);
 		}
 	}
@@ -940,6 +958,10 @@ export class CloudRunLog {
 			throw error;
 		}
 		if (place.exists) this.#root = place.path;
+		if (place.origin) {
+			this.#origin = { ...place.origin };
+			if (place.origin.narrow) this.#narrowFrom = 0;
+		}
 		this.#generation = place.generation;
 		return place;
 	}
@@ -1104,10 +1126,10 @@ export class CloudRunLog {
 		return [
 			"format = 1",
 			`run = "${this.#runId}"`,
-			`conversation = "${this.#conversationId}"`,
-			...(this.#parent ? [`parent = "${this.#parent.runId}"`, `step = ${this.#parent.step}`] : []),
-			...(this.#continues ? [`continues = "${this.#continues}"`] : []),
-			...(this.#startNarrow ? ["narrow = true"] : []),
+			`conversation = "${this.#origin.conversation}"`,
+			...(this.#origin.parent ? [`parent = "${this.#origin.parent}"`, `step = ${this.#origin.step}`] : []),
+			...(this.#origin.continues ? [`continues = "${this.#origin.continues}"`] : []),
+			...(this.#origin.narrow ? ["narrow = true"] : []),
 			"",
 		].join("\n");
 	}
@@ -1250,11 +1272,38 @@ export class CloudRunLog {
 			let relocate: string | null = null;
 			let conflict: string | null = null;
 			let refused: string | null = null;
+			let retryOrigin = false;
+			let retryNarrow = false;
 			result.units.forEach((unit, index) => {
 				const first = set.blocks[index];
 				if (unit.outcome !== "saved") {
 					const reason = unit.reason ?? unit.outcome;
-					if (reason === "memory_run_log_gone") this.#gone = true;
+					const structured = reason === "structured_rule" || reason === "structured_invalid";
+					if (
+						structured &&
+						!place.exists &&
+						unit.op === "new_folder" &&
+						unit.problems.length === 1 &&
+						unit.problems[0]!.message ===
+							"run.toml names the run's conversation, parent step, the run it continues and whether it is narrow"
+					) {
+						retryOrigin = true;
+					} else if (
+						structured &&
+						unit.op === "write" &&
+						unit.problems.length > 0 &&
+						unit.problems.every((problem) => {
+							const match = /^step ([0-9]+) comes after its machine went narrow and is written narrow$/.exec(
+								problem.message,
+							);
+							return match !== null && prepared.has(Number(match[1])) && placed.get(Number(match[1])) === first;
+						})
+					) {
+						// The machine went narrow after classification. Every changed/new line in the retried batch is
+						// narrow; already committed immutable lines remain byte for byte as read.
+						this.#narrowFrom = Math.min(this.#narrowFrom, ...candidates.map(({ step }) => step.j));
+						retryNarrow = true;
+					} else if (reason === "memory_run_log_gone") this.#gone = true;
 					else if (
 						reason === "memory_run_log_moved" ||
 						reason === "parent_missing" ||
@@ -1313,6 +1362,11 @@ export class CloudRunLog {
 			}
 			if (this.#gone) throw new CloudRunLogGone();
 			if (refused !== null) throw new CloudRunLogUnavailable(refused);
+			if (retryOrigin) {
+				this.#place = null;
+				return "origin_changed";
+			}
+			if (retryNarrow) return "machine_narrow";
 			if (relocate !== null) {
 				// Only the blocks the run can still write are read again at the new place.
 				this.#place = null;
