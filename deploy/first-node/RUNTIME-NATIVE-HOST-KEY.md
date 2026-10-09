@@ -233,12 +233,12 @@ the work is still refused. A server never logs the header or puts it in an error
   - the secret brokers and the shared vault prove the lease on `/v1/operations`, `/v1/company-accounts`,
     `/v1/company-account-fills` and `/v1/model-logins`, through their own database principal;
   - the object gateway proves it on `/v1/folder-objects`;
-  - the native host's broker client, model login client and folder bytes client send the header, as do its
-    native-objects clients (the object store and the Company Computer's capture paths), which 6c's check will read.
-- **6c, not yet:** `/v1/native-company-objects` also serves the company computer's captures, file imports and exports,
-  which the computer makes for a run without holding its lease. Its proof comes with the native host passing its
-  holder to the computer with each operation (a company computer image rebuild), together with the office receiver's
-  own proof.
+  - the native host's broker client, model login client and folder bytes client send the header (its native-objects
+    clients did too, until 6c removed them).
+- **6c, the native object route:** gone instead of proven (legacy removal, step C; migration `20260930190000`).
+  `/v1/native-company-objects`, its native-objects clients and their SQL served only snapshot-v1 companies: a
+  folder-v2 capture is stored nowhere, and the computer's file imports and exports are off until the folder carries
+  them. The office receiver's own proof is still to come.
 - **6b** (no SQL: the coding executor already calls the database as service_role):
   - the executor's guest-facing listener (`commandPort`) proves the lease on `/v1/coding-commands/*` and
     `/v1/machine-commands/*`, before the command's own authorization (a machine start's authorization already records

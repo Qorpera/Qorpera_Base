@@ -19,6 +19,7 @@ import {
 	type CompanyComputerPreparationCommand,
 	parseCompanyComputerPreparationCommand,
 } from "@qorpera/contracts";
+import { AGENT_BRIDGE } from "./agent-plug.ts";
 import { lxdMacAddress } from "./lxd-guest-network.ts";
 import { OFFICE_CODE_PACKAGE_LOADER, officeCodePackageStage } from "./lxd-office-code-package-loader.ts";
 import { parseLxdProcUptime } from "./lxd-proc-uptime.ts";
@@ -1081,6 +1082,17 @@ function stringRecord(value: unknown, label: string): Record<string, string> {
 	return Object.fromEntries(entries) as Record<string, string>;
 }
 
+/** Whether a project's instances may have the agent card, a bridged NIC whose parent is the agents' bridge (not a
+ * network LXD manages). This is LXD's own rule (lxd/project/permissions.go, the NIC check and `NetworkAllowed`):
+ * LXD enforces the restrictions unless `restricted` is empty or false, then needs every NIC allowed and the bridge
+ * among the project's networks, if it lists any. */
+function projectAllowsAgentCard(config: Readonly<Record<string, string>>): boolean {
+	if (["", "false", "0", "no", "off"].includes((config.restricted ?? "").toLowerCase())) return true;
+	if (config["restricted.devices.nic"] !== "allow") return false;
+	const networks = config["restricted.networks.access"] ?? "";
+	return networks === "" || networks.split(",").some((name) => name.trim() === AGENT_BRIDGE);
+}
+
 function devices(value: unknown): Record<string, Readonly<Record<string, string>>> {
 	const entries = plainEntries(value, "LXD instance devices");
 	if (entries.some(([name]) => !DEVICE_NAME.test(name))) throw new Error("LXD instance devices is invalid");
@@ -1249,10 +1261,10 @@ export class LxdUnixClient
 		this.#operationTimeoutSeconds = operationTimeoutSeconds;
 	}
 
-	async #officeMetadata(path: string, signal: AbortSignal): Promise<Record<string, unknown>> {
+	async #officeMetadata(path: string, signal: AbortSignal, maximumBytes = 65536): Promise<Record<string, unknown>> {
 		const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
 		checked.throwIfAborted();
-		const result = await this.#requestPayload("GET", path, undefined, undefined, checked, 65536);
+		const result = await this.#requestPayload("GET", path, undefined, undefined, checked, maximumBytes);
 		checked.throwIfAborted();
 		const envelope = record(result.body, "office metadata");
 		if (result.status !== 200 || envelope.type !== "sync" || envelope.status_code !== 200)
@@ -1449,6 +1461,10 @@ export class LxdUnixClient
 			const p = await this.#officeMetadata(`/1.0/projects/${project}`, checked);
 			const n = await this.#officeMetadata(projectPath(`/1.0/networks/${network}`, project), checked);
 			const s = await this.#officeMetadata(`/1.0/storage-pools/${storagePool}`, checked);
+			// The computer's second card is a port of the node's agents' bridge (agent-plug.ts): a bridge LXD does not
+			// manage, which the agent exit owns (deploy/agent-exit). LXD shows such a bridge in its default project,
+			// with every plugged machine of the node in its used_by (unread), so its record is not held to 64 KiB.
+			const a = await this.#officeMetadata(`/1.0/networks/${AGENT_BRIDGE}`, checked, MAX_RESPONSE_BYTES);
 			const pc = stringRecord(p.config, "project config");
 			const nc = stringRecord(n.config, "network config");
 			const sc = stringRecord(s.config, "storage pool config");
@@ -1457,6 +1473,8 @@ export class LxdUnixClient
 			if (
 				p.name !== project ||
 				replicaMode !== "" ||
+				// LXD would refuse the agent card only at the create, after the journal's claim.
+				!projectAllowsAgentCard(pc) ||
 				n.name !== network ||
 				n.type !== "bridge" ||
 				n.managed !== true ||
@@ -1467,6 +1485,9 @@ export class LxdUnixClient
 				nc["ipv4.firewall"] === "false" ||
 				nc["bridge.external_interfaces"] ||
 				nc["security.acls"] ||
+				a.name !== AGENT_BRIDGE ||
+				a.type !== "bridge" ||
+				a.managed !== false ||
 				s.name !== storagePool ||
 				s.status !== "Created" ||
 				!["dir", "btrfs", "lvm", "zfs"].includes(s.driver as string)

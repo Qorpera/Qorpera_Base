@@ -2,7 +2,7 @@ import type { TableValue } from "@qorpera/cloud-client/interfaces";
 import type { Cloud } from "./client.ts";
 import { array, CloudShapeError, nonEmptyString, oneOf, record, timestamp, uuid } from "./parse.ts";
 
-/* Offers of a claimed cell (Interfaces step I9c; migration 20260930105000_interface_offers, supabase/CLIENT-CONTRACT.md
+/* Offers of a claimed cell (Interfaces step I9c; migration 20260928509110_interface_offers, supabase/CLIENT-CONTRACT.md
  * "Offers of a claimed cell"). A member offers a `needs_yes` member cell of a table to another member. The platform
  * keeps the offer; the file changes only when the member it names saves themselves into the cell. */
 

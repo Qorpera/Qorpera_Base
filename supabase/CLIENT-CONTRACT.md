@@ -895,7 +895,7 @@ a write under `human-tasks/` waits for P31.
   `declined`). The member it waits for, owners and admins discard (42501 "Only the member it waits for, owners and
   admins discard a proposal"); an unknown or erased proposal is P0002 "Proposal is unavailable".
 
-### Offers of a claimed cell (20260930105000_interface_offers)
+### Offers of a claimed cell (20260928509110_interface_offers)
 
 Folder-v2 companies only (Interfaces I9c; `deploy/first-node/RUNTIME-INTERFACES.md` §5 "Offers"). A member offers a
 `needs_yes` member cell of a table to another member. The offer changes nothing in the file: the member it names
@@ -1004,7 +1004,6 @@ only after durable storage.
   against its hash and the whole against the file's.
 - `/v1/member-session-attachments/…` — attachments on canonical sessions
 - `POST /v1/read-leases/revoke` — revoke a read lease
-- `/v1/native-company-objects/…` — runner-only, not for clients
 - `/healthz`, `/livez`, `/readyz`
 
 Uploads and downloads are always explicit, typed member interactions

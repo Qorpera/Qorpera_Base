@@ -21,8 +21,12 @@ import {
 	type CloudRunLogCommitted,
 	type CloudRunLogFolder,
 	CloudRunLogGone,
+	type CloudRunLogPreconditions,
+	CloudRunLogUnavailable,
+	type CloudRunTreeBlock,
 	recordCloudRunLogRelease,
 } from "@qorpera/runtime/cloud-run-log";
+import { memoryBlockPath, memoryBlockText } from "@qorpera/runtime/memory-tree/tree";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const companyId = randomUUID();
@@ -46,14 +50,23 @@ function envelope(text: string): string {
 	return JSON.stringify({ schema: "qorpera.cloud-tool-result/v1", status: "ok", content: { text } });
 }
 
-/** The folder as the memory commit keeps it: each unit applies whole or not at all, and the `runLog` precondition
- * refuses every unit of a change set for a log that is gone or moved. */
+/** The folder as the memory commit keeps it: each unit applies whole or not at all, the `runLog` precondition refuses
+ * every unit of a change set for a log that is gone or moved, and `runGenerations` every unit when the run's
+ * generation moved. */
 class Folder implements CloudRunLogFolder {
 	readonly files = new Map<string, { version: string; text: string }>();
 	readonly folders = new Set(["agents", "agents/scout", "agents/scout/sessions", ROOT]);
-	readonly commits: { key: string; units: readonly CloudCompanyFolderUnit[]; path: string }[] = [];
+	readonly commits: {
+		key: string;
+		units: readonly CloudCompanyFolderUnit[];
+		path: string;
+		preconditions: CloudRunLogPreconditions;
+	}[] = [];
 	readonly runId: string;
 	path: string;
+	/** `qorpera_memory_run_generations.memory_generation`. */
+	generation = 3;
+	reads = 0;
 	gone = false;
 	refuse: string | null = null;
 	throwing = 0;
@@ -85,21 +98,24 @@ class Folder implements CloudRunLogFolder {
 			exists: this.folders.has(this.path),
 			missing,
 			last: firsts.length ? Math.max(...firsts) : null,
-			generation: 3,
+			generation: this.generation,
 		};
 	}
 
 	async read(path: string): Promise<{ version: string; text: string } | null> {
+		this.reads++;
 		return this.files.get(path) ?? null;
 	}
 
 	async commit(
 		key: string,
 		units: readonly CloudCompanyFolderUnit[],
-		runLog: { readonly run: string; readonly path: string },
+		preconditions: CloudRunLogPreconditions,
 	): Promise<CloudCompanyFolderCommitResult> {
+		const { runLog, runGenerations } = preconditions;
 		expect(runLog.run).toBe(this.runId);
-		this.commits.push({ key, units, path: runLog.path });
+		for (const entry of runGenerations ?? []) expect(entry.runId).toBe(this.runId);
+		this.commits.push({ key, units, path: runLog.path, preconditions });
 		this.before?.();
 		this.before = undefined;
 		if (this.throwing > 0) {
@@ -110,7 +126,9 @@ class Folder implements CloudRunLogFolder {
 			? "memory_run_log_gone"
 			: runLog.path !== this.path
 				? "memory_run_log_moved"
-				: this.refuse;
+				: runGenerations?.some((entry) => entry.generation !== this.generation)
+					? "memory_generation_stale"
+					: this.refuse;
 		return {
 			commitId: randomUUID(),
 			seq: 1,
@@ -386,6 +404,11 @@ describe("a run's work log", () => {
 		expect((second!.args as string).length).toBeGreaterThan(0);
 		expect(Buffer.byteLength(JSON.stringify(second!.args))).toBeLessThan(CLOUD_RUN_LOG_FIELD_BYTES);
 		expect(argumentsText.startsWith(second!.args as string)).toBe(true);
+		// The step lines see each step as its line stores it.
+		expect(log.steps().map((entry) => [entry.args, entry.text])).toEqual([
+			[first!.args, first!.text],
+			[second!.args, ""],
+		]);
 	});
 
 	it("starts a new block at 16 steps, and before a block passes 64 KiB", async () => {
@@ -488,7 +511,25 @@ describe("a run's work log", () => {
 		]);
 		expect(Object.keys(lines[1]!)).toEqual(["j", "tool", "call", "args_bytes", "args_hash", "erased"]);
 		expect(JSON.stringify([...folder.files.values()])).not.toMatch(/PRIVATE_ERASED/);
-		expect(log.steps().map((entry) => entry.j)).toEqual([0, 2]);
+		// The step lines keep the erased step in its place, with nothing but its number, call id and tool.
+		const steps = log.steps();
+		expect(steps.map((entry) => [entry.j, entry.erased === true])).toEqual([
+			[0, false],
+			[1, true],
+			[2, false],
+		]);
+		expect(steps[1]).toEqual({
+			j: 1,
+			call: lines[1]!.call,
+			tool: "company_write",
+			hashOnly: false,
+			args: "",
+			result: null,
+			text: "",
+			at: "",
+			erased: true,
+		});
+		expect(JSON.stringify(steps)).not.toMatch(/PRIVATE_ERASED/);
 	});
 
 	it("reads a block again after another writer's change, and keeps that writer's lines", async () => {
@@ -572,9 +613,9 @@ describe("a run's work log", () => {
 		await log.flush(signal);
 		// The commit lands, then its answer is lost.
 		const original = folder.commit.bind(folder);
-		folder.commit = async (key, units, place) => {
+		folder.commit = async (key, units, preconditions) => {
 			folder.commit = original;
-			await original(key, units, place);
+			await original(key, units, preconditions);
 			throw new Error("PRIVATE_LOST_ANSWER");
 		};
 		log.finish(step(log, "company_read"), envelope("two"), []);
@@ -595,7 +636,9 @@ describe("a run's work log", () => {
 		log.finish(step(log, "company_read"), envelope("one"), []);
 		const first = step(log, "company_write", { path: "a.md", text: "a" });
 		await log.precommit(first, signal);
-		expect(batches).toEqual([{ runId, steps: [0], blocks: [{ path: blockPath(0), version: expect.any(String) }] }]);
+		expect(batches).toEqual([
+			{ runId, steps: [0], blocks: [{ path: blockPath(0), version: expect.any(String) }], generation: 3 },
+		]);
 		// A change set of pending steps only makes nothing final.
 		const second = step(log, "company_write", { path: "b.md", text: "b" });
 		await log.precommit(second, signal);
@@ -611,6 +654,7 @@ describe("a run's work log", () => {
 				{ path: blockPath(0), version: folder.files.get(blockPath(0))!.version },
 				{ path: blockPath(2), version: folder.files.get(blockPath(2))!.version },
 			],
+			generation: 3,
 		});
 		stop();
 		log.finish(second, envelope("written"), []);
@@ -661,6 +705,377 @@ describe("a run's work log", () => {
 		expect(() => log.step({ call: "c", tool: "company_read", argumentsText: "{}", argumentSha256: "x" })).toThrow(
 			"Invalid run log step",
 		);
+	});
+});
+
+describe("a resumed run's earlier steps", () => {
+	it("reads the steps before its first step as their lines store them, an erased one kept in place", async () => {
+		const first = runLog();
+		first.log.agentText("Looking.");
+		for (let index = 0; index < 18; index++)
+			first.log.finish(step(first.log, "company_read", { path: `f${index}.md` }), envelope(`r${index}`), []);
+		first.log.finish(step(first.log, "send_message", { text: "PRIVATE_SEND_TEXT" }), envelope("sent"), []);
+		// The earlier process paused while this call ran.
+		const acting = step(first.log, "company_write", { path: "a.md", text: "a" });
+		await first.log.precommit(acting, first.signal);
+		await first.log.close(first.signal);
+		const committed = first.log.steps();
+		const { folder } = first;
+		expect(folder.blocks().map((path) => path.slice(-14))).toEqual(["00000000.jsonl", "00000016.jsonl"]);
+		// Step 3 is erased, and the resume filled in the paused call's result (W5).
+		folder.rewrite(folder.blocks()[0]!, (lines) =>
+			lines.map((line) => {
+				const record = JSON.parse(line) as Record<string, unknown>;
+				if (record.j !== 3) return line;
+				const { j, tool, call, args_bytes, args_hash } = record;
+				return JSON.stringify({ j, tool, call, args_bytes, args_hash, erased: true });
+			}),
+		);
+		folder.rewrite(folder.blocks()[1]!, (lines) =>
+			lines.map((line) => line.replace('"result":null', `"result":${envelope("OUTCOME_UNKNOWN")}`)),
+		);
+		folder.generation = 4;
+
+		const { log, signal } = runLog({ runId: first.runId, folder, firstStep: 20 });
+		const earlier = await log.earlier(signal);
+		expect(earlier.map((entry) => entry.j)).toEqual(Array.from({ length: 20 }, (_, j) => j));
+		// The erase moved the run's generation, and finding the log read it.
+		expect(log.generation()).toBe(4);
+		expect(earlier[0]).toEqual({
+			j: 0,
+			call: committed[0]!.call,
+			tool: "company_read",
+			hashOnly: false,
+			args: JSON.stringify({ path: "f0.md" }),
+			result: envelope("r0"),
+			text: "Looking.",
+			at: "2026-10-06T09:12:03Z",
+		});
+		for (const j of [1, 2, ...Array.from({ length: 15 }, (_, index) => index + 4)])
+			expect(earlier[j]).toEqual(committed[j]);
+		expect(earlier[3]).toEqual({
+			j: 3,
+			call: committed[3]!.call,
+			tool: "company_read",
+			hashOnly: false,
+			args: "",
+			result: null,
+			text: "",
+			at: "",
+			erased: true,
+		});
+		expect(earlier[18]).toMatchObject({ tool: "send_message", hashOnly: true, args: "" });
+		expect(earlier[19]).toEqual({ ...committed[19], result: envelope("OUTCOME_UNKNOWN") });
+		expect(JSON.stringify(earlier)).not.toContain("PRIVATE_SEND_TEXT");
+
+		// They are read once, and the resumed run's own steps are not among them.
+		log.finish(step(log, "company_read"), envelope("twenty"), []);
+		await log.flush(signal);
+		const reads = folder.reads;
+		expect(await log.earlier(signal)).toBe(earlier);
+		expect(folder.reads).toBe(reads);
+		expect(log.steps().map((entry) => entry.j)).toEqual([20]);
+		expect(folder.all().map((line) => line.j)).toEqual(Array.from({ length: 21 }, (_, j) => j));
+
+		// A run that starts at step 0 has none, and reads nothing for them.
+		const fresh = runLog();
+		expect(await fresh.log.earlier(fresh.signal)).toEqual([]);
+		expect(fresh.folder.reads).toBe(0);
+	});
+
+	it("refuses earlier steps the log does not hold", async () => {
+		const missing = runLog({ firstStep: 2 });
+		await expect(missing.log.earlier(missing.signal)).rejects.toMatchObject({
+			name: "CloudRunLogUnavailable",
+			reason: "no_log",
+		});
+
+		const first = runLog();
+		for (const text of ["one", "two", "three"]) first.log.finish(step(first.log, "company_read"), envelope(text), []);
+		await first.log.close(first.signal);
+		const { folder } = first;
+		const short = runLog({ runId: first.runId, folder, firstStep: 5 });
+		await expect(short.log.earlier(short.signal)).rejects.toMatchObject({
+			name: "CloudRunLogUnavailable",
+			reason: "log_short",
+		});
+
+		// A block whose steps are not numbered in order is not a run log.
+		folder.rewrite(folder.blocks()[0]!, (lines) => lines.filter((line) => !line.startsWith('{"j":1,')));
+		const gap = runLog({ runId: first.runId, folder, firstStep: 3 });
+		await expect(gap.log.earlier(gap.signal)).rejects.toThrow("Invalid run log block");
+
+		folder.gone = true;
+		const gone = runLog({ runId: first.runId, folder, firstStep: 3 });
+		await expect(gone.log.earlier(gone.signal)).rejects.toBeInstanceOf(CloudRunLogGone);
+		expect(gone.log.gone).toBe(true);
+	});
+});
+
+describe("the run's tree beside its log", () => {
+	const T0 = memoryBlockPath(0, 0);
+	const T1 = memoryBlockPath(4, 0);
+	const block = (...texts: string[]) =>
+		memoryBlockText(
+			texts.map((text, k) => ({ l: 0, k, free: true, text })),
+			"run",
+		);
+
+	const t0 = (version: string | null, ...texts: string[]): CloudRunTreeBlock[] => [
+		{ path: T0, text: block(...texts), version },
+	];
+	const t1 = (version: string | null, ...texts: string[]): CloudRunTreeBlock[] => [
+		{ path: T1, text: block(...texts), version },
+	];
+
+	async function landed() {
+		const run = runLog();
+		run.log.finish(step(run.log, "company_read"), envelope("one"), []);
+		await run.log.flush(run.signal);
+		return run;
+	}
+
+	it("reads and commits step lines under the log's folder, making the tier folders they need", async () => {
+		const { folder, log, signal } = await landed();
+		expect([T0, T1]).toEqual(["t0/00000000.jsonl", "t1/00000000.jsonl"]);
+		expect(await log.treeRead(T0, signal)).toBeNull();
+		expect(await log.commitTree("steplines:0001", t0(null, "read"), 3, signal)).toBe("landed");
+		expect(folder.commits.at(-1)).toEqual({
+			key: "steplines:0001",
+			path: folder.path,
+			preconditions: {
+				runLog: { run: folder.runId, path: folder.path },
+				runGenerations: [{ runId: folder.runId, generation: 3 }],
+			},
+			units: [
+				{ op: "mkdir", path: `${folder.path}/t0` },
+				{
+					op: "write",
+					path: `${folder.path}/${T0}`,
+					content: { text: block("read"), mediaType: "application/jsonl" },
+				},
+			],
+		});
+		const file = await log.treeRead(T0, signal);
+		expect(file).toEqual(folder.files.get(`${folder.path}/${T0}`));
+
+		// The next batch writes the block at the version it read, and makes only the tier folder it lacks.
+		const upper = memoryBlockText([{ l: 4, k: 0, free: true, text: "read and listed" }], "run");
+		expect(
+			await log.commitTree(
+				"steplines:0002",
+				[
+					{ path: T0, text: block("read", "listed"), version: file!.version },
+					{ path: T1, text: upper, version: null },
+				],
+				3,
+				signal,
+			),
+		).toBe("landed");
+		const shape = (unit: CloudCompanyFolderUnit) => [
+			unit.op,
+			"path" in unit ? unit.path : null,
+			"expectedVersion" in unit ? unit.expectedVersion : null,
+		];
+		expect(folder.commits.at(-1)!.units.map(shape)).toEqual([
+			["mkdir", `${folder.path}/t1`, null],
+			["write", `${folder.path}/${T0}`, file!.version],
+			["write", `${folder.path}/${T1}`, null],
+		]);
+		expect(folder.files.get(`${folder.path}/${T0}`)!.text).toBe(block("read", "listed"));
+		expect(folder.files.get(`${folder.path}/${T1}`)!.text).toBe(upper);
+		// The step batches go on beside the tree, which they never touch.
+		log.finish(step(log, "company_read"), envelope("two"), []);
+		await log.flush(signal);
+		expect(folder.commits.at(-1)!.preconditions).toEqual({ runLog: { run: folder.runId, path: folder.path } });
+		expect(folder.all().map((line) => line.j)).toEqual([0, 1]);
+	});
+
+	it("takes a tier folder another batch made, and makes one again that it took to exist", async () => {
+		const { folder, log, signal } = await landed();
+		folder.folders.add(`${folder.path}/t0`);
+		expect(await log.commitTree("steplines:0001", t0(null, "a"), 3, signal)).toBe("landed");
+		// The folder was there: the block lands in the same change set.
+		expect(folder.commits.at(-1)!.units.map((unit) => unit.op)).toEqual(["mkdir", "write"]);
+		expect(folder.files.get(`${folder.path}/${T0}`)!.text).toBe(block("a"));
+
+		// A block read at a version whose tier folder is gone: the folder is made again, and the block found changed.
+		const commits = folder.commits.length;
+		expect(await log.commitTree("steplines:0002", t1("v1", "b"), 3, signal)).toBe("stale");
+		expect(folder.commits.slice(commits).map((commit) => [commit.key, commit.units.map((unit) => unit.op)])).toEqual([
+			["steplines:0002", ["write"]],
+			["steplines:0002:2", ["mkdir", "write"]],
+		]);
+		expect(folder.folders.has(`${folder.path}/t1`)).toBe(true);
+		expect(folder.files.has(`${folder.path}/${T1}`)).toBe(false);
+	});
+
+	it("refuses a batch when the run's generation moved or a step erase is open, and a block that changed", async () => {
+		const { folder, log, signal } = await landed();
+		folder.generation = 4;
+		expect(await log.commitTree("steplines:0001", t0(null, "a"), 3, signal)).toBe("stale");
+		folder.generation = 3;
+		folder.refuse = "memory_erase_open";
+		expect(await log.commitTree("steplines:0002", t0(null, "a"), 3, signal)).toBe("stale");
+		folder.refuse = null;
+		expect(folder.folders.has(`${folder.path}/t0`)).toBe(false);
+		expect(folder.commits.slice(-2).map((commit) => commit.units.length)).toEqual([2, 2]);
+
+		expect(await log.commitTree("steplines:0003", t0(null, "a"), 3, signal)).toBe("landed");
+		// Another writer's block is there: a new block meets it, and so does a write at an older version.
+		expect(await log.commitTree("steplines:0004", t0(null, "b"), 3, signal)).toBe("stale");
+		const file = await log.treeRead(T0, signal);
+		folder.rewrite(`${folder.path}/${T0}`, (lines) => lines);
+		expect(await log.commitTree("steplines:0005", t0(file!.version, "c"), 3, signal)).toBe("stale");
+		expect(folder.files.get(`${folder.path}/${T0}`)!.text).toBe(block("a"));
+
+		// Each block lands or not on its own: the changed block is refused, and the new block beside it lands.
+		const upper = memoryBlockText([{ l: 4, k: 0, free: true, text: "a" }], "run");
+		const split = [...t0(file!.version, "c"), { path: T1, text: upper, version: null }];
+		expect(await log.commitTree("steplines:0006", split, 3, signal)).toBe("stale");
+		expect(folder.files.get(`${folder.path}/${T0}`)!.text).toBe(block("a"));
+		expect(folder.files.get(`${folder.path}/${T1}`)!.text).toBe(upper);
+		// Both are read again before the batch is built again.
+		const [low, high] = [await log.treeRead(T0, signal), await log.treeRead(T1, signal)];
+		const both = memoryBlockText([{ l: 4, k: 0, free: true, text: "a and c" }], "run");
+		expect(
+			await log.commitTree(
+				"steplines:0007",
+				[
+					{ path: T0, text: block("a", "c"), version: low!.version },
+					{ path: T1, text: both, version: high!.version },
+				],
+				3,
+				signal,
+			),
+		).toBe("landed");
+		expect(folder.files.get(`${folder.path}/${T1}`)!.text).toBe(both);
+
+		// Step batches are never discarded: they name no generation.
+		folder.generation = 9;
+		log.finish(step(log, "company_read"), envelope("two"), []);
+		await log.flush(signal);
+		expect(folder.all().map((line) => line.j)).toEqual([0, 1]);
+	});
+
+	it("finds a moved log again, and stops once it is gone", async () => {
+		const { folder, log, signal } = await landed();
+		const old = folder.path;
+		expect(await log.commitTree("steplines:0001", t0(null, "a"), 3, signal)).toBe("landed");
+		const file = await log.treeRead(T0, signal);
+		const rename = (agent: string) => {
+			for (const folderPath of ["agents", `agents/${agent}`, `agents/${agent}/sessions`])
+				folder.folders.add(folderPath);
+			folder.folders.add(`agents/${agent}/sessions/${conversationId}`);
+			const to = `agents/${agent}/sessions/${conversationId}/runs/${folder.runId}`;
+			folder.move(to);
+			return to;
+		};
+		const moved = rename("scout-2");
+		expect(await log.commitTree("steplines:0002", t0(file!.version, "a", "b"), 3, signal)).toBe("landed");
+		expect(folder.commits.slice(-2).map((commit) => [commit.key, commit.path])).toEqual([
+			["steplines:0002", old],
+			["steplines:0002:2", moved],
+		]);
+		expect(folder.files.get(`${moved}/${T0}`)!.text).toBe(block("a", "b"));
+		expect((await log.treeRead(T0, signal))?.text).toBe(block("a", "b"));
+
+		// A read at the place the log has just left finds nothing: the batch built on it is stale, and the next read
+		// finds the block at the new place.
+		const again = rename("scout-3");
+		expect(await log.treeRead(T0, signal)).toBeNull();
+		expect(await log.commitTree("steplines:0003", t0(null, "c"), 3, signal)).toBe("stale");
+		expect(await log.treeRead(T0, signal)).toEqual(folder.files.get(`${again}/${T0}`));
+		expect(folder.files.get(`${again}/${T0}`)!.text).toBe(block("a", "b"));
+
+		folder.gone = true;
+		expect(await log.commitTree("steplines:0004", t0(null, "d"), 3, signal)).toBe("gone");
+		expect(log.gone).toBe(true);
+		const commits = folder.commits.length;
+		await expect(log.treeRead(T0, signal)).rejects.toBeInstanceOf(CloudRunLogGone);
+		expect(await log.commitTree("steplines:0005", t0(null, "e"), 3, signal)).toBe("gone");
+		expect(folder.commits).toHaveLength(commits);
+	});
+
+	it("commits a resumed run's step lines at the generation its log was found at", async () => {
+		const first = await landed();
+		await first.log.close(first.signal);
+		// A step erase between the pause and the resume moved the generation.
+		first.folder.generation = 5;
+		const { folder } = first;
+		const { log, signal } = runLog({ runId: first.runId, folder, firstStep: 1 });
+		expect(log.generation()).toBe(0);
+		expect(await log.treeRead(T0, signal)).toBeNull();
+		expect(log.generation()).toBe(5);
+		expect(await log.commitTree("steplines:0001", t0(null, "read"), log.generation(), signal)).toBe("landed");
+		expect(folder.commits.at(-1)!.preconditions.runGenerations).toEqual([{ runId: first.runId, generation: 5 }]);
+	});
+
+	it("keeps reading and committing step lines after the log is closed, until the run ends", async () => {
+		const { folder, log, signal } = runLog();
+		log.finish(step(log, "company_read"), envelope("one"), []);
+		await log.close(signal);
+		expect(() => step(log, "company_read")).toThrow("Run log closed");
+		expect(log.steps().map((entry) => entry.j)).toEqual([0]);
+		expect(await log.treeRead(T0, signal)).toBeNull();
+		expect(await log.commitTree("steplines-1", t0(null, "read"), 3, signal)).toBe("landed");
+		const file = await log.treeRead(T0, signal);
+		expect(file?.text).toBe(block("read"));
+		expect(await log.commitTree("steplines-2", t0(file!.version, "read more"), 3, signal)).toBe("landed");
+		expect(folder.files.get(`${folder.path}/${T0}`)!.text).toBe(block("read more"));
+	});
+
+	it("refuses tree reads and commits before the log's first batch, and malformed ones", async () => {
+		const early = runLog();
+		await expect(early.log.treeRead(T0, early.signal)).rejects.toMatchObject({
+			name: "CloudRunLogUnavailable",
+			reason: "no_log",
+		});
+		await expect(early.log.commitTree("steplines:0001", t0(null, "a"), 0, early.signal)).rejects.toBeInstanceOf(
+			CloudRunLogUnavailable,
+		);
+		expect(early.folder.commits).toHaveLength(0);
+
+		const { folder, log, signal } = await landed();
+		for (const path of [
+			"t0/0000000.jsonl",
+			"t0/00000000.json",
+			"t01/00000000.jsonl",
+			"t15/00000000.jsonl",
+			"t0/000000000.jsonl",
+			"log/00000000.jsonl",
+			"/t0/00000000.jsonl",
+			"t0/../log/00000000.jsonl",
+			"run.toml",
+		])
+			await expect(log.treeRead(path, signal)).rejects.toThrow("Invalid run tree path");
+		const good: CloudRunTreeBlock = { path: T0, text: block("a"), version: null };
+		const bad: [string, CloudRunTreeBlock[], number][] = [
+			["short", [good], 3],
+			["steplines 0001", [good], 3],
+			["steplines:0001", [], 3],
+			["steplines:0001", [good, { ...good }], 3],
+			["steplines:0001", [{ ...good, path: "log/00000000.jsonl" }], 3],
+			["steplines:0001", [good], -1],
+			["steplines:0001", [good], 1.5],
+			[
+				"steplines:0001",
+				Array.from({ length: 65 }, (_, index) => ({ ...good, path: memoryBlockPath(0, index * 16) })),
+				3,
+			],
+			["steplines:0001", [{ ...good, text: "x".repeat(1024 * 1024 + 1) }], 3],
+		];
+		for (const [key, blocks, generation] of bad)
+			await expect(log.commitTree(key, blocks, generation, signal)).rejects.toThrow("Invalid run tree batch");
+		const commits = folder.commits.length;
+
+		// A refusal of any other kind is not a stale batch.
+		folder.refuse = "denied";
+		await expect(log.commitTree("steplines:0002", [good], 3, signal)).rejects.toMatchObject({
+			name: "CloudRunLogUnavailable",
+			reason: "denied",
+		});
+		expect(folder.commits).toHaveLength(commits + 1);
 	});
 });
 

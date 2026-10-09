@@ -867,7 +867,7 @@ every row does. Column and value labels are in the member's language. The `text`
 `file:rules/shared-areas.md` when the file exists. The `activity` source is not built: the live state has only each
 agent's current run, not the runs that happened, so it waits for a read of past runs (with their answers and changes).
 
-**Built: I9c, the offers' machinery** (`supabase/migrations/20260930105000_interface_offers.sql`, test 938). Offers are
+**Built: I9c, the offers' machinery** (`supabase/migrations/20260928509110_interface_offers.sql`, test 938). Offers are
 kept in `qorpera_interface_offers` (§5 "Offers"). Members make, decline, withdraw and list them with four calls
 (`supabase/CLIENT-CONTRACT.md`, "Offers of a claimed cell"). Offer, decline and withdraw hold the table's index row
 FOR SHARE, so they wait for a save that holds it (FOR NO KEY UPDATE) and read the files as the last commit left

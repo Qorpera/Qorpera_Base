@@ -83,11 +83,6 @@ begin
 	perform pg_temp.not_refused($q$select public.qorpera_authorize_profile_object_upload('64600000-0000-4000-8000-000000000011', repeat('c', 64), 1)$q$);
 	perform pg_temp.as_service();
 	perform pg_temp.not_refused($q$select public.qorpera_authorize_profile_object_download('64600000-0000-4000-8000-000000000010', repeat('b', 64))$q$);
-	-- Native object staging, whatever the binding.
-	perform pg_temp.refuses($q$select public.qorpera_authorize_native_company_object_download('{}', '64600000-0000-4000-8000-000000000010', repeat('b', 64))$q$);
-	perform pg_temp.refuses($q$select public.qorpera_authorize_native_company_object_upload('{}', '64600000-0000-4000-8000-000000000010', repeat('b', 64), 1)$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_authorize_native_company_object_download('{}', '64600000-0000-4000-8000-000000000011', repeat('b', 64))$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_authorize_native_company_object_upload('{}', '64600000-0000-4000-8000-000000000011', repeat('b', 64), 1)$q$);
 end $$;
 
 -- The Storage read policy: a member never reads a folder-v2 object from Storage directly.

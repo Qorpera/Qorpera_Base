@@ -4,8 +4,10 @@ import {
 	assertLxdOfficeGuestInstance,
 	inspectLxdOfficeGuestBoot,
 	type LxdOfficeGuestBinding,
+	lxdOfficeAgentPlugClaim,
 	lxdOfficeGuestPlan,
 } from "../src/lxd-office-guest.ts";
+import { pluggedOfficeRequest, testAgentMac } from "./helpers/agent-plug.ts";
 
 const id = (number: number) => `00000000-0000-4000-8000-${String(number).padStart(12, "0")}`;
 function binding(): LxdOfficeGuestBinding {
@@ -41,8 +43,8 @@ function fixture() {
 		statusCode: 103,
 		config: { ...plan.request.config, "volatile.base_image": config.imageFingerprint, "image.os": "Ubuntu" },
 		expandedConfig: { ...plan.request.config, "volatile.base_image": config.imageFingerprint },
-		devices: structuredClone(plan.request.devices),
-		expandedDevices: structuredClone(plan.request.devices),
+		devices: structuredClone(pluggedOfficeRequest(config).devices),
+		expandedDevices: structuredClone(pluggedOfficeRequest(config).devices),
 	};
 	const file = { content: Buffer.from(`${id(6)}\n`), uid: 0, gid: 0, mode: 0o444 };
 	const client = {
@@ -64,8 +66,28 @@ describe("separate persistent office VM plan and boot observation", () => {
 		const plan = lxdOfficeGuestPlan(input);
 		expect(plan.request.type).toBe("virtual-machine");
 		expect(plan.request.profiles).toEqual([]);
-		expect(Object.keys(plan.request.devices).sort()).toEqual(["network", "root", "workbench"]);
+		expect(Object.keys(plan.request.devices).sort()).toEqual(["network", "plug", "root", "workbench"]);
 		expect(plan.request.devices.workbench.path).toBe("/var/lib/qorpera-office");
+		// The first card stays on the office network for the computer's own services; the agents leave by the second,
+		// a filtered port of the agents' bridge whose MAC the plug gives right before the create. LXD gives a VM's NICs
+		// their PCI slots in device-name order, so the office network's card keeps the first.
+		const nics = Object.entries(plan.request.devices).filter(([, device]) => device.type === "nic");
+		expect(nics.map(([name]) => name).sort()).toEqual(["network", "plug"]);
+		expect(plan.request.devices.network).toEqual({ type: "nic", network: input.network, name: "eth0" });
+		expect(plan.request.devices.plug).toEqual({
+			type: "nic",
+			nictype: "bridged",
+			parent: "qagent0",
+			name: "qagent",
+			"ipv6.address": "none",
+			"security.mac_filtering": "true",
+			"security.ipv6_filtering": "true",
+			"security.port_isolation": "true",
+		});
+		expect(pluggedOfficeRequest(input).devices.plug).toEqual({
+			...plan.request.devices.plug,
+			hwaddr: testAgentMac,
+		});
 		expect(plan.request.source).toEqual({ type: "image", fingerprint: input.imageFingerprint });
 		expect(plan.request.config["boot.autostart"]).toBe("false");
 		expect(JSON.stringify(plan.request)).not.toMatch(/compute.identity|company-live|provider.*credential|cloud-init/);
@@ -77,6 +99,18 @@ describe("separate persistent office VM plan and boot observation", () => {
 		expect(lxdOfficeGuestPlan({ ...binding(), providerPolicySha256: "e".repeat(64) }).instanceSha256).not.toBe(
 			plan.instanceSha256,
 		);
+	});
+	it("claims the computer's agent plug for its company and office", () => {
+		const input = binding();
+		expect(lxdOfficeAgentPlugClaim(input)).toEqual({
+			kind: "office",
+			companyId: id(1),
+			machineId: id(3),
+			memberUserId: null,
+			project: "qorpera-offices",
+			instance: lxdOfficeGuestPlan(input).request.name,
+		});
+		expect(() => lxdOfficeAgentPlugClaim({ ...input, companyId: "invalid" })).toThrow("INVALID_LXD_OFFICE_BINDING");
 	});
 	it.each([
 		["computeIdentityId", id(8)],
@@ -110,28 +144,60 @@ describe("separate persistent office VM plan and boot observation", () => {
 			expect.any(AbortSignal),
 		);
 	});
-	it.each(["extra disk", "profile", "raw qemu", "cloud init", "image", "metadata", "local config"])(
-		"rejects %s drift before reading guest data",
-		async (drift) => {
-			const f = fixture();
-			if (drift === "extra disk")
-				f.instance.expandedDevices = {
-					...f.instance.expandedDevices,
-					extra: { type: "disk", source: "/secret", path: "/secret" },
-				};
-			if (drift === "profile") f.instance.profiles = ["native-runner"];
-			if (drift === "raw qemu") f.instance.expandedConfig = { ...f.instance.expandedConfig, "raw.qemu": "unsafe" };
-			if (drift === "cloud init") f.instance.config = { ...f.instance.config, "cloud-init.user-data": "unsafe" };
-			if (drift === "image")
-				f.instance.expandedConfig = { ...f.instance.expandedConfig, "volatile.base_image": "c".repeat(64) };
-			if (drift === "metadata")
-				f.instance.expandedConfig = { ...f.instance.expandedConfig, "user.qorpera.computer_generation": "2" };
-			if (drift === "local config") f.instance.config = { ...f.instance.config, "limits.memory": "unlimited" };
-			expect(() => assertLxdOfficeGuestInstance(f.config, f.instance)).toThrow("LXD_OFFICE_GUEST_DRIFTED");
-			await expect(f.inspect()).rejects.toThrow("LXD_OFFICE_BOOT_UNCONFIRMED");
-			expect(f.client.readInstanceFile).not.toHaveBeenCalled();
-		},
-	);
+	it.each([
+		"extra disk",
+		"profile",
+		"raw qemu",
+		"cloud init",
+		"image",
+		"metadata",
+		"local config",
+		"unplugged agent card",
+		"agent card without its MAC",
+		"agent card with another MAC",
+		"agent card with an extra key",
+		"agent card on another bridge",
+		"agent MAC differing between views",
+	])("rejects %s drift before reading guest data", async (drift) => {
+		const f = fixture();
+		const agent = f.instance.devices.plug;
+		const card = (value: Record<string, string>) => {
+			f.instance.devices = { ...f.instance.devices, plug: value };
+			f.instance.expandedDevices = { ...f.instance.expandedDevices, plug: value };
+		};
+		if (drift === "extra disk")
+			f.instance.expandedDevices = {
+				...f.instance.expandedDevices,
+				extra: { type: "disk", source: "/secret", path: "/secret" },
+			};
+		if (drift === "unplugged agent card") {
+			const { plug: _, ...devices } = f.instance.devices;
+			f.instance.devices = f.instance.expandedDevices = devices;
+		}
+		if (drift === "agent card without its MAC") {
+			const { hwaddr: _, ...unplugged } = agent;
+			card(unplugged);
+		}
+		if (drift === "agent card with another MAC") card({ ...agent, hwaddr: "00:16:3e:00:00:01" });
+		if (drift === "agent card with an extra key") card({ ...agent, "ipv4.address": "10.210.1.1" });
+		if (drift === "agent card on another bridge") card({ ...agent, parent: "qorpera0" });
+		if (drift === "agent MAC differing between views")
+			f.instance.expandedDevices = {
+				...f.instance.expandedDevices,
+				plug: { ...agent, hwaddr: "0e:51:0a:d2:01:02" },
+			};
+		if (drift === "profile") f.instance.profiles = ["native-runner"];
+		if (drift === "raw qemu") f.instance.expandedConfig = { ...f.instance.expandedConfig, "raw.qemu": "unsafe" };
+		if (drift === "cloud init") f.instance.config = { ...f.instance.config, "cloud-init.user-data": "unsafe" };
+		if (drift === "image")
+			f.instance.expandedConfig = { ...f.instance.expandedConfig, "volatile.base_image": "c".repeat(64) };
+		if (drift === "metadata")
+			f.instance.expandedConfig = { ...f.instance.expandedConfig, "user.qorpera.computer_generation": "2" };
+		if (drift === "local config") f.instance.config = { ...f.instance.config, "limits.memory": "unlimited" };
+		expect(() => assertLxdOfficeGuestInstance(f.config, f.instance)).toThrow("LXD_OFFICE_GUEST_DRIFTED");
+		await expect(f.inspect()).rejects.toThrow("LXD_OFFICE_BOOT_UNCONFIRMED");
+		expect(f.client.readInstanceFile).not.toHaveBeenCalled();
+	});
 	it.each(["owner", "mode", "utf8", "uuid", "whitespace", "reboot", "stopped", "late drift"])(
 		"does not confirm boot after %s",
 		async (failure) => {

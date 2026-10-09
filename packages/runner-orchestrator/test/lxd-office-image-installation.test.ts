@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
 	assertOfficeImageResetCapability,
+	OFFICE_IMAGE_AGENT_PLUG_PACKAGE_FILES,
 	OFFICE_IMAGE_EXECUTABLES,
 	OFFICE_IMAGE_MOUNT_UNIT,
 	OFFICE_IMAGE_NETWORK_PACKAGE_FILES,
@@ -146,6 +147,38 @@ describe("office image installation contract", () => {
 					artifacts: [...manifest.artifacts, ...network.filter((a) => a.file !== missing)],
 				}),
 			).toThrow("OFFICE_IMAGE_PACKAGE_INCOMPLETE");
+		// The machine's agent card: named before netplan and udev's own names, and
+		// systemd-networkd kept off it and off the plumber's routes.
+		expect(officeImageDestination("qorpera-agent-plug.rules")).toEqual({
+			path: "/etc/udev/rules.d/70-qorpera-agent-plug.rules",
+			mode: 0o644,
+		});
+		expect(officeImageDestination("qorpera-agent-plug.network")).toEqual({
+			path: "/etc/systemd/network/00-qorpera-agent-plug.network",
+			mode: 0o644,
+		});
+		expect(officeImageDestination("qorpera-agent-plug-networkd.conf")).toEqual({
+			path: "/etc/systemd/networkd.conf.d/qorpera-agent-plug.conf",
+			mode: 0o644,
+		});
+		const plug = OFFICE_IMAGE_AGENT_PLUG_PACKAGE_FILES.map((file) => ({ file, bytes: 1, sha256: sha }));
+		expect(() =>
+			parseOfficeImagePackage({ ...manifest, artifacts: [...manifest.artifacts, ...network, ...plug] }),
+		).not.toThrow();
+		expect(() => parseOfficeImagePackage({ ...manifest, artifacts: [...manifest.artifacts, ...plug] })).toThrow(
+			"OFFICE_IMAGE_PACKAGE_INCOMPLETE",
+		);
+		for (const missing of OFFICE_IMAGE_AGENT_PLUG_PACKAGE_FILES)
+			expect(() =>
+				parseOfficeImagePackage({
+					...manifest,
+					artifacts: [...manifest.artifacts, ...network, ...plug.filter((a) => a.file !== missing)],
+				}),
+			).toThrow("OFFICE_IMAGE_PACKAGE_INCOMPLETE");
+		// The packaged files are the ones installed.
+		const packaged = readFileSync(new URL("../../../scripts/package-company-computer.mjs", import.meta.url), "utf8");
+		for (const file of [...OFFICE_IMAGE_NETWORK_PACKAGE_FILES, ...OFFICE_IMAGE_AGENT_PLUG_PACKAGE_FILES])
+			expect(packaged).toContain(`"${file}"`);
 		// The machine's firewall and each computer's own filter block the same ranges.
 		const ranges = (text: string) =>
 			/elements = \{([^}]*)\}/

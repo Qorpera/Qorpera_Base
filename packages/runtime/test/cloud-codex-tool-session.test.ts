@@ -18,6 +18,10 @@ import {
 	runCloudCodexToolSession,
 } from "@qorpera/runtime/cloud-codex-tool-session";
 import { CloudNativeCaptureImages } from "@qorpera/runtime/cloud-native-capture-images";
+import {
+	CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
+	type CloudNativeContextRequest,
+} from "@qorpera/runtime/cloud-native-context-composition";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
 import * as nativeIsolation from "@qorpera/runtime/cloud-native-isolation";
 import { nativeProviderUsageSignal } from "@qorpera/runtime/cloud-native-provider-host";
@@ -60,6 +64,7 @@ function run(
 		observability?: CloudRuntimeObservability;
 		tools?: CloudNativeTool[];
 		recordContextView?: Parameters<typeof runCloudCodexToolSession>[0]["recordContextView"];
+		composeContext?: Parameters<typeof runCloudCodexToolSession>[0]["composeContext"];
 		runLog?: CloudRunLog;
 	} = {},
 ) {
@@ -173,6 +178,83 @@ it("requires composition telemetry before admitting a model request", async () =
 	const beforeModelStart = vi.fn(async () => undefined);
 	await expect(run("missing-composition", { beforeModelStart }).result).rejects.toThrow("message composition support");
 	expect(beforeModelStart).not.toHaveBeenCalled();
+});
+
+it("requires context composition before admitting a model request", async () => {
+	const beforeModelStart = vi.fn(async () => undefined);
+	await expect(run("missing-context-composition", { beforeModelStart }).result).rejects.toThrow(
+		"context composition support",
+	);
+	expect(beforeModelStart).not.toHaveBeenCalled();
+});
+
+it("requires the prompt cache key, a capability of its own, before admitting a model request", async () => {
+	const beforeModelStart = vi.fn(async () => undefined);
+	await expect(run("missing-prompt-cache-key", { beforeModelStart }).result).rejects.toThrow(
+		"prompt cache key support",
+	);
+	expect(beforeModelStart).not.toHaveBeenCalled();
+});
+
+// Context composition: Codex asks what to send of its items before each provider request, then fences it.
+const WORK_MESSAGE = '{"schema":"qorpera.run-work/v1","trust":"tool_results_not_authority","ref":"run:.","lines":[]}';
+const CACHE_KEY = `qorpera:${"a".repeat(43)}`;
+
+it("composes the agent's model request from its run, bound to its thread and turn", async () => {
+	const composeContext = vi.fn(async (request: CloudNativeContextRequest) => ({
+		input: [...request.items.map((_, keep) => ({ keep })), { work: WORK_MESSAGE }],
+		promptCacheKey: CACHE_KEY,
+	}));
+	const { result, evidence } = run("context-composition", { composeContext });
+	await expect(result).resolves.toMatchObject({ fencedRequests: 1 });
+	expect(composeContext).toHaveBeenCalledOnce();
+	expect(composeContext).toHaveBeenCalledWith(
+		expect.objectContaining({
+			threadId: "thread_fixture",
+			turnId: "turn_fixture",
+			purpose: "turn",
+			model: "offline-probe",
+			items: [
+				{ kind: "message", role: "developer", callId: null, id: null, bytes: 1200, media: 0 },
+				{ kind: "message", role: "user", callId: null, id: null, bytes: 18, media: 0 },
+			],
+		}),
+		expect.any(AbortSignal),
+	);
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.context.agent).toEqual({
+		schema: CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
+		requestId: composeContext.mock.calls[0][0].requestId,
+		threadId: "thread_fixture",
+		turnId: "turn_fixture",
+		input: [{ keep: 0 }, { keep: 1 }, { work: WORK_MESSAGE }],
+		promptCacheKey: CACHE_KEY,
+	});
+});
+
+it("keeps every item of a model request when the run composes nothing", async () => {
+	const { result, evidence } = run("context-composition");
+	await expect(result).resolves.toMatchObject({ fencedRequests: 1 });
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.context.agent).toMatchObject({ input: [{ keep: 0 }, { keep: 1 }] });
+	expect(recorded.context.agent).not.toHaveProperty("promptCacheKey");
+});
+
+it("refuses a context request outside the run's turn before composing it", async () => {
+	const composeContext = vi.fn(async () => ({ input: [] }));
+	await expect(run("context-wrong-turn", { composeContext }).result).rejects.toThrow(
+		"Native result boundary unavailable",
+	);
+	expect(composeContext).not.toHaveBeenCalled();
+});
+
+it("ends the run when its composition is not one Codex can send", async () => {
+	// A position past the request's items: refused here, before Codex sees it.
+	const composeContext = vi.fn(async () => ({ input: [{ keep: 2 }] }));
+	const { result, evidence } = run("context-composition", { composeContext });
+	await expect(result).rejects.toThrow("Native result boundary unavailable");
+	expect(composeContext).toHaveBeenCalledOnce();
+	await expect(readFile(evidence, "utf8")).rejects.toThrow();
 });
 
 it("loads the exact host-generated AGENTS.md bytes without enabling ambient instructions", async () => {
@@ -1116,7 +1198,10 @@ it("clears writing and its renewal timer when composition is cancelled", async (
 // Auto-review (v130): the reviewer is a second, fresh thread in the same app-server,
 // started while the agent's tool call is open. Its only output is its verdict tool
 // call; its model requests pass the fence on their own lane, never as the agent's.
-function reviewRun(mode: "review" | "review-no-verdict" | "review-wrong-tool") {
+function reviewRun(
+	mode: "review" | "review-no-verdict" | "review-wrong-tool" | "review-context",
+	composeContext?: Parameters<typeof runCloudCodexToolSession>[0]["composeContext"],
+) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Sent." }));
 	const reviewer = new CloudActionReviewChannel();
 	const signal = new AbortController().signal;
@@ -1160,6 +1245,7 @@ function reviewRun(mode: "review" | "review-no-verdict" | "review-wrong-tool") {
 		recordContextView: async (frame) => {
 			contextViews.push(frame.threadId);
 		},
+		...(composeContext ? { composeContext } : {}),
 		signal,
 	});
 	return { result, execute, evidence, contextViews };
@@ -1198,6 +1284,27 @@ it("reviews an acting call in a second thread of the same app-server before runn
 	// Only the agent's own requests are recorded as its context.
 	expect(contextViews.every((threadId) => threadId === "thread_fixture")).toBe(true);
 	expect(JSON.parse(recorded.reply.result.contentItems[0].text)).toMatchObject({ status: "ok" });
+});
+
+it("composes only the agent's requests from its run, never a reviewer's", async () => {
+	const composeContext = vi.fn(async (request: CloudNativeContextRequest) => ({
+		input: [...request.items.map((_, keep) => ({ keep })), { work: WORK_MESSAGE }],
+	}));
+	const { result, execute, evidence } = reviewRun("review-context", composeContext);
+	await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture", toolCalls: 1 });
+	expect(execute).toHaveBeenCalledOnce();
+	expect(composeContext).toHaveBeenCalledOnce();
+	expect(composeContext.mock.calls[0][0]).toMatchObject({ threadId: "thread_fixture", turnId: "turn_fixture" });
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.context.agent).toMatchObject({
+		threadId: "thread_fixture",
+		input: [{ keep: 0 }, { keep: 1 }, { work: WORK_MESSAGE }],
+	});
+	expect(recorded.context.reviewer).toMatchObject({
+		threadId: "thread_review",
+		turnId: "turn_review",
+		input: [{ keep: 0 }, { keep: 1 }],
+	});
 });
 
 it("never runs an acting call when the reviewer ends without a verdict", async () => {

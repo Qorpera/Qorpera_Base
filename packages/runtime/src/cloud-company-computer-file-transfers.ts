@@ -17,7 +17,6 @@ import {
 } from "@qorpera/cloud-client/cloud-file-transfer";
 import type { CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-registry-http.ts";
-import { HttpNativeCompanyObjectTransport } from "./cloud-native-company-objects.ts";
 import { type CloudNativeToolRun, cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import { cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations.ts";
 
@@ -31,7 +30,8 @@ export interface CompanyComputerFileExportPublisher {
 }
 
 /** Staging is immutable and does not publish. SQL binds publication to the
- * original admitted operation, current authority, source path and stored bytes. */
+ * original admitted operation, current authority, source path and stored bytes.
+ * The office no longer wires it: its bytes went to company objects, which are gone (legacy removal, step C). */
 export class CloudCompanyComputerFileExports implements CompanyComputerFileExportPublisher {
 	readonly #run: CloudNativeToolRun;
 	readonly #scope: CompanyComputerScope;
@@ -138,22 +138,4 @@ export class CloudCompanyComputerFileExports implements CompanyComputerFileExpor
 			15000,
 		);
 	}
-}
-
-export function createHttpCompanyComputerFileExports(options: {
-	run: CloudNativeToolRun;
-	scope: CompanyComputerScope;
-	registry: Pick<HttpCloudCompanyComputerRegistry, "call">;
-	objectGateway: { baseUrl: string; token: string; holder?: () => string; fetch?: typeof fetch };
-}): CloudCompanyComputerFileExports {
-	return new CloudCompanyComputerFileExports({
-		...options,
-		objects: (signal) =>
-			new HttpNativeCompanyObjectTransport({
-				...options.objectGateway,
-				companyId: options.scope.companyId,
-				binding: options.run.binding,
-				signal,
-			}),
-	});
 }

@@ -231,7 +231,9 @@ try {
 		!/^(HTTPS?_PROXY|https?_proxy|ALL_PROXY|NO_PROXY)=/m.test(started.environment.replaceAll("\0", "\n")),
 		started.environment,
 	);
-	assert.match(await readFile(`/proc/${started.pid}/root/etc/resolv.conf`, "utf8"), /^nameserver 1\.1\.1\.1\n/);
+	// The agent exit's name server only.
+	const resolv = await readFile(`/proc/${started.pid}/root/etc/resolv.conf`, "utf8");
+	assert.match(resolv, /^nameserver 10\.210\.0\.1\noptions [^\n]*\n$/);
 	const devices = await readFile(`/proc/${started.pid}/net/dev`, "utf8");
 	assert.match(devices, /^ *lo:/m);
 	assert.doesNotMatch(devices, /eth0/);

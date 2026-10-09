@@ -50,7 +50,7 @@ test("packages a standalone office provider without runtime, desktop or browser 
 		const journal=await LxdOfficeOperationJournal.open(stateRoot,id(6),binding,{
 		 submitInstanceOperation:async(project,action)=>({project,instanceName:action.request.name,operationId:id(100)}),inspectInstanceOperation:async()=>'succeeded'
 		},false,()=>new Date('2026-09-09T02:00:00.000Z'));
-		await journal.reconcile(id(10),'create',new AbortController().signal);
+		await journal.reconcile(id(10),'create',new AbortController().signal,'0e:51:0a:d2:01:02');
 		const snapshot=async()=>Promise.all((await readdir(join(stateRoot,id(5)))).sort().map(async name=>[name,(await readFile(join(stateRoot,id(5),name))).toString('base64')]));
 		const before=await snapshot();
 		const history=spawnSync(process.execPath,['--jitless','--disable-proto=throw','--disallow-code-generation-from-strings',file,'--journal-history',stateRoot,id(5)],{cwd:tmpdir(),encoding:'utf8',timeout:10000});
