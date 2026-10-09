@@ -800,21 +800,25 @@ export class CompanyComputerGuestAutomation {
 				const key = action.key;
 				await this.#pageCall(() => page.keyboard.press(key));
 			} else if (action.action === "vault_fill") {
-				// Only this boot's key opens the box, and only for this call, account and field: the value then
-				// goes into the one box named, on the account's own website, and nowhere else.
+				// Only this boot's key opens the box, and only for this call, account (or signed hook) and field: the
+				// value then goes into the one box named, on the account's own website (the hook's site), and nowhere else.
 				const sealed = effect.fill;
 				const key = this.#fillKey;
 				if (!key || !sealed) throw new CompanyComputerActionNotStartedError("ACCOUNT_FILL_UNAVAILABLE");
+				const call = {
+					companyId: this.#binding.companyId,
+					companyComputerId: this.#binding.companyComputerId,
+					computerGeneration: this.#binding.computerGeneration,
+					receiptId: effect.receiptId,
+				};
 				let opened: ReturnType<CompanyComputerFillKey["open"]>;
 				try {
-					opened = key.open(sealed, {
-						companyId: this.#binding.companyId,
-						companyComputerId: this.#binding.companyComputerId,
-						computerGeneration: this.#binding.computerGeneration,
-						receiptId: effect.receiptId,
-						accountId: action.account,
-						field: action.field,
-					});
+					opened = key.open(
+						sealed,
+						"hook" in action
+							? { ...call, hookId: action.hook, field: action.field }
+							: { ...call, accountId: action.account, field: action.field },
+					);
 				} catch (error) {
 					// A spent box (or computers' clocks far apart) is told apart from one for another call or key.
 					throw new CompanyComputerActionNotStartedError(

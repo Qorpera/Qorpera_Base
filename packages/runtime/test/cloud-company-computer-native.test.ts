@@ -14,6 +14,7 @@ import { CompanyComputerScreenActionGate } from "@qorpera/runtime/cloud-company-
 import {
 	COMPANY_COMPUTER_NATIVE_SCHEMA,
 	type CompanyComputerAccountFills,
+	type CompanyComputerHookFills,
 	createHttpCompanyComputerSessionFactory,
 	HttpCompanyComputerNativeEndpoint,
 	parseCompanyComputerNativeDescriptor,
@@ -91,6 +92,7 @@ async function fixture(
 		admitWork?: () => void;
 		capabilities?: ("shell" | "browser")[];
 		accountFills?: CompanyComputerAccountFills;
+		hookFills?: CompanyComputerHookFills;
 		/** The database refuses a screenshot at its authorize with these words (folder-v2, C1c-3l part 3). */
 		refuseScreenshots?: string;
 		/** The guest's screenshots published without storage (folder-v2, P06d), by receipt. */
@@ -279,6 +281,7 @@ async function fixture(
 		holder: () => holder,
 		registry,
 		...(options.accountFills ? { accountFills: options.accountFills } : {}),
+		...(options.hookFills ? { hookFills: options.hookFills } : {}),
 	});
 	const context = {
 		identity: run.identity,
@@ -727,6 +730,97 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 			},
 		});
 		expect(g.perform).not.toHaveBeenCalled();
+	});
+
+	it("asks the vault's hook route for a signed hook's secret, and the account route for an account's (E3b-3)", async () => {
+		const box = {
+			schema: "qorpera.company-account-fill-box/v1",
+			ephemeralPublicKey: "e",
+			iv: "i",
+			tag: "t",
+			ciphertext: "c",
+		};
+		const accountFills = {
+			companyAccountFill: vi.fn<CompanyComputerAccountFills["companyAccountFill"]>(async () => ({
+				schema: "qorpera.company-account-fill-answer/v1",
+				box,
+			})),
+		};
+		const hookFills = {
+			eventHookFill: vi.fn<CompanyComputerHookFills["eventHookFill"]>(async () => ({
+				schema: "qorpera.event-hook-fill-answer/v1",
+				box,
+			})),
+		};
+		const f = await fixture({ capabilities: ["browser"], accountFills, hookFills });
+		const operation: CompanyComputerOperation = {
+			...f.operation,
+			tool: "computer_browser",
+			arguments: {
+				kind: "browser",
+				action: "vault_fill",
+				role: "textbox",
+				name: "Signing secret",
+				hook: randomUUID(),
+				field: "signing_secret",
+			},
+		};
+		expect(await f.endpoint.perform(operation, f.lease, f.context)).toEqual({ kind: "text", value: "test" });
+		expect(hookFills.eventHookFill).toHaveBeenCalledOnce();
+		expect(hookFills.eventHookFill.mock.calls[0]![0]).toEqual({
+			binding: f.source.binding,
+			receiptId: f.context.receiptId,
+			idempotencyKey: f.context.idempotencyKey,
+			envelope: cloudNativeToolOperationEnvelope(f.run.identity, operation),
+		});
+		expect(accountFills.companyAccountFill).not.toHaveBeenCalled();
+		expect(f.perform.mock.calls[0]![2].fill).toEqual(box);
+		// An account's fill on the same host still goes to the account route.
+		const g = await fixture({ capabilities: ["browser"], accountFills, hookFills });
+		const login: CompanyComputerOperation = {
+			...g.operation,
+			tool: "computer_browser",
+			arguments: {
+				kind: "browser",
+				action: "vault_fill",
+				role: "textbox",
+				name: "Password",
+				account: randomUUID(),
+				field: "password",
+			},
+		};
+		await g.endpoint.perform(login, g.lease, g.context);
+		expect(accountFills.companyAccountFill).toHaveBeenCalledOnce();
+		expect(hookFills.eventHookFill).toHaveBeenCalledOnce();
+		// The vault's refusal is the call's answer, and a host without the hook route refuses before the office.
+		hookFills.eventHookFill.mockResolvedValueOnce({
+			schema: "qorpera.event-hook-refusal/v1",
+			code: "55000",
+			message: "This hook was removed",
+		});
+		const h = await fixture({ capabilities: ["browser"], hookFills });
+		expect(await h.endpoint.perform({ ...operation, target: h.operation.target }, h.lease, h.context)).toEqual({
+			kind: "json",
+			value: {
+				action: "vault_fill",
+				completed: false,
+				refused: { code: "55000", message: "This hook was removed" },
+			},
+		});
+		expect(h.perform).not.toHaveBeenCalled();
+		const bare = await fixture({ capabilities: ["browser"], accountFills });
+		expect(
+			await bare.endpoint.perform({ ...operation, target: bare.operation.target }, bare.lease, bare.context),
+		).toEqual({
+			kind: "json",
+			value: {
+				action: "vault_fill",
+				completed: false,
+				refused: { code: "0A000", message: "Signed hooks are not set up for this company's computers" },
+			},
+		});
+		expect(bare.perform).not.toHaveBeenCalled();
+		expect(accountFills.companyAccountFill).toHaveBeenCalledOnce();
 	});
 
 	it("re-derives the native principal, consumes the original receipt and physically closes before releasing occupancy", async () => {
