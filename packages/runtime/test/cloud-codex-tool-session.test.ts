@@ -32,6 +32,7 @@ import {
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudRunLog } from "@qorpera/runtime/cloud-run-log";
 import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
+import { MemoryCompactChannel, MemoryCompactStop } from "@qorpera/runtime/memory-tree/compact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
@@ -66,6 +67,8 @@ function run(
 		recordContextView?: Parameters<typeof runCloudCodexToolSession>[0]["recordContextView"];
 		composeContext?: Parameters<typeof runCloudCodexToolSession>[0]["composeContext"];
 		runLog?: CloudRunLog;
+		compactor?: MemoryCompactChannel;
+		closing?: Parameters<typeof runCloudCodexToolSession>[0]["closing"];
 	} = {},
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => new Promise(() => undefined));
@@ -1324,6 +1327,151 @@ it("refuses the reviewer any tool but its verdict, and never runs the call witho
 	const recorded = JSON.parse(await readFile(evidence, "utf8"));
 	expect(recorded.wrongTool.error).toMatchObject({ code: -32601 });
 	expect(JSON.parse(recorded.reply.result.contentItems[0].text).content.text).toMatch(/^REVIEW_UNAVAILABLE: /);
+});
+
+// Memory compactor (RUNTIME-AGENT-MEMORY-TREE.md §7.1): fresh tool-less threads in the run's own app-server, their
+// requests on a fence lane of their own. Closing opens them after the agent's verified turn, before the process ends.
+it("compacts at closing in a fresh tool-less thread, never as the agent's context", async () => {
+	const compactor = new MemoryCompactChannel();
+	const replies: unknown[] = [];
+	const composeContext = vi.fn(async (request: CloudNativeContextRequest) => ({
+		input: request.items.map((_, keep) => ({ keep })),
+	}));
+	const contextViews: string[] = [];
+	const { result, evidence } = run("compact", {
+		compactor,
+		composeContext,
+		recordContextView: async (frame) => {
+			contextViews.push(frame.threadId);
+		},
+		closing: async (signal) => {
+			const thread = await compactor.call("PRIVATE_COMPACT_SYSTEM", signal);
+			replies.push(await thread.send("PRIVATE_WINDOW_1", signal));
+			replies.push(await thread.send("PRIVATE_WINDOW_2", signal));
+			thread.close?.();
+		},
+	});
+	// The compactor's requests are not the agent's: only the agent's one request is counted.
+	await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture", fencedRequests: 1 });
+	// Each reply used what its thread's cumulative usage grew by since the reply before it.
+	expect(replies).toEqual([
+		{ text: "LINE 1", usage: { input: 500, cached: 100, output: 40 } },
+		{ text: "LINE 2", usage: { input: 700, cached: 500, output: 30 } },
+	]);
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.compactThreads).toEqual([
+		expect.objectContaining({
+			model: "gpt-6-luna",
+			ephemeral: true,
+			approvalPolicy: "never",
+			sandbox: "read-only",
+			developerInstructions: "PRIVATE_COMPACT_SYSTEM",
+			dynamicTools: [],
+		}),
+	]);
+	expect(recorded.compactThreads[0].cwd).toBe(recorded.mainThread.cwd);
+	const sent = (text: string) => ({
+		threadId: "thread_compact",
+		input: [{ type: "text", text, text_elements: [] }],
+		effort: "low",
+		environments: [],
+		runtimeWorkspaceRoots: [],
+		sandboxPolicy: { type: "readOnly", networkAccess: false },
+	});
+	expect(recorded.compactTurns).toEqual([sent("PRIVATE_WINDOW_1"), sent("PRIVATE_WINDOW_2")]);
+	expect(recorded.prewarms).toEqual([expect.objectContaining({ threadId: "thread_compact", outputs: [] })]);
+	expect(recorded.fenced).toEqual([
+		expect.objectContaining({ threadId: "thread_compact", turnId: "turn_compact_1", outputs: [] }),
+		expect.objectContaining({ threadId: "thread_compact", turnId: "turn_compact_2", outputs: [] }),
+	]);
+	// Never composed from the agent's run, never recorded as the agent's context.
+	expect(composeContext).not.toHaveBeenCalled();
+	expect(recorded.composed).toMatchObject({ threadId: "thread_compact", input: [{ keep: 0 }, { keep: 1 }] });
+	expect(contextViews).toContain("thread_fixture");
+	expect(contextViews).not.toContain("thread_compact");
+	expect(recorded.interrupt).toBeNull();
+});
+
+it("refuses the compactor any tool and answers its outputs as unavailable", async () => {
+	const compactor = new MemoryCompactChannel();
+	let reply: unknown;
+	const { result, evidence } = run("compact-tool", {
+		compactor,
+		closing: async (signal) => {
+			const thread = await compactor.call("PRIVATE_COMPACT_SYSTEM", signal);
+			reply = await thread.send("PRIVATE_WINDOW_1", signal);
+		},
+	});
+	await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	// No usage was reported, so the reply has none.
+	expect(reply).toEqual({ text: "LINE 1" });
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.refused.error).toMatchObject({ code: -32601 });
+	expect(recorded.fenced[1].outputs).toEqual([
+		{ kind: "function_call_output", callId: "compact_call", output: '{"available":false}' },
+	]);
+});
+
+it.each([
+	["compact-usage-limit", "usage-limit"],
+	["compact-rate-limit", "rate-limit"],
+	["compact-outage", "outage"],
+	["compact-failed", "Native compaction did not complete"],
+])("ends the compactor's thread on %s, and the agent's turn stands", async (mode, expected) => {
+	const compactor = new MemoryCompactChannel();
+	let failure: unknown;
+	let after: unknown;
+	const { result } = run(mode, {
+		compactor,
+		closing: async (signal) => {
+			const thread = await compactor.call("PRIVATE_COMPACT_SYSTEM", signal);
+			failure = await thread.send("PRIVATE_WINDOW_1", signal).catch((error: unknown) => error);
+			after = await thread.send("PRIVATE_WINDOW_2", signal).catch((error: unknown) => error);
+		},
+	});
+	await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	// A usage limit, rate limit or outage stops the run's compactor (§7.2); any other failure only its request.
+	expect(failure instanceof MemoryCompactStop ? failure.reason : (failure as Error).message).toBe(expected);
+	expect((after as Error).message).toBe("Native compaction ended");
+});
+
+it("interrupts a compactor turn its caller stopped waiting for", async () => {
+	const compactor = new MemoryCompactChannel();
+	const evidence = join(root, "evidence.json");
+	let failure: unknown;
+	const { result } = run("compact-stalled", {
+		compactor,
+		closing: async (signal) => {
+			const thread = await compactor.call("PRIVATE_COMPACT_SYSTEM", signal);
+			const stop = new AbortController();
+			const sending = thread.send("PRIVATE_WINDOW_1", stop.signal).catch((error: unknown) => error);
+			await vi.waitFor(async () => expect(JSON.parse(await readFile(evidence, "utf8")).fenced).toHaveLength(1));
+			stop.abort();
+			failure = await sending;
+			await vi.waitFor(async () => expect(JSON.parse(await readFile(evidence, "utf8")).interrupt).not.toBeNull());
+		},
+	});
+	await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	expect((failure as Error).message).toBe("Native compaction cancelled");
+	expect(JSON.parse(await readFile(evidence, "utf8")).interrupt).toEqual({
+		threadId: "thread_compact",
+		turnId: "turn_compact_1",
+	});
+});
+
+it("keeps the agent's turn when closing fails, and stops the compactor once the run is over", async () => {
+	const compactor = new MemoryCompactChannel();
+	const { result } = run("compact", {
+		compactor,
+		closing: async () => {
+			throw new Error("PRIVATE_CLOSING_FAILURE");
+		},
+	});
+	await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture", toolCalls: 0 });
+	// With no process to answer, a call stops the lane as an outage does; the next run builds what is missing.
+	await expect(compactor.call("PRIVATE_COMPACT_SYSTEM", new AbortController().signal)).rejects.toMatchObject({
+		reason: "outage",
+	});
 });
 
 async function starts(evidence: string): Promise<number> {

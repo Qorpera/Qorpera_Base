@@ -185,6 +185,22 @@ export class MemoryCompactStop extends Error {
 	}
 }
 
+/**
+ * The run's compactor calls, made before or after the Codex session that answers them is up: the session attaches
+ * here (§7.1). With nothing attached a call stops the lane as an outage does; the next run builds what this one could
+ * not.
+ */
+export class MemoryCompactChannel {
+	#call?: MemoryCompactCall;
+
+	attach(call: MemoryCompactCall | undefined): void {
+		this.#call = call;
+	}
+
+	readonly call: MemoryCompactCall = (system, signal) =>
+		this.#call ? this.#call(system, signal) : Promise.reject(new MemoryCompactStop("outage"));
+}
+
 interface Waiting {
 	readonly order: readonly number[];
 	readonly start: () => void;

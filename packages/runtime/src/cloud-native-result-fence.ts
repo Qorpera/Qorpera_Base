@@ -109,7 +109,9 @@ export async function startCloudNativeResultFence(options: {
 	assertSession: (request: CloudNativeFenceRequest) => void;
 	/** Auto-review (v130): a reviewer thread's request is answered with the host's own
 	 * verdict acknowledgements, never the agent's tool results, and is not the agent's
-	 * context. Returns undefined for every other request. */
+	 * context. A memory compactor thread's has no tools: each output is answered as
+	 * unavailable, and it is not the agent's context either. Returns undefined for every
+	 * other request. */
 	releaseReviewOutputs?: (request: CloudNativeFenceRequest) => CloudNativeFencedResult[] | undefined;
 	/** Cloud runtime records exact released evidence before a provider request can leave. */
 	recordContextView?: (
