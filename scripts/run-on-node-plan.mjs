@@ -227,6 +227,9 @@ export const STEPS = [
 			/^scripts\/test-runtime-[a-z-]+-cases\.mjs$/,
 			/^scripts\/fixtures\/email-draft-e2e/,
 			/^packages\/runtime\/src\/cloud-(secret|connector)-/,
+			// The office delete-disposition script bundles the Company Computer's startup and screen publishers, and the
+			// runtime files they import.
+			/^packages\/runtime\/src\/cloud-(company-computer-(startup|screen-lifecycle|screen-outbox|registry-http)|native-tool-authority|control-errors|runtime-observability|runtime-policy)\.ts$/,
 			/^packages\/runner-orchestrator\/src\/lxd-office-[a-z-]+-control\.ts$/,
 			/^packages\/web\/src\/cloud\/email-drafts\.ts$/,
 			// The folder service's parsers and tree, checked against the folder core's own answers. The folder core's

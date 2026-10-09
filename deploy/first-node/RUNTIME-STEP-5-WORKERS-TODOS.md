@@ -194,7 +194,8 @@ published only by the agent's next list or change of that todo.
   session, then the session's turn or machine. Five coding calls broke it until
   runtime v117 (`20260925117000_runtime_coding_lock_order`): the owner's answer,
   the executor's begin and completion, and machine admission and detach. SQL
-  test 602 races each of those pairs across two connections. The company's
+  test 602 (deleted in the legacy sweep) races each of those pairs across two
+  connections. The company's
   profile row comes before all of these, and after the machine come its storage
   volume, allocation, node and demand. A call that needs the profile row at all
   takes it first: machine admission, a machine plan, sleep and release take
@@ -219,7 +220,7 @@ published only by the agent's next list or change of that todo.
   `20260927150000_company_file_writer_fence` takes the fence first only in the
   member writers (save, publish, propose, submit, rebase) and for a NAS replica
   copy (which the replica guard fences anyway); no hot insert path takes a new
-  fence. SQL test 608 races each, and `scripts/load-company-file-fence.mjs` (removed in C1c-3i) ran
+  fence. SQL test 608 (deleted in the legacy sweep) races each, and `scripts/load-company-file-fence.mjs` (removed in C1c-3i) ran
   agent tool calls, Storage uploads, replica copies, a node observer and coding
   turns at once: on the text before it, about two deadlocks a second and agent
   calls near the native result boundary's 4 s budget; with it, none.
