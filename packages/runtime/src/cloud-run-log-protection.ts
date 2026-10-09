@@ -62,14 +62,19 @@ export class CloudRunLogRpcProtection implements CloudRunLogProtection {
 		runId: string,
 		step: Parameters<CloudRunLogProtection["narrow"]>[1],
 		signal: AbortSignal,
-	): Promise<boolean> {
+	): Promise<{ readonly log: boolean; readonly narrow: boolean }> {
 		this.#assertRun(runId, signal);
 		// No clipping: the full arguments, pre-envelope result needles, and all released reads participate. SQL
-		// deliberately ignores strings that are not valid company paths and strips /company/ itself.
-		const paths = [...new Set([...cloudRunLogPaths(step.argumentsText), ...step.resultPaths, ...step.readPaths])];
-		if (paths.some((path) => typeof path !== "string" || [...path].length > 4096))
+		// deliberately ignores strings that are not valid company paths. Strip its /company/ prefix before applying
+		// the byte bound of qorpera_company_path_valid: oversized strings cannot name paths, even in refused calls.
+		const needles = [...cloudRunLogPaths(step.argumentsText), ...step.resultPaths, ...step.readPaths];
+		if (needles.some((path) => typeof path !== "string"))
 			throw new CloudRunLogUnavailable("protection_paths_invalid");
+		const paths = [...new Set(needles.map((path) => (path.startsWith("/company/") ? path.slice(9) : path)))].filter(
+			(path) => path.length > 0 && Buffer.byteLength(path) <= 4096,
+		);
 		let narrow = false;
+		let log = false;
 		// Even a call with no paths must re-read the log and machine flags. Each RPC accepts at most 1,024 paths.
 		for (let offset = 0; offset < Math.max(paths.length, 1); offset += 1024) {
 			const batch = paths.slice(offset, offset + 1024);
@@ -94,9 +99,10 @@ export class CloudRunLogRpcProtection implements CloudRunLogProtection {
 				if (found < 0) throw new CloudRunLogUnavailable("protection_response_invalid");
 				previous = found;
 			}
-			narrow ||= answer.log || answer.machine || answer.restricted.length > 0;
+			log ||= answer.log;
+			narrow ||= answer.machine || answer.restricted.length > 0;
 		}
-		return narrow;
+		return { log, narrow };
 	}
 
 	async hashes(runId: string, digests: readonly string[], signal: AbortSignal): Promise<readonly string[]> {

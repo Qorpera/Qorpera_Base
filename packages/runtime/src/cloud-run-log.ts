@@ -146,7 +146,8 @@ export interface CloudRunLogProtection {
 	/** Checks complete argument and result needles, every read path, and the run's machine against §4.5's every-agent
 	 * rule. resultPaths comes from the whole tool result before its envelope is fitted; readPaths is never clipped.
 	 * The adapter sends these paths through qorpera_memory_step_narrow, in chunks of at most 1,024, and combines its
-	 * log, machine and restricted answers. It must not infer sharing from paths or ordinary grant metadata. */
+	 * machine and restricted answers. Its log flag is separate: it says some part of the log is narrow, not that a
+	 * pending earlier step is narrow. It must not infer sharing from paths or ordinary grant metadata. */
 	narrow(
 		runId: string,
 		step: {
@@ -158,7 +159,7 @@ export interface CloudRunLogProtection {
 			readonly resultPaths: readonly string[];
 		},
 		signal: AbortSignal,
-	): Promise<boolean>;
+	): Promise<{ readonly log: boolean; readonly narrow: boolean }>;
 	/** qorpera_memory_step_hashes: HMAC(platform company key, run id + ":" + digest), in input order. The key never
 	 * leaves the platform. The supplied digests are SHA-256; the returned values, and only those, may be stored. */
 	hashes(runId: string, digests: readonly string[], signal: AbortSignal): Promise<readonly string[]>;
@@ -185,9 +186,16 @@ export function cloudRunLogPaths(value: JsonValue): readonly string[] {
 			continue;
 		}
 		for (const [key, child] of Object.entries(entry)) {
-			if ((key === "path" || key === "from" || key === "to") && typeof child === "string") paths.add(child);
-			if (key === "paths" && Array.isArray(child))
-				for (const path of child) if (typeof path === "string") paths.add(path);
+			// SQL's lax jsonpath wraps scalar paths and unwraps arrays under each of these names. Malformed tool
+			// arguments are still logged, so their string needles participate before the tool refuses their shape.
+			if (key === "path" || key === "from" || key === "to" || key === "paths") {
+				const leaves: JsonValue[] = [child];
+				while (leaves.length) {
+					const leaf = leaves.pop();
+					if (typeof leaf === "string") paths.add(leaf);
+					else if (Array.isArray(leaf)) for (const nested of leaf) leaves.push(nested);
+				}
+			}
 			pending.push(child);
 		}
 	}
@@ -247,8 +255,8 @@ interface Step {
 	readonly call: string;
 	readonly tool: string;
 	readonly hashOnly: boolean;
-	/** Complete arguments, needed for trusted classification before fitting a public line. */
-	readonly argumentsText: string;
+	/** Complete until final classification; a final public/erased step releases this copy. Narrow work stays in memory. */
+	argumentsText: string;
 	readonly argsBytes: number;
 	/** Null for arguments the boundary could not read, as its envelope has it. */
 	readonly argsDigest: string | null;
@@ -278,6 +286,14 @@ interface Step {
 interface Stored {
 	readonly args: string;
 	readonly text: string;
+}
+
+/** Classification is finished. A public line's stored copy serves its view; only narrow work needs full arguments. */
+function releaseFinalInputs(step: Step): void {
+	step.reads = [];
+	step.readPaths = [];
+	step.resultPaths = [];
+	if (!step.narrow || step.erased) step.argumentsText = "";
 }
 
 interface Line {
@@ -988,11 +1004,7 @@ export class CloudRunLog {
 				step.narrow = line.narrow === true;
 				step.state = step.erased || !line.pending ? "final" : "pending";
 				step.stored = line.stored ?? null;
-				if (step.state === "final") {
-					step.reads = [];
-					step.readPaths = [];
-					step.resultPaths = [];
-				}
+				if (step.state === "final") releaseFinalInputs(step);
 			}
 		}
 	}
@@ -1004,7 +1016,7 @@ export class CloudRunLog {
 	/** Classifies an immutable snapshot before serializing it. A call may finish while the platform is answering a
 	 * pre-commit; that result is filled by a later pass, never spliced into a line classified as pending. */
 	async #protectedLine(step: Step, snapshot: Step, pending: boolean, signal: AbortSignal): Promise<Line> {
-		const narrow = await this.#protection.narrow(
+		const classification = await this.#protection.narrow(
 			this.#runId,
 			{
 				j: snapshot.j,
@@ -1016,8 +1028,13 @@ export class CloudRunLog {
 			},
 			signal,
 		);
-		if (typeof narrow !== "boolean") throw new CloudRunLogUnavailable("protection_invalid");
-		if (narrow) this.#narrowFrom = Math.min(this.#narrowFrom, step.j);
+		if (!classification || typeof classification.log !== "boolean" || typeof classification.narrow !== "boolean")
+			throw new CloudRunLogUnavailable("protection_invalid");
+		// A committed later pending line also raises SQL's log flag. The known start remains the boundary: that
+		// flag alone must not redact an earlier public fill. A log with no trusted start cannot be safely interpreted.
+		if (classification.log && this.#narrowFrom === Number.POSITIVE_INFINITY)
+			throw new CloudRunLogUnavailable("protection_narrow_start_unknown");
+		if (classification.narrow) this.#narrowFrom = Math.min(this.#narrowFrom, step.j);
 		snapshot.narrow = step.j >= this.#narrowFrom;
 		const digests: string[] = [];
 		if (step.argsHash === undefined && step.argsDigest !== null) digests.push(step.argsDigest);
@@ -1154,9 +1171,7 @@ export class CloudRunLog {
 			if (erasedLine(read[index]!.text) || !read[index]!.pending) {
 				step.erased = erasedLine(read[index]!.text);
 				step.state = "final";
-				step.reads = [];
-				step.readPaths = [];
-				step.resultPaths = [];
+				releaseFinalInputs(step);
 				continue;
 			}
 			lines(step.block!)[index] = prepared.get(step.j)!;
@@ -1285,11 +1300,7 @@ export class CloudRunLog {
 						step.state = step.erased || !line.pending ? "final" : "pending";
 						step.stored = line.stored ?? null;
 						// Its line is stored: the copy of its reads is no longer needed.
-						if (step.state === "final") {
-							step.reads = [];
-							step.readPaths = [];
-							step.resultPaths = [];
-						}
+						if (step.state === "final") releaseFinalInputs(step);
 						if (placed.get(line.j) === first && !line.pending) final.push(line.j);
 					}
 				}
