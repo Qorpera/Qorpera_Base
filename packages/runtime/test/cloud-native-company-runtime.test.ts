@@ -1269,15 +1269,16 @@ it("gives a company run the folder core's file tools, and Interfaces' read tools
 });
 
 it("refuses a company run whose context names no company folder, before reading a file or starting Codex", async () => {
-	// Every company run is on the company folder (legacy sweep step C, C-P1): no snapshot-v1 fallback is left.
+	// Every company run is on the company folder (legacy sweep step C, C-P1): no snapshot-v1 fallback is left. The
+	// context parser refuses a context without one (C-P9).
 	const f = await fixture("company-runtime");
-	delete f.context.folder;
+	delete (f.context as { folder?: unknown }).folder;
 	const error = await f.runtime
 		.execute(f.request, f.identityRoot, new AbortController().signal)
 		.catch((caught: unknown) => caught);
 	expect(error).toBeInstanceOf(Error);
-	expect((error as Error).message).toBe("A company run needs its agent's company folder");
-	expect(nativeRuntimeFailureMetadata(error)?.stage).toBe("prompt-composition");
+	expect((error as Error).message).toBe("Invalid cloud company context");
+	expect(nativeRuntimeFailureMetadata(error)?.stage).toBe("company-context");
 	const methods = f.pathCall.mock.calls.map(([method]) => method);
 	expect(methods.filter((method) => method.startsWith("qorpera_folder_"))).toEqual([]);
 	expect(methods).not.toContain("qorpera_begin_native_company_execution_v2");
