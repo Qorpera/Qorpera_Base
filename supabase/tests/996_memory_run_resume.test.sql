@@ -60,7 +60,7 @@ begin
 	v_before := public.qorpera_memory_run_resume(v_next);
 	perform pg_temp.base_assert(v_before = jsonb_build_object('schema', 'qorpera.memory-run-resume/v1', 'why', 'restart',
 		'unknownReceipts', jsonb_build_array(jsonb_build_object('receiptId', current_setting('qorpera_test.resume_receipt')::uuid,
-			'logicalOperationKey', 'resume-operation'))), 'trusted resume context: ' || v_before);
+			'logicalOperationKey', 'resume-operation'))), 'trusted resume context: ' || v_before::text);
 	perform pg_temp.rc_begin(v_next);
 	perform pg_temp.base_assert(public.qorpera_memory_run_resume(v_next) = v_before, 'same context after native start');
 end $$;
