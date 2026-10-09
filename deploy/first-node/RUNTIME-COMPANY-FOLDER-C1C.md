@@ -1147,6 +1147,12 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
 | The interlock trigger | gc fence on every company-computer write | returns first: a folder-v2 company has no version-1 cutover |
 | A hire's default access (`runtime_office_default_access_for_staff`) | offices in scan order | offices by id (both cores) |
 
+- **Legacy sweep F2a (20260930290000)** left the start chain only its folder-v2 mode: the assertion, provider set,
+  member start, cancel, withdrawal and status, the provider's reserve and check, the fleet offer and placement,
+  activation, its startup lock and registration lost their gc fence branch, so a company without a folder fails in the
+  machine fence (42501). Registration, start source, guest binding and restart surfaces accept only a ready folder-v2
+  Company File (`path_gateway_version = 1` is gone), and adoption refuses a non-empty mapping on every company.
+  `member_office_catalog` and the office reservation follow in later F2 steps.
 - **Who creates a folder-v2 office** (the coordinator, 3 October): the folder mode of `qorpera_register_runtime_office`,
   called as the company's owner the first time the company needs its computer. Today no product path registers a
   company's first computer (later ones come from `add_runtime_office_computer`); the coordinator does it, and P38
@@ -1643,7 +1649,7 @@ each `else`.
 |---|---|---|
 | `native_office_start` (an agent's `computer_start`) | refused with 0A000 | `qorpera_folder_office_start_enter(binding)`, then the seat lock and every computer of the company by id, as before; no gc fence (the tool run holds the folder fence and rank 0) |
 | `native_office_start_descriptor` | refused with 0A000 | serves folder-v2; its new computer takes the company's agents `KEY SHARE` before the seat lock (as `member_agent_office` does, §6.12); the gate accepts a ready folder-v2 Company File |
-| `assert_runtime_office_start_source`, an agent's start | the agent and its access `FOR SHARE` | on folder-v2 `FOR SHARE NOWAIT` (every caller took the agent before the computer, unless its start appeared since) |
+| `assert_runtime_office_start_source`, an agent's start | the agent and its access `FOR SHARE` | on folder-v2 `FOR SHARE NOWAIT` (every caller took the agent before the computer, unless its start appeared since); legacy sweep F2a (20260930290000) left only that |
 | `qorpera_folder_office_enter` (3j's prelude), run again inside the call | the start's agent `FOR SHARE` | `FOR SHARE NOWAIT` when nested |
 
 - **The prelude.** An agent's tool run takes its requester and agent only `KEY SHARE`. But the start-source check shares
@@ -1734,7 +1740,8 @@ each `else`.
     gets `{name: "office_wakes", companyLimit: 16}`.
   - Since P28a nothing calls the old drain (`qorpera_drain_office_activation_wakes`). It stays until the legacy removal.
 - **The waiter check.** `qorpera_folder_office_waiter_authorized(waiter)` makes the checks of
-  `qorpera_office_waiter_authorized` as plain reads, and that function answers with it on folder-v2. A folder-v2 write's
+  `qorpera_office_waiter_authorized` as plain reads, and that function answers with it on folder-v2 (since legacy sweep
+  F2a, 20260930290000, on every company). A folder-v2 write's
   completed receipt counts as having its revision when it names its folder commit. The old check took
   the company row and every row `NOWAIT`. That would turn a screen heartbeat (the computer `FOR UPDATE`) into a refused
   tool call of the woken run.
