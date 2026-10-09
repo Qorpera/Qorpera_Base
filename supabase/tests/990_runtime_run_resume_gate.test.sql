@@ -21,7 +21,7 @@ begin
 	values (v_run.environment_id, v_run.id, clock_timestamp());
 end
 $$;
--- A step erase's first commit, as the erase makes it (§8): the run's generation row FOR UPDATE, then the job read
+-- A step erase's first commit, as the erase makes it (§10.1): the run's generation row FOR UPDATE, then the job read
 -- plainly. It opens only while no attempt holds the job and no other erase is open: it sets its mark and raises the
 -- generation. Null when it may not open yet.
 create function pg_temp.rg_erase_open() returns uuid language plpgsql as $$
