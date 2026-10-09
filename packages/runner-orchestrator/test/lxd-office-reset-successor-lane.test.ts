@@ -28,6 +28,7 @@ import { officeResetRegistryFixture, officeResetWorkerFixture } from "./fixtures
 import { createOfficeResumeWorkerFixture } from "./fixtures/office-resume-worker.ts";
 import { serviceStartId as id } from "./fixtures/office-service-start.ts";
 import { createOfficeStopWorkerFixture } from "./fixtures/office-stop-worker.ts";
+import { testAgentPlug } from "./helpers/agent-plug.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -426,6 +427,7 @@ async function nextPackagePorts(
 		readManifest: material.ports.readManifest,
 		readArtifact: material.ports.readArtifact,
 		codePackageLane: () => lane,
+		plug: testAgentPlug,
 	};
 }
 describe("composed office reset successor lane", () => {

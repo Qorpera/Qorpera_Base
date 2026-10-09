@@ -19,7 +19,6 @@ import {
 import type { CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-registry-http.ts";
 import { readCompanyFileTransfer } from "./cloud-company-file-transfer-reader.ts";
-import { HttpNativeCompanyObjectTransport } from "./cloud-native-company-objects.ts";
 import { type CloudNativeToolRun, cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import { cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations.ts";
 
@@ -34,7 +33,8 @@ export interface CompanyComputerFileImporter {
 
 /** Current receipt-bound read permission selects one completed shared export.
  * An arbitrary hash or artifact ID grants nothing. The physical writer is bound
- * to this office; SQL records provenance only after its confirmed publication. */
+ * to this office; SQL records provenance only after its confirmed publication.
+ * The office no longer wires it: its bytes came through company objects, which are gone (legacy removal, step C). */
 export class CloudCompanyComputerFileImports implements CompanyComputerFileImporter {
 	readonly #run: CloudNativeToolRun;
 	readonly #scope: CompanyComputerScope;
@@ -159,21 +159,4 @@ export class CloudCompanyComputerFileImports implements CompanyComputerFileImpor
 			15000,
 		);
 	}
-}
-export function createHttpCompanyComputerFileImports(options: {
-	run: CloudNativeToolRun;
-	scope: CompanyComputerScope;
-	registry: Pick<HttpCloudCompanyComputerRegistry, "call">;
-	objectGateway: { baseUrl: string; token: string; holder?: () => string; fetch?: typeof fetch };
-}): CloudCompanyComputerFileImports {
-	return new CloudCompanyComputerFileImports({
-		...options,
-		objects: (signal) =>
-			new HttpNativeCompanyObjectTransport({
-				...options.objectGateway,
-				companyId: options.scope.companyId,
-				binding: options.run.binding,
-				signal,
-			}),
-	});
 }

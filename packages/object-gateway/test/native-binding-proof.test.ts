@@ -11,8 +11,7 @@ import { createObjectGatewayHandler } from "../src/service.ts";
 import { SupabaseObjectAuthority } from "../src/supabase-authority.ts";
 
 // G2-6a: a native host's request on the folder route proves its run's lease (x-qorpera-identity:
-// job.<job id>.<lease token>) before the gateway asks anything else about its binding. (The native-company-objects
-// route also serves the Company Computer's captures, and proves the lease with G2-6c.)
+// job.<job id>.<lease token>) before the gateway asks anything else about its binding.
 const companyId = "32000000-0000-4000-8000-000000000010";
 const environmentId = "32000000-0000-4000-8000-000000000020";
 const jobId = "32000000-0000-4000-8000-0000000abc03";
@@ -80,7 +79,7 @@ async function fixture() {
 			replication,
 			controlToken: "synthetic-control",
 			verifierToken: "synthetic-verifier",
-			nativeObjects: { token: nativeToken, authority, folder: authority },
+			nativeObjects: { token: nativeToken, folder: authority },
 		}),
 	);
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

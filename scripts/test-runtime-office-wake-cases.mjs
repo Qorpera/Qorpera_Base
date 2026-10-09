@@ -112,7 +112,7 @@ export async function testOfficeWake({ setup, intent, service, owner, execute, l
  const run=await CloudNativeToolRun.open(launched,{describeToolAuthority:async()=>JSON.parse(execute(`${service} select public.qorpera_describe_native_tool_authority(${literal(launched)});`))},new AbortController().signal);
  try {
   const noEffect=async()=>{throw new Error("Discovery must not execute a guest effect or create a native receipt");};
-  const factory=createHttpCompanyComputerSessionFactory({url:`https://office.invalid/office/${setup.descriptor.scope.companyComputerId}/native`,token:"a".repeat(43),fetch:noEffect,
+  const factory=createHttpCompanyComputerSessionFactory({url:`https://office.invalid/office/${setup.descriptor.scope.companyComputerId}/native`,token:"a".repeat(43),fetch:noEffect,holder:()=>{throw new Error("Discovery must not send a run holder");},
    registry:{call:async(method,args)=>{
     assert.equal(method,"qorpera_native_office_descriptor"); assert.deepEqual(args.p_binding,launched);
     return JSON.parse(execute(`${service} select public.qorpera_native_office_descriptor(${literal(launched)});`));

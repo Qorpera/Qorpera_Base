@@ -1,5 +1,3 @@
-import { createHttpCompanyComputerFileImports } from "./cloud-company-computer-file-imports.ts";
-import { createHttpCompanyComputerFileExports } from "./cloud-company-computer-file-transfers.ts";
 import {
 	CompanyComputerLinuxBoundary,
 	type CompanyComputerLinuxGuestAttestation,
@@ -9,10 +7,7 @@ import {
 	type CompanyComputerLinuxGuestOptions,
 } from "./cloud-company-computer-linux-guest.ts";
 import type { CompanyComputerScreenLifecycle } from "./cloud-company-computer-screen-lifecycle.ts";
-import {
-	createHttpCompanyComputerScreenshots,
-	parseCompanyComputerCaptureGateway,
-} from "./cloud-company-computer-screenshots.ts";
+import { CloudCompanyComputerScreenshots } from "./cloud-company-computer-screenshots.ts";
 import { startCompanyComputerOfficeService } from "./cloud-company-computer-service.ts";
 import type { CompanyComputerStartupControl } from "./cloud-company-computer-startup.ts";
 
@@ -22,8 +17,6 @@ export type CompanyComputerLinuxOfficeServiceOptions = Omit<
 > & {
 	startup?: CompanyComputerStartupControl;
 	screenLifecycle: CompanyComputerScreenLifecycle;
-	/** Protected host configuration. Never mounted into desktop/browser namespaces. */
-	captureObjectGateway: { baseUrl: string; token: string; fetch?: typeof fetch };
 	linux: Omit<
 		CompanyComputerLinuxGuestOptions,
 		| "scope"
@@ -48,7 +41,6 @@ export async function startCompanyComputerLinuxOfficeService(
 ): ReturnType<typeof startCompanyComputerOfficeService> {
 	if (!options.screenLifecycle || typeof options.screenLifecycle.create !== "function")
 		throw new Error("OFFICE_SCREEN_LIFECYCLE_REQUIRED");
-	const objectGateway = parseCompanyComputerCaptureGateway(options.captureObjectGateway);
 	const stop = new AbortController();
 	let failed = false;
 	let failure: unknown;
@@ -64,16 +56,12 @@ export async function startCompanyComputerLinuxOfficeService(
 		registry: options.registry,
 		screenLifecycle: options.screenLifecycle,
 		boundary,
-		fileImports: (run) =>
-			createHttpCompanyComputerFileImports({ run, scope: options.scope, registry: options.registry, objectGateway }),
-		fileExports: (run) =>
-			createHttpCompanyComputerFileExports({ run, scope: options.scope, registry: options.registry, objectGateway }),
+		// No file import or export: those moved bytes through company objects, which are gone (legacy removal, step C).
 		screenshots: (run) =>
-			createHttpCompanyComputerScreenshots({
+			new CloudCompanyComputerScreenshots({
 				run,
 				scope: options.scope,
 				registry: options.registry,
-				objectGateway,
 			}),
 		onFailure: (error) => {
 			failed = true;

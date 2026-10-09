@@ -204,7 +204,7 @@ describe("member browser CORS", () => {
 		[`${fileRoute}/proposals/${id(7)}`, "GET", "authorization"],
 		["/v1/read-leases/revoke", "POST", "authorization"],
 		["/v1/control/member-observations", "GET", "authorization"],
-		[`/v1/native-company-objects/${id(1)}/${sha256}`, "GET", "authorization"],
+		[`/v1/folder-objects/${id(1)}/${sha256}`, "GET", "authorization"],
 		[`/v1/profile-objects/${id(1)}/${sha256}`, "GET", "authorization"],
 		["/readyz", "GET", "authorization"],
 		[`/v1/member-folder-objects/${id(1)}/${sha256}`, "PUT", "authorization"],

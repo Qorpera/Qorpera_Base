@@ -3,6 +3,10 @@ import { chmod, lstat, realpath } from "node:fs/promises";
 import { createConnection, createServer, isIP, type Socket } from "node:net";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
+import {
+	COMPANY_COMPUTER_AGENT_EXIT_DNS,
+	companyComputerAgentPlugAddress,
+} from "./cloud-company-computer-linux-network.ts";
 import { nativeEgressPublicAddress } from "./cloud-native-egress.ts";
 import { cloudToolRequest } from "./cloud-native-tool-authority.ts";
 
@@ -28,8 +32,10 @@ export function companyComputerBrowserEgressHost(value: string): string {
 	return value;
 }
 
-async function resolveBrowserHost(host: string, signal: AbortSignal): Promise<string[]> {
+async function resolveBrowserHost(host: string, plug: string, signal: AbortSignal): Promise<string[]> {
 	const resolver = new Resolver({ timeout: 1000, tries: 1 });
+	resolver.setServers([COMPANY_COMPUTER_AGENT_EXIT_DNS]);
+	resolver.setLocalAddress(plug);
 	const cancel = (): void => resolver.cancel();
 	signal.addEventListener("abort", cancel, { once: true });
 	try {
@@ -74,9 +80,12 @@ export async function startCompanyComputerBrowserEgress(options: {
 		throw new Error("UNSAFE_OFFICE_BROWSER_EGRESS_ROOT");
 	const path = join(options.root, "egress.sock");
 	if (Buffer.byteLength(path) > 103) throw new Error("OFFICE_BROWSER_EGRESS_PATH_TOO_LONG");
+	// Lookups and connections leave by the machine's agent card, through the
+	// node's agent exit, never by its first card.
+	const plug = options.transport ? undefined : companyComputerAgentPlugAddress();
 	const transport = options.transport ?? {
-		resolve: resolveBrowserHost,
-		connect: (address: string) => createConnection({ host: address, port: 443, family: 4 }),
+		resolve: (host: string, checked: AbortSignal) => resolveBrowserHost(host, plug!, checked),
+		connect: (address: string) => createConnection({ host: address, port: 443, family: 4, localAddress: plug }),
 	};
 	const stop = new AbortController();
 	const signal = AbortSignal.any([options.signal, stop.signal]);

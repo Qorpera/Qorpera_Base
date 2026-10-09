@@ -17,7 +17,7 @@ import { LxdOfficeBootWorker } from "../../src/lxd-office-boot-worker.ts";
 import { LxdOfficeConfigurationWorker } from "../../src/lxd-office-configuration-worker.ts";
 import type { LxdOfficeCreationIdentity } from "../../src/lxd-office-creation-journal.ts";
 import { type LxdOfficeCreationRegistry, LxdOfficeCreationWorker } from "../../src/lxd-office-creation-worker.ts";
-import { type LxdOfficeGuestBinding, lxdOfficeGuestPlan } from "../../src/lxd-office-guest.ts";
+import type { LxdOfficeGuestBinding } from "../../src/lxd-office-guest.ts";
 import { officeCanonical, officeDigest } from "../../src/lxd-office-image-provenance.ts";
 import type { LxdOfficeStorageObservation } from "../../src/lxd-office-inventory-worker.ts";
 import { LxdOfficeInventoryWorker } from "../../src/lxd-office-inventory-worker.ts";
@@ -37,6 +37,7 @@ import { lxdOfficeProviderBindingSha256 } from "../../src/lxd-office-start-contr
 import { parseLxdOfficeStorageReview } from "../../src/lxd-office-storage-review.ts";
 import type { LxdOfficeSuccessorRegistry } from "../../src/lxd-office-successor-control.ts";
 import { LxdOfficeSuccessorWorker } from "../../src/lxd-office-successor-worker.ts";
+import { pluggedOfficeRequest, testAgentPlug } from "../helpers/agent-plug.ts";
 import { officeBootConfigurationHttpFixture } from "./office-boot-configuration-http.ts";
 import { runOfficeBootRestartCycles } from "./office-boot-restart-cycles.ts";
 import { officeBootServiceRestartHttpFixture } from "./office-boot-service-restart-http.ts";
@@ -335,24 +336,25 @@ export async function runOfficeCreationSqlProbe(
 							binding: LxdOfficeGuestBinding;
 							createCommandId: string;
 						};
-						const plan = lxdOfficeGuestPlan(identity.binding);
-						assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString()), plan.request);
+						// The create carries the plug's MAC on the computer's agent card.
+						const created = pluggedOfficeRequest(identity.binding);
+						assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString()), created);
 						const dispatch = JSON.parse(
 							await readFile(join(policy.journal.path, identity.binding.allocationId, "000000.json"), "utf8"),
 						);
 						assert.equal(dispatch.kind, "dispatch");
 						assert.equal(dispatch.commandId, identity.createCommandId);
-						const config = { ...plan.request.config, "volatile.base_image": identity.binding.imageFingerprint };
+						const config = { ...created.config, "volatile.base_image": identity.binding.imageFingerprint };
 						instance = {
-							name: plan.request.name,
+							name: created.name,
 							type: "virtual-machine",
 							status: "Stopped",
 							status_code: 102,
 							profiles: [],
 							config,
 							expanded_config: config,
-							devices: plan.request.devices,
-							expanded_devices: plan.request.devices,
+							devices: created.devices,
+							expanded_devices: created.devices,
 						};
 						send(202, {
 							type: "async",
@@ -365,7 +367,7 @@ export async function runOfficeCreationSqlProbe(
 								status_code: 103,
 								err: "",
 								resources: {},
-								metadata: { entity_url: `/1.0/instances/${plan.request.name}?project=offices` },
+								metadata: { entity_url: `/1.0/instances/${created.name}?project=offices` },
 							},
 						});
 						return;
@@ -432,7 +434,7 @@ export async function runOfficeCreationSqlProbe(
 				hostBootId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
 			}),
 		};
-		const worker = () => new LxdOfficeCreationWorker(gate, transport);
+		const worker = () => new LxdOfficeCreationWorker(gate, transport, undefined, testAgentPlug);
 		const lifecycleMode = bootOptions?.lifecycle === true;
 		const limits = { maxEntries: 100, maxDepth: 4, maxFileBytes: 1024, maxTotalBytes: 4096, maxManifestBytes: 65536 };
 		const phaseWorkers: Record<string, unknown> = {};

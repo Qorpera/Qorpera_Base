@@ -518,26 +518,17 @@ begin
 		or exists (select 1 from pg_temp.wakes()) then
 		raise exception 'Delivery: a question for a shell no longer busy is suppressed: %', v_answer; end if;
 end $$;
--- A cancelled parent's questions are suppressed; a gone parent's undeliverable; nothing is admitted for either.
+-- A cancelled parent's questions are suppressed, and nothing is admitted for it. (A gone parent's are undeliverable:
+-- 989, with a machine's question that still stands.)
 select pg_temp.still_busy();
 update public.qorpera_runtime_office_shell_commands set worked_at = clock_timestamp() - interval '55 hours' where command_id = pg_temp.command(5);
 select pg_temp.job('cancelled') \g /dev/null
 do $$
 declare v_answer jsonb;
 begin
-	-- A gone parent: its job is gone.
-	set local session_replication_role = replica;
-	insert into public.qorpera_execution_runs
-	select (jsonb_populate_record(pg_temp.run(), jsonb_build_object('id', '87200000-0000-4000-8000-0000000009c2',
-		'job_id', extensions.gen_random_uuid(), 'source_id', extensions.gen_random_uuid()))).*;
-	insert into public.qorpera_machine_checkins(profile_id, environment_id, staff_agent_id, parent_run_id, machine_kind, subject_id, since,
-		mark_hours, body)
-	values ('64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000020', (pg_temp.run()).staff_agent_id,
-		'87200000-0000-4000-8000-0000000009c2', 'machine', extensions.gen_random_uuid(), clock_timestamp() - interval '1 hour', 1, '{}');
-	set local session_replication_role = origin;
 	v_answer := pg_temp.step();
 	-- The 55-hour question is asked now and waits a step; then it is suppressed with its cancelled parent.
-	if (v_answer ->> 'undeliverable')::integer <> 1 then raise exception 'Delivery: a gone parent''s question: %', v_answer; end if;
+	if (v_answer ->> 'asked')::integer <> 1 then raise exception 'Delivery: the 55-hour mark is asked: %', v_answer; end if;
 	v_answer := pg_temp.step();
 	if (v_answer ->> 'suppressed')::integer <> 1 or (pg_temp.question(55)).delivery <> 'suppressed' or exists (select 1 from pg_temp.wakes()) then
 		raise exception 'Delivery: a cancelled parent''s question is suppressed: %', v_answer; end if;
