@@ -102,18 +102,6 @@ describe("member browser CORS", () => {
 		).toBe(403);
 		expect(service.authorize).toHaveBeenCalledTimes(2);
 	});
-	it("admits only the typed binary upload headers and PUT method", async () => {
-		const service = await fixture();
-		const response = await service.request(
-			`${fileRoute}/uploads`,
-			preflight("PUT", "authorization,content-type,x-qorpera-company-upload"),
-		);
-		expect(response.status).toBe(204);
-		expect(response.headers.get("access-control-allow-methods")).toBe("PUT");
-		expect((await service.request(`${fileRoute}/uploads`, preflight("POST", "authorization"))).status).toBe(403);
-		expect(service.authorize).not.toHaveBeenCalled();
-		expect(service.get).not.toHaveBeenCalled();
-	});
 	it.each([
 		"*",
 		"null",
@@ -165,12 +153,7 @@ describe("member browser CORS", () => {
 		expect(service.get).not.toHaveBeenCalled();
 	});
 	it.each([
-		[`${fileRoute}/edits`, "POST"],
-		[`${fileRoute}/edits/${id(7)}`, "GET"],
-		[`${fileRoute}/edits/${id(7)}/content`, "GET"],
-		[`${fileRoute}/edits/${id(7)}/review`, "POST"],
-		[`${fileRoute}/proposals/${id(7)}/content`, "GET"],
-		[`${fileRoute}/proposals/${id(7)}/review`, "POST"],
+		[`/v1/member-folder-commits/${id(7)}`, "POST"],
 		[`/v1/member-session-attachments/upload/${id(7)}/${id(8)}/${sha256}`, "PUT"],
 		[`/v1/member-session-attachments/input/${id(7)}/${id(8)}/${sha256}`, "GET"],
 	])("allows the existing %s %s transport contract", async (route, method) => {
@@ -199,9 +182,9 @@ describe("member browser CORS", () => {
 		[objectRoute, "GET", "authorization,"],
 		[objectRoute, "GET", "x".repeat(1025)],
 		[`${objectRoute}?x=1`, "GET", "authorization"],
-		[`${fileRoute}/proposals`, "POST", "authorization"],
-		[`${fileRoute}/edits/review`, "POST", "authorization"],
-		[`${fileRoute}/proposals/${id(7)}`, "GET", "authorization"],
+		[`${fileRoute}/edits`, "POST", "authorization,content-type"],
+		[`${fileRoute}/edits/${id(7)}/file`, "GET", "authorization"],
+		[`${fileRoute}/uploads`, "PUT", "authorization,content-type,x-qorpera-company-upload"],
 		["/v1/read-leases/revoke", "POST", "authorization"],
 		["/v1/control/member-observations", "GET", "authorization"],
 		[`/v1/folder-objects/${id(1)}/${sha256}`, "GET", "authorization"],
@@ -248,9 +231,7 @@ describe("member browser CORS", () => {
 		expect(response.status).toBe(200);
 		expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
 		expect(response.headers.get("access-control-allow-origin")).toBe(origin);
-		expect(response.headers.get("access-control-expose-headers")).toBe(
-			"x-qorpera-access-mode, etag, x-qorpera-plan-sha256",
-		);
+		expect(response.headers.get("access-control-expose-headers")).toBe("x-qorpera-access-mode, etag");
 		expect(response.headers.get("access-control-allow-credentials")).toBeNull();
 		expect(response.headers.get("x-qorpera-access-mode")).toBe("live-path-authority");
 		expect(response.headers.get("cache-control")).toBe("private, no-store");
