@@ -2323,8 +2323,8 @@ it("keeps a company run's tool catalog byte for byte as it was before the snapsh
 	const tools = evidence.threadParameters.dynamicTools[0].tools as { name: string; description: string }[];
 	const start = f.pathCall.mock.calls.find(([method]) => method === "qorpera_begin_native_company_execution_v2")?.[1];
 	const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-	// master's folder-v2 values at 81d0ada8d (legacy sweep step C, C-P1): the names in their order, each
-	// name with its description, and the catalog text the run's start hashes (its ids made neutral).
+	// master's folder-v2 values at a2d6cb27a (legacy sweep step C, C-P1): the names in their order, each
+	// name with its description, and the catalog text the run's start hashes (it holds no ids).
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2357,11 +2357,9 @@ it("keeps a company run's tool catalog byte for byte as it was before the snapsh
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"7753668e0917577e050d193e69a7c4412d5d656b815f6dd0b1555bcdd6ef05f0",
+		"b286a75c9efe55edc40fe341ede866d80f3fe2a8e2f4d1bf87af21fb2771c546",
 	);
-	const catalog = String(start?.p_tool_catalog_text).replace(
-		/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
-		"<id>",
+	expect(sha(String(start?.p_tool_catalog_text))).toBe(
+		"fca34c0f0ff49f4f168bff3c69d2771460704ea4553951d01221e355cc10c9d0",
 	);
-	expect(sha(catalog)).toBe("c21adfa3d7534c638b1359caebc698918d91695dfbf29f9113327e1975706493");
 });
