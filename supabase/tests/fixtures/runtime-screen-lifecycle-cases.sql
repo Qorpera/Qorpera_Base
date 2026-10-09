@@ -12,7 +12,7 @@ declare startup jsonb:=current_setting('qorpera_test.screen_startup')::jsonb;
 begin
  select * into strict office from public.qorpera_runtime_offices where id=(startup#>>'{scope,companyComputerId}')::uuid;
  select * into strict screen from public.qorpera_runtime_office_screens where office_id=office.id order by ordinal limit 1;
- update public.qorpera_runtime_office_screens set power='open',staff_agent_id='30000000-0000-4000-8000-000000000030',drain_pending=false
+ update public.qorpera_runtime_office_screens set power='open',staff_agent_id='92400000-0000-4000-8000-000000000030',drain_pending=false
   where id=screen.id returning * into screen;
  binding:=public.qorpera_runtime_office_scope(office)||jsonb_build_object('computerGeneration',office.generation,
   'screenId',screen.id,'screenOrdinal',screen.ordinal,'screenGeneration',screen.generation,'staffAgentId',screen.staff_agent_id);

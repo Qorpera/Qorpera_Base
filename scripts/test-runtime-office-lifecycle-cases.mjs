@@ -23,7 +23,20 @@ export async function testOfficeLifecycleRevocation({ scope, binding, startup, a
 	assert(lease);
 	const viewer = call(`select public.qorpera_create_runtime_office_viewer(${literal(lease.binding)},${lease.epoch},'watch');`, owner);
 	assert.equal(viewer.state, "issued");
-	const viewerGrant = call(`select public.qorpera_redeem_runtime_office_viewer(${literal(scope)},'${createHash('sha256').update(viewer.capability).digest('hex')}');`);
+	// A viewer ticket is a bearer secret that works once: two redemptions queued behind the computer's lock both read
+	// it as issued before they wait, and exactly one wins.
+	const viewerLock = session();
+	viewerLock.child.stdin.write(`begin; select id from public.qorpera_runtime_offices where id='${scope.companyComputerId}' for update; select 'VIEWER_LOCKED';\n`);
+	await until(() => viewerLock.output().includes("VIEWER_LOCKED"));
+	const redeemers = [0, 1].map(() => session());
+	for (const redeemer of redeemers) redeemer.child.stdin.end(`${service} set application_name='office-viewer-redeem-race'; select public.qorpera_redeem_runtime_office_viewer(${literal(scope)},'${createHash('sha256').update(viewer.capability).digest('hex')}');`);
+	await until(() => execute("select count(*) from pg_stat_activity where application_name='office-viewer-redeem-race' and wait_event_type='Lock';") === "2");
+	viewerLock.child.stdin.end("rollback;");
+	assert.equal((await viewerLock.done).code, 0);
+	const redemptions = await Promise.all(redeemers.map(redeemer => redeemer.done));
+	assert.equal(redemptions.filter(r => r.code === 0).length, 1, "Exactly one of two queued viewer ticket redemptions must win");
+	assert.match(redemptions.find(r => r.code !== 0).error, /Viewer ticket consumed/);
+	const viewerGrant = JSON.parse(redemptions.find(r => r.code === 0).output.split("\n").at(-1));
 	call(`select public.qorpera_check_runtime_office_viewer(${literal(viewerGrant)});`);
 	// One explicitly synthetic unresolved physical effect, tied to a real receipt.
 	execute(`insert into public.qorpera_runtime_office_resources(office_id,screen_id,receipt_id,run_id,native_binding,screen_lease,input_sha256,downstream_idempotency_sha256,state,expires_at)
@@ -44,7 +57,7 @@ export async function testOfficeLifecycleRevocation({ scope, binding, startup, a
 	const privacy = call(`begin; reset role; update public.qorpera_runtime_offices set privacy_state='private',privacy_challenge=${literal(privateChallenge)},privacy_version=7; ${service} ${begin(request)} reset role;
 		select jsonb_build_object('state',privacy_state,'version',privacy_version,'challenge',privacy_challenge) from public.qorpera_runtime_offices; rollback;`, "");
 	assert.deepEqual(privacy, { state: "private", version: 7, challenge: privateChallenge });
-	const paused = call(`begin; reset role; insert into public.qorpera_company_execution_pauses(profile_id,paused_by_user_id) values('${scope.companyId}','30000000-0000-4000-8000-000000000001'); ${service} ${begin(request)} rollback;`, "");
+	const paused = call(`begin; reset role; insert into public.qorpera_company_execution_pauses(profile_id,paused_by_user_id) values('${scope.companyId}','92400000-0000-4000-8000-000000000001'); ${service} ${begin(request)} rollback;`, "");
 	assert.equal(paused.state, "draining");
 	assert.equal(snapshot(), preserved);
 	console.log("PASS: every action revokes only admission; pending drains, private state and all machine allocations are preserved");

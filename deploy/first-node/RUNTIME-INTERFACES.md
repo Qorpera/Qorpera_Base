@@ -886,7 +886,7 @@ the folder read still shows as the offer read it, with Accept and Not now. A clo
 don't answer, draws no offer.
 
 **Built: I8a, the read tools** (`packages/runtime/src/cloud-folder-interface-tools.ts`,
-`supabase/migrations/20260930200000_interface_agent_tools.sql`). A folder-v2 run has `interface_read` and `table_read`
+`supabase/migrations/20260928529100_interface_agent_tools.sql`). A folder-v2 run has `interface_read` and `table_read`
 as Company File tools. Each reads the files as they are now, with the run's own reads (§4), parses each text itself and
 releases exactly its answer with the files it shows. `interface_read` gives one view a page at a time: the interface's
 settings and buttons first, then each block in order (a board's part and a calendar's source are each one item), with

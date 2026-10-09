@@ -44,7 +44,7 @@ actor) and saving them (`ATT:155`).
 |---|---|---|
 | **E1** | Hooks and mailboxes on folder-v2: create, pause, remove, each with its connection file (§3) | P22 (merged), P22b writer |
 | **E2** | Event wakes: `when: event` in routine files, the folder event drain, the wake gate and the wake read (§4) | E1, P29's shared folder drains (merged) |
-| **E3** | Agents open hooks and mailboxes themselves (`manage_hook`, W3) (§5) | E1 |
+| **E3** | Agents open hooks and mailboxes themselves (`manage_hook`, W3): E3a address hooks and mailboxes, E3b and E3c signed hooks (§5) | E1 |
 | **E4** | Settings → Company connections lists hooks and mailboxes for owners and admins (§6) | E1 |
 | later | Events and mail as files, attachments, a mailbox at founding (§7) | E1–E2 |
 
@@ -335,7 +335,8 @@ The plan's original list:
 This builds `RUNTIME-EVENT-INTAKE.md:123-127` on folder-v2: an agent's `manage_hook` tool can create, pause and remove
 hooks and mailboxes for its company.
 
-- **Review:** a new hook or mailbox is reviewed as a new connection. Pausing and removing are not reviewed.
+- **Review:** a new hook or mailbox is reviewed as a new connection. Pausing and resuming are not reviewed; removing is
+  (§5.3).
 - **The address:** the agent receives it in the tool's result, so it can register the address with the service it
   connects (for example GitHub's webhook settings). The address stays in the run and never goes into a file.
 - **Signed hooks:** signing secrets go to the vault through A1's fill path, never through the model.
@@ -343,8 +344,164 @@ hooks and mailboxes for its company.
   - Where the service shows a secret (Stripe), the agent captures it on the Company Computer with the vault's fill.
 - **Locks:** E1's functions, entered from the run (`qorpera_folder_run_enter`), in the same order.
 
-E3 gets its own short design section before it is built; the review class and the secret capture are the parts to
-agree on.
+E3 comes in three parts: **E3a** address hooks and mailboxes (migration `20260930106000`, SQL test 939), **E3b** GitHub
+and HMAC hooks with a secret the vault makes, and **E3c** Stripe's secret taken from the screen. The coordinator agreed
+the design below on 6 October, with one change: no member pastes a Stripe secret in Settings (§5.5).
+
+### 5.1 The tool
+
+`manage_hook` is offered on folder-v2 beside `list_hooks`, `read_event`, `find_mail` and `send_mail`:
+- `create` with `kind: hook` (`name`, `purpose`, and optionally `maxBodyBytes` and `perMinute`), or with
+  `kind: mailbox` (`localPart`, `purpose`);
+- `pause`, `resume` and `remove` with `hook`: a name `list_hooks` shows (a mailbox's hook is its `mail-…` name);
+- `operationKey` on every action: one change per key, and a retry with the same key gets the first answer.
+
+The answer is the hook as `list_hooks` shows it. A create's answer also carries the hook's address and URL, or the
+mailbox's email address, so the agent can give it to the service. The address is only in that answer, never in a file:
+E1's connection file has none.
+
+### 5.2 Who may
+
+- **The run's requester is an owner or admin**, as for E1's Settings calls, and as `list_hooks` shows addresses only to
+  such a run (`20260928269290:555-575`). The agent acts with its requester's authority, never more. Any other run is
+  refused: 42501 "Only owners and admins can open hooks; ask one of them".
+- Any agent of the company may, in any run such a member requested: a chat, a routine, an event wake.
+- **A run that a hook's event woke may pause that hook, never remove it** (after E3a's review r2). E2a's gate refuses a
+  run once its wake's hook is removed, and the receipt's completion checks the run again, so the removal would roll
+  back. It is refused first: 55000 "A run this hook woke cannot remove it; pause it instead". Any other run, a chat for
+  example, may remove it.
+- The hook records the agent (`created_by_staff_agent_id`, which E1's file already shows as `createdBy`).
+- E1's checks are unchanged: the name and purpose rules, at most 50 hooks and 20 mailboxes, a mailbox needs the mail
+  domain, and the reserved mailbox names.
+
+### 5.3 Review (agreed)
+
+- **`create` is an outside effect (`external`)** and is reviewed like one. The card says "Open a hook" or "Open a
+  mailbox", with the hook's name or the mailbox's local part (the part before the @) and the purpose. The reviewer's
+  steps apply unchanged:
+  - a hook that only an email or a web page asks for is denied (`not_requested`);
+  - an Ask first rule that covers it (for example "ask before connecting new services") makes it ask;
+  - otherwise it is allowed.
+- **No new built-in check.** A "new connection" check would ask the member about every hook, a default gate no member
+  chose. Members add rules when they want one.
+- **`pause` and `resume` are `internal`** and not reviewed: they only narrow, or restore, what is already open.
+- **`remove` is `destructive`** and reviewed (changed after E3a's review r1). A removal is final, it can remove what a
+  member opened in Settings, and a removed mailbox's address is free for any company on the shared mail domain. A
+  removal the member asked for is allowed; one that only an email or a web page asks for is denied (`not_requested`).
+
+### 5.4 Locks (E3a)
+
+One function, `qorpera_folder_manage_hook(p_binding, p_request)`. It is granted to the service role and host-dispatched
+with the binding's scope, as `qorpera_folder_cancel_agent_worker` is:
+1. The run check, `qorpera_folder_tool_run`. Its entry already holds the company row (rank 0) and the requester's
+   member row (rank 1) KEY SHARE. A pause, resume or remove adds the hook row at rank 5 FOR NO KEY UPDATE, as E1's
+   status change does.
+2. The role check, under those locks.
+3. The run receipt (`qorpera_folder_begin_run_receipt`, key `hook:<operationKey>`); a replay answers from it.
+4. A create takes E1's per-company claim `qorpera.event-hooks:<profile>` (rank 9). A mailbox then takes the mail domain
+   FOR SHARE, last, as in E1.
+5. The caps, the name, then the insert or the status change; then the receipt completes.
+
+The connection file follows the commit, through E1's marks. The receipt keeps the hook without its address, which is
+read from the hook row for each answer.
+
+### 5.5 Signed hooks (E3b and E3c, agreed)
+
+E3a refused any `proof` but `address`: "A signed hook comes later; use an address hook for now". Since E3b-1 (§5.7) the
+host's path refuses a signed proof with "A signed hook is opened through the vault", and Stripe with "A Stripe hook comes
+later: its secret is taken from Stripe's screen".
+- **GitHub and HMAC (E3b).** The secret broker makes the secret (32 random bytes). It seals it under the company's vault
+  key and creates the hook with its `event_hook` secret (`h<hook id>`, field `signing_secret`) in one transaction, as A1's
+  account opening makes a password (`cloud-company-account-vault.ts` `#open`). The agent types it into the service's
+  form with the Company Computer's `vault_fill`, which gains a hook source: the hook's `signing_secret`, resealed to the
+  computer's boot key as an account's password is. The model never sees it.
+- **Stripe (E3c).** Stripe makes the secret and shows it once. Moving it from the screen into the vault needs a new
+  Company Computer action, the fill's reverse (`vault_capture`). Until it lands, a Stripe hook is refused with a plain
+  reason. Members never copy a token by hand (Jonas, 23 September), so Settings offers no paste for it.
+
+### 5.6 Tests (E3a)
+
+- **SQL 939, on E1's fixture:**
+  - a hook and a mailbox created from an owner's run, with `created_by_staff_agent_id` and the file mark;
+  - a run a plain member requested is refused;
+  - the caps, the names, a missing mail domain, and a signed proof refused;
+  - a replay with the same key gives the same hook; the same key for other work is refused;
+  - pause, resume and remove, and a removed hook refused;
+  - the address in the answer and never in the receipt;
+  - the host call row and the grants.
+- **SQL 985, on E2's fixture (913):** a run that a hook's event woke may pause and resume that hook but not remove it,
+  and may remove another hook.
+- **TypeScript:** the tool's schema and its description (under 4096 bytes), the effect classes and the card, the
+  allow-lists, and the folder client's answer checks.
+- **Deferred (needs Codex):** the live test (§8), where the Co-Founder sets up a hook.
+
+### 5.7 E3b: GitHub and HMAC hooks (agreed 6 October)
+
+E3b comes in three PRs: **E3b-1** the database (migration `20260930160000`, SQL test 987), **E3b-2** the broker's route
+and the runtime's tool, **E3b-3** the computer's `vault_fill` of a hook's secret. The coordinator agreed the design on
+6 October, with one addition to the fill (E3b-3, below).
+
+**The request.** `manage_hook`'s `create` takes `proof` (`github` or `hmac-sha256`) and `site`, the host the secret may
+be typed into: optional for GitHub (`github.com`), required for HMAC, refused on an address hook. A site is a lowercase
+host name, as A1's account sites are ("A site is a host name such as github.com"). The hook keeps it in
+`qorpera_event_hooks.secret_site` (null for address hooks, mailboxes and hooks a member made in Settings), and it is part
+of the receipt's digest, so the same key for another site is other work.
+
+**E3b-1, the database (as built).** E3a's function becomes `qorpera_folder_manage_hook_effect(p_binding, p_request,
+p_vault, …)`, granted to no role, with E3a's order and checks word for word. It has two callers:
+- `qorpera_folder_manage_hook`, the host's (name, signature and grants unchanged), passes no vault. A signed proof is
+  refused there (0A000), because the runtime sends signed creates to the broker.
+- `qorpera_folder_open_signed_hook`, the broker's, passes the vault. In the hook's own step it inserts the hook's
+  `event_hook` secret (W1b's name `h<hook id>`, the company's, created by the run's requester), version 1 (the broker's
+  envelope under this authority's key) and an audit row `hook_secret_made` with the run and the receipt. A replay answers
+  from the receipt and stores nothing. A signed create's answer adds `secretSite`; a pause, resume or removal of a signed
+  hook answers as E3a's do. The vault opens only a signed create: an address hook, a mailbox or a status
+  change is refused (22023).
+
+`qorpera_folder_describe_signed_hook` runs the same checks and returns what the envelope's associated data needs (the
+company, the environment and the authority's key). `qorpera_fill_event_hook_secret` is A1's fill read for a hook's secret
+(`{action: vault_fill, role: textbox, name, hook, field: signing_secret}`). It needs:
+- the executing `computer_browser` receipt of exactly that call (the call's SHA-256 is the receipt's input);
+- the computer the run's screen lease holds, and its current boot's fill key;
+- a live signed hook of the run's company, with a site, whose secret is active and sealed for this authority's key;
+- a requester who is an owner or admin.
+
+It writes `hook_secret_used`. A paused hook's secret is still typed; a removed hook's is not, and W1b's trigger
+(`qorpera_event_hooks_revoke_signing_secret`) revokes it.
+It is not gated by A1's switch (that one is the accounts'), and A1's fill refuses a hook's call as no such account.
+
+**Who may, and the locks.** The three broker functions are granted to `qorpera_secret_broker` only, and run A1's checks
+before any lock: the broker's session and capability, a job of the authority's company, and folder-v2 only ("Hooks need
+a company on the company folder"). The effect checks the envelope (the broker's id, the authority's key, 1 byte to
+128 KiB with its digest) before E3a's run check (§5.4), and the run's company and environment after it. The opening
+keeps E3a's order: the receipt, the company's hook claim (rank 9), the caps and the name, then the inserts. The fill holds the hook
+(rank 5, FOR SHARE) through the run check, then its secret FOR SHARE, then the receipt FOR UPDATE.
+
+**E3b-2, the broker and the runtime.** The runtime sends a signed `create` to the broker's route instead of the host's.
+The broker describes the opening, makes 32 random bytes, seals them under the company's key and opens the hook in one
+call. The tool's answer says the secret is ready and names the site; the model never sees the secret. The TypeScript
+refusal of a signed proof (`cloud-event-tools.ts`) goes with it.
+
+**E3b-3, the fill.** The Company Computer's `vault_fill` gains the hook source: the broker reads the hook's
+`signing_secret` through `qorpera_fill_event_hook_secret`, reseals it to the computer's boot key, and the guest types it
+into the named text box on the hook's site. The guest first makes the text box a password box, then reads the box's type
+back and refuses the fill unless it is `password`, so a page that undoes the change never shows the secret (the
+coordinator's addition).
+
+**Tests (E3b-1): SQL 987, on 924's fixture**, with the company's broker authority and its computer:
+- before the wake's acknowledgement, the broker's calls are refused and write nothing;
+- the broker opens a GitHub hook (the hook, its secret, version 1 and the audit row, in one step: one receipt and one
+  file mark) and an HMAC hook with a site and limits; a replay answers from the receipt and stores nothing; the same key
+  for another site is refused; the host opens an address hook with no secret;
+- every refusal writes nothing: Stripe, the site's rules, the vault opening anything but a signed create, the envelope,
+  a taken secret id or name, the broker's authority and capability, another company's broker, a company not on the
+  company folder, a signed proof on the host's path, Postgres' own session, and a requester who is no longer an owner;
+- the fill: its exact answer; a finished receipt, another call's receipt, input or downstream key; the call's shape; an
+  address hook, no such hook, another company's hook; another computer generation or screen; a version under another key;
+  A1's fill refusing a hook's call; a removed hook (its secret revoked) and a revoked secret; a paused hook's fill;
+- the browser action's hook variant, the grants, the marker, and the functions' order of checks and locks.
+- **SQL 939** keeps E3a's checks, with the host's new refusals of a signed proof.
+- **Left to E3b-2:** the races (a held hook, a held secret) on a committed fixture, through the broker's route.
 
 ## 6. E4: hooks and mailboxes in Settings
 

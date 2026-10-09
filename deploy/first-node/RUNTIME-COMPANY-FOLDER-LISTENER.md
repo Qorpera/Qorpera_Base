@@ -435,6 +435,15 @@ member who is not active is not asked; an always-on machine is left to its weekl
 same agent would be asked about the machine in the same conversation from the same start; a new command of that agent
 there, a new boot, a stop, or that conversation's commands ending while others still run suppress it.
 
+**Always-on machines in the same drain** (20260930201000, SQL test 999): an always-on machine never sleeps under the
+rule, so the due list and the step also count each always-on machine an agent started (`desired_by` `agent`) and has
+wanted running for at least a week since its last start (`wanted_at`: a move to another node keeps it, a stop and start
+resets it). The question (`machine_kind` `always-on`, body `{machine, weeks}`) goes to that agent in the conversation that
+started the machine, at the latest full week passed only: after downtime or a late drain it is asked once, and an older
+week's question still waiting is suppressed. Nobody is asked when a member started the machine last or when the starting
+agent is no longer active. A question stands while the machine is still always-on and wanted running by the same agent
+since the same start; a stop, a member's start, a new start or its removal suppress it.
+
 **C3c's due list** (`coding_checkins`, C1C §6.20, STATE-FILES §8): the folder-v2 environments, not being deleted, not
 paused and not out of computer hours, with a coding session due a quiet question (1, 3 or 7 quiet days, that mark not
 yet asked) whose worker is neither erased nor retired and whose parent run is ready, has stopped or is gone. One step
