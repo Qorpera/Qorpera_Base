@@ -3,9 +3,11 @@ import type { JsonValue } from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
 import {
 	CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
+	type CloudNativeConversationTree,
 	cloudAgentFolderPlace,
 	cloudCompanyContextTool,
 	cloudCompanyRuntimeInstructions,
+	cloudNativeStableInstructions,
 	compileCloudNativeCompanyInstructions,
 	composeCloudNativeCompanyPrompt,
 	parseCloudNativeCompanyContext,
@@ -513,6 +515,63 @@ it("shows the changes waiting for review just before the skills, only when the r
 		"\n# Changes waiting for review\nWhen apply_proposal is offered, proposals lists changes you saved from a computer",
 	);
 	expect(instructions).toContain("never present a waiting change as done.");
+});
+
+it("keeps only the history after a primary view, and puts the branches after the current inputs (§5.3)", () => {
+	const f = nativeCompanyContextFixture();
+	f.context.history = [3, 5, 8].map((sequence) => ({
+		...f.source("history", randomUUID(), `message ${sequence}`),
+		sequence,
+	}));
+	f.context.historyTruncated = true;
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	// No notebook, skills, proposals or head: only the view.
+	const none = [undefined, undefined, undefined, undefined, undefined, undefined] as const;
+	const compose = (tree?: CloudNativeConversationTree) =>
+		composeCloudNativeCompanyPrompt(context, null, ...none, tree);
+	const texts = (prompt: { history: { content: { text: string } }[] }) =>
+		prompt.history.map((item) => item.content.text);
+	const branches = [{ ref: "thread:ida", name: "Ida (thread)", messages: 4, lines: ["0+4|what Ida did"] }];
+	const viewed = JSON.parse(compose({ conversationMessages: 9, lastSequence: 5, branches }));
+	expect(texts(viewed)).toEqual(["message 8"]);
+	// What the view leaves out was not cut for the bound: the history after it is whole.
+	expect(viewed.historyTruncated).toBe(false);
+	expect(viewed.conversationMessages).toBe(9);
+	expect(viewed.branches).toEqual(branches);
+	const keys = Object.keys(viewed);
+	expect(keys.slice(keys.indexOf("conversationMessages"), keys.indexOf("history") + 1)).toEqual([
+		"conversationMessages",
+		"currentInputs",
+		"branches",
+		"history",
+	]);
+	const past = JSON.parse(compose({ conversationMessages: 9, lastSequence: 8, branches: [] }));
+	expect(texts(past)).toEqual([]);
+	expect(past.historyTruncated).toBe(false);
+	// A view of no message keeps the whole history, and whether it was cut.
+	const empty = JSON.parse(compose({ conversationMessages: 0, lastSequence: null, branches: [] }));
+	expect(texts(empty)).toEqual(["message 3", "message 5", "message 8"]);
+	expect(empty.historyTruncated).toBe(true);
+	expect(empty.branches).toEqual([]);
+	// Without one, the context is as it was.
+	expect(compose()).toBe(composeCloudNativeCompanyPrompt(context));
+	const plain = JSON.parse(compose());
+	expect(plain).not.toHaveProperty("conversationMessages");
+	expect(plain).not.toHaveProperty("branches");
+	expect(texts(plain)).toEqual(["message 3", "message 5", "message 8"]);
+});
+
+it("compiles the instructions an agent's runs share, up to the head and views, before the wake's", () => {
+	const f = nativeCompanyContextFixture();
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const parts = { head: "# Head\nBo's head.", views: "# The conversation so far\nBo's view." };
+	const stable = cloudNativeStableInstructions(context, parts);
+	expect(stable.endsWith(`\n${parts.head}\n${parts.views}`)).toBe(true);
+	const instructions = compileCloudNativeCompanyInstructions(context, null, parts);
+	expect(instructions.startsWith(`${stable}\n`)).toBe(true);
+	expect(instructions.length).toBeGreaterThan(stable.length + 1);
+	const plain = compileCloudNativeCompanyInstructions(context);
+	expect(plain.startsWith(`${cloudNativeStableInstructions(context)}\n`)).toBe(true);
 });
 
 it.each(["cofounder", "employee"] as const)(

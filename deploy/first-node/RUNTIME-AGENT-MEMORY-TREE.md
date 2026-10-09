@@ -941,6 +941,14 @@ request of the run**, so Codex's own history no longer carries the context (§11
 
 Parts 1 to 5 are composed once, at run start, and stay byte-identical for every request of the run. Only part 6 grows.
 
+**Built: M1b part 4a** (migration `20260930204000`, SQL test 946; `rt/memory-tree/compose.ts`). An agent's run in its
+own thread composes the primary view when its company is listed in `qorpera_memory_tree_companies`, which stays empty
+until M1b part 4b writes the trees. Until §11's trim, part 5 keeps `history`, but only the messages after the view's
+last one (`lastSequence`). The view ends where the run's inputs begin, so this is usually empty, and no message the view
+leaves out is lost. `historyTruncated` then holds only when the view cut nothing. `conversationMessages` goes before the
+current inputs and `branches` after them. The run records its first request (§13) once its context is hashed and the
+lines shown are released; the record's folder clock is the view reference's `asOfSeq` for W4.
+
 For `gpt-6-astra`, our default model, Codex uses Responses Lite (M0). Parts 1 and 2 are then not request fields but
 the first two input items, in the order tools (`additional_tools`), then the base instructions as a developer
 message. Codex also gives every item ids, and every message a turn id and a creation time, that differ per run:
@@ -1708,7 +1716,8 @@ same day: the tree is the agents' whole context, so it also replaces Codex's own
 - There are no users, so nothing is migrated. Hiring stops seeding `memory/log/`, and the log composer goes.
 - Contract 5.4, 9.1 and 15.1 change with it (§16).
 - The notebook is trimmed at M5, once the probe has met §13's targets. Until then a company with the tree on keeps
-  its notebook as it is, and the tree replaces only `history`.
+  its notebook as it is, and the tree replaces only `history` (from M1b part 4a, the part of it the view covers;
+  §6.1).
 
 **Pins (approved by Jonas, 6 October).** The profile page is a file the agent writes about itself. Pins are its
 successor: a member or the agent pins a message or a line of any conversation or run log into the agent's head,
