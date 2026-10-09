@@ -1453,9 +1453,10 @@ above.
       records. The only client, the web Settings panel, was removed first
       (web PR #247, no bundle), so the cut must follow that deploy.
     - `qorpera_set_company_execution_pause` is no longer granted to
-      `authenticated`. It stays as the operator brake of every runtime cut
-      (an operator session with a founder's claims), and it no longer writes
-      member notifications.
+      `authenticated`, and it no longer writes member notifications. The
+      legacy sweep dropped it (20260930240000): the operator brake of a
+      runtime cut is the folder core's `qorpera_folder_pause` and
+      `qorpera_folder_resume`, which no API role can call.
     - Notification kinds `company_execution_paused` and
       `company_execution_resumed` are removed, together with the open and
       acknowledged rows of both and every `company-ceiling-tripped/v1` row.

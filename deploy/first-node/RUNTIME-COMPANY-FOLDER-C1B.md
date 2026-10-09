@@ -350,7 +350,8 @@ row, bump the revision.
 - Both functions are operator-only, like today's pause.
 - Today's `qorpera_set_company_execution_pause` takes the profile row `FOR
   UPDATE`, so it must refuse folder-v2 companies. That refusal is part of
-  C1c's per-caller decisions.
+  C1c's per-caller decisions. (The legacy sweep dropped it in
+  20260930240000.)
 
 ### 8. The structured-file hook
 

@@ -275,8 +275,7 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
  const created=physical('root_created',plan.commands.createCommandId,{instanceSha256:predecessor.startup.instanceSha256});
  await refuse(prepare('root_created',fresh(),officeDigest(created)),/restart authority/);
  // The pause is an operator brake: the operator session acts with the owner's claims. The fixture paused by inserting
- // the pause row (stop cases); folder-v2 lifts it with its own operator-only resume, as the legacy
- // qorpera_set_company_execution_pause refuses folder-v2 (0A000) (ported from snapshot-v1 in the legacy sweep).
+ // the pause row (stop cases); the operator lifts it with the folder core's operator-only resume.
  execute(`${owner}reset role;select public.qorpera_folder_resume('${scope.companyId}');`);
  const nc=fresh();call(prepare('root_created',nc,officeDigest(created)));call(ack(nc,created));
  assert.equal(reset().phase,'root_created');assert.equal(auditCount(),1);
