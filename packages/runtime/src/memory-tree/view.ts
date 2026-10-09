@@ -44,6 +44,19 @@ export function memoryConversationView(name: string, parts: readonly MemoryTreeP
 	].join("\n");
 }
 
+/**
+ * What kind of conversation a ref names, as qorpera_memory_conversation says: an agent's thread, a group chat, or a
+ * run's own session that is no room.
+ */
+export type MemoryConversationKind = "thread" | "group" | "conversation";
+
+/** A conversation's name as a branch and zoom show it: "Bo (thread)", "Launch (group chat)", or its own name. */
+export function memoryConversationName(kind: MemoryConversationKind, name: string): string {
+	if (kind === "thread") return `${name} (thread)`;
+	if (kind === "group") return `${name} (group chat)`;
+	return name;
+}
+
 /** One of the agent's other conversations, for its branch (§5.5). */
 export interface MemoryBranchSource {
 	/** `thread:<agent>` or `group:<group>`, as zoom takes it. */
@@ -87,20 +100,33 @@ export function memoryBranchLines(messages: number, built: MemoryTreeBuilt, budg
 	return null;
 }
 
+/** What a branch's lines take of the budget, each row as it is sent (memoryRowBytes). */
+export function memoryBranchBytes(branch: MemoryBranchView): number {
+	return (branch.lines ?? []).reduce((total, row) => total + memoryRowBytes(row), 0);
+}
+
 /**
  * The branches (§5.5), most recently active first: half of BRANCHES to the first, a quarter to the next and so on,
  * each at least BRANCH_MIN while room is left. A branch that does not fit its share is listed by name and length.
+ * A branch depends only on the ones before it, so they can be folded a few at a time: `from` is the index of the first
+ * source among all the branches, and `room` what the branches before it left of `budget`.
  */
-export function memoryBranches(sources: readonly MemoryBranchSource[], budget = BRANCHES): MemoryBranchView[] {
-	let room = budget;
+export function memoryBranches(
+	sources: readonly MemoryBranchSource[],
+	budget = BRANCHES,
+	from = 0,
+	room = budget,
+): MemoryBranchView[] {
+	let left = room;
 	return sources.map((source, index) => {
-		const share = Math.min(room, Math.max(BRANCH_MIN, Math.floor(budget / 2 ** (index + 1))));
+		const share = Math.min(left, Math.max(BRANCH_MIN, Math.floor(budget / 2 ** (from + index + 1))));
 		const listed = { ref: source.ref, name: source.name, messages: source.messages };
 		if (share < BRANCH_MIN) return listed;
 		const lines = memoryBranchLines(source.messages, source.built, share);
 		if (!lines) return listed;
-		room -= lines.reduce((total, row) => total + memoryRowBytes(row), 0);
-		return { ...listed, lines };
+		const branch = { ...listed, lines };
+		left -= memoryBranchBytes(branch);
+		return branch;
 	});
 }
 
