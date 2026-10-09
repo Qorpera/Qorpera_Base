@@ -777,6 +777,12 @@ concurrent release of the same id waits and then replays.
   journal row, indexed by (environment, resource, revision).
 - `qorpera_folder_run_read_records (run_id, release_id, resource_id, reads,
   output_sha256, created_at)`: written once.
+  - A record under the nil resource (`00000000-0000-0000-0000-000000000000`)
+    is the platform's read of summary-tree blocks, which every agent may read
+    (RUNTIME-AGENT-MEMORY-TREE.md §9). Only `qorpera_memory_release` writes
+    one, and a wake's read copy (`qorpera_folder_read_wake`) copies it to the
+    woken run as it is. It has no read-set row, and neither recheck (below,
+    and the parent's reads in §4) re-resolves it.
 - Neither has a foreign key to runs, like the operation keys.
 
 **The recheck.** `qorpera_folder_run_reads_current(env, profile, run
@@ -795,7 +801,8 @@ actor)`, for effects:
      case for a grant that disappeared by cascade. It then re-resolves, for the
    run's current authority, only the paths under those prefixes. It looks the
    paths up by key across all of the run's read records, not by the resource
-   they were filed under.
+   they were filed under, and leaves out the nil resource's records (the
+   platform's reads of summary-tree blocks, above).
    - An expired grant re-resolves every path the row covers.
    - It refuses (42501) if any path is no longer readable.
    - Each path's check and its new receipt are taken in one statement.
@@ -828,7 +835,7 @@ migration sorts after both (20260928249000):
 | Every wake kind: the wake's login pays for work its requester started (`qorpera_sponsor_serves_requester`) | none |
 | Agent wakes need no standing execution authority since S2. A coding worker's dispatch is paid by its owner's login, or the login that one follows to (`qorpera_sponsor_version_follows`), and its owner is a member | none |
 | The parent run is in this company and environment | none |
-| **The parent's reads:** for each row of the parent's read set, the recipient can read that resource, under the company-audience rule: not `member_private`, and both the requester and the recipient agent read it. Paths are re-resolved only for rows whose revisions changed, or whose grant expired, since the parent recorded them | none |
+| **The parent's reads:** for each row of the parent's read set, the recipient can read that resource, under the company-audience rule: not `member_private`, and both the requester and the recipient agent read it. Paths are re-resolved only for rows whose revisions changed, or whose grant expired, since the parent recorded them. The parent's records under the nil resource, the platform's reads of summary-tree blocks (§3), are left out: every agent may read them | none |
 | Ancestry: `qorpera_coworker_wake_ancestry` or `qorpera_worker_wake_ancestry`, which lock nothing and write nothing | none |
 | Worker-completion session variant (20260922170000:277-280) | none |
 

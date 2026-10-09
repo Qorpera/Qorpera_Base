@@ -554,9 +554,10 @@ the tree holds the same content.
 - The composer and `zoom` read it in one call each, so a run never opens dozens of block files.
 - `T` is the transcript's count of included events (§3). The built set is the index's rows; an address with no row is
   missing, whether it was never built, failed, or was erased (§10). Events are read from `qorpera_session_events`.
-- The composer releases the block paths and versions it used under the hash of the composed context, as notebook
-  composition does today (`rt/cloud-folder-notebooks.ts:31-43`). So the view passes the fence as read references, and
-  no text is stored.
+- The composer releases the block paths and versions it used under the hash of the composed context, through
+  `qorpera_memory_release`: as the platform's reads, filed under the nil resource, so they need no folder grant, write
+  no read-set row and are never re-resolved (§9). So the view passes the fence as read references, and no text is
+  stored.
 - Erasure deletes a block's rows with the block (`RUNTIME-COMPANY-FOLDER-ERASURE.md` §5).
 
 ### 4.5 Run logs (W1)
@@ -1193,9 +1194,9 @@ folder.
   - `cloudActionEffect` classes it as read, so it is never reviewed.
   - Its name joins `CLOUD_RUNTIME_TOOL_OPERATIONS` and the observation vocabulary.
   - Its output goes through the result fence like any tool output.
-  - Summary lines are released as platform reads of their block's path and version, the way composition reads are
-    (§4.4), so the release needs no folder grant (§9). Transcript events are released the way `read_context`
-    releases its sources.
+  - Summary lines are released as platform reads of their block's path and version through `qorpera_memory_release`,
+    as the composer's are (§4.4), so the release needs no folder grant (§9). Transcript events need no release:
+    zoom's receipt names them, and erasure matches it (§10).
   - Its receipt input keeps the target conversation's session id, or the run log's run id (not the ref, which a
     rename changes), `start`, `size` and `from`. Erasure matches receipts by these (§10). A call without `line` is kept with `start` 0 and
     `size` T: the whole conversation, so any erasure in it matches.
@@ -1223,10 +1224,10 @@ one** (Jonas, 5 October: company-first and agent-first, with no compromise).
   and nothing about the conversation's participants.
 - **Relevance, not permission, chooses the view.** The run's own conversation is large, the agent's other
   conversations and, for the Co-Founder, every agent's thread are branches (§5.5). Anything else is one zoom away.
-- **The composer and `zoom` read for the company.** They read tree blocks and transcript events as the platform, as
-  notebook composition reads today (`rt/cloud-folder-notebooks.ts:31-43`), and release them as read references
-  (§4.4, §8). They check the company and nothing else: not the member the run works for, not the participants, and
-  not the agent's folder grants. Conversation memory is the company's, and every agent gets it.
+- **The composer and `zoom` read for the company.** They read tree blocks and transcript events as the platform, and
+  release the blocks as the platform's read references (`qorpera_memory_release`, §4.4, §8). They check the company
+  and nothing else: not the member the run works for, not the participants, and not the agent's folder grants.
+  Conversation memory is the company's, and every agent gets it.
 - **Ordinary files too.** Tree files sit under `agents/`, a shared root that every member reads, and every agent with
   the default access (a read grant on every live shared root, `RUNTIME-COMPANY-STATE-FILES.md:1128-1130`). The tree
   adds no path resource, not even for a group chat's root. So `company_read`, `company_list`, `company_search`, the
