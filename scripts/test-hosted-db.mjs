@@ -55,7 +55,6 @@ export const HOSTED_DB_SCRIPTS = [
 	"scripts/test-runtime-node-capacity.mjs",
 	"scripts/test-runtime-office-delete-disposition.mjs",
 	"scripts/test-runtime-office-current-provider-activation.mjs",
-	"scripts/test-runtime-room-history.mjs",
 	"scripts/test-folder-service-core-shapes.mjs",
 	"scripts/test-runtime-roll.mjs",
 	"scripts/test-object-gateway-connection-files.mjs",
@@ -76,7 +75,6 @@ const OWN_SERVER_SCRIPTS = new Set([
  * here costs time only: the script copies the nearest earlier snapshot and replays the gap. */
 function scriptStartPoints(names) {
 	return [
-		"20260913000400_runtime_room_history.sql", // test-runtime-room-history
 		"20260926034000_runtime_bundle_activation_v128.sql", // test-runtime-bundle-activation
 		newestBundleActivation(names), // test-runtime-office-delete-disposition holds it back
 	].filter((name) => names.includes(name));
