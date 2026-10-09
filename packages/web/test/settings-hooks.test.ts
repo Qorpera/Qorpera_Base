@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { type HooksAccess, HooksView } from "../src/app/views/settings-hooks.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import { createWebEventHooks, type EventHook, parseEventHook, type WebEventHooks } from "../src/cloud/event-hooks.ts";
-import { id, settle, timestamp } from "./fixtures.ts";
+import { deferred, id, settle, timestamp } from "./fixtures.ts";
 
 const PROJECT_URL = "https://project.supabase.co";
 const ADDRESS = "a".repeat(43);
@@ -172,6 +172,23 @@ describe("webhooks and mailboxes", () => {
 		expect(view!.el.textContent).not.toContain("Only founders and admins");
 	});
 
+	it("reads the list again when a member becomes an owner or admin, for each webhook's address", async () => {
+		const role = { manage: false };
+		// The kernel sends a webhook's address only to an owner or admin.
+		const { url: _, ...unaddressed } = webhook;
+		const { client, state } = setup([unaddressed, mailbox], { canManage: () => role.manage });
+		await settle();
+		expect(client.list).toHaveBeenCalledTimes(1);
+
+		state.hooks = structuredClone([webhook, mailbox]);
+		role.manage = true;
+		view?.update();
+		await settle();
+		expect(client.list).toHaveBeenCalledTimes(2);
+		expect(cardOf(webhook.id)?.querySelector("code")?.textContent).toBe(HOOK_URL);
+		expect(labels(cardOf(webhook.id)!)).toEqual(["Pause", "Remove", "Copy"]);
+	});
+
 	it("pauses and resumes a hook, keeping focus on its button", async () => {
 		const { client } = setup([webhook]);
 		await settle();
@@ -251,6 +268,26 @@ describe("webhooks and mailboxes", () => {
 		expect(view!.el.querySelector("#hook-form-webhook")).toBeNull();
 		expect((document.activeElement as HTMLElement).dataset.focusKey).toBe(`hook-copy:${id(70)}`);
 		expect(client.list).toHaveBeenCalledTimes(2);
+	});
+
+	it("reads once more after a change made while a read was out, so the change shows", async () => {
+		const { client, state } = setup([webhook]);
+		await settle();
+		// The read after adding a webhook is still out when the member pauses another one: it saw the hook active.
+		const read = deferred<EventHook[]>();
+		vi.mocked(client.list).mockImplementationOnce(() => read.promise);
+		add("webhook", "forms", "Form posts");
+		await settle();
+		const before = structuredClone(state.hooks);
+		press(cardOf(webhook.id)!, "Pause");
+		await settle();
+		expect(client.setStatus).toHaveBeenCalledWith(webhook.id, "paused", expect.any(AbortSignal));
+		read.resolve(before);
+		await settle();
+		await settle();
+		expect(client.list).toHaveBeenCalledTimes(3);
+		expect(cardOf(webhook.id)?.querySelector(".hook-state")?.textContent).toBe("Paused · No events yet");
+		expect(cardOf(id(70))).not.toBeNull();
 	});
 
 	it("checks a webhook's name and purpose before asking, and says why the kernel refused", async () => {

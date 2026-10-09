@@ -135,6 +135,8 @@ export class HooksView {
 	/** The last action's outcome, under its hook's card or its kind's form. */
 	#outcome: { key: string; tone: "ok" | "error"; text: string } | undefined;
 	#refreshing: Promise<void> | undefined;
+	/** One more read, asked for while a read was out, and the focus it draws with. */
+	#again: { read: Promise<void>; focusKey: string | undefined } | undefined;
 
 	constructor(client: HooksClient, signal: AbortSignal, options: { access?: HooksAccess } = {}) {
 		this.#client = client;
@@ -151,6 +153,9 @@ export class HooksView {
 		if (this.#lifetime.signal.aborted || this.#access.canManage() === this.#drawnManage) return;
 		if (!this.#access.canManage()) this.#adding = undefined;
 		this.#draw();
+		// The kernel sends a webhook's address only to an owner or admin: a member who just became one reads it.
+		if (this.#access.canManage() && this.#hooks?.some((hook) => kindOf(hook) === "webhook" && !hook.url))
+			void this.#refresh();
 	}
 
 	dispose(): void {
@@ -159,12 +164,29 @@ export class HooksView {
 		this.el.remove();
 	}
 
+	/** Reads the list. A read already out may have left before the caller's change, so a caller then gets one more
+	 * read after it (shared by every caller meanwhile, drawn with the last one's focus). */
 	#refresh(focusKey?: string): Promise<void> {
 		if (this.#lifetime.signal.aborted) return Promise.resolve();
-		this.#refreshing ??= this.#read(focusKey).finally(() => {
-			this.#refreshing = undefined;
-		});
-		return this.#refreshing;
+		if (!this.#refreshing) {
+			this.#refreshing = this.#read(focusKey).finally(() => {
+				this.#refreshing = undefined;
+			});
+			return this.#refreshing;
+		}
+		if (this.#again) {
+			this.#again.focusKey = focusKey;
+			return this.#again.read;
+		}
+		const again: { read: Promise<void>; focusKey: string | undefined } = {
+			read: this.#refreshing.then(() => {
+				this.#again = undefined;
+				return this.#refresh(again.focusKey);
+			}),
+			focusKey,
+		};
+		this.#again = again;
+		return again.read;
 	}
 
 	async #read(focusKey?: string): Promise<void> {
