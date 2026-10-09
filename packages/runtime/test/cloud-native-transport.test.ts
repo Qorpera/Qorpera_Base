@@ -285,9 +285,6 @@ async function serviceFixture() {
 			beginLogin: async () => {
 				throw new Error("No login");
 			},
-			execute: async () => {
-				throw new Error("No model");
-			},
 		},
 	});
 	const execute = vi.spyOn(host, "execute").mockImplementation(

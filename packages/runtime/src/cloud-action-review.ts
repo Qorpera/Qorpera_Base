@@ -206,8 +206,6 @@ export function cloudActionEffect(
 			return args.action === "delete" ? "destructive" : "internal";
 		case "company_write":
 		case "company_mkdir":
-		// A received attachment saved into the company folder, through the same governed gateway (M2c-1).
-		case "save_attachment":
 		case "update_memory":
 		case "organize_sidebar":
 		// An Ask first rule only makes agents more careful.

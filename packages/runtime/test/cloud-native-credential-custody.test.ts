@@ -185,9 +185,6 @@ it.each(["hardlink", "symlink", "missing"])(
 				async beginLogin() {
 					throw new Error("No login expected");
 				},
-				async execute() {
-					throw new Error("Legacy execution forbidden");
-				},
 			},
 			cloudRuntime: { execute },
 			masterKey: key,

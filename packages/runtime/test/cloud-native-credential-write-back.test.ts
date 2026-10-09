@@ -84,9 +84,6 @@ async function host(
 			async beginLogin() {
 				throw new Error("No login expected");
 			},
-			async execute() {
-				throw new Error("Legacy execution forbidden");
-			},
 		},
 		cloudRuntime: {
 			async execute(_request: NativeCompanyExecutionRequest, identityRoot: string) {

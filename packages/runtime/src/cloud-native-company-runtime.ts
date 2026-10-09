@@ -297,7 +297,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					)
 				: Promise.resolve(false);
 			const context = parseCloudNativeCompanyContext(await contextRequest, binding);
-			// Where the company keeps its agents' folders: by id today, by name in a folder-v2 company.
+			// Where the agent's folder is: its folder name.
 			const agentFolders = cloudAgentFolderPlace(context);
 			stage = "bundle-compatibility";
 			assertCloudRuntimeBundle(context.identity, this.#sha256);
@@ -343,8 +343,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			stage = "prompt-composition";
 			// Every company run is a folder-v2 run: its context names the agent's folder, and it reads and writes the
 			// company's files and its state files through the folder core (core C3's thin writers,
-			// RUNTIME-COMPANY-STATE-FILES.md §5). A context without one is refused (legacy sweep step C, C-P1).
-			if (!context.folder) throw new Error("A company run needs its agent's company folder");
+			// RUNTIME-COMPANY-STATE-FILES.md §5). The context parser refuses a context without one (legacy sweep
+			// step C, C-P9).
 			const folder = {
 				client: new CloudCompanyFolderClient({
 					binding,
@@ -841,9 +841,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											}),
 											...cloudReviewRuleTools(binding, identity, this.#paths),
 											// The agent changes the company's hooks through its folder client (E3a).
-											// save_attachment, which wrote through the path gateway, is not offered:
-											// no company run uses that gateway's files (M2c-1).
-											...cloudEventTools(binding, identity, this.#paths, undefined, folder.client),
+											...cloudEventTools(binding, identity, this.#paths, folder.client),
 										]),
 								// Machines are the company's: any agent run in a company conversation may start and
 								// use them and hears about them in that conversation; a worker uses them like its agent
@@ -861,7 +859,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								// The notebook is the agent's own: a worker of the same agent recalls it,
 								// and writes to it only when its dispatch allows Company File writes.
 								...notebooks
-									.tools((files) => cloudMemoryTools(files, identity, undefined, agentFolders), operations)
+									.tools((files) => cloudMemoryTools(files, identity, agentFolders), operations)
 									.filter(
 										(tool) =>
 											tool.name === "recall_memory" || work.companyFile({ ...tool, name: "company_write" }),
@@ -881,7 +879,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									? [
 											...(work.isWorker
 												? []
-												: cloudHiringTools(gateway, identity, undefined, {
+												: cloudHiringTools(identity, {
 														folderHiring: new CloudFolderHiring({
 															folder: folder.client,
 															operations,

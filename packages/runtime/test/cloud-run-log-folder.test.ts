@@ -225,7 +225,7 @@ function fixture(group = false) {
 		control,
 	});
 	const protection = {
-		narrow: vi.fn(async () => false),
+		narrow: vi.fn(async () => ({ log: false, narrow: false })),
 		hashes: vi.fn(async (_run: string, values: readonly string[]) =>
 			values.map((value) =>
 				createHmac("sha256", "synthetic-test-platform-key").update(`${runId}:${value}`).digest("hex"),
