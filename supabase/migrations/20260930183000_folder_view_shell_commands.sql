@@ -13,8 +13,8 @@
 --    desktop. It stands while the screen keeps that generation, the office the view's activation and the agent its
 --    access. Not the command's end: an ended command's view still renews, for its final publish.
 -- 3. The final publish: the view actor's "final": true. Once its command has ended, a command view saves only its
---    final change set. The final closes the view in the commit's transaction, whether it saved anything or not; only a
---    command view sends one.
+--    final change set. The final closes the view in the commit's transaction, whether it saved anything or not (it may
+--    carry no change at all); only a command view sends one.
 --
 -- Exact-text patch: it fails unless the function has the text given exactly once. Body marker "20260930183000".
 
@@ -315,6 +315,13 @@ $old$,
 		-- The view's own functions take the actor without it.
 		v_final := coalesce((p_actor ->> 'final')::boolean, false);
 		p_actor := p_actor - 'final'; v_bytes_actor := p_actor;
+$new$);
+select pg_temp.folder_view_shell_commands_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
+	$old$	if jsonb_typeof(p_units) is distinct from 'array' or jsonb_array_length(p_units) not between 1 and 1000 then
+$old$,
+	$new$	-- 20260930183000: a final may carry no change; it still closes its view.
+	if jsonb_typeof(p_units) is distinct from 'array'
+		or jsonb_array_length(p_units) not between (case when v_final then 0 else 1 end) and 1000 then
 $new$);
 select pg_temp.folder_view_shell_commands_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
 	$old$		when v_actor_kind = 'view' then jsonb_build_object('kind','view','viewId',p_actor ->> 'viewId') else p_actor end;

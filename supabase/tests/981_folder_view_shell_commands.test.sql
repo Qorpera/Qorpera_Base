@@ -273,9 +273,10 @@ end $$;
 
 
 -- Only a command view sends a final, and a run's actor has no such key. A final that saves nothing still closes its
--- view; so does a final while the command still runs.
+-- view, and so does one that carries no change (a change set that is not a final carries at least one); so does a
+-- final while the command still runs.
 do $$
-declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); c uuid; s jsonb; d jsonb; r jsonb;
+declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); c uuid; s jsonb; d jsonb; r jsonb; r2 jsonb;
 begin
 	perform pg_temp.hold(v);
 	d := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4','holderRunId',v ->> 'runId'));
@@ -291,7 +292,19 @@ begin
 	r := pg_temp.final(s, 'cmd-empty-final', '[{"op":"mkdir","path":"shared"}]');
 	perform pg_temp.expect(r, 1, 'conflict', 'exists');
 	if r ->> 'seq' is not null or (pg_temp.view_row(s)).state is distinct from 'closed' or (pg_temp.view_row(s)).close_reason is distinct from 'closed' then
-		raise exception 'An empty final closes the view: %', r; end if;
+		raise exception 'A final that saves nothing closes the view: %', r; end if;
+	c := pg_temp.command(v);
+	s := pg_temp.open_command(c);
+	perform pg_temp.refused(format('select pg_temp.vcommit(%L, %L, %L)', s, 'cmd-no-units', '[]'), '22023', 'Change set is invalid');
+	perform pg_temp.ended(c);
+	r := pg_temp.final(s, 'cmd-no-change-final', '[]');
+	if r ->> 'commitId' is null or r -> 'seq' is distinct from 'null'::jsonb or r -> 'units' is distinct from '[]'::jsonb
+		or (pg_temp.view_row(s)).state is distinct from 'closed' or (pg_temp.view_row(s)).close_reason is distinct from 'closed' then
+		raise exception 'A final with no change closes the view: %', r; end if;
+	r2 := pg_temp.final(s, 'cmd-no-change-final', '[]');
+	if r2 -> 'replay' is distinct from 'true'::jsonb or r2 ->> 'commitId' is distinct from r ->> 'commitId'
+		or r2 -> 'units' is distinct from '[]'::jsonb then
+		raise exception 'The replay of a final with no change: %', r2; end if;
 	c := pg_temp.command(v);
 	s := pg_temp.open_command(c);
 	perform pg_temp.expect(pg_temp.final(s, 'cmd-running-final', '[{"op":"mkdir","path":"by-cmd-running-final"}]'), 1, 'saved');
@@ -335,6 +348,36 @@ begin
 		'42501', 'A read is no longer readable');
 	perform pg_temp.refused(format('select public.qorpera_folder_run_reads_current(%L, %L, %L)', '63200000-0000-4000-8000-000000000020',
 		'63200000-0000-4000-8000-000000000010', b), '42501', 'A read is no longer readable');
+end $$;
+
+
+-- What its run read itself (released through the run, so in the run's read set alone): a detached command view still
+-- answers for it, under the run's own authority (its agent's grants), as a detached desktop answers for its holder's.
+-- The run's read of secret/ stays readable to agent A, so the detached save lands; once cmd-run/ narrows, it refuses.
+do $$
+declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); c uuid; s jsonb; a jsonb := pg_temp.stage('theta');
+begin
+	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'cmd-run-setup', jsonb_build_array(jsonb_build_object('op','mkdir','path','cmd-run'),
+		jsonb_build_object('op','write','path','cmd-run/f.txt','file',a))), 2, 'saved');
+	perform pg_temp.hold(v);
+	c := pg_temp.command(v);
+	s := pg_temp.open_command(c);
+	perform public.qorpera_folder_record_release('63200000-0000-4000-8000-000000000020', v, extensions.gen_random_uuid(),
+		(select jsonb_agg(jsonb_build_object('path', x ->> 'path', 'version', x ->> 'version', 'authority', x -> 'authority'))
+			from (select pg_temp.read(f, v) -> 'entry' as x from unnest(array['cmd-run/f.txt','secret/s.txt']) f) r), repeat('6', 64));
+	if exists (select 1 from public.qorpera_folder_view_read_records where view_id = (s ->> 'viewId')::uuid)
+		or (select count(*) from public.qorpera_folder_run_read_records rec, jsonb_array_elements(rec.reads) x
+			where rec.run_id = (v ->> 'runId')::uuid and x ->> 'path' in ('cmd-run/f.txt','secret/s.txt')) <> 2 then
+		raise exception 'The run''s own reads are in its read set alone'; end if;
+	perform pg_temp.expect(pg_temp.vcommit(s, 'cmd-run-live', '[{"op":"mkdir","path":"by-cmd-run-live"}]'), 1, 'saved');
+	perform pg_temp.fx(format('update public.qorpera_runner_jobs set lease_expires_at = clock_timestamp() - interval ''1 second'' where id = %L',
+		v ->> 'jobId'));
+	perform pg_temp.expect(pg_temp.vcommit(s, 'cmd-run-detached', '[{"op":"mkdir","path":"by-cmd-run-detached"}]'), 1, 'saved');
+	perform public.qorpera_folder_set_resource('63200000-0000-4000-8000-000000000020', pg_temp.member(1), 'cmd-run', 'subtree',
+		'company_shared', 'normal');
+	perform pg_temp.refused(format('select pg_temp.vcommit(%L, %L, %L)', s, 'cmd-run-after', '[{"op":"mkdir","path":"refused"}]'),
+		'42501', 'A read is no longer readable');
+	perform public.qorpera_folder_view_close((s ->> 'viewId')::uuid, s ->> 'pass');
 end $$;
 
 

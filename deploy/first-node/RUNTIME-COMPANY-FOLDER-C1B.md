@@ -955,12 +955,14 @@ it. The facts below come from the read-only inventory of 2026-09-29
   `expired`).
 
 One open view per screen, per coding session, and later per test machine:
-partial unique indexes. A shell command has one view, open or closed
-(`qorpera_folder_views_one_per_command`). Of two opens for the same anchor, the later one
-supersedes the earlier one's new view, or meets it in the index (23505)
-when there was no older view to lock; the office service retries then. The
-table is revoked from every API role; only the folder core's functions write
-it.
+partial unique indexes. Of two opens for the same screen or coding session,
+the later one supersedes the earlier one's new view, or meets it in the
+index (23505) when there was no older view to lock; the office service
+retries then. A shell command has one view, open or closed
+(`qorpera_folder_views_one_per_command`): a later open of the same command
+is refused (42501 "Folder view command is not current"), never superseded
+or retried. The table is revoked from every API role; only the folder
+core's functions write it.
 
 ### 2. The view actor
 
@@ -1313,14 +1315,15 @@ by a machine.
   - `network`: the start's `network` argument (absent, false). Only an
     offline command gets a view; rows the report makes say true;
   - `started_at`, then `ended_at` and `end_reason` (`exited`, `stopped`,
-    `drained`, `paused`, `lost`).
+    `pressure`, `paused`, `closed`, `slept`, `lost`, `unknown`: the
+    table's check, from 20260928489100).
 
   Built in 20260930183000: the native operation's begin of a shell start
   inserts it, before the guest runs anything. The office's 30 s report fills
   in `command_id`; its sweeps spare a row it has not named yet for 60 seconds
   after the start's effect ended, and only commands it named are told to the
-  agent as stopped. It is ended by the guest's report, or by a drain of its
-  screen.
+  agent as stopped. Only the guest's report ends it: a drain of its screen
+  stops the command, and the guest's next report then records its end.
   - **Until each command has its own mount namespace** (F3's step 4), the
     report ends a command when its process group is empty. Programs that
     leave the group (setsid, daemons) are not caught yet.
@@ -1330,8 +1333,9 @@ by a machine.
   The per-screen activity row stays the awake and seat signal.
 - **The end boundary for commands and test machines** (review round 2,
   finding 5):
-  - a drain or a normal exit records `end_reason`, but the view stays valid
-    for one final publish;
+  - the report records the end (an exit, or a drain's stop) in `end_reason`,
+    but the view stays valid for one final publish, which may carry no
+    change;
   - that publish carries `final`, and the commit closes the view in the same
     transaction;
   - a test machine's "command not ended" check accepts a publish made at

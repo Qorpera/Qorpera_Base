@@ -1,8 +1,9 @@
 -- Company folder core, C1b-3a: views under concurrency (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1B.md, "C1b-3: views"
 -- §3 and §4). Other connections race view saves: a holder change that commits while a save waits at its anchor step
 -- refuses the save; the office's and the coding archive's plain updates wait for a save in flight; the company row at
--- rank 0 never deadlocks with #462's order (company row, then member). The fixture is committed so the connections can
--- see it, and removed at the end. Waits are detected with pg_blocking_pids, never by wall-clock time.
+-- rank 0 never deadlocks with #462's order (company row, then member); a shell command's end and its view's final race
+-- the view's saves (20260930183000). The fixture is committed so the connections can see it, and removed at the end.
+-- Waits are detected with pg_blocking_pids, never by wall-clock time.
 
 insert into auth.users(id,email) values ('64400000-0000-4000-8000-000000000001','views-race-owner@example.test'),
 	('64400000-0000-4000-8000-000000000002','views-race-member@example.test');
@@ -561,6 +562,126 @@ begin
 	if v_state <> 'ok' then raise exception 'The release after the view was free: %', v_state; end if;
 end $$;
 
+-- L. A shell command's view (20260930183000) anchors on the command's row, FOR SHARE. The end of the command (the
+-- report's plain UPDATE) that commits while a save waits there refuses the save, which only the final may then be; one
+-- rolled back lets it save. A save in flight makes the end wait, and the end lands after it. A final in flight holds the
+-- clock and has closed its view: a save of the same view passes its anchor step, waits at the clock, and then finds the
+-- view closed. Each race has its own command, started by run one, which holds the screen.
+create function pg_temp.command() returns uuid language plpgsql as $$
+declare v_id uuid := extensions.gen_random_uuid(); v_run uuid := (current_setting('qorpera_test.run_one')::jsonb ->> 'runId')::uuid;
+begin
+	set local session_replication_role = replica;
+	insert into public.qorpera_runtime_office_shell_commands(id, receipt_id, office_id, computer_generation, screen_id, screen_generation,
+		staff_agent_id, run_id, requested_by_user_id, conversation_run_id, command, network, started_at, worked_at)
+	select v_id, v_id, o.id, o.generation, s.id, s.generation, s.staff_agent_id, v_run, '64400000-0000-4000-8000-000000000002', v_run,
+		'make', false, clock_timestamp(), clock_timestamp()
+	from public.qorpera_runtime_office_screens s join public.qorpera_runtime_offices o on o.id = s.office_id
+	where s.id = '64400000-0000-4000-8000-0000000000e4';
+	set local session_replication_role = origin;
+	return v_id;
+end $$;
+create function pg_temp.open_command(p_name text) returns void language sql as $$
+	select set_config('qorpera_test.' || p_name, public.qorpera_folder_view_open('64400000-0000-4000-8000-000000000020',
+		'{"kind":"platform"}', 'computer_shell_command', jsonb_build_object('shellCommandId', pg_temp.command()))::text, false)
+$$;
+-- The office's end of a view's command, as the report writes it: a plain UPDATE.
+create function pg_temp.sql_end(p_name text) returns text language sql as $$
+	select format('update public.qorpera_runtime_office_shell_commands set ended_at = clock_timestamp(), end_reason = ''exited''
+		where id = (select shell_command_id from public.qorpera_folder_views where id = %L)',
+		current_setting('qorpera_test.' || p_name)::jsonb ->> 'viewId')
+$$;
+-- Where a waiter waits: a row lock's waiter holds that row's tuple lock while it waits for the holder (unless it holds a
+-- lock on the row already).
+create function pg_temp.waits_at(p_waiter text, p_table regclass) returns boolean language sql as $$
+	select exists (select 1 from pg_locks where pid = current_setting('qorpera_test.pid_' || p_waiter)::integer
+		and locktype = 'tuple' and relation = p_table)
+$$;
+-- A command view's save past its anchor step: it holds the command table's ROW SHARE, which only the anchor's FOR SHARE
+-- takes, and waits at no row it did not lock before. The next row it locks is the clock's, which it holds KEY SHARE
+-- already through its foreign keys: it waits there for the holder's transaction, with no tuple lock.
+create function pg_temp.past_anchor(p_waiter text) returns boolean language sql as $$
+	select exists (select 1 from pg_locks where pid = current_setting('qorpera_test.pid_' || p_waiter)::integer and granted
+			and locktype = 'relation' and relation = 'public.qorpera_runtime_office_shell_commands'::regclass and mode = 'RowShareLock')
+		and not exists (select 1 from pg_locks where pid = current_setting('qorpera_test.pid_' || p_waiter)::integer and locktype = 'tuple')
+$$;
+select pg_temp.hold(current_setting('qorpera_test.run_one')::jsonb);
+select pg_temp.open_command(name) from unnest(array['cmd1','cmd2','cmd3']) name;
+do $$
+declare v_state text; r jsonb;
+begin
+	perform dblink_exec('view_one', 'begin');
+	perform dblink_exec('view_one', 'set local session_replication_role = replica');
+	perform dblink_exec('view_one', pg_temp.sql_end('cmd1'));
+	perform dblink_send_query('view_two', pg_temp.sql_commit(pg_temp.vactor('cmd1'), 'cmd-anchor-free',
+		'[{"op":"mkdir","path":"shared/cmd-anchor-free"}]'));
+	if not pg_temp.waits_for('view_two', 'view_one') or not pg_temp.waits_at('view_two', 'public.qorpera_runtime_office_shell_commands') then
+		raise exception 'The command view''s save did not wait at its anchor step'; end if;
+	perform dblink_exec('view_one', 'rollback');
+	v_state := pg_temp.outcome('view_two');
+	if v_state <> 'ok' then raise exception 'The save after an end rolled back: %', v_state; end if;
+	if not exists (select 1 from public.qorpera_folder_entries where environment_id = '64400000-0000-4000-8000-000000000020'
+		and key_text = 'shared/cmd-anchor-free') then raise exception 'The save after an end rolled back must land'; end if;
+
+	perform dblink_exec('view_one', 'begin');
+	perform dblink_exec('view_one', 'set local session_replication_role = replica');
+	perform dblink_exec('view_one', pg_temp.sql_end('cmd1'));
+	perform dblink_send_query('view_two', pg_temp.sql_commit(pg_temp.vactor('cmd1'), 'cmd-anchor-ended',
+		'[{"op":"mkdir","path":"shared/cmd-anchor-ended"}]'));
+	if not pg_temp.waits_for('view_two', 'view_one') or not pg_temp.waits_at('view_two', 'public.qorpera_runtime_office_shell_commands') then
+		raise exception 'The command view''s save did not wait at its anchor step'; end if;
+	perform dblink_exec('view_one', 'commit');
+	v_state := pg_temp.outcome('view_two');
+	if v_state not like '42501 %Folder view command has ended%' then
+		raise exception 'An end in the anchor window must refuse a save that is not the final, got %', v_state; end if;
+	if exists (select 1 from public.qorpera_folder_entries where environment_id = '64400000-0000-4000-8000-000000000020'
+		and key_text = 'shared/cmd-anchor-ended') then raise exception 'The refused save must leave nothing'; end if;
+	-- Last in this block: until it ends, this transaction holds the clock.
+	r := pg_temp.commit(pg_temp.vactor('cmd1') || '{"final":true}', 'cmd-anchor-final', '[{"op":"mkdir","path":"shared/cmd-anchor-final"}]');
+	if r -> 'units' -> 0 ->> 'outcome' is distinct from 'saved' then raise exception 'The final after the end: %', r; end if;
+end $$;
+do $$
+declare v_state text; r jsonb;
+begin
+	perform dblink_exec('view_one', 'begin');
+	select t.r into r from dblink('view_one', pg_temp.sql_commit(pg_temp.vactor('cmd2'), 'cmd-flight-1',
+		'[{"op":"mkdir","path":"shared/cmd-in-flight"}]')) as t(r jsonb);
+	if r -> 'units' -> 0 ->> 'outcome' is distinct from 'saved' then raise exception 'The command view''s save in flight: %', r; end if;
+	perform dblink_exec('view_two', 'set session_replication_role = replica');
+	perform dblink_send_query('view_two', pg_temp.sql_end('cmd2'));
+	if not pg_temp.waits_for('view_two', 'view_one') or not pg_temp.waits_at('view_two', 'public.qorpera_runtime_office_shell_commands') then
+		raise exception 'The end of the command did not wait for the save in flight'; end if;
+	perform dblink_exec('view_one', 'commit');
+	v_state := pg_temp.outcome('view_two');
+	perform dblink_exec('view_two', 'set session_replication_role = origin');
+	if v_state <> 'ok' then raise exception 'The end of the command after the save: %', v_state; end if;
+	if not exists (select 1 from public.qorpera_folder_entries where environment_id = '64400000-0000-4000-8000-000000000020'
+			and key_text = 'shared/cmd-in-flight')
+		or not exists (select 1 from public.qorpera_runtime_office_shell_commands c join public.qorpera_folder_views v
+			on v.shell_command_id = c.id where v.id = (current_setting('qorpera_test.cmd2')::jsonb ->> 'viewId')::uuid
+			and c.ended_at is not null) then
+		raise exception 'The save in flight, then the end, must land'; end if;
+end $$;
+do $$
+declare v_state text; r jsonb;
+begin
+	perform dblink_exec('view_one', 'begin');
+	select t.r into r from dblink('view_one', pg_temp.sql_commit(pg_temp.vactor('cmd3') || '{"final":true}', 'cmd-final-flight',
+		'[{"op":"mkdir","path":"shared/cmd-final-flight"}]')) as t(r jsonb);
+	if r -> 'units' -> 0 ->> 'outcome' is distinct from 'saved' then raise exception 'The final in flight: %', r; end if;
+	perform dblink_send_query('view_two', pg_temp.sql_commit(pg_temp.vactor('cmd3'), 'cmd-behind-final',
+		'[{"op":"mkdir","path":"shared/cmd-behind-final"}]'));
+	if not pg_temp.waits_for('view_two', 'view_one') or not pg_temp.past_anchor('view_two') then
+		raise exception 'The save did not wait for the final at the clock'; end if;
+	perform dblink_exec('view_one', 'commit');
+	v_state := pg_temp.outcome('view_two');
+	if v_state not like '42501 %Folder view has ended%' then
+		raise exception 'A save behind the final must find the view closed, got %', v_state; end if;
+	if exists (select 1 from public.qorpera_folder_entries where environment_id = '64400000-0000-4000-8000-000000000020'
+		and key_text = 'shared/cmd-behind-final') then raise exception 'The save behind the final must leave nothing'; end if;
+	if (select state from public.qorpera_folder_views where id = (current_setting('qorpera_test.cmd3')::jsonb ->> 'viewId')::uuid)
+		is distinct from 'closed' then raise exception 'The final closes its view'; end if;
+end $$;
+
 select dblink_disconnect(name) from unnest(array['view_one','view_two','view_three']) name;
 
 -- The committed fixture leaves the shared suite database.
@@ -586,6 +707,7 @@ delete from public.qorpera_coding_repository_grants where environment_id = '6440
 delete from public.qorpera_coding_sessions where profile_id = '64400000-0000-4000-8000-000000000010';
 delete from public.qorpera_coding_machines where profile_id = '64400000-0000-4000-8000-000000000010';
 delete from public.qorpera_runtime_workers where profile_id = '64400000-0000-4000-8000-000000000010';
+delete from public.qorpera_runtime_office_shell_commands where office_id = '64400000-0000-4000-8000-0000000000e0';
 delete from public.qorpera_runtime_office_access where office_id = '64400000-0000-4000-8000-0000000000e0';
 delete from public.qorpera_runtime_office_screens where office_id = '64400000-0000-4000-8000-0000000000e0';
 delete from public.qorpera_runtime_office_activations where office_id = '64400000-0000-4000-8000-0000000000e0';
@@ -607,6 +729,7 @@ begin
 	if exists (select 1 from public.qorpera_company_files where environment_id = '64400000-0000-4000-8000-000000000020')
 		or exists (select 1 from public.qorpera_execution_runs where profile_id = '64400000-0000-4000-8000-000000000010')
 		or exists (select 1 from public.qorpera_folder_views where environment_id = '64400000-0000-4000-8000-000000000020')
-		or exists (select 1 from public.qorpera_runtime_offices where profile_id = '64400000-0000-4000-8000-000000000010') then
+		or exists (select 1 from public.qorpera_runtime_offices where profile_id = '64400000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_runtime_office_shell_commands where office_id = '64400000-0000-4000-8000-0000000000e0') then
 		raise exception 'The race fixture must be removed'; end if;
 end $$;
