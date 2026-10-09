@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -1127,6 +1127,13 @@ it("keeps the agent's own words, never its reasoning, with the next step of its 
 		runId,
 		conversationId: randomUUID(),
 		signal: new AbortController().signal,
+		protection: {
+			narrow: async () => false,
+			hashes: async (run, digests) =>
+				digests.map((digest) =>
+					createHmac("sha256", "codex-session-test-platform-key").update(`${run}:${digest}`).digest("hex"),
+				),
+		},
 		folder: {
 			locate: async () => ({ path: `runs/${runId}`, exists: true, missing: [], last: null, generation: 0 }),
 			read: async (path) => (files.has(path) ? { version: path, text: files.get(path)! } : null),
