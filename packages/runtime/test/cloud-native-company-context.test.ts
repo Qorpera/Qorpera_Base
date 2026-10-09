@@ -1061,6 +1061,8 @@ it("carries the run's service tier outside the shared tool identity", () => {
 it("names a folder-v2 company's agent folders, and leaves every other context and prompt as it is", () => {
 	const f = nativeCompanyContextFixture();
 	const coworker = f.context.coworkers[0].id;
+	// The shared fixture is a folder-v2 context; the context parser itself still accepts one without a folder.
+	delete f.context.folder;
 	const plain = parseCloudNativeCompanyContext(f.context, f.binding);
 	expect(Object.hasOwn(plain, "folder")).toBe(false);
 	expect(cloudAgentFolderPlace(plain)).toEqual({ core: "snapshot-v1" });
