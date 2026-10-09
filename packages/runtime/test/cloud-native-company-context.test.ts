@@ -832,7 +832,7 @@ it("does not let context arguments choose another source, actor, hash or company
 });
 
 it.each([false, true])(
-	"advertises only admitted retrieval handles while preserving their joint binding (continuation: %s)",
+	"names no run's handles in its schema and admits only this run's, in their joint binding (continuation: %s)",
 	(continued) => {
 		const f = nativeCompanyContextFixture();
 		const input = f.source("input", f.context.currentInputs[0].id, "input ".repeat(512));
@@ -879,10 +879,17 @@ it.each([false, true])(
 		const call = vi.fn<CloudCompanyPathControl["call"]>();
 		const tool = cloudCompanyContextTool(context, f.binding, { call });
 		const expectedProperties = {
-			id: { type: "string", enum: ids },
-			sha256: { type: "string", enum: hashes },
+			id: { type: "string" },
+			sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
 		};
 		expect(tool.inputSchema).toMatchObject({ properties: expectedProperties });
+		// The same schema as another run's, so the tool list stays a cached prefix (§6.1).
+		const other = nativeCompanyContextFixture();
+		expect(
+			cloudCompanyContextTool(parseCloudNativeCompanyContext(other.context, other.binding), other.binding, { call })
+				.inputSchema,
+		).toEqual(tool.inputSchema);
+		expect(JSON.stringify(tool.inputSchema)).not.toContain(ids[0]);
 		const boundary = new CloudNativeToolBoundary({
 			companyId: context.identity.companyId,
 			runId: context.identity.runId,

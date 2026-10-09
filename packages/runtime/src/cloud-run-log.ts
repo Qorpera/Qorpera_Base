@@ -121,10 +121,11 @@ export interface CloudRunLogFolder {
 	): Promise<CloudCompanyFolderCommitResult>;
 }
 
-/** A release a tool made while it ran: its id, and the reads it recorded. */
+/** A release a tool made while it ran: its id, and the reads it recorded, a folder release's or zoom's platform read
+ * of tree blocks (M1b-3). Its line keeps only their paths and versions. */
 export interface CloudRunLogRelease {
 	readonly releaseId: string;
-	readonly reads: readonly CloudCompanyFolderRelease[];
+	readonly reads: readonly Pick<CloudCompanyFolderRelease, "path" | "version">[];
 }
 
 /** One step as its line stores it, for the run's step lines (W2). A hashes-only step has `args` "". */
@@ -167,8 +168,8 @@ export function cloudRunLogReleases<T>(releases: CloudRunLogRelease[], operation
 	return RELEASES.run(releases, operation);
 }
 
-/** Called by the folder client once a release is recorded. Outside a logged tool call it does nothing. */
-export function recordCloudRunLogRelease(releaseId: string, reads: readonly CloudCompanyFolderRelease[]): void {
+/** Called by the folder client, or by zoom, once a release is recorded. Outside a logged tool call it does nothing. */
+export function recordCloudRunLogRelease(releaseId: string, reads: CloudRunLogRelease["reads"]): void {
 	const releases = RELEASES.getStore();
 	if (releases && !releases.some((release) => release.releaseId === releaseId)) releases.push({ releaseId, reads });
 }

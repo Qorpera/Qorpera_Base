@@ -166,7 +166,10 @@ export type CloudCompanyPathRpc =
 	| "qorpera_find_agent_mail"
 	| "qorpera_native_mail_attachment"
 	// Company accounts (A1-4): the company's accounts and mailboxes, and the id of the agent's todo by key.
-	| "qorpera_find_company_accounts";
+	| "qorpera_find_company_accounts"
+	// Summary trees (M1b-3): zoom, and the platform read of the tree blocks a zoom result showed.
+	| "qorpera_memory_zoom"
+	| "qorpera_memory_release";
 
 /** Service-only transport. Never exposed as an arbitrary RPC tool. */
 export interface CloudCompanyPathControl {
