@@ -4,8 +4,8 @@
 -- sees no founder left; a removal and a post meet at the agent's thread room; member changes never wait for a
 -- company-row KEY SHARE holder; a join waits at the fence behind a removal in flight; a hire waits for a removal and a
 -- demotion at the member rows, so neither member stays in the new agent's thread; a founder's step-down waits at its
--- member row holding no room; a join caught at the fence holds no invitation, so a deletion goes on. 648's committed
--- fixture, removed at the end.
+-- member row holding no room; a founder steps down at read committed only (no serialization failure from the guard);
+-- a join caught at the fence holds no invitation, so a deletion goes on. 648's committed fixture, removed at the end.
 
 -- More people (committed): 04 with its own login (connection c6, binding b7) and a queued run it pays for, 05, 07, 08
 -- and 10; 06 and 09, who are invited.
@@ -286,6 +286,35 @@ begin
 	perform dblink_exec('fence_three', 'commit');
 	v_role := pg_temp.outcome('fence_one');
 	if v_post <> 'ok' or v_role <> 'ok' then raise exception 'G: the post % and the step-down %', v_post, v_role; end if;
+end $$;
+
+-- I. Founders change at read committed only (20260930242000): on a repeatable-read snapshot taken before the other
+-- founder stepped down, the last founder's step-down is refused (25000) before the guard's KEY SHARE on the other
+-- founder, which failed there with the engine's serialization failure (40001); the company keeps its founder. The
+-- step-down is made by hand, as a change outside the member functions (an operator's, an account deletion's cascade)
+-- meets only the guard. 01 is a founder again first (by hand), beside 06.
+update public.qorpera_profile_members set role = 'owner' where profile_id = '64800000-0000-4000-8000-000000000010'
+	and user_id = '64800000-0000-4000-8000-000000000001';
+do $$
+declare v_state text;
+begin
+	perform dblink_exec('fence_one', 'begin isolation level repeatable read');
+	perform * from dblink('fence_one', $q$select count(*) from public.qorpera_profile_members where profile_id = '64800000-0000-4000-8000-000000000010'
+		and role = 'owner'$q$) as t(n bigint);
+	perform * from dblink('fence_two', format('select public.qorpera_update_profile_member_role(%L, %L, %L)::text',
+		'64800000-0000-4000-8000-000000000010', '64800000-0000-4000-8000-000000000001', 'admin')) as t(x text);
+	perform dblink_send_query('fence_one', $q$update public.qorpera_profile_members set role = 'admin'
+		where profile_id = '64800000-0000-4000-8000-000000000010' and user_id = '66500000-0000-4000-8000-000000000006'
+		returning role::text$q$);
+	v_state := pg_temp.outcome('fence_one');
+	perform dblink_exec('fence_one', 'rollback');
+	if v_state not like '25000 Founder changes run at read committed%' then
+		raise exception 'I: the last founder stepping down on an old snapshot: %', v_state; end if;
+	if (select array_agg(role::text order by user_id) from public.qorpera_profile_members
+			where profile_id = '64800000-0000-4000-8000-000000000010'
+				and user_id in ('64800000-0000-4000-8000-000000000001', '66500000-0000-4000-8000-000000000006'))
+			is distinct from array['admin', 'owner'] then
+		raise exception 'I: 01 stepped down and 06 is still a founder'; end if;
 end $$;
 
 -- H. A join caught at the fence (held FOR UPDATE, as stop's second phase holds it) holds no invitation while it waits.
