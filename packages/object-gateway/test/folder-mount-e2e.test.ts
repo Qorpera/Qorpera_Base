@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { NasObjects } from "../src/folder-service/objects.ts";
-import { encodeFrame, encodeJson, FrameReader, Kind } from "../src/folder-service/protocol.ts";
+import { encodeFrame, encodeJson, FrameReader, Kind, parseHello } from "../src/folder-service/protocol.ts";
 import { createFolderServer } from "../src/folder-service/server.ts";
 import { FolderService } from "../src/folder-service/service.ts";
 import { FolderStaging } from "../src/folder-service/staging.ts";
@@ -467,7 +467,7 @@ async function loggedMount(kind = "computer_shell_command") {
 	await start();
 	cleanup.push(stop);
 	const bridgeSocket = join(dir, "bridge.sock");
-	const faults = { dropReadAnswer: false, dropReport: false, dropPollAnswer: false };
+	const faults = { dropReadAnswer: false, dropReport: false, dropPollAnswer: false, dropHelloAnswer: false };
 	const requests: { kind: number; body: unknown }[] = [];
 	const bridge = createServer((machine) => {
 		const incoming = new FrameReader();
@@ -475,14 +475,31 @@ async function loggedMount(kind = "computer_shell_command") {
 		const upstream = connect(serviceSocket, () => {
 			upstream.write(encodeJson(Kind.bridge, { cid: 90, lookup: "found", machine: OFFICE }));
 			machine.on("data", (data: Buffer) => {
-				for (const frame of incoming.push(data))
-					if (frame.kind !== Kind.chunk && frame.kind !== Kind.hello)
+				for (const frame of incoming.push(data)) {
+					if (frame.kind === Kind.hello) {
+						const hello = parseHello(frame.payload);
+						requests.push({
+							kind: frame.kind,
+							body: {
+								viewId: hello.viewId,
+								previousViewId: hello.previous?.viewId,
+								abandon: hello.abandon === true,
+							},
+						});
+					} else if (frame.kind !== Kind.chunk)
 						requests.push({ kind: frame.kind, body: JSON.parse(frame.payload.toString()) });
+				}
 			});
 			machine.pipe(upstream);
 		});
 		upstream.on("data", (data: Buffer) => {
 			for (const frame of outgoing.push(data)) {
+				if (frame.kind === Kind.helloOk && faults.dropHelloAnswer) {
+					faults.dropHelloAnswer = false;
+					machine.destroy();
+					upstream.destroy();
+					return;
+				}
 				if (
 					(frame.kind === Kind.readsOk && faults.dropReadAnswer) ||
 					(frame.kind === Kind.report && faults.dropReport)
@@ -513,30 +530,34 @@ async function loggedMount(kind = "computer_shell_command") {
 	await writeFile(viewFile, JSON.stringify({ environmentId: ENV, viewId, pass: CORE_PASS }), { mode: 0o600 });
 	await mkdir(company);
 	let output = "";
-	const child = spawn(
-		program!,
-		[
-			"mount",
-			"--view-file",
-			viewFile,
-			"--state-dir",
-			state,
-			"--mountpoint",
-			company,
-			"--connect",
-			`unix:${bridgeSocket}`,
-			"--threads",
-			"4",
-		],
-		{ stdio: ["ignore", "pipe", "pipe"] },
-	);
-	child.stdout.on("data", (data: Buffer) => {
-		output += data.toString();
-	});
-	child.stderr.on("data", (data: Buffer) => {
-		output += data.toString();
-	});
-	const exited = new Promise<void>((resolve) => child.on("exit", () => resolve()));
+	const launch = () => {
+		const child = spawn(
+			program!,
+			[
+				"mount",
+				"--view-file",
+				viewFile,
+				"--state-dir",
+				state,
+				"--mountpoint",
+				company,
+				"--connect",
+				`unix:${bridgeSocket}`,
+				"--threads",
+				"4",
+			],
+			{ stdio: ["ignore", "pipe", "pipe"] },
+		);
+		child.stdout.on("data", (data: Buffer) => {
+			output += data.toString();
+		});
+		child.stderr.on("data", (data: Buffer) => {
+			output += data.toString();
+		});
+		return child;
+	};
+	let child = launch();
+	let exited = new Promise<void>((resolve) => child.on("exit", () => resolve()));
 	const kill = async (): Promise<void> => {
 		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 		await exited;
@@ -592,6 +613,28 @@ async function loggedMount(kind = "computer_shell_command") {
 		core,
 		root,
 		viewId,
+		child: () => child,
+		exited: () => exited,
+		service: () => service,
+		disconnect: () => {
+			for (const socket of sockets) socket.destroy();
+		},
+		remount: async () => {
+			child = launch();
+			exited = new Promise<void>((resolve) => child.on("exit", () => resolve()));
+			expect(await eventually(() => mounted(company)), output).toBe(true);
+		},
+		replace: async (next: string) => {
+			core.openView(next, CORE_PASS, { kind, machineId: ALLOCATION });
+			const current = JSON.parse(await readFile(viewFile, "utf8")) as { viewId: string };
+			core.views.get(current.viewId)!.state = "closed";
+			await service.renewLeases();
+			const temporary = `${viewFile}.next`;
+			await writeFile(temporary, JSON.stringify({ environmentId: ENV, viewId: next, pass: CORE_PASS }), {
+				mode: 0o600,
+			});
+			await rename(temporary, viewFile);
+		},
 		receipt,
 		company,
 		state,
@@ -812,4 +855,122 @@ describe.skipIf(!program)("durable read proof through a real FUSE mount", () => 
 		const missing = await m.publish(false, join(m.state, "missing"));
 		expect(missing).toMatchObject({ code: 1, stdout: "" });
 	}, 15_000);
+});
+
+describe.skipIf(!program)("live desktop handoff through real FUSE", () => {
+	it("keeps an actual open descriptor through stream loss, publisher calls and a view replacement", async () => {
+		const m = await loggedMount("computer_desktop");
+		const file = await open(join(m.company, "docs/empty.md"), "r+");
+		cleanup.push(() => file.close().catch(() => {}));
+		await file.write("first");
+		await file.sync(); // The service holds an open writer, with an unfixed chunk.
+		m.disconnect();
+		const alive = await m.publish();
+		expect(alive.code, alive.stderr + m.output()).toBe(4);
+		expect(JSON.parse(alive.stdout).paths).toContainEqual(
+			expect.objectContaining({ path: "docs/empty.md", outcome: "waiting" }),
+		);
+		expect(
+			m.requests.filter((request) => request.kind === Kind.hello).map((request) => request.body),
+		).not.toContainEqual(expect.objectContaining({ abandon: true }));
+		await file.write(" second");
+		await file.sync();
+		const inode = (await file.stat()).ino;
+		m.faults.dropHelloAnswer = true;
+		await m.replace(v(701));
+		expect(
+			await eventually(
+				async () => JSON.parse(await readFile(join(m.state, "view.json"), "utf8")).view.viewId === v(701),
+				10_000,
+			),
+			m.output(),
+		).toBe(true);
+		expect((await file.stat()).ino).toBe(inode);
+		await file.write(" third");
+		await file.close();
+		const saved = await m.publish();
+		expect(saved.code, saved.stderr + m.output()).toBe(0);
+		expect(m.core.entries.get("docs/empty.md")?.fileSha256).toBe(hashOf("first second third"));
+		expect(await mounted(m.company)).toBe(true);
+	}, 30_000);
+
+	it("retains a remembered base and read sequence after SIGKILL between file replacement and hello", async () => {
+		const m = await loggedMount("computer_desktop");
+		expect(await readFile(join(m.company, "docs/plan.md"), "utf8")).toBe("the plan");
+		const before = await m.journal();
+		m.child().kill("SIGSTOP");
+		await m.replace(v(701));
+		expect(JSON.parse(await readFile(join(m.state, "view.json"), "utf8")).view.viewId).toBe(m.viewId);
+		await m.kill();
+		m.core.write(await storeFile(m.root, "docs/plan.md", "someone else's newer plan", 2));
+		await m.remount();
+		await writeFile(join(m.company, "docs/.plan.tmp"), "my stale save");
+		await rename(join(m.company, "docs/.plan.tmp"), join(m.company, "docs/plan.md"));
+		const saved = await m.publish();
+		expect(saved.code, saved.stderr + m.output()).toBe(4);
+		expect(JSON.parse(saved.stdout).paths).toContainEqual(
+			expect.objectContaining({ path: "docs/plan.md", outcome: "conflict" }),
+		);
+		expect(m.core.entries.get("docs/plan.md")?.fileSha256).toBe(hashOf("someone else's newer plan"));
+		expect((await m.journal())[0]?.log).toBe(before[0]?.log);
+		expect(m.core.readSets.get(v(701))?.get("docs/plan.md")?.version).toBe(v(1));
+		expect(m.requests).toContainEqual({
+			kind: Kind.hello,
+			body: { viewId: v(701), previousViewId: m.viewId, abandon: false },
+		});
+	}, 30_000);
+
+	it("a separate dead-program publisher transfers the old overlay and log and abandons orphan writers", async () => {
+		const m = await loggedMount("computer_desktop");
+		await readFile(join(m.company, "docs/plan.md"));
+		m.core.commitRefusal = "stopped";
+		await writeFile(join(m.company, "docs/result.md"), "fixed result");
+		const unfinished = await open(join(m.company, "docs/result.md"), "r+");
+		cleanup.push(() => unfinished.close().catch(() => {}));
+		await unfinished.write("unfixed text");
+		await unfinished.sync();
+		m.child().kill("SIGSTOP");
+		await m.replace(v(701));
+		await m.kill();
+		m.core.commitRefusal = undefined;
+		const answer = await m.publish();
+		expect(answer.code, answer.stderr + m.output()).toBe(0);
+		expect(m.core.entries.get("docs/result.md")?.fileSha256).toBe(hashOf("fixed result"));
+		expect(m.core.readSets.get(v(701))?.has("docs/plan.md")).toBe(true);
+		expect(m.requests).toContainEqual({
+			kind: Kind.hello,
+			body: { viewId: v(701), previousViewId: m.viewId, abandon: true },
+		});
+		expect(JSON.parse(await readFile(join(m.state, "view.json"), "utf8")).view.viewId).toBe(v(701));
+	}, 30_000);
+
+	it("carries a lost read log through handoff and refuses every publication including after service restart", async () => {
+		const m = await loggedMount("computer_desktop");
+		await readFile(join(m.company, "docs/plan.md"));
+		await appendFile(join(m.state, "reads.jsonl"), "invalid-complete-record\n");
+		await m.replace(v(701));
+		const refused = await m.publish();
+		expect(refused.code, refused.stderr + m.output()).toBe(4);
+		expect(JSON.parse(refused.stdout).refused).toBe("unproven");
+		await m.kill();
+		await m.restart();
+		const again = await m.publish();
+		expect(again.code).toBe(4);
+		expect(JSON.parse(again.stdout).refused).toBe("unproven");
+		expect(m.core.commits).toHaveLength(0);
+	}, 30_000);
+
+	it("unmounts a closed desktop after one minute when no accepted successor arrives", async () => {
+		const m = await loggedMount("computer_desktop");
+		m.core.views.get(m.viewId)!.state = "closed";
+		const started = Date.now();
+		await m.service().renewLeases();
+		await new Promise((resolve) => setTimeout(resolve, 1_000));
+		expect(await mounted(m.company)).toBe(true);
+		await m.exited();
+		expect(Date.now() - started).toBeGreaterThanOrEqual(59_000);
+		expect(Date.now() - started).toBeLessThan(65_000);
+		expect(m.child().exitCode).toBe(3);
+		expect(await mounted(m.company)).toBe(false);
+	}, 70_000);
 });

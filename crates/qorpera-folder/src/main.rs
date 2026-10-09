@@ -1,8 +1,7 @@
 //! qorpera-folder: the company folder inside a Qorpera machine, and the node's vsock bridge to the
 //! folder service. See README.md and deploy/first-node/RUNTIME-FOLDER-SERVICE.md.
 
-use qorpera_folder::{bridge, link, lxd, mount, proto, reads::ReadLog, relay};
-use std::os::unix::fs::MetadataExt;
+use qorpera_folder::{bridge, link, lxd, mount, proto, reads::ReadLog, relay, viewfile::{self, DaemonLock, ViewFile}};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -113,7 +112,7 @@ fn mount(args: &[String]) -> Result<ExitCode, Usage> {
 	if !(1..=64).contains(&threads) {
 		return Err(Usage("--threads must be 1 to 64".into()));
 	}
-	let view = match read_view(view_file) {
+	let view = match viewfile::read(std::path::Path::new(view_file)) {
 		Ok(v) => v,
 		Err(e) => {
 			eprintln!("qorpera-folder: view file {view_file}: {e}");
@@ -127,7 +126,23 @@ fn mount(args: &[String]) -> Result<ExitCode, Usage> {
 			None => return Err(Usage("this view id needs a --state-dir".into())),
 		},
 	};
-	let link = link::Link::new(addr, view, threads);
+	// Acquire the fixed lifetime lock before any journal, accepted-proof or connection mutation. A standalone
+	// publisher holding it excludes a new daemon until its proven-dead abandonment and publication complete.
+	let _daemon = match DaemonLock::acquire(&state, false, true) {
+		Ok(Some(lock)) => lock,
+		Ok(None) => { eprintln!("qorpera-folder: another mount or publisher holds this state"); return Ok(ExitCode::FAILURE); }
+		Err(e) => { eprintln!("qorpera-folder: mount state lock: {e}"); return Ok(ExitCode::FAILURE); }
+	};
+	let prepared = (|| -> std::io::Result<_> {
+		let reads = Arc::new(ReadLog::open(&state, true)?);
+		let store = Arc::new(ViewFile::open(PathBuf::from(view_file), &state, &view, reads.created())?);
+		Ok((reads, store))
+	})();
+	let (reads, store) = match prepared {
+		Ok(prepared) => prepared,
+		Err(e) => { eprintln!("qorpera-folder: private mount state: {e}"); return Ok(ExitCode::FAILURE); }
+	};
+	let link = link::Link::new(addr, view, threads).with_reads(reads).with_view_file(store, true, false);
 	let options = mount::Options { mountpoint, threads, ttl: Duration::from_secs(ttl), allow_other, owner, state: Some(state) };
 	match mount::run(link, options) {
 		Ok(mount::Stop::ViewClosed) => {
@@ -186,7 +201,7 @@ fn publish(args: &[String]) -> Result<ExitCode, Usage> {
 	let o = flag_options(args, &["view-file", "connect", "state-dir"], &["final", "json"])?;
 	let view_file = o.get("view-file").ok_or_else(|| Usage("--view-file is required".into()))?;
 	let addr = o.get("connect").cloned().unwrap_or_else(|| format!("vsock:2:{}", proto::VSOCK_PORT));
-	let view = match read_view(view_file) {
+	let view = match viewfile::read(std::path::Path::new(view_file)) {
 		Ok(v) => v,
 		Err(e) => {
 			eprintln!("qorpera-folder: view file {view_file}: {e}");
@@ -196,6 +211,19 @@ fn publish(args: &[String]) -> Result<ExitCode, Usage> {
 	let state = match o.get("state-dir") {
 		Some(dir) => PathBuf::from(dir),
 		None => state_dir(&view.view_id).ok_or_else(|| Usage("this view id needs a --state-dir".into()))?,
+	};
+	let daemon = match DaemonLock::acquire(&state, false, false) {
+		Ok(lock) => lock,
+		Err(e) => { eprintln!("qorpera-folder: mount state lock: {e}; use its exact --state-dir"); return Ok(ExitCode::FAILURE); }
+	};
+	// A busy lock means alive, even while hello is stalled or every service stream is disconnected.
+	let abandon = daemon.is_some();
+	let store = match ViewFile::open(PathBuf::from(view_file), &state, &view, false) {
+		Ok(store) => Arc::new(store),
+		Err(e) => {
+			eprintln!("qorpera-folder: accepted view proof cannot be read: {e}");
+			return Ok(print_report(&proto::Report { refused: Some("unproven".into()), ..Default::default() }, o.contains_key("json")));
+		}
 	};
 	let reads = match ReadLog::open(&state, false) {
 		Ok(reads) => Arc::new(reads),
@@ -208,7 +236,7 @@ fn publish(args: &[String]) -> Result<ExitCode, Usage> {
 			return Ok(print_report(&report, o.contains_key("json")));
 		}
 	};
-	let report = match link::Link::new(addr, view, 1).with_reads(reads.clone()).publish_final(o.contains_key("final")) {
+	let report = match link::Link::new(addr, view, 1).with_reads(reads.clone()).with_view_file(store, false, abandon).publish_final(o.contains_key("final")) {
 		Ok(r) => r,
 		Err(f) if f.report.is_some() => {
 			eprintln!("qorpera-folder: publication report received, but completion is unproven: {f}");
@@ -260,39 +288,6 @@ fn print_report(report: &proto::Report, json: bool) -> ExitCode {
 	code
 }
 
-/// The view's id and pass. The file must be this account's own, a regular file, and readable by no one
-/// else: the pass opens the view.
-fn read_view(path: &str) -> Result<link::View, String> {
-	use std::io::Read;
-	use std::os::unix::fs::OpenOptionsExt;
-	let mut file = std::fs::OpenOptions::new()
-		.read(true)
-		.custom_flags(libc::O_NOFOLLOW)
-		.open(path)
-		.map_err(|e| e.to_string())?;
-	let meta = file.metadata().map_err(|e| e.to_string())?;
-	// SAFETY: geteuid has no preconditions.
-	let me = unsafe { libc::geteuid() };
-	if !meta.is_file() || meta.uid() != me || meta.mode() & 0o077 != 0 || meta.len() > 4096 {
-		return Err("must be a regular file of at most 4 KiB, owned by this account, mode 0600 or tighter".into());
-	}
-	let mut text = String::new();
-	file.read_to_string(&mut text).map_err(|e| e.to_string())?;
-	#[derive(serde::Deserialize)]
-	#[serde(rename_all = "camelCase", deny_unknown_fields)]
-	struct ViewFile {
-		environment_id: String,
-		view_id: String,
-		pass: String,
-	}
-	let v: ViewFile = serde_json::from_str(&text)
-		.map_err(|_| "must be JSON {\"environmentId\", \"viewId\", \"pass\"}".to_string())?;
-	let fine = |s: &str| !s.is_empty() && s.len() <= 256 && s.bytes().all(|b| b.is_ascii_graphic());
-	if !fine(&v.environment_id) || !fine(&v.view_id) || !fine(&v.pass) {
-		return Err("environmentId, viewId and pass must be printable ASCII without spaces".into());
-	}
-	Ok(link::View { environment_id: v.environment_id, view_id: v.view_id, pass: v.pass })
-}
 
 fn bridge(args: &[String]) -> Result<ExitCode, Usage> {
 	let o = options(args, &["listen", "service", "per-machine", "lxd-socket"])?;

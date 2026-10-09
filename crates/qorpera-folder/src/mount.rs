@@ -1093,7 +1093,8 @@ fn follow(
 			let change = match feed.next() {
 				Ok(c) => c,
 				Err(f) => {
-					if f.view_closed() {
+					s.link.feed_failed(&feed, &f);
+					if s.link.closed() {
 						let _ = stop.send(Stop::ViewClosed);
 						return;
 					}
@@ -1101,6 +1102,7 @@ fn follow(
 					break;
 				}
 			};
+			if !s.link.feed_current(&feed) { break; }
 			let (inval, raced) = {
 				let mut tree = s.tree.lock().unwrap();
 				let inval = if change.resync {
@@ -1148,7 +1150,7 @@ fn follow(
 					apply(inval, raced);
 					break f;
 				}
-				Err(f) if f.view_closed() => {
+				Err(_) if s.link.closed() => {
 					let _ = stop.send(Stop::ViewClosed);
 					return;
 				}
@@ -1231,7 +1233,7 @@ pub fn run(mut link: Link, options: Options) -> Result<Stop, Failed> {
 		}
 	})?;
 	let writable = !ok.read_only;
-	if writable {
+	if writable && !link.has_reads() {
 		let dir = options.state.as_ref().ok_or_else(|| Failed::Other("a writable mount needs its private state directory".into()))?;
 		// Open the journal before the version map creates files: only unused state can start a new read sequence.
 		let reads = ReadLog::open(dir, true).map_err(|e| Failed::Other(format!("read journal: {e}")))?;
@@ -1318,6 +1320,20 @@ pub fn run(mut link: Link, options: Options) -> Result<Stop, Failed> {
 		std::thread::spawn(move || chase(chaser, names));
 		std::thread::spawn(move || follow(shared, notifier, feed, stop_tx, chased));
 	}
+	let watching = Arc::new(AtomicBool::new(true));
+	let watcher = {
+		let shared = shared.clone();
+		let watching = watching.clone();
+		std::thread::spawn(move || {
+			while watching.load(Ordering::SeqCst) {
+				// A refused/malformed replacement leaves the accepted proof and fixed grace intact. Request calls
+				// report their own errors; the idle watcher retries quietly without exposing credentials.
+				let _ = shared.link.refresh();
+				shared.link.expire();
+				std::thread::sleep(Duration::from_millis(250));
+			}
+		})
+	};
 	eprintln!("qorpera-folder: mounted at {} with {} threads", options.mountpoint.display(), options.threads);
 	let why = stop_rx.recv().map_err(|_| Failed::Other("every stop channel closed".into()))?;
 	if !matches!(why, Stop::Ended(_)) {
@@ -1325,6 +1341,8 @@ pub fn run(mut link: Link, options: Options) -> Result<Stop, Failed> {
 			eprintln!("qorpera-folder: unmount {}: {e}", options.mountpoint.display());
 		}
 	}
+	watching.store(false, Ordering::SeqCst);
+	let _ = watcher.join();
 	Ok(why)
 }
 

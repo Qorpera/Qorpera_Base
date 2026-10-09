@@ -146,6 +146,10 @@ export interface Hello {
 	readonly viewId: string;
 	readonly pass: string;
 	readonly role: Role;
+	/** The last view accepted by this mount; only same-machine core desktops may transfer pending state. */
+	readonly previous?: { readonly viewId: string; readonly pass: string };
+	/** The caller holds the mount's process-lifetime lock: no mounted program can still use its handles. */
+	readonly abandon?: true;
 }
 
 export interface WireEntry {
@@ -242,7 +246,7 @@ export function parseBridge(payload: Buffer): BridgeInfo {
 
 export function parseHello(payload: Buffer): Hello {
 	const value = object(payload);
-	exactKeys(value, ["protocol", "environmentId", "viewId", "pass", "role"]);
+	exactKeys(value, ["protocol", "environmentId", "viewId", "pass", "role"], ["previous", "abandon"]);
 	if (value.protocol !== 1 && value.protocol !== 2 && value.protocol !== 3)
 		throw new ProtocolError(ErrorCode.viewRefused, "Unsupported folder protocol");
 	if (typeof value.environmentId !== "string" || !isUuid(value.environmentId))
@@ -252,12 +256,26 @@ export function parseHello(payload: Buffer): Hello {
 	if (!printable(value.viewId) || !printable(value.pass))
 		throw new ProtocolError(ErrorCode.viewRefused, "Bad view id or pass");
 	if (value.role !== "io" && value.role !== "feed") throw new ProtocolError(ErrorCode.badRequest, "Bad role");
+	let previous: Hello["previous"];
+	if (value.previous !== undefined) {
+		const old = value.previous as Record<string, unknown>;
+		if (!old || typeof old !== "object" || Array.isArray(old))
+			throw new ProtocolError(ErrorCode.badRequest, "Bad previous view proof");
+		exactKeys(old, ["viewId", "pass"]);
+		if (value.protocol !== 3 || !printable(old.viewId) || !printable(old.pass) || old.viewId === value.viewId)
+			throw new ProtocolError(ErrorCode.badRequest, "Bad previous view proof");
+		previous = { viewId: old.viewId, pass: old.pass };
+	}
+	if (value.abandon !== undefined && (value.abandon !== true || value.protocol !== 3 || value.role !== "io"))
+		throw new ProtocolError(ErrorCode.badRequest, "Bad abandoned-program request");
 	return {
 		protocol: value.protocol,
 		environmentId: value.environmentId,
 		viewId: value.viewId,
 		pass: value.pass,
 		role: value.role,
+		...(previous ? { previous } : {}),
+		...(value.abandon === true ? { abandon: true } : {}),
 	};
 }
 

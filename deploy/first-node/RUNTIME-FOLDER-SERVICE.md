@@ -540,12 +540,45 @@ the helper must use the code.
 Tests: Rust journal, CLI, link and actual FUSE tests; `folder-mount-e2e.test.ts` runs the built program against the
 actual service with a stand-in core and share. It covers cached/empty/listing receipts, a lost intake answer before a
 write, durable released prefixes and unsubmitted reads across service restarts, automatic quiet saves, a dead mount's
-publisher, unanswered/no-report boundaries, final closure, and permanently lost proof. View switching, office helper
-lifecycle and live deployment remain later slices.
+publisher, unanswered/no-report boundaries, final closure, and permanently lost proof. Office helper lifecycle and
+live deployment remain later slices.
+
+### Slice 4c-3: a desktop's successor view
+
+Protocol-3 hello can include `previous: {viewId, pass}`. The target and old view must name the same company and
+machine, both desktop views, and the old pass must match the service's accepted hash. Each accepted move keeps a
+tombstone pointing to its successor, so a repeated hello, including an older accepted proof after rapid file
+replacements, cannot move an overlay twice. A service that restarted has no old pending overlay; the new view still
+authenticates normally and the program replays its durable log before writing.
+
+The service fences both views before waiting for admitted requests, publication, feed work and renewals. It then
+moves pending nodes, open write handles, remembered versions, unreleased read logs and byte-retention roots as one
+synchronous transition. New old-view requests are refused. Cached staged proofs, including an open handle's fixed
+snapshot, are invalidated: successor writes need seals in their own upload scope. An uncertain commit keeps its
+original actor, operation key and units; only a definitive old-view-ended answer permits replanning under the new
+view. A closed desktop retains its pending state for a fixed minute without renewed authority, then is discarded.
+
+The Rust program watches atomic replacement of its primary view file and checkpoints the last accepted credentials
+in its private state directory under a fixed interprocess `view.lock`. It sends that proof until hello succeeds.
+Every stream carries its accepted epoch and its own volatile read-intake watermark; idle old streams and feeds are
+closed on acceptance, and late old reads/refusals cannot contaminate the successor. Inodes, open descriptors, the
+version map and journal stay in place. A closed desktop waits one minute for an accepted replacement, then unmounts
+with exit 3; an invalid replacement never restarts the deadline. Use the same explicit `--state-dir` for the mount,
+all replacements, restarts and independent publishers.
+
+A private fixed `daemon.lock` is held for the mounted program's full lifetime, before any state mutation or hello.
+Stream loss alone no longer abandons a protocol-3 core view's handles. A publisher unable to take the lock treats
+the mount as alive. If it acquires the lock, it retains it through publication and sends `abandon: true` on its
+authenticated IO hello, restoring orphan writes to their last fixed saves. This excludes a restart while publishing
+dead-program state. A publisher creates neither a missing state directory nor its missing lifetime-lock file.
+
+Tests include actual FUSE descriptors across disconnection and replacement, lost hello answers, SIGKILL between
+primary replacement and hello, dead-program publication, strict successor-scoped seals, uncertain-commit replay,
+fixed grace expiry, stale pooled replies and retained lost logs. This is implementation and test coverage, not a
+live rollout record; the production helper remains slice 4d.
 
 ## Not here
 
-Moves to a newer view in place (`switch`), a closed desktop view kept for its minute, and a kept view refused because
-a newer one replaced it (slice 4c-3); the office service's side of a command's view (opening it, mounting it for the command, and the final
+The office service's side of a command's view (opening it, mounting it for the command, and the final
 boundary at the command's end: slice 4d); coding machines and test machines (each with its own mount). Each is a later
 step.
