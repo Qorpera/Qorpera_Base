@@ -11,7 +11,9 @@
 -- refused call waited for the row. Test 924's fixture gives Alice's run, the owner's sponsor and the owner's
 -- connection; this adds a receipt of the run in flight, a hook, a logical computer and a company connection through
 -- their real paths. Row locks show only across connections, so the fixture is committed and removed again at the end
--- (the harness of 861).
+-- (the harness of 861). A failed run's recovery, which serves the company's writers, is held to the same: someone
+-- outside the company, the publishable key and the viewer are refused while another transaction holds the run's job
+-- (§5, ported from the native authority locks script in the legacy sweep).
 
 reset role;
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
@@ -33,6 +35,8 @@ select public.qorpera_begin_native_tool_operation(current_setting('qorpera_test.
 select set_config('qorpera_test.r757_receipt', '75700000-0000-4000-8000-000000000050', false);
 select set_config('qorpera_test.r757_sponsor', current_setting('qorpera_test.base_sponsor')::jsonb ->> 'binding_id', false);
 select set_config('qorpera_test.r757_connection', current_setting('qorpera_test.base_connection')::jsonb ->> 'connection_id', false);
+select set_config('qorpera_test.r757_run', current_setting('qorpera_test.base_binding')::jsonb ->> 'runId', false);
+select set_config('qorpera_test.r757_job', current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId', false);
 select pg_temp.base_assert((select status from public.qorpera_run_operation_receipts
 		where id = current_setting('qorpera_test.r757_receipt')::uuid) = 'executing'
 	and (select status from public.qorpera_event_hooks where id = current_setting('qorpera_test.r757_hook')::uuid) = 'active'
@@ -303,5 +307,19 @@ select pg_temp.base_assert((select status from public.qorpera_run_operation_rece
 	and (select role::text from public.qorpera_profile_members where profile_id = '92400000-0000-4000-8000-000000000010'
 		and user_id = '92400000-0000-4000-8000-000000000004') = 'admin',
 	'1-4: a refused call changed its row, or the admin is not an admin again');
+
+-- 5. A failed run's recovery: the company's writers. Someone outside the company, the publishable key (which may call
+--    it) and the viewer discarding Alice's run are refused while another transaction holds the run's job, which the
+--    function locks first.
+do $$
+declare v_claims jsonb;
+begin
+	foreach v_claims in array array['{"role":"authenticated","sub":"92400000-0000-4000-8000-000000000005"}', '{"role":"anon"}',
+		'{"role":"authenticated","sub":"92400000-0000-4000-8000-000000000003"}']::jsonb[] loop
+		perform pg_temp.r757_refused(pg_temp.r757_hold('qorpera_runner_jobs', current_setting('qorpera_test.r757_job')), v_claims,
+			format('select public.qorpera_resolve_failed_execution_run(%L, ''discard'')', current_setting('qorpera_test.r757_run')),
+			'execution recovery requires company write access', '5: discarding the run as ' || v_claims::text);
+	end loop;
+end $$;
 
 select pg_temp.r757_cleanup();
