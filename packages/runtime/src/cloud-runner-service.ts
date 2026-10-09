@@ -2,10 +2,6 @@ import { constants } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
-import {
-	CLOUD_RUNNER_CAPABILITIES,
-	type CloudRunnerCapability,
-} from "@qorpera/cloud-client/node/cloud-runner-protocol";
 import { SupabaseCloudRunnerControlTransport } from "@qorpera/runtime/cloud-runner-control";
 import { HttpNativeProviderComputerBridge, type NativeProviderExecutionBoundary } from "./cloud-native-provider.ts";
 import { HttpCloudRunnerAssignmentInbox } from "./cloud-runner-assignment-inbox.ts";
@@ -25,7 +21,6 @@ const MAX_CONFIG_BYTES = 64 * 1024;
 const MAX_CREDENTIAL_BYTES = 256;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
-const JOB_TYPE_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 
 export interface EphemeralCloudRunnerServiceConfig {
 	schema: typeof CONFIG_SCHEMA;
@@ -35,8 +30,6 @@ export interface EphemeralCloudRunnerServiceConfig {
 	authorityStatePath: string;
 	/** Read by the LXD guest bootstrap only; the worker runs only the native company lane and takes no workspace. */
 	temporaryRoot: string;
-	capabilities: readonly CloudRunnerCapability[];
-	jobTypes: readonly string[];
 	platform: string;
 	runnerVersion: string;
 	nativeBridgeUrl?: string;
@@ -95,34 +88,6 @@ function optionalInteger(value: unknown, label: string, minimum: number, maximum
 		throw new Error(`${label} is outside the supported range`);
 	}
 	return value as number;
-}
-
-function capabilities(value: unknown): readonly CloudRunnerCapability[] {
-	if (!Array.isArray(value) || value.length < 1 || value.length > CLOUD_RUNNER_CAPABILITIES.length) {
-		throw new Error("Runner capabilities are invalid");
-	}
-	const parsed = value.map((entry) => {
-		if (!CLOUD_RUNNER_CAPABILITIES.some((candidate) => candidate === entry)) {
-			throw new Error("Runner capability is invalid");
-		}
-		return entry as CloudRunnerCapability;
-	});
-	if (new Set(parsed).size !== parsed.length) throw new Error("Runner capabilities contain duplicates");
-	return Object.freeze(parsed);
-}
-
-function jobTypes(value: unknown): readonly string[] {
-	if (
-		!Array.isArray(value) ||
-		value.length < 1 ||
-		value.length > 32 ||
-		value.some((entry) => typeof entry !== "string" || !JOB_TYPE_PATTERN.test(entry))
-	) {
-		throw new Error("Runner job types are invalid");
-	}
-	const parsed = value as string[];
-	if (new Set(parsed).size !== parsed.length) throw new Error("Runner job types contain duplicates");
-	return Object.freeze([...parsed]);
 }
 
 function environment(value: unknown): Readonly<Record<string, string>> {
@@ -189,8 +154,8 @@ function limits(value: unknown): Partial<CloudRunnerSandboxLimits> | undefined {
 
 export function parseEphemeralCloudRunnerServiceConfig(value: unknown): EphemeralCloudRunnerServiceConfig {
 	const input = record(value, "Runner service configuration");
-	// `image`, `podman_path` and `entrypoint` configured the removed Podman lane (legacy sweep step C, C-R1).
-	// Providers still write them, so they are accepted and ignored.
+	// `image`, `podman_path`, `entrypoint`, `capabilities` and `job_types` configured the removed Podman lane (legacy
+	// sweep step C, C-R1). Providers still write them, so they are accepted and ignored.
 	exactKeys(
 		input,
 		[
@@ -296,8 +261,6 @@ export function parseEphemeralCloudRunnerServiceConfig(value: unknown): Ephemera
 		runnerId,
 		authorityStatePath: requiredAbsolutePath(input.authority_state_path, "Runner authority state path"),
 		temporaryRoot: requiredAbsolutePath(input.temporary_root, "Runner temporary root"),
-		capabilities: capabilities(input.capabilities),
-		jobTypes: jobTypes(input.job_types),
 		platform: requiredText(input.platform, "Runner platform", 80),
 		runnerVersion: requiredText(input.runner_version, "Runner version", 80),
 		...(nativeBridgeUrl ? { nativeBridgeUrl } : {}),

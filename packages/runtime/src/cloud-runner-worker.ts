@@ -406,7 +406,6 @@ export class EphemeralCloudRunnerWorker {
 				);
 				return { status: failed.status === "queued" ? "requeued" : "failed", job: failed };
 			}
-			await this.#options.runner.stageCompletion(job.jobId, execution.result, execution.outputSnapshotId);
 			await stopMaintenance();
 			if (maintenanceError) throw maintenanceError;
 			if (signal.aborted) throw workerStopped();
