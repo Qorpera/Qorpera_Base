@@ -458,13 +458,6 @@ export interface CommitHostedCompanySnapshotInput {
 	};
 }
 
-export interface CaptureHostedCompanySubstrateVersionInput {
-	snapshotId: string;
-	clientVersionId: string;
-	artifactIndexId: string;
-	contractVersion?: number;
-}
-
 export interface RegisterHostedArtifactInput {
 	environmentId: string;
 	clientArtifactId: string;
@@ -727,18 +720,6 @@ export interface HostedPrimaryTransport {
 		p_client_proof_id: string;
 		p_restored_content_sha256: string;
 		p_restored_bytes: number;
-	}): Promise<unknown>;
-	captureCompanySubstrateVersion(input: {
-		p_snapshot_id: string;
-		p_client_version_id: string;
-		p_contract_version: number;
-		p_artifact_index_id: string;
-	}): Promise<unknown>;
-	getCompanySubstrateVersion(input: { p_version_id: string }): Promise<unknown>;
-	listCompanySubstrateOperations(input: {
-		p_version_id: string;
-		p_after_sequence: number;
-		p_limit: number;
 	}): Promise<unknown>;
 }
 
@@ -1096,20 +1077,6 @@ export interface HostedPrimaryDatabase {
 					p_restored_content_sha256: string;
 					p_restored_bytes: number;
 				};
-				Returns: JsonValue;
-			};
-			qorpera_capture_company_substrate_version_v2: {
-				Args: {
-					p_snapshot_id: string;
-					p_client_version_id: string;
-					p_contract_version: number;
-					p_artifact_index_id: string;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_get_company_substrate_version: { Args: { p_version_id: string }; Returns: JsonValue };
-			qorpera_list_company_substrate_operations: {
-				Args: { p_version_id: string; p_after_sequence: number; p_limit: number };
 				Returns: JsonValue;
 			};
 		};
@@ -1634,30 +1601,6 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 		input: Parameters<HostedPrimaryTransport["createObjectRestoreProof"]>[0],
 	): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_create_object_restore_proof", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async captureCompanySubstrateVersion(
-		input: Parameters<HostedPrimaryTransport["captureCompanySubstrateVersion"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_capture_company_substrate_version_v2", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async getCompanySubstrateVersion(
-		input: Parameters<HostedPrimaryTransport["getCompanySubstrateVersion"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_get_company_substrate_version", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async listCompanySubstrateOperations(
-		input: Parameters<HostedPrimaryTransport["listCompanySubstrateOperations"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_list_company_substrate_operations", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -2538,80 +2481,6 @@ function parseArtifactGcAuditReceipt(value: unknown): HostedArtifactGcAuditRecei
 			? {}
 			: { actorUserId: uuid(actorUserId, "artifact cleanup receipt actor id") }),
 		createdAt: timestamp(input.created_at, "artifact cleanup receipt time"),
-	};
-}
-
-function parseCompanySubstrateVersion(value: unknown): HostedCompanySubstrateVersion {
-	const input = record(value, "company substrate version");
-	const artifactIndexId = input.artifact_index_id;
-	const artifactManifestSha256 = input.artifact_manifest_sha256;
-	if (
-		artifactManifestSha256 !== null &&
-		artifactManifestSha256 !== undefined &&
-		(typeof artifactManifestSha256 !== "string" || !SHA256_PATTERN.test(artifactManifestSha256))
-	) {
-		throw new Error("Hosted primary returned invalid artifact manifest hash");
-	}
-	if (typeof input.content_sha256 !== "string" || !SHA256_PATTERN.test(input.content_sha256)) {
-		throw new Error("Hosted primary returned invalid company substrate content hash");
-	}
-	return {
-		versionId: uuid(input.version_id, "company substrate version id"),
-		profileId: uuid(input.profile_id, "company substrate profile id"),
-		environmentId: uuid(input.environment_id, "company substrate environment id"),
-		companySnapshotId: uuid(input.company_snapshot_id, "company substrate snapshot id"),
-		clientVersionId: uuid(input.client_version_id, "company substrate client version id"),
-		contractVersion: boundedInteger(input.contract_version, "company substrate contract version", 1, 1_000_000),
-		operationSequence: boundedInteger(
-			input.operation_sequence,
-			"company substrate operation sequence",
-			0,
-			Number.MAX_SAFE_INTEGER,
-		),
-		operationCount: boundedInteger(
-			input.operation_count,
-			"company substrate operation count",
-			0,
-			Number.MAX_SAFE_INTEGER,
-		),
-		...(artifactIndexId === null || artifactIndexId === undefined
-			? {}
-			: { artifactIndexId: uuid(artifactIndexId, "company substrate artifact index id") }),
-		...(typeof artifactManifestSha256 === "string" ? { artifactManifestSha256 } : {}),
-		contentSha256: input.content_sha256,
-		createdByUserId: uuid(input.created_by_user_id, "company substrate creator id"),
-		createdAt: timestamp(input.created_at, "company substrate creation time"),
-	};
-}
-
-function parseCompanyOperation(value: unknown): HostedCompanyOperation {
-	const input = record(value, "company operation");
-	const operationType = input.operation_type;
-	if (!HOSTED_COMPANY_OPERATION_TYPES.some((candidate) => candidate === operationType)) {
-		throw new Error("Hosted primary returned invalid company operation type");
-	}
-	const environmentId = input.environment_id;
-	if (typeof input.content_sha256 !== "string" || !SHA256_PATTERN.test(input.content_sha256)) {
-		throw new Error("Hosted primary returned invalid company operation content hash");
-	}
-	return {
-		profileId: uuid(input.profile_id, "company operation profile id"),
-		sequence: boundedInteger(input.sequence, "company operation sequence", 1, Number.MAX_SAFE_INTEGER),
-		...(environmentId === null || environmentId === undefined
-			? {}
-			: { environmentId: uuid(environmentId, "company operation environment id") }),
-		operationType: operationType as HostedCompanyOperationType,
-		entityId: uuid(input.entity_id, "company operation entity id"),
-		entityVersion: boundedInteger(
-			input.entity_version,
-			"company operation entity version",
-			0,
-			Number.MAX_SAFE_INTEGER,
-		),
-		contentSha256: input.content_sha256,
-		payload: jsonValue(input.payload),
-		actorUserId: uuid(input.actor_user_id, "company operation actor id"),
-		createdAt: timestamp(input.created_at, "company operation creation time"),
 	};
 }
 
@@ -3962,51 +3831,6 @@ export class QorperaHostedPrimary {
 				p_restored_bytes: restoredBytes,
 			}),
 		);
-	}
-
-	async captureCompanySubstrateVersion(
-		input: CaptureHostedCompanySubstrateVersionInput,
-	): Promise<HostedCompanySubstrateVersion> {
-		requiredUuid(input.snapshotId, "Snapshot id");
-		requiredUuid(input.clientVersionId, "Client substrate version id");
-		requiredUuid(input.artifactIndexId, "Artifact index id");
-		const contractVersion = input.contractVersion ?? 1;
-		if (contractVersion !== 1) throw new Error("Company substrate contract version must be 1");
-		return parseCompanySubstrateVersion(
-			await this.transport.captureCompanySubstrateVersion({
-				p_snapshot_id: input.snapshotId,
-				p_client_version_id: input.clientVersionId,
-				p_contract_version: contractVersion,
-				p_artifact_index_id: input.artifactIndexId,
-			}),
-		);
-	}
-
-	async getCompanySubstrateVersion(versionId: string): Promise<HostedCompanySubstrateVersion> {
-		requiredUuid(versionId, "Company substrate version id");
-		return parseCompanySubstrateVersion(await this.transport.getCompanySubstrateVersion({ p_version_id: versionId }));
-	}
-
-	async listCompanySubstrateOperations(
-		versionId: string,
-		afterSequence = 0,
-		limit = 200,
-	): Promise<HostedCompanyOperation[]> {
-		requiredUuid(versionId, "Company substrate version id");
-		if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) {
-			throw new Error("Company operation cursor must be a non-negative integer");
-		}
-		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
-			throw new Error("Company operation page size must be between 1 and 500");
-		}
-		return array(
-			await this.transport.listCompanySubstrateOperations({
-				p_version_id: versionId,
-				p_after_sequence: afterSequence,
-				p_limit: limit,
-			}),
-			"company operation list",
-		).map(parseCompanyOperation);
 	}
 
 	async createSession(input: CreateHostedSessionInput): Promise<HostedSession> {
