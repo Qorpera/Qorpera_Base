@@ -5,22 +5,14 @@ import {
 	cloudRunnerControlRequestStatus,
 } from "@qorpera/cloud-client/node/cloud-runner-protocol";
 import { executeNativeCompanyRunnerJob } from "./cloud-native-company-runner.ts";
-import { executeNativeCloudRunnerJob, type NativeProviderComputerBridge } from "./cloud-native-provider.ts";
+import type { NativeProviderComputerBridge } from "./cloud-native-provider.ts";
 import {
-	CloudRunnerBrokerCompanyFilePublisher,
-	CloudRunnerBrokerOutputPublisher,
 	type CloudRunnerBrokerTransport,
 	type CloudRunnerStart,
 	NATIVE_AUTHORITY_LEASE_SECONDS,
 } from "./cloud-runner-broker.ts";
 import type { DisposableCloudRunner } from "./cloud-runner-control.ts";
-import {
-	type CloudRunnerExecutionResult,
-	type CloudRunnerSandboxBackend,
-	type CloudRunnerSandboxLimits,
-	type ExecuteCloudRunnerJobOptions,
-	executeCloudRunnerJob,
-} from "./cloud-runner-sandbox.ts";
+import type { CloudRunnerExecutionResult, CloudRunnerSandboxLimits } from "./cloud-runner-sandbox.ts";
 
 const DEFAULT_IDLE_POLL_MS = 2_000;
 const DEFAULT_LEASE_RENEWAL_MS = 45_000;
@@ -31,23 +23,22 @@ export type EphemeralCloudRunnerWorkerResult =
 	| { status: "completed"; job: CloudRunnerJob }
 	| { status: "requeued" | "failed"; job: CloudRunnerJob };
 
+/** The company lane's executor: executeNativeCompanyRunnerJob, or a test's stand-in for it. */
+export type CloudRunnerCompanyExecutor = typeof executeNativeCompanyRunnerJob;
+
 export interface EphemeralCloudRunnerWorkerOptions {
 	runner: DisposableCloudRunner;
 	brokerTransport: CloudRunnerBrokerTransport;
-	backend: CloudRunnerSandboxBackend;
 	nativeProviderBridge?: NativeProviderComputerBridge;
-	nativeWorkspaceGid?: number;
 	platform: string;
 	runnerVersion: string;
-	temporaryRoot?: string;
-	environment?: Readonly<Record<string, string>>;
 	limits?: Partial<CloudRunnerSandboxLimits>;
 	idlePollMs?: number;
 	leaseRenewalMs?: number;
 	heartbeatMs?: number;
 	now?: () => number;
 	retryable?: (error: unknown) => boolean;
-	executeJob?: (options: ExecuteCloudRunnerJobOptions) => Promise<CloudRunnerExecutionResult>;
+	executeJob?: CloudRunnerCompanyExecutor;
 }
 
 export interface CloudRunnerAssignmentSource {
@@ -103,8 +94,7 @@ export class EphemeralCloudRunnerWorker {
 	readonly #leaseRenewalMs: number;
 	readonly #heartbeatMs: number;
 	readonly #now: () => number;
-	readonly #executeJob: (options: ExecuteCloudRunnerJobOptions) => Promise<CloudRunnerExecutionResult>;
-	readonly #injectedExecuteJob: boolean;
+	readonly #executeJob: CloudRunnerCompanyExecutor;
 	#running = false;
 
 	constructor(options: EphemeralCloudRunnerWorkerOptions) {
@@ -133,14 +123,7 @@ export class EphemeralCloudRunnerWorker {
 			10 * 60_000,
 		);
 		this.#now = options.now ?? Date.now;
-		this.#executeJob = options.executeJob ?? executeCloudRunnerJob;
-		this.#injectedExecuteJob = options.executeJob !== undefined;
-		if (
-			options.nativeWorkspaceGid !== undefined &&
-			(!Number.isSafeInteger(options.nativeWorkspaceGid) || options.nativeWorkspaceGid < 1)
-		) {
-			throw new Error("Native workspace group is invalid");
-		}
+		this.#executeJob = options.executeJob ?? executeNativeCompanyRunnerJob;
 	}
 
 	async runNext(
@@ -210,8 +193,6 @@ export class EphemeralCloudRunnerWorker {
 				throw new Error("Runner received an assignment while retained work is unresolved");
 			}
 			job = await this.#options.runner.renew(job.jobId);
-		} else if (assignment && this.#injectedExecuteJob) {
-			job = await this.#options.runner.acceptAssignment(assignment);
 		} else if (assignment) {
 			// One round trip: the acceptance also reads the description and, for a runner that can
 			// execute native subscriptions, acquires the native authority the broker would ask for.
@@ -371,92 +352,45 @@ export class EphemeralCloudRunnerWorker {
 			const broker = this.#options.runner.broker(job, this.#options.brokerTransport, executionAbort.signal, start);
 			let execution: CloudRunnerExecutionResult;
 			try {
-				const shared = {
-					job,
-					substrate: broker,
-					objects: broker.objects,
-					outputPublisher: new CloudRunnerBrokerOutputPublisher(broker),
-					companyFilePublisher: new CloudRunnerBrokerCompanyFilePublisher(broker),
-					...(this.#options.limits ? { limits: this.#options.limits } : {}),
-					...(this.#options.environment ? { environment: this.#options.environment } : {}),
-					...(this.#options.temporaryRoot ? { temporaryRoot: this.#options.temporaryRoot } : {}),
-					signal: executionAbort.signal,
+				// One lane: a native company run (folder-v2). Any other run is refused, never downgraded.
+				const description = await broker.describe();
+				if (description.companyRuntime !== "company-path-v1") {
+					throw new Error("Runner does not support a whole-tree company run; no fallback is permitted");
+				}
+				if (description.sponsor.authenticationMode !== "native_subscription") {
+					throw new Error(
+						"Governed company execution requires the native cloud runtime; no fallback is permitted",
+					);
+				}
+				const bridge = this.#options.nativeProviderBridge;
+				if (!bridge) throw new Error("Native subscription execution bridge is not configured");
+				const authority = await broker.acquireNativeAuthority();
+				renewNativeAuthority = async () => {
+					await broker.renewNativeAuthority();
 				};
-				if (this.#injectedExecuteJob) {
-					await this.#options.backend.prepare?.();
+				try {
 					execution = await this.#executeJob({
-						...shared,
-						backend: this.#options.backend,
-						modelBroker: broker,
+						job,
+						authority,
+						bridge,
+						leaseToken: this.#options.runner.nativeHostLeaseToken(job.jobId),
+						...(this.#options.limits ? { limits: this.#options.limits } : {}),
+						signal: executionAbort.signal,
 					});
-				} else {
-					const description = await broker.describe();
-					if (
-						description.companyRuntime === "company-path-v1" &&
-						description.sponsor.authenticationMode !== "native_subscription"
-					) {
-						throw new Error(
-							"Governed company execution requires the native cloud runtime; no fallback is permitted",
+					// Retain the returned result before the completion, whose response can be lost
+					// independently of successful work.
+					await this.#options.runner.stageCompletion(job.jobId, execution.result, execution.outputSnapshotId);
+				} finally {
+					renewNativeAuthority = undefined;
+					await nativeRenewalInFlight?.catch(() => undefined);
+					// Governed completion validates the still-live native lease and releases it
+					// atomically with the durable completion receipt; a run with no staged
+					// completion releases it here.
+					if (!this.#options.runner.stagedCompletion(job.jobId)) {
+						await withCloudDeadline(
+							() => broker.releaseNativeAuthority(executionAbort.signal.aborted ? "revoked" : "released"),
+							Math.max(1, Math.min(30_000, leaseDeadline - this.#now())),
 						);
-					}
-					if (description.sponsor.authenticationMode === "native_subscription") {
-						if (!this.#options.nativeProviderBridge) {
-							throw new Error("Native subscription execution bridge is not configured");
-						}
-						const authority = await broker.acquireNativeAuthority();
-						renewNativeAuthority = async () => {
-							await broker.renewNativeAuthority();
-						};
-						try {
-							execution =
-								description.companyRuntime === "company-path-v1"
-									? await executeNativeCompanyRunnerJob({
-											job,
-											authority,
-											bridge: this.#options.nativeProviderBridge,
-											leaseToken: this.#options.runner.nativeHostLeaseToken(job.jobId),
-											...(this.#options.limits ? { limits: this.#options.limits } : {}),
-											signal: executionAbort.signal,
-										})
-									: await executeNativeCloudRunnerJob({
-											...shared,
-											authority,
-											refreshAuthority: () => broker.renewNativeAuthority(),
-											bridge: this.#options.nativeProviderBridge,
-											nativeBroker: broker,
-											...(this.#options.nativeWorkspaceGid !== undefined
-												? { nativeWorkspaceGid: this.#options.nativeWorkspaceGid }
-												: {}),
-										});
-							// Retain the returned result before best-effort authority release,
-							// whose response can be lost independently of successful work.
-							await this.#options.runner.stageCompletion(
-								job.jobId,
-								execution.result,
-								execution.outputSnapshotId,
-							);
-						} finally {
-							renewNativeAuthority = undefined;
-							await nativeRenewalInFlight?.catch(() => undefined);
-							// Governed completion validates the still-live native lease and
-							// releases it atomically with the durable completion receipt.
-							if (
-								description.companyRuntime !== "company-path-v1" ||
-								!this.#options.runner.stagedCompletion(job.jobId)
-							) {
-								await withCloudDeadline(
-									() => broker.releaseNativeAuthority(executionAbort.signal.aborted ? "revoked" : "released"),
-									Math.max(1, Math.min(30_000, leaseDeadline - this.#now())),
-								);
-							}
-						}
-					} else {
-						await this.#options.backend.prepare?.();
-						execution = await this.#executeJob({
-							...shared,
-							backend: this.#options.backend,
-							modelBroker: broker,
-						});
 					}
 				}
 			} catch (error) {

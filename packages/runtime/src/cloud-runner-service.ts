@@ -11,7 +11,6 @@ import { HttpNativeProviderComputerBridge, type NativeProviderExecutionBoundary 
 import { HttpCloudRunnerAssignmentInbox } from "./cloud-runner-assignment-inbox.ts";
 import { SupabaseCloudRunnerBrokerTransport } from "./cloud-runner-broker.ts";
 import { DisposableCloudRunner } from "./cloud-runner-control.ts";
-import { RootlessPodmanSandboxBackend } from "./cloud-runner-podman.ts";
 import type { CloudRunnerSandboxLimits } from "./cloud-runner-sandbox.ts";
 import { type CloudRunnerAssignmentSource, EphemeralCloudRunnerWorker } from "./cloud-runner-worker.ts";
 import { FileCloudRunnerAuthorityStore } from "./cloud-runner-worker-state.ts";
@@ -27,7 +26,6 @@ const MAX_CREDENTIAL_BYTES = 256;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const JOB_TYPE_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
-const IMAGE_PATTERN = /^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$/;
 
 export interface EphemeralCloudRunnerServiceConfig {
 	schema: typeof CONFIG_SCHEMA;
@@ -35,16 +33,15 @@ export interface EphemeralCloudRunnerServiceConfig {
 	publishableKey: string;
 	runnerId: string;
 	authorityStatePath: string;
+	/** Read by the LXD guest bootstrap only; the worker runs only the native company lane and takes no workspace. */
 	temporaryRoot: string;
-	image: string;
-	podmanPath: string;
-	entrypoint: string;
 	capabilities: readonly CloudRunnerCapability[];
 	jobTypes: readonly string[];
 	platform: string;
 	runnerVersion: string;
 	nativeBridgeUrl?: string;
 	nativeBridgeBoundary?: Exclude<NativeProviderExecutionBoundary, "test">;
+	/** Read by the LXD guest bootstrap only. */
 	nativeBridgeSharedGid?: number;
 	/** G2-3: on an execution host's slot, this run's machine's identity credential, sent with each execution (a warm
 	 * host's systemd credentials are fixed when it starts). */
@@ -53,6 +50,7 @@ export interface EphemeralCloudRunnerServiceConfig {
 	assignmentPort?: number;
 	assignmentTrustedSource?: string;
 	maxAssignments?: number;
+	/** Read by the LXD guest bootstrap only. */
 	environment: Readonly<Record<string, string>>;
 	limits?: Partial<CloudRunnerSandboxLimits>;
 	idlePollMs?: number;
@@ -89,18 +87,6 @@ function requiredAbsolutePath(value: unknown, label: string): string {
 	const path = requiredText(value, label, 4096);
 	if (!isAbsolute(path)) throw new Error(`${label} must be absolute`);
 	return resolve(path);
-}
-
-function requiredContainerPath(value: unknown, label: string): string {
-	const path = requiredText(value, label, 4096);
-	if (
-		!path.startsWith("/") ||
-		!/^[A-Za-z0-9._/-]+$/.test(path) ||
-		path.split("/").some((part) => part === "." || part === "..")
-	) {
-		throw new Error(`${label} is invalid`);
-	}
-	return path;
 }
 
 function optionalInteger(value: unknown, label: string, minimum: number, maximum: number): number | undefined {
@@ -203,6 +189,8 @@ function limits(value: unknown): Partial<CloudRunnerSandboxLimits> | undefined {
 
 export function parseEphemeralCloudRunnerServiceConfig(value: unknown): EphemeralCloudRunnerServiceConfig {
 	const input = record(value, "Runner service configuration");
+	// `image`, `podman_path` and `entrypoint` configured the removed Podman lane (legacy sweep step C, C-R1).
+	// Providers still write them, so they are accepted and ignored.
 	exactKeys(
 		input,
 		[
@@ -238,8 +226,6 @@ export function parseEphemeralCloudRunnerServiceConfig(value: unknown): Ephemera
 	if (input.schema !== CONFIG_SCHEMA) throw new Error("Runner service configuration schema is unsupported");
 	const runnerId = requiredText(input.runner_id, "Runner id", 36);
 	if (!UUID_PATTERN.test(runnerId)) throw new Error("Runner id is invalid");
-	const image = requiredText(input.image, "Runner image", 512);
-	if (!IMAGE_PATTERN.test(image)) throw new Error("Runner image must be pinned by SHA-256 digest");
 	const idlePollMs = optionalInteger(input.idle_poll_ms, "Runner idle poll", 10, 60_000);
 	const leaseRenewalMs = optionalInteger(input.lease_renewal_ms, "Runner lease renewal", 10, 90_000);
 	const heartbeatMs = optionalInteger(input.heartbeat_ms, "Runner heartbeat", 10, 10 * 60_000);
@@ -310,9 +296,6 @@ export function parseEphemeralCloudRunnerServiceConfig(value: unknown): Ephemera
 		runnerId,
 		authorityStatePath: requiredAbsolutePath(input.authority_state_path, "Runner authority state path"),
 		temporaryRoot: requiredAbsolutePath(input.temporary_root, "Runner temporary root"),
-		image,
-		podmanPath: requiredAbsolutePath(input.podman_path, "Runner Podman path"),
-		entrypoint: requiredContainerPath(input.entrypoint, "Runner container entrypoint"),
 		capabilities: capabilities(input.capabilities),
 		jobTypes: jobTypes(input.job_types),
 		platform: requiredText(input.platform, "Runner platform", 80),
@@ -445,18 +428,9 @@ export async function runEphemeralCloudRunnerService(options: RunEphemeralCloudR
 	const runner = repairToken
 		? await DisposableCloudRunner.repair(control, config.runnerId, authorityStore, repairToken)
 		: await DisposableCloudRunner.open(control, config.runnerId, authorityStore, activationToken);
-	const backend = new RootlessPodmanSandboxBackend({
-		image: config.image,
-		capabilities: config.capabilities,
-		jobTypes: config.jobTypes,
-		podmanPath: config.podmanPath,
-		entrypoint: config.entrypoint,
-		temporaryRoot: config.temporaryRoot,
-	});
 	const worker = new EphemeralCloudRunnerWorker({
 		runner,
 		brokerTransport: new SupabaseCloudRunnerBrokerTransport(config.baseUrl, config.publishableKey, fetch, { signal }),
-		backend,
 		...(config.nativeBridgeUrl && config.nativeBridgeBoundary && nativeBridgeToken
 			? {
 					nativeProviderBridge: new HttpNativeProviderComputerBridge(
@@ -474,11 +448,8 @@ export async function runEphemeralCloudRunnerService(options: RunEphemeralCloudR
 					),
 				}
 			: {}),
-		...(config.nativeBridgeSharedGid !== undefined ? { nativeWorkspaceGid: config.nativeBridgeSharedGid } : {}),
 		platform: config.platform,
 		runnerVersion: config.runnerVersion,
-		temporaryRoot: config.temporaryRoot,
-		environment: config.environment,
 		...(config.limits ? { limits: config.limits } : {}),
 		...(config.idlePollMs !== undefined ? { idlePollMs: config.idlePollMs } : {}),
 		...(config.leaseRenewalMs !== undefined ? { leaseRenewalMs: config.leaseRenewalMs } : {}),

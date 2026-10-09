@@ -103,11 +103,21 @@ describe("ephemeral cloud runner service", () => {
 		expect(config).toMatchObject({
 			schema: "qorpera.ephemeral-runner-service/v1",
 			runnerId,
-			image,
 			capabilities: ["company_substrate"],
 			jobTypes: ["sandbox_probe"],
 			limits: { wallTimeMs: 60_000, memoryBytes: 512 * 1024 * 1024, cpuCount: 1, maxPids: 64 },
 		});
+	});
+
+	it("accepts and ignores the removed Podman lane's settings", async () => {
+		const root = await serviceRoot();
+		const config = parseEphemeralCloudRunnerServiceConfig(configValue(root));
+		for (const key of ["image", "podmanPath", "podman_path", "entrypoint"]) expect(config).not.toHaveProperty(key);
+		const { image: _image, podman_path: _podmanPath, entrypoint: _entrypoint, ...withoutPodman } = configValue(root);
+		expect(parseEphemeralCloudRunnerServiceConfig(withoutPodman)).toEqual(config);
+		expect(
+			parseEphemeralCloudRunnerServiceConfig({ ...configValue(root), image: "unpinned", entrypoint: "../x" }),
+		).toEqual(config);
 	});
 
 	it("takes an exec slot's identity credential for its native bridge only (G2-3)", async () => {
