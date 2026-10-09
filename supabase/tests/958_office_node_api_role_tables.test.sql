@@ -5,7 +5,8 @@
 -- 001_api_function_allowlist, the secret broker by 306_governed_company_computer_privileges.
 begin;
 
--- 1. anon, authenticated and the secret broker hold no row privilege on any office, node or presence table.
+-- 1. anon, authenticated and the secret broker hold no row privilege on any office, runtime node, login gateway,
+-- presence, machine, fleet, compute request, viewer or browser table.
 do $$
 declare v_pairs integer; v_open text[];
 begin
@@ -15,7 +16,7 @@ begin
 	from pg_class as class
 	cross join (values ('anon'), ('authenticated'), ('qorpera_secret_broker')) as role(rolname)
 	where class.relnamespace = 'public'::regnamespace and class.relkind in ('r', 'v', 'p')
-		and class.relname ~ '^qorpera_.*(office|node_inventory|node_health|presence|runtime_machine|fleet|compute_request|viewer|browser)';
+		and class.relname ~ '^qorpera_.*(office|runtime_node|login_gateway|presence|runtime_machine|fleet|compute_request|viewer|browser)';
 	if v_pairs = 0 then raise exception 'API role tables: the office and node table pattern matched nothing'; end if;
 	if v_open is not null then
 		raise exception 'API role tables: an API role can touch %', array_to_string(v_open, ', ');
