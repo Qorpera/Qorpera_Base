@@ -19,7 +19,10 @@ import { isUuid } from "@qorpera/contracts";
  *
  * The box is bound to the computer, its boot generation and the one tool call (effect receipt): the
  * office opens it only for the action it is performing. The hosts the value may be typed into travel
- * inside the sealed payload, so no one on the way can widen them. */
+ * inside the sealed payload, so no one on the way can widen them.
+ *
+ * A signed hook's secret travels the same way (E3b-3, deploy/first-node/RUNTIME-COMPANY-FOLDER-EVENTS.md §5.7):
+ * bound to the hook instead of an account, as the field signing_secret, and typed only on the hook's site. */
 
 const BOX_SCHEMA = "qorpera.company-account-fill-box/v1";
 const PAYLOAD_SCHEMA = "qorpera.company-account-fill/v1";
@@ -33,18 +36,21 @@ export const COMPANY_ACCOUNT_FILL_LIFETIME_MS = 90_000;
 /** How far apart the vault's and the computer's clocks may be. */
 const CLOCK_SKEW_MS = 60_000;
 
-export type CompanyAccountFillField = "login" | "password" | "new_password" | "code";
-const FIELDS: readonly CompanyAccountFillField[] = ["login", "password", "new_password", "code"];
+export type CompanyAccountFillField = "login" | "password" | "new_password" | "code" | "signing_secret";
+type AccountField = Exclude<CompanyAccountFillField, "signing_secret">;
+const ACCOUNT_FIELDS: readonly CompanyAccountFillField[] = ["login", "password", "new_password", "code"];
 
-/** Who may open the box: one computer's boot, for one tool call. */
-export interface CompanyAccountFillIdentity {
+interface FillCall {
 	readonly companyId: string;
 	readonly companyComputerId: string;
 	readonly computerGeneration: number;
 	readonly receiptId: string;
-	readonly accountId: string;
-	readonly field: CompanyAccountFillField;
 }
+
+/** Who may open the box: one computer's boot, for one tool call, of one account's value or one hook's secret. */
+export type CompanyAccountFillIdentity =
+	| (FillCall & { readonly accountId: string; readonly field: AccountField })
+	| (FillCall & { readonly hookId: string; readonly field: "signing_secret" });
 
 export interface CompanyAccountFill {
 	readonly field: CompanyAccountFillField;
@@ -73,20 +79,25 @@ function identity(value: CompanyAccountFillIdentity): CompanyAccountFillIdentity
 		!isUuid(value.companyId) ||
 		!isUuid(value.companyComputerId) ||
 		!isUuid(value.receiptId) ||
-		!isUuid(value.accountId) ||
 		!Number.isSafeInteger(value.computerGeneration) ||
-		value.computerGeneration < 1 ||
-		!FIELDS.includes(value.field)
+		value.computerGeneration < 1
 	)
 		throw new Error("Company account fill identity is malformed");
-	return {
+	const call = {
 		companyId: value.companyId,
 		companyComputerId: value.companyComputerId,
 		computerGeneration: value.computerGeneration,
 		receiptId: value.receiptId,
-		accountId: value.accountId,
-		field: value.field,
 	};
+	// The associated data names the account or the hook, never both: a box for one never opens as the other's.
+	if ("hookId" in value) {
+		if (!isUuid(value.hookId) || value.field !== "signing_secret" || "accountId" in value)
+			throw new Error("Company account fill identity is malformed");
+		return { ...call, hookId: value.hookId, field: value.field };
+	}
+	if (!isUuid(value.accountId) || !ACCOUNT_FIELDS.includes(value.field))
+		throw new Error("Company account fill identity is malformed");
+	return { ...call, accountId: value.accountId, field: value.field };
 }
 
 function associatedData(value: CompanyAccountFillIdentity): Buffer {

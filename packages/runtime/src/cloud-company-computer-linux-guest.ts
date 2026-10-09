@@ -167,12 +167,6 @@ export interface CompanyComputerLinuxGuestOptions {
 	/** Verify adopted VM/image/mount identity. This does not assert that an X display already exists. */
 	boundary: CompanyComputerGuestBoundary;
 	screenshots: (run: CloudNativeToolRun) => CompanyComputerScreenshotPublisher;
-	fileImports?: (
-		run: CloudNativeToolRun,
-	) => import("./cloud-company-computer-file-imports.ts").CompanyComputerFileImporter;
-	fileExports?: (
-		run: CloudNativeToolRun,
-	) => import("./cloud-company-computer-file-transfers.ts").CompanyComputerFileExportPublisher;
 	onFailure(error: Error): void;
 }
 
@@ -963,8 +957,6 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						commands: commands!,
 						shell,
 						screenshots,
-						fileExports: this.#options.fileExports?.(input.run),
-						fileImports: this.#options.fileImports?.(input.run),
 						fillKey: this.#options.fillKey,
 						filled: this.#filledOn(binding.screenOrdinal),
 						siteStops: this.#siteStops,

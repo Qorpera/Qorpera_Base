@@ -291,7 +291,7 @@
 .connection-usage-meter > span { display: block; height: 100%; background: #608878; }
 .connection-usage-meter.is-low > span { background: #ff6b21; }
 .connection-usage-meter.is-stale > span { opacity: .55; }
-.settings-content .connection-actions .btn, .settings-content .connection-add { border-radius: 999px; }
+.settings-content .connection-actions .btn, .settings-content :is(.connection-add, .hook-add) { border-radius: 999px; }
 .connection-add-area { display: grid; justify-items: start; gap: 10px; padding-top: 20px; }
 .connection-empty { margin: 16px 0 0; font-size: 12px; }
 .connection-provider-picker { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; padding-top: 12px; border-top: 1px solid #dededb; }
@@ -380,6 +380,23 @@
 .service-token-row { display: flex; gap: 8px; }
 .service-token-row .service-token { flex: 1; min-width: 0; }
 .service-error { margin: 0 0 8px; }
+/* Webhooks and mailboxes (settings-hooks.ts) share the services' cards. */
+.hook-icon { display: grid; place-items: center; width: 32px; height: 32px; justify-self: center; border-radius: 9px; background: #e4e4e1; color: #5f5f5b; }
+.hook-icon .icon { width: 18px; height: 18px; }
+.hook-card .hook-state, .hook-address small, .hook-form small, .hook-domain { color: #73736f; }
+.hook-address { grid-column: 2 / -1; display: grid; gap: 6px; min-width: 0; }
+.hook-address-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.hook-address code { flex: 1; min-width: 0; padding: 6px 8px; border-radius: 7px; background: #e6e6e3; font-size: 11.5px; overflow-wrap: anywhere; user-select: all; }
+.hook-address-row .btn { display: flex; flex: none; align-items: center; gap: 6px; }
+.hook-address-row .icon { width: 14px; height: 14px; }
+.hook-address small { font-size: 11.5px; }
+.hook-form { display: grid; gap: 8px; justify-self: stretch; max-width: 560px; }
+.hook-form small { font-size: 11.5px; }
+.hook-form-row { display: flex; align-items: center; gap: 8px; }
+.hook-form-row input { flex: 1; min-width: 0; }
+.hook-domain { font-size: 13px; overflow-wrap: anywhere; }
+.hook-form-actions { display: flex; gap: 8px; }
+.hook-form .service-outcome { grid-column: auto; }
 /* Language & region: rows in one card, each value a small button that opens
    a searchable list (preference-picker.ts), as the desktop reference does. */
 .settings-rows { border-radius: 13px; background: #f1f1ef; }

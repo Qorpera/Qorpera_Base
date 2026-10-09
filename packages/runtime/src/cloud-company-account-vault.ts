@@ -300,7 +300,7 @@ interface FillContext {
 	readonly keyId: string;
 	readonly envelope: Buffer;
 	readonly receiptId: string;
-	readonly field: CompanyAccountFillField;
+	readonly field: Exclude<CompanyAccountFillField, "signing_secret">;
 	readonly companyComputerId: string;
 	readonly computerGeneration: number;
 	readonly fillPublicKey: string;

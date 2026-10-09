@@ -9,11 +9,13 @@ import type {
 	CompanyComputerOperation,
 	CompanyComputerToolContent,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import type { JsonValue } from "@qorpera/contracts";
 import { CompanyComputerGuestEndpoint } from "@qorpera/runtime/cloud-company-computer-endpoint";
 import { CompanyComputerScreenActionGate } from "@qorpera/runtime/cloud-company-computer-leases";
 import {
 	COMPANY_COMPUTER_NATIVE_SCHEMA,
 	type CompanyComputerAccountFills,
+	type CompanyComputerHookFills,
 	createHttpCompanyComputerSessionFactory,
 	HttpCompanyComputerNativeEndpoint,
 	parseCompanyComputerNativeDescriptor,
@@ -91,6 +93,7 @@ async function fixture(
 		admitWork?: () => void;
 		capabilities?: ("shell" | "browser")[];
 		accountFills?: CompanyComputerAccountFills;
+		hookFills?: CompanyComputerHookFills;
 		/** The database refuses a screenshot at its authorize with these words (folder-v2, C1c-3l part 3). */
 		refuseScreenshots?: string;
 		/** The guest's screenshots published without storage (folder-v2, P06d), by receipt. */
@@ -279,6 +282,7 @@ async function fixture(
 		holder: () => holder,
 		registry,
 		...(options.accountFills ? { accountFills: options.accountFills } : {}),
+		...(options.hookFills ? { hookFills: options.hookFills } : {}),
 	});
 	const context = {
 		identity: run.identity,
@@ -343,66 +347,95 @@ async function fixture(
 }
 
 describe("native runtime to office transport (real TLS, synthetic SQL and guest effects)", () => {
-	it.each(["shell", "transfer"] as const)(
-		"connects %s through the service factory, native ledger and TLS guest boundary",
-		async (kind) => {
-			const f = await fixture();
-			const control: CloudNativeToolOperationControlPlane = {
-				beginToolOperation: vi.fn(async (binding, input) => ({
-					run_id: binding.runId,
-					receipt_id: input.receiptId,
-					state: "executing",
-					result: null,
-					output_snapshot_id: null,
-					proposal_id: null,
-				})),
-				completeToolOperation: vi.fn(async (binding, input) => {
-					f.order.push("native:complete");
-					return { run_id: binding.runId, receipt_id: input.receiptId, state: "completed", result: input.result };
-				}),
-			};
-			const operations = new CloudNativeToolOperations(f.run, control);
-			const factory = createHttpCompanyComputerSessionFactory({
-				url: f.url,
-				token: f.token,
-				holder: () => f.holder,
-				registry: f.registry,
-			});
-			const session = await factory(f.run, operations);
-			if (!session) throw new Error("Missing admitted office session");
-			cleanups.push(session.close);
-			expect(session.tools.map((tool) => tool.name)).toEqual([
-				"computer_screen",
-				"computer_shell",
-				"computer_transfer",
-			]);
-			const tool = session.tools.find((tool) => tool.name === `computer_${kind}`)!;
-			const context = { companyId: f.run.identity.companyId, runId: f.run.identity.runId, signal: f.run.signal };
-			const action =
-				kind === "shell"
-					? f.operation.arguments
-					: {
-							kind: "transfer",
-							action: "export",
-							source: { realm: "company_computer", path: "reports/$(literal).bin" },
-							destination: { realm: "object_storage" },
-							mediaType: "application/octet-stream",
-						};
-			const args = { operationKey: "native-office:1", action };
-			expect(await tool.execute(args, context)).toEqual({ kind: "text", value: "test" });
-			expect(await tool.execute(args, context)).toEqual({ kind: "text", value: "test" });
-			expect(f.perform).toHaveBeenCalledOnce();
-			expect(f.perform.mock.calls[0][0]).toEqual(action);
-			expect(control.beginToolOperation).toHaveBeenCalledOnce();
-			expect(control.completeToolOperation).toHaveBeenCalledOnce();
-			expect(f.order.indexOf("qorpera_native_office_operation:finish")).toBeLessThan(
-				f.order.indexOf("native:complete"),
-			);
-			f.run.close();
-			await session.close();
-			expect(f.physicalClose).toHaveBeenCalledOnce();
+	it("connects shell through the service factory, native ledger and TLS guest boundary", async () => {
+		const f = await fixture();
+		const control: CloudNativeToolOperationControlPlane = {
+			beginToolOperation: vi.fn(async (binding, input) => ({
+				run_id: binding.runId,
+				receipt_id: input.receiptId,
+				state: "executing",
+				result: null,
+				output_snapshot_id: null,
+				proposal_id: null,
+			})),
+			completeToolOperation: vi.fn(async (binding, input) => {
+				f.order.push("native:complete");
+				return { run_id: binding.runId, receipt_id: input.receiptId, state: "completed", result: input.result };
+			}),
+		};
+		const operations = new CloudNativeToolOperations(f.run, control);
+		const factory = createHttpCompanyComputerSessionFactory({
+			url: f.url,
+			token: f.token,
+			holder: () => f.holder,
+			registry: f.registry,
+		});
+		const session = await factory(f.run, operations);
+		if (!session) throw new Error("Missing admitted office session");
+		cleanups.push(session.close);
+		expect(session.tools.map((tool) => tool.name)).toEqual([
+			"computer_screen",
+			"computer_shell",
+			"computer_transfer",
+		]);
+		const tool = session.tools.find((tool) => tool.name === "computer_shell")!;
+		const context = { companyId: f.run.identity.companyId, runId: f.run.identity.runId, signal: f.run.signal };
+		const action = f.operation.arguments;
+		const args = { operationKey: "native-office:1", action };
+		expect(await tool.execute(args, context)).toEqual({ kind: "text", value: "test" });
+		expect(await tool.execute(args, context)).toEqual({ kind: "text", value: "test" });
+		expect(f.perform).toHaveBeenCalledOnce();
+		expect(f.perform.mock.calls[0][0]).toEqual(action);
+		expect(control.beginToolOperation).toHaveBeenCalledOnce();
+		expect(control.completeToolOperation).toHaveBeenCalledOnce();
+		expect(f.order.indexOf("qorpera_native_office_operation:finish")).toBeLessThan(
+			f.order.indexOf("native:complete"),
+		);
+		f.run.close();
+		await session.close();
+		expect(f.physicalClose).toHaveBeenCalledOnce();
+	});
+	// Company objects carried a transfer's bytes and are gone (legacy removal, step C): the tool's answer is a refusal.
+	const transfers: { [key: string]: JsonValue }[] = [
+		{
+			kind: "transfer",
+			action: "export",
+			source: { realm: "company_computer", path: "reports/$(literal).bin" },
+			destination: { realm: "object_storage" },
+			mediaType: "application/octet-stream",
 		},
-	);
+		{
+			kind: "transfer",
+			action: "import",
+			source: { realm: "object_storage", assetId: "6f1d2c3b-4a59-4e8f-9b7a-1c2d3e4f5a6b", sha256: "a".repeat(64) },
+			destination: { realm: "company_computer", path: "inbox/report.bin" },
+		},
+	];
+	it.each(transfers)("refuses a file transfer ($action) before the database and any receipt", async (action) => {
+		const f = await fixture();
+		const control = { beginToolOperation: vi.fn(), completeToolOperation: vi.fn() };
+		const factory = createHttpCompanyComputerSessionFactory({
+			url: f.url,
+			token: f.token,
+			holder: () => f.holder,
+			registry: f.registry,
+		});
+		const session = await factory(f.run, new CloudNativeToolOperations(f.run, control));
+		if (!session) throw new Error("Missing admitted office session");
+		cleanups.push(session.close);
+		const tool = session.tools.find((tool) => tool.name === "computer_transfer")!;
+		const refused = tool.execute(
+			{ operationKey: "native-office:transfer", action },
+			{ companyId: f.run.identity.companyId, runId: f.run.identity.runId, signal: f.run.signal },
+		);
+		await expect(refused).rejects.toBeInstanceOf(CloudToolAuthorizeRefusal);
+		await expect(refused).rejects.toThrow("File transfer is not available on this computer yet.");
+		expect(control.beginToolOperation).not.toHaveBeenCalled();
+		expect(f.createSession).not.toHaveBeenCalled();
+		expect(f.perform).not.toHaveBeenCalled();
+		expect(f.order).not.toContain("qorpera_native_office_operation:authorize");
+		expect(f.order).not.toContain("qorpera_native_office_operation:begin");
+	});
 	it("tells the model why the database refused a screenshot at its authorize, before any receipt or office work", async () => {
 		const message =
 			"Screenshots are not available on this computer yet. For a web page, use a browser snapshot instead.";
@@ -727,6 +760,97 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 			},
 		});
 		expect(g.perform).not.toHaveBeenCalled();
+	});
+
+	it("asks the vault's hook route for a signed hook's secret, and the account route for an account's (E3b-3)", async () => {
+		const box = {
+			schema: "qorpera.company-account-fill-box/v1",
+			ephemeralPublicKey: "e",
+			iv: "i",
+			tag: "t",
+			ciphertext: "c",
+		};
+		const accountFills = {
+			companyAccountFill: vi.fn<CompanyComputerAccountFills["companyAccountFill"]>(async () => ({
+				schema: "qorpera.company-account-fill-answer/v1",
+				box,
+			})),
+		};
+		const hookFills = {
+			eventHookFill: vi.fn<CompanyComputerHookFills["eventHookFill"]>(async () => ({
+				schema: "qorpera.event-hook-fill-answer/v1",
+				box,
+			})),
+		};
+		const f = await fixture({ capabilities: ["browser"], accountFills, hookFills });
+		const operation: CompanyComputerOperation = {
+			...f.operation,
+			tool: "computer_browser",
+			arguments: {
+				kind: "browser",
+				action: "vault_fill",
+				role: "textbox",
+				name: "Signing secret",
+				hook: randomUUID(),
+				field: "signing_secret",
+			},
+		};
+		expect(await f.endpoint.perform(operation, f.lease, f.context)).toEqual({ kind: "text", value: "test" });
+		expect(hookFills.eventHookFill).toHaveBeenCalledOnce();
+		expect(hookFills.eventHookFill.mock.calls[0]![0]).toEqual({
+			binding: f.source.binding,
+			receiptId: f.context.receiptId,
+			idempotencyKey: f.context.idempotencyKey,
+			envelope: cloudNativeToolOperationEnvelope(f.run.identity, operation),
+		});
+		expect(accountFills.companyAccountFill).not.toHaveBeenCalled();
+		expect(f.perform.mock.calls[0]![2].fill).toEqual(box);
+		// An account's fill on the same host still goes to the account route.
+		const g = await fixture({ capabilities: ["browser"], accountFills, hookFills });
+		const login: CompanyComputerOperation = {
+			...g.operation,
+			tool: "computer_browser",
+			arguments: {
+				kind: "browser",
+				action: "vault_fill",
+				role: "textbox",
+				name: "Password",
+				account: randomUUID(),
+				field: "password",
+			},
+		};
+		await g.endpoint.perform(login, g.lease, g.context);
+		expect(accountFills.companyAccountFill).toHaveBeenCalledOnce();
+		expect(hookFills.eventHookFill).toHaveBeenCalledOnce();
+		// The vault's refusal is the call's answer, and a host without the hook route refuses before the office.
+		hookFills.eventHookFill.mockResolvedValueOnce({
+			schema: "qorpera.event-hook-refusal/v1",
+			code: "55000",
+			message: "This hook was removed",
+		});
+		const h = await fixture({ capabilities: ["browser"], hookFills });
+		expect(await h.endpoint.perform({ ...operation, target: h.operation.target }, h.lease, h.context)).toEqual({
+			kind: "json",
+			value: {
+				action: "vault_fill",
+				completed: false,
+				refused: { code: "55000", message: "This hook was removed" },
+			},
+		});
+		expect(h.perform).not.toHaveBeenCalled();
+		const bare = await fixture({ capabilities: ["browser"], accountFills });
+		expect(
+			await bare.endpoint.perform({ ...operation, target: bare.operation.target }, bare.lease, bare.context),
+		).toEqual({
+			kind: "json",
+			value: {
+				action: "vault_fill",
+				completed: false,
+				refused: { code: "0A000", message: "Signed hooks are not set up for this company's computers" },
+			},
+		});
+		expect(bare.perform).not.toHaveBeenCalled();
+		expect(accountFills.companyAccountFill).toHaveBeenCalledOnce();
 	});
 
 	it("re-derives the native principal, consumes the original receipt and physically closes before releasing occupancy", async () => {

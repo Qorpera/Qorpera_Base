@@ -58,8 +58,8 @@ end $$;
 
 -- The checks start here: a test that runs after this file's fixture part stops at this line.
 
--- 2. Admission: the admission row counts, and marks the transaction for its company. A folder-v2 wake without the mark
--- refuses, whatever else is wrong with it; a snapshot-v1 wake never asks for it.
+-- 2. Admission: the admission row counts, and marks the transaction for its company. A wake without the mark refuses,
+-- whatever else is wrong with it; since legacy sweep F1b (20260930245000) that includes a snapshot-v1 wake.
 do $$
 declare
 	c_profile constant uuid := '63400000-0000-4000-8000-000000000010'; c_env constant uuid := '63400000-0000-4000-8000-000000000020';
@@ -93,13 +93,14 @@ begin
 	if v_wake.status <> 'cancelled' or v_wake.blocked_reason <> 'Company execution is paused' then
 		raise exception 'A paused company''s autonomous wake is cancelled: %', to_jsonb(v_wake); end if;
 	perform pg_temp.fx(format('delete from public.qorpera_company_execution_pauses where profile_id = %L', c_profile));
-	-- A snapshot-v1 wake takes the legacy path: the unknown schema is refused by the legacy check, not the folder mark.
+	-- Folder-v2 only since legacy sweep F1b (20260930245000): a snapshot-v1 wake needs the folder's admission too, so it
+	-- is refused by the folder mark before the schema check.
 	perform set_config('qorpera.folder_wake_admission', '', true);
 	perform pg_temp.raises_like(format($f$insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, wake_kind, source_kind,
 		wake_schema, trigger_id, occurrence_key, scheduled_for, not_before, payload)
 		values (extensions.gen_random_uuid(), '64700000-0000-4000-8000-000000000011', '64700000-0000-4000-8000-000000000021', 'agent',
 			'coworker', 'qorpera.unknown/v1', 'coworker', 'snapshot-control', clock_timestamp(), clock_timestamp(), '{}')$f$),
-		'42501', 'Wake admission is unsupported');
+		'55000', 'Folder wake admission is required');
 	perform pg_temp.raises_like(format($f$insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, wake_kind, source_kind,
 		wake_schema, trigger_id, occurrence_key, scheduled_for, not_before, payload)
 		values (extensions.gen_random_uuid(), %L, %L, 'agent', 'coworker', 'qorpera.unknown/v1', 'coworker', 'folder-control',

@@ -130,11 +130,16 @@ function office(
 		// The page side of the fill: the focus check before typing, then where the value landed.
 		evaluate: vi.fn(async (fn: (node: unknown, arg?: unknown) => unknown, arg?: unknown) =>
 			String(fn).includes("activeElement") && !String(fn).includes("shadowRoot")
-				? true
+				? "ready"
 				: fn(
 						{
 							tagName: element.tagName,
-							type: element.type,
+							get type() {
+								return element.type;
+							},
+							set type(value: string) {
+								element.type = value;
+							},
 							disabled: element.disabled,
 							readOnly: element.readOnly,
 							get value() {
@@ -955,5 +960,87 @@ describe("vault_fill on the Company Computer", () => {
 		const f = office({ url: "https://evil.example/login" });
 		await expect(perform(f, action(), sealed(f.key!))).rejects.toThrow("ACCOUNT_FILL_WRONG_SITE");
 		expect(f.typed).toEqual([]);
+	});
+});
+
+const hook = computerId(70);
+const hookSecret = `whsec_${Buffer.alloc(32, 7).toString("base64")}`;
+const hookPage = "https://app.example.com/settings/webhooks";
+const hookAction: CompanyComputerAction = {
+	kind: "browser",
+	action: "vault_fill",
+	role: "textbox",
+	name: "Signing secret",
+	hook,
+	field: "signing_secret",
+};
+
+/** What the vault sends for a signed hook's fill: its secret sealed to the office's key, for the hook's site. */
+function sealedHook(key: CompanyComputerFillKey, receiptId = computerEffect().receiptId, hookId = hook) {
+	const binding = computerBinding();
+	return sealCompanyAccountFill(
+		{ value: hookSecret, hosts: ["app.example.com"] },
+		key.publicKey,
+		{
+			companyId: binding.companyId,
+			companyComputerId: binding.companyComputerId,
+			computerGeneration: binding.computerGeneration,
+			receiptId,
+			hookId,
+			field: "signing_secret",
+		},
+		Date.now(),
+	);
+}
+
+describe("vault_fill of a signed hook's secret on the Company Computer (E3b-3)", () => {
+	it("makes the site's text box a password box, types the secret once and hides it from later snapshots", async () => {
+		const f = office({ url: hookPage });
+		f.element.type = "text";
+		expect(await perform(f, hookAction, sealedHook(f.key!))).toMatchObject({
+			kind: "json",
+			value: { action: "vault_fill", completed: true },
+		});
+		expect(f.typed).toEqual([hookSecret]);
+		expect(f.element.type).toBe("password");
+		expect(f.attributes.has(COMPANY_ACCOUNT_FILLED_ATTRIBUTE)).toBe(true);
+		expect(f.page.getByRole).toHaveBeenCalledWith("textbox", { name: "Signing secret", exact: true });
+		f.shown.text = `Your signing secret is ${hookSecret}`;
+		const snapshot = await perform(f, { kind: "browser", action: "snapshot" });
+		expect(JSON.stringify(snapshot)).not.toContain(hookSecret);
+	});
+
+	it("opens a hook's box for that hook and call alone, and never an account's box as a hook's or the reverse", async () => {
+		const f = office({ url: hookPage });
+		const binding = computerBinding();
+		const accountBox = sealCompanyAccountFill(
+			{ value: hookSecret, hosts: ["app.example.com"] },
+			f.key!.publicKey,
+			{
+				companyId: binding.companyId,
+				companyComputerId: binding.companyComputerId,
+				computerGeneration: binding.computerGeneration,
+				receiptId: computerEffect().receiptId,
+				accountId: hook,
+				field: "password",
+			},
+			Date.now(),
+		);
+		for (const [value, fill] of [
+			[hookAction, accountBox],
+			[hookAction, sealedHook(f.key!, computerEffect().receiptId, computerId(71))],
+			[hookAction, sealedHook(f.key!, computerId(11))],
+			[action(), sealedHook(f.key!)],
+		] as const)
+			await expect(perform(f, value, fill)).rejects.toThrow("ACCOUNT_FILL_UNOPENED");
+		expect(f.typed).toEqual([]);
+	});
+
+	it("types a hook's secret nowhere but the hook's site", async () => {
+		const f = office();
+		f.element.type = "text";
+		await expect(perform(f, hookAction, sealedHook(f.key!))).rejects.toThrow("ACCOUNT_FILL_WRONG_SITE");
+		expect(f.typed).toEqual([]);
+		expect(f.element.type).toBe("text");
 	});
 });

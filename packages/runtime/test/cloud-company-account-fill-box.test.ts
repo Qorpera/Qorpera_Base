@@ -125,4 +125,47 @@ describe("company account fill box", () => {
 				name,
 			).toThrow("Company account fill identity is malformed");
 	});
+
+	it("seals a signed hook's secret for that hook alone, and never opens one as an account's (E3b-3)", () => {
+		const key = new CompanyComputerFillKey();
+		const { accountId: _account, ...call } = identity;
+		const hook = { ...call, hookId: "79900000-0000-4000-8000-000000000050", field: "signing_secret" } as const;
+		const secret = { value: "whsec_c2VjcmV0LXNlY3JldC1zZWNyZXQtc2VjcmV0LTA=", hosts: ["app.example.com"] };
+		const box = sealCompanyAccountFill(secret, key.publicKey, hook, now);
+		expect(JSON.stringify(box)).not.toContain("whsec_");
+		expect(key.open(box, hook, now)).toEqual({
+			field: "signing_secret",
+			value: secret.value,
+			hosts: secret.hosts,
+			notAfterMs: now + COMPANY_ACCOUNT_FILL_LIFETIME_MS,
+		});
+		// The associated data names the hook: another hook, or an account with the hook's id, does not open it.
+		for (const other of [
+			{ ...hook, hookId: "79900000-0000-4000-8000-000000000051" },
+			{ ...call, accountId: hook.hookId, field: "password" },
+			{ ...hook, receiptId: "79900000-0000-4000-8000-000000000031" },
+		] as CompanyAccountFillIdentity[])
+			expect(() => key.open(box, other, now), JSON.stringify(other)).toThrow(
+				"Company account fill box does not open here",
+			);
+		// Nor an account's box as a hook's, with the account's id as the hook's.
+		const account = sealCompanyAccountFill(fill, key.publicKey, identity, now);
+		expect(() => key.open(account, { ...call, hookId: identity.accountId, field: "signing_secret" }, now)).toThrow(
+			"Company account fill box does not open here",
+		);
+		// A hook names only its secret, an account never names it, and no identity names both.
+		for (const bad of [
+			{ ...hook, field: "password" },
+			{ ...identity, field: "signing_secret" },
+			{ ...hook, accountId: identity.accountId },
+			{ ...hook, hookId: "repo-pushes" },
+		]) {
+			expect(() => sealCompanyAccountFill(secret, key.publicKey, bad as never, now), JSON.stringify(bad)).toThrow(
+				"Company account fill identity is malformed",
+			);
+			expect(() => key.open(box, bad as never, now), JSON.stringify(bad)).toThrow(
+				"Company account fill box does not open here",
+			);
+		}
+	});
 });

@@ -502,16 +502,18 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 								serviceRoleKey: publishableKey,
 								fetch: dispatch.fetch,
 							}),
-							// A vault_fill asks this company's vault, which seals the value to the computer (A1-3).
+							// A vault_fill asks this company's vault, which seals the value to the computer (A1-3), as it
+							// does a signed hook's secret (E3b-3).
 							...(secretBrokerOrigin && secretBrokerToken
-								? {
-										accountFills: new HttpCloudSecretBrokerClient({
+								? (() => {
+										const fills = new HttpCloudSecretBrokerClient({
 											origin: secretBrokerOrigin,
 											runtimeToken: secretBrokerToken,
 											companyId: state.companyId,
 											holder,
-										}),
-									}
+										});
+										return { accountFills: fills, hookFills: fills };
+									})()
 								: {}),
 						}),
 					}

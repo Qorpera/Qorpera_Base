@@ -685,10 +685,21 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
 ### Event hooks (20260928259260_runtime_event_intake)
 
 - Contract: section 19, 2026-09-29 amendment "events wake agents"; design
-  `deploy/first-node/RUNTIME-EVENT-INTAKE.md`. Step W1a: address-proven hooks
-  for `snapshot-v1` companies only; nothing wakes agents yet (W2). The intake
-  is built switched off. Settings lists hooks under Company connections (step
-  A3).
+  `deploy/first-node/RUNTIME-EVENT-INTAKE.md`, and on the folder core
+  `deploy/first-node/RUNTIME-COMPANY-FOLDER-EVENTS.md`. Since
+  20260928489180_folder_core_hooks_mailboxes (E1) a `folder-v2` company
+  creates, pauses and removes hooks and mailboxes with these same calls; its
+  folder describes each in `connections/hook-<name>.md` or
+  `connections/mailbox-<name>.md`, never with its address or a signing
+  secret. The intake is built switched off.
+- Settings (step E4, `packages/web/src/app/views/settings-hooks.ts`): Company
+  connections lists the company's webhooks and mailboxes to every member, each
+  with its name (a mailbox by its `email`), purpose, status and last delivery.
+  Owners and admins also see a webhook's URL to copy, add address-proven
+  webhooks (`p_proof` `address`) and mailboxes, and pause, resume or remove
+  them. Settings never adds a signed hook: its signing secret would have to
+  be pasted, and members never paste a secret (agents open signed hooks,
+  E3b and E3c).
 - `qorpera_create_event_hook(p_profile_id, p_environment_id, p_name,
   p_purpose, p_proof default 'address', p_max_body_bytes default null,
   p_per_minute default null)` → `qorpera.event-hook/v1`: `id`, `companyId`,
@@ -702,8 +713,7 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   until the first delivery). Owners and admins only (42501); 23505 for a
   name in use, 54000 past 50 live hooks, 22023 for a bad environment, name
   (names beginning `mail-` belong to mailboxes, from 20260928299650),
-  purpose, proof or limit, 0A000 for a `folder-v2` company (its hooks come
-  with their connection file).
+  purpose, proof or limit.
 - `qorpera_set_event_hook_status(p_hook_id, p_status)` with `active`,
   `paused` or `removed` → the same descriptor. Removing is final (55000
   afterwards) and frees the name. Owners and admins only.
@@ -737,7 +747,7 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
 ### Company mailboxes (20260928299650_runtime_company_mailboxes)
 
 - Contract: section 19, item 9; design `deploy/first-node/RUNTIME-EVENT-INTAKE.md`, "Mail (M2)". Step M2a:
-  receiving only, for `snapshot-v1` companies. Company mail is built switched off, and no mailbox can be made
+  receiving only; `folder-v2` companies since E1 (20260928489180). Company mail is built switched off, and no mailbox can be made
   until operators set the platform's mail domain.
 - `qorpera_create_company_mailbox(p_profile_id, p_environment_id, p_local_part, p_purpose)` → the hook
   descriptor (`qorpera.event-hook/v1`) of the mailbox's hook: `proof` `mail`, `name` `mail-<local part>` (with a short digest suffix when
@@ -747,7 +757,7 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   (`postmaster`, `abuse`, …) and `noreply` are reserved (22023). An address belongs to one live mailbox across
   the platform (23505 when taken). The domain is one platform setting: a mailbox keeps only its local part, so
   `email` always shows the current domain. Owners and admins only (42501); 54000 past 20 mailboxes or 50 hooks;
-  0A000 before the mail domain is set, and for a `folder-v2` company.
+  0A000 before the mail domain is set.
 - A mailbox is paused, resumed and removed with `qorpera_set_event_hook_status` on its hook; removing frees
   its address. `qorpera_list_event_hooks` lists mailboxes with their `email` for every member, and
   `qorpera_list_event_deliveries` their received messages (`eventType` `mail.received`).
@@ -994,8 +1004,6 @@ Member requests authenticate with the user token; the gateway checks
 Supabase authority, hashes uploads server-side, and confirms the catalog
 only after durable storage.
 
-- `GET/PUT /v1/member-company-file/…` — logical Company File reads and writes
-  through the authority layer
 - `GET/PUT /v1/member-company-objects/…` — content-addressed objects
 - `GET /v1/member-folder-objects/<environmentId>/<sha256>` — a folder-v2 company's bytes for a member (folder core
   C4, P27b), one manifest or chunk of a file the member may read, now or in a version they may read
@@ -1453,9 +1461,10 @@ above.
       records. The only client, the web Settings panel, was removed first
       (web PR #247, no bundle), so the cut must follow that deploy.
     - `qorpera_set_company_execution_pause` is no longer granted to
-      `authenticated`. It stays as the operator brake of every runtime cut
-      (an operator session with a founder's claims), and it no longer writes
-      member notifications.
+      `authenticated`, and it no longer writes member notifications. The
+      legacy sweep dropped it (20260930240000): the operator brake of a
+      runtime cut is the folder core's `qorpera_folder_pause` and
+      `qorpera_folder_resume`, which no API role can call.
     - Notification kinds `company_execution_paused` and
       `company_execution_resumed` are removed, together with the open and
       acknowledged rows of both and every `company-ceiling-tripped/v1` row.

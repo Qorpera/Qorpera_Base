@@ -467,6 +467,8 @@ describe("settings session lifecycle", () => {
 		expect(shown("claude")).toEqual(["settings-tab-my-connections"]);
 		expect(shown("github")).toEqual(["settings-tab-company-connections"]);
 		expect(shown("gmail")).toEqual(["settings-tab-company-connections"]);
+		expect(shown("webhooks")).toEqual(["settings-tab-company-connections"]);
+		expect(shown("postkasser")).toEqual(["settings-tab-company-connections"]);
 	});
 	it("brings a service sign-in back to Company connections", async () => {
 		sessionStorage.setItem(
@@ -1413,7 +1415,11 @@ describe("settings session lifecycle", () => {
 	});
 	it.each([
 		["my-connections", ".connection-section-heading button", []],
-		["company-connections", ".service-card button:not(:disabled)", ["qorpera_list_cloud_secret_connections"]],
+		[
+			"company-connections",
+			".service-card button:not(:disabled)",
+			["qorpera_list_cloud_secret_connections", "qorpera_list_event_hooks"],
+		],
 	])("keeps the focused %s control through an unrelated company refresh", async (tab, selector, rpcs) => {
 		const f = await setup();
 		open(f.root);
@@ -1454,14 +1460,14 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect(content.querySelector("h1")?.textContent).toBe("Company connections");
 		expect(content.querySelector(".settings-lead")?.textContent).toBe(
-			"The company's own accounts. Every agent can use them, and they stay when someone leaves.",
+			"The company's own accounts, webhooks and mailboxes. Every agent can use them, and they stay when someone leaves.",
 		);
 		// The Services section lists the Step 7 connectors with their own Connect buttons.
 		expect(content.querySelectorAll(".service-card")).toHaveLength(3);
 		expect(content.querySelector(".connection-card, .connection-add")).toBeNull();
 		await vi.advanceTimersByTimeAsync(60_000);
-		// The services list is this tab's only read; the member's own accounts are not read for it.
-		expect(sdkRpcs(f)).toEqual(["qorpera_list_cloud_secret_connections"]);
+		// The services and the hooks are this tab's only reads; the member's own accounts are not read for it.
+		expect(sdkRpcs(f)).toEqual(["qorpera_list_cloud_secret_connections", "qorpera_list_event_hooks"]);
 		expect(memberReads()).toEqual([]);
 
 		click(f.root, "#settings-tab-my-connections");
@@ -1475,8 +1481,8 @@ describe("settings session lifecycle", () => {
 		expect(content.querySelector<HTMLElement>(".connection-provider-picker")!.hidden).toBe(true);
 		expect(content.querySelector(".service-card")).toBeNull();
 		await vi.advanceTimersByTimeAsync(60_000);
-		// Model accounts never go through the SDK RPC path, and the services are not read again.
-		expect(sdkRpcs(f)).toEqual(["qorpera_list_cloud_secret_connections"]);
+		// Model accounts never go through the SDK RPC path, and the services and hooks are not read again.
+		expect(sdkRpcs(f)).toEqual(["qorpera_list_cloud_secret_connections", "qorpera_list_event_hooks"]);
 		expect(memberReads()).toEqual([[connectionsUrl, expect.objectContaining({ method: "POST" })]]);
 	});
 });
