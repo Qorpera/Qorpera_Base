@@ -557,7 +557,7 @@ the tree holds the same content.
 - The composer releases the block paths and versions it used under the hash of the composed context, through
   `qorpera_memory_release`: as the platform's reads, filed under the nil resource, so they need no folder grant, write
   no read-set row and are never re-resolved (§9). So the view passes the fence as read references, and no text is
-  stored.
+  stored. Only tree blocks go this way; the head's files are ordinary files (§5.6).
 - Erasure deletes a block's rows with the block (`RUNTIME-COMPANY-FOLDER-ERASURE.md` §5).
 
 ### 4.5 Run logs (W1)
@@ -879,9 +879,10 @@ place of files like `AGENTS.md`, which Codex never loads here (§1).
   So a profile write that a web page talked the agent into is still the agent's own note, never an instruction, as it
   is today. The view's lines carry their own label the same way (§5.3). M1's proof checks this through a view line,
   and W3's through a profile write (§14).
-- Both are read for the company and released as read references (§4.4). They are the same for every member, model and
-  payer, and change only when the vision, the role or the profile changes. So the head is read from the cache across
-  runs.
+- Both are read for the company and released as read references with the run's context, as notebook composition's
+  reads are (`rt/cloud-folder-notebooks.ts:31-43`): they are ordinary files, and only tree blocks go through
+  `qorpera_memory_release` (§4.4). They are the same for every member, model and payer, and change only when the
+  vision, the role or the profile changes. So the head is read from the cache across runs.
 - **Never cut.** If the head is over HEAD, it shows the parts that fit whole, in the order above, and names the path of
   each part left out, with its size, so the agent can read it.
 
