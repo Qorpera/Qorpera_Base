@@ -173,8 +173,9 @@ it("keeps the rows a where names, and says when a column or an after names nothi
 		read(await f.call("table_read", { table: "numbers", where, after: null, limit: 50 })).matching;
 	expect(await matching({ number: "mrr" })).toBe(2);
 	expect(await matching({ number: ["signups"], unit: "count" })).toBe(1);
-	expect(read(await f.call("table_read", { table: "numbers", where: { state: "open" }, after: null, limit: 50 })))
-		.toMatchObject({ matching: 0, rows: [], next: null, problem: "the table has no column state, so no row matches" });
+	expect(
+		read(await f.call("table_read", { table: "numbers", where: { state: "open" }, after: null, limit: 50 })),
+	).toMatchObject({ matching: 0, rows: [], next: null, problem: "the table has no column state, so no row matches" });
 	// The row an after names is no longer among the rows the where keeps.
 	expect(
 		read(
@@ -201,7 +202,9 @@ it("shows a yes-no cell as yes or no, cuts a long cell and a long list, and matc
 			"tables/areas/rows.csv": `area,about,owner,shared,supervisor,agents\nsales,${"A".repeat(250)},,yes,,${agents.join(" ")}\nops,,,no,,${AGENT}\n`,
 		},
 	});
-	const answer = read(await f.call("table_read", { table: "areas", where: { shared: "yes" }, after: null, limit: 50 }));
+	const answer = read(
+		await f.call("table_read", { table: "areas", where: { shared: "yes" }, after: null, limit: 50 }),
+	);
 	expect(answer).toMatchObject({
 		holder: "owner",
 		time: null,
@@ -324,7 +327,11 @@ it("cuts a row's cells when one row does not fit a result whole", async () => {
 
 it("refuses arguments outside each tool's shape", async () => {
 	const f = await fixture();
-	await refuses(f.call("interface_read", { interface: "Pulse", view: null, after: null }), CloudToolArgumentRefusal, "like pulse");
+	await refuses(
+		f.call("interface_read", { interface: "Pulse", view: null, after: null }),
+		CloudToolArgumentRefusal,
+		"like pulse",
+	);
 	await refuses(
 		f.call("interface_read", { interface: "pulse", view: "", after: null }),
 		CloudToolArgumentRefusal,
@@ -335,12 +342,18 @@ it("refuses arguments outside each tool's shape", async () => {
 		CloudToolArgumentRefusal,
 		"after must be a whole number from 0 to 10000",
 	);
-	for (const value of [
+	const shapes: JsonValue[] = [
 		{ interface: "pulse", view: null },
 		{ interface: "pulse", view: null, after: null, path: "x" },
-	])
-		await refuses(f.call("interface_read", value), CloudToolArgumentRefusal, "interface_read takes exactly interface, view, after");
-	for (const where of [{ Bad: 1 }, { a: [] }])
+	];
+	for (const value of shapes)
+		await refuses(
+			f.call("interface_read", value),
+			CloudToolArgumentRefusal,
+			"interface_read takes exactly interface, view, after",
+		);
+	const wheres: JsonValue[] = [{ Bad: 1 }, { a: [] }];
+	for (const where of wheres)
 		await refuses(
 			f.call("table_read", { table: "cards", where, after: null, limit: 5 }),
 			CloudToolArgumentRefusal,
@@ -447,7 +460,11 @@ it("reads Pulse the way its page draws it: settings first, then each item, with 
 		p_release_id: content.companyReadId,
 		p_output_sha256: sha(String(content.value)),
 		p_reads: [
-			{ path: "interfaces/pulse/interface.toml", version, fileSha256: f.files.get("interfaces/pulse/interface.toml")?.file.fileSha256 },
+			{
+				path: "interfaces/pulse/interface.toml",
+				version,
+				fileSha256: f.files.get("interfaces/pulse/interface.toml")?.file.fileSha256,
+			},
 			{ path: "vision/vision.md", version: f.version("vision/vision.md") },
 			{ path: "tables/numbers/table.toml", version: f.version("tables/numbers/table.toml") },
 			{ path: "tables/numbers/rows.csv", version: f.version("tables/numbers/rows.csv") },
@@ -456,7 +473,15 @@ it("reads Pulse the way its page draws it: settings first, then each item, with 
 
 	// A later page starts at after, without the settings, and releases only what it shows.
 	const later = await f.call("interface_read", { interface: "pulse", view: null, after: 3 });
-	expect(read(later)).toEqual({ interface: "pulse", version, view: "Now", itemCount: 9, start: 3, items: late, next: null });
+	expect(read(later)).toEqual({
+		interface: "pulse",
+		version,
+		view: "Now",
+		itemCount: 9,
+		start: 3,
+		items: late,
+		next: null,
+	});
 	cites(f, later, ["interfaces/pulse/interface.toml"]);
 	expect(read(await f.call("interface_read", { interface: "pulse", view: null, after: 9 }))).toEqual({
 		interface: "pulse",
@@ -788,7 +813,14 @@ it("shows a file's text, or why it can't: outside content, no file, or a folder"
 		},
 		{ item: 1, block: 1, kind: "text", from: "file:docs/missing.md", note: "the file does not exist" },
 		{ item: 2, block: 2, kind: "text", from: "file:docs", note: "the file is a folder" },
-		{ item: 3, block: 3, kind: "text", from: "file:docs/plan.md", file: "docs/plan.md", text: "Bake more.\nSell more." },
+		{
+			item: 3,
+			block: 3,
+			kind: "text",
+			from: "file:docs/plan.md",
+			file: "docs/plan.md",
+			text: "Bake more.\nSell more.",
+		},
 	]);
 	cites(f, content, ["interfaces/files/interface.toml", "docs", "docs/plan.md"]);
 	expect((f.releases.at(-1)?.p_reads as Record<string, unknown>[])[1]).not.toHaveProperty("fileSha256");
@@ -818,7 +850,10 @@ it("shows an interface only to the agents its access names", async () => {
 it("shows a broken interface's problems, and refuses one that is not there", async () => {
 	const f = await fixture({
 		files: {
-			"interfaces/pulse/interface.toml": PULSE_INTERFACE.replace('format = "qorpera.interface/v0"', 'format = "nope"'),
+			"interfaces/pulse/interface.toml": PULSE_INTERFACE.replace(
+				'format = "qorpera.interface/v0"',
+				'format = "nope"',
+			),
 			"interfaces/huge/interface.toml": "x".repeat(64 * 1024 + 1),
 		},
 	});
@@ -847,7 +882,10 @@ it("pages whole items, and cuts an item that alone does not fit a page", async (
 	const text = `[[view.block]]\nkind = "text"\ntext = "${"a".repeat(1800)}"\n`;
 	const f = await fixture({
 		files: {
-			"interfaces/paged/interface.toml": page("Paged", `[[view]]\nname = "All"\n\n${Array(4).fill(text).join("\n")}`),
+			"interfaces/paged/interface.toml": page(
+				"Paged",
+				`[[view]]\nname = "All"\n\n${Array(4).fill(text).join("\n")}`,
+			),
 			"interfaces/long/interface.toml": page(
 				"Long",
 				`[[view]]\nname = "Long"\n\n[[view.block]]\nkind = "text"\nfrom = "file:docs/long.md"\n`,

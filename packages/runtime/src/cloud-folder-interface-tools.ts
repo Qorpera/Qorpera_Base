@@ -243,7 +243,8 @@ async function readTable(folder: CloudCompanyFolderClient, name: string, signal:
 		};
 	const definition = parsed.file;
 	const rows = await readFile(folder, `tables/${name}/rows.csv`, TABLE_ROWS_MAX_BYTES, signal);
-	if (rows.kind === "absent") return { kind: "ok", entry: file.entry, definition, rowsEntry: null, rows: [], problems: [] };
+	if (rows.kind === "absent")
+		return { kind: "ok", entry: file.entry, definition, rowsEntry: null, rows: [], problems: [] };
 	if (rows.kind === "not_text")
 		return {
 			kind: "ok",
@@ -385,7 +386,10 @@ function viewBlocks(file: InterfaceFile): { name: string; blocks: { block: Inter
 			blocks:
 				base === undefined
 					? view.blocks.map((block) => ({ block, narrow: [] }))
-					: base.blocks.map((shown) => ({ block: shown.block, narrow: where ? [...shown.narrow, where] : shown.narrow })),
+					: base.blocks.map((shown) => ({
+							block: shown.block,
+							narrow: where ? [...shown.narrow, where] : shown.narrow,
+						})),
 		});
 	}
 	return resolved;
@@ -484,7 +488,10 @@ export function cloudInterfaceTools(options: {
 			parseArguments(value) {
 				const input = args(value, "interface_read", ["interface", "view", "after"]);
 				const view = input.view;
-				if (view !== null && (typeof view !== "string" || view.length < 1 || view.length > 40 || NOT_ONE_LINE.test(view)))
+				if (
+					view !== null &&
+					(typeof view !== "string" || view.length < 1 || view.length > 40 || NOT_ONE_LINE.test(view))
+				)
 					throw new CloudToolArgumentRefusal("view must be null for the first view, or a view's name");
 				return {
 					interface: name(input.interface, "interface", "pulse"),
@@ -507,7 +514,9 @@ export function cloudInterfaceTools(options: {
 				const at = { interface: input.interface, version: read.entry.version };
 				const problems = (shown: readonly string[]) =>
 					largest(0, Math.min(PROBLEMS_SHOWN, shown.length), (n) =>
-						fitsOneResult(render({ ...at, broken: true, problems: shown.slice(0, n), moreProblems: shown.length - n })),
+						fitsOneResult(
+							render({ ...at, broken: true, problems: shown.slice(0, n), moreProblems: shown.length - n }),
+						),
 					) ?? 0;
 				const broken = (shown: readonly string[]) => {
 					const n = problems(shown);
@@ -532,7 +541,11 @@ export function cloudInterfaceTools(options: {
 				if (view === undefined)
 					return show(
 						context,
-						render({ ...at, views: listed(views.map((candidate) => candidate.name)), problem: "no view has that name" }),
+						render({
+							...at,
+							views: listed(views.map((candidate) => candidate.name)),
+							problem: "no view has that name",
+						}),
 						[read.entry],
 					);
 				const items = viewItems(view.blocks);
@@ -566,7 +579,8 @@ export function cloudInterfaceTools(options: {
 					if (from.startsWith("table:")) {
 						const table = await readTable(folder, from.slice("table:".length), signal);
 						if (table.kind === "absent") return note("the table does not exist");
-						if (table.kind === "broken") return note("the table can't be read; table_read shows why", [table.entry]);
+						if (table.kind === "broken")
+							return note("the table can't be read; table_read shows why", [table.entry]);
 						return {
 							kind: "rows",
 							columns: table.definition.columns.map((column) => column.name),
@@ -645,9 +659,9 @@ export function cloudInterfaceTools(options: {
 				> => {
 					const found = await source(from);
 					if (found.kind === "note") return found;
-					const lacks = [
-						...new Set(item.narrow.flatMap((filter) => Object.keys(filter))),
-					].filter((column) => !found.columns.includes(column));
+					const lacks = [...new Set(item.narrow.flatMap((filter) => Object.keys(filter)))].filter(
+						(column) => !found.columns.includes(column),
+					);
 					if (lacks.length > 0)
 						return {
 							kind: "note",
@@ -662,7 +676,11 @@ export function cloudInterfaceTools(options: {
 							{ where: filter, since: null, order: null, limit: null, latestBy: null },
 							options,
 						);
-					return { kind: "rows", source: found, rows: queryInterfaceRows(extend(rows, found), query(found), options) };
+					return {
+						kind: "rows",
+						source: found,
+						rows: queryInterfaceRows(extend(rows, found), query(found), options),
+					};
 				};
 
 				const prepare = async (i: number): Promise<Prepared> => {
@@ -796,7 +814,8 @@ export function cloudInterfaceTools(options: {
 									const single = key?.length === 1 ? key[0] : undefined;
 									return rows.map((row): TableRow => {
 										const id =
-											interfaceCell(row, "id") ?? (single === undefined ? undefined : interfaceCell(row, single));
+											interfaceCell(row, "id") ??
+											(single === undefined ? undefined : interfaceCell(row, single));
 										const values: Record<string, TableValue> = {};
 										for (const { column, index } of looked)
 											values[column] = index === null || typeof id !== "string" ? null : index(id);
@@ -886,7 +905,9 @@ export function cloudInterfaceTools(options: {
 									row: { when, title: titleOf(row, definition) },
 								});
 							}
-							things.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0) || a.at - b.at || a.order - b.order);
+							things.sort(
+								(a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0) || a.at - b.at || a.order - b.order,
+							);
 							return table(
 								found.source.reads,
 								["when", "title"],
@@ -958,16 +979,15 @@ export function cloudInterfaceTools(options: {
 					// Whole items only, after others or after the interface's settings; a page's first item alone is cut.
 					if (shown.length > 0 || top !== null) break;
 					const fits = (budget: Budget) => fitsOneResult(page(null, [prepared.answer(budget)], after));
-					const rows =
-						prepared.rows > 0
-							? largest(1, prepared.rows, (n) => fits({ ...WHOLE, rows: n }))
-							: null;
+					const rows = prepared.rows > 0 ? largest(1, prepared.rows, (n) => fits({ ...WHOLE, rows: n })) : null;
 					const cells =
 						rows === null && prepared.rows > 0
 							? largest(0, CELL_CHARS, (n) => fits({ ...WHOLE, rows: 1, cells: n }))
 							: null;
 					const points =
-						rows === null && cells === null ? largest(0, TEXT_POINTS, (n) => fits({ ...WHOLE, rows: 0, points: n })) : null;
+						rows === null && cells === null
+							? largest(0, TEXT_POINTS, (n) => fits({ ...WHOLE, rows: 0, points: n }))
+							: null;
 					const budget =
 						rows !== null
 							? { ...WHOLE, rows }
@@ -1038,7 +1058,9 @@ export function cloudInterfaceTools(options: {
 					);
 				const after = input.after;
 				if (after !== null && (typeof after !== "string" || after.length < 1 || after.length > 16_384))
-					throw new CloudToolArgumentRefusal("after must be null for the first page, or the next value a page gave");
+					throw new CloudToolArgumentRefusal(
+						"after must be null for the first page, or the next value a page gave",
+					);
 				return {
 					table: name(input.table, "table", "cards"),
 					where,

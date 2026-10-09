@@ -683,7 +683,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								...(folder
 									? [
 											...cloudFolderFileTools({ folder: folder.client, operations, identity }),
-											...cloudInterfaceTools({ folder: folder.client, identity, timeZone: wake.time.timeZone }),
+											...cloudInterfaceTools({
+												folder: folder.client,
+												identity,
+												timeZone: wake.time.timeZone,
+											}),
 										]
 									: gateway.tools()
 								).filter(work.companyFile),
