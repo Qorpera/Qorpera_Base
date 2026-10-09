@@ -28,7 +28,7 @@ const TRACKED_REQUESTS = 16_384;
 // Connections open at once: a model request makes two, its context composition and then its fence, and the
 // agent, one reviewer and JOBS compactor threads (RUNTIME-AGENT-MEMORY-TREE.md §7.1) may each have a prewarm and a
 // turn's request open together. More is a flood, not a run.
-const MAX_CONNECTIONS = 2 * 2 * (2 + JOBS);
+export const CLOUD_NATIVE_FENCE_MAX_CONNECTIONS = 2 * 2 * (2 + JOBS);
 // No stopwatch from a request's connection to its reply (5 Oct 2026; 4 s here and 5 s in Codex until then): the
 // checks before release take as long as the database does, and only the run's end stops them (`signal`: its
 // authority or lease gone, a refusal, a stop). The pinned Codex keeps a 10-minute backstop against a host that is
@@ -182,7 +182,7 @@ export async function startCloudNativeResultFence(options: {
 			.catch(fail);
 	};
 	const server = createServer((socket) => {
-		if (stopped || sockets.size >= MAX_CONNECTIONS) {
+		if (stopped || sockets.size >= CLOUD_NATIVE_FENCE_MAX_CONNECTIONS) {
 			socket.destroy();
 			fail();
 			return;
