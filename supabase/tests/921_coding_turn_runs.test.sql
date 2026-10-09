@@ -4,7 +4,8 @@
 -- the turn's run; F3's view refresh marks the session's open turn narrow, only from false to true, and the flag is frozen
 -- once the turn ended; a read of the session's view outside the every-agent part makes the open turn's run narrow at
 -- once, and its settle and the next begin mark the turn; the run log's machine check (qorpera_memory_run_machine_narrow)
--- answers for the turn's run; a session is narrow while any turn or its view is, and its busy check-in then names
+-- answers for the turn's run, and run.toml's origin makes a member's answer's turn continue the turn it answers, with no
+-- parent step; a session is narrow while any turn or its view is, and its busy check-in then names
 -- neither the session nor a command's text, only each command's commandId and turn. 988's base on 928's helpers: Alice's
 -- run, sessions a and b (cancelled, their first turn ended) on the owner's machine on exec-988.
 
@@ -166,6 +167,11 @@ begin
 	v_run3 := (select o.run_id from public.qorpera_wake_occurrences o where o.id = (pg_temp.ct_turn(w.id, 3)).occurrence_id);
 	perform pg_temp.base_assert(v_run3 is not null and not (pg_temp.ct_turn(w.id, 3)).narrow
 		and not public.qorpera_memory_run_machine_narrow(c_env, v_run3), 'turn 3 begins wide: ' || to_jsonb(pg_temp.ct_turn(w.id, 3))::text);
+	-- A member's answer started it (W1b's worker rule, for run.toml): no parent step, and it continues the turn it answers.
+	perform pg_temp.base_assert((public.qorpera_memory_run_origin(c_env, v_run3) ->> 'parent') is null
+		and (public.qorpera_memory_run_origin(c_env, v_run3) ->> 'step') is null
+		and public.qorpera_memory_run_origin(c_env, v_run3) ->> 'continues' = v_run2::text,
+		'turn 3 continues turn 2: ' || public.qorpera_memory_run_origin(c_env, v_run3)::text);
 	-- The view reads sales: before any refresh marks the turn, its run is narrow, and the ended turn's run stays wide.
 	insert into public.qorpera_folder_view_reads(view_id, environment_id, resource_id, resource_revision) values (v_view, c_env, v_sales, 1);
 	perform pg_temp.base_assert(public.qorpera_coding_view_narrow(w.id) and public.qorpera_coding_session_narrow(w.id)
@@ -193,7 +199,9 @@ begin
 	v_run4 := (select o.run_id from public.qorpera_wake_occurrences o where o.id = (pg_temp.ct_turn(w.id, 4)).occurrence_id);
 	perform pg_temp.base_assert(v_run4 is not null and (pg_temp.ct_turn(w.id, 4)).narrow and not (pg_temp.ct_turn(w.id, 3)).narrow
 		and public.qorpera_memory_run_machine_narrow(c_env, v_run4)
-		and (public.qorpera_memory_run_origin(c_env, v_run4) ->> 'narrow')::boolean,
+		and (public.qorpera_memory_run_origin(c_env, v_run4) ->> 'narrow')::boolean
+		and (public.qorpera_memory_run_origin(c_env, v_run4) ->> 'parent') is null
+		and public.qorpera_memory_run_origin(c_env, v_run4) ->> 'continues' = v_run3::text,
 		'turn 4 begins narrow: ' || public.qorpera_memory_run_origin(c_env, v_run4)::text);
 end $$;
 
