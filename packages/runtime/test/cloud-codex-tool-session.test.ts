@@ -1202,8 +1202,9 @@ it("clears writing and its renewal timer when composition is cancelled", async (
 // started while the agent's tool call is open. Its only output is its verdict tool
 // call; its model requests pass the fence on their own lane, never as the agent's.
 function reviewRun(
-	mode: "review" | "review-no-verdict" | "review-wrong-tool" | "review-context",
+	mode: "review" | "review-no-verdict" | "review-wrong-tool" | "review-context" | "review-compact",
 	composeContext?: Parameters<typeof runCloudCodexToolSession>[0]["composeContext"],
+	compactor?: MemoryCompactChannel,
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Sent." }));
 	const reviewer = new CloudActionReviewChannel();
@@ -1249,6 +1250,7 @@ function reviewRun(
 			contextViews.push(frame.threadId);
 		},
 		...(composeContext ? { composeContext } : {}),
+		...(compactor ? { compactor } : {}),
 		signal,
 	});
 	return { result, execute, evidence, contextViews };
@@ -1394,17 +1396,17 @@ it("compacts at closing in a fresh tool-less thread, never as the agent's contex
 
 it("refuses the compactor any tool and answers its outputs as unavailable", async () => {
 	const compactor = new MemoryCompactChannel();
-	let reply: unknown;
+	let failure: unknown;
 	const { result, evidence } = run("compact-tool", {
 		compactor,
 		closing: async (signal) => {
 			const thread = await compactor.call("PRIVATE_COMPACT_SYSTEM", signal);
-			reply = await thread.send("PRIVATE_WINDOW_1", signal);
+			failure = await thread.send("PRIVATE_WINDOW_1", signal).catch((error: unknown) => error);
 		},
 	});
 	await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
-	// No usage was reported, so the reply has none.
-	expect(reply).toEqual({ text: "LINE 1" });
+	// The pinned Codex takes the unavailable answer for no cloud tool result and fails the turn: no line is built.
+	expect((failure as Error).message).toBe("Native compaction did not complete");
 	const recorded = JSON.parse(await readFile(evidence, "utf8"));
 	expect(recorded.refused.error).toMatchObject({ code: -32601 });
 	expect(recorded.fenced[1].outputs).toEqual([
@@ -1413,26 +1415,66 @@ it("refuses the compactor any tool and answers its outputs as unavailable", asyn
 });
 
 it.each([
-	["compact-usage-limit", "usage-limit"],
-	["compact-rate-limit", "rate-limit"],
-	["compact-outage", "outage"],
-	["compact-failed", "Native compaction did not complete"],
-])("ends the compactor's thread on %s, and the agent's turn stands", async (mode, expected) => {
+	["compact-usage-limit", "usage-limit", undefined],
+	["compact-rate-limit", "rate-limit", undefined],
+	["compact-outage", "outage", undefined],
+	["compact-failed", "Native compaction did not complete", { input: 300, cached: 50, output: 20 }],
+	["compact-large", "Native compaction reply too large", undefined],
+])("ends the compactor's thread on %s, and the agent's turn stands", async (mode, expected, used) => {
 	const compactor = new MemoryCompactChannel();
 	let failure: unknown;
 	let after: unknown;
+	let unreported: unknown;
 	const { result } = run(mode, {
 		compactor,
 		closing: async (signal) => {
 			const thread = await compactor.call("PRIVATE_COMPACT_SYSTEM", signal);
 			failure = await thread.send("PRIVATE_WINDOW_1", signal).catch((error: unknown) => error);
 			after = await thread.send("PRIVATE_WINDOW_2", signal).catch((error: unknown) => error);
+			unreported = thread.unreported?.();
 		},
 	});
 	await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
 	// A usage limit, rate limit or outage stops the run's compactor (§7.2); any other failure only its request.
 	expect(failure instanceof MemoryCompactStop ? failure.reason : (failure as Error).message).toBe(expected);
 	expect((after as Error).message).toBe("Native compaction ended");
+	// What a failed request used is still counted, once.
+	expect(unreported).toEqual(used);
+});
+
+it.each([
+	["compact-open-usage-limit", "usage-limit"],
+	["compact-open-done", "outage"],
+])("stops a compactor send still open when the run ends: %s", async (mode, reason) => {
+	const compactor = new MemoryCompactChannel();
+	const { result } = run(mode, { compactor });
+	const signal = new AbortController().signal;
+	// Attached once the agent's thread is bound; until then a call stops as an outage does.
+	const thread = await vi.waitFor(() => compactor.call("PRIVATE_COMPACT_SYSTEM", signal), { timeout: 10_000 });
+	const failure = await thread.send("PRIVATE_WINDOW_1", signal).catch((error: unknown) => error);
+	// The run's failure stops it with the provider's signal; a process that closes with none stops it as an outage.
+	expect(failure).toBeInstanceOf(MemoryCompactStop);
+	expect((failure as MemoryCompactStop).reason).toBe(reason);
+	const ended = await result.catch((error: unknown) => error);
+	if (mode === "compact-open-done") expect(ended).toMatchObject({ providerSessionId: "thread_fixture" });
+	else expect(nativeProviderUsageSignal(ended)).toBe("usage_limit");
+});
+
+it("keeps a reviewer's late prewarm off a compactor thread starting during the agent's turn", async () => {
+	const compactor = new MemoryCompactChannel();
+	const { result, execute, evidence } = reviewRun("review-compact", undefined, compactor);
+	// The compactor thread starts once the reviewer's has; the fixture sends the reviewer's prewarm only then.
+	await vi.waitFor(() => stat(`${evidence}.review-started`), { timeout: 10_000 });
+	const signal = new AbortController().signal;
+	const thread = await compactor.call("PRIVATE_COMPACT_SYSTEM", signal);
+	await expect(thread.send("PRIVATE_WINDOW_1", signal)).resolves.toEqual({ text: "LINE 1" });
+	thread.close?.();
+	await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture", toolCalls: 1 });
+	expect(execute).toHaveBeenCalledOnce();
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.prewarm).toMatchObject({ threadId: "thread_review", outputs: [] });
+	expect(recorded.compact.prewarms).toEqual([expect.objectContaining({ threadId: "thread_compact", outputs: [] })]);
+	expect(recorded.compact.compactTurns).toHaveLength(1);
 });
 
 it("interrupts a compactor turn its caller stopped waiting for", async () => {

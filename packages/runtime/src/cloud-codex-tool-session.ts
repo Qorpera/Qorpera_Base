@@ -131,7 +131,8 @@ const REVIEW_RECORDED_OUTPUT = JSON.stringify({ recorded: true });
 const REVIEW_UNAVAILABLE_OUTPUT = JSON.stringify({ recorded: false });
 /** What any output of a compactor thread is answered with: it has no tools, so it gets nothing of the agent's. */
 const COMPACT_UNAVAILABLE_OUTPUT = JSON.stringify({ available: false });
-/** A compactor reply past this is no line (RUNTIME-AGENT-MEMORY-TREE.md §7.3): its turn is ended. */
+/** A bound on one compactor reply, far above any line (RUNTIME-AGENT-MEMORY-TREE.md §7.3 sends a line over NODE back
+ * to its thread): a reply past it fails its send, and the thread's turn is ended. */
 const MAX_COMPACT_REPLY_BYTES = 16 * 1024;
 
 /** What binds a model request: a context composition request has no outputs. */
@@ -801,13 +802,25 @@ class CodexBoundaryRpc {
 		);
 	}
 
-	/** The prewarm of the side thread of this kind now starting: the first one while it starts, then only its own. */
+	/** The prewarm of the side thread of this kind now starting: the first one while it starts, then only its own. A
+	 * known side thread's late prewarm is never it. */
 	#startingPrewarm(kind: SideThreadKind, request: Pick<CloudNativeFenceRequest, "threadId" | "purpose">): boolean {
 		const starting = this.#startingSide;
 		return (
 			starting?.kind === kind &&
 			request.purpose === "prewarm" &&
+			!this.#sideThread(request.threadId) &&
 			(starting.prewarmThreadId ?? request.threadId) === request.threadId
+		);
+	}
+
+	/** A reviewer's or a compactor's thread, live or ended. */
+	#sideThread(threadId: string): boolean {
+		return (
+			this.#reviews.has(threadId) ||
+			this.#endedReviews.has(threadId) ||
+			this.#compactions.has(threadId) ||
+			this.#endedCompactions.has(threadId)
 		);
 	}
 
@@ -816,11 +829,7 @@ class CodexBoundaryRpc {
 		if (request.purpose === "prewarm") {
 			if (request.outputs.length !== 0) throw new Error("Native review binding failed");
 			const starting = this.#startingSide;
-			if (
-				starting?.kind === "review" &&
-				!this.#reviews.has(request.threadId) &&
-				!this.#endedReviews.has(request.threadId)
-			)
+			if (starting?.kind === "review" && !this.#sideThread(request.threadId))
 				starting.prewarmThreadId = request.threadId;
 			return;
 		}
@@ -847,11 +856,7 @@ class CodexBoundaryRpc {
 		if (request.purpose === "prewarm") {
 			if (request.outputs.length !== 0) throw new Error("Native compaction binding failed");
 			const starting = this.#startingSide;
-			if (
-				starting?.kind === "compact" &&
-				!this.#compactions.has(request.threadId) &&
-				!this.#endedCompactions.has(request.threadId)
-			)
+			if (starting?.kind === "compact" && !this.#sideThread(request.threadId))
 				starting.prewarmThreadId = request.threadId;
 			return;
 		}
@@ -1049,10 +1054,7 @@ class CodexBoundaryRpc {
 				const id = identifier(object(object(await this.request("thread/start", params)).thread).id);
 				if (
 					id === this.#threadId ||
-					this.#reviews.has(id) ||
-					this.#endedReviews.has(id) ||
-					this.#compactions.has(id) ||
-					this.#endedCompactions.has(id) ||
+					this.#sideThread(id) ||
 					(starting.prewarmThreadId !== undefined && starting.prewarmThreadId !== id)
 				)
 					throw new Error(`Native ${kind === "review" ? "review" : "compaction"} binding failed`);
@@ -1103,6 +1105,12 @@ class CodexBoundaryRpc {
 		this.#compactions.set(threadId, thread);
 		return {
 			send: (text, sendSignal) => this.#compactSend(thread, text, input.effort, sendSignal),
+			// What the thread's failed sends used: its usage grown since the last reply carried it.
+			unreported: () => {
+				const usage = thread.total === thread.counted ? undefined : compactUsage(thread.total, thread.counted);
+				thread.counted = thread.total;
+				return usage;
+			},
 			close: () => this.#endCompaction(threadId),
 		};
 	}

@@ -16,6 +16,7 @@ import {
 	type CloudNativeResultInput,
 	type CloudNativeToolBoundary,
 } from "./cloud-native-tool-boundary.ts";
+import { JOBS } from "./memory-tree/tree.ts";
 
 export const CLOUD_NATIVE_RESULT_FENCE_SCHEMA = "qorpera.native-result-fence/v1";
 // One model request carries any number of tool outputs (runtime v104; the pinned
@@ -24,9 +25,10 @@ const MAX_FRAME_BYTES = CLOUD_NATIVE_FENCE_FRAME_BYTES;
 // A run is not capped by its number of model requests or their total size
 // (founder, 2026-09-24); replayed request ids are tracked in a rolling window.
 const TRACKED_REQUESTS = 16_384;
-// Connections open at once: a model request makes two, its context composition and then its fence, and a
-// prewarm or a reviewer's request may overlap the agent's. More is a flood, not a run.
-const MAX_CONNECTIONS = 8;
+// Connections open at once: a model request makes two, its context composition and then its fence, and the
+// agent, one reviewer and JOBS compactor threads (RUNTIME-AGENT-MEMORY-TREE.md §7.1) may each have a prewarm and a
+// turn's request open together. More is a flood, not a run.
+const MAX_CONNECTIONS = 2 * 2 * (2 + JOBS);
 // No stopwatch from a request's connection to its reply (5 Oct 2026; 4 s here and 5 s in Codex until then): the
 // checks before release take as long as the database does, and only the run's end stops them (`signal`: its
 // authority or lease gone, a refusal, a stop). The pinned Codex keeps a 10-minute backstop against a host that is
