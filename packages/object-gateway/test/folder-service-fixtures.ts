@@ -286,8 +286,12 @@ export class FakeCore implements FolderCore {
 	readonly lapsed = new Set<string>();
 	renewFailures = 0;
 	readonly renewals: string[] = [];
-	/** The next commits get no answer: `lost` applies them first (the reply was lost), `down` does not. */
+	/** The next commits get no answer: `lost` applies them first (the reply was lost, and so may a replay's be), `down`
+	 * does not. */
 	commitFailures: { mode: "lost" | "down"; count: number } = { mode: "down", count: 0 };
+	/** When set, the core refuses every commit not asked before whole, and why (the pause: `stopped`; a change set over
+	 * its 1000 units: `invalid`; and the like). */
+	commitRefusal: CoreRefusal["reason"] | undefined;
 
 	async openUpload(environmentId: string, actor: FolderActor, manifest: string) {
 		this.#check(actor, environmentId);
@@ -357,12 +361,13 @@ export class FakeCore implements FolderCore {
 		const earlier = this.#answers.get(key);
 		if (earlier) {
 			if (earlier.request !== request) throw new CoreRefusal("invalid");
-			return earlier.answer;
+			return this.#answered(earlier.answer);
 		}
 		const view = this.#check(actor, environmentId);
 		if (final && view?.kind !== "computer_shell_command") throw new CoreRefusal("invalid");
 		if (units.length === 0 && !final) throw new CoreRefusal("invalid");
 		if (view?.kind === "computer_shell_command" && view.ended && !final) throw new CoreRefusal("denied");
+		if (this.commitRefusal) throw new CoreRefusal(this.commitRefusal);
 		if (this.commitFailures.count > 0 && this.commitFailures.mode === "down") {
 			this.commitFailures.count--;
 			throw new Error("The database did not answer");
@@ -494,6 +499,11 @@ export class FakeCore implements FolderCore {
 		const answer: CommitAnswer = { commitId, seq, units: outcomes };
 		this.copies.set(commitId, kept);
 		this.#answers.set(key, { request, answer });
+		return this.#answered(answer);
+	}
+
+	/** A commit's answer, unless the next one is lost. */
+	#answered(answer: CommitAnswer): CommitAnswer {
 		if (this.commitFailures.count > 0 && this.commitFailures.mode === "lost") {
 			this.commitFailures.count--;
 			throw new Error("The answer was lost");

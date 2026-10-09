@@ -94,7 +94,8 @@ connection starts it again on the new mount; after the share is mounted again by
 
 A member's or the platform's operator mount writes from step 3, a company machine's desktop view from step 4a (it
 publishes 2 s after its last change, and when its last connection leaves), and a shell command's view from step 4b (it
-publishes only when asked, is kept when its last connection leaves, and its final publish closes it); run box views
+publishes only when asked, or before a change that needs what is pending published first, is kept when its last
+connection leaves, and its final publish closes it); run box views
 stay read-only until steps 5–6. Writes need P17's conflict copies and their erasure live (#783, #798), and step 3a (#855) for big files' chunks.
 
 **Reading the objects.** The gateway writes them 0600, so the service reads them as the gateway's account:

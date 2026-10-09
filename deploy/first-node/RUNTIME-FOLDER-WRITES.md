@@ -113,8 +113,9 @@ A boundary publishes the view's pending changes as one change set.
 **When.** In step 3: when the machine asks (`qorpera-folder publish --view-file <file>`), for a mount configured with a quiet
 period about two seconds after the last change (the desktop rule of §2), and before a change that needs what is
 pending published first (below). Steps 4–6 add theirs: command end and output reads, and per-desktop quiet periods.
-A shell command's view (step 4b) publishes only when asked, and its last boundary is final: one change set with
-everything pending, or an empty one, which closes the view (RUNTIME-FOLDER-SERVICE.md "Step 4b").
+A shell command's view (step 4b) publishes only when asked, or before a change that needs what is pending published
+first, and its last boundary is final: one change set with everything pending, or an empty one, which closes the view
+(RUNTIME-FOLDER-SERVICE.md "Step 4b").
 
 **What is left out** (§2 "Never published"):
 - a file still open for writing by any process; it waits for a later boundary;
@@ -172,8 +173,10 @@ during a commit, it has landed or not; the mount shows the live folder after the
 (above), and the report lists every changed path: `saved`; `conflict`, with the receipt that keeps this view's
 version; `refused` or `denied`, with the core's reason (no write authority, a seeded path, a structured file that does
 not parse); `not applied`, with why (still open, a folder it needed was not made, the save did not get through); and
-whether the change is kept pending. The reply to `publish` carries it, and the program prints it. A quiet-period
-report is logged in the machine's journal until step 4 routes it to the desktop.
+whether the change is kept pending. A change set the core refused whole has no commit, and the report says `refused`
+with why: `denied`, `stopped` (the pause) or `invalid` (among others, more than the core's 1000 units; step 4b). The
+reply to `publish` carries it, and the program prints its paths. A quiet-period report is logged in the machine's
+journal until step 4 routes it to the desktop.
 
 ## Errors at once
 

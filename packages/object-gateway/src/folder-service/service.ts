@@ -96,6 +96,9 @@ export interface Report {
 	readonly paths: readonly ReportEntry[];
 	/** A command's final change set closed the view (F3 4b): nothing is kept pending. */
 	readonly closed?: true;
+	/** The core refused the change set whole, and why (`denied`: 42501, `stopped`: the pause, 55000; `invalid`:
+	 * 22023, a change set over 1000 units among others): an answer, unlike a boundary that got none (F3 4b). */
+	readonly refused?: CoreRefusal["reason"];
 }
 
 /** A chunk being streamed from a machine to the gateway. */
@@ -123,6 +126,16 @@ interface MovedVersion {
 	readonly version: string;
 }
 
+/** The core's answer to a commit; a change set it refused whole is one too (every unit not applied), with why. */
+type Answer = CommitAnswer & { readonly refused?: CoreRefusal["reason"] };
+
+/** A report's commit: its id and position, or, for a change set the core refused whole, why. */
+function committed(answer: Answer): Pick<Report, "commitId" | "seq" | "refused"> {
+	return answer.refused
+		? { commitId: null, seq: null, refused: answer.refused }
+		: { commitId: answer.commitId, seq: answer.seq };
+}
+
 /** A boundary the core answered, while the view waits for the feed to bring its change set: until then the view keeps
  * its pending changes as they were, and nothing changes (BUSY). */
 interface Settlement {
@@ -146,6 +159,18 @@ function held(
 			return u.paths.map((path): ReportEntry => ({ path, outcome: o, ...(reason ? { reason } : {}), kept: true }));
 		}),
 	];
+}
+
+/** The report of a boundary whose commit got no answer: every path it planned stays pending, to be asked again. */
+function notYet(plan: BoundaryPlan): ReportEntry[] {
+	return plan.units.flatMap((u) =>
+		u.paths.map((path): ReportEntry => ({
+			path,
+			outcome: "not_applied",
+			reason: "the save did not get through yet",
+			kept: true,
+		})),
+	);
 }
 
 class View {
@@ -197,10 +222,12 @@ class View {
 	quiet: ReturnType<typeof setTimeout> | undefined;
 	/** One boundary at a time. */
 	publishing: Promise<Report> = Promise.resolve({ commitId: null, seq: null, paths: [] });
-	/** A boundary whose commit got no answer: asked again, unchanged (a final one final), before the next one. */
+	/** A boundary whose commit got no answer: asked again, unchanged (a final one final), as the actor it was asked as,
+	 * before the next one. A view's close keeps it: a final may be what closed the view. */
 	unanswered:
 		| {
 				readonly key: string;
+				readonly actor: FolderActor;
 				readonly units: readonly CommitUnit[];
 				readonly plan: BoundaryPlan;
 				readonly made: ReadonlyMap<string, string>;
@@ -241,7 +268,8 @@ class View {
 		return this.#operator === undefined;
 	}
 
-	/** Who the core reads as. A core view's actor carries its pass, so it exists only while the view does. */
+	/** Who the core reads as. A core view's actor carries its pass, so it exists only while the view does (a boundary
+	 * with no answer keeps the one it was asked as, to ask again). */
 	get actor(): FolderActor {
 		if (this.#operator) return this.#operator;
 		if (!this.lease) throw new ProtocolError(ErrorCode.viewClosed, this.closed ?? "The view is closed");
@@ -391,12 +419,14 @@ export class FolderService {
 	async open(hello: Hello, bridge: BridgeInfo): Promise<ViewHandle> {
 		const grant = this.#grants.admit(hello, bridge);
 		let view = this.#views.get(grant.key);
-		// Joining an open view takes the pass, and the company folder, it was opened with. A hello the core has not
-		// checked yet never locks out another: while it is being checked the other is asked to try again, and an
-		// unchecked view is replaced.
+		// A view that closed while a final of its had no answer stays, joined only to ask that final again.
+		const asksFinal = view?.closed !== undefined && view.unanswered?.final === true;
+		// Joining an open view (or one kept for its final) takes the pass, and the company folder, it was opened with. A
+		// hello the core has not checked yet never locks out another: while it is being checked the other is asked to try
+		// again, and an unchecked view is replaced.
 		if (
 			view &&
-			!view.closed &&
+			(!view.closed || asksFinal) &&
 			(view.environmentId !== grant.environmentId || !timingSafeEqual(view.passSha256, grant.passSha256))
 		) {
 			if (view.confirmed)
@@ -404,7 +434,7 @@ export class FolderService {
 			if (view.loading) throw new ProtocolError(ErrorCode.unavailable, "The view is being checked; try again");
 			view = undefined;
 		}
-		if (!view || view.closed) {
+		if (!view || (view.closed && !asksFinal)) {
 			view = new View(grant);
 			this.#views.set(grant.key, view);
 		}
@@ -439,7 +469,7 @@ export class FolderService {
 		try {
 			view.loading ??= this.#firstLoad(view);
 			await view.loading;
-			if (view.closed) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
+			if (view.closed && !view.unanswered?.final) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
 			// A core view is served only to the machines its kind and machine name: a desktop to its own company machine.
 			if (view.core && !view.access?.admits(bridge))
 				throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
@@ -623,9 +653,13 @@ export class FolderService {
 		view.handles.clear();
 		view.intents.clear();
 		view.unsettled = undefined;
-		// The pass goes with it: a closed view makes no more calls.
+		// The pass goes with it: a closed view makes no more calls, but a final with no answer asked again as it was.
 		view.lease = undefined;
-		if (this.#views.get(view.key) === view) this.#views.delete(view.key);
+		// That final may be what closed the view: the view stays where its machine finds it again, until it has been idle
+		// as long as any other.
+		if (view.unanswered?.final) {
+			if (view.connections === 0) view.idleSince ??= this.#now();
+		} else if (this.#views.get(view.key) === view) this.#views.delete(view.key);
 		for (const sink of view.sinks) sink.closed(ErrorCode.viewClosed, reason);
 		view.sinks.clear();
 		this.#log(`folder-service: ${view.key} closed: ${reason}`);
@@ -1209,8 +1243,21 @@ export class FolderService {
 
 	async #boundary(view: View, final: boolean): Promise<Report> {
 		const pending = view.pending;
-		// A final that finds its view closed did not close it: the machine hears why it closed.
-		if (final && view.closed) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
+		if (final && view.closed) {
+			// A final with no answer may be what closed the view: asked again under its key, as it was (the core answers
+			// a replay on a closed view, given its pass), its answer is the report.
+			const earlier = view.unanswered;
+			if (earlier?.final) {
+				const answer = await this.#commit(view, earlier.actor, earlier.key, earlier.units, true);
+				if (!answer) return { commitId: null, seq: null, paths: notYet(earlier.plan) };
+				view.unanswered = undefined;
+				if (answer.commitId) return await this.#closedBy(view, earlier.plan, answer, []);
+				// Refused: the final did not close the view, which goes now, as any closed one.
+				if (this.#views.get(view.key) === view) this.#views.delete(view.key);
+			}
+			// A final that finds its view closed otherwise did not close it: the machine hears why it closed.
+			throw new ProtocolError(ErrorCode.viewClosed, view.closed);
+		}
 		if (!pending || view.closed) return { commitId: null, seq: null, paths: [] };
 		return await this.#boundaryOf(view, pending, final);
 	}
@@ -1229,27 +1276,15 @@ export class FolderService {
 		// A boundary whose answer never came goes first, unchanged (a final one final).
 		if (view.unanswered) {
 			const earlier = view.unanswered;
-			const answer = await this.#commit(view, earlier.key, earlier.units, earlier.final);
-			if (!answer)
-				return {
-					commitId: null,
-					seq: null,
-					paths: earlier.plan.units.flatMap((u) =>
-						u.paths.map((path) => ({
-							path,
-							outcome: "not_applied" as const,
-							reason: "the save did not get through yet",
-							kept: true,
-						})),
-					),
-				};
+			const answer = await this.#commit(view, earlier.actor, earlier.key, earlier.units, earlier.final);
+			if (!answer) return { commitId: null, seq: null, paths: notYet(earlier.plan) };
 			view.unanswered = undefined;
 			if (earlier.final && answer.commitId) return await this.#closedBy(view, earlier.plan, answer, []);
 			// A command's change set refused whole is not settled: what it carried stays pending, and this boundary plans
 			// it again.
 			if (answer.commitId || !view.access?.command) {
 				entries.push(...(await this.#settle(view, earlier.plan, earlier.made, answer)));
-				if (view.unsettled) return { commitId: answer.commitId, seq: answer.seq, paths: entries };
+				if (view.unsettled) return { ...committed(answer), paths: entries };
 			}
 		}
 		await this.#stageAll(view);
@@ -1291,26 +1326,25 @@ export class FolderService {
 					const node = pending.nodes().get(path);
 					if (node?.kind === "file") made.set(path, node.version);
 				}
-		const answer = await this.#commit(view, key, units, final);
+		// The actor is read once: a renewal that closes the view between two tries of a final (which closed it) does not
+		// stop the next try, which the core answers as a replay.
+		const actor = view.actor;
+		const answer = await this.#commit(view, actor, key, units, final);
 		if (!answer) {
-			view.unanswered = { key, units, plan, made, final };
-			entries.push(...dropped);
-			for (const u of plan.units)
-				for (const path of u.paths)
-					entries.push({ path, outcome: "not_applied", reason: "the save did not get through yet", kept: true });
-			return { commitId: null, seq: null, paths: entries };
+			view.unanswered = { key, actor, units, plan, made, final };
+			return { commitId: null, seq: null, paths: [...entries, ...dropped, ...notYet(plan)] };
 		}
 		if (final && answer.commitId) return await this.#closedBy(view, plan, answer, [...entries, ...dropped]);
-		// A command's change set refused whole (its command ended, so only the final saves) is not settled: what it
-		// carried stays pending, for the final to carry. A desktop's is let go.
+		// A command's change set refused whole (its command ended, so only the final saves; or a final the core refused)
+		// is not settled: what it carried stays pending, for the final to carry, and the report says why. A desktop's is
+		// let go.
 		if (!answer.commitId && view.access?.command)
 			return {
-				commitId: null,
-				seq: null,
+				...committed(answer),
 				paths: [...entries, ...held(plan, (i) => ({ outcome: "refused", reason: answer.units[i]?.reason }))],
 			};
 		entries.push(...dropped, ...(await this.#settle(view, plan, made, answer)));
-		return { commitId: answer.commitId, seq: answer.seq, paths: entries };
+		return { ...committed(answer), paths: entries };
 	}
 
 	/** A command's final, answered: the core closed its view with it, so nothing stays pending and nothing settles. */
@@ -1387,17 +1421,17 @@ export class FolderService {
 	}
 
 	/** The commit, asked again under the same key while no answer comes. Undefined: no answer yet; a refusal of the
-	 * whole change set is an answer of its own (every unit not applied). `final`: a command view's last. */
+	 * whole change set is an answer of its own (every unit not applied, and why). `final`: a command view's last. */
 	async #commit(
 		view: View,
+		actor: FolderActor,
 		key: string,
 		units: readonly CommitUnit[],
 		final = false,
-	): Promise<CommitAnswer | undefined> {
+	): Promise<Answer | undefined> {
+		const as: CommitActor = final && actor.kind === "view" ? { ...actor, final: true } : actor;
 		for (let attempt = 0; attempt < 3; attempt++) {
 			try {
-				const actor = view.actor;
-				const as: CommitActor = final && actor.kind === "view" ? { ...actor, final: true } : actor;
 				return await this.#core.commit(view.environmentId, as, key, units);
 			} catch (error) {
 				if (error instanceof CoreRefusal)
@@ -1410,6 +1444,7 @@ export class FolderService {
 							reason: error.reason,
 							version: null,
 						})),
+						refused: error.reason,
 					};
 				this.#log(`folder-service: ${view.key}: commit not answered: ${(error as Error).message}`);
 			}
