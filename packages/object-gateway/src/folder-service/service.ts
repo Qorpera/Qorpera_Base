@@ -299,6 +299,8 @@ class View {
 	quiet: ReturnType<typeof setTimeout> | undefined;
 	/** One boundary at a time. */
 	publishing: Promise<Report> = Promise.resolve({ commitId: null, seq: null, paths: [] });
+	/** Steps on that chain not ended yet (#inTurn): an idle view is not forgotten while it has any; the last decides. */
+	steps = 0;
 	/** A boundary whose commit got no answer: asked again, unchanged (a final one final), as the actor it was asked as,
 	 * before the next one. A view's close keeps it: a final may be what closed the view. */
 	unanswered:
@@ -558,24 +560,26 @@ export class FolderService {
 			view.handles.clear();
 			// A command's view stays, with what it has pending and its lease: the command's last call publishes it, final.
 			// So does a desktop's whose last boundary had no answer, or a refusal that may lift: a later publish from its
-			// machine publishes it (F3 4c).
-			if (this.#kept(view)) return;
+			// machine publishes it, and nothing else does (F3 4c). A boundary still running decides again as it ends.
+			if (this.#kept(view)) {
+				if (view.quiet) clearTimeout(view.quiet);
+				view.quiet = undefined;
+				return;
+			}
 			view.idleSince = this.#now();
 			// A core view no machine holds is dropped (with its pass): its lease is not renewed while idle, so a machine
 			// that comes back lists it again and renews at once. What it has pending, and the reads its machine logged, are
 			// published first, under the lease it still has (a desktop that ended inside its quiet period); a machine that
-			// comes back meanwhile joins it. A command's never publishes unasked.
+			// comes back meanwhile joins it. A command's never publishes unasked. Either way the view is kept or let go
+			// once its last boundary has ended (#inTurn).
 			if (!view.lease || this.#views.get(view.key) !== view) return;
 			if (view.access?.command || ((!view.pending || view.pending.empty) && !view.unreleased)) {
-				this.#letGo(view);
+				void this.#inTurn(view, async () => ({ commitId: null, seq: null, paths: [] }));
 				return;
 			}
 			if (view.quiet) clearTimeout(view.quiet);
 			view.quiet = undefined;
-			void this.#publishLogged(view).then(() => {
-				if (!this.#kept(view)) this.#letGo(view);
-				else if (view.connections === 0) view.idleSince = undefined;
-			});
+			void this.#publishLogged(view);
 		};
 		try {
 			view.loading ??= this.#firstLoad(view);
@@ -682,14 +686,16 @@ export class FolderService {
 	}
 
 	/** One round: read the clocks of every company with a live view, move views whose company moved, list again those
-	 * due, send heartbeats, and drop views idle for long enough. Exposed for tests. */
+	 * due, send heartbeats, and drop views idle for long enough. A view with a boundary still running stays: the last
+	 * step on its chain keeps it or lets it go (#unheld), which needs it where its machine finds it. Exposed for tests. */
 	async poll(): Promise<void> {
 		if (this.#polling) return;
 		this.#polling = true;
 		try {
 			const now = this.#now();
 			for (const [key, view] of this.#views)
-				if (view.idleSince !== undefined && now - view.idleSince >= this.#idleMs) this.#views.delete(key);
+				if (view.idleSince !== undefined && view.steps === 0 && now - view.idleSince >= this.#idleMs)
+					this.#views.delete(key);
 			const live = [...this.#views.values()].filter((v) => v.tree && !v.closed);
 			if (live.length === 0) return;
 			let clocks: Map<string, number>;
@@ -1136,14 +1142,32 @@ export class FolderService {
 
 	/** Tries to settle an answered boundary in its turn among the view's boundaries, never beside one. */
 	#settleInTurn(view: View): Promise<Report> {
-		const next = view.publishing
-			.catch(() => undefined)
-			.then(async (): Promise<Report> => {
-				await this.#trySettle(view);
-				return { commitId: null, seq: null, paths: [] };
-			});
+		return this.#inTurn(view, async () => {
+			await this.#trySettle(view);
+			return { commitId: null, seq: null, paths: [] };
+		});
+	}
+
+	/** One step in its turn among the view's boundaries, after any running one. The last of them on a view no machine
+	 * holds decides whether it stays kept (#unheld): a boundary still running when its last connection left, or one
+	 * that ran after (a change that landed then, and its quiet period), may have heard another answer. */
+	#inTurn(view: View, step: () => Promise<Report>): Promise<Report> {
+		const next = view.publishing.catch(() => undefined).then(step);
 		view.publishing = next;
+		view.steps++;
+		const decide = (): void => {
+			view.steps--;
+			if (view.publishing === next) this.#unheld(view);
+		};
+		next.then(decide, decide);
 		return next;
+	}
+
+	/** A core view no machine holds, with no boundary running: kept (renewed, and not forgotten while idle), or let go. */
+	#unheld(view: View): void {
+		if (view.connections > 0 || !view.lease || view.closed || this.#views.get(view.key) !== view) return;
+		if (this.#kept(view)) view.idleSince = undefined;
+		else this.#letGo(view);
 	}
 
 	/** A change restarts the quiet period of a mount that publishes on one, and the view's last boundary no longer says
@@ -1372,9 +1396,7 @@ export class FolderService {
 
 	/** One boundary, after any running one (RUNTIME-FOLDER-WRITES.md, "A boundary"). `final`: a command's last. */
 	#publish(view: View, final = false): Promise<Report> {
-		const next = view.publishing.catch(() => undefined).then(() => this.#boundary(view, final));
-		view.publishing = next;
-		return next;
+		return this.#inTurn(view, () => this.#boundary(view, final));
 	}
 
 	async #boundary(view: View, final: boolean): Promise<Report> {
@@ -1543,9 +1565,15 @@ export class FolderService {
 	/** Takes entries of a machine's read log. A log the view does not know starts where the batch does; a known one
 	 * takes a batch that starts at or before its next entry (those it took already are skipped) and leaves one with a
 	 * gap, which the machine sends again from what the answer says the view took. `lost` makes every later boundary of
-	 * the view refused. An operator mount's view keeps no read set: its reads count as released at once. */
+	 * the view refused. An operator mount's view keeps no read set: its reads count as released at once. So do those
+	 * of a view kept only to ask its final again: the core answers it nothing but that final's replay, so no save comes
+	 * of them (a dead program's `publish` hands its log over before it asks). */
 	#takeReads(view: View, request: ReadsRequest): ReadsAnswer {
-		if (view.closed) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
+		if (view.closed) {
+			if (!view.finalOut) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
+			const last = request.reads.at(-1)?.seq ?? 0;
+			return { log: request.log, taken: last, released: last };
+		}
 		if (request.lost) view.unproven = true;
 		const first = request.reads[0];
 		let log = view.logs.get(request.log);

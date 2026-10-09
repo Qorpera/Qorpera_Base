@@ -12,6 +12,7 @@ import {
 	SupabaseFolderCore,
 } from "../src/folder-service/core.ts";
 import type { Transport } from "../src/folder-service/https-request.ts";
+import { DESKTOP_QUIET_MS } from "../src/folder-service/mounts.ts";
 import { NasObjects } from "../src/folder-service/objects.ts";
 import {
 	type BridgeInfo,
@@ -80,8 +81,9 @@ const entry = (
 ): ReadLogEntry => ({ seq, path, version, authority });
 
 /** A company folder with one plan and one view the core opened (a desktop of the company machine, unless said
- * otherwise), and the node's service with the office project configured. */
-async function company(kind = "computer_desktop") {
+ * otherwise), and the node's service with the office project configured (forgetting views idle for `idleMs`, if
+ * given). */
+async function company(kind = "computer_desktop", idleMs?: number) {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-folder-reads-"));
 	const core = new FakeCore();
 	core.seed([folder("docs"), await storeFile(root, "docs/plan.md", "the plan", 1)]);
@@ -93,6 +95,7 @@ async function company(kind = "computer_desktop") {
 		grants: companyGrants(),
 		staging: new FolderStaging(core, new FakeUploads(root, core), objects),
 		log: () => undefined,
+		...(idleMs === undefined ? {} : { idleMs }),
 	});
 	const handles: ViewHandle[] = [];
 	cleanups.push(async () => {
@@ -415,7 +418,7 @@ describe("a machine's read log", () => {
 });
 
 describe("a boundary whose release is not taken", () => {
-	it("keeps a desktop's changes when its release gets no answer, and asks the same release again", async () => {
+	it("keeps a desktop's changes when its release gets no answer, asks the same release again, and lets it go once saved", async () => {
 		const { core, service, open, coreView } = await company();
 		const view = await open();
 		await take(view, LOG, [entry(1)]);
@@ -432,8 +435,10 @@ describe("a boundary whose release is not taken", () => {
 		expect(core.releases).toHaveLength(3);
 		expect(new Set(core.releases.map((r) => r.releaseId)).size).toBe(1);
 		expect(core.commits).toEqual([]);
-		// No machine holds it: it is kept, and renewed, for its machine's next publish.
+		// No machine holds it: it is kept, and renewed, for its machine's next publish; its quiet period publishes nothing.
 		view.release();
+		await new Promise((resolve) => setTimeout(resolve, DESKTOP_QUIET_MS + 200));
+		expect(core.releases).toHaveLength(3);
 		const renewals = coreView.renewals;
 		await service.renewLeases();
 		expect(coreView.renewals).toBe(renewals + 1);
@@ -441,6 +446,145 @@ describe("a boundary whose release is not taken", () => {
 		expect((await again.publish()).paths).toEqual([{ path: "docs/out.md", outcome: "saved" }]);
 		expect(core.releases).toHaveLength(4);
 		expect(new Set(core.releases.map((r) => r.releaseId)).size).toBe(1);
+		// Published, it is let go when its machine lets go: the core hears at once that nothing is unsaved, and it is no
+		// longer renewed.
+		again.release();
+		await until(() => coreView.unsaved.at(-1) === null);
+		await settle();
+		const after = coreView.renewals;
+		await service.renewLeases();
+		expect(coreView.renewals).toBe(after);
+	});
+
+	it("decides what to do with a view whose last connection left during a boundary once that boundary ends", async () => {
+		// A desktop kept for a release with no answer: its machine lets go while its next publish is being asked, and it
+		// saves.
+		const desk = await company();
+		const view = await desk.open();
+		await take(view, LOG, [entry(1)]);
+		await write(view, "docs/out.md", "out");
+		await until(() => desk.coreView.unsaved.length === 2);
+		desk.core.releaseFailures = { mode: "down", count: 3 };
+		expect((await view.publish()).paths).toEqual([
+			{ path: "docs/out.md", outcome: "not_applied", reason: "the save did not get through yet", kept: true },
+		]);
+		let go = (): void => undefined;
+		let asked = false;
+		desk.core.commitHook = () => {
+			asked = true;
+			return new Promise<void>((resolve) => {
+				go = resolve;
+			});
+		};
+		const saving = view.publish();
+		await until(() => asked);
+		view.release();
+		go();
+		expect((await saving).paths).toEqual([{ path: "docs/out.md", outcome: "saved" }]);
+		// Saved with no machine holding it: let go, the core hearing first that nothing is unsaved, so a machine that
+		// comes back lists the view again, as new.
+		await until(() => desk.coreView.unsaved.at(-1) === null);
+		await settle();
+		const renewals = desk.coreView.renewals;
+		await desk.service.renewLeases();
+		expect(desk.coreView.renewals).toBe(renewals);
+		const lists = desk.core.listCalls;
+		await desk.open();
+		expect(desk.core.listCalls).toBeGreaterThan(lists);
+
+		// A command's view, kept when its machine lets go while a publish is being asked that the core then refuses for
+		// good: let go, so a machine that comes back lists the view again, as new.
+		const cmd = await company("computer_shell_command");
+		const first = await cmd.open();
+		await take(first, LOG, [entry(1)]);
+		await write(first, "docs/out.md", "out");
+		let answer = (): void => undefined;
+		let held = false;
+		cmd.core.commitHook = () => {
+			held = true;
+			return new Promise<void>((resolve) => {
+				answer = resolve;
+			});
+		};
+		const refusing = first.publish();
+		await until(() => held);
+		first.release();
+		cmd.core.commitRefusal = "denied";
+		answer();
+		expect(await refusing).toMatchObject({
+			refused: "denied",
+			paths: [{ path: "docs/out.md", outcome: "refused", reason: "denied", kept: true }],
+		});
+		await settle();
+		const before = cmd.coreView.renewals;
+		await cmd.service.renewLeases();
+		expect(cmd.coreView.renewals).toBe(before);
+		cmd.core.commitHook = undefined;
+		const listed = cmd.core.listCalls;
+		await cmd.open();
+		expect(cmd.core.listCalls).toBeGreaterThan(listed);
+	});
+
+	it("leaves a view whose last connection left during a boundary to that boundary, not to the idle sweep", async () => {
+		// A service that forgets a view as soon as it is idle (idleMs 0), swept while the boundary runs. Saved, the view is
+		// let go then: the core hears at once that nothing is unsaved.
+		const saves = await company("computer_desktop", 0);
+		const view = await saves.open();
+		await take(view, LOG, [entry(1)]);
+		await write(view, "docs/out.md", "out");
+		await until(() => saves.coreView.unsaved.length === 2);
+		let go = (): void => undefined;
+		let asked = false;
+		saves.core.commitHook = (earlier) => {
+			if (earlier > 0) return undefined;
+			asked = true;
+			return new Promise<void>((resolve) => {
+				go = resolve;
+			});
+		};
+		const saving = view.publish();
+		await until(() => asked);
+		view.release();
+		await saves.service.poll();
+		go();
+		expect((await saving).paths).toEqual([{ path: "docs/out.md", outcome: "saved" }]);
+		await until(() => saves.coreView.unsaved.at(-1) === null);
+
+		// With no answer (that boundary's, and the one its last connection left asks again), the view is kept: past any
+		// sweep, renewed, and found again by its machine, whose next publish saves it.
+		const waits = await company("computer_desktop", 0);
+		const first = await waits.open();
+		await take(first, LOG, [entry(1)]);
+		await write(first, "docs/out.md", "out");
+		await until(() => waits.coreView.unsaved.length === 2);
+		waits.core.commitFailures = { mode: "down", count: 6 };
+		let answer = (): void => undefined;
+		let held = false;
+		waits.core.commitHook = (earlier) => {
+			if (earlier > 0) return undefined;
+			held = true;
+			return new Promise<void>((resolve) => {
+				answer = resolve;
+			});
+		};
+		const unanswered = first.publish();
+		await until(() => held);
+		first.release();
+		await waits.service.poll();
+		answer();
+		expect((await unanswered).paths).toEqual([
+			{ path: "docs/out.md", outcome: "not_applied", reason: "the save did not get through yet", kept: true },
+		]);
+		await until(() => waits.core.commits.length === 6);
+		await settle();
+		await waits.service.poll();
+		const renewals = waits.coreView.renewals;
+		await waits.service.renewLeases();
+		expect(waits.coreView.renewals).toBe(renewals + 1);
+		const lists = waits.core.listCalls;
+		const again = await waits.open();
+		expect(waits.core.listCalls).toBe(lists);
+		expect((await again.publish()).paths).toEqual([{ path: "docs/out.md", outcome: "saved" }]);
 	});
 
 	it("takes a release the core filed, whose answer was lost, as released when it replays", async () => {
@@ -571,6 +715,40 @@ describe("a boundary whose release is not taken", () => {
 		expect(gone.coreView.renewals).toBe(before);
 		expect(gone.core.releases).toHaveLength(1);
 		expect(gone.core.commits).toEqual([]);
+	});
+
+	it("takes a read log's entries on a command's view closed while its final had no answer, and keeps none", async () => {
+		const { core, service, open, coreView } = await company("computer_shell_command");
+		const first = await open();
+		await take(first, LOG, [entry(1)]);
+		await write(first, "docs/end.txt", "e");
+		// The core applies the final, which closes the view, and no try gets its answer.
+		core.commitFailures = { mode: "lost", count: 3 };
+		expect((await first.publish(true)).commitId).toBeNull();
+		expect(coreView.state).toBe("closed");
+		expect(core.releases).toHaveLength(1);
+		first.release();
+		await settle();
+		await service.renewLeases();
+		// The dead program's last call hands its log over, a lost one too, and the connection stays: the core answers the
+		// view nothing but the final's replay, so nothing comes of those reads.
+		const last = await open();
+		expect(await take(last, LOG, [entry(1), entry(2, "docs/end.txt")], true)).toEqual({
+			log: LOG,
+			taken: 2,
+			released: 2,
+		});
+		expect(await take(last, OTHER, [])).toEqual({ log: OTHER, taken: 0, released: 0 });
+		expect(await last.publish(true)).toEqual({
+			commitId: expect.any(String),
+			seq: expect.any(Number),
+			paths: [{ path: "docs/end.txt", outcome: "saved" }],
+			closed: true,
+		});
+		expect(core.releases).toHaveLength(1);
+		expect(new Set(core.commits.map((c) => c.key)).size).toBe(1);
+		// Answered, the view takes nothing more.
+		await expect(take(last, LOG, [entry(3)])).rejects.toMatchObject({ code: "VIEW_CLOSED" });
 	});
 });
 
