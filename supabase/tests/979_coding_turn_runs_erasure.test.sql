@@ -94,7 +94,7 @@ begin
 		exit when v.state <> 'working' or v.phase > p_phase or (p_unsaved and v.cursor ? 'unsaved');
 		v := pg_temp.w6_step(p_id);
 	end loop;
-	if v.state <> 'working' or v.phase <> case when p_unsaved then p_phase else p_phase + 1 end then
+	if v.state <> 'working' or v.phase <> p_phase + (not p_unsaved)::integer then
 		raise exception 'Phase % did not end: %', p_phase, to_jsonb(v); end if;
 	return pg_temp.w6_noted(p_id);
 end $$;
