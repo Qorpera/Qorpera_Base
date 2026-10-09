@@ -10,7 +10,8 @@ import { systemdCredentialMetadataIsSafe } from "./systemd-credential.ts";
 /**
  * The agent exit's rules reader as a service (qorpera-agent-exit-rules.service). It reads the database with the exit's
  * own login, from two private systemd credentials: the database URL, which the rollout script places on the node, and
- * Supabase's CA. It reads the node's client map and keeps rules.json and status.json in its state folder.
+ * Supabase's CA. It reads the node's client map, keeps rules.json in its state folder and writes status.json to its
+ * runtime folder.
  */
 
 const MAX_CREDENTIAL_BYTES = 64 * 1024;
