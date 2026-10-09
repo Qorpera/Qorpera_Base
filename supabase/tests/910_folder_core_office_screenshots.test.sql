@@ -349,6 +349,12 @@ begin
 				and c.network = coalesce((v_arguments ->> 'network')::boolean, false) and c.ended_at is null and c.told_at is null) then
 			raise exception 'H: % makes its row: %', v_arguments, (select to_jsonb(c) from public.qorpera_runtime_office_shell_commands c
 				where c.id = v_receipt); end if;
+		-- The operation ends, as the office service and the runtime end it (a run has one open operation at a time).
+		v_answer := pg_temp.operation(v_envelope, 'finish', v_receipt);
+		if v_answer is distinct from '{"state": "drained"}' then raise exception 'H: % finishes: %', v_arguments, v_answer; end if;
+		perform public.qorpera_complete_native_tool_operation(current_setting('qorpera_test.binding')::jsonb, v_receipt,
+			pg_temp.sha(v_envelope), jsonb_build_object('schema', 'qorpera.cloud-tool-operation-result/v1', 'inputSha256',
+				pg_temp.sha(v_envelope), 'content', jsonb_build_object('kind', 'json', 'value', '{}'::jsonb)));
 	end loop;
 end $$;
 
