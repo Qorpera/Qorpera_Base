@@ -33,9 +33,6 @@ const objectOperations: Array<{ name: string; call: (authority: SupabaseObjectAu
 ];
 
 const publisherOperations = [
-	"qorpera_claim_company_bootstrap",
-	"qorpera_stage_company_bootstrap_object",
-	"qorpera_finalize_company_bootstrap",
 	"qorpera_prepare_member_company_path_command",
 	"qorpera_apply_member_company_path_command_v3",
 	"qorpera_stage_member_company_path_object",
