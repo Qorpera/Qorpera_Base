@@ -1001,9 +1001,6 @@ it("projects only native auth from a login capsule without materializing local c
 	const put = vi.fn(async (_reference: string, bytes: Uint8Array) => {
 		capsule = bytes;
 	});
-	const oldExecute = vi.fn(async () => {
-		throw new Error("Legacy execution must not be used");
-	});
 	const host = new NativeProviderHost({
 		masterKey,
 		computeIdentityId: f.binding.computeIdentityId,
@@ -1022,7 +1019,6 @@ it("projects only native auth from a login capsule without materializing local c
 			beginLogin: vi.fn(async () => {
 				throw new Error("No login expected");
 			}),
-			execute: oldExecute,
 		},
 	});
 	const output = await host.execute(f.request);
@@ -1032,7 +1028,6 @@ it("projects only native auth from a login capsule without materializing local c
 		message_count: 2,
 		final_message_id: f.deliveries.get("final")?.messageId,
 	});
-	expect(oldExecute).not.toHaveBeenCalled();
 	// The turn did not renew the login, so nothing is saved back: native sessions and logs
 	// created during this turn never become durable credentials.
 	expect(put).not.toHaveBeenCalled();
@@ -1121,9 +1116,6 @@ it("uses the governed HTTP route through the real host, native RPC fence, path t
 		harness: {
 			beginLogin: async () => {
 				throw new Error("No login expected");
-			},
-			execute: async () => {
-				throw new Error("No legacy route allowed");
 			},
 		},
 	});
@@ -2476,9 +2468,6 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 		harness: {
 			beginLogin: async () => {
 				throw new Error("No login expected");
-			},
-			execute: async () => {
-				throw new Error("No legacy route allowed");
 			},
 		},
 	});

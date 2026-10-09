@@ -314,7 +314,7 @@ it("carries CODING_TURN_ENDED_WITHOUT_SUBMISSION to the runner through the host'
 		},
 		capsules: { get: async () => capsule, put: refused },
 		cloudRuntime: f.runtime,
-		harness: { beginLogin: refused, execute: refused },
+		harness: { beginLogin: refused },
 	});
 	const token = randomBytes(32).toString("base64url");
 	const service = new HttpNativeProviderHostService(host, token);

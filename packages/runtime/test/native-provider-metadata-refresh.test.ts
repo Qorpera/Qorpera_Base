@@ -85,7 +85,7 @@ async function fixture() {
 		masterKey,
 		computeIdentityId: identity,
 		temporaryRoot,
-		harness: { beginLogin: unavailable, execute: unavailable },
+		harness: { beginLogin: unavailable },
 	});
 	hosts.push(host);
 	const fetcher = vi.fn(
