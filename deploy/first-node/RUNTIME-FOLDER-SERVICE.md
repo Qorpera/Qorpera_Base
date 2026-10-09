@@ -64,7 +64,7 @@ feed takes acknowledgements alone). A machine on protocol 1 reads only. On a wri
 | `U`, `D` | unlink, rmdir `{path, base?}` | `k` |
 | `N` | rename `{from, fromBase?, to, toBase?, noReplace}` | `k` |
 | `X` | the executable bit `{path, base?, executable}` | `k` `{version}` |
-| `P` | publish `{}` | `p` the report `{commitId, seq, paths: [{path, outcome, reason?, receipt?, kept?}]}` |
+| `P` | publish `{final?}`: `final` only from a shell command's view, its last boundary (step 4b) | `p` the report `{commitId, seq, paths: [{path, outcome, reason?, receipt?, kept?}], closed?}`; `closed` when a final closed the view |
 
 A truncate of a file not open is an open, the chunk that ends it when the cut is inside a chunk, and a close. A cut on
 the 4 MiB grid, or to nothing, sends no chunk: the close cuts the file's chunks, from its origin's when none of it was
@@ -406,6 +406,29 @@ computer desktop's view, which the core opens for an office screen (C1b-3a):
 - **Tests.** `packages/object-gateway/test/folder-desktop-views.test.ts`, with the stand-in core; the core shapes script
   checks a run box's renewal says `run_box` on no machine.
 
+## Step 4b: shell commands
+
+In slice 4b the core opens a view of its own for an offline shell command (`computer_shell_command`, migration
+`20260930183000`; RUNTIME-COMPANY-FOLDER-C1B.md §8), and the folder service serves it:
+
+- **Which machine.** Like a desktop's: only to the company machine named after the view's allocation, read-write.
+- **Publishing.** Only when the machine asks: no quiet period. The command's last call sends `P` with `final: true`.
+  The final publishes everything the view has pending as one change set, or an empty one when nothing is, and the core
+  closes the view with it, whether it saved anything or not: the report says `closed`, and the view is closed on every
+  connection. A path still waiting (a file open for writing) holds the whole final back, with nothing committed: each
+  path stays pending, and the machine asks again. A final whose commit got no answer is asked again, final and under
+  its key, before anything else. A final from any other view is `BAD_REQUEST`; one on a view that has closed is
+  `VIEW_CLOSED` with why it closed.
+- **The command's end.** Once the office's report has recorded the command's end, the core saves only the final. A
+  change set it refuses whole stays pending, so the final carries it.
+- **Kept for the final.** A command's view that its own machine has held is kept when its last connection leaves: its
+  pending changes stay, nothing is published, and its lease is still renewed, until the final closes it or the core
+  does. Its renewals always say nothing is unsaved (no seat waits on a command).
+- **Tests.** `packages/object-gateway/test/folder-command-views.test.ts`, with the stand-in core, which saves only the
+  final of a view whose command ended and closes the view with the final, as the core does.
+
 ## Not here
 
-Commands on company machines, coding machines and test machines (each with its own mount). Each is a later step.
+The read log and moves to a newer view (slice 4c); the office service's side of a command's view (opening it,
+mounting it for the command, and the final boundary at the command's end: slice 4d); coding machines and test machines
+(each with its own mount). Each is a later step.

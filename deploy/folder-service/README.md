@@ -63,12 +63,13 @@ empty until runs use the folder.
 
 `companyMachineProjects` (F3 step 4a, `deploy/first-node/RUNTIME-FOLDER-COMPANY-MACHINES.md`) names the LXD projects
 of this node's company machines. A machine there named `qorpera-office-<allocation id without dashes>` may present its
-own desktop's view. It stays empty until company machines use the folder (which projects: the plan's Q1).
+own desktop's and shell commands' views. It stays empty until company machines use the folder (which projects: the
+plan's Q1).
 
 Which machine is served a core view is the core's to say: the view's first renewal says its kind and machine, and from
-then on a run box is served only to a `runBoxHosts` machine (read-only), a computer desktop only to the company machine
-named after its allocation (read-write), and any other kind to no machine yet. A renewal that says another kind or
-machine closes the view.
+then on a run box is served only to a `runBoxHosts` machine (read-only), a computer desktop or a shell command's view
+(step 4b) only to the company machine named after its allocation (read-write), and any other kind to no machine yet.
+A renewal that says another kind or machine closes the view.
 
 `storageRoot` is where the service sees the object gateway's store: `/srv/qorpera/objects`, a path inside the
 service's own mount namespace. The drop-in below binds the store there ("Reading the objects"). The store is the
@@ -91,9 +92,10 @@ connection starts it again on the new mount; after the share is mounted again by
 - a mount with `"write": true`, and for a desktop's save rule `"quietMs": 2000` (500–60000): its pending changes are
   published that long after the last change; without it, only when the machine asks (`qorpera-folder publish`).
 
-A member's or the platform's operator mount writes from step 3, and a company machine's desktop view from step 4a (it
-publishes 2 s after its last change, and when its last connection leaves); run box views stay read-only until steps
-5–6. Writes need P17's conflict copies and their erasure live (#783, #798), and step 3a (#855) for big files' chunks.
+A member's or the platform's operator mount writes from step 3, a company machine's desktop view from step 4a (it
+publishes 2 s after its last change, and when its last connection leaves), and a shell command's view from step 4b (it
+publishes only when asked, is kept when its last connection leaves, and its final publish closes it); run box views
+stay read-only until steps 5–6. Writes need P17's conflict copies and their erasure live (#783, #798), and step 3a (#855) for big files' chunks.
 
 **Reading the objects.** The gateway writes them 0600, so the service reads them as the gateway's account:
 `qorpera-objects`, a system account with the same uid and gid on both nodes (1500; no shell, no home, no other groups,
