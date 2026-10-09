@@ -9,6 +9,8 @@
 //   answer, and shows no line built.
 // - The composer releases the blocks whose lines the branches show with the primary view's (§8, M1b-4), so the call
 //   keeps no receipt. Branches are relevance, never a permission (§9).
+// - A worker's view reference (§12, W4a-1) keeps each branch's erase generation beside the blocks it shows. The call
+//   reads a tree's generation and its lines in one statement, and each branch read keeps the generation it came with.
 
 import { isUuid, parseClosedRecord, parseInteger, WireValueError } from "@qorpera/contracts";
 import type { MemoryTreeBuilt } from "./fold.ts";
@@ -36,9 +38,24 @@ export interface MemoryTreeBlock {
 	readonly version: string;
 }
 
-/** A run's branches for the user message, and the blocks whose lines they show, each once, in the order shown. */
+/**
+ * A branch whose tree was read, as a view reference names a conversation (W4a-1, {sessionId, generation, through,
+ * blocks}): the erase generation its tree was read at, the messages its fold covers, and the blocks whose lines it
+ * shows, each once, in the order shown.
+ */
+export interface MemoryViewConversation {
+	readonly sessionId: string;
+	readonly generation: number;
+	readonly through: number;
+	readonly blocks: MemoryTreeBlock[];
+}
+
+/** A run's branches for the user message, and what was read for them. */
 export interface MemoryRunBranches {
 	readonly branches: MemoryBranchView[];
+	/** Each branch whose tree was read, in the branches' order, for the view reference. */
+	readonly conversations: MemoryViewConversation[];
+	/** The blocks whose lines the branches show, each once, in the order shown, for the composer to release. */
 	readonly blocks: MemoryTreeBlock[];
 }
 
@@ -51,6 +68,7 @@ interface Listed {
 }
 
 interface Tree {
+	readonly generation: number;
 	readonly messages: number;
 	/** Each built line by its address, `start+size`, with its block. */
 	readonly lines: ReadonlyMap<string, { readonly text: string; readonly block: MemoryTreeBlock }>;
@@ -102,7 +120,7 @@ function tree(value: unknown): [string, Tree] {
 		"blocks",
 		"lines",
 	]);
-	whole(read.generation, "a tree's generation");
+	const generation = whole(read.generation, "a tree's generation");
 	if (read.root !== null) text(read.root, "a tree's root");
 	if (read.nodeBytes !== null) whole(read.nodeBytes, "a tree's node bytes");
 	const blocks = list(read.blocks, "a tree's blocks").map((item) => {
@@ -119,7 +137,8 @@ function tree(value: unknown): [string, Tree] {
 		if (typeof line.text !== "string") throw new WireValueError("a line's text");
 		lines.set(address, { text: line.text, block });
 	}
-	return [id(read.sessionId, "a tree's session"), { messages: whole(read.messages, "a tree's messages"), lines }];
+	const messages = whole(read.messages, "a tree's messages");
+	return [id(read.sessionId, "a tree's session"), { generation, messages, lines }];
 }
 
 /** An answer to a call for the trees of `sessions`: the branches, and the trees by session. */
@@ -148,6 +167,10 @@ function answer(value: unknown, sessions: readonly string[]): { branches: Listed
 	}
 }
 
+function blockKey(block: MemoryTreeBlock): string {
+	return `${block.path}\n${block.version}`;
+}
+
 /** A branch listed by its name as it is shown and its count. */
 function shown(branch: Listed): MemoryBranchView {
 	return { ref: branch.ref, name: memoryConversationName(branch.kind, branch.name), messages: branch.messages };
@@ -155,12 +178,12 @@ function shown(branch: Listed): MemoryBranchView {
 
 /**
  * The run's branches (§5.5), from `read`, the host call for the run: folded within `budget` as memoryBranches folds
- * them, with their names as they are shown, and the blocks of the lines shown.
+ * them, with their names as they are shown; each branch read with its generation and the blocks of its lines shown.
  */
 export async function memoryRunBranches(read: MemoryBranchesRead, budget = BRANCHES): Promise<MemoryRunBranches> {
 	const all = answer(await read([]), []).branches;
 	const branches: MemoryBranchView[] = [];
-	const blocks = new Map<string, MemoryTreeBlock>();
+	const conversations: MemoryViewConversation[] = [];
 	let room = budget;
 	while (branches.length < all.length && room >= BRANCH_MIN) {
 		const batch = all.slice(branches.length, branches.length + BRANCH_READS);
@@ -173,16 +196,23 @@ export async function memoryRunBranches(read: MemoryBranchesRead, budget = BRANC
 		});
 		for (const [index, view] of memoryBranches(sources, budget, branches.length, room).entries()) {
 			room -= memoryBranchBytes(view);
+			branches.push(view);
+			const { sessionId } = batch[index];
+			const found = trees.get(sessionId);
+			if (!found) continue;
 			// A row shows a built line when the address before its first `|` is one's; `earlier|zoom …` and a
 			// placeholder show none.
-			const lines = trees.get(batch[index].sessionId)?.lines;
+			const blocks = new Map<string, MemoryTreeBlock>();
 			for (const row of view.lines ?? []) {
-				const block = lines?.get(row.slice(0, row.indexOf("|")))?.block;
-				if (block) blocks.set(`${block.path}\n${block.version}`, block);
+				const block = found.lines.get(row.slice(0, row.indexOf("|")))?.block;
+				if (block) blocks.set(blockKey(block), block);
 			}
-			branches.push(view);
+			const { generation, messages: through } = found;
+			conversations.push({ sessionId, generation, through, blocks: [...blocks.values()] });
 		}
 	}
 	for (const branch of all.slice(branches.length)) branches.push(shown(branch));
-	return { branches, blocks: [...blocks.values()] };
+	const blocks = new Map<string, MemoryTreeBlock>();
+	for (const block of conversations.flatMap((conversation) => conversation.blocks)) blocks.set(blockKey(block), block);
+	return { branches, conversations, blocks: [...blocks.values()] };
 }
