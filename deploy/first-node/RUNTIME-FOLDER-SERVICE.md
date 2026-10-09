@@ -448,8 +448,55 @@ In slice 4b the core opens a view of its own for an offline shell command (`comp
   a renewal closed the view, after its tries or between them, asked again on the same connection and on a new one; and
   a final refused once a renewal closed the view between its ask and its answer.
 
+## Step 4c: read releases
+
+In slice 4c-1 the folder service takes the reads a company machine logs on a core view, and releases them to the core
+with the view as the actor before anything made from them is published (RUNTIME-FOLDER-COMPANY-MACHINES.md, "Reads"):
+
+- **Protocol 3.** A machine that logs its reads says protocol 3 in its hello. A core view (a desktop's or a command's)
+  takes writes only from it: on protocol 2 its hello says `readOnly`. An operator mount's view still writes from
+  protocol 2. On a writing connection the machine sends `I` with consecutive entries of its log,
+  `{log, reads: [{seq, path, version, authority?}], lost?}`: `log` is the mount's (new each time the mount is made),
+  `version` the version the read showed (null for a folder's listing) and `authority` the receipt the service gave the
+  path. The answer, `i`, says how far the view holds the log: every entry up to `taken`, and up to `released` the core
+  has them. A batch that leaves a gap is not taken, and the machine sends it again from `taken`. A path is never empty,
+  so the program logs no listing of the root (slice 4c-2): a company-wide view opens only when its actor reads the
+  root resource (C1b-3 §2).
+- **Releases.** Each boundary (a quiet publish, a `P`, the last connection leaving) first releases the reads the core
+  does not have yet, at most 10,000 in one release (`RELEASE_READS`, the core's bound), and publishes only once they are
+  released (the log's rule 1). A read goes with its version only when that names bytes the core made that the view
+  showed (a file the view saved and has not published goes with the live version under it, or none), and with no
+  receipt when it was logged without one: the core then checks the path again. A release with no answer, or refused, is
+  asked again first under the same id, and the core replays it. A member-held desktop view records no reads: the core
+  refuses its release (22023), and its reads count as released. So do an operator mount's, which has no read set.
+- **Refused.** A boundary whose release the core refuses publishes nothing, and its report has `refused` with the
+  release's reason: `unreadable` (42501, "A released read is no longer readable": a read's access narrowed before it was
+  released), `run_ended` (42501, "Run is unavailable": the run the view acts for has ended, or its deadline passed while
+  its job is still leased), `denied` (any other 42501), `stopped` (55000, the pause) or `invalid`. A release with no
+  answer after three tries leaves the boundary with none: each path's save did not get through yet. A change set refused
+  because a read released earlier is no longer readable ("A read is no longer readable") is `denied`, as before.
+- **A log that cannot be shown complete.** A batch with `lost: true` says the machine cannot show its log complete (the
+  log's rule 4). From then on every boundary of the view is refused `unproven`, a boundary with no answer asked again
+  included; the office service's way out (slice 4d) stops the mount's users and closes the view.
+- **Kept.** A desktop's view whose last connection leaves while its last boundary had no answer, or a refusal that may
+  lift (the pause, the run check), is kept like a command's: its pending changes and unreleased reads stay and its lease
+  is renewed, and a later publish from its machine publishes it. Once a boundary hears another answer (a save, or a
+  refusal for good) it is dropped like any other view no machine holds. A command's view is kept for its final unless
+  its last boundary was refused for good. A desktop's change set refused by the pause or the run check stays pending,
+  as a command's does, for a later boundary to carry.
+- **Twice.** A view keeps its reads in memory only: after it connects again a machine sends every read it has not heard
+  released. A view dropped, or a folder service restarted, may so have some released twice, which files nothing new. A
+  view that goes takes its unreleased reads with it: they reached no save of it.
+- **Tests.** `packages/object-gateway/test/folder-read-releases.test.ts`, with the stand-in core, which releases as the
+  core does and refuses as it does; and the acceptance script's F3-4c lines on the hosted database: a desktop view's
+  read released through the service before its save; after a narrowing of a read's path, every later save of the view
+  refused (two in a row); and a read not yet released when a narrowing comes, every later boundary refused
+  `unreadable`.
+
 ## Not here
 
-The read log and moves to a newer view (slice 4c); the office service's side of a command's view (opening it,
-mounting it for the command, and the final boundary at the command's end: slice 4d); coding machines and test machines
-(each with its own mount). Each is a later step.
+Moves to a newer view in place (`switch`), a closed desktop view kept for its minute, and a kept view refused because
+a newer one replaced it (slice 4c-3); the folder program's read log, its `--state-dir` and `qorpera-folder publish`
+(slice 4c-2); the office service's side of a command's view (opening it, mounting it for the command, and the final
+boundary at the command's end: slice 4d); coding machines and test machines (each with its own mount). Each is a later
+step.

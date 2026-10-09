@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+	COMMAND_ENDED,
 	type CommitActor,
 	type CommitAnswer,
 	type CommitOutcome,
@@ -15,6 +16,9 @@ import {
 	type FeedEvent,
 	type FolderActor,
 	type FolderCore,
+	MEMBER_HELD_READS,
+	type ReleaseAnswer,
+	type ReleasedRead,
 	type UploadSeal,
 	type ViewRenewal,
 } from "../src/folder-service/core.ts";
@@ -369,7 +373,10 @@ export class FakeCore implements FolderCore {
 		const view = this.#check(actor, environmentId);
 		if (final && view?.kind !== "computer_shell_command") throw new CoreRefusal("invalid");
 		if (units.length === 0 && !final) throw new CoreRefusal("invalid");
-		if (view?.kind === "computer_shell_command" && view.ended && !final) throw new CoreRefusal("denied");
+		if (view?.kind === "computer_shell_command" && view.ended && !final) throw new CoreRefusal("denied", COMMAND_ENDED);
+		// The view's read set is checked again before its save (20260928469330): a read it no longer sees refuses it.
+		if (actor.kind === "view" && [...(this.readSets.get(actor.viewId)?.keys() ?? [])].some((p) => this.hidden(p)))
+			throw new CoreRefusal("denied", "A read is no longer readable");
 		if (this.commitRefusal) throw new CoreRefusal(this.commitRefusal);
 		if (this.commitFailures.count > 0 && this.commitFailures.mode === "down") {
 			this.commitFailures.count--;
@@ -517,6 +524,65 @@ export class FakeCore implements FolderCore {
 	async conflictCopies(environmentId: string, commitId: string): Promise<readonly ConflictCopy[]> {
 		if (environmentId !== ENV) throw new CoreRefusal("invalid");
 		return this.copies.get(commitId) ?? [];
+	}
+
+	// ---- Releases (F3 4c), as core §6 and 20260928259230 decide them, in memory ----------------------------------------
+
+	/** Every release asked, in order (a replay included), and the reads each view's read set holds, by view: a path's
+	 * last read. */
+	readonly releases: { viewId: string; releaseId: string; reads: readonly ReleasedRead[] }[] = [];
+	readonly readSets = new Map<string, Map<string, ReleasedRead>>();
+	readonly #releaseAnswers = new Map<string, string>();
+	/** Views a member holds: they record no reads (22023). */
+	readonly memberHeld = new Set<string>();
+	/** The next releases get no answer: `lost` files them first (the reply was lost), `down` does not. */
+	releaseFailures: { mode: "lost" | "down"; count: number } = { mode: "down", count: 0 };
+	/** When set, the core refuses every release not asked before, and why (the pause, the run check, and the like). */
+	releaseRefusal: CoreRefusal["reason"] | undefined;
+
+	/** A release id used once per view: the same reads replay (the view's pass checked, open or not), others are refused
+	 * (22023). A read of a path the view does not see now is refused whole (42501, as `qorpera_folder_release_pairs`
+	 * re-resolves a receipt that names nothing). */
+	async releaseReads(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		releaseId: string,
+		reads: readonly ReleasedRead[],
+	): Promise<ReleaseAnswer> {
+		this.releases.push({ viewId: actor.viewId, releaseId, reads });
+		if (reads.length > 10_000 || reads.some((r) => r.path === "")) throw new CoreRefusal("invalid");
+		const view = this.views.get(actor.viewId);
+		if (!view || view.pass !== actor.pass || view.environmentId !== environmentId) throw new CoreRefusal("denied");
+		const request = JSON.stringify(reads);
+		const key = `${actor.viewId}:${releaseId}`;
+		const earlier = this.#releaseAnswers.get(key);
+		if (earlier !== undefined) {
+			if (earlier !== request) throw new CoreRefusal("invalid", "Release id was used for other reads");
+			return this.#released({ releaseId, replay: true });
+		}
+		this.#check(actor, environmentId);
+		if (this.memberHeld.has(actor.viewId)) throw new CoreRefusal("invalid", MEMBER_HELD_READS);
+		if (this.releaseRefusal) throw new CoreRefusal(this.releaseRefusal);
+		if (this.releaseFailures.count > 0 && this.releaseFailures.mode === "down") {
+			this.releaseFailures.count--;
+			throw new Error("The database did not answer");
+		}
+		if (reads.some((r) => this.hidden(r.path)))
+			throw new CoreRefusal("unreadable", "A released read is no longer readable");
+		const set = this.readSets.get(actor.viewId) ?? new Map<string, ReleasedRead>();
+		for (const read of reads) set.set(read.path, read);
+		this.readSets.set(actor.viewId, set);
+		this.#releaseAnswers.set(key, request);
+		return this.#released({ releaseId, replay: false });
+	}
+
+	/** A release's answer, unless the next one is lost. */
+	#released(answer: ReleaseAnswer): ReleaseAnswer {
+		if (this.releaseFailures.count > 0 && this.releaseFailures.mode === "lost") {
+			this.releaseFailures.count--;
+			throw new Error("The answer was lost");
+		}
+		return answer;
 	}
 
 	async renewView(viewId: string, pass: string, unsavedSince: string | null): Promise<ViewRenewal> {
