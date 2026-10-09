@@ -6,7 +6,7 @@
 begin;
 
 -- 1. anon, authenticated and the secret broker hold no row privilege on any office, runtime node, login gateway,
--- presence, machine, fleet, compute request, viewer or browser table.
+-- presence, runtime machine, fleet, compute request, viewer or browser table.
 do $$
 declare v_pairs integer; v_open text[];
 begin
