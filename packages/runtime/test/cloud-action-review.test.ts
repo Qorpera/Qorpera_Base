@@ -85,6 +85,21 @@ describe("which calls are reviewed", () => {
 			{ from: "support@mail.example.test", to: ["bob@acme.test"], subject: "Hi", text: "Hi" },
 			"external",
 		],
+		// A new hook or mailbox lets the outside reach the company; pause and resume only change what it takes in; a
+		// removal is final and frees a mailbox's address (E3a).
+		[
+			"manage_hook",
+			{ action: "create", kind: "hook", name: "site-form", purpose: "Contact form.", operationKey: "k" },
+			"external",
+		],
+		[
+			"manage_hook",
+			{ action: "create", kind: "mailbox", localPart: "sales", purpose: "Sales.", operationKey: "k" },
+			"external",
+		],
+		["manage_hook", { action: "pause", hook: "site-form", operationKey: "k" }, "internal"],
+		["manage_hook", { action: "resume", hook: "site-form", operationKey: "k" }, "internal"],
+		["manage_hook", { action: "remove", hook: "site-form", operationKey: "k" }, "destructive"],
 		["hire_agent", {}, "delegation"],
 		["create_group_chat", {}, "delegation"],
 		["manage_routine", { action: "list" }, "read"],
@@ -221,6 +236,58 @@ describe("what the card shows", () => {
 		}).target;
 		expect(target?.endsWith("[...]")).toBe(true);
 		expect(Buffer.byteLength(target ?? "")).toBeLessThanOrEqual(500);
+	});
+
+	it("names a hook or a mailbox, with what it is for and what the change does (E3a)", () => {
+		expect(
+			describeCloudAction(tool("manage_hook"), {
+				action: "create",
+				kind: "hook",
+				name: "site-form",
+				purpose: "Leads from the website's contact form.",
+				perMinute: 10,
+				operationKey: "k",
+			}),
+		).toEqual({
+			title: "Open a hook",
+			target: "site-form",
+			details: {
+				purpose: "Leads from the website's contact form.",
+				effect: "Anyone with the hook's address may send it events; what arrives can wake the company's routines",
+			},
+		});
+		expect(
+			describeCloudAction(tool("manage_hook"), {
+				action: "create",
+				kind: "mailbox",
+				localPart: "sales",
+				purpose: "Sales mail from customers.",
+				operationKey: "k",
+			}),
+		).toEqual({
+			title: "Open a mailbox",
+			target: "sales",
+			details: {
+				purpose: "Sales mail from customers.",
+				effect: "Anyone may send email to this address; what arrives can wake the company's routines",
+			},
+		});
+		for (const [action, title] of [
+			["pause", "Pause a hook"],
+			["resume", "Resume a hook"],
+		] as const)
+			expect(describeCloudAction(tool("manage_hook"), { action, hook: "site-form", operationKey: "k" })).toEqual({
+				title,
+				target: "site-form",
+				details: {},
+			});
+		expect(
+			describeCloudAction(tool("manage_hook"), { action: "remove", hook: "mail-sales", operationKey: "k" }),
+		).toEqual({
+			title: "Remove a hook",
+			target: "mail-sales",
+			details: { effect: "Ends it for good; a mailbox's address is free for any company to take" },
+		});
 	});
 
 	it("shows the text a Drive file gets, and names the file by its id only when nothing else names it", () => {

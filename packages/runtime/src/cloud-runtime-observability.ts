@@ -63,6 +63,8 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"company_search",
 	// Company accounts (A1-4): the company's own accounts on websites.
 	"company_account",
+	// An agent opens, pauses, resumes or removes the company's hooks and mailboxes (E3a).
+	"manage_hook",
 	// Changes the agent saved from a computer that wait for review (P40b): applying one, or dropping it.
 	"apply_proposal",
 	"discard_proposal",
