@@ -1,7 +1,7 @@
 /** Company state files (contract 5.6): the files of the company folder that have a fixed
  * format — the vision, an agent, the sidebar's sections, a group chat, a connection, a
- * company review rule, a routine, a todo, a worker's brief and results, and (H1) a human task
- * and a contact. Every writer (the
+ * company review rule, a routine, a todo, a worker's brief and results, (H1) a human task
+ * and a contact, and (E8) the company's network rules. Every writer (the
  * runtime's tools, the web app, the object gateway and the folder service) reads them through
  * this one parser, so a file means the same thing whoever saves it. The database checks the
  * rules that need its state and keeps the indexes (RUNTIME-COMPANY-STATE-FILES.md). Browser-safe.
@@ -23,6 +23,7 @@ import {
 	type TableFile,
 	type TableRowsFile,
 } from "./interfaces.ts";
+import { NETWORK_RULES_PATH, type NetworkRulesFile, parseNetworkRulesFile } from "./network-rules.ts";
 import { STAFF_CHARACTER_IDS } from "./staff-characters.ts";
 
 export type CompanyStateFileKind =
@@ -44,7 +45,9 @@ export type CompanyStateFileKind =
 	| "interface"
 	| "interface-order"
 	| "table"
-	| "table-rows";
+	| "table-rows"
+	/** The company's network rules, `rules/network.toml` (./network-rules.ts, RUNTIME-AGENT-EXIT.md §10). */
+	| "network-rules";
 
 /** One reason a file cannot be saved. Lines count from 1 over the whole file. */
 export interface CompanyStateProblem {
@@ -403,7 +406,8 @@ export type CompanyStateFile =
 	| InterfaceFile
 	| InterfaceOrderFile
 	| TableFile
-	| TableRowsFile;
+	| TableRowsFile
+	| NetworkRulesFile;
 
 /** Where a structured file sits: its kind and the names its path carries, as keys. */
 export interface CompanyStatePath {
@@ -441,6 +445,8 @@ export function companyStatePath(path: string): CompanyStatePath | null {
 		return { kind, ...none, name };
 	}
 	if (parts.length === 2 && a === "rules" && stem(b) !== null) return { kind: "rule", ...none, name: stem(b) };
+	// Not a review rule: the network rules have their own format and parser (E8).
+	if (parts.join("/") === NETWORK_RULES_PATH) return { kind: "network-rules", ...none };
 	if (parts.length === 2 && a === "human-tasks" && stem(b) !== null)
 		return { kind: "human-task", ...none, name: stem(b) };
 	if (parts.length === 2 && a === "contacts" && stem(b) !== null) return { kind: "contact", ...none, name: stem(b) };
@@ -2032,7 +2038,13 @@ export function companyStatePathProblems(path: string, folder = false): CompanyS
 	if (folder) {
 		let end = written.length;
 		while (end > 1 && written[end - 1] === "") end--;
-		const places = structuredFolderNames(companyPathKey(written.slice(0, end).join("/")).split("/"));
+		const key = companyPathKey(written.slice(0, end).join("/"));
+		// The network rules' path is a file's.
+		if (key === NETWORK_RULES_PATH) {
+			problems.add("name", null, null, `${NETWORK_RULES_PATH} is the name of the network rules file, not a folder`);
+			return problems.list;
+		}
+		const places = structuredFolderNames(key.split("/"));
 		if (places === null) return [];
 		for (const [index, what] of places) named.push([written[index], what]);
 	} else {
@@ -2076,8 +2088,14 @@ export function companyStatePathProblems(path: string, folder = false): CompanyS
 				}`,
 			);
 	const kind = folder ? null : companyStatePath(path)?.kind;
-	// Interface and table files are named by their kind (interface.toml, table.toml, rows.csv, order.md).
-	const fixedName = kind === "interface" || kind === "interface-order" || kind === "table" || kind === "table-rows";
+	// Interface and table files are named by their kind (interface.toml, table.toml, rows.csv, order.md), and so is
+	// rules/network.toml.
+	const fixedName =
+		kind === "interface" ||
+		kind === "interface-order" ||
+		kind === "table" ||
+		kind === "table-rows" ||
+		kind === "network-rules";
 	if (kind && kind !== "vision" && kind !== "sections" && !fixedName && !written.at(-1)?.endsWith(".md"))
 		problems.add("name", null, null, "the file name ends in .md, in lowercase");
 	else if (!problems.list.length && path !== companyPathKey(path))
@@ -2103,6 +2121,15 @@ export function parseCompanyStateFile(path: string, text: string): CompanyStateF
 		where.kind === "table-rows"
 	)
 		return parseInterfaceStateFile(path, text);
+	// The network rules are TOML with their own parser (./network-rules.ts); the path is written in lowercase first.
+	if (where.kind === "network-rules") {
+		const placed = companyStatePathProblems(path);
+		if (placed.length) return { ok: false, path: where, problems: placed };
+		const parsed = parseNetworkRulesFile(text);
+		return parsed.ok
+			? { ok: true, path: where, file: parsed.file }
+			: { ok: false, path: where, problems: parsed.problems };
+	}
 	const problems = new Problems();
 	const refused = () => {
 		const more = problems.list.length - COMPANY_STATE_MAX_PROBLEMS;

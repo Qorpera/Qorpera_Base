@@ -1,7 +1,7 @@
 import { type ChildProcessByStdio, type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
@@ -10,13 +10,7 @@ import {
 	type NativeAccountRefreshRequest,
 } from "@qorpera/cloud-client/native-account-refresh";
 import type { JsonValue } from "@qorpera/contracts";
-import {
-	CLOUD_AGENT_SEND_INSTRUCTIONS,
-	CloudAgentMouth,
-	type CloudAgentMouthConnection,
-	type CloudAgentSendInput,
-	type CloudAgentSendReceipt,
-} from "./cloud-agent-mouth.ts";
+import type { CloudAgentSendInput, CloudAgentSendReceipt } from "./cloud-agent-mouth.ts";
 import type { ModelLoginIssue, ModelLoginIssueRequest, ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
 import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
 import {
@@ -38,13 +32,11 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const MAX_CAPSULE_PLAINTEXT_BYTES = 64 * 1024 * 1024;
 const MAX_CAPSULE_FILES = 4096;
 const MAX_HARNESS_OUTPUT_BYTES = 16 * 1024 * 1024;
-const MAX_PROMPT_BYTES = 16 * 1024 * 1024;
 const EXECUTION_AUTHORITY_RECHECK_MS = 15_000;
 /** A run whose login is in the vault asks it for a newer pass this often. */
 const MODEL_LOGIN_RECHECK_MS = 60_000;
 /** A capsule reference that names a login kept by the vault (Stateless Compute step 1). */
 const MODEL_LOGIN_REFERENCE = /^model-login\/[0-9a-f-]{36}$/;
-const PROVIDER_DEFAULT_MODEL = "provider-default";
 const CODEX_CREDENTIAL_PATHS: ReadonlySet<string> = new Set(["codex/auth.json"]);
 /** A ChatGPT plan run's token file (`<root>/chatgpt-plan/access-token`, read by the run's Codex). */
 const CHATGPT_PLAN_CREDENTIAL_PATHS: ReadonlySet<string> = new Set([
@@ -116,9 +108,9 @@ export interface NativeProviderControlPlane {
 	): Promise<void>;
 	describeLogin(loginId: string, capability: string, signal?: AbortSignal): Promise<NativeProviderLoginDescription>;
 	completeLogin(input: CompleteNativeProviderLoginInput, signal?: AbortSignal): Promise<void>;
-	validateExecution(request: NativeProviderExecutionRequest, signal?: AbortSignal): Promise<void>;
+	validateExecution(request: NativeCompanyExecutionRequest, signal?: AbortSignal): Promise<void>;
 	sendMessage(
-		request: NativeProviderExecutionRequest,
+		request: NativeCompanyExecutionRequest,
 		input: CloudAgentSendInput,
 		signal?: AbortSignal,
 	): Promise<CloudAgentSendReceipt>;
@@ -126,7 +118,7 @@ export interface NativeProviderControlPlane {
 	 * authority as a send. Optional so older control planes keep their shape; a
 	 * runtime without it refuses ask_member instead of guessing. */
 	appendInteractionRequest?(
-		request: NativeProviderExecutionRequest,
+		request: NativeCompanyExecutionRequest,
 		input: CloudInteractionRequestInput,
 		signal?: AbortSignal,
 	): Promise<CloudInteractionRequestReceipt>;
@@ -148,23 +140,13 @@ export interface NativeHarnessLoginHandle {
 	cancel(): Promise<void>;
 }
 
-export interface NativeHarnessExecutionInput {
-	harness: NativeHarnessKind;
-	model: string;
-	identityRoot: string;
-	companyRoot: string;
-	prompt: string;
-	mouth: CloudAgentMouthConnection;
-	signal?: AbortSignal;
-}
-
+/** The official CLI's login driver. Executions run through the cloud runtime (`NativeCloudExecutionDriver`). */
 export interface NativeHarnessDriver {
 	beginLogin(
 		harness: NativeHarnessKind,
 		identityRoot: string,
 		signal?: AbortSignal,
 	): Promise<NativeHarnessLoginHandle>;
-	execute(input: NativeHarnessExecutionInput): Promise<{ providerSessionId?: string }>;
 }
 
 /** Cloud-selected execution, distinct from the official CLI's login driver. */
@@ -303,22 +285,7 @@ interface NativeProviderExecutionIdentity {
 
 export interface NativeCompanyExecutionRequest extends NativeProviderExecutionIdentity {
 	runtime: "company-path-v1";
-	input?: never;
-	outputRoot?: never;
 }
-
-export interface NativeLegacyExecutionRequest extends NativeProviderExecutionIdentity {
-	runtime?: never;
-	input: {
-		companyRoot: string;
-		executionContextPath: string;
-		queuedInputsPath: string;
-		transcriptPath: string;
-	};
-	outputRoot: string;
-}
-
-export type NativeProviderExecutionRequest = NativeCompanyExecutionRequest | NativeLegacyExecutionRequest;
 
 interface CapsuleFile {
 	path: string;
@@ -341,41 +308,6 @@ interface LoginState {
 }
 
 type NativeHarnessChild = ChildProcessByStdio<null, Readable, Readable> | ChildProcessWithoutNullStreams;
-
-async function grantWorkspaceGroupAccess(root: string): Promise<void> {
-	/* The workspace mixes runner-owned materialized entries with entries the
-	 * harness created as this process's user. Only the latter need (or
-	 * permit) a mode change; chmod on a foreign-owned entry raises EPERM,
-	 * so restrict the walk to entries this process owns. */
-	/* The host service umask already lands harness output group-shared;
-	 * this walk only repairs stragglers, so no single entry — vanished,
-	 * foreign-owned, or unreadable — may fail the attempt. */
-	const ownUid = process.getuid?.();
-	const pending = [root];
-	while (pending.length > 0) {
-		const current = pending.pop() as string;
-		let metadata: Awaited<ReturnType<typeof lstat>>;
-		try {
-			metadata = await lstat(current);
-		} catch {
-			continue;
-		}
-		if (metadata.isSymbolicLink()) continue;
-		const owned = ownUid === undefined || metadata.uid === ownUid;
-		if (metadata.isDirectory()) {
-			if (owned) await chmod(current, metadata.mode | 0o050).catch(() => undefined);
-			let entries: string[];
-			try {
-				entries = await readdir(current);
-			} catch {
-				continue;
-			}
-			for (const entry of entries) pending.push(join(current, entry));
-			continue;
-		}
-		if (metadata.isFile() && owned) await chmod(current, metadata.mode | 0o040).catch(() => undefined);
-	}
-}
 
 function requiredUuid(value: string, label: string): void {
 	if (!UUID_PATTERN.test(value)) throw new Error(`${label} is invalid`);
@@ -644,7 +576,9 @@ function harnessExecutionFailureCategory(error: unknown): string {
 	return "unknown";
 }
 
-function safeHarnessExecutionFailure(error: unknown, mouthState: CloudAgentMouth["diagnosticState"]): Error {
+/** The host starts no public mouth for a company run (the company runtime sends through its own), so every
+ * failure keeps the fixed `[mouth=uninitialized]` suffix it always carried. */
+function safeHarnessExecutionFailure(error: unknown): Error {
 	let message: string;
 	const metadata = nativeRuntimeFailureMetadata(error);
 	if (metadata) {
@@ -663,7 +597,7 @@ function safeHarnessExecutionFailure(error: unknown, mouthState: CloudAgentMouth
 	} else {
 		message = `Native provider execution harness-execution stage failed (${harnessExecutionFailureCategory(error)})`;
 	}
-	return new Error(`${message} [mouth=${mouthState}]`, { cause: error });
+	return new Error(`${message} [mouth=uninitialized]`, { cause: error });
 }
 
 export async function sealNativeCredentialCapsule(
@@ -911,18 +845,6 @@ function interactionFromOutput(output: string): NativeHarnessLoginPrompt {
 	};
 }
 
-/** Kills what a detached harness left running in its own process group after it exited: an
- * orphan is no longer the harness's child, but it keeps the group (Codex's plugin sync left
- * `git fetch` writing into `CODEX_HOME/.tmp` after `codex exec` returned). */
-function stopHarnessProcessGroup(child: NativeHarnessChild): void {
-	if (process.platform === "win32" || child.pid === undefined) return;
-	try {
-		process.kill(-child.pid, "SIGKILL");
-	} catch {
-		// Nothing of the group is left.
-	}
-}
-
 /** Removes a harness root; a directory that gains an entry while it is emptied is retried. */
 async function removeHarnessRoot(root: string): Promise<void> {
 	await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
@@ -1107,143 +1029,6 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 			},
 		};
 	}
-
-	async execute(input: NativeHarnessExecutionInput): Promise<{ providerSessionId?: string }> {
-		if (this.#isolation) throw new Error("Governed execution requires the native cloud tool boundary");
-		const root = requiredAbsolutePath(input.identityRoot, "Native identity root");
-		const companyRoot = requiredAbsolutePath(input.companyRoot, "Native Company File root");
-		const environment = await prepareHarnessEnvironment(root);
-		if (!input.model.trim() || input.model.length > 160 || /[\0\r\n]/.test(input.model)) {
-			throw new Error("Native model is invalid");
-		}
-		if (Buffer.byteLength(input.prompt) > MAX_PROMPT_BYTES) throw new Error("Native prompt exceeds its byte limit");
-		const mouthUrl = new URL(input.mouth.url);
-		if (
-			mouthUrl.protocol !== "http:" ||
-			mouthUrl.hostname !== "127.0.0.1" ||
-			mouthUrl.pathname !== "/mcp" ||
-			mouthUrl.username ||
-			mouthUrl.password ||
-			mouthUrl.search ||
-			mouthUrl.hash ||
-			!TOKEN_PATTERN.test(input.mouth.bearerToken)
-		) {
-			throw new Error("Native public mouth connection is invalid");
-		}
-		environment.QORPERA_AGENT_SEND_TOKEN = input.mouth.bearerToken;
-		const command = input.harness === "codex-cli" ? this.#codexPath : this.#claudePath;
-		const modelArgs = input.model === PROVIDER_DEFAULT_MODEL ? [] : ["--model", input.model];
-		const args =
-			input.harness === "codex-cli"
-				? [
-						"exec",
-						"--json",
-						"--ephemeral",
-						"--ignore-user-config",
-						"--skip-git-repo-check",
-						"--sandbox",
-						"workspace-write",
-						// Snappy by default (founder, 2026-08-26): route reasoning
-						// effort low unless a turn explicitly raises it.
-						"-c",
-						"model_reasoning_effort=low",
-						// No plugin startup sync: it clones a plugin repository into
-						// CODEX_HOME/.tmp with `git`, which outlives the turn.
-						"-c",
-						"features.plugins=false",
-						"-c",
-						`mcp_servers.qorpera={url=${JSON.stringify(input.mouth.url)},bearer_token_env_var="QORPERA_AGENT_SEND_TOKEN",required=true,enabled_tools=["send_message"]}`,
-						...modelArgs,
-						"--cd",
-						companyRoot,
-						"-",
-					]
-				: [
-						"--print",
-						"--output-format",
-						"json",
-						"--no-session-persistence",
-						"--permission-mode",
-						"auto",
-						// Safe mode disables even the explicit MCP mouth. Exclude file-based
-						// settings and executable hooks while retaining normal permissions.
-						"--setting-sources",
-						"",
-						"--settings",
-						JSON.stringify({ disableAllHooks: true }),
-						"--strict-mcp-config",
-						"--mcp-config",
-						JSON.stringify({
-							mcpServers: {
-								qorpera: {
-									type: "http",
-									url: input.mouth.url,
-									// biome-ignore lint/suspicious/noTemplateCurlyInString: Claude expands this MCP header from its environment.
-									headers: { Authorization: "Bearer ${QORPERA_AGENT_SEND_TOKEN}" },
-								},
-							},
-						}),
-						"--allowedTools",
-						"mcp__qorpera__send_message",
-						...modelArgs,
-					];
-		const child = spawn(command, args, {
-			cwd: companyRoot,
-			env: environment,
-			stdio: ["pipe", "pipe", "pipe"],
-			windowsHide: true,
-			// Its own process group, which is stopped with it.
-			detached: process.platform !== "win32",
-		});
-		// On exit, not close: a leftover that kept the harness's output open would delay close.
-		child.once("exit", () => stopHarnessProcessGroup(child));
-		const capture = collectChildOutput(child);
-		const abort = (): void => {
-			void terminateChild(child);
-		};
-		input.signal?.addEventListener("abort", abort, { once: true });
-		if (input.signal?.aborted) abort();
-		child.stdin.end(input.prompt, "utf-8");
-		try {
-			await capture.completed;
-			input.signal?.throwIfAborted();
-			if (input.harness !== "codex-cli") {
-				const output = JSON.parse(capture.output()) as Record<string, unknown>;
-				if (output.is_error === true || output.type !== "result" || output.subtype !== "success") {
-					throw new Error("Claude Code did not complete its turn");
-				}
-				return {
-					...(typeof output.session_id === "string" ? { providerSessionId: output.session_id } : {}),
-				};
-			}
-			let providerSessionId: string | undefined;
-			let completed = false;
-			let failed = false;
-			for (const line of capture.output().split(/\r?\n/)) {
-				if (!line.trim()) continue;
-				try {
-					const event = JSON.parse(line) as Record<string, unknown>;
-					if (event.type === "thread.started" && typeof event.thread_id === "string") {
-						providerSessionId = event.thread_id;
-					}
-					if (event.type === "turn.completed") completed = true;
-					if (event.type === "turn.failed" || event.type === "error") failed = true;
-				} catch {
-					// The official CLI may emit non-JSON diagnostics alongside JSONL events.
-				}
-			}
-			if (!completed || failed) {
-				const category = nativeHarnessFailureCategory(capture.output());
-				throw new Error(`Codex did not complete its turn${category ? ` (${category})` : ""}`);
-			}
-			input.signal?.throwIfAborted();
-			return { ...(providerSessionId ? { providerSessionId } : {}) };
-		} finally {
-			input.signal?.removeEventListener("abort", abort);
-			// An exited harness's group was stopped on exit, and its number may be free again.
-			if (child.exitCode === null && child.signalCode === null) stopHarnessProcessGroup(child);
-		}
-	}
 }
 
 function exactDescription(request: NativeProviderLoginRequest, description: NativeProviderLoginDescription): void {
@@ -1260,55 +1045,6 @@ function exactDescription(request: NativeProviderLoginRequest, description: Nati
 	) {
 		throw new Error("Native login request does not match its durable control-plane authority");
 	}
-}
-
-async function boundedText(path: string, label: string): Promise<string> {
-	const metadata = await lstat(path);
-	if (!metadata.isFile() || metadata.size > MAX_PROMPT_BYTES) throw new Error(`${label} exceeds its byte limit`);
-	return readFile(path, "utf-8");
-}
-
-async function executionPrompt(
-	request: NativeLegacyExecutionRequest,
-): Promise<{ prompt: string; requireFinalSend: boolean }> {
-	const [context, inputs, transcript] = await Promise.all([
-		boundedText(request.input.executionContextPath, "Execution context"),
-		boundedText(request.input.queuedInputsPath, "Queued inputs"),
-		boundedText(request.input.transcriptPath, "Canonical transcript"),
-	]);
-	const execution = JSON.parse(context) as {
-		schema?: unknown;
-		run?: { runId?: unknown; jobId?: unknown; sessionId?: unknown };
-	};
-	if (
-		execution?.schema !== "qorpera.runner-execution-context/v1" ||
-		execution?.run?.runId !== request.authority.runId ||
-		execution.run.jobId !== request.job.jobId ||
-		(execution.run.sessionId !== undefined &&
-			(typeof execution.run.sessionId !== "string" || !UUID_PATTERN.test(execution.run.sessionId)))
-	) {
-		throw new Error("Native execution context does not match its run");
-	}
-	const requireFinalSend = execution.run.sessionId !== undefined;
-	const prompt = [
-		"You are a Qorpera agent working in the cloud. No member desktop is needed to execute this turn.\n",
-		"The Qorpera transcript is canonical. Use it to reconstruct context; do not assume local provider-session continuity.",
-		" The supplied Company File is the digital company you work over, not chat memory or a scratch directory. Work directly on its mounted live state; do not create a company checkout or a commit/merge workflow. Isolated review work, when explicitly designated by the execution context, must not modify live state.\n",
-		"Your identity is the run's staffAgentId in the execution context. Read agents/<staffAgentId>/instructions.md in the Company File when present for your job specification.\n",
-		CLOUD_AGENT_SEND_INSTRUCTIONS,
-		requireFinalSend
-			? " The send tool is already bound to this run's authorized conversation: you cannot choose another recipient or speak as another agent. A final send is required. A kickoff is a private startup instruction, not a message to quote.\n"
-			: " This job has no conversation recipient. Do the assigned work silently; do not call send_message or invent a human recipient.\n",
-		"\n<execution-context>\n",
-		context,
-		"\n</execution-context>\n<canonical-transcript>\n",
-		transcript,
-		"\n</canonical-transcript>\n<queued-inputs>\n",
-		inputs,
-		"\n</queued-inputs>\n",
-	].join("");
-	if (Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) throw new Error("Native turn context exceeds its byte limit");
-	return { prompt, requireFinalSend };
 }
 
 export class NativeProviderHost {
@@ -1589,9 +1325,10 @@ export class NativeProviderHost {
 		};
 	}
 
-	async execute(request: NativeProviderExecutionRequest, signal?: AbortSignal): Promise<JsonValue> {
+	async execute(request: NativeCompanyExecutionRequest, signal?: AbortSignal): Promise<JsonValue> {
 		const { authority } = request;
-		if ((request.runtime === "company-path-v1") !== Boolean(this.#cloudRuntime)) {
+		const cloudRuntime = this.#cloudRuntime;
+		if (request.runtime !== "company-path-v1" || !cloudRuntime) {
 			throw new Error("Native provider execution runtime is not configured for this request");
 		}
 		for (const [label, value] of [
@@ -1661,7 +1398,7 @@ export class NativeProviderHost {
 		// only while the stored capsule is byte for byte the one that root was opened from or
 		// last saved as.
 		const warmKey =
-			request.runtime === "company-path-v1" && this.#warmIdleMs !== undefined
+			this.#warmIdleMs !== undefined
 				? JSON.stringify([
 						authority.credentialCapsuleId,
 						authority.encryptedCapsuleReference,
@@ -1670,13 +1407,6 @@ export class NativeProviderHost {
 				: undefined;
 		let output: JsonValue | undefined;
 		let failure: Error | undefined;
-		const mouth = this.#cloudRuntime
-			? undefined
-			: new CloudAgentMouth(
-					authority.runId,
-					(input) => this.#controlPlane.sendMessage(request, input, executionAbort.signal),
-					executionAbort.signal,
-				);
 		try {
 			stage = "temporary-workspace";
 			const warm = await this.#takeWarm(warmKey);
@@ -1684,8 +1414,7 @@ export class NativeProviderHost {
 			root = warm?.root;
 			if (vaultLogin) {
 				const modelLogins = this.#modelLogins;
-				if (!modelLogins || request.runtime !== "company-path-v1")
-					throw new Error("Native login vault is unavailable");
+				if (!modelLogins) throw new Error("Native login vault is unavailable");
 				stage = "credential-download";
 				const binding: ModelLoginRunBinding = {
 					leaseId: authority.leaseId,
@@ -1760,7 +1489,7 @@ export class NativeProviderHost {
 						root,
 						this.#capsuleKey(),
 						authority.credentialCapsuleId,
-						request.runtime === "company-path-v1" ? CODEX_CREDENTIAL_PATHS : undefined,
+						CODEX_CREDENTIAL_PATHS,
 					);
 					durableCredentialPaths = new Set((await collectCapsuleFiles(root)).files.map((file) => file.path));
 				}
@@ -1770,46 +1499,17 @@ export class NativeProviderHost {
 				openedCapsule = capsule;
 			}
 			if (!root || !durableCredentialPaths) throw new Error("Native credential root is unavailable");
-			let result: { providerSessionId?: string };
-			let delivery: { messageCount: number; finalMessageId: string | null };
-			if (request.runtime === "company-path-v1") {
-				if (!this.#cloudRuntime) throw new Error("Native company runtime is unavailable");
-				// No local prompt/transcript, canonical mount, group walk or MCP
-				// endpoint participates in the governed cloud execution path.
-				stage = "harness-execution";
-				harnessStarted = true;
-				const executed = await this.#cloudRuntime.execute(request, root, executionAbort.signal);
-				result = executed;
-				delivery = executed.delivery;
-			} else {
-				if (!mouth) throw new Error("Native legacy mouth is unavailable");
-				stage = "prompt-materialization";
-				const context = await executionPrompt(request);
-				stage = "public-mouth-start";
-				const mouthConnection = await mouth.start();
-				stage = "harness-execution";
-				harnessStarted = true;
-				result = await this.#harness.execute({
-					harness: authority.nativeHarness,
-					model: authority.model,
-					identityRoot: root,
-					companyRoot: request.input.companyRoot,
-					prompt: context.prompt,
-					mouth: mouthConnection,
-					signal: executionAbort.signal,
-				});
-				stage = "public-mouth-completion";
-				delivery = await mouth.finish(context.requireFinalSend);
-				await mouth.close();
-				stage = "workspace-normalization";
-				await grantWorkspaceGroupAccess(request.input.companyRoot);
-			}
+			// No local prompt/transcript, canonical mount, group walk or MCP
+			// endpoint participates in the governed cloud execution path.
+			stage = "harness-execution";
+			harnessStarted = true;
+			const executed = await cloudRuntime.execute(request, root, executionAbort.signal);
 			output = {
 				schema: HARNESS_RESULT_SCHEMA,
 				run_id: authority.runId,
-				message_count: delivery.messageCount,
-				final_message_id: delivery.finalMessageId,
-				provider_session_id: result.providerSessionId ?? null,
+				message_count: executed.delivery.messageCount,
+				final_message_id: executed.delivery.finalMessageId,
+				provider_session_id: executed.providerSessionId ?? null,
 			};
 		} catch (error) {
 			if (stage === "harness-execution") {
@@ -1818,14 +1518,13 @@ export class NativeProviderHost {
 						cause: validationError,
 					});
 				} else {
-					failure = safeHarnessExecutionFailure(error, mouth?.diagnosticState ?? "uninitialized");
+					failure = safeHarnessExecutionFailure(error);
 				}
 			} else {
 				const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
 				failure = new Error(`Native provider execution ${stage} stage failed${reason}`, { cause: error });
 			}
 		} finally {
-			await mouth?.close();
 			// A provider may rotate its login token before a later request fails.
 			// Preserve only the original credential paths, never transient sessions,
 			// and recheck live authority before replacing the capsule.
@@ -1911,11 +1610,6 @@ export class NativeProviderHost {
 				);
 			}
 			signal?.removeEventListener("abort", externalAbort);
-			/* A failed or fenced attempt still leaves partial output that the
-			 * durable review path must be able to read; normalize best-effort
-			 * without masking the original failure. */
-			if (failure && request.runtime !== "company-path-v1")
-				await grantWorkspaceGroupAccess(request.input.companyRoot).catch(() => undefined);
 			const usedRoot = root;
 			if (usedRoot) {
 				let kept = false;
@@ -1930,7 +1624,7 @@ export class NativeProviderHost {
 						// Only the capsule's own credential files stay; the next harness starts auth-only.
 						await pruneToCredentialFiles(usedRoot, durableCredentialPaths);
 						const keptRoot = usedRoot;
-						this.#cloudRuntime?.prepareSpare?.(keptRoot, this.#warmIdleMs);
+						cloudRuntime.prepareSpare?.(keptRoot, this.#warmIdleMs);
 						const timer = setTimeout(() => {
 							if (this.#warm?.root !== keptRoot) return;
 							this.#warm = undefined;
@@ -1953,7 +1647,7 @@ export class NativeProviderHost {
 				}
 				if (!kept) {
 					try {
-						await this.#cloudRuntime?.disposeSpares?.(usedRoot).catch(() => undefined);
+						await cloudRuntime.disposeSpares?.(usedRoot).catch(() => undefined);
 						await removeHarnessRoot(usedRoot);
 					} catch (error) {
 						failure ??= new Error(

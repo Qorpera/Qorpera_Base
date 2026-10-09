@@ -1,11 +1,8 @@
 import { createHash } from "node:crypto";
 import { parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
 import { type CloudFolderGroupChat, CloudFolderGroupChats } from "@qorpera/runtime/cloud-folder-group-chats";
-import {
-	CLOUD_GROUP_CHAT_TOOL_DESCRIPTION,
-	CLOUD_GROUP_CHAT_TOOL_DESCRIPTION_FOLDER,
-	cloudHiringTools,
-} from "@qorpera/runtime/cloud-hiring-tools";
+import { CloudFolderHiring } from "@qorpera/runtime/cloud-folder-hiring";
+import { CLOUD_GROUP_CHAT_TOOL_DESCRIPTION_FOLDER, cloudHiringTools } from "@qorpera/runtime/cloud-hiring-tools";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudToolArgumentRefusal, CloudToolRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
@@ -175,10 +172,11 @@ it("tells the model what a conflict, a refusal and a waiting chat mean", async (
 
 it("is the group chat tool's folder-v2 path: its description, the check before review, a bound key, the writer behind execute", async () => {
 	const f = await fixture({ folders: ["agents/groups"] });
-	const gateway = { mutate: vi.fn(), applyOwnOrganizationDocument: vi.fn() };
-	const legacy = cloudHiringTools(gateway, f.identity)[1];
-	const tool = cloudHiringTools(gateway, f.identity, undefined, { folderGroupChats: f.chats() })[1];
-	expect(legacy?.description).toBe(CLOUD_GROUP_CHAT_TOOL_DESCRIPTION);
+	const operations = new CloudNativeToolOperations(f.run, f.operationControl);
+	const tool = cloudHiringTools(f.identity, {
+		folderHiring: new CloudFolderHiring({ folder: f.folder, operations, identity: f.identity }),
+		folderGroupChats: f.chats(operations),
+	})[1];
 	expect(tool?.description).toBe(CLOUD_GROUP_CHAT_TOOL_DESCRIPTION_FOLDER);
 	const args = {
 		operationKey: "chat-1",
@@ -190,7 +188,6 @@ it("is the group chat tool's folder-v2 path: its description, the check before r
 	const parsed = tool?.parseArguments(args);
 	const result = parse((await tool?.execute(parsed ?? {}, f.context)) as { value: unknown });
 	expect(result).toMatchObject({ outcome: "saved", chat: { folder: "agents/groups/launch-week" } });
-	expect(gateway.mutate).not.toHaveBeenCalled();
 	expect(() => tool?.parseArguments({ ...args, name: "Other" })).toThrow(
 		/check agents\/groups\/ before opening another/,
 	);

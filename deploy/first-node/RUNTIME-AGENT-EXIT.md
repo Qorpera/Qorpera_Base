@@ -305,28 +305,60 @@ under qorpera.com and a page that explains the traffic with an abuse contact.
 
 ## 10. Company rules (E8, choice 4)
 
-`rules/network.toml` in the company folder (proposed format):
+`rules/network.toml` in the company folder:
 
 ```toml
-mode = "open"          # or "only-listed"
-block = ["casino.example", "*.torrents.example"]
-allow = []             # used when mode is "only-listed"
+mode = "open"                                     # or "only-listed"
+block = ["casino.example", "*.torrents.example"]  # refused in both modes
+allow = ["github.com"]                            # the only names reached in "only-listed"
 ```
 
-- It is written, moved, deleted and restored only by owners and admins. Agents read it and never write it (contract
-  5.6).
-- It is not a review rule: the reviewer does not read it. Today the folder code treats only `rules/*.md` as rules, so
-  E8 adds the file as its own checked kind. A save that fails the check is refused, and a company without the file
-  is open.
-- The platform projects it to every node.
-- **Per-company names (proposed).** dnsmasq cannot hold a list per company. E8 puts a resolver with per-client policy
-  in front of or in place of dnsmasq's DNS (for example unbound views keyed by client address from the client map).
-  A changed list reloads without a restart, and a blocked name lands in the name-lookup record.
+E8 lands in four PRs: E8a, the file, its check and the rules the nodes read; E8b-1, the reader that keeps them on each
+node, and its login; E8b-2, per-company names on each node's exit; E8c, "only listed".
+
+- **Names.** A name covers itself and every name under it (`github.com` covers `api.github.com`); `*.` in front
+  covers only the names under it. A name is written in lowercase, without `https://`, a path, a port or the dot at
+  the end, and is never an address: a site's addresses change. A list holds at most 1000 names, each once.
+  - A name in both lists is refused. A blocked name stays refused when `allow` covers it through a wider name, so
+    the block wins.
+  - `allow` does nothing in "open", so a list is kept while the mode changes.
+  - Every key may be left out. The defaults are "open" and empty lists, and a company without the file is open.
+- **Who.** Owners and admins write, delete and restore it. Agents and the other members read it and never write it
+  (contract 5.6). It never moves (not even onto its own path) or is copied, no other file moves or is copied onto
+  its path, and no folder takes its name. Each such change is an outcome, never an internal error. The core's own
+  checks (permission, version, a taken target, a missing parent) come first, as on any path. A taken target is a
+  conflict (`exists`): a move or copy of the file onto another entry, a copy of it onto itself, and anything made,
+  moved or copied onto its path while it is there. Past those checks:
+  - a move of the file, away or onto its own path (a rename), is refused with a problem;
+  - a copy of the file is refused as `kind_change` (or `structured_copy` onto another checked kind);
+  - a folder by its name is refused with a problem, and another file moved or copied onto its path is refused as
+    `kind_change` or `structured_copy`.
+- **The check (E8a).** It is not a review rule: the reviewer does not read it. The folder treats it as its own checked
+  kind, `network-rules`, read by one parser in every writer (`packages/cloud-client/src/network-rules.ts`). The
+  database checks the parse's shape again with the same name rule and refuses a save that fails. Each save keeps the
+  rules in `qorpera_company_network_rules`, one row per company folder, and a delete removes the row.
+- **How the nodes read it (E8a, E8b).** A database role of its own, `qorpera_agent_exit`, may call one function and
+  nothing else: `qorpera_agent_exit_network_rules(companies)` returns each listed company's current rules (a
+  version, the mode and both lists). It reads no table. E8a's migration creates the role without a login.
+  - E8b-1's reader (`qorpera-agent-exit-rules.service`, a dynamic user on the node's own network, never in the exit's
+    namespace) asks every 2 seconds for the companies of the client map and keeps their rules in a file only it and
+    root read. A pass that cannot read the database keeps the last rules.
+  - Its login is made and placed by one script that the coordinator runs, `deploy/agent-exit/rules-reader-login.py`:
+    a new password, written by each node's root helper from stdin into a root-only file (mode 0400) that the unit
+    hands to the reader with `LoadCredential`, then the role's login as a SCRAM verifier made where the script runs,
+    so the password never reaches the database or the Supabase API. Nobody reads, copies or prints it; the script
+    prints file names, sizes, a hash comparison and `ok`. Running it again makes a new login.
+- **Per-company names (E8b-2).** One dnsmasq cannot hold a list per company. E8b-2 runs a small dnsmasq for each
+  company that has rules, in the exit's namespace: its servers file answers a blocked name with "no such name" and
+  sends the rest to the exit's upstreams, and a changed list reloads it without a restart. The exit sends each
+  machine's lookups to its company's resolver, by the client map (a machine's company is its LXD
+  `user.qorpera.company_id`). A machine whose company has rules gets no answers until that resolver runs. A blocked
+  name lands in the name-lookup record.
 - **Block list:** the exit's DNS refuses a blocked name for that company's machines. No address is blocked, so other
   sites behind the same CDN are untouched. A machine that reaches a site by address, or through its own encrypted
   DNS, gets past a block list.
-- **"Only listed":** strict. A machine reaches only TCP port 443, only on addresses the exit's own lookups gave for
-  a listed name (a per-company set filled as names resolve), and only when the TLS server name is listed too, so an
+- **"Only listed" (E8c):** strict. A machine reaches only TCP port 443, only on addresses the exit's own lookups gave
+  for a listed name (a per-company set that the company's resolver fills as names resolve), and only when the TLS server name is listed too, so an
   unlisted site that shares a listed site's address is refused. E8 adds that check as a pass-through that reads only
   the server name, like the model relay's check. Everything else is refused in this mode: plain HTTP, other ports and
   protocols, UDP (QUIC) and SSH included. The exit never decrypts, so domain fronting (a listed TLS name carrying
@@ -368,7 +400,11 @@ allow = []             # used when mode is "only-listed"
   starts again carries `since` (its last heartbeat), so a lookup marks the whole outage as unknown; after a reboot
   there is no heartbeat, and the outage runs from the last line written. Other gap records (lost events, unlogged
   refusals) mark a moment; E3 reads them as unknown back to the line before.
-- **Rule change.** Applies at once (the resolver reloads its lists and the exit its sets), without a restart.
+- **Rule change.** Applies within seconds (the exit reads the rules, the resolver reloads its lists and the exit its
+  sets), without a restart.
+- **Rules unreadable** (the database down, or the reader's login refused). Each node keeps the last rules it read,
+  also across a restart, and the reader's status names the problem. A company the node has not read yet is unknown:
+  from E8b-2 on, its machines get no answers until a read succeeds.
 - **Update.** In place (§3), with no machine stopped and no company paused.
 
 ## 13. Build plan
@@ -384,7 +420,7 @@ allow = []             # used when mode is "only-listed"
 | E5 | Coding machines use the agent plug | made with it |
 | E6 | Company Computer: a second network card for the browser, shells, terminal and desktop (with the next image) | made with it |
 | E7 | Line guard: counting (with E3's tender), then the brake, built and off, at the levels the founder decides | after his decision |
-| E8 | Company rules | rules work |
+| E8 | Company rules: E8a the file, its check and the rules the nodes read; E8b-1 the reader on each node and its login; E8b-2 per-company names; E8c "only listed" | rules work |
 | E9 | The address block: switch-over per node, reverse names, info page | new address |
 | E10 | Each company's own log view (its own interfaces amendment) | companies see it |
 

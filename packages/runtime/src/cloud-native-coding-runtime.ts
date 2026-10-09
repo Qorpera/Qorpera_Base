@@ -500,7 +500,17 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			)
 				throw new Error("CODING_SUBMISSION_UNCONFIRMED");
 			submitted = true;
-			return cloudToolJsonText(receipt);
+			// The model gets the receipt without the words it submitted (summary, question, choices): they are in the
+			// turn row, and the run log keeps this answer as the step's result (RUNTIME-AGENT-MEMORY-TREE.md §4.5).
+			return cloudToolJsonText({
+				schema: receipt.schema,
+				workerId: receipt.workerId,
+				sequence: receipt.sequence,
+				kind: receipt.kind,
+				state: receipt.state,
+				headSha: receipt.headSha ?? null,
+				operationKey: receipt.operationKey,
+			});
 		};
 		const finish: CloudNativeTool = {
 			name: "coding_finish" satisfies CloudRuntimeToolOperation,

@@ -245,10 +245,20 @@ describe("the coding composition of a native turn", () => {
 					},
 				});
 				const span = observability.start("coding_finish");
+				// The model gets the receipt without the summary it wrote; the turn row keeps it.
 				expect(await finish.execute(finish.parseArguments(input), { ...f.context, observation: span })).toEqual({
 					kind: "text",
-					value: cloudToolJsonText(f.coding.submission),
+					value: cloudToolJsonText({
+						schema: "qorpera.coding-submission/v1",
+						workerId: f.coding.workerId,
+						sequence: 1,
+						kind: "finish",
+						state: "submitted",
+						headSha: "b".repeat(40),
+						operationKey: "done",
+					}),
 				});
+				expect(f.coding.submission).toMatchObject({ kind: "finish", summary: "Changes committed; checks passed" });
 				span.finish("succeeded");
 				await observability.close();
 				expect(
@@ -346,10 +356,21 @@ describe("the coding composition of a native turn", () => {
 					options: ["Keep 250 ms", "Raise to 500 ms"],
 				});
 				const receipt = JSON.parse((await ask.execute(parsed, f.context)).value as string);
-				expect(receipt).toMatchObject({
+				// The question and its choices reach the turn row; the model's receipt holds none of the words.
+				expect(f.coding.submission).toMatchObject({
 					kind: "ask",
+					summary: "Composer fixed; the poll interval is your call.",
 					question: "Keep 250 ms, or raise to 500 ms?",
 					options: ["Keep 250 ms", "Raise to 500 ms"],
+				});
+				expect(receipt).toEqual({
+					schema: "qorpera.coding-submission/v1",
+					workerId: f.coding.workerId,
+					sequence: 1,
+					kind: "ask",
+					state: "submitted",
+					headSha: null,
+					operationKey: "poll",
 				});
 				expect(() =>
 					ask.parseArguments({

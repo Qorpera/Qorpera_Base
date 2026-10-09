@@ -213,10 +213,11 @@ async function rehearse(empty, path = "roll") {
 			// After the switch N+1 misbehaves: pause every company with work still running, reverse, roll the
 			// nodes back (by hand), clear the declarations, resume.
 			const pausable = () =>
-				Number(sql(`select count(*) from public.qorpera_profiles p where not public.qorpera_company_deleting(p.id) and exists (select 1 from public.qorpera_profile_members m where m.profile_id = p.id and m.role in ('owner','admin'));`));
+				Number(sql(`select count(*) from public.qorpera_profiles p where public.qorpera_company_is_folder_v2(p.id) and not public.qorpera_company_deleting(p.id) and exists (select 1 from public.qorpera_profile_members m where m.profile_id = p.id and m.role in ('owner','admin'));`));
 			assert.match(fails(p("91-reverse.sql")), /paused first/);
 			const pausedNow = lastJson(commit("90-pause-now.sql"));
 			assert.equal(paused(), pausable(), "every company that can be paused is paused: " + JSON.stringify(pausedNow));
+			assert.deepEqual(pausedNow.notPausable, [], "924's one company is folder-v2, so none is left unpaused");
 			commit("91-reverse.sql");
 			assert.deepEqual(active(), [String(from.version), from.sha], "the active bundle is N again");
 			const runBack = newRun(alice, reason); // Alice's fixture run has ended

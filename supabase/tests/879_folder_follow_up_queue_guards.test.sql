@@ -37,7 +37,6 @@ begin
 		'public.qorpera_default_agent_read_on_staff()',
 		'public.qorpera_grant_shared_connectors_to_staff()',
 		'public.qorpera_revoke_secret_grants_for_inactive_staff()',
-		'public.qorpera_routine_stops_with_agent()',
 		'public.qorpera_agent_thread_on_staff()'] loop
 		if position('20260930022000' in pg_get_functiondef(v_fn::regprocedure)) = 0 then
 			raise exception '% does not carry P15''s marker', v_fn; end if;

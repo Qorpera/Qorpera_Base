@@ -18,8 +18,6 @@ const methods = [
 	"qorpera_retain_runtime_screen_observation",
 	"qorpera_native_office_operation",
 	"qorpera_native_office_capture",
-	"qorpera_native_office_file_export",
-	"qorpera_native_office_file_import",
 	"qorpera_read_native_office_capture",
 	"qorpera_assert_native_office_captures",
 	"qorpera_native_office_browser_grant",

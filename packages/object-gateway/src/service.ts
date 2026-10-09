@@ -5,7 +5,6 @@ import type { ObjectGatewayFolderGc } from "./folder-gc.ts";
 import { serveFolderObject } from "./folder-objects.ts";
 import { type FolderServiceObjectOptions, serveFolderServiceObject } from "./folder-service-objects.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
-import { serveMemberCompanyFile } from "./member-company-file.ts";
 import { type MemberCompanyObjectAuthority, serveMemberCompanyObject } from "./member-company-objects.ts";
 import { serveMemberCompanyPresence } from "./member-company-presence.ts";
 import { createMemberCors } from "./member-cors.ts";
@@ -176,8 +175,6 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 				request.url?.startsWith("/v1/member-folder-objects/")
 			)
 				observation = options.memberObservations?.start("object_read");
-			else if (request.url?.startsWith("/v1/member-company-file/"))
-				observation = options.memberObservations?.start("file_request");
 			else if (request.url?.startsWith("/v1/member-folder-commits/"))
 				observation = options.memberObservations?.start("command_submit");
 		} catch {
@@ -290,17 +287,6 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 						authority: options.memberFiles,
 						store: options.store,
 						readLegacyObject: (companyId, sha256) => options.authority.readLegacyObject(companyId, sha256),
-					});
-					return;
-				}
-				if (request.url?.startsWith("/v1/member-company-file/")) {
-					if (!options.memberFiles || !options.replication) throw new HttpError(404, "Not found");
-					await serveMemberCompanyFile(request, response, {
-						authority: options.memberFiles,
-						store: options.store,
-						replication: options.replication,
-						readLegacyObject: (companyId, sha256) => options.authority.readLegacyObject(companyId, sha256),
-						observation,
 					});
 					return;
 				}

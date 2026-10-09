@@ -9,7 +9,6 @@ import {
 	parseCloudAgentSendReceipt,
 } from "@qorpera/runtime/cloud-agent-mouth";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runCloudMouthProbe } from "./fixtures/cloud-mouth-probe.ts";
 
 const runId = "19000000-0000-4000-8000-000000000001";
 const sessionId = "19000000-0000-4000-8000-000000000002";
@@ -66,14 +65,6 @@ afterEach(async () => {
 });
 
 describe("cloud agent public mouth", () => {
-	it("runs the native process loop without publishing its reasoning, diagnostics or ordinary text", async () => {
-		await expect(runCloudMouthProbe()).resolves.toMatchObject({
-			publicMessages: 2,
-			immediateDelivery: true,
-			retryDeduplicated: true,
-			privateOutputExcluded: true,
-		});
-	});
 	it("accepts only text, phase and an idempotency key, never caller-selected authority or reasoning", () => {
 		const input = { idempotencyKey: "result-1", text: "Finished", phase: "final" };
 		expect(parseCloudAgentSendInput(input)).toEqual(input);

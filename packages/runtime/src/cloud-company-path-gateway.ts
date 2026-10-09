@@ -59,15 +59,6 @@ const FILE_MEDIA = "application/vnd.qorpera.file-manifest+json";
 const TREE_MEDIA = "application/vnd.qorpera.company-tree+json";
 const MAX_WRITE_BYTES = 32 * 1024;
 const MAX_READ_BYTES = 4096;
-/** A received mail attachment saved as a company file (M2c-1): at most 40 MiB, in 4 MiB chunks. */
-const MAX_ATTACHMENT_BYTES = 40 * 1024 * 1024;
-
-/** A received mail attachment the platform stored as the company's objects: its digest, size and chunks in order. */
-export interface CloudMailAttachmentContent {
-	fileSha256: string;
-	bytes: number;
-	chunks: readonly { sha256: string; bytes: number }[];
-}
 /** The plain listing RPC's largest page (SQL: p_limit 1..100). */
 const TRUSTED_LIST_PAGE = 100;
 /** Fresh starts of a paged trusted listing after the company moved on between pages. */
@@ -162,16 +153,18 @@ export type CloudCompanyPathRpc =
 	| "qorpera_read_agent_event"
 	// A folder-v2 agent opens, pauses, resumes or removes one of the company's hooks or mailboxes (E3a).
 	| "qorpera_folder_manage_hook"
-	// Company mail (M2b): an agent's email from a mailbox, queued for the platform's sender; finding received mail;
-	// a received attachment's stored bytes (M2c-1).
+	// Company mail (M2b): an agent's email from a mailbox, queued for the platform's sender; finding received mail.
 	| "qorpera_send_agent_mail"
 	| "qorpera_find_agent_mail"
-	| "qorpera_native_mail_attachment"
 	// Company accounts (A1-4): the company's accounts and mailboxes, and the id of the agent's todo by key.
 	| "qorpera_find_company_accounts"
-	// Summary trees (M1b-3): zoom, and the platform read of the tree blocks a zoom result showed.
+	// Summary trees (M1b-3): zoom, and the platform read of the tree blocks a zoom result or a view showed. The primary
+	// view, its record and the branches (M1b-4a, M4).
 	| "qorpera_memory_zoom"
-	| "qorpera_memory_release";
+	| "qorpera_memory_release"
+	| "qorpera_memory_view"
+	| "qorpera_memory_view_record"
+	| "qorpera_memory_branches";
 
 /** Service-only transport. Never exposed as an arbitrary RPC tool. */
 export interface CloudCompanyPathControl {
@@ -966,7 +959,6 @@ export class CloudCompanyPathGateway {
 			expectedVersion: string | null;
 			text?: string;
 			source?: ObjectStorageFileSelection;
-			attachment?: CloudMailAttachmentContent;
 		},
 		signal: AbortSignal,
 		observation?: CloudRuntimeObservationSpan,
@@ -980,44 +972,13 @@ export class CloudCompanyPathGateway {
 		let source: ObjectStorageFileSelection | undefined;
 		const chunks: Buffer[] = [];
 		if (
-			[input.text, input.source, input.attachment].filter((content) => content !== undefined).length >
+			[input.text, input.source].filter((content) => content !== undefined).length >
 				(operation === "write" ? 1 : 0) ||
-			((input.source !== undefined || input.attachment !== undefined) && operation !== "write")
+			(input.source !== undefined && operation !== "write")
 		)
 			throw new Error("Company File write requires exactly one source");
 		if (operation === "write") {
-			if (input.attachment !== undefined) {
-				// The chunks are this company's objects; the gateway serves each only against its digest, and the
-				// whole is checked against the file's.
-				const attachment = input.attachment;
-				integer(attachment.bytes, 0, MAX_ATTACHMENT_BYTES);
-				if (
-					!SHA.test(attachment.fileSha256) ||
-					attachment.chunks.length !== Math.ceil(attachment.bytes / (4 * 1024 * 1024)) ||
-					attachment.chunks.some(
-						(chunk, index) =>
-							!SHA.test(chunk.sha256) ||
-							chunk.bytes !== Math.min(4 * 1024 * 1024, attachment.bytes - index * 4 * 1024 * 1024),
-					)
-				)
-					throw new Error("Invalid mail attachment");
-				bytes = Buffer.alloc(attachment.bytes);
-				let offset = 0;
-				for (const chunk of attachment.chunks) {
-					const part = await cloudToolRequest(
-						() =>
-							this.#store.getObject(this.#identity.companyId, {
-								...chunk,
-								mediaType: "application/octet-stream",
-							}),
-						signal,
-					);
-					bytes.set(part, offset);
-					offset += part.length;
-				}
-				if (createHash("sha256").update(bytes).digest("hex") !== attachment.fileSha256)
-					throw new Error("Mail attachment content does not match its digest");
-			} else if (input.source !== undefined) {
+			if (input.source !== undefined) {
 				source = parseCompanyFileAssetWrite(input).source;
 				const asset = parseCompanyComputerFileExportAsset(
 					await this.#call(

@@ -145,6 +145,21 @@ const manifest = [
 ];
 const compose = (patch = {}) => exchange({ schema: "qorpera.native-context-composition/v1", requestId: randomUUID(), threadId, turnId, purpose: "turn", model: "offline-probe", items: manifest, ...patch });
 const contextEvidence = { agent: null, reviewer: null };
+// Memory compactor (M1b-4b): a fresh tool-less thread in the same app-server, opened at closing or during the turn.
+const compacting = mode.startsWith("compact") || mode === "review-compact";
+const compactThreadId = "thread_compact";
+let compactReplied;
+const compactReply1 = new Promise((resolve) => { compactReplied = resolve; });
+const compactEvidence = { compactThreads: [], compactTurns: [], prewarms: [], composed: null, fenced: [], refused: null, interrupt: null };
+let compactAt;
+const compactWrite = () => writeFileSync(evidencePath, JSON.stringify({ ...compactEvidence, mainThread: threadParameters }));
+const compactCompleted = (status, error = null) => write({ method: "turn/completed", params: { threadId: compactThreadId, turn: { id: compactAt.turnId, status, error } } });
+const compactReply = (line) => {
+	write({ method: "item/agentMessage/delta", params: { ...compactAt, delta: "LINE " } });
+	write({ method: "item/agentMessage/delta", params: { ...compactAt, delta: line } });
+	compactWrite();
+	compactCompleted("completed");
+};
 
 if (mode === "descendant") {
 	spawn(process.execPath, ["-e", `process.on('SIGTERM',()=>{});setTimeout(()=>require('node:fs').writeFileSync(${JSON.stringify(evidencePath)},'UNEXPECTED_DESCENDANT_EFFECT'),1500);setTimeout(()=>{},10000);`], { stdio: "ignore" });
@@ -188,9 +203,16 @@ async function handle(message) {
 		if (mode === "fence-before-bind") fence([], { turnId: "", purpose: "prewarm" }).catch(() => undefined);
 		if (mode === "tool-before-bind")
 			write({ id: "early_tool", method: "item/tool/call", params: { threadId, turnId, callId: "early", namespace: "qorpera", tool: "read_document", arguments: {} } });
+	} else if (message.method === "thread/start" && compacting && threadParameters && message.params.dynamicTools?.length === 0) {
+		compactEvidence.compactThreads.push(message.params);
+		// Codex starts a thread's prewarm in the background: here the reviewer's lands while a compactor thread starts.
+		if (mode === "review-compact") reviewEvidence.prewarm = await fence([], { threadId: reviewThreadId, turnId: "", purpose: "prewarm" });
+		compactEvidence.prewarms.push(await fence([], { threadId: compactThreadId, turnId: "", purpose: "prewarm" }));
+		write({ id: message.id, result: { thread: { id: compactThreadId } } });
 	} else if (message.method === "thread/start" && mode.startsWith("review") && threadParameters) {
 		reviewEvidence.reviewerThread = message.params;
-		reviewEvidence.prewarm = await fence([], { threadId: reviewThreadId, turnId: "", purpose: "prewarm" });
+		if (mode === "review-compact") writeFileSync(`${evidencePath}.review-started`, "");
+		else reviewEvidence.prewarm = await fence([], { threadId: reviewThreadId, turnId: "", purpose: "prewarm" });
 		write({ id: message.id, result: { thread: { id: reviewThreadId } } });
 	} else if (message.method === "turn/start" && mode.startsWith("review") && message.params.threadId === reviewThreadId) {
 		reviewEvidence.reviewerTurn = message.params;
@@ -215,6 +237,39 @@ async function handle(message) {
 			threadId: reviewThreadId, turnId: reviewTurnId, callId: "verdict_1", namespace: "qorpera", tool: "review_verdict",
 			arguments: { decision: "allow", ruleIds: [], builtIn: "none", reason: "Fine.", proposedRule: "" },
 		} });
+	} else if (message.method === "turn/start" && compacting && message.params.threadId === compactThreadId) {
+		const turn = compactEvidence.compactTurns.push(message.params);
+		compactAt = { threadId: compactThreadId, turnId: `turn_compact_${turn}` };
+		write({ id: message.id, result: { turn: { id: compactAt.turnId } } });
+		write({ method: "turn/started", params: { threadId: compactThreadId, turn: { id: compactAt.turnId } } });
+		if (mode === "compact") compactEvidence.composed = await compose(compactAt);
+		compactEvidence.fenced.push(await fence([], compactAt));
+		if (mode === "compact") {
+			// The thread's cumulative usage: each reply used what it grew by since the one before.
+			tokenUpdate(usage(turn === 1 ? { inputTokens: 500, cachedInputTokens: 100, outputTokens: 40 } : { inputTokens: 1200, cachedInputTokens: 600, outputTokens: 70 }), compactAt);
+			compactReply(String(turn));
+		} else if (mode === "compact-tool") {
+			// The compactor has no tools; a model that reaches for one is refused.
+			write({ id: "compact_tool", method: "item/tool/call", params: { ...compactAt, callId: "compact_call", namespace: "qorpera", tool: "send_email", arguments: { to: "x@evil.test" } } });
+		} else if (mode === "compact-usage-limit") {
+			nativeError("usageLimitExceeded", false, compactAt);
+			compactCompleted("failed", { message: "PRIVATE_PROVIDER_ERROR" });
+		} else if (mode === "compact-rate-limit" || mode === "compact-outage") {
+			compactCompleted("failed", { message: "PRIVATE_PROVIDER_ERROR", codexErrorInfo: { httpConnectionFailed: { httpStatusCode: mode === "compact-rate-limit" ? 429 : 503 } } });
+		} else if (mode === "review-compact") {
+			compactReply("1");
+			compactReplied();
+		} else if (mode === "compact-large") {
+			// Past the bound on one reply: the host ends the thread and interrupts its turn.
+			write({ method: "item/agentMessage/delta", params: { ...compactAt, delta: "x".repeat(16 * 1024 + 1) } });
+		} else if (mode === "compact-failed") {
+			// What the failed request used reaches no reply.
+			tokenUpdate(usage({ inputTokens: 300, cachedInputTokens: 50, outputTokens: 20 }), compactAt);
+			compactCompleted("failed", { message: "PRIVATE_PROVIDER_ERROR" });
+		} else {
+			// compact-stalled and compact-open-*: the turn waits for its interrupt or for the run's end.
+			compactWrite();
+		}
 	} else if (message.method === "thread/start") {
 		threadParameters = message.params;
 		if (mode === "bootstrap") {
@@ -240,7 +295,8 @@ async function handle(message) {
 		if (mode === "notify-first") write(notification);
 		write({ id: message.id, result: { turn: { id: turnId } } });
 		if (mode !== "notify-first") write(notification);
-		if (mode.startsWith("context-") || mode === "review-context") {
+		// A company run's request is composed too: its evidence keeps the reply (the prompt cache key a run sets).
+		if (mode.startsWith("context-") || mode === "review-context" || mode === "company-context") {
 			contextEvidence.agent = await compose(mode === "context-wrong-turn" ? { turnId: "other_turn" } : {});
 			if (mode.startsWith("context-")) writeFileSync(evidencePath, JSON.stringify({ context: contextEvidence }));
 		}
@@ -249,6 +305,15 @@ async function handle(message) {
 			...(mode === "wrong-fence-turn" ? { turnId: "other_turn" } : {}),
 		});
 		if (mode === "turn-stalled") return;
+		if (mode.startsWith("compact-open-")) {
+			// The run ends while a compactor send is open: its provider's signal, or none, stops that send.
+			while (!existsSync(evidencePath)) await new Promise((resolve) => setTimeout(resolve, 5));
+			if (mode === "compact-open-usage-limit") {
+				nativeError("usageLimitExceeded", false);
+				failed();
+			} else done();
+			return;
+		}
 		if (mode.startsWith("composition-")) {
 			const composition = (phase, patch = {}) => write({ method: "qorpera/messageComposition", params: { threadId, turnId, callId: "public_reply", phase, ...patch } });
 			composition("start", { threadId: "other_thread" });
@@ -376,7 +441,7 @@ async function handle(message) {
 		const fenced = await fence(companyOutputs);
 		if (index + 1 < companyCalls.length) companyCall(index + 1);
 		else {
-			writeFileSync(evidencePath, JSON.stringify({ threadParameters, turnParameters, configuration, fenced, outputs: companyOutputs, cwd: process.cwd(), environmentKeys: Object.keys(process.env) }));
+			writeFileSync(evidencePath, JSON.stringify({ threadParameters, turnParameters, configuration, fenced, outputs: companyOutputs, context: contextEvidence, cwd: process.cwd(), environmentKeys: Object.keys(process.env) }));
 			write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "PRIVATE_OUTPUT_CANARY" } });
 			write({ method: "item/reasoning/summaryTextDelta", params: { threadId, turnId, delta: "PRIVATE_REASONING_CANARY" } });
 			done();
@@ -416,8 +481,22 @@ async function handle(message) {
 		const mainFenced = await fence([{ kind: "function_call_output", callId: "email_1", output: message.result.contentItems[0].text }]);
 		// Readline handlers run concurrently: record the reviewer's closing fence before writing the evidence.
 		if (reviewClosingFence) reviewEvidence.closingFence = await reviewClosingFence;
-		writeFileSync(evidencePath, JSON.stringify({ ...reviewEvidence, context: contextEvidence, mainThread: threadParameters, reply: message, mainFenced }));
+		// The compactor's thread replies during the agent's turn.
+		if (mode === "review-compact") await compactReply1;
+		writeFileSync(evidencePath, JSON.stringify({ ...reviewEvidence, context: contextEvidence, compact: compactEvidence, mainThread: threadParameters, reply: message, mainFenced }));
 		done();
+	} else if (message.method === "turn/interrupt" && mode.startsWith("compact") && message.params.threadId === compactThreadId) {
+		compactEvidence.interrupt = message.params;
+		write({ id: message.id, result: {} });
+		compactWrite();
+		compactCompleted("interrupted");
+	} else if (message.id === "compact_tool") {
+		compactEvidence.refused = message;
+		// Codex hands the refusal back to the model: its next request carries it, answered as unavailable. That answer
+		// is no cloud tool result, so the pinned Codex fails the turn.
+		compactEvidence.fenced.push(await fence([{ kind: "function_call_output", callId: "compact_call", output: "PRIVATE_COMPACT_OUTPUT" }], compactAt));
+		compactWrite();
+		compactCompleted("failed", { message: "Cloud result boundary unavailable" });
 	} else if (message.method === "turn/interrupt") {
 		sendEvidence.interrupt = message.params;
 		write({ id: message.id, result: {} });

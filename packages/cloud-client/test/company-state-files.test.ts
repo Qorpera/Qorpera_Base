@@ -146,6 +146,11 @@ describe("companyStatePath", () => {
 				"connections/archive/old.md",
 				"rules/readme.txt",
 				"skills/x/SKILL.md",
+				"rules/network.toml",
+				"Rules/Network.TOML",
+				"rules/network.md",
+				"rules/sub/network.toml",
+				"network.toml",
 			].map((path) => [path, companyStatePath(path)?.kind ?? null]),
 		);
 		expect(kinds).toEqual({
@@ -182,6 +187,11 @@ describe("companyStatePath", () => {
 			"connections/archive/old.md": null,
 			"rules/readme.txt": null,
 			"skills/x/SKILL.md": null,
+			"rules/network.toml": "network-rules",
+			"Rules/Network.TOML": "network-rules",
+			"rules/network.md": "rule",
+			"rules/sub/network.toml": null,
+			"network.toml": null,
 		});
 		expect(companyStatePath("agents/anna-berg/todos/pricing-page/w1/brief.md")).toMatchObject({
 			agent: "anna-berg",

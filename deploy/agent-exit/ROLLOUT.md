@@ -35,7 +35,8 @@ Each check changes nothing. Every one must hold on both nodes before step 1.
 
 A node that already runs the exit from an earlier release takes E3 alone instead: `README.md`, "Adding E3 to a node
 that runs the exit" (its steps, check and undo). One that runs E3 already takes E7 alone: "Adding E7 to a node that
-runs the exit". A fresh node gets E7 with this step, its brake off (step 4c).
+runs the exit", and one that runs E7 takes E8b alone: "Adding E8b to a node that runs the exit". A fresh node gets E7
+with this step, its brake off (step 4c), and the rules reader, off until its login is placed (step 8).
 
 First the NAS for the logs (E3): the mount unit of `README.md`, "The mount", written to
 `/etc/systemd/system/srv-qorpera-agent\x2dexit\x2dlogs.mount`, then:
@@ -59,7 +60,9 @@ first. `/etc/default/qorpera-agent-exit` is root's, mode 0644. Then the exit:
 ```bash
 apt-get install -y --no-install-recommends dnsmasq-base conntrack python3
 getent group qorpera-agent-plug || groupadd --system qorpera-agent-plug
-bash deploy/agent-exit/install-agent-exit.sh
+# The rules reader's package, from the checkout with its dependencies installed (npm ci --ignore-scripts); a new folder.
+node scripts/package-agent-exit-rules.mjs --out /tmp/agent-exit-rules
+bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules
 systemctl enable --now qorpera-agent-exit.service qorpera-agent-exit-dns.service qorpera-agent-exit-log.service \
 	qorpera-agent-plug.service qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer qorpera-agent-exit-ship.timer
 systemctl start qorpera-agent-exit-ship.service
@@ -314,3 +317,27 @@ Check, per node, on a new Company Computer (or the next reset):
 
 Undo: roll the node back to its previous release and office image. A plugged Company Computer keeps its entry until it
 is deleted.
+
+## Step 8 (E8b): the rules reader's login
+
+After steps 1 and 2 (both nodes have the reader installed, off) and migration 20260930230000 (E8a: the role
+`qorpera_agent_exit` and `public.qorpera_agent_exit_network_rules`). It may come before or after steps 3–7: nothing
+reads the reader's rules yet (E8b-2's per-company resolvers will). On the Mac, from a checkout of what the nodes run:
+
+```bash
+python3 deploy/agent-exit/rules-reader-login.py --check
+python3 deploy/agent-exit/rules-reader-login.py
+```
+
+The script makes the login, places it on both nodes as a root-only file and starts both readers, in one go; it prints
+only file names, sizes, a hash comparison and `ok`, never the login (`README.md`, "The rules reader (E8b)", says how
+the login travels). A failed step stops it with what failed; run it again (each run makes a new login).
+
+Check, per node:
+- the script's last line is `ok`;
+- `systemctl is-active qorpera-agent-exit-rules.service` is `active`;
+- `cat /run/qorpera-agent-exit-rules/status.json` shows `"ok":true` and a `readAt` under 10 seconds old;
+- `X verify` still prints `qorpera-agent-exit: healthy`.
+
+Undo: on each node `systemctl disable --now qorpera-agent-exit-rules.service && rm /etc/qorpera-agent-exit/database-url`,
+then as the database owner `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'alter role qorpera_agent_exit with nologin password null'`.

@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+	type CommitActor,
 	type CommitAnswer,
 	type CommitOutcome,
 	type ConflictCopy,
@@ -94,7 +95,8 @@ export class FakeCore implements FolderCore {
 	listCalls = 0;
 	profileCalls = 0;
 	/** Core views, as C1b-3a keeps them: id to pass and state, the view's kind and the machine allocation it was opened
-	 * on (null for a run box: 20260930104000), and what each renewal said was unsaved since. */
+	 * on (null for a run box: 20260930104000), what each renewal said was unsaved since, and for a shell command's view
+	 * (20260930183000) whether its command has ended. */
 	readonly views = new Map<
 		string,
 		{
@@ -105,6 +107,7 @@ export class FakeCore implements FolderCore {
 			kind: string;
 			machineId: string | null;
 			unsaved: (string | null)[];
+			ended: boolean;
 		}
 	>();
 	renewalFails = false;
@@ -129,16 +132,25 @@ export class FakeCore implements FolderCore {
 			kind: options.kind ?? "run_box",
 			machineId: options.machineId ?? null,
 			unsaved: [],
+			ended: false,
 		});
+	}
+
+	/** The office's report ends a shell command's view's command: the view still renews, and saves only its final. */
+	endCommand(viewId: string): void {
+		const view = this.views.get(viewId);
+		if (view?.kind !== "computer_shell_command") throw new Error("Not a command's view");
+		view.ended = true;
 	}
 
 	/** A view actor reads only in its own company folder, with its own pass, and only while its view is open
 	 * (view_resolve: 42501). */
-	#check(actor: FolderActor, environmentId: string): void {
-		if (actor.kind !== "view") return;
+	#check(actor: FolderActor, environmentId: string) {
+		if (actor.kind !== "view") return undefined;
 		const view = this.views.get(actor.viewId);
 		if (!view || view.pass !== actor.pass || view.state !== "open" || view.environmentId !== environmentId)
 			throw new CoreRefusal("denied");
+		return view;
 	}
 	/** Events per feed page (0: all in one page), and the feed call (counted from `feedCalls`) that fails. */
 	feedPage = 0;
@@ -151,6 +163,8 @@ export class FakeCore implements FolderCore {
 	/** When set, the storage profile of an upload waits for it, and so does a commit. */
 	uploadProfileGate: Promise<void> | undefined;
 	commitGate: Promise<void> | undefined;
+	/** Called before each commit is asked, with how many were asked before it: it may hold it. */
+	commitHook: ((asked: number) => Promise<void> | undefined) | undefined;
 
 	seed(entries: CoreEntry[]): void {
 		for (const e of entries) this.entries.set(e.path, e);
@@ -257,8 +271,8 @@ export class FakeCore implements FolderCore {
 	/** Objects on the share the catalog knows, by hash: their sizes. */
 	readonly catalog = new Map<string, number>();
 	readonly intents = new Map<string, { manifest: string; objects: Map<string, number>; put: Set<string> }>();
-	/** Every commit asked, in order (a replay included). */
-	readonly commits: { key: string; units: readonly CommitUnit[] }[] = [];
+	/** Every commit asked, in order (a replay included), and whether it was a command view's final. */
+	readonly commits: { key: string; units: readonly CommitUnit[]; final: boolean }[] = [];
 	readonly #answers = new Map<string, { request: string; answer: CommitAnswer }>();
 	#nextVersion = 1000;
 	/** A path's units the core refuses (no write authority there). */
@@ -274,8 +288,12 @@ export class FakeCore implements FolderCore {
 	readonly lapsed = new Set<string>();
 	renewFailures = 0;
 	readonly renewals: string[] = [];
-	/** The next commits get no answer: `lost` applies them first (the reply was lost), `down` does not. */
+	/** The next commits get no answer: `lost` applies them first (the reply was lost, and so may a replay's be), `down`
+	 * does not. */
 	commitFailures: { mode: "lost" | "down"; count: number } = { mode: "down", count: 0 };
+	/** When set, the core refuses every commit not asked before whole, and why (the pause: `stopped`; a change set over
+	 * its 1000 units: `invalid`; and the like). */
+	commitRefusal: CoreRefusal["reason"] | undefined;
 
 	async openUpload(environmentId: string, actor: FolderActor, manifest: string) {
 		this.#check(actor, environmentId);
@@ -330,17 +348,29 @@ export class FakeCore implements FolderCore {
 	}
 
 	/** The core's unit rules (core §3), each unit whole or not at all, applied in order; the saved ones are one change
-	 * set on the journal. A key asked again with the same units answers the same; with others, 22023. */
-	async commit(environmentId: string, actor: FolderActor, key: string, units: readonly unknown[]) {
+	 * set on the journal. A key asked again with the same units (and the same `final`) answers the same, its view
+	 * closed or not, given its pass; with others, 22023. A command view's final (20260930183000) closes it, saved or
+	 * not, and may be empty; once its command has ended, the view saves nothing else (42501). */
+	async commit(environmentId: string, actor: CommitActor, key: string, units: readonly unknown[]) {
 		await this.commitGate;
-		this.#check(actor, environmentId);
-		const request = JSON.stringify(units);
-		this.commits.push({ key, units: units as CommitUnit[] });
+		await this.commitHook?.(this.commits.length);
+		const final = "final" in actor;
+		const request = JSON.stringify({ final, units });
+		this.commits.push({ key, units: units as CommitUnit[], final });
+		if (actor.kind === "view") {
+			const view = this.views.get(actor.viewId);
+			if (!view || view.pass !== actor.pass || view.environmentId !== environmentId) throw new CoreRefusal("denied");
+		}
 		const earlier = this.#answers.get(key);
 		if (earlier) {
 			if (earlier.request !== request) throw new CoreRefusal("invalid");
-			return earlier.answer;
+			return this.#answered(earlier.answer);
 		}
+		const view = this.#check(actor, environmentId);
+		if (final && view?.kind !== "computer_shell_command") throw new CoreRefusal("invalid");
+		if (units.length === 0 && !final) throw new CoreRefusal("invalid");
+		if (view?.kind === "computer_shell_command" && view.ended && !final) throw new CoreRefusal("denied");
+		if (this.commitRefusal) throw new CoreRefusal(this.commitRefusal);
 		if (this.commitFailures.count > 0 && this.commitFailures.mode === "down") {
 			this.commitFailures.count--;
 			throw new Error("The database did not answer");
@@ -468,9 +498,15 @@ export class FakeCore implements FolderCore {
 			seq = ++this.seq;
 			this.journal.push({ seq, kind: "change_set", changes });
 		}
+		if (final && view) view.state = "closed";
 		const answer: CommitAnswer = { commitId, seq, units: outcomes };
 		this.copies.set(commitId, kept);
 		this.#answers.set(key, { request, answer });
+		return this.#answered(answer);
+	}
+
+	/** A commit's answer, unless the next one is lost. */
+	#answered(answer: CommitAnswer): CommitAnswer {
 		if (this.commitFailures.count > 0 && this.commitFailures.mode === "lost") {
 			this.commitFailures.count--;
 			throw new Error("The answer was lost");

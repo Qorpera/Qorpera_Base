@@ -9,7 +9,6 @@ import type {
 } from "@qorpera/cloud-client/node/cloud-runner-protocol";
 import type { CloudRunnerBrokerTransport } from "@qorpera/runtime/cloud-runner-broker";
 import { DisposableCloudRunner } from "@qorpera/runtime/cloud-runner-control";
-import type { CloudRunnerSandboxBackend } from "@qorpera/runtime/cloud-runner-sandbox";
 import { EphemeralCloudRunnerWorker } from "@qorpera/runtime/cloud-runner-worker";
 import { FileCloudRunnerAuthorityStore } from "@qorpera/runtime/cloud-runner-worker-state";
 
@@ -33,26 +32,6 @@ function quotaFailure(error: unknown): void {
 		`Unexpected quota failure: ${failure.code}/${failure.syscall}`,
 	);
 }
-const backend: CloudRunnerSandboxBackend = {
-	backendId: "synthetic-recovery-probe",
-	capabilities: ["agent_turn"],
-	jobTypes: ["agent_turn"],
-	guarantees: {
-		boundary: "rootless_container",
-		hostFilesystem: "none",
-		inputFilesystem: "read_only",
-		companyCheckout: "job_private",
-		outputFilesystem: "job_private",
-		network: "deny_by_default",
-		environment: "allowlist_only",
-		privileges: "unprivileged",
-		resourceLimits: "kernel_enforced",
-		termination: "boundary_destroyed",
-	},
-	start: async () => {
-		throw new Error("Native work must not rerun during recovery");
-	},
-};
 
 class SyntheticControl implements CloudRunnerControlTransport {
 	readonly calls: CloudRunnerControlRequest["action"][] = [];
@@ -150,7 +129,6 @@ if (process.argv[2] === "seed") {
 		const worker = new EphemeralCloudRunnerWorker({
 			runner,
 			brokerTransport: broker,
-			backend,
 			executeJob: async () => forbidden(),
 			platform: "linux-x64",
 			runnerVersion: "synthetic",

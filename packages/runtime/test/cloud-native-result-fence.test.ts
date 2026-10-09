@@ -8,6 +8,7 @@ import {
 	type CloudNativeContextRequest,
 } from "@qorpera/runtime/cloud-native-context-composition";
 import {
+	CLOUD_NATIVE_FENCE_MAX_CONNECTIONS,
 	CLOUD_NATIVE_RESULT_FENCE_SCHEMA,
 	startCloudNativeResultFence,
 } from "@qorpera/runtime/cloud-native-result-fence";
@@ -322,9 +323,11 @@ it("serves any number of model requests in a run, one after another", async () =
 
 it("caps a native connection flood before unbounded waiting work is created", async () => {
 	const f = await fixture(async () => new Promise(() => undefined));
-	// Eight at once is a run (a request's composition and fence, and a reviewer's); the ninth is a flood.
-	const outcomes = await Promise.all(Array.from({ length: 9 }, () => exchange(f.service.path, request())));
-	expect(outcomes).toEqual(Array.from({ length: 9 }, () => undefined));
+	// The bound at once is a run (the agent's, a reviewer's and the compactor threads' compositions and fences); one
+	// more is a flood.
+	const flood = CLOUD_NATIVE_FENCE_MAX_CONNECTIONS + 1;
+	const outcomes = await Promise.all(Array.from({ length: flood }, () => exchange(f.service.path, request())));
+	expect(outcomes).toEqual(Array.from({ length: flood }, () => undefined));
 	expect(f.onFailure).toHaveBeenCalledTimes(1);
 });
 

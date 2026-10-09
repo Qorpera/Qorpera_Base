@@ -40,35 +40,16 @@ Only canonical HTTPS origins are accepted; `http://127.0.0.1:<port>` is allowed
 for local development and acceptance. Wildcards, opaque origins, paths and
 credentials are rejected. The allowlist is read at service startup.
 
-CORS is limited to the member Company File object, upload, edit/review, export,
+CORS is limited to the member Company File object, folder object, folder commit, export,
 native activity display and session attachment routes and their specific methods and headers. Preflights
 perform no authority or storage I/O. Actual requests retain all member bearer
 token and live resource checks, including after object reads. Responses expose
-the access-mode, ETag and pending plan hash headers; cookie credentials are not enabled. Private
+the access-mode and ETag headers; cookie credentials are not enabled. Private
 native, verifier, cleanup, diagnostics and raw profile-object routes receive no
 browser access. Desktop requests without an Origin header retain their existing
 transport. Configure the same exact public web origin at the deployment proxy,
 which must forward OPTIONS and preserve the gateway's CORS and Vary headers;
 hosted proxy/TLS acceptance is a separate deployment gate.
-
-Member binary uploads use `PUT /v1/member-company-file/<environment>/uploads`
-with a bearer token, `application/octet-stream`, exact content length and the
-canonical base64url UTF-8 `x-qorpera-company-upload` metadata. The shared client
-constructs this closed schema. Migration `20260908003300` binds the selected
-member filename/hash/size/media type and canonical manifest/chunks to the
-original human command before staging. The gateway verifies all selected bytes
-before storing them, stages only registered objects, and uses the existing live
-publisher or protected human review. Retries cannot substitute a source or
-decorate a previous text command. Uploads are at most 8 MiB with 4 MiB chunks;
-the text endpoint stays limited to 32 KiB.
-
-`GET /v1/member-company-file/<environment>/{edits|proposals}/<id>/file`
-returns at most 8 MiB of verified pending content. Manifest and chunk reads use
-the existing current member object authority, followed by a final command or
-proposal check. The response is binary, non-cacheable and carries
-`x-qorpera-plan-sha256`; clients verify that digest plus full file size/hash.
-This does not publish the file or approve its plan. (Its SQL/HTTP/Chromium
-script, `test-member-company-file-upload.mjs`, ran on snapshot-v1 and was deleted in the legacy sweep, B2b.)
 
 The vault's connection-file writer (P22b) is off by default. With `QORPERA_CONNECTION_FILE_WRITER=1` it writes, every 15 s in a loop of its own, up to ten due `connections/<name>.md` files of folder-v2 companies as the platform, from the vault's allow-listed settings only (`qorpera_claim_connection_file` / `qorpera_finish_connection_file`); `QORPERA_CONNECTION_FILE_WORKER_ID` names the worker (a random id otherwise). A company whose creation has not completed is skipped until it has (P14a). The vault stays the authority: no tool reads these files to act.
 

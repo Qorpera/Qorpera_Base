@@ -416,10 +416,6 @@ export class CompanyComputerGuestAutomation {
 	readonly #browser?: CompanyComputerBrowserSession;
 	readonly #screenBrowser?: (signal: AbortSignal) => Promise<BrowserContext | undefined>;
 	readonly #screenshots: CompanyComputerScreenshotPublisher;
-	readonly #fileImports: import("./cloud-company-computer-file-imports.ts").CompanyComputerFileImporter | undefined;
-	readonly #fileExports:
-		| import("./cloud-company-computer-file-transfers.ts").CompanyComputerFileExportPublisher
-		| undefined;
 	readonly #tabIds = new Map<Page, string>();
 	/** This office service's boot key: it alone opens what the vault sealed for a vault_fill (A1-3). */
 	readonly #fillKey: CompanyComputerFillKey | undefined;
@@ -439,8 +435,6 @@ export class CompanyComputerGuestAutomation {
 		/** The browser window open on this screen now, whether or not this run drives it; it never opens one. */
 		screenBrowser?: (signal: AbortSignal) => Promise<BrowserContext | undefined>;
 		screenshots: CompanyComputerScreenshotPublisher;
-		fileExports?: import("./cloud-company-computer-file-transfers.ts").CompanyComputerFileExportPublisher;
-		fileImports?: import("./cloud-company-computer-file-imports.ts").CompanyComputerFileImporter;
 		fillKey?: CompanyComputerFillKey;
 		filled?: CompanyComputerFilledValues;
 		/** The sites this computer stopped on (A1-4c), shared by its screens. */
@@ -457,8 +451,6 @@ export class CompanyComputerGuestAutomation {
 		this.#browser = options.browser;
 		this.#screenBrowser = options.screenBrowser;
 		this.#screenshots = options.screenshots;
-		this.#fileExports = options.fileExports;
-		this.#fileImports = options.fileImports;
 		this.#fillKey = options.fillKey;
 		this.#filled = options.filled ?? new CompanyComputerFilledValues();
 		this.#siteStops = options.siteStops ?? new CompanyComputerSiteStops();
@@ -656,19 +648,9 @@ export class CompanyComputerGuestAutomation {
 		signal.throwIfAborted();
 		if (action.kind === "screen") throw new Error("SCREEN_LIFECYCLE_REQUIRES_CLOUD_REGISTRY");
 		if (action.kind === "transfer") {
-			if (action.action === "import") {
-				if (!this.#commands?.writeFile || !this.#fileImports) throw new Error("OFFICE_FILE_IMPORT_UNAVAILABLE");
-				return {
-					kind: "json",
-					value: await this.#fileImports.perform(lease, effect, operation, (file, checked) =>
-						this.#commands!.writeFile!({ ...file, signal: checked }),
-					),
-				};
-			}
-			if (!this.#commands?.readFile || !this.#fileExports) throw new Error("OFFICE_FILE_EXPORT_UNAVAILABLE");
-			const bytes = await this.#commands.readFile({ path: action.source.path, signal });
-			signal.throwIfAborted();
-			return { kind: "json", value: await this.#fileExports.publish(bytes, lease, effect, operation) };
+			// Company objects carried these bytes and are gone (legacy removal, step C): no import or export.
+			if (action.action === "import") throw new Error("OFFICE_FILE_IMPORT_UNAVAILABLE");
+			throw new Error("OFFICE_FILE_EXPORT_UNAVAILABLE");
 		}
 		const display = companyComputerScreenDisplay(this.#binding.screenOrdinal);
 		if (action.kind === "browser" || (action.kind === "screenshot" && action.surface === "browser")) {
@@ -800,21 +782,25 @@ export class CompanyComputerGuestAutomation {
 				const key = action.key;
 				await this.#pageCall(() => page.keyboard.press(key));
 			} else if (action.action === "vault_fill") {
-				// Only this boot's key opens the box, and only for this call, account and field: the value then
-				// goes into the one box named, on the account's own website, and nowhere else.
+				// Only this boot's key opens the box, and only for this call, account (or signed hook) and field: the
+				// value then goes into the one box named, on the account's own website (the hook's site), and nowhere else.
 				const sealed = effect.fill;
 				const key = this.#fillKey;
 				if (!key || !sealed) throw new CompanyComputerActionNotStartedError("ACCOUNT_FILL_UNAVAILABLE");
+				const call = {
+					companyId: this.#binding.companyId,
+					companyComputerId: this.#binding.companyComputerId,
+					computerGeneration: this.#binding.computerGeneration,
+					receiptId: effect.receiptId,
+				};
 				let opened: ReturnType<CompanyComputerFillKey["open"]>;
 				try {
-					opened = key.open(sealed, {
-						companyId: this.#binding.companyId,
-						companyComputerId: this.#binding.companyComputerId,
-						computerGeneration: this.#binding.computerGeneration,
-						receiptId: effect.receiptId,
-						accountId: action.account,
-						field: action.field,
-					});
+					opened = key.open(
+						sealed,
+						"hook" in action
+							? { ...call, hookId: action.hook, field: action.field }
+							: { ...call, accountId: action.account, field: action.field },
+					);
 				} catch (error) {
 					// A spent box (or computers' clocks far apart) is told apart from one for another call or key.
 					throw new CompanyComputerActionNotStartedError(

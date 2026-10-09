@@ -111,6 +111,8 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			expect(tool.description).toContain("supported, authorized connector granted to the company");
 			// A company account's values are typed only by the vault (A1-4); a block page ends the attempt.
 			expect(tool.description).toContain("use browser vault_fill {role, name, account, field}");
+			// A signed hook's secret goes the same way onto its site (E3b-3).
+			expect(tool.description).toContain("{role: textbox, name, hook, field: signing_secret} on its site");
 			expect(tool.description).toContain("never type or ask for a password yourself");
 			expect(tool.description).toContain("ends the attempt at once: never retry it");
 			expect(tool.description).toContain("If the required connector or account is unavailable, report the blocker");
@@ -118,24 +120,42 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 				"Model-provider subscription credentials never belong on the Company Computer",
 			);
 		}
-		// The browser offers vault_fill: an account id and which of its values, never a value.
+		// The browser offers vault_fill: an account id and which of its values, or a signed hook's id and its secret;
+		// never a value.
 		const browser = harness.session.tools.find((tool) => tool.name === "computer_browser")!;
 		const actions = (
 			browser.inputSchema.properties as { action: { oneOf: Array<{ properties: Record<string, unknown> }> } }
 		).action.oneOf;
-		expect(actions.find((schema) => (schema.properties.action as { const: string }).const === "vault_fill")).toEqual({
-			type: "object",
-			additionalProperties: false,
-			required: ["kind", "action", "role", "name", "account", "field"],
-			properties: {
-				kind: { const: "browser" },
-				action: { const: "vault_fill" },
-				role: { enum: ["textbox", "spinbutton"] },
-				name: { type: "string", maxLength: 512 },
-				account: { type: "string", pattern: expect.any(String) },
-				field: { enum: ["login", "password", "code"] },
+		expect(
+			actions.filter((schema) => (schema.properties.action as { const: string }).const === "vault_fill"),
+		).toEqual([
+			{
+				type: "object",
+				additionalProperties: false,
+				required: ["kind", "action", "role", "name", "account", "field"],
+				properties: {
+					kind: { const: "browser" },
+					action: { const: "vault_fill" },
+					role: { enum: ["textbox", "spinbutton"] },
+					name: { type: "string", maxLength: 512 },
+					account: { type: "string", pattern: expect.any(String) },
+					field: { enum: ["login", "password", "code"] },
+				},
 			},
-		});
+			{
+				type: "object",
+				additionalProperties: false,
+				required: ["kind", "action", "role", "name", "hook", "field"],
+				properties: {
+					kind: { const: "browser" },
+					action: { const: "vault_fill" },
+					role: { const: "textbox" },
+					name: { type: "string", maxLength: 512 },
+					hook: { type: "string", pattern: expect.any(String) },
+					field: { const: "signing_secret" },
+				},
+			},
+		]);
 	});
 
 	it("keeps authorization free of physical launch and prepares only after receipt admission", async () => {
@@ -611,6 +631,61 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		},
 	);
 
+	// From the deleted file transfer classes' tests (legacy removal, step C): the guest still parses every transfer.
+	it.each(["/etc/passwd", "../secret", "a/../b", "a//b", "a/./b", "a\\b", "a\0b", "a/", "x".repeat(256)])(
+		"rejects a transfer path outside the workbench: %j",
+		(path) => {
+			expect(() =>
+				parseCompanyComputerAction({
+					kind: "transfer",
+					action: "export",
+					source: { realm: "company_computer", path },
+					destination: { realm: "object_storage" },
+					mediaType: "text/plain",
+				}),
+			).toThrow();
+			expect(() =>
+				parseCompanyComputerAction({
+					kind: "transfer",
+					action: "import",
+					source: { realm: "object_storage", assetId: computerId(51), sha256: "a".repeat(64) },
+					destination: { realm: "company_computer", path },
+				}),
+			).toThrow();
+		},
+	);
+
+	it("keeps a transfer's literal names and refuses implicit realms, raw hashes and extra flags", () => {
+		const exported = {
+			kind: "transfer",
+			action: "export",
+			source: { realm: "company_computer", path: 'output/`quote` $(value) "name".bin' },
+			destination: { realm: "object_storage" },
+			mediaType: "application/octet-stream",
+		};
+		const imported = {
+			kind: "transfer",
+			action: "import",
+			source: { realm: "object_storage", assetId: computerId(51), sha256: "a".repeat(64) },
+			destination: { realm: "company_computer", path: "incoming/$(literal).bin" },
+		};
+		expect(parseCompanyComputerAction(exported)).toEqual(exported);
+		expect(parseCompanyComputerAction(imported)).toEqual(imported);
+		for (const bad of [
+			{ ...exported, source: { realm: "member_device", path: "selected" } },
+			{ ...exported, source: { ...exported.source, realm: "isolated_worker" } },
+			{ ...exported, destination: { realm: "isolated_worker" } },
+			...["member_device", "company_file", "isolated_worker", "company_computer"].map((realm) => ({
+				...imported,
+				source: { ...imported.source, realm },
+			})),
+			{ ...imported, destination: { ...imported.destination, realm: "isolated_worker" } },
+			{ ...imported, source: { realm: "object_storage", sha256: "a".repeat(64) } },
+			{ ...imported, overwrite: true },
+		])
+			expect(() => parseCompanyComputerAction(bad), JSON.stringify(bad)).toThrow();
+	});
+
 	it("reads a vault_fill as a box, an account and a field, never a value", () => {
 		const fill = {
 			kind: "browser",
@@ -635,6 +710,38 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			{ ...fill, name: " " },
 		])
 			expect(() => parseCompanyComputerAction(bad), JSON.stringify(bad)).toThrow("INVALID_COMPUTER_ARGUMENTS");
+	});
+
+	it("reads a vault_fill of a signed hook's secret as a text box, the hook and its secret, never a value (E3b-3)", () => {
+		const fill = {
+			kind: "browser",
+			action: "vault_fill",
+			role: "textbox",
+			name: "Signing secret",
+			hook: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+			field: "signing_secret",
+		};
+		expect(parseCompanyComputerAction(fill)).toEqual({ ...fill, hook: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" });
+		for (const bad of [
+			{ ...fill, value: "whsec_x" },
+			{ ...fill, account: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" },
+			{ ...fill, field: "password" },
+			{ ...fill, field: "secret" },
+			{ ...fill, role: "spinbutton" },
+			{ ...fill, hook: "repo-pushes" },
+			{ ...fill, hook: 1 },
+			{ ...fill, name: " " },
+		])
+			expect(() => parseCompanyComputerAction(bad), JSON.stringify(bad)).toThrow("INVALID_COMPUTER_ARGUMENTS");
+		// An account's call never names a hook's secret.
+		const { hook: _hook, ...box } = fill;
+		expect(() =>
+			parseCompanyComputerAction({
+				...box,
+				account: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+				field: "signing_secret",
+			}),
+		).toThrow("INVALID_COMPUTER_ARGUMENTS");
 	});
 
 	it("bounds input and validates coordinates before cloud acquisition", async () => {

@@ -120,7 +120,6 @@ export interface HostedSession {
 	staffAgentId?: string;
 	parentSessionId?: string;
 	executionScope?: Record<string, JsonValue>;
-	companySnapshotId?: string;
 	staffVersion?: number;
 	audience: HostedSessionAudience;
 	status: "open" | "closed";
@@ -161,7 +160,6 @@ export interface StaffSessionHandle {
 	clientSessionId: string;
 	environmentId: string;
 	title: string;
-	companySnapshotId?: string;
 	staffVersion?: number;
 	audience: HostedSessionAudience;
 	created: boolean;
@@ -274,54 +272,9 @@ export interface HostedAccountEntitlement {
 export interface HostedCompanyFile {
 	profileId: string;
 	environmentId: string;
-	canonicalWorkspaceId: string;
-	headSnapshotId?: string;
-	state: "provisioning" | "ready";
-	logicalBytes: number;
-	retainedStorageBytes: number;
 	storageUsedBytes: number;
 	storageLimitBytes: number;
-	objectBackends: string[];
 	entitlement?: HostedAccountEntitlement;
 	createdAt: string;
 	updatedAt: string;
-}
-
-export interface HostedCompanySnapshot {
-	snapshotId: string;
-	profileId: string;
-	environmentId: string;
-	workspaceId: string;
-	clientSnapshotId: string;
-	parentSnapshotId?: string;
-	tree: {
-		manifestSha256: string;
-		manifestBytes: number;
-		contractVersion: number;
-		fileCount: number;
-		totalBytes: number;
-	};
-	createdByUserId: string;
-	createdAt: string;
-	publicationState?: "prepared" | "published";
-}
-
-/* Company tree manifests (COMPANY-FILE.md, cloud-company-snapshot.ts) */
-
-export interface CloudFileReference {
-	manifestSha256: string;
-	fileSha256: string;
-	bytes: number;
-	mediaType: string;
-}
-
-export type CloudCompanyTreeEntry =
-	| { kind: "directory"; path: string }
-	| { kind: "file"; path: string; executable: boolean; file: CloudFileReference };
-
-export interface CloudCompanyTreeManifest {
-	schema: "qorpera.company-tree/v1";
-	contractVersion: number;
-	omittedLayers: string[];
-	entries: CloudCompanyTreeEntry[];
 }

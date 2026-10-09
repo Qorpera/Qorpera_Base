@@ -19,15 +19,7 @@ export type CompanyComputerLinuxOfficeServiceOptions = Omit<
 	screenLifecycle: CompanyComputerScreenLifecycle;
 	linux: Omit<
 		CompanyComputerLinuxGuestOptions,
-		| "scope"
-		| "computerGeneration"
-		| "registry"
-		| "onFailure"
-		| "boundary"
-		| "screenshots"
-		| "fileExports"
-		| "fileImports"
-		| "screenLifecycle"
+		"scope" | "computerGeneration" | "registry" | "onFailure" | "boundary" | "screenshots" | "screenLifecycle"
 	> & {
 		attestation: CompanyComputerLinuxGuestAttestation;
 	};

@@ -83,15 +83,19 @@ function companyFile(initial: Record<string, string> = {}) {
 
 const NOW = new Date(Date.UTC(2026, 8, 22, 21, 30, 0));
 
-async function fixture(initial: Record<string, string> = {}, place?: CloudAgentFolderPlace) {
+/** Every agent's folder is its folder name (legacy sweep step C, AF). */
+const PLACE: CloudAgentFolderPlace = { core: "folder-v2", handle: "nora" };
+
+async function fixture(initial: Record<string, string> = {}, place = PLACE) {
 	const { binding, authority } = nativeToolAuthorityFixture();
 	const run = await CloudNativeToolRun.open(
 		binding,
 		{ describeToolAuthority: async () => authority },
 		new AbortController().signal,
 	);
-	const agent = run.identity.staffAgentId;
-	const folder = cloudAgentFolder(run.identity.companyId, agent, place);
+	// The agent's folder name: its notebook is under agents/<agent>/memory.
+	const agent = place.handle;
+	const folder = cloudAgentFolder(run.identity.companyId, run.identity.staffAgentId, place);
 	const paths = cloudMemoryPaths(folder);
 	const store = companyFile(
 		Object.fromEntries(Object.entries(initial).map(([key, text]) => [key.replace("<agent>", agent), text])),
@@ -100,7 +104,7 @@ async function fixture(initial: Record<string, string> = {}, place?: CloudAgentF
 		companyId: run.identity.companyId,
 		runId: run.identity.runId,
 		identity: run.identity,
-		tools: cloudMemoryTools(store.gateway, run.identity, () => NOW, place),
+		tools: cloudMemoryTools(store.gateway, run.identity, place, () => NOW),
 		assertActive: (signal) => run.assertActive(signal),
 		signal: run.signal,
 	});
@@ -472,7 +476,7 @@ describe("agent memory notebook", () => {
 	it("advertises no scope parameter: memory is company first, with no member shard", () => {
 		const { gateway } = companyFile();
 		const identity = nativeToolAuthorityFixture().authority.identity;
-		for (const tool of cloudMemoryTools(gateway, identity)) {
+		for (const tool of cloudMemoryTools(gateway, identity, PLACE)) {
 			expect(Object.keys((tool.inputSchema as { properties: object }).properties)).not.toContain("scope");
 			expect(tool.description).not.toMatch(/scope|shard/i);
 		}
@@ -504,12 +508,11 @@ describe("agent memory notebook", () => {
 /** The real HTTP adapter and gateway over a fake PostgREST that answers like the migrations. */
 function httpNotebook() {
 	const db = companyFilePostgrest();
-	const agent = db.identity.staffAgentId;
 	const boundary = new CloudNativeToolBoundary({
 		companyId: db.identity.companyId,
 		runId: db.identity.runId,
 		identity: db.identity,
-		tools: cloudMemoryTools(db.gateway, db.identity, () => NOW),
+		tools: cloudMemoryTools(db.gateway, db.identity, PLACE, () => NOW),
 		assertActive: async () => {},
 		signal: new AbortController().signal,
 	});
@@ -517,8 +520,8 @@ function httpNotebook() {
 		JSON.parse(result.contentItems[0].text);
 	const receipt = (result: Awaited<ReturnType<CloudNativeToolBoundary["invoke"]>>) =>
 		JSON.parse(envelope(result).content.text);
-	const folder = cloudAgentFolder(db.identity.companyId, agent);
-	return { db, agent, folder, paths: cloudMemoryPaths(folder), boundary, envelope, receipt };
+	const folder = cloudAgentFolder(db.identity.companyId, db.identity.staffAgentId, PLACE);
+	return { db, folder, paths: cloudMemoryPaths(folder), boundary, envelope, receipt };
 }
 
 describe("agent memory over the real Company File HTTP adapter", () => {

@@ -1,6 +1,10 @@
 import type { JsonValue } from "@qorpera/contracts";
 import { CloudActionReviewChannel, type CloudActionReviewer } from "./cloud-action-review.ts";
-import { type CloudChatGptPlanAuth, runCloudCodexToolSession } from "./cloud-codex-tool-session.ts";
+import {
+	type CloudChatGptPlanAuth,
+	type CloudCodexContextComposer,
+	runCloudCodexToolSession,
+} from "./cloud-codex-tool-session.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import type { CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
@@ -72,6 +76,8 @@ export async function runCloudNativeRunToolSession(options: {
 	binarySha256: string;
 	prompt: string;
 	runtimeInstructions?: string;
+	/** Composes each model request's input; absent sends it as Codex built it (cloudNativeContextIdentity). */
+	composeContext?: CloudCodexContextComposer;
 	identityRoot?: string;
 	/** Warm conversations: the identity root was kept from an earlier run on this host. */
 	reusedIdentityRoot?: boolean;
@@ -190,6 +196,7 @@ export async function runCloudNativeRunToolSession(options: {
 			serviceTier: options.serviceTier,
 			prompt: options.prompt,
 			runtimeInstructions: options.runtimeInstructions,
+			...(options.composeContext ? { composeContext: options.composeContext } : {}),
 			identityRoot: options.identityRoot,
 			...(options.reusedIdentityRoot ? { reusedIdentityRoot: true } : {}),
 			isolation: options.isolation,

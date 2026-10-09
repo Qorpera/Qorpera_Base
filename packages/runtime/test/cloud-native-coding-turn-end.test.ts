@@ -229,6 +229,9 @@ async function fixture() {
 		objectStore: () => {
 			throw new Error("A coding turn has no Company File");
 		},
+		folderBytes: () => {
+			throw new Error("A coding turn has no company folder");
+		},
 		command,
 		binarySha256,
 		timeoutMs: 10_000,
@@ -311,7 +314,7 @@ it("carries CODING_TURN_ENDED_WITHOUT_SUBMISSION to the runner through the host'
 		},
 		capsules: { get: async () => capsule, put: refused },
 		cloudRuntime: f.runtime,
-		harness: { beginLogin: refused, execute: refused },
+		harness: { beginLogin: refused },
 	});
 	const token = randomBytes(32).toString("base64url");
 	const service = new HttpNativeProviderHostService(host, token);
