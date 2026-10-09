@@ -153,7 +153,8 @@ struct Shared {
 	answered: Mutex<Answered>,
 	/// The node lets this view write.
 	writable: bool,
-	/// Who the files show as owned by: the account that mounted the folder (a read-only view shows root).
+	/// Who the files show as owned by: the explicit `Options.owner` if given, else the account that mounted the
+	/// folder; a read-only view shows root.
 	owner: (u32, u32),
 	versions: Mutex<VersionMap>,
 	/// Files open for writing, by inode. Held only to look one up, add or remove it: never while a file's own lock is
