@@ -616,6 +616,10 @@ cannot be built again; a platform restore of `runs/` is W1's to add if it is wan
   and are not copied. So a `send_mail` step never holds the mail's body (`rt/cloud-event-tools.ts:289-309`). A mail
   read (`read_event`) does hold the text it returned (`rt/cloud-event-tools.ts:220-287`), and a contact's erasure
   reaches it (§10.1).
+- **A report keeps its arguments as a hash only too**, as a send does: a worker's `report_work`, and a coding turn's
+  `coding_finish` and `coding_ask` (W6b). Their words are in the worker's report and its results file, and a coding
+  turn's are in its turn row too; a copy in the log would outlive the erasure of those. A coding turn's commands
+  (`coding_run_command`, `coding_read_command`, `coding_cancel_command`) keep their arguments like any other step.
 - **The result is the call's receipt, as the fence issued it.** A `send_mail` receipt keeps `from`, `fromName`, `to`,
   `cc`, `subject` and the attached paths, as today's receipts do (`rt/cloud-event-tools.ts:363-386`,
   `mig/20260928309740_runtime_company_mail_sending.sql:109-115`, with the paths from
