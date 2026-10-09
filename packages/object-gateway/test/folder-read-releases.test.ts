@@ -81,8 +81,9 @@ const entry = (
 ): ReadLogEntry => ({ seq, path, version, authority });
 
 /** A company folder with one plan and one view the core opened (a desktop of the company machine, unless said
- * otherwise), and the node's service with the office project configured. */
-async function company(kind = "computer_desktop") {
+ * otherwise), and the node's service with the office project configured (forgetting views idle for `idleMs`, if
+ * given). */
+async function company(kind = "computer_desktop", idleMs?: number) {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-folder-reads-"));
 	const core = new FakeCore();
 	core.seed([folder("docs"), await storeFile(root, "docs/plan.md", "the plan", 1)]);
@@ -94,6 +95,7 @@ async function company(kind = "computer_desktop") {
 		grants: companyGrants(),
 		staging: new FolderStaging(core, new FakeUploads(root, core), objects),
 		log: () => undefined,
+		...(idleMs === undefined ? {} : { idleMs }),
 	});
 	const handles: ViewHandle[] = [];
 	cleanups.push(async () => {
@@ -521,6 +523,68 @@ describe("a boundary whose release is not taken", () => {
 		const listed = cmd.core.listCalls;
 		await cmd.open();
 		expect(cmd.core.listCalls).toBeGreaterThan(listed);
+	});
+
+	it("leaves a view whose last connection left during a boundary to that boundary, not to the idle sweep", async () => {
+		// A service that forgets a view as soon as it is idle (idleMs 0), swept while the boundary runs. Saved, the view is
+		// let go then: the core hears at once that nothing is unsaved.
+		const saves = await company("computer_desktop", 0);
+		const view = await saves.open();
+		await take(view, LOG, [entry(1)]);
+		await write(view, "docs/out.md", "out");
+		await until(() => saves.coreView.unsaved.length === 2);
+		let go = (): void => undefined;
+		let asked = false;
+		saves.core.commitHook = (earlier) => {
+			if (earlier > 0) return undefined;
+			asked = true;
+			return new Promise<void>((resolve) => {
+				go = resolve;
+			});
+		};
+		const saving = view.publish();
+		await until(() => asked);
+		view.release();
+		await saves.service.poll();
+		go();
+		expect((await saving).paths).toEqual([{ path: "docs/out.md", outcome: "saved" }]);
+		await until(() => saves.coreView.unsaved.at(-1) === null);
+
+		// With no answer (that boundary's, and the one its last connection left asks again), the view is kept: past any
+		// sweep, renewed, and found again by its machine, whose next publish saves it.
+		const waits = await company("computer_desktop", 0);
+		const first = await waits.open();
+		await take(first, LOG, [entry(1)]);
+		await write(first, "docs/out.md", "out");
+		await until(() => waits.coreView.unsaved.length === 2);
+		waits.core.commitFailures = { mode: "down", count: 6 };
+		let answer = (): void => undefined;
+		let held = false;
+		waits.core.commitHook = (earlier) => {
+			if (earlier > 0) return undefined;
+			held = true;
+			return new Promise<void>((resolve) => {
+				answer = resolve;
+			});
+		};
+		const unanswered = first.publish();
+		await until(() => held);
+		first.release();
+		await waits.service.poll();
+		answer();
+		expect((await unanswered).paths).toEqual([
+			{ path: "docs/out.md", outcome: "not_applied", reason: "the save did not get through yet", kept: true },
+		]);
+		await until(() => waits.core.commits.length === 6);
+		await settle();
+		await waits.service.poll();
+		const renewals = waits.coreView.renewals;
+		await waits.service.renewLeases();
+		expect(waits.coreView.renewals).toBe(renewals + 1);
+		const lists = waits.core.listCalls;
+		const again = await waits.open();
+		expect(waits.core.listCalls).toBe(lists);
+		expect((await again.publish()).paths).toEqual([{ path: "docs/out.md", outcome: "saved" }]);
 	});
 
 	it("takes a release the core filed, whose answer was lost, as released when it replays", async () => {

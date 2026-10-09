@@ -494,7 +494,8 @@ with the view as the actor before anything made from them is published (RUNTIME-
   connection). Once a boundary hears another answer (a save, or a refusal for good) it is dropped like any other view
   no machine holds. A command's view is kept for its final unless its last boundary was refused for good. A boundary
   still running when the last connection leaves, or one that runs after it (a change that landed then), decides again
-  when it ends: the view stays kept, or is let go. A desktop's change set refused by the pause or the run check stays
+  when it ends: the view stays kept, or is let go. Until then the view is not forgotten as idle, however long the
+  boundary takes. A desktop's change set refused by the pause or the run check stays
   pending, as a command's does, for a later boundary to carry.
 - **A final asked again.** A command's view that closed while its final had no answer (Step 4b, "No answer") takes `I`
   and keeps none of it, a `lost` included: the core answers that view nothing but the final's replay, which publishes

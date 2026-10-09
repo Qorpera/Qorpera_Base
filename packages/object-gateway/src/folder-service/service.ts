@@ -299,6 +299,8 @@ class View {
 	quiet: ReturnType<typeof setTimeout> | undefined;
 	/** One boundary at a time. */
 	publishing: Promise<Report> = Promise.resolve({ commitId: null, seq: null, paths: [] });
+	/** Steps on that chain not ended yet (#inTurn): an idle view is not forgotten while it has any; the last decides. */
+	steps = 0;
 	/** A boundary whose commit got no answer: asked again, unchanged (a final one final), as the actor it was asked as,
 	 * before the next one. A view's close keeps it: a final may be what closed the view. */
 	unanswered:
@@ -684,14 +686,16 @@ export class FolderService {
 	}
 
 	/** One round: read the clocks of every company with a live view, move views whose company moved, list again those
-	 * due, send heartbeats, and drop views idle for long enough. Exposed for tests. */
+	 * due, send heartbeats, and drop views idle for long enough. A view with a boundary still running stays: the last
+	 * step on its chain keeps it or lets it go (#unheld), which needs it where its machine finds it. Exposed for tests. */
 	async poll(): Promise<void> {
 		if (this.#polling) return;
 		this.#polling = true;
 		try {
 			const now = this.#now();
 			for (const [key, view] of this.#views)
-				if (view.idleSince !== undefined && now - view.idleSince >= this.#idleMs) this.#views.delete(key);
+				if (view.idleSince !== undefined && view.steps === 0 && now - view.idleSince >= this.#idleMs)
+					this.#views.delete(key);
 			const live = [...this.#views.values()].filter((v) => v.tree && !v.closed);
 			if (live.length === 0) return;
 			let clocks: Map<string, number>;
@@ -1150,7 +1154,9 @@ export class FolderService {
 	#inTurn(view: View, step: () => Promise<Report>): Promise<Report> {
 		const next = view.publishing.catch(() => undefined).then(step);
 		view.publishing = next;
+		view.steps++;
 		const decide = (): void => {
+			view.steps--;
 			if (view.publishing === next) this.#unheld(view);
 		};
 		next.then(decide, decide);
