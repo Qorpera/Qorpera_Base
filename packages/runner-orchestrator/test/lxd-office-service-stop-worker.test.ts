@@ -34,21 +34,26 @@ describe("serialized provider stop worker", () => {
 		});
 		expect(f.activation.exec).toHaveBeenCalledOnce();
 	});
-	it.each([true, false])("does not immediately resubmit an uncertain stop (completion present: %s)", async (physical) => {
-		const f = await fixture(),
-			original = f.exec.getMockImplementation()!;
-		f.state.physical = physical;
-		f.exec.mockImplementationOnce(async (...args) => {
-			await original(...args);
-			throw new Error("lost submission reply");
-		});
-		for (let i = 0; i < 2; i++)
-			await expect(f.create().reconcile(f.activation.request.intentId, f.request, signal())).resolves.toMatchObject({
-				state: physical ? "stopped" : "unknown",
+	it.each([true, false])(
+		"does not immediately resubmit an uncertain stop (completion present: %s)",
+		async (physical) => {
+			const f = await fixture(),
+				original = f.exec.getMockImplementation()!;
+			f.state.physical = physical;
+			f.exec.mockImplementationOnce(async (...args) => {
+				await original(...args);
+				throw new Error("lost submission reply");
 			});
-		expect(f.exec).toHaveBeenCalledOnce();
-		expect(f.inspect).toHaveBeenCalledTimes(physical ? 1 : 0);
-	});
+			for (let i = 0; i < 2; i++)
+				await expect(
+					f.create().reconcile(f.activation.request.intentId, f.request, signal()),
+				).resolves.toMatchObject({
+					state: physical ? "stopped" : "unknown",
+				});
+			expect(f.exec).toHaveBeenCalledOnce();
+			expect(f.inspect).toHaveBeenCalledTimes(physical ? 1 : 0);
+		},
+	);
 	it.each(["qorpera_begin_runtime_office_lifecycle", "qorpera_ack_runtime_office_stop"] as const)(
 		"recovers a lost committed %s reply with the same identity",
 		async (method) => {
