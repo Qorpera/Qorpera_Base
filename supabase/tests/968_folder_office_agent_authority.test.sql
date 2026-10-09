@@ -78,6 +78,9 @@ select pg_temp.base_error($q$select public.qorpera_check_runtime_office_shared_s
 select pg_temp.base_error($q$select pg_temp.ob_call('renew',current_setting('qorpera_test.office_lease')::jsonb)$q$,'42501');
 select pg_temp.base_assert(pg_temp.ob_call('release',current_setting('qorpera_test.office_lease')::jsonb)='{"state":"released"}','release after revocation');
 reset role;
+-- Release answers "released" whether or not it cleared the lease, so the screen row is read too.
+select pg_temp.base_assert((select lease_id is null from public.qorpera_runtime_office_screens
+	where id=(current_setting('qorpera_test.binding')::jsonb->>'screenId')::uuid),'release frees the revoked lease''s seat');
 rollback to savepoint aa_revoke;
 
 -- 2. Alice's reserved start (an intent as her computer_start leaves it, as 893 §C) checks; once the owner revokes her, the
@@ -235,6 +238,8 @@ select pg_temp.base_assert(not case when a->>'kind'='browser' then public.qorper
 	else public.qorpera_valid_office_desktop_action(a) end,'invalid action: '||a::text) from jsonb_array_elements(current_setting('qorpera_test.aa_bad')::jsonb) a;
 set local role service_role;
 select pg_temp.base_assert(pg_temp.aa_op('authorize','{"kind":"desktop","action":"press","key":"Enter"}')->>'state'='authorized','a sound action is authorized');
+-- The browser branch also refuses without a browser grant, so a sound browser action is the control for its two cases.
+select pg_temp.base_assert(pg_temp.aa_op('authorize','{"kind":"browser","action":"snapshot"}')->>'state'='authorized','a sound browser action is authorized');
 select pg_temp.base_error(format('select pg_temp.aa_op(%L,%L)','authorize',a),'42501') from jsonb_array_elements(current_setting('qorpera_test.aa_bad')::jsonb) a;
 reset role;
 
