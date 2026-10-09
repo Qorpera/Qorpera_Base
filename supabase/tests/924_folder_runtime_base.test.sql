@@ -1037,7 +1037,8 @@ begin
 			select to_jsonb(lease) into strict v_before from public.qorpera_native_provider_connection_leases lease
 			where id = (v_binding ->> 'leaseId')::uuid;
 			perform pg_temp.base_error(format('select public.qorpera_acquire_native_provider_connection_lease(%L, %L, %L, %L, %L, 120)',
-				v_binding ->> 'runId', v_binding ->> 'runnerId', repeat('2', 64), v_binding ->> 'assignmentId', repeat('3', 64)), '55000');
+				v_binding ->> 'runId', v_binding ->> 'runnerId', repeat('2', 64), v_binding ->> 'assignmentId', repeat('3', 64)), '55000',
+				'native provider lease is terminal or expired');
 			perform pg_temp.base_assert((select to_jsonb(lease) = v_before from public.qorpera_native_provider_connection_leases lease
 				where id = (v_binding ->> 'leaseId')::uuid), 'a refused acquire leaves the ' || v_status || ' lease as it was');
 			raise sqlstate 'PZ001';
@@ -1110,21 +1111,25 @@ declare v_binding jsonb := pg_temp.bc_agent_run('bc-agent');
 begin
 	perform public.qorpera_read_native_wake(v_binding);
 	perform pg_temp.bc_consent(false);
-	perform pg_temp.base_error(format('select public.qorpera_read_native_wake(%L)', v_binding), '42501');
+	perform pg_temp.base_error(format('select public.qorpera_read_native_wake(%L)', v_binding), '42501',
+		'native provider execution authority is unavailable');
 	perform pg_temp.base_error(format('select public.qorpera_send_coworker_message(%L, %L, %L, %L)', v_binding,
-		'92400000-0000-4000-8000-000000000030', 'revoked-send', 'Must not deliver'), '42501');
+		'92400000-0000-4000-8000-000000000030', 'revoked-send', 'Must not deliver'), '42501',
+		'native provider execution authority is unavailable');
 	perform pg_temp.base_error(format('select public.qorpera_complete_runner_job_v6(%L, repeat(''2'', 64), %L, repeat(''3'', 64), '
 		'extensions.gen_random_uuid(), extensions.gen_random_uuid(), null, %L)', v_binding ->> 'runnerId', v_binding ->> 'jobId',
 		jsonb_build_object('schema', 'qorpera.runner-result/v1', 'runtime', 'company-path-v1', 'backend', 'native-company-runtime',
-			'native_lease_id', v_binding ->> 'leaseId', 'output_count', 0, 'output_bytes', 0, 'publication', null)), '42501');
+			'native_lease_id', v_binding ->> 'leaseId', 'output_count', 0, 'output_bytes', 0, 'publication', null)), '42501',
+		'runner execution sponsor is unavailable');
 end
 $$;
 rollback to bc_agent;
 
--- 22. The vault's broker hands a run a connector secret only while the run's authority stands: a routine run is
---     authorized (the control), but not once its routine is paused or its login's consent is withdrawn; an agent's run
---     not once the member who started its chain withdraws consent; a member's delivery not once it has sent its final
---     report. A refused call audits nothing as authorized. (300's founder stop is the legacy pause: dropped.)
+-- 22. The vault's broker hands a run a connector secret only while the run's authority stands: a routine run, an
+--     agent's run and a member's delivery are each authorized (the controls), but a routine run not once its routine is
+--     paused or its login's consent is withdrawn; an agent's run not once the member who started its chain withdraws
+--     consent; a member's delivery not once it has sent its final report. A refused call audits nothing as authorized.
+--     (300's founder stop is the legacy pause: dropped.)
 savepoint bc_broker;
 select pg_temp.base_commit(pg_temp.base_owner(), 'bc-broker', jsonb_build_array(pg_temp.wb_routine('agents/alice/routines/broker.md',
 	pg_temp.wb_rparse('92400000-0000-4000-8000-0000000000f3', 'Broker', pg_temp.wb_every())))) \g /dev/null
@@ -1141,12 +1146,16 @@ values ('92400000-0000-4000-8000-0000000000b1', 1, '92400000-0000-4000-8000-0000
 	encode(extensions.digest('\x0102'::bytea, 'sha256'), 'hex'), '92400000-0000-4000-8000-000000000001');
 do $$
 declare v_case text[]; b jsonb; v_op public.qorpera_cloud_connector_operations; v_grant uuid; v_receipt uuid; v_state text;
+	v_message text;
 begin
 	select * into strict v_op from public.qorpera_cloud_connector_operations
 	where connector_id = 'gmail' and operation_id = 'search_messages' and status = 'active';
-	foreach v_case slice 1 in array array[['routine', 'none'], ['routine', 'standing_authority'], ['routine', 'consent'],
-		['agent', 'consent'], ['room', 'final']] loop
-		v_state := null; v_grant := extensions.gen_random_uuid(); v_receipt := extensions.gen_random_uuid();
+	foreach v_case slice 1 in array array[['routine', 'none', '', ''],
+		['routine', 'standing_authority', '42501', 'Admitted wake authority is unavailable'],
+		['routine', 'consent', '42501', 'native provider execution authority is unavailable'],
+		['agent', 'none', '', ''], ['agent', 'consent', '42501', 'native provider execution authority is unavailable'],
+		['room', 'none', '', ''], ['room', 'final', '55000', 'Wake public output is already final']] loop
+		v_state := null; v_message := null; v_grant := extensions.gen_random_uuid(); v_receipt := extensions.gen_random_uuid();
 		begin
 			if v_case[1] = 'routine' then b := pg_temp.bc_routine_run('92400000-0000-4000-8000-0000000000f3', 'bc-broker-' || v_case[2]);
 			elsif v_case[1] = 'agent' then b := pg_temp.bc_agent_run('bc-broker');
@@ -1172,14 +1181,15 @@ begin
 				perform public.qorpera_authorize_cloud_secret_operation('92400000-0000-4000-8000-0000000000b0', repeat('c', 64), b, v_receipt,
 					repeat('a', 64), repeat('b', 64), v_grant, 'gmail', 'search_messages', v_op.version, v_op.adapter_sha256,
 					v_op.destination_origin);
-			exception when others then v_state := sqlstate;
+			exception when others then v_state := sqlstate; v_message := sqlerrm;
 			end;
 			execute 'reset session authorization';
 			perform pg_temp.base_claims('service_role');
-			perform pg_temp.base_assert(case when v_case[2] = 'none' then v_state is null else v_state in ('42501', '55000') end
+			perform pg_temp.base_assert(case when v_case[2] = 'none' then v_state is null
+					else v_state = v_case[3] and v_message = v_case[4] end
 				and (select count(*) from public.qorpera_cloud_secret_audit_events where receipt_id = v_receipt
 					and event_type = 'effect_authorized') = case when v_case[2] = 'none' then 1 else 0 end,
-				'the broker and ' || v_case::text || ': ' || coalesce(v_state, 'authorized'));
+				'the broker and ' || v_case[1:2]::text || ': ' || coalesce(v_state || ' ' || v_message, 'authorized'));
 			raise sqlstate 'PZ001';
 		exception when sqlstate 'PZ001' then null; end;
 	end loop;
