@@ -477,10 +477,32 @@ a company on the company folder"). The effect checks the envelope (the broker's 
 keeps E3a's order: the receipt, the company's hook claim (rank 9), the caps and the name, then the inserts. The fill holds the hook
 (rank 5, FOR SHARE) through the run check, then its secret FOR SHARE, then the receipt FOR UPDATE.
 
-**E3b-2, the broker and the runtime.** The runtime sends a signed `create` to the broker's route instead of the host's.
-The broker describes the opening, makes 32 random bytes, seals them under the company's key and opens the hook in one
-call. The tool's answer says the secret is ready and names the site; the model never sees the secret. The TypeScript
-refusal of a signed proof (`cloud-event-tools.ts`) goes with it.
+**E3b-2, the broker and the runtime (as built).** The runtime sends a signed `create` to the broker's route instead of the
+host's:
+- **`manage_hook`** (`cloud-event-tools.ts`) takes `proof` `github` or `hmac-sha256` and `site` (a lowercase host name;
+  `github.com` for GitHub unless named, required for HMAC, refused on an address hook). Stripe is still refused, with
+  its reason. The review card names who signs, the site, and that the vault makes a secret nobody sees.
+- **The folder client** (`cloud-company-folder-client.ts`) sends a signed create to the company's secret broker
+  (`POST /v1/event-hooks`, the runtime's token and the run's lease in `x-qorpera-identity` as on G2-6a's other broker
+  routes, 15 s inside the client's 20 s), with the release retry and the same operation key. A host without the broker
+  refuses it as unavailable and sends nothing. The answer must name the site the request named and carry the hook's
+  `signingSecret` marker (`event_hook`, W1b's name, ready); the database's refusals come back in the model's words, and
+  any other failure is a lost answer that the same key asks again.
+- **The broker's route** (`cloud-secret-broker-http.ts`) first proves the request's binding with that lease (G2-6a,
+  `RUNTIME-NATIVE-HOST-KEY.md`): a refusal is a plain 403, and the database is asked nothing else.
+- **The broker** (`cloud-event-hook-vault.ts`) then describes the opening (the run's company, environment and key),
+  draws a random secret id and 32 random bytes in the form the sender's verification reads (GitHub: hex; HMAC: `whsec_`
+  and base64), seals them under the company's key with that id as associated data, and opens the hook in one call. The
+  envelope and the bytes are zeroed after. Its answer is the hook's receipt or the database's refusal (by SQLSTATE,
+  message at most 512 characters); anything else is "outcome unconfirmed". A retry's new id and envelope are never
+  stored: the receipt answers.
+- **Rollout:** after E3b-1's migration, the secret broker (it serves `/v1/event-hooks`), then the vault's nginx on node 1
+  (the `:10000` server block in `RUNTIME-STEP-7-CLOUD-CONNECTORS.md`, which `QORPERA_CLOUD_SECRET_BROKER_URL` names):
+  `location = /v1/event-hooks` (POST only), proxied through `$qorpera_operations_broker` as `/v1/company-accounts` is
+  (the client sends `?company=<profileId>`), checked with `nginx -t` before the reload; then the runtime bundle. Until
+  both are in place a signed create gets an error status, which the folder client takes as a lost answer: it asks again
+  with the same key, then reports the outcome as unknown, and nothing is written.
+The model never sees the secret.
 
 **E3b-3, the fill.** The Company Computer's `vault_fill` gains the hook source: the broker reads the hook's
 `signing_secret` through `qorpera_fill_event_hook_secret`, reseals it to the computer's boot key, and the guest types it
@@ -501,7 +523,22 @@ coordinator's addition).
   A1's fill refusing a hook's call; a removed hook (its secret revoked) and a revoked secret; a paused hook's fill;
 - the browser action's hook variant, the grants, the marker, and the functions' order of checks and locks.
 - **SQL 939** keeps E3a's checks, with the host's new refusals of a signed proof.
-- **Left to E3b-2:** the races (a held hook, a held secret) on a committed fixture, through the broker's route.
+
+**Tests (E3b-2): SQL 948, on 987's fixture committed**, from two connections as the broker's login and an owner (the
+harness of 861), with a second leased run (Bob's):
+- the same opening twice at once (the runtime's retry): the second waits for the run, then answers the first's receipt
+  word for word, and its secret id and envelope are never stored;
+- two runs open hooks of the same name: the second waits for the company's hook claim and is refused (23505), writing
+  nothing (no hook, secret or receipt); when the first rolls back, the second opens it;
+- a fill holds the hook while the owner removes it: the removal waits, then revokes the secret the fill read (audit:
+  made, used, revoked); a fill holds the secret while the owner revokes it: the revoke waits, then revokes it;
+- a revoke holds the secret: the fill waits, then is refused ("gone from the vault") and writes no use; a removal holds
+  the hook: the fill waits, then is refused ("removed").
+
+The runtime's tests: `cloud-event-hook-vault` (the request and answer schemas, the secret's two forms, the sealed
+associated data, the refusals by SQLSTATE, the zeroed buffers, an unknown key or a malformed context), the route and its
+client, `cloud-company-folder-client` (the broker path, its checks of the answer, a host without the broker),
+`cloud-event-tools` (the new fields and refusals) and `cloud-action-review` (the card).
 
 ## 6. E4: hooks and mailboxes in Settings
 

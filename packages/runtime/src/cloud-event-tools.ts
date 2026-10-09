@@ -48,9 +48,11 @@ const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$
 /** A hook's and a mailbox's names, as the database checks them (E1's rules): a mailbox's never has two dots in a row. */
 const HOOK_NAME = /^[a-z][a-z0-9-]{0,63}$/;
 const MAILBOX_NAME = /^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?$/;
+/** The site a signed hook's secret may be typed into, as A1's account sites are (E3b). */
+const HOST = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 /** The keys of each kind of change, as the database checks them. */
 const HOOK_REQUEST_KEYS = {
-	hook: ["action", "kind", "name", "purpose", "proof", "maxBodyBytes", "perMinute", "operationKey"],
+	hook: ["action", "kind", "name", "purpose", "proof", "site", "maxBodyBytes", "perMinute", "operationKey"],
 	mailbox: ["action", "kind", "localPart", "purpose", "operationKey"],
 	change: ["action", "hook", "operationKey"],
 } as const;
@@ -178,7 +180,8 @@ export const CLOUD_MANAGE_HOOK_TOOL_DESCRIPTION =
 	"Open a hook or a mailbox for your company, or pause, resume or remove one by its name (hook, as list_hooks shows it). " +
 	"A hook (action create, kind hook) is an address where another service posts events, such as a website form, a monitoring alert or a no-code automation: name is lowercase letters, digits and hyphens, starts with a letter, has at most 64 characters and does not start with mail-; purpose is one line saying what it is for (at most 512 characters); maxBodyBytes (1024 to 262144, default 65536) and perMinute (1 to 120, default 60) limit what it takes. " +
 	"Anyone with a hook's address may post to it: the result has its address and path, and url, the full address the sending service posts to, once the platform has one. Give the address only to that service, and never put it anywhere else; list_hooks shows it again. " +
-	"Signed hooks (Stripe, GitHub, HMAC) come later: proof is address. " +
+	"proof is address unless the sender signs its events: github for GitHub's webhooks, hmac-sha256 for a service that signs as Standard Webhooks do (a whsec_ secret, as Svix's). A signed hook takes only events signed with its secret. The vault makes the secret and keeps it: you never see it, and nobody can show it to you. " +
+	"site is the host name where the secret may be typed into the sender's settings, and nowhere else: github.com unless you name another for github, and required for hmac-sha256; the result names it as secretSite. A Stripe hook comes later. " +
 	"A mailbox (action create, kind mailbox) receives email at localPart@ the company's mail domain: localPart is 1 to 64 lowercase letters, digits, dots, hyphens and underscores, starting and ending with a letter or digit, never two dots in a row; its hook is named mail- and the localPart. Find and read what arrives with find_mail and read_event, and send from it with send_mail. " +
 	"A company has at most 50 hooks, mailboxes included, and at most 20 mailboxes. Opening one is reviewed before it happens, like any action outside the company. " +
 	"pause makes a hook refuse what is sent to it until resume; remove ends it for good and frees a mailbox's address for any company to take, so a removal is reviewed first too. " +
@@ -187,7 +190,8 @@ export const CLOUD_MANAGE_HOOK_TOOL_DESCRIPTION =
 	"A routine wakes on a hook's events with manage_routine and the trigger kind event, using the hook's id.";
 
 /** The fields a change to the company's hooks takes, each checked as the database checks it, so the model learns what to
- * fix before the change is reviewed. A signed proof is refused here with its plain reason: it comes later (E3b, E3c). */
+ * fix before the change is reviewed. A GitHub or HMAC hook takes its site, github.com by default for GitHub (E3b); a
+ * Stripe hook is refused here with its plain reason: it comes later (E3c). */
 function parseHookRequest(value: JsonValue): JsonValue {
 	if (!value || typeof value !== "object" || Array.isArray(value))
 		throw new CloudToolArgumentRefusal("manage_hook takes an object with action and operationKey");
@@ -226,12 +230,25 @@ function parseHookRequest(value: JsonValue): JsonValue {
 		throw new CloudToolArgumentRefusal(
 			"name uses lowercase letters, digits and hyphens, starts with a letter, has at most 64 characters and does not start with mail-",
 		);
-	if (a.proof !== undefined && a.proof !== "address")
-		throw new CloudToolArgumentRefusal(
-			["stripe", "github", "hmac-sha256"].includes(a.proof as string)
-				? "A signed hook comes later; use an address hook for now"
-				: "proof is address",
-		);
+	if (a.proof === "stripe")
+		throw new CloudToolArgumentRefusal("A Stripe hook comes later: its secret is taken from Stripe's screen");
+	if (a.proof !== undefined && a.proof !== "address" && a.proof !== "github" && a.proof !== "hmac-sha256")
+		throw new CloudToolArgumentRefusal("proof is address, github or hmac-sha256");
+	const proof = a.proof === "github" || a.proof === "hmac-sha256" ? a.proof : undefined;
+	if (!proof && a.site !== undefined)
+		throw new CloudToolArgumentRefusal("Only a signed hook names the site its secret is typed into");
+	if (proof === "hmac-sha256" && a.site === undefined)
+		throw new CloudToolArgumentRefusal("An HMAC hook names the site its secret is typed into");
+	// As A1's account sites: a lowercase host name.
+	const site = !proof
+		? undefined
+		: a.site === undefined
+			? "github.com"
+			: typeof a.site === "string"
+				? a.site.trim().toLowerCase()
+				: "";
+	if (site !== undefined && (site.length > 253 || !HOST.test(site)))
+		throw new CloudToolArgumentRefusal("A site is a host name such as github.com");
 	const limit = (key: "maxBodyBytes" | "perMinute", least: number, most: number): number | undefined => {
 		const field = a[key];
 		if (field === undefined) return undefined;
@@ -241,8 +258,13 @@ function parseHookRequest(value: JsonValue): JsonValue {
 	};
 	const maxBodyBytes = limit("maxBodyBytes", 1024, 262144);
 	const perMinute = limit("perMinute", 1, 120);
-	// A limit left out takes the database's default.
+	// A limit left out takes the database's default. A signed hook names its proof and site; an address hook leaves its
+	// proof out, as E3a's request does.
 	const request: Record<string, string | number> = { action: "create", kind: "hook", name: a.name, purpose };
+	if (proof && site) {
+		request.proof = proof;
+		request.site = site;
+	}
 	if (maxBodyBytes !== undefined) request.maxBodyBytes = maxBodyBytes;
 	if (perMinute !== undefined) request.perMinute = perMinute;
 	request.operationKey = operationKey;
@@ -706,7 +728,8 @@ export function cloudEventTools(
 				name: { type: "string", pattern: HOOK_NAME.source },
 				localPart: { type: "string", pattern: MAILBOX_NAME.source },
 				purpose: { type: "string", minLength: 1, maxLength: 512 },
-				proof: { type: "string", enum: ["address"] },
+				proof: { type: "string", enum: ["address", "github", "hmac-sha256"] },
+				site: { type: "string", maxLength: 253 },
 				maxBodyBytes: { type: "integer", minimum: 1024, maximum: 262144 },
 				perMinute: { type: "integer", minimum: 1, maximum: 120 },
 				hook: { type: "string", pattern: HOOK_NAME.source },

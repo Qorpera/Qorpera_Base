@@ -1,4 +1,8 @@
-import { type CloudCompanyFolderBytes, CloudCompanyFolderClient } from "@qorpera/runtime/cloud-company-folder-client";
+import {
+	type CloudCompanyFolderBytes,
+	CloudCompanyFolderClient,
+	type CloudCompanyFolderSignedHooks,
+} from "@qorpera/runtime/cloud-company-folder-client";
 import type { CloudCompanyPathControl, CloudCompanyPathGateway } from "@qorpera/runtime/cloud-company-path-gateway";
 import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
 import { cloudEventTools } from "@qorpera/runtime/cloud-event-tools";
@@ -17,7 +21,7 @@ const HOOK = "73100000-0000-4000-8000-0000000000b1";
 async function fixture(
 	result?: (method: string, args: Record<string, unknown>, runId: string) => unknown,
 	gateway?: Pick<CloudCompanyPathGateway, "mutate">,
-	withFolder = false,
+	withFolder: boolean | CloudCompanyFolderSignedHooks = false,
 ) {
 	const { binding, authority } = nativeToolAuthorityFixture();
 	const run = await CloudNativeToolRun.open(
@@ -48,13 +52,14 @@ async function fixture(
 			done: true,
 		};
 	});
-	// A folder-v2 run's folder client, on the same wire.
+	// A folder-v2 run's folder client, on the same wire, with the secret broker's signed hooks when given.
 	const folder = withFolder
 		? new CloudCompanyFolderClient({
 				binding,
 				identity: run.identity,
 				control: { call },
 				bytes: {} as CloudCompanyFolderBytes,
+				...(withFolder === true ? {} : { signedHooks: withFolder }),
 			})
 		: undefined;
 	const boundary = new CloudNativeToolBoundary({
@@ -958,6 +963,109 @@ describe("agent event tools", () => {
 			}
 		});
 
+		/** The secret broker's answer to a signed create, as the folder client checks it (test 987 pins the real one). */
+		const signedReceipt = (f: Fixture, request: Record<string, unknown>) => {
+			const base = receipt(f, { p_request: request });
+			return {
+				...base,
+				hook: {
+					...base.hook,
+					proof: request.proof,
+					signingSecret: { connectorId: "event_hook", secretName: `h${HOOK.replaceAll("-", "")}`, ready: true },
+				},
+				secretSite: request.site,
+			};
+		};
+
+		it("opens a GitHub and an HMAC hook through the secret broker, which makes the secret, and never through SQL", async () => {
+			const eventHook = vi.fn<CloudCompanyFolderSignedHooks["eventHook"]>(async ({ request }) =>
+				signedReceipt(f, { ...request }),
+			);
+			const f: Fixture = await fixture(undefined, undefined, { eventHook });
+			try {
+				const github = await f.boundary.invoke("s1", "qorpera", "manage_hook", {
+					...CREATE,
+					name: "github-pushes",
+					proof: "github",
+					operationKey: "gh-1",
+				});
+				expect(github.success, JSON.stringify(github)).toBe(true);
+				const text = github.contentItems[0].text;
+				expect(text).toContain('\\"secretSite\\":\\"github.com\\"');
+				expect(text).toContain('\\"proof\\":\\"github\\"');
+				expect(text).toContain(`\\"secretName\\":\\"h${HOOK.replaceAll("-", "")}\\"`);
+				expect(text).not.toContain(f.binding.credentialCapsuleId);
+				const hmac = await f.boundary.invoke("s2", "qorpera", "manage_hook", {
+					...CREATE,
+					name: "billing-events",
+					proof: "hmac-sha256",
+					site: "  App.Billing.Example.COM ",
+					perMinute: 30,
+					operationKey: "hmac-1",
+				});
+				expect(hmac.success, JSON.stringify(hmac)).toBe(true);
+				expect(hmac.contentItems[0].text).toContain('\\"secretSite\\":\\"app.billing.example.com\\"');
+				// GitHub's site by default, a named one trimmed and lowercased; the run's binding; nothing through SQL.
+				expect(eventHook.mock.calls.map(([sent]) => sent)).toEqual([
+					{
+						binding: f.binding,
+						request: {
+							...CREATE,
+							name: "github-pushes",
+							proof: "github",
+							site: "github.com",
+							operationKey: "gh-1",
+						},
+					},
+					{
+						binding: f.binding,
+						request: {
+							...CREATE,
+							name: "billing-events",
+							proof: "hmac-sha256",
+							site: "app.billing.example.com",
+							perMinute: 30,
+							operationKey: "hmac-1",
+						},
+					},
+				]);
+				expect(f.call).not.toHaveBeenCalled();
+			} finally {
+				f.run.close();
+			}
+		});
+
+		it("refuses a signed hook as unavailable without the secret broker, and passes the broker's refusal on", async () => {
+			const bare = await fixture(undefined, undefined, true);
+			try {
+				const result = await bare.boundary.invoke("u1", "qorpera", "manage_hook", { ...CREATE, proof: "github" });
+				expect(result.success).toBe(false);
+				expect(result.contentItems[0].text).not.toContain("REFUSED");
+				expect(bare.call).not.toHaveBeenCalled();
+			} finally {
+				bare.run.close();
+			}
+			const eventHook = vi.fn<CloudCompanyFolderSignedHooks["eventHook"]>(async () => ({
+				schema: "qorpera.event-hook-refusal/v1",
+				code: "22023",
+				message: "A site is a host name such as github.com",
+			}));
+			const refused = await fixture(undefined, undefined, { eventHook });
+			try {
+				const result = await refused.boundary.invoke("u2", "qorpera", "manage_hook", {
+					...CREATE,
+					proof: "hmac-sha256",
+					site: "hooks.example.com",
+				});
+				expect(result.success).toBe(false);
+				expect(result.contentItems[0].text).toContain("REFUSED: A site is a host name such as github.com");
+				expect(eventHook).toHaveBeenCalledTimes(1);
+				expect(refused.call).not.toHaveBeenCalled();
+			} finally {
+				refused.run.close();
+			}
+		});
+
 		it("says why a request is malformed without calling the cloud", async () => {
 			const f = await fixture(undefined, undefined, true);
 			const mailbox = {
@@ -978,7 +1086,7 @@ describe("agent event tools", () => {
 					[
 						"h4",
 						{ ...CREATE, secret: "s" },
-						"create with kind hook takes only action, kind, name, purpose, proof, maxBodyBytes, perMinute, operationKey",
+						"create with kind hook takes only action, kind, name, purpose, proof, site, maxBodyBytes, perMinute, operationKey",
 					],
 					[
 						"h5",
@@ -1005,14 +1113,48 @@ describe("agent event tools", () => {
 					["h11", { ...CREATE, purpose: "p".repeat(513) }, purpose],
 					["h12", { ...CREATE, name: "mail-sales" }, name],
 					["h13", { ...CREATE, name: "Site" }, name],
-					["h14", { ...CREATE, proof: "stripe" }, "A signed hook comes later; use an address hook for now"],
-					["h15", { ...CREATE, proof: "basic" }, "proof is address"],
+					[
+						"h14",
+						{ ...CREATE, proof: "stripe" },
+						"A Stripe hook comes later: its secret is taken from Stripe's screen",
+					],
+					["h15", { ...CREATE, proof: "basic" }, "proof is address, github or hmac-sha256"],
 					["h16", { ...CREATE, maxBodyBytes: 512 }, "maxBodyBytes is a whole number from 1024 to 262144"],
 					["h17", { ...CREATE, perMinute: 1.5 }, "perMinute is a whole number from 1 to 120"],
 					[
 						"h18",
 						{ ...mailbox, localPart: "sales..team" },
 						"localPart is 1 to 64 lowercase letters, digits, dots, hyphens and underscores, starting and ending with a letter or digit, never two dots in a row",
+					],
+					["h19", { ...CREATE, site: "github.com" }, "Only a signed hook names the site its secret is typed into"],
+					[
+						"h20",
+						{ ...CREATE, proof: "address", site: "github.com" },
+						"Only a signed hook names the site its secret is typed into",
+					],
+					["h21", { ...CREATE, proof: "hmac-sha256" }, "An HMAC hook names the site its secret is typed into"],
+					["h22", { ...CREATE, proof: "github", site: "github" }, "A site is a host name such as github.com"],
+					[
+						"h23",
+						{ ...CREATE, proof: "hmac-sha256", site: "https://hooks.example.com" },
+						"A site is a host name such as github.com",
+					],
+					["h24", { ...CREATE, proof: "github", site: 42 }, "A site is a host name such as github.com"],
+					["h25", { ...CREATE, proof: "github", site: "   " }, "A site is a host name such as github.com"],
+					[
+						"h26",
+						{
+							...CREATE,
+							proof: "hmac-sha256",
+							site: `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(62)}`,
+						},
+						"A site is a host name such as github.com",
+					],
+					["h27", { ...CREATE, proof: "github", site: "-github.com" }, "A site is a host name such as github.com"],
+					[
+						"h28",
+						{ action: "pause", hook: "site-form", site: "github.com", operationKey: "k" },
+						"pause takes only action, hook, operationKey",
 					],
 				] as const) {
 					const refused = await f.boundary.invoke(callId, "qorpera", "manage_hook", args);
