@@ -325,7 +325,11 @@ exit; E8c, "only listed".
   - Every key may be left out. The defaults are "open" and empty lists, and a company without the file is open.
 - **Who.** Owners and admins write, delete and restore it. Agents and the other members read it and never write it
   (contract 5.6). It never moves (not even onto its own path) or is copied, no other file moves or is copied onto
-  its path, and no folder takes its name. Such a change is refused with a problem, as any rule is.
+  its path, and no folder takes its name. Each such change is an outcome, never an internal error:
+  - a move of the file, and a folder by its name, are refused with a problem;
+  - a copy of the file, or another file moved or copied there, is refused as `kind_change` or `structured_copy`,
+    with no problem;
+  - a copy onto the path while the file is there is a conflict (`exists`).
 - **The check (E8a).** It is not a review rule: the reviewer does not read it. The folder treats it as its own checked
   kind, `network-rules`, read by one parser in every writer (`packages/cloud-client/src/network-rules.ts`). The
   database checks the parse's shape again with the same name rule and refuses a save that fails. Each save keeps the
