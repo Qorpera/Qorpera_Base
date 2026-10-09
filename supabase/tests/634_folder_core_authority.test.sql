@@ -110,9 +110,9 @@ begin
 end $$;
 
 -- A hand-built leased run of an agent for a requester, and its wake. p_kind 'human' (a message in the agent's company
--- thread) or 'agent', woken by p_source ('coworker', 'worker-dispatch', 'worker-completion', 'office-activation') from
--- the parent run p_parent, with p_worker for worker wakes. Returns the run actor. Foreign keys and triggers are off
--- only while the rows go in.
+-- thread) or 'agent', woken by p_source ('coworker', 'worker-dispatch', 'worker-completion', 'office-activation',
+-- 'machine-event') from the parent run p_parent, with p_worker for worker wakes. Returns the run actor. Foreign keys
+-- and triggers are off only while the rows go in.
 create function pg_temp.run(p_staff uuid, p_kind text, p_requester uuid, p_source text default null, p_parent jsonb default null,
 	p_worker uuid default null) returns jsonb
 language plpgsql as $$
@@ -510,7 +510,7 @@ end $$;
 
 
 -- Agent wakes: coworker runs, who pays, the parent's reads, worker dispatch and completion, coding sessions, and
--- what still waits (office activation).
+-- hand-built office activations and machine events, which their ancestry refuses.
 do $$
 declare
 	c_env constant uuid := '63400000-0000-4000-8000-000000000020';
@@ -589,9 +589,12 @@ begin
 	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', pg_temp.run(c_a, 'agent', c_member, 'worker-dispatch', p,
 		pg_temp.worker(c_a, p, 'coding', 'read', '63400000-0000-4000-8000-000000000004')), 'coding-other-owner', c_refused), '42501');
 
-	-- Office activation still waits for C1b-3.
+	-- A machine event serves folder-v2 since C1c-3i part b (20260930058000) and an office activation since C1c-3l part 2
+	-- (20260930030100, 892); these hand-built ones have no event or waiter behind them, so their ancestry refuses them.
+	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', pg_temp.run(c_a, 'agent', c_member, 'machine-event', p),
+		'machine-1', c_refused), '42501');
 	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', pg_temp.run(c_a, 'agent', c_member, 'office-activation', p),
-		'office-1', c_refused), '0A000');
+		'office-1', c_refused), '42501');
 	if exists (select 1 from public.qorpera_folder_entries where environment_id = c_env and key_text = 'refused') then
 		raise exception 'A refused run applied a unit'; end if;
 end $$;

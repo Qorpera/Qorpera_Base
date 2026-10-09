@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { boundedObjectOperation, ObjectDependencyError } from "./dependency.ts";
-import { assertNativeToken, nativeBinding, UUID } from "./native-objects.ts";
+import { assertNativeToken, type NativeBindingProof, nativeBinding, nativeHolder, UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 
@@ -25,7 +25,7 @@ export type FolderServiceActor =
 export type FolderActor = FolderRunActor | FolderServiceActor;
 
 /** The folder core's byte checks (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1D.md §3, §7). */
-export interface FolderObjectAuthority {
+export interface FolderObjectAuthority extends NativeBindingProof {
 	/** Per chunk: the object is listed by this actor's open upload intent. Returns the company, the NAS place. */
 	authorizeFolderUpload(
 		environmentId: string,
@@ -73,6 +73,7 @@ export async function serveFolderObject(
 	const environmentId = match[1]!;
 	const sha256 = match[2]!;
 	const binding = nativeBinding(request);
+	await options.authority.proveNativeBinding(binding, nativeHolder(request));
 	// The folder core's run actor, in the lower case its checks compare.
 	const actor: FolderRunActor = {
 		kind: "run",
@@ -112,7 +113,7 @@ export async function serveFolderObject(
 	}
 	if (bytes.byteLength !== authority.bytes || createHash("sha256").update(bytes).digest("hex") !== sha256)
 		throw new ObjectDependencyError(503);
-	// Recheck after potentially slow NAS I/O, as the native route does.
+	// Recheck after potentially slow NAS I/O.
 	const current = await options.authority.authorizeFolderDownload(environmentId, actor, sha256);
 	if (current.profileId !== authority.profileId || current.bytes !== authority.bytes)
 		throw new ObjectDependencyError(503);

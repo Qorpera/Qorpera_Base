@@ -6,9 +6,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LxdOperationState, LxdTrackedInstanceAction } from "../src/lxd-client.ts";
 import { type LxdOfficeGuestBinding, lxdOfficeGuestPlan } from "../src/lxd-office-guest.ts";
 import { LxdOfficeOperationJournal } from "../src/lxd-office-operations.ts";
+import { pluggedOfficeRequest, testAgentMac } from "./helpers/agent-plug.ts";
 
 const id = (number: number) => `00000000-0000-4000-8000-${String(number).padStart(12, "0")}`;
 const roots: string[] = [];
+// The MAC a not yet dispatched create needs from its plug; no other action takes one.
+const plugFor = (action: string) => (action === "create" ? testAgentMac : undefined);
 const signal = () => new AbortController().signal;
 function binding(): LxdOfficeGuestBinding {
 	return {
@@ -70,7 +73,7 @@ describe("durable office operation recovery", () => {
 		const times = ["2026-09-09T01:00:00.001Z", "2026-09-09T01:00:00.002Z", "2026-09-09T01:01:00.003Z"];
 		let index = 0;
 		const f = await fixture(() => new Date(times[index++]));
-		await f.journal.reconcile(id(10), "create", signal());
+		await f.journal.reconcile(id(10), "create", signal(), testAgentMac);
 		f.client.inspectInstanceOperation.mockResolvedValue("failed");
 		await (await f.reopen()).observe(id(10), "create", signal());
 		const before = await f.events();
@@ -95,7 +98,7 @@ describe("durable office operation recovery", () => {
 			resourceReleaseInferred: false,
 		});
 		expect(JSON.stringify(history)).not.toMatch(/workbenchSource|\/mnt\/nas|network|office-net/);
-		await expect((await f.reopen()).reconcile(id(10), "create", signal())).resolves.toMatchObject({
+		await expect((await f.reopen()).reconcile(id(10), "create", signal(), testAgentMac)).resolves.toMatchObject({
 			state: "failed",
 		});
 		expect(await LxdOfficeOperationJournal.readHistory(f.root, id(5))).toEqual(history);
@@ -151,7 +154,9 @@ describe("durable office operation recovery", () => {
 			return new Date(broken ? Number.NaN : "2026-09-09T02:00:00.000Z");
 		});
 		f.client.inspectInstanceOperation.mockResolvedValue("succeeded");
-		await expect(f.journal.reconcile(id(10), "create", signal())).resolves.toMatchObject({ state: "succeeded" });
+		await expect(f.journal.reconcile(id(10), "create", signal(), testAgentMac)).resolves.toMatchObject({
+			state: "succeeded",
+		});
 		expect(
 			(await f.journal.history()).events.every((e) => e.recordedAt === null && e.timeSource === "clock_unavailable"),
 		).toBe(true);
@@ -166,7 +171,7 @@ describe("durable office operation recovery", () => {
 		let millis = Date.parse("2026-09-09T02:00:00.000Z");
 		const f = await fixture(() => new Date(millis--));
 		f.client.inspectInstanceOperation.mockResolvedValue("succeeded");
-		await f.journal.reconcile(id(10), "create", signal());
+		await f.journal.reconcile(id(10), "create", signal(), testAgentMac);
 		const history = await f.journal.history();
 		expect(history.events.map((e) => e.sequence)).toEqual([0, 1, 2]);
 		expect(history.events.map((e) => e.recordedAt)).toEqual([
@@ -177,7 +182,7 @@ describe("durable office operation recovery", () => {
 	});
 	it("rejects malformed timestamp metadata without dispatch, provider reads or historical repair", async () => {
 		const f = await fixture();
-		await f.journal.reconcile(id(10), "create", signal());
+		await f.journal.reconcile(id(10), "create", signal(), testAgentMac);
 		const event = (await f.events())[1];
 		await writeFile(
 			join(f.path, "000001.json"),
@@ -185,7 +190,9 @@ describe("durable office operation recovery", () => {
 		);
 		const before = await readFile(join(f.path, "000001.json"));
 		await expect(LxdOfficeOperationJournal.readHistory(f.root, id(5))).rejects.toThrow("JOURNAL_UNCONFIRMED");
-		await expect(f.journal.reconcile(id(10), "create", signal())).rejects.toThrow("JOURNAL_UNCONFIRMED");
+		await expect(f.journal.reconcile(id(10), "create", signal(), testAgentMac)).rejects.toThrow(
+			"JOURNAL_UNCONFIRMED",
+		);
 		expect(await readFile(join(f.path, "000001.json"))).toEqual(before);
 		expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(1);
 		expect(f.client.inspectInstanceOperation).toHaveBeenCalledTimes(1);
@@ -207,7 +214,7 @@ describe("durable office operation recovery", () => {
 		}));
 		for (const [index, command] of commands.entries()) {
 			if (index > 0) await f.journal.assertLifecycleSequence(commands.slice(0, index + 1), signal());
-			await f.journal.reconcile(command.commandId, command.action, signal());
+			await f.journal.reconcile(command.commandId, command.action, signal(), plugFor(command.action));
 		}
 		await f.journal.assertLifecycleSequence(commands, signal());
 		for (const changed of [
@@ -232,7 +239,8 @@ describe("durable office operation recovery", () => {
 		await expect(f.journal.assertResetLineage(prior, reset, signal())).rejects.toThrow(
 			"OFFICE_RESET_LINEAGE_UNCONFIRMED",
 		);
-		for (const command of prior) await f.journal.reconcile(command.commandId, command.action, signal());
+		for (const command of prior)
+			await f.journal.reconcile(command.commandId, command.action, signal(), plugFor(command.action));
 		await expect(f.journal.assertResetLineage(prior, reset, signal())).resolves.toEqual({
 			reached: "none",
 			settled: false,
@@ -264,7 +272,7 @@ describe("durable office operation recovery", () => {
 			[id(22), "create"],
 			[id(23), "start"],
 		] as const)
-			await f.journal.reconcile(commandId, action, signal());
+			await f.journal.reconcile(commandId, action, signal(), plugFor(action));
 		await expect(f.journal.assertResetLineage(prior, reset, signal())).resolves.toEqual({
 			reached: "start",
 			settled: true,
@@ -272,7 +280,7 @@ describe("durable office operation recovery", () => {
 		await expect(f.journal.assertLifecycleSequence(prior, signal())).rejects.toThrow("OFFICE_VM_LINEAGE_UNCONFIRMED");
 		f.client.inspectInstanceOperation.mockResolvedValue("failed");
 		const g = await fixture();
-		await g.journal.reconcile(id(10), "create", signal());
+		await g.journal.reconcile(id(10), "create", signal(), testAgentMac);
 		await g.journal.observe(id(10), "create", signal());
 		await expect(g.journal.assertResetLineage(prior, reset, signal())).rejects.toThrow(
 			"OFFICE_RESET_LINEAGE_UNCONFIRMED",
@@ -284,7 +292,7 @@ describe("durable office operation recovery", () => {
 				{ commandId: id(10), action: "create" as const },
 				{ commandId: id(11), action: "start" as const },
 			];
-		await f.journal.reconcile(id(10), "create", signal());
+		await f.journal.reconcile(id(10), "create", signal(), testAgentMac);
 		await expect(f.journal.assertLifecycleSequence(commands, signal())).rejects.toThrow(
 			"OFFICE_VM_LINEAGE_UNCONFIRMED",
 		);
@@ -298,24 +306,24 @@ describe("durable office operation recovery", () => {
 		const f = await fixture();
 		f.client.submitInstanceOperation.mockImplementationOnce(async (project, action) => {
 			expect((await f.events()).map((event) => event.kind)).toEqual(["dispatch"]);
-			expect(action).toEqual({ action: "create", request: f.plan.request });
+			expect(action).toEqual({ action: "create", request: pluggedOfficeRequest(f.config) });
 			return { project, instanceName: f.plan.request.name, operationId: id(100) };
 		});
 		f.client.inspectInstanceOperation.mockImplementationOnce(async () => {
 			expect((await f.events()).map((event) => event.kind)).toEqual(["dispatch", "accepted"]);
 			return "pending";
 		});
-		await expect(f.journal.reconcile(id(10), "create", signal())).resolves.toEqual({
+		await expect(f.journal.reconcile(id(10), "create", signal(), testAgentMac)).resolves.toEqual({
 			state: "pending",
 			operationId: id(100),
 		});
 		f.client.inspectInstanceOperation.mockResolvedValue("succeeded");
 		const resumed = await f.reopen();
-		await expect(resumed.reconcile(id(10), "create", signal())).resolves.toEqual({
+		await expect(resumed.reconcile(id(10), "create", signal(), testAgentMac)).resolves.toEqual({
 			state: "succeeded",
 			operationId: id(100),
 		});
-		await expect(resumed.reconcile(id(10), "create", signal())).resolves.toEqual({
+		await expect(resumed.reconcile(id(10), "create", signal(), testAgentMac)).resolves.toEqual({
 			state: "succeeded",
 			operationId: id(100),
 		});
@@ -326,9 +334,11 @@ describe("durable office operation recovery", () => {
 	it("never resubmits after a lost acceptance response, including after restart", async () => {
 		const f = await fixture();
 		f.client.submitInstanceOperation.mockRejectedValueOnce(new Error("connection lost after daemon accepted create"));
-		await expect(f.journal.reconcile(id(10), "create", signal())).resolves.toEqual({ state: "unknown" });
+		await expect(f.journal.reconcile(id(10), "create", signal(), testAgentMac)).resolves.toEqual({
+			state: "unknown",
+		});
 		const resumed = await f.reopen();
-		await expect(resumed.reconcile(id(10), "create", signal())).resolves.toEqual({ state: "unknown" });
+		await expect(resumed.reconcile(id(10), "create", signal(), testAgentMac)).resolves.toEqual({ state: "unknown" });
 		await expect(resumed.reconcile(id(11), "delete", signal())).rejects.toThrow("LXD_OFFICE_OPERATION_UNSETTLED");
 		expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(1);
 		expect(f.client.inspectInstanceOperation).not.toHaveBeenCalled();
@@ -336,13 +346,13 @@ describe("durable office operation recovery", () => {
 	it("keeps a recorded but missing operation unsettled, then recovers when it is observable", async () => {
 		const f = await fixture();
 		f.client.inspectInstanceOperation.mockRejectedValue(new Error("404"));
-		await expect(f.journal.reconcile(id(10), "create", signal())).resolves.toEqual({
+		await expect(f.journal.reconcile(id(10), "create", signal(), testAgentMac)).resolves.toEqual({
 			state: "unknown",
 			operationId: id(100),
 		});
 		await expect((await f.reopen()).reconcile(id(11), "delete", signal())).rejects.toThrow("UNSETTLED");
 		f.client.inspectInstanceOperation.mockResolvedValue("failed");
-		await expect((await f.reopen()).reconcile(id(10), "create", signal())).resolves.toEqual({
+		await expect((await f.reopen()).reconcile(id(10), "create", signal(), testAgentMac)).resolves.toEqual({
 			state: "failed",
 			operationId: id(100),
 		});
@@ -352,11 +362,13 @@ describe("durable office operation recovery", () => {
 		const f = await fixture();
 		f.client.inspectInstanceOperation.mockResolvedValue("succeeded");
 		for (const [index, action] of (["create", "start", "stop", "delete"] as const).entries()) {
-			await expect((await f.reopen()).reconcile(id(10 + index), action, signal())).resolves.toMatchObject({
+			await expect(
+				(await f.reopen()).reconcile(id(10 + index), action, signal(), plugFor(action)),
+			).resolves.toMatchObject({
 				state: "succeeded",
 			});
 		}
-		await f.journal.reconcile(id(10), "create", signal());
+		await f.journal.reconcile(id(10), "create", signal(), testAgentMac);
 		expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(4);
 		expect(f.client.inspectInstanceOperation).toHaveBeenCalledTimes(4);
 		expect(await f.events()).toHaveLength(12);
@@ -377,9 +389,9 @@ describe("durable office operation recovery", () => {
 			await gate;
 			return { project, instanceName: f.plan.request.name, operationId: id(100) };
 		});
-		const first = f.journal.reconcile(id(10), "create", signal());
+		const first = f.journal.reconcile(id(10), "create", signal(), testAgentMac);
 		await dispatched;
-		await expect(second.reconcile(id(10), "create", signal())).resolves.toEqual({ state: "unknown" });
+		await expect(second.reconcile(id(10), "create", signal(), testAgentMac)).resolves.toEqual({ state: "unknown" });
 		await expect(second.reconcile(id(11), "start", signal())).rejects.toThrow("UNSETTLED");
 		release();
 		await first;
@@ -407,13 +419,13 @@ describe("durable office operation recovery", () => {
 		const f = await fixture();
 		const second = await f.reopen();
 		const results = await Promise.allSettled([
-			f.journal.reconcile(id(10), "create", signal()),
-			second.reconcile(id(10), "create", signal()),
+			f.journal.reconcile(id(10), "create", signal(), testAgentMac),
+			second.reconcile(id(10), "create", signal(), testAgentMac),
 		]);
 		expect(results.some((result) => result.status === "fulfilled" && result.value.state === "pending")).toBe(true);
 		expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(1);
 		expect((await f.events()).map((event) => event.kind)).toEqual(["dispatch", "accepted"]);
-		await expect((await f.reopen()).reconcile(id(10), "create", signal())).resolves.toMatchObject({
+		await expect((await f.reopen()).reconcile(id(10), "create", signal(), testAgentMac)).resolves.toMatchObject({
 			state: "pending",
 		});
 		expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(1);
@@ -422,7 +434,7 @@ describe("durable office operation recovery", () => {
 		"rejects changed %s without another physical request",
 		async (changed) => {
 			const f = await fixture();
-			await f.journal.reconcile(id(10), "create", signal());
+			await f.journal.reconcile(id(10), "create", signal(), testAgentMac);
 			if (changed === "binding")
 				await expect(
 					LxdOfficeOperationJournal.open(f.root, id(6), { ...f.config, computerGeneration: 2 }, f.client),
@@ -453,7 +465,7 @@ describe("durable office operation recovery", () => {
 		"fails closed on %s instead of silently restarting the journal",
 		async (corruption) => {
 			const f = await fixture();
-			await f.journal.reconcile(id(10), "create", signal());
+			await f.journal.reconcile(id(10), "create", signal(), testAgentMac);
 			const path = join(f.path, "000001.json");
 			if (corruption === "partial record") await writeFile(path, '{"schema":');
 			if (corruption === "sequence hole") await rm(join(f.path, "000000.json"));
@@ -476,11 +488,29 @@ describe("durable office operation recovery", () => {
 		await chmod(f.root, 0o755);
 		await expect(f.reopen()).rejects.toThrow("DIRECTORY_UNSAFE");
 	});
+	it("claims no create without its plug's MAC", async () => {
+		const f = await fixture();
+		await expect(f.journal.reconcile(id(10), "create", signal())).rejects.toThrow("AGENT_PLUG_MISSING");
+		for (const hwaddr of ["00:16:3e:00:00:01", "0e:51:0a:d2:00:01", "0e:51:0a:d2:01:ff", "0E:51:0A:D2:01:01"])
+			await expect(f.journal.reconcile(id(10), "create", signal(), hwaddr)).rejects.toThrow("AGENT_PLUG_INVALID");
+		// A refused create was never claimed: the same command dispatches once its plug answers.
+		expect(await f.events()).toEqual([]);
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+		await expect(f.journal.reconcile(id(10), "create", signal(), testAgentMac)).resolves.toMatchObject({
+			state: "pending",
+		});
+		// Only a create carries a MAC.
+		for (const action of ["start", "stop", "delete"] as const)
+			await expect(f.journal.reconcile(id(11), action, signal(), testAgentMac)).rejects.toThrow(
+				"INVALID_LXD_OFFICE_COMMAND",
+			);
+		expect(f.client.submitInstanceOperation).toHaveBeenCalledOnce();
+	});
 	it("does not journal or submit an already cancelled request", async () => {
 		const f = await fixture();
 		const stop = new AbortController();
 		stop.abort();
-		await expect(f.journal.reconcile(id(10), "create", stop.signal)).rejects.toThrow();
+		await expect(f.journal.reconcile(id(10), "create", stop.signal, testAgentMac)).rejects.toThrow();
 		expect(await f.events()).toEqual([]);
 		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
 	});
@@ -491,7 +521,9 @@ describe("durable office operation recovery", () => {
 			instanceName: "other",
 			operationId: id(100),
 		});
-		await expect(f.journal.reconcile(id(10), "create", signal())).resolves.toEqual({ state: "unknown" });
+		await expect(f.journal.reconcile(id(10), "create", signal(), testAgentMac)).resolves.toEqual({
+			state: "unknown",
+		});
 		expect(await f.events()).toHaveLength(1);
 		expect(f.client.inspectInstanceOperation).not.toHaveBeenCalled();
 	});

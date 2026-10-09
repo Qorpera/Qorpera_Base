@@ -265,12 +265,13 @@ select pg_temp.ic_expect(pg_temp.ic_call(current_setting('qorpera_test.job_crede
 rollback to savepoint exec_slot;
 
 -- The sign-in guest completes its sign-in through the entry point as the service caller would (compared with a direct
--- completion, rolled back), and only with the native host's own capsule reference.
+-- completion, rolled back), and only with the native host's own capsule reference, named for the sign-in (G2-4,
+-- 20260930103000).
 do $$
 declare v_direct jsonb; v_outcome text; v_args jsonb := jsonb_build_object(
 	'p_login_id', current_setting('qorpera_test.login_id'), 'p_capability_sha256', pg_temp.ic_sha('login-capability'),
-	'p_capsule_id', '86000000-0000-4000-8000-000000000081',
-	'p_encrypted_capsule_reference', 'native-capsule/86000000-0000-4000-8000-000000000081',
+	'p_capsule_id', current_setting('qorpera_test.login_id'),
+	'p_encrypted_capsule_reference', 'native-capsule/' || current_setting('qorpera_test.login_id'),
 	'p_attestation_policy_sha256', repeat('b', 64), 'p_provider_account_reference', 'fixture-openai-account',
 	'p_billing_source', 'personal-subscription', 'p_consent_version', 'qorpera-native-provider-consent/v1',
 	'p_quota_policy', '{"monthly_microusd":1000000000,"reservation_microusd":1000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":32}'::jsonb,
@@ -287,7 +288,7 @@ begin
 	end;
 	perform set_config('request.jwt.claims', '', true);
 	perform pg_temp.ic_expect(pg_temp.ic_call(current_setting('qorpera_test.login_credential'), 'qorpera_complete_native_provider_login',
-		v_args || jsonb_build_object('p_encrypted_capsule_reference', 'model-login/86000000-0000-4000-8000-000000000081')),
+		v_args || jsonb_build_object('p_encrypted_capsule_reference', 'model-login/' || current_setting('qorpera_test.login_id'))),
 		'refused', 'a sign-in completed with a vault capsule reference');
 	perform pg_temp.ic_expect(pg_temp.ic_call(current_setting('qorpera_test.login_credential'), 'qorpera_complete_native_provider_login',
 		v_args || jsonb_build_object('p_encrypted_capsule_reference', 'native-capsule/86000000-0000-4000-8000-000000000082')),
@@ -295,9 +296,13 @@ begin
 	perform pg_temp.ic_expect(pg_temp.ic_call(current_setting('qorpera_test.login_credential'), 'qorpera_complete_native_provider_login',
 		v_args - 'p_encrypted_capsule_reference'), 'refused', 'a sign-in completed with no capsule reference');
 	perform pg_temp.ic_expect(pg_temp.ic_call(current_setting('qorpera_test.login_credential'), 'qorpera_complete_native_provider_login',
-		v_args || jsonb_build_object('p_capsule_id', '86000000-0000-4000-8000-0000000000AB',
-			'p_encrypted_capsule_reference', 'native-capsule/86000000-0000-4000-8000-0000000000AB')),
+		v_args || jsonb_build_object('p_capsule_id', upper(current_setting('qorpera_test.login_id')),
+			'p_encrypted_capsule_reference', 'native-capsule/' || upper(current_setting('qorpera_test.login_id')))),
 		'refused', 'a sign-in completed with an upper-case capsule id');
+	perform pg_temp.ic_expect(pg_temp.ic_call(current_setting('qorpera_test.login_credential'), 'qorpera_complete_native_provider_login',
+		v_args || jsonb_build_object('p_capsule_id', '86000000-0000-4000-8000-000000000081',
+			'p_encrypted_capsule_reference', 'native-capsule/86000000-0000-4000-8000-000000000081')),
+		'refused', 'a sign-in completed with a capsule not named for the sign-in');
 	perform pg_temp.ic_expect(pg_temp.ic_call(current_setting('qorpera_test.login_credential'), 'qorpera_complete_native_provider_login',
 		v_args || jsonb_build_object('p_capsule_id', '00000000-0000-0000-0000-000000000000',
 			'p_encrypted_capsule_reference', 'native-capsule/00000000-0000-0000-0000-000000000000')),

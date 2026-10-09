@@ -220,7 +220,7 @@ execution denial. No provider call is necessary for this security proof.
 The reproducible database driver is
 `node scripts/test-identity-recovery.mjs --out <new-evidence-directory>`.
 It applies all 87 Step 2 migrations to disposable PostgreSQL, runs SQL suites
-160/165/280/297/298/299, races requests/restores/release commits/completions, and
+165/280/298/299 (160 and 297 ran too until they were deleted with snapshot-v1 in the legacy sweep, B2b), races requests/restores/release commits/completions, and
 replays an immutable receipt after database restart. It then connects the
 actual SQL functions to the actual HTTP recovery service, uses real synthetic
 keys and signed envelopes, restores a native credential capsule, and retries

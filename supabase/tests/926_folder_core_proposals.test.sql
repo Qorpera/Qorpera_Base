@@ -3,8 +3,9 @@
 -- and carries none is parked as a proposal; the agent's next run for the same member lists it, reviews it as one
 -- apply_proposal call, records the approval through R1's recorder and applies it; a deny declines it; the agent's run,
 -- the asked member and owners or admins discard it; an open proposal roots its bytes; a restricted agent's hire through a
--- view asks the owners and admins; erasure erases it. Views are run boxes of 769's runs (each acts through its live
--- run). Races are in 927.
+-- view asks the owners and admins; erasure erases it; an apply that finds it decided after its review cancels the call's
+-- receipt, and a listed proposal names the reads its run releases and what a new folder contains (P40b). Views are run
+-- boxes of 769's runs (each acts through its live run). Races are in 927.
 
 create function pg_temp.box(p_run jsonb) returns jsonb language sql as $$
 	select public.qorpera_folder_view_open('63400000-0000-4000-8000-000000000020', p_run, 'run_box', '{}')
@@ -118,8 +119,11 @@ begin
 		or (l -> 'proposals' -> 0 ->> 'proposalId')::uuid <> p1 or (l -> 'proposals' -> 1 ->> 'proposalId')::uuid <> p2
 		or (l ->> 'moreProposals')::integer <> 0 or l -> 'nextCursor' <> 'null'::jsonb then
 		raise exception 'The list: %', l; end if;
-	perform pg_temp.same((l -> 'proposals' -> 0) - 'createdAt', ('{"proposalId":"' || p1 || '","viewKind":"run_box","effect":"destructive",'
+	perform pg_temp.same((l -> 'proposals' -> 0) - 'createdAt' - 'reads', ('{"proposalId":"' || p1 || '","viewKind":"run_box","effect":"destructive",'
 		'"createsAgent":false,"unitCount":1,"units":[{"unit":1,"op":"delete","path":"rr1.txt"}],"moreUnits":0}')::jsonb, 'A listed proposal');
+	-- (P40b) Its reads: the path it names, with the receipt a read of it gives the run.
+	perform pg_temp.same(l -> 'proposals' -> 0 -> 'reads', jsonb_build_array(jsonb_build_object('path', 'rr1.txt',
+		'authority', pg_temp.read('rr1.txt', x -> 'actor') -> 'entry' -> 'authority')), 'A listed proposal''s reads');
 	l := pg_temp.list(x -> 'actor', jsonb_build_object('cursor', p1));
 	if jsonb_array_length(l -> 'proposals') <> 1 or (l -> 'proposals' -> 0 ->> 'proposalId')::uuid <> p2 then
 		raise exception 'After the cursor: %', l; end if;
@@ -151,6 +155,50 @@ begin
 	perform pg_temp.fx(format('update public.qorpera_company_path_grants set revoked_at = null where id = %L', v_grant));
 	if not (pg_temp.list(y -> 'actor') -> 'proposals' @> jsonb_build_array(jsonb_build_object('proposalId', p))) then
 		raise exception 'With the grant back it is listed again'; end if;
+	perform pg_temp.discard(1, p);
+end $$;
+
+-- 2c. P40b: a listed proposal names its reads, every path it names with the authority its list was decided on, sorted;
+-- the run releases them with the context that shows them (no file was read: no version). A grant revoked after the list
+-- then fences the run, and a run that releases its list after the revocation is refused.
+do $$
+declare
+	c_env constant uuid := '63400000-0000-4000-8000-000000000020'; c_profile constant uuid := '63400000-0000-4000-8000-000000000010';
+	x jsonb := pg_temp.agent_run(); b jsonb; y jsonb; z jsonb; p uuid; v_res uuid; v_g uuid; v_reads jsonb; v_late jsonb;
+begin
+	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'p40b-reads-setup', jsonb_build_array(
+		jsonb_build_object('op','mkdir','path','p40r'),
+		jsonb_build_object('op','write','path','p40r/a.txt','file',pg_temp.stage('p40b a')),
+		jsonb_build_object('op','write','path','p40b-root.txt','file',pg_temp.stage('p40b root')))), 3, 'saved');
+	v_res := public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'p40r', 'subtree', 'company_shared', 'normal') ->> 'resourceId';
+	v_g := public.qorpera_folder_grant(c_env, pg_temp.member(1), v_res, 'staff_agent', '63400000-0000-4000-8000-0000000000a1',
+		array['read','write']) ->> 'grantId';
+	b := pg_temp.box(x -> 'actor');
+	p := (pg_temp.parked(pg_temp.vcommit(b, 'p40b-park-reads', jsonb_build_array(pg_temp.deletes('p40r/a.txt'),
+		pg_temp.deletes('p40b-root.txt'))))).id;
+	y := pg_temp.agent_run();
+	z := pg_temp.agent_run();
+	v_reads := (select e -> 'reads' from jsonb_array_elements(pg_temp.list(y -> 'actor') -> 'proposals') e
+		where e ->> 'proposalId' = p::text);
+	perform pg_temp.same(v_reads, jsonb_build_array(
+		jsonb_build_object('path', 'p40b-root.txt', 'authority', pg_temp.read('p40b-root.txt', y -> 'actor') -> 'entry' -> 'authority'),
+		jsonb_build_object('path', 'p40r/a.txt', 'authority', pg_temp.read('p40r/a.txt', y -> 'actor') -> 'entry' -> 'authority')),
+		'The reads');
+	if v_reads -> 1 -> 'authority' ->> 'resourceId' <> v_res::text or v_reads -> 1 -> 'authority' ->> 'grantId' <> v_g::text then
+		raise exception 'A read under the resource names its grant: %', v_reads; end if;
+	v_late := (select e -> 'reads' from jsonb_array_elements(pg_temp.list(z -> 'actor') -> 'proposals') e
+		where e ->> 'proposalId' = p::text);
+	-- Released (with no version), the run watches the pair; nothing has changed yet.
+	perform pg_temp.release(y -> 'actor', extensions.gen_random_uuid(), v_reads);
+	if not exists (select 1 from pg_temp.reads(y -> 'actor') r where r.resource_id = v_res and r.grant_id = v_g) then
+		raise exception 'The released reads are watched: %', (select jsonb_agg(to_jsonb(r)) from pg_temp.reads(y -> 'actor') r); end if;
+	if public.qorpera_folder_run_reads_current(c_env, c_profile, pg_temp.resolved(y -> 'actor')) <> 0 then
+		raise exception 'Nothing changed yet'; end if;
+	-- The grant is revoked after both lists: the released run is fenced, the late release refused.
+	perform public.qorpera_folder_revoke(c_env, pg_temp.member(1), v_res, v_g);
+	perform pg_temp.raises(format('select public.qorpera_folder_run_reads_current(%L, %L, %L)', c_env, c_profile,
+		pg_temp.resolved(y -> 'actor')), '42501');
+	perform pg_temp.raises(format('select pg_temp.release(%L, %L, %L)', z -> 'actor', extensions.gen_random_uuid(), v_late), '42501');
 	perform pg_temp.discard(1, p);
 end $$;
 
@@ -309,6 +357,11 @@ begin
 		raise exception 'An open proposal roots its file'; end if;
 	if not (pg_temp.list(x -> 'actor') -> 'proposals' @> jsonb_build_array(jsonb_build_object('proposalId', p.id, 'createsAgent', true))) then
 		raise exception 'The list says the proposal makes an agent: %', pg_temp.list(x -> 'actor'); end if;
+	-- (P40b) It names what the new folder contains, each item by path and kind, for the review to read.
+	perform pg_temp.same((select q -> 'units' -> 0 -> 'contains' from jsonb_array_elements(pg_temp.list(x -> 'actor') -> 'proposals') q
+		where q ->> 'proposalId' = p.id::text), '[{"path":"agents/nora/agent.md","kind":"file"},
+		{"path":"agents/nora/memory","kind":"folder"},{"path":"agents/nora/todos","kind":"folder"}]'::jsonb,
+		'A listed new folder''s items');
 	-- Agent A becomes restricted.
 	perform pg_temp.fx(format('update public.qorpera_company_path_grants set expires_at = clock_timestamp() + interval ''1 day'' where id = %L',
 		(pg_temp.agent_grant((pg_temp.root()).id, '63400000-0000-4000-8000-0000000000a1')).id));
@@ -369,10 +422,13 @@ begin
 			'public.qorpera_folder_apply_proposal(uuid,jsonb,text,uuid,uuid,uuid)', 'public.qorpera_folder_close_proposal(jsonb,jsonb)',
 			'public.qorpera_folder_member_discard_proposal(uuid,jsonb,uuid)', 'public.qorpera_folder_proposal_call_sha256(uuid)',
 			'public.qorpera_folder_proposal_of_call(text,text)', 'public.qorpera_folder_units_create_agent(uuid,jsonb)',
-			'public.qorpera_folder_proposal_hires(uuid,jsonb)'] loop
+			'public.qorpera_folder_proposal_hires(uuid,jsonb)', 'public.qorpera_folder_proposal_reads(uuid,uuid,jsonb,uuid)'] loop
 		if has_function_privilege('anon', v_fn, 'execute') or has_function_privilege('authenticated', v_fn, 'execute') then
 			raise exception 'API clients reach %', v_fn; end if;
 	end loop;
+	-- (P40b) The reads are the listing's alone.
+	if has_function_privilege('service_role', 'public.qorpera_folder_proposal_reads(uuid,uuid,jsonb,uuid)', 'execute') then
+		raise exception 'The service reaches the proposal reads'; end if;
 	if has_table_privilege('service_role', 'public.qorpera_folder_proposals', 'select')
 		or has_table_privilege('authenticated', 'public.qorpera_folder_proposal_paths', 'select') then
 		raise exception 'The proposal tables are readable'; end if;
@@ -380,6 +436,66 @@ begin
 		<> encode(extensions.digest(convert_to('["qorpera","apply_proposal","{\"proposalId\":\"63400000-0000-4000-8000-00000000f040\"}"]',
 			'utf8'), 'sha256'), 'hex') then
 		raise exception 'The call digest is JSON.stringify of [namespace, tool, arguments]'; end if;
+end $$;
+
+-- 11. P40b: a member's discard (or an erasure) lands after the run recorded its review and began the apply's receipt.
+-- The apply then cancels that receipt, the run's own for this proposal's apply, still executing with no commit, and says
+-- what the proposal is, so nothing fences the run; a retry answers the same. Any other receipt is refused as before and
+-- left executing. (The receipts are written here as the runtime's begin writes them; 927 begins them for real.)
+create function pg_temp.receipt(p_binding jsonb, p_key text) returns uuid language plpgsql as $$
+declare v_id uuid := extensions.gen_random_uuid();
+begin
+	perform pg_temp.fx(format('insert into public.qorpera_run_operation_receipts(id, run_id, job_id, assignment_id, logical_operation_key,
+		operation_kind, input_sha256, downstream_idempotency_sha256, requires_company_revision) values (%L, %L, %L, %L, %L, %L, %L, %L, true)',
+		v_id, p_binding ->> 'runId', p_binding ->> 'jobId', p_binding ->> 'assignmentId', p_key, 'cloud_tool', repeat('a', 64), repeat('b', 64)));
+	return v_id;
+end $$;
+create function pg_temp.apply_under(p_run jsonb, p_proposal uuid, p_review uuid, p_receipt uuid) returns jsonb language sql as $$
+	select public.qorpera_folder_apply_proposal('63400000-0000-4000-8000-000000000020', p_run, 'apply-proposal:' || p_proposal,
+		p_proposal, p_review, p_receipt)
+$$;
+create function pg_temp.receipt_status(p_receipt uuid) returns text language sql as $$
+	select status from public.qorpera_run_operation_receipts where id = p_receipt
+$$;
+do $$
+declare x jsonb := pg_temp.agent_run(); y jsonb := pg_temp.agent_run(); b jsonb := pg_temp.box(x -> 'actor'); p uuid; q uuid;
+	v_review uuid; v_erased uuid; v_receipt uuid; v_other uuid; v_wrong uuid; a jsonb; v_row public.qorpera_run_operation_receipts;
+begin
+	p := (pg_temp.parked(pg_temp.vcommit(b, 'p40b-park-1', jsonb_build_array(pg_temp.deletes('rr9.txt'))))).id;
+	q := (pg_temp.parked(pg_temp.vcommit(b, 'p40b-park-2', jsonb_build_array(pg_temp.deletes('rr10.txt'))))).id;
+	v_review := (pg_temp.record_apply(x -> 'binding', (pg_temp.apply_action(x -> 'binding', 'p40b-apply-1', p) ->> 'reviewId')::uuid, p)
+		->> 'reviewId')::uuid;
+	v_erased := (pg_temp.record_apply(x -> 'binding', (pg_temp.apply_action(x -> 'binding', 'p40b-apply-2', q) ->> 'reviewId')::uuid, q)
+		->> 'reviewId')::uuid;
+	perform pg_temp.discard(1, p);
+	-- Not the call's receipt: another run's for this apply, or this run's for another proposal's.
+	v_other := pg_temp.receipt(y -> 'binding', 'apply_proposal:apply:' || p);
+	v_wrong := pg_temp.receipt(x -> 'binding', 'apply_proposal:apply:' || q);
+	perform pg_temp.raises(format('select pg_temp.apply_under(%L, %L, %L, %L)', x -> 'actor', p, v_review, v_other), 'P0002');
+	perform pg_temp.raises(format('select pg_temp.apply_under(%L, %L, %L, %L)', x -> 'actor', p, v_review, v_wrong), 'P0002');
+	if pg_temp.receipt_status(v_other) <> 'executing' or pg_temp.receipt_status(v_wrong) <> 'executing' then
+		raise exception 'A receipt that is not the call''s was settled'; end if;
+	-- The call's own: cancelled, nothing applied.
+	v_receipt := pg_temp.receipt(x -> 'binding', 'apply_proposal:apply:' || p);
+	a := pg_temp.apply_under(x -> 'actor', p, v_review, v_receipt);
+	perform pg_temp.same(a, jsonb_build_object('schema', 'qorpera.folder-proposal-unapplied/v1', 'proposalId', p, 'status', 'discarded',
+		'receiptId', v_receipt), 'The apply of a proposal discarded after its review');
+	select * into v_row from public.qorpera_run_operation_receipts where id = v_receipt;
+	if v_row.status <> 'cancelled' or v_row.completed_at is null or v_row.result is not null or v_row.folder_commit_id is not null
+		or exists (select 1 from public.qorpera_folder_commits c where c.receipt_id = v_receipt or c.operation_key = 'apply-proposal:' || p)
+		or not pg_temp.present('rr9.txt') then
+		raise exception 'The cancelled receipt: %', to_jsonb(v_row); end if;
+	-- A retry answers the same and leaves the receipt as it is; without a receipt the apply is refused as before.
+	perform pg_temp.same(pg_temp.apply_under(x -> 'actor', p, v_review, v_receipt), a, 'A retry');
+	if (select completed_at from public.qorpera_run_operation_receipts where id = v_receipt) <> v_row.completed_at then
+		raise exception 'A retry settled the receipt again'; end if;
+	perform pg_temp.raises(format('select pg_temp.apply(%L, %L, %L, %L)', x -> 'actor', 'apply-proposal:' || p, p, v_review), 'P0002');
+	-- Erased (deleted, as erasure deletes it in 9): answered as erased, its receipt cancelled.
+	perform pg_temp.fx(format('delete from public.qorpera_folder_proposals where id = %L', q));
+	perform pg_temp.same(pg_temp.apply_under(x -> 'actor', q, v_erased, v_wrong), jsonb_build_object('schema',
+		'qorpera.folder-proposal-unapplied/v1', 'proposalId', q, 'status', 'erased', 'receiptId', v_wrong), 'The apply of an erased proposal');
+	if pg_temp.receipt_status(v_wrong) <> 'cancelled' or pg_temp.present('rr10.txt') is not true then
+		raise exception 'The erased proposal''s receipt: %', pg_temp.receipt_status(v_wrong); end if;
 end $$;
 
 rollback;

@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { UUID_PATTERN } from "@qorpera/contracts";
 import { cloudControlBackoffMs, cloudControlPause, cloudControlRetryable } from "./cloud-control-errors.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 import { type CloudRuntimeReasoningEffort, isCloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
@@ -6,6 +7,9 @@ import { type CloudRuntimeReasoningEffort, isCloudRuntimeReasoningEffort } from 
 export const CLOUD_NATIVE_TOOL_AUTHORITY_SCHEMA = "qorpera.native-tool-authority/v1";
 export const CLOUD_NATIVE_TOOL_AUTHORITY_WINDOW_MS = 30_000;
 const REQUEST_TIMEOUT_MS = 5_000;
+/** The longest one attempt of a cloud tool request may wait. A transport that `CloudNativeToolRun.retry` calls waits
+ * this long, so the run's retry decides how long each attempt is (6 Oct 2026). */
+export const CLOUD_TOOL_REQUEST_MAX_MS = 300_000;
 const REFRESH_MS = 10_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -96,6 +100,14 @@ export function parseCloudNativeToolBinding(value: unknown): CloudNativeToolBind
 		nativeHarness: "codex-cli",
 		model: input.model,
 	});
+}
+
+/** The holder credential a native host sends with a run's request (G2-6): `job.<job id>.<lease token>` in
+ * x-qorpera-identity, as NativeHostDispatch.holderHeader() gives it while the job runs. A server proves it against
+ * the request's binding with qorpera_native_binding_proven; its value never reaches a log, an error or a reply. */
+export function isNativeJobHolder(value: unknown): value is string {
+	const [kind, jobId, token, ...rest] = typeof value === "string" ? value.split(".") : [];
+	return kind === "job" && UUID_PATTERN.test(jobId ?? "") && /^[A-Za-z0-9_-]{43}$/.test(token ?? "") && !rest.length;
 }
 
 export function parseCloudNativeToolAuthority(
@@ -193,9 +205,10 @@ export function parseCloudNativeToolAuthority(
 
 /** Two cloud reads sent together that the database serialises on the run's job row. */
 export const CLOUD_PAIRED_REQUEST_TIMEOUT_MS = 10_000;
-/** The one call before each model request (qorpera_fence_native_context) gets most of the
- * native result fence's 4 s budget; the rest covers the host's own steps and the reply. */
-export const CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS = 3_500;
+/** The first attempt of the one call before each model request (qorpera_fence_native_context). A lost or late answer
+ * is asked again for as long as the run's authority holds, with no budget of its own (5 Oct 2026), each attempt cut at
+ * its deadline giving the next twice as long (6 Oct 2026). */
+export const CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS = 10_000;
 
 /** Bounded, cancellation-aware wait, including transports which ignore AbortSignal. */
 export function cloudToolRequest<T>(
@@ -203,7 +216,7 @@ export function cloudToolRequest<T>(
 	signal: AbortSignal,
 	timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<T> {
-	if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000)
+	if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > CLOUD_TOOL_REQUEST_MAX_MS)
 		throw new Error("Invalid cloud tool request deadline");
 	const timeout = new AbortController();
 	const requestSignal = AbortSignal.any([signal, timeout.signal]);
@@ -241,6 +254,8 @@ export class CloudNativeToolRun {
 	#identity?: CloudNativeToolIdentity;
 	#identityText?: string;
 	#deadline = 0;
+	/** When the read whose authority is applied started: answers apply in the order their reads started. */
+	#readAt = Number.NEGATIVE_INFINITY;
 	#watchdog?: ReturnType<typeof setTimeout>;
 	#refresh?: ReturnType<typeof setTimeout>;
 	#checking: Promise<void> = Promise.resolve();
@@ -295,50 +310,73 @@ export class CloudNativeToolRun {
 
 	/**
 	 * assertActive with another cloud call that reads the run's authority in its own
-	 * transaction (the one-call context fence reads it with the same describe function).
+	 * transaction (the one-call context fence reads it with the same describe function), safe to repeat.
 	 * The same checks before the call (not closed, the last authority not lapsed) and after
-	 * it (same identity, not expired, new deadline), in the same order as every other check.
-	 * Returns false, changing nothing, when `read` returns undefined: the database lacks the
-	 * call and nothing ran. With `budgetMs`, every attempt together ends within that budget (a model request's
-	 * fence answers within its result fence's deadline); `read` must then be safe to repeat.
+	 * it (same identity, not expired, new deadline). Returns false, changing nothing, when `read` returns undefined:
+	 * the database lacks the call and nothing ran.
+	 *
+	 * It is not queued behind the run's own checks: a lost or late answer is asked again for as long as the run's
+	 * authority holds, while the background refresh keeps renewing it. So a slow database never ends the run here; lost
+	 * authority, a refusal or a cancellation do (5 Oct 2026). The database still cuts each attempt at its own statement
+	 * budget (25 s for the fence, through `qorpera_native_host_call_long`, migration 20260930109500), and that is asked
+	 * again like a lost answer: a fence that needs longer in the database never lands.
 	 */
 	async assertActiveWith(
 		read: (signal: AbortSignal) => Promise<unknown>,
 		signal: AbortSignal,
 		timeoutMs?: number,
-		budgetMs?: number,
 	): Promise<boolean> {
-		return this.#check(read, signal, timeoutMs, true, budgetMs);
+		const combined = AbortSignal.any([signal, this.signal]);
+		try {
+			combined.throwIfAborted();
+			if (this.#identity && performance.now() >= this.#deadline) throw new Error("Cloud tool authority expired");
+			const { value, started } = await this.retry(read, combined, timeoutMs);
+			if (value === undefined) return false;
+			this.#apply(value, started, combined);
+			return true;
+		} catch (error) {
+			this.close();
+			throw new Error("Cloud tool authority unavailable", { cause: error });
+		}
 	}
 
 	/**
 	 * Asks an idempotent read of this run again while its answer is lost or late (a timeout, a connection or gateway
 	 * error, a serialization failure, a lock or statement timeout), pausing 250 ms doubling to 2 s, until the run's
-	 * current authority would lapse (its validity, which the cloud bounds by the run's lease) or, before the first
-	 * authority, within the authority window; or within `budgetMs`. A refusal, a cancellation, or any other failure is
-	 * thrown at once. A slow database is not a stopped run (control calls, 4 Oct 2026).
+	 * authority would lapse (its validity, which the cloud bounds by the run's lease, as renewed meanwhile) or, before
+	 * the first authority, within the authority window. A refusal, a cancellation, or any other failure is thrown at
+	 * once. A slow database is not a stopped run (control calls, 4 Oct 2026).
+	 *
+	 * An attempt cut at its deadline gives the next one twice as long, still within the limit: a read slower than one
+	 * attempt, queued behind the transaction its cut attempt left running, still lands (6 Oct 2026). That needs a read
+	 * whose own transport does not cut it first: the fence's waits `CLOUD_TOOL_REQUEST_MAX_MS`. It helps a delay outside
+	 * the database statement (a connection pool wait), or a statement shorter than the database's own budget (25 s for
+	 * the fence, 8 s for the native host's other reads). A statement the database cancels at that budget is not a cut
+	 * here: it is asked again at the same length.
 	 */
 	async retry<T>(
 		read: (signal: AbortSignal) => Promise<T>,
 		signal: AbortSignal,
 		timeoutMs?: number,
-		budgetMs?: number,
 	): Promise<{ value: T; started: number }> {
 		const combined = AbortSignal.any([signal, this.signal]);
 		const begun = performance.now();
-		const lapse = this.#identity ? this.#deadline : begun + CLOUD_NATIVE_TOOL_AUTHORITY_WINDOW_MS;
-		const limit = budgetMs === undefined ? lapse : Math.min(lapse, begun + budgetMs);
+		// Read at each step: a refresh that lands meanwhile extends it.
+		const limit = (): number => (this.#identity ? this.#deadline : begun + CLOUD_NATIVE_TOOL_AUTHORITY_WINDOW_MS);
+		let attemptLimitMs = timeoutMs ?? REQUEST_TIMEOUT_MS;
 		for (let attempt = 0; ; attempt += 1) {
 			combined.throwIfAborted();
 			const started = performance.now();
 			try {
 				// Every attempt ends by the limit: none starts with less than 1 ms of it.
-				const attemptMs = Math.min(timeoutMs ?? REQUEST_TIMEOUT_MS, Math.floor(limit - started));
+				const attemptMs = Math.min(attemptLimitMs, Math.floor(limit() - started));
 				if (attemptMs < 1) throw new Error("Cloud tool authority unavailable");
 				return { value: await cloudToolRequest(read, combined, attemptMs), started };
 			} catch (error) {
+				if (error instanceof CloudRuntimeDiagnosticError && error.category === "timeout")
+					attemptLimitMs = Math.min(CLOUD_TOOL_REQUEST_MAX_MS, attemptLimitMs * 2);
 				const pause = cloudControlBackoffMs(attempt);
-				if (combined.aborted || !cloudControlRetryable(error) || performance.now() + pause >= limit) throw error;
+				if (combined.aborted || !cloudControlRetryable(error) || performance.now() + pause >= limit()) throw error;
 				await cloudControlPause(pause, combined);
 			}
 		}
@@ -348,19 +386,14 @@ export class CloudNativeToolRun {
 		read: (signal: AbortSignal) => Promise<unknown>,
 		signal: AbortSignal,
 		timeoutMs: number | undefined,
-		unavailableIsUndefined = false,
-		budgetMs?: number,
-	): Promise<boolean> {
+	): Promise<void> {
 		const combined = AbortSignal.any([signal, this.signal]);
-		let applied = false;
 		const check = this.#checking.then(async () => {
 			combined.throwIfAborted();
 			if (this.#identity && performance.now() >= this.#deadline) throw new Error("Cloud tool authority expired");
 			// The attempt that answered dates the authority it read.
-			const { value, started } = await this.retry(read, combined, timeoutMs, budgetMs);
-			if (unavailableIsUndefined && value === undefined) return;
+			const { value, started } = await this.retry(read, combined, timeoutMs);
 			this.#apply(value, started, combined);
-			applied = true;
 		});
 		this.#checking = check.catch(() => {
 			this.close();
@@ -372,17 +405,18 @@ export class CloudNativeToolRun {
 			// The cause only tells a timed-out check apart in observations.
 			throw new Error("Cloud tool authority unavailable", { cause: error });
 		}
-		return applied;
 	}
 
 	#apply(value: unknown, started: number, signal: AbortSignal): void {
 		const authority = parseCloudNativeToolAuthority(value, this.binding);
 		signal.throwIfAborted();
 		const identityText = JSON.stringify(authority.identity);
+		if (this.#identityText && this.#identityText !== identityText) throw new Error("Cloud tool authority changed");
+		// A context fence's read may answer after a refresh that started later: the later read's authority stands.
+		if (started <= this.#readAt) return;
 		const deadline = started + authority.validForMs;
-		if ((this.#identityText && this.#identityText !== identityText) || deadline <= performance.now()) {
-			throw new Error("Cloud tool authority changed or expired");
-		}
+		if (deadline <= performance.now()) throw new Error("Cloud tool authority expired");
+		this.#readAt = started;
 		this.#identity = authority.identity;
 		this.#identityText = identityText;
 		this.#deadline = deadline;

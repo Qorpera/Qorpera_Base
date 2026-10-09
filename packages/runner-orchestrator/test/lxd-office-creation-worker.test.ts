@@ -2,12 +2,14 @@ import { mkdtemp, readdir, readFile, realpath, rm, unlink } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AgentPlugClaim } from "../src/agent-plug.ts";
 import { type LxdInstanceRecord, LxdUnixClient } from "../src/lxd-client.ts";
 import { LxdOfficeCreationWorker } from "../src/lxd-office-creation-worker.ts";
 import { type LxdOfficeGuestBinding, lxdOfficeGuestPlan } from "../src/lxd-office-guest.ts";
 import { lxdOfficePhysicalPolicySha256 } from "../src/lxd-office-physical-policy.ts";
 import { nodeAdmissionFixture } from "./fixtures/node-admission.ts";
 import { officePhysicalFixture } from "./fixtures/office-physical-policy.ts";
+import { pluggedOfficeRequest, testAgentMac, testAgentPlug } from "./helpers/agent-plug.ts";
 
 const intentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const operationId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -133,7 +135,7 @@ async function fixture() {
 		expect(action.action).toBe("create");
 		if (action.action !== "create") throw new Error("unexpected power operation");
 		const binding = (await readIdentity()).binding;
-		expect(action.request).toEqual(lxdOfficeGuestPlan(binding).request);
+		expect(action.request).toEqual(pluggedOfficeRequest(binding));
 		const config = { ...action.request.config, "volatile.base_image": binding.imageFingerprint };
 		state.instance = {
 			name: action.request.name,
@@ -150,8 +152,12 @@ async function fixture() {
 		return { project, instanceName: action.request.name, operationId };
 	});
 	const observe = vi.spyOn(client, "inspectInstanceOperation").mockImplementation(async () => state.operation);
-	const worker = () => new LxdOfficeCreationWorker(gate, registry, client);
-	return { root, policy, state, calls, readIdentity, inspect, get, submit, observe, worker };
+	const plug = vi.fn(async (claim: AgentPlugClaim, signal: AbortSignal) => {
+		calls.push({ method: "plug", args: { ...claim } });
+		return testAgentPlug(claim, signal);
+	});
+	const worker = () => new LxdOfficeCreationWorker(gate, registry, client, plug);
+	return { root, policy, state, calls, readIdentity, inspect, get, submit, observe, plug, worker };
 }
 const signal = () => new AbortController().signal;
 describe("durable office creation from retained cloud intent", () => {
@@ -166,6 +172,79 @@ describe("durable office creation from retained cloud intent", () => {
 		f.state.nodeCapacity = true;
 		expect((await f.worker().reconcile(signal())).state).toBe("awaiting_adoption");
 		expect(await f.readIdentity()).toEqual(before);
+		expect(f.submit).toHaveBeenCalledOnce();
+		// A plug never followed by a create is the same entry when it is plugged in again.
+		expect(f.plug).toHaveBeenCalledTimes(2);
+		expect(f.plug.mock.calls[1][0]).toEqual(f.plug.mock.calls[0][0]);
+	});
+	it("plugs the computer's agent card in right before its create, with the computer's identity", async () => {
+		const f = await fixture();
+		await expect(f.worker().reconcile(signal())).resolves.toHaveProperty("state", "awaiting_adoption");
+		const { binding } = await f.readIdentity();
+		expect(f.plug).toHaveBeenCalledOnce();
+		expect(f.plug.mock.calls[0][0]).toEqual({
+			kind: "office",
+			companyId: binding.companyId,
+			machineId: binding.companyComputerId,
+			memberUserId: null,
+			project: binding.project,
+			instance: lxdOfficeGuestPlan(binding).request.name,
+		});
+		// After the company reservation, before the fresh authority that bounds the create.
+		const methods = f.calls.map((call) => call.method);
+		expect(methods.indexOf("plug")).toBeGreaterThan(methods.indexOf("qorpera_reserve_runtime_office_start"));
+		expect(methods.indexOf("plug")).toBeLessThan(methods.indexOf("qorpera_check_runtime_office_start"));
+		expect(f.state.instance?.devices.plug?.hwaddr).toBe(testAgentMac);
+		// A dispatched create is never plugged in again.
+		await f.worker().reconcile(signal());
+		expect(f.plug).toHaveBeenCalledOnce();
+	});
+	it("plugs in outside the physical gate's window and inspects the gate again before the create", async () => {
+		const f = await fixture();
+		const lapsed = new AbortController();
+		f.inspect.mockImplementationOnce(async () => ({
+			signal: lapsed.signal,
+			validForMs: 5000,
+			hostBootId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+		}));
+		// The first window lapses while the plug waits on the node's reconciler.
+		f.plug.mockImplementationOnce(async (claim, plugSignal) => {
+			lapsed.abort();
+			return testAgentPlug(claim, plugSignal);
+		});
+		await expect(f.worker().reconcile(signal())).resolves.toHaveProperty("state", "awaiting_adoption");
+		expect(f.inspect).toHaveBeenCalledTimes(2);
+		expect(f.inspect.mock.invocationCallOrder[1]).toBeGreaterThan(f.plug.mock.invocationCallOrder[0]!);
+		expect(f.submit).toHaveBeenCalledOnce();
+	});
+	it("never plugs a card in for an unrecorded VM of the computer's name", async () => {
+		const f = await fixture();
+		await f.worker().reconcile(signal());
+		const unrecorded = f.state.instance;
+		const g = await fixture();
+		g.state.instance = unrecorded;
+		await expect(g.worker().reconcile(signal())).rejects.toThrow("OFFICE_CREATION_INSTANCE_ALREADY_EXISTS");
+		expect(g.plug).not.toHaveBeenCalled();
+		expect(g.submit).not.toHaveBeenCalled();
+	});
+	it("creates nothing while the plug refuses, then the same identity once it plugs in", async () => {
+		const f = await fixture();
+		f.plug.mockRejectedValueOnce(new Error("PLUGGED_IN_FOR_ANOTHER_MACHINE"));
+		await expect(f.worker().reconcile(signal())).rejects.toThrow("PLUGGED_IN_FOR_ANOTHER_MACHINE");
+		expect(f.submit).not.toHaveBeenCalled();
+		expect(f.calls.map((call) => call.method)).not.toContain("qorpera_check_runtime_office_start");
+		expect(f.state.reservation).not.toBeNull();
+		const before = await f.readIdentity();
+		await expect(f.worker().reconcile(signal())).resolves.toHaveProperty("state", "awaiting_adoption");
+		expect(await f.readIdentity()).toEqual(before);
+		expect(f.submit).toHaveBeenCalledOnce();
+	});
+	it("refuses a plug answer that is not a plug MAC before claiming the create", async () => {
+		const f = await fixture();
+		f.plug.mockResolvedValueOnce("00:16:3e:00:00:01");
+		await expect(f.worker().reconcile(signal())).rejects.toThrow("AGENT_PLUG_INVALID");
+		expect(f.submit).not.toHaveBeenCalled();
+		await expect(f.worker().reconcile(signal())).resolves.toHaveProperty("state", "awaiting_adoption");
 		expect(f.submit).toHaveBeenCalledOnce();
 	});
 	it.each([false, true])(
@@ -260,6 +339,7 @@ describe("durable office creation from retained cloud intent", () => {
 		const first = await f.worker().reconcile(signal());
 		expect(first.state).toBe("capacity_refused");
 		expect(f.submit).not.toHaveBeenCalled();
+		expect(f.plug).not.toHaveBeenCalled();
 		const identity = await f.readIdentity();
 		f.state.capacity = true;
 		await expect(f.worker().reconcile(signal())).resolves.toMatchObject({
@@ -343,6 +423,14 @@ describe("durable office creation from retained cloud intent", () => {
 		await expect(f.worker().reconcile(signal())).rejects.toThrow("OFFICE_CREATION_STOPPED_VM_UNCONFIRMED");
 		f.state.instance!.status = "Stopped";
 		f.state.instance!.statusCode = 102;
+		// The agent card must be there, with a plug's MAC.
+		const plugged = f.state.instance!.devices;
+		const { plug, ...unplugged } = plugged;
+		for (const devices of [unplugged, { ...plugged, plug: { ...plug, hwaddr: "00:16:3e:00:00:01" } }]) {
+			f.state.instance!.devices = f.state.instance!.expandedDevices = devices;
+			await expect(f.worker().reconcile(signal())).rejects.toThrow("LXD_OFFICE_GUEST_DRIFTED");
+		}
+		f.state.instance!.devices = plugged;
 		f.state.instance!.expandedDevices = {
 			...f.state.instance!.devices,
 			forbidden: { type: "disk", source: "/secrets", path: "/secrets" },

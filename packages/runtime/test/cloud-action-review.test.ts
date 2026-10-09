@@ -116,6 +116,15 @@ describe("which calls are reviewed", () => {
 		["organize_sidebar", { action: "list" }, "internal"],
 		["manage_worker", { action: "status" }, "internal"],
 		["manage_worker", { action: "dispatch" }, "delegation"],
+		// Changes the agent saved from a computer apply with the effect their list gave them (P40b); dropping them
+		// changes nothing in the company.
+		["apply_proposal", { proposalId: RULE, effect: "delegation" }, "delegation"],
+		["apply_proposal", { proposalId: RULE, effect: "destructive" }, "destructive"],
+		["apply_proposal", { proposalId: RULE }, "delegation"],
+		["discard_proposal", { proposalId: RULE }, "internal"],
+		// Interfaces (I8): reading a page or a table.
+		["interface_read", { interface: "pulse", view: null, after: null }, "read"],
+		["table_read", { table: "deals", where: null, after: null, limit: 20 }, "read"],
 		["a_tool_this_table_does_not_know", {}, "external"],
 	] as const)("%s %j is %s", (name, parsed, effect) => {
 		expect(cloudActionEffect(tool(name), parsed as JsonValue)).toBe(effect);
@@ -350,6 +359,45 @@ describe("what the card shows", () => {
 			describeCloudAction(tool("computer_shell"), { action: { kind: "shell", command: "cd /srv\n  ls -la\t" } })
 				.details,
 		).toEqual({ command: "cd /srv\n  ls -la" });
+	});
+
+	it("shows changes saved from a computer as the changes, in order, never their files", () => {
+		const saved = "Saved earlier from a computer; nothing of it applies until this is allowed";
+		expect(
+			describeCloudAction(tool("apply_proposal"), {
+				proposalId: RULE,
+				effect: "destructive",
+				title: "Apply 3 changes saved from a computer",
+				target: null,
+				details: [
+					{ key: "saved", value: saved },
+					{ key: "change 1", value: "Delete “Q3 plan” from “Old”" },
+					{ key: "change 2", value: "Set up or change the routine “Monday report”" },
+					{ key: "more", value: "1 more change" },
+					{ key: "intent (change 2)", value: "Sum up last week's sales.\n\nSend it to the team.", quoted: true },
+				],
+			}),
+		).toEqual({
+			title: "Apply 3 changes saved from a computer",
+			target: null,
+			details: {
+				saved,
+				"change 1": "Delete “Q3 plan” from “Old”",
+				"change 2": "Set up or change the routine “Monday report”",
+				more: "1 more change",
+				"intent (change 2)": "Sum up last week's sales.\n\nSend it to the team.",
+			},
+		});
+		// A hire saved from a computer reads as the hire itself.
+		expect(
+			describeCloudAction(tool("apply_proposal"), {
+				proposalId: RULE,
+				effect: "delegation",
+				title: "Hire a new agent",
+				target: "Mira",
+				details: [{ key: "role", value: "Bookkeeper" }, { key: "saved", value: saved }, { value: "no key" }],
+			}),
+		).toEqual({ title: "Hire a new agent", target: "Mira", details: { role: "Bookkeeper", saved } });
 	});
 });
 
@@ -1157,6 +1205,42 @@ describe("the review step", () => {
 		});
 	});
 
+	it("gives the reviewer everything a call would change when its arguments only name it, and never reviews a part", async () => {
+		const { calls, review } = gate({});
+		const control: CloudActionReviewControl = {
+			call: async (method, args) => {
+				calls.push({ method, args });
+				return method === "qorpera_begin_action_review"
+					? { state: "review", agent: { name: "Tina" }, company: { name: "Acme" }, rules: [] }
+					: { reviewId: "review-1", decision: "allow", card: false, reason: "Fine." };
+			},
+		};
+		const instance = new CloudActionReviewGate({ binding, control, reviewer: { review }, request: "", holdMs: 0 });
+		const contents = { changes: [{ op: "delete", path: "docs/old/note-9.md" }] };
+		const check = (reviewContents: () => JsonValue) =>
+			instance.check(
+				{
+					tool: { ...tool("apply_proposal"), reviewContents },
+					parsed: { proposalId: "p", effect: "destructive", title: "Apply 9 changes", target: null, details: [] },
+					argumentsText: '{"proposalId":"p"}',
+					argumentSha256: "a".repeat(64),
+					callId: "call_1",
+				},
+				new AbortController().signal,
+			);
+		await expect(check(() => contents)).resolves.toEqual({ run: true });
+		expect(JSON.parse(review.mock.calls[0][0].prompt).action.contents).toEqual(contents);
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain("When the action has contents");
+		// A tool that cannot give all of it fails the check, which the boundary ends REVIEW_UNAVAILABLE: no verdict on a part.
+		await expect(
+			check(() => {
+				throw new Error("Proposal is not listed in full");
+			}),
+		).rejects.toThrow("not listed in full");
+		expect(review).toHaveBeenCalledTimes(1);
+		expect(calls.filter((call) => call.method === "qorpera_record_action_review")).toHaveLength(1);
+	});
+
 	it("names a group chat's coworkers and the member it acts for on the card and to the reviewer", async () => {
 		const maja = randomUUID();
 		const calls: Array<{ method: CloudActionReviewRpc; args: Record<string, unknown> }> = [];
@@ -1375,6 +1459,38 @@ describe("the review step", () => {
 		await expect(gate({ record: { reviewId: "review-1" } }).check()).resolves.toEqual({ run: true });
 	});
 
+	it("passes on the denial's id on each denying path, so a tool can close what the call stood for (P40b)", async () => {
+		const id = randomUUID();
+		await expect(gate({ begin: { state: "declined", reviewId: id.toUpperCase() } }).check()).resolves.toEqual({
+			run: false,
+			text: expect.stringMatching(/^REVIEW_DENIED: This exact action was declined/),
+			deniedReviewId: id,
+		});
+		await expect(gate({ record: { decision: "deny", reason: "No.", reviewId: id } }).check()).resolves.toEqual({
+			run: false,
+			text: expect.stringMatching(/^REVIEW_DENIED: No\. /),
+			deniedReviewId: id,
+		});
+		await expect(
+			gate({
+				holdMs: 60_000,
+				record: { decision: "ask", card: true, reviewId: id, approverName: "Jonas" },
+				waits: [{ state: "declined", answeredBy: "Jonas" }],
+			}).check(),
+		).resolves.toEqual({
+			run: false,
+			text: expect.stringMatching(/^APPROVAL_DECLINED: Jonas declined/),
+			deniedReviewId: id,
+		});
+		// A malformed id gives none: the denial stands as it is.
+		await expect(
+			gate({ record: { decision: "deny", reason: "No.", reviewId: "review-1" } }).check(),
+		).resolves.toEqual({
+			run: false,
+			text: expect.stringMatching(/^REVIEW_DENIED: /),
+		});
+	});
+
 	it("waits on a card that is already waiting instead of raising a second one", async () => {
 		const { check, calls, review } = gate({
 			holdMs: 0,
@@ -1388,7 +1504,10 @@ describe("the review step", () => {
 });
 
 describe("the boundary's review step", () => {
-	function boundaryFixture(result: { run: true; reviewId?: string } | { run: false; text: string }) {
+	function boundaryFixture(
+		result: { run: true; reviewId?: string } | { run: false; text: string; deniedReviewId?: string },
+		denied?: CloudNativeTool["denied"],
+	) {
 		const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Sent" }));
 		const assertActive = vi.fn(async () => undefined);
 		const check = vi.fn(async () => result);
@@ -1403,6 +1522,7 @@ describe("the boundary's review step", () => {
 					inputSchema: { type: "object", properties: {}, additionalProperties: false },
 					parseArguments: () => ({ to: "bob@acme.test" }),
 					execute,
+					...(denied ? { denied } : {}),
 				},
 			],
 			assertActive,
@@ -1448,5 +1568,36 @@ describe("the boundary's review step", () => {
 		const result = JSON.parse(response.contentItems[0].text) as CloudToolResult;
 		expect(result).toMatchObject({ status: "denied", content: { text: "APPROVAL_PENDING: waits for Jonas." } });
 		expect(execute).not.toHaveBeenCalled();
+	});
+
+	it("lets a denied call close what it stood for with the denial's id, and keeps the denial when it cannot", async () => {
+		const id = randomUUID();
+		const text = async (fixture: ReturnType<typeof boundaryFixture>) =>
+			(
+				JSON.parse(
+					(await fixture.boundary.invoke("call_1", "qorpera", "send_email", {})).contentItems[0].text,
+				) as CloudToolResult
+			).content.text;
+		const denied = vi.fn<NonNullable<CloudNativeTool["denied"]>>(async () => "Closed as declined.");
+		const closing = boundaryFixture({ run: false, text: "REVIEW_DENIED: No.", deniedReviewId: id }, denied);
+		expect(await text(closing)).toBe("REVIEW_DENIED: No. Closed as declined.");
+		expect(denied).toHaveBeenCalledWith(
+			{ to: "bob@acme.test" },
+			expect.objectContaining({ callId: "call_1", argumentSha256: expect.any(String), actionReviewId: id }),
+		);
+		expect(closing.execute).not.toHaveBeenCalled();
+		// Without the denial's id there is nothing to close; nothing to add, or a failed close, leaves the denial as it is.
+		const unnamed = vi.fn<NonNullable<CloudNativeTool["denied"]>>(async () => "Closed as declined.");
+		expect(await text(boundaryFixture({ run: false, text: "REVIEW_DENIED: No." }, unnamed))).toBe(
+			"REVIEW_DENIED: No.",
+		);
+		expect(unnamed).not.toHaveBeenCalled();
+		const silent = boundaryFixture({ run: false, text: "REVIEW_DENIED: No.", deniedReviewId: id }, async () => "");
+		expect(await text(silent)).toBe("REVIEW_DENIED: No.");
+		const failing = boundaryFixture({ run: false, text: "REVIEW_DENIED: No.", deniedReviewId: id }, async () => {
+			throw new Error("PRIVATE_CLOSE_FAILURE");
+		});
+		expect(await text(failing)).toBe("REVIEW_DENIED: No.");
+		expect(failing.execute).not.toHaveBeenCalled();
 	});
 });

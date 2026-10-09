@@ -15,6 +15,7 @@ import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganiz
 import type { PageCursor } from "../cloud/pagination.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
 import type { CloudPresenceHandle, PresenceMember } from "../cloud/presence.ts";
+import type { FolderProposalPage } from "../cloud/proposals.ts";
 import { type MessageQuote, QUOTES_MAX, sameQuotes } from "../cloud/quotes.ts";
 import {
 	type RealtimePhase,
@@ -48,7 +49,9 @@ import { attachmentProblemText } from "../ui/attachments.ts";
 import { isGroupChat } from "../ui/group-chat.ts";
 import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
+import type { MailState } from "./company-mail.ts";
 import type { InterfaceFolderState } from "./interface-folder.ts";
+import type { InterfaceOffersState } from "./interface-offers.ts";
 import {
 	appendQuoted,
 	brokenQuotes,
@@ -126,11 +129,16 @@ function retryRefusal(error: unknown): string {
 	return t("It could not be tried again. Send the message again instead.");
 }
 
+/** Whether a card's answer was refused for want of the member's model account: in an agent's thread an answer runs
+ * the agent on it. */
+export function needsModelAccount(error: unknown): boolean {
+	return /sponsor|model account/i.test(error instanceof Error ? error.message : "");
+}
+
 /** Why the cloud would not take a card's answer, in the member's words. */
 function answerRefusal(error: unknown): string {
 	const message = error instanceof Error ? error.message : "";
-	// In an agent's thread an answer runs the agent on the member's own model account.
-	if (/sponsor|model account/i.test(message)) return t("Select an active model account, then try again.");
+	if (needsModelAccount(error)) return t("Select an active model account, then try again.");
 	if (/paused/i.test(message)) return t("Agents are paused for a moment while Qorpera updates. Try again shortly.");
 	return describeError(error);
 }
@@ -182,6 +190,11 @@ export interface CompanyState {
 	 * Unset until the first read lands, and while the folder keeps no `interfaces/order.md`: the Interfaces tab then
 	 * draws the library's definitions (app/interfaces.ts). */
 	interfaceFolder?: InterfaceFolderState;
+	/** The company's open offers of claimed cells (Interfaces step I9c; app/interface-offers.ts). Unset until the first
+	 * read lands, and on a cloud without them: no page draws an offer then. */
+	interfaceOffers?: InterfaceOffersState;
+	/** The company's mail as the member reads it (Interfaces step I5c; app/company-mail.ts). Unset until it is read. */
+	mail?: MailState;
 	loading: boolean;
 	error?: string;
 	accessLost?: boolean;
@@ -222,6 +235,11 @@ export interface ConversationState {
 	 * oldest first; absent until the first listing, empty when the cloud has none
 	 * or does not carry coding sessions yet. */
 	codingSessions?: CodingSession[];
+	/** The member's open proposals of the thread's agent (P40c): changes its runs saved that wait for review. Its first
+	 * page, without those this browser discarded; absent until the first listing, and outside the agent's thread. */
+	proposals?: FolderProposalPage;
+	/** Proposals whose discard this browser is sending. */
+	discardingProposals?: readonly string[];
 	/** Inputs this browser appended that the cloud has not listed back yet. */
 	optimistic: {
 		clientInputId: string;
@@ -469,6 +487,8 @@ export class CompanyController {
 	/** Taken inputs a thread has read back for once: never again (a run queued for hours stays taken
 	 * without an event, and each load would read further back). */
 	readonly #readBackFor = new Set<string>();
+	/** Proposals this browser discarded: a listing read before the discard landed does not show them again. */
+	readonly #discardedProposals = new Set<string>();
 	/** Per failed run: when its details may be read next (performance.now()), and
 	 * the latest request, so an older answer never replaces a newer one. */
 	readonly #recoveryReads = new Map<string, { due: number; request: number }>();
@@ -1581,16 +1601,24 @@ export class CompanyController {
 			};
 			// "Show earlier" may have read older events meanwhile: both stay.
 			const current = () => (store.get().events === known.events ? events : mergeEvents(store.get().events, events));
+			// The member's open proposals of the agent wait in the agent's thread (not a group chat, a routine's or a
+			// worker's session).
+			const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
+			const agent = session && isPrimaryStaffSession(session) ? session : undefined;
 			try {
-				// The history, the waiting inputs and the coding sessions do not depend on one
-				// another: they are read side by side, and the thread draws once, when all landed.
-				const [complete, read, listed] = await Promise.all([
+				// The history, the waiting inputs, the coding sessions and the proposals do not depend on
+				// one another: they are read side by side, and the thread draws once, when all landed.
+				const [complete, read, listed, proposals] = await Promise.all([
 					readEvents(),
-					// New events only: the waiting inputs and coding sessions stay as last read.
+					// New events only: the waiting inputs, coding sessions and proposals stay as last read.
 					full ? readPending() : Promise.resolve(undefined),
 					// The listing is optional: a cloud without Order 9 answers with a missing
 					// RPC, and a refused or failed listing keeps what the thread already shows.
 					full ? this.#api.listCodingSessions(sessionId).catch(() => undefined) : Promise.resolve(undefined),
+					// So are the proposals: a company not on folder-v2 refuses, a cloud before P40c has no RPC.
+					full && agent?.staffAgentId
+						? this.#api.listAgentProposals(agent.environmentId, agent.staffAgentId).catch(() => undefined)
+						: Promise.resolve(undefined),
 				]);
 				const pending = full ? read : store.get().pending;
 				if (this.#stopped || !complete || !pending) return;
@@ -1629,6 +1657,7 @@ export class CompanyController {
 					optimistic,
 					interactionAnswers: reconcileInteractionAnswers(store.get().interactionAnswers, projection, pending),
 					codingSessions,
+					...(proposals ? { proposals: this.#withoutDiscarded(proposals) } : {}),
 					hasEarlier: earlier,
 				});
 			} catch (error) {
@@ -2016,6 +2045,37 @@ export class CompanyController {
 		void this.loadConversation(sessionId);
 		void this.refreshActivity();
 		this.#watchWork(20_000);
+	}
+
+	/** Discard one of the member's open proposals in an agent's thread (P40c): the agent's run cannot apply it anymore.
+	 * The core decides who may (the member it waits for, owners and admins). One that is gone (decided, or erased with
+	 * its run) leaves the thread as a discarded one does. */
+	async discardProposal(sessionId: string, proposalId: string): Promise<void> {
+		const store = this.conversation(sessionId);
+		const id = proposalId.toLowerCase();
+		const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
+		if (!session || store.get().discardingProposals?.includes(id)) return;
+		store.set({ discardingProposals: [...(store.get().discardingProposals ?? []), id], interactionError: undefined });
+		try {
+			await this.#api.discardProposal(session.environmentId, id).catch((error: unknown) => {
+				if (!(error instanceof CloudRpcError && error.code === "P0002")) throw error;
+			});
+			this.#discardedProposals.add(id);
+			const proposals = store.get().proposals;
+			if (proposals) store.set({ proposals: this.#withoutDiscarded(proposals) });
+		} catch (error) {
+			store.set({ interactionError: describeError(error) });
+			throw error;
+		} finally {
+			const discarding = store.get().discardingProposals?.filter((item) => item !== id) ?? [];
+			store.set({ discardingProposals: discarding.length ? discarding : undefined });
+			void this.loadConversation(sessionId);
+		}
+	}
+
+	#withoutDiscarded(page: FolderProposalPage): FolderProposalPage {
+		const proposals = page.proposals.filter((proposal) => !this.#discardedProposals.has(proposal.proposalId));
+		return proposals.length === page.proposals.length ? page : { ...page, proposals };
 	}
 
 	/** An answer runs the agent the way a message there does, on the member's

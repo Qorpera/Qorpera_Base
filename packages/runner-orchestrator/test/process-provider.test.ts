@@ -88,6 +88,7 @@ describe("process cloud runner provider", () => {
 				"  masterKey: process.env.QORPERA_NATIVE_PROVIDER_MASTER_KEY,",
 				"  masterKeyFile: process.env.QORPERA_NATIVE_PROVIDER_MASTER_KEY_FILE,",
 				"  executionBoundary: process.env.QORPERA_NATIVE_PROVIDER_EXECUTION_BOUNDARY,",
+				"  serviceKey: process.env.QORPERA_SUPABASE_SERVICE_KEY,",
 				"}));",
 				"setInterval(() => {}, 1000);",
 			].join("\n"),
@@ -152,16 +153,19 @@ describe("process cloud runner provider", () => {
 		const provisioning = requests.find((entry) => entry.url.includes("qorpera_provision_execution_runner"));
 		expect(provisioning?.headers.get("apikey")).toBe("sb_secret_private");
 		expect(provisioning?.headers.get("authorization")).toBeNull();
-		let nativeEnvironment: { masterKey?: string; masterKeyFile?: string; executionBoundary?: string } | undefined;
+		let nativeEnvironment:
+			| { masterKey?: string; masterKeyFile?: string; executionBoundary?: string; serviceKey?: string }
+			| undefined;
 		for (let attempt = 0; attempt < 100 && !nativeEnvironment; attempt++) {
 			try {
 				nativeEnvironment = JSON.parse(
 					await readFile(join(directory, "state", runId, "native-env.json"), "utf-8"),
-				) as { masterKey?: string; masterKeyFile?: string; executionBoundary?: string };
+				) as { masterKey?: string; masterKeyFile?: string; executionBoundary?: string; serviceKey?: string };
 			} catch {
 				await new Promise((resolveWait) => setTimeout(resolveWait, 5));
 			}
 		}
+		// G2-5: no service key (toEqual leaves no room for one).
 		expect(nativeEnvironment).toEqual({
 			masterKeyFile: nativeProviderMasterKeyFile,
 			executionBoundary: "virtual_machine",

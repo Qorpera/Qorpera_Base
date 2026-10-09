@@ -235,6 +235,42 @@ it("writes each trigger, the end, the runs, quiet hours and effort as the file s
 		runs: 50,
 		reply: "optional",
 	});
+	// An event (E2): the hook and the types it takes, with its time zone; without only, every type.
+	const hookId = "0a1b2c3d-1111-4111-8111-111111111111";
+	await routines.change(
+		{
+			...UPSERT,
+			operationKey: "payments-1",
+			routineKey: "payments",
+			trigger: {
+				kind: "listener",
+				source: "event",
+				hookId,
+				only: ["invoice.paid", "charge.refunded"],
+				timeZone: "Europe/Copenhagen",
+				replyPolicy: "required",
+			},
+		},
+		f.call(),
+	);
+	expect(f.routine("payments")).toMatchObject({
+		trigger: { when: "event", hook: hookId, only: ["invoice.paid", "charge.refunded"] },
+		timezone: "Europe/Copenhagen",
+		reply: "required",
+	});
+	expect(f.text(`${ROUTINES}/payments.md`)).toContain(
+		`when: event\nhook: ${hookId}\nonly: [invoice.paid, charge.refunded]\ntimezone: Europe/Copenhagen\n`,
+	);
+	await routines.change(
+		{
+			...UPSERT,
+			operationKey: "forms-1",
+			routineKey: "forms",
+			trigger: { kind: "listener", source: "event", hookId, timeZone: "UTC", replyPolicy: "optional" },
+		},
+		f.call(),
+	);
+	expect(f.routine("forms")).toMatchObject({ trigger: { when: "event", hook: hookId, only: null }, timezone: "UTC" });
 });
 
 it("saves over an existing file with its id, its version and its effort, and answers an unchanged save", async () => {
@@ -648,12 +684,15 @@ it("is manage_routine's folder-v2 path: its description, its list arguments, the
 	expect(tool?.description).toContain("cursor: the nextCursor of an earlier page");
 	expect(tool?.description).toContain("resume switches a routine back on");
 	expect(tool?.description).toContain(
-		"or file_change (a Company File path you can read, match exact or subtree); routines that react to events are not available in this company yet. ",
+		"file_change (a Company File path you can read, match exact or subtree), or event (hookId, a hook or mailbox from list_hooks; optional only, the event types to take; IANA timeZone). ",
 	);
 	expect(tool?.description).toContain(
-		"It listens from the save that set it up, so a later save of the routine drops changes not delivered yet.",
+		"Both listen from their last save, which drops what was not delivered yet; report required needs your public thread or the run is skipped. ",
 	);
-	expect(tool?.description).not.toMatch(/No member approval|hookId|list_hooks|files or events/);
+	expect(tool?.description).toContain("each run gets up to 20 new events");
+	expect(tool?.description).not.toMatch(/No member approval|not available/);
+	// The tool boundary takes a description of at most 4096 bytes.
+	expect(Buffer.byteLength(tool?.description ?? "")).toBeLessThanOrEqual(4096);
 	expect(legacy?.inputSchema).not.toHaveProperty("properties.cursor");
 	expect(tool?.inputSchema).toHaveProperty("properties.cursor");
 	// list: one routine, or a page from a cursor.
@@ -666,7 +705,8 @@ it("is manage_routine's folder-v2 path: its description, its list arguments, the
 		tool?.parseArguments({ action: "list", routineKey: "inbox", cursor: "0f1a2b3c-8888-4888-8888-000000000001" }),
 	).toThrow(CloudToolArgumentRefusal);
 	expect(() => tool?.parseArguments({ action: "list", cursor: "next" })).toThrow(CloudToolArgumentRefusal);
-	// The key is a file name, said in words; a file change is taken and an event routine refused; the file is checked.
+	// The key is a file name, said in words; a file change and an event are taken (the hook's id in lowercase); the file is
+	// checked.
 	expect(() => tool?.parseArguments({ action: "pause", operationKey: "p-1", routineKey: "weekly.report" })).toThrow(
 		/lowercase letters, digits and single hyphens/,
 	);
@@ -693,20 +733,38 @@ it("is manage_routine's folder-v2 path: its description, its list arguments, the
 	expect(() =>
 		tool?.parseArguments({ ...upsert, trigger: { kind: "file_change", path: "sales/../hr", timeZone: "UTC" } }),
 	).toThrow();
-	expect(() =>
+	expect(
 		tool?.parseArguments({
 			...upsert,
-			trigger: { kind: "event", hookId: "0a1b2c3d-1111-4111-8111-111111111111", timeZone: "UTC" },
+			trigger: {
+				kind: "event",
+				hookId: "0A1B2C3D-1111-4111-8111-111111111111",
+				only: ["form.posted"],
+				timeZone: "UTC",
+				report: "required",
+			},
 		}),
-	).toThrow(/routines that react to events are not available yet/);
+	).toMatchObject({
+		trigger: {
+			kind: "listener",
+			source: "event",
+			hookId: "0a1b2c3d-1111-4111-8111-111111111111",
+			only: ["form.posted"],
+			timeZone: "UTC",
+			replyPolicy: "required",
+		},
+	});
+	expect(() =>
+		tool?.parseArguments({ ...upsert, trigger: { kind: "event", hookId: "forms", timeZone: "UTC" } }),
+	).toThrow();
 	expect(() => tool?.parseArguments({ ...upsert, title: "In\tbox" })).toThrow(CloudToolArgumentRefusal);
-	// The schema offers the file name rule, the clock triggers and a file change.
+	// The schema offers the file name rule, the clock triggers, a file change and an event.
 	expect(tool?.inputSchema).toHaveProperty("properties.routineKey.pattern", "^[a-z0-9]+(?:-[a-z0-9]+)*$");
 	const kinds = (schema: unknown) =>
 		(
 			schema as { properties: { trigger: { oneOf: { properties: { kind: { const: string } } }[] } } }
 		).properties.trigger.oneOf.map((item) => item.properties.kind.const);
-	expect(kinds(tool?.inputSchema)).toEqual(["dynamic", "every", "weekly", "file_change"]);
+	expect(kinds(tool?.inputSchema)).toEqual(["dynamic", "every", "weekly", "file_change", "event"]);
 	expect(kinds(legacy?.inputSchema)).toEqual(["dynamic", "every", "weekly", "file_change", "event"]);
 	const list = parse((await tool?.execute({ action: "list" }, f.context)) as { value: unknown });
 	expect(list.routines.map((routine: { routineKey: string }) => routine.routineKey)).toEqual(["inbox"]);

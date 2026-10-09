@@ -298,6 +298,222 @@ describe("machine event envelopes", () => {
 	});
 });
 
+/** Exactly what qorpera_machine_checkin_payload builds from qorpera_ask_busy_office_shells' question. */
+function checkinWakeFixture() {
+	const { identity, wake, continuation } = workerWakeFixture("worker-completion");
+	const checkinId = randomUUID();
+	const checkinWake: CloudWakeEnvelope = {
+		...wake,
+		source: { kind: "machine-checkin", id: checkinId, occurrenceKey: `machine-checkin:${randomUUID()}` },
+		policy: continuation,
+		payload: {
+			schema: "qorpera.machine-checkin/v1",
+			parentRunId: wake.parentRunId,
+			checkins: [
+				{
+					checkinId,
+					machineKind: "computer",
+					since: "2026-10-04T05:00:00.000000+00:00",
+					askedAt: "2026-10-04T06:00:01.000000+00:00",
+					machine: "your computer",
+					busyHours: 1,
+					running: [{ command: "python crawl.py", startedAt: "2026-10-04T04:30:00.000000+00:00" }],
+					more: 0,
+				},
+			],
+			stillWaiting: 0,
+		},
+	};
+	return { identity, wake: checkinWake };
+}
+
+/** A coding session's question after it, as qorpera_ask_busy_coding_sessions builds it. */
+function codingCheckinWakeFixture() {
+	const { identity, wake } = checkinWakeFixture();
+	const shell = (wake.payload.checkins as Record<string, unknown>[])[0];
+	const coding = {
+		checkinId: randomUUID(),
+		machineKind: "coding",
+		since: "2026-10-04T05:00:00.000000+00:00",
+		askedAt: "2026-10-04T08:00:01.000000+00:00",
+		machine: 'the coding session "Fix the login" (repository acme/web, branch qorpera/fix-login)',
+		busyHours: 3,
+		running: [{ command: "npm run dev", turn: 2 }],
+		more: 0,
+		todoKey: "fix-login",
+		workerKey: "session-a",
+	};
+	return { identity, wake: { ...wake, payload: { ...wake.payload, checkins: [shell, coding] } } as CloudWakeEnvelope };
+}
+
+/** An agent's machine's question after it, as qorpera_ask_busy_company_machines builds it. */
+function machineCheckinWakeFixture() {
+	const { identity, wake } = checkinWakeFixture();
+	const shell = (wake.payload.checkins as Record<string, unknown>[])[0];
+	const machine = {
+		checkinId: randomUUID(),
+		machineKind: "machine",
+		since: "2026-10-04T05:00:00.000000+00:00",
+		askedAt: "2026-10-04T06:00:01.000000+00:00",
+		machine: "build-1",
+		busyHours: 1,
+		running: [{ command: "npm test", startedAt: "2026-10-04T05:00:00.000000+00:00", commandId: randomUUID() }],
+		more: 0,
+	};
+	return {
+		identity,
+		wake: { ...wake, payload: { ...wake.payload, checkins: [shell, machine] } } as CloudWakeEnvelope,
+	};
+}
+
+describe("machine check-in envelopes", () => {
+	it("admits a check-in as an internal continuation in its parent's conversation", () => {
+		const { identity, wake } = checkinWakeFixture();
+		const parsed = parseCloudWakeEnvelope(wake, identity);
+		expect(parsed.source.kind).toBe("machine-checkin");
+		expect(parsed.policy).toMatchObject({ initial: "optional", final: "optional" });
+	});
+	it("admits a coding session's check-in with its todo and worker keys and each command's turn", () => {
+		const { identity, wake } = codingCheckinWakeFixture();
+		const parsed = parseCloudWakeEnvelope(wake, identity);
+		expect((parsed.payload.checkins as Record<string, unknown>[])[1]).toMatchObject({
+			machineKind: "coding",
+			todoKey: "fix-login",
+			workerKey: "session-a",
+			running: [{ command: "npm run dev", turn: 2 }],
+		});
+	});
+	const first = (wake: CloudWakeEnvelope) => (wake.payload.checkins as Record<string, unknown>[])[0];
+	const second = (wake: CloudWakeEnvelope) => (wake.payload.checkins as Record<string, unknown>[])[1];
+	it.each([
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: { ...wake.payload, checkins: [first(wake), { ...second(wake), todoKey: undefined }] },
+		}),
+		(wake: CloudWakeEnvelope) => {
+			const { workerKey: _, ...rest } = second(wake);
+			return { ...wake, payload: { ...wake.payload, checkins: [first(wake), rest] } };
+		},
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: { ...wake.payload, checkins: [first(wake), { ...second(wake), workerKey: "Session A" }] },
+		}),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: {
+				...wake.payload,
+				checkins: [first(wake), { ...second(wake), running: [{ command: "make", turn: 0 }] }],
+			},
+		}),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: {
+				...wake.payload,
+				checkins: [
+					first(wake),
+					{ ...second(wake), running: [{ command: "make", startedAt: "2026-10-04T04:30:00Z" }] },
+				],
+			},
+		}),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: {
+				...wake.payload,
+				checkins: [{ ...first(wake), todoKey: "fix-login", workerKey: "session-a" }, second(wake)],
+			},
+		}),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: { ...wake.payload, checkins: [first(wake), { ...second(wake), machineKind: "computer" }] },
+		}),
+	])("rejects a coding session's check-in that is not exactly what the kernel admits %#", (mutate) => {
+		const { identity, wake } = codingCheckinWakeFixture();
+		expect(() => parseCloudWakeEnvelope(wake, identity)).not.toThrow();
+		expect(() => parseCloudWakeEnvelope(mutate(wake), identity)).toThrow();
+	});
+	it("admits an agent's machine's check-in with each command's handle, and with no command", () => {
+		const { identity, wake } = machineCheckinWakeFixture();
+		expect(second(parseCloudWakeEnvelope(wake, identity))).toMatchObject({
+			machineKind: "machine",
+			machine: "build-1",
+			running: [{ command: "npm test", commandId: (second(wake).running as { commandId: string }[])[0].commandId }],
+		});
+		const outside = {
+			...wake,
+			payload: { ...wake.payload, checkins: [first(wake), { ...second(wake), running: [] }] },
+		};
+		expect(() => parseCloudWakeEnvelope(outside, identity)).not.toThrow();
+	});
+	const command = (wake: CloudWakeEnvelope) => (second(wake).running as Record<string, unknown>[])[0];
+	it.each([
+		(wake: CloudWakeEnvelope) => {
+			const { commandId: _, ...rest } = command(wake);
+			return {
+				...wake,
+				payload: { ...wake.payload, checkins: [first(wake), { ...second(wake), running: [rest] }] },
+			};
+		},
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: {
+				...wake.payload,
+				checkins: [first(wake), { ...second(wake), running: [{ ...command(wake), commandId: "build-1" }] }],
+			},
+		}),
+		(wake: CloudWakeEnvelope) => {
+			const { startedAt: _, ...rest } = command(wake);
+			return {
+				...wake,
+				payload: { ...wake.payload, checkins: [first(wake), { ...second(wake), running: [{ ...rest, turn: 1 }] }] },
+			};
+		},
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: {
+				...wake.payload,
+				checkins: [
+					{ ...first(wake), running: [{ ...(first(wake).running as object[])[0], commandId: randomUUID() }] },
+					second(wake),
+				],
+			},
+		}),
+	])("rejects an agent's machine's check-in that is not exactly what the kernel admits %#", (mutate) => {
+		const { identity, wake } = machineCheckinWakeFixture();
+		expect(() => parseCloudWakeEnvelope(wake, identity)).not.toThrow();
+		expect(() => parseCloudWakeEnvelope(mutate(wake), identity)).toThrow();
+	});
+	it.each([
+		(wake: CloudWakeEnvelope) => ({ ...wake, actorUserId: randomUUID() }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, parentRunId: null }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, source: { ...wake.source, id: randomUUID() } }),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			source: { ...wake.source, occurrenceKey: `machine-event:${randomUUID()}` },
+		}),
+		(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, schema: "qorpera.machine-event/v1" } }),
+		(wake: CloudWakeEnvelope) => ({ ...wake, payload: { ...wake.payload, checkins: [] } }),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: { ...wake.payload, checkins: [{ ...first(wake), machineKind: "shell" }] },
+		}),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: { ...wake.payload, checkins: [{ ...first(wake), busyHours: 0 }] },
+		}),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: { ...wake.payload, checkins: [{ ...first(wake), extra: true }] },
+		}),
+		(wake: CloudWakeEnvelope) => ({
+			...wake,
+			payload: { ...wake.payload, checkins: [{ ...first(wake), running: [{ command: "make", startedAt: null }] }] },
+		}),
+	])("rejects a check-in that is not exactly what the kernel admits %#", (mutate) => {
+		const { identity, wake } = checkinWakeFixture();
+		expect(() => parseCloudWakeEnvelope(mutate(wake), identity)).toThrow();
+	});
+});
+
 describe("worker dispatch and completion envelopes", () => {
 	it("admits a blank worker with a complete dispatch and no public mouth", () => {
 		const { identity, wake } = workerWakeFixture("worker-dispatch");

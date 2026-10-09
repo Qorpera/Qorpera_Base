@@ -241,7 +241,7 @@ export class ProcessCloudRunnerProviderBackend implements CloudRunnerProviderSer
 			env: {
 				PATH: process.env.PATH ?? "",
 				QORPERA_SUPABASE_URL: this.#config.supabaseUrl,
-				QORPERA_SUPABASE_SERVICE_KEY: this.#config.supabaseServiceKey,
+				// G2-5: the native host holds no service key (it refuses one).
 				QORPERA_NATIVE_PROVIDER_MASTER_KEY_FILE: this.#config.nativeProviderMasterKeyFile,
 				QORPERA_NATIVE_PROVIDER_BRIDGE_TOKEN: nativeBridgeToken,
 				QORPERA_NATIVE_PROVIDER_EXECUTION_BOUNDARY: this.#config.nativeExecutionBoundary,

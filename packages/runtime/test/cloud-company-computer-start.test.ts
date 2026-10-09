@@ -109,6 +109,7 @@ async function fixture() {
 	const factory = createHttpCompanyComputerSessionFactory({
 		url: `https://office.qorpera.test/office/${scope.companyComputerId}/native`,
 		token: randomBytes(32).toString("base64url"),
+		holder: () => `job.${randomUUID()}.${"h".repeat(43)}`,
 		registry,
 		fetch: guest,
 	});
@@ -234,6 +235,7 @@ describe("native office startup without a running guest", () => {
 		const factory = createHttpCompanyComputerSessionFactory({
 			url: "https://office.qorpera.test/office/{companyComputerId}/native",
 			token: randomBytes(32).toString("base64url"),
+			holder: () => `job.${randomUUID()}.${"h".repeat(43)}`,
 			registry: new HttpCloudCompanyComputerRegistry({
 				supabaseUrl: "https://registry.qorpera.test",
 				serviceRoleKey: "synthetic-service-key",
@@ -250,6 +252,7 @@ describe("native office startup without a running guest", () => {
 		const factory = createHttpCompanyComputerSessionFactory({
 			url: "https://office.qorpera.test/office/{companyComputerId}/native",
 			token: randomBytes(32).toString("base64url"),
+			holder: () => `job.${randomUUID()}.${"h".repeat(43)}`,
 			registry: new HttpCloudCompanyComputerRegistry({
 				supabaseUrl: "https://registry.qorpera.test",
 				serviceRoleKey: "synthetic-service-key",

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { withAgentPlug } from "./agent-plug.ts";
 import type { LxdOperationState, LxdTrackedClient, LxdTrackedInstanceAction } from "./lxd-client.ts";
 import {
 	assertLxdOfficeDeleteDispositionContext,
@@ -533,12 +534,20 @@ export class LxdOfficeOperationJournal {
 
 	/** One bounded reconciliation: submit at most once, then inspect at most
 	 * once. Call again with the SAME command ID to resume after a process crash.
-	 * The caller separately checks physical postconditions and admission fences. */
-	async reconcile(commandId: string, action: Action, signal: AbortSignal): Promise<LxdOfficeOperationResult> {
+	 * The caller separately checks physical postconditions and admission fences.
+	 * A create that is not dispatched yet needs `hwaddr`, the MAC the agent plug
+	 * gave right before it (agent-plug.ts); no other action takes one. */
+	async reconcile(
+		commandId: string,
+		action: Action,
+		signal: AbortSignal,
+		hwaddr?: string,
+	): Promise<LxdOfficeOperationResult> {
 		if (
 			typeof commandId !== "string" ||
 			!UUID.test(commandId) ||
-			!["create", "start", "stop", "delete"].includes(action)
+			!["create", "start", "stop", "delete"].includes(action) ||
+			(hwaddr !== undefined && action !== "create")
 		)
 			throw new Error("INVALID_LXD_OFFICE_COMMAND");
 		signal.throwIfAborted();
@@ -560,6 +569,14 @@ export class LxdOfficeOperationJournal {
 				throw new Error("LXD_OFFICE_OPERATION_UNSETTLED");
 			// Reserve room for acceptance and settlement before dispatching.
 			if (current.events.length > MAX_EVENTS - 3) throw new Error("LXD_OFFICE_JOURNAL_FULL");
+			const { binding, request } = lxdOfficeGuestPlan(this.#authority.binding);
+			// No computer is made without its plug's MAC on its agent card: checked before the claim, so a create
+			// refused here was never dispatched.
+			if (action === "create" && hwaddr === undefined) throw new Error("AGENT_PLUG_MISSING");
+			const submission: LxdTrackedInstanceAction =
+				action === "create"
+					? { action, request: withAgentPlug(request, "plug", hwaddr as string) }
+					: { action, name: request.name };
 			signal.throwIfAborted();
 			const claimed = await this.#append(current.events, current.previousSha256, {
 				commandId,
@@ -569,15 +586,10 @@ export class LxdOfficeOperationJournal {
 				state: null,
 			});
 			if (!claimed) return this.#observe(commandId, action, signal);
-			const { binding, request } = lxdOfficeGuestPlan(this.#authority.binding);
 			let operationId: string;
 			try {
 				signal.throwIfAborted();
-				const reference = await this.#client.submitInstanceOperation(
-					binding.project,
-					action === "create" ? { action, request } : { action, name: request.name },
-					signal,
-				);
+				const reference = await this.#client.submitInstanceOperation(binding.project, submission, signal);
 				if (
 					reference.project !== binding.project ||
 					reference.instanceName !== request.name ||

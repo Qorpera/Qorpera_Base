@@ -9,11 +9,9 @@ import {
 	type CompanyComputerScope,
 	type CompanyComputerScreenLease,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
-import type { CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { CompanyComputerScreenshotPublisher } from "./cloud-company-computer-guest.ts";
 import type { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-registry-http.ts";
 import { parseCompanyComputerAction } from "./cloud-company-computer-tools.ts";
-import { HttpNativeCompanyObjectTransport } from "./cloud-native-company-objects.ts";
 import { type CloudNativeToolRun, cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import { cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations.ts";
 
@@ -130,18 +128,15 @@ export class CompanyComputerInlineScreenshots {
 	}
 }
 
-/** How the capture authority says to keep the pixels: as a stored object (the published artifact), or not at all
- * (folder-v2: they go to the model once, in the perform answer, and the operation's receipt is the record). */
-function captureStorage(value: unknown): "object" | "none" {
-	const answer = record(value, value && typeof value === "object" && "storage" in value ? "state,storage" : "state");
-	if (answer.state !== "authorized" || (answer.storage !== undefined && answer.storage !== "none"))
-		throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
-	return answer.storage === "none" ? "none" : "object";
+/** The capture authority's answer: keep the pixels nowhere (folder-v2: they go to the model once, in the perform
+ * answer, and the operation's receipt is the record). Stored captures (snapshot-v1) are gone (legacy removal, step C). */
+function assertCaptureUnstored(value: unknown): void {
+	const answer = record(value, "state,storage");
+	if (answer.state !== "authorized" || answer.storage !== "none") throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
 }
 
-/** One admitted native run. Upload stages bytes; only the SQL transaction
- * publishes an artifact with the original effect receipt and retention hold.
- * On a folder-v2 company nothing is stored: the pixels go to the native host in
+/** One admitted native run. Nothing is stored: the SQL transaction publishes the
+ * capture with the original effect receipt, the pixels go to the native host in
  * the perform answer and wait in memory for the model, and the effect receipt is
  * the capture's record.
  * Private sign-in surfaces never call this adapter. */
@@ -149,14 +144,12 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 	readonly #run: CloudNativeToolRun;
 	readonly #scope: CompanyComputerScope;
 	readonly #registry: Pick<HttpCloudCompanyComputerRegistry, "call">;
-	readonly #objects: (signal: AbortSignal) => Pick<CloudObjectTransport, "put" | "get">;
 	readonly #inline = new CompanyComputerInlineScreenshots();
 
 	constructor(options: {
 		run: CloudNativeToolRun;
 		scope: CompanyComputerScope;
 		registry: Pick<HttpCloudCompanyComputerRegistry, "call">;
-		objects: (signal: AbortSignal) => Pick<CloudObjectTransport, "put" | "get">;
 	}) {
 		assertCompanyComputerScope(options.scope, options.scope);
 		if (
@@ -169,7 +162,6 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 		this.#run = options.run;
 		this.#scope = Object.freeze({ ...options.scope });
 		this.#registry = options.registry;
-		this.#objects = options.objects;
 		// A waiting screenshot never outlives its run (a closed native session closes its run).
 		this.#run.signal.addEventListener("abort", () => this.#inline.clear(), { once: true });
 	}
@@ -214,19 +206,10 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 		return cloudToolRequest(
 			async (signal) => {
 				await this.#run.assertActive(signal);
-				const storage = captureStorage(
+				assertCaptureUnstored(
 					await this.#registry.call("qorpera_native_office_capture", { ...args, p_action: "authorize" }, signal),
 				);
 				signal.throwIfAborted();
-				if (storage === "object") {
-					const stored = await this.#objects(signal).put(
-						`${this.#scope.companyId}/${image.sha256}`,
-						bytes,
-						image.mediaType,
-					);
-					if (stored !== "stored" && stored !== "exists") throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
-					signal.throwIfAborted();
-				}
 				const asset = parseCompanyComputerScreenshotAsset(
 					await this.#registry.call("qorpera_native_office_capture", { ...args, p_action: "publish" }, signal),
 				);
@@ -240,11 +223,9 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 				)
 					throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
 				signal.throwIfAborted();
-				if (storage === "none") {
-					// The receipt names the capture; the pixels wait here for the native gateway's answer.
-					if (asset.assetId !== receiptId) throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
-					this.#inline.hold(asset.assetId, bytes);
-				}
+				// The receipt names the capture; the pixels wait here for the native gateway's answer.
+				if (asset.assetId !== receiptId) throw new Error("OFFICE_CAPTURE_UNCONFIRMED");
+				this.#inline.hold(asset.assetId, bytes);
 				return asset;
 			},
 			AbortSignal.any([context.signal, this.#run.signal]),
@@ -275,8 +256,7 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 		this.#inline.hold(asset.assetId, bytes);
 	}
 
-	/** Fetch only a completed capture of this run, rechecking after object I/O.
-	 * A capture whose pixels came in its perform answer is read from memory, once.
+	/** Read only a completed capture of this run, from the pixels its perform answer brought: from memory, once.
 	 * This returns host bytes, not a model-visible URL or a member download grant. */
 	async read(value: CompanyComputerScreenshotAsset, signal: AbortSignal): Promise<Uint8Array> {
 		const asset = parseCompanyComputerScreenshotAsset(value);
@@ -295,10 +275,9 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 				};
 				await this.#run.assertActive(checked);
 				await authorize();
-				const bytes = Uint8Array.from(
-					this.#inline.take(asset.assetId) ??
-						(await this.#objects(checked).get(`${this.#scope.companyId}/${asset.sha256}`)),
-				);
+				const bytes = this.#inline.take(asset.assetId);
+				// Read once already, or held past its minute: the pixels are kept nowhere else.
+				if (!bytes) throw new Error("OFFICE_CAPTURE_UNAVAILABLE");
 				if (
 					!isDeepStrictEqual(png(bytes, asset.surface), {
 						sha256: asset.sha256,
@@ -340,48 +319,4 @@ export class CloudCompanyComputerScreenshots implements CompanyComputerScreensho
 			3_000,
 		);
 	}
-}
-
-/** Protected service configuration; credentials remain outside browser/command
- * namespaces. The existing immutable gateway rechecks the full native binding. */
-export function parseCompanyComputerCaptureGateway(options: {
-	baseUrl: string;
-	token: string;
-	fetch?: typeof fetch;
-}): Readonly<typeof options> {
-	const gateway = { ...options };
-	const url = new URL(gateway.baseUrl);
-	if (
-		(url.protocol !== "https:" && !(url.protocol === "http:" && url.hostname === "127.0.0.1")) ||
-		url.username ||
-		url.password ||
-		url.search ||
-		url.hash ||
-		url.pathname !== "/" ||
-		!/^[A-Za-z0-9_-]{43}$/.test(gateway.token) ||
-		(gateway.fetch !== undefined && typeof gateway.fetch !== "function")
-	)
-		throw new Error("INVALID_OFFICE_CAPTURE_GATEWAY");
-	return Object.freeze(gateway);
-}
-
-export function createHttpCompanyComputerScreenshots(options: {
-	run: CloudNativeToolRun;
-	scope: CompanyComputerScope;
-	registry: Pick<HttpCloudCompanyComputerRegistry, "call">;
-	objectGateway: { baseUrl: string; token: string; fetch?: typeof fetch };
-}): CloudCompanyComputerScreenshots {
-	const gateway = parseCompanyComputerCaptureGateway(options.objectGateway);
-	const companyId = options.scope.companyId;
-	const binding = options.run.binding;
-	return new CloudCompanyComputerScreenshots({
-		...options,
-		objects: (signal) =>
-			new HttpNativeCompanyObjectTransport({
-				...gateway,
-				companyId,
-				binding,
-				signal,
-			}),
-	});
 }
