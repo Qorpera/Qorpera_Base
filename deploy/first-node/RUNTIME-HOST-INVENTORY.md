@@ -49,7 +49,7 @@ through this query. Use `qorpera_runtime_node_capacity` for admission and
 `qorpera_runtime_node_health` for separately timed health measurements. Overflow
 remains unavailable.
 
-`node scripts/test-runtime-node-inventory.mjs` exercises the production inventory
+`node scripts/test-runtime-node-inventory.mjs` (deleted in the legacy sweep) exercises the production inventory
 reader and publisher through Unix HTTP and disposable PostgreSQL. The added
 host view cases cover infrastructure, managed allocation identity, unmanaged
 stopped instances, physical substitution, failed scans, historical pagination,

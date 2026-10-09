@@ -20,7 +20,6 @@ import { testOfficeLifecycleRevocation } from "./test-runtime-office-lifecycle-c
 import { testOfficeResetChain } from "./test-runtime-office-delete-disposition-cases.mjs";
 import { testOfficeStopAcknowledgement } from "./test-runtime-office-stop-cases.mjs";
 import { renewOfficeWakeBinding } from "./test-runtime-office-wake-cases.mjs";
-import { testRuntimeComputerLifecycle } from "./test-runtime-computer-lifecycle-cases.mjs";
 import { prepareScreenObservationRecovery } from "./test-runtime-screen-observation-recovery-cases.mjs";
 import { testRuntimeScreenLifecycle } from "./test-runtime-screen-lifecycle-cases.mjs";
 

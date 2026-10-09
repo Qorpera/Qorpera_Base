@@ -6,7 +6,7 @@
 -- old consent. Test 924's fixture gives the owner's login a consented version 2.
 
 -- Row locks show only across connections, so 924's fixture is committed here and removed again at the end (the
--- harness of 602 and 746): the test refuses to run beside other connections to this database, whose rows the
+-- harness of 746): the test refuses to run beside other connections to this database, whose rows the
 -- cleanup could not tell from its own.
 reset role;
 select set_config('qorpera_test.r969_connection', current_setting('qorpera_test.base_connection')::jsonb ->> 'connection_id', false);
@@ -74,7 +74,7 @@ begin
 end
 $$;
 
--- At the end: remove what the test committed, as 602 and 746 do.
+-- At the end: remove what the test committed, as 746 does.
 create function pg_temp.r969_cleanup() returns void language plpgsql as $$
 declare v_table text; v_columns text; v_expected bigint; v_count bigint; v_wrong text[] := '{}'; v_first xid := current_setting('qorpera_test.r969_first_xid')::xid;
 begin

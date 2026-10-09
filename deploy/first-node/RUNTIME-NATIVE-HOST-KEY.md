@@ -237,6 +237,9 @@ empty 503 it gives every refused request. The node-level tokens stay as transpor
   - the object gateway proves it on `/v1/folder-objects`;
   - the native host's broker client, model login client and folder bytes client send the header (its native-objects
     clients did too, until the legacy sweep's step C removed them).
+- **`/v1/event-hooks`** (E3b-2, a signed hook's create; `RUNTIME-COMPANY-FOLDER-EVENTS.md` §5.7): the secret broker
+  proves the lease there as on `/v1/company-accounts`, before the database is asked anything, and the broker client
+  sends the header.
 - **The native object route:** gone instead of proven (legacy removal, step C; migration `20260930190000`).
   `/v1/native-company-objects`, its native-objects clients and their SQL served only snapshot-v1 companies: a
   folder-v2 capture is stored nowhere, and the computer's file imports and exports are off until the folder carries

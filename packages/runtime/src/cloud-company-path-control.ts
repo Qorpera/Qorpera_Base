@@ -154,6 +154,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_native_mail_attachment",
 			// Company accounts (A1-4): the company's accounts and mailboxes, and the id of the agent's todo by key.
 			"qorpera_find_company_accounts",
+			// Summary trees (M1b-3): zoom, and the platform read of the tree blocks a zoom result showed.
+			"qorpera_memory_zoom",
+			"qorpera_memory_release",
 		];
 		if (!permitted.includes(method)) throw new Error("Unknown Company File control operation");
 		const body = JSON.stringify(argumentsValue);
@@ -201,7 +204,10 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 											// A proposal's apply is its commit; a page of proposals carries up to 200 units with their
 											// structured files' whole parses, which SQL does not cut.
 											method === "qorpera_folder_apply_proposal" ||
-											method === "qorpera_folder_agent_proposals")
+											method === "qorpera_folder_agent_proposals" ||
+											// A zoom with no line reads the conversation's whole tree, every line up to
+											// 2,048 bytes as stored.
+											method === "qorpera_memory_zoom")
 									? 16 * 1024 * 1024
 									: // One routine whole (32 KiB of instructions, each character escaped at worst), or a
 										// page of 32 with theirs cut; a page of 16 workers with their outputs' paths.

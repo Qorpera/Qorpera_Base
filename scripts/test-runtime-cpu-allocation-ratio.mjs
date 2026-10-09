@@ -52,11 +52,6 @@ try {
 		process.stdout.write(`Running ${test}\n`);
 		sql(expandTestFixture(test, (name) => read(`supabase/tests/${name}`)));
 	}
-	const wake=read("supabase/tests/300_runtime_wake_bus.test.sql").split("-- END WAKE FIXTURE")[0];
-	const office=read("supabase/tests/fixtures/runtime-office-registry-cases.sql").split("-- Synthetic guest readiness only.")[0];
-	const offers=read("supabase/tests/fixtures/runtime-office-fleet-cases.sql").split("savepoint fleet_staged;")[0];
-	sql(`${wake}\n${office}\n${offers}\n${read("supabase/tests/fixtures/runtime-cpu-ratio-office-cases.sql")}\nrollback;`);
-	process.stdout.write("PASS: office fleet CPU ratio placement\n");
 	const fixture = expandTestFixture("404_runtime_cpu_allocation_ratio.test.sql", (name) => read(`supabase/tests/${name}`));
 	const setup = fixture.split("-- BEGIN CPU RATIO RACE SETUP")[0];
 	assert(setup !== fixture);

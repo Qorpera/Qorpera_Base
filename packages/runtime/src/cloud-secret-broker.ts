@@ -18,6 +18,14 @@ import {
 	CompanyAccountVault,
 } from "./cloud-company-account-vault.ts";
 import type { ConnectorTokenRevocationAuthority } from "./cloud-connector-token-revocation.ts";
+import {
+	type EventHookAnswer,
+	type EventHookAuthority,
+	type EventHookCreate,
+	type EventHookOpening,
+	type EventHookRequest,
+	EventHookVault,
+} from "./cloud-event-hook-vault.ts";
 import type { EventVerificationAuthority } from "./cloud-event-verification.ts";
 import type { ModelLoginAuthority, ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
 import type { ModelLoginSignInAuthority } from "./cloud-model-login-vault-sign-in.ts";
@@ -160,6 +168,9 @@ export interface CloudSecretBrokerAuthority {
 	openCompanyAccount?: CompanyAccountAuthority["openCompanyAccount"];
 	setCompanyAccountState?: CompanyAccountAuthority["setCompanyAccountState"];
 	readCompanyAccountFill?: CompanyAccountAuthority["readCompanyAccountFill"];
+	/** Signed hooks' secrets (E3b-2); a broker whose database cannot serve them leaves these out. */
+	describeSignedHook?: EventHookAuthority["describeSignedHook"];
+	openSignedHook?: EventHookAuthority["openSignedHook"];
 }
 
 export interface CloudSecretPostgresClient {
@@ -523,6 +534,7 @@ export class CloudSecretBroker {
 	readonly #keys: CloudSecretKeyring;
 	readonly #adapters = new Map<string, CloudSecretConnectorAdapter>();
 	readonly #companyAccounts: CompanyAccountVault | undefined;
+	readonly #eventHooks: EventHookVault | undefined;
 
 	constructor(options: {
 		authority: CloudSecretBrokerAuthority;
@@ -541,6 +553,17 @@ export class CloudSecretBroker {
 							openCompanyAccount: openCompanyAccount.bind(options.authority),
 							setCompanyAccountState: setCompanyAccountState.bind(options.authority),
 							readCompanyAccountFill: readCompanyAccountFill.bind(options.authority),
+						},
+						keys: options.keyring,
+					})
+				: undefined;
+		const { describeSignedHook, openSignedHook } = options.authority;
+		this.#eventHooks =
+			describeSignedHook && openSignedHook
+				? new EventHookVault({
+						authority: {
+							describeSignedHook: describeSignedHook.bind(options.authority),
+							openSignedHook: openSignedHook.bind(options.authority),
 						},
 						keys: options.keyring,
 					})
@@ -650,6 +673,13 @@ export class CloudSecretBroker {
 	): Promise<CompanyAccountFillAnswer | CompanyAccountRefusal> {
 		if (!this.#companyAccounts) return Promise.reject(new Error("Company accounts unavailable"));
 		return this.#companyAccounts.fill(request, signal);
+	}
+
+	/** One signed manage_hook create of an agent's run (E3b-2): the hook's receipt or the database's refusal; the
+	 * secret never leaves. */
+	eventHook(request: EventHookRequest, signal: AbortSignal): Promise<EventHookAnswer> {
+		if (!this.#eventHooks) return Promise.reject(new Error("Event hooks unavailable"));
+		return this.#eventHooks.handle(request, signal);
 	}
 
 	async execute(request: CloudSecretOperationRequest, signal: AbortSignal): Promise<CloudToolContent> {
@@ -1002,7 +1032,8 @@ export class PostgresCloudSecretBrokerAuthority
 		ModelLoginUsageAuthority,
 		ConnectorTokenRevocationAuthority,
 		EventVerificationAuthority,
-		CompanyAccountAuthority
+		CompanyAccountAuthority,
+		EventHookAuthority
 {
 	readonly #database: CloudSecretPostgresClient;
 	readonly #brokerAuthorityId: string;
@@ -1107,6 +1138,45 @@ export class PostgresCloudSecretBrokerAuthority
 		} finally {
 			// A query still queued for a connection after the deadline is sent with zeros; the database's
 			// digest check refuses it (42501) before anything is written.
+			envelope.fill(0);
+		}
+	}
+
+	describeSignedHook(binding: CloudNativeToolBinding, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_folder_describe_signed_hook($1::uuid,$2::text,$3::jsonb) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, JSON.stringify(binding)],
+			signal,
+		);
+	}
+
+	async openSignedHook(
+		binding: CloudNativeToolBinding,
+		request: EventHookCreate,
+		opening: EventHookOpening,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		const envelope = Buffer.from(opening.encryptedEnvelope);
+		try {
+			return await this.#rpc(
+				"select public.qorpera_folder_open_signed_hook($1::uuid,$2::text,$3::jsonb,$4::jsonb,$5::uuid,$6::uuid,$7::uuid,$8::text,$9::bytea,$10::text) as result",
+				[
+					this.#brokerAuthorityId,
+					this.#brokerCapabilitySha256,
+					JSON.stringify(binding),
+					JSON.stringify(request),
+					opening.secretId,
+					opening.companyId,
+					opening.environmentId,
+					opening.keyId,
+					envelope,
+					opening.envelopeSha256,
+				],
+				signal,
+			);
+		} finally {
+			// A query still queued for a connection after the deadline is sent with zeros; the database's
+			// envelope check refuses it (42501) before anything is written.
 			envelope.fill(0);
 		}
 	}

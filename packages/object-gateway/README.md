@@ -30,7 +30,7 @@ tokens, and verified NAS backup and restore. The verifier token grants
 integrity-checked reads to the trusted Company File verifier, but cannot upload
 or delete objects. Do not run this service on an execution worker.
 
-Completed shared exports use `GET /v1/member-file-exports/<environment>/<asset>/<sha256>` with member bearer authentication. SQL requires current membership, a completed shared export receipt and available content. The gateway verifies bounded bytes and hash, then repeats authority before replying with `x-qorpera-access-mode: live-export-authority`. This route accepts no raw object hashes or local paths and performs no mutation. The member discovery API is `qorpera_list_member_file_exports`; its UUID cursor can advance over an empty page. `scripts/test-member-file-exports.mjs` verifies actual SQL, Linux export, storage, member download through this gateway and revocation during a read; `QORPERA_WEB_EXPORT_TEST_BROWSER` adds the member web app's browser download. Hosted proxy/NAS acceptance remains separate.
+Completed shared exports use `GET /v1/member-file-exports/<environment>/<asset>/<sha256>` with member bearer authentication. SQL requires current membership, a completed shared export receipt and available content. The gateway verifies bounded bytes and hash, then repeats authority before replying with `x-qorpera-access-mode: live-export-authority`. This route accepts no raw object hashes or local paths and performs no mutation. The member discovery API is `qorpera_list_member_file_exports`; its UUID cursor can advance over an empty page. `scripts/test-member-file-exports.mjs` (deleted in the legacy sweep) verifies actual SQL, Linux export, storage, member download through this gateway and revocation during a read; `QORPERA_WEB_EXPORT_TEST_BROWSER` adds the member web app's browser download. Hosted proxy/NAS acceptance remains separate.
 
 Native path activity uses `POST /v1/member-company-presence/<company>/<environment>` with a member bearer and JSON `{paths,candidates,truncated}`. The existing `QORPERA_MEMBER_COMPANY_FILES=1` configuration enables it through the member authority; embedded hosts may supply `memberPresence` separately. Each request checks member path scope before and after independent service-only native subject transactions, verifies Ed25519 signatures and intersects both actors' current path routes. It returns a closed display view plus verified client/sequence confirmations. It never returns native bindings, signing keys or routing tokens, stores no activity and admits no work. The operation is bounded to 2.5 seconds, 1 MiB, eight paths, 32 statements and four concurrent subject lookups. A stalled inbound body is disconnected. This optional display cannot authorize a file mutation.
 
@@ -50,13 +50,6 @@ browser access. Desktop requests without an Origin header retain their existing
 transport. Configure the same exact public web origin at the deployment proxy,
 which must forward OPTIONS and preserve the gateway's CORS and Vary headers;
 hosted proxy/TLS acceptance is a separate deployment gate.
-
-`scripts/test-member-file-cors-browser.mjs` verifies the shared member reader in
-Chromium against the actual gateway and disk store on a separate local origin.
-It exercises native preflights, exposed headers, denied origins/private routes,
-corrupt bytes and access revoked during storage I/O. Authority and control RPC
-responses remain fixtures. Set `QORPERA_FILE_TEST_BROWSER` to an installed
-Chromium executable; no deployment or external credentials are used.
 
 Member binary uploads use `PUT /v1/member-company-file/<environment>/uploads`
 with a bearer token, `application/octet-stream`, exact content length and the
