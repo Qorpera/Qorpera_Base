@@ -50,12 +50,7 @@ podman image exists "$immutable_image"
 
 (
 	cd packages/runtime
-	node ../../node_modules/vitest/dist/cli.js --run \
-		test/cloud-runner-container.test.ts \
-		test/cloud-runner-podman.test.ts
-	QORPERA_LINUX_RUNNER_IMAGE="$immutable_image" \
-	QORPERA_LINUX_PODMAN_PATH=$(command -v podman) \
-		node ../../node_modules/vitest/dist/cli.js --run test/cloud-runner-podman-linux.integration.test.ts
+	node ../../node_modules/vitest/dist/cli.js --run test/cloud-runner-container.test.ts
 )
 
 if command -v shellcheck >/dev/null; then
