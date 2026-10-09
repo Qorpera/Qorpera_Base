@@ -13,6 +13,14 @@
 //   it in the tool list.
 
 import { createHash } from "node:crypto";
+import {
+	isUuid,
+	parseClosedRecord,
+	parseInteger,
+	parseRecord,
+	parseSha256Hex,
+	WireValueError,
+} from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "../cloud-company-path-gateway.ts";
 import {
 	type CloudNativeToolBinding,
@@ -51,8 +59,6 @@ const FENCE_RESERVE_BYTES = 3072;
 const REF_CHARACTERS = 300;
 const LINE = /^(0|[1-9][0-9]{0,15})\+[1-9][0-9]{0,15}$/;
 const ZOOM_KEYS = new Set(["line", "conversation", "from"]);
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const SHA256 = /^[0-9a-f]{64}$/;
 /** An event's time as the host call writes it, in UTC. */
 const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -101,16 +107,9 @@ interface Row {
 	readonly block: MemoryTreeBlock | null;
 }
 
-function invalid(what: string): Error {
-	return new Error(`Invalid memory zoom answer: ${what}`);
-}
-
-/** `value` as an object with exactly `keys`. */
-function record(value: unknown, keys: readonly string[], what: string): Record<string, unknown> {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) throw invalid(what);
-	const own = Object.keys(value);
-	if (own.length !== keys.length || own.some((key) => !keys.includes(key))) throw invalid(what);
-	return value as Record<string, unknown>;
+/** A part of the answer that is not as the host call writes it; `zoomed`'s caller names the answer invalid. */
+function invalid(what: string): WireValueError {
+	return new WireValueError(what);
 }
 
 function list(value: unknown, what: string): unknown[] {
@@ -119,8 +118,7 @@ function list(value: unknown, what: string): unknown[] {
 }
 
 function whole(value: unknown, what: string): number {
-	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw invalid(what);
-	return value;
+	return parseInteger(value, what, 0, Number.MAX_SAFE_INTEGER);
 }
 
 function nonEmpty(value: unknown, what: string): string {
@@ -128,8 +126,9 @@ function nonEmpty(value: unknown, what: string): string {
 	return value;
 }
 
-function uuid(value: unknown, what: string): string {
-	if (typeof value !== "string" || !UUID.test(value)) throw invalid(what);
+/** A uuid as the database prints it (`isUuid`). */
+function id(value: unknown, what: string): string {
+	if (!isUuid(value)) throw invalid(what);
 	return value;
 }
 
@@ -139,12 +138,12 @@ function instant(value: unknown, what: string): string {
 }
 
 function block(value: unknown, what: string): MemoryTreeBlock {
-	const read = record(value, ["path", "version"], what);
-	return { path: nonEmpty(read.path, `${what}'s path`), version: uuid(read.version, `${what}'s version`) };
+	const read = parseClosedRecord(value, what, ["path", "version"]);
+	return { path: nonEmpty(read.path, `${what}'s path`), version: id(read.version, `${what}'s version`) };
 }
 
 function conversation(value: unknown, ref: string): Conversation {
-	const read = record(value, ["ref", "sessionId", "kind", "name"], "its conversation");
+	const read = parseClosedRecord(value, "its conversation", ["ref", "sessionId", "kind", "name"]);
 	if (read.ref !== ref) throw invalid("its conversation's ref");
 	const kind = read.kind;
 	if (kind !== "thread" && kind !== "group" && kind !== "conversation") throw invalid("its conversation's kind");
@@ -152,7 +151,7 @@ function conversation(value: unknown, ref: string): Conversation {
 	if (name !== null && typeof name !== "string") throw invalid("its conversation's name");
 	return {
 		ref,
-		sessionId: uuid(read.sessionId, "its conversation's session"),
+		sessionId: id(read.sessionId, "its conversation's session"),
 		kind,
 		name: typeof name === "string" && name.trim() !== "" ? name : null,
 	};
@@ -160,19 +159,23 @@ function conversation(value: unknown, ref: string): Conversation {
 
 /** A tree as qorpera_memory_tree_read answers, for the conversation's session. */
 function tree(value: unknown, sessionId: string): Tree {
-	const read = record(
-		value,
-		["sessionId", "generation", "messages", "root", "nodeBytes", "blocks", "lines"],
-		"its tree",
-	);
-	if (uuid(read.sessionId, "its tree's session") !== sessionId) throw invalid("its tree's session");
+	const read = parseClosedRecord(value, "its tree", [
+		"sessionId",
+		"generation",
+		"messages",
+		"root",
+		"nodeBytes",
+		"blocks",
+		"lines",
+	]);
+	if (id(read.sessionId, "its tree's session") !== sessionId) throw invalid("its tree's session");
 	whole(read.generation, "its tree's generation");
 	if (read.root !== null) nonEmpty(read.root, "its tree's root");
 	if (read.nodeBytes !== null) whole(read.nodeBytes, "its tree's node bytes");
 	const blocks = list(read.blocks, "its tree's blocks").map((item) => block(item, "a tree's block"));
 	const lines = new Map<string, { text: string; block: MemoryTreeBlock }>();
 	for (const item of list(read.lines, "its tree's lines")) {
-		const line = record(item, ["l", "k", "text", "block"], "a tree's line");
+		const line = parseClosedRecord(item, "a tree's line", ["l", "k", "text", "block"]);
 		const l = whole(line.l, "a line's level");
 		if (l > 59) throw invalid("a line's level");
 		const address = memoryNodeAddress(l, whole(line.k, "a line's k"));
@@ -212,14 +215,15 @@ function days(from: string, to: string): string {
  * An erased event keeps its speaker and time and shows `(erased)`.
  */
 function eventRows(value: unknown, index: number): Row[] {
-	const event = record(value, EVENT_KEYS, "its event");
+	const event = parseClosedRecord(value, "its event", EVENT_KEYS);
 	if (whole(event.index, "its event's index") !== index) throw invalid("its event's index");
 	if (whole(event.sequence, "its event's sequence") < 1) throw invalid("its event's sequence");
-	uuid(event.eventId, "its event's id");
-	if (typeof event.eventHash !== "string" || !SHA256.test(event.eventHash)) throw invalid("its event's hash");
+	// Not `id`: a kickoff event's id is an md5 cast to uuid, of no RFC version.
+	nonEmpty(event.eventId, "its event's id");
+	parseSha256Hex(event.eventHash, "its event's hash");
 	nonEmpty(event.type, "its event's type");
 	if (typeof event.erased !== "boolean") throw invalid("its event's erasure");
-	if (event.runId !== null) uuid(event.runId, "its event's run");
+	if (event.runId !== null) id(event.runId, "its event's run");
 	if (typeof event.speakerKind !== "string" || !SPEAKERS.has(event.speakerKind)) throw invalid("its event's speaker");
 	if (event.role !== null && typeof event.role !== "string") throw invalid("its event's role");
 	const text = event.text;
@@ -236,15 +240,20 @@ function eventRows(value: unknown, index: number): Row[] {
 	}
 	const attachments = (event.attachments === null ? [] : list(event.attachments, "its event's attachments")).map(
 		(item) => {
-			const attachment = record(item, ["mediaType", "bytes"], "an attachment");
+			const attachment = parseClosedRecord(item, "an attachment", ["mediaType", "bytes"]);
 			if (attachment.mediaType !== null && typeof attachment.mediaType !== "string") throw invalid("an attachment");
 			if (attachment.bytes !== null) whole(attachment.bytes, "an attachment's size");
 			return `${attachment.mediaType || "file"}${attachment.bytes === null ? "" : ` (${attachment.bytes} bytes)`}`;
 		},
 	);
 	const quotes = (event.quotes === null ? [] : list(event.quotes, "its event's quotes")).map((item, position) => {
-		const quote = record(item, ["schema", "trust", "provenance", "text"], "a quote");
-		const provenance = record(quote.provenance, ["inputId", "quote", "source", "ref"], "a quote's provenance");
+		const quote = parseClosedRecord(item, "a quote", ["schema", "trust", "provenance", "text"]);
+		const provenance = parseClosedRecord(quote.provenance, "a quote's provenance", [
+			"inputId",
+			"quote",
+			"source",
+			"ref",
+		]);
 		if (
 			quote.schema !== "qorpera.member-quote/v1" ||
 			quote.trust !== "untrusted_data" ||
@@ -258,7 +267,7 @@ function eventRows(value: unknown, index: number): Row[] {
 			schema: quote.schema,
 			trust: quote.trust,
 			provenance: {
-				inputId: uuid(provenance.inputId, "a quote's input"),
+				inputId: id(provenance.inputId, "a quote's input"),
 				quote: provenance.quote,
 				source: provenance.source,
 				ref: provenance.ref,
@@ -283,7 +292,7 @@ function childRows(value: unknown, start: number, size: number): Row[] {
 	if (children.length !== 2) throw invalid("its lines");
 	const half = size / 2;
 	return children.map((item, position) => {
-		const child = record(item, ["line", "from", "to", "text", "block"], "a line");
+		const child = parseClosedRecord(item, "a line", ["line", "from", "to", "text", "block"]);
 		const address = `${start + position * half}+${half}`;
 		if (child.line !== address) throw invalid("a line's address");
 		if ((child.from === null) !== (child.to === null)) throw invalid("a line's dates");
@@ -321,16 +330,16 @@ function zoomed(
 	line: string | null,
 	from: number,
 ): { heading: string; rows: Row[] | null } {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) throw invalid("the answer");
-	const answer = value as Record<string, unknown>;
+	const answer = parseRecord(value, "the answer");
 	if (answer.missing === "conversation") {
-		const read = record(value, ["schema", "missing", "conversation"], "the answer");
+		const read = parseClosedRecord(value, "the answer", ["schema", "missing", "conversation"]);
 		if (read.schema !== MEMORY_ZOOM_SCHEMA) throw invalid("its schema");
-		if (record(read.conversation, ["ref"], "its conversation").ref !== ref) throw invalid("its conversation's ref");
+		const named = parseClosedRecord(read.conversation, "its conversation", ["ref"]);
+		if (named.ref !== ref) throw invalid("its conversation's ref");
 		return { heading: `No conversation ${ref}.`, rows: null };
 	}
 	if (answer.missing === "line") {
-		const read = record(value, ["schema", "missing", "conversation", "line", "messages"], "the answer");
+		const read = parseClosedRecord(value, "the answer", ["schema", "missing", "conversation", "line", "messages"]);
 		if (read.schema !== MEMORY_ZOOM_SCHEMA) throw invalid("its schema");
 		if (line === null || read.line !== line) throw invalid("its line");
 		const count = whole(read.messages, "its messages");
@@ -340,7 +349,7 @@ function zoomed(
 		};
 	}
 	const kind = ["tree", "event", "lines"].find((key) => key in answer) ?? "tree";
-	const read = record(value, ["schema", "conversation", "line", "messages", "from", kind], "the answer");
+	const read = parseClosedRecord(value, "the answer", ["schema", "conversation", "line", "messages", "from", kind]);
 	if (read.schema !== MEMORY_ZOOM_SCHEMA) throw invalid("its schema");
 	const source = conversation(read.conversation, ref);
 	if (read.line !== line) throw invalid("its line");
@@ -503,17 +512,24 @@ export function memoryZoomTool(
 				context.signal,
 			);
 			const from = args.from ?? 0;
-			const { heading: top, rows } = zoomed(answer, args.conversation ?? ".", args.line ?? null, from);
+			let shown: { heading: string; rows: Row[] | null };
+			try {
+				shown = zoomed(answer, args.conversation ?? ".", args.line ?? null, from);
+			} catch (error) {
+				if (!(error instanceof WireValueError)) throw error;
+				throw new Error(`Invalid memory zoom answer: ${error.message}`, { cause: error });
+			}
+			const { heading: top, rows } = shown;
 			const { text, blocks } = rows === null ? { text: top, blocks: [] } : page(top, rows, from);
 			if (blocks.length > 0) {
 				// The lines shown are released before the model sees them, as platform reads (§9).
 				const outputSha256 = createHash("sha256").update(text, "utf8").digest("hex");
-				const id = releaseId(context.runId, context.callId, outputSha256, blocks);
+				const release = releaseId(context.runId, context.callId, outputSha256, blocks);
 				const released = await cloudToolRequest(
 					(requestSignal) =>
 						control.call(
 							"qorpera_memory_release",
-							{ p_binding: admitted, p_request: { releaseId: id, outputSha256, blocks } },
+							{ p_binding: admitted, p_request: { releaseId: release, outputSha256, blocks } },
 							requestSignal,
 						),
 					context.signal,
@@ -525,12 +541,12 @@ export function memoryZoomTool(
 					Array.isArray(r) ||
 					Object.keys(r).length !== 4 ||
 					r.schema !== MEMORY_RELEASE_SCHEMA ||
-					r.releaseId !== id ||
+					r.releaseId !== release ||
 					r.reads !== blocks.length ||
 					typeof r.replay !== "boolean"
 				)
 					throw new Error("Memory release differs");
-				recordCloudRunLogRelease(id, blocks);
+				recordCloudRunLogRelease(release, blocks);
 			}
 			return { kind: "text", value: text };
 		},

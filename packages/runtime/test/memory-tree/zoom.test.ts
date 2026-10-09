@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { UUID_PATTERN } from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
@@ -21,8 +22,6 @@ const INPUT = "97200000-0000-4000-8000-000000000004";
 const ROOT = "agents/bo/memory/thread";
 /** Bo's thread opened as `.`, the conversation the run is in. */
 const HERE = 'conversation . "Bo (thread)"';
-/** A release id: a uuid in the v4 shape. */
-const RELEASE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** The end of a piece that leaves text: the code point it stopped at, which is the next `from`, and the total. */
 const NEXT = /\n\[nextOffset (\d+) of (\d+) characters: zoom again with the same arguments and from: \1 to read on\]$/;
 /**
@@ -48,7 +47,7 @@ function version(index: number): string {
 	return `97300000-0000-4000-8000-${String(index).padStart(12, "0")}`;
 }
 
-function sha256(text: string): string {
+function digest(text: string): string {
 	return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
@@ -135,7 +134,7 @@ function accepted(request: Record<string, unknown>) {
 
 /** The release request for a result `text` that shows the lines of `blocks`. */
 function release(text: string, blocks: readonly Block[]) {
-	return { releaseId: expect.stringMatching(RELEASE_ID), outputSha256: sha256(text), blocks };
+	return { releaseId: expect.stringMatching(UUID_PATTERN), outputSha256: digest(text), blocks };
 }
 
 /** A run with the zoom tool, whose host answers zoom with `zoomed`, and a release with `released`. */
@@ -310,7 +309,10 @@ describe("memory zoom tool", () => {
 				speaker: "Ada",
 				runId: RUN,
 				quotes: [QUOTE],
-				attachments: [{ mediaType: "application/pdf", bytes: 123456 }, { mediaType: null, bytes: null }],
+				attachments: [
+					{ mediaType: "application/pdf", bytes: 123456 },
+					{ mediaType: null, bytes: null },
+				],
 				cardType: "email_draft",
 				card: { subject: "Q3 & <numbers>" },
 			}),
