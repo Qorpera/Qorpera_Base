@@ -107,6 +107,9 @@ describe("which calls are reviewed", () => {
 		["apply_proposal", { proposalId: RULE, effect: "destructive" }, "destructive"],
 		["apply_proposal", { proposalId: RULE }, "delegation"],
 		["discard_proposal", { proposalId: RULE }, "internal"],
+		// Interfaces (I8): reading a page or a table.
+		["interface_read", { interface: "pulse", view: null, after: null }, "read"],
+		["table_read", { table: "deals", where: null, after: null, limit: 20 }, "read"],
 		["a_tool_this_table_does_not_know", {}, "external"],
 	] as const)("%s %j is %s", (name, parsed, effect) => {
 		expect(cloudActionEffect(tool(name), parsed as JsonValue)).toBe(effect);
