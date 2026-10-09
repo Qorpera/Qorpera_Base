@@ -16,7 +16,7 @@ function setup(implementation: CloudRunLogProtectionCall = async () => plain) {
 describe("lease-bound run log protection", () => {
 	it("reads current machine/log flags even without paths and binds all trusted identity arguments", async () => {
 		const { call, protection } = setup();
-		expect(await protection.narrow(binding.runId, step, signal)).toBe(false);
+		expect(await protection.narrow(binding.runId, step, signal)).toEqual({ log: false, narrow: false });
 		expect(call).toHaveBeenCalledOnce();
 		expect(call.mock.calls[0]?.slice(0, 2)).toEqual([
 			"qorpera_memory_step_narrow",
@@ -47,10 +47,9 @@ describe("lease-bound run log protection", () => {
 				},
 				signal,
 			),
-		).toBe(true);
+		).toEqual({ log: false, narrow: true });
 		expect(call.mock.calls[0]?.[1].p_paths).toEqual(
 			expect.arrayContaining([
-				"/company/projects/source",
 				"projects/target",
 				"projects/source",
 				"projects/result",
@@ -58,7 +57,7 @@ describe("lease-bound run log protection", () => {
 				"projects/read",
 			]),
 		);
-		expect(call.mock.calls[0]?.[1].p_paths).toHaveLength(6);
+		expect(call.mock.calls[0]?.[1].p_paths).toHaveLength(5);
 		expect(JSON.stringify(call.mock.calls)).not.toContain("clipped");
 	});
 
@@ -68,17 +67,20 @@ describe("lease-bound run log protection", () => {
 			...plain,
 			restricted: (args.p_paths as string[]).filter((path) => path === paths.at(-1)),
 		}));
-		expect(await protection.narrow(binding.runId, { ...step, readPaths: paths }, signal)).toBe(true);
+		expect(await protection.narrow(binding.runId, { ...step, readPaths: paths }, signal)).toEqual({
+			log: false,
+			narrow: true,
+		});
 		expect(call.mock.calls.map((entry) => (entry[1].p_paths as string[]).length)).toEqual([1024, 1024, 2]);
 		expect(call.mock.calls.flatMap((entry) => entry[1].p_paths)).toEqual(paths);
 	});
 
 	it.each([
-		{ ...plain, log: true },
-		{ ...plain, machine: true },
-	])("honors a platform narrow flag: %o", async (answer) => {
+		{ answer: { ...plain, log: true }, expected: { log: true, narrow: false } },
+		{ answer: { ...plain, machine: true }, expected: { log: false, narrow: true } },
+	])("keeps the log flag separate from per-step causes: %o", async ({ answer, expected }) => {
 		const { protection } = setup(async () => answer);
-		expect(await protection.narrow(binding.runId, step, signal)).toBe(true);
+		expect(await protection.narrow(binding.runId, step, signal)).toEqual(expected);
 	});
 
 	it.each([
@@ -132,14 +134,20 @@ describe("lease-bound run log protection", () => {
 		expect(call).toHaveBeenCalledTimes(2);
 	});
 
-	it("counts path limits as SQL characters rather than UTF-16 code units", async () => {
+	it("normalizes the company prefix and ignores empty or oversized UTF-8 needles before RPC limits", async () => {
 		const { call, protection } = setup();
-		const path = "\u{1f600}".repeat(4096);
-		expect(await protection.narrow(binding.runId, { ...step, readPaths: [path] }, signal)).toBe(false);
-		expect(call.mock.calls[0]?.[1].p_paths).toEqual([path]);
-		await expect(protection.narrow(binding.runId, { ...step, readPaths: [`${path}a`] }, signal)).rejects.toThrow(
-			"protection_paths_invalid",
-		);
+		const path = "\u{1f600}".repeat(1024);
+		expect(
+			await protection.narrow(
+				binding.runId,
+				{
+					...step,
+					readPaths: [path, `${path}a`, "/company/", "", "/company/a", "a".repeat(5000), `/company/${path}`],
+				},
+				signal,
+			),
+		).toEqual({ log: false, narrow: false });
+		expect(call.mock.calls[0]?.[1].p_paths).toEqual([path, "a"]);
 		expect(call).toHaveBeenCalledOnce();
 	});
 
@@ -184,9 +192,9 @@ describe("lease-bound run log protection", () => {
 		const { call, protection } = setup();
 		await expect(protection.narrow(randomUUID(), step, signal)).rejects.toThrow("protection_run_mismatch");
 		await expect(protection.hashes(randomUUID(), [], signal)).rejects.toThrow("protection_run_mismatch");
-		await expect(
-			protection.narrow(binding.runId, { ...step, readPaths: ["a".repeat(4097)] }, signal),
-		).rejects.toThrow("protection_paths_invalid");
+		await expect(protection.narrow(binding.runId, { ...step, readPaths: [1 as never] }, signal)).rejects.toThrow(
+			"protection_paths_invalid",
+		);
 		await expect(protection.hashes(binding.runId, ["bad"], signal)).rejects.toThrow("protection_digests_invalid");
 		await expect(protection.hashes(binding.runId, new Array(1), signal)).rejects.toThrow(
 			"protection_digests_invalid",

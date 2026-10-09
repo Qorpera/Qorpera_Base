@@ -28,6 +28,7 @@ import {
 	cloudRunLogPaths,
 	recordCloudRunLogRelease,
 } from "@qorpera/runtime/cloud-run-log";
+import { CloudRunLogRpcProtection } from "@qorpera/runtime/cloud-run-log-protection";
 import { memoryBlockPath, memoryBlockText } from "@qorpera/runtime/memory-tree/tree";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -46,9 +47,25 @@ function keyed(runId: string, digest: string): string {
 }
 
 const protection: CloudRunLogProtection = {
-	narrow: async () => false,
+	narrow: async () => ({ log: false, narrow: false }),
 	hashes: async (runId, digests) => digests.map((digest) => keyed(runId, digest)),
 };
+
+function rpcProtection(runId: string, logNarrow: () => boolean = () => false): CloudRunLogRpcProtection {
+	return new CloudRunLogRpcProtection({
+		environmentId: randomUUID(),
+		jobId: randomUUID(),
+		runId,
+		call: async (method, args) =>
+			method === "qorpera_memory_step_hashes"
+				? (args.p_digests as string[]).map((digest) => keyed(runId, digest))
+				: {
+						log: logNarrow(),
+						machine: false,
+						restricted: (args.p_paths as string[]).filter((path) => path.startsWith("restricted/")),
+					},
+	});
+}
 
 function read(path: string, version = randomUUID()): CloudCompanyFolderRelease {
 	return {
@@ -274,6 +291,58 @@ describe("a run's work log", () => {
 		expect(cloudRunLogPaths(JSON.stringify(value))).toEqual(cloudRunLogPaths(value));
 		expect(cloudRunLogPaths("ordinary/path-text.md")).toEqual([]);
 	});
+	it("walks a large result path array without spreading it into function arguments", () => {
+		expect(cloudRunLogPaths({ paths: Array(150_000).fill("restricted/a.md") })).toEqual(["restricted/a.md"]);
+	});
+	it.each(["path", "from", "to", "paths"])("classifies scalar and nested-array needles under %s", async (key) => {
+		for (const value of ["restricted/a.md", ["restricted/a.md"], [[null, "restricted/a.md"]]]) {
+			const args = { [key]: value };
+			expect(cloudRunLogPaths(args)).toEqual(["restricted/a.md"]);
+			const runId = randomUUID();
+			const f = runLog({ runId, protection: rpcProtection(runId) });
+			f.log.finish(step(f.log, "company_read", args), envelope("INVALID_ARGUMENTS"), []);
+			await f.log.flush(f.signal);
+			expect(f.folder.all()[0]).toMatchObject({ narrow: true, finished: true });
+			expect(JSON.stringify(f.folder.commits)).not.toContain("restricted/a.md");
+		}
+	});
+
+	it("keeps public earlier fills when a later pending narrow line raises SQL's log flag", async () => {
+		const runId = randomUUID();
+		let folder!: Folder;
+		const f = runLog({
+			runId,
+			protection: rpcProtection(runId, () => folder.all().some((line) => line.narrow === true)),
+		});
+		folder = f.folder;
+		const first = step(f.log, "company_write");
+		await f.log.precommit(first, f.signal);
+		f.log.finish(step(f.log, "company_read"), envelope("public earlier read"), []);
+		f.log.finish(step(f.log, "company_read", { path: "restricted/a.md" }), envelope("private read"), []);
+		const last = step(f.log, "company_write");
+		await f.log.precommit(last, f.signal);
+		expect(folder.all().map((line) => line.narrow === true)).toEqual([false, false, true, true]);
+		f.log.finish(first, envelope("public earlier receipt"), []);
+		f.log.finish(last, envelope("last receipt"), []);
+		await f.log.flush(f.signal);
+		expect(folder.all().map((line) => line.narrow === true)).toEqual([false, false, true, true]);
+		expect(JSON.stringify(folder.all()[0])).toContain("public earlier receipt");
+		expect(JSON.stringify(folder.all()[1])).toContain("public earlier read");
+		expect(f.log.steps()[2]).toMatchObject({ args: JSON.stringify({ path: "restricted/a.md" }), narrow: true });
+	});
+
+	it("requires a trusted narrow start for a flagged log and honors inherited whole-log narrow", async () => {
+		const runId = randomUUID();
+		const trusted = rpcProtection(runId, () => true);
+		const unknown = runLog({ runId, protection: trusted });
+		await expect(unknown.log.precommit(step(unknown.log, "company_write"), unknown.signal)).rejects.toMatchObject({
+			reason: "protection_narrow_start_unknown",
+		});
+		expect(unknown.folder.commits).toEqual([]);
+		const inherited = runLog({ runId, protection: trusted, narrow: true });
+		await inherited.log.precommit(step(inherited.log, "company_write"), inherited.signal);
+		expect(inherited.folder.all()[0]).toMatchObject({ narrow: true, finished: false });
+	});
 	it("requires a trusted protection port even when the folder is available", () => {
 		const folder = new Folder(randomUUID());
 		expect(
@@ -333,10 +402,10 @@ describe("a run's work log", () => {
 
 	it("classifies complete arguments and every release before fitting a public copy", async () => {
 		const releaseId = randomUUID();
-		const narrow = vi.fn<CloudRunLogProtection["narrow"]>(
-			async (_run, input) =>
-				input.argumentsText.includes("restricted/PRIVATE_PATH.md") || input.releases.includes(releaseId),
-		);
+		const narrow = vi.fn<CloudRunLogProtection["narrow"]>(async (_run, input) => ({
+			log: false,
+			narrow: input.argumentsText.includes("restricted/PRIVATE_PATH.md") || input.releases.includes(releaseId),
+		}));
 		const args = { text: "x".repeat(20_000), path: "restricted/PRIVATE_PATH.md" };
 		const first = runLog({ protection: { ...protection, narrow } });
 		first.log.finish(step(first.log, "company_write", args), envelope("Written"), []);
@@ -363,8 +432,10 @@ describe("a run's work log", () => {
 	});
 
 	it("keys hashes per run and keeps the same arguments hash across pending, fill, and retries", async () => {
-		const narrow: CloudRunLogProtection["narrow"] = async (_run, input) =>
-			input.result?.includes("PRIVATE_RESULT") ?? false;
+		const narrow: CloudRunLogProtection["narrow"] = async (_run, input) => ({
+			log: false,
+			narrow: input.result?.includes("PRIVATE_RESULT") ?? false,
+		});
 		const first = runLog({ protection: { ...protection, narrow } });
 		const second = runLog({ narrow: true });
 		const args = { path: "sales/a.md", text: "same words" };
@@ -385,8 +456,10 @@ describe("a run's work log", () => {
 	});
 
 	it("holds later completed results until an earlier parallel effect's result is classified", async () => {
-		const narrow: CloudRunLogProtection["narrow"] = async (_run, input) =>
-			input.result?.includes("PRIVATE_RESULT") ?? false;
+		const narrow: CloudRunLogProtection["narrow"] = async (_run, input) => ({
+			log: false,
+			narrow: input.result?.includes("PRIVATE_RESULT") ?? false,
+		});
 		const { folder, log, signal } = runLog({ protection: { ...protection, narrow } });
 		const first = step(log, "company_write", { path: "sales/a.md" });
 		await log.precommit(first, signal);
@@ -428,7 +501,7 @@ describe("a run's work log", () => {
 				entered();
 				await held;
 			}
-			return input.result?.includes("PRIVATE_RESULT") ?? false;
+			return { log: false, narrow: input.result?.includes("PRIVATE_RESULT") ?? false };
 		};
 		const { folder, log, signal } = runLog({ protection: { ...protection, narrow } });
 		const first = step(log, "company_write");
@@ -457,7 +530,7 @@ describe("a run's work log", () => {
 				...protection,
 				narrow: async (_run, input) => {
 					if (input.j === 1) throw new Error("classification unavailable");
-					return false;
+					return { log: false, narrow: false };
 				},
 			},
 		});
@@ -486,7 +559,7 @@ describe("a run's work log", () => {
 				narrow: async (_run, _step, signal) => {
 					signal.throwIfAborted();
 					signals.push(signal);
-					return true;
+					return { log: false, narrow: true };
 				},
 				hashes: async (runId, digests, signal) => {
 					signal.throwIfAborted();
@@ -1413,6 +1486,7 @@ describe("the tool boundary with a work log", () => {
 			release?: () => Promise<void>;
 			/** The automatic review every call passes before it runs. */
 			review?: CloudNativeActionReview;
+			parseRead?: CloudNativeTool["parseArguments"];
 		} = {},
 	) {
 		const { runId, folder, log, signal, abort } = runLog(options.log);
@@ -1422,7 +1496,7 @@ describe("the tool boundary with a work log", () => {
 			description: "Read a file.",
 			source: "company_file",
 			inputSchema: { type: "object", properties: { path: { type: "string" } }, additionalProperties: false },
-			parseArguments: (value) => value,
+			parseArguments: options.parseRead ?? ((value) => value),
 			execute: vi.fn(async () => {
 				order.push("read");
 				recordCloudRunLogRelease("70700000-0000-4000-8000-0000000000a1", [read("sales/prices.md")]);
@@ -1490,6 +1564,36 @@ describe("the tool boundary with a work log", () => {
 		return { folder, log, signal, abort, boundary, call, readTool, writeTool, workerTool, order };
 	}
 
+	it.each(["arguments", "result"])(
+		"a non-path oversized string in %s does not block later effects",
+		async (source) => {
+			const runId = randomUUID();
+			const f = fixture({
+				log: { runId, protection: rpcProtection(runId) },
+				...(source === "arguments"
+					? {
+							parseRead: () => {
+								throw new Error("invalid path");
+							},
+						}
+					: {}),
+			});
+			const long = "x".repeat(5000);
+			if (source === "result")
+				vi.mocked(f.readTool.execute).mockResolvedValueOnce({ kind: "json", value: { path: long } });
+			const reading = await f.call("long_path", "company_read", {
+				path: source === "arguments" ? long : "sales/a.md",
+			});
+			expect(reading.result.status).toBe(source === "arguments" ? "denied" : "ok");
+			const writing = await f.call("later_effect", "company_write", { path: "sales/b.md", text: "written" });
+			expect(writing.result.status).toBe("ok");
+			expect(f.writeTool.execute).toHaveBeenCalledOnce();
+			await f.log.close(f.signal);
+			expect(f.folder.all().map((line) => line.j)).toEqual([0, 1]);
+			expect(f.folder.all().every((line) => line.result !== null)).toBe(true);
+		},
+	);
+
 	it("logs every call with the envelope it got and every release it made", async () => {
 		const f = fixture();
 		expect(f.boundary.runLog).toBe(f.log);
@@ -1522,9 +1626,10 @@ describe("the tool boundary with a work log", () => {
 	it.each(["json", "text"] as const)(
 		"classifies the complete %s result's paths beyond the envelope cut",
 		async (kind) => {
-			const narrow = vi.fn<CloudRunLogProtection["narrow"]>(async (_run, input) =>
-				input.resultPaths.includes("restricted/PRIVATE_PATH.md"),
-			);
+			const narrow = vi.fn<CloudRunLogProtection["narrow"]>(async (_run, input) => ({
+				log: false,
+				narrow: input.resultPaths.includes("restricted/PRIVATE_PATH.md"),
+			}));
 			const f = fixture({ log: { protection: { ...protection, narrow } } });
 			const value = { a: "PRIVATE_CONTENT".repeat(1500), z: { path: "restricted/PRIVATE_PATH.md" } };
 			vi.mocked(f.readTool.execute).mockResolvedValueOnce(
@@ -1606,7 +1711,10 @@ describe("the tool boundary with a work log", () => {
 				log: {
 					protection: {
 						...protection,
-						narrow: async (_run, input) => input.result?.includes("PRIVATE_RESULT") ?? false,
+						narrow: async (_run, input) => ({
+							log: false,
+							narrow: input.result?.includes("PRIVATE_RESULT") ?? false,
+						}),
 					},
 				},
 			});
@@ -1739,7 +1847,7 @@ describe("the tool boundary with a work log", () => {
 	});
 
 	it("keeps the denial a call got when its answer was held back, never the answer", async () => {
-		const narrow = vi.fn<CloudRunLogProtection["narrow"]>(async () => false);
+		const narrow = vi.fn<CloudRunLogProtection["narrow"]>(async () => ({ log: false, narrow: false }));
 		const f = fixture({
 			log: { protection: { ...protection, narrow } },
 			// The run lost what it read after the call ran, before its answer goes back to the model.

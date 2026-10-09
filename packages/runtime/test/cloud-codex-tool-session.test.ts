@@ -1128,7 +1128,7 @@ it("keeps the agent's own words, never its reasoning, with the next step of its 
 		conversationId: randomUUID(),
 		signal: new AbortController().signal,
 		protection: {
-			narrow: async () => false,
+			narrow: async () => ({ log: false, narrow: false }),
 			hashes: async (run, digests) =>
 				digests.map((digest) =>
 					createHmac("sha256", "codex-session-test-platform-key").update(`${run}:${digest}`).digest("hex"),
