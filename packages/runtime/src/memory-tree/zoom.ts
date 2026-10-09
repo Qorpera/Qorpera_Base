@@ -9,8 +9,8 @@
 // - The summary lines a result shows are released as platform reads of their blocks (qorpera_memory_release, migration
 //   20260930203000) before it is returned, and recorded for the call's step. An event needs no release: the receipt
 //   covers it.
-// - Its description and schema are the same for every run, so the tool list stays a cached prefix (§6.1). M1b-4 puts
-//   it in the tool list.
+// - Its description and schema are the same for every run, so the tool list stays a cached prefix (§6.1). A run that
+//   may have a primary view has it in its tool list (compose.ts, M1b-4a).
 
 import { createHash } from "node:crypto";
 import {
@@ -434,6 +434,44 @@ function releaseId(runId: string, callId: string, outputSha256: string, blocks: 
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${((Number.parseInt(hex[16] as string, 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
+/**
+ * Releases `blocks`, the summary lines a text shows, as platform reads before the model sees them (§9): one
+ * qorpera_memory_release for the run's binding, named by the call `callId` and the text's SHA-256, so a retry replays
+ * it. A logged tool call records the release for its step.
+ */
+export async function memoryRelease(
+	control: CloudCompanyPathControl,
+	binding: CloudNativeToolBinding,
+	shown: { readonly runId: string; readonly callId: string; readonly outputSha256: string },
+	blocks: readonly MemoryTreeBlock[],
+	signal: AbortSignal,
+): Promise<void> {
+	const { runId, callId, outputSha256 } = shown;
+	const release = releaseId(runId, callId, outputSha256, blocks);
+	const released = await cloudToolRequest(
+		(requestSignal) =>
+			control.call(
+				"qorpera_memory_release",
+				{ p_binding: binding, p_request: { releaseId: release, outputSha256, blocks } },
+				requestSignal,
+			),
+		signal,
+	);
+	const r = released as Record<string, unknown> | null;
+	if (
+		!r ||
+		typeof r !== "object" ||
+		Array.isArray(r) ||
+		Object.keys(r).length !== 4 ||
+		r.schema !== MEMORY_RELEASE_SCHEMA ||
+		r.releaseId !== release ||
+		r.reads !== blocks.length ||
+		typeof r.replay !== "boolean"
+	)
+		throw new Error("Memory release differs");
+	recordCloudRunLogRelease(release, blocks);
+}
+
 /** The zoom tool for one run (§8), on its binding. */
 export function memoryZoomTool(
 	binding: CloudNativeToolBinding,
@@ -522,31 +560,9 @@ export function memoryZoomTool(
 			const { heading: top, rows } = shown;
 			const { text, blocks } = rows === null ? { text: top, blocks: [] } : page(top, rows, from);
 			if (blocks.length > 0) {
-				// The lines shown are released before the model sees them, as platform reads (§9).
 				const outputSha256 = createHash("sha256").update(text, "utf8").digest("hex");
-				const release = releaseId(context.runId, context.callId, outputSha256, blocks);
-				const released = await cloudToolRequest(
-					(requestSignal) =>
-						control.call(
-							"qorpera_memory_release",
-							{ p_binding: admitted, p_request: { releaseId: release, outputSha256, blocks } },
-							requestSignal,
-						),
-					context.signal,
-				);
-				const r = released as Record<string, unknown> | null;
-				if (
-					!r ||
-					typeof r !== "object" ||
-					Array.isArray(r) ||
-					Object.keys(r).length !== 4 ||
-					r.schema !== MEMORY_RELEASE_SCHEMA ||
-					r.releaseId !== release ||
-					r.reads !== blocks.length ||
-					typeof r.replay !== "boolean"
-				)
-					throw new Error("Memory release differs");
-				recordCloudRunLogRelease(release, blocks);
+				const { runId, callId } = context;
+				await memoryRelease(control, admitted, { runId, callId, outputSha256 }, blocks, context.signal);
 			}
 			return { kind: "text", value: text };
 		},

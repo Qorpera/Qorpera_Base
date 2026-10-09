@@ -34,11 +34,11 @@ import {
 } from "./cloud-native-host-dispatch.ts";
 import type {
 	CompleteNativeProviderLoginInput,
+	NativeCompanyExecutionRequest,
 	NativeCredentialCapsuleStore,
 	NativeProviderAccountMetadata,
 	NativeProviderAccountRefresh,
 	NativeProviderControlPlane,
-	NativeProviderExecutionRequest,
 	NativeProviderHost,
 	NativeProviderLoginDescription,
 	NativeProviderLoginRequest,
@@ -63,7 +63,7 @@ import {
 } from "./cloud-thread-interactions.ts";
 
 const LOGIN_SCHEMA = "qorpera.native-provider-login/v1";
-const EXECUTION_SCHEMA = "qorpera.native-provider-execution/v1";
+const EXECUTION_SCHEMA = "qorpera.native-company-execution/v1";
 const CANCEL_SCHEMA = "qorpera.native-provider-cancel/v1";
 const EXECUTE_KEEPALIVE_MS = 60_000;
 const RESULT_SCHEMA = "qorpera.native-provider-result/v1";
@@ -148,7 +148,7 @@ const CODEX_TURN_INCOMPLETE = new RegExp(
 	`^Codex did not complete its turn(?: \\((${HARNESS_UNAVAILABLE}) unavailable\\))?$`,
 );
 const EXECUTION_STAGE_FAILED =
-	/^Native provider execution (initial-authority-validation|temporary-workspace|credential-download|credential-opening|prompt-materialization|public-mouth-start|public-mouth-completion|harness-execution|workspace-normalization|completion-authority-validation|credential-sealing|credential-upload|authority-monitor|cleanup|internal-completion) stage failed(?: \((storage-budget|unsupported-entry|invalid-path|symbolic-link|filesystem-(?:not-found|permission|read-only|layout)|resource-(?:capacity|file-descriptors|memory)|process-pipe|cancelled|timeout|unknown)\))?$/;
+	/^Native provider execution (initial-authority-validation|temporary-workspace|credential-download|credential-opening|harness-execution|completion-authority-validation|credential-sealing|credential-upload|authority-monitor|cleanup|internal-completion) stage failed(?: \((storage-budget|unsupported-entry|invalid-path|symbolic-link|filesystem-(?:not-found|permission|read-only|layout)|resource-(?:capacity|file-descriptors|memory)|process-pipe|cancelled|timeout|unknown)\))?$/;
 const HARNESS_OUTPUT_LIMIT = "Provider harness output exceeded its byte limit";
 
 /** The fixed code a failed request carries back to the runner: the coding
@@ -257,25 +257,22 @@ function parseLogin(value: unknown): NativeProviderLoginRequest {
 	};
 }
 
-function parseExecution(value: unknown): NativeProviderExecutionRequest {
+function parseExecution(value: unknown): NativeCompanyExecutionRequest {
 	const input = record(value, "Native execution request");
-	const companyRuntime = input.schema === "qorpera.native-company-execution/v1";
-	if (input.schema !== EXECUTION_SCHEMA && !companyRuntime) throw new Error("Native execution schema is invalid");
+	if (input.schema !== EXECUTION_SCHEMA) throw new Error("Native execution schema is invalid");
 	const authority = record(input.authority, "Native execution authority");
 	const job = record(input.job, "Native execution job");
 	if (
 		authority.authentication_mode !== "native_subscription" ||
-		(!companyRuntime && (job.job_type !== "agent_turn" || job.required_capability !== "agent_turn")) ||
-		(companyRuntime &&
-			(Object.keys(input).some((key) => !["schema", "authority", "job", "native_host"].includes(key)) ||
-				Object.keys(job).some((key) => !["job_id", "attempt_count", "lease_token"].includes(key)))) ||
+		Object.keys(input).some((key) => !["schema", "authority", "job", "native_host"].includes(key)) ||
+		Object.keys(job).some((key) => !["job_id", "attempt_count", "lease_token"].includes(key)) ||
 		!Number.isSafeInteger(job.attempt_count) ||
 		(job.attempt_count as number) < 1
 	) {
 		throw new Error("Native execution request is invalid");
 	}
 	const model = text(authority.model, "Native execution model", 160);
-	const identity = {
+	return {
 		authority: {
 			leaseId: uuid(authority.lease_id, "Native lease id"),
 			runId: uuid(authority.run_id, "Native run id"),
@@ -295,20 +292,9 @@ function parseExecution(value: unknown): NativeProviderExecutionRequest {
 			jobType: "agent_turn" as const,
 			requiredCapability: "agent_turn" as const,
 			attemptCount: job.attempt_count as number,
-			payload: companyRuntime ? null : (job.payload as JsonValue),
+			payload: null,
 		},
-	};
-	if (companyRuntime) return { ...identity, runtime: "company-path-v1" };
-	const paths = record(input.input, "Native execution paths");
-	return {
-		...identity,
-		input: {
-			companyRoot: text(paths.company_root, "Native Company File root", 4096),
-			executionContextPath: text(paths.execution_context_path, "Native execution context path", 4096),
-			queuedInputsPath: text(paths.queued_inputs_path, "Native queued inputs path", 4096),
-			transcriptPath: text(paths.transcript_path, "Native transcript path", 4096),
-		},
-		outputRoot: text(paths.output_root, "Native output root", 4096),
+		runtime: "company-path-v1",
 	};
 }
 
@@ -550,7 +536,7 @@ export class SupabaseNativeProviderControlPlane
 		);
 	}
 
-	async validateExecution(request: NativeProviderExecutionRequest, signal?: AbortSignal): Promise<void> {
+	async validateExecution(request: NativeCompanyExecutionRequest, signal?: AbortSignal): Promise<void> {
 		if (!this.#identityEpoch || this.#identityEpoch.computeIdentityId !== request.authority.computeIdentityId)
 			throw new Error("Native host has no matching local identity generation");
 		const result = record(
@@ -641,7 +627,7 @@ export class SupabaseNativeProviderControlPlane
 	}
 
 	async sendMessage(
-		request: NativeProviderExecutionRequest,
+		request: NativeCompanyExecutionRequest,
 		input: CloudAgentSendInput,
 		signal?: AbortSignal,
 	): Promise<CloudAgentSendReceipt> {
@@ -668,7 +654,7 @@ export class SupabaseNativeProviderControlPlane
 	}
 
 	async appendInteractionRequest(
-		request: NativeProviderExecutionRequest,
+		request: NativeCompanyExecutionRequest,
 		input: CloudInteractionRequestInput,
 		signal?: AbortSignal,
 	): Promise<CloudInteractionRequestReceipt> {

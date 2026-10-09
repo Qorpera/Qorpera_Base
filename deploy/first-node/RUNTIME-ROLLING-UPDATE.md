@@ -380,10 +380,11 @@ node scripts/runtime-roll.mjs packets --ref <release commit> \
   migration only to roll it back. The runner refuses to commit them (its `dryRunOnly` rule).
 - `emergencyOnly` lists the paused way back: `90-pause-now`, `91-reverse`, `92-clear-declarations` and
   `93-resume`.
-  - `90-pause-now` has no quiet gate. It pauses every company that has an owner or admin and is not
-    being deleted: a folder-v2 company through its operator pause, any other under that founder (the
-    pause records that founder). Each company is tried on its own, so a busy lock or a refusal stops only
-    that one. The result names what failed; run the packet again for those.
+  - `90-pause-now` has no quiet gate. It pauses every folder-v2 company that has an owner or admin and
+    is not being deleted, through the folder core's operator pause in the name of one of those founders.
+    A company with no company folder has no pause: it is not paused, and `roll_paused.notPausable` lists
+    it with every other company the packet leaves alone. Each company is tried on its own, so a busy lock
+    or a refusal stops only that one. The result names what failed; run the packet again for those.
   - Each company waits at most 2 s for its lock, so a long list stays inside the statement timeout.
   - `93-resume` resumes the same way.
   - The runner commits these files only when told to (`QORPERA_ROLL_EMERGENCY=<file>`).
@@ -425,11 +426,11 @@ back twice: right after the switch, and after the finish. No company is paused d
   changed: N stays active, A takes no runs, and B serves N. Fix the cause and run step 6 again.
 - **N+1 misbehaves after the switch.** There is no rolling way back once N+1 is active. The node
   agent's rollback after an activation runs under a pause. So:
-  1. Pause every company (`90-pause-now`). Work already running is not waited for.
-  2. Reverse the activation (`91-reverse`). It needs every company paused, checks that exactly N+1 is
-     active, and moves the active pointer back to the existing N row; N's row already exists
-     (`unique (bundle_key, version)`, and the table is immutable). The declarations stay: a node
-     still on N+1 code must not take N runs. After `80-finish` nothing is declared, so it declares
+  1. Pause every company that can be paused (`90-pause-now`). Work already running is not waited for.
+  2. Reverse the activation (`91-reverse`). It needs each of those companies paused, checks that
+     exactly N+1 is active, and moves the active pointer back to the existing N row; N's row already
+     exists (`unique (bundle_key, version)`, and the table is immutable). The declarations stay: a
+     node still on N+1 code must not take N runs. After `80-finish` nothing is declared, so it declares
      both nodes N+1.
   3. Move **every** node that runs N+1 back to N (`agent rollback`, and the fast host rebuilt from N:
      the coordinator's `roll-rollback`, outside this repo, which restores the whole previous image,

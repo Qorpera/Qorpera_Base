@@ -67,7 +67,8 @@ interface Listed {
 	readonly messages: number;
 }
 
-interface Tree {
+/** A conversation's live tree, as qorpera_memory_tree_read reads it with its erase generation and message count. */
+export interface MemoryTreeRead {
 	readonly generation: number;
 	readonly messages: number;
 	/** Each built line by its address, `start+size`, with its block. */
@@ -110,7 +111,8 @@ function listed(value: unknown): Listed {
 	};
 }
 
-function tree(value: unknown): [string, Tree] {
+/** qorpera_memory_tree_read's answer: its session and its tree. A WireValueError says what is wrong. */
+export function memoryTreeRead(value: unknown): [string, MemoryTreeRead] {
 	const read = parseClosedRecord(value, "a tree", [
 		"sessionId",
 		"generation",
@@ -142,7 +144,10 @@ function tree(value: unknown): [string, Tree] {
 }
 
 /** An answer to a call for the trees of `sessions`: the branches, and the trees by session. */
-function answer(value: unknown, sessions: readonly string[]): { branches: Listed[]; trees: Map<string, Tree> } {
+function answer(
+	value: unknown,
+	sessions: readonly string[],
+): { branches: Listed[]; trees: Map<string, MemoryTreeRead> } {
 	try {
 		const read = parseClosedRecord(value, "the answer", ["schema", "branches", "trees"]);
 		if (read.schema !== MEMORY_BRANCHES_SCHEMA) throw new WireValueError("its schema");
@@ -150,9 +155,9 @@ function answer(value: unknown, sessions: readonly string[]): { branches: Listed
 		if (new Set(branches.map((branch) => branch.sessionId)).size !== branches.length) {
 			throw new WireValueError("a branch", "is there twice");
 		}
-		const trees = new Map<string, Tree>();
+		const trees = new Map<string, MemoryTreeRead>();
 		for (const item of list(read.trees, "its trees")) {
-			const [sessionId, found] = tree(item);
+			const [sessionId, found] = memoryTreeRead(item);
 			if (!sessions.includes(sessionId) || trees.has(sessionId)) {
 				throw new WireValueError("a tree", "was not asked for or is there twice");
 			}
@@ -167,7 +172,8 @@ function answer(value: unknown, sessions: readonly string[]): { branches: Listed
 	}
 }
 
-function blockKey(block: MemoryTreeBlock): string {
+/** A block's key for keeping each block once: its path and version. */
+export function memoryBlockKey(block: MemoryTreeBlock): string {
 	return `${block.path}\n${block.version}`;
 }
 
@@ -205,7 +211,7 @@ export async function memoryRunBranches(read: MemoryBranchesRead, budget = BRANC
 			const blocks = new Map<string, MemoryTreeBlock>();
 			for (const row of view.lines ?? []) {
 				const block = found.lines.get(row.slice(0, row.indexOf("|")))?.block;
-				if (block) blocks.set(blockKey(block), block);
+				if (block) blocks.set(memoryBlockKey(block), block);
 			}
 			const { generation, messages: through } = found;
 			conversations.push({ sessionId, generation, through, blocks: [...blocks.values()] });
@@ -213,6 +219,7 @@ export async function memoryRunBranches(read: MemoryBranchesRead, budget = BRANC
 	}
 	for (const branch of all.slice(branches.length)) branches.push(shown(branch));
 	const blocks = new Map<string, MemoryTreeBlock>();
-	for (const block of conversations.flatMap((conversation) => conversation.blocks)) blocks.set(blockKey(block), block);
+	for (const block of conversations.flatMap((conversation) => conversation.blocks))
+		blocks.set(memoryBlockKey(block), block);
 	return { branches, conversations, blocks: [...blocks.values()] };
 }

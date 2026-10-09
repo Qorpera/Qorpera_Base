@@ -117,7 +117,7 @@ function fixture(
 		computerGeneration: 3,
 		receiptId,
 		accountId,
-		field: field as CompanyAccountFillIdentity["field"],
+		field: field as Exclude<CompanyAccountFillIdentity["field"], "signing_secret">,
 	});
 	return { keyring, computer, vault, authority, wait, identity, clock: () => clock };
 }

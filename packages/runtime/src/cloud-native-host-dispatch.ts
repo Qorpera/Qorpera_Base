@@ -13,9 +13,10 @@ import type { WebSocketLikeConstructor } from "@supabase/supabase-js";
 /** The native host's calls inside a job, and the entry point (statement budget) of each: qorpera_native_host_calls as
  * migrations 20260928409985, 20260928429982 (find_mail), 20260928429984 (save_attachment), 20260929999965
  * (company_account), 20260929999970 (the run's folder view), 20260930093000 (proposals, P40b), 20260930106000
- * (manage_hook), 20260930202000 (zoom, M1b-3), 20260930203000 (the release of tree blocks, M1b-3), 20260930220000
- * (branches, M4) and 20260930231000 (run logs, W1b) list them, without the two identity calls, which the host makes
- * between jobs (G2-3). The long budget is the lease validator's and, since 20260930109500, the model request's fence's. */
+ * (manage_hook), 20260930202000 (zoom, M1b-3), 20260930203000 (the release of tree blocks, M1b-3), 20260930204000
+ * (the primary view and its record, M1b-4a), 20260930220000 (branches, M4) and 20260930231000 (run logs, W1b), without the two identity
+ * calls, which the host makes between jobs (G2-3). The long budget is the lease validator's and, since 20260930109500,
+ * the model request's fence's. */
 export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new Map<string, "standard" | "long">([
 	["qorpera_add_agent_review_rule", "standard"],
 	["qorpera_append_native_interaction_request", "standard"],
@@ -77,6 +78,8 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_memory_release", "standard"],
 	["qorpera_memory_run_log_place", "standard"],
 	["qorpera_memory_step_hashes", "standard"],
+	["qorpera_memory_view", "standard"],
+	["qorpera_memory_view_record", "standard"],
 	["qorpera_memory_zoom", "standard"],
 	["qorpera_native_company_file_write", "standard"],
 	["qorpera_native_company_file_write_source", "standard"],

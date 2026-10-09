@@ -71,8 +71,8 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 		...rowsOf(read("20260928439965_runtime_company_account_tool.sql")),
 		...rowsOf(read("20260928439970_folder_run_view_open.sql")),
 		// The worker tools on folder-v2 (F2-5b-2), a coding session's archive (C3b), the proposal calls (P40b), agents'
-		// hooks and mailboxes (E3a), zoom and its release (M1b-3), branches (M4) and run logs (W1b), found by name: a
-		// release re-slots the file.
+		// hooks and mailboxes (E3a), zoom and its release (M1b-3), the primary view and its record (M1b-4a) and branches
+		// (M4) and run logs (W1b), found by name: a release re-slots the file.
 		...[
 			"_folder_state_worker_files.sql",
 			"_folder_coding_archive.sql",
@@ -80,6 +80,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			"_folder_agent_manage_hook.sql",
 			"_memory_zoom.sql",
 			"_memory_release.sql",
+			"_memory_view.sql",
 			"_memory_branches.sql",
 			"_memory_run_logs.sql",
 		].flatMap((suffix) =>
@@ -106,7 +107,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, , scope]) => scope !== "identity")
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(101);
+	expect(rows).toHaveLength(103);
 	expect(new Map(NATIVE_HOST_CALLS)).toEqual(expected);
 	expect([...NATIVE_HOST_CALLS].filter(([, budget]) => budget === "long")).toEqual([
 		["qorpera_fence_native_context", "long"],
@@ -575,9 +576,6 @@ async function hostServiceFixture(outcome: "succeed" | "fail" | "wait" = "succee
 			beginLogin: async () => {
 				throw new Error("No login");
 			},
-			execute: async () => {
-				throw new Error("No model");
-			},
 		},
 	});
 	const { dispatch, sent } = dispatchFixture();
@@ -690,6 +688,16 @@ it("refuses an execution without a valid credential with a fixed code and never 
 			const refused = await post(body);
 			expect(refused.status).toBe(422);
 			expect(await refused.json()).toEqual({ error: "request rejected", code: "NATIVE_HOST_CREDENTIAL" });
+		}
+		// Only the company request is accepted: the whole-tree schema, or a host-supplied input or payload, is refused.
+		for (const body of [
+			{ ...valid, schema: "qorpera.native-provider-execution/v1" },
+			{ ...valid, input: { company_root: "/x" } },
+			{ ...valid, job: { ...job, payload: {} } },
+		]) {
+			const refused = await post(body);
+			expect(refused.status).toBe(422);
+			expect(await refused.json()).toEqual({ error: "request rejected", code: "UNCLASSIFIED" });
 		}
 		expect(f.execute).not.toHaveBeenCalled();
 		// A second execution while one still holds the host is refused as busy.

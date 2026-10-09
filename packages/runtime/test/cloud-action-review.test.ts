@@ -19,6 +19,7 @@ import { type CloudNativeToolBinding, CloudNativeToolRun } from "@qorpera/runtim
 import {
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
+	CloudToolRefusal,
 	type CloudToolResult,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "@qorpera/runtime/cloud-routine-tools";
@@ -141,6 +142,12 @@ describe("which calls are reviewed", () => {
 		// Interfaces (I8): reading a page or a table.
 		["interface_read", { interface: "pulse", view: null, after: null }, "read"],
 		["table_read", { table: "deals", where: null, after: null, limit: 20 }, "read"],
+		// Rows of a table are the company's records; a save takes the effect its preparation read from the files it
+		// replaces, and an unprepared one is a delegation (I8b).
+		["table_write", { table: "deals", operationKey: "k", set: [{ deal: "Acme" }], remove: [] }, "internal"],
+		["save_interface", { operationKey: "k", files: [], effect: "internal" }, "internal"],
+		["save_interface", { operationKey: "k", files: [], effect: "delegation" }, "delegation"],
+		["save_interface", { operationKey: "k", files: [] }, "delegation"],
 		["a_tool_this_table_does_not_know", {}, "external"],
 	] as const)("%s %j is %s", (name, parsed, effect) => {
 		expect(cloudActionEffect(tool(name), parsed as JsonValue)).toBe(effect);
@@ -164,6 +171,27 @@ describe("what the card shows", () => {
 			action: { kind: "browser", action: "click", role: "button", name: "Pay now \u2028– $12.98" },
 		});
 		expect(description).toEqual({ title: "Click in the browser", target: 'button "Pay now – $12.98"', details: {} });
+	});
+
+	it("names a signed hook and its secret's field for a vault_fill of the hook's secret, never a value (E3b-3)", () => {
+		const hook = "98700000-0000-4000-8000-000000000060";
+		expect(
+			describeCloudAction(tool("computer_browser"), {
+				operationKey: "k",
+				action: {
+					kind: "browser",
+					action: "vault_fill",
+					role: "textbox",
+					name: "Signing secret",
+					hook,
+					field: "signing_secret",
+				},
+			}),
+		).toEqual({
+			title: "Type a hook's signing secret into a web page",
+			target: 'textbox "Signing secret"',
+			details: { hook, field: "signing_secret" },
+		});
 	});
 
 	it("names an email draft action and every recipient", () => {
@@ -446,6 +474,36 @@ describe("what the card shows", () => {
 				details: [{ key: "role", value: "Bookkeeper" }, { key: "saved", value: saved }, { value: "no key" }],
 			}),
 		).toEqual({ title: "Hire a new agent", target: "Mira", details: { role: "Bookkeeper", saved } });
+	});
+
+	it("shows an interface save as its preparation described it, never its files", () => {
+		const files = [{ path: "interfaces/deals/interface.toml", expectedVersion: null, text: "format = ..." }];
+		expect(
+			describeCloudAction(tool("save_interface"), {
+				operationKey: "k",
+				files,
+				effect: "delegation",
+				title: "Make a new interface",
+				target: "Deals",
+				details: [
+					{ key: "buttons", value: "adds the button “Call them” (message)" },
+					{ key: "what it is for", value: "The deals we work on.\n\nOne row per deal.", quoted: true },
+				],
+			}),
+		).toEqual({
+			title: "Make a new interface",
+			target: "Deals",
+			details: {
+				buttons: "adds the button “Call them” (message)",
+				"what it is for": "The deals we work on.\n\nOne row per deal.",
+			},
+		});
+		// A call that was never prepared still has a title, and shows nothing it was not told.
+		expect(describeCloudAction(tool("save_interface"), { operationKey: "k", files })).toEqual({
+			title: "Change an interface",
+			target: null,
+			details: {},
+		});
 	});
 });
 
@@ -1647,5 +1705,80 @@ describe("the boundary's review step", () => {
 		});
 		expect(await text(failing)).toBe("REVIEW_DENIED: No.");
 		expect(failing.execute).not.toHaveBeenCalled();
+	});
+
+	/** A tool that reads what its call changes before the review (I8b's `save_interface`). */
+	function preparedFixture(prepare: NonNullable<CloudNativeTool["prepare"]>) {
+		const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Saved" }));
+		const check = vi.fn(async () => ({ run: true as const }));
+		const boundary = new CloudNativeToolBoundary({
+			companyId: randomUUID(),
+			runId: randomUUID(),
+			tools: [
+				{
+					name: "save_interface",
+					description: "Save an interface.",
+					source: "company_file",
+					inputSchema: { type: "object", properties: {}, additionalProperties: false },
+					parseArguments: () => ({ operationKey: "k", files: [] }),
+					prepare,
+					execute,
+				},
+			],
+			assertActive: async () => undefined,
+			signal: new AbortController().signal,
+			review: { check },
+		});
+		const invoke = async () => {
+			const response = await boundary.invoke("call_1", "qorpera", "save_interface", {});
+			return JSON.parse(response.contentItems[0].text) as CloudToolResult;
+		};
+		return { invoke, execute, check };
+	}
+
+	it("reviews and runs what a call's preparation read, with the digest of the call as the model made it", async () => {
+		const prepare = vi.fn<NonNullable<CloudNativeTool["prepare"]>>(async (parsed) => ({
+			...(parsed as Record<string, JsonValue>),
+			effect: "internal",
+			title: "Change an interface",
+		}));
+		const f = preparedFixture(prepare);
+		expect((await f.invoke()).status).toBe("ok");
+		const prepared = { operationKey: "k", files: [], effect: "internal", title: "Change an interface" };
+		expect(prepare).toHaveBeenCalledWith(
+			{ operationKey: "k", files: [] },
+			expect.objectContaining({ callId: "call_1", argumentSha256: expect.any(String) }),
+		);
+		const digest = (prepare.mock.calls[0]![1] as { argumentSha256: string }).argumentSha256;
+		expect(f.check).toHaveBeenCalledWith(
+			expect.objectContaining({ parsed: prepared, argumentsText: "{}", argumentSha256: digest }),
+			expect.any(AbortSignal),
+		);
+		expect(f.execute).toHaveBeenCalledWith(prepared, expect.objectContaining({ argumentSha256: digest }));
+	});
+
+	it("refuses a call its preparation refuses, or cannot read, before any review", async () => {
+		const refused = preparedFixture(async () => {
+			throw new CloudToolRefusal("Only the owners edit this interface");
+		});
+		expect(await refused.invoke()).toMatchObject({
+			status: "denied",
+			content: { text: "REFUSED: Only the owners edit this interface" },
+		});
+		// Any other failure, and a preparation larger than a call's arguments may be, says nothing of what it read.
+		const failed = preparedFixture(async () => {
+			throw new Error("PRIVATE_READ_FAILURE");
+		});
+		const oversized = preparedFixture(async () => ({ details: "x".repeat(65 * 1024) }));
+		for (const f of [failed, oversized]) {
+			const result = await f.invoke();
+			expect(result.status).toBe("denied");
+			expect(result.content.text).toMatch(/^TOOL_UNAVAILABLE: What this call changes could not be read/);
+			expect(JSON.stringify(result)).not.toContain("PRIVATE_READ_FAILURE");
+		}
+		for (const f of [refused, failed, oversized]) {
+			expect(f.check).not.toHaveBeenCalled();
+			expect(f.execute).not.toHaveBeenCalled();
+		}
 	});
 });

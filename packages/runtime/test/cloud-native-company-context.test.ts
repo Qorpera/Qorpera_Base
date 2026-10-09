@@ -3,9 +3,11 @@ import type { JsonValue } from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
 import {
 	CLOUD_COMPANY_RUNTIME_INSTRUCTIONS,
+	type CloudNativeConversationTree,
 	cloudAgentFolderPlace,
 	cloudCompanyContextTool,
 	cloudCompanyRuntimeInstructions,
+	cloudNativeStableInstructions,
 	compileCloudNativeCompanyInstructions,
 	composeCloudNativeCompanyPrompt,
 	parseCloudNativeCompanyContext,
@@ -513,6 +515,63 @@ it("shows the changes waiting for review just before the skills, only when the r
 		"\n# Changes waiting for review\nWhen apply_proposal is offered, proposals lists changes you saved from a computer",
 	);
 	expect(instructions).toContain("never present a waiting change as done.");
+});
+
+it("keeps only the history after a primary view, and puts the branches after the current inputs (§5.3)", () => {
+	const f = nativeCompanyContextFixture();
+	f.context.history = [3, 5, 8].map((sequence) => ({
+		...f.source("history", randomUUID(), `message ${sequence}`),
+		sequence,
+	}));
+	f.context.historyTruncated = true;
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	// No notebook, skills, proposals or head: only the view.
+	const none = [undefined, undefined, undefined, undefined, undefined, undefined] as const;
+	const compose = (tree?: CloudNativeConversationTree) =>
+		composeCloudNativeCompanyPrompt(context, null, ...none, tree);
+	const texts = (prompt: { history: { content: { text: string } }[] }) =>
+		prompt.history.map((item) => item.content.text);
+	const branches = [{ ref: "thread:ida", name: "Ida (thread)", messages: 4, lines: ["0+4|what Ida did"] }];
+	const viewed = JSON.parse(compose({ conversationMessages: 9, lastSequence: 5, branches }));
+	expect(texts(viewed)).toEqual(["message 8"]);
+	// What the view leaves out was not cut for the bound: the history after it is whole.
+	expect(viewed.historyTruncated).toBe(false);
+	expect(viewed.conversationMessages).toBe(9);
+	expect(viewed.branches).toEqual(branches);
+	const keys = Object.keys(viewed);
+	expect(keys.slice(keys.indexOf("conversationMessages"), keys.indexOf("history") + 1)).toEqual([
+		"conversationMessages",
+		"currentInputs",
+		"branches",
+		"history",
+	]);
+	const past = JSON.parse(compose({ conversationMessages: 9, lastSequence: 8, branches: [] }));
+	expect(texts(past)).toEqual([]);
+	expect(past.historyTruncated).toBe(false);
+	// A view of no message keeps the whole history, and whether it was cut.
+	const empty = JSON.parse(compose({ conversationMessages: 0, lastSequence: null, branches: [] }));
+	expect(texts(empty)).toEqual(["message 3", "message 5", "message 8"]);
+	expect(empty.historyTruncated).toBe(true);
+	expect(empty.branches).toEqual([]);
+	// Without one, the context is as it was.
+	expect(compose()).toBe(composeCloudNativeCompanyPrompt(context));
+	const plain = JSON.parse(compose());
+	expect(plain).not.toHaveProperty("conversationMessages");
+	expect(plain).not.toHaveProperty("branches");
+	expect(texts(plain)).toEqual(["message 3", "message 5", "message 8"]);
+});
+
+it("compiles the instructions an agent's runs share, up to the head and views, before the wake's", () => {
+	const f = nativeCompanyContextFixture();
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const parts = { head: "# Head\nBo's head.", views: "# The conversation so far\nBo's view." };
+	const stable = cloudNativeStableInstructions(context, parts);
+	expect(stable.endsWith(`\n${parts.head}\n${parts.views}`)).toBe(true);
+	const instructions = compileCloudNativeCompanyInstructions(context, null, parts);
+	expect(instructions.startsWith(`${stable}\n`)).toBe(true);
+	expect(instructions.length).toBeGreaterThan(stable.length + 1);
+	const plain = compileCloudNativeCompanyInstructions(context);
+	expect(plain.startsWith(`${cloudNativeStableInstructions(context)}\n`)).toBe(true);
 });
 
 it.each(["cofounder", "employee"] as const)(
@@ -1058,14 +1117,12 @@ it("carries the run's service tier outside the shared tool identity", () => {
 	).toThrow();
 });
 
-it("names a folder-v2 company's agent folders, and leaves every other context and prompt as it is", () => {
+it("names the company's agent folders, and refuses a context that names none", () => {
 	const f = nativeCompanyContextFixture();
 	const coworker = f.context.coworkers[0].id;
-	const plain = parseCloudNativeCompanyContext(f.context, f.binding);
-	expect(Object.hasOwn(plain, "folder")).toBe(false);
-	expect(cloudAgentFolderPlace(plain)).toEqual({ core: "snapshot-v1" });
-	const plainPrompt = composeCloudNativeCompanyPrompt(plain);
-	expect(plainPrompt).not.toContain('"folder"');
+	// Every company is on the company folder (legacy sweep step C, C-P9): a context without a folder is refused.
+	const { folder: _folder, ...unfoldered } = f.context;
+	expect(() => parseCloudNativeCompanyContext(unfoldered, f.binding)).toThrow("Invalid cloud company context");
 
 	const folder = { agent: "anna-berg", coworkers: { [coworker]: "ida-lund" } };
 	const context = parseCloudNativeCompanyContext({ ...f.context, folder }, f.binding);
@@ -1099,4 +1156,136 @@ it("names a folder-v2 company's agent folders, and leaves every other context an
 			f.binding,
 		),
 	).toThrow("Cloud context does not match its admitted run");
+});
+
+/** A company-folder run whose bytes are stable: every id becomes a fixed one in the order it first appears, and the
+ * bundle digest a fixed one. It lists one coworker with a folder and one without. */
+function stableFolderRun(kind: "conversation" | "worker" | "private") {
+	const f = nativeCompanyContextFixture();
+	const named = f.context.coworkers[0].id;
+	f.context.coworkers.push({ id: randomUUID(), version: 3, name: "Bookkeeper", role: "Keep the books" });
+	f.context.folder = { agent: "nora", coworkers: { [named]: "ida-lund" } };
+	const requester = f.context.identity.requesterUserId;
+	if (kind === "private") {
+		f.context.identity = { ...f.context.identity, audienceKind: "member_private", audienceUserId: requester };
+		f.context.audience = { kind: "member_private", userId: requester };
+	}
+	if (kind === "worker") {
+		f.context.identity = { ...f.context.identity, sessionId: null };
+		f.context.currentInputs = [];
+	}
+	const identity = f.context.identity;
+	const inputId = f.context.currentInputs[0]?.id;
+	const workerId = randomUUID();
+	const parentRunId = randomUUID();
+	const worker = kind === "worker";
+	const wake = {
+		schema: "qorpera.wake-envelope/v1",
+		id: randomUUID(),
+		runId: identity.runId,
+		kind: worker ? "agent" : "human",
+		companyId: identity.companyId,
+		environmentId: identity.environmentId,
+		staffAgentId: identity.staffAgentId,
+		requesterUserId: requester,
+		actorStaffId: null,
+		actorUserId: worker ? null : requester,
+		audience: { ...f.context.audience, sessionId: identity.sessionId },
+		source: worker
+			? { kind: "worker-dispatch", id: workerId, occurrenceKey: `worker-dispatch:${workerId}:1` }
+			: { kind: "input", id: inputId, occurrenceKey: `input:${inputId}` },
+		policy: {
+			schema: "qorpera.wake-policy/v1",
+			kind: worker ? "agent" : "human",
+			initial: worker ? "forbidden" : "required",
+			final: worker ? "forbidden" : "required",
+			silenceAllowed: worker,
+			maxPublicSends: worker ? 0 : null,
+		},
+		time: { utc: "2026-09-19T08:00:00.000000Z", local: "2026-09-19T08:00:00.000000", timeZone: "UTC" },
+		pins: {
+			companySnapshotId: randomUUID(),
+			staffVersion: identity.staffVersion,
+			wakeSchema: "qorpera.wake-envelope/v1",
+			runtimeBundleVersion: null,
+		},
+		routine: null,
+		payload: worker
+			? {
+					schema: "qorpera.worker-dispatch/v1",
+					workerId,
+					workerKey: "note-check",
+					sequence: 1,
+					species: "in-house",
+					title: "Check the note",
+					todo: { todoKey: "note", title: "Note", path: "work/todos/nora/note.json" },
+					parentRunId,
+					access: "read",
+					outputFolder: "work/todos/nora/note/note-check",
+					dispatch: {
+						goal: "Read note.md and say what it contains.",
+						definitionOfDone: "One sentence describing the note.",
+						context: "",
+						sources: ["note.md"],
+						followUp: null,
+						authority: "Read what this agent may read. Write nothing.",
+						output: "Report once through report_work.",
+						cancellation: "Ends with its todo, or when the parent cancels it.",
+						completion: "The parent is revived as soon as you report.",
+					},
+				}
+			: { inputIds: [inputId] },
+		parentRunId: worker ? parentRunId : null,
+		causal: { rootId: randomUUID(), agentIds: [identity.staffAgentId] },
+	};
+	const ids = new Map<string, string>();
+	const stable = JSON.parse(
+		JSON.stringify({ binding: f.binding, context: f.context, wake })
+			.replaceAll(identity.runtimeBundleSha256, "e".repeat(64))
+			.replace(/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/g, (id) => {
+				if (!ids.has(id)) ids.set(id, `00000000-0000-4000-8000-${(ids.size + 1).toString(16).padStart(12, "0")}`);
+				return ids.get(id) as string;
+			}),
+	);
+	const context = parseCloudNativeCompanyContext(stable.context, stable.binding);
+	const parsedWake = parseCloudWakeEnvelope(stable.wake, context.identity);
+	const digest = (text: string) => createHash("sha256").update(text).digest("hex");
+	return {
+		instructions: digest(
+			compileCloudNativeCompanyInstructions(context, parsedWake, { head: "# Your head\nThe head as data." }),
+		),
+		prompt: digest(composeCloudNativeCompanyPrompt(context, parsedWake)),
+	};
+}
+
+// The sha256 of each run's developer instructions and prompt, taken from master at 1e2e3f773 (after M1b compose,
+// #980) before C-P9 + AF made the company folder the only kind of context. A change to either is a change to every
+// run's bytes.
+it.each([
+	[
+		"an ordinary company conversation",
+		"conversation",
+		{
+			instructions: "b1dfe0d73fd35704e697d6d76e771d0b1d6e89cff88179807edfc6d209e1beda",
+			prompt: "35c1e010081296977564ebb88aee05cd6c94c195a75fab7b6f832cbe69a57058",
+		},
+	],
+	[
+		"a worker run",
+		"worker",
+		{
+			instructions: "b20b98f09b5430f7caa5d7910bbf658d2ad196e96c31b68cb126e92038bbf62f",
+			prompt: "b84fbeb21c11a335f2bb8618541bca328beb04b78cc37db39f1c12985145e99f",
+		},
+	],
+	[
+		"a member's private conversation",
+		"private",
+		{
+			instructions: "b1dfe0d73fd35704e697d6d76e771d0b1d6e89cff88179807edfc6d209e1beda",
+			prompt: "705cb782127ccbd631ce2de685e399a096e2ba36975865241678e1c25d6ccca1",
+		},
+	],
+] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {
+	expect(stableFolderRun(kind)).toEqual(pinned);
 });

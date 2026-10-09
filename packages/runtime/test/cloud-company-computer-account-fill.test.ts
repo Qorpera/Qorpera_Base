@@ -77,9 +77,14 @@ function fixture(options: {
 	stealInto?: "editable";
 	/** The website keeps only this many characters (it reshapes input). */
 	keeps?: number;
+	/** The page keeps its box a text box: setting the box's type does nothing. */
+	typeStays?: boolean;
+	/** A page script makes the box show its text again when it takes the focus, or while the value goes in. */
+	showAgain?: "focus" | "typing";
 }) {
 	const urls = Array.isArray(options.url) ? [...options.url] : [options.url ?? "https://vercel.com/login"];
 	const target = fakeBox(options.box);
+	if (options.typeStays) Object.defineProperty(target, "type", { get: () => "text", set: () => undefined });
 	const other = fakeBox({ type: "text" });
 	const host = { ...fakeBox({ tagName: "SIGN-IN" }), shadowRoot: { activeElement: other } };
 	const editable = { tagName: "DIV", setAttribute: () => undefined };
@@ -97,6 +102,7 @@ function fixture(options: {
 		const into = options.stealFocus === "shadow" ? other : document.activeElement;
 		if (into) into.value += options.keeps === undefined ? params.text : params.text.slice(0, options.keeps);
 		if (options.advance) document.activeElement = other;
+		if (options.showAgain === "typing") target.type = "text";
 	});
 	const handle = {
 		ownerFrame: async () => (options.inFrame ? {} : mainFrame),
@@ -115,6 +121,7 @@ function fixture(options: {
 		focus: vi.fn(async () => {
 			calls.push("focus");
 			document.activeElement = target;
+			if (options.showAgain === "focus") target.type = "text";
 		}),
 	};
 	const page = {
@@ -226,6 +233,73 @@ describe("company account fill", () => {
 	});
 });
 
+/** An HMAC hook's secret, for the sender's settings page on the hook's site (E3b-3). */
+const hookSecret: CompanyAccountFill = {
+	field: "signing_secret",
+	value: `whsec_${Buffer.alloc(32, 7).toString("base64")}`,
+	hosts: ["app.example.com"],
+	notAfterMs: Number.MAX_SAFE_INTEGER,
+};
+const hookPage = "https://app.example.com/settings/webhooks";
+
+describe("a signed hook's secret", () => {
+	it("makes the site's box a password box before the secret goes in, and marks it private", async () => {
+		for (const type of ["text", "password"]) {
+			const f = fixture({ url: hookPage, box: { type } });
+			await fillCompanyAccountBox(f.page, f.box, hookSecret);
+			expect(f.calls, type).toEqual(["load", "fill:", "focus", "Input.insertText"]);
+			expect(f.target.type, type).toBe("password");
+			expect(f.target.value, type).toBe(hookSecret.value);
+			expect(f.target.attributes.has(COMPANY_ACCOUNT_FILLED_ATTRIBUTE), type).toBe(true);
+		}
+		// An account's code goes into its text box as the box is.
+		const code = fixture({ box: { type: "text" } });
+		await fillCompanyAccountBox(code.page, code.box, { ...password, field: "code", value: "123456" });
+		expect(code.target.type).toBe("text");
+	});
+
+	it("types nothing into a box the page keeps from being a password box, or shows again before the typing", async () => {
+		for (const options of [{ typeStays: true }, { showAgain: "focus" }] as const) {
+			const f = fixture({ url: hookPage, box: { type: "text" }, ...options });
+			await expect(fillCompanyAccountBox(f.page, f.box, hookSecret), JSON.stringify(options)).rejects.toThrow(
+				"ACCOUNT_FILL_NOT_HIDDEN",
+			);
+			expect(f.send, JSON.stringify(options)).not.toHaveBeenCalled();
+			expect(f.target.value).toBe("");
+			expect(f.handle.dispose).toHaveBeenCalled();
+		}
+	});
+
+	it("empties a box that shows the secret again while it goes in", async () => {
+		const f = fixture({ url: hookPage, box: { type: "text" }, showAgain: "typing" });
+		const error = await fillCompanyAccountBox(f.page, f.box, hookSecret).catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(CompanyAccountFillRefusedError);
+		expect((error as CompanyAccountFillRefusedError).reason).toBe("ACCOUNT_FILL_NOT_HIDDEN");
+		expect(f.send).toHaveBeenCalledTimes(1);
+		expect(f.target.value).toBe("");
+	});
+
+	it("types it only into a text or password box on the hook's own site", async () => {
+		const cases: Array<[Parameters<typeof fixture>[0], string]> = [
+			[{ url: "https://vercel.com/login" }, "ACCOUNT_FILL_WRONG_SITE"],
+			[{ url: "http://app.example.com/settings/webhooks" }, "ACCOUNT_FILL_WRONG_SITE"],
+			[{ url: hookPage, box: { type: "email" } }, "ACCOUNT_FILL_WRONG_BOX"],
+			[{ url: hookPage, box: { type: "tel" } }, "ACCOUNT_FILL_WRONG_BOX"],
+			[{ url: hookPage, box: { tagName: "TEXTAREA", type: "text" } }, "ACCOUNT_FILL_WRONG_BOX"],
+			[{ url: hookPage, box: { type: "text", readOnly: true } }, "ACCOUNT_FILL_WRONG_BOX"],
+			[{ url: hookPage, box: { type: "text", disabled: true } }, "ACCOUNT_FILL_WRONG_BOX"],
+		];
+		for (const [options, reason] of cases) {
+			const f = fixture(options);
+			const error = await fillCompanyAccountBox(f.page, f.box, hookSecret).catch((caught: unknown) => caught);
+			expect((error as CompanyAccountFillRefusedError).reason, JSON.stringify(options)).toBe(reason);
+			expect(f.send, JSON.stringify(options)).not.toHaveBeenCalled();
+			// A box that is refused stays as the page made it.
+			expect(f.target.type, JSON.stringify(options)).toBe(options.box?.type ?? "password");
+		}
+	});
+});
+
 describe("filled values on one screen", () => {
 	it("hides a password in each spelling a page address uses, and a code only as a number of its own", () => {
 		const filled = new CompanyComputerFilledValues();
@@ -292,6 +366,17 @@ describe("filled values on one screen", () => {
 		filled.add("Pw 1234567890!abcd", "password");
 		expect(filled.shows("https://x.example/?q=Pw+1234567890!abcd")).toBe(true);
 		expect(filled.hide("https://x.example/?q=Pw+1234567890!abcd")).toBe("https://x.example/?q=[hidden]");
+	});
+
+	it("hides a hook's secret for good, as a password", () => {
+		let now = 1_000;
+		const filled = new CompanyComputerFilledValues(() => now);
+		filled.add(hookSecret.value, "signing_secret");
+		now += 24 * 60 * 60_000;
+		expect(filled.current()).toEqual([hookSecret.value]);
+		expect(filled.hide(`https://x.example/?s=${encodeURIComponent(hookSecret.value)}`)).toBe(
+			"https://x.example/?s=[hidden]",
+		);
 	});
 
 	it("drops spent codes before it drops a password", () => {

@@ -34,6 +34,7 @@ import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
 import { CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
 import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import { cloudInterfaceTools } from "./cloud-folder-interface-tools.ts";
+import { cloudInterfaceWriteTools } from "./cloud-folder-interface-writes.ts";
 import { CloudFolderNotebooks } from "./cloud-folder-notebooks.ts";
 import { CloudFolderProposals } from "./cloud-folder-proposals.ts";
 import { CloudFolderRoutineDecision } from "./cloud-folder-routine-decision.ts";
@@ -50,6 +51,7 @@ import type { CloudNativeCodingDriver } from "./cloud-native-coding-runtime.ts";
 import {
 	cloudAgentFolderPlace,
 	cloudCompanyContextTool,
+	cloudNativeStableInstructions,
 	compileCloudNativeCompanyInstructions,
 	composeCloudNativeCompanyPrompt,
 	parseCloudNativeCompanyContext,
@@ -110,6 +112,9 @@ import {
 	parseCloudWakeEnvelope,
 } from "./cloud-wake-bus.ts";
 import { cloudWorkerToolFilter, cloudWorkerTools, describeCloudAgentOpenWork } from "./cloud-worker-tools.ts";
+import { memoryCacheKeyComposer, memoryCommitView, memoryComposeView } from "./memory-tree/compose.ts";
+import { memoryPromptCacheKey } from "./memory-tree/view.ts";
+import { memoryZoomTool } from "./memory-tree/zoom.ts";
 
 // The company runtime's control plane completes folder receipts: a folder-v2 run's writers commit under them.
 type NativeCompanyControl = CloudNativeToolAuthorityReader &
@@ -142,9 +147,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #coding: CloudNativeCodingDriver | undefined;
 	readonly #machines: ((binding: CloudNativeToolBinding) => CloudMachineCommandGateway) | undefined;
 	readonly #folderSearch: { readonly socketPath: string } | undefined;
-	readonly #folderBytes:
-		| ((binding: CloudNativeToolBinding, identity: CloudNativeToolIdentity) => CloudCompanyFolderBytes)
-		| undefined;
+	readonly #folderBytes: (
+		binding: CloudNativeToolBinding,
+		identity: CloudNativeToolIdentity,
+	) => CloudCompanyFolderBytes;
 
 	constructor(options: {
 		presence?: CloudCompanyPathPresenceFactory;
@@ -174,9 +180,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		/** Company machines' command gateway (the coding executor's ingress, 2026-09-28).
 		 * Without it no run is offered the machine tools. */
 		machines?: (binding: CloudNativeToolBinding) => CloudMachineCommandGateway;
-		/** A folder-v2 run's file bytes (core C1d: the object gateway's folder route). Without it a folder-v2 run
-		 * keeps the legacy state tools, which refuse. */
-		folderBytes?: (binding: CloudNativeToolBinding, identity: CloudNativeToolIdentity) => CloudCompanyFolderBytes;
+		/** A company run's file bytes (core C1d: the object gateway's folder route). Every company run is a folder-v2
+		 * run (legacy sweep step C, C-P1). */
+		folderBytes: (binding: CloudNativeToolBinding, identity: CloudNativeToolIdentity) => CloudCompanyFolderBytes;
 		/** The slot's relay to the node's folder search (F3, the shared execution host only): a folder-v2 run gets
 		 * company_search over it. */
 		folderSearch?: { readonly socketPath: string };
@@ -291,7 +297,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					)
 				: Promise.resolve(false);
 			const context = parseCloudNativeCompanyContext(await contextRequest, binding);
-			// Where the company keeps its agents' folders: by id today, by name in a folder-v2 company.
+			// Where the agent's folder is: its folder name.
 			const agentFolders = cloudAgentFolderPlace(context);
 			stage = "bundle-compatibility";
 			assertCloudRuntimeBundle(context.identity, this.#sha256);
@@ -335,33 +341,35 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				return descriptors;
 			};
 			stage = "prompt-composition";
-			// A folder-v2 run (its context names the agent's folder) writes its state files through the folder core
-			// (core C3's thin writers, RUNTIME-COMPANY-STATE-FILES.md §5).
-			const folder =
-				context.folder && this.#folderBytes
-					? {
-							client: new CloudCompanyFolderClient({
-								binding,
-								identity: context.identity,
-								control: this.#paths,
-								bytes: this.#folderBytes(binding, context.identity),
-								...(this.#eventHooks ? { signedHooks: this.#eventHooks } : {}),
-							}),
-							handle: context.folder.agent,
-						}
-					: undefined;
+			// Every company run is a folder-v2 run: its context names the agent's folder, and it reads and writes the
+			// company's files and its state files through the folder core (core C3's thin writers,
+			// RUNTIME-COMPANY-STATE-FILES.md §5). The context parser refuses a context without one (legacy sweep
+			// step C, C-P9).
+			const folder = {
+				client: new CloudCompanyFolderClient({
+					binding,
+					identity: context.identity,
+					control: this.#paths,
+					bytes: this.#folderBytes(binding, context.identity),
+					...(this.#eventHooks ? { signedHooks: this.#eventHooks } : {}),
+				}),
+				handle: context.folder.agent,
+			};
 			// Its notebook and skills, through the folder core too (P20): the same composition and tools.
-			const notebooks = folder
-				? new CloudFolderNotebooks({
-						folder: folder.client,
-						runId: binding.runId,
-						agentFolder: cloudAgentFolder(
-							context.identity.companyId,
-							context.identity.staffAgentId,
-							agentFolders,
-						),
-					})
-				: undefined;
+			const notebooks = new CloudFolderNotebooks({
+				folder: folder.client,
+				runId: binding.runId,
+				agentFolder: cloudAgentFolder(context.identity.companyId, context.identity.staffAgentId, agentFolders),
+			});
+			// Summary trees (RUNTIME-AGENT-MEMORY-TREE.md §5.3, M1b-4a): an agent's run in its own thread may see the
+			// primary view of its conversation, with the branches (§5.5), instead of the history before it. The host call
+			// answers whether it does (the company is listed once its trees are written); a run that has the view has zoom
+			// and the conversation's prompt cache key (§6.2). A worker is not one; it gets its parent's view (W4).
+			const memoryTree =
+				context.identity.audienceKind === "company" &&
+				context.identity.sessionId !== null &&
+				cloudWakeIsOwnThread(wake) &&
+				!cloudWorkerToolFilter(wake).isWorker;
 			const composeContext = async () => {
 				presence = this.#presenceFactory?.(binding, context.identity, signal);
 				// Only a typed, cloud-authorized file event selects an initial path.
@@ -393,13 +401,20 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				// Changes the agent saved from a computer that wait for review (P40): listed only where it can
 				// raise a card (its own conversation or thread, not a worker), the same rule the folder core keeps.
 				const proposalsRequest =
-					folder &&
 					context.identity.audienceKind === "company" &&
 					context.identity.sessionId !== null &&
 					!cloudWorkerToolFilter(wake).isWorker &&
 					(wake.kind !== "room" || cloudWakeIsOwnThread(wake))
 						? CloudFolderProposals.list(folder.client, signal)
 						: Promise.resolve(undefined);
+				// The primary view and branches, asked alongside the notebook. A failure keeps the history, with no zoom.
+				const viewRequest = memoryTree
+					? memoryComposeView(this.#paths, binding, signal).catch((error) => {
+							if (!signal.aborted)
+								console.error(`Memory view was not composed (${cloudRuntimeErrorCategory(error, signal)})`);
+							return null;
+						})
+					: Promise.resolve(null);
 				// The agent's own notebook (contract 15.1) and its skill catalog (15.2) are
 				// composed side by side through the trusted read lane; an unreadable one
 				// degrades to "unavailable" and the run still starts, because neither is a
@@ -409,7 +424,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					Promise.resolve()
 						.then(() =>
 							composeCloudAgentMemory(
-								notebooks?.composition ?? gateway,
+								notebooks.composition,
 								cloudAgentFolder(context.identity.companyId, context.identity.staffAgentId, agentFolders),
 								new Date(),
 								signal,
@@ -419,13 +434,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							signal.throwIfAborted();
 							return unavailableCloudAgentMemory(cloudRuntimeErrorCategory(error, signal));
 						}),
-					composeCloudAgentSkills(notebooks?.composition ?? gateway, context.identity, signal, agentFolders).catch(
-						(error) => {
-							signal.throwIfAborted();
-							return unavailableCloudAgentSkills(cloudRuntimeErrorCategory(error, signal));
-						},
-					),
-					readCloudAgentHeadVision(notebooks?.composition ?? gateway, signal),
+					composeCloudAgentSkills(notebooks.composition, context.identity, signal, agentFolders).catch((error) => {
+						signal.throwIfAborted();
+						return unavailableCloudAgentSkills(cloudRuntimeErrorCategory(error, signal));
+					}),
+					readCloudAgentHeadVision(notebooks.composition, signal),
 				]);
 				return {
 					initialPresence,
@@ -435,19 +448,19 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					vision,
 					openWork: await openWorkRequest,
 					proposals: await proposalsRequest,
+					view: await viewRequest,
 				};
 			};
-			const { initialPresence, gateway, memory, skills, vision, openWork, proposals } = await composeContext().catch(
-				async (error) => {
+			const { initialPresence, gateway, memory, skills, vision, openWork, proposals, view } =
+				await composeContext().catch(async (error) => {
 					await connectorTools();
 					throw error;
-				},
-			);
+				});
 			const connectorDescriptors = await connectorTools();
 			signal.throwIfAborted();
 			const head = composeCloudAgentHead(context, vision, memory);
-			// The primary view (M1, §5.3) goes after the head; none yet.
-			const views = "";
+			// The primary view (§5.3) goes after the head; the context message keeps the history after it.
+			const views = view?.views ?? "";
 			const prompt = composeCloudNativeCompanyPrompt(
 				context,
 				wake,
@@ -457,6 +470,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				skills,
 				proposals?.context,
 				head,
+				view?.tree,
 			);
 			// The run's context is its head and views (in the developer instructions) and its context message, hashed
 			// together.
@@ -466,7 +480,24 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const contextSha256 = createHash("sha256").update(composed).digest("hex");
 			// What composition read from the folder is released under the composed context before any model request, with
 			// the paths of the proposals it shows (P40b).
-			await notebooks?.releaseComposition(contextSha256, signal, proposals?.reads);
+			await notebooks.releaseComposition(contextSha256, signal, proposals?.reads);
+			// So are the summary lines the view and the branches show, and the run's first request is recorded (§13). A
+			// failed release fails the run. A failed record leaves it without the answer, the view reference (W4a-1),
+			// which is for the workers the run dispatches (W4b).
+			if (view)
+				await memoryCommitView(
+					this.#paths,
+					binding,
+					view,
+					{
+						contextSha256,
+						headBytes: Buffer.byteLength(head.text),
+						stablePrefixSha256: createHash("sha256")
+							.update(cloudNativeStableInstructions(context, { head: head.text, views }))
+							.digest("hex"),
+					},
+					signal,
+				);
 			const mouth = new CloudAgentMouth(
 				binding.runId,
 				async (input) => {
@@ -640,6 +671,18 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
 					prompt,
 					runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake, { head: head.text, views }),
+					// Every request of a run with the view shares its conversation's cache key (§6.2).
+					...(view && context.identity.sessionId !== null
+						? {
+								composeContext: memoryCacheKeyComposer(
+									memoryPromptCacheKey({
+										payerLoginConnectionId: context.identity.providerConnectionId,
+										agentId: context.identity.staffAgentId,
+										conversationId: context.identity.sessionId,
+									}),
+								),
+							}
+						: {}),
 					signal,
 					timeoutMs: this.#timeoutMs,
 					// Auto-review (v130): acting calls wait for the reviewer, or for a member's approval.
@@ -670,16 +713,15 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						)
 							throw new Error("Cloud context identity changed before execution");
 						const computer = await this.#computerSession?.(run, operations);
-						// The node's folder search (F3, "Light threads"): a folder-v2 run on a host that has it. A worker
-						// gets it too: it only reads.
-						const folderSearch =
-							folder && this.#folderSearch
-								? new CloudFolderSearch({
-										socketPath: this.#folderSearch.socketPath,
-										folder: folder.client,
-										environmentId: identity.environmentId,
-									})
-								: undefined;
+						// The node's folder search (F3, "Light threads"): a run on a host that has it. A worker gets it
+						// too: it only reads.
+						const folderSearch = this.#folderSearch
+							? new CloudFolderSearch({
+									socketPath: this.#folderSearch.socketPath,
+									folder: folder.client,
+									environmentId: identity.environmentId,
+								})
+							: undefined;
 						// Contract 13: a worker reads, works and reports to its parent. It has no mouth, no
 						// coworker channel and no delegation; an ordinary company run is the dispatcher.
 						const work = cloudWorkerToolFilter(wake);
@@ -687,20 +729,18 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							captures: computer?.captures,
 							tools: [
 								...(computer?.tools ?? []),
-								// A folder-v2 run's file tools act through the folder core with its own authority (P19), and so do
-								// the tools that read its interfaces and tables (Interfaces I8a).
-								...(folder
-									? [
-											...cloudFolderFileTools({ folder: folder.client, operations, identity }),
-											...cloudInterfaceTools({
-												folder: folder.client,
-												identity,
-												timeZone: wake.time.timeZone,
-											}),
-										]
-									: gateway.tools()
-								).filter(work.companyFile),
-								...(folder && folderSearch
+								// A run's file tools act through the folder core with its own authority (P19), and so do the
+								// tools that read and write its interfaces and tables (Interfaces I8a, I8b).
+								...[
+									...cloudFolderFileTools({ folder: folder.client, operations, identity }),
+									...cloudInterfaceTools({
+										folder: folder.client,
+										identity,
+										timeZone: wake.time.timeZone,
+									}),
+									...cloudInterfaceWriteTools({ folder: folder.client, operations, identity }),
+								].filter(work.companyFile),
+								...(folderSearch
 									? [
 											cloudFolderSearchTool({
 												search: folderSearch,
@@ -710,6 +750,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										]
 									: []),
 								cloudCompanyContextTool(context, binding, this.#paths),
+								...(view ? [memoryZoomTool(binding, identity, this.#paths)] : []),
 								// A worker has no outbound effects: no mouth, no connectors.
 								...(this.#secretBroker && !work.isWorker
 									? cloudSecretTools({
@@ -721,8 +762,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										})
 									: []),
 								// The company's own website accounts (A1-4): not a worker's. They serve companies on the
-								// company folder only (A1-7, migration 20260930072000), whose vault writes their connection files.
-								...(this.#companyAccounts && !work.isWorker && context.folder
+								// company folder (A1-7, migration 20260930072000), whose vault writes their connection files.
+								...(this.#companyAccounts && !work.isWorker
 									? [
 											cloudCompanyAccountTool({
 												binding,
@@ -750,18 +791,16 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 															},
 														}
 													: undefined,
-												folder
-													? new CloudFolderRoutines({
-															folder: folder.client,
-															operations,
-															identity,
-															handle: folder.handle,
-															// The routine that woke this run, which it may not pause or remove.
-															...(wake.kind === "routine" && wake.routine
-																? { ownRoutineId: wake.routine.id }
-																: {}),
-														})
-													: undefined,
+												new CloudFolderRoutines({
+													folder: folder.client,
+													operations,
+													identity,
+													handle: folder.handle,
+													// The routine that woke this run, which it may not pause or remove.
+													...(wake.kind === "routine" && wake.routine
+														? { ownRoutineId: wake.routine.id }
+														: {}),
+												}),
 											),
 											...(dynamicRoutine
 												? [
@@ -770,7 +809,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 															decided: () => {
 																routineDecisionOwed = false;
 															},
-															...(folder && wake.routine?.routineKey
+															...(wake.routine?.routineKey
 																? {
 																		folderDecision: new CloudFolderRoutineDecision({
 																			folder: folder.client,
@@ -785,38 +824,26 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 														}),
 													]
 												: []),
-											...cloudSidebarTools(
-												binding,
-												identity,
-												this.#paths,
-												folder
-													? {
-															folderSidebar: new CloudFolderSidebar({
-																folder: folder.client,
-																operations,
-																identity,
-																// The Co-Founder stays on top, outside the sections.
-																people: new Map(
-																	[
-																		...(context.agentKind === "cofounder" ? [] : [context.agent]),
-																		...context.coworkers,
-																	].map((agent) => [agent.id, agent.name]),
-																),
-																peopleComplete: !context.coworkersTruncated,
-															}),
-														}
-													: {},
-											),
+											...cloudSidebarTools(binding, identity, this.#paths, {
+												folderSidebar: new CloudFolderSidebar({
+													folder: folder.client,
+													operations,
+													identity,
+													// The Co-Founder stays on top, outside the sections.
+													people: new Map(
+														[
+															...(context.agentKind === "cofounder" ? [] : [context.agent]),
+															...context.coworkers,
+														].map((agent) => [agent.id, agent.name]),
+													),
+													peopleComplete: !context.coworkersTruncated,
+												}),
+											}),
 											...cloudReviewRuleTools(binding, identity, this.#paths),
-											// save_attachment writes through the path gateway, which a folder-v2 company does not use (M2c-1);
-											// a folder-v2 run's agent changes the company's hooks through its folder client (E3a).
-											...cloudEventTools(
-												binding,
-												identity,
-												this.#paths,
-												context.folder ? undefined : gateway,
-												folder?.client,
-											),
+											// The agent changes the company's hooks through its folder client (E3a).
+											// save_attachment, which wrote through the path gateway, is not offered:
+											// no company run uses that gateway's files (M2c-1).
+											...cloudEventTools(binding, identity, this.#paths, undefined, folder.client),
 										]),
 								// Machines are the company's: any agent run in a company conversation may start and
 								// use them and hears about them in that conversation; a worker uses them like its agent
@@ -833,73 +860,57 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									: []),
 								// The notebook is the agent's own: a worker of the same agent recalls it,
 								// and writes to it only when its dispatch allows Company File writes.
-								...(notebooks
-									? notebooks.tools(
-											(files) => cloudMemoryTools(files, identity, undefined, agentFolders),
-											operations,
-										)
-									: cloudMemoryTools(gateway, identity, undefined, agentFolders)
-								).filter(
-									(tool) =>
-										tool.name === "recall_memory" || work.companyFile({ ...tool, name: "company_write" }),
-								),
+								...notebooks
+									.tools((files) => cloudMemoryTools(files, identity, agentFolders), operations)
+									.filter(
+										(tool) =>
+											tool.name === "recall_memory" || work.companyFile({ ...tool, name: "company_write" }),
+									),
 								// Skills the same way: every run reads and searches them. Only a company run saves one
 								// (a member's private conversation never feeds a shared library), and a worker only
 								// when its dispatch allows Company File writes.
-								...(notebooks
-									? notebooks.tools((files) => cloudSkillTools(files, identity, agentFolders), operations)
-									: cloudSkillTools(gateway, identity, agentFolders)
-								).filter(
-									(tool) =>
-										tool.name !== "update_skill" ||
-										(identity.audienceKind === "company" &&
-											work.companyFile({ ...tool, name: "company_write" })),
-								),
+								...notebooks
+									.tools((files) => cloudSkillTools(files, identity, agentFolders), operations)
+									.filter(
+										(tool) =>
+											tool.name !== "update_skill" ||
+											(identity.audienceKind === "company" &&
+												work.companyFile({ ...tool, name: "company_write" })),
+									),
 								...(identity.audienceKind === "company"
 									? [
 											...(work.isWorker
 												? []
-												: cloudHiringTools(
-														gateway,
-														identity,
-														undefined,
-														folder
-															? {
-																	folderHiring: new CloudFolderHiring({
-																		folder: folder.client,
-																		operations,
-																		identity,
-																	}),
-																	folderGroupChats: new CloudFolderGroupChats({
-																		folder: folder.client,
-																		operations,
-																		identity,
-																	}),
-																}
-															: {},
-													)),
+												: cloudHiringTools(gateway, identity, undefined, {
+														folderHiring: new CloudFolderHiring({
+															folder: folder.client,
+															operations,
+															identity,
+														}),
+														folderGroupChats: new CloudFolderGroupChats({
+															folder: folder.client,
+															operations,
+															identity,
+														}),
+													})),
 											...cloudWorkerTools(binding, identity, this.#paths, gateway, wake, {
 												machines: Boolean(this.#machines) && machinesAvailable,
-												...(folder
-													? {
-															folderTodos: new CloudFolderTodos({
-																folder: folder.client,
-																operations,
-																identity,
-																handle: folder.handle,
-															}),
-															folderWorkers: new CloudFolderWorkers({
-																folder: folder.client,
-																operations,
-																identity,
-																handle: folder.handle,
-																// A worker run's own folder, where it reports.
-																...(work.isWorker && typeof wake.payload.outputFolder === "string"
-																	? { outputFolder: wake.payload.outputFolder }
-																	: {}),
-															}),
-														}
-													: {}),
+												folderTodos: new CloudFolderTodos({
+													folder: folder.client,
+													operations,
+													identity,
+													handle: folder.handle,
+												}),
+												folderWorkers: new CloudFolderWorkers({
+													folder: folder.client,
+													operations,
+													identity,
+													handle: folder.handle,
+													// A worker run's own folder, where it reports.
+													...(work.isWorker && typeof wake.payload.outputFolder === "string"
+														? { outputFolder: wake.payload.outputFolder }
+														: {}),
+												}),
 											}),
 										]
 									: []),

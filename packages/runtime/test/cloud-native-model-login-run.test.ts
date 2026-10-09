@@ -81,9 +81,6 @@ async function fixture(options: {
 			async beginLogin() {
 				throw new Error("No login expected");
 			},
-			async execute() {
-				throw new Error("Legacy execution forbidden");
-			},
 		},
 		cloudRuntime: {
 			async execute(_request: NativeCompanyExecutionRequest, identityRoot: string) {
@@ -278,7 +275,7 @@ it("fails a vault run without the vault or when the vault refuses, and keeps no 
 					sendMessage: vi.fn(),
 				},
 				capsules: { get: vi.fn(), put: vi.fn() },
-				harness: { beginLogin: vi.fn(), execute: vi.fn() },
+				harness: { beginLogin: vi.fn() },
 				computeIdentityId,
 			}),
 	).toThrow("capsule key or the login vault");
@@ -319,7 +316,7 @@ it("leaves the usage check of a vault login to the vault", async () => {
 			recordAccountMetadata: vi.fn(),
 		},
 		capsules: f.capsules,
-		harness: { beginLogin: vi.fn(), execute: vi.fn() },
+		harness: { beginLogin: vi.fn() },
 		modelLogins: { issue: vi.fn() },
 		computeIdentityId,
 		temporaryRoot: f.temporaryRoot,

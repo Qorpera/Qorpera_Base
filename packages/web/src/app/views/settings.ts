@@ -2,6 +2,7 @@ import type { CloudApi } from "../../cloud/api.ts";
 import { CloudRpcError, describeError } from "../../cloud/client.ts";
 import type { CompanyComputerHours } from "../../cloud/computer-hours.ts";
 import { createWebConnectors } from "../../cloud/connectors.ts";
+import { createWebEventHooks } from "../../cloud/event-hooks.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { createWebReviewRules } from "../../cloud/review-rules.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
@@ -19,6 +20,7 @@ import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { renderPlan } from "./plan.ts";
 import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
+import { HooksView } from "./settings-hooks.ts";
 import { RulesView } from "./settings-rules.ts";
 import { ServicesView } from "./settings-services.ts";
 import { storageSummary } from "./storage-summary.ts";
@@ -72,7 +74,7 @@ const TABS = [
 		label: phrase("Company connections"),
 		icon: "connections",
 		keywords:
-			"services accounts gmail google drive github token secrets agents virksomhedens forbindelser tjenester konti hemmeligheder agenter",
+			"services accounts gmail google drive github token secrets agents webhooks hooks mailboxes mail email events virksomhedens forbindelser tjenester konti hemmeligheder agenter postkasser hændelser",
 	},
 ] as const;
 export type SettingsTab = (typeof TABS)[number]["id"];
@@ -120,6 +122,7 @@ export class SettingsView {
 	#companyLifetime = new AbortController();
 	#connections: ConnectionsView | undefined;
 	#services: ServicesView | undefined;
+	#hooks: HooksView | undefined;
 	#rules: RulesView | undefined;
 	/** General: the account's settings, then the rules of the company Settings show. */
 	readonly #accountPanel = h("div");
@@ -317,6 +320,7 @@ export class SettingsView {
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
 		this.#services?.dispose();
+		this.#hooks?.dispose();
 		this.#rules?.dispose();
 		this.#friends.dispose();
 		this.#payments.dispose();
@@ -406,31 +410,36 @@ export class SettingsView {
 					),
 				);
 			} else if (tab === "company-connections" && !this.#services) {
-				// Step 7 connectors. Company first: owners and admins manage them, everyone sees them.
-				this.#services = new ServicesView(
-					createWebConnectors(this.#api.cloud, {
-						profileId: company.profile.profileId,
-						environmentId: company.profile.environmentId,
-					}),
-					signal(),
-					{
-						access: {
-							canManage: () => {
-								const role = company.store.get().team?.role;
-								return role === "owner" || role === "admin";
-							},
-							memberName: (userId) =>
-								company.store.get().team?.members.find((member) => member.userId === userId)?.displayName ||
-								undefined,
-						},
+				// Step 7 connectors, then the company's webhooks and mailboxes. Company first:
+				// owners and admins manage them, everyone sees them.
+				const canManage = () => {
+					const role = company.store.get().team?.role;
+					return role === "owner" || role === "admin";
+				};
+				const environment = {
+					profileId: company.profile.profileId,
+					environmentId: company.profile.environmentId,
+				};
+				this.#services = new ServicesView(createWebConnectors(this.#api.cloud, environment), signal(), {
+					access: {
+						canManage,
+						memberName: (userId) =>
+							company.store.get().team?.members.find((member) => member.userId === userId)?.displayName ||
+							undefined,
 					},
-				);
+				});
+				this.#hooks = new HooksView(createWebEventHooks(this.#api.cloud, environment), signal(), {
+					access: { canManage },
+				});
 				this.#panels.set(
 					tab,
 					connectionsPage(
 						t("Company connections"),
-						t("The company's own accounts. Every agent can use them, and they stay when someone leaves."),
+						t(
+							"The company's own accounts, webhooks and mailboxes. Every agent can use them, and they stay when someone leaves.",
+						),
 						this.#services.el,
+						this.#hooks.el,
 					),
 				);
 			}
@@ -563,6 +572,8 @@ export class SettingsView {
 		this.#connections = undefined;
 		this.#services?.dispose();
 		this.#services = undefined;
+		this.#hooks?.dispose();
+		this.#hooks = undefined;
 		this.#rules?.dispose();
 		this.#rules = undefined;
 		if (this.#ownsCompany) this.#company?.stop();
@@ -584,6 +595,7 @@ export class SettingsView {
 					return;
 				}
 				this.#services?.update();
+				this.#hooks?.update();
 				this.#rules?.update();
 				this.#drawCompany();
 				// "Buy hours" is for founders: the plan tab follows the member's role once the team loads.

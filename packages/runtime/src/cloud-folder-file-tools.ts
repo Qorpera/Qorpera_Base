@@ -43,15 +43,15 @@ const MAX_READ_BYTES = 4096;
 const MAX_WRITE_BYTES = 32 * 1024;
 const MAX_LIST = 50;
 /** The model's operation key, as the legacy tools take it. */
-const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
-const TOOL_VERSION = "folder-v2/1";
+export const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
+export const TOOL_VERSION = "folder-v2/1";
 const TEXT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 type MutationTool = "company_write" | "company_mkdir" | "company_delete";
 
 /** One release id per tool call and output: a replay of the same call showing the same text releases under the same
  * id, and one that shows something else gets its own. */
-function releaseId(runId: string, callId: string, outputSha256: string): string {
+export function releaseId(runId: string, callId: string, outputSha256: string): string {
 	const hex = createHash("sha256")
 		.update(`qorpera.company-file-release/v1:${runId}:${callId}:${outputSha256}`)
 		.digest("hex");
@@ -66,7 +66,7 @@ export function args(value: JsonValue, tool: string, keys: readonly string[]): R
 	return value as Record<string, JsonValue>;
 }
 
-function path(value: JsonValue | undefined, root: boolean): string {
+export function path(value: JsonValue | undefined, root: boolean): string {
 	try {
 		return parseCloudCompanyPath(value as string, root);
 	} catch {
@@ -82,7 +82,7 @@ export function integer(value: JsonValue | undefined, label: string, minimum: nu
 	return value;
 }
 
-function operationKey(value: JsonValue | undefined): string {
+export function operationKey(value: JsonValue | undefined): string {
 	if (typeof value !== "string" || !OPERATION_KEY.test(value))
 		throw new CloudToolArgumentRefusal(
 			"operationKey must be 1 to 192 letters, digits or . _ : -, starting with a letter or digit",
@@ -90,7 +90,7 @@ function operationKey(value: JsonValue | undefined): string {
 	return value;
 }
 
-function version(value: JsonValue | undefined, nullable: boolean): string | null {
+export function version(value: JsonValue | undefined, nullable: boolean): string | null {
 	if (value === null && nullable) return null;
 	if (typeof value !== "string" || !UUID_PATTERN.test(value))
 		throw new CloudToolArgumentRefusal(
@@ -175,7 +175,7 @@ function mutationText(
 							: reason === "review_required"
 								? tool === "company_delete"
 									? "Nothing was deleted: the deletion needs the automatic review's approval of this call. Call again, and if this repeats tell the member."
-									: "Nothing was written: this change needs a review, so it is made with its own tool (hire_agent, create_group_chat, manage_routine), not with a file write."
+									: "Nothing was written: this change needs a review, so it is made with its own tool (hire_agent, create_group_chat, manage_routine, save_interface), not with a file write."
 								: unit.outcome === "denied"
 									? "COMPANY_FILE_ACCESS_DENIED: you may not change this path; nothing was written."
 									: `Nothing was written (${reason || "refused"})${unit.problems.length ? ": fix the problems listed and call again with a new operationKey" : ""}.`;

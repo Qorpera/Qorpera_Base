@@ -34,8 +34,10 @@ import {
 	parseCompanyComputerStartDescriptor,
 } from "./cloud-company-computer-start.ts";
 import type { CompanyComputerCloudEndpoint } from "./cloud-company-computer-tools.ts";
+import type { EventHookFillAnswer, EventHookFillRequest, EventHookRefusal } from "./cloud-event-hook-vault.ts";
 import { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
 import { type CloudNativeToolRun, cloudToolRequest, isNativeJobHolder } from "./cloud-native-tool-authority.ts";
+import { CloudToolAuthorizeRefusal } from "./cloud-native-tool-boundary.ts";
 import { cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations.ts";
 
 /** The vault, for a vault_fill (company accounts A1-3): HttpCloudSecretBrokerClient. */
@@ -44,6 +46,11 @@ export interface CompanyComputerAccountFills {
 		request: CompanyAccountFillRequest,
 		signal: AbortSignal,
 	): Promise<CompanyAccountFillAnswer | CompanyAccountRefusal>;
+}
+
+/** The vault, for a vault_fill of a signed hook's secret (E3b-3): HttpCloudSecretBrokerClient. */
+export interface CompanyComputerHookFills {
+	eventHookFill(request: EventHookFillRequest, signal: AbortSignal): Promise<EventHookFillAnswer | EventHookRefusal>;
 }
 
 export const COMPANY_COMPUTER_NATIVE_SCHEMA = "qorpera.company-computer-native/v1";
@@ -125,6 +132,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 	readonly #holder: () => string;
 	readonly #fetch: typeof fetch;
 	readonly #accountFills: CompanyComputerAccountFills | undefined;
+	readonly #hookFills: CompanyComputerHookFills | undefined;
 	readonly #screenshots: Pick<CloudCompanyComputerScreenshots, "holdInline"> | undefined;
 	readonly #leases = new Map<string, CompanyComputerScreenLease>();
 	#closed = false;
@@ -139,6 +147,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		registry: HttpCloudCompanyComputerRegistry;
 		fetch?: typeof fetch;
 		accountFills?: CompanyComputerAccountFills;
+		hookFills?: CompanyComputerHookFills;
 		/** The run's capture reader, which keeps a screenshot's pixels from its perform answer for the model. */
 		screenshots?: Pick<CloudCompanyComputerScreenshots, "holdInline">;
 	}) {
@@ -158,6 +167,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		this.#holder = options.holder;
 		this.#fetch = options.fetch ?? fetch;
 		this.#accountFills = options.accountFills;
+		this.#hookFills = options.hookFills;
 		this.#screenshots = options.screenshots;
 		this.#effects = new CloudCompanyComputerEffectControl({
 			run: options.run,
@@ -193,6 +203,10 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 	): Promise<void> {
 		this.#validate(operation, lease);
 		if (!isDeepStrictEqual(identity, this.#run.identity)) throw new Error("OFFICE_NATIVE_IDENTITY_CHANGED");
+		// Company objects carried a transfer's bytes and are gone (legacy removal, step C). The refusal is the tool's
+		// answer, in words for the model, before the database or any receipt, as the database refuses a screenshot.
+		if (operation.tool === "computer_transfer")
+			throw new CloudToolAuthorizeRefusal("File transfer is not available on this computer yet.");
 		await this.#effects.assertAuthorized({ operation, identity, lease, receipt: null }, signal);
 	}
 	async #call(
@@ -255,26 +269,37 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		await this.#run.assertActive(signal);
 		// A vault_fill: the vault seals the value to the boot key of the computer this lease holds, for exactly
 		// this call (the receipt's input digest is this envelope's), and this host only carries the box. A
-		// refusal (accounts switched off, no such account, an older computer) is the call's answer, unsent.
+		// refusal (accounts switched off, no such account, an older computer) is the call's answer, unsent. A signed
+		// hook's secret (E3b-3) comes the same way, from the vault's hook route.
 		let fill: Readonly<Record<string, string>> | undefined;
 		const action = operation.arguments as { kind?: unknown; action?: unknown };
 		if (action.kind === "browser" && action.action === "vault_fill") {
-			const answer = this.#accountFills
-				? await this.#accountFills.companyAccountFill(
-						{
-							binding: this.#run.binding,
-							receiptId: context.receiptId,
-							idempotencyKey: context.idempotencyKey,
-							envelope: cloudNativeToolOperationEnvelope(this.#run.identity, operation),
-						},
-						signal,
-					)
-				: ({
-						schema: "qorpera.company-account-refusal/v1",
-						code: "0A000",
-						message: "Company accounts are not set up for this company's computers",
-					} as const);
-			if (answer.schema !== "qorpera.company-account-fill-answer/v1")
+			const request = {
+				binding: this.#run.binding,
+				receiptId: context.receiptId,
+				idempotencyKey: context.idempotencyKey,
+				envelope: cloudNativeToolOperationEnvelope(this.#run.identity, operation),
+			};
+			const answer =
+				"hook" in action
+					? this.#hookFills
+						? await this.#hookFills.eventHookFill(request, signal)
+						: ({
+								schema: "qorpera.event-hook-refusal/v1",
+								code: "0A000",
+								message: "Signed hooks are not set up for this company's computers",
+							} as const)
+					: this.#accountFills
+						? await this.#accountFills.companyAccountFill(request, signal)
+						: ({
+								schema: "qorpera.company-account-refusal/v1",
+								code: "0A000",
+								message: "Company accounts are not set up for this company's computers",
+							} as const);
+			if (
+				answer.schema !== "qorpera.company-account-fill-answer/v1" &&
+				answer.schema !== "qorpera.event-hook-fill-answer/v1"
+			)
 				return {
 					kind: "json",
 					value: {
@@ -361,6 +386,8 @@ export function createHttpCompanyComputerSessionFactory(options: {
 	fetch?: typeof fetch;
 	/** The vault, for vault_fill (A1-3); without it every fill is refused before the office. */
 	accountFills?: CompanyComputerAccountFills;
+	/** The vault, for vault_fill of a signed hook's secret (E3b-3); without it every such fill is refused likewise. */
+	hookFills?: CompanyComputerHookFills;
 }): CloudCompanyComputerSessionFactory {
 	// One computer, or every computer of the company: the run reaches the one its screen is on.
 	const route = parseCompanyComputerNativeRoute(options.url);

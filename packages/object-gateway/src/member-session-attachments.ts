@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isDeepStrictEqual } from "node:util";
 import { boundedObjectOperation, ObjectDependencyError } from "./dependency.ts";
-import type { MemberCompanyFileOptions } from "./member-company-file.ts";
+import type { MemberCompanyFileOptions } from "./member-company-authority.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MEDIA = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);

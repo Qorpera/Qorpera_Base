@@ -7,7 +7,11 @@ import { COMPANY_COMPUTER_PRIVATE_VALUE, companyComputerUrlForms } from "./cloud
  * or one of its sign-in hosts, over https, and the box must be the kind the field names. The value is
  * typed with CDP Input.insertText, so it never passes the X server (no keystrokes another program on the
  * screen could read), and a box for a secret is marked private first, so every snapshot, screenshot mask
- * and whole-screen check treats it as a password box from then on. */
+ * and whole-screen check treats it as a password box from then on.
+ *
+ * A signed hook's secret (E3b-3) goes the same way onto the hook's site. A website's box for it is often a
+ * text box: the fill makes it a password box, so the secret is never drawn on the screen, and types only
+ * while the box still reads back as one. */
 
 /** Set on a box the vault filled; the private-field selector covers it. */
 export const COMPANY_ACCOUNT_FILLED_ATTRIBUTE = "data-qorpera-private";
@@ -18,7 +22,9 @@ export type CompanyAccountFillRefusal =
 	| "ACCOUNT_FILL_IN_FRAME"
 	| "ACCOUNT_FILL_UNCONFIRMED"
 	/** The value went where it cannot be emptied (a closed shadow root, an editable area): the tab must go. */
-	| "ACCOUNT_FILL_LOST";
+	| "ACCOUNT_FILL_LOST"
+	/** A hook's secret: the page kept its box from being a password box (or made it show again, and it was emptied). */
+	| "ACCOUNT_FILL_NOT_HIDDEN";
 
 export class CompanyAccountFillRefusedError extends Error {
 	readonly reason: CompanyAccountFillRefusal;
@@ -44,26 +50,29 @@ export function companyAccountFillHost(url: string, hosts: readonly string[]): s
 /** The parts of a page's box the fill reads (the runtime has no DOM types). */
 interface PageBox {
 	readonly tagName: string;
-	readonly type: string;
+	type: string;
 	readonly disabled: boolean;
 	readonly readOnly: boolean;
 	value: string;
 	setAttribute(name: string, value: string): void;
 }
 
-/** What the box must be for each field: a password box for a password, a text-like box otherwise. */
+/** What the box must be for each field: a password box for a password, a text-like box otherwise. A hook's
+ * secret takes a text box too, which becomes a password box before anything is typed. */
 const BOX_TYPES: Readonly<Record<CompanyAccountFill["field"], readonly string[]>> = {
 	login: ["text", "email", "tel"],
 	password: ["password"],
 	new_password: ["password"],
 	code: ["text", "tel", "number", "password"],
+	signing_secret: ["text", "password"],
 };
 
 /**
  * Types the opened value into the one box `box` names on `page`. Refuses (nothing typed) a page that is not
- * the account's, a box inside a frame, or a box of the wrong kind; refuses after typing when the value did not
- * land whole in that box (a website that reshapes input, or moved the focus meanwhile), so the agent looks again.
- * A value that landed in another box is marked private and emptied there.
+ * the account's, a box inside a frame, or a box of the wrong kind (for a hook's secret, also one that does not stay
+ * a password box); refuses after typing when the value did not land whole in that box (a website that reshapes
+ * input, or moved the focus meanwhile), so the agent looks again. A value that landed in another box is marked
+ * private and emptied there.
  */
 export async function fillCompanyAccountBox(page: Page, box: Locator, fill: CompanyAccountFill): Promise<void> {
 	if (companyAccountFillHost(page.url(), fill.hosts) === null)
@@ -75,20 +84,27 @@ export async function fillCompanyAccountBox(page: Page, box: Locator, fill: Comp
 		if ((await handle.ownerFrame()) !== page.mainFrame())
 			throw new CompanyAccountFillRefusedError("ACCOUNT_FILL_IN_FRAME");
 		const types = BOX_TYPES[fill.field];
+		// A hook's secret is never drawn on the screen, whatever box the website gave it.
+		const hide = fill.field === "signing_secret";
 		// Marks the box before any value reaches it; answers whether it is a usable box of the right kind.
-		// A login is no secret: its box stays readable to the agent.
+		// A login is no secret: its box stays readable to the agent. A hook's box becomes a password box.
 		const usable = await handle.evaluate(
-			(node, { types, attribute }) => {
+			(node, { types, attribute, hide }) => {
 				const element = node as unknown as PageBox;
 				// An input only: the type of anything else is not a box's.
 				if (element.tagName !== "INPUT") return false;
 				if (element.disabled || element.readOnly || !types.includes(element.type)) return false;
 				if (attribute) element.setAttribute(attribute, "");
+				if (hide) element.type = "password";
 				return true;
 			},
-			{ types: [...types], attribute: fill.field === "login" ? null : COMPANY_ACCOUNT_FILLED_ATTRIBUTE },
+			{ types: [...types], attribute: fill.field === "login" ? null : COMPANY_ACCOUNT_FILLED_ATTRIBUTE, hide },
 		);
 		if (!usable) throw new CompanyAccountFillRefusedError("ACCOUNT_FILL_WRONG_BOX");
+		// The box's type read back in a call of its own, after the page's scripts had their turn: a page that undid
+		// the change (or never let it happen) never shows the secret.
+		if (hide && (await handle.evaluate((element) => (element as unknown as PageBox).type)) !== "password")
+			throw new CompanyAccountFillRefusedError("ACCOUNT_FILL_NOT_HIDDEN");
 		// A page that moves the focus when it finishes loading has done so before the value goes in.
 		await page.waitForLoadState("load", { timeout: 5_000 }).catch(() => undefined);
 		// Empty the box and give it the focus, then insert the value where the focus is.
@@ -99,36 +115,49 @@ export async function fillCompanyAccountBox(page: Page, box: Locator, fill: Comp
 			throw new CompanyAccountFillRefusedError("ACCOUNT_FILL_WRONG_SITE");
 		const session = await page.context().newCDPSession(page);
 		try {
-			const focused = await handle.evaluate(
-				(element) =>
-					element === (globalThis as unknown as { document: { activeElement: unknown } }).document.activeElement,
+			// The box has the focus, and a hook's box is still a password box, just before the value goes in.
+			const ready = await handle.evaluate(
+				(element, hide) =>
+					element !== (globalThis as unknown as { document: { activeElement: unknown } }).document.activeElement
+						? "moved"
+						: hide && (element as unknown as PageBox).type !== "password"
+							? "shown"
+							: "ready",
+				hide,
 			);
-			if (!focused) throw new CompanyAccountFillRefusedError("ACCOUNT_FILL_WRONG_BOX");
+			if (ready === "shown") throw new CompanyAccountFillRefusedError("ACCOUNT_FILL_NOT_HIDDEN");
+			if (ready !== "ready") throw new CompanyAccountFillRefusedError("ACCOUNT_FILL_WRONG_BOX");
 			await session.send("Input.insertText", { text: fill.value });
 		} finally {
 			await session.detach().catch(() => undefined);
 		}
-		// Where the value went. Whole in the box: done, even if the page has moved the focus on since (a code box
-		// that advances). Otherwise a page script moved the focus between the check and the typing: the value is in
-		// the box that has the focus now, inside open shadow roots too, which is marked private and emptied; where it
-		// cannot be emptied, the value is lost to the page and the caller closes the tab.
+		// Where the value went. A hook's box that shows its text again is emptied first. Whole in the box: done, even
+		// if the page has moved the focus on since (a code box that advances). Otherwise a page script moved the focus
+		// between the check and the typing: the value is in the box that has the focus now, inside open shadow roots
+		// too, which is marked private and emptied; where it cannot be emptied, the value is lost to the page and the
+		// caller closes the tab.
 		const landed = await handle.evaluate(
-			(element, { attribute, length }) => {
-				if ((element as unknown as PageBox).value.length === length) return "filled";
+			(element, { attribute, length, hide }) => {
+				const filled = element as unknown as PageBox;
+				const shown = hide && filled.type !== "password";
+				const whole = filled.value.length === length;
+				if (shown) filled.value = "";
+				if (whole) return shown ? "shown" : "filled";
 				interface Focus extends PageBox {
 					shadowRoot?: { activeElement: Focus | null } | null;
 				}
 				let active = (globalThis as unknown as { document: { activeElement: Focus | null } }).document
 					.activeElement;
 				while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
-				if (!active || active === (element as unknown)) return "short";
+				if (!active || active === (element as unknown)) return shown ? "shown" : "short";
 				if (typeof active.value !== "string") return "lost";
 				active.setAttribute(attribute, "");
 				active.value = "";
-				return "emptied";
+				return shown ? "shown" : "emptied";
 			},
-			{ attribute: COMPANY_ACCOUNT_FILLED_ATTRIBUTE, length: fill.value.length },
+			{ attribute: COMPANY_ACCOUNT_FILLED_ATTRIBUTE, length: fill.value.length, hide },
 		);
+		if (landed === "shown") throw new CompanyAccountFillRefusedError("ACCOUNT_FILL_NOT_HIDDEN");
 		if (landed === "lost") throw new CompanyAccountFillRefusedError("ACCOUNT_FILL_LOST");
 		if (landed !== "filled") throw new CompanyAccountFillRefusedError("ACCOUNT_FILL_UNCONFIRMED");
 	} finally {
