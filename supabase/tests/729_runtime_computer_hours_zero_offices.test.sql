@@ -7,9 +7,9 @@
 --     zero, and the computer says it waits for hours.
 --   * Once hours are added the wake is handed over, before the next sweep, and it stays handed over
 --     if the company runs out again (the provider may have begun the resume).
--- 718's fixture on 924's folder-v2 company: the office, its start and activation (fixtures/runtime-office-idle-cases.sql),
--- with Alice's live run holding a screen lease. The pause is the folder-v2 operator pause (qorpera_folder_pause, lifted
--- by qorpera_folder_resume).
+-- 718's fixture on 924's folder-v2 company: the office, its start and activation (as in the deleted
+-- fixtures/runtime-office-idle-cases.sql), with Alice's live run holding a screen lease. The pause is the folder-v2
+-- operator pause (qorpera_folder_pause, lifted by qorpera_folder_resume).
 
 create function pg_temp.hz_office() returns public.qorpera_runtime_offices language sql as $$
 	select o.* from public.qorpera_runtime_offices o

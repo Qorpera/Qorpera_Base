@@ -1,6 +1,6 @@
 -- Closed reset authority surface: private tables, service-only RPCs, strict
 -- plan/custody/restore/successor validation and refusal without an enrolled
--- office. The full phase chain runs in scripts/test-runtime-office-reset.mjs
+-- office. The full phase chain runs in scripts/test-runtime-office-delete-disposition.mjs
 -- against a real office fixture with synthetic physical observations.
 begin;
 

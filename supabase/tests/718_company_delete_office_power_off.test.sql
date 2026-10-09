@@ -4,7 +4,8 @@
 -- and so does a pause (the folder-v2 operator pause, qorpera_folder_pause); deleting the company turns the next check
 -- into a power_off request, and the deletion waits for the computer's machine. 405's office fixture on 924's folder-v2
 -- company: the owner's computer 1, with Alice's live run holding a screen lease. The provider, start and activation
--- below are the SQL policy fixture of fixtures/runtime-office-idle-cases.sql; physical activation evidence is synthetic.
+-- below are the SQL policy fixture of the deleted fixtures/runtime-office-idle-cases.sql; physical activation evidence
+-- is synthetic.
 reset role;
 update public.qorpera_runtime_offices set state='provisioning';
 select pg_temp.base_claims('service_role');

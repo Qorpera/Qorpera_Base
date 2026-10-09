@@ -227,15 +227,14 @@ export const STEPS = [
 			/^scripts\/test-runtime-[a-z-]+-cases\.mjs$/,
 			/^scripts\/fixtures\/email-draft-e2e/,
 			/^packages\/runtime\/src\/cloud-(secret|connector)-/,
-			// The production review and wake bus scripts check SQL output with these parsers.
-			/^packages\/runtime\/src\/cloud-(native-company-context|native-tool-authority|wake-bus)\.ts$/,
-			/^packages\/runtime\/test\/fixtures\/wake-policies\.json$/,
+			// The office delete-disposition script bundles the Company Computer's startup and screen publishers, and the
+			// runtime files they import.
+			/^packages\/runtime\/src\/cloud-(company-computer-(startup|screen-lifecycle|screen-outbox|registry-http)|native-tool-authority|control-errors|runtime-observability|runtime-policy)\.ts$/,
 			/^packages\/runner-orchestrator\/src\/lxd-office-[a-z-]+-control\.ts$/,
 			/^packages\/web\/src\/cloud\/email-drafts\.ts$/,
 			// The folder service's parsers and tree, checked against the folder core's own answers. The folder core's
 			// acceptance script (F3-3c) also runs its writes, staging and mounts on the real commit. Not server.ts or cli.ts.
 			/^packages\/object-gateway\/src\/folder-service\/(core|view-tree|https-request|service|staging|mounts|machines|plan|pending|protocol|objects|search)\.ts$/,
-			/^scripts\/test-runtime-wake-envelope\.mjs$/,
 			// The connection-file writer's script runs the gateway's writer and the shared state-file parser on SQL.
 			// So does company creation's worker script (P14b). The folder core's acceptance script also runs the
 			// gateway's handler, its folder service route and its Supabase authority (F3-3c), and member folder commits.

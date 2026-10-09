@@ -13,7 +13,7 @@
 --    the company's computer, a live signed hook of the run's company and its secret sealed for this authority; A1's fill
 --    refuses a hook's call; a removal revokes the secret;
 -- D. the browser action's hook variant, the grants, the marker, and the bodies' order.
--- The races (a held hook, a held secret) are left to the broker's route (E3b-2) on a committed fixture.
+-- The races (a retried opening, a taken name, a held hook, a held secret) are 948's, on this fixture committed.
 
 -- The company's broker authority, no public URL (the answer's hook then has no url), and A1's switch off (the fill of a
 -- hook's secret is not the accounts').

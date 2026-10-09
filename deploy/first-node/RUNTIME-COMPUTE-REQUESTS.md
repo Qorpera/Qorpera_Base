@@ -47,7 +47,7 @@ not promise one snapshot across calls. Retained terminal requests remain in the
 view; no automatic deletion or new retention policy is added. Member, anonymous,
 guest and secret-broker access remain unavailable.
 
-Run `node scripts/test-runtime-compute-requests.mjs` for the disposable PostgreSQL
+Run `node scripts/test-runtime-compute-requests.mjs` (deleted in the legacy sweep) for the disposable PostgreSQL
 proof. Actual member start/login, company/node reservation, cancellation and
 dispatch-release RPCs are exercised. Extra offered dispatch rows and host
 measurements are explicit fixtures. The proof creates a failure before applying

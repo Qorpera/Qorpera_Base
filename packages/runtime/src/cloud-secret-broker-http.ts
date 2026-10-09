@@ -22,6 +22,13 @@ import {
 	connectorReturnLocation,
 } from "./cloud-connector-oauth.ts";
 import {
+	EVENT_HOOK_REQUEST_SCHEMA,
+	type EventHookAnswer,
+	type EventHookRequest,
+	parseEventHookAnswer,
+	parseEventHookRequest,
+} from "./cloud-event-hook-vault.ts";
+import {
 	type CloudModelLoginVault,
 	type ModelLoginIssue,
 	type ModelLoginIssueRequest,
@@ -752,6 +759,15 @@ export class HttpCloudSecretBrokerService {
 				response(reply, 200, answer as unknown as JsonValue);
 				return;
 			}
+			// An agent's manage_hook create of a signed hook (E3b-2): the hook's receipt or the database's refusal; the
+			// secret never leaves here. Same token, routing and lease proof; inside the client's 15 s.
+			if (path === "/v1/event-hooks" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
+				const hookRequest = parseEventHookRequest(await readRequest(request));
+				await this.#proven(request, hookRequest.binding);
+				const answer = await scope.broker.eventHook(hookRequest, AbortSignal.timeout(12_000));
+				response(reply, 200, answer as unknown as JsonValue);
+				return;
+			}
 			// A member's sign-in to the vault (Stateless Compute step 1, change 2B). The login
 			// gateway chooser names `<origin>/v1/model-logins/<company>/`; the web client's edge
 			// function posts its unchanged sign-in request there, server to server, with the
@@ -1088,6 +1104,40 @@ export class HttpCloudSecretBrokerClient {
 				}
 			},
 			35_000,
+			signal,
+		);
+	}
+
+	/** One signed manage_hook create (E3b-2): the hook's receipt, or the database's refusal in its own words. */
+	async eventHook(request: EventHookRequest, signal: AbortSignal): Promise<EventHookAnswer> {
+		return withCloudDeadline(
+			async (requestSignal) => {
+				const responseValue = await this.#fetch(`${this.#origin}/v1/event-hooks?company=${this.#companyId}`, {
+					method: "POST",
+					redirect: "error",
+					headers: {
+						authorization: `Bearer ${this.#runtimeToken}`,
+						"x-qorpera-identity": this.#holder(),
+						"content-type": "application/json",
+					},
+					body: cloudToolJsonText({ schema: EVENT_HOOK_REQUEST_SCHEMA, ...request }),
+					signal: requestSignal,
+				});
+				if (!responseValue.ok) {
+					void responseValue.body?.cancel().catch(() => undefined);
+					throw new Error("Cloud secret broker rejected the event hook call");
+				}
+				const bytes = await readBoundedCloudResponse(responseValue, MAX_RESPONSE_BYTES, requestSignal);
+				try {
+					return parseEventHookAnswer(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+				} catch {
+					throw new Error("Cloud secret broker returned invalid data");
+				} finally {
+					bytes.fill(0);
+				}
+			},
+			// Past the broker's 12 s, inside the folder client's 20 s.
+			15_000,
 			signal,
 		);
 	}

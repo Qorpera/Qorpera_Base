@@ -31,7 +31,7 @@ select public.qorpera_bind_execution_host_credential('qorpera-exec-other', 'othe
 reset role;
 
 -- Row locks show only across connections, so 924's fixture and this one are committed here and removed again at the end
--- (the harness of 602, 746, 793 and 861): the test refuses to run beside other connections to this database, whose rows
+-- (the harness of 746, 793 and 861): the test refuses to run beside other connections to this database, whose rows
 -- the cleanup could not tell from its own.
 reset role;
 select set_config('qorpera_test.base_binding', current_setting('qorpera_test.base_binding'), false);
@@ -115,7 +115,7 @@ create function pg_temp.r863_pid(p_connection text) returns integer language sql
 	select current_setting('qorpera_test.r863_' || p_connection || '_pid')::integer
 $$;
 
--- At the end: remove what the test committed, as 602, 746, 793 and 861 do.
+-- At the end: remove what the test committed, as 746, 793 and 861 do.
 create function pg_temp.r863_cleanup() returns void language plpgsql as $$
 declare v_table text; v_columns text; v_expected bigint; v_count bigint; v_wrong text[] := '{}'; v_first xid := current_setting('qorpera_test.r863_first_xid')::xid;
 begin

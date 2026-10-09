@@ -11,7 +11,7 @@ begin
 end $$;
 
 -- Row locks show only across connections, so the fixture is committed here and removed again at the end (the
--- harness of 602, 746 and 793): the test refuses to run beside other connections to this database, whose rows the
+-- harness of 746 and 793): the test refuses to run beside other connections to this database, whose rows the
 -- cleanup could not tell from its own.
 reset role;
 select set_config('qorpera_test.r812_first_xid', xid(pg_current_xact_id())::text, false);
@@ -98,7 +98,7 @@ create function pg_temp.r812_view_state(p_view jsonb) returns text language sql 
 		from public.qorpera_folder_views where id = %L$q$, p_view ->> 'viewId')) as v(state text, reason text)
 $$;
 
--- At the end: remove what the test committed, as 602, 746 and 793 do.
+-- At the end: remove what the test committed, as 746 and 793 do.
 create function pg_temp.r812_cleanup() returns void language plpgsql as $$
 declare v_table text; v_columns text; v_expected bigint; v_count bigint; v_wrong text[] := '{}'; v_first xid := current_setting('qorpera_test.r812_first_xid')::xid;
 begin
