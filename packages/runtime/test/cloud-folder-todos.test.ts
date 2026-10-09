@@ -314,6 +314,11 @@ it("lists the todos from the index, newest first, and reads one todo's whole con
 	);
 	await todos.list({ todoKey: "call-the-bank" }, { ...f.context, callId: "one" }, fits);
 	expect((f.releases.at(-1) as { p_release_id: string }).p_release_id).not.toBe(releaseId);
+	// A page shows one todo even when none fits, so a walk always moves on.
+	expect(parse(await todos.list({}, f.context, () => false))).toMatchObject({
+		todos: [{ todoKey: "book-the-room" }],
+		moreTodos: 1,
+	});
 	// A page that fits one todo continues from the index's cursor.
 	const first = parse(await todos.list({}, f.context, (text) => text.split('"todoKey"').length <= 2));
 	expect(first).toMatchObject({ todos: [{ todoKey: "book-the-room" }], moreTodos: 1 });
