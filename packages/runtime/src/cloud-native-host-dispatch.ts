@@ -77,6 +77,8 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_memory_branches", "standard"],
 	["qorpera_memory_release", "standard"],
 	["qorpera_memory_run_log_place", "standard"],
+	["qorpera_memory_run_resume", "standard"],
+	["qorpera_memory_run_resume_record", "standard"],
 	["qorpera_memory_step_hashes", "standard"],
 	["qorpera_memory_step_narrow", "standard"],
 	["qorpera_memory_view", "standard"],
