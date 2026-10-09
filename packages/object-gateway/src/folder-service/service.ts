@@ -2,8 +2,8 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import { companyStatePath } from "@qorpera/cloud-client/company-state-files";
 import { memberFolderStructured } from "../member-folder-commits.ts";
 import {
-	type CommitAnswer,
 	type CommitActor,
+	type CommitAnswer,
 	type ConflictCopy,
 	CoreRefusal,
 	type FeedCursor,
