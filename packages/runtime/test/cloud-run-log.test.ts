@@ -647,7 +647,11 @@ describe("a run's work log", () => {
 		const lines = folder.all();
 		expect(lines.map((line) => line.tool)).toEqual([...hashOnly, "coding_run_command"]);
 		for (const line of lines.slice(0, -1))
-			expect(line).toMatchObject({ args: "", args_bytes: Buffer.byteLength(text), args_hash: keyed(runId, sha(text)) });
+			expect(line).toMatchObject({
+				args: "",
+				args_bytes: Buffer.byteLength(text),
+				args_hash: keyed(runId, sha(text)),
+			});
 		expect(lines.at(-1)).toMatchObject({
 			args: command,
 			args_bytes: Buffer.byteLength(command),
