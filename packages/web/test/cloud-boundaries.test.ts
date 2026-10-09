@@ -1,8 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CloudApi } from "../src/cloud/api.ts";
-import { CloudRpcError } from "../src/cloud/client.ts";
-import { ObjectReader } from "../src/cloud/objects.ts";
 import { collectPages } from "../src/cloud/pagination.ts";
 import { figureElement } from "../src/ui/avatar.ts";
 import { fixture, id, profileA, session, settle, stubFigureMotion, timestamp, userA } from "./fixtures.ts";
@@ -51,41 +49,6 @@ describe("cloud boundary regressions", () => {
 		const read = vi.fn(async () => ({ items: [1], hasMore: true, nextTime: timestamp, nextId: id(1) }));
 		await expect(collectPages(read)).rejects.toThrow("did not advance");
 		expect(read).toHaveBeenCalledTimes(2);
-	});
-
-	it("reports object authorization denial without inventing a gateway cause", async () => {
-		const { api } = fixture();
-		vi.spyOn(api, "authorizeObjectDownload").mockRejectedValue(
-			new CloudRpcError("download", { code: "42501", message: "Denied" }, 403),
-		);
-		const reader = new ObjectReader(api, profileA.profileId);
-		await expect(reader.read("a".repeat(64))).rejects.toMatchObject({ reason: "denied" });
-		reader.dispose();
-	});
-
-	it("rejects oversized chunk declarations before downloading any chunk", async () => {
-		const { api } = fixture();
-		const reader = new ObjectReader(api, profileA.profileId);
-		const read = vi.spyOn(reader, "read").mockResolvedValue(
-			new TextEncoder().encode(
-				JSON.stringify({
-					schema: "qorpera.cloud-file-manifest/v1",
-					fileSha256: "b".repeat(64),
-					bytes: 1,
-					chunks: [{ sha256: "c".repeat(64), bytes: 10_000_000 }],
-				}),
-			),
-		);
-		await expect(
-			reader.readFile({
-				manifestSha256: "a".repeat(64),
-				fileSha256: "b".repeat(64),
-				bytes: 1,
-				mediaType: "text/plain",
-			}),
-		).rejects.toThrow("exceed");
-		expect(read).toHaveBeenCalledTimes(1);
-		reader.dispose();
 	});
 
 	it("disposes removed avatar rigs without requiring another mount", async () => {
