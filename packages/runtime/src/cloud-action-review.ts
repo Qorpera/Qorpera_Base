@@ -194,6 +194,8 @@ export function cloudActionEffect(
 		case "list_hooks":
 		case "read_event":
 		case "find_mail":
+		// Summary trees (M1b-3): a conversation's lines and messages, as read_context reads the run's own.
+		case "zoom":
 			return "read";
 		// A skill is guidance in the Company File, written through the same governed gateway; deleting one is a
 		// deletion, as company_delete (and on folder-v2 its approval is recorded the same way, P20).
