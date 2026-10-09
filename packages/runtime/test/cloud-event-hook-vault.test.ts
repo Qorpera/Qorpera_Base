@@ -14,7 +14,11 @@ import {
 	type CloudSecretBrokerAuthority,
 	PostgresCloudSecretBrokerAuthority,
 } from "@qorpera/runtime/cloud-secret-broker";
-import { HttpCloudSecretBrokerClient, HttpCloudSecretBrokerService } from "@qorpera/runtime/cloud-secret-broker-http";
+import {
+	HttpCloudSecretBrokerClient,
+	HttpCloudSecretBrokerService,
+	type NativeBindingProof,
+} from "@qorpera/runtime/cloud-secret-broker-http";
 import { CloudSecretKeyring } from "@qorpera/runtime/cloud-secret-crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
@@ -445,22 +449,35 @@ describe("event hooks over the broker", () => {
 		};
 		const runtimeToken = randomBytes(32).toString("base64url");
 		const codingExecutorToken = randomBytes(32).toString("base64url");
+		// G2-6a: the database's lease proof stands in here (its own test is 986): only the run's own lease token, as
+		// `job.<the binding's job>.<lease token>`, proves a request's binding.
+		const lease = randomBytes(32).toString("base64url");
+		const holderOf = (request: { binding: object }) =>
+			`job.${(request.binding as { jobId: string }).jobId.toLowerCase()}.${lease}`;
+		const proveBinding = vi.fn<NativeBindingProof>(async (binding, presented) => {
+			if (presented !== holderOf({ binding })) throw new Error("native binding proof is refused");
+		});
 		const service = new HttpCloudSecretBrokerService(
 			new CloudSecretBroker({ authority, keyring: f.keyring, adapters: [] }),
 			runtimeToken,
-			{ codingExecutorToken },
+			{ codingExecutorToken, proveBinding },
 		);
 		services.push(service);
 		const port = await service.start();
-		const client = (token = runtimeToken) =>
+		const request = hookRequest();
+		const client = (holder = holderOf(request), token = runtimeToken) =>
 			new HttpCloudSecretBrokerClient({
 				origin: `http://127.0.0.1:${port}`,
 				runtimeToken: token,
 				companyId,
+				holder: () => holder,
 				allowLoopback: true,
 			});
-		const request = hookRequest();
 		expect(await client().eventHook(request, AbortSignal.timeout(5000))).toEqual(receipt());
+		expect(proveBinding).toHaveBeenCalledWith(
+			expect.objectContaining({ jobId: request.binding.jobId, runId: request.binding.runId }),
+			holderOf(request),
+		);
 		expect(f.authority.openSignedHook).toHaveBeenCalledWith(
 			request.binding,
 			request.request,
@@ -485,7 +502,20 @@ describe("event hooks over the broker", () => {
 		opening = undefined;
 		const calls = vi.mocked(f.authority.openSignedHook).mock.calls.length;
 		for (const token of [randomBytes(32).toString("base64url"), codingExecutorToken])
-			await expect(client(token).eventHook(request, AbortSignal.timeout(5000))).rejects.toThrow(
+			await expect(client(holderOf(request), token).eventHook(request, AbortSignal.timeout(5000))).rejects.toThrow(
+				"Cloud secret broker rejected the event hook call",
+			);
+		// Without the run's own lease (a malformed holder, another run's, or another lease token for this run's job), a
+		// signed hook is refused before the database is asked anything, so no secret is made.
+		for (const holder of [
+			"",
+			lease,
+			`identity.${lease}`,
+			`${holderOf(request)}x`,
+			`job.${randomUUID()}.${lease}`,
+			`job.${request.binding.jobId.toLowerCase()}.${"W".repeat(43)}`,
+		])
+			await expect(client(holder).eventHook(request, AbortSignal.timeout(5000))).rejects.toThrow(
 				"Cloud secret broker rejected the event hook call",
 			);
 		expect(f.authority.openSignedHook).toHaveBeenCalledTimes(calls);

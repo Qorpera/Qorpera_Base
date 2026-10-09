@@ -760,12 +760,11 @@ export class HttpCloudSecretBrokerService {
 				return;
 			}
 			// An agent's manage_hook create of a signed hook (E3b-2): the hook's receipt or the database's refusal; the
-			// secret never leaves here. Same token and routing; inside the client's 15 s.
+			// secret never leaves here. Same token, routing and lease proof; inside the client's 15 s.
 			if (path === "/v1/event-hooks" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
-				const answer = await scope.broker.eventHook(
-					parseEventHookRequest(await readRequest(request)),
-					AbortSignal.timeout(12_000),
-				);
+				const hookRequest = parseEventHookRequest(await readRequest(request));
+				await this.#proven(request, hookRequest.binding);
+				const answer = await scope.broker.eventHook(hookRequest, AbortSignal.timeout(12_000));
 				response(reply, 200, answer as unknown as JsonValue);
 				return;
 			}
@@ -1118,6 +1117,7 @@ export class HttpCloudSecretBrokerClient {
 					redirect: "error",
 					headers: {
 						authorization: `Bearer ${this.#runtimeToken}`,
+						"x-qorpera-identity": this.#holder(),
 						"content-type": "application/json",
 					},
 					body: cloudToolJsonText({ schema: EVENT_HOOK_REQUEST_SCHEMA, ...request }),

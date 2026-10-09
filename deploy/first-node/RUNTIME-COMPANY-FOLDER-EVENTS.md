@@ -483,13 +483,16 @@ host's:
   `github.com` for GitHub unless named, required for HMAC, refused on an address hook). Stripe is still refused, with
   its reason. The review card names who signs, the site, and that the vault makes a secret nobody sees.
 - **The folder client** (`cloud-company-folder-client.ts`) sends a signed create to the company's secret broker
-  (`POST /v1/event-hooks`, the runtime's token, 15 s inside the client's 20 s), with the release retry and the same
-  operation key. A host without the broker refuses it as unavailable and sends nothing. The answer must name the site the
-  request named and carry the hook's `signingSecret` marker (`event_hook`, W1b's name, ready); the database's refusals
-  come back in the model's words, and any other failure is a lost answer that the same key asks again.
-- **The broker** (`cloud-event-hook-vault.ts`) describes the opening (the run's company, environment and key), draws a
-  random secret id and 32 random bytes in the form the sender's verification reads (GitHub: hex; HMAC: `whsec_` and
-  base64), seals them under the company's key with that id as associated data, and opens the hook in one call. The
+  (`POST /v1/event-hooks`, the runtime's token and the run's lease in `x-qorpera-identity` as on G2-6a's other broker
+  routes, 15 s inside the client's 20 s), with the release retry and the same operation key. A host without the broker
+  refuses it as unavailable and sends nothing. The answer must name the site the request named and carry the hook's
+  `signingSecret` marker (`event_hook`, W1b's name, ready); the database's refusals come back in the model's words, and
+  any other failure is a lost answer that the same key asks again.
+- **The broker's route** (`cloud-secret-broker-http.ts`) first proves the request's binding with that lease (G2-6a,
+  `RUNTIME-NATIVE-HOST-KEY.md`): a refusal is a plain 403, and the database is asked nothing else.
+- **The broker** (`cloud-event-hook-vault.ts`) then describes the opening (the run's company, environment and key),
+  draws a random secret id and 32 random bytes in the form the sender's verification reads (GitHub: hex; HMAC: `whsec_`
+  and base64), seals them under the company's key with that id as associated data, and opens the hook in one call. The
   envelope and the bytes are zeroed after. Its answer is the hook's receipt or the database's refusal (by SQLSTATE,
   message at most 512 characters); anything else is "outcome unconfirmed". A retry's new id and envelope are never
   stored: the receipt answers.
