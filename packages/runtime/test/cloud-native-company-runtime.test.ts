@@ -2510,7 +2510,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 	// master's folder-v2 values at a2d6cb27a, which the legacy sweep (step C, C-P1) kept byte for byte, with
 	// Interfaces' save_interface and table_write (I8b) after table_read: the names in their order, each name with
-	// its description, and the catalog text the run's start hashes (it holds no ids).
+	// its description, and the catalog text the run's start hashes (it holds no ids). Since C-P4, read_event's
+	// description no longer names save_attachment, so the last two moved; every other tool is as on master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2545,9 +2546,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"14114dd3cfb74a57eaf4c5164d670b78057ef1d8ce7fb1ff17ca019d6d7b1bd1",
+		"1313f48b04f4560c329b2e06819750cb8ed86898d35cb021ff2318e81070a665",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"0985c7a9953be185bdf7c3a2dcae60469d47a20364da7bb3ebdb15e2b446fb03",
+		"9a72e9b6ef7ebad5921ded098ccd47b28c4569aaba66708c9f5a3cf0e3139974",
 	);
 });

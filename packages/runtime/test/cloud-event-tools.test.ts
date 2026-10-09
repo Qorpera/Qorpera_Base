@@ -3,7 +3,7 @@ import {
 	CloudCompanyFolderClient,
 	type CloudCompanyFolderSignedHooks,
 } from "@qorpera/runtime/cloud-company-folder-client";
-import type { CloudCompanyPathControl, CloudCompanyPathGateway } from "@qorpera/runtime/cloud-company-path-gateway";
+import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
 import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
 import { cloudEventTools } from "@qorpera/runtime/cloud-event-tools";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
@@ -20,7 +20,6 @@ const HOOK = "73100000-0000-4000-8000-0000000000b1";
 
 async function fixture(
 	result?: (method: string, args: Record<string, unknown>, runId: string) => unknown,
-	gateway?: Pick<CloudCompanyPathGateway, "mutate">,
 	withFolder: boolean | CloudCompanyFolderSignedHooks = false,
 ) {
 	const { binding, authority } = nativeToolAuthorityFixture();
@@ -66,7 +65,7 @@ async function fixture(
 		companyId: run.identity.companyId,
 		runId: run.identity.runId,
 		identity: run.identity,
-		tools: cloudEventTools(binding, run.identity, { call }, gateway as CloudCompanyPathGateway | undefined, folder),
+		tools: cloudEventTools(binding, run.identity, { call }, folder),
 		assertActive: (signal) => run.assertActive(signal),
 		signal: run.signal,
 	});
@@ -701,170 +700,6 @@ describe("agent event tools", () => {
 		}
 	});
 
-	describe("save_attachment", () => {
-		const CHUNK = "c".repeat(64);
-		const request = {
-			deliveryId: DELIVERY.toUpperCase(),
-			attachment: 2,
-			path: "finance/invoice-42.pdf",
-			operationKey: "save-invoice-42",
-			expectedVersion: null,
-		};
-		const receipt = (runId: string, extra: Record<string, unknown>) => ({
-			schema: "qorpera.agent-mail-attachment/v1",
-			runId,
-			deliveryId: DELIVERY,
-			attachment: 2,
-			filename: "invoice-42.pdf",
-			contentType: "application/pdf",
-			...extra,
-		});
-		const writer = () => ({
-			mutate: vi.fn<CloudCompanyPathGateway["mutate"]>(async (_operation, input) => ({
-				schema: "qorpera.company-path-result/v1",
-				state: "applied",
-				operationKey: input.operationKey,
-				path: input.path,
-				version: "73300000-0000-4000-8000-0000000000c3",
-				receiptId: "73300000-0000-4000-8000-0000000000c1",
-				snapshotId: "73300000-0000-4000-8000-0000000000c2",
-				proposalId: null,
-			})),
-		});
-
-		it("is offered only with the company folder's writer", async () => {
-			const f = await fixture();
-			try {
-				expect((await f.boundary.invoke("s0", "qorpera", "save_attachment", request)).success).toBe(false);
-			} finally {
-				f.run.close();
-			}
-		});
-
-		it("waits while the platform fetches it, then writes its stored chunks as the file", async () => {
-			const gateway = writer();
-			const states = ["fetching", "stored"];
-			const f = await fixture(
-				(_method, _args, runId) =>
-					receipt(
-						runId,
-						states.shift() === "stored"
-							? {
-									state: "stored",
-									bytes: 12,
-									fileSha256: "f".repeat(64),
-									chunks: [{ sha256: CHUNK, bytes: 12 }],
-								}
-							: { state: "fetching" },
-					),
-				gateway,
-			);
-			try {
-				const saved = await f.boundary.invoke("s1", "qorpera", "save_attachment", request);
-				expect(saved.success, JSON.stringify(saved)).toBe(true);
-				expect(f.call.mock.calls.map(([method, args]) => [method, args])).toEqual([
-					[
-						"qorpera_native_mail_attachment",
-						{ p_binding: f.binding, p_request: { deliveryId: DELIVERY, attachment: 2 } },
-					],
-					[
-						"qorpera_native_mail_attachment",
-						{ p_binding: f.binding, p_request: { deliveryId: DELIVERY, attachment: 2 } },
-					],
-				]);
-				expect(gateway.mutate.mock.calls[0].slice(0, 2)).toEqual([
-					"write",
-					{
-						path: "finance/invoice-42.pdf",
-						operationKey: "save-invoice-42",
-						expectedVersion: null,
-						attachment: { fileSha256: "f".repeat(64), bytes: 12, chunks: [{ sha256: CHUNK, bytes: 12 }] },
-					},
-				]);
-				const text = saved.contentItems[0].text;
-				expect(text).toContain("invoice-42.pdf");
-				expect(text).toContain("applied");
-				expect(text).not.toContain(CHUNK);
-			} finally {
-				f.run.close();
-			}
-		});
-
-		it("says why a fetch failed, writing nothing", async () => {
-			const gateway = writer();
-			const f = await fixture(
-				(_method, _args, runId) =>
-					receipt(runId, { state: "failed", error: "The mail provider no longer has this attachment" }),
-				gateway,
-			);
-			try {
-				const failed = await f.boundary.invoke("s2", "qorpera", "save_attachment", request);
-				expect(failed.success, JSON.stringify(failed)).toBe(true);
-				expect(failed.contentItems[0].text).toContain("no longer has this attachment");
-				expect(gateway.mutate).not.toHaveBeenCalled();
-			} finally {
-				f.run.close();
-			}
-		});
-
-		it("stops waiting as soon as the run ends", async () => {
-			const gateway = writer();
-			const f = await fixture((_method, _args, runId) => receipt(runId, { state: "fetching" }), gateway);
-			const waiting = f.boundary.invoke("s3", "qorpera", "save_attachment", request);
-			await new Promise((resolve) => setTimeout(resolve, 50));
-			const closed = Date.now();
-			f.run.close();
-			const ended = await waiting;
-			expect(Date.now() - closed).toBeLessThan(1000);
-			expect(ended.success).toBe(false);
-			expect(gateway.mutate).not.toHaveBeenCalled();
-		});
-
-		it("refuses a malformed request without calling the cloud, and a receipt for another run or attachment", async () => {
-			const gateway = writer();
-			const f = await fixture(undefined, gateway);
-			try {
-				for (const [callId, args] of [
-					["s4", { ...request, attachment: 0 }],
-					["s5", { ...request, attachment: 51 }],
-					["s6", { ...request, attachment: 1.5 }],
-					["s7", { ...request, deliveryId: "the invoice" }],
-					["s8", { ...request, path: "../outside.pdf" }],
-					["s9", { ...request, operationKey: "" }],
-					["s10", { ...request, expectedVersion: "latest" }],
-					["s11", { ...request, extra: true }],
-				] as const) {
-					expect((await f.boundary.invoke(callId, "qorpera", "save_attachment", args)).success, callId).toBe(
-						false,
-					);
-				}
-				expect(f.call).not.toHaveBeenCalled();
-			} finally {
-				f.run.close();
-			}
-			for (const [callId, answer] of [
-				["s12", { runId: "73100000-0000-4000-8000-0000000000ff" }],
-				["s13", { attachment: 3 }],
-				["s14", { state: "saved" }],
-				["s15", { state: "stored", bytes: 12, fileSha256: "f".repeat(64), chunks: "all" }],
-			] as const) {
-				const other = await fixture(
-					(_method, _args, runId) => Object.assign(receipt(runId, { state: "fetching" }), answer),
-					gateway,
-				);
-				try {
-					expect(
-						(await other.boundary.invoke(callId, "qorpera", "save_attachment", request)).success,
-						callId,
-					).toBe(false);
-				} finally {
-					other.run.close();
-				}
-			}
-			expect(gateway.mutate).not.toHaveBeenCalled();
-		});
-	});
-
 	describe("manage_hook (E3a)", () => {
 		type Fixture = Awaited<ReturnType<typeof fixture>>;
 		const ADDRESS = "Ab_-".repeat(10).concat("xyz");
@@ -909,7 +744,7 @@ describe("agent event tools", () => {
 		};
 
 		it("opens a hook and a mailbox and pauses one, through the run's folder client, as the run", async () => {
-			const f: Fixture = await fixture((_method, args) => receipt(f, args), undefined, true);
+			const f: Fixture = await fixture((_method, args) => receipt(f, args), true);
 			try {
 				const opened = await f.boundary.invoke("k1", "qorpera", "manage_hook", {
 					...CREATE,
@@ -981,7 +816,7 @@ describe("agent event tools", () => {
 			const eventHook = vi.fn<CloudCompanyFolderSignedHooks["eventHook"]>(async ({ request }) =>
 				signedReceipt(f, { ...request }),
 			);
-			const f: Fixture = await fixture(undefined, undefined, { eventHook });
+			const f: Fixture = await fixture(undefined, { eventHook });
 			try {
 				const github = await f.boundary.invoke("s1", "qorpera", "manage_hook", {
 					...CREATE,
@@ -1036,7 +871,7 @@ describe("agent event tools", () => {
 		});
 
 		it("refuses a signed hook as unavailable without the secret broker, and passes the broker's refusal on", async () => {
-			const bare = await fixture(undefined, undefined, true);
+			const bare = await fixture(undefined, true);
 			try {
 				const result = await bare.boundary.invoke("u1", "qorpera", "manage_hook", { ...CREATE, proof: "github" });
 				expect(result.success).toBe(false);
@@ -1050,7 +885,7 @@ describe("agent event tools", () => {
 				code: "22023",
 				message: "A site is a host name such as github.com",
 			}));
-			const refused = await fixture(undefined, undefined, { eventHook });
+			const refused = await fixture(undefined, { eventHook });
 			try {
 				const result = await refused.boundary.invoke("u2", "qorpera", "manage_hook", {
 					...CREATE,
@@ -1067,7 +902,7 @@ describe("agent event tools", () => {
 		});
 
 		it("says why a request is malformed without calling the cloud", async () => {
-			const f = await fixture(undefined, undefined, true);
+			const f = await fixture(undefined, true);
 			const mailbox = {
 				action: "create",
 				kind: "mailbox",
@@ -1168,13 +1003,10 @@ describe("agent event tools", () => {
 		});
 
 		it("passes SQL's refusal on in the model's words, and never confirms an answer it could not check", async () => {
-			const refused = await fixture(
-				() => {
-					throw new CloudCompanyFolderRpcError("42501", "Only owners and admins can open hooks; ask one of them");
-				},
-				undefined,
-				true,
-			);
+			const refuse = () => {
+				throw new CloudCompanyFolderRpcError("42501", "Only owners and admins can open hooks; ask one of them");
+			};
+			const refused = await fixture(refuse, true);
 			try {
 				const result = await refused.boundary.invoke("r1", "qorpera", "manage_hook", CREATE);
 				expect(result.success).toBe(false);
@@ -1186,7 +1018,6 @@ describe("agent event tools", () => {
 			}
 			const other: Fixture = await fixture(
 				(_method, args) => ({ ...receipt(other, args), runId: "73100000-0000-4000-8000-0000000000ff" }),
-				undefined,
 				true,
 			);
 			try {
@@ -1218,7 +1049,7 @@ describe("agent event tools", () => {
 					bytes: {} as CloudCompanyFolderBytes,
 				});
 				expect(
-					cloudEventTools(f.binding, f.run.identity, { call: f.call }, undefined, own).map((tool) => tool.name),
+					cloudEventTools(f.binding, f.run.identity, { call: f.call }, own).map((tool) => tool.name),
 				).toContain("manage_hook");
 				const another = nativeToolAuthorityFixture();
 				const theirs = new CloudCompanyFolderClient({
@@ -1227,7 +1058,7 @@ describe("agent event tools", () => {
 					control: { call: f.call },
 					bytes: {} as CloudCompanyFolderBytes,
 				});
-				expect(() => cloudEventTools(f.binding, f.run.identity, { call: f.call }, undefined, theirs)).toThrow(
+				expect(() => cloudEventTools(f.binding, f.run.identity, { call: f.call }, theirs)).toThrow(
 					"Event binding differs",
 				);
 				expect(f.call).not.toHaveBeenCalled();
