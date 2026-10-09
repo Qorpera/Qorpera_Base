@@ -1154,12 +1154,14 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
   Registration, start source, guest binding and restart surfaces accept only a ready folder-v2
   Company File (`path_gateway_version = 1` is gone), and adoption refuses a non-empty mapping on every company.
   `member_office_catalog` and the office reservation follow in later F2 steps.
-- **Legacy sweep F2b (20260930291000)** left a computer in use only its folder-v2 path: `member_office_catalog`, a
-  member's agent office, the screens (open, access, events, observations), the start descriptor and an agent's start,
-  the access status and a hire's default access lost their gc fence branch, so a company without a folder fails in the
-  folder fence (42501). The shared surface, an agent's screen and the start descriptor accept only a ready folder-v2
-  Company File; screenshots keep only §6.21's path; shell check-ins ask on every company. The office reservation
-  follows in F2c.
+- **Legacy sweep F2b (20260930291000)** left a computer in use only its folder-v2 path. `member_office_catalog`, a
+  screen's open, the access grant, the screen events and observations, and a member's new computer take the machine
+  fence on every company, so a company without a folder fails in it (42501); an agent's start fails in its tool run.
+  The access status is plain reads, the start descriptor shares the active agents, and a hire's default access takes
+  the seat locks, all on every company. The office preludes run on every company too: the viewers' and the browser
+  grant's member rows, and a private heartbeat's and a successor activation's fence. The shared surface, an agent's
+  screen and the start descriptor accept only a ready folder-v2 Company File; screenshots keep only §6.21's path;
+  shell check-ins ask on every company. The office reservation follows in F2c.
 - **Who creates a folder-v2 office** (the coordinator, 3 October): the folder mode of `qorpera_register_runtime_office`,
   called as the company's owner the first time the company needs its computer. Today no product path registers a
   company's first computer (later ones come from `add_runtime_office_computer`); the coordinator does it, and P38

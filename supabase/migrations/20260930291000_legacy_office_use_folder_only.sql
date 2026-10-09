@@ -1,4 +1,4 @@
--- 20260930291000: the legacy sweep, step F2b (a company computer in use). Seventeen functions keep only their folder-v2
+-- 20260930291000: the legacy sweep, step F2b (a company computer in use). Twenty functions keep only their folder-v2
 -- path (folder-v2 only, the founder's decision of 3 October). Each is patched in place from its live text, so its
 -- header, its grants and the other migrations' changes to it stay; each anchor must occur exactly once.
 -- 1. A member's computer panel and catalog, a member's screen, the access grant and its status, a new agent's default
@@ -11,6 +11,8 @@
 --    captures uses the receipts. The snapshot-v1 tails (the refusal of 20260930190000 and its dead artifact code, and
 --    the object reads) go.
 -- 4. Shell check-ins ask on every company, not only on folder-v2.
+-- 5. The office preludes run on every company: the viewers' and the browser grant's member rows, and a private screen
+--    heartbeat's and a successor activation's fence (a company without a folder fails in it, 42501).
 -- Every patched body names this migration (20260930291000).
 
 set local lock_timeout = '3s';
@@ -348,3 +350,27 @@ select pg_temp.f2b_patch('public.qorpera_office_shell_checkins_unasked(uuid)'::r
 $old$			and public.qorpera_environment_is_folder_v2(office.environment_id)
 $old$,
 $new$$new$);
+
+-- 5. The office preludes run on every company. ----------------------------------------------------------------------
+
+select pg_temp.f2b_patch('public.qorpera_folder_office_members_first(uuid,uuid[])'::regprocedure,
+$old$	if not public.qorpera_company_is_folder_v2(v_profile) then return; end if;
+$old$,
+$new$	-- 20260930291000 (legacy sweep F2b): folder-v2 only, so every company takes this path.
+$new$);
+
+select pg_temp.f2b_patch('public.qorpera_folder_office_enter_startup(jsonb,text)'::regprocedure,
+$old$	if not public.qorpera_company_is_folder_v2((select office.profile_id from public.qorpera_runtime_offices as office
+		where office.id = v_office)) then return; end if;
+$old$,
+$new$	-- 20260930291000 (legacy sweep F2b): folder-v2 only, so every company takes this path (an unknown computer is
+	-- left to the startup lock: qorpera_folder_office_enter returns at once).
+$new$);
+
+select pg_temp.f2b_patch('public.qorpera_folder_office_enter_successor(jsonb)'::regprocedure,
+$old$	if not public.qorpera_company_is_folder_v2((select office.profile_id from public.qorpera_runtime_offices as office
+		where office.id = v_office)) then return; end if;
+$old$,
+$new$	-- 20260930291000 (legacy sweep F2b): folder-v2 only, so every company takes this path (an unknown computer is
+	-- left to the status call: qorpera_folder_office_enter returns at once).
+$new$);
