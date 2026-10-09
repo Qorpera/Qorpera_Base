@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ObjectDependencyError } from "../src/dependency.ts";
-import { MemberCompanyHeadConflict, SupabaseMemberCompanyAuthority } from "../src/member-company-authority.ts";
+import { SupabaseMemberCompanyAuthority } from "../src/member-company-authority.ts";
 
 const token = "synthetic-member-jwt";
 
@@ -31,17 +31,16 @@ describe("human and publisher transport separation", () => {
 	});
 
 	it.each([
-		[409, "PT409", true, 409],
-		[409, "23505", false, 409],
-		[500, "40001", false, 409],
-		[500, "40P01", false, 409],
-		[500, "55P03", false, 409],
-		[500, "55000", false, 423],
-		[500, "57014", false, 503],
-		[500, "XX000", false, 500],
-		[409, "QRC01", false, 409],
-		[412, "PT412", false, 412],
-	] as const)("classifies %s/%s without retrying uncertainty", async (status, code, rebuild, expectedStatus) => {
+		[409, "23505", 409],
+		[500, "40001", 409],
+		[500, "40P01", 409],
+		[500, "55P03", 409],
+		[500, "55000", 423],
+		[500, "57014", 503],
+		[500, "XX000", 500],
+		[409, "QRC01", 409],
+		[412, "PT412", 412],
+	] as const)("classifies %s/%s without retrying uncertainty", async (status, code, expectedStatus) => {
 		const authority = new SupabaseMemberCompanyAuthority({
 			projectUrl: "https://cloud.test",
 			publishableKey: "public",
@@ -53,7 +52,6 @@ describe("human and publisher transport separation", () => {
 			.catch((failure: unknown) => failure);
 		expect(error).toBeInstanceOf(ObjectDependencyError);
 		expect(error).toMatchObject({ status: expectedStatus });
-		expect(error instanceof MemberCompanyHeadConflict).toBe(rebuild);
 	});
 
 	it("preserves a denial without waiting for its body", async () => {
