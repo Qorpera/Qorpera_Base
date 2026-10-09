@@ -773,20 +773,6 @@ export class CloudApi {
 			.then(parseCompanyFile);
 	}
 
-	// Objects
-
-	authorizeObjectDownload(profileId: string, sha256: string): Promise<{ backend: string; bytes: number }> {
-		return this.cloud
-			.rpc("qorpera_authorize_profile_object_download", {
-				p_profile_id: requiredUuid(profileId, "Profile id"),
-				p_sha256: sha256,
-			})
-			.then((value) => {
-				const input = value as { backend?: unknown; bytes?: unknown };
-				return { backend: String(input.backend ?? "unknown"), bytes: Number(input.bytes ?? 0) };
-			});
-	}
-
 	// Feedback
 
 	async submitFeedback(clientFeedbackId: string, category: string, details: string): Promise<void> {

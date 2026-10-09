@@ -4,7 +4,6 @@ import { CloudApi } from "../src/cloud/api.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import type {
 	HostedCompanyFile,
-	HostedCompanySnapshot,
 	HostedProfile,
 	HostedProfileTeam,
 	HostedSession,
@@ -78,26 +77,11 @@ export const staff: HostedStaffAgent = {
 	updatedAt: timestamp,
 	updatedByUserId: userA.id,
 };
-export const snapshot: HostedCompanySnapshot = {
-	snapshotId: id(10),
-	profileId: profileA.profileId,
-	environmentId: profileA.environmentId,
-	workspaceId: id(11),
-	clientSnapshotId: id(12),
-	tree: { manifestSha256: "a".repeat(64), manifestBytes: 20, contractVersion: 1, fileCount: 2, totalBytes: 18 },
-	createdByUserId: userA.id,
-	createdAt: timestamp,
-};
 export const file: HostedCompanyFile = {
 	profileId: profileA.profileId,
 	environmentId: profileA.environmentId,
-	canonicalWorkspaceId: snapshot.workspaceId,
-	state: "ready",
-	logicalBytes: 18,
-	retainedStorageBytes: 0,
 	storageUsedBytes: 18,
 	storageLimitBytes: 100,
-	objectBackends: ["supabase-storage"],
 	createdAt: timestamp,
 	updatedAt: timestamp,
 };
