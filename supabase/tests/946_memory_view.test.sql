@@ -1,10 +1,10 @@
 -- @fixture 970_memory_branches.test.sql until "-- The checks start here."
 -- Summary trees M1b-4a (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §5.3, §13; 20260930204000): the primary view and
--- its record, native host calls. The gate (a listed company); T, the included events before the inputs that woke the
--- run (the run's own, or those its wake names, as a room post's), or up to the transcript start with no such event; the
--- tree. A record per step, with the folder clock as the view reference's asOfSeq: replays, a different request,
--- malformed requests; the run check first; the grants and the call list. On 970's fixture: Nora's thread has a message
--- at 10 and a card at 11, Otto's tree one line.
+-- its record, native host calls. The gate (a listed company, a conversation of the run's environment); T, the included
+-- events before the inputs that woke the run (the run's own, or those its wake names, as a room post's), or up to the
+-- transcript start with no such event; the tree. A record per step, with the folder clock as the view reference's
+-- asOfSeq: replays, a different request, malformed requests; the run check first; the grants and the call list. On
+-- 970's fixture: Nora's thread has a message at 10 and a card at 11, Otto's tree one line.
 
 -- A view call by Nora's or Otto's run, a record call, and a record request.
 create function pg_temp.view(p_who text) returns jsonb language sql as $$
@@ -22,12 +22,14 @@ $$;
 create function pg_temp.event_id(p_seq bigint) returns uuid language sql immutable as $$
 	select ('97000000-0000-4000-8000-e' || lpad(p_seq::text, 11, '0'))::uuid
 $$;
--- T and the last sequence of Nora's view.
+-- T and the last sequence of Nora's view, past the run check (which refuses a wake that names other inputs than its
+-- run, so a room post's are tried on Nora's run).
 create function pg_temp.t(p_who text default 'nora') returns jsonb language sql as $$
-	select jsonb_build_array(v -> 'messages', v -> 'lastSequence') from (select pg_temp.view(p_who) as v) x
+	select jsonb_build_array(v -> 'messages', v -> 'lastSequence')
+	from (select public.qorpera_memory_view_of(pg_temp.run_id(p_who)) as v) x
 $$;
 
--- 1. The gate: a listed company ---------------------------------------------------------------------------------------
+-- 1. The gate: a listed company, a conversation of the run's environment ----------------------------------------------
 
 do $$
 declare
@@ -39,6 +41,13 @@ begin
 		'conversation', jsonb_build_object('sessionId', nora, 'kind', 'thread', 'name', 'Nora'), 'messages', 0, 'lastSequence', null,
 		'tree', public.qorpera_memory_tree_read(env, nora)), 'A listed company: Nora''s view, at transcript start 0');
 	perform pg_temp.same(pg_temp.view('nora') #> '{tree,root}', 'null', 'No tree yet');
+
+	-- A conversation of another environment has no view; the run check refuses it first.
+	perform pg_temp.fx(format('update public.qorpera_shared_sessions set environment_id = %L where id = %L', extensions.gen_random_uuid(),
+		nora));
+	perform pg_temp.same(public.qorpera_memory_view_of(pg_temp.run_id('nora')), null, 'Another environment''s conversation');
+	perform pg_temp.raises(format('select public.qorpera_memory_view(%L)', pg_temp.b('nora')), '42501');
+	perform pg_temp.fx(format('update public.qorpera_shared_sessions set environment_id = %L where id = %L', env, nora));
 
 	-- Otto's view holds his tree, with its line past T.
 	perform pg_temp.same(pg_temp.view('otto') - 'tree', jsonb_build_object('schema', 'qorpera.memory-view/v1',
@@ -160,9 +169,9 @@ do $$
 declare v_bad text;
 begin
 	select string_agg(f || ' ' || r, ', ') into v_bad
-	from unnest(array['public.qorpera_memory_view(jsonb)', 'public.qorpera_memory_view_record(jsonb,jsonb)']) f,
-		unnest(array['anon', 'authenticated', 'service_role']) r
-	where has_function_privilege(r, f, 'execute') is distinct from (r = 'service_role');
+	from unnest(array['public.qorpera_memory_view(jsonb)', 'public.qorpera_memory_view_record(jsonb,jsonb)',
+		'public.qorpera_memory_view_of(uuid)']) f, unnest(array['anon', 'authenticated', 'service_role']) r
+	where has_function_privilege(r, f, 'execute') is distinct from (r = 'service_role' and f <> 'public.qorpera_memory_view_of(uuid)');
 	if v_bad is not null then raise exception 'Wrong callers: %', v_bad; end if;
 	select string_agg(t || ' ' || r || ' ' || p, ', ') into v_bad
 	from unnest(array['public.qorpera_memory_tree_companies', 'public.qorpera_memory_views']) t,

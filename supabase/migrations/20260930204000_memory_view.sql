@@ -3,8 +3,9 @@
 -- 1. qorpera_memory_tree_companies: the companies whose runs compose the view (M1's deploy list). A company not listed
 --    keeps today's history. The coordinator lists a company once its trees are written (M1b-4b).
 -- 2. qorpera_memory_view, a native host call (scope binding): the run check, then, for a run in a conversation of a
---    listed company, what the runtime folds the primary view from: the conversation, T (the included events before the
---    inputs that woke the run), the sequence of T's last event, and the live tree (qorpera_memory_tree_read).
+--    listed company, what the runtime folds the primary view from (qorpera_memory_view_of): the conversation, T (the
+--    included events before the inputs that woke the run), the sequence of T's last event, and the live tree
+--    (qorpera_memory_tree_read).
 -- 3. qorpera_memory_views and qorpera_memory_view_record, a native host call (scope binding): one row per composed
 --    request (§13, memory_view), with the folder clock it was recorded at. The runtime records after it has read the
 --    trees, so that clock is the view reference's asOfSeq (W4a-1).
@@ -35,23 +36,23 @@ comment on table public.qorpera_memory_tree_companies is
 
 -- 2. The view ---------------------------------------------------------------------------------------------------------
 
--- What the binding's run folds its primary view from (§5.3). Null when the run has no conversation or its company is
--- not listed (the run check refuses a conversation outside the run's environment). Otherwise {schema, conversation,
--- messages, lastSequence, tree}:
+-- What a run folds its primary view from (§5.3), once its run check has passed (qorpera_memory_view). Null when the run
+-- has no conversation, its company is not listed, or its conversation is not of the run's environment (which the run
+-- check refuses first). Otherwise {schema, conversation, messages, lastSequence, tree}:
 -- - conversation: the run's own, as zoom names `.` (qorpera_memory_conversation): {sessionId, kind, name};
 -- - messages: T, the included events (§3) before the first event of the inputs that woke the run, those of the run and
 --   those its wake names (a room post's), so the view ends where they begin. With no such event, every included event up
 --   to the run's transcript start;
 -- - lastSequence: the sequence of T's last event, null when T is 0. The history after it is shown in full;
 -- - tree: the conversation's live tree (qorpera_memory_tree_read). It may hold lines past T, which the view leaves out.
-create function public.qorpera_memory_view(p_binding jsonb)
-returns jsonb language plpgsql security definer set search_path = '' as $$
+create function public.qorpera_memory_view_of(p_run_id uuid)
+returns jsonb language plpgsql set search_path = '' as $$
 declare
 	c_uuid constant text := '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 	v_run public.qorpera_execution_runs%rowtype; v_conversation jsonb; v_inputs uuid[]; v_first bigint;
 	v_messages bigint; v_last bigint;
 begin
-	v_run := jsonb_populate_record(null::public.qorpera_execution_runs, public.qorpera_folder_tool_run(p_binding, '[]'::jsonb) -> 'run');
+	select * into v_run from public.qorpera_execution_runs where id = p_run_id;
 	if v_run.session_id is null
 		or not exists (select 1 from public.qorpera_memory_tree_companies c where c.profile_id = v_run.profile_id) then
 		return null; end if;
@@ -70,6 +71,14 @@ begin
 		and case when v_first is null then e.sequence <= v_run.transcript_start_sequence else e.sequence < v_first end;
 	return jsonb_build_object('schema', 'qorpera.memory-view/v1', 'conversation', v_conversation, 'messages', v_messages,
 		'lastSequence', v_last, 'tree', public.qorpera_memory_tree_read(v_run.environment_id, v_run.session_id));
+end $$;
+revoke all on function public.qorpera_memory_view_of(uuid) from public, anon, authenticated, service_role;
+
+-- The view of the binding's run (qorpera_memory_view_of), after the run check.
+create function public.qorpera_memory_view(p_binding jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+begin
+	return public.qorpera_memory_view_of((public.qorpera_folder_tool_run(p_binding, '[]'::jsonb) #>> '{run,id}')::uuid);
 end $$;
 revoke all on function public.qorpera_memory_view(jsonb) from public, anon, authenticated, service_role;
 grant execute on function public.qorpera_memory_view(jsonb) to service_role;
