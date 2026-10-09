@@ -7,8 +7,10 @@
 -- * A turn is narrow once its session's view holds a path outside the every-agent part. Its begin marks it when the
 --   session's coding view has read one (qorpera_coding_view_narrow: the open view carries its predecessor's read set),
 --   and F3 step 5's view refresh calls qorpera_coding_turn_mark_narrow while it is open; its settle marks it when the
---   view is narrow by then. The flag only goes from false to true and is frozen once the turn ended. A session is narrow while any of its turns or its view is
---   (qorpera_coding_session_narrow): each turn resumes the session's conversation.
+--   view is narrow by then. The flag only goes from false to true and is frozen once the turn ended. A session is
+--   narrow while any of its turns or its view is, or any turn's run is narrow by its log or its place (the step that
+--   dispatched it, or the run it continues) (qorpera_coding_session_narrow): each turn resumes the session's
+--   conversation.
 -- * The run log's side: qorpera_memory_run_machine_narrow (W1b-1's, false until now) is true for a coding turn's run
 --   when that turn or an earlier one of its session is narrow, or, while the turn is open, when its session's view is.
 --   qorpera_memory_run_origin already ORs it in for the run itself, and qorpera_run_log_narrow for the run a later
@@ -109,13 +111,21 @@ begin
 end $$;
 revoke all on function public.qorpera_coding_turn_mark_narrow(uuid) from public, anon, authenticated, service_role, qorpera_secret_broker;
 
--- Whether a coding session read files only some agents may read: one of its turns is narrow, and each turn resumes the
--- session's conversation, or its view is (between turns no turn is open to mark).
+-- Whether a coding session read files only some agents may read, given that each turn resumes the session's
+-- conversation: one of its turns is narrow, or its view is (between turns no turn is open to mark), or one of its turns'
+-- runs is narrow by its log or by its place (§4.5: the step that dispatched it, its parent's log from that step, or the
+-- run it continues). The steering run a check-in goes to need not be narrow itself: a later follow-up may come from
+-- another run.
 create function public.qorpera_coding_session_narrow(p_worker_id uuid)
 returns boolean language sql stable security definer set search_path = '' as $$
 	-- 20260930250000 (W6a).
 	select exists (select 1 from public.qorpera_coding_session_turns turn where turn.worker_id = p_worker_id and turn.narrow)
 		or public.qorpera_coding_view_narrow(p_worker_id)
+		or exists (select 1 from public.qorpera_coding_session_turns turn
+			join public.qorpera_wake_occurrences o on o.id = turn.occurrence_id
+			where turn.worker_id = p_worker_id and o.run_id is not null
+				and (public.qorpera_run_log_narrow(o.run_id)
+					or coalesce((public.qorpera_memory_run_origin(o.environment_id, o.run_id) ->> 'narrow')::boolean, false)))
 $$;
 revoke all on function public.qorpera_coding_session_narrow(uuid) from public, anon, authenticated, service_role, qorpera_secret_broker;
 
@@ -162,8 +172,10 @@ $new$);
 
 -- Whether a run's machine made it narrow (§4.5): a coding turn's run when that turn or an earlier one of its session is
 -- narrow, or, while the turn is open, when its session's view is. The settle folds the view into the turn's flag, and
--- once the turn ended its flags are frozen, so the answer never changes after the run's end. False for other runs. qorpera_memory_run_origin ORs it in for the run, and qorpera_run_log_narrow for the
--- run a later turn continues.
+-- once the turn ended its flags are frozen, so the answer never changes after the turn ended. That is not the run's
+-- end: the executor finishes the run's job, then publishes, then completes the turn, so a view read released while it
+-- publishes can still make the answer true after the run ended (only ever more cautious). False for other runs.
+-- qorpera_memory_run_origin ORs it in for the run, and qorpera_run_log_narrow for the run a later turn continues.
 create or replace function public.qorpera_memory_run_machine_narrow(p_environment_id uuid, p_run_id uuid)
 returns boolean language sql stable set search_path = '' as $$
 	-- 20260930231000 (W1b)
