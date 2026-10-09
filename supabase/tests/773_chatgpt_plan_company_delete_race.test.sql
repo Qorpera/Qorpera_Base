@@ -23,7 +23,7 @@ insert into public.qorpera_company_deletions(profile_id, requested_by_user_id)
 values ('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000001');
 
 -- Row locks show only across connections, so the fixture is committed here and removed again at the end (the
--- harness of 602 and 746): the test refuses to run beside other connections to this database, whose rows the
+-- harness of 746): the test refuses to run beside other connections to this database, whose rows the
 -- cleanup could not tell from its own.
 reset role;
 select set_config(name, current_setting(name), false)
@@ -95,7 +95,7 @@ create function pg_temp.r773_plan_status() returns text language sql as $$
 	select status from public.qorpera_provider_connections where id = (current_setting('qorpera_test.r771')::jsonb ->> 'plan')::uuid
 $$;
 
--- At the end: remove what the test committed, as 602 and 746 do.
+-- At the end: remove what the test committed, as 746 does.
 create function pg_temp.r773_cleanup() returns void language plpgsql as $$
 declare v_table text; v_columns text; v_expected bigint; v_count bigint; v_wrong text[] := '{}'; v_first xid := current_setting('qorpera_test.r773_first_xid')::xid;
 begin

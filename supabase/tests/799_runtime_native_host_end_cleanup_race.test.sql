@@ -63,7 +63,7 @@ from public.qorpera_runtime_office_screens as screen where screen.id = (current_
 set local session_replication_role = origin;
 
 -- Row locks show only across connections, so 924's fixture and this one are committed here and removed again at the end
--- (the harness of 602 and 746): the test refuses to run beside other connections to this database, whose rows the
+-- (the harness of 746): the test refuses to run beside other connections to this database, whose rows the
 -- cleanup could not tell from its own.
 reset role;
 select set_config(name, current_setting(name), false)
@@ -133,7 +133,7 @@ begin
 end
 $$;
 
--- At the end: remove what the test committed, as 602 and 746 do.
+-- At the end: remove what the test committed, as 746 does.
 create function pg_temp.r799_cleanup() returns void language plpgsql as $$
 declare v_table text; v_columns text; v_expected bigint; v_count bigint; v_wrong text[] := '{}'; v_first xid := current_setting('qorpera_test.r799_first_xid')::xid;
 begin

@@ -56,8 +56,6 @@ export const HOSTED_DB_SCRIPTS = [
 	"scripts/test-runtime-office-delete-disposition.mjs",
 	"scripts/test-runtime-office-current-provider-activation.mjs",
 	"scripts/test-runtime-room-history.mjs",
-	"scripts/test-runtime-production-review.mjs",
-	"scripts/test-runtime-wake-bus.mjs",
 	"scripts/test-folder-service-core-shapes.mjs",
 	"scripts/test-runtime-roll.mjs",
 	"scripts/test-object-gateway-connection-files.mjs",
@@ -72,7 +70,6 @@ export const HOSTED_DB_SCRIPTS = [
 const OWN_SERVER_SCRIPTS = new Set([
 	"scripts/test-runtime-node-capacity.mjs",
 	"scripts/test-runtime-office-delete-disposition.mjs",
-	"scripts/test-runtime-wake-bus.mjs",
 ]);
 
 /** Where those scripts start in the migration chain; the one replay leaves a copy at each. A point missing

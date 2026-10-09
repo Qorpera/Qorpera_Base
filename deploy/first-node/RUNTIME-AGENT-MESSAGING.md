@@ -37,8 +37,9 @@ ceiling and founder stop.
   the pair policy and the transcript, one allowed public send, member read of
   the transcript, member post refused, six hops then a refused seventh with the
   budget line, self-send refused, departure closes the transcript.
-- `supabase/tests/300_runtime_wake_bus.test.sql`: coworker section rewritten
-  (reply is one more hop; the agent a file woke may answer the file's author).
+- `supabase/tests/300_runtime_wake_bus.test.sql` (deleted in the legacy
+  sweep): coworker section rewritten (reply is one more hop; the agent a file
+  woke may answer the file's author).
 - `packages/runtime/test/cloud-wake-bus.test.ts`: pair policy, new envelope
   shape, legacy shape, rejections. `packages/web/test/peer-messages.test.ts`:
   projection of peer messages, chips, budget lines.

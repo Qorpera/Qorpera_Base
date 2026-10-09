@@ -208,7 +208,7 @@ parts of both candidates' policies from each node's measured base. Record the
 fleet status, the selected node, the unit states and the first ordinary
 computer operation, and hand them over with the proof run (PR comment and registry line).
 
-Local proofs: `node scripts/test-runtime-office-fleet.mjs` exercises actual SQL
+Local proofs: `node scripts/test-runtime-office-fleet.mjs` (deleted in the legacy sweep) exercises actual SQL
 admission with synthetic host measurements. The focused
 `test/lxd-office-fleet.test.ts` tests staged selection, cancellation, losing-host
 behavior, lost replies, retained identities and unit rendering. These are not
