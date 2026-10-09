@@ -1,4 +1,6 @@
+import { type CloudCompanyFolderBytes, CloudCompanyFolderClient } from "@qorpera/runtime/cloud-company-folder-client";
 import type { CloudCompanyPathControl, CloudCompanyPathGateway } from "@qorpera/runtime/cloud-company-path-gateway";
+import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
 import { cloudEventTools } from "@qorpera/runtime/cloud-event-tools";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
@@ -15,6 +17,7 @@ const HOOK = "73100000-0000-4000-8000-0000000000b1";
 async function fixture(
 	result?: (method: string, args: Record<string, unknown>, runId: string) => unknown,
 	gateway?: Pick<CloudCompanyPathGateway, "mutate">,
+	withFolder = false,
 ) {
 	const { binding, authority } = nativeToolAuthorityFixture();
 	const run = await CloudNativeToolRun.open(
@@ -45,11 +48,20 @@ async function fixture(
 			done: true,
 		};
 	});
+	// A folder-v2 run's folder client, on the same wire.
+	const folder = withFolder
+		? new CloudCompanyFolderClient({
+				binding,
+				identity: run.identity,
+				control: { call },
+				bytes: {} as CloudCompanyFolderBytes,
+			})
+		: undefined;
 	const boundary = new CloudNativeToolBoundary({
 		companyId: run.identity.companyId,
 		runId: run.identity.runId,
 		identity: run.identity,
-		tools: cloudEventTools(binding, run.identity, { call }, gateway as CloudCompanyPathGateway | undefined),
+		tools: cloudEventTools(binding, run.identity, { call }, gateway as CloudCompanyPathGateway | undefined, folder),
 		assertActive: (signal) => run.assertActive(signal),
 		signal: run.signal,
 	});
@@ -845,6 +857,241 @@ describe("agent event tools", () => {
 				}
 			}
 			expect(gateway.mutate).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("manage_hook (E3a)", () => {
+		type Fixture = Awaited<ReturnType<typeof fixture>>;
+		const ADDRESS = "Ab_-".repeat(10).concat("xyz");
+		const PATH = `/functions/v1/event-intake/${ADDRESS}`;
+		const CREATE = {
+			action: "create",
+			kind: "hook",
+			name: "site-form",
+			purpose: "Leads from the website.",
+			operationKey: "hook-1",
+		} as const;
+		/** SQL's receipt for the request, as the folder client checks it (test 939 pins the real one). */
+		const receipt = (f: Fixture, args: Record<string, unknown>) => {
+			const request = args.p_request as Record<string, unknown>;
+			const mailbox = request.kind === "mailbox";
+			return {
+				schema: "qorpera.agent-hook-receipt/v1",
+				runId: f.binding.runId,
+				receiptId: "73900000-0000-4000-8000-0000000000c1",
+				action: request.action,
+				hook: {
+					schema: "qorpera.event-hook/v1",
+					id: HOOK,
+					companyId: f.run.identity.companyId,
+					environmentId: f.run.identity.environmentId,
+					name: mailbox ? `mail-${request.localPart}` : (request.name ?? request.hook),
+					purpose: request.purpose ?? "Leads from the website.",
+					proof: mailbox ? "mail" : "address",
+					status: (
+						{ create: "active", pause: "paused", resume: "active", remove: "removed" } as Record<string, string>
+					)[request.action as string],
+					maxBodyBytes: request.maxBodyBytes ?? 65536,
+					perMinute: request.perMinute ?? 60,
+					createdAt: "2026-10-06T12:00:00.123456+00:00",
+					...(mailbox
+						? { email: `${request.localPart}@mail.example.test` }
+						: request.action === "create"
+							? { address: ADDRESS, path: PATH }
+							: {}),
+				},
+			};
+		};
+
+		it("opens a hook and a mailbox and pauses one, through the run's folder client, as the run", async () => {
+			const f: Fixture = await fixture((_method, args) => receipt(f, args), undefined, true);
+			try {
+				const opened = await f.boundary.invoke("k1", "qorpera", "manage_hook", {
+					...CREATE,
+					purpose: "  Leads from the website.  ",
+					proof: "address",
+					perMinute: 10,
+				});
+				expect(opened.success, JSON.stringify(opened)).toBe(true);
+				const text = opened.contentItems[0].text;
+				expect(text).toContain("qorpera.agent-hook-receipt/v1");
+				expect(text).toContain(PATH);
+				expect(text).not.toContain(f.binding.credentialCapsuleId);
+				const mailbox = await f.boundary.invoke("k2", "qorpera", "manage_hook", {
+					action: "create",
+					kind: "mailbox",
+					localPart: "sales",
+					purpose: "Sales mail.",
+					operationKey: "box-1",
+				});
+				expect(mailbox.success, JSON.stringify(mailbox)).toBe(true);
+				expect(mailbox.contentItems[0].text).toContain("sales@mail.example.test");
+				const paused = await f.boundary.invoke("k3", "qorpera", "manage_hook", {
+					action: "pause",
+					hook: "site-form",
+					operationKey: "pause-1",
+				});
+				expect(paused.success, JSON.stringify(paused)).toBe(true);
+				// The purpose trimmed of its spaces, proof left to SQL, an unnamed limit left to SQL's default.
+				expect(f.call.mock.calls.map(([method, args]) => [method, args])).toEqual([
+					["qorpera_folder_manage_hook", { p_binding: f.binding, p_request: { ...CREATE, perMinute: 10 } }],
+					[
+						"qorpera_folder_manage_hook",
+						{
+							p_binding: f.binding,
+							p_request: {
+								action: "create",
+								kind: "mailbox",
+								localPart: "sales",
+								purpose: "Sales mail.",
+								operationKey: "box-1",
+							},
+						},
+					],
+					[
+						"qorpera_folder_manage_hook",
+						{ p_binding: f.binding, p_request: { action: "pause", hook: "site-form", operationKey: "pause-1" } },
+					],
+				]);
+			} finally {
+				f.run.close();
+			}
+		});
+
+		it("says why a request is malformed without calling the cloud", async () => {
+			const f = await fixture(undefined, undefined, true);
+			const mailbox = {
+				action: "create",
+				kind: "mailbox",
+				localPart: "sales",
+				purpose: "Sales mail.",
+				operationKey: "k",
+			};
+			const purpose = "purpose is one line of 1 to 512 characters saying what it is for";
+			const name =
+				"name uses lowercase letters, digits and hyphens, starts with a letter, has at most 64 characters and does not start with mail-";
+			try {
+				for (const [callId, args, says] of [
+					["h1", [CREATE], "manage_hook takes an object with action and operationKey"],
+					["h2", { ...CREATE, action: "open" }, "action is create, pause, resume or remove"],
+					["h3", { ...CREATE, kind: "webhook" }, "create takes kind hook or mailbox"],
+					[
+						"h4",
+						{ ...CREATE, secret: "s" },
+						"create with kind hook takes only action, kind, name, purpose, proof, maxBodyBytes, perMinute, operationKey",
+					],
+					[
+						"h5",
+						{ ...mailbox, name: "sales" },
+						"create with kind mailbox takes only action, kind, localPart, purpose, operationKey",
+					],
+					[
+						"h6",
+						{ action: "pause", hook: "site-form", purpose: "p", operationKey: "k" },
+						"pause takes only action, hook, operationKey",
+					],
+					[
+						"h7",
+						{ action: "resume", hook: "site-form" },
+						"operationKey is 1 to 192 letters, digits, dots, underscores, colons and hyphens, starting with a letter or digit",
+					],
+					[
+						"h8",
+						{ action: "remove", hook: "Site Form", operationKey: "k" },
+						"hook is the name of one of your company's hooks, as list_hooks shows it",
+					],
+					["h9", { ...CREATE, purpose: "   " }, purpose],
+					["h10", { ...CREATE, purpose: "Leads\nand spam" }, purpose],
+					["h11", { ...CREATE, purpose: "p".repeat(513) }, purpose],
+					["h12", { ...CREATE, name: "mail-sales" }, name],
+					["h13", { ...CREATE, name: "Site" }, name],
+					["h14", { ...CREATE, proof: "stripe" }, "A signed hook comes later; use an address hook for now"],
+					["h15", { ...CREATE, proof: "basic" }, "proof is address"],
+					["h16", { ...CREATE, maxBodyBytes: 512 }, "maxBodyBytes is a whole number from 1024 to 262144"],
+					["h17", { ...CREATE, perMinute: 1.5 }, "perMinute is a whole number from 1 to 120"],
+					[
+						"h18",
+						{ ...mailbox, localPart: "sales..team" },
+						"localPart is 1 to 64 lowercase letters, digits, dots, hyphens and underscores, starting and ending with a letter or digit, never two dots in a row",
+					],
+				] as const) {
+					const refused = await f.boundary.invoke(callId, "qorpera", "manage_hook", args);
+					expect(refused.success, callId).toBe(false);
+					expect(refused.contentItems[0].text, callId).toContain(`INVALID_ARGUMENTS: ${says}`);
+				}
+				expect(f.call).not.toHaveBeenCalled();
+			} finally {
+				f.run.close();
+			}
+		});
+
+		it("passes SQL's refusal on in the model's words, and never confirms an answer it could not check", async () => {
+			const refused = await fixture(
+				() => {
+					throw new CloudCompanyFolderRpcError("42501", "Only owners and admins can open hooks; ask one of them");
+				},
+				undefined,
+				true,
+			);
+			try {
+				const result = await refused.boundary.invoke("r1", "qorpera", "manage_hook", CREATE);
+				expect(result.success).toBe(false);
+				expect(result.contentItems[0].text).toContain(
+					"REFUSED: Only owners and admins can open hooks; ask one of them",
+				);
+			} finally {
+				refused.run.close();
+			}
+			const other: Fixture = await fixture(
+				(_method, args) => ({ ...receipt(other, args), runId: "73100000-0000-4000-8000-0000000000ff" }),
+				undefined,
+				true,
+			);
+			try {
+				const result = await other.boundary.invoke("r2", "qorpera", "manage_hook", CREATE);
+				expect(result.success).toBe(false);
+				expect(result.contentItems[0].text).toContain("TOOL_OUTCOME_UNCONFIRMED");
+				// That call may have opened the hook: SQL refusing the same key now says nothing of it.
+				other.call.mockImplementationOnce(async () => {
+					throw new CloudCompanyFolderRpcError("23505", "A hook with this name already exists");
+				});
+				const again = await other.boundary.invoke("r3", "qorpera", "manage_hook", CREATE);
+				expect(again.contentItems[0].text).toContain("TOOL_OUTCOME_UNCONFIRMED");
+			} finally {
+				other.run.close();
+			}
+		});
+
+		it("is offered only with a folder-v2 run's folder client, and only for its own run", async () => {
+			const f = await fixture();
+			try {
+				expect((await f.boundary.invoke("o1", "qorpera", "manage_hook", CREATE)).success).toBe(false);
+				expect(cloudEventTools(f.binding, f.run.identity, { call: f.call }).map((tool) => tool.name)).not.toContain(
+					"manage_hook",
+				);
+				const own = new CloudCompanyFolderClient({
+					binding: f.binding,
+					identity: f.run.identity,
+					control: { call: f.call },
+					bytes: {} as CloudCompanyFolderBytes,
+				});
+				expect(
+					cloudEventTools(f.binding, f.run.identity, { call: f.call }, undefined, own).map((tool) => tool.name),
+				).toContain("manage_hook");
+				const another = nativeToolAuthorityFixture();
+				const theirs = new CloudCompanyFolderClient({
+					binding: another.binding,
+					identity: another.authority.identity,
+					control: { call: f.call },
+					bytes: {} as CloudCompanyFolderBytes,
+				});
+				expect(() => cloudEventTools(f.binding, f.run.identity, { call: f.call }, undefined, theirs)).toThrow(
+					"Event binding differs",
+				);
+				expect(f.call).not.toHaveBeenCalled();
+			} finally {
+				f.run.close();
+			}
 		});
 	});
 });

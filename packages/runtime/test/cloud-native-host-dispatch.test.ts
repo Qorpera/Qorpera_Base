@@ -70,12 +70,13 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 		...rowsOf(read("20260928429984_runtime_company_mail_attachments.sql")),
 		...rowsOf(read("20260928439965_runtime_company_account_tool.sql")),
 		...rowsOf(read("20260928439970_folder_run_view_open.sql")),
-		// The worker tools on folder-v2 (F2-5b-2), a coding session's archive (C3b), the proposal calls (P40b) and zoom
-		// (M1b-3), found by name: a release re-slots the file.
+		// The worker tools on folder-v2 (F2-5b-2), a coding session's archive (C3b), the proposal calls (P40b), agents'
+		// hooks and mailboxes (E3a) and zoom (M1b-3), found by name: a release re-slots the file.
 		...[
 			"_folder_state_worker_files.sql",
 			"_folder_coding_archive.sql",
 			"_folder_proposals_runtime.sql",
+			"_folder_agent_manage_hook.sql",
 			"_memory_zoom.sql",
 		].flatMap((suffix) =>
 			rowsOf(

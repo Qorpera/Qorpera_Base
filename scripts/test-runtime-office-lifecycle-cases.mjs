@@ -44,7 +44,7 @@ export async function testOfficeLifecycleRevocation({ scope, binding, startup, a
 	const privacy = call(`begin; reset role; update public.qorpera_runtime_offices set privacy_state='private',privacy_challenge=${literal(privateChallenge)},privacy_version=7; ${service} ${begin(request)} reset role;
 		select jsonb_build_object('state',privacy_state,'version',privacy_version,'challenge',privacy_challenge) from public.qorpera_runtime_offices; rollback;`, "");
 	assert.deepEqual(privacy, { state: "private", version: 7, challenge: privateChallenge });
-	const paused = call(`begin; reset role; insert into public.qorpera_company_execution_pauses(profile_id,paused_by_user_id) values('${scope.companyId}','30000000-0000-4000-8000-000000000001'); ${service} ${begin(request)} rollback;`, "");
+	const paused = call(`begin; reset role; insert into public.qorpera_company_execution_pauses(profile_id,paused_by_user_id) values('${scope.companyId}','92400000-0000-4000-8000-000000000001'); ${service} ${begin(request)} rollback;`, "");
 	assert.equal(paused.state, "draining");
 	assert.equal(snapshot(), preserved);
 	console.log("PASS: every action revokes only admission; pending drains, private state and all machine allocations are preserved");
