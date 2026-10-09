@@ -301,19 +301,31 @@ begin
 end $$;
 
 
--- Detached, a command view still answers for what its run read: once the run's file is no longer readable to agent A
--- (its folder narrowed), the save refuses, as for a desktop.
+-- Reads: while its run's job is leased, a read released through a command view lands in the view's read set and the
+-- run's. Detached, the view still answers for what its run read: once the file is no longer readable to agent A (its
+-- folder narrowed), the view's save refuses, as for a desktop, and so does the run's recheck
+-- (qorpera_folder_run_reads_current, which qorpera_folder_assert_run_reads runs before a model request).
 do $$
 declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); c uuid; s jsonb; e jsonb; a jsonb := pg_temp.stage('eta');
+	b jsonb;
 begin
 	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'cmd-read-setup', jsonb_build_array(jsonb_build_object('op','mkdir','path','cmd-read'),
 		jsonb_build_object('op','write','path','cmd-read/r.txt','file',a))), 2, 'saved');
 	perform pg_temp.hold(v);
 	c := pg_temp.command(v);
 	s := pg_temp.open_command(c);
-	e := pg_temp.read('cmd-read/r.txt', v) -> 'entry';
-	perform public.qorpera_folder_record_release('63200000-0000-4000-8000-000000000020', v, extensions.gen_random_uuid(),
+	e := pg_temp.read('cmd-read/r.txt', pg_temp.vactor(s)) -> 'entry';
+	perform public.qorpera_folder_record_release('63200000-0000-4000-8000-000000000020', pg_temp.vactor(s), extensions.gen_random_uuid(),
 		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('5', 64));
+	if not exists (select 1 from public.qorpera_folder_view_read_records rec, jsonb_array_elements(rec.reads) x
+			where rec.view_id = (s ->> 'viewId')::uuid and x ->> 'path' = 'cmd-read/r.txt')
+		or not exists (select 1 from public.qorpera_folder_run_read_records rec, jsonb_array_elements(rec.reads) x
+			where rec.run_id = (v ->> 'runId')::uuid and x ->> 'path' = 'cmd-read/r.txt') then
+		raise exception 'A live command view''s release lands in both read sets'; end if;
+	-- The run as its recheck resolves it, while its job is leased.
+	b := public.qorpera_folder_run_resolve('63200000-0000-4000-8000-000000000020', '63200000-0000-4000-8000-000000000010', v)
+		- 'lockTargets' - 'attribution';
+	perform public.qorpera_folder_run_reads_current('63200000-0000-4000-8000-000000000020', '63200000-0000-4000-8000-000000000010', b);
 	perform pg_temp.fx(format('update public.qorpera_runner_jobs set lease_expires_at = clock_timestamp() - interval ''1 second'' where id = %L',
 		v ->> 'jobId'));
 	perform pg_temp.expect(pg_temp.vcommit(s, 'cmd-read-before', '[{"op":"mkdir","path":"by-cmd-read"}]'), 1, 'saved');
@@ -321,6 +333,8 @@ begin
 		'company_shared', 'normal');
 	perform pg_temp.refused(format('select pg_temp.vcommit(%L, %L, %L)', s, 'cmd-read-after', '[{"op":"mkdir","path":"refused"}]'),
 		'42501', 'A read is no longer readable');
+	perform pg_temp.refused(format('select public.qorpera_folder_run_reads_current(%L, %L, %L)', '63200000-0000-4000-8000-000000000020',
+		'63200000-0000-4000-8000-000000000010', b), '42501', 'A read is no longer readable');
 end $$;
 
 

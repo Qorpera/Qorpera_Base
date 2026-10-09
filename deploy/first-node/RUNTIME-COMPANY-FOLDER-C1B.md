@@ -941,8 +941,10 @@ it. The facts below come from the read-only inventory of 2026-09-29
     activation it opened under; each boot makes a new one), and the holder
     (`holder_run_id` or `holder_user_id`);
   - coding session: `worker_id` and `attachment_token`;
-  - later `shell_command_id`, `company_machine_id`, `placement_id` and
-    `boot_id`;
+  - shell command (C1b-3b, 20260930183000): `shell_command_id`, the
+    `screen_generation` the command started in and the `activation_id`; no
+    `screen_id` or holder, so the screen's desktop view keeps its index;
+  - later `company_machine_id`, `placement_id` and `boot_id`;
 - `node_id` and `machine_id` (the allocation it was opened on), plus
   `unsaved_since`, which the folder service reports when it renews;
 - `pass_sha256`: the pass is 32 random bytes, returned once at open and
@@ -953,7 +955,8 @@ it. The facts below come from the read-only inventory of 2026-09-29
   `expired`).
 
 One open view per screen, per coding session, and later per test machine:
-partial unique indexes. Of two opens for the same anchor, the later one
+partial unique indexes. A shell command has one view, open or closed
+(`qorpera_folder_views_one_per_command`). Of two opens for the same anchor, the later one
 supersedes the earlier one's new view, or meets it in the index (23505)
 when there was no older view to lock; the office service retries then. The
 table is revoked from every API role; only the folder core's functions write
@@ -1033,7 +1036,7 @@ legacy holder-changing paths needs a patch (the only legacy change is
 | `run_box` | the job, `KEY SHARE`, taken at step 3 as for a run | the run actor checks pass, and the job still carries the view's `runner_id` and `client_lease_id` |
 | `computer_desktop` | the screen row, `FOR SHARE` | the view is the newest open view of its screen; the screen's `generation` is the view's; either the screen's drain is still pending (the old holder's final publish, whatever the privacy state), or the screen is held by the view's holder or by nobody and privacy is shared or this is the private member's view; the office's current activation is the view's; the agent's `qorpera_runtime_office_access` is active |
 | `coding_session` | the session row, `FOR SHARE` | the session carries the view's `attachment_token`, and `qorpera_coding_attachment_refusal` finds nothing (not archived, not expired, repository not withdrawn, executor enabled) |
-| `computer_shell_command` (C1b-3b) | the command row, `FOR SHARE` | the command has not ended (§8 has the end boundary), and the screen's `generation` and the office's current activation are unchanged |
+| `computer_shell_command` (C1b-3b, 20260930183000) | the command row, `FOR SHARE` (the report's end of the command waits for it) | the screen's `generation` is the one the command started in, the office's current activation is the view's, and the agent's `qorpera_runtime_office_access` is active. Not the command's end: an ended command's view still renews, refuses every save but the final one, and the final publish closes it (§8) |
 | `test_machine` (C1b-3b) | the machine row and its current placement, `FOR SHARE` | the placement and `boot_id` are the view's |
 
 **Desktops: the newest view wins.**
@@ -1307,12 +1310,17 @@ by a machine.
     id;
   - `office_id`, `screen_id`, the screen `generation`, `run_id`,
     `staff_agent_id` and `requested_by_user_id` (from the run);
+  - `network`: the start's `network` argument (absent, false). Only an
+    offline command gets a view; rows the report makes say true;
   - `started_at`, then `ended_at` and `end_reason` (`exited`, `stopped`,
     `drained`, `paused`, `lost`).
 
-  It is inserted with the start effect, under the office and screen locks
-  that path already takes. It is ended by the guest's report, or by a drain
-  of its screen.
+  Built in 20260930183000: the native operation's begin of a shell start
+  inserts it, before the guest runs anything. The office's 30 s report fills
+  in `command_id`; its sweeps spare a row it has not named yet for 60 seconds
+  after the start's effect ended, and only commands it named are told to the
+  agent as stopped. It is ended by the guest's report, or by a drain of its
+  screen.
   - **Until each command has its own mount namespace** (F3's step 4), the
     report ends a command when its process group is empty. Programs that
     leave the group (setsid, daemons) are not caught yet.
