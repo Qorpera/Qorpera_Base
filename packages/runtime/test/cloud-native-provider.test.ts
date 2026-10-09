@@ -1,27 +1,6 @@
-import { mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import type { HostedArtifactIndex, HostedCompanySubstrateVersion } from "@qorpera/cloud-client/hosted-primary";
-import { captureCloudCompanyTree } from "@qorpera/cloud-client/node/cloud-company-snapshot";
-import type { ResolvedCompanySubstrateReference } from "@qorpera/cloud-client/node/cloud-company-substrate";
-import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
-import type { CloudRunnerJob } from "@qorpera/cloud-client/node/cloud-runner-protocol";
-import {
-	executeNativeCloudRunnerJob,
-	HttpNativeProviderComputerBridge,
-	type NativeProviderComputerBridge,
-	nativeProviderExecutionGuarantees,
-	parseNativeHarnessResult,
-} from "@qorpera/runtime/cloud-native-provider";
+import { HttpNativeProviderComputerBridge, parseNativeHarnessResult } from "@qorpera/runtime/cloud-native-provider";
 import type { CloudRunnerNativeAuthority } from "@qorpera/runtime/cloud-runner-broker";
-import type {
-	CloudRunnerSandboxProcess,
-	CloudRunnerSandboxRequest,
-	CloudRunnerSubstrateResolver,
-	ResolvedCloudRunnerExecutionContext,
-} from "@qorpera/runtime/cloud-runner-sandbox";
 import { describe, expect, it, vi } from "vitest";
-import { scaffoldCompany } from "./fixtures/scaffold-company.ts";
 
 const authority: CloudRunnerNativeAuthority = {
 	leaseId: "10000000-0000-4000-8000-000000000001",
@@ -45,249 +24,16 @@ const authority: CloudRunnerNativeAuthority = {
 	expiresAt: "2026-08-21T12:05:00.000Z",
 };
 
-const request: CloudRunnerSandboxRequest = {
-	job: {
-		jobId: "10000000-0000-4000-8000-000000000008",
-		jobType: "agent_turn",
-		requiredCapability: "agent_turn",
-		attemptCount: 1,
-		payload: { schema: "qorpera.agent-turn/v1" },
-	},
-	substrate: {
-		versionId: "10000000-0000-4000-8000-000000000009",
-		contentSha256: "b".repeat(64),
-		operationSequence: 1,
-		operationCount: 1,
-		artifactCount: 0,
-	},
-	input: {
-		companyBaseRoot: "/work/input/company",
-		companyRoot: "/work/company",
-		executionContextPath: "/work/input/execution.json",
-		queuedInputsPath: "/work/input/inputs.jsonl",
-		transcriptPath: "/work/input/transcript.jsonl",
-		substrateManifestPath: "/work/input/substrate.json",
-		operationsPath: "/work/input/operations.jsonl",
-		artifactsRoot: "/work/input/artifacts",
-		attachmentsRoot: "/work/input/attachments",
-	},
-	outputRoot: "/work/output",
-	environment: {},
-	limits: {
-		wallTimeMs: 60_000,
-		memoryBytes: 1024 * 1024 * 1024,
-		cpuCount: 1,
-		maxPids: 128,
-		maxInputBytes: 1024 * 1024 * 1024,
-		maxOutputBytes: 1024 * 1024,
-		maxResultBytes: 32 * 1024,
-	},
-};
-
-class MemoryObjectTransport implements CloudObjectTransport {
-	readonly values = new Map<string, Uint8Array>();
-
-	async put(path: string, bytes: Uint8Array): Promise<"exists" | "stored"> {
-		if (this.values.has(path)) return "exists";
-		this.values.set(path, Uint8Array.from(bytes));
-		return "stored";
-	}
-
-	async get(path: string): Promise<Uint8Array> {
-		const value = this.values.get(path);
-		if (!value) throw new Error("missing native execution object");
-		return Uint8Array.from(value);
-	}
-}
+const companyJob = { jobId: "10000000-0000-4000-8000-000000000008", attemptCount: 1 };
 
 describe("native provider computer bridge", () => {
-	it("materializes the canonical run through the native harness and synchronizes its provider result", async () => {
-		const temporaryRoot = await mkdtemp(join(await realpath(tmpdir()), "qorpera-native-run-test-"));
-		const nativeWorkspaceGid = process.platform === "linux" ? Math.max(1, process.getgid?.() ?? 1) : undefined;
-		try {
-			const companyRoot = join(temporaryRoot, "company");
-			scaffoldCompany(companyRoot);
-			await writeFile(join(companyRoot, "company.md"), "# Native company\n", "utf-8");
-			const objects = new CloudContentAddressedStore(new MemoryObjectTransport());
-			const tree = await captureCloudCompanyTree(companyRoot, request.job.jobId, objects);
-			const createdAt = "2026-08-21T12:00:00.000Z";
-			const snapshot = {
-				snapshotId: request.substrate.versionId,
-				profileId: request.job.jobId,
-				environmentId: authority.runId,
-				workspaceId: authority.assignmentId,
-				clientSnapshotId: authority.runnerId,
-				tree,
-				createdByUserId: authority.computeIdentityOwnerUserId as string,
-				createdAt,
-			};
-			const version: HostedCompanySubstrateVersion = {
-				versionId: request.substrate.versionId,
-				profileId: request.job.jobId,
-				environmentId: authority.runId,
-				companySnapshotId: snapshot.snapshotId,
-				clientVersionId: "10000000-0000-4000-8000-000000000014",
-				contractVersion: 1,
-				operationSequence: 0,
-				operationCount: 0,
-				contentSha256: request.substrate.contentSha256,
-				createdByUserId: authority.computeIdentityOwnerUserId as string,
-				createdAt,
-			};
-			const execution: ResolvedCloudRunnerExecutionContext = {
-				run: {
-					runId: authority.runId,
-					profileId: version.profileId,
-					environmentId: version.environmentId,
-					sourceKind: "session_turn",
-					sourceId: authority.runId,
-					sessionId: "10000000-0000-4000-8000-000000000015",
-					jobId: request.job.jobId,
-					substrateVersionId: version.versionId,
-					companySnapshotId: snapshot.snapshotId,
-					staffAgentId: "10000000-0000-4000-8000-000000000016",
-					staffVersion: 1,
-					inputIds: ["10000000-0000-4000-8000-000000000017"],
-					sponsorBindingId: "10000000-0000-4000-8000-000000000018",
-					sponsorVersion: 1,
-					requiredCapability: "agent_turn",
-					jobType: "agent_turn",
-					payloadSha256: "c".repeat(64),
-					publicationMode: "automatic",
-					reviewerStaffIds: [],
-					computeIdentityId: authority.computeIdentityId,
-					computeIdentityOwnershipKind: "member",
-					computeIdentityOwnerUserId: authority.computeIdentityOwnerUserId,
-					workerClass: "managed_sandbox",
-					transcriptStartSequence: 0,
-					status: "runner_started",
-					createdByUserId: authority.computeIdentityOwnerUserId as string,
-					requestedByUserId: authority.computeIdentityOwnerUserId,
-					sponsoredByUserId: authority.computeIdentityOwnerUserId,
-					createdAt,
-				},
-				sponsor: {
-					bindingId: "10000000-0000-4000-8000-000000000018",
-					version: 1,
-					kind: "member_connection",
-					providerConnectionId: authority.providerConnectionId,
-					providerConnectionVersion: authority.providerConnectionVersion,
-					provider: authority.provider,
-					authenticationMode: "native_subscription",
-					nativeHarness: authority.nativeHarness,
-					allowAutonomous: false,
-				},
-			};
-			const substrate: CloudRunnerSubstrateResolver = {
-				resolveExecution: async () => execution,
-				listInputs: async () => [
-					{
-						inputId: execution.run.inputIds[0] as string,
-						position: 1,
-						kind: "user_message",
-						authorUserId: authority.computeIdentityOwnerUserId as string,
-						authorDisplayName: "Native member",
-						body: { schema: "qorpera.session-prompt/v1", text: "Use my subscription", images: [] },
-						createdAt,
-					},
-				],
-				listTranscript: async () => [],
-				resolve: async (): Promise<ResolvedCompanySubstrateReference> => ({ version, snapshot }),
-				listOperations: async (_version: HostedCompanySubstrateVersion) => [],
-				listArtifacts: async (_index: HostedArtifactIndex) => [],
-			};
-			const job: CloudRunnerJob = {
-				jobId: request.job.jobId,
-				runId: authority.runId,
-				profileId: version.profileId,
-				environmentId: version.environmentId,
-				sessionId: execution.run.sessionId,
-				substrateVersionId: version.versionId,
-				clientJobId: "10000000-0000-4000-8000-000000000019",
-				assignmentId: authority.assignmentId,
-				requiredCapability: "agent_turn",
-				jobType: "agent_turn",
-				payload: { schema: "qorpera.agent-turn/v1" },
-				status: "leased",
-				attemptCount: 1,
-				runnerId: authority.runnerId,
-				outputArtifactCount: 0,
-				createdByUserId: authority.computeIdentityOwnerUserId as string,
-				createdAt,
-				startedAt: createdAt,
-				leaseExpiresAt: "2099-08-21T12:05:00.000Z",
-			};
-			const bridge: NativeProviderComputerBridge = {
-				executionGuarantees: nativeProviderExecutionGuarantees("virtual_machine"),
-				start: vi.fn(async (receivedAuthority, receivedRequest): Promise<CloudRunnerSandboxProcess> => {
-					expect(receivedAuthority).toEqual({
-						...authority,
-						expiresAt: "2026-08-21T12:10:00.000Z",
-					});
-					expect(receivedRequest.hostBroker).toBeUndefined();
-					if (nativeWorkspaceGid !== undefined) {
-						const [workspaceDirectory, inputDirectory, inputFile, workFile, outputDirectory] = await Promise.all([
-							stat(temporaryRoot),
-							stat(dirname(receivedRequest.input.companyBaseRoot)),
-							stat(join(receivedRequest.input.companyBaseRoot, "company.md")),
-							stat(join(receivedRequest.input.companyRoot, "company.md")),
-							stat(receivedRequest.outputRoot),
-						]);
-						expect(workspaceDirectory.gid).toBe(nativeWorkspaceGid);
-						expect(workspaceDirectory.mode & 0o070).toBe(0o010);
-						expect(inputDirectory.gid).toBe(nativeWorkspaceGid);
-						expect(inputDirectory.mode & 0o7777).toBe(0o2750);
-						expect(inputFile.mode & 0o777).toBe(0o640);
-						expect(workFile.mode & 0o777).toBe(0o660);
-						expect(outputDirectory.mode & 0o7777).toBe(0o2770);
-					}
-					return {
-						result: Promise.resolve({
-							schema: "qorpera.native-harness-result/v2",
-							run_id: authority.runId,
-							message_count: 2,
-							final_message_id: "10000000-0000-4000-8000-000000000020",
-							provider_session_id: "official-session-1",
-						}),
-						terminate: vi.fn(async () => undefined),
-					};
-				}),
-			};
-			const appendTranscriptEvent = vi.fn(async () => ({}));
-			const bindProviderSession = vi.fn(async () => ({}));
-			const nativeBroker = { appendTranscriptEvent, bindProviderSession };
-			const refreshedAuthority = {
-				...authority,
-				expiresAt: "2026-08-21T12:10:00.000Z",
-			};
-			const refreshAuthority = vi.fn(async () => refreshedAuthority);
-			const completed = await executeNativeCloudRunnerJob({
-				job,
-				substrate,
-				objects,
-				authority,
-				refreshAuthority,
-				bridge,
-				nativeBroker,
-				...(nativeWorkspaceGid !== undefined ? { nativeWorkspaceGid } : {}),
-				temporaryRoot,
-			});
-			expect(refreshAuthority).toHaveBeenCalledOnce();
-			expect(bridge.start).toHaveBeenCalledWith(refreshedAuthority, expect.any(Object));
-			expect(completed.result).toMatchObject({
-				backend: "native-provider-computer",
-				backend_result: { provider_session_id: "official-session-1" },
-			});
-			expect(appendTranscriptEvent).not.toHaveBeenCalled();
-			expect(bindProviderSession).toHaveBeenCalledWith({ providerSessionId: "official-session-1" });
-		} finally {
-			await rm(temporaryRoot, { recursive: true, force: true });
-		}
-	});
-
 	it("passes only opaque capsule authority to the trusted native boundary", async () => {
 		const fetchImplementation = vi.fn<typeof fetch>(async (_input, init) => {
 			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			// The company execution names the job and its authority only: no Company File, path or credential.
+			expect(Object.keys(body).sort()).toEqual(["authority", "job", "schema"]);
+			expect(body.schema).toBe("qorpera.native-company-execution/v1");
+			expect(body.job).toEqual({ job_id: companyJob.jobId, attempt_count: 1 });
 			const projectedAuthority = body.authority as Record<string, unknown>;
 			expect(projectedAuthority.authentication_mode).toBe("native_subscription");
 			expect(projectedAuthority.native_harness).toBe("codex-cli");
@@ -313,13 +59,13 @@ describe("native provider computer bridge", () => {
 				},
 			});
 		});
-		const bridge: NativeProviderComputerBridge = new HttpNativeProviderComputerBridge(
+		const bridge = new HttpNativeProviderComputerBridge(
 			"https://native-runner.example.test/",
 			"c".repeat(43),
 			fetchImplementation,
 			{ executionBoundary: "virtual_machine" },
 		);
-		const process = await bridge.start(authority, request);
+		const process = await bridge.startCompany(authority, companyJob);
 		await expect(process.result).resolves.toMatchObject({
 			schema: "qorpera.native-harness-result/v2",
 			provider_session_id: "codex-session-1",
@@ -350,7 +96,7 @@ describe("native provider computer bridge", () => {
 			expect(() => parseNativeHarnessResult(invalid, authority.runId)).toThrow("private completion receipt");
 	});
 
-	it("rejects non-agent and non-native work before contacting the bridge", async () => {
+	it("rejects non-native and malformed company work before contacting the bridge", async () => {
 		const fetchImplementation = vi.fn<typeof fetch>();
 		const bridge = new HttpNativeProviderComputerBridge(
 			"http://127.0.0.1:9898/",
@@ -358,8 +104,11 @@ describe("native provider computer bridge", () => {
 			fetchImplementation,
 		);
 		await expect(
-			bridge.start({ ...authority, authenticationMode: "api_key" as "native_subscription" }, request),
-		).rejects.toThrow("unsupported execution");
+			bridge.startCompany({ ...authority, authenticationMode: "api_key" as "native_subscription" }, companyJob),
+		).rejects.toThrow("unsupported company runtime");
+		await expect(bridge.startCompany(authority, { ...companyJob, jobId: "not-a-job" })).rejects.toThrow(
+			"unsupported company runtime",
+		);
 		expect(fetchImplementation).not.toHaveBeenCalled();
 	});
 
@@ -380,7 +129,7 @@ describe("native provider computer bridge", () => {
 					result: { schema: "qorpera.native-harness-result/v1", provider_state: { refresh_token: "no" } },
 				}),
 		);
-		const process = await bridge.start(authority, request);
+		const process = await bridge.startCompany(authority, companyJob);
 		await expect(process.result).rejects.toThrow("credential boundary");
 	});
 
@@ -395,7 +144,7 @@ describe("native provider computer bridge", () => {
 					result: { schema: "qorpera.native-harness-result/v1", provider_state: { token: "no" } },
 				}),
 		);
-		const process = await bridge.start(authority, request);
+		const process = await bridge.startCompany(authority, companyJob);
 		await expect(process.result).rejects.toThrow("credential boundary");
 	});
 
