@@ -318,7 +318,8 @@ matching waits (a filtered listener skipping other types); never closer than a m
 so a receive still committing is never passed. W1b must therefore stamp `verified_at` with
 `clock_timestamp()` in a transaction shorter than a minute.
 
-**Admission.** The materializer's drain (`qorpera_drain_event_wakes`, called after the file drain)
+**Admission.** The materializer's drain (`qorpera_drain_event_wakes`, called after the file drain; legacy sweep F3b,
+20260930295000, dropped it, and the orchestrator's E2 step takes event wakes on folder-v2)
 takes up to 32 active cursors, oldest scan first, and for each one:
 - skips it while its hook is removed, the company is paused, or the routine is not active at that
   version; it takes the routine row without waiting (a routine save takes it first) and skips the
