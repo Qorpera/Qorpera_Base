@@ -11,10 +11,11 @@
 -- 4. Where a run's log goes: qorpera_memory_run_origin (its conversation, parent step, the run it continues and whether
 --    it is narrow) and qorpera_memory_run_log_place.
 -- 5. The refusals: a memory commit with runLog writes only that run's log folder; one without writes no runs/ path. A run
---    writes only its own log; only the platform deletes. Steps are append-only: a finished line never changes, a pending
---    one only to its finished form, and a narrow log takes only narrow lines.
--- 6. Native host calls: qorpera_memory_step_hashes ('lease'), qorpera_memory_run_log_place ('run') and
---    qorpera_folder_memory_commit ('folder'; a run actor writes only its own run's log).
+--    writes only its own log, as itself, without the folder's grants (§4.3); only the platform deletes. Steps are
+--    append-only: a finished line never changes, a pending one only to its finished form, and a narrow log takes only
+--    narrow lines.
+-- 6. Native host calls: qorpera_memory_step_hashes and qorpera_memory_step_narrow ('lease'), qorpera_memory_run_log_place
+--    ('run') and qorpera_folder_memory_commit ('folder'; a run actor writes only its own run's log).
 -- Every new or patched body carries the marker 20260930231000 for the deploy guard.
 
 set local lock_timeout = '3s';
@@ -522,6 +523,39 @@ end $$;
 revoke all on function public.qorpera_memory_step_hashes(uuid, uuid, uuid, jsonb) from public, anon, authenticated;
 grant execute on function public.qorpera_memory_step_hashes(uuid, uuid, uuid, jsonb) to service_role;
 
+-- What makes a run's next step lines narrow (§7.6), as its log's file rules decide it: the log is narrow from its next
+-- step on (the whole log, or a step it holds), the run's machine went narrow, and which of the paths a step names not
+-- every agent reads. A path is spelled as a step line has it (a leading /company/ goes); one that is no company path
+-- names nothing, as in qorpera_memory_run_step_line. Only while the job holds its lease on the run; at most 1,024 paths.
+create function public.qorpera_memory_step_narrow(p_environment_id uuid, p_job_id uuid, p_run_id uuid, p_paths jsonb)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+-- 20260930231000 (W1b)
+begin
+	if auth.role() is distinct from 'service_role' then
+		raise exception 'Folder core authority is required' using errcode = '42501'; end if;
+	if not exists (select 1 from public.qorpera_runner_jobs j where j.id = p_job_id and j.status = 'leased'
+			and j.run_id = p_run_id and j.environment_id = p_environment_id and j.lease_expires_at > clock_timestamp())
+		or not exists (select 1 from public.qorpera_execution_runs r where r.id = p_run_id and r.environment_id = p_environment_id) then
+		raise exception 'The run''s lease is not held' using errcode = '42501'; end if;
+	if jsonb_typeof(p_paths) is distinct from 'array' then
+		raise exception 'Step paths are a list of at most 1,024 paths' using errcode = '22023'; end if;
+	if jsonb_array_length(p_paths) > 1024 or exists (select 1 from jsonb_array_elements(p_paths) p
+		where jsonb_typeof(p.value) is distinct from 'string' or char_length(p.value #>> '{}') > 4096) then
+		raise exception 'Step paths are a list of at most 1,024 paths' using errcode = '22023'; end if;
+	return jsonb_build_object(
+		'log', coalesce((select l.narrow or l.narrow_from is not null from public.qorpera_memory_run_logs l
+			where l.environment_id = p_environment_id and l.run_id = p_run_id and l.retired_at is null), false),
+		'machine', public.qorpera_memory_run_machine_narrow(p_environment_id, p_run_id),
+		'restricted', coalesce((select jsonb_agg(p.value order by p.n)
+			from jsonb_array_elements(p_paths) with ordinality p(value, n)
+			cross join lateral (select case when p.value #>> '{}' like '/company/%' then substr(p.value #>> '{}', 10)
+				else p.value #>> '{}' end as path) c
+			where public.qorpera_company_path_valid(c.path)
+				and not public.qorpera_folder_path_every_agent(p_environment_id, public.qorpera_folder_key(c.path))), '[]'::jsonb));
+end $$;
+revoke all on function public.qorpera_memory_step_narrow(uuid, uuid, uuid, jsonb) from public, anon, authenticated;
+grant execute on function public.qorpera_memory_step_narrow(uuid, uuid, uuid, jsonb) to service_role;
+
 -- A memory commit's run rows, before the receipts' rank 10 (§4.5): each run its request names, in id order, FOR SHARE;
 -- the logged run FOR NO KEY UPDATE while its log is not made yet, so two first batches never both make it. An erase
 -- takes the row FOR UPDATE and waits for the batches; a batch after it sees erase_open.
@@ -715,11 +749,43 @@ end $$;
 revoke all on function public.qorpera_memory_run_log_paths(uuid, jsonb, text, text, jsonb, text)
 	from public, anon, authenticated, service_role;
 
+-- Whether a memory commit's unit is in its run's own log, which the run writes as itself without the folder's grants
+-- (§4.3): its agent may hold none where the log goes, as in a group chat's tree. Every path the unit makes is the log's
+-- folder, under it, or a folder on the way to it inside the conversation's memory folder; the run's write still needs
+-- the request of this commit, and the structured hook decides the unit as any other. Only the platform deletes.
+create function public.qorpera_memory_run_log_admits(p_environment_id uuid, p_operation_key text, p_actor jsonb, p_op text,
+	p_path text, p_unit jsonb)
+returns boolean language plpgsql stable set search_path = '' as $$
+-- 20260930231000 (W1b)
+declare v_request jsonb := public.qorpera_folder_memory_request(); v_run text; v_log_key text;
+begin
+	if v_request is null or v_request ->> 'environmentId' is distinct from p_environment_id::text
+		or v_request ->> 'operationKey' is distinct from p_operation_key or p_op not in ('write','mkdir','new_folder') then
+		return false; end if;
+	v_run := v_request #>> '{preconditions,runLog,run}';
+	if v_run is null or p_actor ->> 'kind' is distinct from 'staff_agent' or p_actor ->> 'runId' is distinct from v_run then
+		return false; end if;
+	v_log_key := public.qorpera_folder_key(v_request #>> '{preconditions,runLog,path}');
+	if public.qorpera_memory_run_folder_key(v_log_key) is distinct from v_log_key or right(v_log_key, 42) <> '/runs/' || v_run then
+		return false; end if;
+	return not exists (select 1
+		from (select public.qorpera_folder_key(p_path) as key
+			union all
+			select public.qorpera_folder_key(p_path || '/' || (c.value ->> 'path'))
+			from jsonb_array_elements(case when p_op = 'new_folder' and jsonb_typeof(p_unit -> 'contents') = 'array'
+				then p_unit -> 'contents' else '[]'::jsonb end) c) t
+		where t.key is null or not (t.key = v_log_key or left(t.key, char_length(v_log_key) + 1) = v_log_key || '/'
+			or (left(v_log_key, char_length(t.key) + 1) = t.key || '/' and t.key ~ '^agents/([^/]+|groups/[^/]+)/memory(/|$)')));
+end $$;
+revoke all on function public.qorpera_memory_run_log_admits(uuid, text, jsonb, text, text, jsonb)
+	from public, anon, authenticated, service_role;
+
 -- A run log file's own rules, for each one a unit writes (§4.5). run.toml names the run's origin and never changes. A
 -- log block is 1 to 16 step lines from its number on, after the log's last step or a block of the same commit: a step
 -- stays in its block, a finished or erased line never changes and a pending one only to its finished form; a new
--- erased line is the erase's (W5). A narrow log, and a log from its first narrow step on, takes only narrow lines; a
--- line that is not narrow names only paths every agent reads. A run tree block parses. Returns a refusal or null.
+-- erased line is the erase's (W5). A narrow log, a log from its first narrow step on and a run whose machine went narrow
+-- take only narrow lines; a line that is not narrow names only paths every agent reads. A run tree block parses. Returns
+-- a refusal or null.
 create function public.qorpera_memory_run_log_file_rules(p_environment_id uuid, p_entries jsonb, p_key text, p_kind text,
 	p_parse jsonb, p_text text)
 returns jsonb language plpgsql stable set search_path = '' as $$
@@ -728,6 +794,7 @@ declare
 	v_folder text := public.qorpera_memory_run_folder_key(p_key); v_run uuid; v_row public.qorpera_memory_run_logs%rowtype;
 	v_toml jsonb; v_home jsonb; v_problem text; v_lines text[]; v_line text; v_parsed jsonb; v_no integer := 0;
 	v_start integer; v_end integer; v_old public.qorpera_memory_run_steps%rowtype; v_block jsonb; v_narrow boolean;
+	v_machine boolean;
 begin
 	if p_parse is distinct from jsonb_build_object('kind', p_kind) then
 		return jsonb_build_object('ok', false, 'reason', 'structured_invalid', 'problems', jsonb_build_array(
@@ -785,6 +852,8 @@ begin
 				where e.key ~ '/log/[0-9]{8}\.jsonl$' and left(e.key, -char_length('/log/00000000.jsonl')) = v_folder
 					and (case when e.key ~ '/log/[0-9]{8}\.jsonl$' then substring(e.key from '/([0-9]{8})\.jsonl$')::integer end) < v_start
 					and coalesce((public.qorpera_memory_run_step_line(l.line) ->> 'narrow')::boolean, false));
+		-- The run's machine went narrow (W6a): every line written from now on is narrow.
+		v_machine := public.qorpera_memory_run_machine_narrow(p_environment_id, v_run);
 		foreach v_line in array v_lines loop
 			v_no := v_no + 1;
 			-- Sized before it is parsed.
@@ -816,6 +885,9 @@ begin
 				and not (v_parsed ->> 'narrow')::boolean and (v_narrow or v_start + v_no - 1 >= v_row.narrow_from) then
 				v_problem := 'step ' || (v_start + v_no - 1) || ' comes after a narrow step and is written narrow';
 			elsif (v_old.run_id is null or v_old.line_sha256 <> v_parsed ->> 'line_sha256')
+				and not (v_parsed ->> 'narrow')::boolean and v_machine then
+				v_problem := 'step ' || (v_start + v_no - 1) || ' comes after its machine went narrow and is written narrow';
+			elsif (v_old.run_id is null or v_old.line_sha256 <> v_parsed ->> 'line_sha256')
 				and not (v_parsed ->> 'narrow')::boolean and exists (select 1 from jsonb_array_elements_text(v_parsed -> 'paths') p(key)
 					where not public.qorpera_folder_path_every_agent(p_environment_id, p.key)) then
 				v_problem := 'step ' || (v_start + v_no - 1) || ' names a path not every agent reads and is written narrow';
@@ -828,17 +900,18 @@ begin
 		if exists (select 1 from public.qorpera_memory_run_steps s
 			where s.environment_id = p_environment_id and s.run_id = v_run and s.block_key = p_key and s.j >= v_end) then
 			v_problem := 'a log block keeps every step it holds';
-		elsif v_start > coalesce(v_row.step_count, 0) and not exists (select 1 from jsonb_each(p_entries) e
-			where e.key ~ '/log/[0-9]{8}\.jsonl$' and left(e.key, -char_length('/log/00000000.jsonl')) = v_folder
-				and (case when e.key ~ '/log/[0-9]{8}\.jsonl$' then substring(e.key from '/([0-9]{8})\.jsonl$')::integer end)
-					+ cardinality(string_to_array(left(e.value ->> 'text', -1), E'\n')) = v_start) then
-			v_problem := 'a log block starts at the log''s next step';
+		-- Overlap first: blocks of one change that overlap may still chain, end to start.
 		elsif exists (select 1 from jsonb_each(p_entries) e
 			where e.key ~ '/log/[0-9]{8}\.jsonl$' and left(e.key, -char_length('/log/00000000.jsonl')) = v_folder and e.key <> p_key
 				and (case when e.key ~ '/log/[0-9]{8}\.jsonl$' then substring(e.key from '/([0-9]{8})\.jsonl$')::integer end) < v_end
 				and (case when e.key ~ '/log/[0-9]{8}\.jsonl$' then substring(e.key from '/([0-9]{8})\.jsonl$')::integer end)
 					+ cardinality(string_to_array(left(e.value ->> 'text', -1), E'\n')) > v_start) then
 			v_problem := 'two log blocks hold the same step';
+		elsif v_start > coalesce(v_row.step_count, 0) and not exists (select 1 from jsonb_each(p_entries) e
+			where e.key ~ '/log/[0-9]{8}\.jsonl$' and left(e.key, -char_length('/log/00000000.jsonl')) = v_folder
+				and (case when e.key ~ '/log/[0-9]{8}\.jsonl$' then substring(e.key from '/([0-9]{8})\.jsonl$')::integer end)
+					+ cardinality(string_to_array(left(e.value ->> 'text', -1), E'\n')) = v_start) then
+			v_problem := 'a log block starts at the log''s next step';
 		end if;
 	end if;
 	if v_problem is null then return null; end if;
@@ -1182,6 +1255,14 @@ $old$,
 
 	-- Rank 10: a run's released reads still hold (C1B-2 §3). A narrowing that commits after this is caught after the
 $new$);
+select pg_temp.w1b_run_logs_replace(
+	'public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
+	$old$		if v_ok and v_actor_kind in ('member','run','view') then
+$old$,
+	$new$		-- 20260930231000 (W1b): not a memory commit's unit in its run's own log, which the run writes as itself (§4.3).
+		if v_ok and v_actor_kind in ('member','run','view') and not (v_actor_kind = 'run'
+			and public.qorpera_memory_run_log_admits(p_environment_id, p_operation_key, v_auth_actor, v_op, v_path, v_unit)) then
+$new$);
 
 -- The targets: the run log rows a unit writes in, deletes or moves, at rank 5, after the hooks.
 select pg_temp.w1b_run_logs_replace('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure,
@@ -1216,10 +1297,11 @@ drop function pg_temp.w1b_run_logs_replace(regprocedure, text, text, integer);
 
 -- 8. Native host calls ---------------------------------------------------------------------------------------------------
 
--- A run hashes its narrow steps' results while it holds its lease, finds where its log goes, and writes its log through
--- the memory commit as itself (a run actor writes only its own run's log: qorpera_memory_run_log_paths).
+-- A run hashes its narrow steps' results and learns what makes its steps narrow while it holds its lease, finds where
+-- its log goes, and writes its log through the memory commit as itself (a run actor writes only its own run's log,
+-- qorpera_memory_run_log_paths, and needs no grant there, qorpera_memory_run_log_admits).
 insert into public.qorpera_native_host_calls(name, scope) values ('qorpera_memory_step_hashes', 'lease'),
-	('qorpera_memory_run_log_place', 'run'), ('qorpera_folder_memory_commit', 'folder');
+	('qorpera_memory_step_narrow', 'lease'), ('qorpera_memory_run_log_place', 'run'), ('qorpera_folder_memory_commit', 'folder');
 
 -- 9. The deploy guard ---------------------------------------------------------------------------------------------------
 
@@ -1234,9 +1316,10 @@ begin
 		'public.qorpera_run_log_narrow(uuid)', 'public.qorpera_memory_run_origin(uuid,uuid)',
 		'public.qorpera_memory_conversation_root(uuid,uuid,uuid)', 'public.qorpera_memory_run_log_home(uuid,uuid)',
 		'public.qorpera_memory_run_log_place(uuid,uuid)', 'public.qorpera_memory_step_hashes(uuid,uuid,uuid,jsonb)',
-		'public.qorpera_memory_run_generations_lock(uuid,text)',
+		'public.qorpera_memory_step_narrow(uuid,uuid,uuid,jsonb)', 'public.qorpera_memory_run_generations_lock(uuid,text)',
 		'public.qorpera_folder_memory_preconditions_valid(uuid,jsonb)', 'public.qorpera_memory_generation_decide(uuid,uuid)',
 		'public.qorpera_memory_run_log_paths(uuid,jsonb,text,text,jsonb,text)',
+		'public.qorpera_memory_run_log_admits(uuid,text,jsonb,text,text,jsonb)',
 		'public.qorpera_memory_run_log_file_rules(uuid,jsonb,text,text,jsonb,text)',
 		'public.qorpera_memory_run_log_index(uuid,uuid,text,text,uuid,text,text)',
 		'public.qorpera_memory_run_log_moved(uuid,uuid,text,text,text)', 'public.qorpera_memory_run_log_deleted(uuid,uuid,text)',
@@ -1254,6 +1337,6 @@ begin
 			raise exception 'W1b marker is missing in %', v_function; end if;
 	end loop;
 	if (select count(*) from public.qorpera_native_host_calls c where c.name in ('qorpera_memory_step_hashes',
-		'qorpera_memory_run_log_place', 'qorpera_folder_memory_commit')) <> 3 then
+		'qorpera_memory_step_narrow', 'qorpera_memory_run_log_place', 'qorpera_folder_memory_commit')) <> 4 then
 		raise exception 'W1b host calls are missing'; end if;
 end $guard$;
