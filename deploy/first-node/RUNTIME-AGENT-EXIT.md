@@ -313,8 +313,8 @@ block = ["casino.example", "*.torrents.example"]  # refused in both modes
 allow = ["github.com"]                            # the only names reached in "only-listed"
 ```
 
-E8 lands in three PRs: E8a, the file, its check and the rules the nodes read; E8b, per-company names on each node's
-exit; E8c, "only listed".
+E8 lands in four PRs: E8a, the file, its check and the rules the nodes read; E8b-1, the reader that keeps them on each
+node, and its login; E8b-2, per-company names on each node's exit; E8c, "only listed".
 
 - **Names.** A name covers itself and every name under it (`github.com` covers `api.github.com`); `*.` in front
   covers only the names under it. A name is written in lowercase, without `https://`, a path, a port or the dot at
@@ -339,9 +339,15 @@ exit; E8c, "only listed".
   rules in `qorpera_company_network_rules`, one row per company folder, and a delete removes the row.
 - **How the nodes read it (E8a, E8b).** A database role of its own, `qorpera_agent_exit`, may call one function and
   nothing else: `qorpera_agent_exit_network_rules(companies)` returns each listed company's current rules (a
-  version, the mode and both lists). It reads no table. E8a's migration creates the role without a login. At rollout
-  the coordinator sets its login secret on each node with a root script and places it for the exit's
-  `LoadCredential`; nobody reads or prints it. The exit asks about every 2 seconds and applies a change at once.
+  version, the mode and both lists). It reads no table. E8a's migration creates the role without a login.
+  - E8b-1's reader (`qorpera-agent-exit-rules.service`, a dynamic user on the node's own network, never in the exit's
+    namespace) asks every 2 seconds for the companies of the client map and keeps their rules in a file only it and
+    root read. A pass that cannot read the database keeps the last rules.
+  - Its login is made and placed by one script that the coordinator runs, `deploy/agent-exit/rules-reader-login.py`:
+    a new password, written by each node's root helper from stdin into a root-only file (mode 0400) that the unit
+    hands to the reader with `LoadCredential`, then the role's login as a SCRAM verifier made where the script runs,
+    so the password never reaches the database or the Supabase API. Nobody reads, copies or prints it; the script
+    prints file names, sizes, a hash comparison and `ok`. Running it again makes a new login.
 - **Per-company names (E8b).** One dnsmasq cannot hold a list per company. E8b runs a small dnsmasq for each company
   that has rules, in the exit's namespace: its servers file answers a blocked name with "no such name" and sends the
   rest to the exit's upstreams, and a changed list reloads it without a restart. The exit sends each machine's
@@ -396,6 +402,9 @@ exit; E8c, "only listed".
   refusals) mark a moment; E3 reads them as unknown back to the line before.
 - **Rule change.** Applies within seconds (the exit reads the rules, the resolver reloads its lists and the exit its
   sets), without a restart.
+- **Rules unreadable** (the database down, or the reader's login refused). Each node keeps the last rules it read,
+  also across a restart, and the reader's status names the problem. A company the node has not read yet is unknown:
+  from E8b-2 on, its machines get no answers until a read succeeds.
 - **Update.** In place (§3), with no machine stopped and no company paused.
 
 ## 13. Build plan
@@ -411,7 +420,7 @@ exit; E8c, "only listed".
 | E5 | Coding machines use the agent plug | made with it |
 | E6 | Company Computer: a second network card for the browser, shells, terminal and desktop (with the next image) | made with it |
 | E7 | Line guard: counting (with E3's tender), then the brake, built and off, at the levels the founder decides | after his decision |
-| E8 | Company rules: E8a the file, its check and the rules the nodes read; E8b per-company names; E8c "only listed" | rules work |
+| E8 | Company rules: E8a the file, its check and the rules the nodes read; E8b-1 the reader on each node and its login; E8b-2 per-company names; E8c "only listed" | rules work |
 | E9 | The address block: switch-over per node, reverse names, info page | new address |
 | E10 | Each company's own log view (its own interfaces amendment) | companies see it |
 

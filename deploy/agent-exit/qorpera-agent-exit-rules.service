@@ -1,0 +1,49 @@
+[Unit]
+Description=Qorpera agent exit: the companies' network rules, read from the database for the exit's resolvers
+Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/first-node/RUNTIME-AGENT-EXIT.md
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=exec
+# The host's network, not the exit's namespace: the reader talks to the database alone, never to an agent machine.
+DynamicUser=yes
+# rules.json, kept across restarts (root reads it through /var/lib/qorpera-agent-exit/rules).
+StateDirectory=qorpera-agent-exit/rules
+StateDirectoryMode=0700
+# status.json, for the exit's verify.
+RuntimeDirectory=qorpera-agent-exit-rules
+RuntimeDirectoryMode=0755
+# The exit's own database login (role qorpera_agent_exit, which may call one function); its rollout script places it.
+LoadCredential=qorpera-agent-exit-rules-database-url:/etc/qorpera-agent-exit/database-url
+LoadCredential=qorpera-agent-exit-rules-database-ca:/usr/local/libexec/qorpera-agent-exit/supabase-prod-ca-2021.crt
+ExecStart=/usr/bin/node /usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit-rules.mjs
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=yes
+RestrictNamespaces=yes
+CapabilityBoundingSet=
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+MemoryMax=256M
+TasksMax=32
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

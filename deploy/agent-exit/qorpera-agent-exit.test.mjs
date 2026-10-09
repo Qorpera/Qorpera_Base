@@ -62,9 +62,261 @@ test("the installer pins the files in this folder", () => {
 		["LOGS_TIMER", "qorpera-agent-exit-logs.timer"],
 		["SHIP_UNIT", "qorpera-agent-exit-ship.service"],
 		["SHIP_TIMER", "qorpera-agent-exit-ship.timer"],
+		["RULES_UNIT", "qorpera-agent-exit-rules.service"],
+		["RULES_CA", "../cloud-secret-broker/supabase-prod-ca-2021.crt"],
 	]) {
 		assert.match(installer, new RegExp(`EXPECTED_${name}_SHA256="${sha256(readFileSync(join(here, file)))}"`), `${file} pin`);
 	}
+});
+
+// E8b: the rollout script that makes the rules reader's login, against stand-ins for the Supabase API and the nodes'
+// root helpers. No network, keychain or ssh.
+describe("the rules reader's login (rules-reader-login.py)", () => {
+	const loginTool = join(here, "rules-reader-login.py");
+	const script = String.raw`
+import base64, contextlib, hashlib, hmac, importlib.util, io, json, re, secrets, sys
+spec = importlib.util.spec_from_file_location("login", sys.argv[1])
+login = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(login)
+out = {"pattern": login.LOGIN_PATTERN}
+
+def raises(f, *args):
+    try:
+        f(*args)
+    except login.Stop:
+        return True
+    return False
+
+def keys(verifier):
+    m = re.fullmatch(r"SCRAM-SHA-256\$4096:([^$]+)\$([^:]+):(.+)", verifier)
+    return [base64.b64decode(part) for part in m.groups()]
+
+# RFC 7677's example exchange (user "user", password "pencil"): a client with the password proves itself against the
+# StoredKey, and the ServerKey signs as the server did.
+salt, stored, server = keys(login.scram_verifier("pencil", base64.b64decode("W22ZaJ0SNY7soEsUEjb6gQ==")))
+nonce = "rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0"
+auth = ("n=user,r=rOprNGfwEbeRWgbNEkqO,r=" + nonce + ",s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096,c=biws,r=" + nonce).encode()
+proof = base64.b64decode("dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=")
+client_key = bytes(a ^ b for a, b in zip(proof, hmac.new(stored, auth, hashlib.sha256).digest()))
+signature = base64.b64decode("6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4=")
+out["rfc"] = [hashlib.sha256(client_key).digest() == stored, hmac.new(server, auth, hashlib.sha256).digest() == signature]
+out["set_login"] = [
+    login.set_login(login.scram_verifier("p" * 43, secrets.token_bytes(16))).startswith(
+        "alter role qorpera_agent_exit with login password 'SCRAM-SHA-256$4096:"),
+    raises(login.set_login, "SCRAM-SHA-256$4096:x$y:z'; drop role postgres; --"),
+]
+
+host = "aws-0-eu-central-1.pooler.supabase.com"
+urls = [login.login_url(host, secrets.token_urlsafe(32)) for _ in range(200)]
+out["urls"] = urls[:3]
+out["bad_host"] = raises(login.login_url, "pooler.example/x?", "p" * 43)
+
+token = "sbp_" + "0123456789abcdef" * 2 + "01234567"
+out["tokens"] = [
+    login.cli_token(token.encode() + b"\n") == token,
+    login.cli_token(b"go-keyring-base64:" + base64.b64encode(token.encode())) == token,
+    login.cli_token(b"go-keyring-encoded:" + token.encode().hex().encode()) == token,
+    raises(login.cli_token, b"not a token"),
+    raises(login.cli_token, b"go-keyring-base64:" + base64.b64encode(b"sbp_short")),
+]
+
+entry = {"database_type": "PRIMARY", "db_host": host, "is_using_scram_auth": True, "db_port": 6543}
+other = "aws-0-us-east-1.pooler.supabase.com"
+out["pooler"] = [
+    login.pooler_host([entry, dict(entry, database_type="READ_REPLICA", db_host=other)]) == host,
+    login.pooler_host([entry, dict(entry, db_port=5432, pool_mode="session")]) == host,
+    raises(login.pooler_host, []),
+    raises(login.pooler_host, {"db_host": host}),
+    raises(login.pooler_host, [entry, dict(entry, db_host=other)]),
+    raises(login.pooler_host, [dict(entry, db_host=["x"])]),
+    raises(login.pooler_host, [dict(entry, db_host="db." + login.REF + ".supabase.co")]),
+    raises(login.pooler_host, [dict(entry, is_using_scram_auth=False)]),
+]
+
+good = {"login": False, "elevated": False, "alone": True, "reads": True, "lasting": True}
+out["role"] = [
+    login.role_state([good]) is False,
+    login.role_state([dict(good, login=True)]) is True,
+] + [raises(login.role_state, rows) for rows in (
+    [], [good, good], [dict(good, elevated=True)], [dict(good, alone=False)], [dict(good, reads=False)],
+    [dict(good, lasting=False)], [dict(good, login=None)], [dict(good, extra=1)],
+)]
+
+out["shown"] = login.shown(
+    "qorpera-agent-exit: database-url: refused\nWarning: Permanently added\n"
+    + '{"passed": false, "failureClass": "TimeoutError"}\nqorpera-agent-exit: s3cret\n\n', "s3cret")
+
+def rollout(argv=(), fail=None):
+    """The script's run against stand-in nodes and API; fail: (node, how) makes one step fail on one node."""
+    calls, files, queries, state = [], {}, [], {"login": False}
+    def helper(node, request, secret=None):
+        argv = request.get("argv", [])
+        how = fail[1] if fail and fail[0] == node[0] else None
+        calls.append([node[0], request["action"]] + (argv[1:] if argv[:1] == [login.TOOL] else argv[:1]))
+        if request["action"] == "status":
+            return 0, json.dumps({"installed": True}), []
+        if argv[0] == "/usr/bin/sha256sum":
+            lines = [login.sha256_file(local) + "  " + path for path, local in login.INSTALLED]
+            if how == "stale":
+                lines[0] = "0" * 64 + "  " + login.TOOL
+            return 0, "\n".join(lines + ["1" * 64 + "  " + login.PROGRAM]) + "\n", []
+        if argv[0] == "/usr/bin/test":
+            return 0, "", []
+        if argv == [login.TOOL, "database-url"]:
+            if how == "refused":
+                return 1, "", login.shown("qorpera-agent-exit: database-url: refused\n" + request["stdin"] + "\n", secret)
+            files[node[0]] = request["stdin"]
+            data = (request["stdin"] + ("x" if how == "other" else "")).encode()
+            return 0, "%s mode=400 owner=root:root bytes=%d sha256=%s\n" % (
+                login.LOGIN_FILE, len(request["stdin"]), hashlib.sha256(data).hexdigest()), []
+        if argv == [login.TOOL, "rules-start"]:
+            if how == "unread":
+                return 1, "", ["qorpera-agent-exit: the rules reader has not read the database in 30 s (problem 28P01)"]
+            return 0, "qorpera-agent-exit: the rules reader read the database: ok\n", []
+        raise AssertionError(argv)
+    def api(token_, method, path, what, body=None):
+        assert token_ == token
+        if path == "/config/database/pooler":
+            calls.append(["api", "pooler"])
+            return [entry]
+        queries.append(body)
+        if body["query"] == login.ROLE_QUERY:
+            calls.append(["api", "role"])
+            return [dict(good, login=state["login"])]
+        calls.append(["api", "set login"])
+        state["login"] = True
+        return []
+    login.helper, login.api, login.keychain_token = helper, api, lambda: token
+    printed = io.StringIO()
+    with contextlib.redirect_stdout(printed):
+        try:
+            result = login.main(list(argv))
+        except login.Stop as stop:
+            result = str(stop)
+    password = files["node01"].split(":")[2].split("@")[0] if "node01" in files else None
+    said = printed.getvalue() + str(result) + json.dumps(calls) + json.dumps([q for q in queries if q["query"] != login.ROLE_QUERY])
+    run = {"result": result, "printed": printed.getvalue().splitlines(), "calls": calls, "leaks": bool(password) and password in said}
+    if files:
+        run["urls"] = sorted(set(files.values()))
+    if len(queries) > 1:
+        salted = keys(re.fullmatch(r"alter role qorpera_agent_exit with login password '(.+)'", queries[1]["query"]).group(1))
+        derived = hashlib.pbkdf2_hmac("sha256", password.encode(), salted[0], 4096)
+        run["verifies"] = hashlib.sha256(hmac.new(derived, b"Client Key", hashlib.sha256).digest()).digest() == salted[1]
+        run["read_only"] = [q.get("read_only") for q in queries]
+    return run
+
+out["runs"] = {"check": rollout(["--check"]), "full": rollout()}
+for name, how in (("node02", "stale"), ("node02", "refused"), ("node02", "other"), ("node01", "unread")):
+    out["runs"][name + " " + how] = rollout(fail=(name, how))
+print(json.dumps(out))
+`;
+	let out;
+	before(() => {
+		const r = spawnSync("python3", ["-c", script, loginTool], { encoding: "utf8" });
+		assert.equal(r.status, 0, r.stderr);
+		out = JSON.parse(r.stdout);
+	});
+	const checks = (node) => [
+		[node, "status"],
+		[node, "exec", "/usr/bin/sha256sum"],
+		[node, "exec", "/usr/bin/test"],
+	];
+
+	test("its logins are the one form the exit's tool takes; its verifier is the one RFC 7677's exchange proves", () => {
+		const tool = readFileSync(join(here, "qorpera-agent-exit.sh"), "utf8");
+		const toolPattern = [...tool.matchAll(/^\tpattern\+?='([^']*)'$/gm)].map((match) => match[1]).join("");
+		assert.equal(out.pattern, toolPattern);
+		for (const url of out.urls) {
+			assert.match(url, /^postgresql:\/\/qorpera_agent_exit\.phqlfrkcvstmxlebljcj:[A-Za-z0-9_-]{43}@/);
+			assert.ok(url.endsWith("@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?sslmode=verify-full"), url);
+			const bash = spawnSync("bash", ["-c", `pattern='${toolPattern}'; [[ $1 =~ $pattern ]]`, "bash", url]);
+			assert.equal(bash.status, 0, `the tool's pattern in bash refuses ${url}`);
+		}
+		assert.equal(out.bad_host, true);
+		assert.deepEqual(out.rfc, [true, true]);
+		assert.deepEqual(out.set_login, [true, true]);
+	});
+
+	test("the keychain's token, the pooler and the role are taken only as Supabase and migration 230000 make them", () => {
+		assert.deepEqual(out.tokens, [true, true, true, true, true]);
+		assert.deepEqual(out.pooler, Array(8).fill(true));
+		assert.deepEqual(out.role, Array(10).fill(true));
+		assert.deepEqual(out.shown, [
+			"qorpera-agent-exit: database-url: refused",
+			'{"passed": false, "failureClass": "TimeoutError"}',
+			"(2 other lines not shown)",
+		]);
+	});
+
+	test("a run checks, places the same new login on both nodes, sets its verifier, then starts the readers", () => {
+		const check = out.runs.check;
+		assert.equal(check.result, 0);
+		assert.deepEqual(check.calls, [["api", "pooler"], ["api", "role"], ...checks("node01"), ...checks("node02")]);
+		assert.deepEqual(check.printed, [
+			"checked: the pooler, role qorpera_agent_exit (no login yet), node01, node02",
+			"ok (nothing changed)",
+		]);
+		const full = out.runs.full;
+		assert.equal(full.result, 0);
+		assert.deepEqual(full.calls, [
+			["api", "pooler"],
+			["api", "role"],
+			...checks("node01"),
+			...checks("node02"),
+			["node01", "exec", "database-url"],
+			["node02", "exec", "database-url"],
+			["api", "set login"],
+			["api", "role"],
+			["node01", "exec", "rules-start"],
+			["node02", "exec", "rules-start"],
+		]);
+		assert.equal(full.urls.length, 1, "both nodes get the same login");
+		const bytes = full.urls[0].length;
+		assert.deepEqual(full.printed, [
+			"checked: the pooler, role qorpera_agent_exit (no login yet), node01, node02",
+			`node01: /etc/qorpera-agent-exit/database-url mode=400 owner=root:root bytes=${bytes}, sha256 matches`,
+			`node02: /etc/qorpera-agent-exit/database-url mode=400 owner=root:root bytes=${bytes}, sha256 matches`,
+			"node01: the rules reader read the database: ok",
+			"node02: the rules reader read the database: ok",
+			"ok",
+		]);
+		assert.equal(full.verifies, true, "the role gets the placed password's verifier");
+		assert.deepEqual(full.read_only, [true, null, true], "only the login is set with a query that may write");
+		assert.equal(full.leaks, false, "the password is in nothing printed and not in the query that sets the login");
+	});
+
+	test("a node not as this checkout, or a login not written as sent, stops the run before the role changes", () => {
+		const stale = out.runs["node02 stale"];
+		assert.equal(
+			stale.result,
+			"node02: /usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh is not this checkout's: install the exit from it first",
+		);
+		assert.deepEqual(stale.calls.at(-1), ["node02", "exec", "/usr/bin/sha256sum"]);
+		assert.equal(stale.urls, undefined, "no login is made");
+		const refused = out.runs["node02 refused"];
+		assert.equal(
+			refused.result,
+			"node02: the login file was not written\nnode02:   qorpera-agent-exit: database-url: refused\nnode02:   (1 other lines not shown)",
+		);
+		assert.deepEqual(refused.calls.at(-1), ["node02", "exec", "database-url"]);
+		assert.equal(refused.leaks, false, "a line holding the login is never shown");
+		const other = out.runs["node02 other"];
+		assert.equal(other.result, "node02: /etc/qorpera-agent-exit/database-url is not the login sent");
+		assert.ok(!other.calls.some((call) => call[1] === "set login"));
+		const unread = out.runs["node01 unread"];
+		assert.equal(
+			unread.result,
+			"node01: the rules reader did not read the database with the new login\nnode01:   qorpera-agent-exit: the rules reader has not read the database in 30 s (problem 28P01)",
+		);
+		assert.equal(unread.leaks, false);
+	});
+
+	test("anything but --check or nothing prints the usage and exits 64, before the keychain", () => {
+		const r = spawnSync("python3", [loginTool, "--now"], { encoding: "utf8" });
+		assert.equal(r.status, 64);
+		assert.match(r.stderr, /rules-reader-login\.py --check/);
+		assert.equal(r.stdout, "");
+	});
 });
 
 describe("the connection logger", () => {
