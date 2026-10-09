@@ -276,14 +276,14 @@ checked by each slice's functional test (647, 652, 656, 658). No snapshot-v1 dig
 
 | Function | `folder-v2` | Slice |
 | --- | --- | --- |
-| `native_tool_locked_run` (its callers include F2-1b's `qorpera_prepare_routine_login`) | `folder_tool_run(binding, '[]')`, returning the run row | 2a |
-| `validate_native_provider_execution_lease` (also called directly by the runtime) | `folder_native_lease_current` plus the stop check | 2a |
+| `native_tool_locked_run` (its callers include F2-1b's `qorpera_prepare_routine_login`) | `folder_tool_run(binding, '[]')`, returning the run row (since legacy sweep F1c, 20260930246000, it only calls it) | 2a |
+| `validate_native_provider_execution_lease` (also called directly by the runtime) | `folder_native_lease_current` plus the stop check (since legacy sweep F1c, 20260930246000, it only calls `folder_validate_native_lease`, and the snapshot-v1 check `validate_native_provider_execution_lease_before_recover` is dropped) | 2a |
 | `run_wake_authorized`, and `wake_authorized` itself (the materializer calls it directly; its agent branch passes vacuously on `folder-v2`) | `wake_authorized` dispatches to `folder_wake_authorized` (since legacy sweep F1b, 20260930245000, it only calls it); `run_wake_authorized` keeps its text, calls it with the run's wake and compares the policy kind | 2a |
 | `company_path_assert_context` | by the company's core: `run_reads_current`, never the loop | 2a |
 | the five "unchanged" callers (§3) | a text patch: their actor call becomes `company_run_actor`; `begin_native_company_execution_v2` also takes the run mutex; the digest is of the patched text | 2a |
 | the read-type branches: `describe_company_run_context` (company name from `qorpera_folder_company_index`; its session check stays `FOR SHARE`, after rank 10's recheck at the sessions rank of §5.7; and F2's folder facts: `|| case when v_folder is null then '{}' else jsonb_build_object('folder', v_folder) end`, with `v_folder := qorpera_company_state_run_folder(env, staff, <the coworker ids the body lists>)`, called by name at run time so snapshot-v1 never needs it. It is given the same ids the body puts in `coworkers` and names no others, so `folder` never names an unlisted coworker even when a roster change lands between the two statements; a coworker whose folder retired in between is left out, as one without a folder is. From F2-1b's migration 20260929440000 on #534; the runtime's closed parser checks that every coworker in `folder` is listed, and memory and skills then use `agents/<handle>`), the presence functions (a folder `presence_path_routes` on `qorpera_folder_path_resource` and `folder_actor_allowed`; a refusal is 42501, which `native_presence_subject` reads as "absent"), `native_company_object_actor`, `member_file_export_source` (no gc fence) | their `folder-v2` body | 2a |
 | `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order (served since 3f, §6.5). The office start and its descriptor serve folder-v2 since 3l (§6.16). The capture serves folder-v2 since P06d part 2 (§6.21), storing nothing (3l part 3 refused screenshots before it, §6.22) | 2a |
-| `send_native_agent_message`, `send_runner_agent_message`, `append_native_interaction_request`, `append_runner_transcript_event`, `begin_`/`complete_native_tool_operation`, `begin_`/`complete_run_operation_receipt` | 2a: refuse 0A000. 2b-1: the folder receipts (`begin_`/`complete_native_tool_operation`). 2b-2: the folder native send and interaction request. The runner broker's `append_runner_transcript_event`, its send and its direct receipt calls keep refusing (C3) | 2a, 2b |
+| `send_native_agent_message`, `send_runner_agent_message`, `append_native_interaction_request`, `append_runner_transcript_event`, `begin_`/`complete_native_tool_operation`, `begin_`/`complete_run_operation_receipt` | 2a: refuse 0A000. 2b-1: the folder receipts (`begin_`/`complete_native_tool_operation`). 2b-2: the folder native send and interaction request. The runner broker's `append_runner_transcript_event`, its send and its direct receipt calls keep refusing (C3). Legacy sweep F1c (20260930246000) left `begin_`/`complete_native_tool_operation` only their folder receipts | 2a, 2b |
 | `record_action_review` | 2a: under the mutex; its card path refuses through the transcript append. 2b: the folder card path (§5.6) | 2a, 2b |
 | `assert_company_path_reads`, `record_native_context_view`, `add_agent_review_rule` | their `folder-v2` body (§5.6) | 2b |
 | `enforce_company_context_send` | requires the marker the folder send sets; refuses without it | 2b |
@@ -545,12 +545,12 @@ checked by each slice's functional test (647, 652, 656, 658). No snapshot-v1 dig
   receipts satisfied by commits (C1c-2c part 2: one more condition, `folder_commit_id is null`, which only
   `folder-v2` receipts can fail). Removed by 20260930059000 (the payer never changes without the member; test 658's
   handoff part went with it).
-- **Receipt recovery** (2c part 2). `terminalize_runner_attempt_before_native_start` needs no change: it marks
-  executing receipts ambiguous on either core. `resolve_run_operation_receipt` dispatches a `folder-v2` receipt to
-  `qorpera_folder_resolve_run_receipt`: `confirmed_completed` records the commit that carries the receipt (one per
-  receipt) and refuses a snapshot or proposal, and a revision receipt that no commit carries cannot be confirmed
-  completed (22023); `confirmed_not_run` refuses while a commit carries the receipt (55000, "A folder commit carries
-  this operation: it ran").
+- **Receipt recovery** (2c part 2). `terminalize_runner_attempt_before_native_start` needs no change: it marks executing
+  receipts ambiguous on either core. `resolve_run_operation_receipt` dispatches a `folder-v2` receipt to
+  `qorpera_folder_resolve_run_receipt` (every receipt since legacy sweep F1c, 20260930246000): `confirmed_completed`
+  records the commit that carries the receipt (one per receipt) and refuses a snapshot or proposal, and a revision
+  receipt that no commit carries cannot be confirmed completed (22023); `confirmed_not_run` refuses while a commit
+  carries the receipt (55000, "A folder commit carries this operation: it ran").
 
 ### 5.7 Additions to core §3's order
 
@@ -575,7 +575,7 @@ conversation `FOR UPDATE` before the review row, because the review row's foreig
 - Renewal's move to `FOR NO KEY UPDATE`: done in C3's first part (P23, migration 20260930002200, test 825; 648 C).
   - On `folder-v2`, `qorpera_renew_runner_job` takes the job `FOR NO KEY UPDATE`, and so does the native lease renewal.
     The native renewal does it through `qorpera_folder_renewal_locked_job`, which is `qorpera_runner_broker_locked_job`'s
-    text with that lock clause.
+    text with that lock clause. Since legacy sweep F1c (20260930246000) every native renewal does.
   - Both now run beside the run's tool calls (the job `KEY SHARE`). Every lease-ending change still takes `FOR UPDATE`
     and waits for those calls.
   - The other callers of `locked_job` (acquire, release, model authority) keep `FOR UPDATE`.
