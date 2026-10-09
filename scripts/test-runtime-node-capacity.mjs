@@ -57,9 +57,8 @@ try {
 	sql(read("supabase/tests/fixtures/runtime-node-inventory-observer.sql"));
 	const base = read("supabase/tests/924_folder_runtime_base.test.sql").split("-- The checks start here");
 	assert.equal(base.length, 2);
-	const office = read("supabase/tests/fixtures/runtime-office-registry-cases.sql").split("set local role service_role;\nselect set_config('qorpera_test.office_lease'");
-	assert.equal(office.length, 2);
-	const setup = `${base[0]}\n${office[0]}\n${read("supabase/tests/fixtures/runtime-node-capacity-setup.sql")}`;
+	const office = read("supabase/tests/fixtures/runtime-office-registry-cases.sql");
+	const setup = `${base[0]}\n${office}\n${read("supabase/tests/fixtures/runtime-node-capacity-setup.sql")}`;
 	sql(`${setup}\n${read("supabase/tests/fixtures/runtime-login-machine-capacity-cases.sql")}\nrollback;`);
 	console.log("PASS: real login allocation, shared node budget, native/login identity exclusion, revocation/expiry cleanup and exact release");
 	sql(`${setup}\n${read("supabase/tests/fixtures/runtime-node-capacity-cases.sql")}\nrollback;`);
@@ -73,7 +72,7 @@ try {
 	const second = "92410000-0000-4000-8000-0000000000";
 	const helpers = base[0].match(/create function pg_temp\.base_claims[\s\S]*?\$\$;\n/)[0]
 		+ base[0].split("-- BEGIN BASE HELPERS")[1].split("create function pg_temp.base_owner")[0];
-	const secondOffice = office[0].split("-- Every active agent already holds the default grant");
+	const secondOffice = office.split("-- Every active agent already holds the default grant");
 	assert.equal(secondOffice.length, 2);
 	sql(`begin;
 	 insert into auth.users(id,email) values('${second}01','second-owner@example.test'),('${second}02','second-member@example.test');

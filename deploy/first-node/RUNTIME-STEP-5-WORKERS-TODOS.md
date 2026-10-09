@@ -64,7 +64,7 @@ they belong to Orders 9, 7 and 8.
 
 ## Proofs
 
-Disposable PostgreSQL (`supabase/tests/385_runtime_workers_todos.test.sql`, on
+Disposable PostgreSQL (`supabase/tests/385_runtime_workers_todos.test.sql` (deleted in the legacy sweep), on
 the full migration chain):
 
 1. Todos are idempotent by operation key, publish as live Company File state

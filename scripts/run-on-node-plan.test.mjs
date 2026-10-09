@@ -75,15 +75,8 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 	assert.ok(names(["packages/runner-orchestrator/src/lxd-office-start-control.ts"]).includes("hosted-db"));
 	// No hosted-db script reads the coding turn sample since C1c-3i removed the snapshot-v1 coding backfill script.
 	assert.ok(!names(["packages/runtime/test/fixtures/coding-turn-context-backfilled.json"]).includes("hosted-db"));
-	// The production review and wake bus scripts: their SQL, themselves, and the parsers and fixtures they read.
+	// The folder service's shapes script and the parsers it checks against SQL.
 	for (const file of [
-		"supabase/acceptance/runtime_session_stop_authority.sql",
-		"scripts/test-runtime-production-review.mjs",
-		"scripts/test-runtime-wake-bus.mjs",
-		"scripts/test-runtime-wake-envelope.mjs",
-		"packages/runtime/src/cloud-native-company-context.ts",
-		"packages/runtime/src/cloud-wake-bus.ts",
-		"packages/runtime/test/fixtures/wake-policies.json",
 		"scripts/test-folder-service-core-shapes.mjs",
 		"packages/object-gateway/src/folder-service/core.ts",
 		"packages/object-gateway/src/folder-service/view-tree.ts",

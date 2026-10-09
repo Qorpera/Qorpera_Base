@@ -102,7 +102,7 @@ their own decision.
 Real PostgreSQL (task-local 18.6 on `company41-node-02`; CI runs the pinned
 17.6 image), every migration applied, then:
 
-- `370_runtime_agent_routines.test.sql`: acknowledgement gate, creation with
+- `370_runtime_agent_routines.test.sql` (deleted in the legacy sweep): acknowledgement gate, creation with
   no member step, same agent and account, exact replay, versioning, listing,
   closed request (no other agent, no sponsor, no trigger id, no one-minute
   loop), control-plane-only execution, pause/resume/remove, finite watch,
