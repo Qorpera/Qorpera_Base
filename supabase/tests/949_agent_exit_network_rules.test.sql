@@ -341,13 +341,22 @@ end $$;
 do $$
 declare r jsonb; x public.qorpera_company_network_rules := pg_temp.row();
 begin
+	-- Away, or onto its own path (which the core takes as a rename): refused as a rule, not as an internal error.
 	r := pg_temp.commit(pg_temp.owner(), 'move-0001', jsonb_build_array(
 		jsonb_build_object('op','move','from','rules/network.toml','to','rules/old.toml','expectedVersion',pg_temp.version('rules/network.toml')),
+		jsonb_build_object('op','move','from','rules/network.toml','to','rules/network.toml','expectedVersion',pg_temp.version('rules/network.toml')),
 		jsonb_build_object('op','copy','from','rules/network.toml','to','rules/copy.toml'),
 		jsonb_build_object('op','delete','path','rules','expectedVersion',pg_temp.version('rules'),'asOfSeq',pg_temp.seq()),
 		jsonb_build_object('op','move','from','rules','to','old-rules','expectedVersion',pg_temp.version('rules'),'asOfSeq',pg_temp.seq())));
-	perform pg_temp.expect(r, 1, 'refused', 'kind_change'); perform pg_temp.expect(r, 2, 'refused', 'kind_change');
-	perform pg_temp.expect(r, 3, 'refused', 'seeded'); perform pg_temp.expect(r, 4, 'refused', 'seeded');
+	perform pg_temp.expect(r, 1, 'refused', 'structured_rule'); perform pg_temp.expect(r, 2, 'refused', 'structured_rule');
+	perform pg_temp.expect(r, 3, 'refused', 'kind_change');
+	perform pg_temp.expect(r, 4, 'refused', 'seeded'); perform pg_temp.expect(r, 5, 'refused', 'seeded');
+	if r -> 'units' -> 1 -> 'problems' is distinct from jsonb_build_array(jsonb_build_object('code','value',
+		'message','rules/network.toml does not move; edit it where it is')) then
+		raise exception 'A move of the file onto itself is refused by the rule: %', r; end if;
+	if (pg_temp.row()).folder_path_version is distinct from x.folder_path_version or (pg_temp.row()).commit_id is distinct from x.commit_id
+		or pg_temp.version('rules/network.toml') is distinct from x.folder_path_version then
+		raise exception 'The refused moves left the file and its row as they were'; end if;
 	-- Nor does another file move or copy onto the path.
 	r := pg_temp.commit(pg_temp.owner(), 'move-0002', jsonb_build_array(jsonb_build_object('op','delete',
 		'path','rules/network.toml','expectedVersion',pg_temp.version('rules/network.toml')),

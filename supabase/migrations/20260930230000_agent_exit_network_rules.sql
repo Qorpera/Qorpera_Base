@@ -8,8 +8,8 @@
 --   again: exactly mode, block and allow; mode 'open' or 'only-listed'; each list at most 1000 distinct names as the
 --   exit's resolver matches them (qorpera_company_network_rules_name_valid); no name in both lists.
 -- * Who writes it: rules/ is the core's company_rules scope, so owners and admins write it and agents only read it.
---   rules/ is seeded, and a move to or from the path changes a file's kind, so the file never moves. No folder takes
---   its name.
+--   The file never moves (decide refuses it, onto its own path too), a move of another file onto its path changes that
+--   file's kind, and rules/ is seeded. No folder takes its name.
 -- * qorpera_company_network_rules, one row per environment whose folder has the file: apply writes it on a save or a
 --   restore and deletes it with the file, and verify checks it. A company without a row is open. No row is ever
 --   retired, so erasure (RUNTIME-COMPANY-FOLDER-ERASURE.md §5: retired rows only) has nothing here.
@@ -54,6 +54,17 @@ select pg_temp.e8a_replace('public.qorpera_company_state_path_problems(text,bool
 			return jsonb_build_array(public.qorpera_company_state_problem('name', null, null,
 				'rules/network.toml is the name of the network rules file, not a folder')); end if;
 		v_places := public.qorpera_structured_folder_names(v_key);$new$);
+
+-- The file never moves, onto its own path either (the core takes that as a rename): decide refuses it as a rule. A move
+-- of another file onto the path changes its kind, which carried refuses.
+select pg_temp.e8a_replace('public.qorpera_folder_structured_decide(uuid,jsonb,uuid,integer,jsonb,text,text)'::regprocedure,
+	$old$if public.qorpera_company_state_seeded(v_key) then return jsonb_build_object('ok', false, 'reason', 'seeded'); end if;$old$,
+	$new$if public.qorpera_company_state_seeded(v_key) then return jsonb_build_object('ok', false, 'reason', 'seeded'); end if;
+		-- 20260930230000 (E8a): the network rules file never moves.
+		if v_op = 'move' and v_key = 'rules/network.toml' then
+			return jsonb_build_object('ok', false, 'reason', 'structured_rule', 'problems', jsonb_build_array(
+				public.qorpera_company_state_problem('value', null, null, 'rules/network.toml does not move; edit it where it is')));
+		end if;$new$);
 
 -- 2. What the file says --------------------------------------------------------------------------------------------------
 
@@ -148,8 +159,8 @@ select pg_temp.e8a_replace('public.qorpera_folder_structured_apply(uuid,uuid,int
 			elsif v_kind = 'rule' then$new$);
 select pg_temp.e8a_replace('public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)'::regprocedure,
 	$old$		-- 20260930111000 (M1a): summary trees follow their files.$old$,
-	$new$		-- 20260930230000 (E8a): the network rules file never moves (decide refuses it: rules/ is seeded, and a move to or
-		-- from its path changes a file's kind).
+	$new$		-- 20260930230000 (E8a): the network rules file never moves, and no file moves onto its path; decide refuses both,
+		-- so this is a guard only.
 		if exists (select 1 from public.qorpera_folder_path_versions v
 			where v.environment_id = p_environment_id and v.key_sha256 = extensions.digest('rules/network.toml', 'sha256')
 				and v.commit_id = p_commit_id and v.unit_no = p_unit_no and v.op in ('move_out','move_in') and v.kind = 'file') then
@@ -219,6 +230,7 @@ begin
 	foreach v_function in array array[
 		'public.qorpera_structured_path_kind(text)', 'public.qorpera_company_state_path_problems(text,boolean)',
 		'public.qorpera_company_state_parse_problems(text,jsonb)', 'public.qorpera_company_state_checked(jsonb,text,text,jsonb)',
+		'public.qorpera_folder_structured_decide(uuid,jsonb,uuid,integer,jsonb,text,text)',
 		'public.qorpera_folder_structured_apply(uuid,uuid,integer,jsonb,text,text)',
 		'public.qorpera_folder_structured_verify(uuid,uuid)'
 	]::regprocedure[] loop
