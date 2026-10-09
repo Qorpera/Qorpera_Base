@@ -1,5 +1,5 @@
 import { isUuid, type JsonValue, UUID_PATTERN } from "@qorpera/contracts";
-import { cloudActionFileName } from "./cloud-action-review.ts";
+import { cloudActionEventWhen, cloudActionFileName } from "./cloud-action-review.ts";
 import type {
 	CloudCompanyFolderClient,
 	CloudCompanyFolderCommitResult,
@@ -97,7 +97,8 @@ function parentOf(path: string): string {
 	return path.split("/").slice(0, -1).join("/");
 }
 
-/** "Every 2 hours", "Mondays and Fridays at 09:00", "Once, at …", "When “Leads” changes": a routine file's trigger. */
+/** "Every 2 hours", "Mondays and Fridays at 09:00", "Once, at …", "When “Leads” changes", "When a hook receives an
+ * event": a routine file's trigger. */
 function routineWhen(parse: Readonly<Record<string, unknown>>): string {
 	const trigger = (parse.trigger ?? {}) as Record<string, unknown>;
 	const every = (minutes: unknown) =>
@@ -132,7 +133,9 @@ function routineWhen(parse: Readonly<Record<string, unknown>>): string {
 							? trigger.match === "subtree"
 								? `When anything in “${cloudActionFileName(trigger.watch)}” changes`
 								: `When “${cloudActionFileName(trigger.watch)}” changes`
-							: "";
+							: trigger.when === "event"
+								? cloudActionEventWhen(trigger.only)
+								: "";
 	return words && typeof parse.timezone === "string" ? `${words} (${parse.timezone})` : words;
 }
 

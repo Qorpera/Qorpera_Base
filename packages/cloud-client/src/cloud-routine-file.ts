@@ -40,8 +40,8 @@ function indexInstant(text: string): string {
 }
 
 /** What a routine file's trigger reads as in the routine list, as the index makes it: its id is always `file`, a start
- * is kept to the millisecond, and the reply is the file's. Null for a trigger the index does not schedule
- * (`file-change`, until the folder's file events reach routines). */
+ * is kept to the millisecond, and the reply is the file's. An event routine is W2's listener on its hook (E2). Null
+ * for `file-change`, which this does not map. */
 export function cloudRoutineTriggerOfFile(file: RoutineFile): CloudRoutineTrigger | null {
 	const trigger = file.trigger;
 	const base = { id: "file", replyPolicy: file.reply as CloudRoutineReplyPolicy };
@@ -77,6 +77,16 @@ export function cloudRoutineTriggerOfFile(file: RoutineFile): CloudRoutineTrigge
 			return { ...base, kind: "once", at: trigger.at, timeZone: file.timezone };
 		case "file-change":
 			return null;
+		case "event":
+			if (file.timezone === null) return null;
+			return {
+				...base,
+				kind: "listener",
+				source: "event",
+				hookId: trigger.hook,
+				...(trigger.only === null ? {} : { only: [...trigger.only] }),
+				timeZone: file.timezone,
+			};
 	}
 }
 
@@ -99,7 +109,19 @@ export function routineFileTrigger(
 
 type FlatTrigger = Partial<
 	Record<
-		"when" | "minutes" | "starts" | "days" | "time" | "from" | "to" | "months" | "at" | "watch" | "match",
+		| "when"
+		| "minutes"
+		| "starts"
+		| "days"
+		| "time"
+		| "from"
+		| "to"
+		| "months"
+		| "at"
+		| "watch"
+		| "match"
+		| "hook"
+		| "only",
 		CompanyStateSetting
 	>
 >;
@@ -123,6 +145,8 @@ function flat(trigger: RoutineTrigger): FlatTrigger {
 			return { when: "once", at: trigger.at };
 		case "file-change":
 			return { when: "file-change", watch: trigger.watch, match: trigger.match };
+		case "event":
+			return { when: "event", hook: trigger.hook, only: trigger.only };
 	}
 }
 
