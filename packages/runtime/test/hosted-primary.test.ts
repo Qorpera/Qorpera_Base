@@ -991,6 +991,13 @@ describe("Qorpera hosted primary", () => {
 								status: "ambiguous",
 								created_at: createdAt,
 							},
+							// Settled by a resume after the run was cut off (W5).
+							{
+								operation_id: eventId,
+								operation_kind: "cloud_tool",
+								status: "outcome_unknown",
+								created_at: createdAt,
+							},
 						],
 						inputs: [input],
 					},
@@ -1010,6 +1017,13 @@ describe("Qorpera hosted primary", () => {
 							operation_id: objectProofId,
 							operation_kind: "http_request",
 							status: "ambiguous",
+							recovery_resolution: null,
+							created_at: createdAt,
+						},
+						{
+							operation_id: eventId,
+							operation_kind: "cloud_tool",
+							status: "outcome_unknown",
 							recovery_resolution: null,
 							created_at: createdAt,
 						},
@@ -1067,7 +1081,10 @@ describe("Qorpera hosted primary", () => {
 				{
 					turnId: objectGraphId,
 					failureReason: "executor lease expired",
-					operationReceipts: [{ operationId: objectProofId, status: "ambiguous" }],
+					operationReceipts: [
+						{ operationId: objectProofId, status: "ambiguous" },
+						{ operationId: eventId, status: "outcome_unknown" },
+					],
 					inputs: [{ inputId: eventId, authorDisplayName: "Jonas" }],
 				},
 			],
@@ -1078,7 +1095,10 @@ describe("Qorpera hosted primary", () => {
 				sessionId,
 				failureReason: "runner lease expired",
 				inputs: [{ inputId: eventId }],
-				operationReceipts: [{ operationId: objectProofId, status: "ambiguous" }],
+				operationReceipts: [
+					{ operationId: objectProofId, status: "ambiguous" },
+					{ operationId: eventId, status: "outcome_unknown" },
+				],
 			},
 		]);
 		await expect(primary.listStaffExecutionActivity(environmentId)).resolves.toEqual([

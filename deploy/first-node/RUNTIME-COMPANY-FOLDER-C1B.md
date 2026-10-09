@@ -941,8 +941,10 @@ it. The facts below come from the read-only inventory of 2026-09-29
     activation it opened under; each boot makes a new one), and the holder
     (`holder_run_id` or `holder_user_id`);
   - coding session: `worker_id` and `attachment_token`;
-  - later `shell_command_id`, `company_machine_id`, `placement_id` and
-    `boot_id`;
+  - shell command (C1b-3b, 20260930183000): `shell_command_id`, the
+    `screen_generation` the command started in and the `activation_id`; no
+    `screen_id` or holder, so the screen's desktop view keeps its index;
+  - later `company_machine_id`, `placement_id` and `boot_id`;
 - `node_id` and `machine_id` (the allocation it was opened on), plus
   `unsaved_since`, which the folder service reports when it renews;
 - `pass_sha256`: the pass is 32 random bytes, returned once at open and
@@ -953,11 +955,14 @@ it. The facts below come from the read-only inventory of 2026-09-29
   `expired`).
 
 One open view per screen, per coding session, and later per test machine:
-partial unique indexes. Of two opens for the same anchor, the later one
-supersedes the earlier one's new view, or meets it in the index (23505)
-when there was no older view to lock; the office service retries then. The
-table is revoked from every API role; only the folder core's functions write
-it.
+partial unique indexes. Of two opens for the same screen or coding session,
+the later one supersedes the earlier one's new view, or meets it in the
+index (23505) when there was no older view to lock; the office service
+retries then. A shell command has one view, open or closed
+(`qorpera_folder_views_one_per_command`): a later open of the same command
+is refused (42501 "Folder view command is not current"), never superseded
+or retried. The table is revoked from every API role; only the folder
+core's functions write it.
 
 ### 2. The view actor
 
@@ -1033,7 +1038,7 @@ legacy holder-changing paths needs a patch (the only legacy change is
 | `run_box` | the job, `KEY SHARE`, taken at step 3 as for a run | the run actor checks pass, and the job still carries the view's `runner_id` and `client_lease_id` |
 | `computer_desktop` | the screen row, `FOR SHARE` | the view is the newest open view of its screen; the screen's `generation` is the view's; either the screen's drain is still pending (the old holder's final publish, whatever the privacy state), or the screen is held by the view's holder or by nobody and privacy is shared or this is the private member's view; the office's current activation is the view's; the agent's `qorpera_runtime_office_access` is active |
 | `coding_session` | the session row, `FOR SHARE` | the session carries the view's `attachment_token`, and `qorpera_coding_attachment_refusal` finds nothing (not archived, not expired, repository not withdrawn, executor enabled) |
-| `computer_shell_command` (C1b-3b) | the command row, `FOR SHARE` | the command has not ended (§8 has the end boundary), and the screen's `generation` and the office's current activation are unchanged |
+| `computer_shell_command` (C1b-3b, 20260930183000) | the command row, `FOR SHARE` (every end of the command waits for it: §8) | the screen's `generation` is the one the command started in, the office's current activation is the view's, and the agent's `qorpera_runtime_office_access` is active. Not the command's end: an ended command's view still renews, refuses every save but the final one, and the final publish closes it (§8) |
 | `test_machine` (C1b-3b) | the machine row and its current placement, `FOR SHARE` | the placement and `boot_id` are the view's |
 
 **Desktops: the newest view wins.**
@@ -1307,12 +1312,26 @@ by a machine.
     id;
   - `office_id`, `screen_id`, the screen `generation`, `run_id`,
     `staff_agent_id` and `requested_by_user_id` (from the run);
+  - `network`: the start's `network` argument (absent, false). Only an
+    offline command gets a view; rows the report makes say true;
   - `started_at`, then `ended_at` and `end_reason` (`exited`, `stopped`,
-    `drained`, `paused`, `lost`).
+    `pressure`, `paused`, `closed`, `slept`, `lost`, `unknown`: the
+    table's check, from 20260928489100).
 
-  It is inserted with the start effect, under the office and screen locks
-  that path already takes. It is ended by the guest's report, or by a drain
-  of its screen.
+  Built in 20260930183000: the native operation's begin of a shell start
+  inserts it, before the guest runs anything. The office's 30 s report fills
+  in `command_id`; its sweeps spare a row it has not named yet for 60 seconds
+  after the start's effect ended, and only commands it named are told to the
+  agent as stopped. The row's end (`ended_at` and `end_reason`) is written
+  by one of these:
+  - the guest's report: the command exited, or a drain of its screen stopped
+    it and the next report records that;
+  - the report's sweeps: a command of an earlier generation, one its screen's
+    whole lists no longer name, and the like;
+  - the platform: the idle policy's sleep of the computer (`slept`) and any
+    other stop of it (`closed`), both in 20260928489100.
+
+  From then on the view saves only its final change set (below).
   - **Until each command has its own mount namespace** (F3's step 4), the
     report ends a command when its process group is empty. Programs that
     leave the group (setsid, daemons) are not caught yet.
@@ -1322,8 +1341,9 @@ by a machine.
   The per-screen activity row stays the awake and seat signal.
 - **The end boundary for commands and test machines** (review round 2,
   finding 5):
-  - a drain or a normal exit records `end_reason`, but the view stays valid
-    for one final publish;
+  - the command's end is recorded in `end_reason` (by the report, its sweeps,
+    or the platform's sleep or stop: above), but the view stays valid for one
+    final publish, which may carry no change;
   - that publish carries `final`, and the commit closes the view in the same
     transaction;
   - a test machine's "command not ended" check accepts a publish made at

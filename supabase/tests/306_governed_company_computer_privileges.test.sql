@@ -39,7 +39,9 @@ begin
 	-- and recording the state of a company website account, each bound to the agent's effect receipt; filling
 	-- one into the Company Computer (20260928429975) adds reading it for a vault_fill browser call. G2-6a
 	-- (20260930152000) adds the lease proof the runtime routes ask before they serve a run binding; it takes no
-	-- principal, because it only answers whether the caller's lease token is that run's job's.
+	-- principal, because it only answers whether the caller's lease token is that run's job's. Signed hooks
+	-- (20260930160000) add describing and opening a GitHub or HMAC hook whose secret the broker makes, each bound to
+	-- the agent's manage_hook run, and reading that secret for a vault_fill browser call.
 	select array_agg(function.oid::regprocedure::text order by function.oid::regprocedure::text collate "C") into v_functions
 	from pg_proc as function
 	join pg_namespace as namespace on namespace.oid = function.pronamespace
@@ -69,9 +71,12 @@ begin
 		'qorpera_describe_model_login_sign_in(uuid,text,uuid,text)',
 		'qorpera_describe_model_login_sign_in_v2(uuid,text,uuid,text)',
 		'qorpera_fill_company_account(uuid,text,jsonb,uuid,text,text)',
+		'qorpera_fill_event_hook_secret(uuid,text,jsonb,uuid,text,text)',
 		'qorpera_finish_chatgpt_plan_revocation(uuid,text,uuid,uuid,bigint)',
 		'qorpera_finish_email_draft_action(uuid,text,uuid,text,jsonb)',
 		'qorpera_finish_event_verification(uuid,text,uuid,uuid,text,text,text,text)',
+		'qorpera_folder_describe_signed_hook(uuid,text,jsonb)',
+		'qorpera_folder_open_signed_hook(uuid,text,jsonb,jsonb,uuid,uuid,uuid,text,bytea,text)',
 		'qorpera_issue_model_login(uuid,text,jsonb,bigint,boolean)',
 		'qorpera_model_login_broker_company(uuid,text)',
 		'qorpera_model_logins_without_account(uuid,text)',
