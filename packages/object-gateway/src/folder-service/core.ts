@@ -42,9 +42,11 @@ export interface ListPage {
 	readonly next: string | null;
 }
 
-/** One change of a change set on the feed (20260928237000). */
+/** One change of a change set on the feed (20260928237000). A move's arrival names the version the path had where it
+ * came from (`priorVersion`), when the actor may read that path too. */
 export interface FeedChange extends CoreEntry {
 	readonly op: "write" | "mkdir" | "delete" | "move_out" | "move_in" | "copy";
+	readonly priorVersion?: string;
 }
 
 export type FeedEvent =
@@ -80,19 +82,187 @@ export interface FolderCore {
 	/** The company's storage profile, through the core's download check of one object the actor may read. The check
 	 * also refuses a company being deleted, for every actor. */
 	objectProfile(environmentId: string, actor: FolderActor, sha256: string, signal?: AbortSignal): Promise<string>;
-	/** Extends a machine view's lease (120 s) or learns that it closed (C1b-3a `qorpera_folder_view_renew`). */
-	renewView(viewId: string, pass: string, signal?: AbortSignal): Promise<ViewRenewal>;
+	/** Extends a machine view's lease (120 s) or learns that it closed (C1b-3a `qorpera_folder_view_renew`). An open
+	 * answer says what the view is and which machine it belongs to (F3 4a). `unsavedSince`: since when the view has
+	 * had changes not published (an ISO time), or null; a desktop's keeps its seat in use. */
+	renewView(viewId: string, pass: string, unsavedSince: string | null, signal?: AbortSignal): Promise<ViewRenewal>;
+	/** Opens an upload intent for a manifest (C1D §3.1): which of its objects the actor holds already. */
+	openUpload(environmentId: string, actor: FolderActor, manifest: string, signal?: AbortSignal): Promise<UploadOpen>;
+	/** The company an intent's object goes to (C1D §3.2's authorization, a plain read): the storage profile, for a view
+	 * with no file to learn it from yet. */
+	uploadProfile(
+		environmentId: string,
+		actor: FolderActor,
+		intentId: string,
+		sha256: string,
+		bytes: number,
+		signal?: AbortSignal,
+	): Promise<string>;
+	/** Seals an intent once all its objects are held or put (C1D §3.4). */
+	sealUpload(environmentId: string, actor: FolderActor, intentId: string, signal?: AbortSignal): Promise<UploadSeal>;
+	/** Extends an open or sealed intent (C1D §3.5); returns its new expiry. */
+	renewUpload(environmentId: string, actor: FolderActor, intentId: string, signal?: AbortSignal): Promise<string>;
+	/** One change set (core §3). */
+	commit(
+		environmentId: string,
+		actor: FolderActor,
+		operationKey: string,
+		units: readonly unknown[],
+		signal?: AbortSignal,
+	): Promise<CommitAnswer>;
+	/** The files one commit kept as conflict copies on its receipt (P17), by unit and file. */
+	conflictCopies(environmentId: string, commitId: string, signal?: AbortSignal): Promise<readonly ConflictCopy[]>;
 }
 
+/** One file a commit kept on its receipt: the unit (1-based, as the answer numbers them) and the file in it. */
+export interface ConflictCopy {
+	readonly unit: number;
+	readonly file: number;
+	readonly path: string;
+	readonly manifestSha256: string;
+}
+
+export interface UploadOpen {
+	readonly intentId: string;
+	/** The objects the actor holds already: it puts only the others. */
+	readonly present: readonly string[];
+}
+
+export type UploadSeal =
+	| {
+			readonly state: "sealed";
+			readonly file: {
+				readonly manifestSha256: string;
+				readonly fileSha256: string;
+				readonly bytes: number;
+				readonly mediaType: string;
+				readonly executable: boolean;
+			};
+	  }
+	| { readonly state: "incomplete"; readonly missing: readonly string[] };
+
+export type CommitOutcomeKind = "saved" | "conflict" | "refused" | "denied" | "waiting_for_review";
+
+/** One unit's outcome, in the change set's order. */
+export interface CommitOutcome {
+	readonly unit: number;
+	readonly outcome: CommitOutcomeKind;
+	readonly reason: string | null;
+	readonly version: string | null;
+}
+
+export interface CommitAnswer {
+	readonly commitId: string;
+	/** Null when nothing saved. */
+	readonly seq: number | null;
+	readonly units: readonly CommitOutcome[];
+}
+
+const OUTCOMES = new Set(["saved", "conflict", "refused", "denied", "waiting_for_review"]);
+
+function hashOf(value: unknown, what: string): string {
+	if (typeof value !== "string" || !SHA256_HEX_PATTERN.test(value)) invalidAnswer(what);
+	return value;
+}
+
+export function parseUploadOpen(value: unknown): UploadOpen {
+	const answer = answerRecord(value, "upload");
+	if (answer.schema !== "qorpera.folder-upload/v1" || !isUuid(answer.intentId) || !Array.isArray(answer.present))
+		invalidAnswer("upload");
+	return { intentId: answer.intentId as string, present: answer.present.map((h) => hashOf(h, "present object")) };
+}
+
+export function parseUploadSeal(value: unknown): UploadSeal {
+	const answer = answerRecord(value, "seal");
+	if (answer.schema !== "qorpera.folder-seal/v1") invalidAnswer("seal");
+	if (answer.state === "incomplete" && Array.isArray(answer.missing))
+		return { state: "incomplete", missing: answer.missing.map((h) => hashOf(h, "missing object")) };
+	if (answer.state !== "sealed") invalidAnswer("seal state");
+	const f = answerRecord(answer.file, "sealed file");
+	if (
+		typeof f.mediaType !== "string" ||
+		typeof f.executable !== "boolean" ||
+		typeof f.bytes !== "number" ||
+		!Number.isSafeInteger(f.bytes) ||
+		f.bytes < 0
+	)
+		invalidAnswer("sealed file");
+	return {
+		state: "sealed",
+		file: {
+			manifestSha256: hashOf(f.manifestSha256, "sealed manifest"),
+			fileSha256: hashOf(f.fileSha256, "sealed file hash"),
+			bytes: f.bytes,
+			mediaType: f.mediaType,
+			executable: f.executable,
+		},
+	};
+}
+
+export function parseCommitAnswer(value: unknown, units: number): CommitAnswer {
+	const answer = answerRecord(value, "commit");
+	if (answer.schema !== "qorpera.folder-commit/v1" || !isUuid(answer.commitId) || !Array.isArray(answer.units))
+		invalidAnswer("commit");
+	if (answer.units.length !== units) invalidAnswer("commit units");
+	return {
+		commitId: answer.commitId as string,
+		seq: answer.seq === null || answer.seq === undefined ? null : seqOf(answer.seq, "commit seq"),
+		units: answer.units.map((value, index) => {
+			const u = answerRecord(value, "commit unit");
+			if (u.unit !== index + 1 || typeof u.outcome !== "string" || !OUTCOMES.has(u.outcome))
+				invalidAnswer("commit unit");
+			if (u.reason !== undefined && typeof u.reason !== "string") invalidAnswer("commit reason");
+			return {
+				unit: index + 1,
+				outcome: u.outcome as CommitOutcomeKind,
+				reason: (u.reason as string | undefined) ?? null,
+				version: u.version === undefined || u.version === null ? null : versionOf(u.version),
+			};
+		}),
+	};
+}
+
+export function parseConflictCopies(value: unknown): ConflictCopy[] {
+	if (!Array.isArray(value)) invalidAnswer("conflict copies");
+	return value.map((item) => {
+		const c = answerRecord(item, "conflict copy");
+		const count = (n: unknown): number => {
+			if (typeof n !== "number" || !Number.isSafeInteger(n) || n < 1) invalidAnswer("conflict copy");
+			return n;
+		};
+		if (typeof c.path !== "string") invalidAnswer("conflict copy");
+		return {
+			unit: count(c.unit),
+			file: count(c.file),
+			path: c.path,
+			manifestSha256: hashOf(c.manifestSha256, "conflict copy manifest"),
+		};
+	});
+}
+
+/** An open view's `kind` (`run_box`, `computer_desktop`, `coding_session`, …) and `machineId`: the machine allocation
+ * it was opened on (migration 20260930104000), null for a run box. */
 export type ViewRenewal =
-	| { readonly state: "open"; readonly leaseUntil: string }
+	| {
+			readonly state: "open";
+			readonly leaseUntil: string;
+			readonly kind: string;
+			readonly machineId: string | null;
+	  }
 	| { readonly state: "closed"; readonly reason: "closed" | "superseded" | "ended" | "expired" };
 
 export function parseViewRenewal(value: unknown): ViewRenewal {
 	const answer = answerRecord(value, "view renewal");
 	if (answer.schema !== "qorpera.folder-view-renew/v1") invalidAnswer("view renewal");
-	if (answer.state === "open" && typeof answer.leaseUntil === "string" && !Number.isNaN(Date.parse(answer.leaseUntil)))
-		return { state: "open", leaseUntil: answer.leaseUntil };
+	if (
+		answer.state === "open" &&
+		typeof answer.leaseUntil === "string" &&
+		!Number.isNaN(Date.parse(answer.leaseUntil)) &&
+		typeof answer.kind === "string" &&
+		answer.kind !== "" &&
+		(answer.machineId === null || (typeof answer.machineId === "string" && isUuid(answer.machineId)))
+	)
+		return { state: "open", leaseUntil: answer.leaseUntil, kind: answer.kind, machineId: answer.machineId };
 	if (
 		answer.state === "closed" &&
 		(answer.reason === "closed" ||
@@ -258,7 +428,12 @@ export function parseFeedPage(value: unknown): FeedPage {
 					removal ? { path: change.path, kind: change.kind, version: change.version } : c,
 					removal,
 				);
-				return { ...entry, op: change.op as FeedChange["op"] };
+				const prior = change.op === "move_in" ? change.priorVersion : undefined;
+				return {
+					...entry,
+					op: change.op as FeedChange["op"],
+					...(prior !== undefined && prior !== null ? { priorVersion: versionOf(prior) } : {}),
+				};
 			}),
 		};
 	});
@@ -289,8 +464,8 @@ interface SupabaseFolderCoreOptions {
 	readonly requestTimeoutMs?: number;
 }
 
-/** The folder core over PostgREST, with the service credential. Reads only: list, feed, the clock, and the
- * download check for the storage profile. */
+/** The folder core over PostgREST, with the service credential: list, feed, the clock, the download check for the
+ * storage profile, view renewals, and (step 3) staging and the commit. */
 export class SupabaseFolderCore implements FolderCore {
 	readonly #url: string;
 	readonly #key: string;
@@ -381,12 +556,114 @@ export class SupabaseFolderCore implements FolderCore {
 		return answer.profileId;
 	}
 
-	async renewView(viewId: string, pass: string, signal?: AbortSignal): Promise<ViewRenewal> {
-		// Nothing is unsaved in a read-only view: p_unsaved_since stays null.
+	async renewView(
+		viewId: string,
+		pass: string,
+		unsavedSince: string | null,
+		signal?: AbortSignal,
+	): Promise<ViewRenewal> {
 		return parseViewRenewal(
 			await this.#rpc(
 				"qorpera_folder_view_renew",
-				{ p_view_id: viewId, p_pass: pass, p_unsaved_since: null },
+				{ p_view_id: viewId, p_pass: pass, p_unsaved_since: unsavedSince },
+				signal,
+			),
+		);
+	}
+
+	async openUpload(environmentId: string, actor: FolderActor, manifest: string, signal?: AbortSignal) {
+		return parseUploadOpen(
+			await this.#rpc(
+				"qorpera_folder_open_upload",
+				{ p_environment_id: environmentId, p_actor: actorJson(actor), p_manifest: manifest },
+				signal,
+			),
+		);
+	}
+
+	async uploadProfile(
+		environmentId: string,
+		actor: FolderActor,
+		intentId: string,
+		sha256: string,
+		bytes: number,
+		signal?: AbortSignal,
+	) {
+		const answer = answerRecord(
+			await this.#rpc(
+				"qorpera_folder_authorize_object_upload",
+				{
+					p_environment_id: environmentId,
+					p_actor: actorJson(actor),
+					p_intent: intentId,
+					p_sha256: sha256,
+					p_bytes: bytes,
+				},
+				signal,
+			),
+			"upload check",
+		);
+		if (answer.schema !== "qorpera.folder-object-upload/v1" || !isUuid(answer.profileId))
+			invalidAnswer("upload check");
+		return answer.profileId as string;
+	}
+
+	async sealUpload(environmentId: string, actor: FolderActor, intentId: string, signal?: AbortSignal) {
+		return parseUploadSeal(
+			await this.#rpc(
+				"qorpera_folder_seal_upload",
+				{ p_environment_id: environmentId, p_actor: actorJson(actor), p_intent: intentId },
+				signal,
+			),
+		);
+	}
+
+	async renewUpload(environmentId: string, actor: FolderActor, intentId: string, signal?: AbortSignal) {
+		const answer = answerRecord(
+			await this.#rpc(
+				"qorpera_folder_renew_upload",
+				{ p_environment_id: environmentId, p_actor: actorJson(actor), p_intent: intentId },
+				signal,
+			),
+			"upload renewal",
+		);
+		if (
+			answer.schema !== "qorpera.folder-upload-renew/v1" ||
+			answer.intentId !== intentId ||
+			typeof answer.expiresAt !== "string" ||
+			Number.isNaN(Date.parse(answer.expiresAt))
+		)
+			invalidAnswer("upload renewal");
+		return answer.expiresAt;
+	}
+
+	async commit(
+		environmentId: string,
+		actor: FolderActor,
+		operationKey: string,
+		units: readonly unknown[],
+		signal?: AbortSignal,
+	) {
+		return parseCommitAnswer(
+			await this.#rpc(
+				"qorpera_folder_commit",
+				{
+					p_environment_id: environmentId,
+					p_actor: actorJson(actor),
+					p_operation_key: operationKey,
+					p_units: units,
+				},
+				signal,
+			),
+			units.length,
+		);
+	}
+
+	async conflictCopies(environmentId: string, commitId: string, signal?: AbortSignal) {
+		return parseConflictCopies(
+			await this.#rpc(
+				"qorpera_folder_conflict_copies_of",
+				{ p_environment_id: environmentId, p_commit_id: commitId },
 				signal,
 			),
 		);

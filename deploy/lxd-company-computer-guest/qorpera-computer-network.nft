@@ -2,12 +2,18 @@
 # Each computer's shell and desktop has a network of its own: a veth named
 # qcmp<ordinal><s|d> whose other end lives in that namespace (added by
 # qorpera-computer-plumb). Everything public goes out, on any port and
-# protocol. Nothing of ours is reachable: every private, shared, link-local,
+# protocol, by the machine's agent card `qagent` only, to the node's agent
+# exit. Nothing of ours is reachable: every private, shared, link-local,
 # loopback, documentation and special range (the NAS and node LAN, Tailscale,
 # cloud metadata, the LXD bridges and this machine's own networks), this
-# machine itself and the other computers. Nothing comes in, and the machine
-# forwards nothing else. qorpera-computer-plumb keeps the same ranges in each
-# computer's own filter.
+# machine itself and the other computers. The one exception is the exit's name
+# server (10.210.0.1, port 53). Nothing comes in, and the machine forwards
+# nothing else. qorpera-computer-plumb keeps the same ranges in each computer's
+# own filter.
+#
+# The machine's own services keep its first card. Should the agent card's
+# routing go, the computers' traffic and the machine's own traffic from the
+# card's address would leave by the first card: both are dropped instead.
 
 table inet qorpera_computers
 delete table inet qorpera_computers
@@ -35,9 +41,11 @@ table inet qorpera_computers {
 
 	chain forward {
 		type filter hook forward priority filter; policy drop;
-		iifname "qcmp*" oifname "qcmp*" drop
+		iifname "qcmp*" oifname != "qagent" drop
 		iifname "qcmp*" ip saddr != 10.253.0.0/16 drop
-		iifname "qcmp*" ip daddr @blocked drop
+		iifname "qcmp*" ip daddr != 10.210.0.1 ip daddr @blocked drop
+		iifname "qcmp*" ip daddr 10.210.0.1 meta l4proto != { tcp, udp } drop
+		iifname "qcmp*" ip daddr 10.210.0.1 th dport != 53 drop
 		iifname "qcmp*" ct state new add @connections { ip saddr ct count over 16384 } drop
 		iifname "qcmp*" ct state new ct count over 196608 drop
 		iifname "qcmp*" meta nfproto ipv4 accept
@@ -47,10 +55,17 @@ table inet qorpera_computers {
 	chain input {
 		type filter hook input priority filter; policy accept;
 		iifname "qcmp*" drop
+		iifname "qagent" ct state established,related accept
+		iifname "qagent" drop
+	}
+
+	chain output {
+		type filter hook output priority filter; policy accept;
+		ip saddr 10.210.0.0/16 oifname != "qagent" drop
 	}
 
 	chain postrouting {
 		type nat hook postrouting priority srcnat; policy accept;
-		ip saddr 10.253.0.0/16 oifname != "qcmp*" masquerade
+		ip saddr 10.253.0.0/16 oifname "qagent" masquerade
 	}
 }

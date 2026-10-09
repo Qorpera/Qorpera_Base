@@ -1,0 +1,5 @@
+# The machine's agent card: its second card, a port of the node's agents'
+# bridge, known by the MAC the node's plug tool gives it (agent-plug.ts). It is
+# named qagent before any network configuration sees it, and
+# qorpera-agent-plug.network keeps systemd-networkd off it.
+SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="0e:51:0a:d2:*", NAME="qagent"

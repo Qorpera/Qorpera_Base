@@ -271,7 +271,8 @@ within 63 characters.
 
 As in C1c-1, a line inserted at the start of each function sends `folder-v2` to its new body. The snapshot-v1 text
 after that line stays byte-identical, and its digest (the body without the line, or with a text patch reversed) is
-checked by each slice's functional test (647, 652, 656, 658).
+checked by each slice's functional test (647, 652, 656, 658). No snapshot-v1 digests since 3 October: legacy sweep A,
+#829, removed them from these tests.
 
 | Function | `folder-v2` | Slice |
 | --- | --- | --- |
@@ -286,7 +287,7 @@ checked by each slice's functional test (647, 652, 656, 658).
 | `record_action_review` | 2a: under the mutex; its card path refuses through the transcript append. 2b: the folder card path (§5.6) | 2a, 2b |
 | `assert_company_path_reads`, `record_native_context_view`, `add_agent_review_rule` | their `folder-v2` body (§5.6) | 2b |
 | `enforce_company_context_send` | requires the marker the folder send sets; refuses without it | 2b |
-| `pin_wake_occurrence`, `routine_occurrence_lifecycle` | their `folder-v2` modes (§5.6): text patches, each keeping the legacy statement as its `else` branch; the digest is of the patched text with the patch reversed | 2c part 1 |
+| `pin_wake_occurrence`, `routine_occurrence_lifecycle` | their `folder-v2` modes (§5.6): text patches, each keeping the legacy statement as its `else` branch; the digest was of the patched text with the patch reversed (removed since 3 October, as above) | 2c part 1 |
 | `send_coworker_message`, `read_native_wake` | their `folder-v2` bodies (§5.6), by a first line | 2c part 1 |
 | `enqueue_routine_wake` (routine firing) | its `folder-v2` mode in place of the gc fence, after its argument checks (§5.6); moved here from C1c-3 because part 1 closes the legacy path (F2-6's test 709 fires file routines) | 2c part 1 |
 | the legacy multi-company loops: `materialize_wake_execution_runs`, the drains (`office_activation`, `worker`, `machine`, `company_file` with the dynamic-routine tick), `materialize_session_execution_runs` | skip `folder-v2` companies in the scan's `WHERE` clause, before their first lock. `materialize_session_turn_requests` needs no skip: its scan requires the company's head snapshot, which a `folder-v2` company never has (`qorpera_company_files_core_head`) | 2c part 1 |
@@ -636,7 +637,7 @@ Concurrency tests (dblink, with `current_database()`), by slice:
   5. `assert_context` with a revoked read refuses rather than passing, and so does `run_wake_authorized` for a coworker
      wake whose parent's reads are no longer readable.
   6. Every `folder-v2` refusal, a run with no budget row included, and a snapshot-v1 control for every dispatcher, plus
-     a digest of each snapshot-v1 body.
+     a digest of each snapshot-v1 body (no snapshot-v1 digests since 3 October: legacy sweep A, #829, removed them).
 - **C1c-2b:**
   7. Concurrent receipt begins leave one `executing` receipt.
   7b. Concurrent context views of one run get ordinals 1 and 2.
@@ -995,7 +996,7 @@ Decisions:
   admission takes (824 B shows it runs beside a folder effect). Its final authority check takes the same rows again in the
   same modes.
 - **Snapshot-v1** keeps each patched statement in the `else` branch. Each body with its branch reversed is byte for byte
-  the definition before 3f (824 H).
+  the definition before 3f (824 H until 3 October; legacy sweep A, #829, removed that digest).
 - **Decided with 3f** (§6.1): the machine-event drain on `folder-v2` goes with 3i; the worker drain is F2's (F2-5b-3,
   the shared folder drains' `workers`). Both deliver to a
   parent run and need the per-company admission loop (`qorpera_drain_machine_wakes` skips `folder-v2`; until 3i, a
@@ -1066,7 +1067,8 @@ Decisions:
   for the threads (817 §2); a changed title is still written (817 §3).
 - **#581 N2:** an answer to a card and a member change meet at the thread room, in both orders (818 C).
 - Snapshot-v1 keeps every path: each patched body with its patch reversed is the definition before (817 §1; 664 §1 now
-  strips the join's new prelude text).
+  strips the join's new prelude text). No snapshot-v1 digests since 3 October: legacy sweep A, #829, removed 817 §1's
+  and 664 §1's.
 - Not in 3d-1:
   - A joiner still misses an agent thread created at the same moment (on master too). The hire is an effect (the fence
     and the member rows `KEY SHARE`) and the joiner's member row does not exist yet, so nothing both lock conflicts. It
@@ -1200,10 +1202,11 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
   whose purge wants the fence row (it deletes it by cascade): a 40P01 that heals on retry, as §6.4 notes for 3f. 3g's
   drain takes the fence `FOR UPDATE` before the company row and closes it.
 - **Snapshot-v1** keeps each statement in its `else` branch, so the activation markers of 20260925123000 stay in each
-  body. Each body reversed is master's text (826 D; the digests came from a test VM run of the reversal), and the
+  body. Each body reversed is master's text (826 D until 3 October: legacy sweep A, #829, removed the digests and kept
+  the markers check), and the
   snapshot-v1 company still waits for a
   holder of its company row (826 C). 824 B2 is flipped: a `folder-v2` coding reservation no longer waits for the company
-  row `KEY SHARE`, and 824 H reverses 3h's line before 3f's.
+  row `KEY SHARE`, and 824 H reversed 3h's line before 3f's (no digests since 3 October; legacy sweep A, #829).
 - **Inert until C3:** `manage_agent_worker` refuses `folder-v2` (the path actor), so no `folder-v2` coding session can be
   created yet. 3i brings the turn's admission (`begin_coding_turn`) and the machine-event drain; F2-5b-3 the worker drain.
 - **Coding view saves** (the inventory lists tests against them for 3h): attach is unchanged, so they go with 3i's
@@ -1249,8 +1252,8 @@ again after its first. 3e gives it a `folder-v2` path with one company per trans
   reconciler then reports it and asks again after ten minutes, as it does for the first-slot advance.
 - **Deploy order:** the migration, then the edge function, then the orchestrator. An older orchestrator never calls the
   actions, and a `folder-v2` dynamic routine waits for it.
-- Snapshot-v1 keeps its path: `ensure` with its first lines removed is the definition before (819 §1). The legacy tick
-  is unchanged.
+- Snapshot-v1 keeps its path: `ensure` with its first lines removed is the definition before (819 §1 until 3 October:
+  legacy sweep A, #829, removed that digest). The legacy tick is unchanged.
 - Not in 3e: the run itself (materializing a `folder-v2` wake) is C4's materializer (P28). Until then the inserted wake
   stays `queued`, and the list skips the routine (its run is pending). Like the legacy tick, the restore inserts the
   wake even when the company has no computer hours left; P28's materializer holds it ("Waiting for computer hours"),
@@ -1462,7 +1465,7 @@ environment per call, up to 8. It enters their coding workers once, together (`q
 worker's targets merged, so each rank is taken once in its tables' key order, and no rank is taken again after a later
 one, review r2), then archives each session in id order. The legacy quiet check-ins (`ask_quiet_coding_sessions`, a wake
 inserter with no fence that locks other companies' coding rows NOWAIT) run only when the archive entered no company, and
-skip `folder-v2` sessions until 3i-b asks them per company.
+skip `folder-v2` sessions, which C3c's drain asks per company (§6.20).
 
 **The owner's calls.** A delegation locks the worker through the same entry. The answer, the delegation and the owner's
 archive check the owner again once the entry holds the owner's member row, so a removal that committed while they waited
@@ -1553,7 +1556,8 @@ reverse of core §3's order, and on `folder-v2` a stall of every effect of the c
 - **Snapshot-v1:** the reservations', releases' and node reservation's old statements stay in their `else` branches.
   The member removal's prelude is `folder-v2` only. The account metadata's new order holds on both cores (every other
   path also takes the model login before the identity). 900 I checks that each patched branch is present, with no
-  snapshot-v1 text pins (since 3 Oct); 824 H reverses the node reservation's new layer first.
+  snapshot-v1 text pins (since 3 Oct); 824 H reversed the node reservation's new layer first (no digests since 3
+  October; legacy sweep A, #829).
 - **A window P13's second part closed** (20260930049000, test 901, §6.17): `qorpera_request_login_identity_recovery` and
   `_account_refresh_identity_recovery` took the sign-in `FOR SHARE` and then the gc fence, the reverse of the new
   reservation (the row `KEY SHARE`, then the sign-in `FOR UPDATE`). They could deadlock on one sign-in when two gateway
@@ -1625,7 +1629,7 @@ A company that is not `folder-v2` keeps the gc fence in each `else` branch, unte
   the company, and no error recorded.
 - F: the markers.
 
-824 H gains this migration's layer, undone first.
+824 H gains this migration's layer, undone first (no digests since 3 October; legacy sweep A, #829, removed 824 H's).
 
 ### 6.16 C1c-3l part 1 as built: an agent starts the Company Computer (migration 20260930030000, test 890)
 
@@ -1686,10 +1690,84 @@ each `else`.
   - E1 and E4 set a lock timeout, so a wait there fails the test instead of hanging it;
   - F: the descriptor's new computer waits at the agents before the seat lock;
   - G: exactly 5 bodies name the migration.
-- **Not here (part 2, 20260930030100, test 892):** the office-activation wake that wakes the agent once its computer is
-  up. That covers the per-company drain plugged into the shared folder-drains step (P29a), the waiter check's plain
-  folder branch, and the `'office-activation'` token in `pin_wake_occurrence`, `folder_wake_authorized` (with its
-  ancestry) and `folder_run_resolve`. Until then an agent's start records its waiter, and nothing delivers it.
+- **Not here (part 2, §6.18):** the office-activation wake that wakes the agent once its computer is up.
+
+### 6.18 C1c-3l part 2 as built: the agent wakes when its computer is up (migration 20260930030100, test 892)
+
+The coordinator's P06c, second PR. When an agent's `computer_start` has to wait for the computer, its start records a
+waiter (§6.16). Once the agent's turn has ended and the computer is up, a wake continues the agent's work. On folder-v2
+that wake was refused, and nothing delivered the waiter. Folder-v2 only: the statement that was there before stays in
+each `else`.
+
+- **The drain** (`office_wakes`), plugged into the shared folder-drains step (P29a, `RUNTIME-COMPANY-FOLDER-LISTENER.md`
+  §9) after `listen`:
+  - A waiter is due (`qorpera_folder_office_waiter_due`, plain reads) once its start's turn has ended and the drain can
+    act on it: deliver it (the computer is up under the start's activation) or cancel it (the turn failed or was
+    cancelled, the start is gone or cancelled, or the computer was replaced). A waiter whose computer is still coming
+    up waits, so its company is not listed on every pass.
+  - `qorpera_folder_office_wakes_due(p_after_environment, p_limit)` lists the folder-v2 companies with a due waiter. It
+    is plain reads, and leaves out companies that are paused or being deleted. `has_more` is true only for a full page,
+    which alone carries the next cursor (LISTENER §9).
+  - `qorpera_folder_office_wakes_company(p_environment_id, p_limit ≤ 40)` handles one company in one transaction, with
+    a 2 s lock budget (each waiter writes in its own subtransaction, under core §3's 64), in rank order:
+    1. it reads the work without a lock;
+    2. it takes the folder fence and the company row `KEY SHARE`, then the starts' requesters, agents and their execution
+       authorities `KEY SHARE` (`qorpera_folder_company_enter`, as the materializer does);
+    3. it takes the waiters `FOR UPDATE SKIP LOCKED`, so a second drain of the company skips them, and then the
+       admission;
+    4. per waiter:
+       - a failed or cancelled start, or a replaced computer, cancels it;
+       - a computer not yet up, or a pause, skips it. A stop's first phase writes its pause without waiting for the
+         fence, so a pause can land during the drain; the waiter then waits for a later pass, as with the old drain;
+       - a waiter whose authority is gone (for example its agent's access was revoked) is cancelled;
+       - an authorized one gets a queued `office-activation` wake, and the waiter is delivered. If the pin cancels the
+         wake (a pause that lands inside the insert), the insert is undone and the waiter skipped, so no cancelled row
+         keeps its key.
+
+    It answers `busy` when a lock is not free within the budget, `paused`, `idle`, `deleting` or `not_folder`,
+    otherwise `{state: "drained", delivered, cancelled, skipped}`. No computer row is locked. The wake's authority is
+    read again when it becomes a run, and on every tool call of that run.
+  - The edge function's `FOLDER_DRAINS` gets `office_wakes` (maximum 40), and the orchestrator's `CLOUD_FOLDER_DRAINS`
+    gets `{name: "office_wakes", companyLimit: 16}`.
+  - Since P28a nothing calls the old drain (`qorpera_drain_office_activation_wakes`). It stays until the legacy removal.
+- **The waiter check.** `qorpera_folder_office_waiter_authorized(waiter)` makes the checks of
+  `qorpera_office_waiter_authorized` as plain reads, and that function answers with it on folder-v2. A folder-v2 write's
+  completed receipt counts as having its revision when it names its folder commit. The old check took
+  the company row and every row `NOWAIT`. That would turn a screen heartbeat (the computer `FOR UPDATE`) into a refused
+  tool call of the woken run.
+- **The wake source.** `'office-activation'` leaves the folder-v2 refusal lists of `qorpera_pin_wake_occurrence`,
+  `qorpera_folder_wake_authorized` and `qorpera_folder_run_resolve`. `qorpera_folder_wake_authorized` checks an
+  office-activation wake's ancestry (`qorpera_office_activation_wake_ancestry`). Each list is found by its own opening
+  and its own raise or return. Only the `'office-activation'` token and its comma go, with a marker line before the
+  statement, and a list left empty drops its whole statement. 3i-b's `'machine-event'` edit (S3) does the same, so the
+  two apply in either order.
+- **Test 892** (648's committed fixture; Ada's start waits for the company's computer, which comes up):
+  - A: nothing is due while Ada's turn runs; once it has ended the company is due, unless it is paused, being deleted,
+    or its computer is not up. A page that is not full has no next cursor; a full one names its last company;
+  - B: the drain waits behind a folder stop at the fence, holding neither the waiter nor the admission, and behind a
+    member change at the start's requester, likewise. It then delivers one queued wake for Ada, scheduled at the
+    activation, and a second drain is idle;
+  - C: with the computer held `FOR UPDATE` (a screen heartbeat), the folder wake check answers at once. Once the computer
+    is no longer active, the wake is not authorized;
+  - D: the run the wake becomes resolves as Ada's agent run for that wake;
+  - H: a fence held past the 2 s budget answers `busy` and changes nothing;
+  - I: two drains at once: the second skips the waiter the first holds, and one wake comes;
+  - J: with the admission row held, the drain waits there holding the waiter and no computer; a pause that commits
+    meanwhile leaves the waiter waiting (skipped), and after the pause it is delivered;
+  - K: a wake the pin cancels is undone; the waiter waits, and the next pass delivers it;
+  - L: a waiter whose agent lost its access to the computer is cancelled;
+  - M: with the computer held `FOR UPDATE` (a screen heartbeat), the drain delivers at once;
+  - N: the admission held past the budget also answers `busy`, and the waiter waits;
+  - O: a turn that also saved a company file (its write's receipt names its folder commit) still wakes its agent;
+  - E: a start whose turn failed is cancelled, not woken;
+  - F: only the service role lists and drains, and a page over 500 or a company limit over 40 is refused;
+  - G: exactly the patched and new functions name the migration.
+- **Other tests:**
+  - 656 now reverses the pin trigger's new marker line;
+  - 838 takes `qorpera_office_waiter_authorized` off P13's list of open folder-v2 sites: it tests the core first now;
+  - 656 and 634 check that a machine event is still refused on folder-v2 (634 also checks that a hand-built office
+    activation with no waiter behind it is refused by its ancestry);
+  - the edge function's and the orchestrator's tests cover the new entries.
 
 ### 6.17 P13 part 2 as built: identity recovery and retirement (migration 20260930049000, test 901)
 
@@ -1861,7 +1939,9 @@ stopped before it ran) never reached a folder-v2 run:
   - `running` (its job is queued or leased: wait);
   - `pending` (a wake of that kind for it is queued, or materialized with its job missing, queued or leased: one at a
     time);
-  - `stopped` (job cancelled, or revivals stopped: suppress);
+  - `stopped` (job cancelled, or revivals stopped: suppress; since C3c a `worker-completion` asks
+    `qorpera_worker_revival_stopped`, which skips the quiet questions, and every other kind
+    `qorpera_machine_revival_stopped`);
   - `gone` (no run or job: undeliverable).
 - `qorpera_folder_insert_continuation(parent, source_kind, source_id, payload)`: the agent wake, under the caller's
   admission. The pin trigger fills the conversation, requester, payer and causal chain.
@@ -1889,15 +1969,41 @@ stopped before it ran) never reached a folder-v2 run:
   holds nothing;
 - two steps of one company skip each other's events.
 
-**Not here: quiet coding check-ins.** On folder-v2 they wait for coding dispatch, which `qorpera_company_state_worker_rules`
-refuses ("coding workers come to the company folder with coding machines") until C3. **Hand-over:** whoever opens
-coding dispatch on folder-v2 adds the check-in drain. A check-in is a `worker-completion` wake (folder-v2 serves that
-kind already) for the worker's steering run, through the two helpers above, with the legacy
-`qorpera_ask_quiet_coding_sessions` rules: quiet sessions, a mark so each question is asked once, skipping a pending
-revival.
+**Quiet coding check-ins** (C3c, migration 20260930107500, tests 934 and 936; STATE-FILES §8 "Plan (C3)"): the drain
+`coding_checkins`, built once C3a opened coding dispatch on folder-v2. A check-in is a `worker-completion` wake for the
+worker's steering run, classified by `qorpera_folder_parent_continuation`. It is inserted directly rather than through
+`qorpera_folder_insert_continuation`, because it keeps the legacy key, which a new turn and a stopped question read.
+- **`qorpera_folder_coding_checkins_due`** lists the folder-v2 environments, not deleting, not paused and not out of
+  computer hours, with a due session of a worker neither erased nor retired whose parent is ready, stopped or gone.
+- **`qorpera_folder_coding_checkins_company(environment, limit ≤ 32)`:**
+  1. plain reads of the due sessions, longest quiet first, each parent classified;
+  2. the folder fence `KEY SHARE`, rank 0, each session's coding worker rows (`qorpera_coding_worker_targets`, none
+     required) and the ready parents' requesters, agents and authorities `KEY SHARE` (ranks 1 to 5);
+  3. `deleting` / `paused` / `at_zero` answers;
+  4. the ready parents' conversations `KEY SHARE` in id order (rank 10), then the sessions `FOR NO KEY UPDATE` in
+     worker order, each read again under them;
+  5. admission, last, only when a question is to be asked; one question per parent, its parent classified again.
+
+  An erased or retired worker, or a stopped parent, has its mark counted as asked (`suppressed`); a gone parent's, or a
+  refused wake's (42501, P0002, 55000, check, unique, size), is `undeliverable`, and the answer names the last refusal
+  (`lastError`). 55P03 and 40P01 answer `busy`.
+
+**No cycle, for the check-ins.** The step takes a coding worker's rows as every writer of a coding worker does
+(`qorpera_coding_worker_targets`, in rank order under the fence), the session rows after rank 10 as core §3 puts them,
+and admission last.
+
+**Tests of the check-ins.** 934 covers the parents, the marks, the question, the refusals and the answers. 936 (dblink, on
+648's committed fixture) covers the step against other connections:
+- A: locks:
+  - beside an effect, no wait;
+  - behind a stop's second phase, it waits at the fence holding no session, worker, todo or member row.
+- B: one continuation of a parent across transactions. The step and F2's worker drain (either first), and two steps
+  holding different sessions of one parent, meet at admission and leave one queued `worker-completion` wake.
+- C: a lock timeout answers `busy` and marks nothing.
 
 **b9's machine check-ins** (#800, stacked later) use the same helpers with a new source kind, `machine-checkin`, which
-they add to the pin trigger's agent branch, the wake checks and the materializer's parent copy.
+they add to the pin trigger's agent branch, the wake checks and the materializer's parent copy. Busy coding sessions'
+check-ins (20260930109000) ride the same kind to the worker's steering run.
 
 **Tests.** 848, on 648's committed fixture:
 - A: no folder-v2 refusal names the kind, and a continuation without admission is refused.

@@ -10,6 +10,7 @@ import {
 	CloudMachineCommandRefusal,
 	createHttpCloudMachineCommandGateway,
 } from "../src/cloud-machine-command-http.ts";
+import type { CloudNativeToolBinding } from "../src/cloud-native-tool-authority.ts";
 import { cloudNativeToolOperationEnvelope } from "../src/cloud-native-tool-operations.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
@@ -35,8 +36,16 @@ async function service(
 	execute: (request: CloudMachineCommandHttpRequest) => Promise<unknown>,
 ) {
 	const token = randomBytes(32).toString("base64url");
+	// G2-6b: the database's lease proof stands in here (its own test is 986): only the run's own lease token, as
+	// `job.<the binding's job>.<lease token>`, proves a request's binding.
+	const lease = randomBytes(32).toString("base64url");
+	const holderOf = (binding: CloudNativeToolBinding) => `job.${binding.jobId.toLowerCase()}.${lease}`;
+	const proveBinding = vi.fn(async (binding: CloudNativeToolBinding, holder: string) => {
+		if (holder !== holderOf(binding)) throw new Error("native binding proof is refused");
+	});
 	const http = new HttpCloudCodingCommandService({
 		token,
+		proveBinding,
 		authorize: async () => {
 			throw new Error("not a coding command");
 		},
@@ -47,7 +56,7 @@ async function service(
 	});
 	const port = await http.start();
 	cleanups.push(() => http.close());
-	return { token, url: `http://127.0.0.1:${port}` };
+	return { token, url: `http://127.0.0.1:${port}`, lease, holderOf, proveBinding };
 }
 
 describe("machine command gateway", () => {
@@ -60,13 +69,20 @@ describe("machine command gateway", () => {
 		const execute = vi.fn(async (_request: CloudMachineCommandHttpRequest) =>
 			receiptFor(machineId, commandId, inputSha256),
 		);
-		const { token, url } = await service(authorize, execute);
-		const gateway = createHttpCloudMachineCommandGateway({ url, token, binding, allowLoopback: true });
+		const { token, url, holderOf, proveBinding } = await service(authorize, execute);
+		const gateway = createHttpCloudMachineCommandGateway({
+			url,
+			token,
+			binding,
+			holder: () => holderOf(binding),
+			allowLoopback: true,
+		});
 		const input = { commandId, inputSha256, command: "docker compose up -d", timeoutMs: null, notify: true };
 		expect(await gateway.start({ machineId }, input, new AbortController().signal)).toEqual(
 			receiptFor(machineId, commandId, inputSha256),
 		);
 		expect(authorize).toHaveBeenCalledTimes(2);
+		expect(proveBinding).toHaveBeenCalledWith(binding, holderOf(binding), expect.any(AbortSignal));
 		expect(execute.mock.calls[0]?.[0]).toEqual({
 			schema: "qorpera.machine-command-http/v1",
 			binding,
@@ -87,13 +103,19 @@ describe("machine command gateway", () => {
 		const { binding } = nativeToolAuthorityFixture();
 		const machineId = randomUUID();
 		let refusal: Error = new CloudMachineCommandRefusal("MACHINE_NOT_RUNNING");
-		const { token, url } = await service(
+		const { token, url, holderOf } = await service(
 			async () => {
 				throw refusal;
 			},
 			async () => ({}),
 		);
-		const gateway = createHttpCloudMachineCommandGateway({ url, token, binding, allowLoopback: true });
+		const gateway = createHttpCloudMachineCommandGateway({
+			url,
+			token,
+			binding,
+			holder: () => holderOf(binding),
+			allowLoopback: true,
+		});
 		const read = () =>
 			gateway.read({ machineId }, { commandId: randomUUID(), offset: 0, limit: 4096 }, new AbortController().signal);
 		await expect(read()).rejects.toThrow("MACHINE_NOT_RUNNING");
@@ -104,6 +126,7 @@ describe("machine command gateway", () => {
 			url,
 			token: randomBytes(32).toString("base64url"),
 			binding,
+			holder: () => holderOf(binding),
 			allowLoopback: true,
 		});
 		await expect(other.cancel({ machineId }, randomUUID(), new AbortController().signal)).rejects.toThrow(
@@ -115,14 +138,61 @@ describe("machine command gateway", () => {
 		const { binding } = nativeToolAuthorityFixture();
 		const machineId = randomUUID(),
 			commandId = randomUUID();
-		const { token, url } = await service(
+		const { token, url, holderOf } = await service(
 			async () => ({ inputSha256: "a".repeat(64) }),
 			async () => receiptFor(randomUUID(), commandId, "a".repeat(64)),
 		);
-		const gateway = createHttpCloudMachineCommandGateway({ url, token, binding, allowLoopback: true });
+		const gateway = createHttpCloudMachineCommandGateway({
+			url,
+			token,
+			binding,
+			holder: () => holderOf(binding),
+			allowLoopback: true,
+		});
 		await expect(gateway.cancel({ machineId }, commandId, new AbortController().signal)).rejects.toThrow(
 			"Machine command gateway unavailable",
 		);
+	});
+
+	it("asks nothing about a command without the run's own lease, not even a start's record (G2-6b)", async () => {
+		const { binding } = nativeToolAuthorityFixture();
+		const machineId = randomUUID(),
+			commandId = randomUUID(),
+			inputSha256 = "a".repeat(64);
+		const authorize = vi.fn(async () => ({ inputSha256 }));
+		const execute = vi.fn(async () => receiptFor(machineId, commandId, inputSha256));
+		const { token, url, lease, holderOf, proveBinding } = await service(authorize, execute);
+		const input = { commandId, inputSha256, command: "docker compose up -d", timeoutMs: null, notify: true };
+		// A malformed holder, another run's, or another lease token for this run's job.
+		for (const holder of [
+			"",
+			lease,
+			`identity.${lease}`,
+			`${holderOf(binding)}x`,
+			`job.${randomUUID()}.${lease}`,
+			`job.${binding.jobId.toLowerCase()}.${"W".repeat(43)}`,
+		]) {
+			const gateway = createHttpCloudMachineCommandGateway({
+				url,
+				token,
+				binding,
+				holder: () => holder,
+				allowLoopback: true,
+			});
+			await expect(gateway.start({ machineId }, input, new AbortController().signal)).rejects.toThrow(
+				"Machine command gateway unavailable",
+			);
+		}
+		expect(authorize).not.toHaveBeenCalled();
+		expect(execute).not.toHaveBeenCalled();
+		// Only the two well-formed holders reached the proof.
+		expect(proveBinding).toHaveBeenCalledTimes(2);
+		// A gateway without a holder (an executor's, for its peer) is refused on this guest-facing listener too.
+		const peer = createHttpCloudMachineCommandGateway({ url, token, binding, holder: null, allowLoopback: true });
+		await expect(peer.start({ machineId }, input, new AbortController().signal)).rejects.toThrow(
+			"Machine command gateway unavailable",
+		);
+		expect(authorize).not.toHaveBeenCalled();
 	});
 });
 
@@ -229,6 +299,7 @@ describe("machine command authority", () => {
 	});
 	it("passes a peer's refusal on as the same refusal", async () => {
 		const f = fixture();
+		const forwarded: Headers[] = [];
 		const router = new MachineCommandRouter({
 			owner: "mx-c",
 			providerId: "machine-node",
@@ -242,10 +313,14 @@ describe("machine command authority", () => {
 			],
 			control: f,
 			credential: async () => randomBytes(32).toString("base64url"),
-			fetch: (async () =>
-				new Response(JSON.stringify({ code: "MACHINE_NOT_RUNNING" }), { status: 409 })) as typeof fetch,
+			fetch: (async (_input: string | URL | Request, init?: RequestInit) => {
+				forwarded.push(new Headers(init?.headers));
+				return new Response(JSON.stringify({ code: "MACHINE_NOT_RUNNING" }), { status: 409 });
+			}) as typeof fetch,
 		});
 		await expect(router.execute(f.request, f.signal)).rejects.toMatchObject({ code: "MACHINE_NOT_RUNNING" });
+		// The peer listener takes no holder: this executor proved the guest's at its own ingress (G2-6b).
+		expect(forwarded.map((headers) => headers.has("x-qorpera-identity"))).toEqual([false]);
 	});
 	it("routes to this node, or only to a peer in the allowlist, and a peer never forwards", async () => {
 		const f = fixture();

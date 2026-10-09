@@ -6,8 +6,10 @@ mod support;
 
 use qorpera_folder::link::{Link, View};
 use qorpera_folder::mount::{self, Options, Stop};
-use std::io::{ErrorKind, Read};
-use std::os::unix::fs::PermissionsExt;
+use std::ffi::CString;
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::io::IntoRawFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use support::{FakeNode, PASS};
@@ -44,14 +46,20 @@ fn mounted(path: &Path) -> bool {
 }
 
 fn start(node: &FakeNode) -> (PathBuf, std::thread::JoinHandle<Stop>) {
+	start_with(node, None)
+}
+
+/// Mounts with the version map kept in `state` (a mount started again over the same folder reads it back).
+fn start_with(node: &FakeNode, state: Option<PathBuf>) -> (PathBuf, std::thread::JoinHandle<Stop>) {
 	let mountpoint = node.dir.join("company");
-	std::fs::create_dir(&mountpoint).unwrap();
+	std::fs::create_dir_all(&mountpoint).unwrap();
 	let link = Link::new(
 		node.addr.clone(),
 		View { environment_id: "env".into(), view_id: "view".into(), pass: PASS.into() },
 		4,
 	);
-	let options = Options { mountpoint: mountpoint.clone(), threads: 4, ttl: Duration::from_secs(3600), allow_other: false };
+	let options =
+		Options { mountpoint: mountpoint.clone(), threads: 4, ttl: Duration::from_secs(3600), allow_other: false, state };
 	let runner = std::thread::spawn(move || match mount::run(link, options) {
 		Ok(stop) => stop,
 		Err(e) => panic!("mount failed: {e:?}"),
@@ -193,10 +201,267 @@ fn a_refused_view_is_never_mounted() {
 		View { environment_id: "env".into(), view_id: "view".into(), pass: "wrong".into() },
 		2,
 	);
-	let options = Options { mountpoint: mountpoint.clone(), threads: 2, ttl: Duration::from_secs(1), allow_other: false };
+	let options =
+		Options { mountpoint: mountpoint.clone(), threads: 2, ttl: Duration::from_secs(1), allow_other: false, state: None };
 	match mount::run(link, options) {
 		Err(mount::Failed::View(_)) => {}
 		other => panic!("{other:?}"),
 	}
 	assert!(!mounted(&mountpoint));
 }
+
+#[test]
+fn writes_files_and_folders_through_a_writable_mount() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("docs/plan.md", "the plan, version one", false);
+	let (company, runner) = start_with(&node, Some(node.dir.join("state")));
+	assert_eq!(std::fs::metadata(company.join("docs/plan.md")).unwrap().permissions().mode() & 0o777, 0o644);
+
+	// A new file, there at once and on the node.
+	std::fs::write(company.join("docs/new.md"), "hello").unwrap();
+	assert_eq!(std::fs::read_to_string(company.join("docs/new.md")).unwrap(), "hello");
+	assert_eq!(node.content("docs/new.md").unwrap(), b"hello");
+
+	// A file across three chunks, written in pieces.
+	let big: Vec<u8> = (0..9 * 1024 * 1024 + 5).map(|i| (i % 251) as u8).collect();
+	std::fs::write(company.join("big.bin"), &big).unwrap();
+	assert_eq!(node.content("big.bin").unwrap(), big);
+	assert_eq!(std::fs::read(company.join("big.bin")).unwrap(), big);
+
+	// Writes inside chunks already sent (a database's pages), read back before the close.
+	let mut f = std::fs::OpenOptions::new().read(true).write(true).open(company.join("big.bin")).unwrap();
+	f.seek(SeekFrom::Start(4096)).unwrap();
+	f.write_all(b"page").unwrap();
+	f.seek(SeekFrom::Start(5 * 1024 * 1024)).unwrap();
+	f.write_all(b"two").unwrap();
+	let mut back = [0u8; 4];
+	f.seek(SeekFrom::Start(4096)).unwrap();
+	f.read_exact(&mut back).unwrap();
+	assert_eq!(&back, b"page");
+	drop(f);
+	let mut expected = big.clone();
+	expected[4096..4100].copy_from_slice(b"page");
+	expected[5 * 1024 * 1024..5 * 1024 * 1024 + 3].copy_from_slice(b"two");
+	assert_eq!(node.content("big.bin").unwrap(), expected);
+
+	// An editor's save: it read the file, writes a temporary one and renames it over, based on the version it read.
+	assert_eq!(std::fs::read_to_string(company.join("docs/plan.md")).unwrap(), "the plan, version one");
+	std::fs::write(company.join("docs/.plan.md.new"), "the plan, version two").unwrap();
+	std::fs::rename(company.join("docs/.plan.md.new"), company.join("docs/plan.md")).unwrap();
+	assert_eq!(node.content("docs/plan.md").unwrap(), b"the plan, version two");
+	assert_eq!(node.renames().last().unwrap().to_base.as_deref(), Some("v1"));
+	assert_eq!(std::fs::read_to_string(company.join("docs/plan.md")).unwrap(), "the plan, version two");
+
+	// Folders: made with what is in them, renamed, removed.
+	std::fs::create_dir_all(company.join("a/b")).unwrap();
+	std::fs::write(company.join("a/b/c.txt"), "c").unwrap();
+	std::fs::rename(company.join("a"), company.join("z")).unwrap();
+	assert_eq!(std::fs::read_to_string(company.join("z/b/c.txt")).unwrap(), "c");
+	assert_eq!(names(&company), ["big.bin", "docs", "z"]);
+	std::fs::remove_dir_all(company.join("z")).unwrap();
+	assert!(!node.exists("z") && !node.exists("z/b/c.txt"));
+
+	// The executable bit, and a file cut short that no one has open.
+	std::fs::set_permissions(company.join("docs/new.md"), std::fs::Permissions::from_mode(0o755)).unwrap();
+	assert!(node.executable("docs/new.md"));
+	assert_eq!(std::fs::metadata(company.join("docs/new.md")).unwrap().permissions().mode() & 0o777, 0o755);
+	let path = std::ffi::CString::new(company.join("big.bin").to_str().unwrap()).unwrap();
+	// SAFETY: a path from CString, and a plain truncate.
+	assert_eq!(unsafe { libc::truncate(path.as_ptr(), 10) }, 0);
+	assert_eq!(node.content("big.bin").unwrap(), &expected[..10]);
+	assert_eq!(std::fs::metadata(company.join("big.bin")).unwrap().len(), 10);
+
+	// What the folder does not hold.
+	assert_eq!(std::os::unix::fs::symlink("x", company.join("link")).unwrap_err().raw_os_error(), Some(libc::EPERM));
+
+	// The machine asks for a boundary.
+	let link = Link::new(node.addr.clone(), View { environment_id: "env".into(), view_id: "view".into(), pass: PASS.into() }, 1);
+	link.publish().unwrap();
+	assert_eq!(node.publishes(), 1);
+
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn the_version_map_outlives_the_program() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("notes.md", "first", false);
+	let state = node.dir.join("state");
+	let (company, runner) = start_with(&node, Some(state.clone()));
+	assert_eq!(std::fs::read_to_string(company.join("notes.md")).unwrap(), "first");
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+	// Another machine saves while the program is down; the program starts again with the same map.
+	node.reopen_view();
+	node.put("notes.md", "theirs", false);
+	let (company, runner) = start_with(&node, Some(state));
+	// An editor saves its buffer in place: based on the version read before the restart, not the newest.
+	std::fs::write(company.join("notes.md"), "mine").unwrap();
+	assert_eq!(node.opens().last().unwrap(), &("notes.md".to_string(), Some("v1".to_string())));
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+fn c_path(path: &Path) -> CString {
+	CString::new(path.to_str().unwrap()).unwrap()
+}
+
+/// The errno a libc call that returned -1 left.
+fn last_errno() -> Option<i32> {
+	std::io::Error::last_os_error().raw_os_error()
+}
+
+#[test]
+fn a_close_the_node_does_not_take_at_once_is_tried_again_until_it_does() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	let (company, runner) = start(&node);
+	// A boundary is settling: the node answers BUSY to the next chunk and the next close.
+	node.busy(1, 1);
+	let mut f = std::fs::File::create(company.join("busy.md")).unwrap();
+	f.write_all(b"written whole").unwrap();
+	// The program's close hears it; the file is still closed at the node soon after, with every byte.
+	// SAFETY: closes the descriptor this test owns.
+	assert_eq!(unsafe { libc::close(f.into_raw_fd()) }, -1);
+	assert_eq!(last_errno(), Some(libc::EBUSY));
+	assert!(eventually(Duration::from_secs(5), || node.open_handles() == 0), "the node's handle was left open");
+	assert_eq!(node.content("busy.md").unwrap(), b"written whole");
+	// No longer written here: the next save opens it at the node again.
+	std::fs::write(company.join("busy.md"), "again").unwrap();
+	assert_eq!(node.content("busy.md").unwrap(), b"again");
+	assert_eq!(node.open_handles(), 0);
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn one_writer_per_file_across_duplicated_inherited_and_truncating_descriptors() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("docs/plan.md", "the plan", false);
+	let (company, runner) = start(&node);
+	let log = company.join("log.txt");
+
+	// A descriptor closed while its duplicate goes on writing: the close closes the file at the node, and the next
+	// write opens it again there, going on from the chunk still in memory.
+	let mut f = std::fs::File::create(&log).unwrap();
+	f.write_all(b"one ").unwrap();
+	let mut dup = f.try_clone().unwrap();
+	drop(f);
+	assert_eq!(node.content("log.txt").unwrap(), b"one ");
+	dup.write_all(b"two").unwrap();
+	drop(dup);
+	assert_eq!(node.content("log.txt").unwrap(), b"one two");
+	assert_eq!(node.gets(), 0, "the chunk in memory was read back");
+
+	// A child that inherited the descriptor writes and exits: its close leaves the file open at the node; the
+	// opener's close closes it. (The copy handed to the child closes in this process with the command, which is the
+	// opener's close; the child writes after it.)
+	let f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+	let mut command = std::process::Command::new("sh");
+	command.arg("-c").arg("sleep 0.5; printf ' three'").stdout(f.try_clone().unwrap());
+	let mut child = command.spawn().unwrap();
+	drop(command);
+	assert!(child.wait().unwrap().success());
+	assert_eq!(node.content("log.txt").unwrap(), b"one two", "the child's exit closed the file at the node");
+	assert_eq!(node.open_handles(), 1);
+	drop(f);
+	assert_eq!(node.content("log.txt").unwrap(), b"one two three");
+
+	// ftruncate of the open file, then an O_TRUNC open that joins it: one handle at the node throughout.
+	let opens = node.opens().len();
+	let f = std::fs::OpenOptions::new().write(true).open(&log).unwrap();
+	f.set_len(3).unwrap();
+	assert_eq!(std::fs::metadata(&log).unwrap().len(), 3);
+	let mut g = std::fs::OpenOptions::new().write(true).truncate(true).open(&log).unwrap();
+	g.write_all(b"fresh").unwrap();
+	drop(g);
+	assert_eq!(std::fs::read(&log).unwrap(), b"fresh");
+	drop(f);
+	assert_eq!(node.content("log.txt").unwrap(), b"fresh");
+	assert_eq!((node.opens().len(), node.open_handles()), (opens + 1, 0));
+
+	// The executable bit at create.
+	let mut script = std::fs::OpenOptions::new().write(true).create(true).mode(0o755).open(company.join("run.sh")).unwrap();
+	script.write_all(b"#!/bin/sh\n").unwrap();
+	drop(script);
+	assert!(node.executable("run.sh"));
+
+	// `touch`: times are the folder's, so nothing changes. Owners are the mount's. Two names cannot swap.
+	let plan = c_path(&company.join("docs/plan.md"));
+	let version = node.version("docs/plan.md");
+	// SAFETY: a path from CString; null times mean now.
+	assert_eq!(unsafe { libc::utimensat(libc::AT_FDCWD, plan.as_ptr(), std::ptr::null(), 0) }, 0);
+	assert_eq!(node.version("docs/plan.md"), version);
+	// SAFETY: as above; a gid of -1 leaves it.
+	assert_eq!(unsafe { libc::chown(plan.as_ptr(), 4242, u32::MAX) }, -1);
+	assert_eq!(last_errno(), Some(libc::EPERM));
+	const RENAME_EXCHANGE: libc::c_uint = 2;
+	let other = c_path(&log);
+	// SAFETY: two paths from CString, and the renameat2 flags.
+	let swapped = unsafe {
+		libc::syscall(libc::SYS_renameat2, libc::AT_FDCWD, plan.as_ptr(), libc::AT_FDCWD, other.as_ptr(), RENAME_EXCHANGE)
+	};
+	assert_eq!((swapped, last_errno()), (-1, Some(libc::EINVAL)));
+
+	// O_RDONLY with O_TRUNC cuts the file too.
+	// SAFETY: a path from CString, opened and closed.
+	let fd = unsafe { libc::open(plan.as_ptr(), libc::O_RDONLY | libc::O_TRUNC) };
+	assert!(fd >= 0);
+	// SAFETY: closes the descriptor opened above.
+	assert_eq!(unsafe { libc::close(fd) }, 0);
+	assert_eq!(node.content("docs/plan.md").unwrap(), b"");
+	assert_eq!(std::fs::metadata(company.join("docs/plan.md")).unwrap().len(), 0);
+
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn a_file_held_open_across_a_newer_version_bases_its_save_on_what_it_read() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("plan.md", "the first", false);
+	let (company, runner) = start(&node);
+	let plan = company.join("plan.md");
+	// An editor opens the file; another machine publishes a newer version before the editor reads it, and the mount
+	// shows that one now.
+	let mut held = std::fs::File::open(&plan).unwrap();
+	node.put("plan.md", "the second one", false);
+	assert!(eventually(Duration::from_secs(2), || std::fs::metadata(&plan).is_ok_and(|m| m.len() == 14)));
+	// The editor reads the version it opened: the only version this mount read of the path.
+	let mut text = String::new();
+	held.read_to_string(&mut text).unwrap();
+	assert_eq!(text, "the first");
+	// Its save in place names that version, so the node takes it for the stale save it is, not an overwrite.
+	std::fs::write(&plan, "mine").unwrap();
+	assert_eq!(node.opens().last().unwrap(), &("plan.md".to_string(), Some("v1".to_string())));
+	// A read of the newest version takes over; the file still open does not take the map back.
+	node.put("notes.md", "n1", false);
+	assert!(eventually(Duration::from_secs(2), || company.join("notes.md").exists()));
+	let mut notes = std::fs::File::open(company.join("notes.md")).unwrap();
+	node.put("notes.md", "n2 longer", false);
+	assert!(eventually(Duration::from_secs(2), || std::fs::read_to_string(company.join("notes.md")).ok().as_deref()
+		== Some("n2 longer")));
+	let mut old = String::new();
+	notes.read_to_string(&mut old).unwrap();
+	assert_eq!(old, "n1");
+	std::fs::write(company.join("notes.md"), "mine").unwrap();
+	assert_eq!(node.opens().last().unwrap(), &("notes.md".to_string(), Some("v2".to_string())));
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+

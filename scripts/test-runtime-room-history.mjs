@@ -16,7 +16,7 @@ async function main() {
 	const database = await hostedDatabase(databaseName, { before: historyMigration });
 	try {
 		// Then, in one session: the wake fixture, the upgrade fixture, the remaining migrations and the cases.
-		const fixture = readFileSync(join(repositoryRoot, "supabase/tests/300_runtime_wake_bus.test.sql"), "utf8").split("-- END WAKE FIXTURE")[0];
+		const fixture = readFileSync(join(repositoryRoot, "supabase/tests/fixtures/runtime-room-history-seed.sql"), "utf8");
 		const upgrade = readFileSync(join(repositoryRoot, "supabase/tests/fixtures/runtime-room-history-upgrade.sql"), "utf8");
 		const cases = readFileSync(join(repositoryRoot, "supabase/tests/fixtures/runtime-room-history-cases.sql"), "utf8");
 		const remaining = migrations.filter(name => name >= historyMigration).map(name => readFileSync(join(MIGRATIONS, name), "utf8")).join("\n");

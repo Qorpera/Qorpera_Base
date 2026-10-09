@@ -54,6 +54,7 @@ work. No recovery guard was relaxed and no sponsor is substituted.
 
 Run the added concurrency coverage with
 `node scripts/test-runtime-recovery-admission.mjs --report /absolute/path/report.json`.
+(The driver was deleted with snapshot-v1 in the legacy sweep, B2b: it ran on SQL 335's plain-session queue.)
 Use a new report path; the driver refuses to overwrite evidence.
 
 ## Evidence and limits

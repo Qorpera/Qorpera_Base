@@ -75,8 +75,12 @@ export async function folderWriterFixture(
 		/** The worker index by todo key (`qorpera_folder_agent_workers`, with each worker's folder); a todo not named is
 		 * one the run does not have (P0002), and a cancel finds its worker here. */
 		workers?: Record<string, Record<string, unknown>[]>;
+		/** Answers any other call (the proposal calls, P40); undefined leaves it unexpected. */
+		rpc?: (method: string, args: Record<string, unknown>) => unknown;
 		/** What `qorpera_folder_archive_coding_worker` raises instead of archiving (C3b). */
 		archiveError?: { code: string; message: string };
+		/** What `qorpera_folder_cancel_agent_worker` raises instead of cancelling (C3c). */
+		cancelError?: { code: string; message: string };
 	} = {},
 ) {
 	const { binding, authority } = nativeToolAuthorityFixture();
@@ -232,6 +236,8 @@ export async function folderWriterFixture(
 			if (method === "qorpera_folder_cancel_agent_worker") {
 				const request = args.p_request as { folder: string; operationKey: string };
 				cancels.push(structuredClone(args));
+				if (options.cancelError)
+					throw new CloudCompanyFolderRpcError(options.cancelError.code, options.cancelError.message);
 				const found = Object.values(options.workers ?? {})
 					.flat()
 					.find((worker) => worker.folder === request.folder);
@@ -606,6 +612,8 @@ export async function folderWriterFixture(
 					replay: false,
 				};
 			}
+			const answer = options.rpc?.(method, args);
+			if (answer !== undefined) return answer;
 			throw new Error(`Unexpected ${method}`);
 		}),
 	};

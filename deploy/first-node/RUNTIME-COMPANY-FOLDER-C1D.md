@@ -17,7 +17,7 @@ Everything here runs only for `folder-v2` companies. No real one exists before C
 
 | Step | Today | Lock |
 | --- | --- | --- |
-| a run's upload and download | the native route: `authorize_`/`confirm_native_company_object_upload`, `authorize_native_company_object_download` | the full run check and the gc fence, three times; C1c-1 refuses both for `folder-v2` |
+| a run's upload and download | the native route: `authorize_`/`confirm_native_company_object_upload`, `authorize_native_company_object_download` | the full run check and the gc fence, three times; C1c-1 refuses both for `folder-v2`; legacy removal step C (migration `20260930190000`) removed the route and the three functions |
 | the catalog insert | `confirm_profile_object_upload` | the gc fence, then `company_files` `FOR UPDATE`, then the object row `FOR UPDATE` |
 | the proof | `verify_company_path_file` | the gc fence |
 | replication's insert into `storage.objects` | `enforce_company_storage_quota`; `guard_nas_replica_insert` → `authorize_profile_object_replication` | `company_files` `FOR UPDATE`, which conflicts with the commit's foreign-key `KEY SHARE` on it; the gc fence |
@@ -249,7 +249,8 @@ that the Storage mirror inserted is still served.
 ## 8. The gateway and the runtime
 
 - **Gateway** (`packages/object-gateway`): `/v1/folder-objects/<environmentId>/<sha256>`, on the native token, with
-  the run's binding (its actor) and, for a put, `x-qorpera-upload-intent`. The folder service's puts for its views (F3
+  the run's binding (its actor), the run's lease as `x-qorpera-identity: job.<job id>.<lease token>` (G2-6a; see
+  `RUNTIME-NATIVE-HOST-KEY.md`, "G2-6") and, for a put, `x-qorpera-upload-intent`. The folder service's puts for its views (F3
   step 3, `RUNTIME-FOLDER-WRITES.md`, slice 3b) go to `PUT /v1/folder-service-objects/<environmentId>/<sha256>`, on
   the folder service's own token (`QORPERA_OBJECT_GATEWAY_FOLDER_SERVICE_TOKEN`, distinct from every other; the route
   is off without it), naming the actor in `x-qorpera-folder-actor` (canonical base64url JSON of exactly a member's,
@@ -339,7 +340,8 @@ runtime adapter, with no migration.
 
 **Activation checks** (test 761 §8 runs them; the coordinator may copy them into the activation file):
 - each of the four patched snapshot-v1 bodies, with its `folder-v2` line removed, has its reviewed digest, so the
-  snapshot-v1 text after the line stays byte-identical;
+  snapshot-v1 text after the line stays byte-identical (no snapshot-v1 digests since 3 October: legacy sweep A, #829,
+  removed this check from 761 §8);
 - none of the new functions contains `for update`, `for share`, `nowait`, `qorpera_lock_profile_gc_fence`,
   `qorpera_folder_fences` or `qorpera_runner_jobs`; `for no key update` appears only in
   `qorpera_folder_authorize_replication` (§6);
@@ -360,7 +362,7 @@ runtime adapter, with no migration.
   chunk for a write and for a copy; a closure object outside the locked set; a move into a folder, then a copy of it,
   in one change set.
 - Usage and the soft quota at the exact limit, for new and for stored objects; the lazy seed; the snapshot-v1 paths
-  unchanged (digests, and the old functions' results).
+  unchanged (digests, and the old functions' results; no digests since 3 October: legacy sweep A, #829, removed them).
 - Races (dblink, `current_database()`): a commit against a seal of the same file; two uploads of one hash; open,
   confirm and seal against a waiting `FOR UPDATE` on their objects; a stop against an open; replication behind a held
   profile row; staging, download and replication calls (and a replica insert) that finish while `company_files` and

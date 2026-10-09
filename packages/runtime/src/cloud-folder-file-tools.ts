@@ -58,7 +58,7 @@ function releaseId(runId: string, callId: string, outputSha256: string): string 
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${((Number.parseInt(hex[16] as string, 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-function args(value: JsonValue, tool: string, keys: readonly string[]): Record<string, JsonValue> {
+export function args(value: JsonValue, tool: string, keys: readonly string[]): Record<string, JsonValue> {
 	if (value === null || typeof value !== "object" || Array.isArray(value))
 		throw new CloudToolArgumentRefusal(`${tool} takes an object with ${keys.join(", ")}`);
 	if (Object.keys(value).some((key) => !keys.includes(key)) || keys.some((key) => !Object.hasOwn(value, key)))
@@ -76,7 +76,7 @@ function path(value: JsonValue | undefined, root: boolean): string {
 	}
 }
 
-function integer(value: JsonValue | undefined, label: string, minimum: number, maximum: number): number {
+export function integer(value: JsonValue | undefined, label: string, minimum: number, maximum: number): number {
 	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum || value > maximum)
 		throw new CloudToolArgumentRefusal(`${label} must be a whole number from ${minimum} to ${maximum}`);
 	return value;
@@ -102,7 +102,7 @@ function version(value: JsonValue | undefined, nullable: boolean): string | null
 }
 
 /** A folder call that failed before anything was shown or changed, as a refusal the model can act on. */
-function unavailable(error: unknown, what: string): never {
+export function unavailable(error: unknown, what: string): never {
 	if (!(error instanceof CloudCompanyFolderError)) throw error;
 	if (error.failure === "stopped")
 		throw new CloudToolRefusal(`COMPANY_WORK_STOPPED: the company's work is stopped, so nothing was ${what}`);
@@ -116,7 +116,7 @@ function unavailable(error: unknown, what: string): never {
 /** Releases what an answer shows under the hash of exactly its text, and returns the text with its citation. An
  * answer that cannot reach the model whole (its smallest form is still cut by the fence) is refused before anything is
  * released. */
-async function released(
+export async function released(
 	folder: CloudCompanyFolderClient,
 	runId: string,
 	context: CloudToolContext,
@@ -252,6 +252,7 @@ export function cloudFolderFileTools(options: {
 				return {
 					content: { kind: "text", value: mutationText(tool, request, receiptId, unit) },
 					folderCommitId: committed.commitId,
+					...(unit.outcome === "waiting_for_review" ? { proposed: true as const } : {}),
 				};
 			},
 			signal: context.signal,

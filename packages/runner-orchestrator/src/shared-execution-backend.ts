@@ -96,12 +96,11 @@ export interface SharedExecutionProviderConfig {
 	/** Stable name of this execution host; part of every sandbox's instance digest. */
 	hostId: string;
 	supabaseUrl: string;
-	supabaseServiceKey: string;
 	supabasePublishableKey: string;
 	/**
 	 * G2-3e: the execution host's own credential, which the node host bound to `hostId`. The service's own database
-	 * calls go through the execution host's entry points with it and the publishable key, never the service key, which
-	 * only reaches the slots, until G2-5.
+	 * calls go through the execution host's entry points with it and the publishable key. Neither the service nor its
+	 * slots hold the service key (G2-5).
 	 */
 	executionHostCredential: string;
 	/** Journals and per-slot scratch state (disk). */
@@ -1328,7 +1327,6 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		if (!identity && !vaultState) return undefined;
 		const files: Array<[string, string]> = [
 			[join(slotRun, "native-provider.env"), nativeProviderEnvironment],
-			[join(credentialDirectory, "qorpera-supabase-service-key"), `${this.#config.supabaseServiceKey}\n`],
 			[join(credentialDirectory, "qorpera-native-object-token"), `${runtime.objectGatewayToken}\n`],
 			[join(credentialDirectory, "qorpera-cloud-secret-runtime"), `${runtime.secretBroker.runtimeToken}\n`],
 			[join(credentialDirectory, "qorpera-cloud-secret-ca"), runtime.secretBroker.caCertificate],

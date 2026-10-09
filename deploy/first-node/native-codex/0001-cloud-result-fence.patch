@@ -110,7 +110,7 @@ index 04e57f8c5..064a3bbf3 100644
          | ServerNotification::ThreadStatusChanged(_)
          | ServerNotification::ThreadArchived(_)
 diff --git a/codex-rs/app-server/src/request_processors/initialize_processor.rs b/codex-rs/app-server/src/request_processors/initialize_processor.rs
-index d6c77f12e..f622b4c15 100644
+index d6c77f12e..ff57de811 100644
 --- a/codex-rs/app-server/src/request_processors/initialize_processor.rs
 +++ b/codex-rs/app-server/src/request_processors/initialize_processor.rs
 @@ -173,7 +173,12 @@ impl InitializeRequestProcessor {
@@ -121,7 +121,7 @@ index d6c77f12e..f622b4c15 100644
 +        // Private downstream capability marker, returned only to the local host.
 +        // Provider request headers and the official authentication flow are unchanged.
 +        let user_agent = format!(
-+            "{} qorpera.native-capture-images/v1 qorpera.native-message-composition/v1 qorpera.native-result-fence/v1 qorpera.native-direct-tools/v1",
++            "{} qorpera.native-capture-images/v1 qorpera.native-message-composition/v1 qorpera.native-context-composition/v1 qorpera.native-prompt-cache-key/v1 qorpera.native-result-fence/v1 qorpera.native-direct-tools/v1",
 +            get_codex_user_agent()
 +        );
          let response = InitializeResponse {
@@ -223,7 +223,7 @@ index 24c6640cc..a851e5344 100644
  similar = { workspace = true }
  tempfile = { workspace = true }
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index d46a98ed3..4c1e3f306 100644
+index d46a98ed3..8172091f7 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -781,6 +781,8 @@ impl ModelClient {
@@ -235,7 +235,7 @@ index d46a98ed3..4c1e3f306 100644
      pub(crate) fn build_responses_request(
          &self,
          prompt: &Prompt,
-@@ -790,7 +792,41 @@ impl ModelClient {
+@@ -790,7 +792,51 @@ impl ModelClient {
          service_tier: Option<String>,
          responses_metadata: &CodexResponsesMetadata,
      ) -> Result<ResponsesApiRequest> {
@@ -244,10 +244,10 @@ index d46a98ed3..4c1e3f306 100644
 +        self.build_responses_request_from_input(input, prompt, model_info, effort, summary, service_tier, responses_metadata)
 +    }
 +
-+    /// Governed request builder: validates and fences native results in the history
-+    /// before Responses Lite normalization removes image detail. Pixels and authority
-+    /// stay unchanged. Every provider-bound request (HTTP, WebSocket, v2 compaction and
-+    /// guardian) is built here.
++    /// Governed request builder: has the host compose the input, then validates and
++    /// fences native results in what it kept, before Responses Lite normalization
++    /// removes image detail. Pixels and authority stay unchanged. Every provider-bound
++    /// request (HTTP, WebSocket, v2 compaction and guardian) is built here.
 +    #[allow(clippy::too_many_arguments)]
 +    pub(crate) async fn build_fenced_responses_request(
 +        &self,
@@ -259,9 +259,19 @@ index d46a98ed3..4c1e3f306 100644
 +        responses_metadata: &CodexResponsesMetadata,
 +    ) -> Result<ResponsesApiRequest> {
 +        let mut input = prompt.input.clone();
++        let prompt_cache_key = crate::qorpera_context_composition::compose_context(
++            &mut input,
++            responses_metadata,
++            &model_info.slug,
++        )
++        .await?;
 +        crate::qorpera_result_fence::fence_results(&mut input, responses_metadata).await?;
 +        crate::client_common::normalize_image_details(&mut input, model_info);
-+        self.build_responses_request_from_input(input, prompt, model_info, effort, summary, service_tier, responses_metadata)
++        let mut request = self.build_responses_request_from_input(input, prompt, model_info, effort, summary, service_tier, responses_metadata)?;
++        if prompt_cache_key.is_some() {
++            request.prompt_cache_key = prompt_cache_key;
++        }
++        Ok(request)
 +    }
 +
 +    #[allow(clippy::too_many_arguments)]
@@ -278,7 +288,7 @@ index d46a98ed3..4c1e3f306 100644
          let is_openai = self.state.provider.info().is_openai();
          let (instructions, tools) = if model_info.use_responses_lite {
              // These prompt-only items are rebuilt on every request. Hash their visible payloads
-@@ -1522,14 +1558,17 @@ impl ModelClientSession {
+@@ -1522,14 +1568,17 @@ impl ModelClientSession {
                  )
                  .await;
  
@@ -304,7 +314,7 @@ index d46a98ed3..4c1e3f306 100644
              ModelClient::filter_tool_result_metadata(
                  &mut request.input,
                  &client_setup.api_provider,
-@@ -1678,14 +1717,17 @@ impl ModelClientSession {
+@@ -1678,14 +1727,17 @@ impl ModelClientSession {
                  client_setup.agent_identity_telemetry.clone(),
                  pending_retry,
              );
@@ -344,18 +354,1028 @@ index 96cd7eab0..9827f0fdb 100644
          match item {
              ResponseItem::Message { content, .. } => {
 diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
-index 55d1f474e..b4bbae8f4 100644
+index 55d1f474e..c3253fa33 100644
 --- a/codex-rs/core/src/lib.rs
 +++ b/codex-rs/core/src/lib.rs
-@@ -9,6 +9,8 @@ mod apply_patch;
+@@ -9,6 +9,9 @@ mod apply_patch;
  mod apps;
  mod client;
  mod client_common;
++mod qorpera_context_composition;
 +mod qorpera_message_composition;
 +mod qorpera_result_fence;
  mod realtime_context;
  mod realtime_conversation;
  mod realtime_history;
+diff --git a/codex-rs/core/src/qorpera_context_composition.rs b/codex-rs/core/src/qorpera_context_composition.rs
+new file mode 100644
+index 000000000..b561c93ae
+--- /dev/null
++++ b/codex-rs/core/src/qorpera_context_composition.rs
+@@ -0,0 +1,509 @@
++//! Private cloud context composition (`qorpera.native-context-composition/v1`). Before every provider
++//! request the Qorpera host composes the request's input from Codex's own: it keeps items by their
++//! position, and where the run's earlier steps were (or, on a resumed run, would be) it may put one work
++//! message, a runtime envelope of their folded lines. It cannot write an instruction, a tool, a call, an
++//! output or a reasoning item, or change the model. The result fence then runs over what was kept. It
++//! shares the result fence's private socket, in the same pinned, isolated app-server process, and has no
++//! access to provider credentials.
++
++use codex_protocol::error::CodexErr;
++use codex_protocol::error::Result;
++use codex_protocol::models::ResponseItem;
++
++use crate::responses_metadata::CodexResponsesMetadata;
++
++/// Composes `input` in place. Returns the prompt cache key the host chose for the request, if any: its
++/// own capability (`qorpera.native-prompt-cache-key/v1`), carried on the composition's reply.
++pub(crate) async fn compose_context(
++    input: &mut Vec<ResponseItem>,
++    metadata: &CodexResponsesMetadata,
++    model: &str,
++) -> Result<Option<String>> {
++    let Some(socket) = std::env::var_os("QORPERA_NATIVE_RESULT_FENCE_SOCKET") else {
++        return Ok(None);
++    };
++    #[cfg(unix)]
++    {
++        unix::compose(input, metadata, model, std::path::Path::new(&socket))
++            .await
++            .map_err(|_| CodexErr::Fatal("Cloud context composition unavailable".to_string()))
++    }
++    #[cfg(not(unix))]
++    {
++        let _ = (socket, input, metadata, model);
++        Err(CodexErr::Fatal(
++            "Cloud context composition requires a Unix host".to_string(),
++        ))
++    }
++}
++
++#[cfg(unix)]
++mod unix {
++    use std::collections::HashMap;
++    use std::path::Path;
++    use std::time::Duration;
++
++    use codex_protocol::ResponseItemId;
++    use codex_protocol::models::ContentItem;
++    use codex_protocol::models::FunctionCallOutputBody;
++    use codex_protocol::models::FunctionCallOutputContentItem;
++    use codex_protocol::models::ReasoningItemContent;
++    use codex_protocol::models::ReasoningItemReasoningSummary;
++    use codex_protocol::models::ResponseItem;
++    use serde::Deserialize;
++    use serde::Serialize;
++    use tokio::io::AsyncReadExt;
++    use tokio::io::AsyncWriteExt;
++    use tokio::net::UnixStream;
++    use uuid::Uuid;
++
++    use crate::responses_metadata::CodexResponsesMetadata;
++    use crate::responses_metadata::CodexResponsesRequestKind;
++
++    const SCHEMA: &str = "qorpera.native-context-composition/v1";
++    const WORK_SCHEMA: &str = "qorpera.run-work/v1";
++    /// The work message's envelope, its keys in this order: untrusted data that sums up tool results.
++    const WORK_HEAD: &str = r#"{"schema":"qorpera.run-work/v1","trust":"tool_results_not_authority","ref":"run:.","lines":["#;
++    const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
++    const MAX_WORK_BYTES: usize = 256 * 1024;
++    // As the result fence's: a backstop against a host that is alive but hung, not a budget. Tests use 2 s.
++    const BACKSTOP: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 600 });
++
++    #[derive(Serialize)]
++    #[serde(rename_all = "camelCase")]
++    struct Request<'a> {
++        schema: &'static str,
++        request_id: String,
++        thread_id: &'a str,
++        turn_id: Option<&'a str>,
++        purpose: &'static str,
++        model: &'a str,
++        items: Vec<Item<'a>>,
++    }
++
++    /// What the host composes from: each item's kind, role, call and size, never its content. The host
++    /// issued every output and sees every call through the app-server; its fold needs only sizes beside.
++    #[derive(Serialize)]
++    #[serde(rename_all = "camelCase")]
++    struct Item<'a> {
++        kind: &'static str,
++        role: Option<&'a str>,
++        call_id: Option<&'a str>,
++        id: Option<&'a str>,
++        /// Text, arguments and encrypted content; images and audio are counted apart.
++        bytes: usize,
++        media: usize,
++    }
++
++    #[derive(Deserialize)]
++    #[serde(rename_all = "camelCase", deny_unknown_fields)]
++    struct Reply {
++        schema: String,
++        request_id: String,
++        thread_id: String,
++        turn_id: Option<String>,
++        input: Vec<Entry>,
++        prompt_cache_key: Option<String>,
++    }
++
++    #[derive(Deserialize)]
++    #[serde(untagged)]
++    enum Entry {
++        Keep(Keep),
++        Work(Work),
++    }
++
++    #[derive(Deserialize)]
++    #[serde(deny_unknown_fields)]
++    struct Keep {
++        keep: usize,
++    }
++
++    #[derive(Deserialize)]
++    #[serde(deny_unknown_fields)]
++    struct Work {
++        work: String,
++    }
++
++    pub(super) async fn compose(
++        input: &mut Vec<ResponseItem>,
++        metadata: &CodexResponsesMetadata,
++        model: &str,
++        socket: &Path,
++    ) -> std::result::Result<Option<String>, ()> {
++        if !socket.is_absolute() {
++            return Err(());
++        }
++        let purpose = match metadata.request_kind {
++            Some(CodexResponsesRequestKind::Prewarm) => "prewarm",
++            Some(CodexResponsesRequestKind::Compaction(_)) => "compaction",
++            Some(CodexResponsesRequestKind::Memory) => return Err(()),
++            Some(CodexResponsesRequestKind::Turn) | None => "turn",
++        };
++        let request = Request {
++            schema: SCHEMA,
++            request_id: Uuid::new_v4().to_string(),
++            thread_id: &metadata.thread_id,
++            turn_id: metadata.turn_id.as_deref(),
++            purpose,
++            model,
++            items: input.iter().map(describe).collect(),
++        };
++        let wire = serde_json::to_vec(&request).map_err(|_| ())?;
++        if wire.len() > MAX_FRAME_BYTES {
++            return Err(());
++        }
++        let reply: Reply = tokio::time::timeout(BACKSTOP, async {
++            let mut stream = UnixStream::connect(socket).await.map_err(|_| ())?;
++            stream.write_u32(wire.len() as u32).await.map_err(|_| ())?;
++            stream.write_all(&wire).await.map_err(|_| ())?;
++            let size = stream.read_u32().await.map_err(|_| ())? as usize;
++            if size == 0 || size > MAX_FRAME_BYTES {
++                return Err(());
++            }
++            let mut bytes = vec![0; size];
++            stream.read_exact(&mut bytes).await.map_err(|_| ())?;
++            serde_json::from_slice(&bytes).map_err(|_| ())
++        })
++        .await
++        .map_err(|_| ())??;
++        if reply.schema != SCHEMA
++            || reply.request_id != request.request_id
++            || reply.thread_id != request.thread_id
++            || reply.turn_id.as_deref() != request.turn_id
++            || reply
++                .prompt_cache_key
++                .as_deref()
++                .is_some_and(|key| !cache_key(key))
++        {
++            return Err(());
++        }
++        // Check the whole reply before anything changes.
++        check(input, &reply.input)?;
++        let mut items: Vec<Option<ResponseItem>> =
++            std::mem::take(input).into_iter().map(Some).collect();
++        for entry in reply.input {
++            input.push(match entry {
++                Entry::Keep(Keep { keep }) => {
++                    items.get_mut(keep).and_then(Option::take).ok_or(())?
++                }
++                Entry::Work(Work { work }) => ResponseItem::Message {
++                    id: None,
++                    role: "user".to_string(),
++                    content: vec![ContentItem::InputText { text: work }],
++                    phase: None,
++                    internal_chat_message_metadata_passthrough: None,
++                },
++            });
++        }
++        Ok(reply.prompt_cache_key)
++    }
++
++    /// The rules of a composed input (design §6.3). Items are kept in their order; only the run's own
++    /// work may be left out, its earlier steps a prefix of it, with the one work message in their place
++    /// (or, on a resumed run, before its raw work with nothing left out); a call and its output stay
++    /// together; and no kept host-written message claims the work message's schema.
++    fn check(input: &[ResponseItem], entries: &[Entry]) -> std::result::Result<(), ()> {
++        let mut kept = vec![false; input.len()];
++        let mut last_kept = None;
++        // The kept item the work message follows, if there is a work message.
++        let mut work_after = None;
++        for entry in entries {
++            match entry {
++                Entry::Keep(Keep { keep }) => {
++                    if *keep >= input.len() || last_kept.is_some_and(|last| *keep <= last) {
++                        return Err(());
++                    }
++                    kept[*keep] = true;
++                    last_kept = Some(*keep);
++                }
++                Entry::Work(Work { work }) => {
++                    if work_after.is_some() || !work_text(work) {
++                        return Err(());
++                    }
++                    work_after = Some(last_kept);
++                }
++            }
++        }
++        // Folded steps: the run's work left out, other than reasoning, which may be dropped anywhere
++        // (it belongs to the model and account that made it).
++        let mut first_folded = None;
++        let mut last_folded = None;
++        for (index, item) in input.iter().enumerate() {
++            if kept[index] {
++                if claims_work(item) {
++                    return Err(());
++                }
++                continue;
++            }
++            match item {
++                ResponseItem::Reasoning { .. } => {}
++                item if work(item) => {
++                    first_folded.get_or_insert(index);
++                    last_folded = Some(index);
++                }
++                _ => return Err(()),
++            }
++        }
++        match (first_folded, last_folded, work_after) {
++            (None, None, None) => {}
++            // A resumed run: a new thread, its earlier steps only in the run's log. The work message
++            // holds them with nothing folded, after every kept item before the run's raw work.
++            (None, None, Some(after)) => {
++                let start = input
++                    .iter()
++                    .zip(&kept)
++                    .position(|(item, &held)| held && work(item))
++                    .unwrap_or(input.len());
++                if after != (0..start).rev().find(|&index| kept[index]) {
++                    return Err(());
++                }
++            }
++            (Some(first), Some(last), Some(after)) => {
++                // Just before the raw steps: after every kept item before the fold, before every other.
++                if after != (0..first).rev().find(|&index| kept[index]) {
++                    return Err(());
++                }
++                // The fold is the run's earlier steps: none of its work is kept before the fold's end,
++                // and nothing at all is kept inside it.
++                if input
++                    .iter()
++                    .enumerate()
++                    .take(last)
++                    .any(|(index, item)| kept[index] && (index > first || work(item)))
++                {
++                    return Err(());
++                }
++            }
++            _ => return Err(()),
++        }
++        let mut calls = HashMap::new();
++        for (index, item) in input.iter().enumerate() {
++            let output = match item {
++                ResponseItem::FunctionCall { call_id, .. }
++                | ResponseItem::CustomToolCall { call_id, .. } => {
++                    calls.insert(call_id.as_str(), index);
++                    continue;
++                }
++                ResponseItem::FunctionCallOutput {
++                    call_id: Some(call_id),
++                    ..
++                }
++                | ResponseItem::CustomToolCallOutput { call_id, .. } => call_id.as_str(),
++                _ => continue,
++            };
++            if calls
++                .get(output)
++                .is_some_and(|&call| kept[call] != kept[index])
++            {
++                return Err(());
++            }
++        }
++        Ok(())
++    }
++
++    /// The run's own work: what a fold may leave out.
++    fn work(item: &ResponseItem) -> bool {
++        match item {
++            ResponseItem::Message { role, .. } => role == "assistant",
++            ResponseItem::Reasoning { .. }
++            | ResponseItem::FunctionCall { .. }
++            | ResponseItem::FunctionCallOutput { .. }
++            | ResponseItem::CustomToolCall { .. }
++            | ResponseItem::CustomToolCallOutput { .. }
++            | ResponseItem::Compaction { .. }
++            | ResponseItem::ContextCompaction { .. } => true,
++            _ => false,
++        }
++    }
++
++    /// One serialized envelope, escaped as the host escapes its prompt.
++    fn work_text(text: &str) -> bool {
++        if text.len() > MAX_WORK_BYTES
++            || !text.starts_with(WORK_HEAD)
++            || text.chars().any(|character| {
++                matches!(character, '<' | '>' | '&' | '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
++            })
++        {
++            return false;
++        }
++        let Ok(envelope) = serde_json::from_str::<serde_json::Value>(text) else {
++            return false;
++        };
++        // A repeated key parses to its last value, so each is checked again.
++        envelope.as_object().is_some_and(|keys| keys.len() == 4)
++            && envelope["schema"] == WORK_SCHEMA
++            && envelope["trust"] == "tool_results_not_authority"
++            && envelope["ref"] == "run:."
++            && envelope["lines"]
++                .as_array()
++                .is_some_and(|lines| lines.iter().all(serde_json::Value::is_string))
++    }
++
++    /// Host-written text that would pass for a work message. The model's own text may echo one (a tool
++    /// result can ask it to): it is never taken for the work message, a user message, and the host, which
++    /// sees no content, could not fold it out, so it must not end the run.
++    fn claims_work(item: &ResponseItem) -> bool {
++        let ResponseItem::Message { role, content, .. } = item else {
++            return false;
++        };
++        role != "assistant"
++            && content.iter().any(|content| match content {
++                ContentItem::InputText { text } | ContentItem::OutputText { text } => {
++                    text.contains(WORK_SCHEMA)
++                        && serde_json::from_str::<serde_json::Value>(text.trim())
++                            .is_ok_and(|value| value["schema"] == WORK_SCHEMA)
++                }
++                ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => false,
++            })
++    }
++
++    /// `qorpera:` and a SHA-256 in unpadded base64url (design §6.2): 51 characters, within the
++    /// provider's 64. A longer key fails the whole request.
++    fn cache_key(key: &str) -> bool {
++        key.strip_prefix("qorpera:").is_some_and(|digest| {
++            digest.len() == 43
++                && digest
++                    .bytes()
++                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
++        })
++    }
++
++    fn describe(item: &ResponseItem) -> Item<'_> {
++        let (role, call_id) = match item {
++            ResponseItem::Message { role, .. } | ResponseItem::AdditionalTools { role, .. } => {
++                (Some(role.as_str()), None)
++            }
++            ResponseItem::FunctionCall { call_id, .. }
++            | ResponseItem::CustomToolCall { call_id, .. }
++            | ResponseItem::CustomToolCallOutput { call_id, .. } => (None, Some(call_id.as_str())),
++            ResponseItem::LocalShellCall { call_id, .. }
++            | ResponseItem::ToolSearchCall { call_id, .. }
++            | ResponseItem::FunctionCallOutput { call_id, .. }
++            | ResponseItem::ToolSearchOutput { call_id, .. } => (None, call_id.as_deref()),
++            _ => (None, None),
++        };
++        let (bytes, media) = size(item);
++        Item {
++            kind: kind(item),
++            role,
++            call_id,
++            id: item.id().map(ResponseItemId::as_str),
++            bytes,
++            media,
++        }
++    }
++
++    fn kind(item: &ResponseItem) -> &'static str {
++        match item {
++            ResponseItem::AdditionalTools { .. } => "additional_tools",
++            ResponseItem::Message { .. } => "message",
++            ResponseItem::AgentMessage { .. } => "agent_message",
++            ResponseItem::Reasoning { .. } => "reasoning",
++            ResponseItem::LocalShellCall { .. } => "local_shell_call",
++            ResponseItem::FunctionCall { .. } => "function_call",
++            ResponseItem::ToolSearchCall { .. } => "tool_search_call",
++            ResponseItem::FunctionCallOutput { .. } => "function_call_output",
++            ResponseItem::CustomToolCall { .. } => "custom_tool_call",
++            ResponseItem::CustomToolCallOutput { .. } => "custom_tool_call_output",
++            ResponseItem::ToolSearchOutput { .. } => "tool_search_output",
++            ResponseItem::WebSearchCall { .. } => "web_search_call",
++            ResponseItem::ImageGenerationCall { .. } => "image_generation_call",
++            ResponseItem::Compaction { .. } => "compaction",
++            ResponseItem::ConfigurationUpdate { .. } => "configuration_update",
++            ResponseItem::CompactionTrigger {} => "compaction_trigger",
++            ResponseItem::ContextCompaction { .. } => "context_compaction",
++            ResponseItem::Other => "other",
++        }
++    }
++
++    /// The bytes and media an item puts before the model, read from lengths, never serialized.
++    fn size(item: &ResponseItem) -> (usize, usize) {
++        match item {
++            ResponseItem::Message { content, .. } => {
++                content
++                    .iter()
++                    .fold((0, 0), |(bytes, media), content| match content {
++                        ContentItem::InputText { text } | ContentItem::OutputText { text } => {
++                            (bytes + text.len(), media)
++                        }
++                        ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => {
++                            (bytes, media + 1)
++                        }
++                    })
++            }
++            ResponseItem::Reasoning {
++                summary,
++                content,
++                encrypted_content,
++                ..
++            } => (
++                summary
++                    .iter()
++                    .map(|summary| match summary {
++                        ReasoningItemReasoningSummary::SummaryText { text } => text.len(),
++                    })
++                    .sum::<usize>()
++                    + content
++                        .iter()
++                        .flatten()
++                        .map(|content| match content {
++                            ReasoningItemContent::ReasoningText { text }
++                            | ReasoningItemContent::Text { text } => text.len(),
++                        })
++                        .sum::<usize>()
++                    + encrypted_content.as_ref().map_or(0, String::len),
++                0,
++            ),
++            ResponseItem::FunctionCall {
++                name,
++                namespace,
++                arguments,
++                ..
++            } => (
++                name.len() + namespace.as_ref().map_or(0, String::len) + arguments.len(),
++                0,
++            ),
++            ResponseItem::CustomToolCall {
++                name,
++                namespace,
++                input,
++                ..
++            } => (
++                name.len() + namespace.as_ref().map_or(0, String::len) + input.len(),
++                0,
++            ),
++            ResponseItem::FunctionCallOutput { output, .. }
++            | ResponseItem::CustomToolCallOutput { output, .. } => match &output.body {
++                FunctionCallOutputBody::Text(text) => (text.len(), 0),
++                FunctionCallOutputBody::ContentItems(items) => {
++                    items
++                        .iter()
++                        .fold((0, 0), |(bytes, media), item| match item {
++                            FunctionCallOutputContentItem::InputText { text } => {
++                                (bytes + text.len(), media)
++                            }
++                            FunctionCallOutputContentItem::EncryptedContent {
++                                encrypted_content,
++                            } => (bytes + encrypted_content.len(), media),
++                            FunctionCallOutputContentItem::InputImage { .. }
++                            | FunctionCallOutputContentItem::InputAudio { .. } => {
++                                (bytes, media + 1)
++                            }
++                        })
++                }
++            },
++            ResponseItem::Compaction {
++                encrypted_content, ..
++            } => (encrypted_content.len(), 0),
++            ResponseItem::ContextCompaction {
++                encrypted_content, ..
++            } => (encrypted_content.as_ref().map_or(0, String::len), 0),
++            _ => (0, 0),
++        }
++    }
++}
++
++#[cfg(all(test, unix))]
++#[path = "qorpera_context_composition_tests.rs"]
++mod tests;
+diff --git a/codex-rs/core/src/qorpera_context_composition_tests.rs b/codex-rs/core/src/qorpera_context_composition_tests.rs
+new file mode 100644
+index 000000000..d681cdacf
+--- /dev/null
++++ b/codex-rs/core/src/qorpera_context_composition_tests.rs
+@@ -0,0 +1,488 @@
++use codex_protocol::models::ContentItem;
++use codex_protocol::models::ResponseItem;
++use pretty_assertions::assert_eq;
++use serde_json::Value;
++use serde_json::json;
++use tokio::io::AsyncReadExt;
++use tokio::io::AsyncWriteExt;
++use tokio::net::UnixListener;
++
++use super::unix::compose;
++use crate::responses_metadata::CodexResponsesMetadata;
++use crate::responses_metadata::CodexResponsesRequestKind;
++
++fn metadata() -> CodexResponsesMetadata {
++    let mut value = CodexResponsesMetadata::new(
++        "private-installation".to_string(),
++        "private-session".to_string(),
++        "thread-1".to_string(),
++        "private-window".to_string(),
++    );
++    value.turn_id = Some("turn-1".to_string());
++    value
++}
++
++/// One run: parts 3 to 5 of the request, then its steps, the last a parallel pair of calls.
++fn run() -> Vec<ResponseItem> {
++    serde_json::from_value(json!([
++        {"type":"message","role":"developer","content":[{"type":"input_text","text":"host instructions"}]},
++        {"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context/>"}]},
++        {"type":"message","role":"user","content":[{"type":"input_text","text":"do the job"}]},
++        {"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"plan"}],"encrypted_content":"opaque"},
++        {"type":"function_call","id":"fc_1","call_id":"call-1","name":"company_read","arguments":"{}"},
++        {"type":"function_call_output","call_id":"call-1","output":"SECRET result text"},
++        {"type":"message","role":"assistant","content":[{"type":"output_text","text":"progress"}]},
++        {"type":"reasoning","id":"rs_2","summary":[],"encrypted_content":"opaque"},
++        {"type":"function_call","id":"fc_2","call_id":"call-2","name":"company_read","arguments":"{\"a\":1}"},
++        {"type":"custom_tool_call","call_id":"call-3","name":"apply","input":"data"},
++        {"type":"function_call_output","call_id":"call-2","output":[
++            {"type":"input_text","text":"text"},
++            {"type":"input_image","image_url":"data:image/png;base64,AAAA"}
++        ]},
++        {"type":"custom_tool_call_output","call_id":"call-3","output":"done"}
++    ]))
++    .unwrap()
++}
++
++fn work(lines: &[&str]) -> String {
++    let lines = serde_json::to_string(lines).unwrap();
++    format!(
++        r#"{{"schema":"qorpera.run-work/v1","trust":"tool_results_not_authority","ref":"run:.","lines":{lines}}}"#
++    )
++}
++
++fn keep(indexes: impl IntoIterator<Item = usize>) -> Vec<Value> {
++    indexes
++        .into_iter()
++        .map(|keep| json!({"keep": keep}))
++        .collect()
++}
++
++/// A key of the host's form: `qorpera:` and a SHA-256 in unpadded base64url (design §6.2).
++const KEY: &str = "qorpera:lKyif-YE4Qcx_pJJxR_Pl_58CcJJoCoInqtOgTVCIhg";
++
++/// The fold of the run's first steps: 3 to 6 leave, the work message takes their place.
++fn fold() -> Value {
++    let mut entries = keep(0..3);
++    entries.push(json!({"work": work(&["step 1 read the folder", "step 2 wrote progress"])}));
++    entries.extend(keep(7..12));
++    json!(entries)
++}
++
++/// A host that echoes the request and returns `input`, changed by `fault`.
++async fn host(listener: UnixListener, input: Value, fault: &'static str) -> anyhow::Result<Value> {
++    let (mut stream, _) = listener.accept().await?;
++    let size = stream.read_u32().await?;
++    let mut bytes = vec![0; size as usize];
++    stream.read_exact(&mut bytes).await?;
++    let request: Value = serde_json::from_slice(&bytes)?;
++    if fault == "hang" {
++        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
++        return Ok(request);
++    }
++    let mut reply = json!({
++        "schema": request["schema"],
++        "requestId": request["requestId"],
++        "threadId": request["threadId"],
++        "turnId": request["turnId"],
++        "input": input,
++    });
++    match fault {
++        "none" => {}
++        "key" => reply["promptCacheKey"] = json!(KEY),
++        "key_short" => reply["promptCacheKey"] = json!(&KEY[..50]),
++        "key_long" => reply["promptCacheKey"] = json!(format!("{KEY}A")),
++        // The form this key had: 72 characters, past the provider's 64.
++        "key_hex" => reply["promptCacheKey"] = json!(format!("qorpera:{}", "0a".repeat(32))),
++        "key_slash" => reply["promptCacheKey"] = json!(KEY.replace('_', "/")),
++        "key_padded" => reply["promptCacheKey"] = json!(format!("{}=", &KEY[..50])),
++        "key_prefix" => reply["promptCacheKey"] = json!(format!("other:{}", &KEY[8..])),
++        "schema" => reply["schema"] = json!("qorpera.native-result-fence/v1"),
++        "nonce" => reply["requestId"] = json!("stale-request"),
++        "thread" => reply["threadId"] = json!("other-thread"),
++        "turn" => reply["turnId"] = json!("other-turn"),
++        "extra" => reply["model"] = json!("other-model"),
++        _ => panic!("unknown test fault"),
++    }
++    let wire = serde_json::to_vec(&reply)?;
++    stream.write_u32(wire.len() as u32).await?;
++    stream.write_all(&wire).await?;
++    Ok(request)
++}
++
++/// Composes `input` against a host returning `reply`; returns the outcome and the host's request.
++async fn composed(
++    input: &mut Vec<ResponseItem>,
++    metadata: &CodexResponsesMetadata,
++    reply: Value,
++    fault: &'static str,
++) -> (std::result::Result<Option<String>, ()>, Value) {
++    let directory = tempfile::tempdir().unwrap();
++    let path = directory.path().join("f.sock");
++    let listener = UnixListener::bind(&path).unwrap();
++    let host = tokio::spawn(host(listener, reply, fault));
++    let outcome = compose(input, metadata, "gpt-test", &path).await;
++    (outcome, host.await.unwrap().unwrap())
++}
++
++#[tokio::test]
++async fn the_host_sees_a_manifest_and_keeping_everything_changes_nothing() {
++    let mut input = run();
++    let (outcome, request) = composed(&mut input, &metadata(), json!(keep(0..12)), "none").await;
++    assert_eq!(outcome, Ok(None));
++    assert_eq!(input, run());
++    assert_eq!(request["schema"], "qorpera.native-context-composition/v1");
++    assert_eq!(request["threadId"], "thread-1");
++    assert_eq!(request["turnId"], "turn-1");
++    assert_eq!(request["purpose"], "turn");
++    assert_eq!(request["model"], "gpt-test");
++    assert_eq!(
++        request["items"],
++        json!([
++            {"kind":"message","role":"developer","callId":null,"id":null,"bytes":17,"media":0},
++            {"kind":"message","role":"user","callId":null,"id":null,"bytes":22,"media":0},
++            {"kind":"message","role":"user","callId":null,"id":null,"bytes":10,"media":0},
++            {"kind":"reasoning","role":null,"callId":null,"id":"rs_1","bytes":10,"media":0},
++            {"kind":"function_call","role":null,"callId":"call-1","id":"fc_1","bytes":14,"media":0},
++            {"kind":"function_call_output","role":null,"callId":"call-1","id":null,"bytes":18,"media":0},
++            {"kind":"message","role":"assistant","callId":null,"id":null,"bytes":8,"media":0},
++            {"kind":"reasoning","role":null,"callId":null,"id":"rs_2","bytes":6,"media":0},
++            {"kind":"function_call","role":null,"callId":"call-2","id":"fc_2","bytes":19,"media":0},
++            {"kind":"custom_tool_call","role":null,"callId":"call-3","id":null,"bytes":9,"media":0},
++            {"kind":"function_call_output","role":null,"callId":"call-2","id":null,"bytes":4,"media":1},
++            {"kind":"custom_tool_call_output","role":null,"callId":"call-3","id":null,"bytes":4,"media":0}
++        ])
++    );
++    // Sizes, never content: no text, argument, output or image crosses.
++    let wire = request.to_string();
++    for content in [
++        "host instructions",
++        "do the job",
++        "SECRET",
++        "progress",
++        "opaque",
++        "data:image",
++    ] {
++        assert!(!wire.contains(content), "{content}");
++    }
++}
++
++#[tokio::test]
++async fn a_fold_puts_one_user_work_message_just_before_the_raw_steps() {
++    let mut input = run();
++    let (outcome, _) = composed(&mut input, &metadata(), fold(), "none").await;
++    assert_eq!(outcome, Ok(None));
++    let original = run();
++    assert_eq!(input.len(), 9);
++    assert_eq!(&input[..3], &original[..3]);
++    assert_eq!(
++        input[3],
++        ResponseItem::Message {
++            id: None,
++            role: "user".to_string(),
++            content: vec![ContentItem::InputText {
++                text: work(&["step 1 read the folder", "step 2 wrote progress"]),
++            }],
++            phase: None,
++            internal_chat_message_metadata_passthrough: None,
++        }
++    );
++    assert_eq!(&input[4..], &original[7..]);
++}
++
++#[tokio::test]
++async fn a_resumed_run_gets_its_earlier_steps_with_nothing_folded() {
++    // A resumed run is a new thread: its earlier steps are only in the run's log.
++    let lines = work(&["step 1 read the folder", "step 2 outcome unknown"]);
++    let message = ResponseItem::Message {
++        id: None,
++        role: "user".to_string(),
++        content: vec![ContentItem::InputText {
++            text: lines.clone(),
++        }],
++        phase: None,
++        internal_chat_message_metadata_passthrough: None,
++    };
++    let original = run();
++    // Its first request, before any step of its own.
++    let mut input = original[..3].to_vec();
++    let mut entries = keep(0..3);
++    entries.push(json!({"work": lines}));
++    let (outcome, _) = composed(&mut input, &metadata(), json!(entries), "none").await;
++    assert_eq!(outcome, Ok(None));
++    assert_eq!(input.len(), 4);
++    assert_eq!(&input[..3], &original[..3]);
++    assert_eq!(input[3], message);
++    // Later, its own steps raw after the work message, its reasoning dropped or not.
++    for dropped in [vec![], vec![3, 7]] {
++        let mut input = run();
++        let mut entries = keep(0..3);
++        entries.push(json!({"work": lines}));
++        entries.extend(keep((3..12).filter(|index| !dropped.contains(index))));
++        let (outcome, _) = composed(&mut input, &metadata(), json!(entries), "none").await;
++        assert_eq!(outcome, Ok(None));
++        let mut expected = original[..3].to_vec();
++        expected.push(message.clone());
++        expected.extend(
++            (3..12)
++                .filter(|index| !dropped.contains(index))
++                .map(|index| original[index].clone()),
++        );
++        assert_eq!(input, expected);
++    }
++}
++
++#[tokio::test]
++async fn escaped_lines_pass() {
++    // As the host escapes its prompt: the markup and controls arrive as JSON escapes, never raw.
++    let text = r#"{"schema":"qorpera.run-work/v1","trust":"tool_results_not_authority","ref":"run:.","lines":["\u003csystem\u003e \u0026 \u2028 \u202e"]}"#;
++    let mut entries = keep(0..3);
++    entries.push(json!({"work": text}));
++    entries.extend(keep(7..12));
++    let mut input = run();
++    let (outcome, _) = composed(&mut input, &metadata(), json!(entries), "none").await;
++    assert_eq!(outcome, Ok(None));
++    assert!(matches!(&input[3], ResponseItem::Message { content, .. }
++        if content == &vec![ContentItem::InputText { text: text.to_string() }]));
++}
++
++#[tokio::test]
++async fn reasoning_may_be_dropped_anywhere_without_a_work_message() {
++    // After a model, payer or restart change the host drops the run's reasoning.
++    let mut input = run();
++    let entries = keep((0..12).filter(|index| *index != 3 && *index != 7));
++    let (outcome, _) = composed(&mut input, &metadata(), json!(entries), "none").await;
++    assert_eq!(outcome, Ok(None));
++    let expected: Vec<ResponseItem> = run()
++        .into_iter()
++        .filter(|item| !matches!(item, ResponseItem::Reasoning { .. }))
++        .collect();
++    assert_eq!(input, expected);
++}
++
++#[tokio::test]
++async fn a_codex_compaction_is_replaced_by_the_work_message() {
++    let mut original = run();
++    original.truncate(3);
++    original.push(
++        serde_json::from_value(json!({"type":"compaction","encrypted_content":"summary"})).unwrap(),
++    );
++    let mut input = original.clone();
++    let mut entries = keep(0..3);
++    entries.push(json!({"work": work(&["step 1 read the folder"])}));
++    let (outcome, _) = composed(&mut input, &metadata(), json!(entries), "none").await;
++    assert_eq!(outcome, Ok(None));
++    assert_eq!(input.len(), 4);
++    assert_eq!(&input[..3], &original[..3]);
++    assert!(matches!(&input[3], ResponseItem::Message { role, .. } if role == "user"));
++}
++
++#[tokio::test]
++async fn the_host_may_set_the_prompt_cache_key_and_only_its_own_form() {
++    assert_eq!(KEY.len(), 51);
++    let mut input = run();
++    let (outcome, _) = composed(&mut input, &metadata(), json!(keep(0..12)), "key").await;
++    assert_eq!(outcome, Ok(Some(KEY.to_string())));
++    for fault in [
++        "key_short",
++        "key_long",
++        "key_hex",
++        "key_slash",
++        "key_padded",
++        "key_prefix",
++    ] {
++        let mut input = run();
++        let (outcome, _) = composed(&mut input, &metadata(), fold(), fault).await;
++        assert_eq!(outcome, Err(()), "{fault}");
++        assert_eq!(input, run(), "{fault}");
++    }
++}
++
++#[tokio::test]
++async fn a_reply_for_another_request_is_refused() {
++    for fault in ["schema", "nonce", "thread", "turn", "extra"] {
++        let mut input = run();
++        let (outcome, _) = composed(&mut input, &metadata(), fold(), fault).await;
++        assert_eq!(outcome, Err(()), "{fault}");
++        assert_eq!(input, run(), "{fault}");
++    }
++}
++
++#[tokio::test]
++async fn compositions_outside_the_rules_are_refused_and_change_nothing() {
++    let with = |before: Vec<usize>, works: Vec<String>, after: Vec<usize>| {
++        let mut entries = keep(before);
++        entries.extend(works.into_iter().map(|work| json!({"work": work})));
++        entries.extend(keep(after));
++        json!(entries)
++    };
++    let one = || vec![work(&["step 1"])];
++    let cases = [
++        ("out of range", json!(keep(0..13))),
++        (
++            "repeated",
++            json!(keep([0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])),
++        ),
++        (
++            "reordered",
++            json!(keep([0, 2, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11])),
++        ),
++        ("developer dropped", json!(keep(1..12))),
++        ("user dropped", with(vec![0, 1], one(), (3..12).collect())),
++        // A call without its output, and a parallel pair split.
++        ("call alone", with(vec![0, 1, 2], one(), (5..12).collect())),
++        (
++            "parallel split",
++            with(vec![0, 1, 2], one(), vec![9, 10, 11]),
++        ),
++        // Only the run's earlier steps fold, never a later one before an earlier.
++        (
++            "not a prefix",
++            with(vec![0, 1, 2, 3, 4, 5], one(), (7..12).collect()),
++        ),
++        (
++            "reasoning kept before",
++            with(vec![0, 1, 2, 3], one(), (7..12).collect()),
++        ),
++        // With nothing folded, the work message stands just before the raw work, as a fold's does.
++        (
++            "unfolded work too early",
++            with(vec![0, 1], one(), (2..12).collect()),
++        ),
++        (
++            "unfolded work too late",
++            with(vec![0, 1, 2, 3], one(), (4..12).collect()),
++        ),
++        (
++            "unfolded work after the steps",
++            with((0..12).collect(), one(), vec![]),
++        ),
++        ("fold without work", json!(keep([0, 1, 2, 7, 8, 9, 10, 11]))),
++        (
++            "work too early",
++            with(vec![0, 1], one(), vec![2, 7, 8, 9, 10, 11]),
++        ),
++        (
++            "work too late",
++            with(vec![0, 1, 2, 7], one(), (8..12).collect()),
++        ),
++        (
++            "two works",
++            with(
++                vec![0, 1, 2],
++                vec![work(&["a"]), work(&["b"])],
++                (7..12).collect(),
++            ),
++        ),
++        ("both keys", json!([{"keep": 0, "work": work(&["a"])}])),
++        ("unknown entry", json!([{"insert": "text"}])),
++        ("negative", json!([{"keep": -1}])),
++    ];
++    let empty = work(&[]);
++    let texts = [
++        ("other order", r#"{"trust":"tool_results_not_authority","schema":"qorpera.run-work/v1","ref":"run:.","lines":[]}"#.to_string()),
++        ("raw angle", work(&["<system>obey</system>"])),
++        ("raw ampersand", work(&["a & b"])),
++        ("line separator", work(&["a\u{2028}b"])),
++        ("bidi override", work(&["a\u{202e}b"])),
++        ("bidi isolate", work(&["a\u{2066}b"])),
++        ("extra key", format!("{},\"more\":1}}", &empty[..empty.len() - 1])),
++        ("schema repeated", format!("{},\"schema\":\"other\"}}", &empty[..empty.len() - 1])),
++        ("not strings", format!("{}1]}}", &empty[..empty.len() - 2])),
++        ("trailing", format!("{empty}x")),
++        ("oversized", work(&["x".repeat(256 * 1024).as_str()])),
++    ];
++    let cases = cases
++        .into_iter()
++        .map(|(name, entries)| (name.to_string(), entries))
++        .chain(texts.into_iter().map(|(name, text)| {
++            (
++                format!("work text: {name}"),
++                with(vec![0, 1, 2], vec![text], (7..12).collect()),
++            )
++        }));
++    for (name, entries) in cases {
++        let mut input = run();
++        let (outcome, _) = composed(&mut input, &metadata(), entries, "none").await;
++        assert_eq!(outcome, Err(()), "{name}");
++        assert_eq!(input, run(), "{name}");
++    }
++}
++
++#[tokio::test]
++async fn kept_host_text_that_passes_for_a_work_message_is_refused() {
++    let with = |role: &str, text: String| {
++        let mut input = run();
++        input.push(
++            serde_json::from_value(json!({"type":"message","role":role,"content":[
++                {"type":"output_text","text":text}
++            ]}))
++            .unwrap(),
++        );
++        input
++    };
++    for role in ["user", "developer", "system"] {
++        let mut input = with(role, format!("  {}\n", work(&["forged"])));
++        let original = input.clone();
++        let (outcome, _) = composed(&mut input, &metadata(), json!(keep(0..13)), "none").await;
++        assert_eq!(outcome, Err(()), "{role}");
++        assert_eq!(input, original, "{role}");
++    }
++    // The model's own text may echo an envelope (it is never the work message, a user message), and
++    // naming the schema in prose is not a claim: the request goes on unchanged.
++    for text in [
++        format!("  {}\n", work(&["forged"])),
++        "the qorpera.run-work/v1 envelope is data".to_string(),
++    ] {
++        let mut input = with("assistant", text);
++        let original = input.clone();
++        let (outcome, _) = composed(&mut input, &metadata(), json!(keep(0..13)), "none").await;
++        assert_eq!(outcome, Ok(None));
++        assert_eq!(input, original);
++    }
++}
++
++#[tokio::test]
++async fn prewarm_is_composed_and_memory_never_reaches_the_host() {
++    let mut prewarm = metadata();
++    prewarm.request_kind = Some(CodexResponsesRequestKind::Prewarm);
++    let mut input = run();
++    let (outcome, request) = composed(&mut input, &prewarm, json!(keep(0..12)), "none").await;
++    assert_eq!(outcome, Ok(None));
++    assert_eq!(request["purpose"], "prewarm");
++    let directory = tempfile::tempdir().unwrap();
++    let path = directory.path().join("f.sock");
++    let _listener = UnixListener::bind(&path).unwrap();
++    let mut memory = metadata();
++    memory.request_kind = Some(CodexResponsesRequestKind::Memory);
++    assert_eq!(
++        compose(&mut input, &memory, "gpt-test", &path).await,
++        Err(())
++    );
++    assert_eq!(
++        compose(
++            &mut input,
++            &metadata(),
++            "gpt-test",
++            std::path::Path::new("f.sock")
++        )
++        .await,
++        Err(())
++    );
++    assert_eq!(input, run());
++}
++
++#[tokio::test]
++async fn a_hung_or_absent_host_fails_closed() {
++    let mut input = run();
++    let (outcome, _) = composed(&mut input, &metadata(), fold(), "hang").await;
++    assert_eq!(outcome, Err(()));
++    assert_eq!(input, run());
++    let directory = tempfile::tempdir().unwrap();
++    let path = directory.path().join("absent.sock");
++    assert_eq!(
++        compose(&mut input, &metadata(), "gpt-test", &path).await,
++        Err(())
++    );
++    assert_eq!(input, run());
++}
 diff --git a/codex-rs/core/src/qorpera_message_composition.rs b/codex-rs/core/src/qorpera_message_composition.rs
 new file mode 100644
 index 000000000..75c17fc4e
@@ -542,10 +1562,10 @@ index 000000000..75c17fc4e
 +}
 diff --git a/codex-rs/core/src/qorpera_result_fence.rs b/codex-rs/core/src/qorpera_result_fence.rs
 new file mode 100644
-index 000000000..4a60a6777
+index 000000000..08528e6d6
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_result_fence.rs
-@@ -0,0 +1,385 @@
+@@ -0,0 +1,389 @@
 +//! Private cloud result boundary. This has no access to provider credentials or transports.
 +//! The Qorpera host enables it only in a pinned, isolated app-server process.
 +
@@ -628,7 +1648,11 @@ index 000000000..4a60a6777
 +    const MAX_RESULT_BYTES: usize = 8 * 1024;
 +    const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 +    const MAX_IMAGE_BATCH_BYTES: usize = 128 * 1024 * 1024;
-+    const DEADLINE: Duration = Duration::from_secs(5);
++    // Not a budget: a backstop against a host that is alive but hung. The host decides when a model
++    // request's checks fail (lost authority or lease, or a refusal; never a slow database), and a host
++    // that dies closes the socket at once (Qorpera, 5 Oct 2026). Tests use 2 s: room for the 2 MB
++    // request's round trip in a debug build, and well past their 250 ms guard on early rejection.
++    const BACKSTOP: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 600 });
 +
 +    #[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
 +    #[serde(rename_all = "snake_case")]
@@ -864,7 +1888,7 @@ index 000000000..4a60a6777
 +        }
 +        // Even an empty first request requires a live host acknowledgement. This is
 +        // outside the provider HTTP/WS layer and never forwards its authorization.
-+        let reply: Reply = tokio::time::timeout(DEADLINE, async {
++        let reply: Reply = tokio::time::timeout(BACKSTOP, async {
 +            let mut stream = UnixStream::connect(socket).await.map_err(|_| ())?;
 +            stream.write_u32(wire.len() as u32).await.map_err(|_| ())?;
 +            stream.write_all(&wire).await.map_err(|_| ())?;
@@ -933,10 +1957,10 @@ index 000000000..4a60a6777
 +mod tests;
 diff --git a/codex-rs/core/src/qorpera_result_fence_tests.rs b/codex-rs/core/src/qorpera_result_fence_tests.rs
 new file mode 100644
-index 000000000..0e95b6fab
+index 000000000..380de0692
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_result_fence_tests.rs
-@@ -0,0 +1,398 @@
+@@ -0,0 +1,400 @@
 +use anyhow::Context;
 +use base64::Engine;
 +use base64::engine::general_purpose::STANDARD;
@@ -1193,10 +2217,12 @@ index 000000000..0e95b6fab
 +        let original = input.clone();
 +        // A listening socket with no accepting host distinguishes rejection
 +        // from a connection error: malformed content must not wait for timeout.
++        // The guard is well inside the 2 s test backstop, so a request that
++        // reached the socket would fail it rather than pass as a rejection.
 +        let listener = UnixListener::bind(&path).unwrap();
 +        assert_eq!(
 +            tokio::time::timeout(
-+                std::time::Duration::from_secs(1),
++                std::time::Duration::from_millis(250),
 +                fence(&mut input, &metadata(), &path)
 +            )
 +            .await
@@ -1313,7 +2339,7 @@ index 000000000..0e95b6fab
 +        fence(&mut history().unwrap(), &metadata(), &path).await,
 +        Err(())
 +    );
-+    assert!(started.elapsed() < std::time::Duration::from_secs(7));
++    assert!(started.elapsed() < std::time::Duration::from_secs(4));
 +    host.abort();
 +}
 +

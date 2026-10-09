@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { type AgentPlugClaim, agentPlugCard, isAgentPlugCard } from "./agent-plug.ts";
 import type { LxdCreateInstanceRequest, LxdInspectableClient, LxdInstanceRecord } from "./lxd-client.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -93,8 +94,15 @@ export function parseLxdOfficeGuestBinding(value: unknown): Readonly<LxdOfficeGu
 	return Object.freeze(input);
 }
 
-/** The office gets one persistent workbench, an image root and one controlled
- * NIC. No runner bootstrap, Compute Identity disk, profile or canonical mount. */
+/** The office gets one persistent workbench, an image root and two controlled
+ * NICs: `network` on the office network for the computer's own services (the
+ * passthrough finds it by that name), and `plug`, a port of the agents' bridge
+ * that the agents' browsers and shells leave by. Its MAC comes from the plug
+ * right before each create (`withAgentPlug`). LXD gives a VM's NICs their PCI
+ * slots in device-name order, so `plug`, named after `network`, stays the
+ * second card and `network` keeps the first card's slot (the image names the
+ * plug `qagent` by its MAC). No runner bootstrap, Compute Identity disk,
+ * profile or canonical mount. */
 export function lxdOfficeGuestPlan(value: LxdOfficeGuestBinding): {
 	binding: Readonly<LxdOfficeGuestBinding>;
 	instanceSha256: string;
@@ -147,6 +155,7 @@ export function lxdOfficeGuestPlan(value: LxdOfficeGuestBinding): {
 			devices: {
 				root: { type: "disk", path: "/", pool: binding.storagePool, size: String(binding.rootDiskBytes) },
 				network: { type: "nic", network: binding.network, name: "eth0" },
+				plug: agentPlugCard("qagent"),
 				workbench: {
 					type: "disk",
 					source: binding.workbenchSource,
@@ -158,14 +167,36 @@ export function lxdOfficeGuestPlan(value: LxdOfficeGuestBinding): {
 	};
 }
 
+/** What the plug records for this computer: the exit's reconciler checks it
+ * against the instance's company_id and office_id. */
+export function lxdOfficeAgentPlugClaim(value: LxdOfficeGuestBinding): AgentPlugClaim {
+	const { binding, request } = lxdOfficeGuestPlan(value);
+	return {
+		kind: "office",
+		companyId: binding.companyId,
+		machineId: binding.companyComputerId,
+		memberUserId: null,
+		project: binding.project,
+		instance: request.name,
+	};
+}
+
 export function assertLxdOfficeGuestInstance(binding: LxdOfficeGuestBinding, instance: LxdInstanceRecord): void {
 	const { request } = lxdOfficeGuestPlan(binding);
+	const { plug: template, ...planned } = request.devices;
+	// The agent card is the plan's with the MAC its plug gave (one MAC, the same in both views); every other device
+	// is exactly the plan's.
+	const matches = (devices: LxdInstanceRecord["devices"]): boolean => {
+		const { plug, ...rest } = devices;
+		return isAgentPlugCard(plug, template) && isDeepStrictEqual(rest, planned);
+	};
 	if (
 		instance.name !== request.name ||
 		instance.type !== "virtual-machine" ||
 		!isDeepStrictEqual(instance.profiles, []) ||
-		!isDeepStrictEqual(instance.devices, request.devices) ||
-		!isDeepStrictEqual(instance.expandedDevices, request.devices)
+		!matches(instance.devices) ||
+		!matches(instance.expandedDevices) ||
+		!isDeepStrictEqual(instance.devices.plug, instance.expandedDevices.plug)
 	)
 		throw new Error("LXD_OFFICE_GUEST_DRIFTED");
 	for (const config of [instance.config, instance.expandedConfig]) {
