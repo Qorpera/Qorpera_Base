@@ -24,7 +24,7 @@
 		"sha256Helpers": 0
 	},
 	"object-gateway": {
-		"uuidPatterns": 13,
+		"uuidPatterns": 11,
 		"recordHelpers": 3,
 		"uuidHelpers": 0,
 		"sha256Helpers": 0
