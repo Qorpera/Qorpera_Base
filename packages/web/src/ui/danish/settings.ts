@@ -255,8 +255,8 @@ export const SETTINGS: Record<string, string> = {
 	"Company connections": "Virksomhedens forbindelser",
 	"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.":
 		"Dine egne AI-abonnementer. De betaler for det arbejde, du starter, også for dine rutiner, og de følger med dig, når du går.",
-	"The company's own accounts. Every agent can use them, and they stay when someone leaves.":
-		"Virksomhedens egne konti. Alle agenter kan bruge dem, og de bliver, når nogen går.",
+	"The company's own accounts, webhooks and mailboxes. Every agent can use them, and they stay when someone leaves.":
+		"Virksomhedens egne konti, webhooks og postkasser. Alle agenter kan bruge dem, og de bliver, når nogen går.",
 
 	// My connections: model accounts (app/views/settings-connections.ts)
 	"Continue with ChatGPT": "Fortsæt med ChatGPT",
@@ -358,6 +358,71 @@ export const SETTINGS: Record<string, string> = {
 	"The sign-in could not be started. Try again.": "Login kunne ikke startes. Prøv igen.",
 	"The token could not be saved. Try again.": "Tokenet kunne ikke gemmes. Prøv igen.",
 	"The service could not be disconnected. Try again.": "Tjenesten kunne ikke afbrydes. Prøv igen.",
+
+	// Company connections: webhooks and mailboxes (app/views/settings-hooks.ts)
+	Webhooks: "Webhooks",
+	Mailboxes: "Postkasser",
+	"Only founders and admins can add, pause or remove them.":
+		"Kun stiftere og administratorer kan tilføje, sætte på pause eller fjerne dem.",
+	"No webhooks yet. A webhook lets another service, such as a shop or a payment provider, start the company's routines.":
+		"Ingen webhooks endnu. Med en webhook kan en anden tjeneste, f.eks. en webshop eller en betalingsudbyder, starte virksomhedens rutiner.",
+	"No mailboxes yet. Email sent to a company mailbox can start the company's routines.":
+		"Ingen postkasser endnu. E-mail sendt til en af virksomhedens postkasser kan starte virksomhedens rutiner.",
+	"The company's webhooks and mailboxes could not be read.": "Virksomhedens webhooks og postkasser kunne ikke hentes.",
+	"Waiting for its signing secret": "Venter på sin signeringsnøgle",
+	"Last event {time}": "Seneste hændelse {time}",
+	"No events yet": "Ingen hændelser endnu",
+	"Last email {time}": "Seneste e-mail {time}",
+	"No email yet": "Ingen e-mail endnu",
+	"Signed by Stripe": "Signeret af Stripe",
+	"Signed by GitHub": "Signeret af GitHub",
+	"Signed by its sender": "Signeret af afsenderen",
+	Copy: "Kopiér",
+	"Anyone with this address can send to it. Give it only to the service that sends the events.":
+		"Alle med denne adresse kan sende til den. Giv den kun til den tjeneste, der sender hændelserne.",
+	"The address is copied.": "Adressen er kopieret.",
+	"The address could not be copied. Select it and copy it.":
+		"Adressen kunne ikke kopieres. Markér den, og kopiér den.",
+	Pause: "Sæt på pause",
+	Resume: "Genoptag",
+	"Remove the webhook {name}? Anything sent to its address afterwards is turned away.":
+		"Fjern webhooken {name}? Alt, hvad der sendes til dens adresse bagefter, bliver afvist.",
+	"Remove the mailbox {name}? Email sent to it afterwards does not reach the company.":
+		"Fjern postkassen {name}? E-mail, der sendes til den bagefter, når ikke frem til virksomheden.",
+	"It could not be changed. Try again.": "Den kunne ikke ændres. Prøv igen.",
+	"Add webhook": "Tilføj webhook",
+	"Add mailbox": "Tilføj postkasse",
+	"Webhook name": "Webhookens navn",
+	"Mailbox name": "Postkassens navn",
+	"e.g. new-orders": "f.eks. nye-ordrer",
+	"e.g. invoices": "f.eks. fakturaer",
+	"What it is for": "Hvad den er til",
+	"What it is for, e.g. new orders from the shop": "Hvad den er til, f.eks. nye ordrer fra webshoppen",
+	"What it is for, e.g. invoices from suppliers": "Hvad den er til, f.eks. fakturaer fra leverandører",
+	"Lowercase letters, digits and hyphens, starting with a letter. The company's agents read what it is for when something arrives.":
+		"Små bogstaver, tal og bindestreger, og den starter med et bogstav. Virksomhedens agenter læser, hvad den er til, når der kommer noget.",
+	"The part before the @: lowercase letters, digits, dots, hyphens and underscores.":
+		"Delen før @: små bogstaver, tal, punktummer, bindestreger og understregninger.",
+	Add: "Tilføj",
+	"Adding…": "Tilføjer…",
+	"A webhook name is lowercase letters, digits and hyphens, and starts with a letter.":
+		"Et webhooknavn består af små bogstaver, tal og bindestreger og starter med et bogstav.",
+	"Names beginning with mail- belong to mailboxes.": "Navne, der begynder med mail-, hører til postkasser.",
+	"A mailbox name is lowercase letters, digits, dots, hyphens and underscores, and starts and ends with a letter or digit.":
+		"Et postkassenavn består af små bogstaver, tal, punktummer, bindestreger og understregninger og starter og slutter med et bogstav eller et tal.",
+	"Say what it is for, in one line.": "Skriv på én linje, hvad den er til.",
+	"A webhook with this name already exists.": "Der findes allerede en webhook med dette navn.",
+	"This address is taken.": "Denne adresse er taget.",
+	"This mailbox name is reserved. Choose another.": "Dette postkassenavn er reserveret. Vælg et andet.",
+	"Company mail is not set up yet.": "Virksomhedsmail er ikke sat op endnu.",
+	"The company has as many webhooks and mailboxes as it can have. Remove one first.":
+		"Virksomheden har så mange webhooks og postkasser, som den kan have. Fjern en først.",
+	"The webhook could not be added. Try again.": "Webhooken kunne ikke tilføjes. Prøv igen.",
+	"The mailbox could not be added. Try again.": "Postkassen kunne ikke tilføjes. Prøv igen.",
+	"The webhook is ready. Give its address to the service that sends the events.":
+		"Webhooken er klar. Giv dens adresse til den tjeneste, der sender hændelserne.",
+	"The mailbox is ready. Email sent to it can start the company's routines.":
+		"Postkassen er klar. E-mail sendt til den kan starte virksomhedens rutiner.",
 
 	// Rules, auto-review (Settings → General, settings-rules.ts)
 	Rules: "Regler",

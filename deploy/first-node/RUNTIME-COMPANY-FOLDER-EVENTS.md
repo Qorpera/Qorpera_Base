@@ -548,6 +548,13 @@ purpose and status. This is web only, on the existing RPCs (`qorpera_list_event_
 `qorpera_set_event_hook_status`, `qorpera_create_company_mailbox`). It is agreed with Interfaces, whose Mailbox page
 reads the same mailboxes.
 
+As built (`packages/web/src/app/views/settings-hooks.ts`, `packages/web/src/cloud/event-hooks.ts`): two sections,
+Webhooks and Mailboxes, below the services, on the services' cards. A card shows the name (a mailbox by its email
+address), purpose, status and last delivery, and who signs a signed hook. Owners and admins also see a webhook's URL to
+copy, and add, pause, resume or remove (after a confirmation). Settings adds address-proven webhooks and mailboxes only:
+a signed hook needs its sender's signing secret, and members never paste one (agents open those, §5.5). No SQL: all
+four calls answer for `folder-v2` since E1.
+
 ## 7. Later, not in E1–E4
 
 - **Events and mail as files.** The sources disagree on where these go:
