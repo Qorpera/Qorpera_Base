@@ -59,8 +59,10 @@ begin
 		and not public.qorpera_memory_run_machine_narrow('92400000-0000-4000-8000-000000000020', v_run)
 		and not (public.qorpera_memory_run_origin('92400000-0000-4000-8000-000000000020', v_run) ->> 'narrow')::boolean,
 		'not narrow before');
-	perform pg_temp.base_assert(public.qorpera_coding_turn_mark_narrow(t.worker_id) and public.qorpera_coding_turn_mark_narrow(t.worker_id)
-		and (pg_temp.ct_turn(t.worker_id, 2)).narrow and not (pg_temp.ct_turn(t.worker_id, 1)).narrow
+	perform pg_temp.base_assert(public.qorpera_coding_turn_mark_narrow(t.worker_id) and public.qorpera_coding_turn_mark_narrow(t.worker_id),
+		'the refresh marks the open turn');
+	-- (A statement of its own: the stable checks read the statement's snapshot.)
+	perform pg_temp.base_assert((pg_temp.ct_turn(t.worker_id, 2)).narrow and not (pg_temp.ct_turn(t.worker_id, 1)).narrow
 		and public.qorpera_coding_session_narrow(t.worker_id), 'the narrow turn');
 	perform pg_temp.base_assert(public.qorpera_memory_run_machine_narrow('92400000-0000-4000-8000-000000000020', v_run)
 		and (public.qorpera_memory_run_origin('92400000-0000-4000-8000-000000000020', v_run) ->> 'narrow')::boolean
