@@ -22,7 +22,10 @@ import {
 	type EventHookAnswer,
 	type EventHookAuthority,
 	type EventHookCreate,
+	type EventHookFillAnswer,
+	type EventHookFillRequest,
 	type EventHookOpening,
+	type EventHookRefusal,
 	type EventHookRequest,
 	EventHookVault,
 } from "./cloud-event-hook-vault.ts";
@@ -168,9 +171,10 @@ export interface CloudSecretBrokerAuthority {
 	openCompanyAccount?: CompanyAccountAuthority["openCompanyAccount"];
 	setCompanyAccountState?: CompanyAccountAuthority["setCompanyAccountState"];
 	readCompanyAccountFill?: CompanyAccountAuthority["readCompanyAccountFill"];
-	/** Signed hooks' secrets (E3b-2); a broker whose database cannot serve them leaves these out. */
+	/** Signed hooks' secrets (E3b-2, E3b-3); a broker whose database cannot serve them leaves these out. */
 	describeSignedHook?: EventHookAuthority["describeSignedHook"];
 	openSignedHook?: EventHookAuthority["openSignedHook"];
+	readEventHookFill?: EventHookAuthority["readEventHookFill"];
 }
 
 export interface CloudSecretPostgresClient {
@@ -557,13 +561,14 @@ export class CloudSecretBroker {
 						keys: options.keyring,
 					})
 				: undefined;
-		const { describeSignedHook, openSignedHook } = options.authority;
+		const { describeSignedHook, openSignedHook, readEventHookFill } = options.authority;
 		this.#eventHooks =
-			describeSignedHook && openSignedHook
+			describeSignedHook && openSignedHook && readEventHookFill
 				? new EventHookVault({
 						authority: {
 							describeSignedHook: describeSignedHook.bind(options.authority),
 							openSignedHook: openSignedHook.bind(options.authority),
+							readEventHookFill: readEventHookFill.bind(options.authority),
 						},
 						keys: options.keyring,
 					})
@@ -680,6 +685,13 @@ export class CloudSecretBroker {
 	eventHook(request: EventHookRequest, signal: AbortSignal): Promise<EventHookAnswer> {
 		if (!this.#eventHooks) return Promise.reject(new Error("Event hooks unavailable"));
 		return this.#eventHooks.handle(request, signal);
+	}
+
+	/** One vault_fill of a hook's secret into the Company Computer's browser (E3b-3): the secret sealed to that
+	 * computer's boot key. */
+	eventHookFill(request: EventHookFillRequest, signal: AbortSignal): Promise<EventHookFillAnswer | EventHookRefusal> {
+		if (!this.#eventHooks) return Promise.reject(new Error("Event hooks unavailable"));
+		return this.#eventHooks.fill(request, signal);
 	}
 
 	async execute(request: CloudSecretOperationRequest, signal: AbortSignal): Promise<CloudToolContent> {
@@ -1179,6 +1191,21 @@ export class PostgresCloudSecretBrokerAuthority
 			// envelope check refuses it (42501) before anything is written.
 			envelope.fill(0);
 		}
+	}
+
+	readEventHookFill(request: EventHookFillRequest, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_fill_event_hook_secret($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				JSON.stringify(request.binding),
+				request.receiptId,
+				request.envelope,
+				createHash("sha256").update(request.idempotencyKey).digest("hex"),
+			],
+			signal,
+		);
 	}
 
 	setCompanyAccountState(

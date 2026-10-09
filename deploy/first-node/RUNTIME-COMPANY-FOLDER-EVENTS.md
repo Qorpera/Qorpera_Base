@@ -504,11 +504,42 @@ host's:
   with the same key, then reports the outcome as unknown, and nothing is written.
 The model never sees the secret.
 
-**E3b-3, the fill.** The Company Computer's `vault_fill` gains the hook source: the broker reads the hook's
+**E3b-3, the fill (as built).** The Company Computer's `vault_fill` gains the hook source: the broker reads the hook's
 `signing_secret` through `qorpera_fill_event_hook_secret`, reseals it to the computer's boot key, and the guest types it
 into the named text box on the hook's site. The guest first makes the text box a password box, then reads the box's type
 back and refuses the fill unless it is `password`, so a page that undoes the change never shows the secret (the
-coordinator's addition).
+coordinator's addition). It is runtime and guest only: E3b-1's migration already has the read.
+- **The tool** (`cloud-company-computer-tools.ts`): `computer_browser` takes `{action: vault_fill, role: textbox, name,
+  hook, field: signing_secret}` beside the account's form; `hook` is the hook's id (list_hooks shows it), and no call
+  names both a hook and an account. `manage_hook`'s description says how to put the secret into the sender's settings,
+  and the review card reads "Type a hook's signing secret into a web page" and names the hook and the field.
+- **The host** (`cloud-company-computer-native-client.ts`) sends a hook's call to the vault's hook route instead of the
+  accounts' route, with the same binding, receipt, key and envelope. A host without the vault refuses it before the
+  office ("Signed hooks are not set up for this company's computers", 0A000), as it does an account's.
+- **The broker's route** (`POST /v1/event-hook-fills`, `cloud-secret-broker-http.ts`) proves the binding with the run's
+  lease first (G2-6a), as `/v1/event-hooks` does, then asks the database in 15 s. Its request is
+  `qorpera.event-hook-fill-request/v1` (the binding, the receipt, the call's key and its envelope), and its answer is
+  `qorpera.event-hook-fill-answer/v1` (the box) or E3b-2's refusal by SQLSTATE. A1's answer schema is not reused,
+  because A1's client takes only A1's SQLSTATEs.
+- **The broker** (`cloud-event-hook-vault.ts`) checks the database's context field by field (its schema, the field
+  `signing_secret`, the proof, the site, the authority's key, the envelope's base64 and SHA-256, and that it answers this
+  call's receipt), opens the envelope with E3b-2's associated data, and seals `{value, hosts: [site]}` to the computer's
+  fill key with A1-3's box. The box's associated data names the hook and `signing_secret` where an account's names the
+  account and its field, so a hook's box never opens as an account's, nor one account's as a hook's. The envelope and
+  the secret are zeroed after. Anything but a box or a refusal is "outcome unconfirmed".
+- **The guest** (`cloud-company-computer-guest.ts`, `cloud-company-computer-account-fill.ts`) opens the box with the
+  call's own hook and field, so a box for another hook or field does not open, and types only on the hook's site over
+  https, in the page's own document. The box must be an `input` of type `text` or `password`. It becomes a password
+  box and is marked private before the value arrives; its type is read back in a call of its own (after the page's
+  scripts had their turn) and again just before the value goes in, and a box that is not `password` either time is
+  refused (`ACCOUNT_FILL_NOT_HIDDEN`, nothing typed). A box that shows its text again after the typing is emptied and
+  refused the same way. The secret stays hidden from every snapshot, title and address for the screen's lifetime, as a
+  password does.
+- **Rollout:** the secret broker (it serves `/v1/event-hook-fills`), then the vault's nginx on node 1, in the same
+  `:10000` server block as E3b-2's line: `location = /v1/event-hook-fills` (POST only), proxied through
+  `$qorpera_operations_broker` as `/v1/event-hooks` is, checked with `nginx -t` before the reload; then the runtime bundle
+  and the office image (the guest's new identity and the password box). Until the route is in place a hook's fill gets an
+  error status and nothing is typed; an office image without E3b-3 refuses a hook's call, and nothing is typed either.
 
 **Tests (E3b-1): SQL 987, on 924's fixture**, with the company's broker authority and its computer:
 - before the wake's acknowledgement, the broker's calls are refused and write nothing;
@@ -539,6 +570,14 @@ The runtime's tests: `cloud-event-hook-vault` (the request and answer schemas, t
 associated data, the refusals by SQLSTATE, the zeroed buffers, an unknown key or a malformed context), the route and its
 client, `cloud-company-folder-client` (the broker path, its checks of the answer, a host without the broker),
 `cloud-event-tools` (the new fields and refusals) and `cloud-action-review` (the card).
+
+**Tests (E3b-3):** runtime only, no SQL. `cloud-event-hook-vault` (the fill: the box opens only with the hook's identity
+and only on the site; a refusal passes through; another receipt, a malformed context, a wrong digest or a missing
+secret is unconfirmed, with the envelope zeroed; the database call's text and values; the route's proof, holder and
+token), `cloud-company-account-fill-box` (a hook's box and an account's never open as each other), the guest's typing
+(a text box becomes a password box; a page that keeps it a text box, or shows it again before or after the typing, is
+refused, and in the last case the box is emptied; other boxes are refused), `cloud-company-computer-tools` (the hook form
+and its refusals), `cloud-company-computer-native` (the hook route and a host without it) and `cloud-action-review`.
 
 ## 6. E4: hooks and mailboxes in Settings
 
