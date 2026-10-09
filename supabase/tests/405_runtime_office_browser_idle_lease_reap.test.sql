@@ -11,7 +11,7 @@
 -- 924's folder-v2 runtime base: the owner registers the company's first computer (two screens), and Alice's live run
 -- (924's real claim, assignment and native lease) takes a native screen lease on it. Real native authority and office
 -- RPCs; only guest readiness is synthetic, as in fixtures/runtime-office-registry-cases.sql. The office fixture ends at
--- the line that says the office checks start; 627, 628 (no wait), 718 and 755 run after it.
+-- the line that says the office checks start; every test whose @fixture line names this file runs after it.
 
 select pg_temp.base_claims('authenticated','92400000-0000-4000-8000-000000000001');
 set local role authenticated;
