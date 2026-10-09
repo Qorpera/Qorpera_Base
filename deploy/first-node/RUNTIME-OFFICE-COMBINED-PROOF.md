@@ -1,5 +1,7 @@
 # Combined offline office workload
 
+**Gone (legacy removal, step C; migration `20260930190000`).** The `--combined` and `--combined-rebuild` modes, their probe and the object gateway route they wrote through are removed: they ran a snapshot-v1 company. This file records what they covered.
+
 Run from the repository with the prepared, local browser image:
 
 ```sh

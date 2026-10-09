@@ -5,8 +5,9 @@
 -- and words, as rule refusals that write nothing; the worker, its session, its first turn and event; no wake; a replay;
 -- an in-house worker beside it; a second session that queues and is cancelled. Then: a coding follow-up; a coding
 -- session's turn claimed, begun, authorized, submitted and completed on folder-v2, its turn's wake carrying the
--- folder-v2 payload, report_work refused to it, and its parent revived by F2's drain once the parent's turn ended and its
--- batch's coding sibling stopped working, with an in-house sibling's result in the same wake; and
+-- folder-v2 payload, report_work refused to it, and its parent revived by F2's drain once the parent's turn ended, its
+-- batch's coding sibling stopped working and the platform wrote that sibling's results.md (C3d), with an in-house
+-- sibling's result in the same wake; and
 -- the drain stopping an active coding worker whose parent a member stopped. 924's base: Alice's run for the owner, on
 -- the owner's own codex-cli login (allowed to work while they are away).
 
@@ -373,7 +374,8 @@ end $$;
 
 -- 8. Session 1's turn on folder-v2, beside an in-house worker of the same batch: the in-house one reports; the coding
 --    turn is claimed, begun, authorized, submitted and completed, and report_work is refused to it; the parent is revived
---    once, with both results, by F2's drain, after its own turn ended and the batch's coding sibling stopped working ------
+--    once, with both results, by F2's drain, after its own turn ended, the batch's coding sibling stopped working and the
+--    platform wrote its results.md --------------------------------------------------------------------------------------
 create function pg_temp.c3_results(p_binding jsonb, p_key text, p_folder text) returns jsonb language plpgsql as $$
 declare v_parse jsonb := jsonb_build_object('kind', 'worker-results', 'outcome', 'succeeded',
 	'reportedAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'decision', null, 'note', null,
@@ -393,7 +395,7 @@ set local session_replication_role = origin;
 do $$
 declare v_alice jsonb := pg_temp.c3_alice(); v_claim jsonb; v_begin jsonb; v_pass jsonb; v_turn jsonb; v_research jsonb;
 	v_authority jsonb; v_wake public.qorpera_wake_occurrences%rowtype; w public.qorpera_runtime_workers%rowtype;
-	s public.qorpera_coding_sessions%rowtype; v_token uuid; v_result jsonb; v_drain jsonb;
+	s public.qorpera_coding_sessions%rowtype; v_token uuid; v_result jsonb; v_drain jsonb; v_written jsonb; v_parse jsonb;
 begin
 	-- The in-house worker of the batch: started by the drain, its run reports.
 	v_result := pg_temp.c3_dispatch(v_alice, 'c3-research-1', 'agents/alice/todos/fix-login/research',
@@ -452,6 +454,23 @@ begin
 	w := pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b1'); s := pg_temp.c3_session(w.id);
 	perform pg_temp.base_assert(w.state = 'succeeded' and w.completion_state = 'waiting' and s.phase = 'completed'
 		and s.pull_request ->> 'number' = '7', 'the completed session: ' || to_jsonb(w)::text);
+	-- The batch waits for its results.md too, which the platform writes as the turn reported it (C3d; 982 has the rest).
+	v_drain := public.qorpera_folder_workers_company('92400000-0000-4000-8000-000000000020', 32);
+	perform pg_temp.base_assert(v_drain ->> 'state' = 'idle', 'the batch waits for session 1''s results.md: ' || v_drain::text);
+	perform pg_temp.base_claims('service_role');
+	v_written := public.qorpera_claim_coding_results_file('92800000-0000-4000-8000-0000000000f1', 60);
+	perform pg_temp.base_assert(v_written ->> 'codingWorkerId' = w.id::text and v_written ->> 'outcome' = 'succeeded'
+		and v_written ->> 'pullRequest' = 'https://github.com/Qorpera/Qorpera_Base/pull/7'
+		and v_written ->> 'path' = 'agents/alice/todos/fix-login/session-1/results.md',
+		'session 1''s results claim: ' || coalesce(v_written::text, 'none'));
+	v_parse := jsonb_build_object('kind', 'worker-results', 'outcome', 'succeeded', 'reportedAt', v_written ->> 'reportedAt',
+		'decision', null, 'note', null, 'summary', (v_written ->> 'summary') || E'\n\nPull request: ' || (v_written ->> 'pullRequest'),
+		'needs', null, 'files', '[]'::jsonb);
+	perform pg_temp.base_commit('{"kind":"platform"}', v_written ->> 'operationKey', jsonb_build_array(
+		pg_temp.base_write(v_written ->> 'path', 'worker-results', v_parse::text, v_parse)));
+	perform pg_temp.base_assert((pg_temp.c3_worker(w.id)).folder_results_version = pg_temp.base_version(v_written ->> 'path')
+		and not (public.qorpera_finish_coding_results_file('92800000-0000-4000-8000-0000000000f1', w.id,
+			(v_written ->> 'generation')::bigint) ->> 'finished')::boolean, 'session 1''s results.md');
 	-- One revival of the parent, with both results.
 	v_drain := public.qorpera_folder_workers_company('92400000-0000-4000-8000-000000000020', 32);
 	perform pg_temp.base_assert(v_drain ->> 'state' = 'done' and (v_drain ->> 'revivals')::integer = 1, 'the revival: ' || v_drain::text);
@@ -465,7 +484,7 @@ end $$;
 
 -- 8b. A worker whose folder or todo was deleted continues only after a restore -----------------------------------------
 do $$
-declare v_folder text := 'agents/alice/todos/fix-login/session-1'; v_result jsonb; v_brief jsonb;
+declare v_folder text := 'agents/alice/todos/fix-login/session-1'; v_result jsonb; v_brief jsonb; v_results jsonb;
 begin
 	perform pg_temp.base_commit(pg_temp.base_owner(), 'c3-delete-1', jsonb_build_array(jsonb_build_object('op', 'delete',
 		'path', v_folder, 'expectedVersion', pg_temp.base_version(v_folder), 'asOfSeq', (select last_seq
@@ -496,10 +515,14 @@ begin
 		'path', 'agents/alice/todos/fix-login')));
 	v_brief := (select v.structured -> 'parse' from public.qorpera_folder_path_versions v
 		where v.version = (pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b1')).folder_brief_version);
+	v_results := (select v.structured -> 'parse' from public.qorpera_folder_path_versions v
+		where v.version = (pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b1')).folder_results_version);
 	perform pg_temp.base_commit(pg_temp.base_owner(), 'c3-restore-2', jsonb_build_array(jsonb_build_object('op', 'new_folder',
 		'path', v_folder, 'contents', jsonb_build_array(jsonb_build_object('path', 'brief.md', 'kind', 'file',
-			'file', pg_temp.base_stage(v_brief::text))),
-		'structured', jsonb_build_array(pg_temp.c3_entry(v_folder || '/brief.md', v_brief)))));
+			'file', pg_temp.base_stage(v_brief::text)), jsonb_build_object('path', 'results.md', 'kind', 'file',
+			'file', pg_temp.base_stage(v_results::text))),
+		'structured', jsonb_build_array(pg_temp.c3_entry(v_folder || '/brief.md', v_brief),
+			pg_temp.c3_entry(v_folder || '/results.md', v_results)))));
 	perform pg_temp.base_assert((pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b1')).folder_retired_at is null
 		and (select t.folder_retired_at from public.qorpera_runtime_agent_todos t where t.id = '92800000-0000-4000-8000-0000000000a1') is not null,
 		'session 1 back under a deleted todo: ' || to_jsonb(pg_temp.c3_worker('92800000-0000-4000-8000-0000000000b1'))::text);

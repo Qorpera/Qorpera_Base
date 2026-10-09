@@ -242,8 +242,10 @@ systemd lifecycle and reproducible local acceptance command are documented in
 Installation leaves the service disabled/stopped and preserves existing journals.
 
 The Step 4 office path is separate from the Compute Identity runner. `lxdOfficeGuestPlan`
-constructs a full VM with a pinned local image, explicit root disk, controlled NIC
-and persistent noncanonical workbench. It accepts no inherited profiles, runner
+constructs a full VM with a pinned local image, explicit root disk, two controlled NICs
+(`network` on the office network for the computer's own services, and `plug`, a port of
+the node's agents' bridge `qagent0` whose MAC the node's plug tool gives right before
+each create) and persistent noncanonical workbench. It accepts no inherited profiles, runner
 identity disk, provider credential options or canonical Company File mount.
 `inspectLxdOfficeGuestBoot` checks exact local/expanded devices and configuration,
 the image fingerprint and two reads of the actual guest boot ID. It performs no

@@ -1,11 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { IncomingMessage } from "node:http";
 import { UUID_PATTERN } from "@qorpera/contracts";
-import { boundedObjectOperation, ObjectDependencyError } from "./dependency.ts";
+import { ObjectDependencyError } from "./dependency.ts";
 import type { FolderObjectAuthority } from "./folder-objects.ts";
-import type { FileSystemObjectStore } from "./object-store.ts";
-import type { ObjectGatewayReplication } from "./replication.ts";
-import type { AuthorizedObject } from "./supabase-authority.ts";
 
 /** G2-6a: whether the request's caller holds its binding's run lease (qorpera_native_binding_proven, migration
  * 20260930152000). Refuses unless it does; the locked checks behind each route still run under their locks. */
@@ -13,114 +10,16 @@ export interface NativeBindingProof {
 	proveNativeBinding(binding: Record<string, unknown>, holder: string): Promise<void>;
 }
 
-export interface NativeCompanyObjectAuthority {
-	authorizeNativeUpload(
-		binding: Record<string, unknown>,
-		companyId: string,
-		sha256: string,
-		bytes: number,
-	): Promise<void>;
-	confirmNativeUpload(
-		binding: Record<string, unknown>,
-		companyId: string,
-		sha256: string,
-		bytes: number,
-	): Promise<void>;
-	authorizeNativeDownload(
-		binding: Record<string, unknown>,
-		companyId: string,
-		sha256: string,
-	): Promise<AuthorizedObject>;
-	readLegacyObject(companyId: string, sha256: string): Promise<Uint8Array>;
-}
-
+/** The native host's credential and the folder core's route for folder-v2 runs (C1d). The snapshot-v1
+ * /v1/native-company-objects route on the same credential is gone (legacy removal, step C). */
 export interface NativeCompanyObjectOptions {
 	token: string;
-	authority: NativeCompanyObjectAuthority;
-	/** The folder core's route for folder-v2 runs (C1d), on the same credential. */
-	folder?: FolderObjectAuthority;
+	folder: FolderObjectAuthority;
 }
 
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const MAX_BYTES = 8 * 1024 * 1024;
 
-/** Trusted native-host staging, not a public raw-hash or model tool route.
- * The separate credential cannot delete objects or bypass the live run check.
- * Immutable staging does not publish a Company File change.
- */
-export async function serveNativeCompanyObject(
-	request: IncomingMessage,
-	response: ServerResponse,
-	options: NativeCompanyObjectOptions,
-	store: FileSystemObjectStore,
-	replication: ObjectGatewayReplication,
-): Promise<void> {
-	assertNativeToken(request, options.token);
-	const match = /^\/v1\/native-company-objects\/([0-9a-f-]{36})\/([0-9a-f]{64})$/.exec(request.url ?? "");
-	if (!match || !UUID.test(match[1]!)) throw new ObjectDependencyError(404);
-	const companyId = match[1]!;
-	const sha256 = match[2]!;
-	// G2-6c (not yet): this route also serves the Company Computer's captures, which hold no run lease to prove, so its
-	// lease proof comes with the computer passing its run's holder along. The folder route proves it (folder-objects.ts).
-	const binding = nativeBinding(request);
-	if (request.method === "PUT") {
-		const declared = request.headers["content-length"];
-		if (!declared || !/^(0|[1-9][0-9]{0,7})$/.test(declared) || Number(declared) > MAX_BYTES)
-			throw new ObjectDependencyError(413);
-		const length = Number(declared);
-		await options.authority.authorizeNativeUpload(binding, companyId, sha256, length);
-		const bytes = await boundedObjectOperation(async () => {
-			const chunks: Uint8Array[] = [];
-			let count = 0;
-			for await (const part of request) {
-				const chunk = typeof part === "string" ? Buffer.from(part) : Buffer.from(part);
-				count += chunk.byteLength;
-				if (count > length) throw new ObjectDependencyError(413);
-				chunks.push(chunk);
-			}
-			if (count !== length) throw new ObjectDependencyError(400);
-			return Buffer.concat(chunks);
-		});
-		if (createHash("sha256").update(bytes).digest("hex") !== sha256) throw new ObjectDependencyError(400);
-		const status = await replication.uploadWithAuthority(companyId, sha256, bytes, {
-			authorize: () => options.authority.authorizeNativeUpload(binding, companyId, sha256, length),
-			confirm: () => options.authority.confirmNativeUpload(binding, companyId, sha256, length),
-		});
-		response.writeHead(status === "stored" ? 201 : 200, {
-			"cache-control": "no-store",
-			"content-type": "application/json",
-		});
-		response.end(JSON.stringify({ status, sha256, bytes: length, replication: "pending" }));
-		return;
-	}
-	if (request.method !== "GET") throw new ObjectDependencyError(405);
-	const authority = await options.authority.authorizeNativeDownload(binding, companyId, sha256);
-	let bytes: Uint8Array;
-	try {
-		bytes = await store.get(companyId, sha256, authority.bytes);
-	} catch (error) {
-		if (
-			!(error instanceof Error) ||
-			(error.message !== "Object not found" && !(error instanceof ObjectDependencyError && error.unavailable))
-		)
-			throw error;
-		bytes = await options.authority.readLegacyObject(companyId, sha256);
-	}
-	if (bytes.byteLength !== authority.bytes || createHash("sha256").update(bytes).digest("hex") !== sha256)
-		throw new ObjectDependencyError(503);
-	// No read grace for a native host. Recheck after potentially slow NAS I/O.
-	const current = await options.authority.authorizeNativeDownload(binding, companyId, sha256);
-	if (current.bytes !== authority.bytes) throw new ObjectDependencyError(503);
-	response.writeHead(200, {
-		"cache-control": "no-store",
-		"content-type": "application/octet-stream",
-		"content-length": String(bytes.byteLength),
-		etag: `"sha256-${sha256}"`,
-	});
-	response.end(bytes);
-}
-
-/** The native route's bearer check: the gateway's native credential, compared in constant time. */
+/** The native routes' bearer check: the gateway's native credential, compared in constant time. */
 export function assertNativeToken(request: IncomingMessage, token: string): void {
 	const header = request.headers.authorization;
 	if (

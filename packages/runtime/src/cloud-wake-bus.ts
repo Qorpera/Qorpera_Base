@@ -665,7 +665,8 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		// A typed internal continuation of the agent's own run: a program it started has kept a machine busy for hours
 		// since it last worked with it (the one idle rule's check-in, amendment of 2026-10-03, item 5). A notice: the
 		// program keeps running until the agent stops it. A coding session's check-in also names the session as
-		// manage_worker does (todoKey, workerKey), and each running command the turn that started it.
+		// manage_worker does (todoKey, workerKey), and each running command the turn that started it; an agent's
+		// machine's, each running command's handle, as machine_cancel takes it.
 		const asked = closed(payloadBody, ["schema", "parentRunId", "checkins", "stillWaiting"]);
 		if (
 			asked.schema !== "qorpera.machine-checkin/v1" ||
@@ -687,6 +688,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			throw new Error("Invalid machine check-in wake");
 		for (const [index, item] of asked.checkins.entries()) {
 			const coding = (item as { machineKind?: unknown } | null)?.machineKind === "coding";
+			const machine = (item as { machineKind?: unknown } | null)?.machineKind === "machine";
 			const checkin = closed(item, [
 				"checkinId",
 				"machineKind",
@@ -719,7 +721,11 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 				throw new Error("Invalid machine check-in wake");
 			uuid(checkin.checkinId);
 			for (const running of checkin.running) {
-				const program = closed(running, ["command", coding ? "turn" : "startedAt"]);
+				const program = closed(running, [
+					"command",
+					coding ? "turn" : "startedAt",
+					...(machine ? ["commandId"] : []),
+				]);
 				if (
 					typeof program.command !== "string" ||
 					(coding
@@ -727,6 +733,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 						: typeof program.startedAt !== "string")
 				)
 					throw new Error("Invalid machine check-in wake");
+				if (machine) uuid(program.commandId);
 			}
 		}
 	} else if (wake.kind === "agent" && source.kind === "human-task") {

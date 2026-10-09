@@ -421,6 +421,17 @@ its steering run (`completion_state` `waiting`), an erased or retired worker, a 
 session whose quiet question (`coding-quiet:…`, C3c) is still pending are not asked. A question stands while the session stays busy since the same turn; once a new turn starts, it
 is suppressed, and an archive from its run refuses (`qorpera_coding_question_stale`).
 
+**Agents' machines in the same drain** (20260930181000, SQL test 989): the due list and the step also count a task
+machine busy now (it should run, its current placement runs, and the executor's last busy look, `busy_at`, is under 90
+seconds old) for a mark since the agent last worked with it: the later of the machine's boot and that agent's last
+command started there. The whole machine is measured, so the question (`machine_kind` `machine`) goes to each
+conversation whose runs started a command still running there (a worker's: the conversation that dispatched it); with
+none, the machine is busy outside its commands and the agent that started it is asked in the conversation that started
+it. Each question lists that conversation's running commands with the `commandId` that `machine_cancel` takes. A staff
+member who is not active is not asked; an always-on machine is left to its weekly check-in. A question stands while the
+same agent would be asked about the machine in the same conversation from the same start; a new command of that agent
+there, a new boot, a stop, or that conversation's commands ending while others still run suppress it.
+
 **C3c's due list** (`coding_checkins`, C1C §6.20, STATE-FILES §8): the folder-v2 environments, not being deleted, not
 paused and not out of computer hours, with a coding session due a quiet question (1, 3 or 7 quiet days, that mark not
 yet asked) whose worker is neither erased nor retired and whose parent run is ready, has stopped or is gone. One step

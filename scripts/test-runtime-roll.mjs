@@ -1,6 +1,7 @@
 // Local PostgreSQL only: rehearses one rolling update with the packets of scripts/runtime-roll.mjs on two
 // registered nodes, from the active bundle N to a fixture N+1, and checks that no company is paused, that
 // N runs stay on node B while node A takes N+1 runs, and that the emergency packets reverse the switch.
+// The company is 924's folder-v2 runtime base (supabase/tests/924_folder_runtime_base.test.sql's fixture part).
 // No hosted database, provider or node is touched: the hosted-db suite's disposable PostgreSQL (every migration),
 // or with QORPERA_ROLL_LOCAL_PORT=<port> a local cluster's qorpera_tpl template.
 import assert from "node:assert/strict";
@@ -39,7 +40,7 @@ const literal = (value) => `'${JSON.stringify(value).replaceAll("'", "''")}'::js
 
 const nodeA = "79600000-0000-4000-8000-00000000000a";
 const nodeB = "79600000-0000-4000-8000-00000000000b";
-const orchestratorA = "30000000-0000-4000-8000-000000000092"; // the wake fixture's orchestrator (adapter 'process')
+const orchestratorA = "92400000-0000-4000-8000-000000000092"; // the base fixture's orchestrator (adapter 'process')
 const orchestratorB = "79600000-0000-4000-8000-0000000000b1";
 const policy = (id, label, machine) => ({
 	schema: "qorpera.runtime-node-policy/v1", nodeId: id, machineIdSha256: machine, label, cpuMillis: 32000, memoryBytes: 68719476736,
@@ -56,33 +57,30 @@ const fresh = () => {
 };
 const heartbeat = () =>
 	sql(`update public.qorpera_runner_orchestrators set last_heartbeat_at = clock_timestamp() where id in ('${orchestratorA}','${orchestratorB}');`);
-// A queued run of the fixture conversation, of the active bundle (the wake fixture's own helper, by base run).
-const newRun = () =>
-	sql(`create function pg_temp.roll_run() returns uuid language plpgsql as $$
-declare v_base public.qorpera_execution_runs%rowtype; v_id uuid := extensions.gen_random_uuid(); v_job uuid; v_input uuid := extensions.gen_random_uuid();
-begin
-	select * into strict v_base from public.qorpera_execution_runs
-	where id = (select claim.run_id from public.qorpera_runner_job_claims claim where claim.orchestrator_id = '30000000-0000-4000-8000-000000000092'
-		order by claim.created_at, claim.id limit 1);
-	insert into public.qorpera_session_inputs(id,session_id,client_input_id,kind,author_user_id,body)
-	values(v_input,'30000000-0000-4000-8000-000000000042',extensions.gen_random_uuid(),'user_message',v_base.requested_by_user_id,
-		'{"schema":"qorpera.session-prompt/v1","text":"Work","images":[]}');
-	insert into public.qorpera_runner_jobs(profile_id,environment_id,session_id,substrate_version_id,client_job_id,
-		required_capability,job_type,payload,created_by_user_id)
-	values(v_base.profile_id,v_base.environment_id,'30000000-0000-4000-8000-000000000042',v_base.substrate_version_id,
-		v_id,'agent_turn','agent_turn','{}',v_base.requested_by_user_id) returning id into v_job;
-	insert into public.qorpera_execution_runs(id,profile_id,environment_id,source_kind,source_id,session_id,job_id,
-		substrate_version_id,company_snapshot_id,staff_agent_id,staff_version,input_ids,sponsor_binding_id,sponsor_version,
-		required_capability,job_type,payload_sha256,compute_identity_id,transcript_start_sequence,created_by_user_id)
-	values(v_id,v_base.profile_id,v_base.environment_id,'session_turn',v_id,'30000000-0000-4000-8000-000000000042',v_job,
-		v_base.substrate_version_id,v_base.company_snapshot_id,'30000000-0000-4000-8000-000000000031',1,array[v_input],
-		v_base.sponsor_binding_id,v_base.sponsor_version,'agent_turn','agent_turn',repeat('e',64),v_base.compute_identity_id,0,v_base.requested_by_user_id);
-	update public.qorpera_runner_jobs set run_id = v_id where id = v_job;
-	if not public.qorpera_reserve_execution_sponsor_authority(v_id) then raise exception 'The fixture sponsor is unavailable'; end if;
-	update public.qorpera_session_inputs set execution_run_id = v_id where id = v_input;
-	return v_id;
-end $$;
-select pg_temp.roll_run();`);
+// The base company (924's ids): its owner posts in an agent's thread, paid by the owner's member sponsor.
+const company = "92400000-0000-4000-8000-000000000010";
+const owner = "92400000-0000-4000-8000-000000000001";
+const [alice, bob, carol, coFounder] = ["030", "031", "032", "033"].map((id) => `92400000-0000-4000-8000-000000000${id}`);
+let sponsorBinding;
+// A queued run of the active bundle: the owner's post in an agent's thread, made a run by one materializer pass (as
+// 924's base_post and base_materialize do). A paused folder-v2 company materializes nothing, so a run the rehearsal
+// needs during an emergency pause is made with the pause lifted and set again (same reason) in one transaction.
+const newRun = (agent, pauseReason = null) => {
+	const output = sql(`begin;
+${pauseReason ? `select public.qorpera_folder_resume('${company}') \\g /dev/null` : ""}
+select id as room from public.qorpera_company_rooms where profile_id = '${company}' and bound_staff_agent_id = '${agent}' \\gset
+set local request.jwt.claims = '{"role":"authenticated","sub":"${owner}"}'; set local role authenticated;
+select public.qorpera_post_company_room_message(:'room', extensions.gen_random_uuid(),
+	'{"schema":"qorpera.session-prompt/v1","text":"Work"}', '${sponsorBinding}', 1) \\g /dev/null
+reset role; set local request.jwt.claims = '{"role":"service_role"}';
+select set_config('qorpera.folder_wake_admission', '', true) \\g /dev/null
+select public.qorpera_folder_materialize_company('${company}', 16);
+${pauseReason ? `select public.qorpera_folder_pause('${company}', '${owner}', '${pauseReason}') \\g /dev/null` : ""}
+commit;`);
+	const pass = lastJson(output);
+	assert(pass.state === "done" && pass.run_ids.length === 1, `one run for ${agent}: ${output}`);
+	return pass.run_ids[0];
+};
 const claim = (orchestrator) =>
 	JSON.parse(sql(`${service} select public.qorpera_claim_runner_job_for_orchestrator('${orchestrator}','${randomUUID()}',120);`));
 // A run's work ends (as its runner would end it): its job is settled and its claims are released.
@@ -112,9 +110,11 @@ async function rehearse(empty, path = "roll") {
 		}
 		sql("create schema if not exists supabase_migrations; create table if not exists supabase_migrations.schema_migrations(version text primary key, statements text[], name text);");
 		sql(read("supabase/tests/fixtures/runtime-node-inventory-observer.sql"));
-		const wake = read("supabase/tests/300_runtime_wake_bus.test.sql").split("-- END WAKE FIXTURE");
-		assert.equal(wake.length, 2);
-		sql(`${wake[0]}\ncommit;`);
+		const base = read("supabase/tests/924_folder_runtime_base.test.sql").split("-- The checks start here");
+		assert.equal(base.length, 2);
+		sponsorBinding = sql(`${base[0]}\nselect current_setting('qorpera_test.base_sponsor')::jsonb ->> 'binding_id';\ncommit;`)
+			.split("\n")
+			.at(-1);
 		// The fixture leases its run for 120 s. A loaded machine outlasts that: the next claim's reconcile requeues
 		// the run with its old created_at, and node B would take it before the rehearsal's N run. Renew the
 		// leases, as a live runner does.
@@ -169,8 +169,8 @@ async function rehearse(empty, path = "roll") {
 		for (const name of DRY_RUN_ONLY) assert(p(name), name);
 
 		// A queued N run before the roll; node B's fast host will take it.
-		const runN = newRun();
-		const runN2 = newRun(); // a second N run, still queued when node B is about to leave N
+		const runN = newRun(bob);
+		const runN2 = newRun(carol); // a second N run, still queued when node B is about to leave N
 		// 05: the schema rehearsal applies every release migration and rolls back: nothing is recorded.
 		const rehearsal = lastJson(dryRun(p("05-rehearse-migrations.sql")));
 		assert.deepEqual(rehearsal.rehearsed, [migration.name]);
@@ -204,7 +204,7 @@ async function rehearse(empty, path = "roll") {
 		assert.deepEqual(active(), [String(to.version), to.sha]);
 		assert.equal(paused(), 0, "no company was paused");
 		// N+1 work goes to node A only; node B still runs N.
-		const runNext = newRun();
+		const runNext = newRun(coFounder);
 		assert.equal(sql(`select runtime_bundle_sha256 from public.qorpera_execution_runs where id = '${runNext}';`), to.sha);
 		assert.equal(claim(orchestratorA).work.run_id, runNext, "node A takes the N+1 run");
 		const checkN = lastJson(dryRun(p("50-check-n.sql")));
@@ -219,7 +219,7 @@ async function rehearse(empty, path = "roll") {
 			assert.equal(paused(), pausable(), "every company that can be paused is paused: " + JSON.stringify(pausedNow));
 			commit("91-reverse.sql");
 			assert.deepEqual(active(), [String(from.version), from.sha], "the active bundle is N again");
-			const runBack = newRun();
+			const runBack = newRun(alice, reason); // Alice's fixture run has ended
 			assert.equal(sql(`select runtime_bundle_sha256 from public.qorpera_execution_runs where id = '${runBack}';`), from.sha);
 			assert.equal(claim(orchestratorA), null, "node A (still declared N+1, still on N+1 code) takes no N run");
 			commit("92-clear-declarations.sql");
@@ -259,7 +259,7 @@ async function rehearse(empty, path = "roll") {
 				lastJson(commit("90-pause-now.sql"));
 				commit("91-reverse.sql");
 				assert.equal(sql(`select count(*) from public.qorpera_runner_orchestrators where runtime_bundle_sha256 = '${to.sha}';`), "2");
-				newRun();
+				newRun(alice, reason);
 				heartbeat();
 				assert.equal(claim(orchestratorA), null, "node A (N+1 code) takes no N run");
 				assert.equal(claim(orchestratorB), null, "node B (N+1 code) takes no N run");

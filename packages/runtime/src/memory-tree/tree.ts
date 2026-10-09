@@ -1,7 +1,7 @@
 // A conversation's summary tree (design RUNTIME-AGENT-MEMORY-TREE.md §4, M1b). `node(l, k)` covers messages
 // `[k·2^l, (k+1)·2^l)` and is shown as `start+size`. Its line is stored in block `t<l/4>/<8 digits>.jsonl` under the
 // tree root, one JSON object per line, which M1a's SQL checks (`qorpera_memory_block_line`,
-// `qorpera_memory_block_parse` in 20260930111000_memory_tree_files.sql). The rules here mirror those checks, so a
+// `qorpera_memory_block_parse` in 20260928509150_memory_tree_files.sql). The rules here mirror those checks, so a
 // line the runtime builds is one the commit accepts.
 // - A line's text has its control characters turned into spaces and is stored as UTF-8, not `\u`-escaped: only `"`
 //   and `\` take two bytes, so a text of at most NODE bytes stores within 2 × NODE, under LINE_BYTES.

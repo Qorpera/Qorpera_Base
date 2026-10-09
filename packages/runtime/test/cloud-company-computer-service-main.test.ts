@@ -77,7 +77,6 @@ beforeEach(() => {
 	credentials = {
 		"qorpera-office-registry": Buffer.from("r".repeat(64)),
 		"qorpera-office-native": Buffer.from("n".repeat(43)),
-		"qorpera-office-objects": Buffer.from("o".repeat(43)),
 		"qorpera-office-tls-cert": cert,
 		"qorpera-office-tls-key": key,
 	};
@@ -200,7 +199,7 @@ describe("headless office process lifetime (physical guest mocked)", () => {
 		const options = await started.promise;
 		expect(options.scope).toEqual(config.scope);
 		expect(options.native.token).toBe("n".repeat(43));
-		expect(options.captureObjectGateway.token).toBe("o".repeat(43));
+		expect(options).not.toHaveProperty("captureObjectGateway");
 		expect(options.native.tls.cert).toEqual(cert);
 		expect(options.startup).toBeDefined();
 		expect(options.screenLifecycle).toBeDefined();
@@ -268,7 +267,7 @@ describe("headless office process lifetime (physical guest mocked)", () => {
 			if (failure === "tls") credentials["qorpera-office-tls-key"] = Buffer.from("private-key-that-must-not-leak");
 			if (failure === "native token") credentials["qorpera-office-native"] = Buffer.from("short");
 			if (failure === "reused credential")
-				credentials["qorpera-office-native"] = credentials["qorpera-office-objects"];
+				credentials["qorpera-office-registry"] = credentials["qorpera-office-native"];
 			if (failure === "stale shape") Object.assign(config, { computeIdentityId: "forbidden" });
 			if (failure === "mutable adoption")
 				config.linux.attestation.adoptionReceiptPath = "/srv/workbench/adoption.json";
