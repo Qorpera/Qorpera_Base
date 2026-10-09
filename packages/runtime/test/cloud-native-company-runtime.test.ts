@@ -1307,8 +1307,8 @@ it.each([true, false])(
 		);
 		for (const name of ["company_read", "company_write", "company_mkdir", "company_delete"])
 			expect(tools.some((tool) => tool.name === name)).toBe(true);
-		// Interfaces' read tools read through the folder core, so only a folder-v2 run has them.
-		for (const name of ["interface_read", "table_read"])
+		// Interfaces' tools read and write through the folder core, so only a folder-v2 run has them.
+		for (const name of ["interface_read", "table_read", "save_interface", "table_write"])
 			expect(tools.some((tool) => tool.name === name)).toBe(folder);
 	},
 );
