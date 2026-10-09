@@ -35,8 +35,9 @@ comment on table public.qorpera_memory_tree_companies is
 
 -- 2. The view ---------------------------------------------------------------------------------------------------------
 
--- What the binding's run folds its primary view from (§5.3). Null when the run has no conversation, its company is not
--- listed, or its conversation is not the environment's. Otherwise {schema, conversation, messages, lastSequence, tree}:
+-- What the binding's run folds its primary view from (§5.3). Null when the run has no conversation or its company is
+-- not listed (the run check refuses a conversation outside the run's environment). Otherwise {schema, conversation,
+-- messages, lastSequence, tree}:
 -- - conversation: the run's own, as zoom names `.` (qorpera_memory_conversation): {sessionId, kind, name};
 -- - messages: T, the included events (§3) before the first event of the inputs that woke the run, those of the run and
 --   those its wake names (a room post's), so the view ends where they begin. With no such event, every included event up

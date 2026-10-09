@@ -1,10 +1,10 @@
 -- @fixture 970_memory_branches.test.sql until "-- The checks start here."
 -- Summary trees M1b-4a (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §5.3, §13; 20260930204000): the primary view and
--- its record, native host calls. The gate (a listed company, a conversation of the environment); T, the included events
--- before the inputs that woke the run (the run's own, or those its wake names, as a room post's), or up to the transcript
--- start with no such event; the tree. A record per step, with the folder clock as the view reference's asOfSeq: replays,
--- a different request, malformed requests; the run check first; the grants and the call list. On 970's fixture: Nora's
--- thread has a message at 10 and a card at 11, Otto's tree one line.
+-- its record, native host calls. The gate (a listed company); T, the included events before the inputs that woke the
+-- run (the run's own, or those its wake names, as a room post's), or up to the transcript start with no such event; the
+-- tree. A record per step, with the folder clock as the view reference's asOfSeq: replays, a different request,
+-- malformed requests; the run check first; the grants and the call list. On 970's fixture: Nora's thread has a message
+-- at 10 and a card at 11, Otto's tree one line.
 
 -- A view call by Nora's or Otto's run, a record call, and a record request.
 create function pg_temp.view(p_who text) returns jsonb language sql as $$
@@ -27,7 +27,7 @@ create function pg_temp.t(p_who text default 'nora') returns jsonb language sql 
 	select jsonb_build_array(v -> 'messages', v -> 'lastSequence') from (select pg_temp.view(p_who) as v) x
 $$;
 
--- 1. The gate: a listed company, a conversation of the environment ---------------------------------------------------
+-- 1. The gate: a listed company ---------------------------------------------------------------------------------------
 
 do $$
 declare
@@ -39,12 +39,6 @@ begin
 		'conversation', jsonb_build_object('sessionId', nora, 'kind', 'thread', 'name', 'Nora'), 'messages', 0, 'lastSequence', null,
 		'tree', public.qorpera_memory_tree_read(env, nora)), 'A listed company: Nora''s view, at transcript start 0');
 	perform pg_temp.same(pg_temp.view('nora') #> '{tree,root}', 'null', 'No tree yet');
-
-	-- A conversation of another environment has no view (the run is unchanged).
-	perform pg_temp.fx(format('update public.qorpera_shared_sessions set environment_id = %L where id = %L', extensions.gen_random_uuid(),
-		nora));
-	perform pg_temp.same(pg_temp.view('nora'), null, 'Another environment''s conversation');
-	perform pg_temp.fx(format('update public.qorpera_shared_sessions set environment_id = %L where id = %L', env, nora));
 
 	-- Otto's view holds his tree, with its line past T.
 	perform pg_temp.same(pg_temp.view('otto') - 'tree', jsonb_build_object('schema', 'qorpera.memory-view/v1',
