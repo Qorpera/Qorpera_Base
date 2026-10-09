@@ -170,17 +170,27 @@ pass "rules-start enables and starts the reader, waits 30 s and names its proble
 
 pid=$(systemctl show -p MainPID --value "$UNIT")
 uid=$(ps -o uid= -p "$pid" | tr -d ' ')
+gid=$(ps -o gid= -p "$pid" | tr -d ' ')
 ((uid >= 61184 && uid <= 65519)) || fail "the reader runs as uid $uid, not a dynamic user"
 [[ $(readlink /var/lib/qorpera-agent-exit/rules) == ../private/qorpera-agent-exit/rules ]] ||
 	fail "the state link: $(ls -l /var/lib/qorpera-agent-exit/rules 2>&1)"
-[[ $(stat -c '%a %u' /var/lib/private/qorpera-agent-exit/rules) == "700 $uid" ]] ||
+[[ $(stat -c '%a %U:%G' /var/lib/private) == "700 root:root" ]] || fail "/var/lib/private is not root's alone"
+# On disk the folder is the dynamic user's, or, where systemd maps it into the reader's namespace with an id-mapped
+# mount (Ubuntu 26.04's), nobody's; in the reader's namespace it is the reader's own either way, and it writes there.
+on_disk=$(stat -c '%a %u' /var/lib/private/qorpera-agent-exit/rules)
+[[ $on_disk == "700 $uid" || $on_disk == "700 65534" ]] ||
 	fail "the state folder: $(stat -c '%a %U' /var/lib/private/qorpera-agent-exit/rules)"
 [[ -z $(ls -A /var/lib/private/qorpera-agent-exit/rules) ]] || fail "rules kept without a read"
-[[ $(stat -c '%a %U:%G' /run/qorpera-agent-exit-rules) == "755 $(stat -c %U /var/lib/private/qorpera-agent-exit/rules):$(stat -c %G /var/lib/private/qorpera-agent-exit/rules)" ]] ||
+[[ $(nsenter --target "$pid" --mount stat -L -c '%a %u' "$STATE/rules") == "700 $uid" ]] ||
+	fail "the state folder in the reader's namespace: $(nsenter --target "$pid" --mount stat -L -c '%a %u' "$STATE/rules" 2>&1)"
+nsenter --target "$pid" --mount --setgid "$gid" --setuid "$uid" -- \
+	sh -c 'probe=$1/.prove-rules-reader; : >"$probe" && rm "$probe"' sh "$STATE/rules" ||
+	fail "the reader's user cannot write its state folder"
+[[ $(stat -c '%a %u' /run/qorpera-agent-exit-rules) == "755 $uid" ]] ||
 	fail "the runtime folder: $(stat -c '%a %U:%G' /run/qorpera-agent-exit-rules)"
 credentials=/run/credentials/$UNIT
 seen=$(stat -c '%n %a %U:%G' "$credentials"/* 2>/dev/null | sed "s|$credentials/||" | tr '\n' ';' || true)
-pass "the reader runs as dynamic user $uid with both credentials (as systemd hands them: ${seen:-not visible from here}), its state folder linked from $STATE/rules (0700, empty) and its runtime folder"
+pass "the reader runs as dynamic user $uid with both credentials (as systemd hands them: ${seen:-not visible from here}), its state folder linked from $STATE/rules (0700, empty, uid ${on_disk#* } on disk, the reader's own and writable in its namespace) and its runtime folder its own"
 
 [[ $(stat -c %a "$STATUS") == 644 ]] || fail "status.json is mode $(stat -c %a "$STATUS")"
 python3 - "$STATUS" "$problem" <<'EOF' || fail "status.json: $(cat "$STATUS")"

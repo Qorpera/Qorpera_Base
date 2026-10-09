@@ -492,8 +492,11 @@ The exit answers each machine's names by its company's network rules (`rules/net
   `BAD_ROWS` or `INTERNAL`), `companies`, `withRules`, `badRows` and `skipped` (client entries it could not use). Its
   journal has only changes of state, as codes: nothing the database or a client entry says reaches a log.
 - It runs as a dynamic user with no capabilities, on the node's own network (never in `qexit`, where agent machines
-  are). Its state folder is systemd's private one, which `/var/lib/qorpera-agent-exit/rules` links to; `rules.json` is
-  mode 0600, so only it and root read it.
+  are). Its state folder is systemd's private one, which `/var/lib/qorpera-agent-exit/rules` links to, under
+  `/var/lib/private` (root's alone, 0700); `rules.json` is mode 0600, so only it and root read it. On Ubuntu 26.04 the
+  folder belongs to `nobody` on disk, and systemd maps it to the reader's user in the reader's own view (an id-mapped
+  mount), so a dynamic user that changes from run to run keeps its rules. `ls -l` on the node shows `nobody`; that is
+  expected.
 - Nothing reads `rules.json` yet, and `verify` does not check the reader: the per-company resolvers (E8b-2) do both.
 
 Its login: the role `qorpera_agent_exit` (migration 20260930230000, E8a) may call that one function and nothing else,
@@ -707,7 +710,8 @@ nodes' Node (Ubuntu's `nodejs` 22.22.1+dfsg+~cs22.19.15-1ubuntu1 and its `libnod
 - places a login with `database-url` as the rollout script does (root-only, its sha256 printed), naming a stand-in
   server in the VM that answers Postgres's TLS request with a certificate of its own;
 - runs `rules-start`: the reader runs as a dynamic user with both credentials, its state folder linked from
-  `/var/lib/qorpera-agent-exit/rules` and empty, its runtime folder its own; it asks the stand-in for TLS, refuses the
+  `/var/lib/qorpera-agent-exit/rules` and empty (on disk 0700 under root's `/var/lib/private`; in the reader's own
+  view its user's, and that user writes there), its runtime folder its own; it asks the stand-in for TLS, refuses the
   certificate before it sends anything, keeps no rules, says why in `status.json` (the client map read, the
   non-UUID company skipped) and in `rules-start`'s answer after 30 s, and does not restart;
 - finds the login in no log, and the reader's journal with its one state line;
