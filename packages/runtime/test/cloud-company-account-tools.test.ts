@@ -342,7 +342,7 @@ describe("company_account", () => {
 
 	it("is given the vault's client by the host, beside the connectors' broker", () => {
 		const main = readFileSync(new URL("../src/cloud-native-provider-service-main.ts", import.meta.url), "utf8");
-		expect(main).toContain("return { secretBroker: broker, companyAccounts: broker };");
+		expect(main).toContain("return { secretBroker: broker, companyAccounts: broker, eventHooks: broker };");
 	});
 
 	it("records the website's answer for one account by its id", async () => {

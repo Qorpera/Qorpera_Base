@@ -17,8 +17,6 @@ const runnerAssignmentId = "46651b43-5769-45a5-bc1c-8fba94a52712";
 const memberUserId = "509eb21f-981a-4c39-9f64-5fa1b121f367";
 const createdAt = "2026-08-16T12:00:00.000Z";
 const eventHash = "a".repeat(64);
-const promotionId = "4a9d13d1-89fe-4896-a39e-67fc33db67d1";
-const companyCreationId = "4a9d13d1-89fe-4896-a39e-67fc33db67d2";
 const staffAgentId = "11111111-1111-4111-8111-111111111111";
 const formationId = "11111111-1111-4111-8111-111111111112";
 const cofounderSessionId = "11111111-1111-4111-8111-111111111113";
@@ -478,32 +476,7 @@ function companyProposalCommentRecord() {
 
 function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrimaryTransport {
 	return {
-		createCompany: vi.fn(async () => ({
-			...profileRecord(),
-			company_file: companyFileRecord(),
-			bootstrap_state: "completed",
-			organization: {
-				schema: "qorpera.company-organization-bootstrap/v1",
-				cofounder: {
-					staff_agent_id: staffAgentId,
-					formation_id: formationId,
-					member_session_id: cofounderSessionId,
-				},
-				formation_state: "source_inventory",
-			},
-		})),
-		getCompanyOrganizationBootstrap: vi.fn(async () => ({
-			schema: "qorpera.company-organization-bootstrap/v1",
-			cofounder: {
-				staff_agent_id: staffAgentId,
-				formation_id: formationId,
-				member_session_id: cofounderSessionId,
-			},
-			formation_state: "source_inventory",
-		})),
 		getCompanyOrganization: vi.fn(async () => companyOrganizationRecord()),
-		createProfile: vi.fn(async () => profileRecord()),
-		promoteProfile: vi.fn(async () => profileRecord()),
 		listProfiles: vi.fn(async () => [profileRecord()]),
 		getAccountEntitlement: vi.fn(async () => accountEntitlementRecord()),
 		inviteMember: vi.fn(async (input) => ({
@@ -549,7 +522,6 @@ function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrima
 		updateMemberRole: vi.fn(async (input) => ({ ...memberRecord(), role: input.p_role })),
 		removeMember: vi.fn(async () => true),
 		listStaff: vi.fn(async () => [staffRecord()]),
-		deleteStaff: vi.fn(async () => true),
 		leaveProfile: vi.fn(async () => true),
 		deleteProfile: vi.fn(async () => true),
 		ensureStaffSession: vi.fn(async () => sessionRecord()),
@@ -602,7 +574,6 @@ function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrima
 		})),
 		listPresenceDevices: vi.fn(async () => []),
 		unregisterPresenceDevice: vi.fn(async () => null),
-		putStaff: vi.fn(async () => staffRecord()),
 		createSession: vi.fn(async (input) => ({ ...sessionRecord(), execution_scope: input.p_execution_scope })),
 		closeSession: vi.fn(async () => true),
 		listSessions: vi.fn(async () => [sessionRecord()]),
@@ -693,17 +664,22 @@ function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrima
 }
 
 describe("Qorpera hosted primary", () => {
-	it("creates one idempotent cloud company with its freemium Company File", async () => {
-		const fake = transport();
-		const primary = new QorperaHostedPrimary(fake);
-		await expect(
-			primary.createCompany({
-				clientCreationId: companyCreationId,
-				companyName: " Qorpera ",
-				contractVersion: 2,
-			}),
-		).resolves.toEqual({
-			profile: {
+	it("reads the company organization projection", async () => {
+		const primary = new QorperaHostedPrimary(transport());
+		await expect(primary.getCompanyOrganization(profileId)).resolves.toMatchObject({
+			schema: "qorpera.company-organization/v1",
+			profileId,
+			cofounder: { staffAgentId, formationId, memberSessionId: cofounderSessionId },
+			formation: { formationId, state: "source_inventory", status: "active", revision: 1 },
+			responsibilities: [{ responsibilityId, name: "Engineering", accountableStaffAgentId: staffAgentId }],
+			projects: [{ projectId, name: "Launch", sponsoringResponsibilityId: responsibilityId, roomId }],
+		});
+	});
+
+	it("projects a stable hosted profile and environment identity", async () => {
+		const primary = new QorperaHostedPrimary(transport());
+		await expect(primary.listProfiles()).resolves.toEqual([
+			{
 				profileType: "cloud",
 				profileId,
 				environmentId,
@@ -713,92 +689,7 @@ describe("Qorpera hosted primary", () => {
 				contractVersion: 1,
 				createdAt,
 			},
-			companyFile: {
-				profileId,
-				environmentId,
-				canonicalWorkspaceId: workspaceId,
-				headSnapshotId: snapshotId,
-				state: "ready",
-				logicalBytes: 4096,
-				retainedStorageBytes: 1024,
-				storageUsedBytes: 5120,
-				storageLimitBytes: 50 * 1024 * 1024 * 1024,
-				objectBackends: ["nas-object-gateway"],
-				entitlement: {
-					planKey: "freemium",
-					billingMode: "free",
-					featureSet: "standard",
-					storageAllocation: "metered",
-					storageAllocationBytes: 50 * 1024 * 1024 * 1024,
-					source: "default",
-				},
-				createdAt,
-				updatedAt: createdAt,
-			},
-			organization: {
-				schema: "qorpera.company-organization-bootstrap/v1",
-				cofounder: { staffAgentId, formationId, memberSessionId: cofounderSessionId },
-				formationState: "source_inventory",
-			},
-		});
-		await expect(primary.getCompanyOrganizationBootstrap(profileId)).resolves.toEqual({
-			schema: "qorpera.company-organization-bootstrap/v1",
-			cofounder: { staffAgentId, formationId, memberSessionId: cofounderSessionId },
-			formationState: "source_inventory",
-		});
-		await expect(primary.getCompanyOrganization(profileId)).resolves.toMatchObject({
-			schema: "qorpera.company-organization/v1",
-			profileId,
-			cofounder: { staffAgentId, formationId, memberSessionId: cofounderSessionId },
-			formation: { formationId, state: "source_inventory", status: "active", revision: 1 },
-			responsibilities: [{ responsibilityId, name: "Engineering", accountableStaffAgentId: staffAgentId }],
-			projects: [{ projectId, name: "Launch", sponsoringResponsibilityId: responsibilityId, roomId }],
-		});
-		const malformed = new QorperaHostedPrimary(
-			transport({
-				getCompanyOrganizationBootstrap: vi.fn(async () => ({
-					schema: "qorpera.company-organization-bootstrap/v1",
-					cofounder: {
-						staff_agent_id: staffAgentId,
-						formation_id: formationId,
-						member_session_id: cofounderSessionId,
-					},
-					formation_state: "source_inventory",
-					unexpected: true,
-				})),
-			}),
-		);
-		await expect(malformed.getCompanyOrganizationBootstrap(profileId)).rejects.toThrow(
-			"invalid company organization bootstrap",
-		);
-		expect(fake.createCompany).toHaveBeenCalledWith({
-			p_client_creation_id: companyCreationId,
-			p_company_name: "Qorpera",
-			p_contract_version: 2,
-		});
-	});
-
-	it("creates and projects a stable hosted profile and environment identity", async () => {
-		const fake = transport();
-		const primary = new QorperaHostedPrimary(fake);
-		await expect(
-			primary.createProfile({ profileName: " Qorpera ", environmentName: " Qorpera Company ", contractVersion: 1 }),
-		).resolves.toEqual({
-			profileType: "cloud",
-			profileId,
-			environmentId,
-			profileName: "Qorpera",
-			environmentName: "Qorpera Company",
-			role: "owner",
-			contractVersion: 1,
-			createdAt,
-		});
-		expect(fake.createProfile).toHaveBeenCalledWith({
-			p_profile_name: "Qorpera",
-			p_environment_name: "Qorpera Company",
-			p_contract_version: 1,
-		});
-		await expect(primary.listProfiles()).resolves.toHaveLength(1);
+		]);
 		await expect(primary.getAccountEntitlement()).resolves.toEqual({
 			planKey: "freemium",
 			billingMode: "free",
@@ -807,26 +698,6 @@ describe("Qorpera hosted primary", () => {
 			storageAllocationBytes: 50 * 1024 * 1024 * 1024,
 			source: "default",
 		});
-	});
-
-	it("uses a stable promotion identity for resumable local-to-cloud creation", async () => {
-		const fake = transport();
-		const primary = new QorperaHostedPrimary(fake);
-		await expect(
-			primary.createProfile({
-				profileName: "Qorpera",
-				environmentName: "Qorpera Company",
-				contractVersion: 1,
-				promotionId,
-			}),
-		).resolves.toMatchObject({ profileId, environmentId });
-		expect(fake.promoteProfile).toHaveBeenCalledWith({
-			p_promotion_id: promotionId,
-			p_profile_name: "Qorpera",
-			p_environment_name: "Qorpera Company",
-			p_contract_version: 1,
-		});
-		expect(fake.createProfile).not.toHaveBeenCalled();
 	});
 
 	it("normalizes invitations and never permits owner invitations", async () => {
@@ -1151,40 +1022,14 @@ describe("Qorpera hosted primary", () => {
 		);
 	});
 
-	it("lists, writes, and deletes authoritative staff with optimistic versions", async () => {
-		const fake = transport();
-		const primary = new QorperaHostedPrimary(fake);
+	it("lists authoritative staff with their versions", async () => {
+		const primary = new QorperaHostedPrimary(transport());
 		const [staff] = await primary.listStaff(profileId);
 		expect(staff).toMatchObject({
 			profileId,
 			id: staffAgentId,
 			displayName: "Financial Officer",
 			version: 1,
-		});
-		await expect(primary.putStaff(profileId, staff!, 1)).resolves.toMatchObject({ id: staffAgentId, version: 1 });
-		expect(fake.putStaff).toHaveBeenCalledWith({
-			p_profile_id: profileId,
-			p_staff_agent_id: staffAgentId,
-			p_display_name: "Financial Officer",
-			p_role: "Finance lead",
-			p_charter: "Maintain the verified financial baseline.",
-			p_template_id: "financial-officer",
-			p_department_id: null,
-			p_appearance_color: "green",
-			p_appearance_shape: "gem",
-			p_appearance_creature: null,
-			p_model_provider: null,
-			p_model_id: null,
-			p_employment_status: "active",
-			p_lifecycle_state: "active",
-			p_created_at: createdAt,
-			p_expected_version: 1,
-		});
-		await expect(primary.deleteStaff(profileId, staffAgentId, 1)).resolves.toBeUndefined();
-		expect(fake.deleteStaff).toHaveBeenCalledWith({
-			p_profile_id: profileId,
-			p_staff_agent_id: staffAgentId,
-			p_expected_version: 1,
 		});
 	});
 

@@ -109,6 +109,18 @@ select pg_temp.check(not coalesce(pg_temp.shell_ok(jsonb_build_object('kind','sh
 select pg_temp.check(pg_get_functiondef('public.qorpera_native_office_operation(jsonb,jsonb,jsonb,text,text,uuid,text)'::regprocedure)
 	like '%if not coalesce(public.qorpera_valid_office_shell_action(v_operation->''arguments''),false) then%',
 	'the office''s operation check takes the shell action through that validator');
+-- 20260930183000: a start may say, as a boolean, whether the command uses the network; no other action or form may.
+select pg_temp.check(coalesce(pg_temp.shell_ok('{"kind":"shell","action":"start","command":"make","network":false,"waitMs":0}'),false)
+	and coalesce(pg_temp.shell_ok('{"kind":"shell","action":"start","command":"npm ci","network":true,"waitMs":10000}'),false)
+	and not coalesce(pg_temp.shell_ok('{"kind":"shell","action":"start","command":"make","network":"false","waitMs":0}'),true)
+	and not coalesce(pg_temp.shell_ok('{"kind":"shell","action":"start","command":"make","network":null,"waitMs":0}'),true)
+	and not coalesce(pg_temp.shell_ok('{"kind":"shell","action":"start","command":"make","network":false}'),true)
+	and not coalesce(pg_temp.shell_ok('{"kind":"shell","action":"start","command":"   ","network":false,"waitMs":0}'),true)
+	and not coalesce(pg_temp.shell_ok('{"kind":"shell","command":"ls","network":false,"timeoutMs":1000}'),true)
+	and not coalesce(pg_temp.shell_ok('{"kind":"shell","action":"list","network":false}'),true)
+	and not coalesce(pg_temp.shell_ok(
+		'{"kind":"shell","action":"read","sessionId":"00000000-0000-4000-8000-0000000000a1","network":false,"waitMs":0}'),true),
+	'a start may say whether the command uses the network, as a boolean; nothing else may');
 
 -- The company's computer, started by its owner and brought up by the provider (894's chain), and Ada's screen opened
 -- by the owner.
@@ -190,8 +202,9 @@ $$;
 create function pg_temp.receipt(p_n integer) returns uuid language sql as $$
 	select ('87000000-0000-4000-8000-000000001' || lpad(p_n::text, 3, '0'))::uuid
 $$;
+-- A command's row by the guest's session id (the row's key is its start's receipt, 20260930183000).
 create function pg_temp.command_row(p_n integer) returns public.qorpera_runtime_office_shell_commands language sql as $$
-	select * from public.qorpera_runtime_office_shell_commands where id = pg_temp.command(p_n)
+	select * from public.qorpera_runtime_office_shell_commands where command_id = pg_temp.command(p_n)
 $$;
 create function pg_temp.at(p_ago interval) returns text language sql as $$
 	select to_char((clock_timestamp() - p_ago) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
@@ -242,6 +255,9 @@ select pg_temp.check(not pg_temp.demand() and not pg_temp.seat(), 'a waiting dev
 select pg_temp.check((select c.staff_agent_id = (pg_temp.run()).staff_agent_id and c.run_id = (pg_temp.run()).id
 	and c.receipt_id = pg_temp.receipt(1) and c.conversation_run_id = (pg_temp.run()).id and c.session_id = (pg_temp.run()).session_id
 	and c.command = 'npm run dev' and c.ended_at is null and c.computer_generation = (pg_temp.office()).generation and c.told_at is null
+	-- 20260930183000: keyed by its start's receipt, the run's member; a row the report made says it uses the network.
+	and c.id = pg_temp.receipt(1) and c.requested_by_user_id is not distinct from (pg_temp.run()).requested_by_user_id and c.network
+	and c.screen_generation is null
 	from pg_temp.command_row(1) c), 'the command is on record with the run that started it and its conversation');
 select pg_temp.check((select c.end_reason = 'exited' and c.ended_at is not null from pg_temp.command_row(3) c),
 	'a command that exited is on record as exited');
@@ -252,7 +268,8 @@ select pg_temp.shells(false, jsonb_build_array(
 	pg_temp.open_item(4, 'another run''s receipt', '1 minute', '1 minute', '64800000-0000-4000-8000-0000000000e3'),
 	pg_temp.open_item(4, 'not a receipt', '1 minute', '1 minute') || '{"receiptId":"key-4"}')) \g /dev/null
 select pg_temp.check(not exists (select 1 from public.qorpera_runtime_office_shell_commands
-	where id in (pg_temp.command(4), pg_temp.command(10))) and (pg_temp.command_row(1)).ended_at is null,
+	where command_id in (pg_temp.command(4), pg_temp.command(10)) or id in (pg_temp.receipt(4), pg_temp.receipt(10)))
+	and (pg_temp.command_row(1)).ended_at is null,
 	'commands the screen has no record of starting are left out, and the report still counts');
 -- A shape the office never sends is refused, and so is any other office's screen, generation or caller.
 select pg_temp.refused(format('select pg_temp.shells(false, %L::jsonb)', jsonb_build_array(pg_temp.open_item(4, repeat('x', 301), '1 minute', '1 minute'))),
@@ -377,13 +394,14 @@ begin
 		and (pg_temp.command_row(2)).told_at is null and (pg_temp.command_row(3)).told_at is null,
 		'the command is marked told by that run; what ended by itself is never told');
 	perform pg_temp.check(jsonb_array_length(pg_temp.open_work() -> 'computerStopped') = 1, 'a restart of the same run is told again');
-	update public.qorpera_runtime_office_shell_commands set told_run_id = extensions.gen_random_uuid() where id = pg_temp.command(1);
+	update public.qorpera_runtime_office_shell_commands set told_run_id = extensions.gen_random_uuid() where command_id = pg_temp.command(1);
 	perform pg_temp.check(not pg_temp.open_work() ? 'computerStopped', 'a command told in another run is not told again');
 	-- At most 32 a run, oldest first.
-	insert into public.qorpera_runtime_office_shell_commands(id, office_id, computer_generation, screen_id, staff_agent_id, run_id,
-		receipt_id, conversation_run_id, session_id, command, started_at, worked_at, ended_at, end_reason)
-	select extensions.gen_random_uuid(), (pg_temp.office()).id, (pg_temp.office()).generation, current_setting('qorpera_test.screen')::uuid,
-		(pg_temp.run()).staff_agent_id, (pg_temp.run()).id, extensions.gen_random_uuid(), (pg_temp.run()).id, (pg_temp.run()).session_id,
+	insert into public.qorpera_runtime_office_shell_commands(id, command_id, office_id, computer_generation, screen_id, staff_agent_id,
+		run_id, receipt_id, conversation_run_id, session_id, command, started_at, worked_at, ended_at, end_reason)
+	select ('87000000-0000-4000-8000-0000000009' || lpad(n::text, 2, '0'))::uuid, extensions.gen_random_uuid(), (pg_temp.office()).id,
+		(pg_temp.office()).generation, current_setting('qorpera_test.screen')::uuid, (pg_temp.run()).staff_agent_id, (pg_temp.run()).id,
+		('87000000-0000-4000-8000-0000000009' || lpad(n::text, 2, '0'))::uuid, (pg_temp.run()).id, (pg_temp.run()).session_id,
 		'job ' || n, clock_timestamp() - interval '1 hour', clock_timestamp() - interval '1 hour', clock_timestamp() + n * interval '1 second',
 		'closed'
 	from generate_series(1, 40) n;
@@ -424,7 +442,7 @@ select pg_temp.check((pg_temp.command_row(1)).end_reason = 'paused' and (pg_temp
 	'a pause ends what still runs as paused and keeps no busy report');
 rollback;
 begin;
-update public.qorpera_runtime_office_shell_commands set computer_generation = computer_generation - 1 where id = pg_temp.command(1);
+update public.qorpera_runtime_office_shell_commands set computer_generation = computer_generation - 1 where command_id = pg_temp.command(1);
 select pg_temp.shells(false) \g /dev/null
 select pg_temp.check((pg_temp.command_row(1)).end_reason = 'lost', 'a command of an earlier generation nobody ended is lost');
 rollback;
@@ -440,6 +458,62 @@ select pg_temp.shells(false, jsonb_build_array(pg_temp.open_item(5, 'npm run bui
 select pg_temp.check((pg_temp.command_row(1)).ended_at is null and (pg_temp.command_row(5)).id is not null
 	and (pg_temp.command_row(5)).ended_at is null,
 	'a screen that is not whole ends nothing it leaves out, and records what it names');
+rollback;
+-- A start's own row (20260930183000), as the native operation's begin makes it before the guest runs anything: keyed by
+-- the start's receipt, with no session id yet. The office's sweeps spare it for 60 seconds after its start's effect
+-- ended, then end it; the report that names it fills in the guest's session id, and no other command takes it. Only a
+-- row the office named is told as stopped.
+begin;
+do $$
+begin
+	set local session_replication_role = replica;
+	update public.qorpera_runtime_office_resources set expires_at = clock_timestamp() - interval '2 minutes',
+		drained_at = clock_timestamp() - interval '2 minutes' where receipt_id = pg_temp.receipt(5);
+	update public.qorpera_runtime_office_resources set expires_at = clock_timestamp(), drained_at = clock_timestamp()
+	where receipt_id = pg_temp.receipt(6);
+	set local session_replication_role = origin;
+end $$;
+insert into public.qorpera_runtime_office_shell_commands(id, receipt_id, office_id, computer_generation, screen_id, screen_generation,
+	staff_agent_id, run_id, requested_by_user_id, conversation_run_id, session_id, command, network, started_at, worked_at)
+select pg_temp.receipt(n), pg_temp.receipt(n), (pg_temp.office()).id, (pg_temp.office()).generation, s.id, s.generation,
+	(pg_temp.run()).staff_agent_id, (pg_temp.run()).id, (pg_temp.run()).requested_by_user_id, (pg_temp.run()).id, (pg_temp.run()).session_id,
+	'make ' || n, false, clock_timestamp(), clock_timestamp()
+from public.qorpera_runtime_office_screens s cross join unnest(array[5, 6]) n
+where s.id = current_setting('qorpera_test.screen')::uuid;
+create function pg_temp.start_row(p_n integer) returns public.qorpera_runtime_office_shell_commands language sql as $$
+	select * from public.qorpera_runtime_office_shell_commands where id = pg_temp.receipt(p_n)
+$$;
+savepoint unreported;
+select public.qorpera_report_runtime_office_shell_activity(current_setting('qorpera_test.scope')::jsonb,
+	current_setting('qorpera_test.generation')::bigint, '{"schema":"qorpera.office-shell-report/v1","screens":[]}') \g /dev/null
+select pg_temp.check((pg_temp.start_row(6)).ended_at is null and (pg_temp.start_row(5)).end_reason = 'closed'
+	and (pg_temp.command_row(1)).end_reason = 'closed',
+	'a report without the screen spares a start''s own row within 60 seconds of its effect''s end, and ends it after');
+rollback to savepoint unreported;
+select pg_temp.shells(false, jsonb_build_array(pg_temp.open_item(1, 'npm run dev', '10 minutes', '10 minutes'))) \g /dev/null
+select pg_temp.check((pg_temp.start_row(6)).ended_at is null and (pg_temp.start_row(6)).command_id is null
+	and (pg_temp.start_row(5)).end_reason = 'unknown' and (pg_temp.start_row(5)).command_id is null
+	and (pg_temp.command_row(1)).ended_at is null,
+	'a whole screen that does not list a start''s own row spares it within 60 seconds of its effect''s end, and ends it after');
+-- The report names it: the row takes the guest's session id and keeps what the start said.
+select pg_temp.shells(false, jsonb_build_array(pg_temp.open_item(1, 'npm run dev', '10 minutes', '10 minutes'),
+	pg_temp.open_item(6, 'make 6 (as the guest says it)', '5 seconds', '5 seconds'))) \g /dev/null
+select pg_temp.check((select c.command_id = pg_temp.command(6) and c.ended_at is null and c.command = 'make 6' and not c.network
+	and c.screen_generation is not null and c.requested_by_user_id is not distinct from (pg_temp.run()).requested_by_user_id
+	from pg_temp.start_row(6) c), 'the report that names a start''s own row fills in the session id, and the row keeps the start''s');
+-- Another session id on the same receipt is not this command: the row keeps its own, and no row takes the other.
+select pg_temp.shells(false, jsonb_build_array(pg_temp.open_item(1, 'npm run dev', '10 minutes', '10 minutes'),
+	pg_temp.open_item(6, 'make 6', '5 seconds', '5 seconds') || jsonb_build_object('id', pg_temp.command(16)),
+	pg_temp.open_item(6, 'make 6', '5 seconds', '5 seconds'))) \g /dev/null
+select pg_temp.check((pg_temp.start_row(6)).command_id = pg_temp.command(6) and (pg_temp.start_row(6)).ended_at is null
+	and not exists (select 1 from public.qorpera_runtime_office_shell_commands where command_id = pg_temp.command(16)),
+	'another session id on a named start''s receipt takes nothing');
+-- A row the office never named may never have run: it is never told as stopped. Once named, it is.
+update public.qorpera_runtime_office_shell_commands set end_reason = 'slept' where id = pg_temp.receipt(5);
+select pg_temp.check(not pg_temp.open_work() ? 'computerStopped', 'a start''s own row the office never named is not told as stopped');
+update public.qorpera_runtime_office_shell_commands set command_id = pg_temp.command(5) where id = pg_temp.receipt(5);
+select pg_temp.check(pg_temp.open_work() #>> '{computerStopped,0,command}' = 'make 5'
+	and jsonb_array_length(pg_temp.open_work() -> 'computerStopped') = 1, 'once named, it is told');
 rollback;
 -- Any other stop of the computer (the provider's lifecycle request, here a power-off) ends what still runs as closed.
 begin;
@@ -499,10 +573,10 @@ select pg_temp.check(not exists (select 1 from unnest(array['anon','authenticate
 
 -- 5. Two runs of Ada in the conversation race to read what stopped: one wins, the other is told nothing and does not
 --    wait. The stopped commands are committed so the connections see them.
-insert into public.qorpera_runtime_office_shell_commands(id, office_id, computer_generation, screen_id, staff_agent_id, run_id,
-	receipt_id, conversation_run_id, session_id, command, started_at, worked_at, ended_at, end_reason)
-select ('87000000-0000-4000-8000-00000000080' || n)::uuid, (pg_temp.office()).id, (pg_temp.office()).generation,
-	current_setting('qorpera_test.screen')::uuid, (pg_temp.run()).staff_agent_id, (pg_temp.run()).id,
+insert into public.qorpera_runtime_office_shell_commands(id, command_id, office_id, computer_generation, screen_id, staff_agent_id,
+	run_id, receipt_id, conversation_run_id, session_id, command, started_at, worked_at, ended_at, end_reason)
+select ('87000000-0000-4000-8000-00000000081' || n)::uuid, ('87000000-0000-4000-8000-00000000080' || n)::uuid, (pg_temp.office()).id,
+	(pg_temp.office()).generation, current_setting('qorpera_test.screen')::uuid, (pg_temp.run()).staff_agent_id, (pg_temp.run()).id,
 	('87000000-0000-4000-8000-00000000081' || n)::uuid, (pg_temp.run()).id, (pg_temp.run()).session_id, 'race ' || n,
 	clock_timestamp(), clock_timestamp(), clock_timestamp() + n * interval '1 minute', 'slept'
 from generate_series(1, 3) n;

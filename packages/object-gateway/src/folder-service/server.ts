@@ -245,8 +245,7 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 				return;
 			}
 			case Kind.publish:
-				parsePublish(frame.payload);
-				send(encodeJson(Kind.report, await handle.publish()));
+				send(encodeJson(Kind.report, await handle.publish(parsePublish(frame.payload).final)));
 				return;
 		}
 		send(encodeJson(Kind.done, {}));

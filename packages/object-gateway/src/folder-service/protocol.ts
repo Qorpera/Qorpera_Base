@@ -502,6 +502,9 @@ export function parseExecutable(payload: Buffer): {
 	return { path: path(value.path), ...(b ? { base: b } : {}), executable: flag(value.executable) };
 }
 
-export function parsePublish(payload: Buffer): void {
-	exactKeys(object(payload), []);
+/** `final`: a command's last boundary (F3 4b): its change set closes the view. */
+export function parsePublish(payload: Buffer): { readonly final: boolean } {
+	const value = object(payload);
+	exactKeys(value, [], ["final"]);
+	return { final: value.final === undefined ? false : flag(value.final) };
 }

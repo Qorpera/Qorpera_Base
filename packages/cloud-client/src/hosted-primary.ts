@@ -305,22 +305,6 @@ export interface HostedCompanyProposalCommentPage {
 	nextId?: string;
 }
 
-export interface CreatedHostedCompany {
-	profile: HostedProfile;
-	companyFile: HostedCompanyFile;
-	organization: HostedCompanyOrganizationBootstrap;
-}
-
-export interface HostedCompanyOrganizationBootstrap {
-	schema: "qorpera.company-organization-bootstrap/v1";
-	cofounder: {
-		staffAgentId: string;
-		formationId: string;
-		memberSessionId: string;
-	};
-	formationState: "source_inventory";
-}
-
 export interface HostedCompanySubstrateVersion {
 	versionId: string;
 	profileId: string;
@@ -484,19 +468,6 @@ export interface HostedCompanyOperation {
 	createdAt: string;
 }
 
-export interface CreateHostedProfileInput {
-	profileName: string;
-	environmentName: string;
-	contractVersion: number;
-	promotionId?: string;
-}
-
-export interface CreateHostedCompanyInput {
-	clientCreationId: string;
-	companyName: string;
-	contractVersion: number;
-}
-
 export interface HostedOperationExecution {
 	kind: "turn" | "wake";
 	id: string;
@@ -620,24 +591,7 @@ export interface BeginHostedObjectReachabilityGraphInput {
 }
 
 export interface HostedPrimaryTransport {
-	createCompany(input: {
-		p_client_creation_id: string;
-		p_company_name: string;
-		p_contract_version: number;
-	}): Promise<unknown>;
-	getCompanyOrganizationBootstrap(input: { p_profile_id: string }): Promise<unknown>;
 	getCompanyOrganization(input: { p_profile_id: string }): Promise<unknown>;
-	createProfile(input: {
-		p_profile_name: string;
-		p_environment_name: string;
-		p_contract_version: number;
-	}): Promise<unknown>;
-	promoteProfile(input: {
-		p_promotion_id: string;
-		p_profile_name: string;
-		p_environment_name: string;
-		p_contract_version: number;
-	}): Promise<unknown>;
 	listProfiles(): Promise<unknown>;
 	getAccountEntitlement(): Promise<unknown>;
 	inviteMember(input: {
@@ -660,25 +614,6 @@ export interface HostedPrimaryTransport {
 	}): Promise<unknown>;
 	removeMember(input: { p_profile_id: string; p_member_user_id: string }): Promise<unknown>;
 	listStaff(input: { p_profile_id: string }): Promise<unknown>;
-	deleteStaff(input: { p_profile_id: string; p_staff_agent_id: string; p_expected_version: number }): Promise<unknown>;
-	putStaff(input: {
-		p_profile_id: string;
-		p_staff_agent_id: string;
-		p_display_name: string;
-		p_role: string;
-		p_charter: string;
-		p_template_id: string | null;
-		p_department_id: string | null;
-		p_appearance_color: string;
-		p_appearance_shape: string;
-		p_appearance_creature: string | null;
-		p_model_provider: string | null;
-		p_model_id: string | null;
-		p_employment_status: StaffAgent["employmentStatus"];
-		p_lifecycle_state: StaffAgent["lifecycleState"];
-		p_created_at: string;
-		p_expected_version: number | null;
-	}): Promise<unknown>;
 	createSession(input: {
 		p_environment_id: string;
 		p_client_session_id: string;
@@ -975,33 +910,7 @@ export interface HostedPrimaryDatabase {
 		Tables: Record<never, never>;
 		Views: Record<never, never>;
 		Functions: {
-			qorpera_create_cloud_company: {
-				Args: {
-					p_client_creation_id: string;
-					p_company_name: string;
-					p_contract_version: number;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_company_organization_bootstrap: { Args: { p_profile_id: string }; Returns: JsonValue };
 			qorpera_company_organization_json: { Args: { p_profile_id: string }; Returns: JsonValue };
-			qorpera_create_hosted_profile: {
-				Args: {
-					p_profile_name: string;
-					p_environment_name: string;
-					p_contract_version: number;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_promote_local_profile: {
-				Args: {
-					p_promotion_id: string;
-					p_profile_name: string;
-					p_environment_name: string;
-					p_contract_version: number;
-				};
-				Returns: JsonValue;
-			};
 			qorpera_list_hosted_profiles: { Args: Record<never, never>; Returns: JsonValue };
 			qorpera_get_account_entitlement: { Args: Record<never, never>; Returns: JsonValue };
 			qorpera_invite_profile_member: {
@@ -1039,31 +948,6 @@ export interface HostedPrimaryDatabase {
 				Returns: JsonValue;
 			};
 			qorpera_list_profile_staff: { Args: { p_profile_id: string }; Returns: JsonValue };
-			qorpera_delete_profile_staff: {
-				Args: { p_profile_id: string; p_staff_agent_id: string; p_expected_version: number };
-				Returns: JsonValue;
-			};
-			qorpera_put_profile_staff: {
-				Args: {
-					p_profile_id: string;
-					p_staff_agent_id: string;
-					p_display_name: string;
-					p_role: string;
-					p_charter: string;
-					p_template_id: string | null;
-					p_department_id: string | null;
-					p_appearance_color: string;
-					p_appearance_shape: string;
-					p_appearance_creature: string | null;
-					p_model_provider: string | null;
-					p_model_id: string | null;
-					p_employment_status: StaffAgent["employmentStatus"];
-					p_lifecycle_state: StaffAgent["lifecycleState"];
-					p_created_at: string;
-					p_expected_version: number | null;
-				};
-				Returns: JsonValue;
-			};
 			qorpera_create_shared_session_v4: {
 				Args: {
 					p_environment_id: string;
@@ -1499,36 +1383,10 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 		this.client = client;
 	}
 
-	async createCompany(input: Parameters<HostedPrimaryTransport["createCompany"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_create_cloud_company", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async getCompanyOrganizationBootstrap(
-		input: Parameters<HostedPrimaryTransport["getCompanyOrganizationBootstrap"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_company_organization_bootstrap", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
 	async getCompanyOrganization(
 		input: Parameters<HostedPrimaryTransport["getCompanyOrganization"]>[0],
 	): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_company_organization_json", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async createProfile(input: Parameters<HostedPrimaryTransport["createProfile"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_create_hosted_profile", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async promoteProfile(input: Parameters<HostedPrimaryTransport["promoteProfile"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_promote_local_profile", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -1809,18 +1667,6 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 
 	async listStaff(input: Parameters<HostedPrimaryTransport["listStaff"]>[0]): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_list_profile_staff", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async deleteStaff(input: Parameters<HostedPrimaryTransport["deleteStaff"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_delete_profile_staff", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async putStaff(input: Parameters<HostedPrimaryTransport["putStaff"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_put_profile_staff", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -2171,15 +2017,6 @@ function record(value: unknown, label: string): Record<string, unknown> {
 	return value as Record<string, unknown>;
 }
 
-function exactRecord(value: unknown, label: string, keys: readonly string[]): Record<string, unknown> {
-	const input = record(value, label);
-	const expected = new Set(keys);
-	if (Object.keys(input).length !== expected.size || Object.keys(input).some((key) => !expected.has(key))) {
-		throw new Error(`Hosted primary returned invalid ${label}`);
-	}
-	return input;
-}
-
 function uuid(value: unknown, label: string): string {
 	if (typeof value !== "string" || !UUID_PATTERN.test(value))
 		throw new Error(`Hosted primary returned invalid ${label}`);
@@ -2369,56 +2206,6 @@ function parseAccountEntitlement(value: unknown): HostedAccountEntitlement {
 			: {}),
 		source,
 		...(typeof updatedAt === "string" ? { updatedAt: timestamp(updatedAt, "account entitlement update time") } : {}),
-	};
-}
-
-function parseCreatedCompany(value: unknown): CreatedHostedCompany | undefined {
-	const input = record(value, "created company");
-	const profile = parseProfile(input);
-	const companyFile = parseCompanyFile(input.company_file);
-	if (profile.profileId !== companyFile.profileId || profile.environmentId !== companyFile.environmentId) {
-		throw new Error("Hosted primary returned a Company File outside the created company");
-	}
-	if (
-		(input.bootstrap_state === "queued" || input.bootstrap_state === "leased") &&
-		(input.organization === null || input.organization === undefined)
-	) {
-		return undefined;
-	}
-	if (input.bootstrap_state === "blocked") {
-		throw new Error("Hosted primary could not provision the canonical Company File");
-	}
-	if (input.bootstrap_state !== "completed" || !companyFile.headSnapshotId || companyFile.state !== "ready") {
-		throw new Error("Hosted primary returned an invalid company bootstrap state");
-	}
-	return { profile, companyFile, organization: parseCompanyOrganizationBootstrap(input.organization) };
-}
-
-function parseCompanyOrganizationBootstrap(value: unknown): HostedCompanyOrganizationBootstrap {
-	const organization = exactRecord(value, "company organization bootstrap", [
-		"schema",
-		"cofounder",
-		"formation_state",
-	]);
-	if (
-		organization.schema !== "qorpera.company-organization-bootstrap/v1" ||
-		organization.formation_state !== "source_inventory"
-	) {
-		throw new Error("Hosted primary returned invalid company organization bootstrap");
-	}
-	const cofounder = exactRecord(organization.cofounder, "company Co-Founder bootstrap", [
-		"staff_agent_id",
-		"formation_id",
-		"member_session_id",
-	]);
-	return {
-		schema: "qorpera.company-organization-bootstrap/v1",
-		cofounder: {
-			staffAgentId: uuid(cofounder.staff_agent_id, "company Co-Founder staff id"),
-			formationId: uuid(cofounder.formation_id, "company formation id"),
-			memberSessionId: uuid(cofounder.member_session_id, "company Co-Founder member session id"),
-		},
-		formationState: "source_inventory",
 	};
 }
 
@@ -3741,54 +3528,9 @@ export class QorperaHostedPrimary {
 		this.transport = transport;
 	}
 
-	async createCompany(input: CreateHostedCompanyInput): Promise<CreatedHostedCompany> {
-		requiredUuid(input.clientCreationId, "Company creation id");
-		if (!Number.isSafeInteger(input.contractVersion) || input.contractVersion < 1) {
-			throw new Error("Environment contract version must be a positive integer");
-		}
-		const request = {
-			p_client_creation_id: input.clientCreationId,
-			p_company_name: requiredText(input.companyName, "Company name", MAX_PROFILE_NAME_LENGTH),
-			p_contract_version: input.contractVersion,
-		};
-		const deadline = Date.now() + 120_000;
-		while (true) {
-			const created = parseCreatedCompany(await this.transport.createCompany(request));
-			if (created) return created;
-			if (Date.now() >= deadline) throw new Error("Canonical Company File bootstrap did not finish in time");
-			await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 250));
-		}
-	}
-
-	async getCompanyOrganizationBootstrap(profileId: string): Promise<HostedCompanyOrganizationBootstrap> {
-		requiredUuid(profileId, "Profile id");
-		return parseCompanyOrganizationBootstrap(
-			await this.transport.getCompanyOrganizationBootstrap({ p_profile_id: profileId }),
-		);
-	}
-
 	async getCompanyOrganization(profileId: string): Promise<HostedCompanyOrganization> {
 		requiredUuid(profileId, "Profile id");
 		return parseHostedCompanyOrganization(await this.transport.getCompanyOrganization({ p_profile_id: profileId }));
-	}
-
-	async createProfile(input: CreateHostedProfileInput): Promise<HostedProfile> {
-		if (!Number.isSafeInteger(input.contractVersion) || input.contractVersion < 1) {
-			throw new Error("Environment contract version must be a positive integer");
-		}
-		const request = {
-			p_profile_name: requiredText(input.profileName, "Profile name", MAX_PROFILE_NAME_LENGTH),
-			p_environment_name: requiredText(input.environmentName, "Environment name", MAX_PROFILE_NAME_LENGTH),
-			p_contract_version: input.contractVersion,
-		};
-		if (input.promotionId === undefined) return parseProfile(await this.transport.createProfile(request));
-		requiredUuid(input.promotionId, "Promotion id");
-		return parseProfile(
-			await this.transport.promoteProfile({
-				p_promotion_id: input.promotionId,
-				...request,
-			}),
-		);
 	}
 
 	async listProfiles(): Promise<HostedProfile[]> {
@@ -4652,22 +4394,6 @@ export class QorperaHostedPrimary {
 		};
 	}
 
-	async deleteStaff(profileId: string, staffAgentId: string, expectedVersion: number): Promise<void> {
-		requiredUuid(profileId, "Profile id");
-		requiredUuid(staffAgentId, "Staff agent id");
-		if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
-			throw new Error("Expected staff version must be a positive integer");
-		}
-		requireTrue(
-			await this.transport.deleteStaff({
-				p_profile_id: profileId,
-				p_staff_agent_id: staffAgentId,
-				p_expected_version: expectedVersion,
-			}),
-			"staff deletion result",
-		);
-	}
-
 	async ensureCompanyWorkspace(input: EnsureHostedCompanyWorkspaceInput): Promise<HostedCompanyWorkspace> {
 		requiredUuid(input.environmentId, "Environment id");
 		requiredUuid(input.clientWorkspaceId, "Client workspace id");
@@ -5025,34 +4751,6 @@ export class QorperaHostedPrimary {
 			}),
 			"company operation list",
 		).map(parseCompanyOperation);
-	}
-
-	async putStaff(profileId: string, staff: StaffAgent, expectedVersion?: number): Promise<HostedStaffAgent> {
-		requiredUuid(profileId, "Profile id");
-		requiredUuid(staff.id, "Staff agent id");
-		if (expectedVersion !== undefined && (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1)) {
-			throw new Error("Expected staff version must be a positive integer");
-		}
-		return parseStaff(
-			await this.transport.putStaff({
-				p_profile_id: profileId,
-				p_staff_agent_id: staff.id,
-				p_display_name: staff.displayName,
-				p_role: staff.role,
-				p_charter: staff.charter,
-				p_template_id: staff.templateId ?? null,
-				p_department_id: staff.departmentId ?? null,
-				p_appearance_color: staff.appearance.color,
-				p_appearance_shape: staff.appearance.shape,
-				p_appearance_creature: staff.appearance.creature ?? null,
-				p_model_provider: staff.model?.provider ?? null,
-				p_model_id: staff.model?.modelId ?? null,
-				p_employment_status: staff.employmentStatus,
-				p_lifecycle_state: staff.lifecycleState,
-				p_created_at: staff.createdAt,
-				p_expected_version: expectedVersion ?? null,
-			}),
-		);
 	}
 
 	async createSession(input: CreateHostedSessionInput): Promise<HostedSession> {

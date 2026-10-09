@@ -81,10 +81,10 @@ results, and private Git trees. No Git commit is needed to apply the patch.
 | `packages/shell/src/cloud-wake-bus.ts` | Closed immutable policy/envelope parsers, native binding adapter, coworker tool registration factory, bounded service RPC transport. |
 | `packages/runtime/test/cloud-wake-bus.test.ts` | Policy, mouth, identity, post-I/O authority, receipt, native tool boundary and transport tests. |
 | `packages/runtime/test/fixtures/wake-policies.json` | Eight exact SQL/TypeScript policy fixtures, including all five kinds and closed fallback. |
-| `supabase/tests/300_runtime_wake_bus.test.sql` | Real admission/receipt/path component cases and disposable native fixtures. |
-| `supabase/acceptance/runtime_wake_bus.sql` | Actual database completion, send and effect acceptance; missing shared enforcement fails. |
-| `scripts/test-runtime-wake-bus.mjs` | Isolated PostgreSQL upgrade, audience contention, concurrent/interrupted delivery, queue and admitted-start recovery; replay against integrated migrations and actual acceptance with JSON reports. |
-| `scripts/test-runtime-wake-envelope.mjs` | Actual SQL-produced authority and envelopes checked by the production TypeScript parsers; unsupported room envelopes stay rejected. |
+| `supabase/tests/300_runtime_wake_bus.test.sql` (deleted in the legacy sweep) | Real admission/receipt/path component cases and disposable native fixtures. |
+| `supabase/acceptance/runtime_wake_bus.sql` (deleted in the legacy sweep) | Actual database completion, send and effect acceptance; missing shared enforcement fails. |
+| `scripts/test-runtime-wake-bus.mjs` (deleted in the legacy sweep) | Isolated PostgreSQL upgrade, audience contention, concurrent/interrupted delivery, queue and admitted-start recovery; replay against integrated migrations and actual acceptance with JSON reports. |
+| `scripts/test-runtime-wake-envelope.mjs` (deleted in the legacy sweep) | Actual SQL-produced authority and envelopes checked by the production TypeScript parsers; unsupported room envelopes stay rejected. |
 | `packages/runner-orchestrator/src/orchestrator.ts` | Accept the three closed `replyPolicy` values without forwarding job authority; isolate enqueue failures so one denied schedule cannot stop unrelated work. |
 | `packages/runner-orchestrator/test/orchestrator.test.ts` | Schedule policy parsing, failure isolation, continued dispatch, and the existing deterministic-key/catch-up rules. |
 | This document | Integration contracts, verification and gates. |

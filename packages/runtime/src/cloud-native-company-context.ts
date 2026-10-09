@@ -785,15 +785,14 @@ export function cloudCompanyContextTool(
 		source: "runtime",
 		description:
 			"Read more of a context source that was cut short. Pass sourceKind and id from the source, sha256 from its content.sha256, offset from its content.nextOffset (counted in Unicode characters) and limit, up to 16384 UTF-8 bytes. A page can be shorter than the limit so that it fits in one result; continue from each returned nextOffset until it is null. These fields are the handle even when the text itself stops in the middle of JSON; do not look for another handle inside the text, and try this one before saying a source is unavailable. Fix a rejected argument before retrying. This reads only what was already admitted to this run: it adds no new request or permission and does not fetch attachments.",
+		// The same for every run, so the tool list stays a cached prefix (RUNTIME-AGENT-MEMORY-TREE.md §6.1): the run's
+		// handles are in its prompt, and parseArguments admits only those.
 		inputSchema: {
 			type: "object",
 			properties: {
 				sourceKind: { type: "string", enum: ["input", "history", "job", "job_spec", "continuation"] },
-				id: { type: "string", enum: [...new Set([...sources.values()].map((source) => source.id))] },
-				sha256: {
-					type: "string",
-					enum: [...new Set([...sources.values()].map((source) => source.content.sha256))],
-				},
+				id: { type: "string" },
+				sha256: { type: "string", pattern: SHA256.source },
 				offset: { type: "integer", minimum: 0 },
 				limit: { type: "integer", minimum: 4, maximum: 16384 },
 			},
