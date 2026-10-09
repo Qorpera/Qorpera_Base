@@ -490,7 +490,8 @@ export function cloudInterfaceTools(options: {
 				const view = input.view;
 				if (
 					view !== null &&
-					(typeof view !== "string" || view.length < 1 || view.length > 40 || NOT_ONE_LINE.test(view))
+					// 40 characters, counted as the parser and the schema count them (code points).
+					(typeof view !== "string" || view.length < 1 || Array.from(view).length > 40 || NOT_ONE_LINE.test(view))
 				)
 					throw new CloudToolArgumentRefusal("view must be null for the first view, or a view's name");
 				return {

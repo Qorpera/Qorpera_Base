@@ -14,11 +14,12 @@ begin
 	execute replace(v_definition, p_old, p_new);
 end $$;
 
--- Observations name the four tools, after the proposals'.
+-- Observations name the four tools, after the proposals'. The anchor is the proposals' two names alone: other slices
+-- add names before them (E3a) or after them (M1b-3), and these two stay side by side, once.
 select pg_temp.i8a_replace('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure,
-	$old$'company_search','company_account','apply_proposal','discard_proposal',$old$,
-	$new$'company_search','company_account','apply_proposal','discard_proposal',
-		'interface_read','table_read','table_write','save_interface',$new$);
+	$old$'apply_proposal','discard_proposal',$old$,
+	$new$'apply_proposal','discard_proposal',
+		/* 20260930200000 (I8a) */'interface_read','table_read','table_write','save_interface',$new$);
 
 do $guard$
 begin

@@ -890,8 +890,8 @@ don't answer, draws no offer.
 as Company File tools. Each reads the files as they are now, with the run's own reads (§4), parses each text itself and
 releases exactly its answer with the files it shows. `interface_read` gives one view a page at a time: the interface's
 settings and buttons first, then each block in order (a board's part and a calendar's source are each one item), with
-a table's rows as the page keeps them, a file's text, and for anything it can't show (live state, mail, the folder's
-own todos and routines, outside content) a note naming where to read it. An interface whose access lists other agents
-shows nothing. `table_read` gives a table's rows kept by a `where`, a page at a time by key; its first page holds each
-column's type, the table's problems and who may write it. An answer too long for one result is cut and says how much
-more there is. The migration names all four tools in a run's observations; I8b adds `table_write` and `save_interface`.
+a table's rows as the page keeps them, a file's text, and for anything it can't show a note: mail, the folder's own
+todos and routines and outside content name where to read them, and live state is noted as not shown. An interface
+whose access lists other agents shows nothing. `table_read` gives a table's rows kept by a `where`, a page at a time by
+key; its first page holds each column's type, the table's problems and who may write it. An answer too long for one
+result is cut and says how much more there is. The migration names all four tools in a run's observations; I8b adds `table_write` and `save_interface`.

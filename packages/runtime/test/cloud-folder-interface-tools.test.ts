@@ -337,6 +337,18 @@ it("refuses arguments outside each tool's shape", async () => {
 		CloudToolArgumentRefusal,
 		"view must be null for the first view, or a view's name",
 	);
+	// A view's name is up to 40 characters as the parser counts them, an emoji being one.
+	const faces = String.fromCodePoint(0x1f600).repeat(40);
+	expect(f.tool("interface_read").parseArguments({ interface: "pulse", view: faces, after: null })).toEqual({
+		interface: "pulse",
+		view: faces,
+		after: null,
+	});
+	await refuses(
+		f.call("interface_read", { interface: "pulse", view: `${faces}a`, after: null }),
+		CloudToolArgumentRefusal,
+		"view must be null for the first view, or a view's name",
+	);
 	await refuses(
 		f.call("interface_read", { interface: "pulse", view: null, after: -1 }),
 		CloudToolArgumentRefusal,
