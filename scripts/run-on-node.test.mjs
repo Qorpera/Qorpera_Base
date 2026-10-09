@@ -438,6 +438,12 @@ test("cleanup prunes runs by the UTC time in their name, never by mtime", () => 
 	assert.equal(spawnSync("bash", ["-n", "-c", script]).status, 0);
 });
 
+test("cleanup removes worktree copies unused for 3 days, only when no run holds their lock", () => {
+	const script = pruneScript();
+	assert.match(script, /find \/home\/tester\/trees -maxdepth 1 -name '\*\.lock' -mtime \+2 /);
+	assert.match(script, /flock -n "\$l" sudo -n rm -rf -- "\$\{l%\.lock\}"/);
+});
+
 function files(root) {
 	const out = [];
 	const walk = (dir) => {
