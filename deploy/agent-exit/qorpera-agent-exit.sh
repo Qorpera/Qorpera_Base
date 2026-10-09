@@ -15,6 +15,9 @@
 #   qorpera-agent-exit.sh counts [--from DAY] [--to DAY] [--json]   the line guard's counts per company (E7)
 #   qorpera-agent-exit.sh lookup --at TIME [--remote ADDR [--remote-port N]] [--agent ADDR] [--window S] [--days N]
 #                   [--json]        who used an address (one or both), on every node: companies, machines, names
+#   qorpera-agent-exit.sh database-url  the exit's database login (E8b) from stdin into its root-only file; prints the
+#                   file's mode, owner, size and sha256, never the login (only the rollout script runs it)
+#   qorpera-agent-exit.sh rules-start   enable and restart the rules reader; exit 0 once it has read the database
 #
 # Layout (README.md): namespace qexit; bridge qagent0 on the node with no address; veth qx-br (node, a port of
 # qagent0) / br0 (exit, 10.210.0.1/16); uplink veth qx-up (node, 10.209.255.1/30) / up0 (exit, 10.209.255.2/30).
@@ -36,6 +39,10 @@ upstreams=${QORPERA_AGENT_EXIT_UPSTREAMS:-9.9.9.9 1.1.1.1}
 run_dir=${QORPERA_AGENT_EXIT_RUN_DIR:-/run/qorpera-agent-exit}
 state_dir=${QORPERA_AGENT_EXIT_STATE_DIR:-/var/lib/qorpera-agent-exit}
 log_dir=${QORPERA_AGENT_EXIT_LOG_DIR:-/var/log/qorpera-agent-exit}
+# The exit's database login (E8b): root's alone; the rules reader gets it as a systemd credential.
+login_dir=${QORPERA_AGENT_EXIT_LOGIN_DIR:-/etc/qorpera-agent-exit}
+rules_unit=qorpera-agent-exit-rules.service
+rules_status=${QORPERA_AGENT_EXIT_RULES_STATUS:-/run/qorpera-agent-exit-rules/status.json}
 # The logs may hold at most this many bytes of the node's disk, and leave at least this share of it free. A node may
 # set its own in /etc/default/qorpera-agent-exit, its NAS folder (E3) and the brake's levels (E7): KEY=number lines for
 # the numbers, KEY=/absolute/path for the folder, and the levels as written (the logger says what is wrong with one);
@@ -80,7 +87,7 @@ LEASE=10m
 PLUG_GROUP=qorpera-agent-plug
 
 usage() {
-	sed -n '4,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+	sed -n '4,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 	exit 64
 }
 
@@ -437,6 +444,70 @@ status() {
 	[[ ! -e $run_dir/brake.json ]] || cat "$run_dir/brake.json"
 }
 
+# The exit's database login (E8b), from stdin. Only the rollout script (rules-reader-login.py) runs this, through ssh
+# and the root helper, so the login is never an argument, in a log or in a shell's history. It is written all at once,
+# root-only (0400) and without a newline, so the printed sha256 is the login's own for the script to compare. A login
+# not in the one form the script makes is refused, and the old file stays.
+login_tmp=
+database_url() {
+	local url pattern file="$login_dir/database-url"
+	pattern='^postgresql://qorpera_agent_exit(\.[a-z0-9]{20})?:[A-Za-z0-9_-]{20,128}'
+	pattern+='@[a-z0-9.-]{1,253}:[0-9]{1,5}/postgres\?sslmode=verify-full$'
+	url=$(head -c 4097)
+	((${#url} <= 4096)) && [[ $url =~ $pattern ]] ||
+		die "database-url: refused, not a login as the rollout script makes it"
+	install -d -m 0700 -o root -g root "$login_dir"
+	login_tmp=$(mktemp "$login_dir/.database-url.XXXXXX")
+	trap 'rm -f -- "$login_tmp"' EXIT
+	printf '%s' "$url" >"$login_tmp"
+	url=
+	chmod 0400 "$login_tmp"
+	chown root:root "$login_tmp"
+	sync -- "$login_tmp"
+	mv -fT -- "$login_tmp" "$file"
+	trap - EXIT
+	sync -- "$login_dir"
+	echo "$(stat -c '%n mode=%a owner=%U:%G bytes=%s' "$file") sha256=$(sha256sum <"$file" | cut -d' ' -f1)"
+}
+
+# After the login changed (rules-reader-login.py runs this): enable the rules reader and restart it, so it reads the
+# new login, and wait up to 30 seconds for a pass that read the database. A restart empties its runtime folder, so the
+# status read here is the new run's. Prints ok, or the reader's problem code; never the login.
+rules_start() {
+	local i answer last=
+	systemctl reset-failed "$rules_unit" 2>/dev/null || true
+	systemctl enable --quiet "$rules_unit"
+	systemctl restart "$rules_unit"
+	for ((i = 0; i < 30; i++)); do
+		sleep 1
+		answer=$(python3 -c '
+import json, re, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        status = json.load(f)
+except (OSError, ValueError):
+    print("waiting")
+    sys.exit()
+problem = status.get("problem")
+code = " " + problem if isinstance(problem, str) and re.fullmatch(r"[A-Z0-9_]{1,32}", problem) else ""
+print(("read" if isinstance(status.get("readAt"), str) else "waiting") + code)
+' "$rules_status")
+		case $answer in
+		read)
+			echo "qorpera-agent-exit: the rules reader read the database: ok"
+			return 0
+			;;
+		read\ *)
+			echo "qorpera-agent-exit: the rules reader read the database: ok (problem ${answer#read })"
+			return 0
+			;;
+		esac
+		last=${answer#waiting}
+	done
+	systemctl is-active --quiet "$rules_unit" || die "the rules reader is not running (journalctl -u $rules_unit)"
+	die "the rules reader has not read the database in 30 s${last:+ (problem${last})}"
+}
+
 case "${1:-}" in
 check)
 	table_batch "$EXIT_TABLE" "$exit_rules" | nft -c -f /dev/stdin
@@ -462,5 +533,7 @@ lookup)
 verify) verify ;;
 health) health ;;
 status) status ;;
+database-url) database_url ;;
+rules-start) rules_start ;;
 *) usage ;;
 esac

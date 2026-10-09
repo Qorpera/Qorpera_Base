@@ -11,6 +11,7 @@ import {
 	type MemoryCompactSource,
 	MemoryCompactStop,
 	type MemoryCompactThread,
+	type MemoryCompactUsage,
 	memoryCompact,
 	memoryCompactCut,
 	memoryCompactLeafPrompt,
@@ -493,4 +494,29 @@ it("counts a batch's tokens, and a run log's lines name no event", async () => {
 		failures: 0,
 		stopped: null,
 	});
+});
+
+it("counts what a failed request used, and a thread that cannot say adds nothing", async () => {
+	const refused = (unreported: () => MemoryCompactUsage | undefined): MemoryCompactThread => ({
+		send: async () => {
+			throw new Error("refused");
+		},
+		unreported,
+	});
+	const counted = refused(() => ({ input: 300, cached: 50, output: 20 }));
+	const used = await memoryCompact(source([long("E0")]), async () => counted, {
+		lane: new MemoryCompactLane(),
+		signal: deadline(),
+	});
+	expect(used.lines).toEqual([]);
+	expect(used.stats).toMatchObject({ calls: 1, failures: 1, input: 300, cached: 50, output: 20 });
+
+	const unknown = refused(() => {
+		throw new Error("gone");
+	});
+	const silent = await memoryCompact(source([long("E0")]), async () => unknown, {
+		lane: new MemoryCompactLane(),
+		signal: deadline(),
+	});
+	expect(silent.stats).toMatchObject({ calls: 1, failures: 1, input: 0, cached: 0, output: 0 });
 });

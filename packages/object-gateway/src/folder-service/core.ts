@@ -10,6 +10,10 @@ export type FolderActor =
 	| { readonly kind: "platform" }
 	| { readonly kind: "view"; readonly viewId: string; readonly pass: string };
 
+/** Who a change set is committed as. A command view's last one says `final` (F3 4b, migration 20260930183000): the core
+ * closes the view with it, whether it saved anything or not. */
+export type CommitActor = FolderActor | (Extract<FolderActor, { kind: "view" }> & { readonly final: true });
+
 /** The authority an agent's listing names for an entry (C1b-2 `qorpera_folder_read_receipt`). A run box's mount
  * logs it with each read and the run's native host releases it, so the core files the read without checking the path
  * again; a stale or missing one only costs the core that check. Members and the platform get none. */
@@ -102,10 +106,10 @@ export interface FolderCore {
 	sealUpload(environmentId: string, actor: FolderActor, intentId: string, signal?: AbortSignal): Promise<UploadSeal>;
 	/** Extends an open or sealed intent (C1D §3.5); returns its new expiry. */
 	renewUpload(environmentId: string, actor: FolderActor, intentId: string, signal?: AbortSignal): Promise<string>;
-	/** One change set (core §3). */
+	/** One change set (core §3). A final one may be empty. */
 	commit(
 		environmentId: string,
-		actor: FolderActor,
+		actor: CommitActor,
 		operationKey: string,
 		units: readonly unknown[],
 		signal?: AbortSignal,
@@ -639,7 +643,7 @@ export class SupabaseFolderCore implements FolderCore {
 
 	async commit(
 		environmentId: string,
-		actor: FolderActor,
+		actor: CommitActor,
 		operationKey: string,
 		units: readonly unknown[],
 		signal?: AbortSignal,
@@ -649,7 +653,7 @@ export class SupabaseFolderCore implements FolderCore {
 				"qorpera_folder_commit",
 				{
 					p_environment_id: environmentId,
-					p_actor: actorJson(actor),
+					p_actor: "final" in actor ? { ...actorJson(actor), final: true } : actorJson(actor),
 					p_operation_key: operationKey,
 					p_units: units,
 				},

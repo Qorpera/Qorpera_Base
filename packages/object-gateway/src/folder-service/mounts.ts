@@ -37,6 +37,9 @@ export interface Grant {
 export interface CoreAccess {
 	readonly write: boolean;
 	readonly quietMs?: number;
+	/** A command's view (F3 4b): published only when asked, its last publish final (the core closes the view with it);
+	 * kept when its last connection leaves; its renewals say nothing is unsaved (no seat waits on a command). */
+	readonly command?: true;
 	/** Whether the calling machine may present the view. */
 	admits(bridge: BridgeInfo): boolean;
 }
@@ -115,22 +118,25 @@ export class MountGrants {
 
 	/** How a core view the core says is `kind`, on machine allocation `machineId`, is served; none for a kind this node
 	 * does not serve yet (a coding session's: step 5). A run box view is read-only, from a run box host. A computer
-	 * desktop's is served to its own company machine alone (named after the view's allocation, in a company machine
-	 * project) and writes, publishing after a quiet period. */
+	 * desktop's and a shell command's are served to their own company machine alone (named after the view's
+	 * allocation, in a company machine project) and write: a desktop's publishes after a quiet period, a command's only
+	 * when asked. */
 	coreAccess(identity: { readonly kind: string; readonly machineId: string | null }): CoreAccess | undefined {
 		if (identity.kind === "run_box")
 			return { write: false, admits: (bridge) => this.#runBoxHosts.some((host) => isMachine(bridge, host)) };
-		if (identity.kind === "computer_desktop" && identity.machineId !== null && isUuid(identity.machineId)) {
+		const desktop = identity.kind === "computer_desktop";
+		if (
+			(desktop || identity.kind === "computer_shell_command") &&
+			identity.machineId !== null &&
+			isUuid(identity.machineId)
+		) {
 			const name = `qorpera-office-${identity.machineId.replaceAll("-", "")}`;
-			return {
-				write: true,
-				quietMs: DESKTOP_QUIET_MS,
-				admits: (bridge) =>
-					bridge.lookup === "found" &&
-					bridge.machine !== undefined &&
-					this.#companyMachineProjects.includes(bridge.machine.project) &&
-					bridge.machine.name === name,
-			};
+			const admits = (bridge: BridgeInfo): boolean =>
+				bridge.lookup === "found" &&
+				bridge.machine !== undefined &&
+				this.#companyMachineProjects.includes(bridge.machine.project) &&
+				bridge.machine.name === name;
+			return desktop ? { write: true, quietMs: DESKTOP_QUIET_MS, admits } : { write: true, command: true, admits };
 		}
 		return undefined;
 	}
@@ -158,12 +164,12 @@ export class MountGrants {
 		};
 	}
 
-	/** A view the core opened (step 2: a run's box, opened by the execution host's service; step 4: a computer desktop,
-	 * by its company machine). The core checks the pass when the view is first listed and at every renewal (40 s);
-	 * between them the service serves from memory, never past the lease the core confirmed. Here only the pass's shape,
-	 * and that the calling machine may present a core view at all (a run box host, or a company machine). The view's
-	 * kind and machine are the core's: the first renewal says them, and the service then admits only the machines
-	 * `coreAccess` names (P7 adds the node). */
+	/** A view the core opened (step 2: a run's box, opened by the execution host's service; step 4: a computer desktop
+	 * or a shell command, by its company machine). The core checks the pass when the view is first listed and at every
+	 * renewal (40 s); between them the service serves from memory, never past the lease the core confirmed. Here only the
+	 * pass's shape, and that the calling machine may present a core view at all (a run box host, or a company machine).
+	 * The view's kind and machine are the core's: the first renewal says them, and the service then admits only the
+	 * machines `coreAccess` names (P7 adds the node). */
 	#coreView(hello: Hello, bridge: BridgeInfo): Grant {
 		if (!CORE_PASS.test(hello.pass))
 			throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");

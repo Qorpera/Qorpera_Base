@@ -96,8 +96,7 @@ select pg_temp.denied(format('select public.qorpera_record_node_update_phase(%L,
 select pg_temp.denied('select pg_temp.phase(''install'')');
 select pg_temp.denied(format('select public.qorpera_drain_node_update(%L,1,%L,%L,1,%L)','32100000-0000-4000-8000-000000000020',current_setting('t.node_cap'),current_setting('t.node_release_sha'),pg_temp.node_state()#>>'{observation,policySha256}'));
 reset role;
--- The pause is an operator brake, in a founder's name. A folder-v2 company refuses the snapshot-v1 founder pause
--- (qorpera_set_company_execution_pause, 0A000); the operator pauses it through the folder core, as 849 does.
+-- The pause is an operator brake, in a founder's name: the operator pauses the company through the folder core, as 849 does.
 select public.qorpera_folder_pause('32100000-0000-4000-8000-000000000010','32100000-0000-4000-8000-000000000001','node update fixture') \g /dev/null
 select set_config('request.jwt.claims','{"role":"authenticated","sub":"32100000-0000-4000-8000-000000000001"}',true);
 select public.qorpera_authorize_node_update_drain('32100000-0000-4000-8000-000000000020',current_setting('t.node_release_sha'),repeat('3',64));

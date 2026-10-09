@@ -164,6 +164,8 @@ export interface MemoryCompactReply {
 export interface MemoryCompactThread {
 	/** One request in the thread. A refusal (§7.2) resolves with empty text or rejects; it is a failure either way. */
 	send(text: string, signal: AbortSignal): Promise<MemoryCompactReply>;
+	/** Tokens the thread used that no reply carried, those of sends that failed; each is answered once. */
+	unreported?(): MemoryCompactUsage | undefined;
 	close?(): void;
 }
 
@@ -183,6 +185,22 @@ export class MemoryCompactStop extends Error {
 		this.name = "MemoryCompactStop";
 		this.reason = reason;
 	}
+}
+
+/**
+ * The run's compactor calls, made before or after the Codex session that answers them is up: the session attaches
+ * here (§7.1). With nothing attached a call stops the lane as an outage does; the next run builds what this one could
+ * not.
+ */
+export class MemoryCompactChannel {
+	#call?: MemoryCompactCall;
+
+	attach(call: MemoryCompactCall | undefined): void {
+		this.#call = call;
+	}
+
+	readonly call: MemoryCompactCall = (system, signal) =>
+		this.#call ? this.#call(system, signal) : Promise.reject(new MemoryCompactStop("outage"));
 }
 
 interface Waiting {
@@ -336,17 +354,21 @@ export async function memoryCompactLine(
 		let best: string | null = null;
 		let tries = 0;
 		let opening: Promise<MemoryCompactThread> | undefined;
+		let thread: MemoryCompactThread | undefined;
+		const count = (usage: MemoryCompactUsage | undefined) => {
+			stats.input += usage?.input ?? 0;
+			stats.cached += usage?.cached ?? 0;
+			stats.output += usage?.output ?? 0;
+		};
 		try {
 			opening = call(system, signal);
-			const thread = await abortable(opening, signal);
+			thread = await abortable(opening, signal);
 			let message = prompt;
 			while (tries < TRIES) {
 				tries += 1;
 				stats.calls += 1;
 				const reply = await abortable(thread.send(message, signal), signal);
-				stats.input += reply.usage?.input ?? 0;
-				stats.cached += reply.usage?.cached ?? 0;
-				stats.output += reply.usage?.output ?? 0;
+				count(reply.usage);
 				const text = memoryLineText(reply.text).trim();
 				if (!text) break;
 				if (best === null || Buffer.byteLength(text) < Buffer.byteLength(best)) best = text;
@@ -357,9 +379,13 @@ export async function memoryCompactLine(
 		} catch (error) {
 			if (error instanceof MemoryCompactStop) lane.stop(error.reason);
 		} finally {
+			// What failed sends used is counted too, as far as the thread knows it now. One that cannot say adds nothing.
+			try {
+				count(thread?.unreported?.());
+			} catch {}
 			// Closed once it is open: now, or as it opens if that comes after an abort. A thread that fails to open or
 			// to close is dropped: neither rejects anything.
-			opening?.then((thread) => thread.close?.()).catch(() => {});
+			opening?.then((opened) => opened.close?.()).catch(() => {});
 		}
 		if (best !== null && memoryLineStoredBytes(best) <= LINE_BYTES) return { text: best, tries };
 		if (!signal.aborted) stats.failures += 1;

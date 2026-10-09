@@ -2,14 +2,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const OBJECT = new RegExp(`^/v1/member-company(?:-snapshot)?-objects/${UUID}/${UUID}/[0-9a-f]{64}$`);
-const UPLOAD = new RegExp(`^/v1/member-company-file/${UUID}/uploads$`);
 const EXPORT = new RegExp(`^/v1/member-file-exports/${UUID}/${UUID}/[0-9a-f]{64}$`);
 const FOLDER_OBJECT = new RegExp(`^/v1/member-folder-objects/${UUID}/[0-9a-f]{64}$`);
 const FOLDER_COMMIT = new RegExp(`^/v1/member-folder-commits/${UUID}$`);
 const PRESENCE = new RegExp(`^/v1/member-company-presence/${UUID}/${UUID}$`);
-const FILE = new RegExp(
-	`^/v1/member-company-file/${UUID}/(edits|proposals)(?:/(${UUID}))?(?:/(review|content|file))?$`,
-);
 const ATTACHMENT = new RegExp(`^/v1/member-session-attachments/(upload|input)/${UUID}/${UUID}/[0-9a-f]{64}$`);
 
 function route(url: string): { method: string; headers: string[] } | undefined {
@@ -17,19 +13,7 @@ function route(url: string): { method: string; headers: string[] } | undefined {
 	if (EXPORT.test(url)) return { method: "GET", headers: ["authorization"] };
 	if (FOLDER_OBJECT.test(url)) return { method: "GET", headers: ["authorization"] };
 	if (FOLDER_COMMIT.test(url)) return { method: "POST", headers: ["authorization", "content-type"] };
-	if (UPLOAD.test(url))
-		return { method: "PUT", headers: ["authorization", "content-type", "x-qorpera-company-upload"] };
 	if (OBJECT.test(url)) return { method: "GET", headers: ["authorization", "x-qorpera-company-path"] };
-	const file = FILE.exec(url);
-	if (file) {
-		const [, kind, target, action] = file;
-		if (!target && (kind !== "edits" || action)) return undefined;
-		if (kind === "proposals" && !action) return undefined;
-		return {
-			method: !target || action === "review" ? "POST" : "GET",
-			headers: ["authorization", "content-type"],
-		};
-	}
 	const attachment = ATTACHMENT.exec(url);
 	if (attachment)
 		return { method: attachment[1] === "upload" ? "PUT" : "GET", headers: ["authorization", "content-type"] };
@@ -89,7 +73,7 @@ export function createMemberCors(
 		}
 		response.setHeader("access-control-allow-origin", origin);
 		if (!preflight) {
-			response.setHeader("access-control-expose-headers", "x-qorpera-access-mode, etag, x-qorpera-plan-sha256");
+			response.setHeader("access-control-expose-headers", "x-qorpera-access-mode, etag");
 			return false;
 		}
 		response.writeHead(204, {

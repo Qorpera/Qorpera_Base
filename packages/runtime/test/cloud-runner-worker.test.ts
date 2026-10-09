@@ -4,16 +4,20 @@ import {
 	type CloudRunnerControlTransport,
 } from "@qorpera/cloud-client/node/cloud-runner-protocol";
 import type { JsonValue } from "@qorpera/contracts";
-import type { CloudRunnerBrokerTransport } from "@qorpera/runtime/cloud-runner-broker";
+import {
+	type NativeProviderComputerBridge,
+	nativeProviderExecutionGuarantees,
+} from "@qorpera/runtime/cloud-native-provider";
+import {
+	type CloudRunnerBrokerDescription,
+	type CloudRunnerBrokerTransport,
+	CloudRunnerJobBroker,
+	type CloudRunnerNativeAuthority,
+} from "@qorpera/runtime/cloud-runner-broker";
 import { DisposableCloudRunner } from "@qorpera/runtime/cloud-runner-control";
-import type {
-	CloudRunnerExecutionResult,
-	CloudRunnerSandboxBackend,
-	CloudRunnerSandboxGuarantees,
-	ExecuteCloudRunnerJobOptions,
-} from "@qorpera/runtime/cloud-runner-sandbox";
-import { EphemeralCloudRunnerWorker } from "@qorpera/runtime/cloud-runner-worker";
-import { describe, expect, it, vi } from "vitest";
+import type { CloudRunnerExecutionResult } from "@qorpera/runtime/cloud-runner-sandbox";
+import { type CloudRunnerCompanyExecutor, EphemeralCloudRunnerWorker } from "@qorpera/runtime/cloud-runner-worker";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const runnerId = "a8450f9d-c912-43ea-81f6-62c7247d752a";
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
@@ -28,6 +32,8 @@ const clientJobId = "b953532a-c4f0-4b81-b901-d4bb21237004";
 const createdAt = "2026-08-17T00:00:00.000Z";
 const activationToken = "a".repeat(43);
 const outputSnapshotId = "b953532a-c4f0-4b81-b901-d4bb21237006";
+
+type CompanyJobOptions = Parameters<CloudRunnerCompanyExecutor>[0];
 
 function runnerRecord(activeLeases: number) {
 	return {
@@ -94,10 +100,11 @@ class RunnerService implements CloudRunnerControlTransport {
 		if (body.action === "activate" || body.action === "heartbeat") {
 			return runnerRecord(this.status === "leased" ? 1 : 0);
 		}
-		if (body.action === "accept") {
+		if (body.action === "start") {
 			if (this.status !== "queued") return null;
 			this.status = "leased";
-			return jobRecord("leased");
+			// A start that defers its reads: the company-lane spies serve the description and authority.
+			return { job: jobRecord("leased"), description: null, native_authority: null };
 		}
 		if (body.action === "renew") return jobRecord("leased");
 		if (body.action === "complete") {
@@ -119,31 +126,58 @@ class RunnerService implements CloudRunnerControlTransport {
 	}
 }
 
-const guarantees: CloudRunnerSandboxGuarantees = {
-	boundary: "rootless_container",
-	hostFilesystem: "none",
-	inputFilesystem: "read_only",
-	companyCheckout: "job_private",
-	outputFilesystem: "job_private",
-	network: "deny_by_default",
-	environment: "allowlist_only",
-	privileges: "unprivileged",
-	resourceLimits: "kernel_enforced",
-	termination: "boundary_destroyed",
+const authority: CloudRunnerNativeAuthority = {
+	leaseId: clientJobId,
+	runId: environmentId,
+	providerConnectionId: clientRunnerId,
+	providerConnectionVersion: 1,
+	credentialCapsuleId: clientRunnerId,
+	encryptedCapsuleReference: "synthetic-private-capsule",
+	attestationPolicySha256: "a".repeat(64),
+	computeIdentityId: clientRunnerId,
+	computeIdentityOwnershipKind: "member",
+	computeIdentityOwnerUserId: actorUserId,
+	credentialOwnershipKind: "member",
+	credentialOwnerUserId: actorUserId,
+	provider: "openai",
+	authenticationMode: "native_subscription",
+	nativeHarness: "codex-cli",
+	model: "faux-no-model",
+	runnerId,
+	assignmentId,
+	expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
 };
 
-function backend() {
+const bridge: NativeProviderComputerBridge = {
+	executionGuarantees: nativeProviderExecutionGuarantees("virtual_machine"),
+	startCompany: async () => {
+		throw new Error("worker test uses an injected company executor");
+	},
+};
+
+/** The company lane's broker reads. This is a worker lifecycle test: broker parsing and native
+ * execution have their own fixtures, so only what the worker consumes is stubbed. */
+function companyLane() {
 	return {
-		backendId: "worker-test",
-		guarantees,
-		capabilities: ["agent_turn"] as const,
-		jobTypes: ["agent_turn"] as const,
-		prepare: vi.fn(async () => undefined),
-		start: vi.fn(async () => {
-			throw new Error("worker test uses an injected executor");
-		}),
-	} satisfies CloudRunnerSandboxBackend;
+		describe: vi.spyOn(CloudRunnerJobBroker.prototype, "describe").mockResolvedValue({
+			companyRuntime: "company-path-v1",
+			sponsor: { authenticationMode: "native_subscription" },
+		} as CloudRunnerBrokerDescription),
+		acquire: vi.spyOn(CloudRunnerJobBroker.prototype, "acquireNativeAuthority").mockResolvedValue(authority),
+		renew: vi.spyOn(CloudRunnerJobBroker.prototype, "renewNativeAuthority").mockResolvedValue(authority),
+		release: vi.spyOn(CloudRunnerJobBroker.prototype, "releaseNativeAuthority").mockResolvedValue(undefined),
+	};
 }
+
+let lane: ReturnType<typeof companyLane>;
+
+beforeEach(() => {
+	lane = companyLane();
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 function brokerTransport(): CloudRunnerBrokerTransport {
 	return {
@@ -199,14 +233,13 @@ async function activeRunner(service: RunnerService): Promise<DisposableCloudRunn
 
 function worker(
 	runner: DisposableCloudRunner,
-	serviceBackend: CloudRunnerSandboxBackend,
-	executeJob: (options: ExecuteCloudRunnerJobOptions) => Promise<CloudRunnerExecutionResult>,
+	executeJob: CloudRunnerCompanyExecutor,
 	options: { leaseRenewalMs?: number; heartbeatMs?: number; now?: () => number } = {},
 ): EphemeralCloudRunnerWorker {
 	return new EphemeralCloudRunnerWorker({
 		runner,
 		brokerTransport: brokerTransport(),
-		backend: serviceBackend,
+		nativeProviderBridge: bridge,
 		platform: "linux-x64",
 		runnerVersion: "0.1.0",
 		executeJob,
@@ -215,31 +248,82 @@ function worker(
 }
 
 describe("ephemeral cloud runner worker", () => {
-	it("accepts assigned work, executes through the broker boundary, and completes", async () => {
+	it("starts assigned work on the native company lane and completes it", async () => {
 		const service = new RunnerService();
 		const runner = await activeRunner(service);
-		const serviceBackend = backend();
-		const executeJob = vi.fn(async (_options: ExecuteCloudRunnerJobOptions) => ({
+		const executeJob = vi.fn(async (_options: CompanyJobOptions) => ({
 			...successfulExecution({ outcome: "built" }),
 			outputSnapshotId,
 		}));
 
-		const result = await worker(runner, serviceBackend, executeJob).runNext(assignment);
+		const result = await worker(runner, executeJob).runNext(assignment);
 
 		expect(result).toMatchObject({ status: "completed", job: { jobId, status: "completed" } });
-		expect(serviceBackend.prepare).toHaveBeenCalledOnce();
 		expect(executeJob).toHaveBeenCalledOnce();
 		expect(executeJob.mock.calls[0]?.[0]).toMatchObject({
 			job: { jobId, substrateVersionId },
-			backend: serviceBackend,
-			modelBroker: { requestModel: expect.any(Function) },
+			authority,
+			bridge,
+			// The job's lease token travels with it, for the host's calls (G2-2).
+			leaseToken: assignment.capability,
 		});
-		expect(service.requests.map((request) => request.action)).toEqual(["activate", "accept", "complete"]);
+		expect(lane.acquire).toHaveBeenCalledOnce();
+		// Governed completion releases the native lease atomically with its receipt.
+		expect(lane.release).not.toHaveBeenCalled();
+		expect(service.requests.map((request) => request.action)).toEqual(["activate", "start", "complete"]);
 		expect(service.requests.at(-1)).toMatchObject({ action: "complete", outputSnapshotId });
 		expect(runner.leasedJobs()).toEqual([]);
 	});
 
-	it("renews the lease and heartbeat serially while a container is running", async () => {
+	it.each([
+		["a whole-tree company run", "whole-tree-v1", "native_subscription", "does not support a whole-tree"],
+		["a non-native company run", "company-path-v1", "api_key", "requires the native cloud runtime"],
+	] as const)(
+		"refuses %s before any authority or execution, with no fallback",
+		async (_label, companyRuntime, authenticationMode, message) => {
+			const description = { companyRuntime, sponsor: { authenticationMode } } as CloudRunnerBrokerDescription;
+			lane.describe.mockResolvedValue(description);
+			const service = new RunnerService();
+			const runner = await activeRunner(service);
+			const executeJob = vi.fn(async () => successfulExecution());
+
+			const result = await worker(runner, executeJob).runNext(assignment);
+
+			expect(result).toMatchObject({ status: "failed", job: { status: "failed" } });
+			expect(service.requests.at(-1)).toMatchObject({
+				action: "fail",
+				error: expect.stringContaining(message),
+				retryable: false,
+			});
+			expect(executeJob).not.toHaveBeenCalled();
+			expect(lane.acquire).not.toHaveBeenCalled();
+			expect(lane.release).not.toHaveBeenCalled();
+		},
+	);
+
+	it("refuses a company run when no native execution bridge is configured", async () => {
+		const service = new RunnerService();
+		const runner = await activeRunner(service);
+		const executeJob = vi.fn(async () => successfulExecution());
+
+		const result = await new EphemeralCloudRunnerWorker({
+			runner,
+			brokerTransport: brokerTransport(),
+			platform: "linux-x64",
+			runnerVersion: "0.1.0",
+			executeJob,
+		}).runNext(assignment);
+
+		expect(result).toMatchObject({ status: "failed" });
+		expect(service.requests.at(-1)).toMatchObject({
+			action: "fail",
+			error: expect.stringContaining("bridge is not configured"),
+		});
+		expect(executeJob).not.toHaveBeenCalled();
+		expect(lane.acquire).not.toHaveBeenCalled();
+	});
+
+	it("renews the lease, the native authority and the heartbeat serially while a company run is in flight", async () => {
 		const service = new RunnerService();
 		const runner = await activeRunner(service);
 		const executeJob = vi.fn(
@@ -249,38 +333,40 @@ describe("ephemeral cloud runner worker", () => {
 				}),
 		);
 
-		await worker(runner, backend(), executeJob, { leaseRenewalMs: 10, heartbeatMs: 20 }).runNext(assignment);
+		await worker(runner, executeJob, { leaseRenewalMs: 10, heartbeatMs: 20 }).runNext(assignment);
 
 		const actions = service.requests.map((request) => request.action);
 		expect(actions.filter((action) => action === "renew").length).toBeGreaterThanOrEqual(2);
+		expect(lane.renew).toHaveBeenCalled();
 		expect(actions).toContain("heartbeat");
 		expect(actions.at(-1)).toBe("complete");
 	});
 
-	it("reports deterministic job-contract failures without retrying them", async () => {
+	it("reports deterministic job-contract failures without retrying them, and releases the native lease", async () => {
 		const service = new RunnerService();
 		const runner = await activeRunner(service);
-		const result = await worker(runner, backend(), async () => {
+		const result = await worker(runner, async () => {
 			throw new Error("Runner substrate is inconsistent");
 		}).runNext(assignment);
 
 		expect(result).toMatchObject({ status: "failed", job: { status: "failed" } });
 		expect(service.requests.at(-1)).toMatchObject({ action: "fail", retryable: false });
+		expect(lane.release).toHaveBeenCalledExactlyOnceWith("released");
 	});
 
-	it("destroys execution on shutdown without falsely failing the leased job", async () => {
+	it("destroys execution on shutdown without falsely failing the leased job, and revokes the native lease", async () => {
 		const service = new RunnerService();
 		const runner = await activeRunner(service);
 		const controller = new AbortController();
 		const executeJob = vi.fn(
-			async (options: ExecuteCloudRunnerJobOptions) =>
+			async (options: CompanyJobOptions) =>
 				new Promise<CloudRunnerExecutionResult>((_resolve, reject) => {
-					options.signal?.addEventListener("abort", () => reject(new Error("container destroyed")), {
+					options.signal.addEventListener("abort", () => reject(new Error("computer destroyed")), {
 						once: true,
 					});
 				}),
 		);
-		const running = worker(runner, backend(), executeJob, { leaseRenewalMs: 50, heartbeatMs: 50 }).runNext(
+		const running = worker(runner, executeJob, { leaseRenewalMs: 50, heartbeatMs: 50 }).runNext(
 			assignment,
 			controller.signal,
 		);
@@ -290,9 +376,10 @@ describe("ephemeral cloud runner worker", () => {
 		await expect(running).rejects.toThrow("worker stopped");
 		expect(service.requests.some((request) => request.action === "fail")).toBe(false);
 		expect(runner.leasedJobs()).toMatchObject([{ jobId, status: "leased" }]);
+		expect(lane.release).toHaveBeenCalledExactlyOnceWith("revoked");
 	});
 
-	it("replays a staged completion after an ambiguous response without rerunning the container", async () => {
+	it("replays a staged completion after an ambiguous response without rerunning the company run", async () => {
 		const service = new RunnerService();
 		const runner = await activeRunner(service);
 		service.failCompletionOnce = true;
@@ -300,12 +387,15 @@ describe("ephemeral cloud runner worker", () => {
 			...successfulExecution({ outcome: "durable" }),
 			outputSnapshotId,
 		}));
-		const ephemeralWorker = worker(runner, backend(), executeJob);
+		const ephemeralWorker = worker(runner, executeJob);
 		await expect(ephemeralWorker.runNext(assignment)).rejects.toThrow("completion response lost");
 		expect(runner.pendingCompletion(jobId)).toEqual({ outcome: "durable" });
 
 		await expect(ephemeralWorker.runNext(undefined)).resolves.toMatchObject({ status: "completed" });
 		expect(executeJob).toHaveBeenCalledOnce();
+		expect(lane.acquire).toHaveBeenCalledOnce();
+		// The staged completion still owns the native lease; the replayed completion releases it.
+		expect(lane.release).not.toHaveBeenCalled();
 		const completions = service.requests.filter((request) => request.action === "complete");
 		expect(completions).toHaveLength(2);
 		expect(completions[0]).toEqual(completions[1]);
@@ -317,7 +407,7 @@ describe("ephemeral cloud runner worker", () => {
 		const runner = await activeRunner(service);
 		service.failCompletionOnce = true;
 		const executeJob = vi.fn(async () => successfulExecution({ outcome: "staged" }));
-		const ephemeralWorker = worker(runner, backend(), executeJob);
+		const ephemeralWorker = worker(runner, executeJob);
 		await expect(ephemeralWorker.runNext(assignment)).rejects.toThrow("completion response lost");
 		expect(runner.pendingCompletion(jobId)).toEqual({ outcome: "staged" });
 		service.completionErrorStatus = 409;
@@ -332,7 +422,7 @@ describe("ephemeral cloud runner worker", () => {
 		const runner = await activeRunner(service);
 		service.failCompletionOnce = true;
 		const executeJob = vi.fn(async () => successfulExecution({ outcome: "waiting" }));
-		const ephemeralWorker = worker(runner, backend(), executeJob);
+		const ephemeralWorker = worker(runner, executeJob);
 		await expect(ephemeralWorker.runNext(assignment)).rejects.toThrow("completion response lost");
 		service.completionErrorStatus = 423;
 
@@ -347,14 +437,10 @@ describe("ephemeral cloud runner worker", () => {
 		const runner = await activeRunner(service);
 		service.failCompletionOnce = true;
 		const executeJob = vi.fn(async () => successfulExecution({ outcome: "expired" }));
-		await expect(worker(runner, backend(), executeJob).runNext(assignment)).rejects.toThrow(
-			"completion response lost",
-		);
+		await expect(worker(runner, executeJob).runNext(assignment)).rejects.toThrow("completion response lost");
 		const leaseExpiry = Date.parse(runner.leasedJobs()[0]?.leaseExpiresAt as string);
 
-		await expect(
-			worker(runner, backend(), executeJob, { now: () => leaseExpiry + 1 }).runNext(undefined),
-		).resolves.toEqual({
+		await expect(worker(runner, executeJob, { now: () => leaseExpiry + 1 }).runNext(undefined)).resolves.toEqual({
 			status: "idle",
 		});
 		expect(service.requests.filter((request) => request.action === "complete")).toHaveLength(1);

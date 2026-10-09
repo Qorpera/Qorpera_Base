@@ -21,11 +21,7 @@
  * edit someone else made meanwhile is never overwritten unseen (contract 5.2).
  * A skill is guidance: it grants nothing and never replaces a current source. */
 import { createHash } from "node:crypto";
-import {
-	CLOUD_AGENT_FOLDER_BY_ID,
-	type CloudAgentFolderPlace,
-	cloudAgentFolder,
-} from "@qorpera/cloud-client/cloud-agent-folder";
+import { type CloudAgentFolderPlace, cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
 import {
 	CLOUD_SKILL_NAME_MAX_CHARS,
 	type CloudSkillDocument,
@@ -118,11 +114,7 @@ export type CloudSkillOwner = Pick<CloudNativeToolIdentity, "companyId" | "staff
 
 /** Where a library keeps its skills; an agent's own is in its folder as the company keeps it (place, from
  * the run's context). */
-export function cloudSkillRoot(
-	scope: CloudSkillScope,
-	owner: CloudSkillOwner,
-	place: CloudAgentFolderPlace = CLOUD_AGENT_FOLDER_BY_ID,
-): string {
+export function cloudSkillRoot(scope: CloudSkillScope, owner: CloudSkillOwner, place: CloudAgentFolderPlace): string {
 	return scope === "company"
 		? CLOUD_COMPANY_SKILLS_ROOT
 		: `${cloudAgentFolder(owner.companyId, owner.staffAgentId, place)}/skills`;
@@ -294,7 +286,7 @@ export async function composeCloudAgentSkills(
 	gateway: CloudSkillGateway,
 	owner: CloudSkillOwner,
 	signal: AbortSignal,
-	place: CloudAgentFolderPlace = CLOUD_AGENT_FOLDER_BY_ID,
+	place: CloudAgentFolderPlace,
 ): Promise<CloudAgentSkillsBlock> {
 	const ownRoot = cloudSkillRoot("agent", owner, place);
 	const [ownListing, companyListing] = await Promise.allSettled([
@@ -412,7 +404,7 @@ export const CLOUD_UPDATE_SKILL_DESCRIPTION =
 export function cloudSkillTools(
 	gateway: CloudSkillGateway,
 	identity: CloudNativeToolIdentity,
-	place: CloudAgentFolderPlace = CLOUD_AGENT_FOLDER_BY_ID,
+	place: CloudAgentFolderPlace,
 ): readonly CloudNativeTool[] {
 	const expected = Object.freeze({ ...identity });
 	const ownRoot = cloudSkillRoot("agent", expected, place);

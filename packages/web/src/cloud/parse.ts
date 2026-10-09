@@ -275,7 +275,6 @@ export function parseSession(value: unknown): HostedSession {
 		scope && typeof scope === "object" && !Array.isArray(scope) ? (scope as Record<string, JsonValue>) : undefined;
 	const staffAgentId = optionalString(input.staff_agent_id, "staff agent id", 128);
 	const parentSessionId = optionalUuid(input.parent_session_id, "parent session id");
-	const companySnapshotId = optionalUuid(input.company_snapshot_id, "session company snapshot id");
 	const staffVersion = optionalInteger(input.staff_version, "session staff version", 1);
 	return {
 		sessionId: uuid(input.session_id, "session id"),
@@ -286,7 +285,6 @@ export function parseSession(value: unknown): HostedSession {
 		...(staffAgentId ? { staffAgentId } : {}),
 		...(parentSessionId ? { parentSessionId } : {}),
 		...(executionScope ? { executionScope } : {}),
-		...(companySnapshotId ? { companySnapshotId } : {}),
 		...(staffVersion ? { staffVersion } : {}),
 		audience: parseSessionAudience(input),
 		status,
@@ -319,14 +317,12 @@ export function parseAgentThreadHandle(value: unknown): AgentThreadHandle {
 }
 export function parseStaffSessionHandle(value: unknown): StaffSessionHandle {
 	const input = record(value, "staff session");
-	const companySnapshotId = optionalUuid(input.company_snapshot_id, "session Company File revision");
 	const staffVersion = optionalInteger(input.staff_version, "session staff version", 1);
 	return {
 		sessionId: uuid(input.session_id, "session id"),
 		clientSessionId: uuid(input.client_session_id, "client session id"),
 		environmentId: uuid(input.environment_id, "environment id"),
 		title: String(input.title ?? ""),
-		...(companySnapshotId ? { companySnapshotId } : {}),
 		...(staffVersion ? { staffVersion } : {}),
 		audience: parseSessionAudience(input),
 		created: input.created === true,
@@ -572,7 +568,6 @@ export function parseEvents(value: unknown): HostedSessionEvent[] {
 
 export function parseCompanyFile(value: unknown): HostedCompanyFile {
 	const input = record(value, "company file");
-	const headSnapshotId = optionalUuid(input.head_snapshot_id, "company file head snapshot id");
 	const entitlement =
 		input.entitlement && typeof input.entitlement === "object"
 			? parseAccountEntitlement(input.entitlement)
@@ -580,16 +575,6 @@ export function parseCompanyFile(value: unknown): HostedCompanyFile {
 	return {
 		profileId: uuid(input.profile_id, "company file profile id"),
 		environmentId: uuid(input.environment_id, "company file environment id"),
-		canonicalWorkspaceId: uuid(input.canonical_workspace_id, "company file workspace id"),
-		...(headSnapshotId ? { headSnapshotId } : {}),
-		state: oneOf(input.state, ["provisioning", "ready"], "company file state"),
-		logicalBytes: boundedInteger(input.logical_bytes ?? 0, "company file logical bytes", 0, Number.MAX_SAFE_INTEGER),
-		retainedStorageBytes: boundedInteger(
-			input.retained_storage_bytes ?? 0,
-			"company file retained storage",
-			0,
-			Number.MAX_SAFE_INTEGER,
-		),
 		storageUsedBytes: boundedInteger(
 			input.storage_used_bytes ?? 0,
 			"company file storage",
@@ -602,7 +587,6 @@ export function parseCompanyFile(value: unknown): HostedCompanyFile {
 			0,
 			Number.MAX_SAFE_INTEGER,
 		),
-		objectBackends: Array.isArray(input.object_backends) ? input.object_backends.map(String) : [],
 		...(entitlement ? { entitlement } : {}),
 		createdAt: timestamp(input.created_at, "company file creation time"),
 		updatedAt: timestamp(input.updated_at, "company file update time"),

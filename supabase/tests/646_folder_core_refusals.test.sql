@@ -281,11 +281,10 @@ begin
 	set local session_replication_role = origin;
 end $$;
 
--- The legacy pause, and the old row writers (contract 5.6).
+-- The old row writers (contract 5.6).
 do $$
 begin
 	perform pg_temp.as_member('64600000-0000-4000-8000-000000000001');
-	perform pg_temp.refuses($q$select public.qorpera_set_company_execution_pause('64600000-0000-4000-8000-000000000010', true, null)$q$);
 	perform pg_temp.refuses($q$select public.qorpera_put_profile_staff('64600000-0000-4000-8000-000000000010', extensions.gen_random_uuid(),
 		'Agent', 'Role', 'Charter.', null, null, 'green', 'round', null, null, null, 'active', 'active', statement_timestamp(), null)$q$);
 	perform pg_temp.refuses($q$select public.qorpera_delete_profile_staff('64600000-0000-4000-8000-000000000010', extensions.gen_random_uuid(), 1)$q$);
@@ -297,7 +296,6 @@ begin
 		'Agent', 'Role', 'Charter.', null, null, 'green', 'round', null, null, null, 'active', 'active', statement_timestamp(), null)$q$);
 	perform pg_temp.not_refused($q$select public.qorpera_delete_profile_staff('64600000-0000-4000-8000-000000000011',
 		'64600000-0000-4000-8000-0000000000a1', 1)$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_set_company_execution_pause('64600000-0000-4000-8000-000000000011', true, null)$q$);
 	perform pg_temp.as_service();
 end $$;
 

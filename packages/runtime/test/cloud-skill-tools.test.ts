@@ -123,6 +123,9 @@ function companyFile(initial: Record<string, string> = {}) {
 	};
 }
 
+/** Every agent's folder is its folder name (legacy sweep step C, AF). */
+const PLACE = { core: "folder-v2", handle: "nora" } as const;
+
 async function fixture(initial: Record<string, string> = {}) {
 	const { binding, authority } = nativeToolAuthorityFixture();
 	const run = await CloudNativeToolRun.open(
@@ -130,14 +133,15 @@ async function fixture(initial: Record<string, string> = {}) {
 		{ describeToolAuthority: async () => authority },
 		new AbortController().signal,
 	);
-	const agent = run.identity.staffAgentId;
-	const own = cloudSkillRoot("agent", run.identity);
-	// In a folder-v2 company an agent's own library is in its named folder.
+	// The agent's folder name: its own library is under agents/<agent>/skills.
+	const agent = PLACE.handle;
+	const own = cloudSkillRoot("agent", run.identity, PLACE);
+	expect(own).toBe("agents/nora/skills");
 	expect(cloudSkillRoot("agent", run.identity, { core: "folder-v2", handle: "anna-berg" })).toBe(
 		"agents/anna-berg/skills",
 	);
 	expect(cloudSkillRoot("company", run.identity, { core: "folder-v2", handle: "anna-berg" })).toBe(
-		cloudSkillRoot("company", run.identity),
+		cloudSkillRoot("company", run.identity, PLACE),
 	);
 	const store = companyFile(
 		Object.fromEntries(Object.entries(initial).map(([key, text]) => [key.replace("<own>", own), text])),
@@ -146,7 +150,7 @@ async function fixture(initial: Record<string, string> = {}) {
 		companyId: run.identity.companyId,
 		runId: run.identity.runId,
 		identity: run.identity,
-		tools: cloudSkillTools(store.gateway, run.identity),
+		tools: cloudSkillTools(store.gateway, run.identity, PLACE),
 		assertActive: (signal) => run.assertActive(signal),
 		signal: run.signal,
 	});
@@ -160,7 +164,9 @@ async function fixture(initial: Record<string, string> = {}) {
 	};
 	/** The current version of a stored file, as read_skill or a receipt would give it. */
 	const version = (path: string) => store.files.get(path.replace("<own>", own))!.version;
-	return { run, agent, own, store, boundary, call, version };
+	/** The skills block the runtime composes for this run. */
+	const compose = () => composeCloudAgentSkills(store.gateway, run.identity, new AbortController().signal, PLACE);
+	return { run, agent, own, store, boundary, call, version, compose };
 }
 
 const imported = [
@@ -499,7 +505,7 @@ describe("imported skills with long descriptions", () => {
 			"skills/long-one/SKILL.md": `---\nname: long-one\ndescription: ${long}\n---\n\nSteps.\n`,
 		});
 		try {
-			const block = await composeCloudAgentSkills(f.store.gateway, f.run.identity, new AbortController().signal);
+			const block = await f.compose();
 			const [entry] = block.company.skills;
 			expect(Buffer.byteLength(entry.description!)).toBeLessThanOrEqual(1100);
 			expect(entry.description!.endsWith("…")).toBe(true);
@@ -524,7 +530,7 @@ describe("skill catalog composition", () => {
 		});
 		try {
 			f.store.unreadable.add("skills/refund/SKILL.md");
-			const block = await composeCloudAgentSkills(f.store.gateway, f.run.identity, new AbortController().signal);
+			const block = await f.compose();
 			expect(block).toEqual({
 				schema: "qorpera.agent-skills/v1",
 				trust: "guidance_not_authority",
@@ -562,7 +568,7 @@ describe("skill catalog composition", () => {
 			),
 		);
 		try {
-			const block = await composeCloudAgentSkills(f.store.gateway, f.run.identity, new AbortController().signal);
+			const block = await f.compose();
 			expect(block.company).toMatchObject({ descriptions: "search_skills", moreSkills: 0 });
 			expect(block.company.skills).toHaveLength(30);
 			expect(block.company.skills[0]).toEqual({ name: "skill-00" });
@@ -580,7 +586,7 @@ describe("skill catalog composition", () => {
 		});
 		try {
 			f.store.unlistable.add("skills");
-			const block = await composeCloudAgentSkills(f.store.gateway, f.run.identity, new AbortController().signal);
+			const block = await f.compose();
 			expect(block.available).toBe(true);
 			expect(block.own.skills).toEqual([{ name: "triage", description: "Triage." }]);
 			expect(block.own).not.toHaveProperty("unavailable");
@@ -589,9 +595,7 @@ describe("skill catalog composition", () => {
 			const found = await f.call("search_skills", {});
 			expect(found).toMatchObject({ total: 1, searched: { agent: 1 }, unavailable: ["company"] });
 			f.store.unlistable.add(f.own);
-			await expect(
-				composeCloudAgentSkills(f.store.gateway, f.run.identity, new AbortController().signal),
-			).rejects.toThrow("Company File listing unavailable");
+			await expect(f.compose()).rejects.toThrow("Company File listing unavailable");
 		} finally {
 			f.run.close();
 		}
@@ -658,7 +662,7 @@ describe("refusals and protected libraries", () => {
 			expect(f.store.files.get("skills/refund/SKILL.md")?.text).toContain("\n\nx\n");
 			f.store.deniedReads.add("skills/refund/SKILL.md");
 			expect(await f.call("read_skill", { name: "refund", scope: "company" })).toMatchObject({ state: "no_access" });
-			const block = await composeCloudAgentSkills(f.store.gateway, f.run.identity, new AbortController().signal);
+			const block = await f.compose();
 			expect(block.company.skills).toEqual([{ name: "refund", problem: "no_access" }]);
 		} finally {
 			f.run.close();

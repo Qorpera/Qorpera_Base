@@ -794,6 +794,8 @@ handoff left open.
   request), running work fenced at its next governed effect or read, queued
   wakes wait; resuming lifts it; founders are notified either way. The
   ceiling view reports the wake ceiling, the last hour and the pause.
+  (The ceilings went on 24 September; the legacy sweep dropped the
+  function in 20260930240000.)
 - **Sponsor handoff** `20260828024000_runtime_sponsor_handoff.sql`
   (contract 17, acceptance 29): when a run's sponsoring connection reports
   `usage_limit` and the attempt produced no governed effect, job failure

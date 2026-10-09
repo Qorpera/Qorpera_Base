@@ -1,11 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
+import { CloudFolderGroupChats } from "@qorpera/runtime/cloud-folder-group-chats";
 import { type CloudFolderHire, CloudFolderHiring } from "@qorpera/runtime/cloud-folder-hiring";
-import {
-	CLOUD_HIRE_TOOL_DESCRIPTION,
-	CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER,
-	cloudHiringTools,
-} from "@qorpera/runtime/cloud-hiring-tools";
+import { CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER, cloudHiringTools } from "@qorpera/runtime/cloud-hiring-tools";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudToolArgumentRefusal, CloudToolRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudNativeToolOperations } from "@qorpera/runtime/cloud-native-tool-operations";
@@ -230,10 +227,11 @@ it("reports a folder taken meanwhile as a conflict, and a save the review does n
 
 it("is the hire tool's folder-v2 path: its description, a 4000-byte assignment, and the writer behind execute", async () => {
 	const f = await fixture();
-	const gateway = { mutate: vi.fn(), applyOwnOrganizationDocument: vi.fn() };
-	const [legacy] = cloudHiringTools(gateway, f.identity);
-	const [tool] = cloudHiringTools(gateway, f.identity, undefined, { folderHiring: f.hiring() });
-	expect(legacy?.description).toBe(CLOUD_HIRE_TOOL_DESCRIPTION);
+	const operations = new CloudNativeToolOperations(f.run, f.operationControl);
+	const [tool] = cloudHiringTools(f.identity, {
+		folderHiring: f.hiring(operations),
+		folderGroupChats: new CloudFolderGroupChats({ folder: f.folder, operations, identity: f.identity }),
+	});
 	expect(tool?.description).toBe(CLOUD_HIRE_TOOL_DESCRIPTION_FOLDER);
 	expect(tool?.inputSchema).toMatchObject({ properties: { firstAssignment: { maxLength: 4000 } } });
 	const args = { ...HIRE };
@@ -246,13 +244,9 @@ it("is the hire tool's folder-v2 path: its description, a 4000-byte assignment, 
 	expect(() =>
 		tool?.parseArguments({ ...args, operationKey: "hire-4000", firstAssignment: "Å".repeat(2000) }),
 	).not.toThrow();
-	expect(() =>
-		legacy?.parseArguments({ ...args, operationKey: "hire-9", firstAssignment: "x".repeat(4001) }),
-	).not.toThrow();
 	const parsed = tool?.parseArguments(args);
 	const result = parse((await tool?.execute(parsed ?? {}, f.context)) as { value: unknown });
 	expect(result).toMatchObject({ outcome: "saved", agent: { folder: "agents/ada-lind" } });
-	expect(gateway.mutate).not.toHaveBeenCalled();
 	// The key is bound to that request: other arguments under it are refused, pointing at agents/.
 	expect(() => tool?.parseArguments({ ...args, name: "Someone Else" })).toThrow(/check agents\/ before hiring again/);
 });

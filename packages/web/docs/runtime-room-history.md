@@ -21,4 +21,4 @@ The native provider login proxy accepts browser requests only from the exact HTT
 - `node --test supabase/functions/native-provider-login/native-provider-login.test.ts`
 - `node --test packages/web/scripts/provenance.test.mjs`
 - In `packages/web`: `npx vitest run test/room-speaker.test.ts test/transcript.test.ts`
-- `node scripts/test-runtime-room-history.mjs` creates a disposable local PostgreSQL database with the complete migrations and real room/wake/native-send fixtures. It verifies zero-recipient persistence, replay, authorization, no materialization duplicate, immutable speaker projection, and migration repair of accepted historical messages. It never targets a configured hosted database.
+- The SQL tests in `hosted-db` check room posting on the company folder (folder-v2): `660_folder_core_member_actions` (a post in an agent's thread and in a group chat with no agent), `626_runtime_room_mentions`, and the speaker projection in `924_folder_runtime_base`. The legacy sweep (F1b) deleted `scripts/test-runtime-room-history.mjs`, which replayed the 13 Sep history upgrade on a snapshot-v1 company.

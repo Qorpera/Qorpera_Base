@@ -9,21 +9,18 @@ import {
 	type CloudRunnerControlTransport,
 } from "@qorpera/cloud-client/node/cloud-runner-protocol";
 import type { JsonValue } from "@qorpera/contracts";
-import * as nativeProvider from "@qorpera/runtime/cloud-native-provider";
+import { nativeProviderExecutionGuarantees } from "@qorpera/runtime/cloud-native-provider";
 import {
 	type CloudRunnerBrokerDescription,
 	type CloudRunnerBrokerTransport,
 	CloudRunnerJobBroker,
+	type CloudRunnerNativeAuthority,
 } from "@qorpera/runtime/cloud-runner-broker";
 import { DisposableCloudRunner, SupabaseCloudRunnerControlTransport } from "@qorpera/runtime/cloud-runner-control";
-import type {
-	CloudRunnerExecutionResult,
-	CloudRunnerSandboxBackend,
-	ExecuteCloudRunnerJobOptions,
-} from "@qorpera/runtime/cloud-runner-sandbox";
-import { EphemeralCloudRunnerWorker } from "@qorpera/runtime/cloud-runner-worker";
+import type { CloudRunnerExecutionResult } from "@qorpera/runtime/cloud-runner-sandbox";
+import { type CloudRunnerCompanyExecutor, EphemeralCloudRunnerWorker } from "@qorpera/runtime/cloud-runner-worker";
 import { FileCloudRunnerAuthorityStore } from "@qorpera/runtime/cloud-runner-worker-state";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const runnerId = "a8450f9d-c912-43ea-81f6-62c7247d752a";
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
@@ -145,26 +142,46 @@ function broker() {
 	} satisfies CloudRunnerBrokerTransport;
 }
 
-const backend: CloudRunnerSandboxBackend = {
-	backendId: "faux-cloud-execution",
-	capabilities: ["agent_turn"],
-	jobTypes: ["agent_turn"],
-	guarantees: {
-		boundary: "rootless_container",
-		hostFilesystem: "none",
-		inputFilesystem: "read_only",
-		companyCheckout: "job_private",
-		outputFilesystem: "job_private",
-		network: "deny_by_default",
-		environment: "allowlist_only",
-		privileges: "unprivileged",
-		resourceLimits: "kernel_enforced",
-		termination: "boundary_destroyed",
-	},
-	start: async () => {
-		throw new Error("Only injected faux execution is allowed");
-	},
-};
+/** The company lane's broker reads. This is a worker lifecycle test: broker parsing and native
+ * execution have their own fixtures, so only what the worker consumes is stubbed. */
+function companyLane() {
+	const authority: CloudRunnerNativeAuthority = {
+		leaseId: actorId,
+		runId,
+		providerConnectionId: actorId,
+		providerConnectionVersion: 1,
+		credentialCapsuleId: actorId,
+		encryptedCapsuleReference: "synthetic-private-capsule",
+		attestationPolicySha256: "a".repeat(64),
+		computeIdentityId: actorId,
+		computeIdentityOwnershipKind: "member",
+		computeIdentityOwnerUserId: actorId,
+		credentialOwnershipKind: "member",
+		credentialOwnerUserId: actorId,
+		provider: "openai",
+		authenticationMode: "native_subscription",
+		nativeHarness: "codex-cli",
+		model: "faux-no-model",
+		runnerId,
+		assignmentId,
+		expiresAt: new Date(Date.now() + 60_000).toISOString(),
+	};
+	return {
+		describe: vi.spyOn(CloudRunnerJobBroker.prototype, "describe").mockResolvedValue({
+			companyRuntime: "company-path-v1",
+			sponsor: { authenticationMode: "native_subscription" },
+		} as CloudRunnerBrokerDescription),
+		acquire: vi.spyOn(CloudRunnerJobBroker.prototype, "acquireNativeAuthority").mockResolvedValue(authority),
+		renew: vi.spyOn(CloudRunnerJobBroker.prototype, "renewNativeAuthority").mockResolvedValue(authority),
+		release: vi.spyOn(CloudRunnerJobBroker.prototype, "releaseNativeAuthority").mockResolvedValue(undefined),
+	};
+}
+
+let lane: ReturnType<typeof companyLane>;
+
+beforeEach(() => {
+	lane = companyLane();
+});
 
 function result(): CloudRunnerExecutionResult {
 	return {
@@ -192,14 +209,19 @@ function result(): CloudRunnerExecutionResult {
 
 function worker(
 	runner: DisposableCloudRunner,
-	executeJob: (options: ExecuteCloudRunnerJobOptions) => Promise<CloudRunnerExecutionResult>,
+	executeJob: CloudRunnerCompanyExecutor,
 	transport = broker(),
 	now?: () => number,
 ) {
 	return new EphemeralCloudRunnerWorker({
 		runner,
 		brokerTransport: transport,
-		backend,
+		nativeProviderBridge: {
+			executionGuarantees: nativeProviderExecutionGuarantees("virtual_machine"),
+			startCompany: async () => {
+				throw new Error("Only injected faux execution is allowed");
+			},
+		},
 		executeJob,
 		platform: "linux-x64",
 		runnerVersion: "synthetic",
@@ -238,55 +260,21 @@ describe("cloud worker outage recovery", () => {
 		);
 	});
 
-	it("retains a returned native result before an independently failed authority-release request", async () => {
+	it("retains a returned company result without releasing its native lease, and replays it after restart", async () => {
 		const control = new Control();
+		control.loseCompletion = true;
 		const fixture = await durable(control);
 		const transport = broker();
-		// This is a worker lifecycle test: broker parsing and native execution
-		// have their own fixtures. Only the worker-consumed description is stubbed.
-		vi.spyOn(CloudRunnerJobBroker.prototype, "describe").mockResolvedValue({
-			sponsor: { authenticationMode: "native_subscription" },
-		} as CloudRunnerBrokerDescription);
-		vi.spyOn(CloudRunnerJobBroker.prototype, "acquireNativeAuthority").mockResolvedValue({
-			leaseId: actorId,
-			runId,
-			providerConnectionId: actorId,
-			providerConnectionVersion: 1,
-			credentialCapsuleId: actorId,
-			encryptedCapsuleReference: "synthetic-private-capsule",
-			attestationPolicySha256: "a".repeat(64),
-			computeIdentityId: actorId,
-			computeIdentityOwnershipKind: "member",
-			computeIdentityOwnerUserId: actorId,
-			credentialOwnershipKind: "member",
-			credentialOwnerUserId: actorId,
-			provider: "openai",
-			authenticationMode: "native_subscription",
-			nativeHarness: "codex-cli",
-			model: "faux-no-model",
-			runnerId,
-			assignmentId,
-			expiresAt: new Date(Date.now() + 60_000).toISOString(),
+		// Governed completion releases the native lease atomically with its receipt: a staged
+		// company result never asks for a separate release, whose response could be lost.
+		lane.release.mockImplementation(async () => {
+			throw new Error("A staged company result must not release its native lease");
 		});
-		const execute = vi.spyOn(nativeProvider, "executeNativeCloudRunnerJob").mockResolvedValue(result());
-		vi.spyOn(CloudRunnerJobBroker.prototype, "releaseNativeAuthority").mockImplementation(async () => {
-			expect(fixture.runner.stagedCompletion(jobId)?.result).toEqual(result().result);
-			throw new Error("native release response lost");
-		});
-		const native = new EphemeralCloudRunnerWorker({
-			runner: fixture.runner,
-			brokerTransport: transport,
-			backend,
-			platform: "linux-x64",
-			runnerVersion: "synthetic",
-			nativeProviderBridge: {
-				executionGuarantees: nativeProvider.nativeProviderExecutionGuarantees("virtual_machine"),
-				start: async () => {
-					throw new Error("Real native execution is forbidden in this fixture");
-				},
-			},
-		});
-		await expect(native.runNext(assignment)).rejects.toThrow("native release response lost");
+		const execute = vi.fn(async () => result());
+		await expect(worker(fixture.runner, execute, transport).runNext(assignment)).rejects.toThrow(
+			"completion response lost",
+		);
+		expect(fixture.runner.stagedCompletion(jobId)?.result).toEqual(result().result);
 		const restored = await fixture.restart();
 		const forbidden = vi.fn(async () => {
 			throw new Error("Retained work must not rerun");
@@ -296,6 +284,8 @@ describe("cloud worker outage recovery", () => {
 		});
 		expect(execute).toHaveBeenCalledOnce();
 		expect(forbidden).not.toHaveBeenCalled();
+		expect(lane.acquire).toHaveBeenCalledOnce();
+		expect(lane.release).not.toHaveBeenCalled();
 		expect(transport.appendTranscriptEvent).not.toHaveBeenCalled();
 	});
 
@@ -416,9 +406,9 @@ describe("cloud worker outage recovery", () => {
 		const runner = await DisposableCloudRunner.open(control, runnerId, store, "b".repeat(43));
 		await runner.activate("linux-x64", "synthetic");
 		const execute = vi.fn(
-			async (options: ExecuteCloudRunnerJobOptions) =>
+			async (options: Parameters<CloudRunnerCompanyExecutor>[0]) =>
 				new Promise<CloudRunnerExecutionResult>((_resolve, reject) => {
-					options.signal?.addEventListener("abort", () => reject(options.signal!.reason), { once: true });
+					options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
 				}),
 		);
 		const running = worker(runner, execute)
@@ -428,7 +418,7 @@ describe("cloud worker outage recovery", () => {
 		expect(execute).toHaveBeenCalledOnce();
 		await vi.advanceTimersByTimeAsync(101);
 		expect(await running).toBeInstanceOf(Error);
-		expect(execute.mock.calls[0]![0].signal?.aborted).toBe(true);
+		expect(execute.mock.calls[0]![0].signal.aborted).toBe(true);
 		expect(control.calls.filter((call) => call.action === "complete" || call.action === "fail")).toHaveLength(0);
 		await worker(runner, execute).runNext(undefined);
 		expect(runner.recoveryRecords()).toHaveLength(1);
@@ -442,9 +432,9 @@ describe("cloud worker outage recovery", () => {
 		const runner = new DisposableCloudRunner(control, runnerId, "b".repeat(43));
 		await runner.activate("linux-x64", "synthetic");
 		const execute = vi.fn(
-			async (options: ExecuteCloudRunnerJobOptions) =>
+			async (options: Parameters<CloudRunnerCompanyExecutor>[0]) =>
 				new Promise<CloudRunnerExecutionResult>((_resolve, reject) => {
-					options.signal?.addEventListener("abort", () => reject(options.signal!.reason), { once: true });
+					options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
 				}),
 		);
 		const running = worker(runner, execute)

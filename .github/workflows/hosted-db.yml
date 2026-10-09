@@ -19,7 +19,6 @@ on:
       - 'packages/web/src/cloud/email-drafts.ts'
       - 'scripts/test-runtime-office-current-provider-activation.mjs'
       - 'scripts/test-runtime-node-capacity.mjs'
-      - 'scripts/test-runtime-room-history.mjs'
 
 # Release train (deploy/first-node/RUNTIME-RELEASE-TRAIN.md): only release
 # branches declare the runtime bundle, so only they must carry derived files
@@ -72,6 +71,3 @@ jobs:
 
       - name: Verify current office activation against disposable PostgreSQL
         run: node scripts/test-runtime-office-current-provider-activation.mjs
-
-      - name: Room history accepted before the history upgrade against disposable PostgreSQL
-        run: node scripts/test-runtime-room-history.mjs
