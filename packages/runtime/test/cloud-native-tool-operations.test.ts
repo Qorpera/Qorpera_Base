@@ -3,8 +3,10 @@ import { performance } from "node:perf_hooks";
 import type { JsonValue } from "@qorpera/contracts";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
+	CLOUD_TOOL_RESULT_INSTRUCTIONS,
 	CloudNativeToolBoundary,
 	CloudToolAuthorizeRefusal,
+	CloudToolOutcomeUnknown,
 	CloudToolRefusal,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
@@ -25,7 +27,7 @@ import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fix
 type ExecuteOptions = Parameters<CloudNativeToolOperations["execute"]>[0];
 interface Receipt {
 	input: BeginCloudRunnerOperationInput;
-	state: "executing" | "completed" | "ambiguous" | "cancelled";
+	state: "executing" | "completed" | "ambiguous" | "cancelled" | "outcome_unknown";
 	result: JsonValue | null;
 	outputSnapshotId: string | null;
 	proposalId: string | null;
@@ -284,6 +286,95 @@ it.each(["executing", "ambiguous", "cancelled"] as const)("does not rerun a reta
 	await expect(f.execute({}, new CloudNativeToolOperations(f.run, f.control))).rejects.toThrow("outcome unconfirmed");
 	expect(f.perform).toHaveBeenCalledTimes(1);
 	expect(f.control.completeToolOperation).not.toHaveBeenCalled();
+});
+
+it("answers a repeat of a cut-off call as outcome unknown and lets a new key run after the check", async () => {
+	const f = await fixture();
+	f.perform.mockRejectedValueOnce(new Error("PRIVATE_EFFECT_UNKNOWN"));
+	await expect(f.execute()).rejects.toThrow("outcome unconfirmed");
+	// The resume (W5) settles the cut-off attempt's executing receipt as outcome_unknown, final.
+	const receipt = [...f.ledger.values()][0];
+	receipt.state = "outcome_unknown";
+	const observed = observe(f.binding.assignmentId);
+	const span = observed.observability.start("connector");
+	const repeat = f.execute({ observation: span }, new CloudNativeToolOperations(f.run, f.control));
+	await expect(repeat).rejects.toThrow(CloudToolOutcomeUnknown);
+	await expect(repeat).rejects.not.toThrow("PRIVATE_EFFECT_UNKNOWN");
+	expect(span.result).toMatchObject({
+		status: "unconfirmed",
+		receiptId: receipt.input.receiptId,
+		errorCategory: "ambiguous_effect",
+	});
+	await observed.observability.close();
+	expect(f.perform).toHaveBeenCalledTimes(1);
+	expect(f.control.completeToolOperation).not.toHaveBeenCalled();
+	expect(receipt.state).toBe("outcome_unknown");
+	// The key never runs it again, in this executor or a fresh one.
+	await expect(f.execute({}, new CloudNativeToolOperations(f.run, f.control))).rejects.toThrow(
+		CloudToolOutcomeUnknown,
+	);
+	expect(f.perform).toHaveBeenCalledTimes(1);
+	// After its check, the agent repeats it under a new key; a settled receipt no longer fences the run.
+	await expect(
+		f.execute(
+			{ operation: { ...f.operation, logicalOperationKey: "job-document-2" } },
+			new CloudNativeToolOperations(f.run, f.control),
+		),
+	).resolves.toEqual({ kind: "json", value: { changed: true } });
+	expect(f.perform).toHaveBeenCalledTimes(2);
+	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
+});
+
+it("does not take outcome unknown from a receipt that names a result or revision", async () => {
+	const f = await fixture();
+	f.perform.mockRejectedValueOnce(new Error("PRIVATE_EFFECT_UNKNOWN"));
+	await expect(f.execute()).rejects.toThrow("outcome unconfirmed");
+	const receipt = [...f.ledger.values()][0];
+	receipt.state = "outcome_unknown";
+	receipt.folderCommitId = randomUUID();
+	const repeat = f.execute({}, new CloudNativeToolOperations(f.run, f.control));
+	await expect(repeat).rejects.toThrow("Cloud tool operation outcome unconfirmed");
+	await expect(repeat).rejects.not.toThrow(CloudToolOutcomeUnknown);
+	expect(f.perform).toHaveBeenCalledTimes(1);
+});
+
+it("tells the model to check an outcome-unknown call before it repeats it under a new key", async () => {
+	const f = await fixture();
+	f.perform.mockRejectedValueOnce(new Error("PRIVATE_EFFECT_UNKNOWN"));
+	await expect(f.execute()).rejects.toThrow("outcome unconfirmed");
+	[...f.ledger.values()][0].state = "outcome_unknown";
+	const operations = new CloudNativeToolOperations(f.run, f.control);
+	const boundary = new CloudNativeToolBoundary({
+		companyId: f.authority.identity.companyId,
+		runId: f.run.identity.runId,
+		identity: f.run.identity,
+		signal: f.run.signal,
+		assertActive: (signal) => f.run.assertActive(signal),
+		tools: [
+			{
+				name: "write_document",
+				description: "Test a durable operation",
+				source: "company_file",
+				inputSchema: { type: "object", additionalProperties: false },
+				parseArguments: () => ({}),
+				execute: async () => f.execute({}, operations),
+			},
+		],
+	});
+	try {
+		const result = await boundary.invoke("call_resumed", "qorpera", "write_document", {});
+		expect(result.success).toBe(false);
+		const text = result.contentItems[0].text;
+		expect(text).toContain("OUTCOME_UNKNOWN");
+		expect(text).toContain("new operation key");
+		expect(text).not.toContain("TOOL_OUTCOME_UNCONFIRMED");
+		expect(text).not.toContain("PRIVATE_EFFECT_UNKNOWN");
+		expect(f.perform).toHaveBeenCalledTimes(1);
+		// The standing rule (same key, never a new one) names its one exception.
+		expect(CLOUD_TOOL_RESULT_INSTRUCTIONS).toContain("OUTCOME_UNKNOWN is the one exception");
+	} finally {
+		boundary.close();
+	}
 });
 
 it("does not bypass an uncertain effect by changing the native call ID or logical key", async () => {
