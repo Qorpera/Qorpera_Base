@@ -611,6 +611,61 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		},
 	);
 
+	// From the deleted file transfer classes' tests (legacy removal, step C): the guest still parses every transfer.
+	it.each(["/etc/passwd", "../secret", "a/../b", "a//b", "a/./b", "a\\b", "a\0b", "a/", "x".repeat(256)])(
+		"rejects a transfer path outside the workbench: %j",
+		(path) => {
+			expect(() =>
+				parseCompanyComputerAction({
+					kind: "transfer",
+					action: "export",
+					source: { realm: "company_computer", path },
+					destination: { realm: "object_storage" },
+					mediaType: "text/plain",
+				}),
+			).toThrow();
+			expect(() =>
+				parseCompanyComputerAction({
+					kind: "transfer",
+					action: "import",
+					source: { realm: "object_storage", assetId: computerId(51), sha256: "a".repeat(64) },
+					destination: { realm: "company_computer", path },
+				}),
+			).toThrow();
+		},
+	);
+
+	it("keeps a transfer's literal names and refuses implicit realms, raw hashes and extra flags", () => {
+		const exported = {
+			kind: "transfer",
+			action: "export",
+			source: { realm: "company_computer", path: 'output/`quote` $(value) "name".bin' },
+			destination: { realm: "object_storage" },
+			mediaType: "application/octet-stream",
+		};
+		const imported = {
+			kind: "transfer",
+			action: "import",
+			source: { realm: "object_storage", assetId: computerId(51), sha256: "a".repeat(64) },
+			destination: { realm: "company_computer", path: "incoming/$(literal).bin" },
+		};
+		expect(parseCompanyComputerAction(exported)).toEqual(exported);
+		expect(parseCompanyComputerAction(imported)).toEqual(imported);
+		for (const bad of [
+			{ ...exported, source: { realm: "member_device", path: "selected" } },
+			{ ...exported, source: { ...exported.source, realm: "isolated_worker" } },
+			{ ...exported, destination: { realm: "isolated_worker" } },
+			...["member_device", "company_file", "isolated_worker", "company_computer"].map((realm) => ({
+				...imported,
+				source: { ...imported.source, realm },
+			})),
+			{ ...imported, destination: { ...imported.destination, realm: "isolated_worker" } },
+			{ ...imported, source: { realm: "object_storage", sha256: "a".repeat(64) } },
+			{ ...imported, overwrite: true },
+		])
+			expect(() => parseCompanyComputerAction(bad), JSON.stringify(bad)).toThrow();
+	});
+
 	it("reads a vault_fill as a box, an account and a field, never a value", () => {
 		const fill = {
 			kind: "browser",
