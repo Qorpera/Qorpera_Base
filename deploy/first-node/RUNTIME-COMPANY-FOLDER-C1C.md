@@ -1154,6 +1154,12 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
   Registration, start source, guest binding and restart surfaces accept only a ready folder-v2
   Company File (`path_gateway_version = 1` is gone), and adoption refuses a non-empty mapping on every company.
   `member_office_catalog` and the office reservation follow in later F2 steps.
+- **Legacy sweep F2b (20260930291000)** left a computer in use only its folder-v2 path: `member_office_catalog`, a
+  member's agent office, the screens (open, access, events, observations), the start descriptor and an agent's start,
+  the access status and a hire's default access lost their gc fence branch, so a company without a folder fails in the
+  folder fence (42501). The shared surface, an agent's screen and the start descriptor accept only a ready folder-v2
+  Company File; screenshots keep only §6.21's path; shell check-ins ask on every company. The office reservation
+  follows in F2c.
 - **Who creates a folder-v2 office** (the coordinator, 3 October): the folder mode of `qorpera_register_runtime_office`,
   called as the company's owner the first time the company needs its computer. Today no product path registers a
   company's first computer (later ones come from `add_runtime_office_computer`); the coordinator does it, and P38
@@ -2067,6 +2073,10 @@ on `storage: none` and leaves its receipt open. The coordinator settles the offi
   (`qorpera_folder_record_context_view`) now takes a screenshot output: it checks the output's shape in its loop
   (22023 "Native capture invalid") and the view's screenshots as one set after it. Before, it refused any screenshot
   with 0A000.
+- **Legacy sweep F2b (20260930291000)** made this the only path: the capture, the capture-set check and the read keep
+  their folder-v2 branch on every company. The stored path's tails go: 20260930190000's 0A000 refusal of a snapshot-v1
+  screenshot and the object reads. `qorpera_native_office_operation` keeps a screenshot's target resources on every
+  company.
 - **Tests:**
   - 910 (648's committed fixture; the computer up and Ada's screen acquired):
     - A: Ada's desktop screenshot runs through the operation and the capture with nothing stored, and its resource
