@@ -1,13 +1,17 @@
--- 20260930242000: the legacy sweep, step G. The founder guard runs at read committed only, so the engine's
--- serialization failure no longer comes out of it. Under repeatable read, its KEY SHARE on the other founders failed
--- (40001, "could not serialize access due to concurrent update") when one of them had stepped down or left since the
--- snapshot. It was the last qorpera_ function that still did (registry, 4 October). At read committed, where every
--- caller runs, the lock waits for a founder's row that is being deleted or held FOR UPDATE and then reads the result:
--- member changes meet at the folder fence (665 B), and an account deletion's cascade and a member change wait for each
--- other at the member rows. Any other level is now refused (25000), as the folder core's functions refuse it; a company
--- being deleted still lets its members go first. Folder-v2 only (3 October): the snapshot-v1 branch (the company row
--- FOR UPDATE) goes, and qorpera_company_deleting (20260928249150) is called directly. The rest is the live text,
--- unchanged.
+-- 20260930242000: the legacy sweep, step G. The founder guard runs at read committed only, so it never reads a stale
+-- founder and the engine's serialization failure no longer comes out of it. Under repeatable read, when one of the
+-- other founders had changed since the snapshot, its KEY SHARE on them did one of two things:
+-- - after a delete, or an update of a row first taken FOR UPDATE (as the member functions do), it failed (40001,
+--   "could not serialize access due to concurrent update"). It was the last qorpera_ function that still did
+--   (registry, 4 October);
+-- - after a plain update of the role, which is not a key column, it locked the snapshot's old row and read a founder
+--   who had already stepped down, so the company could lose its last founder.
+-- At read committed, where every caller runs, the lock waits for a founder's row that is being deleted or held FOR
+-- UPDATE and then reads the result: member changes meet at the folder fence (665 B), and an account deletion's cascade
+-- and a member change wait for each other at the member rows. Any other level is now refused (25000), as the folder
+-- core's functions refuse it; a company being deleted still lets its members go first. Folder-v2 only (3 October): the
+-- snapshot-v1 branch (the company row FOR UPDATE) goes, and qorpera_company_deleting (20260928249150) is called
+-- directly. The rest is the live text, unchanged.
 
 set local lock_timeout = '3s';
 
@@ -19,8 +23,9 @@ begin
 	-- The company itself is being deleted (its row is gone, or its deletion was requested): its
 	-- members go with it.
 	if not found or public.qorpera_company_deleting(old.profile_id) then return coalesce(new, old); end if;
-	-- 20260930242000: the other founders are read at read committed only (under repeatable read, the lock below fails
-	-- once one of them has changed since the snapshot).
+	-- 20260930242000: the other founders are read at read committed only. Under repeatable read, the lock below fails
+	-- (40001) after a delete or a FOR UPDATE then update since the snapshot, and after a plain update of the role it
+	-- locks the snapshot's old row and reads a founder who has already stepped down.
 	if current_setting('transaction_isolation') <> 'read committed' then
 		raise exception 'Founder changes run at read committed' using errcode = '25000';
 	end if;
