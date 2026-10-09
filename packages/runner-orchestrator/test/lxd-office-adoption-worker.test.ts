@@ -8,7 +8,6 @@ import type { executeLxdOfficeAdoptionFiles } from "../src/lxd-office-adoption-f
 import { planLxdOfficeAdoption } from "../src/lxd-office-adoption-plan.ts";
 import { assertOfficeStorageMaintenanceHandoff, LxdOfficeAdoptionWorker } from "../src/lxd-office-adoption-worker.ts";
 import { openLxdOfficeCreationIdentity } from "../src/lxd-office-creation-journal.ts";
-import { lxdOfficeGuestPlan } from "../src/lxd-office-guest.ts";
 import { officeCanonical, officeDigest } from "../src/lxd-office-image-provenance.ts";
 import type { LxdOfficeStorageObservation } from "../src/lxd-office-inventory-worker.ts";
 import { publish } from "../src/lxd-office-journal-files.ts";
@@ -16,6 +15,7 @@ import { LxdOfficeOperationJournal } from "../src/lxd-office-operations.ts";
 import { lxdOfficeProviderBindingSha256 } from "../src/lxd-office-start-control.ts";
 import { parseLxdOfficeStorageReview } from "../src/lxd-office-storage-review.ts";
 import { officePhysicalFixture } from "./fixtures/office-physical-policy.ts";
+import { pluggedOfficeRequest, testAgentMac } from "./helpers/agent-plug.ts";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const signal = () => new AbortController().signal;
@@ -39,10 +39,10 @@ async function fixture() {
 	vi.spyOn(client, "inspectInstanceOperation").mockResolvedValue("succeeded");
 	const identity = await openLxdOfficeCreationIdentity(policy, id(1), false, client, signal());
 	const journal = await LxdOfficeOperationJournal.open(root, id(1), identity.binding, client, true);
-	await journal.reconcile(identity.createCommandId, "create", signal());
+	await journal.reconcile(identity.createCommandId, "create", signal(), testAgentMac);
 	submit.mockClear();
 	const { binding } = identity;
-	const { request: vm } = lxdOfficeGuestPlan(binding);
+	const vm = pluggedOfficeRequest(binding);
 	const instance = {
 		name: vm.name,
 		type: "virtual-machine" as const,

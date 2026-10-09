@@ -57,11 +57,12 @@ export async function runCompanyComputerServiceMain(environment: NodeJS.ProcessE
 		stage = "credentials";
 		const registryKey = text(await read("qorpera-office-registry"));
 		const nativeToken = text(await read("qorpera-office-native"));
-		const objectsToken = text(await read("qorpera-office-objects"));
+		// The capture object gateway's token (qorpera-office-objects) is no longer read: company objects are gone
+		// (legacy removal, step C). The orchestrator still writes it, and the configuration its URL, until it drops them.
 		if (
 			!/^[\x21-\x7e]{32,8192}$/.test(registryKey) ||
-			![nativeToken, objectsToken].every((token) => /^[A-Za-z0-9_-]{43}$/.test(token)) ||
-			new Set([registryKey, nativeToken, objectsToken]).size !== 3
+			!/^[A-Za-z0-9_-]{43}$/.test(nativeToken) ||
+			registryKey === nativeToken
 		)
 			throw new Error("OFFICE_SERVICE_CREDENTIALS_INVALID");
 		const registry = new HttpCloudCompanyComputerRegistry({
@@ -123,7 +124,6 @@ export async function runCompanyComputerServiceMain(environment: NodeJS.ProcessE
 			startup,
 			screenLifecycle,
 			viewer: { ...config.viewer, tls },
-			captureObjectGateway: { baseUrl: config.captureObjectGatewayUrl, token: objectsToken },
 			signal: stop.signal,
 		});
 		stage = "supervision";

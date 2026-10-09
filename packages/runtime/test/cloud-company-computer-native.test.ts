@@ -471,19 +471,11 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 				result: input.result,
 			})),
 		};
-		const objects = vi.fn(async (): Promise<Response> => {
-			throw new Error("A screenshot stored nowhere is never fetched");
-		});
 		const factory = createHttpCompanyComputerSessionFactory({
 			url: f.url,
 			token: f.token,
 			holder: () => f.holder,
 			registry: f.registry,
-			objectGateway: {
-				baseUrl: "https://objects.qorpera.test",
-				token: randomBytes(32).toString("base64url"),
-				fetch: objects,
-			},
 		});
 		const session = await factory(f.run, new CloudNativeToolOperations(f.run, control));
 		if (!session?.captures) throw new Error("Missing admitted office session with captures");
@@ -503,7 +495,6 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 			`data:image/png;base64,${png.toString("base64")}`,
 		);
 		expect(f.order.filter((step) => step.startsWith("qorpera_read_native_office_capture"))).toHaveLength(2);
-		expect(objects).not.toHaveBeenCalled();
 	});
 	it("takes pixels only in a screenshot's answer, and only exactly the published capture's under its receipt", async () => {
 		const f = await fixture();

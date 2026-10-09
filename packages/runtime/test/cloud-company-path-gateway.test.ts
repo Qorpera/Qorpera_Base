@@ -27,7 +27,6 @@ import {
 	CloudCompanyPathRpcPrecondition,
 	CloudCompanyPathRpcRefusal,
 } from "@qorpera/runtime/cloud-company-path-refusal";
-import { HttpNativeCompanyObjectTransport } from "@qorpera/runtime/cloud-native-company-objects";
 import type { CloudNativeFenceRequest } from "@qorpera/runtime/cloud-native-result-fence";
 import { CLOUD_NATIVE_TOOL_AUTHORITY_SCHEMA } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudNativeToolBoundary, cloudToolJsonText } from "@qorpera/runtime/cloud-native-tool-boundary";
@@ -1997,111 +1996,5 @@ describe("Company File writes from shared exports", () => {
 		await expect(f.gateway.mutate("write", input, f.signal)).rejects.toThrow();
 		expect(f.transport.get).not.toHaveBeenCalled();
 		expect(f.transport.put).not.toHaveBeenCalled();
-	});
-});
-
-describe("a Company File tool over the native object route's lock conflicts", () => {
-	/** The object gateway's native route over the fixture's objects. Each PUT or GET answers the gateway's lock
-	 * conflict while its count lasts, as a 409 with `code: "lock_conflict"`. */
-	function nativeObjects(f: ReturnType<typeof fixture>, conflicts: { PUT: number; GET: number }) {
-		const methods: string[] = [];
-		const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
-			const request = new Request(input, init);
-			const path = new URL(request.url).pathname.replace("/v1/native-company-objects/", "");
-			const method = request.method as "PUT" | "GET";
-			methods.push(method);
-			if (conflicts[method] > 0) {
-				conflicts[method]--;
-				return Response.json(
-					{ error: "Object authority rejected the operation", code: "lock_conflict" },
-					{ status: 409 },
-				);
-			}
-			if (method === "PUT") {
-				const bytes = new Uint8Array(await request.arrayBuffer());
-				const exists = f.objects.has(path);
-				if (!exists) f.objects.set(path, bytes);
-				return Response.json(
-					{
-						status: exists ? "exists" : "stored",
-						sha256: path.split("/")[1],
-						bytes: bytes.length,
-						replication: "pending",
-					},
-					{ status: exists ? 200 : 201 },
-				);
-			}
-			const bytes = f.objects.get(path)!;
-			return new Response(Uint8Array.from(bytes), { headers: { "content-length": String(bytes.length) } });
-		});
-		const http = new HttpNativeCompanyObjectTransport({
-			baseUrl: "https://objects.test",
-			token: "n".repeat(43),
-			companyId: f.identity.companyId,
-			binding: f.binding,
-			signal: f.signal,
-			fetch,
-		});
-		vi.mocked(f.transport.put).mockImplementation((path, bytes, mediaType) => http.put(path, bytes, mediaType));
-		vi.mocked(f.transport.get).mockImplementation((path) => http.get(path));
-		return methods;
-	}
-	function observed() {
-		const rows: CloudRuntimeObservation[] = [];
-		const observability = new CloudRuntimeObservability({
-			assignmentId: null,
-			publish: async (batch) => {
-				rows.push(...batch);
-			},
-		});
-		return { rows, observability };
-	}
-	const write = { path: "plan.md", text: "the plan\n", operationKey: "lock-conflict", expectedVersion: null };
-
-	it("turns a lock conflict and then success into one successful tool result", async () => {
-		const { rows, observability } = observed();
-		const f = fixture(observability);
-		const methods = nativeObjects(f, { PUT: 1, GET: 0 });
-		const result = await f.boundary.invoke("conflicted_write", "qorpera", "company_write", write);
-		expect(result.success).toBe(true);
-		expect(JSON.parse(result.contentItems[0].text).status).toBe("ok");
-		// Only the conflicted PUT was sent again; the model saw one result.
-		const clean = fixture();
-		const baseline = nativeObjects(clean, { PUT: 0, GET: 0 });
-		expect((await clean.boundary.invoke("clean_write", "qorpera", "company_write", write)).success).toBe(true);
-		expect(methods).toEqual(["PUT", ...baseline]);
-		expect(f.receipts.size).toBe(1);
-		await observability.close();
-		f.boundary.close();
-		const finishes = rows.filter((row) => row.operation === "company_write" && row.phase === "finish");
-		expect(finishes.map((row) => row.status)).toEqual(["succeeded"]);
-	});
-
-	it("reads through a lock conflict on the object", async () => {
-		const f = fixture();
-		await f.seed("plan.md", "the plan\n");
-		const methods = nativeObjects(f, { PUT: 0, GET: 1 });
-		const result = await f.boundary.invoke("conflicted_read", "qorpera", "company_read", {
-			path: "plan.md",
-			offset: 0,
-			limit: 4096,
-		});
-		expect(result.success).toBe(true);
-		expect(result.contentItems[0].text).toContain("the plan");
-		expect(methods).toEqual(["GET", "GET", "GET"]);
-	});
-
-	it("keeps three lock conflicts unconfirmed, as today, within the 5 s tool budget", async () => {
-		const f = fixture();
-		const methods = nativeObjects(f, { PUT: 3, GET: 0 });
-		const started = performance.now();
-		const result = await f.boundary.invoke("still_conflicted", "qorpera", "company_write", write);
-		expect(performance.now() - started).toBeLessThan(5_000);
-		expect(JSON.parse(result.contentItems[0].text)).toMatchObject({
-			status: "unconfirmed",
-			content: { text: "TOOL_OUTCOME_UNCONFIRMED" },
-		});
-		expect(methods).toEqual(["PUT", "PUT", "PUT"]);
-		expect(f.call.mock.calls.filter(([method]) => method === "qorpera_commit_company_path_mutation")).toHaveLength(0);
 	});
 });

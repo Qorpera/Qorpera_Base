@@ -26,9 +26,7 @@ import {
 import { CloudCompanyComputerEffectControl } from "./cloud-company-computer-effect-control.ts";
 import type { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-registry-http.ts";
 import {
-	type CloudCompanyComputerScreenshots,
-	createHttpCompanyComputerScreenshots,
-	parseCompanyComputerCaptureGateway,
+	CloudCompanyComputerScreenshots,
 	parseCompanyComputerScreenshotAsset,
 } from "./cloud-company-computer-screenshots.ts";
 import {
@@ -361,7 +359,6 @@ export function createHttpCompanyComputerSessionFactory(options: {
 	holder: () => string;
 	registry: HttpCloudCompanyComputerRegistry;
 	fetch?: typeof fetch;
-	objectGateway?: { baseUrl: string; token: string; holder?: () => string; fetch?: typeof fetch };
 	/** The vault, for vault_fill (A1-3); without it every fill is refused before the office. */
 	accountFills?: CompanyComputerAccountFills;
 }): CloudCompanyComputerSessionFactory {
@@ -369,7 +366,6 @@ export function createHttpCompanyComputerSessionFactory(options: {
 	const route = parseCompanyComputerNativeRoute(options.url);
 	const reaches = (companyComputerId: string) =>
 		route.companyComputerId === null || route.companyComputerId === companyComputerId;
-	const objectGateway = options.objectGateway ? parseCompanyComputerCaptureGateway(options.objectGateway) : undefined;
 	if (!/^[A-Za-z0-9_-]{43}$/.test(options.token)) throw new Error("INVALID_OFFICE_NATIVE_CONFIGURATION");
 	return async (run, operations) => {
 		if (run.identity.audienceKind !== "company") return undefined;
@@ -400,20 +396,17 @@ export function createHttpCompanyComputerSessionFactory(options: {
 		if (!reaches(descriptor.scope.companyComputerId)) return undefined;
 		const url = route.urlFor(descriptor.scope.companyComputerId);
 		// One capture reader for the run: the endpoint keeps a screenshot's pixels there, and the boundary reads them.
-		const screenshots = objectGateway
-			? createHttpCompanyComputerScreenshots({
-					run,
-					scope: descriptor.scope,
-					registry: options.registry,
-					objectGateway,
-				})
-			: undefined;
+		const screenshots = new CloudCompanyComputerScreenshots({
+			run,
+			scope: descriptor.scope,
+			registry: options.registry,
+		});
 		const remote = new HttpCompanyComputerNativeEndpoint({
 			...options,
 			url,
 			run,
 			descriptor,
-			...(screenshots ? { screenshots } : {}),
+			screenshots,
 		});
 		const session = createCloudCompanyComputerSession({
 			run,
@@ -424,7 +417,7 @@ export function createHttpCompanyComputerSessionFactory(options: {
 		});
 		return {
 			tools: session.tools,
-			...(screenshots ? { captures: new CloudNativeCaptureImages(screenshots) } : {}),
+			captures: new CloudNativeCaptureImages(screenshots),
 			close: async () => {
 				try {
 					await remote.close();

@@ -11,6 +11,7 @@ import { officeDigest } from "../src/lxd-office-image-provenance.ts";
 import { LxdOfficeOperationJournal } from "../src/lxd-office-operations.ts";
 import * as physical from "../src/lxd-office-physical-host.ts";
 import { LxdOfficeResetJournal } from "../src/lxd-office-reset-journal.ts";
+import { testAgentMac } from "./helpers/agent-plug.ts";
 import {
 	officeDeleteDispositionId as id,
 	officeDeleteDispositionContextFor,
@@ -66,7 +67,7 @@ async function fixture() {
 		[id(91), "start"],
 		[plan.commands.stopCommandId, "stop"],
 	] as const)
-		await journal.reconcile(command, action, signal());
+		await journal.reconcile(command, action, signal(), action === "create" ? testAgentMac : undefined);
 	client.inspectInstanceOperation.mockRejectedValue(new Error("result evicted"));
 	const unknown = await journal.reconcile(plan.commands.deleteCommandId, "delete", signal());
 	expect(unknown.state).toBe("unknown");
@@ -140,7 +141,9 @@ describe("administrative delete metadata crash reconciliation", () => {
 		expect(count).toBe(failAt < 3 ? 11 : 12);
 		if (failAt <= 3) {
 			await expect(readFile(f.phase5)).rejects.toMatchObject({ code: "ENOENT" });
-			await expect(f.journal.reconcile(f.plan.commands.createCommandId, "create", signal())).rejects.toThrow();
+			await expect(
+				f.journal.reconcile(f.plan.commands.createCommandId, "create", signal(), testAgentMac),
+			).rejects.toThrow();
 		}
 		await f.preserved();
 		await expect(reconcileLxdOfficeDeleteMetadata(f.root, f.context, async () => {})).resolves.toMatchObject({
@@ -197,7 +200,9 @@ describe("administrative delete metadata crash reconciliation", () => {
 			[f.plan.commands.createCommandId, "start"],
 			[id(241), "delete"],
 		] as const)
-			await expect(f.journal.reconcile(command, action, signal())).rejects.toThrow();
+			await expect(
+				f.journal.reconcile(command, action, signal(), action === "create" ? testAgentMac : undefined),
+			).rejects.toThrow();
 		expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(4);
 		const observed = f.client.inspectInstanceOperation.mock.calls.length;
 		await expect(f.journal.reconcile(f.plan.commands.deleteCommandId, "delete", signal())).resolves.toEqual({
@@ -206,7 +211,9 @@ describe("administrative delete metadata crash reconciliation", () => {
 		});
 		expect(f.client.inspectInstanceOperation).toHaveBeenCalledTimes(observed);
 		f.client.inspectInstanceOperation.mockResolvedValue("succeeded");
-		await expect(f.journal.reconcile(f.plan.commands.createCommandId, "create", signal())).resolves.toMatchObject({
+		await expect(
+			f.journal.reconcile(f.plan.commands.createCommandId, "create", signal(), testAgentMac),
+		).resolves.toMatchObject({
 			state: "succeeded",
 		});
 		expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(5);
@@ -221,9 +228,9 @@ describe("administrative delete metadata crash reconciliation", () => {
 		const f = await fixture();
 		await reconcileLxdOfficeDeleteMetadata(f.root, f.context, async () => {});
 		f.protectedRead.mockRejectedValue(new Error("receipt unavailable"));
-		await expect(f.journal.reconcile(f.plan.commands.createCommandId, "create", signal())).rejects.toThrow(
-			"DISPOSITION_UNCONFIRMED",
-		);
+		await expect(
+			f.journal.reconcile(f.plan.commands.createCommandId, "create", signal(), testAgentMac),
+		).rejects.toThrow("DISPOSITION_UNCONFIRMED");
 		expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(4);
 		expect((await f.journal.history()).events).toHaveLength(12);
 		await f.preserved();

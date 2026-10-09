@@ -12,6 +12,7 @@ export interface CompanyComputerServiceConfig {
 	scope: CompanyComputerScope;
 	computerGeneration: number;
 	registryUrl: string;
+	/** Unused since company objects are gone (legacy removal, step C); the orchestrator writes it until it drops it. */
 	captureObjectGatewayUrl: string;
 	native: { host: string; port: number };
 	viewer: { host: string; port: number; origins: string[] };

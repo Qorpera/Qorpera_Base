@@ -23,10 +23,13 @@ import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
  *   has landed. A denied call that closes what it stood for (P40b) is committed the same way before it closes it.
  * - A send, a card or a `send_mail` keeps no copy of its arguments: `args` is "", and `args_bytes` and `args_hash`
  *   stay. For now its `args_hash` is the boundary's plain digest of the call, as for every step, so a guess of its
- *   words can be checked against it. W1c-2 replaces it with the platform's keyed hash before any run is built with a
+ *   words can be checked against it. W1c-3 replaces it with the platform's keyed hash before any run is built with a
  *   log.
- * - Narrow steps, for folders not shared with every agent, are not built here: every step keeps its full line. W1c-2
+ * - Narrow steps, for folders not shared with every agent, are not built here: every step keeps its full line. W1c-3
  *   brings their line shape, with the platform's keyed hashes, before any run is built with a log.
+ * - The run's tree, its step lines (§7.5), sits beside the log in `runs/<run>/t<n>/`. W2's step-line writer reads and
+ *   commits its blocks through `treeRead` and `commitTree`, also after `close`, for the lines built at closing. Only
+ *   its batches check the run's generation: they are derived, and are refused when it moved.
  */
 
 export const CLOUD_RUN_LOG_BLOCK_STEPS = 16;
@@ -49,6 +52,11 @@ const CHANGE_SET_FILES = 64;
 const ATTEMPTS = 4;
 /** Calls whose words are already in the conversation, on a card or in the outbox row: their arguments are not copied. */
 const HASH_ONLY_TOOLS = new Set(["send_message", "send_coworker_message", "ask_member", "send_mail"]);
+/** A block of the run's tree under the log's folder, as `memoryBlockPath` names it: tier `t0` to `t14`, block
+ * `<8 digits>`. */
+const TREE_PATH = /^t(?:[0-9]|1[0-4])\/\d{8}\.jsonl$/;
+/** A tree batch's operation key, with room for the try it is on (the folder's keys are 8 to 200 characters). */
+const TREE_KEY = /^[A-Za-z0-9._:-]{8,190}$/;
 
 /** The log's folder was deleted (`memory_run_log_gone`): its effectful calls can no longer be committed first, so they
  * do not run, and the run ends. */
@@ -85,20 +93,30 @@ export interface CloudRunLogPlace {
 	readonly generation: number;
 }
 
-/** The folder as a run log uses it. W1c-2 builds it on the folder client and the run-log index. */
+/** The memory commit's preconditions for a change set of a run log's folder. */
+export interface CloudRunLogPreconditions {
+	/** The log's folder as the change set found it: `memory_run_log_moved` when the index has it elsewhere now, and
+	 * `memory_run_log_gone` when its row is retired. */
+	readonly runLog: { readonly run: string; readonly path: string };
+	/** For a batch of the run's tree only: the run's generation as the batch read it, `memory_generation_stale` when it
+	 * moved. A step batch names none (§4.5). */
+	readonly runGenerations?: readonly { readonly runId: string; readonly generation: number }[];
+}
+
+/** The folder as a run log uses it. W1c-3 builds it on the folder client and the run-log index. */
 export interface CloudRunLogFolder {
 	/** Throws CloudRunLogGone when the log's index row, or for a new log its conversation owner's row, is retired or
 	 * missing. */
 	locate(runId: string, signal: AbortSignal): Promise<CloudRunLogPlace>;
 	/** A file's committed text and version, or null when there is none. */
 	read(path: string, signal: AbortSignal): Promise<{ readonly version: string; readonly text: string } | null>;
-	/** Stages and commits one change set through the folder memory commit, with the precondition
-	 * `runLog: { run, path }`. A refusal is a unit outcome (`memory_run_log_gone`, `memory_run_log_moved`,
-	 * `memory_erase_open`), with nothing applied. */
+	/** Stages and commits one change set through the folder memory commit. A refusal is a unit outcome
+	 * (`memory_run_log_gone`, `memory_run_log_moved`, `memory_erase_open`, `memory_generation_stale`), with nothing
+	 * applied. */
 	commit(
 		operationKey: string,
 		units: readonly CloudCompanyFolderUnit[],
-		runLog: { readonly run: string; readonly path: string },
+		preconditions: CloudRunLogPreconditions,
 		signal: AbortSignal,
 	): Promise<CloudCompanyFolderCommitResult>;
 }
@@ -109,7 +127,7 @@ export interface CloudRunLogRelease {
 	readonly reads: readonly CloudCompanyFolderRelease[];
 }
 
-/** One step as committed, for the run's step lines (W2). A hashes-only step has `args` "". */
+/** One step as its line stores it, for the run's step lines (W2). A hashes-only step has `args` "". */
 export interface CloudRunLogStep {
 	readonly j: number;
 	readonly call: string;
@@ -119,7 +137,10 @@ export interface CloudRunLogStep {
 	readonly result: string | null;
 	readonly text: string;
 	readonly hashOnly: boolean;
+	/** "" for an erased step. */
 	readonly at: string;
+	/** An erased step (§10.1) keeps only its number, call id and tool: `args` and `text` are "", `result` is null. */
+	readonly erased?: true;
 }
 
 /** The steps one change set made final, in step order, and the blocks it saved. */
@@ -127,6 +148,16 @@ export interface CloudRunLogCommitted {
 	readonly runId: string;
 	readonly steps: readonly number[];
 	readonly blocks: readonly { readonly path: string; readonly version: string }[];
+	/** The run's generation as the log found it: a batch of step lines built from these steps commits at it. */
+	readonly generation: number;
+}
+
+/** A block of the run's tree as a batch of step lines writes it: its path under the log's folder (`memoryBlockPath`),
+ * its text, and the version it was read at, null for a new block. */
+export interface CloudRunTreeBlock {
+	readonly path: string;
+	readonly text: string;
+	readonly version: string | null;
 }
 
 const RELEASES = new AsyncLocalStorage<CloudRunLogRelease[]>();
@@ -165,12 +196,21 @@ interface Step {
 	state: "new" | "pending" | "final";
 	erased: boolean;
 	block: number | null;
+	/** `args` and `text` as its committed line stores them. */
+	stored: Stored | null;
+}
+
+interface Stored {
+	readonly args: string;
+	readonly text: string;
 }
 
 interface Line {
 	readonly j: number;
 	readonly text: string;
 	readonly pending: boolean;
+	/** Its `args` and `text`, where the line has them as strings. */
+	readonly stored?: Stored;
 }
 
 interface Block {
@@ -204,6 +244,11 @@ function blockName(first: number): string {
 	return `${String(first).padStart(8, "0")}.jsonl`;
 }
 
+/** The tier folder of a tree block's path under the log's folder, `t<n>`. */
+function tierOf(path: string): string {
+	return path.split("/")[0]!;
+}
+
 function lineBytes(line: Line): number {
 	return line.pending ? CLOUD_RUN_LOG_STEP_BYTES : Buffer.byteLength(line.text) + 1;
 }
@@ -230,6 +275,9 @@ function parseBlock(text: string): Line[] {
 			j: record.j as number,
 			text: raw,
 			pending: record.erased !== true && record.result === null,
+			...(typeof record.args === "string" && typeof record.text === "string"
+				? { stored: { args: record.args, text: record.text } }
+				: {}),
 		});
 	}
 	return lines;
@@ -241,6 +289,28 @@ function erasedLine(text: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+/** An erased step as the run's step lines see it (§10.1): its number, call id and tool only. */
+function erasedStep(step: Pick<CloudRunLogStep, "j" | "call" | "tool" | "hashOnly">): CloudRunLogStep {
+	return Object.freeze({ ...step, args: "", result: null, text: "", at: "", erased: true as const });
+}
+
+/** A step of an earlier process of the run, as its line stores it. */
+function loggedStep(line: Line): CloudRunLogStep {
+	const record = JSON.parse(line.text) as Record<string, unknown>;
+	if (typeof record.tool !== "string" || typeof record.call !== "string") throw new Error("Invalid run log block");
+	const hashOnly = HASH_ONLY_TOOLS.has(record.tool) || record.narrow === true;
+	const step = { j: line.j, call: record.call, tool: record.tool, hashOnly };
+	if (record.erased === true) return erasedStep(step);
+	const result = record.result;
+	return Object.freeze({
+		...step,
+		args: line.stored?.args ?? "",
+		result: result && typeof result === "object" && !Array.isArray(result) ? JSON.stringify(result) : null,
+		text: line.stored?.text ?? "",
+		at: typeof record.at === "string" ? record.at : "",
+	});
 }
 
 export class CloudRunLog {
@@ -260,6 +330,11 @@ export class CloudRunLog {
 	/** Pre-commits waiting for the steps before theirs. */
 	readonly #waiters = new Set<() => void>();
 	#place: CloudRunLogPlace | null = null;
+	/** The log's folder as it was last found to exist, for the run's tree. */
+	#root: string | null = null;
+	/** The tree's tier folders known to exist. */
+	readonly #tiers = new Set<string>();
+	#earlier: readonly CloudRunLogStep[] | null = null;
 	#generation = 0;
 	#commits = 0;
 	#text = "";
@@ -312,7 +387,8 @@ export class CloudRunLog {
 		return this.#gone;
 	}
 
-	/** The run's generation as its log's last placement read it. Step-line batches check it (`runGenerations`). */
+	/** The run's generation as the log was last found, by a step batch, `earlier` or a tree read or commit. Step-line
+	 * batches check it (`runGenerations`). */
 	generation(): number {
 		return this.#generation;
 	}
@@ -357,6 +433,7 @@ export class CloudRunLog {
 			state: "new",
 			erased: false,
 			block: null,
+			stored: null,
 		});
 		return j;
 	}
@@ -419,22 +496,184 @@ export class CloudRunLog {
 		await this.#enqueue(signal);
 	}
 
-	/** The steps as committed, in step order. */
+	/** This process's steps as committed, in step order, as their lines store them. */
 	steps(): readonly CloudRunLogStep[] {
 		return this.#steps
-			.filter((step) => step.state !== "new" && !step.erased)
-			.map((step) =>
-				Object.freeze({
-					j: step.j,
-					call: step.call,
-					tool: step.tool,
-					args: step.hashOnly ? "" : step.argumentsText,
+			.filter((step) => step.state !== "new")
+			.map((step) => {
+				const base = { j: step.j, call: step.call, tool: step.tool, hashOnly: step.hashOnly };
+				if (step.erased) return erasedStep(base);
+				return Object.freeze({
+					...base,
+					args: step.stored?.args ?? (step.hashOnly ? "" : step.argumentsText),
 					result: step.state === "pending" ? null : step.result,
-					text: clip(step.text, CLOUD_RUN_LOG_FIELD_BYTES),
-					hashOnly: step.hashOnly,
+					text: step.stored?.text ?? clip(step.text, CLOUD_RUN_LOG_FIELD_BYTES),
 					at: step.at,
-				}),
+				});
+			});
+	}
+
+	/**
+	 * The steps before this run's first step, in step order, as the log holds them: a resumed run's earlier work, for
+	 * its work message and the step lines whose windows reach back before its first step (§7.5). An erased step is kept
+	 * as its line is. A step its earlier process left pending has the result its line has: the one the resume filled
+	 * in (W5), or none. [] for a run that starts at step 0. Throws CloudRunLogUnavailable when the log does not hold
+	 * them all.
+	 */
+	async earlier(signal: AbortSignal): Promise<readonly CloudRunLogStep[]> {
+		if (this.#first === 0) return [];
+		if (this.#earlier) return this.#earlier;
+		// No erase changes a live run's log (§4.5), so they are read once.
+		for (let attempt = 1; ; attempt++) {
+			if (this.#gone) throw new CloudRunLogGone();
+			const place = await this.#locate(signal);
+			if (!place.exists) throw new CloudRunLogUnavailable("no_log");
+			const steps: CloudRunLogStep[] = [];
+			// Each block is named by the step after the last one in the block before it.
+			while (steps.length < this.#first) {
+				const file = await this.#folder.read(`${place.path}/log/${blockName(steps.length)}`, signal);
+				if (!file) break;
+				const lines = parseBlock(file.text);
+				if (!lines.length) throw new Error("Invalid run log block");
+				for (const line of lines) {
+					if (line.j !== steps.length) throw new Error("Invalid run log block");
+					if (line.j === this.#first) break;
+					steps.push(loggedStep(line));
+				}
+			}
+			if (steps.length === this.#first) {
+				this.#earlier = Object.freeze(steps);
+				return this.#earlier;
+			}
+			// A block is missing: the log moved while it was read, or it does not hold every step before this run's.
+			if (attempt >= ATTEMPTS) throw new CloudRunLogUnavailable("log_short");
+		}
+	}
+
+	/**
+	 * A block of the run's tree (§7.5), by its path under the log's folder (`memoryBlockPath`): its committed text and
+	 * version, or null when there is none. Throws CloudRunLogGone once the log is gone, and CloudRunLogUnavailable
+	 * ("no_log") before its first batch has landed. A read at a place the log has just left finds nothing; the commit
+	 * built on it is refused as moved and then as `stale`, so the writer reads again at the new place.
+	 */
+	async treeRead(
+		path: string,
+		signal: AbortSignal,
+	): Promise<{ readonly version: string; readonly text: string } | null> {
+		if (typeof path !== "string" || !TREE_PATH.test(path)) throw new Error("Invalid run tree path");
+		const file = await this.#folder.read(`${await this.#treeRoot(signal)}/${path}`, signal);
+		if (file) this.#tiers.add(tierOf(path));
+		return file;
+	}
+
+	/**
+	 * Commits blocks of the run's tree (§7.5) as a change set, with the run's generation as the batch read it, and
+	 * makes the tier folders they need. Each block lands or not on its own (core §3: a unit applies whole or not at
+	 * all), so a batch that did not land whole may still have landed some of its blocks: before a caller builds the
+	 * batch again, it reads every block of it again. "stale" when the generation moved or a step erase is open (that
+	 * change set landed nothing), or when a block is not at the version it was read at (that block was refused, and
+	 * the others may have landed). "gone" once the log is gone. A moved log is found again and the blocks that did not
+	 * land are tried again, under `<operationKey>:2` to `:4`, so a batch's key never ends in one of those. Any other
+	 * refusal throws CloudRunLogUnavailable, and a failed call throws as it failed.
+	 */
+	async commitTree(
+		operationKey: string,
+		blocks: readonly CloudRunTreeBlock[],
+		generation: number,
+		signal: AbortSignal,
+	): Promise<"landed" | "stale" | "gone"> {
+		if (
+			typeof operationKey !== "string" ||
+			!TREE_KEY.test(operationKey) ||
+			!Number.isSafeInteger(generation) ||
+			generation < 0 ||
+			!Array.isArray(blocks) ||
+			blocks.length < 1 ||
+			blocks.length > CHANGE_SET_FILES ||
+			blocks.some(
+				(block) =>
+					typeof block.path !== "string" ||
+					!TREE_PATH.test(block.path) ||
+					typeof block.text !== "string" ||
+					(block.version !== null && typeof block.version !== "string"),
+			) ||
+			new Set(blocks.map((block) => block.path)).size !== blocks.length ||
+			blocks.reduce((total, block) => total + Buffer.byteLength(block.text), 0) > CHANGE_SET_BYTES
+		)
+			throw new Error("Invalid run tree batch");
+		// A block read at a version is in a tier folder that exists.
+		for (const block of blocks) if (block.version !== null) this.#tiers.add(tierOf(block.path));
+		let left = [...blocks];
+		let root: string;
+		try {
+			root = await this.#treeRoot(signal);
+		} catch (error) {
+			if (error instanceof CloudRunLogGone) return "gone";
+			throw error;
+		}
+		for (let attempt = 1; ; attempt++) {
+			const tiers = [...new Set(left.map((block) => tierOf(block.path)))].filter((tier) => !this.#tiers.has(tier));
+			const units: Extract<CloudCompanyFolderUnit, { op: "mkdir" | "write" }>[] = [
+				...tiers.sort().map((tier) => ({ op: "mkdir" as const, path: `${root}/${tier}` })),
+				...left.map((block) => ({
+					op: "write" as const,
+					path: `${root}/${block.path}`,
+					content: { text: block.text, mediaType: "application/jsonl" },
+					...(block.version !== null ? { expectedVersion: block.version } : {}),
+				})),
+			];
+			const result = await this.#folder.commit(
+				attempt === 1 ? operationKey : `${operationKey}:${attempt}`,
+				units,
+				{ runLog: { run: this.#runId, path: root }, runGenerations: [{ runId: this.#runId, generation }] },
+				signal,
 			);
+			const landed = new Set<string>();
+			let gone = false;
+			let stale = false;
+			let relocate: string | null = null;
+			let refused: string | null = null;
+			result.units.forEach((outcome, index) => {
+				const unit = units[index]!;
+				const tier = tierOf(unit.path.slice(root.length + 1));
+				if (outcome.outcome === "saved") {
+					if (unit.op === "mkdir") this.#tiers.add(tier);
+					else landed.add(unit.path);
+					return;
+				}
+				const reason = outcome.reason ?? outcome.outcome;
+				if (reason === "memory_run_log_gone") gone = true;
+				else if (reason === "memory_generation_stale" || reason === "memory_erase_open") stale = true;
+				else if (reason === "memory_run_log_moved") relocate ??= reason;
+				else if (reason === "parent_missing") {
+					// The log moved, or a tier folder this run took to exist does not.
+					this.#tiers.delete(tier);
+					relocate ??= reason;
+				} else if (outcome.outcome === "conflict") {
+					// A tier folder another batch made, or a block another writer changed.
+					if (unit.op === "mkdir") this.#tiers.add(tier);
+					else stale = true;
+				} else refused ??= reason;
+			});
+			if (gone) {
+				this.#gone = true;
+				this.#wake();
+				return "gone";
+			}
+			if (stale) return "stale";
+			if (refused !== null) throw new CloudRunLogUnavailable(refused);
+			left = left.filter((block) => !landed.has(`${root}/${block.path}`));
+			if (!left.length) return "landed";
+			if (attempt >= ATTEMPTS) throw new CloudRunLogUnavailable(relocate ?? "not_landed");
+			if (relocate !== null) {
+				try {
+					root = await this.#treeRoot(signal, true);
+				} catch (error) {
+					if (error instanceof CloudRunLogGone) return "gone";
+					throw error;
+				}
+			}
+		}
 	}
 
 	/** Called after each change set that made steps final. */
@@ -535,21 +774,38 @@ export class CloudRunLog {
 		}
 	}
 
+	/** Finds the log by its run id. A gone log is remembered. */
+	async #locate(signal: AbortSignal): Promise<CloudRunLogPlace> {
+		let place: CloudRunLogPlace;
+		try {
+			place = await this.#folder.locate(this.#runId, signal);
+		} catch (error) {
+			if (error instanceof CloudRunLogGone) {
+				this.#gone = true;
+				this.#wake();
+			}
+			throw error;
+		}
+		if (place.exists) this.#root = place.path;
+		this.#generation = place.generation;
+		return place;
+	}
+
+	/** The log's folder for the run's tree: where it was last found, or found again. */
+	async #treeRoot(signal: AbortSignal, again = false): Promise<string> {
+		if (this.#gone) throw new CloudRunLogGone();
+		if (again || this.#root === null) {
+			const place = await this.#locate(signal);
+			if (!place.exists) throw new CloudRunLogUnavailable("no_log");
+		}
+		return this.#root!;
+	}
+
 	/** Finds the log, and reads again what a failed batch left uncertain. */
 	async #refresh(signal: AbortSignal): Promise<void> {
 		if (!this.#place) {
-			let place: CloudRunLogPlace;
-			try {
-				place = await this.#folder.locate(this.#runId, signal);
-			} catch (error) {
-				if (error instanceof CloudRunLogGone) {
-					this.#gone = true;
-					this.#wake();
-				}
-				throw error;
-			}
+			const place = await this.#locate(signal);
 			this.#place = place;
-			this.#generation = place.generation;
 			if (place.exists && place.last !== null && !this.#blocks.has(place.last))
 				this.#blocks.set(place.last, { first: place.last, version: null, lines: [], stale: true });
 		}
@@ -576,6 +832,7 @@ export class CloudRunLog {
 				step.block = block.first;
 				step.erased = erasedLine(line.text);
 				step.state = step.erased || !line.pending ? "final" : "pending";
+				step.stored = line.stored ?? null;
 				if (step.state === "final") step.reads = [];
 			}
 		}
@@ -586,30 +843,30 @@ export class CloudRunLog {
 	}
 
 	/** A step's line as stored, fitted so it never passes CLOUD_RUN_LOG_STEP_BYTES with its newline. */
-	#line(step: Step, pending: boolean): string {
+	#line(step: Step, pending: boolean): Line {
 		let reads = CLOUD_RUN_LOG_READS_BYTES;
 		let text = CLOUD_RUN_LOG_FIELD_BYTES;
 		let args = CLOUD_RUN_LOG_FIELD_BYTES;
 		for (;;) {
-			const line = this.#render(step, pending, { reads, text, args });
+			const stored = { args: step.hashOnly ? "" : clip(step.argumentsText, args), text: clip(step.text, text) };
+			const line = this.#render(step, pending, reads, stored);
 			const over = Buffer.byteLength(line) + 1 - CLOUD_RUN_LOG_STEP_BYTES;
-			if (over <= 0) return line;
-			// Only a result with very many release parts gets here: the copies give way, never the release ids.
-			if (reads > 2) reads = Math.max(2, reads - over);
-			else if (text > 2) text = Math.max(2, text - over);
-			else if (args > 2) args = Math.max(2, args - over);
-			else return line;
+			// Only a result with very many release parts gets past it: the copies give way, never the release ids.
+			if (over > 0 && reads > 2) reads = Math.max(2, reads - over);
+			else if (over > 0 && text > 2) text = Math.max(2, text - over);
+			else if (over > 0 && args > 2) args = Math.max(2, args - over);
+			else return { j: step.j, text: line, pending, stored };
 		}
 	}
 
-	#render(step: Step, pending: boolean, budget: { reads: number; text: number; args: number }): string {
+	#render(step: Step, pending: boolean, budget: number, stored: Stored): string {
 		const reads: string[] = [];
 		let readBytes = 2;
 		// Reads past CLOUD_RUN_LOG_READS_BYTES were not kept: the copy is cut short either way.
 		let cut = !pending && step.readsCut;
 		for (const entry of pending ? [] : step.reads) {
 			const bytes = Buffer.byteLength(entry) + (reads.length ? 1 : 0);
-			if (readBytes + bytes > budget.reads) {
+			if (readBytes + bytes > budget) {
 				cut = true;
 				break;
 			}
@@ -620,7 +877,7 @@ export class CloudRunLog {
 			`"j":${step.j}`,
 			`"tool":${JSON.stringify(step.tool)}`,
 			`"call":${JSON.stringify(step.call)}`,
-			`"args":${JSON.stringify(step.hashOnly ? "" : clip(step.argumentsText, budget.args))}`,
+			`"args":${JSON.stringify(stored.args)}`,
 			`"args_bytes":${step.argsBytes}`,
 			`"args_hash":${JSON.stringify(step.argsHash)}`,
 			// The envelope is JSON with no line breaks, kept as a JSON value exactly as the fence issued it.
@@ -628,7 +885,7 @@ export class CloudRunLog {
 			`"reads":[${reads.join(",")}]`,
 			...(cut ? [`"reads_cut":true`] : []),
 			`"releases":${JSON.stringify(pending ? [] : step.releases)}`,
-			`"text":${JSON.stringify(clip(step.text, budget.text))}`,
+			`"text":${JSON.stringify(stored.text)}`,
 			`"at":${JSON.stringify(step.at)}`,
 		].join(",")}}`;
 	}
@@ -676,13 +933,12 @@ export class CloudRunLog {
 				step.reads = [];
 				continue;
 			}
-			lines(step.block!)[index] = { j: step.j, text: this.#line(step, false), pending: false };
+			lines(step.block!)[index] = this.#line(step, false);
 			placed.set(step.j, step.block!);
 		}
 		let last = Math.max(-1, ...this.#blocks.keys(), ...touched.keys());
 		for (const step of ready) {
-			const pending = step.result === null;
-			const line: Line = { j: step.j, text: this.#line(step, pending), pending };
+			const line = this.#line(step, step.result === null);
 			// A new step joins the last block only if the block, a pending step counted at its full size, still fits.
 			const block = last >= 0 ? (touched.get(last) ?? this.#blocks.get(last)?.lines) : undefined;
 			const counted = block?.reduce((total, current) => total + lineBytes(current), 0) ?? 0;
@@ -750,7 +1006,12 @@ export class CloudRunLog {
 			const key = `runlog:${this.#runId}:${this.#nonce}:${++this.#commits}`;
 			let result: CloudCompanyFolderCommitResult;
 			try {
-				result = await this.#folder.commit(key, set.units, { run: this.#runId, path: place.path }, signal);
+				result = await this.#folder.commit(
+					key,
+					set.units,
+					{ runLog: { run: this.#runId, path: place.path } },
+					signal,
+				);
 			} catch (error) {
 				// The outcome is unknown: find the log and read its blocks again before the next batch. A batch that
 				// landed is then found in the file and not written twice.
@@ -780,7 +1041,10 @@ export class CloudRunLog {
 					} else refused ??= reason;
 					return;
 				}
-				if (unit.op === "new_folder") this.#place = { ...place, exists: true, missing: [] };
+				if (unit.op === "new_folder") {
+					this.#place = { ...place, exists: true, missing: [] };
+					this.#root = place.path;
+				}
 				if (first === null || first === undefined || !unit.version) return;
 				const next = touched.get(first)!;
 				this.#blocks.set(first, { first, version: unit.version, lines: next, stale: false });
@@ -792,6 +1056,7 @@ export class CloudRunLog {
 						step.block = first;
 						step.erased = erasedLine(line.text);
 						step.state = step.erased || !line.pending ? "final" : "pending";
+						step.stored = line.stored ?? null;
 						// Its line is stored: the copy of its reads is no longer needed.
 						if (step.state === "final") step.reads = [];
 						if (placed.get(line.j) === first && !line.pending) final.push(line.j);
@@ -805,6 +1070,7 @@ export class CloudRunLog {
 					runId: this.#runId,
 					steps: Object.freeze(final.sort((a, b) => a - b)),
 					blocks: Object.freeze(saved),
+					generation: this.#generation,
 				});
 				for (const listener of this.#listeners) {
 					try {

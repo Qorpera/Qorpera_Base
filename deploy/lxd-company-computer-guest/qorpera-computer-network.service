@@ -1,11 +1,13 @@
 # Qorpera computers' networks: the firewall of qorpera-computer-network.nft,
-# then forwarding, before the office service starts shells and desktops.
-# Pulled in by qorpera-company-computer.service (Wants=). Without it the
-# plumber refuses and computers start without a network, never with an
-# unfiltered one. Stopping it removes every computer's link first.
+# the agent card's address and routes, then forwarding, before the office
+# service starts shells and desktops. Pulled in by
+# qorpera-company-computer.service (Wants=). Without it the plumber refuses
+# and computers start without a network, never with an unfiltered one or by
+# the machine's first card. Stopping it removes every computer's link first.
 [Unit]
 Description=Qorpera computers' network firewall
-After=nftables.service
+Requires=sys-subsystem-net-devices-qagent.device
+After=sys-subsystem-net-devices-qagent.device nftables.service systemd-networkd.service
 Before=qorpera-company-computer.service qorpera-computer-plumb.socket
 
 [Service]

@@ -22,8 +22,8 @@ rollouts or fallbacks that only keep live companies running: each ships whole, o
   that it stays out (below).
 - G2-6: the node-level tokens bound to one run by a proof of its lease (below): 6a (migration `20260930152000`, SQL test
   986) the secret brokers' runtime routes and the object gateway's folder route; 6b the coding executor; 6c the Company
-  Computer's office receiver. The object gateway's native-objects route serves no folder-v2 company and is deleted in
-  the legacy sweep instead.
+  Computer's office receiver. The object gateway's native-objects route served no folder-v2 company and went in the
+  legacy sweep's step C instead.
 
 ## G2-3: the identity credential
 
@@ -235,11 +235,12 @@ empty 503 it gives every refused request. The node-level tokens stay as transpor
   - the secret brokers and the shared vault prove the lease on `/v1/operations`, `/v1/company-accounts`,
     `/v1/company-account-fills` and `/v1/model-logins`, through their own database principal;
   - the object gateway proves it on `/v1/folder-objects`;
-  - the native host's broker client, model login client and folder bytes client send the header, as do its
-    native-objects clients (the object store and the Company Computer's capture paths).
-- **Not proved: `/v1/native-company-objects`.** Both SQL checks behind it refuse every folder-v2 company
-  (`20260928259430`), folder-v2 screenshots travel inline, and file export is refused, so the route serves nothing we
-  build. The legacy sweep (step C) deletes it with the Company Computer's object publishers, instead of a proof.
+  - the native host's broker client, model login client and folder bytes client send the header (its native-objects
+    clients did too, until the legacy sweep's step C removed them).
+- **The native object route:** gone instead of proven (legacy removal, step C; migration `20260930190000`).
+  `/v1/native-company-objects`, its native-objects clients and their SQL served only snapshot-v1 companies: a
+  folder-v2 capture is stored nowhere, and the computer's file imports and exports are off until the folder carries
+  them. G2-6c is the office receiver's own proof alone (below).
 - **6b** (no SQL: the coding executor already calls the database as service_role):
   - the executor's guest-facing listener (`commandPort`) proves the lease on `/v1/coding-commands/*` and
     `/v1/machine-commands/*`, before the command's own authorization (a machine start's authorization already records

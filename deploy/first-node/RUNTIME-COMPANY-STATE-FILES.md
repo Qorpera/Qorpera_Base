@@ -2409,8 +2409,53 @@ worker suites (379, 385, 387, 388, 395–399, 600–606, 656) after the new colu
     lock, as every coding-session writer takes it (3i-a's claim, begin and complete, the cancel, the drain).
 - **C3b (the runtime):** `cloud-folder-workers.ts` dispatches and follows up coding sessions (the brief's coding
   fields, the request's), and the dispatch's answer names the session's phase.
-- **C3c:** the quiet coding check-ins as a drain, on #816's continuation helpers (C1C §6.20's hand-over).
-- **C3d:** a coding turn's result written to `results.md`.
+- **C3c (migration 20260930107500, SQL tests 934 and 936; the drain `coding_checkins`, LISTENER §9, C1C §6.20's hand-over):**
+  349850's quiet check-ins on folder-v2. After 1, 3 and 7 quiet days, the agent that started a coding session is asked
+  once per mark whether it can be archived. The legacy ask (`qorpera_ask_quiet_coding_sessions`) still skips folder-v2
+  (026000) and stays for the executor's scan.
+  - **Due** (`qorpera_folder_coding_checkin_due`, 349850's rule): an open session whose worker is not active and has
+    no report on its way, with a steering run, a mark reached and not asked in this quiet period, and an executor to
+    archive it. The due list and the step leave out erased and retired workers (`qorpera_coding_worker_retired`), and
+    parents still running or with a continuation pending (`qorpera_folder_parent_continuation`).
+  - **The question** is a `worker-completion` wake for the worker's steering run, longest quiet first, one continuation
+    of a parent at a time. It has the report shape the agent already reads (`qorpera_worker_completion_payload`), with
+    349850's question as the summary, and the legacy key `coding-quiet:<worker>:<quiet since, ms>:<mark>`:
+    - a new turn withdraws a queued question (`qorpera_open_coding_turn`);
+    - a member who stops a question's run stops only that question: `qorpera_worker_revival_stopped` skips the key,
+      and `qorpera_folder_parent_continuation` now uses it for `worker-completion`. That session is not asked again in
+      that quiet period (its mark goes to 7).
+
+    The session's event says "Quiet for N days; asked the agent whether it can be archived".
+  - **Marks.** An erased or retired worker found under the locks, or a stopped parent, has its mark counted as asked
+    (`suppressed`). A gone parent, or a wake refused (the same key again, no one to pay), is `undeliverable`, and the
+    answer names the last refusal. Either way the executor's automatic archive (after 30 quiet days) remains.
+  - **F2's cancel**, like C3b's archive, refuses a question's run once the session has a new turn since it was asked
+    (55000, `qorpera_coding_question_stale`). `manage_worker` answers it in SQL's words.
+- **C3d (migration 20260930108000, SQL test 982; the gateway's `coding-results-files.ts`):** a coding turn's result
+  written to `results.md`. A coding turn reports through its executor (`qorpera_complete_coding_turn`) or fails when
+  its executor's lease runs out (`qorpera_claim_coding_session`), never through a run's `report_work`, so until now no
+  `results.md` was written and its agent could not decide on it. The platform writes it, as it writes a connection's
+  file (P22b).
+  - **Due.** The report marks the worker due (`qorpera_coding_results_files`, one row per worker at the reported
+    sequence) in its own transaction, under the worker's rank-5 lock. A newer report replaces the row and takes a new
+    generation, so a claim's operation key (`coding-results:<worker>:<sequence>:<generation>`) is never an earlier
+    claim's.
+  - **The writer.** The object gateway (off unless `QORPERA_CODING_RESULTS_WRITER=1`) claims one due row at a time
+    (`qorpera_claim_coding_results_file`, service role, `SKIP LOCKED`, the worker read again in its own statement),
+    renders `results.md` from the claim and commits it as the platform under the claim's operation key at the version
+    the claim read. Then it finishes the claim (`qorpera_finish_coding_results_file`); a problem backs the row off. The
+    file holds the turn's outcome and report time, its summary (or a standing text), its pull request on its own line,
+    and, when blocked, what it needs with its options as a list when they fit. A line the parser would read as a
+    section heading is demoted one level, a text too long is cut to its section's bound, and a report the parser still
+    refuses is written with a standing text in its place.
+  - **The rules.** Without a worker request, a platform commit under the due row's exact operation key may write a
+    live coding worker's `results.md`, only as its turn reported it: the worker's outcome and `reported_at`, no
+    decision, no note, no files. The index points the worker at the new results and removes the due row in the same
+    commit. A decision waits while the row is due ("still being written").
+  - **The revival waits** (`qorpera_coding_results_held`, in `qorpera_folder_worker_due` and
+    `qorpera_folder_workers_company`): the agent is revived once `results.md` is written, at most a minute after the
+    report, and at once after a writing problem. A batch sibling waits with it, and a revival another worker starts
+    leaves the held worker out.
 
 **Plan (P16): interfaces and tables on the folder core** (the coordinator's slice P16, RUNTIME-INTERFACES.md
 step I6, with Interfaces; design, 3 October, review r1 folded). The rules are RUNTIME-INTERFACES.md §6.1 (its nine

@@ -326,6 +326,11 @@ it("asks only whether a busy program is still needed on a machine check-in", () 
 		"A coding session (machineKind coding) you archive with manage_worker action archive, using the todoKey and workerKey of its check-in",
 	);
 	expect(instructions).toContain("If its state is active again (a new turn started), leave it.");
+	expect(instructions).toContain("a machine of the company (machineKind machine) is named by its name");
+	expect(instructions).toContain("on a machine use machine_cancel with the machine's name and the commandId");
+	expect(instructions).toContain(
+		"A machine whose running is empty is busy outside its commands (containers, or programs left behind): stop it with machine_stop",
+	);
 	expect(instructions).not.toContain("# This wake: your machine");
 	expect(instructions).toContain("qorpera.machine-checkin-continuation/v1");
 });
