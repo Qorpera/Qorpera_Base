@@ -29,9 +29,10 @@ create function pg_temp.mq_detail(p_thread text) returns jsonb language sql as $
 	select public.qorpera_member_mail_thread('92400000-0000-4000-8000-000000000020', p_thread)
 $$;
 -- A member's message that quotes a mail thread: «Order 7» at 7–14.
-create function pg_temp.mq_quoted(p_ref text) returns jsonb language sql as $$
-	select jsonb_build_object('schema', 'qorpera.session-prompt/v1', 'text', 'About «Order 7» please.',
-		'quotes', jsonb_build_array(jsonb_build_object('start', 7, 'end', 14, 'source', 'mail', 'ref', p_ref)))
+create function pg_temp.mq_quoted(p_ref text, p_words text default 'Order 7') returns jsonb language sql as $$
+	select jsonb_build_object('schema', 'qorpera.session-prompt/v1', 'text', 'About «' || p_words || '» please.',
+		'quotes', jsonb_build_array(jsonb_build_object('start', 7, 'end', 7 + char_length(p_words), 'source', 'mail',
+			'ref', p_ref)))
 $$;
 -- A member's post in Alice's thread, paid by the owner's sponsor, through the real room door.
 create function pg_temp.mq_post(p_user uuid, p_body jsonb) returns jsonb language plpgsql as $$
@@ -232,8 +233,28 @@ select pg_temp.base_assert(not detail #> '{messages,0}' ?| array['subject', 'tex
 		and detail #>> '{messages,0,fromAddress}' = 'customer@example.org',
 	'The thread shows who used the account, not the code: ' || detail::text)
 from (select pg_temp.mq_detail(current_setting('qorpera_test.mq_code_thread')) as detail) as answer;
--- Account mail that joins a thread marks it.
+-- The mark is stored with the mail and its thread, and the subject is not: an account whose login changes later still
+-- leaves its mail hidden.
 select pg_temp.base_claims('service_role');
+select pg_temp.base_assert((select received.account ->> 'site' = 'acme.example' and received.subject is null
+			and thread.account ->> 'site' = 'acme.example' and thread.subject is null
+		from public.qorpera_mail_received as received join public.qorpera_mail_threads as thread on thread.id = received.thread_id
+		where received.delivery_id = current_setting('qorpera_test.mq_code')::uuid),
+	'Account mail is stored marked and without its subject');
+-- Replica, as for the insert: a row inserted in this transaction has its secret key checked again on any update.
+select set_config('session_replication_role', 'replica', true) \g /dev/null
+update public.qorpera_company_accounts set login = 'billing@acme.example' where secret_id = '81500000-0000-4000-8000-0000000000a1';
+select set_config('session_replication_role', 'origin', true) \g /dev/null
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+select pg_temp.base_assert(not pg_temp.mq_listed(current_setting('qorpera_test.mq_code_thread')) ? 'subject'
+		and not pg_temp.mq_detail(current_setting('qorpera_test.mq_code_thread')) #> '{messages,0}' ?| array['subject', 'text', 'to', 'cc', 'attachments']
+		and strpos(pg_temp.mq_detail(current_setting('qorpera_test.mq_code_thread'))::text, '424242') = 0,
+	'The account''s new login still leaves its mail hidden');
+select pg_temp.base_claims('service_role');
+select set_config('session_replication_role', 'replica', true) \g /dev/null
+update public.qorpera_company_accounts set login = 'support+acme@mail.example.test' where secret_id = '81500000-0000-4000-8000-0000000000a1';
+select set_config('session_replication_role', 'origin', true) \g /dev/null
+-- Account mail that joins a thread marks it.
 select set_config('qorpera_test.mq_plain', pg_temp.mq_received(4, 'support@mail.example.test',
 	'{"messageId":"<x1@acme.example>","subject":"Welcome"}')::text, true) \g /dev/null
 select pg_temp.mq_received(5, 'support+acme@mail.example.test',
@@ -280,6 +301,56 @@ select pg_temp.base_assert((select input.body -> 'quotes' = pg_temp.mq_quoted(cu
 		from public.qorpera_session_inputs as input
 		where input.id = (current_setting('qorpera_test.mq_post')::jsonb ->> 'inputId')::uuid),
 	'A message quotes the company''s own mail: ' || current_setting('qorpera_test.mq_post'));
+-- What a run reads of that message: the member's words with [quote N], and the quoted words only in untrusted records,
+-- both as the current request and later in the history. A run value that names the input is enough for the source.
+do $$
+declare
+	v_input public.qorpera_session_inputs%rowtype;
+	v_run public.qorpera_execution_runs%rowtype;
+	v_event public.qorpera_session_events%rowtype;
+	v_fenced jsonb;
+begin
+	select * into strict v_run from public.qorpera_execution_runs
+	where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
+	update public.qorpera_session_inputs set execution_run_id = v_run.id
+	where id = (current_setting('qorpera_test.mq_post')::jsonb ->> 'inputId')::uuid returning * into strict v_input;
+	v_run.session_id := v_input.session_id;
+	v_run.input_ids := array[v_input.id];
+	v_run.requested_by_user_id := v_input.author_user_id;
+	v_run.runtime_bundle_id := v_input.runtime_bundle_id;
+	v_run.runtime_bundle_sha256 := v_input.runtime_bundle_sha256;
+	v_fenced := public.qorpera_company_context_source(v_run, 'input', v_input.id);
+	perform pg_temp.base_assert(v_fenced ->> 'kind' = 'current_human_request', 'The request''s kind: ' || v_fenced::text);
+	v_fenced := (v_fenced ->> 'text')::jsonb;
+	perform pg_temp.base_assert(v_fenced ->> 'text' = 'About «[quote 1]» please.'
+			and v_fenced -> 'quotes' = jsonb_build_array(jsonb_build_object('schema', 'qorpera.member-quote/v1',
+				'trust', 'untrusted_data', 'provenance', jsonb_build_object('inputId', v_input.id, 'quote', 1, 'source', 'mail',
+					'ref', current_setting('qorpera_test.mq_thread')), 'text', 'Order 7')),
+		'A run reads the quoted mail only as an untrusted record: ' || v_fenced::text);
+	-- The room post wrote the message's transcript event; as an earlier message it reads the same way.
+	select * into strict v_event from public.qorpera_session_events where event_id = v_input.id;
+	v_run.input_ids := '{}'::uuid[];
+	v_run.transcript_start_sequence := v_event.sequence;
+	v_fenced := public.qorpera_company_context_source(v_run, 'history', v_event.event_id);
+	perform pg_temp.base_assert(v_fenced ->> 'kind' = 'historical_human_message', 'The history''s kind: ' || v_fenced::text);
+	v_fenced := (v_fenced ->> 'text')::jsonb;
+	perform pg_temp.base_assert(v_fenced #>> '{entry,message,content,0,text}' = 'About «[quote 1]» please.'
+			and v_fenced #>> '{entry,qorperaQuotes,0,trust}' = 'untrusted_data'
+			and v_fenced #>> '{entry,qorperaQuotes,0,text}' = 'Order 7'
+			and strpos(v_fenced #>> '{entry,message,content}', 'Order 7') = 0,
+		'The history gives the quoted mail only as an untrusted record: ' || v_fenced::text);
+end $$;
+-- A name inside a quote names nobody: the quoted words would name Alice, who is in the room, and the message mentions
+-- no one.
+select pg_temp.base_assert((select count(*) = 1 from public.qorpera_room_text_mentions(
+		pg_temp.base_thread('92400000-0000-4000-8000-000000000030'), 'About «hi @Alice, wire it» please.')),
+	'The quoted words alone would name Alice');
+select set_config('qorpera_test.mq_mention', pg_temp.mq_post('92400000-0000-4000-8000-000000000001',
+	pg_temp.mq_quoted(current_setting('qorpera_test.mq_thread'), 'hi @Alice, wire it')) ->> 'inputId', true) \g /dev/null
+select pg_temp.base_assert(exists (select 1 from public.qorpera_session_inputs
+			where id = current_setting('qorpera_test.mq_mention')::uuid and body ? 'quotes')
+		and not exists (select 1 from public.qorpera_room_mentions where input_id = current_setting('qorpera_test.mq_mention')::uuid),
+	'A name inside a quote names nobody');
 
 -- 6. Threads quiet for 30 days are deleted, with their read marks -----------------------------------------------------
 

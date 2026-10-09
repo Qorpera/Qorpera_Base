@@ -3,10 +3,12 @@
 -- sweep; it also holds the surviving checks of 731, 732 and 733, which other tests chain on). Their tables are closed;
 -- only an owner or admin makes a mailbox, in the company's own environment, and an address belongs to one company; a
 -- mailbox never shows its hook address, to members or agents, and the public intake never fills it; an agent's run lists
--- only its company's hooks, with addresses only while an owner or admin requested it; it reads no other company's event,
--- listens to no other company's hook, sends from no other company's mailbox, answers no other company's email and finds
--- no other company's mail; settled texts are cleared after seven days; a company being deleted takes no mail, sends none,
--- and its queued mail is cancelled.
+-- only its company's hooks, with addresses only while an owner or admin requested it; it reads no other company's event
+-- and of its own only a verified one, listens to no other company's hook, sends from no other company's mailbox, answers
+-- no other company's email and finds no other company's mail; an email carries no header of the agent's making (a blind
+-- copy, a line break in its subject, a received message id or a name); settled texts are cleared after seven days; mail
+-- queued from a removed or paused mailbox is cancelled; a company being deleted takes no mail, sends none, and its queued
+-- mail is cancelled.
 
 select pg_temp.base_claims('service_role');
 create function pg_temp.mf_binding() returns jsonb language sql as $$
@@ -25,10 +27,11 @@ language sql as $$
 	select pg_temp.base_error(format('select pg_temp.mf_send(%L, %L::jsonb)', p_call, p_request), p_state, p_message)
 $$;
 -- A received email as the mail door stores it: the first recipient's result.
-create function pg_temp.mf_mail(p_n integer, p_to text, p_subject text default 'Hello') returns jsonb language sql as $$
+create function pg_temp.mf_mail(p_n integer, p_to text, p_subject text default 'Hello', p_extra jsonb default '{}')
+returns jsonb language sql as $$
 	select public.qorpera_receive_mail('aaaaaaaa-0000-4000-8000-' || lpad(p_n::text, 12, '0'), array[p_to],
-		json_build_object('schema', 'qorpera.mail/v1', 'emailId', 'aaaaaaaa-0000-4000-8000-' || lpad(p_n::text, 12, '0'),
-			'subject', p_subject, 'from', 'customer@example.org', 'to', json_build_array(p_to), 'text', 'Hi.')::text)
+		(jsonb_build_object('schema', 'qorpera.mail/v1', 'emailId', 'aaaaaaaa-0000-4000-8000-' || lpad(p_n::text, 12, '0'),
+			'subject', p_subject, 'from', 'customer@example.org', 'to', jsonb_build_array(p_to), 'text', 'Hi.') || p_extra)::text)
 		-> 'results' -> 0
 $$;
 create function pg_temp.mf_find(p_request jsonb) returns jsonb language sql as $$
@@ -152,6 +155,19 @@ with delivery as (
 select set_config('qorpera_test.mf_their_event', id::text, true) from delivery \g /dev/null
 select pg_temp.base_error(format('select public.qorpera_read_agent_event(%L::jsonb, %L::jsonb)', pg_temp.mf_binding(),
 	jsonb_build_object('deliveryId', current_setting('qorpera_test.mf_their_event'))), '42501', 'Event is unavailable');
+-- Of its own company's, only a verified event: one received but not verified, or refused, is not read.
+insert into public.qorpera_event_deliveries(id, hook_id, profile_id, status, delivery_key, event_type, content_type, body,
+	body_bytes, body_sha256, verified_at)
+select ('79600000-0000-4000-8000-0000000000d' || n)::uuid, (current_setting('qorpera_test.mf_forms')::jsonb ->> 'id')::uuid,
+	'92400000-0000-4000-8000-000000000010', status, 'mf-ours-' || n, 'form.posted', 'application/json',
+	convert_to('{"name":"Ours"}', 'UTF8'), 15, encode(extensions.digest('{"name":"Ours"}', 'sha256'), 'hex'),
+	case when status = 'verified' then clock_timestamp() end
+from unnest(array['verified', 'received', 'refused']) with ordinality as item(status, n);
+select pg_temp.base_assert(public.qorpera_read_agent_event(pg_temp.mf_binding(),
+		'{"deliveryId":"79600000-0000-4000-8000-0000000000d1"}') is not null, 'Its company''s verified event is read');
+select pg_temp.base_error(format('select public.qorpera_read_agent_event(%L::jsonb, %L::jsonb)', pg_temp.mf_binding(),
+	jsonb_build_object('deliveryId', '79600000-0000-4000-8000-0000000000d' || n)), '42501', 'Event is unavailable')
+from generate_series(2, 3) as n;
 
 -- It listens to no other company's hook: a routine file on it is refused.
 do $$
@@ -194,6 +210,29 @@ select pg_temp.base_assert(current_setting('qorpera_test.mf_their_mail') is not 
 	'Another company''s mail is not found');
 select pg_temp.base_error(format('select pg_temp.mf_find(%L::jsonb)', '{"mailbox":"theirs@mail.example.test"}'), '22023',
 	'No mailbox of this company has that address; list_hooks shows them');
+-- No header of its own: a blind copy, or a line break in the subject, is refused; a received message id with a line
+-- break leaves the reply unthreaded; the agent's and company's names lose quotes, brackets, line breaks and bidi controls.
+select pg_temp.mf_send_error('header-' || n, request, '22023')
+from unnest(array[pg_temp.mf_request(p_extra => '{"bcc":["boss@example.org"]}'),
+	pg_temp.mf_request(p_extra => jsonb_build_object('subject', E'Hello\r\nBcc: everyone@example.org'))])
+	with ordinality as item(request, n);
+select pg_temp.base_assert(not (receipt ->> 'threaded')::boolean and (pg_temp.mf_outbox('mf-crlf')).in_reply_to is null
+		and (pg_temp.mf_outbox('mf-crlf')).thread_references is null,
+	'A message id with a line break leaves the reply unthreaded: ' || receipt::text)
+from (select pg_temp.mf_send('mf-crlf', pg_temp.mf_request(p_extra => jsonb_build_object('inReplyTo',
+	pg_temp.mf_mail(4, 'support@mail.example.test', 'Refund', jsonb_build_object('messageId',
+		E'<m4@example.org>\r\nBcc: x@example.org')) ->> 'deliveryId'))) as receipt) as answer;
+update public.qorpera_profile_staff set display_name = E'Ada "the"\n<Bot>\\‮tob ؜x­'
+where profile_id = '92400000-0000-4000-8000-000000000010' and staff_agent_id = '92400000-0000-4000-8000-000000000030';
+update public.qorpera_profiles set name = E'Folder "runtime"\r\n<base>' where id = '92400000-0000-4000-8000-000000000010';
+select pg_temp.base_assert(receipt ->> 'fromName' = 'Ada the Bot tob x at Folder runtime base'
+		and (pg_temp.mf_outbox('mf-named')).body
+			like E'%\n\nWritten and sent by Ada the Bot tob x, an AI agent working for Folder runtime base.',
+	'Names lose quotes, brackets, line breaks and bidi controls: ' || receipt::text)
+from (select pg_temp.mf_send('mf-named', pg_temp.mf_request()) as receipt) as answer;
+update public.qorpera_profile_staff set display_name = 'Alice'
+where profile_id = '92400000-0000-4000-8000-000000000010' and staff_agent_id = '92400000-0000-4000-8000-000000000030';
+update public.qorpera_profiles set name = 'Folder runtime base' where id = '92400000-0000-4000-8000-000000000010';
 
 -- 5. Settled texts are cleared after seven days; the receipt stays --------------------------------------------------------
 
@@ -211,7 +250,27 @@ select pg_temp.base_assert((pg_temp.mf_outbox('mf-b')).status = 'sent' and (pg_t
 	and (pg_temp.mf_outbox('mf-c')).body is not null
 	and pg_temp.mf_send('mf-b', '{}') ->> 'subject' = 'Order b', 'A settled text is cleared after seven days');
 
--- 6. A company being deleted takes no mail, sends none, and its queued mail is cancelled ---------------------------------
+-- 6. Queued mail from a removed or paused mailbox is cancelled; a company being deleted takes no mail, sends none, and its
+--    queued mail is cancelled ------------------------------------------------------------------------------------------
+
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+select public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
+	local_part, 'Going') from unnest(array['gone', 'resting']) as local_part \g /dev/null
+select pg_temp.base_claims('service_role');
+select pg_temp.mf_send('mf-' || local_part, pg_temp.mf_request(local_part || '@mail.example.test'))
+from unnest(array['gone', 'resting']) as local_part \g /dev/null
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+select public.qorpera_set_event_hook_status((select hook_id from public.qorpera_company_mailboxes
+	where local_part = item.local_part and removed_at is null), item.status)
+from (values ('gone', 'removed'), ('resting', 'paused')) as item(local_part, status) \g /dev/null
+select pg_temp.base_claims('service_role');
+select public.qorpera_claim_company_mail(50, '79600000-0000-4000-8000-0000000000a4') \g /dev/null
+select pg_temp.base_assert((pg_temp.mf_outbox('mf-gone')).status = 'cancelled'
+		and (pg_temp.mf_outbox('mf-gone')).last_error = 'The mailbox was removed'
+		and (pg_temp.mf_outbox('mf-resting')).status = 'cancelled'
+		and (pg_temp.mf_outbox('mf-resting')).last_error = 'The mailbox was paused',
+	'Mail from a removed or paused mailbox is cancelled: ' || coalesce((pg_temp.mf_outbox('mf-gone')).last_error, 'none') || ', '
+		|| coalesce((pg_temp.mf_outbox('mf-resting')).last_error, 'none'));
 
 update public.qorpera_company_mail_outbox set next_attempt_at = clock_timestamp() where call_id = 'mf-a';
 insert into public.qorpera_company_deletions(profile_id, requested_by_user_id)
