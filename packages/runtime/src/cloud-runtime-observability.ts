@@ -73,6 +73,8 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"table_read",
 	"table_write",
 	"save_interface",
+	// Summary trees (M1b-3): reading a conversation's lines and messages.
+	"zoom",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

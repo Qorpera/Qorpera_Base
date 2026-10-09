@@ -10,7 +10,7 @@ set lease_token_sha256 = encode(extensions.digest(convert_to(current_setting('qo
 where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'jobId')::uuid;
 
 -- Row locks show only across connections, so 924's fixture is committed here and removed again at the end (the
--- harness of 602 and 746): the test refuses to run beside other connections to this database, whose rows the
+-- harness of 746): the test refuses to run beside other connections to this database, whose rows the
 -- cleanup could not tell from its own.
 reset role;
 select set_config(name, current_setting(name), false)
@@ -79,7 +79,7 @@ begin
 end
 $$;
 
--- At the end: remove what the test committed, as 602 and 746 do.
+-- At the end: remove what the test committed, as 746 does.
 create function pg_temp.r793_cleanup() returns void language plpgsql as $$
 declare v_table text; v_columns text; v_expected bigint; v_count bigint; v_wrong text[] := '{}'; v_first xid := current_setting('qorpera_test.r793_first_xid')::xid;
 begin

@@ -47,8 +47,6 @@ const memberAuthority = new SupabaseMemberCompanyAuthority({
 	publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
 	secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
 });
-// The legacy company bootstrap (CompanyBootstrapProvisioner) no longer runs: new companies are created at the founding
-// table, on folder-v2, by the creation loop below. A legacy bootstrap job stays queued (lobby hardening, #776's review).
 // The vault's connection-file writer (P22b): off unless QORPERA_CONNECTION_FILE_WRITER=1; the coordinator turns it on.
 // Its own database client (its own circuit, so a slow commit never refuses members' file requests) and its own loop.
 const connectionFiles =

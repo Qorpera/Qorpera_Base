@@ -197,6 +197,8 @@ export function cloudActionEffect(
 		// Interfaces (I8): a page and a table, read with the run's own authority.
 		case "interface_read":
 		case "table_read":
+		// Summary trees (M1b-3): a conversation's lines and messages, as read_context reads the run's own.
+		case "zoom":
 			return "read";
 		// A skill is guidance in the Company File, written through the same governed gateway; deleting one is a
 		// deletion, as company_delete (and on folder-v2 its approval is recorded the same way, P20).
@@ -532,12 +534,20 @@ export function describeCloudAction(
 						: "Remove a hook";
 		target = text(args.name) || text(args.localPart) || text(args.hook) || null;
 		add("purpose", args.purpose);
+		// A signed hook (E3b): who signs, and the one site its secret may be typed into.
+		const signed = args.action === "create" && (args.proof === "github" || args.proof === "hmac-sha256");
+		if (signed) {
+			add("signed by", args.proof === "github" ? "GitHub" : "The sender, with HMAC-SHA256");
+			add("site", args.site);
+		}
 		if (args.action === "create")
 			add(
 				"effect",
 				args.kind === "mailbox"
 					? "Anyone may send email to this address; what arrives can wake the company's routines"
-					: "Anyone with the hook's address may send it events; what arrives can wake the company's routines",
+					: signed
+						? "The vault makes the hook's secret, which no one sees, to be typed only on the site; events signed with it can wake the company's routines"
+						: "Anyone with the hook's address may send it events; what arrives can wake the company's routines",
 			);
 		if (args.action === "remove")
 			add("effect", "Ends it for good; a mailbox's address is free for any company to take");
