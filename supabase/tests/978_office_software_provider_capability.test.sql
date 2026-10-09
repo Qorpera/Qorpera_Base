@@ -8,7 +8,7 @@
 --    and not one whose provider, policy or allocation has moved on. Only service_role claims reach it.
 -- 2. A rotation keeps the allocation, provider and policy and raises the revision by exactly one; the old capability is
 --    refused after it.
--- 3. Each of the 7 office-software RPCs checks the capability before it takes any lock, checks it again under its locks
+-- 3. Each of the 7 office-software RPCs checks the capability before it takes any lock and again after its lock step
 --    (the gate holds the capability row FOR SHARE until commit), and passes the raw capability to nothing but the gate.
 -- 4. Activating measured software is refused once the capability it was challenged under is disabled or rotated.
 -- 405's office fixture on 924's folder-v2 company, with 718's start reserve: an LXD allocation on the office's provider.
@@ -58,14 +58,16 @@ begin
 	perform pg_temp.base_error(pg_temp.os_gate(repeat('ef', 32)), '42501', c_unavailable);
 	perform pg_temp.base_error(pg_temp.os_gate(encode(extensions.digest(c_cap, 'sha256'), 'hex')), '42501', c_unavailable);
 	perform pg_temp.base_error(pg_temp.os_gate(c_cap, false, extensions.gen_random_uuid()), '42501', c_unavailable);
-	-- Only service_role claims reach the gate: not the owner, not the publishable key, not a caller without claims.
+	-- Only service_role claims reach the gate: not the owner, not the publishable key. A session without claims has no
+	-- role at all in production (this harness reads it as anon), so the gate must compare with "is distinct from".
 	perform pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 	perform pg_temp.base_error(pg_temp.os_gate(c_cap), '42501', c_required);
 	perform pg_temp.base_claims('anon');
 	perform pg_temp.base_error(pg_temp.os_gate(c_cap), '42501', c_required);
-	perform pg_temp.base_claims(null);
-	perform pg_temp.base_error(pg_temp.os_gate(c_cap), '42501', c_required);
 	perform pg_temp.base_claims('service_role');
+	perform pg_temp.base_assert((select prosrc from pg_proc
+		where oid = 'public.qorpera_require_office_software_capability(uuid,text,boolean)'::regprocedure)
+		~ 'auth\.role\(\)\s+is\s+distinct\s+from\s+''service_role''', 'The gate refuses a caller with no role too');
 	-- The capability holds only under the office's provider and its policy, on a live allocation (each case rolled back).
 	for v_case in 1..3 loop
 		begin
@@ -103,11 +105,11 @@ end
 $$;
 
 -- 3. Each RPC's live definition: the first gate call is the lock-free precheck, and nothing before it locks or calls
--- another function; a second gate call (for an invocation ack, the invocation check) runs under the locks; and every
--- use of the raw capability is one of those calls.
+-- another function; a second gate call (for an invocation ack, the invocation check) comes after the RPC's lock step;
+-- and every use of the raw capability is one of those calls.
 do $$
 declare
-	f regprocedure; s text; i integer; v_head text; v_first text;
+	f regprocedure; s text; i integer; v_head text; v_first text; v_rest text; v_locked text;
 begin
 	foreach f in array array['public.qorpera_enroll_office_software(jsonb,jsonb,jsonb,text,text)',
 		'public.qorpera_begin_office_software(text,text,text,bigint,text,text)',
@@ -123,9 +125,12 @@ begin
 		perform pg_temp.base_assert(i > 0 and v_first ~ 'p_provider_capability\s*,\s*false\s*\)\s*;$'
 			and v_head !~* '\mfor\s+(update|share|no\s+key\s+update|key\s+share)\M|advisory|\mlock\M|public\.qorpera_\w+\s*\(',
 			format('%s checks the capability before it takes any lock', f));
-		perform pg_temp.base_assert(s ~ 'public\.qorpera_require_office_software_capability\([^;]*p_provider_capability\s*,\s*true\s*\)'
-			or s ~ 'public\.qorpera_check_office_software_invocation\([^;]*p_provider_capability\s*\)',
-			format('%s checks the capability again under its locks', f));
+		v_rest := substr(s, i + length(v_first));
+		v_locked := substring(v_rest from '(public\.qorpera_require_office_software_capability\([^;]*p_provider_capability\s*,\s*true\s*\)'
+			'|public\.qorpera_check_office_software_invocation\([^;]*p_provider_capability\s*\))');
+		perform pg_temp.base_assert(v_locked is not null
+			and left(v_rest, strpos(v_rest, v_locked) - 1) ~ 'public\.qorpera_(lock_\w+|assert_runtime_office_provider)\s*\(',
+			format('%s checks the capability again after its lock step', f));
 		perform pg_temp.base_assert((select count(*) from regexp_matches(s, 'p_provider_capability', 'g'))
 			= (select count(*) from regexp_matches(s, 'public\.qorpera_require_office_software_capability\([^;]*p_provider_capability\s*,\s*(false|true)\s*\)', 'g'))
 			+ (select count(*) from regexp_matches(s, 'public\.qorpera_check_office_software_invocation\([^;]*p_provider_capability\s*\)', 'g')),
