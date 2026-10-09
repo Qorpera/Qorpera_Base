@@ -1744,7 +1744,8 @@ export function interfaceInstant(text: string): number | null {
 	return ms;
 }
 
-function typedValue(column: TableColumn, raw: string): { value: TableValue } | { problem: string } {
+/** A raw CSV field typed as the column reads it, or why it does not fit; the rows file's own reading, field by field. */
+export function tableFieldValue(column: TableColumn, raw: string): { value: TableValue } | { problem: string } {
 	if (raw === "") return column.optional ? { value: null } : { problem: `${column.name} is empty` };
 	switch (column.type) {
 		case "text":
@@ -1837,7 +1838,7 @@ export function parseTableRows(table: TableFile, text: string): TableRowsResult 
 		let bad: string | null = null;
 		for (const column of table.columns) {
 			const at = named.indexOf(column.name);
-			const out = typedValue(column, at < 0 ? "" : (record.fields[at] ?? ""));
+			const out = tableFieldValue(column, at < 0 ? "" : (record.fields[at] ?? ""));
 			if ("problem" in out) {
 				bad = out.problem;
 				break;
@@ -1859,7 +1860,8 @@ export function parseTableRows(table: TableFile, text: string): TableRowsResult 
 	return { rows, problems: withMore(problems), readable: true };
 }
 
-function csvField(value: TableValue): string {
+/** A typed value as a CSV field, quoted when it must be. */
+export function csvField(value: TableValue): string {
 	if (value === null) return "";
 	const text =
 		typeof value === "boolean" ? (value ? "yes" : "no") : Array.isArray(value) ? value.join(" ") : String(value);

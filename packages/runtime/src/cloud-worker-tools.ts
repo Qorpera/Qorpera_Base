@@ -796,7 +796,7 @@ export async function describeCloudAgentOpenWork(
 
 /** What a worker may use: its parent's reading tools, writing only when the
  * dispatch grants it, its office tools, and its single report. It has no mouth,
- * no coworker channel, no hiring, no routines and no workers of its own.
+ * no coworker channel, no hiring, no routines, no interface saves and no workers of its own.
  */
 export function cloudWorkerToolFilter(wake: Pick<CloudWakeEnvelope, "kind" | "source" | "payload">) {
 	const isWorker = wake.kind === "agent" && wake.source.kind === "worker-dispatch";
@@ -806,7 +806,10 @@ export function cloudWorkerToolFilter(wake: Pick<CloudWakeEnvelope, "kind" | "so
 	const readOnly = isWorker && wake.payload.access !== "write";
 	return {
 		isWorker,
+		// A worker never saves an interface or a table's settings: the change can give a button, an access or who writes
+		// a table, a delegation as hiring and routines are. Rows of a table are written as files are.
 		companyFile: (tool: CloudNativeTool) =>
-			!readOnly || !["company_write", "company_mkdir", "company_delete"].includes(tool.name),
+			!(isWorker && tool.name === "save_interface") &&
+			(!readOnly || !["company_write", "company_mkdir", "company_delete", "table_write"].includes(tool.name)),
 	};
 }
