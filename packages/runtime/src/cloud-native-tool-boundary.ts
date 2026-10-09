@@ -114,6 +114,10 @@ export interface CloudNativeTool {
 	 * is cut to a bound (P40b: a proposal's every change). It throws when it cannot give all of it: the call is then
 	 * never reviewed on a part. */
 	reviewContents?(parsed: JsonValue): JsonValue;
+	/** What the call would change, read from the company's current state before the automatic review (I8b: an
+	 * interface save's card and effect come from the files it replaces). Its value takes the parsed arguments' place for
+	 * the review, the work log and the effect; it changes nothing. A `CloudToolRefusal` refuses the call before review. */
+	prepare?(parsed: JsonValue, context: CloudToolContext): Promise<JsonValue>;
 	/** The cloud adapter still owns effect-time authorization, durable receipts and secret handling. */
 	execute(argumentsValue: JsonValue, context: CloudToolContext): Promise<CloudToolContent>;
 	/** After the automatic review denied the call (the reviewer, or a member on its card), with the denial's id: a call
@@ -810,6 +814,28 @@ export class CloudNativeToolBoundary {
 			...(this.#identity ? { identity: this.#identity } : {}),
 			...(observation ? { observation } : {}),
 		};
+		if (tool.prepare) {
+			// What the call changes is read before its review, so the card and the effect class are the ones that run.
+			try {
+				parsed = await untilStopped(() => tool.prepare!(parsed, context), this.#signal);
+				if (Buffer.byteLength(cloudToolJsonText(parsed)) > MAX_ARGUMENT_BYTES)
+					throw new Error("Oversized prepared arguments");
+			} catch (error) {
+				if (this.#signal.aborted)
+					return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
+				if (error instanceof CloudToolRefusal) {
+					const reason =
+						Buffer.byteLength(error.message) <= 1024 && REFUSAL_PLAIN.test(error.message)
+							? `: ${error.message}`
+							: "";
+					return this.#result(callId, tool, digest, "denied", { kind: "text", value: `REFUSED${reason}` });
+				}
+				return this.#result(callId, tool, digest, "denied", {
+					kind: "text",
+					value: "TOOL_UNAVAILABLE: What this call changes could not be read, so it did not happen. You may try the identical call once more; if it fails again, tell the member.",
+				});
+			}
+		}
 		const runLog = this.#runLog;
 		let actionReviewId: string | undefined;
 		if (this.#review) {

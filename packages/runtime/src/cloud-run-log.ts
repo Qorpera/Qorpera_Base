@@ -22,11 +22,13 @@ import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
  *   with no result yet, once every earlier call has an answer or a pending record. Worker dispatch and followup also
  *   wait for earlier answers, so the worker inherits its origin's narrow status. The call runs only once its commit
  *   has landed. A denied call that closes what it stood for (P40b) is committed the same way before it closes it.
- * - A send, a card or a `send_mail` keeps no copy of its arguments: `args` is "", and `args_bytes` and `args_hash`
- *   stay. Every stored hash comes from the platform's per-run keyed-hash service, never from a plain digest.
+ * - A send, a card, a `send_mail`, a report (`report_work`, `coding_finish`) or a coding session's question
+ *   (`coding_ask`) keeps no copy of its arguments: `args` is "", and `args_bytes` and `args_hash` stay. A report's or
+ *   a question's result holds none of its words either (a coding turn's receipt leaves them out). Every stored hash
+ *   comes from the platform's per-run keyed-hash service, never from a plain digest.
  * - The protection port classifies every step before any bytes are staged. A narrow step and every later step keep
- *   only keyed hashes and receipt identifiers in the folder; their full content stays in this process. The real
- *   protection and folder adapters must be implemented before any production run is built with a log.
+ *   only keyed hashes and receipt identifiers in the folder; their full content stays in this process. Production
+ *   wiring still needs the folder adapter and origin/refusal handling before any run is built with a log.
  * - The run's tree, its step lines (§7.5), sits beside the log in `runs/<run>/t<n>/`. W2's step-line writer reads and
  *   commits its blocks through `treeRead` and `commitTree`, also after `close`, for the lines built at closing. Only
  *   its batches check the run's generation: they are derived, and are refused when it moved.
@@ -50,8 +52,18 @@ const CHANGE_SET_BYTES = 1024 * 1024;
 const CHANGE_SET_FILES = 64;
 /** Tries of one batch: a conflict, a moved log or a missing parent is read again and done again. */
 const ATTEMPTS = 4;
-/** Calls whose words are already in the conversation, on a card or in the outbox row: their arguments are not copied. */
-const HASH_ONLY_TOOLS = new Set(["send_message", "send_coworker_message", "ask_member", "send_mail"]);
+/** Calls whose words are already in the conversation, on a card, in the outbox row, or in the worker's report and its
+ * results file (a coding turn's row too): their arguments are not copied. A report's or a coding turn's result holds
+ * none of its words either (the coding receipt leaves them out), so no copy of those outlives their erasure. */
+const HASH_ONLY_TOOLS = new Set([
+	"send_message",
+	"send_coworker_message",
+	"ask_member",
+	"send_mail",
+	"report_work",
+	"coding_finish",
+	"coding_ask",
+]);
 /** A block of the run's tree under the log's folder, as `memoryBlockPath` names it: tier `t0` to `t14`, block
  * `<8 digits>`. */
 const TREE_PATH = /^t(?:[0-9]|1[0-4])\/\d{8}\.jsonl$/;

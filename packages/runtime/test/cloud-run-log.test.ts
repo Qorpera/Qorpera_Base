@@ -627,19 +627,34 @@ describe("a run's work log", () => {
 		await vi.waitFor(() => expect(counted.folder.all()).toHaveLength(16));
 	});
 
-	it("keeps only hashes of a send's arguments", async () => {
+	it("keeps only hashes of a send's, a report's and a coding question's arguments", async () => {
 		const { runId, folder, log, signal } = runLog();
 		const text = JSON.stringify({ text: "PRIVATE_SEND_TEXT" });
-		for (const tool of ["send_message", "send_coworker_message", "ask_member", "send_mail"])
-			log.finish(step(log, tool, { text: "PRIVATE_SEND_TEXT" }), envelope("sent"), []);
+		const hashOnly = [
+			"send_message",
+			"send_coworker_message",
+			"ask_member",
+			"send_mail",
+			"report_work",
+			"coding_finish",
+			"coding_ask",
+		];
+		for (const tool of hashOnly) log.finish(step(log, tool, { text: "PRIVATE_SEND_TEXT" }), envelope("sent"), []);
+		// A command is not one of them: its step keeps its line.
+		const command = JSON.stringify({ command: "npm test" });
+		log.finish(step(log, "coding_run_command", { command: "npm test" }), envelope("ran"), []);
 		await log.flush(signal);
-		for (const line of folder.all())
-			expect(line).toMatchObject({
-				args: "",
-				args_bytes: Buffer.byteLength(text),
-				args_hash: keyed(runId, sha(text)),
-			});
-		expect(log.steps().every((entry) => entry.hashOnly && entry.args === "")).toBe(true);
+		const lines = folder.all();
+		expect(lines.map((line) => line.tool)).toEqual([...hashOnly, "coding_run_command"]);
+		for (const line of lines.slice(0, -1))
+			expect(line).toMatchObject({ args: "", args_bytes: Buffer.byteLength(text), args_hash: keyed(runId, sha(text)) });
+		expect(lines.at(-1)).toMatchObject({
+			args: command,
+			args_bytes: Buffer.byteLength(command),
+			args_hash: keyed(runId, sha(command)),
+		});
+		expect(log.steps().map((entry) => entry.hashOnly)).toEqual([...hashOnly.map(() => true), false]);
+		expect(log.steps().every((entry) => entry.args === (entry.hashOnly ? "" : command))).toBe(true);
 		expect(JSON.stringify([...folder.files.values()])).not.toContain("PRIVATE_SEND_TEXT");
 	});
 

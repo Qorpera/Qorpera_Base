@@ -34,6 +34,7 @@ import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
 import { CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
 import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import { cloudInterfaceTools } from "./cloud-folder-interface-tools.ts";
+import { cloudInterfaceWriteTools } from "./cloud-folder-interface-writes.ts";
 import { CloudFolderNotebooks } from "./cloud-folder-notebooks.ts";
 import { CloudFolderProposals } from "./cloud-folder-proposals.ts";
 import { CloudFolderRoutineDecision } from "./cloud-folder-routine-decision.ts";
@@ -50,6 +51,7 @@ import type { CloudNativeCodingDriver } from "./cloud-native-coding-runtime.ts";
 import {
 	cloudAgentFolderPlace,
 	cloudCompanyContextTool,
+	cloudNativeStableInstructions,
 	compileCloudNativeCompanyInstructions,
 	composeCloudNativeCompanyPrompt,
 	parseCloudNativeCompanyContext,
@@ -110,6 +112,9 @@ import {
 	parseCloudWakeEnvelope,
 } from "./cloud-wake-bus.ts";
 import { cloudWorkerToolFilter, cloudWorkerTools, describeCloudAgentOpenWork } from "./cloud-worker-tools.ts";
+import { memoryCacheKeyComposer, memoryCommitView, memoryComposeView } from "./memory-tree/compose.ts";
+import { memoryPromptCacheKey } from "./memory-tree/view.ts";
+import { memoryZoomTool } from "./memory-tree/zoom.ts";
 
 // The company runtime's control plane completes folder receipts: a folder-v2 run's writers commit under them.
 type NativeCompanyControl = CloudNativeToolAuthorityReader &
@@ -356,6 +361,15 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				runId: binding.runId,
 				agentFolder: cloudAgentFolder(context.identity.companyId, context.identity.staffAgentId, agentFolders),
 			});
+			// Summary trees (RUNTIME-AGENT-MEMORY-TREE.md §5.3, M1b-4a): an agent's run in its own thread may see the
+			// primary view of its conversation, with the branches (§5.5), instead of the history before it. The host call
+			// answers whether it does (the company is listed once its trees are written); a run that has the view has zoom
+			// and the conversation's prompt cache key (§6.2). A worker is not one; it gets its parent's view (W4).
+			const memoryTree =
+				context.identity.audienceKind === "company" &&
+				context.identity.sessionId !== null &&
+				cloudWakeIsOwnThread(wake) &&
+				!cloudWorkerToolFilter(wake).isWorker;
 			const composeContext = async () => {
 				presence = this.#presenceFactory?.(binding, context.identity, signal);
 				// Only a typed, cloud-authorized file event selects an initial path.
@@ -393,6 +407,14 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					(wake.kind !== "room" || cloudWakeIsOwnThread(wake))
 						? CloudFolderProposals.list(folder.client, signal)
 						: Promise.resolve(undefined);
+				// The primary view and branches, asked alongside the notebook. A failure keeps the history, with no zoom.
+				const viewRequest = memoryTree
+					? memoryComposeView(this.#paths, binding, signal).catch((error) => {
+							if (!signal.aborted)
+								console.error(`Memory view was not composed (${cloudRuntimeErrorCategory(error, signal)})`);
+							return null;
+						})
+					: Promise.resolve(null);
 				// The agent's own notebook (contract 15.1) and its skill catalog (15.2) are
 				// composed side by side through the trusted read lane; an unreadable one
 				// degrades to "unavailable" and the run still starts, because neither is a
@@ -426,19 +448,19 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					vision,
 					openWork: await openWorkRequest,
 					proposals: await proposalsRequest,
+					view: await viewRequest,
 				};
 			};
-			const { initialPresence, gateway, memory, skills, vision, openWork, proposals } = await composeContext().catch(
-				async (error) => {
+			const { initialPresence, gateway, memory, skills, vision, openWork, proposals, view } =
+				await composeContext().catch(async (error) => {
 					await connectorTools();
 					throw error;
-				},
-			);
+				});
 			const connectorDescriptors = await connectorTools();
 			signal.throwIfAborted();
 			const head = composeCloudAgentHead(context, vision, memory);
-			// The primary view (M1, §5.3) goes after the head; none yet.
-			const views = "";
+			// The primary view (§5.3) goes after the head; the context message keeps the history after it.
+			const views = view?.views ?? "";
 			const prompt = composeCloudNativeCompanyPrompt(
 				context,
 				wake,
@@ -448,6 +470,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				skills,
 				proposals?.context,
 				head,
+				view?.tree,
 			);
 			// The run's context is its head and views (in the developer instructions) and its context message, hashed
 			// together.
@@ -458,6 +481,23 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			// What composition read from the folder is released under the composed context before any model request, with
 			// the paths of the proposals it shows (P40b).
 			await notebooks.releaseComposition(contextSha256, signal, proposals?.reads);
+			// So are the summary lines the view and the branches show, and the run's first request is recorded (§13). A
+			// failed release fails the run. A failed record leaves it without the answer, the view reference (W4a-1),
+			// which is for the workers the run dispatches (W4b).
+			if (view)
+				await memoryCommitView(
+					this.#paths,
+					binding,
+					view,
+					{
+						contextSha256,
+						headBytes: Buffer.byteLength(head.text),
+						stablePrefixSha256: createHash("sha256")
+							.update(cloudNativeStableInstructions(context, { head: head.text, views }))
+							.digest("hex"),
+					},
+					signal,
+				);
 			const mouth = new CloudAgentMouth(
 				binding.runId,
 				async (input) => {
@@ -631,6 +671,18 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
 					prompt,
 					runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake, { head: head.text, views }),
+					// Every request of a run with the view shares its conversation's cache key (§6.2).
+					...(view && context.identity.sessionId !== null
+						? {
+								composeContext: memoryCacheKeyComposer(
+									memoryPromptCacheKey({
+										payerLoginConnectionId: context.identity.providerConnectionId,
+										agentId: context.identity.staffAgentId,
+										conversationId: context.identity.sessionId,
+									}),
+								),
+							}
+						: {}),
 					signal,
 					timeoutMs: this.#timeoutMs,
 					// Auto-review (v130): acting calls wait for the reviewer, or for a member's approval.
@@ -678,7 +730,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							tools: [
 								...(computer?.tools ?? []),
 								// A run's file tools act through the folder core with its own authority (P19), and so do the
-								// tools that read its interfaces and tables (Interfaces I8a).
+								// tools that read and write its interfaces and tables (Interfaces I8a, I8b).
 								...[
 									...cloudFolderFileTools({ folder: folder.client, operations, identity }),
 									...cloudInterfaceTools({
@@ -686,6 +738,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										identity,
 										timeZone: wake.time.timeZone,
 									}),
+									...cloudInterfaceWriteTools({ folder: folder.client, operations, identity }),
 								].filter(work.companyFile),
 								...(folderSearch
 									? [
@@ -697,6 +750,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										]
 									: []),
 								cloudCompanyContextTool(context, binding, this.#paths),
+								...(view ? [memoryZoomTool(binding, identity, this.#paths)] : []),
 								// A worker has no outbound effects: no mouth, no connectors.
 								...(this.#secretBroker && !work.isWorker
 									? cloudSecretTools({

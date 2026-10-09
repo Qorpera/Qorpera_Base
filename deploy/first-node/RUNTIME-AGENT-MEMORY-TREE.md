@@ -616,6 +616,13 @@ cannot be built again; a platform restore of `runs/` is W1's to add if it is wan
   and are not copied. So a `send_mail` step never holds the mail's body (`rt/cloud-event-tools.ts:289-309`). A mail
   read (`read_event`) does hold the text it returned (`rt/cloud-event-tools.ts:220-287`), and a contact's erasure
   reaches it (§10.1).
+- **A report keeps its arguments as a hash only too**, as a send does: a worker's `report_work`, and a coding turn's
+  `coding_finish` and `coding_ask` (W6b). Their words are in the worker's report and its results file, and a coding
+  turn's are in its turn row too; a copy in the log would outlive the erasure of those. Their results hold none of the
+  words either: `report_work` answers with the outcome and the results file's path (`rt/cloud-folder-workers.ts:381-393`),
+  and a coding turn's receipt leaves out the summary, question and choices that `qorpera_submit_coding_turn` returns
+  (`submit` in `rt/cloud-native-coding-runtime.ts`). A coding turn's commands (`coding_run_command`,
+  `coding_read_command`, `coding_cancel_command`) keep their arguments like any other step.
 - **The result is the call's receipt, as the fence issued it.** A `send_mail` receipt keeps `from`, `fromName`, `to`,
   `cc`, `subject` and the attached paths, as today's receipts do (`rt/cloud-event-tools.ts:363-386`,
   `mig/20260928309740_runtime_company_mail_sending.sql:109-115`, with the paths from
@@ -940,6 +947,14 @@ request of the run**, so Codex's own history no longer carries the context (§11
    earlier steps, then its newest steps raw, as the call and output items Codex made.
 
 Parts 1 to 5 are composed once, at run start, and stay byte-identical for every request of the run. Only part 6 grows.
+
+**Built: M1b part 4a** (migration `20260930204000`, SQL test 946; `rt/memory-tree/compose.ts`). An agent's run in its
+own thread composes the primary view when its company is listed in `qorpera_memory_tree_companies`, which stays empty
+until M1b part 4b writes the trees. Until §11's trim, part 5 keeps `history`, but only the messages after the view's
+last one (`lastSequence`). The view ends where the run's inputs begin, so this is usually empty, and no message the view
+leaves out is lost. `historyTruncated` then holds only when the view cut nothing. `conversationMessages` goes before the
+current inputs and `branches` after them. The run records its first request (§13) once its context is hashed and the
+lines shown are released; the record's folder clock is the view reference's `asOfSeq` for W4.
 
 For `gpt-6-astra`, our default model, Codex uses Responses Lite (M0). Parts 1 and 2 are then not request fields but
 the first two input items, in the order tools (`additional_tools`), then the base instructions as a developer
@@ -1708,7 +1723,8 @@ same day: the tree is the agents' whole context, so it also replaces Codex's own
 - There are no users, so nothing is migrated. Hiring stops seeding `memory/log/`, and the log composer goes.
 - Contract 5.4, 9.1 and 15.1 change with it (§16).
 - The notebook is trimmed at M5, once the probe has met §13's targets. Until then a company with the tree on keeps
-  its notebook as it is, and the tree replaces only `history`.
+  its notebook as it is, and the tree replaces only `history` (from M1b part 4a, the part of it the view covers;
+  §6.1).
 
 **Pins (approved by Jonas, 6 October).** The profile page is a file the agent writes about itself. Pins are its
 successor: a member or the agent pins a message or a line of any conversation or run log into the agent's head,
@@ -1779,7 +1795,7 @@ item 9, #877).
 **Recorded per run** (existing records, plus new observation kinds):
 - `model_turn` (exists): `inputTokens`, `cachedInputTokens`, `reasoningOutputTokens` and `totalTokens`.
   `context_bytes` on the launch (exists).
-- `memory_view` (new), **per composed request** (§6):
+- `memory_view` (new), **per composed request** (§6) of each attempt (a retry or a resume of a run composes again):
   - the step number, `T`, and the bytes of the head, the view, the branches and the run view;
   - raw steps, placeholders, the wait in ms, and the lines built while waiting;
   - whether the run view folded at this request;
