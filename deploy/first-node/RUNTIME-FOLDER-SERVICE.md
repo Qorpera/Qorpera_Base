@@ -511,10 +511,35 @@ with the view as the actor before anything made from them is published (RUNTIME-
   refused (two in a row); and a read not yet released when a narrowing comes, every later boundary refused
   `unreadable`.
 
+### Slice 4c-2: the program's durable log
+
+The Rust program speaks protocol 3. Writable mounts log every file open, including cached and empty files, and every non-root
+folder open before answering FUSE, with the version and receipt shown. `reads.jsonl` in its private `--state-dir`
+keeps the mount UUID, consecutive entries and synced released markers. Threads and separate publishers take an OS
+lock on `reads.lock`, whose inode stays fixed across journal compaction. A program restart reopens the same log; a
+new mount starts with empty state. `/run` outlives these processes, not a VM restart.
+
+Before each mutation and `P`, on that same connection, the program sends every entry it has not heard released and
+waits for `i.taken`. The lock spans that handover and the mutation's send, so no earlier completed open can be left
+behind. A dropped acknowledgement is replayed before the mutation; `taken` is never durable proof. Only a synced
+released marker permits prefix compaction. A missing or corrupt journal leaves a permanent lost marker, reports
+`lost: true` after reconnects and refuses further opens; a torn unanswered last append alone can be trimmed.
+
+`publish --view-file <file> --state-dir <dir> [--final] [--json]` reads that same journal, even after the mount died.
+An ordinary boundary's report is followed by an empty `I` to prove the captured prefix released: an unanswered
+no-write release otherwise has the same empty paths as a successful one. A final's success requires `closed: true`.
+JSON mode prints only the report to stdout and diagnostics to stderr. Exit 0 is success, 1 failed/unknown, 2 usage,
+3 closed/refused view and 4 a boundary or path refused. Exit 1 or 3 can have no report; the helper must use the code.
+
+Tests: Rust journal, CLI, link and actual FUSE tests; `folder-mount-e2e.test.ts` runs the built program against the
+actual service with a stand-in core and share. It covers cached/empty/listing receipts, a lost intake answer before a
+write, durable released prefixes and unsubmitted reads across service restarts, automatic quiet saves, a dead mount's
+publisher, unanswered/no-report boundaries, final closure, and permanently lost proof. View switching, office helper
+lifecycle and live deployment remain later slices.
+
 ## Not here
 
 Moves to a newer view in place (`switch`), a closed desktop view kept for its minute, and a kept view refused because
-a newer one replaced it (slice 4c-3); the folder program's read log, its `--state-dir` and `qorpera-folder publish`
-(slice 4c-2); the office service's side of a command's view (opening it, mounting it for the command, and the final
+a newer one replaced it (slice 4c-3); the office service's side of a command's view (opening it, mounting it for the command, and the final
 boundary at the command's end: slice 4d); coding machines and test machines (each with its own mount). Each is a later
 step.

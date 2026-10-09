@@ -21,6 +21,7 @@ use crate::link::{Fail, Link};
 use crate::proto::{code, join, valid_name, valid_path, EntryKind, OpenRequest, RenameRequest, MAX_READ};
 use crate::tree::{Attr, Child, Inval, Tree, ROOT};
 use crate::versions::VersionMap;
+use crate::reads::ReadLog;
 use crate::writer::Writer;
 use fuser::{
 	Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags,
@@ -153,7 +154,7 @@ struct Shared {
 	answered: Mutex<Answered>,
 	/// The node lets this view write.
 	writable: bool,
-	/// Who the files show as owned by: the account that mounted the folder (a read-only view shows root).
+	/// Virtual owner: the explicit owner or the mounting account (a read-only view shows root).
 	owner: (u32, u32),
 	versions: Mutex<VersionMap>,
 	/// Files open for writing, by inode. Held only to look one up, add or remove it: never while a file's own lock is
@@ -598,6 +599,18 @@ impl Filesystem for FolderFs {
 			Ok(r) => r,
 			Err(e) => return reply.error(Errno::from_i32(e)),
 		};
+		let (attr, _) = match self.s.attr(ino.0) {
+			Ok(attr) => attr,
+			Err(e) => return reply.error(Errno::from_i32(e)),
+		};
+		let path = match self.s.path_of(ino.0) {
+			Ok(path) => path,
+			Err(e) => return reply.error(Errno::from_i32(e)),
+		};
+		if let Err(e) = self.s.link.record_read(&path, None, attr.authority.as_ref()) {
+			eprintln!("qorpera-folder: could not record a directory read: {e}");
+			return reply.error(Errno::EIO);
+		}
 		let parent = self.s.tree.lock().unwrap().parent(ino.0).unwrap_or(ROOT);
 		let mut entries = Vec::with_capacity(children.len() + 2);
 		entries.push((ino.0, FileType::Directory, ".".to_string()));
@@ -641,6 +654,10 @@ impl Filesystem for FolderFs {
 			Ok(p) => p,
 			Err(e) => return reply.error(Errno::from_i32(e)),
 		};
+		if let Err(e) = self.s.link.record_read(&path, Some(&attr.version), attr.authority.as_ref()) {
+			eprintln!("qorpera-folder: could not record a file open: {e}");
+			return reply.error(Errno::EIO);
+		}
 		if write {
 			return match self.s.open_write(ino.0, &path, &attr, flags.0 & libc::O_TRUNC != 0) {
 				Ok(open) => {
@@ -683,7 +700,7 @@ impl Filesystem for FolderFs {
 			Err(f) => return reply.error(errno(f)),
 		};
 		let mut attr =
-			Attr { kind: EntryKind::File, size: opened.size, mtime_ms: now_ms(), executable: false, version: opened.version };
+			Attr { kind: EntryKind::File, size: opened.size, mtime_ms: now_ms(), executable: false, version: opened.version, authority: None };
 		let ino = self.s.tree.lock().unwrap().add_local(parent.0, &name, attr.clone());
 		let open = Open::new();
 		{
@@ -939,7 +956,7 @@ impl Filesystem for FolderFs {
 		if let Err(f) = self.s.link.mkdir(&path) {
 			return reply.error(errno(f));
 		}
-		let attr = Attr { kind: EntryKind::Folder, size: 0, mtime_ms: now_ms(), executable: false, version: String::new() };
+		let attr = Attr { kind: EntryKind::Folder, size: 0, mtime_ms: now_ms(), executable: false, version: String::new(), authority: None };
 		let ino = self.s.tree.lock().unwrap().add_local(parent.0, &name, attr.clone());
 		reply.entry(&self.s.ttl(true), &self.s.file_attr(ino, &attr), Generation(0));
 	}
@@ -1202,7 +1219,7 @@ pub enum Failed {
 }
 
 /// Mounts the view and serves it until a signal, the view's end, or an unmount. Returns why it stopped.
-pub fn run(link: Link, options: Options) -> Result<Stop, Failed> {
+pub fn run(mut link: Link, options: Options) -> Result<Stop, Failed> {
 	let signals = block_stop_signals();
 	// Open the feed before anything is listed, so no change after the first listing can be missed. This
 	// also checks the view: a refused view never gets mounted.
@@ -1214,6 +1231,12 @@ pub fn run(link: Link, options: Options) -> Result<Stop, Failed> {
 		}
 	})?;
 	let writable = !ok.read_only;
+	if writable {
+		let dir = options.state.as_ref().ok_or_else(|| Failed::Other("a writable mount needs its private state directory".into()))?;
+		// Open the journal before the version map creates files: only unused state can start a new read sequence.
+		let reads = ReadLog::open(dir, true).map_err(|e| Failed::Other(format!("read journal: {e}")))?;
+		link = link.with_reads(Arc::new(reads));
+	}
 	eprintln!(
 		"qorpera-folder: view {} accepted at change {}, {}",
 		ok.view_id,

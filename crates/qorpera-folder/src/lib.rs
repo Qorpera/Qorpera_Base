@@ -8,6 +8,7 @@ pub mod link;
 pub mod lxd;
 pub mod mount;
 pub mod proto;
+pub mod reads;
 pub mod relay;
 pub mod transport;
 pub mod tree;

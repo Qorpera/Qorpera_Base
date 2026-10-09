@@ -154,8 +154,10 @@ desktops and shells run under bwrap with every capability dropped. That stays. M
 - for a mount the helper writes the view file (root, 0600, as the program requires) under
   `/run/qorpera-folder/views/`, makes the mount's state folder `/run/qorpera-folder/state/<name>/` empty (its read
   log and version map, below), and starts `qorpera-office-folder-mount@<name>.service`: the folder program at
-  `/run/qorpera-folder/mounts/<name>`, with `--state-dir /run/qorpera-folder/state/<name>` and `--allow-other yes`,
-  run as the execution host's mount unit is (`deploy/folder-service/qorpera-folder-mount@.service`: root,
+  `/run/qorpera-folder/mounts/<name>`, with `--state-dir /run/qorpera-folder/state/<name>`, `--allow-other yes`,
+  and `--owner-uid <qorpera-office uid> --owner-gid <qorpera-office gid>` resolved from the VM's `qorpera-office`
+  account. Those IDs set only the virtual files' ownership; the daemon, view file and state folder remain root-owned.
+  It runs as the execution host's mount unit is (`deploy/folder-service/qorpera-folder-mount@.service`: root,
   `DeviceAllow=/dev/fuse rw`, `AF_UNIX AF_VSOCK`, exit 3 = view closed, not restarted). Step 3's program keeps its
   version map under `/run/qorpera-folder/<mount>/` (RUNTIME-FOLDER-WRITES.md), which nothing empties; here 4c's
   `--state-dir` puts the map and the read log in the folder the helper makes (review round 8). `mount` refuses a name
