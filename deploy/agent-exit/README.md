@@ -1,4 +1,4 @@
-# Agent exit (E1, E2, E3 and E7)
+# Agent exit (E1, E2, E3, E7 and E8)
 
 The exit that agent road machines' internet traffic leaves through, one per node, the same on every node. Design and
 decisions: `deploy/first-node/RUNTIME-AGENT-EXIT.md` and the contract's "2026-10-03 amendment: agent traffic leaves
@@ -7,7 +7,9 @@ creators call, its reconciler, the bridge rules that tie each port to its MAC an
 for the bridged leg, and the health file the node observer reads. The logs' tender keeps the exit's logs on the node
 small and safe for its disk, and counts each day per company for the line guard (below). E3 ships the logs to the
 NAS, keeps them 90 days there, and answers "who used this address at that time" across the nodes. E7's brake slows a
-company's new connections past the founder's levels, and is off until they are set. Nothing is plugged in until
+company's new connections past the founder's levels, and is off until they are set. E8b's rules reader keeps the
+network rules (`RUNTIME-AGENT-EXIT.md` §10) of each company plugged in on the node, for the per-company resolvers that
+come next. Nothing is plugged in until
 the creators call `plug` (E2c); with no users and no legacy machines (founder decision, 3 October) there are no
 switches and nothing to migrate. Nothing is installed in production before a milestone release.
 
@@ -33,7 +35,7 @@ own and removes the node's masquerade.
 | --- | --- |
 | `qorpera-agent-exit.nft` | rules inside `qexit` (`inet qorpera_agent_exit`): our own networks and TCP port 25 refused at once; IPv6, invalid packets and sources outside 10.210.0.0/16 dropped; at most 16,384 open connections per machine and 98,304 in all (decided 3 October; per address, and the bridge rules pin each machine to one); a closed agent TCP connection held 30 s, not 120 (`ct timeout agent_tcp`); plain DNS to any resolver redirected to the exit; new connections and refusals counted per machine (`new_by_client`, `refused_by_client`); refused flows kept an hour for the log (`refused_flows`, `refused_other`), each machine's share rate-limited; the brake's map, sets and chains (E7, below); masquerade out of `up0`; the exit answers DHCP, and DNS and ping from the agent range, only |
 | `qorpera-agent-exit-host.nft` | the node's second line (`inet qorpera_agent_exit_host`): nothing is routed into or out of `qagent0`, and the node does not track what enters from it (`notrack`; the exit tracks and bounds it); the masqueraded leg of a closed agent TCP connection is held 30 s, not 120; `qx-up` reaches public addresses only, never port 25 or the tailnet, and nothing on the node; nothing starts a connection into `qx-up`; the uplink's addresses are refused anywhere else; phase 1's masquerade, to public addresses only |
-| `qorpera-agent-exit.sh` | `check`, `up`, `down`, `dns`, `log`, `plug`, `logs`, `ship`, `verify`, `health`, `status`, `counts`, `lookup` |
+| `qorpera-agent-exit.sh` | `check`, `up`, `down`, `dns`, `log`, `plug`, `logs`, `ship`, `verify`, `health`, `status`, `counts`, `lookup`, and for the rules reader's login `database-url` and `rules-start` (E8b, below) |
 | `qorpera-agent-exit-log.py` | the connection log: conntrack's start and end of each agent connection (with bytes each way), each refused flow, and a gap line whenever events were lost, a read failed or a line could not be written; one JSON line each in `/var/log/qorpera-agent-exit/flows-YYYY-MM-DD.jsonl` (mode 0640); never content. It exits when its reader watches a namespace the exit replaced, and its unit starts it in the new one. It pauses past the logs' cap or under the disk's floor (below). Its line guard is the brake (E7, below) |
 | `qorpera-agent-exit-logs.py` | the logs' tool: the tender (`tend`) seals and compresses the logs, cuts `dns.log`, counts each closed day per company, keeps 90 days and the cap; the shipper (`ship`, E3) copies the sealed logs, the counts and the deletion records to the NAS, each read back and compared, and keeps 90 days there; `lookup` (E3) answers who used an address, on every node; `count` (a day's numbers, writing nothing) and `report` (the founder's table) |
 | `qorpera-agent-exit-bridge.nft` | the agents' bridge's own rules (`bridge qorpera_agent_exit_bridge`, on the node): before the bridge learns a MAC, a machine's port sends only its own MAC (`ports`, from LXD), so no machine takes another's or the exit's; then only ARP (its sender fields too) and IPv4 from a MAC and address pair in the client map, and DHCP only through one rule per machine (its own MAC, from no address or its own, naming its own MAC as the client), so no machine can take, release or decline another's lease; the node takes nothing from the bridge. `up` loads it filled with the entries LXD backed and the ports it held, in one transaction; the reconciler keeps it equal to LXD |
@@ -45,9 +47,16 @@ own and removes the node's masquerade.
 | `qorpera-agent-exit-health.service`, `.timer` | `health` every 10 seconds: `verify`'s answer as `/run/qorpera-agent-exit/health.json` (`{schema, healthy, checkedAt, problems}`, mode 0644) for the node observer, which has no capabilities and cannot run `verify` |
 | `qorpera-agent-exit-logs.service`, `.timer` | `logs` every 5 minutes (nice, idle I/O) |
 | `qorpera-agent-exit-ship.service`, `.timer` | `ship` every 5 minutes (nice, idle I/O); a pass that hangs on the NAS ends after 15 minutes, and the next goes on from where it stopped |
-| `install-agent-exit.sh` | verifies the pins, copies the files, runs `check`; installs no package, creates no group, mounts nothing, starts and enables nothing |
+| `qorpera-agent-exit-rules.service` | the rules reader (E8b, below): `DynamicUser`, on the node's own network, never in `qexit`; its login and the database's CA as systemd credentials |
+| `rules-reader-login.py` | the rules reader's database login, made and placed in one go; the coordinator runs it on the Mac (E8b, below) |
+| `install-agent-exit.sh` | verifies the pins and the rules reader's package, copies the files, runs `check`; installs no package, creates no group, mounts nothing, starts and enables nothing |
 
-Packages: `dnsmasq-base` and `conntrack` (neither starts a service of its own), and `python3`.
+The rules reader's program is not in this folder: `scripts/package-agent-exit-rules.mjs` bundles it (with `pg`,
+pinned at 8.23.0 by `packages/runtime`) from `packages/runtime/src/agent-exit-rules-main.ts` into a package with its unit and
+Supabase's CA, and the installer takes that package.
+
+Packages: `dnsmasq-base` and `conntrack` (neither starts a service of its own), and `python3`. The rules reader runs on
+`/usr/bin/node`, 22.19 or later (the nodes run 22.22.1).
 
 ## The agent plug (E2)
 
@@ -127,7 +136,10 @@ with E3; a node that already runs the exit takes E3 as in "Adding E3 to a node t
 3. The NAS: the share and its marker (once, for both nodes), this node's mount and its `QORPERA_AGENT_EXIT_NAS_DIR`
    line ("The logs on the NAS", below). `findmnt /srv/qorpera/agent-exit-logs` shows `192.168.1.40`, and the marker
    is there.
-4. `bash deploy/agent-exit/install-agent-exit.sh` from a checkout at the merged head.
+4. From a checkout at the merged head, with its dependencies installed (`npm ci --ignore-scripts`):
+   `node scripts/package-agent-exit-rules.mjs --out /tmp/agent-exit-rules` (the rules reader's package; the folder must
+   be new), then `bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules`. The rules reader stays off
+   until its login is placed ("The rules reader (E8b)", below).
 5. `systemctl enable --now qorpera-agent-exit.service qorpera-agent-exit-dns.service qorpera-agent-exit-log.service
    qorpera-agent-plug.service qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer
    qorpera-agent-exit-ship.timer`, then `systemctl start qorpera-agent-exit-ship.service` for a first pass at once (the
@@ -383,7 +395,7 @@ Limits:
 
 The tool before E3 reads only numbers from `/etc/default/qorpera-agent-exit`, so the NAS can be set up first.
 1. The share and its marker (once), this node's mount and its `QORPERA_AGENT_EXIT_NAS_DIR` line (above).
-2. `bash deploy/agent-exit/install-agent-exit.sh` from a checkout at the merged head, then at once
+2. `install-agent-exit.sh` from a checkout at the merged head, as in step 4 of "Switching a node on", then at once
    `systemctl enable --now qorpera-agent-exit-ship.timer && systemctl start qorpera-agent-exit-ship.service`. Between
    the install and that first pass, `verify` fails ("the logs' shipper has not run"), so the health file may say
    unhealthy for a turn or two. Then `systemctl restart qorpera-agent-exit-log.service`: the new logger writes the
@@ -450,7 +462,7 @@ How it is kept:
 
 ### Adding E7 to a node that runs the exit
 
-1. `bash deploy/agent-exit/install-agent-exit.sh` from a checkout at the merged head, then at once
+1. `install-agent-exit.sh` from a checkout at the merged head, as in step 4 of "Switching a node on", then at once
    `systemctl reload qorpera-agent-exit.service` (the rules with the brake's map, sets and chains, in place), then
    `systemctl restart qorpera-agent-exit-log.service qorpera-agent-plug.service`. Between the install and the logger's
    restart, `verify` fails ("the brake not running"), so the health file may say unhealthy for a turn.
@@ -461,6 +473,81 @@ How it is kept:
    end at once.
 4. Undo of the install: install the earlier release's files again, then `systemctl reload qorpera-agent-exit.service`
    and `systemctl restart qorpera-agent-exit-log.service qorpera-agent-plug.service`.
+
+## The rules reader (E8b)
+
+The exit answers each machine's names by its company's network rules (`rules/network.toml`, `RUNTIME-AGENT-EXIT.md`
+§10). `qorpera-agent-exit-rules.service` keeps them on the node:
+- Every 2 seconds it lists the companies of the client map (`clients/*.json`), asks
+  `public.qorpera_agent_exit_network_rules` for their rules (at most 10,000 companies a call, and once even with none,
+  so every pass proves the login), and keeps them in `/var/lib/qorpera-agent-exit/rules/rules.json`:
+  `{"schema":"qorpera.agent-exit-rules/v1","companies":{…}}`, every company asked about, `null` when it is open (no
+  rules file) and otherwise its version, mode and both lists. A company not in it is not known yet. The file is
+  replaced all at once, and only when the rules change.
+- A pass that cannot read the database or the client map keeps the last file, also across a restart. A row not as
+  the database writes it (§10's name rule, at most 1000 distinct names a list, no name in both) keeps that company's
+  last rules, or leaves it unknown.
+- `/run/qorpera-agent-exit-rules/status.json` (mode 0644), every pass: `checkedAt`, `readAt` (the last pass that read
+  the database), `ok`, `problem` (a SQLSTATE or system error code, `TIMEOUT`, `DATABASE`, `CLIENTS`, `WRITE`,
+  `BAD_ROWS` or `INTERNAL`), `companies`, `withRules`, `badRows` and `skipped` (client entries it could not use). Its
+  journal has only changes of state, as codes: nothing the database or a client entry says reaches a log.
+- It runs as a dynamic user with no capabilities, on the node's own network (never in `qexit`, where agent machines
+  are). Its state folder is systemd's private one, which `/var/lib/qorpera-agent-exit/rules` links to, under
+  `/var/lib/private` (root's alone, 0700); `rules.json` is mode 0600, so only it and root read it. On Ubuntu 26.04 the
+  folder belongs to `nobody` on disk, and systemd maps it to the reader's user in the reader's own view (an id-mapped
+  mount), so a dynamic user that changes from run to run keeps its rules. `ls -l` on the node shows `nobody`; that is
+  expected.
+- Nothing reads `rules.json` yet, and `verify` does not check the reader: the per-company resolvers (E8b-2) do both.
+
+Its login: the role `qorpera_agent_exit` (migration 20260930230000, E8a) may call that one function and nothing else,
+and has no login until `rules-reader-login.py` gives it one. The login is a URL for Supabase's pooler on port 6543
+(transaction mode, as the secret broker uses it: the database's own host has IPv6 only), with
+`sslmode=verify-full`; the reader takes Supabase's CA only with its pinned fingerprint. On the node it is
+`/etc/qorpera-agent-exit/database-url`, root's, mode 0400 in a 0700 folder, which the unit hands to the reader with
+`LoadCredential`. Nobody reads, copies or prints it.
+
+The coordinator runs the script on the Mac, from a checkout of what the nodes run. It reads the Supabase CLI's token
+from the keychain itself and reaches each node with `ssh` and its root helper:
+
+```
+python3 deploy/agent-exit/rules-reader-login.py --check   checks everything, changes nothing
+python3 deploy/agent-exit/rules-reader-login.py           makes a new login and places it
+```
+
+It checks the project's pooler (one primary, with SCRAM), the role as the migration makes it, and on each node the
+root helper, the exit's tool, the reader's unit and CA as this checkout's, the reader's program and the client map.
+Then:
+1. a new password (256 random bits) and its login URL;
+2. each node writes the URL into its file (`X database-url`, from stdin), and the script compares each file's size and
+   sha256 with the URL's;
+3. the role gets the login as a SCRAM-SHA-256 verifier made on the Mac, so the password never reaches the Supabase
+   API, the database or its logs. This is the one commit point: before it, the readers run on the old login;
+4. each node enables and restarts its reader (`X rules-start`) and waits up to 30 seconds for a pass that read the
+   database.
+
+It prints the file names, sizes, the hash comparison and `ok`, and from a node only the exit's tool's own lines or
+the root helper's failure class. The login travels from the script's memory through the ssh connection's stdin (a
+request to the root helper, which keeps only an HMAC of it) and the helper's memfd as the tool's stdin (never an
+argument) into the root-only file, and from there as systemd's credential copy to the reader. A failed step stops the
+run and says what failed; run it again, which makes a new password. A run stopped between steps 3 and 4 leaves the
+readers failing (`28P01`) once they connect again, with their last rules, until the next run. To change the login,
+run it again.
+
+### Adding E8b to a node that runs the exit
+
+First migration 20260930230000 (E8a), on the database.
+1. On each node, `install-agent-exit.sh` as in step 4 of "Switching a node on". Nothing changes for running machines;
+   the reader stays off.
+2. Once both nodes have it, on the Mac: `python3 deploy/agent-exit/rules-reader-login.py --check`, then without
+   `--check`. It does both nodes in one go.
+3. Check: the script ends with `ok`; on each node `systemctl is-active qorpera-agent-exit-rules.service` says `active`,
+   `cat /run/qorpera-agent-exit-rules/status.json` shows `"ok":true` and a `readAt` under 10 seconds old, and `X verify`
+   stays healthy.
+4. Undo: on each node `systemctl disable --now qorpera-agent-exit-rules.service` and
+   `rm /etc/qorpera-agent-exit/database-url`, then the role's login off, as the database owner:
+   `alter role qorpera_agent_exit with nologin password null`.
+
+A new node takes step 1 with "Switching a node on" and step 2 once both nodes run the exit.
 
 ## Test
 
@@ -481,13 +568,22 @@ removed by hand, plugs never created, unusable entries and links never followed,
 Then the brake on a stand-in for the exit's rules: the levels (off until set, and any problem turns it off), the
 braked map, the share chain and the counted sets as `nft -j` lists them, a company braked past either level, longer
 while it goes on (its dropped connections counted once) and let go after, and a failed read or write and a restart
-that keep the brake; and the counts and the report with the brake's lines.
+that keep the brake; and the counts and the report with the brake's lines. Then the rules reader's login script, with
+stand-ins for the Supabase API and the root helpers: its login in the one form the tool takes, its verifier as RFC
+7677's exchange proves it, the keychain's token, the pooler and the role taken only as Supabase and the migration make
+them, a run's order (checks, both files, the verifier, the readers), and a node not as this checkout or a file not as
+sent stopping the run before the role changes, with nothing printed that holds the login.
+`packages/runtime/test/agent-exit-rules.test.ts` tests the reader itself (the companies of the client map, the rules
+file and when it changes, a failing database or client map, rows refused, a restart), and
+`scripts/package-agent-exit-rules.test.mjs` its package.
 On Linux with Docker it runs `test/proof.sh` in a privileged container with no network of its own (`ubuntu:26.04`
 with the packages above, built once and cached). The proof never leaves the container's namespaces and never unloads
 a kernel module (the kernel loads nftables' own on demand).
 The proof plays a node: an agent road machine plugged into `qagent0` by a creator (a member of the plug group, umask
 077), the office network (router, NAS, node 1), a small internet (a site, a resolver, our public address) and node 1
 on the tailnet. It checks:
+- the rules reader's login (`database-url`): from stdin into a root-only file, its sha256 printed and never the login,
+  and any other form refused with the file kept;
 - DHCP, names, the DNS redirect and the query log;
 - that a site sees the node's own address;
 - that mail servers, the NAS, the router, both nodes, the uplink, Tailscale and our public address are refused at
@@ -531,10 +627,11 @@ on the tailnet. It checks:
 
 Where the kernel has br_netfilter loaded, the proof also checks that the node does not track the bridged leg; the
 test machines do not load it, so it prints a SKIP line there. Not covered here: br_netfilter, LXD's own MAC and IPv6
-filters and port isolation, LXD's API as the reconciler reads it, systemd's handling of the units, a real NFS mount
-(the proofs' NAS is a tmpfs; the shipper reads each copy back), and running
+filters and port isolation, LXD's API as the reconciler reads it, systemd's handling of the units, Supabase's pooler,
+a real NFS mount (the proofs' NAS is a tmpfs; the shipper reads each copy back), and running
 beside the guest guard, LXD and Tailscale on a real node. E2b's proof, in a throwaway VM with its own LXD inside a
-test machine, covers the first three.
+test machine, covers the first three; E8b's, in another, systemd's handling of the rules reader. The rollout script's
+last step reads Supabase through its pooler on each node.
 
 `run-on-node.mjs changed` runs it on the node 2 test machine.
 
@@ -592,6 +689,44 @@ What the numbers say:
   keeps the defaults): a quarter of that. Measured on 4 October (run 20261004T013618-56993-344f627b, the same
   throwaway VM): 5,000 connections left 4,995 TIME_WAIT entries in each table, and 35 seconds later none. The line
   guard's burst brake (E7) bounds the rate itself; phase 2 (E9) drops the node's leg altogether.
+
+## E8b: the rules reader under systemd
+
+`test/prove-rules-reader-vm.sh` runs as root on a test machine, never on a node (with the default install: it builds
+the reader's package there):
+
+```
+node scripts/run-on-node.mjs --machine node01 --sudo --no-status -- bash deploy/agent-exit/test/prove-rules-reader-vm.sh </dev/null
+```
+
+It changes nothing of the test machine. It claims an LXD project, makes a throwaway VM with no network card, and pushes
+in the reader's package built from the checkout, this folder, and the packages apt would install on the VM for the
+nodes' Node (Ubuntu's `nodejs` 22.22.1+dfsg+~cs22.19.15-1ubuntu1 and its `libnode127`), dnsmasq and conntrack. Inside,
+`test/prove-rules-reader.sh`:
+- installs with `install-agent-exit.sh`: a package with one byte changed refused with nothing installed, then the
+  package taken and nothing started or enabled;
+- plugs two machines in as a creator does (umask 077), one of them for a company that is no UUID;
+- starts the reader without its login: systemd refuses, and no status appears;
+- places a login with `database-url` as the rollout script does (root-only, its sha256 printed), naming a stand-in
+  server in the VM that answers Postgres's TLS request with a certificate of its own;
+- runs `rules-start`: the reader runs as a dynamic user with both credentials, its state folder linked from
+  `/var/lib/qorpera-agent-exit/rules` and empty (on disk 0700 under root's `/var/lib/private`; in the reader's own
+  view its user's, and that user writes there), its runtime folder its own; it asks the stand-in for TLS, refuses the
+  certificate before it sends anything, keeps no rules, says why in `status.json` (the client map read, the
+  non-UUID company skipped) and in `rules-start`'s answer after 30 s, and does not restart;
+- finds the login in no log, and the reader's journal with its one state line;
+- undoes it as "Adding E8b to a node that runs the exit" says: the reader disabled and stopped, its credentials and
+  runtime folder gone, and no start without a login.
+
+Afterwards the test machine is compared with before, as for E2b. A read that succeeds needs Supabase: the rollout
+script's last step proves it on the nodes.
+
+Result (9 October 2026, node 1's test machine, Ubuntu 26.04.1 with kernel 7.0.0-30; run
+20261009T123312-96953-09e441db on 00a02c2de, 220 s): ALL PASSED. Inside an Ubuntu 26.04 VM with Node v22.22.1 from
+`nodejs` 22.22.1+dfsg+~cs22.19.15-1ubuntu1, the reader ran as dynamic user 61859. Seen from outside its namespace,
+its two credentials were 0440 and root's, and it read both. Its state folder was uid 65534 on disk and its own in its namespace. It refused
+the stand-in's certificate (`DEPTH_ZERO_SELF_SIGNED_CERT`) after asking it for TLS. Its journal had its one state
+line. The test machine's links, nft tables, sysctls and network modules were as before.
 
 ## Notes for later steps
 
