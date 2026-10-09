@@ -1038,7 +1038,7 @@ legacy holder-changing paths needs a patch (the only legacy change is
 | `run_box` | the job, `KEY SHARE`, taken at step 3 as for a run | the run actor checks pass, and the job still carries the view's `runner_id` and `client_lease_id` |
 | `computer_desktop` | the screen row, `FOR SHARE` | the view is the newest open view of its screen; the screen's `generation` is the view's; either the screen's drain is still pending (the old holder's final publish, whatever the privacy state), or the screen is held by the view's holder or by nobody and privacy is shared or this is the private member's view; the office's current activation is the view's; the agent's `qorpera_runtime_office_access` is active |
 | `coding_session` | the session row, `FOR SHARE` | the session carries the view's `attachment_token`, and `qorpera_coding_attachment_refusal` finds nothing (not archived, not expired, repository not withdrawn, executor enabled) |
-| `computer_shell_command` (C1b-3b, 20260930183000) | the command row, `FOR SHARE` (the report's end of the command waits for it) | the screen's `generation` is the one the command started in, the office's current activation is the view's, and the agent's `qorpera_runtime_office_access` is active. Not the command's end: an ended command's view still renews, refuses every save but the final one, and the final publish closes it (§8) |
+| `computer_shell_command` (C1b-3b, 20260930183000) | the command row, `FOR SHARE` (every end of the command waits for it: §8) | the screen's `generation` is the one the command started in, the office's current activation is the view's, and the agent's `qorpera_runtime_office_access` is active. Not the command's end: an ended command's view still renews, refuses every save but the final one, and the final publish closes it (§8) |
 | `test_machine` (C1b-3b) | the machine row and its current placement, `FOR SHARE` | the placement and `boot_id` are the view's |
 
 **Desktops: the newest view wins.**
@@ -1322,8 +1322,16 @@ by a machine.
   inserts it, before the guest runs anything. The office's 30 s report fills
   in `command_id`; its sweeps spare a row it has not named yet for 60 seconds
   after the start's effect ended, and only commands it named are told to the
-  agent as stopped. Only the guest's report ends it: a drain of its screen
-  stops the command, and the guest's next report then records its end.
+  agent as stopped. The row's end (`ended_at` and `end_reason`) is written
+  by one of these:
+  - the guest's report: the command exited, or a drain of its screen stopped
+    it and the next report records that;
+  - the report's sweeps: a command of an earlier generation, one its screen's
+    whole lists no longer name, and the like;
+  - the platform: the idle policy's sleep of the computer (`slept`) and any
+    other stop of it (`closed`), both in 20260928489100.
+
+  From then on the view saves only its final change set (below).
   - **Until each command has its own mount namespace** (F3's step 4), the
     report ends a command when its process group is empty. Programs that
     leave the group (setsid, daemons) are not caught yet.
@@ -1333,9 +1341,9 @@ by a machine.
   The per-screen activity row stays the awake and seat signal.
 - **The end boundary for commands and test machines** (review round 2,
   finding 5):
-  - the report records the end (an exit, or a drain's stop) in `end_reason`,
-    but the view stays valid for one final publish, which may carry no
-    change;
+  - the command's end is recorded in `end_reason` (by the report, its sweeps,
+    or the platform's sleep or stop: above), but the view stays valid for one
+    final publish, which may carry no change;
   - that publish carries `final`, and the commit closes the view in the same
     transaction;
   - a test machine's "command not ended" check accepts a publish made at

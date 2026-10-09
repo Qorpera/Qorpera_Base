@@ -562,11 +562,12 @@ begin
 	if v_state <> 'ok' then raise exception 'The release after the view was free: %', v_state; end if;
 end $$;
 
--- L. A shell command's view (20260930183000) anchors on the command's row, FOR SHARE. The end of the command (the
--- report's plain UPDATE) that commits while a save waits there refuses the save, which only the final may then be; one
--- rolled back lets it save. A save in flight makes the end wait, and the end lands after it. A final in flight holds the
--- clock and has closed its view: a save of the same view passes its anchor step, waits at the clock, and then finds the
--- view closed. Each race has its own command, started by run one, which holds the screen.
+-- L. A shell command's view (20260930183000) anchors on the command's row, FOR SHARE. Every end of the command takes a
+-- row lock that conflicts with it: the report's upsert, and the plain UPDATEs of the report's sweeps, the idle sleep
+-- and the computer's stop. An end that commits while a save waits there refuses the save, which only the final may then
+-- be; one rolled back lets it save. A save in flight makes the end wait, and the end lands after it. A final in flight
+-- holds the clock and has closed its view: a save of the same view passes its anchor step, waits at the clock, and then
+-- finds the view closed. Each race has its own command, started by run one, which holds the screen.
 create function pg_temp.command() returns uuid language plpgsql as $$
 declare v_id uuid := extensions.gen_random_uuid(); v_run uuid := (current_setting('qorpera_test.run_one')::jsonb ->> 'runId')::uuid;
 begin
@@ -584,7 +585,8 @@ create function pg_temp.open_command(p_name text) returns void language sql as $
 	select set_config('qorpera_test.' || p_name, public.qorpera_folder_view_open('64400000-0000-4000-8000-000000000020',
 		'{"kind":"platform"}', 'computer_shell_command', jsonb_build_object('shellCommandId', pg_temp.command()))::text, false)
 $$;
--- The office's end of a view's command, as the report writes it: a plain UPDATE.
+-- An end of a view's command, in the plain UPDATE the report's sweeps, the idle sleep and the computer's stop use (its
+-- reason does not matter to the anchor).
 create function pg_temp.sql_end(p_name text) returns text language sql as $$
 	select format('update public.qorpera_runtime_office_shell_commands set ended_at = clock_timestamp(), end_reason = ''exited''
 		where id = (select shell_command_id from public.qorpera_folder_views where id = %L)',

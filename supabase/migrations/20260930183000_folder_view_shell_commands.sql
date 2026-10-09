@@ -365,7 +365,8 @@ select pg_temp.folder_view_shell_commands_patch('public.qorpera_folder_commit(uu
 	$new$		elsif v_view.kind = 'coding_session' then
 			perform 1 from public.qorpera_coding_sessions where worker_id = v_view.worker_id for share;
 		elsif v_view.kind = 'computer_shell_command' then
-			-- 20260930183000: the command row, which the report's end of the command waits for.
+			-- 20260930183000: the command row, which every end of the command (the report's, its sweeps', the
+			-- platform's sleep and stop) waits for.
 			perform 1 from public.qorpera_runtime_office_shell_commands where id = v_view.shell_command_id for share;
 		end if;
 		select * into v_view from public.qorpera_folder_views where id = v_view.id;
