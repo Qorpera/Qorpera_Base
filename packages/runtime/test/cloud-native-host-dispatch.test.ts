@@ -131,8 +131,8 @@ it("classifies every database call the host's clients can make: inside a job, be
 		"cloud-native-coding-runtime.ts",
 		"cloud-company-computer-registry-http.ts",
 	];
-	// In the clients' closed lists but never called by the native host: the office VM's own registry calls, and the
-	// wake checks only SQL completion makes. The dispatch refuses them.
+	// In the clients' closed lists but never called by the native host: the office VM's own registry calls (G2-6c: with
+	// the lease proof its receiver asks), and the wake checks only SQL completion makes. The dispatch refuses them.
 	const neverByHost = new Set([
 		"qorpera_ack_runtime_office_drain",
 		"qorpera_ack_runtime_office_privacy",
@@ -146,6 +146,7 @@ it("classifies every database call the host's clients can make: inside a job, be
 		"qorpera_check_runtime_office_start",
 		"qorpera_check_runtime_office_startup",
 		"qorpera_check_runtime_office_viewer",
+		"qorpera_native_binding_proven",
 		"qorpera_native_office_browser_grant",
 		"qorpera_native_office_file_export",
 		"qorpera_native_office_file_import",
