@@ -6,7 +6,7 @@
 		"sha256Helpers": 1
 	},
 	"company": {
-		"uuidPatterns": 3,
+		"uuidPatterns": 2,
 		"recordHelpers": 0,
 		"uuidHelpers": 0,
 		"sha256Helpers": 0
