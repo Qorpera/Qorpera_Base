@@ -294,7 +294,7 @@ describe("Company File bounded control transport", () => {
 				Response.json({ code, message, details: null, hint: null }, { status }),
 			);
 			const error = await fixture(transport)
-				.call("qorpera_manage_agent_worker", {}, new AbortController().signal)
+				.call("qorpera_describe_agent_open_work", {}, new AbortController().signal)
 				.catch((error: unknown) => error);
 			expect(error).toBeInstanceOf(CloudControlRpcRefused);
 			expect((error as CloudControlRpcRefused).code).toBe(code);
@@ -316,7 +316,7 @@ describe("Company File bounded control transport", () => {
 			typeof body === "string" ? new Response(body, { status }) : Response.json(body, { status }),
 		);
 		const error = await fixture(transport)
-			.call("qorpera_manage_agent_worker", {}, new AbortController().signal)
+			.call("qorpera_describe_agent_open_work", {}, new AbortController().signal)
 			.catch((error: unknown) => error);
 		expect(error).not.toBeInstanceOf(CloudControlRpcRefused);
 		expect(cloudControlRetryable(error)).toBe(true);

@@ -807,10 +807,6 @@ begin
 	if v_result ->> 'routine_id' is distinct from '70800000-0000-4000-8000-0000000000e4' then
 		raise exception 'A routine row from before the files is still saved there: %', v_result; end if;
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
-	-- The agent tools refuse on a folder-v2 company too (their callers need a native tool lease, so the fence is read here).
-	if position('routines folders; write the routine' in pg_get_functiondef('public.qorpera_manage_agent_routine(jsonb,jsonb)'::regprocedure)) = 0
-		or position('routines folders; write the routine' in pg_get_functiondef('public.qorpera_decide_agent_routine(jsonb,jsonb)'::regprocedure)) = 0 then
-		raise exception 'Both agent routine tools carry the folder-v2 fence'; end if;
 end $$;
 
 rollback;

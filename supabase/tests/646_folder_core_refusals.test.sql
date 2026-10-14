@@ -199,13 +199,9 @@ begin
 		'64600000-0000-4000-8000-0000000000c2', repeat('a', 64), repeat('b', 64))$q$);
 	perform pg_temp.not_refused($q$select public.qorpera_complete_runner_job_v6('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
 		'64600000-0000-4000-8000-0000000000c2', repeat('a', 64), null, null, null, '{}')$q$);
-	perform pg_temp.refuses(format('select public.qorpera_confirm_agent_todo_publication(%L, %L)', b, '{}'));
 	perform pg_temp.not_refused(format('select public.qorpera_native_office_company_file_source(%L, %L)', s, '{}'));
 	perform pg_temp.not_refused(format('select public.qorpera_confirm_office_company_file_import(%L, %L, %L, %L, %L, %L)', s, '{}', '{}', '{}',
 		extensions.gen_random_uuid(), '{}'));
-	perform pg_temp.not_refused(format('select public.qorpera_confirm_agent_todo_publication(%L, %L)', s, '{}'));
-	-- A job id in capitals names the same job.
-	perform pg_temp.refuses(format('select public.qorpera_confirm_agent_todo_publication(%L, %L)', jsonb_build_object('jobId', upper(b ->> 'jobId')), '{}'));
 	-- The runner's revision lane.
 	perform pg_temp.refuses($q$select public.qorpera_runner_prepare_company_revision('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
 		'64600000-0000-4000-8000-0000000000c1', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid(), repeat('d', 64), 10, 3, 1, 1)$q$);
@@ -245,9 +241,12 @@ begin
 	perform pg_temp.not_refused($q$select public.qorpera_runner_finalize_company_revision_verification('64600000-0000-4000-8000-0000000000c9',
 		repeat('a', 64), '64600000-0000-4000-8000-0000000000c2', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid(),
 		extensions.gen_random_uuid())$q$);
-	-- A job id in any spelling uuid input accepts names the job; anything else names none.
-	perform pg_temp.refuses(format('select public.qorpera_confirm_agent_todo_publication(%L, %L)',
-		jsonb_build_object('jobId', '{' || replace(b ->> 'jobId', '-', '') || '}'), '{}'));
+	-- The binding check behind these refusals: a job id in any spelling uuid input accepts names the job; anything else
+	-- names none.
+	if not public.qorpera_binding_is_folder_v2(jsonb_build_object('jobId', upper(b ->> 'jobId')))
+		or not public.qorpera_binding_is_folder_v2(jsonb_build_object('jobId', '{' || replace(b ->> 'jobId', '-', '') || '}'))
+		or public.qorpera_binding_is_folder_v2(s) or public.qorpera_binding_is_folder_v2('{"jobId":"not-a-job"}') then
+		raise exception 'A binding names its folder-v2 job in any spelling uuid input accepts, and nothing else'; end if;
 end $$;
 
 -- The snapshot bootstrap: the worker skips a folder-v2 company's job, and finalizing it or seeding a Co-Founder refuses.

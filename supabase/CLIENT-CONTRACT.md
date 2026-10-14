@@ -311,7 +311,9 @@ and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
   Section names are 1-60 characters, unique per company ignoring case; any
   number of sections (at most 40 until bundle v95). The Co-Founder is never
   placed, pinned or hidden. Agents change the same shared sections through the
-  runtime tool `organize_sidebar` (`qorpera_manage_agent_sidebar`, runner only).
+  runtime tool `organize_sidebar`, which saves `agents/sections.md` (its old row
+  writer, `qorpera_manage_agent_sidebar`, was dropped in legacy sweep D6,
+  `20260930335000`).
 - Group chats (migration `20260928030000`, no bundle): a group chat (an active
   room that is not an agent's thread, with an open conversation) is placed,
   pinned and hidden like an agent, named by `roomId` where an agent is named by

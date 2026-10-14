@@ -273,7 +273,6 @@ async function fixture(
 		adapterSha256: "b".repeat(64),
 		destinationOrigin: "https://api.linear.app",
 	};
-	const decisions: Record<string, unknown>[] = [];
 	const reviewedTools: string[] = [];
 	/** The kernel's answer to whether any node can serve machines (an Error: the call fails). */
 	let machinesAnswer: unknown = true;
@@ -386,21 +385,6 @@ async function fixture(
 			}
 			if (method === "qorpera_read_native_wake")
 				return structuredClone(mode === "company-worker" ? workerWake : wake);
-			if (method === "qorpera_decide_agent_routine") {
-				decisions.push(args.p_request as Record<string, unknown>);
-				return {
-					schema: "qorpera.agent-routine-receipt/v1",
-					runId: f.binding.runId,
-					receiptId: randomUUID(),
-					action: "upsert",
-					routine: {
-						routineKey: "invoice-watch",
-						status: "active",
-						version: 2,
-						nextRunAt: "2026-09-02T10:00:00Z",
-					},
-				};
-			}
 			if (method === "qorpera_describe_agent_open_work") {
 				if (mode === "company-worker") throw new Error("A worker keeps no todos");
 				return {
@@ -694,7 +678,6 @@ async function fixture(
 		proposalsAnswer: (value: unknown) => {
 			proposalsAnswer = value;
 		},
-		decisions,
 		folderReads,
 		folderFiles,
 		folderReleases,
@@ -1178,12 +1161,9 @@ it("has a dynamic routine run decide its next run before its final message", asy
 	const f = await fixture("company-dynamic");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
-	// The early final and the save of its own routine never reached the kernel: the host showed the model why.
-	expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_manage_agent_routine")).toBe(false);
+	// The host refused the early final and the save of its own routine, and showed the model why (below).
 	const sends = f.control.sendMessage.mock.calls.map(([, input]) => input);
 	expect(sends.map((input) => input.idempotencyKey)).toEqual(["progress", "final"]);
-	// The decision goes to the routine's file (the next test), never to the kernel's own decision.
-	expect(f.decisions).toEqual([]);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
 	expect(names).toContain("decide_routine");
@@ -1212,8 +1192,7 @@ it("has a folder-v2 dynamic routine run decide through its routine file, settled
 	const f = await fixture("company-dynamic");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
-	// The decision went to the routine's file, not the kernel's legacy decision: no file there, so nothing is owed.
-	expect(f.decisions).toEqual([]);
+	// The decision went to the routine's file: no file there, so nothing is owed.
 	expect(f.folderReads).toContain(`agents/nora/routines/${f.wake.routine?.routineKey}.md`);
 	// Not found at its key: its folder is listed for the file carrying its id (the wake is read once: a second read
 	// would claim held messages).
