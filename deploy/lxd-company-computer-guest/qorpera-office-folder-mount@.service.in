@@ -1,0 +1,33 @@
+[Unit]
+Description=Qorpera company folder for %i (started and stopped by the folder helper)
+ConditionPathExists=/run/qorpera-folder/views/%i.json
+
+[Service]
+Type=exec
+# The helper made the state folder empty, and the mountpoint inside a parent it bound onto itself and shared: a
+# desktop's or a command's namespace binds the parent, so a mount made again reaches it. The office account reaches
+# the mount (allow_other) and owns what it writes; the view file and the state folder stay root's.
+ExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file /run/qorpera-folder/views/%i.json --mountpoint /run/qorpera-folder/mounts/%i/company --state-dir /run/qorpera-folder/state/%i --allow-other yes --owner-uid @OFFICE_UID@ --owner-gid @OFFICE_GID@
+# A program killed hard leaves its mount behind; take it away.
+ExecStopPost=-/usr/bin/umount -l /run/qorpera-folder/mounts/%i/company
+Restart=on-failure
+RestartSec=5s
+# 3: the node closed or refused the view. Starting again would only be refused again.
+RestartPreventExitStatus=3
+KillMode=mixed
+TimeoutStopSec=20s
+LimitCORE=0
+# The mount must appear in PID 1's mount namespace, so no option here makes a namespace of its own (ProtectSystem,
+# PrivateTmp, PrivateDevices, ProtectHome, ReadWritePaths, ProtectKernel*, ProtectControlGroups).
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SYS_ADMIN
+DevicePolicy=closed
+DeviceAllow=/dev/fuse rw
+RestrictAddressFamilies=AF_UNIX AF_VSOCK
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+MemoryMax=512M
+MemorySwapMax=0
