@@ -486,4 +486,45 @@ begin
 		'the room log''s steps');
 end $$;
 
+-- 5. A run's own summary tree ------------------------------------------------------------------------------------------
+do $$
+declare
+	env constant uuid := '63400000-0000-4000-8000-000000000020'; nora constant uuid := pg_temp.run_id('nora');
+	log constant text := 'agents/nora/memory/thread/runs/' || pg_temp.run_id('nora'); a constant jsonb := pg_temp.actor('nora');
+	otto constant text := 'agents/otto/memory/thread/runs/' || pg_temp.run_id('otto'); t0 constant text := log || '/t0/00000000.jsonl';
+	gen constant jsonb := jsonb_build_object('runGenerations', jsonb_build_array(jsonb_build_object('runId', nora, 'generation', 0)));
+	r jsonb;
+begin
+	-- A change to a run tree names the run's generation.
+	r := pg_temp.logc('nora', 'w1b:tree:1', jsonb_build_array(jsonb_build_object('op','mkdir','path',log || '/t0')), log);
+	perform pg_temp.refused(r, 1, 'structured_rule', 'a run tree''s change names its run''s generation');
+	-- A block waits for its log's run.toml (otto's log has none).
+	r := pg_temp.logc('otto', 'w1b:tree:2', jsonb_build_array(jsonb_build_object('op','mkdir','path',otto || '/t0'),
+		pg_temp.rfile(otto || '/t0/00000000.jsonl', pg_temp.block(array['{"l":0,"k":0,"free":true,"text":"x"}']), pg_temp.actor('otto'))),
+		otto, jsonb_build_object('runGenerations', jsonb_build_array(jsonb_build_object('runId', pg_temp.run_id('otto'), 'generation', 0))));
+	perform pg_temp.expect(r, 1, 'saved');
+	perform pg_temp.refused(r, 2, 'structured_rule', 'write this log''s run.toml first');
+	-- The parser's problem and its line.
+	r := pg_temp.logc('nora', 'w1b:tree:3', jsonb_build_array(jsonb_build_object('op','mkdir','path',log || '/t0'),
+		pg_temp.rfile(t0, pg_temp.block(array['{"l":0,"k":0,"free":true,"text":"x"}', '{"l":0,"k":16,"free":true,"text":"y"}']), a)),
+		log, gen);
+	perform pg_temp.expect(r, 1, 'saved');
+	perform pg_temp.refused(r, 2, 'structured_invalid', 'this line does not belong in this block', 'value', 2);
+
+	-- A block's lines go in the tree's index under the run, and a rewrite replaces them.
+	r := pg_temp.logc('nora', 'w1b:tree:ok1', jsonb_build_array(pg_temp.rfile(t0, pg_temp.block(array[
+		'{"l":0,"k":0,"free":true,"text":"x"}', '{"l":0,"k":1,"free":true,"text":"y"}', pg_temp.line(1, 0, 'xy')]), a)), log, gen);
+	perform pg_temp.expect(r, 1, 'saved');
+	perform pg_temp.same((select jsonb_agg(jsonb_build_array(n.session_id, n.l, n.k, n.text, n.free, n.tries, n.seq, n.block_key)
+		order by n.l, n.k) from public.qorpera_memory_tree_nodes n where n.environment_id = env and n.run_id = nora), jsonb_build_array(
+		jsonb_build_array(pg_temp.thread('nora'), 0, 0, 'x', true, null, null, t0),
+		jsonb_build_array(pg_temp.thread('nora'), 0, 1, 'y', true, null, null, t0),
+		jsonb_build_array(pg_temp.thread('nora'), 1, 0, 'xy', false, 1, null, t0)), 'the run tree''s lines');
+	r := pg_temp.logc('nora', 'w1b:tree:ok2', jsonb_build_array(pg_temp.rfile(t0, pg_temp.block(array[
+		'{"l":0,"k":0,"free":true,"text":"x"}', '{"l":0,"k":1,"free":true,"text":"z"}']), a)), log, gen);
+	perform pg_temp.expect(r, 1, 'saved');
+	perform pg_temp.same((select jsonb_agg(jsonb_build_array(n.l, n.k, n.text) order by n.l, n.k) from public.qorpera_memory_tree_nodes n
+		where n.environment_id = env and n.run_id = nora), '[[0, 0, "x"], [0, 1, "z"]]', 'the rewritten run tree''s lines');
+end $$;
+
 rollback;
