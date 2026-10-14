@@ -68,8 +68,8 @@ any folder program or folder unit the image may carry:
   `deploy/lxd-company-computer-guest/qorpera-company-computer.service`, pushed in.
 
 What A1 itself supplies is the kernel, systemd, bubblewrap, tini, node, python,
-the mount tools and `fusermount`, the `qorpera-office` account, and how `/run` is
-mounted. The record keeps what the image carries beside master's: the installed
+the mount tools, any `fusermount`, the `qorpera-office` account, and how `/run` is
+mounted. The record's `image` part keeps what A1 carries beside master's: the installed
 office unit's sha256 and its diff against master (`officeUnitSha256`,
 `officeUnitAgainstMaster`), what is in `/opt/qorpera-folder` and which
 `qorpera-folder*` units exist (`imageFolder`), `/run`'s mount options
@@ -78,3 +78,24 @@ office unit's sha256 and its diff against master (`officeUnitSha256`,
 4d's acceptance reruns this harness on the 4d generation with
 `--image <fingerprint>`, once that image is staged. Building that image is 4d's
 work, not this proof's.
+
+## What the JSON establishes
+
+The fixture prints one record. `result` is `passed` only if all nine checks
+below are present and passed and nothing raised. The three office namespaces
+(the desktop, shell and command shapes) are started **before** the first mount,
+through the candidate form 4d-2a (#1070) uses: the folder's shared parent bound
+at `/run/qorpera-company`, with `/company` a symlink to
+`/run/qorpera-company/company`.
+
+| Check | Passes when |
+|---|---|
+| `officeFirstPropagation` | after the unit's first start, each namespace reads the node's `before.txt` through `/company`, and its write reaches the node |
+| `restartedBySystemd` | after the daemon is killed (`SIGKILL` to its main PID), systemd starts it again with a new PID and `NRestarts` one higher, and the host serves exactly one mount within 30 s |
+| `oneMountAfterRestart` | after each kill, the host has one mount at the mountpoint and each namespace sees one at `/run/qorpera-company/company`: no stacked dead mount |
+| `runningNamespacesRecovered` | after the first kill, each namespace is the same process in the same mount namespace, reads a file only the new mount can know, and its new write reaches the node |
+| `directBindNegativeControl` | a namespace that binds the FUSE mount itself (not its parent), started once it was served, read `before.txt` before the kill and gets `ENOTCONN` after it: the candidate form is what makes recovery work |
+| `stateFolderKept` | the view's state folder keeps its inode and every name across the restart |
+| `secondRestartRecovered` | the same holds after a second kill through `systemctl kill -s KILL` |
+| `exitThreeNotRestarted` | when the node closes the view (`VIEW_CLOSED`), the program exits 3, and 9 s later systemd has not restarted it and nothing is mounted |
+| `fixtureProtocolClean` | the synthetic node logged no protocol error and no client request failed or went unanswered |
