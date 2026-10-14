@@ -139,3 +139,85 @@ export function remountShapes(dir) {
 	};
 	return { root: "/run/qorpera-folder", shapes: { desktop, command, shell }, standins: STANDINS };
 }
+
+/** Guest file name → its source in this tree; the two generated ones are written beside the run. */
+export const PUSHED = {
+	"office.mjs": "scripts/fixtures/office-folder-remount-office.mjs",
+	"office-folder-remount-client.py": "scripts/fixtures/office-folder-remount-client.py",
+	"office-folder-substrate.py": "scripts/fixtures/office-folder-substrate.py",
+	"office-folder-remount.py": "scripts/fixtures/office-folder-remount.py",
+	"office.service": "deploy/lxd-company-computer-guest/qorpera-company-computer.service",
+	"mount.service": "deploy/folder-service/qorpera-folder-mount@.service",
+};
+
+/** The runtime's own process gate, run unchanged in the guest's node: its types stripped, nothing else. */
+export function processModule() {
+	return stripTypeScriptTypes(readFileSync(resolve(root, "packages/runtime/src/cloud-company-computer-linux-process.ts"), "utf8"), { mode: "strip" });
+}
+
+export function main(args) {
+	const options = parseArgs(args);
+	if (process.platform !== "linux" || !existsSync("/etc/qorpera-test-machine-versions")) throw new Error("Run the launcher through run-on-node on a configured test machine");
+	checkPins();
+	const command = (args, extra = {}) => execFileSync("lxc", ["--force-local", "--project", options.project, ...args], { encoding: "utf8", timeout: 30_000, maxBuffer: 16 * 1024 * 1024, ...extra });
+	const instance = JSON.parse(command(["list", options.vm, "--format", "json"])).find((entry) => entry.name === options.vm);
+	assertTarget(instance ?? {}, options);
+	if (sha256(readFileSync(realpathSync(options["folder-binary"]))) !== options["folder-sha256"]) throw new Error("Folder binary digest differs");
+	const guest = JSON.parse(command(["exec", options.vm, "--", "python3", "-c", guestProbeSource]));
+	assertGuest(guest, readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim());
+	const local = mkdtempSync(join(tmpdir(), "qorpera-remount-"));
+	const dir = `/run/qorpera-remount-${options.uuid}`;
+	try {
+		writeFileSync(join(local, "company-computer-process.mjs"), processModule());
+		writeFileSync(join(local, "shapes.json"), `${JSON.stringify(remountShapes(dir), null, 2)}\n`);
+		const sources = { ...Object.fromEntries(Object.entries(PUSHED).map(([name, path]) => [name, resolve(root, path)])), "company-computer-process.mjs": join(local, "company-computer-process.mjs"), "shapes.json": join(local, "shapes.json"), "qorpera-folder": realpathSync(options["folder-binary"]) };
+		const digests = Object.fromEntries(Object.entries(sources).map(([name, path]) => [name, sha256(readFileSync(path))]));
+		const evidence = { schema: "qorpera.office-folder-remount/v1", scope: "the folder mount's restart under the office's namespaces; synthetic folder node; master's mount unit on #1047's layout; copied office confinement", project: options.project, vm: options.vm, uuid: options.uuid, image: options.image, fuse: options.fuse, folderSha256: options["folder-sha256"], digests, runtimePins: RUNTIME_PINS.map(({ file, from, sha256 }) => ({ file, from, sha256 })), guestBoot: guest.boot, guestOfficeUnitSha256: guest.unitSha256, executed: false };
+		if (!options.execute) {
+			writeFileSync(options.record, `${JSON.stringify({ ...evidence, result: "plan", guestCommand: ["python3", `${dir}/office-folder-remount.py`, "proof", dir, options.fuse] }, null, 2)}\n`);
+			console.log("Preflight passed. No guest files or units created.");
+			return;
+		}
+		const result = execute(command, options, dir, sources, digests);
+		const output = `${JSON.stringify({ ...evidence, executed: true, ...result }, null, 2)}\n`;
+		writeFileSync(options.record, output);
+		console.log(output);
+		if (result.result !== "passed") process.exitCode = 1;
+	} finally {
+		rmSync(local, { recursive: true, force: true });
+	}
+}
+
+function execute(command, options, dir, sources, digests) {
+	let created = false;
+	let fixtureInstalled = false;
+	let result;
+	try {
+		command(["exec", options.vm, "--", "mkdir", "-m", "0755", dir]);
+		created = true;
+		command(["file", "push", sources["office-folder-remount.py"], `${options.vm}${dir}/office-folder-remount.py`]);
+		fixtureInstalled = true;
+		for (const [name, path] of Object.entries(sources)) if (name !== "office-folder-remount.py") command(["file", "push", path, `${options.vm}${dir}/${name}`], { timeout: 120_000 });
+		const names = Object.keys(sources);
+		const hashes = JSON.parse(command(["exec", options.vm, "--", "python3", "-c", "import hashlib,json,pathlib,sys; p=pathlib.Path(sys.argv[1]); print(json.dumps({n:hashlib.sha256((p/n).read_bytes()).hexdigest() for n in sys.argv[2:]}))", dir, ...names]));
+		const differs = names.filter((name) => hashes[name] !== digests[name]);
+		if (differs.length) throw new Error(`Copied artifact digest differs: ${differs.join(", ")}`);
+		command(["exec", options.vm, "--", "chmod", "0644", ...names.map((name) => `${dir}/${name}`)]);
+		// A timed-out or disconnected lxc client must not leave a root process, a relay or a mount running in the guest.
+		const output = command(["exec", options.vm, "--", "systemd-run", "--quiet", "--wait", "--pipe", "--collect", "--unit", `qorpera-remount-${options.uuid}-proof`, "--property", "RuntimeMaxSec=540", "--property", "KillMode=control-group", "--", "python3", `${dir}/office-folder-remount.py`, "proof", dir, options.fuse], { timeout: 600_000 });
+		result = JSON.parse(output.trim().split("\n").at(-1));
+	} catch (error) {
+		result = { result: "harness-error", error: error.message, stdout: String(error.stdout ?? ""), stderr: String(error.stderr ?? "") };
+	} finally {
+		// Never delete a VM or an arbitrary path. The fixture stops its own units and mounts before this directory goes.
+		try {
+			if (fixtureInstalled) result = { ...result, cleanup: JSON.parse(command(["exec", options.vm, "--", "python3", `${dir}/office-folder-remount.py`, "cleanup", dir], { timeout: 120_000 }).trim().split("\n").at(-1)) };
+			else if (created) command(["exec", options.vm, "--", "rmdir", dir]);
+		} catch (error) {
+			result = { ...result, result: "harness-error", cleanupError: error.message, cleanupStdout: String(error.stdout ?? ""), cleanupStderr: String(error.stderr ?? "") };
+		}
+	}
+	return result;
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main(process.argv.slice(2));
