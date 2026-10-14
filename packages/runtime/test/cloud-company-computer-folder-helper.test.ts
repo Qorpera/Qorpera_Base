@@ -455,6 +455,24 @@ describe("moving a desktop's mount to a newer view", () => {
 		await writeFile(join(at.state, "view.json"), JSON.stringify({ schema: PROOF, view: VIEW, extra: 1 }));
 		expect(await helper.answer({ op: "switch", name: DESKTOP, view: third })).toEqual({ answer: "failed" });
 	});
+
+	it("leaves the mount movable when its program is killed before it takes the newer view", async () => {
+		const { helper, system, paths } = await setup();
+		const at = paths(DESKTOP),
+			unit = companyComputerFolderUnit(DESKTOP);
+		await helper.answer({ op: "mount", name: DESKTOP, view: VIEW });
+		system.follows = false;
+		expect(await helper.answer({ op: "switch", name: DESKTOP, view: NEWER })).toEqual({ answer: "pending" });
+		// Killed before its hello: systemd starts it again, and the restarted program reads the view file.
+		system.units.set(unit, { ...ACTIVE, active: "activating" });
+		const third = { ...NEWER, viewId: "view-3", pass: "pass-secret-3" };
+		expect(await helper.answer({ op: "switch", name: DESKTOP, view: third })).toEqual({ answer: "pending" });
+		system.units.set(unit, ACTIVE);
+		system.follows = true;
+		expect(await helper.answer({ op: "switch", name: DESKTOP, view: third })).toEqual({ answer: "switched" });
+		expect(JSON.parse(await readFile(at.view, "utf8"))).toEqual(third);
+		expect(JSON.parse(await readFile(join(at.state, "view.json"), "utf8")).view).toEqual(third);
+	});
 });
 
 describe("the folder helper's socket", () => {
