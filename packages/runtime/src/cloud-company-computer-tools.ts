@@ -654,7 +654,6 @@ export function createCompanyComputerTools(options: {
 						},
 						requiresCompanyRevision: false,
 					};
-					let givenBack = false;
 					const content = await options.operations.execute({
 						operation,
 						signal: AbortSignal.any([signal, active.signal]),
@@ -664,17 +663,16 @@ export function createCompanyComputerTools(options: {
 						},
 						perform: async (exact, effect) => {
 							await active.assertActive(effect.signal);
-							const content = await options.endpoint.perform(exact, active.lease, effect);
-							givenBack = isCompanyComputerFolderGiveBack(content);
-							return { content };
+							return { content: await options.endpoint.perform(exact, active.lease, effect) };
 						},
 					});
 					if (parsed.action.kind === "screen" && parsed.action.action === "release") {
 						closed = true;
 						await active.close();
-					} else if (givenBack) {
+					} else if (isCompanyComputerFolderGiveBack(content)) {
 						// The office gave the screen back for the folder (F3 4d): the lease goes after the result's final
-						// check, as on release. Like an admission refusal, only an explicit open asks for it again.
+						// check, as on release. Like an admission refusal, only an explicit open asks for it again. The
+						// answer is read here, not in perform, so a completed receipt's replay gives the screen back too.
 						admissionRefused = true;
 						const refused = Promise.reject(new Error("COMPUTER_SCREEN_GIVEN_BACK"));
 						refused.catch(() => undefined);

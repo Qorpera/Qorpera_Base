@@ -1648,6 +1648,37 @@ describe("each desktop's mount of the company folder (helper stand-in; the mount
 		]);
 		expect(f.failure).not.toHaveBeenCalled();
 	});
+	it("unmounts a mount made after its run's open was cancelled, a minute later with no desktop", async () => {
+		const h = folderHelper();
+		const f = await fixture({ folderHelper: h.ask });
+		const session = await f.create();
+		const mounting = computerDeferred<unknown>();
+		h.answer("mount", mounting.promise);
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const cancel = new AbortController();
+		const asked = session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, {
+			...f.effect(),
+			signal: cancel.signal,
+		});
+		asked.catch(() => undefined);
+		await vi.waitFor(() => expect(h.ops()).toEqual(["mount"]));
+		cancel.abort(new Error("fixture cancelled the open"));
+		await expect(asked).rejects.toThrow();
+		// The helper answers after the caller left: nothing starts on that mount, and it goes after a minute.
+		mounting.resolve({ answer: "mounted" });
+		h.answer("unmount", { answer: "saved", report: { commitId: null, seq: null, paths: [] }, unmounted: true });
+		await vi.advanceTimersByTimeAsync(59_000);
+		expect(h.ops()).toEqual(["mount"]);
+		await vi.advanceTimersByTimeAsync(1_000);
+		await vi.waitFor(() => expect(f.order).toContain("qorpera_folder_view_close:read"));
+		expect(h.asked.at(-1)).toEqual({
+			op: "unmount",
+			name: `desktop-${f.binding.screenId}`,
+			final: false,
+			timeoutMs: 30000,
+		});
+		expect(physical.launch).not.toHaveBeenCalled();
+	});
 	it("moves the mount to the view of a member who takes control, and a shared viewer asks nothing", async () => {
 		const h = folderHelper();
 		const f = await fixture({ folderHelper: h.ask });

@@ -801,6 +801,38 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		expect(harness.automation.perform).toHaveBeenCalledOnce();
 	});
 
+	it("gives the screen back again when a refused open's completed receipt is replayed under the same key", async () => {
+		const harness = toolHarness();
+		harness.prepareScreen.mockResolvedValueOnce({
+			code: "COMPANY_FOLDER_UNAVAILABLE",
+			message: "company folder is unavailable",
+		});
+		const refused = {
+			kind: "json",
+			value: {
+				action: "open",
+				completed: false,
+				refused: { code: "COMPANY_FOLDER_UNAVAILABLE", message: "company folder is unavailable" },
+			},
+		};
+		await expect(harness.call("computer_screen", { kind: "screen", action: "open" }, "replay:1")).resolves.toEqual(
+			refused,
+		);
+		expect(harness.order).toEqual(["receipt-completed", "released"]);
+		// The same open again takes a new lease, gets the stored refusal back, and gives that lease back too.
+		await expect(harness.call("computer_screen", { kind: "screen", action: "open" }, "replay:1")).resolves.toEqual(
+			refused,
+		);
+		expect(harness.prepareScreen).toHaveBeenCalledOnce();
+		expect(harness.screens.acquire).toHaveBeenCalledTimes(2);
+		expect(harness.order).toEqual(["receipt-completed", "released", "released"]);
+		await expect(
+			harness.call("computer_browser", { kind: "browser", action: "snapshot" }, "replay:2"),
+		).rejects.toThrow("COMPUTER_SCREEN_GIVEN_BACK");
+		expect(harness.screens.acquire).toHaveBeenCalledTimes(2);
+		expect(harness.automation.perform).not.toHaveBeenCalled();
+	});
+
 	it("refuses foreign runtime caller identity before acquiring a resource", async () => {
 		const harness = toolHarness();
 		await expect(

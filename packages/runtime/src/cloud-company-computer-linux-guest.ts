@@ -483,17 +483,22 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		const folders = this.#options.folders;
 		let company: CompanyComputerDesktopCompany | undefined;
 		if (folders && holder) {
-			const held = await folders.hold(
-				binding,
-				holder,
-				AbortSignal.any([signal, this.#stop.signal]),
-				replyBy ?? performance.now() + 5000,
-			);
-			if (!("code" in held)) company = held;
-			else if (holder.kind === "run") {
-				// A mount that no desktop will use goes, unless one starts or the screen is held again first.
+			// A mount that no desktop will use goes, unless one starts or the screen is held again first. The release
+			// runs after the screen's helper requests before it, so it also finds a mount made after its caller left.
+			const unused = (): void => {
 				if (!this.#screens.has(binding.screenOrdinal))
 					folders.releaseLater(binding.screenId, () => !this.#screens.has(binding.screenOrdinal));
+			};
+			const held = await folders
+				.hold(binding, holder, AbortSignal.any([signal, this.#stop.signal]), replyBy ?? performance.now() + 5000)
+				.catch((error: unknown) => {
+					// Cancelled while the helper works on.
+					unused();
+					throw error;
+				});
+			if (!("code" in held)) company = held;
+			else if (holder.kind === "run") {
+				unused();
 				return held;
 			}
 		} else company = folders?.mounted(binding.screenId);
