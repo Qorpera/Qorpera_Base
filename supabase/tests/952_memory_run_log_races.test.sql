@@ -139,7 +139,8 @@ begin
 				pg_blocking_pids(current_setting('qorpera_test.pid_fence_two')::integer); end if;
 		perform pg_sleep(0.02);
 	end loop;
-	v_queued := pg_temp.queued_on('fence_two')::text;
+	v_queued := coalesce(pg_temp.queued_on('fence_two')::text, (select l.locktype || coalesce(' ' || l.relation::regclass::text, '')
+		from pg_locks l where l.pid = current_setting('qorpera_test.pid_fence_two')::integer and not l.granted limit 1));
 	perform dblink_exec('fence_one', p_end);
 	return jsonb_build_object('hold', v_hold, 'queued', v_queued, 'batch', pg_temp.answer('fence_two'));
 end $$;
@@ -194,6 +195,94 @@ begin
 		pg_temp.step(glog, 0)), glog);
 	perform pg_temp.same(jsonb_build_array(r -> 'units' -> 0 ->> 'outcome', r -> 'units' -> 1 ->> 'outcome'), '["saved", "saved"]',
 		'g''s log with step 0');
+end $$;
+
+-- A. Two first batches of one run's log. The second waits for the first's transaction; once the first commits, the log is
+-- made and the second conflicts with it (one); once the first rolls back, the second makes it (two).
+do $$
+declare
+	one constant uuid := pg_temp.run_id('one'); two constant uuid := pg_temp.run_id('two');
+	l1 constant text := 'agents/ada/memory/thread/runs/' || pg_temp.run_id('one');
+	l2 constant text := 'agents/ada/memory/thread/runs/' || pg_temp.run_id('two');
+begin
+	perform pg_temp.sql_log('a1', 'one', 'w1b-race:a:1', jsonb_build_array(pg_temp.log_folder(l1, pg_temp.rtoml(one, pg_temp.thread()))), l1);
+	perform pg_temp.sql_log('a2', 'one', 'w1b-race:a:2', jsonb_build_array(pg_temp.log_folder(l1, pg_temp.rtoml(one, pg_temp.thread()))), l1);
+	perform pg_temp.sql_log('a3', 'two', 'w1b-race:a:3', jsonb_build_array(pg_temp.log_folder(l2, pg_temp.rtoml(two, pg_temp.thread()))), l2);
+	perform pg_temp.sql_log('a4', 'two', 'w1b-race:a:4', jsonb_build_array(pg_temp.log_folder(l2, pg_temp.rtoml(two, pg_temp.thread()))), l2);
+end $$;
+do $$
+declare
+	env constant uuid := '64800000-0000-4000-8000-000000000020'; one constant uuid := pg_temp.run_id('one');
+	two constant uuid := pg_temp.run_id('two'); x jsonb;
+begin
+	x := pg_temp.race(current_setting('qorpera_test.sql_a1'), 'a2', 'commit', 'A1');
+	perform pg_temp.same(jsonb_build_array(pg_temp.unit(x -> 'hold'), x -> 'queued', pg_temp.unit(x -> 'batch')),
+		'[["saved", null], "transactionid", ["conflict", "exists"]]', 'A1: the second first batch');
+	perform pg_temp.same((select jsonb_build_array(count(*), bool_and(g.log_created_at is not null))
+		from public.qorpera_memory_run_logs l join public.qorpera_memory_run_generations g using (environment_id, run_id)
+		where l.environment_id = env and l.run_id = one), '[1, true]', 'A1: one log');
+	x := pg_temp.race(current_setting('qorpera_test.sql_a3'), 'a4', 'rollback', 'A2');
+	perform pg_temp.same(jsonb_build_array(pg_temp.unit(x -> 'hold'), x -> 'queued', pg_temp.unit(x -> 'batch')),
+		'[["saved", null], "transactionid", ["saved", null]]', 'A2: the second first batch');
+	perform pg_temp.same((select jsonb_build_array(count(*), bool_and(g.log_created_at is not null))
+		from public.qorpera_memory_run_logs l join public.qorpera_memory_run_generations g using (environment_id, run_id)
+		where l.environment_id = env and l.run_id = two), '[1, true]', 'A2: one log');
+end $$;
+
+-- E. A batch naming its run's generation, against a change of that generation: the batch waits for the change's
+-- transaction at the run's generations row; once the change commits, the batch is stale (E1); once it rolls back, the
+-- batch saves (E2).
+do $$
+declare
+	one constant uuid := pg_temp.run_id('one'); l1 constant text := 'agents/ada/memory/thread/runs/' || pg_temp.run_id('one');
+begin
+	perform pg_temp.sql_log('e1', 'one', 'w1b-race:e:1', jsonb_build_array(pg_temp.step(l1, 0)), l1,
+		jsonb_build_object('runGenerations', jsonb_build_array(jsonb_build_object('runId', one, 'generation', 0))));
+	perform pg_temp.sql_log('e2', 'one', 'w1b-race:e:2', jsonb_build_array(pg_temp.step(l1, 0)), l1,
+		jsonb_build_object('runGenerations', jsonb_build_array(jsonb_build_object('runId', one, 'generation', 1))));
+end $$;
+do $$
+declare
+	bump constant text := format('update public.qorpera_memory_run_generations set memory_generation = memory_generation + 1
+		where environment_id = %L and run_id = %L returning memory_generation::text', '64800000-0000-4000-8000-000000000020',
+		pg_temp.run_id('one'));
+	x jsonb;
+begin
+	x := pg_temp.race(bump, 'e1', 'commit', 'E1');
+	perform pg_temp.same(jsonb_build_array(x -> 'hold', x -> 'queued', pg_temp.unit(x -> 'batch')),
+		'[1, "transactionid", ["refused", "memory_generation_stale"]]', 'E1: a stale generation');
+	x := pg_temp.race(bump, 'e2', 'rollback', 'E2');
+	perform pg_temp.same(jsonb_build_array(x -> 'hold', x -> 'queued', pg_temp.unit(x -> 'batch')),
+		'[2, "transactionid", ["saved", null]]', 'E2: the generation stays');
+	perform pg_temp.same((select to_jsonb(array[g.memory_generation, (select count(*) from public.qorpera_memory_run_steps s
+		where s.environment_id = g.environment_id and s.run_id = g.run_id)]) from public.qorpera_memory_run_generations g
+		where g.environment_id = '64800000-0000-4000-8000-000000000020' and g.run_id = pg_temp.run_id('one')), '[1, 1]',
+		'E: one''s generation and step 0');
+end $$;
+
+-- D. A batch against an erase of its run: the erase takes the run's generations row FOR UPDATE and opens; the batch
+-- waits, then is refused while the erase is open, and saves once it has closed.
+do $$
+declare l1 constant text := 'agents/ada/memory/thread/runs/' || pg_temp.run_id('one');
+begin
+	perform pg_temp.sql_log('d1', 'one', 'w1b-race:d:1', jsonb_build_array(pg_temp.step(l1, 1)), l1);
+end $$;
+do $$
+declare
+	env constant uuid := '64800000-0000-4000-8000-000000000020'; one constant uuid := pg_temp.run_id('one');
+	l1 constant text := 'agents/ada/memory/thread/runs/' || pg_temp.run_id('one'); x jsonb;
+begin
+	x := pg_temp.race(format('with held as (select g.run_id from public.qorpera_memory_run_generations g
+			where g.environment_id = %L and g.run_id = %L for update)
+		update public.qorpera_memory_run_generations g set erase_open = extensions.gen_random_uuid() from held
+		where g.environment_id = %L and g.run_id = held.run_id returning (g.erase_open is not null)::text', env, one, env),
+		'd1', 'commit', 'D');
+	perform pg_temp.same(jsonb_build_array(x -> 'hold', x -> 'queued', pg_temp.unit(x -> 'batch')),
+		'[true, "transactionid", ["refused", "memory_erase_open"]]', 'D: an open erase');
+	-- The erase closes; the run's next batch saves.
+	update public.qorpera_memory_run_generations set erase_open = null where environment_id = env and run_id = one;
+	perform pg_temp.same(pg_temp.unit(pg_temp.logc('one', 'w1b-race:d:2', jsonb_build_array(pg_temp.step(l1, 1)), l1)),
+		'["saved", null]', 'D: after the erase');
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
