@@ -242,3 +242,85 @@ select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_commit(uui
 		if v_final then$old$,
 	$new$	if v_view.kind in ('computer_shell_command','test_machine') then -- 20260930420000
 		if v_final then$new$);
+
+-- 4. Access, on the disk's whole life -----------------------------------------------------------------------------------
+
+-- Every machine command on a placement that has or had a view needs the caller's agent and member to read the root;
+-- a worker's run is checked as its agent. Under the machine row (FOR UPDATE), which the open waits for (FOR SHARE).
+select pg_temp.folder_test_machine_views_patch(
+	'public.qorpera_authorize_machine_command(jsonb,jsonb,text,uuid,text,jsonb)'::regprocedure,
+	$old$			'machine',v_machine.name,'machineState',public.qorpera_company_machine_state(v_machine)); end if;
+$old$,
+	$new$			'machine',v_machine.name,'machineState',public.qorpera_company_machine_state(v_machine)); end if;
+	-- 20260930420000: what the disk's views read may be on it, on any boot.
+	if exists (select 1 from public.qorpera_folder_views v where v.placement_id = v_placement.id)
+		and not public.qorpera_folder_reads_root(v_machine.environment_id, v_machine.profile_id,
+			(v_identity ->> 'staffAgentId')::uuid, (v_identity ->> 'requesterUserId')::uuid) then
+		raise exception 'Machine needs the company-wide view' using errcode = '42501'; end if;
+$new$);
+-- The first command started on a placement that never had a view marks it used without the check: no view opens there.
+select pg_temp.folder_test_machine_views_patch(
+	'public.qorpera_authorize_machine_command(jsonb,jsonb,text,uuid,text,jsonb)'::regprocedure,
+	$old$ -- 20260929361500: the member the run works for
+			returning * into v_command;
+$old$,
+	$new$ -- 20260929361500: the member the run works for
+			returning * into v_command;
+			-- 20260930420000: the open refuses this disk from now on.
+			update public.qorpera_company_machine_placements set folder_unchecked_at = clock_timestamp()
+			where id = v_placement.id and folder_unchecked_at is null
+				and not exists (select 1 from public.qorpera_folder_views v where v.placement_id = v_placement.id);
+$new$);
+
+-- The patched functions may have a private owner in production: it reaches what their new text uses. Row locks need
+-- UPDATE as well as SELECT.
+do $$ declare v_owner name; begin
+	foreach v_owner in array array(select distinct pg_get_userbyid(proowner) from pg_proc where oid in (
+		'public.qorpera_folder_view_valid(public.qorpera_folder_views)'::regprocedure,
+		'public.qorpera_folder_view_live_run(public.qorpera_folder_views)'::regprocedure,
+		'public.qorpera_folder_view_resolve(uuid,uuid,jsonb)'::regprocedure,
+		'public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)'::regprocedure,
+		'public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
+		'public.qorpera_authorize_machine_command(jsonb,jsonb,text,uuid,text,jsonb)'::regprocedure)) loop
+		if v_owner in ('anon', 'authenticated', 'service_role', 'qorpera_secret_broker') then
+			raise exception 'Test machine view function has an API owner'; end if;
+	end loop;
+	foreach v_owner in array array(select distinct pg_get_userbyid(proowner) from pg_proc where oid in (
+		'public.qorpera_folder_view_valid(public.qorpera_folder_views)'::regprocedure,
+		'public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)'::regprocedure,
+		'public.qorpera_authorize_machine_command(jsonb,jsonb,text,uuid,text,jsonb)'::regprocedure)) loop
+		if v_owner is distinct from current_user then
+			execute format('grant execute on function public.qorpera_folder_reads_root(uuid, uuid, uuid, uuid) to %I', v_owner);
+			execute format('grant select on public.qorpera_company_machine_placements, public.qorpera_folder_views to %I', v_owner);
+		end if;
+	end loop;
+	foreach v_owner in array array(select distinct pg_get_userbyid(proowner) from pg_proc where oid in (
+		'public.qorpera_folder_view_live_run(public.qorpera_folder_views)'::regprocedure)) loop
+		if v_owner is distinct from current_user then
+			execute format('grant select on public.qorpera_company_machines to %I', v_owner);
+		end if;
+	end loop;
+	-- The open and the commit take the machine and the placement FOR SHARE.
+	foreach v_owner in array array(select distinct pg_get_userbyid(proowner) from pg_proc where oid in (
+		'public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)'::regprocedure,
+		'public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure)) loop
+		if v_owner is distinct from current_user then
+			execute format('grant select, update on public.qorpera_company_machines, '
+				'public.qorpera_company_machine_placements to %I', v_owner);
+		end if;
+	end loop;
+	foreach v_owner in array array(select distinct pg_get_userbyid(proowner) from pg_proc where oid in (
+		'public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)'::regprocedure)) loop
+		if v_owner is distinct from current_user then
+			execute format('grant execute on function public.qorpera_folder_machine_fence(uuid), '
+				'public.qorpera_company_machine_placement_reserved(uuid) to %I', v_owner);
+		end if;
+	end loop;
+	-- The authorization records the unchecked use on the placement.
+	foreach v_owner in array array(select distinct pg_get_userbyid(proowner) from pg_proc where oid in (
+		'public.qorpera_authorize_machine_command(jsonb,jsonb,text,uuid,text,jsonb)'::regprocedure)) loop
+		if v_owner is distinct from current_user then
+			execute format('grant update on public.qorpera_company_machine_placements to %I', v_owner);
+		end if;
+	end loop;
+end $$;
