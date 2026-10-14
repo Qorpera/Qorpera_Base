@@ -50,3 +50,31 @@ The launcher refuses to run unless the guest is a separate KVM boot, the office
 service is stopped, and both `/etc/qorpera-office/credentials` and
 `/etc/qorpera-office/boots` are empty. It records the file names it finds there,
 never their contents. The fixture's preflight checks again inside the guest.
+
+## The image under test
+
+The default image is A1: fingerprint
+`9a4935f853ae27b80bb8d2fd8cbe33d1cb3db68bbfe0d47469bb0ebdbbf20f01`, built at
+commit `c1ac31535`. **A1 predates folder-v2.** The proof therefore does not use
+any folder program or folder unit the image may carry:
+
+- the `qorpera-folder` program is built from this tree and pushed in;
+- the mount unit is master's `deploy/folder-service/qorpera-folder-mount@.service`,
+  pushed in, with only the lines that name `/etc` and `/srv` moved to #1047's
+  `/run` layout, the synthetic node's socket, and no `[Install]`. It still runs
+  as root with `CapabilityBoundingSet=CAP_SYS_ADMIN`, `Restart=on-failure`,
+  `RestartSec=5s` and `RestartPreventExitStatus=3`;
+- the relay takes its confinement lines from master's
+  `deploy/lxd-company-computer-guest/qorpera-company-computer.service`, pushed in.
+
+What A1 itself supplies is the kernel, systemd, bubblewrap, tini, node, python,
+the mount tools and `fusermount`, the `qorpera-office` account, and how `/run` is
+mounted. The record keeps what the image carries beside master's: the installed
+office unit's sha256 and its diff against master (`officeUnitSha256`,
+`officeUnitAgainstMaster`), what is in `/opt/qorpera-folder` and which
+`qorpera-folder*` units exist (`imageFolder`), `/run`'s mount options
+(`runMount`) and which of `fusermount` and `fusermount3` exist.
+
+4d's acceptance reruns this harness on the 4d generation with
+`--image <fingerprint>`, once that image is staged. Building that image is 4d's
+work, not this proof's.
