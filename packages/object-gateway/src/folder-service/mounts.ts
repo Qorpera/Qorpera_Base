@@ -121,8 +121,8 @@ export class MountGrants {
 	/** How a core view the core says is `kind`, on machine allocation `machineId`, is served; none for a kind this node
 	 * does not serve yet (a coding session's: step 5). A run box view is read-only, from a run box host. A computer
 	 * desktop's and a shell command's are served to their own company machine alone (named after the view's
-	 * allocation, in a company machine project) and write, publishing after a quiet period; a command's also publishes
-	 * when asked, its last publish final. */
+	 * allocation, in a company machine project) and write, publishing after a quiet period; a command's only while its
+	 * machine holds it, and also when asked, its last publish final. */
 	coreAccess(identity: { readonly kind: string; readonly machineId: string | null }): CoreAccess | undefined {
 		if (identity.kind === "run_box")
 			return { write: false, admits: (bridge) => this.#runBoxHosts.some((host) => isMachine(bridge, host)) };

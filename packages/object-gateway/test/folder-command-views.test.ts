@@ -275,6 +275,55 @@ describe("shell commands' views", () => {
 		expect(cmd.renewals).toBe(renewals);
 	});
 
+	it("starts no quiet period once its last connection has left, nor publishes one that waited behind a boundary", async () => {
+		// A change that waited behind a boundary lands after its machine let go: no quiet period comes of it, not even
+		// once its machine is back.
+		const { core, open, cmd } = await company();
+		const view = await open();
+		await write(view, "docs/a.txt", "a");
+		let releaseCommit!: () => void;
+		core.commitGate = new Promise<void>((resolve) => {
+			releaseCommit = resolve;
+		});
+		const asked = view.publish();
+		await settle();
+		const made = view.mkdir("docs/late");
+		await settle();
+		view.release();
+		releaseCommit();
+		core.commitGate = undefined;
+		expect((await asked).paths).toEqual([{ path: "docs/a.txt", outcome: "saved" }]);
+		await made;
+		const last = await open();
+		await wait(DESKTOP_QUIET_MS + 500);
+		expect(core.commits.map((c) => c.final)).toEqual([false]);
+		// The view is kept with it, and the command's last call publishes it, final.
+		expect((await last.publish(true)).paths).toEqual([{ path: "docs/late", outcome: "saved" }]);
+		expect(core.commits.map((c) => c.final)).toEqual([false, true]);
+		expect(cmd.state).toBe("closed");
+		// A quiet period that ended while a boundary was being asked waits behind it, and publishes nothing if its machine
+		// let go meanwhile: here not even the boundary that got no answer is asked again.
+		const queued = await company();
+		const held = await queued.open();
+		await write(held, "docs/b.txt", "b");
+		queued.core.commitGate = new Promise<void>((resolve) => {
+			releaseCommit = resolve;
+		});
+		// The core answers none of the boundary's three tries.
+		queued.core.commitFailures = { mode: "down", count: 3 };
+		const unanswered = held.publish();
+		await wait(DESKTOP_QUIET_MS + 200);
+		held.release();
+		releaseCommit();
+		queued.core.commitGate = undefined;
+		expect((await unanswered).commitId).toBeNull();
+		await wait(DESKTOP_QUIET_MS + 500);
+		expect(queued.core.commits).toHaveLength(3);
+		const renewals = queued.cmd.renewals;
+		await queued.service.renewLeases();
+		expect(queued.cmd.renewals).toBe(renewals + 1);
+	});
+
 	it("publishes a final with nothing pending as an empty change set, which closes the view", async () => {
 		const { core, open, cmd } = await company();
 		const view = await open();

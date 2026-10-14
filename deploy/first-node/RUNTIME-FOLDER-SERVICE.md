@@ -417,7 +417,10 @@ In slice 4b the core opens a view of its own for an offline shell command (`comp
 - **Publishing.** While the command runs, as a desktop's (slice 4b-2; the contract's 14 October 2026 amendment, item
   3): 2 s after its last change (`DESKTOP_QUIET_MS`), each boundary releasing the reads first (Step 4c), and when the
   machine asks, or before a change that needs what is pending published first. A view no machine holds publishes on
-  no quiet period. The command's last call sends `P` with `final: true`, and a quiet period still to come ends with
+  no quiet period: a change that waited behind a boundary and lands after the last connection left starts none, and a
+  quiet period that ended while the view was held, but waited behind a boundary while its last connection left,
+  publishes nothing (not even a boundary that got no answer is asked again). Its changes wait for the boundary its
+  machine asks. The command's last call sends `P` with `final: true`, and a quiet period still to come ends with
   it: a command that ends inside its quiet period publishes once, final. The final publishes everything the view has
   pending as one change set, or an empty one when nothing is, and the core closes the view with it, whether it saved
   anything or not: the report says `closed`, and the view is closed on every connection. A path still waiting (a file
@@ -453,7 +456,8 @@ In slice 4b the core opens a view of its own for an offline shell command (`comp
   final of a view whose command ended, closes the view with the final, and answers a replay on a closed view given its
   pass, as the core does. Among them: a running command's changes published after its quiet period, its reads released
   first; a command that ends inside its quiet period, published once, final, its final held back or not; a view let go
-  or kept with no connection, which its quiet period does not publish; a final refused whole, empty or not; a final
+  or kept with no connection, which its quiet period does not publish, nor a change or a quiet period that waited
+  behind a boundary while its last connection left; a final refused whole, empty or not; a final
   whose answers were all lost while a renewal closed the view, after its tries or between them, asked again on the
   same connection and on a new one; and a final refused once a renewal closed the view between its ask and its answer.
 

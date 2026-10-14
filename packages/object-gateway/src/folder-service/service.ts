@@ -1190,17 +1190,22 @@ export class FolderService {
 		}
 		if (view.quietMs === undefined) return;
 		if (view.quiet) clearTimeout(view.quiet);
+		view.quiet = undefined;
+		// A command's quiet period runs only while its machine holds the view: a change that waited behind a boundary and
+		// landed after the last connection left waits, with what else is pending, for the boundary its machine asks.
+		if (view.access?.command && view.connections === 0) return;
 		view.quiet = setTimeout(() => {
 			view.quiet = undefined;
-			void this.#publishLogged(view);
+			void this.#publishLogged(view, true);
 		}, view.quietMs);
 		view.quiet.unref?.();
 	}
 
-	/** A boundary no machine asked for: what it did not save goes to the log, until step 4 routes it to the desktop. */
-	async #publishLogged(view: View): Promise<void> {
+	/** A boundary no machine asked for: what it did not save goes to the log, until step 4 routes it to the desktop.
+	 * `quiet`: one a quiet period asked. */
+	async #publishLogged(view: View, quiet = false): Promise<void> {
 		try {
-			const report = await this.#publish(view);
+			const report = await this.#publish(view, false, quiet);
 			for (const entry of report.paths)
 				if (entry.outcome !== "saved")
 					this.#log(
@@ -1400,9 +1405,14 @@ export class FolderService {
 		return undefined;
 	}
 
-	/** One boundary, after any running one (RUNTIME-FOLDER-WRITES.md, "A boundary"). `final`: a command's last. */
-	#publish(view: View, final = false): Promise<Report> {
-		return this.#inTurn(view, () => this.#boundary(view, final));
+	/** One boundary, after any running one (RUNTIME-FOLDER-WRITES.md, "A boundary"). `final`: a command's last. `quiet`:
+	 * one a quiet period asked, which publishes nothing on a command's view no machine holds by its turn: the last
+	 * connection left while it waited, and what is pending waits for the boundary the command's machine asks. */
+	#publish(view: View, final = false, quiet = false): Promise<Report> {
+		return this.#inTurn(view, async () => {
+			if (quiet && view.access?.command && view.connections === 0) return { commitId: null, seq: null, paths: [] };
+			return await this.#boundary(view, final);
+		});
 	}
 
 	async #boundary(view: View, final: boolean): Promise<Report> {
