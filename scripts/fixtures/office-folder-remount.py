@@ -33,6 +33,8 @@ base = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(base)
 
 ROOT = Path("/run/qorpera-folder")
+# Not master's unit name, so nothing the image itself carries is shadowed or started.
+UNIT = "qorpera-office-folder-mount@{}.service"
 UNIT_FILE = Path("/run/systemd/system/qorpera-office-folder-mount@.service")
 OFFICE_UNIT = "qorpera-company-computer.service"
 # The mountpoint's mode while nothing is mounted over it, in the order tried: the main run uses the first one the
@@ -296,3 +298,154 @@ class RemountNode(base.FolderNode):
         if kind == "P":
             return "p", {"commitId": "synthetic", "seq": 0, "paths": []}
         raise ValueError(f"unsupported fixture operation {kind}")
+
+
+def quiet(*args, seconds=30):
+    """A cleanup command: its outcome is recorded, never raised."""
+    try:
+        done = subprocess.run(args, capture_output=True, text=True, timeout=seconds)
+        return {"command": list(args), "code": done.returncode, "output": (done.stdout + done.stderr).strip()[-2000:]}
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {"command": list(args), "failure": repr(error)}
+
+
+def make_root():
+    """#1047's layout root: views and state for root only, mounts for anyone to reach."""
+    for path, mode in ((ROOT, 0o755), (ROOT / "views", 0o700), (ROOT / "state", 0o700), (ROOT / "mounts", 0o755)):
+        path.mkdir(mode=mode)
+        path.chmod(mode)
+
+
+def lay_out(view, mode):
+    """One view in #1047's layout, with the bare mountpoint at the given mode and its parent a shared mount."""
+    state = ROOT / "state" / view
+    state.mkdir(mode=0o700)
+    state.chmod(0o700)
+    parent = ROOT / "mounts" / view
+    parent.mkdir()
+    parent.chmod(0o755)
+    point = parent / "company"
+    point.mkdir()
+    point.chmod(int(mode, 8))
+    descriptor = os.open(ROOT / "views" / f"{view}.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "w") as file:
+        json.dump({"environmentId": "synthetic", "viewId": view, "pass": "synthetic-pass"}, file)
+    base.run("mount", "--bind", str(parent), str(parent))
+    base.run("mount", "--make-rshared", str(parent))
+    if not shared(parent):
+        raise RuntimeError(f"{parent} is not a shared mount")
+    return point
+
+
+def tear_view(view):
+    """Stops the view's mount unit and removes its mounts and files; returns what each step did."""
+    unit = UNIT.format(view)
+    steps = [quiet("systemctl", "stop", unit), quiet("systemctl", "reset-failed", unit)]
+    parent = ROOT / "mounts" / view
+    for path in (parent / "company", parent):
+        for _ in range(5):
+            if not at(path, mountinfo()):
+                break
+            steps.append(quiet("umount", "-l", str(path)))
+    for path in (parent / "company", parent):
+        if path.is_dir() and not at(path, mountinfo()):
+            path.rmdir()
+    shutil.rmtree(ROOT / "state" / view, ignore_errors=True)
+    (ROOT / "views" / f"{view}.json").unlink(missing_ok=True)
+    return steps
+
+
+class Relay:
+    """The office side: a transient unit with the office unit's confinement, running office-folder-remount-office.mjs
+    as the office account. Each one is a new mount namespace that systemd set up when it started."""
+    def __init__(self, directory, number, node, properties):
+        self.unit = f"{directory.name}-relay{number}"
+        self.log = directory / f"relay{number}.log"
+        with open(self.log, "w") as log:
+            self.process = subprocess.Popen(["systemd-run", "--quiet", "--pipe", "--wait", "--collect", "--unit", self.unit, *properties, "--", node, str(directory / "office.mjs"), str(directory)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, bufsize=0)
+        self.ids = itertools.count(1)
+
+    def call(self, op, seconds=45, **fields):
+        number = next(self.ids)
+        self.process.stdin.write((json.dumps({"id": number, "op": op, **fields}) + "\n").encode())
+        reply = base.answer(self.process, seconds)
+        if reply.get("id") != number:
+            raise RuntimeError(f"relay answered {reply.get('id')} for {number}")
+        reply.pop("id")
+        return reply
+
+    def client(self, name, request, seconds=45):
+        """One request to one namespace's client; a client that stopped answering comes back as callError."""
+        reply = self.call("call", seconds, name=name, request=request)
+        return reply.get("reply", reply)
+
+    def close(self):
+        steps = []
+        if self.process.poll() is None:
+            try:
+                steps.append(self.call("exit", 30))
+            except (OSError, RuntimeError, TimeoutError, ValueError) as error:
+                steps.append({"exitFailure": repr(error)})
+        steps.append(quiet("systemctl", "stop", self.unit))
+        try:
+            self.process.wait(10)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+        return steps
+
+
+def relay_properties(office_text, directory, writable_mounts=False):
+    taken, _ = office_lines(office_text)
+    properties = [part for line in taken for part in ("--property", line)]
+    properties += ["--property", f"ReadWritePaths={directory / 'standin'}", "--property", "RuntimeMaxSec=420", "--property", "KillMode=control-group"]
+    if writable_mounts:
+        # The variant measured beside the plain one: the office unit naming the folder mounts writable.
+        properties += ["--property", f"ReadWritePaths=-{ROOT / 'mounts'}"]
+    return properties
+
+
+def claim(directory, claimed, key, value=True):
+    """What this run created, written before it is created, so cleanup removes only that."""
+    claimed[key] = value
+    (directory / "claimed.json").write_text(json.dumps(claimed))
+
+
+def stand_in(directory, office, shapes):
+    """The office's private surface stand-ins: what the runtime binds from its state directory and the image."""
+    standin = directory / "standin"
+    standin.mkdir(mode=0o755)
+    standin.chmod(0o755)
+    for name in ("workbench", "home", "screen", "x11", "session"):
+        (standin / name).mkdir(mode=0o700)
+        os.chown(standin / name, office.pw_uid, office.pw_gid)
+    for name, text, mode, owner in (("machine-id", os.urandom(16).hex() + "\n", 0o400, office), ("hosts", shapes["standins"]["hosts"], 0o444, None), ("resolv.conf", shapes["standins"]["resolv.conf"], 0o444, None)):
+        (standin / name).write_text(text)
+        (standin / name).chmod(mode)
+        if owner:
+            os.chown(standin / name, owner.pw_uid, owner.pw_gid)
+    return standin
+
+
+def install_program(directory, claimed):
+    """The folder program where the unit can run it: /run may be mounted noexec."""
+    home = Path("/var/lib") / directory.name
+    if home.exists():
+        raise RuntimeError(f"{home} already exists")
+    claim(directory, claimed, "program", str(home))
+    home.mkdir(mode=0o755)
+    home.chmod(0o755)
+    program = home / "qorpera-folder"
+    shutil.copyfile(directory / "qorpera-folder", program)
+    program.chmod(0o555)
+    return program
+
+
+def install_unit(directory, claimed, program, office):
+    text = proof_unit((directory / "mount.service").read_text(), program, directory / "node.sock", office.pw_uid, office.pw_gid)
+    if UNIT_FILE.exists():
+        raise RuntimeError(f"{UNIT_FILE} already exists")
+    claim(directory, claimed, "unit", str(UNIT_FILE))
+    UNIT_FILE.write_text(text)
+    UNIT_FILE.chmod(0o644)
+    base.run("systemctl", "daemon-reload")
+    return text
