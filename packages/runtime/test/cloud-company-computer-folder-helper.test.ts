@@ -85,8 +85,11 @@ class FakeSystem implements CompanyComputerFolderHelperSystem {
 	detaches = true;
 	published: { code: number | null; stdout: Buffer | undefined } = { code: 0, stdout: printed(report()) };
 	#id = 100;
+	readonly root: string;
 
-	constructor(readonly root: string) {}
+	constructor(root: string) {
+		this.root = root;
+	}
 
 	#paths(unit: string) {
 		const name = /^qorpera-office-folder-mount@(.+)\.service$/.exec(unit)?.[1];
@@ -99,8 +102,11 @@ class FakeSystem implements CompanyComputerFolderHelperSystem {
 		);
 	}
 	#unmount(path: string) {
-		const index = this.entries.findLastIndex((line) => line.split(" ")[4] === path);
-		if (index >= 0) this.entries.splice(index, 1);
+		for (let index = this.entries.length - 1; index >= 0; index--)
+			if (this.entries[index]?.split(" ")[4] === path) {
+				this.entries.splice(index, 1);
+				return;
+			}
 	}
 	async #prove(unit: string) {
 		const paths = this.#paths(unit);
@@ -177,13 +183,14 @@ const gone = async (path: string) =>
 		() => false,
 		(error: NodeJS.ErrnoException) => error.code === "ENOENT",
 	);
-const boundary = (name: string, final = false): CompanyComputerFolderRequest => ({
+type Boundary = Extract<CompanyComputerFolderRequest, { op: "boundary" | "unmount" }>;
+const boundary = (name: string, final = false): Boundary => ({
 	op: "boundary",
 	name,
 	final,
 	timeoutMs: 30000,
 });
-const unmount = (name: string, final = false): CompanyComputerFolderRequest => ({
+const unmount = (name: string, final = false): Boundary => ({
 	op: "unmount",
 	name,
 	final,

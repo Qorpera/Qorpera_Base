@@ -1,4 +1,5 @@
 import { createConnection } from "node:net";
+import { isUuid } from "@qorpera/contracts";
 
 /**
  * The office service's door to the folder helper (qorpera-office-folder-helper.socket): the root helper that mounts
@@ -25,8 +26,6 @@ export function companyComputerFolderPaths(name: string, root = COMPANY_COMPUTER
 	};
 }
 
-/** A mount's name: its desktop's screen or its command. */
-const NAME = /^(desktop|command)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** Longest request line: a view is three values of at most 256 bytes. */
 export const COMPANY_COMPUTER_FOLDER_REQUEST_BYTES = 4096;
 /** Longest answer line: a boundary's report lists every changed path. */
@@ -111,14 +110,17 @@ export type CompanyComputerFolderAnswer<
 	Op extends CompanyComputerFolderRequest["op"] = CompanyComputerFolderRequest["op"],
 > = CompanyComputerFolderAnswers[Op] | { readonly answer: "invalid" };
 
+/** A mount's name: `desktop-` and its desktop's screen, or `command-` and its command. */
 export function companyComputerFolderName(kind: "desktop" | "command", id: string): string {
 	const name = `${kind}-${id}`;
-	if (!NAME.test(name)) throw new Error("INVALID_COMPANY_COMPUTER_FOLDER_NAME");
+	if (!isCompanyComputerFolderName(name)) throw new Error("INVALID_COMPANY_COMPUTER_FOLDER_NAME");
 	return name;
 }
 
 export function isCompanyComputerFolderName(value: unknown): value is string {
-	return typeof value === "string" && NAME.test(value);
+	if (typeof value !== "string") return false;
+	const id = value.startsWith("desktop-") ? value.slice(8) : value.startsWith("command-") ? value.slice(8) : undefined;
+	return isUuid(id);
 }
 
 /** As the folder program checks a view file: each value printable ASCII without spaces, 1 to 256 bytes. */
@@ -225,7 +227,7 @@ export function askCompanyComputerFolderHelper<Request extends CompanyComputerFo
 			} catch {
 				return finish(undefined);
 			}
-			finish(parseCompanyComputerFolderAnswer(request.op, text));
+			finish(parseCompanyComputerFolderAnswer<Request["op"]>(request.op as Request["op"], text));
 		});
 		socket.once("connect", () => socket.write(line));
 	});
