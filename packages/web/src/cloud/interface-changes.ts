@@ -7,15 +7,16 @@ import type {
 	CloudMemberFolderUnitResult,
 } from "@qorpera/cloud-client/cloud-member-folder";
 import { companyPathKey } from "@qorpera/cloud-client/company-state-files";
+import { array, boundedInteger, CloudShapeError, oneOf, record, uuid } from "./parse.ts";
 
 /*
  * An agent's change to the company's pages and tables, and its Undo (Interfaces I10; deploy/first-node/
  * RUNTIME-INTERFACES.md §7 and §9 decision 2). A change that needs no review is saved at once, whatever tool or machine
  * carried it, and the runtime notes it in the agent's conversation: a session_info event naming the commit and each
  * path version it made under interfaces/ and tables/ (a table's rows are its data, never in a note), with the version
- * before it. Undo is the member's own change set, through the member commit route (C4), based on those versions: a path the
- * commit made is deleted, a file it rewrote gets its earlier text back. When anything the commit made changed since,
- * nothing is undone; the member sees why.
+ * before it. Undo is the member's own change set, through the member commit route (C4), based on those versions: a
+ * path the commit made is deleted, a file it rewrote gets its earlier text back. When anything the commit made changed
+ * since, nothing is undone; the member sees why.
  */
 
 export const INTERFACE_CHANGE_SCHEMA = "qorpera.interface-change/v1";
@@ -52,9 +53,8 @@ export type InterfaceUndo =
 /** What Undo needs of the member's folder client. */
 export type InterfaceUndoFolder = Pick<CloudMemberFolderClient, "read" | "pathHistory" | "readFile" | "commit">;
 
-/** Any UUID: the core's versions and ids are not all of one version. */
-const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const OPS: readonly CloudMemberFolderOp[] = ["write", "mkdir", "delete", "move_out", "move_in", "copy"];
+const KINDS = ["file", "folder"] as const;
 /** The member commit route's limits: units a change set, bytes a file's text and a change set's. */
 const MAX_UNITS = 16;
 const MAX_FILE_BYTES = 64 * 1024;
@@ -62,58 +62,44 @@ const MAX_TEXT_BYTES = 512 * 1024;
 /** A path under interfaces/ or tables/, by its key: the folder's paths are one path in any case. */
 const UNDER = /^(?:interfaces|tables)\/[^/]+(?:\/[^/]+)*$/;
 
-const record = (value: unknown): Record<string, unknown> | undefined =>
-	value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
-const id = (value: unknown): value is string => typeof value === "string" && ID.test(value);
-const count = (value: unknown, least: number): value is number =>
-	Number.isSafeInteger(value) && (value as number) >= least;
-
 /** A note's body as an interface change, or null when it is not a well-formed one: every path is under interfaces/ or
  * tables/, since a note names nothing else. */
 export function parseInterfaceChange(value: unknown): InterfaceChange | null {
-	const body = record(value);
-	if (
-		body?.schema !== INTERFACE_CHANGE_SCHEMA ||
-		!id(body.commitId) ||
-		!count(body.seq, 1) ||
-		!id(body.runId) ||
-		!id(body.staffAgentId) ||
-		!Array.isArray(body.changes) ||
-		body.changes.length < 1
-	)
-		return null;
-	const changes: InterfaceChangePath[] = [];
-	for (const item of body.changes) {
-		const change = record(item);
-		if (
-			!change ||
-			!count(change.unit, 1) ||
-			!OPS.includes(change.op as CloudMemberFolderOp) ||
-			(change.kind !== "file" && change.kind !== "folder") ||
-			typeof change.path !== "string" ||
-			change.path.length > 1024 ||
-			!UNDER.test(companyPathKey(change.path)) ||
-			change.path.split("/").some((part) => part === "." || part === "..") ||
-			!id(change.version) ||
-			(change.priorVersion !== null && !id(change.priorVersion))
-		)
-			return null;
-		changes.push({
-			unit: change.unit,
-			op: change.op as CloudMemberFolderOp,
-			kind: change.kind,
-			path: change.path,
-			version: change.version,
-			priorVersion: change.priorVersion as string | null,
+	try {
+		const body = record(value, "interface change");
+		if (body.schema !== INTERFACE_CHANGE_SCHEMA) return null;
+		const items = array(body.changes, "interface change paths");
+		if (!items.length) return null;
+		const changes = items.map((item): InterfaceChangePath => {
+			const change = record(item, "interface change path");
+			const { path } = change;
+			if (
+				typeof path !== "string" ||
+				path.length > 1024 ||
+				!UNDER.test(companyPathKey(path)) ||
+				path.split("/").some((part) => part === "." || part === "..")
+			)
+				throw new CloudShapeError("interface change path");
+			return {
+				unit: boundedInteger(change.unit, "interface change unit", 1, Number.MAX_SAFE_INTEGER),
+				op: oneOf(change.op, OPS, "interface change op"),
+				kind: oneOf(change.kind, KINDS, "interface change kind"),
+				path,
+				version: uuid(change.version, "interface change version"),
+				priorVersion: change.priorVersion === null ? null : uuid(change.priorVersion, "interface change version"),
+			};
 		});
+		return {
+			commitId: uuid(body.commitId, "interface change commit"),
+			seq: boundedInteger(body.seq, "interface change seq", 1, Number.MAX_SAFE_INTEGER),
+			runId: uuid(body.runId, "interface change run"),
+			staffAgentId: uuid(body.staffAgentId, "interface change agent"),
+			changes,
+		};
+	} catch (error) {
+		if (error instanceof CloudShapeError) return null;
+		throw error;
 	}
-	return {
-		commitId: body.commitId,
-		seq: body.seq,
-		runId: body.runId,
-		staffAgentId: body.staffAgentId,
-		changes,
-	};
 }
 
 /** An interface or a table a change touched, by its folder's name as the note first spells it. `made`: the change made
