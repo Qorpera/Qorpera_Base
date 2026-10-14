@@ -2,7 +2,7 @@
 -- Run logs W1b-1 under concurrency (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §4.5, §8; 20260930231000): two first
 -- batches of one run's log; a batch against a stale run generation and against an open erase; a batch against its
 -- agent's rename and against its group's delete. In each race one connection holds its transaction open, the batch on
--- another waits for it, and then saves or is refused. On 648's committed company, with leased runs of Ada's in her
+-- another waits for it, and then saves, conflicts or is refused. On 648's committed company, with leased runs of Ada's in her
 -- thread and in a group chat (648's own run has no conversation a log lives in); the fixture goes at the end.
 
 create function pg_temp.same(p_got jsonb, p_want jsonb, p_what text) returns void language plpgsql as $$
@@ -283,6 +283,53 @@ begin
 	update public.qorpera_memory_run_generations set erase_open = null where environment_id = env and run_id = one;
 	perform pg_temp.same(pg_temp.unit(pg_temp.logc('one', 'w1b-race:d:2', jsonb_build_array(pg_temp.step(l1, 1)), l1)),
 		'["saved", null]', 'D: after the erase');
+end $$;
+
+-- B. A batch against its agent's rename: the move of agents/ada holds its transaction; the batch at the log's old path
+-- waits at the log's row, which the move rewrote, then the core refuses it (its folder is gone). The logs follow the
+-- rename, and a batch at the new path saves.
+do $$
+declare l2 constant text := 'agents/ada/memory/thread/runs/' || pg_temp.run_id('two');
+begin
+	perform pg_temp.sql_log('b1', 'two', 'w1b-race:b:1', jsonb_build_array(pg_temp.step(l2, 0)), l2);
+end $$;
+do $$
+declare
+	env constant uuid := '64800000-0000-4000-8000-000000000020'; one constant uuid := pg_temp.run_id('one');
+	two constant uuid := pg_temp.run_id('two'); l2 constant text := 'agents/ada-2/memory/thread/runs/' || pg_temp.run_id('two');
+	x jsonb;
+begin
+	x := pg_temp.race(format('select public.qorpera_folder_commit(%L, %L, %L, %L)::text', env, pg_temp.owner(), 'w1b-race:b:2',
+		jsonb_build_array(jsonb_build_object('op','move','from','agents/ada','to','agents/ada-2',
+			'expectedVersion',pg_temp.version('agents/ada'),'asOfSeq',pg_temp.seq()))), 'b1', 'commit', 'B');
+	perform pg_temp.same(jsonb_build_array(pg_temp.unit(x -> 'hold'), x -> 'queued', pg_temp.unit(x -> 'batch')),
+		'[["saved", null], "qorpera_memory_run_logs", ["refused", "parent_missing"]]', 'B: a batch at the old path');
+	perform pg_temp.same((select jsonb_build_array(count(*), bool_and(l.run_path = 'agents/ada-2/memory/thread/runs/' || l.run_id))
+		from public.qorpera_memory_run_logs l where l.environment_id = env and l.run_id in (one, two)), '[2, true]',
+		'B: the logs follow the rename');
+	perform pg_temp.follow_ups(env);
+	perform pg_temp.same(pg_temp.unit(pg_temp.logc('two', 'w1b-race:b:3', jsonb_build_array(pg_temp.step(l2, 0)), l2)),
+		'["saved", null]', 'B: a batch at the new path');
+end $$;
+
+-- C. A batch against its group's delete: the delete of the launch group's folder holds its transaction; the batch in the
+-- group chat's log waits at the log's row, which the delete retired, then the core refuses it. The log's steps are gone.
+do $$
+declare glog constant text := 'agents/groups/launch/memory/runs/' || pg_temp.run_id('g');
+begin
+	perform pg_temp.sql_log('c1', 'g', 'w1b-race:c:1', jsonb_build_array(pg_temp.step(glog, 1)), glog);
+end $$;
+do $$
+declare env constant uuid := '64800000-0000-4000-8000-000000000020'; g constant uuid := pg_temp.run_id('g'); x jsonb;
+begin
+	x := pg_temp.race(format('select public.qorpera_folder_commit(%L, %L, %L, %L)::text', env, pg_temp.owner(), 'w1b-race:c:2',
+		jsonb_build_array(jsonb_build_object('op','delete','path','agents/groups/launch',
+			'expectedVersion',pg_temp.version('agents/groups/launch'),'asOfSeq',pg_temp.seq()))), 'c1', 'commit', 'C');
+	perform pg_temp.same(jsonb_build_array(pg_temp.unit(x -> 'hold'), x -> 'queued', pg_temp.unit(x -> 'batch')),
+		'[["saved", null], "qorpera_memory_run_logs", ["refused", "parent_missing"]]', 'C: a batch in a deleted group');
+	perform pg_temp.same((select jsonb_build_array(l.retired_at is not null, (select count(*) from public.qorpera_memory_run_steps s
+		where s.environment_id = env and s.run_id = g)) from public.qorpera_memory_run_logs l
+		where l.environment_id = env and l.run_id = g), '[true, 0]', 'C: the log retires');
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
