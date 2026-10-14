@@ -210,3 +210,102 @@ begin
 	perform pg_temp.hold(null);
 	perform public.qorpera_folder_view_close((s ->> 'viewId')::uuid, s ->> 'pass');
 end $$;
+
+
+-- It acts through the starter's run while the run's job is leased, then as the agent for the member; company-wide as a
+-- desktop either way, so it reads and saves only what both the agent and the member may.
+do $$
+declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); m uuid := pg_temp.machine(v, 'acts');
+	s jsonb; r jsonb; c public.qorpera_folder_commits%rowtype; a jsonb := pg_temp.stage('eta');
+begin
+	s := pg_temp.open_machine(pg_temp.place(m));
+	r := public.qorpera_folder_view_resolve('63200000-0000-4000-8000-000000000020', '63200000-0000-4000-8000-000000000010', pg_temp.vactor(s));
+	if r ->> 'runId' is distinct from v ->> 'runId' or r -> 'view' ->> 'kind' is distinct from 'test_machine'
+		or r -> 'view' -> 'companyWide' is distinct from 'true'::jsonb or r -> 'view' -> 'runActor' is distinct from v then
+		raise exception 'Live test machine view: %', r; end if;
+	r := pg_temp.vcommit(s, 'tm-live', jsonb_build_array(jsonb_build_object('op','write','path','shared/tm.txt','file',a),
+		jsonb_build_object('op','write','path','secret/tm.txt','file',a), jsonb_build_object('op','write','path','rules/tm.txt','file',a)));
+	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'denied', 'denied'); perform pg_temp.expect(r, 3, 'denied', 'denied');
+	c := pg_temp.last_commit(r);
+	if c.run_id is distinct from (v ->> 'runId')::uuid or c.view_kind is distinct from 'test_machine'
+		or c.view_id is distinct from (s ->> 'viewId')::uuid then raise exception 'Live test machine commit: %', to_jsonb(c); end if;
+	if (pg_temp.read('secret/s.txt', pg_temp.vactor(s)) ->> 'found')::boolean
+		or not (pg_temp.read('rules/tone.txt', pg_temp.vactor(s)) ->> 'found')::boolean then
+		raise exception 'The company-wide view for a test machine''s reads'; end if;
+	-- The run's turn ends; the machine runs on.
+	perform pg_temp.lapse(v);
+	r := public.qorpera_folder_view_resolve('63200000-0000-4000-8000-000000000020', '63200000-0000-4000-8000-000000000010', pg_temp.vactor(s));
+	if r ->> 'kind' is distinct from 'staff_agent' or r ->> 'staffAgentId' is distinct from '63200000-0000-4000-8000-0000000000a1'
+		or r ->> 'requesterUserId' is distinct from '63200000-0000-4000-8000-000000000002' or r ->> 'sessionKind' is distinct from 'in_house'
+		or r -> 'runId' is distinct from 'null'::jsonb or r -> 'view' -> 'companyWide' is distinct from 'true'::jsonb then
+		raise exception 'Detached test machine view: %', r; end if;
+	r := pg_temp.vcommit(s, 'tm-detached', jsonb_build_array(jsonb_build_object('op','write','path','shared/tm2.txt','file',a),
+		jsonb_build_object('op','write','path','secret/tm2.txt','file',a)));
+	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'denied', 'denied');
+	c := pg_temp.last_commit(r);
+	if c.run_id is not null or c.actor_kind is distinct from 'staff_agent' or c.requester_id is distinct from '63200000-0000-4000-8000-000000000002'
+		or c.session_kind is distinct from 'in_house' or c.view_id is distinct from (s ->> 'viewId')::uuid then
+		raise exception 'Detached test machine commit: %', to_jsonb(c); end if;
+	perform public.qorpera_folder_view_close((s ->> 'viewId')::uuid, s ->> 'pass');
+end $$;
+
+
+-- A machine has one open view: an open for its boot, its next boot or its next disk supersedes the one before.
+do $$
+declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); m uuid := pg_temp.machine(v, 'supersedes');
+	a jsonb := pg_temp.place(m); s jsonb; s2 jsonb; s3 jsonb; s4 jsonb;
+begin
+	s := pg_temp.open_machine(a);
+	s2 := pg_temp.open_machine(a);
+	a := pg_temp.reboot(a);
+	s3 := pg_temp.open_machine(a);
+	s4 := pg_temp.open_machine(pg_temp.place(m));
+	if (pg_temp.view_row(s)).close_reason is distinct from 'superseded' or (pg_temp.view_row(s2)).close_reason is distinct from 'superseded'
+		or (pg_temp.view_row(s3)).close_reason is distinct from 'superseded' or (pg_temp.view_row(s4)).state is distinct from 'open' then
+		raise exception 'Each open supersedes the machine''s open view'; end if;
+	perform pg_temp.refused(format('select pg_temp.vcommit(%L, %L, %L)', s3, 'tm-superseded', '[{"op":"mkdir","path":"refused"}]'),
+		'42501', 'Folder view has ended');
+	perform pg_temp.violates(format('update public.qorpera_folder_views set state = %L, closed_at = null, close_reason = null where id = %L',
+		'open', s3 ->> 'viewId'), 'qorpera_folder_views_open_test_machine');
+	perform public.qorpera_folder_view_close((s4 ->> 'viewId')::uuid, s4 ->> 'pass');
+end $$;
+
+
+-- It ends with its boot: a new boot of the disk, the disk's removal, or the starter's agent or member no longer
+-- reading the root (each undone after). A save is refused; a renew reports the end and closes it. A retired disk keeps
+-- it for its final publish, which closes it.
+do $$
+declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); m uuid := pg_temp.machine(v, 'ends');
+	a jsonb := pg_temp.place(m); s jsonb; r jsonb; f text;
+begin
+	s := pg_temp.open_machine(a);
+	foreach f in array array[
+		format('update public.qorpera_company_machine_placements set boot_id = %L where id = %L', extensions.gen_random_uuid(), a ->> 'placementId'),
+		format('update public.qorpera_company_machine_placements set removing_at = clock_timestamp(), removed_at = clock_timestamp()
+			where id = %L', a ->> 'placementId'),
+		'update public.qorpera_company_path_grants set revoked_at = clock_timestamp() where principal_kind = ''staff_agent''
+			and principal_id = ''63200000-0000-4000-8000-0000000000a1''',
+		'delete from public.qorpera_profile_members where profile_id = ''63200000-0000-4000-8000-000000000010''
+			and user_id = ''63200000-0000-4000-8000-000000000002'''] loop
+		begin
+			perform pg_temp.fx(f);
+			perform pg_temp.refused(format('select pg_temp.vcommit(%L, %L, %L)', s, 'tm-ended', '[{"op":"mkdir","path":"refused"}]'),
+				'42501', 'Folder view has ended');
+			r := public.qorpera_folder_view_renew((s ->> 'viewId')::uuid, s ->> 'pass');
+			if r ->> 'state' is distinct from 'closed' or r ->> 'reason' is distinct from 'ended' then
+				raise exception 'Renew after %: %', f, r; end if;
+			raise exception 'Undo' using errcode = 'QTF80';
+		exception when sqlstate 'QTF80' then null;
+		end;
+	end loop;
+	perform pg_temp.fx(format('update public.qorpera_company_machine_placements set retired_at = clock_timestamp() where id = %L',
+		a ->> 'placementId'));
+	r := public.qorpera_folder_view_renew((s ->> 'viewId')::uuid, s ->> 'pass');
+	if r ->> 'state' is distinct from 'open' then raise exception 'A retired disk''s view renews: %', r; end if;
+	r := pg_temp.final(s, 'tm-final', '[{"op":"mkdir","path":"by-tm-final"}]');
+	perform pg_temp.expect(r, 1, 'saved');
+	if (pg_temp.view_row(s)).state is distinct from 'closed' or (pg_temp.view_row(s)).close_reason is distinct from 'closed' then
+		raise exception 'The final closes the test machine''s view: %', r; end if;
+	perform pg_temp.refused(format('select pg_temp.final(%L, %L, %L)', s, 'tm-final-2', '[{"op":"mkdir","path":"refused"}]'),
+		'42501', 'Folder view has ended');
+end $$;
