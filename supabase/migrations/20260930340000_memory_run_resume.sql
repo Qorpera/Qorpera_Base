@@ -48,7 +48,8 @@ begin
 	select * into v_started from public.qorpera_execution_run_events
 	where run_id = p_run and event_type = 'runner_started'
 		and payload ->> 'schema' = 'qorpera.native-company-execution-start/v1' order by id desc limit 1;
-	if not found or (v_started.id > v_event.id and v_started.payload ->> 'leaseId' is distinct from p_lease::text) then
+	-- The start stored its binding's leaseId as sent; compare the uuid, not its spelling.
+	if not found or (v_started.id > v_event.id and (v_started.payload ->> 'leaseId')::uuid is distinct from p_lease) then
 		raise exception 'Run resume is unavailable' using errcode = '55000'; end if;
 	select coalesce(jsonb_agg(jsonb_build_object('receiptId', r.id, 'logicalOperationKey', r.logical_operation_key)
 		order by r.created_at, r.id), '[]'::jsonb) into v_receipts
@@ -73,7 +74,8 @@ grant execute on function public.qorpera_memory_run_resume(jsonb) to service_rol
 
 -- Request: {stepsRead, unknownCalls:[{call, step, receiptId}]}. A log entry has a call and step, and null receiptId;
 -- a receipt entry has only receiptId (the other two fields are null). SQL has no authoritative association between
--- the two identifiers. Every pending unerased log step and every unknown receipt must be shown, once each.
+-- the two identifiers. Every log step below stepsRead that is pending or erased (an erased step's result is gone, so
+-- its outcome is unknown, §12) and every unknown receipt must be shown, once each.
 -- Reply: {schema, why, stepsRead, unknownCalls}; each unknown additionally has logicalOperationKey (null for a log).
 -- The binding check precedes validation; malformed input is 22023, a different replay 23505.
 create function public.qorpera_memory_run_resume_record(p_binding jsonb, p_request jsonb)
@@ -138,7 +140,7 @@ begin
 			if v_item -> 'receiptId' = 'null'::jsonb then
 				if not exists (select 1 from public.qorpera_memory_run_steps s where s.environment_id = v_run.environment_id
 					and s.run_id = v_run.id and s.j = (v_item ->> 'step')::integer and s.call_id = v_item ->> 'call'
-					and not s.erased and not s.finished) then
+					and (s.erased or not s.finished)) then
 					raise exception 'Run resume unknown calls disagree with the log' using errcode = '22023'; end if;
 			else
 				select r.logical_operation_key into v_key from public.qorpera_run_operation_receipts r
@@ -148,7 +150,7 @@ begin
 			v_unknown := v_unknown || jsonb_build_array(v_item || jsonb_build_object('logicalOperationKey', v_key));
 		end loop;
 		if exists (select 1 from public.qorpera_memory_run_steps s where s.environment_id = v_run.environment_id
-			and s.run_id = v_run.id and s.j < v_steps and not s.erased and not s.finished and not (s.j = any(v_log_steps)))
+			and s.run_id = v_run.id and s.j < v_steps and (s.erased or not s.finished) and not (s.j = any(v_log_steps)))
 			or exists (select 1 from public.qorpera_run_operation_receipts r where r.run_id = v_run.id
 				and r.status = 'outcome_unknown' and not (r.id = any(v_receipts))) then
 			raise exception 'Run resume omits an unknown outcome' using errcode = '22023'; end if;
