@@ -1799,7 +1799,8 @@ it("shows an own-thread run its summary tree, released and recorded before the m
 	expect(admitted).toBeLessThan(views[1]!);
 	expect(at("qorpera_memory_view_record")).toBeLessThan(start);
 	expect(methods.lastIndexOf("qorpera_memory_view")).toBeGreaterThan(start);
-	const request = (name: string) => (calls[at(name)]![1] as { p_request: Record<string, unknown> }).p_request;
+	const request = (name: CloudCompanyPathRpc) =>
+		(calls[at(name)]![1] as { p_request: Record<string, unknown> }).p_request;
 	// The lines it shows are released under exactly the context the run starts with; its first request is recorded,
 	// with settle's wait: nothing was missing.
 	expect(request("qorpera_memory_release").outputSha256).toBe(
