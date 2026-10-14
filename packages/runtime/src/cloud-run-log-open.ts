@@ -3,15 +3,11 @@
 // - no log yet: an original attempt starts one; a resumed attempt whose earlier attempts made none (their company was
 //   not on the memory tree's list yet, or none of their steps landed) goes on without one, as they did;
 // - a log: only a resumed attempt continues it (W5b-2, `openCloudRunResume`); an original attempt refuses it;
-// - off (20260930352000, until W1d) or gone (the run has no conversation tree, or its folder was deleted): no log.
+// - off (its company is not on the list, 20260930352000 until W1d, or the run has no conversation tree): no log;
+// - gone (a log made once and no longer there): CloudRunLogGone, so the run ends as it does when its log goes mid-run,
+//   rather than go on unlogged past its earlier steps.
 import type { CloudNativeContextComposition, CloudNativeContextRequest } from "./cloud-native-context-composition.ts";
-import {
-	CloudRunLog,
-	type CloudRunLogFolder,
-	CloudRunLogGone,
-	type CloudRunLogPlace,
-	CloudRunLogUnavailable,
-} from "./cloud-run-log.ts";
+import { CloudRunLog, type CloudRunLogFolder, type CloudRunLogPlace, CloudRunLogUnavailable } from "./cloud-run-log.ts";
 import { type CloudRunResumePort, openCloudRunResume } from "./cloud-run-resume.ts";
 import { CloudRunStepLines, type CloudRunStepLinesOptions } from "./memory-tree/step-lines.ts";
 
@@ -43,8 +39,7 @@ export async function openCloudRunLog(options: {
 	try {
 		place = await folder.locate(runId, signal);
 	} catch (error) {
-		if (error instanceof CloudRunLogGone || (error instanceof CloudRunLogUnavailable && error.reason === "off"))
-			return null;
+		if (error instanceof CloudRunLogUnavailable && error.reason === "off") return null;
 		throw error;
 	}
 	if (place.exists) {

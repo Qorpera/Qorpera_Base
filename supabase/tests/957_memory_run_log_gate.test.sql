@@ -1,9 +1,9 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
 -- Context tree W1c-3 (20260930352000): run logs turn on only for the companies in qorpera_memory_tree_companies, until
 -- W1d (erasure of work) is live. Test 924's run of Alice's: while its company is not on the list, the log's place
--- answers off; once it is, the place answers where the new log goes. A log already made goes on when the company leaves
--- the list, and a log made once and no longer there answers gone, listed or not. A run the place does not know answers
--- gone, never off. The place is still the platform's alone.
+-- answers off; once it is, the place answers where the new log goes. A run with no conversation tree, or one the place
+-- does not know, keeps no log either: off, listed or not. A log already made goes on when the company leaves the list,
+-- and only a log made once and no longer there answers gone, listed or not. The place is still the platform's alone.
 
 create function pg_temp.lg_run() returns public.qorpera_execution_runs language sql as $$
 	select * from public.qorpera_execution_runs where id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid
@@ -41,7 +41,7 @@ end
 $$;
 
 -- 2. Off while the company is not on the list; where the new log goes once it is; off again when it leaves before a log
---    is made. A run the place does not know answers gone.
+--    is made. A run the place does not know keeps no log: off, listed or not.
 do $$
 declare v_run public.qorpera_execution_runs := pg_temp.lg_run(); v_place jsonb;
 begin
@@ -49,22 +49,43 @@ begin
 		where profile_id = '92400000-0000-4000-8000-000000000010'), 'the base company is not on the list');
 	perform pg_temp.base_assert(pg_temp.lg_place() = '{"off":true}'::jsonb, 'an unlisted company''s run is off: '
 		|| pg_temp.lg_place()::text);
-	perform pg_temp.base_assert(pg_temp.lg_place(extensions.gen_random_uuid()) = '{"gone":true}'::jsonb,
-		'a run the place does not know is gone, not off');
+	perform pg_temp.base_assert(pg_temp.lg_place(extensions.gen_random_uuid()) = '{"off":true}'::jsonb,
+		'a run the place does not know is off, not gone');
 	perform pg_temp.lg_list(true);
 	v_place := pg_temp.lg_place();
 	perform pg_temp.base_assert(not v_place ? 'off' and v_place ->> 'exists' = 'false' and v_place ->> 'gone' = 'false'
 		and v_place ->> 'path' = 'agents/alice/memory/thread/runs/' || v_run.id
 		and v_place #>> '{origin,conversation}' = v_run.session_id::text,
 		'a listed company''s run is placed in its conversation''s tree: ' || v_place::text);
-	perform pg_temp.base_assert(pg_temp.lg_place(extensions.gen_random_uuid()) = '{"gone":true}'::jsonb,
-		'a run the place does not know is still gone');
+	perform pg_temp.base_assert(pg_temp.lg_place(extensions.gen_random_uuid()) = '{"off":true}'::jsonb,
+		'a run the place does not know is still off');
 	perform pg_temp.lg_list(false);
 	perform pg_temp.base_assert(pg_temp.lg_place() = '{"off":true}'::jsonb, 'off again when the company leaves the list');
 end
 $$;
 
--- 3. A log already made goes on when its company is not on the list; a log made once and no longer there is gone, listed
+-- 3. A listed company's run whose conversation has no tree keeps no log: off, not gone. The room goes for this block
+--    alone (its error undoes it), with triggers off so nothing else moves.
+do $$
+declare v_run public.qorpera_execution_runs := pg_temp.lg_run();
+begin
+	perform pg_temp.lg_list(true);
+	begin
+		set local session_replication_role = replica;
+		update public.qorpera_company_rooms set session_id = extensions.gen_random_uuid() where session_id = v_run.session_id;
+		set local session_replication_role = origin;
+		perform pg_temp.base_assert(pg_temp.lg_place() = '{"off":true}'::jsonb,
+			'a listed run with no conversation tree is off: ' || pg_temp.lg_place()::text);
+		raise exception 'undo the room' using errcode = 'QG957';
+	exception when sqlstate 'QG957' then null;
+	end;
+	perform pg_temp.base_assert(pg_temp.lg_place() ->> 'path' = 'agents/alice/memory/thread/runs/' || v_run.id,
+		'the room is back: ' || pg_temp.lg_place()::text);
+	perform pg_temp.lg_list(false);
+end
+$$;
+
+-- 4. A log already made goes on when its company is not on the list; a log made once and no longer there is gone, listed
 --    or not.
 do $$
 declare v_run public.qorpera_execution_runs := pg_temp.lg_run(); v_place jsonb;

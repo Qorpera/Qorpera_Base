@@ -4,8 +4,12 @@
 --   would have placed a new log. The runtime then makes no log and the run takes today's path, so the runtime needs no
 --   flag of its own.
 -- * A log already made goes on (place answers it as before, listed or not), and a log made once and no longer there
---   still answers gone. A run place does not know still answers gone, never off.
--- * When W1d (erasure of work) is live, every folder-v2 company gets run logs: W1d drops this gate, in this one place.
+--   still answers gone.
+-- * Gone is only that: a run with no conversation tree (or one the place does not know) keeps no log, so it answers
+--   off too. A resumed attempt that finds its log gone then ends, as a run does when its log goes mid-run, and never
+--   goes on unlogged past its earlier steps.
+-- * When W1d (erasure of work) is live, every folder-v2 company gets run logs: W1d drops the list gate (1), in this one
+--   place. The home-less answer (2) stays.
 -- Every inserted text names this migration (20260930352000), for the deploy guard.
 
 do $$ begin
@@ -42,7 +46,16 @@ select pg_temp.w1c3_replace('public.qorpera_memory_run_log_place(uuid,uuid)'::re
 	v_home := public.qorpera_memory_run_log_home(p_environment_id, p_run_id);
 $new$);
 
--- 2. The deploy guard (create or replace keeps the function's grants) ----------------------------------------------------
+-- 2. No conversation tree, no log ----------------------------------------------------------------------------------------
+
+select pg_temp.w1c3_replace('public.qorpera_memory_run_log_place(uuid,uuid)'::regprocedure,
+	E'\tif v_home is null then return jsonb_build_object(''gone'', true); end if;\n',
+	$new$	-- 20260930352000 (W1c-3): a run with no conversation tree keeps no log (off); gone is only a log made once and
+	-- no longer there.
+	if v_home is null then return jsonb_build_object('off', true); end if;
+$new$);
+
+-- 3. The deploy guard (create or replace keeps the function's grants) ----------------------------------------------------
 
 do $guard$
 declare v_source text := (select prosrc from pg_proc
@@ -55,4 +68,7 @@ begin
 		raise exception 'W1c-3 lost the place'; end if;
 	if strpos(v_source, 'return jsonb_build_object(''off'', true)') not between 1 and strpos(v_source, 'v_home := ') then
 		raise exception 'W1c-3 gate is not before the home'; end if;
+	if strpos(v_source, 'if v_home is null then return jsonb_build_object(''off'', true); end if;') = 0
+		or strpos(v_source, 'if v_home is null then return jsonb_build_object(''gone'', true)') > 0 then
+		raise exception 'W1c-3 left a home-less run gone'; end if;
 end $guard$;

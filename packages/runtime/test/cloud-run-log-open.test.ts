@@ -156,13 +156,19 @@ describe("opening a run's work log", () => {
 		});
 	});
 
-	it.each<[string, Error]>([
-		["off the memory tree's list", new CloudRunLogUnavailable("off")],
-		["without a tree, or whose log was deleted", new CloudRunLogGone()],
-	])("keeps no log for a run %s, and asks nothing more", async (_, error) => {
+	it("keeps no log for a run off the memory tree's list or without a conversation tree, and asks nothing more", async () => {
 		const f = fixture();
-		vi.mocked(f.folder.locate).mockRejectedValue(error);
+		vi.mocked(f.folder.locate).mockRejectedValue(new CloudRunLogUnavailable("off"));
 		expect(await f.open()).toBeNull();
+		expect(f.resume.context).not.toHaveBeenCalled();
+		expect(f.folder.commit).not.toHaveBeenCalled();
+	});
+
+	it("ends a run whose log was made once and is no longer there, rather than go on unlogged past its steps", async () => {
+		const f = fixture();
+		f.context = { why: "restart", unknownReceipts: [] };
+		vi.mocked(f.folder.locate).mockRejectedValue(new CloudRunLogGone());
+		await expect(f.open()).rejects.toBeInstanceOf(CloudRunLogGone);
 		expect(f.resume.context).not.toHaveBeenCalled();
 		expect(f.folder.commit).not.toHaveBeenCalled();
 	});

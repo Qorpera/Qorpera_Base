@@ -85,6 +85,7 @@ import {
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
 import { cloudReviewRuleTools } from "./cloud-review-rule-tools.ts";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "./cloud-routine-tools.ts";
+import { CloudRunLogGone } from "./cloud-run-log.ts";
 import { CloudRunLogCompanyFolder } from "./cloud-run-log-folder.ts";
 import { openCloudRunLog } from "./cloud-run-log-open.ts";
 import { CloudRunLogRpcProtection } from "./cloud-run-log-protection.ts";
@@ -731,7 +732,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						)
 							throw new Error("Cloud context identity changed before execution");
 						// Before any provider request: a resumed attempt reads its earlier work first (W5b-2). The log
-						// steps a call as auto-review classifies it.
+						// steps a call as auto-review classifies it. A log made once and no longer there ends the run, as
+						// it does mid-run.
 						const opened = await openCloudRunLog({
 							resume: new CloudRunResumeRpc({ run, control: this.#paths }),
 							folder: new CloudRunLogCompanyFolder({
@@ -753,6 +755,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								effectful: (tool, parsed) => cloudActionEffect(tool, parsed, connectorEffects) !== "read",
 							},
 							lines: { call: compactor.call, lane },
+						}).catch((error: unknown) => {
+							throw error instanceof CloudRunLogGone
+								? tagNativeRuntimeFailure(error, "native-tools", "authority_unavailable")
+								: error;
 						});
 						runWork = opened?.composeContext;
 						const computer = await this.#computerSession?.(run, operations);

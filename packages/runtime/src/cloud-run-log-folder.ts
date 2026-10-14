@@ -48,8 +48,8 @@ function originOf(value: unknown): CloudRunLogOrigin {
 
 /** W1c-3's persistence port. Location/origin comes from the platform; bytes and structured parses use the ordinary
  * run-actor folder client. No direct object-store access, service-actor read, or parser bypass. `locate` throws
- * CloudRunLogUnavailable("off") for a run whose company keeps no run logs yet (20260930352000): `openCloudRunLog`
- * then makes none. */
+ * CloudRunLogUnavailable("off") for a run whose company keeps no run logs yet, or that has no conversation tree
+ * (20260930352000): `openCloudRunLog` then makes none. CloudRunLogGone is only a log made once and no longer there. */
 export class CloudRunLogCompanyFolder implements CloudRunLogFolder {
 	readonly #environmentId: string;
 	readonly #runId: string;
@@ -99,7 +99,8 @@ export class CloudRunLogCompanyFolder implements CloudRunLogFolder {
 			parseClosedRecord(value, "Run log place", ["gone"]);
 			throw new CloudRunLogGone();
 		}
-		// The run's company keeps no run logs yet (20260930352000, until W1d): the run makes none.
+		// The run's company keeps no run logs yet (20260930352000, until W1d), or the run has no conversation tree: the
+		// run makes none.
 		if ((value as { off?: unknown } | null)?.off === true) {
 			parseClosedRecord(value, "Run log place", ["off"]);
 			throw new CloudRunLogUnavailable("off");

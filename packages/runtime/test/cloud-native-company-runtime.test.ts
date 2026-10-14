@@ -33,6 +33,7 @@ import {
 import { HttpNativeProviderHostService } from "@qorpera/runtime/cloud-native-provider-service";
 import { CLOUD_TOOL_RESULT_INSTRUCTIONS } from "@qorpera/runtime/cloud-native-tool-boundary";
 import type { CloudNativeToolOperationControlPlane } from "@qorpera/runtime/cloud-native-tool-operations";
+import { CloudRunLogGone } from "@qorpera/runtime/cloud-run-log";
 import type { CloudRunnerNativeAuthority } from "@qorpera/runtime/cloud-runner-broker";
 import * as runtimeBundle from "@qorpera/runtime/cloud-runtime-bundle";
 import { CLOUD_RUNTIME_NATIVE_BINARY_SHA256 } from "@qorpera/runtime/cloud-runtime-bundle.generated";
@@ -1115,6 +1116,26 @@ it("keeps a listed company's run's work log, each acting step's line saved befor
 			.sort((a, b) => a - b),
 	).toEqual([0, 1, 2, 3]);
 	for (const line of lines) if (!line.free) expect(line.text).toMatch(/^LINE \d+$/);
+});
+
+it("ends a run whose work log was made once and is no longer there, before its first model request (W1c-3)", async () => {
+	const f = await fixture();
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) =>
+		method === "qorpera_memory_run_log_place" ? { gone: true } : original(method, args, signal),
+	);
+	const error = await f.runtime
+		.execute(f.request, f.identityRoot, new AbortController().signal)
+		.catch((caught: unknown) => caught);
+	expect(error).toBeInstanceOf(CloudRunLogGone);
+	expect(nativeRuntimeFailureMetadata(error)).toMatchObject({
+		stage: "native-tools",
+		category: "authority_unavailable",
+	});
+	const methods = f.pathCall.mock.calls.map(([method]) => method);
+	expect(methods).not.toContain("qorpera_memory_run_resume");
+	expect(methods).not.toContain("qorpera_fence_native_context");
+	expect(f.control.sendMessage).not.toHaveBeenCalled();
 });
 
 it("projects only native auth from a login capsule without materializing local context or configuration", async () => {
