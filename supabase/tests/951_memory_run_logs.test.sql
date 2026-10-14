@@ -3,7 +3,8 @@
 -- parsers; where a run's log goes (origin and place); run.toml, log blocks and run tree blocks with every refusal; the
 -- paths a memory commit with runLog writes, and a run naming another run; the index (logs, steps, needles from `paths`,
 -- the args and the receipt, cut args); what a run writes as itself (admits); step hashes and narrow paths; a stale run
--- generation and an open erase; a log that moves with its group, a log deleted and erased; the grants and host calls.
+-- generation and an open erase; a log that moves with its group, a log deleted and erased; a run whose machine went
+-- narrow; the grants and host calls.
 -- Runs are 970's (nora and otto, each in its own thread) and a room run of otto's in launch. Races are in 952.
 
 -- A run's actor, as its binding names it.
@@ -864,6 +865,47 @@ begin
 		pg_temp.block(array[pg_temp.nstep(0)]), a)), log), 1, 'saved');
 	perform pg_temp.same(public.qorpera_memory_step_narrow(env, ojob, otto, '[]'), '{"log": true, "machine": true, "restricted": []}',
 		'otto''s log is narrow from its first step');
+end $$;
+
+-- 14. Who may call and read ----------------------------------------------------------------------------------------------
+do $$
+begin
+	-- The service role calls the four host calls and the memory commit and reads the run-log tables; it writes none of them.
+	perform pg_temp.same(to_jsonb(array[
+		has_function_privilege('service_role', 'public.qorpera_memory_run_origin(uuid,uuid)', 'execute'),
+		has_function_privilege('service_role', 'public.qorpera_memory_run_log_place(uuid,uuid)', 'execute'),
+		has_function_privilege('service_role', 'public.qorpera_memory_step_hashes(uuid,uuid,uuid,jsonb)', 'execute'),
+		has_function_privilege('service_role', 'public.qorpera_memory_step_narrow(uuid,uuid,uuid,jsonb)', 'execute'),
+		has_function_privilege('service_role', 'public.qorpera_folder_memory_commit(uuid,jsonb,text,jsonb,jsonb,uuid,uuid)', 'execute'),
+		has_function_privilege('authenticated', 'public.qorpera_memory_run_log_place(uuid,uuid)', 'execute'),
+		has_function_privilege('anon', 'public.qorpera_memory_step_narrow(uuid,uuid,uuid,jsonb)', 'execute'),
+		has_function_privilege('authenticated', 'public.qorpera_memory_step_hashes(uuid,uuid,uuid,jsonb)', 'execute'),
+		has_table_privilege('service_role', 'public.qorpera_memory_run_logs', 'select'),
+		has_table_privilege('service_role', 'public.qorpera_memory_run_steps', 'select'),
+		has_table_privilege('service_role', 'public.qorpera_memory_run_generations', 'select'),
+		has_table_privilege('service_role', 'public.qorpera_memory_run_logs', 'update'),
+		has_table_privilege('service_role', 'public.qorpera_memory_run_steps', 'insert'),
+		has_table_privilege('service_role', 'public.qorpera_memory_run_generations', 'update'),
+		has_table_privilege('service_role', 'public.qorpera_memory_step_hash_keys', 'select'),
+		has_table_privilege('authenticated', 'public.qorpera_memory_run_logs', 'select'),
+		has_table_privilege('anon', 'public.qorpera_memory_run_steps', 'select')]),
+		'[true,true,true,true,true,false,false,false,true,true,true,false,false,false,false,false,false]', 'who calls and reads');
+	-- Nothing else of W1b is anyone's to call.
+	perform pg_temp.same(coalesce((select jsonb_agg(f order by f) from unnest(array[
+		'public.qorpera_memory_run_folder_key(text)', 'public.qorpera_memory_run_toml(text)',
+		'public.qorpera_memory_run_block_line(text)', 'public.qorpera_memory_run_block_parse(text,text)',
+		'public.qorpera_memory_run_step_line(text)', 'public.qorpera_memory_run_step_needles(jsonb)',
+		'public.qorpera_folder_path_every_agent(uuid,text)', 'public.qorpera_memory_run_machine_narrow(uuid,uuid)',
+		'public.qorpera_run_log_narrow(uuid)', 'public.qorpera_memory_conversation_root(uuid,uuid,uuid)',
+		'public.qorpera_memory_run_log_home(uuid,uuid)', 'public.qorpera_memory_run_generations_lock(uuid,text)',
+		'public.qorpera_memory_run_log_paths(uuid,jsonb,text,text,jsonb,text)',
+		'public.qorpera_memory_run_log_admits(uuid,text,jsonb,text,text,jsonb)',
+		'public.qorpera_memory_run_log_file_rules(uuid,jsonb,text,text,jsonb,text)',
+		'public.qorpera_memory_run_log_index(uuid,uuid,text,text,uuid,text,text)',
+		'public.qorpera_memory_run_log_moved(uuid,uuid,text,text,text)', 'public.qorpera_memory_run_log_deleted(uuid,uuid,text)',
+		'public.qorpera_memory_run_log_targets(uuid,jsonb)', 'public.qorpera_memory_tree_path_allowed(text,text,text)']) f
+		where has_function_privilege('service_role', f, 'execute') or has_function_privilege('authenticated', f, 'execute')
+			or has_function_privilege('anon', f, 'execute')), '[]'::jsonb), '[]', 'nothing else is callable');
 end $$;
 
 rollback;
