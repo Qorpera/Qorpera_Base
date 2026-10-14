@@ -363,7 +363,7 @@ begin
 	-- The first batch: the log's folder with its run.toml and log/, and its first block, as the run.
 	r := pg_temp.logc('nora', 'w1b:toml:ok', jsonb_build_array(pg_temp.log_folder(log, pg_temp.rtoml(nora, conv), a),
 		pg_temp.rfile(log || '/log/00000000.jsonl', pg_temp.block(array[pg_temp.step(0, '{"path":"contracts/a.md"}'),
-			pg_temp.step(1, '{}', null)]), a)), log);
+			pg_temp.step(1, '{}', null, '["contracts/b.md"]')]), a)), log);
 	for i in 1..2 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	select * into l from public.qorpera_memory_run_logs where environment_id = env and run_id = nora;
 	perform pg_temp.same(jsonb_build_array(l.session_id, l.parent_run_id, l.parent_step, l.continues_run_id, l.narrow, l.run_path,
@@ -380,7 +380,7 @@ begin
 	perform pg_temp.refused(r, 1, 'structured_rule', 'a run log''s run.toml does not change');
 end $$;
 
--- 4. Log blocks: nora's log holds step 0 (finished) and step 1 (pending) in log/00000000.jsonl ----------------------------
+-- 4. Log blocks: nora's log holds step 0 (finished) and step 1 (pending, naming contracts/b.md) in log/00000000.jsonl ----
 do $$
 declare
 	log constant text := 'agents/nora/memory/thread/runs/' || pg_temp.run_id('nora'); a constant jsonb := pg_temp.actor('nora');
@@ -421,6 +421,10 @@ begin
 	r := pg_temp.logc('nora', 'w1b:block:8', jsonb_build_array(pg_temp.rfile(b0,
 		pg_temp.block(array[s0, pg_temp.step(1, '{"x":1}', null)]), a)), log);
 	perform pg_temp.refused(r, 1, 'structured_rule', 'step 1 changes only to its finished form', 'value', 2);
+	-- A finished form that drops a path its pending line named, which an erase would then miss.
+	r := pg_temp.logc('nora', 'w1b:block:paths', jsonb_build_array(pg_temp.rfile(b0,
+		pg_temp.block(array[s0, pg_temp.step(1)]), a)), log);
+	perform pg_temp.refused(r, 1, 'structured_rule', 'step 1 keeps every path it named while pending', 'value', 2);
 	r := pg_temp.logc('nora', 'w1b:block:9', jsonb_build_array(pg_temp.rfile(log || '/log/00000002.jsonl',
 		pg_temp.block(array[pg_temp.erased_step(2)]), a)), log);
 	perform pg_temp.refused(r, 1, 'structured_rule', 'only an erase writes an erased step', 'value', 1);
@@ -430,8 +434,9 @@ begin
 		pg_temp.block(array[pg_temp.step(3)]), a)), log);
 	perform pg_temp.refused(r, 1, 'structured_rule', 'a log block starts at the log''s next step');
 
-	-- Step 1 finishes; two blocks in one commit, the second starting where the first ends.
-	r := pg_temp.logc('nora', 'w1b:block:ok1', jsonb_build_array(pg_temp.rfile(b0, pg_temp.block(array[s0, pg_temp.step(1)]), a),
+	-- Step 1 finishes with its paths; two blocks in one commit, the second starting where the first ends.
+	r := pg_temp.logc('nora', 'w1b:block:ok1', jsonb_build_array(pg_temp.rfile(b0, pg_temp.block(array[s0,
+			pg_temp.step(1, '{}', '{"ok":true}', '["contracts/b.md"]')]), a),
 		pg_temp.rfile(log || '/log/00000002.jsonl', pg_temp.block(array[pg_temp.step(2)]), a),
 		pg_temp.rfile(log || '/log/00000003.jsonl', pg_temp.block(array[pg_temp.step(3)]), a)), log);
 	for i in 1..3 loop perform pg_temp.expect(r, i, 'saved'); end loop;
@@ -586,7 +591,7 @@ begin
 		s.block_key) order by s.j) from public.qorpera_memory_run_steps s where s.environment_id = env and s.run_id = nora),
 		jsonb_build_array(
 			jsonb_build_array(0, 'read_file', 'c0', array['contracts', 'contracts/a.md'], false, false, true, log || '/log/00000000.jsonl'),
-			jsonb_build_array(1, 'read_file', 'c1', array[]::text[], false, false, true, log || '/log/00000000.jsonl'),
+			jsonb_build_array(1, 'read_file', 'c1', array['contracts', 'contracts/b.md'], false, false, true, log || '/log/00000000.jsonl'),
 			jsonb_build_array(2, 'read_file', 'c2', array[]::text[], false, false, true, log || '/log/00000002.jsonl'),
 			jsonb_build_array(3, 'read_file', 'c3', array[]::text[], false, false, true, log || '/log/00000003.jsonl'),
 			jsonb_build_array(4, 'read_file', 'c4', array[]::text[], true, false, true, log || '/log/00000004.jsonl'),
@@ -844,11 +849,15 @@ declare
 	env constant uuid := '63400000-0000-4000-8000-000000000020'; otto constant uuid := pg_temp.run_id('otto');
 	log constant text := 'agents/otto/memory/thread/runs/' || pg_temp.run_id('otto'); a constant jsonb := pg_temp.actor('otto');
 	ojob constant uuid := (pg_temp.actor('otto') ->> 'jobId')::uuid; b0 constant text := log || '/log/00000000.jsonl'; r jsonb;
+	-- Step 0 pending and plain, naming contracts/a.md; its narrow form has the same arguments and names nothing.
+	n0 constant text := jsonb_set(pg_temp.nstep(0)::jsonb, '{args_hash}', pg_temp.step(0)::jsonb -> 'args_hash')::text;
 begin
-	-- Otto's log folder gets its run.toml while otto is not narrow.
+	-- Otto's log folder gets its run.toml and pending step 0 while otto is not narrow.
 	perform pg_temp.same(to_jsonb(array[public.qorpera_run_log_narrow(otto)]), '[false]', 'otto is not narrow');
-	perform pg_temp.expect(pg_temp.logc('otto', 'w1b:machine:1', jsonb_build_array(pg_temp.rfile(log || '/run.toml',
-		pg_temp.rtoml(otto, pg_temp.thread('otto')), a)), log), 1, 'saved');
+	r := pg_temp.logc('otto', 'w1b:machine:1', jsonb_build_array(pg_temp.rfile(log || '/run.toml',
+		pg_temp.rtoml(otto, pg_temp.thread('otto')), a), pg_temp.rfile(b0, pg_temp.block(array[pg_temp.step(0, '{}', null,
+		'["contracts/a.md"]')]), a)), log);
+	for i in 1..2 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 
 	-- W6a says when a run's machine went narrow; until then no machine does. Here otto's has (rolled back with the test).
 	execute format($f$create or replace function public.qorpera_memory_run_machine_narrow(p_environment_id uuid, p_run_id uuid)
@@ -858,11 +867,15 @@ begin
 	perform pg_temp.same(public.qorpera_memory_step_narrow(env, ojob, otto, '[]'), '{"log": false, "machine": true, "restricted": []}',
 		'otto''s machine went narrow');
 
-	-- From then on a plain step is refused and a narrow one saved.
-	r := pg_temp.logc('otto', 'w1b:machine:2', jsonb_build_array(pg_temp.rfile(b0, pg_temp.block(array[pg_temp.step(0)]), a)), log);
+	-- From then on a plain step is refused and a narrow one saved: the narrow form drops the paths its pending line named.
+	r := pg_temp.logc('otto', 'w1b:machine:2', jsonb_build_array(pg_temp.rfile(b0, pg_temp.block(array[pg_temp.step(0, '{}',
+		'{"ok":true}', '["contracts/a.md"]')]), a)), log);
 	perform pg_temp.refused(r, 1, 'structured_rule', 'step 0 comes after its machine went narrow and is written narrow', 'value', 1);
 	perform pg_temp.expect(pg_temp.logc('otto', 'w1b:machine:3', jsonb_build_array(pg_temp.rfile(b0,
-		pg_temp.block(array[pg_temp.nstep(0)]), a)), log), 1, 'saved');
+		pg_temp.block(array[n0]), a)), log), 1, 'saved');
+	perform pg_temp.same((select jsonb_build_array(s.needles, s.narrow, s.finished) from public.qorpera_memory_run_steps s
+		where s.environment_id = env and s.run_id = otto and s.j = 0), jsonb_build_array(array[]::text[], true, true),
+		'otto''s step 0 is narrow and names nothing');
 	perform pg_temp.same(public.qorpera_memory_step_narrow(env, ojob, otto, '[]'), '{"log": true, "machine": true, "restricted": []}',
 		'otto''s log is narrow from its first step');
 end $$;
