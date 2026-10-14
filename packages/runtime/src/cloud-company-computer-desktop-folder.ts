@@ -3,7 +3,7 @@ import { type FileHandle, open, realpath } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import type { CompanyComputerScreenBinding } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { isUuid } from "@qorpera/contracts";
-import { parseCompanyComputerMountinfo } from "./cloud-company-computer-folder-helper.ts";
+import { isCompanyComputerFolderMount, parseCompanyComputerMountinfo } from "./cloud-company-computer-folder-helper.ts";
 import {
 	askCompanyComputerFolderHelper,
 	COMPANY_COMPUTER_FOLDER_BOUNDARY_MS,
@@ -147,7 +147,7 @@ export function checkCompanyComputerFolderParent(mountinfo: string, fdinfo: stri
 		top = above[0];
 		below = top.id;
 	}
-	return !top || (top.fstype === "fuse.qorpera" && top.source === "qorpera-company");
+	return !top || isCompanyComputerFolderMount(top);
 }
 
 /**

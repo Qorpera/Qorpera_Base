@@ -234,7 +234,8 @@ describe("a mount's parent, as a desktop binds it", () => {
 	const fdinfo = "pos:\t0\nflags:\t02200000\nmnt_id:\t412\nino:\t9\n";
 	const bind = (optional = "master:5") =>
 		`412 30 0:40 /qorpera-folder/mounts/${name} ${parent} rw,nosuid,nodev ${optional} - tmpfs tmpfs rw,mode=755\n`;
-	const fuse = (id = 413, under = 412, fstype = "fuse.qorpera", source = "qorpera-company") =>
+	// As the kernel lists the folder program's direct mount (#1007): `fuse qorpera-company`.
+	const fuse = (id = 413, under = 412, fstype = "fuse", source = "qorpera-company") =>
 		`${id} ${under} 0:51 / ${parent}/company rw,nosuid,nodev master:7 - ${fstype} ${source} rw,user_id=0\n`;
 	const root =
 		"29 1 252:1 / / rw,relatime shared:1 - ext4 /dev/vda1 rw\n30 29 0:26 / /run rw,nosuid shared:5 - tmpfs tmpfs rw\n";
@@ -243,6 +244,10 @@ describe("a mount's parent, as a desktop binds it", () => {
 		expect(checkCompanyComputerFolderParent(root + bind() + fuse(), fdinfo, parent)).toBe(true);
 		expect(checkCompanyComputerFolderParent(root + bind("shared:9 master:5") + fuse(), fdinfo, parent)).toBe(true);
 		expect(checkCompanyComputerFolderParent(root + bind(), fdinfo, parent)).toBe(true);
+		// A mount made through fusermount keeps the subtype.
+		expect(checkCompanyComputerFolderParent(root + bind() + fuse(413, 412, "fuse.qorpera"), fdinfo, parent)).toBe(
+			true,
+		);
 		// Mounts stacked at `company`: the top one counts.
 		expect(
 			checkCompanyComputerFolderParent(
@@ -261,7 +266,8 @@ describe("a mount's parent, as a desktop binds it", () => {
 		],
 		["two mounts side by side at `company`", root + bind() + fuse() + fuse(414, 412)],
 		["something other than the folder program on top", root + bind() + fuse() + fuse(414, 413, "tmpfs", "tmpfs")],
-		["a program of another source", root + bind() + fuse(413, 412, "fuse.qorpera", "elsewhere")],
+		["a program of another source", root + bind() + fuse(413, 412, "fuse", "elsewhere")],
+		["another FUSE type", root + bind() + fuse(413, 412, "fuse.sshfs")],
 		["no mount at the fd's place", root + fuse()],
 		["unreadable mounts", `${root}412 30 0:40\n`],
 	])("refuses %s", (_case, mountinfo) => {

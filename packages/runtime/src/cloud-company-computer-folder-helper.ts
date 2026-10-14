@@ -35,8 +35,9 @@ import { integer, properties, systemctl } from "./cloud-company-computer-systemd
 export const COMPANY_COMPUTER_FOLDER_PROGRAM = "/opt/qorpera-folder/qorpera-folder";
 /**
  * The mountpoint under the program's mount. Seen only while no program serves the mount (systemd's 5 s before a
- * restart): the office account then gets an error, not an empty company folder. Q3's proof measures `0000` against
- * this; the coordinator chose a loud error (14 Oct).
+ * restart): the office account then gets an error, not an empty company folder; the coordinator chose a loud error
+ * (14 Oct). Not `0000`: the program opens the mountpoint for its `rootmode=`, and root bounded to CAP_SYS_ADMIN may
+ * not open a `0000` directory (Q3 measured EACCES, 15 Oct), so it opens as the owner.
  */
 export const COMPANY_COMPUTER_FOLDER_MOUNTPOINT_MODE = 0o700;
 /** How long a mount may take to come up, and a switch to be taken, before the helper answers without it. */
@@ -163,10 +164,22 @@ export function parseCompanyComputerMountinfo(text: string): CompanyComputerMoun
 		});
 }
 
+/**
+ * The folder program's mount. fuser's direct mount always passes the type `fuse` and names the source by FSName, so
+ * the kernel lists the program as `fuse qorpera-company` (#1007's mountinfo, Q3's run); `fuse.qorpera` is a mount
+ * made through fusermount.
+ */
+export function isCompanyComputerFolderMount(entry: Pick<CompanyComputerMountEntry, "fstype" | "source">): boolean {
+	return (entry.fstype === "fuse" || entry.fstype === "fuse.qorpera") && entry.source === "qorpera-company";
+}
+
 /** The top mount at the mountpoint is the folder program's. */
-function served(entries: readonly CompanyComputerMountEntry[], mountpoint: string): boolean {
+export function companyComputerFolderServed(
+	entries: readonly CompanyComputerMountEntry[],
+	mountpoint: string,
+): boolean {
 	const top = entries.filter((entry) => entry.mountpoint === mountpoint).at(-1);
-	return top?.fstype === "fuse.qorpera" && top.source === "qorpera-company";
+	return !!top && isCompanyComputerFolderMount(top);
 }
 
 function shared(entries: readonly CompanyComputerMountEntry[], parent: string): boolean {
@@ -307,7 +320,10 @@ export class CompanyComputerFolderHelper {
 		// The unit is up once the program runs (Type=exec); the mount comes after the node accepts its view.
 		const deadline = Date.now() + this.#mountMs;
 		for (;;) {
-			if (served(parseCompanyComputerMountinfo(await this.#system.mountinfo()), paths.mountpoint)) return "mounted";
+			if (
+				companyComputerFolderServed(parseCompanyComputerMountinfo(await this.#system.mountinfo()), paths.mountpoint)
+			)
+				return "mounted";
 			const state = await this.#system.inspect(unit).catch(() => undefined);
 			if (state && closedByNode(state)) return "closed";
 			if (Date.now() >= deadline) return "unanswered";
