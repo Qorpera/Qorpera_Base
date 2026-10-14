@@ -527,4 +527,51 @@ begin
 		where n.environment_id = env and n.run_id = nora), '[[0, 0, "x"], [0, 1, "z"]]', 'the rewritten run tree''s lines');
 end $$;
 
+-- 6. Whose log a change is ---------------------------------------------------------------------------------------------
+do $$
+declare
+	env constant uuid := '63400000-0000-4000-8000-000000000020'; nora constant uuid := pg_temp.run_id('nora');
+	log constant text := 'agents/nora/memory/thread/runs/' || pg_temp.run_id('nora'); a constant jsonb := pg_temp.actor('nora');
+	t0 constant text := log || '/t0/00000000.jsonl'; ottos constant text := 'agents/otto/memory/thread/runs/';
+	gen constant jsonb := jsonb_build_object('runGenerations', jsonb_build_array(jsonb_build_object('runId', nora, 'generation', 0)));
+	r jsonb;
+begin
+	-- A run names its own log; nobody else writes it, and only the platform deletes from it. (Each staged text is new.)
+	r := public.qorpera_folder_memory_commit(env, a, 'w1b:whose:1', jsonb_build_array(pg_temp.rfile(t0,
+		pg_temp.block(array['{"l":0,"k":0,"free":true,"text":"w1"}']), a)));
+	perform pg_temp.refused(r, 1, 'structured_rule', 'a run writes only its own run log');
+	r := public.qorpera_folder_memory_commit(env, pg_temp.member(1), 'w1b:whose:2', jsonb_build_array(pg_temp.rfile(t0,
+		pg_temp.block(array['{"l":0,"k":0,"free":true,"text":"w2"}']), pg_temp.member(1))),
+		jsonb_build_object('runLog', jsonb_build_object('run', nora, 'path', log)) || gen);
+	perform pg_temp.refused(r, 1, 'structured_rule', 'a run writes only its own run log');
+	r := public.qorpera_folder_memory_commit(env, '{"kind":"platform"}', 'w1b:whose:3', jsonb_build_array(pg_temp.rfile(t0,
+		pg_temp.block(array['{"l":0,"k":0,"free":true,"text":"w3"}']))));
+	perform pg_temp.refused(r, 1, 'structured_rule', 'a run log''s change names its run (runLog)');
+	r := pg_temp.logc('nora', 'w1b:whose:4', jsonb_build_array(pg_temp.rfile(t0,
+		pg_temp.block(array['{"l":0,"k":0,"free":true,"text":"w4"}']), a)), log || '/t0', gen);
+	perform pg_temp.refused(r, 1, 'structured_rule', 'a run log''s folder is <tree>/runs/<its run>');
+	r := pg_temp.logc('nora', 'w1b:whose:5', jsonb_build_array(jsonb_build_object('op','delete','path',t0,
+		'expectedVersion',pg_temp.version(t0))), log, gen);
+	perform pg_temp.refused(r, 1, 'structured_rule', 'only the platform deletes a run log''s files');
+	r := pg_temp.logc('nora', 'w1b:whose:6', jsonb_build_array(jsonb_build_object('op','mkdir','path',
+		'agents/nora/memory/thread/runs/' || extensions.gen_random_uuid())), log);
+	perform pg_temp.refused(r, 1, 'structured_rule', 'a run log''s change writes only its own log folder');
+	r := pg_temp.logc('nora', 'w1b:whose:7', jsonb_build_array(jsonb_build_object('op','mkdir','path',ottos || pg_temp.run_id('otto')
+		|| '/t1')), log);
+	perform pg_temp.refused(r, 1, 'structured_rule', 'a run log''s change writes only its own log folder');
+	-- A run names no other run (F3), in its log or its generations.
+	perform pg_temp.raises_like(format('select public.qorpera_folder_memory_commit(%L, %L, %L, %L, %L)', env, pg_temp.actor('otto'),
+		'w1b:whose:8', '[]', jsonb_build_object('runLog', jsonb_build_object('run', nora, 'path', log))), '42501',
+		'A run writes only its own run log');
+	perform pg_temp.raises_like(format('select public.qorpera_folder_memory_commit(%L, %L, %L, %L, %L)', env, a, 'w1b:whose:9', '[]',
+		jsonb_build_object('runLog', jsonb_build_object('run', nora, 'path', log), 'runGenerations', jsonb_build_array(
+			jsonb_build_object('runId', pg_temp.run_id('otto'), 'generation', 0)))), '42501', 'A run writes only its own run log');
+	-- A log is where it was made, and goes where its run's conversation tree is.
+	r := pg_temp.logc('nora', 'w1b:whose:10', jsonb_build_array(jsonb_build_object('op','mkdir','path',ottos || nora)), ottos || nora);
+	perform pg_temp.expect(r, 1, 'refused', 'memory_run_log_moved');
+	r := pg_temp.logc('otto', 'w1b:whose:11', jsonb_build_array(jsonb_build_object('op','mkdir','path',
+		'agents/nora/memory/thread/runs/' || pg_temp.run_id('otto'))), 'agents/nora/memory/thread/runs/' || pg_temp.run_id('otto'));
+	perform pg_temp.expect(r, 1, 'refused', 'memory_run_log_moved');
+end $$;
+
 rollback;
