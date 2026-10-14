@@ -1,5 +1,6 @@
 -- Summary trees M1b-4b-2 (RUNTIME-AGENT-MEMORY-TREE.md §4.2-§4.4, §7, §13): the conversation tree writer's SQL.
--- A run's memory commit without runLog writes only its own conversation tree, naming exactly its generation.
+-- A run's memory commit without runLog writes only its own conversation tree, naming exactly its generation, and as
+-- with its run log needs no folder grant there.
 -- Two binding calls expose bounded raw events and record compaction costs per batch of an attempt. Neither enables
 -- the runtime writer or lists a company in qorpera_memory_tree_companies.
 
@@ -9,9 +10,46 @@ do $$ begin
 	if to_regclass('public.qorpera_memory_compactions') is not null then
 		raise exception 'M1b-4b-2 (20260930300000) is already applied'; end if;
 	if to_regprocedure('public.qorpera_memory_run_log_paths(uuid,jsonb,text,text,jsonb,text)') is null
+		or to_regprocedure('public.qorpera_memory_run_log_admits(uuid,text,jsonb,text,text,jsonb)') is null
 		or to_regprocedure('public.qorpera_memory_conversation_root(uuid,uuid,uuid)') is null then
 		raise exception 'M1b-4b-2 (20260930300000) needs W1b (20260930231000)'; end if;
 end $$;
+
+-- With no runLog, a run's memory commit writes only its own conversation's tree, under the root its owner gives (also
+-- before the first tree.toml; a live index must agree by key), and every unit, even the empty root, names exactly that
+-- conversation's generation. The units: mkdir of the root and of t0 to t14, writes of tree.toml and of
+-- t<n>/<8 digits>.jsonl (§4.2). The commit has validated and locked the generations already. Null for such a unit;
+-- otherwise the problem.
+create function public.qorpera_memory_run_tree_problem(p_environment_id uuid, p_actor jsonb, p_op text, p_key text)
+returns text language plpgsql stable set search_path = '' as $$
+-- 20260930300000 (M1b-4b-2)
+declare
+	v_request jsonb := public.qorpera_folder_memory_request(); v_session uuid; v_root text; v_indexed_root text;
+	v_generations jsonb; v_relative text;
+begin
+	if v_request is null or v_request #> '{preconditions,runLog}' is not null
+		or p_actor ->> 'kind' is distinct from 'staff_agent'
+		or coalesce(p_actor ->> 'runId', '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
+		return 'a run writes only its own run log'; end if;
+	select r.session_id, public.qorpera_memory_conversation_root(r.environment_id, r.profile_id, r.session_id), t.root_key
+	into v_session, v_root, v_indexed_root
+	from public.qorpera_execution_runs r
+	left join public.qorpera_memory_trees t
+		on t.environment_id = r.environment_id and t.session_id = r.session_id and t.retired_at is null
+	where r.id = (p_actor ->> 'runId')::uuid and r.environment_id = p_environment_id;
+	v_generations := coalesce(v_request #> '{preconditions,sessionGenerations}', '[]'::jsonb);
+	if v_session is null or v_root is null or (v_indexed_root is not null and v_indexed_root <> v_root)
+		or jsonb_array_length(v_generations) <> 1 or v_generations #>> '{0,sessionId}' is distinct from v_session::text then
+		return 'a run tree change names exactly its own conversation and generation'; end if;
+	v_relative := case when p_key = v_root then ''
+		when left(p_key, char_length(v_root) + 1) = v_root || '/' then substr(p_key, char_length(v_root) + 2) end;
+	if (p_op = 'mkdir' and (v_relative = '' or v_relative ~ '^t([0-9]|1[0-4])$'))
+		or (p_op = 'write' and (v_relative = 'tree.toml' or v_relative ~ '^t([0-9]|1[0-4])/[0-9]{8}\.jsonl$')) then
+		return null; end if;
+	return 'a run writes only its own conversation tree folders, tree.toml and blocks';
+end $$;
+revoke all on function public.qorpera_memory_run_tree_problem(uuid, jsonb, text, text)
+	from public, anon, authenticated, service_role;
 
 -- Preserve W1b's run-log rules. Only the former no-runLog refusal gains the conversation writer's narrow admission.
 create or replace function public.qorpera_memory_run_log_paths(p_environment_id uuid, p_actor jsonb, p_op text, p_key text, p_unit jsonb,
@@ -21,42 +59,18 @@ returns jsonb language plpgsql stable set search_path = '' as $$
 declare
 	v_request jsonb := public.qorpera_folder_memory_request(); v_log jsonb; v_run uuid; v_log_key text; v_touch record;
 	v_root text; v_row public.qorpera_memory_run_logs%rowtype; v_gen public.qorpera_memory_run_generations%rowtype;
-	v_home jsonb; v_session uuid; v_indexed_root text; v_relative text;
+	v_home jsonb; v_problem text;
 	v_own_log constant jsonb := jsonb_build_object('ok', false, 'reason', 'structured_rule', 'problems', jsonb_build_array(
 		public.qorpera_company_state_problem('value', null, null, 'a run writes only its own run log')));
 begin
 	if v_request is null then return null; end if;
 	v_log := v_request -> 'preconditions' -> 'runLog';
-	-- 20260930300000 (M1b-4b-2): with no runLog, a run writes only its own conversation's tree. Every unit, even
-	-- its empty root, names exactly that conversation's generation. The commit has validated and locked it already.
+	-- 20260930300000 (M1b-4b-2): with no runLog, a run writes only its own conversation's tree.
 	if v_log is null and p_actor ->> 'kind' is distinct from 'platform' then
-		if p_actor ->> 'kind' is distinct from 'staff_agent' then return v_own_log; end if;
-		select r.session_id, public.qorpera_memory_conversation_root(r.environment_id, r.profile_id, r.session_id),
-			public.qorpera_memory_session_tree_root(r.environment_id, r.session_id)
-		into v_session, v_root, v_indexed_root
-		from public.qorpera_execution_runs r
-		where r.id::text = p_actor ->> 'runId' and r.environment_id = p_environment_id;
-		-- The owner-derived root exists before the first tree.toml. A live index must agree with that owner.
-		if v_session is null or v_root is null or (v_indexed_root is not null and v_indexed_root <> v_root)
-			or jsonb_array_length(coalesce(v_request -> 'preconditions' -> 'sessionGenerations', '[]'::jsonb)) <> 1
-			or v_request #>> '{preconditions,sessionGenerations,0,sessionId}' is distinct from v_session::text then
-			return jsonb_build_object('ok', false, 'reason', 'structured_rule', 'problems', jsonb_build_array(
-				public.qorpera_company_state_problem('value', null, null,
-					'a run tree change names exactly its own conversation and generation'))); end if;
-		if p_key = v_root then
-			v_relative := '';
-		elsif left(p_key, char_length(v_root) + 1) = v_root || '/' then
-			v_relative := substr(p_key, char_length(v_root) + 2);
-		else
-			v_relative := null;
-		end if;
-		if (p_op = 'mkdir' and (v_relative = '' or v_relative ~ '^t([0-9]|1[0-4])$'))
-			or (p_op = 'write' and (v_relative = 'tree.toml' or v_relative ~ '^t([0-9]|1[0-4])/[0-9]{8}\.jsonl$')) then
-			return null;
-		end if;
+		v_problem := public.qorpera_memory_run_tree_problem(p_environment_id, p_actor, p_op, p_key);
+		if v_problem is null then return null; end if;
 		return jsonb_build_object('ok', false, 'reason', 'structured_rule', 'problems', jsonb_build_array(
-			public.qorpera_company_state_problem('value', null, null,
-				'a run writes only its own conversation tree folders, tree.toml and blocks')));
+			public.qorpera_company_state_problem('value', null, null, v_problem)));
 	end if;
 	if v_log is not null then
 		v_run := (v_log ->> 'run')::uuid;
@@ -114,6 +128,39 @@ end $$;
 revoke all on function public.qorpera_memory_run_log_paths(uuid, jsonb, text, text, jsonb, text)
 	from public, anon, authenticated, service_role;
 
+-- A run writes its own conversation's tree as itself, as it writes its own run log: the tree is the platform's
+-- (contract 5.6), so neither the member it works for nor its agent needs a grant there (§4.3). W1b's body, with the
+-- no-runLog case added.
+create or replace function public.qorpera_memory_run_log_admits(p_environment_id uuid, p_operation_key text, p_actor jsonb,
+	p_op text, p_path text, p_unit jsonb)
+returns boolean language plpgsql stable set search_path = '' as $$
+-- 20260930231000 (W1b)
+declare v_request jsonb := public.qorpera_folder_memory_request(); v_run text; v_log_key text;
+begin
+	if v_request is null or v_request ->> 'environmentId' is distinct from p_environment_id::text
+		or v_request ->> 'operationKey' is distinct from p_operation_key or p_op not in ('write','mkdir','new_folder') then
+		return false; end if;
+	-- 20260930300000 (M1b-4b-2): with no runLog, exactly the units the paths hook admits in the run's own tree.
+	if v_request #> '{preconditions,runLog}' is null then
+		return public.qorpera_memory_run_tree_problem(p_environment_id, p_actor, p_op, public.qorpera_folder_key(p_path)) is null;
+	end if;
+	v_run := v_request #>> '{preconditions,runLog,run}';
+	if v_run is null or p_actor ->> 'kind' is distinct from 'staff_agent' or p_actor ->> 'runId' is distinct from v_run then
+		return false; end if;
+	v_log_key := public.qorpera_folder_key(v_request #>> '{preconditions,runLog,path}');
+	if public.qorpera_memory_run_folder_key(v_log_key) is distinct from v_log_key or right(v_log_key, 42) <> '/runs/' || v_run then
+		return false; end if;
+	return not exists (select 1
+		from (select public.qorpera_folder_key(p_path) as key
+			union all
+			select public.qorpera_folder_key(p_path || '/' || (c.value ->> 'path'))
+			from jsonb_array_elements(case when p_op = 'new_folder' and jsonb_typeof(p_unit -> 'contents') = 'array'
+				then p_unit -> 'contents' else '[]'::jsonb end) c) t
+		where t.key is null or not (t.key = v_log_key or left(t.key, char_length(v_log_key) + 1) = v_log_key || '/'
+			or (left(v_log_key, char_length(t.key) + 1) = t.key || '/' and t.key ~ '^agents/([^/]+|groups/[^/]+)/memory(/|$)')));
+end $$;
+revoke all on function public.qorpera_memory_run_log_admits(uuid, text, jsonb, text, text, jsonb)
+	from public, anon, authenticated, service_role;
 
 -- Raw included events [start,start+count), with the same sequence and eventHash as zoom and the level-0 validator.
 -- This distinct native name leaves the internal qorpera_memory_events(uuid,bigint,integer) unexposed and unambiguous.

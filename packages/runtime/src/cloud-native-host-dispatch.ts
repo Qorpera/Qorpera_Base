@@ -16,8 +16,7 @@ import type { WebSocketLikeConstructor } from "@supabase/supabase-js";
  * (manage_hook), 20260930202000 (zoom, M1b-3), 20260930203000 (the release of tree blocks, M1b-3), 20260930204000
  * (the primary view and its record, M1b-4a), 20260930220000 (branches, M4), 20260930231000 (run logs, W1b) and
  * 20260930300000 (tree writer, M1b-4b-2) list them, without the two identity calls, which the host makes between jobs
- * (G2-3). The long budget is the lease
- * validator's and, since 20260930109500, the model request's fence's. */
+ * (G2-3). The long budget is the lease validator's and, since 20260930109500, the model request's fence's. */
 export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new Map<string, "standard" | "long">([
 	["qorpera_add_agent_review_rule", "standard"],
 	["qorpera_append_native_interaction_request", "standard"],

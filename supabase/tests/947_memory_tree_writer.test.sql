@@ -1,7 +1,8 @@
 -- @fixture 970_memory_branches.test.sql until "-- The checks start here."
 -- M1b-4b-2: real run-actor uploads and commits to a new and an existing conversation tree; refusals outside the exact
 -- scope and a generation change discarding the whole batch. Bounded raw events and count-only compaction records:
--- authoritative payer, per-assignment batches, exact replay, malformed inputs and run-check precedence.
+-- authoritative payer, per-assignment batches, exact replay, malformed inputs and run-check precedence. A tree under a
+-- mixed-case agent folder, written by a run with no folder grant.
 
 create function pg_temp.writer_actor(p_who text) returns jsonb language sql as $$
 	select public.qorpera_folder_tool_run(pg_temp.b(p_who), '[]'::jsonb) -> 'actor'
@@ -220,14 +221,17 @@ begin
 		raise exception 'The binding fixture was restored'; end if;
 end $$;
 
--- 7. Native host registration and least grants; no overloaded binding-call name, no exposed internal reader.
+-- 7. Native host registration and least grants; no overloaded binding-call name, no exposed internal reader or rule.
 do $$
 declare bad text;
 begin
 	select string_agg(f || ' ' || r, ', ') into bad
 	from unnest(array['public.qorpera_memory_events_run(jsonb,jsonb)', 'public.qorpera_memory_compaction_record(jsonb,jsonb)',
-		'public.qorpera_memory_events(uuid,bigint,integer)']) f, unnest(array['anon','authenticated','service_role']) r
-	where has_function_privilege(r, f, 'execute') is distinct from (r = 'service_role' and f <> 'public.qorpera_memory_events(uuid,bigint,integer)');
+		'public.qorpera_memory_events(uuid,bigint,integer)', 'public.qorpera_memory_run_tree_problem(uuid,jsonb,text,text)',
+		'public.qorpera_memory_run_log_admits(uuid,text,jsonb,text,text,jsonb)']) f,
+		unnest(array['anon','authenticated','service_role']) r
+	where has_function_privilege(r, f, 'execute') is distinct from (r = 'service_role'
+		and f in ('public.qorpera_memory_events_run(jsonb,jsonb)', 'public.qorpera_memory_compaction_record(jsonb,jsonb)'));
 	if bad is not null then raise exception 'Wrong function grants: %', bad; end if;
 	select string_agg(r || ' ' || p, ', ') into bad from unnest(array['anon','authenticated','service_role']) r,
 		unnest(array['select','insert','update','delete']) p
@@ -240,6 +244,41 @@ begin
 		'{"qorpera_memory_events_run":["binding","standard"],"qorpera_memory_compaction_record":["binding","standard"]}', 'The host call list');
 	if (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname in
 		('qorpera_memory_events_run','qorpera_memory_compaction_record')) <> 2 then raise exception 'No overload ambiguity'; end if;
+end $$;
+
+-- 8. An agent folder spelled in mixed case: the run's tree root is compared by key, before the tree is indexed and
+-- after. The tree is the platform's (§4.3), so a run whose agent holds only a read grant still writes it, while that
+-- run's ordinary write is denied.
+do $$
+declare env constant uuid := '63400000-0000-4000-8000-000000000020'; vera constant uuid := '97000000-0000-4000-8000-0000000000a5';
+	root constant text := 'agents/Vera/memory/thread'; x jsonb; r jsonb; s uuid; i integer;
+begin
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'writer-hire-vera',
+		jsonb_build_array(pg_temp.hire('Vera', vera, 'Vera'))), 1, 'saved');
+	perform public.qorpera_folder_grant(env, pg_temp.member(1), (public.qorpera_folder_path_resource(env, root)).id,
+		'staff_agent', vera, array['read']);
+	x := pg_temp.agent_run(vera);
+	perform set_config('qorpera_test.binding_vera', (x -> 'binding')::text, true);
+	s := (select session_id from public.qorpera_company_rooms where profile_id = '63400000-0000-4000-8000-000000000010'
+		and bound_staff_agent_id = vera);
+	if s is null or (select session_id from public.qorpera_execution_runs where id = (x -> 'actor' ->> 'runId')::uuid)
+		is distinct from s then raise exception 'Vera''s run is in Vera''s thread'; end if;
+	perform pg_temp.same(to_jsonb(public.qorpera_memory_conversation_root(env, '63400000-0000-4000-8000-000000000010', s)),
+		'"agents/vera/memory/thread"', 'The owner gives the root''s key');
+	if public.qorpera_folder_actor_allowed(env, '63400000-0000-4000-8000-000000000010',
+		public.qorpera_folder_tool_run(pg_temp.b('vera'), '[]'::jsonb) -> 'resolved', root || '/t0', 'write') then
+		raise exception 'Vera''s run holds no write grant'; end if;
+	perform pg_temp.expect(pg_temp.commit(pg_temp.writer_actor('vera'), 'writer-vera-plain',
+		jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'agents/Vera/notes'))), 1, 'refused', 'denied');
+	perform pg_temp.event(s, 200);
+	r := pg_temp.writer_commit('vera', 'writer-vera-new-tree', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', root),
+		pg_temp.writer_file('vera', root || '/tree.toml', pg_temp.toml(s)), jsonb_build_object('op', 'mkdir', 'path', root || '/t0'),
+		pg_temp.writer_file('vera', root || '/t0/00000000.jsonl', pg_temp.line0(0, 200) || E'\n')), pg_temp.generations(s));
+	for i in 1..4 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	perform pg_temp.same(to_jsonb(public.qorpera_memory_session_tree_root(env, s)), to_jsonb(root), 'The tree is indexed as spelled');
+	r := pg_temp.writer_commit('vera', 'writer-vera-indexed-tree',
+		jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', root || '/t1')), pg_temp.generations(s));
+	perform pg_temp.expect(r, 1, 'saved');
 end $$;
 
 rollback;
