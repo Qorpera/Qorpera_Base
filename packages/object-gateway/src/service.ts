@@ -5,7 +5,6 @@ import type { ObjectGatewayFolderGc } from "./folder-gc.ts";
 import { serveFolderObject } from "./folder-objects.ts";
 import { type FolderServiceObjectOptions, serveFolderServiceObject } from "./folder-service-objects.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
-import { type MemberCompanyObjectAuthority, serveMemberCompanyObject } from "./member-company-objects.ts";
 import { serveMemberCompanyPresence } from "./member-company-presence.ts";
 import { createMemberCors } from "./member-cors.ts";
 import { serveMemberFileExport } from "./member-file-exports.ts";
@@ -43,7 +42,6 @@ export interface ObjectGatewayServiceOptions {
 	nativeObjects?: NativeCompanyObjectOptions;
 	/** The folder service's puts for its views (F3 step 3), on the folder service's own token. */
 	folderServiceObjects?: FolderServiceObjectOptions;
-	memberObjects?: MemberCompanyObjectAuthority;
 	/** A member's bytes of a folder-v2 company (folder core C4, P27b). */
 	memberFolderObjects?: MemberFolderObjectAuthority;
 	/** A member's change sets to a folder-v2 company (folder core C4, P34a): the writer check with the member's token,
@@ -169,11 +167,7 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 		if (memberCors(request, response)) return;
 		let observation: MemberRequestObservationSpan | undefined;
 		try {
-			if (
-				request.url?.startsWith("/v1/member-company-objects/") ||
-				request.url?.startsWith("/v1/member-company-snapshot-objects/") ||
-				request.url?.startsWith("/v1/member-folder-objects/")
-			)
+			if (request.url?.startsWith("/v1/member-folder-objects/"))
 				observation = options.memberObservations?.start("object_read");
 			else if (request.url?.startsWith("/v1/member-folder-commits/"))
 				observation = options.memberObservations?.start("command_submit");
@@ -298,14 +292,6 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 						replication: options.replication,
 						readLegacyObject: (companyId, sha256) => options.authority.readLegacyObject(companyId, sha256),
 					});
-					return;
-				}
-				if (
-					request.url?.startsWith("/v1/member-company-objects/") ||
-					request.url?.startsWith("/v1/member-company-snapshot-objects/")
-				) {
-					if (!options.memberObjects) throw new HttpError(404, "Not found");
-					await serveMemberCompanyObject(request, response, options.memberObjects, options.store, observation);
 					return;
 				}
 				if (request.url?.startsWith("/v1/member-folder-objects/")) {
