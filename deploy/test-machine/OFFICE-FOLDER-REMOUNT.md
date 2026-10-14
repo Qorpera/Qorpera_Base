@@ -94,8 +94,38 @@ at `/run/qorpera-company`, with `/company` a symlink to
 | `restartedBySystemd` | after the daemon is killed (`SIGKILL` to its main PID), systemd starts it again with a new PID and `NRestarts` one higher, and the host serves exactly one mount within 30 s |
 | `oneMountAfterRestart` | after each kill, the host has one mount at the mountpoint and each namespace sees one at `/run/qorpera-company/company`: no stacked dead mount |
 | `runningNamespacesRecovered` | after the first kill, each namespace is the same process in the same mount namespace, reads a file only the new mount can know, and its new write reaches the node |
-| `directBindNegativeControl` | a namespace that binds the FUSE mount itself (not its parent), started once it was served, read `before.txt` before the kill and gets `ENOTCONN` after it: the candidate form is what makes recovery work |
+| `directBindNegativeControl` | a namespace that binds the FUSE mount itself (not its parent), started once it was served, read `before.txt` before the kill and gets `ENOTCONN` after it: a bind of the mount itself does not follow a restart |
 | `stateFolderKept` | the view's state folder keeps its inode and every name across the restart |
 | `secondRestartRecovered` | the same holds after a second kill through `systemctl kill -s KILL` |
 | `exitThreeNotRestarted` | when the node closes the view (`VIEW_CLOSED`), the program exits 3, and 9 s later systemd has not restarted it and nothing is mounted |
 | `fixtureProtocolClean` | the synthetic node logged no protocol error and no client request failed or went unanswered |
+
+## Recorded, not pass or fail
+
+These are under `recorded` in the JSON. They describe the substrate for 4d's
+design; none of them decides `result`.
+
+- `gap`, `mode`: the bare mountpoint before any mount, per mode (below).
+- `kill1`, `kill2`: each restart's unit state before and after, how long the host
+  took to serve one mount again (`hostServedAfterSeconds`), how long the desktop
+  namespace's watcher took to see it (`namespaceServedAfterSeconds`), each
+  distinct state the watcher saw in between (`namespaceSawMeanwhile`), and the
+  unit's journal.
+- `staleCwd`: the command namespace's working directory inside `/company` from
+  before the kill: listing it after the kill, then `chdir` again and listing.
+- `oldDescriptor`: a read descriptor the desktop namespace opened before the
+  kill: `pread` and `close` on it after.
+- `loss`: what open writes lose (next section).
+- `officeStartedOverMount`: two more relays start a command namespace while the
+  folder is already mounted, one with the office unit's lines as they are and one
+  with `ReadWritePaths=` for the folder's mounts. `ProtectSystem=strict` makes
+  what exists at a service's start read-only, so this shows whether an office
+  started over a mounted folder can write it, and whether it survives the second
+  kill.
+- `firstMount`, `directStart`, `directAfterKill2`, `afterExitThree`,
+  `relay1BeforeLayout` and each namespace's start: the context the checks read.
+
+Beside `recorded`, `image` holds what A1 carries (above), `relayConfinement`
+the office unit lines the relays run under, `officeLinesLeftOut` the lines that
+run the application rather than confine it, and `mountUnit` the unit text the
+proof installed.
