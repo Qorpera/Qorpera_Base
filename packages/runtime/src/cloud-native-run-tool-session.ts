@@ -268,8 +268,9 @@ export async function runCloudNativeRunToolSession(options: {
 		throw error;
 	} finally {
 		boundary?.close();
-		// A run that failed on its own commits the steps it finished, as closing would have. A stopped run does not: its
-		// authority is gone, and a later attempt may already be writing the log.
+		// A run that failed on its own commits the steps it finished, as closing would have, within 10 s: a timed batch
+		// still running stops then too. A stopped run does not: its authority is gone, and a later attempt may already be
+		// writing the log.
 		if (executionFailed && !closingStarted && !run.signal.aborted && adapters?.runLog)
 			await adapters.runLog.log.close(AbortSignal.timeout(10_000)).catch(() => undefined);
 		run.close();

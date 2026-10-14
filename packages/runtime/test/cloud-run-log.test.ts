@@ -597,6 +597,36 @@ describe("a run's work log", () => {
 		expect(folder.all()[0]).toMatchObject({ narrow: true, finished: true });
 	});
 
+	it("stops a timed batch still running when closing's signal stops, and waits for it no longer", async () => {
+		const signals: AbortSignal[] = [];
+		let answer: (value: { log: boolean; narrow: boolean }) => void = () => undefined;
+		const { log, folder } = runLog({
+			commitMs: 1,
+			protection: {
+				// The timed batch's answer never comes on its own: its transport ignores the signal.
+				narrow: (runId, candidate, signal) => {
+					signals.push(signal);
+					if (signals.length > 1) return protection.narrow(runId, candidate, signal);
+					return new Promise((resolve) => {
+						answer = resolve;
+					});
+				},
+				hashes: protection.hashes,
+			},
+		});
+		log.finish(step(log, "company_read"), envelope("one"), []);
+		await vi.waitFor(() => expect(signals).toHaveLength(1));
+		expect(signals[0]!.aborted).toBe(false);
+		const deadline = new AbortController();
+		const closing = log.close(deadline.signal);
+		deadline.abort(new Error("cleanup deadline"));
+		await expect(closing).rejects.toThrow("cleanup deadline");
+		expect(signals[0]!.aborted).toBe(true);
+		expect(signals).toHaveLength(1);
+		expect(folder.commits).toHaveLength(0);
+		answer({ log: false, narrow: false });
+	});
+
 	it("recognizes a narrow pending line after a lost commit response and fills it once", async () => {
 		const { folder, log, signal } = runLog({ narrow: true });
 		const commit = folder.commit.bind(folder);

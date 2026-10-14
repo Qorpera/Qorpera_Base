@@ -512,6 +512,8 @@ export class CloudRunLog {
 	#gone = false;
 	#closed = false;
 	#timer: ReturnType<typeof setTimeout> | undefined;
+	/** Stops timed batches when closing's signal stops. */
+	readonly #stop = new AbortController();
 	#queue: Promise<void> = Promise.resolve();
 	#narrowFrom = Number.POSITIVE_INFINITY;
 
@@ -526,7 +528,7 @@ export class CloudRunLog {
 		narrow?: boolean;
 		protection: CloudRunLogProtection;
 		folder: CloudRunLogFolder;
-		/** The run's own signal: timed batches stop with it. */
+		/** The run's own signal: timed batches stop with it, or with closing's (`close`). */
 		signal: AbortSignal;
 		/** The run's classification of its calls: `cloudActionEffect` with its connectors' effects. */
 		effectful?: (tool: Pick<CloudNativeTool, "name" | "source">, parsed: JsonValue) => boolean;
@@ -563,7 +565,7 @@ export class CloudRunLog {
 		if (this.#origin.narrow) this.#narrowFrom = 0;
 		this.#folder = options.folder;
 		this.#effectful = options.effectful ?? ((tool, parsed) => cloudActionEffect(tool, parsed) !== "read");
-		this.#signal = options.signal;
+		this.#signal = AbortSignal.any([options.signal, this.#stop.signal]);
 		this.#now = options.now ?? (() => new Date());
 		this.#commitMs = options.commitMs ?? CLOUD_RUN_LOG_COMMIT_MS;
 		this.#first = options.firstStep ?? 0;
@@ -705,13 +707,27 @@ export class CloudRunLog {
 		await this.#enqueue(signal);
 	}
 
-	/** At run end: no more steps, and every finished step is committed. */
+	/** At run end: no more steps, and every finished step is committed. `signal` bounds all the log's work left: when it
+	 * stops, so does a timed batch still running, and closing waits for no batch past it. */
 	async close(signal: AbortSignal): Promise<void> {
 		this.#closed = true;
 		this.#wake();
 		if (this.#timer) clearTimeout(this.#timer);
 		this.#timer = undefined;
-		await this.#enqueue(signal);
+		let stop: () => void = () => undefined;
+		const stopped = new Promise<never>((_, reject) => {
+			stop = (): void => {
+				this.#stop.abort(signal.reason);
+				reject(signal.reason);
+			};
+		});
+		if (signal.aborted) stop();
+		else signal.addEventListener("abort", stop, { once: true });
+		try {
+			await Promise.race([this.#enqueue(signal), stopped]);
+		} finally {
+			signal.removeEventListener("abort", stop);
+		}
 	}
 
 	/** This process's steps as committed, in step order, as their lines store them. */
