@@ -188,6 +188,7 @@ function stepLine(text: string): bigint | null {
 			"result",
 			"reads",
 			"releases",
+			"paths",
 			"text",
 			"at",
 			...(fields.has("reads_cut") ? ["reads_cut"] : []),
@@ -195,8 +196,15 @@ function stepLine(text: string): bigint | null {
 	)
 		return null;
 	if (typeof row.args !== "string" || typeof row.text !== "string" || !Array.isArray(row.reads)) return null;
-	for (const key of ["args", "text", "result", "reads"])
+	for (const key of ["args", "text", "result", "reads", "paths"])
 		if (encoder.encode(fields.get(key)!).length > (key === "reads" ? 16384 : 8192)) return null;
+	// The paths the step's arguments and result name, never cut (§4.5): up to 1,024 strings of up to 4,096 characters.
+	if (
+		!Array.isArray(row.paths) ||
+		row.paths.length > 1024 ||
+		row.paths.some((path) => typeof path !== "string" || [...path].length > 4096)
+	)
+		return null;
 	if (fields.has("reads_cut") && (row.reads_cut !== true || row.result === null)) return null;
 	if (row.result === null && (row.reads.length !== 0 || row.releases.length !== 0)) return null;
 	const rawReads = fields.get("reads")!;
@@ -251,7 +259,7 @@ export function parseMemoryRunFile(kind: MemoryRunFileKind, path: string, text: 
 	let previousLevel = -1;
 	let previousNumber = -1n;
 	for (const [index, line] of lines.entries()) {
-		if (encoder.encode(line).length > (kind === "memory-steps" ? 41983 : 2113))
+		if (encoder.encode(line).length > (kind === "memory-steps" ? 50175 : 2113))
 			return refuse("this line is longer than this kind permits", index + 1);
 		if (kind === "memory-steps") {
 			const j = stepLine(line);

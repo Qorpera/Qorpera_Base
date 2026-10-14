@@ -22,6 +22,7 @@ function ordinary(changes: Record<string, unknown> = {}) {
 		result: null,
 		reads: [],
 		releases: [],
+		paths: ["projects/research.md"],
 		text: "Read the brief",
 		at: "2026-10-09T12:30:00Z",
 		...changes,
@@ -189,6 +190,12 @@ describe("memory step blocks", () => {
 			narrow({ finished: true, result_hash: null }),
 			narrow({ finished: "true" }),
 			narrow({ text: "hidden" }),
+			narrow({ paths: [] }),
+			ordinary({ paths: undefined }),
+			ordinary({ paths: "projects/research.md" }),
+			ordinary({ paths: [null] }),
+			ordinary({ paths: [["projects/research.md"]] }),
+			{ j: 0, tool: "read_file", call: "x", args_hash: null, erased: true, args_bytes: 0, paths: [] },
 			{ j: 0, tool: "read_file", call: "x", args_hash: null, erased: false, args_bytes: 0 },
 			{ j: 0, tool: "read_file", call: "x", args_hash: null, erased: true, narrow: true, args_bytes: 0 },
 		])
@@ -215,6 +222,16 @@ describe("memory step blocks", () => {
 		refuses(LOG, `${raw.replace('"result":{}', `"result":{${" ".repeat(8191)}}`)}\n`);
 		accepts(LOG, `${raw.replace('"reads":[]', `"reads":[${" ".repeat(16382)}]`)}\n`, "memory-steps");
 		refuses(LOG, `${raw.replace('"reads":[]', `"reads":[${" ".repeat(16383)}]`)}\n`);
+		const paths = '"paths":["projects/research.md"]';
+		accepts(LOG, `${raw.replace(paths, `"paths":[${" ".repeat(8190)}]`)}\n`, "memory-steps");
+		refuses(LOG, `${raw.replace(paths, `"paths":[${" ".repeat(8191)}]`)}\n`);
+		refuses(LOG, lines(ordinary({ paths: ["a".repeat(4096), "b".repeat(4096)] })));
+		// Each path is at most 4,096 characters, counted as SQL's char_length counts them: by code point.
+		accepts(LOG, lines(ordinary({ paths: [`${"a".repeat(4095)}😀`] })), "memory-steps");
+		refuses(LOG, lines(ordinary({ paths: ["a".repeat(4097)] })));
+		const numbered = (length: number) => Array.from({ length }, (_, index) => String(index));
+		accepts(LOG, lines(ordinary({ paths: numbered(1024) })), "memory-steps");
+		refuses(LOG, lines(ordinary({ paths: numbered(1025) })));
 		refuses(
 			LOG,
 			`${raw.replace('"args":"{\\"path\\":\\"projects/research.md\\"}"', `"args":"${"\\u0061".repeat(1366)}"`)}\n`,
@@ -231,8 +248,8 @@ describe("memory step blocks", () => {
 		refuses(LOG, raw);
 		refuses(LOG, `${raw}\n\n`);
 		refuses(LOG, "\n");
-		accepts(LOG, `${raw}${" ".repeat(41983 - raw.length)}\n`, "memory-steps");
-		refuses(LOG, `${raw}${" ".repeat(41984 - raw.length)}\n`);
+		accepts(LOG, `${raw}${" ".repeat(50175 - raw.length)}\n`, "memory-steps");
+		refuses(LOG, `${raw}${" ".repeat(50176 - raw.length)}\n`);
 		const second = JSON.stringify(ordinary({ j: 1 }));
 		const block = `${raw}${" ".repeat(32767 - raw.length)}\n${second}${" ".repeat(32767 - second.length)}\n`;
 		accepts(LOG, block, "memory-steps");
