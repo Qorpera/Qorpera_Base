@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, constants } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
@@ -68,6 +69,14 @@ export interface MachineGuestPorts {
 	/** Where commands start (/root). */
 	home?: string;
 	requireRoot?: boolean;
+	/** The company folder's private folder (/run/qorpera-folder) and its mount (/company); see MACHINE_FOLDER. */
+	folderRoot?: string;
+	folderMountpoint?: string;
+	/** This process's /proc/self/mountinfo. */
+	readMountinfo?: () => Promise<string>;
+	/** Exec stdin, at most this many bytes. */
+	readInput?: (maxBytes: number) => Promise<Buffer>;
+	sleep?: (ms: number) => Promise<void>;
 }
 interface Identity {
 	schema: "qorpera.machine-guest/v1";
@@ -502,7 +511,8 @@ export async function cancelMachineCommand(
 
 /** Linux's USER_HZ, the unit of /proc/stat on every architecture machines run. */
 const CLOCK_TICKS_PER_SECOND = 100;
-/** The machine's own control: the watchdog's slice and the LXD agent the executor's calls run under. Everything else on
+/** The machine's own control: the slice of the watchdog and the company folder's program, and the LXD agent the
+ * executor's calls run under. Everything else on
  * the machine, its commands, containers and programs left behind, is the machine's work. */
 const OWN_UNITS = ["qorpera-control.slice", "lxd-agent.service"];
 /** At most this many processes are read for the bytes they moved. */
@@ -842,6 +852,154 @@ export async function executeMachineCommand(commandId: string, ports: MachineGue
 	}
 }
 
+// The company folder (F3 step 6c; deploy/first-node/RUNTIME-FOLDER-TEST-MACHINES.md "Mounts in the VM"). The
+// executor hands the boot's view {environmentId, viewId, pass} to `folder-mount` on exec stdin: never in an argument,
+// LXD config, a unit's environment or a log. The folder program reads a view only from a file, so the view goes to one
+// root-only file in /run, which is memory (refused when it is not), next to the program's state folder. One static
+// unit (deploy/machine/qorpera-machine-folder.service) runs the program at /company, where every command and container
+// sees it, and systemd starts it again whenever it exits until it exits 3 (the node closed or refused the view). One
+// view per boot: handing the same view again only starts the program if it was stopped.
+export const MACHINE_FOLDER = Object.freeze({
+	root: "/run/qorpera-folder",
+	mountpoint: "/company",
+	unit: "qorpera-machine-folder.service",
+});
+const FOLDER_VIEW_MAX_BYTES = 4096;
+const FOLDER_POLLS = 100;
+interface FolderView {
+	environmentId: string;
+	viewId: string;
+	pass: string;
+}
+export interface MachineFolderAnswer {
+	schema: "qorpera.machine-guest-folder/v1";
+	viewId: string;
+	/** mounted: /company is the program's; closed: the node closed or refused the view; unanswered: not yet. */
+	mount: "mounted" | "closed" | "unanswered";
+}
+
+function folderView(value: unknown): FolderView {
+	if (
+		!value ||
+		typeof value !== "object" ||
+		Array.isArray(value) ||
+		Object.keys(value).sort().join() !== "environmentId,pass,viewId" ||
+		!Object.values(value).every((field) => typeof field === "string" && /^[\x21-\x7e]{1,256}$/.test(field))
+	)
+		throw new Error("MACHINE_FOLDER_VIEW_INVALID");
+	const { environmentId, viewId, pass } = value as FolderView;
+	return { environmentId, viewId, pass };
+}
+function parseFolderView(input: Buffer): FolderView {
+	let value: unknown;
+	try {
+		value = input.length <= FOLDER_VIEW_MAX_BYTES ? JSON.parse(input.toString("utf8")) : undefined;
+	} catch {
+		// The parser's message can quote the pass.
+		value = undefined;
+	}
+	return folderView(value);
+}
+/** Exec stdin until the executor closes it: at most maxBytes, within 15 seconds. */
+export function readMachineInput(input: Readable, maxBytes: number, timeoutMs = 15000): Promise<Buffer> {
+	return new Promise((resolve, reject) => {
+		const chunks: Buffer[] = [];
+		let size = 0;
+		let done = false;
+		const end = (error?: Error) => {
+			if (done) return;
+			done = true;
+			clearTimeout(timer);
+			input.destroy();
+			if (error) reject(error);
+			else resolve(Buffer.concat(chunks));
+		};
+		const timer = setTimeout(() => end(new Error("MACHINE_FOLDER_VIEW_UNREAD")), timeoutMs);
+		input
+			.on("data", (chunk: Buffer) => {
+				size += chunk.length;
+				if (size > maxBytes) end(new Error("MACHINE_FOLDER_VIEW_INVALID"));
+				else if (!done) chunks.push(chunk);
+			})
+			.once("end", () => end())
+			.on("error", () => end(new Error("MACHINE_FOLDER_VIEW_UNREAD")));
+	});
+}
+/** The top mount a path is on, from mountinfo. */
+function mountOf(mountinfo: string, path: string): { mountpoint: string; fstype: string; source: string } | undefined {
+	const decode = (field: string) =>
+		field.replace(/\\([0-7]{3})/g, (_, octal: string) => String.fromCharCode(Number.parseInt(octal, 8)));
+	let top: { mountpoint: string; fstype: string; source: string } | undefined;
+	for (const line of mountinfo.split("\n").filter(Boolean)) {
+		const fields = line.split(" ");
+		const dash = fields.indexOf("-", 6);
+		if (dash < 0 || fields.length < dash + 3) throw new Error("MACHINE_FOLDER_MOUNTS_UNCONFIRMED");
+		const mountpoint = decode(fields[4]);
+		if (path !== mountpoint && !path.startsWith(mountpoint === "/" ? "/" : `${mountpoint}/`)) continue;
+		if (!top || mountpoint.length >= top.mountpoint.length)
+			top = { mountpoint, fstype: fields[dash + 1], source: decode(fields[dash + 2]) };
+	}
+	return top;
+}
+
+/** Shows the boot's view at /company: writes it to the folder's private file
+ * in memory, then starts the program's unit and waits for the mount. */
+export async function mountMachineFolder(input: Buffer, ports: MachineGuestPorts = {}): Promise<MachineFolderAnswer> {
+	requireRoot(ports);
+	const view = parseFolderView(input);
+	await identity(ports);
+	const root = ports.folderRoot ?? MACHINE_FOLDER.root,
+		mountpoint = ports.folderMountpoint ?? MACHINE_FOLDER.mountpoint,
+		file = join(root, "view.json"),
+		state = join(root, "state");
+	const mountinfo = ports.readMountinfo ?? (() => readFile("/proc/self/mountinfo", "utf8"));
+	if (mountOf(await mountinfo(), root)?.fstype !== "tmpfs") throw new Error("MACHINE_FOLDER_NOT_IN_MEMORY");
+	await mkdir(root, { recursive: true, mode: 0o700 });
+	const held = await missing(() => readJson(file, FOLDER_VIEW_MAX_BYTES));
+	if (held === undefined) {
+		// The program's version map and read log start only in an empty state folder.
+		await rm(state, { recursive: true, force: true });
+		await mkdir(state, { mode: 0o700 });
+		await writeJson(file, view, 0o600);
+	} else {
+		const known = folderView(held);
+		if (known.environmentId !== view.environmentId || known.viewId !== view.viewId || known.pass !== view.pass)
+			throw new Error("MACHINE_FOLDER_VIEW_TAKEN");
+	}
+	await mkdir(mountpoint, { recursive: true, mode: 0o755 });
+	const run = ports.system ?? system;
+	await run("/usr/bin/systemctl", ["start", MACHINE_FOLDER.unit]);
+	// The unit is up once the program runs (Type=exec); the mount comes after the node accepts the view.
+	for (let poll = 0; ; poll += 1) {
+		const top = mountOf(await mountinfo(), mountpoint);
+		if (top?.mountpoint === mountpoint && top.fstype === "fuse.qorpera" && top.source === "qorpera-company")
+			return { schema: "qorpera.machine-guest-folder/v1", viewId: view.viewId, mount: "mounted" };
+		const fields = Object.fromEntries(
+			(
+				await run("/usr/bin/systemctl", [
+					"show",
+					MACHINE_FOLDER.unit,
+					"--property=ActiveState,Result,ExecMainCode,ExecMainStatus",
+				])
+			)
+				.trim()
+				.split("\n")
+				.map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+		);
+		// Exit 3: the node closed or refused the view, and systemd does not start the program again.
+		if (
+			fields.ActiveState === "failed" &&
+			fields.Result === "exit-code" &&
+			fields.ExecMainCode === "1" &&
+			fields.ExecMainStatus === "3"
+		)
+			return { schema: "qorpera.machine-guest-folder/v1", viewId: view.viewId, mount: "closed" };
+		if (poll + 1 >= FOLDER_POLLS)
+			return { schema: "qorpera.machine-guest-folder/v1", viewId: view.viewId, mount: "unanswered" };
+		await (ports.sleep ?? ((ms: number) => new Promise((done) => setTimeout(done, ms))))(200);
+	}
+}
+
 /** Every answer goes to a reply file the executor reads back (LXD exec
  * returns no output); old replies are removed on the way. */
 async function reply(ports: MachineGuestPorts, nonce: string, value: unknown): Promise<void> {
@@ -888,6 +1046,11 @@ export async function runMachineGuestCli(argv: readonly string[], ports: Machine
 		} else if (second === "observe" && rest.length === 1)
 			result = await observeMachine(a === "-" ? [] : a.split(","), ports);
 		else if (second === "stop-commands" && rest.length === 0) result = await stopMachineCommands(ports);
+		else if (second === "folder-mount" && rest.length === 0)
+			result = await mountMachineFolder(
+				await (ports.readInput ?? ((max: number) => readMachineInput(process.stdin, max)))(FOLDER_VIEW_MAX_BYTES),
+				ports,
+			);
 		else throw new Error("INVALID_MACHINE_GUEST_ARGUMENTS");
 	} catch (error) {
 		result = { schema: "qorpera.machine-guest-refusal/v1", code: codingErrorCode(error) };
