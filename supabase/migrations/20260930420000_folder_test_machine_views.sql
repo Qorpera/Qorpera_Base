@@ -118,3 +118,93 @@ select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_view_resol
 	-- must still stand.$old$,
 	$new$	-- Detached: a desktop, a command (20260930183000) or a test machine (20260930420000) whose run has ended, or a
 	-- coding session. The agent and member must still stand.$new$);
+
+-- 2. The open ---------------------------------------------------------------------------------------------------------
+
+select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)'::regprocedure,
+	$old$	v_command public.qorpera_runtime_office_shell_commands%rowtype; -- 20260930183000
+$old$,
+	$new$	v_command public.qorpera_runtime_office_shell_commands%rowtype; -- 20260930183000
+	v_company_machine public.qorpera_company_machines%rowtype; v_placement public.qorpera_company_machine_placements%rowtype;
+	v_had_view boolean := false; -- 20260930420000
+$new$);
+select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)'::regprocedure,
+	$old$	if p_kind not in ('run_box','computer_desktop','computer_shell_command','coding_session') -- 20260930183000$old$,
+	$new$	if p_kind not in ('run_box','computer_desktop','computer_shell_command','coding_session','test_machine') -- 20260930420000$new$);
+select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)'::regprocedure,
+	$old$	else
+		if coalesce(p_anchor ->> 'workerId', '')$old$,
+	$new$	elsif p_kind = 'test_machine' then
+		-- 20260930420000 (C1b-3b): a company machine's boot that the executor has just recorded: the machine not removed
+		-- and meant to run, the anchor's placement its current one, reserved and running the anchor's boot. The machine's
+		-- older views first (the open one, and the placement's newest, whose read set this view carries), which waits out
+		-- their last save and release; then the machine fence, the machine and the placement FOR SHARE, in custody's
+		-- order; then the checks, in new statements. The view names the starter's agent and member.
+		if p_anchor - array['companyMachineId','placementId','bootId'] <> '{}'::jsonb
+			or exists (select 1 from unnest(array['companyMachineId','placementId','bootId']) f(name)
+				where coalesce(p_anchor ->> f.name, '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') then
+			raise exception 'Folder view anchor is invalid' using errcode = '22023'; end if;
+		perform 1 from public.qorpera_folder_views where company_machine_id = (p_anchor ->> 'companyMachineId')::uuid
+			and (state = 'open' or id = (select v.id from public.qorpera_folder_views v
+				where v.placement_id = (p_anchor ->> 'placementId')::uuid order by v.created_at desc, v.id desc limit 1))
+		for update;
+		perform public.qorpera_folder_machine_fence(v_file.profile_id);
+		perform 1 from public.qorpera_company_machines where id = (p_anchor ->> 'companyMachineId')::uuid for share;
+		perform 1 from public.qorpera_company_machine_placements where id = (p_anchor ->> 'placementId')::uuid
+			and machine_id = (p_anchor ->> 'companyMachineId')::uuid for share;
+		select * into v_company_machine from public.qorpera_company_machines where id = (p_anchor ->> 'companyMachineId')::uuid;
+		select * into v_placement from public.qorpera_company_machine_placements where id = (p_anchor ->> 'placementId')::uuid;
+		-- coalesce: a missing row must refuse, not compare to null.
+		if not coalesce(v_company_machine.environment_id = p_environment_id and v_company_machine.removed_at is null
+				and v_company_machine.desired_state = 'running' and v_placement.machine_id = v_company_machine.id
+				and v_placement.retired_at is null and v_placement.removed_at is null and v_placement.running_at is not null
+				and v_placement.boot_id = (p_anchor ->> 'bootId')::uuid
+				and public.qorpera_company_machine_placement_reserved(v_placement.id), false) then
+			raise exception 'Folder view machine is not current' using errcode = '42501'; end if;
+		v_staff := v_company_machine.started_by_staff_agent_id; v_member := v_company_machine.requested_by_user_id;
+		v_access := (public.qorpera_run_worker(v_company_machine.started_by_run_id)).access;
+		v_machine := v_placement.id;
+		-- The disk's whole life: a command that ran there without the root-read check may have left anything on it, and a
+		-- disk that had a view holds what its views read. Either way the executor moves the machine to a new disk.
+		v_had_view := exists (select 1 from public.qorpera_folder_views v where v.placement_id = v_placement.id);
+		if v_placement.folder_unchecked_at is not null then
+			raise exception 'Test machine disk was used without the folder check' using errcode = '42501',
+				detail = 'qorpera.test-machine/new-disk'; end if;
+		if v_had_view and not (exists (select 1 from public.qorpera_profile_staff where profile_id = v_file.profile_id
+					and staff_agent_id = v_staff and employment_status = 'active')
+				and exists (select 1 from public.qorpera_profile_members where profile_id = v_file.profile_id and user_id = v_member)
+				and public.qorpera_folder_reads_root(p_environment_id, v_file.profile_id, v_staff, v_member)) then
+			raise exception 'Folder view needs the company-wide view' using errcode = '42501',
+				detail = 'qorpera.test-machine/new-disk'; end if;
+	else
+		if coalesce(p_anchor ->> 'workerId', '')$new$);
+select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)'::regprocedure,
+	$old$	if p_kind in ('computer_desktop','computer_shell_command') then -- 20260930183000$old$,
+	$new$	if p_kind in ('computer_desktop','computer_shell_command','test_machine') then -- 20260930183000, 20260930420000$new$);
+-- A test machine carries the read set of its placement's newest view, across boots: it lives with the disk. A new disk
+-- starts clean.
+select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)'::regprocedure,
+	$old$			or (p_kind = 'coding_session' and v.worker_id = v_session.worker_id))
+		order by v.created_at desc, v.id desc limit 1) newest$old$,
+	$new$			or (p_kind = 'coding_session' and v.worker_id = v_session.worker_id)
+			or (p_kind = 'test_machine' and v.placement_id = v_placement.id)) -- 20260930420000
+		order by v.created_at desc, v.id desc limit 1) newest$new$);
+select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)'::regprocedure,
+	$old$		or (p_kind = 'coding_session' and newest.machine_id = v_machine);$old$,
+	$new$		or (p_kind = 'coding_session' and newest.machine_id = v_machine) or p_kind = 'test_machine'; -- 20260930420000$new$);
+select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)'::regprocedure,
+	$old$		or (p_kind = 'coding_session' and worker_id = v_session.worker_id));$old$,
+	$new$		or (p_kind = 'coding_session' and worker_id = v_session.worker_id)
+		or (p_kind = 'test_machine' and company_machine_id = v_company_machine.id)); -- 20260930420000$new$);
+select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_view_open(uuid,jsonb,text,jsonb)'::regprocedure,
+	$old$		screen_id, screen_generation, activation_id, holder_run_id, holder_user_id, worker_id, attachment_token, node_id, machine_id,
+		pass_sha256, lease_until)
+	values (p_environment_id, v_file.profile_id, p_kind, v_staff, v_member, v_access,
+		v_screen.id, v_screen.generation, v_activation, v_holder_run, v_holder_user, v_session.worker_id, v_session.attachment_token,
+		v_node, v_machine, extensions.digest(v_pass, 'sha256'), clock_timestamp() + interval '120 seconds')$old$,
+	$new$		screen_id, screen_generation, activation_id, holder_run_id, holder_user_id, worker_id, attachment_token, node_id, machine_id,
+		company_machine_id, placement_id, boot_id, pass_sha256, lease_until) -- 20260930420000
+	values (p_environment_id, v_file.profile_id, p_kind, v_staff, v_member, v_access,
+		v_screen.id, v_screen.generation, v_activation, v_holder_run, v_holder_user, v_session.worker_id, v_session.attachment_token,
+		v_node, v_machine, v_company_machine.id, v_placement.id, v_placement.boot_id, extensions.digest(v_pass, 'sha256'),
+		clock_timestamp() + interval '120 seconds')$new$);
