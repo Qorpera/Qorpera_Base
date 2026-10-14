@@ -75,7 +75,7 @@ they answer 42501 "native host call is refused".
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-154 functions, grouped for navigation. Signatures: see the migration that defines each.
+152 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
@@ -260,13 +260,11 @@ and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
 - `qorpera_stage_operation_receipt_objects`
 
 
-### Company File, snapshots, workspaces (5)
+### Company File and snapshots (3)
 
 - `qorpera_company_uses_path_gateway`
 - `qorpera_get_company_file`
 - `qorpera_get_company_snapshot`
-- `qorpera_list_company_snapshots`
-- `qorpera_list_company_workspaces`
 
 
 ### Organization and staff (4)
