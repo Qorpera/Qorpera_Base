@@ -237,8 +237,9 @@ revoke all on function public.qorpera_memory_run_block_parse(text, text) from pu
 -- closed keys and no duplicate. Three shapes, as the runtime writes them (cloud-run-log.ts):
 --   a step: j, tool, call, args, args_bytes, args_hash, result (null while pending), reads, reads_cut (only true, only
 --     when finished), releases, paths, text, at; args, text and result at most 8 KiB each as stored, reads 16 KiB;
---     paths, the paths the step named (its args, its receipt and its reads, as the runtime gives them to
---     qorpera_memory_step_narrow): at most 1,024 strings of at most 4,096 characters, 8 KiB as stored;
+--     paths, the paths the step named in its args and its receipt, not its reads (the runtime gives
+--     qorpera_memory_step_narrow these and the read paths): at most 1,024 strings of at most 4,096 characters, 8 KiB
+--     as stored;
 --   a narrow step (§4.5): j, tool, call, args_hash, narrow, finished, result_hash (when finished), releases, at;
 --   an erased step (§8): j, tool, call, args_hash, erased, and narrow or args_bytes.
 -- Returns its parts, the folder keys a step names, the line's sha256 and that of its fixed parts (j, tool, call,

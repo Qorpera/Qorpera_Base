@@ -608,13 +608,15 @@ them too, with `result` null and `reads` and `releases` empty.
   that read nothing.
 - `text` is the agent's own text before the call, fitted to 8 KiB as stored like `args`. Reasoning items are never
   stored (§6.3). So a rendered step is at most about 24 KiB.
-- **`paths` are the paths the step named:** those in its arguments, in its receipt and in its reads, the same list
-  the runtime gives `qorpera_memory_step_narrow` (below). They are taken from the whole call and the whole result,
-  before anything is cut to fit, and spelled as that call spells them: a leading `/company/` goes, and a string that
-  is no company path names nothing. At most 1,024 paths of at most 4,096 characters each, and 8 KiB as stored with
-  the brackets. A pending step names its arguments' paths, and the finished step adds those of its receipt and reads.
-  A file's erasure finds the step by them (below), so `paths` is never cut: a step that names more than fits is
-  written narrow (below), and so holds no copy that its paths would have to find.
+- **`paths` are the paths the step named in its arguments and in its receipt** (the result), not its reads. A
+  search can read up to 10,000 paths, so listing them would pass the cap below and make the rest of the run narrow.
+  Reads are covered elsewhere: `reads` and the read records of `releases` above, and the runtime still gives
+  `qorpera_memory_step_narrow` (below) every read path with these. `paths` are taken from the whole call and the whole
+  receipt, before anything is cut to fit, and spelled as that call spells them: a leading `/company/` goes, and a
+  string that is no company path names nothing. At most 1,024 paths of at most 4,096 characters each, and 8 KiB as
+  stored with the brackets. A pending step names its arguments' paths, and the finished step adds those of its
+  receipt. A file's erasure finds the step by them (below), so `paths` is never cut: a step whose arguments and
+  receipt name more than fits is written narrow (below), and so holds no copy that its paths would have to find.
 - **A block holds 16 steps or fewer, and never passes core §5's 64 KiB for a structured file**
   (`RUNTIME-COMPANY-FOLDER-CORE.md` §5). A step record takes at most 49 KiB (50,176 bytes) with its keys and newline. A pending effectful
   step (below) counts at that full size until its result is filled in. A new step joins the last block only if the
