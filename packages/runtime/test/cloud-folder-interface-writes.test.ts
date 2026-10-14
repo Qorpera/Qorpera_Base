@@ -405,9 +405,10 @@ it("saves nothing when a file is not as the call expects, and says why with what
 		else expect(answer.companyReadId, example.name).toBeUndefined();
 		expect(f.commits, example.name).toEqual([]);
 		// Asked for in case a commit of this call saved before (none did), so nothing is noted.
-		expect(f.notes.map((note) => note.p_request), example.name).toEqual([
-			{ operationKey: `save_interface:${sha("save-1")}` },
-		]);
+		expect(
+			f.notes.map((note) => note.p_request),
+			example.name,
+		).toEqual([{ operationKey: `save_interface:${sha("save-1")}` }]);
 	}
 });
 
