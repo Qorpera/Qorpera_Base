@@ -16,7 +16,8 @@ const words = (text) => text.split(/[\s\\]+/).filter(Boolean);
 
 test("the image installs the toolbox every Qorpera machine has, and its checks ask each command its version", () => {
 	// deploy/first-node/RUNTIME-FOLDER-COMPANY-MACHINES.md (4e): bash and the usual Unix tools, git, Node.js with npm,
-	// npx, tsc and tsx, Python 3 with pip and uv, ripgrep, fd, jq, sqlite3, curl, zip, unzip, LibreOffice.
+	// npx, tsc and tsx, Python 3 with pip and uv, mise (QORPERA-RUNTIME-CONTRACT.md, "One toolbox on every machine"),
+	// ripgrep, fd, jq, sqlite3, curl, zip, unzip, LibreOffice.
 	const apt = words(imageScript.match(/apt-get install -y --no-install-recommends((?:[^\n]*\\\n)*[^\n]*)/)[1]);
 	for (const name of [
 		"git",
@@ -45,6 +46,7 @@ test("the image installs the toolbox every Qorpera machine has, and its checks a
 		"python3",
 		"pip",
 		"uv",
+		"mise",
 		"rg",
 		"fd",
 		"jq",
@@ -57,10 +59,16 @@ test("the image installs the toolbox every Qorpera machine has, and its checks a
 		assert.ok(checked.includes(tool), `the image checks ${tool} --version`);
 	// unzip alone has no --version.
 	assert.match(imageScript, /\n\tunzip -v >\/dev\/null\n/);
-	// What apt does not bring is pinned: uv by its release's sha-256, tsc and tsx by exact npm versions.
+	// What apt does not bring is pinned: uv and mise by their releases' sha-256, tsc and tsx by exact npm versions.
 	assert.match(imageScript, /\nUV_VERSION=\d+\.\d+\.\d+\nUV_SHA256=[0-9a-f]{64}\n/);
+	assert.match(imageScript, /\nMISE_VERSION=\d{4}\.\d+\.\d+\nMISE_SHA256=[0-9a-f]{64}\n/);
 	assert.match(imageScript, /\nTYPESCRIPT_VERSION=\d+\.\d+\.\d+\nTSX_VERSION=\d+\.\d+\.\d+\n/);
 	assert.match(imageScript, /echo "\$\{UV_SHA256\}  \/tmp\/uv\.tar\.gz" \| sha256sum -c -/);
+	// mise is the release's own linux-x64 binary, checked before it goes on every user's PATH.
+	assert.match(
+		imageScript,
+		/curl -fsSLo \/tmp\/mise "https:\/\/github\.com\/jdx\/mise\/releases\/download\/v\$\{MISE_VERSION\}\/mise-v\$\{MISE_VERSION\}-linux-x64"\n\techo "\$\{MISE_SHA256\}  \/tmp\/mise" \| sha256sum -c -\n\tinstall -o root -g root -m 0755 \/tmp\/mise \/usr\/local\/bin\/mise\n/,
+	);
 	assert.match(
 		imageScript,
 		/npm install -g --ignore-scripts --no-fund --no-audit "typescript@\$\{TYPESCRIPT_VERSION\}" "tsx@\$\{TSX_VERSION\}"/,

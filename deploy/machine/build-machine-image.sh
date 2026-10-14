@@ -33,9 +33,12 @@ PROJECT=${4:?the build space project, for example qorpera-build}
 NETWORK=${5:?the build space network, for example qorpera0}
 POOL=${6:?the storage pool for the builder root, for example qorpera-vm}
 MACHINES=${7:-machines}
-# The toolbox's own pins beside apt's: uv from its release page, tsc and tsx from npm.
+# The toolbox's own pins beside apt's: uv and mise from their release pages, tsc and tsx from npm.
 UV_VERSION=0.13.1
 UV_SHA256=eadd9d27c134ab5ac1ffd4473b97a741407f3ea238288f03121fc4deddf90220
+# mise-vMISE_VERSION-linux-x64 in the release's SHASUMS256.txt.
+MISE_VERSION=2026.10.10
+MISE_SHA256=7d79972e15549b286dcf9e25ef8c4fcef3d9fd7c0332d11cdfbc7d2842c418be
 TYPESCRIPT_VERSION=7.0.2
 TSX_VERSION=4.23.15
 # The company folder's program: the build deploy/folder-service/folder-program-linux-x64.json records
@@ -89,7 +92,8 @@ lx start "$BUILDER"
 for _ in $(seq 1 90); do lx exec "$BUILDER" -- true >/dev/null 2>&1 && break; sleep 2; done
 lx exec "$BUILDER" -- cloud-init status --wait >/dev/null
 lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256" UV_VERSION="$UV_VERSION" \
-	UV_SHA256="$UV_SHA256" TYPESCRIPT_VERSION="$TYPESCRIPT_VERSION" TSX_VERSION="$TSX_VERSION" bash -euo pipefail -c '
+	UV_SHA256="$UV_SHA256" MISE_VERSION="$MISE_VERSION" MISE_SHA256="$MISE_SHA256" TYPESCRIPT_VERSION="$TYPESCRIPT_VERSION" \
+	TSX_VERSION="$TSX_VERSION" bash -euo pipefail -c '
 	export DEBIAN_FRONTEND=noninteractive
 	apt-get update
 	apt-get install -y --no-install-recommends ca-certificates curl git jq unzip zip xz-utils make pkg-config \
@@ -112,6 +116,11 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	tar -xzf /tmp/uv.tar.gz -C /tmp
 	install -o root -g root -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uv /tmp/uv-x86_64-unknown-linux-gnu/uvx /usr/local/bin/
 	rm -rf /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu
+	# mise installs any other language or version in the home of the user who asks (~/.local/share/mise), without root.
+	curl -fsSLo /tmp/mise "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-linux-x64"
+	echo "${MISE_SHA256}  /tmp/mise" | sha256sum -c -
+	install -o root -g root -m 0755 /tmp/mise /usr/local/bin/mise
+	rm -f /tmp/mise
 	systemctl enable docker.service containerd.service
 	install -d -o root -g root -m 0755 /opt/qorpera-machine /opt/qorpera-folder
 	# Where the company folder is mounted; until then an empty folder.
@@ -132,7 +141,7 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	node --version | grep -q "^v2[4-9]\."
 	python3 --version && git --version && gcc --version | head -1
 	# The toolbox: every command answers --version (unzip has none; -v prints its version).
-	for tool in bash git node npm npx tsc tsx python3 pip pip3 uv uvx rg fd jq sqlite3 curl zip libreoffice soffice \
+	for tool in bash git node npm npx tsc tsx python3 pip pip3 uv uvx mise rg fd jq sqlite3 curl zip libreoffice soffice \
 		fusermount3; do
 		"$tool" --version >/dev/null || { echo "$tool does not answer --version" >&2; exit 1; }
 	done
