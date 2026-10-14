@@ -79,3 +79,42 @@ create index qorpera_folder_views_placement_history on public.qorpera_folder_vie
 -- made before this counts as used.
 alter table public.qorpera_company_machine_placements add column folder_unchecked_at timestamptz;
 update public.qorpera_company_machine_placements set folder_unchecked_at = clock_timestamp();
+
+-- 3. Valid while its placement is not removed and runs its boot, and the starter's agent and member read the root.
+select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_view_valid(public.qorpera_folder_views)'::regprocedure,
+	$old$		when 'coding_session' then exists (select 1 from public.qorpera_coding_sessions cs$old$,
+	$new$		-- 20260930420000: a test machine's view stands while its placement is not removed and still runs the view's
+		-- boot, and the starter's agent and member still read the root. A retired placement keeps it, for the final
+		-- publish, which closes it.
+		when 'test_machine' then exists (select 1 from public.qorpera_company_machine_placements p
+				where p.id = p_view.placement_id and p.machine_id = p_view.company_machine_id and p.removed_at is null
+					and p.boot_id = p_view.boot_id)
+			and public.qorpera_folder_reads_root(p_view.environment_id, p_view.profile_id, p_view.staff_agent_id,
+				p_view.member_user_id)
+		when 'coding_session' then exists (select 1 from public.qorpera_coding_sessions cs$new$);
+
+-- It acts through the starter's run while the run's job is leased.
+select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_view_live_run(public.qorpera_folder_views)'::regprocedure,
+	$old$		when 'coding_session' then (select jsonb_build_object('kind','run','runId',r.id,'jobId',j.id,$old$,
+	$new$		-- 20260930420000: a test machine acts through its starter's run while the run's job is leased.
+		when 'test_machine' then (select jsonb_build_object('kind','run','runId',r.id,'jobId',j.id,
+				'runnerId',j.runner_id,'assignmentId',j.client_lease_id)
+			from public.qorpera_company_machines m
+			join public.qorpera_execution_runs r on r.id = m.started_by_run_id
+			join public.qorpera_runner_jobs j on j.id = r.job_id
+			where m.id = p_view.company_machine_id and j.status = 'leased' and j.lease_expires_at > clock_timestamp())
+		when 'coding_session' then (select jsonb_build_object('kind','run','runId',r.id,'jobId',j.id,$new$);
+
+-- It resolves as its live run, else detached as the agent; company-wide, as a desktop.
+select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_view_resolve(uuid,uuid,jsonb)'::regprocedure,
+	$old$		'companyWide', v_view.kind in ('computer_desktop','computer_shell_command'));$old$,
+	$new$		'companyWide', v_view.kind in ('computer_desktop','computer_shell_command','test_machine')); -- 20260930420000$new$);
+select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_view_resolve(uuid,uuid,jsonb)'::regprocedure,
+	$old$	if v_view.kind = 'run_box' or (v_view.kind in ('computer_desktop','computer_shell_command') and v_run is not null) then$old$,
+	$new$	if v_view.kind = 'run_box' or (v_view.kind in ('computer_desktop','computer_shell_command','test_machine') -- 20260930420000
+			and v_run is not null) then$new$);
+select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_view_resolve(uuid,uuid,jsonb)'::regprocedure,
+	$old$	-- Detached: a desktop or a command (20260930183000) whose run has ended, or a coding session. The agent and member
+	-- must still stand.$old$,
+	$new$	-- Detached: a desktop, a command (20260930183000) or a test machine (20260930420000) whose run has ended, or a
+	-- coding session. The agent and member must still stand.$new$);
