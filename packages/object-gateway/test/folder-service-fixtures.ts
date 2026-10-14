@@ -152,8 +152,8 @@ export class FakeCore implements FolderCore {
 	#check(actor: FolderActor, environmentId: string) {
 		if (actor.kind !== "view") return undefined;
 		const view = this.views.get(actor.viewId);
-		if (!view || view.pass !== actor.pass || view.state !== "open" || view.environmentId !== environmentId)
-			throw new CoreRefusal("denied");
+		if (!view || view.pass !== actor.pass || view.environmentId !== environmentId) throw new CoreRefusal("denied");
+		if (view.state !== "open") throw new CoreRefusal("denied", "Folder view has ended");
 		return view;
 	}
 	/** Events per feed page (0: all in one page), and the feed call (counted from `feedCalls`) that fails. */
@@ -275,6 +275,9 @@ export class FakeCore implements FolderCore {
 	/** Objects on the share the catalog knows, by hash: their sizes. */
 	readonly catalog = new Map<string, number>();
 	readonly intents = new Map<string, { manifest: string; objects: Map<string, number>; put: Set<string> }>();
+	/** Opt-in possession check from folder_core_bytes: a view needs its own live seal or an already-readable file. */
+	checkViewPossession = false;
+	readonly sealedIntents = new Map<string, { viewId: string; manifestSha256: string }>();
 	/** Every commit asked, in order (a replay included), and whether it was a command view's final. */
 	readonly commits: { key: string; units: readonly CommitUnit[]; final: boolean }[] = [];
 	readonly #answers = new Map<string, { request: string; answer: CommitAnswer }>();
@@ -328,6 +331,8 @@ export class FakeCore implements FolderCore {
 			mediaType: string;
 			executable: boolean;
 		};
+		if (actor.kind === "view")
+			this.sealedIntents.set(intentId, { viewId: actor.viewId, manifestSha256: hashOf(intent.manifest) });
 		return {
 			state: "sealed",
 			file: {
@@ -401,6 +406,32 @@ export class FakeCore implements FolderCore {
 				version: null,
 			});
 			const path = u.op === "move" ? u.to : u.path;
+			if (this.checkViewPossession && actor.kind === "view") {
+				const files =
+					u.op === "write"
+						? [u.file]
+						: u.op === "new_folder"
+							? u.contents.flatMap((entry) => (entry.file ? [entry.file] : []))
+							: [];
+				if (
+					files.some(
+						(file) =>
+							![...this.sealedIntents].some(
+								([id, seal]) =>
+									seal.viewId === actor.viewId &&
+									seal.manifestSha256 === file.manifestSha256 &&
+									!this.lapsed.has(id),
+							) &&
+							![...this.entries.values()].some(
+								(entry) =>
+									entry.kind === "file" &&
+									entry.manifestSha256 === file.manifestSha256 &&
+									!this.hidden(entry.path),
+							),
+					)
+				)
+					return no("refused", "bytes_unverified");
+			}
 			if (this.refuse(path) || (u.op === "move" && this.refuse(u.from))) return no("denied", "denied");
 			if (this.park(path)) return no("waiting_for_review", "parked");
 			const conflict = (reason: string): CommitOutcome => {

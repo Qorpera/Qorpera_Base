@@ -63,7 +63,7 @@ fn start_with(node: &FakeNode, state: Option<PathBuf>) -> (PathBuf, std::thread:
 		4,
 	);
 	let options =
-		Options { mountpoint: mountpoint.clone(), threads: 4, ttl: Duration::from_secs(3600), allow_other: false, owner: None, state };
+		Options { mountpoint: mountpoint.clone(), threads: 4, ttl: Duration::from_secs(3600), allow_other: false, owner: None, state, reads: None };
 	let runner = std::thread::spawn(move || match mount::run(link, options) {
 		Ok(stop) => stop,
 		Err(e) => panic!("mount failed: {e:?}"),
@@ -206,7 +206,7 @@ fn a_refused_view_is_never_mounted() {
 		2,
 	);
 	let options =
-		Options { mountpoint: mountpoint.clone(), threads: 2, ttl: Duration::from_secs(1), allow_other: false, owner: None, state: None };
+		Options { mountpoint: mountpoint.clone(), threads: 2, ttl: Duration::from_secs(1), allow_other: false, owner: None, state: None, reads: None };
 	match mount::run(link, options) {
 		Err(mount::Failed::View(_)) => {}
 		other => panic!("{other:?}"),
@@ -604,6 +604,10 @@ fi
 		let log_meta = std::fs::metadata(state.join("versions.jsonl")).unwrap();
 		assert_eq!((state_meta.uid(), state_meta.mode() & 0o777), (0, 0o700));
 		assert_eq!((log_meta.uid(), log_meta.mode() & 0o777), (0, 0o600));
+	} else {
+		// The account read docs/plan.md, but a read-only mount hands no reads over, so it never logs them.
+		let journal = ReadLog::open(&state, false).unwrap();
+		assert!(journal.locked().unwrap().request(0).reads.is_empty(), "a read-only mount logged its reads");
 	}
 }
 

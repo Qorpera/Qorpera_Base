@@ -2,64 +2,98 @@ import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isDeepStrictEqual } from "node:util";
 import { boundedObjectOperation, ObjectDependencyError } from "./dependency.ts";
-import type { MemberCompanyFileOptions } from "./member-company-authority.ts";
+import type { MemberCompanyAuthority } from "./member-company-authority.ts";
+import { memberFolderWriter } from "./member-folder-commits.ts";
+import { UUID } from "./native-objects.ts";
+import type { FileSystemObjectStore } from "./object-store.ts";
+import { PlatformFolderWriter } from "./platform-folder-writer.ts";
+import type { ObjectGatewayReplication } from "./replication.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/*
+ * A member's chat images on folder-v2 (supabase/CLIENT-CONTRACT.md "Chat images", migration 20260930260000): each image
+ * is a folder file under the conversation's tree root, `<root>/images/<client input id>/<sha256>.<ext>`, which only the
+ * platform writes.
+ * - `PUT …/upload/<sessionId>/<clientInputId>/<sha256>`: the member's begin (`qorpera_room_image_begin`, with their
+ *   token) checks the room, the input and its limits and names the company's folder, and the writer check
+ *   (`qorpera_member_folder_writer`, with their token) names the member. The body must be the bytes begun. The gateway
+ *   stages them as the platform and saves the file for that member (`qorpera_room_image_commit`, with the service key).
+ *   Answers `{sha256, bytes, mediaType}`.
+ * - `GET …/input/<sessionId>/<inputId>/<sha256>`: one image of a posted input, for a member who may read the
+ *   conversation (`qorpera_room_image_download`, with their token), read by its manifest as the platform, and served
+ *   only if the member may still read it after the read.
+ * The database's refusals keep their statuses: 42501 is 403, 22023 400, 23505 (another member's input) 409, 54000 (the
+ * input's limits) 413, and 55000 (no folder, the file gone, a paused company) 423.
+ */
+
+const MAX_BYTES = 8 * 1024 * 1024;
 const MEDIA = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const SHA256 = /^[0-9a-f]{64}$/;
 
-function descriptor(
+export interface MemberSessionAttachmentOptions {
+	readonly authority: Pick<MemberCompanyAuthority, "member" | "publisher">;
+	readonly store: Pick<FileSystemObjectStore, "get">;
+	readonly replication: Pick<ObjectGatewayReplication, "uploadWithAuthority">;
+	readonly readFallback?: (profileId: string, sha256: string) => Promise<Uint8Array>;
+}
+
+/** The database's answer: exactly `keys`, with the values the route asked for in `expected`; 503 otherwise. */
+function answer(value: unknown, keys: readonly string[], expected: Record<string, unknown>): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new ObjectDependencyError(503);
+	const item = value as Record<string, unknown>;
+	if (
+		Object.keys(item).length !== keys.length ||
+		keys.some((key) => !Object.hasOwn(item, key)) ||
+		Object.entries(expected).some(([key, wanted]) => item[key] !== wanted)
+	)
+		throw new ObjectDependencyError(503);
+	return item;
+}
+
+/** An image the download names: its folder, its manifest and an image within the limits; 503 otherwise. */
+function download(
 	value: unknown,
 	sessionId: string,
 	inputId: string,
 	sha256: string,
-	upload: boolean,
-): {
-	companyId: string;
-	bytes: number;
-	mediaType: string;
-	uploadId?: string;
-} {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new ObjectDependencyError(503);
-	const item = value as Record<string, unknown>;
-	const keys = [
-		"companyId",
-		"sessionId",
-		upload ? "clientInputId" : "inputId",
-		"sha256",
-		"bytes",
-		"mediaType",
-		...(upload ? ["uploadId"] : []),
-	];
+): { environmentId: string; manifestSha256: string; bytes: number } {
+	const item = answer(
+		value,
+		[
+			"schema",
+			"environmentId",
+			"sessionId",
+			"inputId",
+			"sha256",
+			"bytes",
+			"mediaType",
+			"manifestSha256",
+			"fileSha256",
+			"path",
+		],
+		{ schema: "qorpera.room-image-download/v1", sessionId, inputId, sha256, fileSha256: sha256 },
+	);
 	if (
-		Object.keys(item).length !== keys.length ||
-		keys.some((key) => !Object.hasOwn(item, key)) ||
-		item.sessionId !== sessionId ||
-		item[upload ? "clientInputId" : "inputId"] !== inputId ||
-		item.sha256 !== sha256 ||
-		typeof item.companyId !== "string" ||
-		!UUID.test(item.companyId) ||
+		typeof item.environmentId !== "string" ||
+		!UUID.test(item.environmentId) ||
+		typeof item.manifestSha256 !== "string" ||
+		!SHA256.test(item.manifestSha256) ||
 		!Number.isSafeInteger(item.bytes) ||
 		(item.bytes as number) < 1 ||
-		(item.bytes as number) > 8 * 1024 * 1024 ||
+		(item.bytes as number) > MAX_BYTES ||
 		typeof item.mediaType !== "string" ||
 		!MEDIA.has(item.mediaType) ||
-		(upload && (typeof item.uploadId !== "string" || !UUID.test(item.uploadId)))
+		typeof item.path !== "string"
 	)
 		throw new ObjectDependencyError(503);
-	return {
-		companyId: item.companyId,
-		bytes: item.bytes as number,
-		mediaType: item.mediaType,
-		...(upload ? { uploadId: item.uploadId as string } : {}),
-	};
+	return { environmentId: item.environmentId, manifestSha256: item.manifestSha256, bytes: item.bytes as number };
 }
 
-/** Upload proof and download authority are separate. Neither a known hash nor
- * an unaccepted upload gives access to someone else's Company File bytes. */
+/** Upload proof and download authority are separate. Neither a known hash nor an unposted upload gives access to
+ * another input's bytes. */
 export async function serveMemberSessionAttachment(
 	request: IncomingMessage,
 	response: ServerResponse,
-	options: MemberCompanyFileOptions,
+	options: MemberSessionAttachmentOptions,
 ): Promise<void> {
 	const match =
 		/^\/v1\/member-session-attachments\/(upload|input)\/([0-9a-f-]{36})\/([0-9a-f-]{36})\/([0-9a-f]{64})$/.exec(
@@ -71,8 +105,14 @@ export async function serveMemberSessionAttachment(
 	const token = header.slice(7);
 	const [, kind, sessionId, inputId, sha256] = match;
 	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), 30_000);
+	const timer = setTimeout(() => controller.abort(new ObjectDependencyError(503)), 30_000);
 	const signal = controller.signal;
+	const folder = new PlatformFolderWriter({
+		authority: options.authority,
+		store: options.store,
+		replication: options.replication,
+		...(options.readFallback ? { readFallback: options.readFallback } : {}),
+	});
 	try {
 		if (kind === "upload") {
 			if (request.method !== "PUT") throw new ObjectDependencyError(405);
@@ -81,68 +121,84 @@ export async function serveMemberSessionAttachment(
 			if (
 				!length ||
 				!/^[1-9][0-9]{0,6}$/.test(length) ||
-				Number(length) > 8 * 1024 * 1024 ||
+				Number(length) > MAX_BYTES ||
 				!mediaType ||
 				!MEDIA.has(mediaType)
 			)
 				throw new ObjectDependencyError(400);
-			const access = descriptor(
+			const size = Number(length);
+			const begun = answer(
 				await options.authority.member(
-					"qorpera_begin_member_session_attachment_upload",
+					"qorpera_room_image_begin",
 					token,
 					{
 						p_session_id: sessionId,
 						p_client_input_id: inputId,
 						p_sha256: sha256,
-						p_bytes: Number(length),
+						p_bytes: size,
 						p_media_type: mediaType,
 					},
 					signal,
 				),
-				sessionId,
-				inputId,
-				sha256,
-				true,
+				["schema", "environmentId", "sessionId", "clientInputId", "sha256", "bytes", "mediaType", "path"],
+				{
+					schema: "qorpera.room-image-begin/v1",
+					sessionId,
+					clientInputId: inputId,
+					sha256,
+					bytes: size,
+					mediaType,
+				},
 			);
-			if (access.bytes !== Number(length) || access.mediaType !== mediaType) throw new ObjectDependencyError(503);
+			if (
+				typeof begun.environmentId !== "string" ||
+				!UUID.test(begun.environmentId) ||
+				typeof begun.path !== "string"
+			)
+				throw new ObjectDependencyError(503);
+			const environmentId = begun.environmentId;
+			// The commit is the service key's, for the member the database names for this token.
+			const member = memberFolderWriter(
+				await options.authority.member(
+					"qorpera_member_folder_writer",
+					token,
+					{ p_environment_id: environmentId },
+					signal,
+				),
+			);
 			const bytes = await boundedObjectOperation(async () => {
 				const chunks: Buffer[] = [];
-				let size = 0;
+				let count = 0;
 				for await (const part of request) {
 					const chunk = Buffer.from(part);
-					size += chunk.length;
-					if (size > access.bytes) throw new ObjectDependencyError(413);
+					count += chunk.length;
+					if (count > size) throw new ObjectDependencyError(413);
 					chunks.push(chunk);
 				}
-				if (size !== access.bytes) throw new ObjectDependencyError(400);
+				if (count !== size) throw new ObjectDependencyError(400);
 				return Buffer.concat(chunks);
 			});
 			if (createHash("sha256").update(bytes).digest("hex") !== sha256) throw new ObjectDependencyError(400);
-			const check = async (confirm: boolean): Promise<void> => {
-				signal.throwIfAborted();
-				if (
-					(await options.authority.publisher(
-						"qorpera_stage_member_session_attachment",
-						{ p_upload_id: access.uploadId, p_confirm: confirm },
-						signal,
-					)) !== access.companyId
-				)
-					throw new ObjectDependencyError(403);
-			};
-			await options.replication.uploadWithAuthority(access.companyId, sha256, bytes, {
-				authorize: () => check(false),
-				confirm: () => check(true),
-			});
+			const file = await folder.stage(environmentId, bytes, { mediaType, executable: false }, signal);
+			answer(
+				await options.authority.publisher(
+					"qorpera_room_image_commit",
+					{ p_user_id: member.actor.userId, p_session_id: sessionId, p_client_input_id: inputId, p_file: file },
+					signal,
+				),
+				["schema", "sha256", "bytes", "mediaType", "path"],
+				{ schema: "qorpera.room-image/v1", sha256, bytes: size, mediaType, path: begun.path },
+			);
 			signal.throwIfAborted();
 			response.writeHead(200, { "content-type": "application/json", "cache-control": "private, no-store" });
-			response.end(JSON.stringify({ sha256, bytes: access.bytes, mediaType }));
+			response.end(JSON.stringify({ sha256, bytes: size, mediaType }));
 			return;
 		}
 		if (request.method !== "GET") throw new ObjectDependencyError(405);
 		const authorize = async () =>
-			descriptor(
+			download(
 				await options.authority.member(
-					"qorpera_authorize_member_session_attachment",
+					"qorpera_room_image_download",
 					token,
 					{ p_session_id: sessionId, p_input_id: inputId, p_sha256: sha256 },
 					signal,
@@ -150,22 +206,15 @@ export async function serveMemberSessionAttachment(
 				sessionId,
 				inputId,
 				sha256,
-				false,
 			);
 		const access = await authorize();
-		let bytes: Uint8Array;
-		try {
-			bytes = await options.store.get(access.companyId, sha256, access.bytes);
-		} catch (error) {
-			if (
-				!(error instanceof Error) ||
-				(error.message !== "Object not found" && !(error instanceof ObjectDependencyError && error.unavailable))
-			)
-				throw error;
-			bytes = await options.readLegacyObject(access.companyId, sha256);
-		}
-		if (bytes.length !== access.bytes || createHash("sha256").update(bytes).digest("hex") !== sha256)
-			throw new ObjectDependencyError(503);
+		// The read checks the bytes against the file's hash, which is the URL's.
+		const bytes = await folder.read(
+			access.environmentId,
+			{ manifestSha256: access.manifestSha256, fileSha256: sha256, bytes: access.bytes },
+			MAX_BYTES,
+			signal,
+		);
 		if (!isDeepStrictEqual(await authorize(), access)) throw new ObjectDependencyError(403);
 		signal.throwIfAborted();
 		response.writeHead(200, {

@@ -1,13 +1,9 @@
-import type { CloudRunnerModelRequest } from "@qorpera/cloud-client/cloud-runner-model";
 import { parseCloudRunnerJob } from "@qorpera/cloud-client/node/cloud-runner-protocol";
 import {
-	type AppendCloudRunnerTranscriptEventInput,
-	type BeginCloudRunnerOperationInput,
-	type BindCloudRunnerProviderSessionInput,
 	type CloudRunnerBrokerAuthority,
 	type CloudRunnerBrokerTransport,
 	CloudRunnerJobBroker,
-	type CompleteCloudRunnerOperationInput,
+	NATIVE_AUTHORITY_LEASE_SECONDS,
 	SupabaseCloudRunnerBrokerTransport,
 } from "@qorpera/runtime/cloud-runner-broker";
 import { describe, expect, it, vi } from "vitest";
@@ -25,13 +21,19 @@ const sessionId = "45454545-4545-4454-8545-454545454545";
 const sponsorBindingId = "56565656-5656-4565-8565-565656565656";
 const providerConnectionId = "67676767-6767-4676-8676-676767676767";
 const staffAgentId = "69696969-6969-4969-8969-696969696969";
-const inputId = "70707070-7070-4070-8070-707070707070";
+const computeIdentityId = "71717171-7171-4717-8717-717171717171";
+const capsuleId = "72727272-7272-4727-8727-727272727272";
+const leaseId = "73737373-7373-4737-8737-737373737373";
+const otherId = "13131313-1313-4313-8313-131313131313";
 const artifactIndexId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const actorUserId = "c98d600e-654a-40da-a07f-f1d54f93cc6c";
 const createdAt = "2026-08-17T01:00:00.000Z";
 const sessionToken = "s".repeat(43);
 const leaseToken = "l".repeat(43);
+const RUNTIME_REFUSAL = "Runner broker returned an invalid Company File runtime selection";
+const SUBSTRATE_REFUSAL = "Runner broker returned a run with a Company File substrate";
 
+/** A folder-v2 run's leased job: no Company File substrate. */
 function jobRecord(): Record<string, unknown> {
 	return {
 		job_id: jobId,
@@ -39,7 +41,7 @@ function jobRecord(): Record<string, unknown> {
 		profile_id: profileId,
 		environment_id: environmentId,
 		session_id: sessionId,
-		substrate_version_id: versionId,
+		substrate_version_id: null,
 		client_job_id: "11111111-1111-4111-8111-111111111111",
 		assignment_id: assignmentId,
 		required_capability: "agent_turn",
@@ -63,23 +65,26 @@ function jobRecord(): Record<string, unknown> {
 	};
 }
 
+/** qorpera_folder_runner_broker_describe (folder core C3, P23): the path lane with no substrate anywhere. */
 function descriptionRecord(): Record<string, unknown> {
 	return {
-		company_runtime: "whole-tree-v1",
+		company_runtime: "company-path-v1",
 		job: jobRecord(),
 		run: {
 			run_id: runId,
 			profile_id: profileId,
 			environment_id: environmentId,
-			source_kind: "session_turn",
+			source_kind: "wake",
 			source_id: "12121212-1212-4212-8212-121212121212",
 			session_id: sessionId,
 			job_id: jobId,
-			substrate_version_id: versionId,
-			company_snapshot_id: snapshotId,
+			substrate_version_id: null,
+			company_snapshot_id: null,
+			// The folder clock's pin (folder core C4, P28: qorpera_folder_runner_broker_describe sends it).
+			company_seq: 7,
 			staff_agent_id: staffAgentId,
 			staff_version: 3,
-			input_ids: [inputId],
+			input_ids: [],
 			sponsor_binding_id: sponsorBindingId,
 			sponsor_version: 1,
 			required_capability: "agent_turn",
@@ -89,6 +94,10 @@ function descriptionRecord(): Record<string, unknown> {
 			review_policy_key: null,
 			reviewer_staff_ids: [],
 			logical_computer_id: null,
+			compute_identity_id: computeIdentityId,
+			compute_identity_ownership_kind: "member",
+			compute_identity_owner_user_id: actorUserId,
+			compute_identity_owner_scope_key: null,
 			transcript_start_sequence: 1,
 			status: "runner_started",
 			created_by_user_id: actorUserId,
@@ -101,9 +110,36 @@ function descriptionRecord(): Record<string, unknown> {
 			provider_connection_id: providerConnectionId,
 			provider_connection_version: 2,
 			provider: "openai",
-			authentication_mode: "api_key",
-			native_harness: "openai-responses",
-			allow_autonomous: false,
+			authentication_mode: "native_subscription",
+			native_harness: "codex-cli",
+			allow_autonomous: true,
+		},
+		version: null,
+		snapshot: null,
+		proposal_snapshot: null,
+		artifact_index: null,
+		output_limits: {
+			max_object_bytes: 8 * 1024 * 1024,
+			max_object_count: 100,
+			max_total_bytes: 64 * 1024 * 1024,
+			root_contract: "qorpera.object/v1",
+		},
+		company_file_output_limits: null,
+	};
+}
+
+/** The whole-tree lane's description of a snapshot-v1 run (removed in legacy sweep step C): a substrate everywhere. */
+function wholeTreeRecord(): Record<string, unknown> {
+	const folder = descriptionRecord();
+	return {
+		...folder,
+		company_runtime: "whole-tree-v1",
+		job: { ...jobRecord(), substrate_version_id: versionId },
+		run: {
+			...(folder.run as Record<string, unknown>),
+			substrate_version_id: versionId,
+			company_snapshot_id: snapshotId,
+			company_seq: null,
 		},
 		version: {
 			version_id: versionId,
@@ -129,7 +165,7 @@ function descriptionRecord(): Record<string, unknown> {
 			parent_snapshot_id: null,
 			tree_manifest_sha256: "c".repeat(64),
 			tree_manifest_bytes: 128,
-			tree_contract_version: 1,
+			tree_contract_version: 3,
 			file_count: 1,
 			total_bytes: 32,
 			created_by_user_id: actorUserId,
@@ -147,12 +183,6 @@ function descriptionRecord(): Record<string, unknown> {
 			created_by_user_id: actorUserId,
 			created_at: createdAt,
 		},
-		output_limits: {
-			max_object_bytes: 8 * 1024 * 1024,
-			max_object_count: 100,
-			max_total_bytes: 64 * 1024 * 1024,
-			root_contract: "qorpera.object/v1",
-		},
 		company_file_output_limits: {
 			max_object_bytes: 8 * 1024 * 1024,
 			max_object_count: 509_602,
@@ -162,210 +192,91 @@ function descriptionRecord(): Record<string, unknown> {
 	};
 }
 
-class MemoryBrokerTransport implements CloudRunnerBrokerTransport {
-	readonly authorities: CloudRunnerBrokerAuthority[] = [];
-	readonly modelRequests: CloudRunnerModelRequest[] = [];
-	readonly begunOperations: BeginCloudRunnerOperationInput[] = [];
-	readonly completedOperations: CompleteCloudRunnerOperationInput[] = [];
-	readonly providerSessions: BindCloudRunnerProviderSessionInput[] = [];
-	readonly transcriptEvents: AppendCloudRunnerTranscriptEventInput[] = [];
-	readonly description = descriptionRecord();
-
-	async describe(authority: CloudRunnerBrokerAuthority): Promise<unknown> {
-		this.authorities.push({ ...authority });
-		return this.description;
-	}
-
-	async listInputs(authority: CloudRunnerBrokerAuthority): Promise<unknown> {
-		this.authorities.push({ ...authority });
-		return [
-			{
-				input_id: inputId,
-				position: 1,
-				kind: "user_message",
-				author_user_id: actorUserId,
-				author_display_name: "Owner",
-				body: { text: "Run safely" },
-				created_at: createdAt,
-			},
-		];
-	}
-
-	async listTranscript(authority: CloudRunnerBrokerAuthority): Promise<unknown> {
-		this.authorities.push({ ...authority });
-		return [
-			{
-				session_id: sessionId,
-				sequence: 1,
-				event_id: "23232323-2323-4232-8232-232323232323",
-				event_type: "message",
-				actor_user_id: actorUserId,
-				body: { schema: "qorpera.runner-transcript-entry/v1", entry: { id: "prior" } },
-				previous_hash: null,
-				event_hash: "8".repeat(64),
-				execution_kind: "turn",
-				execution_id: "24242424-2424-4242-8242-242424242424",
-				execution_claimant_id: "25252525-2525-4252-8252-252525252525",
-				runner_assignment_id: null,
-				created_at: createdAt,
-			},
-		];
-	}
-
-	async listOperations(authority: CloudRunnerBrokerAuthority): Promise<unknown> {
-		this.authorities.push({ ...authority });
-		return [
-			{
-				profile_id: profileId,
-				sequence: 2,
-				environment_id: environmentId,
-				operation_type: "session_event",
-				entity_id: "12121212-1212-4212-8212-121212121212",
-				entity_version: 0,
-				content_sha256: "e".repeat(64),
-				payload: { message: "immutable" },
-				actor_user_id: actorUserId,
-				created_at: createdAt,
-			},
-		];
-	}
-
-	async listArtifacts(authority: CloudRunnerBrokerAuthority): Promise<unknown> {
-		this.authorities.push({ ...authority });
-		return [];
-	}
-
-	async requestModel(authority: CloudRunnerBrokerAuthority, input: CloudRunnerModelRequest): Promise<unknown> {
-		this.authorities.push({ ...authority });
-		this.modelRequests.push(structuredClone(input));
-		return {
-			request_id: input.requestId,
-			provider: input.provider,
-			model: input.model,
-			output: { text: "bounded answer" },
-			usage: { input_tokens: 8, output_tokens: 3, cost_microusd: 125 },
-		};
-	}
-
-	async beginOperation(
-		authority: CloudRunnerBrokerAuthority,
-		receivedAssignmentId: string,
-		input: BeginCloudRunnerOperationInput,
-	): Promise<unknown> {
-		this.authorities.push({ ...authority });
-		expect(receivedAssignmentId).toBe(assignmentId);
-		this.begunOperations.push(structuredClone(input));
-		return { state: "executing", receipt_id: input.receiptId, result: null };
-	}
-
-	async completeOperation(
-		authority: CloudRunnerBrokerAuthority,
-		receivedAssignmentId: string,
-		input: CompleteCloudRunnerOperationInput,
-	): Promise<unknown> {
-		this.authorities.push({ ...authority });
-		expect(receivedAssignmentId).toBe(assignmentId);
-		this.completedOperations.push(structuredClone(input));
-		return { state: "completed", receipt_id: input.receiptId, result: input.result };
-	}
-
-	async bindProviderSession(
-		authority: CloudRunnerBrokerAuthority,
-		input: BindCloudRunnerProviderSessionInput,
-	): Promise<unknown> {
-		this.authorities.push({ ...authority });
-		this.providerSessions.push(structuredClone(input));
-		return {
-			run_id: runId,
-			provider_connection_id: providerConnectionId,
-			provider_session_id: input.providerSessionId,
-		};
-	}
-
-	async appendTranscriptEvent(
-		authority: CloudRunnerBrokerAuthority,
-		receivedAssignmentId: string,
-		input: AppendCloudRunnerTranscriptEventInput,
-	): Promise<unknown> {
-		this.authorities.push({ ...authority });
-		expect(receivedAssignmentId).toBe(assignmentId);
-		this.transcriptEvents.push(structuredClone(input));
-		return {
-			session_id: "45454545-4545-4454-8545-454545454545",
-			sequence: (input.expectedSequence ?? 0) + 1,
-			event_id: input.eventId,
-			event_type: input.eventType,
-			body: { schema: "qorpera.runner-transcript-entry/v1", entry: input.entry },
-			previous_hash: null,
-			event_hash: "e".repeat(64),
-			execution_kind: "run",
-			execution_id: runId,
-			execution_claimant_id: runId,
-			runner_assignment_id: assignmentId,
-			created_at: createdAt,
-		};
-	}
-}
-
-// A folder-v2 run (folder core C3, P23): the broker describes it in the path lane with no substrate anywhere.
-function folderDescriptionRecord(): Record<string, unknown> {
-	const description = descriptionRecord();
+/** qorpera_acquire_native_provider_connection_lease plus the run's model authority. */
+function nativeAuthorityRecord(): Record<string, unknown> {
 	return {
-		...description,
-		company_runtime: "company-path-v1",
-		job: { ...(description.job as Record<string, unknown>), substrate_version_id: null },
-		// The folder clock's pin (folder core C4, P28: qorpera_folder_runner_broker_describe sends it).
-		run: {
-			...(description.run as Record<string, unknown>),
-			substrate_version_id: null,
-			company_snapshot_id: null,
-			company_seq: 7,
-		},
-		version: null,
-		snapshot: null,
-		proposal_snapshot: null,
-		artifact_index: null,
-		company_file_output_limits: null,
+		lease_id: leaseId,
+		run_id: runId,
+		provider_connection_id: providerConnectionId,
+		provider_connection_version: 2,
+		credential_capsule_id: capsuleId,
+		encrypted_capsule_reference: "model-login/fixture",
+		attestation_policy_sha256: "d".repeat(64),
+		compute_identity_id: computeIdentityId,
+		compute_identity_ownership_kind: "member",
+		compute_identity_owner_user_id: actorUserId,
+		compute_identity_owner_scope_key: null,
+		credential_ownership_kind: "member",
+		credential_owner_user_id: actorUserId,
+		credential_owner_scope_key: null,
+		provider: "openai",
+		authentication_mode: "native_subscription",
+		native_harness: "codex-cli",
+		runner_id: runnerId,
+		assignment_id: assignmentId,
+		expires_at: new Date(Date.now() + NATIVE_AUTHORITY_LEASE_SECONDS * 1000).toISOString(),
+		model: { provider: "openai", model: "gpt-native" },
 	};
 }
 
-function folderBroker(description = folderDescriptionRecord()): {
+class MemoryBrokerTransport implements CloudRunnerBrokerTransport {
+	readonly actions: string[] = [];
+	readonly authorities: CloudRunnerBrokerAuthority[] = [];
+	readonly description = descriptionRecord();
+
+	async describe(authority: CloudRunnerBrokerAuthority): Promise<unknown> {
+		this.#called("describe", authority);
+		return this.description;
+	}
+
+	async acquireNativeAuthority(
+		authority: CloudRunnerBrokerAuthority,
+		receivedRunId: string,
+		receivedAssignmentId: string,
+		leaseSeconds: number,
+	): Promise<unknown> {
+		this.#called("native_authority", authority);
+		expect(receivedRunId).toBe(runId);
+		expect(receivedAssignmentId).toBe(assignmentId);
+		expect(leaseSeconds).toBe(NATIVE_AUTHORITY_LEASE_SECONDS);
+		return nativeAuthorityRecord();
+	}
+
+	async renewNativeAuthority(
+		authority: CloudRunnerBrokerAuthority,
+		receivedLeaseId: string,
+		leaseSeconds: number,
+	): Promise<unknown> {
+		this.#called("renew_native_authority", authority);
+		return {
+			lease_id: receivedLeaseId,
+			run_id: runId,
+			status: "active",
+			expires_at: new Date(Date.now() + leaseSeconds * 1000).toISOString(),
+		};
+	}
+
+	async releaseNativeAuthority(
+		authority: CloudRunnerBrokerAuthority,
+		receivedLeaseId: string,
+		status: "released" | "revoked" | "expired",
+	): Promise<unknown> {
+		this.#called("release_native_authority", authority);
+		return { lease_id: receivedLeaseId, status };
+	}
+
+	#called(action: string, authority: CloudRunnerBrokerAuthority): void {
+		this.actions.push(action);
+		this.authorities.push({ ...authority });
+	}
+}
+
+function broker(description?: Record<string, unknown>): {
 	broker: CloudRunnerJobBroker;
 	transport: MemoryBrokerTransport;
 } {
 	const transport = new MemoryBrokerTransport();
-	Object.assign(transport.description, description);
-	return {
-		broker: new CloudRunnerJobBroker({
-			job: parseCloudRunnerJob({ ...jobRecord(), substrate_version_id: null }),
-			runnerId,
-			credentials: () => ({ sessionToken, leaseToken }),
-			transport,
-		}),
-		transport,
-	};
-}
-
-// The opening statements of v169's parseCloudRunnerBrokerDescription with its `record` helper, verbatim from
-// c7878671f except that their results go unused: every host on a build before P23 runs them first.
-function previousRecord(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value))
-		throw new Error(`Runner broker returned invalid ${label}`);
-	return value as Record<string, unknown>;
-}
-function previousParserOpening(value: unknown): void {
-	const input = previousRecord(value, "description");
-	if (input.company_runtime !== "whole-tree-v1" && input.company_runtime !== "company-path-v1") {
-		throw new Error("Runner broker returned an invalid Company File runtime selection");
-	}
-	previousRecord(input.output_limits, "output limits");
-	previousRecord(input.company_file_output_limits, "Company File output limits");
-}
-
-function broker(transport = new MemoryBrokerTransport()): {
-	broker: CloudRunnerJobBroker;
-	transport: MemoryBrokerTransport;
-} {
+	if (description) Object.assign(transport.description, description);
 	return {
 		broker: new CloudRunnerJobBroker({
 			job: parseCloudRunnerJob(jobRecord()),
@@ -378,7 +289,7 @@ function broker(transport = new MemoryBrokerTransport()): {
 }
 
 describe("cloud runner object broker", () => {
-	it.each([undefined, null, "company-path-v2", ""])(
+	it.each([undefined, null, "company-path-v2", "", "whole-tree-v1"])(
 		"rejects a missing or unknown cloud runtime selection (%s)",
 		async (mode) => {
 			const current = broker();
@@ -393,7 +304,7 @@ describe("cloud runner object broker", () => {
 		);
 	});
 
-	it("resolves only the leased substrate and refreshes credentials for every broker call", async () => {
+	it("binds every broker call to the leased job and refreshes credentials for each", async () => {
 		const memory = new MemoryBrokerTransport();
 		let currentSessionToken = sessionToken;
 		const current = new CloudRunnerJobBroker({
@@ -403,154 +314,55 @@ describe("cloud runner object broker", () => {
 			transport: memory,
 		});
 
-		await expect(current.resolve(versionId)).resolves.toMatchObject({
-			version: { versionId, operationSequence: 2 },
-			snapshot: { snapshotId },
-			artifactIndex: { indexId: artifactIndexId },
+		await expect(current.describe()).resolves.toMatchObject({
+			job: { jobId, runId, assignmentId },
+			run: { runId, jobId },
 		});
-		await expect(current.listTranscript()).resolves.toMatchObject([
-			{
-				sessionId,
-				sequence: 1,
-				execution: { kind: "turn" },
-			},
-		]);
-		await expect(current.listInputs()).resolves.toMatchObject([
-			{ inputId, position: 1, kind: "user_message", body: { text: "Run safely" } },
-		]);
+		const authority = await current.acquireNativeAuthority();
+		expect(authority).toMatchObject({ leaseId, runId, assignmentId, runnerId });
 		currentSessionToken = "n".repeat(43);
-		await expect(current.listOperations((await current.resolve(versionId)).version)).resolves.toMatchObject([
-			{ sequence: 2, entityVersion: 0, payload: { message: "immutable" } },
+		await expect(current.renewNativeAuthority()).resolves.toMatchObject({ leaseId, runId });
+		await current.releaseNativeAuthority();
+		expect(memory.actions).toEqual([
+			"describe",
+			"native_authority",
+			"renew_native_authority",
+			"release_native_authority",
 		]);
-		expect(memory.authorities).toMatchObject([
-			{ sessionToken, leaseToken, runnerId, jobId },
-			{ sessionToken, leaseToken, runnerId, jobId },
-			{ sessionToken, leaseToken, runnerId, jobId },
-			{ sessionToken: currentSessionToken, leaseToken, runnerId, jobId },
+		expect(memory.authorities).toEqual([
+			{ runnerId, jobId, sessionToken, leaseToken },
+			{ runnerId, jobId, sessionToken, leaseToken },
+			{ runnerId, jobId, sessionToken: currentSessionToken, leaseToken },
+			{ runnerId, jobId, sessionToken: currentSessionToken, leaseToken },
 		]);
-		await expect(current.resolve("13131313-1313-4313-8313-131313131313")).rejects.toThrow("another substrate");
 	});
 
-	it("describes a snapshot-v1 run's quota-sized Company File output limits", async () => {
-		expect((await broker().broker.describe()).companyFileOutputLimits).toEqual({
-			maxObjectBytes: 8 * 1024 * 1024,
-			maxObjectCount: 509_602,
-			maxTotalBytes: 50 * 1024 * 1024 * 1024,
-			treeContractVersion: 3,
-		});
+	it.each([
+		["another job", { job: { ...jobRecord(), job_id: otherId } }],
+		["another assignment", { job: { ...jobRecord(), assignment_id: otherId } }],
+		["another job's run", { run: { ...(descriptionRecord().run as Record<string, unknown>), job_id: otherId } }],
+		[
+			"another sponsor binding",
+			{ sponsor: { ...(descriptionRecord().sponsor as Record<string, unknown>), binding_id: otherId } },
+		],
+		// The broker refuses a proposal review on folder-v2 (0A000): it reads a proposal snapshot, which a folder-v2 run
+		// has none of.
+		[
+			"a proposal review",
+			{ run: { ...(descriptionRecord().run as Record<string, unknown>), source_kind: "proposal_review" } },
+		],
+	])("refuses a description of %s", async (_label, change) => {
+		await expect(broker(change).broker.describe()).rejects.toThrow("another job substrate");
 	});
 
-	it("brokers a bounded model request with the current job lease and no provider credential", async () => {
+	it("acquires a native authority only for a native subscription sponsor", async () => {
 		const current = broker();
-		const request = {
-			requestId: "34343434-3434-4434-8434-343434343434",
-			provider: "openai",
-			model: "gpt-test",
-			input: { prompt: "Answer from the immutable substrate" },
-			maxOutputTokens: 128,
-		};
-		await expect(current.broker.requestModel(request)).resolves.toMatchObject({
-			requestId: request.requestId,
-			output: { text: "bounded answer" },
-			usage: { inputTokens: 8, outputTokens: 3, costMicrousd: 125 },
+		Object.assign(current.transport.description.sponsor as Record<string, unknown>, {
+			authentication_mode: "api_key",
+			native_harness: "openai-responses",
 		});
-		expect(current.transport.modelRequests).toEqual([request]);
-		expect(current.transport.authorities.at(-1)).toEqual({ runnerId, jobId, sessionToken, leaseToken });
-	});
-
-	it("refuses to route native subscription traffic through the model gateway", async () => {
-		const current = broker();
-		const sponsor = current.transport.description.sponsor as Record<string, unknown>;
-		sponsor.authentication_mode = "native_subscription";
-		sponsor.native_harness = "codex-cli";
-
-		await expect(
-			current.broker.requestModel({
-				requestId: "34343434-3434-4434-8434-343434343434",
-				provider: "openai",
-				model: "gpt-test",
-				input: { prompt: "must stay native" },
-				maxOutputTokens: 128,
-			}),
-		).rejects.toThrow("provider-native harness");
-		expect(current.transport.modelRequests).toEqual([]);
-	});
-
-	it("binds provider continuity, operation receipts, and transcript output to the assigned run", async () => {
-		const current = broker();
-		const receiptId = "34343434-3434-4434-8434-343434343434";
-		const inputSha256 = "f".repeat(64);
-		await expect(
-			current.broker.beginOperation({
-				receiptId,
-				logicalOperationKey: "ticket:123:reply",
-				operationKind: "send_email",
-				inputSha256,
-				downstreamIdempotencyKey: "qorpera-ticket-123-reply",
-				requiresCompanyRevision: false,
-			}),
-		).resolves.toMatchObject({ state: "executing", receiptId });
-		await expect(
-			current.broker.completeOperation({ receiptId, inputSha256, result: { message_id: "mail-123" } }),
-		).resolves.toMatchObject({ state: "completed", result: { message_id: "mail-123" } });
-		await expect(
-			current.broker.bindProviderSession({ providerSessionId: "codex-session-123" }),
-		).resolves.toMatchObject({
-			runId,
-			providerSessionId: "codex-session-123",
-		});
-		await expect(
-			current.broker.appendTranscriptEvent({
-				eventId: "12121212-1212-4212-8212-121212121212",
-				eventType: "message",
-				entry: {
-					type: "message",
-					id: "12121212-1212-4212-8212-121212121212",
-					parentId: null,
-					timestamp: createdAt,
-					message: { role: "assistant", text: "completed" },
-				},
-				expectedSequence: 0,
-			}),
-		).resolves.toMatchObject({ executionRunId: runId, assignmentId, sequence: 1 });
-		expect(current.transport.begunOperations).toHaveLength(1);
-		expect(current.transport.completedOperations).toHaveLength(1);
-		expect(current.transport.providerSessions).toHaveLength(1);
-		expect(current.transport.transcriptEvents).toHaveLength(1);
-	});
-
-	it("adopts the durable receipt id when a replacement runner replays a logical operation", async () => {
-		const current = broker();
-		const durableReceiptId = "34343434-3434-4434-8434-343434343434";
-		vi.spyOn(current.transport, "beginOperation").mockResolvedValueOnce({
-			state: "completed",
-			receipt_id: durableReceiptId,
-			result: { message_id: "mail-123" },
-		});
-
-		const replacementReceiptId = "35353535-3535-4535-8535-353535353535";
-		await expect(
-			current.broker.beginOperation({
-				receiptId: replacementReceiptId,
-				logicalOperationKey: "ticket:123:reply",
-				operationKind: "send_email",
-				inputSha256: "f".repeat(64),
-				downstreamIdempotencyKey: "qorpera-ticket-123-reply",
-				requiresCompanyRevision: false,
-			}),
-		).resolves.toMatchObject({
-			state: "completed",
-			receiptId: durableReceiptId,
-			result: { message_id: "mail-123" },
-		});
-		await expect(
-			current.broker.completeOperation({
-				receiptId: replacementReceiptId,
-				inputSha256: "f".repeat(64),
-				result: { message_id: "mail-123" },
-			}),
-		).resolves.toMatchObject({ state: "completed", receiptId: durableReceiptId });
-		expect(current.transport.completedOperations.at(-1)?.receiptId).toBe(durableReceiptId);
+		await expect(current.broker.acquireNativeAuthority()).rejects.toThrow("does not use a native subscription");
+		expect(current.transport.actions).toEqual(["describe"]);
 	});
 
 	it("keeps runner credentials out of broker URLs and request bodies", async () => {
@@ -567,24 +379,21 @@ describe("cloud runner object broker", () => {
 		const authority = { runnerId, jobId, sessionToken, leaseToken };
 
 		await transport.describe(authority);
-		await transport.requestModel(authority, {
-			requestId: "34343434-3434-4434-8434-343434343434",
-			provider: "openai",
-			model: "gpt-test",
-			input: { prompt: "safe" },
-			maxOutputTokens: 64,
-		});
+		await transport.acquireNativeAuthority(authority, runId, assignmentId, NATIVE_AUTHORITY_LEASE_SECONDS);
+		await transport.renewNativeAuthority(authority, leaseId, NATIVE_AUTHORITY_LEASE_SECONDS);
+		await transport.releaseNativeAuthority(authority, leaseId, "released");
 
-		expect(calls[0]?.url).toBe("https://example.supabase.co/functions/v1/runner-broker");
-		expect(calls[0]?.url).not.toContain(sessionToken);
-		expect(calls[0]?.url).not.toContain(leaseToken);
-		expect(String(calls[0]?.init?.body)).not.toContain(sessionToken);
-		expect(String(calls[0]?.init?.body)).not.toContain(leaseToken);
-		expect(new Headers(calls[0]?.init?.headers).get("authorization")).toBe(`Bearer ${sessionToken}`);
-		expect(new Headers(calls[0]?.init?.headers).get("x-qorpera-lease-token")).toBe(leaseToken);
-		expect(String(calls[1]?.init?.body)).toContain('"action":"model"');
-		expect(String(calls[1]?.init?.body)).not.toContain(sessionToken);
-		expect(String(calls[1]?.init?.body)).not.toContain(leaseToken);
+		expect(calls).toHaveLength(4);
+		for (const call of calls) {
+			expect(call.url).toBe("https://example.supabase.co/functions/v1/runner-broker");
+			expect(call.url).not.toContain(sessionToken);
+			expect(call.url).not.toContain(leaseToken);
+			expect(String(call.init?.body)).not.toContain(sessionToken);
+			expect(String(call.init?.body)).not.toContain(leaseToken);
+			expect(new Headers(call.init?.headers).get("authorization")).toBe(`Bearer ${sessionToken}`);
+			expect(new Headers(call.init?.headers).get("x-qorpera-lease-token")).toBe(leaseToken);
+		}
+		expect(String(calls[1]?.init?.body)).toContain('"action":"native_authority"');
 	});
 
 	it("aborts a stalled broker request when its job execution is fenced", async () => {
@@ -716,83 +525,84 @@ describe("cloud runner broker incident-scale retry budgets", () => {
 
 describe("a folder-v2 run in the runner broker (folder core C3, P23)", () => {
 	it("is described in the path lane with no substrate anywhere", async () => {
-		const description = await folderBroker().broker.describe();
-		expect(description.companyRuntime).toBe("company-path-v1");
-		for (const key of ["version", "snapshot", "proposalSnapshot", "artifactIndex", "companyFileOutputLimits"]) {
-			expect(description).not.toHaveProperty(key);
-		}
+		const description = await broker().broker.describe();
+		expect(description).toEqual({
+			companyRuntime: "company-path-v1",
+			job: expect.objectContaining({ jobId, runId, assignmentId, sessionId }),
+			run: expect.objectContaining({ runId, jobId, sessionId, sourceKind: "wake", companySeq: 7 }),
+			sponsor: {
+				bindingId: sponsorBindingId,
+				version: 1,
+				kind: "member_connection",
+				providerConnectionId,
+				providerConnectionVersion: 2,
+				provider: "openai",
+				authenticationMode: "native_subscription",
+				nativeHarness: "codex-cli",
+				allowAutonomous: true,
+			},
+			outputLimits: {
+				maxObjectBytes: 8 * 1024 * 1024,
+				maxObjectCount: 100,
+				maxTotalBytes: 64 * 1024 * 1024,
+				rootContract: "qorpera.object/v1",
+			},
+		});
 		expect(description.job).not.toHaveProperty("substrateVersionId");
 		expect(description.run).not.toHaveProperty("substrateVersionId");
 		expect(description.run).not.toHaveProperty("companySnapshotId");
-		expect(description.run.companySeq).toBe(7);
-		expect(description.run.runId).toBe(runId);
 	});
 
 	it("carries a folder-v2 run's companySeq, never beside a snapshot (P28)", async () => {
-		const folder = folderDescriptionRecord();
+		const folder = descriptionRecord();
 		const run = folder.run as Record<string, unknown>;
 		// A description from before P28 has no key; a run with no pin sends null.
 		const { company_seq: _seq, ...withoutKey } = run;
 		for (const unpinned of [withoutKey, { ...run, company_seq: null }]) {
-			const described = await folderBroker({ ...folder, run: unpinned }).broker.describe();
+			const described = await broker({ run: unpinned }).broker.describe();
 			expect(described.run).not.toHaveProperty("companySeq");
 		}
 		for (const companySeq of [-1, 1.5, "7"]) {
-			await expect(
-				folderBroker({ ...folder, run: { ...run, company_seq: companySeq } }).broker.describe(),
-			).rejects.toThrow();
+			await expect(broker({ run: { ...run, company_seq: companySeq } }).broker.describe()).rejects.toThrow();
 		}
-		const transport = new MemoryBrokerTransport();
-		Object.assign(transport.description, {
-			run: { ...(transport.description.run as Record<string, unknown>), company_seq: 7 },
-		});
-		await expect(broker(transport).broker.describe()).rejects.toThrow("both a snapshot and a folder sequence");
-	});
-
-	it("refuses everything that needs a Company File substrate", async () => {
-		const current = folderBroker();
-		const { version } = await broker().broker.resolve(versionId);
-		const artifacts = (await broker().broker.describe()).artifactIndex;
-		await expect(current.broker.resolve(versionId)).rejects.toThrow("no Company File substrate");
-		await expect(current.broker.listOperations(version)).rejects.toThrow("no Company File substrate");
-		expect(artifacts).toBeDefined();
-		await expect(current.broker.listArtifacts(artifacts!)).rejects.toThrow("another artifact index");
+		const snapshotRun = { ...run, substrate_version_id: versionId, company_snapshot_id: snapshotId };
+		await expect(broker({ run: snapshotRun }).broker.describe()).rejects.toThrow(
+			"both a snapshot and a folder sequence",
+		);
 	});
 
 	it.each([
-		["the whole-tree lane", { company_runtime: "whole-tree-v1" }, "outside the path lane"],
+		["the whole-tree lane's description", wholeTreeRecord(), RUNTIME_REFUSAL],
+		["the whole-tree lane", { company_runtime: "whole-tree-v1" }, RUNTIME_REFUSAL],
+		[
+			"the path lane over a snapshot-v1 substrate",
+			{ ...wholeTreeRecord(), company_runtime: "company-path-v1" },
+			SUBSTRATE_REFUSAL,
+		],
+		["a version", { version: wholeTreeRecord().version }, SUBSTRATE_REFUSAL],
+		["a snapshot", { snapshot: wholeTreeRecord().snapshot }, SUBSTRATE_REFUSAL],
+		["a proposal snapshot", { proposal_snapshot: wholeTreeRecord().snapshot }, SUBSTRATE_REFUSAL],
+		["an artifact index", { artifact_index: wholeTreeRecord().artifact_index }, SUBSTRATE_REFUSAL],
 		[
 			"Company File output limits",
-			{ company_file_output_limits: descriptionRecord().company_file_output_limits },
-			"outside the path lane",
+			{ company_file_output_limits: wholeTreeRecord().company_file_output_limits },
+			SUBSTRATE_REFUSAL,
 		],
-		["a substrate on the job", { job: jobRecord() }, "outside the path lane"],
-		["a substrate on the run", { run: descriptionRecord().run }, "outside the path lane"],
-		["a version for a run without a substrate", { version: descriptionRecord().version }, "for a run without one"],
-		["a version without its snapshot", { ...descriptionRecord(), snapshot: null }, "invalid company snapshot"],
-	])("never reaches a reader of a substrate with %s", async (_label, change, message) => {
-		const current = folderBroker({ ...folderDescriptionRecord(), ...change });
-		await expect(current.broker.describe()).rejects.toThrow(message);
-	});
-
-	it("refuses a substrate described for a run that names none", async () => {
-		const description = descriptionRecord();
-		const current = broker();
-		Object.assign(current.transport.description, {
-			run: {
-				...(description.run as Record<string, unknown>),
-				substrate_version_id: null,
-				company_snapshot_id: null,
+		["a substrate on the job", { job: wholeTreeRecord().job }, SUBSTRATE_REFUSAL],
+		["a substrate on the run", { run: wholeTreeRecord().run }, SUBSTRATE_REFUSAL],
+		[
+			"a substrate for a run that names none",
+			{
+				version: wholeTreeRecord().version,
+				snapshot: wholeTreeRecord().snapshot,
+				artifact_index: wholeTreeRecord().artifact_index,
+				company_file_output_limits: wholeTreeRecord().company_file_output_limits,
 			},
-		});
-		await expect(current.broker.describe()).rejects.toThrow("for a run without one");
-	});
-
-	it("is refused by a host on the parser before P23, before it reads anything else", () => {
-		expect(() => previousParserOpening(folderDescriptionRecord())).toThrow(
-			"Runner broker returned invalid Company File output limits",
-		);
-		// A snapshot-v1 description still passes those statements.
-		expect(() => previousParserOpening(descriptionRecord())).not.toThrow();
+			SUBSTRATE_REFUSAL,
+		],
+	])("refuses a description naming a Company File substrate: %s", async (_label, change, message) => {
+		const current = broker(change);
+		await expect(current.broker.describe()).rejects.toThrow(message);
+		expect(current.transport.actions).toEqual(["describe"]);
 	});
 });

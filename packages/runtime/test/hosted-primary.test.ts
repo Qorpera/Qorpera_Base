@@ -25,9 +25,7 @@ const projectId = "11111111-1111-4111-8111-111111111115";
 const roomId = "11111111-1111-4111-8111-111111111116";
 const pathVersionId = "11111111-1111-4111-8111-111111111117";
 const workspaceId = "22222222-2222-4222-8222-222222222222";
-const clientWorkspaceId = "33333333-3333-4333-8333-333333333333";
 const snapshotId = "44444444-4444-4444-8444-444444444444";
-const clientSnapshotId = "55555555-5555-4555-8555-555555555555";
 const artifactId = "88888888-8888-4888-8888-888888888888";
 const clientArtifactId = "99999999-9999-4999-8999-999999999999";
 const artifactIndexId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -206,38 +204,6 @@ function companyOrganizationRecord() {
 	};
 }
 
-function workspaceRecord(headSnapshotId: string | null = null) {
-	return {
-		workspace_id: workspaceId,
-		profile_id: profileId,
-		environment_id: environmentId,
-		client_workspace_id: clientWorkspaceId,
-		name: "Jonas MacBook",
-		head_snapshot_id: headSnapshotId,
-		created_by_user_id: actorUserId,
-		created_at: createdAt,
-		updated_at: createdAt,
-	};
-}
-
-function snapshotRecord() {
-	return {
-		snapshot_id: snapshotId,
-		profile_id: profileId,
-		environment_id: environmentId,
-		workspace_id: workspaceId,
-		client_snapshot_id: clientSnapshotId,
-		parent_snapshot_id: null,
-		tree_manifest_sha256: treeManifestSha256,
-		tree_manifest_bytes: 1024,
-		tree_contract_version: 1,
-		file_count: 3,
-		total_bytes: 4096,
-		created_by_user_id: actorUserId,
-		created_at: createdAt,
-	};
-}
-
 function companyFileRecord(headSnapshotId: string | null = snapshotId) {
 	return {
 		profile_id: profileId,
@@ -285,40 +251,6 @@ function artifactRecord() {
 		created_by_user_id: actorUserId,
 		created_at: createdAt,
 		eligible_for_gc_at: "2026-09-15T12:00:00.000Z",
-	};
-}
-
-function objectGraphRecord(status: "uploading" | "complete" = "complete") {
-	return {
-		graph_id: objectGraphId,
-		profile_id: profileId,
-		environment_id: environmentId,
-		root_kind: "artifact",
-		root_id: artifactId,
-		client_graph_id: artifactId,
-		root_object_sha256: treeManifestSha256,
-		contract_version: 1,
-		content_sha256: artifactIndexContentSha256,
-		object_count: 2,
-		storage_bytes: 5120,
-		status,
-		created_by_user_id: actorUserId,
-		created_at: createdAt,
-		completed_at: status === "complete" ? createdAt : null,
-	};
-}
-
-function objectProofRecord() {
-	return {
-		proof_id: objectProofId,
-		graph_id: objectGraphId,
-		profile_id: profileId,
-		client_proof_id: artifactId,
-		restored_content_sha256: artifactContentSha256,
-		restored_bytes: 4096,
-		verified_by_user_id: actorUserId,
-		verified_at: createdAt,
-		valid_until: "2026-08-23T12:00:00.000Z",
 	};
 }
 
@@ -492,11 +424,6 @@ function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrima
 		appendAccountEvent: vi.fn(async (input) => eventRecord(input.p_event_type)),
 		readSessionEvents: vi.fn(async () => [eventRecord()]),
 		getCompanyFile: vi.fn(async () => companyFileRecord()),
-		ensureCompanyWorkspace: vi.fn(async () => workspaceRecord()),
-		commitCompanySnapshot: vi.fn(async () => snapshotRecord()),
-		getCompanySnapshot: vi.fn(async () => snapshotRecord()),
-		listCompanyWorkspaces: vi.fn(async () => [workspaceRecord(snapshotId)]),
-		listCompanySnapshots: vi.fn(async () => [snapshotRecord()]),
 		registerArtifact: vi.fn(async () => artifactRecord()),
 		createArtifactIndex: vi.fn(async () => artifactIndexRecord()),
 		getArtifactIndex: vi.fn(async () => artifactIndexRecord()),
@@ -528,12 +455,6 @@ function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrima
 		]),
 		cancelArtifactGcPlan: vi.fn(async () => artifactGcPlanRecord("cancelled")),
 		retryArtifactGcPlan: vi.fn(async () => artifactGcPlanRecord("retrying")),
-		beginObjectReachabilityGraph: vi.fn(async () => objectGraphRecord("uploading")),
-		appendObjectReachabilityEntries: vi.fn(async () => 2),
-		completeObjectReachabilityGraph: vi.fn(async () => objectGraphRecord()),
-		getObjectReachabilityGraph: vi.fn(async () => objectGraphRecord()),
-		verifyCompanySnapshotClosure: vi.fn(async () => ({ verified: true })),
-		createObjectRestoreProof: vi.fn(async () => objectProofRecord()),
 		...overrides,
 	};
 }
@@ -941,59 +862,6 @@ describe("Qorpera hosted primary", () => {
 		});
 	});
 
-	it("creates fork-safe workspaces and commits immutable tree references with CAS heads", async () => {
-		const fake = transport();
-		const primary = new QorperaHostedPrimary(fake);
-		await expect(
-			primary.ensureCompanyWorkspace({
-				environmentId,
-				clientWorkspaceId,
-				name: " Jonas MacBook ",
-			}),
-		).resolves.toMatchObject({ workspaceId, clientWorkspaceId, name: "Jonas MacBook" });
-		expect(fake.ensureCompanyWorkspace).toHaveBeenCalledWith({
-			p_environment_id: environmentId,
-			p_client_workspace_id: clientWorkspaceId,
-			p_name: "Jonas MacBook",
-			p_base_snapshot_id: null,
-		});
-
-		await expect(
-			primary.commitCompanySnapshot({
-				workspaceId,
-				clientSnapshotId,
-				tree: {
-					manifestSha256: treeManifestSha256,
-					manifestBytes: 1024,
-					contractVersion: 1,
-					fileCount: 3,
-					totalBytes: 4096,
-				},
-			}),
-		).resolves.toMatchObject({
-			snapshotId,
-			workspaceId,
-			tree: { manifestSha256: treeManifestSha256, fileCount: 3 },
-		});
-		expect(fake.commitCompanySnapshot).toHaveBeenCalledWith({
-			p_workspace_id: workspaceId,
-			p_client_snapshot_id: clientSnapshotId,
-			p_expected_head_snapshot_id: null,
-			p_tree_manifest_sha256: treeManifestSha256,
-			p_tree_manifest_bytes: 1024,
-			p_tree_contract_version: 1,
-			p_file_count: 3,
-			p_total_bytes: 4096,
-		});
-		await expect(primary.listCompanyWorkspaces(environmentId)).resolves.toMatchObject([
-			{ workspaceId, headSnapshotId: snapshotId },
-		]);
-		await expect(primary.getCompanySnapshot(snapshotId)).resolves.toMatchObject({ snapshotId, workspaceId });
-		expect(fake.getCompanySnapshot).toHaveBeenCalledWith({ p_snapshot_id: snapshotId });
-		await expect(primary.listCompanySnapshots(workspaceId, 50)).resolves.toHaveLength(1);
-		expect(fake.listCompanySnapshots).toHaveBeenCalledWith({ p_workspace_id: workspaceId, p_limit: 50 });
-	});
-
 	it("reads the one canonical Company File head", async () => {
 		const fake = transport();
 		const primary = new QorperaHostedPrimary(fake);
@@ -1084,56 +952,6 @@ describe("Qorpera hosted primary", () => {
 			cancelledByUserId: actorUserId,
 		});
 		await expect(primary.retryArtifactGcPlan(artifactGcPlanId)).resolves.toMatchObject({ status: "retrying" });
-	});
-
-	it("uploads bounded reachability entries and records a restore proof", async () => {
-		const verifyCompanySnapshotClosure = vi
-			.fn()
-			.mockResolvedValueOnce({ verified: false, pending: true })
-			.mockResolvedValueOnce({ verified: false, pending: true })
-			.mockResolvedValueOnce({ verified: true });
-		const fake = transport({ verifyCompanySnapshotClosure });
-		const primary = new QorperaHostedPrimary(fake);
-		await expect(
-			primary.beginObjectReachabilityGraph({
-				rootKind: "artifact",
-				rootId: artifactId,
-				clientGraphId: artifactId,
-				rootObjectSha256: treeManifestSha256,
-				contentSha256: artifactIndexContentSha256,
-				objectCount: 2,
-				storageBytes: 5120,
-			}),
-		).resolves.toMatchObject({ graphId: objectGraphId, status: "uploading" });
-		expect(fake.beginObjectReachabilityGraph).toHaveBeenCalledWith({
-			p_root_kind: "artifact",
-			p_root_id: artifactId,
-			p_client_graph_id: artifactId,
-			p_root_object_sha256: treeManifestSha256,
-			p_contract_version: 1,
-			p_content_sha256: artifactIndexContentSha256,
-			p_object_count: 2,
-			p_storage_bytes: 5120,
-		});
-		await expect(
-			primary.appendObjectReachabilityEntries(objectGraphId, [
-				{ sha256: treeManifestSha256, bytes: 1024 },
-				{ sha256: artifactContentSha256, bytes: 4096 },
-			]),
-		).resolves.toBe(2);
-		await expect(primary.completeObjectReachabilityGraph(objectGraphId)).resolves.toMatchObject({
-			graphId: objectGraphId,
-			status: "complete",
-		});
-		await expect(primary.getObjectReachabilityGraph(objectGraphId)).resolves.toMatchObject({
-			graphId: objectGraphId,
-		});
-		await expect(primary.verifyCompanySnapshotClosure(snapshotId, objectGraphId)).resolves.toBeUndefined();
-		expect(fake.verifyCompanySnapshotClosure).toHaveBeenCalledWith({ snapshotId, graphId: objectGraphId });
-		expect(fake.verifyCompanySnapshotClosure).toHaveBeenCalledTimes(3);
-		await expect(
-			primary.createObjectRestoreProof(objectGraphId, artifactId, artifactContentSha256, 4096),
-		).resolves.toMatchObject({ proofId: objectProofId, graphId: objectGraphId, restoredBytes: 4096 });
 	});
 
 	it("pages events and rejects malformed or oversized boundary data", async () => {

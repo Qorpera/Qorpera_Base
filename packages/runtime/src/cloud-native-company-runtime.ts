@@ -781,7 +781,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											...cloudRoutineTools(
 												binding,
 												identity,
-												this.#paths,
 												dynamicRoutine && wake.routine?.routineKey
 													? {
 															routineKey: wake.routine.routineKey,
@@ -802,29 +801,27 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 														: {}),
 												}),
 											),
-											...(dynamicRoutine
+											// The wake bus gives a routine its key exactly when it is dynamic, so every dynamic
+											// routine's run is offered the decision.
+											...(dynamicRoutine && wake.routine?.routineKey
 												? [
-														cloudRoutineDecisionTool(binding, identity, this.#paths, {
+														cloudRoutineDecisionTool(binding, identity, {
 															decisionOwed: () => routineDecisionOwed,
 															decided: () => {
 																routineDecisionOwed = false;
 															},
-															...(wake.routine?.routineKey
-																? {
-																		folderDecision: new CloudFolderRoutineDecision({
-																			folder: folder.client,
-																			operations,
-																			identity,
-																			handle: folder.handle,
-																			routineKey: wake.routine.routineKey,
-																			routineId: wake.routine.id,
-																		}),
-																	}
-																: {}),
+															folderDecision: new CloudFolderRoutineDecision({
+																folder: folder.client,
+																operations,
+																identity,
+																handle: folder.handle,
+																routineKey: wake.routine.routineKey,
+																routineId: wake.routine.id,
+															}),
 														}),
 													]
 												: []),
-											...cloudSidebarTools(binding, identity, this.#paths, {
+											...cloudSidebarTools(binding, identity, {
 												folderSidebar: new CloudFolderSidebar({
 													folder: folder.client,
 													operations,

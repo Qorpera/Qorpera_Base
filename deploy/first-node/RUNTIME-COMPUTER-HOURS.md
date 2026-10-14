@@ -652,8 +652,9 @@ Coordinator (nothing secret):
     and computer checks, and fails its queued jobs with the same reason, beside its other
     queued-job failures. No retry; no routine is paused and no worker cancelled;
   - an in-house worker so ended reports reason `out_of_computer_hours` ("The background work was
-    stopped because the company is out of computer hours.") to its parent, from
-    `qorpera_drain_worker_wakes`;
+    stopped because the company is out of computer hours.") to its parent, from the worker drain
+    (`qorpera_folder_worker_ended` on folder-v2; the legacy `qorpera_drain_worker_wakes` went in the
+    legacy sweep's F3b, 20260930295000);
   - a job picked for a reason that no longer holds when it is ended (hours arrived meanwhile) is
     left alone while its lease is live, instead of ending as "lease expired";
   - "one hour" is an hour after the ran-out time, which is the sweep's (up to a minute late),

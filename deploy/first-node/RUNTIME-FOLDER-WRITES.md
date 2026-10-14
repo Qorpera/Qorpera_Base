@@ -185,7 +185,8 @@ As §2 "Errors that happen at once", decided in the program or the service befor
 - names the folder forbids (`EINVAL`), the adapter-only prefixes, devices, FIFOs and sockets (`EPERM`), a file over
   256 MiB, the version-2 manifest's limit (`EFBIG`);
 - symbolic links and hard links (`EPERM`) only until their slices land: the 2026-10-14 amendment makes a symbolic link
-  an entry of its own and a hard link a copy that shares the stored bytes (items 4 and 5);
+  an entry of its own and a hard link a copy that shares the stored bytes (items 4 and 5;
+  [RUNTIME-FOLDER-LINKS.md](RUNTIME-FOLDER-LINKS.md));
 - deleting or moving a seeded path, a lone `agent.md` or `group.md`, or an agent's or group's folder out of place
   (`EPERM`);
 - `rename` with `RENAME_EXCHANGE` (`EINVAL`); a name that differs only in case from a sibling (`EEXIST`).
@@ -265,7 +266,7 @@ extend it.
 
 | Slice | What | Tests |
 | --- | --- | --- |
-| 3a | SQL: an upload holds its actor's own puts (migration `20260930083000`, test 931) | a chunk put under one intent is `present` in the same actor's next intent and not in another actor's; the whole file then seals and commits; an expired intent does not count; a marked object still refuses |
+| 3a | SQL: an upload holds its actor's own puts (migration `20260928489290`, test 931) | a chunk put under one intent is `present` in the same actor's next intent and not in another actor's; the whole file then seals and commits; an expired intent does not count; a marked object still refuses |
 | 3b | Gateway: the folder service's byte route and token | put and refusal paths as `folder-objects.ts`'s tests; the native token is refused there, and the folder service's token on the native routes |
 | 3c | Folder service: protocol v2, pending changes, base versions, staging, boundaries, the report (built as 3c-1, the pending changes and the boundary plan, #861; 3c-2, the protocol, staging and boundaries, #867; 3c-3, the hosted-db run, `scripts/test-folder-core-acceptance.mjs`'s F3-3c lines, #876) | the service's tests with a stand-in core that commits (conflicts, unseen changes, refusals, replays) and a stand-in gateway: a stale save (v1 read, v2 published, then saved in place and by renaming a temporary file over it) is a conflict, also when the service restarted between the read and the save; a lost reply replays under the same key; each change that must publish first does, and every boundary, applied to a model of the core's rules (folded keys included), ends as the view showed it; with each unit failing in turn no byte the view held is lost (it is live, kept as a conflict copy, or still pending); the hosted-db script runs the real commit on boundaries the service builds |
 | 3d | Folder program: write operations, chunks, read-back, `publish` | FUSE tests on the test machine (a file written across chunks, a write inside a sent chunk, rename over a file, `rm -rf`, an open file left out, lock names; the version map kept across a restart of the program and of the service); the end-to-end test against the service: a stale save after a service restart, in place and by rename, is a conflict |

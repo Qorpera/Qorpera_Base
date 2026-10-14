@@ -182,15 +182,6 @@ afterEach(() => {
 function brokerTransport(): CloudRunnerBrokerTransport {
 	return {
 		describe: vi.fn(async () => ({})),
-		listInputs: vi.fn(async () => []),
-		listTranscript: vi.fn(async () => []),
-		listOperations: vi.fn(async () => []),
-		listArtifacts: vi.fn(async () => []),
-		requestModel: vi.fn(async () => ({})),
-		beginOperation: vi.fn(async () => ({})),
-		completeOperation: vi.fn(async () => ({})),
-		bindProviderSession: vi.fn(async () => ({})),
-		appendTranscriptEvent: vi.fn(async () => ({})),
 	};
 }
 
@@ -267,31 +258,28 @@ describe("ephemeral cloud runner worker", () => {
 		expect(runner.leasedJobs()).toEqual([]);
 	});
 
-	it.each([
-		["a whole-tree company run", "whole-tree-v1", "native_subscription", "does not support a whole-tree"],
-		["a non-native company run", "company-path-v1", "api_key", "requires the native cloud runtime"],
-	] as const)(
-		"refuses %s before any authority or execution, with no fallback",
-		async (_label, companyRuntime, authenticationMode, message) => {
-			const description = { companyRuntime, sponsor: { authenticationMode } } as CloudRunnerBrokerDescription;
-			lane.describe.mockResolvedValue(description);
-			const service = new RunnerService();
-			const runner = await activeRunner(service);
-			const executeJob = vi.fn(async () => successfulExecution());
+	it("refuses a non-native company run before any authority or execution, with no fallback", async () => {
+		const description = {
+			companyRuntime: "company-path-v1",
+			sponsor: { authenticationMode: "api_key" },
+		} as CloudRunnerBrokerDescription;
+		lane.describe.mockResolvedValue(description);
+		const service = new RunnerService();
+		const runner = await activeRunner(service);
+		const executeJob = vi.fn(async () => successfulExecution());
 
-			const result = await worker(runner, executeJob).runNext(assignment);
+		const result = await worker(runner, executeJob).runNext(assignment);
 
-			expect(result).toMatchObject({ status: "failed", job: { status: "failed" } });
-			expect(service.requests.at(-1)).toMatchObject({
-				action: "fail",
-				error: expect.stringContaining(message),
-				retryable: false,
-			});
-			expect(executeJob).not.toHaveBeenCalled();
-			expect(lane.acquire).not.toHaveBeenCalled();
-			expect(lane.release).not.toHaveBeenCalled();
-		},
-	);
+		expect(result).toMatchObject({ status: "failed", job: { status: "failed" } });
+		expect(service.requests.at(-1)).toMatchObject({
+			action: "fail",
+			error: expect.stringContaining("requires the native cloud runtime"),
+			retryable: false,
+		});
+		expect(executeJob).not.toHaveBeenCalled();
+		expect(lane.acquire).not.toHaveBeenCalled();
+		expect(lane.release).not.toHaveBeenCalled();
+	});
 
 	it("refuses a company run when no native execution bridge is configured", async () => {
 		const service = new RunnerService();
