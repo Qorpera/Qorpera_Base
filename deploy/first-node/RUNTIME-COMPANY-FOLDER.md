@@ -77,7 +77,8 @@ What it changes in the build:
 [RUNTIME-FOLDER-COMPANY-MACHINES.md](RUNTIME-FOLDER-COMPANY-MACHINES.md) (a
 follow-up to 4b for networked commands' views and quiet publishing, 4d, and
 4e's toolbox), and new slices for links: the core's link entries, the write
-protocol, the folder program and service, and the server-side tools.
+protocol, the folder program and service, and the server-side tools
+([RUNTIME-FOLDER-LINKS.md](RUNTIME-FOLDER-LINKS.md)).
 
 ## Decided on 2 October 2026 (light threads)
 
