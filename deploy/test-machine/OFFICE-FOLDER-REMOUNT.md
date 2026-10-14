@@ -127,6 +127,12 @@ design; none of them decides `result`.
   processes, such as the `ExecStopPost` umount, only at debug, so each kill runs
   with the guest's systemd at log level `debug`, and the level it had
   (`logLevel`) is set back afterwards.
+- `kill3Cleared`: a third `systemctl kill -s KILL`, after the second kill's
+  checks, with a drop-in that adds
+  `ExecStartPre=-/usr/bin/umount -l /run/qorpera-folder/mounts/q3/company` to the
+  unit. It records the same fields as `kill1` and `kill2`, and `oneRestart`:
+  whether one restart served the folder again. The drop-in is removed before
+  the exit-3 step, so that step runs master's unit lines.
 - `staleCwd`: the command namespace's working directory inside `/company` from
   before the kill: listing it after the kill, then `chdir` again and listing.
 - `oldDescriptor`: a read descriptor the desktop namespace opened before the

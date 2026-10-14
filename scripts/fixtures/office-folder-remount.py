@@ -928,6 +928,21 @@ class Proof:
         self.note("officeStartedOverMount", {name: entry for name, (_, entry) in self.over.items()})
         self.note("directAfterKill2", self.ask(self.relay1, "direct", {"op": "read", "path": "before.txt"}))
 
+    def cleared_kill(self):
+        """A third `systemctl kill`, with a drop-in that clears a dead mount before each start: recorded, not checked."""
+        drop_in = UNIT_FILE.parent / f"{self.unit}.d" / "q3-clear.conf"
+        text = f"[Service]\nExecStartPre=-/usr/bin/umount -l {self.point}\n"
+        drop_in.parent.mkdir(mode=0o755, exist_ok=True)
+        self.claimed["dropIn"] = drop_in
+        drop_in.write_text(text)
+        base.run("systemctl", "daemon-reload")
+        restart = self.kill("systemctl", "after3.txt", "after cleared restart")
+        shutil.rmtree(drop_in.parent)
+        self.claimed.pop("dropIn")
+        base.run("systemctl", "daemon-reload")
+        # kill() finds the host served only when NRestarts rose by exactly one.
+        self.note("kill3Cleared", {"dropIn": text, "oneRestart": restart["hostServedAfterSeconds"] is not None, **restart})
+
     def exit_three(self):
         """The node closes the view: the program exits 3, which the unit must not restart."""
         before = show(self.unit)
@@ -959,6 +974,8 @@ class Proof:
                 steps["views"][view] = repr(error)
         if self.node:
             self.node.close()
+        if self.claimed.get("dropIn"):
+            shutil.rmtree(self.claimed["dropIn"].parent, ignore_errors=True)
         if self.claimed.get("unit"):
             UNIT_FILE.unlink(missing_ok=True)
             steps["daemonReload"] = quiet("systemctl", "daemon-reload")
@@ -988,6 +1005,7 @@ class Proof:
             self.first_kill()
             self.over_mount()
             self.second_kill()
+            self.cleared_kill()
             self.exit_three()
         except Exception as error:
             self.record["error"] = repr(error)
