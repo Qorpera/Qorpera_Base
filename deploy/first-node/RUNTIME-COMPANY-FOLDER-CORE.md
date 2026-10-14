@@ -1251,9 +1251,9 @@ For `folder-v2` companies:
     (`parseRunnerWork` and `validateCloudRunnerWork` in `orchestrator.ts`; done in #709);
   - the object gateway serves `folder-v2` without tree manifests
     (`member-company-file.ts:794`, `company-bootstrap.ts:252`);
-  - the edge functions handle `folder-v2` (runner-broker's verifier call
-    `index.ts:348`, runner-control's `outputSnapshotId` `runner-control.ts:155`,
-    member-company-gateway's snapshot route);
+  - the edge functions handle `folder-v2` (runner-control's `outputSnapshotId`
+    `runner-control.ts:155`, member-company-gateway's snapshot route;
+    runner-broker's verifier call went with its snapshot-v1 lane in step D5);
   - the object gateway's connection-file writer, switched on by its flag
     (amended 3 October 2026, P22: the secret broker gets no folder access).
 
