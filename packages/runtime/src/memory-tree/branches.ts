@@ -71,6 +71,9 @@ interface Listed {
 export interface MemoryTreeRead {
 	readonly generation: number;
 	readonly messages: number;
+	/** The tree's folder as its index names it, and its tree.toml's node_bytes; null before the tree is made. */
+	readonly root: string | null;
+	readonly nodeBytes: number | null;
 	/** Each built line by its address, `start+size`, with its block. */
 	readonly lines: ReadonlyMap<string, { readonly text: string; readonly block: MemoryTreeBlock }>;
 }
@@ -123,8 +126,8 @@ export function memoryTreeRead(value: unknown): [string, MemoryTreeRead] {
 		"lines",
 	]);
 	const generation = whole(read.generation, "a tree's generation");
-	if (read.root !== null) text(read.root, "a tree's root");
-	if (read.nodeBytes !== null) whole(read.nodeBytes, "a tree's node bytes");
+	const root = read.root === null ? null : text(read.root, "a tree's root");
+	const nodeBytes = read.nodeBytes === null ? null : whole(read.nodeBytes, "a tree's node bytes");
 	const blocks = list(read.blocks, "a tree's blocks").map((item) => {
 		const block = parseClosedRecord(item, "a tree's block", ["path", "version"]);
 		return { path: text(block.path, "a block's path"), version: id(block.version, "a block's version") };
@@ -140,7 +143,7 @@ export function memoryTreeRead(value: unknown): [string, MemoryTreeRead] {
 		lines.set(address, { text: line.text, block });
 	}
 	const messages = whole(read.messages, "a tree's messages");
-	return [id(read.sessionId, "a tree's session"), { generation, messages, lines }];
+	return [id(read.sessionId, "a tree's session"), { generation, messages, root, nodeBytes, lines }];
 }
 
 /** An answer to a call for the trees of `sessions`: the branches, and the trees by session. */

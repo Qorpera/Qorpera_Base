@@ -3,6 +3,7 @@ import { CloudActionReviewChannel, type CloudActionReviewer } from "./cloud-acti
 import {
 	type CloudChatGptPlanAuth,
 	type CloudCodexContextComposer,
+	type CloudCodexOpening,
 	runCloudCodexToolSession,
 } from "./cloud-codex-tool-session.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
@@ -29,6 +30,7 @@ import {
 } from "./cloud-native-tool-operations.ts";
 import { type CloudRuntimeObservability, cloudRuntimeErrorCategory } from "./cloud-runtime-observability.ts";
 import type { CloudRuntimeServiceTier } from "./cloud-runtime-policy.ts";
+import type { MemoryCompactChannel } from "./memory-tree/compact.ts";
 
 export interface CloudNativeRunToolAdapters {
 	tools: readonly CloudNativeTool[];
@@ -74,10 +76,16 @@ export async function runCloudNativeRunToolSession(options: {
 	) => CloudNativeRunToolAdapters | Promise<CloudNativeRunToolAdapters>;
 	command: readonly [string, ...string[]];
 	binarySha256: string;
-	prompt: string;
+	prompt?: string;
 	runtimeInstructions?: string;
 	/** Composes each model request's input; absent sends it as Codex built it (cloudNativeContextIdentity). */
 	composeContext?: CloudCodexContextComposer;
+	/** The run's opening (RUNTIME-AGENT-MEMORY-TREE.md §5.4): after the admission and before the agent's thread, it
+	 * gives the agent's input in place of prompt, runtimeInstructions and composeContext. */
+	opening?: (signal: AbortSignal) => Promise<CloudCodexOpening>;
+	/** The memory compactor and closing (§7.1), as runCloudCodexToolSession takes them. */
+	compactor?: MemoryCompactChannel;
+	closing?: (signal: AbortSignal) => Promise<void>;
 	identityRoot?: string;
 	/** Warm conversations: the identity root was kept from an earlier run on this host. */
 	reusedIdentityRoot?: boolean;
@@ -174,6 +182,7 @@ export async function runCloudNativeRunToolSession(options: {
 			}
 		};
 		await assertActive(run.signal);
+		const opening = options.opening;
 		const reviewer = options.actionReview ? new CloudActionReviewChannel() : undefined;
 		boundary = new CloudNativeToolBoundary({
 			observability: options.observability,
@@ -197,6 +206,18 @@ export async function runCloudNativeRunToolSession(options: {
 			prompt: options.prompt,
 			runtimeInstructions: options.runtimeInstructions,
 			...(options.composeContext ? { composeContext: options.composeContext } : {}),
+			...(opening
+				? {
+						// The run's authority still holds once the opening has composed and bound its context.
+						opening: async (signal: AbortSignal) => {
+							const composed = await opening(signal);
+							await assertActive(signal);
+							return composed;
+						},
+					}
+				: {}),
+			...(options.compactor ? { compactor: options.compactor } : {}),
+			...(options.closing ? { closing: options.closing } : {}),
 			identityRoot: options.identityRoot,
 			...(options.reusedIdentityRoot ? { reusedIdentityRoot: true } : {}),
 			isolation: options.isolation,

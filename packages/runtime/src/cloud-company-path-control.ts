@@ -75,6 +75,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_record_runtime_observation_batch",
 			"qorpera_record_provider_usage_signal",
 			"qorpera_begin_native_company_execution_v2",
+			// The admission split (M1b-4b-3): admit before any provider work, bind the composed context once.
+			"qorpera_begin_native_company_execution_v3",
+			"qorpera_bind_native_company_context",
 			"qorpera_describe_company_run_context",
 			"qorpera_list_native_connector_tools",
 			"qorpera_assert_native_connector_operation",
@@ -166,6 +169,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_memory_view",
 			"qorpera_memory_view_record",
 			"qorpera_memory_branches",
+			// The conversation tree writer (M1b-4b-2, M1b-4b-3): the raw events and a batch's compaction record.
+			"qorpera_memory_events_run",
+			"qorpera_memory_compaction_record",
 		];
 		if (!permitted.includes(method)) throw new Error("Unknown Company File control operation");
 		const body = JSON.stringify(argumentsValue);
@@ -221,7 +227,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 											// 2,048 bytes as stored; so do the view, and the branches for up to 8 trees.
 											method === "qorpera_memory_zoom" ||
 											method === "qorpera_memory_view" ||
-											method === "qorpera_memory_branches")
+											method === "qorpera_memory_branches" ||
+											// A page of up to 128 raw events, each a whole message.
+											method === "qorpera_memory_events_run")
 									? 16 * 1024 * 1024
 									: // One routine whole (32 KiB of instructions, each character escaped at worst), or a
 										// page of 32 with theirs cut; a page of 16 workers with their outputs' paths.

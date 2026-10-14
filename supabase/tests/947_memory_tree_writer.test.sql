@@ -3,6 +3,8 @@
 -- scope and a generation change discarding the whole batch. Bounded raw events and count-only compaction records:
 -- authoritative payer, per-assignment batches, exact replay, malformed inputs and run-check precedence.
 -- A tree written by a run with no folder grant, and a run that may write there refused by the run rule alone.
+-- M1b-4b-3: the admission split. v3 admits before any provider work and launches nothing; the memory calls work on
+-- the admission and the context view does not; the bind binds the composed context once, through v2.
 
 create function pg_temp.writer_actor(p_who text) returns jsonb language sql as $$
 	select public.qorpera_folder_tool_run(pg_temp.b(p_who), '[]'::jsonb) -> 'actor'
@@ -330,6 +332,141 @@ begin
 	foreach p in array array[root || '/runs', other || '/t1', root || '/t2'] loop
 		perform pg_temp.same(pg_temp.read(p) -> 'found', 'false', 'No refused folder ' || p);
 	end loop;
+end $$;
+
+-- 10. The admission split (contract §6, §7: admitted, composing, running). Nora's run carries the active bundle. v3
+-- refuses another binary, bundle or policy and a malformed catalog; it admits with every v2 check but the context's,
+-- again for the same lease, and writes no launch and no start. On the admission the memory calls work and the context
+-- view is refused (it needs the launch). The bind refuses another lease's admission and a bad context and keeps the
+-- admission, then binds once through v2: the launch and the start record, with the last admitted catalog. A second
+-- bind, a later v3 and a run never admitted are refused.
+create function pg_temp.admit_sql(p_binding jsonb, p_binary text, p_bundle text, p_policy text, p_catalog text)
+returns text language sql as $$
+	select format('select public.qorpera_begin_native_company_execution_v3(%L,%L,%L,%L,%L)', p_binding, p_binary, p_bundle,
+		p_policy, p_catalog)
+$$;
+create function pg_temp.bind_sql(p_binding jsonb, p_sha256 text, p_bytes integer) returns text language sql as $$
+	select format('select public.qorpera_bind_native_company_context(%L,%L,%L)', p_binding, p_sha256, p_bytes)
+$$;
+do $$
+declare env constant uuid := '63400000-0000-4000-8000-000000000020'; root constant text := 'agents/nora/memory/thread';
+	b jsonb := pg_temp.b('nora'); run_ uuid := pg_temp.run_id('nora'); s uuid := pg_temp.thread('nora');
+	bundle_ public.qorpera_active_runtime_bundle%rowtype; manifest_ jsonb; bin text; sha text; policy text; tool jsonb;
+	cat jsonb; cat2 jsonb; bad text; contexts text[] := array[null, repeat('C', 64), repeat('c', 63), repeat('c', 64), repeat('c', 64)];
+	sizes integer[] := array[10, 10, 10, 0, 1048577]; a jsonb; started jsonb; i integer;
+begin
+	select * into strict bundle_ from public.qorpera_active_runtime_bundle where singleton;
+	select manifest into strict manifest_ from public.qorpera_runtime_bundles
+	where id = bundle_.runtime_bundle_id and sha256 = bundle_.runtime_bundle_sha256;
+	bin := manifest_ ->> 'nativeBinarySha256'; sha := bundle_.runtime_bundle_sha256;
+	policy := encode(extensions.digest(convert_to((manifest_ -> 'modelPolicy')::text, 'utf8'), 'sha256'), 'hex');
+	perform pg_temp.fx(format('update public.qorpera_execution_runs set runtime_bundle_id = %L, runtime_bundle_sha256 = %L,
+		reasoning_effort = %L, reasoning_policy_sha256 = %L, service_tier = ''standard'' where id = %L', bundle_.runtime_bundle_id,
+		sha, manifest_ #>> '{modelPolicy,effort}', policy, run_));
+	perform pg_temp.fx(format('update public.qorpera_session_inputs set runtime_bundle_id = %L, runtime_bundle_sha256 = %L
+		where execution_run_id = %L', bundle_.runtime_bundle_id, sha, run_));
+	tool := '{"type":"function","name":"read_document","description":"Read synthetic data","inputSchema":{"type":"object","additionalProperties":false}}';
+	cat := jsonb_build_object('type', 'namespace', 'name', 'qorpera', 'description', 'Synthetic native fixture', 'tools', jsonb_build_array(tool));
+	cat2 := cat || jsonb_build_object('tools', jsonb_build_array(tool, tool || '{"name":"read_memory"}'));
+	if exists (select 1 from public.qorpera_native_execution_launches where run_id = run_)
+		or exists (select 1 from public.qorpera_execution_run_events where run_id = run_ and event_type = 'runner_started') then
+		raise exception 'Nora''s run has not launched'; end if;
+
+	foreach bad in array array[pg_temp.admit_sql(b, repeat('0', 64), sha, policy, cat::text),
+		pg_temp.admit_sql(b, bin, repeat('0', 64), policy, cat::text), pg_temp.admit_sql(b, bin, sha, repeat('0', 64), cat::text)] loop
+		perform pg_temp.raises_like(bad, '42501', 'Native executable policy differs from the admitted run');
+	end loop;
+	foreach bad in array array['', '[]', '{"type":"namespace"}', (cat || '{"tools":[]}')::text, (cat || '{"more":1}')::text,
+		(cat || '{"name":"other"}')::text, (cat || jsonb_build_object('tools', jsonb_build_array(tool || '{"name":"Read"}')))::text,
+		(cat || jsonb_build_object('tools', jsonb_build_array(tool, tool)))::text,
+		(cat || jsonb_build_object('tools', jsonb_build_array(tool - 'description')))::text,
+		(cat || jsonb_build_object('tools', jsonb_build_array(tool || '{"more":1}')))::text,
+		(cat || jsonb_build_object('tools', jsonb_build_array(jsonb_set(tool, '{inputSchema,additionalProperties}', 'true'))))::text,
+		repeat(' ', 1048577)] loop
+		perform pg_temp.raises(pg_temp.admit_sql(b, bin, sha, policy, bad), '22023');
+	end loop;
+	perform pg_temp.raises(pg_temp.admit_sql(b, bin, sha, policy, null), '22023');
+	perform set_config('request.jwt.claims', '{"role":"authenticated"}', true);
+	perform pg_temp.raises_like(pg_temp.admit_sql(b, bin, sha, policy, cat::text), '42501', 'Native execution admission is unavailable');
+	perform pg_temp.raises_like(pg_temp.bind_sql(b, repeat('c', 64), 10), '42501', 'Native execution admission is unavailable');
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	if exists (select 1 from public.qorpera_native_execution_admissions where run_id = run_) then
+		raise exception 'A refused admission is not kept'; end if;
+
+	perform public.qorpera_begin_native_company_execution_v3(b, bin, sha, policy, cat::text);
+	a := public.qorpera_begin_native_company_execution_v3(b, bin, sha, policy, cat2::text);
+	perform pg_temp.same(a, jsonb_build_object('schema', 'qorpera.native-company-execution-admission/v1', 'runId', run_,
+		'jobId', b ->> 'jobId', 'leaseId', b ->> 'leaseId', 'binarySha256', bin, 'runtimeBundleSha256', sha,
+		'reasoningEffort', manifest_ #>> '{modelPolicy,effort}', 'reasoningPolicySha256', policy,
+		'toolCatalogSha256', encode(extensions.digest(cat2::text, 'sha256'), 'hex')), 'The admission');
+	perform pg_temp.same((select jsonb_agg(jsonb_build_array(lease_id, tool_catalog_text)) from public.qorpera_native_execution_admissions
+		where run_id = run_), jsonb_build_array(jsonb_build_array(b ->> 'leaseId', cat2::text)), 'One admission, the last one');
+	if exists (select 1 from public.qorpera_native_execution_launches where run_id = run_)
+		or exists (select 1 from public.qorpera_execution_run_events where run_id = run_ and event_type = 'runner_started') then
+		raise exception 'The admission launches nothing'; end if;
+
+	-- Composing: the settle's calls run on the admission; the context view waits for the launch.
+	perform pg_temp.same(public.qorpera_memory_events_run(b, jsonb_build_object('session', s, 'start', 0, 'count', 1)) -> 'root',
+		to_jsonb(root), 'The events call on the admission');
+	perform pg_temp.same(public.qorpera_memory_compaction_record(b, pg_temp.compaction(0)) -> 'batch', '0', 'The record on the admission');
+	perform pg_temp.expect(pg_temp.writer_commit('nora', 'writer-admitted-commit',
+		jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', root || '/t2')), pg_temp.generations(s, 1)), 1, 'saved');
+	perform pg_temp.raises_like(format('select public.qorpera_folder_record_context_view(%L,%L,%L)', env, b, '{}'), '42501',
+		'Native launch provenance is unavailable');
+
+	-- The bind: another lease's admission, then bad contexts; each keeps the admission.
+	perform pg_temp.fx(format('update public.qorpera_native_execution_admissions set lease_id = %L where run_id = %L',
+		extensions.gen_random_uuid(), run_));
+	perform pg_temp.raises_like(pg_temp.bind_sql(b, repeat('c', 64), 10), '55000', 'Native execution is not admitted');
+	perform pg_temp.fx(format('update public.qorpera_native_execution_admissions set lease_id = %L where run_id = %L', b ->> 'leaseId', run_));
+	for i in 1..5 loop
+		perform pg_temp.raises_like(pg_temp.bind_sql(b, contexts[i], sizes[i]), '22023', 'Native launch provenance is invalid');
+	end loop;
+	if not exists (select 1 from public.qorpera_native_execution_admissions where run_id = run_) then
+		raise exception 'A refused bind keeps the admission'; end if;
+	started := public.qorpera_bind_native_company_context(b, repeat('c', 64), 10);
+	perform pg_temp.same(started, (a - 'schema') || jsonb_build_object('schema', 'qorpera.native-company-execution-start/v1',
+		'contextSha256', repeat('c', 64), 'contextBytes', 10), 'The start record is the admission with its context');
+	perform pg_temp.same((select jsonb_agg(payload) from public.qorpera_execution_run_events where run_id = run_
+		and event_type = 'runner_started'), jsonb_build_array(started), 'One start, recorded');
+	perform pg_temp.same((select jsonb_agg(jsonb_build_array(tool_catalog_text, context_sha256, context_bytes))
+		from public.qorpera_native_execution_launches where run_id = run_),
+		jsonb_build_array(jsonb_build_array(cat2::text, repeat('c', 64), 10)), 'The launch');
+	if exists (select 1 from public.qorpera_native_execution_admissions where run_id = run_) then
+		raise exception 'The bind takes the admission'; end if;
+	perform pg_temp.raises_like(format('select public.qorpera_folder_record_context_view(%L,%L,%L)', env, b, '{}'), '22023',
+		'Context view is invalid');
+	perform pg_temp.raises_like(pg_temp.bind_sql(b, repeat('d', 64), 20), '55000', 'Native execution is not admitted');
+	perform pg_temp.raises_like(pg_temp.admit_sql(b, bin, sha, policy, cat::text), '55000',
+		'Earlier native execution requires reconciliation');
+	perform pg_temp.raises_like(pg_temp.bind_sql(pg_temp.b('vera'), repeat('c', 64), 10), '55000', 'Native execution is not admitted');
+end $$;
+
+-- 11. Least grants: only the service role calls v3 and the bind (v2 stays, for the coding wrapper); nobody reads the
+-- admissions; both are listed binding calls with the standard budget, without overloads.
+do $$
+declare bad text;
+begin
+	select string_agg(f || ' ' || r, ', ') into bad
+	from unnest(array['public.qorpera_begin_native_company_execution_v3(jsonb,text,text,text,text)',
+		'public.qorpera_bind_native_company_context(jsonb,text,integer)',
+		'public.qorpera_begin_native_company_execution_v2(jsonb,text,text,text,text,text,integer)']) f,
+		unnest(array['anon','authenticated','service_role']) r
+	where has_function_privilege(r, f, 'execute') is distinct from (r = 'service_role');
+	if bad is not null then raise exception 'Wrong function grants: %', bad; end if;
+	select string_agg(r || ' ' || p, ', ') into bad from unnest(array['anon','authenticated','service_role']) r,
+		unnest(array['select','insert','update','delete']) p
+	where has_table_privilege(r, 'public.qorpera_native_execution_admissions', p);
+	if bad is not null then raise exception 'Wrong table grants: %', bad; end if;
+	if not (select relrowsecurity from pg_class where oid = 'public.qorpera_native_execution_admissions'::regclass) then
+		raise exception 'Admissions have row security'; end if;
+	perform pg_temp.same((select jsonb_object_agg(name, jsonb_build_array(scope, budget)) from public.qorpera_native_host_calls
+		where name in ('qorpera_begin_native_company_execution_v3','qorpera_bind_native_company_context')),
+		'{"qorpera_begin_native_company_execution_v3":["binding","standard"],"qorpera_bind_native_company_context":["binding","standard"]}',
+		'The host call list');
+	if (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname in
+		('qorpera_begin_native_company_execution_v3','qorpera_bind_native_company_context')) <> 2 then
+		raise exception 'No overload ambiguity'; end if;
 end $$;
 
 rollback;

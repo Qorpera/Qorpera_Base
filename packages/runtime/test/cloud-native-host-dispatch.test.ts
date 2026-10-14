@@ -72,7 +72,8 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 		...rowsOf(read("20260928439970_folder_run_view_open.sql")),
 		// The worker tools on folder-v2 (F2-5b-2), a coding session's archive (C3b), the proposal calls (P40b), agents'
 		// hooks and mailboxes (E3a), zoom and its release (M1b-3), the primary view and its record (M1b-4a), branches
-		// (M4), run logs (W1b) and the conversation tree writer (M1b-4b-2), found by name: a release re-slots the file.
+		// (M4), run logs (W1b), the conversation tree writer (M1b-4b-2) and the admission split (M1b-4b-3), found by name: a
+		// release re-slots the file.
 		...[
 			"_folder_state_worker_files.sql",
 			"_folder_coding_archive.sql",
@@ -84,6 +85,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			"_memory_branches.sql",
 			"_memory_run_logs.sql",
 			"_memory_tree_writer.sql",
+			"_native_admission_split.sql",
 		].flatMap((suffix) =>
 			rowsOf(
 				read(
@@ -108,7 +110,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, , scope]) => scope !== "identity")
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(106);
+	expect(rows).toHaveLength(108);
 	expect(new Map(NATIVE_HOST_CALLS)).toEqual(expected);
 	expect([...NATIVE_HOST_CALLS].filter(([, budget]) => budget === "long")).toEqual([
 		["qorpera_fence_native_context", "long"],
