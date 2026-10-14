@@ -188,8 +188,9 @@ mount propagation proof for a container started before the mount came up.
 `qorpera_authorize_machine_command` writes (machine, placement, run, agent, requester) and the executor's journal of
 when each one runs. The executor tells the folder service over the host-local control socket (5c) when a command's
 window opens and closes, with `{commandId, runId, staffAgentId, requestedByUserId}`. It opens the window after the
-command row is written and before the guest starts the command, and closes it only after the command's end boundary is
-answered (below). The service tags each pending change with the commands whose windows were open when it was made. A
+command row is written and before the guest starts the command. It closes the window once the guest reports that the
+command ended (its unit's processes are gone then, `KillMode=control-group`), and right away asks for the command's end
+boundary (below). The service tags each pending change with the commands whose windows were open when it was made. A
 change made while no window is open is tagged with the starter.
 
 **When the service publishes** (design §2, item 3):
@@ -302,11 +303,32 @@ directly (rules 1 and 3).
 
 ## Boundaries
 
-<!-- TODO -->
+A boundary on a test machine covers the whole machine: the service flushes the folder program, releases every recorded
+read of the machine (rule 4), then publishes the view's pending changes, each unit with its credits. The executor asks
+for it over the host-local control socket (5c), not through the guest.
+
+| When | What happens |
+| --- | --- |
+| A command starts | its window opens at the service before the guest starts it; the start receipt that carries early output waits for a boundary first |
+| Output is read while a command runs (`machine_read`, a worker's read, `machine_cancel`'s receipt) | a boundary first |
+| A command ends | its window closes, then its end boundary, then its end and output tail are recorded and the notify continuation follows |
+| Files change while a program runs, or while no command runs | a quiet publish about 2 s after the machine's last change (item 3) |
+| Stop, sleep, suspend, release or delete | a final boundary with the VM up, then close and the power-off; an unanswered final boundary does not hold the stop past a minute, and what it held is not applied |
+| The guest reboots (a new boot) | a final boundary for the old view, then the new boot is recorded and its view opened |
+| The starter's authority narrows | renew closes the view `ended`; what was pending is not applied; the VM restarts |
+| The service stops cleanly | it releases everything, publishes everything and clears `served_by` |
+| The service crashed, or the VM or node was lost | rule 5 above; pending changes are lost ("not applied: the machine was lost") |
+
+A boundary's answer carries step 4's reasons per view (4c), so the report says what was held back and why.
 
 ## The report
 
-<!-- TODO -->
+Each `machine_run`, `machine_read` and `machine_cancel` receipt, and the notify continuation, gives what step 4's
+report gives (the view's reasons, what was held back and why), plus: whether this boot has `/company` and, when it has
+not, why (the starter's authority, a refused open); the saves credited to the command, with each refused unit's reason;
+the other commands that overlapped it (design); and a machine restarted or moved to a new disk by rule 5 or by the
+starter's authority narrowing. A member's machine card says only whether the machine works in the company folder, and
+why not when it does not (cards show changes, not files).
 
 ## What replaces `/mnt/repository`
 
