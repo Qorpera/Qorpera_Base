@@ -942,7 +942,7 @@ export class CloudNativeToolBoundary {
 				error instanceof CloudCompanyPathToolRefusal &&
 				!this.#signal.aborted &&
 				tool.source === "company_file" &&
-				["company_read", "company_list", "company_write", "company_mkdir", "company_delete"].includes(tool.name)
+				["company_write", "company_mkdir", "company_delete"].includes(tool.name)
 			) {
 				observation?.finish("denied", { errorCategory: "authority_unavailable" });
 				return this.#result(callId, tool, digest, "denied", { kind: "text", value: "COMPANY_FILE_ACCESS_DENIED" });
