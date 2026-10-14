@@ -34,8 +34,8 @@ save is credited to its session as well as root allows, as on test machines).
 
 ## The parts
 
-- **The coding machine**: one LXD VM per member, coding agent and setup digest (below, and Q1), in the LXD project for
-  coding machines (Q8). Its only NIC is on the agent plug (`agentPlugCard("eth0")`, as today in
+- **The coding machine**: one LXD VM per member, coding agent, repository and setup digest (below, and Q1), in the
+  LXD project for coding machines (Q8). Its only NIC is on the agent plug (`agentPlugCard("eth0")`, as today in
   `coding-machine.ts:148`), so all its traffic leaves through the agent exit. Its disk keeps home, caches, Docker and
   tmp across sleep.
 - **The guest agent** (`qorpera-guest`, new, replacing today's command helper and storage helper): runs as root in the
@@ -47,9 +47,9 @@ save is credited to its session as well as root allows, as on test machines).
   to, records each read it serves, releases reads, publishes saves and answers boundaries.
 - **The executor** (`coding-executor-host.ts`): opens and renews views, starts commands, writes receipts and output
   host-side, holds the lease, injects environment secrets and asks for boundaries over a host-local control socket.
-- **The code host** (new, 5e): a credential-free platform VM per node with no NIC that runs every git command that must
-  not run as a member's root: the seed, worktree adds, the default branch's `main/`, the export bundle, gc, and reading
-  the setup file.
+- **The code host** (new, 5e): a credential-free platform VM with no NIC, one per company on each node, that runs every
+  git command that must not run as a member's root: the seed, worktree adds, the default branch's `main/`, the export
+  bundle, gc, and reading the setup file.
 - **The builder VM** (new, 5h): a fresh VM per snapshot build, on the agent plug, with no `/company`.
 - **The preview proxy** (new, 5i) and **the vault relay** (new, 5j), both host-side.
 - **The host watchdog** (new, 5g): a host timer that force-stops a coding VM whose lease has lapsed.
@@ -64,13 +64,13 @@ Each capability of item 11, and how it works on our nodes. "The VM" is the membe
 | Root through `sudo` | Each session's uid has NOPASSWD sudo in the VM. Root is the VM's root under KVM; it reaches the host only through the channels in "The security line". | 5f, 5g |
 | Docker and compose | Rootless Docker per session in the VM (`/run/user/<uid>/docker.sock`), started on first use; `sudo docker` reaches the system daemon. Nested containers stay in the guest kernel. | 5f |
 | A setup file | Ours (`.qorpera/environment.json`), then `.cursor/environment.json`, then `.devcontainer/devcontainer.json`, read host-side by the code host and parsed by the executor under a strict schema. | 5h |
-| Snapshots | Per member and setup digest, built on a fresh builder VM from the default branch; a failed build keeps the old snapshot; a snapshot is scratch. | 5h |
+| Snapshots | Per member, repository and setup digest, built on a fresh builder VM from the default branch; a failed build keeps the old snapshot; a snapshot is scratch. | 5h |
 | Terminals the member watches | tmux per session in the VM, streamed to the web app over host-initiated exec. | 5g |
 | Ports opened from the web app | A node preview proxy on a preview domain reaches the session's port through a host-initiated stream. | 5i |
 | A browser the agent drives, with screenshots | Headless Chromium in the session's network namespace, driven by a `coding_browser` tool; a boundary before each screenshot reaches the model. | 5i |
 | Secrets as environment variables | Vault environment secrets, scoped to the member or the company, injected host-side into each command; masked in output, logs, receipts, saves and pushes (Q4). | 5j |
 | MCP servers as programs | They run as programs in the VM and reach the harness through host-initiated stdio streams; their sign-ins go through the vault relay. | 5j |
-| No waiting: a second machine | When the machine is full, a new attach opens the member's next machine for the same agent and setup digest (Q9). | 5k |
+| No waiting: a second machine | When the machine is full, a new attach opens the member's next machine for the same agent, repository and setup digest (Q9). | 5k |
 | The network through the exit | The VM's only NIC is on the agent plug; the agent exit applies company rules and refuses our own networks (agent exit §3). | today |
 | Unreviewed sessions | Coding views commit without review, as today (C1b-3 §2). | 5a |
 | Each session mounts with its own authority | One view per session, served only to its own machine (below). | 5a, 5c, 5g |
@@ -129,21 +129,28 @@ machine has the same authority (below).
 
 ## Views and machines
 
-**Which sessions share a machine.** A coding machine holds one member's sessions for one coding agent and one setup
-digest (Q1). Every view on it then has the same authority: the coding agent ∩ the member, with `agents/` and `rules/`
-read-only (contract 5.6; C1b's actor rule). Root can read every pass and mount on its machine, so a machine that mixed
-agents would let one agent read through another agent's view, which breaks item 11's "each session mounts with its own
-authority". Jonas's
-"one machine per member" (24 September 2026) still holds per agent and setup: a member who uses one coding agent on
-one kind of repository has one machine. The machine's row keeps today's shape (`qorpera_coding_machines`, kind
-`member`); 5a adds `staff_agent_id`, `setup_digest` and `number` to it and widens the unique index
-`qorpera_coding_machines_current` from `(profile_id, environment_id, member_user_id)` to those six columns (still where
-`kind = 'member' and removed_at is null`). `number` is the machine's place when one is full (5k). The LXD name stays
-`qorpera-coding-machine-<machine_id hex>` (`lxdCodingMachineName`, `coding-machine.ts:78`).
+**Which sessions share a machine.** A coding machine holds one member's sessions for one coding agent, one repository
+and one setup digest (Q1). Every view on it then has the same authority: the coding agent ∩ the member, with `agents/`
+and `rules/` read-only (contract 5.6; C1b's actor rule). Root can read every pass and mount on its machine, so a machine
+that mixed agents would let one agent read through another agent's view, which breaks item 11's "each session mounts
+with its own authority". One repository per machine is item 11's "the repository's machine": the setup file sets it up
+and its snapshot is built from that repository (below). A session whose setup names `repositoryDependencies` uses its
+own repository's machine. Jonas's "one machine per member" (24 September 2026) still holds per agent and repository: a
+member who uses one coding agent on one repository has one machine. The machine's row keeps today's shape
+(`qorpera_coding_machines`, kind `member`); 5a adds `staff_agent_id`, `repository` (the code area's `<owner>/<name>`),
+`setup_digest` and `number` to it and widens the unique index `qorpera_coding_machines_current` from `(profile_id,
+environment_id, member_user_id)` to those seven columns (still where `kind = 'member' and removed_at is null`). `number`
+is the machine's place when one is full (5k). The LXD name stays `qorpera-coding-machine-<machine_id hex>`
+(`lxdCodingMachineName`, `coding-machine.ts:78`).
 
-**The setup digest** is the SHA-256 of the parsed setup file in its normal form, or of the empty setup when the
-repository has none (5h). A session whose repository's setup changes keeps its machine until it is archived; its next
-new session goes to the machine of the new digest.
+**The setup digest** is the SHA-256 of the parsed setup file in its normal form together with the bytes of each
+Dockerfile it names (`build.dockerfile`, devcontainer `dockerFile` and `build.dockerfile`), read from the default
+branch, or of the empty setup when the repository has none (5h). A session whose repository's setup or Dockerfile
+changes keeps its machine until it is archived; its next new session goes to the machine of the new digest. Other inputs
+(a Dockerfile's context, the scripts `install` runs) are not in the digest, because the snapshot is only a head start:
+every session is set up from its own checkout at attach (`install` runs again, and a Dockerfile setup's image is built
+again from the session's worktree, quickly from the snapshot's BuildKit cache). An older disk can keep leftovers of an
+older install, as a laptop does, but each session runs what its own checkout sets up.
 
 **The view.** Each attached session has one open coding view (C1b-3 §3; the unique index
 `qorpera_folder_views_open_coding` on `(worker_id) where state='open'`). The executor opens it after the attach
@@ -169,7 +176,8 @@ VM's CID (`{project, name, physicalId}` from LXD):
 - a `coding_session` view is served only to `qorpera-coding-machine-<machine_id hex>` in one of the node's
   `codingMachineProjects` (new, as step 4's `companyMachineProjects`; Q8), read-write, with a quiet publish about 2 s
   after its last change;
-- a `code_host` view (new, 5a) is served only to the node's code host, read-write within the code area rules (5b);
+- a `code_host` view (new, 5a) is served only to its company's code host on the node, read-write within the code area
+  rules (5b);
 - no other machine gets either kind; a kind or machine that changes closes the view (as 4a).
 
 **Access.** A coding worker's `workerAccess` is always `read`, and there it names the dispatch's sources, not folder
@@ -221,8 +229,24 @@ output the ring had already dropped).
 
 **The lease is the host's.** The executor keeps one lease per machine at `/run/qorpera-coding-host/<machine>.json` on
 the node host. A host timer (`qorpera-coding-host-watchdog.timer`, 5g) force-stops any coding VM whose lease has lapsed.
-When a session's attachment lapses, the executor stops its units and, if the guest does not confirm within about 10 s,
-force-stops the VM. The guest's `qorpera-coding-watchdog` timer stays in the image as a courtesy for an honest guest.
+The guest's `qorpera-coding-watchdog` timer stays in the image as a courtesy for an honest guest.
+
+**When an attachment ends, the host stops its programs.** Root can confirm a stop and leave the programs running, so the
+guest's answer is never the proof. The executor closes the session's view, its sign-ins at the relay (5j) and its
+preview routes (5i) host-side, asks the guest to stop the session's slice, and then:
+
+- **the last attachment on the machine** ended: it force-stops the VM. All the machine's sessions share a member, agent,
+  repository and executor, so a refused renewal (the owner no longer a member, the repository grant withdrawn, the
+  executor switched off) ends them all at once;
+- **an attachment the executor lost** (not renewed in time) while another session stays attached: it restarts the VM
+  within the minute (stop, then start on the same disk), whatever the guest answered. The other sessions attach again,
+  and their next turns are told what stopped, as after sleep. If the executor dies first, the machine's lease lapses and
+  the watchdog stops the VM;
+- **an archive** while another session stays attached: the stop is the guest's, and the VM keeps running. Whatever root
+  leaves running has no view, sign-in or preview route of the archived session; it runs with the authority of the
+  sessions still attached, which are that member's own (item 11: "root reaches only that member's own sessions"), and it
+  stops when they end or the machine sleeps. A restart here would stop the other sessions' programs, which compute item
+  3 keeps until their own attachment ends or the machine sleeps.
 
 ## Code areas and git
 
@@ -233,9 +257,10 @@ in the folder, credited to its view. The core's rules for code areas (§7 item 9
 `qorpera_folder_path_reserved` already refuses `.git` and `node_modules` outside `code/`; nothing else of §7 item 9 is
 built yet.
 
-**Session-local git files.** `repo.git/config`, `repo.git/hooks/**` and `repo.git/info/**` are kept per session on the
-machine's disk and never published: the folder program serves the session its own copy, seeded from the platform's
-published copy when the view opens, and keeps its writes local. `objects/info/alternates` and
+**Session-local git files.** `repo.git/config`, `repo.git/hooks/**`, `repo.git/info/**` and the session's
+`repo.git/worktrees/<workerId>/config.worktree` are kept per session on the machine's disk and never published: the
+folder program serves the session its own copy, seeded from the platform's published copy when the view opens, and
+keeps its writes local. `objects/info/alternates` and
 `objects/info/http-alternates` refuse every write with EPERM. This amends §6 "Who may write what" ("only coding
 sessions may write a repository's config and hook scripts") and §7 item 9 ("`.git/config` and hooks writable only by
 coding sessions"). Why: with root, a session can write any hook or `include.path`; published, that hook would run in
@@ -374,18 +399,19 @@ and `dockerFile` as Cursor's. Features run through the devcontainer CLI in the b
 the builder VM, never on a host. A compose-based devcontainer is settled in 5h: run in the VM's Docker if the proof
 holds, else refused with a report.
 
-**Snapshots.** One per member and setup digest, keyed by the digest and the default branch's commit. A refresh starts
-when either changes. It runs on a fresh builder VM: the agent plug, no `/company`, a `git archive` of the default branch
-pushed in over exec stdin, `install` run with the member's secrets and the company secrets granted to the repository
-(5j), then the checkout removed and the disk published as an LXD image. At most one build runs at a time per repository
-and member. A failed build keeps the old snapshot; its masked log goes to the member, and the agent's next turn is told.
-A snapshot is scratch: nothing in it is company data, and it can be rebuilt at any time.
+**Snapshots.** One per member, repository and setup digest, keyed by the digest and the default branch's commit. A
+refresh starts when either changes. It runs on a fresh builder VM: the agent plug, no `/company`, a `git archive` of the
+default branch pushed in over exec stdin, `install` run with the member's secrets and the company secrets granted to the
+repository (5j), then the checkout removed and the disk published as an LXD image. At most one build runs at a time per
+repository and member. A failed build keeps the old snapshot; its masked log goes to the member, and the agent's next
+turn is told. A snapshot is scratch: nothing in it is company data, and it can be rebuilt at any time.
 
 **At attach** a new machine starts from the newest snapshot; an existing machine keeps its disk. The session's
 `install` runs again in its worktree, then `start` and the terminals.
 
-**An image or Dockerfile setup** builds with BuildKit in the builder VM, and the session's commands run in its
-container on the machine, with the worktree and `/company` bound in (proved in 5h, else Q12).
+**An image or Dockerfile setup** builds with BuildKit in the builder VM, and the snapshot keeps the image and BuildKit's
+cache. At attach the session's image is built again from its worktree (quick from the cache), and the session's commands
+run in its container on the machine, with the worktree and `/company` bound in (proved in 5h, else Q12).
 
 **Where snapshots are kept** is Q7 (recommended: per node, rebuilt where missing).
 
@@ -448,16 +474,21 @@ Docker and compose on a nested VM first; Q11 asks for the fallback if the proof 
 
 ## More machines
 
-When a machine is full, a new attach opens the member's next machine for the same coding agent and setup digest
-(`number` + 1), from the same snapshot (5k). What "full" means is Q9 (recommended: counted by size, the sessions'
+When a machine is full, a new attach opens the member's next machine for the same coding agent, repository and setup
+digest (`number` + 1), from the same snapshot (5k). What "full" means is Q9 (recommended: counted by size, the sessions'
 declared or measured memory and processor against the machine's, with a guest hint that can only open a new machine,
 never keep a session on a full one). Sessions never move between machines while attached.
 
 ## The code host
 
-A credential-free platform VM per node (5e), in its own LXD project (Q8), with no NIC (Q2 asks whether it is a VM or
-the broker's sandbox on the host). It mounts `/company` through `code_host` views and runs git with hooks at
-`/dev/null`, no filters, no fsmonitor and no submodule recursion. It does what no member's root may:
+A credential-free platform VM (5e), in its own LXD project (Q8), with no NIC: one per company on each node, started for
+a job and stopped when idle (Q2 asks whether a VM is right, or the broker's sandbox on the host). It mounts `/company`
+through a `code_host` view per job, which reaches only `code/` (5a), opened for the job and closed after it. A session
+can write files the code host's git reads (its worktree, its own `repo.git/worktrees/<workerId>/`), so that git never
+takes code or settings from the repository: `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`, the repository
+config being the platform's own (sessions' copies are never published), `extensions.worktreeConfig` off,
+`core.hooksPath=/dev/null`, no filters, no fsmonitor, no submodule recursion. One VM per company means a job that still
+went wrong reaches only its own company. It does what no member's root may:
 
 - **Seed.** The broker (`coding-git-seed.ts`, `coding-git-sandbox.ts`) bundles the repository with the token and
   streams the bundle over exec stdin; the code host fetches it into `repo.git` and checks NFC and case (§6 "Names").
@@ -481,17 +512,17 @@ Migration slots and SQL test numbers are reserved in the registry when a slice i
 
 | Slice | What | Tests |
 | --- | --- | --- |
-| 5a | SQL: coding views on member machines. The machine read set (written and fanned out by every coding release, rechecked at rank 10 by every coding commit, taken in at a turn's lease, emptied by the disk-replacement call, which is refused while a session is attached), replacing the per-session carry. `create or replace qorpera_memory_run_machine_narrow` and `qorpera_coding_turn_mark_narrow` from renew and release (after #986). `served_by` on views and the crashed-service refusal. The `code_host` view kind. The machine row's `staff_agent_id`, `setup_digest` and `number`, and the widened `qorpera_coding_machines_current`. Session uids allocated apart from `qorpera_coding_storage_volumes` | A read released by one session's view reaches every turn leased on the machine, and a turn leased later takes it in; a commit after a narrowing of a read path refuses for every session on the machine; the disk-replacement call empties the set and is refused while a session is attached; a turn on a machine with a view holding a non-every-agent path is narrow, and one with only every-agent paths is not; a view served by a crashed service is refused, a cleanly stopped one is not; `code_host` views open only for the platform; two sessions of one member with different agents or setup digests get different machines, with the same ones the same machine |
+| 5a | SQL: coding views on member machines. The machine read set (written and fanned out by every coding release, rechecked at rank 10 by every coding commit, taken in at a turn's lease, emptied by the disk-replacement call, which is refused while a session is attached), replacing the per-session carry. `create or replace qorpera_memory_run_machine_narrow` and `qorpera_coding_turn_mark_narrow` from renew and release (after #986). `served_by` on views and the crashed-service refusal. The `code_host` view kind (platform-only, `code/` only). The machine row's `staff_agent_id`, `repository`, `setup_digest` and `number`, and the widened `qorpera_coding_machines_current`. Session uids allocated apart from `qorpera_coding_storage_volumes` | A read released by one session's view reaches every turn leased on the machine, and a turn leased later takes it in; a commit after a narrowing of a read path refuses for every session on the machine; the disk-replacement call empties the set and is refused while a session is attached; a turn on a machine with a view holding a non-every-agent path is narrow, and one with only every-agent paths is not; a view served by a crashed service is refused, a cleanly stopped one is not; `code_host` views open only for the platform and refuse a path outside `code/`; two sessions of one member with different agents, repositories or setup digests get different machines (two repositories with the same setup file too), with the same ones the same machine |
 | 5b | SQL: code areas (§7 item 9 as amended). `.git` and `repo.git` only inside `code/<owner>/<name>/`; leases and synchronous publish units; the per-worker rule; `refs/stash` refused; no object deletes, `.keep` never published; session-local files and alternates platform-only; §6's names; 7-day object versions and the history fold; the gc lease block | One test per rule, each refused for a session and allowed for the platform where §6 says so; a lease held by one session makes another's lock fail; the version check refuses a second writer after an expired lease; a session's config or hook write refused in the folder |
 | 5c | Folder service: coding views. Serving only to the view's own coding machine in `codingMachineProjects`, or to the code host for `code_host`; the in-memory read record before an answer leaves; release fan-out; the host-local control socket and machine-wide boundaries; `served_by` set and cleared; reasons as 4c | The service's tests with a stand-in core: a coding view refused from another coding machine, an office, the execution host or an unlisted project; a read is recorded before its answer; a boundary is answered only after every read of the machine is released; a boundary with a refused release holds; a clean stop clears `served_by`; the control socket refuses a peer that is not the executor's uid |
-| 5d | Folder service and program: git on the mount. §6's lock protocol (lease on exclusive create, refresh before `open()` returns, publish on rename, publish on lock removal, rename onto a held lock), session-local `config`, `hooks/**` and `info/**`, EPERM for alternates and `utime` on objects, file times, the index reader and the cache list on the machine's disk | FUSE tests with real git (the pinned version) against a stand-in core: commit, rebase, fetch with N refs, `branch -D`, a killed git leaving a lock, two sessions racing one ref, a hook written in one session not seen in another, a cache folder never published and dropped from the list once tracked; merges after 5b |
-| 5e | The code host: VM, project, no NIC; seed from the broker's bundle; worktree add and lock; `main/` following the default branch; export bundle to `coding-git.ts`; gc with the lease block; reading the setup file | Runtime tests for each job with a stand-in exec; a seed refused for an NFC or case problem, naming the paths; an export of a branch that is not the session's refused; gc holds new leases in `repo.git` and releases them; the code host's git ignores a hook and a filter set in the repository |
+| 5d | Folder service and program: git on the mount. §6's lock protocol (lease on exclusive create, refresh before `open()` returns, publish on rename, publish on lock removal, rename onto a held lock), session-local `config`, `hooks/**`, `info/**` and `config.worktree`, EPERM for alternates and `utime` on objects, file times, the index reader and the cache list on the machine's disk | FUSE tests with real git (the pinned version) against a stand-in core: commit, rebase, fetch with N refs, `branch -D`, a killed git leaving a lock, two sessions racing one ref, a hook written in one session not seen in another, a cache folder never published and dropped from the list once tracked; merges after 5b |
+| 5e | The code host: one VM per company on each node, its project, no NIC, started for a job and stopped when idle, a `code_host` view per job; seed from the broker's bundle; worktree add and lock; `main/` following the default branch; export bundle to `coding-git.ts`; gc with the lease block; reading the setup file | Runtime tests for each job with a stand-in exec; a seed refused for an NFC or case problem, naming the paths; an export of a branch that is not the session's refused; gc holds new leases in `repo.git` and releases them; the code host's git ignores a hook, a filter, `include.path` and `extensions.worktreeConfig` set in the repository or a session's `config.worktree`; one company's job never sees another company's code area |
 | 5f | Base image: toolchains, tmux, Chromium, rootless Docker and compose, NOPASSWD sudo per session uid, the guest agent, the apt timers masked, `security.devlxd=false` | Image build test on the test machine; in a throwaway nested VM: rootless Docker and compose run a two-service app, `sudo` works, `/dev/lxd` absent, nothing on the host changes (modules, sysctls, nft listed before and after) |
-| 5g | Executor and guest agent: the cutover. Views opened after attach and closed after the final boundary; mounts and binds; command units, network namespaces and the host-built environment; receipts and output host-side; re-attach from the output ring; boundaries through the control socket; rule 4's restart and the `unreadable` move; the host lease and watchdog; terminals; the vsock listener list | Runtime tests: a refused open fails the attach with its reason, an unanswered one retries until the deadline; output reaches the model only after a boundary; a restarted executor re-attaches and records a gap; a lapsed lease force-stops the VM; a crashed service restarts the VM and reopens the views; the host listens to coding VMs only on the two CID-checked ports |
-| 5h | Setup file and snapshots: the three formats and their mapping, the strict schema, builder VMs, snapshot keys and refresh, one build at a time, a failed build keeps the old snapshot, `install` at attach, image and Dockerfile setups (BuildKit), compose devcontainers settled | Parser tests for each format and each ignored or refused key; a refresh on a setup change and on a default-branch change; a failed build keeps the old snapshot and reports its log; a second build for the same repository and member waits |
+| 5g | Executor and guest agent: the cutover. Views opened after attach and closed after the final boundary; mounts and binds; command units, network namespaces and the host-built environment; receipts and output host-side; re-attach from the output ring; boundaries through the control socket; rule 4's restart and the `unreadable` move; the host lease and watchdog; the host's stop when an attachment ends; terminals; the vsock listener list | Runtime tests: a refused open fails the attach with its reason, an unanswered one retries until the deadline; output reaches the model only after a boundary; a restarted executor re-attaches and records a gap; a lapsed lease force-stops the VM; with a guest that confirms a stop and leaves the programs running, the last attachment ending stops the VM and a lost attachment beside a live one restarts it within the minute, and an archive beside a live one closes the archived session's view, sign-ins and preview routes; a crashed service restarts the VM and reopens the views; the host listens to coding VMs only on the two CID-checked ports |
+| 5h | Setup file and snapshots: the three formats and their mapping, the strict schema, builder VMs, the digest with each named Dockerfile's bytes, snapshot keys and refresh, one build at a time, a failed build keeps the old snapshot, `install` at attach, image and Dockerfile setups (BuildKit, the image built again from the worktree at attach), compose devcontainers settled | Parser tests for each format and each ignored or refused key; a refresh on a setup change and on a default-branch change; a failed build keeps the old snapshot and reports its log; a second build for the same repository and member waits; a change to a named Dockerfile alone gives a new digest, so the next new session gets a new machine; a context file changed on a session's branch is in the image built at attach |
 | 5i | Previews and the browser: the preview proxy, single-use capabilities and host cookies, member-only access, host-initiated streams; the `coding_browser` tool with a boundary before each screenshot | Proxy tests: a capability works once, a cookie works only on its host, another member is refused; a screenshot waits for a boundary |
 | 5j | Secrets and the vault relay: environment secrets (member and company, with grants), host-side injection, masking in output, logs, receipts, terminals, saves and pushes, the relay for MCP sign-ins and git fetch | Masking across chunk boundaries and in base64 and URL forms; a save carrying a value refused; a push carrying a value refused; a company secret without a grant not injected; the relay forwards a sign-in only to its own origin and refuses a push; the SQL part may land before 5g |
-| 5k | A second machine: `number`, the full rule, opening the next machine from the same snapshot | A full machine opens the next one for the same agent and digest; a session never moves while attached |
+| 5k | A second machine: `number`, the full rule, opening the next machine from the same snapshot | A full machine opens the next one for the same agent, repository and digest; a session never moves while attached |
 | 5l | Retirements after step 6: the private repository folder, `cloud-coding-git-guest.ts`, `coding-git-transfer.ts`, the 64 MiB cap, the storage and command helpers, the NAS data and custody plugs, COMMAND-GUEST.md | The changed tests pass with the old paths gone; `git grep` finds no caller |
 | 5m | Live proof (below) | — |
 
@@ -551,11 +582,13 @@ only if a rule is wrong.
   view.
 - **P3 (only if the coordinator asks).** A durable read ledger, so a crashed service needs no VM restart. It conflicts
   with founder decision 1 (the folder service keeps no state beyond memory), so the plan does not build it.
-- **Q1 (coordinator).** Grouping: one machine per member, coding agent and setup digest. Jonas said one per member (24
-  September 2026); the plan splits by agent because root reads every view on a machine, and by setup digest because a
-  snapshot is the machine's disk.
-- **Q2 (coordinator).** Where the code host runs: a platform VM per node with no NIC (recommended), or the broker's
-  sandbox on the host.
+- **Q1 (coordinator).** Grouping: one machine per member, coding agent, repository and setup digest. Jonas said one
+  per member (24 September 2026); the plan splits by agent because root reads every view on a machine, and by repository
+  and setup digest because item 11 sets "the repository's machine" up from its setup file and a snapshot is the
+  machine's disk.
+- **Q2 (coordinator).** Where the code host runs: a platform VM with no NIC, one per company on each node, started for
+  a job (recommended); one VM per node for every company (fewer boots, but one VM then holds every company's code
+  areas); or the broker's sandbox on the host.
 - **Q3 (coordinator).** Step 5 and step 6 meet at `/mnt/repository`: a test machine started with `repositoryWorker`
   attaches the session's private repository folder there, read-only (`deploy/machine/README.md`), and step 6 replaces
   it with `/company`. From 5g, sessions work in the shared `repo.git`, so that folder is no longer updated until step 6
