@@ -161,11 +161,75 @@ refused (5a), as for coding views.
 
 ## Mounts in the VM
 
-<!-- TODO -->
+The guest helper starts one folder program, as root, at `/company`, with `allow_other`, from the pass it read on exec
+stdin. The pass stays in the program's memory and is never written to the disk. The helper restarts the program if it
+exits while the boot's view is open; root can stop or unmount it, which changes nothing outside the machine. There is
+one mount for the whole machine and no namespace per command (item 2): every command, and every process a command leaves
+running, sees the same `/company`. A Docker container binds `/company` like any other path; 6c's tests repeat step 4's
+mount propagation proof for a container started before the mount came up.
+
+- **Commands.** Each command runs as today: a transient systemd unit under `qorpera-machine.slice`, with
+  `KillMode=control-group` (`cloud-machine-guest.ts:459`). A program that keeps running, such as a dev server or a
+  watcher, is a command that has not ended. What a command leaves behind outside its unit (a Docker container, a timer)
+  keeps running, and its changes made while no command runs are credited to the starter ("Commands and credit").
+- **Links and special files** (items 4–6) are the folder program's and the service's, from the links slices (step 4's
+  links lane), so a test machine gets them with the program.
+- **Item 8's caches** stay on the machine's disk: "The folder program keeps item 8's caches on the machine." Step 6
+  uses that part of the program as whichever slice builds it first leaves it ("whichever of it and 5d lands first
+  builds the program's part"). 6e, which retires the copy to the machine's disk, waits for it.
+- **The toolbox** (item 7): "Agents' own machines and test machines start from a base image that carries it." 6c adds
+  to `build-machine-image.sh` what today's image lacks of 4e's list (`tsc` and `tsx`, uv, ripgrep, fd, sqlite3, zip and
+  LibreOffice), with `fuse3` and the folder program, in a new image generation. The image tests are 4e's: every
+  toolbox command answers `--version`.
 
 ## Commands and credit
 
-<!-- TODO -->
+**Command windows.** Credit comes from #419's command records on the node: the command rows that
+`qorpera_authorize_machine_command` writes (machine, placement, run, agent, requester) and the executor's journal of
+when each one runs. The executor tells the folder service over the host-local control socket (5c) when a command's
+window opens and closes, with `{commandId, runId, staffAgentId, requestedByUserId}`. It opens the window after the
+command row is written and before the guest starts the command, and closes it only after the command's end boundary is
+answered (below). The service tags each pending change with the commands whose windows were open when it was made. A
+change made while no window is open is tagged with the starter.
+
+**When the service publishes** (design §2, item 3):
+
+- about 2 s after the machine's last change: item 3's quiet publish applies here (decided), since a program that keeps
+  running is common on a test machine and may never end or be read;
+- at each read of a running command's output, before the answer leaves (a boundary, below);
+- at each command's end (its end boundary);
+- at stop, sleep, suspend, release and delete (the final boundary).
+
+**Credit per unit** (6a). Each unit of a publish carries `credits`: the commands its changes were tagged with, or none
+for a change made while no command ran. SQL checks each credited command against `qorpera_company_machine_commands`:
+that machine, that placement, not ended, where a publish made at that command's own end counts (C1b §8). A unit whose
+credited command fails the check is refused alone, as an outcome ("its command ended before it was published"),
+since only malformed requests raise. Each unit must be allowed for every credited command's agent and requester, and a
+unit with no command for the starter's. The commit's actor is the credited command that started first, and its
+`credits` lists all of them (C1b §8). When commands overlap, each of their receipts lists the others (design).
+
+C1b §8 names the commands once per publish. Step 6 names them per unit, because one publish often holds a change
+made under one command next to a change made while two ran. Crediting every unit to both would refuse the first unit
+whenever the second command's agent may not change it, and would misname its saver. Per-unit credits keep the design's
+rule ("it can misname the saver, never widen the view") as close as the windows allow (amended below).
+
+**Changes made while no command runs** (a Docker container, a program a command left outside its unit, root's
+timers) go to the starter "at the next publish or at stop" (design).
+
+**The end order.** The executor records a command's end, and its output tail, only after the command's end boundary
+is answered. So every change tagged with that command is published while SQL still sees it running, and the notify
+continuation and a worker's read see the tail only after the command's changes are saved or refused. At stop, sleep,
+suspend, release and delete, the executor runs the final boundary with the VM still up, before the power-off. The
+commands then end with the stop's cause, as today, and a delete's commands end only at close, after the release
+("The machines' end paths need no change", C1b §8).
+
+**A guest reboot.** A new `boot_id` ends the old boot's commands `lost` (`qorpera_mark_company_machine_running`). The
+service still holds what was pending, so the executor first runs the final boundary on the old view, which is still
+valid because SQL still has the old `boot_id`. Then it records the new boot and opens the new boot's view.
+
+**A lost machine.** When the VM, the node or the folder service dies, what was pending since the last boundary is lost
+(founder decision 3, "What a crash loses"). The commands end `lost` as today, and their receipts say "not applied: the
+machine was lost".
 
 ## Review
 
