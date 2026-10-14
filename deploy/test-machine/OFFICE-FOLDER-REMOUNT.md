@@ -72,11 +72,12 @@ any folder program or folder unit the image may carry:
 
 What A1 itself supplies is the kernel, systemd, bubblewrap, tini, node, python,
 the mount tools, any `fusermount`, the `qorpera-office` account, and how `/run` is
-mounted. The record's `image` part keeps what A1 carries beside master's: the installed
-office unit's sha256 and its diff against master (`officeUnitSha256`,
-`officeUnitAgainstMaster`), what is in `/opt/qorpera-folder` and which
-`qorpera-folder*` units exist (`imageFolder`), `/run`'s mount options
-(`runMount`) and which of `fusermount` and `fusermount3` exist.
+mounted. The record's `guestImage` part keeps what A1 carries beside master's:
+the installed office unit's sha256 and its diff against master
+(`officeUnitSha256`, `officeUnitAgainstMaster`), what is in `/opt/qorpera-folder`
+and which `qorpera-folder*` units exist (`imageFolder`), `/run`'s mount options
+(`runMount`) and which of `fusermount` and `fusermount3` exist. The top-level
+`image` is the fingerprint the VM was made from.
 
 4d's acceptance reruns this harness on the 4d generation with
 `--image <fingerprint>`, once that image is staged. Building that image is 4d's
@@ -128,7 +129,7 @@ design; none of them decides `result`.
 - `firstMount`, `directStart`, `directAfterKill2`, `afterExitThree`,
   `relay1BeforeLayout` and each namespace's start: the context the checks read.
 
-Beside `recorded`, `image` holds what A1 carries (above), `relayConfinement`
+Beside `recorded`, `guestImage` holds what A1 carries (above), `relayConfinement`
 the office unit lines the relays run under, `officeLinesLeftOut` the lines that
 run the application rather than confine it, and `mountUnit` the unit text the
 proof installed.

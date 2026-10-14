@@ -648,7 +648,7 @@ class Proof:
         require_disposable_guest(self.directory)
         self.directory.chmod(0o755)
         seen, office = preflight(self.directory, self.fuse)
-        self.record["image"] = seen
+        self.record["guestImage"] = seen
         self.node_path = seen["node"]
         self.office_text = (self.directory / "office.service").read_text()
         taken, skipped = office_lines(self.office_text)
