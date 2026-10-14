@@ -26,6 +26,14 @@ def company(name=""):
     return "/company/" + name if name else "/company"
 
 
+def where():
+    """A working directory on a mount that is gone has no path: the status still answers."""
+    try:
+        return os.getcwd()
+    except OSError as error:
+        return {"errno": error.errno}
+
+
 def status():
     fields = dict(line.split(":", 1) for line in open("/proc/self/status").read().splitlines() if ":" in line)
     return {
@@ -37,7 +45,7 @@ def status():
         "pidNamespace": os.readlink("/proc/self/ns/pid"),
         "capEff": fields["CapEff"].strip(),
         "noNewPrivs": fields["NoNewPrivs"].strip(),
-        "cwd": os.getcwd(),
+        "cwd": where(),
     }
 
 
