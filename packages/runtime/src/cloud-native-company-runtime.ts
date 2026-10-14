@@ -619,6 +619,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			};
 			try {
 				stage = "native-tools";
+				// Whether the run had a machine, whose changes are noted after it (Interfaces I10, below).
+				let machine = false;
 				const result = await runCloudNativeRunToolSession({
 					observability,
 					binding,
@@ -713,6 +715,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						)
 							throw new Error("Cloud context identity changed before execution");
 						const computer = await this.#computerSession?.(run, operations);
+						if (computer) machine = true;
 						// The node's folder search (F3, "Light threads"): a run on a host that has it. A worker gets it
 						// too: it only reads.
 						const folderSearch = this.#folderSearch
@@ -939,6 +942,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								: {}),
 						};
 					},
+				}).finally(async () => {
+					// What the run's machine saved under interfaces/ or tables/ (its shell, its screen) shows in its
+					// conversation with Undo, as a tool's change does (Interfaces I10): SQL notes each of the run's commits
+					// there once, now that the machine is closed. A note that fails leaves the change without its line; the
+					// run's outcome stands.
+					if (machine && context.identity.sessionId !== null)
+						await folder.client.noteInterfaceChanges(signal).catch((error: unknown) => {
+							console.error(
+								`The run's interface changes were not noted (${cloudRuntimeErrorCategory(error, signal)})`,
+							);
+						});
 				});
 				stage = "public-completion";
 				const delivery = await mouth.finish(wake.policy.final === "required");

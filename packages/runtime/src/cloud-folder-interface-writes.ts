@@ -1320,16 +1320,13 @@ export function cloudInterfaceWriteTools(options: {
 			writable();
 			const bytes = request.files.reduce((sum, file) => sum + Buffer.byteLength(file.text), 0);
 			context.observation?.update({ inputBytes: bytes });
-			// The commit's operation key for the model's: fixed length, and distinct per tool.
-			const key = `save_interface:${sha256hex(request.operationKey)}`;
 			// Planned again on the folder as it is now: it may have changed since the review.
 			const plan = await planSave(folder, agent, request.files, context.signal);
 			if (plan.blocked || plan.units.length === 0) {
 				// A repeat of a call that saved but could not note its change finds the files saved, or changed since: the
-				// note is made now (I10), if this run's commit under the key saved anything. This call changed nothing, so
-				// a failure is a refusal.
+				// run's changes with no note get theirs now (I10). This call changed nothing, so a failure is a refusal.
 				try {
-					await folder.noteInterfaceChange(key, context.signal);
+					await folder.noteInterfaceChanges(context.signal);
 				} catch (error) {
 					unavailable(error, "shown");
 				}
@@ -1358,6 +1355,8 @@ export function cloudInterfaceWriteTools(options: {
 				// The folder core decides at the commit, under this call's receipt.
 				authorize: async () => {},
 				perform: async (_operation, { receiptId, signal }) => {
+					// The commit's operation key for the model's: fixed length, and distinct per tool.
+					const key = `save_interface:${sha256hex(request.operationKey)}`;
 					let committed: Awaited<ReturnType<CloudCompanyFolderClient["commit"]>>;
 					if (review === undefined) committed = await folder.commit(key, plan.units, { receiptId }, signal);
 					else {
@@ -1380,10 +1379,9 @@ export function cloudInterfaceWriteTools(options: {
 				...(context.observation ? { observation: context.observation } : {}),
 			});
 			if (content.kind !== "text") throw new Error("A save answered no text");
-			// The change in the run's conversation, with Undo (I10): SQL notes the commit under this key once, if it saved
-			// anything. Its failure is a folder error, never a refusal, so the call is unconfirmed: the same call again
-			// notes it.
-			await folder.noteInterfaceChange(key, context.signal);
+			// The change in the run's conversation, with Undo (I10): SQL notes each of the run's commits there once. Its
+			// failure is a folder error, never a refusal, so the call is unconfirmed: the same call again notes it.
+			await folder.noteInterfaceChanges(context.signal);
 			// The commit's answer can quote what the save read, a table's rows in its problems: released with it.
 			return showCommitted(context, content.value, plan.reads);
 		},

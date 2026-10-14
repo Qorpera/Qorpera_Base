@@ -57,7 +57,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_folder_complete_run_receipt", "standard"],
 	["qorpera_folder_list", "standard"],
 	["qorpera_folder_manage_hook", "standard"],
-	["qorpera_folder_note_interface_change", "standard"],
+	["qorpera_folder_note_interface_changes", "standard"],
 	["qorpera_folder_open_upload", "standard"],
 	["qorpera_folder_read", "standard"],
 	["qorpera_folder_record_release", "standard"],

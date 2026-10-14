@@ -148,8 +148,8 @@ export type CloudCompanyPathRpc =
 	| "qorpera_folder_close_proposal"
 	// A coding session's archive (C3b).
 	| "qorpera_folder_archive_coding_worker"
-	// An agent's page change in its conversation, with Undo (I10).
-	| "qorpera_folder_note_interface_change"
+	// An agent's page and table changes in its conversation, with Undo (I10).
+	| "qorpera_folder_note_interface_changes"
 	// Event wakes (W2): the company's hooks and one event's body.
 	| "qorpera_list_agent_event_hooks"
 	| "qorpera_read_agent_event"

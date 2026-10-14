@@ -1,29 +1,46 @@
--- @fixture 769_folder_core_review_recorder.test.sql until "-- The files the runs delete"
--- Interfaces I10 (deploy/first-node/RUNTIME-INTERFACES.md §9 decision 2, §10 row I10; 20260930370000): the note of a
--- run's save_interface commit in its conversation, a native host call. What the note names (each version the commit
--- made, with the one before it), whose event it is, one note a commit, when there is none (no commit of this run under
--- the key, a commit that saved nothing, no conversation), the refusals (a closed conversation's run among them), and the
--- grants. Runs are 647's with their native rows; the commits write plain files, since the note reads only what a
--- commit's units made.
+-- @fixture 864_folder_state_interfaces.test.sql until "-- 1. The kinds, by the path's shape alone"
+-- Interfaces I10 (deploy/first-node/RUNTIME-INTERFACES.md §7 and §9 decision 2, §10 row I10; 20260930370000): the
+-- notes of a run's changes to the company's pages and tables in its conversation, a native host call. Which commits
+-- get one (any of the run's that changed a path under interfaces/ or tables/, whatever tool's key it has; never a
+-- table's rows), what a note names (each version the commit made there, with the one before it), whose event it is,
+-- one note a commit, when there is none (another run's commit, a commit that saved nothing, no conversation), the
+-- refusals (a closed conversation's run among them), and the grants. The seed is 864's: Pulse with its README, Mailbox,
+-- and the numbers table with its rows. Runs are 647's with their native rows.
 
-create function pg_temp.note(p_binding jsonb, p_key text) returns jsonb language sql as $$
-	select public.qorpera_folder_note_interface_change(p_binding, jsonb_build_object('operationKey', p_key))
+create function pg_temp.note(p_binding jsonb) returns jsonb language sql as $$
+	select public.qorpera_folder_note_interface_changes(p_binding, '{}'::jsonb)
 $$;
--- The commit's key for the model's key, as save_interface makes it.
-create function pg_temp.key(p_model_key text) returns text language sql immutable as $$
-	select 'save_interface:' || pg_temp.hash(p_model_key)
+create function pg_temp.noted(p_count integer) returns jsonb language sql immutable as $$
+	select jsonb_build_object('schema', 'qorpera.interface-change-notes/v1', 'noted', p_count)
 $$;
-create function pg_temp.version(p_path text) returns uuid language sql as $$
-	select version from public.qorpera_folder_entries where environment_id = '63400000-0000-4000-8000-000000000020'
-		and key_text = lower(p_path) and kind <> 'claim'
+-- A commit's key as a tool makes it: the tool, then the hash of the model's key.
+create function pg_temp.key(p_tool text, p_model_key text) returns text language sql immutable as $$
+	select p_tool || ':' || pg_temp.hash(p_model_key)
 $$;
--- The notes in a run's conversation.
+-- The notes in a run's conversation, in its order.
 create function pg_temp.notes(p_actor jsonb) returns setof public.qorpera_session_events language sql as $$
 	select e.* from public.qorpera_session_events e join public.qorpera_execution_runs r on r.session_id = e.session_id
-	where r.id = (p_actor ->> 'runId')::uuid and e.body ->> 'schema' = 'qorpera.interface-change/v1'
+	where r.id = (p_actor ->> 'runId')::uuid and e.body ->> 'schema' = 'qorpera.interface-change/v1' order by e.sequence
 $$;
-create function pg_temp.none() returns jsonb language sql immutable as $$
-	select jsonb_build_object('schema', 'qorpera.interface-change-note/v1', 'noted', false, 'eventId', null)
+-- A commit's note id: its hash as a version 8 UUID.
+create function pg_temp.event_id(p_commit jsonb) returns uuid language sql immutable as $$
+	select overlay(overlay(md5('qorpera.interface-change:' || (p_commit ->> 'commitId'))::uuid::text placing '8' from 15 for 1)
+		placing '8' from 20 for 1)::uuid
+$$;
+create function pg_temp.seq(p_commit jsonb) returns bigint language sql as $$
+	select seq from public.qorpera_folder_commits where id = (p_commit ->> 'commitId')::uuid
+$$;
+-- One path version a note names.
+create function pg_temp.change(p_unit integer, p_op text, p_kind text, p_path text, p_prior uuid) returns jsonb language sql as $$
+	select jsonb_build_object('unit', p_unit, 'op', p_op, 'kind', p_kind, 'path', p_path,
+		'version', pg_temp.p16_version(lower(p_path)), 'priorVersion', p_prior)
+$$;
+create function pg_temp.plain(p_actor jsonb, p_path text, p_text text) returns jsonb language sql as $$
+	select jsonb_build_object('op', 'write', 'path', p_path, 'file', pg_temp.stage(p_text, p_actor))
+$$;
+-- The numbers table's rows with the first reading's value changed: a rows save.
+create function pg_temp.reading(p_actor jsonb, p_value text) returns jsonb language sql as $$
+	select pg_temp.p16_write(p_actor, 'tables/numbers/rows.csv', jsonb_set(pg_temp.fixture('rows'), '{rows,0,fields,2}', to_jsonb(p_value)))
 $$;
 -- A routine run of agent A with no conversation (a silent routine, as 658 builds it), with its binding.
 create function pg_temp.routine_run() returns jsonb language plpgsql as $$
@@ -65,120 +82,128 @@ begin
 	return jsonb_build_object('actor', p, 'binding', pg_temp.native(p));
 end $$;
 
--- 1. A run's commit: a new file, a rewrite of the member's file, and a new folder with two files. The note names each
--- version in unit and path order, with the version each replaced; it is a session_info event in the run's conversation,
--- from the member the run is for, with no run identity. A replay finds the same note.
+-- 1. A company_write of Pulse's README, then a plain file: one note, of the README's commit. It names the version the
+-- commit made and the one before it; it is a session_info event in the run's conversation, from the member the run is
+-- for, with no run identity. A repeat notes nothing more.
 do $$
-declare m jsonb := pg_temp.member(2); x jsonb := pg_temp.agent_run(); b jsonb := x -> 'binding'; p jsonb := x -> 'actor';
-	v_old uuid; c jsonb; v_commit public.qorpera_folder_commits%rowtype; v_event uuid; r jsonb;
-	e public.qorpera_session_events%rowtype; v_changes jsonb;
+declare x jsonb := pg_temp.agent_run(); b jsonb := x -> 'binding'; p jsonb := x -> 'actor';
+	v_old uuid := pg_temp.p16_version('interfaces/pulse/readme.md'); c jsonb; e public.qorpera_session_events%rowtype;
 begin
-	perform pg_temp.expect(pg_temp.commit(m, 'i10-setup', jsonb_build_array(jsonb_build_object('op', 'write', 'path', 'i10-old.md',
-		'file', pg_temp.stage('Old page.', m)))), 1, 'saved');
-	v_old := pg_temp.version('i10-old.md');
-	c := pg_temp.commit(p, pg_temp.key('page-1'), jsonb_build_array(
-		jsonb_build_object('op', 'write', 'path', 'i10-new.md', 'file', pg_temp.stage('New page.', p)),
-		jsonb_build_object('op', 'write', 'path', 'i10-old.md', 'file', pg_temp.stage('Changed page.', p), 'expectedVersion', v_old),
-		jsonb_build_object('op', 'new_folder', 'path', 'i10-pages', 'contents', jsonb_build_array(
-			jsonb_build_object('path', 'b.md', 'kind', 'file', 'file', pg_temp.stage('Page B.', p)),
-			jsonb_build_object('path', 'a.md', 'kind', 'file', 'file', pg_temp.stage('Page A.', p))))));
+	c := pg_temp.commit(p, pg_temp.key('company_write', 'readme-1'), jsonb_build_array(
+		pg_temp.p16_write(p, 'interfaces/pulse/README.md', '"About Pulse, by the agent."')));
 	perform pg_temp.expect(c, 1, 'saved');
-	perform pg_temp.expect(c, 2, 'saved');
-	perform pg_temp.expect(c, 3, 'saved');
-	select * into strict v_commit from public.qorpera_folder_commits where id = (c ->> 'commitId')::uuid;
-	v_event := md5('qorpera.interface-change:' || v_commit.id::text)::uuid;
-	r := pg_temp.note(b, pg_temp.key('page-1'));
-	if r <> jsonb_build_object('schema', 'qorpera.interface-change-note/v1', 'noted', true, 'eventId', v_event) then
-		raise exception 'The note: %', r; end if;
+	perform pg_temp.expect(pg_temp.commit(p, pg_temp.key('company_write', 'plain-1'), jsonb_build_array(
+		pg_temp.plain(p, 'i10-plain.md', 'A plain file.'))), 1, 'saved');
+	if pg_temp.note(b) <> pg_temp.noted(1) then raise exception 'One note: %', pg_temp.note(b); end if;
 	select * into strict e from pg_temp.notes(p);
-	v_changes := jsonb_build_array(
-		jsonb_build_object('unit', 1, 'op', 'write', 'kind', 'file', 'path', 'i10-new.md', 'version', pg_temp.version('i10-new.md'),
-			'priorVersion', null),
-		jsonb_build_object('unit', 2, 'op', 'write', 'kind', 'file', 'path', 'i10-old.md', 'version', pg_temp.version('i10-old.md'),
-			'priorVersion', v_old),
-		jsonb_build_object('unit', 3, 'op', 'mkdir', 'kind', 'folder', 'path', 'i10-pages', 'version', pg_temp.version('i10-pages'),
-			'priorVersion', null),
-		jsonb_build_object('unit', 3, 'op', 'write', 'kind', 'file', 'path', 'i10-pages/a.md',
-			'version', pg_temp.version('i10-pages/a.md'), 'priorVersion', null),
-		jsonb_build_object('unit', 3, 'op', 'write', 'kind', 'file', 'path', 'i10-pages/b.md',
-			'version', pg_temp.version('i10-pages/b.md'), 'priorVersion', null));
-	if e.event_id <> v_event or e.event_type <> 'session_info' or e.actor_user_id <> '63400000-0000-4000-8000-000000000002'
+	-- The id is a version 8 UUID, which the web's strict event check takes.
+	if e.event_id <> pg_temp.event_id(c) or e.event_id::text !~ '^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$'
+		or e.event_type <> 'session_info' or e.actor_user_id <> '63400000-0000-4000-8000-000000000002'
 		or e.execution_kind is not null or e.execution_id is not null or e.runner_assignment_id is not null
-		or e.body <> jsonb_build_object('schema', 'qorpera.interface-change/v1', 'commitId', v_commit.id, 'seq', v_commit.seq,
-			'runId', p ->> 'runId', 'staffAgentId', '63400000-0000-4000-8000-0000000000a1', 'changes', v_changes)
-		or v_commit.seq is null or v_old = pg_temp.version('i10-old.md') then
+		or e.body <> jsonb_build_object('schema', 'qorpera.interface-change/v1', 'commitId', c ->> 'commitId',
+			'seq', pg_temp.seq(c), 'runId', p ->> 'runId', 'staffAgentId', '63400000-0000-4000-8000-0000000000a1',
+			'changes', jsonb_build_array(pg_temp.change(1, 'write', 'file', 'interfaces/pulse/README.md', v_old)))
+		or pg_temp.seq(c) is null or v_old is null or v_old = pg_temp.p16_version('interfaces/pulse/readme.md') then
 		raise exception 'The event: %', to_jsonb(e); end if;
-	-- A replay finds its note; the conversation holds one.
-	if pg_temp.note(b, pg_temp.key('page-1')) <> r or (select count(*) from pg_temp.notes(p)) <> 1 then
-		raise exception 'A replay notes once'; end if;
+	if pg_temp.note(b) <> pg_temp.noted(0) or (select count(*) from pg_temp.notes(p)) <> 1 then
+		raise exception 'A repeat notes nothing more'; end if;
 	perform set_config('qorpera_test.i10_run', x::text, true);
 end $$;
 
--- 2. Refusals: the run check first (a snapshot-v1 binding), then the request's shape (22023).
+-- 2. More commits, then one call notes each that has none, in the order they saved: a new table folder with its README
+-- in a commit that also writes a plain file and the numbers table's rows (the note names the folder and its README
+-- only); a commit of the table's rows alone (no note); and save_interface's new README for Mailbox.
+do $$
+declare x jsonb := current_setting('qorpera_test.i10_run')::jsonb; b jsonb := x -> 'binding'; p jsonb := x -> 'actor';
+	c3 jsonb; c5 jsonb; v_notes jsonb;
+begin
+	c3 := pg_temp.commit(p, pg_temp.key('company_write', 'table-1'), jsonb_build_array(
+		pg_temp.p16_folder(p, 'tables/i10-table', jsonb_build_object('README.md', 'About the table.')),
+		pg_temp.plain(p, 'i10-also.md', 'Another plain file.'),
+		pg_temp.reading(p, '1300')));
+	perform pg_temp.expect(c3, 1, 'saved');
+	perform pg_temp.expect(c3, 2, 'saved');
+	perform pg_temp.expect(c3, 3, 'saved');
+	perform pg_temp.expect(pg_temp.commit(p, pg_temp.key('table_write', 'rows-1'), jsonb_build_array(pg_temp.reading(p, '1400'))),
+		1, 'saved');
+	c5 := pg_temp.commit(p, pg_temp.key('save_interface', 'mailbox-1'), jsonb_build_array(
+		pg_temp.p16_write(p, 'interfaces/mailbox/README.md', '"About Mailbox."')));
+	perform pg_temp.expect(c5, 1, 'saved');
+	if pg_temp.note(b) <> pg_temp.noted(2) then raise exception 'Two notes'; end if;
+	select jsonb_agg(jsonb_build_array(e.event_id, e.body) order by e.sequence) into v_notes from pg_temp.notes(p) e
+	where e.event_id in (pg_temp.event_id(c3), pg_temp.event_id(c5));
+	if v_notes is distinct from jsonb_build_array(
+		jsonb_build_array(pg_temp.event_id(c3), jsonb_build_object('schema', 'qorpera.interface-change/v1',
+			'commitId', c3 ->> 'commitId', 'seq', pg_temp.seq(c3), 'runId', p ->> 'runId',
+			'staffAgentId', '63400000-0000-4000-8000-0000000000a1', 'changes', jsonb_build_array(
+				pg_temp.change(1, 'mkdir', 'folder', 'tables/i10-table', null),
+				pg_temp.change(1, 'write', 'file', 'tables/i10-table/README.md', null)))),
+		jsonb_build_array(pg_temp.event_id(c5), jsonb_build_object('schema', 'qorpera.interface-change/v1',
+			'commitId', c5 ->> 'commitId', 'seq', pg_temp.seq(c5), 'runId', p ->> 'runId',
+			'staffAgentId', '63400000-0000-4000-8000-0000000000a1', 'changes', jsonb_build_array(
+				pg_temp.change(1, 'write', 'file', 'interfaces/mailbox/README.md', null))))) then
+		raise exception 'The notes: %', v_notes; end if;
+	if pg_temp.note(b) <> pg_temp.noted(0) or (select count(*) from pg_temp.notes(p)) <> 3 then
+		raise exception 'A repeat notes nothing more'; end if;
+end $$;
+
+-- 3. Refusals: the run check first (a snapshot-v1 binding), then the request, which is {} (22023).
 do $$
 declare b jsonb := current_setting('qorpera_test.i10_run')::jsonb -> 'binding'; request text;
 begin
-	perform pg_temp.raises(format('select public.qorpera_folder_note_interface_change(%L, %L)',
-		current_setting('qorpera_test.snapshot_binding'), jsonb_build_object('operationKey', pg_temp.key('page-1'))), '42501');
-	foreach request in array array['[]', '"x"', '1', 'null', '{}', '{"operationKey":null}', '{"operationKey":1}',
-		'{"operationKey":["x"]}',
-		jsonb_build_object('operationKey', pg_temp.key('page-1'), 'more', 1)::text,
-		jsonb_build_object('operationKey', 'save_interface:')::text,
-		jsonb_build_object('operationKey', pg_temp.hash('page-1'))::text,
-		jsonb_build_object('operationKey', 'save_interface:' || upper(pg_temp.hash('page-1')))::text,
-		jsonb_build_object('operationKey', 'table_write:' || pg_temp.hash('page-1'))::text,
-		jsonb_build_object('operationKey', pg_temp.key('page-1') || '0')::text,
-		jsonb_build_object('operationKey', ' ' || pg_temp.key('page-1'))::text,
-		jsonb_build_object('operationKey', pg_temp.key('page-1') || E'\n')::text] loop
-		perform pg_temp.raises(format('select public.qorpera_folder_note_interface_change(%L, %L)', b, request), '22023');
+	perform pg_temp.raises(format('select public.qorpera_folder_note_interface_changes(%L, %L)',
+		current_setting('qorpera_test.snapshot_binding'), '{}'), '42501');
+	foreach request in array array['[]', '"x"', '1', 'null', '{"operationKey":"x"}', '{"more":1}', '{"":null}'] loop
+		perform pg_temp.raises(format('select public.qorpera_folder_note_interface_changes(%L, %L)', b, request), '22023');
 	end loop;
-	perform pg_temp.raises(format('select public.qorpera_folder_note_interface_change(%L, null)', b), '22023');
+	perform pg_temp.raises(format('select public.qorpera_folder_note_interface_changes(%L, null)', b), '22023');
 end $$;
 
--- 3. No note, and no event: no commit under the key, another run's commit (the same agent's, in the same conversation),
--- a commit that saved nothing, a run with no conversation (a silent routine's). A run whose conversation closed is
--- refused by the run check (42501), before the note's own check, which catches a close between the two.
+-- 4. No note, and no event: another run's commit (the same agent's, in the same conversation) is that run's to note; a
+-- commit that saved nothing; a run with no conversation (a silent routine's). A run whose conversation closed is refused
+-- by the run check (42501), before the note's own check, which catches a close between the two.
 do $$
 declare x jsonb := current_setting('qorpera_test.i10_run')::jsonb; b jsonb := x -> 'binding'; p jsonb := x -> 'actor';
 	y jsonb := pg_temp.agent_run(); z jsonb := pg_temp.routine_run(); w jsonb := pg_temp.agent_run('63400000-0000-4000-8000-0000000000a2');
-	c jsonb; v_events bigint := (select count(*) from public.qorpera_session_events);
+	c jsonb; v_events bigint;
 begin
-	if pg_temp.note(b, pg_temp.key('page-none')) <> pg_temp.none() then raise exception 'No commit, no note'; end if;
-	perform pg_temp.expect(pg_temp.commit(y -> 'actor', pg_temp.key('page-2'), jsonb_build_array(jsonb_build_object('op', 'write',
-		'path', 'i10-other.md', 'file', pg_temp.stage('Other page.', y -> 'actor')))), 1, 'saved');
-	if pg_temp.note(b, pg_temp.key('page-2')) <> pg_temp.none() then raise exception 'Another run''s commit is not this run''s'; end if;
-	c := pg_temp.commit(p, pg_temp.key('page-3'), jsonb_build_array(jsonb_build_object('op', 'write', 'path', 'i10-new.md',
-		'file', pg_temp.stage('Stale page.', p), 'expectedVersion', extensions.gen_random_uuid())));
+	c := pg_temp.commit(y -> 'actor', pg_temp.key('company_mkdir', 'other-1'), jsonb_build_array(
+		jsonb_build_object('op', 'mkdir', 'path', 'tables/i10-other')));
+	perform pg_temp.expect(c, 1, 'saved');
+	c := pg_temp.commit(p, pg_temp.key('company_write', 'stale-1'), jsonb_build_array(
+		pg_temp.plain(p, 'interfaces/pulse/README.md', 'Stale.') || jsonb_build_object('expectedVersion', extensions.gen_random_uuid())));
 	perform pg_temp.expect(c, 1, 'conflict', 'version_changed');
 	if exists (select 1 from public.qorpera_folder_commits where id = (c ->> 'commitId')::uuid and seq is not null) then
 		raise exception 'The conflict saved nothing: %', c; end if;
-	if pg_temp.note(b, pg_temp.key('page-3')) <> pg_temp.none() then raise exception 'A commit that saved nothing has no note'; end if;
+	v_events := (select count(*) from public.qorpera_session_events);
+	if pg_temp.note(b) <> pg_temp.noted(0) then raise exception 'Another run''s commit is not this run''s'; end if;
 	-- A run with no conversation.
-	perform pg_temp.expect(pg_temp.commit(z -> 'actor', pg_temp.key('page-4'), jsonb_build_array(jsonb_build_object('op', 'write',
-		'path', 'i10-quiet.md', 'file', pg_temp.stage('Quiet page.', z -> 'actor')))), 1, 'saved');
-	if pg_temp.note(z -> 'binding', pg_temp.key('page-4')) <> pg_temp.none() then raise exception 'No conversation, no note'; end if;
+	perform pg_temp.expect(pg_temp.commit(z -> 'actor', pg_temp.key('company_mkdir', 'quiet-1'), jsonb_build_array(
+		jsonb_build_object('op', 'mkdir', 'path', 'tables/i10-quiet'))), 1, 'saved');
+	if pg_temp.note(z -> 'binding') <> pg_temp.noted(0) then raise exception 'No conversation, no note'; end if;
 	-- A closed conversation (Agent B's own): the run check refuses.
-	perform pg_temp.expect(pg_temp.commit(w -> 'actor', pg_temp.key('page-5'), jsonb_build_array(jsonb_build_object('op', 'write',
-		'path', 'i10-closed.md', 'file', pg_temp.stage('Closed page.', w -> 'actor')))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(w -> 'actor', pg_temp.key('company_mkdir', 'closed-1'), jsonb_build_array(
+		jsonb_build_object('op', 'mkdir', 'path', 'tables/i10-closed'))), 1, 'saved');
 	perform pg_temp.fx(format('update public.qorpera_shared_sessions set status = %L where id = (select session_id from '
 		'public.qorpera_execution_runs where id = %L)', 'closed', w -> 'actor' ->> 'runId'));
-	perform pg_temp.raises(format('select public.qorpera_folder_note_interface_change(%L, %L)', w -> 'binding',
-		jsonb_build_object('operationKey', pg_temp.key('page-5'))), '42501');
+	perform pg_temp.raises(format('select public.qorpera_folder_note_interface_changes(%L, %L)', w -> 'binding', '{}'), '42501');
 	if (select count(*) from public.qorpera_session_events) <> v_events then raise exception 'No note wrote an event'; end if;
+	-- The other run notes its own.
+	if pg_temp.note(y -> 'binding') <> pg_temp.noted(1) then raise exception 'The other run notes its commit'; end if;
 end $$;
 
--- 4. The grants and the call list.
+-- 5. The grants and the call list.
 do $$
 declare v_bad text;
 begin
 	select string_agg(r, ', ') into v_bad from unnest(array['anon', 'authenticated', 'service_role']) r
-	where has_function_privilege(r, 'public.qorpera_folder_note_interface_change(jsonb,jsonb)', 'execute') is distinct from (r = 'service_role');
+	where has_function_privilege(r, 'public.qorpera_folder_note_interface_changes(jsonb,jsonb)', 'execute') is distinct from (r = 'service_role');
 	if v_bad is not null then raise exception 'Wrong callers: %', v_bad; end if;
 	if not (select p.prosecdef and p.proconfig = array['search_path=""'] from pg_proc p
-			where p.oid = 'public.qorpera_folder_note_interface_change(jsonb,jsonb)'::regprocedure) then
+			where p.oid = 'public.qorpera_folder_note_interface_changes(jsonb,jsonb)'::regprocedure) then
 		raise exception 'The note is a definer with an empty search path'; end if;
 	if (select to_jsonb(array[c.scope, c.budget]) from public.qorpera_native_host_calls c
-			where c.name = 'qorpera_folder_note_interface_change') is distinct from '["binding", "standard"]'::jsonb then
+			where c.name = 'qorpera_folder_note_interface_changes') is distinct from '["binding", "standard"]'::jsonb then
 		raise exception 'The call list'; end if;
 end $$;
 
