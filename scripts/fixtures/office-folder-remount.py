@@ -589,6 +589,22 @@ def gone(events, killed):
     return seen
 
 
+def seed_text(path):
+    """The file's text read through the host's mount, or None while no live mount serves it."""
+    try:
+        return path.read_text()
+    except OSError:
+        return None
+
+
+def restarted(before, now, host, again):
+    """Whether one restart serves again: a new running process, one live mount that served the file seeded at the kill, and still that process after the read."""
+    unit = ("MainPID", "NRestarts", "ActiveState")
+    once = now["NRestarts"] == before["NRestarts"] + 1 and now["MainPID"] not in (0, before["MainPID"]) and now["ActiveState"] == "active"
+    live = host["served"] and host["count"] == 1 and host["statErrno"] == 0 and host["seedRead"]
+    return once and live and {key: again[key] for key in unit} == {key: now[key] for key in unit}
+
+
 def ask(relay, name, request, troubles, seconds=45):
     """One client request. An errno is an answer; a client failure or a client that stopped answering is trouble."""
     reply = relay.client(name, request, seconds)
@@ -813,17 +829,17 @@ class Proof:
         with self.node.lock:
             self.node.files[seed] = text.encode()
 
-        # Each distinct state the host passes through: the mounts at the path, what a stat there gets, the unit's state.
+        # Each distinct state the host passes through: the mounts at the path, what a stat there gets, whether the seed reads, the unit's state.
         timeline = []
 
         def back():
             now = show(self.unit)
-            state = {"mounts": [[entry["id"], entry["parent"]] for entry in at(self.point, mountinfo())], "statErrno": stat_errno(self.point), "unit": f"{now['ActiveState']}/{now['SubState']}", "NRestarts": now["NRestarts"]}
+            # systemd reports the new process running before it mounts, so only a read of the new seed shows a live mount.
+            state = {"mounts": [[entry["id"], entry["parent"]] for entry in at(self.point, mountinfo())], "statErrno": stat_errno(self.point), "seedRead": seed_text(self.point / seed) == text, "unit": f"{now['ActiveState']}/{now['SubState']}", "NRestarts": now["NRestarts"]}
             if not timeline or {key: timeline[-1][key] for key in state} != state:
                 timeline.append({"at": round(time.monotonic() - killed, 3), **state})
-            if now["NRestarts"] == before["NRestarts"] + 1 and now["MainPID"] not in (0, before["MainPID"]) and now["ActiveState"] == "active" and served(self.point) and count(self.point) == 1:
-                return now
-            return None
+            host = {"served": served(self.point), "count": count(self.point), "statErrno": state["statErrno"], "seedRead": state["seedRead"]}
+            return now if restarted(before, now, host, show(self.unit)) else None
 
         try:
             after = base.eventually(back, 30)
@@ -1114,6 +1130,15 @@ def selftest(office_path, mount_path):
     events = [{"at": 9.0, "names": ["before.txt"]}, {"at": 10.5, "listErrno": 107}, {"at": 10.6, "dev": 1, "names": []}, {"at": 10.7, "listErrno": 107}, {"at": 12.25, "names": ["after.txt", "before.txt"]}]
     assert restart_seconds(events, 10.0) == 2.25 and restart_seconds(events[:4], 10.0) is None
     assert gone(events, 10.0) == [{"listErrno": 107}, {"dev": 1, "names": []}]
+    old, new = {"MainPID": 41, "NRestarts": 0, "ActiveState": "active"}, {"MainPID": 57, "NRestarts": 1, "ActiveState": "active"}
+    live = {"served": True, "count": 1, "statErrno": 0, "seedRead": True}
+    assert restarted(old, new, live, new)
+    # A new running process over the dead mount it has not yet replaced: mountinfo still lists it, but it gets ENOTCONN and serves nothing.
+    assert not restarted(old, new, {**live, "statErrno": 107, "seedRead": False}, new)
+    assert not restarted(old, new, {**live, "seedRead": False}, new)
+    assert not restarted(old, new, live, {**new, "MainPID": 63, "NRestarts": 2})
+    assert not restarted(old, {**new, "NRestarts": 2}, live, {**new, "NRestarts": 2})
+    assert seed_text(Path("/nonexistent-qorpera-remount/after1.txt")) is None
     with tempfile.TemporaryDirectory(prefix="qorpera-remount-wire-") as tmp:
         node = RemountNode(Path(tmp) / "node.sock", heartbeat=0.2)
         try:

@@ -119,10 +119,14 @@ design; none of them decides `result`.
 
 - `gap`, `mode`: the bare mountpoint before any mount, per mode (below).
 - `kill1`, `kill2`: each restart's unit state before and after, how long the host
-  took to serve one mount again (`hostServedAfterSeconds`), how long the desktop
+  took to serve one mount again (`hostServedAfterSeconds`: one restart, a new
+  running process, one live mount at the mountpoint that reads back the file
+  seeded at the kill, and the same process when systemd is asked again after
+  that read; systemd reports the process running before it mounts), how long the desktop
   namespace's watcher took to see it (`namespaceServedAfterSeconds`), each
   distinct state the watcher saw in between (`namespaceSawMeanwhile`), each
-  distinct state of the host's mountpoint and unit (`hostTimeline`), and the
+  distinct state of the host's mountpoint (its mounts, a stat's errno, whether
+  the seed reads) and unit (`hostTimeline`), and the
   unit's journal from the kill until it served again. systemd logs its control
   processes, such as the `ExecStopPost` umount, only at debug, so each kill runs
   with the guest's systemd at log level `debug`, and the level it had
