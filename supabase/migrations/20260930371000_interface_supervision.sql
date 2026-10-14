@@ -15,10 +15,11 @@
 -- 4. An area's supervisor can now be offered as any claimed cell (I9c's refusal goes). Every patched body carries the
 --    marker 20260930371000 for the deploy guard.
 --
--- Locks: the areas table's index row first (a commit holds it FOR NO KEY UPDATE, the calls FOR SHARE), then the
--- member's row (FOR KEY SHARE, so a member leaving waits for the save that names them, or goes first), then the
--- consents, always in id order. A member's leaving ends their consents under their deleted row; an agent's commit holds
--- the consent it acts under FOR SHARE.
+-- Locks: the areas table's index row first (a commit that writes the areas holds it FOR NO KEY UPDATE; an agent's commit
+-- in tables/ and the calls hold it FOR SHARE), then the member's row (FOR KEY SHARE, so a member leaving waits for the
+-- save that names them, or goes first), then the consents, always in id order. A member's leaving ends their consents
+-- under their deleted row; an agent's commit holds the consent it acts under FOR SHARE, and no save of the areas changes
+-- its area's agents or supervisor before it ends.
 
 set local lock_timeout = '3s';
 
@@ -86,20 +87,25 @@ begin
 end $$;
 revoke all on function public.qorpera_interface_area_rows(uuid) from public, anon, authenticated, service_role;
 
--- Tells everyone a consent's end concerns, once per consent: the company's owners and admins, the supervisor and the
--- member the area's `owner` names, each while a member who may read the areas, but never `p_by` (who ended it).
+-- The member an area's row names as owner (their user id, as text), in typed rows of tables/areas, by the row's key.
+create function public.qorpera_interface_area_owner(p_rows jsonb, p_key jsonb)
+returns text language sql immutable set search_path = '' as $$
+	select a.value -> 'values' ->> 'owner' from jsonb_array_elements(p_rows) a where a.value -> 'key' = p_key limit 1
+$$;
+revoke all on function public.qorpera_interface_area_owner(jsonb, jsonb) from public, anon, authenticated, service_role;
+
+-- Tells everyone a consent's end concerns, once per consent: the company's owners and admins, the supervisor and
+-- `p_owner`, the member the area's `owner` named while the consent was live, each while a member who may read the areas,
+-- but never `p_by` (who ended it).
 create function public.qorpera_interface_supervision_notify(p_environment_id uuid, p_profile_id uuid, p_supervision uuid,
-	p_table uuid, p_key jsonb, p_user uuid, p_reason text, p_by uuid)
+	p_table uuid, p_key jsonb, p_user uuid, p_owner text, p_reason text, p_by uuid)
 returns void language plpgsql set search_path = '' as $$
-declare v_folder text; v_owner text;
+declare v_folder text;
 begin
 	-- 20260930371000 (I9b)
 	if not exists (select 1 from public.qorpera_profiles p where p.id = p_profile_id) then return; end if;
 	select i.folder_path into v_folder from public.qorpera_folder_table_index i
 	where i.environment_id = p_environment_id and i.id = p_table;
-	select a.value -> 'values' ->> 'owner' into v_owner
-	from jsonb_array_elements(public.qorpera_interface_area_rows(p_environment_id)) a
-	where a.value -> 'key' = p_key limit 1;
 	insert into public.qorpera_member_notifications(profile_id, user_id, kind, subject, dedupe_key)
 	select p_profile_id, m.user_id, 'interface_supervision_ended', jsonb_build_object(
 		'schema', 'qorpera.member-notification.interface-supervision-ended/v1', 'supervisionId', p_supervision,
@@ -107,13 +113,13 @@ begin
 		'reason', p_reason, 'byUserId', p_by, 'at', statement_timestamp()), p_supervision::text
 	from public.qorpera_profile_members m
 	where m.profile_id = p_profile_id and m.user_id is distinct from p_by
-		and (m.role::text in ('owner','admin') or m.user_id = p_user or m.user_id::text = v_owner)
+		and (m.role::text in ('owner','admin') or m.user_id = p_user or m.user_id::text = p_owner)
 		and v_folder is not null
 		and public.qorpera_folder_actor_allowed(p_environment_id, p_profile_id,
 			jsonb_build_object('kind', 'member', 'userId', m.user_id), v_folder || '/rows.csv', 'read')
 	on conflict (profile_id, user_id, kind, dedupe_key) where acknowledged_at is null do nothing;
 end $$;
-revoke all on function public.qorpera_interface_supervision_notify(uuid, uuid, uuid, uuid, jsonb, uuid, text, uuid)
+revoke all on function public.qorpera_interface_supervision_notify(uuid, uuid, uuid, uuid, jsonb, uuid, text, text, uuid)
 	from public, anon, authenticated, service_role;
 
 -- An areas table's consents against its files as they are now (apply, after its definition or its rows change): a
@@ -163,20 +169,32 @@ begin
 		order by e.id), '[]'::jsonb)
 	into v_ended from ended e;
 
-	if v_member then
-		-- The rows before this save, typed by the definition they were saved under (this unit's earlier one, if it saved one).
-		select pv.structured -> 'parse' into v_prior_rows from public.qorpera_folder_path_versions r
-		join public.qorpera_folder_path_versions pv on pv.version = r.prior_version
-		where r.version = p_version;
-		select pv.structured -> 'parse' into v_prior_definition from public.qorpera_folder_path_versions r
-		join public.qorpera_folder_path_versions d on d.commit_id = r.commit_id and d.unit_no = r.unit_no
-			and d.key_sha256 = extensions.digest(p_folder_key || '/table.toml', 'sha256') and d.op in ('write','copy')
-		join public.qorpera_folder_path_versions pv on pv.version = d.prior_version
-		where r.version = p_version;
+	if v_member or jsonb_array_length(v_ended) > 0 then
+		if p_rows then
+			-- The rows before this save, typed by the definition they were saved under (this unit's earlier one, if it saved
+			-- one).
+			select pv.structured -> 'parse' into v_prior_rows from public.qorpera_folder_path_versions r
+			join public.qorpera_folder_path_versions pv on pv.version = r.prior_version
+			where r.version = p_version;
+			select pv.structured -> 'parse' into v_prior_definition from public.qorpera_folder_path_versions r
+			join public.qorpera_folder_path_versions d on d.commit_id = r.commit_id and d.unit_no = r.unit_no
+				and d.key_sha256 = extensions.digest(p_folder_key || '/table.toml', 'sha256') and d.op in ('write','copy')
+			join public.qorpera_folder_path_versions pv on pv.version = d.prior_version
+			where r.version = p_version;
+		else
+			-- A definition saved alone: the rows as they are, typed by the definition before it.
+			select pv.structured -> 'parse' into v_prior_definition from public.qorpera_folder_path_versions d
+			join public.qorpera_folder_path_versions pv on pv.version = d.prior_version
+			where d.version = p_version;
+			v_prior_rows := public.qorpera_interface_stored(p_environment_id, p_folder_key || '/rows.csv');
+		end if;
 		if v_prior_rows is not null and coalesce(v_prior_definition, v_definition) is not null then
 			v_prior := coalesce(public.qorpera_interface_rows(coalesce(v_prior_definition, v_definition), v_prior_rows) -> 'rows',
 				'[]'::jsonb);
 		end if;
+	end if;
+
+	if v_member then
 		insert into public.qorpera_interface_supervisions(environment_id, table_id, row_key, user_id)
 		select p_environment_id, v_table, t.value -> 'key', v_by from jsonb_array_elements(v_typed) t
 		where t.value -> 'values' -> 'supervisor' = to_jsonb(v_by::text)
@@ -190,8 +208,11 @@ begin
 		-- A row whose key the member changed in this save took their consent with it: nobody is told it went. (So is a
 		-- row they deleted in a save that also made them a consent elsewhere; the rows alone cannot tell the two apart.)
 		if v_end ->> 'state' = 'gone' and (v_end ->> 'user')::uuid = v_by and v_made > 0 then continue; end if;
+		-- The area's owner as the row was while the consent was live (a key changed or a row deleted leaves none now).
 		perform public.qorpera_interface_supervision_notify(p_environment_id, p_profile_id, (v_end ->> 'id')::uuid, v_table,
-			v_end -> 'key', (v_end ->> 'user')::uuid, v_end ->> 'state', v_by);
+			v_end -> 'key', (v_end ->> 'user')::uuid, public.qorpera_interface_area_owner(
+				case when jsonb_array_length(v_prior) > 0 then v_prior else v_typed end, v_end -> 'key'),
+			v_end ->> 'state', v_by);
 	end loop;
 end $$;
 revoke all on function public.qorpera_interface_supervision_settle(uuid, uuid, uuid, text, uuid, boolean)
@@ -200,8 +221,9 @@ revoke all on function public.qorpera_interface_supervision_settle(uuid, uuid, u
 -- 2. An agent's self -------------------------------------------------------------------------------------------------
 
 -- The member who supervises an agent: the supervisor of the area whose `agents` holds it, while their consent is live
--- and they are a member; null otherwise. The consent is held FOR SHARE, so a withdrawal or a leaving waits for the
--- commit that acts under it, or ends it first.
+-- and they are a member; null otherwise. The areas' row is held FOR SHARE (the agent's commit holds it already, at rank
+-- 5), so the rows and the consent are read as no save of the areas can change them before the commit ends. The consent
+-- is held FOR SHARE, so a withdrawal or a leaving waits for the commit that acts under it, or ends it first.
 create function public.qorpera_interface_agent_supervisor(p_environment_id uuid, p_profile_id uuid, p_staff_agent_id text)
 returns uuid language plpgsql volatile set search_path = '' as $$
 declare v_table uuid; v_area jsonb; v_user uuid;
@@ -209,7 +231,8 @@ begin
 	-- 20260930371000 (I9b)
 	if p_staff_agent_id is null then return null; end if;
 	select i.id into v_table from public.qorpera_folder_table_index i
-	where i.environment_id = p_environment_id and i.retired_at is null and i.folder_key = 'tables/areas';
+	where i.environment_id = p_environment_id and i.retired_at is null and i.folder_key = 'tables/areas'
+	for share;
 	if v_table is null then return null; end if;
 	-- One area per agent (rule 9).
 	select a.value into v_area from jsonb_array_elements(public.qorpera_interface_area_rows(p_environment_id)) a
@@ -234,6 +257,30 @@ select pg_temp.i9b_supervision_replace(
 		v_self := case when p_actor ->> 'kind' = 'member' then to_jsonb(p_actor ->> 'userId')
 			when v_agent and cardinality(v_columns) > 0 then to_jsonb(public.qorpera_interface_agent_supervisor(p_environment_id,
 				p_profile_id, p_actor ->> 'staffAgentId')::text) end;$new$);
+
+-- An agent's commit holds the areas' row FOR SHARE (rank 5, beside the rows P16 takes) for each unit in tables/: its
+-- self is read under it.
+select pg_temp.i9b_supervision_replace('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure,
+	$old$		-- 20260930016000 (P16): the table rows and the company index row a unit writes or relies on, at rank 5.
+		for v_p16 in select * from public.qorpera_company_state_interface_targets(p_environment_id, v_unit) loop
+			rank := 5; tbl := v_p16.tbl; key := v_p16.key; mode := v_p16.mode;
+			return next;
+		end loop;$old$,
+	$new$		-- 20260930016000 (P16): the table rows and the company index row a unit writes or relies on, at rank 5.
+		for v_p16 in select * from public.qorpera_company_state_interface_targets(p_environment_id, v_unit) loop
+			rank := 5; tbl := v_p16.tbl; key := v_p16.key; mode := v_p16.mode;
+			return next;
+		end loop;
+		-- 20260930371000 (I9b): an agent's unit in tables/ may act as its area's supervisor (rule 8). It holds the areas'
+		-- row FOR SHARE, so no save of the areas changes the agent's area or whom it acts for before the commit ends.
+		if p_actor ->> 'kind' = 'staff_agent' and exists (select 1 from unnest(array[
+				case when v_op in ('move','copy') then v_unit ->> 'from' else v_unit ->> 'path' end,
+				case when v_op in ('move','copy') then v_unit ->> 'to' end]) p(path)
+			where p.path is not null and public.qorpera_folder_key(p.path) like 'tables/%') then
+			return query select 5::smallint, 'qorpera_folder_table_index'::text, p_environment_id::text || ':' || i.id::text,
+				'share'::text from public.qorpera_folder_table_index i
+			where i.environment_id = p_environment_id and i.retired_at is null and i.folder_key = 'tables/areas';
+		end if;$new$);
 
 -- 3. The members' calls ---------------------------------------------------------------------------------------------
 
@@ -274,7 +321,8 @@ begin
 		select file.profile_id into v_profile from public.qorpera_company_files as file
 		where file.environment_id = p_environment_id and file.core = 'folder-v2';
 		perform public.qorpera_interface_supervision_notify(p_environment_id, v_profile, v_supervision.id,
-			v_supervision.table_id, v_key, v_user, 'withdrawn', v_user);
+			v_supervision.table_id, v_key, v_user,
+			public.qorpera_interface_area_owner(public.qorpera_interface_area_rows(p_environment_id), v_key), 'withdrawn', v_user);
 	end if;
 	return jsonb_build_object('schema', 'qorpera.interface-supervision/v1', 'ok', true, 'changed', v_changed,
 		'supervision', public.qorpera_interface_supervision_json(v_supervision, v_folder));
@@ -316,19 +364,26 @@ begin
 	perform 1 from public.qorpera_profile_members m where m.profile_id = v_profile and m.user_id = v_user for key share;
 	if not found then raise exception 'Not a member of this company' using errcode = '42501'; end if;
 
-	insert into public.qorpera_interface_supervisions(environment_id, table_id, row_key, user_id)
-	values (p_environment_id, v_row.id, v_found -> 'key', v_user)
-	on conflict (environment_id, table_id, md5(row_key::text)) where state = 'live' do nothing
-	returning * into v_supervision;
-	if v_supervision.id is not null then
-		return jsonb_build_object('schema', 'qorpera.interface-supervision/v1', 'ok', true, 'created', true,
-			'supervision', public.qorpera_interface_supervision_json(v_supervision, v_row.folder_path));
-	end if;
-	select * into v_supervision from public.qorpera_interface_supervisions s
-	where s.environment_id = p_environment_id and s.table_id = v_row.id and s.state = 'live'
-		and md5(s.row_key::text) = md5((v_found -> 'key')::text);
-	return jsonb_build_object('schema', 'qorpera.interface-supervision/v1', 'ok', true, 'created', false,
-		'supervision', public.qorpera_interface_supervision_json(v_supervision, v_row.folder_path));
+	-- A live consent answers the call, held FOR SHARE so a withdrawal waits for this call to end; one that ended between
+	-- the insert and the lock left the row free, so try again.
+	loop
+		insert into public.qorpera_interface_supervisions(environment_id, table_id, row_key, user_id)
+		values (p_environment_id, v_row.id, v_found -> 'key', v_user)
+		on conflict (environment_id, table_id, md5(row_key::text)) where state = 'live' do nothing
+		returning * into v_supervision;
+		if v_supervision.id is not null then
+			return jsonb_build_object('schema', 'qorpera.interface-supervision/v1', 'ok', true, 'created', true,
+				'supervision', public.qorpera_interface_supervision_json(v_supervision, v_row.folder_path));
+		end if;
+		select * into v_supervision from public.qorpera_interface_supervisions s
+		where s.environment_id = p_environment_id and s.table_id = v_row.id and s.state = 'live'
+			and md5(s.row_key::text) = md5((v_found -> 'key')::text) and s.row_key = v_found -> 'key'
+		for share;
+		if v_supervision.id is not null then
+			return jsonb_build_object('schema', 'qorpera.interface-supervision/v1', 'ok', true, 'created', false,
+				'supervision', public.qorpera_interface_supervision_json(v_supervision, v_row.folder_path));
+		end if;
+	end loop;
 end $$;
 
 -- The live consents on live tables the member may read, of current members, newest first (at most 500).
@@ -388,7 +443,8 @@ begin
 	into v_ended from ended e;
 	for v_end in select e.value from jsonb_array_elements(v_ended) e loop
 		perform public.qorpera_interface_supervision_notify((v_end ->> 'environment')::uuid, old.profile_id,
-			(v_end ->> 'id')::uuid, (v_end ->> 'table')::uuid, v_end -> 'key', old.user_id, 'left', null);
+			(v_end ->> 'id')::uuid, (v_end ->> 'table')::uuid, v_end -> 'key', old.user_id, public.qorpera_interface_area_owner(
+				public.qorpera_interface_area_rows((v_end ->> 'environment')::uuid), v_end -> 'key'), 'left', null);
 	end loop;
 	return null;
 end $$;
@@ -451,6 +507,8 @@ begin
 			'20260930371000') = 0
 		or strpos((select prosrc from pg_proc where oid = 'public.qorpera_offer_interface_cell(uuid,jsonb)'::regprocedure),
 			'20260930371000') = 0
+		or strpos((select prosrc from pg_proc
+				where oid = 'public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure), '20260930371000') = 0
 		or (length(v_apply) - length(replace(v_apply, '20260930371000', ''))) / length('20260930371000') <> 2 then
-		raise exception 'I9b did not reach the rules, apply and offers'; end if;
+		raise exception 'I9b did not reach the rules, the lock targets, apply and offers'; end if;
 end $guard$;

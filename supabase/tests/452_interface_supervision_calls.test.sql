@@ -68,7 +68,8 @@ begin
 			or has_function_privilege('service_role', f, 'execute') then raise exception 'The grants of %', f; end if;
 	end loop;
 	foreach f in array array['public.qorpera_interface_supervision_json(public.qorpera_interface_supervisions,text)',
-		'public.qorpera_interface_area_rows(uuid)', 'public.qorpera_interface_supervision_notify(uuid,uuid,uuid,uuid,jsonb,uuid,text,uuid)',
+		'public.qorpera_interface_area_rows(uuid)', 'public.qorpera_interface_area_owner(jsonb,jsonb)',
+		'public.qorpera_interface_supervision_notify(uuid,uuid,uuid,uuid,jsonb,uuid,text,text,uuid)',
 		'public.qorpera_interface_supervision_settle(uuid,uuid,uuid,text,uuid,boolean)',
 		'public.qorpera_interface_agent_supervisor(uuid,uuid,text)', 'public.qorpera_interface_supervision_refused(text,text)',
 		'public.qorpera_interface_supervision_left()'] loop

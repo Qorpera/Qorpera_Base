@@ -952,7 +952,8 @@ environment.
 
 - `qorpera_consent_interface_supervision(environment, {key})`: the member the row's `supervisor` cell names consents
   again. Answers `{schema: "qorpera.interface-supervision/v1", ok: true, created, supervision}`; `created` is false
-  while a consent to that row is live, with that consent. A refusal is `{schema, ok: false, reason, message}`, show the
+  while a consent to that row is live, with that consent (a consent being withdrawn meanwhile is waited for, and a new
+  one made). A refusal is `{schema, ok: false, reason, message}`, show the
   message: `gone` "This area is gone." (no such row, or the areas unreadable to the caller), `not_yours` "Only the
   member it names as supervisor can consent.". A request of another shape is 22023 (`key` a non-empty array, at most
   4,096 bytes), a paused or deleting company 55000.
@@ -968,7 +969,8 @@ environment.
   `qorpera.member-notification.interface-supervision-ended/v1`: `supervisionId, tableId, key (null when longer than
   1,024 bytes), supervisorUserId, reason ('released'|'gone'|'withdrawn'|'left'), byUserId (null when no member ended
   it), at`): a consent ended, told once to the company's owners and admins, the supervisor and the member the area's
-  `owner` names, each while a member who may read the areas, never the member who ended it. A key the supervisor
+  `owner` named before the end (before the save, when a save ended it), each while a member who may read the areas,
+  never the member who ended it. A key the supervisor
   changed in their own save that consents to the renamed row tells nobody.
 
 ### Chat images (20260930260000_chat_images)

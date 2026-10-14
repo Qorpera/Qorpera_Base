@@ -2,9 +2,10 @@
 -- Interfaces I9b, a consent's end told, and a member's leaving (RUNTIME-INTERFACES.md §5.1 "Supervision"): the
 -- platform clearing a supervisor's cell ends their consent released, and everyone it concerns is told (the company's
 -- owners and admins, the supervisor, the area's owner; never a member who may not read the areas, nor one who left).
--- A member who leaves ends their consents (left): their cells keep naming them until the platform clears them, and
--- their areas' agents act for no one. A member with no consents leaving changes nothing. The notice once per consent,
--- and without a key too long to carry.
+-- A new key ends it gone, and the area's owner the row named under the old key is told. A member who leaves ends their
+-- consents (left): their cells keep naming them until the platform clears them, and their areas' agents act for no
+-- one. A member with no consents leaving changes nothing. The notice once per consent, and without a key too long to
+-- carry.
 
 -- The areas' rows: area, owner, supervisor, agents, shared.
 create function pg_temp.i9b_areas(p_rows text[][]) returns jsonb language sql as $$
@@ -63,7 +64,32 @@ begin
 		raise exception 'The notices differ by member'; end if;
 end $$;
 
--- 2. Member 2 takes the supervisor again, then leaves: left, and the owner, the admin and the area's owner are told.
+-- 2. Member 2 takes the supervisor again; the owner gives the areas a new key: gone, and the area's owner (member 4, as
+-- the row named them under the key before) is told with the supervisor and the admin. The key back, the platform clears
+-- the cell.
+do $$
+declare m jsonb := pg_temp.member(2); o jsonb := pg_temp.member(1); v_id uuid;
+	v_areas jsonb := pg_temp.tbl('86400000-0000-4000-8000-000000000012', 'areas');
+	c_m constant text := '63400000-0000-4000-8000-000000000002'; c_n constant text := '63400000-0000-4000-8000-000000000004';
+	c_a1 constant text := '63400000-0000-4000-8000-0000000000a1'; c_a2 constant text := '63400000-0000-4000-8000-0000000000a2';
+begin
+	perform pg_temp.expect(pg_temp.save_rows(m, 'i9b-key-0001', 'tables/areas/rows.csv', pg_temp.i9b_areas(
+		array[array['Sales',c_n,c_m,c_a1,'no'], array['Ops','','',c_a2,'no']])), 1, 'saved');
+	v_id := pg_temp.i9b_live('["Sales"]');
+	perform pg_temp.expect(pg_temp.commit(o, 'i9b-key-0002', jsonb_build_array(
+		pg_temp.p16_write(o, 'tables/areas/table.toml', v_areas || '{"key":["area","shared"]}'))), 1, 'saved');
+	if v_id is null or pg_temp.i9b_state(v_id) is distinct from 'gone' or pg_temp.i9b_told(v_id) is distinct from array[2,4,5] then
+		raise exception 'A new key: %, %, %', v_id, pg_temp.i9b_state(v_id), pg_temp.i9b_told(v_id); end if;
+	perform pg_temp.expect(pg_temp.commit(o, 'i9b-key-0003', jsonb_build_array(
+		pg_temp.p16_write(o, 'tables/areas/table.toml', v_areas))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.save_rows('{"kind":"platform"}', 'i9b-key-0004', 'tables/areas/rows.csv', pg_temp.i9b_areas(
+		array[array['Sales',c_n,'',c_a1,'no'], array['Ops','','',c_a2,'no']])), 1, 'saved');
+	if exists (select 1 from public.qorpera_interface_supervisions s where s.state = 'live') then
+		raise exception 'A consent after the key came back: %', (select jsonb_agg(to_jsonb(s))
+			from public.qorpera_interface_supervisions s where s.state = 'live'); end if;
+end $$;
+
+-- 3. Member 2 takes the supervisor again, then leaves: left, and the owner, the admin and the area's owner are told.
 -- The cell keeps naming them; the area's agent acts for no one; the consent is no longer listed.
 do $$
 declare m jsonb := pg_temp.member(2); r jsonb; v_id uuid;
@@ -96,7 +122,7 @@ begin
 	if jsonb_array_length(r -> 'supervisions') is distinct from 0 then raise exception 'A left consent is listed: %', r; end if;
 end $$;
 
--- 3. The platform clears the leaver's cell; the owner takes it. Member 4, with no consents, leaves: nothing changes.
+-- 4. The platform clears the leaver's cell; the owner takes it. Member 4, with no consents, leaves: nothing changes.
 -- The owner releases it: the admin is told, not the area's owner (no longer a member) nor the owner (who released it).
 do $$
 declare o jsonb := pg_temp.member(1); v_id uuid; v_told bigint;
@@ -120,22 +146,22 @@ begin
 		raise exception 'Released by the owner: %, %', pg_temp.i9b_state(v_id), pg_temp.i9b_told(v_id); end if;
 end $$;
 
--- 4. The notice: a key too long to carry is null; told twice, each member has it once while unacknowledged.
+-- 5. The notice: a key too long to carry is null; told twice, each member has it once while unacknowledged.
 do $$
 declare v_long uuid := extensions.gen_random_uuid(); v_twice uuid := extensions.gen_random_uuid();
 begin
 	perform public.qorpera_interface_supervision_notify('63400000-0000-4000-8000-000000000020',
 		'63400000-0000-4000-8000-000000000010', v_long, '86400000-0000-4000-8000-000000000012',
-		jsonb_build_array(repeat('x', 1100)), '63400000-0000-4000-8000-000000000001', 'released', null);
+		jsonb_build_array(repeat('x', 1100)), '63400000-0000-4000-8000-000000000001', null, 'released', null);
 	if pg_temp.i9b_told(v_long) is distinct from array[1,5] or exists (select 1 from public.qorpera_member_notifications n2
 		where n2.dedupe_key = v_long::text and n2.subject -> 'key' is distinct from 'null'::jsonb) then
 		raise exception 'A long key: %', (select jsonb_agg(n2.subject) from public.qorpera_member_notifications n2
 			where n2.dedupe_key = v_long::text); end if;
 	perform public.qorpera_interface_supervision_notify('63400000-0000-4000-8000-000000000020',
 		'63400000-0000-4000-8000-000000000010', v_twice, '86400000-0000-4000-8000-000000000012', '["Sales"]',
-		'63400000-0000-4000-8000-000000000001', 'released', null);
+		'63400000-0000-4000-8000-000000000001', null, 'released', null);
 	perform public.qorpera_interface_supervision_notify('63400000-0000-4000-8000-000000000020',
 		'63400000-0000-4000-8000-000000000010', v_twice, '86400000-0000-4000-8000-000000000012', '["Sales"]',
-		'63400000-0000-4000-8000-000000000001', 'released', null);
+		'63400000-0000-4000-8000-000000000001', null, 'released', null);
 	if pg_temp.i9b_told(v_twice) is distinct from array[1,5] then raise exception 'Told twice: %', pg_temp.i9b_told(v_twice); end if;
 end $$;

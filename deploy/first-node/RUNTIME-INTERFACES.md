@@ -881,7 +881,8 @@ offers after its rows or definition change, and lapses them when its folder is d
 (erasure) removes its offers. Test 866 races an offer against a rows save both ways: an offer behind a save reads the
 cell the save left, and a save behind an offer settles it.
 
-**Built: I9b, the consent records** (`supabase/migrations/20260930371000_interface_supervision.sql`, tests 451–453).
+**Built: I9b, the consent records** (`supabase/migrations/20260930371000_interface_supervision.sql`, tests 451–453
+and 458).
 Consents are kept in `qorpera_interface_supervisions` (§5.1), at most one live per area row. The save hook's apply
 settles them after each save of `tables/areas`' rows or definition: a member's own rows save that puts them in a
 row's `supervisor` cell, where the stored row didn't name them, makes one; a cell that now names someone else or no one
@@ -889,7 +890,10 @@ ends it released, and a row gone (deleted, or its key changed) ends it gone. A m
 to a cell that names them, and lists the live ones with three calls (`supabase/CLIENT-CONTRACT.md`, "Supervision
 consent"); a member's leaving ends theirs (left), and their cells keep naming them. Rule 8's *self* for an agent is its
 area's supervisor while their consent is live and they are a member; the agent's commit holds that consent FOR SHARE,
-so a withdrawal or a leaving waits for it. Each end is told once (`interface_supervision_ended`), and the web client
+so a withdrawal or a leaving waits for it. An agent's commit with a unit in `tables/` also holds the areas table's
+index row FOR SHARE at rank 5, before its paths, so a save of the areas waits for it or goes first. Consent and
+withdraw hold that row FOR SHARE too, and a consent called while its live one is being withdrawn makes a new one.
+Each end is told once (`interface_supervision_ended`), and the web client
 shows it in the notices. An area's `supervisor` is now offered like any other claimed cell. Not built yet: the
 board's Consent and Withdraw, adding agents by offer, agents' offers and `table_write`'s claims (a row write still
 refuses a claim), work alone, and clearing a leaver's cells.
