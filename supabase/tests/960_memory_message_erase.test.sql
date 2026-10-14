@@ -198,6 +198,103 @@ begin
 	perform pg_temp.fails('select * from public.qorpera_memory_message_erase_due(0)', '22023', 'A limit from 1 to 1000');
 end $$;
 
+-- 2b. Runs that read message 5, and runs that did not ----------------------------------------------------------------
+
+-- A run of the Co-Founder in its thread with its job, live (leased) or ended (failed). The rows by hand, with foreign keys
+-- and triggers off: the fixture has no sponsor or bundle, and nothing here reads them.
+create function pg_temp.run(p_run uuid, p_live boolean) returns void language plpgsql as $$
+declare s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); v_job uuid := extensions.gen_random_uuid();
+begin
+	set local session_replication_role = replica;
+	insert into public.qorpera_runner_jobs(id, profile_id, environment_id, session_id, client_job_id, required_capability,
+		job_type, payload, created_by_user_id, status, lease_token_sha256, lease_expires_at, finished_at, last_error, run_id)
+	values (v_job, '70000000-0000-4000-8000-000000000010', '70000000-0000-4000-8000-000000000020', s, v_job, 'agent_turn',
+		'agent_turn', '{}', '70000000-0000-4000-8000-000000000001', case when p_live then 'leased' else 'failed' end,
+		case when p_live then repeat('a', 64) end, case when p_live then clock_timestamp() + interval '1 hour' end,
+		case when not p_live then clock_timestamp() end, case when not p_live then 'test' end, p_run);
+	insert into public.qorpera_execution_runs(id, profile_id, environment_id, source_kind, source_id, session_id, job_id,
+		company_seq, staff_agent_id, staff_version, sponsor_binding_id, sponsor_version, required_capability, job_type,
+		payload_sha256, transcript_start_sequence, input_ids, created_by_user_id, requested_by_user_id, model_provider, model_id,
+		model_selection, audience_kind, runtime_bundle_id, runtime_bundle_sha256)
+	values (p_run, '70000000-0000-4000-8000-000000000010', '70000000-0000-4000-8000-000000000020', 'manual', p_run, s, v_job,
+		(select last_seq from public.qorpera_folder_clocks where environment_id = '70000000-0000-4000-8000-000000000020'),
+		'70000000-0000-4000-8000-0000000000c0',
+		(select version from public.qorpera_profile_staff where profile_id = '70000000-0000-4000-8000-000000000010'
+			and staff_agent_id = '70000000-0000-4000-8000-0000000000c0'),
+		extensions.gen_random_uuid(), 1, 'agent_turn', 'agent_turn', repeat('c', 64), 34, '{}', '70000000-0000-4000-8000-000000000001',
+		'70000000-0000-4000-8000-000000000001', 'openai', 'gpt-test', 'provider_default', 'company', extensions.gen_random_uuid(),
+		repeat('b', 64));
+	set local session_replication_role = origin;
+end $$;
+create function pg_temp.end_run(p_run uuid) returns void language plpgsql as $$
+begin
+	set local session_replication_role = replica;
+	update public.qorpera_runner_jobs set status = 'failed', lease_token_sha256 = null, lease_expires_at = null,
+		finished_at = clock_timestamp(), last_error = 'test'
+	where id = (select job_id from public.qorpera_execution_runs where id = p_run);
+	set local session_replication_role = origin;
+end $$;
+-- A tool call's completed operation receipt, its content the text it returned.
+create function pg_temp.op(p_run uuid, p_call text) returns uuid language plpgsql as $$
+declare v_id uuid := extensions.gen_random_uuid();
+begin
+	set local session_replication_role = replica;
+	insert into public.qorpera_run_operation_receipts(id, run_id, job_id, assignment_id, logical_operation_key, operation_kind,
+		input_sha256, downstream_idempotency_sha256, status, result, completed_at)
+	select v_id, p_run, r.job_id, extensions.gen_random_uuid(), p_call, 'cloud_tool', repeat('a', 64), repeat('e', 64), 'completed',
+		jsonb_build_object('schema', 'qorpera.cloud-tool-operation-result/v1', 'callId', p_call,
+			'content', jsonb_build_object('kind', 'text', 'value', 'message 5 said ' || p_call)), clock_timestamp()
+	from public.qorpera_execution_runs r where r.id = p_run;
+	set local session_replication_role = origin;
+	return v_id;
+end $$;
+-- A read receipt: a zoom or a read_context page of a conversation (or of a run's log), linked to its operation receipt.
+create function pg_temp.read(p_run uuid, p_call text, p_tool text, p_op uuid, p_start bigint, p_size bigint, p_session uuid,
+	p_target_run uuid default null) returns uuid language sql as $$
+	insert into public.qorpera_memory_read_receipts(environment_id, run_id, call_id, tool, operation_receipt_id, target_session_id,
+		target_run_id, start, size)
+	values ('70000000-0000-4000-8000-000000000020', p_run, p_call, p_tool, p_op, p_session, p_target_run, p_start, p_size)
+	returning id
+$$;
+-- The calls a run's rows in the run table name, in order.
+create function pg_temp.run_calls(p_run uuid) returns jsonb language sql as $$
+	select coalesce(jsonb_agg(rr.call_id order by rr.call_id), '[]'::jsonb)
+	from public.qorpera_memory_message_erase_runs t join public.qorpera_memory_read_receipts rr on rr.id = any(t.read_receipt_ids)
+	where t.run_id = p_run
+$$;
+create function pg_temp.content(p_run uuid, p_call text) returns text language sql as $$
+	select result #>> '{content,value}' from public.qorpera_run_operation_receipts where run_id = p_run and logical_operation_key = p_call
+$$;
+
+do $$
+declare
+	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0');
+	a constant uuid := '96000000-0000-4000-8000-0000000000a1'; b constant uuid := '96000000-0000-4000-8000-0000000000b1';
+	c constant uuid := '96000000-0000-4000-8000-0000000000c1'; d constant uuid := '96000000-0000-4000-8000-0000000000d1';
+begin
+	-- A, live: a zoom of message 5's own line.
+	perform pg_temp.run(a, true);
+	perform pg_temp.read(a, 'zoom-a', 'zoom', pg_temp.op(a, 'zoom-a'), 5, 1, s);
+	-- B, ended with a card still open: a read_context page of messages 0 to 7.
+	perform pg_temp.run(b, false);
+	perform pg_temp.read(b, 'rc-b', 'read_context', pg_temp.op(b, 'rc-b'), 0, 8, s);
+	insert into public.qorpera_action_reviews(profile_id, run_id, call_id, staff_agent_id, tool_name, effect, argument_sha256,
+		action, decision, built_in, reason, reviewer_model, approver_scope)
+	values ('70000000-0000-4000-8000-000000000010', b, 'card-b', '70000000-0000-4000-8000-0000000000c0', 'send_mail', 'external',
+		repeat('2', 64), '{"title":"Mail"}', 'ask', 'none', 'Ask first.', 'test', 'owners_admins');
+	-- C, ended: zooms of messages 32-47 and 0-3 (neither a source), of the line over 4-5 (a source), a read_context page
+	-- at 5 with no operation receipt yet, and one from 6.
+	perform pg_temp.run(c, false);
+	perform pg_temp.read(c, 'zoom-c1', 'zoom', pg_temp.op(c, 'zoom-c1'), 32, 16, s);
+	perform pg_temp.read(c, 'zoom-c2', 'zoom', pg_temp.op(c, 'zoom-c2'), 0, 4, s);
+	perform pg_temp.read(c, 'zoom-c3', 'zoom', pg_temp.op(c, 'zoom-c3'), 4, 2, s);
+	perform pg_temp.read(c, 'rc-c4', 'read_context', null, 5, 0, s);
+	perform pg_temp.read(c, 'rc-c5', 'read_context', pg_temp.op(c, 'rc-c5'), 6, 4, s);
+	-- D, ended: a page of A's run log, not of the conversation.
+	perform pg_temp.run(d, false);
+	perform pg_temp.read(d, 'rc-d', 'read_context', pg_temp.op(d, 'rc-d'), 5, 1, null, a);
+end $$;
+
 -- 3. Step 1: one memory commit blanks the event, deletes the three live candidate blocks and keeps their other lines ----
 
 do $$
@@ -209,7 +306,7 @@ begin
 	g := (select memory_generation from public.qorpera_shared_sessions where id = s);
 	r := public.qorpera_memory_message_erase_open('70000000-0000-4000-8000-000000000020', eid);
 	perform pg_temp.same(r - 'eraseId' - 'sessionId' - 'eventId', '{"schema":"qorpera.memory-message-erase/v1","state":"open",'
-		'"blocks":4,"runsPending":0}', 'Step 1 opens the erase');
+		'"blocks":4,"runsPending":3}', 'Step 1 opens the erase');
 	er := pg_temp.erase(eid);
 	if er.generation is distinct from g + 1 or (select memory_generation from public.qorpera_shared_sessions where id = s) <> g + 1
 		or er.owner_kind is distinct from 'agent' or er.owner_id is distinct from '70000000-0000-4000-8000-0000000000c0'
@@ -245,6 +342,11 @@ begin
 		raise exception 'The member''s commit and its cuts'; end if;
 	perform pg_temp.same(to_jsonb((select count(*) from public.qorpera_folder_commits c where c.operation_key like 'memerase:%')), '1',
 		'One commit');
+	-- The runs that read message 5, each with the receipts that did: not D (a run log), not C's pages that miss it.
+	perform pg_temp.same((select jsonb_object_agg(t.run_id, pg_temp.run_calls(t.run_id)) from public.qorpera_memory_message_erase_runs t
+			where t.erase_id = eid and t.state = 'pending' and t.scrubbed_at is null),
+		'{"96000000-0000-4000-8000-0000000000a1":["zoom-a"],"96000000-0000-4000-8000-0000000000b1":["rc-b"],'
+		'"96000000-0000-4000-8000-0000000000c1":["rc-c4","zoom-c3"]}', 'The runs to scrub');
 	-- An open erase is past step 1: a second call answers where it stands.
 	perform pg_temp.same(public.qorpera_memory_message_erase_open('70000000-0000-4000-8000-000000000020', eid), r, 'Step 1 runs once');
 	perform pg_temp.same(public.qorpera_memory_message_erase_request('70000000-0000-4000-8000-000000000020',
