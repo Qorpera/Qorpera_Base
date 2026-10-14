@@ -208,3 +208,37 @@ select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_view_open(
 		v_screen.id, v_screen.generation, v_activation, v_holder_run, v_holder_user, v_session.worker_id, v_session.attachment_token,
 		v_node, v_machine, v_company_machine.id, v_placement.id, v_placement.boot_id, extensions.digest(v_pass, 'sha256'),
 		clock_timestamp() + interval '120 seconds')$new$);
+
+-- 3. The final publish: a test machine's last boundary before its power-off (6d) says "final" and closes the view, as a
+-- command's does. Its anchor is the machine and the placement, FOR SHARE, in custody's order.
+select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
+	$old$		if v_final and v_view_early -> 'view' ->> 'kind' is distinct from 'computer_shell_command' then -- 20260930183000
+			raise exception 'Only a command view publishes a final change set' using errcode = '22023'; end if;$old$,
+	$new$		if v_final and coalesce(v_view_early -> 'view' ->> 'kind' not in ('computer_shell_command','test_machine'), true)
+		then -- 20260930183000, 20260930420000
+			raise exception 'Only a command or test machine view publishes a final change set' using errcode = '22023'; end if;$new$);
+select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
+	$old$					from public.qorpera_runtime_office_shell_commands command where command.id = v_view.shell_command_id)));
+		elsif v_turn_run is not null then$old$,
+	$new$					from public.qorpera_runtime_office_shell_commands command where command.id = v_view.shell_command_id)));
+		elsif v_view.kind = 'test_machine' then
+			-- 20260930420000: a detached test machine: what its starter's run read may be on the disk.
+			perform public.qorpera_folder_run_reads_current(p_environment_id, v_file.profile_id,
+				public.qorpera_folder_run_reader(v_file.profile_id, (select machine.started_by_run_id
+					from public.qorpera_company_machines machine where machine.id = v_view.company_machine_id)));
+		elsif v_turn_run is not null then$new$);
+select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
+	$old$			perform 1 from public.qorpera_runtime_office_shell_commands where id = v_view.shell_command_id for share;
+		end if;$old$,
+	$new$			perform 1 from public.qorpera_runtime_office_shell_commands where id = v_view.shell_command_id for share;
+		elsif v_view.kind = 'test_machine' then
+			-- 20260930420000: the machine, then the placement, which a new boot, a retirement and a removal (the
+			-- executor's custody, FOR UPDATE) wait for.
+			perform 1 from public.qorpera_company_machines where id = v_view.company_machine_id for share;
+			perform 1 from public.qorpera_company_machine_placements where id = v_view.placement_id for share;
+		end if;$new$);
+select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
+	$old$	if v_view.kind = 'computer_shell_command' then
+		if v_final then$old$,
+	$new$	if v_view.kind in ('computer_shell_command','test_machine') then -- 20260930420000
+		if v_final then$new$);
