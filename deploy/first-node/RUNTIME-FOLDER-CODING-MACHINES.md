@@ -10,7 +10,8 @@ mechanics ([RUNTIME-FOLDER-COMPANY-MACHINES.md](RUNTIME-FOLDER-COMPANY-MACHINES.
 answer, the reasons, the mount propagation proof), the agent exit
 ([RUNTIME-AGENT-EXIT.md](RUNTIME-AGENT-EXIT.md)) and W6's machine rule (the coordinator's agreed W6 design, built in
 W6a #986: `qorpera_memory_run_machine_narrow` and `qorpera_coding_turn_mark_narrow`). Where this page differs from
-them, it says so and why. Facts about today's coding machines are from master at e3e698a1a.
+them, it says so and why. Links in the folder are [RUNTIME-FOLDER-LINKS.md](RUNTIME-FOLDER-LINKS.md)'s. Facts about
+today's coding machines are from master at dc4988f7a.
 
 ## What step 5 delivers
 
@@ -272,8 +273,13 @@ over `X` is the publish point inside the syscall, a lock's removal publishes `X`
 **The cache list** (§6 "The per-session cache") moves from the session's NAS cache folder to the machine's disk: a
 folder on the list lives on the disk, is never published, and other views and machines see nothing at its path. Since
 the cache lives in the VM, the folder program keeps the list and reads the worktree's index (5d); a wrong list only
-keeps the session's own files unpublished, which root could do anyway. The links lane extends the list to every
-machine later.
+keeps the session's own files unpublished, which root could do anyway. The amendment's item 8 (dependencies and builds
+in each machine's own cache) is a slice of its own for every machine; whichever of it and 5d lands first builds the
+program's part, and the other reuses it.
+
+**Links.** A checkout writes a mode-120000 entry as a symbolic link, and `git clone --local` hard-links objects. Links
+in the folder are [RUNTIME-FOLDER-LINKS.md](RUNTIME-FOLDER-LINKS.md)'s (LK1–LK6), which leaves the per-session git
+settings, `core.symlinks=true` among them, to step 5. 5d's tests with links need LK3 and LK4.
 
 **Git's version.** §6 has the guest image, the seed and export helper and the gc host run the same pinned git. Root may
 install any git in its VM, so the pin now holds only where the platform runs git (the code host, 5e) and as the base
@@ -490,8 +496,9 @@ Migration slots and SQL test numbers are reserved in the registry when a slice i
 | 5m | Live proof (below) | — |
 
 **Order.** 5a, 5b, 5c, 5d and 5f can be built side by side (5c and 5d against a stand-in core; 5d merges after 5b).
-5e needs 5a–5d. 5g needs 5a, 5c, 5e and 5f; no coding machine mounts the folder before 5g. 5h, 5i, 5j and 5k each need
-5g and can run side by side (5j's SQL can land earlier). 5l needs 5g and step 6. 5m comes last.
+5d's tests with links need LK3 and LK4. 5e needs 5a–5d. 5g needs 5a, 5c, 5e and 5f; no coding machine mounts the
+folder before 5g. 5h, 5i, 5j and 5k each need 5g and can run side by side (5j's SQL can land earlier). 5l needs 5g and
+step 6. 5m comes last.
 
 **Live proof (5m)**, on a test company, without Codex:
 - a snapshot builds for each setup format (ours, Cursor's, a devcontainer with a feature); a broken `install` keeps the
