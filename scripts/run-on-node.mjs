@@ -50,6 +50,7 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
 Machines: node02 (tester@10.201.0.2 via company41-node-02), node01 (tester@10.201.0.3 via company41-node-01).
 A run asks each how many runs it holds and takes the one with the most free slots (ties: this order). If that
 machine fails before the suite starts (unreachable, copy failed), the run moves to the next one.
+hosted-db -- --only <tests> takes the quick lane: one slot and queue of its own, so it never waits behind long runs.
 
 A named suite run on a clean, pushed commit posts its result as the commit status qorpera-ci/<suite>
 (pending while it runs), so the PR shows it as a check. Uncommitted changes or ad-hoc commands post none.
@@ -96,6 +97,15 @@ export const RUNNERS = Array.from({ length: 16 }, (_, i) => `ci${String(i + 1).p
  * is ~881 CPU-seconds; two full runs plus other sessions drove 6 vCPUs to load 22 and timing-bound tests
  * failed. Later runs wait in arrival order. */
 export const CPU_SLOTS = 3;
+/** A hosted-db run narrowed with --only (a few SQL tests, about 15 s of work) takes one of QUICK_SLOTS slots of
+ * its own, with its own arrival-ordered queue: on 14 Oct such runs waited 5-20 minutes behind the CPU slots'
+ * 20-minute changed runs. */
+export const QUICK_SLOTS = 1;
+/** Each lane's slot count, slot lock files and queue directory under LOCKS. */
+const LANES = {
+	cpu: { name: "CPU lane", slots: CPU_SLOTS, slot: "qorpera-test-machine-slot", queue: "qorpera-test-machine-queue" },
+	quick: { name: "quick lane", slots: QUICK_SLOTS, slot: "qorpera-test-machine-quick-slot", queue: "qorpera-test-machine-quick-queue" },
+};
 const SECRET =
 	/(^|\/)(\.env(\.[^/]*)?|\.envrc|\.dev\.vars|\.npmrc|\.netrc|\.pgpass|\.git-credentials|\.aws\/credentials|[^/]*\.(env|pem|p12|pfx|key|tfvars)|id_[^/.]+|credentials[^/]*\.json|service-account[^/]*\.json|[^/]*\.private\.json)$/i;
 
@@ -165,7 +175,7 @@ export function parseArgs(argv) {
 		if (suite === "changed") {
 			if (extra.length) throw new Error("changed takes no suite arguments");
 			// The plan, and with it the command and the build, is made from git in main().
-			return { ...options, install: options.install ?? true, build: options.build, suite, command: [], plain: plain(options, suite, extra) };
+			return { ...options, install: options.install ?? true, build: options.build, suite, command: [], quick: false, plain: plain(options, suite, extra) };
 		}
 		const base = suiteCommand(suite);
 		// npm keeps --flags after the script name for itself unless they follow a literal --.
@@ -174,7 +184,8 @@ export function parseArgs(argv) {
 	const build = options.build ?? (suite === "test" && options.install !== false);
 	const install = options.install ?? (suite !== "hosted-db" || build);
 	if (build && !install) throw new Error("--build needs --install");
-	return { ...options, install, build, suite, command, plain: plain(options, suite, extra) };
+	const quick = suite === "hosted-db" && extra.some((arg) => arg === "--only" || arg.startsWith("--only="));
+	return { ...options, install, build, suite, command, quick, plain: plain(options, suite, extra) };
 }
 
 /** The suite exactly as named: no suite arguments, environment, sudo or install/build override. Only such a
@@ -289,11 +300,13 @@ export function baseCopyCompare(shared) {
 
 /** One ssh session: refresh the base copy, take a free runner user under a lock held until the
  * session ends, hand it the run directory, then install and run as that user. The status file
- * carries the runner user and times back to the record. Exit codes 90 (install or build) and 91-94
- * (harness: cd, runner user, chown, CPU slot) are recorded as setup-failed. */
-export function runScript({ run, runDir, treeDir, shared = false, files, copySeconds, install, build, runCommand }) {
+ * carries the runner user and times back to the record. A quick run waits for the quick lane's slots, any other
+ * for the CPU lane's. Exit codes 90 (install or build) and 91-94 (harness: cd, runner user, chown, slot) are
+ * recorded as setup-failed. */
+export function runScript({ run, runDir, treeDir, shared = false, files, copySeconds, install, build, runCommand, quick }) {
 	const status = `${runDir}/.run-on-node-status`;
-	const queue = "/run/lock/qorpera-test-machine-queue";
+	const lane = quick ? LANES.quick : LANES.cpu;
+	const queue = `${LOCKS}/${lane.queue}`;
 	const inner = [
 		`cd ${runDir} || exit 91`,
 		// A --env VITEST_MAX_WORKERS=n on the command still wins: it is set later, on the command itself.
@@ -316,7 +329,7 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 		"set -uo pipefail",
 		// The base copy is only a cache: a busy or failed refresh never fails the run.
 		`flock -w 60 ${treeDir}.lock ${["rsync", "-a", "--delete", ...baseCopyCompare(shared), `${runDir}/`, `${treeDir}/`].join(" ")} || echo "== run-on-node: base copy refresh skipped"`,
-		// Arrival-ordered queue for the CPU slots: a ticket per waiting run, its name sorting by arrival.
+		// Arrival-ordered queue for the lane's slots: a ticket per waiting run, its name sorting by arrival.
 		// The run holds a lock on its own ticket (fd 7) while it waits, so a ticket nobody holds belongs
 		// to a run that died, whatever its pid became; it is dropped. Only the first ticket may take a
 		// free slot. The slot lock stays on fd 9 until this session ends.
@@ -331,13 +344,13 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 		'\t[ -e "$ticket" ] || { exec 7>"$ticket"; flock 7; }',
 		`\tposition=$(ls ${queue} | sort | grep -n -x -F "$(basename "$ticket")" | cut -d: -f1)`,
 		'\tif [ "$position" = 1 ]; then',
-		`\t\tfor candidate in $(seq 1 ${CPU_SLOTS}); do`,
-		'\t\t\t{ exec 9>"/run/lock/qorpera-test-machine-slot$candidate.lock"; } 2>/dev/null || continue',
+		`\t\tfor candidate in $(seq 1 ${lane.slots}); do`,
+		`\t\t\t{ exec 9>"${LOCKS}/${lane.slot}$candidate.lock"; } 2>/dev/null || continue`,
 		'\t\t\tif flock -n 9; then slot=$candidate; break; fi',
 		"\t\tdone",
 		"\tfi",
 		'\tif [ -z "$slot" ]; then',
-		`\t\t[ "$position" != "$shown" ] && echo "== run-on-node: waiting for a slot (${CPU_SLOTS} runs at a time), queue position $position" && shown=$position`,
+		`\t\t[ "$position" != "$shown" ] && echo "== run-on-node: waiting for a slot in the ${lane.name} (${lane.slots} run${lane.slots === 1 ? "" : "s"} at a time), queue position $position" && shown=$position`,
 		'\t\t[ $(( $(date +%s) - queued )) -ge 7200 ] && { echo "== run-on-node: no slot free for two hours"; exit 94; }',
 		"\t\tsleep 2",
 		"\tfi",
@@ -363,7 +376,7 @@ export function runScript({ run, runDir, treeDir, shared = false, files, copySec
 		// run. The pattern is anchored on node: this script's own shell carries the words in its command line.
 		`echo "runner=$runner slot=$slot queued_s=$queued_s load=$(cut -d' ' -f1 /proc/loadavg) uncapped=$(pgrep -u tester -fc '^([^ ]*/)?node .*(vitest|--test)' || true)" >${status}`,
 		`sudo -n chown -R "$runner:$runner" ${runDir} || exit 93`,
-		`echo "== run-on-node: $(hostname) ${run} as $runner in slot $slot of ${CPU_SLOTS} (${files} files, copy ${copySeconds.toFixed(1)} s, queued $queued_s s)"`,
+		`echo "== run-on-node: $(hostname) ${run} as $runner in slot $slot of ${lane.slots} in the ${lane.name} (${files} files, copy ${copySeconds.toFixed(1)} s, queued $queued_s s)"`,
 		`sudo -n -u "$runner" -H bash -c ${shellQuote(inner)}`,
 	].join("\n");
 }
@@ -398,24 +411,31 @@ export function candidateMachines(machine, env) {
 	return machine ? MACHINES.filter((candidate) => candidate.name === machine) : MACHINES;
 }
 
-/** Read-only: how many of the machine's CPU slots runs hold, how many runs wait in its queue for one, how many
- * are still being copied there, and whether it is closed. A lock is opened for reading (never created) and tried
- * once: a held one counts, a free one is held for an instant only (a run taking a slot right then tries the next
- * and, if none is free, retries 2 s later), and an unheld queue ticket belongs to a run that died. A copy marker
- * counts for 10 minutes; a killed copy's marker ages out. */
+/** Read-only: how many of each lane's slots on the machine runs hold, how many runs wait in each lane's queue for
+ * one, how many are still being copied there, and whether it is closed. A lock is opened for reading (never
+ * created) and tried once: a held one counts, a free one is held for an instant only (a run taking a slot right
+ * then tries the next and, if none is free, retries 2 s later), and an unheld queue ticket belongs to a run that
+ * died. A copy marker counts for 10 minutes; a killed copy's marker ages out. */
 export function probeScript({ locks, closed, setUp, arriving }) {
+	const count = (lane, busy, waiting) => [
+		`for i in $(seq 1 ${lane.slots}); do { flock -n 5 || ${busy}=$((${busy} + 1)); } 2>/dev/null 5<${shellQuote(`${locks}/${lane.slot}`)}"$i.lock"; done`,
+		`for t in ${shellQuote(`${locks}/${lane.queue}`)}/*; do { flock -n 5 || ${waiting}=$((${waiting} + 1)); } 2>/dev/null 5<"$t"; done`,
+	];
 	return [
-		`busy=0; waiting=0; closed=0; setup=0; [ -e ${shellQuote(closed)} ] && closed=1; [ -e ${shellQuote(setUp)} ] && setup=1`,
-		`for i in $(seq 1 ${CPU_SLOTS}); do { flock -n 5 || busy=$((busy + 1)); } 2>/dev/null 5<${shellQuote(`${locks}/qorpera-test-machine-slot`)}"$i.lock"; done`,
-		`for t in ${shellQuote(`${locks}/qorpera-test-machine-queue`)}/*; do { flock -n 5 || waiting=$((waiting + 1)); } 2>/dev/null 5<"$t"; done`,
+		`busy=0; waiting=0; quick_busy=0; quick_waiting=0; closed=0; setup=0; [ -e ${shellQuote(closed)} ] && closed=1; [ -e ${shellQuote(setUp)} ] && setup=1`,
+		...count(LANES.cpu, "busy", "waiting"),
+		...count(LANES.quick, "quick_busy", "quick_waiting"),
 		`arriving=$(( $(find ${shellQuote(arriving)} -maxdepth 1 -type f -mmin -10 2>/dev/null | wc -l) ))`,
-		'echo "busy=$busy waiting=$waiting arriving=$arriving closed=$closed setup=$setup cpus=$(nproc) load=$(cut -d" " -f1 /proc/loadavg)"',
+		'echo "busy=$busy waiting=$waiting quick_busy=$quick_busy quick_waiting=$quick_waiting arriving=$arriving closed=$closed setup=$setup cpus=$(nproc) load=$(cut -d" " -f1 /proc/loadavg)"',
 	].join("\n");
 }
 
-/** Free slots after running, queued and arriving runs; negative when runs wait. */
-function free(probe) {
-	return CPU_SLOTS - probe.busy - probe.waiting - probe.arriving;
+/** Free slots in the run's lane after running and queued runs, and in the CPU lane after arriving ones too;
+ * negative when runs wait. */
+function free(probe, quick) {
+	return quick
+		? QUICK_SLOTS - probe.quickBusy - probe.quickWaiting
+		: CPU_SLOTS - probe.busy - probe.waiting - probe.arriving;
 }
 
 /** Open to the automatic choice: answered, not closed by an operator, and set up. */
@@ -423,27 +443,28 @@ function open(probe) {
 	return probe.unreachable === undefined && !probe.closed && probe.setUp;
 }
 
-/** Machines that answered their probe, best first: the most free slots, then list order. Unreachable machines
- * are left out, and closed ones unless the run named its machine. */
-export function rankMachines(probes, pinned) {
+/** Machines that answered their probe, best first: the most free slots in the run's lane, then list order.
+ * Unreachable machines are left out, and closed ones unless the run named its machine. */
+export function rankMachines(probes, pinned, quick) {
 	return probes
 		.map((probe, index) => ({ probe, index }))
 		.filter(({ probe }) => probe.unreachable === undefined && (pinned || open(probe)))
-		.sort((a, b) => free(b.probe) - free(a.probe) || a.index - b.index)
+		.sort((a, b) => free(b.probe, quick) - free(a.probe, quick) || a.index - b.index)
 		.map(({ probe }) => probe);
 }
 
 /** The order a run tries machines in: those that answered, best first. Only when none of them can take the run
  * are the machines that did not answer tried, in list order (a probe has a short budget; the copy's own
  * connection may still get through). A closed machine is never tried unless the run named it. */
-export function runOrder(probes, pinned) {
-	const answered = rankMachines(probes, pinned).map((probe) => probe.name);
+export function runOrder(probes, pinned, quick) {
+	const answered = rankMachines(probes, pinned, quick).map((probe) => probe.name);
 	return answered.length ? answered : probes.filter((probe) => probe.unreachable !== undefined).map((probe) => probe.name);
 }
 
 /** Asks every machine at once with `ask(machine, signal)`, which settles when asked to stop. Once one machine has
- * answered with a free slot the others get `graceMs` more; `timeoutMs` ends every probe. */
-export async function probeAll(machines, ask, { graceMs, timeoutMs }) {
+ * answered with a free slot (in the quick lane for a `quick` run) the others get `graceMs` more; `timeoutMs` ends
+ * every probe. */
+export async function probeAll(machines, ask, { graceMs, timeoutMs, quick }) {
 	const stop = new AbortController();
 	const timeout = setTimeout(() => stop.abort(new Error(`no answer in ${timeoutMs / 1000} s`)), timeoutMs);
 	let grace = null;
@@ -451,7 +472,7 @@ export async function probeAll(machines, ask, { graceMs, timeoutMs }) {
 		return await Promise.all(
 			machines.map((machine) =>
 				ask(machine, stop.signal).then((answer) => {
-					if (!grace && open(answer) && free(answer) > 0)
+					if (!grace && open(answer) && free(answer, quick) > 0)
 						grace = setTimeout(
 							() => stop.abort(new Error(`no answer within ${graceMs / 1000} s of ${answer.name}'s`)),
 							graceMs,
@@ -493,12 +514,12 @@ function signalTurn() {
 	return new Promise((resolveTurn) => setTimeout(resolveTurn, SIGNAL_TURN_MS));
 }
 
-/** One line for the log: each machine's slots and queue, or why it did not answer. */
+/** One line for the log: each machine's slots and queues, or why it did not answer. */
 export function describeProbes(probes) {
 	return probes
 		.map((probe) =>
 			probe.unreachable === undefined
-				? `${probe.name}${probe.closed ? " closed," : probe.setUp ? "" : " not set up,"} ${probe.busy}/${CPU_SLOTS} slots busy, ${probe.waiting} waiting${probe.arriving ? `, ${probe.arriving} arriving` : ""}`
+				? `${probe.name}${probe.closed ? " closed," : probe.setUp ? "" : " not set up,"} ${probe.busy}/${CPU_SLOTS} slots busy, ${probe.waiting} waiting${probe.arriving ? `, ${probe.arriving} arriving` : ""}, quick ${probe.quickBusy}/${QUICK_SLOTS}${probe.quickWaiting ? ` + ${probe.quickWaiting} waiting` : ""}`
 				: `${probe.name} unreachable (${probe.unreachable})`,
 		)
 		.join("; ");
@@ -568,12 +589,14 @@ function probeOverSsh(machine, key, signal) {
 		child.on("error", (error) => unreachable(error.message));
 		child.on("close", (code) => {
 			const answer = parseStatus(out);
-			const counts = ["busy", "waiting", "arriving"].map((name) => answer[name] ?? "");
+			const counts = ["busy", "waiting", "quick_busy", "quick_waiting", "arriving"].map((name) => answer[name] ?? "");
 			if (code === 0 && counts.every((count) => /^\d+$/.test(count)))
 				settle({
 					name: machine.name,
 					busy: Number(answer.busy),
 					waiting: Number(answer.waiting),
+					quickBusy: Number(answer.quick_busy),
+					quickWaiting: Number(answer.quick_waiting),
 					arriving: Number(answer.arriving),
 					closed: answer.closed === "1",
 					setUp: answer.setup === "1",
@@ -681,9 +704,10 @@ async function main() {
 	const probes = await probeAll(machines, (machine, signal) => probeOverSsh(machine, key, signal), {
 		graceMs: PROBE_GRACE_MS,
 		timeoutMs: PROBE_TIMEOUT_MS,
+		quick: options.quick,
 	});
 	const probeSeconds = (Date.now() - probeStarted) / 1000;
-	const ranked = runOrder(probes, Boolean(options.machine) || customTarget(process.env)).map((name) => {
+	const ranked = runOrder(probes, Boolean(options.machine) || customTarget(process.env), options.quick).map((name) => {
 		const machine = machines.find((candidate) => candidate.name === name);
 		return { ...machine, ssh: sshArgs(machine, key) };
 	});
@@ -794,6 +818,7 @@ async function main() {
 			install: options.install,
 			build: options.build,
 			runCommand,
+			quick: options.quick,
 		}),
 	);
 	const finished = Date.now();
@@ -833,6 +858,7 @@ async function main() {
 		build: options.build,
 		run: options.keep ? runDir : run,
 		runner: status.runner ?? null,
+		lane: options.quick ? "quick" : "cpu",
 		cpuSlot: status.slot ? Number(status.slot) : null,
 		queuedSeconds: status.queued_s ? Number(status.queued_s) : null,
 		vitestMaxWorkers: Number(options.env.findLast(([name]) => name === "VITEST_MAX_WORKERS")?.[1] ?? status.workers ?? Number.NaN) || null,
