@@ -659,4 +659,50 @@ begin
 	perform set_config('qorpera.folder_memory', '', true);
 end $$;
 
+-- 9. Step hashes and narrow paths, while the run's job holds its lease --------------------------------------------------
+do $$
+declare
+	env constant uuid := '63400000-0000-4000-8000-000000000020'; nora constant uuid := pg_temp.run_id('nora');
+	otto constant uuid := pg_temp.run_id('otto'); job constant uuid := (pg_temp.actor('nora') ->> 'jobId')::uuid;
+	ojob constant uuid := (pg_temp.actor('otto') ->> 'jobId')::uuid; d1 constant text := repeat('a', 64);
+	d2 constant text := repeat('0', 63) || '1'; h jsonb; k bytea;
+begin
+	-- A keyed hash of each digest under the run, in order; the same digest under another run hashes apart.
+	h := public.qorpera_memory_step_hashes(env, job, nora, jsonb_build_array(d1, d2));
+	select key into k from public.qorpera_memory_step_hash_keys where environment_id = env;
+	perform pg_temp.same(h, jsonb_build_array(
+		encode(extensions.hmac(convert_to(nora::text || ':' || d1, 'utf8'), k, 'sha256'), 'hex'),
+		encode(extensions.hmac(convert_to(nora::text || ':' || d2, 'utf8'), k, 'sha256'), 'hex')), 'step hashes');
+	perform pg_temp.same(public.qorpera_memory_step_hashes(env, job, nora, jsonb_build_array(d1)), jsonb_build_array(h -> 0),
+		'the same hash again');
+	perform pg_temp.same(to_jsonb(array[public.qorpera_memory_step_hashes(env, ojob, otto, jsonb_build_array(d1)) -> 0 <> h -> 0]),
+		'[true]', 'another run''s hash');
+	perform pg_temp.same(public.qorpera_memory_step_hashes(env, job, nora, '[]'), '[]', 'no digests');
+	perform pg_temp.raises_like(format('select public.qorpera_memory_step_hashes(%L, %L, %L, %L)', env, ojob, nora, '[]'), '42501',
+		'The run''s lease is not held');
+	perform pg_temp.raises_like(format('select public.qorpera_memory_step_hashes(%L, %L, %L, %L)', env, job, nora, '{}'), '22023',
+		'Step digests are a list of sha256 digests');
+	perform pg_temp.raises_like(format('select public.qorpera_memory_step_hashes(%L, %L, %L, %L)', env, job, nora,
+		jsonb_build_array(upper(d1))), '22023', 'Step digests are a list of sha256 digests');
+	perform pg_temp.raises_like(format('select public.qorpera_memory_step_hashes(%L, %L, %L, %L)', env, job, nora,
+		(select jsonb_agg(d1) from generate_series(1, 129))), '22023', 'Step digests are a list of sha256 digests');
+
+	-- Narrow: nora's log went narrow at step 4; otto has no log. The paths not every agent reads, as given.
+	perform pg_temp.same(public.qorpera_memory_step_narrow(env, job, nora, '["contracts/a.md", "private/x.md", "/company/Private/y.md",
+		"notes//bad", "/company/contracts/b.md"]'), '{"log": true, "machine": false, "restricted": ["private/x.md",
+		"/company/Private/y.md"]}', 'nora''s narrow paths');
+	perform pg_temp.same(public.qorpera_memory_step_narrow(env, ojob, otto, '["contracts/a.md"]'),
+		'{"log": false, "machine": false, "restricted": []}', 'otto''s narrow paths');
+	perform pg_temp.raises_like(format('select public.qorpera_memory_step_narrow(%L, %L, %L, %L)', env, job, otto, '[]'), '42501',
+		'The run''s lease is not held');
+	perform pg_temp.raises_like(format('select public.qorpera_memory_step_narrow(%L, %L, %L, %L)', env, job, nora, '"x"'), '22023',
+		'Step paths are a list of at most 1,024 paths');
+	perform pg_temp.raises_like(format('select public.qorpera_memory_step_narrow(%L, %L, %L, %L)', env, job, nora, '[1]'), '22023',
+		'Step paths are a list of at most 1,024 paths');
+	perform pg_temp.raises_like(format('select public.qorpera_memory_step_narrow(%L, %L, %L, %L)', env, job, nora,
+		jsonb_build_array(repeat('a', 4097))), '22023', 'Step paths are a list of at most 1,024 paths');
+	perform pg_temp.raises_like(format('select public.qorpera_memory_step_narrow(%L, %L, %L, %L)', env, job, nora,
+		(select jsonb_agg('a.md'::text) from generate_series(1, 1025))), '22023', 'Step paths are a list of at most 1,024 paths');
+end $$;
+
 rollback;
