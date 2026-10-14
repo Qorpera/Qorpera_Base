@@ -7,16 +7,13 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const MAX_PROFILE_NAME_LENGTH = 120;
 const MAX_SESSION_TITLE_LENGTH = 256;
-const MAX_WORKSPACE_NAME_LENGTH = 160;
 const MAX_AGENT_ID_LENGTH = 128;
 const MAX_EVENT_BODY_BYTES = 256 * 1024;
 const MAX_TREE_MANIFEST_BYTES = 8 * 1024 * 1024;
-const MAX_TREE_FILES = 50_000;
 const MAX_TREE_BYTES = 1024 * 1024 * 1024 * 1024;
 const MAX_ARTIFACT_INDEX_ENTRIES = 5_000;
 const MAX_REACHABILITY_OBJECTS = 400_000;
 const MAX_REACHABILITY_STORAGE_BYTES = 2 * 1024 * 1024 * 1024 * 1024;
-const MAX_COMPANY_VERIFICATION_TRANCHES = Math.ceil(MAX_TREE_BYTES / (64 * 1024 * 1024)) + MAX_TREE_FILES + 1;
 
 export const HOSTED_PROFILE_ROLES = ["owner", "admin", "contributor", "viewer"] as const;
 export type HostedProfileRole = (typeof HOSTED_PROFILE_ROLES)[number];
@@ -47,8 +44,6 @@ export type HostedCompanyOperationType = (typeof HOSTED_COMPANY_OPERATION_TYPES)
 
 export const HOSTED_ARTIFACT_ROOT_CONTRACTS = ["qorpera.object/v1", "qorpera.cloud-file-manifest/v1"] as const;
 export type HostedArtifactRootContract = (typeof HOSTED_ARTIFACT_ROOT_CONTRACTS)[number];
-export const HOSTED_OBJECT_ROOT_KINDS = ["artifact", "company_snapshot"] as const;
-export type HostedObjectRootKind = (typeof HOSTED_OBJECT_ROOT_KINDS)[number];
 export const HOSTED_ARTIFACT_GC_PLAN_STATUSES = [
 	"waiting",
 	"deleting",
@@ -179,18 +174,6 @@ export interface HostedStaffAgent extends StaffAgent {
 	updatedByUserId: string;
 }
 
-export interface HostedCompanyWorkspace {
-	workspaceId: string;
-	profileId: string;
-	environmentId: string;
-	clientWorkspaceId: string;
-	name: string;
-	headSnapshotId?: string;
-	createdByUserId: string;
-	createdAt: string;
-	updatedAt: string;
-}
-
 export interface HostedCompanySnapshot {
 	snapshotId: string;
 	profileId: string;
@@ -309,41 +292,6 @@ export interface HostedArtifactGcCandidate extends HostedArtifact {
 	blockedReason?: string;
 }
 
-export interface HostedObjectReachabilityEntry {
-	sha256: string;
-	bytes: number;
-}
-
-export interface HostedObjectReachabilityGraph {
-	graphId: string;
-	profileId: string;
-	environmentId: string;
-	rootKind: HostedObjectRootKind;
-	rootId: string;
-	clientGraphId: string;
-	rootObjectSha256: string;
-	contractVersion: 1;
-	contentSha256: string;
-	objectCount: number;
-	storageBytes: number;
-	status: "uploading" | "complete";
-	createdByUserId: string;
-	createdAt: string;
-	completedAt?: string;
-}
-
-export interface HostedObjectRestoreProof {
-	proofId: string;
-	graphId: string;
-	profileId: string;
-	clientProofId: string;
-	restoredContentSha256: string;
-	restoredBytes: number;
-	verifiedByUserId: string;
-	verifiedAt: string;
-	validUntil: string;
-}
-
 export interface HostedArtifactGcPlan {
 	planId: string;
 	profileId: string;
@@ -438,26 +386,6 @@ export interface AppendHostedSessionEventInput {
 	execution?: ExecutionIdentity;
 }
 
-export interface EnsureHostedCompanyWorkspaceInput {
-	environmentId: string;
-	clientWorkspaceId: string;
-	name: string;
-	baseSnapshotId?: string;
-}
-
-export interface CommitHostedCompanySnapshotInput {
-	workspaceId: string;
-	clientSnapshotId: string;
-	expectedHeadSnapshotId?: string;
-	tree: {
-		manifestSha256: string;
-		manifestBytes: number;
-		contractVersion: number;
-		fileCount: number;
-		totalBytes: number;
-	};
-}
-
 export interface RegisterHostedArtifactInput {
 	environmentId: string;
 	clientArtifactId: string;
@@ -475,16 +403,6 @@ export interface CreateHostedArtifactIndexInput {
 	environmentId: string;
 	clientIndexId: string;
 	artifactIds: string[];
-}
-
-export interface BeginHostedObjectReachabilityGraphInput {
-	rootKind: HostedObjectRootKind;
-	rootId: string;
-	clientGraphId: string;
-	rootObjectSha256: string;
-	contentSha256: string;
-	objectCount: number;
-	storageBytes: number;
 }
 
 export interface HostedPrimaryTransport {
@@ -650,25 +568,6 @@ export interface HostedPrimaryTransport {
 	}): Promise<unknown>;
 	readSessionEvents(input: { p_session_id: string; p_after_sequence: number; p_limit: number }): Promise<unknown>;
 	getCompanyFile(input: { p_environment_id: string }): Promise<unknown>;
-	ensureCompanyWorkspace(input: {
-		p_environment_id: string;
-		p_client_workspace_id: string;
-		p_name: string;
-		p_base_snapshot_id: string | null;
-	}): Promise<unknown>;
-	commitCompanySnapshot(input: {
-		p_workspace_id: string;
-		p_client_snapshot_id: string;
-		p_expected_head_snapshot_id: string | null;
-		p_tree_manifest_sha256: string;
-		p_tree_manifest_bytes: number;
-		p_tree_contract_version: number;
-		p_file_count: number;
-		p_total_bytes: number;
-	}): Promise<unknown>;
-	getCompanySnapshot(input: { p_snapshot_id: string }): Promise<unknown>;
-	listCompanyWorkspaces(input: { p_environment_id: string }): Promise<unknown>;
-	listCompanySnapshots(input: { p_workspace_id: string; p_limit: number }): Promise<unknown>;
 	registerArtifact(input: {
 		p_environment_id: string;
 		p_client_artifact_id: string;
@@ -701,26 +600,6 @@ export interface HostedPrimaryTransport {
 	listArtifactGcAudit(input: { p_plan_id: string; p_after_id: number; p_limit: number }): Promise<unknown>;
 	cancelArtifactGcPlan(input: { p_plan_id: string }): Promise<unknown>;
 	retryArtifactGcPlan(input: { p_plan_id: string }): Promise<unknown>;
-	beginObjectReachabilityGraph(input: {
-		p_root_kind: HostedObjectRootKind;
-		p_root_id: string;
-		p_client_graph_id: string;
-		p_root_object_sha256: string;
-		p_contract_version: number;
-		p_content_sha256: string;
-		p_object_count: number;
-		p_storage_bytes: number;
-	}): Promise<unknown>;
-	appendObjectReachabilityEntries(input: { p_graph_id: string; p_entries: JsonValue }): Promise<unknown>;
-	completeObjectReachabilityGraph(input: { p_graph_id: string }): Promise<unknown>;
-	getObjectReachabilityGraph(input: { p_graph_id: string }): Promise<unknown>;
-	verifyCompanySnapshotClosure(input: { snapshotId: string; graphId: string }): Promise<unknown>;
-	createObjectRestoreProof(input: {
-		p_graph_id: string;
-		p_client_proof_id: string;
-		p_restored_content_sha256: string;
-		p_restored_bytes: number;
-	}): Promise<unknown>;
 }
 
 export interface HostedPrimaryDatabase {
@@ -959,34 +838,6 @@ export interface HostedPrimaryDatabase {
 				Returns: JsonValue;
 			};
 			qorpera_get_company_file: { Args: { p_environment_id: string }; Returns: JsonValue };
-			qorpera_ensure_company_workspace: {
-				Args: {
-					p_environment_id: string;
-					p_client_workspace_id: string;
-					p_name: string;
-					p_base_snapshot_id: string | null;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_commit_company_snapshot: {
-				Args: {
-					p_workspace_id: string;
-					p_client_snapshot_id: string;
-					p_expected_head_snapshot_id: string | null;
-					p_tree_manifest_sha256: string;
-					p_tree_manifest_bytes: number;
-					p_tree_contract_version: number;
-					p_file_count: number;
-					p_total_bytes: number;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_get_company_snapshot: { Args: { p_snapshot_id: string }; Returns: JsonValue };
-			qorpera_list_company_workspaces: { Args: { p_environment_id: string }; Returns: JsonValue };
-			qorpera_list_company_snapshots: {
-				Args: { p_workspace_id: string; p_limit: number };
-				Returns: JsonValue;
-			};
 			qorpera_register_artifact_v2: {
 				Args: {
 					p_environment_id: string;
@@ -1043,40 +894,6 @@ export interface HostedPrimaryDatabase {
 			};
 			qorpera_retry_artifact_gc_plan: {
 				Args: { p_plan_id: string };
-				Returns: JsonValue;
-			};
-			qorpera_begin_object_reachability_graph: {
-				Args: {
-					p_root_kind: HostedObjectRootKind;
-					p_root_id: string;
-					p_client_graph_id: string;
-					p_root_object_sha256: string;
-					p_contract_version: number;
-					p_content_sha256: string;
-					p_object_count: number;
-					p_storage_bytes: number;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_append_object_reachability_entries: {
-				Args: { p_graph_id: string; p_entries: JsonValue };
-				Returns: number;
-			};
-			qorpera_complete_object_reachability_graph: {
-				Args: { p_graph_id: string };
-				Returns: JsonValue;
-			};
-			qorpera_get_object_reachability_graph: {
-				Args: { p_graph_id: string };
-				Returns: JsonValue;
-			};
-			qorpera_create_object_restore_proof: {
-				Args: {
-					p_graph_id: string;
-					p_client_proof_id: string;
-					p_restored_content_sha256: string;
-					p_restored_bytes: number;
-				};
 				Returns: JsonValue;
 			};
 		};
@@ -1430,42 +1247,6 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 		return data;
 	}
 
-	async ensureCompanyWorkspace(
-		input: Parameters<HostedPrimaryTransport["ensureCompanyWorkspace"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_ensure_company_workspace", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async commitCompanySnapshot(
-		input: Parameters<HostedPrimaryTransport["commitCompanySnapshot"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_commit_company_snapshot", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async getCompanySnapshot(input: Parameters<HostedPrimaryTransport["getCompanySnapshot"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_get_company_snapshot", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async listCompanyWorkspaces(
-		input: Parameters<HostedPrimaryTransport["listCompanyWorkspaces"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_list_company_workspaces", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async listCompanySnapshots(input: Parameters<HostedPrimaryTransport["listCompanySnapshots"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_list_company_snapshots", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
 	async registerArtifact(input: Parameters<HostedPrimaryTransport["registerArtifact"]>[0]): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_register_artifact_v2", input);
 		if (error) throw rpcError(error);
@@ -1545,65 +1326,6 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 		if (error) throw rpcError(error);
 		return data;
 	}
-
-	async beginObjectReachabilityGraph(
-		input: Parameters<HostedPrimaryTransport["beginObjectReachabilityGraph"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_begin_object_reachability_graph", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async appendObjectReachabilityEntries(
-		input: Parameters<HostedPrimaryTransport["appendObjectReachabilityEntries"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_append_object_reachability_entries", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async completeObjectReachabilityGraph(
-		input: Parameters<HostedPrimaryTransport["completeObjectReachabilityGraph"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_complete_object_reachability_graph", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async verifyCompanySnapshotClosure(
-		input: Parameters<HostedPrimaryTransport["verifyCompanySnapshotClosure"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.functions.invoke("company-file-verifier", {
-			body: input,
-		});
-		if (error) {
-			const context = (error as { context?: Response }).context;
-			if (context instanceof Response) {
-				const body = await context.text().catch(() => "");
-				throw new Error(
-					`Company File verification returned ${context.status}: ${body.slice(0, 500) || error.message}`,
-				);
-			}
-			throw new Error(error.message);
-		}
-		return data;
-	}
-
-	async getObjectReachabilityGraph(
-		input: Parameters<HostedPrimaryTransport["getObjectReachabilityGraph"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_get_object_reachability_graph", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async createObjectRestoreProof(
-		input: Parameters<HostedPrimaryTransport["createObjectRestoreProof"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_create_object_restore_proof", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -1658,13 +1380,6 @@ function artifactRootContract(value: unknown): HostedArtifactRootContract {
 		throw new Error("Hosted primary returned invalid artifact root contract");
 	}
 	return value as HostedArtifactRootContract;
-}
-
-function objectRootKind(value: unknown): HostedObjectRootKind {
-	if (!HOSTED_OBJECT_ROOT_KINDS.some((candidate) => candidate === value)) {
-		throw new Error("Hosted primary returned invalid object root kind");
-	}
-	return value as HostedObjectRootKind;
 }
 
 function jsonValue(value: unknown, seen = new Set<object>()): JsonValue {
@@ -2104,71 +1819,11 @@ function parseEvent(value: unknown): HostedSessionEvent {
 	};
 }
 
-function parseCompanyWorkspace(value: unknown): HostedCompanyWorkspace {
-	const input = record(value, "company workspace");
-	const headSnapshotId = input.head_snapshot_id;
-	return {
-		workspaceId: uuid(input.workspace_id, "company workspace id"),
-		profileId: uuid(input.profile_id, "company workspace profile id"),
-		environmentId: uuid(input.environment_id, "company workspace environment id"),
-		clientWorkspaceId: uuid(input.client_workspace_id, "company client workspace id"),
-		name: nonEmptyString(input.name, "company workspace name", MAX_WORKSPACE_NAME_LENGTH),
-		...(headSnapshotId === null || headSnapshotId === undefined
-			? {}
-			: { headSnapshotId: uuid(headSnapshotId, "company workspace head snapshot id") }),
-		createdByUserId: uuid(input.created_by_user_id, "company workspace creator id"),
-		createdAt: timestamp(input.created_at, "company workspace creation time"),
-		updatedAt: timestamp(input.updated_at, "company workspace update time"),
-	};
-}
-
 function boundedInteger(value: unknown, label: string, minimum: number, maximum: number): number {
 	if (!Number.isSafeInteger(value) || (value as number) < minimum || (value as number) > maximum) {
 		throw new Error(`Hosted primary returned invalid ${label}`);
 	}
 	return value as number;
-}
-
-function parseCompanySnapshot(value: unknown): HostedCompanySnapshot {
-	const input = record(value, "company snapshot");
-	const parentSnapshotId = input.parent_snapshot_id;
-	const publicationState = input.publication_state;
-	if (typeof input.tree_manifest_sha256 !== "string" || !SHA256_PATTERN.test(input.tree_manifest_sha256)) {
-		throw new Error("Hosted primary returned invalid company tree manifest hash");
-	}
-	if (
-		publicationState !== undefined &&
-		publicationState !== null &&
-		publicationState !== "prepared" &&
-		publicationState !== "published"
-	) {
-		throw new Error("Hosted primary returned invalid company snapshot publication state");
-	}
-	return {
-		snapshotId: uuid(input.snapshot_id, "company snapshot id"),
-		profileId: uuid(input.profile_id, "company snapshot profile id"),
-		environmentId: uuid(input.environment_id, "company snapshot environment id"),
-		workspaceId: uuid(input.workspace_id, "company snapshot workspace id"),
-		clientSnapshotId: uuid(input.client_snapshot_id, "company client snapshot id"),
-		...(parentSnapshotId === null || parentSnapshotId === undefined
-			? {}
-			: { parentSnapshotId: uuid(parentSnapshotId, "company parent snapshot id") }),
-		tree: {
-			manifestSha256: input.tree_manifest_sha256,
-			manifestBytes: boundedInteger(
-				input.tree_manifest_bytes,
-				"company tree manifest bytes",
-				1,
-				MAX_TREE_MANIFEST_BYTES,
-			),
-			contractVersion: boundedInteger(input.tree_contract_version, "company tree contract version", 1, 3),
-			fileCount: boundedInteger(input.file_count, "company tree file count", 0, MAX_TREE_FILES),
-			totalBytes: boundedInteger(input.total_bytes, "company tree total bytes", 0, MAX_TREE_BYTES),
-		},
-		createdByUserId: uuid(input.created_by_user_id, "company snapshot creator id"),
-		createdAt: timestamp(input.created_at, "company snapshot creation time"),
-		...(publicationState === "prepared" || publicationState === "published" ? { publicationState } : {}),
-	};
 }
 
 function parseArtifact(value: unknown): HostedArtifact {
@@ -2309,69 +1964,6 @@ function parseArtifactGcCandidate(value: unknown): HostedArtifactGcCandidate {
 		...(blockedReason === null || blockedReason === undefined
 			? {}
 			: { blockedReason: nonEmptyString(blockedReason, "artifact deletion blocker", 500) }),
-	};
-}
-
-function parseObjectReachabilityGraph(value: unknown): HostedObjectReachabilityGraph {
-	const input = record(value, "object reachability graph");
-	const status = input.status;
-	const completedAt = input.completed_at;
-	if (status !== "uploading" && status !== "complete") {
-		throw new Error("Hosted primary returned invalid object reachability status");
-	}
-	if ((status === "complete") !== (typeof completedAt === "string")) {
-		throw new Error("Hosted primary returned inconsistent object reachability completion");
-	}
-	if (input.contract_version !== 1) {
-		throw new Error("Hosted primary returned invalid object reachability contract");
-	}
-	if (typeof input.root_object_sha256 !== "string" || !SHA256_PATTERN.test(input.root_object_sha256)) {
-		throw new Error("Hosted primary returned invalid object reachability root hash");
-	}
-	if (typeof input.content_sha256 !== "string" || !SHA256_PATTERN.test(input.content_sha256)) {
-		throw new Error("Hosted primary returned invalid object reachability content hash");
-	}
-	return {
-		graphId: uuid(input.graph_id, "object reachability graph id"),
-		profileId: uuid(input.profile_id, "object reachability profile id"),
-		environmentId: uuid(input.environment_id, "object reachability environment id"),
-		rootKind: objectRootKind(input.root_kind),
-		rootId: uuid(input.root_id, "object reachability root id"),
-		clientGraphId: uuid(input.client_graph_id, "object reachability client id"),
-		rootObjectSha256: input.root_object_sha256,
-		contractVersion: 1,
-		contentSha256: input.content_sha256,
-		objectCount: boundedInteger(input.object_count, "object reachability count", 1, MAX_REACHABILITY_OBJECTS),
-		storageBytes: boundedInteger(
-			input.storage_bytes,
-			"object reachability storage bytes",
-			0,
-			MAX_REACHABILITY_STORAGE_BYTES,
-		),
-		status,
-		createdByUserId: uuid(input.created_by_user_id, "object reachability creator id"),
-		createdAt: timestamp(input.created_at, "object reachability creation time"),
-		...(typeof completedAt === "string"
-			? { completedAt: timestamp(completedAt, "object reachability completion time") }
-			: {}),
-	};
-}
-
-function parseObjectRestoreProof(value: unknown): HostedObjectRestoreProof {
-	const input = record(value, "object restore proof");
-	if (typeof input.restored_content_sha256 !== "string" || !SHA256_PATTERN.test(input.restored_content_sha256)) {
-		throw new Error("Hosted primary returned invalid restored content hash");
-	}
-	return {
-		proofId: uuid(input.proof_id, "object restore proof id"),
-		graphId: uuid(input.graph_id, "object restore graph id"),
-		profileId: uuid(input.profile_id, "object restore profile id"),
-		clientProofId: uuid(input.client_proof_id, "object restore client id"),
-		restoredContentSha256: input.restored_content_sha256,
-		restoredBytes: boundedInteger(input.restored_bytes, "restored bytes", 0, MAX_TREE_BYTES),
-		verifiedByUserId: uuid(input.verified_by_user_id, "object restore verifier id"),
-		verifiedAt: timestamp(input.verified_at, "object restore verification time"),
-		validUntil: timestamp(input.valid_until, "object restore validity time"),
 	};
 }
 
@@ -3519,67 +3111,6 @@ export class QorperaHostedPrimary {
 		return parseCompanyFile(await this.transport.getCompanyFile({ p_environment_id: environmentId }));
 	}
 
-	async ensureCompanyWorkspace(input: EnsureHostedCompanyWorkspaceInput): Promise<HostedCompanyWorkspace> {
-		requiredUuid(input.environmentId, "Environment id");
-		requiredUuid(input.clientWorkspaceId, "Client workspace id");
-		if (input.baseSnapshotId) requiredUuid(input.baseSnapshotId, "Base snapshot id");
-		return parseCompanyWorkspace(
-			await this.transport.ensureCompanyWorkspace({
-				p_environment_id: input.environmentId,
-				p_client_workspace_id: input.clientWorkspaceId,
-				p_name: requiredText(input.name, "Workspace name", MAX_WORKSPACE_NAME_LENGTH),
-				p_base_snapshot_id: input.baseSnapshotId ?? null,
-			}),
-		);
-	}
-
-	async commitCompanySnapshot(input: CommitHostedCompanySnapshotInput): Promise<HostedCompanySnapshot> {
-		requiredUuid(input.workspaceId, "Workspace id");
-		requiredUuid(input.clientSnapshotId, "Client snapshot id");
-		if (input.expectedHeadSnapshotId) requiredUuid(input.expectedHeadSnapshotId, "Expected head snapshot id");
-		if (!SHA256_PATTERN.test(input.tree.manifestSha256)) throw new Error("Tree manifest SHA-256 is invalid");
-		boundedInteger(input.tree.manifestBytes, "tree manifest bytes", 1, MAX_TREE_MANIFEST_BYTES);
-		boundedInteger(input.tree.contractVersion, "tree contract version", 1, 1_000_000);
-		boundedInteger(input.tree.fileCount, "tree file count", 0, MAX_TREE_FILES);
-		boundedInteger(input.tree.totalBytes, "tree total bytes", 0, MAX_TREE_BYTES);
-		return parseCompanySnapshot(
-			await this.transport.commitCompanySnapshot({
-				p_workspace_id: input.workspaceId,
-				p_client_snapshot_id: input.clientSnapshotId,
-				p_expected_head_snapshot_id: input.expectedHeadSnapshotId ?? null,
-				p_tree_manifest_sha256: input.tree.manifestSha256,
-				p_tree_manifest_bytes: input.tree.manifestBytes,
-				p_tree_contract_version: input.tree.contractVersion,
-				p_file_count: input.tree.fileCount,
-				p_total_bytes: input.tree.totalBytes,
-			}),
-		);
-	}
-
-	async listCompanyWorkspaces(environmentId: string): Promise<HostedCompanyWorkspace[]> {
-		requiredUuid(environmentId, "Environment id");
-		return array(
-			await this.transport.listCompanyWorkspaces({ p_environment_id: environmentId }),
-			"company workspace list",
-		).map(parseCompanyWorkspace);
-	}
-
-	async getCompanySnapshot(snapshotId: string): Promise<HostedCompanySnapshot> {
-		requiredUuid(snapshotId, "Snapshot id");
-		return parseCompanySnapshot(await this.transport.getCompanySnapshot({ p_snapshot_id: snapshotId }));
-	}
-
-	async listCompanySnapshots(workspaceId: string, limit = 100): Promise<HostedCompanySnapshot[]> {
-		requiredUuid(workspaceId, "Workspace id");
-		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
-			throw new Error("Snapshot page size must be between 1 and 500");
-		}
-		return array(
-			await this.transport.listCompanySnapshots({ p_workspace_id: workspaceId, p_limit: limit }),
-			"company snapshot list",
-		).map(parseCompanySnapshot);
-	}
-
 	async registerArtifact(input: RegisterHostedArtifactInput): Promise<HostedArtifact> {
 		requiredUuid(input.environmentId, "Environment id");
 		requiredUuid(input.clientArtifactId, "Client artifact id");
@@ -3741,96 +3272,6 @@ export class QorperaHostedPrimary {
 	async retryArtifactGcPlan(planId: string): Promise<HostedArtifactGcPlan> {
 		requiredUuid(planId, "Artifact cleanup plan id");
 		return parseArtifactGcPlan(await this.transport.retryArtifactGcPlan({ p_plan_id: planId }));
-	}
-
-	async beginObjectReachabilityGraph(
-		input: BeginHostedObjectReachabilityGraphInput,
-	): Promise<HostedObjectReachabilityGraph> {
-		if (!HOSTED_OBJECT_ROOT_KINDS.includes(input.rootKind)) throw new Error("Object root kind is invalid");
-		requiredUuid(input.rootId, "Object root id");
-		requiredUuid(input.clientGraphId, "Client object graph id");
-		if (!SHA256_PATTERN.test(input.rootObjectSha256)) throw new Error("Object root SHA-256 is invalid");
-		if (!SHA256_PATTERN.test(input.contentSha256)) throw new Error("Object graph content SHA-256 is invalid");
-		boundedInteger(input.objectCount, "object graph count", 1, MAX_REACHABILITY_OBJECTS);
-		boundedInteger(input.storageBytes, "object graph storage bytes", 0, MAX_REACHABILITY_STORAGE_BYTES);
-		return parseObjectReachabilityGraph(
-			await this.transport.beginObjectReachabilityGraph({
-				p_root_kind: input.rootKind,
-				p_root_id: input.rootId,
-				p_client_graph_id: input.clientGraphId,
-				p_root_object_sha256: input.rootObjectSha256,
-				p_contract_version: 1,
-				p_content_sha256: input.contentSha256,
-				p_object_count: input.objectCount,
-				p_storage_bytes: input.storageBytes,
-			}),
-		);
-	}
-
-	async appendObjectReachabilityEntries(graphId: string, entries: HostedObjectReachabilityEntry[]): Promise<number> {
-		requiredUuid(graphId, "Object graph id");
-		if (entries.length < 1 || entries.length > 500) {
-			throw new Error("Object reachability batch must contain between 1 and 500 entries");
-		}
-		const seen = new Set<string>();
-		const payload: Array<{ sha256: string; bytes: number }> = [];
-		for (const entry of entries) {
-			if (!SHA256_PATTERN.test(entry.sha256)) throw new Error("Reachable object SHA-256 is invalid");
-			boundedInteger(entry.bytes, "reachable object bytes", 0, MAX_TREE_MANIFEST_BYTES);
-			if (seen.has(entry.sha256)) throw new Error("Object reachability batch contains duplicate hashes");
-			seen.add(entry.sha256);
-			payload.push({ sha256: entry.sha256, bytes: entry.bytes });
-		}
-		const result = await this.transport.appendObjectReachabilityEntries({
-			p_graph_id: graphId,
-			p_entries: payload,
-		});
-		return boundedInteger(result, "object reachability uploaded count", 1, MAX_REACHABILITY_OBJECTS);
-	}
-
-	async completeObjectReachabilityGraph(graphId: string): Promise<HostedObjectReachabilityGraph> {
-		requiredUuid(graphId, "Object graph id");
-		return parseObjectReachabilityGraph(
-			await this.transport.completeObjectReachabilityGraph({ p_graph_id: graphId }),
-		);
-	}
-
-	async getObjectReachabilityGraph(graphId: string): Promise<HostedObjectReachabilityGraph> {
-		requiredUuid(graphId, "Object graph id");
-		return parseObjectReachabilityGraph(await this.transport.getObjectReachabilityGraph({ p_graph_id: graphId }));
-	}
-
-	async verifyCompanySnapshotClosure(snapshotId: string, graphId: string): Promise<void> {
-		requiredUuid(snapshotId, "Company snapshot id");
-		requiredUuid(graphId, "Object graph id");
-		for (let tranche = 0; tranche < MAX_COMPANY_VERIFICATION_TRANCHES; tranche += 1) {
-			const result = await this.transport.verifyCompanySnapshotClosure({ snapshotId, graphId });
-			const value = record(result, "Company snapshot verification");
-			if (value.verified === true) return;
-			if (value.pending !== true) throw new Error("Company snapshot server verification did not complete");
-			await new Promise<void>((resolvePromise) => setImmediate(resolvePromise));
-		}
-		throw new Error("Company snapshot server verification exceeded the supported Company File limits");
-	}
-
-	async createObjectRestoreProof(
-		graphId: string,
-		clientProofId: string,
-		restoredContentSha256: string,
-		restoredBytes: number,
-	): Promise<HostedObjectRestoreProof> {
-		requiredUuid(graphId, "Object graph id");
-		requiredUuid(clientProofId, "Client restore proof id");
-		if (!SHA256_PATTERN.test(restoredContentSha256)) throw new Error("Restored content SHA-256 is invalid");
-		boundedInteger(restoredBytes, "restored bytes", 0, MAX_TREE_BYTES);
-		return parseObjectRestoreProof(
-			await this.transport.createObjectRestoreProof({
-				p_graph_id: graphId,
-				p_client_proof_id: clientProofId,
-				p_restored_content_sha256: restoredContentSha256,
-				p_restored_bytes: restoredBytes,
-			}),
-		);
 	}
 
 	async createSession(input: CreateHostedSessionInput): Promise<HostedSession> {
