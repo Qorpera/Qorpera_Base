@@ -395,7 +395,50 @@ refuses a peer that is not the executor's uid; machine-wide boundaries; and `ser
 
 ## Slices
 
-<!-- TODO -->
+Reserved in the registry: migration slots 20260930420000–429000 and SQL tests 510–519 (6a and 6e).
+
+| Slice | What | Tests |
+| --- | --- | --- |
+| 6a | SQL: the `test_machine` view kind (C1b-3b). Columns `company_machine_id`, `placement_id` and `boot_id`, set exactly for that kind; the kind joins `qorpera_folder_views_built_kind`; one open view per machine (a partial unique index) and a history index by placement. The open: the machine fence, the machine row and placement `FOR SHARE`, the starter's root read; valid while the placement is not removed, the boot is the view's and the starter reads the root; `companyWide` true. Per-unit `credits` in the commit: each credited command checked against `qorpera_company_machine_commands` (machine, placement, not ended, a publish at its own end counted), refused alone as an outcome; each unit allowed for every credited agent and requester, or the starter's; the actor the first-started command and the commit's `credits` their union. The view's read set: fan-out to runs with a running command whose job is leased (KEY SHARE in id order), rank-10 recheck, carry to the next view of the same placement. `qorpera_folder_run_inherit_view_reads` takes a `test_machine` view for a run whose agent and member read the root. `qorpera_authorize_machine_command` requires the caller's root read on a boot that has or had a view. The crashed-service refusal for these views (5a's `served_by`) | An open refused when the starter's agent or member lacks the root read; a second open view on one machine refused; the view invalid after a new boot and after the starter narrows, and still valid on a retired placement for one `final` publish; a unit credited to an ended command refused while the other units commit; a unit allowed for one credited agent but not the other refused; the actor and `credits` with two overlapping commands; a unit with no command credited to the starter; a read fanned out to a leased run with a running command, not to one whose command ended; a commit refused at rank 10 after a read path narrows; the read set carried across boots of one placement and clean on a new one; the take-in allowed for another agent with the root read and refused without; `machine_run`, `machine_read` and `machine_cancel` refused for a caller without the root read on a machine with a view, allowed on one without; a view served by a crashed service refused |
+| 6b | Folder service: test machine views. The `test_machine` kind in `coreAccess`, served only to its own instance in `testMachineProjects`; command windows on 5c's control socket; per-change tags; per-unit `credits`; the quiet publish; a command's end boundary and the machine's final boundary; reasons as 4c | The service's tests with a stand-in core: a `test_machine` view refused from another test machine, an office, a coding machine or an unlisted project; a change made in one window credited to it, one made in two windows to both, one with none to the starter; a quiet publish about 2 s after the last change; an end boundary that publishes the command's changes before it answers; the final boundary with `final`; a window message from a peer that is not the executor's uid refused |
+| 6c | Image, guest helper and mount. `build-machine-image.sh`: the toolbox (item 7) as 4e's list, `fuse3` and the folder program, in a new image generation. The guest helper starts the folder program at `/company` with the pass from exec stdin and restarts it while the view is open. `security.devlxd=false` on test machines | The image contract tests: every toolbox command answers `--version`, the folder program and `fuse3` are present. The helper's tests: the pass is in no file, unit environment or log, and the program restarts after it exits. The plan's tests: `security.devlxd=false` and no pass in any config key. Step 4's mount propagation proof for a Docker container started before the mount, in a throwaway nested VM on the test machine |
+| 6d | Executor cutover, review and output paths. The executor opens the boot's view after `qorpera_mark_company_machine_running` and hands over the pass; a start waits for the boot's open; windows; a boundary before every answer that carries output; the end order; the final boundary before every power-off, not held past a minute; a guest reboot's final boundary before the new boot is recorded; a restart on a narrowing or a crashed service; the placement retired on `unreadable`. `machine_run` becomes "external". Every output path takes in the view's reads first | `company-machine-host` tests with a stand-in folder service: the order of window, boundary and recorded end; the final boundary before the power-off, and a stop not held past a minute; a reboot's final boundary before the new boot; the placement retired on `unreadable`. `cloudActionEffect`: `machine_run` "external", the other machine tools unchanged. The receipts, the notify continuation and a worker's read take in the view's reads before they return output. A worker's `machine_run` reaches the review with its agent's rules |
+| 6e | The report and the retirements ("What replaces `/mnt/repository`", "The report"). The binding becomes v2, and v1 placements are retired by the migration | `company-machine.test.ts` with the v2 binding and no repository device; a v1 placement retired by the migration (SQL); `machine_start` without `repositoryWorker`; 628 and 897 without the repository; the report's fields (`/company` or why not, credits, refused units, overlaps) |
+| 6f | Live proof, below | Below |
+
+**Order.** 6a, 6b and 6c can be built side by side (6b against a stand-in core; it merges after 4c and 5c, which it
+reuses; 6a's crashed-service refusal needs 5a's `served_by`). 6d needs 6a, 6b and 6c; no test machine mounts the
+folder before 6d. 6e needs 6d and item 8's caches in the folder program. 6f comes last.
+
+**Live proof (6f)**, on a test company, without Codex (the tools called by a script, as `prove-machine-node.ts` does):
+
+- a networked command (`curl https://github.com` into a file under `/company`) saves it, credited to that command, and
+  the web app's folder shows it;
+- a program that keeps running (a loop writing a file every 10 s) publishes about 2 s after each change, at each
+  `machine_read`, and when it is cancelled;
+- two overlapping commands of two agents: each receipt lists the other, and a change made while both ran is credited
+  to both;
+- a change made by a Docker container while no command runs is credited to the starter at the next publish;
+- a machine whose starter lacks the root read has no `/company`, and the report says why;
+- a stop with a program running publishes its last change in the final boundary, before the power-off;
+- from a test machine, a vsock probe to the folder service under another machine's view is refused (the CID check),
+  and nothing on the host answers on any other port;
+- the node host is unchanged: modules, sysctls and nft rules listed before and after are the same.
+
+**Deferred (needs Codex):** everything a model drives. The automatic review judging a `machine_run` (allowed, asked,
+denied) under the company's rules; an agent ending its turn and being woken by `notify` with its saves listed; a worker
+waiting on a command; README's acceptance step 4 in `/company/code/…`.
+
+**Settled in step 6's implementation.** This plan fixes the rules and the tests above. The mechanics behind them are
+designed in their slice's PR and reviewed there against those rules, each pinned by the tests named in its row:
+
+- the windows' messages on the control socket and how the service keeps tags: 6b;
+- how the guest helper hands the pass over and restarts the program: 6c;
+- the executor's journal entries for windows and boundaries: 6d;
+- how receipts show credits and overlaps: 6e.
+
+A case a slice's review finds that these rules already decide is fixed in that slice, with a test; this plan changes
+only if a rule is wrong.
 
 ## What this plan amends
 
