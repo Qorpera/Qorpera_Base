@@ -523,6 +523,36 @@ it("reads a block that changed under it again, keeping the stored lines", async 
 	expect(lines.built(0, 0)).toBe("Cy: first");
 });
 
+it("stores each line once when two runs in the conversation settle and close its tree at the same time", async () => {
+	// Bo's run and Cy's, both woken by event 2 (a group chat's tree is written by each member agent's run).
+	const host = thread(2, 1);
+	const cy = { ...host.binding, runId: OTHER_RUN };
+	const bo = writer(host);
+	const other = new CloudConversationLines({
+		control: host.control,
+		binding: cy,
+		folder: host.folder,
+		call: fake().call,
+		lane: new MemoryCompactLane(),
+		record: memoryCompactionRecorder(host.control, cy),
+	});
+	await Promise.all([bo.open(open()), other.open(open())]);
+	await Promise.all([bo.settle(open()), other.settle(open())]);
+	expect(host.addresses()).toEqual(["0.0", "0.1", "1.0"]);
+	expect(host.files.get(`${ROOT}/tree.toml`)?.text).toBe(memoryTreeToml(SESSION));
+	host.events.push(
+		event(3, { runId: host.binding.runId, speakerKind: "agent", speaker: "Bo", text: "sent" }),
+		event(4, { runId: OTHER_RUN, speakerKind: "agent", speaker: "Cy", text: "done" }),
+	);
+	await Promise.all([bo.close(open()), other.close(open())]);
+	expect(host.addresses()).toEqual(["0.0", "0.1", "0.2", "0.3", "0.4", "1.0", "1.1", "2.0"]);
+	expect(host.stored()).toEqual(expect.arrayContaining([leaf(3, "Bo: sent"), leaf(4, "Cy: done")]));
+	// Each run's change sets have their own keys.
+	const keys = host.commits.map((commit) => commit.key);
+	expect(new Set(keys).size).toBe(keys.length);
+	expect(new Set(keys.map((key) => key.split(".")[1]))).toEqual(new Set([host.binding.runId, OTHER_RUN]));
+});
+
 it("never tries a node again in the run once the compactor failed on it", async () => {
 	const host = new FakeHost();
 	host.events.push(
