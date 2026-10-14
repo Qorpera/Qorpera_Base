@@ -402,6 +402,33 @@ it("makes a folder, and refuses a version for one", async () => {
 	).toThrow(CloudToolArgumentRefusal);
 });
 
+// Ported from the path gateway's own tools (removed in C-P5): the run's identity, an approval or an address
+// never comes from the model.
+it("takes no identity, approval or address a model adds to a call, before anything is read", async () => {
+	const f = await fixture({ files: { "docs/plan.md": "plan" } });
+	const read = vi.spyOn(f.folder, "read");
+	const extras: { [key: string]: JsonValue }[] = [
+		{ companyId: randomUUID() },
+		{ approved: true },
+		{ binding: {} },
+		{ sha256: "a".repeat(64) },
+		{ url: "https://outside.example" },
+	];
+	const calls: [string, { [key: string]: JsonValue }][] = [
+		["company_read", { path: "docs/plan.md", offset: 0, limit: 4 }],
+		["company_list", { path: "docs", after: null, limit: 5 }],
+		["company_write", { path: "docs/plan.md", operationKey: "w-1", expectedVersion: null, text: "x" }],
+	];
+	// Each call parses as it is; only the added key refuses it.
+	for (const [name, value] of calls) f.tool(name).parseArguments(value);
+	for (const extra of extras)
+		for (const [name, value] of calls)
+			expect(() => f.tool(name).parseArguments({ ...value, ...extra })).toThrow(CloudToolArgumentRefusal);
+	expect(read).not.toHaveBeenCalled();
+	expect(f.releases).toHaveLength(0);
+	expect(f.commits).toHaveLength(0);
+});
+
 it("deletes a file with the review its call was approved under", async () => {
 	const f = await fixture({ files: { "docs/old.md": "old" } });
 	const expectedVersion = f.files.get("docs/old.md")?.version as string;

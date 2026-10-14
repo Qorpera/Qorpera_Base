@@ -95,6 +95,9 @@ pub struct Options {
 	/// The folder the mount's version map is kept in (under /run/qorpera-folder/), so a program started again for the
 	/// mount bases saves on what was read before; None keeps it in memory.
 	pub state: Option<PathBuf>,
+	/// The read journal the caller already opened in `state` (the CLI does, to check the view proof). Only a writable
+	/// view logs its reads: a read-only one hands none over, so its journal would never be emptied. None opens it here.
+	pub reads: Option<Arc<ReadLog>>,
 }
 
 /// Why the program stopped.
@@ -1093,7 +1096,8 @@ fn follow(
 			let change = match feed.next() {
 				Ok(c) => c,
 				Err(f) => {
-					if f.view_closed() {
+					s.link.feed_failed(&feed, &f);
+					if s.link.closed() {
 						let _ = stop.send(Stop::ViewClosed);
 						return;
 					}
@@ -1101,6 +1105,7 @@ fn follow(
 					break;
 				}
 			};
+			if !s.link.feed_current(&feed) { break; }
 			let (inval, raced) = {
 				let mut tree = s.tree.lock().unwrap();
 				let inval = if change.resync {
@@ -1148,7 +1153,7 @@ fn follow(
 					apply(inval, raced);
 					break f;
 				}
-				Err(f) if f.view_closed() => {
+				Err(_) if s.link.closed() => {
 					let _ = stop.send(Stop::ViewClosed);
 					return;
 				}
@@ -1218,8 +1223,9 @@ pub enum Failed {
 	Other(String),
 }
 
-/// Mounts the view and serves it until a signal, the view's end, or an unmount. Returns why it stopped.
-pub fn run(mut link: Link, options: Options) -> Result<Stop, Failed> {
+/// Mounts the view and serves it until a signal, the view's end, or an unmount. Returns why it stopped. The caller
+/// holds the state's daemon.lock.
+pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 	let signals = block_stop_signals();
 	// Open the feed before anything is listed, so no change after the first listing can be missed. This
 	// also checks the view: a refused view never gets mounted.
@@ -1231,11 +1237,26 @@ pub fn run(mut link: Link, options: Options) -> Result<Stop, Failed> {
 		}
 	})?;
 	let writable = !ok.read_only;
+	if writable && !link.has_reads() {
+		let reads = match options.reads.take() {
+			Some(reads) => reads,
+			None => {
+				let dir = options.state.as_ref().ok_or_else(|| Failed::Other("a writable mount needs its private state directory".into()))?;
+				// Open the journal before the version map creates files: only unused state can start a new read sequence.
+				Arc::new(ReadLog::open(dir, true).map_err(|e| Failed::Other(format!("read journal: {e}")))?)
+			}
+		};
+		link = link.with_reads(reads);
+	}
 	if writable {
-		let dir = options.state.as_ref().ok_or_else(|| Failed::Other("a writable mount needs its private state directory".into()))?;
-		// Open the journal before the version map creates files: only unused state can start a new read sequence.
-		let reads = ReadLog::open(dir, true).map_err(|e| Failed::Other(format!("read journal: {e}")))?;
-		link = link.with_reads(Arc::new(reads));
+		// The caller holds the state's daemon.lock: what an earlier program left open goes before a file is served here.
+		link.abandon_earlier().map_err(|f| {
+			if f.view_closed() {
+				Failed::View(f.to_string())
+			} else {
+				Failed::Other(format!("could not tell the node the earlier program is gone: {f}"))
+			}
+		})?;
 	}
 	eprintln!(
 		"qorpera-folder: view {} accepted at change {}, {}",
@@ -1318,6 +1339,20 @@ pub fn run(mut link: Link, options: Options) -> Result<Stop, Failed> {
 		std::thread::spawn(move || chase(chaser, names));
 		std::thread::spawn(move || follow(shared, notifier, feed, stop_tx, chased));
 	}
+	let watching = Arc::new(AtomicBool::new(true));
+	let watcher = {
+		let shared = shared.clone();
+		let watching = watching.clone();
+		std::thread::spawn(move || {
+			while watching.load(Ordering::SeqCst) {
+				// A refused/malformed replacement leaves the accepted proof and fixed grace intact. Request calls
+				// report their own errors; the idle watcher retries quietly without exposing credentials.
+				let _ = shared.link.refresh();
+				shared.link.expire();
+				std::thread::sleep(Duration::from_millis(250));
+			}
+		})
+	};
 	eprintln!("qorpera-folder: mounted at {} with {} threads", options.mountpoint.display(), options.threads);
 	let why = stop_rx.recv().map_err(|_| Failed::Other("every stop channel closed".into()))?;
 	if !matches!(why, Stop::Ended(_)) {
@@ -1325,6 +1360,8 @@ pub fn run(mut link: Link, options: Options) -> Result<Stop, Failed> {
 			eprintln!("qorpera-folder: unmount {}: {e}", options.mountpoint.display());
 		}
 	}
+	watching.store(false, Ordering::SeqCst);
+	let _ = watcher.join();
 	Ok(why)
 }
 

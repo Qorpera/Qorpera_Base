@@ -27,7 +27,7 @@ export class CloudCompanyPathRpcMissing extends CloudRuntimeDiagnosticError {
 }
 
 /** Only the Company File gateway promotes a transaction refusal at its initial
- * admission, before it stages objects, registers presence or attempts a commit.
+ * admission, before it stages objects or attempts a commit.
  * Never infer this brand from an HTTP status, diagnostic category or raw text. */
 export class CloudCompanyPathToolRefusal extends CloudRuntimeDiagnosticError {
 	constructor() {

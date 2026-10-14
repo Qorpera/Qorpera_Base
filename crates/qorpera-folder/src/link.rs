@@ -14,7 +14,8 @@ use sha2::{Digest, Sha256};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use crate::viewfile::ViewFile;
 
 /// How long a list or a read may wait for its answer, and a request to be sent. A cold read of a 4 MiB piece from the
 /// storage server takes well under a second (measured 28 September); this only catches a link that died silently. A
@@ -72,23 +73,8 @@ impl std::fmt::Display for PublishFailure {
 	}
 }
 
-struct Connection {
-	stream: Stream,
-	/// Volatile service knowledge belongs to this exact connection, never its replacement.
-	taken: u64,
-	/// Even an empty first intake conveys lost=false; a later sticky lost=true must be sent again.
-	intake_lost: Option<bool>,
-}
-
-impl std::ops::Deref for Connection {
-	type Target = Stream;
-	fn deref(&self) -> &Stream { &self.stream }
-}
-
-impl std::ops::DerefMut for Connection {
-	fn deref_mut(&mut self) -> &mut Stream { &mut self.stream }
-}
-
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct View {
 	pub environment_id: String,
 	pub view_id: String,
@@ -107,12 +93,18 @@ impl std::fmt::Debug for View {
 
 pub struct Link {
 	addr: String,
-	view: View,
+	view: Mutex<Current>,
+	view_file: Option<Arc<ViewFile>>,
+	/// A CLI publisher holds daemon.lock throughout all connections and publication when this is true. A mount never
+	/// sets it: it says so once, before it serves the folder (`abandon_earlier`).
+	abandon: bool,
+	grace: bool,
+	feed: Mutex<Option<Connection>>,
 	free: Mutex<Vec<Connection>>,
 	ready: Condvar,
 	open: Mutex<usize>,
 	max: usize,
-	/// Set once the node says the view is closed; every later call fails at once.
+	/// Permanent closure after an immediate refusal or the desktop handoff grace expires.
 	closed: AtomicBool,
 	/// Called once when the view closes, so the mount can end instead of failing every call.
 	on_closed: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -121,11 +113,69 @@ pub struct Link {
 	reads: Option<Arc<ReadLog>>,
 }
 
+struct Current {
+	view: View,
+	epoch: u64,
+	accepted: bool,
+	switchable: bool,
+	closed_at: Option<Instant>,
+}
+
+/// Every stream is tied to the hello that accepted it, never to whichever view the Link currently names.
+struct Connection {
+	stream: Stream,
+	epoch: u64,
+	/// Service intake is volatile and belongs to this exact accepted connection.
+	taken: u64,
+	intake_lost: Option<bool>,
+}
+impl std::ops::Deref for Connection { type Target = Stream; fn deref(&self) -> &Stream { &self.stream } }
+impl std::ops::DerefMut for Connection { fn deref_mut(&mut self) -> &mut Stream { &mut self.stream } }
+
 impl Link {
+	pub fn with_view_file(mut self, store: Arc<ViewFile>, grace: bool, abandon: bool) -> Link {
+		self.view_file = Some(store);
+		self.grace = grace;
+		self.abandon = abandon;
+		self
+	}
+
+	pub fn has_reads(&self) -> bool { self.reads.is_some() }
+
+	pub fn epoch(&self) -> u64 { self.view.lock().unwrap().epoch }
+
+	/// Checks atomic primary-file replacement even while the filesystem is idle. A bad replacement never erases
+	/// accepted proof or extends the fixed closure grace. A successful hello invalidates old pools and the feed.
+	pub fn refresh(&self) -> Result<bool, Fail> {
+		self.expire();
+		if self.closed() {
+			return Err(Fail::Remote(ErrorReply { code: code::VIEW_CLOSED.into(), message: "the view is closed".into() }));
+		}
+		let before = self.epoch();
+		if let Some(store) = &self.view_file {
+			let target = store.target().map_err(Fail::Link)?;
+			let changed = target != self.view.lock().unwrap().view;
+			if changed {
+				let (connection, _) = self.hello(Role::Io, self.timeout)?;
+				connection.shutdown();
+			}
+		}
+		self.expire();
+		Ok(before != self.epoch())
+	}
+
+	pub fn expire(&self) {
+		let expired = self.view.lock().unwrap().closed_at.is_some_and(|at| at.elapsed() >= Duration::from_secs(60));
+		if expired && !self.closed.swap(true, Ordering::SeqCst) { self.fire_closed(); }
+	}
 	pub fn new(addr: String, view: View, max: usize) -> Link {
 		Link {
 			addr,
-			view,
+			view: Mutex::new(Current { view, epoch: 0, accepted: false, switchable: false, closed_at: None }),
+			view_file: None,
+			abandon: false,
+			grace: false,
+			feed: Mutex::new(None),
 			free: Mutex::new(Vec::new()),
 			ready: Condvar::new(),
 			open: Mutex::new(0),
@@ -165,41 +215,106 @@ impl Link {
 		self.closed.load(Ordering::SeqCst)
 	}
 
+	/// A mount holds daemon.lock from before its first hello, so no earlier program on this state is alive. One IO hello
+	/// says so, and the node abandons the files that program left open: a mount systemd restarted after a crash would
+	/// otherwise keep them open on the node for good, and those paths never publish again. It goes before the folder is
+	/// served, so no file this program opens is among them.
+	pub fn abandon_earlier(&self) -> Result<(), Fail> {
+		let (connection, _) = self.hello_as(Role::Io, self.timeout, true)?;
+		connection.shutdown();
+		Ok(())
+	}
+
 	fn hello(&self, role: Role, timeout: Duration) -> Result<(Connection, HelloOk), Fail> {
-		let mut s = connect(&self.addr).map_err(Fail::Link)?;
-		s.set_timeouts(Some(timeout), Some(self.timeout)).map_err(Fail::Link)?;
+		self.hello_as(role, timeout, self.abandon)
+	}
+
+	fn hello_as(&self, role: Role, timeout: Duration, abandon: bool) -> Result<(Connection, HelloOk), Fail> {
+		// A fixed interprocess lock spans reading primary, authenticating and checkpointing the accepted view.
+		// No pool or journal lock is held: a stalled hello cannot deadlock the live mount's ordinary IO.
+		let proof = self.view_file.as_ref().map(|store| store.prepare()).transpose().map_err(Fail::Link)?;
+		let target = proof.as_ref().map(|p| p.target.clone()).unwrap_or_else(|| self.view.lock().unwrap().view.clone());
+		let before = self.epoch();
+		let remaining = self.view.lock().unwrap().closed_at.map(|at| Duration::from_secs(60).saturating_sub(at.elapsed()));
+		let timeout = remaining.map_or(timeout, |left| timeout.min(left.max(Duration::from_millis(1))));
+		let mut stream = connect(&self.addr).map_err(Fail::Link)?;
+		stream.set_timeouts(Some(timeout), Some(self.timeout)).map_err(Fail::Link)?;
 		let hello = Hello {
 			protocol: PROTOCOL,
-			environment_id: self.view.environment_id.clone(),
-			view_id: self.view.view_id.clone(),
-			pass: self.view.pass.clone(),
+			environment_id: target.environment_id.clone(),
+			view_id: target.view_id.clone(),
+			pass: target.pass.clone(),
 			role,
+			previous: proof.as_ref().and_then(|p| p.previous.as_ref()).map(|old| crate::proto::Previous { view_id: old.view_id.clone(), pass: old.pass.clone() }),
+			abandon: abandon && role == Role::Io,
 		};
-		let ok: HelloOk = exchange(&mut s, kind::HELLO, &json(&hello), kind::HELLO_OK).and_then(|b| parse(&b))?;
-		if ok.protocol != PROTOCOL || ok.view_id != self.view.view_id {
+		let ok: HelloOk = match exchange(&mut stream, kind::HELLO, &json(&hello), kind::HELLO_OK).and_then(|b| parse(&b)) {
+			Ok(ok) => ok,
+			Err(f) => {
+				// A refused proposed successor does not close the accepted view, nor reset its existing deadline.
+				let same = self.view.lock().unwrap().view == target;
+				if same { self.note(before, &f); }
+				return Err(f);
+			}
+		};
+		if ok.protocol != PROTOCOL || ok.view_id != target.view_id {
 			return Err(Fail::Link(io::Error::other("the node answered for another view or protocol")));
 		}
-		Ok((Connection { stream: s, taken: 0, intake_lost: None }, ok))
+		self.expire();
+		if self.closed() && self.view.lock().unwrap().accepted {
+			return Err(Fail::Remote(ErrorReply { code: code::VIEW_CLOSED.into(), message: "the closed view's grace expired".into() }));
+		}
+		if let Some(proof) = &proof { proof.accepted().map_err(Fail::Link)?; }
+		let (epoch, changed) = {
+			let mut current = self.view.lock().unwrap();
+			let changed = current.view != target;
+			if changed {
+				current.view = target;
+				current.epoch += 1;
+				current.closed_at = None;
+				self.closed.store(false, Ordering::SeqCst);
+			}
+			current.accepted = true;
+			current.switchable = ok.switchable;
+			(current.epoch, changed)
+		};
+		if changed {
+			self.drop_idle();
+			if let Some(feed) = self.feed.lock().unwrap().take() { feed.shutdown(); }
+		}
+		Ok((Connection { stream, epoch, taken: 0, intake_lost: None }, ok))
 	}
 
 	/// Opens the feed: the node's answer to the hello, then a stream of changes.
 	pub fn open_feed(&self) -> Result<(Feed, HelloOk), Fail> {
-		match self.hello(Role::Feed, FEED_TIMEOUT) {
-			Ok((connection, ok)) => Ok((Feed { stream: connection.stream }, ok)),
-			Err(f) => {
-				self.note(&f);
-				Err(f)
-			}
+		let (connection, ok) = self.hello(Role::Feed, FEED_TIMEOUT)?;
+		let mut active = self.feed.lock().unwrap();
+		if connection.epoch != self.epoch() {
+			return Err(Fail::Link(io::Error::other("the view changed while opening its feed")));
 		}
+		*active = Some(Connection { stream: connection.try_clone().map_err(Fail::Link)?, epoch: connection.epoch, taken: 0, intake_lost: None });
+		Ok((Feed { connection }, ok))
 	}
+
+	pub fn feed_failed(&self, feed: &Feed, fail: &Fail) { self.note(feed.connection.epoch, fail); }
+	pub fn feed_current(&self, feed: &Feed) -> bool { self.epoch() == feed.connection.epoch }
 
 	/// All entries of a folder, page by page.
 	pub fn list(&self, path: &str) -> Result<Vec<Entry>, Fail> {
 		let mut out = Vec::new();
 		let mut after = None;
+		let mut epoch = self.epoch();
 		loop {
 			let req = ListRequest { path: path.to_string(), after: after.take() };
 			let page: Listing = self.call(kind::LIST, &json(&req), kind::LISTING).and_then(|b| parse(&b))?;
+			let now = self.epoch();
+			if now != epoch {
+				// An old page's continuation is not a cursor in the successor's tree.
+				epoch = now;
+				out.clear();
+				after = None;
+				continue;
+			}
 			out.extend(page.entries);
 			match page.next {
 				Some(next) => after = Some(next),
@@ -230,11 +345,16 @@ impl Link {
 			};
 			match exchange(&mut s, request, payload, answer) {
 				Ok(data) => {
+					let current = s.epoch == self.epoch();
 					self.give(s);
-					return Ok(data);
+					if current { return Ok(data); }
+					// Lists and reads are repeatable; never return an old epoch's response into a new view.
+					continue;
 				}
 				Err(f @ Fail::Remote(_)) => {
+					let stale = s.epoch != self.epoch();
 					self.answered(s, &f);
+					if stale { continue; }
 					return Err(f);
 				}
 				Err(Fail::Link(e)) => {
@@ -272,7 +392,9 @@ impl Link {
 				// No mutation went out when handing over reads failed. A fresh connection must take the journal
 				// again: an earlier I acknowledgement does not survive the service that acknowledged it.
 				if let Fail::Remote(_) = f {
+					let stale = s.epoch != self.epoch();
 					self.answered(s, &f);
+					if stale && f.view_closed() { continue; }
 					return Err(f);
 				}
 				self.lost();
@@ -290,10 +412,12 @@ impl Link {
 					Ok(data)
 				}
 				Err(f @ Fail::Remote(_)) => {
+					let epoch = s.epoch;
 					match self.after_change(s) {
 						Some(s) => self.answered(s, &f),
-						None => self.note(&f),
+						None => self.note(epoch, &f),
 					}
+					if epoch != self.epoch() && f.view_closed() { continue; }
 					Err(f)
 				}
 				Err(Fail::Link(e)) => {
@@ -363,6 +487,7 @@ impl Link {
 	/// A connection the node answered with an error: back to the pool, unless the error says the node may have ended it
 	/// (it ends a connection after a failure of its own, which it answers as UNAVAILABLE).
 	fn answered(&self, s: Connection, f: &Fail) {
+		let epoch = s.epoch;
 		match f {
 			Fail::Remote(e) if e.code == code::UNAVAILABLE => {
 				s.shutdown();
@@ -370,7 +495,7 @@ impl Link {
 			}
 			_ => self.give(s),
 		}
-		self.note(f);
+		self.note(epoch, f);
 	}
 
 	pub fn open_write(&self, request: &OpenRequest) -> Result<Opened, Fail> {
@@ -457,7 +582,8 @@ impl Link {
 	}
 
 	pub fn publish_final(&self, final_boundary: bool) -> Result<Report, PublishFailure> {
-		let (mut s, _) = self.hello(Role::Io, self.timeout).inspect_err(|f| self.note(f))?;
+		let (mut s, _) = self.hello(Role::Io, self.timeout)?;
+		let epoch = s.epoch;
 		let mut received = None;
 		let answer = (|| -> Result<(), Fail> {
 			let through = self.send_change(&mut s, kind::PUBLISH, &json(&PublishRequest { final_boundary }))?;
@@ -493,7 +619,7 @@ impl Link {
 		})();
 		s.shutdown();
 		if let Err(f) = &answer {
-			self.note(f);
+			self.note(epoch, f);
 		}
 		match answer {
 			Ok(()) => Ok(received.unwrap()),
@@ -501,26 +627,37 @@ impl Link {
 		}
 	}
 
-	fn note(&self, f: &Fail) {
-		if f.view_closed() {
-			self.closed.store(true, Ordering::SeqCst);
-			{
-				let _free = self.free.lock().unwrap();
-				self.ready.notify_all();
-			}
-			self.fire_closed();
+	fn note(&self, epoch: u64, f: &Fail) {
+		if !f.view_closed() { return; }
+		let defer = {
+			let mut current = self.view.lock().unwrap();
+			if current.epoch != epoch { return; }
+			let defer = self.grace && current.accepted && current.switchable;
+			if defer { current.closed_at.get_or_insert_with(Instant::now); }
+			defer
+		};
+		if !defer { self.closed.store(true, Ordering::SeqCst); }
+		{
+			let _free = self.free.lock().unwrap();
+			self.ready.notify_all();
 		}
+		if !defer { self.fire_closed(); }
 	}
 
 	/// A free connection, or a new one while fewer than `max` are open, or a wait for one.
 	fn take(&self) -> Result<Connection, Fail> {
+		self.refresh()?;
 		let mut free = self.free.lock().unwrap();
 		loop {
 			if self.closed() {
 				return Err(Fail::Remote(ErrorReply { code: code::VIEW_CLOSED.into(), message: "the view is closed".into() }));
 			}
 			if let Some(s) = free.pop() {
-				return Ok(s);
+				if s.epoch == self.epoch() { return Ok(s); }
+				s.shutdown();
+				let mut open = self.open.lock().unwrap();
+				*open = open.saturating_sub(1);
+				continue;
 			}
 			{
 				let mut open = self.open.lock().unwrap();
@@ -530,7 +667,7 @@ impl Link {
 					drop(free);
 					return self.hello(Role::Io, self.timeout).map(|(s, _)| s).inspect_err(|f| {
 						self.lost();
-						self.note(f);
+						let _ = f; // hello already recorded a refusal against its own epoch.
 					});
 				}
 			}
@@ -539,7 +676,14 @@ impl Link {
 	}
 
 	fn give(&self, s: Connection) {
-		self.free.lock().unwrap().push(s);
+		let mut free = self.free.lock().unwrap();
+		if s.epoch == self.epoch() {
+			free.push(s);
+		} else {
+			s.shutdown();
+			let mut open = self.open.lock().unwrap();
+			*open = open.saturating_sub(1);
+		}
 		self.ready.notify_one();
 	}
 
@@ -552,14 +696,14 @@ impl Link {
 }
 
 pub struct Feed {
-	stream: Stream,
+	connection: Connection,
 }
 
 impl Feed {
 	/// The next change; a heartbeat is a change with no paths. Errors when the link breaks or no
 	/// frame came within `FEED_TIMEOUT`.
 	pub fn next(&mut self) -> Result<Change, Fail> {
-		let (k, payload) = read_frame(&mut self.stream).map_err(Fail::Link)?;
+		let (k, payload) = read_frame(&mut self.connection.stream).map_err(Fail::Link)?;
 		match k {
 			kind::CHANGE => parse(&payload),
 			kind::ERROR => Err(Fail::Remote(parse(&payload)?)),
@@ -568,11 +712,11 @@ impl Feed {
 	}
 
 	pub fn ack(&mut self, seq: u64) -> Result<(), Fail> {
-		write_frame(&mut self.stream, kind::ACK, &json(&Ack { seq })).map_err(Fail::Link)
+		write_frame(&mut self.connection.stream, kind::ACK, &json(&Ack { seq })).map_err(Fail::Link)
 	}
 
 	pub fn close(&self) {
-		self.stream.shutdown();
+		self.connection.shutdown();
 	}
 }
 
@@ -645,7 +789,7 @@ mod tests {
 						write_frame(&mut s, kind::ERROR, &serde_json::to_vec(&e).unwrap()).unwrap();
 						return;
 					}
-					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 7, read_only: true };
+					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 7, read_only: true, switchable: false };
 					write_frame(&mut s, kind::HELLO_OK, &serde_json::to_vec(&ok).unwrap()).unwrap();
 					for _ in 0..drop_after {
 						let Ok((k, body)) = read_frame(&mut s) else { return };
@@ -711,7 +855,7 @@ mod tests {
 					std::thread::spawn(move || {
 						let (_, body) = read_frame(&mut s).unwrap();
 						let hello: Hello = serde_json::from_slice(&body).unwrap();
-						let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false };
+						let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: false };
 						write_frame(&mut s, kind::HELLO_OK, &json(&ok)).unwrap();
 						let mut taken = 0;
 						while let Ok((kind, body)) = read_frame(&mut s) {
@@ -750,6 +894,41 @@ mod tests {
 			link.drop_idle();
 			std::fs::remove_dir_all(dir).unwrap();
 		}
+	}
+
+	#[test]
+	fn only_the_mounts_first_io_hello_says_the_earlier_program_is_gone() {
+		let dir = tempdir();
+		let path = dir.join("node.sock");
+		let listener = UnixListener::bind(&path).unwrap();
+		let hellos: Arc<Mutex<Vec<(Role, bool)>>> = Arc::default();
+		let seen = hellos.clone();
+		std::thread::spawn(move || {
+			for conn in listener.incoming() {
+				let mut s = conn.unwrap();
+				let seen = seen.clone();
+				std::thread::spawn(move || {
+					let (_, body) = read_frame(&mut s).unwrap();
+					let hello: Hello = serde_json::from_slice(&body).unwrap();
+					seen.lock().unwrap().push((hello.role, hello.abandon));
+					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: true };
+					write_frame(&mut s, kind::HELLO_OK, &json(&ok)).unwrap();
+					while let Ok((k, _)) = read_frame(&mut s) {
+						assert_eq!(k, kind::MKDIR);
+						if write_frame(&mut s, kind::DONE, b"{}").is_err() { return; }
+					}
+				});
+			}
+		});
+		let link = Link::new(format!("unix:{}", path.display()), view("right"), 2);
+		let (_feed, _) = link.open_feed().unwrap();
+		link.abandon_earlier().unwrap();
+		link.mkdir("mine").unwrap();
+		link.drop_idle(); // The pool's next connection is a new hello: it never abandons this program's own files.
+		link.mkdir("also-mine").unwrap();
+		assert_eq!(*hellos.lock().unwrap(), [(Role::Feed, false), (Role::Io, true), (Role::Io, false), (Role::Io, false)]);
+		link.drop_idle();
+		std::fs::remove_dir_all(dir).unwrap();
 	}
 
 	#[test]
@@ -837,7 +1016,7 @@ mod tests {
 					let (_, body) = read_frame(&mut s).unwrap();
 					let hello: Hello = serde_json::from_slice(&body).unwrap();
 					assert_eq!(hello.protocol, PROTOCOL);
-					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false };
+					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: false };
 					write_frame(&mut s, kind::HELLO_OK, &serde_json::to_vec(&ok).unwrap()).unwrap();
 					let done = |s: &mut std::os::unix::net::UnixStream, body: &str| write_frame(s, kind::DONE, body.as_bytes()).unwrap();
 					while let Ok((k, body)) = read_frame(&mut s) {
@@ -913,7 +1092,7 @@ mod tests {
 				std::thread::spawn(move || {
 					let (_, body) = read_frame(&mut s).unwrap();
 					let hello: Hello = serde_json::from_slice(&body).unwrap();
-					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false };
+					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: false };
 					write_frame(&mut s, kind::HELLO_OK, &serde_json::to_vec(&ok).unwrap()).unwrap();
 					while let Ok((k, body)) = read_frame(&mut s) {
 						let mut offset = 0;
@@ -967,7 +1146,7 @@ mod tests {
 					std::thread::spawn(move || {
 						let Ok((_, body)) = read_frame(&mut s) else { return };
 						let hello: Hello = serde_json::from_slice(&body).unwrap();
-						let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false };
+						let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: false };
 						write_frame(&mut s, kind::HELLO_OK, &serde_json::to_vec(&ok).unwrap()).unwrap();
 						while let Ok((k, body)) = read_frame(&mut s) {
 							assert_eq!(k, kind::MKDIR);
@@ -1040,7 +1219,7 @@ mod tests {
 				std::thread::spawn(move || {
 					let (_, body) = read_frame(&mut s).unwrap();
 					let hello: Hello = serde_json::from_slice(&body).unwrap();
-					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false };
+					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: false };
 					write_frame(&mut s, kind::HELLO_OK, &serde_json::to_vec(&ok).unwrap()).unwrap();
 					while let Ok((k, _)) = read_frame(&mut s) {
 						std::thread::sleep(delay);
@@ -1130,4 +1309,69 @@ mod tests {
 		assert!(!link.closed(), "an error about one request leaves the view open");
 		std::fs::remove_dir_all(dir).unwrap();
 	}
+
+	#[test]
+	fn old_read_replies_and_refusals_cannot_enter_or_close_a_successor_epoch() {
+		use std::os::unix::fs::PermissionsExt;
+		use std::sync::mpsc;
+		for refused in [false, true] {
+			let dir = tempdir();
+			std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+			let state = dir.join("state");
+			let log = Arc::new(ReadLog::open(&state, true).unwrap());
+			let primary = dir.join("primary.json");
+			let first = View { environment_id: "company".into(), view_id: "first".into(), pass: "private-first".into() };
+			let second = View { environment_id: "company".into(), view_id: "second".into(), pass: "private-second".into() };
+			std::fs::write(&primary, json(&first)).unwrap();
+			std::fs::set_permissions(&primary, std::fs::Permissions::from_mode(0o600)).unwrap();
+			let store = Arc::new(ViewFile::open(primary.clone(), &state, &first, log.created()).unwrap());
+			let socket = dir.join("switch.sock");
+			let listener = UnixListener::bind(&socket).unwrap();
+			let (entered, started) = mpsc::channel();
+			let gate = Arc::new((Mutex::new(false), Condvar::new()));
+			let server_gate = gate.clone();
+			std::thread::spawn(move || {
+				for connection in listener.incoming() {
+					let mut stream = connection.unwrap();
+					let gate = server_gate.clone();
+					let entered = entered.clone();
+					std::thread::spawn(move || {
+						let (_, bytes) = read_frame(&mut stream).unwrap();
+						let hello: Hello = serde_json::from_slice(&bytes).unwrap();
+						let old = hello.view_id == "first";
+						let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: true };
+						write_frame(&mut stream, kind::HELLO_OK, &json(&ok)).unwrap();
+						while let Ok((request, _)) = read_frame(&mut stream) {
+							assert_eq!(request, kind::READ);
+							if old {
+								entered.send(()).unwrap();
+								let mut open = gate.0.lock().unwrap();
+								while !*open { open = gate.1.wait(open).unwrap(); }
+							}
+							let answer = if old && refused {
+								write_frame(&mut stream, kind::ERROR, &json(&ErrorReply { code: code::VIEW_CLOSED.into(), message: "old view closed".into() }))
+							} else { write_frame(&mut stream, kind::DATA, if old { b"stale" } else { b"fresh" }) };
+							if answer.is_err() { break; }
+						}
+					});
+				}
+			});
+			let link = Arc::new(Link::new(format!("unix:{}", socket.display()), first, 2).with_reads(log).with_view_file(store, true, false));
+			let reading = { let link = link.clone(); std::thread::spawn(move || link.read("file", "version", 0, 5)) };
+			started.recv_timeout(Duration::from_secs(3)).unwrap();
+			let replacement = dir.join("next.json");
+			std::fs::write(&replacement, json(&second)).unwrap();
+			std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o600)).unwrap();
+			std::fs::rename(replacement, primary).unwrap();
+			assert!(link.refresh().unwrap());
+			*gate.0.lock().unwrap() = true;
+			gate.1.notify_all();
+			assert_eq!(reading.join().unwrap().unwrap(), b"fresh");
+			assert!(!link.closed());
+			assert_eq!(link.read("file", "version", 0, 5).unwrap(), b"fresh");
+			link.drop_idle();
+			std::fs::remove_dir_all(dir).unwrap();
+		}
+	}
+
 }

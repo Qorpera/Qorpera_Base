@@ -1,0 +1,64 @@
+{
+  "schema": "qorpera.run-on-node/v1",
+  "machine": "node01",
+  "host": "tester@10.201.0.3",
+  "via": "company41-node-01",
+  "machines": [
+    {
+      "name": "node01",
+      "busy": 3,
+      "waiting": 1,
+      "arriving": 0,
+      "closed": false,
+      "setUp": true,
+      "cpus": 10,
+      "load": 6.57
+    }
+  ],
+  "probeSeconds": 0.401,
+  "environment": {
+    "machine": "qorpera-testvm-node01",
+    "kernel": "7.0.0-30-generic",
+    "os": "Ubuntu 26.04.1 LTS",
+    "node": "v24.21.0",
+    "npm": "11.19.0",
+    "docker": "29.8.2",
+    "git": "git version 2.53.0",
+    "cpus": "10",
+    "kvm": true
+  },
+  "source": {
+    "head": "2caf1d1ea1200474cead07e16ce88d9faa09ad10",
+    "dirty": true,
+    "files": 3687,
+    "untracked": 5,
+    "treeSha256": "493f01eb911155fbfd541159e068b202b424077890e41aabe47f0574ea55daea"
+  },
+  "command": [
+    "bash",
+    "scripts/prove-office-folder-substrate-vm.sh"
+  ],
+  "sudo": true,
+  "install": false,
+  "build": false,
+  "run": "20261009T125544-35682-8785a023",
+  "runner": "ci03",
+  "cpuSlot": 3,
+  "queuedSeconds": 351,
+  "vitestMaxWorkers": 3,
+  "loadAtStart": 7.08,
+  "uncappedTestProcesses": 0,
+  "startedAt": "2026-10-09T12:55:45.048Z",
+  "copySeconds": 1.433,
+  "prepareSeconds": 0.003,
+  "suiteSeconds": 214.207,
+  "elapsedSeconds": 567.563,
+  "exitCode": 1,
+  "result": "failed",
+  "githubStatus": {
+    "context": null,
+    "sha": "2caf1d1ea1200474cead07e16ce88d9faa09ad10",
+    "posted": false,
+    "reason": "--no-status"
+  }
+}
