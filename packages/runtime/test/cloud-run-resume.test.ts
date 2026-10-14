@@ -172,14 +172,16 @@ function fixture() {
 }
 
 describe("dormant run resume opening", () => {
-	it("discovers variable-size contiguous blocks, counts erased steps, and exposes only after recording", async () => {
+	it("discovers contiguous blocks, lists erased steps as unknown, and exposes only after recording", async () => {
 		const f = fixture();
 		const result = (await f.open())!;
 		expect(result.firstStep).toBe(4);
 		expect(result.earlier.map(({ j }) => j)).toEqual([0, 1, 2, 3]);
 		expect(result.earlier[1]).toMatchObject({ j: 1, erased: true, args: "", result: null });
 		expect(cloudRunStepText(result.earlier[1]!, true)).toBe("company_write: (erased)");
+		// The erased step's result is gone, so its outcome is unknown (§12), beside the pending call and the receipt.
 		expect(result.recorded.unknownCalls).toEqual([
+			{ call: "call_1", step: 1, receiptId: null, logicalOperationKey: null },
 			{ call: "call_2", step: 2, receiptId: null, logicalOperationKey: null },
 			{ call: null, step: null, receiptId: expect.any(String), logicalOperationKey: "op.mail-previous-attempt" },
 		]);
@@ -188,7 +190,7 @@ describe("dormant run resume opening", () => {
 		expect(f.folder.commit).not.toHaveBeenCalled();
 	});
 
-	it("keeps every pending/receipt warning outside folds and matches the recorded list exactly", async () => {
+	it("keeps every pending/erased/receipt warning outside folds and matches the recorded list exactly", async () => {
 		const f = fixture();
 		const result = (await f.open())!;
 		const lines = vi.spyOn(result.lines, "lines").mockResolvedValue(["0+4|summary that omits uncertain outcomes"]);
@@ -228,7 +230,8 @@ describe("dormant run resume opening", () => {
 			f.block(2, [row(2, value), row(3)]);
 			const result = (await f.open())!;
 			expect(result.earlier[2]?.result).toBe(JSON.stringify(value));
-			expect(result.recorded.unknownCalls.every((entry) => entry.receiptId !== null)).toBe(true);
+			const steps = result.recorded.unknownCalls.filter((entry) => entry.receiptId === null).map(({ step }) => step);
+			expect(steps).toEqual([1]);
 		},
 	);
 

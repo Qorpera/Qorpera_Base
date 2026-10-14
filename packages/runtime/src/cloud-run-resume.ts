@@ -209,9 +209,11 @@ export async function openCloudRunResume(options: {
 	)
 		throw new CloudRunLogUnavailable("resume_log_changed");
 	if (latest.origin?.narrow) throw new CloudRunLogUnavailable("resume_narrow");
+	// A pending call, and an erased step: its result is gone, so its outcome is unknown too (§12). Its line stays
+	// `(erased)`, as zoom shows it; the warning names its call.
 	const unknownCalls: CloudRunResumeUnknown[] = [
 		...earlier
-			.filter((step) => !step.erased && step.result === null)
+			.filter((step) => step.erased || step.result === null)
 			.map((step) => ({ call: step.call, step: step.j, receiptId: null })),
 		...context.unknownReceipts.map(({ receiptId }) => ({ call: null, step: null, receiptId })),
 	];
