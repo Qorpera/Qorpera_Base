@@ -132,6 +132,9 @@ export function companyComputerFolderBoundaryAnswer(
 }
 
 export interface CompanyComputerMountEntry {
+	/** The mount's id and its parent's, in the reading process's own mount namespace. */
+	readonly id: number;
+	readonly parent: number;
 	readonly mountpoint: string;
 	readonly optional: readonly string[];
 	readonly fstype: string;
@@ -147,8 +150,11 @@ export function parseCompanyComputerMountinfo(text: string): CompanyComputerMoun
 		.map((line) => {
 			const fields = line.split(" ");
 			const dash = fields.indexOf("-", 6);
-			if (dash < 0 || fields.length < dash + 3) throw new Error("COMPANY_COMPUTER_FOLDER_MOUNTS_UNCONFIRMED");
+			if (dash < 0 || fields.length < dash + 3 || !/^[0-9]+$/.test(fields[0]) || !/^[0-9]+$/.test(fields[1]))
+				throw new Error("COMPANY_COMPUTER_FOLDER_MOUNTS_UNCONFIRMED");
 			return {
+				id: Number(fields[0]),
+				parent: Number(fields[1]),
 				mountpoint: decode(fields[4]),
 				optional: fields.slice(6, dash),
 				fstype: fields[dash + 1],

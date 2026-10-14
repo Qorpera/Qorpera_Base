@@ -574,6 +574,8 @@ describe("the folder helper's machine", () => {
 			),
 		).toEqual([
 			{
+				id: 36,
+				parent: 35,
 				mountpoint: "/run/a b/company",
 				optional: ["master:1", "shared:7"],
 				fstype: "fuse.qorpera",
