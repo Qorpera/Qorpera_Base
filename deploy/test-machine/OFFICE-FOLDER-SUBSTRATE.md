@@ -174,8 +174,11 @@ This run is older than the code it documents:
   `3256df4f…`: the hash moved, the code did not.
 - The run used fixture `97b525ae025839fb48bfa1190b4b38f879560d92e72d45f8729c05cbabc5a961`.
   The fixture has changed since then, including the ptrace positive control.
+- Master's #1011 then moved the folder program to protocol 3. It refuses a hello
+  answered with protocol 2, so this run's binary and the first 14 Oct rerun's
+  (`7aa0ccbc…`) both speak a protocol master no longer has.
 
-The rerun below uses the current binary and fixture.
+The last rerun below uses master's protocol-3 binary and the protocol-3 fixture.
 
 The offline candidate remains **unproven**. Its namespace creation returned
 `EPERM`. The process retained `SYS_ADMIN` in its effective, permitted, inheritable
@@ -191,8 +194,9 @@ company acceptance.
 The `office-account` probe was rerun on node01 at head
 `59053c3bad81c4707502d8d7704cf8bbce56a3fc` with a clean tree (run
 `20261014T161650-38323-c9940728`, source snapshot SHA-256
-`b8d72d7ebbbb4d0d65fc63e978b5938a0bc1839f69632e7546e34a417313a379`). Later
-commits change only this document and the evidence folder. The run built folder
+`b8d72d7ebbbb4d0d65fc63e978b5938a0bc1839f69632e7546e34a417313a379`). Until the
+move to protocol 3 (next section), later commits changed only this document and
+the evidence folder. The run built folder
 binary `7aa0ccbc718c2886569cbf06668ec1b02e722fe1fa2aa55ce78a6a2d309810a2` and
 used fixture `0133118315f2a1861fa0a03d1fc5b1ce77dc44823be8785263ab7d9df50f06a6`,
 on the same prepared Ubuntu image `fca42260aab1…` in nested VM UUID
@@ -224,6 +228,44 @@ its project and pool.
 The run records, full logs and extracted JSON are in
 [`acceptance/2026-10-14-office-folder-substrate/`](acceptance/2026-10-14-office-folder-substrate/),
 with a `MANIFEST.json` like the 9 Oct one.
+
+## Rerun on protocol 3 (2026-10-14)
+
+After master (with #1011) was merged in, commit `551e23413` taught the synthetic
+node protocol 3. The `office-account` probe was then rerun on node01 at head
+`551e234132707eee050bc01f11f28e7a6d46dbb4` with a clean tree (run
+`20261014T165304-74801-23846909`, source snapshot SHA-256
+`40902e510c93bb3a43d9d7647d300437e7ad15849f5f6df797f3cbf20b3bab16`). Later
+commits change only this document and the evidence folder. The run built folder
+binary `11eda4a82f07c487874a027359d6385c4645d80be73cedaf548b9b18dccae445`, the
+protocol-3 binary that master's build record pins. It used fixture
+`4e0f98e97bd38d7ae91a0483c5402b7f61c0eb83a81c809538f9ef22c57005fe` and office
+unit `af2f6a4063d5d71bff80ffddbed995bc36d389b5d1cd60c1993e8409c23af80f`, on the
+same prepared Ubuntu image `fca42260aab1…` in nested VM UUID
+`4ff228ec-3c6e-4a8f-8291-5de5dc4525c9` (project `qfs-fec058b4`).
+
+The mount result matches the earlier runs:
+
+- All five mount checks passed, with owner uid 999, gid 986 and mode `0o755`
+  before and after restart.
+- The direct bind's fresh lookup and write returned `ENOTCONN` (107). The
+  propagated namespace's fresh lookup read `after remount` and its write
+  succeeded, in the same process.
+- In both namespaces, the old descriptor still read the cached `before`, and
+  closing it returned `ENOTCONN`.
+- Both mounts logged `view synthetic accepted at change 0, read-write` and FUSE
+  ABI 7.45. The synthetic node recorded no protocol errors.
+
+The `result` is `failed` for the same reason as before: the offline candidate's
+namespace creation returned `EPERM` under `bwrap//&unpriv_bwrap (enforce)`, with
+the kernel's AppArmor denial of `sys_admin` (capability 21). The ptrace step was
+not reached. The script removed its project and pool. Its before/after
+comparison of the test machine printed no difference, and its module checks
+reported none appearing or disappearing.
+
+The run record, full log and extracted JSON are in
+[`acceptance/2026-10-14-office-folder-substrate-v3/`](acceptance/2026-10-14-office-folder-substrate-v3/),
+with a `MANIFEST.json`.
 
 ## Unprivileged checks
 
