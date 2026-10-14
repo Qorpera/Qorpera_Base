@@ -918,3 +918,43 @@ class Proof:
         clean = "error" not in self.record and not self.record["missingChecks"]
         self.record["result"] = "passed" if clean and all(entry["passed"] for entry in self.record["checks"].values()) else "failed"
         return self.record
+
+
+def cleanup(directory):
+    """After the proof, or after a proof that was stopped: removes only what this directory's claim names."""
+    require_disposable_guest(directory)
+    steps = [quiet("systemctl", "stop", f"{directory.name}-{name}.service") for name in ("proof", "relay1", "relay2", "relay3")]
+    units = quiet("systemctl", "list-units", "--all", "--plain", "--no-legend", "qorpera-office-folder-mount@*").get("output", "")
+    for unit in (line.split()[0] for line in units.splitlines() if line.strip()):
+        steps += [quiet("systemctl", "stop", unit), quiet("systemctl", "reset-failed", unit)]
+    claimed = json.loads((directory / "claimed.json").read_text()) if (directory / "claimed.json").exists() else {}
+    if claimed.get("root") and (ROOT / "mounts").is_dir():
+        for view in sorted(os.listdir(ROOT / "mounts")):
+            steps += tear_view(view)
+    if claimed.get("root"):
+        left = [entry["mountpoint"] for entry in mountinfo() if entry["mountpoint"] == str(ROOT) or entry["mountpoint"].startswith(str(ROOT) + "/")]
+        if left:
+            raise RuntimeError(f"Mounts are left under {ROOT}: {left}")
+        shutil.rmtree(ROOT, ignore_errors=True)
+    if claimed.get("unit"):
+        UNIT_FILE.unlink(missing_ok=True)
+        steps.append(quiet("systemctl", "daemon-reload"))
+    if claimed.get("program"):
+        shutil.rmtree(claimed["program"], ignore_errors=True)
+    shutil.rmtree(directory)
+    print(json.dumps({"cleanup": "done", "claimed": claimed, "steps": steps}))
+
+
+if __name__ == "__main__":
+    mode = sys.argv[1]
+    if mode == "proof":
+        if sys.argv[3] not in ("present", "loaded"):
+            raise SystemExit("fuse must be present or loaded")
+        # The record carries the result; the launcher reads it either way.
+        print(json.dumps(Proof(Path(sys.argv[2]), sys.argv[3]).run()))
+    elif mode == "cleanup":
+        cleanup(Path(sys.argv[2]))
+    elif mode == "selftest":
+        selftest(Path(sys.argv[2]), Path(sys.argv[3]))
+    else:
+        raise SystemExit(f"unknown mode {mode}")
