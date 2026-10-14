@@ -75,7 +75,7 @@ they answer 42501 "native host call is refused".
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-170 functions, grouped for navigation. Signatures: see the migration that defines each.
+154 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
@@ -191,8 +191,7 @@ they answer 42501 "native host call is refused".
     login lapsed works);
   - only the member whose plan pays retries a failed run on it
     (`qorpera_resolve_failed_execution_run` 'retry': 55000 for anyone else;
-    acknowledging stays open) or a change's review on it
-    (`qorpera_retry_company_proposal_review`: 42501 for anyone else).
+    acknowledging stays open).
 - `qorpera_select_member_session_account(p_profile_id, p_session_id)` and
   `qorpera_choose_member_session_account(p_profile_id, p_session_id,
   p_connection_id)` (20260930059000, the payer never changes without the
@@ -261,29 +260,13 @@ and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
 - `qorpera_stage_operation_receipt_objects`
 
 
-### Company File, snapshots, proposals, workspaces (21)
+### Company File, snapshots, workspaces (5)
 
-- `qorpera_accept_company_proposal`
-- `qorpera_append_company_proposal_comment`
-- `qorpera_capture_company_substrate_version`
-- `qorpera_capture_company_substrate_version_v2`
 - `qorpera_company_uses_path_gateway`
 - `qorpera_get_company_file`
-- `qorpera_get_company_proposal`
 - `qorpera_get_company_snapshot`
-- `qorpera_get_company_substrate_version`
-- `qorpera_list_company_proposal_comments`
-- `qorpera_list_company_proposals`
 - `qorpera_list_company_snapshots`
-- `qorpera_list_company_substrate_operations`
 - `qorpera_list_company_workspaces`
-- `qorpera_prepare_company_file_proposal`
-- `qorpera_prepare_company_file_revision`
-- `qorpera_publish_company_file_revision`
-- `qorpera_rebase_company_proposal`
-- `qorpera_reject_company_proposal`
-- `qorpera_retry_company_proposal_review`
-- `qorpera_submit_company_proposal`
 
 
 ### Organization and staff (4)
