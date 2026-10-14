@@ -140,3 +140,72 @@ begin
 	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'tm-setup', jsonb_build_array(jsonb_build_object('op','mkdir','path','tm'),
 		jsonb_build_object('op','write','path','tm/k.txt','file',a), jsonb_build_object('op','write','path','tm/r.txt','file',a))), 3, 'saved');
 end $$;
+
+
+-- The open: the platform's, for a machine that is not removed and is meant to run, on its current placement, reserved
+-- and running the anchor's boot. The anchor names the machine, the placement and the boot, and nothing else.
+do $$
+declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); m uuid := pg_temp.machine(v, 'open-checks');
+	m2 uuid := pg_temp.machine(v, 'open-other'); a jsonb := pg_temp.place(m); a2 jsonb := pg_temp.place(m2); s jsonb; d jsonb; r jsonb;
+	w public.qorpera_folder_views%rowtype; f text;
+begin
+	perform pg_temp.refused(format('select pg_temp.open(%L, %L)', 'test_machine', '{}'), '22023', 'Folder view anchor is invalid');
+	perform pg_temp.refused(format('select pg_temp.open(%L, %L)', 'test_machine', a || '{"screenId":"63900000-0000-4000-8000-0000000000e4"}'),
+		'22023', 'Folder view anchor is invalid');
+	perform pg_temp.refused(format('select pg_temp.open(%L, %L)', 'test_machine', a || jsonb_build_object('bootId', upper(a ->> 'bootId'))),
+		'22023', 'Folder view anchor is invalid');
+	perform pg_temp.refused(format('select pg_temp.open(%L, %L, %L)', 'test_machine', a, v), '22023', 'Folder view opener is invalid');
+	-- Not current: an unknown machine, placement or boot, and another machine's placement; then each row in turn
+	-- (undone after each); then another folder of the company.
+	perform pg_temp.not_current(a || jsonb_build_object('companyMachineId', extensions.gen_random_uuid()));
+	perform pg_temp.not_current(a || jsonb_build_object('placementId', extensions.gen_random_uuid()));
+	perform pg_temp.not_current(a || jsonb_build_object('bootId', extensions.gen_random_uuid()));
+	perform pg_temp.not_current(a || jsonb_build_object('placementId', a2 ->> 'placementId', 'bootId', a2 ->> 'bootId'));
+	foreach f in array array[
+		format('update public.qorpera_company_machines set desired_state = %L where id = %L', 'stopped', m),
+		format('update public.qorpera_company_machines set desired_state = %L, removed_at = clock_timestamp() where id = %L', 'deleted', m),
+		format('update public.qorpera_company_machine_placements set retired_at = clock_timestamp() where id = %L', a ->> 'placementId'),
+		format('update public.qorpera_company_machine_placements set running_at = null where id = %L', a ->> 'placementId'),
+		format('update public.qorpera_company_machine_placements set removing_at = clock_timestamp(), removed_at = clock_timestamp()
+			where id = %L', a ->> 'placementId'),
+		format('update public.qorpera_runtime_node_demands set suspended_at = clock_timestamp() where allocation_id = %L', a ->> 'placementId'),
+		format('update public.qorpera_runtime_node_demands set released_at = clock_timestamp() where allocation_id = %L', a ->> 'placementId'),
+		format('update public.qorpera_runtime_machine_allocations set released_at = clock_timestamp() where id = %L', a ->> 'placementId')] loop
+		begin
+			perform pg_temp.fx(f);
+			perform pg_temp.not_current(a);
+			raise exception 'Undo' using errcode = 'QTF80';
+		exception when sqlstate 'QTF80' then null;
+		end;
+	end loop;
+	perform pg_temp.refused(format('select public.qorpera_folder_view_open(%L, %L, %L, %L)', '63200000-0000-4000-8000-000000000021',
+		'{"kind":"platform"}', 'test_machine', a), '42501', 'Folder view machine is not current');
+	-- The view: the starter's agent and member, the run's worker access, and the machine's columns; its machine is the
+	-- placement (the disk), and it has no run, screen or worker of its own.
+	s := pg_temp.open_machine(a);
+	w := pg_temp.view_row(s);
+	if s ->> 'schema' is distinct from 'qorpera.folder-view/v1' or w.kind is distinct from 'test_machine' or w.state is distinct from 'open'
+		or w.staff_agent_id is distinct from '63200000-0000-4000-8000-0000000000a1'
+		or w.member_user_id is distinct from '63200000-0000-4000-8000-000000000002' or w.company_machine_id is distinct from m
+		or w.placement_id is distinct from (a ->> 'placementId')::uuid or w.boot_id is distinct from (a ->> 'bootId')::uuid
+		or w.machine_id is distinct from w.placement_id or w.run_id is not null or w.screen_id is not null or w.worker_id is not null
+		or w.worker_access is distinct from (public.qorpera_run_worker((v ->> 'runId')::uuid)).access then
+		raise exception 'The test machine view: %', to_jsonb(w); end if;
+	r := public.qorpera_folder_view_renew((s ->> 'viewId')::uuid, s ->> 'pass');
+	if r ->> 'state' is distinct from 'open' or r ->> 'kind' is distinct from 'test_machine' or r ->> 'machineId' is distinct from a ->> 'placementId' then
+		raise exception 'Renew: %', r; end if;
+	-- The machine columns are whole on a test machine's view and absent from every other kind's.
+	perform pg_temp.violates(format('update public.qorpera_folder_views set machine_id = %L where id = %L', extensions.gen_random_uuid(),
+		s ->> 'viewId'), 'qorpera_folder_views_test_machine');
+	perform pg_temp.violates(format('update public.qorpera_folder_views set boot_id = null where id = %L', s ->> 'viewId'),
+		'qorpera_folder_views_test_machine');
+	perform pg_temp.violates(format('update public.qorpera_folder_views set run_id = %L where id = %L', v ->> 'runId', s ->> 'viewId'),
+		'qorpera_folder_views_test_machine');
+	perform pg_temp.hold(v);
+	d := pg_temp.open('computer_desktop', jsonb_build_object('screenId','63900000-0000-4000-8000-0000000000e4','holderRunId',v ->> 'runId'));
+	perform pg_temp.violates(format('update public.qorpera_folder_views set company_machine_id = %L where id = %L', m, d ->> 'viewId'),
+		'qorpera_folder_views_test_machine_kind');
+	perform public.qorpera_folder_view_close((d ->> 'viewId')::uuid, d ->> 'pass');
+	perform pg_temp.hold(null);
+	perform public.qorpera_folder_view_close((s ->> 'viewId')::uuid, s ->> 'pass');
+end $$;
