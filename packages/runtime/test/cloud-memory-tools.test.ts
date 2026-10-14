@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { type CloudAgentFolderPlace, cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
-import type { CloudCompanyPathGateway } from "@qorpera/runtime/cloud-company-path-gateway";
 import { CloudCompanyPathVersionChanged } from "@qorpera/runtime/cloud-company-path-refusal";
+import type { CloudFolderNotebookGateway } from "@qorpera/runtime/cloud-folder-notebooks";
 import {
 	cloudMemoryLogPath,
 	cloudMemoryPaths,
@@ -12,11 +12,10 @@ import {
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { describe, expect, it, vi } from "vitest";
-import { companyFilePostgrest, FakeSqlError } from "./fixtures/company-file-postgrest.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
-/** An in-memory Company File: versioned text objects behind the gateway's trusted reads and governed writes.
- * A stale expected version fails the way the real gateway reports it (PT412, promoted by the gateway). */
+/** An in-memory Company File: versioned text objects behind the notebook gateway's trusted reads and writes.
+ * A stale expected version fails the way CloudFolderNotebooks reports a folder conflict (a version change). */
 function companyFile(initial: Record<string, string> = {}) {
 	const files = new Map<string, { version: string; text: string }>();
 	// Folders are real entries, as in the live tree: the gateway never invents a parent.
@@ -27,20 +26,20 @@ function companyFile(initial: Record<string, string> = {}) {
 		for (let folder = parent(path); folder; folder = parent(folder)) folders.add(folder);
 	}
 	const conflicts: string[] = [];
-	const readTrusted = vi.fn<CloudCompanyPathGateway["readTrusted"]>(async (path) => {
+	const readTrusted = vi.fn<CloudFolderNotebookGateway["readTrusted"]>(async (path) => {
 		const file = files.get(path);
 		if (file) return { path, version: file.version, kind: "file", text: file.text, fileSha256: "a".repeat(64) };
 		return folders.has(path)
 			? { path, version: randomUUID(), kind: "directory", text: "", fileSha256: null }
 			: { path, version: null, kind: "absent", text: "", fileSha256: null };
 	});
-	const listTrusted = vi.fn<CloudCompanyPathGateway["listTrusted"]>(async (path) =>
+	const listTrusted = vi.fn<CloudFolderNotebookGateway["listTrusted"]>(async (path) =>
 		[...files.entries()]
 			.filter(([key]) => key.startsWith(`${path}/`) && !key.slice(path.length + 1).includes("/"))
 			.sort(([a], [b]) => a.localeCompare(b, "en"))
 			.map(([key, file]) => ({ path: key, version: file.version, kind: "file" as const, bytes: file.text.length })),
 	);
-	const mutate = vi.fn<CloudCompanyPathGateway["mutate"]>(async (operation, input) => {
+	const mutate = vi.fn<CloudFolderNotebookGateway["mutate"]>(async (operation, input) => {
 		if (parent(input.path) && !folders.has(parent(input.path))) throw new Error("Company File parent is absent");
 		if (operation === "mkdir") {
 			if (folders.has(input.path) || files.has(input.path)) throw new CloudCompanyPathVersionChanged();
@@ -501,270 +500,6 @@ describe("agent memory notebook", () => {
 				).toBe(true);
 		} finally {
 			f.run.close();
-		}
-	});
-});
-
-/** The real HTTP adapter and gateway over a fake PostgREST that answers like the migrations. */
-function httpNotebook() {
-	const db = companyFilePostgrest();
-	const boundary = new CloudNativeToolBoundary({
-		companyId: db.identity.companyId,
-		runId: db.identity.runId,
-		identity: db.identity,
-		tools: cloudMemoryTools(db.gateway, db.identity, PLACE, () => NOW),
-		assertActive: async () => {},
-		signal: new AbortController().signal,
-	});
-	const envelope = (result: Awaited<ReturnType<CloudNativeToolBoundary["invoke"]>>) =>
-		JSON.parse(result.contentItems[0].text);
-	const receipt = (result: Awaited<ReturnType<CloudNativeToolBoundary["invoke"]>>) =>
-		JSON.parse(envelope(result).content.text);
-	const folder = cloudAgentFolder(db.identity.companyId, db.identity.staffAgentId, PLACE);
-	return { db, folder, paths: cloudMemoryPaths(folder), boundary, envelope, receipt };
-}
-
-describe("agent memory over the real Company File HTTP adapter", () => {
-	it.each([
-		["before its version check", "qorpera_check_company_path_mutation"],
-		["between prepare and commit", "qorpera_commit_company_path_mutation"],
-	])("re-reads and retries when another writer changed the month file %s (HTTP 412, PT412)", async (_label, stage) => {
-		const f = httpNotebook();
-		const month = cloudMemoryLogPath(f.folder, NOW);
-		await f.db.seed(month, "- (2026-09-01) First.\n");
-		let raced = false;
-		f.db.before.hook = async (method, args) => {
-			if (method !== stage || raced || (args.p_plan as { path: string }).path !== month) return;
-			raced = true;
-			await f.db.seed(month, "- (2026-09-01) First.\n- (2026-09-22) Written by another run.\n");
-		};
-		try {
-			const result = await f.boundary.invoke("race", "qorpera", "update_memory", {
-				action: "write",
-				fact: "Second.",
-			});
-			expect(f.envelope(result).status, JSON.stringify(f.envelope(result))).toBe("ok");
-			expect(f.receipt(result)).toMatchObject({ state: "written", tier: "log", path: month });
-			// The database refused the stale write exactly once, as PostgREST reports PT412.
-			expect(f.db.requests.filter((request) => request.status === 412)).toEqual([
-				{ method: stage, path: month, status: 412 },
-			]);
-			expect(await f.db.text(month)).toBe(
-				"- (2026-09-01) First.\n- (2026-09-22) Written by another run.\n- (2026-09-22) Second.\n",
-			);
-		} finally {
-			f.boundary.close();
-		}
-	});
-
-	it("says nothing was saved, instead of an unknown outcome, when the file keeps changing", async () => {
-		const f = httpNotebook();
-		const month = cloudMemoryLogPath(f.folder, NOW);
-		await f.db.seed(month, "- (2026-09-01) First.\n");
-		let writers = 0;
-		f.db.before.hook = async (method, args) => {
-			if (method !== "qorpera_check_company_path_mutation" || (args.p_plan as { path: string }).path !== month)
-				return;
-			writers++;
-			await f.db.seed(month, `${(await f.db.text(month)) ?? ""}- (2026-09-22) Other run ${writers}.\n`);
-		};
-		try {
-			const result = await f.boundary.invoke("busy", "qorpera", "update_memory", { action: "write", fact: "Mine." });
-			expect(f.envelope(result).status).toBe("ok");
-			expect(f.receipt(result)).toMatchObject({ state: "conflict", saved: false });
-			expect(f.receipt(result).hint).toMatch(/try again/i);
-			expect(await f.db.text(month)).not.toContain("Mine.");
-			expect(f.db.requests.filter((request) => request.method === "qorpera_commit_company_path_mutation")).toEqual(
-				[],
-			);
-		} finally {
-			f.boundary.close();
-		}
-	});
-
-	it("writes again after a member deleted the profile or the whole log folder", async () => {
-		const f = httpNotebook();
-		const month = cloudMemoryLogPath(f.folder, NOW);
-		await f.db.seed(f.paths.profile, "- (2026-09-01) Old profile fact.\n");
-		await f.db.seed(month, "- (2026-09-01) Old log fact.\n");
-		// Deletions leave tombstones that keep a version; the notebook must name it to recreate the path.
-		f.db.remove(f.paths.profile);
-		f.db.remove(month);
-		f.db.remove(f.paths.log);
-		try {
-			const profiled = f.receipt(
-				await f.boundary.invoke("p1", "qorpera", "update_memory", {
-					action: "write",
-					tier: "profile",
-					fact: "New profile fact.",
-				}),
-			);
-			expect(profiled).toMatchObject({ state: "written", tier: "profile" });
-			const logged = f.receipt(
-				await f.boundary.invoke("l1", "qorpera", "update_memory", { action: "write", fact: "New log fact." }),
-			);
-			expect(logged).toMatchObject({ state: "written", tier: "log", path: month });
-			expect(f.db.requests.filter((request) => request.status === 412)).toEqual([]);
-			expect(f.db.entries.get(f.paths.log)?.entry).toEqual({ kind: "directory", path: f.paths.log });
-			expect(await f.db.text(f.paths.profile)).toBe("- (2026-09-22) New profile fact.\n");
-			expect(await f.db.text(month)).toBe("- (2026-09-22) New log fact.\n");
-		} finally {
-			f.boundary.close();
-		}
-	});
-
-	it("treats a notebook file that is not text as a named gap, never a failure of every write", async () => {
-		const f = httpNotebook();
-		await f.db.seed(`${f.paths.log}/2026-07.md`, "- (2026-07-01) Bills go out monthly.\n");
-		// An import or a member left a month that is not notebook text: too large, and not UTF-8.
-		await f.db.seedBytes(`${f.paths.log}/2026-06.md`, Buffer.alloc(40 * 1024, 0x61));
-		await f.db.seedBytes(`${f.paths.log}/2026-05.md`, Buffer.from([0xff, 0xfe, 0x00]));
-		try {
-			const written = f.receipt(
-				await f.boundary.invoke("w1", "qorpera", "update_memory", { action: "write", fact: "Fresh fact." }),
-			);
-			expect(written).toMatchObject({ state: "written" });
-			const unreadable = [`${f.paths.log}/2026-06.md`, `${f.paths.log}/2026-05.md`];
-			const recalled = f.receipt(
-				await f.boundary.invoke("r1", "qorpera", "recall_memory", { query: "Bills monthly" }),
-			);
-			expect(recalled.facts).toEqual([{ date: "2026-07-01", tier: "log", fact: "Bills go out monthly." }]);
-			expect(recalled.searched).toEqual({ logMonths: 4, oldestMonth: "2026-05", unreadable });
-			// Forget removes what it can reach and never claims every copy is gone.
-			const forgotten = f.receipt(
-				await f.boundary.invoke("f1", "qorpera", "update_memory", {
-					action: "forget",
-					fact: "Bills go out monthly.",
-				}),
-			);
-			expect(forgotten).toMatchObject({ state: "partial", removed: 1, searched: { unreadable } });
-			expect(await f.db.text(`${f.paths.log}/2026-07.md`)).toBe("");
-			// Only a write into the unreadable file itself is refused, and it says so.
-			await f.db.seedBytes(cloudMemoryLogPath(f.folder, NOW), Buffer.alloc(40 * 1024, 0x62));
-			const refused = f.receipt(
-				await f.boundary.invoke("w2", "qorpera", "update_memory", { action: "write", fact: "Another fact." }),
-			);
-			expect(refused).toMatchObject({ state: "unreadable", saved: false, path: cloudMemoryLogPath(f.folder, NOW) });
-		} finally {
-			f.boundary.close();
-		}
-	});
-
-	it("does not append a fact to a month another run created with it after the listing", async () => {
-		const f = httpNotebook();
-		const month = cloudMemoryLogPath(f.folder, NOW);
-		let raced = false;
-		f.db.before.hook = async (method, args) => {
-			if (method !== "qorpera_read_company_path" || args.p_path !== month || raced) return;
-			raced = true;
-			await f.db.seed(month, "- (2026-09-22) Mine.\n");
-		};
-		try {
-			const again = f.receipt(
-				await f.boundary.invoke("race-dup", "qorpera", "update_memory", { action: "write", fact: "Mine." }),
-			);
-			expect(again).toMatchObject({ state: "duplicate", path: month });
-			expect(await f.db.text(month)).toBe("- (2026-09-22) Mine.\n");
-		} finally {
-			f.boundary.close();
-		}
-	});
-
-	it("composes around a recent month that is not notebook text, and names it", async () => {
-		const f = httpNotebook();
-		await f.db.seed(cloudMemoryLogPath(f.folder, NOW), "- (2026-09-21) Current fact.\n");
-		await f.db.seedBytes(`${f.paths.log}/2026-08.md`, Buffer.alloc(40 * 1024, 0x61));
-		await f.db.seed(f.paths.profile, "- (2026-01-01) I keep the books.\n");
-		const block = await composeCloudAgentMemory(f.db.gateway, f.folder, NOW, new AbortController().signal);
-		expect(block).toMatchObject({
-			available: true,
-			profile: { facts: [{ fact: "I keep the books." }] },
-			recentLog: { facts: [{ fact: "Current fact." }], unreadable: [`${f.paths.log}/2026-08.md`] },
-		});
-		// An unreadable profile cannot be composed whole, so the block degrades with a named reason.
-		await f.db.seedBytes(f.paths.profile, Buffer.from([0xff, 0xfe]));
-		await expect(
-			composeCloudAgentMemory(f.db.gateway, f.folder, NOW, new AbortController().signal),
-		).rejects.toMatchObject({ category: "invalid_response" });
-		f.boundary.close();
-	});
-
-	it("never answers not found or an empty recall when the notebook could not be listed", async () => {
-		const f = httpNotebook();
-		await f.db.seed(`${f.paths.log}/2026-08.md`, "- (2026-08-01) Kept fact.\n");
-		f.db.before.hook = (method) => {
-			if (method === "qorpera_list_company_paths") throw new FakeSqlError("XX000", "PRIVATE_OUTAGE");
-		};
-		try {
-			for (const [call, tool, args] of [
-				["down-recall", "recall_memory", { query: "Kept fact" }],
-				["down-forget", "update_memory", { action: "forget", fact: "Kept fact." }],
-				["down-write", "update_memory", { action: "write", fact: "Kept fact." }],
-			] as const) {
-				const envelope = f.envelope(await f.boundary.invoke(call, "qorpera", tool, args));
-				expect(envelope).toMatchObject({ status: "unconfirmed", content: { text: "TOOL_OUTCOME_UNCONFIRMED" } });
-			}
-			expect(await f.db.text(`${f.paths.log}/2026-08.md`)).toBe("- (2026-08-01) Kept fact.\n");
-			expect(f.db.requests.filter((request) => request.method.includes("mutation"))).toEqual([]);
-		} finally {
-			f.boundary.close();
-		}
-	});
-
-	it("searches and forgets across every month, past one listing page, even when the company moves on", async () => {
-		const f = httpNotebook();
-		// 130 monthly files: more than the two-year horizon and more than one 100-entry listing page.
-		for (let index = 0; index < 130; index++) {
-			const month = new Date(Date.UTC(2015, 8 + index, 1)).toISOString().slice(0, 7);
-			const fact = index === 0 ? "Ancient archive needle." : `Routine note ${index}.`;
-			await f.db.seed(`${f.paths.log}/${month}.md`, `- (${month}-01) ${fact}\n`);
-		}
-		// The same fact again this month, written before notebook-wide dedupe existed.
-		await f.db.seed(cloudMemoryLogPath(f.folder, NOW), "- (2026-09-02) ancient archive  needle.\n");
-		await f.db.seed(f.paths.profile, "- (2026-01-01) I keep the books.\n");
-		// Another writer moves the company's head between the first and second listing page, once.
-		let moved = false;
-		f.db.before.hook = (method, args) => {
-			if (method === "qorpera_list_company_paths" && args.p_after !== null && !moved) {
-				moved = true;
-				f.db.moveHead();
-			}
-		};
-		try {
-			const recalled = f.receipt(
-				await f.boundary.invoke("r1", "qorpera", "recall_memory", { query: "Ancient archive needle" }),
-			);
-			expect(moved).toBe(true);
-			expect(recalled.facts).toEqual([
-				{ date: "2026-09-02", tier: "log", fact: "ancient archive  needle." },
-				{ date: "2015-09-01", tier: "log", fact: "Ancient archive needle." },
-			]);
-			expect(recalled.searched).toEqual({ logMonths: 131, oldestMonth: "2015-09" });
-			const forgotten = f.receipt(
-				await f.boundary.invoke("f1", "qorpera", "update_memory", {
-					action: "forget",
-					fact: "Ancient archive needle.",
-				}),
-			);
-			expect(forgotten).toMatchObject({ state: "forgotten", removed: 2 });
-			expect(forgotten.changes.map((change: { path: string }) => change.path)).toEqual([
-				cloudMemoryLogPath(f.folder, NOW),
-				`${f.paths.log}/2015-09.md`,
-			]);
-			expect(await f.db.text(`${f.paths.log}/2015-09.md`)).toBe("");
-			const again = f.receipt(
-				await f.boundary.invoke("r2", "qorpera", "recall_memory", { query: "Ancient archive needle" }),
-			);
-			expect(again.facts).toEqual([]);
-			const missing = f.receipt(
-				await f.boundary.invoke("f2", "qorpera", "update_memory", {
-					action: "forget",
-					fact: "Ancient archive needle.",
-				}),
-			);
-			expect(missing).toMatchObject({ state: "not_found", searched: { logMonths: 131, oldestMonth: "2015-09" } });
-		} finally {
-			f.boundary.close();
 		}
 	});
 });

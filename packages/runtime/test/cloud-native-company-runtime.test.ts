@@ -717,22 +717,15 @@ async function fixture(
 
 it("binds path presence to the run and closes it with the native execution", async () => {
 	const observe = vi.fn<CloudCompanyPathPresence["observe"]>();
-	const claim = vi.fn<CloudCompanyPathPresence["claim"]>((path) => ({
-		schema: "qorpera.company-path-presence-view/v1",
-		state: "available",
-		observedAt: Date.now(),
-		paths: [{ path, participants: [] }],
-	}));
 	const close = vi.fn(async () => {});
-	const presence = vi.fn<CloudCompanyPathPresenceFactory>(() => ({ observe, claim, close }));
+	const presence = vi.fn<CloudCompanyPathPresenceFactory>(() => ({ observe, close }));
 	const f = await fixture("company-runtime", false, presence);
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(result.delivery.messageCount).toBe(2);
 	expect(presence).toHaveBeenCalledOnce();
 	expect(presence.mock.calls[0][0]).toEqual(f.binding);
-	// Only a file-event wake observes at startup; the folder core's file tools claim no presence.
+	// Only a file-event wake observes at startup; the folder core's file tools observe no presence.
 	expect(observe).not.toHaveBeenCalled();
-	expect(claim).not.toHaveBeenCalled();
 	expect(close).toHaveBeenCalledOnce();
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	expect(JSON.stringify(evidence.fenced.outputs)).not.toContain("qorpera.company-path-presence-view/v1");
@@ -771,8 +764,7 @@ it.each(["available", "unavailable"])(
 			};
 		});
 		const close = vi.fn(async () => {});
-		const claim = vi.fn<CloudCompanyPathPresence["claim"]>();
-		const f = await fixture("company-silent", false, () => ({ observe, claim, close }));
+		const f = await fixture("company-silent", false, () => ({ observe, close }));
 		const commitId = randomUUID();
 		Object.assign(f.wake, {
 			source: { kind: "company-file", id: commitId, occurrenceKey: `file:7:1` },
@@ -2067,13 +2059,6 @@ it.each([
 			if (presenceFails) throw new Error("Presence is unavailable");
 			return {
 				observe: async () => ({ state: "unavailable" }) as never,
-				// As the real claim answers before it holds any observation: at once, unavailable.
-				claim: (path) => ({
-					schema: "qorpera.company-path-presence-view/v1",
-					state: "unavailable",
-					observedAt: Date.now(),
-					paths: [{ path, participants: [] }],
-				}),
 				close: async () => {},
 			};
 		});

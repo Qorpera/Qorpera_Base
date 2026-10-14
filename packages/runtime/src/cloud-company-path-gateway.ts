@@ -1,22 +1,10 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { type CloudCompanyPathPlan, parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
-import {
-	CLOUD_COMPANY_TREE_OMITTED_LAYERS,
-	type CloudCompanyTreeEntry,
-	validateCloudCompanyTreeEntries,
-} from "@qorpera/cloud-client/node/cloud-company-snapshot";
+import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
+import type { CloudCompanyTreeEntry } from "@qorpera/cloud-client/node/cloud-company-snapshot";
 import type { CloudContentAddressedStore, CloudFileReference } from "@qorpera/cloud-client/node/cloud-object-store";
 import { parseCompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
-import {
-	CloudCompanyPathParentMissing,
-	CloudCompanyPathRpcMissing,
-	CloudCompanyPathRpcParentMissing,
-	CloudCompanyPathRpcPrecondition,
-	CloudCompanyPathRpcRefusal,
-	CloudCompanyPathToolRefusal,
-	CloudCompanyPathVersionChanged,
-} from "./cloud-company-path-refusal.ts";
+import { CloudCompanyPathRpcMissing, CloudCompanyPathRpcPrecondition } from "./cloud-company-path-refusal.ts";
 import type { CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
 import {
 	CLOUD_TOOL_REQUEST_MAX_MS,
@@ -26,14 +14,11 @@ import {
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
 import type { CloudNativeFencedResult } from "./cloud-native-tool-boundary.ts";
-import type { CloudRuntimeObservationSpan } from "./cloud-runtime-observability.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
-const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
 const FILE_SCHEMA = "qorpera.cloud-file-manifest/v1";
 const FILE_MEDIA = "application/vnd.qorpera.file-manifest+json";
-const TREE_MEDIA = "application/vnd.qorpera.company-tree+json";
 const MAX_WRITE_BYTES = 32 * 1024;
 /** The plain listing RPC's largest page (SQL: p_limit 1..100). */
 const TRUSTED_LIST_PAGE = 100;
@@ -60,11 +45,6 @@ export type CloudCompanyPathRpc =
 	| "qorpera_record_native_context_view"
 	| "qorpera_fence_native_context"
 	| "qorpera_assert_company_path_reads"
-	| "qorpera_check_company_path_mutation"
-	| "qorpera_verify_company_path_file"
-	| "qorpera_verify_company_path_tree"
-	| "qorpera_prepare_company_path_mutation"
-	| "qorpera_commit_company_path_mutation"
 	| "qorpera_native_presence_register"
 	| "qorpera_company_presence_scope"
 	| "qorpera_native_presence_subject"
@@ -214,64 +194,10 @@ function entry(value: unknown): CloudCompanyTreeEntry {
 	return { kind: "file", path, executable: input.executable, file: fileReference(input.file) };
 }
 
-function result(value: unknown, plan: CloudCompanyPathPlan): CloudCompanyPathResult {
-	const input = closed(value, [
-		"schema",
-		"state",
-		"operationKey",
-		"path",
-		"version",
-		"snapshotId",
-		"receiptId",
-		"proposalId",
-	]);
-	if (
-		input.schema !== "qorpera.company-path-result/v1" ||
-		(input.state !== "applied" && input.state !== "proposed") ||
-		input.operationKey !== plan.operationKey ||
-		input.path !== plan.path ||
-		(input.state === "applied" &&
-			(input.snapshotId === null || input.proposalId !== null || input.version === null)) ||
-		(input.state === "proposed" &&
-			(input.snapshotId !== null || input.proposalId === null || input.version !== plan.expectedVersion))
-	)
-		throw new Error("Company File receipt does not match the operation");
-	return {
-		schema: "qorpera.company-path-result/v1",
-		state: input.state,
-		operationKey: plan.operationKey,
-		path: plan.path,
-		version: version(input.version, true),
-		snapshotId: version(input.snapshotId, true),
-		receiptId: version(input.receiptId)!,
-		proposalId: version(input.proposalId, true),
-	};
-}
-
-function prepared(
-	value: unknown,
-	plan: CloudCompanyPathPlan,
-	withTree: boolean,
-):
-	| { state: "completed"; result: CloudCompanyPathResult }
-	| { state: "protected" }
-	| { state: "ready"; snapshotId: string | null; entries: CloudCompanyTreeEntry[] } {
-	const input = closed(value, ["state"], ["result", "snapshotId", "entries"]);
-	if (input.state === "completed" && Object.keys(input).length === 2)
-		return { state: "completed", result: result(input.result, plan) };
-	if (input.state === "protected" && Object.keys(input).length === 1) return { state: "protected" };
-	if (input.state === "ready") {
-		if (!withTree && Object.keys(input).length === 1) return { state: "ready", snapshotId: null, entries: [] };
-		if (withTree && Object.keys(input).length === 3 && Array.isArray(input.entries) && input.entries.length <= 50_000)
-			return { state: "ready", snapshotId: version(input.snapshotId)!, entries: input.entries.map(entry) };
-	}
-	throw new Error("Invalid Company File preparation");
-}
-
 /**
  * Trusted cloud adapter over one live immutable tree. It never materializes a
  * Company File checkout, takes a filesystem path, or returns hidden siblings
- * or object capabilities to a model. SQL owns the single effect commit point.
+ * or object capabilities to a model. It writes no file: the folder core owns every write.
  */
 export class CloudCompanyPathGateway {
 	readonly #binding: CloudNativeToolBinding;
@@ -306,20 +232,13 @@ export class CloudCompanyPathGateway {
 		method: CloudCompanyPathRpc,
 		argumentsValue: Record<string, unknown>,
 		signal: AbortSignal,
-		initialAdmission = false,
 		timeoutMs?: number,
 	): Promise<unknown> {
-		try {
-			return await cloudToolRequest(
-				(requestSignal) => this.#control.call(method, argumentsValue, requestSignal),
-				signal,
-				timeoutMs,
-			);
-		} catch (error) {
-			if (initialAdmission && error instanceof CloudCompanyPathRpcRefusal && !signal.aborted)
-				throw new CloudCompanyPathToolRefusal();
-			throw error;
-		}
+		return await cloudToolRequest(
+			(requestSignal) => this.#control.call(method, argumentsValue, requestSignal),
+			signal,
+			timeoutMs,
+		);
 	}
 
 	#bound(): { p_environment_id: string; p_binding: CloudNativeToolBinding } {
@@ -373,7 +292,6 @@ export class CloudCompanyPathGateway {
 				"qorpera_fence_native_context",
 				{ ...this.#bound(), p_paths: [], p_view: view },
 				signal,
-				false,
 				CLOUD_TOOL_REQUEST_MAX_MS,
 			);
 		} catch (error) {
@@ -658,208 +576,4 @@ export class CloudCompanyPathGateway {
 			}
 		}
 	}
-
-	async mutate(
-		operation: "write" | "mkdir" | "delete",
-		input: {
-			path: string;
-			operationKey: string;
-			expectedVersion: string | null;
-			text?: string;
-		},
-		signal: AbortSignal,
-		observation?: CloudRuntimeObservationSpan,
-	): Promise<CloudCompanyPathResult> {
-		const path = parseCloudCompanyPath(input.path);
-		if (!OPERATION_KEY.test(input.operationKey)) throw new Error("Invalid Company File operation key");
-		const expectedVersion = version(input.expectedVersion, true);
-		let bytes: Buffer | undefined;
-		let manifest: Buffer | undefined;
-		let next: CloudCompanyTreeEntry | null;
-		const chunks: Buffer[] = [];
-		if (operation !== "write" && input.text !== undefined) throw new Error("Only a Company File write carries text");
-		if (operation === "write") {
-			if (
-				typeof input.text !== "string" ||
-				Buffer.byteLength(input.text) > MAX_WRITE_BYTES ||
-				Buffer.from(input.text).toString("utf8") !== input.text
-			)
-				throw new Error("Invalid Company File text write");
-			bytes = Buffer.from(input.text, "utf8");
-			for (let offset = 0; offset < bytes.length; offset += 4 * 1024 * 1024)
-				chunks.push(bytes.subarray(offset, Math.min(offset + 4 * 1024 * 1024, bytes.length)));
-			const digest = createHash("sha256").update(bytes).digest("hex");
-			manifest = Buffer.from(
-				JSON.stringify({
-					schema: FILE_SCHEMA,
-					fileSha256: digest,
-					bytes: bytes.length,
-					mediaType: "application/octet-stream",
-					chunks: chunks.map((chunk) => ({
-						sha256: createHash("sha256").update(chunk).digest("hex"),
-						bytes: chunk.length,
-					})),
-				}),
-			);
-			next = {
-				kind: "file",
-				path,
-				executable: false,
-				file: {
-					manifestSha256: createHash("sha256").update(manifest).digest("hex"),
-					fileSha256: digest,
-					bytes: bytes.length,
-					mediaType: "application/octet-stream",
-				},
-			};
-		} else if (operation === "mkdir") next = { kind: "directory", path };
-		else if (operation === "delete") next = null;
-		else throw new Error("Unknown Company File operation");
-		const plan: CloudCompanyPathPlan = {
-			schema: "qorpera.company-path-mutation/v1",
-			operationKey: input.operationKey,
-			path,
-			expectedVersion,
-			entry: next,
-		};
-		const mutation = async (action: "check" | "prepare" | "commit", extra: Record<string, unknown> = {}) => {
-			try {
-				return await this.#call(
-					action === "check"
-						? "qorpera_check_company_path_mutation"
-						: action === "prepare"
-							? "qorpera_prepare_company_path_mutation"
-							: "qorpera_commit_company_path_mutation",
-					{ ...this.#bound(), p_plan: plan, ...extra },
-					signal,
-					// Only check precedes object staging and canonical writes.
-					action === "check",
-				);
-			} catch (error) {
-				// Each of these transactions replays a completed operation key before it
-				// tests the expected version (20260828019950), and a refusal rolls it back
-				// whole: at any stage this is a definite "changed, nothing written".
-				if (error instanceof CloudCompanyPathRpcPrecondition && !signal.aborted)
-					throw new CloudCompanyPathVersionChanged();
-				// Each of them also checks the path's folder (20260926203300); check runs first, so a
-				// missing folder is normally refused before any bytes are staged.
-				if (error instanceof CloudCompanyPathRpcParentMissing && !signal.aborted)
-					throw new CloudCompanyPathParentMissing();
-				throw error;
-			}
-		};
-		const preflight = prepared(await mutation("check"), plan, false);
-		if (preflight.state === "completed") {
-			observation?.finish(preflight.result.state === "proposed" ? "proposed" : "replayed", {
-				receiptId: preflight.result.receiptId,
-				errorCategory: preflight.result.state === "proposed" ? "protected_path" : null,
-			});
-			return preflight.result;
-		}
-		if (next?.kind === "file" && bytes && manifest) {
-			for (const chunk of chunks)
-				await cloudToolRequest(
-					() => this.#store.putObject(this.#identity.companyId, chunk, "application/octet-stream"),
-					signal,
-				);
-			await cloudToolRequest(() => this.#store.putObject(this.#identity.companyId, manifest!, FILE_MEDIA), signal);
-			await cloudToolRequest(() => this.#store.restoreFile(this.#identity.companyId, next.file), signal);
-			await this.#call(
-				"qorpera_verify_company_path_file",
-				{ p_profile_id: this.#identity.companyId, p_manifest_text: manifest.toString("utf8") },
-				signal,
-			);
-		}
-		for (let attempt = 0; attempt < 4; attempt++) {
-			const preparation = prepared(await mutation("prepare"), plan, true);
-			if (preparation.state === "completed") {
-				observation?.finish(preparation.result.state === "proposed" ? "proposed" : "replayed", {
-					receiptId: preparation.result.receiptId,
-					errorCategory: preparation.result.state === "proposed" ? "protected_path" : null,
-				});
-				return preparation.result;
-			}
-			// SQL checked the plan's own folder at check and prepare. Missing from the entries prepare
-			// listed, it was deleted in between; nothing of this plan is committed yet, so that is still
-			// a definite refusal.
-			if (preparation.state === "ready" && next !== null && path.includes("/")) {
-				const folder = path.slice(0, path.lastIndexOf("/"));
-				if (!preparation.entries.some((candidate) => candidate.path === folder && candidate.kind === "directory"))
-					throw new CloudCompanyPathParentMissing();
-			}
-			const tree =
-				preparation.state === "ready"
-					? await stageCompanyPathCandidate(
-							this.#identity.companyId,
-							preparation.entries,
-							plan,
-							this.#store,
-							this.#control,
-							signal,
-						)
-					: null;
-			try {
-				const outcome = result(
-					await mutation("commit", {
-						p_expected_head: preparation.state === "ready" ? preparation.snapshotId : null,
-						p_tree_sha256: tree,
-					}),
-					plan,
-				);
-				observation?.finish(outcome.state === "proposed" ? "proposed" : "succeeded", {
-					receiptId: outcome.receiptId,
-					errorCategory: outcome.state === "proposed" ? "protected_path" : null,
-				});
-				return outcome;
-			} catch (error) {
-				// A timeout may mean SQL committed. It is never this retry path.
-				if (!(error instanceof CloudCompanyHeadConflict) || preparation.state !== "ready" || attempt === 3)
-					throw error;
-			}
-		}
-		throw new Error("Company File changed too frequently");
-	}
-}
-
-/** Internal entries never leave the trusted gateway. SQL checks the exact diff again. */
-async function stageCompanyPathCandidate(
-	companyId: string,
-	entries: readonly CloudCompanyTreeEntry[],
-	plan: CloudCompanyPathPlan,
-	store: CloudContentAddressedStore,
-	control: CloudCompanyPathControl,
-	signal: AbortSignal,
-): Promise<string> {
-	const next = entries.filter((candidate) => candidate.path !== plan.path);
-	if (plan.entry) next.push(plan.entry);
-	next.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
-	validateCloudCompanyTreeEntries(next, 3);
-	const byPath = new Map(next.map((candidate) => [candidate.path, candidate.kind]));
-	for (const candidate of next) {
-		parseCloudCompanyPath(candidate.path);
-		const slash = candidate.path.lastIndexOf("/");
-		if (slash !== -1 && byPath.get(candidate.path.slice(0, slash)) !== "directory")
-			throw new Error("Company File parent is not a directory");
-	}
-	const bytes = Buffer.from(
-		JSON.stringify({
-			schema: "qorpera.company-tree/v1",
-			contractVersion: 3,
-			omittedLayers: CLOUD_COMPANY_TREE_OMITTED_LAYERS,
-			entries: next,
-		}),
-	);
-	const reference = await cloudToolRequest(() => store.putObject(companyId, bytes, TREE_MEDIA), signal);
-	await cloudToolRequest(() => store.getObject(companyId, reference), signal);
-	const verified = await cloudToolRequest(
-		(requestSignal) =>
-			control.call(
-				"qorpera_verify_company_path_tree",
-				{ p_profile_id: companyId, p_manifest_text: bytes.toString("utf8") },
-				requestSignal,
-			),
-		signal,
-	);
-	if (verified !== reference.sha256) throw new Error("Company File candidate verification differs");
-	return reference.sha256;
 }
