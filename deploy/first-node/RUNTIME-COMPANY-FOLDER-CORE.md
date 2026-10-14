@@ -914,7 +914,9 @@ With G1–G4 in place, GC for `folder-v2` takes no company fence and needs no
 company-wide gate. Today's gate (`qorpera_profile_gc_deletion_active`,
 20260821009000:335-352) stays for `snapshot-v1`. From C1, today's GC
 (`qorpera_claim_company_object_gc`, 20260913000100:68-130) never claims a
-`folder-v2` company's objects.
+`folder-v2` company's objects. (Legacy sweep E1, 20260930400000, dropped that
+GC and the artifact GC plans; the gate now sees only outstanding deletion
+authorizations.)
 
 ### Erasure
 
