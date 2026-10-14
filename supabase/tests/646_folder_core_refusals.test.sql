@@ -117,46 +117,6 @@ end $$;
 reset role;
 select pg_temp.as_service();
 
--- The member whole-tree lane.
-do $$
-begin
-	perform pg_temp.as_member('64600000-0000-4000-8000-000000000001');
-	perform pg_temp.refuses($q$select public.qorpera_prepare_company_file_revision('64600000-0000-4000-8000-000000000020',
-		extensions.gen_random_uuid(), null, repeat('d', 64), 10, 3, 1, 1)$q$);
-	perform pg_temp.refuses($q$select public.qorpera_publish_company_file_revision('64600000-0000-4000-8000-000000000020',
-		extensions.gen_random_uuid(), null)$q$);
-	perform pg_temp.refuses($q$select public.qorpera_prepare_company_file_proposal('64600000-0000-4000-8000-000000000020',
-		extensions.gen_random_uuid(), extensions.gen_random_uuid(), repeat('d', 64), 10, 3, 1, 1)$q$);
-	perform pg_temp.refuses($q$select public.qorpera_submit_company_proposal('64600000-0000-4000-8000-000000000020',
-		extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'session_turn', extensions.gen_random_uuid(), extensions.gen_random_uuid(),
-		extensions.gen_random_uuid(), 0, 'Reason.', null, 'Title', '{}')$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_prepare_company_file_revision('64600000-0000-4000-8000-000000000021',
-		extensions.gen_random_uuid(), null, repeat('d', 64), 10, 3, 1, 1)$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_publish_company_file_revision('64600000-0000-4000-8000-000000000021',
-		extensions.gen_random_uuid(), null)$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_prepare_company_file_proposal('64600000-0000-4000-8000-000000000021',
-		extensions.gen_random_uuid(), extensions.gen_random_uuid(), repeat('d', 64), 10, 3, 1, 1)$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_submit_company_proposal('64600000-0000-4000-8000-000000000021',
-		extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'run', extensions.gen_random_uuid(), extensions.gen_random_uuid(),
-		extensions.gen_random_uuid(), 0, 'policy', null, 'Title', '{}')$q$);
-	perform pg_temp.as_service();
-	perform pg_temp.fx($q$insert into public.qorpera_company_proposals(id, profile_id, environment_id, client_proposal_id, proposal_snapshot_id,
-		execution_kind, execution_id, execution_claimant_id, trail_end_sequence, reason, title, created_by_user_id)
-		values ('64600000-0000-4000-8000-0000000000d1', '64600000-0000-4000-8000-000000000010', '64600000-0000-4000-8000-000000000020',
-			extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'run', extensions.gen_random_uuid(), extensions.gen_random_uuid(),
-			0, 'policy', 'Title', '64600000-0000-4000-8000-000000000001')$q$);
-	perform pg_temp.as_member('64600000-0000-4000-8000-000000000001');
-	perform pg_temp.refuses($q$select public.qorpera_rebase_company_proposal('64600000-0000-4000-8000-0000000000d1',
-		extensions.gen_random_uuid(), extensions.gen_random_uuid(), extensions.gen_random_uuid())$q$);
-	perform pg_temp.as_service();
-	perform pg_temp.fx($q$update public.qorpera_company_proposals set profile_id = '64600000-0000-4000-8000-000000000011',
-		environment_id = '64600000-0000-4000-8000-000000000021' where id = '64600000-0000-4000-8000-0000000000d1'$q$);
-	perform pg_temp.as_member('64600000-0000-4000-8000-000000000001');
-	perform pg_temp.not_refused($q$select public.qorpera_rebase_company_proposal('64600000-0000-4000-8000-0000000000d1',
-		extensions.gen_random_uuid(), extensions.gen_random_uuid(), extensions.gen_random_uuid())$q$);
-	perform pg_temp.as_service();
-end $$;
-
 -- The approval and member-command actors, before their company fence.
 do $$
 begin

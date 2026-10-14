@@ -1053,8 +1053,10 @@ the old code until the reset, so it is removed in C6:
 - **Snapshot columns** on sessions, runs, turns, wake claims, receipts and
   proposals. They are replaced by commit or sequence references.
 - **The legacy snapshot lane:**
-  - `qorpera_prepare/publish_company_file_revision`, `commit_company_snapshot`;
-  - `submit/rebase/accept_company_proposal`, the runner revision lane;
+  - `qorpera_prepare/publish_company_file_revision` (legacy sweep D2,
+    20260930331000, dropped them), `commit_company_snapshot`;
+  - `submit/rebase/accept_company_proposal` (dropped by D2 too), the runner
+    revision lane;
   - `promote_company_file_graph_to_supabase`;
   - the `company-file-verifier` edge function;
   - the desktop callers in `cloud-client/src/hosted-primary.ts`.
