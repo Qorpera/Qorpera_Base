@@ -6,6 +6,7 @@ mod support;
 
 use qorpera_folder::link::{Link, View};
 use qorpera_folder::mount::{self, Options, Stop};
+use qorpera_folder::reads::ReadLog;
 use std::ffi::CString;
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -53,6 +54,7 @@ fn start(node: &FakeNode) -> (PathBuf, std::thread::JoinHandle<Stop>) {
 
 /// Mounts with the version map kept in `state` (a mount started again over the same folder reads it back).
 fn start_with(node: &FakeNode, state: Option<PathBuf>) -> (PathBuf, std::thread::JoinHandle<Stop>) {
+	let state = Some(state.unwrap_or_else(|| node.dir.join("state")));
 	let mountpoint = node.dir.join("company");
 	std::fs::create_dir_all(&mountpoint).unwrap();
 	let link = Link::new(
@@ -289,7 +291,7 @@ fn writes_files_and_folders_through_a_writable_mount() {
 }
 
 #[test]
-fn the_version_map_outlives_the_program() {
+fn the_version_map_and_unreleased_read_log_outlive_the_program() {
 	if !wanted() {
 		return;
 	}
@@ -298,12 +300,20 @@ fn the_version_map_outlives_the_program() {
 	let state = node.dir.join("state");
 	let (company, runner) = start_with(&node, Some(state.clone()));
 	assert_eq!(std::fs::read_to_string(company.join("notes.md")).unwrap(), "first");
+	let journal = ReadLog::open(&state, false).unwrap();
+	let before = journal.locked().unwrap().request(0);
+	assert_eq!(before.reads.len(), 1);
+	assert_eq!(before.reads[0].path, "notes.md");
+	assert_eq!(before.reads[0].version.as_deref(), Some("v1"));
 	node.close_view();
 	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
 	// Another machine saves while the program is down; the program starts again with the same map.
 	node.reopen_view();
 	node.put("notes.md", "theirs", false);
 	let (company, runner) = start_with(&node, Some(state));
+	let after = journal.locked().unwrap().request(0);
+	assert_eq!(after.log, before.log);
+	assert_eq!(after.reads, before.reads);
 	// An editor saves its buffer in place: based on the version read before the restart, not the newest.
 	std::fs::write(company.join("notes.md"), "mine").unwrap();
 	assert_eq!(node.opens().last().unwrap(), &("notes.md".to_string(), Some("v1".to_string())));

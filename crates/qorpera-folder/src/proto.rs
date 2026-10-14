@@ -1,11 +1,11 @@
-//! Folder protocol v2: what a machine's folder program and its node's folder service say to each other.
+//! Folder protocol v3: what a machine's folder program and its node's folder service say to each other.
 //! The node side is `packages/object-gateway/src/folder-service/protocol.ts`; keep the two in step.
 //! Version 2 adds writes (deploy/first-node/RUNTIME-FOLDER-WRITES.md); a view the node does not let write answers
 //! the hello with `readOnly`.
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 /// The folder service's vsock port on the node (the host is always CID 2 from inside a VM).
 pub const VSOCK_PORT: u32 = 5250;
 /// The largest read a machine asks for in one request.
@@ -95,6 +95,18 @@ pub enum EntryKind {
 	Folder,
 }
 
+/// The authority under which the service listed a path. The core rechecks it when the read is released.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Authority {
+	pub resource_id: String,
+	pub resource_revision: u64,
+	#[serde(deserialize_with = "required_nullable")]
+	pub grant_id: Option<String>,
+	#[serde(deserialize_with = "required_nullable")]
+	pub grant_revision: Option<u64>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
@@ -110,6 +122,8 @@ pub struct Entry {
 	/// The path's current version: the core's id for it, opaque here.
 	#[serde(default)]
 	pub version: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub authority: Option<Authority>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -146,6 +160,41 @@ pub struct Change {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Ack {
 	pub seq: u64,
+}
+
+/// One successful file open or non-root folder listing in a mount's durable, consecutive read log.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LoggedRead {
+	pub seq: u64,
+	pub path: String,
+	#[serde(deserialize_with = "required_nullable")]
+	pub version: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub authority: Option<Authority>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReadsRequest {
+	pub log: String,
+	pub reads: Vec<LoggedRead>,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub lost: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReadsAnswer {
+	pub log: String,
+	pub taken: u64,
+	pub released: u64,
+}
+
+#[derive(Serialize)]
+pub struct PublishRequest {
+	#[serde(rename = "final", skip_serializing_if = "std::ops::Not::not")]
+	pub final_boundary: bool,
 }
 
 // ---- Writes (protocol 2) ----------------------------------------------------------------------------------------
@@ -241,14 +290,17 @@ pub struct ExecutableRequest {
 
 /// `p`: what a boundary did with each changed path.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Report {
-	#[serde(default)]
+	#[serde(deserialize_with = "required_nullable")]
 	pub commit_id: Option<String>,
-	#[serde(default)]
+	#[serde(deserialize_with = "required_nullable")]
 	pub seq: Option<u64>,
-	#[serde(default)]
 	pub paths: Vec<ReportEntry>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub refused: Option<String>,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub closed: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -271,6 +323,15 @@ pub struct ErrorReply {
 	pub code: String,
 	#[serde(default)]
 	pub message: String,
+}
+
+/// `null` is a value in these exact wire/journal records; an absent field is a malformed record.
+fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+	D: serde::Deserializer<'de>,
+	T: Deserialize<'de>,
+{
+	Option::<T>::deserialize(deserializer)
 }
 
 /// Error codes the node sends.
@@ -356,6 +417,25 @@ mod tests {
 	use super::*;
 
 	#[test]
+	fn nullable_read_and_receipt_fields_cannot_be_silently_missing() {
+		assert!(serde_json::from_str::<LoggedRead>(r#"{"seq":1,"path":"docs"}"#).is_err());
+		let read: LoggedRead = serde_json::from_str(r#"{"seq":1,"path":"docs","version":null}"#).unwrap();
+		assert_eq!(read.version, None);
+		assert!(serde_json::from_str::<Authority>(r#"{"resourceId":"r","resourceRevision":1}"#).is_err());
+		let receipt: Authority = serde_json::from_str(r#"{"resourceId":"r","resourceRevision":1,"grantId":null,"grantRevision":null}"#).unwrap();
+		assert_eq!(receipt.grant_id, None);
+	}
+
+	#[test]
+	fn a_report_must_have_paths_and_malformed_or_unknown_shapes_never_mean_empty_success() {
+		for bad in [r#"{}"#, r#"{"paths":[]}"#, r#"{"paths":null}"#, r#"{"paths":[],"closed":"yes"}"#, r#"{"paths":[],"unanswered":true}"#] {
+			assert!(serde_json::from_str::<Report>(bad).is_err(), "{bad}");
+		}
+		let report: Report = serde_json::from_str(r#"{"commitId":null,"seq":null,"paths":[],"refused":"unproven"}"#).unwrap();
+		assert_eq!(report.refused.as_deref(), Some("unproven"));
+	}
+
+	#[test]
 	fn paths() {
 		for good in ["", "a", "a/b", "rules/agents.md", "æøå/ü"] {
 			assert!(valid_path(good), "{good}");
@@ -383,7 +463,7 @@ mod tests {
 		};
 		assert_eq!(
 			serde_json::to_string(&hello).unwrap(),
-			r#"{"protocol":2,"environmentId":"e","viewId":"v","pass":"p","role":"feed"}"#
+			r#"{"protocol":3,"environmentId":"e","viewId":"v","pass":"p","role":"feed"}"#
 		);
 		let list = ListRequest { path: "a".into(), after: None };
 		assert_eq!(serde_json::to_string(&list).unwrap(), r#"{"path":"a"}"#);
