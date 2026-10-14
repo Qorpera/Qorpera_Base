@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
-import type { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { JsonValue } from "@qorpera/contracts";
 import {
 	CLOUD_ACTION_REVIEW_HOLD_MS,
@@ -130,11 +129,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #presenceFactory: CloudCompanyPathPresenceFactory | undefined;
 	readonly #control: NativeCompanyControl;
 	readonly #paths: CloudCompanyPathControl;
-	readonly #store: (
-		companyId: string,
-		binding: CloudNativeToolBinding,
-		signal: AbortSignal,
-	) => CloudContentAddressedStore;
 	readonly #command: readonly [string, ...string[]];
 	readonly #sha256: string;
 	readonly #timeoutMs: number | undefined;
@@ -156,11 +150,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		presence?: CloudCompanyPathPresenceFactory;
 		controlPlane: NativeCompanyControl;
 		pathControl: CloudCompanyPathControl;
-		objectStore: (
-			companyId: string,
-			binding: CloudNativeToolBinding,
-			signal: AbortSignal,
-		) => CloudContentAddressedStore;
 		command: readonly [string, ...string[]];
 		binarySha256: string;
 		timeoutMs?: number;
@@ -190,7 +179,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#control = options.controlPlane;
 		this.#presenceFactory = options.presence;
 		this.#paths = options.pathControl;
-		this.#store = options.objectStore;
 		this.#command = Object.freeze([...options.command]) as readonly [string, ...string[]];
 		this.#sha256 = options.binarySha256;
 		// Hash the Codex binary once per service process, while it waits for its run.
@@ -385,11 +373,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						? await observeCloudCompanyPathPresence(presence, firstChange.path, "object", "reading", signal)
 						: undefined;
 				const gateway = new CloudCompanyPathGateway({
-					presence,
 					binding,
 					identity: context.identity,
 					control: this.#paths,
-					store: this.#store(context.identity.companyId, binding, signal),
 				});
 				// How much open work the agent has (counts only), where it keeps todos and workers:
 				// a company run that is not itself a worker. Asked alongside the notebook; like
@@ -619,6 +605,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			};
 			try {
 				stage = "native-tools";
+				// Whether the run had a machine, whose changes are noted after it (Interfaces I10, below).
+				let machine = false;
 				const result = await runCloudNativeRunToolSession({
 					observability,
 					binding,
@@ -713,6 +701,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						)
 							throw new Error("Cloud context identity changed before execution");
 						const computer = await this.#computerSession?.(run, operations);
+						if (computer) machine = true;
 						// The node's folder search (F3, "Light threads"): a run on a host that has it. A worker gets it
 						// too: it only reads.
 						const folderSearch = this.#folderSearch
@@ -781,7 +770,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											...cloudRoutineTools(
 												binding,
 												identity,
-												this.#paths,
 												dynamicRoutine && wake.routine?.routineKey
 													? {
 															routineKey: wake.routine.routineKey,
@@ -802,29 +790,27 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 														: {}),
 												}),
 											),
-											...(dynamicRoutine
+											// The wake bus gives a routine its key exactly when it is dynamic, so every dynamic
+											// routine's run is offered the decision.
+											...(dynamicRoutine && wake.routine?.routineKey
 												? [
-														cloudRoutineDecisionTool(binding, identity, this.#paths, {
+														cloudRoutineDecisionTool(binding, identity, {
 															decisionOwed: () => routineDecisionOwed,
 															decided: () => {
 																routineDecisionOwed = false;
 															},
-															...(wake.routine?.routineKey
-																? {
-																		folderDecision: new CloudFolderRoutineDecision({
-																			folder: folder.client,
-																			operations,
-																			identity,
-																			handle: folder.handle,
-																			routineKey: wake.routine.routineKey,
-																			routineId: wake.routine.id,
-																		}),
-																	}
-																: {}),
+															folderDecision: new CloudFolderRoutineDecision({
+																folder: folder.client,
+																operations,
+																identity,
+																handle: folder.handle,
+																routineKey: wake.routine.routineKey,
+																routineId: wake.routine.id,
+															}),
 														}),
 													]
 												: []),
-											...cloudSidebarTools(binding, identity, this.#paths, {
+											...cloudSidebarTools(binding, identity, {
 												folderSidebar: new CloudFolderSidebar({
 													folder: folder.client,
 													operations,
@@ -939,6 +925,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								: {}),
 						};
 					},
+				}).finally(async () => {
+					// What the run's machine saved under interfaces/ or tables/ (its shell, its screen) shows in its
+					// conversation with Undo, as a tool's change does (Interfaces I10): SQL notes each of the run's commits
+					// there once, now that the machine is closed. A note that fails leaves the change without its line; the
+					// run's outcome stands.
+					if (machine && context.identity.sessionId !== null)
+						await folder.client.noteInterfaceChanges(signal).catch((error: unknown) => {
+							console.error(
+								`The run's interface changes were not noted (${cloudRuntimeErrorCategory(error, signal)})`,
+							);
+						});
 				});
 				stage = "public-completion";
 				const delivery = await mouth.finish(wake.policy.final === "required");

@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CompanyComputerScreenLease } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
-import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
 import { CLOUD_AGENT_HEAD_BYTES, CLOUD_AGENT_HEAD_SCHEMA } from "@qorpera/runtime/cloud-agent-head";
 import type { CloudAgentSendReceipt } from "@qorpera/runtime/cloud-agent-mouth";
 import {
@@ -19,6 +18,7 @@ import type {
 	CloudCompanyPathPresence,
 	CloudCompanyPathPresenceFactory,
 } from "@qorpera/runtime/cloud-company-path-presence";
+import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
 import { compileCloudNativeCompanyInstructions } from "@qorpera/runtime/cloud-native-company-context";
 import { CloudNativeCompanyRuntime } from "@qorpera/runtime/cloud-native-company-runtime";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
@@ -199,18 +199,6 @@ async function fixture(
 					parentRunId: null,
 					causal: { rootId: randomUUID(), agentIds: [wakeIdentity.staffAgentId] },
 				};
-	const objects = new Map<string, Uint8Array>();
-	const transport: CloudObjectTransport = {
-		async put(path, bytes) {
-			objects.set(path, Uint8Array.from(bytes));
-			return "stored";
-		},
-		async get(path) {
-			const bytes = objects.get(path);
-			if (!bytes) throw new Error("Missing synthetic object");
-			return bytes;
-		},
-	};
 	// A background worker of the same agent: blank, read-only here, and without a conversation.
 	const workerId = randomUUID();
 	const workerParentRunId = randomUUID();
@@ -252,7 +240,6 @@ async function fixture(
 			},
 		},
 	};
-	const store = new CloudContentAddressedStore(transport);
 	const observations: CloudRuntimeObservation[] = [];
 	let nativeStarted = false;
 	const connectorGrantId = randomUUID();
@@ -273,7 +260,6 @@ async function fixture(
 		adapterSha256: "b".repeat(64),
 		destinationOrigin: "https://api.linear.app",
 	};
-	const decisions: Record<string, unknown>[] = [];
 	const reviewedTools: string[] = [];
 	/** The kernel's answer to whether any node can serve machines (an Error: the call fails). */
 	let machinesAnswer: unknown = true;
@@ -354,6 +340,11 @@ async function fixture(
 			}
 			if (method === "qorpera_folder_agent_proposals" && proposalsAnswer !== undefined) return proposalsAnswer;
 			expect(args.p_binding).toEqual(f.binding);
+			// What a run's machine saved under interfaces/ or tables/, noted in its conversation (Interfaces I10).
+			if (method === "qorpera_folder_note_interface_changes") {
+				expect(args.p_request).toEqual({});
+				return { schema: "qorpera.interface-change-notes/v1", noted: 1 };
+			}
 			if (method === "qorpera_begin_native_company_execution_v2") {
 				if (nativeStarted) throw new Error("Earlier native execution requires reconciliation");
 				nativeStarted = true;
@@ -386,21 +377,6 @@ async function fixture(
 			}
 			if (method === "qorpera_read_native_wake")
 				return structuredClone(mode === "company-worker" ? workerWake : wake);
-			if (method === "qorpera_decide_agent_routine") {
-				decisions.push(args.p_request as Record<string, unknown>);
-				return {
-					schema: "qorpera.agent-routine-receipt/v1",
-					runId: f.binding.runId,
-					receiptId: randomUUID(),
-					action: "upsert",
-					routine: {
-						routineKey: "invoice-watch",
-						status: "active",
-						version: 2,
-						nextRunAt: "2026-09-02T10:00:00Z",
-					},
-				};
-			}
 			if (method === "qorpera_describe_agent_open_work") {
 				if (mode === "company-worker") throw new Error("A worker keeps no todos");
 				return {
@@ -610,7 +586,6 @@ async function fixture(
 					},
 				})
 			: { call: pathCall },
-		objectStore: () => store,
 		command: [process.execPath, rpcFixture, mode, evidence],
 		binarySha256,
 		timeoutMs: 10_000,
@@ -694,12 +669,10 @@ async function fixture(
 		proposalsAnswer: (value: unknown) => {
 			proposalsAnswer = value;
 		},
-		decisions,
 		folderReads,
 		folderFiles,
 		folderReleases,
 		reviewedTools,
-		store,
 		deliveries,
 		evidence,
 		identityRoot,
@@ -717,22 +690,15 @@ async function fixture(
 
 it("binds path presence to the run and closes it with the native execution", async () => {
 	const observe = vi.fn<CloudCompanyPathPresence["observe"]>();
-	const claim = vi.fn<CloudCompanyPathPresence["claim"]>((path) => ({
-		schema: "qorpera.company-path-presence-view/v1",
-		state: "available",
-		observedAt: Date.now(),
-		paths: [{ path, participants: [] }],
-	}));
 	const close = vi.fn(async () => {});
-	const presence = vi.fn<CloudCompanyPathPresenceFactory>(() => ({ observe, claim, close }));
+	const presence = vi.fn<CloudCompanyPathPresenceFactory>(() => ({ observe, close }));
 	const f = await fixture("company-runtime", false, presence);
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(result.delivery.messageCount).toBe(2);
 	expect(presence).toHaveBeenCalledOnce();
 	expect(presence.mock.calls[0][0]).toEqual(f.binding);
-	// Only a file-event wake observes at startup; the folder core's file tools claim no presence.
+	// Only a file-event wake observes at startup; the folder core's file tools observe no presence.
 	expect(observe).not.toHaveBeenCalled();
-	expect(claim).not.toHaveBeenCalled();
 	expect(close).toHaveBeenCalledOnce();
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	expect(JSON.stringify(evidence.fenced.outputs)).not.toContain("qorpera.company-path-presence-view/v1");
@@ -771,8 +737,7 @@ it.each(["available", "unavailable"])(
 			};
 		});
 		const close = vi.fn(async () => {});
-		const claim = vi.fn<CloudCompanyPathPresence["claim"]>();
-		const f = await fixture("company-silent", false, () => ({ observe, claim, close }));
+		const f = await fixture("company-silent", false, () => ({ observe, close }));
 		const commitId = randomUUID();
 		Object.assign(f.wake, {
 			source: { kind: "company-file", id: commitId, occurrenceKey: `file:7:1` },
@@ -820,6 +785,13 @@ it("composes office tools with the actual admitted native run and existing effec
 	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
 	expect(f.officeClose).toHaveBeenCalledTimes(1);
 	expect(f.officeCall.mock.calls.filter(([, args]) => args.p_action === "release")).toHaveLength(1);
+	// What the machine saved under interfaces/ or tables/ is noted in the run's conversation once, after it closed
+	// (Interfaces I10).
+	const notes = f.pathCall.mock.calls.flatMap(([method], index) =>
+		method === "qorpera_folder_note_interface_changes" ? [f.pathCall.mock.invocationCallOrder[index]] : [],
+	);
+	expect(notes).toHaveLength(1);
+	expect(notes[0]).toBeGreaterThan(f.officeClose.mock.invocationCallOrder[0]);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
 	expect(names).toContain("computer_shell");
@@ -841,6 +813,36 @@ it("fails the native result when office cleanup is unconfirmed, without repeatin
 	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow("cleanup");
 	expect(f.officeEndpoint.perform).toHaveBeenCalledTimes(1);
 	expect(f.officeClose).toHaveBeenCalledTimes(1);
+	// A failed run's machine changes are noted too.
+	const methods = f.pathCall.mock.calls.map(([method]) => method);
+	expect(methods.filter((method) => method === "qorpera_folder_note_interface_changes")).toHaveLength(1);
+});
+
+it("keeps the run's outcome when its machine's changes could not be noted, and logs the category only", async () => {
+	const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	try {
+		const f = await fixture("company-office");
+		const original = f.pathCall.getMockImplementation()!;
+		f.pathCall.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_folder_note_interface_changes")
+				throw new CloudCompanyFolderRpcError("55000", "PRIVATE_NOTE_ERROR");
+			return original(method, args, signal);
+		});
+		const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		expect(result.delivery.messageCount).toBe(2);
+		expect(f.officeClose).toHaveBeenCalledTimes(1);
+		expect(logged.mock.calls.filter(([line]) => String(line).startsWith("The run's interface changes"))).toEqual([
+			["The run's interface changes were not noted (authority_unavailable)"],
+		]);
+	} finally {
+		logged.mockRestore();
+	}
+});
+
+it("asks for no interface change notes after a run with no machine: its tools note their own", async () => {
+	const f = await fixture("company-runtime");
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_folder_note_interface_changes");
 });
 
 it("closes an initialized office session when native execution admission fails", async () => {
@@ -1179,11 +1181,11 @@ it("has a dynamic routine run decide its next run before its final message", asy
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
 	// The early final and the save of its own routine never reached the kernel: the host showed the model why.
-	expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_manage_agent_routine")).toBe(false);
+	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_manage_agent_routine");
 	const sends = f.control.sendMessage.mock.calls.map(([, input]) => input);
 	expect(sends.map((input) => input.idempotencyKey)).toEqual(["progress", "final"]);
 	// The decision goes to the routine's file (the next test), never to the kernel's own decision.
-	expect(f.decisions).toEqual([]);
+	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_decide_agent_routine");
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
 	expect(names).toContain("decide_routine");
@@ -1213,7 +1215,7 @@ it("has a folder-v2 dynamic routine run decide through its routine file, settled
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
 	// The decision went to the routine's file, not the kernel's legacy decision: no file there, so nothing is owed.
-	expect(f.decisions).toEqual([]);
+	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_decide_agent_routine");
 	expect(f.folderReads).toContain(`agents/nora/routines/${f.wake.routine?.routineKey}.md`);
 	// Not found at its key: its folder is listed for the file carrying its id (the wake is read once: a second read
 	// would claim held messages).
@@ -2067,13 +2069,6 @@ it.each([
 			if (presenceFails) throw new Error("Presence is unavailable");
 			return {
 				observe: async () => ({ state: "unavailable" }) as never,
-				// As the real claim answers before it holds any observation: at once, unavailable.
-				claim: (path) => ({
-					schema: "qorpera.company-path-presence-view/v1",
-					state: "unavailable",
-					observedAt: Date.now(),
-					paths: [{ path, participants: [] }],
-				}),
 				close: async () => {},
 			};
 		});

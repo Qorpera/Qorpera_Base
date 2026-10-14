@@ -240,6 +240,12 @@ browser sandbox compatibility. Dependency and user-space SDK installs run as
 the session's user in this VM. Arbitrary apt/root installation, host package tools,
 LXD access and privilege escalation are unavailable to the model. A new system
 package needs an image revision or separately authorized installer design.
+(Amended 2026-10-14, contract "2026-10-14 amendment: machines work in the folder
+as on their own disk", item 11: sessions get `sudo` and Docker inside the
+member's machine, and a project's secrets reach its commands as masked
+environment variables from the vault. This section's no-root and broker rules
+hold until step 5 builds that, with the platform's trusted helpers moved out of
+the guest or made safe from root.)
 
 The image must never update itself. Mask `apt-daily.timer`,
 `apt-daily-upgrade.timer`, `apt-daily.service`, `apt-daily-upgrade.service` and

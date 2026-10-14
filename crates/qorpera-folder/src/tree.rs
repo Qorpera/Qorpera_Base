@@ -12,7 +12,7 @@
 //!   to forget the name and the cached pages (`Inval`).
 //! - `changes` counts invalidations. A listing fetched while one happened is passed on but not kept.
 
-use crate::proto::{join, split, Entry, EntryKind};
+use crate::proto::{join, split, Authority, Entry, EntryKind};
 use std::collections::{HashMap, HashSet};
 
 pub const ROOT: u64 = 1;
@@ -25,14 +25,15 @@ pub struct Attr {
 	pub executable: bool,
 	/// The core's version of the path (an opaque id).
 	pub version: String,
+	pub authority: Option<Authority>,
 }
 
 impl Attr {
 	fn of(e: &Entry) -> Attr {
-		Attr { kind: e.kind, size: e.size, mtime_ms: e.mtime_ms, executable: e.executable, version: e.version.clone() }
+		Attr { kind: e.kind, size: e.size, mtime_ms: e.mtime_ms, executable: e.executable, version: e.version.clone(), authority: e.authority.clone() }
 	}
 	pub fn root() -> Attr {
-		Attr { kind: EntryKind::Folder, size: 0, mtime_ms: 0, executable: false, version: String::new() }
+		Attr { kind: EntryKind::Folder, size: 0, mtime_ms: 0, executable: false, version: String::new(), authority: None }
 	}
 	/// Whether `next` is another version of the file (or not the same kind of thing at all).
 	fn replaced_by(&self, next: &Attr) -> bool {
@@ -496,10 +497,10 @@ mod tests {
 	use super::*;
 
 	fn file(name: &str, size: u64, version: &str) -> Entry {
-		Entry { name: name.into(), kind: EntryKind::File, size, mtime_ms: 1, executable: false, version: version.into() }
+		Entry { name: name.into(), kind: EntryKind::File, size, mtime_ms: 1, executable: false, version: version.into(), authority: None }
 	}
 	fn folder(name: &str) -> Entry {
-		Entry { name: name.into(), kind: EntryKind::Folder, size: 0, mtime_ms: 1, executable: false, version: "f".into() }
+		Entry { name: name.into(), kind: EntryKind::Folder, size: 0, mtime_ms: 1, executable: false, version: "f".into(), authority: None }
 	}
 	fn ino_of(children: &[Child], name: &str) -> u64 {
 		children.iter().find(|c| c.name == name).unwrap().ino
@@ -710,7 +711,7 @@ mod tests {
 		t.hold(d);
 		t.hold(f);
 		// A file made here: held by the kernel's lookup; its folder lists again.
-		let new = Attr { kind: EntryKind::File, size: 0, mtime_ms: 5, executable: false, version: "p0".into() };
+		let new = Attr { kind: EntryKind::File, size: 0, mtime_ms: 5, executable: false, version: "p0".into(), authority: None };
 		let n = t.add_local(d, "new.md", new);
 		assert_eq!(t.path(n), Some("d/new.md"));
 		// Its save keeps the inode, and a listing that shows that version does too.

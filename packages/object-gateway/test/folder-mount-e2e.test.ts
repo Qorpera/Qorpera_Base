@@ -21,20 +21,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { NasObjects } from "../src/folder-service/objects.ts";
-import { encodeJson, Kind } from "../src/folder-service/protocol.ts";
+import { encodeFrame, encodeJson, FrameReader, Kind, parseHello } from "../src/folder-service/protocol.ts";
 import { createFolderServer } from "../src/folder-service/server.ts";
 import { FolderService } from "../src/folder-service/service.ts";
 import { FolderStaging } from "../src/folder-service/staging.ts";
 import {
+	ALLOCATION,
 	BRIDGE,
+	companyGrants,
 	ENV,
 	FakeCore,
 	FakeUploads,
 	folder,
 	grants,
 	hashOf,
+	OFFICE,
 	PASS,
 	storeFile,
+	v,
 	writableGrants,
 } from "./folder-service-fixtures.ts";
 
@@ -264,9 +268,21 @@ describe.skipIf(!program)("folder program against the folder service", () => {
 		const publish = (): Promise<{ code: number | null; text: string }> =>
 			new Promise((resolve) => {
 				let text = "";
-				const run = spawn(program!, ["publish", "--view-file", viewFile, "--connect", `unix:${bridgeSocket}`], {
-					stdio: ["ignore", "pipe", "pipe"],
-				});
+				const run = spawn(
+					program!,
+					[
+						"publish",
+						"--view-file",
+						viewFile,
+						"--state-dir",
+						join(dir, "state"),
+						"--connect",
+						`unix:${bridgeSocket}`,
+					],
+					{
+						stdio: ["ignore", "pipe", "pipe"],
+					},
+				);
 				run.stdout!.on("data", (d: Buffer) => {
 					text += d.toString();
 				});
@@ -399,4 +415,620 @@ describe.skipIf(!program)("folder program against the folder service", () => {
 		child.kill("SIGTERM");
 		expect(await exited).toBe(0);
 	}, 60_000);
+});
+
+/** A real program and service on a core view, with only the database and object store replaced. Frame interception
+ * models a link losing an acknowledgement after the service took the log; no mount internals are called. */
+const CORE_PASS = "readpass_0123456789-abcdefghijklmnopqrstuvw";
+
+async function loggedMount(kind = "computer_shell_command") {
+	const dir = await mkdtemp(join(tmpdir(), "qorpera-folder-log-e2e-"));
+	cleanup.push(() => rm(dir, { recursive: true, force: true }));
+	const root = join(dir, "share");
+	const core = new FakeCore();
+	core.seed([
+		folder("docs"),
+		await storeFile(root, "docs/plan.md", "the plan", 1),
+		await storeFile(root, "docs/empty.md", "", 1),
+	]);
+	const viewId = v(700);
+	const receipt = { resourceId: v(60), resourceRevision: 9, grantId: v(61), grantRevision: 2 };
+	core.receipts = () => receipt;
+	core.openView(viewId, CORE_PASS, { kind, machineId: ALLOCATION });
+	const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
+	const serviceSocket = join(dir, "service.sock");
+	const sockets = new Set<Socket>();
+	let service: FolderService;
+	let server: Server;
+	let running = false;
+	const start = async (): Promise<void> => {
+		service = new FolderService({
+			core,
+			objects,
+			grants: companyGrants(),
+			staging: new FolderStaging(core, new FakeUploads(root, core), objects),
+			log: () => {},
+		});
+		server = createFolderServer(service, () => {});
+		server.on("connection", (socket) => {
+			sockets.add(socket);
+			socket.on("close", () => sockets.delete(socket));
+		});
+		await listen(server, serviceSocket);
+		running = true;
+	};
+	const stop = async (): Promise<void> => {
+		if (!running) return;
+		running = false;
+		service.stop();
+		for (const socket of sockets) socket.destroy();
+		await new Promise<void>((resolve) => server.close(() => resolve()));
+	};
+	await start();
+	cleanup.push(stop);
+	const bridgeSocket = join(dir, "bridge.sock");
+	const faults = { dropReadAnswer: false, dropReport: false, dropPollAnswer: false, dropHelloAnswer: false };
+	const requests: { kind: number; body: unknown }[] = [];
+	const answers: number[] = [];
+	const bridge = createServer((machine) => {
+		const incoming = new FrameReader();
+		const outgoing = new FrameReader();
+		const upstream = connect(serviceSocket, () => {
+			upstream.write(encodeJson(Kind.bridge, { cid: 90, lookup: "found", machine: OFFICE }));
+			machine.on("data", (data: Buffer) => {
+				for (const frame of incoming.push(data)) {
+					if (frame.kind === Kind.hello) {
+						const hello = parseHello(frame.payload);
+						requests.push({
+							kind: frame.kind,
+							body: {
+								viewId: hello.viewId,
+								previousViewId: hello.previous?.viewId,
+								abandon: hello.abandon === true,
+							},
+						});
+					} else if (frame.kind !== Kind.chunk)
+						requests.push({ kind: frame.kind, body: JSON.parse(frame.payload.toString()) });
+				}
+			});
+			machine.pipe(upstream);
+		});
+		upstream.on("data", (data: Buffer) => {
+			for (const frame of outgoing.push(data)) {
+				if (frame.kind === Kind.helloOk && faults.dropHelloAnswer) {
+					faults.dropHelloAnswer = false;
+					machine.destroy();
+					upstream.destroy();
+					return;
+				}
+				if (
+					(frame.kind === Kind.readsOk && faults.dropReadAnswer) ||
+					(frame.kind === Kind.report && faults.dropReport)
+				) {
+					faults.dropReadAnswer = false;
+					faults.dropReport = false;
+					machine.destroy();
+					upstream.destroy();
+					return;
+				}
+				if (frame.kind === Kind.report && faults.dropPollAnswer) {
+					faults.dropPollAnswer = false;
+					faults.dropReadAnswer = true;
+				}
+				answers.push(frame.kind);
+				machine.write(encodeFrame(frame.kind, frame.payload));
+			}
+		});
+		machine.on("error", () => upstream.destroy());
+		upstream.on("error", () => machine.destroy());
+		machine.on("close", () => upstream.destroy());
+		upstream.on("close", () => machine.destroy());
+	});
+	await listen(bridge, bridgeSocket);
+	cleanup.push(() => new Promise<void>((resolve) => bridge.close(() => resolve())));
+	const viewFile = join(dir, "view.json");
+	const state = join(dir, "state");
+	const company = join(dir, "company");
+	await writeFile(viewFile, JSON.stringify({ environmentId: ENV, viewId, pass: CORE_PASS }), { mode: 0o600 });
+	await mkdir(company);
+	let output = "";
+	const launch = () => {
+		const child = spawn(
+			program!,
+			[
+				"mount",
+				"--view-file",
+				viewFile,
+				"--state-dir",
+				state,
+				"--mountpoint",
+				company,
+				"--connect",
+				`unix:${bridgeSocket}`,
+				"--threads",
+				"4",
+			],
+			{ stdio: ["ignore", "pipe", "pipe"] },
+		);
+		child.stdout.on("data", (data: Buffer) => {
+			output += data.toString();
+		});
+		child.stderr.on("data", (data: Buffer) => {
+			output += data.toString();
+		});
+		return child;
+	};
+	let child = launch();
+	let exited = new Promise<void>((resolve) => child.on("exit", () => resolve()));
+	const kill = async (): Promise<void> => {
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+		await exited;
+		if (await mounted(company))
+			await new Promise<void>((resolve) => spawn("umount", ["-l", company]).on("exit", () => resolve()));
+	};
+	cleanup.push(kill);
+	expect(await eventually(() => mounted(company)), output).toBe(true);
+	const publish = (
+		final = false,
+		stateDir = state,
+	): Promise<{ code: number | null; stdout: string; stderr: string }> =>
+		new Promise((resolve) => {
+			const run = spawn(
+				program!,
+				[
+					"publish",
+					"--view-file",
+					viewFile,
+					"--state-dir",
+					stateDir,
+					"--connect",
+					`unix:${bridgeSocket}`,
+					"--json",
+					...(final ? ["--final"] : []),
+				],
+				{ stdio: ["ignore", "pipe", "pipe"] },
+			);
+			let stdout = "";
+			let stderr = "";
+			run.stdout.on("data", (data: Buffer) => {
+				stdout += data.toString();
+			});
+			run.stderr.on("data", (data: Buffer) => {
+				stderr += data.toString();
+			});
+			run.on("exit", (code) => resolve({ code, stdout, stderr }));
+		});
+	const journal = async (): Promise<
+		{
+			t: string;
+			seq?: number;
+			released?: number;
+			log?: string;
+			read?: { seq: number; path: string; version: string | null; authority: unknown };
+		}[]
+	> =>
+		(await readFile(join(state, "reads.jsonl"), "utf8"))
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+	return {
+		core,
+		root,
+		viewId,
+		child: () => child,
+		exited: () => exited,
+		service: () => service,
+		disconnect: () => {
+			for (const socket of sockets) socket.destroy();
+		},
+		remount: async () => {
+			child = launch();
+			exited = new Promise<void>((resolve) => child.on("exit", () => resolve()));
+			expect(await eventually(() => mounted(company)), output).toBe(true);
+		},
+		replace: async (next: string) => {
+			core.openView(next, CORE_PASS, { kind, machineId: ALLOCATION });
+			const current = JSON.parse(await readFile(viewFile, "utf8")) as { viewId: string };
+			core.views.get(current.viewId)!.state = "closed";
+			await service.renewLeases();
+			const temporary = `${viewFile}.next`;
+			await writeFile(temporary, JSON.stringify({ environmentId: ENV, viewId: next, pass: CORE_PASS }), {
+				mode: 0o600,
+			});
+			await rename(temporary, viewFile);
+		},
+		receipt,
+		company,
+		state,
+		requests,
+		answers,
+		faults,
+		publish,
+		journal,
+		kill,
+		restart: async () => {
+			await stop();
+			await start();
+		},
+		output: () => output,
+	};
+}
+
+/** The views whose IO hellos said the program before is gone, in order. */
+function abandons(requests: { kind: number; body: unknown }[]): string[] {
+	return requests.flatMap((request) => {
+		const body = request.body as { viewId: string; abandon: boolean };
+		return request.kind === Kind.hello && body.abandon ? [body.viewId] : [];
+	});
+}
+
+describe.skipIf(!program)("durable read proof through a real FUSE mount", () => {
+	it("refuses a nonexistent publisher state directory locally without poisoning the healthy mount", async () => {
+		const m = await loggedMount();
+		await readFile(join(m.company, "docs/plan.md"));
+		const missing = join(m.state, "wrong", "state");
+		const before = m.requests.length;
+		const refused = await m.publish(false, missing);
+		expect(refused).toMatchObject({ code: 1, stdout: "" });
+		expect(refused.stderr).toContain("exact --state-dir");
+		expect(m.requests).toHaveLength(before);
+		await expect(stat(join(m.state, "wrong"))).rejects.toMatchObject({ code: "ENOENT" });
+		await writeFile(join(m.company, "docs/healthy.md"), "still healthy");
+		expect((await m.publish()).code).toBe(0);
+		expect(m.core.entries.get("docs/healthy.md")?.fileSha256).toBe(hashOf("still healthy"));
+	}, 15_000);
+
+	it("retains a unique conflict receipt when its report arrives but the release poll answer is lost", async () => {
+		const m = await loggedMount();
+		await readFile(join(m.company, "docs/plan.md"));
+		m.core.write(await storeFile(m.root, "docs/plan.md", "newer live bytes", 2));
+		await writeFile(join(m.company, "docs/plan.md"), "my stale bytes");
+		m.faults.dropPollAnswer = true;
+		const uncertain = await m.publish();
+		expect(uncertain.code).toBe(1);
+		expect(uncertain.stderr).toContain("completion is unproven");
+		const report = JSON.parse(uncertain.stdout);
+		expect(report.paths).toEqual([
+			{
+				path: "docs/plan.md",
+				outcome: "conflict",
+				reason: "version_changed",
+				receipt: expect.any(String),
+			},
+		]);
+		expect(m.core.copies.has(report.paths[0].receipt)).toBe(true);
+		expect(m.core.entries.get("docs/plan.md")?.fileSha256).toBe(hashOf("newer live bytes"));
+		const retried = await m.publish();
+		expect(retried.code).toBe(0);
+		expect(JSON.parse(retried.stdout).paths).toEqual([]);
+	}, 15_000);
+
+	it("journals cached and empty opens with receipts, replays a lost acknowledgement before a write, and keeps released prefixes across service restarts", async () => {
+		const m = await loggedMount();
+		await readdir(m.company); // The root itself is never logged.
+		await readdir(join(m.company, "docs"));
+		expect(await readFile(join(m.company, "docs/plan.md"), "utf8")).toBe("the plan");
+		expect(await readFile(join(m.company, "docs/plan.md"), "utf8")).toBe("the plan");
+		expect(await readFile(join(m.company, "docs/empty.md"), "utf8")).toBe("");
+		const reads = (await m.journal()).flatMap((line) => (line.read ? [line.read] : []));
+		expect(reads.map((read) => read.path)).toEqual(["docs", "docs/plan.md", "docs/plan.md", "docs/empty.md"]);
+		expect(reads.map((read) => read.seq)).toEqual([1, 2, 3, 4]);
+		for (const read of reads) expect(read.authority).toEqual(m.receipt);
+		expect(reads[0]?.version).toBeNull();
+		expect(reads[3]?.version).toBe(v(1));
+		m.faults.dropReadAnswer = true;
+		await writeFile(join(m.company, "docs/result.md"), "result from plan");
+		const beforeWrite = m.requests.slice(
+			0,
+			m.requests.findIndex((request) => request.kind === Kind.open),
+		);
+		expect(beforeWrite.filter((request) => request.kind === Kind.reads).length).toBe(2);
+		m.core.commitHook = async () => {
+			expect(m.core.readSets.get(m.viewId)?.has("docs/plan.md")).toBe(true);
+			expect(m.core.readSets.get(m.viewId)?.has("docs/empty.md")).toBe(true);
+		};
+		const report = await m.publish();
+		expect(report, m.output()).toMatchObject({ code: 0, stderr: "" });
+		expect(JSON.parse(report.stdout).paths).toEqual([{ path: "docs/result.md", outcome: "saved" }]);
+		const released = m.core.releases.length;
+		expect((await m.journal()).some((line) => line.t === "released" && line.seq === 4)).toBe(true);
+		await m.restart();
+		expect((await m.publish()).code).toBe(0);
+		expect(m.core.releases).toHaveLength(released);
+		// A newly observed read, never sent before this service restart, is handed over at a quiet no-write boundary.
+		expect(
+			await eventually(async () => (await readFile(join(m.company, "docs/plan.md"), "utf8")) === "the plan", 10_000),
+			m.output(),
+		).toBe(true);
+		await m.restart();
+		const noWrites = await m.publish();
+		expect(noWrites).toMatchObject({ code: 0, stderr: "" });
+		expect(JSON.parse(noWrites.stdout)).toEqual({ commitId: null, seq: null, paths: [] });
+		expect(m.core.releases.length).toBeGreaterThan(released);
+	}, 30_000);
+
+	it("releases a read before a write after service restart, and retries lost intake before a no-write boundary", async () => {
+		const m = await loggedMount();
+		await readFile(join(m.company, "docs/plan.md"));
+		expect(m.core.releases).toHaveLength(0);
+		await m.restart();
+		m.core.commitHook = async () => {
+			expect(m.core.readSets.get(m.viewId)?.get("docs/plan.md")).toEqual({
+				path: "docs/plan.md",
+				version: v(1),
+				authority: m.receipt,
+			});
+		};
+		await writeFile(join(m.company, "docs/result.md"), "after restart");
+		expect((await m.publish()).code).toBe(0);
+		expect(m.core.entries.get("docs/result.md")?.fileSha256).toBe(hashOf("after restart"));
+		await readFile(join(m.company, "docs/empty.md"));
+		const releases = m.core.releases.length;
+		m.faults.dropReadAnswer = true;
+		expect(await m.publish()).toMatchObject({ code: 1, stdout: "" });
+		expect(m.core.releases).toHaveLength(releases);
+		const retried = await m.publish();
+		expect(retried.code).toBe(0);
+		expect(JSON.parse(retried.stdout)).toEqual({ commitId: null, seq: null, paths: [] });
+		expect(m.core.readSets.get(m.viewId)?.get("docs/empty.md")).toEqual({
+			path: "docs/empty.md",
+			version: v(1),
+			authority: m.receipt,
+		});
+	}, 30_000);
+
+	it("releases a desktop's reads before its automatic quiet save, without a publisher", async () => {
+		const m = await loggedMount("computer_desktop");
+		await readFile(join(m.company, "docs/plan.md"));
+		m.core.commitHook = async () => {
+			expect(m.core.readSets.get(m.viewId)?.get("docs/plan.md")?.authority).toEqual(m.receipt);
+		};
+		await writeFile(join(m.company, "docs/result.md"), "quiet save");
+		expect(await eventually(async () => m.core.entries.has("docs/result.md"), 5_000), m.output()).toBe(true);
+		expect(m.requests.some((request) => request.kind === Kind.publish)).toBe(false);
+		expect(m.core.readSets.get(m.viewId)?.has("docs/plan.md")).toBe(true);
+	}, 15_000);
+
+	it("publishes a dead mount's retained log, retries unanswered no-write releases, and requires a closed final report", async () => {
+		const m = await loggedMount();
+		await readFile(join(m.company, "docs/plan.md"));
+		await m.kill();
+		m.core.releaseFailures = { mode: "down", count: 3 };
+		const unknown = await m.publish();
+		expect(unknown.code).toBe(1);
+		expect(JSON.parse(unknown.stdout).paths).toEqual([]);
+		expect(unknown.stderr).toContain("release did not complete");
+		expect(unknown.stderr).not.toContain(CORE_PASS);
+		expect((await m.publish()).code).toBe(0);
+		const releases = m.core.releases.length;
+		await m.restart();
+		expect((await m.publish()).code).toBe(0);
+		expect(m.core.releases).toHaveLength(releases);
+		m.core.endCommand(m.viewId);
+		m.core.commitFailures = { mode: "down", count: 3 };
+		const unfinished = await m.publish(true);
+		expect(unfinished.code).toBe(1);
+		expect(JSON.parse(unfinished.stdout).closed).toBeUndefined();
+		expect(unfinished.stderr).toContain("did not close");
+		const final = await m.publish(true);
+		expect(final.code).toBe(0);
+		expect(JSON.parse(final.stdout)).toMatchObject({ closed: true, paths: [] });
+		expect(m.core.views.get(m.viewId)?.state).toBe("closed");
+	}, 15_000);
+
+	it("keeps a final's definitive per-path refusal structured without claiming the view closed", async () => {
+		const m = await loggedMount();
+		await readFile(join(m.company, "docs/plan.md"));
+		await writeFile(join(m.company, "docs/result.md"), "refused save");
+		await m.kill();
+		m.core.endCommand(m.viewId);
+		m.core.commitRefusal = "denied";
+		const answer = await m.publish(true);
+		expect(answer.code).toBe(4);
+		const report = JSON.parse(answer.stdout);
+		expect(report.closed).toBeUndefined();
+		expect(report.paths).toEqual([{ path: "docs/result.md", outcome: "refused", reason: "denied", kept: true }]);
+		expect(m.core.entries.has("docs/result.md")).toBe(false);
+	}, 15_000);
+
+	it("never claims a lost report or released marker succeeded, and safely replays the still-retained read prefix", async () => {
+		const m = await loggedMount();
+		await readFile(join(m.company, "docs/plan.md"));
+		await m.kill();
+		m.faults.dropPollAnswer = true;
+		const unknown = await m.publish();
+		expect(unknown.code).toBe(1);
+		expect(JSON.parse(unknown.stdout).paths).toEqual([]);
+		expect((await m.journal()).some((line) => line.t === "released")).toBe(false);
+		await m.restart();
+		expect((await m.publish()).code).toBe(0);
+		expect(m.core.readSets.get(m.viewId)?.size).toBe(1);
+		m.faults.dropReport = true;
+		expect(await m.publish()).toMatchObject({ code: 1, stdout: "" });
+		expect((await m.publish()).code).toBe(0);
+	}, 15_000);
+
+	it("fails opens and every later publish closed when its journal is lost, including after a service restart", async () => {
+		const m = await loggedMount();
+		await readFile(join(m.company, "docs/plan.md"));
+		await appendFile(join(m.state, "reads.jsonl"), "invalid-complete-record\n");
+		await expect(readFile(join(m.company, "docs/plan.md"))).rejects.toMatchObject({ code: "EIO" });
+		const refused = await m.publish();
+		expect(refused.code).toBe(4);
+		expect(JSON.parse(refused.stdout)).toEqual({ commitId: null, seq: null, paths: [], refused: "unproven" });
+		await m.kill();
+		await rm(join(m.state, "reads.jsonl"));
+		await m.restart();
+		const stillRefused = await m.publish();
+		expect(stillRefused.code).toBe(4);
+		expect(JSON.parse(stillRefused.stdout).refused).toBe("unproven");
+		expect(m.core.commits).toHaveLength(0);
+		const missing = await m.publish(false, join(m.state, "missing"));
+		expect(missing).toMatchObject({ code: 1, stdout: "" });
+	}, 15_000);
+});
+
+describe.skipIf(!program)("live desktop handoff through real FUSE", () => {
+	it("keeps an actual open descriptor through stream loss, publisher calls and a view replacement", async () => {
+		const m = await loggedMount("computer_desktop");
+		// The mount said once, as it started, that no earlier program is alive; nothing it or a publisher sends while
+		// it lives says so again.
+		expect(abandons(m.requests)).toEqual([m.viewId]);
+		const file = await open(join(m.company, "docs/empty.md"), "r+");
+		cleanup.push(() => file.close().catch(() => {}));
+		await file.write("first");
+		await file.sync(); // The service holds an open writer, with an unfixed chunk.
+		m.disconnect();
+		const alive = await m.publish();
+		expect(alive.code, alive.stderr + m.output()).toBe(4);
+		expect(JSON.parse(alive.stdout).paths).toContainEqual(
+			expect.objectContaining({ path: "docs/empty.md", outcome: "waiting" }),
+		);
+		expect(abandons(m.requests)).toEqual([m.viewId]);
+		await file.write(" second");
+		await file.sync();
+		const inode = (await file.stat()).ino;
+		m.faults.dropHelloAnswer = true;
+		await m.replace(v(701));
+		expect(
+			await eventually(
+				async () => JSON.parse(await readFile(join(m.state, "view.json"), "utf8")).view.viewId === v(701),
+				10_000,
+			),
+			m.output(),
+		).toBe(true);
+		expect((await file.stat()).ino).toBe(inode);
+		await file.write(" third");
+		await file.close();
+		const saved = await m.publish();
+		expect(saved.code, saved.stderr + m.output()).toBe(0);
+		expect(m.core.entries.get("docs/empty.md")?.fileSha256).toBe(hashOf("first second third"));
+		expect(await mounted(m.company)).toBe(true);
+		expect(abandons(m.requests)).toEqual([m.viewId]);
+	}, 30_000);
+
+	it("retains a remembered base and read sequence after SIGKILL between file replacement and hello", async () => {
+		const m = await loggedMount("computer_desktop");
+		expect(await readFile(join(m.company, "docs/plan.md"), "utf8")).toBe("the plan");
+		const before = await m.journal();
+		m.child().kill("SIGSTOP");
+		await m.replace(v(701));
+		expect(JSON.parse(await readFile(join(m.state, "view.json"), "utf8")).view.viewId).toBe(m.viewId);
+		await m.kill();
+		m.core.write(await storeFile(m.root, "docs/plan.md", "someone else's newer plan", 2));
+		await m.remount();
+		await writeFile(join(m.company, "docs/.plan.tmp"), "my stale save");
+		await rename(join(m.company, "docs/.plan.tmp"), join(m.company, "docs/plan.md"));
+		const saved = await m.publish();
+		expect(saved.code, saved.stderr + m.output()).toBe(4);
+		expect(JSON.parse(saved.stdout).paths).toContainEqual(
+			expect.objectContaining({ path: "docs/plan.md", outcome: "conflict" }),
+		);
+		expect(m.core.entries.get("docs/plan.md")?.fileSha256).toBe(hashOf("someone else's newer plan"));
+		expect((await m.journal())[0]?.log).toBe(before[0]?.log);
+		expect(m.core.readSets.get(v(701))?.get("docs/plan.md")?.version).toBe(v(1));
+		expect(m.requests).toContainEqual({
+			kind: Kind.hello,
+			body: { viewId: v(701), previousViewId: m.viewId, abandon: false },
+		});
+		// The restarted mount's feed moved the old view; its first IO hello, on the newer view, said the old program is gone.
+		expect(abandons(m.requests)).toEqual([m.viewId, v(701)]);
+	}, 30_000);
+
+	it("a restarted mount abandons what the killed program left open, so those paths publish again", async () => {
+		const m = await loggedMount("computer_desktop");
+		await writeFile(join(m.company, "docs/result.md"), "fixed result");
+		const unfinished = await open(join(m.company, "docs/result.md"), "r+");
+		cleanup.push(() => unfinished.close().catch(() => {}));
+		await unfinished.write("unfixed text");
+		await unfinished.sync();
+		const rewritten = await open(join(m.company, "docs/empty.md"), "r+");
+		cleanup.push(() => rewritten.close().catch(() => {}));
+		await rewritten.write("lost bytes");
+		await rewritten.sync(); // The service holds both writers, each with an unfixed chunk.
+		await m.kill(); // As systemd restarts it after a crash: no publisher runs between.
+		await m.remount();
+		expect(abandons(m.requests)).toEqual([m.viewId, m.viewId]);
+		await writeFile(join(m.company, "docs/empty.md"), "written again");
+		const saved = await m.publish();
+		expect(saved.code, saved.stderr + m.output()).toBe(0);
+		expect(m.core.entries.get("docs/empty.md")?.fileSha256).toBe(hashOf("written again"));
+		// The file left open went back to its last close.
+		expect(m.core.entries.get("docs/result.md")?.fileSha256).toBe(hashOf("fixed result"));
+		expect(await readFile(join(m.company, "docs/result.md"), "utf8")).toBe("fixed result");
+	}, 30_000);
+
+	it("publishes what a desktop closed when its last connection leaves while another file stays open", async () => {
+		const m = await loggedMount("computer_desktop");
+		const held = await open(join(m.company, "docs/empty.md"), "r+");
+		cleanup.push(() => held.close().catch(() => {}));
+		await held.write("still writing");
+		await held.sync();
+		const done = m.answers.filter((kind) => kind === Kind.done).length;
+		await writeFile(join(m.company, "docs/result.md"), "closed result");
+		// The service has the close (its answer came back), inside the quiet period.
+		expect(await eventually(async () => m.answers.filter((kind) => kind === Kind.done).length > done, 1_000)).toBe(
+			true,
+		);
+		m.child().kill("SIGSTOP"); // No reconnection and no quiet period: only the last connection leaving publishes.
+		cleanup.push(m.kill); // Before the held file closes: a stopped mount never answers its flush.
+		m.disconnect();
+		expect(await eventually(async () => m.core.entries.has("docs/result.md"), 5_000), m.output()).toBe(true);
+		expect(m.core.entries.get("docs/result.md")?.fileSha256).toBe(hashOf("closed result"));
+		expect(m.core.entries.get("docs/empty.md")?.fileSha256).toBe(hashOf(""));
+	}, 30_000);
+
+	it("a separate dead-program publisher transfers the old overlay and log and abandons orphan writers", async () => {
+		const m = await loggedMount("computer_desktop");
+		await readFile(join(m.company, "docs/plan.md"));
+		m.core.commitRefusal = "stopped";
+		await writeFile(join(m.company, "docs/result.md"), "fixed result");
+		const unfinished = await open(join(m.company, "docs/result.md"), "r+");
+		cleanup.push(() => unfinished.close().catch(() => {}));
+		await unfinished.write("unfixed text");
+		await unfinished.sync();
+		m.child().kill("SIGSTOP");
+		await m.replace(v(701));
+		await m.kill();
+		m.core.commitRefusal = undefined;
+		const answer = await m.publish();
+		expect(answer.code, answer.stderr + m.output()).toBe(0);
+		expect(m.core.entries.get("docs/result.md")?.fileSha256).toBe(hashOf("fixed result"));
+		expect(m.core.readSets.get(v(701))?.has("docs/plan.md")).toBe(true);
+		expect(m.requests).toContainEqual({
+			kind: Kind.hello,
+			body: { viewId: v(701), previousViewId: m.viewId, abandon: true },
+		});
+		expect(JSON.parse(await readFile(join(m.state, "view.json"), "utf8")).view.viewId).toBe(v(701));
+	}, 30_000);
+
+	it("carries a lost read log through handoff and refuses every publication including after service restart", async () => {
+		const m = await loggedMount("computer_desktop");
+		await readFile(join(m.company, "docs/plan.md"));
+		await appendFile(join(m.state, "reads.jsonl"), "invalid-complete-record\n");
+		await m.replace(v(701));
+		const refused = await m.publish();
+		expect(refused.code, refused.stderr + m.output()).toBe(4);
+		expect(JSON.parse(refused.stdout).refused).toBe("unproven");
+		await m.kill();
+		await m.restart();
+		const again = await m.publish();
+		expect(again.code).toBe(4);
+		expect(JSON.parse(again.stdout).refused).toBe("unproven");
+		expect(m.core.commits).toHaveLength(0);
+	}, 30_000);
+
+	it("unmounts a closed desktop after one minute when no accepted successor arrives", async () => {
+		const m = await loggedMount("computer_desktop");
+		m.core.views.get(m.viewId)!.state = "closed";
+		const started = Date.now();
+		await m.service().renewLeases();
+		await new Promise((resolve) => setTimeout(resolve, 1_000));
+		expect(await mounted(m.company)).toBe(true);
+		await m.exited();
+		expect(Date.now() - started).toBeGreaterThanOrEqual(59_000);
+		expect(Date.now() - started).toBeLessThan(65_000);
+		expect(m.child().exitCode).toBe(3);
+		expect(await mounted(m.company)).toBe(false);
+	}, 70_000);
 });

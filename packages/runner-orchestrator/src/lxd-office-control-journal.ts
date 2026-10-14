@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, readdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { lstat, mkdir, readdir, rename, rm } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
 	type LxdOfficePreparationCommand,
@@ -9,7 +9,7 @@ import {
 	lxdOfficePreparationCommand,
 } from "./lxd-client.ts";
 import { type LxdOfficeGuestBinding, lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
-import { checkDirectory, publish, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
+import { checkDirectory, code, publish, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const sha = (value: Buffer) => createHash("sha256").update(value).digest("hex");
@@ -31,6 +31,7 @@ type Purpose =
 	| "boot-service-start"
 	| "service-start"
 	| "service-stop"
+	| "service-stop-retry"
 	| "service-restart"
 	| "reset-configuration"
 	| "reset-service-start"
@@ -52,6 +53,7 @@ export interface LxdOfficeControlIdentity {
 	originPreparationSha256?: string;
 	resetId?: string;
 	rootIncarnationId?: string;
+	attempt?: number;
 }
 interface Event {
 	schema: `qorpera.lxd-office-${Purpose}-event/v1`;
@@ -72,8 +74,10 @@ export interface LxdOfficeControlOperationResult {
  * the completed preparation observation; service start binds acknowledged configuration.
  * Stop binds the retained revocation and original start observation, with its
  * own transition directory so later lifecycle transitions cannot reuse it.
- * Durable records survive provider restarts; an unknown submission is never
- * retried, even after a reboot, a missing operation or an apparent report.
+ * Durable records survive provider restarts. Each journal dispatches at most
+ * once, including after an unknown submission. The stop worker may open a
+ * separate retry journal for the same command after its current attempt is no
+ * longer pending and its durable backoff expires.
  * The supervisor must hold the kernel lifecycle lock, serialize all phases,
  * retain the identity before effects, and check the phase's current physical
  * and cloud authority before reconciliation. This journal does none of those
@@ -106,7 +110,7 @@ export class LxdOfficeControlJournal {
 		signal: AbortSignal,
 	): Promise<LxdOfficeControlOperationResult> {
 		const match =
-			/^(preparation|configuration|boot-configuration|boot-service-restart|boot-service-start|service-start|service-stop|service-restart|reset-configuration|reset-service-start|reset-service-restart)-([0-9a-f-]+)$/.exec(
+			/^(preparation|configuration|boot-configuration|boot-service-restart|boot-service-start|service-start|service-stop-retry|service-stop|service-restart|reset-configuration|reset-service-start|reset-service-restart)-([0-9a-f-]+)$/.exec(
 				name,
 			);
 		if (!match) throw new Error("INVALID_OFFICE_CONTROL_JOURNAL_NAME");
@@ -152,6 +156,7 @@ export class LxdOfficeControlJournal {
 				"boot-service-start",
 				"service-start",
 				"service-stop",
+				"service-stop-retry",
 				"service-restart",
 				"reset-configuration",
 				"reset-service-start",
@@ -163,27 +168,29 @@ export class LxdOfficeControlJournal {
 			resolve(stateRoot) !== stateRoot ||
 			!value ||
 			Object.keys(value).sort().join() !==
-				(purpose === "reset-service-restart"
-					? "activationId,binding,bootObservationSha256,command,configurationObservationSha256,intentId,originActivationId,resetId,rootIncarnationId,stopObservationSha256,transitionId"
-					: purpose === "reset-configuration"
-						? "activationId,binding,bootObservationSha256,command,intentId,originPreparationSha256,resetId"
-						: purpose === "reset-service-start"
-							? "activationId,binding,bootObservationSha256,command,configurationObservationSha256,intentId,resetId"
-							: purpose === "boot-service-restart"
-								? "activationId,binding,bootIntentId,bootObservationSha256,command,configurationObservationSha256,intentId,originActivationId,stopObservationSha256,transitionId"
-								: purpose === "boot-service-start"
-									? "activationId,binding,bootIntentId,bootObservationSha256,command,configurationObservationSha256,intentId"
-									: purpose === "boot-configuration"
-										? "activationId,binding,bootIntentId,bootObservationSha256,command,intentId,originPreparationSha256"
-										: purpose === "preparation"
-											? "binding,bootObservationSha256,command,intentId"
-											: purpose === "configuration"
-												? "binding,bootObservationSha256,command,intentId,preparationObservationSha256"
-												: purpose === "service-start"
-													? "binding,bootObservationSha256,command,configurationObservationSha256,intentId"
-													: purpose === "service-stop"
-														? "binding,bootObservationSha256,command,intentId,revocationSha256,startObservationSha256,transitionId"
-														: "activationId,binding,bootObservationSha256,command,configurationObservationSha256,intentId,stopObservationSha256,transitionId") ||
+				(purpose === "service-stop-retry"
+					? "attempt,binding,bootObservationSha256,command,intentId,revocationSha256,startObservationSha256,transitionId"
+					: purpose === "reset-service-restart"
+						? "activationId,binding,bootObservationSha256,command,configurationObservationSha256,intentId,originActivationId,resetId,rootIncarnationId,stopObservationSha256,transitionId"
+						: purpose === "reset-configuration"
+							? "activationId,binding,bootObservationSha256,command,intentId,originPreparationSha256,resetId"
+							: purpose === "reset-service-start"
+								? "activationId,binding,bootObservationSha256,command,configurationObservationSha256,intentId,resetId"
+								: purpose === "boot-service-restart"
+									? "activationId,binding,bootIntentId,bootObservationSha256,command,configurationObservationSha256,intentId,originActivationId,stopObservationSha256,transitionId"
+									: purpose === "boot-service-start"
+										? "activationId,binding,bootIntentId,bootObservationSha256,command,configurationObservationSha256,intentId"
+										: purpose === "boot-configuration"
+											? "activationId,binding,bootIntentId,bootObservationSha256,command,intentId,originPreparationSha256"
+											: purpose === "preparation"
+												? "binding,bootObservationSha256,command,intentId"
+												: purpose === "configuration"
+													? "binding,bootObservationSha256,command,intentId,preparationObservationSha256"
+													: purpose === "service-start"
+														? "binding,bootObservationSha256,command,configurationObservationSha256,intentId"
+														: purpose === "service-stop"
+															? "binding,bootObservationSha256,command,intentId,revocationSha256,startObservationSha256,transitionId"
+															: "activationId,binding,bootObservationSha256,command,configurationObservationSha256,intentId,stopObservationSha256,transitionId") ||
 			(purpose === "configuration" &&
 				(typeof value.preparationObservationSha256 !== "string" ||
 					!/^[0-9a-f]{64}$/.test(value.preparationObservationSha256))) ||
@@ -206,7 +213,7 @@ export class LxdOfficeControlJournal {
 			((purpose === "service-start" || purpose === "boot-service-start" || purpose === "reset-service-start") &&
 				(typeof value.configurationObservationSha256 !== "string" ||
 					!/^[0-9a-f]{64}$/.test(value.configurationObservationSha256))) ||
-			(purpose === "service-stop" &&
+			((purpose === "service-stop" || purpose === "service-stop-retry") &&
 				(typeof value.transitionId !== "string" ||
 					!UUID.test(value.transitionId) ||
 					![value.revocationSha256, value.startObservationSha256].every(
@@ -232,6 +239,7 @@ export class LxdOfficeControlJournal {
 				) ||
 					new Set([value.resetId, value.rootIncarnationId, value.originActivationId, value.activationId]).size !==
 						4)) ||
+			(purpose === "service-stop-retry" && (!Number.isSafeInteger(value.attempt) || value.attempt! < 1)) ||
 			typeof value.intentId !== "string" ||
 			!UUID.test(value.intentId) ||
 			typeof value.bootObservationSha256 !== "string" ||
@@ -262,13 +270,14 @@ export class LxdOfficeControlJournal {
 				? { activationId: value.activationId, resetId: value.resetId }
 				: {}),
 			...(purpose === "reset-configuration" ? { originPreparationSha256: value.originPreparationSha256 } : {}),
-			...(purpose === "service-stop"
+			...(purpose === "service-stop" || purpose === "service-stop-retry"
 				? {
 						transitionId: value.transitionId,
 						revocationSha256: value.revocationSha256,
 						startObservationSha256: value.startObservationSha256,
 					}
 				: {}),
+			...(purpose === "service-stop-retry" ? { attempt: value.attempt } : {}),
 			...(purpose === "reset-service-restart"
 				? {
 						resetId: value.resetId,
@@ -291,10 +300,31 @@ export class LxdOfficeControlJournal {
 		await checkDirectory(stateRoot);
 		const root = join(
 			stateRoot,
-			`${purpose}-${identity.binding.allocationId}${purpose === "service-stop" ? `-${identity.transitionId}` : purpose === "service-restart" || purpose === "boot-service-restart" || purpose === "reset-service-restart" || purpose === "boot-configuration" || purpose === "boot-service-start" || purpose === "reset-configuration" || purpose === "reset-service-start" ? `-${identity.activationId}` : ""}`,
+			`${purpose}-${identity.binding.allocationId}${purpose === "service-stop-retry" ? `-${identity.transitionId}-${identity.attempt}` : purpose === "service-stop" ? `-${identity.transitionId}` : purpose === "service-restart" || purpose === "boot-service-restart" || purpose === "reset-service-restart" || purpose === "boot-configuration" || purpose === "boot-service-start" || purpose === "reset-configuration" || purpose === "reset-service-start" ? `-${identity.activationId}` : ""}`,
 		);
 		const journal = new LxdOfficeControlJournal(root, identity, client, purpose);
-		if (!existing) {
+		if (!existing && purpose === "service-stop-retry") {
+			// The stop retry schedule has durably reserved this attempt. Publish
+			// its complete authority atomically, so an interrupted mkdir/write is
+			// never mistaken for a damaged active journal on the next pass.
+			try {
+				await lstat(root);
+				throw new Error("OFFICE_STOP_RETRY_ALREADY_EXISTS");
+			} catch (error) {
+				if (!code(error, "ENOENT")) throw error;
+			}
+			const staging = join(stateRoot, `.creating-${basename(root)}`);
+			try {
+				await checkDirectory(staging);
+				await rm(staging, { recursive: true });
+			} catch (error) {
+				if (!code(error, "ENOENT")) throw error;
+			}
+			await mkdir(staging, { mode: 0o700 });
+			await publish(staging, "authority.json", encode(journal.#authority()));
+			await rename(staging, root);
+			await syncDirectory(stateRoot);
+		} else if (!existing) {
 			// Creation is explicit and exclusive. A surviving directory with lost
 			// authority is never silently initialized, even if it looks empty.
 			await mkdir(root, { mode: 0o700 });

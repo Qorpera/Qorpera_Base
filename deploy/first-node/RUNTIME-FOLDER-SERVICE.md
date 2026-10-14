@@ -70,7 +70,9 @@ A truncate of a file not open is an open, the chunk that ends it when the cut is
 the 4 MiB grid, or to nothing, sends no chunk: the close cuts the file's chunks, from its origin's when none of it was
 sent. A file whose manifest is not on the 4 MiB grid is changed whole (open it with truncate), not chunk by chunk. A write handle belongs to the view, not to
 the connection that opened it (the folder program pools its connections); a file still open when the view's last
-connection ends is abandoned, and what it held at its last close stays pending.
+connection ends is abandoned, and what it held at its last close stays pending. A protocol-3 core view's handles
+outlive its connections instead: they are abandoned only when a program holding the mount's `daemon.lock` says the
+program before it is gone (a restarted mount, or a publisher), or when the view ends (Step 4c-3).
 
 A save's base is the version the machine's version map holds: the newest it read of the path, or the version its own
 save made (the `version` of `C` or `X`). Once that save is published, the service reads such a base as the version
@@ -392,7 +394,8 @@ computer desktop's view, which the core opens for an office screen (C1b-3a):
   view. It publishes 2 s after its last change (`DESKTOP_QUIET_MS`, the desktop rule of RUNTIME-COMPANY-FOLDER.md §2),
   when its machine asks, and when its last connection leaves: what is pending then is published under the lease it
   still has, and the view is dropped after, unless that publish has no answer or a refusal that may lift (then it is
-  kept: Step 4c, "Kept"). A machine that comes back meanwhile joins it.
+  kept: Step 4c, "Kept"). A machine that comes back meanwhile joins it. A file its program still holds open waits
+  (Step 4c-3): what was closed publishes, and the view is kept for the open files.
 - **The seat in use.** Each renewal tells the core since when the view has had changes not published
   (`p_unsaved_since`, C1b-3 §9), or null. Unsaved means what a boundary publishes: a removal, or a new, moved or
   changed file or folder. A lock, swap, backup or trash name a program holds is never published and is none, nor is a
@@ -511,10 +514,80 @@ with the view as the actor before anything made from them is published (RUNTIME-
   refused (two in a row); and a read not yet released when a narrowing comes, every later boundary refused
   `unreadable`.
 
+### Slice 4c-2: the program's durable log
+
+The Rust program speaks protocol 3. Writable mounts log every file open, including cached and empty files, and every non-root
+folder open before answering FUSE, with the version and receipt shown. `reads.jsonl` in its private `--state-dir`
+keeps the mount UUID, consecutive entries and synced released markers. Threads and separate publishers take an OS
+lock on `reads.lock`, whose inode stays fixed across journal compaction. A program restart reopens the same log; a
+new mount starts with empty state. `/run` outlives these processes, not a VM restart.
+
+Before each mutation and `P`, on that same connection, the program sends entries beyond both the durable released
+prefix and that connection's `i.taken`. Each new connection starts without a taken watermark, and sends at least one
+intake, including an empty log's lost flag. Later empty intakes are skipped unless the journal becomes lost. The lock
+spans that handover and the mutation's send, so no earlier completed open can be left behind. Batches index directly
+into the consecutive retained suffix. A dropped acknowledgement is replayed before the mutation; `taken` is never durable proof. Only a synced
+released marker permits prefix compaction. A missing or corrupt journal leaves a permanent lost marker, reports
+`lost: true` after reconnects and refuses further opens; a torn unanswered last append alone can be trimmed.
+
+`publish --view-file <file> --state-dir <dir> [--final] [--json]` reads that same journal, even after the mount died.
+It never creates a missing state directory: that fails locally, without contacting or poisoning the healthy view.
+Missing proof inside an existing state directory still marks the journal lost.
+An ordinary boundary's report is followed by an empty `I` to prove the captured prefix released: an unanswered
+no-write release otherwise has the same empty paths as a successful one. A final's success requires `closed: true`.
+JSON mode prints only the report to stdout and diagnostics to stderr. Exit 0 is success, 1 failed/unknown, 2 usage,
+3 closed/refused view and 4 a boundary or path refused. An answered report remains printed if a later release poll or
+closure check fails, with exit 1: its receipts remain useful, but completion is unproven. Exit 1 or 3 can have no report;
+the helper must use the code.
+
+Tests: Rust journal, CLI, link and actual FUSE tests; `folder-mount-e2e.test.ts` runs the built program against the
+actual service with a stand-in core and share. It covers cached/empty/listing receipts, a lost intake answer before a
+write, durable released prefixes and unsubmitted reads across service restarts, automatic quiet saves, a dead mount's
+publisher, unanswered/no-report boundaries, final closure, and permanently lost proof. Office helper lifecycle and
+live deployment remain later slices.
+
+### Slice 4c-3: a desktop's successor view
+
+Protocol-3 hello can include `previous: {viewId, pass}`. The target and old view must name the same company and
+machine, both desktop views, and the old pass must match the service's accepted hash. Each accepted move keeps a
+tombstone pointing to its successor, so a repeated hello, including an older accepted proof after rapid file
+replacements, cannot move an overlay twice. A service that restarted has no old pending overlay; the new view still
+authenticates normally and the program replays its durable log before writing.
+
+The service fences both views before waiting for admitted requests, publication, feed work and renewals. It then
+moves pending nodes, open write handles, remembered versions, unreleased read logs and byte-retention roots as one
+synchronous transition. New old-view requests are refused. Cached staged proofs, including an open handle's fixed
+snapshot, are invalidated: successor writes need seals in their own upload scope. An uncertain commit keeps its
+original actor, operation key and units; only a definitive old-view-ended answer permits replanning under the new
+view. A closed desktop retains its pending state for a fixed minute without renewed authority, then is discarded.
+
+The Rust program watches atomic replacement of its primary view file and checkpoints the last accepted credentials
+in its private state directory under a fixed interprocess `view.lock`. It sends that proof until hello succeeds.
+Every stream carries its accepted epoch and its own volatile read-intake watermark; idle old streams and feeds are
+closed on acceptance, and late old reads/refusals cannot contaminate the successor. Inodes, open descriptors, the
+version map and journal stay in place. A closed desktop waits one minute for an accepted replacement, then unmounts
+with exit 3; an invalid replacement never restarts the deadline. Use the same explicit `--state-dir` for the mount,
+all replacements, restarts and independent publishers.
+
+A private fixed `daemon.lock` is held for the mounted program's full lifetime, before any state mutation or hello.
+Stream loss alone no longer abandons a protocol-3 core view's handles. Holding the lock proves no earlier program on
+the same state is alive, so a writable mount, once its feed has accepted the view and before it serves a file, sends
+one IO hello with `abandon: true`: what a program systemd restarted after a crash left open goes back to its last
+fixed save and publishes after the quiet period, as any change does. None of its later hellos carries it, so it never
+abandons its own handles. A publisher unable to take the lock treats the mount as alive. If it acquires the lock, it
+retains it through publication and sends `abandon: true` on its authenticated IO hello, restoring orphan writes to
+their last fixed saves. This excludes a restart while publishing dead-program state. A publisher creates neither a
+missing state directory nor its missing lifetime-lock file. A desktop view kept only for files still open publishes
+what was closed when its last connection leaves; the open files wait.
+
+Tests include actual FUSE descriptors across disconnection and replacement, lost hello answers, SIGKILL between
+primary replacement and hello, a SIGKILLed mount restarted on the same state that abandons what it left open,
+publication of closed files on last leave while one stays open, dead-program publication, strict successor-scoped
+seals, uncertain-commit replay, fixed grace expiry, stale pooled replies and retained lost logs. This is implementation and test coverage, not a
+live rollout record; the production helper remains slice 4d.
+
 ## Not here
 
-Moves to a newer view in place (`switch`), a closed desktop view kept for its minute, and a kept view refused because
-a newer one replaced it (slice 4c-3); the folder program's read log, its `--state-dir` and `qorpera-folder publish`
-(slice 4c-2); the office service's side of a command's view (opening it, mounting it for the command, and the final
+The office service's side of a command's view (opening it, mounting it for the command, and the final
 boundary at the command's end: slice 4d); coding machines and test machines (each with its own mount). Each is a later
 step.

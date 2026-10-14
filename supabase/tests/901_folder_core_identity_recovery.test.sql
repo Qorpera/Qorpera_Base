@@ -10,8 +10,8 @@
 -- Two registrations of one target, and two retirement confirmations of one identity, serialize on the identity's
 -- machine lock and the second replays the first.
 -- Every patched body carries its branch. The fixture is committed so the connections can see it, and removed at the
--- end. Waits are detected with pg_blocking_pids. A snapshot-v1 company keeps the gc fence in each else branch, untested
--- (folder-v2 only since 3 Oct).
+-- end. Waits are detected with pg_blocking_pids. A company without a folder takes no gc fence since the legacy sweep's
+-- F2d (20260930293000): every call fails in the fence (42501), as M checks.
 
 -- The owner, and one member per identity (a member has one identity in a company).
 insert into auth.users(id,email) values ('09010000-0000-4000-8000-000000000001','p13b-owner@example.test');
@@ -708,124 +708,85 @@ begin
 	if v_value is distinct from v_first then raise exception 'L: the second confirmation must replay the first''s receipt: %', v_value; end if;
 end $$;
 
--- K. Each patched body carries its folder-v2 branch exactly once: a later create or replace that drops one fails here
--- (folder-v2 only since 3 Oct, so no snapshot-v1 text pins).
+-- K. Each patched body carries its folder-v2 path exactly once: a later create or replace that drops one fails here
+-- (folder-v2 only since 3 Oct, so no snapshot-v1 text pins; since the legacy sweep's F2d, 20260930293000, each path
+-- is the only one).
 create temporary table p13b_patches(n serial, fn text, patched text) on commit preserve rows;
 insert into p13b_patches(fn, patched) values
 	('qorpera_activate_identity_recovery(uuid)',
 		$p13new$	-- 20260930049000: on folder-v2 the fence, rank 0 and the company's member rows (rank 1) before the identity; no gc fence.
-	if public.qorpera_company_is_folder_v2(v_recovery.profile_id) then
-		perform public.qorpera_folder_identity_recovery_locks(v_recovery.profile_id);
-	else
-	perform public.qorpera_lock_profile_gc_fence(v_recovery.profile_id);
-	end if;
+	-- 20260930293000 (legacy sweep F2d): folder-v2 only, so every company takes this path.
+	perform public.qorpera_folder_identity_recovery_locks(v_recovery.profile_id);
 $p13new$),
 	('qorpera_cancel_identity_recovery(uuid)',
 		$p13new$	-- 20260930049000: on folder-v2 the fence, rank 0 and the company's member rows (rank 1) before the identity; no gc fence.
-	if public.qorpera_company_is_folder_v2(v_recovery.profile_id) then
-		perform public.qorpera_folder_identity_recovery_locks(v_recovery.profile_id);
-	else
-	perform public.qorpera_lock_profile_gc_fence(v_recovery.profile_id);
-	end if;
+	-- 20260930293000 (legacy sweep F2d): folder-v2 only, so every company takes this path.
+	perform public.qorpera_folder_identity_recovery_locks(v_recovery.profile_id);
 $p13new$),
 	('qorpera_consent_identity_recovery(uuid)',
 		$p13new$	-- 20260930049000: on folder-v2 the fence, rank 0 and the company's member rows (rank 1) before the identity; no gc fence.
-	if public.qorpera_company_is_folder_v2(v_recovery.profile_id) then
-		perform public.qorpera_folder_identity_recovery_locks(v_recovery.profile_id);
-	else
-	perform public.qorpera_lock_profile_gc_fence(v_recovery.profile_id);
-	end if;
+	-- 20260930293000 (legacy sweep F2d): folder-v2 only, so every company takes this path.
+	perform public.qorpera_folder_identity_recovery_locks(v_recovery.profile_id);
 $p13new$),
 	('qorpera_request_identity_recovery(uuid,uuid,uuid,bigint,text,text)',
 		$p13new$	-- 20260930049000: on folder-v2 the fence, rank 0 and the company's member rows (rank 1) before the identity; no gc fence.
-	if public.qorpera_company_is_folder_v2(v_identity.profile_id) then
-		perform public.qorpera_folder_identity_recovery_locks(v_identity.profile_id);
-	else
-	perform public.qorpera_lock_profile_gc_fence(v_identity.profile_id);
-	end if;
-$p13new$),
-	('qorpera_request_login_identity_recovery(uuid,uuid,uuid,text)',
-		$p13new$	v_user uuid; v_owner boolean; v_self boolean; v_owner_user uuid; v_folder boolean;
+	-- 20260930293000 (legacy sweep F2d): folder-v2 only, so every company takes this path.
+	perform public.qorpera_folder_identity_recovery_locks(v_identity.profile_id);
 $p13new$),
 	('qorpera_request_login_identity_recovery(uuid,uuid,uuid,text)',
 		$p13new$	-- 20260930049000: on folder-v2 the sign-in is read with no lock and checked again under the identity's lock
 	-- (pending, and re-pinned to no other recovery epoch meanwhile); holding it while waiting for the identity
 	-- deadlocks with a new sign-in (C1B §8).
+	-- 20260930293000 (legacy sweep F2d): folder-v2 only, so every company takes this path.
 	select * into v_session from public.qorpera_native_provider_login_sessions where id=p_login_id;
-	v_folder:=found and public.qorpera_company_is_folder_v2(v_session.profile_id);
-	if not v_folder then
-	select * into v_session from public.qorpera_native_provider_login_sessions where id=p_login_id for share;
-	end if;
 $p13new$),
 	('qorpera_request_login_identity_recovery(uuid,uuid,uuid,text)',
 		$p13new$	-- 20260930049000: on folder-v2 the fence, rank 0 and the company's member rows (rank 1) before the identity; no gc fence.
-	if v_folder then
-		perform public.qorpera_folder_identity_recovery_locks(v_identity.profile_id);
-	else
-	perform public.qorpera_lock_profile_gc_fence(v_identity.profile_id);
-	end if;
+	-- 20260930293000 (legacy sweep F2d): folder-v2 only, so every company takes this path.
+	perform public.qorpera_folder_identity_recovery_locks(v_identity.profile_id);
 $p13new$),
 	('qorpera_request_login_identity_recovery(uuid,uuid,uuid,text)',
 		$p13new$	select * into strict v_identity from public.qorpera_member_compute_identities where id=v_session.compute_identity_id for update;
-	if v_folder and not exists(select 1 from public.qorpera_native_provider_login_sessions where id=p_login_id and status='pending'
+	if not exists(select 1 from public.qorpera_native_provider_login_sessions where id=p_login_id and status='pending'
 		and expires_at>clock_timestamp()) then
 		raise exception 'login recovery requires a pending login' using errcode='42501'; end if;
-	if v_folder and not exists(select 1 from public.qorpera_native_provider_login_sessions where id=p_login_id
+	if not exists(select 1 from public.qorpera_native_provider_login_sessions where id=p_login_id
 		and compute_recovery_epoch=v_session.compute_recovery_epoch) then
 		raise exception 'login recovery generation changed' using errcode='42501'; end if;
-$p13new$),
-	('qorpera_request_account_refresh_identity_recovery(uuid,uuid,uuid,text)',
-		$p13new$	v_user uuid; v_owner boolean; v_self boolean; v_owner_user uuid; v_folder boolean;
 $p13new$),
 	('qorpera_request_account_refresh_identity_recovery(uuid,uuid,uuid,text)',
 		$p13new$	-- 20260930049000: on folder-v2 the refresh request is read with no lock and checked again under the identity's lock
 	-- (pending, and re-pinned to no other recovery epoch meanwhile); holding it while waiting for the identity
 	-- deadlocks with a new sign-in (C1B §8).
+	-- 20260930293000 (legacy sweep F2d): folder-v2 only, so every company takes this path.
 	select * into v_session from public.qorpera_native_account_refresh_requests where id=p_request_id;
-	v_folder:=found and public.qorpera_company_is_folder_v2(v_session.profile_id);
-	if not v_folder then
-	select * into v_session from public.qorpera_native_account_refresh_requests where id=p_request_id for share;
-	end if;
 $p13new$),
 	('qorpera_request_account_refresh_identity_recovery(uuid,uuid,uuid,text)',
 		$p13new$	-- 20260930049000: on folder-v2 the fence, rank 0 and the company's member rows (rank 1) before the identity; no gc fence.
-	if v_folder then
-		perform public.qorpera_folder_identity_recovery_locks(v_identity.profile_id);
-	else
-	perform public.qorpera_lock_profile_gc_fence(v_identity.profile_id);
-	end if;
+	-- 20260930293000 (legacy sweep F2d): folder-v2 only, so every company takes this path.
+	perform public.qorpera_folder_identity_recovery_locks(v_identity.profile_id);
 $p13new$),
 	('qorpera_request_account_refresh_identity_recovery(uuid,uuid,uuid,text)',
 		$p13new$	select * into strict v_identity from public.qorpera_member_compute_identities where id=v_session.compute_identity_id for update;
-	if v_folder and not exists(select 1 from public.qorpera_native_account_refresh_requests where id=p_request_id and status='pending'
+	if not exists(select 1 from public.qorpera_native_account_refresh_requests where id=p_request_id and status='pending'
 		and expires_at>clock_timestamp()) then
 		raise exception 'login recovery requires a pending login' using errcode='42501'; end if;
-	if v_folder and not exists(select 1 from public.qorpera_native_account_refresh_requests where id=p_request_id
+	if not exists(select 1 from public.qorpera_native_account_refresh_requests where id=p_request_id
 		and compute_recovery_epoch=v_session.compute_recovery_epoch) then
 		raise exception 'login recovery generation changed' using errcode='42501'; end if;
-$p13new$),
-	('qorpera_prepare_identity_key_backup(uuid,text,uuid,text,text)',
-		$p13new$	v_revision bigint; v_folder boolean;
 $p13new$),
 	('qorpera_prepare_identity_key_backup(uuid,text,uuid,text,text)',
 		$p13new$	-- 20260930049000: on folder-v2 the fence and rank 0, then the sign-in KEY SHARE (the backup and its receipt
 	-- reference it), which a new sign-in's cancellation does not wait for, checked again under the identity's
 	-- lock (C1B §8); no gc fence.
-	v_folder:=public.qorpera_company_is_folder_v2(v_authority.profile_id);
-	if v_folder then
-		perform public.qorpera_folder_machine_fence(v_authority.profile_id);
-		select * into v_login from public.qorpera_native_provider_login_sessions
-		where id = p_login_id and profile_id = v_authority.profile_id and capability_sha256 = p_login_capability_sha256
-			and status in ('pending','completed') and expires_at > clock_timestamp() for key share;
-	else
-	perform public.qorpera_lock_profile_gc_fence(v_authority.profile_id);
+	-- 20260930293000 (legacy sweep F2d): folder-v2 only, so every company takes this path.
+	perform public.qorpera_folder_machine_fence(v_authority.profile_id);
 	select * into v_login from public.qorpera_native_provider_login_sessions
 	where id = p_login_id and profile_id = v_authority.profile_id and capability_sha256 = p_login_capability_sha256
-		and status in ('pending','completed') and expires_at > clock_timestamp() for share;
-	end if;
+		and status in ('pending','completed') and expires_at > clock_timestamp() for key share;
 $p13new$),
 	('qorpera_prepare_identity_key_backup(uuid,text,uuid,text,text)',
-		$p13new$	if v_folder and not exists(select 1 from public.qorpera_native_provider_login_sessions where id = v_login.id
+		$p13new$	if not exists(select 1 from public.qorpera_native_provider_login_sessions where id = v_login.id
 		and status in ('pending','completed') and expires_at > clock_timestamp()
 		and compute_recovery_epoch = v_login.compute_recovery_epoch) then
 		raise exception 'recovery source login is unavailable' using errcode = '42501'; end if;
@@ -834,40 +795,28 @@ $p13new$),
 $p13new$),
 	('qorpera_recovery_locked(uuid,text,uuid,text)',
 		$p13new$	-- 20260930049000: on folder-v2 the fence, rank 0 and the company's member rows (rank 1) before the identity; no gc fence.
-	if public.qorpera_company_is_folder_v2(v_authority.profile_id) then
-		perform public.qorpera_folder_identity_recovery_locks(v_authority.profile_id);
-	else
-	perform public.qorpera_lock_profile_gc_fence(v_authority.profile_id);
-	end if;
+	-- 20260930293000 (legacy sweep F2d): folder-v2 only, so every company takes this path.
+	perform public.qorpera_folder_identity_recovery_locks(v_authority.profile_id);
 $p13new$),
 	('qorpera_register_identity_recovery_target(uuid,text,uuid,uuid,uuid,text,text,text,text)',
 		$p13new$	-- 20260930049000: on folder-v2 the fence and rank 0, then the identity's machine lock, which serializes two
 	-- registrations of one target as the gc fence did (the second finds the first's row); no gc fence.
-	if public.qorpera_company_is_folder_v2(v_authority.profile_id) then
-		perform public.qorpera_folder_machine_fence(v_authority.profile_id);
-		perform pg_advisory_xact_lock(hashtextextended('qorpera.identity-machine:' || p_compute_identity_id::text, 0));
-	else
-	perform public.qorpera_lock_profile_gc_fence(v_authority.profile_id);
-	end if;
+	-- 20260930293000 (legacy sweep F2d): folder-v2 only, so every company takes this path.
+	perform public.qorpera_folder_machine_fence(v_authority.profile_id);
+	perform pg_advisory_xact_lock(hashtextextended('qorpera.identity-machine:' || p_compute_identity_id::text, 0));
 $p13new$),
 	('qorpera_recovery_member_role(uuid)',
 		$p13new$  -- 20260930049000: on folder-v2 the fence and rank 0, then the member (rank 1); no gc fence.
-  if public.qorpera_company_is_folder_v2(p_company_id) then
-    perform public.qorpera_folder_machine_fence(p_company_id);
-  else
-  perform public.qorpera_lock_profile_gc_fence(p_company_id);
-  end if;
+  -- 20260930293000 (legacy sweep F2d): folder-v2 only, so every company takes this path.
+  perform public.qorpera_folder_machine_fence(p_company_id);
 $p13new$),
 	('qorpera_confirm_runtime_identity_retirement(text,text,uuid,jsonb)',
 		$p13new$		-- 20260930049000: on folder-v2 the fence and rank 0, then the identity's machine lock, which serializes
 		-- two confirmations of one identity as the gc fence did (the second finds the first's receipt), and a
 		-- confirmation with a machine reservation of the identity; no gc fence.
-		if public.qorpera_company_is_folder_v2(v_profile) then
-			perform public.qorpera_folder_machine_fence(v_profile);
-			perform pg_advisory_xact_lock(hashtextextended('qorpera.identity-machine:' || p_compute_identity_id::text, 0));
-		else
-		perform public.qorpera_lock_profile_gc_fence(v_profile);
-		end if;
+		-- 20260930293000 (legacy sweep F2d): folder-v2 only, so every company takes this path.
+		perform public.qorpera_folder_machine_fence(v_profile);
+		perform pg_advisory_xact_lock(hashtextextended('qorpera.identity-machine:' || p_compute_identity_id::text, 0));
 $p13new$),
 	('qorpera_decide_member_identity_recovery(uuid,uuid,uuid,text,text,uuid,text)',
 		$p13new$begin
@@ -876,7 +825,8 @@ $p13new$),
   -- or cancellation after them, then take nothing new, so two decisions on one identity, or a decision and the
   -- removal of the identity's owner, queue instead of deadlocking (C1B §8). A caller the review would refuse
   -- (checked here with no lock) takes none of them.
-  if public.qorpera_company_is_folder_v2(p_company_id) and auth.role() = 'authenticated' and exists(
+  -- 20260930293000 (legacy sweep F2d): folder-v2 only, so every company takes this path.
+  if auth.role() = 'authenticated' and exists(
     select 1 from public.qorpera_member_compute_identities as identity
     join public.qorpera_profile_members as member on member.profile_id = identity.profile_id and member.user_id = auth.uid()
     where identity.id = p_compute_identity_id and identity.profile_id = p_company_id
@@ -889,19 +839,46 @@ $p13new$);
 do $$
 declare v_bad text[];
 begin
-	if (select count(*) from p13b_patches) <> 20 then raise exception 'K: the patch table is incomplete'; end if;
+	if (select count(*) from p13b_patches) <> 17 then raise exception 'K: the patch table is incomplete'; end if;
 	select array_agg(fn order by n) into v_bad from p13b_patches
 	where (length(pg_get_functiondef(('public.' || fn)::regprocedure))
 		- length(replace(pg_get_functiondef(('public.' || fn)::regprocedure), patched, ''))) / length(patched) <> 1;
 	if v_bad is not null then raise exception 'K: a patched branch is missing in: %', v_bad; end if;
 end $$;
 
+-- M. A company without a folder takes no gc fence (the legacy sweep's F2d, 20260930293000): its owner's recovery member
+-- role and recovery decision fail in the fence, as every recovery and retirement call there does.
+insert into public.qorpera_profiles(id,name,created_by_user_id) values
+	('09010000-0000-4000-8000-000000000011','Identity recovery, no folder','09010000-0000-4000-8000-000000000001');
+insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role) values
+	('09010000-0000-4000-8000-000000000011','09010000-0000-4000-8000-000000000001','p13b-owner@example.test','Owner','owner');
+insert into public.qorpera_member_compute_identities(id, profile_id, ownership_kind, owner_user_id, client_identity_id, display_name)
+values ('09010000-0000-4000-8000-000000000039','09010000-0000-4000-8000-000000000011','member','09010000-0000-4000-8000-000000000001',
+	extensions.gen_random_uuid(),'Identity without a folder');
+do $$
+declare v_call text;
+begin
+	perform set_config('request.jwt.claims', pg_temp.claims('09010000-0000-4000-8000-000000000001'), false);
+	foreach v_call in array array['select public.qorpera_recovery_member_role(''09010000-0000-4000-8000-000000000011'')',
+		format('select public.qorpera_decide_member_identity_recovery(%L,%L,%L,%L,%L)', '09010000-0000-4000-8000-000000000011',
+			'09010000-0000-4000-8000-000000000039', extensions.gen_random_uuid(), repeat('0', 64), 'cancel')] loop
+		begin
+			execute v_call;
+			raise exception 'M: a call on a company without a folder must fail in the fence: %', left(v_call, 70);
+		exception when sqlstate '42501' then
+			if sqlerrm <> 'Company folder is unavailable' then
+				raise exception 'M: a call on a company without a folder must fail in the fence, not %: %', sqlerrm, left(v_call, 70); end if;
+		end;
+	end loop;
+	perform set_config('request.jwt.claims', pg_temp.claims(null), false);
+end $$;
+
 select dblink_disconnect(name) from unnest(array['p13b_a','p13b_b','p13b_c','p13b_d','p13b_e']) name;
 
--- Remove the fixture: the node, the rows of the identities and model logins, then the company's rows.
+-- Remove the fixture: the node, the rows of the identities and model logins, then the companies' rows.
 set session_replication_role = replica;
 do $$
-declare v_table record; v_profile uuid := '09010000-0000-4000-8000-000000000010';
+declare v_table record; v_profiles uuid[] := array['09010000-0000-4000-8000-000000000010', '09010000-0000-4000-8000-000000000011']::uuid[];
 	v_identities uuid[] := array(select pg_temp.identity(n) from generate_series(1, 7) as n);
 	v_connections uuid[] := array(select id from public.qorpera_provider_connections where profile_id = '09010000-0000-4000-8000-000000000010');
 begin
@@ -916,18 +893,19 @@ begin
 	for v_table in select c.table_name, c.column_name from information_schema.columns c
 		join information_schema.tables t on t.table_schema = c.table_schema and t.table_name = c.table_name and t.table_type = 'BASE TABLE'
 		where c.table_schema = 'public' and c.column_name in ('profile_id','environment_id') and c.data_type = 'uuid' loop
-		execute format('delete from public.%I where %I = $1', v_table.table_name, v_table.column_name)
-		using case v_table.column_name when 'profile_id' then v_profile else '09010000-0000-4000-8000-000000000020'::uuid end;
+		execute format('delete from public.%I where %I = any ($1)', v_table.table_name, v_table.column_name)
+		using case v_table.column_name when 'profile_id' then v_profiles else array['09010000-0000-4000-8000-000000000020']::uuid[] end;
 	end loop;
-	delete from public.qorpera_profiles where id = v_profile;
+	delete from public.qorpera_profiles where id = any (v_profiles);
 end $$;
 set session_replication_role = origin;
 delete from auth.users where id = '09010000-0000-4000-8000-000000000001' or id in (select pg_temp.member(n) from generate_series(1, 7) as n);
 do $$
 begin
-	if exists (select 1 from public.qorpera_profiles where id = '09010000-0000-4000-8000-000000000010')
+	if exists (select 1 from public.qorpera_profiles where id in ('09010000-0000-4000-8000-000000000010', '09010000-0000-4000-8000-000000000011'))
 		or exists (select 1 from public.qorpera_runtime_nodes where id = '09010000-0000-4000-8000-000000000060')
-		or exists (select 1 from public.qorpera_member_compute_identities where profile_id = '09010000-0000-4000-8000-000000000010')
+		or exists (select 1 from public.qorpera_member_compute_identities where profile_id in ('09010000-0000-4000-8000-000000000010',
+			'09010000-0000-4000-8000-000000000011'))
 		or exists (select 1 from public.qorpera_identity_recoveries where profile_id = '09010000-0000-4000-8000-000000000010')
 		or exists (select 1 from public.qorpera_identity_backup_login_receipts where compute_identity_id in (
 			select ('09010000-0000-4000-8000-00000000003' || n)::uuid from generate_series(1, 7) as n))

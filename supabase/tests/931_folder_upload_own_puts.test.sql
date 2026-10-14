@@ -1,5 +1,5 @@
 -- @fixture 761_folder_core_bytes.test.sql until "-- 1. The version-2 manifest"
--- Company folder core, for F3 step 3 (migration 20260930083000; deploy/first-node/RUNTIME-FOLDER-WRITES.md, 3a): an
+-- Company folder core, for F3 step 3 (migration 20260928489290; deploy/first-node/RUNTIME-FOLDER-WRITES.md, 3a): an
 -- upload holds the bytes its actor put under its own earlier intents, so a big file's chunks, sent before its manifest
 -- was known, are not put again. Only the same actor's (kind and scope), only in the same environment, only while that
 -- intent is unexpired; a marked object still refuses.

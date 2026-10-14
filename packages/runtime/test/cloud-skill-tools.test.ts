@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { parseCloudSkillFile } from "@qorpera/cloud-client/cloud-skill-file";
-import type { CloudCompanyPathGateway, CloudCompanyPathResult } from "@qorpera/runtime/cloud-company-path-gateway";
+import type { CloudCompanyPathResult } from "@qorpera/runtime/cloud-company-path-gateway";
 import { CloudCompanyPathNotText } from "@qorpera/runtime/cloud-company-path-gateway";
 import {
 	CloudCompanyPathParentMissing,
@@ -8,6 +8,7 @@ import {
 	CloudCompanyPathToolRefusal,
 	CloudCompanyPathVersionChanged,
 } from "@qorpera/runtime/cloud-company-path-refusal";
+import type { CloudFolderNotebookGateway } from "@qorpera/runtime/cloud-folder-notebooks";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudNativeToolBoundary, MAX_CLOUD_TOOL_RESULT_BYTES } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { cloudSkillRoot, cloudSkillTools, composeCloudAgentSkills } from "@qorpera/runtime/cloud-skill-tools";
@@ -52,7 +53,7 @@ function companyFile(initial: Record<string, string> = {}) {
 		receiptId: randomUUID(),
 		proposalId: state === "proposed" ? randomUUID() : null,
 	});
-	const readTrusted = vi.fn<CloudCompanyPathGateway["readTrusted"]>(async (path) => {
+	const readTrusted = vi.fn<CloudFolderNotebookGateway["readTrusted"]>(async (path) => {
 		if (unreadable.has(path)) throw new CloudCompanyPathNotText();
 		if (deniedReads.has(path)) throw new CloudCompanyPathRpcRefusal();
 		const file = files.get(path);
@@ -61,7 +62,7 @@ function companyFile(initial: Record<string, string> = {}) {
 			? { path, version: randomUUID(), kind: "directory", text: "", fileSha256: null }
 			: { path, version: null, kind: "absent", text: "", fileSha256: null };
 	});
-	const listTrusted = vi.fn<CloudCompanyPathGateway["listTrusted"]>(async (path) => {
+	const listTrusted = vi.fn<CloudFolderNotebookGateway["listTrusted"]>(async (path) => {
 		if (unlistable.has(path)) throw new Error("Company File listing unavailable");
 		const child = (key: string) => key.startsWith(`${path}/`) && !key.slice(path.length + 1).includes("/");
 		return [
@@ -81,7 +82,7 @@ function companyFile(initial: Record<string, string> = {}) {
 				})),
 		].sort((a, b) => (a.path < b.path ? -1 : 1));
 	});
-	const mutate = vi.fn<CloudCompanyPathGateway["mutate"]>(async (operation, input) => {
+	const mutate = vi.fn<CloudFolderNotebookGateway["mutate"]>(async (operation, input) => {
 		if (parent(input.path) && !folders.has(parent(input.path))) throw new Error("Company File parent is absent");
 		if (deniedChanges.has(input.path)) throw new CloudCompanyPathToolRefusal();
 		if (operation === "mkdir") {
