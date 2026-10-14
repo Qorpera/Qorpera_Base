@@ -1531,6 +1531,67 @@ describe("cloud Company File path gateway", () => {
 		},
 	);
 
+	it.each(["valid", "hash", "kind", "tool", "read", "status"])(
+		"records a folder image company_read showed only when its released answer names it: %s",
+		async (fault) => {
+			const f = fixture();
+			const readId = randomUUID();
+			const image = "e".repeat(64);
+			const text = JSON.stringify({
+				path: "photos/red.png",
+				kind: fault === "kind" ? "file" : "image",
+				imageSha256: image,
+			});
+			f.confirmations.set(readId, "b".repeat(64));
+			const output = JSON.stringify({
+				status: fault === "status" ? "unconfirmed" : "ok",
+				provenance: {
+					companyId: f.identity.companyId,
+					runId: f.identity.runId,
+					tool: fault === "tool" ? "company_list" : "company_read",
+					...(fault === "read" ? {} : { companyReadId: readId }),
+				},
+				content: { sha256: "b".repeat(64), text, includedBytes: Buffer.byteLength(text) },
+			});
+			const request = f.gateway.recordContextView(
+				{
+					schema: "qorpera.native-result-fence/v1",
+					requestId: "image-context",
+					threadId: "thread",
+					turnId: "turn",
+					purpose: "turn",
+					outputs: [],
+				},
+				[
+					{
+						kind: "function_call_output",
+						callId: "image-call",
+						output,
+						imageSha256: fault === "hash" ? "a".repeat(64) : image,
+					},
+				],
+				f.signal,
+			);
+			if (fault !== "valid") await expect(request).rejects.toThrow("Native capture provenance changed");
+			else {
+				await request;
+				const views = f.call.mock.calls.filter(([method]) => method === "qorpera_record_native_context_view");
+				expect(views).toHaveLength(1);
+				expect(views[0][1].p_view).toMatchObject({
+					outputs: [
+						{
+							sha256: createHash("sha256").update(output).digest("hex"),
+							readId,
+							readSha256: "b".repeat(64),
+							includedSha256: createHash("sha256").update(text).digest("hex"),
+						},
+					],
+				});
+				expect(views[0][1].p_view).not.toHaveProperty("outputs.0.capture");
+			}
+		},
+	);
+
 	it("does not confirm a corrupted or failed transfer, and rejects a mismatched confirmation receipt", async () => {
 		const f = fixture();
 		const file = await f.seed("note.md", "data");

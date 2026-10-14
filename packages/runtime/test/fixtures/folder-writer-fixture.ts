@@ -123,8 +123,8 @@ export async function folderWriterFixture(
 	const now = () =>
 		`2026-10-01T00:${String(Math.floor(tick / 60)).padStart(2, "0")}:${String(tick++ % 60).padStart(2, "0")}+00:00`;
 	// A file as another writer left it, in a folder that exists.
-	const store = (path: string, content: string) => {
-		const data = new TextEncoder().encode(content);
+	const store = (path: string, content: string | Uint8Array, mediaType = "text/markdown") => {
+		const data = typeof content === "string" ? new TextEncoder().encode(content) : Uint8Array.from(content);
 		bytesBySha.set(sha(data), data);
 		files.set(path, {
 			version: randomUUID(),
@@ -132,7 +132,7 @@ export async function folderWriterFixture(
 				manifestSha256: sha(`manifest:${sha(data)}`),
 				fileSha256: sha(data),
 				bytes: data.byteLength,
-				mediaType: "text/markdown",
+				mediaType,
 				executable: false,
 			},
 			updatedAt: now(),
