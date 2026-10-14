@@ -2,8 +2,10 @@
 -- "Views and machines"). One member's sessions share a machine only for the same coding agent, repository (GitHub's
 -- names in any case) and setup digest; a session keeps its machine when the setup changes. A turn runs only on a machine
 -- of its session's agent and repository, as the session's own uid; a machine stays while its own sessions are open.
--- A company on the folder, one member, one executor with its node and coding provider, and five leased sessions:
---   s1 agent a1, acme/app; s2 agent a1, Acme/App; s3 agent a2, acme/app; s4 agent a1, acme/web; s5 agent a1, acme/app.
+-- A company on the folder, one member, one executor with its node and coding provider, and seven leased sessions:
+--   s1 agent a1, acme/app; s2 agent a1, Acme/App; s3 agent a2, acme/app; s4 agent a1, acme/web; s5 to s7 agent a1, acme/app.
+-- H adds the read set (20260930395000): a turn already leased moves onto a machine with its session and takes in the
+-- machine's reads.
 begin;
 
 insert into auth.users(id, email) values ('48500000-0000-4000-8000-000000000001', 'coding-identity@example.test');
@@ -45,14 +47,14 @@ select ('48500000-0000-4000-8000-0000000000c' || n)::uuid, '48500000-0000-4000-8
 	('48500000-0000-4000-8000-0000000000a' || case n when 3 then 2 else 1 end)::uuid, extensions.gen_random_uuid(), 'w-485-' || n, 'coding',
 	'Code', 'read', 'each', '{}', '48500000-0000-4000-8000-000000000001', extensions.gen_random_uuid(),
 	'48500000-0000-4000-8000-000000000001', extensions.gen_random_uuid(), 1
-from generate_series(1, 5) n;
+from generate_series(1, 7) n;
 insert into public.qorpera_coding_sessions(worker_id, profile_id, environment_id, harness, repository, branch, phase, lease_owner,
 	lease_token, lease_until, started_at)
 select ('48500000-0000-4000-8000-0000000000c' || n)::uuid, '48500000-0000-4000-8000-000000000010', '48500000-0000-4000-8000-000000000020',
 	'codex', jsonb_build_object('host', 'github.com', 'owner', case n when 2 then 'Acme' else 'acme' end,
 		'name', case n when 2 then 'App' when 4 then 'web' else 'app' end, 'baseBranch', 'main'),
 	'qorpera/coding/485-' || n, 'preparing', 'exec-485', extensions.gen_random_uuid(), clock_timestamp() + interval '5 minutes', clock_timestamp()
-from generate_series(1, 5) n;
+from generate_series(1, 7) n;
 set local session_replication_role = origin;
 
 create function pg_temp.ok(p_ok boolean, p_message text) returns void language plpgsql as $$
@@ -88,9 +90,37 @@ begin
 	return 'ok';
 exception when others then return sqlstate || ' ' || sqlerrm;
 end $$;
+-- A turn dispatched to the session's worker, its job leased until p_until: the job, run and wake by hand, as in 634.
+create function pg_temp.turn(p_n integer, p_until timestamptz) returns uuid language plpgsql as $$
+declare v_run uuid := extensions.gen_random_uuid(); v_job uuid := extensions.gen_random_uuid(); v_wake uuid := extensions.gen_random_uuid();
+	v_profile uuid := '48500000-0000-4000-8000-000000000010'; v_env uuid := '48500000-0000-4000-8000-000000000020';
+	v_user uuid := '48500000-0000-4000-8000-000000000001'; v_staff uuid := '48500000-0000-4000-8000-0000000000a1';
+begin
+	set local session_replication_role = replica;
+	insert into public.qorpera_runner_jobs(id, profile_id, environment_id, substrate_version_id, client_job_id, required_capability,
+		job_type, payload, created_by_user_id, status, runner_id, client_lease_id, lease_token_sha256, lease_expires_at, run_id)
+	values (v_job, v_profile, v_env, extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'agent_turn', 'agent_turn', '{}', v_user,
+		'leased', extensions.gen_random_uuid(), extensions.gen_random_uuid(), repeat('a', 64), p_until, v_run);
+	insert into public.qorpera_execution_runs(id, profile_id, environment_id, source_kind, source_id, job_id, substrate_version_id,
+		company_snapshot_id, staff_agent_id, staff_version, sponsor_binding_id, sponsor_version, required_capability, job_type,
+		payload_sha256, transcript_start_sequence, created_by_user_id, requested_by_user_id, model_provider, model_id, model_selection,
+		audience_kind, runtime_bundle_id, runtime_bundle_sha256, input_ids)
+	values (v_run, v_profile, v_env, 'wake', v_wake, v_job, extensions.gen_random_uuid(), extensions.gen_random_uuid(), v_staff, 1,
+		extensions.gen_random_uuid(), 1, 'agent_turn', 'agent_turn', repeat('c', 64), 0, v_user, v_user, 'openai', 'gpt-test',
+		'provider_default', 'company', extensions.gen_random_uuid(), repeat('b', 64), '{}');
+	insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, trigger_id, occurrence_key, scheduled_for, not_before,
+		wake_kind, source_kind, source_id, run_id, status, staff_agent_id, staff_version, requested_by_user_id, sponsor_binding_id,
+		sponsor_version, causal_root_id, causal_agent_ids, causal_hop_count, parent_run_id, payload)
+	values (v_wake, v_profile, v_env, 'worker-dispatch', v_wake::text, clock_timestamp(), clock_timestamp(), 'agent', 'worker-dispatch',
+		pg_temp.worker(p_n), v_run, 'materialized', v_staff, 1, v_user, extensions.gen_random_uuid(), 1, extensions.gen_random_uuid(),
+		array[v_staff], 0, extensions.gen_random_uuid(), '{}');
+	set local session_replication_role = origin;
+	return v_run;
+end $$;
 
 do $$
 declare v_m1 jsonb; v_m2 jsonb; v_m3 jsonb; v_m4 jsonb; v_m5 jsonb; v_again jsonb; v_run1 jsonb; v_run2 jsonb; v_machine public.qorpera_coding_machines%rowtype;
+	v_turn6 uuid; v_turn7 uuid; v_read jsonb; v_take uuid;
 begin
 	-- A. The three-argument plan is gone; the executor's named three still reach the new one. A digest must be one.
 	perform pg_temp.ok(to_regprocedure('public.qorpera_plan_coding_machine(uuid,uuid,text)') is null, 'the three-argument plan went');
@@ -156,6 +186,31 @@ begin
 	-- G. The current-machine index is unique over the member, agent, repository, digest and place.
 	perform pg_temp.ok((select index.indisunique and index.indnatts = 7 from pg_index index
 		where index.indexrelid = 'public.qorpera_coding_machines_current'::regclass), 'the current-machine index has seven columns');
+
+	-- H. A session moving onto m1 brings its leased turn, which takes in m1's read set under m1's release for that run,
+	-- with an all-zero output. m1 holds a released read of rules/coding.md (every agent may read rules/), its receipt as
+	-- the turn's own reader gets it. s7's turn is no longer leased: it takes in nothing.
+	v_turn6 := pg_temp.turn(6, clock_timestamp() + interval '1 hour');
+	v_turn7 := pg_temp.turn(7, clock_timestamp() - interval '1 second');
+	v_read := jsonb_build_object('path', 'rules/coding.md', 'version', '1', 'authority', public.qorpera_folder_read_receipt(
+		'48500000-0000-4000-8000-000000000020', '48500000-0000-4000-8000-000000000010',
+		public.qorpera_folder_run_reader('48500000-0000-4000-8000-000000000010', v_turn6), 'rules/coding.md'));
+	insert into public.qorpera_coding_machine_read_records(coding_machine_id, release_id, environment_id, resource_id, reads, output_sha256)
+	values ((v_m1 ->> 'machineId')::uuid, extensions.gen_random_uuid(), '48500000-0000-4000-8000-000000000020',
+		(v_read -> 'authority' ->> 'resourceId')::uuid, jsonb_build_array(v_read), repeat('3', 64));
+	perform pg_temp.ok(v_read -> 'authority' ->> 'grantId' is null and not exists (select 1 from public.qorpera_folder_run_read_records
+		where run_id = v_turn6), format('rules/ needs no grant, and s6''s turn has no records before it moves: %s', v_read));
+	perform pg_temp.ok(pg_temp.run(6, v_m1 ->> 'bindingText') ->> 'intent' = 'run'
+		and pg_temp.run(7, v_m1 ->> 'bindingText') ->> 'intent' = 'run', 's6 and s7 move onto m1');
+	v_take := md5('coding-machine:' || v_turn6 || ':' || (v_m1 ->> 'machineId'))::uuid;
+	perform pg_temp.ok(exists (select 1 from public.qorpera_folder_run_read_records where run_id = v_turn6 and release_id = v_take
+		and resource_id = (v_read -> 'authority' ->> 'resourceId')::uuid and output_sha256 = repeat('0', 64)
+		and reads = jsonb_build_array(v_read)), 'the moved turn''s records hold m1''s read under m1''s release for the run');
+	perform pg_temp.ok(exists (select 1 from public.qorpera_folder_run_reads where run_id = v_turn6 and grant_id is null
+		and resource_id = (v_read -> 'authority' ->> 'resourceId')::uuid
+		and resource_revision = (v_read -> 'authority' ->> 'resourceRevision')::bigint), 'the moved turn has the read''s pair');
+	perform pg_temp.ok(not exists (select 1 from public.qorpera_folder_run_read_records where run_id = v_turn7)
+		and not exists (select 1 from public.qorpera_folder_run_reads where run_id = v_turn7), 'a turn no longer leased takes in nothing');
 end $$;
 
 rollback;

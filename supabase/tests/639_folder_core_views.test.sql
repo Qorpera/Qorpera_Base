@@ -416,6 +416,11 @@ begin
 		or not exists (select 1 from public.qorpera_folder_run_read_records rec, jsonb_array_elements(rec.reads) x
 			where rec.run_id = (t ->> 'runId')::uuid and x ->> 'path' = 'cread/c.txt') then
 		raise exception 'A coding view''s reads during a turn land in the turn''s read set'; end if;
+	-- 20260930395000 (step 5a): and in the machine's.
+	if not exists (select 1 from public.qorpera_coding_machine_reads where coding_machine_id = cm)
+		or not exists (select 1 from public.qorpera_coding_machine_read_records rec, jsonb_array_elements(rec.reads) x
+			where rec.coding_machine_id = cm and x ->> 'path' = 'cread/c.txt') then
+		raise exception 'A coding view''s reads land in its machine''s read set'; end if;
 	select * into wk from public.qorpera_wake_occurrences where run_id = (t ->> 'runId')::uuid;
 	wk.source_kind := 'worker-completion'; wk.trigger_id := 'worker-completion'; wk.parent_run_id := (t ->> 'runId')::uuid;
 	if not public.qorpera_folder_parent_reads_allowed(wk) then raise exception 'The completion''s parent check before a narrowing'; end if;
@@ -423,8 +428,8 @@ begin
 		'company_shared', 'normal');
 	if public.qorpera_folder_parent_reads_allowed(wk) then raise exception 'The completion''s parent check sees the coding reads'; end if;
 	perform pg_temp.raises(format('select pg_temp.vcommit(%L, %L, %L)', cv, 'coding-after-narrow', '[{"op":"mkdir","path":"code/refused"}]'), '42501');
-	-- With the turn over, reopened on the same machine the session carries its reads (still refused); moved to another
-	-- machine it starts clean.
+	-- With the turn over, reopened on the same machine the machine's read set still holds the reads (still refused);
+	-- moved to another machine it starts clean.
 	perform pg_temp.fx(format('update public.qorpera_runner_jobs set lease_expires_at = clock_timestamp() - interval ''1 second'' where id = %L',
 		t ->> 'jobId'));
 	cv := pg_temp.open('coding_session', jsonb_build_object('workerId', w, 'attachmentToken', tok));
