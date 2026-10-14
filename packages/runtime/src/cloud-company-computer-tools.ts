@@ -569,7 +569,7 @@ export function createCompanyComputerTools(options: {
 					"One driver per screen; member takeover cancels agent control. Keep operationKey stable for the same logical work. " +
 					"Writes, navigation, input and shell are effect-checked with durable receipts; an uncertain result requires reconciliation, never a new key. " +
 					"Screen release gives up occupancy without deleting desktop/browser state; idle policy controls power. " +
-					"After a confirmed screen-admission refusal, or a screen given back because the company folder refused or was unavailable, explicitly open the screen again to retry; no action is replayed automatically. " +
+					"After a confirmed screen-admission or folder refusal, explicitly open the screen again to retry; no action is replayed automatically. " +
 					"Use browser list_tabs then select_tab for multiple or closed tabs. Tab IDs belong to this admitted screen session; " +
 					"list_tabs returns bounded title/URL previews and nextAfterTabId for pagination. Restart listing if its cursor closes. " +
 					"Browser snapshots report semantic roles and text, not pixels. In replies and saved reports, preserve the observed roles: a link is not a footer link and a button is not a primary action unless evidence explicitly establishes that placement or hierarchy. Describe a text-only finding as reported by the snapshot, not visually verified; actual appearance requires screenshot evidence. " +
