@@ -49,7 +49,8 @@ whether the machine is quiet enough to sleep, and to learn which attachment
 generation the guest still holds.
 
 Each session runs as its own uid/gid (200000-524287, assigned in SQL per member
-and environment when its NAS volume is first used, never reused within them). The
+and environment at the session's first run on a machine, never reused within
+them; `qorpera_coding_session_uids`). The
 storage initializer registers it as a boot-local userdb record under
 `/run/userdb` (read by nss-systemd), named `qorpera-coding-<uid>`, with no login
 shell; `detach` removes it. Sessions therefore cannot see or signal each
@@ -59,12 +60,9 @@ They do share the machine's network, loopback included: a server one session
 listens with on 127.0.0.1, or an abstract Unix socket, is reachable from the
 member's other sessions on that machine. POSIX shared memory and semaphores in
 `/dev/shm` are the machine's too, guarded only by uid and file mode.
-`PrivateIPC` needs systemd 248 or later in the image. All of them are the same member's sessions in the same company; a
-per-session network namespace is a later hardening, not built. A
-session whose NAS volume predates member machines keeps the image's own coding
-user (the executor's configured `guest.uid`, below 200000), whose files it
-already holds; while such a session is on a machine, no second legacy session
-may join it (SQL refuses `LEGACY_SESSION_BUSY`, the turn waits in the queue).
+`PrivateIPC` needs systemd 248 or later in the image. All of them are the same member's sessions in the same company,
+for the same coding agent, repository and setup (one machine each); a
+per-session network namespace is a later hardening, not built.
 
 The configuration and helper must be root-owned mode 0444 so the session's
 user can read them. Output directories remain root-owned mode 0755;
