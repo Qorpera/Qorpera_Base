@@ -837,4 +837,33 @@ begin
 		where l.environment_id = env and l.run_id = nora)]), '[0]', 'an erase of the log takes its row');
 end $$;
 
+-- 13. A run whose machine went narrow writes narrow lines only -----------------------------------------------------------
+do $$
+declare
+	env constant uuid := '63400000-0000-4000-8000-000000000020'; otto constant uuid := pg_temp.run_id('otto');
+	log constant text := 'agents/otto/memory/thread/runs/' || pg_temp.run_id('otto'); a constant jsonb := pg_temp.actor('otto');
+	ojob constant uuid := (pg_temp.actor('otto') ->> 'jobId')::uuid; b0 constant text := log || '/log/00000000.jsonl'; r jsonb;
+begin
+	-- Otto's log folder gets its run.toml while otto is not narrow.
+	perform pg_temp.same(to_jsonb(array[public.qorpera_run_log_narrow(otto)]), '[false]', 'otto is not narrow');
+	perform pg_temp.expect(pg_temp.logc('otto', 'w1b:machine:1', jsonb_build_array(pg_temp.rfile(log || '/run.toml',
+		pg_temp.rtoml(otto, pg_temp.thread('otto')), a)), log), 1, 'saved');
+
+	-- W6a says when a run's machine went narrow; until then no machine does. Here otto's has (rolled back with the test).
+	execute format($f$create or replace function public.qorpera_memory_run_machine_narrow(p_environment_id uuid, p_run_id uuid)
+		returns boolean language sql stable set search_path = '' as $b$ select p_run_id = %L::uuid $b$ $f$, otto);
+	perform pg_temp.same(to_jsonb(array[public.qorpera_run_log_narrow(otto),
+		(public.qorpera_memory_run_origin(env, otto) ->> 'narrow')::boolean]), '[true, true]', 'otto''s machine made otto narrow');
+	perform pg_temp.same(public.qorpera_memory_step_narrow(env, ojob, otto, '[]'), '{"log": false, "machine": true, "restricted": []}',
+		'otto''s machine went narrow');
+
+	-- From then on a plain step is refused and a narrow one saved.
+	r := pg_temp.logc('otto', 'w1b:machine:2', jsonb_build_array(pg_temp.rfile(b0, pg_temp.block(array[pg_temp.step(0)]), a)), log);
+	perform pg_temp.refused(r, 1, 'structured_rule', 'step 0 comes after its machine went narrow and is written narrow', 'value', 1);
+	perform pg_temp.expect(pg_temp.logc('otto', 'w1b:machine:3', jsonb_build_array(pg_temp.rfile(b0,
+		pg_temp.block(array[pg_temp.nstep(0)]), a)), log), 1, 'saved');
+	perform pg_temp.same(public.qorpera_memory_step_narrow(env, ojob, otto, '[]'), '{"log": true, "machine": true, "restricted": []}',
+		'otto''s log is narrow from its first step');
+end $$;
+
 rollback;
