@@ -570,15 +570,15 @@ export class FolderService {
 			// A core view no machine holds is dropped (with its pass): its lease is not renewed while idle, so a machine
 			// that comes back lists it again and renews at once. What it has pending, and the reads its machine logged, are
 			// published first, under the lease it still has (a desktop that ended inside its quiet period); a machine that
-			// comes back meanwhile joins it. A command's never publishes unasked. Either way the view is kept or let go
-			// once its last boundary has ended (#inTurn).
+			// comes back meanwhile joins it. A command's publishes only on its quiet period while held, or when asked.
+			// Either way the view is kept or let go once its last boundary has ended (#inTurn).
 			if (!view.lease || this.#views.get(view.key) !== view) return;
+			if (view.quiet) clearTimeout(view.quiet);
+			view.quiet = undefined;
 			if (view.access?.command || ((!view.pending || view.pending.empty) && !view.unreleased)) {
 				void this.#inTurn(view, async () => ({ commitId: null, seq: null, paths: [] }));
 				return;
 			}
-			if (view.quiet) clearTimeout(view.quiet);
-			view.quiet = undefined;
 			void this.#publishLogged(view);
 		};
 		try {
@@ -666,6 +666,12 @@ export class FolderService {
 			publish: async (final = false) => {
 				if (final && !view.access?.command)
 					throw new ProtocolError(ErrorCode.badRequest, "Only a command view publishes a final change set");
+				// A command that ended inside its quiet period publishes once, final (4b-2): the final takes what the quiet
+				// period would have published.
+				if (final && view.quiet) {
+					clearTimeout(view.quiet);
+					view.quiet = undefined;
+				}
 				return this.#publish(view, final);
 			},
 			reads: async (request) => this.#takeReads(view, request),

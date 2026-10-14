@@ -17,13 +17,14 @@ import {
 	folder,
 	hashOf,
 	OFFICE,
+	v,
 } from "./folder-service-fixtures.ts";
 
-/** Shell commands on the folder (F3 step 4, slice 4b: deploy/first-node/RUNTIME-FOLDER-COMPANY-MACHINES.md, C1B §8): a
- * command's view the core opened is served to its own company machine alone and writes. It publishes only when asked,
- * or before a change that needs what is pending published first, never says it has changes unsaved, and is kept, with
- * what it has pending, when its last connection leaves: the command's last call publishes it final, and the core closes
- * the view with that change set. */
+/** Shell commands on the folder (F3 step 4, slices 4b and 4b-2: deploy/first-node/RUNTIME-FOLDER-COMPANY-MACHINES.md,
+ * C1B §8): a command's view the core opened is served to its own company machine alone and writes. It publishes after
+ * a quiet period while its command runs, when asked, or before a change that needs what is pending published first,
+ * never says it has changes unsaved, and is kept, with what it has pending, when its last connection leaves: the
+ * command's last call publishes it final, and the core closes the view with that change set. */
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
@@ -56,8 +57,8 @@ async function company(kind = "computer_shell_command") {
 		service.stop();
 		await rm(root, { recursive: true, force: true });
 	});
-	const open = async (bridge: BridgeInfo = AT_OFFICE) => {
-		const handle = await service.open(hello, bridge);
+	const open = async (bridge: BridgeInfo = AT_OFFICE, as: Hello = hello) => {
+		const handle = await service.open(as, bridge);
 		handles.push(handle);
 		return handle;
 	};
@@ -75,6 +76,12 @@ async function write(view: ViewHandle, path: string, text: string): Promise<void
 const names = async (view: ViewHandle, path: string) => (await view.list(path, undefined)).entries.map((e) => e.name);
 const byPath = (paths: readonly ReportEntry[]) => [...paths].sort((a, b) => (a.path < b.path ? -1 : 1));
 const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function until(done: () => boolean, ms = 3_000): Promise<void> {
+	for (const end = Date.now() + ms; !done() && Date.now() < end; ) await wait(10);
+	expect(done()).toBe(true);
+}
 
 describe("shell commands' views", () => {
 	it("reads a publish's final flag", () => {
@@ -85,10 +92,9 @@ describe("shell commands' views", () => {
 			expect(() => parsePublish(Buffer.from(bad))).toThrow();
 	});
 
-	it("serves a command's view to its own company machine alone, and publishes it only when asked", async () => {
+	it("serves a command's view to its own company machine alone, and publishes it when asked", async () => {
 		const access = companyGrants().coreAccess({ kind: "computer_shell_command", machineId: ALLOCATION });
-		expect(access).toMatchObject({ write: true, command: true });
-		expect(access?.quietMs).toBeUndefined();
+		expect(access).toMatchObject({ write: true, quietMs: DESKTOP_QUIET_MS, command: true });
 		expect(companyGrants().coreAccess({ kind: "computer_shell_command", machineId: null })).toBeUndefined();
 		const { core, open, cmd } = await company();
 		const otherOffice: BridgeInfo = {
@@ -104,12 +110,77 @@ describe("shell commands' views", () => {
 		expect(view.writable).toBe(true);
 		await expect(open(otherOffice)).rejects.toMatchObject({ code: "VIEW_REFUSED" });
 		await write(view, "docs/out.txt", "o");
-		// No quiet period publishes it.
-		await new Promise((resolve) => setTimeout(resolve, DESKTOP_QUIET_MS + 500));
-		expect(core.commits).toEqual([]);
 		expect((await view.publish()).paths).toEqual([{ path: "docs/out.txt", outcome: "saved" }]);
 		expect(core.commits.map((c) => c.final)).toEqual([false]);
 		expect(cmd.state).toBe("open");
+	});
+
+	it("publishes a running command's changes after its quiet period, the reads its machine logged released first", async () => {
+		const { core, open, cmd } = await company();
+		const view = await open(AT_OFFICE, { ...hello, protocol: 3 });
+		const released: number[] = [];
+		core.commitHook = () => {
+			released.push(core.releases.length);
+			return undefined;
+		};
+		const log = v(80);
+		expect(await view.reads({ log, reads: [{ seq: 1, path: "docs", version: null }], lost: false })).toEqual({
+			log,
+			taken: 1,
+			released: 0,
+		});
+		await write(view, "docs/live.txt", "live");
+		// Not before its quiet period is over: the command may change more.
+		await wait(DESKTOP_QUIET_MS / 2);
+		expect(core.commits).toEqual([]);
+		expect(core.releases).toEqual([]);
+		// Then unasked, not final, the reads first: the command still runs, and its view stays open.
+		await until(() => core.commits.length === 1, DESKTOP_QUIET_MS);
+		expect(core.commits[0]?.final).toBe(false);
+		expect(released).toEqual([1]);
+		expect([...core.readSets.get(VIEW)!.keys()]).toEqual(["docs"]);
+		expect(core.entries.get("docs/live.txt")?.fileSha256).toBe(hashOf("live"));
+		expect(await view.reads({ log, reads: [], lost: false })).toEqual({ log, taken: 1, released: 1 });
+		expect(cmd.state).toBe("open");
+		// Its next change goes the same way, and its last call publishes what is left, final.
+		await write(view, "docs/live.txt", "more");
+		await until(() => core.commits.length === 2, DESKTOP_QUIET_MS * 2);
+		expect(core.entries.get("docs/live.txt")?.fileSha256).toBe(hashOf("more"));
+		expect(await view.publish(true)).toEqual({ commitId: expect.any(String), seq: null, paths: [], closed: true });
+		expect(core.commits.map((c) => c.final)).toEqual([false, false, true]);
+		expect(cmd.state).toBe("closed");
+	});
+
+	it("publishes a command that ends inside its quiet period once, final", async () => {
+		const { core, open, cmd } = await company();
+		const view = await open();
+		await write(view, "docs/end.txt", "e");
+		// Its last call comes before the quiet period is over, and publishes the change, final; nothing comes after.
+		expect(await view.publish(true)).toMatchObject({
+			paths: [{ path: "docs/end.txt", outcome: "saved" }],
+			closed: true,
+		});
+		await wait(DESKTOP_QUIET_MS + 500);
+		expect(core.commits.map((c) => c.final)).toEqual([true]);
+		expect(cmd.state).toBe("closed");
+		// A final held back (a file still open for writing) ends the quiet period too: only the final, asked again,
+		// publishes.
+		const held = await company();
+		const last = await held.open();
+		await write(last, "docs/done.txt", "d");
+		const { handle } = await last.open({ path: "docs/open.txt", create: true, exclusive: false, truncate: true });
+		const data = Buffer.from("o");
+		await last.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
+		expect((await last.publish(true)).commitId).toBeNull();
+		await wait(DESKTOP_QUIET_MS + 500);
+		expect(held.core.commits).toEqual([]);
+		await last.close(handle, data.byteLength);
+		expect(byPath((await last.publish(true)).paths)).toEqual([
+			{ path: "docs/done.txt", outcome: "saved" },
+			{ path: "docs/open.txt", outcome: "saved" },
+		]);
+		expect(held.core.commits.map((c) => c.final)).toEqual([true]);
+		expect(held.cmd.state).toBe("closed");
 	});
 
 	it("closes a command's view whose kind or machine changed, kept or not, and publishes nothing", async () => {
@@ -151,8 +222,9 @@ describe("shell commands' views", () => {
 		const view = await open();
 		await write(view, "docs/result.txt", "r");
 		view.release();
-		await settle();
-		// Nothing is published when the command's program lets go, and the view is still renewed with no connection.
+		await wait(DESKTOP_QUIET_MS + 500);
+		// Nothing is published when the command's program lets go, its quiet period included, and the view is still
+		// renewed with no connection.
 		expect(core.commits).toEqual([]);
 		const renewals = cmd.renewals;
 		await service.renewLeases();
@@ -176,6 +248,31 @@ describe("shell commands' views", () => {
 		const closedRenewals = cmd.renewals;
 		await service.renewLeases();
 		expect(cmd.renewals).toBe(closedRenewals);
+	});
+
+	it("lets a command's view refused for good go when its last connection leaves, its quiet period with it", async () => {
+		const { core, service, open, cmd } = await company();
+		const view = await open();
+		await write(view, "docs/big.txt", "b");
+		core.commitRefusal = "invalid";
+		expect((await view.publish()).refused).toBe("invalid");
+		// Its program asks again and lets go while that boundary is still being asked, its quiet period still to come.
+		let releaseCommit!: () => void;
+		core.commitGate = new Promise<void>((resolve) => {
+			releaseCommit = resolve;
+		});
+		const again = view.publish();
+		view.release();
+		await wait(DESKTOP_QUIET_MS + 500);
+		releaseCommit();
+		core.commitGate = undefined;
+		expect((await again).refused).toBe("invalid");
+		await settle();
+		// Refused again, the view goes as it is once that boundary has ended: nothing more is published, nor renewed.
+		expect(core.commits.map((c) => c.final)).toEqual([false, false]);
+		const renewals = cmd.renewals;
+		await service.renewLeases();
+		expect(cmd.renewals).toBe(renewals);
 	});
 
 	it("publishes a final with nothing pending as an empty change set, which closes the view", async () => {
