@@ -1,8 +1,8 @@
 {
 	"cloud-client": {
-		"uuidPatterns": 21,
-		"recordHelpers": 16,
-		"uuidHelpers": 10,
+		"uuidPatterns": 20,
+		"recordHelpers": 15,
+		"uuidHelpers": 9,
 		"sha256Helpers": 1
 	},
 	"company": {
