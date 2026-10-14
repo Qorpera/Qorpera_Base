@@ -1,0 +1,43 @@
+{
+  "schema": "qorpera.office-folder-substrate-evidence/v1",
+  "recordedOn": "2026-10-09",
+  "copiedOn": "2026-10-14",
+  "fullyAccepted": false,
+  "officeIntegrationAccepted": false,
+  "note": "Byte-for-byte copies of the Codex hand-off files. Both runs used earlier folder binaries and fixtures than this commit; see deploy/test-machine/OFFICE-FOLDER-SUBSTRATE.md, 'Recorded substrate result'.",
+  "sourceWorkspace": "/Users/jonas/Documents/Codex/2026-10-07/over-the-last-couple-of-days/work/rebuild",
+  "files": [
+    {
+      "file": "ROOT-DEFAULT-RUN.json",
+      "source": "acceptance-vm-2.json",
+      "run": "20261009T125544-35682-8785a023",
+      "sha256": "6d5d8655e6ec8891dd400a51035e053a3ce1ba3e80c2bc8886f243bfa0696e25",
+      "bytes": 1487
+    },
+    {
+      "file": "ROOT-DEFAULT-EVIDENCE.json",
+      "source": "acceptance-vm-2.evidence.json",
+      "ownerMode": "root-default",
+      "folderSha256": "d608f95fa164c7afc9572f11bff1b0002d32690be282470d2f42f9c4233763c0",
+      "fixtureSha256": "d1038bdcc055bc1e4d7334de68fb282e22c92182bf98042520e7967a7cc94abe",
+      "sha256": "f863fbc26f7c73494e71fea68f668923c5bea58e2836e313b198e1760b776f31",
+      "bytes": 8054
+    },
+    {
+      "file": "OFFICE-ACCOUNT-RUN.json",
+      "source": "acceptance-vm-3.json",
+      "run": "20261009T131030-53082-28d87d18",
+      "sha256": "d673cda6c796555f2ba193753ea1745a96bb5e2e061b9fe563a0ad4861680f91",
+      "bytes": 1505
+    },
+    {
+      "file": "OFFICE-ACCOUNT-EVIDENCE.json",
+      "source": "acceptance-vm-3.evidence.json",
+      "ownerMode": "office-account",
+      "folderSha256": "3256df4f65338b7c89f620d1beba1a3edb06d1af8d9c8f39f69ea7a92a60232a",
+      "fixtureSha256": "97b525ae025839fb48bfa1190b4b38f879560d92e72d45f8729c05cbabc5a961",
+      "sha256": "4eb66729e674e0b5b9f2e021ee3202ccbd30c09b64914664a245ab80bf500044",
+      "bytes": 22477
+    }
+  ]
+}

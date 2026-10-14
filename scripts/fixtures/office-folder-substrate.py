@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import pwd
 import re
+import select
 import shutil
 import socket
 import struct
@@ -23,10 +24,12 @@ import threading
 import time
 
 LIBC = ctypes.CDLL(None, use_errno=True)
+PR_GET_DUMPABLE = 3
 PR_SET_DUMPABLE = 4
 PR_SET_NO_NEW_PRIVS = 38
 PR_SET_PTRACER = 0x59616d61
 CLONE_NEWNS = 0x00020000
+CLONE_NEWUSER = 0x10000000
 CLONE_NEWNET = 0x40000000
 
 
@@ -37,6 +40,28 @@ def checked(call, *args):
 
 def run(*args, check=True):
     return subprocess.run(args, check=check, capture_output=True, text=True, timeout=15).stdout.strip()
+
+
+def answer(process, seconds=12):
+    """Read one JSON line from a piped fixture child; raise on timeout, EOF or a reported error."""
+    ready, _, _ = select.select([process.stdout], [], [], seconds)
+    if not ready:
+        raise TimeoutError("fixture child produced no reply")
+    line = process.stdout.readline()
+    if not line:
+        raise RuntimeError("fixture child closed without a reply")
+    value = json.loads(line)
+    if "error" in value:
+        raise RuntimeError(value["error"])
+    return value
+
+
+def init_ns_uids(pid):
+    """The real [real, effective, saved, fs] uids of a pid, read from this (init-namespace) vantage point."""
+    for line in Path(f"/proc/{pid}/status").read_text().splitlines():
+        if line.startswith("Uid:"):
+            return [int(part) for part in line.split()[1:]]
+    return None
 
 
 def eventually(check, seconds=12):
@@ -175,6 +200,14 @@ def status():
     return {k: v.strip() for k, v in (line.split(":", 1) for line in Path("/proc/self/status").read_text().splitlines() if ":" in line)}
 
 
+def security_label():
+    """This process's LSM label, e.g. AppArmor's `bwrap//&unpriv_bwrap (enforce)`."""
+    try:
+        return {"securityLabel": Path("/proc/self/attr/current").read_text().strip()}
+    except OSError as error:
+        return {"securityLabelErrno": error.errno}
+
+
 def client(control, name):
     """One process stays alive across daemon death; new lookups cannot be cache hits."""
     outcome = {"pid": os.getpid(), "mountNamespace": os.readlink("/proc/self/ns/mnt"), "status": {k: status()[k] for k in ("CapEff", "CapPrm", "NoNewPrivs")}}
@@ -215,11 +248,7 @@ def client(control, name):
 
 def shell(control):
     """Plan option (a): shell host has SYS_ADMIN but no NET_ADMIN in its user namespace."""
-    start = {"status": status(), "user": os.readlink("/proc/self/ns/user"), "mount": os.readlink("/proc/self/ns/mnt"), "net": os.readlink("/proc/self/ns/net"), "uid": os.geteuid()}
-    try:
-        start["securityLabel"] = Path("/proc/self/attr/current").read_text().strip()
-    except OSError as error:
-        start["securityLabelErrno"] = error.errno
+    start = {"status": status(), "user": os.readlink("/proc/self/ns/user"), "mount": os.readlink("/proc/self/ns/mnt"), "net": os.readlink("/proc/self/ns/net"), "uid": os.geteuid(), **security_label()}
     emit(control / "offline-start.json", start)
     child = os.fork()
     if child:
@@ -284,18 +313,50 @@ def helper(control, target):
         finally:
             os._exit(0)
     eventually(lambda: (control / "helper-child-ready.json").exists())
-    emit(control / "helper-ready.json", {"pid": os.getpid(), "childPid": child, "userBefore": before, "userAfter": os.readlink("/proc/self/ns/user"), "childUser": os.readlink(f"/proc/{child}/ns/user"), "net": os.readlink("/proc/self/ns/net")})
+    emit(control / "helper-ready.json", {"pid": os.getpid(), "childPid": child, "userBefore": before, "userAfter": os.readlink("/proc/self/ns/user"), "childUser": os.readlink(f"/proc/{child}/ns/user"), "net": os.readlink("/proc/self/ns/net"), **security_label()})
     eventually(lambda: (control / "helper-stop").exists(), 30)
     os.waitpid(child, 0)
 
 
-def attack(pid):
+def ptrace_control(attacker):
+    """Positive control: root like the helper and under the same label, but dumpable and inside the attacker's user
+    namespace, so the attacker's namespace SYS_PTRACE must reach it. If it cannot, the denials below prove nothing."""
+    fd = os.open(f"/proc/{attacker}/ns/user", os.O_RDONLY)
+    checked(LIBC.setns, fd, CLONE_NEWUSER)
+    os.close(fd)
+    # Changing credentials into a user namespace resets dumpability; set it again, after the switch.
+    checked(LIBC.prctl, PR_SET_DUMPABLE, 1, 0, 0, 0)
+    checked(LIBC.prctl, PR_SET_PTRACER, ctypes.c_ulong(-1), 0, 0, 0)
+    print(json.dumps({"pid": os.getpid(), "user": os.readlink("/proc/self/ns/user"), "dumpable": LIBC.prctl(PR_GET_DUMPABLE, 0, 0, 0, 0), **security_label()}), flush=True)
+    sys.stdin.read()
+
+
+def ptrace_attach(pid):
     ctypes.set_errno(0)
     result = LIBC.ptrace(16, pid, 0, 0)
     error = ctypes.get_errno()
     if result == 0:
+        # Collect the attach stop (__WALL) before detaching, so the target runs on.
+        os.waitpid(pid, 0x40000000)
         LIBC.ptrace(17, pid, 0, 0)
-    print(json.dumps({"denied": result == -1 and error == errno.EPERM, "errno": error, "attackerUserNamespace": os.readlink("/proc/self/ns/user"), "caps": status()["CapEff"]}))
+    return {"attached": result == 0, "denied": result == -1 and error == errno.EPERM, "errno": error}
+
+
+def attack(helper, child):
+    """One attacker process tries the control first, then the helper and its child."""
+    print(json.dumps({"pid": os.getpid(), "user": os.readlink("/proc/self/ns/user"), "caps": status()["CapEff"], **security_label()}), flush=True)
+    control = int(sys.stdin.readline())
+    print(json.dumps({name: ptrace_attach(pid) for name, pid in (("control", control), ("helper", helper), ("child", child))}), flush=True)
+
+
+def ptrace_checks(attacker, results, control, helper):
+    """The denials count only together with the control: the same attacker, holding SYS_PTRACE in its own user
+    namespace, attached to a root process under the helper's label that is dumpable and inside that namespace."""
+    capable = int(attacker.get("caps", "0"), 16) & (1 << 19) != 0 and attacker.get("user") not in (None, helper.get("userBefore"))
+    return {
+        "ptracePositiveControl": capable and results.get("control", {}).get("attached") is True and control.get("uids") == [0, 0, 0, 0] and control.get("user") == attacker["user"] and control.get("dumpable") == 1 and control.get("securityLabel") == helper.get("securityLabel"),
+        "helperAndChildPtraceDenied": capable and all(results.get(name, {}).get("denied") is True for name in ("helper", "child")),
+    }
 
 
 def bwrap(directory, mode):
@@ -381,6 +442,13 @@ def probe(directory, owner_mode):
         record["mountOwners"].append({"uid": attrs.st_uid, "gid": attrs.st_gid, "permissions": oct(attrs.st_mode & 0o777)})
         return child
 
+    def piped(name, *command):
+        log = open(directory / f"{name}.log", "w")
+        child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, bufsize=0)
+        log.close()
+        children.append(child)
+        return child
+
     try:
         daemon = start_mount()
         for mode in ("direct", "propagated", "offline"):
@@ -423,17 +491,21 @@ def probe(directory, owner_mode):
         record["helper"] = info
         # The attacking office user has all capabilities in a user namespace it owns, including SYS_PTRACE,
         # while seeing the helper's real PID. No PID-namespace invisibility or Yama relationship hides it.
-        record["ptrace"] = {}
-        for name, pid in (("helper", info["pid"]), ("child", info["childPid"])):
-            attacked = run("setpriv", f"--reuid={office.pw_uid}", f"--regid={office.pw_gid}", "--clear-groups", "bwrap", "--unshare-user", "--cap-add", "ALL", "--ro-bind", "/", "/", "--", "python3", str(directory / "probe.py"), "attack", str(pid))
-            record["ptrace"][name] = json.loads(attacked)
+        attacker = piped("ptrace-attacker", "setpriv", f"--reuid={office.pw_uid}", f"--regid={office.pw_gid}", "--clear-groups", "bwrap", "--unshare-user", "--die-with-parent", "--cap-add", "ALL", "--ro-bind", "/", "/", "--", "python3", str(directory / "probe.py"), "attack", str(info["pid"]), str(info["childPid"]))
+        record["ptraceAttacker"] = answer(attacker)
+        positive = piped("ptrace-control", "python3", str(directory / "probe.py"), "ptrace-control", str(record["ptraceAttacker"]["pid"]))
+        reply = answer(positive)
+        record["ptraceControl"] = {**reply, "uids": init_ns_uids(reply["pid"])}
+        attacker.stdin.write(f"{reply['pid']}\n".encode())
+        record["ptrace"] = answer(attacker)
+        positive.stdin.close()
         (control / "offline-go").touch()
         record["offline"] = await_record(control, "offline", "done")
         (control / "helper-stop").touch()
         o = record["offline"]
         record["checks"].update({
             "helperNeverEnteredUserNamespace": info["userBefore"] == info["userAfter"] == info["childUser"] == os.readlink("/proc/self/ns/user"),
-            "helperAndChildPtraceDenied": all(record["ptrace"][name].get("denied") is True and int(record["ptrace"][name]["caps"], 16) & (1 << 19) != 0 and record["ptrace"][name]["attackerUserNamespace"] != info["userBefore"] for name in ("helper", "child")),
+            **ptrace_checks(record["ptraceAttacker"], record["ptrace"], record["ptraceControl"], info),
             "offlineOnlyLoopback": [link["ifname"] for link in o.get("links", [])] == ["lo"] and o.get("loopbackConnected") is True and o.get("networkErrno") == errno.ENETUNREACH,
             "commandHasNoCapabilities": all(int(o.get("status", {}).get(k, "1"), 16) == 0 for k in ("CapEff", "CapPrm", "CapInh", "CapAmb")) and o.get("status", {}).get("NoNewPrivs") == "1" and o.get("netAdminDenied") is True,
             "fixtureProtocolClean": not node.errors,
@@ -456,6 +528,7 @@ def probe(directory, owner_mode):
             except (OSError, ValueError) as error:
                 record["controlRecords"][path.name] = {"unreadable": repr(error)}
         record["mountLogs"] = [p.read_text() for p in directory.glob("mount-*.log")]
+        record["ptraceLogs"] = {p.stem: p.read_text() for p in directory.glob("ptrace-*.log")}
         kernel = run("journalctl", "-k", "--no-pager", "--since", f"@{started}", "-n", "100", check=False)
         record["kernelDenials"] = [line for line in kernel.splitlines() if "DENIED" in line or "apparmor=" in line or "SECCOMP" in line]
         record["units"] = {mode: run("journalctl", "--no-pager", "-n", "30", "-u", f"{directory.name}-{mode}.service", check=False) for mode in ("direct", "propagated", "offline")}
@@ -472,6 +545,20 @@ def selftest():
             raise AssertionError("invalid owner mode or IDs accepted")
         except ValueError:
             pass
+    helper = {"userBefore": "user:[1]", "securityLabel": "unconfined"}
+    attacker = {"user": "user:[2]", "caps": "000001ffffffffff"}
+    positive = {"uids": [0, 0, 0, 0], "user": "user:[2]", "dumpable": 1, "securityLabel": "unconfined"}
+    attached = {"attached": True, "denied": False, "errno": 0}
+    denied = {"attached": False, "denied": True, "errno": errno.EPERM}
+    assert ptrace_checks(attacker, {"control": attached, "helper": denied, "child": denied}, positive, helper) == {"ptracePositiveControl": True, "helperAndChildPtraceDenied": True}
+    # A denied control means AppArmor or Yama may have refused the attacker, not the helper's own state.
+    assert ptrace_checks(attacker, {"control": denied, "helper": denied, "child": denied}, positive, helper) == {"ptracePositiveControl": False, "helperAndChildPtraceDenied": True}
+    assert ptrace_checks(attacker, {"helper": denied, "child": denied}, {}, helper)["ptracePositiveControl"] is False
+    for change in ({"uids": [1000, 1000, 1000, 1000]}, {"user": "user:[1]"}, {"dumpable": 2}, {"securityLabel": "bwrap//&unpriv_bwrap (enforce)"}):
+        assert ptrace_checks(attacker, {"control": attached, "helper": denied, "child": denied}, {**positive, **change}, helper)["ptracePositiveControl"] is False
+    for change in ({"caps": "0000000000000000"}, {"user": "user:[1]"}):
+        assert ptrace_checks({**attacker, **change}, {"control": attached, "helper": denied, "child": denied}, positive, helper) == {"ptracePositiveControl": False, "helperAndChildPtraceDenied": False}
+    assert ptrace_checks(attacker, {"control": attached, "helper": attached, "child": denied}, positive, helper)["helperAndChildPtraceDenied"] is False
     with tempfile.TemporaryDirectory(prefix="qorpera-substrate-wire-") as tmp:
         control = Path(tmp)
         emit(control / "early-done.json", {"error": "synthetic namespace failure", "status": {"CapEff": "0"}})
@@ -545,8 +632,16 @@ if __name__ == "__main__":
         except Exception as error:
             emit(Path(sys.argv[2]) / "helper-done.json", {"error": repr(error), "status": status()})
             raise
-    elif mode == "attack":
-        attack(int(sys.argv[2]))
+    elif mode in ("ptrace-control", "attack"):
+        # These answer the probe on a pipe, so a failure reaches it as an answer too.
+        try:
+            if mode == "ptrace-control":
+                ptrace_control(int(sys.argv[2]))
+            else:
+                attack(int(sys.argv[2]), int(sys.argv[3]))
+        except Exception as error:
+            print(json.dumps({"error": repr(error)}), flush=True)
+            raise
     elif mode == "selftest":
         selftest()
     else:

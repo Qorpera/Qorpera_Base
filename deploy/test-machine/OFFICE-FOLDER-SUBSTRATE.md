@@ -92,16 +92,23 @@ operator provenance, not an automatic attestation of every installed file.
   inheritable and ambient capabilities, sets no-new-privileges, proves a real
   loopback connection, and fails to route or change the link. The namespace
   bounding set is not a claim of held privilege after those drops.
-- The office account attempts to ptrace both helper and a held helper child,
-  while it has `CAP_SYS_PTRACE` in its own namespace and can see their actual
-  PIDs. Both must return `EPERM`. Yama's relationship restriction is disabled for
-  these two processes only, without changing a sysctl. Both remain in the initial
-  user namespace. Production helper peer/target authorization and command mount
+- One attacker process, as the office account, has `CAP_SYS_PTRACE` in its own
+  user namespace and sees real PIDs. It records its own security label
+  (`/proc/self/attr/current`) and capabilities. It first attaches to a
+  **positive control**: a root process with the helper's security label that
+  joins the attacker's user namespace and then makes itself dumpable. The attach
+  must succeed (`ptracePositiveControl`). Otherwise the attacker's own
+  confinement, for example an AppArmor profile that denies its capabilities,
+  would explain any denial, and the run fails. The same process then tries the
+  helper and a held helper child. Both must return `EPERM`
+  (`helperAndChildPtraceDenied`). The helper and its child are nondumpable and stay
+  in the initial user namespace. Yama's relationship restriction is lifted for
+  the control, the helper and the child only, without changing a sysctl. The JSON
+  records the control's uids as seen from the initial namespace, its user
+  namespace and dumpability, and each attach's errno. A denial counts only when
+  the control passed in the same run. No recorded run has reached this step yet
+  (see below). Production helper peer/target authorization and command mount
   attachment are outside this candidate primitive.
-  These denials alone do not establish helper protection: this candidate lacks
-  a dumpable positive control under the same confinement. A denial can come
-  from AppArmor regardless of the helper. The ptrace claim remains unproven
-  until that control is implemented and passes; no current record proves it.
 
 `result: passed` requires every listed mechanism check. `failed` includes a
 mechanism failure; `harness-error` includes setup, execution or cleanup failure.
@@ -150,14 +157,28 @@ The mapped-ownership evidence is node01 run
 It used prepared Ubuntu image
 `fca42260aab1da12d0e0cf4cdd96ae36487daa94da0aec601d2cfe1275c1ca2e`
 and nested VM UUID `23e92732-4975-49c3-9ebd-71bde3d63e55`.
-The host-side run record and extracted JSON were retained in the Codex handoff
-as `acceptance-vm-3.json` and `acceptance-vm-3.evidence.json`.
+The host-side run records and extracted JSON of both runs are kept byte for byte
+in [`acceptance/2026-10-09-office-folder-substrate/`](acceptance/2026-10-09-office-folder-substrate/).
+Its `MANIFEST.json` lists each file's Codex hand-off name, SHA-256 and size, and
+the folder binary and fixture digests each run used. `OFFICE-ACCOUNT-*.json` are
+`acceptance-vm-3.json` and `acceptance-vm-3.evidence.json`; `ROOT-DEFAULT-*.json`
+are the earlier root-default run (`acceptance-vm-2.*`).
+
+This run is older than the code it documents, and it was not rerun after either
+of these changes:
+
+- #1005's last commit (4675c5187) changed one doc comment in
+  `crates/qorpera-folder/src/mount.rs`. The rebuilt binary is now
+  `7aa0ccbc718c2886569cbf06668ec1b02e722fe1fa2aa55ce78a6a2d309810a2`, not
+  `3256df4f…`: the hash moved, the code did not.
+- The run used fixture `97b525ae025839fb48bfa1190b4b38f879560d92e72d45f8729c05cbabc5a961`.
+  The fixture has changed since then, including the ptrace positive control.
 
 The offline candidate remains **unproven**. Its namespace creation returned
 `EPERM`. The process retained `SYS_ADMIN` in its effective, permitted, inheritable
 and ambient sets, but its security label was `bwrap//&unpriv_bwrap (enforce)` and
 the guest kernel recorded an AppArmor denial of that capability. The helper and
-ptrace checks were not reached. This requires a reviewed office launcher/policy
+ptrace checks were not reached, so no record yet shows the ptrace control. This requires a reviewed office launcher/policy
 or a different helper setup design; the probe neither disables AppArmor nor
 relaxes its profile. These observations establish no built-office-image or live
 company acceptance.
@@ -169,5 +190,6 @@ node scripts/run-on-node.mjs --no-install --no-status -- \
   node --test scripts/test-office-folder-substrate.test.mjs </dev/null
 ```
 
-These check fail-closed target/provenance validation and the synthetic service's
-framing/write behavior. They do not start a VM or prove any privileged mechanism.
+These check fail-closed target/provenance validation, the synthetic service's
+framing/write behavior, and that the ptrace checks fail without a passing
+positive control. They do not start a VM or prove any privileged mechanism.
