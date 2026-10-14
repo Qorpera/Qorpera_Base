@@ -92,7 +92,7 @@ writer renews it, and a new intent judges again. (Reviewer round 2, L1; F1 may a
      row (plain), since `read_actor` does not check it;
    - validates the manifest (§2) and inserts the intent and its object rows, `expires_at` = now + 15 minutes;
    - finds the listed objects the catalog already has and the actor may already read (§7's rule; the platform: all),
-     or put itself under another of its own unexpired intents in this environment (20260930083000, test 931: a
+     or put itself under another of its own unexpired intents in this environment (20260928489290, test 931: a
      machine sends a big file's chunks before its manifest is known; RUNTIME-FOLDER-WRITES.md, 3a), takes them
      `FOR KEY SHARE` in hash order (G1), marks them `held`, and returns them, so the writer puts only the
      others: `{schema: 'qorpera.folder-upload/v1', intentId, manifestSha256, expiresAt, present: [sha256…]}`.
