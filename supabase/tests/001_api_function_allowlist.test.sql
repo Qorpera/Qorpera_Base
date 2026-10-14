@@ -349,6 +349,8 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_revoke_company_path(uuid,uuid,uuid)', false, true, 'internal: auth.uid() + membership/ownership'),
 	('public.qorpera_revoke_native_provider_connection(uuid,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_revoke_runner(uuid)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
+	('public.qorpera_room_image_begin(uuid,uuid,text,bigint,text)', false, true, 'member: auth.uid() + membership/ownership'),
+	('public.qorpera_room_image_download(uuid,uuid,text)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_rotate_runner_orchestrator_control(uuid,text,text,integer)', true, true, 'internal: auth.role() = service_role + token/capability hash; anon only through the platform default, authenticated only through the platform default'),
 	('public.qorpera_runner_append_company_revision_graph(uuid,text,uuid,text,uuid,uuid,jsonb)', true, true, 'internal: runner broker: service_role or secret-broker session + runner session token + job lease token; anon only through the platform default, authenticated only through the platform default'),
 	('public.qorpera_runner_authorize_company_revision_verification(uuid,text,uuid,text,uuid,uuid,uuid)', true, true, 'internal: runner broker: service_role or secret-broker session + runner session token + job lease token; anon only through the platform default, authenticated only through the platform default'),
