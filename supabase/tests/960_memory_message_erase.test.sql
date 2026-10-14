@@ -556,7 +556,7 @@ begin
 		to_jsonb((pg_temp.event(s, 6)).body::text), 'Its neighbour reads as it was');
 end $$;
 
--- 8. Privileges: the folder core calls the eight steps, as their definer; no one calls the rest or reads the tables -----
+-- 8. Privileges: the folder core calls the eight steps, as their definer, and reads the tables; no one calls the rest -
 
 do $$
 declare
@@ -584,7 +584,8 @@ begin
 	select string_agg(t || ' ' || r, ', ') into v_bad
 	from unnest(array['public.qorpera_memory_message_erases', 'public.qorpera_memory_message_erase_blocks',
 		'public.qorpera_memory_message_erase_runs']) t, unnest(array['anon', 'authenticated', 'service_role']) r
-	where has_table_privilege(r, t, 'select,insert,update,delete');
+	where has_table_privilege(r, t, 'insert,update,delete,truncate')
+		or has_table_privilege(r, t, 'select') is distinct from (r = 'service_role');
 	if v_bad is not null then raise exception 'Table readers: %', v_bad; end if;
 end $$;
 

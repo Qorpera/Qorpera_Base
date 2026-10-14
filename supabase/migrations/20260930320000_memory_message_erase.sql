@@ -106,6 +106,18 @@ alter table public.qorpera_memory_message_erase_blocks enable row level security
 alter table public.qorpera_memory_message_erase_runs enable row level security;
 revoke all on public.qorpera_memory_message_erases, public.qorpera_memory_message_erase_blocks,
 	public.qorpera_memory_message_erase_runs from public, anon, authenticated, service_role;
+grant select on public.qorpera_memory_message_erases, public.qorpera_memory_message_erase_blocks,
+	public.qorpera_memory_message_erase_runs to service_role;
+
+comment on table public.qorpera_memory_message_erases is
+	'Message erases (RUNTIME-AGENT-MEMORY-TREE.md §10): one row per erased message, its four steps from pending to done. '
+	'A second request for the message joins it.';
+comment on table public.qorpera_memory_message_erase_blocks is
+	'Message erases (RUNTIME-AGENT-MEMORY-TREE.md §10): each block whose history step 3 asks P18 to erase, with the lines '
+	'step 2 writes back and the erasure that took it.';
+comment on table public.qorpera_memory_message_erase_runs is
+	'Message erases (RUNTIME-AGENT-MEMORY-TREE.md §10): each run that read the message, the receipts step 4 scrubs once '
+	'it has ended.';
 
 -- 2. Helpers (plain reads) ----------------------------------------------------------------------------------------------
 
