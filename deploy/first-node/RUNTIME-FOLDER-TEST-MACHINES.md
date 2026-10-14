@@ -233,11 +233,72 @@ machine was lost".
 
 ## Review
 
-<!-- TODO -->
+The design: "Once `/company` is mounted on it, starting a command and typing into one are outside effects and pass the
+automatic review…; a worker's commands pass under its agent's rules… Until then a machine has no company folder and its
+commands are not reviewed." Today every machine tool is "internal" or "read" (`cloud-action-review.ts:226–233`: "A
+company machine is the company's own scratch compute").
+
+- **From 6d, `machine_run` is "external"**, as `computer_shell`'s commands are ("A command can reach the internet, and
+  so can what is typed into one"). With `/company` mounted, a command also reaches the company's files (item 2).
+- `machine_read` and `machine_list` stay "read". `machine_start`, `machine_cancel`, `machine_stop` and
+  `machine_delete` stay "internal": starting a machine runs nothing of the agent's, and the others only end work.
+- No tool types into a running command today. One added later is "external" too (the design's "typing into one").
+- **A worker's commands** pass under its agent's rules (design). 6d's tests show a worker's `machine_run` reaching the
+  review with its agent's rules, and 6d adds that where it does not.
+- **A boot without `/company`.** Read with item 10, the design leaves such a machine's commands unreviewed. This plan
+  reviews every `machine_run` instead (Q2), for three reasons. `cloudActionEffect` is a pure function of the tool and
+  its arguments, and whether a machine has `/company` is decided per boot, so it can change between the review and the
+  start. A machine's disk may still hold copies of company files from an earlier boot that had `/company`. And a
+  folderless machine is still a networked command run on the company's behalf. If the coordinator keeps the design's
+  reading, 6d instead classes the call from the machine's state at the call, and `qorpera_authorize_machine_command`
+  refuses an unreviewed start on a boot that has a view.
 
 ## Reads
 
-<!-- TODO -->
+Today a test machine has no view and records no reads. With root, one command can read through `/company` for
+another, so a read can't be pinned to one command. The design: reads go "in the read set of every run with a command
+running at the time. Reads made while none runs are recorded on the starter's view", and "the next run inherits"
+them. Step 6 builds that as follows:
+
+1. **Recording and release.** The folder service records each read it serves under a `test_machine` view, in memory,
+   before the answer leaves the service (5c); nothing the guest reports about reads counts. Each read reaches the view's
+   read set and every run with a command running on the machine at the time whose job is leased, before any output of
+   the machine reaches a model and before any save of the machine commits: the service releases the machine's recorded
+   reads before each of its commits, quiet publishes included. Not followed: a copy on the machine's disk of a read that
+   never reached a model or a save (C1b-3 §6: "it does not trace every copy").
+2. **The view's read set lives with the disk.** It holds every read of the machine, those made while no command ran
+   included, and carries to the next view of the same placement (a reboot or a wake on the same disk). A new placement
+   starts clean, because it has a new disk.
+3. **Output takes in the view's reads.** Every path that hands machine output to a run first takes the view's read set
+   into that run (`qorpera_folder_run_inherit_view_reads`): the receipts of `machine_run`, `machine_read` and
+   `machine_cancel`, the notify continuation and a worker's read. Output can show what any command on the machine read,
+   so whoever sees it takes in what the machine read. This also covers a run whose command ran while its job was not
+   leased (rule 1 reaches only leased jobs).
+4. **Boundaries come after reads.** A boundary (below) is answered only after every recorded read of the machine is
+   released. A boundary with no answer holds the output back: the model gets nothing from the machine until it is
+   answered.
+5. **What can't be proven is refused.**
+   - **A crashed service.** A view whose `served_by` is still set by a service that did not stop cleanly may have
+     served reads that were never released. Every `test_machine` view that service served is refused, the VM is
+     restarted and the next boot opens a new view. The read set keeps what was released.
+   - **`unreadable`** (a released read the core can no longer place, or a take-in that raises "A read is no longer
+     readable") holds the output back, and the executor retires the placement, so the machine starts on a new disk at
+     its next start.
+   - **The core's other refusals** hold the output back, as step 4's do: `QRC01` and `run_ended` are retried, `stopped`
+     (the pause) is held, `denied` is held, and is final at the final boundary.
+
+**SQL (6a).**
+
+- A `test_machine` view's release writes the view's read set and fans each read out to every run with a command
+  running on the machine whose job is leased, taking each job's KEY SHARE in id order.
+- Every commit of a `test_machine` view rechecks the view's read set at rank 10, as a run's read set is rechecked today.
+- The read set carries to the next view of the same placement.
+- `qorpera_folder_run_inherit_view_reads` takes a `test_machine` view for any company-audience run whose agent and
+  member read the root now. Today it takes only "its own agent's and member's views", which on a test machine would
+  leave out every agent but the starter.
+
+**Narrow marks (W6)** are coding turns' (5a). Step 6 adds none: a test machine's reads reach each run's read set
+directly (rules 1 and 3).
 
 ## Boundaries
 
