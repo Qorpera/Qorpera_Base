@@ -26,7 +26,7 @@ async function mountinfo() {
 /** The folder's place in a namespace: the shared parent with `/company` a link into it, or the mount itself. */
 function folderArgs(folder, fd) {
 	if (folder === "direct") return ["--bind-fd", String(fd), "/company"];
-	if (folder === "candidate") return ["--bind-fd", String(fd), "/folder-parent", "--symlink", "/folder-parent/company", "/company"];
+	if (folder === "candidate") return ["--bind-fd", String(fd), "/run/qorpera-company", "--symlink", "/run/qorpera-company/company", "/company"];
 	throw new Error("UNKNOWN_FOLDER_FORM");
 }
 

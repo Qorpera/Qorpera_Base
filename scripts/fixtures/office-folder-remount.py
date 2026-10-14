@@ -775,7 +775,7 @@ class Proof:
                 "sameNamespace": status.get("mountNamespace") == self.before[name]["status"].get("mountNamespace"),
                 "read": self.ask(self.relay1, name, {"op": "read", "path": seed}),
                 "write": self.ask(self.relay1, name, {"op": "write", "path": f"{name}-{tag}.txt", "text": tag}),
-                "namespaceCount": count("/folder-parent/company", mountinfo("\n".join(lines))),
+                "namespaceCount": count("/run/qorpera-company/company", mountinfo("\n".join(lines))),
                 "mountinfo": lines,
             }
         with self.node.lock:

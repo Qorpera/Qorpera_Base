@@ -111,7 +111,7 @@ def handle(request):
     if op == "listcwd":
         return {"names": sorted(os.listdir("."))}
     if op == "mountinfo":
-        return {"lines": [line for line in open("/proc/self/mountinfo").read().splitlines() if "/company" in line or "/folder-parent" in line]}
+        return {"lines": [line for line in open("/proc/self/mountinfo").read().splitlines() if "/company" in line or "/run/qorpera-company" in line]}
     if op == "watch-start":
         stop = threading.Event()
         watching.update(stop=stop, events=[])
