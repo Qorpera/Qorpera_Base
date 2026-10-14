@@ -156,3 +156,21 @@ The record keeps each step's reply, what the node held before the kill
 (`nodeBeforeKill`), the closes after it (`closesAfterKill`), what the node holds
 after (`nodeAfterRestart`), the node's `abandoned` entries, and `asExpected`. A
 mismatch is recorded, not a failed check.
+
+## The gap before the first mount
+
+An office that boots before its folder is mounted already holds the shared
+parent, so `/company` leads to the bare mountpoint
+`/run/qorpera-folder/mounts/<view>/company`. Its mode decides what the office
+sees there, and whether it can write into a directory the mount will later hide.
+#1047 creates it `0700`. The candidate is `0000`, kept only if the mount still
+comes up over it with the unit's real mount user: root bounded to
+`CAP_SYS_ADMIN`, through the program's own mount path and mountpoint checks.
+
+The fixture measures every mode in the order `0000`, `0700`, `0755`, each in its
+own view. For each it records the bare mountpoint's mode and owner, then starts a
+command namespace and a shell spawned with `--chdir /company` before the mount,
+and has them look and write. It starts the mount unit, waits up to 15 s for it
+to serve, and has them look and write again, beside the unit's state and journal.
+The rest of the run uses the first mode that was served; if none was, the run
+stops there.
