@@ -1791,7 +1791,7 @@ it("shows an own-thread run its summary tree, released and recorded before the m
 	]);
 	const calls = f.pathCall.mock.calls;
 	const methods = calls.map(([method]) => method);
-	const at = (name: string) => methods.indexOf(name);
+	const at = (name: CloudCompanyPathRpc) => methods.indexOf(name);
 	const views = methods.flatMap((method, index) => (method === "qorpera_memory_view" ? [index] : []));
 	const admitted = at("qorpera_begin_native_company_execution_v3");
 	const start = at("qorpera_bind_native_company_context");
@@ -1890,12 +1890,11 @@ it("keeps zoom for a run whose view failed after the catalog was admitted with i
 it("settles an own-thread run's tree at the opening, after the admission, and records its wait", async () => {
 	const f = await memoryTreeFixture({ bare: true });
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
-	// Settle reads the events [0, T) misses lines for: none read, so it built nothing, and recorded its batch. The
+	// Settle reads the events [0, T) misses lines for: none read, so it tried no line and has no batch to record. The
 	// view shows a placeholder for each message, and no block is released.
 	expect(memoryTreeCalls(f)).toEqual([
 		"qorpera_memory_view",
 		"qorpera_memory_events_run",
-		"qorpera_memory_compaction_record",
 		"qorpera_memory_view",
 		"qorpera_memory_branches",
 		"qorpera_memory_view_record",
@@ -1906,10 +1905,9 @@ it("settles an own-thread run's tree at the opening, after the admission, and re
 	expect(methods.indexOf("qorpera_begin_native_company_execution_v3")).toBeLessThan(
 		methods.indexOf("qorpera_memory_events_run"),
 	);
-	const request = (name: string) =>
+	const request = (name: CloudCompanyPathRpc) =>
 		(calls[methods.indexOf(name)]![1] as { p_request: Record<string, unknown> }).p_request;
 	expect(request("qorpera_memory_events_run")).toEqual({ session: f.context.identity.sessionId, start: 0, count: 2 });
-	expect(request("qorpera_memory_compaction_record")).toMatchObject({ batch: 0, kind: "conversation", calls: 0 });
 	expect(request("qorpera_memory_view_record")).toMatchObject({ placeholders: 2, waitedLines: 0 });
 	expect(request("qorpera_memory_view_record").waitMs).toEqual(expect.any(Number));
 });

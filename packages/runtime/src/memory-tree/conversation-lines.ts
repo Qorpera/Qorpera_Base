@@ -207,7 +207,8 @@ interface BlockWrite {
 
 /** What a change set's unit makes: the tree's root, its tree.toml, a tier folder or a block. */
 type Target =
-	| { readonly kind: "root" | "toml" }
+	| { readonly kind: "root" }
+	| { readonly kind: "toml" }
 	| { readonly kind: "tier"; readonly tier: string }
 	| { readonly kind: "block"; readonly write: BlockWrite };
 

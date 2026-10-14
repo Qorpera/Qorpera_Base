@@ -182,7 +182,6 @@ export async function runCloudNativeRunToolSession(options: {
 			}
 		};
 		await assertActive(run.signal);
-		const opening = options.opening;
 		const reviewer = options.actionReview ? new CloudActionReviewChannel() : undefined;
 		boundary = new CloudNativeToolBoundary({
 			observability: options.observability,
@@ -206,16 +205,8 @@ export async function runCloudNativeRunToolSession(options: {
 			prompt: options.prompt,
 			runtimeInstructions: options.runtimeInstructions,
 			...(options.composeContext ? { composeContext: options.composeContext } : {}),
-			...(opening
-				? {
-						// The run's authority still holds once the opening has composed and bound its context.
-						opening: async (signal: AbortSignal) => {
-							const composed = await opening(signal);
-							await assertActive(signal);
-							return composed;
-						},
-					}
-				: {}),
+			// The bind rechecks the run's lease, and the first request's fence its authority.
+			...(options.opening ? { opening: options.opening } : {}),
 			...(options.compactor ? { compactor: options.compactor } : {}),
 			...(options.closing ? { closing: options.closing } : {}),
 			identityRoot: options.identityRoot,

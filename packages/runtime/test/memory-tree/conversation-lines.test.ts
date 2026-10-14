@@ -507,9 +507,9 @@ it("reads a block that changed under it again, keeping the stored lines", async 
 	await lines.settle(open());
 	expect(host.commits).toHaveLength(2);
 	// The tier another batch made counts as made; the block is read again and written at its version.
-	expect(host.commits[0].units.map((unit) => [unit.op, unit.path])).toEqual([
-		["mkdir", `${ROOT}/t0`],
-		["write", BLOCK],
+	expect(host.commits[0].units).toMatchObject([
+		{ op: "mkdir", path: `${ROOT}/t0` },
+		{ op: "write", path: BLOCK },
 	]);
 	expect(host.commits[1].units).toEqual([
 		{ op: "write", path: BLOCK, content: expect.any(Object), expectedVersion: expect.any(String) },

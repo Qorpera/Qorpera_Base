@@ -504,7 +504,7 @@ describe("the coding composition of a native turn", () => {
 					new CloudNativeToolOperations(run, f.control),
 					run,
 				);
-				const context = JSON.parse(options.prompt) as Record<string, unknown>;
+				const context = JSON.parse(options.prompt ?? "") as Record<string, unknown>;
 				prompts.push(context);
 				const [, , , finish, ask] = adapters.tools;
 				const current = context.input as { text: string | null; answers: { options: string[] } | null } | undefined;
@@ -706,7 +706,7 @@ describe("the coding composition of a native turn", () => {
 		f.turnContext.omittedEarlierTurns = 3;
 		let prompt = "";
 		vi.mocked(runCloudNativeRunToolSession).mockImplementation(async (options) => {
-			prompt = options.prompt;
+			prompt = options.prompt ?? "";
 			throw new Error("stop after composing");
 		});
 		await expect(
@@ -752,7 +752,7 @@ describe("the coding composition of a native turn", () => {
 		f.turnContext.input = { from: "member", text: "Yes", answers: { question, options: ["Yes", "No"] } };
 		let prompt = "";
 		vi.mocked(runCloudNativeRunToolSession).mockImplementation(async (options) => {
-			prompt = options.prompt;
+			prompt = options.prompt ?? "";
 			throw new Error("stop after composing");
 		});
 		await expect(
