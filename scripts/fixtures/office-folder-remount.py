@@ -25,6 +25,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 
 HERE = Path(__file__).resolve().parent
 # The substrate proof's wire helpers and synthetic node, unchanged.
@@ -808,3 +809,112 @@ class Proof:
         state = ROOT / "state" / VIEW
         now = {"inode": state.stat().st_ino, "names": sorted(os.listdir(state))}
         self.check("stateFolderKept", now["inode"] == self.state_before["inode"] and set(self.state_before["names"]) <= set(now["names"]), {"before": self.state_before, "after": now})
+
+    def use(self, relay, name, seed, tag):
+        return {
+            "status": self.ask(relay, name, {"op": "status"}),
+            "read": self.ask(relay, name, {"op": "read", "path": seed}),
+            "write": self.ask(relay, name, {"op": "write", "path": f"{name}-{tag}.txt", "text": tag}),
+            "mountinfo": self.ask(relay, name, {"op": "mountinfo"}),
+            "look": self.ask(relay, name, {"op": "look"}),
+        }
+
+    def over_mount(self):
+        """Office services started while the folder is mounted: ProtectSystem=strict makes what exists at start
+        read-only, so the plain unit is measured beside one that names the folder mounts writable."""
+        self.over = {}
+        for number, name, writable in ((2, "over-plain", False), (3, "over-rw", True)):
+            relay = self.relay(number, writable)
+            entry = {"relay": relay.call("info"), "start": relay.call("start", name=name, shape="command", folder="candidate", view=VIEW)}
+            if entry["start"]["started"]:
+                entry["over"] = self.use(relay, name, "before.txt", "over")
+            self.over[name] = (relay, entry)
+
+    def second_kill(self):
+        restart = self.kill("systemctl", "after2.txt", "after second restart")
+        self.note("kill2", restart)
+        seen, recovered, one = self.after_restart("after2", "after2.txt", "after second restart")
+        self.check("secondRestartRecovered", restart["hostServedAfterSeconds"] is not None and recovered, {"before": restart["before"], "after": restart["after"], "namespaces": seen})
+        self.check("oneMountAfterRestart", restart["hostCount"] == 1 and one, {"kill": 2, "hostCount": restart["hostCount"], "namespaceCounts": {name: entry["namespaceCount"] for name, entry in seen.items()}})
+        for name, (relay, entry) in self.over.items():
+            if entry["start"]["started"]:
+                entry["afterKill2"] = self.use(relay, name, "after2.txt", "after2")
+        self.note("officeStartedOverMount", {name: entry for name, (_, entry) in self.over.items()})
+        self.note("directAfterKill2", self.ask(self.relay1, "direct", {"op": "read", "path": "before.txt"}))
+
+    def exit_three(self):
+        """The node closes the view: the program exits 3, which the unit must not restart."""
+        before = show(self.unit)
+        self.node.close_view(VIEW)
+
+        def ended():
+            now = show(self.unit)
+            return now if now.get("ExecMainStatus") == 3 and now["ActiveState"] in ("failed", "inactive") else None
+
+        try:
+            stopped = base.eventually(ended, 20)
+        except TimeoutError:
+            stopped = None
+        # Past RestartSec=5s: a restart would have begun by now.
+        time.sleep(9)
+        now = show(self.unit)
+        passed = stopped is not None and now["NRestarts"] == before["NRestarts"] and now["ActiveState"] in ("failed", "inactive") and not served(self.point) and count(self.point) == 0
+        self.check("exitThreeNotRestarted", passed, {"before": before, "ended": stopped, "nineSecondsLater": now, "hostCount": count(self.point), "journal": journal(self.unit, 20)})
+        self.note("afterExitThree", {name: self.ask(self.relay1, name, {"op": "look"}) for name, _ in CANDIDATES})
+
+    def tear_down(self):
+        steps = {"relays": [], "views": {}}
+        for relay in self.relays:
+            steps["relays"].append(relay.close())
+        for view in self.views:
+            try:
+                steps["views"][view] = tear_view(view)
+            except OSError as error:
+                steps["views"][view] = repr(error)
+        if self.node:
+            self.node.close()
+        if self.claimed.get("unit"):
+            UNIT_FILE.unlink(missing_ok=True)
+            steps["daemonReload"] = quiet("systemctl", "daemon-reload")
+        if self.claimed.get("root"):
+            # Never through a mount: what is left mounted under the root stays for the cleanup's lazy unmounts.
+            left = [entry["mountpoint"] for entry in mountinfo() if entry["mountpoint"].startswith(str(ROOT) + "/")]
+            steps["mountsLeft"] = left
+            if not left:
+                shutil.rmtree(ROOT, ignore_errors=True)
+        if self.claimed.get("program"):
+            shutil.rmtree(self.claimed["program"], ignore_errors=True)
+        return steps
+
+    def evidence(self):
+        units = [UNIT.format(f"gap-{mode}") for mode in MODES] + [self.unit]
+        self.record["journals"] = {unit: journal(unit, 60) for unit in units + [relay.unit for relay in self.relays]}
+        self.record["relayLogs"] = {relay.unit: relay.log.read_text()[-4000:] for relay in self.relays if relay.log.exists()}
+        kernel = quiet("journalctl", "-k", "--no-pager", "-o", "cat", "--since", f"@{self.started}").get("output", "")
+        self.record["kernelDenials"] = [line for line in kernel.splitlines() if "denied" in line.lower()]
+
+    def run(self):
+        self.started = int(time.time())
+        try:
+            self.set_up()
+            self.first_mount()
+            self.prepare_loss()
+            self.first_kill()
+            self.over_mount()
+            self.second_kill()
+            self.exit_three()
+        except Exception as error:
+            self.record["error"] = repr(error)
+            self.record["traceback"] = traceback.format_exc().splitlines()[-12:]
+        finally:
+            self.record["teardown"] = self.tear_down()
+            self.evidence()
+        errors = list(self.node.errors) if self.node else ["the node never started"]
+        self.check("fixtureProtocolClean", not errors and not self.troubles, {"nodeErrors": errors, "troubles": self.troubles})
+        if self.node:
+            self.record["nodeHellos"] = self.node.hellos
+            self.record["nodeOps"] = self.node.ops
+        self.record["missingChecks"] = [name for name in CHECKS if name not in self.record["checks"]]
+        clean = "error" not in self.record and not self.record["missingChecks"]
+        self.record["result"] = "passed" if clean and all(entry["passed"] for entry in self.record["checks"].values()) else "failed"
+        return self.record
