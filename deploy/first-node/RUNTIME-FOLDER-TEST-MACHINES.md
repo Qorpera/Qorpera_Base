@@ -442,8 +442,35 @@ only if a rule is wrong.
 
 ## What this plan amends
 
-<!-- TODO -->
+- [RUNTIME-COMPANY-FOLDER.md](RUNTIME-COMPANY-FOLDER.md), "Which view each machine gets": the test machine's view "is
+  opened by the starter's run". The executor opens it on that run's behalf at each boot; the view still names the
+  starter and its run ("Views and machines").
+- [RUNTIME-COMPANY-FOLDER-C1B.md](RUNTIME-COMPANY-FOLDER-C1B.md) §8: "A publish names the commands running while its
+  changes were made" becomes per unit, and a unit whose credited command fails the check is refused alone. The
+  commit's actor and its `credits` are as §8 says ("Commands and credit"). §8's "The machines' end paths need no
+  change" holds: only the executor's order changes.
+- C1b-3 §6, `qorpera_folder_run_inherit_view_reads`: "A run inherits only its own agent's and member's views" is
+  widened for `test_machine` views to a run whose agent and member read the root ("Reads", SQL).
+- RUNTIME-COMPANY-FOLDER.md, the test machine's review: "Until then a machine has no company folder and its commands
+  are not reviewed", if Q2 is accepted ("Review").
+- `cloud-action-review.ts`: `machine_run` leaves the machine tools' "internal" group (6d).
+- [deploy/machine/README.md](../machine/README.md): "A coding session's repository", Lifetime and acceptance step 4
+  (6e); the build order's row 6 is done by 6e.
 
 ## Proposals and questions
 
-<!-- TODO -->
+- **P1 (after 6f).** A machine whose starter's authority does not cover the company-wide view gets no `/company` (the
+  design). It could instead get the starter's own narrower view, so agents with narrower access also work in the
+  folder on a test machine. That needs a founder decision, because any agent may use the machine and would then work
+  under the starter's narrower view.
+- **Q1 (coordinator).** When to build. 6b reuses 4c and 5c, and 6a's crashed-service refusal needs 5a's `served_by`;
+  none of these is on master yet. Recommended: build 6a and 6c now (6a's crashed-service test lands once 5a has
+  merged), and 6b against a stand-in core, merging after 4c and 5c; 6d after all three.
+- **Q2 (coordinator).** Review on a boot without `/company`. The design and item 10 leave such a machine's commands
+  unreviewed. Recommended: review every `machine_run` from 6d, for the reasons in "Review". Otherwise 6d classes each
+  call from the machine's state at the call, and `qorpera_authorize_machine_command` refuses an unreviewed start on a
+  boot that has a view.
+
+The contract and the design decide the rest, and this plan follows them: who opens the view and whose authority it
+shows, the guard (the CID check and exactly one view per machine), when to publish (item 3's quiet publish applies
+here), credit and reads per command, the review once `/company` is mounted, and what row 6 retires.
