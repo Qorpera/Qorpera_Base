@@ -941,6 +941,58 @@ now, `key` the row's typed key (a JSON array, as the client's table parse gives 
   most 500. Every member who reads the table sees its offers. Read it again after a folder change to the table and on
   focus; an offer settles with the save that changes its cell.
 
+### Chat images (20260930260000_chat_images)
+
+Folder-v2 companies only. A member's image in a conversation (an agent's thread or a group chat) is a folder file under
+the conversation's summary-tree root: `<root>/images/<clientInputId>/<sha256>.<png|jpg|gif|webp>`, the root being
+`agents/<handle>/memory/thread` for a thread and `agents/groups/<handle>/memory` for a group chat. The input lists each
+image as before, `{objectSha256, bytes, mediaType}`, the hash being the file's. An input holds at most 5 images and
+8 MiB, each PNG, JPEG, GIF or WebP (the web's limits). Only the platform writes these paths (a summary tree is the
+platform's; a member's commit is refused `platform_only`), and an agent reads them as folder files. A conversation with
+no root (its agent has no folder) takes no images.
+
+The steps, through the object gateway's `/v1/member-session-attachments` routes (§4):
+
+1. The client picks the input's `clientInputId` first: every image of the input and the post use it.
+2. `PUT …/upload/<sessionId>/<clientInputId>/<sha256>`: the gateway calls `qorpera_room_image_begin(session,
+   clientInputId, sha256, bytes, mediaType)` with the member's token, which answers `{schema:
+   "qorpera.room-image-begin/v1", environmentId, sessionId, clientInputId, sha256, bytes, mediaType, path}`; it stages
+   the bytes as the platform and calls `qorpera_room_image_commit(userId, session, clientInputId, file)` as the service
+   role, `file` being the seal's `{manifestSha256, fileSha256, bytes, mediaType, executable}`. That makes the folders
+   still missing and writes the file in one memory commit naming the conversation's generation, and answers `{schema:
+   "qorpera.room-image/v1", sha256, bytes, mediaType, path}`. The same image again answers the same and commits nothing.
+3. The post (`qorpera_post_company_room_message`) lists the images. Each must be a live file at its path that this
+   member uploaded for this `clientInputId` (42501 "Attachment bytes must be uploaded for this exact member input"); a
+   replay of the post is not checked again. The input trigger holds any writer to the same rule, and a submitted
+   input's images and author never change (42501 "Submitted input attachments cannot change").
+4. `GET …/input/<sessionId>/<inputId>/<sha256>`: the gateway calls `qorpera_room_image_download(session, inputId,
+   sha256)` with the member's token, which answers `{schema: "qorpera.room-image-download/v1", environmentId, sessionId,
+   inputId, sha256, bytes, mediaType, manifestSha256, fileSha256, path}`, and serves that file. Any member who may read
+   the conversation may download (a viewer too).
+
+The begin's refusals: 42501 "Member attachment authority is required" (not a member's token), 22023 "Member attachment
+is invalid" (no input id, or an image outside the limits above), 42501 "Member attachment session is unavailable"
+(not a member of the open conversation's room, or the company was deleted meanwhile), 42501 "Submitted input
+attachments cannot change" (the input is posted), 55000 "Attachment folder is unavailable" (no root), 55000 "Member
+attachment could not be saved" (the sweep removed the input's uploads meanwhile; begin again), 23505 "Attachment input
+id is bound to another member" and 54000 "Member attachment capacity is reached" (a sixth image, or more than 8 MiB;
+the same image again does not count). The
+commit's refusals: 42501 "Member attachment authority is required" (not the service role), 22023 "Member attachment is
+invalid" (`file` other than exactly those five keys with `executable` false, or an image outside the limits), 42501
+"Member attachment session is unavailable" (no such conversation, an input id nobody began, another member's input, or
+the member no longer in the room), 42501 "Submitted input attachments cannot change" (the input was posted, before or
+during the save), 55000 "Attachment folder is unavailable" (no root), 54000 "Member attachment capacity is reached" and
+55000 "Member attachment could not be saved" (the folder refused the write). The download's refusals: 42501
+"Chat attachment access is unavailable", "Canonical chat input is unavailable" (no such member prompt in the
+transcript, or its message erased) and "Attachment does not belong to this canonical input", and 55000 "Attachment
+object is unavailable" (the file is gone).
+
+Images no input lists are deleted a day after the input's last upload, by a sweep every minute
+(`qorpera_room_image_orphan_sweep`, pg_cron job `qorpera-room-image-sweep`, at most one folder commit per call): the
+whole folder of an input never posted, and the images a posted input does not list. Erasing a message (memory step
+M3) deletes that message's images (its input's folder) with its lines. The memory zoom's `attachments` stay `{mediaType, bytes}` for
+now; an image's path comes to the zoom with the runtime that opens it.
+
 ## 3. Realtime
 
 Every private topic's policies on `realtime.messages` also require the row's
@@ -1014,7 +1066,11 @@ only after durable storage.
   (`qorpera_member_folder_object`, checked before and after the read). Behind the member company gateway like the
   other member routes. `CloudMemberFolderClient.readFile` fetches the manifest, then its chunks, and checks each
   against its hash and the whole against the file's.
-- `/v1/member-session-attachments/…` — attachments on canonical sessions
+- `PUT /v1/member-session-attachments/upload/<sessionId>/<clientInputId>/<sha256>` and
+  `GET /v1/member-session-attachments/input/<sessionId>/<inputId>/<sha256>` — a member's chat images (§2 "Chat images").
+  On folder-v2 the routes move onto `qorpera_room_image_begin`, `qorpera_room_image_commit` and
+  `qorpera_room_image_download` with the gateway change that follows 20260930260000; until it deploys they serve
+  snapshot-v1 sessions only.
 - `POST /v1/read-leases/revoke` — revoke a read lease
 - `/healthz`, `/livez`, `/readyz`
 

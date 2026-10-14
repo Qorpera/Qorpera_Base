@@ -454,7 +454,12 @@ folder-v2 before it writes: member and native uploads (the C1c-1 guards, 2026092
 `20260930041000`, artifacts: `register_artifact(_v2)`, the runner broker's output objects and artifact registration,
 and the member functions that would take the gc fence over an artifact (index, hold, graph completion, GC plan cancel)
 answer 0A000 first (838 pins it). Any feature that later stores bytes for a
-folder-v2 company (C3 and C4: chat images, screenshots, mail attachments, checkpoints) must add its root here first.
+folder-v2 company (C3 and C4: screenshots, mail attachments, checkpoints) must add its root here first. Chat images
+(`20260930260000`) add none: an image is a folder file under its conversation's summary-tree root
+(`<root>/images/<clientInputId>/<sha256>.<ext>`), written by a memory commit that names the conversation's generation,
+so the folder core roots its object like any file's; an input body holds only the hash, and an image's root may exist
+before the tree's `tree.toml`. The image's file goes with an M3 erase or the orphan sweep (every minute, at most one
+folder commit per call).
 C1d-2a pins this with a test that no table outside the folder core references a folder-v2 profile's catalog rows. A
 23503 at finish (a RESTRICT reference) is answered `restore`.
 
