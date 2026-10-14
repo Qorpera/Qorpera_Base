@@ -2,7 +2,7 @@
 -- M1b-4b-2: real run-actor uploads and commits to a new and an existing conversation tree; refusals outside the exact
 -- scope and a generation change discarding the whole batch. Bounded raw events and count-only compaction records:
 -- authoritative payer, per-assignment batches, exact replay, malformed inputs and run-check precedence.
--- A tree written by a run with no folder grant.
+-- A tree written by a run with no folder grant, and a run that may write there refused by the run rule alone.
 
 create function pg_temp.writer_actor(p_who text) returns jsonb language sql as $$
 	select public.qorpera_folder_tool_run(pg_temp.b(p_who), '[]'::jsonb) -> 'actor'
@@ -284,6 +284,52 @@ begin
 	r := pg_temp.writer_commit('vera', 'writer-vera-indexed-tree',
 		jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', root || '/t1')), pg_temp.generations(s));
 	perform pg_temp.expect(r, 1, 'saved');
+end $$;
+
+-- 9. A run whose agent and member may write the trees' folders (as a live agent's default grant on the shared root
+-- gives) passes the commit's authority check, so the run rule alone refuses: a block's delete, a folder outside t0 to
+-- t14, another conversation's tree under that conversation's generation, and a second session's generation.
+do $$
+declare env constant uuid := '63400000-0000-4000-8000-000000000020'; root constant text := 'agents/nora/memory/thread';
+	other constant text := 'agents/otto/memory/thread'; s uuid := pg_temp.thread('nora'); a jsonb; p text; r jsonb; u jsonb;
+	i integer := 0;
+	outside constant text := 'a run writes only its own conversation tree folders, tree.toml and blocks';
+	scope constant text := 'a run tree change names exactly its own conversation and generation';
+begin
+	foreach p in array array[root, other] loop
+		perform public.qorpera_folder_grant(env, pg_temp.member(1), (public.qorpera_folder_path_resource(env, p)).id,
+			'staff_agent', pg_temp.id('nora'), array['read','write']);
+		perform public.qorpera_folder_grant(env, pg_temp.member(1), (public.qorpera_folder_path_resource(env, p)).id,
+			'member', '63400000-0000-4000-8000-000000000002', array['read','write']);
+	end loop;
+	a := public.qorpera_folder_tool_run(pg_temp.b('nora'), '[]'::jsonb) -> 'resolved';
+	foreach p in array array[root || '/t0/00000000.jsonl', root || '/runs', root || '/t15', other || '/t1', root || '/t2'] loop
+		if not public.qorpera_folder_actor_allowed(env, '63400000-0000-4000-8000-000000000010', a, p, 'write') then
+			raise exception 'Nora''s run may write %', p; end if;
+	end loop;
+	foreach u in array array[
+		jsonb_build_object('op', 'delete', 'path', root || '/t0/00000000.jsonl',
+			'expectedVersion', pg_temp.read(root || '/t0/00000000.jsonl') #>> '{entry,version}'),
+		jsonb_build_object('op', 'mkdir', 'path', root || '/runs'),
+		jsonb_build_object('op', 'mkdir', 'path', root || '/t15')] loop
+		i := i + 1;
+		r := pg_temp.writer_commit('nora', 'writer-granted-' || i, jsonb_build_array(u), pg_temp.generations(s, 1));
+		perform pg_temp.same(pg_temp.expect(r, 1, 'refused', 'structured_rule') #> '{problems,0,message}', to_jsonb(outside),
+			'The run rule refuses ' || (u ->> 'op') || ' ' || (u ->> 'path'));
+	end loop;
+	r := pg_temp.writer_commit('nora', 'writer-granted-other', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', other || '/t1')),
+		pg_temp.generations(pg_temp.thread('otto')));
+	perform pg_temp.same(pg_temp.expect(r, 1, 'refused', 'structured_rule') #> '{problems,0,message}', to_jsonb(scope),
+		'The run rule refuses another conversation''s tree');
+	r := pg_temp.writer_commit('nora', 'writer-granted-both', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', root || '/t2')),
+		jsonb_build_object('sessionGenerations', (pg_temp.generations(s, 1) -> 'sessionGenerations')
+			|| (pg_temp.generations(pg_temp.thread('otto')) -> 'sessionGenerations')));
+	perform pg_temp.same(pg_temp.expect(r, 1, 'refused', 'structured_rule') #> '{problems,0,message}', to_jsonb(scope),
+		'The run rule refuses a second session''s generation');
+	perform pg_temp.same(pg_temp.read(root || '/t0/00000000.jsonl') -> 'found', 'true', 'The refused delete kept the block');
+	foreach p in array array[root || '/runs', root || '/t15', other || '/t1', root || '/t2'] loop
+		perform pg_temp.same(pg_temp.read(p) -> 'found', 'false', 'No refused folder ' || p);
+	end loop;
 end $$;
 
 rollback;
