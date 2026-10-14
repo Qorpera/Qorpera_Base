@@ -25,9 +25,9 @@ do $$ begin
 	if to_regclass('public.qorpera_memory_run_logs') is not null then
 		raise exception 'W1b (20260930231000) is already applied'; end if;
 	if to_regclass('public.qorpera_memory_trees') is null then
-		raise exception 'W1b (20260930231000) needs M1a (20260930111000)'; end if;
+		raise exception 'W1b (20260930231000) needs M1a (20260928509140, 20260928509150)'; end if;
 	if to_regclass('public.qorpera_runtime_worker_parents') is null then
-		raise exception 'W1b (20260930231000) needs W4a-1 (20260930171000)'; end if;
+		raise exception 'W1b (20260930231000) needs W4a-1 (20260928519130)'; end if;
 end $$;
 
 -- 1. The index ------------------------------------------------------------------------------------------------------
@@ -42,7 +42,7 @@ create table public.qorpera_memory_run_logs (
 	parent_run_id uuid,
 	parent_step integer check (parent_step >= 0),
 	continues_run_id uuid,
-	-- The whole log is narrow (§7.6), or it is from step narrow_from on.
+	-- The whole log is narrow (§4.5), or it is from step narrow_from on.
 	narrow boolean not null default false,
 	narrow_from integer check (narrow_from >= 0),
 	step_count integer not null default 0 check (step_count >= 0),
@@ -128,7 +128,7 @@ create table public.qorpera_memory_step_hash_keys (
 alter table public.qorpera_memory_step_hash_keys enable row level security;
 revoke all on public.qorpera_memory_step_hash_keys from public, anon, authenticated, service_role;
 comment on table public.qorpera_memory_step_hash_keys is
-	'Run logs (RUNTIME-AGENT-MEMORY-TREE.md §7.6): the key a company''s narrow steps hash their results with. Read only '
+	'Run logs (RUNTIME-AGENT-MEMORY-TREE.md §4.5): the key a company''s narrow steps hash their results with. Read only '
 	'by qorpera_memory_step_hashes.';
 
 -- 2. Helpers ----------------------------------------------------------------------------------------------------------
@@ -235,7 +235,7 @@ revoke all on function public.qorpera_memory_run_block_parse(text, text) from pu
 -- Three shapes, as the runtime writes them (cloud-run-log.ts):
 --   a step: j, tool, call, args, args_bytes, args_hash, result (null while pending), reads, reads_cut (only true, only
 --     when finished), releases, text, at; args, text and result at most 8 KiB each as stored, reads 16 KiB;
---   a narrow step (§7.6): j, tool, call, args_hash, narrow, finished, result_hash (when finished), releases, at;
+--   a narrow step (§4.5): j, tool, call, args_hash, narrow, finished, result_hash (when finished), releases, at;
 --   an erased step (§8): j, tool, call, args_hash, erased, and narrow or args_bytes.
 -- Returns its parts, the folder keys a step names (in its result, arguments and reads, as path, from, to or paths), the
 -- line's sha256 and that of its fixed parts (j, tool, call, args_hash and at).
@@ -355,7 +355,7 @@ returns boolean language sql stable security definer set search_path = '' as $$
 $$;
 revoke all on function public.qorpera_folder_path_every_agent(uuid, text) from public, anon, authenticated, service_role;
 
--- Whether a run's machine made it narrow (§7.6). W6a fills this in for coding runs.
+-- Whether a run's machine made it narrow (§4.5). W6a fills this in for coding runs.
 create function public.qorpera_memory_run_machine_narrow(p_environment_id uuid, p_run_id uuid)
 returns boolean language sql stable set search_path = '' as $$
 	-- 20260930231000 (W1b)
@@ -378,7 +378,7 @@ revoke all on function public.qorpera_run_log_narrow(uuid) from public, anon, au
 
 -- A run's place among runs (§4.5): its conversation, the step of its parent run that started it (a worker's dispatch,
 -- as W4a-1 keeps it), the run it continues (the worker's previous dispatch, or the run a completion, machine or office
--- wake follows) and whether it is narrow (§7.6: its parent step, its parent's log from that step, the run it continues,
+-- wake follows) and whether it is narrow (§4.5: its parent step, its parent's log from that step, the run it continues,
 -- or its machine). Null when the run is not in this company. Plain reads.
 create function public.qorpera_memory_run_origin(p_environment_id uuid, p_run_id uuid)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
@@ -494,7 +494,7 @@ end $$;
 revoke all on function public.qorpera_memory_run_log_place(uuid, uuid) from public, anon, authenticated;
 grant execute on function public.qorpera_memory_run_log_place(uuid, uuid) to service_role;
 
--- A narrow step's result hashes (§7.6): keyed with the company's step hash key and the run, so a hash names nothing
+-- A narrow step's result hashes (§4.5): keyed with the company's step hash key and the run, so a hash names nothing
 -- outside its run. Only while the job holds its lease on the run; at most 128 sha256 digests, in their order.
 create function public.qorpera_memory_step_hashes(p_environment_id uuid, p_job_id uuid, p_run_id uuid, p_digests jsonb)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
@@ -523,7 +523,7 @@ end $$;
 revoke all on function public.qorpera_memory_step_hashes(uuid, uuid, uuid, jsonb) from public, anon, authenticated;
 grant execute on function public.qorpera_memory_step_hashes(uuid, uuid, uuid, jsonb) to service_role;
 
--- What makes a run's next step lines narrow (§7.6), as its log's file rules decide it: the log is narrow from its next
+-- What makes a run's next step lines narrow (§4.5), as its log's file rules decide it: the log is narrow from its next
 -- step on (the whole log, or a step it holds), the run's machine went narrow, and which of the paths a step names not
 -- every agent reads. A path is spelled as a step line has it (a leading /company/ goes); one that is no company path
 -- names nothing, as in qorpera_memory_run_step_line. Only while the job holds its lease on the run; at most 1,024 paths.
