@@ -4,10 +4,12 @@
 // - `open` reads the run's conversation and its live tree (qorpera_memory_view) before any event or line, so every
 //   line the writer builds and stores is at the erase generation read then (§4.3). A later read at another generation
 //   drops what was built at the earlier one.
-// - `settle` (§5.4) builds the lines `[0, T)` is missing within SETTLE_MS and stores them, before the run composes its
-//   view. The view reads the tree again, so it shows only lines that were stored.
+// - `settle` (§5.4) builds the lines `[0, T)` is missing and stores them, before the run composes its view, and the run
+//   waits at most SETTLE_MS for it. The view reads the tree again, so it shows only lines that were stored. Lines not
+//   stored by then are stored at closing.
 // - `close` (§7.1) builds, within CLOSE_MS, the level-0 nodes of the events the run caused (the inputs that woke it,
-//   its own sends and cards) and every merge they complete, and stores them. What is left stays missing, for a settle.
+//   its own sends and cards) and every merge they complete, and stores them with any settle left. What is left stays
+//   missing, for a settle.
 // - Events come from qorpera_memory_events_run (M1b-4b-2), PAGE at a time, rendered as §4.1 shows them.
 // - A node the compactor failed on, with its inputs at hand, stays missing for the rest of the run (§7.2). A stopped
 //   lane, a deadline or an unreadable event is no failure.
@@ -61,6 +63,8 @@ const BLOCK_BYTES = 64 * 1024;
 const READS = 3;
 /** Times one change set is committed while some of its units wait for a folder (`<key>:2` to `:4`). */
 const ATTEMPTS = 4;
+/** Of SETTLE_MS, the time settle keeps for storing and recording what it built. */
+const SETTLE_STORE_MS = 5_000;
 /** Events one call reads: the host call's most. */
 const PAGE = 128;
 /** The most a memory_compaction count holds. */
@@ -228,6 +232,27 @@ export interface CloudConversationLinesOptions {
 const nodeKey = (l: number, k: number): string => `${l}:${k}`;
 const tierOf = (path: string): string => path.slice(0, path.indexOf("/"));
 
+/** `signal`, or `ms` from now, whichever ends first. Its timer is a global one, as step-lines' are; `end` clears it. */
+function deadline(signal: AbortSignal, ms: number): { readonly signal: AbortSignal; end(): void } {
+	const timeout = new AbortController();
+	const timer = setTimeout(() => timeout.abort(), ms);
+	timer.unref?.();
+	return { signal: AbortSignal.any([signal, timeout.signal]), end: () => clearTimeout(timer) };
+}
+
+/** Resolves when `promise` settles or `signal` aborts, whichever is first. */
+function until(promise: Promise<unknown>, signal: AbortSignal): Promise<void> {
+	if (signal.aborted) return Promise.resolve();
+	return new Promise((resolve) => {
+		const done = () => {
+			signal.removeEventListener("abort", done);
+			resolve();
+		};
+		signal.addEventListener("abort", done, { once: true });
+		promise.then(done, done);
+	});
+}
+
 export class CloudConversationLines {
 	readonly #control: CloudCompanyPathControl;
 	readonly #binding: CloudNativeToolBinding;
@@ -290,54 +315,69 @@ export class CloudConversationLines {
 	}
 
 	/**
-	 * At run start (§5.4): builds the lines `[0, T)` is missing, waiting at most SETTLE_MS, and stores them. Answers the
-	 * time it took and the lines it built, for the run's memory_view record (§13). Only an abort of `signal` throws.
+	 * At run start (§5.4): builds the lines `[0, T)` is missing and stores them, and the run waits at most SETTLE_MS for
+	 * all of it. Building ends SETTLE_STORE_MS before. Lines not stored by SETTLE_MS stay unstored, for the closing to
+	 * store, and the batch's record goes on under `signal`. Answers the time it took and the lines it built, for the
+	 * run's memory_view record (§13). Only an abort of `signal` throws.
 	 */
 	async settle(signal: AbortSignal): Promise<MemoryViewWait> {
 		const opening = this.#opening;
 		if (!opening || !this.#writable()) return { waitMs: 0, waitedLines: 0 };
 		const started = Date.now();
+		const wait = deadline(signal, SETTLE_MS);
+		const build = deadline(signal, SETTLE_MS - SETTLE_STORE_MS);
 		let waitedLines = 0;
+		let recorded: Promise<unknown> = Promise.resolve();
 		try {
-			const build = AbortSignal.any([signal, AbortSignal.timeout(SETTLE_MS)]);
 			const reader = this.#reader(opening.sessionId, opening.T);
 			const leaves = Array.from({ length: opening.T }, (_, i) => i);
-			waitedLines = await this.#batch(opening.T, leaves, reader, build, signal);
-			await this.#commit(signal);
+			({ added: waitedLines, recorded } = await this.#batch(opening.T, leaves, reader, build.signal, signal));
+			// A commit cut off at SETTLE_MS may have landed: the closing reads each block again before storing.
+			await this.#commit(wait.signal);
 		} catch (error) {
 			signal.throwIfAborted();
-			console.error(`Memory tree lines were not settled (${cloudRuntimeErrorCategory(error, signal)})`);
+			const category = wait.signal.aborted ? "timeout" : cloudRuntimeErrorCategory(error, signal);
+			console.error(`Memory tree lines were not settled (${category})`);
+		} finally {
+			await until(recorded, wait.signal);
+			wait.end();
+			build.end();
 		}
 		return { waitMs: Date.now() - started, waitedLines };
 	}
 
 	/**
 	 * Closing (§7.1), after the agent's turn: reads the tree again, then builds within CLOSE_MS the level-0 nodes of the
-	 * events the run caused, and every merge they complete, in one batch, and stores them. Never throws.
+	 * events the run caused, and every merge they complete, in one batch, and stores them with the lines settle did not
+	 * store. Never throws.
 	 */
 	async close(signal: AbortSignal): Promise<void> {
 		const opening = this.#opening;
 		if (!opening) return;
+		const build = deadline(signal, CLOSE_MS);
+		let recorded: Promise<unknown> = Promise.resolve();
 		try {
 			const view = await this.#read(signal);
 			if (!view || view.sessionId !== opening.sessionId) return;
 			this.#adopt(view);
 			if (!this.#writable()) return;
 			const T = view.tree.messages;
-			const build = AbortSignal.any([signal, AbortSignal.timeout(CLOSE_MS)]);
 			const reader = this.#reader(view.sessionId, T);
 			// The inputs that woke the run, then its own sends and cards.
 			const caused: number[] = [];
 			for (let i = opening.T; i < Math.min(opening.start, T); i++) caused.push(i);
 			for (let i = opening.start; i < T; i++) {
-				const entry = await reader.entry(i, build).catch(() => null);
+				const entry = await reader.entry(i, build.signal).catch(() => null);
 				if (entry?.runId === this.#binding.runId) caused.push(i);
 			}
-			await this.#batch(T, caused, reader, build, signal);
+			({ recorded } = await this.#batch(T, caused, reader, build.signal, signal));
 			await this.#commit(signal);
 		} catch (error) {
 			if (!signal.aborted)
 				console.error(`Memory tree lines were not closed (${cloudRuntimeErrorCategory(error, signal)})`);
+		} finally {
+			await recorded;
+			build.end();
 		}
 	}
 
@@ -455,8 +495,8 @@ export class CloudConversationLines {
 	}
 
 	/**
-	 * One batch (memoryCompact): the candidates' missing lines in `[0, T)` until `build` ends, recorded once, and the
-	 * nodes it failed on marked. Answers how many lines it built.
+	 * One batch (memoryCompact): the candidates' missing lines in `[0, T)` until `build` ends, and the nodes it failed on
+	 * marked. Answers how many lines it built, and its one record, which goes on under `signal` and never rejects.
 	 */
 	async #batch(
 		T: number,
@@ -464,9 +504,9 @@ export class CloudConversationLines {
 		reader: EventReader,
 		build: AbortSignal,
 		signal: AbortSignal,
-	): Promise<number> {
+	): Promise<{ added: number; recorded: Promise<unknown> }> {
 		const scope = this.#scope(T, candidates);
-		if (!scope.leaves.length) return 0;
+		if (!scope.leaves.length) return { added: 0, recorded: Promise.resolve() };
 		const { lines, stats } = await memoryCompact(
 			{ kind: "conversation", T, built: this.built, leaves: scope.leaves, event: reader.event },
 			this.#call,
@@ -480,15 +520,15 @@ export class CloudConversationLines {
 			if (!this.#stale) this.#unstored.set(key, line);
 			added += 1;
 		}
+		let recorded: Promise<unknown> = Promise.resolve();
 		if (stats.calls || stats.free || stats.failures) {
-			try {
-				await this.#record?.(stats, signal);
-			} catch {
+			// Asked now, so the recorder numbers the batches in the order they ended.
+			recorded = (async () => this.#record?.(stats, signal))().catch(() => {
 				// The record is the recorder's own.
-			}
+			});
 		}
 		// A deadline or a stopped lane leaves nodes missing that did not fail.
-		if (build.aborted || this.#lane.stopped) return added;
+		if (build.aborted || this.#lane.stopped) return { added, recorded };
 		for (const [l, k] of scope.nodes) {
 			if (this.built(l, k) !== undefined) continue;
 			let inputs = true;
@@ -496,7 +536,7 @@ export class CloudConversationLines {
 			else for (let i = memoryWindowStart(k); i <= k; i++) inputs &&= reader.read.has(i);
 			if (inputs) this.#failed.add(nodeKey(l, k));
 		}
-		return added;
+		return { added, recorded };
 	}
 
 	/**

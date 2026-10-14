@@ -10,6 +10,7 @@ import {
 	type MemoryCompactCall,
 	MemoryCompactLane,
 	type MemoryCompactReply,
+	type MemoryCompactStats,
 	memoryCompactStats,
 } from "@qorpera/runtime/memory-tree/compact";
 import { MEMORY_VIEW_SCHEMA } from "@qorpera/runtime/memory-tree/compose";
@@ -21,7 +22,7 @@ import {
 	memoryCompactionRecorder,
 	memoryTreeToml,
 } from "@qorpera/runtime/memory-tree/conversation-lines";
-import { type MemoryTreeLine, memoryBlockLines, memoryBlockText } from "@qorpera/runtime/memory-tree/tree";
+import { type MemoryTreeLine, memoryBlockLines, memoryBlockText, SETTLE_MS } from "@qorpera/runtime/memory-tree/tree";
 import { expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "../fixtures/native-tool-authority-fixture.ts";
 
@@ -551,6 +552,65 @@ it("stores each line once when two runs in the conversation settle and close its
 	const keys = host.commits.map((commit) => commit.key);
 	expect(new Set(keys).size).toBe(keys.length);
 	expect(new Set(keys.map((key) => key.split(".")[1]))).toEqual(new Set([host.binding.runId, OTHER_RUN]));
+});
+
+it("waits at most SETTLE for settle, its record and its commit, and stores at closing what settle did not", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	try {
+		const host = thread(2, 1);
+		// The record answers only when let go, and the first commit not before its signal ends, landing nothing.
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const records: MemoryCompactStats[] = [];
+		let commits = 0;
+		const lines = new CloudConversationLines({
+			control: host.control,
+			binding: host.binding,
+			folder: {
+				...host.folder,
+				memorySessionCommitStaged: (key, staged, session, signal) =>
+					commits++
+						? host.folder.memorySessionCommitStaged(key, staged, session, signal)
+						: new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason))),
+			},
+			call: fake().call,
+			lane: new MemoryCompactLane(),
+			record: (stats) => held.then(() => void records.push(stats)),
+		});
+		await lines.open(open());
+		let settled: unknown = null;
+		const settle = lines.settle(open()).then((value) => {
+			settled = value;
+		});
+		await vi.advanceTimersByTimeAsync(SETTLE_MS - 1);
+		expect([settled, commits, records]).toEqual([null, 1, []]);
+		await vi.advanceTimersByTimeAsync(1);
+		await settle;
+		expect(settled).toEqual({ waitMs: expect.any(Number), waitedLines: 3 });
+		expect(error.mock.calls).toEqual([["Memory tree lines were not settled (timeout)"]]);
+		expect(host.commits).toEqual([]);
+		// The record goes on after settle.
+		release();
+		await held;
+		expect(records).toEqual([expect.objectContaining({ kind: "conversation", free: 3 })]);
+		// The closing stores settle's lines with its own: event 2, which woke the run.
+		await lines.close(open());
+		expect(host.commits).toHaveLength(1);
+		expect(host.commits[0].units).toMatchObject([
+			{ op: "mkdir", path: ROOT },
+			{ op: "write", path: `${ROOT}/tree.toml` },
+			{ op: "mkdir", path: `${ROOT}/t0` },
+			{ op: "write", path: BLOCK },
+		]);
+		expect(host.addresses()).toEqual(["0.0", "0.1", "0.2", "1.0"]);
+		expect(records).toHaveLength(2);
+	} finally {
+		error.mockRestore();
+		vi.useRealTimers();
+	}
 });
 
 it("never tries a node again in the run once the compactor failed on it", async () => {
