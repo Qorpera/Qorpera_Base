@@ -66,8 +66,10 @@ operator provenance, not an automatic attestation of every installed file.
 ## What the JSON establishes
 
 - A real pinned `qorpera-folder` binary mounts FUSE as root, with `allow_other`.
-  Its peer is a tiny synthetic protocol-v2 Unix-socket folder service. It does
-  not exercise the database, vsock identity, read release or production grants.
+  Its peer is a tiny synthetic protocol-3 Unix-socket folder service. It takes
+  each read hand-over (`I`) as a consecutive prefix and releases it at once, like
+  the crate's test node. It does not exercise the database, vsock identity, read
+  release or production grants.
 - Two unprivileged clients use the installed office unit's confinement settings
   in transient units, followed by the runtime's bubblewrap namespace pattern.
   The write allowance is the probe's `/run` directory. The office application,
@@ -207,8 +209,12 @@ offline candidate's namespace creation returned `EPERM` under
 `bwrap//&unpriv_bwrap (enforce)`, and the guest kernel recorded the AppArmor
 denial of `sys_admin` (capability 21). The ptrace step comes after namespace
 creation, so it did not run and `ptraceLogs` is empty. **No record yet shows the
-ptrace positive control.** It can only run once a reviewed helper setup gets
-past this denial.
+ptrace positive control.** Getting past this denial is not enough for it: the
+attacker is started through the same `/usr/bin/bwrap`, so it should get the same
+`unpriv_bwrap` label, and that profile would deny its `CAP_SYS_PTRACE` too. The
+control is expected to be denied (and the run to fail) until the attacker's setup
+changes as well. A run that reaches the step shows which, in
+`ptraceAttacker.securityLabel` and `ptrace.control.errno`.
 
 An earlier attempt at head `70893ce62` (run `20261014T160923-30488-a2b8c8ed`)
 stopped before any probe: the nested guest's lxd-agent returned `Error: EOF`

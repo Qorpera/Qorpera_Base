@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Disposable nested-VM substrate proof, not the office helper implementation.
 
-Real qorpera-folder/FUSE and copied office confinement; a synthetic protocol-v2
+Real qorpera-folder/FUSE and copied office confinement; a synthetic protocol-3
 node. This does not start the office application. Pathname recovery is tested separately from old descriptors. No SQL,
 model, vsock provenance, read-release or helper request-auth proof is claimed.
 """
@@ -31,6 +31,8 @@ PR_SET_PTRACER = 0x59616d61
 CLONE_NEWNS = 0x00020000
 CLONE_NEWUSER = 0x10000000
 CLONE_NEWNET = 0x40000000
+# The folder protocol of crates/qorpera-folder/src/proto.rs; the program refuses a hello answered with another.
+PROTOCOL = 3
 
 
 def checked(call, *args):
@@ -125,6 +127,8 @@ class FolderNode:
     def __init__(self, path):
         self.files = {"before.txt": b"before"}
         self.handles = {}
+        # Each read log's taken prefix. Like the test node's operator view, every read is released at once.
+        self.logs = {}
         self.lock = threading.Lock()
         self.errors = []
         self.listener = socket.socket(socket.AF_UNIX)
@@ -145,8 +149,8 @@ class FolderNode:
             with conn:
                 kind, body = receive(conn)
                 hello = json.loads(body)
-                assert kind == "H" and hello["protocol"] == 2 and hello["pass"] == "synthetic-pass"
-                send(conn, "h", {"protocol": 2, "viewId": hello["viewId"], "asOfSeq": 0, "readOnly": False})
+                assert kind == "H" and hello["protocol"] == PROTOCOL and hello["pass"] == "synthetic-pass"
+                send(conn, "h", {"protocol": PROTOCOL, "viewId": hello["viewId"], "asOfSeq": 0, "readOnly": False})
                 while True:
                     kind, body = receive(conn)
                     if kind == "a":
@@ -162,7 +166,18 @@ class FolderNode:
                             send(conn, "k", {})
                             continue
                         q = json.loads(body)
-                        if kind == "L":
+                        if kind == "I":
+                            # The reads a write hands over first: taken only as a consecutive prefix.
+                            reads = q["reads"]
+                            taken = self.logs.get(q["log"], reads[0]["seq"] - 1 if reads else 0)
+                            for read in reads:
+                                if read["seq"] <= taken:
+                                    continue
+                                assert read["seq"] == taken + 1
+                                taken = read["seq"]
+                            self.logs[q["log"]] = taken
+                            send(conn, "i", {"log": q["log"], "taken": taken, "released": taken})
+                        elif kind == "L":
                             assert q["path"] == ""
                             send(conn, "l", {"entries": [{"name": name, "kind": "file", "size": len(value), "mtimeMs": 1700000000000, "executable": False, "version": "v1"} for name, value in sorted(self.files.items())], "next": None})
                         elif kind == "R":
@@ -575,14 +590,19 @@ def selftest():
                 client.settimeout(2)
                 client.connect(str(Path(tmp) / "node.sock"))
                 # Byte-at-a-time framing catches reads that incorrectly assume recv returns a whole frame.
-                hello = b'H{"protocol":2,"viewId":"wire-test","pass":"synthetic-pass"}'
+                hello = b'H{"protocol":3,"environmentId":"synthetic","viewId":"wire-test","pass":"synthetic-pass","role":"io"}'
                 for byte in struct.pack(">I", len(hello)) + hello:
                     client.sendall(bytes([byte]))
                 kind, body = receive(client)
-                assert kind == "h" and json.loads(body)["readOnly"] is False
+                assert kind == "h" and json.loads(body) == {"protocol": 3, "viewId": "wire-test", "asOfSeq": 0, "readOnly": False}
                 send(client, "L", {"path": ""})
                 kind, body = receive(client)
                 assert kind == "l" and json.loads(body)["entries"][0]["name"] == "before.txt"
+                # A write hands over its reads first; a resend of the taken prefix only moves past it.
+                for seqs, taken in (((1, 2), 2), ((2, 3), 3), ((), 3)):
+                    send(client, "I", {"log": "wire-log", "reads": [{"seq": seq, "path": "before.txt", "version": "v1"} for seq in seqs]})
+                    kind, body = receive(client)
+                    assert kind == "i" and json.loads(body) == {"log": "wire-log", "taken": taken, "released": taken}
                 send(client, "O", {"path": "written.txt", "exclusive": True, "truncate": True})
                 kind, body = receive(client)
                 assert kind == "o"
