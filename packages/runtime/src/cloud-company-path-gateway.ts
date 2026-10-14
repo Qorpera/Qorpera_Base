@@ -9,12 +9,6 @@ import {
 import type { CloudContentAddressedStore, CloudFileReference } from "@qorpera/cloud-client/node/cloud-object-store";
 import { parseCompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
 import {
-	COMPANY_FORMATION_PATH,
-	companyFormationWriteRefusal,
-	isCompanyFormationPath,
-} from "./cloud-company-formation.ts";
-import {
-	CloudCompanyFormationRefused,
 	CloudCompanyPathParentMissing,
 	CloudCompanyPathRpcMissing,
 	CloudCompanyPathRpcParentMissing,
@@ -71,10 +65,6 @@ export type CloudCompanyPathRpc =
 	| "qorpera_verify_company_path_tree"
 	| "qorpera_prepare_company_path_mutation"
 	| "qorpera_commit_company_path_mutation"
-	| "qorpera_prepare_company_path_approval"
-	| "qorpera_apply_company_path_approval"
-	| "qorpera_apply_company_path_approval_v3"
-	| "qorpera_self_approve_organization_proposal"
 	| "qorpera_native_presence_register"
 	| "qorpera_company_presence_scope"
 	| "qorpera_native_presence_subject"
@@ -669,42 +659,6 @@ export class CloudCompanyPathGateway {
 		}
 	}
 
-	/** Founder decision 2026-09-20: a NEW agent or room this run proposed needs no member approval.
-	 * The cloud approves it by policy (20260920001000) and the ordinary approval lane applies and
-	 * projects it. Anything else is refused by the cloud and stays a proposal. */
-	async applyOwnOrganizationDocument(
-		proposalId: string,
-		documentText: string,
-		signal: AbortSignal,
-	): Promise<{ state: "applied"; proposalId: string; snapshotId: string }> {
-		const approved = closed(
-			await cloudToolRequest(
-				(requestSignal) =>
-					this.#control.call(
-						"qorpera_self_approve_organization_proposal",
-						{ p_binding: this.#binding, p_proposal_id: proposalId },
-						requestSignal,
-					),
-				signal,
-			),
-			["proposalId", "planSha256", "state"],
-		);
-		if (
-			approved.proposalId !== proposalId ||
-			typeof approved.planSha256 !== "string" ||
-			!SHA.test(approved.planSha256)
-		)
-			throw new Error("Organization approval receipt differs");
-		return applyApprovedCompanyPath({
-			proposalId,
-			planSha256: approved.planSha256,
-			documentText,
-			control: this.#control,
-			store: this.#store,
-			signal,
-		});
-	}
-
 	async mutate(
 		operation: "write" | "mkdir" | "delete",
 		input: {
@@ -802,24 +756,6 @@ export class CloudCompanyPathGateway {
 			});
 			return preflight.result;
 		}
-		// The organization projection only runs when the proposal this write makes is
-		// approved, and its refusal never reaches the agent. Once the check has passed
-		// (authority, a replayed operation key, the version, the folder), judge a
-		// formation write against the version it replaces, so the agent learns the
-		// allowed step before anything is staged or proposed. Best effort: when that
-		// version cannot be read, or changed since, the usual path decides. It is a
-		// trusted read of three fields the agent may read anyway, returned only in a
-		// refusal, so it carries no model-read observation or wake-work gate.
-		if (bytes && isCompanyFormationPath(path)) {
-			const current = await this.readTrusted(COMPANY_FORMATION_PATH, signal).catch((error: unknown) => {
-				if (signal.aborted) throw error;
-				return null;
-			});
-			if (current?.kind === "file" && current.version === expectedVersion) {
-				const refusal = companyFormationWriteRefusal(current.text, bytes.toString("utf8"));
-				if (refusal) throw new CloudCompanyFormationRefused(refusal);
-			}
-		}
 		if (next?.kind === "file" && bytes && manifest) {
 			for (const chunk of chunks)
 				await cloudToolRequest(
@@ -845,7 +781,7 @@ export class CloudCompanyPathGateway {
 			}
 			// SQL checked the plan's own folder at check and prepare. Missing from the entries prepare
 			// listed, it was deleted in between; nothing of this plan is committed yet, so that is still
-			// a definite refusal. (The approval lane stages the same way but never gets this brand.)
+			// a definite refusal.
 			if (preparation.state === "ready" && next !== null && path.includes("/")) {
 				const folder = path.slice(0, path.lastIndexOf("/"));
 				if (!preparation.entries.some((candidate) => candidate.path === folder && candidate.kind === "directory"))
@@ -926,96 +862,4 @@ async function stageCompanyPathCandidate(
 	);
 	if (verified !== reference.sha256) throw new Error("Company File candidate verification differs");
 	return reference.sha256;
-}
-
-/** Trusted approval worker only. The human API stores consent in SQL. This
- * accepts only that proposal identity/digest, never new content or a user id,
- * and cannot wake a model, renew its old lease, or produce a public send. */
-export async function applyApprovedCompanyPath(options: {
-	proposalId: string;
-	planSha256: string;
-	/** Exact UTF-8 text of a projected organization document (agent, room); applied through the projecting entrypoint. */
-	documentText?: string;
-	control: CloudCompanyPathControl;
-	store: CloudContentAddressedStore;
-	signal: AbortSignal;
-}): Promise<{ state: "applied"; proposalId: string; snapshotId: string }> {
-	version(options.proposalId);
-	if (!SHA.test(options.planSha256)) throw new Error("Invalid Company File approval digest");
-	const args = { p_proposal_id: options.proposalId, p_plan_sha256: options.planSha256 };
-	for (let attempt = 0; attempt < 4; attempt++) {
-		const preparation = closed(
-			await cloudToolRequest(
-				(signal) => options.control.call("qorpera_prepare_company_path_approval", args, signal),
-				options.signal,
-			),
-			["state", "plan", "companyId", "environmentId", "outputSnapshotId", "snapshotId", "entries"],
-		);
-		const companyId = version(preparation.companyId)!;
-		version(preparation.environmentId);
-		const head = version(preparation.snapshotId)!;
-		if (preparation.state === "applied")
-			return {
-				state: "applied",
-				proposalId: options.proposalId,
-				snapshotId: version(preparation.outputSnapshotId)!,
-			};
-		if (
-			preparation.state !== "approved" ||
-			preparation.outputSnapshotId !== null ||
-			!Array.isArray(preparation.entries) ||
-			preparation.entries.length > 50_000
-		)
-			throw new Error("Company File proposal is not approved");
-		const input = closed(preparation.plan, ["schema", "operationKey", "path", "expectedVersion", "entry"]);
-		if (
-			input.schema !== "qorpera.company-path-mutation/v1" ||
-			typeof input.operationKey !== "string" ||
-			!OPERATION_KEY.test(input.operationKey)
-		)
-			throw new Error("Invalid approved Company File plan");
-		const plan: CloudCompanyPathPlan = {
-			schema: "qorpera.company-path-mutation/v1",
-			operationKey: input.operationKey,
-			path: parseCloudCompanyPath(input.path),
-			expectedVersion: version(input.expectedVersion, true),
-			entry: input.entry === null ? null : entry(input.entry),
-		};
-		if (plan.entry && plan.entry.path !== plan.path) throw new Error("Approved Company File target changed");
-		const tree = await stageCompanyPathCandidate(
-			companyId,
-			preparation.entries.map(entry),
-			plan,
-			options.store,
-			options.control,
-			options.signal,
-		);
-		try {
-			const outcome = closed(
-				await cloudToolRequest(
-					(signal) =>
-						options.control.call(
-							options.documentText === undefined
-								? "qorpera_apply_company_path_approval"
-								: "qorpera_apply_company_path_approval_v3",
-							{
-								...args,
-								p_expected_head: head,
-								p_tree_sha256: tree,
-								...(options.documentText === undefined ? {} : { p_document_text: options.documentText }),
-							},
-							signal,
-						),
-					options.signal,
-				),
-				["state", "proposalId", "snapshotId"],
-			);
-			if (outcome.state !== "applied" || outcome.proposalId !== options.proposalId)
-				throw new Error("Company File approval receipt differs");
-			return { state: "applied", proposalId: options.proposalId, snapshotId: version(outcome.snapshotId)! };
-		} catch (error) {
-			if (!(error instanceof CloudCompanyHeadConflict) || attempt === 3) throw error;
-		}
-	}
-	throw new Error("Company File approval could not be applied");
 }

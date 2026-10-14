@@ -77,19 +77,6 @@ export class CloudCompanyPathParentMissing extends CloudRuntimeDiagnosticError {
 	}
 }
 
-/** Only the Company File gateway's mutate() raises this, after its check and
- * before it stages anything: a write of organization/formation.json that the
- * organization projection would refuse over the file's current version (see
- * cloud-company-formation.ts). Nothing was staged, proposed or written. The
- * reason names only fixed formation keys and whole numbers, never the text. */
-export class CloudCompanyFormationRefused extends CloudRuntimeDiagnosticError {
-	readonly reason: string;
-	constructor(reason: string) {
-		super("invalid_arguments", "Company formation write refused");
-		this.reason = reason;
-	}
-}
-
 /** A complete PostgREST error from one of the folder core's entry points (`qorpera_folder_read`, `_list`, `_commit`,
  * `_record_release`), with its SQLSTATE (or PostgREST's own `PGRST1nn`-`PGRST3nn`, for a request nothing ran) and
  * message. The folder client alone decides what each means (core C3): a

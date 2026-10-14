@@ -85,10 +85,6 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_verify_company_path_tree",
 			"qorpera_prepare_company_path_mutation",
 			"qorpera_commit_company_path_mutation",
-			"qorpera_prepare_company_path_approval",
-			"qorpera_apply_company_path_approval",
-			"qorpera_apply_company_path_approval_v3",
-			"qorpera_self_approve_organization_proposal",
 			"qorpera_native_presence_register",
 			"qorpera_company_presence_scope",
 			"qorpera_native_presence_subject",
@@ -181,9 +177,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 				)
 					return null;
 				const maximum =
-					response.ok &&
-					(method === "qorpera_prepare_company_path_mutation" ||
-						method === "qorpera_prepare_company_path_approval")
+					response.ok && method === "qorpera_prepare_company_path_mutation"
 						? 16 * 1024 * 1024
 						: response.ok && method === "qorpera_describe_company_run_context"
 							? 1024 * 1024
