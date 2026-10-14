@@ -122,8 +122,11 @@ design; none of them decides `result`.
   took to serve one mount again (`hostServedAfterSeconds`), how long the desktop
   namespace's watcher took to see it (`namespaceServedAfterSeconds`), each
   distinct state the watcher saw in between (`namespaceSawMeanwhile`), each
-  distinct state of the host's mountpoint and unit (`hostTimeline`), the last
-  `ExecStopPost` run (`stopPost`), and the unit's journal.
+  distinct state of the host's mountpoint and unit (`hostTimeline`), and the
+  unit's journal from the kill until it served again. systemd logs its control
+  processes, such as the `ExecStopPost` umount, only at debug, so each kill runs
+  with the guest's systemd at log level `debug`, and the level it had
+  (`logLevel`) is set back afterwards.
 - `staleCwd`: the command namespace's working directory inside `/company` from
   before the kill: listing it after the kill, then `chdir` again and listing.
 - `oldDescriptor`: a read descriptor the desktop namespace opened before the

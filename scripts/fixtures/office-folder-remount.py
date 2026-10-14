@@ -601,6 +601,18 @@ def journal(unit, lines=40):
     return quiet("journalctl", "--no-pager", "-o", "short-monotonic", "-n", str(lines), "-u", unit, keep=400 * lines).get("output", "").splitlines()
 
 
+def cursor():
+    """The journal's position now, so a later read can start after it."""
+    shown = base.run("journalctl", "--no-pager", "-q", "-n", "1", "--show-cursor").splitlines()
+    return shown[-1].removeprefix("-- cursor: ") if shown and shown[-1].startswith("-- cursor: ") else None
+
+
+def journal_since(unit, position):
+    if position is None:
+        return journal(unit, 200)
+    return quiet("journalctl", "--no-pager", "-o", "short-monotonic", f"--after-cursor={position}", "-u", unit, keep=200000).get("output", "").splitlines()
+
+
 def gap_trial(relay, mode, troubles):
     """Before the first mount: what an office namespace sees at /company, and whether the mount comes up over it."""
     view = f"gap-{mode}"
@@ -788,6 +800,10 @@ class Proof:
         """Kills the mount's daemon, then waits for systemd's restart to serve one mount again."""
         self.ask(self.relay1, "desktop", {"op": "watch-start"})
         before = show(self.unit)
+        # systemd logs its control processes (the ExecStopPost umount) only at debug, so the kill runs under debug.
+        level = base.run("systemd-analyze", "log-level")
+        base.run("systemd-analyze", "log-level", "debug")
+        position = cursor()
         killed = time.monotonic()
         if how == "pid":
             os.kill(before["MainPID"], signal.SIGKILL)
@@ -814,6 +830,8 @@ class Proof:
             seconds = round(time.monotonic() - killed, 3)
         except TimeoutError:
             after, seconds = show(self.unit), None
+        finally:
+            base.run("systemd-analyze", "log-level", level)
         time.sleep(0.5)
         events = self.ask(self.relay1, "desktop", {"op": "watch-stop"}).get("events", [])
         return {
@@ -825,11 +843,11 @@ class Proof:
             "hostCopies": copies(self.point),
             "hostAt": held(self.point),
             "hostTimeline": timeline,
-            # The last ExecStopPost run, the umount after the kill: its pid, times and exit status.
-            "stopPost": base.run("systemctl", "show", "-p", "ExecStopPost", "--value", self.unit),
+            "logLevel": level,
             "namespaceServedAfterSeconds": restart_seconds(events, killed),
             "namespaceSawMeanwhile": gone(events, killed),
-            "journal": journal(self.unit, 60),
+            # systemd's debug log for the unit from the kill until it served again.
+            "journal": journal_since(self.unit, position),
         }
 
     def after_restart(self, tag, seed, text):
