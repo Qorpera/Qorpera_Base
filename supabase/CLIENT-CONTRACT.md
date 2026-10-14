@@ -778,12 +778,11 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
 - Sender names (20260928319810_runtime_company_mail_sender_names): `qorpera_create_company_mailbox` also reserves
   (22023) any local part that reads as Qorpera (case, separators, accents, full width and look-alike letters or
   digits folded), and no email goes out when the agent's or the company's name or the mailbox reads as Qorpera.
-- Attachments (20260928429984_runtime_company_mail_attachments, step M2c-1): agents save a received email's
-  attachment into the company folder with the runtime tool `save_attachment`, and attach company files to
-  `send_mail`; there is no client surface. A saved attachment is an ordinary company file, written through the path
-  gateway. Fetches live in `qorpera_mail_attachment_fetches`, closed to every API role; the `mail-attachments` Edge
-  Function stores attachments as the company's objects in `qorpera-profile-objects`, counted in its storage
-  allowance.
+- Attachments (20260928429984_runtime_company_mail_attachments, step M2c-1): agents attach company files to
+  `send_mail`; there is no client surface. Saving a received email's attachment (the runtime tool `save_attachment`)
+  served only snapshot-v1 companies: C-P4 removed the tool, and legacy sweep D4 (20260930333000) dropped its request.
+  Fetches live in `qorpera_mail_attachment_fetches`, closed to every API role; the `mail-attachments` Edge Function,
+  which stores attachments as the company's objects in `qorpera-profile-objects`, stays until step E.
 - Members read mail (20260928439980_runtime_company_mail_member_read, step I5a; for the Mailbox): any member calls
   `qorpera_member_mail_addresses(p_environment_id)`, `qorpera_member_mail_threads(p_environment_id, p_request)`
   (`{address?, state?, before?: {lastAt, thread}, limit ≤ 50}` → `{threads, nextBefore?}`),
