@@ -1,0 +1,3677 @@
+{
+  "schema": "qorpera.office-folder-remount/v1",
+  "scope": "the folder mount's restart under the office's namespaces; synthetic folder node; master's mount unit on #1047's layout; copied office confinement",
+  "project": "qrm-67313403",
+  "vm": "qorpera-remount-67313403",
+  "uuid": "f1287d81-5688-4f6a-90bf-e2f542d06fb8",
+  "image": "9a4935f853ae27b80bb8d2fd8cbe33d1cb3db68bbfe0d47469bb0ebdbbf20f01",
+  "fuse": "present",
+  "folderSha256": "d8523292c5afbfe270f23efc24ca719d4933ba707feac7f306c02cde93084a65",
+  "digests": {
+    "office.mjs": "9fcf6daafed4d06a6019b861f026cf91933b450b407f4c9d7de0a2f28102ff5d",
+    "office-folder-remount-client.py": "f06f60c21d542708a63c0ab2ea4a3f03f0f38ab31a5c7ade52b63b56e80ffcfb",
+    "office-folder-substrate.py": "4e0f98e97bd38d7ae91a0483c5402b7f61c0eb83a81c809538f9ef22c57005fe",
+    "office-folder-remount.py": "2074cfb5fcc2d6030cf04606a8fde294d1d9e11f61da09e8d85003907307d8d3",
+    "office.service": "af2f6a4063d5d71bff80ffddbed995bc36d389b5d1cd60c1993e8409c23af80f",
+    "mount.service": "77b56d0e10600dc2e2b5a600a73261d904637128e83b9400d876a27feafec17c",
+    "company-computer-process.mjs": "ab3f6a4ad3040b5dedf7df0bd5c49cbbef8ea70ebb24956dcf3ad86f9dd7794d",
+    "shapes.json": "96747e92d85c4b39e333b517c7283527628e9255053eef908ebb40cb45480e20",
+    "qorpera-folder": "d8523292c5afbfe270f23efc24ca719d4933ba707feac7f306c02cde93084a65"
+  },
+  "runtimePins": [
+    {
+      "file": "packages/runtime/src/cloud-company-computer-linux-host.ts",
+      "from": "export function companyComputerLinuxSandboxArgs(tmpBytes = 67108864): string[] {",
+      "sha256": "39208f0c978cdd1be87ddf399819e8519d58a3f3546ee93f19fb729a6b17bef4"
+    },
+    {
+      "file": "packages/runtime/src/cloud-company-computer-linux-desktop.ts",
+      "from": "files.push(await openCompanyComputerLinuxDirectory(layout.workbenchRoot, false));",
+      "sha256": "774a016b1967b68d13d5b74fd90d4639da2e737154e3ecec8cfda8ee5e00acdd"
+    },
+    {
+      "file": "packages/runtime/src/cloud-company-computer-linux-commands.ts",
+      "from": "const workbench = await openCompanyComputerLinuxDirectory(this.#layout.workbenchRoot, false);",
+      "sha256": "48ddc6b2a1d2a0b553f91535dbfb4ad7ca8917b694951794775845ee811c498f"
+    },
+    {
+      "file": "packages/runtime/src/cloud-company-computer-linux-shell.ts",
+      "from": "export const COMPANY_COMPUTER_SHELL_TMP_BYTES = 512 * 1024 * 1024;",
+      "sha256": "111a5c1758d6189b6442dbd1fadd3429f09dfddda287532d434ad4c3eb0552ed"
+    },
+    {
+      "file": "packages/runtime/src/cloud-company-computer-linux-shell.ts",
+      "from": "files.push(await openCompanyComputerLinuxDirectory(layout.workbenchRoot, false));",
+      "sha256": "532e140b088a2c3d8f09ffe3585bdebad9b2f9794c1ba88e1cdd4a41bd49c849"
+    },
+    {
+      "file": "packages/runtime/src/cloud-company-computer-linux-network.ts",
+      "from": "export const COMPANY_COMPUTER_AGENT_EXIT_DNS = \"10.210.0.1\";",
+      "sha256": "d59958ee52f793e2efdb12eac71e1344a7451bc6e3bf8842955a4228c2a9c5d3"
+    },
+    {
+      "file": "deploy/lxd-company-computer-guest/qorpera-office-private.mount.in",
+      "from": "Where=/run/qorpera-office/private",
+      "sha256": "7f06bb7728270fef99dc5abd5fb0b9a5e25784cc6c3301685993f2cc85bbf6fd"
+    }
+  ],
+  "guestBoot": "e46add29-a0d4-42c1-aad7-d9f5856f6a61",
+  "guestOfficeUnitSha256": "92fbb1f8e526791ccb5f6c11757e2d272c80d40d4d916587f9825f20a449ed02",
+  "executed": true,
+  "result": "failed",
+  "checks": {
+    "officeFirstPropagation": {
+      "passed": true,
+      "evidence": [
+        {
+          "desktop": {
+            "read": {
+              "text": "before"
+            },
+            "write": {
+              "written": true
+            },
+            "mountinfo": {
+              "lines": [
+                "449 384 0:29 /qorpera-folder/mounts/q3 /run/qorpera-company rw,nosuid,nodev master:312 - tmpfs tmpfs rw,size=786616k,nr_inodes=819200,mode=755,inode64",
+                "345 449 0:78 / /run/qorpera-company/company rw,nosuid,nodev,noatime master:328 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+              ]
+            },
+            "startedBefore": {
+              "status": {
+                "name": "desktop",
+                "token": "3ebf4648e22be64c",
+                "pid": 2,
+                "uid": 20045,
+                "mountNamespace": "mnt:[4026532567]",
+                "pidNamespace": "pid:[4026532572]",
+                "capEff": "0000000000000000",
+                "noNewPrivs": "1",
+                "cwd": "/run/qorpera-office/private"
+              },
+              "look": {
+                "dev": 29,
+                "mode": "0o755",
+                "uid": 65534,
+                "names": []
+              }
+            }
+          },
+          "shell": {
+            "read": {
+              "text": "before"
+            },
+            "write": {
+              "written": true
+            },
+            "mountinfo": {
+              "lines": [
+                "486 460 0:29 /qorpera-folder/mounts/q3 /run/qorpera-company rw,nosuid,nodev master:312 - tmpfs tmpfs rw,size=786616k,nr_inodes=819200,mode=755,inode64",
+                "344 486 0:78 / /run/qorpera-company/company rw,nosuid,nodev,noatime master:328 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+              ]
+            },
+            "startedBefore": {
+              "status": {
+                "name": "shell",
+                "token": "cdc5f9162e9b2a56",
+                "pid": 2,
+                "uid": 20045,
+                "mountNamespace": "mnt:[4026532685]",
+                "pidNamespace": "pid:[4026532688]",
+                "capEff": "0000000000000000",
+                "noNewPrivs": "1",
+                "cwd": "/run/qorpera-office/private"
+              },
+              "look": {
+                "dev": 29,
+                "mode": "0o755",
+                "uid": 65534,
+                "names": []
+              }
+            }
+          },
+          "command": {
+            "read": {
+              "text": "before"
+            },
+            "write": {
+              "written": true
+            },
+            "mountinfo": {
+              "lines": [
+                "504 489 0:29 /qorpera-folder/mounts/q3 /run/qorpera-company rw,nosuid,nodev master:312 - tmpfs tmpfs rw,size=786616k,nr_inodes=819200,mode=755,inode64",
+                "343 504 0:78 / /run/qorpera-company/company rw,nosuid,nodev,noatime master:328 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+              ]
+            },
+            "startedBefore": {
+              "status": {
+                "name": "command",
+                "token": "7555b192b75163ec",
+                "pid": 2,
+                "uid": 20045,
+                "mountNamespace": "mnt:[4026532745]",
+                "pidNamespace": "pid:[4026532748]",
+                "capEff": "0000000000000000",
+                "noNewPrivs": "1",
+                "cwd": "/run/qorpera-office/private"
+              },
+              "look": {
+                "dev": 29,
+                "mode": "0o755",
+                "uid": 65534,
+                "names": []
+              }
+            }
+          }
+        }
+      ]
+    },
+    "restartedBySystemd": {
+      "passed": true,
+      "evidence": [
+        {
+          "before": {
+            "ActiveState": "active",
+            "SubState": "running",
+            "MainPID": 1717,
+            "Result": "success",
+            "NRestarts": 0,
+            "ExecMainCode": 0,
+            "ExecMainStatus": 0
+          },
+          "after": {
+            "ActiveState": "active",
+            "SubState": "running",
+            "MainPID": 1835,
+            "Result": "success",
+            "NRestarts": 1,
+            "ExecMainCode": 0,
+            "ExecMainStatus": 0
+          }
+        }
+      ]
+    },
+    "runningNamespacesRecovered": {
+      "passed": true,
+      "evidence": [
+        {
+          "desktop": {
+            "sameProcess": true,
+            "sameNamespace": true,
+            "read": {
+              "text": "after restart"
+            },
+            "write": {
+              "written": true
+            },
+            "namespaceCount": 1,
+            "mountinfo": [
+              "449 384 0:29 /qorpera-folder/mounts/q3 /run/qorpera-company rw,nosuid,nodev master:312 - tmpfs tmpfs rw,size=786616k,nr_inodes=819200,mode=755,inode64",
+              "347 449 0:85 / /run/qorpera-company/company rw,nosuid,nodev,noatime master:328 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+            ]
+          },
+          "shell": {
+            "sameProcess": true,
+            "sameNamespace": true,
+            "read": {
+              "text": "after restart"
+            },
+            "write": {
+              "written": true
+            },
+            "namespaceCount": 1,
+            "mountinfo": [
+              "486 460 0:29 /qorpera-folder/mounts/q3 /run/qorpera-company rw,nosuid,nodev master:312 - tmpfs tmpfs rw,size=786616k,nr_inodes=819200,mode=755,inode64",
+              "346 486 0:85 / /run/qorpera-company/company rw,nosuid,nodev,noatime master:328 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+            ]
+          },
+          "command": {
+            "sameProcess": true,
+            "sameNamespace": true,
+            "read": {
+              "text": "after restart"
+            },
+            "write": {
+              "written": true
+            },
+            "namespaceCount": 1,
+            "mountinfo": [
+              "504 489 0:29 /qorpera-folder/mounts/q3 /run/qorpera-company rw,nosuid,nodev master:312 - tmpfs tmpfs rw,size=786616k,nr_inodes=819200,mode=755,inode64",
+              "344 504 0:85 / /run/qorpera-company/company rw,nosuid,nodev,noatime master:328 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+            ]
+          }
+        }
+      ]
+    },
+    "oneMountAfterRestart": {
+      "passed": true,
+      "evidence": [
+        {
+          "kill": 1,
+          "hostCount": 1,
+          "hostCopies": 2,
+          "firstMountCopies": 2,
+          "namespaceCounts": {
+            "desktop": 1,
+            "shell": 1,
+            "command": 1
+          }
+        },
+        {
+          "kill": 2,
+          "hostCount": 1,
+          "hostCopies": 2,
+          "firstMountCopies": 2,
+          "namespaceCounts": {
+            "desktop": 1,
+            "shell": 1,
+            "command": 1
+          }
+        }
+      ]
+    },
+    "directBindNegativeControl": {
+      "passed": true,
+      "evidence": [
+        {
+          "before": {
+            "read": {
+              "text": "before"
+            },
+            "write": {
+              "written": true
+            },
+            "mountinfo": {
+              "lines": [
+                "545 530 0:78 / /company rw,nosuid,nodev,noatime master:328 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+              ]
+            }
+          },
+          "after": {
+            "errno": 107
+          }
+        }
+      ]
+    },
+    "stateFolderKept": {
+      "passed": true,
+      "evidence": [
+        {
+          "before": {
+            "inode": 2662,
+            "names": [
+              "daemon.lock",
+              "reads.jsonl",
+              "reads.lock",
+              "versions.jsonl",
+              "view.json",
+              "view.lock"
+            ]
+          },
+          "after": {
+            "inode": 2662,
+            "names": [
+              "daemon.lock",
+              "reads.jsonl",
+              "reads.lock",
+              "versions.jsonl",
+              "view.json",
+              "view.lock"
+            ]
+          }
+        }
+      ]
+    },
+    "secondRestartRecovered": {
+      "passed": false,
+      "evidence": [
+        {
+          "before": {
+            "ActiveState": "active",
+            "SubState": "running",
+            "MainPID": 1835,
+            "Result": "success",
+            "NRestarts": 1,
+            "ExecMainCode": 0,
+            "ExecMainStatus": 0
+          },
+          "after": {
+            "ActiveState": "active",
+            "SubState": "running",
+            "MainPID": 2072,
+            "Result": "success",
+            "NRestarts": 3,
+            "ExecMainCode": 0,
+            "ExecMainStatus": 0
+          },
+          "namespaces": {
+            "desktop": {
+              "sameProcess": true,
+              "sameNamespace": true,
+              "read": {
+                "text": "after second restart"
+              },
+              "write": {
+                "written": true
+              },
+              "namespaceCount": 1,
+              "mountinfo": [
+                "449 384 0:29 /qorpera-folder/mounts/q3 /run/qorpera-company rw,nosuid,nodev master:312 - tmpfs tmpfs rw,size=786616k,nr_inodes=819200,mode=755,inode64",
+                "351 449 0:102 / /run/qorpera-company/company rw,nosuid,nodev,noatime master:331 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+              ]
+            },
+            "shell": {
+              "sameProcess": true,
+              "sameNamespace": true,
+              "read": {
+                "text": "after second restart"
+              },
+              "write": {
+                "written": true
+              },
+              "namespaceCount": 1,
+              "mountinfo": [
+                "486 460 0:29 /qorpera-folder/mounts/q3 /run/qorpera-company rw,nosuid,nodev master:312 - tmpfs tmpfs rw,size=786616k,nr_inodes=819200,mode=755,inode64",
+                "350 486 0:102 / /run/qorpera-company/company rw,nosuid,nodev,noatime master:331 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+              ]
+            },
+            "command": {
+              "sameProcess": true,
+              "sameNamespace": true,
+              "read": {
+                "text": "after second restart"
+              },
+              "write": {
+                "written": true
+              },
+              "namespaceCount": 1,
+              "mountinfo": [
+                "504 489 0:29 /qorpera-folder/mounts/q3 /run/qorpera-company rw,nosuid,nodev master:312 - tmpfs tmpfs rw,size=786616k,nr_inodes=819200,mode=755,inode64",
+                "349 504 0:102 / /run/qorpera-company/company rw,nosuid,nodev,noatime master:331 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "exitThreeNotRestarted": {
+      "passed": true,
+      "evidence": [
+        {
+          "before": {
+            "ActiveState": "active",
+            "SubState": "running",
+            "MainPID": 2573,
+            "Result": "success",
+            "NRestarts": 4,
+            "ExecMainCode": 0,
+            "ExecMainStatus": 0
+          },
+          "ended": {
+            "ActiveState": "failed",
+            "SubState": "failed",
+            "MainPID": 0,
+            "Result": "exit-code",
+            "NRestarts": 4,
+            "ExecMainCode": 1,
+            "ExecMainStatus": 3
+          },
+          "nineSecondsLater": {
+            "ActiveState": "failed",
+            "SubState": "failed",
+            "MainPID": 0,
+            "Result": "exit-code",
+            "NRestarts": 4,
+            "ExecMainCode": 1,
+            "ExecMainStatus": 3
+          },
+          "hostCopies": 0,
+          "hostAt": [],
+          "journal": [
+            "[  121.938374] qorpera-remount-67313403 systemd-executor[2573]: Loaded shared library 'libselinux.so.1' via dlopen().",
+            "[  121.945633] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libapparmor.so.1' via dlopen().",
+            "[  121.945871] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Loaded 'libbpf.so.1' via dlopen()",
+            "[  121.946417] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libcryptsetup.so.12' via dlopen().",
+            "[  121.946589] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libmount.so.1' via dlopen().",
+            "[  121.946743] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libseccomp.so.2' via dlopen().",
+            "[  121.947078] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Enabled MemoryDenyWriteExecute= with PR_SET_MDWE",
+            "[  121.947368] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Executing: /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder mount --connect unix:/run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/node.sock --view-file /run/qorpera-folder/views/q3.json --mountpoint /run/qorpera-folder/mounts/q3/company --state-dir /run/qorpera-folder/state/q3 --allow-other yes --owner-uid 20045 --owner-gid 20045",
+            "[  121.948280] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: got exec-fd event",
+            "[  121.948287] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Got EOF on exec-fd",
+            "[  121.948292] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed start -> running",
+            "[  121.948300] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Job 3278 qorpera-office-folder-mount@q3.service/start finished, result=done",
+            "[  121.948347] qorpera-remount-67313403 systemd[1]: Started qorpera-office-folder-mount@q3.service - Qorpera company folder q3 (from this node's folder service; read-write only for a view it lets write).",
+            "[  121.950831] qorpera-remount-67313403 qorpera-folder[2573]: qorpera-folder: view q3 accepted at change 0, read-write",
+            "[  121.953494] qorpera-remount-67313403 qorpera-folder[2573]: qorpera-folder: kernel FUSE ABI Version(7, 45)",
+            "[  121.954684] qorpera-remount-67313403 qorpera-folder[2573]: qorpera-folder: mounted at /run/qorpera-folder/mounts/q3/company with 16 threads",
+            "[  122.954788] qorpera-remount-67313403 qorpera-folder[2573]: qorpera-folder: the node closed the view; unmounted",
+            "[  122.956161] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Main process exited, code=exited, status=3/NOTIMPLEMENTED",
+            "[  122.967407] qorpera-remount-67313403 umount[2672]: umount: /run/qorpera-folder/mounts/q3/company: not mounted.",
+            "[  122.968489] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Failed with result 'exit-code'."
+          ]
+        }
+      ]
+    },
+    "fixtureProtocolClean": {
+      "passed": true,
+      "evidence": [
+        {
+          "nodeErrors": [],
+          "troubles": []
+        }
+      ]
+    }
+  },
+  "recorded": {
+    "relay1BeforeLayout": {
+      "uid": 20045,
+      "gid": 20045,
+      "pid": 1567,
+      "node": "v22.22.1",
+      "mountNamespace": "mnt:[4026532568]",
+      "mountinfo": []
+    },
+    "gap": [
+      {
+        "mode": "0000",
+        "served": false,
+        "bare": {
+          "mode": "0o0",
+          "uid": 0
+        },
+        "commandStart": {
+          "started": true,
+          "monitorPid": 1580,
+          "folderFd": 5,
+          "args": [
+            "--unshare-user",
+            "--unshare-pid",
+            "--unshare-net",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--unshare-cgroup",
+            "--disable-userns",
+            "--assert-userns-disabled",
+            "--die-with-parent",
+            "--new-session",
+            "--cap-drop",
+            "ALL",
+            "--clearenv",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/bin",
+            "/bin",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib64",
+            "/lib64",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--size",
+            "67108864",
+            "--tmpfs",
+            "/tmp",
+            "--bind-fd",
+            "3",
+            "/run/qorpera-office/private",
+            "--bind-fd",
+            "4",
+            "/home/qorpera",
+            "--setenv",
+            "HOME",
+            "/home/qorpera",
+            "--setenv",
+            "PATH",
+            "/usr/local/bin:/usr/bin:/bin",
+            "--setenv",
+            "LANG",
+            "C.UTF-8",
+            "--bind-fd",
+            "5",
+            "/run/qorpera-company",
+            "--symlink",
+            "/run/qorpera-company/company",
+            "/company",
+            "--chdir",
+            "/run/qorpera-office/private",
+            "--remount-ro",
+            "/"
+          ],
+          "skipped": []
+        },
+        "commandBefore": {
+          "look": {
+            "dev": 29,
+            "mode": "0o0",
+            "uid": 65534,
+            "listErrno": 13
+          },
+          "write": {
+            "errno": 13,
+            "stage": "open"
+          }
+        },
+        "shellAtCompanyStart": {
+          "started": false,
+          "gate": "OFFICE_PROCESS_EXITED_BEFORE_START",
+          "ended": {
+            "code": 1,
+            "signal": null
+          },
+          "stderr": "bwrap: Can't chdir to /company: Permission denied\n"
+        },
+        "start": {
+          "command": [
+            "systemctl",
+            "start",
+            "--no-block",
+            "qorpera-office-folder-mount@gap-0000.service"
+          ],
+          "code": 0,
+          "output": ""
+        },
+        "unit": {
+          "ActiveState": "activating",
+          "SubState": "auto-restart",
+          "MainPID": 0,
+          "Result": "exit-code",
+          "NRestarts": 2,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 1
+        },
+        "journal": [
+          "[   62.764835] qorpera-remount-67313403 systemd[1]: Starting qorpera-office-folder-mount@gap-0000.service - Qorpera company folder gap-0000 (from this node's folder service; read-write only for a view it lets write)...",
+          "[   62.783565] qorpera-remount-67313403 systemd[1]: Started qorpera-office-folder-mount@gap-0000.service - Qorpera company folder gap-0000 (from this node's folder service; read-write only for a view it lets write).",
+          "[   62.786205] qorpera-remount-67313403 qorpera-folder[1586]: qorpera-folder: view gap-0000 accepted at change 0, read-write",
+          "[   62.786572] qorpera-remount-67313403 qorpera-folder[1586]: qorpera-folder: mount /run/qorpera-folder/mounts/gap-0000/company: Permission denied (os error 13)",
+          "[   62.787478] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@gap-0000.service: Main process exited, code=exited, status=1/FAILURE",
+          "[   62.802855] qorpera-remount-67313403 umount[1590]: umount: /run/qorpera-folder/mounts/gap-0000/company: not mounted.",
+          "[   62.803196] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@gap-0000.service: Failed with result 'exit-code'.",
+          "[   67.879259] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@gap-0000.service: Scheduled restart job, restart counter is at 1.",
+          "[   67.881137] qorpera-remount-67313403 systemd[1]: Starting qorpera-office-folder-mount@gap-0000.service - Qorpera company folder gap-0000 (from this node's folder service; read-write only for a view it lets write)...",
+          "[   67.892183] qorpera-remount-67313403 systemd[1]: Started qorpera-office-folder-mount@gap-0000.service - Qorpera company folder gap-0000 (from this node's folder service; read-write only for a view it lets write).",
+          "[   67.894034] qorpera-remount-67313403 qorpera-folder[1592]: qorpera-folder: view gap-0000 accepted at change 0, read-write",
+          "[   67.894290] qorpera-remount-67313403 qorpera-folder[1592]: qorpera-folder: mount /run/qorpera-folder/mounts/gap-0000/company: Permission denied (os error 13)",
+          "[   67.894801] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@gap-0000.service: Main process exited, code=exited, status=1/FAILURE",
+          "[   67.903746] qorpera-remount-67313403 umount[1596]: umount: /run/qorpera-folder/mounts/gap-0000/company: not mounted.",
+          "[   67.904204] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@gap-0000.service: Failed with result 'exit-code'.",
+          "[   73.129194] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@gap-0000.service: Scheduled restart job, restart counter is at 2.",
+          "[   73.131070] qorpera-remount-67313403 systemd[1]: Starting qorpera-office-folder-mount@gap-0000.service - Qorpera company folder gap-0000 (from this node's folder service; read-write only for a view it lets write)...",
+          "[   73.161260] qorpera-remount-67313403 systemd[1]: Started qorpera-office-folder-mount@gap-0000.service - Qorpera company folder gap-0000 (from this node's folder service; read-write only for a view it lets write).",
+          "[   73.163866] qorpera-remount-67313403 qorpera-folder[1603]: qorpera-folder: view gap-0000 accepted at change 0, read-write",
+          "[   73.163866] qorpera-remount-67313403 qorpera-folder[1603]: qorpera-folder: mount /run/qorpera-folder/mounts/gap-0000/company: Permission denied (os error 13)",
+          "[   73.164776] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@gap-0000.service: Main process exited, code=exited, status=1/FAILURE",
+          "[   73.179313] qorpera-remount-67313403 umount[1607]: umount: /run/qorpera-folder/mounts/gap-0000/company: not mounted.",
+          "[   73.179591] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@gap-0000.service: Failed with result 'exit-code'."
+        ],
+        "commandAfter": {
+          "look": {
+            "dev": 29,
+            "mode": "0o0",
+            "uid": 65534,
+            "listErrno": 13
+          },
+          "write": {
+            "errno": 13,
+            "stage": "open"
+          }
+        },
+        "stopped": [
+          {
+            "stopped": true,
+            "ended": {
+              "code": 0,
+              "signal": null
+            },
+            "stderr": ""
+          }
+        ],
+        "teardown": [
+          {
+            "command": [
+              "systemctl",
+              "stop",
+              "qorpera-office-folder-mount@gap-0000.service"
+            ],
+            "code": 0,
+            "output": ""
+          },
+          {
+            "command": [
+              "systemctl",
+              "reset-failed",
+              "qorpera-office-folder-mount@gap-0000.service"
+            ],
+            "code": 1,
+            "output": "Failed to reset failed state of unit qorpera-office-folder-mount@gap-0000.service: Unit qorpera-office-folder-mount@gap-0000.service not loaded."
+          },
+          {
+            "command": [
+              "umount",
+              "-l",
+              "/run/qorpera-folder/mounts/gap-0000"
+            ],
+            "code": 0,
+            "output": ""
+          }
+        ]
+      },
+      {
+        "mode": "0700",
+        "served": true,
+        "bare": {
+          "mode": "0o700",
+          "uid": 0
+        },
+        "commandStart": {
+          "started": true,
+          "monitorPid": 1623,
+          "folderFd": 5,
+          "args": [
+            "--unshare-user",
+            "--unshare-pid",
+            "--unshare-net",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--unshare-cgroup",
+            "--disable-userns",
+            "--assert-userns-disabled",
+            "--die-with-parent",
+            "--new-session",
+            "--cap-drop",
+            "ALL",
+            "--clearenv",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/bin",
+            "/bin",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib64",
+            "/lib64",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--size",
+            "67108864",
+            "--tmpfs",
+            "/tmp",
+            "--bind-fd",
+            "3",
+            "/run/qorpera-office/private",
+            "--bind-fd",
+            "4",
+            "/home/qorpera",
+            "--setenv",
+            "HOME",
+            "/home/qorpera",
+            "--setenv",
+            "PATH",
+            "/usr/local/bin:/usr/bin:/bin",
+            "--setenv",
+            "LANG",
+            "C.UTF-8",
+            "--bind-fd",
+            "5",
+            "/run/qorpera-company",
+            "--symlink",
+            "/run/qorpera-company/company",
+            "/company",
+            "--chdir",
+            "/run/qorpera-office/private",
+            "--remount-ro",
+            "/"
+          ],
+          "skipped": []
+        },
+        "commandBefore": {
+          "look": {
+            "dev": 29,
+            "mode": "0o700",
+            "uid": 65534,
+            "listErrno": 13
+          },
+          "write": {
+            "errno": 13,
+            "stage": "open"
+          }
+        },
+        "shellAtCompanyStart": {
+          "started": false,
+          "gate": "OFFICE_PROCESS_EXITED_BEFORE_START",
+          "ended": {
+            "code": 1,
+            "signal": null
+          },
+          "stderr": "bwrap: Can't chdir to /company: Permission denied\n"
+        },
+        "start": {
+          "command": [
+            "systemctl",
+            "start",
+            "--no-block",
+            "qorpera-office-folder-mount@gap-0700.service"
+          ],
+          "code": 0,
+          "output": ""
+        },
+        "servedAfterSeconds": 0.07,
+        "unit": {
+          "ActiveState": "active",
+          "SubState": "running",
+          "MainPID": 1629,
+          "Result": "success",
+          "NRestarts": 0,
+          "ExecMainCode": 0,
+          "ExecMainStatus": 0
+        },
+        "journal": [
+          "[   77.975045] qorpera-remount-67313403 systemd[1]: Starting qorpera-office-folder-mount@gap-0700.service - Qorpera company folder gap-0700 (from this node's folder service; read-write only for a view it lets write)...",
+          "[   77.986395] qorpera-remount-67313403 systemd[1]: Started qorpera-office-folder-mount@gap-0700.service - Qorpera company folder gap-0700 (from this node's folder service; read-write only for a view it lets write).",
+          "[   77.989876] qorpera-remount-67313403 qorpera-folder[1629]: qorpera-folder: view gap-0700 accepted at change 0, read-write",
+          "[   77.989876] qorpera-remount-67313403 qorpera-folder[1629]: qorpera-folder: kernel FUSE ABI Version(7, 45)",
+          "[   77.989876] qorpera-remount-67313403 qorpera-folder[1629]: qorpera-folder: mounted at /run/qorpera-folder/mounts/gap-0700/company with 16 threads"
+        ],
+        "commandAfter": {
+          "look": {
+            "dev": 65,
+            "mode": "0o755",
+            "uid": 20045,
+            "names": [
+              "before.txt",
+              "loss-keep.txt",
+              "loss-truncate.txt"
+            ]
+          },
+          "write": {
+            "written": true
+          }
+        },
+        "stopped": [
+          {
+            "stopped": true,
+            "ended": {
+              "code": 0,
+              "signal": null
+            },
+            "stderr": ""
+          }
+        ],
+        "teardown": [
+          {
+            "command": [
+              "systemctl",
+              "stop",
+              "qorpera-office-folder-mount@gap-0700.service"
+            ],
+            "code": 0,
+            "output": ""
+          },
+          {
+            "command": [
+              "systemctl",
+              "reset-failed",
+              "qorpera-office-folder-mount@gap-0700.service"
+            ],
+            "code": 1,
+            "output": "Failed to reset failed state of unit qorpera-office-folder-mount@gap-0700.service: Unit qorpera-office-folder-mount@gap-0700.service not loaded."
+          },
+          {
+            "command": [
+              "umount",
+              "-l",
+              "/run/qorpera-folder/mounts/gap-0700"
+            ],
+            "code": 0,
+            "output": ""
+          }
+        ]
+      },
+      {
+        "mode": "0755",
+        "served": true,
+        "bare": {
+          "mode": "0o755",
+          "uid": 0
+        },
+        "commandStart": {
+          "started": true,
+          "monitorPid": 1665,
+          "folderFd": 5,
+          "args": [
+            "--unshare-user",
+            "--unshare-pid",
+            "--unshare-net",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--unshare-cgroup",
+            "--disable-userns",
+            "--assert-userns-disabled",
+            "--die-with-parent",
+            "--new-session",
+            "--cap-drop",
+            "ALL",
+            "--clearenv",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/bin",
+            "/bin",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib64",
+            "/lib64",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--size",
+            "67108864",
+            "--tmpfs",
+            "/tmp",
+            "--bind-fd",
+            "3",
+            "/run/qorpera-office/private",
+            "--bind-fd",
+            "4",
+            "/home/qorpera",
+            "--setenv",
+            "HOME",
+            "/home/qorpera",
+            "--setenv",
+            "PATH",
+            "/usr/local/bin:/usr/bin:/bin",
+            "--setenv",
+            "LANG",
+            "C.UTF-8",
+            "--bind-fd",
+            "5",
+            "/run/qorpera-company",
+            "--symlink",
+            "/run/qorpera-company/company",
+            "/company",
+            "--chdir",
+            "/run/qorpera-office/private",
+            "--remount-ro",
+            "/"
+          ],
+          "skipped": []
+        },
+        "commandBefore": {
+          "look": {
+            "dev": 29,
+            "mode": "0o755",
+            "uid": 65534,
+            "names": []
+          },
+          "write": {
+            "errno": 13,
+            "stage": "open"
+          }
+        },
+        "shellAtCompanyStart": {
+          "started": true,
+          "monitorPid": 1668,
+          "folderFd": 7,
+          "args": [
+            "--unshare-user",
+            "--unshare-pid",
+            "--unshare-net",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--unshare-cgroup",
+            "--disable-userns",
+            "--assert-userns-disabled",
+            "--die-with-parent",
+            "--new-session",
+            "--cap-drop",
+            "ALL",
+            "--clearenv",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/bin",
+            "/bin",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib64",
+            "/lib64",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--size",
+            "536870912",
+            "--tmpfs",
+            "/tmp",
+            "--bind-fd",
+            "5",
+            "/run/qorpera-office/private",
+            "--bind-fd",
+            "6",
+            "/home/qorpera",
+            "--ro-bind",
+            "/run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/standin/hosts",
+            "/etc/hosts",
+            "--ro-bind",
+            "/run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/standin/resolv.conf",
+            "/etc/resolv.conf",
+            "--ro-bind",
+            "/etc/passwd",
+            "/etc/passwd",
+            "--ro-bind",
+            "/etc/group",
+            "/etc/group",
+            "--ro-bind",
+            "/etc/nsswitch.conf",
+            "/etc/nsswitch.conf",
+            "--ro-bind",
+            "/etc/ld.so.cache",
+            "/etc/ld.so.cache",
+            "--ro-bind",
+            "/etc/ssl/openssl.cnf",
+            "/etc/ssl/openssl.cnf",
+            "--ro-bind",
+            "/etc/ssl/certs",
+            "/etc/ssl/certs",
+            "--ro-bind",
+            "/etc/alternatives",
+            "/etc/alternatives",
+            "--ro-bind",
+            "/etc/fonts",
+            "/etc/fonts",
+            "--ro-bind",
+            "/etc/xdg",
+            "/etc/xdg",
+            "--setenv",
+            "HOME",
+            "/home/qorpera",
+            "--setenv",
+            "PATH",
+            "/usr/local/bin:/usr/bin:/bin",
+            "--setenv",
+            "LANG",
+            "C.UTF-8",
+            "--setenv",
+            "SHELL",
+            "/usr/bin/bash",
+            "--setenv",
+            "TERM",
+            "dumb",
+            "--bind-fd",
+            "7",
+            "/run/qorpera-company",
+            "--symlink",
+            "/run/qorpera-company/company",
+            "/company",
+            "--chdir",
+            "/company",
+            "--remount-ro",
+            "/"
+          ],
+          "skipped": []
+        },
+        "shellAtCompanyBefore": {
+          "status": {
+            "name": "gap-0755-shell",
+            "token": "12fb7889d1d572b7",
+            "pid": 2,
+            "uid": 20045,
+            "mountNamespace": "mnt:[4026532685]",
+            "pidNamespace": "pid:[4026532688]",
+            "capEff": "0000000000000000",
+            "noNewPrivs": "1",
+            "cwd": "/run/qorpera-company/company"
+          },
+          "listcwd": {
+            "names": []
+          }
+        },
+        "start": {
+          "command": [
+            "systemctl",
+            "start",
+            "--no-block",
+            "qorpera-office-folder-mount@gap-0755.service"
+          ],
+          "code": 0,
+          "output": ""
+        },
+        "servedAfterSeconds": 0.078,
+        "unit": {
+          "ActiveState": "active",
+          "SubState": "running",
+          "MainPID": 1672,
+          "Result": "success",
+          "NRestarts": 0,
+          "ExecMainCode": 0,
+          "ExecMainStatus": 0
+        },
+        "journal": [
+          "[   78.391256] qorpera-remount-67313403 systemd[1]: Starting qorpera-office-folder-mount@gap-0755.service - Qorpera company folder gap-0755 (from this node's folder service; read-write only for a view it lets write)...",
+          "[   78.422807] qorpera-remount-67313403 systemd[1]: Started qorpera-office-folder-mount@gap-0755.service - Qorpera company folder gap-0755 (from this node's folder service; read-write only for a view it lets write).",
+          "[   78.425041] qorpera-remount-67313403 qorpera-folder[1672]: qorpera-folder: view gap-0755 accepted at change 0, read-write",
+          "[   78.425483] qorpera-remount-67313403 qorpera-folder[1672]: qorpera-folder: kernel FUSE ABI Version(7, 45)",
+          "[   78.425608] qorpera-remount-67313403 qorpera-folder[1672]: qorpera-folder: mounted at /run/qorpera-folder/mounts/gap-0755/company with 16 threads"
+        ],
+        "commandAfter": {
+          "look": {
+            "dev": 71,
+            "mode": "0o755",
+            "uid": 20045,
+            "names": [
+              "before.txt",
+              "gap-after.txt",
+              "loss-keep.txt",
+              "loss-truncate.txt"
+            ]
+          },
+          "write": {
+            "written": true
+          }
+        },
+        "shellAtCompanyAfter": {
+          "listcwd": {
+            "names": []
+          },
+          "look": {
+            "dev": 71,
+            "mode": "0o755",
+            "uid": 20045,
+            "names": [
+              "before.txt",
+              "gap-after.txt",
+              "loss-keep.txt",
+              "loss-truncate.txt"
+            ]
+          }
+        },
+        "stopped": [
+          {
+            "stopped": true,
+            "ended": {
+              "code": 0,
+              "signal": null
+            },
+            "stderr": ""
+          },
+          {
+            "stopped": true,
+            "ended": {
+              "code": 0,
+              "signal": null
+            },
+            "stderr": ""
+          }
+        ],
+        "teardown": [
+          {
+            "command": [
+              "systemctl",
+              "stop",
+              "qorpera-office-folder-mount@gap-0755.service"
+            ],
+            "code": 0,
+            "output": ""
+          },
+          {
+            "command": [
+              "systemctl",
+              "reset-failed",
+              "qorpera-office-folder-mount@gap-0755.service"
+            ],
+            "code": 1,
+            "output": "Failed to reset failed state of unit qorpera-office-folder-mount@gap-0755.service: Unit qorpera-office-folder-mount@gap-0755.service not loaded."
+          },
+          {
+            "command": [
+              "umount",
+              "-l",
+              "/run/qorpera-folder/mounts/gap-0755"
+            ],
+            "code": 0,
+            "output": ""
+          }
+        ]
+      }
+    ],
+    "mode": "0755",
+    "desktopStart": {
+      "started": true,
+      "monitorPid": 1707,
+      "folderFd": 9,
+      "args": [
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-net",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--unshare-cgroup",
+        "--disable-userns",
+        "--assert-userns-disabled",
+        "--die-with-parent",
+        "--new-session",
+        "--cap-drop",
+        "ALL",
+        "--clearenv",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--symlink",
+        "usr/bin",
+        "/bin",
+        "--symlink",
+        "usr/lib",
+        "/lib",
+        "--symlink",
+        "usr/lib64",
+        "/lib64",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--size",
+        "67108864",
+        "--tmpfs",
+        "/tmp",
+        "--bind-fd",
+        "3",
+        "/run/qorpera-office/private",
+        "--bind-fd",
+        "4",
+        "/home/qorpera",
+        "--bind-fd",
+        "5",
+        "/screen-state/q3-screen",
+        "--bind-fd",
+        "6",
+        "/tmp/.X11-unix",
+        "--bind-fd",
+        "7",
+        "/run/qorpera",
+        "--ro-bind-fd",
+        "8",
+        "/etc/machine-id",
+        "--size",
+        "33554432",
+        "--tmpfs",
+        "/var/tmp",
+        "--ro-bind",
+        "/run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/standin/hosts",
+        "/etc/hosts",
+        "--ro-bind",
+        "/run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/standin/resolv.conf",
+        "/etc/resolv.conf",
+        "--ro-bind",
+        "/etc/passwd",
+        "/etc/passwd",
+        "--ro-bind",
+        "/etc/group",
+        "/etc/group",
+        "--ro-bind",
+        "/etc/nsswitch.conf",
+        "/etc/nsswitch.conf",
+        "--ro-bind",
+        "/etc/fonts",
+        "/etc/fonts",
+        "--ro-bind",
+        "/etc/xdg",
+        "/etc/xdg",
+        "--ro-bind",
+        "/etc/X11",
+        "/etc/X11",
+        "--ro-bind",
+        "/etc/dbus-1",
+        "/etc/dbus-1",
+        "--ro-bind",
+        "/etc/ssl/certs",
+        "/etc/ssl/certs",
+        "--symlink",
+        "../usr/lib/os-release",
+        "/etc/os-release",
+        "--setenv",
+        "HOME",
+        "/home/qorpera",
+        "--setenv",
+        "PATH",
+        "/usr/local/bin:/usr/bin:/bin",
+        "--setenv",
+        "LANG",
+        "C.UTF-8",
+        "--setenv",
+        "QORPERA_WORKBENCH_ROOT",
+        "/run/qorpera-office/private",
+        "--setenv",
+        "QORPERA_DESKTOP_HOME",
+        "/home/qorpera",
+        "--setenv",
+        "QORPERA_SCREEN_STATE_ROOT",
+        "/screen-state",
+        "--setenv",
+        "QORPERA_SCREEN_RUNTIME_ROOT",
+        "/run/qorpera",
+        "--setenv",
+        "QORPERA_SCREEN_WALLPAPER",
+        "/screen-state/q3-screen/wallpaper.png",
+        "--bind-fd",
+        "9",
+        "/run/qorpera-company",
+        "--symlink",
+        "/run/qorpera-company/company",
+        "/company",
+        "--chdir",
+        "/run/qorpera-office/private",
+        "--remount-ro",
+        "/"
+      ],
+      "skipped": []
+    },
+    "shellStart": {
+      "started": true,
+      "monitorPid": 1710,
+      "folderFd": 7,
+      "args": [
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-net",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--unshare-cgroup",
+        "--disable-userns",
+        "--assert-userns-disabled",
+        "--die-with-parent",
+        "--new-session",
+        "--cap-drop",
+        "ALL",
+        "--clearenv",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--symlink",
+        "usr/bin",
+        "/bin",
+        "--symlink",
+        "usr/lib",
+        "/lib",
+        "--symlink",
+        "usr/lib64",
+        "/lib64",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--size",
+        "536870912",
+        "--tmpfs",
+        "/tmp",
+        "--bind-fd",
+        "5",
+        "/run/qorpera-office/private",
+        "--bind-fd",
+        "6",
+        "/home/qorpera",
+        "--ro-bind",
+        "/run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/standin/hosts",
+        "/etc/hosts",
+        "--ro-bind",
+        "/run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/standin/resolv.conf",
+        "/etc/resolv.conf",
+        "--ro-bind",
+        "/etc/passwd",
+        "/etc/passwd",
+        "--ro-bind",
+        "/etc/group",
+        "/etc/group",
+        "--ro-bind",
+        "/etc/nsswitch.conf",
+        "/etc/nsswitch.conf",
+        "--ro-bind",
+        "/etc/ld.so.cache",
+        "/etc/ld.so.cache",
+        "--ro-bind",
+        "/etc/ssl/openssl.cnf",
+        "/etc/ssl/openssl.cnf",
+        "--ro-bind",
+        "/etc/ssl/certs",
+        "/etc/ssl/certs",
+        "--ro-bind",
+        "/etc/alternatives",
+        "/etc/alternatives",
+        "--ro-bind",
+        "/etc/fonts",
+        "/etc/fonts",
+        "--ro-bind",
+        "/etc/xdg",
+        "/etc/xdg",
+        "--setenv",
+        "HOME",
+        "/home/qorpera",
+        "--setenv",
+        "PATH",
+        "/usr/local/bin:/usr/bin:/bin",
+        "--setenv",
+        "LANG",
+        "C.UTF-8",
+        "--setenv",
+        "SHELL",
+        "/usr/bin/bash",
+        "--setenv",
+        "TERM",
+        "dumb",
+        "--bind-fd",
+        "7",
+        "/run/qorpera-company",
+        "--symlink",
+        "/run/qorpera-company/company",
+        "/company",
+        "--chdir",
+        "/run/qorpera-office/private",
+        "--remount-ro",
+        "/"
+      ],
+      "skipped": []
+    },
+    "commandStart": {
+      "started": true,
+      "monitorPid": 1713,
+      "folderFd": 5,
+      "args": [
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-net",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--unshare-cgroup",
+        "--disable-userns",
+        "--assert-userns-disabled",
+        "--die-with-parent",
+        "--new-session",
+        "--cap-drop",
+        "ALL",
+        "--clearenv",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--symlink",
+        "usr/bin",
+        "/bin",
+        "--symlink",
+        "usr/lib",
+        "/lib",
+        "--symlink",
+        "usr/lib64",
+        "/lib64",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--size",
+        "67108864",
+        "--tmpfs",
+        "/tmp",
+        "--bind-fd",
+        "3",
+        "/run/qorpera-office/private",
+        "--bind-fd",
+        "4",
+        "/home/qorpera",
+        "--setenv",
+        "HOME",
+        "/home/qorpera",
+        "--setenv",
+        "PATH",
+        "/usr/local/bin:/usr/bin:/bin",
+        "--setenv",
+        "LANG",
+        "C.UTF-8",
+        "--bind-fd",
+        "5",
+        "/run/qorpera-company",
+        "--symlink",
+        "/run/qorpera-company/company",
+        "/company",
+        "--chdir",
+        "/run/qorpera-office/private",
+        "--remount-ro",
+        "/"
+      ],
+      "skipped": []
+    },
+    "firstMount": {
+      "servedAfterSeconds": 0.093,
+      "unit": {
+        "ActiveState": "active",
+        "SubState": "running",
+        "MainPID": 1717,
+        "Result": "success",
+        "NRestarts": 0,
+        "ExecMainCode": 0,
+        "ExecMainStatus": 0
+      },
+      "hostCount": 1,
+      "hostCopies": 2,
+      "hostAt": [
+        {
+          "id": 291,
+          "parent": 154,
+          "optional": [
+            "shared:320"
+          ],
+          "fstype": "fuse",
+          "source": "qorpera-company"
+        },
+        {
+          "id": 292,
+          "parent": 34,
+          "optional": [
+            "shared:320"
+          ],
+          "fstype": "fuse",
+          "source": "qorpera-company"
+        }
+      ],
+      "parentShared": true
+    },
+    "directStart": {
+      "started": true,
+      "monitorPid": 1743,
+      "folderFd": 5,
+      "args": [
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-net",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--unshare-cgroup",
+        "--disable-userns",
+        "--assert-userns-disabled",
+        "--die-with-parent",
+        "--new-session",
+        "--cap-drop",
+        "ALL",
+        "--clearenv",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--symlink",
+        "usr/bin",
+        "/bin",
+        "--symlink",
+        "usr/lib",
+        "/lib",
+        "--symlink",
+        "usr/lib64",
+        "/lib64",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--size",
+        "67108864",
+        "--tmpfs",
+        "/tmp",
+        "--bind-fd",
+        "3",
+        "/run/qorpera-office/private",
+        "--bind-fd",
+        "4",
+        "/home/qorpera",
+        "--setenv",
+        "HOME",
+        "/home/qorpera",
+        "--setenv",
+        "PATH",
+        "/usr/local/bin:/usr/bin:/bin",
+        "--setenv",
+        "LANG",
+        "C.UTF-8",
+        "--bind-fd",
+        "5",
+        "/company",
+        "--chdir",
+        "/run/qorpera-office/private",
+        "--remount-ro",
+        "/"
+      ],
+      "skipped": []
+    },
+    "kill1": {
+      "how": "pid",
+      "before": {
+        "ActiveState": "active",
+        "SubState": "running",
+        "MainPID": 1717,
+        "Result": "success",
+        "NRestarts": 0,
+        "ExecMainCode": 0,
+        "ExecMainStatus": 0
+      },
+      "after": {
+        "ActiveState": "active",
+        "SubState": "running",
+        "MainPID": 1835,
+        "Result": "success",
+        "NRestarts": 1,
+        "ExecMainCode": 0,
+        "ExecMainStatus": 0
+      },
+      "hostServedAfterSeconds": 5.126,
+      "hostCount": 1,
+      "hostCopies": 2,
+      "hostAt": [
+        {
+          "id": 291,
+          "parent": 154,
+          "optional": [
+            "shared:320"
+          ],
+          "fstype": "fuse",
+          "source": "qorpera-company"
+        },
+        {
+          "id": 292,
+          "parent": 34,
+          "optional": [
+            "shared:320"
+          ],
+          "fstype": "fuse",
+          "source": "qorpera-company"
+        }
+      ],
+      "hostTimeline": [
+        {
+          "at": 0.015,
+          "mounts": [
+            [
+              291,
+              154
+            ],
+            [
+              292,
+              34
+            ]
+          ],
+          "statErrno": 107,
+          "unit": "deactivating/stop-post",
+          "NRestarts": 0
+        },
+        {
+          "at": 0.077,
+          "mounts": [],
+          "statErrno": 0,
+          "unit": "activating/auto-restart",
+          "NRestarts": 0
+        },
+        {
+          "at": 5.065,
+          "mounts": [],
+          "statErrno": 0,
+          "unit": "activating/auto-restart-queued",
+          "NRestarts": 1
+        },
+        {
+          "at": 5.125,
+          "mounts": [
+            [
+              291,
+              154
+            ],
+            [
+              292,
+              34
+            ]
+          ],
+          "statErrno": 0,
+          "unit": "active/running",
+          "NRestarts": 1
+        }
+      ],
+      "logLevel": "info",
+      "namespaceServedAfterSeconds": 5.094,
+      "namespaceSawMeanwhile": [
+        {
+          "statErrno": 103
+        },
+        {
+          "dev": 29,
+          "mode": "0o755",
+          "uid": 65534,
+          "names": []
+        }
+      ],
+      "journal": [
+        "[   79.197581] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Child 1717 belongs to qorpera-office-folder-mount@q3.service.",
+        "[   79.197603] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Main process exited, code=killed, status=9/KILL",
+        "[   79.197647] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Will spawn child (service_enter_stop_post): /usr/bin/umount",
+        "[   79.197953] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: About to execute: /usr/bin/umount -l /run/qorpera-folder/mounts/q3/company",
+        "[   79.197966] qorpera-remount-67313403 systemd[1]: Serializing sd-executor-state to memfd.",
+        "[   79.198411] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Forked /usr/bin/umount as 1753 (via CLONE_INTO_CGROUP)",
+        "[   79.198455] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed running -> stop-post",
+        "[   79.198642] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Control group is empty.",
+        "[   79.204172] qorpera-remount-67313403 systemd-executor[1753]: Loaded shared library 'libselinux.so.1' via dlopen().",
+        "[   79.208846] qorpera-remount-67313403 (umount)[1753]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libapparmor.so.1' via dlopen().",
+        "[   79.209112] qorpera-remount-67313403 (umount)[1753]: qorpera-office-folder-mount@q3.service: Loaded 'libbpf.so.1' via dlopen()",
+        "[   79.209634] qorpera-remount-67313403 (umount)[1753]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libcryptsetup.so.12' via dlopen().",
+        "[   79.209747] qorpera-remount-67313403 (umount)[1753]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libmount.so.1' via dlopen().",
+        "[   79.209836] qorpera-remount-67313403 (umount)[1753]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libseccomp.so.2' via dlopen().",
+        "[   79.210885] qorpera-remount-67313403 (umount)[1753]: qorpera-office-folder-mount@q3.service: Enabled MemoryDenyWriteExecute= with PR_SET_MDWE",
+        "[   79.211400] qorpera-remount-67313403 (umount)[1753]: qorpera-office-folder-mount@q3.service: Executing: /usr/bin/umount -l /run/qorpera-folder/mounts/q3/company",
+        "[   79.216928] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Child 1753 belongs to qorpera-office-folder-mount@q3.service.",
+        "[   79.216941] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Control process exited, code=exited, status=0/SUCCESS (success)",
+        "[   79.216945] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Got final SIGCHLD for state stop-post.",
+        "[   79.216984] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Failed with result 'signal'.",
+        "[   79.217102] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Service will restart (restart setting)",
+        "[   79.217108] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed stop-post -> failed-before-auto-restart",
+        "[   79.217407] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Consumed 42ms CPU time over 302ms wall clock time, 3.3M memory peak.",
+        "[   79.217422] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Next restart interval calculated as: 5s",
+        "[   79.217541] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed failed-before-auto-restart -> auto-restart",
+        "[   84.252746] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Service restart interval 5s expired, scheduling restart.",
+        "[   84.252760] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Trying to enqueue job qorpera-office-folder-mount@q3.service/start/restart-dependencies",
+        "[   84.253403] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Installed new job qorpera-office-folder-mount@q3.service/start as 2555",
+        "[   84.253430] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Enqueued job qorpera-office-folder-mount@q3.service/start as 2555",
+        "[   84.253438] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Scheduled restart job, restart counter is at 1.",
+        "[   84.253672] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed auto-restart -> auto-restart-queued",
+        "[   84.258055] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Will spawn child (service_enter_start): /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder",
+        "[   84.259133] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Passing 0 fds to service",
+        "[   84.259169] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: About to execute: /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder mount --connect unix:/run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/node.sock --view-file /run/qorpera-folder/views/q3.json --mountpoint /run/qorpera-folder/mounts/q3/company --state-dir /run/qorpera-folder/state/q3 --allow-other yes --owner-uid 20045 --owner-gid 20045",
+        "[   84.259178] qorpera-remount-67313403 systemd[1]: Serializing sd-executor-state to memfd.",
+        "[   84.259622] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Forked /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder as 1835 (via CLONE_INTO_CGROUP)",
+        "[   84.259837] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Failed to send unit change signal for qorpera-office-folder-mount@q3.service: Connection reset by peer",
+        "[   84.259841] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed auto-restart-queued -> start",
+        "[   84.259850] qorpera-remount-67313403 systemd[1]: Starting qorpera-office-folder-mount@q3.service - Qorpera company folder q3 (from this node's folder service; read-write only for a view it lets write)...",
+        "[   84.267274] qorpera-remount-67313403 systemd-executor[1835]: Loaded shared library 'libselinux.so.1' via dlopen().",
+        "[   84.272642] qorpera-remount-67313403 (qorpera-folder)[1835]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libapparmor.so.1' via dlopen().",
+        "[   84.273171] qorpera-remount-67313403 (qorpera-folder)[1835]: qorpera-office-folder-mount@q3.service: Loaded 'libbpf.so.1' via dlopen()",
+        "[   84.275100] qorpera-remount-67313403 (qorpera-folder)[1835]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libcryptsetup.so.12' via dlopen().",
+        "[   84.275399] qorpera-remount-67313403 (qorpera-folder)[1835]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libmount.so.1' via dlopen().",
+        "[   84.275611] qorpera-remount-67313403 (qorpera-folder)[1835]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libseccomp.so.2' via dlopen().",
+        "[   84.276767] qorpera-remount-67313403 (qorpera-folder)[1835]: qorpera-office-folder-mount@q3.service: Enabled MemoryDenyWriteExecute= with PR_SET_MDWE",
+        "[   84.277111] qorpera-remount-67313403 (qorpera-folder)[1835]: qorpera-office-folder-mount@q3.service: Executing: /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder mount --connect unix:/run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/node.sock --view-file /run/qorpera-folder/views/q3.json --mountpoint /run/qorpera-folder/mounts/q3/company --state-dir /run/qorpera-folder/state/q3 --allow-other yes --owner-uid 20045 --owner-gid 20045",
+        "[   84.277967] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: got exec-fd event",
+        "[   84.277976] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Got EOF on exec-fd",
+        "[   84.277983] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed start -> running",
+        "[   84.277991] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Job 2555 qorpera-office-folder-mount@q3.service/start finished, result=done",
+        "[   84.278033] qorpera-remount-67313403 systemd[1]: Started qorpera-office-folder-mount@q3.service - Qorpera company folder q3 (from this node's folder service; read-write only for a view it lets write).",
+        "[   84.280249] qorpera-remount-67313403 qorpera-folder[1835]: qorpera-folder: view q3 accepted at change 0, read-write",
+        "[   84.280917] qorpera-remount-67313403 qorpera-folder[1835]: qorpera-folder: kernel FUSE ABI Version(7, 45)",
+        "[   84.280917] qorpera-remount-67313403 qorpera-folder[1835]: qorpera-folder: mounted at /run/qorpera-folder/mounts/q3/company with 16 threads"
+      ]
+    },
+    "staleCwd": {
+      "chdir": {
+        "cwd": "/run/qorpera-company/company"
+      },
+      "listcwd": {
+        "names": [
+          "before.txt",
+          "command-before.txt",
+          "desktop-before.txt",
+          "direct-before.txt",
+          "gap-after.txt",
+          "loss-closed.txt",
+          "loss-keep.txt",
+          "loss-new-fsynced.txt",
+          "loss-new-unsent.txt",
+          "loss-truncate.txt",
+          "shell-before.txt"
+        ]
+      },
+      "listcwdAfterKill": {
+        "errno": 107
+      },
+      "chdirAgain": {
+        "cwd": "/run/qorpera-company/company"
+      },
+      "listcwdAgain": {
+        "names": [
+          "after.txt",
+          "before.txt",
+          "command-after.txt",
+          "command-before.txt",
+          "desktop-after.txt",
+          "desktop-before.txt",
+          "direct-before.txt",
+          "gap-after.txt",
+          "loss-closed.txt",
+          "loss-keep.txt",
+          "loss-new-fsynced.txt",
+          "loss-new-unsent.txt",
+          "loss-truncate.txt",
+          "shell-after.txt",
+          "shell-before.txt"
+        ]
+      }
+    },
+    "oldDescriptor": {
+      "open": {
+        "opened": true
+      },
+      "pread": {
+        "text": "before"
+      },
+      "preadAfterKill": {
+        "text": "before"
+      },
+      "closeAfterKill": {
+        "errno": 107
+      }
+    },
+    "loss": {
+      "steps": {
+        "new-unsent": [
+          {
+            "opened": true
+          },
+          {
+            "bytes": 6
+          }
+        ],
+        "new-fsynced": [
+          {
+            "opened": true
+          },
+          {
+            "bytes": 7
+          },
+          {
+            "synced": true
+          }
+        ],
+        "truncate": [
+          {
+            "opened": true
+          },
+          {
+            "bytes": 8
+          },
+          {
+            "synced": true
+          }
+        ],
+        "keep": [
+          {
+            "opened": true
+          },
+          {
+            "bytes": 2
+          },
+          {
+            "synced": true
+          }
+        ],
+        "closed": [
+          {
+            "written": true
+          }
+        ]
+      },
+      "nodeBeforeKill": {
+        "new-unsent": {
+          "file": "",
+          "handles": [
+            ""
+          ]
+        },
+        "new-fsynced": {
+          "file": "",
+          "handles": [
+            "fsynced"
+          ]
+        },
+        "truncate": {
+          "file": "",
+          "handles": [
+            "replaced"
+          ]
+        },
+        "keep": {
+          "file": "saved before",
+          "handles": [
+            "XYved before"
+          ]
+        },
+        "closed": {
+          "file": "closed",
+          "handles": []
+        }
+      },
+      "closesAfterKill": {
+        "new-unsent": {
+          "errno": 107
+        },
+        "new-fsynced": {
+          "errno": 107
+        },
+        "truncate": {
+          "errno": 107
+        },
+        "keep": {
+          "errno": 107
+        }
+      },
+      "nodeAfterRestart": {
+        "new-unsent": "",
+        "new-fsynced": "",
+        "truncate": "",
+        "keep": "saved before",
+        "closed": "closed"
+      },
+      "abandoned": [
+        {
+          "at": 78.947232696,
+          "op": "abandoned",
+          "viewId": "q3",
+          "names": []
+        },
+        {
+          "at": 84.28016372,
+          "op": "abandoned",
+          "viewId": "q3",
+          "names": [
+            "loss-keep.txt",
+            "loss-new-fsynced.txt",
+            "loss-new-unsent.txt",
+            "loss-truncate.txt"
+          ]
+        }
+      ],
+      "expected": {
+        "new-unsent": "",
+        "new-fsynced": "",
+        "truncate": "",
+        "keep": "saved before",
+        "closed": "closed"
+      },
+      "asExpected": true
+    },
+    "kill2": {
+      "how": "systemctl",
+      "before": {
+        "ActiveState": "active",
+        "SubState": "running",
+        "MainPID": 1835,
+        "Result": "success",
+        "NRestarts": 1,
+        "ExecMainCode": 0,
+        "ExecMainStatus": 0
+      },
+      "after": {
+        "ActiveState": "active",
+        "SubState": "running",
+        "MainPID": 2072,
+        "Result": "success",
+        "NRestarts": 3,
+        "ExecMainCode": 0,
+        "ExecMainStatus": 0
+      },
+      "hostServedAfterSeconds": null,
+      "hostCount": 1,
+      "hostCopies": 2,
+      "hostAt": [
+        {
+          "id": 291,
+          "parent": 154,
+          "optional": [
+            "shared:320"
+          ],
+          "fstype": "fuse",
+          "source": "qorpera-company"
+        },
+        {
+          "id": 292,
+          "parent": 34,
+          "optional": [
+            "shared:320"
+          ],
+          "fstype": "fuse",
+          "source": "qorpera-company"
+        }
+      ],
+      "hostTimeline": [
+        {
+          "at": 0.023,
+          "mounts": [
+            [
+              291,
+              154
+            ],
+            [
+              292,
+              34
+            ]
+          ],
+          "statErrno": 107,
+          "unit": "activating/auto-restart",
+          "NRestarts": 1
+        },
+        {
+          "at": 5.034,
+          "mounts": [
+            [
+              291,
+              154
+            ],
+            [
+              292,
+              34
+            ]
+          ],
+          "statErrno": 107,
+          "unit": "activating/start",
+          "NRestarts": 2
+        },
+        {
+          "at": 5.096,
+          "mounts": [],
+          "statErrno": 0,
+          "unit": "activating/auto-restart",
+          "NRestarts": 2
+        },
+        {
+          "at": 10.068,
+          "mounts": [],
+          "statErrno": 0,
+          "unit": "activating/auto-restart-queued",
+          "NRestarts": 3
+        },
+        {
+          "at": 10.143,
+          "mounts": [
+            [
+              291,
+              154
+            ],
+            [
+              292,
+              34
+            ]
+          ],
+          "statErrno": 0,
+          "unit": "active/running",
+          "NRestarts": 3
+        }
+      ],
+      "logLevel": "info",
+      "namespaceServedAfterSeconds": 10.095,
+      "namespaceSawMeanwhile": [
+        {
+          "dev": 85,
+          "mode": "0o755",
+          "uid": 20045,
+          "listErrno": 103
+        },
+        {
+          "statErrno": 107
+        },
+        {
+          "dev": 29,
+          "mode": "0o755",
+          "uid": 65534,
+          "names": []
+        }
+      ],
+      "journal": [
+        "[   86.011402] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Sent signal SIGKILL to main process 1835 (qorpera-folder) on client request.",
+        "[   86.011464] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Killed unit cgroup '/system.slice/system-qorpera\\x2doffice\\x2dfolder\\x2dmount.slice/qorpera-office-folder-mount@q3.service' with SIGKILL on client request.",
+        "[   86.013192] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Child 1835 belongs to qorpera-office-folder-mount@q3.service.",
+        "[   86.013212] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Main process exited, code=killed, status=9/KILL",
+        "[   86.013261] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Will spawn child (service_enter_stop_post): /usr/bin/umount",
+        "[   86.013726] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: About to execute: /usr/bin/umount -l /run/qorpera-folder/mounts/q3/company",
+        "[   86.013748] qorpera-remount-67313403 systemd[1]: Serializing sd-executor-state to memfd.",
+        "[   86.014056] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Forked /usr/bin/umount as 1901 (via CLONE_INTO_CGROUP)",
+        "[   86.014120] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed running -> stop-post",
+        "[   86.014302] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Failed to send unit change signal for qorpera-office-folder-mount@q3.service: Connection reset by peer",
+        "[   86.014473] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Child 1901 belongs to qorpera-office-folder-mount@q3.service.",
+        "[   86.014487] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Control process exited, code=killed, status=9/KILL (success)",
+        "[   86.014493] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Got final SIGCHLD for state stop-post.",
+        "[   86.014539] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Failed with result 'signal'.",
+        "[   86.014570] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Service will restart (restart setting)",
+        "[   86.014577] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed stop-post -> failed-before-auto-restart",
+        "[   86.014849] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Consumed 35ms CPU time over 6.797s wall clock time, 3.3M memory peak.",
+        "[   86.014866] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Next restart interval calculated as: 5s",
+        "[   86.014934] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed failed-before-auto-restart -> auto-restart",
+        "[   86.015448] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Control group is empty.",
+        "[   91.030312] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Service restart interval 5s expired, scheduling restart.",
+        "[   91.030339] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Trying to enqueue job qorpera-office-folder-mount@q3.service/start/restart-dependencies",
+        "[   91.030869] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Installed new job qorpera-office-folder-mount@q3.service/start as 2988",
+        "[   91.030894] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Enqueued job qorpera-office-folder-mount@q3.service/start as 2988",
+        "[   91.030948] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Scheduled restart job, restart counter is at 2.",
+        "[   91.031128] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed auto-restart -> auto-restart-queued",
+        "[   91.031294] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Will spawn child (service_enter_start): /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder",
+        "[   91.032493] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Passing 0 fds to service",
+        "[   91.032536] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: About to execute: /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder mount --connect unix:/run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/node.sock --view-file /run/qorpera-folder/views/q3.json --mountpoint /run/qorpera-folder/mounts/q3/company --state-dir /run/qorpera-folder/state/q3 --allow-other yes --owner-uid 20045 --owner-gid 20045",
+        "[   91.032548] qorpera-remount-67313403 systemd[1]: Serializing sd-executor-state to memfd.",
+        "[   91.032986] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Forked /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder as 1984 (via CLONE_INTO_CGROUP)",
+        "[   91.033404] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed auto-restart-queued -> start",
+        "[   91.033411] qorpera-remount-67313403 systemd[1]: Starting qorpera-office-folder-mount@q3.service - Qorpera company folder q3 (from this node's folder service; read-write only for a view it lets write)...",
+        "[   91.036567] qorpera-remount-67313403 systemd-executor[1984]: Loaded shared library 'libselinux.so.1' via dlopen().",
+        "[   91.039716] qorpera-remount-67313403 (qorpera-folder)[1984]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libapparmor.so.1' via dlopen().",
+        "[   91.039909] qorpera-remount-67313403 (qorpera-folder)[1984]: qorpera-office-folder-mount@q3.service: Loaded 'libbpf.so.1' via dlopen()",
+        "[   91.040516] qorpera-remount-67313403 (qorpera-folder)[1984]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libcryptsetup.so.12' via dlopen().",
+        "[   91.040672] qorpera-remount-67313403 (qorpera-folder)[1984]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libmount.so.1' via dlopen().",
+        "[   91.040806] qorpera-remount-67313403 (qorpera-folder)[1984]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libseccomp.so.2' via dlopen().",
+        "[   91.041231] qorpera-remount-67313403 (qorpera-folder)[1984]: qorpera-office-folder-mount@q3.service: Enabled MemoryDenyWriteExecute= with PR_SET_MDWE",
+        "[   91.041665] qorpera-remount-67313403 (qorpera-folder)[1984]: qorpera-office-folder-mount@q3.service: Executing: /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder mount --connect unix:/run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/node.sock --view-file /run/qorpera-folder/views/q3.json --mountpoint /run/qorpera-folder/mounts/q3/company --state-dir /run/qorpera-folder/state/q3 --allow-other yes --owner-uid 20045 --owner-gid 20045",
+        "[   91.042436] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: got exec-fd event",
+        "[   91.042443] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Got EOF on exec-fd",
+        "[   91.042448] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed start -> running",
+        "[   91.042454] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Job 2988 qorpera-office-folder-mount@q3.service/start finished, result=done",
+        "[   91.042459] qorpera-remount-67313403 systemd[1]: Started qorpera-office-folder-mount@q3.service - Qorpera company folder q3 (from this node's folder service; read-write only for a view it lets write).",
+        "[   91.044374] qorpera-remount-67313403 qorpera-folder[1984]: qorpera-folder: view q3 accepted at change 0, read-write",
+        "[   91.044559] qorpera-remount-67313403 qorpera-folder[1984]: qorpera-folder: mount /run/qorpera-folder/mounts/q3/company: Transport endpoint is not connected (os error 107)",
+        "[   91.045409] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Child 1984 belongs to qorpera-office-folder-mount@q3.service.",
+        "[   91.045481] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Main process exited, code=exited, status=1/FAILURE",
+        "[   91.045570] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Will spawn child (service_enter_stop_post): /usr/bin/umount",
+        "[   91.045807] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: About to execute: /usr/bin/umount -l /run/qorpera-folder/mounts/q3/company",
+        "[   91.045867] qorpera-remount-67313403 systemd[1]: Serializing sd-executor-state to memfd.",
+        "[   91.046225] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Forked /usr/bin/umount as 1988 (via CLONE_INTO_CGROUP)",
+        "[   91.046498] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed running -> stop-post",
+        "[   91.047097] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Control group is empty.",
+        "[   91.048863] qorpera-remount-67313403 systemd-executor[1988]: Loaded shared library 'libselinux.so.1' via dlopen().",
+        "[   91.057315] qorpera-remount-67313403 (umount)[1988]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libapparmor.so.1' via dlopen().",
+        "[   91.057506] qorpera-remount-67313403 (umount)[1988]: qorpera-office-folder-mount@q3.service: Loaded 'libbpf.so.1' via dlopen()",
+        "[   91.057915] qorpera-remount-67313403 (umount)[1988]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libcryptsetup.so.12' via dlopen().",
+        "[   91.058072] qorpera-remount-67313403 (umount)[1988]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libmount.so.1' via dlopen().",
+        "[   91.058172] qorpera-remount-67313403 (umount)[1988]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libseccomp.so.2' via dlopen().",
+        "[   91.058490] qorpera-remount-67313403 (umount)[1988]: qorpera-office-folder-mount@q3.service: Enabled MemoryDenyWriteExecute= with PR_SET_MDWE",
+        "[   91.058768] qorpera-remount-67313403 (umount)[1988]: qorpera-office-folder-mount@q3.service: Executing: /usr/bin/umount -l /run/qorpera-folder/mounts/q3/company",
+        "[   91.062906] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Child 1988 belongs to qorpera-office-folder-mount@q3.service.",
+        "[   91.062924] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Control process exited, code=exited, status=0/SUCCESS (success)",
+        "[   91.062928] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Got final SIGCHLD for state stop-post.",
+        "[   91.062960] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Failed with result 'exit-code'.",
+        "[   91.062982] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Service will restart (restart setting)",
+        "[   91.062992] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed stop-post -> failed-before-auto-restart",
+        "[   91.063275] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Consumed 15ms CPU time over 5.048s wall clock time, 2M memory peak.",
+        "[   91.063286] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Next restart interval calculated as: 5s",
+        "[   91.063400] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed failed-before-auto-restart -> auto-restart",
+        "[   96.063482] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Service restart interval 5s expired, scheduling restart.",
+        "[   96.063491] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Trying to enqueue job qorpera-office-folder-mount@q3.service/start/restart-dependencies",
+        "[   96.064240] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Installed new job qorpera-office-folder-mount@q3.service/start as 3133",
+        "[   96.064283] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Enqueued job qorpera-office-folder-mount@q3.service/start as 3133",
+        "[   96.064292] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Scheduled restart job, restart counter is at 3.",
+        "[   96.064627] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed auto-restart -> auto-restart-queued",
+        "[   96.070264] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Will spawn child (service_enter_start): /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder",
+        "[   96.071561] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Passing 0 fds to service",
+        "[   96.071589] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: About to execute: /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder mount --connect unix:/run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/node.sock --view-file /run/qorpera-folder/views/q3.json --mountpoint /run/qorpera-folder/mounts/q3/company --state-dir /run/qorpera-folder/state/q3 --allow-other yes --owner-uid 20045 --owner-gid 20045",
+        "[   96.071601] qorpera-remount-67313403 systemd[1]: Serializing sd-executor-state to memfd.",
+        "[   96.072088] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Forked /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder as 2072 (via CLONE_INTO_CGROUP)",
+        "[   96.072359] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Failed to send unit change signal for qorpera-office-folder-mount@q3.service: Connection reset by peer",
+        "[   96.072363] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed auto-restart-queued -> start",
+        "[   96.072375] qorpera-remount-67313403 systemd[1]: Starting qorpera-office-folder-mount@q3.service - Qorpera company folder q3 (from this node's folder service; read-write only for a view it lets write)...",
+        "[   96.076388] qorpera-remount-67313403 systemd-executor[2072]: Loaded shared library 'libselinux.so.1' via dlopen().",
+        "[   96.083444] qorpera-remount-67313403 (qorpera-folder)[2072]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libapparmor.so.1' via dlopen().",
+        "[   96.083638] qorpera-remount-67313403 (qorpera-folder)[2072]: qorpera-office-folder-mount@q3.service: Loaded 'libbpf.so.1' via dlopen()",
+        "[   96.084270] qorpera-remount-67313403 (qorpera-folder)[2072]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libcryptsetup.so.12' via dlopen().",
+        "[   96.084453] qorpera-remount-67313403 (qorpera-folder)[2072]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libmount.so.1' via dlopen().",
+        "[   96.084584] qorpera-remount-67313403 (qorpera-folder)[2072]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libseccomp.so.2' via dlopen().",
+        "[   96.084959] qorpera-remount-67313403 (qorpera-folder)[2072]: qorpera-office-folder-mount@q3.service: Enabled MemoryDenyWriteExecute= with PR_SET_MDWE",
+        "[   96.085444] qorpera-remount-67313403 (qorpera-folder)[2072]: qorpera-office-folder-mount@q3.service: Executing: /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder mount --connect unix:/run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/node.sock --view-file /run/qorpera-folder/views/q3.json --mountpoint /run/qorpera-folder/mounts/q3/company --state-dir /run/qorpera-folder/state/q3 --allow-other yes --owner-uid 20045 --owner-gid 20045",
+        "[   96.086154] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: got exec-fd event",
+        "[   96.086165] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Got EOF on exec-fd",
+        "[   96.086172] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed start -> running",
+        "[   96.086179] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Job 3133 qorpera-office-folder-mount@q3.service/start finished, result=done",
+        "[   96.086186] qorpera-remount-67313403 systemd[1]: Started qorpera-office-folder-mount@q3.service - Qorpera company folder q3 (from this node's folder service; read-write only for a view it lets write).",
+        "[   96.088639] qorpera-remount-67313403 qorpera-folder[2072]: qorpera-folder: view q3 accepted at change 0, read-write",
+        "[   96.089112] qorpera-remount-67313403 qorpera-folder[2072]: qorpera-folder: kernel FUSE ABI Version(7, 45)",
+        "[   96.090088] qorpera-remount-67313403 qorpera-folder[2072]: qorpera-folder: mounted at /run/qorpera-folder/mounts/q3/company with 16 threads"
+      ]
+    },
+    "officeStartedOverMount": {
+      "over-plain": {
+        "relay": {
+          "uid": 20045,
+          "gid": 20045,
+          "pid": 1865,
+          "node": "v22.22.1",
+          "mountNamespace": "mnt:[4026532864]",
+          "mountinfo": [
+            "568 561 0:29 /qorpera-folder/mounts/q3 /run/qorpera-folder/mounts/q3 rw,nosuid,nodev shared:351 master:13 - tmpfs tmpfs rw,size=786616k,nr_inodes=819200,mode=755,inode64",
+            "569 568 0:85 / /run/qorpera-folder/mounts/q3/company rw,nosuid,nodev,noatime shared:352 master:320 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other",
+            "570 561 0:85 / /run/qorpera-folder/mounts/q3/company rw,nosuid,nodev,noatime shared:353 master:320 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+          ]
+        },
+        "start": {
+          "started": true,
+          "monitorPid": 1876,
+          "folderFd": 5,
+          "args": [
+            "--unshare-user",
+            "--unshare-pid",
+            "--unshare-net",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--unshare-cgroup",
+            "--disable-userns",
+            "--assert-userns-disabled",
+            "--die-with-parent",
+            "--new-session",
+            "--cap-drop",
+            "ALL",
+            "--clearenv",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/bin",
+            "/bin",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib64",
+            "/lib64",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--size",
+            "67108864",
+            "--tmpfs",
+            "/tmp",
+            "--bind-fd",
+            "3",
+            "/run/qorpera-office/private",
+            "--bind-fd",
+            "4",
+            "/home/qorpera",
+            "--setenv",
+            "HOME",
+            "/home/qorpera",
+            "--setenv",
+            "PATH",
+            "/usr/local/bin:/usr/bin:/bin",
+            "--setenv",
+            "LANG",
+            "C.UTF-8",
+            "--bind-fd",
+            "5",
+            "/run/qorpera-company",
+            "--symlink",
+            "/run/qorpera-company/company",
+            "/company",
+            "--chdir",
+            "/run/qorpera-office/private",
+            "--remount-ro",
+            "/"
+          ],
+          "skipped": []
+        },
+        "over": {
+          "status": {
+            "name": "over-plain",
+            "token": "ec794968ed291a60",
+            "pid": 2,
+            "uid": 20045,
+            "mountNamespace": "mnt:[4026532867]",
+            "pidNamespace": "pid:[4026532870]",
+            "capEff": "0000000000000000",
+            "noNewPrivs": "1",
+            "cwd": "/run/qorpera-office/private"
+          },
+          "read": {
+            "text": "before"
+          },
+          "write": {
+            "written": true
+          },
+          "mountinfo": {
+            "lines": [
+              "600 585 0:29 /qorpera-folder/mounts/q3 /run/qorpera-company rw,nosuid,nodev master:351 - tmpfs tmpfs rw,size=786616k,nr_inodes=819200,mode=755,inode64",
+              "601 600 0:85 / /run/qorpera-company/company rw,nosuid,nodev,noatime master:352 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+            ]
+          },
+          "look": {
+            "dev": 85,
+            "mode": "0o755",
+            "uid": 20045,
+            "names": [
+              "after.txt",
+              "before.txt",
+              "command-after.txt",
+              "command-before.txt",
+              "desktop-after.txt",
+              "desktop-before.txt",
+              "direct-before.txt",
+              "gap-after.txt",
+              "loss-closed.txt",
+              "loss-keep.txt",
+              "loss-new-fsynced.txt",
+              "loss-new-unsent.txt",
+              "loss-truncate.txt",
+              "over-plain-over.txt",
+              "shell-after.txt",
+              "shell-before.txt"
+            ]
+          }
+        },
+        "afterKill2": {
+          "status": {
+            "name": "over-plain",
+            "token": "ec794968ed291a60",
+            "pid": 2,
+            "uid": 20045,
+            "mountNamespace": "mnt:[4026532867]",
+            "pidNamespace": "pid:[4026532870]",
+            "capEff": "0000000000000000",
+            "noNewPrivs": "1",
+            "cwd": "/run/qorpera-office/private"
+          },
+          "read": {
+            "text": "after second restart"
+          },
+          "write": {
+            "written": true
+          },
+          "mountinfo": {
+            "lines": [
+              "600 585 0:29 /qorpera-folder/mounts/q3 /run/qorpera-company rw,nosuid,nodev master:351 - tmpfs tmpfs rw,size=786616k,nr_inodes=819200,mode=755,inode64",
+              "359 600 0:102 / /run/qorpera-company/company rw,nosuid,nodev,noatime master:334 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+            ]
+          },
+          "look": {
+            "dev": 102,
+            "mode": "0o755",
+            "uid": 20045,
+            "names": [
+              "after.txt",
+              "after2.txt",
+              "before.txt",
+              "command-after.txt",
+              "command-after2.txt",
+              "command-before.txt",
+              "desktop-after.txt",
+              "desktop-after2.txt",
+              "desktop-before.txt",
+              "direct-before.txt",
+              "gap-after.txt",
+              "loss-closed.txt",
+              "loss-keep.txt",
+              "loss-new-fsynced.txt",
+              "loss-new-unsent.txt",
+              "loss-truncate.txt",
+              "over-plain-after2.txt",
+              "over-plain-over.txt",
+              "over-rw-over.txt",
+              "shell-after.txt",
+              "shell-after2.txt",
+              "shell-before.txt"
+            ]
+          }
+        }
+      },
+      "over-rw": {
+        "relay": {
+          "uid": 20045,
+          "gid": 20045,
+          "pid": 1880,
+          "node": "v22.22.1",
+          "mountNamespace": "mnt:[4026532926]",
+          "mountinfo": [
+            "624 617 0:29 /qorpera-folder/mounts/q3 /run/qorpera-folder/mounts/q3 rw,nosuid,nodev shared:420 master:13 - tmpfs tmpfs rw,size=786616k,nr_inodes=819200,mode=755,inode64",
+            "625 624 0:85 / /run/qorpera-folder/mounts/q3/company rw,nosuid,nodev,noatime shared:421 master:320 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other",
+            "626 617 0:85 / /run/qorpera-folder/mounts/q3/company rw,nosuid,nodev,noatime shared:422 master:320 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other",
+            "615 617 0:29 /qorpera-folder/mounts /run/qorpera-folder/mounts rw,nosuid,nodev shared:424 master:13 - tmpfs tmpfs rw,size=786616k,nr_inodes=819200,mode=755,inode64",
+            "616 615 0:29 /qorpera-folder/mounts/q3 /run/qorpera-folder/mounts/q3 rw,nosuid,nodev shared:425 master:13 - tmpfs tmpfs rw,size=786616k,nr_inodes=819200,mode=755,inode64",
+            "618 616 0:85 / /run/qorpera-folder/mounts/q3/company rw,nosuid,nodev,noatime shared:426 master:320 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other",
+            "619 615 0:85 / /run/qorpera-folder/mounts/q3/company rw,nosuid,nodev,noatime shared:427 master:320 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+          ]
+        },
+        "start": {
+          "started": true,
+          "monitorPid": 1891,
+          "folderFd": 5,
+          "args": [
+            "--unshare-user",
+            "--unshare-pid",
+            "--unshare-net",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--unshare-cgroup",
+            "--disable-userns",
+            "--assert-userns-disabled",
+            "--die-with-parent",
+            "--new-session",
+            "--cap-drop",
+            "ALL",
+            "--clearenv",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--symlink",
+            "usr/bin",
+            "/bin",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib64",
+            "/lib64",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--size",
+            "67108864",
+            "--tmpfs",
+            "/tmp",
+            "--bind-fd",
+            "3",
+            "/run/qorpera-office/private",
+            "--bind-fd",
+            "4",
+            "/home/qorpera",
+            "--setenv",
+            "HOME",
+            "/home/qorpera",
+            "--setenv",
+            "PATH",
+            "/usr/local/bin:/usr/bin:/bin",
+            "--setenv",
+            "LANG",
+            "C.UTF-8",
+            "--bind-fd",
+            "5",
+            "/run/qorpera-company",
+            "--symlink",
+            "/run/qorpera-company/company",
+            "/company",
+            "--chdir",
+            "/run/qorpera-office/private",
+            "--remount-ro",
+            "/"
+          ],
+          "skipped": []
+        },
+        "over": {
+          "status": {
+            "name": "over-rw",
+            "token": "dffc2a2019903f7e",
+            "pid": 2,
+            "uid": 20045,
+            "mountNamespace": "mnt:[4026532929]",
+            "pidNamespace": "pid:[4026532932]",
+            "capEff": "0000000000000000",
+            "noNewPrivs": "1",
+            "cwd": "/run/qorpera-office/private"
+          },
+          "read": {
+            "text": "before"
+          },
+          "write": {
+            "written": true
+          },
+          "mountinfo": {
+            "lines": [
+              "664 649 0:29 /qorpera-folder/mounts/q3 /run/qorpera-company rw,nosuid,nodev master:425 - tmpfs tmpfs rw,size=786616k,nr_inodes=819200,mode=755,inode64",
+              "665 664 0:85 / /run/qorpera-company/company rw,nosuid,nodev,noatime master:426 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+            ]
+          },
+          "look": {
+            "dev": 85,
+            "mode": "0o755",
+            "uid": 20045,
+            "names": [
+              "after.txt",
+              "before.txt",
+              "command-after.txt",
+              "command-before.txt",
+              "desktop-after.txt",
+              "desktop-before.txt",
+              "direct-before.txt",
+              "gap-after.txt",
+              "loss-closed.txt",
+              "loss-keep.txt",
+              "loss-new-fsynced.txt",
+              "loss-new-unsent.txt",
+              "loss-truncate.txt",
+              "over-plain-over.txt",
+              "over-rw-over.txt",
+              "shell-after.txt",
+              "shell-before.txt"
+            ]
+          }
+        },
+        "afterKill2": {
+          "status": {
+            "name": "over-rw",
+            "token": "dffc2a2019903f7e",
+            "pid": 2,
+            "uid": 20045,
+            "mountNamespace": "mnt:[4026532929]",
+            "pidNamespace": "pid:[4026532932]",
+            "capEff": "0000000000000000",
+            "noNewPrivs": "1",
+            "cwd": "/run/qorpera-office/private"
+          },
+          "read": {
+            "text": "after second restart"
+          },
+          "write": {
+            "written": true
+          },
+          "mountinfo": {
+            "lines": [
+              "664 649 0:29 /qorpera-folder/mounts/q3 /run/qorpera-company rw,nosuid,nodev master:425 - tmpfs tmpfs rw,size=786616k,nr_inodes=819200,mode=755,inode64",
+              "355 664 0:102 / /run/qorpera-company/company rw,nosuid,nodev,noatime master:333 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other"
+            ]
+          },
+          "look": {
+            "dev": 102,
+            "mode": "0o755",
+            "uid": 20045,
+            "names": [
+              "after.txt",
+              "after2.txt",
+              "before.txt",
+              "command-after.txt",
+              "command-after2.txt",
+              "command-before.txt",
+              "desktop-after.txt",
+              "desktop-after2.txt",
+              "desktop-before.txt",
+              "direct-before.txt",
+              "gap-after.txt",
+              "loss-closed.txt",
+              "loss-keep.txt",
+              "loss-new-fsynced.txt",
+              "loss-new-unsent.txt",
+              "loss-truncate.txt",
+              "over-plain-after2.txt",
+              "over-plain-over.txt",
+              "over-rw-after2.txt",
+              "over-rw-over.txt",
+              "shell-after.txt",
+              "shell-after2.txt",
+              "shell-before.txt"
+            ]
+          }
+        }
+      }
+    },
+    "directAfterKill2": {
+      "errno": 107
+    },
+    "kill3Cleared": {
+      "dropIn": "[Service]\nExecStartPre=-/usr/bin/umount -l /run/qorpera-folder/mounts/q3/company\n",
+      "oneRestart": true,
+      "how": "systemctl",
+      "before": {
+        "ActiveState": "active",
+        "SubState": "running",
+        "MainPID": 2072,
+        "Result": "success",
+        "NRestarts": 3,
+        "ExecMainCode": 0,
+        "ExecMainStatus": 0
+      },
+      "after": {
+        "ActiveState": "active",
+        "SubState": "running",
+        "MainPID": 2573,
+        "Result": "success",
+        "NRestarts": 4,
+        "ExecMainCode": 0,
+        "ExecMainStatus": 0
+      },
+      "hostServedAfterSeconds": 5.068,
+      "hostCount": 1,
+      "hostCopies": 2,
+      "hostAt": [
+        {
+          "id": 291,
+          "parent": 154,
+          "optional": [
+            "shared:320"
+          ],
+          "fstype": "fuse",
+          "source": "qorpera-company"
+        },
+        {
+          "id": 292,
+          "parent": 34,
+          "optional": [
+            "shared:320"
+          ],
+          "fstype": "fuse",
+          "source": "qorpera-company"
+        }
+      ],
+      "hostTimeline": [
+        {
+          "at": 0.017,
+          "mounts": [
+            [
+              291,
+              154
+            ],
+            [
+              292,
+              34
+            ]
+          ],
+          "statErrno": 107,
+          "unit": "activating/auto-restart",
+          "NRestarts": 3
+        },
+        {
+          "at": 5.067,
+          "mounts": [
+            [
+              291,
+              154
+            ],
+            [
+              292,
+              34
+            ]
+          ],
+          "statErrno": 0,
+          "unit": "active/running",
+          "NRestarts": 4
+        }
+      ],
+      "logLevel": "info",
+      "namespaceServedAfterSeconds": 5.049,
+      "namespaceSawMeanwhile": [
+        {
+          "statErrno": 107
+        },
+        {
+          "dev": 29,
+          "mode": "0o755",
+          "uid": 65534,
+          "names": []
+        }
+      ],
+      "journal": [
+        "[  116.910110] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Sent signal SIGKILL to main process 2072 (qorpera-folder) on client request.",
+        "[  116.910139] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Killed unit cgroup '/system.slice/system-qorpera\\x2doffice\\x2dfolder\\x2dmount.slice/qorpera-office-folder-mount@q3.service' with SIGKILL on client request.",
+        "[  116.910968] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Child 2072 belongs to qorpera-office-folder-mount@q3.service.",
+        "[  116.910982] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Main process exited, code=killed, status=9/KILL",
+        "[  116.911057] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Will spawn child (service_enter_stop_post): /usr/bin/umount",
+        "[  116.911268] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: About to execute: /usr/bin/umount -l /run/qorpera-folder/mounts/q3/company",
+        "[  116.911278] qorpera-remount-67313403 systemd[1]: Serializing sd-executor-state to memfd.",
+        "[  116.911530] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Forked /usr/bin/umount as 2487 (via CLONE_INTO_CGROUP)",
+        "[  116.911567] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed running -> stop-post",
+        "[  116.911714] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Child 2487 belongs to qorpera-office-folder-mount@q3.service.",
+        "[  116.911728] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Control process exited, code=killed, status=9/KILL (success)",
+        "[  116.911731] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Got final SIGCHLD for state stop-post.",
+        "[  116.911761] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Failed with result 'signal'.",
+        "[  116.911801] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Service will restart (restart setting)",
+        "[  116.911805] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed stop-post -> failed-before-auto-restart",
+        "[  116.912063] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Consumed 212ms CPU time over 25.848s wall clock time, 4M memory peak.",
+        "[  116.912071] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Next restart interval calculated as: 5s",
+        "[  116.912111] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed failed-before-auto-restart -> auto-restart",
+        "[  116.912202] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Control group is empty.",
+        "[  121.912207] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Service restart interval 5s expired, scheduling restart.",
+        "[  121.912215] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Trying to enqueue job qorpera-office-folder-mount@q3.service/start/restart-dependencies",
+        "[  121.912948] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Installed new job qorpera-office-folder-mount@q3.service/start as 3278",
+        "[  121.912975] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Enqueued job qorpera-office-folder-mount@q3.service/start as 3278",
+        "[  121.912981] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Scheduled restart job, restart counter is at 4.",
+        "[  121.913077] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed auto-restart -> auto-restart-queued",
+        "[  121.913582] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Will spawn child (service_enter_start_pre): /usr/bin/umount",
+        "[  121.914525] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: About to execute: /usr/bin/umount -l /run/qorpera-folder/mounts/q3/company",
+        "[  121.914549] qorpera-remount-67313403 systemd[1]: Serializing sd-executor-state to memfd.",
+        "[  121.914884] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Forked /usr/bin/umount as 2572 (via CLONE_INTO_CGROUP)",
+        "[  121.914958] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed auto-restart-queued -> start-pre",
+        "[  121.914965] qorpera-remount-67313403 systemd[1]: Starting qorpera-office-folder-mount@q3.service - Qorpera company folder q3 (from this node's folder service; read-write only for a view it lets write)...",
+        "[  121.918450] qorpera-remount-67313403 systemd-executor[2572]: Loaded shared library 'libselinux.so.1' via dlopen().",
+        "[  121.928341] qorpera-remount-67313403 (umount)[2572]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libapparmor.so.1' via dlopen().",
+        "[  121.928531] qorpera-remount-67313403 (umount)[2572]: qorpera-office-folder-mount@q3.service: Loaded 'libbpf.so.1' via dlopen()",
+        "[  121.928965] qorpera-remount-67313403 (umount)[2572]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libcryptsetup.so.12' via dlopen().",
+        "[  121.929121] qorpera-remount-67313403 (umount)[2572]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libmount.so.1' via dlopen().",
+        "[  121.929222] qorpera-remount-67313403 (umount)[2572]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libseccomp.so.2' via dlopen().",
+        "[  121.929557] qorpera-remount-67313403 (umount)[2572]: qorpera-office-folder-mount@q3.service: Enabled MemoryDenyWriteExecute= with PR_SET_MDWE",
+        "[  121.929863] qorpera-remount-67313403 (umount)[2572]: qorpera-office-folder-mount@q3.service: Executing: /usr/bin/umount -l /run/qorpera-folder/mounts/q3/company",
+        "[  121.934223] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Child 2572 belongs to qorpera-office-folder-mount@q3.service.",
+        "[  121.934234] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Control process exited, code=exited, status=0/SUCCESS (success)",
+        "[  121.934236] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Got final SIGCHLD for state start-pre.",
+        "[  121.934268] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Will spawn child (service_enter_start): /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder",
+        "[  121.934440] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Passing 0 fds to service",
+        "[  121.934458] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: About to execute: /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder mount --connect unix:/run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/node.sock --view-file /run/qorpera-folder/views/q3.json --mountpoint /run/qorpera-folder/mounts/q3/company --state-dir /run/qorpera-folder/state/q3 --allow-other yes --owner-uid 20045 --owner-gid 20045",
+        "[  121.934464] qorpera-remount-67313403 systemd[1]: Serializing sd-executor-state to memfd.",
+        "[  121.936064] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Forked /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder as 2573 (via CLONE_INTO_CGROUP)",
+        "[  121.936103] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed start-pre -> start",
+        "[  121.936210] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Control group is empty.",
+        "[  121.938374] qorpera-remount-67313403 systemd-executor[2573]: Loaded shared library 'libselinux.so.1' via dlopen().",
+        "[  121.945633] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libapparmor.so.1' via dlopen().",
+        "[  121.945871] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Loaded 'libbpf.so.1' via dlopen()",
+        "[  121.946417] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libcryptsetup.so.12' via dlopen().",
+        "[  121.946589] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libmount.so.1' via dlopen().",
+        "[  121.946743] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libseccomp.so.2' via dlopen().",
+        "[  121.947078] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Enabled MemoryDenyWriteExecute= with PR_SET_MDWE",
+        "[  121.947368] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Executing: /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder mount --connect unix:/run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/node.sock --view-file /run/qorpera-folder/views/q3.json --mountpoint /run/qorpera-folder/mounts/q3/company --state-dir /run/qorpera-folder/state/q3 --allow-other yes --owner-uid 20045 --owner-gid 20045",
+        "[  121.948280] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: got exec-fd event",
+        "[  121.948287] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Got EOF on exec-fd",
+        "[  121.948292] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed start -> running",
+        "[  121.948300] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Job 3278 qorpera-office-folder-mount@q3.service/start finished, result=done",
+        "[  121.948347] qorpera-remount-67313403 systemd[1]: Started qorpera-office-folder-mount@q3.service - Qorpera company folder q3 (from this node's folder service; read-write only for a view it lets write).",
+        "[  121.950831] qorpera-remount-67313403 qorpera-folder[2573]: qorpera-folder: view q3 accepted at change 0, read-write",
+        "[  121.953494] qorpera-remount-67313403 qorpera-folder[2573]: qorpera-folder: kernel FUSE ABI Version(7, 45)",
+        "[  121.954684] qorpera-remount-67313403 qorpera-folder[2573]: qorpera-folder: mounted at /run/qorpera-folder/mounts/q3/company with 16 threads"
+      ]
+    },
+    "afterExitThree": {
+      "desktop": {
+        "dev": 29,
+        "mode": "0o755",
+        "uid": 65534,
+        "names": []
+      },
+      "shell": {
+        "dev": 29,
+        "mode": "0o755",
+        "uid": 65534,
+        "names": []
+      },
+      "command": {
+        "dev": 29,
+        "mode": "0o755",
+        "uid": 65534,
+        "names": []
+      }
+    }
+  },
+  "limitations": [
+    "A synthetic protocol-3 node on a Unix socket: no database, vsock identity, switchable views or plumber",
+    "Office namespaces come from the runtime's process gate and mirrored bubblewrap arguments in a relay with the office unit's confinement, not from the office application",
+    "Stand-in private surfaces in the proof directory, not the office state directory",
+    "Every namespace's program reads requests on a stdin pipe; the command shape is used without display or capture",
+    "systemd-run takes the office unit's InaccessiblePaths lines as transient properties, where unit specifiers are not expanded",
+    "The A1 image predates folder-v2: the folder program and the mount unit's lines were pushed in from master"
+  ],
+  "guestImage": {
+    "officeFileNames": {
+      "credentials": [],
+      "boots": []
+    },
+    "versions": {
+      "os": "Ubuntu 26.04 LTS",
+      "kernel": "7.0.0-30-generic",
+      "systemd": "systemd 259 (259.5-0ubuntu3.4)",
+      "bwrap": "bubblewrap 0.11.1",
+      "node": "v22.22.1",
+      "python": "3.14.4"
+    },
+    "node": "/usr/bin/node",
+    "runMount": "tmpfs rw,nosuid,nodev,size=786616k,nr_inodes=819200,mode=755,inode64",
+    "fusermount": {
+      "fusermount": "/usr/bin/fusermount",
+      "fusermount3": "/usr/bin/fusermount3"
+    },
+    "fuse": "present",
+    "officeService": {
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "FragmentPath": "/etc/systemd/system/qorpera-company-computer.service",
+      "Result": "success"
+    },
+    "officeUnitSha256": "92fbb1f8e526791ccb5f6c11757e2d272c80d40d4d916587f9825f20a449ed02",
+    "officeUnitAgainstMaster": [
+      "--- master",
+      "+++ /etc/systemd/system/qorpera-company-computer.service",
+      "@@ -6,4 +5,0 @@",
+      "-# Each computer's own filtered network. Wanted, not required: without it the",
+      "-# computers start without a network, never with an unfiltered one.",
+      "-Wants=qorpera-computer-network.service qorpera-computer-plumb.socket",
+      "-After=qorpera-computer-network.service qorpera-computer-plumb.socket"
+    ],
+    "imageFolder": {
+      "opt": null,
+      "units": []
+    },
+    "office": {
+      "uid": 20045,
+      "gid": 20045
+    }
+  },
+  "relayConfinement": [
+    "User=qorpera-office",
+    "Group=qorpera-office",
+    "UMask=0077",
+    "LimitCORE=0",
+    "PrivateTmp=yes",
+    "PrivateDevices=yes",
+    "ProtectSystem=strict",
+    "InaccessiblePaths=/etc/qorpera-office/credentials -/etc/qorpera-office/boots/%b/credentials -/var/lib/qorpera/identity -/qorpera/company-live",
+    "ProtectHome=yes",
+    "ProtectProc=invisible",
+    "ProcSubset=all",
+    "ProtectHostname=private",
+    "ProtectClock=yes",
+    "ProtectKernelTunables=no",
+    "ProtectKernelLogs=no",
+    "ProtectKernelModules=yes",
+    "ProtectControlGroups=yes",
+    "NoNewPrivileges=yes",
+    "CapabilityBoundingSet=",
+    "AmbientCapabilities=",
+    "RestrictNamespaces=user mnt pid net ipc uts cgroup",
+    "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK",
+    "RestrictSUIDSGID=yes",
+    "LockPersonality=yes",
+    "MemoryMax=4G",
+    "MemorySwapMax=0",
+    "TasksMax=512",
+    "CPUQuota=200%"
+  ],
+  "officeLinesLeftOut": [
+    "Type=exec",
+    "StateDirectory=qorpera-office-events",
+    "StateDirectoryMode=0700",
+    "WorkingDirectory=/opt/qorpera-office",
+    "Environment=HOME=/nonexistent",
+    "LoadCredential=qorpera-office-config:/etc/qorpera-office/boots/%b/credentials/config.json",
+    "LoadCredential=qorpera-office-registry:/etc/qorpera-office/boots/%b/credentials/registry",
+    "LoadCredential=qorpera-office-native:/etc/qorpera-office/boots/%b/credentials/native",
+    "LoadCredential=qorpera-office-objects:/etc/qorpera-office/boots/%b/credentials/objects",
+    "LoadCredential=qorpera-office-tls-cert:/etc/qorpera-office/boots/%b/credentials/tls-cert.pem",
+    "LoadCredential=qorpera-office-tls-key:/etc/qorpera-office/boots/%b/credentials/tls-key.pem",
+    "ExecStart=/usr/bin/node /opt/qorpera-office/qorpera-company-computer-service.mjs",
+    "Restart=on-failure",
+    "RestartSec=10",
+    "KillMode=mixed",
+    "KillSignal=SIGTERM",
+    "SendSIGKILL=yes",
+    "TimeoutStopSec=70",
+    "ReadWritePaths=/var/lib/qorpera-office /run/qorpera-office /var/lib/qorpera-office-events"
+  ],
+  "mountUnit": [
+    "[Unit]",
+    "Description=Qorpera company folder %i (from this node's folder service; read-write only for a view it lets write)",
+    "ConditionPathExists=/run/qorpera-folder/views/%i.json",
+    "",
+    "[Service]",
+    "Type=exec",
+    "# Only root can enter /srv/qorpera-folder, and the mount serves only the account that made it (no allow_other).",
+    "# A writable view's version map is kept in /run/qorpera-folder/<view id>/ (memory, root's only): it outlives the",
+    "# program, so a mount started again bases saves on what was read before, and goes when the machine restarts.",
+    "ExecStart=/var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder mount --connect unix:/run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/node.sock --view-file /run/qorpera-folder/views/%i.json --mountpoint /run/qorpera-folder/mounts/%i/company --state-dir /run/qorpera-folder/state/%i --allow-other yes --owner-uid 20045 --owner-gid 20045",
+    "# A program killed hard leaves its mount behind; take it away.",
+    "ExecStopPost=-/usr/bin/umount -l /run/qorpera-folder/mounts/%i/company",
+    "Restart=on-failure",
+    "RestartSec=5s",
+    "# 3: the node closed or refused the view. Starting again would only be refused again.",
+    "RestartPreventExitStatus=3",
+    "KillMode=mixed",
+    "TimeoutStopSec=20s",
+    "LimitCORE=0",
+    "# The mount must appear in PID 1's mount namespace, so no option here makes a namespace of its own (ProtectSystem,",
+    "# PrivateTmp, PrivateDevices, ProtectHome, ReadWritePaths, ProtectKernel*, ProtectControlGroups).",
+    "NoNewPrivileges=yes",
+    "CapabilityBoundingSet=CAP_SYS_ADMIN",
+    "DevicePolicy=closed",
+    "DeviceAllow=/dev/fuse rw",
+    "RestrictAddressFamilies=AF_UNIX AF_VSOCK",
+    "RestrictSUIDSGID=yes",
+    "RestrictRealtime=yes",
+    "LockPersonality=yes",
+    "MemoryDenyWriteExecute=yes",
+    "SystemCallArchitectures=native",
+    "MemoryMax=512M",
+    "MemorySwapMax=0",
+    ""
+  ],
+  "teardown": {
+    "relays": [
+      [
+        {
+          "stopped": [
+            {
+              "stopped": true,
+              "ended": {
+                "code": 0,
+                "signal": null
+              },
+              "stderr": ""
+            },
+            {
+              "stopped": true,
+              "ended": {
+                "code": 0,
+                "signal": null
+              },
+              "stderr": ""
+            },
+            {
+              "stopped": true,
+              "ended": {
+                "code": 0,
+                "signal": null
+              },
+              "stderr": ""
+            },
+            {
+              "stopped": true,
+              "ended": {
+                "code": 0,
+                "signal": null
+              },
+              "stderr": ""
+            }
+          ]
+        },
+        {
+          "command": [
+            "systemctl",
+            "stop",
+            "qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay1"
+          ],
+          "code": 0,
+          "output": ""
+        }
+      ],
+      [
+        {
+          "stopped": [
+            {
+              "stopped": true,
+              "ended": {
+                "code": 0,
+                "signal": null
+              },
+              "stderr": ""
+            }
+          ]
+        },
+        {
+          "command": [
+            "systemctl",
+            "stop",
+            "qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay2"
+          ],
+          "code": 0,
+          "output": ""
+        }
+      ],
+      [
+        {
+          "stopped": [
+            {
+              "stopped": true,
+              "ended": {
+                "code": 0,
+                "signal": null
+              },
+              "stderr": ""
+            }
+          ]
+        },
+        {
+          "command": [
+            "systemctl",
+            "stop",
+            "qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay3"
+          ],
+          "code": 0,
+          "output": ""
+        }
+      ]
+    ],
+    "views": {
+      "q3": [
+        {
+          "command": [
+            "systemctl",
+            "stop",
+            "qorpera-office-folder-mount@q3.service"
+          ],
+          "code": 0,
+          "output": ""
+        },
+        {
+          "command": [
+            "systemctl",
+            "reset-failed",
+            "qorpera-office-folder-mount@q3.service"
+          ],
+          "code": 0,
+          "output": ""
+        },
+        {
+          "command": [
+            "umount",
+            "-l",
+            "/run/qorpera-folder/mounts/q3"
+          ],
+          "code": 0,
+          "output": ""
+        }
+      ]
+    },
+    "daemonReload": {
+      "command": [
+        "systemctl",
+        "daemon-reload"
+      ],
+      "code": 0,
+      "output": ""
+    },
+    "mountsLeft": []
+  },
+  "journals": {
+    "qorpera-office-folder-mount@gap-0000.service": [
+      "[   62.764835] qorpera-remount-67313403 systemd[1]: Starting qorpera-office-folder-mount@gap-0000.service - Qorpera company folder gap-0000 (from this node's folder service; read-write only for a view it lets write)...",
+      "[   62.783565] qorpera-remount-67313403 systemd[1]: Started qorpera-office-folder-mount@gap-0000.service - Qorpera company folder gap-0000 (from this node's folder service; read-write only for a view it lets write).",
+      "[   62.786205] qorpera-remount-67313403 qorpera-folder[1586]: qorpera-folder: view gap-0000 accepted at change 0, read-write",
+      "[   62.786572] qorpera-remount-67313403 qorpera-folder[1586]: qorpera-folder: mount /run/qorpera-folder/mounts/gap-0000/company: Permission denied (os error 13)",
+      "[   62.787478] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@gap-0000.service: Main process exited, code=exited, status=1/FAILURE",
+      "[   62.802855] qorpera-remount-67313403 umount[1590]: umount: /run/qorpera-folder/mounts/gap-0000/company: not mounted.",
+      "[   62.803196] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@gap-0000.service: Failed with result 'exit-code'.",
+      "[   67.879259] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@gap-0000.service: Scheduled restart job, restart counter is at 1.",
+      "[   67.881137] qorpera-remount-67313403 systemd[1]: Starting qorpera-office-folder-mount@gap-0000.service - Qorpera company folder gap-0000 (from this node's folder service; read-write only for a view it lets write)...",
+      "[   67.892183] qorpera-remount-67313403 systemd[1]: Started qorpera-office-folder-mount@gap-0000.service - Qorpera company folder gap-0000 (from this node's folder service; read-write only for a view it lets write).",
+      "[   67.894034] qorpera-remount-67313403 qorpera-folder[1592]: qorpera-folder: view gap-0000 accepted at change 0, read-write",
+      "[   67.894290] qorpera-remount-67313403 qorpera-folder[1592]: qorpera-folder: mount /run/qorpera-folder/mounts/gap-0000/company: Permission denied (os error 13)",
+      "[   67.894801] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@gap-0000.service: Main process exited, code=exited, status=1/FAILURE",
+      "[   67.903746] qorpera-remount-67313403 umount[1596]: umount: /run/qorpera-folder/mounts/gap-0000/company: not mounted.",
+      "[   67.904204] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@gap-0000.service: Failed with result 'exit-code'.",
+      "[   73.129194] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@gap-0000.service: Scheduled restart job, restart counter is at 2.",
+      "[   73.131070] qorpera-remount-67313403 systemd[1]: Starting qorpera-office-folder-mount@gap-0000.service - Qorpera company folder gap-0000 (from this node's folder service; read-write only for a view it lets write)...",
+      "[   73.161260] qorpera-remount-67313403 systemd[1]: Started qorpera-office-folder-mount@gap-0000.service - Qorpera company folder gap-0000 (from this node's folder service; read-write only for a view it lets write).",
+      "[   73.163866] qorpera-remount-67313403 qorpera-folder[1603]: qorpera-folder: view gap-0000 accepted at change 0, read-write",
+      "[   73.163866] qorpera-remount-67313403 qorpera-folder[1603]: qorpera-folder: mount /run/qorpera-folder/mounts/gap-0000/company: Permission denied (os error 13)",
+      "[   73.164776] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@gap-0000.service: Main process exited, code=exited, status=1/FAILURE",
+      "[   73.179313] qorpera-remount-67313403 umount[1607]: umount: /run/qorpera-folder/mounts/gap-0000/company: not mounted.",
+      "[   73.179591] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@gap-0000.service: Failed with result 'exit-code'.",
+      "[   77.870541] qorpera-remount-67313403 systemd[1]: Stopped qorpera-office-folder-mount@gap-0000.service - Qorpera company folder gap-0000 (from this node's folder service; read-write only for a view it lets write)."
+    ],
+    "qorpera-office-folder-mount@gap-0700.service": [
+      "[   77.975045] qorpera-remount-67313403 systemd[1]: Starting qorpera-office-folder-mount@gap-0700.service - Qorpera company folder gap-0700 (from this node's folder service; read-write only for a view it lets write)...",
+      "[   77.986395] qorpera-remount-67313403 systemd[1]: Started qorpera-office-folder-mount@gap-0700.service - Qorpera company folder gap-0700 (from this node's folder service; read-write only for a view it lets write).",
+      "[   77.989876] qorpera-remount-67313403 qorpera-folder[1629]: qorpera-folder: view gap-0700 accepted at change 0, read-write",
+      "[   77.989876] qorpera-remount-67313403 qorpera-folder[1629]: qorpera-folder: kernel FUSE ABI Version(7, 45)",
+      "[   77.989876] qorpera-remount-67313403 qorpera-folder[1629]: qorpera-folder: mounted at /run/qorpera-folder/mounts/gap-0700/company with 16 threads",
+      "[   78.081263] qorpera-remount-67313403 systemd[1]: Stopping qorpera-office-folder-mount@gap-0700.service - Qorpera company folder gap-0700 (from this node's folder service; read-write only for a view it lets write)...",
+      "[   78.244351] qorpera-remount-67313403 qorpera-folder[1629]: qorpera-folder: signal 15; unmounted",
+      "[   78.265750] qorpera-remount-67313403 umount[1658]: umount: /run/qorpera-folder/mounts/gap-0700/company: not mounted.",
+      "[   78.267719] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@gap-0700.service: Deactivated successfully.",
+      "[   78.269139] qorpera-remount-67313403 systemd[1]: Stopped qorpera-office-folder-mount@gap-0700.service - Qorpera company folder gap-0700 (from this node's folder service; read-write only for a view it lets write)."
+    ],
+    "qorpera-office-folder-mount@gap-0755.service": [
+      "[   78.391256] qorpera-remount-67313403 systemd[1]: Starting qorpera-office-folder-mount@gap-0755.service - Qorpera company folder gap-0755 (from this node's folder service; read-write only for a view it lets write)...",
+      "[   78.422807] qorpera-remount-67313403 systemd[1]: Started qorpera-office-folder-mount@gap-0755.service - Qorpera company folder gap-0755 (from this node's folder service; read-write only for a view it lets write).",
+      "[   78.425041] qorpera-remount-67313403 qorpera-folder[1672]: qorpera-folder: view gap-0755 accepted at change 0, read-write",
+      "[   78.425483] qorpera-remount-67313403 qorpera-folder[1672]: qorpera-folder: kernel FUSE ABI Version(7, 45)",
+      "[   78.425608] qorpera-remount-67313403 qorpera-folder[1672]: qorpera-folder: mounted at /run/qorpera-folder/mounts/gap-0755/company with 16 threads",
+      "[   78.516592] qorpera-remount-67313403 systemd[1]: Stopping qorpera-office-folder-mount@gap-0755.service - Qorpera company folder gap-0755 (from this node's folder service; read-write only for a view it lets write)...",
+      "[   78.677900] qorpera-remount-67313403 qorpera-folder[1672]: qorpera-folder: signal 15; unmounted",
+      "[   78.697461] qorpera-remount-67313403 umount[1701]: umount: /run/qorpera-folder/mounts/gap-0755/company: not mounted.",
+      "[   78.699691] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@gap-0755.service: Deactivated successfully.",
+      "[   78.700548] qorpera-remount-67313403 systemd[1]: Stopped qorpera-office-folder-mount@gap-0755.service - Qorpera company folder gap-0755 (from this node's folder service; read-write only for a view it lets write)."
+    ],
+    "qorpera-office-folder-mount@q3.service": [
+      "[  116.911714] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Child 2487 belongs to qorpera-office-folder-mount@q3.service.",
+      "[  116.911728] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Control process exited, code=killed, status=9/KILL (success)",
+      "[  116.911731] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Got final SIGCHLD for state stop-post.",
+      "[  116.911761] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Failed with result 'signal'.",
+      "[  116.911801] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Service will restart (restart setting)",
+      "[  116.911805] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed stop-post -> failed-before-auto-restart",
+      "[  116.912063] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Consumed 212ms CPU time over 25.848s wall clock time, 4M memory peak.",
+      "[  116.912071] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Next restart interval calculated as: 5s",
+      "[  116.912111] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed failed-before-auto-restart -> auto-restart",
+      "[  116.912202] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Control group is empty.",
+      "[  121.912207] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Service restart interval 5s expired, scheduling restart.",
+      "[  121.912215] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Trying to enqueue job qorpera-office-folder-mount@q3.service/start/restart-dependencies",
+      "[  121.912948] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Installed new job qorpera-office-folder-mount@q3.service/start as 3278",
+      "[  121.912975] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Enqueued job qorpera-office-folder-mount@q3.service/start as 3278",
+      "[  121.912981] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Scheduled restart job, restart counter is at 4.",
+      "[  121.913077] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed auto-restart -> auto-restart-queued",
+      "[  121.913582] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Will spawn child (service_enter_start_pre): /usr/bin/umount",
+      "[  121.914525] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: About to execute: /usr/bin/umount -l /run/qorpera-folder/mounts/q3/company",
+      "[  121.914549] qorpera-remount-67313403 systemd[1]: Serializing sd-executor-state to memfd.",
+      "[  121.914884] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Forked /usr/bin/umount as 2572 (via CLONE_INTO_CGROUP)",
+      "[  121.914958] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed auto-restart-queued -> start-pre",
+      "[  121.914965] qorpera-remount-67313403 systemd[1]: Starting qorpera-office-folder-mount@q3.service - Qorpera company folder q3 (from this node's folder service; read-write only for a view it lets write)...",
+      "[  121.918450] qorpera-remount-67313403 systemd-executor[2572]: Loaded shared library 'libselinux.so.1' via dlopen().",
+      "[  121.928341] qorpera-remount-67313403 (umount)[2572]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libapparmor.so.1' via dlopen().",
+      "[  121.928531] qorpera-remount-67313403 (umount)[2572]: qorpera-office-folder-mount@q3.service: Loaded 'libbpf.so.1' via dlopen()",
+      "[  121.928965] qorpera-remount-67313403 (umount)[2572]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libcryptsetup.so.12' via dlopen().",
+      "[  121.929121] qorpera-remount-67313403 (umount)[2572]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libmount.so.1' via dlopen().",
+      "[  121.929222] qorpera-remount-67313403 (umount)[2572]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libseccomp.so.2' via dlopen().",
+      "[  121.929557] qorpera-remount-67313403 (umount)[2572]: qorpera-office-folder-mount@q3.service: Enabled MemoryDenyWriteExecute= with PR_SET_MDWE",
+      "[  121.929863] qorpera-remount-67313403 (umount)[2572]: qorpera-office-folder-mount@q3.service: Executing: /usr/bin/umount -l /run/qorpera-folder/mounts/q3/company",
+      "[  121.934223] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Child 2572 belongs to qorpera-office-folder-mount@q3.service.",
+      "[  121.934234] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Control process exited, code=exited, status=0/SUCCESS (success)",
+      "[  121.934236] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Got final SIGCHLD for state start-pre.",
+      "[  121.934268] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Will spawn child (service_enter_start): /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder",
+      "[  121.934440] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Passing 0 fds to service",
+      "[  121.934458] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: About to execute: /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder mount --connect unix:/run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/node.sock --view-file /run/qorpera-folder/views/q3.json --mountpoint /run/qorpera-folder/mounts/q3/company --state-dir /run/qorpera-folder/state/q3 --allow-other yes --owner-uid 20045 --owner-gid 20045",
+      "[  121.934464] qorpera-remount-67313403 systemd[1]: Serializing sd-executor-state to memfd.",
+      "[  121.936064] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Forked /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder as 2573 (via CLONE_INTO_CGROUP)",
+      "[  121.936103] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed start-pre -> start",
+      "[  121.936210] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Control group is empty.",
+      "[  121.938374] qorpera-remount-67313403 systemd-executor[2573]: Loaded shared library 'libselinux.so.1' via dlopen().",
+      "[  121.945633] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libapparmor.so.1' via dlopen().",
+      "[  121.945871] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Loaded 'libbpf.so.1' via dlopen()",
+      "[  121.946417] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libcryptsetup.so.12' via dlopen().",
+      "[  121.946589] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libmount.so.1' via dlopen().",
+      "[  121.946743] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Loaded shared library 'libseccomp.so.2' via dlopen().",
+      "[  121.947078] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Enabled MemoryDenyWriteExecute= with PR_SET_MDWE",
+      "[  121.947368] qorpera-remount-67313403 (qorpera-folder)[2573]: qorpera-office-folder-mount@q3.service: Executing: /var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/qorpera-folder mount --connect unix:/run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/node.sock --view-file /run/qorpera-folder/views/q3.json --mountpoint /run/qorpera-folder/mounts/q3/company --state-dir /run/qorpera-folder/state/q3 --allow-other yes --owner-uid 20045 --owner-gid 20045",
+      "[  121.948280] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: got exec-fd event",
+      "[  121.948287] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Got EOF on exec-fd",
+      "[  121.948292] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Changed start -> running",
+      "[  121.948300] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Job 3278 qorpera-office-folder-mount@q3.service/start finished, result=done",
+      "[  121.948347] qorpera-remount-67313403 systemd[1]: Started qorpera-office-folder-mount@q3.service - Qorpera company folder q3 (from this node's folder service; read-write only for a view it lets write).",
+      "[  121.950831] qorpera-remount-67313403 qorpera-folder[2573]: qorpera-folder: view q3 accepted at change 0, read-write",
+      "[  121.953494] qorpera-remount-67313403 qorpera-folder[2573]: qorpera-folder: kernel FUSE ABI Version(7, 45)",
+      "[  121.954684] qorpera-remount-67313403 qorpera-folder[2573]: qorpera-folder: mounted at /run/qorpera-folder/mounts/q3/company with 16 threads",
+      "[  122.954788] qorpera-remount-67313403 qorpera-folder[2573]: qorpera-folder: the node closed the view; unmounted",
+      "[  122.956161] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Main process exited, code=exited, status=3/NOTIMPLEMENTED",
+      "[  122.967407] qorpera-remount-67313403 umount[2672]: umount: /run/qorpera-folder/mounts/q3/company: not mounted.",
+      "[  122.968489] qorpera-remount-67313403 systemd[1]: qorpera-office-folder-mount@q3.service: Failed with result 'exit-code'."
+    ],
+    "qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay1": [
+      "[   62.263459] qorpera-remount-67313403 systemd[1]: Started qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay1.service - [systemd-run] /usr/bin/node /run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/office.mjs /run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8.",
+      "[  132.068725] qorpera-remount-67313403 systemd[1]: qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay1.service: Deactivated successfully.",
+      "[  132.068941] qorpera-remount-67313403 systemd[1]: qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay1.service: Consumed 1.463s CPU time over 1min 9.805s wall clock time, 50M memory peak."
+    ],
+    "qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay2": [
+      "[   84.856118] qorpera-remount-67313403 systemd[1]: Started qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay2.service - [systemd-run] /usr/bin/node /run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/office.mjs /run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8.",
+      "[  132.087424] qorpera-remount-67313403 systemd[1]: Stopping qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay2.service - [systemd-run] /usr/bin/node /run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/office.mjs /run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8...",
+      "[  132.087660] qorpera-remount-67313403 systemd[1]: qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay2.service: Deactivated successfully.",
+      "[  132.087827] qorpera-remount-67313403 systemd[1]: Stopped qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay2.service - [systemd-run] /usr/bin/node /run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/office.mjs /run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8."
+    ],
+    "qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay3": [
+      "[   85.204685] qorpera-remount-67313403 systemd[1]: Started qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay3.service - [systemd-run] /usr/bin/node /run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/office.mjs /run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8.",
+      "[  132.109967] qorpera-remount-67313403 systemd[1]: qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay3.service: Deactivated successfully.",
+      "[  132.110191] qorpera-remount-67313403 systemd[1]: Stopped qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay3.service - [systemd-run] /usr/bin/node /run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8/office.mjs /run/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8.",
+      "[  132.110515] qorpera-remount-67313403 systemd[1]: qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay3.service: Consumed 1.042s CPU time over 46.905s wall clock time, 21.8M memory peak."
+    ]
+  },
+  "relayLogs": {
+    "qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay1": "",
+    "qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay2": "",
+    "qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay3": ""
+  },
+  "kernelDenials": [],
+  "nodeHellos": [
+    {
+      "at": 62.785315459,
+      "viewId": "gap-0000",
+      "role": "feed",
+      "abandon": false
+    },
+    {
+      "at": 62.785955568,
+      "viewId": "gap-0000",
+      "role": "io",
+      "abandon": true
+    },
+    {
+      "at": 67.893604087,
+      "viewId": "gap-0000",
+      "role": "feed",
+      "abandon": false
+    },
+    {
+      "at": 67.893853603,
+      "viewId": "gap-0000",
+      "role": "io",
+      "abandon": true
+    },
+    {
+      "at": 73.163101869,
+      "viewId": "gap-0000",
+      "role": "feed",
+      "abandon": false
+    },
+    {
+      "at": 73.163405874,
+      "viewId": "gap-0000",
+      "role": "io",
+      "abandon": true
+    },
+    {
+      "at": 77.988550701,
+      "viewId": "gap-0700",
+      "role": "feed",
+      "abandon": false
+    },
+    {
+      "at": 77.988899666,
+      "viewId": "gap-0700",
+      "role": "io",
+      "abandon": true
+    },
+    {
+      "at": 78.063766244,
+      "viewId": "gap-0700",
+      "role": "io",
+      "abandon": false
+    },
+    {
+      "at": 78.424684639,
+      "viewId": "gap-0755",
+      "role": "feed",
+      "abandon": false
+    },
+    {
+      "at": 78.424941966,
+      "viewId": "gap-0755",
+      "role": "io",
+      "abandon": true
+    },
+    {
+      "at": 78.4969121,
+      "viewId": "gap-0755",
+      "role": "io",
+      "abandon": false
+    },
+    {
+      "at": 78.946873642,
+      "viewId": "q3",
+      "role": "feed",
+      "abandon": false
+    },
+    {
+      "at": 78.947223266,
+      "viewId": "q3",
+      "role": "io",
+      "abandon": true
+    },
+    {
+      "at": 79.018508278,
+      "viewId": "q3",
+      "role": "io",
+      "abandon": false
+    },
+    {
+      "at": 84.279714397,
+      "viewId": "q3",
+      "role": "feed",
+      "abandon": false
+    },
+    {
+      "at": 84.280147841,
+      "viewId": "q3",
+      "role": "io",
+      "abandon": true
+    },
+    {
+      "at": 84.289579958,
+      "viewId": "q3",
+      "role": "io",
+      "abandon": false
+    },
+    {
+      "at": 91.044053657,
+      "viewId": "q3",
+      "role": "feed",
+      "abandon": false
+    },
+    {
+      "at": 91.044273722,
+      "viewId": "q3",
+      "role": "io",
+      "abandon": true
+    },
+    {
+      "at": 96.08798236,
+      "viewId": "q3",
+      "role": "feed",
+      "abandon": false
+    },
+    {
+      "at": 96.088481012,
+      "viewId": "q3",
+      "role": "io",
+      "abandon": true
+    },
+    {
+      "at": 96.09667023,
+      "viewId": "q3",
+      "role": "io",
+      "abandon": false
+    },
+    {
+      "at": 121.950479045,
+      "viewId": "q3",
+      "role": "feed",
+      "abandon": false
+    },
+    {
+      "at": 121.95068561,
+      "viewId": "q3",
+      "role": "io",
+      "abandon": true
+    },
+    {
+      "at": 121.954367811,
+      "viewId": "q3",
+      "role": "io",
+      "abandon": false
+    }
+  ],
+  "nodeOps": [
+    {
+      "at": 62.786046796,
+      "op": "abandoned",
+      "viewId": "gap-0000",
+      "names": []
+    },
+    {
+      "at": 67.893863552,
+      "op": "abandoned",
+      "viewId": "gap-0000",
+      "names": []
+    },
+    {
+      "at": 73.163414403,
+      "op": "abandoned",
+      "viewId": "gap-0000",
+      "names": []
+    },
+    {
+      "at": 77.988909905,
+      "op": "abandoned",
+      "viewId": "gap-0700",
+      "names": []
+    },
+    {
+      "at": 78.065405317,
+      "op": "open",
+      "viewId": "gap-0700",
+      "name": "gap-after.txt",
+      "handle": 1,
+      "create": true,
+      "truncate": true
+    },
+    {
+      "at": 78.066093336,
+      "op": "commit",
+      "viewId": "gap-0700",
+      "name": "gap-after.txt"
+    },
+    {
+      "at": 78.424950116,
+      "op": "abandoned",
+      "viewId": "gap-0755",
+      "names": []
+    },
+    {
+      "at": 78.498483873,
+      "op": "open",
+      "viewId": "gap-0755",
+      "name": "gap-after.txt",
+      "handle": 2,
+      "create": false,
+      "truncate": true
+    },
+    {
+      "at": 78.499214983,
+      "op": "commit",
+      "viewId": "gap-0755",
+      "name": "gap-after.txt"
+    },
+    {
+      "at": 78.947232696,
+      "op": "abandoned",
+      "viewId": "q3",
+      "names": []
+    },
+    {
+      "at": 79.035495983,
+      "op": "open",
+      "viewId": "q3",
+      "name": "desktop-before.txt",
+      "handle": 3,
+      "create": true,
+      "truncate": true
+    },
+    {
+      "at": 79.035859806,
+      "op": "commit",
+      "viewId": "q3",
+      "name": "desktop-before.txt"
+    },
+    {
+      "at": 79.038886897,
+      "op": "open",
+      "viewId": "q3",
+      "name": "shell-before.txt",
+      "handle": 4,
+      "create": true,
+      "truncate": true
+    },
+    {
+      "at": 79.03931637,
+      "op": "commit",
+      "viewId": "q3",
+      "name": "shell-before.txt"
+    },
+    {
+      "at": 79.041638353,
+      "op": "open",
+      "viewId": "q3",
+      "name": "command-before.txt",
+      "handle": 5,
+      "create": true,
+      "truncate": true
+    },
+    {
+      "at": 79.042157514,
+      "op": "commit",
+      "viewId": "q3",
+      "name": "command-before.txt"
+    },
+    {
+      "at": 79.106641419,
+      "op": "open",
+      "viewId": "q3",
+      "name": "direct-before.txt",
+      "handle": 6,
+      "create": true,
+      "truncate": true
+    },
+    {
+      "at": 79.108192974,
+      "op": "commit",
+      "viewId": "q3",
+      "name": "direct-before.txt"
+    },
+    {
+      "at": 79.116140485,
+      "op": "open",
+      "viewId": "q3",
+      "name": "loss-new-unsent.txt",
+      "handle": 7,
+      "create": true,
+      "truncate": false
+    },
+    {
+      "at": 79.121967251,
+      "op": "open",
+      "viewId": "q3",
+      "name": "loss-new-fsynced.txt",
+      "handle": 8,
+      "create": true,
+      "truncate": false
+    },
+    {
+      "at": 79.123588584,
+      "op": "open",
+      "viewId": "q3",
+      "name": "loss-truncate.txt",
+      "handle": 9,
+      "create": false,
+      "truncate": true
+    },
+    {
+      "at": 79.124931983,
+      "op": "open",
+      "viewId": "q3",
+      "name": "loss-keep.txt",
+      "handle": 10,
+      "create": false,
+      "truncate": false
+    },
+    {
+      "at": 79.126421818,
+      "op": "open",
+      "viewId": "q3",
+      "name": "loss-closed.txt",
+      "handle": 11,
+      "create": true,
+      "truncate": true
+    },
+    {
+      "at": 79.126801273,
+      "op": "commit",
+      "viewId": "q3",
+      "name": "loss-closed.txt"
+    },
+    {
+      "at": 84.28016372,
+      "op": "abandoned",
+      "viewId": "q3",
+      "names": [
+        "loss-keep.txt",
+        "loss-new-fsynced.txt",
+        "loss-new-unsent.txt",
+        "loss-truncate.txt"
+      ]
+    },
+    {
+      "at": 84.839703048,
+      "op": "open",
+      "viewId": "q3",
+      "name": "desktop-after.txt",
+      "handle": 12,
+      "create": true,
+      "truncate": true
+    },
+    {
+      "at": 84.84016612,
+      "op": "commit",
+      "viewId": "q3",
+      "name": "desktop-after.txt"
+    },
+    {
+      "at": 84.84260656,
+      "op": "open",
+      "viewId": "q3",
+      "name": "shell-after.txt",
+      "handle": 13,
+      "create": true,
+      "truncate": true
+    },
+    {
+      "at": 84.842942256,
+      "op": "commit",
+      "viewId": "q3",
+      "name": "shell-after.txt"
+    },
+    {
+      "at": 84.845240659,
+      "op": "open",
+      "viewId": "q3",
+      "name": "command-after.txt",
+      "handle": 14,
+      "create": true,
+      "truncate": true
+    },
+    {
+      "at": 84.845582802,
+      "op": "commit",
+      "viewId": "q3",
+      "name": "command-after.txt"
+    },
+    {
+      "at": 85.181927221,
+      "op": "open",
+      "viewId": "q3",
+      "name": "over-plain-over.txt",
+      "handle": 15,
+      "create": true,
+      "truncate": true
+    },
+    {
+      "at": 85.18261401,
+      "op": "commit",
+      "viewId": "q3",
+      "name": "over-plain-over.txt"
+    },
+    {
+      "at": 85.921669663,
+      "op": "open",
+      "viewId": "q3",
+      "name": "over-rw-over.txt",
+      "handle": 16,
+      "create": true,
+      "truncate": true
+    },
+    {
+      "at": 85.922143145,
+      "op": "commit",
+      "viewId": "q3",
+      "name": "over-rw-over.txt"
+    },
+    {
+      "at": 91.044283723,
+      "op": "abandoned",
+      "viewId": "q3",
+      "names": []
+    },
+    {
+      "at": 96.088488922,
+      "op": "abandoned",
+      "viewId": "q3",
+      "names": []
+    },
+    {
+      "at": 116.60105838,
+      "op": "open",
+      "viewId": "q3",
+      "name": "desktop-after2.txt",
+      "handle": 17,
+      "create": true,
+      "truncate": true
+    },
+    {
+      "at": 116.601477172,
+      "op": "commit",
+      "viewId": "q3",
+      "name": "desktop-after2.txt"
+    },
+    {
+      "at": 116.603751156,
+      "op": "open",
+      "viewId": "q3",
+      "name": "shell-after2.txt",
+      "handle": 18,
+      "create": true,
+      "truncate": true
+    },
+    {
+      "at": 116.60411813,
+      "op": "commit",
+      "viewId": "q3",
+      "name": "shell-after2.txt"
+    },
+    {
+      "at": 116.606276105,
+      "op": "open",
+      "viewId": "q3",
+      "name": "command-after2.txt",
+      "handle": 19,
+      "create": true,
+      "truncate": true
+    },
+    {
+      "at": 116.606598619,
+      "op": "commit",
+      "viewId": "q3",
+      "name": "command-after2.txt"
+    },
+    {
+      "at": 116.608630887,
+      "op": "open",
+      "viewId": "q3",
+      "name": "over-plain-after2.txt",
+      "handle": 20,
+      "create": true,
+      "truncate": true
+    },
+    {
+      "at": 116.608931402,
+      "op": "commit",
+      "viewId": "q3",
+      "name": "over-plain-after2.txt"
+    },
+    {
+      "at": 116.612056201,
+      "op": "open",
+      "viewId": "q3",
+      "name": "over-rw-after2.txt",
+      "handle": 21,
+      "create": true,
+      "truncate": true
+    },
+    {
+      "at": 116.612384516,
+      "op": "commit",
+      "viewId": "q3",
+      "name": "over-rw-after2.txt"
+    },
+    {
+      "at": 121.9506918,
+      "op": "abandoned",
+      "viewId": "q3",
+      "names": []
+    }
+  ],
+  "missingChecks": [],
+  "cleanup": {
+    "cleanup": "done",
+    "claimed": {
+      "program": "/var/lib/qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8",
+      "unit": "/run/systemd/system/qorpera-office-folder-mount@.service",
+      "root": "/run/qorpera-folder"
+    },
+    "steps": [
+      {
+        "command": [
+          "systemctl",
+          "stop",
+          "qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-proof.service"
+        ],
+        "code": 5,
+        "output": "Failed to stop qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-proof.service: Unit qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-proof.service not loaded."
+      },
+      {
+        "command": [
+          "systemctl",
+          "stop",
+          "qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay1.service"
+        ],
+        "code": 5,
+        "output": "Failed to stop qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay1.service: Unit qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay1.service not loaded."
+      },
+      {
+        "command": [
+          "systemctl",
+          "stop",
+          "qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay2.service"
+        ],
+        "code": 5,
+        "output": "Failed to stop qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay2.service: Unit qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay2.service not loaded."
+      },
+      {
+        "command": [
+          "systemctl",
+          "stop",
+          "qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay3.service"
+        ],
+        "code": 5,
+        "output": "Failed to stop qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay3.service: Unit qorpera-remount-f1287d81-5688-4f6a-90bf-e2f542d06fb8-relay3.service not loaded."
+      },
+      {
+        "command": [
+          "systemctl",
+          "daemon-reload"
+        ],
+        "code": 0,
+        "output": ""
+      }
+    ]
+  }
+}

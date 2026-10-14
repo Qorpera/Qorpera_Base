@@ -1,0 +1,64 @@
+{
+  "schema": "qorpera.run-on-node/v1",
+  "machine": "node01",
+  "host": "tester@10.201.0.3",
+  "via": "company41-node-01",
+  "machines": [
+    {
+      "name": "node01",
+      "busy": 3,
+      "waiting": 0,
+      "arriving": 2,
+      "closed": false,
+      "setUp": true,
+      "cpus": 10,
+      "load": 5.76
+    }
+  ],
+  "probeSeconds": 0.565,
+  "environment": {
+    "machine": "qorpera-testvm-node01",
+    "kernel": "7.0.0-30-generic",
+    "os": "Ubuntu 26.04.1 LTS",
+    "node": "v24.21.0",
+    "npm": "11.19.0",
+    "docker": "29.8.2",
+    "git": "git version 2.53.0",
+    "cpus": "10",
+    "kvm": true
+  },
+  "source": {
+    "head": "e7c4e40e689e98461ad5ba5a6ba02111d15d64e8",
+    "dirty": false,
+    "files": 3741,
+    "untracked": 0,
+    "treeSha256": "4eb67c10c3f109b42950d280d5048591b3b80a1f49734f00b4533376d13a7a6c"
+  },
+  "command": [
+    "bash",
+    "scripts/prove-office-folder-remount-vm.sh"
+  ],
+  "sudo": true,
+  "install": false,
+  "build": false,
+  "run": "20261014T231755-20572-99adde87",
+  "runner": "ci03",
+  "cpuSlot": 3,
+  "queuedSeconds": 19,
+  "vitestMaxWorkers": 3,
+  "loadAtStart": 5.75,
+  "uncappedTestProcesses": 0,
+  "startedAt": "2026-10-14T23:17:55.725Z",
+  "copySeconds": 2.181,
+  "prepareSeconds": 0.003,
+  "suiteSeconds": 162.242,
+  "elapsedSeconds": 183.873,
+  "exitCode": 1,
+  "result": "failed",
+  "githubStatus": {
+    "context": null,
+    "sha": "e7c4e40e689e98461ad5ba5a6ba02111d15d64e8",
+    "posted": false,
+    "reason": "--no-status"
+  }
+}
