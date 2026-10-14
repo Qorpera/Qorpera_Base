@@ -249,4 +249,116 @@ begin
 	perform pg_temp.same(to_jsonb(pg_temp.versions_at('agents/nora-skov/memory/thread/t0/00000000.jsonl')), '0', 'The deleted tree''s block');
 end $$;
 
+-- 5. Two erases in one conversation: the later one's generation makes the first's rewrite stale; a block live again ----
+
+do $$
+declare
+	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); root constant text := 'agents/co-founder/memory/thread';
+	x uuid; y uuid; r jsonb; i integer; g bigint; v_life bigint;
+begin
+	perform pg_temp.events(s, 10);
+	r := pg_temp.memory('m3x-tree-3', jsonb_build_array(jsonb_build_object('op','mkdir','path',root),
+		pg_temp.toml_file(root || '/tree.toml', pg_temp.toml(s)), jsonb_build_object('op','mkdir','path',root || '/t0'),
+		pg_temp.block_file(root || '/t0/00000000.jsonl', pg_temp.block(array[pg_temp.line0(0, 1), pg_temp.line0(1, 3),
+			pg_temp.line0(2, 4), pg_temp.line0(3, 5), pg_temp.line0(4, 6), pg_temp.line0(5, 7), pg_temp.line0(6, 8),
+			pg_temp.line(1, 0), pg_temp.line(2, 0)])),
+		jsonb_build_object('op','mkdir','path',root || '/t2'),
+		pg_temp.block_file(root || '/t2/00000000.jsonl', pg_temp.block(array[pg_temp.line(8, 0)]))), array[s]);
+	for i in 1..6 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	perform pg_temp.expect(pg_temp.memory('m3x-tree-4', jsonb_build_array(jsonb_build_object('op','delete',
+		'path',root || '/t2/00000000.jsonl','expectedVersion',pg_temp.version(root || '/t2/00000000.jsonl'))), array[s]), 1, 'saved');
+	perform pg_temp.service();
+	g := (select memory_generation from public.qorpera_shared_sessions where id = s);
+	-- Message 5 (event 7), then message 6 (event 8): the first deletes the block, so the second finds it by key alone.
+	x := (public.qorpera_memory_message_erase_request('70000000-0000-4000-8000-000000000020', '70000000-0000-4000-8000-000000000001',
+		s, (pg_temp.event(s, 7)).event_id) ->> 'eraseId')::uuid;
+	y := (public.qorpera_memory_message_erase_request('70000000-0000-4000-8000-000000000020', '70000000-0000-4000-8000-000000000001',
+		s, (pg_temp.event(s, 8)).event_id) ->> 'eraseId')::uuid;
+	perform public.qorpera_memory_message_erase_open('70000000-0000-4000-8000-000000000020', x);
+	perform public.qorpera_memory_message_erase_open('70000000-0000-4000-8000-000000000020', y);
+	perform pg_temp.same(jsonb_build_array(pg_temp.keys(x), pg_temp.keys(y)), jsonb_build_array(
+		jsonb_build_array(root || '/t0/00000000.jsonl:block:7:cut', root || '/t2/00000000.jsonl:block:-:key'),
+		jsonb_build_array(root || '/t0/00000000.jsonl:block:-:key', root || '/t2/00000000.jsonl:block:-:key')), 'Both erases');
+	if (pg_temp.erase(x)).generation <> g + 1 or (pg_temp.erase(y)).generation <> g + 2 or (pg_temp.erase(y)).commit_id is not null then
+		raise exception 'Each erase raises the generation; the second deletes nothing'; end if;
+	-- The deleted block is written again before step 3.
+	r := pg_temp.memory('m3x-live-1', jsonb_build_array(pg_temp.block_file(root || '/t2/00000000.jsonl',
+		pg_temp.block(array[pg_temp.line(8, 0, 'again')]))), array[s]);
+	perform pg_temp.expect(r, 1, 'saved');
+	v_life := (select c.seq from public.qorpera_folder_commits c where c.id = (r ->> 'commitId')::uuid);
+	-- The first erase's rewrite is stale: it moves on with nothing written (the later erase read its lines from the index).
+	perform pg_temp.same(pg_temp.rewrite(x) -> 'state', '"rewritten"', 'The stale rewrite');
+	if (pg_temp.erase(x)).last_error is distinct from 'memory_generation_stale' or (pg_temp.erase(x)).rewrite_commit_id is not null
+		or pg_temp.version(root || '/t0/00000000.jsonl') is not null then
+		raise exception 'A stale rewrite writes nothing: %', to_jsonb(pg_temp.erase(x)); end if;
+	perform pg_temp.same(pg_temp.rewrite(y) -> 'state', '"rewritten"', 'The later rewrite, with nothing to write');
+	-- The block by key alone is live again: its request keeps the newest life.
+	perform pg_temp.same(pg_temp.ask_all(x) - 'eraseId' - 'sessionId' - 'eventId', '{"schema":"qorpera.memory-message-erase/v1",'
+		'"state":"requested","blocks":2,"runsPending":0,"waits":0}', 'The first erase''s step 3');
+	perform pg_temp.same((select e.block_history - 'for' from public.qorpera_memory_message_erase_blocks b
+			join public.qorpera_folder_erasures e on e.id = b.erasure_id
+			where b.erase_id = x and b.block_key = root || '/t2/00000000.jsonl'),
+		jsonb_build_object('path', root || '/t2/00000000.jsonl', 'lifeSeq', v_life, 'lifeUnit', 1), 'The request keeps the life');
+	-- The later erase's block is in the first's versions phase: asked again later.
+	r := public.qorpera_memory_message_erase_ask('70000000-0000-4000-8000-000000000020', y);
+	if r ->> 'state' <> 'rewritten' or (pg_temp.erase(y)).last_error is distinct from 'Block history is being erased; ask again'
+		or exists (select 1 from public.qorpera_memory_message_erase_blocks b where b.erase_id = y and b.accepted_at is not null) then
+		raise exception 'A covered block waits: %', to_jsonb(pg_temp.erase(y)); end if;
+	-- Another request at the block's key (a request for another row): refused, never taken as this row's.
+	insert into public.qorpera_folder_erasures(id, environment_id, profile_id, operation_key, request_sha256, requested_by_user_id,
+		requested_at, as_of_seq, as_of_at, roots, state, phase, reply, done_at, block_history)
+	select '96100000-0000-4000-8000-0000000000e9', e.environment_id, e.profile_id,
+		'memtree:' || encode(extensions.digest(convert_to('qorpera_memory_message_erases:' || y || ':' || root || '/t0/00000000.jsonl',
+			'utf8'), 'sha256'), 'hex'),
+		e.request_sha256, e.requested_by_user_id, e.requested_at, e.as_of_seq, e.as_of_at, e.roots, 'done', e.phase, e.reply, clock_timestamp(),
+		e.block_history || jsonb_build_object('for', jsonb_build_object('table', 'qorpera_memory_step_erases',
+			'id', extensions.gen_random_uuid()::text))
+	from public.qorpera_folder_erasures e
+	where e.id = (select b.erasure_id from public.qorpera_memory_message_erase_blocks b
+		where b.erase_id = x and b.block_key = root || '/t0/00000000.jsonl');
+	perform pg_temp.fails(format('select public.qorpera_memory_message_erase_ask(%L, %L)', '70000000-0000-4000-8000-000000000020', y),
+		'55000', 'Another request holds the key');
+	delete from public.qorpera_folder_erasures where id = '96100000-0000-4000-8000-0000000000e9';
+	-- Once the first erase's versions phase is past, the later erase finds nothing left before the life.
+	perform pg_temp.same(pg_temp.ask_all(y) -> 'state', '"requested"', 'The later erase''s step 3');
+	perform pg_temp.drain(b.erasure_id) from public.qorpera_memory_message_erase_blocks b
+	where b.erase_id in (x, y) and b.erasure_id is not null;
+	perform pg_temp.same(jsonb_build_array(pg_temp.versions_at(root || '/t0/00000000.jsonl'), pg_temp.versions_at(root || '/t2/00000000.jsonl')),
+		'[0, 1]', 'The versions left after both');
+end $$;
+
+-- 6. A member who is no longer an owner or admin when step 1 runs: refused, nothing changed; asked again, a new row ------
+
+do $$
+declare
+	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); root constant text := 'agents/co-founder/memory/thread';
+	z uuid; r jsonb; g bigint;
+begin
+	perform pg_temp.service();
+	g := (select memory_generation from public.qorpera_shared_sessions where id = s);
+	z := (public.qorpera_memory_message_erase_request('70000000-0000-4000-8000-000000000020', '70000000-0000-4000-8000-000000000001',
+		s, (pg_temp.event(s, 9)).event_id) ->> 'eraseId')::uuid;
+	set local session_replication_role = replica;
+	update public.qorpera_profile_members set role = 'contributor'
+	where profile_id = '70000000-0000-4000-8000-000000000010' and user_id = '70000000-0000-4000-8000-000000000001';
+	set local session_replication_role = origin;
+	r := public.qorpera_memory_message_erase_open('70000000-0000-4000-8000-000000000020', z);
+	perform pg_temp.same(r -> 'state', '"refused"', 'Step 1 refuses a contributor');
+	if (pg_temp.erase(z)).last_error is distinct from 'Only owners and admins erase' or (pg_temp.erase(z)).generation is not null
+		or (select memory_generation from public.qorpera_shared_sessions where id = s) <> g
+		or (pg_temp.event(s, 9)).body = '{"erased":true}'::jsonb or pg_temp.version(root || '/t2/00000000.jsonl') is null
+		or exists (select 1 from public.qorpera_memory_message_erase_blocks b where b.erase_id = z) then
+		raise exception 'A refusal changes nothing: %', to_jsonb(pg_temp.erase(z)); end if;
+	if exists (select 1 from public.qorpera_memory_message_erase_due(1000) d where d.erase_id = z) then
+		raise exception 'A refused erase is not due'; end if;
+	set local session_replication_role = replica;
+	update public.qorpera_profile_members set role = 'owner'
+	where profile_id = '70000000-0000-4000-8000-000000000010' and user_id = '70000000-0000-4000-8000-000000000001';
+	set local session_replication_role = origin;
+	r := public.qorpera_memory_message_erase_request('70000000-0000-4000-8000-000000000020', '70000000-0000-4000-8000-000000000001',
+		s, (pg_temp.event(s, 9)).event_id);
+	if (r ->> 'eraseId')::uuid = z or r ->> 'state' <> 'pending' or pg_temp.erase_of(s, 9) <> (r ->> 'eraseId')::uuid then
+		raise exception 'Asked again, a new erase: %', r; end if;
+end $$;
+
 rollback;
