@@ -203,7 +203,7 @@ fallback; `0700` is only measured. If neither was served, the run stops there.
 
 ## Recorded result (2026-10-14)
 
-Run `20261014T231755-20572-99adde87` on node01's test machine, at `e7c4e40e6`,
+Run `20261014T234054-41114-51648c14` on node01's test machine, at `a2793caad`,
 on A1, with `/dev/fuse` already present in the nested VM. Evidence:
 [`acceptance/2026-10-14-office-folder-remount/`](acceptance/2026-10-14-office-folder-remount/).
 The test machine's before/after diff was empty, and no kernel module appeared
@@ -217,9 +217,13 @@ not serve. The running namespaces see the new mount after every kill.
 
 | Kill | Restarts | Host served after | Desktop namespace saw it after |
 |---|---|---|---|
-| `SIGKILL` to the main PID | 1 | 5.13 s | 5.09 s |
-| `systemctl kill -s KILL` | 2 | 10.14 s | 10.10 s |
-| `systemctl kill -s KILL`, with the drop-in (`kill3Cleared`) | 1 | 5.07 s | 5.05 s |
+| `SIGKILL` to the main PID | 1 | 5.16 s | 5.09 s |
+| `systemctl kill -s KILL` | 2 | 10.16 s (from `hostTimeline`) | 10.10 s |
+| `systemctl kill -s KILL`, with the drop-in (`kill3Cleared`) | 1 | 5.12 s | 5.06 s |
+
+The host counts as served when it reads back the file seeded at the kill. After
+`systemctl kill`, `hostServedAfterSeconds` is null: it counts one restart only,
+so the time comes from the first `hostTimeline` state that reads the seed.
 
 `systemctl kill` kills the unit's whole cgroup. systemd then forks the
 `ExecStopPost` umount into that same cgroup, and the umount is killed at once.
@@ -227,19 +231,21 @@ Its `-` prefix makes systemd count that as success, so the dead FUSE mount
 stays. From `kill2`'s journal, at systemd's debug level:
 
 ```
-[86.011464] Killed unit cgroup '…/qorpera-office-folder-mount@q3.service' with SIGKILL on client request.
-[86.013212] Main process exited, code=killed, status=9/KILL
-[86.014056] Forked /usr/bin/umount as 1901 (via CLONE_INTO_CGROUP)
-[86.014487] Control process exited, code=killed, status=9/KILL (success)
-[91.044559] qorpera-folder: mount /run/qorpera-folder/mounts/q3/company: Transport endpoint is not connected (os error 107)
-[91.062924] Control process exited, code=exited, status=0/SUCCESS (success)
-[96.090088] qorpera-folder: mounted at /run/qorpera-folder/mounts/q3/company with 16 threads
+[123.485486] Killed unit cgroup '…/qorpera-office-folder-mount@q3.service' with SIGKILL on client request.
+[123.487543] Main process exited, code=killed, status=9/KILL
+[123.488098] Forked /usr/bin/umount as 1953 (via CLONE_INTO_CGROUP)
+[123.488389] Control process exited, code=killed, status=9/KILL (success)
+[128.518346] qorpera-folder: mount /run/qorpera-folder/mounts/q3/company: Transport endpoint is not connected (os error 107)
+[128.521088] Main process exited, code=exited, status=1/FAILURE
+[128.522082] Forked /usr/bin/umount as 2095 (via CLONE_INTO_CGROUP)
+[128.531646] Control process exited, code=exited, status=0/SUCCESS (success)
+[133.570034] qorpera-folder: mounted at /run/qorpera-folder/mounts/q3/company with 16 threads
 ```
 
-The restart at 91 s fails with `ENOTCONN` on the dead mount. Only that failed
+The restart at 128 s fails with `ENOTCONN` on the dead mount. Only that failed
 start's own `ExecStopPost` clears the mount, so the second restart serves. After
 a kill of the main PID alone, the umount runs and exits 0 (`kill1`). This
-happened in every run that got this far (five of them). Any kill of the whole
+happened in every run that got this far (six of them). Any kill of the whole
 cgroup does the same; systemd-oomd kills that way too.
 
 With the `kill3Cleared` drop-in

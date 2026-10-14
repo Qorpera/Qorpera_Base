@@ -7,15 +7,15 @@
     {
       "name": "node01",
       "busy": 3,
-      "waiting": 0,
-      "arriving": 2,
+      "waiting": 4,
+      "arriving": 0,
       "closed": false,
       "setUp": true,
       "cpus": 10,
-      "load": 5.76
+      "load": 4.51
     }
   ],
-  "probeSeconds": 0.565,
+  "probeSeconds": 1.226,
   "environment": {
     "machine": "qorpera-testvm-node01",
     "kernel": "7.0.0-30-generic",
@@ -28,11 +28,11 @@
     "kvm": true
   },
   "source": {
-    "head": "e7c4e40e689e98461ad5ba5a6ba02111d15d64e8",
+    "head": "a2793caad67e605b15763458a595eac0bd89ad58",
     "dirty": false,
-    "files": 3741,
+    "files": 3745,
     "untracked": 0,
-    "treeSha256": "4eb67c10c3f109b42950d280d5048591b3b80a1f49734f00b4533376d13a7a6c"
+    "treeSha256": "c75b1e3fe8a03ff0694e479086e1a2d472e2aa5bcfeb5a3066416bd03cb7ca39"
   },
   "command": [
     "bash",
@@ -41,23 +41,23 @@
   "sudo": true,
   "install": false,
   "build": false,
-  "run": "20261014T231755-20572-99adde87",
-  "runner": "ci03",
-  "cpuSlot": 3,
-  "queuedSeconds": 19,
+  "run": "20261014T234054-41114-51648c14",
+  "runner": "ci02",
+  "cpuSlot": 2,
+  "queuedSeconds": 172,
   "vitestMaxWorkers": 3,
-  "loadAtStart": 5.75,
+  "loadAtStart": 6.08,
   "uncappedTestProcesses": 0,
-  "startedAt": "2026-10-14T23:17:55.725Z",
-  "copySeconds": 2.181,
+  "startedAt": "2026-10-14T23:40:55.895Z",
+  "copySeconds": 2.12,
   "prepareSeconds": 0.003,
-  "suiteSeconds": 162.242,
-  "elapsedSeconds": 183.873,
+  "suiteSeconds": 202.781,
+  "elapsedSeconds": 377.511,
   "exitCode": 1,
   "result": "failed",
   "githubStatus": {
     "context": null,
-    "sha": "e7c4e40e689e98461ad5ba5a6ba02111d15d64e8",
+    "sha": "a2793caad67e605b15763458a595eac0bd89ad58",
     "posted": false,
     "reason": "--no-status"
   }
