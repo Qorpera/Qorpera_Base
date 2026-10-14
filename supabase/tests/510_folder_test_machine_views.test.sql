@@ -309,3 +309,100 @@ begin
 	perform pg_temp.refused(format('select pg_temp.final(%L, %L, %L)', s, 'tm-final-2', '[{"op":"mkdir","path":"refused"}]'),
 		'42501', 'Folder view has ended');
 end $$;
+
+
+-- Its read set lives with the disk: a view for the disk's next boot carries what the last one read, and is refused
+-- once that read narrows (undone after); a view on a new disk starts clean.
+do $$
+declare c_env constant uuid := '63200000-0000-4000-8000-000000000020';
+	v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); m uuid := pg_temp.machine(v, 'reads');
+	a jsonb := pg_temp.place(m); s jsonb; s2 jsonb; s3 jsonb; e jsonb;
+begin
+	s := pg_temp.open_machine(a);
+	e := pg_temp.read('tm/k.txt', pg_temp.vactor(s)) -> 'entry';
+	perform public.qorpera_folder_record_release(c_env, pg_temp.vactor(s), extensions.gen_random_uuid(),
+		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('6', 64));
+	s2 := pg_temp.open_machine(pg_temp.reboot(a));
+	if not exists (select 1 from public.qorpera_folder_view_read_records rec, jsonb_array_elements(rec.reads) x
+		where rec.view_id = (s2 ->> 'viewId')::uuid and x ->> 'path' = 'tm/k.txt') then
+		raise exception 'The next boot carries the disk''s read records'; end if;
+	perform pg_temp.expect(pg_temp.vcommit(s2, 'tm-carried', '[{"op":"mkdir","path":"by-tm-carried"}]'), 1, 'saved');
+	begin
+		perform public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'tm', 'subtree', 'company_shared', 'normal');
+		perform pg_temp.refused(format('select pg_temp.vcommit(%L, %L, %L)', s2, 'tm-carried-narrowed', '[{"op":"mkdir","path":"refused"}]'),
+			'42501', 'A read is no longer readable');
+		raise exception 'Undo' using errcode = 'QTF80';
+	exception when sqlstate 'QTF80' then null;
+	end;
+	s3 := pg_temp.open_machine(pg_temp.place(m));
+	if exists (select 1 from public.qorpera_folder_view_read_records where view_id = (s3 ->> 'viewId')::uuid)
+		or exists (select 1 from public.qorpera_folder_view_reads where view_id = (s3 ->> 'viewId')::uuid) then
+		raise exception 'A new disk starts clean'; end if;
+	perform public.qorpera_folder_view_close((s3 ->> 'viewId')::uuid, s3 ->> 'pass');
+end $$;
+
+-- Detached, it still answers for what the starter's run read, which may be on the disk: once that read narrows, its
+-- save is refused, though the view itself read nothing (undone after).
+do $$
+declare c_env constant uuid := '63200000-0000-4000-8000-000000000020';
+	v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); m uuid := pg_temp.machine(v, 'starter-reads'); s jsonb; e jsonb;
+begin
+	s := pg_temp.open_machine(pg_temp.place(m));
+	e := pg_temp.read('tm/r.txt', v) -> 'entry';
+	perform public.qorpera_folder_record_release(c_env, v, extensions.gen_random_uuid(),
+		jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority')), repeat('5', 64));
+	perform pg_temp.lapse(v);
+	perform pg_temp.expect(pg_temp.vcommit(s, 'tm-starter-read', '[{"op":"mkdir","path":"by-tm-starter"}]'), 1, 'saved');
+	begin
+		perform public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'tm', 'subtree', 'company_shared', 'normal');
+		perform pg_temp.refused(format('select pg_temp.vcommit(%L, %L, %L)', s, 'tm-starter-narrowed', '[{"op":"mkdir","path":"refused"}]'),
+			'42501', 'A read is no longer readable');
+		raise exception 'Undo' using errcode = 'QTF80';
+	exception when sqlstate 'QTF80' then null;
+	end;
+	perform public.qorpera_folder_view_close((s ->> 'viewId')::uuid, s ->> 'pass');
+end $$;
+
+
+-- The open needs the starter's agent and member to read the root. On a disk that never had a view, a refusal only
+-- leaves the boot without the folder. On a disk that had one, or that ran a command without the check, it tells the
+-- executor to move the machine to a new disk (each undone after).
+do $$
+declare v jsonb := pg_temp.run('human', '63200000-0000-4000-8000-000000000002'); m uuid := pg_temp.machine(v, 'authority');
+	a jsonb := pg_temp.place(m); a2 jsonb; s jsonb; p text[];
+	c_grants constant text := 'update public.qorpera_company_path_grants set revoked_at = clock_timestamp() where principal_kind = ''staff_agent''
+		and principal_id = ''63200000-0000-4000-8000-0000000000a1''';
+	c_member constant text := 'delete from public.qorpera_profile_members where profile_id = ''63200000-0000-4000-8000-000000000010''
+		and user_id = ''63200000-0000-4000-8000-000000000002''';
+begin
+	-- Never viewed: the common refusals, with no detail.
+	foreach p slice 1 in array array[[c_grants, 'Folder view needs the company-wide view'], [c_member, 'Folder view principals are unavailable']] loop
+		begin
+			perform pg_temp.fx(p[1]);
+			perform pg_temp.refused(format('select pg_temp.open_machine(%L)', a), '42501', p[2]);
+			raise exception 'Undo' using errcode = 'QTF80';
+		exception when sqlstate 'QTF80' then null;
+		end;
+	end loop;
+	-- Viewed once: the next boot's open is refused with the new-disk detail.
+	s := pg_temp.open_machine(a);
+	a := pg_temp.reboot(a);
+	foreach p slice 1 in array array[[c_grants], [c_member]] loop
+		begin
+			perform pg_temp.fx(p[1]);
+			perform pg_temp.refused(format('select pg_temp.open_machine(%L)', a), '42501', 'Folder view needs the company-wide view',
+				'qorpera.test-machine/new-disk');
+			raise exception 'Undo' using errcode = 'QTF80';
+		exception when sqlstate 'QTF80' then null;
+		end;
+	end loop;
+	s := pg_temp.open_machine(a);
+	-- A disk a command used without the check is refused even with the root read; the open view stays.
+	a2 := pg_temp.place(m);
+	perform pg_temp.fx(format('update public.qorpera_company_machine_placements set folder_unchecked_at = clock_timestamp() where id = %L',
+		a2 ->> 'placementId'));
+	perform pg_temp.refused(format('select pg_temp.open_machine(%L)', a2), '42501', 'Test machine disk was used without the folder check',
+		'qorpera.test-machine/new-disk');
+	if (pg_temp.view_row(s)).state is distinct from 'open' then raise exception 'A refused open supersedes nothing'; end if;
+	perform public.qorpera_folder_view_close((s ->> 'viewId')::uuid, s ->> 'pass');
+end $$;
