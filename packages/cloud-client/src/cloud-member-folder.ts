@@ -20,7 +20,10 @@ const CHUNK_BYTES = 4 * 1024 * 1024;
 const MAX_CHUNKS = 64;
 const MAX_FILE_BYTES = MAX_CHUNKS * CHUNK_BYTES;
 const MAX_MANIFEST_BYTES = 32 * 1024;
-/** A full page of 1,000 entries or changes with long paths fits. */
+/** The most entries or feed changes one call asks for. Each may hold a 4,096-byte path (its quotes escaped, twice the
+ * bytes) and a link's 4,095-byte target (a control character escaped as `\u00XX`, six times the bytes): about 33 KB, so
+ * a page of them fits `MAX_ANSWER_BYTES`. */
+export const CLOUD_MEMBER_FOLDER_PAGE = 200;
 const MAX_ANSWER_BYTES = 8 * 1024 * 1024;
 
 export class CloudMemberFolderError extends Error {
@@ -684,7 +687,7 @@ export class CloudMemberFolderClient {
 		limit: number,
 		signal: AbortSignal,
 	): Promise<CloudMemberFolderListPage> {
-		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > CLOUD_MEMBER_FOLDER_PAGE)
 			throw new CloudMemberFolderError("Invalid company folder listing");
 		return this.#call(
 			"qorpera_member_folder_list",
@@ -785,7 +788,7 @@ export class CloudMemberFolderClient {
 		if (
 			!Number.isSafeInteger(limit) ||
 			limit < 1 ||
-			limit > 1000 ||
+			limit > CLOUD_MEMBER_FOLDER_PAGE ||
 			!Number.isSafeInteger(from.afterSeq) ||
 			from.afterSeq < 0
 		)

@@ -114,7 +114,8 @@ describe("listing a folder's names", () => {
 		// The 1,000 made here, Ledger and the seeded groups.
 		expect(names.size).toBe(1002);
 		expect(names.has("ledger")).toBe(true);
-		expect(fake.folder.list).toHaveBeenCalledTimes(2);
+		// Pages of 200: five full ones and the last two names.
+		expect(fake.folder.list).toHaveBeenCalledTimes(6);
 	});
 });
 

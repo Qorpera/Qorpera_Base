@@ -1,11 +1,12 @@
-import type {
-	CloudMemberFolderBy,
-	CloudMemberFolderChangeSet,
-	CloudMemberFolderClient,
-	CloudMemberFolderEntry,
-	CloudMemberFolderFeedPosition,
-	CloudMemberFolderFile,
-	CloudMemberFolderVersion,
+import {
+	CLOUD_MEMBER_FOLDER_PAGE,
+	type CloudMemberFolderBy,
+	type CloudMemberFolderChangeSet,
+	type CloudMemberFolderClient,
+	type CloudMemberFolderEntry,
+	type CloudMemberFolderFeedPosition,
+	type CloudMemberFolderFile,
+	type CloudMemberFolderVersion,
 } from "@qorpera/cloud-client/cloud-member-folder";
 import { WebFileDownloads } from "../../../../member-web/src/files.ts";
 import { button, fmtBytes, h, icon, replace } from "../../ui/dom.ts";
@@ -416,7 +417,7 @@ export class CompanyFolderBrowser {
 				reset = true;
 				break;
 			}
-			const page = await this.#client!.changes(position, 500, this.#signal());
+			const page = await this.#client!.changes(position, CLOUD_MEMBER_FOLDER_PAGE, this.#signal());
 			this.#live();
 			if (page.resync || !page.next) {
 				reset = true;

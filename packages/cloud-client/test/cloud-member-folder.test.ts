@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
+	CLOUD_MEMBER_FOLDER_PAGE,
 	CloudMemberFolderAccessDenied,
 	CloudMemberFolderClient,
 	CloudMemberFolderHints,
@@ -435,6 +436,52 @@ describe("the member folder client", () => {
 		expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ p_environment_id: env, p_path: "notes/a.txt" });
 		expect(() => folder.list(null, null, 0, new AbortController().signal)).toThrow();
 		expect(() => folder.pathHistory("a", "not-a-version", 10, new AbortController().signal)).toThrow();
+	});
+
+	it("reads a page of 200 links with the longest paths and targets, each character escaped at worst", async () => {
+		const target = "\u0001".repeat(4095);
+		const entries = Array.from({ length: CLOUD_MEMBER_FOLDER_PAGE }, (_, index) => ({
+			path: `${String(index).padStart(3, "0")}${'"'.repeat(4093)}`,
+			kind: "symlink",
+			version,
+			seq: index + 1,
+			updatedAt: at,
+			target,
+		}));
+		const listing = { schema: "qorpera.folder-list/v1", asOfSeq: 200, entries, next: entries.at(-1)!.path };
+		const changes = entries.map(({ path }, index) => ({
+			unitNo: index + 1,
+			op: "write",
+			kind: "symlink",
+			path,
+			version,
+			target,
+		}));
+		const by = { kind: "member", userId: member };
+		const feed = {
+			schema: "qorpera.folder-feed/v1",
+			asOfSeq: 201,
+			resync: false,
+			events: [{ seq: 201, kind: "change_set", commitId: version2, at, by, changes }],
+			next: { afterSeq: 201, cursor: null },
+			more: false,
+		};
+		for (const answer of [listing, feed])
+			expect(Buffer.byteLength(JSON.stringify(answer))).toBeGreaterThan(6_500_000);
+		const { folder } = client((url) => Response.json(url.pathname.endsWith("_list") ? listing : feed));
+		const signal = new AbortController().signal;
+		const page = await folder.list(null, null, CLOUD_MEMBER_FOLDER_PAGE, signal);
+		expect(page.entries.map((entry) => entry.target)).toEqual(entries.map(() => target));
+		expect(page.next).toBe(entries.at(-1)!.path);
+		const changed = await folder.changes({ afterSeq: 0, cursor: null }, CLOUD_MEMBER_FOLDER_PAGE, signal);
+		expect(changed.events.flatMap((event) => (event.kind === "change_set" ? event.changes : []))).toHaveLength(200);
+		// A larger page could pass the answer's bound.
+		expect(() => folder.list(null, null, CLOUD_MEMBER_FOLDER_PAGE + 1, signal)).toThrow(
+			"Invalid company folder listing",
+		);
+		expect(() => folder.changes({ afterSeq: 0, cursor: null }, CLOUD_MEMBER_FOLDER_PAGE + 1, signal)).toThrow(
+			"Invalid company folder feed position",
+		);
 	});
 
 	it("reads a file through the member folder route, every object checked", async () => {

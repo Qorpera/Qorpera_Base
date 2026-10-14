@@ -45,7 +45,8 @@ const MEDIA_TYPE = /^[a-z0-9!#$&^_.+-]{1,127}\/[a-z0-9!#$&^_.+-]{1,127}$/;
 /** The commit's bound on units in one change set. */
 const MAX_UNITS = 1000;
 /** One listing page. SQL accepts up to 1000. An entry with its receipt is about 550 bytes plus its path (at most
- * 4096, twice that escaped), so 200 fit the control's 2 MiB bound for listings. */
+ * 4096, twice that escaped) and a link's target (at most 4095, six times that escaped): about 33 KB, so 200 fit the
+ * control's 8 MiB bound for listings. */
 const LIST_PAGE = 200;
 /** A release names at most this many reads (SQL's bound). */
 const MAX_RELEASED = 10_000;

@@ -217,8 +217,17 @@ it("lists an absent path as absent and refuses to list a file", async () => {
 it("reads and lists a link as the target it holds, never following it, and lists nothing under it", async () => {
 	const f = await fixture({ files: { "docs/plan.md": "the plan" }, links: { "docs/latest": "plan.md" } });
 	const version = f.links.get("docs/latest")?.version;
-	const read = await f.call("company_read", { path: "docs/latest", offset: 0, limit: 4 });
-	expect(parse(read)).toEqual({ path: "docs/latest", kind: "symlink", version, target: "plan.md" });
+	const read = await f.call("company_read", { path: "docs/latest", offset: 0, limit: 4096 });
+	expect(parse(read)).toEqual({
+		path: "docs/latest",
+		kind: "symlink",
+		version,
+		offset: 0,
+		bytesRead: 7,
+		totalBytes: 7,
+		target: "plan.md",
+		nextOffset: null,
+	});
 	// The link is released, and nothing of the file it names.
 	expect(read.companyReadId).toBe(f.releases[0]?.p_release_id);
 	expect(f.releases[0]?.p_reads).toEqual([{ path: "docs/latest", version, authority: expect.any(Object) }]);
@@ -236,6 +245,113 @@ it("reads and lists a link as the target it holds, never following it, and lists
 		"COMPANY_FILE_NOT_A_FOLDER: that path is a link",
 	);
 	expect(f.releases).toHaveLength(2);
+});
+
+it("reads a link's target in windows that each fit one result, however much its characters escape", async () => {
+	for (const target of ["&".repeat(4095), "\u0001".repeat(4095)]) {
+		const f = await fixture({ links: { "docs/latest": target } });
+		let shown = "";
+		let offset: number | null = 0;
+		let windows = 0;
+		while (offset !== null) {
+			const content = await f.call("company_read", { path: "docs/latest", offset, limit: 4096 });
+			expect(fitsOneResult(String(content.value))).toBe(true);
+			const answer = parse(content);
+			expect(answer).toMatchObject({ kind: "symlink", offset, totalBytes: 4095 });
+			expect(answer.bytesRead).toBeGreaterThan(0);
+			shown += answer.target;
+			offset = answer.nextOffset;
+			windows++;
+		}
+		expect(shown).toBe(target);
+		expect(windows).toBeGreaterThan(4);
+		// Each window is released as shown.
+		expect(f.releases).toHaveLength(windows);
+	}
+	// A window that starts inside a character is not text, one that ends inside one stops before it, and one past the
+	// end is empty.
+	const accent = await fixture({ links: { "docs/accent": "é".repeat(10) } });
+	await refuses(
+		accent.call("company_read", { path: "docs/accent", offset: 1, limit: 4 }),
+		CloudToolRefusal,
+		"COMPANY_FILE_NOT_TEXT",
+	);
+	expect(parse(await accent.call("company_read", { path: "docs/accent", offset: 2, limit: 5 }))).toMatchObject({
+		target: "éé",
+		bytesRead: 4,
+		nextOffset: 6,
+	});
+	expect(parse(await accent.call("company_read", { path: "docs/accent", offset: 99, limit: 4 }))).toMatchObject({
+		target: "",
+		bytesRead: 0,
+		totalBytes: 20,
+		nextOffset: null,
+	});
+});
+
+it("cuts a listed link's target, and a first link's further when its path is long", async () => {
+	const long = "\u0001".repeat(4095);
+	// Its path, escaped and shown twice (the entry and next), leaves less than 512 bytes of the target room.
+	const wide = `docs/${"&".repeat(300)}`;
+	const f = await fixture({ files: { "docs/b.md": "b" }, links: { [wide]: long, "docs/a": long, "docs/c": "b.md" } });
+	const first = await f.call("company_list", { path: "docs", after: null, limit: 50 });
+	expect(fitsOneResult(String(first.value))).toBe(true);
+	const page = parse(first);
+	expect(page.entries).toEqual([
+		{
+			path: wide,
+			kind: "symlink",
+			version: f.links.get(wide)?.version,
+			bytes: null,
+			target: expect.any(String),
+			targetCut: true,
+		},
+	]);
+	expect(page.entries[0].target.length).toBeGreaterThan(0);
+	expect(page.entries[0].target.length).toBeLessThan(512);
+	expect(long.startsWith(page.entries[0].target)).toBe(true);
+	expect(page.next).toBe(wide);
+	const second = await f.call("company_list", { path: "docs", after: page.next, limit: 50 });
+	expect(fitsOneResult(String(second.value))).toBe(true);
+	expect(parse(second)).toMatchObject({
+		entries: [
+			{
+				path: "docs/a",
+				kind: "symlink",
+				version: f.links.get("docs/a")?.version,
+				bytes: null,
+				target: "\u0001".repeat(512),
+				targetCut: true,
+			},
+			{ path: "docs/b.md", kind: "file", bytes: 1 },
+			{ path: "docs/c", kind: "symlink", target: "b.md" },
+		],
+		next: null,
+	});
+	expect(parse(second).entries[2]).not.toHaveProperty("targetCut");
+});
+
+it("names as much of a long link's target as fits when it refuses to write over the link", async () => {
+	const f = await fixture({ links: { "docs/long": "\u0001".repeat(4095) } });
+	const expectedVersion = f.links.get("docs/long")?.version as string;
+	const refused = await f.call("company_write", {
+		path: "docs/long",
+		operationKey: "write-1",
+		expectedVersion,
+		text: "x",
+	});
+	expect(fitsOneResult(String(refused.value))).toBe(true);
+	const answer = parse(refused);
+	expect(answer).toMatchObject({
+		state: "not_applied",
+		reason: "link",
+		targetCut: true,
+		next: expect.stringContaining("read the link with company_read for all of it"),
+	});
+	expect(answer.target.length).toBeGreaterThan(0);
+	expect("\u0001".repeat(4095).startsWith(answer.target)).toBe(true);
+	expect(refused.companyReadId).toBe(f.releases[0]?.p_release_id);
+	expect(f.commits).toHaveLength(0);
 });
 
 it("never writes over a link at its version, naming its target, and meets one as there when creating a file", async () => {

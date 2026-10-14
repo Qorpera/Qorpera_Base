@@ -385,14 +385,14 @@ describe("a folder-v2 company's Company File", () => {
 		await vi.advanceTimersByTimeAsync(1100);
 		await settle();
 		expect(fake.client.changes).toHaveBeenCalledTimes(1);
-		expect(fake.client.changes).toHaveBeenCalledWith({ afterSeq: 4, cursor: null }, 500, expect.any(AbortSignal));
+		expect(fake.client.changes).toHaveBeenCalledWith({ afterSeq: 4, cursor: null }, 200, expect.any(AbortSignal));
 		expect(fake.client.list.mock.calls.length).toBe(listsBefore + 1);
 		expect(rows(host)).toContain("new.txt");
 		expect(host.querySelector(".files-text")?.textContent).toBe("Hello again.");
 		// The next sync starts where this one ended.
 		src.hint(6);
 		await vi.advanceTimersByTimeAsync(1100);
-		expect(fake.client.changes).toHaveBeenLastCalledWith({ afterSeq: 5, cursor: null }, 500, expect.any(AbortSignal));
+		expect(fake.client.changes).toHaveBeenLastCalledWith({ afterSeq: 5, cursor: null }, 200, expect.any(AbortSignal));
 	});
 
 	it("reads the folder again after an authority change or a feed that can't be continued", async () => {
