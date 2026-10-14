@@ -4,15 +4,35 @@
   "copiedOn": "2026-10-14",
   "fullyAccepted": false,
   "officeIntegrationAccepted": false,
-  "note": "Byte-for-byte copies of the Codex hand-off files. Both runs used earlier folder binaries and fixtures than this commit; see deploy/test-machine/OFFICE-FOLDER-SUBSTRATE.md, 'Recorded substrate result'.",
+  "note": "Byte-for-byte copies of the Codex hand-off files: each run's run-on-node record and full log, and the evidence JSON extracted from between the log's OFFICE_FOLDER_SUBSTRATE_EVIDENCE markers. All three runs used earlier folder binaries and fixtures than this commit; see deploy/test-machine/OFFICE-FOLDER-SUBSTRATE.md, 'Recorded substrate result'.",
   "sourceWorkspace": "/Users/jonas/Documents/Codex/2026-10-07/over-the-last-couple-of-days/work/rebuild",
   "files": [
+    {
+      "file": "FIRST-ATTEMPT-RUN.json",
+      "source": "acceptance-vm.json",
+      "run": "20261009T124833-27886-c7740c25",
+      "note": "The nested VM failed to start (qemu exit 1); no probe ran.",
+      "sha256": "eb54babc2b8489e18c19c6ca35fa8f6c936c42249a73cc5a78df8f743e43e5ed",
+      "bytes": 1484
+    },
+    {
+      "file": "FIRST-ATTEMPT-RUN.log",
+      "source": "acceptance-vm.log",
+      "sha256": "a20a2cf675eee6401f830229e8bcd1ef4f0752c01d02f130c07e8a032a698309",
+      "bytes": 3291
+    },
     {
       "file": "ROOT-DEFAULT-RUN.json",
       "source": "acceptance-vm-2.json",
       "run": "20261009T125544-35682-8785a023",
       "sha256": "6d5d8655e6ec8891dd400a51035e053a3ce1ba3e80c2bc8886f243bfa0696e25",
       "bytes": 1487
+    },
+    {
+      "file": "ROOT-DEFAULT-RUN.log",
+      "source": "acceptance-vm-2.log",
+      "sha256": "b94f2cc149f62f8b4b724b4ff63196a4feb3eb0052b34d7ed137b84cfe39c34e",
+      "bytes": 22514
     },
     {
       "file": "ROOT-DEFAULT-EVIDENCE.json",
@@ -29,6 +49,12 @@
       "run": "20261009T131030-53082-28d87d18",
       "sha256": "d673cda6c796555f2ba193753ea1745a96bb5e2e061b9fe563a0ad4861680f91",
       "bytes": 1505
+    },
+    {
+      "file": "OFFICE-ACCOUNT-RUN.log",
+      "source": "acceptance-vm-3.log",
+      "sha256": "69d52f11e058a7910f498636ca6b51768434e3bbb2bfcd8e80c8f5a3ebf10c5f",
+      "bytes": 51227
     },
     {
       "file": "OFFICE-ACCOUNT-EVIDENCE.json",
