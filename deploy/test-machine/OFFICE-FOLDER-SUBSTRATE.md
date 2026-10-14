@@ -164,8 +164,7 @@ the folder binary and fixture digests each run used. `OFFICE-ACCOUNT-*.json` are
 `acceptance-vm-3.json` and `acceptance-vm-3.evidence.json`; `ROOT-DEFAULT-*.json`
 are the earlier root-default run (`acceptance-vm-2.*`).
 
-This run is older than the code it documents, and it was not rerun after either
-of these changes:
+This run is older than the code it documents:
 
 - #1005's last commit (4675c5187) changed one doc comment in
   `crates/qorpera-folder/src/mount.rs`. The rebuilt binary is now
@@ -174,14 +173,51 @@ of these changes:
 - The run used fixture `97b525ae025839fb48bfa1190b4b38f879560d92e72d45f8729c05cbabc5a961`.
   The fixture has changed since then, including the ptrace positive control.
 
+The rerun below uses the current binary and fixture.
+
 The offline candidate remains **unproven**. Its namespace creation returned
 `EPERM`. The process retained `SYS_ADMIN` in its effective, permitted, inheritable
 and ambient sets, but its security label was `bwrap//&unpriv_bwrap (enforce)` and
 the guest kernel recorded an AppArmor denial of that capability. The helper and
-ptrace checks were not reached, so no record yet shows the ptrace control. This requires a reviewed office launcher/policy
+ptrace checks were not reached. This requires a reviewed office launcher/policy
 or a different helper setup design; the probe neither disables AppArmor nor
 relaxes its profile. These observations establish no built-office-image or live
 company acceptance.
+
+## Rerun at a clean head (2026-10-14)
+
+The `office-account` probe was rerun on node01 at head
+`59053c3bad81c4707502d8d7704cf8bbce56a3fc` with a clean tree (run
+`20261014T161650-38323-c9940728`, source snapshot SHA-256
+`b8d72d7ebbbb4d0d65fc63e978b5938a0bc1839f69632e7546e34a417313a379`). Later
+commits change only this document and the evidence folder. The run built folder
+binary `7aa0ccbc718c2886569cbf06668ec1b02e722fe1fa2aa55ce78a6a2d309810a2` and
+used fixture `0133118315f2a1861fa0a03d1fc5b1ce77dc44823be8785263ab7d9df50f06a6`,
+on the same prepared Ubuntu image `fca42260aab1…` in nested VM UUID
+`93676b87-cdb1-4802-8062-969712dc9a60`.
+
+The mount result matches 9 Oct. All five mount checks passed: owner uid 999,
+gid 986 and mode `0o755` before and after restart, the direct bind's fresh lookup
+and write returned `ENOTCONN` (107), and the propagated namespace's fresh lookup
+and write recovered in the same process. In both namespaces, closing the old
+descriptor returned `ENOTCONN`.
+
+The run's `result` is still `failed`, for the same reason as on 9 Oct: the
+offline candidate's namespace creation returned `EPERM` under
+`bwrap//&unpriv_bwrap (enforce)`, and the guest kernel recorded the AppArmor
+denial of `sys_admin` (capability 21). The ptrace step comes after namespace
+creation, so it did not run and `ptraceLogs` is empty. **No record yet shows the
+ptrace positive control.** It can only run once a reviewed helper setup gets
+past this denial.
+
+An earlier attempt at head `70893ce62` (run `20261014T160923-30488-a2b8c8ed`)
+stopped before any probe: the nested guest's lxd-agent returned `Error: EOF`
+while the script pushed or installed the guest's packages. The script removed
+its project and pool.
+
+The run records, full logs and extracted JSON are in
+[`acceptance/2026-10-14-office-folder-substrate/`](acceptance/2026-10-14-office-folder-substrate/),
+with a `MANIFEST.json` like the 9 Oct one.
 
 ## Unprivileged checks
 

@@ -1,0 +1,43 @@
+{
+  "schema": "qorpera.office-folder-substrate-evidence/v1",
+  "recordedOn": "2026-10-14",
+  "copiedOn": "2026-10-14",
+  "fullyAccepted": false,
+  "officeIntegrationAccepted": false,
+  "note": "The rerun at a clean head: each run's run-on-node record and full log, and the evidence JSON extracted from between the log's OFFICE_FOLDER_SUBSTRATE_EVIDENCE markers. Commits after the run's head change only the substrate document and this evidence; see deploy/test-machine/OFFICE-FOLDER-SUBSTRATE.md, 'Rerun at a clean head (2026-10-14)'.",
+  "files": [
+    {
+      "file": "FIRST-ATTEMPT-RUN.json",
+      "run": "20261014T160923-30488-a2b8c8ed",
+      "head": "70893ce626b6022cb50e0a7f2e878aee9f9c401c",
+      "note": "The nested guest's lxd-agent returned 'Error: EOF' after the host had downloaded the guest's packages, while the script pushed or installed them; no probe ran, and the script removed its project and pool.",
+      "sha256": "c389d82753c98e455844d1b6ca9119b54f34f920be7f51b7e3c360397a2cb1d4",
+      "bytes": 1508
+    },
+    {
+      "file": "FIRST-ATTEMPT-RUN.log",
+      "sha256": "48b5af39088709683e1628cd927aa9336236925c93965a9430a7aa6e760913c6",
+      "bytes": 2181
+    },
+    {
+      "file": "OFFICE-ACCOUNT-RUN.json",
+      "run": "20261014T161650-38323-c9940728",
+      "head": "59053c3bad81c4707502d8d7704cf8bbce56a3fc",
+      "sha256": "5b6b4f0c499b64f3a0442ff0c98d71e110a95af3473227edaeff0ec7f0ed3769",
+      "bytes": 1507
+    },
+    {
+      "file": "OFFICE-ACCOUNT-RUN.log",
+      "sha256": "5d45001c673256c82eb975bec3363dfa89a0dae78296eba6eb563e8ad18c118f",
+      "bytes": 42276
+    },
+    {
+      "file": "OFFICE-ACCOUNT-EVIDENCE.json",
+      "ownerMode": "office-account",
+      "folderSha256": "7aa0ccbc718c2886569cbf06668ec1b02e722fe1fa2aa55ce78a6a2d309810a2",
+      "fixtureSha256": "0133118315f2a1861fa0a03d1fc5b1ce77dc44823be8785263ab7d9df50f06a6",
+      "sha256": "643f2e9bc7f7694eaed91b2e731d9890861eb781caa38ec90ea8aeb6f67a9be4",
+      "bytes": 18021
+    }
+  ]
+}
