@@ -352,3 +352,76 @@ begin
 	perform pg_temp.same(public.qorpera_memory_message_erase_request('70000000-0000-4000-8000-000000000020',
 		'70000000-0000-4000-8000-000000000001', s, (pg_temp.event(s, 7)).event_id), r, 'A request joins the open erase');
 end $$;
+
+-- 4. Step 2: the plan, its refusals, a live write that moves it, and the rewrite --------------------------------------
+
+do $$
+declare
+	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); root constant text := 'agents/co-founder/memory/thread';
+	eid uuid := (select e.id from public.qorpera_memory_message_erases e); p jsonb; p1 jsonb; r jsonb; v uuid;
+	er public.qorpera_memory_message_erases;
+	t text := pg_temp.block(array[pg_temp.line0(0, 1), pg_temp.line0(1, 3), pg_temp.line0(2, 4), pg_temp.line0(3, 5),
+		pg_temp.line0(4, 6), pg_temp.kept(1, 0), pg_temp.kept(1, 1), pg_temp.kept(2, 0)]);
+begin
+	perform pg_temp.service();
+	-- The plan: the one block with lines to keep, its text those lines in order, as a new file.
+	p := public.qorpera_memory_message_erase_plan('70000000-0000-4000-8000-000000000020', eid);
+	perform pg_temp.same(p - 'planSha256', jsonb_build_object('schema', 'qorpera.memory-message-erase-plan/v1', 'eraseId', eid,
+		'blocks', jsonb_build_array(jsonb_build_object('path', root || '/t0/00000000.jsonl', 'text', t,
+			'fileSha256', encode(extensions.digest(convert_to(t, 'utf8'), 'sha256'), 'hex'), 'bytes', octet_length(t),
+			'expectedVersion', null))), 'The plan');
+	perform pg_temp.same(p -> 'planSha256',
+		to_jsonb(encode(extensions.digest(convert_to((p -> 'blocks')::text, 'utf8'), 'sha256'), 'hex')), 'The plan''s hash');
+	-- A rewrite holds to the plan and its files.
+	perform set_config('request.jwt.claims', '{"role":"authenticated"}', true);
+	perform pg_temp.fails(format('select public.qorpera_memory_message_erase_plan(%L, %L)',
+		'70000000-0000-4000-8000-000000000020', eid), '42501', 'Only the folder core plans');
+	perform pg_temp.service();
+	perform pg_temp.fails(format('select public.qorpera_memory_message_erase_plan(%L, %L)',
+		'70000000-0000-4000-8000-000000000020', extensions.gen_random_uuid()), 'P0002', 'No such erase');
+	perform pg_temp.fails(format('select public.qorpera_memory_message_erase_rewrite(%L, %L, %L, %L)',
+		'70000000-0000-4000-8000-000000000020', eid, repeat('0', 64), '[]'), '55000', 'Another plan');
+	perform pg_temp.fails(format('select public.qorpera_memory_message_erase_rewrite(%L, %L, %L, %L)',
+		'70000000-0000-4000-8000-000000000020', eid, p ->> 'planSha256', '[]'), '22023', 'No files');
+	perform pg_temp.fails(format('select public.qorpera_memory_message_erase_rewrite(%L, %L, %L, %L)',
+		'70000000-0000-4000-8000-000000000020', eid, p ->> 'planSha256', jsonb_build_array(jsonb_build_object(
+			'path', root || '/t0/00000000.jsonl', 'file', pg_temp.stage(E'other\n')))), '22023', 'A file that is not the text');
+	perform pg_temp.fails(format('select public.qorpera_memory_message_erase_rewrite(%L, %L, %L, %L)',
+		'70000000-0000-4000-8000-000000000020', eid, p ->> 'planSha256', jsonb_build_array(jsonb_build_object(
+			'path', root || '/t0/00000001.jsonl', 'file', pg_temp.stage(t)))), '22023', 'A file at another path');
+	-- A run writes the block again first: the plan takes its live line in place of the kept one, over its version.
+	r := pg_temp.memory('m3-live-1', jsonb_build_array(pg_temp.block_file(root || '/t0/00000000.jsonl',
+		pg_temp.block(array[pg_temp.line0(0, 1, 'again')]))), array[s]);
+	perform pg_temp.expect(r, 1, 'saved');
+	v := pg_temp.version(root || '/t0/00000000.jsonl');
+	perform pg_temp.fails(format('select public.qorpera_memory_message_erase_rewrite(%L, %L, %L, %L)',
+		'70000000-0000-4000-8000-000000000020', eid, p ->> 'planSha256', jsonb_build_array(jsonb_build_object(
+			'path', root || '/t0/00000000.jsonl', 'file', pg_temp.stage(t)))), '55000', 'The plan moved');
+	t := pg_temp.block(array[pg_temp.line0(0, 1, 'again'), pg_temp.line0(1, 3), pg_temp.line0(2, 4), pg_temp.line0(3, 5),
+		pg_temp.line0(4, 6), pg_temp.kept(1, 0), pg_temp.kept(1, 1), pg_temp.kept(2, 0)]);
+	p1 := public.qorpera_memory_message_erase_plan('70000000-0000-4000-8000-000000000020', eid);
+	perform pg_temp.same(p1 -> 'blocks', jsonb_build_array(jsonb_build_object('path', root || '/t0/00000000.jsonl', 'text', t,
+		'fileSha256', encode(extensions.digest(convert_to(t, 'utf8'), 'sha256'), 'hex'), 'bytes', octet_length(t),
+		'expectedVersion', v)), 'The plan over the live block');
+	if (pg_temp.erase(eid)).state <> 'open' then raise exception 'A refused rewrite leaves the row open'; end if;
+	-- The rewrite: one member's commit, the kept lines back in the index beside the live one.
+	r := pg_temp.rewrite(eid);
+	perform pg_temp.same(r - 'eraseId' - 'sessionId' - 'eventId', '{"schema":"qorpera.memory-message-erase/v1",'
+		'"state":"rewritten","blocks":4,"runsPending":3}', 'Step 2 rewrites the block');
+	perform pg_temp.same(to_jsonb(pg_temp.nodes(s)), '"0:0:1,0:1:3,0:2:4,0:3:5,0:4:6,0:32:34,1:0:-,1:1:-,2:0:-"',
+		'The index after step 2');
+	if (select n.text from public.qorpera_memory_tree_nodes n where n.session_id = s and n.l = 0 and n.k = 0) is distinct from 'again'
+		or pg_temp.version(root || '/t0/00000000.jsonl') = v then
+		raise exception 'Step 2 writes over the live block and keeps its line'; end if;
+	er := pg_temp.erase(eid);
+	if er.last_error is not null or not exists (select 1 from public.qorpera_folder_commits c where c.id = er.rewrite_commit_id
+			and c.requester_kind = 'member' and c.requester_id = '70000000-0000-4000-8000-000000000001'
+			and c.operation_key like 'memerase:' || eid || ':%') then
+		raise exception 'The member''s rewrite commit: %', to_jsonb(er); end if;
+	-- A rewritten erase is past step 2: the plan is empty and a second call answers where it stands.
+	perform pg_temp.same(public.qorpera_memory_message_erase_plan('70000000-0000-4000-8000-000000000020', eid) -> 'blocks', '[]',
+		'Nothing left to plan');
+	perform pg_temp.same(pg_temp.rewrite(eid), r, 'Step 2 runs once');
+	perform pg_temp.same(to_jsonb((select count(*) from public.qorpera_folder_commits c where c.operation_key like 'memerase:%')), '2',
+		'Two commits');
+end $$;
