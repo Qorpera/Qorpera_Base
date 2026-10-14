@@ -332,7 +332,42 @@ why not when it does not (cards show changes, not files).
 
 ## What replaces `/mnt/repository`
 
-<!-- TODO -->
+Today `machine_start` with `repositoryWorker` attaches a coding session's repository folder read-only at
+`/mnt/repository`, places the machine on the node whose NAS holds that session, and the agent copies it to the
+machine's disk before building (README, "A coding session's repository"). The design's build order row 6 retires
+"`/mnt/repository` and copies to the machine's disk".
+
+**What replaces it.** The folder. After step 5 a session's work is in the code area of the company folder
+(`code/<owner>/<name>/worktrees/<workerId>/`, step 5's layout), which a test machine with `/company` sees like any other
+path, and changes there follow step 5's code area rules (5b). Builds run in place: dependencies and build output stay
+in the machine's own cache (item 8), so nothing is copied to the disk first. A machine no longer needs a particular
+node, so it places and wakes like any other.
+
+**What 6e removes**, with no compatibility (there are no users):
+
+- `packages/runner-orchestrator/src/company-machine.ts`: `repositoryWorkerId` in the binding and
+  `COMPANY_MACHINE_KEYS`, `CompanyMachineRepositoryStorage`, `companyMachineRepositorySource`, the `storage` parameter
+  of `lxdCompanyMachinePlan` and `lxdCompanyMachineJournalPlan`, `COMPANY_MACHINE_REPOSITORY_UNAVAILABLE` and the
+  `repository` disk device. The binding's schema becomes `qorpera.lxd-company-machine/v2` (the observer that knows it
+  rolls first, as README's step 6 says for v1). 6e's migration retires every placement bound under v1, so each machine
+  starts fresh under v2.
+- `packages/contracts/src/cloud-machine.ts`: `CLOUD_MACHINE_GUEST_PATHS.repository`.
+- `packages/runtime/src/cloud-machine-tools.ts`: the `repositoryWorker` argument and its description.
+- SQL (`20260928259050_runtime_company_machines.sql`): `machine_start`'s `repositoryWorker` branch
+  (`REPOSITORY_UNAVAILABLE`), the uses of `repository_worker_id` in the machine's JSON (:398), the binding (:471–478),
+  the wake rule (:542) and the candidates (:570), then the column itself. Each function is patched by an anchor that
+  must be present exactly once, as `20260928489995_runtime_node_agent_exit_placement.sql` does, and that file's clause
+  "a repository-tied machine's wake … cannot move" (:66–73) is patched out the same way; its copy in
+  `deploy/agent-exit/undo-20260930089100.sql:31` changes with it.
+- `deploy/machine/prove-machine-node.ts:61`, and the tests that cover the repository in
+  `packages/runner-orchestrator/test/` (`company-machine-host.test.ts:53`, `company-machine.test.ts`,
+  `runtime-node-inventory.test.ts:156`), `supabase/tests/628_runtime_company_machines.test.sql` and
+  `supabase/tests/897_runtime_node_agent_exit_placement.test.sql`.
+- `deploy/machine/README.md`: "A coding session's repository" goes, Lifetime's "nor one with a repository attached"
+  goes, and acceptance step 4 becomes: the agent runs `cd /company/code/<owner>/<name>/worktrees/<workerId> && npm ci
+  --ignore-scripts && npm run test:hosted-db` with `notify: true`, ends its turn and is woken with the result.
+
+Step 5's Q3 already accepts the gap between its retirement of the session folder and this one.
 
 ## What step 6 reuses from 4c and 5c
 
