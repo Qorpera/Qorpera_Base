@@ -298,9 +298,9 @@ read can't be pinned to one session. Step 5 makes the machine the unit:
    the answer leaves the service; nothing the guest reports about reads counts. Each read reaches the machine's read
    set and every turn leased on the machine before any output of the machine reaches a model and before any save of
    the machine commits: the service releases the machine's recorded reads before each of its commits, quiet and
-   synchronous publishes included. A turn leased later takes in the machine's read set when its lease starts. Not followed: a copy
-   on the machine's disk of a read that never reached a model or a save (as step 4 and C1b-3 §6 accept: "it does not
-   trace every copy").
+   synchronous publishes included. A turn leased later takes in the machine's read set when its lease starts. Not
+   followed: a copy on the machine's disk of a read that never reached a model or a save (as step 4 and C1b-3 §6
+   accept: "it does not trace every copy").
 2. **The machine's read set lives with the disk.** A new machine id or a recreated disk starts clean; sleep keeps it.
 3. **Boundaries come after reads.** A boundary (below) is answered only after every recorded read of the machine is
    released. A boundary with no answer holds the output back: the model gets nothing from the machine until it is
