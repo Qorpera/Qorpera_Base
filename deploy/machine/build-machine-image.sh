@@ -5,10 +5,14 @@
 #     <build-project> <build-network> <storage-pool> [machines-project]
 #
 # One image for every machine: Ubuntu 26.04 with rootful Docker Engine and
-# Compose, Node, Python 3, Git and build tools, the machine guest helper and
-# its watchdog (scripts/package-machine-guest.mjs), and apt's self-update
-# units masked. An agent that has a Dockerfile builds and runs it inside its
-# machine; images are not made from Dockerfiles.
+# Compose, Node, Python 3, Git and build tools, the toolbox every Qorpera
+# machine has (deploy/first-node/RUNTIME-FOLDER-COMPANY-MACHINES.md: npm, npx,
+# tsc, tsx, pip, uv, ripgrep, fd, jq, sqlite3, curl, zip, unzip, LibreOffice),
+# fuse3 and the company folder's program with its unit (F3 step 6c: it mounts
+# the folder at /company once the host hands the machine a view), the machine
+# guest helper and its watchdog (scripts/package-machine-guest.mjs), and apt's
+# self-update units masked. An agent that has a Dockerfile builds and runs it
+# inside its machine; images are not made from Dockerfiles.
 #
 # The builder runs in the node's declared image build space (the observer
 # policy's buildSpace: its project and its only network) as a build machine:
@@ -29,14 +33,25 @@ PROJECT=${4:?the build space project, for example qorpera-build}
 NETWORK=${5:?the build space network, for example qorpera0}
 POOL=${6:?the storage pool for the builder root, for example qorpera-vm}
 MACHINES=${7:-machines}
+# The toolbox's own pins beside apt's: uv from its release page, tsc and tsx from npm.
+UV_VERSION=0.13.1
+UV_SHA256=eadd9d27c134ab5ac1ffd4473b97a741407f3ea238288f03121fc4deddf90220
+TYPESCRIPT_VERSION=7.0.2
+TSX_VERSION=4.23.15
+# The company folder's program: the build deploy/folder-service/folder-program-linux-x64.json records
+# (scripts/folder-program-artifact.test.mjs keeps this pin on that record).
+EXPECTED_FOLDER_PROGRAM_SHA256="d8523292c5afbfe270f23efc24ca719d4933ba707feac7f306c02cde93084a65"
 [[ $(id -u) -eq 0 ]] || { echo "run as root" >&2; exit 1; }
 # Only the build record goes to stdout (> image-build.json); the builder's own output goes to stderr.
 exec 3>&1 1>&2
 [[ $NODE_VERSION =~ ^2[4-9]\.[0-9]+\.[0-9]+$ ]] || { echo "invalid Node.js version" >&2; exit 1; }
 [[ $NODE_SHA256 =~ ^[0-9a-f]{64}$ ]] || { echo "invalid Node.js sha-256" >&2; exit 1; }
-for file in cloud-machine-guest.mjs qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer manifest.json; do
+for file in cloud-machine-guest.mjs qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer \
+	qorpera-machine-folder.service qorpera-folder manifest.json; do
 	[[ -f $PACKAGE/$file ]] || { echo "package misses $file" >&2; exit 1; }
 done
+[[ $(sha256sum <"$PACKAGE/qorpera-folder" | cut -d' ' -f1) == "$EXPECTED_FOLDER_PROGRAM_SHA256" ]] ||
+	{ echo "the package's qorpera-folder is not the pinned folder program" >&2; exit 1; }
 # The package's own checksums, before anything is installed.
 python3 - "$PACKAGE" <<'PY'
 import hashlib, json, sys, pathlib
@@ -73,11 +88,15 @@ lx init ubuntu:26.04 "$BUILDER" --vm --no-profiles --storage "$POOL" -d root,siz
 lx start "$BUILDER"
 for _ in $(seq 1 90); do lx exec "$BUILDER" -- true >/dev/null 2>&1 && break; sleep 2; done
 lx exec "$BUILDER" -- cloud-init status --wait >/dev/null
-lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256" bash -euo pipefail -c '
+lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256" UV_VERSION="$UV_VERSION" \
+	UV_SHA256="$UV_SHA256" TYPESCRIPT_VERSION="$TYPESCRIPT_VERSION" TSX_VERSION="$TSX_VERSION" bash -euo pipefail -c '
 	export DEBIAN_FRONTEND=noninteractive
 	apt-get update
-	apt-get install -y --no-install-recommends ca-certificates curl git jq unzip xz-utils make pkg-config \
-		build-essential python3 python3-venv python3-pip docker.io docker-compose-v2 docker-buildx
+	apt-get install -y --no-install-recommends ca-certificates curl git jq unzip zip xz-utils make pkg-config \
+		build-essential python3 python3-venv python3-pip docker.io docker-compose-v2 docker-buildx \
+		ripgrep fd-find sqlite3 libreoffice-nogui fuse3
+	# Debian names fd fdfind; the toolbox calls it fd.
+	ln -sf /usr/bin/fdfind /usr/local/bin/fd
 	curl -fsSLo /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"
 	echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c -
 	tar -xJf /tmp/node.tar.xz -C /opt
@@ -85,36 +104,59 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	for tool in node npm npx corepack; do ln -sf "/opt/node/bin/$tool" "/usr/local/bin/$tool"; done
 	ln -sf /opt/node/bin/node /usr/bin/node
 	rm -f /tmp/node.tar.xz
+	# No install scripts: tsc and tsx need none (esbuild, under tsx, ships its binary as a platform package).
+	npm install -g --ignore-scripts --no-fund --no-audit "typescript@${TYPESCRIPT_VERSION}" "tsx@${TSX_VERSION}"
+	for tool in tsc tsx; do ln -sf "/opt/node/bin/$tool" "/usr/local/bin/$tool"; done
+	curl -fsSLo /tmp/uv.tar.gz "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz"
+	echo "${UV_SHA256}  /tmp/uv.tar.gz" | sha256sum -c -
+	tar -xzf /tmp/uv.tar.gz -C /tmp
+	install -o root -g root -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uv /tmp/uv-x86_64-unknown-linux-gnu/uvx /usr/local/bin/
+	rm -rf /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu
 	systemctl enable docker.service containerd.service
-	install -d -o root -g root -m 0755 /opt/qorpera-machine
+	install -d -o root -g root -m 0755 /opt/qorpera-machine /opt/qorpera-folder
+	# Where the company folder is mounted; until then an empty folder.
+	install -d -o root -g root -m 0755 /company
 	# No self-update: the image stays what was reviewed; agents update what they need inside their own machine.
 	systemctl mask apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service
 '
 lx file push "$PACKAGE/cloud-machine-guest.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-guest.mjs" --uid 0 --gid 0 --mode 0444
-for unit in qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer; do
+lx file push "$PACKAGE/qorpera-folder" "$BUILDER/opt/qorpera-folder/qorpera-folder" --uid 0 --gid 0 --mode 0555
+for unit in qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer qorpera-machine-folder.service; do
 	lx file push "$PACKAGE/$unit" "$BUILDER/etc/systemd/system/$unit" --uid 0 --gid 0 --mode 0644
 done
-lx exec "$BUILDER" -- bash -euo pipefail -c '
+lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGRAM_SHA256" bash -euo pipefail -c '
 	systemctl daemon-reload
 	systemctl enable qorpera-machine-watchdog.timer
 	# Checks the reviewed image must pass.
 	docker --version && docker compose version && docker buildx version
 	node --version | grep -q "^v2[4-9]\."
 	python3 --version && git --version && gcc --version | head -1
+	# The toolbox: every command answers --version (unzip has none; -v prints its version).
+	for tool in bash git node npm npx tsc tsx python3 pip pip3 uv uvx rg fd jq sqlite3 curl zip libreoffice soffice \
+		fusermount3; do
+		"$tool" --version >/dev/null || { echo "$tool does not answer --version" >&2; exit 1; }
+	done
+	unzip -v >/dev/null
+	# The folder program is the pinned one, runs, and is only started by the helper (its unit has no [Install]).
+	[[ $(sha256sum </opt/qorpera-folder/qorpera-folder | cut -d" " -f1) == "$EXPECTED_FOLDER_PROGRAM_SHA256" ]]
+	/opt/qorpera-folder/qorpera-folder --version
+	[[ $(systemctl is-enabled qorpera-machine-folder.service || true) == static ]]
+	[[ -d /company && -z $(ls -A /company) ]]
 	for unit in apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service; do
 		[[ $(readlink "/etc/systemd/system/$unit") == /dev/null ]]
 	done
-	systemd-analyze verify /etc/systemd/system/qorpera-machine-watchdog.service /etc/systemd/system/qorpera-machine.slice
-	# Nothing of this build stays: logs, keys, caches, the machine id.
+	systemd-analyze verify /etc/systemd/system/qorpera-machine-watchdog.service /etc/systemd/system/qorpera-machine.slice \
+		/etc/systemd/system/qorpera-machine-folder.service
+	# Nothing of this build stays: logs, keys, caches (the LibreOffice profile too), the machine id.
 	apt-get clean
-	rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /root/.cache /root/.npm
+	rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /root/.cache /root/.npm /root/.config/libreoffice
 	cloud-init clean --logs --machine-id
 	rm -f /etc/ssh/ssh_host_*
 	journalctl --rotate --vacuum-time=1s >/dev/null 2>&1 || true
 	sync
 '
 lx stop "$BUILDER"
-lx publish "$BUILDER" --alias "$ALIAS" description="Qorpera company machine $STAMP (Ubuntu 26.04, Docker, Node $NODE_VERSION)"
+lx publish "$BUILDER" --alias "$ALIAS" description="Qorpera company machine $STAMP (Ubuntu 26.04, Docker, Node $NODE_VERSION, toolbox, company folder)"
 FINGERPRINT=$(lx image info "$ALIAS" | awk '/^Fingerprint:/ {print $2}')
 [[ $FINGERPRINT =~ ^[0-9a-f]{64}$ ]] || { echo "no image fingerprint" >&2; exit 1; }
 echo "published $FINGERPRINT (delete it by hand if this build fails from here)" >&2
