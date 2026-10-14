@@ -1,18 +1,10 @@
-import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import type { CloudFolderSidebar, CloudFolderSidebarRequest } from "./cloud-folder-sidebar.ts";
 import {
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
-	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
-import {
-	CloudControlRefusalRelay,
-	type CloudNativeTool,
-	type CloudToolContext,
-	cloudOperationKeyOf,
-	cloudToolJsonText,
-} from "./cloud-native-tool-boundary.ts";
+import type { CloudNativeTool, CloudToolContext } from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 const ACTIONS = ["list", "create_section", "rename_section", "delete_section", "move_agent"] as const;
@@ -56,14 +48,12 @@ function sectionRef(value: unknown): string {
 export function cloudSidebarTools(
 	binding: CloudNativeToolBinding,
 	identity: CloudNativeToolIdentity,
-	control: CloudCompanyPathControl,
-	/** A folder-v2 run's sections file writer. */
-	options: { folderSidebar?: CloudFolderSidebar } = {},
+	/** The run's sections file writer. */
+	options: { folderSidebar: CloudFolderSidebar },
 ): readonly CloudNativeTool[] {
 	const folderSidebar = options.folderSidebar;
 	const admitted = parseCloudNativeToolBinding(binding),
 		expected = Object.freeze({ ...identity });
-	const refusals = new CloudControlRefusalRelay();
 	if (
 		Object.entries(admitted).some(
 			([key, value]) => key !== "credentialCapsuleId" && expected[key as keyof CloudNativeToolIdentity] !== value,
@@ -85,7 +75,7 @@ export function cloudSidebarTools(
 	const tool: CloudNativeTool = {
 		name: "organize_sidebar" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: folderSidebar ? CLOUD_SIDEBAR_TOOL_DESCRIPTION_FOLDER : CLOUD_SIDEBAR_TOOL_DESCRIPTION,
+		description: CLOUD_SIDEBAR_TOOL_DESCRIPTION_FOLDER,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -123,34 +113,8 @@ export function cloudSidebarTools(
 		async execute(value, context) {
 			assertContext(context);
 			const request = value as Record<string, unknown>;
-			// A folder-v2 company's sections are a file; the folder core decides each save.
-			if (folderSidebar) return folderSidebar.run(request as unknown as CloudFolderSidebarRequest, context);
-			// The tool's first effect: a refusal of it is the tool's answer (control calls, 4 Oct 2026).
-			const result = await refusals.call(cloudOperationKeyOf(request), () =>
-				cloudToolRequest(
-					(requestSignal) =>
-						control.call(
-							"qorpera_manage_agent_sidebar",
-							{ p_binding: admitted, p_request: request },
-							requestSignal,
-						),
-					context.signal,
-				),
-			);
-			const r = result as Record<string, unknown> | null;
-			if (
-				!r ||
-				typeof r !== "object" ||
-				r.schema !== "qorpera.agent-sidebar/v1" ||
-				r.runId !== admitted.runId ||
-				r.action !== request.action ||
-				typeof r.changed !== "boolean" ||
-				!Array.isArray(r.sections) ||
-				!Array.isArray(r.unassigned) ||
-				(r.refused !== undefined && (typeof r.refused !== "string" || r.changed))
-			)
-				throw new Error("Sidebar receipt differs");
-			return { kind: "text", value: cloudToolJsonText(r) };
+			// A company's sections are a file; the folder core decides each save.
+			return folderSidebar.run(request as unknown as CloudFolderSidebarRequest, context);
 		},
 	};
 	return [tool];
