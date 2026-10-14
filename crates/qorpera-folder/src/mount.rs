@@ -305,6 +305,20 @@ impl Shared {
 		children.into_iter().find(|c| c.name == name).ok_or(libc::ENOENT)
 	}
 
+	/// Remember a version read through its inode, unless a local save or rename changed what that inode stands for.
+	/// A detached older version counts only when no newer read or save is already remembered for the path.
+	fn read_version(&self, ino: u64, path: &str, version: &str) {
+		if !self.writable {
+			return;
+		}
+		let tree = self.tree.lock().unwrap();
+		let mut versions = self.versions.lock().unwrap();
+		let its = tree.path(ino) == Some(path) && tree.last_seen(ino).is_some_and(|a| a.version == version);
+		if its && (tree.current(ino) || (!tree.removed_here(ino) && versions.get(path).is_none())) {
+			versions.read(path, version);
+		}
+	}
+
 	/// Opens `ino` (at `path`, showing `attr`) for writing at the node, or joins the handles already writing it (or a
 	/// file whose close the node has not taken yet). Only this file's lock is held over the node's open: two opens of it
 	/// never make two node handles, and nothing else waits.
@@ -637,6 +651,12 @@ impl Filesystem for FolderFs {
 		// version's only: a newer version is another inode (tree.rs), and this program's own saves are what was written
 		// through this inode.
 		let writing = self.s.writing.lock().unwrap().contains_key(&ino.0);
+		// The kernel can answer EOF for an empty file without sending a read. Its empty content is already known at
+		// this read-only open, so remember that version before a later writer or feed change can replace it. A file
+		// being written here instead reads from its writer; its listed size may not describe those bytes.
+		if attr.size == 0 && !writing {
+			self.s.read_version(ino.0, &path, &attr.version);
+		}
 		let flags =
 			if self.s.ttl(kept).is_zero() || writing { FopenFlags::empty() } else { FopenFlags::FOPEN_KEEP_CACHE };
 		reply.opened(self.s.handle(Handle::File { ino: ino.0, path, version: attr.version, size: attr.size }), flags);
@@ -746,20 +766,7 @@ impl Filesystem for FolderFs {
 		let len = (file_size - offset).min(size.min(MAX_READ) as u64) as u32;
 		match self.s.link.read(&path, &version, offset, len) {
 			Ok(data) => {
-				// The version map: the newest version this mount read of the path, a save's base. A read of the version the
-				// path's inode stands for, through that inode (its version, not its attributes: a change on the feed makes
-				// those unknown until the folder is listed again). A read under way while this mount saves the file read the
-				// version before the save, and is not taken. A file still open from before a newer version arrived reads an
-				// older one: taken only while the map holds nothing for the path, when it is the only version the mount read.
-				if self.s.writable {
-					let tree = self.s.tree.lock().unwrap();
-					let mut versions = self.s.versions.lock().unwrap();
-					let its = tree.path(ino) == Some(path.as_str())
-						&& tree.last_seen(ino).is_some_and(|a| a.version == version);
-					if its && (tree.current(ino) || (!tree.removed_here(ino) && versions.get(&path).is_none())) {
-						versions.read(&path, &version);
-					}
-				}
+				self.s.read_version(ino, &path, &version);
 				reply.data(&data)
 			}
 			Err(f) => {

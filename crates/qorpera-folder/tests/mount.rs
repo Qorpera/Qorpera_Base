@@ -465,3 +465,45 @@ fn a_file_held_open_across_a_newer_version_bases_its_save_on_what_it_read() {
 	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
 }
 
+fn save_after_reading_an_empty_file(rename: bool) {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("plan.md", "", false);
+	let (company, runner) = start_with(&node, Some(node.dir.join("state")));
+	let plan = company.join("plan.md");
+	let mut held = std::fs::File::open(&plan).unwrap();
+	assert_eq!(held.metadata().unwrap().len(), 0);
+	let mut content = Vec::new();
+	held.read_to_end(&mut content).unwrap();
+	assert!(content.is_empty());
+	assert_eq!(node.reads(), 0, "an empty file needs no byte request: the kernel may answer EOF itself");
+
+	// Another writer publishes, and the feed advances this mount. Only inspect attributes here: reading the newer
+	// bytes would deliberately replace the editor's remembered base.
+	node.put("plan.md", "the other writer's work", false);
+	assert!(eventually(Duration::from_secs(2), || std::fs::metadata(&plan).is_ok_and(|m| m.len() == 23)));
+	if rename {
+		let temporary = company.join(".plan.md.new");
+		std::fs::write(&temporary, "from the empty buffer").unwrap();
+		std::fs::rename(&temporary, &plan).unwrap();
+		assert_eq!(node.renames().last().unwrap().to_base.as_deref(), Some("v1"));
+	} else {
+		std::fs::write(&plan, "from the empty buffer").unwrap();
+		assert_eq!(node.opens().last().unwrap(), &("plan.md".to_string(), Some("v1".to_string())));
+	}
+	drop(held);
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
+fn an_empty_file_read_keeps_its_base_for_an_in_place_save() {
+	save_after_reading_an_empty_file(false);
+}
+
+#[test]
+fn an_empty_file_read_keeps_its_base_for_a_temporary_file_save() {
+	save_after_reading_an_empty_file(true);
+}

@@ -126,18 +126,10 @@ function broker() {
 		listTranscript: vi.fn(async () => []),
 		listOperations: vi.fn(async () => []),
 		listArtifacts: vi.fn(async () => []),
-		getObject: vi.fn(async () => new Uint8Array()),
-		putObject: vi.fn(async () => "stored" as const),
-		registerArtifact: vi.fn(async () => ({})),
 		requestModel: vi.fn(async () => ({})),
 		beginOperation: vi.fn(async () => ({})),
 		completeOperation: vi.fn(async () => ({})),
 		bindProviderSession: vi.fn(async () => ({})),
-		prepareCompanyRevision: vi.fn(async () => ({})),
-		beginCompanyRevisionGraph: vi.fn(async () => ({})),
-		appendCompanyRevisionGraph: vi.fn(async () => 1),
-		completeCompanyRevisionGraph: vi.fn(async () => ({})),
-		verifyCompanyRevision: vi.fn(async () => ({ verified: true, pending: false })),
 		appendTranscriptEvent: vi.fn(async () => ({})),
 	} satisfies CloudRunnerBrokerTransport;
 }
