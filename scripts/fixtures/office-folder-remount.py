@@ -532,3 +532,55 @@ def gone(events, killed):
         if state not in seen:
             seen.append(state)
     return seen
+
+
+def ask(relay, name, request, troubles, seconds=45):
+    """One client request. An errno is an answer; a client failure or a client that stopped answering is trouble."""
+    reply = relay.client(name, request, seconds)
+    if "failure" in reply or "callError" in reply:
+        troubles.append({"client": name, "request": request, "reply": reply})
+    return reply
+
+
+def journal(unit, lines=40):
+    return quiet("journalctl", "--no-pager", "-o", "short-monotonic", "-n", str(lines), "-u", unit).get("output", "").splitlines()
+
+
+def gap_trial(relay, mode, troubles):
+    """Before the first mount: what an office namespace sees at /company, and whether the mount comes up over it."""
+    view = f"gap-{mode}"
+    unit = UNIT.format(view)
+    trial = {"mode": mode, "served": False}
+    started = []
+    try:
+        point = lay_out(view, mode)
+        info = point.stat()
+        trial["bare"] = {"mode": oct(info.st_mode & 0o7777), "uid": info.st_uid}
+        command, shell = f"{view}-command", f"{view}-shell"
+        trial["commandStart"] = relay.call("start", name=command, shape="command", folder="candidate", view=view)
+        if trial["commandStart"]["started"]:
+            started.append(command)
+            trial["commandBefore"] = {"look": ask(relay, command, {"op": "look"}, troubles), "write": ask(relay, command, {"op": "write", "path": "gap.txt", "text": "gap"}, troubles)}
+        # A shell that starts in /company, as shell.ts's comment says it will once the folder is mounted.
+        trial["shellAtCompanyStart"] = relay.call("start", name=shell, shape="shell", folder="candidate", view=view, chdir="/company")
+        if trial["shellAtCompanyStart"]["started"]:
+            started.append(shell)
+            trial["shellAtCompanyBefore"] = {"status": ask(relay, shell, {"op": "status"}, troubles), "listcwd": ask(relay, shell, {"op": "listcwd"}, troubles)}
+        began = time.monotonic()
+        trial["start"] = quiet("systemctl", "start", "--no-block", unit)
+        try:
+            base.eventually(lambda: served(point), 15)
+            trial["served"] = True
+            trial["servedAfterSeconds"] = round(time.monotonic() - began, 3)
+        except TimeoutError:
+            pass
+        trial["unit"] = show(unit)
+        trial["journal"] = journal(unit)
+        if command in started:
+            trial["commandAfter"] = {"look": ask(relay, command, {"op": "look"}, troubles), "write": ask(relay, command, {"op": "write", "path": "gap-after.txt", "text": "gap"}, troubles)}
+        if shell in started:
+            trial["shellAtCompanyAfter"] = {"listcwd": ask(relay, shell, {"op": "listcwd"}, troubles), "look": ask(relay, shell, {"op": "look"}, troubles)}
+    finally:
+        trial["stopped"] = [relay.call("stop", name=name) for name in started]
+        trial["teardown"] = tear_view(view)
+    return trial
