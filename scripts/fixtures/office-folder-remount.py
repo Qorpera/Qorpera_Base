@@ -725,3 +725,86 @@ class Proof:
         self.cwd["listcwd"] = self.ask(relay, "command", {"op": "listcwd"})
         state = ROOT / "state" / VIEW
         self.state_before = {"inode": state.stat().st_ino, "names": sorted(os.listdir(state))}
+
+    def kill(self, how, seed, text):
+        """Kills the mount's daemon, then waits for systemd's restart to serve one mount again."""
+        self.ask(self.relay1, "desktop", {"op": "watch-start"})
+        before = show(self.unit)
+        killed = time.monotonic()
+        if how == "pid":
+            os.kill(before["MainPID"], signal.SIGKILL)
+        else:
+            base.run("systemctl", "kill", "-s", "KILL", self.unit)
+        # Only the new mount can know this file.
+        with self.node.lock:
+            self.node.files[seed] = text.encode()
+
+        def back():
+            now = show(self.unit)
+            if now["NRestarts"] == before["NRestarts"] + 1 and now["MainPID"] not in (0, before["MainPID"]) and now["ActiveState"] == "active" and served(self.point) and count(self.point) == 1:
+                return now
+            return None
+
+        try:
+            after = base.eventually(back, 30)
+            seconds = round(time.monotonic() - killed, 3)
+        except TimeoutError:
+            after, seconds = show(self.unit), None
+        time.sleep(0.5)
+        events = self.ask(self.relay1, "desktop", {"op": "watch-stop"}).get("events", [])
+        return {
+            "how": how,
+            "before": before,
+            "after": after,
+            "hostServedAfterSeconds": seconds,
+            "hostCount": count(self.point),
+            "namespaceServedAfterSeconds": restart_seconds(events, killed),
+            "namespaceSawMeanwhile": gone(events, killed),
+            "journal": journal(self.unit, 30),
+        }
+
+    def after_restart(self, tag, seed, text):
+        """The namespaces started before the first mount: same process and namespace, reading and writing the new mount."""
+        seen = {}
+        for name, _ in CANDIDATES:
+            status = self.ask(self.relay1, name, {"op": "status"})
+            lines = self.ask(self.relay1, name, {"op": "mountinfo"}).get("lines", [])
+            seen[name] = {
+                "sameProcess": status.get("token") == self.before[name]["status"].get("token"),
+                "sameNamespace": status.get("mountNamespace") == self.before[name]["status"].get("mountNamespace"),
+                "read": self.ask(self.relay1, name, {"op": "read", "path": seed}),
+                "write": self.ask(self.relay1, name, {"op": "write", "path": f"{name}-{tag}.txt", "text": tag}),
+                "namespaceCount": count("/folder-parent/company", mountinfo("\n".join(lines))),
+                "mountinfo": lines,
+            }
+        with self.node.lock:
+            stored = {name: self.node.files.get(f"{name}-{tag}.txt") for name in seen}
+        recovered = all(entry["sameProcess"] and entry["sameNamespace"] and entry["read"].get("text") == text and entry["write"].get("written") and stored[name] == tag.encode() for name, entry in seen.items())
+        return seen, recovered, all(entry["namespaceCount"] == 1 for entry in seen.values())
+
+    def first_kill(self):
+        restart = self.kill("pid", "after.txt", "after restart")
+        self.note("kill1", restart)
+        self.check("restartedBySystemd", restart["hostServedAfterSeconds"] is not None, {"before": restart["before"], "after": restart["after"]})
+        seen, recovered, one = self.after_restart("after", "after.txt", "after restart")
+        self.check("runningNamespacesRecovered", recovered, seen)
+        self.check("oneMountAfterRestart", restart["hostCount"] == 1 and one, {"kill": 1, "hostCount": restart["hostCount"], "namespaceCounts": {name: entry["namespaceCount"] for name, entry in seen.items()}})
+        direct = self.ask(self.relay1, "direct", {"op": "read", "path": "before.txt"})
+        self.check("directBindNegativeControl", self.direct_before["read"].get("text") == "before" and direct.get("errno") == errno.ENOTCONN, {"before": self.direct_before, "after": direct})
+        self.cwd["listcwdAfterKill"] = self.ask(self.relay1, "command", {"op": "listcwd"})
+        self.cwd["chdirAgain"] = self.ask(self.relay1, "command", {"op": "chdir"})
+        self.cwd["listcwdAgain"] = self.ask(self.relay1, "command", {"op": "listcwd"})
+        self.note("staleCwd", self.cwd)
+        self.old_fd["preadAfterKill"] = self.ask(self.relay1, "desktop", {"op": "pread", "key": "old"})
+        self.old_fd["closeAfterKill"] = self.ask(self.relay1, "desktop", {"op": "close", "key": "old"})
+        self.note("oldDescriptor", self.old_fd)
+        closes = {key: self.ask(self.relay1, "command", {"op": "close", "key": key}) for key in ("new-unsent", "new-fsynced", "truncate", "keep")}
+        with self.node.lock:
+            kept = {key: self.node.files.get(path, b"").decode() for key, (path, _) in LOSS.items()}
+            abandoned = [op for op in self.node.ops if op["op"] == "abandoned" and op["viewId"] == VIEW]
+        self.loss.update(closesAfterKill=closes, nodeAfterRestart=kept, abandoned=abandoned, expected={key: text for key, (_, text) in LOSS.items()})
+        self.loss["asExpected"] = kept == self.loss["expected"]
+        self.note("loss", self.loss)
+        state = ROOT / "state" / VIEW
+        now = {"inode": state.stat().st_ino, "names": sorted(os.listdir(state))}
+        self.check("stateFolderKept", now["inode"] == self.state_before["inode"] and set(self.state_before["names"]) <= set(now["names"]), {"before": self.state_before, "after": now})
