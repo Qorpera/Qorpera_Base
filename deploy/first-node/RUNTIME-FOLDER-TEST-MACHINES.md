@@ -1,0 +1,204 @@
+# Test machines on the folder (F3 step 6): the plan
+
+Status: plan, for review before it is built. No slice is built yet.
+Test machines are today's company machines ([deploy/machine/README.md](../machine/README.md): the `machine_*` tools,
+`qorpera_company_machines`, the guest helper). The design calls them test machines, and so does this page. The design it
+follows is [RUNTIME-COMPANY-FOLDER.md](RUNTIME-COMPANY-FOLDER.md)'s 14 October decision ("Which view each machine gets":
+the test machine paragraphs; "What a crash loses"; "Nothing on a node"; build order row 6), with §2 ("When changes are
+published") and §8 (what a test machine reaches), and the contract's 2026-10-14 amendment ("machines work in the folder
+as on their own disk": item 1 the bar, item 2 commands as root, item 3 programs that keep running, items 4–6 links and
+special files, item 7 the toolbox, item 8 the machine's own cache, item 10 until a machine carries the folder). The views
+are C1b-3's ([RUNTIME-COMPANY-FOLDER-C1B.md](RUNTIME-COMPANY-FOLDER-C1B.md) §1–§7, and §8 "C1b-3b: shell commands and
+test machines"). It reuses step 4's mechanics ([RUNTIME-FOLDER-COMPANY-MACHINES.md](RUNTIME-FOLDER-COMPANY-MACHINES.md):
+the serving check, the boundary answer, the reasons, the mount propagation proof) and step 5's
+([RUNTIME-FOLDER-CODING-MACHINES.md](RUNTIME-FOLDER-CODING-MACHINES.md): the in-memory read record, release fan-out, the
+host-local control socket, machine-wide boundaries and `served_by`). Where this page differs from them, it says so and
+why. Facts about today's test machines are from master at 63f697118.
+
+## What step 6 delivers
+
+A test machine whose starter's authority covers the company-wide view works in the company folder at `/company`. Its
+commands read and write the company's files as on their own disk (item 1), with the network and the folder (item 2). A
+program that keeps running publishes about two seconds after its last change, each time its output is read, and when it
+ends (item 3). Each save is credited to the commands that ran while it was made, from #419's command records on the
+node. Once `/company` is mounted, starting a command passes the automatic review as an outside effect (design: "a
+worker's commands pass under its agent's rules"). The read-only repository disk at `/mnt/repository`, and the copy of it
+to the machine's own disk, retire (build order row 6).
+
+What does not change: a test machine is the company's own scratch compute, any agent of the company may use it, and every
+member sees it. Its only network is the agent exit: it reaches the internet but no private network, the NAS, the nodes or
+the control plane (§8). Its disk is throwaway ("Nothing on a node"). Its dependencies and builds stay in its own cache and
+are never published (item 8). A machine whose starter's authority does not cover the company-wide view has no `/company`
+and works as today (item 10; review of its commands is Q2).
+
+**Root is the agent's.** On a test machine an agent is root (design: "The guard there is the CID check plus exactly one
+view per machine"). Root reaches every command on the machine, whichever agent started it. So the walls between commands
+keep order, not security: crediting a save to its commands is best effort, and "it can misname the saver, never widen the
+view". What any command can see or change is the one view's, which is the starter's (below), and each save must also be
+allowed for every agent it is credited to (C1b §8). Nothing that must hold for the platform, for another company or
+for an agent's authority runs inside the machine: the folder's checks, the read record, receipts and the lease stay
+outside it (below).
+
+## The parts
+
+- **The test machine**: one LXD VM per placement, `qorpera-machine-<placementId hex>` in the LXD project `machines`
+  (`lxdCompanyMachineName`). Its only NIC is on the agent plug (`agentPlugCard("eth0")`), so all its traffic leaves
+  through the agent exit. Its disk is scratch.
+- **The guest helper** (`packages/runtime/src/cloud-machine-guest.ts`, today's): runs as root in the VM and is
+  untrusted. It runs each command as a transient systemd unit under `qorpera-machine.slice` (`KillMode=control-group`, as
+  today) and, new in 6c, starts and restarts the folder program. The executor drives it only by LXD exec; its answers are
+  observations, and the executor's journal and SQL are the truth.
+- **The folder program**: step 1's FUSE program, one per machine, as root in the VM, at `/company`.
+- **The node's folder service** (`packages/object-gateway/src/folder-service/`): serves the machine's one view to that
+  machine only, records each read it serves, tags each change with the commands that ran when it was made, publishes and
+  answers boundaries.
+- **The executor** (`packages/runner-orchestrator/src/company-machine-host.ts`, and the command route
+  `cloud-machine-command-http.ts`): opens the view for each boot, hands the folder program its pass, tells the folder
+  service when each command starts and ends over the host-local control socket (5c), and asks for a boundary before any
+  answer that carries the machine's output.
+- **SQL** (6a): the `test_machine` view kind, credits per unit in a publish, the machine's read set, and the check that a
+  caller may use a machine that has `/company`.
+- **The review** (6d): `cloudActionEffect` (`packages/runtime/src/cloud-action-review.ts`) classes `machine_run` as an
+  outside effect.
+
+## What stays outside the machine
+
+Root in the VM can't be trusted for anything that must hold beyond the machine itself. Everything below runs on the node
+host or in the core, and the VM sees only its results.
+
+| What | Where it runs | Why it can't be in the VM |
+| --- | --- | --- |
+| The folder's checks: authority, the view, names, sizes, links and special files (items 4–6) | The node's folder service and the core | Root can change any program in the VM. |
+| The read record and release | The folder service records each read it serves, in memory, before the answer leaves (5c) | A guest-kept read log could be edited. |
+| Command windows and credit | The executor tells the folder service when each command starts and ends; the service tags each change with the commands open at that moment | The guest can lie about which command made a change. |
+| Receipts and the output tail | The executor writes them through SQL, as today (`qorpera_record_company_machine_commands`) | They are history; root can rewrite anything on the machine's disk. |
+| Whether the view is still valid | SQL, at each renew, release and commit: the boot and placement are the view's, and the starter still reads the root | The folder program renews the lease (C1b-3 §5), and root can keep that up; the lease is not what keeps the view valid. |
+| The pass | Handed to the guest over exec stdin only, never into LXD config, `user.*` keys, cloud-init or a host file | Root reads every file, environment and LXD key in the VM. |
+
+## The security line
+
+**What an agent's root reaches.** Its own VM: every command, file, process and mount on it, whichever agent started them.
+The folder only through the one view served to that VM, so never more than the company-wide view as the starter's
+authority allows it (below). The network only through the agent exit, under company rules, with our own networks refused
+(agent exit §3) and the exit's port isolation between guests. One host service on vsock: the folder service, whose
+bridge asks LXD which instance has the caller's CID and serves only that instance's view
+(`packages/object-gateway/src/folder-service/machines.ts`). LXD's own agent channel, which runs only what the host
+starts.
+
+**What it can't reach:**
+
+- **Other companies.** A machine belongs to one company and environment, its view is that company's, and the exit's
+  company rules and log are per company. A pass read on one VM fails on any other: the service serves a view only to
+  the instance it names.
+- **The node host.** The VM is a KVM guest. The host listens to it only on the CID-checked folder service; every stream
+  into the VM (the guest helper's calls, the folder program's start) is started by the host. `security.devlxd=false` on
+  test machines (new in 6c, as step 5 does for coding machines), so `/dev/lxd` offers the guest nothing.
+- **Platform keys.** A test machine holds no credential (README). No service-role key in the guest (G2). No secret or
+  pass goes into LXD config, `user.*` keys or cloud-init.
+- **Our networks.** The NAS, the nodes, private networks and the control plane: the agent exit refuses them (§8).
+
+**What never changes on node hosts.** No kernel modules, sysctls or nft changes; the agent exit and the guest guard are
+unchanged. Test machines stay in the `machines` project; nothing is created in a node host's own LXD outside it. A proof
+that needs any of this runs only inside a throwaway nested VM.
+
+**Root inside the VM is accepted, not walled.** Item 2: where commands run as root, "a namespace does not hold a
+command. There, every command has the network and the folder". So step 6 adds no wall between commands inside the VM.
+
+## Views and machines
+
+**When `/company` is mounted.** The design: "`/company` is mounted only when the starter's authority covers the
+company-wide view. Its one view is opened by the starter's run, holds the lease and sets what can be seen." The starter
+is the machine's `started_by_staff_agent_id` and the member it acted for, `requested_by_user_id`
+(`20260928259050_runtime_company_machines.sql:123–129`). Its authority covers the company-wide view when both the agent
+and the member read the company folder's root now. The test is made at each boot, so a starter whose authority widens
+gets `/company` at the machine's next boot, and one whose authority narrows loses it (renew, below).
+
+**The view.** Each boot that passes has one open `test_machine` view (C1b-3 §1: "one open view … per test machine";
+the partial unique index on `(company_machine_id) where state='open'`, new in 6a). The executor opens it right after
+`qorpera_mark_company_machine_running` records the boot, in its own transaction (C1b-3 §5), with the opener
+`{"kind":"platform"}` and the anchor `{companyMachineId, placementId, bootId}`. The open takes the machine fence
+(`qorpera_folder_machine_fence`), then the machine row and its current placement `FOR SHARE` (C1b-3 §3's `test_machine`
+row: "the placement and `boot_id` are the view's"). The view's `machine_id` is the placement's id, which names the
+instance (`qorpera-machine-<placementId hex>`). The view names the starter's agent and member, and its run is the
+starter's run (`started_by_run_id`) for credit and inheritance. It shows the company-wide view (`companyWide` true, as
+for `computer_desktop`), as the starter's agent and member may see and change it. The executor hands
+`{environmentId, viewId, pass}` to the guest helper over exec stdin before it starts any command of that boot.
+
+The design has the starter's run open the view. Here the executor opens it on that run's behalf, as the office opens a
+desktop's view: a boot often comes long after that run ended (a member's Start, or another agent's wake), and only the
+executor knows when the boot is up. The view still names the starter and its run (amended below).
+
+- **A refused open** leaves the boot without `/company`: the machine runs as today (item 10), and the report says why
+  (the starter's authority, the machine stopping). The next boot asks again.
+- **An open with no answer** (the core unreachable) is retried at every executor pass. A command started before the
+  boot's open is answered waits for it; with no answer by the start's deadline, the start fails as unreachable, the way
+  a start fails today when the guest does not answer.
+- **Renew and close** are the folder program's, as on every machine (C1b-3 §5): renew extends the lease by 120 s and
+  closes the view `ended` or `expired` once it is no longer valid. A `test_machine` view is valid while its placement
+  is not removed, the machine's `boot_id` is the view's, and the starter's agent and member still read the root (6a, in
+  `qorpera_folder_view_valid`). A retired placement stays valid, so a delete's final boundary can still publish (below).
+  The executor closes the view after the final boundary at stop, sleep, delete, suspend and release (C1b §8: the end
+  boundary keeps the view valid for one final publish with `final`, and the commit closes it).
+- **A starter whose authority narrows** makes the next renew close the view `ended`. What was not yet published is not
+  applied, and the commands running are told why. The executor sees the closed view at its next pass and restarts the
+  VM, so no command keeps running under a view that is gone, and the next boot's open decides again.
+
+**Serving.** As step 4's 4a and step 5's 5c, the view's first renewal says its kind and machine, and the service checks
+the calling VM's CID (`{project, name, physicalId}` from LXD):
+
+- a `test_machine` view is served only to `qorpera-machine-<machine_id hex>` in one of the node's `testMachineProjects`
+  (new in 6b, as step 4's `companyMachineProjects`; on our nodes the `machines` project), read-write, with a quiet
+  publish about 2 s after its last change (item 3);
+- no other machine gets it, and a test machine gets no other kind; a kind or machine that changes closes the view (as
+  4a).
+
+**Access.** Any agent whose authority covers the view may run commands there (design). So while the machine's current
+placement has an open `test_machine` view, or had one this boot, `qorpera_authorize_machine_command` (start, read and
+cancel) also requires the caller's agent and member to read the root now (6a). A worker is checked as its agent.
+
+**The service that served a view** is named on it (`served_by`, 5a's), and a view served by a crashed service is
+refused (5a), as for coding views.
+
+## Mounts in the VM
+
+<!-- TODO -->
+
+## Commands and credit
+
+<!-- TODO -->
+
+## Review
+
+<!-- TODO -->
+
+## Reads
+
+<!-- TODO -->
+
+## Boundaries
+
+<!-- TODO -->
+
+## The report
+
+<!-- TODO -->
+
+## What replaces `/mnt/repository`
+
+<!-- TODO -->
+
+## What step 6 reuses from 4c and 5c
+
+<!-- TODO -->
+
+## Slices
+
+<!-- TODO -->
+
+## What this plan amends
+
+<!-- TODO -->
+
+## Proposals and questions
+
+<!-- TODO -->
