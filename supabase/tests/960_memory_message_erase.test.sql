@@ -224,6 +224,11 @@ begin
 		extensions.gen_random_uuid(), 1, 'agent_turn', 'agent_turn', repeat('c', 64), 34, '{}', '70000000-0000-4000-8000-000000000001',
 		'70000000-0000-4000-8000-000000000001', 'openai', 'gpt-test', 'provider_default', 'company', extensions.gen_random_uuid(),
 		repeat('b', 64));
+	-- Its assignment: a scrub updates the receipts, and an update checks the keys of a row this transaction wrote.
+	insert into public.qorpera_runner_assignments(id, claim_id, job_id, run_id, runner_id, capability_sha256, status, expires_at,
+		accepted_at)
+	values (extensions.gen_random_uuid(), extensions.gen_random_uuid(), v_job, p_run, extensions.gen_random_uuid(), repeat('e', 64),
+		'accepted', clock_timestamp() + interval '1 hour', clock_timestamp());
 	set local session_replication_role = origin;
 end $$;
 create function pg_temp.end_run(p_run uuid) returns void language plpgsql as $$
@@ -241,7 +246,8 @@ begin
 	set local session_replication_role = replica;
 	insert into public.qorpera_run_operation_receipts(id, run_id, job_id, assignment_id, logical_operation_key, operation_kind,
 		input_sha256, downstream_idempotency_sha256, status, result, completed_at)
-	select v_id, p_run, r.job_id, extensions.gen_random_uuid(), p_call, 'cloud_tool', repeat('a', 64), repeat('e', 64), 'completed',
+	select v_id, p_run, r.job_id, (select x.id from public.qorpera_runner_assignments x where x.run_id = p_run), p_call, 'cloud_tool',
+		repeat('a', 64), repeat('e', 64), 'completed',
 		jsonb_build_object('schema', 'qorpera.cloud-tool-operation-result/v1', 'callId', p_call,
 			'content', jsonb_build_object('kind', 'text', 'value', 'message 5 said ' || p_call)), clock_timestamp()
 	from public.qorpera_execution_runs r where r.id = p_run;
@@ -481,3 +487,105 @@ begin
 	-- A requested erase is past step 3.
 	perform pg_temp.same(public.qorpera_memory_message_erase_ask('70000000-0000-4000-8000-000000000020', eid), r, 'Step 3 runs once');
 end $$;
+
+-- 6. Step 4: each ended run with no open card has its receipts scrubbed; the erase is done once the versions are gone ---
+
+do $$
+declare
+	eid uuid := (select e.id from public.qorpera_memory_message_erases e); r jsonb; er public.qorpera_memory_message_erases;
+	a constant uuid := '96000000-0000-4000-8000-0000000000a1'; b constant uuid := '96000000-0000-4000-8000-0000000000b1';
+	c constant uuid := '96000000-0000-4000-8000-0000000000c1'; d constant uuid := '96000000-0000-4000-8000-0000000000d1';
+begin
+	perform set_config('request.jwt.claims', '{"role":"authenticated"}', true);
+	perform pg_temp.fails(format('select public.qorpera_memory_message_erase_scrub(%L, %L)',
+		'70000000-0000-4000-8000-000000000020', eid), '42501', 'Only the folder core scrubs');
+	perform pg_temp.service();
+	perform pg_temp.fails(format('select public.qorpera_memory_message_erase_scrub(%L, %L)',
+		'70000000-0000-4000-8000-000000000020', extensions.gen_random_uuid()), 'P0002', 'No such erase');
+	-- C has ended: the receipt that read message 5 keeps its envelope, its content erased. A is live; B has an open card.
+	r := public.qorpera_memory_message_erase_scrub('70000000-0000-4000-8000-000000000020', eid);
+	perform pg_temp.same(r - 'eraseId' - 'sessionId' - 'eventId', '{"schema":"qorpera.memory-message-erase/v1",'
+		'"state":"requested","blocks":4,"runsPending":2}', 'Step 4 scrubs the ended run');
+	perform pg_temp.same((select jsonb_object_agg(t.run_id, t.state || ':' || (t.scrubbed_at is not null))
+			from public.qorpera_memory_message_erase_runs t where t.erase_id = eid),
+		'{"96000000-0000-4000-8000-0000000000a1":"pending:false","96000000-0000-4000-8000-0000000000b1":"pending:false",'
+		'"96000000-0000-4000-8000-0000000000c1":"done:true"}', 'The run table after C');
+	perform pg_temp.same((select o.result from public.qorpera_run_operation_receipts o where o.run_id = c and o.logical_operation_key = 'zoom-c3'),
+		'{"schema":"qorpera.cloud-tool-operation-result/v1","callId":"zoom-c3","content":{"kind":"text","value":"[erased]"}}',
+		'The scrubbed receipt');
+	perform pg_temp.same(jsonb_build_array(pg_temp.content(c, 'zoom-c1'), pg_temp.content(c, 'zoom-c2'), pg_temp.content(c, 'rc-c5'),
+			pg_temp.content(a, 'zoom-a'), pg_temp.content(b, 'rc-b'), pg_temp.content(d, 'rc-d')),
+		'["message 5 said zoom-c1","message 5 said zoom-c2","message 5 said rc-c5","message 5 said zoom-a","message 5 said rc-b",'
+		'"message 5 said rc-d"]', 'The other receipts stay');
+	-- A ends and B's card is denied: both are scrubbed, while P18 still erases the blocks' versions.
+	perform pg_temp.end_run(a);
+	update public.qorpera_action_reviews set answer = 'deny', answered_by_user_id = '70000000-0000-4000-8000-000000000001',
+		answered_at = clock_timestamp()
+	where run_id = b;
+	r := public.qorpera_memory_message_erase_scrub('70000000-0000-4000-8000-000000000020', eid);
+	perform pg_temp.same(r - 'eraseId' - 'sessionId' - 'eventId', '{"schema":"qorpera.memory-message-erase/v1",'
+		'"state":"requested","blocks":4,"runsPending":0}', 'Every run scrubbed, the versions not yet gone');
+	perform pg_temp.same(jsonb_build_array(pg_temp.content(a, 'zoom-a'), pg_temp.content(b, 'rc-b'), pg_temp.content(c, 'zoom-c3')),
+		'["[erased]","[erased]","[erased]"]', 'A and B scrubbed');
+	-- Each erasure moves past its versions phase: the erase is done.
+	set local session_replication_role = replica;
+	update public.qorpera_folder_erasures set phase = 2
+	where id in (select x.erasure_id from public.qorpera_memory_message_erase_blocks x where x.erase_id = eid) and phase = 1;
+	set local session_replication_role = origin;
+	r := public.qorpera_memory_message_erase_scrub('70000000-0000-4000-8000-000000000020', eid);
+	perform pg_temp.same(r - 'eraseId' - 'sessionId' - 'eventId', '{"schema":"qorpera.memory-message-erase/v1",'
+		'"state":"done","blocks":4,"runsPending":0}', 'The erase is done');
+	er := pg_temp.erase(eid);
+	if er.done_at is null or er.last_error is not null then raise exception 'A done erase: %', to_jsonb(er); end if;
+	perform pg_temp.same(public.qorpera_memory_message_erase_scrub('70000000-0000-4000-8000-000000000020', eid), r, 'Step 4 runs once');
+	perform pg_temp.same(public.qorpera_memory_message_erase_status('70000000-0000-4000-8000-000000000020',
+		'70000000-0000-4000-8000-000000000001', eid), r, 'Its status');
+end $$;
+
+-- 7. Readers: a run's context reads the erased message as (erased), its neighbour as it was ------------------------------
+
+do $$
+declare
+	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); v_run public.qorpera_execution_runs;
+begin
+	select * into v_run from public.qorpera_execution_runs where id = '96000000-0000-4000-8000-0000000000a1';
+	perform pg_temp.same(public.qorpera_company_context_source(v_run, 'history', (pg_temp.event(s, 7)).event_id) - 'id',
+		jsonb_build_object('kind', 'historical_data', 'sourceKind', 'history', 'actorKind', 'company_service', 'authorUserId', null,
+			'sequence', 7, 'attachmentCount', 0, 'text', '(erased)'), 'An erased message reads (erased)');
+	perform pg_temp.same(public.qorpera_company_context_source(v_run, 'history', (pg_temp.event(s, 6)).event_id) -> 'text',
+		to_jsonb((pg_temp.event(s, 6)).body::text), 'Its neighbour reads as it was');
+end $$;
+
+-- 8. Privileges: the folder core calls the eight steps, as their definer; no one calls the rest or reads the tables -----
+
+do $$
+declare
+	v_bad text;
+	v_steps constant text[] := array['public.qorpera_memory_message_erase_request(uuid,uuid,uuid,uuid)',
+		'public.qorpera_memory_message_erase_status(uuid,uuid,uuid)', 'public.qorpera_memory_message_erase_due(integer)',
+		'public.qorpera_memory_message_erase_open(uuid,uuid)', 'public.qorpera_memory_message_erase_plan(uuid,uuid)',
+		'public.qorpera_memory_message_erase_rewrite(uuid,uuid,text,jsonb)', 'public.qorpera_memory_message_erase_ask(uuid,uuid)',
+		'public.qorpera_memory_message_erase_scrub(uuid,uuid)'];
+begin
+	select string_agg(f || ' ' || r, ', ') into v_bad
+	from unnest(v_steps || array['public.qorpera_memory_entry_id(jsonb,uuid)', 'public.qorpera_memory_erase_drops(bigint,integer,bigint)',
+		'public.qorpera_memory_erase_candidates(text,bigint)', 'public.qorpera_memory_erase_line(public.qorpera_memory_tree_nodes)',
+		'public.qorpera_memory_erase_deletes(uuid,text,bigint,uuid)', 'public.qorpera_memory_erase_toml_manifests(uuid)',
+		'public.qorpera_memory_erase_roots(uuid,uuid)', 'public.qorpera_memory_erase_receipts(uuid,uuid,bigint)',
+		'public.qorpera_memory_message_erase_context(uuid,text)', 'public.qorpera_memory_message_erase_lock_targets(jsonb)',
+		'public.qorpera_memory_message_erase_targets(uuid,text)', 'public.qorpera_memory_message_erase_step1(jsonb,jsonb)',
+		'public.qorpera_memory_message_erase_hook(uuid,text,jsonb)', 'public.qorpera_memory_message_erase_reply(uuid)',
+		'public.qorpera_memory_message_erase_rewrite_plan(uuid,uuid)']) f,
+		unnest(array['anon', 'authenticated', 'service_role']) r
+	where has_function_privilege(r, f, 'execute') is distinct from (f = any(v_steps) and r = 'service_role');
+	if v_bad is not null then raise exception 'Wrong callers: %', v_bad; end if;
+	if exists (select 1 from unnest(v_steps) f join pg_proc p on p.oid = f::regprocedure where not p.prosecdef) then
+		raise exception 'The steps run as their definer'; end if;
+	select string_agg(t || ' ' || r, ', ') into v_bad
+	from unnest(array['public.qorpera_memory_message_erases', 'public.qorpera_memory_message_erase_blocks',
+		'public.qorpera_memory_message_erase_runs']) t, unnest(array['anon', 'authenticated', 'service_role']) r
+	where has_table_privilege(r, t, 'select,insert,update,delete');
+	if v_bad is not null then raise exception 'Table readers: %', v_bad; end if;
+end $$;
+
+rollback;
