@@ -128,21 +128,25 @@ begin
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
 end $$;
 
--- 4. Raw events retain original numbering, sequence and eventHash, skip non-included events, page and bound exactly.
+-- 4. Raw events retain original numbering, sequence and eventHash, skip non-included events, page and bound exactly;
+-- each page names the conversation's tree root.
 do $$
 declare s uuid := pg_temp.thread('nora'); r jsonb; request_ jsonb; i integer;
 	base jsonb := jsonb_build_object('session', pg_temp.thread('nora'), 'start', 0, 'count', 128);
 begin
 	perform pg_temp.event(s, 9, 'session_info');
 	r := public.qorpera_memory_events_run(pg_temp.b('nora'), base);
-	perform pg_temp.same(r, public.qorpera_memory_events(s, 0, 128), 'The existing event renderer is unchanged');
-	perform pg_temp.same(jsonb_build_array(r #> '{0,sequence}', r #> '{0,eventHash}', r #> '{1,sequence}'),
+	perform pg_temp.same(r - 'events', '{"schema":"qorpera.memory-events/v1","root":"agents/nora/memory/thread"}', 'The page and its root');
+	perform pg_temp.same(r -> 'events', public.qorpera_memory_events(s, 0, 128), 'The existing event renderer is unchanged');
+	perform pg_temp.same(jsonb_build_array(r #> '{events,0,sequence}', r #> '{events,0,eventHash}', r #> '{events,1,sequence}'),
 		jsonb_build_array(10, pg_temp.ehash(10), 11), 'Original sequence and hash, with non-included event skipped');
-	perform pg_temp.same(public.qorpera_memory_events_run(pg_temp.b('nora'), base || '{"start":1,"count":1}'),
-		jsonb_build_array(r -> 1), 'A single paged event');
-	perform pg_temp.same(public.qorpera_memory_events_run(pg_temp.b('nora'), base || '{"start":9007199254740991}'), '[]', 'Past the end');
+	perform pg_temp.same(public.qorpera_memory_events_run(pg_temp.b('nora'), base || '{"start":1,"count":1}') -> 'events',
+		jsonb_build_array(r #> '{events,1}'), 'A single paged event');
+	perform pg_temp.same(public.qorpera_memory_events_run(pg_temp.b('nora'), base || '{"start":9007199254740991}'),
+		(r - 'events') || '{"events":[]}', 'Past the end');
 	for i in 50..178 loop perform pg_temp.event(s, i); end loop;
-	perform pg_temp.same(to_jsonb(jsonb_array_length(public.qorpera_memory_events_run(pg_temp.b('nora'), base))), '128', 'Bounded at 128');
+	perform pg_temp.same(to_jsonb(jsonb_array_length(public.qorpera_memory_events_run(pg_temp.b('nora'), base) -> 'events')), '128',
+		'Bounded at 128');
 	perform pg_temp.raises(format('select public.qorpera_memory_events_run(%L,%L)', pg_temp.b('nora'),
 		base || jsonb_build_object('session', pg_temp.thread('otto'))), '42501');
 	foreach request_ in array array['[]'::jsonb, '{}'::jsonb, base - 'count', base || '{"more":true}', base || '{"session":null}',
@@ -264,6 +268,8 @@ begin
 		is distinct from s then raise exception 'Vera''s run is in Vera''s thread'; end if;
 	perform pg_temp.same(to_jsonb(public.qorpera_memory_conversation_root(env, '63400000-0000-4000-8000-000000000010', s)),
 		'"agents/vera/memory/thread"', 'The owner gives the root''s key');
+	perform pg_temp.same(public.qorpera_memory_events_run(pg_temp.b('vera'), jsonb_build_object('session', s, 'start', 0, 'count', 1))
+		-> 'root', to_jsonb(root), 'The events call gives the root before any tree');
 	if public.qorpera_folder_actor_allowed(env, '63400000-0000-4000-8000-000000000010',
 		public.qorpera_folder_tool_run(pg_temp.b('vera'), '[]'::jsonb) -> 'resolved', root || '/t0', 'write') then
 		raise exception 'Vera''s run holds no write grant'; end if;

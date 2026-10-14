@@ -1,8 +1,8 @@
 -- Summary trees M1b-4b-2 (RUNTIME-AGENT-MEMORY-TREE.md §4.2-§4.4, §7, §13): the conversation tree writer's SQL.
 -- A run's memory commit without runLog writes only its own conversation tree, naming exactly its generation, and as
 -- with its run log needs no folder grant there.
--- Two binding calls expose bounded raw events and record compaction costs per batch of an attempt. Neither enables
--- the runtime writer or lists a company in qorpera_memory_tree_companies.
+-- Two binding calls expose bounded raw events with the tree root and record compaction costs per batch of an attempt.
+-- Neither enables the runtime writer or lists a company in qorpera_memory_tree_companies.
 
 set local lock_timeout = '3s';
 
@@ -162,13 +162,15 @@ end $$;
 revoke all on function public.qorpera_memory_run_log_admits(uuid, text, jsonb, text, text, jsonb)
 	from public, anon, authenticated, service_role;
 
--- Raw included events [start,start+count), with the same sequence and eventHash as zoom and the level-0 validator.
+-- Raw included events [start,start+count), with the same sequence and eventHash as zoom and the level-0 validator, and
+-- the conversation's tree root from its live owner: the writer's first batch makes the tree there before
+-- qorpera_memory_session_tree_root knows it (agent handles are lowercase, so the root's key is its path).
 -- This distinct native name leaves the internal qorpera_memory_events(uuid,bigint,integer) unexposed and unambiguous.
 -- The request is exactly {session,start,count}; start is a nonnegative safe integer, count 1..128. No receipt stores
 -- compactor input or output (§7.1). Its batch's generation precondition fences any intervening erase at commit.
 create function public.qorpera_memory_events_run(p_binding jsonb, p_request jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
-declare v_run public.qorpera_execution_runs%rowtype; v_start bigint; v_count integer;
+declare v_run public.qorpera_execution_runs%rowtype; v_start bigint; v_count integer; v_root text;
 begin
 	v_run := jsonb_populate_record(null::public.qorpera_execution_runs,
 		public.qorpera_folder_tool_run(p_binding, '[]'::jsonb) -> 'run');
@@ -185,10 +187,11 @@ begin
 	v_start := (p_request ->> 'start')::bigint; v_count := (p_request ->> 'count')::integer;
 	if v_start > 9007199254740991 or v_count > 128 then
 		raise exception 'memory events request is malformed' using errcode = '22023'; end if;
-	if p_request ->> 'session' is distinct from v_run.session_id::text
-		or public.qorpera_memory_conversation_root(v_run.environment_id, v_run.profile_id, v_run.session_id) is null then
+	v_root := public.qorpera_memory_conversation_root(v_run.environment_id, v_run.profile_id, v_run.session_id);
+	if p_request ->> 'session' is distinct from v_run.session_id::text or v_root is null then
 		raise exception 'A run reads only its own conversation for compaction' using errcode = '42501'; end if;
-	return public.qorpera_memory_events(v_run.session_id, v_start, v_count);
+	return jsonb_build_object('schema', 'qorpera.memory-events/v1', 'root', v_root,
+		'events', public.qorpera_memory_events(v_run.session_id, v_start, v_count));
 end $$;
 revoke all on function public.qorpera_memory_events_run(jsonb, jsonb) from public, anon, authenticated, service_role;
 grant execute on function public.qorpera_memory_events_run(jsonb, jsonb) to service_role;
