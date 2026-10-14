@@ -47,6 +47,7 @@ struct Local {
 pub struct ReadLog {
 	dir: PathBuf,
 	local: Mutex<Local>,
+	created: bool,
 }
 
 pub struct Locked<'a> {
@@ -70,20 +71,30 @@ impl ReadLog {
 				"read journal directory must be private to the daemon",
 			));
 		}
-		let unused = std::fs::read_dir(dir)?.next().is_none();
+		// The CLI holds its process-lifetime lock before any state or connection mutation. That fixed lock alone
+		// is not prior read proof; a journal lock, version map or view checkpoint is, even if the journal went missing.
+		let unused = std::fs::read_dir(dir)?.try_fold(true, |unused, entry| {
+			Ok::<_, io::Error>(unused && entry?.file_name() == "daemon.lock")
+		})?;
 		let lock = private_file(&dir.join(LOCK), true)?;
-		let out = ReadLog { dir: dir.to_path_buf(), local: Mutex::new(Local { lock, state: None, stamp: None }) };
+		let mut out = ReadLog { dir: dir.to_path_buf(), local: Mutex::new(Local { lock, state: None, stamp: None }), created: false };
+		let created;
 		{
 			let mut held = out.acquire()?;
-			if !dir.join(JOURNAL).exists() && fresh && unused {
+			created = !dir.join(JOURNAL).exists() && fresh && unused;
+			if created {
 				let state = State { log: uuid()?, last: 0, released: 0, reads: VecDeque::new(), lines: 1, lost: false };
 				held.local.state = Some(state);
 				held.rewrite()?;
 			}
 			held.refresh();
 		}
+		out.created = created;
 		Ok(out)
 	}
+
+	/// This instance initialized the journal in empty mount state; missing adjacent proof may only be initialized then.
+	pub fn created(&self) -> bool { self.created }
 
 	fn acquire(&self) -> io::Result<Locked<'_>> {
 		let local = self.local.lock().unwrap();

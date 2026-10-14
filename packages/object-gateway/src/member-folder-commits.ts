@@ -243,8 +243,8 @@ async function body(request: IncomingMessage, observation?: MemberRequestObserva
 
 type MemberActor = Extract<FolderWriterActor, { kind: "member" }>;
 
-/** The writer check's answer: the member's own actor and the company. */
-function writer(value: unknown): { actor: MemberActor; profileId: string } {
+/** The writer check's answer: the member's own actor and the company (the chat image route's member too). */
+export function memberFolderWriter(value: unknown): { actor: MemberActor; profileId: string } {
 	const input = value as { schema?: unknown; actor?: unknown; profileId?: unknown } | null;
 	const actor = input?.actor as { kind?: unknown; userId?: unknown } | null | undefined;
 	if (
@@ -314,7 +314,7 @@ export async function serveMemberFolderCommit(
 	const signal = controller.signal;
 	let held: string | undefined;
 	try {
-		const member = writer(
+		const member = memberFolderWriter(
 			await options.authority.member(
 				"qorpera_member_folder_writer",
 				token,
