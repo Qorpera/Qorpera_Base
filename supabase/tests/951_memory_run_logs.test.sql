@@ -705,4 +705,48 @@ begin
 		(select jsonb_agg('a.md'::text) from generate_series(1, 1025))), '22023', 'Step paths are a list of at most 1,024 paths');
 end $$;
 
+-- 10. A batch's generations and an open erase, at decide ------------------------------------------------------------------
+do $$
+declare
+	env constant uuid := '63400000-0000-4000-8000-000000000020'; nora constant uuid := pg_temp.run_id('nora');
+	log constant text := 'agents/nora/memory/thread/runs/' || pg_temp.run_id('nora'); a constant jsonb := pg_temp.actor('nora');
+	room constant text := 'agents/groups/launch/memory/runs/' || pg_temp.run_id('room'); b6 constant text := log || '/log/00000006.jsonl';
+	sg constant bigint := (select s.memory_generation from public.qorpera_shared_sessions s where s.id = pg_temp.thread('nora'));
+	r jsonb;
+begin
+	-- A stale run generation, or a stale session generation, refuses the batch.
+	r := pg_temp.logc('nora', 'w1b:decide:1', jsonb_build_array(pg_temp.rfile(b6, pg_temp.block(array[pg_temp.nstep(6)]), a)), log,
+		jsonb_build_object('runGenerations', jsonb_build_array(jsonb_build_object('runId', nora, 'generation', 1))));
+	perform pg_temp.expect(r, 1, 'refused', 'memory_generation_stale');
+	r := pg_temp.logc('nora', 'w1b:decide:2', jsonb_build_array(pg_temp.rfile(b6, pg_temp.block(array[pg_temp.nstep(6)]), a)), log,
+		jsonb_build_object('sessionGenerations', jsonb_build_array(jsonb_build_object('sessionId', pg_temp.thread('nora'),
+			'generation', sg + 1))));
+	perform pg_temp.expect(r, 1, 'refused', 'memory_generation_stale');
+
+	-- An erase open on a run refuses its log's batches, and only its own.
+	perform pg_temp.fx(format('update public.qorpera_memory_run_generations set erase_open = %L where environment_id = %L and run_id = %L',
+		extensions.gen_random_uuid(), env, nora));
+	r := pg_temp.logc('nora', 'w1b:decide:3', jsonb_build_array(pg_temp.rfile(b6, pg_temp.block(array[pg_temp.nstep(6)]), a)), log);
+	perform pg_temp.expect(r, 1, 'refused', 'memory_erase_open');
+	r := pg_temp.logc('room', 'w1b:decide:4', jsonb_build_array(pg_temp.rfile(room || '/log/00000003.jsonl',
+		pg_temp.block(array[pg_temp.step(3)]), pg_temp.actor('room'))), room);
+	perform pg_temp.expect(r, 1, 'saved');
+	perform pg_temp.fx(format('update public.qorpera_memory_run_generations set erase_open = null where environment_id = %L and run_id = %L',
+		env, nora));
+
+	-- With its generations current, the batch is saved.
+	r := pg_temp.logc('nora', 'w1b:decide:5', jsonb_build_array(pg_temp.rfile(b6, pg_temp.block(array[pg_temp.nstep(6)]), a)), log,
+		jsonb_build_object('runGenerations', jsonb_build_array(jsonb_build_object('runId', nora, 'generation', 0)),
+			'sessionGenerations', jsonb_build_array(jsonb_build_object('sessionId', pg_temp.thread('nora'), 'generation', sg))));
+	perform pg_temp.expect(r, 1, 'saved');
+
+	-- A memory request that is not this change's.
+	perform set_config('qorpera.folder_memory', jsonb_build_object('environmentId', env, 'operationKey', 'w1b:someone-else',
+		'preconditions', '{}'::jsonb)::text, true);
+	r := pg_temp.commit('{"kind":"platform"}', 'w1b:decide:6', jsonb_build_array(jsonb_build_object('op','mkdir',
+		'path','agents/groups/launch/w1b-decide')));
+	perform set_config('qorpera.folder_memory', '', true);
+	perform pg_temp.refused(r, 1, 'structured_rule', 'the memory request does not belong to this change');
+end $$;
+
 rollback;
