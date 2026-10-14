@@ -670,3 +670,58 @@ class Proof:
         self.note("mode", self.mode)
         if self.mode is None:
             raise RuntimeError("The mount came up over none of the modes")
+
+    def first_mount(self):
+        """Namespaces started before the mount, then the unit started: does the mount reach them?"""
+        self.views.append(VIEW)
+        lay_out(VIEW, self.mode)
+        self.before = {}
+        for name, shape in CANDIDATES:
+            started = self.relay1.call("start", name=name, shape=shape, folder="candidate", view=VIEW)
+            self.note(f"{name}Start", started)
+            if not started["started"]:
+                raise RuntimeError(f"{name} did not start before the mount: {started['gate']}")
+            self.before[name] = {"status": self.ask(self.relay1, name, {"op": "status"}), "look": self.ask(self.relay1, name, {"op": "look"})}
+        began = time.monotonic()
+        base.run("systemctl", "start", self.unit)
+        base.eventually(lambda: served(self.point), 20)
+        self.note("firstMount", {"servedAfterSeconds": round(time.monotonic() - began, 3), "unit": show(self.unit), "hostCount": count(self.point), "parentShared": shared(self.point.parent)})
+        # The negative control: a namespace that binds the folder's own root, started once it is served.
+        started = self.relay1.call("start", name="direct", shape="command", folder="direct", view=VIEW)
+        self.note("directStart", started)
+        if not started["started"]:
+            raise RuntimeError(f"direct did not start: {started['gate']}")
+        first = {}
+        for name in [name for name, _ in CANDIDATES] + ["direct"]:
+            first[name] = {
+                "read": self.ask(self.relay1, name, {"op": "read", "path": "before.txt"}),
+                "write": self.ask(self.relay1, name, {"op": "write", "path": f"{name}-before.txt", "text": "before"}),
+                "mountinfo": self.ask(self.relay1, name, {"op": "mountinfo"}),
+            }
+        with self.node.lock:
+            stored = {name: self.node.files.get(f"{name}-before.txt") for name in first}
+        self.direct_before = first.pop("direct")
+        passed = all(first[name]["read"].get("text") == "before" and first[name]["write"].get("written") and stored[name] == b"before" for name in first)
+        self.check("officeFirstPropagation", passed, {name: dict(first[name], startedBefore=self.before[name]) for name in first})
+
+    def prepare_loss(self):
+        """Writers and readers the killed mount leaves behind: unsent, fsynced and committed writes, an old read
+        descriptor, a working directory inside the folder, and a watcher that times the gap."""
+        relay = self.relay1
+        plan = {
+            "new-unsent": [{"op": "open", "mode": "create-excl"}, {"op": "pwrite", "text": "unsent"}],
+            "new-fsynced": [{"op": "open", "mode": "create-excl"}, {"op": "pwrite", "text": "fsynced"}, {"op": "fsync"}],
+            "truncate": [{"op": "open", "mode": "truncate"}, {"op": "pwrite", "text": "replaced"}, {"op": "fsync"}],
+            "keep": [{"op": "open", "mode": "keep"}, {"op": "pwrite", "text": "XY", "offset": 0}, {"op": "fsync"}],
+        }
+        steps = {key: [self.ask(relay, "command", {**request, "key": key, "path": LOSS[key][0]}) for request in requests] for key, requests in plan.items()}
+        steps["closed"] = [self.ask(relay, "command", {"op": "write", "path": LOSS["closed"][0], "text": "closed"})]
+        with self.node.lock:
+            held = {key: {"file": self.node.files.get(path, b"").decode(), "handles": [value.decode() for name, value in self.node.handles.values() if name == path]} for key, (path, _) in LOSS.items()}
+        self.loss = {"steps": steps, "nodeBeforeKill": held}
+        self.old_fd = {"open": self.ask(relay, "desktop", {"op": "open", "key": "old", "path": "before.txt", "mode": "read"})}
+        self.old_fd["pread"] = self.ask(relay, "desktop", {"op": "pread", "key": "old"})
+        self.cwd = {"chdir": self.ask(relay, "command", {"op": "chdir"})}
+        self.cwd["listcwd"] = self.ask(relay, "command", {"op": "listcwd"})
+        state = ROOT / "state" / VIEW
+        self.state_before = {"inode": state.stat().st_ino, "names": sorted(os.listdir(state))}
