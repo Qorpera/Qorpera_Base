@@ -124,8 +124,8 @@ def at(path, entries):
     return [entry for entry in entries if entry["mountpoint"] == str(path)]
 
 
-# Root's direct mount drops the program's Subtype option: a real folder mount reads `fuse qorpera-company`, not #1047's
-# `fuse.qorpera` (run 20261014T221714-41263-9a93d28c; the 2026-10-14 substrate evidence shows the same line).
+# fuser 0.18's direct mount always passes type `fuse` and uses Subtype only as a fallback source, so a real folder
+# mount reads `fuse qorpera-company`, not #1047's `fuse.qorpera` (run 20261014T221714-41263-9a93d28c).
 FOLDER_TYPES = ("fuse", "fuse.qorpera")
 
 
