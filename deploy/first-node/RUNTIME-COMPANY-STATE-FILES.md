@@ -513,7 +513,9 @@ an email to a mailbox) wakes the agent, with up to 20 deliveries a wake; with `o
   offered again at the new one. The file's trigger id is always `file`. Instants are canonical,
   so re-spelling `starts` changes nothing.
 - The commit never inserts a wake. The tick starts a dynamic routine's next run
-  (`qorpera_restore_dynamic_routine_runs`), so no admission fence is taken after the clock.
+  (`qorpera_restore_dynamic_routine_runs`; on folder-v2 `qorpera_folder_restore_dynamic_routine_run`
+  since C1c-3e, and the legacy tick went in the legacy sweep's F3b, 20260930295000), so no admission
+  fence is taken after the clock.
 
 **Status:**
 - The file's status is the saver's word when the save changes it, and when it restores the file.
@@ -2344,7 +2346,8 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
      subtransactions.
   - The parent's job status is a plain read: no lock, no `NOWAIT`, nothing taken before the fence. The drain
     acts only on final job states, which never go back, so a stale read waits one pass.
-  - The legacy `qorpera_serialize_wake_admission` (the company row `FOR UPDATE NOWAIT`) is never used.
+  - The legacy `qorpera_serialize_wake_admission` (the company row `FOR UPDATE NOWAIT`) is never used (legacy sweep
+    F3b, 20260930295000, dropped it).
 - `qorpera_folder_workers_due(after, limit)` lists, a page at a time, the folder-v2 environments with a due worker
   (`qorpera_folder_worker_due`, the same predicate the drain uses, so it leaves out companies the drain would only
   answer `idle` for), leaving out paused companies and those being deleted.

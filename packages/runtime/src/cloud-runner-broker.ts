@@ -18,7 +18,6 @@ import type {
 import type { ResolvedCompanySubstrateReference } from "@qorpera/cloud-client/node/cloud-company-substrate";
 import type { CloudRunnerCapability, CloudRunnerJob } from "@qorpera/cloud-client/node/cloud-runner-protocol";
 import type { JsonValue } from "@qorpera/contracts";
-import type { CloudRunnerSubstrateResolver } from "./cloud-runner-sandbox.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -1339,7 +1338,7 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 	}
 }
 
-export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
+export class CloudRunnerJobBroker {
 	readonly #options: CloudRunnerJobBrokerOptions;
 	#description?: CloudRunnerBrokerDescription;
 	#nativeAuthority?: CloudRunnerNativeAuthority;
