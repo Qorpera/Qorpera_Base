@@ -339,7 +339,7 @@ end $$;
 -- again for the same lease, and writes no launch and no start. On the admission the memory calls work and the context
 -- view is refused (it needs the launch). The bind refuses another lease's admission and a bad context and keeps the
 -- admission, then binds once through v2: the launch and the start record, with the last admitted catalog. A second
--- bind, a later v3 and a run never admitted are refused.
+-- bind, a later v3 and a run never admitted are refused; after a cut-off, v3 admits the run again.
 create function pg_temp.admit_sql(p_binding jsonb, p_binary text, p_bundle text, p_policy text, p_catalog text)
 returns text language sql as $$
 	select format('select public.qorpera_begin_native_company_execution_v3(%L,%L,%L,%L,%L)', p_binding, p_binary, p_bundle,
@@ -440,6 +440,11 @@ begin
 	perform pg_temp.raises_like(pg_temp.admit_sql(b, bin, sha, policy, cat::text), '55000',
 		'Earlier native execution requires reconciliation');
 	perform pg_temp.raises_like(pg_temp.bind_sql(pg_temp.b('vera'), repeat('c', 64), 10), '55000', 'Native execution is not admitted');
+	-- A cut-off after the start supersedes it (W5a-1), so the next attempt is admitted again; its bind is v2's resume.
+	perform pg_temp.fx(format('insert into public.qorpera_execution_run_events(run_id, event_type, payload)
+		values (%L, ''run_cut_off'', ''{}'')', run_));
+	perform pg_temp.same(public.qorpera_begin_native_company_execution_v3(b, bin, sha, policy, cat::text) -> 'toolCatalogSha256',
+		to_jsonb(encode(extensions.digest(cat::text, 'sha256'), 'hex')), 'A cut-off run is admitted again');
 end $$;
 
 -- 11. Least grants: only the service role calls v3 and the bind (v2 stays, for the coding wrapper); nobody reads the
