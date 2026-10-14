@@ -575,7 +575,7 @@ export class FolderService {
 			if (mine) view.sinks.delete(mine);
 			view.connections--;
 			if (view.connections > 0) return;
-			// A protocol-3 core mount keeps handles across link loss. Only a publisher holding the daemon lock may
+			// A protocol-3 core mount keeps handles across link loss. Only a program holding the daemon lock may
 			// declare them orphaned; a transfer keeps the same handles usable by the mounted program.
 			if (view.moving || view.movedTo || this.#retained(view)) return;
 			if (!view.persistentHandles) {
@@ -585,11 +585,13 @@ export class FolderService {
 			// A command's view stays, with what it has pending and its lease: the command's last call publishes it, final.
 			// So does a desktop's whose last boundary had no answer, or a refusal that may lift: a later publish from its
 			// machine publishes it, and nothing else does (F3 4c). A boundary still running decides again as it ends.
-			if (this.#kept(view)) {
+			if (this.#waitsForAnswer(view)) {
 				if (view.quiet) clearTimeout(view.quiet);
 				view.quiet = undefined;
 				return;
 			}
+			// A view kept only for files its program may still hold open publishes as below: what was closed is saved,
+			// the open files wait, and the boundary's end keeps the view for them (#unheld).
 			view.idleSince = this.#now();
 			// A core view no machine holds is dropped (with its pass): its lease is not renewed while idle, so a machine
 			// that comes back lists it again and renews at once. What it has pending, and the reads its machine logged, are
@@ -835,8 +837,10 @@ export class FolderService {
 		}
 	}
 
-	/** This request comes only from a publisher holding the private process-lifetime daemon lock. Authentication
-	 * above binds it to this exact view, company and calling machine. Never infer death from disconnected streams. */
+	/** This request comes only from a program holding the private process-lifetime daemon lock: a publisher, or a mount
+	 * as it starts (one systemd restarted after a crash). Authentication above binds it to this exact view, company and
+	 * calling machine. Never infer death from disconnected streams. What the dead program closed, and what its open
+	 * files go back to, publishes after the quiet period as any change does. */
 	async #abandonProgram(view: View, hello: Hello): Promise<void> {
 		if (view.finalOut) return;
 		if (hello.protocol !== 3 || hello.role !== "io" || !view.pending)
@@ -849,21 +853,29 @@ export class FolderService {
 			view.handles.clear();
 		} finally {
 			view.moving = false;
+			this.#resumeQuiet(view);
 		}
 	}
 
-	/** A view a machine it admits has held, open, kept with no connection and renewed (F3 4b, 4c): a command's for its
-	 * final boundary, unless its last boundary was refused for good; a desktop's while its last boundary had no answer,
-	 * or a refusal that may lift, until a later publish from its machine gets another answer. */
+	/** A view a machine it admits has held, open, kept with no connection and renewed (F3 4b, 4c): while it waits for
+	 * an answer (#waitsForAnswer), or while its mounted program may still hold files open: a protocol-3 core mount's
+	 * handles outlive its streams, until a program holding the mount's daemon lock says that program is gone (a
+	 * restarted mount, or the helper's publisher), or the view ends. */
 	#kept(view: View): boolean {
+		return this.#waitsForAnswer(view) || (this.#keepable(view) && view.persistentHandles && view.handles.size > 0);
+	}
+
+	/** Kept for an answer: a command's view for its final boundary, unless its last boundary was refused for good; a
+	 * desktop's while its last boundary had no answer, or a refusal that may lift, until a later publish from its
+	 * machine gets another answer. */
+	#waitsForAnswer(view: View): boolean {
 		return (
-			view.admitted &&
-			view.lease !== undefined &&
-			!view.closed &&
-			this.#views.get(view.key) === view &&
-			((view.persistentHandles && view.handles.size > 0) ||
-				(view.access?.command === true ? view.heard !== "refused" : view.heard === "open"))
+			this.#keepable(view) && (view.access?.command === true ? view.heard !== "refused" : view.heard === "open")
 		);
+	}
+
+	#keepable(view: View): boolean {
+		return view.admitted && view.lease !== undefined && !view.closed && this.#views.get(view.key) === view;
 	}
 
 	/** One round: read the clocks of every company with a live view, move views whose company moved, list again those

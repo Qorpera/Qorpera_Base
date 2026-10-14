@@ -469,6 +469,7 @@ async function loggedMount(kind = "computer_shell_command") {
 	const bridgeSocket = join(dir, "bridge.sock");
 	const faults = { dropReadAnswer: false, dropReport: false, dropPollAnswer: false, dropHelloAnswer: false };
 	const requests: { kind: number; body: unknown }[] = [];
+	const answers: number[] = [];
 	const bridge = createServer((machine) => {
 		const incoming = new FrameReader();
 		const outgoing = new FrameReader();
@@ -514,6 +515,7 @@ async function loggedMount(kind = "computer_shell_command") {
 					faults.dropPollAnswer = false;
 					faults.dropReadAnswer = true;
 				}
+				answers.push(frame.kind);
 				machine.write(encodeFrame(frame.kind, frame.payload));
 			}
 		});
@@ -639,6 +641,7 @@ async function loggedMount(kind = "computer_shell_command") {
 		company,
 		state,
 		requests,
+		answers,
 		faults,
 		publish,
 		journal,
@@ -649,6 +652,14 @@ async function loggedMount(kind = "computer_shell_command") {
 		},
 		output: () => output,
 	};
+}
+
+/** The views whose IO hellos said the program before is gone, in order. */
+function abandons(requests: { kind: number; body: unknown }[]): string[] {
+	return requests.flatMap((request) => {
+		const body = request.body as { viewId: string; abandon: boolean };
+		return request.kind === Kind.hello && body.abandon ? [body.viewId] : [];
+	});
 }
 
 describe.skipIf(!program)("durable read proof through a real FUSE mount", () => {
@@ -860,6 +871,9 @@ describe.skipIf(!program)("durable read proof through a real FUSE mount", () => 
 describe.skipIf(!program)("live desktop handoff through real FUSE", () => {
 	it("keeps an actual open descriptor through stream loss, publisher calls and a view replacement", async () => {
 		const m = await loggedMount("computer_desktop");
+		// The mount said once, as it started, that no earlier program is alive; nothing it or a publisher sends while
+		// it lives says so again.
+		expect(abandons(m.requests)).toEqual([m.viewId]);
 		const file = await open(join(m.company, "docs/empty.md"), "r+");
 		cleanup.push(() => file.close().catch(() => {}));
 		await file.write("first");
@@ -870,9 +884,7 @@ describe.skipIf(!program)("live desktop handoff through real FUSE", () => {
 		expect(JSON.parse(alive.stdout).paths).toContainEqual(
 			expect.objectContaining({ path: "docs/empty.md", outcome: "waiting" }),
 		);
-		expect(
-			m.requests.filter((request) => request.kind === Kind.hello).map((request) => request.body),
-		).not.toContainEqual(expect.objectContaining({ abandon: true }));
+		expect(abandons(m.requests)).toEqual([m.viewId]);
 		await file.write(" second");
 		await file.sync();
 		const inode = (await file.stat()).ino;
@@ -892,6 +904,7 @@ describe.skipIf(!program)("live desktop handoff through real FUSE", () => {
 		expect(saved.code, saved.stderr + m.output()).toBe(0);
 		expect(m.core.entries.get("docs/empty.md")?.fileSha256).toBe(hashOf("first second third"));
 		expect(await mounted(m.company)).toBe(true);
+		expect(abandons(m.requests)).toEqual([m.viewId]);
 	}, 30_000);
 
 	it("retains a remembered base and read sequence after SIGKILL between file replacement and hello", async () => {
@@ -918,6 +931,51 @@ describe.skipIf(!program)("live desktop handoff through real FUSE", () => {
 			kind: Kind.hello,
 			body: { viewId: v(701), previousViewId: m.viewId, abandon: false },
 		});
+		// The restarted mount's feed moved the old view; its first IO hello, on the newer view, said the old program is gone.
+		expect(abandons(m.requests)).toEqual([m.viewId, v(701)]);
+	}, 30_000);
+
+	it("a restarted mount abandons what the killed program left open, so those paths publish again", async () => {
+		const m = await loggedMount("computer_desktop");
+		await writeFile(join(m.company, "docs/result.md"), "fixed result");
+		const unfinished = await open(join(m.company, "docs/result.md"), "r+");
+		cleanup.push(() => unfinished.close().catch(() => {}));
+		await unfinished.write("unfixed text");
+		await unfinished.sync();
+		const rewritten = await open(join(m.company, "docs/empty.md"), "r+");
+		cleanup.push(() => rewritten.close().catch(() => {}));
+		await rewritten.write("lost bytes");
+		await rewritten.sync(); // The service holds both writers, each with an unfixed chunk.
+		await m.kill(); // As systemd restarts it after a crash: no publisher runs between.
+		await m.remount();
+		expect(abandons(m.requests)).toEqual([m.viewId, m.viewId]);
+		await writeFile(join(m.company, "docs/empty.md"), "written again");
+		const saved = await m.publish();
+		expect(saved.code, saved.stderr + m.output()).toBe(0);
+		expect(m.core.entries.get("docs/empty.md")?.fileSha256).toBe(hashOf("written again"));
+		// The file left open went back to its last close.
+		expect(m.core.entries.get("docs/result.md")?.fileSha256).toBe(hashOf("fixed result"));
+		expect(await readFile(join(m.company, "docs/result.md"), "utf8")).toBe("fixed result");
+	}, 30_000);
+
+	it("publishes what a desktop closed when its last connection leaves while another file stays open", async () => {
+		const m = await loggedMount("computer_desktop");
+		const held = await open(join(m.company, "docs/empty.md"), "r+");
+		cleanup.push(() => held.close().catch(() => {}));
+		await held.write("still writing");
+		await held.sync();
+		const done = m.answers.filter((kind) => kind === Kind.done).length;
+		await writeFile(join(m.company, "docs/result.md"), "closed result");
+		// The service has the close (its answer came back), inside the quiet period.
+		expect(await eventually(async () => m.answers.filter((kind) => kind === Kind.done).length > done, 1_000)).toBe(
+			true,
+		);
+		m.child().kill("SIGSTOP"); // No reconnection and no quiet period: only the last connection leaving publishes.
+		cleanup.push(m.kill); // Before the held file closes: a stopped mount never answers its flush.
+		m.disconnect();
+		expect(await eventually(async () => m.core.entries.has("docs/result.md"), 5_000), m.output()).toBe(true);
+		expect(m.core.entries.get("docs/result.md")?.fileSha256).toBe(hashOf("closed result"));
+		expect(m.core.entries.get("docs/empty.md")?.fileSha256).toBe(hashOf(""));
 	}, 30_000);
 
 	it("a separate dead-program publisher transfers the old overlay and log and abandons orphan writers", async () => {

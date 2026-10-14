@@ -1220,7 +1220,8 @@ pub enum Failed {
 	Other(String),
 }
 
-/// Mounts the view and serves it until a signal, the view's end, or an unmount. Returns why it stopped.
+/// Mounts the view and serves it until a signal, the view's end, or an unmount. Returns why it stopped. The caller
+/// holds the state's daemon.lock.
 pub fn run(mut link: Link, options: Options) -> Result<Stop, Failed> {
 	let signals = block_stop_signals();
 	// Open the feed before anything is listed, so no change after the first listing can be missed. This
@@ -1238,6 +1239,16 @@ pub fn run(mut link: Link, options: Options) -> Result<Stop, Failed> {
 		// Open the journal before the version map creates files: only unused state can start a new read sequence.
 		let reads = ReadLog::open(dir, true).map_err(|e| Failed::Other(format!("read journal: {e}")))?;
 		link = link.with_reads(Arc::new(reads));
+	}
+	if writable {
+		// The caller holds the state's daemon.lock: what an earlier program left open goes before a file is served here.
+		link.abandon_earlier().map_err(|f| {
+			if f.view_closed() {
+				Failed::View(f.to_string())
+			} else {
+				Failed::Other(format!("could not tell the node the earlier program is gone: {f}"))
+			}
+		})?;
 	}
 	eprintln!(
 		"qorpera-folder: view {} accepted at change {}, {}",

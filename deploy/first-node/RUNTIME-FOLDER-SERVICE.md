@@ -70,7 +70,9 @@ A truncate of a file not open is an open, the chunk that ends it when the cut is
 the 4 MiB grid, or to nothing, sends no chunk: the close cuts the file's chunks, from its origin's when none of it was
 sent. A file whose manifest is not on the 4 MiB grid is changed whole (open it with truncate), not chunk by chunk. A write handle belongs to the view, not to
 the connection that opened it (the folder program pools its connections); a file still open when the view's last
-connection ends is abandoned, and what it held at its last close stays pending.
+connection ends is abandoned, and what it held at its last close stays pending. A protocol-3 core view's handles
+outlive its connections instead: they are abandoned only when a program holding the mount's `daemon.lock` says the
+program before it is gone (a restarted mount, or a publisher), or when the view ends (Step 4c-3).
 
 A save's base is the version the machine's version map holds: the newest it read of the path, or the version its own
 save made (the `version` of `C` or `X`). Once that save is published, the service reads such a base as the version
@@ -392,7 +394,8 @@ computer desktop's view, which the core opens for an office screen (C1b-3a):
   view. It publishes 2 s after its last change (`DESKTOP_QUIET_MS`, the desktop rule of RUNTIME-COMPANY-FOLDER.md §2),
   when its machine asks, and when its last connection leaves: what is pending then is published under the lease it
   still has, and the view is dropped after, unless that publish has no answer or a refusal that may lift (then it is
-  kept: Step 4c, "Kept"). A machine that comes back meanwhile joins it.
+  kept: Step 4c, "Kept"). A machine that comes back meanwhile joins it. A file its program still holds open waits
+  (Step 4c-3): what was closed publishes, and the view is kept for the open files.
 - **The seat in use.** Each renewal tells the core since when the view has had changes not published
   (`p_unsaved_since`, C1b-3 §9), or null. Unsaved means what a boundary publishes: a removal, or a new, moved or
   changed file or folder. A lock, swap, backup or trash name a program holds is never published and is none, nor is a
@@ -567,14 +570,20 @@ with exit 3; an invalid replacement never restarts the deadline. Use the same ex
 all replacements, restarts and independent publishers.
 
 A private fixed `daemon.lock` is held for the mounted program's full lifetime, before any state mutation or hello.
-Stream loss alone no longer abandons a protocol-3 core view's handles. A publisher unable to take the lock treats
-the mount as alive. If it acquires the lock, it retains it through publication and sends `abandon: true` on its
-authenticated IO hello, restoring orphan writes to their last fixed saves. This excludes a restart while publishing
-dead-program state. A publisher creates neither a missing state directory nor its missing lifetime-lock file.
+Stream loss alone no longer abandons a protocol-3 core view's handles. Holding the lock proves no earlier program on
+the same state is alive, so a writable mount, once its feed has accepted the view and before it serves a file, sends
+one IO hello with `abandon: true`: what a program systemd restarted after a crash left open goes back to its last
+fixed save and publishes after the quiet period, as any change does. None of its later hellos carries it, so it never
+abandons its own handles. A publisher unable to take the lock treats the mount as alive. If it acquires the lock, it
+retains it through publication and sends `abandon: true` on its authenticated IO hello, restoring orphan writes to
+their last fixed saves. This excludes a restart while publishing dead-program state. A publisher creates neither a
+missing state directory nor its missing lifetime-lock file. A desktop view kept only for files still open publishes
+what was closed when its last connection leaves; the open files wait.
 
 Tests include actual FUSE descriptors across disconnection and replacement, lost hello answers, SIGKILL between
-primary replacement and hello, dead-program publication, strict successor-scoped seals, uncertain-commit replay,
-fixed grace expiry, stale pooled replies and retained lost logs. This is implementation and test coverage, not a
+primary replacement and hello, a SIGKILLed mount restarted on the same state that abandons what it left open,
+publication of closed files on last leave while one stays open, dead-program publication, strict successor-scoped
+seals, uncertain-commit replay, fixed grace expiry, stale pooled replies and retained lost logs. This is implementation and test coverage, not a
 live rollout record; the production helper remains slice 4d.
 
 ## Not here

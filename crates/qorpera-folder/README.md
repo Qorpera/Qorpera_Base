@@ -59,8 +59,11 @@ one-minute grace awaiting an accepted successor, then exits 3. A bad replacement
 The daemon holds a fixed private `daemon.lock` for its entire lifetime, before any state or connection mutation.
 A publisher that finds it busy leaves open writers alone, even if all service streams disconnected. A publisher
 that acquires it holds the lock through its authenticated `abandon` hello and boundary, excluding a daemon restart
-while orphan handles are abandoned back to their last fixed saves. Protocol-3 handles survive stream loss; only
-this explicit request abandons them. A publisher never creates missing state or lock files. The service fences and
+while orphan handles are abandoned back to their last fixed saves. A writable mount sends the same request once, on
+one IO hello after its feed accepts the view and before it serves a file, so what a program before it on the same
+state left open (one systemd restarted after a crash) goes back too; no later hello of its own carries it.
+Protocol-3 handles survive stream loss; only this explicit request abandons them. A publisher never creates missing
+state or lock files. The service fences and
 drains admitted old work before moving pending state, keeps a closed desktop for its fixed minute, restages files
 under the successor's upload scope, and replays any unanswered commit with its original actor and operation key.
 The office helper and live activation remain separate slices of `RUNTIME-FOLDER-COMPANY-MACHINES.md`.

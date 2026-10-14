@@ -95,7 +95,8 @@ pub struct Link {
 	addr: String,
 	view: Mutex<Current>,
 	view_file: Option<Arc<ViewFile>>,
-	/// A CLI publisher holds daemon.lock throughout all connections and publication when this is true.
+	/// A CLI publisher holds daemon.lock throughout all connections and publication when this is true. A mount never
+	/// sets it: it says so once, before it serves the folder (`abandon_earlier`).
 	abandon: bool,
 	grace: bool,
 	feed: Mutex<Option<Connection>>,
@@ -214,7 +215,21 @@ impl Link {
 		self.closed.load(Ordering::SeqCst)
 	}
 
+	/// A mount holds daemon.lock from before its first hello, so no earlier program on this state is alive. One IO hello
+	/// says so, and the node abandons the files that program left open: a mount systemd restarted after a crash would
+	/// otherwise keep them open on the node for good, and those paths never publish again. It goes before the folder is
+	/// served, so no file this program opens is among them.
+	pub fn abandon_earlier(&self) -> Result<(), Fail> {
+		let (connection, _) = self.hello_as(Role::Io, self.timeout, true)?;
+		connection.shutdown();
+		Ok(())
+	}
+
 	fn hello(&self, role: Role, timeout: Duration) -> Result<(Connection, HelloOk), Fail> {
+		self.hello_as(role, timeout, self.abandon)
+	}
+
+	fn hello_as(&self, role: Role, timeout: Duration, abandon: bool) -> Result<(Connection, HelloOk), Fail> {
 		// A fixed interprocess lock spans reading primary, authenticating and checkpointing the accepted view.
 		// No pool or journal lock is held: a stalled hello cannot deadlock the live mount's ordinary IO.
 		let proof = self.view_file.as_ref().map(|store| store.prepare()).transpose().map_err(Fail::Link)?;
@@ -231,7 +246,7 @@ impl Link {
 			pass: target.pass.clone(),
 			role,
 			previous: proof.as_ref().and_then(|p| p.previous.as_ref()).map(|old| crate::proto::Previous { view_id: old.view_id.clone(), pass: old.pass.clone() }),
-			abandon: self.abandon && role == Role::Io,
+			abandon: abandon && role == Role::Io,
 		};
 		let ok: HelloOk = match exchange(&mut stream, kind::HELLO, &json(&hello), kind::HELLO_OK).and_then(|b| parse(&b)) {
 			Ok(ok) => ok,
@@ -879,6 +894,41 @@ mod tests {
 			link.drop_idle();
 			std::fs::remove_dir_all(dir).unwrap();
 		}
+	}
+
+	#[test]
+	fn only_the_mounts_first_io_hello_says_the_earlier_program_is_gone() {
+		let dir = tempdir();
+		let path = dir.join("node.sock");
+		let listener = UnixListener::bind(&path).unwrap();
+		let hellos: Arc<Mutex<Vec<(Role, bool)>>> = Arc::default();
+		let seen = hellos.clone();
+		std::thread::spawn(move || {
+			for conn in listener.incoming() {
+				let mut s = conn.unwrap();
+				let seen = seen.clone();
+				std::thread::spawn(move || {
+					let (_, body) = read_frame(&mut s).unwrap();
+					let hello: Hello = serde_json::from_slice(&body).unwrap();
+					seen.lock().unwrap().push((hello.role, hello.abandon));
+					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: true };
+					write_frame(&mut s, kind::HELLO_OK, &json(&ok)).unwrap();
+					while let Ok((k, _)) = read_frame(&mut s) {
+						assert_eq!(k, kind::MKDIR);
+						if write_frame(&mut s, kind::DONE, b"{}").is_err() { return; }
+					}
+				});
+			}
+		});
+		let link = Link::new(format!("unix:{}", path.display()), view("right"), 2);
+		let (_feed, _) = link.open_feed().unwrap();
+		link.abandon_earlier().unwrap();
+		link.mkdir("mine").unwrap();
+		link.drop_idle(); // The pool's next connection is a new hello: it never abandons this program's own files.
+		link.mkdir("also-mine").unwrap();
+		assert_eq!(*hellos.lock().unwrap(), [(Role::Feed, false), (Role::Io, true), (Role::Io, false), (Role::Io, false)]);
+		link.drop_idle();
+		std::fs::remove_dir_all(dir).unwrap();
 	}
 
 	#[test]
