@@ -1,24 +1,19 @@
 import { createHash, randomUUID } from "node:crypto";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
-import type { CloudCompanyTreeEntry } from "@qorpera/cloud-client/node/cloud-company-snapshot";
-import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
 import {
 	type CloudCompanyPathControl,
 	CloudCompanyPathGateway,
-	CloudCompanyPathNotText,
 	type CloudCompanyPathRpc,
 } from "@qorpera/runtime/cloud-company-path-gateway";
 import {
 	CloudCompanyPathParentMissing,
 	CloudCompanyPathRpcMissing,
-	CloudCompanyPathRpcPrecondition,
 	CloudCompanyPathVersionChanged,
 } from "@qorpera/runtime/cloud-company-path-refusal";
 import type { CloudNativeFenceRequest } from "@qorpera/runtime/cloud-native-result-fence";
 import { CLOUD_NATIVE_TOOL_AUTHORITY_SCHEMA } from "@qorpera/runtime/cloud-native-tool-authority";
 import { type CloudNativeTool, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { describe, expect, it, vi } from "vitest";
-import { companyFilePostgrest } from "./fixtures/company-file-postgrest.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 /** Stands for the folder core's company_read (cloud-folder-file-tools): its text, cited by the
@@ -49,48 +44,17 @@ function failingRead(error: Error): CloudNativeTool {
 	};
 }
 
-/** Only wire/storage orchestration is simulated here. SQL 290 exercises the
+/** Only wire orchestration is simulated here. SQL 290 exercises the
  * actual membership, native lease, path policy and transaction boundaries. */
 function fixture(tools: readonly CloudNativeTool[] = []) {
 	const { binding, authority } = nativeToolAuthorityFixture();
 	const identity = authority.identity;
-	const objects = new Map<string, Uint8Array>();
-	const entries = new Map<string, CloudCompanyTreeEntry>();
-	const versions = new Map<string, string>();
 	/** What the folder core recorded as released: read id to the hash of the text it released. */
 	const released = new Map<string, string>();
-	const snapshotId = randomUUID();
-	const transport: CloudObjectTransport = {
-		put: vi.fn(async (path: string, bytes: Uint8Array) => {
-			if (objects.has(path)) return "exists";
-			objects.set(path, Uint8Array.from(bytes));
-			return "stored";
-		}),
-		get: vi.fn(async (path: string) => {
-			const bytes = objects.get(path);
-			if (!bytes) throw new Error("Missing fixture object");
-			return bytes;
-		}),
-	};
-	const store = new CloudContentAddressedStore(transport);
 	const overrides = new Map<CloudCompanyPathRpc, (args: Record<string, unknown>) => Promise<unknown>>();
 	const defaultCall = async (method: CloudCompanyPathRpc, args: Record<string, unknown>): Promise<unknown> => {
 		expect(args.p_binding).toEqual(binding);
 		expect(args.p_environment_id).toBe(identity.environmentId);
-		if (method === "qorpera_read_company_path") {
-			const path = args.p_path as string;
-			const entry = entries.get(path) ?? null;
-			return {
-				path,
-				version: versions.get(path) ?? null,
-				entry,
-				manifestBytes:
-					entry?.kind === "file"
-						? objects.get(`${identity.companyId}/${entry.file.manifestSha256}`)?.length
-						: null,
-				companyId: identity.companyId,
-			};
-		}
 		if (method === "qorpera_assert_company_path_reads") return null;
 		if (method === "qorpera_record_native_context_view") {
 			const view = args.p_view as {
@@ -108,21 +72,6 @@ function fixture(tools: readonly CloudNativeTool[] = []) {
 				ordinal: 1,
 			};
 		}
-		if (method === "qorpera_list_company_paths")
-			return {
-				snapshotId,
-				items: [...entries.values()]
-					.filter((entry) => entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))) === args.p_path)
-					.sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)))
-					.map((entry) => ({
-						path: entry.path,
-						version: versions.get(entry.path),
-						kind: entry.kind,
-						bytes: entry.kind === "file" ? entry.file.bytes : null,
-					})),
-				hasMore: false,
-				nextAfter: null,
-			};
 		throw new Error("Unexpected fixture RPC");
 	};
 	const call = vi.fn(async (method: CloudCompanyPathRpc, args: Record<string, unknown>, signal: AbortSignal) => {
@@ -130,7 +79,7 @@ function fixture(tools: readonly CloudNativeTool[] = []) {
 		return overrides.has(method) ? overrides.get(method)!(args) : defaultCall(method, args);
 	});
 	const control: CloudCompanyPathControl = { call };
-	const gateway = new CloudCompanyPathGateway({ binding, identity, control, store });
+	const gateway = new CloudCompanyPathGateway({ binding, identity, control });
 	const signal = new AbortController().signal;
 	const boundary = new CloudNativeToolBoundary({
 		companyId: identity.companyId,
@@ -143,26 +92,13 @@ function fixture(tools: readonly CloudNativeTool[] = []) {
 	return {
 		binding,
 		identity,
-		objects,
-		entries,
-		versions,
 		released,
-		transport,
-		store,
 		call,
 		overrides,
 		defaultCall,
 		gateway,
 		boundary,
 		signal,
-		async seed(path: string, text: string) {
-			const file = await store.putFile(identity.companyId, Buffer.from(text), "application/octet-stream");
-			entries.set(path, { kind: "file", path, executable: false, file });
-			versions.set(path, randomUUID());
-			vi.mocked(transport.put).mockClear();
-			vi.mocked(transport.get).mockClear();
-			return file;
-		},
 	};
 }
 
@@ -175,82 +111,6 @@ describe("cloud Company File path gateway", () => {
 			status: "unconfirmed",
 			content: { text: "TOOL_OUTCOME_UNCONFIRMED" },
 		});
-	});
-	it("pages the trusted listing to its end and starts again, a bounded number of times, when the company moves on", async () => {
-		const db = companyFilePostgrest();
-		for (let index = 0; index < 150; index++) await db.seed(`notebook/${String(index).padStart(3, "0")}.md`, "x\n");
-		const listed = await db.gateway.listTrusted("notebook", new AbortController().signal);
-		expect(listed.map((item) => item.path)).toEqual(
-			Array.from({ length: 150 }, (_, index) => `notebook/${String(index).padStart(3, "0")}.md`),
-		);
-		// A company that writes between every two pages: the listing gives up rather than return a mixed view.
-		db.before.hook = (method, args) => {
-			if (method === "qorpera_list_company_paths" && args.p_after !== null) db.moveHead();
-		};
-		db.requests.length = 0;
-		await expect(db.gateway.listTrusted("notebook", new AbortController().signal)).rejects.toBeInstanceOf(
-			CloudCompanyPathRpcPrecondition,
-		);
-		expect(
-			db.requests.filter((request) => request.method === "qorpera_list_company_paths").map((r) => r.status),
-		).toEqual([200, 412, 200, 412, 200, 412, 200, 412]);
-	});
-	it("tells text that is not UTF-8 apart from bytes that do not match their digest", async () => {
-		const db = companyFilePostgrest();
-		await db.seedBytes("notes/binary.md", Buffer.from([0xff, 0xfe, 0x00]));
-		await expect(db.gateway.readTrusted("notes/binary.md", new AbortController().signal)).rejects.toBeInstanceOf(
-			CloudCompanyPathNotText,
-		);
-		// A verified manifest whose chunks are not the file it names is an integrity failure, never "not text".
-		const chunk = await db.store.putObject(
-			db.identity.companyId,
-			Buffer.from([0xff, 0xfe]),
-			"application/octet-stream",
-		);
-		const claimed = createHash("sha256").update("ok").digest("hex");
-		const manifest = Buffer.from(
-			JSON.stringify({
-				schema: "qorpera.cloud-file-manifest/v1",
-				fileSha256: claimed,
-				bytes: 2,
-				mediaType: "application/octet-stream",
-				chunks: [{ sha256: chunk.sha256, bytes: 2 }],
-			}),
-		);
-		const stored = await db.store.putObject(
-			db.identity.companyId,
-			manifest,
-			"application/vnd.qorpera.file-manifest+json",
-		);
-		db.directory("notes");
-		db.entries.set("notes/forged.md", {
-			version: randomUUID(),
-			entry: {
-				kind: "file",
-				path: "notes/forged.md",
-				executable: false,
-				file: {
-					manifestSha256: stored.sha256,
-					fileSha256: claimed,
-					bytes: 2,
-					mediaType: "application/octet-stream",
-				},
-			},
-		});
-		const forged = await db.gateway.readTrusted("notes/forged.md", new AbortController().signal).catch((e) => e);
-		expect(forged).toBeInstanceOf(Error);
-		expect(forged).not.toBeInstanceOf(CloudCompanyPathNotText);
-		expect(String(forged)).toContain("does not match its digest");
-	});
-	it("refuses a trusted listing page that claims more without a cursor", async () => {
-		const f = fixture();
-		f.overrides.set("qorpera_list_company_paths", async () => ({
-			snapshotId: randomUUID(),
-			items: [],
-			hasMore: true,
-			nextAfter: null,
-		}));
-		await expect(f.gateway.listTrusted("notebook", f.signal)).rejects.toThrow("Invalid Company File page cursor");
 	});
 	it("does not infer a version change from a precondition outside a mutation", async () => {
 		const f = fixture([failingRead(new CloudCompanyPathVersionChanged())]);
@@ -401,7 +261,6 @@ describe("cloud Company File path gateway", () => {
 					binding: f.binding,
 					identity: { ...f.identity, runId: randomUUID() },
 					control: { call: f.call },
-					store: f.store,
 				}),
 		).toThrow("does not match the admitted run");
 		expect(f.call).not.toHaveBeenCalled();
@@ -424,38 +283,6 @@ describe("cloud Company File path gateway", () => {
 		"dir./x",
 	])("rejects path representation %s before transport", (path) => {
 		expect(() => parseCloudCompanyPath(path)).toThrow();
-	});
-
-	it("rejects corrupted immutable bytes and forged path/company metadata in a trusted read", async () => {
-		const f = fixture();
-		const file = await f.seed("note.md", "valid bytes");
-		f.objects.set(`${f.identity.companyId}/${file.fileSha256}`, Buffer.from("other bytes"));
-		await expect(f.gateway.readTrusted("note.md", f.signal)).rejects.toThrow("integrity");
-		for (const forged of [{ companyId: randomUUID() }, { path: "other.md" }]) {
-			f.overrides.set("qorpera_read_company_path", async (args) => ({
-				...((await f.defaultCall("qorpera_read_company_path", args)) as Record<string, unknown>),
-				...forged,
-			}));
-			vi.mocked(f.transport.get).mockClear();
-			await expect(f.gateway.readTrusted("note.md", f.signal)).rejects.toThrow("scope");
-			expect(f.transport.get).not.toHaveBeenCalled();
-		}
-	});
-
-	it("lists only the server's projected children in a trusted listing, without object capabilities", async () => {
-		const f = fixture();
-		await f.seed("note.md", "data");
-		const items = await f.gateway.listTrusted("", f.signal);
-		expect(items).toEqual([{ path: "note.md", version: f.versions.get("note.md"), kind: "file", bytes: 4 }]);
-		expect(JSON.stringify(items)).not.toContain("Sha256");
-		expect(f.transport.get).not.toHaveBeenCalled();
-		f.overrides.set("qorpera_list_company_paths", async () => ({
-			snapshotId: randomUUID(),
-			items: [{ path: "secret/child", kind: "file", bytes: 4, version: randomUUID() }],
-			hasMore: false,
-			nextAfter: null,
-		}));
-		await expect(f.gateway.listTrusted("", f.signal)).rejects.toThrow("child");
 	});
 
 	it("records exact delivered read hashes before turn and compaction requests, without storing text", async () => {

@@ -58,8 +58,6 @@ describe("Company File bounded control transport", () => {
 		"qorpera_begin_native_company_execution_v2",
 		"qorpera_describe_company_run_context",
 		"qorpera_read_company_run_context",
-		"qorpera_read_company_path",
-		"qorpera_list_company_paths",
 		"qorpera_record_native_context_view",
 		"qorpera_fence_native_context",
 		"qorpera_native_presence_register",
@@ -129,7 +127,7 @@ describe("Company File bounded control transport", () => {
 	] as const)("distinguishes definite head conflict %i %j", async (status, body, conflict) => {
 		const transport = vi.fn<typeof fetch>(async () => Response.json(body, { status }));
 		const error = await fixture(transport)
-			.call("qorpera_list_company_paths", {}, new AbortController().signal)
+			.call("qorpera_find_agent_mail", {}, new AbortController().signal)
 			.catch((error: unknown) => error);
 		expect(error instanceof CloudCompanyHeadConflict).toBe(conflict);
 		expect(String(error)).not.toContain("PRIVATE_DIAGNOSTIC");
@@ -148,7 +146,7 @@ describe("Company File bounded control transport", () => {
 	] as const)("brands only a complete request precondition refusal (%i, %j)", async (status, body, precondition) => {
 		const transport = vi.fn<typeof fetch>(async () => Response.json(body, { status }));
 		const error = await fixture(transport)
-			.call("qorpera_list_company_paths", {}, new AbortController().signal)
+			.call("qorpera_find_agent_mail", {}, new AbortController().signal)
 			.catch((error: unknown) => error);
 		expect(error instanceof CloudCompanyPathRpcPrecondition).toBe(precondition);
 		// Either way the diagnostic category stays what it was, and no database text leaks.
@@ -168,7 +166,7 @@ describe("Company File bounded control transport", () => {
 	] as const)("brands only a complete missing-folder refusal (%i, %j)", async (status, body, missing) => {
 		const transport = vi.fn<typeof fetch>(async () => Response.json(body, { status }));
 		const error = await fixture(transport)
-			.call("qorpera_list_company_paths", {}, new AbortController().signal)
+			.call("qorpera_find_agent_mail", {}, new AbortController().signal)
 			.catch((error: unknown) => error);
 		expect(error instanceof CloudCompanyPathRpcParentMissing).toBe(missing);
 		expect(error instanceof CloudCompanyPathRpcPrecondition).toBe(false);
@@ -216,7 +214,7 @@ describe("Company File bounded control transport", () => {
 		const transport = vi.fn<typeof fetch>(
 			async () => new Response(new ReadableStream<Uint8Array>({ cancel }), { status }),
 		);
-		const result = fixture(transport).call("qorpera_read_company_path", {}, new AbortController().signal);
+		const result = fixture(transport).call("qorpera_describe_agent_open_work", {}, new AbortController().signal);
 		const rejected = expect(result).rejects.toThrow("unavailable");
 		await vi.advanceTimersByTimeAsync(3001);
 		await rejected;
@@ -323,7 +321,7 @@ describe("Company File bounded control transport", () => {
 	it.each([
 		"qorpera_describe_company_run_context",
 		"qorpera_assert_company_path_reads",
-		"qorpera_list_company_paths",
+		"qorpera_find_agent_mail",
 	] as const)("treats a lock timeout on %s as unavailable, never a refusal or a head conflict", async (method) => {
 		const transport = vi.fn<typeof fetch>(async () =>
 			Response.json(

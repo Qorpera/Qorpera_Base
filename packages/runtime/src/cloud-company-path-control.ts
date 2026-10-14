@@ -63,9 +63,6 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 
 	call(method: CloudCompanyPathRpc, argumentsValue: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 		const permitted: readonly CloudCompanyPathRpc[] = [
-			"qorpera_manage_agent_routine",
-			"qorpera_decide_agent_routine",
-			"qorpera_manage_agent_sidebar",
 			"qorpera_describe_agent_open_work",
 			"qorpera_record_runtime_observation_batch",
 			"qorpera_record_provider_usage_signal",
@@ -74,9 +71,6 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_list_native_connector_tools",
 			"qorpera_assert_native_connector_operation",
 			"qorpera_read_company_run_context",
-			// Trusted notebook reads for memory composition (runtime Step 6).
-			"qorpera_read_company_path",
-			"qorpera_list_company_paths",
 			"qorpera_record_native_context_view",
 			"qorpera_fence_native_context",
 			"qorpera_assert_company_path_reads",

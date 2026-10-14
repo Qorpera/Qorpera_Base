@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
-import type { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { JsonValue } from "@qorpera/contracts";
 import {
 	CLOUD_ACTION_REVIEW_HOLD_MS,
@@ -130,11 +129,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #presenceFactory: CloudCompanyPathPresenceFactory | undefined;
 	readonly #control: NativeCompanyControl;
 	readonly #paths: CloudCompanyPathControl;
-	readonly #store: (
-		companyId: string,
-		binding: CloudNativeToolBinding,
-		signal: AbortSignal,
-	) => CloudContentAddressedStore;
 	readonly #command: readonly [string, ...string[]];
 	readonly #sha256: string;
 	readonly #timeoutMs: number | undefined;
@@ -156,11 +150,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		presence?: CloudCompanyPathPresenceFactory;
 		controlPlane: NativeCompanyControl;
 		pathControl: CloudCompanyPathControl;
-		objectStore: (
-			companyId: string,
-			binding: CloudNativeToolBinding,
-			signal: AbortSignal,
-		) => CloudContentAddressedStore;
 		command: readonly [string, ...string[]];
 		binarySha256: string;
 		timeoutMs?: number;
@@ -190,7 +179,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#control = options.controlPlane;
 		this.#presenceFactory = options.presence;
 		this.#paths = options.pathControl;
-		this.#store = options.objectStore;
 		this.#command = Object.freeze([...options.command]) as readonly [string, ...string[]];
 		this.#sha256 = options.binarySha256;
 		// Hash the Codex binary once per service process, while it waits for its run.
@@ -388,7 +376,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					binding,
 					identity: context.identity,
 					control: this.#paths,
-					store: this.#store(context.identity.companyId, binding, signal),
 				});
 				// How much open work the agent has (counts only), where it keeps todos and workers:
 				// a company run that is not itself a worker. Asked alongside the notebook; like
