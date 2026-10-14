@@ -223,7 +223,7 @@ begin
 	if r ->> 'runId' is distinct from v ->> 'runId' or r -> 'view' ->> 'kind' is distinct from 'test_machine'
 		or r -> 'view' -> 'companyWide' is distinct from 'true'::jsonb or r -> 'view' -> 'runActor' is distinct from v then
 		raise exception 'Live test machine view: %', r; end if;
-	r := pg_temp.vcommit(s, 'tm-live', jsonb_build_array(jsonb_build_object('op','write','path','shared/tm.txt','file',a),
+	r := pg_temp.vcommit(s, 'tm-live-1', jsonb_build_array(jsonb_build_object('op','write','path','shared/tm.txt','file',a),
 		jsonb_build_object('op','write','path','secret/tm.txt','file',a), jsonb_build_object('op','write','path','rules/tm.txt','file',a)));
 	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'denied', 'denied'); perform pg_temp.expect(r, 3, 'denied', 'denied');
 	c := pg_temp.last_commit(r);
