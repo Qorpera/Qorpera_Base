@@ -4,7 +4,6 @@ import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
-import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
 import { createClient } from "@supabase/supabase-js";
 import type { CloudChatGptPlanAuth } from "./cloud-codex-tool-session.ts";
 import { createHttpCloudCodingCommandGateway, parseCloudCodingCommandUrl } from "./cloud-coding-command-http.ts";
@@ -49,10 +48,6 @@ import {
 
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_CREDENTIAL_BYTES = 8192;
-const NO_COMPANY_OBJECTS: CloudObjectTransport = {
-	put: () => Promise.reject(new Error("Company objects are no longer served")),
-	get: () => Promise.reject(new Error("Company objects are no longer served")),
-};
 
 export function systemdCredentialMetadataIsSafe(
 	metadata: SystemdCredentialMetadata,
@@ -529,8 +524,6 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 					identity,
 					control: pathControl,
 				}),
-			// Company objects are gone (legacy removal, step C): a snapshot-v1 path's bytes are refused here.
-			objectStore: () => new CloudContentAddressedStore(NO_COMPANY_OBJECTS),
 			...(secretBrokerOrigin && secretBrokerToken
 				? (() => {
 						// The company routes the request to this company's broker behind the
