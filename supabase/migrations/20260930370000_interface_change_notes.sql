@@ -3,8 +3,8 @@
 -- carried it.
 --
 -- qorpera_folder_note_interface_changes, a native host call (scope binding): the runtime asks it after a tool's commit
--- under interfaces/ or tables/ (save_interface, company_write, company_mkdir, company_delete), and once more as a run
--- with a computer ends, for what its shell and screen saved. It notes each of the binding run's commits that changed a
+-- under interfaces/ or tables/ (save_interface, company_write, company_mkdir, company_delete, apply_proposal), and once
+-- more as a run with a computer ends, for what its shell and screen saved. It notes each of the binding run's commits that changed a
 -- path there and has no note yet, so a call notes what an earlier one missed. A note is a session_info event (schema
 -- qorpera.interface-change/v1) that names the commit and each path version it made there, with the version before it.
 -- The web draws it as one line with Undo, which a member's own commit makes (C4's member route), based on the versions
