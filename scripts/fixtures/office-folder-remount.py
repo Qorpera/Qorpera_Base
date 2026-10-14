@@ -584,3 +584,89 @@ def gap_trial(relay, mode, troubles):
         trial["stopped"] = [relay.call("stop", name=name) for name in started]
         trial["teardown"] = tear_view(view)
     return trial
+
+
+def choose_mode(trials):
+    """The first mode, in MODES order, that the unit's mount user served over."""
+    return next((trial["mode"] for trial in trials if trial["served"]), None)
+
+
+VIEW = "q3"
+# Started before the first mount, through the candidate form: the folder's shared parent with `/company` a link.
+CANDIDATES = (("desktop", "desktop"), ("shell", "shell"), ("command", "command"))
+CHECKS = ("officeFirstPropagation", "restartedBySystemd", "oneMountAfterRestart", "runningNamespacesRecovered", "directBindNegativeControl", "stateFolderKept", "secondRestartRecovered", "exitThreeNotRestarted", "fixtureProtocolClean")
+# What a writer in the killed mount holds, and what the node keeps after the new mount's abandon hello.
+LOSS = {
+    "new-unsent": ("loss-new-unsent.txt", ""),
+    "new-fsynced": ("loss-new-fsynced.txt", ""),
+    "truncate": ("loss-truncate.txt", ""),
+    "keep": ("loss-keep.txt", "saved before"),
+    "closed": ("loss-closed.txt", "closed"),
+}
+LIMITATIONS = [
+    "A synthetic protocol-3 node on a Unix socket: no database, vsock identity, switchable views or plumber",
+    "Office namespaces come from the runtime's process gate and mirrored bubblewrap arguments in a relay with the office unit's confinement, not from the office application",
+    "Stand-in private surfaces in the proof directory, not the office state directory",
+    "Every namespace's program reads requests on a stdin pipe; the command shape is used without display or capture",
+    "systemd-run takes the office unit's InaccessiblePaths lines as transient properties, where unit specifiers are not expanded",
+    "The A1 image predates folder-v2: the folder program and the mount unit's lines were pushed in from master",
+]
+
+
+class Proof:
+    def __init__(self, directory, fuse):
+        self.directory = directory
+        self.fuse = fuse
+        self.record = {"result": "failed", "checks": {}, "recorded": {}, "limitations": LIMITATIONS}
+        self.troubles = []
+        self.claimed = {}
+        self.relays = []
+        self.views = []
+        self.node = None
+        self.point = ROOT / "mounts" / VIEW / "company"
+        self.unit = UNIT.format(VIEW)
+
+    def check(self, name, passed, evidence):
+        """A check holds only if every place it is measured holds."""
+        entry = self.record["checks"].setdefault(name, {"passed": True, "evidence": []})
+        entry["passed"] = entry["passed"] and bool(passed)
+        entry["evidence"].append(evidence)
+
+    def note(self, name, value):
+        self.record["recorded"][name] = value
+
+    def relay(self, number, writable_mounts=False):
+        relay = Relay(self.directory, number, self.node_path, relay_properties(self.office_text, self.directory, writable_mounts))
+        self.relays.append(relay)
+        return relay
+
+    def ask(self, relay, name, request):
+        return ask(relay, name, request, self.troubles)
+
+    def set_up(self):
+        require_disposable_guest(self.directory)
+        self.directory.chmod(0o755)
+        seen, office = preflight(self.directory, self.fuse)
+        self.record["image"] = seen
+        self.node_path = seen["node"]
+        self.office_text = (self.directory / "office.service").read_text()
+        taken, skipped = office_lines(self.office_text)
+        self.record["relayConfinement"] = taken
+        self.record["officeLinesLeftOut"] = skipped
+        stand_in(self.directory, office, json.loads((self.directory / "shapes.json").read_text()))
+        program = install_program(self.directory, self.claimed)
+        self.node = RemountNode(self.directory / "node.sock")
+        self.record["mountUnit"] = install_unit(self.directory, self.claimed, program, office).splitlines()
+        # The first office namespace starts before /run/qorpera-folder exists, as an office booted before any folder.
+        self.relay1 = self.relay(1)
+        self.note("relay1BeforeLayout", self.relay1.call("info"))
+        claim(self.directory, self.claimed, "root", str(ROOT))
+        make_root()
+        trials = []
+        self.note("gap", trials)
+        for mode in MODES:
+            trials.append(gap_trial(self.relay1, mode, self.troubles))
+        self.mode = choose_mode(trials)
+        self.note("mode", self.mode)
+        if self.mode is None:
+            raise RuntimeError("The mount came up over none of the modes")
