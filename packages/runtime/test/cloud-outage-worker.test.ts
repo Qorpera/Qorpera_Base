@@ -122,15 +122,6 @@ class Control implements CloudRunnerControlTransport {
 function broker() {
 	return {
 		describe: vi.fn(async () => ({})),
-		listInputs: vi.fn(async () => []),
-		listTranscript: vi.fn(async () => []),
-		listOperations: vi.fn(async () => []),
-		listArtifacts: vi.fn(async () => []),
-		requestModel: vi.fn(async () => ({})),
-		beginOperation: vi.fn(async () => ({})),
-		completeOperation: vi.fn(async () => ({})),
-		bindProviderSession: vi.fn(async () => ({})),
-		appendTranscriptEvent: vi.fn(async () => ({})),
 	} satisfies CloudRunnerBrokerTransport;
 }
 
@@ -278,7 +269,6 @@ describe("cloud worker outage recovery", () => {
 		expect(forbidden).not.toHaveBeenCalled();
 		expect(lane.acquire).toHaveBeenCalledOnce();
 		expect(lane.release).not.toHaveBeenCalled();
-		expect(transport.appendTranscriptEvent).not.toHaveBeenCalled();
 	});
 
 	it("replays an exact durable completion after process restart without rerunning work or sending messages", async () => {
@@ -294,7 +284,6 @@ describe("cloud worker outage recovery", () => {
 			status: "completed",
 		});
 		expect(execute).toHaveBeenCalledOnce();
-		expect(transport.appendTranscriptEvent).not.toHaveBeenCalled();
 		const calls = control.calls.filter((call) => call.action === "complete");
 		expect(calls).toHaveLength(2);
 		expect(calls[0]).toEqual(calls[1]);
@@ -331,7 +320,6 @@ describe("cloud worker outage recovery", () => {
 		expect(restored.recoveryRecords()).toMatchObject([
 			{ job: { runId, assignmentId }, completion: { outputSnapshotId: snapshotId, result: result().result } },
 		]);
-		expect(transport.appendTranscriptEvent).not.toHaveBeenCalled();
 		expect(execute).toHaveBeenCalledOnce();
 		const again = await fixture.restart();
 		expect(again.snapshot().recoveryJobIds).toEqual([jobId]);
