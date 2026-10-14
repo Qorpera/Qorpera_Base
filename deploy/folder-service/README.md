@@ -10,7 +10,7 @@ install reference. Every node and machine step is the coordinator's, at a cut.
 | `qorpera-folder-service.cjs` | node host, `qorpera-objects` (a drop-in; see "Reading the objects") | The folder service (from `packages/object-gateway/src/folder-service/`). Holds the service credential; never talks to LXD. |
 | `qorpera-folder` | node host (`bridge`), machine (`mount`) | The folder program (from `crates/qorpera-folder/`), built by `scripts/build-folder-program.mjs`; its recorded build is `folder-program-linux-x64.json`. |
 | `qorpera-folder-service.socket` | node host | `/run/qorpera-folder/service.sock`, 0660, group `qorpera-folder-bridge`: only the bridge connects. |
-| `qorpera-folder-control.socket` | node host with coding machines | `/run/qorpera-folder-control/control.sock`, 0600, user `qorpera-coding-executor`: only the coding executor connects, to ask its machines' boundaries (F3 5c). |
+| `qorpera-folder-control.socket` | node host with coding machines | `/run/qorpera-folder-control/control.sock`, 0600, user `qorpera-coding-executor`: only the coding executor connects, to ask its machines' boundaries and say when it restarted one (F3 5c). |
 | `qorpera-folder-service.service` | node host | The service, started by its socket. |
 | `qorpera-folder-bridge.service` | node host, `qorpera-folder-bridge` (+ group `lxd`) | vsock port 5250 to the socket, naming each machine as LXD sees it. No credential. |
 | `qorpera-folder-mount@.service` | execution host, from the shared-execution package | One read-only mount per instance: `/srv/qorpera-folder/<id>` from `/etc/qorpera-folder/mounts/<id>.json`. |
@@ -71,7 +71,7 @@ plan's Q1).
 `codingMachineProjects` (F3 step 5c, `deploy/first-node/RUNTIME-FOLDER-SERVICE.md`, "Step 5c") names the LXD projects
 of this node's coding machines. A machine there named `qorpera-coding-machine-<coding machine id without dashes>` may
 present its own coding sessions' views, and `codingExecutorUid` (`id -u qorpera-coding-executor`) is the only uid the
-control socket lets ask their boundaries. Both stay unset until coding machines use the folder; a company's code host
+control socket lets ask their boundaries and say when it restarted one. Both stay unset until coding machines use the folder; a company's code host
 needs neither (its project is `qorpera-codehost-<company id without dashes>`).
 
 Which machine is served a core view is the core's to say: the view's first renewal says its kind and machine, and from
@@ -112,7 +112,9 @@ stay read-only until steps 5–6. Writes need P17's conflict copies and their er
 **Stopping (step 5c).** A stop or restart of the service ends nothing it serves for good: first it releases every read
 its coding machines' views served and publishes every coding and code host view, for up to 45 s
 (`TimeoutStopSec=60s`), then tells the core it stopped cleanly, and the next run serves those views. If it could not,
-the views stay marked as this run's: the core refuses them to the next run, and their machines restart.
+or a coding machine lost a read this run served and the executor has not said it restarted it since (`restarted` on
+the control socket), the views stay marked as this run's: the core refuses them to the next run, and their machines
+restart.
 
 **Reading the objects.** The gateway writes them 0600, so the service reads them as the gateway's account:
 `qorpera-objects`, a system account with the same uid and gid on both nodes (1500; no shell, no home, no other groups,

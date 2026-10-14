@@ -30,8 +30,9 @@ import {
  * "Boundaries"): a coding session's view is served to its own coding machine alone, and a code host's to its company's
  * code host. The service records every read it serves a coding machine before the answer leaves, and releases every
  * read of the machine before any of its saves and before it answers a boundary the executor asks over the control
- * socket. A clean stop clears `served_by`; a run that did not stop cleanly leaves it, and the core refuses its views
- * to the next. */
+ * socket. A read a machine was served that went unreleased leaves the machine unproven, its views gone or not, until
+ * the executor says it restarted the machine. A clean stop clears `served_by`; a run that did not stop cleanly leaves
+ * it, and the core refuses its views to the next. */
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
@@ -40,10 +41,13 @@ afterEach(async () => {
 const SESSION = "c0d1e5e5-0001-4a00-8b00-000000000001";
 const SECOND = "c0d1e5e5-0002-4a00-8b00-000000000002";
 const HOST_VIEW = "c0d1e5e5-0003-4a00-8b00-000000000003";
+/** A session's view the executor opens on the machine after it restarted it (open in the core only once a test does). */
+const THIRD = "c0d1e5e5-0004-4a00-8b00-000000000004";
 const PASSES: Record<string, string> = {
 	[SESSION]: "codepass_0123456789-abcdefghijklmnopqrstuvw",
 	[SECOND]: "codepass_0123456789-bcdefghijklmnopqrstuvwx",
 	[HOST_VIEW]: "hostpass_0123456789-abcdefghijklmnopqrstuvw",
+	[THIRD]: "codepass_0123456789-cdefghijklmnopqrstuvwxy",
 };
 const AT_CODING: BridgeInfo = { cid: 95, lookup: "found", machine: CODING };
 const AT_HOST: BridgeInfo = { cid: 96, lookup: "found", machine: CODE_HOST };
@@ -244,6 +248,90 @@ describe("coding views", () => {
 		});
 	});
 
+	it("answers a machine's boundary only once none of its views holds a read unreleased, one served during the last release included", async () => {
+		const { core, service, open } = await company();
+		const first = await open();
+		const second = await open(SECOND);
+		await write(first, "docs/out.txt", "o");
+		// While the first view's save is asked, the second is served a listing. While that listing is released, after
+		// the release that found nothing in the first view, the first is served a file.
+		let armed = false;
+		core.commitHook = (asked) => {
+			if (asked !== 0) return undefined;
+			armed = true;
+			return second.list("docs", undefined).then(() => undefined);
+		};
+		core.releaseHook = (viewId) => {
+			if (viewId !== SECOND || !armed) return undefined;
+			armed = false;
+			return first.read(NOTES).then(() => undefined);
+		};
+		expect(await service.boundary(CODING_MACHINE_ID)).toMatchObject({
+			reads: "released",
+			views: [
+				{ viewId: SESSION, report: { paths: [{ path: "docs/out.txt", outcome: "saved" }] } },
+				{ viewId: SECOND, report: { commitId: null, paths: [] } },
+			],
+		});
+		expect(armed).toBe(false);
+		expect(releasesOf(core)).toEqual([
+			[SECOND, [["docs", null]]],
+			[SESSION, [["docs/notes.md", v(2)]]],
+		]);
+	});
+
+	it("keeps a read a coding machine lost once its last view has gone, until the executor says it restarted the machine", async () => {
+		const { core, service, open } = await company();
+		// The machine's last view closes with a read it was served and never released: the machine holds the read still.
+		const first = await open();
+		await first.read(PLAN);
+		core.views.get(SESSION)!.state = "closed";
+		await service.renewLeases();
+		expect(await service.boundary(CODING_MACHINE_ID)).toEqual({
+			machine: CODING_MACHINE_ID,
+			reads: "unproven",
+			views: [],
+		});
+		// A view opened on it cannot show its reads released either.
+		const second = await open(SECOND);
+		await write(second, "docs/b.txt", "b");
+		expect(await service.boundary(CODING_MACHINE_ID)).toMatchObject({
+			reads: "unproven",
+			views: [{ viewId: SECOND, report: { commitId: null, refused: "unproven" } }],
+		});
+		// The executor closes the machine's views, restarts it and says so: a view opened after is served as any.
+		core.views.get(SECOND)!.state = "closed";
+		await service.renewLeases();
+		service.restarted(CODING_MACHINE_ID);
+		core.openView(THIRD, PASSES[THIRD] as string, { kind: "coding_session", codingMachineId: CODING_MACHINE_ID });
+		const third = await open(THIRD);
+		await third.read(PLAN);
+		await write(third, "docs/c.txt", "c");
+		expect(await service.boundary(CODING_MACHINE_ID)).toMatchObject({
+			reads: "released",
+			views: [{ viewId: THIRD, report: { paths: [{ path: "docs/c.txt", outcome: "saved" }] } }],
+		});
+		expect(releasesOf(core)).toEqual([[THIRD, [["docs/plan.md", v(1)]]]]);
+		// A restart while a view of the machine is still open with a read unreleased: the read is forgotten with the
+		// machine it was served to, the view is unproven, and its closing later makes nothing lost.
+		await third.read(NOTES);
+		service.restarted(CODING_MACHINE_ID);
+		await write(third, "docs/d.txt", "d");
+		expect(await service.boundary(CODING_MACHINE_ID)).toMatchObject({
+			reads: "released",
+			views: [{ viewId: THIRD, report: { commitId: null, refused: "unproven" } }],
+		});
+		core.views.get(THIRD)!.state = "closed";
+		await service.renewLeases();
+		expect(await service.boundary(CODING_MACHINE_ID)).toEqual({
+			machine: CODING_MACHINE_ID,
+			reads: "released",
+			views: [],
+		});
+		expect(releasesOf(core)).toHaveLength(1);
+		expect(core.commits).toHaveLength(1);
+	});
+
 	it("publishes a coding view after its quiet period, every read of its machine released first", async () => {
 		const { core, open } = await company();
 		const first = await open();
@@ -369,6 +457,16 @@ describe("coding views", () => {
 		expect(core.stopped).toEqual([]);
 		expect(session.servedBy).not.toBeNull();
 	});
+
+	it("does not stop cleanly while a coding machine holds a read it lost, though none of its views is open", async () => {
+		const { core, service, open } = await company();
+		const view = await open();
+		await view.read(PLAN);
+		core.views.get(SESSION)!.state = "closed";
+		await service.renewLeases();
+		expect(await service.stopCleanly()).toBe(false);
+		expect(core.stopped).toEqual([]);
+	});
 });
 
 describe("the control socket", () => {
@@ -394,17 +492,21 @@ describe("the control socket", () => {
 			if (text !== "") socket.end(text);
 		});
 
-	it("answers the coding executor's boundaries, and refuses every peer while the socket's file lets another connect", async () => {
+	it("answers the coding executor's boundaries and restarts, and refuses every peer while the socket's file lets another connect", async () => {
 		// Under /tmp (root's, sticky), not $TMPDIR: every folder above the socket counts.
 		const dir = await realpath(await mkdtemp("/tmp/qfc-"));
 		cleanups.push(() => rm(dir, { recursive: true, force: true }));
 		const path = join(dir, "control.sock");
 		const uid = process.getuid?.() ?? 0;
 		const asked: [string, readonly string[]][] = [];
+		const restarts: string[] = [];
 		const target = {
 			boundary: async (machine: string, final: readonly string[]): Promise<MachineBoundary> => {
 				asked.push([machine, final]);
 				return { machine, reads: "released", views: [] };
+			},
+			restarted: (machine: string) => {
+				restarts.push(machine);
 			},
 		};
 		const close = (server: Server) => new Promise<void>((resolve) => server.close(() => resolve()));
@@ -440,6 +542,7 @@ describe("the control socket", () => {
 		await chmod(dir, 0o700);
 		expect(socketRefusal(dir, uid)).toMatch(/is not a socket/);
 		expect(asked).toEqual([]);
+		expect(restarts).toEqual([]);
 
 		// The executor's alone: each request answered in order, a bad one with why.
 		expect(socketRefusal(path, uid)).toBeUndefined();
@@ -450,19 +553,26 @@ describe("the control socket", () => {
 				{ op: "publish", machine: CODING_MACHINE_ID },
 				{ op: "boundary", machine: "machine-1" },
 				{ op: "boundary", machine: CODING_MACHINE_ID, final: [SESSION, SESSION] },
+				{ op: "restarted", machine: CODING_MACHINE_ID, final: [] },
+				{ op: "restarted", machine: "machine-1" },
+				{ op: "restarted", machine: CODING_MACHINE_ID },
 			]
 				.map((line) => `${JSON.stringify(line)}\n`)
 				.join(""),
 		);
 		expect(answers).toEqual([
 			{ boundary: { machine: CODING_MACHINE_ID, reads: "released", views: [] } },
-			{ error: { code: "BAD_REQUEST", message: "The only request is a boundary" } },
+			{ error: { code: "BAD_REQUEST", message: "A request is a boundary or a restart" } },
 			{ error: { code: "BAD_REQUEST", message: "machine is a coding machine's id" } },
 			{ boundary: { machine: CODING_MACHINE_ID, reads: "released", views: [] } },
+			{ error: { code: "BAD_REQUEST", message: "final is a boundary's" } },
+			{ error: { code: "BAD_REQUEST", message: "machine is a coding machine's id" } },
+			{ restarted: { machine: CODING_MACHINE_ID } },
 		]);
 		expect(asked).toEqual([
 			[CODING_MACHINE_ID, []],
 			[CODING_MACHINE_ID, [SESSION]],
 		]);
+		expect(restarts).toEqual([CODING_MACHINE_ID]);
 	});
 });

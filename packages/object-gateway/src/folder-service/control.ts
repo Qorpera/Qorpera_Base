@@ -6,11 +6,14 @@ import { ErrorCode, ProtocolError } from "./protocol.ts";
 import type { MachineBoundary } from "./service.ts";
 
 /** The folder service's control socket (F3 5c, the plan's "Boundaries"): host-local, for the coding executor alone,
- * which asks it for its coding machines' boundaries. One JSON object a line each way, one request at a time, each
- * answered in order:
+ * which asks it for its coding machines' boundaries, and says when it restarted one. One JSON object a line each way,
+ * one request at a time, each answered in order:
  *
  *   {"op":"boundary","machine":"<coding machine id>","final":["<view id>", …]}
  *   → {"boundary":{"machine":…,"reads":…,"views":[…]}} (`MachineBoundary`), or {"error":{"code":…,"message":…}}
+ *   {"op":"restarted","machine":"<coding machine id>"}
+ *   → {"restarted":{"machine":…}}: sent once the machine is stopped and before it starts again (the plan's rule 4), so
+ *     a read it lost no longer makes its views unproven (`FolderService.restarted`)
  *
  * Node cannot read a connection's peer credentials (SO_PEERCRED), so the kernel checks the peer's uid: connecting to
  * a Unix socket needs write permission on its file. The socket unit (qorpera-folder-control.socket) makes the file the
@@ -26,7 +29,10 @@ const REFUSED = "This socket admits only the coding executor";
 
 export interface ControlTarget {
 	boundary(machine: string, final: readonly string[]): Promise<MachineBoundary>;
+	restarted(machine: string): void;
 }
+
+type Request = { op: "boundary"; machine: string; final: string[] } | { op: "restarted"; machine: string };
 
 export interface ControlOptions {
 	readonly target: ControlTarget;
@@ -130,16 +136,22 @@ async function answer(text: string, options: ControlOptions): Promise<unknown> {
 	const request = parseRequest(text);
 	if (typeof request === "string") return { error: { code: ErrorCode.badRequest, message: request } };
 	try {
+		if (request.op === "restarted") {
+			options.target.restarted(request.machine);
+			return { restarted: { machine: request.machine } };
+		}
 		return { boundary: await options.target.boundary(request.machine, request.final) };
 	} catch (error) {
 		if (error instanceof ProtocolError) return { error: { code: error.code, message: error.message } };
-		options.log(`folder-service: control: boundary of ${request.machine} failed: ${(error as Error).message}`);
-		return { error: { code: ErrorCode.unavailable, message: "The boundary could not be made now" } };
+		options.log(`folder-service: control: ${request.op} of ${request.machine} failed: ${(error as Error).message}`);
+		const message =
+			request.op === "restarted" ? "The restart could not be taken now" : "The boundary could not be made now";
+		return { error: { code: ErrorCode.unavailable, message } };
 	}
 }
 
 /** A request, or what is wrong with it. */
-function parseRequest(text: string): { machine: string; final: string[] } | string {
+function parseRequest(text: string): Request | string {
 	let value: unknown;
 	try {
 		value = JSON.parse(text);
@@ -151,10 +163,14 @@ function parseRequest(text: string): { machine: string; final: string[] } | stri
 	const request = value as Record<string, unknown>;
 	for (const key of Object.keys(request))
 		if (key !== "op" && key !== "machine" && key !== "final") return `Unknown request key ${key}`;
-	if (request.op !== "boundary") return "The only request is a boundary";
+	if (request.op !== "boundary" && request.op !== "restarted") return "A request is a boundary or a restart";
 	if (!isUuid(request.machine)) return "machine is a coding machine's id";
+	if (request.op === "restarted") {
+		if (request.final !== undefined) return "final is a boundary's";
+		return { op: "restarted", machine: request.machine };
+	}
 	const final = request.final ?? [];
 	if (!Array.isArray(final) || final.length > MAX_FINAL || !final.every((id) => isUuid(id)))
 		return `final is a list of at most ${MAX_FINAL} view ids`;
-	return { machine: request.machine, final: [...new Set(final as string[])] };
+	return { op: "boundary", machine: request.machine, final: [...new Set(final as string[])] };
 }

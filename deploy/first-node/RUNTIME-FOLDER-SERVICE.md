@@ -627,17 +627,26 @@ In slice 5c the folder service serves coding machines' views (RUNTIME-FOLDER-COD
   `{"op":"boundary","machine":"<coding machine id>","final":["<view id>", …]}` answers
   `{"boundary":{"machine","reads","views":[{"viewId","report" or "error"}…]}}` or `{"error":{"code","message"}}`. Every view of
   the machine with something pending publishes, then the reads served meanwhile are released, and only then does the
-  answer leave (rule 3). `reads` is `released`, the release's refusal (4c's reasons), `unanswered`, or `unproven`;
+  answer leave (rule 3). One view may be served more while another's release is out, so the release is asked again
+  until, in the step that answers, no open view of the machine holds a read unreleased; after 8 rounds the boundary
+  answers `unanswered`. `reads` is `released`, the release's refusal (4c's reasons), `unanswered`, or `unproven`;
   each view's report is 4c's, with its reasons. A view named final that this service does not hold open is a
-  `VIEW_CLOSED` entry in `views`.
+  `VIEW_CLOSED` entry in `views`. `{"op":"restarted","machine":"<coding machine id>"}` answers
+  `{"restarted":{"machine"}}`: the executor sends it once it has stopped the machine and before the machine starts
+  again (below).
 - **Held.** A coding view's refused boundary holds what it had pending, its bytes and folders alike, and the view stays
   kept until the core closes it: `stopped` and `run_ended` may lift, `denied` holds, `unreadable` (a release's, or a
   commit's "A read is no longer readable", which 4c calls `denied`) moves the machine. At a boundary that names the
   view final, a refusal is final: what has no bytes (a folder) is let go, and changed files stay pending for the
   executor to report.
 - **A view that goes with reads unreleased.** Its reads reached its machine, where any session may save what was made
-  of them. So every view of that machine open now, and any opened while one of those is, answers its boundaries
-  `unproven` from then on, until the executor has closed them and restarted the machine.
+  of them, even once every view of it has closed. So the machine is lost: its boundaries answer `reads: "unproven"`,
+  and every view of it open now or opened later answers its own boundaries `unproven`, until the executor says it
+  restarted the machine (`restarted`). A view opened after that is proven again; one still open then stays
+  `unproven`, and if one of those still held a read unreleased, all of them lose their logs. The lost state is kept in
+  memory only (the plan's durable read ledger, P3, is not built): a run that ends with a machine lost does not stop
+  cleanly, so the next run's renewals close the machine's views (`service_crashed`), and the host stops a machine
+  whose last attachment ended.
 - **Who may connect.** Node cannot read a Unix connection's peer credentials (`SO_PEERCRED`), so the kernel checks the
   uid: connecting needs write permission on the socket's file. The unit makes the file the executor's
   (`qorpera-coding-executor`), mode 0600, in a root-owned folder (0755). The service serves a connection only while the
@@ -646,16 +655,19 @@ In slice 5c the folder service serves coding machines' views (RUNTIME-FOLDER-COD
   uid configured refuses every connection. Root may connect, as it may do anything on the host.
 - **A clean stop.** On SIGTERM the service stops serving, waits for what is running, asks a boundary of every coding
   machine it serves and publishes every code host view, for up to 45 s (`TimeoutStopSec=60s`). When every such view
-  has every read released and nothing pending, it calls `qorpera_folder_service_stopped` and the core clears
-  `served_by`: the next run serves those views. Otherwise `served_by` stays and the next run's renewals close them
-  (`service_crashed`).
+  has every read released and nothing pending, and no machine is lost, it calls `qorpera_folder_service_stopped` and
+  the core clears `served_by`: the next run serves those views. Otherwise `served_by` stays and the next run's
+  renewals close them (`service_crashed`). A lost machine counts even with none of its views open: a view this run let
+  go may still be open in the core, marked as served by it.
 - **Tests.** `packages/object-gateway/test/folder-coding-views.test.ts`, against the stand-in core: a coding view is
   refused from another coding machine, an office, the execution host, an unlisted project and the code host, and a
   code host's from another company's code host and a coding machine; a read is recorded before its answer; a boundary
-  is answered only after every read of the machine is released; a refused release holds, as do `unreadable` and
-  `denied` until the final; a clean stop clears `served_by` and an unclean one keeps it; the control socket refuses
-  a file another uid could connect through and answers only boundaries. The core's side (the fan-out, `served_by`,
-  `service_crashed`) is 5a's SQL tests.
+  is answered only after every read of the machine is released, one served during the last release included; a
+  refused release holds, as do `unreadable` and `denied` until the final; a machine that lost a read stays `unproven`
+  after its last view closes and until `restarted`, and keeps the service from stopping cleanly; a clean stop clears
+  `served_by` and an unclean one keeps it; the control socket refuses a file another uid could connect through and
+  answers only boundaries and restarts. The core's side (the fan-out, `served_by`, `service_crashed`) is 5a's SQL
+  tests.
 
 ## Not here
 

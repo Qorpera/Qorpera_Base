@@ -102,6 +102,10 @@ const SERVED = "served";
 /** Reads a coding view keeps as released, so a read served again is not released again (the machine's read set keeps
  * it); past this many it forgets them all, and releases a read again the next time it is served. */
 const SERVED_RELEASED_KEPT = 100_000;
+/** Times a coding machine's boundary releases the reads of all its views before it answers. A view may be served more
+ * while the others' releases are out, so each round is followed by another until none has a read left; a machine that
+ * reads on through every round has its boundary answered as having no answer yet. */
+const MACHINE_RELEASE_ROUNDS = 8;
 const STOPPING = "The folder service is stopping; try again";
 
 /** One changed path's outcome at a boundary (RUNTIME-FOLDER-WRITES.md, "Outcomes and the report"). */
@@ -135,7 +139,8 @@ export interface MachineBoundary {
 	readonly machine: string;
 	/** What came of releasing every read the machine was served before the answer: `released`, so its output may reach
 	 * a model; `unanswered`, none yet; the core's refusal (the plan's rule 4: `unreadable` moves the machine); or
-	 * `unproven`, a read it was served went unreleased, so the executor restarts it. Only `released` lets output go. */
+	 * `unproven`, a read it was served went unreleased, so the executor restarts it (and says so, `restarted`). Only
+	 * `released` lets output go. */
 	readonly reads: Released | "unproven";
 	/** Each open view of the machine's boundary, or why it had none. */
 	readonly views: readonly MachineViewReport[];
@@ -488,6 +493,9 @@ export class FolderService {
 	readonly #serviceId = randomUUID();
 	/** A clean stop has begun (`stopCleanly`): nothing more is served, so no read is recorded after the last release. */
 	#stopping = false;
+	/** Coding machines served a read that went unreleased (#forgetReads), until the executor says the machine restarted
+	 * (`restarted`): kept apart from their views, as the machine keeps the read once the view that served it has gone. */
+	readonly #lostMachines = new Set<string>();
 
 	constructor(options: FolderServiceOptions) {
 		this.#core = options.core;
@@ -529,6 +537,27 @@ export class FolderService {
 		return this.#machineBoundary(machine, final);
 	}
 
+	/** The executor stopped the coding machine and starts it again (F3 5c, the plan's rule 4), which it says over the
+	 * control socket before the machine runs again: no program holds what it was served before. A read it lost no longer
+	 * makes a view opened from now on unproven. A view of the machine still open is of the machine before: if any of
+	 * them holds a read unreleased, that read is forgotten, as when its view goes (#forgetReads), and every one of them is
+	 * unproven. */
+	restarted(machine: string): void {
+		const views = this.#machineViews(machine);
+		if (views.some((view) => view.unreleased)) {
+			this.#log(`folder-service: coding machine ${machine} restarted with reads unreleased; its views are unproven`);
+			for (const view of views) {
+				view.unproven = true;
+				view.logs.clear();
+				view.releasing = undefined;
+			}
+		}
+		if (this.#lostMachines.delete(machine))
+			this.#log(
+				`folder-service: coding machine ${machine} restarted; its views opened from now on are proven again`,
+			);
+	}
+
 	async #machineBoundary(machine: string, final: readonly string[]): Promise<MachineBoundary> {
 		const views = this.#machineViews(machine).filter((view) => view.lease !== undefined);
 		const reports = await Promise.all(
@@ -559,10 +588,13 @@ export class FolderService {
 						message: "This service holds no open view of the machine by that id",
 					},
 				});
-		// Reads served while the views published: released before the answer, as every one before.
-		const reads = await this.#releaseMachine(machine);
-		const unproven = views.some((view) => view.unproven) || this.#machineViews(machine).some((view) => view.unproven);
-		return { machine, reads: unproven ? "unproven" : reads, views: reports };
+		// Reads served while the views published: released before the answer, as every one before. A view may be served
+		// another once its own release is done while another view's is out, so the machine is released again until, in
+		// the same step as the answer, no open view of it (one opened meanwhile included) holds a read unreleased.
+		let reads = await this.#releaseMachine(machine);
+		for (let round = 1; reads === "released" && this.#machineViews(machine).some((view) => view.unreleased); round++)
+			reads = round < MACHINE_RELEASE_ROUNDS ? await this.#releaseMachine(machine) : "unanswered";
+		return { machine, reads: this.#lostMachines.has(machine) ? "unproven" : reads, views: reports };
 	}
 
 	/** Stops for good, cleanly (F3 5c, the plan's "The service stops cleanly"): nothing more is served, every coding
@@ -601,9 +633,16 @@ export class FolderService {
 					view.unsettled !== undefined ||
 					view.pending?.unsaved === true),
 		);
-		if (left.length > 0) {
+		// A machine that lost a read and has not restarted since: a view of it this run let go may still be open in the
+		// core, marked served by this run, and it stays marked, so the next run (which knows nothing of the loss) refuses
+		// it too.
+		if (left.length > 0 || this.#lostMachines.size > 0) {
 			for (const view of left)
 				this.#log(`folder-service: ${view.key}: not stopped cleanly: reads unreleased or changes unpublished`);
+			for (const machine of this.#lostMachines)
+				this.#log(
+					`folder-service: coding machine ${machine}: not stopped cleanly: a read it was served went unreleased`,
+				);
 			return false;
 		}
 		try {
@@ -687,10 +726,10 @@ export class FolderService {
 			view.access = this.#grants.coreAccess(identity);
 			view.write = view.access?.write ?? false;
 			view.quietMs = view.access?.quietMs;
-			// A coding machine with an open view that cannot show its reads released holds a read this service lost
-			// (#forgetReads): a view opened on it cannot either, until the executor has closed those and restarted it.
+			// A coding machine served a read this service lost (#forgetReads) holds it, its views open or not: a view
+			// opened on it cannot show its reads released either, until the executor has restarted it (`restarted`).
 			const machine = view.access?.machine;
-			if (machine !== undefined && this.#machineViews(machine).some((other) => other.unproven)) view.unproven = true;
+			if (machine !== undefined && this.#lostMachines.has(machine)) view.unproven = true;
 		} else if (
 			view.identity.kind !== identity.kind ||
 			view.identity.machineId !== identity.machineId ||
@@ -1221,13 +1260,15 @@ export class FolderService {
 	}
 
 	/** A view's reads not released go with it: they reached no save of it. A coding view's reached its machine, where
-	 * any of its views may save what was made from them: every view of the machine open now cannot show its reads
-	 * released, nor can one opened while any of those is open (#renewNow), and the executor restarts the machine (F3
-	 * 5c, the plan's rule 4). */
+	 * any of its views may save what was made from them: the machine is lost until the executor says it restarted
+	 * (`restarted`), even once none of its views is open, so every view of it open now cannot show its reads released,
+	 * nor can one opened before the restart (#renewNow), and its boundaries answer `unproven` (F3 5c, the plan's rule
+	 * 4). */
 	#forgetReads(view: View): void {
 		const machine = view.access?.machine;
 		if (machine !== undefined && view.unreleased) {
 			this.#log(`folder-service: ${view.key}: reads served to coding machine ${machine} went unreleased`);
+			this.#lostMachines.add(machine);
 			for (const other of this.#machineViews(machine)) other.unproven = true;
 		}
 		view.logs.clear();
@@ -1939,7 +1980,9 @@ export class FolderService {
 				],
 			};
 		}
-		// The reads reach the read sets before anything made from them is published (the log's rule 1).
+		// The reads reach the read sets before anything made from them is published (the log's rule 1). One release of the
+		// machine's views is enough here, unlike before a machine's boundary is answered: what this commits was planned
+		// before it began, so a read served while it runs reached none of it.
 		const machine = view.access?.machine;
 		const release = machine === undefined ? await this.#releaseReads(view) : await this.#releaseMachine(machine);
 		// Another view of the machine went while the release ran, with reads it never released.
@@ -2153,7 +2196,7 @@ export class FolderService {
 
 	/** Releases every read a coding machine was served, under each of its views, at once (the plan's rules 1 and 3):
 	 * a refusal of any is the answer (the first, in the views' order), else none yet if any has none. A view that closed
-	 * meanwhile releases nothing more: its reads not released made the machine's other views unproven (#forgetReads). */
+	 * meanwhile releases nothing more: its reads not released made the machine lost (#forgetReads). */
 	async #releaseMachine(machine: string): Promise<Released> {
 		const answers = await Promise.all(
 			this.#machineViews(machine).map((view) =>

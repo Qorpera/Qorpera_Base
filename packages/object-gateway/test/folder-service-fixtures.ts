@@ -594,6 +594,9 @@ export class FakeCore implements FolderCore {
 	releaseRefusal: CoreRefusal["reason"] | undefined;
 	/** When set, every release waits for it before it is heard. */
 	releaseGate: Promise<void> | undefined;
+	/** When set, called as each release is asked, by the view it is asked under; the release is heard once what it
+	 * returns has settled. */
+	releaseHook: ((viewId: string) => Promise<void> | undefined) | undefined;
 
 	/** A release id used once per view: the same reads replay (the view's pass checked, open or not), others are refused
 	 * (22023). A read of a path the view does not see now is refused whole (42501, as `qorpera_folder_release_pairs`
@@ -605,6 +608,7 @@ export class FakeCore implements FolderCore {
 		reads: readonly ReleasedRead[],
 	): Promise<ReleaseAnswer> {
 		await this.releaseGate;
+		await this.releaseHook?.(actor.viewId);
 		this.releases.push({ viewId: actor.viewId, releaseId, reads });
 		if (reads.length > 10_000 || reads.some((r) => r.path === "")) throw new CoreRefusal("invalid");
 		const view = this.views.get(actor.viewId);
