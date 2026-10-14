@@ -147,7 +147,9 @@ export class CloudRunResumeRpc implements CloudRunResumePort {
 /** Opens only a resumed attempt. Null means SQL positively identified an original attempt; a missing log on a
  * resume is an error, never a fresh writer. A caller must await this before issuing any provider request or step.
  * The record RPC is the final authoritative gate: it refuses a gone/narrow/erasing log, changed count or omitted
- * unknown outcome. A read crossing a move refuses safely and may be opened afresh before any work is exposed. */
+ * unknown outcome. A read crossing a move refuses safely and may be opened afresh before any work is exposed.
+ * The resumed run's work messages come from the returned `composeContext`, never `lines.composeContext()`: that
+ * composer has no `unfolded` warnings, so it would drop every outcome-unknown warning (§12). */
 export async function openCloudRunResume(options: {
 	readonly resume: CloudRunResumePort;
 	readonly folder: CloudRunLogFolder;
