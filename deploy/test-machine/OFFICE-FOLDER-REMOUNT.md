@@ -174,3 +174,31 @@ and has them look and write. It starts the mount unit, waits up to 15 s for it
 to serve, and has them look and write again, beside the unit's state and journal.
 The rest of the run uses the first mode that was served; if none was, the run
 stops there.
+
+## Limitations
+
+The record lists these under `limitations`:
+
+- The node is a synthetic protocol-3 node on a Unix socket: no database, vsock
+  identity, view switching or plumber.
+- The office namespaces come from the runtime's process gate and mirrored
+  bubblewrap arguments, in a relay that runs under the office unit's
+  confinement, not from the office application. `test-office-folder-remount.mjs`
+  pins the runtime lines the shapes mirror and refuses to run if they changed.
+- The private surfaces (workbench, home, screen, X11, session, machine-id, hosts,
+  resolv.conf) are stand-ins in the proof directory, not the office state folder.
+- Every namespace's program reads requests on a stdin pipe; the command shape is
+  used without its display or capture.
+- `systemd-run` takes the office unit's `InaccessiblePaths=` lines as transient
+  properties, where unit specifiers are not expanded.
+- A1 predates folder-v2: the folder program and the mount unit's lines were
+  pushed in from master.
+
+## Unprivileged checks
+
+`scripts/test-office-folder-remount.test.mjs` runs in `run-on-node changed`. It
+checks the launcher's argument and target refusals, the guest preflight, the
+runtime pins, the shapes' descriptor arithmetic, that the type-stripped process
+gate loads, and the fixture's `selftest`: the unit rewrite, the office lines,
+mountinfo reading, and the synthetic node's wire with a real heartbeat, without
+privilege.
