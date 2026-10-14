@@ -8,9 +8,11 @@ use qorpera_folder::link::{Link, View};
 use qorpera_folder::mount::{self, Options, Stop};
 use std::ffi::CString;
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::IntoRawFd;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, Instant};
 use support::{FakeNode, PASS};
 
@@ -59,7 +61,7 @@ fn start_with(node: &FakeNode, state: Option<PathBuf>) -> (PathBuf, std::thread:
 		4,
 	);
 	let options =
-		Options { mountpoint: mountpoint.clone(), threads: 4, ttl: Duration::from_secs(3600), allow_other: false, state };
+		Options { mountpoint: mountpoint.clone(), threads: 4, ttl: Duration::from_secs(3600), allow_other: false, owner: None, state };
 	let runner = std::thread::spawn(move || match mount::run(link, options) {
 		Ok(stop) => stop,
 		Err(e) => panic!("mount failed: {e:?}"),
@@ -202,7 +204,7 @@ fn a_refused_view_is_never_mounted() {
 		2,
 	);
 	let options =
-		Options { mountpoint: mountpoint.clone(), threads: 2, ttl: Duration::from_secs(1), allow_other: false, state: None };
+		Options { mountpoint: mountpoint.clone(), threads: 2, ttl: Duration::from_secs(1), allow_other: false, owner: None, state: None };
 	match mount::run(link, options) {
 		Err(mount::Failed::View(_)) => {}
 		other => panic!("{other:?}"),
@@ -506,4 +508,111 @@ fn an_empty_file_read_keeps_its_base_for_an_in_place_save() {
 #[test]
 fn an_empty_file_read_keeps_its_base_for_a_temporary_file_save() {
 	save_after_reading_an_empty_file(true);
+}
+
+/// Run the actual CLI as root and access its mount from another uid/gid. Changing process credentials is confined
+/// to the child command; the test runner and daemon retain root, including ownership of their private files.
+fn a_root_mount_for_another_account(owner: Option<(u32, u32)>, allow_other: bool, writable: bool) {
+	if !wanted() {
+		return;
+	}
+	// SAFETY: geteuid has no preconditions.
+	assert_eq!(unsafe { libc::geteuid() }, 0, "this test needs a root daemon");
+	let node = if writable { FakeNode::writable() } else { FakeNode::start() };
+	node.put("docs/plan.md", "first", false);
+	// Make the containing directory traversable, independently of the test runner's umask.
+	std::fs::set_permissions(&node.dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+	let company = node.dir.join("company");
+	std::fs::create_dir(&company).unwrap();
+	let view = node.dir.join("view.json");
+	let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&view).unwrap();
+	write!(file, "{{\"environmentId\":\"env\",\"viewId\":\"view\",\"pass\":\"{PASS}\"}}").unwrap();
+	drop(file);
+	let state = node.dir.join("state");
+	let mut command = Command::new(env!("CARGO_BIN_EXE_qorpera-folder"));
+	command.arg("mount").arg("--view-file").arg(&view).arg("--mountpoint").arg(&company)
+		.arg("--connect").arg(&node.addr).arg("--state-dir").arg(&state)
+		.arg("--allow-other").arg(if allow_other { "yes" } else { "no" })
+		.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
+	if let Some((uid, gid)) = owner {
+		command.arg("--owner-uid").arg(uid.to_string()).arg("--owner-gid").arg(gid.to_string());
+	}
+	let mut daemon = command.spawn().unwrap();
+	if !eventually(Duration::from_secs(5), || mounted(&company)) {
+		let _ = daemon.kill();
+		let output = daemon.wait_with_output().unwrap();
+		panic!("the CLI did not mount: {}", String::from_utf8_lossy(&output.stderr));
+	}
+	let folder_meta = std::fs::metadata(&company).unwrap();
+	let file_meta = std::fs::metadata(company.join("docs/plan.md")).unwrap();
+	let may_write = writable && allow_other && owner == Some((65534, 65534));
+	let output = Command::new("sh").arg("-c").arg(r#"
+set -eu
+[ "$(id -u)" = 65534 ] && [ "$(id -g)" = 65534 ]
+if [ "$4" = yes ]; then
+  [ "$(cat "$1/docs/plan.md")" = first ]
+else
+  if cat "$1/docs/plan.md" >/dev/null 2>&1; then exit 10; fi
+fi
+if [ "$5" = yes ]; then
+  mkdir "$1/new"
+  printf created >"$1/new/note.md"
+  [ "$(cat "$1/new/note.md")" = created ]
+  printf rewritten >"$1/docs/plan.md"
+  [ "$(cat "$1/docs/plan.md")" = rewritten ]
+else
+  if (mkdir "$1/new") 2>/dev/null; then exit 11; fi
+  if (printf overwritten >"$1/docs/plan.md") 2>/dev/null; then exit 12; fi
+fi
+if cat "$2" >/dev/null 2>&1; then exit 13; fi
+if [ "$6" = yes ]; then
+  if cat "$3/versions.jsonl" >/dev/null 2>&1; then exit 14; fi
+fi
+"#).arg("unprivileged-mount-user").arg(&company).arg(&view).arg(&state)
+		.arg(if allow_other { "yes" } else { "no" }).arg(if may_write { "yes" } else { "no" })
+		.arg(if writable { "yes" } else { "no" }).uid(65534).gid(65534).output().unwrap();
+	// Close and reap before checking assertions, so a regression leaves no child mount behind.
+	node.close_view();
+	if !eventually(Duration::from_secs(5), || daemon.try_wait().unwrap().is_some()) {
+		let _ = daemon.kill();
+	}
+	let stopped = daemon.wait_with_output().unwrap();
+	assert_eq!(stopped.status.code(), Some(3), "{}", String::from_utf8_lossy(&stopped.stderr));
+	assert!(!mounted(&company));
+	assert!(output.status.success(), "child {:?}: {}", output.status.code(), String::from_utf8_lossy(&output.stderr));
+	let expected_owner = if writable { owner.unwrap_or((0, 0)) } else { (0, 0) };
+	assert_eq!((folder_meta.uid(), folder_meta.gid()), expected_owner);
+	assert_eq!((file_meta.uid(), file_meta.gid()), expected_owner);
+	assert_eq!(folder_meta.mode() & 0o777, if writable { 0o755 } else { 0o555 });
+	assert_eq!(file_meta.mode() & 0o777, if writable { 0o644 } else { 0o444 });
+	assert_eq!(node.content("docs/plan.md").unwrap(), if may_write { b"rewritten".as_slice() } else { b"first".as_slice() });
+	assert_eq!(node.content("new/note.md"), may_write.then(|| b"created".to_vec()));
+	let view_meta = std::fs::metadata(&view).unwrap();
+	assert_eq!((view_meta.uid(), view_meta.mode() & 0o777), (0, 0o600));
+	if writable {
+		let state_meta = std::fs::metadata(&state).unwrap();
+		let log_meta = std::fs::metadata(state.join("versions.jsonl")).unwrap();
+		assert_eq!((state_meta.uid(), state_meta.mode() & 0o777), (0, 0o700));
+		assert_eq!((log_meta.uid(), log_meta.mode() & 0o777), (0, 0o600));
+	}
+}
+
+#[test]
+fn a_root_daemon_defaults_to_root_owned_files_even_with_allow_other() {
+	a_root_mount_for_another_account(None, true, true);
+}
+
+#[test]
+fn an_explicit_owner_can_write_without_reading_the_root_daemons_private_files() {
+	a_root_mount_for_another_account(Some((65534, 65534)), true, true);
+}
+
+#[test]
+fn an_explicit_owner_still_needs_allow_other() {
+	a_root_mount_for_another_account(Some((65534, 65534)), false, true);
+}
+
+#[test]
+fn an_explicit_owner_does_not_make_a_read_only_view_writable() {
+	a_root_mount_for_another_account(Some((65534, 65534)), true, false);
 }

@@ -88,6 +88,9 @@ pub struct Options {
 	/// Let every account on the machine read the folder (a box's account, from step 2). Without it only the
 	/// account that mounted it can, root included only if it mounted it.
 	pub allow_other: bool,
+	/// Virtual ownership of writable files and folders; None uses the mounting account. Does not change the
+	/// daemon's identity, its private view/state files, or access through allow_other. Read-only views stay root-owned.
+	pub owner: Option<(u32, u32)>,
 	/// The folder the mount's version map is kept in (under /run/qorpera-folder/), so a program started again for the
 	/// mount bases saves on what was read before; None keeps it in memory.
 	pub state: Option<PathBuf>,
@@ -150,7 +153,8 @@ struct Shared {
 	answered: Mutex<Answered>,
 	/// The node lets this view write.
 	writable: bool,
-	/// Who the files show as owned by: the account that mounted the folder (a read-only view shows root).
+	/// Who the files show as owned by: the explicit `Options.owner` if given, else the account that mounted the
+	/// folder; a read-only view shows root.
 	owner: (u32, u32),
 	versions: Mutex<VersionMap>,
 	/// Files open for writing, by inode. Held only to look one up, add or remove it: never while a file's own lock is
@@ -1223,8 +1227,12 @@ pub fn run(link: Link, options: Options) -> Result<Stop, Failed> {
 			.map_err(|e| Failed::Other(format!("the version map in {}: {e}", dir.display())))?,
 		_ => VersionMap::memory(),
 	};
-	// SAFETY: geteuid and getegid have no preconditions.
-	let owner = if writable { unsafe { (libc::geteuid(), libc::getegid()) } } else { (0, 0) };
+	let owner = if writable {
+		// SAFETY: geteuid and getegid have no preconditions. This affects virtual attributes only.
+		options.owner.unwrap_or_else(|| unsafe { (libc::geteuid(), libc::getegid()) })
+	} else {
+		(0, 0)
+	};
 	let shared = Arc::new(Shared {
 		tree: Mutex::new(Tree::new()),
 		link,
