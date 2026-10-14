@@ -355,11 +355,11 @@ class RemountNode(base.FolderNode):
         raise ValueError(f"unsupported fixture operation {kind}")
 
 
-def quiet(*args, seconds=30):
-    """A cleanup command: its outcome is recorded, never raised."""
+def quiet(*args, seconds=30, keep=2000):
+    """A cleanup command: its outcome is recorded, never raised. The output keeps its last `keep` characters."""
     try:
         done = subprocess.run(args, capture_output=True, text=True, timeout=seconds)
-        return {"command": list(args), "code": done.returncode, "output": (done.stdout + done.stderr).strip()[-2000:]}
+        return {"command": list(args), "code": done.returncode, "output": (done.stdout + done.stderr).strip()[-keep:]}
     except (OSError, subprocess.TimeoutExpired) as error:
         return {"command": list(args), "failure": repr(error)}
 
@@ -598,7 +598,7 @@ def ask(relay, name, request, troubles, seconds=45):
 
 
 def journal(unit, lines=40):
-    return quiet("journalctl", "--no-pager", "-o", "short-monotonic", "-n", str(lines), "-u", unit).get("output", "").splitlines()
+    return quiet("journalctl", "--no-pager", "-o", "short-monotonic", "-n", str(lines), "-u", unit, keep=400 * lines).get("output", "").splitlines()
 
 
 def gap_trial(relay, mode, troubles):
