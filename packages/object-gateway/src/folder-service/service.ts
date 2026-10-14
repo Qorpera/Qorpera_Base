@@ -139,8 +139,8 @@ export interface MachineBoundary {
 	readonly machine: string;
 	/** What came of releasing every read the machine was served before the answer: `released`, so its output may reach
 	 * a model; `unanswered`, none yet; the core's refusal (the plan's rule 4: `unreadable` moves the machine); or
-	 * `unproven`, a read it was served went unreleased, so the executor restarts it (and says so, `restarted`). Only
-	 * `released` lets output go. */
+	 * `unproven`, a read it was served went unreleased, so the executor restarts it (and says so, `restarted`), or it
+	 * restarted while the boundary was out. Only `released` lets output go. */
 	readonly reads: Released | "unproven";
 	/** Each open view of the machine's boundary, or why it had none. */
 	readonly views: readonly MachineViewReport[];
@@ -496,6 +496,10 @@ export class FolderService {
 	/** Coding machines served a read that went unreleased (#forgetReads), until the executor says the machine restarted
 	 * (`restarted`): kept apart from their views, as the machine keeps the read once the view that served it has gone. */
 	readonly #lostMachines = new Set<string>();
+	/** How many times the executor said each coding machine restarted (`restarted`), for every machine said so since the
+	 * start (never dropped, so a count is never seen again): a machine boundary a restart crossed may have missed a read
+	 * lost before it, which the restart cleared. */
+	readonly #restarts = new Map<string, number>();
 
 	constructor(options: FolderServiceOptions) {
 		this.#core = options.core;
@@ -541,8 +545,9 @@ export class FolderService {
 	 * control socket before the machine runs again: no program holds what it was served before. A read it lost no longer
 	 * makes a view opened from now on unproven. A view of the machine still open is of the machine before: if any of
 	 * them holds a read unreleased, that read is forgotten, as when its view goes (#forgetReads), and every one of them is
-	 * unproven. */
+	 * unproven. A boundary of the machine still out answers `unproven` (#machineBoundary). */
 	restarted(machine: string): void {
+		this.#restarts.set(machine, (this.#restarts.get(machine) ?? 0) + 1);
 		const views = this.#machineViews(machine);
 		if (views.some((view) => view.unreleased)) {
 			this.#log(`folder-service: coding machine ${machine} restarted with reads unreleased; its views are unproven`);
@@ -559,6 +564,7 @@ export class FolderService {
 	}
 
 	async #machineBoundary(machine: string, final: readonly string[]): Promise<MachineBoundary> {
+		const restarts = this.#restarts.get(machine);
 		const views = this.#machineViews(machine).filter((view) => view.lease !== undefined);
 		const reports = await Promise.all(
 			views.map(async (view): Promise<MachineViewReport> => {
@@ -594,7 +600,10 @@ export class FolderService {
 		let reads = await this.#releaseMachine(machine);
 		for (let round = 1; reads === "released" && this.#machineViews(machine).some((view) => view.unreleased); round++)
 			reads = round < MACHINE_RELEASE_ROUNDS ? await this.#releaseMachine(machine) : "unanswered";
-		return { machine, reads: this.#lostMachines.has(machine) ? "unproven" : reads, views: reports };
+		// A machine that lost a read, or that restarted since the boundary began: a view of it may have gone meanwhile with
+		// a read unreleased, which the restart cleared, and what the boundary answers for was made before the restart.
+		const unproven = this.#lostMachines.has(machine) || this.#restarts.get(machine) !== restarts;
+		return { machine, reads: unproven ? "unproven" : reads, views: reports };
 	}
 
 	/** Stops for good, cleanly (F3 5c, the plan's "The service stops cleanly"): nothing more is served, every coding

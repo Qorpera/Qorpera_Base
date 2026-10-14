@@ -332,6 +332,47 @@ describe("coding views", () => {
 		expect(core.commits).toHaveLength(1);
 	});
 
+	it("answers a boundary the machine's restart crossed unproven, though the read lost before it was cleared", async () => {
+		const { core, service, open } = await company();
+		const first = await open();
+		const second = await open(SECOND);
+		await write(first, "docs/out.txt", "o");
+		// While the first view's save is asked, the second is served a listing. While that listing is released, in the
+		// boundary's last release, the first view is served a file and goes with it unreleased, and the executor says it
+		// restarted the machine (on another connection), which clears the loss.
+		let armed = false;
+		core.commitHook = (asked) => {
+			if (asked !== 0) return undefined;
+			armed = true;
+			return second.list("docs", undefined).then(() => undefined);
+		};
+		core.releaseHook = (viewId) => {
+			if (viewId !== SECOND || !armed) return undefined;
+			armed = false;
+			return (async () => {
+				await first.read(PLAN);
+				core.views.get(SESSION)!.state = "closed";
+				await service.renewLeases();
+				service.restarted(CODING_MACHINE_ID);
+			})();
+		};
+		expect(await service.boundary(CODING_MACHINE_ID)).toMatchObject({
+			reads: "unproven",
+			views: [
+				{ viewId: SESSION, report: { paths: [{ path: "docs/out.txt", outcome: "saved" }] } },
+				{ viewId: SECOND, report: { commitId: null, paths: [] } },
+			],
+		});
+		expect(armed).toBe(false);
+		// The core never heard the read that went.
+		expect(releasesOf(core)).toEqual([[SECOND, [["docs", null]]]]);
+		// A boundary begun after the restart answers for the machine as it is now; the view open across it stays unproven.
+		expect(await service.boundary(CODING_MACHINE_ID)).toMatchObject({
+			reads: "released",
+			views: [{ viewId: SECOND, report: { commitId: null, refused: "unproven" } }],
+		});
+	});
+
 	it("publishes a coding view after its quiet period, every read of its machine released first", async () => {
 		const { core, open } = await company();
 		const first = await open();

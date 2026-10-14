@@ -643,7 +643,8 @@ In slice 5c the folder service serves coding machines' views (RUNTIME-FOLDER-COD
   of them, even once every view of it has closed. So the machine is lost: its boundaries answer `reads: "unproven"`,
   and every view of it open now or opened later answers its own boundaries `unproven`, until the executor says it
   restarted the machine (`restarted`). A view opened after that is proven again; one still open then stays
-  `unproven`, and if one of those still held a read unreleased, all of them lose their logs. The lost state is kept in
+  `unproven`, and if one of those still held a read unreleased, all of them lose their logs. A boundary of the machine
+  still out at the restart answers `unproven`: a view may have gone meanwhile with a read the restart cleared. The lost state is kept in
   memory only (the plan's durable read ledger, P3, is not built): a run that ends with a machine lost does not stop
   cleanly, so the next run's renewals close the machine's views (`service_crashed`), and the host stops a machine
   whose last attachment ended.
@@ -664,7 +665,8 @@ In slice 5c the folder service serves coding machines' views (RUNTIME-FOLDER-COD
   code host's from another company's code host and a coding machine; a read is recorded before its answer; a boundary
   is answered only after every read of the machine is released, one served during the last release included; a
   refused release holds, as do `unreadable` and `denied` until the final; a machine that lost a read stays `unproven`
-  after its last view closes and until `restarted`, and keeps the service from stopping cleanly; a clean stop clears
+  after its last view closes and until `restarted`, and keeps the service from stopping cleanly; a boundary a restart
+  crossed answers `unproven`; a clean stop clears
   `served_by` and an unclean one keeps it; the control socket refuses a file another uid could connect through and
   answers only boundaries and restarts. The core's side (the fan-out, `served_by`, `service_crashed`) is 5a's SQL
   tests.
