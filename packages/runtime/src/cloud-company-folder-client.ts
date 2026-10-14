@@ -69,6 +69,7 @@ const RUN_EFFECTS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_close_proposal",
 	"qorpera_folder_manage_hook",
 	"qorpera_folder_archive_coding_worker",
+	"qorpera_folder_note_interface_change",
 ]);
 /** SQL's refusal (55000) of an archive or a cancel by the run that was asked about a quiet coding session, once the
  * session has a new turn (`qorpera_coding_question_stale`). */
@@ -1679,6 +1680,29 @@ export class CloudCompanyFolderClient {
 		)
 			invalid();
 		return input.status as (typeof PROPOSAL_STATUSES)[number];
+	}
+
+	/** Notes the run's save_interface commit under `operationKey` in its conversation (I10,
+	 * `qorpera_folder_note_interface_change`, a run effect): one note a commit, which the web draws with Undo. A replay
+	 * finds the note it made. False when there is none to make: the run has no open conversation, or no commit of this
+	 * run under the key saved anything. */
+	async noteInterfaceChange(operationKey: string, signal: AbortSignal): Promise<boolean> {
+		if (!/^save_interface:[0-9a-f]{64}$/.test(operationKey))
+			throw new Error("Invalid Company folder interface change");
+		const value = await this.#retried(
+			"qorpera_folder_note_interface_change",
+			{ p_binding: this.#binding, p_request: { operationKey } },
+			RECORD_RETRY,
+			signal,
+		);
+		const input = record(value, ["schema", "noted", "eventId"]);
+		if (
+			input.schema !== "qorpera.interface-change-note/v1" ||
+			typeof input.noted !== "boolean" ||
+			(input.noted ? typeof input.eventId !== "string" || !UUID.test(input.eventId) : input.eventId !== null)
+		)
+			invalid();
+		return input.noted;
 	}
 
 	/** A file's text, checked against its entry, or null when nothing is at the path. A folder, a file larger than

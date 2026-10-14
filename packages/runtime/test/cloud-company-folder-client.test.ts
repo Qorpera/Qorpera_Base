@@ -2053,3 +2053,67 @@ describe("releases", () => {
 		);
 	});
 });
+
+describe("interface change notes (I10)", () => {
+	const KEY = `save_interface:${sha("notes-1")}`;
+	// SQL's event id is an md5 cast to a UUID, so it has no version or variant.
+	const EVENT = "0cc175b9-c0f1-b6a8-31c3-99e269772661";
+	const answer = (noted: boolean, eventId: string | null) => ({
+		schema: "qorpera.interface-change-note/v1",
+		noted,
+		eventId,
+	});
+
+	it("notes a save's commit as a run effect, asks again after a deadlock, and checks the answer", async () => {
+		let tries = 0;
+		const { client, calls, binding } = fixture(() => {
+			if (++tries === 1) throw sqlError("40P01", "deadlock detected");
+			return answer(true, EVENT);
+		});
+		await expect(client.noteInterfaceChange(KEY, signal())).resolves.toBe(true);
+		// The run's binding and the request as the run effect takes them: no folder actor.
+		const call = {
+			method: "qorpera_folder_note_interface_change",
+			args: { p_binding: binding, p_request: { operationKey: KEY } },
+		};
+		expect(calls).toEqual([call, call]);
+		const none = fixture(() => answer(false, null));
+		await expect(none.client.noteInterfaceChange(KEY, signal())).resolves.toBe(false);
+		for (const wrong of [
+			answer(true, null),
+			answer(true, "x"),
+			answer(false, EVENT),
+			{ ...answer(true, EVENT), noted: "true" },
+			{ schema: "qorpera.interface-change-note/v1", noted: true },
+			{ ...answer(true, EVENT), extra: 1 },
+			{ ...answer(true, EVENT), schema: "qorpera.folder-review/v1" },
+		]) {
+			const f = fixture(() => wrong);
+			await expect(f.client.noteInterfaceChange(KEY, signal()), JSON.stringify(wrong)).rejects.toThrow(
+				"Company folder response is invalid",
+			);
+		}
+		// Only a save's commit key is sent.
+		for (const key of [
+			`save_interface:${sha("x").toUpperCase()}`,
+			`table_write:${sha("x")}`,
+			"save_interface:",
+			`${KEY} `,
+		]) {
+			const f = fixture(() => answer(true, EVENT));
+			await expect(f.client.noteInterfaceChange(key, signal())).rejects.toThrow(
+				"Invalid Company folder interface change",
+			);
+			expect(f.calls).toEqual([]);
+		}
+		// SQL's refusals as folder errors: the run stopped, or it may no longer write.
+		const stopped = fixture(() => {
+			throw sqlError("55000", "Worker was cancelled");
+		});
+		await expect(stopped.client.noteInterfaceChange(KEY, signal())).rejects.toMatchObject({ failure: "stopped" });
+		const gone = fixture(() => {
+			throw sqlError("42501", "Run is unavailable");
+		});
+		await expect(gone.client.noteInterfaceChange(KEY, signal())).rejects.toMatchObject({ failure: "unavailable" });
+	});
+});

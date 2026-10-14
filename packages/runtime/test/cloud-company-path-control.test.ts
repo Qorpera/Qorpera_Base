@@ -396,6 +396,7 @@ describe("the folder core's entry points (core C3)", () => {
 		"qorpera_folder_close_proposal",
 		"qorpera_folder_archive_coding_worker",
 		"qorpera_folder_manage_hook",
+		"qorpera_folder_note_interface_change",
 	] as const;
 
 	it("reads a page of proposals and a proposal's apply up to 16 MiB, where a proposal's close stops at 256 KiB", async () => {
