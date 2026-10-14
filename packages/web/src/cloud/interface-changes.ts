@@ -153,21 +153,27 @@ type Step =
 	| { readonly change: InterfaceChangePath; readonly action: "restore" };
 
 /** What Undo does with each path the change made, before reading anything: a folder it made is deleted with what it
- * made under it; a file it wrote new is deleted; a file it rewrote gets its version before back. Anything else is null.
- * A path under a folder the change made goes with that folder, so it has no step of its own. */
+ * made under it; a file it wrote new is deleted; a file it rewrote gets its version before back. Anything else is null:
+ * a delete, move or copy, a path it saved twice, and a folder it made that holds something moved or copied in, which
+ * deleting the folder would delete too. A path it made under a folder it made goes with that folder, so it has no step
+ * of its own. */
 function steps(change: InterfaceChange): (Step | null)[] {
 	const key = (path: string) => companyPathKey(path);
 	const parent = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf("/")));
-	const made = new Set(change.changes.filter((item) => item.op === "mkdir").map((item) => key(item.path)));
+	const folderMade = (item: InterfaceChangePath) => item.op === "mkdir" && item.kind === "folder";
+	const fileWritten = (item: InterfaceChangePath) => item.op === "write" && item.kind === "file";
+	if (new Set(change.changes.map((item) => key(item.path))).size !== change.changes.length) return [null];
+	const made = new Set(change.changes.filter(folderMade).map((item) => key(item.path)));
 	// A root is a folder the commit made in a folder it did not make; what it made under a root goes with the root.
-	const roots = change.changes.filter((item) => item.op === "mkdir" && !made.has(key(parent(item.path))));
+	const roots = change.changes.filter((item) => folderMade(item) && !made.has(key(parent(item.path))));
 	const rootOf = (item: InterfaceChangePath) =>
 		roots.find((root) => root !== item && key(item.path).startsWith(`${key(root.path)}/`));
 	return change.changes.flatMap((item): (Step | null)[] => {
-		if (rootOf(item)) return [];
-		if (item.op === "mkdir" && item.kind === "folder")
+		// Under a root was nothing before the commit, so a folder made or a file written there is new.
+		if (rootOf(item)) return folderMade(item) || fileWritten(item) ? [] : [null];
+		if (folderMade(item))
 			return [{ change: item, action: "delete", inside: change.changes.filter((other) => rootOf(other) === item) }];
-		if (item.op !== "write" || item.kind !== "file") return [null];
+		if (!fileWritten(item)) return [null];
 		if (item.priorVersion === null) return [{ change: item, action: "delete", inside: [] }];
 		return [{ change: item, action: "restore" }];
 	});

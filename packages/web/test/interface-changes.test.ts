@@ -588,6 +588,31 @@ describe("Undo of an interface change", () => {
 		await expect(undo(f, order)).resolves.toEqual({ outcome: "undone", already: false });
 	});
 
+	it("can't undo a folder it made that holds what it moved or copied in, or a path it saved twice", async () => {
+		const f = seeded();
+		// The move's source is outside interfaces/ and tables/, so the note names only where the file went.
+		const moved = change([
+			path(1, "mkdir", "interfaces/leads"),
+			path(2, "move_in", "interfaces/leads/README.md", V(40)),
+		]);
+		const copied = change([path(1, "mkdir", "interfaces/leads"), path(2, "copy", "interfaces/leads/notes.md")]);
+		const nested = change([
+			path(1, "mkdir", "tables/leads"),
+			path(2, "mkdir", "tables/leads/files"),
+			path(3, "move_in", "tables/leads/files/brief.md", V(41)),
+		]);
+		const twice = f.agent([
+			{ op: "write", path: "interfaces/order.md", text: "- leads\n" },
+			{ op: "write", path: "interfaces/order.md", text: "- leads\n- offers\n" },
+		]);
+		for (const value of [moved, copied, nested, twice]) {
+			expect(interfaceChangeUndoable(value)).toBe(false);
+			await expect(undo(f, value)).resolves.toEqual({ outcome: "unavailable" });
+		}
+		expect(f.folder.read).not.toHaveBeenCalled();
+		expect(f.commits).toEqual([]);
+	});
+
 	it("stops when the member's access changed while it read", async () => {
 		const f = seeded();
 		const leads = f.agent([{ op: "mkdir", path: "interfaces/leads" }]);
@@ -708,6 +733,15 @@ describe("an interface change in the agent's thread", () => {
 		const writer = await mount({ undoInterfaceChange }, [note(deleted)]);
 		expect(writer.line().querySelector(".interface-change-text")?.textContent).toBe("Deleted the interface “offers”");
 		expect(writer.line().querySelector("button")).toBeNull();
+		dispose?.();
+
+		const moved = change([
+			path(1, "mkdir", "interfaces/leads"),
+			path(2, "move_in", "interfaces/leads/README.md", V(40)),
+		]);
+		const mover = await mount({ undoInterfaceChange }, [note(moved)]);
+		expect(mover.line().querySelector(".interface-change-text")?.textContent).toBe("Made the interface “leads”");
+		expect(mover.line().querySelector("button")).toBeNull();
 		dispose?.();
 
 		const without = await mount({}, [note(leads)]);
