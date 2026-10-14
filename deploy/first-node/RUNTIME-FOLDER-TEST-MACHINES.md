@@ -371,7 +371,27 @@ Step 5's Q3 already accepts the gap between its retirement of the session folder
 
 ## What step 6 reuses from 4c and 5c
 
-<!-- TODO -->
+Step 6's folder service work (6b) is small because 4c (qorpera-80) and 5c (qorpera-3c) build the hard parts. Before
+6b changes a file of the folder service, its builder tells both owners which files will change.
+
+**From 4c:** the read log for core views and its release with the view actor, before each publish and at each boundary;
+`--final` for the last publish; a release refused because a read is no longer readable, passed on as a reason; the
+serving check by LXD project and instance name (4a's, through `MountGrants` and `coreAccess` in
+`packages/object-gateway/src/folder-service/mounts.ts`); the quiet publish about 2 s after the last change (4a's desktop
+`quietMs`, 4b-2's for commands); and the reasons per view in a boundary's answer.
+
+**From 5c:** the in-memory read record before an answer leaves; release fan-out; the host-local control socket, which
+refuses a peer that is not the executor's uid; machine-wide boundaries; and `served_by` set and cleared.
+
+**What 6b adds:**
+
+- the `test_machine` kind in `coreAccess`, served only to `qorpera-machine-<machine_id hex>` in a project listed in the
+  new `testMachineProjects` setting (`cli.ts` reads it beside `companyMachineProjects`; `deploy/folder-service/README.md`
+  documents it);
+- command windows on the control socket (`open` and `close`, with `{commandId, runId, staffAgentId,
+  requestedByUserId}`), and per-change tags from the windows open when a change was made, the starter when none was;
+- `credits` per unit in each publish;
+- the end boundary for one command, and the final boundary for the machine.
 
 ## Slices
 
