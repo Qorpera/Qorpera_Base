@@ -43,7 +43,7 @@ function fixture() {
 	const folder: CloudRunLogFolder = {
 		locate: vi.fn(async () => structuredClone(place)),
 		read: vi.fn(async () => null),
-		commit: vi.fn(async (_key, units) => {
+		commit: vi.fn<CloudRunLogFolder["commit"]>(async (_key, units) => {
 			commits.push(units);
 			return {
 				commitId: randomUUID(),

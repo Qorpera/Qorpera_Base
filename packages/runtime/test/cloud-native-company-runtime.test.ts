@@ -1015,18 +1015,22 @@ it("keeps a listed company's run's work log, each acting step's line saved befor
 	const bytes = f.stagedBytes();
 	const root = `agents/nora/memory/thread/runs/${f.binding.runId}`;
 	const writes: { path: string; text: string }[] = [];
+	const conversation = randomUUID();
 	const original = f.pathCall.getMockImplementation()!;
 	f.pathCall.mockImplementation(async (method, args, signal) => {
+		// Where the new log goes, until its first batch makes it; then the log, read like any of the run's files.
 		if (method === "qorpera_memory_run_log_place")
-			return {
-				path: root,
-				exists: false,
-				missing: ["agents/nora/memory/thread/runs"],
-				last: null,
-				generation: 0,
-				gone: false,
-				origin: { conversation: randomUUID(), parent: null, step: null, continues: null, narrow: false },
-			};
+			return f.folderFiles.has(`${root}/run.toml`)
+				? { path: root, exists: true, missing: [], last: 0, generation: 0, gone: false }
+				: {
+						path: root,
+						exists: false,
+						missing: ["agents/nora/memory/thread/runs"],
+						last: null,
+						generation: 0,
+						gone: false,
+						origin: { conversation, parent: null, step: null, continues: null, narrow: false },
+					};
 		if (method === "qorpera_memory_run_resume") {
 			expect(args).toEqual({ p_binding: f.binding });
 			// The run's original attempt.
@@ -1044,9 +1048,17 @@ it("keeps a listed company's run's work log, each acting step's line saved befor
 			return (args.p_digests as string[]).map((digest) => createHash("sha256").update(digest).digest("hex"));
 		if (method === "qorpera_folder_memory_commit") {
 			expect(args.p_preconditions).toMatchObject({ runLog: { run: f.binding.runId, path: root } });
-			const units = args.p_units as { op: string; path: string; file?: { fileSha256: string } }[];
-			for (const unit of units)
-				if (unit.op === "write") writes.push({ path: unit.path, text: bytes.get(unit.file!.fileSha256)! });
+			type File = { path: string; kind: string; file?: { fileSha256: string } };
+			const units = args.p_units as (File & { op: string; contents?: File[] })[];
+			// What the batch saves, the run reads back: its log's run.toml and blocks, and its tree's.
+			for (const unit of units) {
+				for (const item of unit.contents ?? [])
+					if (item.file) f.folderFiles.set(`${unit.path}/${item.path}`, bytes.get(item.file.fileSha256)!);
+				if (unit.op !== "write") continue;
+				const text = bytes.get(unit.file!.fileSha256)!;
+				writes.push({ path: unit.path, text });
+				f.folderFiles.set(unit.path, text);
+			}
 			return {
 				schema: "qorpera.folder-commit/v1",
 				commitId: randomUUID(),
@@ -1066,8 +1078,7 @@ it("keeps a listed company's run's work log, each acting step's line saved befor
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
 	const methods = f.pathCall.mock.calls.map(([method]) => method);
-	// The log is placed, and the attempt asked whether it resumes, once and before the first model request.
-	expect(methods.filter((method) => method === "qorpera_memory_run_log_place")).toHaveLength(1);
+	// The log is placed, and the attempt asked once whether it resumes, before the first model request.
 	expect(methods.filter((method) => method === "qorpera_memory_run_resume")).toHaveLength(1);
 	expect(methods.indexOf("qorpera_memory_run_log_place")).toBeLessThan(methods.indexOf("qorpera_memory_run_resume"));
 	expect(methods.indexOf("qorpera_memory_run_resume")).toBeLessThan(methods.indexOf("qorpera_fence_native_context"));
@@ -1090,10 +1101,12 @@ it("keeps a listed company's run's work log, each acting step's line saved befor
 	expect(steps.map((step) => step.tool)).toEqual(["send_message", "company_read", "send_message", "send_message"]);
 	for (const step of steps) expect(step.result).not.toBeNull();
 	expect(steps[1]).toMatchObject({ j: 1, paths: ["note.md"] });
-	// Its step lines are kept beside it; a line built by a call is a compactor thread's reply (§7.1).
-	const lines = writes
-		.filter((write) => write.path === `${root}/t0/00000000.jsonl`)
-		.flatMap((write) => write.text.trim().split("\n"))
+	// Its step lines are kept beside it, each write keeping the lines stored before it; a line built by a call is a
+	// compactor thread's reply (§7.1).
+	const tree = writes.filter((write) => write.path === `${root}/t0/00000000.jsonl`).at(-1)!;
+	const lines = tree.text
+		.trim()
+		.split("\n")
 		.map((line) => JSON.parse(line) as { l: number; k: number; free: boolean; text: string });
 	expect(
 		lines
@@ -2600,12 +2613,13 @@ it("reaches the first model request of a simple turn in a pinned number of seria
 	expect(wave("qorpera_folder_list")).toBe(4);
 	expect(wave("qorpera_folder_read")).toBe(4);
 	expect(wave("qorpera_describe_agent_open_work")).toBe(4);
-	// Run admission, one context check, the run's work log's place (W1c-3: a resumed attempt reads its earlier work
-	// before any provider request), then the first request's fence in one call
+	// Run admission, one context check, then the first request's fence in one call
 	// (qorpera_fence_native_context, 20260929400000): its two checks, this record and the check
-	// after it, once four serial round trips (waves 10 to 13), share one. 10 before the work log,
-	// 12 before that fence, 13 before the connector catalog joined the context reads.
-	expect(wave("qorpera_memory_run_log_place")).toBe(wave("qorpera_record_native_context_view") - 1);
+	// after it, once four serial round trips (waves 10 to 13), share one. The run's work log's place
+	// (W1c-3: a resumed attempt reads its earlier work before any provider request) adds one as the
+	// tools are built: 10 before the work log, 12 before that fence, 13 before the connector catalog
+	// joined the context reads.
+	expect(wave("qorpera_memory_run_log_place")).toBe(6);
 	expect(wave("qorpera_fence_native_context")).toBe(wave("qorpera_record_native_context_view"));
 	expect(wave("qorpera_record_native_context_view")).toBe(11);
 });

@@ -391,9 +391,9 @@ it("steps each call into the run's work log and, after the turn, closes it befor
 		w.order.push("log");
 		throw new Error("PRIVATE_FINAL_BATCH");
 	});
-	await expect(
-		f.start({ compactor, tools: () => ({ ...f.tools(), runLog: w.runLog }) }),
-	).resolves.toMatchObject({ toolCalls: 1 });
+	await expect(f.start({ compactor, tools: () => ({ ...f.tools(), runLog: w.runLog }) })).resolves.toMatchObject({
+		toolCalls: 1,
+	});
 	expect(w.log.step).toHaveBeenCalledOnce();
 	expect(w.log.finish).toHaveBeenCalledOnce();
 	expect(f.execute).toHaveBeenCalledOnce();
