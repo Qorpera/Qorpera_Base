@@ -169,4 +169,84 @@ begin
 	perform pg_temp.same(to_jsonb(pg_temp.nodes(s)), '"0:0:1,0:1:3,0:2:4,0:3:5,0:4:6,1:0:-,2:0:-"', 'The index after P18');
 end $$;
 
+-- 3. Nora's folder deleted: no root, so step 1 commits nothing and records each block by key alone; step 2 writes none --
+
+do $$
+declare
+	s uuid := (select e.session_id from public.qorpera_memory_message_erases e limit 1); eid uuid; r jsonb; g bigint;
+	er public.qorpera_memory_message_erases; root constant text := 'agents/nora-skov/memory/thread';
+	cid constant uuid := '96100000-0000-4000-8000-0000000000c8';
+begin
+	perform pg_temp.member(s, 8, cid);
+	perform pg_temp.expect(pg_temp.memory('m3x-image-2', pg_temp.image(root, cid), array[s]), 2, 'saved');
+	r := pg_temp.commit(pg_temp.owner(), 'm3x-delete-1', jsonb_build_array(jsonb_build_object('op','delete','path','agents/nora-skov',
+		'expectedVersion',pg_temp.version('agents/nora-skov'),'asOfSeq',pg_temp.seq())));
+	perform pg_temp.expect(r, 1, 'saved');
+	if public.qorpera_memory_owner_root('70000000-0000-4000-8000-000000000020', 'agent', '70000000-0000-4000-8000-0000000000a1') is not null
+		or pg_temp.nodes(s) <> '' then raise exception 'Nora is retired with her tree'; end if;
+	perform pg_temp.service();
+	g := (select memory_generation from public.qorpera_shared_sessions where id = s);
+	r := public.qorpera_memory_message_erase_request('70000000-0000-4000-8000-000000000020', '70000000-0000-4000-8000-000000000001',
+		s, (pg_temp.event(s, 8)).event_id);
+	eid := (r ->> 'eraseId')::uuid;
+	r := public.qorpera_memory_message_erase_open('70000000-0000-4000-8000-000000000020', eid);
+	perform pg_temp.same(r - 'eraseId' - 'sessionId' - 'eventId', '{"schema":"qorpera.memory-message-erase/v1","state":"open",'
+		'"blocks":2,"runsPending":0}', 'Step 1 with no root');
+	er := pg_temp.erase(eid);
+	if er.root_key is not null or er.commit_id is not null or er.generation is distinct from g + 1
+		or er.owner_kind is distinct from 'agent' or er.owner_id is distinct from '70000000-0000-4000-8000-0000000000a1'
+		or (select memory_generation from public.qorpera_shared_sessions where id = s) <> g + 1 then
+		raise exception 'The row with no root: %', to_jsonb(er); end if;
+	if (pg_temp.event(s, 8)).body is distinct from '{"erased":true}'::jsonb
+		or (select body from public.qorpera_session_inputs where id = er.input_id) is distinct from '{"erased":true}'::jsonb then
+		raise exception 'Step 1 blanks the event and its input with no root'; end if;
+	-- The earlier roots' paths with versions: the deleted tree's block and the image (the first root's block is erased).
+	perform pg_temp.same(pg_temp.keys(eid), jsonb_build_array(root || '/images/' || cid || ':images:-:key',
+		root || '/t0/00000000.jsonl:block:-:key'), 'The blocks by key alone');
+	r := pg_temp.rewrite(eid);
+	perform pg_temp.same(r -> 'state', '"rewritten"', 'Step 2 with no root');
+	if (pg_temp.erase(eid)).rewrite_commit_id is not null or (pg_temp.erase(eid)).last_error is not null
+		or exists (select 1 from public.qorpera_folder_commits c where c.operation_key like 'memerase:' || eid || ':%') then
+		raise exception 'Step 2 writes nothing with no root'; end if;
+	perform pg_temp.same(pg_temp.ask_all(eid) - 'eraseId' - 'sessionId' - 'eventId', '{"schema":"qorpera.memory-message-erase/v1",'
+		'"state":"requested","blocks":2,"runsPending":0,"waits":0}', 'Step 3 with no root');
+	if exists (select 1 from public.qorpera_memory_message_erase_blocks b where b.erase_id = eid and b.erasure_id is null) then
+		raise exception 'Each block by key alone is an erasure'; end if;
+end $$;
+
+-- 4. Nora hired again and her tree written again: step 1 cuts the new root's block; the deleted tree's is by key -------
+
+do $$
+declare
+	nora constant uuid := '70000000-0000-4000-8000-0000000000a1'; root constant text := 'agents/nora-back/memory/thread';
+	s uuid := (select e.session_id from public.qorpera_memory_message_erases e limit 1); eid uuid; r jsonb;
+begin
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'm3x-hire-2', jsonb_build_array(pg_temp.hire('nora-back', nora, 'Nora Skov'))),
+		1, 'saved');
+	perform pg_temp.member(s, 9, '96100000-0000-4000-8000-0000000000c9');
+	r := pg_temp.memory('m3x-tree-2', jsonb_build_array(jsonb_build_object('op','mkdir','path',root),
+		pg_temp.toml_file(root || '/tree.toml', pg_temp.toml(s)), jsonb_build_object('op','mkdir','path',root || '/t0'),
+		pg_temp.block_file(root || '/t0/00000000.jsonl', pg_temp.block(array[pg_temp.line0(0, 1), pg_temp.line0(7, 9),
+			pg_temp.line(1, 0), pg_temp.line(3, 0)]))), array[s]);
+	perform pg_temp.expect(r, 4, 'saved');
+	perform pg_temp.service();
+	r := public.qorpera_memory_message_erase_request('70000000-0000-4000-8000-000000000020', '70000000-0000-4000-8000-000000000001',
+		s, (pg_temp.event(s, 9)).event_id);
+	eid := (r ->> 'eraseId')::uuid;
+	perform pg_temp.same(public.qorpera_memory_message_erase_open('70000000-0000-4000-8000-000000000020', eid) -> 'state', '"open"',
+		'Step 1 after the restore');
+	if (pg_temp.erase(eid)).root_key is distinct from root or (pg_temp.erase(eid)).commit_id is null then
+		raise exception 'The restored root: %', to_jsonb(pg_temp.erase(eid)); end if;
+	-- Message 7 drops (0,7) and (3,0); the deleted tree's block, its erasure still in its versions phase, is asked by key.
+	perform pg_temp.same(pg_temp.keys(eid), jsonb_build_array(root || '/t0/00000000.jsonl:block:2:cut',
+		'agents/nora-skov/memory/thread/t0/00000000.jsonl:block:-:key'), 'The blocks after the restore');
+	perform pg_temp.same(pg_temp.rewrite(eid) -> 'state', '"rewritten"', 'Step 2 after the restore');
+	perform pg_temp.same(to_jsonb(pg_temp.nodes(s)), '"0:0:1,1:0:-"', 'The kept lines after the restore');
+	-- The deleted tree's block waits for the erasure that covers it, then finds nothing left.
+	perform pg_temp.same(pg_temp.ask_all(eid) -> 'waits', '1', 'Step 3 waits once');
+	perform pg_temp.same((select jsonb_agg(b.erasure_id is not null order by b.block_key collate "C")
+		from public.qorpera_memory_message_erase_blocks b where b.erase_id = eid), '[true, false]', 'The requests after the restore');
+	perform pg_temp.same(to_jsonb(pg_temp.versions_at('agents/nora-skov/memory/thread/t0/00000000.jsonl')), '0', 'The deleted tree''s block');
+end $$;
+
 rollback;
