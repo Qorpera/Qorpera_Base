@@ -2563,7 +2563,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// master's folder-v2 values at a2d6cb27a, which the legacy sweep (step C, C-P1) kept byte for byte, with
 	// Interfaces' save_interface and table_write (I8b) after table_read: the names in their order, each name with
 	// its description, and the catalog text the run's start hashes (it holds no ids). Since C-P4, read_event's
-	// description no longer names save_attachment, so the last two moved; every other tool is as on master.
+	// description no longer names save_attachment, so the last two moved. Since chat images, company_read's description
+	// says it shows an image, so they moved again; every other tool is as on master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2598,9 +2599,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"1313f48b04f4560c329b2e06819750cb8ed86898d35cb021ff2318e81070a665",
+		"e1990aa47207c9724cc54a03d03ae15237064628987aff55c849c3a6edd529c0",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"9a72e9b6ef7ebad5921ded098ccd47b28c4569aaba66708c9f5a3cf0e3139974",
+		"1dda11727d958493cb4bba2e7483cf305c53849880565875ece99fe6ed1c1116",
 	);
 });
