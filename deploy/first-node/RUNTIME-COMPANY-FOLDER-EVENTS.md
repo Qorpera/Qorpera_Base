@@ -590,8 +590,8 @@ and its refusals), `cloud-company-computer-native` (the hook route and a host wi
 
 E3c comes in four PRs: **E3c-1** the database (migration `20260930344000`, SQL test 419), **E3c-2** the broker and the
 runtime, **E3c-3** the office image, and **E3c-4** the hold (migration `20260930345000`, SQL test 420). The coordinator
-agreed the design on 9 October. E3c-1 is built (below). E3c-2, E3c-3 and E3c-4 ship together in one release; until then
-`manage_hook` refuses a Stripe hook (§5.7, E3b-2).
+agreed the design on 9 October. E3c-1 and E3c-4 are built (below). E3c-2, E3c-3 and E3c-4 ship together in one
+release; until then `manage_hook` refuses a Stripe hook (§5.7, E3b-2).
 
 **What it is for.** An agent opens a Stripe hook with `manage_hook`, adds its URL as an endpoint in Stripe, and then
 moves the endpoint's signing secret (`whsec_…`) from Stripe's page into the vault with `vault_capture`. The model never
@@ -715,6 +715,17 @@ screenshots are refused while it is shown (`PRIVATE_FIELD_ON_SCREEN`). This also
     under it. Only the deliveries accepted before the hold are lost: the refused one, and any that raced it. The agent
     resends those.
   - The hold shows in `lastRefusal` ("held: the captured secret does not match"), so the agent captures again.
+  - **As built (E3c-4, migration `20260930345000`).** The state is on the Stripe hook's capture key
+    (`verified_secret_version`, `held_secret_version`, `held_at`, the held delivery's receipt time).
+    - `qorpera_finish_event_verification` holds the version on a refusal with the broker's exact words "The Stripe
+      signature does not match" (`cloud-event-verification.ts:135`; E3c-2 pins them in a test). The answer stays
+      `refused`. A verified delivery records its version and lifts a hold on it or on an older one, so a delivery
+      claimed beside the refused one and verified under the same version lifts the hold.
+    - The broker's capture read offers no `current` version while it is held, so the next capture stores a new version
+      even of the same value. Without that the broker would answer "unchanged", and the hold would never lift.
+    - `ready` stays true while the hook is held; `lastRefusal` is how the agent sees it.
+    - Locks: finish takes the broker authority (FOR SHARE), the delivery (FOR UPDATE), then the capture key; a capture
+      takes the hook, the capture key, the secret, then the receipt; claims and intake lock no capture key.
   - Once a version has verified a delivery, a later mismatch is refused as today and holds nothing. A rolled secret is
     covered by a new capture, and a forged delivery can no longer stop the hook.
   - It applies only to versions made by a capture, which is Stripe only. A GitHub or HMAC version is made by the broker,
@@ -807,7 +818,7 @@ screenshots are refused while it is shown (`PRIVATE_FIELD_ON_SCREEN`). This also
   Empty ones are left out, so a Stripe hook before its first capture, and every GitHub or HMAC hook, keeps exactly
   `connectorId`, `secretName` and `ready`. The five broker functions are granted to `qorpera_secret_broker` only.
 
-**Next: E3c-2, E3c-3 and E3c-4, in one release.**
+**Next: E3c-2 and E3c-3, in one release with E3c-4.**
 - **E3c-2, the broker and the runtime:** `manage_hook`'s Stripe create (its E3b-2 refusal goes, and its description says
   one hook per Stripe endpoint, test and live mode apart); the folder client's new refusal words and its signed-create
   check (a Stripe create answers `ready: false`, and `version` and `capturedAt` appear only after a capture); the
@@ -816,8 +827,8 @@ screenshots are refused while it is shown (`PRIVATE_FIELD_ON_SCREEN`). This also
   result that reaches the model.
 - **E3c-3, the office image:** `vault_capture`'s page checks, cover, reveal, read and seal, the shape guard, the
   registry method and the perform answer's box.
-- **E3c-4, the hold** (migration `20260930345000`, SQL test 420): the verifier's finish, intake's readiness and
-  `lastRefusal`'s hold.
+- **E3c-4, the hold** (migration `20260930345000`, SQL test 420) is built: the verifier's finish, intake's readiness,
+  the broker's capture read and `lastRefusal`'s hold (point 5 above, "As built").
 
 **Rollout (the coordinator's; in each PR's "Deploy needed" lines):**
 1. E3c-1's and E3c-4's migrations.
@@ -845,9 +856,19 @@ The races (two stores of one version, a replace beside a store) are left to a co
 **SQL 987, 939 and 418** take E3c-1's words: a Stripe proof on the host's and the member's paths gets "A signed hook is
 opened through the vault", and the broker's E3b opening refuses one with "hook capture key is unavailable".
 
-**Tests (E3c-2 to E3c-4):**
-- **SQL 420 (E3c-4):** a mismatch under a never-verified captured version holds it, and intake answers 409; the next
-  capture lifts the hold; a mismatch after a verified delivery holds nothing; GitHub and HMAC versions are never held.
+**Tests (E3c-4): SQL 420, on 419's fixture** (its setup, up to its first section), with the broker opening a Stripe, a
+GitHub and an HMAC hook:
+- a mismatch under a never-verified captured version holds it, with the refusal's receipt time: the verdict is still
+  refused, a second finish is stale, intake answers `not_ready` and writes nothing, and the descriptor says held; any
+  other refusal holds nothing;
+- the next capture lifts the hold: the broker's read offers no current version, so the capture stores version 2, which
+  verifies a delivery and clears the old hold;
+- a mismatch after a verified delivery holds nothing, and the descriptor names that refusal; two deliveries claimed
+  together under version 3: one does not match and holds it, the other verifies and lifts the hold;
+- GitHub and HMAC hooks, refused with their own words or with Stripe's, have no capture key and keep taking deliveries;
+- the marker is in the four patched bodies and no other, and the grants are unchanged.
+
+**Tests (E3c-2 and E3c-3):**
 - **TypeScript:** the keyring's capture key (it never exposes raw bytes) and a capture box that never opens as a fill
   box; the broker route's proof and answers, the constant-time compare, and the native relay; the redaction of
   secret-shaped text in shell output, file reads and page text; the guest's checks against fixture pages (cut, two

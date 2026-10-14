@@ -732,9 +732,14 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   20260930344000 (E3c-1) a `stripe` hook's `signingSecret` also carries, once
   the vault has its secret, `version` (the current one), `capturedAt` (when
   that version was stored) and, if a delivery was refused under that
-  version, `lastRefusal` `{receivedAt, reason}` (the newest one). A `github`
-  or `hmac-sha256` hook's keeps exactly `connectorId`, `secretName` and
-  `ready`, and so does a `stripe` hook's before its first capture. On a
+  version, `lastRefusal` `{receivedAt, reason}` (the newest one). From
+  20260930345000 (E3c-4) a `stripe` hook whose signature did not match under
+  a version no delivery verified under is held: it answers senders
+  `not_ready` until the next capture, `ready` stays true, and `lastRefusal` is
+  that delivery's `receivedAt` with the reason "held: the captured secret does
+  not match". A `github` or `hmac-sha256` hook's keeps exactly `connectorId`,
+  `secretName` and `ready`, and so does a `stripe` hook's before its first
+  capture. On a
   snapshot-v1 company an owner or admin saves the sender's signing secret with
   `qorpera_begin_cloud_secret_capture(company, environment, 'company', null,
   'event_hook', secretName, purpose)` and then
