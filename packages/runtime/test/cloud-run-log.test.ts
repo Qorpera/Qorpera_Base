@@ -709,6 +709,41 @@ describe("a run's work log", () => {
 		]);
 	});
 
+	it("keeps a hook call's result without its addresses, and names no path of it", async () => {
+		const narrow = vi.fn(protection.narrow);
+		const { folder, log, signal } = runLog({ protection: { ...protection, narrow } });
+		const hooks = {
+			hooks: [
+				{
+					name: "orders",
+					address: "PRIVATE_ADDRESS",
+					path: "PRIVATE_PATH",
+					deliveries: [{ url: "PRIVATE_URL", status: "delivered" }],
+				},
+			],
+		};
+		log.finish(step(log, "list_hooks", {}), envelope(JSON.stringify(hooks)), [], ["PRIVATE_PATH"]);
+		// A result cut short is no JSON to take the addresses out of.
+		const cut = step(log, "manage_hook", { name: "orders" });
+		log.finish(cut, envelope(JSON.stringify(hooks).slice(0, 60)), [], ["PRIVATE_PATH"]);
+		const refusal = JSON.stringify({ status: "denied", content: { text: "Only owners and admins manage hooks." } });
+		log.finish(step(log, "manage_hook", { name: "orders" }), refusal, []);
+		await log.flush(signal);
+
+		expect(JSON.stringify(folder.commits)).not.toContain("PRIVATE_");
+		expect(JSON.stringify(log.steps())).not.toContain("PRIVATE_");
+		for (const [, checked] of narrow.mock.calls) expect(checked.resultPaths).toEqual([]);
+		const text = (line: Record<string, unknown>) => (line.result as { content: { text: string } }).content.text;
+		const [listed, cutShort, denied] = folder.all();
+		expect(listed!.result).toMatchObject({ schema: "qorpera.cloud-tool-result/v1", status: "ok" });
+		expect(JSON.parse(text(listed!))).toEqual({ hooks: [{ name: "orders", deliveries: [{ status: "delivered" }] }] });
+		expect(text(cutShort!)).toBe(
+			"(The work log leaves out this result: it held hook addresses. Call list_hooks again.)",
+		);
+		expect(text(denied!)).toBe("Only owners and admins manage hooks.");
+		expect(folder.all().map((line) => line.paths)).toEqual([[], [], []]);
+	});
+
 	it("commits finished steps on the STEP_COMMIT timer and at 16 steps", async () => {
 		const timed = runLog({ commitMs: 20 });
 		timed.log.finish(step(timed.log, "company_read"), envelope("one"), []);

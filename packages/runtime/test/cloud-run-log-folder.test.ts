@@ -424,6 +424,12 @@ describe("run log persistence through the ordinary folder client", () => {
 		await expect(f.folder.locate(f.runId, signal)).rejects.toThrow("folder_response_invalid");
 		f.placeOverride = () => ({ gone: true });
 		await expect(f.folder.locate(f.runId, signal)).rejects.toBeInstanceOf(CloudRunLogGone);
+		// The run's company keeps no run logs yet (20260930352000): an exact answer, then no log.
+		f.placeOverride = () => ({ off: true });
+		await expect(f.folder.locate(f.runId, signal)).rejects.toMatchObject({ reason: "off" });
+		f.placeOverride = () => ({ off: true, gone: false });
+		await expect(f.folder.locate(f.runId, signal)).rejects.toThrow("folder_response_invalid");
+		expect(f.bytes.put).not.toHaveBeenCalled();
 	});
 
 	it("rejects unrelated mutations before staging and validates stored log bytes on read", async () => {

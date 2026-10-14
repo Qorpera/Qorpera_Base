@@ -27,9 +27,12 @@ import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
  *   (`coding_ask`) keeps no copy of its arguments: `args` is "", and `args_bytes` and `args_hash` stay. A report's or
  *   a question's result holds none of its words either (a coding turn's receipt leaves them out). Every stored hash
  *   comes from the platform's per-run keyed-hash service, never from a plain digest.
+ * - A hook's address lets anyone post to it, and only owners and admins see it: `list_hooks` and `manage_hook` keep
+ *   their result without any `address`, `path` or `url`, and name no path of it.
  * - The protection port classifies every step before any bytes are staged. A narrow step and every later step keep
  *   only keyed hashes and receipt identifiers in the folder; their full content stays in this process. Production
- *   wiring remains gated on the matching SQL, closing/compaction and erasure support before a run is built with a log.
+ *   builds a log for a run once its place answers where it goes: until W1d (erasure of work) is live, only for the
+ *   companies on the memory tree's list (20260930352000).
  * - The run's tree, its step lines (§7.5), sits beside the log in `runs/<run>/t<n>/`. W2's step-line writer reads and
  *   commits its blocks through `treeRead` and `commitTree`, also after `close`, for the lines built at closing. Only
  *   its batches check the run's generation: they are derived, and are refused when it moved.
@@ -68,6 +71,11 @@ const HASH_ONLY_TOOLS = new Set([
 	"coding_finish",
 	"coding_ask",
 ]);
+/** Calls whose results hold hook addresses. */
+const ADDRESS_TOOLS = new Set(["list_hooks", "manage_hook"]);
+const ADDRESS_KEYS = new Set(["address", "path", "url"]);
+/** What a hook call's line keeps of a result that names no JSON to leave the addresses out of (cut short). */
+const ADDRESSES_LEFT_OUT = "(The work log leaves out this result: it held hook addresses. Call list_hooks again.)";
 /** A block of the run's tree under the log's folder, as `memoryBlockPath` names it: tier `t0` to `t14`, block
  * `<8 digits>`. */
 const TREE_PATH = /^t(?:[0-9]|1[0-4])\/\d{8}\.jsonl$/;
@@ -422,6 +430,32 @@ function erasedLine(text: string): boolean {
 	}
 }
 
+/** A JSON value without any `address`, `path` or `url` key, at any depth. */
+function withoutAddresses(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(withoutAddresses);
+	if (value === null || typeof value !== "object") return value;
+	return Object.fromEntries(
+		Object.entries(value)
+			.filter(([key]) => !ADDRESS_KEYS.has(key))
+			.map(([key, child]) => [key, withoutAddresses(child)]),
+	);
+}
+
+/** A step's result as its line stores it: the envelope as the fence issued it, except for a hook call
+ * (ADDRESS_TOOLS), whose content keeps no `address`, `path` or `url` at any depth. Its other fields stay as the fence
+ * issued them. A refusal's or an unconfirmed outcome's text is the host's own and is kept. */
+function storedResult(tool: string, result: string): string {
+	if (!ADDRESS_TOOLS.has(tool)) return result;
+	const envelope = JSON.parse(result) as { status: string; content: { text: string } };
+	let text: string;
+	try {
+		text = JSON.stringify(withoutAddresses(JSON.parse(envelope.content.text)));
+	} catch {
+		text = envelope.status === "ok" ? ADDRESSES_LEFT_OUT : envelope.content.text;
+	}
+	return JSON.stringify({ ...envelope, content: { ...envelope.content, text } });
+}
+
 /** An erased step as the run's step lines see it (§10.1): its number, call id and tool only. */
 function erasedStep(step: Pick<CloudRunLogStep, "j" | "call" | "tool" | "hashOnly" | "narrow">): CloudRunLogStep {
 	return Object.freeze({ ...step, args: "", result: null, text: "", at: "", erased: true as const });
@@ -651,7 +685,8 @@ export class CloudRunLog {
 			step.state === "final"
 				? []
 				: [...new Set(releases.flatMap((release) => release.reads.map((read) => read.path)))];
-		step.resultPaths = step.state === "final" ? [] : [...new Set(resultPaths)];
+		// A hook's `path` is its address's, never a company path.
+		step.resultPaths = step.state === "final" || ADDRESS_TOOLS.has(step.tool) ? [] : [...new Set(resultPaths)];
 		this.#wake();
 		if (this.#closed) return;
 		const waiting = this.#steps.filter((candidate) => candidate.result !== null && candidate.state !== "final");
@@ -699,7 +734,7 @@ export class CloudRunLog {
 							? ""
 							: step.argumentsText
 						: (step.stored?.args ?? (step.hashOnly ? "" : clip(step.argumentsText, CLOUD_RUN_LOG_FIELD_BYTES))),
-					result: step.state === "pending" ? null : step.result,
+					result: step.state === "pending" || step.result === null ? null : storedResult(step.tool, step.result),
 					text: step.stored?.text ?? clip(step.text, CLOUD_RUN_LOG_FIELD_BYTES),
 					at: step.at,
 				});
@@ -1164,8 +1199,8 @@ export class CloudRunLog {
 			`"args":${JSON.stringify(stored.args)}`,
 			`"args_bytes":${step.argsBytes}`,
 			`"args_hash":${JSON.stringify(step.argsHash)}`,
-			// The envelope is JSON with no line breaks, kept as a JSON value exactly as the fence issued it.
-			`"result":${pending ? "null" : step.result}`,
+			// The envelope is JSON with no line breaks, kept as a JSON value as the fence issued it (storedResult).
+			`"result":${pending ? "null" : storedResult(step.tool, step.result!)}`,
 			`"reads":[${reads.join(",")}]`,
 			...(cut ? [`"reads_cut":true`] : []),
 			`"releases":${JSON.stringify(pending ? [] : step.releases)}`,
