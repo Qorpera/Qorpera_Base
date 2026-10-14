@@ -15,7 +15,8 @@
 --    append-only: a finished line never changes, a pending one only to its finished form, and a narrow log takes only
 --    narrow lines.
 -- 6. Native host calls: qorpera_memory_step_hashes and qorpera_memory_step_narrow ('lease'), qorpera_memory_run_log_place
---    ('run') and qorpera_folder_memory_commit ('folder'; a run actor writes only its own run's log).
+--    ('run') and qorpera_folder_memory_commit ('folder'; a run actor writes only its own run's log and names no other
+--    run in its request, which the memory commit refuses before it takes any lock).
 -- Every new or patched body carries the marker 20260930231000 for the deploy guard.
 
 set local lock_timeout = '3s';
@@ -689,6 +690,33 @@ begin
 	return null;
 end $$;
 
+-- M1a's memory commit, now a call a run makes as itself: a run actor names only its own run in runLog and
+-- runGenerations, checked before the commit takes any lock (the run generation rows are locked before the receipts'
+-- rank 10). The platform names any run of the company, as before.
+create or replace function public.qorpera_folder_memory_commit(p_environment_id uuid, p_actor jsonb, p_operation_key text,
+	p_units jsonb, p_preconditions jsonb default '{}'::jsonb, p_review_id uuid default null, p_receipt_id uuid default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+-- 20260930231000 (W1b)
+declare v_result jsonb; v_pre jsonb := coalesce(p_preconditions, '{}'::jsonb);
+begin
+	if auth.role() is distinct from 'service_role' then raise exception 'Folder core authority is required' using errcode = '42501'; end if;
+	if coalesce(current_setting('qorpera.folder_memory', true), '') <> '' then raise exception 'A memory request is already set in this transaction' using errcode = '55000'; end if;
+	if p_environment_id is null or coalesce(p_operation_key, '') = ''
+		or not public.qorpera_folder_memory_preconditions_valid(p_environment_id, v_pre) then
+		raise exception 'Memory request is invalid' using errcode = '22023'; end if;
+	if p_actor ->> 'kind' = 'run' and (v_pre ? 'runLog' and v_pre #>> '{runLog,run}' is distinct from p_actor ->> 'runId'
+		or exists (select 1 from jsonb_array_elements(coalesce(v_pre -> 'runGenerations', '[]'::jsonb)) g
+			where g.value ->> 'runId' is distinct from p_actor ->> 'runId')) then
+		raise exception 'A run writes only its own run log' using errcode = '42501'; end if;
+	perform set_config('qorpera.folder_memory', jsonb_build_object('environmentId', p_environment_id::text,
+		'operationKey', p_operation_key, 'preconditions', v_pre)::text, true);
+	v_result := public.qorpera_folder_commit(p_environment_id, p_actor, p_operation_key, p_units, p_review_id, p_receipt_id);
+	perform set_config('qorpera.folder_memory', '', true);
+	return v_result;
+end $$;
+revoke all on function public.qorpera_folder_memory_commit(uuid, jsonb, text, jsonb, jsonb, uuid, uuid) from public, anon, authenticated;
+grant execute on function public.qorpera_folder_memory_commit(uuid, jsonb, text, jsonb, jsonb, uuid, uuid) to service_role;
+
 -- 5. The refusals ------------------------------------------------------------------------------------------------------
 
 -- The structured-file hook's run log check, for every unit of a memory commit (§4.5), after M1a's tree check. Returns a
@@ -1314,8 +1342,9 @@ drop function pg_temp.w1b_run_logs_replace(regprocedure, text, text, integer);
 -- 8. Native host calls ---------------------------------------------------------------------------------------------------
 
 -- A run hashes its narrow steps' results and learns what makes its steps narrow while it holds its lease, finds where
--- its log goes, and writes its log through the memory commit as itself (a run actor writes only its own run's log,
--- qorpera_memory_run_log_paths, and needs no grant there, qorpera_memory_run_log_admits).
+-- its log goes, and writes its log through the memory commit as itself (a run actor names only its own run in its
+-- request and writes only its own run's log, qorpera_memory_run_log_paths, and needs no grant there,
+-- qorpera_memory_run_log_admits).
 insert into public.qorpera_native_host_calls(name, scope) values ('qorpera_memory_step_hashes', 'lease'),
 	('qorpera_memory_step_narrow', 'lease'), ('qorpera_memory_run_log_place', 'run'), ('qorpera_folder_memory_commit', 'folder');
 
@@ -1334,6 +1363,7 @@ begin
 		'public.qorpera_memory_run_log_place(uuid,uuid)', 'public.qorpera_memory_step_hashes(uuid,uuid,uuid,jsonb)',
 		'public.qorpera_memory_step_narrow(uuid,uuid,uuid,jsonb)', 'public.qorpera_memory_run_generations_lock(uuid,text)',
 		'public.qorpera_folder_memory_preconditions_valid(uuid,jsonb)', 'public.qorpera_memory_generation_decide(uuid,uuid)',
+		'public.qorpera_folder_memory_commit(uuid,jsonb,text,jsonb,jsonb,uuid,uuid)',
 		'public.qorpera_memory_run_log_paths(uuid,jsonb,text,text,jsonb,text)',
 		'public.qorpera_memory_run_log_admits(uuid,text,jsonb,text,text,jsonb)',
 		'public.qorpera_memory_run_log_file_rules(uuid,jsonb,text,text,jsonb,text)',

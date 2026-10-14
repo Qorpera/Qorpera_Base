@@ -486,6 +486,9 @@ the tree holds the same content.
   - The runtime host writes a run's batches through it. Each batch is one change set, attributed like any of the run's
     writes: actor the agent, requester the member, the run and its sponsor. Each touched block is one unit at its
     expected version.
+  - A run that writes its own log through it as itself (W1b, a native host call) names only its own run in the
+    request's `runLog` and `runGenerations`. The call refuses any other run before the commit takes a lock
+    (`A run writes only its own run log`, 42501). The platform names any run of the company.
   - Erasure deletes and rewrites tree files through it (§10 steps 1 and 2), as the platform (`{"kind":"platform"}`)
     or as the member whose erase it is.
   - The 7-day prune commits nothing. It never touches a path's current version: it removes only replaced versions,
