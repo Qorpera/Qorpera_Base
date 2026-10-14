@@ -425,3 +425,59 @@ begin
 	perform pg_temp.same(to_jsonb((select count(*) from public.qorpera_folder_commits c where c.operation_key like 'memerase:%')), '2',
 		'Two commits');
 end $$;
+
+-- 5. Step 3: one block's history request per call, each an erasure for this row; a replay finds its own ----------------
+
+do $$
+declare
+	root constant text := 'agents/co-founder/memory/thread';
+	eid uuid := (select e.id from public.qorpera_memory_message_erases e); r jsonb; i integer; b public.qorpera_memory_message_erase_blocks;
+begin
+	perform pg_temp.service();
+	perform set_config('request.jwt.claims', '{"role":"authenticated"}', true);
+	perform pg_temp.fails(format('select public.qorpera_memory_message_erase_ask(%L, %L)',
+		'70000000-0000-4000-8000-000000000020', eid), '42501', 'Only the folder core asks');
+	perform pg_temp.service();
+	perform pg_temp.fails(format('select public.qorpera_memory_message_erase_ask(%L, %L)',
+		'70000000-0000-4000-8000-000000000020', extensions.gen_random_uuid()), 'P0002', 'No such erase');
+	-- Four blocks, four calls, in key order.
+	for i in 1..4 loop
+		r := public.qorpera_memory_message_erase_ask('70000000-0000-4000-8000-000000000020', eid);
+		perform pg_temp.same(r - 'eraseId' - 'sessionId' - 'eventId', jsonb_build_object('schema', 'qorpera.memory-message-erase/v1',
+			'state', case when i < 4 then 'rewritten' else 'requested' end, 'blocks', 4, 'runsPending', 3), format('Ask %s', i));
+		perform pg_temp.same((select jsonb_agg(substr(x.block_key, length(root) + 2) order by x.block_key)
+				from public.qorpera_memory_message_erase_blocks x where x.erase_id = eid and x.accepted_at is not null),
+			(select jsonb_agg(y) from (select y from unnest(array['t0/00000000.jsonl', 't0/00000001.jsonl', 't1/00000000.jsonl',
+				't2/00000000.jsonl']) y limit i) z), format('The blocks asked after %s', i));
+		if (pg_temp.erase(eid)).last_error is not null then raise exception 'Ask %: %', i, (pg_temp.erase(eid)).last_error; end if;
+	end loop;
+	-- Each block's erasure: its own key, for this row, cut at the block's delete or by key alone, its copies kept.
+	for b in select * from public.qorpera_memory_message_erase_blocks x where x.erase_id = eid order by x.block_key loop
+		if b.erasure_id is null or b.copies is null or not exists (select 1 from public.qorpera_folder_erasures e
+				where e.id = b.erasure_id and e.environment_id = '70000000-0000-4000-8000-000000000020'
+					and e.operation_key = 'memtree:' || encode(extensions.digest(convert_to('qorpera_memory_message_erases:' || eid
+						|| ':' || b.block_key, 'utf8'), 'sha256'), 'hex')
+					and e.block_history -> 'for' = jsonb_build_object('table', 'qorpera_memory_message_erases', 'id', eid::text)
+					and e.block_history ->> 'path' = b.path and e.requested_by_user_id = '70000000-0000-4000-8000-000000000001'
+					and (e.block_history ->> 'cutoffSeq')::bigint is not distinct from b.cutoff_seq
+					and (e.block_history ->> 'cutoffUnit')::integer is not distinct from b.cutoff_unit
+					and coalesce(e.reply -> 'copies', '[]'::jsonb) = b.copies) then
+			raise exception 'The erasure of %: %', b.block_key, to_jsonb(b); end if;
+	end loop;
+	if (select count(distinct x.erasure_id) from public.qorpera_memory_message_erase_blocks x where x.erase_id = eid) <> 4 then
+		raise exception 'One erasure per block'; end if;
+	-- A request accepted before a restart, its answer lost: asked again, the erasure is found by its key.
+	b := (select x from public.qorpera_memory_message_erase_blocks x where x.erase_id = eid and x.block_key = root || '/t1/00000000.jsonl');
+	update public.qorpera_memory_message_erase_blocks set erasure_id = null, copies = null, accepted_at = null
+	where erase_id = eid and block_key = b.block_key;
+	update public.qorpera_memory_message_erases set state = 'rewritten' where id = eid;
+	perform pg_temp.same(public.qorpera_memory_message_erase_ask('70000000-0000-4000-8000-000000000020', eid), r, 'The replay');
+	if (select x.erasure_id from public.qorpera_memory_message_erase_blocks x where x.erase_id = eid and x.block_key = b.block_key)
+			is distinct from b.erasure_id
+		or (select x.copies from public.qorpera_memory_message_erase_blocks x where x.erase_id = eid and x.block_key = b.block_key)
+			is distinct from b.copies
+		or (select count(*) from public.qorpera_folder_erasures e where e.operation_key like 'memtree:%') <> 4 then
+		raise exception 'The replay finds its erasure'; end if;
+	-- A requested erase is past step 3.
+	perform pg_temp.same(public.qorpera_memory_message_erase_ask('70000000-0000-4000-8000-000000000020', eid), r, 'Step 3 runs once');
+end $$;
