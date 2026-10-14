@@ -296,7 +296,7 @@ export function createObjectGatewayHandler(options: ObjectGatewayServiceOptions)
 						authority: options.memberFiles,
 						store: options.store,
 						replication: options.replication,
-						readLegacyObject: (companyId, sha256) => options.authority.readLegacyObject(companyId, sha256),
+						readFallback: (profileId, sha256) => options.authority.readLegacyObject(profileId, sha256),
 					});
 					return;
 				}
