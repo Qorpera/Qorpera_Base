@@ -264,18 +264,10 @@ function brokerTransport(waves: Waves): CloudRunnerBrokerTransport {
 		listTranscript: unexpected,
 		listOperations: unexpected,
 		listArtifacts: unexpected,
-		getObject: unexpected,
-		putObject: unexpected,
-		registerArtifact: unexpected,
 		requestModel: unexpected,
 		beginOperation: unexpected,
 		completeOperation: unexpected,
 		bindProviderSession: unexpected,
-		prepareCompanyRevision: unexpected,
-		beginCompanyRevisionGraph: unexpected,
-		appendCompanyRevisionGraph: unexpected,
-		completeCompanyRevisionGraph: unexpected,
-		verifyCompanyRevision: unexpected,
 		appendTranscriptEvent: unexpected,
 	};
 }

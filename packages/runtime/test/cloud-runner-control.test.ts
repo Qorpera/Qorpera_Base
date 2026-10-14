@@ -135,30 +135,23 @@ describe("disposable cloud runner", () => {
 		expect(runner.snapshot()).toMatchObject({ active: true, activeJobIds: [jobId] });
 		const brokerAuthorities: CloudRunnerBrokerAuthority[] = [];
 		const brokerTransport: CloudRunnerBrokerTransport = {
-			describe: vi.fn(async () => ({})),
+			// The empty description fails its parse, so it is never cached and every call reaches the transport.
+			describe: vi.fn(async (authority) => {
+				brokerAuthorities.push({ ...authority });
+				return {};
+			}),
 			listInputs: vi.fn(async () => []),
 			listTranscript: vi.fn(async () => []),
 			listOperations: vi.fn(async () => []),
 			listArtifacts: vi.fn(async () => []),
-			getObject: vi.fn(async (authority) => {
-				brokerAuthorities.push({ ...authority });
-				return new Uint8Array();
-			}),
-			putObject: vi.fn(async () => "stored" as const),
-			registerArtifact: vi.fn(async () => ({})),
 			requestModel: vi.fn(async () => ({})),
 			beginOperation: vi.fn(async () => ({})),
 			completeOperation: vi.fn(async () => ({})),
 			bindProviderSession: vi.fn(async () => ({})),
-			prepareCompanyRevision: vi.fn(async () => ({})),
-			beginCompanyRevisionGraph: vi.fn(async () => ({})),
-			appendCompanyRevisionGraph: vi.fn(async () => 1),
-			completeCompanyRevisionGraph: vi.fn(async () => ({})),
-			verifyCompanyRevision: vi.fn(async () => ({ verified: true, pending: false })),
 			appendTranscriptEvent: vi.fn(async () => ({})),
 		};
 		const broker = runner.broker(claimedJob as NonNullable<typeof claimedJob>, brokerTransport);
-		await broker.readObject("f".repeat(64));
+		await expect(broker.describe()).rejects.toThrow("runtime selection");
 		expect(brokerAuthorities).toMatchObject([{ runnerId, jobId }]);
 		expect(brokerAuthorities[0]?.sessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
 		expect(brokerAuthorities[0]?.leaseToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
@@ -175,7 +168,7 @@ describe("disposable cloud runner", () => {
 			clientSubstrateVersionId: expect.stringMatching(/^[0-9a-f-]{36}$/),
 		});
 		expect(runner.snapshot().activeJobIds).toEqual([]);
-		await expect(broker.readObject("f".repeat(64))).rejects.toThrow("lease is unavailable");
+		await expect(broker.describe()).rejects.toThrow("lease is unavailable");
 		expect(JSON.stringify(runner.snapshot())).not.toContain(pairing.activationToken);
 	});
 
