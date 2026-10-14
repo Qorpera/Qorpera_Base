@@ -869,9 +869,7 @@ export class FolderService {
 	 * desktop's while its last boundary had no answer, or a refusal that may lift, until a later publish from its
 	 * machine gets another answer. */
 	#waitsForAnswer(view: View): boolean {
-		return (
-			this.#keepable(view) && (view.access?.command === true ? view.heard !== "refused" : view.heard === "open")
-		);
+		return this.#keepable(view) && (view.access?.command === true ? view.heard !== "refused" : view.heard === "open");
 	}
 
 	#keepable(view: View): boolean {
