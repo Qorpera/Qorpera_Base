@@ -379,4 +379,111 @@ begin
 	perform pg_temp.refused(r, 1, 'structured_rule', 'a run log''s run.toml does not change');
 end $$;
 
+-- 4. Log blocks: nora's log holds step 0 (finished) and step 1 (pending) in log/00000000.jsonl ----------------------------
+do $$
+declare
+	log constant text := 'agents/nora/memory/thread/runs/' || pg_temp.run_id('nora'); a constant jsonb := pg_temp.actor('nora');
+	b0 constant text := log || '/log/00000000.jsonl'; s0 constant text := pg_temp.step(0, '{"path":"contracts/a.md"}');
+	otto constant text := 'agents/otto/memory/thread/runs/' || pg_temp.run_id('otto'); r jsonb;
+begin
+	-- No log yet: a block waits for its run.toml (a log folder made without one stays empty).
+	r := pg_temp.logc('otto', 'w1b:block:otto', jsonb_build_array(jsonb_build_object('op','mkdir','path','agents/otto/memory/thread/runs'),
+		jsonb_build_object('op','mkdir','path',otto), jsonb_build_object('op','mkdir','path',otto || '/log'),
+		pg_temp.rfile(otto || '/log/00000000.jsonl', pg_temp.block(array[pg_temp.step(0)]), pg_temp.actor('otto'))), otto);
+	perform pg_temp.refused(r, 4, 'structured_rule', 'write this log''s run.toml first');
+
+	-- A block's size, and lines that are not the block's step lines.
+	r := pg_temp.logc('nora', 'w1b:block:1', jsonb_build_array(pg_temp.rfile(log || '/log/00000002.jsonl', pg_temp.step(2), a)), log);
+	perform pg_temp.refused(r, 1, 'structured_invalid',
+		'a log block is 1 to 16 step lines, each ending in a newline, at most 65,536 bytes');
+	r := pg_temp.logc('nora', 'w1b:block:2', jsonb_build_array(pg_temp.rfile(log || '/log/00000002.jsonl',
+		pg_temp.block(array(select pg_temp.step(j) from generate_series(2, 18) j)), a)), log);
+	perform pg_temp.refused(r, 1, 'structured_invalid',
+		'a log block is 1 to 16 step lines, each ending in a newline, at most 65,536 bytes');
+	r := pg_temp.logc('nora', 'w1b:block:3', jsonb_build_array(pg_temp.rfile(log || '/log/00000002.jsonl',
+		pg_temp.block(array[pg_temp.step(2, '{"t":"' || repeat('x', 50200) || '"}')]), a)), log);
+	perform pg_temp.refused(r, 1, 'structured_invalid', 'this line is longer than a step line can be', 'value', 1);
+	r := pg_temp.logc('nora', 'w1b:block:4', jsonb_build_array(pg_temp.rfile(log || '/log/00000002.jsonl',
+		pg_temp.block(array[pg_temp.step(2), '{"j":3}']), a)), log);
+	perform pg_temp.refused(r, 1, 'structured_invalid', 'this line is not a step line', 'value', 2);
+	r := pg_temp.logc('nora', 'w1b:block:5', jsonb_build_array(pg_temp.rfile(log || '/log/00000002.jsonl',
+		pg_temp.block(array[pg_temp.step(2), pg_temp.step(4)]), a)), log);
+	perform pg_temp.refused(r, 1, 'structured_invalid', 'the steps go by j from the block''s number, each once', 'value', 2);
+
+	-- What a block's steps may become.
+	r := pg_temp.logc('nora', 'w1b:block:6', jsonb_build_array(pg_temp.rfile(log || '/log/00000001.jsonl',
+		pg_temp.block(array[pg_temp.step(1)]), a)), log);
+	perform pg_temp.refused(r, 1, 'structured_rule', 'step 1 is in another block', 'value', 1);
+	r := pg_temp.logc('nora', 'w1b:block:7', jsonb_build_array(pg_temp.rfile(b0,
+		pg_temp.block(array[pg_temp.step(0, '{"path":"contracts/b.md"}'), pg_temp.step(1, '{}', null)]), a)), log);
+	perform pg_temp.refused(r, 1, 'structured_rule', 'step 0 is finished and does not change', 'value', 1);
+	r := pg_temp.logc('nora', 'w1b:block:8', jsonb_build_array(pg_temp.rfile(b0,
+		pg_temp.block(array[s0, pg_temp.step(1, '{"x":1}', null)]), a)), log);
+	perform pg_temp.refused(r, 1, 'structured_rule', 'step 1 changes only to its finished form', 'value', 2);
+	r := pg_temp.logc('nora', 'w1b:block:9', jsonb_build_array(pg_temp.rfile(log || '/log/00000002.jsonl',
+		pg_temp.block(array[pg_temp.erased_step(2)]), a)), log);
+	perform pg_temp.refused(r, 1, 'structured_rule', 'only an erase writes an erased step', 'value', 1);
+	r := pg_temp.logc('nora', 'w1b:block:10', jsonb_build_array(pg_temp.rfile(b0, pg_temp.block(array[s0]), a)), log);
+	perform pg_temp.refused(r, 1, 'structured_rule', 'a log block keeps every step it holds');
+	r := pg_temp.logc('nora', 'w1b:block:11', jsonb_build_array(pg_temp.rfile(log || '/log/00000003.jsonl',
+		pg_temp.block(array[pg_temp.step(3)]), a)), log);
+	perform pg_temp.refused(r, 1, 'structured_rule', 'a log block starts at the log''s next step');
+
+	-- Step 1 finishes; two blocks in one commit, the second starting where the first ends.
+	r := pg_temp.logc('nora', 'w1b:block:ok1', jsonb_build_array(pg_temp.rfile(b0, pg_temp.block(array[s0, pg_temp.step(1)]), a),
+		pg_temp.rfile(log || '/log/00000002.jsonl', pg_temp.block(array[pg_temp.step(2)]), a),
+		pg_temp.rfile(log || '/log/00000003.jsonl', pg_temp.block(array[pg_temp.step(3)]), a)), log);
+	for i in 1..3 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+
+	-- A path not every agent reads makes its step narrow, and every step after a narrow one is narrow.
+	perform pg_temp.fx($q$insert into public.qorpera_company_path_resources(environment_id, path, path_match, scope, owner_user_id,
+		policy, created_by_user_id) values ('63400000-0000-4000-8000-000000000020', 'private', 'subtree', 'member_private',
+		'63400000-0000-4000-8000-000000000001', 'normal', '63400000-0000-4000-8000-000000000001')$q$);
+	r := pg_temp.logc('nora', 'w1b:block:13', jsonb_build_array(pg_temp.rfile(log || '/log/00000004.jsonl',
+		pg_temp.block(array[pg_temp.step(4, '{"path":"private/x.md"}')]), a)), log);
+	perform pg_temp.refused(r, 1, 'structured_rule', 'step 4 names a path not every agent reads and is written narrow', 'value', 1);
+	r := pg_temp.logc('nora', 'w1b:block:ok2', jsonb_build_array(pg_temp.rfile(log || '/log/00000004.jsonl',
+		pg_temp.block(array[pg_temp.nstep(4)]), a)), log);
+	perform pg_temp.expect(r, 1, 'saved');
+	r := pg_temp.logc('nora', 'w1b:block:14', jsonb_build_array(pg_temp.rfile(log || '/log/00000005.jsonl',
+		pg_temp.block(array[pg_temp.step(5)]), a)), log);
+	perform pg_temp.refused(r, 1, 'structured_rule', 'step 5 comes after a narrow step and is written narrow', 'value', 1);
+	r := pg_temp.logc('nora', 'w1b:block:ok3', jsonb_build_array(pg_temp.rfile(log || '/log/00000005.jsonl',
+		pg_temp.block(array[pg_temp.nstep(5, false)]), a)), log);
+	perform pg_temp.expect(r, 1, 'saved');
+end $$;
+
+-- The room run's first batch makes its log folder with two blocks at once.
+create function pg_temp.log_with_blocks(p_path text, p_toml text, p_actor jsonb, p_blocks text[]) returns jsonb language sql as $$
+	select jsonb_build_object('op','new_folder','path',p_path,
+		'contents', jsonb_build_array(jsonb_build_object('path','run.toml','kind','file','file',pg_temp.stage(p_toml, p_actor)),
+			jsonb_build_object('path','log','kind','folder')) || (select jsonb_agg(jsonb_build_object('path',
+				format('log/%s.jsonl', split_part(b, ':', 1)),'kind','file','file',pg_temp.stage(substr(b, 10), p_actor))) from unnest(p_blocks) b),
+		'structured', jsonb_build_array(pg_temp.entry(p_path || '/run.toml', 'memory-run', p_toml, '{"kind":"memory-run"}'))
+			|| (select jsonb_agg(pg_temp.entry(format('%s/log/%s.jsonl', p_path, split_part(b, ':', 1)), 'memory-steps', substr(b, 10),
+				'{"kind":"memory-steps"}')) from unnest(p_blocks) b))
+$$;
+do $$
+declare
+	room constant uuid := pg_temp.run_id('room'); log constant text := 'agents/groups/launch/memory/runs/' || pg_temp.run_id('room');
+	toml constant text := pg_temp.rtoml(pg_temp.run_id('room'), pg_temp.chat('launch')); a constant jsonb := pg_temp.actor('room');
+	r jsonb;
+begin
+	r := pg_temp.logc('room', 'w1b:room:mk', jsonb_build_array(jsonb_build_object('op','mkdir','path','agents/groups/launch/memory'),
+		jsonb_build_object('op','mkdir','path','agents/groups/launch/memory/runs')), log);
+	for i in 1..2 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	-- Two blocks that hold the same step.
+	r := pg_temp.logc('room', 'w1b:room:1', jsonb_build_array(pg_temp.log_with_blocks(log, toml, a, array[
+		'00000000:' || pg_temp.block(array[pg_temp.step(0), pg_temp.step(1)]), '00000001:' || pg_temp.block(array[pg_temp.step(1)])])), log);
+	perform pg_temp.same(jsonb_build_array(r -> 'units' -> 0 -> 'reason', (select jsonb_agg(distinct p ->> 'message')
+		from jsonb_array_elements(r -> 'units' -> 0 -> 'problems') p)), '["structured_rule", ["two log blocks hold the same step"]]',
+		'two blocks hold the same step');
+	-- A second block that starts where the first ends.
+	r := pg_temp.logc('room', 'w1b:room:ok', jsonb_build_array(pg_temp.log_with_blocks(log, toml, a, array[
+		'00000000:' || pg_temp.block(array[pg_temp.step(0)]), '00000001:' || pg_temp.block(array[pg_temp.step(1), pg_temp.step(2)])])), log);
+	perform pg_temp.expect(r, 1, 'saved');
+	perform pg_temp.same(to_jsonb(array[(select step_count from public.qorpera_memory_run_logs where run_id = room)]), '[3]',
+		'the room log''s steps');
+end $$;
+
 rollback;
