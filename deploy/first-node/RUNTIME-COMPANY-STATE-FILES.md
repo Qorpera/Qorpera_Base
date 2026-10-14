@@ -2668,10 +2668,12 @@ companies the creation path must not also run the old chain (`qorpera_seed_compa
 snapshot bootstrap). If it runs first, its database-only Co-Founder makes the creation commit's
 Co-Founder unit refused; if it runs after, it finds the recorded one. Either way the old chain
 queues its own first run and leaves the company half on the old core (C2; #444 comment 5872662909).
+Legacy sweep D1 (20260930330000) dropped the old chain.
 
 Found while building F2-1, for F1 (C1c): `qorpera_put_profile_staff` and
 `qorpera_delete_profile_staff` still write folder-v2 roster rows directly, since their guards look
 at snapshot-v1 columns, and `qorpera_ensure_default_agent_read_grants` (the roster's default-grant
 trigger) inserts grants outside the authority journal and the rank-6 lock of C1b-2. A folder-v2
-index row should change only through its file.
+index row should change only through its file. (C1c guarded both writers; legacy sweep D1,
+20260930330000, dropped them.)
 

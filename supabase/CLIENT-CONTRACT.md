@@ -75,7 +75,7 @@ they answer 42501 "native host call is refused".
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-175 functions, grouped for navigation. Signatures: see the migration that defines each.
+170 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
@@ -286,12 +286,10 @@ and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
 - `qorpera_submit_company_proposal`
 
 
-### Organization and staff (6)
+### Organization and staff (4)
 
-- `qorpera_company_organization_bootstrap`
 - `qorpera_company_organization_json`
 - `qorpera_configure_staff_execution_authority`
-- `qorpera_delete_profile_staff`
 - `qorpera_list_profile_staff`
 - `qorpera_put_staff_provider_model`
 
@@ -467,7 +465,7 @@ and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
 - `qorpera_upsert_scoped_compute_identity`
 
 
-### Accounts, profiles, membership (22)
+### Accounts, profiles, membership (19)
 
 - `qorpera_accept_profile_invitation`
 - `qorpera_accept_profile_invitations`
@@ -475,8 +473,6 @@ and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
 - `qorpera_can_read_profile`
 - `qorpera_can_write_profile`
 - `qorpera_cancel_profile_invitation`
-- `qorpera_create_cloud_company`
-- `qorpera_create_hosted_profile`
 - `qorpera_decline_profile_invitation`
 - `qorpera_delete_hosted_profile`
 - `qorpera_get_account_entitlement`
@@ -486,7 +482,6 @@ and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
 - `qorpera_list_profile_invitations`
 - `qorpera_member_role`
 - `qorpera_profile_team_info`
-- `qorpera_promote_local_profile`
 - `qorpera_remove_profile_member`
 - `qorpera_retry_profile_invitation_delivery`
 - `qorpera_session_profile_id`
@@ -1178,7 +1173,7 @@ does locally that the contract forbids.
 | `chat:open` | qorpera_ensure_staff_session / qorpera_ensure_member_private_staff_session |
 | `companies:list` | qorpera_list_hosted_profiles |
 | `company:close` | client state |
-| `company:new` | qorpera_create_cloud_company + qorpera_company_organization_bootstrap |
+| `company:new` | the founding lobby (qorpera_open_company_founding, qorpera_start_company_founding); the old create RPCs and the bootstrap went with legacy sweep D1 (20260930330000) |
 | `company:open` | select cloud profile (no folder; desktop-only local projection is transitional) |
 | `company:pending-creation` | client state over the same RPCs |
 | `company:product-add` | Order 9 (coding workers / repositories) — not yet |
@@ -1209,7 +1204,7 @@ does locally that the contract forbids.
 | `profile:leave-cloud` | qorpera_leave_hosted_profile |
 | `profile:list-invitations` | qorpera_list_profile_invitations |
 | `profile:materialize-cloud` | desktop-only transitional (local checkout) — no web equivalent by design |
-| `profile:migrate-local` | desktop-only transitional (qorpera_promote_local_profile) — no web equivalent by design |
+| `profile:migrate-local` | desktop-only transitional — no web equivalent by design (qorpera_promote_local_profile went with legacy sweep D1, 20260930330000) |
 | `room:archive` | qorpera_close_shared_session |
 | `room:create` | rooms: Order 3 fan-out; today shared sessions (qorpera_create_shared_session_v4) |
 | `room:open` | qorpera_read_session_events_tail (the newest page; older pages on "Show earlier") + qorpera_read_session_events (new events) + Realtime |
@@ -1223,11 +1218,11 @@ does locally that the contract forbids.
 | `settings:overlay` | client-local preference |
 | `settings:sidebar-translucency` | client-local preference |
 | `staff:archive` | review (staff lifecycle RPC, Order 0 organization kernel) |
-| `staff:bootstrap` | qorpera_company_organization_bootstrap |
+| `staff:bootstrap` | none: the company's creation seeds the Co-Founder (qorpera_company_organization_bootstrap went with legacy sweep D1, 20260930330000) |
 | `staff:catalog` | qorpera_company_organization_json / qorpera_list_profile_staff |
 | `staff:copy-conversation-id` | client |
 | `staff:create` | organization kernel RPC (in rework: responsibilities) — review |
-| `staff:delete` | qorpera_delete_profile_staff |
+| `staff:delete` | review (an agent's files in the company folder; qorpera_delete_profile_staff went with legacy sweep D1, 20260930330000) |
 | `staff:intro-ready` | review |
 | `staff:open` | qorpera_ensure_staff_session |
 | `staff:restore` | review |
@@ -1368,6 +1363,9 @@ above.
     Until this lands the web client derives the placeholder character from the
     profile id (stable across renames) and says so in its own code; it offers
     no logo picker, because there is nowhere to put the answer.
+
+    *`qorpera_create_hosted_profile` went with legacy sweep D1
+    (20260930330000); a company is created through the founding lobby.*
 11. **A member cannot set an agent's appearance once a company is bootstrapped.**
     `qorpera_put_profile_staff` is listed in §2 and granted to `authenticated`,
     but on a company whose bootstrap job has completed every member write to
@@ -1396,6 +1394,10 @@ above.
     member-callable only before bootstrap completes; a client reading §2 today
     would build exactly the screen that this trigger refuses, which is what
     happened here.
+
+    *Legacy sweep D1 (20260930330000) dropped `qorpera_put_profile_staff`,
+    `qorpera_delete_profile_staff` and the trigger. A `folder-v2` agent
+    changes through its files in the company folder.*
 
 ### 2026-09-19 — from the web client session (`packages/web`, PR #118)
 

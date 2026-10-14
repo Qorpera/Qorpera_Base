@@ -733,8 +733,9 @@ first-run kickoff (launch item 3). The follow-up queue (below, P15) gives the
 Co-Founder its default grant and then queues the kickoff's turn request; the
 first-run wake comes when C4 (P28) materializes that turn. The company stays
 hidden until the creation is completed and the queue has converged the
-Co-Founder, as today's bootstrap job keeps a company hidden
-(`qorpera_finalize_company_bootstrap`). How creation runs (the
+Co-Founder, as the old chain's bootstrap job kept a company hidden
+(`qorpera_finalize_company_bootstrap`, gone with legacy sweep D1,
+20260930330000). How creation runs (the
 creation row, the worker, the operator's path):
 `RUNTIME-COMPANY-FOLDER-CREATION.md`.
 
