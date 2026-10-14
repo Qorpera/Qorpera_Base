@@ -9,8 +9,9 @@ belongs in this guest.
 
 ## Sessions on a member's machine
 
-One coding machine per member (company, environment, member) carries all of
-that member's sessions. Every path, unit and user of a session derives from its
+One coding machine per member, coding agent, repository and setup digest (in
+one company and environment, 20260930394000) carries that member's sessions for
+that agent, repository and setup. Every path, unit and user of a session derives from its
 worker id alone (`cloudCodingSessionLayout` in `@qorpera/contracts`): its NAS
 data volume is attached at `/workspace/<workerId>`, its custody volume at
 `/var/lib/qorpera-coding/<workerId>`, its boot-local configuration and lease live
