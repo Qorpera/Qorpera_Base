@@ -3,11 +3,12 @@
 -- fence and the company row KEY SHARE (qorpera_folder_machine_fence), never the gc fence's row FOR UPDATE. A folder effect
 -- (the fence and the row KEY SHARE) never makes them wait; a stop's second phase (the fence FOR UPDATE) does, before any
 -- coding row. Each call here is refused after its locks for its own reasons (no lease, no custody), which is enough to
--- see where it waits. The snapshot-v1 company keeps the gc fence. 648's committed fixture with a coding worker and
--- machine in each company, removed at the end.
+-- see where it waits. Since the legacy sweep's F2c (20260930292000) every company takes these paths, so a company without
+-- a folder (648's company 11) is refused at the fence. 648's committed fixture with a coding worker and machine in each
+-- company, removed at the end.
 
 -- Coding rows (committed): a coding worker and a member's coding machine in the folder-v2 company (10) and in the
--- snapshot-v1 company (11). Foreign keys and triggers are off only while they go in.
+-- company without a folder (11). Foreign keys and triggers are off only while they go in.
 set session_replication_role = replica;
 insert into public.qorpera_runtime_workers(id, profile_id, environment_id, staff_agent_id, todo_id, worker_key, species, title, access,
 	revival, dispatch, requested_by_user_id, steering_run_id, owner_user_id, owner_sponsor_binding_id, owner_sponsor_version)
@@ -61,7 +62,7 @@ begin
 	return true;
 exception when lock_not_available then return false;
 end $$;
--- The four calls, as the coding executor sends them, for the company's worker or machine (c1: folder-v2, c2: snapshot-v1).
+-- The four calls, as the coding executor sends them, for the company's worker or machine (c1: folder-v2, c2: without a folder).
 -- None carries a lease or custody that holds (the binding is not the machine's), so each is refused once it has its locks.
 create function pg_temp.sql_call(p_fn text, p_n integer) returns text language sql as $$
 	select case p_fn
@@ -120,27 +121,34 @@ begin
 	end loop;
 end $$;
 
--- C. The snapshot-v1 company keeps the gc fence: each call waits for a holder of its company row KEY SHARE.
+-- C. A company without a folder takes no gc fence: beside a holder of its company row KEY SHARE, each call is refused at
+-- once at the fence.
 do $$
-declare v_fn text;
+declare v_fn text; v_state text;
 begin
 	foreach v_fn in array array['authorize', 'plan', 'suspend', 'release'] loop
 		perform pg_temp.hold('row', '64800000-0000-4000-8000-000000000011');
 		perform dblink_send_query('fence_two', pg_temp.sql_call(v_fn, 2));
-		if not pg_temp.waits_for('fence_two', 'fence_one') then
+		if not pg_temp.finishes_unblocked('fence_two', 'fence_one') then
 			perform pg_temp.release();
-			raise exception 'C: snapshot-v1 % must keep the gc fence', v_fn; end if;
+			raise exception 'C: % on a company without a folder waited for its row', v_fn; end if;
+		v_state := pg_temp.outcome('fence_two');
 		perform pg_temp.release();
-		perform pg_temp.outcome('fence_two');
+		if v_state <> '42501 Company folder is unavailable' then
+			raise exception 'C: % on a company without a folder must be refused at the fence, got %', v_fn, v_state; end if;
 	end loop;
 end $$;
 
--- D. The activation markers of 20260925123000 stay in each body.
+-- D. Each body has the line the activation template looks for (20260925123000's, the folder fence since F2c).
 do $$
 begin
-	if position('qorpera_lock_profile_gc_fence(worker.profile_id) from public.qorpera_runtime_workers worker where worker.id = p_worker_id'
+	if position('qorpera_folder_machine_fence(worker.profile_id) from public.qorpera_runtime_workers worker where worker.id = p_worker_id'
 			in pg_get_functiondef('public.qorpera_authorize_coding_machine_run(uuid,uuid,text,jsonb,text)'::regprocedure)) = 0
-		or position('qorpera_lock_profile_gc_fence(machine.profile_id) from public.qorpera_coding_machines machine where machine.id = p_machine_id'
+		or position('qorpera_folder_machine_fence(worker.profile_id) from public.qorpera_runtime_workers worker where worker.id = p_worker_id'
+			in pg_get_functiondef('public.qorpera_plan_coding_machine(uuid,uuid,text)'::regprocedure)) = 0
+		or position('qorpera_folder_machine_fence(machine.profile_id) from public.qorpera_coding_machines machine where machine.id = p_machine_id'
+			in pg_get_functiondef('public.qorpera_suspend_coding_machine(uuid,text,text,text)'::regprocedure)) = 0
+		or position('qorpera_folder_machine_fence(machine.profile_id) from public.qorpera_coding_machines machine where machine.id = p_machine_id'
 			in pg_get_functiondef('public.qorpera_release_coding_machine(uuid,text,text,text)'::regprocedure)) = 0 then
 		raise exception 'D: an activation marker went missing'; end if;
 end $$;

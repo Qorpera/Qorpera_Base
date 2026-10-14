@@ -4,7 +4,7 @@
 use qorpera_folder::frame::{kind, read_frame, write_frame};
 use qorpera_folder::proto::{
 	code, Change, ChunkHeader, CloseRequest, Entry, EntryKind, ErrorReply, ExecutableRequest, GetChunk, Hello, HelloOk,
-	ListRequest, Listing, OpenRequest, Opened, PathRequest, ReadRequest, RemoveRequest, RenameRequest, Report, Role,
+	ListRequest, Listing, OpenRequest, Opened, PathRequest, ReadRequest, ReadsRequest, ReadsAnswer, RemoveRequest, RenameRequest, Report, Role,
 	CHUNK,
 };
 use sha2::{Digest, Sha256};
@@ -53,6 +53,8 @@ struct State {
 	/// How many of the next chunks and closes to answer BUSY (a boundary settling).
 	busy_chunks: usize,
 	busy_closes: usize,
+	logs: std::collections::HashMap<String, u64>,
+	unproven: bool,
 }
 
 pub struct FakeNode {
@@ -264,6 +266,7 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 							mtime_ms: 1_700_000_000_000,
 							executable: n.executable,
 							version: format!("v{}", n.version),
+							authority: None,
 						})
 						.collect();
 					send_json(&mut s, kind::LISTING, &Listing { entries, next: None })
@@ -312,6 +315,19 @@ fn version_of(n: &Node) -> String {
 fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<()> {
 	let folder = |st: &State, p: &str| p.is_empty() || st.entries.get(p).is_some_and(|n| n.folder);
 	match k {
+		kind::READS => {
+			let req: ReadsRequest = serde_json::from_slice(body).unwrap();
+			st.unproven |= req.lost;
+			let mut taken = st.logs.get(&req.log).copied().unwrap_or_else(|| req.reads.first().map_or(0, |r| r.seq - 1));
+			for read in &req.reads {
+				if read.seq <= taken { continue; }
+				assert_eq!(read.seq, taken + 1);
+				taken = read.seq;
+			}
+			st.logs.insert(req.log.clone(), taken);
+			// This stand-in's operator view has no read set: every read is released immediately.
+			send_json(s, kind::READS_OK, &ReadsAnswer { log: req.log, taken, released: taken })
+		}
 		kind::OPEN => {
 			let req: OpenRequest = serde_json::from_slice(body).unwrap();
 			st.opens.push((req.path.clone(), req.base.clone()));
@@ -462,7 +478,11 @@ fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<
 		}
 		kind::PUBLISH => {
 			st.publishes += 1;
-			send_json(s, kind::REPORT, &Report { commit_id: Some("c".into()), seq: Some(st.seq), paths: Vec::new() })
+			send_json(s, kind::REPORT, &Report {
+				commit_id: Some("c".into()), seq: Some(st.seq), paths: Vec::new(),
+				refused: st.unproven.then(|| "unproven".into()),
+				closed: !st.unproven && serde_json::from_slice::<serde_json::Value>(body).unwrap()["final"].as_bool() == Some(true),
+			})
 		}
 		_ => error(s, code::BAD_REQUEST),
 	}

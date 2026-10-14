@@ -259,9 +259,10 @@ begin
 	if r ->> 'status' <> 'queued' or (select status from public.qorpera_shared_sessions where id = pg_temp.thread(c_b)) <> 'open'
 		or (select session_id from public.qorpera_wake_occurrences where id = (r ->> 'occurrenceId')::uuid) <> pg_temp.thread(c_b) then
 		raise exception 'A message to a closed thread reopens it: %', r; end if;
-	-- The snapshot-v1 message is not refused as folder-v2.
-	perform pg_temp.not_refused(format('select pg_temp.cw(%L, %L, %L, %L)', current_setting('qorpera_test.snapshot_binding'), c_b,
-		'control-1', 'Hi'));
+	-- Folder-v2 only since legacy sweep F1e (20260930248000): a snapshot-v1 message goes to the folder core, which finds no
+	-- folder-v2 Company File for its run and refuses it.
+	perform pg_temp.raises_like(format('select pg_temp.cw(%L, %L, %L, %L)', current_setting('qorpera_test.snapshot_binding'), c_b,
+		'control-1', 'Hi'), '42501', 'native tool run is unavailable');
 end $$;
 
 -- 5. The audience: the recipient reads everything the run has read (C1B-2 §4), and the run's own reads still hold (the

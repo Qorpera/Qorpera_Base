@@ -256,7 +256,8 @@ export function treeDigest(root, files) {
 
 /** Best-effort cleanup at the start of every run: runs older than a day by the UTC time in
  * their name (never by mtime: rsync -a gives a run directory the worktree's old mtime),
- * worktree copies unused for 14 days, and hosted-db containers older than 6 hours. */
+ * worktree copies unused for 3 days (each worktree has its own copy, and with many sessions 14 days filled
+ * node02's disk on 2026-10-09), and hosted-db containers older than 6 hours. */
 export function pruneScript() {
 	return [
 		"set -u",
@@ -264,7 +265,7 @@ export function pruneScript() {
 		"cutoff=$(date -u -d '-1 day' +%Y%m%dT%H%M%S)",
 		`for d in ${HOME}/runs/*/; do n=$(basename "$d"); if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then sudo -n rm -rf -- "$d"; fi; done`,
 		`for f in ${ARRIVING}/*; do n=$(basename "$f"); if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then rm -f -- "$f"; fi; done`,
-		`find ${HOME}/trees -maxdepth 1 -name '*.lock' -mtime +14 2>/dev/null | while read -r l; do flock -n "$l" sudo -n rm -rf -- "\${l%.lock}" && rm -f -- "$l"; done`,
+		`find ${HOME}/trees -maxdepth 1 -name '*.lock' -mtime +2 2>/dev/null | while read -r l; do flock -n "$l" sudo -n rm -rf -- "\${l%.lock}" && rm -f -- "$l"; done`,
 		`for id in $(docker ps -aq --filter name=^qorpera-hosted-db- 2>/dev/null); do c=$(docker inspect -f '{{.Created}}' "$id") && [ $(( $(date +%s) - $(date -d "$c" +%s) )) -gt 21600 ] && docker rm -f "$id" >/dev/null; done`,
 		"true",
 	].join("\n");

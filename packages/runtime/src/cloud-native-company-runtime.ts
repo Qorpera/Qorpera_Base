@@ -891,7 +891,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 															identity,
 														}),
 													})),
-											...cloudWorkerTools(binding, identity, this.#paths, gateway, wake, {
+											...cloudWorkerTools(binding, identity, wake, {
 												machines: Boolean(this.#machines) && machinesAvailable,
 												folderTodos: new CloudFolderTodos({
 													folder: folder.client,
