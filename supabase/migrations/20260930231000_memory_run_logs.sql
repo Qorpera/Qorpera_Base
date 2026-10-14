@@ -77,7 +77,8 @@ create table public.qorpera_memory_run_steps (
 	call_id text not null,
 	args_hash text check (args_hash ~ '^[0-9a-f]{64}$'),
 	releases uuid[] not null default '{}',
-	-- The folder keys a step names (its result, arguments and reads) with their ancestors: an erased path finds its steps.
+	-- The folder keys a step names (its paths, and those in its result, arguments, output and reads) with their
+	-- ancestors: an erased path finds its steps.
 	needles text[] not null default '{}',
 	narrow boolean not null,
 	erased boolean not null,
@@ -231,23 +232,27 @@ begin
 end $$;
 revoke all on function public.qorpera_memory_run_block_parse(text, text) from public, anon, authenticated, service_role;
 
--- One step line of a log block (§4.5), or null: at most 41,983 bytes, a JSON object with closed keys and no duplicate.
--- Three shapes, as the runtime writes them (cloud-run-log.ts):
+-- One step line of a log block (§4.5), or null: at most 50,175 bytes (49 KiB with its newline), a JSON object with
+-- closed keys and no duplicate. Three shapes, as the runtime writes them (cloud-run-log.ts):
 --   a step: j, tool, call, args, args_bytes, args_hash, result (null while pending), reads, reads_cut (only true, only
---     when finished), releases, text, at; args, text and result at most 8 KiB each as stored, reads 16 KiB;
+--     when finished), releases, paths, text, at; args, text and result at most 8 KiB each as stored, reads 16 KiB;
+--     paths, the paths the step named (its args, its receipt and its reads, as the runtime gives them to
+--     qorpera_memory_step_narrow): at most 1,024 strings of at most 4,096 characters, 8 KiB as stored;
 --   a narrow step (§4.5): j, tool, call, args_hash, narrow, finished, result_hash (when finished), releases, at;
 --   an erased step (§8): j, tool, call, args_hash, erased, and narrow or args_bytes.
--- Returns its parts, the folder keys a step names (in its result, arguments and reads, as path, from, to or paths), the
--- line's sha256 and that of its fixed parts (j, tool, call, args_hash and at).
+-- Returns its parts, the folder keys a step names, the line's sha256 and that of its fixed parts (j, tool, call,
+-- args_hash and at). A step names each of its paths, and each path, from, to or paths in its result, its arguments,
+-- its reads and its output (result.content.text of kind json, when it parses), spelled as qorpera_memory_step_narrow
+-- spells them: a leading /company/ goes, and a string that is no company path names nothing.
 create function public.qorpera_memory_run_step_line(p_line text)
 returns jsonb language plpgsql stable set search_path = '' as $$
 -- 20260930231000 (W1b)
 declare
 	v_json json; v_line jsonb; v_keys text[]; v_want text[]; v_erased boolean; v_narrow boolean; v_finished boolean;
-	v_args jsonb; v_paths text[] := '{}';
+	v_args jsonb; v_output jsonb; v_paths text[] := '{}';
 begin
 	-- Sized before it is parsed.
-	if p_line is null or octet_length(p_line) > 41983 then return null; end if;
+	if p_line is null or octet_length(p_line) > 50175 then return null; end if;
 	begin
 		v_json := p_line::json;
 		v_line := p_line::jsonb;
@@ -280,7 +285,7 @@ begin
 			or (v_line ->> 'result_hash') !~ '^[0-9a-f]{64}$') then return null; end if;
 	else
 		v_finished := jsonb_typeof(v_line -> 'result') is distinct from 'null';
-		v_want := array['j','tool','call','args','args_bytes','args_hash','result','reads','releases','text','at']
+		v_want := array['j','tool','call','args','args_bytes','args_hash','result','reads','releases','paths','text','at']
 			|| case when v_line ? 'reads_cut' then array['reads_cut'] else '{}'::text[] end;
 	end if;
 	if v_keys is distinct from (select array_agg(k order by k collate "C") from unnest(v_want) k) then return null; end if;
@@ -299,6 +304,10 @@ begin
 		if octet_length((v_json -> 'args')::text) > 8192 or octet_length((v_json -> 'text')::text) > 8192
 			or octet_length((v_json -> 'result')::text) > 8192 or octet_length((v_json -> 'reads')::text) > 16384 then
 			return null; end if;
+		if jsonb_typeof(v_line -> 'paths') is distinct from 'array' or jsonb_array_length(v_line -> 'paths') > 1024
+			or octet_length((v_json -> 'paths')::text) > 8192 then return null; end if;
+		if exists (select 1 from jsonb_array_elements(v_line -> 'paths') p where jsonb_typeof(p.value) is distinct from 'string'
+			or char_length(p.value #>> '{}') > 4096) then return null; end if;
 		if exists (select 1 from jsonb_array_elements(v_line -> 'reads') r where jsonb_typeof(r.value) is distinct from 'object') then
 			return null; end if;
 		if exists (select 1 from jsonb_array_elements(v_line -> 'reads') r
@@ -311,18 +320,25 @@ begin
 		if v_line ? 'reads_cut' and (v_line -> 'reads_cut' is distinct from 'true'::jsonb or not v_finished) then return null; end if;
 		-- A pending step has read and released nothing yet.
 		if not v_finished and (v_line -> 'reads' <> '[]'::jsonb or v_line -> 'releases' <> '[]'::jsonb) then return null; end if;
+		-- Arguments cut to fit, or an output that is no JSON or was cut, add nothing: the step's paths hold what they name.
 		begin
 			v_args := (v_line ->> 'args')::jsonb;
-		exception when data_exception then v_args := null; end;
+		exception when data_exception or program_limit_exceeded then v_args := null; end;
+		if v_line #> '{result,content,kind}' = '"json"'::jsonb and jsonb_typeof(v_line #> '{result,content,text}') = 'string' then
+			begin
+				v_output := (v_line #>> '{result,content,text}')::jsonb;
+			exception when data_exception or program_limit_exceeded then v_output := null; end;
+		end if;
 		select coalesce(array_agg(distinct public.qorpera_folder_key(c.path)), '{}') into v_paths
-		from (select p.value #>> '{}' as raw
-			from jsonb_path_query(jsonb_build_array(v_line -> 'result', v_args, v_line -> 'reads'),
+		from (select p.value #>> '{}' as raw from jsonb_array_elements(v_line -> 'paths') p
+			union all select p.value #>> '{}'
+			from jsonb_path_query(jsonb_build_array(v_line -> 'result', v_args, v_output, v_line -> 'reads'),
 				'lax $.**."path" ? (@.type() == "string")') p(value)
-			union all select p.value #>> '{}' from jsonb_path_query(jsonb_build_array(v_line -> 'result', v_args),
+			union all select p.value #>> '{}' from jsonb_path_query(jsonb_build_array(v_line -> 'result', v_args, v_output),
 				'lax $.**."from" ? (@.type() == "string")') p(value)
-			union all select p.value #>> '{}' from jsonb_path_query(jsonb_build_array(v_line -> 'result', v_args),
+			union all select p.value #>> '{}' from jsonb_path_query(jsonb_build_array(v_line -> 'result', v_args, v_output),
 				'lax $.**."to" ? (@.type() == "string")') p(value)
-			union all select p.value #>> '{}' from jsonb_path_query(jsonb_build_array(v_line -> 'result', v_args),
+			union all select p.value #>> '{}' from jsonb_path_query(jsonb_build_array(v_line -> 'result', v_args, v_output),
 				'lax $.**."paths"[*] ? (@.type() == "string")') p(value)) s
 		cross join lateral (select case when s.raw like '/company/%' then substr(s.raw, 10) else s.raw end as path) c
 		where public.qorpera_company_path_valid(c.path);
@@ -857,7 +873,7 @@ begin
 		foreach v_line in array v_lines loop
 			v_no := v_no + 1;
 			-- Sized before it is parsed.
-			if octet_length(v_line) > 41983 then
+			if octet_length(v_line) > 50175 then
 				return jsonb_build_object('ok', false, 'reason', 'structured_invalid', 'problems', jsonb_build_array(
 					public.qorpera_company_state_problem('value', v_no, null, 'this line is longer than a step line can be'))); end if;
 			v_parsed := public.qorpera_memory_run_step_line(v_line);

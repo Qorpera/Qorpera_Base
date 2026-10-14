@@ -584,8 +584,11 @@ cannot be built again; a platform restore of `runs/` is W1's to add if it is wan
 **A step record**, one JSON object per line:
 
 ```
-{"j":12,"tool":"company_read","call":"call_…","args":"{…}","args_bytes":214,"args_hash":"…","result":{…},"reads":[{"path":"sales/prices.md","version":"…"}],"releases":["…"],"text":"…","at":"2026-10-05T09:12:03Z"}
+{"j":12,"tool":"company_read","call":"call_…","args":"{…}","args_bytes":214,"args_hash":"…","result":{…},"reads":[{"path":"sales/prices.md","version":"…"}],"releases":["…"],"paths":["sales/prices.md"],"text":"…","at":"2026-10-05T09:12:03Z"}
 ```
+
+The keys are fixed: a plain step has exactly these, with `reads_cut` (below) only when it applies. A pending step has
+them too, with `result` null and `reads` and `releases` empty.
 
 - `result` is the envelope exactly as the fence issued it, at most 8 KiB (§1). So the log holds what the model saw,
   never a larger raw result. The envelope is JSON (`rt/cloud-native-tool-boundary.ts:788`), so it is stored as a JSON
@@ -602,13 +605,20 @@ cannot be built again; a platform restore of `runs/` is W1's to add if it is wan
   that read nothing.
 - `text` is the agent's own text before the call, fitted to 8 KiB as stored like `args`. Reasoning items are never
   stored (§6.3). So a rendered step is at most about 24 KiB.
+- **`paths` are the paths the step named:** those in its arguments, in its receipt and in its reads, the same list
+  the runtime gives `qorpera_memory_step_narrow` (below). They are taken from the whole call and the whole result,
+  before anything is cut to fit, and spelled as that call spells them: a leading `/company/` goes, and a string that
+  is no company path names nothing. At most 1,024 paths of at most 4,096 characters each, and 8 KiB as stored with
+  the brackets. A pending step names its arguments' paths, and the finished step adds those of its receipt and reads.
+  A file's erasure finds the step by them (below), so `paths` is never cut: a step that names more than fits is
+  written narrow (below), and so holds no copy that its paths would have to find.
 - **A block holds 16 steps or fewer, and never passes core §5's 64 KiB for a structured file**
-  (`RUNTIME-COMPANY-FOLDER-CORE.md` §5). A step record takes at most about 41 KiB with its keys. A pending effectful
+  (`RUNTIME-COMPANY-FOLDER-CORE.md` §5). A step record takes at most 49 KiB (50,176 bytes) with its keys and newline. A pending effectful
   step (below) counts at that full size until its result is filled in. A new step joins the last block only if the
   block, counted that way, still fits with it; otherwise it starts a new block. So one step always fits a block, and
   filling in a result never takes a block past 64 KiB. A block is named by its first step, and
   `qorpera_memory_run_steps` maps each step to its block (below).
-- **A batch fits core §5's change set.** It writes at most 16 new steps, about 656 KiB, and rewrites the blocks whose
+- **A batch fits core §5's change set.** It writes at most 16 new steps, about 784 KiB, and rewrites the blocks whose
   pending results it fills in. If that would pass 1 MiB or 64 files, as after many parallel effectful calls, it is
   committed as several change sets, in step order.
 - **A send, a card or a `send_mail` keeps its arguments as a hash only**, in its pre-commit (below) too: `args` is
@@ -664,8 +674,9 @@ A run log is read company-wide (§9), so it holds nothing from a folder that onl
   `{"j":…,"tool":"…","call":"…","at":"…","finished":true,"releases":[…],"args_hash":"…","result_hash":"…","narrow":true}`,
   and nothing else: no `args`, `result`, `reads` or `text`. `result_hash` is there only once the call finished. Its
   line, and every summary line over it, names neither the path nor what it held. The index check refuses a narrow
-  record with any other key, any step that is not narrow after a narrow one, and a record that is not narrow whose
-  needles or reads lie outside the part every agent shares. An erased narrow step has a shape of its own,
+  record with any other key, any step that is not narrow after a narrow one, and a record that is not narrow that
+  names a path outside the part every agent shares: in its `paths`, or in its arguments, result, output or reads as
+  the index finds them (below). An erased narrow step has a shape of its own,
   `{"j":…,"tool":"…","call":"…","args_hash":"…","narrow":true,"erased":true}` (§10.1). The check accepts it, and it
   still counts as narrow.
 - **The run still sees its narrow steps in full** while it runs. The host keeps them, and the lines folded over them,
@@ -745,10 +756,17 @@ A run log is read company-wide (§9), so it holds nothing from a folder that onl
 
 **Index and rules.** `qorpera_memory_run_logs` (one row per run: path, conversation, `parent` and `step`,
 `continues`, `narrow` as its `run.toml` gives them, and step count) and `qorpera_memory_run_steps` (one row per step:
-its block, tool, call id, `args_hash`, `releases`, the paths under a tree root that its `args` or `result` name,
-spelled as P18 spells needles (§4.3 there), whether it is narrow and whether it is erased, never its text) are structured-file indexes,
-rebuilt from the files. Like every index, they are taken at core §3's rank 5,
-through the structured-file hook; the generation is not on them (above). A run log's tree nodes go into
+its block, tool, call id, `args_hash`, `releases`, its needles, whether it is narrow and whether it is erased, never
+its text) are structured-file indexes, rebuilt from the files. Like every index, they are taken at core §3's rank 5,
+through the structured-file hook; the generation is not on them (above).
+- **A step's needles** are the folder keys of the paths it names, each with its ancestors, as P18 spells needles
+  (`RUNTIME-COMPANY-FOLDER-ERASURE.md` §4.3): every entry of its `paths`, and every `path`, `from`, `to` and `paths`
+  entry the index finds in its `result`, its `args` and its `reads`, and in the tool's output, `result.content.text`,
+  when `result.content.kind` is `json` and the text parses. Arguments or output that were cut to fit do not parse and
+  add nothing; `paths` still holds what they named. Each is spelled as `qorpera_memory_step_narrow` spells it. A
+  narrow or erased step has no needles.
+
+A run log's tree nodes go into
 `qorpera_memory_tree_nodes` with the run in place of the conversation. Writes are the platform's only, reads are
 ordinary, and no file change under `runs/` wakes anyone, as §4.3 says for trees.
 
@@ -1614,7 +1632,7 @@ compactor's window holds only the same run's raw steps (§7.5), so step `j` is a
 - **A file's erasure reaches steps.** P18 §6's rule for receipts applies to run-log steps, as a new row of its table:
   - over the runs P18 notes in phases 1 to 3 (the runs that wrote, refused, were refused about, or read the erased
     path), once they have ended;
-  - a step is reached when the JSON text of its `args` or of its `result` contains a needle (an erased path as P18
+  - a step is reached when its `paths`, or the JSON text of its `args` or of its `result`, contains a needle (an erased path as P18
     spells it, §4.3 there), or when the read records of its `releases` name an erased version (§4.5). Those records
     are the fence's full list, every part included, so a step whose `reads` copy was cut is checked exactly, never
     assumed reached;
@@ -1623,8 +1641,8 @@ compactor's window holds only the same run's raw steps (§7.5), so step `j` is a
     company-wide;
   - **the drain lists runs; the runtime finds and erases steps.** P18's drain is one SQL step per tick (P18 §4.2).
     The step text lives in log blocks in the object store (core §7), which SQL neither reads nor writes, and no index
-    copies it (`qorpera_memory_run_steps` holds only each step's block, tool, call id, `args_hash`, releases, the tree
-    paths it names and its erased flag, §4.5). So the drain's new row lists the noted runs that have a log on the
+    copies it (`qorpera_memory_run_steps` holds only each step's block, tool, call id, `args_hash`, releases, the needles
+    of the paths it names and its erased flag, §4.5). So the drain's new row lists the noted runs that have a log on the
     erasure as pending, as it lists pending runs today. The runtime host's memory eraser, which makes no model call,
     reads each listed run's log blocks, finds the reached steps by the rule above, and writes or joins a
     `qorpera_memory_step_erases` row for each (§4.5). It then does their step erases through the folder commit
@@ -1635,7 +1653,7 @@ compactor's window holds only the same run's raw steps (§7.5), so step `j` is a
       compactor call keeps none (§7.1), and its own step batches are the log being erased. And phase 3 is the wrong
       test for reads: a release lists every block a search looked through, not only what it showed, and the 7-day
       prune may have removed the version a step read (§10, GC);
-    - finds its steps through the step index instead: the steps whose `args` or `result` name one of the request's
+    - finds its steps through the step index instead: the steps whose needles (§4.5) hold one of the request's
       block paths, partner paths included. That covers a `company_read` of a block, a search hit, `rg -l` output and
       a `cat` by path. A search or a shell command that only looked through a block names none of its paths;
     - reaches such a step when its releases read that path at a version before the request's cutoff. A version that
@@ -2027,9 +2045,9 @@ the rules for folders shared with only some agents (§4.5, §8, §9). It changes
   messages or steps instead of OptChat's folded chat. M2 and W2 measure both.
 - **Latency.** Each zoom is one more tool round. Closing compaction holds the slot up to CLOSE after the reply, and the
   run lease must allow that time. A fold inside a run may wait for lines (§5.7).
-- **Storage.** Block rewrites cost a few KB per message, kept for 7 days (§10, GC). Run logs cost at most about 41 KiB
-  per step (its text, its call and its 8 KiB envelope, and its read references), so a 500-step run stores at most
-  about 20 MB, and usually far less, kept like the conversation. Their index keeps no step text.
+- **Storage.** Block rewrites cost a few KB per message, kept for 7 days (§10, GC). Run logs cost at most 49 KiB
+  per step (its text, its call and its 8 KiB envelope, its read references and the paths it names), so a 500-step
+  run stores at most about 24 MB, and usually far less, kept like the conversation. Their index keeps no step text.
 - **Shell output without a read reference.** A step that printed a file through a shell, with no read reference, is
   not found by a file's erasure. That is the same as P18 decides for receipts and transcripts today (§10.1). The
   tree's own erases go by path only: a step that printed a tree or log block without naming its path keeps that
