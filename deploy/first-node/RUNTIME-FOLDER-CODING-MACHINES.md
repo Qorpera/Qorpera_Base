@@ -106,8 +106,8 @@ and the company gave it (5j).
 
 - **Other members.** Each member has their own VMs. No host filesystem is shared: the NAS data and custody disks leave
   the guest, and the machine's disk is its own. Views are served per machine, so a pass read on one VM fails on any
-  other. Git files that run code (`repo.git/config`, `hooks/**`, `info/**`) are kept per session and never published,
-  so nothing one member's root writes runs in another member's VM (below).
+  other. Git files that run code (`repo.git/config`, `hooks/**`, `info/**`, a worktree's `config.worktree`) are kept per
+  session and never published, so nothing one member's root writes runs in another member's VM (below).
 - **The node host.** The VM is a KVM guest. The host listens to it only on the two CID-checked vsock services; every
   stream into the VM (exec, terminals, previews, MCP stdio) is started by the host. The host watchdog and the lease file
   are on the host. `security.devlxd=false` on coding machines (proved in 5f), so `/dev/lxd` offers the guest nothing.
@@ -232,21 +232,20 @@ the node host. A host timer (`qorpera-coding-host-watchdog.timer`, 5g) force-sto
 The guest's `qorpera-coding-watchdog` timer stays in the image as a courtesy for an honest guest.
 
 **When an attachment ends, the host stops its programs.** Root can confirm a stop and leave the programs running, so the
-guest's answer is never the proof. The executor closes the session's view, its sign-ins at the relay (5j) and its
-preview routes (5i) host-side, asks the guest to stop the session's slice, and then:
+guest's answer is never the proof. Whether the session was archived, its renewal refused or its attachment lost (not
+renewed in time), the executor closes the session's view, its sign-ins at the relay (5j) and its preview routes (5i)
+host-side, asks the guest to stop the session's slice, and then, whatever the guest answered:
 
 - **the last attachment on the machine** ended: it force-stops the VM. All the machine's sessions share a member, agent,
   repository and executor, so a refused renewal (the owner no longer a member, the repository grant withdrawn, the
   executor switched off) ends them all at once;
-- **an attachment the executor lost** (not renewed in time) while another session stays attached: it restarts the VM
-  within the minute (stop, then start on the same disk), whatever the guest answered. The other sessions attach again,
-  and their next turns are told what stopped, as after sleep. If the executor dies first, the machine's lease lapses and
-  the watchdog stops the VM;
-- **an archive** while another session stays attached: the stop is the guest's, and the VM keeps running. Whatever root
-  leaves running has no view, sign-in or preview route of the archived session; it runs with the authority of the
-  sessions still attached, which are that member's own (item 11: "root reaches only that member's own sessions"), and it
-  stops when they end or the machine sleeps. A restart here would stop the other sessions' programs, which compute item
-  3 keeps until their own attachment ends or the machine sleeps.
+- **another session stays attached:** it restarts the VM within the minute (stop, then start on the same disk). The
+  other sessions attach again, and their next turns are told what stopped, as after sleep. If the executor dies first,
+  the machine's lease lapses and the watchdog stops the VM.
+
+Contract compute item 3 keeps a session's programs until its own attachment ends or the machine sleeps; under a root
+that can't be trusted, the contract's stop for the ended session is the stronger rule, so the others' programs stop with
+the restart (Q1).
 
 ## Code areas and git
 
@@ -370,6 +369,7 @@ for it over a host-local Unix control socket of the folder service (5c), not thr
 | A turn completes | a boundary, then the turn completes (the executor flushes releases and saves before completion, C1b-3 §6) |
 | Detach, sleep or archive of a session | a final boundary for its view, then close and unmount |
 | The machine sleeps | a final boundary for every view, then LXD stop |
+| An attachment ends beside a live one, and the machine restarts ("When an attachment ends") | a final boundary for every view, then the restart; an unanswered boundary does not hold the restart past the minute, and its output stays held back |
 | The service stops cleanly | it releases everything, publishes everything and clears `served_by` |
 | The service crashed | rule 4 above |
 
@@ -504,7 +504,7 @@ It retires `cloud-coding-git-guest.ts`, `coding-git-transfer.ts`, the 64 MiB cap
 A turn's report gives what step 4's gives (the views' reasons, what was held back and why), plus: the setup file used
 and anything in it ignored or refused, the snapshot's commit and age (and a failed refresh with its log), secrets
 masked in the turn's output, the Docker path caveat when the session used `sudo docker` with a `/company` bind, and a
-machine moved or restarted by rule 4.
+machine moved or restarted by rule 4 or by another session's attachment ending.
 
 ## Slices
 
@@ -514,11 +514,11 @@ Migration slots and SQL test numbers are reserved in the registry when a slice i
 | --- | --- | --- |
 | 5a | SQL: coding views on member machines. The machine read set (written and fanned out by every coding release, rechecked at rank 10 by every coding commit, taken in at a turn's lease, emptied by the disk-replacement call, which is refused while a session is attached), replacing the per-session carry. `create or replace qorpera_memory_run_machine_narrow` and `qorpera_coding_turn_mark_narrow` from renew and release (after #986). `served_by` on views and the crashed-service refusal. The `code_host` view kind (platform-only, `code/` only). The machine row's `staff_agent_id`, `repository`, `setup_digest` and `number`, and the widened `qorpera_coding_machines_current`. Session uids allocated apart from `qorpera_coding_storage_volumes` | A read released by one session's view reaches every turn leased on the machine, and a turn leased later takes it in; a commit after a narrowing of a read path refuses for every session on the machine; the disk-replacement call empties the set and is refused while a session is attached; a turn on a machine with a view holding a non-every-agent path is narrow, and one with only every-agent paths is not; a view served by a crashed service is refused, a cleanly stopped one is not; `code_host` views open only for the platform and refuse a path outside `code/`; two sessions of one member with different agents, repositories or setup digests get different machines (two repositories with the same setup file too), with the same ones the same machine |
 | 5b | SQL: code areas (§7 item 9 as amended). `.git` and `repo.git` only inside `code/<owner>/<name>/`; leases and synchronous publish units; the per-worker rule; `refs/stash` refused; no object deletes, `.keep` never published; session-local files and alternates platform-only; §6's names; 7-day object versions and the history fold; the gc lease block | One test per rule, each refused for a session and allowed for the platform where §6 says so; a lease held by one session makes another's lock fail; the version check refuses a second writer after an expired lease; a session's config or hook write refused in the folder |
-| 5c | Folder service: coding views. Serving only to the view's own coding machine in `codingMachineProjects`, or to the code host for `code_host`; the in-memory read record before an answer leaves; release fan-out; the host-local control socket and machine-wide boundaries; `served_by` set and cleared; reasons as 4c | The service's tests with a stand-in core: a coding view refused from another coding machine, an office, the execution host or an unlisted project; a read is recorded before its answer; a boundary is answered only after every read of the machine is released; a boundary with a refused release holds; a clean stop clears `served_by`; the control socket refuses a peer that is not the executor's uid |
+| 5c | Folder service: coding views. Serving only to the view's own coding machine in `codingMachineProjects`, or to its company's code host for `code_host`; the in-memory read record before an answer leaves; release fan-out; the host-local control socket and machine-wide boundaries; `served_by` set and cleared; reasons as 4c | The service's tests with a stand-in core: a coding view refused from another coding machine, an office, the execution host or an unlisted project; a read is recorded before its answer; a boundary is answered only after every read of the machine is released; a boundary with a refused release holds; a clean stop clears `served_by`; the control socket refuses a peer that is not the executor's uid |
 | 5d | Folder service and program: git on the mount. §6's lock protocol (lease on exclusive create, refresh before `open()` returns, publish on rename, publish on lock removal, rename onto a held lock), session-local `config`, `hooks/**`, `info/**` and `config.worktree`, EPERM for alternates and `utime` on objects, file times, the index reader and the cache list on the machine's disk | FUSE tests with real git (the pinned version) against a stand-in core: commit, rebase, fetch with N refs, `branch -D`, a killed git leaving a lock, two sessions racing one ref, a hook written in one session not seen in another, a cache folder never published and dropped from the list once tracked; merges after 5b |
 | 5e | The code host: one VM per company on each node, its project, no NIC, started for a job and stopped when idle, a `code_host` view per job; seed from the broker's bundle; worktree add and lock; `main/` following the default branch; export bundle to `coding-git.ts`; gc with the lease block; reading the setup file | Runtime tests for each job with a stand-in exec; a seed refused for an NFC or case problem, naming the paths; an export of a branch that is not the session's refused; gc holds new leases in `repo.git` and releases them; the code host's git ignores a hook, a filter, `include.path` and `extensions.worktreeConfig` set in the repository or a session's `config.worktree`; one company's job never sees another company's code area |
 | 5f | Base image: toolchains, tmux, Chromium, rootless Docker and compose, NOPASSWD sudo per session uid, the guest agent, the apt timers masked, `security.devlxd=false` | Image build test on the test machine; in a throwaway nested VM: rootless Docker and compose run a two-service app, `sudo` works, `/dev/lxd` absent, nothing on the host changes (modules, sysctls, nft listed before and after) |
-| 5g | Executor and guest agent: the cutover. Views opened after attach and closed after the final boundary; mounts and binds; command units, network namespaces and the host-built environment; receipts and output host-side; re-attach from the output ring; boundaries through the control socket; rule 4's restart and the `unreadable` move; the host lease and watchdog; the host's stop when an attachment ends; terminals; the vsock listener list | Runtime tests: a refused open fails the attach with its reason, an unanswered one retries until the deadline; output reaches the model only after a boundary; a restarted executor re-attaches and records a gap; a lapsed lease force-stops the VM; with a guest that confirms a stop and leaves the programs running, the last attachment ending stops the VM and a lost attachment beside a live one restarts it within the minute, and an archive beside a live one closes the archived session's view, sign-ins and preview routes; a crashed service restarts the VM and reopens the views; the host listens to coding VMs only on the two CID-checked ports |
+| 5g | Executor and guest agent: the cutover. Views opened after attach and closed after the final boundary; mounts and binds; command units, network namespaces and the host-built environment; receipts and output host-side; re-attach from the output ring; boundaries through the control socket; rule 4's restart and the `unreadable` move; the host lease and watchdog; the host's stop when an attachment ends; terminals; the vsock listener list | Runtime tests: a refused open fails the attach with its reason, an unanswered one retries until the deadline; output reaches the model only after a boundary; a restarted executor re-attaches and records a gap; a lapsed lease force-stops the VM; with a guest that confirms a stop and leaves the programs running, the ended session's programs are gone within the minute after an archive, a refused renewal and a lost attachment, each with and without another session attached (the VM restarted or stopped), and the other sessions are told what stopped; a crashed service restarts the VM and reopens the views; the host listens to coding VMs only on the two CID-checked ports |
 | 5h | Setup file and snapshots: the three formats and their mapping, the strict schema, builder VMs, the digest with each named Dockerfile's bytes, snapshot keys and refresh, one build at a time, a failed build keeps the old snapshot, `install` at attach, image and Dockerfile setups (BuildKit, the image built again from the worktree at attach), compose devcontainers settled | Parser tests for each format and each ignored or refused key; a refresh on a setup change and on a default-branch change; a failed build keeps the old snapshot and reports its log; a second build for the same repository and member waits; a change to a named Dockerfile alone gives a new digest, so the next new session gets a new machine; a context file changed on a session's branch is in the image built at attach |
 | 5i | Previews and the browser: the preview proxy, single-use capabilities and host cookies, member-only access, host-initiated streams; the `coding_browser` tool with a boundary before each screenshot | Proxy tests: a capability works once, a cookie works only on its host, another member is refused; a screenshot waits for a boundary |
 | 5j | Secrets and the vault relay: environment secrets (member and company, with grants), host-side injection, masking in output, logs, receipts, terminals, saves and pushes, the relay for MCP sign-ins and git fetch | Masking across chunk boundaries and in base64 and URL forms; a save carrying a value refused; a push carrying a value refused; a company secret without a grant not injected; the relay forwards a sign-in only to its own origin and refuses a push; the SQL part may land before 5g |
@@ -565,8 +565,8 @@ only if a rule is wrong.
   RestrictAddressFamilies without AF_VSOCK" no longer holds on coding machines; the CID check is the boundary.
 - §6's per-session NAS cache and custody folders: the cache moves to the machine's disk; custody is written host-side
   only.
-- §6 "Who may write what" and §7 item 9: `repo.git/config`, `hooks/**` and `info/**` are session-local and never
-  published; alternates are platform-only.
+- §6 "Who may write what" and §7 item 9: `repo.git/config`, `hooks/**`, `info/**` and a worktree's `config.worktree`
+  are session-local and never published; alternates are platform-only.
 - §6's seed and export line ("change to work through the shared git directory"): they run on the code host. §6's git
   version line: the pin holds where the platform runs git.
 - C1b-3 §5's per-session carry and §6's release: the machine read set and its fan-out replace them.
@@ -582,10 +582,11 @@ only if a rule is wrong.
   view.
 - **P3 (only if the coordinator asks).** A durable read ledger, so a crashed service needs no VM restart. It conflicts
   with founder decision 1 (the folder service keeps no state beyond memory), so the plan does not build it.
-- **Q1 (coordinator).** Grouping: one machine per member, coding agent, repository and setup digest. Jonas said one
-  per member (24 September 2026); the plan splits by agent because root reads every view on a machine, and by repository
-  and setup digest because item 11 sets "the repository's machine" up from its setup file and a snapshot is the
-  machine's disk.
+- **Q1 (coordinator).** Grouping: one machine per member, coding agent, repository and setup digest. Jonas said one per
+  member (24 September 2026); the plan splits by agent because root reads every view on a machine, and by repository and
+  setup digest because item 11 sets "the repository's machine" up from its setup file and a snapshot is the machine's
+  disk. The cost of sharing: when one session's attachment ends, the machine restarts and the other sessions' programs
+  stop ("When an attachment ends"). One machine per session would avoid that, with more VMs and no shared disk.
 - **Q2 (coordinator).** Where the code host runs: a platform VM with no NIC, one per company on each node, started for
   a job (recommended); one VM per node for every company (fewer boots, but one VM then holds every company's code
   areas); or the broker's sandbox on the host.
