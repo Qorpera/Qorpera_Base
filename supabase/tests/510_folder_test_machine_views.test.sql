@@ -50,15 +50,16 @@ end $$;
 -- boot. Returns the boot's anchor.
 create function pg_temp.place(p_machine uuid) returns jsonb language plpgsql as $$
 declare v_id uuid := extensions.gen_random_uuid(); v_boot uuid := extensions.gen_random_uuid();
+	v_instance text := encode(extensions.digest(v_id::text, 'sha256'), 'hex');
 begin
 	set local session_replication_role = replica;
 	update public.qorpera_company_machine_placements set retired_at = clock_timestamp() where machine_id = p_machine and retired_at is null;
 	insert into public.qorpera_company_machine_placements(id, machine_id, profile_id, owner, machine_id_sha256, binding, instance_sha256,
 		running_at, boot_id)
-	values (v_id, p_machine, '63200000-0000-4000-8000-000000000010', 'node-a', repeat('8', 64), '{}', repeat('9', 64), clock_timestamp(), v_boot);
+	values (v_id, p_machine, '63200000-0000-4000-8000-000000000010', 'node-a', repeat('8', 64), '{}', v_instance, clock_timestamp(), v_boot);
 	insert into public.qorpera_runtime_machine_allocations(id, profile_id, company_machine_placement_id, provider_adapter, instance_sha256,
 		reserved_at)
-	values (v_id, '63200000-0000-4000-8000-000000000010', v_id, 'lxd', repeat('9', 64), clock_timestamp());
+	values (v_id, '63200000-0000-4000-8000-000000000010', v_id, 'lxd', v_instance, clock_timestamp());
 	insert into public.qorpera_runtime_node_demands(allocation_id, node_id, provider_kind, provider_id, policy_sha256, cpu_millis, memory_bytes,
 		reserved_at)
 	values (v_id, '63900000-0000-4000-8000-0000000000e2', 'machine', 'lxd', repeat('4', 64), 2000, 4294967296, clock_timestamp());
