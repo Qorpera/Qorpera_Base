@@ -80,11 +80,6 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_record_native_context_view",
 			"qorpera_fence_native_context",
 			"qorpera_assert_company_path_reads",
-			"qorpera_check_company_path_mutation",
-			"qorpera_verify_company_path_file",
-			"qorpera_verify_company_path_tree",
-			"qorpera_prepare_company_path_mutation",
-			"qorpera_commit_company_path_mutation",
 			"qorpera_native_presence_register",
 			"qorpera_company_presence_scope",
 			"qorpera_native_presence_subject",
@@ -172,41 +167,37 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 					response.status === 204 &&
 					(method === "qorpera_assert_company_path_reads" ||
 						method === "qorpera_native_presence_forget" ||
-						method === "qorpera_assert_native_connector_operation" ||
-						method === "qorpera_verify_company_path_file")
+						method === "qorpera_assert_native_connector_operation")
 				)
 					return null;
 				const maximum =
-					response.ok && method === "qorpera_prepare_company_path_mutation"
-						? 16 * 1024 * 1024
-						: response.ok && method === "qorpera_describe_company_run_context"
-							? 1024 * 1024
-							: // A listing page of 200 entries with 4096-byte paths (each character escaped at worst), and a
-								// change set's outcomes.
-								response.ok && method === "qorpera_folder_list"
-								? 2 * 1024 * 1024
-								: response.ok &&
-										(method === "qorpera_folder_commit" ||
-											method === "qorpera_folder_worker_commit" ||
-											// A proposal's apply is its commit; a page of proposals carries up to 200 units with their
-											// structured files' whole parses, which SQL does not cut.
-											method === "qorpera_folder_apply_proposal" ||
-											method === "qorpera_folder_agent_proposals" ||
-											// A zoom with no line reads the conversation's whole tree, every line up to
-											// 2,048 bytes as stored; so do the view, and the branches for up to 8 trees.
-											method === "qorpera_memory_zoom" ||
-											method === "qorpera_memory_view" ||
-											method === "qorpera_memory_branches")
-									? 16 * 1024 * 1024
-									: // One routine whole (32 KiB of instructions, each character escaped at worst), or a
-										// page of 32 with theirs cut; a page of 16 workers with their outputs' paths.
-										response.ok &&
-											(method === "qorpera_folder_agent_routines" ||
-												method === "qorpera_folder_agent_workers")
-										? 1024 * 1024
-										: response.ok
-											? 256 * 1024
-											: 4096;
+					response.ok && method === "qorpera_describe_company_run_context"
+						? 1024 * 1024
+						: // A listing page of 200 entries with 4096-byte paths (each character escaped at worst), and a
+							// change set's outcomes.
+							response.ok && method === "qorpera_folder_list"
+							? 2 * 1024 * 1024
+							: response.ok &&
+									(method === "qorpera_folder_commit" ||
+										method === "qorpera_folder_worker_commit" ||
+										// A proposal's apply is its commit; a page of proposals carries up to 200 units with their
+										// structured files' whole parses, which SQL does not cut.
+										method === "qorpera_folder_apply_proposal" ||
+										method === "qorpera_folder_agent_proposals" ||
+										// A zoom with no line reads the conversation's whole tree, every line up to
+										// 2,048 bytes as stored; so do the view, and the branches for up to 8 trees.
+										method === "qorpera_memory_zoom" ||
+										method === "qorpera_memory_view" ||
+										method === "qorpera_memory_branches")
+								? 16 * 1024 * 1024
+								: // One routine whole (32 KiB of instructions, each character escaped at worst), or a
+									// page of 32 with theirs cut; a page of 16 workers with their outputs' paths.
+									response.ok &&
+										(method === "qorpera_folder_agent_routines" || method === "qorpera_folder_agent_workers")
+									? 1024 * 1024
+									: response.ok
+										? 256 * 1024
+										: 4096;
 				// A 5xx that is not PostgREST's own answer (a proxy's page, a cut body) is a lost answer: the transaction
 				// may have committed. The folder client retries a folder call with the same key; a run's authority and
 				// read-set checks ask again (control calls, 4 Oct 2026); nothing else retries.
