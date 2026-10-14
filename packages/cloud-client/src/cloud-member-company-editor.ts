@@ -2,7 +2,6 @@ import { cloudFileBytesSha256 } from "./cloud-file-bytes.ts";
 import type { CompanyFileTransferSelection } from "./cloud-file-transfer.ts";
 import type { CloudMemberCompanyFileDownload } from "./cloud-member-company-file.ts";
 import { CloudMemberCompanyFileReader } from "./cloud-member-company-file.ts";
-import { CloudMemberFileExports } from "./cloud-member-file-exports.ts";
 import { readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts";
 import { type CloudCompanyPathPlan, parseCloudCompanyPath } from "./company-path-schema.ts";
 
@@ -166,7 +165,6 @@ export class CloudMemberCompanyAccessDenied extends Error {
 /** Shared member display/intent client only. The cloud stages bytes and publishes
  * against current ACLs. This client cannot obtain a tree or service key. */
 export class CloudMemberCompanyFileClient {
-	readonly exports: CloudMemberFileExports;
 	readonly #options: ConstructorParameters<typeof CloudMemberCompanyFileReader>[0];
 	readonly #reader: CloudMemberCompanyFileReader;
 	readonly #control: string;
@@ -174,7 +172,6 @@ export class CloudMemberCompanyFileClient {
 	readonly #fetch: typeof fetch;
 
 	constructor(options: ConstructorParameters<typeof CloudMemberCompanyFileReader>[0]) {
-		this.exports = new CloudMemberFileExports(options);
 		this.#reader = new CloudMemberCompanyFileReader(options);
 		this.#options = { ...options };
 		this.#control = new URL(options.supabaseUrl).origin;
