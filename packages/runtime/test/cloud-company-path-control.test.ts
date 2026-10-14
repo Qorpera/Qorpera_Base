@@ -36,7 +36,7 @@ describe("Company File bounded control transport", () => {
 	] as const)("brands only a complete transaction denial (%i, %j)", async (status, body, denied) => {
 		const transport = vi.fn<typeof fetch>(async () => Response.json(body, { status }));
 		const error = await fixture(transport)
-			.call("qorpera_read_company_path_v2", {}, new AbortController().signal)
+			.call("qorpera_find_agent_mail", {}, new AbortController().signal)
 			.catch((error) => error);
 		expect(error instanceof CloudCompanyPathRpcRefusal).toBe(denied);
 		expect(String(error)).not.toContain("PRIVATE_DENIAL");
@@ -58,21 +58,14 @@ describe("Company File bounded control transport", () => {
 		"qorpera_begin_native_company_execution_v2",
 		"qorpera_describe_company_run_context",
 		"qorpera_read_company_run_context",
-		"qorpera_read_company_path_v2",
-		"qorpera_list_company_paths_v2",
 		"qorpera_read_company_path",
 		"qorpera_list_company_paths",
-		"qorpera_confirm_company_path_read",
 		"qorpera_record_native_context_view",
 		"qorpera_fence_native_context",
 		"qorpera_check_company_path_mutation",
 		"qorpera_verify_company_path_tree",
 		"qorpera_prepare_company_path_mutation",
 		"qorpera_commit_company_path_mutation",
-		"qorpera_native_company_file_write_source",
-		"qorpera_native_company_file_write",
-		"qorpera_prepare_company_path_approval",
-		"qorpera_apply_company_path_approval",
 		"qorpera_native_presence_register",
 		"qorpera_company_presence_scope",
 		"qorpera_native_presence_subject",
@@ -274,7 +267,7 @@ describe("Company File bounded control transport", () => {
 			Response.json({ body: "x".repeat(300000) }),
 		]) {
 			const error = await fixture(async () => response)
-				.call("qorpera_read_company_path_v2", {}, new AbortController().signal)
+				.call("qorpera_find_agent_mail", {}, new AbortController().signal)
 				.catch((error: unknown) => error);
 			expect(error).toBeInstanceOf(Error);
 			expect(error).not.toBeInstanceOf(CloudCompanyHeadConflict);
@@ -294,7 +287,7 @@ describe("Company File bounded control transport", () => {
 				Response.json({ code, message, details: null, hint: null }, { status }),
 			);
 			const error = await fixture(transport)
-				.call("qorpera_manage_agent_worker", {}, new AbortController().signal)
+				.call("qorpera_send_agent_mail", {}, new AbortController().signal)
 				.catch((error: unknown) => error);
 			expect(error).toBeInstanceOf(CloudControlRpcRefused);
 			expect((error as CloudControlRpcRefused).code).toBe(code);
@@ -316,7 +309,7 @@ describe("Company File bounded control transport", () => {
 			typeof body === "string" ? new Response(body, { status }) : Response.json(body, { status }),
 		);
 		const error = await fixture(transport)
-			.call("qorpera_manage_agent_worker", {}, new AbortController().signal)
+			.call("qorpera_send_agent_mail", {}, new AbortController().signal)
 			.catch((error: unknown) => error);
 		expect(error).not.toBeInstanceOf(CloudControlRpcRefused);
 		expect(cloudControlRetryable(error)).toBe(true);
@@ -326,7 +319,7 @@ describe("Company File bounded control transport", () => {
 		const transport = vi.fn<typeof fetch>();
 		const abort = new AbortController();
 		abort.abort();
-		await expect(fixture(transport).call("qorpera_read_company_path_v2", {}, abort.signal)).rejects.toThrow();
+		await expect(fixture(transport).call("qorpera_find_agent_mail", {}, abort.signal)).rejects.toThrow();
 		expect(transport).not.toHaveBeenCalled();
 	});
 
@@ -364,7 +357,7 @@ describe("Company File bounded control transport", () => {
 			Response.json({ message: "PRIVATE_PATH PRIVATE_CREDENTIAL" }, { status }),
 		);
 		const error = await fixture(transport)
-			.call("qorpera_read_company_path_v2", {}, new AbortController().signal)
+			.call("qorpera_find_agent_mail", {}, new AbortController().signal)
 			.catch((error: unknown) => error);
 		expect(error).toBeInstanceOf(CloudRuntimeDiagnosticError);
 		expect(error).toMatchObject({ category });
@@ -463,7 +456,7 @@ describe("the folder core's entry points (core C3)", () => {
 	it("keeps today's mapping for every other RPC, and brands no incomplete folder error", async () => {
 		const denial = { code: "42501", message: "Run is unavailable", details: null, hint: null };
 		const other = await fixture(vi.fn<typeof fetch>(async () => Response.json(denial, { status: 403 })))
-			.call("qorpera_read_company_path_v2", {}, new AbortController().signal)
+			.call("qorpera_find_agent_mail", {}, new AbortController().signal)
 			.catch((error: unknown) => error);
 		expect(other).toBeInstanceOf(CloudCompanyPathRpcRefusal);
 		for (const body of [
@@ -516,7 +509,7 @@ describe("the folder core's entry points (core C3)", () => {
 			[504, page, "qorpera_folder_commit", "transport_unavailable"],
 			[502, "x".repeat(5000), "qorpera_folder_record_release", "transport_unavailable"],
 			// Any call's unreadable 5xx is a lost answer (control calls, 4 Oct 2026); only checks of a run ask again.
-			[504, page, "qorpera_read_company_path_v2", "transport_unavailable"],
+			[504, page, "qorpera_find_agent_mail", "transport_unavailable"],
 			[400, page, "qorpera_folder_commit", "invalid_response"],
 		] as const) {
 			const error = await fixture(vi.fn<typeof fetch>(async () => new Response(body, { status })))
@@ -535,7 +528,7 @@ describe("the folder core's entry points (core C3)", () => {
 			["qorpera_folder_commit", 3_000_000, true],
 			["qorpera_folder_read", 300_000, false],
 			["qorpera_folder_record_release", 300_000, false],
-			["qorpera_read_company_path_v2", 300_000, false],
+			["qorpera_find_agent_mail", 300_000, false],
 		] as const) {
 			const result = await fixture(vi.fn<typeof fetch>(async () => Response.json(sized(bytes))))
 				.call(method, {}, new AbortController().signal)

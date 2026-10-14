@@ -66,10 +66,6 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_manage_agent_routine",
 			"qorpera_decide_agent_routine",
 			"qorpera_manage_agent_sidebar",
-			"qorpera_manage_agent_todo",
-			"qorpera_confirm_agent_todo_publication",
-			"qorpera_manage_agent_worker",
-			"qorpera_report_worker_result",
 			"qorpera_describe_agent_open_work",
 			"qorpera_record_runtime_observation_batch",
 			"qorpera_record_provider_usage_signal",
@@ -78,12 +74,9 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_list_native_connector_tools",
 			"qorpera_assert_native_connector_operation",
 			"qorpera_read_company_run_context",
-			"qorpera_read_company_path_v2",
-			"qorpera_list_company_paths_v2",
 			// Trusted notebook reads for memory composition (runtime Step 6).
 			"qorpera_read_company_path",
 			"qorpera_list_company_paths",
-			"qorpera_confirm_company_path_read",
 			"qorpera_record_native_context_view",
 			"qorpera_fence_native_context",
 			"qorpera_assert_company_path_reads",
@@ -92,12 +85,6 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_verify_company_path_tree",
 			"qorpera_prepare_company_path_mutation",
 			"qorpera_commit_company_path_mutation",
-			"qorpera_native_company_file_write_source",
-			"qorpera_native_company_file_write",
-			"qorpera_prepare_company_path_approval",
-			"qorpera_apply_company_path_approval",
-			"qorpera_apply_company_path_approval_v3",
-			"qorpera_self_approve_organization_proposal",
 			"qorpera_native_presence_register",
 			"qorpera_company_presence_scope",
 			"qorpera_native_presence_subject",
@@ -190,10 +177,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 				)
 					return null;
 				const maximum =
-					response.ok &&
-					(method === "qorpera_prepare_company_path_mutation" ||
-						method === "qorpera_native_company_file_write" ||
-						method === "qorpera_prepare_company_path_approval")
+					response.ok && method === "qorpera_prepare_company_path_mutation"
 						? 16 * 1024 * 1024
 						: response.ok && method === "qorpera_describe_company_run_context"
 							? 1024 * 1024

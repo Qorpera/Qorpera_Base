@@ -6,20 +6,21 @@ import {
 	readBoundedObjectResponse,
 } from "./dependency.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
-import type { ObjectGatewayReplication } from "./replication.ts";
 import { supabaseRequestHeaders } from "./supabase-headers.ts";
 
 export type MemberCompanyRpc =
 	| "qorpera_company_presence_scope"
 	| "qorpera_member_file_export_source"
-	| "qorpera_begin_member_session_attachment_upload"
-	| "qorpera_authorize_member_session_attachment"
+	// The chat image route (20260930260000): a member's begin of one image, and the read of a posted one.
+	| "qorpera_room_image_begin"
+	| "qorpera_room_image_download"
 	// The member commit route's writer check (folder core C4, P34a): the member's own actor, from their token.
 	| "qorpera_member_folder_writer";
 
 export type MemberCompanyPublisherRpc =
 	| "qorpera_native_presence_subject"
-	| "qorpera_stage_member_session_attachment"
+	// The chat image route's save of an image it staged as the platform.
+	| "qorpera_room_image_commit"
 	// The vault's connection-file writer (connection-files.ts, P22b): its claim and finish, and the folder core's
 	// platform staging, read and commit.
 	| "qorpera_claim_connection_file"
@@ -53,11 +54,10 @@ export interface MemberCompanyAuthority {
 	publisher(method: MemberCompanyPublisherRpc, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
 }
 
-/** What the member export and session attachment routes read and write through. */
+/** What the member export route reads through. */
 export interface MemberCompanyFileOptions {
 	authority: MemberCompanyAuthority;
 	store: FileSystemObjectStore;
-	replication: ObjectGatewayReplication;
 	readLegacyObject(companyId: string, sha256: string): Promise<Uint8Array>;
 }
 
@@ -126,8 +126,12 @@ export class SupabaseMemberCompanyAuthority implements MemberCompanyAuthority {
 			if (!response.ok) {
 				// Never inspect a denial body. A very short, bounded error-code read distinguishes one company's
 				// state or lock conflict from the database's health; a missing or unreadable body stays a
-				// dependency failure.
-				if (response.status === 500) throw companyStateFailure(await postgrestErrorCode(response, combined));
+				// dependency failure. One of the company's limits (54000: an input's images, its hooks) refuses this
+				// request only, as 413.
+				if (response.status === 500) {
+					const code = await postgrestErrorCode(response, combined);
+					throw code === "54000" ? new ObjectDependencyError(413) : companyStateFailure(code);
+				}
 				void response.body?.cancel().catch(() => undefined);
 				throw new ObjectDependencyError(response.status);
 			}

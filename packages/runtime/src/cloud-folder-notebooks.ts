@@ -130,7 +130,6 @@ function gateway(folder: CloudCompanyFolderClient, reads: Reads, changes: Change
 			if (!changes) throw new Error("A folder change runs inside a tool call");
 			// A commit no one can complete would fence this run's later operations: refuse before writing anything.
 			if (!changes.operations.completesFolderCommits) throw new Error("This run cannot complete folder writes");
-			if (input.source !== undefined) throw new Error("A notebook or skill change writes text only");
 			const path = parseCloudCompanyPath(input.path);
 			let unit: CloudCompanyFolderUnit;
 			if (operation === "write") {

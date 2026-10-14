@@ -27,7 +27,7 @@ export class CloudCompanyPathRpcMissing extends CloudRuntimeDiagnosticError {
 }
 
 /** Only the Company File gateway promotes a transaction refusal at its initial
- * admission, before it stages objects, registers presence or attempts a commit.
+ * admission, before it stages objects or attempts a commit.
  * Never infer this brand from an HTTP status, diagnostic category or raw text. */
 export class CloudCompanyPathToolRefusal extends CloudRuntimeDiagnosticError {
 	constructor() {
@@ -74,19 +74,6 @@ export class CloudCompanyPathRpcParentMissing extends CloudRuntimeDiagnosticErro
 export class CloudCompanyPathParentMissing extends CloudRuntimeDiagnosticError {
 	constructor() {
 		super("parent_missing", "Company File parent folder is missing");
-	}
-}
-
-/** Only the Company File gateway's mutate() raises this, after its check and
- * before it stages anything: a write of organization/formation.json that the
- * organization projection would refuse over the file's current version (see
- * cloud-company-formation.ts). Nothing was staged, proposed or written. The
- * reason names only fixed formation keys and whole numbers, never the text. */
-export class CloudCompanyFormationRefused extends CloudRuntimeDiagnosticError {
-	readonly reason: string;
-	constructor(reason: string) {
-		super("invalid_arguments", "Company formation write refused");
-		this.reason = reason;
 	}
 }
 

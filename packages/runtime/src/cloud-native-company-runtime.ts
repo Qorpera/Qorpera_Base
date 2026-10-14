@@ -385,7 +385,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						? await observeCloudCompanyPathPresence(presence, firstChange.path, "object", "reading", signal)
 						: undefined;
 				const gateway = new CloudCompanyPathGateway({
-					presence,
 					binding,
 					identity: context.identity,
 					control: this.#paths,

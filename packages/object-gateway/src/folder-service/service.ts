@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { companyStatePath } from "@qorpera/cloud-client/company-state-files";
 import { memberFolderStructured } from "../member-folder-commits.ts";
 import {
@@ -78,6 +78,9 @@ const HEARTBEAT_MS = 15_000;
 /** A core view's lease is 120 s; it is renewed every 40 s while a machine is connected (C1b-3a). */
 const RENEW_MS = 40_000;
 const LEASE_MS = 120_000;
+/** A closed desktop keeps its pending state for a successor hello, never for serving the old holder. */
+const CLOSED_GRACE_MS = 60_000;
+const VIEW_ENDED = "Folder view has ended";
 /** A chunk's own intent lasts 15 minutes and a file's sealed one an hour; each is renewed after 10 while its file is
  * pending (C1D §3.5). */
 const INTENT_RENEW_MS = 10 * 60_000;
@@ -168,7 +171,7 @@ function mayLift(refused: Report["refused"]): boolean {
 /** A change set refused whole that is not settled: what it carried stays pending, to be published again. A command's
  * (only its final closes its view), and a desktop's refused in a way that may lift (F3 4c). */
 function holds(view: View, answer: Answer): boolean {
-	return !answer.commitId && (view.access?.command === true || mayLift(answer.refused));
+	return !answer.commitId && (view.access?.command === true || mayLift(answer.refused) || answer.said === VIEW_ENDED);
 }
 
 /** A report's commit: its id and position, or, for a change set the core refused whole, why. */
@@ -276,6 +279,14 @@ class View {
 	idleSince: number | undefined;
 	loadedAt = 0;
 	closed: string | undefined;
+	closedAt: number | undefined;
+	/** Transfers fence new requests before waiting for the accepted operations to finish. */
+	moving = false;
+	movedTo: View | undefined;
+	readonly active = new Set<Promise<unknown>>();
+	intentWork: Promise<void> = Promise.resolve();
+	/** Protocol-3 mounts distinguish disconnected streams from a dead program with an authenticated hello. */
+	persistentHandles = false;
 	/** Versions replaced on the feed, still readable by files opened before; newest last. */
 	readonly superseded = new Map<string, TreeEntry[]>();
 	/** The view may write (step 3: an operator mount configured so; step 4: a computer desktop). A core view's is set at
@@ -327,7 +338,8 @@ class View {
 	/** The intents that root the bytes of its pending files, by id. */
 	readonly intents = new Map<string, HeldIntent>();
 	/** The write handles open on the view. The machine's program pools its connections, so any of them may use a
-	 * handle; they are abandoned when the view's last connection ends. */
+	 * handle. Protocol 3 preserves them across disconnects until authenticated abandonment or view expiry;
+	 * legacy connections abandon them when the view's last connection ends. */
 	readonly handles = new Set<number>();
 	/** The reads its machine logged (protocol 3, F3 4c), by log. They are kept with the view only: after it connects
 	 * again a machine sends every read it has not heard released, so a view dropped, or a service restarted, may have
@@ -388,6 +400,8 @@ export interface ViewHandle {
 	readonly writable: boolean;
 	/** A core view: its reads go to read sets. */
 	readonly core: boolean;
+	/** Only a core desktop can retain and transfer its overlay to a successor. */
+	readonly switchable?: boolean;
 	list(path: string, after: string | undefined): Promise<{ entries: readonly WireEntry[]; next: string | null }>;
 	read(request: ReadRequest): Promise<Buffer>;
 	/** One page of a search over the view (F3 `company_search`). */
@@ -469,7 +483,10 @@ export class FolderService {
 	async renewLeases(): Promise<void> {
 		await Promise.all(
 			[...this.#views.values()]
-				.filter((view) => view.lease && view.tree && (view.connections > 0 || this.#kept(view)) && !view.closed)
+				.filter(
+					(view) =>
+						view.lease && view.tree && (view.connections > 0 || this.#kept(view)) && !view.closed && !view.moving,
+				)
 				.map(async (view) => {
 					try {
 						await this.#renew(view);
@@ -528,6 +545,9 @@ export class FolderService {
 		let view = this.#views.get(grant.key);
 		// A view that closed while a final of its was out stays, joined only to ask that final again.
 		const asksFinal = view?.closed !== undefined && view.finalOut;
+		if (view?.moving) throw new ProtocolError(ErrorCode.busy, "The view is changing; try again");
+		if (view?.movedTo || (view?.closed && this.#retained(view)))
+			throw new ProtocolError(ErrorCode.viewClosed, "The view was replaced or closed");
 		// Joining an open view (or one kept for its final) takes the pass, and the company folder, it was opened with. A
 		// hello the core has not checked yet never locks out another: while it is being checked the other is asked to try
 		// again, and an unchecked view is replaced.
@@ -555,17 +575,23 @@ export class FolderService {
 			if (mine) view.sinks.delete(mine);
 			view.connections--;
 			if (view.connections > 0) return;
-			// No connection is left to finish a file: its program ended (or lost the link), and what it was writing goes.
-			for (const handle of view.handles) this.#abandon(view, handle);
-			view.handles.clear();
+			// A protocol-3 core mount keeps handles across link loss. Only a program holding the daemon lock may
+			// declare them orphaned; a transfer keeps the same handles usable by the mounted program.
+			if (view.moving || view.movedTo || this.#retained(view)) return;
+			if (!view.persistentHandles) {
+				for (const handle of view.handles) this.#abandon(view, handle);
+				view.handles.clear();
+			}
 			// A command's view stays, with what it has pending and its lease: the command's last call publishes it, final.
 			// So does a desktop's whose last boundary had no answer, or a refusal that may lift: a later publish from its
 			// machine publishes it, and nothing else does (F3 4c). A boundary still running decides again as it ends.
-			if (this.#kept(view)) {
+			if (this.#waitsForAnswer(view)) {
 				if (view.quiet) clearTimeout(view.quiet);
 				view.quiet = undefined;
 				return;
 			}
+			// A view kept only for files its program may still hold open publishes as below: what was closed is saved,
+			// the open files wait, and the boundary's end keeps the view for them (#unheld).
 			view.idleSince = this.#now();
 			// A core view no machine holds is dropped (with its pass): its lease is not renewed while idle, so a machine
 			// that comes back lists it again and renews at once. What it has pending, and the reads its machine logged, are
@@ -589,19 +615,24 @@ export class FolderService {
 			if (view.core && !view.access?.admits(bridge))
 				throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
 			view.admitted = true;
+			if (view.core && hello.protocol === 3) view.persistentHandles = true;
+			if (hello.previous) await this.#transfer(view, hello, bridge);
+			if (hello.abandon) await this.#abandonProgram(view, hello);
 		} catch (error) {
 			release();
 			throw error;
 		}
-		return {
+		const handle: ViewHandle = {
 			asOfSeq: view.seq,
 			writable: view.pending !== undefined,
 			core: view.core,
+			switchable: view.identity?.kind === "computer_desktop",
 			list: async (path, after) => this.#list(view, path, after),
 			read: async (request) => this.#read(view, request),
 			search: async (request) => this.#search(view, request),
 			subscribe: (sink) => {
-				if (released || view.closed) return sink.closed(ErrorCode.viewClosed, view.closed ?? "Released");
+				if (released || view.closed || view.moving)
+					return sink.closed(ErrorCode.viewClosed, view.closed ?? "Released");
 				mine = sink;
 				view.sinks.add(sink);
 			},
@@ -670,19 +701,179 @@ export class FolderService {
 			},
 			reads: async (request) => this.#takeReads(view, request),
 		};
+		// Register synchronously, before yielding: a transfer waits for every operation admitted before its fence,
+		// including chunk staging and the tail after a boundary. Old pooled connections cannot use moved handles.
+		const serve = <T>(operation: () => Promise<T>): Promise<T> => {
+			if (released || view.movedTo)
+				return Promise.reject(new ProtocolError(ErrorCode.viewClosed, "The connection's view has ended"));
+			if (view.moving) return Promise.reject(new ProtocolError(ErrorCode.busy, "The view is changing; try again"));
+			const task = Promise.resolve().then(operation);
+			view.active.add(task);
+			const done = (): void => {
+				view.active.delete(task);
+			};
+			task.then(done, done);
+			return task;
+		};
+		return {
+			...handle,
+			list: (...args) => serve(() => handle.list(...args)),
+			read: (...args) => serve(() => handle.read(...args)),
+			search: (...args) => serve(() => handle.search(...args)),
+			open: (...args) => serve(() => handle.open(...args)),
+			chunk: (...args) => serve(() => handle.chunk(...args)),
+			getChunk: (...args) => serve(() => handle.getChunk(...args)),
+			close: (...args) => serve(() => handle.close(...args)),
+			mkdir: (...args) => serve(() => handle.mkdir(...args)),
+			unlink: (...args) => serve(() => handle.unlink(...args)),
+			rmdir: (...args) => serve(() => handle.rmdir(...args)),
+			rename: (...args) => serve(() => handle.rename(...args)),
+			setExecutable: (...args) => serve(() => handle.setExecutable(...args)),
+			publish: (...args) => serve(() => handle.publish(...args)),
+			reads: (...args) => serve(() => handle.reads(...args)),
+		};
 	}
 
-	/** A view a machine it admits has held, open, kept with no connection and renewed (F3 4b, 4c): a command's for its
-	 * final boundary, unless its last boundary was refused for good; a desktop's while its last boundary had no answer,
-	 * or a refusal that may lift, until a later publish from its machine gets another answer. */
+	/** Waits only for work admitted before the fence. Timers and new requests do not start work while moving. */
+	async #quiesce(view: View): Promise<void> {
+		if (view.quiet) clearTimeout(view.quiet);
+		view.quiet = undefined;
+		await Promise.allSettled([...view.active]);
+		await Promise.allSettled([view.publishing, view.work, view.renewing, view.intentWork]);
+	}
+
+	/** Authenticated same-machine desktop transfer. Both overlays are fenced before the first await; after old IO
+	 * finishes, all mutable pending state moves synchronously. The old identity remains a tombstone for lost hellos. */
+	async #transfer(target: View, hello: Hello, bridge: BridgeInfo): Promise<void> {
+		const previous = hello.previous!;
+		const refuse = (): ProtocolError =>
+			new ProtocolError(ErrorCode.viewRefused, "The previous view did not match this desktop");
+		if (hello.protocol !== 3 || target.identity?.kind !== "computer_desktop" || !target.access?.admits(bridge))
+			throw refuse();
+		let old = this.#views.get(`view:${previous.viewId}`);
+		// A restarted service has no pending state to transfer. The target's own pass, company and machine were
+		// checked above; the mount replays its durable read journal before any write on this fresh service.
+		if (!old) return;
+		if (
+			!old.confirmed ||
+			old.environmentId !== target.environmentId ||
+			old.identity?.kind !== "computer_desktop" ||
+			old.identity.machineId !== target.identity.machineId ||
+			!old.access?.admits(bridge) ||
+			!timingSafeEqual(old.passSha256, createHash("sha256").update(previous.pass).digest())
+		)
+			throw refuse();
+		// A checkpoint may have failed after hello, followed by a second file replacement. Follow accepted moves,
+		// never an unaccepted intermediate primary file. Each move was authenticated on this same machine.
+		while (old.movedTo) old = old.movedTo;
+		if (old === target) return;
+		if (old.closed && !this.#retained(old))
+			throw new ProtocolError(ErrorCode.viewClosed, "The previous view expired");
+		if (old.moving || target.moving) throw new ProtocolError(ErrorCode.busy, "The view is changing; try again");
+		old.moving = target.moving = true;
+		try {
+			await Promise.all([this.#quiesce(old), this.#quiesce(target)]);
+			this.#tree(target);
+			if (
+				!target.pending ||
+				(target.pending && !target.pending.empty) ||
+				target.handles.size > 0 ||
+				target.logs.size > 0 ||
+				target.unanswered ||
+				target.unsettled ||
+				target.unproven
+			)
+				throw new ProtocolError(ErrorCode.busy, "The successor already has independent pending work");
+			if (old.closed && !this.#retained(old))
+				throw new ProtocolError(ErrorCode.viewClosed, "The previous view expired");
+			const pending = old.pending;
+			if (!pending) throw refuse();
+			pending.rebind(
+				() => target.tree ?? new ViewTree(),
+				() => target.seq,
+			);
+			target.pending = pending;
+			old.pending = undefined;
+			for (const [key, value] of old.superseded) target.superseded.set(key, value);
+			// Entries current in the old view may already be superseded in the successor's first listing. Keep their
+			// versions too, both for retained read handles and for journal entries not handed over before the switch.
+			for (const path of old.tree?.paths() ?? []) {
+				const entry = old.tree?.get(path);
+				if (entry?.kind === "file" && target.tree?.get(path)?.version !== entry.version) this.#keep(target, entry);
+			}
+			for (const [key, value] of old.published) target.published.set(key, value);
+			for (const [key, value] of old.uploads) target.uploads.set(key, value);
+			for (const [key, value] of old.intents) target.intents.set(key, value);
+			for (const [key, value] of old.logs) target.logs.set(key, value);
+			for (const handle of old.handles) target.handles.add(handle);
+			old.superseded.clear();
+			old.published.clear();
+			old.uploads.clear();
+			old.intents.clear();
+			old.logs.clear();
+			old.handles.clear();
+			target.unanswered = old.unanswered;
+			old.unanswered = undefined;
+			target.unsettled = old.unsettled;
+			old.unsettled = undefined;
+			target.unproven = old.unproven;
+			target.heard = old.heard;
+			target.unsavedSince = old.unsavedSince;
+			// A release id belongs to its old view. Entries with no durable acknowledgement stay unreleased and get
+			// a new id under the successor; any old release already filed was carried by the core's view-open.
+			old.releasing = undefined;
+			old.movedTo = target;
+			old.closed = "The view was replaced";
+			old.closedAt ??= this.#now();
+			old.lease = undefined;
+			old.tree = undefined;
+			for (const sink of old.sinks) sink.closed(ErrorCode.viewClosed, old.closed);
+			old.sinks.clear();
+			for (const sink of target.sinks) sink.change({ seq: target.seq, resync: true, paths: [] });
+		} finally {
+			old.moving = target.moving = false;
+			this.#resumeQuiet(old);
+			this.#resumeQuiet(target);
+		}
+	}
+
+	/** This request comes only from a program holding the private process-lifetime daemon lock: a publisher, or a mount
+	 * as it starts (one systemd restarted after a crash). Authentication above binds it to this exact view, company and
+	 * calling machine. Never infer death from disconnected streams. What the dead program closed, and what its open
+	 * files go back to, publishes after the quiet period as any change does. */
+	async #abandonProgram(view: View, hello: Hello): Promise<void> {
+		if (view.finalOut) return;
+		if (hello.protocol !== 3 || hello.role !== "io" || !view.pending)
+			throw new ProtocolError(ErrorCode.badRequest, "This view cannot abandon a mounted program");
+		if (view.moving) throw new ProtocolError(ErrorCode.busy, "The view is changing; try again");
+		view.moving = true;
+		try {
+			await this.#quiesce(view);
+			for (const handle of view.handles) this.#abandon(view, handle);
+			view.handles.clear();
+		} finally {
+			view.moving = false;
+			this.#resumeQuiet(view);
+		}
+	}
+
+	/** A view a machine it admits has held, open, kept with no connection and renewed (F3 4b, 4c): while it waits for
+	 * an answer (#waitsForAnswer), or while its mounted program may still hold files open: a protocol-3 core mount's
+	 * handles outlive its streams, until a program holding the mount's daemon lock says that program is gone (a
+	 * restarted mount, or the helper's publisher), or the view ends. */
 	#kept(view: View): boolean {
-		return (
-			view.admitted &&
-			view.lease !== undefined &&
-			!view.closed &&
-			this.#views.get(view.key) === view &&
-			(view.access?.command === true ? view.heard !== "refused" : view.heard === "open")
-		);
+		return this.#waitsForAnswer(view) || (this.#keepable(view) && view.persistentHandles && view.handles.size > 0);
+	}
+
+	/** Kept for an answer: a command's view for its final boundary, unless its last boundary was refused for good; a
+	 * desktop's while its last boundary had no answer, or a refusal that may lift, until a later publish from its
+	 * machine gets another answer. */
+	#waitsForAnswer(view: View): boolean {
+		return this.#keepable(view) && (view.access?.command === true ? view.heard !== "refused" : view.heard === "open");
+	}
+
+	#keepable(view: View): boolean {
+		return view.admitted && view.lease !== undefined && !view.closed && this.#views.get(view.key) === view;
 	}
 
 	/** One round: read the clocks of every company with a live view, move views whose company moved, list again those
@@ -693,10 +884,16 @@ export class FolderService {
 		this.#polling = true;
 		try {
 			const now = this.#now();
-			for (const [key, view] of this.#views)
-				if (view.idleSince !== undefined && view.steps === 0 && now - view.idleSince >= this.#idleMs)
-					this.#views.delete(key);
-			const live = [...this.#views.values()].filter((v) => v.tree && !v.closed);
+			for (const [key, view] of this.#views) {
+				if (view.moving || view.steps > 0 || view.active.size > 0) continue;
+				if (view.closedAt !== undefined) {
+					if (now - view.closedAt >= CLOSED_GRACE_MS) {
+						this.#discard(view);
+						this.#views.delete(key);
+					}
+				} else if (view.idleSince !== undefined && now - view.idleSince >= this.#idleMs) this.#views.delete(key);
+			}
+			const live = [...this.#views.values()].filter((v) => v.tree && !v.closed && !v.moving);
 			if (live.length === 0) return;
 			let clocks: Map<string, number>;
 			try {
@@ -736,7 +933,7 @@ export class FolderService {
 
 	/** Queues a task unless one is already waiting (a waiting advance covers every change up to when it runs). */
 	#queue(view: View, task: () => Promise<void>): void {
-		if (view.queued) return;
+		if (view.queued || view.moving) return;
 		view.queued = true;
 		view.work = view.work
 			.then(() => {
@@ -765,16 +962,10 @@ export class FolderService {
 
 	#close(view: View, reason: string): void {
 		view.closed = reason;
-		view.tree = undefined;
-		// What was pending is lost with the view (founder decision 3).
-		view.pending?.clear();
+		if (view.identity?.kind === "computer_desktop" && view.admitted) view.closedAt ??= this.#now();
+		else this.#discard(view);
 		if (view.quiet) clearTimeout(view.quiet);
-		for (const upload of view.uploads.values()) upload.upload?.abort();
-		view.uploads.clear();
-		view.handles.clear();
-		view.intents.clear();
-		view.unsettled = undefined;
-		this.#forgetReads(view);
+		view.quiet = undefined;
 		// The pass goes with it: a closed view makes no more calls, but a final with no answer asked again as it was.
 		view.lease = undefined;
 		this.#forgetClosed(view);
@@ -785,7 +976,24 @@ export class FolderService {
 
 	/** Forgets a closed view, unless a final of its is out: that final may be what closed it, so the view stays where its
 	 * machine finds it again, until it has been idle as long as any other. */
+	#retained(view: View): boolean {
+		return view.closedAt !== undefined && this.#now() - view.closedAt < CLOSED_GRACE_MS;
+	}
+
+	#discard(view: View): void {
+		view.tree = undefined;
+		view.pending?.clear();
+		view.pending = undefined;
+		for (const upload of view.uploads.values()) upload.upload?.abort();
+		view.uploads.clear();
+		view.handles.clear();
+		view.intents.clear();
+		view.unsettled = undefined;
+		this.#forgetReads(view);
+	}
+
 	#forgetClosed(view: View): void {
+		if (this.#retained(view)) return;
 		if (view.finalOut) {
 			if (view.connections === 0) view.idleSince ??= this.#now();
 		} else if (this.#views.get(view.key) === view) this.#views.delete(view.key);
@@ -801,7 +1009,7 @@ export class FolderService {
 	/** Drops a core view no machine holds (after its last boundary). A core that may count it as having unsaved changes
 	 * hears first that it has none, so a desktop's seat is free now, not when the lease ends (C1B §9). */
 	#letGo(view: View): void {
-		if (view.connections > 0) return;
+		if (view.connections > 0 || view.moving || this.#retained(view)) return;
 		if (!view.unsavedSent || !view.lease) {
 			this.#drop(view);
 			return;
@@ -817,7 +1025,7 @@ export class FolderService {
 
 	/** Forgets a core view no machine holds, with its pass and anything its last boundary kept pending. */
 	#drop(view: View): void {
-		if (view.closed) return;
+		if (view.closed || view.moving) return;
 		if (this.#views.get(view.key) === view) this.#views.delete(view.key);
 		view.lease = undefined;
 		view.closed = "No machine holds the view";
@@ -1165,7 +1373,8 @@ export class FolderService {
 
 	/** A core view no machine holds, with no boundary running: kept (renewed, and not forgotten while idle), or let go. */
 	#unheld(view: View): void {
-		if (view.connections > 0 || !view.lease || view.closed || this.#views.get(view.key) !== view) return;
+		if (view.connections > 0 || view.moving || !view.lease || view.closed || this.#views.get(view.key) !== view)
+			return;
 		if (this.#kept(view)) view.idleSince = undefined;
 		else this.#letGo(view);
 	}
@@ -1176,13 +1385,19 @@ export class FolderService {
 	 * no seat. */
 	#touch(view: View): void {
 		view.heard = undefined;
+		if (view.moving || view.closed) return;
 		if (view.lease && !view.access?.command && view.unsavedSince === undefined && view.pending?.unsaved) {
 			view.unsavedSince = this.#now();
 			this.#renew(view).catch((error: unknown) =>
 				this.#log(`folder-service: ${view.key}: lease not renewed now: ${(error as Error).message}`),
 			);
 		}
-		if (view.quietMs === undefined) return;
+		this.#resumeQuiet(view);
+	}
+
+	#resumeQuiet(view: View): void {
+		if (view.closed || view.moving || view.connections === 0 || view.quietMs === undefined || !view.pending?.unsaved)
+			return;
 		if (view.quiet) clearTimeout(view.quiet);
 		view.quiet = setTimeout(() => {
 			view.quiet = undefined;
@@ -1415,8 +1630,8 @@ export class FolderService {
 			throw this.#closedOtherwise(view);
 		}
 		// A view kept for its final takes nothing else.
-		if (view.closed && view.finalOut) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
-		if (!pending || view.closed) return { commitId: null, seq: null, paths: [] };
+		if (view.closed) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
+		if (!pending) return { commitId: null, seq: null, paths: [] };
 		return await this.#boundaryOf(view, pending, final);
 	}
 
@@ -1460,6 +1675,17 @@ export class FolderService {
 			if (earlier.final && view.closed) throw this.#closedOtherwise(view);
 			// A change set refused whole that holds is not settled: what it carried stays pending, and this boundary plans
 			// it again.
+			if (
+				answer.said === VIEW_ENDED &&
+				earlier.actor.kind === "view" &&
+				earlier.actor.viewId === view.lease?.viewId
+			) {
+				this.#close(view, VIEW_ENDED);
+				return {
+					...committed(answer),
+					paths: held(earlier.plan, () => ({ outcome: "refused", reason: "denied" })),
+				};
+			}
 			if (!holds(view, answer)) {
 				entries.push(...(await this.#settle(view, earlier.plan, earlier.made, answer)));
 				if (view.unsettled) {
@@ -1551,6 +1777,7 @@ export class FolderService {
 		// A change set refused whole that holds is not settled: what it carried stays pending, and the report says why. A
 		// command's (its command ended, so only the final saves; or a final the core refused) waits for the final to carry
 		// it; a desktop's refused by the pause or the run check, for a later boundary (F3 4c). Any other is let go.
+		if (answer.said === VIEW_ENDED) this.#close(view, VIEW_ENDED);
 		if (holds(view, answer))
 			return {
 				...committed(answer),
@@ -1634,6 +1861,7 @@ export class FolderService {
 					answered = true;
 				} catch (error) {
 					if (error instanceof CoreRefusal) {
+						if (error.said === VIEW_ENDED) this.#close(view, VIEW_ENDED);
 						if (error.said !== MEMBER_HELD_READS) return error.reason;
 						answered = true;
 					} else this.#log(`folder-service: ${view.key}: release not answered: ${(error as Error).message}`);
@@ -2005,35 +2233,42 @@ export class FolderService {
 	 * a file whose sealed intent lapsed is staged again at the next boundary. A renewal that could not reach the core is
 	 * tried again next round. The intents of files no longer pending are let go. Exposed for tests. */
 	async renewIntents(): Promise<void> {
-		const now = this.#now();
 		for (const view of [...this.#views.values()]) {
-			const pending = view.pending;
-			if (!pending || view.closed) continue;
-			const { chunks, files } = this.#neededBytes(view, pending);
-			for (const [id, held] of [...view.intents]) {
-				const needed = held.chunk
-					? chunks.has(held.chunk.sha256)
-					: held.staged !== undefined && files.has(held.staged.manifestSha256);
-				if (!needed) {
-					view.intents.delete(id);
+			if (view.moving || view.closed) continue;
+			const next = view.intentWork.catch(() => undefined).then(() => this.#renewIntentsFor(view));
+			view.intentWork = next;
+			await next;
+		}
+	}
+
+	async #renewIntentsFor(view: View): Promise<void> {
+		const now = this.#now();
+		const pending = view.pending;
+		if (!pending || view.closed || view.moving) return;
+		const { chunks, files } = this.#neededBytes(view, pending);
+		for (const [id, held] of [...view.intents]) {
+			const needed = held.chunk
+				? chunks.has(held.chunk.sha256)
+				: held.staged !== undefined && files.has(held.staged.manifestSha256);
+			if (!needed) {
+				view.intents.delete(id);
+				continue;
+			}
+			if (now - held.renewed < INTENT_RENEW_MS) continue;
+			try {
+				await this.#core.renewUpload(view.environmentId, view.actor, id);
+				held.renewed = now;
+			} catch (error) {
+				if (!(error instanceof CoreRefusal)) {
+					this.#log(
+						`folder-service: ${view.key}: an upload intent was not renewed now: ${(error as Error).message}`,
+					);
 					continue;
 				}
-				if (now - held.renewed < INTENT_RENEW_MS) continue;
-				try {
-					await this.#core.renewUpload(view.environmentId, view.actor, id);
-					held.renewed = now;
-				} catch (error) {
-					if (!(error instanceof CoreRefusal)) {
-						this.#log(
-							`folder-service: ${view.key}: an upload intent was not renewed now: ${(error as Error).message}`,
-						);
-						continue;
-					}
-					// The core let it lapse (C1D §3.5).
-					view.intents.delete(id);
-					if (held.staged && held.node.staged?.file === held.staged) held.node.staged = undefined;
-					if (held.chunk) await this.#holdAgain(view, id, held);
-				}
+				// The core let it lapse (C1D §3.5).
+				view.intents.delete(id);
+				if (held.staged && held.node.staged?.file === held.staged) held.node.staged = undefined;
+				if (held.chunk) await this.#holdAgain(view, id, held);
 			}
 		}
 	}

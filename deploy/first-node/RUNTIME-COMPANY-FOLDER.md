@@ -276,6 +276,7 @@ live before the next:
 
 Step 3's plan, its slices and its live proof: [RUNTIME-FOLDER-WRITES.md](RUNTIME-FOLDER-WRITES.md).
 Step 4's: [RUNTIME-FOLDER-COMPANY-MACHINES.md](RUNTIME-FOLDER-COMPANY-MACHINES.md).
+Step 5's: [RUNTIME-FOLDER-CODING-MACHINES.md](RUNTIME-FOLDER-CODING-MACHINES.md).
 
 Steps 4, 5 and 6 do not depend on each other. Milestone M3 of the Rebuild Map
 is reached when two machines on two nodes edit the same folder live and

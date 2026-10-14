@@ -17,9 +17,6 @@ import { describe, expect, it, vi } from "vitest";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 const environmentId = "73dc6943-b71c-4ba4-a38d-78da0861e0dc";
-const workspaceId = "22222222-2222-4222-8222-222222222222";
-const snapshotId = "44444444-4444-4444-8444-444444444444";
-const versionId = "66666666-6666-4666-8666-666666666666";
 const jobId = "77777777-7777-4777-8777-777777777777";
 const runnerId = "88888888-8888-4888-8888-888888888888";
 const runId = "89898989-8989-4989-8989-898989898989";
@@ -30,14 +27,10 @@ const staffAgentId = "69696969-6969-4969-8969-696969696969";
 const computeIdentityId = "71717171-7171-4717-8717-717171717171";
 const capsuleId = "72727272-7272-4727-8727-727272727272";
 const leaseId = "73737373-7373-4737-8737-737373737373";
-const artifactIndexId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const actorUserId = "c98d600e-654a-40da-a07f-f1d54f93cc6c";
 const createdAt = "2026-09-29T08:00:00.000Z";
 const capability = "l".repeat(43);
 const assignment = { assignmentId, jobId, capability };
-
-/** A folder-v2 run (folder core C3, P23): its job and its description name no Company File substrate. */
-let folderRun = false;
 
 function jobRecord(status: "leased" | "completed" = "leased", result: unknown = null) {
 	return {
@@ -47,7 +40,7 @@ function jobRecord(status: "leased" | "completed" = "leased", result: unknown = 
 		profile_id: profileId,
 		environment_id: environmentId,
 		session_id: null,
-		substrate_version_id: folderRun ? null : versionId,
+		substrate_version_id: null,
 		client_job_id: "11111111-1111-4111-8111-111111111111",
 		required_capability: "agent_turn",
 		job_type: "agent_turn",
@@ -70,21 +63,9 @@ function jobRecord(status: "leased" | "completed" = "leased", result: unknown = 
 	};
 }
 
-/** qorpera_runner_broker_describe for a native company run (for a folder-v2 run, with no substrate anywhere). */
+/** qorpera_runner_broker_describe for a native company run: a folder-v2 run's, with no substrate anywhere (folder
+ * core C3, P23). */
 function descriptionRecord() {
-	const description = snapshotDescriptionRecord();
-	if (!folderRun) return description;
-	return {
-		...description,
-		run: { ...description.run, substrate_version_id: null, company_snapshot_id: null },
-		version: null,
-		snapshot: null,
-		artifact_index: null,
-		company_file_output_limits: null,
-	};
-}
-
-function snapshotDescriptionRecord() {
 	return {
 		company_runtime: "company-path-v1",
 		job: jobRecord(),
@@ -96,8 +77,8 @@ function snapshotDescriptionRecord() {
 			source_id: "12121212-1212-4212-8212-121212121212",
 			session_id: null,
 			job_id: jobId,
-			substrate_version_id: versionId,
-			company_snapshot_id: snapshotId,
+			substrate_version_id: null,
+			company_snapshot_id: null,
 			staff_agent_id: staffAgentId,
 			staff_version: 3,
 			input_ids: [],
@@ -130,60 +111,17 @@ function snapshotDescriptionRecord() {
 			native_harness: "codex-cli",
 			allow_autonomous: true,
 		},
-		version: {
-			version_id: versionId,
-			profile_id: profileId,
-			environment_id: environmentId,
-			company_snapshot_id: snapshotId,
-			client_version_id: "99999999-9999-4999-8999-999999999999",
-			contract_version: 1,
-			operation_sequence: 2,
-			operation_count: 1,
-			artifact_index_id: artifactIndexId,
-			artifact_manifest_sha256: "a".repeat(64),
-			content_sha256: "b".repeat(64),
-			created_by_user_id: actorUserId,
-			created_at: createdAt,
-		},
-		snapshot: {
-			snapshot_id: snapshotId,
-			profile_id: profileId,
-			environment_id: environmentId,
-			workspace_id: workspaceId,
-			client_snapshot_id: "55555555-5555-4555-8555-555555555555",
-			parent_snapshot_id: null,
-			tree_manifest_sha256: "c".repeat(64),
-			tree_manifest_bytes: 128,
-			tree_contract_version: 3,
-			file_count: 1,
-			total_bytes: 32,
-			created_by_user_id: actorUserId,
-			created_at: createdAt,
-		},
-		artifact_index: {
-			index_id: artifactIndexId,
-			profile_id: profileId,
-			environment_id: environmentId,
-			client_index_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-			contract_version: 1,
-			content_sha256: "a".repeat(64),
-			artifact_count: 0,
-			total_bytes: 0,
-			created_by_user_id: actorUserId,
-			created_at: createdAt,
-		},
+		version: null,
+		snapshot: null,
+		proposal_snapshot: null,
+		artifact_index: null,
 		output_limits: {
 			max_object_bytes: 8 * 1024 * 1024,
 			max_object_count: 100,
 			max_total_bytes: 64 * 1024 * 1024,
 			root_contract: "qorpera.object/v1",
 		},
-		company_file_output_limits: {
-			max_object_bytes: 8 * 1024 * 1024,
-			max_object_count: 509_602,
-			max_total_bytes: 50 * 1024 * 1024 * 1024,
-			tree_contract_version: 3,
-		},
+		company_file_output_limits: null,
 	};
 }
 
@@ -240,9 +178,6 @@ function cloudWaves() {
 type Waves = ReturnType<typeof cloudWaves>;
 
 function brokerTransport(waves: Waves): CloudRunnerBrokerTransport {
-	const unexpected = async (): Promise<never> => {
-		throw new Error("Unexpected broker call before execution");
-	};
 	return {
 		describe: vi.fn(() => waves.track("describe", descriptionRecord)),
 		acquireNativeAuthority: vi.fn((_authority, _runId, _assignmentId, leaseSeconds: number) => {
@@ -260,15 +195,6 @@ function brokerTransport(waves: Waves): CloudRunnerBrokerTransport {
 		releaseNativeAuthority: vi.fn((_authority, lease: string, status) =>
 			waves.track("release_native_authority", () => ({ lease_id: lease, status })),
 		),
-		listInputs: unexpected,
-		listTranscript: unexpected,
-		listOperations: unexpected,
-		listArtifacts: unexpected,
-		requestModel: unexpected,
-		beginOperation: unexpected,
-		completeOperation: unexpected,
-		bindProviderSession: unexpected,
-		appendTranscriptEvent: unexpected,
 	};
 }
 
@@ -370,20 +296,15 @@ describe("runner start", () => {
 	});
 
 	it("hands a folder-v2 run (no Company File substrate) to its computer and completes it naming none", async () => {
-		folderRun = true;
-		try {
-			const f = await nativeWorker("deferred");
-			const { result } = await f.runNext();
-			// The completed job echoes the completion's result: the path lane's, naming no substrate.
-			expect(result).toMatchObject({
-				status: "completed",
-				job: { result: { runtime: "company-path-v1", substrate_version_id: null } },
-			});
-			expect(f.startCompany).toHaveBeenCalledOnce();
-			expect(f.broker.describe).toHaveBeenCalled();
-		} finally {
-			folderRun = false;
-		}
+		const f = await nativeWorker("deferred");
+		const { result } = await f.runNext();
+		// The completed job echoes the completion's result: the path lane's, naming no substrate.
+		expect(result).toMatchObject({
+			status: "completed",
+			job: { result: { runtime: "company-path-v1", substrate_version_id: null } },
+		});
+		expect(f.startCompany).toHaveBeenCalledOnce();
+		expect(f.broker.describe).toHaveBeenCalled();
 	});
 
 	it("makes the separate calls when the cloud deferred the start's reads", async () => {

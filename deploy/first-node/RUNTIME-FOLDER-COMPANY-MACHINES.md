@@ -126,7 +126,9 @@ for its view: it was killed, or its machine lost the link. The service's view ou
   other answer, which drops it (4c; review round 13). A publish refused because the view has ended ("Folder view has
   ended", `denied`), as when a newer view replaced it, is not such an answer but the view's closing: a closed desktop
   view's pending changes and unreleased reads wait the minute for a newer view's hello and move at it (above; review
-  round 15). A machine that connects with the view meanwhile joins it;
+  round 15). A machine that connects with the view meanwhile joins it. Files its program still holds open wait, and
+  keep the view, until a restarted mount or the helper's publisher (each holding the mount's `daemon.lock`) says that
+  program is gone and they go back to their last fixed save, or the view ends (4c-3);
 - a command view is published only when asked (4b). When its last connection leaves, the service keeps it in the same
   way until a publish asked for it gets an answer other than those, or it closes. A closed command view goes: a move is
   only between desktop views (above);

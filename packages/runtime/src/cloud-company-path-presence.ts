@@ -82,23 +82,6 @@ export async function observeCloudCompanyPathPresence(
 	}
 }
 
-/** Company File tools never wait on presence (contract 5.2: presence is never a lock).
- * The claim is published in the background; the result carries the latest
- * observation of the path already held, and is unavailable until there is one. */
-export function claimCloudCompanyPathPresence(
-	presence: CloudCompanyPathPresence | undefined,
-	path: string,
-	extent: CompanyPathExtent,
-	activity: CompanyPathActivity,
-): CompanyPathPresenceView | undefined {
-	if (!presence) return undefined;
-	try {
-		return presence.claim(path, extent, activity);
-	} catch {
-		return unavailableView(path);
-	}
-}
-
 function closed(value: unknown, keys: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== keys)
 		throw new Error("INVALID_NATIVE_PRESENCE_RESPONSE");
