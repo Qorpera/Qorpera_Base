@@ -181,8 +181,10 @@ journal until step 4 routes it to the desktop.
 ## Errors at once
 
 As §2 "Errors that happen at once", decided in the program or the service before anything is sent:
-- names the folder forbids (`EINVAL`), the adapter-only prefixes, symlinks, hard links, devices, FIFOs and sockets
-  (`EPERM`), a file over 256 MiB, the version-2 manifest's limit (`EFBIG`);
+- names the folder forbids (`EINVAL`), the adapter-only prefixes, devices, FIFOs and sockets (`EPERM`), a file over
+  256 MiB, the version-2 manifest's limit (`EFBIG`);
+- symbolic links and hard links (`EPERM`) only until their slices land: the 2026-10-14 amendment makes a symbolic link
+  an entry of its own and a hard link a copy that shares the stored bytes (items 4 and 5);
 - deleting or moving a seeded path, a lone `agent.md` or `group.md`, or an agent's or group's folder out of place
   (`EPERM`);
 - `rename` with `RENAME_EXCHANGE` (`EINVAL`); a name that differs only in case from a sibling (`EEXIST`).
