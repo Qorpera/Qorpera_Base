@@ -129,7 +129,10 @@ desktop's view: a boot often comes long after that run ended (a member's Start, 
 executor knows when the boot is up. The view still names the starter and its run (amended below).
 
 - **A refused open** leaves the boot without `/company`: the machine runs as today (item 10), and the report says why
-  (the starter's authority, the machine stopping). The next boot asks again.
+  (the starter's authority, the machine stopping). The next boot asks again. On a placement that had a view on an
+  earlier boot, an open refused for the starter's authority instead makes the executor retire the placement, as rule 5
+  of "Reads" does for `unreadable`: the machine starts again on a new disk, without `/company`, and with today's access
+  ("Access").
 - **An open with no answer** (the core unreachable) is retried at every executor pass. A command started before the
   boot's open is answered waits for it; with no answer by the start's deadline, the start fails as unreachable, the way
   a start fails today when the guest does not answer.
@@ -141,7 +144,8 @@ executor knows when the boot is up. The view still names the starter and its run
   boundary keeps the view valid for one final publish with `final`, and the commit closes it).
 - **A starter whose authority narrows** makes the next renew close the view `ended`. What was not yet published is not
   applied, and the commands running are told why. The executor sees the closed view at its next pass and restarts the
-  VM, so no command keeps running under a view that is gone, and the next boot's open decides again.
+  VM, so no command keeps running under a view that is gone, and the next boot's open decides again (refused, it
+  retires the placement, above).
 
 **Serving.** As step 4's 4a and step 5's 5c, the view's first renewal says its kind and machine, and the service checks
 the calling VM's CID (`{project, name, physicalId}` from LXD):
@@ -152,9 +156,12 @@ the calling VM's CID (`{project, name, physicalId}` from LXD):
 - no other machine gets it, and a test machine gets no other kind; a kind or machine that changes closes the view (as
   4a).
 
-**Access.** Any agent whose authority covers the view may run commands there (design). So while the machine's current
-placement has an open `test_machine` view, or had one this boot, `qorpera_authorize_machine_command` (start, read and
-cancel) also requires the caller's agent and member to read the root now (6a). A worker is checked as its agent.
+**Access.** Any agent whose authority covers the view may run commands there (design). So once the machine's current
+placement has had a `test_machine` view, on any boot, `qorpera_authorize_machine_command` (start, read and cancel) also
+requires the caller's agent and member to read the root now (6a), for as long as that placement lives. The placement is
+the disk, and the disk survives a reboot: commands of an earlier boot may have copied company files to it, so a later
+boot without `/company` is not open to callers who lack the root read. A worker is checked as its agent. A placement
+that never had a view (a new disk) needs only today's machine access.
 
 **The service that served a view** is named on it (`served_by`, 5a's), and a view served by a crashed service is
 refused (5a), as for coding views.
@@ -254,10 +261,11 @@ company machine is the company's own scratch compute").
   reviews every `machine_run` instead (Q2), for three reasons. `cloudActionEffect` is a pure function of the tool and
   its arguments, and whether a machine has `/company` is decided per boot, so it can change between the review and the
   start. Commands of an earlier boot that had `/company` may have copied company files to the disk (the platform keeps
-none there, "Nothing on a node", but root can copy). And a
-  folderless machine is still a networked command run on the company's behalf. If the coordinator keeps the design's
+  none there, "Nothing on a node", but root can copy); "Access" keeps such a disk to callers who read the root, and
+  the review still sees what a command sends out. And a folderless machine is still a networked command run on the
+  company's behalf. If the coordinator keeps the design's
   reading, 6d instead classes the call from the machine's state at the call, and `qorpera_authorize_machine_command`
-  refuses an unreviewed start on a boot that has a view.
+  refuses an unreviewed start on a placement that has or had a view.
 
 ## Reads
 
@@ -404,10 +412,10 @@ Reserved in the registry: migration slots 20260930420000–429000 and SQL tests 
 
 | Slice | What | Tests |
 | --- | --- | --- |
-| 6a | SQL: the `test_machine` view kind (C1b-3b). Columns `company_machine_id`, `placement_id` and `boot_id`, set exactly for that kind; the kind joins `qorpera_folder_views_built_kind`; one open view per machine (a partial unique index) and a history index by placement. The open: the machine fence, the machine row and placement `FOR SHARE`, the starter's root read; valid while the placement is not removed, the boot is the view's and the starter reads the root; `companyWide` true. Per-unit `credits` in the commit: each credited command checked against `qorpera_company_machine_commands` (machine, placement, not ended, a publish at its own end counted), refused alone as an outcome; each unit allowed for every credited agent and requester, or the starter's; the actor the first-started command and the commit's `credits` their union. The view's read set: fan-out to runs with a running command whose job is leased (KEY SHARE in id order), rank-10 recheck, carry to the next view of the same placement. `qorpera_folder_run_inherit_view_reads` takes a `test_machine` view for a run whose agent and member read the root. `qorpera_authorize_machine_command` requires the caller's root read on a boot that has or had a view. The crashed-service refusal for these views (5a's `served_by`) | An open refused when the starter's agent or member lacks the root read; a second open view on one machine refused; the view invalid after a new boot and after the starter narrows, and still valid on a retired placement for one `final` publish; a unit credited to an ended command refused while the other units commit; a unit allowed for one credited agent but not the other refused; the actor and `credits` with two overlapping commands; a unit with no command credited to the starter; a read fanned out to a leased run with a running command, not to one whose command ended; a commit refused at rank 10 after a read path narrows; the read set carried across boots of one placement and clean on a new one; the take-in allowed for another agent with the root read and refused without; `machine_run`, `machine_read` and `machine_cancel` refused for a caller without the root read on a machine with a view, allowed on one without; a view served by a crashed service refused |
+| 6a | SQL: the `test_machine` view kind (C1b-3b). Columns `company_machine_id`, `placement_id` and `boot_id`, set exactly for that kind; the kind joins `qorpera_folder_views_built_kind`; one open view per machine (a partial unique index) and a history index by placement. The open: the machine fence, the machine row and placement `FOR SHARE`, the starter's root read; valid while the placement is not removed, the boot is the view's and the starter reads the root; `companyWide` true. Per-unit `credits` in the commit: each credited command checked against `qorpera_company_machine_commands` (machine, placement, not ended, a publish at its own end counted), refused alone as an outcome; each unit allowed for every credited agent and requester, or the starter's; the actor the first-started command and the commit's `credits` their union. The view's read set: fan-out to runs with a running command whose job is leased (KEY SHARE in id order), rank-10 recheck, carry to the next view of the same placement. `qorpera_folder_run_inherit_view_reads` takes a `test_machine` view for a run whose agent and member read the root. `qorpera_authorize_machine_command` requires the caller's root read on a placement that has or had a view, on any boot. The crashed-service refusal for these views (5a's `served_by`) | An open refused when the starter's agent or member lacks the root read; a second open view on one machine refused; the view invalid after a new boot and after the starter narrows, and still valid on a retired placement for one `final` publish; a unit credited to an ended command refused while the other units commit; a unit allowed for one credited agent but not the other refused; the actor and `credits` with two overlapping commands; a unit with no command credited to the starter; a read fanned out to a leased run with a running command, not to one whose command ended; a commit refused at rank 10 after a read path narrows; the read set carried across boots of one placement and clean on a new one; the take-in allowed for another agent with the root read and refused without; `machine_run`, `machine_read` and `machine_cancel` refused for a caller without the root read on a machine with a view, still refused on a later boot of that placement whose open was refused, and allowed on a placement that never had a view; a view served by a crashed service refused |
 | 6b | Folder service: test machine views. The `test_machine` kind in `coreAccess`, served only to its own instance in `testMachineProjects`; command windows on 5c's control socket; per-change tags; per-unit `credits`; the quiet publish; a command's end boundary and the machine's final boundary; reasons as 4c | The service's tests with a stand-in core: a `test_machine` view refused from another test machine, an office, a coding machine or an unlisted project; a change made in one window credited to it, one made in two windows to both, one with none to the starter; a quiet publish about 2 s after the last change; an end boundary that publishes the command's changes before it answers; the final boundary with `final`; a window message from a peer that is not the executor's uid refused |
 | 6c | Image, guest helper and mount. `build-machine-image.sh`: the toolbox (item 7) as 4e's list, `fuse3` and the folder program, in a new image generation. The guest helper starts the folder program at `/company` with the pass from exec stdin and restarts it while the view is open. `security.devlxd=false` on test machines | The image contract tests: every toolbox command answers `--version`, the folder program and `fuse3` are present. The helper's tests: the pass is in no file, unit environment or log, and the program restarts after it exits. The plan's tests: `security.devlxd=false` and no pass in any config key. Step 4's mount propagation proof for a Docker container started before the mount, in a throwaway nested VM on the test machine |
-| 6d | Executor cutover, review and output paths. The executor opens the boot's view after `qorpera_mark_company_machine_running` and hands over the pass; a start waits for the boot's open; windows; a boundary before every answer that carries output; the end order; the final boundary before every power-off, not held past a minute; a guest reboot's final boundary before the new boot is recorded; a restart on a narrowing or a crashed service; the placement retired on `unreadable`. `machine_run` becomes "external". Every output path takes in the view's reads first | `company-machine-host` tests with a stand-in folder service: the order of window, boundary and recorded end; the final boundary before the power-off, and a stop not held past a minute; a reboot's final boundary before the new boot; the placement retired on `unreadable`. `cloudActionEffect`: `machine_run` "external", the other machine tools unchanged. The receipts, the notify continuation and a worker's read take in the view's reads before they return output. A worker's `machine_run` reaches the review with its agent's rules |
+| 6d | Executor cutover, review and output paths. The executor opens the boot's view after `qorpera_mark_company_machine_running` and hands over the pass; a start waits for the boot's open; windows; a boundary before every answer that carries output; the end order; the final boundary before every power-off, not held past a minute; a guest reboot's final boundary before the new boot is recorded; a restart on a narrowing or a crashed service; the placement retired on `unreadable`, and when a later boot's open on a placement that had a view is refused for the starter's authority. `machine_run` becomes "external". Every output path takes in the view's reads first | `company-machine-host` tests with a stand-in folder service: the order of window, boundary and recorded end; the final boundary before the power-off, and a stop not held past a minute; a reboot's final boundary before the new boot; the placement retired on `unreadable`; after a narrowing, the restart's refused open retires the placement, and the machine starts on a new disk with today's access, while a refused open on a placement that never had a view does not retire it. `cloudActionEffect`: `machine_run` "external", the other machine tools unchanged. The receipts, the notify continuation and a worker's read take in the view's reads before they return output. A worker's `machine_run` reaches the review with its agent's rules |
 | 6e | The report and the retirements ("What replaces `/mnt/repository`", "The report"). The binding becomes v2, and v1 placements are retired by the migration | `company-machine.test.ts` with the v2 binding and no repository device; a v1 placement retired by the migration (SQL); `machine_start` without `repositoryWorker`; 628 and 897 without the repository; the report's fields (`/company` or why not, credits, refused units, overlaps) |
 | 6f | Live proof, below | Below |
 
@@ -425,6 +433,8 @@ folder before 6d. 6e needs 6d and item 8's caches in the folder program. 6f come
   to both;
 - a change made by a Docker container while no command runs is credited to the starter at the next publish;
 - a machine whose starter lacks the root read has no `/company`, and the report says why;
+- a starter that loses the root read while its machine runs: the machine restarts, its refused open retires the
+  placement, and it starts on a new disk; until then an agent without the root read can run nothing on it;
 - a stop with a program running publishes its last change in the final boundary, before the power-off;
 - from a test machine, a vsock probe to the folder service under another machine's view is refused (the CID check),
   and nothing on the host answers on any other port;
@@ -474,7 +484,7 @@ only if a rule is wrong.
 - **Q2 (coordinator).** Review on a boot without `/company`. The design and item 10 leave such a machine's commands
   unreviewed. Recommended: review every `machine_run` from 6d, for the reasons in "Review". Otherwise 6d classes each
   call from the machine's state at the call, and `qorpera_authorize_machine_command` refuses an unreviewed start on a
-  boot that has a view.
+  placement that has or had a view.
 
 The contract and the design decide the rest, and this plan follows them: who opens the view and whose authority it
 shows, the guard (the CID check and exactly one view per machine), when to publish (item 3's quiet publish applies
