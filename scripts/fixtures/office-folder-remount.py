@@ -109,14 +109,15 @@ def decode(field):
 
 
 def mountinfo(text=None):
-    """Parsed like #1047's parseCompanyComputerMountinfo: mountpoint, optional fields, type and source."""
+    """Parsed like #1047's parseCompanyComputerMountinfo (mountpoint, optional fields, type and source), with the
+    mount's and its parent's ids."""
     entries = []
     for line in (Path("/proc/self/mountinfo").read_text() if text is None else text).splitlines():
         fields = line.split(" ")
         if "-" not in fields[6:]:
             continue
         dash = fields.index("-", 6)
-        entries.append({"mountpoint": decode(fields[4]), "options": fields[5], "optional": fields[6:dash], "fstype": fields[dash + 1], "source": decode(fields[dash + 2])})
+        entries.append({"id": int(fields[0]), "parent": int(fields[1]), "mountpoint": decode(fields[4]), "options": fields[5], "optional": fields[6:dash], "fstype": fields[dash + 1], "source": decode(fields[dash + 2])})
     return entries
 
 
@@ -133,20 +134,62 @@ def folder(entry):
     return entry["fstype"] in FOLDER_TYPES and entry["source"] == "qorpera-company"
 
 
+def stack(path, entries=None):
+    """The mounts at the path that path resolution passes through, bottom first. Walking down from /, each mountpoint
+    on the way takes only the mounts on top of the one reached so far. The parent bound onto itself joins /run's peer
+    group, so a folder mount is also propagated to /run under that bind, where nothing reaches it: it is left out."""
+    entries = mountinfo() if entries is None else entries
+    parts = Path(path).parts
+    reached, chain = None, []
+    for depth in range(1, len(parts) + 1):
+        here = [entry for entry in entries if entry["mountpoint"] == str(Path(*parts[:depth]))]
+        chain = []
+        while True:
+            if reached is None:
+                # Nothing reached yet: the bottom mount here is the one whose parent is not mounted here too.
+                ids = {entry["id"] for entry in here}
+                above = [entry for entry in here if entry["parent"] not in ids]
+            else:
+                above = [entry for entry in here if entry["parent"] == reached["id"]]
+            if not above:
+                break
+            reached = above[-1]
+            chain.append(reached)
+    return chain
+
+
 def served(path, entries=None):
-    """#1047's test, with the type a real mount has: the top mount at the path is the folder program's."""
-    top = at(path, mountinfo() if entries is None else entries)
-    return bool(top) and folder(top[-1])
+    """#1047's test, with the type a real mount has: the mount path resolution reaches is the folder program's."""
+    chain = stack(path, entries)
+    return bool(chain) and folder(chain[-1])
 
 
 def shared(path, entries=None):
-    top = at(path, mountinfo() if entries is None else entries)
-    return bool(top) and any(field.startswith("shared:") for field in top[-1]["optional"])
+    chain = stack(path, entries)
+    return bool(chain) and any(field.startswith("shared:") for field in chain[-1]["optional"])
 
 
 def count(path, entries=None):
-    """Folder mounts stacked at the path: a dead one left under a live one counts too."""
+    """Folder mounts stacked where path resolution reaches the path: a dead one left under a live one counts too."""
+    return sum(1 for entry in stack(path, entries) if folder(entry))
+
+
+def copies(path, entries=None):
+    """Folder mounts at the path anywhere, the propagated copies under covering mounts too."""
     return sum(1 for entry in at(path, mountinfo() if entries is None else entries) if folder(entry))
+
+
+def held(path):
+    """What the record keeps of each mount at the path."""
+    return [{key: entry[key] for key in ("id", "parent", "optional", "fstype", "source")} for entry in at(path, mountinfo())]
+
+
+def stat_errno(path):
+    try:
+        os.stat(path)
+        return 0
+    except OSError as error:
+        return error.errno
 
 
 def show(unit):
@@ -637,6 +680,7 @@ class Proof:
         self.views = []
         self.node = None
         self.point = ROOT / "mounts" / VIEW / "company"
+        self.first_copies = None
         self.unit = UNIT.format(VIEW)
 
     def check(self, name, passed, evidence):
@@ -698,7 +742,8 @@ class Proof:
         began = time.monotonic()
         base.run("systemctl", "start", self.unit)
         base.eventually(lambda: served(self.point), 20)
-        self.note("firstMount", {"servedAfterSeconds": round(time.monotonic() - began, 3), "unit": show(self.unit), "hostCount": count(self.point), "parentShared": shared(self.point.parent)})
+        self.note("firstMount", {"servedAfterSeconds": round(time.monotonic() - began, 3), "unit": show(self.unit), "hostCount": count(self.point), "hostCopies": copies(self.point), "hostAt": held(self.point), "parentShared": shared(self.point.parent)})
+        self.first_copies = copies(self.point)
         # The negative control: a namespace that binds the folder's own root, started once it is served.
         started = self.relay1.call("start", name="direct", shape="command", folder="direct", view=VIEW)
         self.note("directStart", started)
@@ -752,8 +797,14 @@ class Proof:
         with self.node.lock:
             self.node.files[seed] = text.encode()
 
+        # Each distinct state the host passes through: the mounts at the path, what a stat there gets, the unit's state.
+        timeline = []
+
         def back():
             now = show(self.unit)
+            state = {"mounts": [[entry["id"], entry["parent"]] for entry in at(self.point, mountinfo())], "statErrno": stat_errno(self.point), "unit": f"{now['ActiveState']}/{now['SubState']}", "NRestarts": now["NRestarts"]}
+            if not timeline or {key: timeline[-1][key] for key in state} != state:
+                timeline.append({"at": round(time.monotonic() - killed, 3), **state})
             if now["NRestarts"] == before["NRestarts"] + 1 and now["MainPID"] not in (0, before["MainPID"]) and now["ActiveState"] == "active" and served(self.point) and count(self.point) == 1:
                 return now
             return None
@@ -771,9 +822,14 @@ class Proof:
             "after": after,
             "hostServedAfterSeconds": seconds,
             "hostCount": count(self.point),
+            "hostCopies": copies(self.point),
+            "hostAt": held(self.point),
+            "hostTimeline": timeline,
+            # The last ExecStopPost run, the umount after the kill: its pid, times and exit status.
+            "stopPost": base.run("systemctl", "show", "-p", "ExecStopPost", "--value", self.unit),
             "namespaceServedAfterSeconds": restart_seconds(events, killed),
             "namespaceSawMeanwhile": gone(events, killed),
-            "journal": journal(self.unit, 30),
+            "journal": journal(self.unit, 60),
         }
 
     def after_restart(self, tag, seed, text):
@@ -801,7 +857,7 @@ class Proof:
         self.check("restartedBySystemd", restart["hostServedAfterSeconds"] is not None, {"before": restart["before"], "after": restart["after"]})
         seen, recovered, one = self.after_restart("after", "after.txt", "after restart")
         self.check("runningNamespacesRecovered", recovered, seen)
-        self.check("oneMountAfterRestart", restart["hostCount"] == 1 and one, {"kill": 1, "hostCount": restart["hostCount"], "namespaceCounts": {name: entry["namespaceCount"] for name, entry in seen.items()}})
+        self.check("oneMountAfterRestart", restart["hostCount"] == 1 and restart["hostCopies"] == self.first_copies and one, {"kill": 1, "hostCount": restart["hostCount"], "hostCopies": restart["hostCopies"], "firstMountCopies": self.first_copies, "namespaceCounts": {name: entry["namespaceCount"] for name, entry in seen.items()}})
         direct = self.ask(self.relay1, "direct", {"op": "read", "path": "before.txt"})
         self.check("directBindNegativeControl", self.direct_before["read"].get("text") == "before" and direct.get("errno") == errno.ENOTCONN, {"before": self.direct_before, "after": direct})
         self.cwd["listcwdAfterKill"] = self.ask(self.relay1, "command", {"op": "listcwd"})
@@ -847,7 +903,7 @@ class Proof:
         self.note("kill2", restart)
         seen, recovered, one = self.after_restart("after2", "after2.txt", "after second restart")
         self.check("secondRestartRecovered", restart["hostServedAfterSeconds"] is not None and recovered, {"before": restart["before"], "after": restart["after"], "namespaces": seen})
-        self.check("oneMountAfterRestart", restart["hostCount"] == 1 and one, {"kill": 2, "hostCount": restart["hostCount"], "namespaceCounts": {name: entry["namespaceCount"] for name, entry in seen.items()}})
+        self.check("oneMountAfterRestart", restart["hostCount"] == 1 and restart["hostCopies"] == self.first_copies and one, {"kill": 2, "hostCount": restart["hostCount"], "hostCopies": restart["hostCopies"], "firstMountCopies": self.first_copies, "namespaceCounts": {name: entry["namespaceCount"] for name, entry in seen.items()}})
         for name, (relay, entry) in self.over.items():
             if entry["start"]["started"]:
                 entry["afterKill2"] = self.use(relay, name, "after2.txt", "after2")
@@ -870,8 +926,8 @@ class Proof:
         # Past RestartSec=5s: a restart would have begun by now.
         time.sleep(9)
         now = show(self.unit)
-        passed = stopped is not None and now["NRestarts"] == before["NRestarts"] and now["ActiveState"] in ("failed", "inactive") and not served(self.point) and count(self.point) == 0
-        self.check("exitThreeNotRestarted", passed, {"before": before, "ended": stopped, "nineSecondsLater": now, "hostCount": count(self.point), "journal": journal(self.unit, 20)})
+        passed = stopped is not None and now["NRestarts"] == before["NRestarts"] and now["ActiveState"] in ("failed", "inactive") and not served(self.point) and copies(self.point) == 0
+        self.check("exitThreeNotRestarted", passed, {"before": before, "ended": stopped, "nineSecondsLater": now, "hostCopies": copies(self.point), "hostAt": held(self.point), "journal": journal(self.unit, 20)})
         self.note("afterExitThree", {name: self.ask(self.relay1, name, {"op": "look"}) for name, _ in CANDIDATES})
 
     def tear_down(self):
@@ -988,6 +1044,17 @@ def selftest(office_path, mount_path):
     assert properties.count("--property") == len(taken) + 3 and properties[-6:] == ["--property", "ReadWritePaths=/run/qorpera-remount-x/standin", "--property", "RuntimeMaxSec=420", "--property", "KillMode=control-group"]
     assert relay_properties(office_text, Path("/run/qorpera-remount-x"), True)[-2:] == ["--property", "ReadWritePaths=-/run/qorpera-folder/mounts"]
     point = "/run/qorpera-folder/mounts/q3/company"
+    # A real host after the first mount: the parent bound onto itself is in /run's peer group, so the folder mount is
+    # propagated to /run under that bind too.
+    real = mountinfo("\n".join([
+        "1 0 252:1 / / rw,relatime shared:1 - ext4 /dev/vda1 rw",
+        "25 1 0:25 / /run rw,nosuid,nodev shared:5 - tmpfs tmpfs rw,mode=755",
+        "36 25 0:25 /qorpera-folder/mounts/q3 /run/qorpera-folder/mounts/q3 rw,nosuid,nodev shared:5 - tmpfs tmpfs rw,mode=755",
+        f"41 36 0:42 / {point} rw,nosuid,nodev,noatime shared:14 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other",
+        f"42 25 0:42 / {point} rw,nosuid,nodev,noatime shared:14 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other",
+    ]))
+    assert [entry["id"] for entry in stack(point, real)] == [41] and served(point, real) and shared("/run/qorpera-folder/mounts/q3", real)
+    assert count(point, real) == 1 and copies(point, real) == 2 and [entry["id"] for entry in stack("/run", real)] == [25]
     sample = "\n".join([
         "36 25 0:30 / /run/qorpera-folder/mounts/q3 rw,nosuid,nodev shared:12 - tmpfs tmpfs rw",
         f"40 36 0:41 / {point} rw,nosuid,nodev shared:13 - fuse.qorpera qorpera-company rw,user_id=0,group_id=0,allow_other",
@@ -998,6 +1065,7 @@ def selftest(office_path, mount_path):
     ])
     entries = mountinfo(sample)
     assert len(entries) == 4 and served(point, entries) and count(point, entries) == 2 and shared("/run/qorpera-folder/mounts/q3", entries)
+    assert entries[0]["id"] == 36 and entries[0]["parent"] == 25 and copies(point, entries) == 2
     assert entries[3]["mountpoint"] == "/a b" and entries[3]["source"] == "tmp\tx" and not shared("/a b", entries) and not served("/a b", entries)
     covered = mountinfo(sample + f"\n60 41 0:44 / {point} rw - tmpfs tmpfs rw")
     assert not served(point, covered) and count(point, covered) == 2
