@@ -1010,6 +1010,12 @@ Decisions:
   - a run's own machine reservation and model logins (§6.1's other sites: C3 at the latest);
   - `stop_company_work`'s machine stop, under deletion's gc fence (3g).
   - `record_company_machine_error` updates one machine row and takes no company lock, on either core.
+- **Legacy sweep F2c (20260930292000)** left each of these paths only its `folder-v2` branch: the executor's brief fence,
+  placing, custody's suspend and release, a member's start, stop or delete, the sweep and giving up an executor lost
+  their gc fence. A company without a folder fails in the machine fence (42501 "Company folder is unavailable", 824 A
+  and D), and the sweep skips it (824 E). 824 E5 now sweeps a second `folder-v2` company's machine first. The node
+  reservation takes the machine fence for every kind (§6.8, §6.15), and the machine, always-on and coding check-ins
+  ask on every company.
 
 ### 6.6 C1c-3d-1 as built (migration 20260930002650, tests 817 and 818)
 
@@ -1162,6 +1168,9 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
   grant's member rows, and a private heartbeat's and a successor activation's fence. The shared surface, an agent's
   screen and the start descriptor accept only a ready folder-v2 Company File; screenshots keep only §6.21's path;
   shell check-ins ask on every company. The office reservation follows in F2c.
+- **Legacy sweep F2c (20260930292000)** left the office reservation only its `folder-v2` path:
+  `reserve_runtime_machine` takes the machine fence on every company, and its office branch accepts only a ready
+  `folder-v2` Company File (`path_gateway_version = 1` is gone).
 - **Who creates a folder-v2 office** (the coordinator, 3 October): the folder mode of `qorpera_register_runtime_office`,
   called as the company's owner the first time the company needs its computer. Today no product path registers a
   company's first computer (later ones come from `add_runtime_office_computer`); the coordinator does it, and P38
@@ -1231,6 +1240,10 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
   turn admission.
 - Not in 3h: custody (`coding_machine_custody`, `authorize_coding_machine_custody`), attach and claim take no company
   lock and need no change; the secret broker's coding credential takes the company row `KEY SHARE` already (v123).
+- **Legacy sweep F2c (20260930292000)** left each of these calls only its `folder-v2` line, so a company without a
+  folder fails in the machine fence (42501). The gc fence lines, and with them 20260925123000's text, are gone: the
+  activation template's check for that migration now looks for the folder fence line in each of the four bodies.
+  Coding check-ins ask on every company. The claim's `folder-v2` filter and the worker locks' refusal stay (step G).
 
 ### 6.9 C1c-3e as built: a dynamic routine's next run (migration 20260930009500, test 819)
 
@@ -1635,7 +1648,8 @@ Found by P13's activation check (test 838). Folder-v2 only.
 - The old body's comment that "the profile fence serializes both reservation paths" (`20260908003800`) holds only off
   `folder-v2`; there the identity's machine lock does.
 
-A company that is not `folder-v2` keeps the gc fence in each `else` branch, untested.
+A company that is not `folder-v2` keeps the gc fence in each `else` branch, untested. Legacy sweep F2c (20260930292000)
+removed those branches: every company takes these paths, and one without a folder fails at its fence (42501).
 
 **Tests.** 849:
 - A: beside a folder effect or member management (the fence `FOR NO KEY UPDATE`), none of the six calls waits.

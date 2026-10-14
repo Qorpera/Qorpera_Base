@@ -391,7 +391,8 @@ delete from public.qorpera_company_execution_pauses where profile_id = '09000000
 
 -- I. Each patched body carries its folder-v2 branch (or, for the member removal and the account metadata, its new
 -- order) exactly once: a later create or replace that drops one fails here (folder-v2 only since 3 Oct, so no
--- snapshot-v1 text pins). The helper is postgres-only, refuses a reservation's unknown sign-in or wrong capability
+-- snapshot-v1 text pins). The node reservation's fence has no branch since the legacy sweep's F2c: every kind on every
+-- company takes it. The helper is postgres-only, refuses a reservation's unknown sign-in or wrong capability
 -- before any lock, and returns nothing (locking nothing) for a release of an unknown sign-in or a snapshot-v1 company.
 create temporary table p13_patches(n serial, fn text, patched text) on commit preserve rows;
 insert into p13_patches(fn, patched) values
@@ -481,8 +482,9 @@ $p13new$),
 $p13new$),
 	('qorpera_reserve_runtime_node_machine(uuid,text,text,text,text,text,bigint,bigint)',
 		$p13new$ -- office kind. 20260930035000: a sign-in's or refresh's login machine too (the gateway's own call, after the
- -- company reservation).
- if p_provider_kind in ('machine', 'coding', 'office', 'login') and public.qorpera_company_is_folder_v2(v_profile) then
+ -- company reservation). C1c-3n (20260930046000): a run's machine (its company reservation took the identity's
+ -- machine lock). Legacy sweep F2c (20260930292000): folder-v2 only, so every kind on every company takes it.
+ perform public.qorpera_folder_machine_fence(v_profile);
 $p13new$);
 do $$
 declare v_bad text[]; v_value text;
