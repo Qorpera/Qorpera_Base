@@ -3,7 +3,8 @@
 -- (folder-v2 only, the founder's decision of 3 October): the mail-attachments Edge Function, its minute's pg_cron job,
 -- the worker's claim, completion and failure, and the fetch table.
 -- 1. The minute's job goes where it exists. The deploy notes scheduled it by hand (RUNTIME-EVENT-INTAKE.md, "Deploy
---    (M2c-1)"); a database without pg_cron, or whose job another role scheduled, is left as it is.
+--    (M2c-1)"); a database without pg_cron, whose job another role scheduled, or whose applying role may not use
+--    pg_cron is left as it is.
 -- 2. Dropped: the claim, completion and failure. Only the Edge Function called them, and no trigger or policy names
 --    them.
 -- 3. The fetch table goes, which must be empty: nothing reads it but the dropped functions (no GC root, view or foreign
@@ -13,11 +14,20 @@ set local lock_timeout = '3s';
 
 -- 1. The minute's job. ------------------------------------------------------------------------------------------------
 
+-- Only the applying role's own job: pg_cron lets nobody but a job's owner (or a superuser) unschedule it, and a role
+-- that may read every job (postgres on Supabase) need not own this one. A role without USAGE on schema cron, or
+-- without SELECT on its jobs, gets a warning, never a failed migration (as 20260928319370 schedules).
 do $$
 begin
-	if to_regclass('cron.job') is not null then
-		perform cron.unschedule(job.jobid) from cron.job as job where job.jobname = 'qorpera-mail-attachments';
+	if to_regnamespace('cron') is null then
+		return;
 	end if;
+	begin
+		perform cron.unschedule(job.jobid) from cron.job as job
+			where job.jobname = 'qorpera-mail-attachments' and job.username = current_user;
+	exception when insufficient_privilege then
+		raise warning 'The mail attachments job was not unscheduled: % may not use pg_cron', current_user;
+	end;
 end $$;
 
 -- 2. The worker's claim, completion and failure. ----------------------------------------------------------------------

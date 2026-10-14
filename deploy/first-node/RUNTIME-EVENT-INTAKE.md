@@ -693,10 +693,11 @@ fetch nobody serves is given up after a day. The new `mail-outbox` reads the old
    and saved, then sent, with the functions' logs showing no resource error.
 
 Legacy sweep D7 (`20260930336000`) removes the fetch lane. Its migration unschedules step 4's job if the migration's
-role scheduled it; a job another role scheduled stays, and that role runs
-`select cron.unschedule('qorpera-mail-attachments')`. The migration also drops the fetch table and the worker's
-functions. Then delete the function with `supabase functions delete mail-attachments`. Until then a call finds no claim
-to run and fails; nothing calls it once the job is gone.
+role scheduled it. A job another role scheduled stays, as does the job when the migration's role may not use pg_cron
+(the migration then warns); the job's owner runs `select cron.unschedule('qorpera-mail-attachments')`. The migration
+also drops the fetch table and the worker's functions. Then delete the function with
+`supabase functions delete mail-attachments`. Until then a call finds no claim to run and fails; nothing calls it once
+the job is gone.
 
 ## Deploy (I5a)
 
