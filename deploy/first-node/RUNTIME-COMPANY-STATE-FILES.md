@@ -2429,8 +2429,8 @@ worker suites (379, 385, 387, 388, 395–399, 600–606, 656) after the new colu
   fields, the request's), and the dispatch's answer names the session's phase.
 - **C3c (migration 20260930107500, SQL tests 934 and 936; the drain `coding_checkins`, LISTENER §9, C1C §6.20's hand-over):**
   349850's quiet check-ins on folder-v2. After 1, 3 and 7 quiet days, the agent that started a coding session is asked
-  once per mark whether it can be archived. The legacy ask (`qorpera_ask_quiet_coding_sessions`) still skips folder-v2
-  (026000) and stays for the executor's scan.
+  once per mark whether it can be archived. The legacy ask (`qorpera_ask_quiet_coding_sessions`) skipped folder-v2
+  (026000) and went in the legacy sweep's F3a (20260930294000).
   - **Due** (`qorpera_folder_coding_checkin_due`, 349850's rule): an open session whose worker is not active and has
     no report on its way, with a steering run, a mark reached and not asked in this quiet period, and an executor to
     archive it. The due list and the step leave out erased and retired workers (`qorpera_coding_worker_retired`), and

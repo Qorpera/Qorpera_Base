@@ -1494,9 +1494,10 @@ refused with 0A000.
 **The executor's quiet-session archive** (`archive_quiet_coding_sessions`) takes the quiet `folder-v2` sessions of one
 environment per call, up to 8. It enters their coding workers once, together (`qorpera_lock_coding_workers`: every
 worker's targets merged, so each rank is taken once in its tables' key order, and no rank is taken again after a later
-one, review r2), then archives each session in id order. The legacy quiet check-ins (`ask_quiet_coding_sessions`, a wake
-inserter with no fence that locks other companies' coding rows NOWAIT) run only when the archive entered no company, and
-skip `folder-v2` sessions, which C3c's drain asks per company (§6.20).
+one, review r2), then archives each session in id order. C3c's drain asks the quiet sessions per company (§6.20). The
+legacy quiet check-ins (`ask_quiet_coding_sessions`, a wake inserter with no fence that locked other companies' coding
+rows NOWAIT), which ran only when the archive entered no company and skipped `folder-v2` sessions, went in the legacy
+sweep's F3a (20260930294000).
 
 **The owner's calls.** A delegation locks the worker through the same entry. The answer, the delegation and the owner's
 archive check the owner again once the entry holds the owner's member row, so a removal that committed while they waited
