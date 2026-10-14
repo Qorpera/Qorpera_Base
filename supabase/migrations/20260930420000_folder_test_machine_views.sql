@@ -137,13 +137,15 @@ select pg_temp.folder_test_machine_views_patch('public.qorpera_folder_view_open(
 	$new$	elsif p_kind = 'test_machine' then
 		-- 20260930420000 (C1b-3b): a company machine's boot that the executor has just recorded: the machine not removed
 		-- and meant to run, the anchor's placement its current one, reserved and running the anchor's boot. The machine's
-		-- older views first (the open one, and the placement's newest, whose read set this view carries), which waits out
+		-- opens one at a time, so the next statement's snapshot sees the view an earlier open made. Then the machine's
+		-- older views (the open one, and the placement's newest, whose read set this view carries), which waits out
 		-- their last save and release; then the machine fence, the machine and the placement FOR SHARE, in custody's
 		-- order; then the checks, in new statements. The view names the starter's agent and member.
 		if p_anchor - array['companyMachineId','placementId','bootId'] <> '{}'::jsonb
 			or exists (select 1 from unnest(array['companyMachineId','placementId','bootId']) f(name)
 				where coalesce(p_anchor ->> f.name, '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') then
 			raise exception 'Folder view anchor is invalid' using errcode = '22023'; end if;
+		perform pg_advisory_xact_lock(hashtextextended('qorpera.test-machine-view:' || (p_anchor ->> 'companyMachineId'), 0));
 		perform 1 from public.qorpera_folder_views where company_machine_id = (p_anchor ->> 'companyMachineId')::uuid
 			and (state = 'open' or id = (select v.id from public.qorpera_folder_views v
 				where v.placement_id = (p_anchor ->> 'placementId')::uuid order by v.created_at desc, v.id desc limit 1))
