@@ -231,6 +231,26 @@ it("has no wall-clock deadline: a run that takes days completes and records it",
 	expect(f.terminate).not.toHaveBeenCalled();
 });
 
+it("records the default sandbox limits and refuses one outside its range before starting the bridge", async () => {
+	const f = fixture();
+	const result = await executeNativeCompanyRunnerJob(f.options);
+	expect(result.usage.limits).toEqual({
+		wallTimeMs: Number.MAX_SAFE_INTEGER,
+		memoryBytes: 2 * 1024 * 1024 * 1024,
+		cpuMillis: 2000,
+		maxPids: 256,
+		maxInputBytes: 16 * 1024 * 1024 * 1024,
+		maxOutputBytes: 256 * 1024 * 1024,
+		maxResultBytes: 32 * 1024,
+	});
+	expect(result.result).toMatchObject({ usage: { limits: { cpu_millis: 2000 } } });
+	const refused = fixture();
+	await expect(executeNativeCompanyRunnerJob({ ...refused.options, limits: { cpuCount: 0 } })).rejects.toThrow(
+		"Sandbox CPU count is outside the supported range",
+	);
+	expect(refused.startCompany).not.toHaveBeenCalled();
+});
+
 it("uses a closed, path-free HTTP execution schema with no copied job payload", async () => {
 	const f = fixture();
 	const fetcher = vi.fn(async () =>
