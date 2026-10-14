@@ -290,7 +290,7 @@ checked by each slice's functional test (647, 652, 656, 658). No snapshot-v1 dig
 | `pin_wake_occurrence`, `routine_occurrence_lifecycle` | their `folder-v2` modes (§5.6): text patches, each keeping the legacy statement as its `else` branch; the digest was of the patched text with the patch reversed (removed since 3 October, as above). Legacy sweep F1a (20260930244000) removed `routine_occurrence_lifecycle`'s `else`, and F1b (20260930245000) `pin_wake_occurrence`'s | 2c part 1 |
 | `send_coworker_message`, `read_native_wake` | their `folder-v2` bodies (§5.6), by a first line. Legacy sweep F1b (20260930245000) left `read_native_wake` only that line, and F1e (20260930248000) `send_coworker_message` | 2c part 1 |
 | `enqueue_routine_wake` (routine firing) | its `folder-v2` mode in place of the gc fence, after its argument checks (§5.6); moved here from C1c-3 because part 1 closes the legacy path (F2-6's test 709 fires file routines). Legacy sweep F1a (20260930244000) removed the legacy path, here and in `advance_routine_next_due` | 2c part 1 |
-| the legacy multi-company loops: `materialize_wake_execution_runs`, the drains (`office_activation`, `worker`, `machine`, `company_file` with the dynamic-routine tick), `materialize_session_execution_runs` | skip `folder-v2` companies in the scan's `WHERE` clause, before their first lock. `materialize_session_turn_requests` needs no skip: its scan requires the company's head snapshot, which a `folder-v2` company never has (`qorpera_company_files_core_head`) | 2c part 1 |
+| the legacy multi-company loops: `materialize_wake_execution_runs`, the drains (`office_activation`, `worker`, `machine`, `company_file` with the dynamic-routine tick), `materialize_session_execution_runs` | skip `folder-v2` companies in the scan's `WHERE` clause, before their first lock. `materialize_session_turn_requests` needs no skip: its scan requires the company's head snapshot, which a `folder-v2` company never has (`qorpera_company_files_core_head`). Legacy sweep F3b (20260930295000) dropped all of them, the event drain, the Company Proposal review materializer and their helpers included | 2c part 1 |
 | `handoff_run_sponsor`, receipt recovery | their `folder-v2` modes (§5.6, §5.9) | 2c part 2 |
 | `complete_runner_job_v6` | the folder completion lane, in place of C1c-1's guard | 2c part 2 |
 
@@ -425,7 +425,7 @@ checked by each slice's functional test (647, 652, 656, 658). No snapshot-v1 dig
     - The dynamic-routine tick (`restore_dynamic_routine_runs`, inside the Company File drain) skips `folder-v2` too:
       it is routine firing, which gets its folder mode in C1c-3. The routine expiry sweep does not skip: it inserts no
       wake and takes no company row, and F2-6 relies on it for file routines (its 40P01 against a multi-routine save
-      is documented there).
+      is documented there). Legacy sweep F3b (20260930295000) dropped the tick with the drain.
     - Routine firing (`enqueue_routine_wake`, which the scheduler calls per routine after `list_routine_schedule_heads`)
       gets its `folder-v2` mode here, not in C1c-3: part 1 closes the legacy path, and F2-6's test 709 fires file
       routines. `qorpera_folder_enqueue_routine_wake`, after the legacy argument checks, in place of the gc fence: the
@@ -660,7 +660,8 @@ Concurrency tests (dblink, with `current_database()`), by slice:
       creation shape). The routine lifecycle at `FOR NO KEY UPDATE` runs beside a routine-file commit and beside the
       routine run's tool call.
   14. A materializer pass with a `folder-v2` wake beside a snapshot-v1 wake: the snapshot-v1 wake materializes, and the
-      `folder-v2` company row is never locked.
+      `folder-v2` company row is never locked (legacy sweep F3b, 20260930295000, dropped the materializers and their
+      tests, 656 §7's loops and 657 F).
   15. Removing another member while a run sends: no deadlock. Removing the run's own requester is C1c-3's case, and so
       is removing the member who owns the run's sponsor login: that revokes the login, and the cascade ends the run's
       job, which needs the job lock a completion or tool call holds (40P01 today on both lanes; C1c-3's reordered
@@ -669,7 +670,7 @@ Concurrency tests (dblink, with `current_database()`), by slice:
   Part 1 builds 11 (657 A, B, G: the first message and the recipient's own send, crossed messages, archiving the
   sender; the archiving save is rolled back in its first order, and 647 covers an archived run's agent), 13 (656 §2
   and §3, 657 D; "beside a routine-file commit" is a wait at the routine, then the insert lands), 14 (656 §7 for every
-  loop, 657 F with the `folder-v2` company row held `FOR UPDATE` elsewhere) and 15 (657 E), plus the thread that
+  loop, 657 F with the `folder-v2` company row held `FOR UPDATE` elsewhere, until legacy sweep F3b) and 15 (657 E), plus the thread that
   changed while a message waited (657 C). Part 2 builds 12 (658 §2–§4 for the dispositions and the lane's checks, 659
   A and B for a send and a release in flight, 659 C for a tool call during completion; a `folder-v2` job never
   reaches `before_path_runtime`, shown by its `company_file.runtime`), plus the handoff (658 §7) and recovery (658
@@ -1002,7 +1003,8 @@ Decisions:
   the definition before 3f (824 H until 3 October; legacy sweep A, #829, removed that digest).
 - **Decided with 3f** (§6.1): the machine-event drain on `folder-v2` goes with 3i; the worker drain is F2's (F2-5b-3,
   the shared folder drains' `workers`). Both deliver to a
-  parent run and need the per-company admission loop (`qorpera_drain_machine_wakes` skips `folder-v2`; until 3i, a
+  parent run and need the per-company admission loop (`qorpera_drain_machine_wakes` skipped `folder-v2` until legacy
+  sweep F3b, 20260930295000, dropped it; until 3i, a
   `folder-v2` run is not told when its machine is running or its command ended). Who creates a `folder-v2` office stays
   with 3j.
 - Not in 3f:
@@ -1250,7 +1252,7 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
 An agent's dynamic routine (`when: once`) gets its next run from the control-plane tick
 (`qorpera_restore_dynamic_routine_runs`, inside the Company File drain that `reconcile` runs). That tick visits every
 company in one transaction, so since C1c-2c part 1 it skips `folder-v2`, and a `folder-v2` dynamic routine never ran
-again after its first. 3e gives it a `folder-v2` path with one company per transaction, as routine firing has
+again after its first (legacy sweep F3b, 20260930295000, dropped that tick). 3e gives it a `folder-v2` path with one company per transaction, as routine firing has
 (`qorpera_folder_enqueue_routine_wake`, §5.6):
 - **`qorpera_folder_dynamic_routines_due(after, limit)`** (service role) lists the `folder-v2` dynamic routines that may
   be missing their run, with the legacy tick's own filter, paged by routine id like the schedule heads, without a lock.
@@ -1768,7 +1770,8 @@ each `else`.
     read again when it becomes a run, and on every tool call of that run.
   - The edge function's `FOLDER_DRAINS` gets `office_wakes` (maximum 40), and the orchestrator's `CLOUD_FOLDER_DRAINS`
     gets `{name: "office_wakes", companyLimit: 16}`.
-  - Since P28a nothing calls the old drain (`qorpera_drain_office_activation_wakes`). It stays until the legacy removal.
+  - Since P28a nothing calls the old drain (`qorpera_drain_office_activation_wakes`). Legacy sweep F3b (20260930295000)
+    dropped it.
 - **The waiter check.** `qorpera_folder_office_waiter_authorized(waiter)` makes the checks of
   `qorpera_office_waiter_authorized` as plain reads, and that function answers with it on folder-v2 (since legacy sweep
   F2a, 20260930290000, on every company). A folder-v2 write's
