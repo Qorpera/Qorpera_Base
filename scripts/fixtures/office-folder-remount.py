@@ -945,6 +945,121 @@ def cleanup(directory):
     print(json.dumps({"cleanup": "done", "claimed": claimed, "steps": steps}))
 
 
+def refused(call, *args):
+    try:
+        call(*args)
+    except ValueError:
+        return True
+    return False
+
+
+def selftest(office_path, mount_path):
+    """Unprivileged checks of the unit rewrite, the office lines, mountinfo reading and the synthetic node's wire.
+    Deliberately claims no FUSE, namespace or systemd proof."""
+    mount_text = mount_path.read_text()
+    lines = proof_unit(mount_text, "/var/lib/qorpera-remount-x/qorpera-folder", "/run/qorpera-remount-x/node.sock", 1000, 1001).splitlines()
+    assert "ExecStart=/var/lib/qorpera-remount-x/qorpera-folder mount --connect unix:/run/qorpera-remount-x/node.sock --view-file /run/qorpera-folder/views/%i.json --mountpoint /run/qorpera-folder/mounts/%i/company --state-dir /run/qorpera-folder/state/%i --allow-other yes --owner-uid 1000 --owner-gid 1001" in lines
+    assert "ConditionPathExists=/run/qorpera-folder/views/%i.json" in lines and "ExecStopPost=-/usr/bin/umount -l /run/qorpera-folder/mounts/%i/company" in lines
+    assert "[Install]" not in lines and not any(line.startswith("ExecStartPre=/usr/bin/install") for line in lines)
+    # Every other line of master's unit is kept as it is.
+    assert len(lines) == len(mount_text.splitlines()) - 4 and all(line in lines for line in mount_text.splitlines() if line not in MOUNT_LINES)
+    for args in (("1000", 1001), (0, 1001), (1000, 4294967295)):
+        assert refused(proof_unit, mount_text, "p", "s", *args)
+    assert refused(proof_unit, mount_text.replace("WantedBy=multi-user.target", ""), "p", "s", 1000, 1001)
+    assert refused(proof_unit, mount_text + "\nReadWritePaths=/srv/other\n", "p", "s", 1000, 1001)
+    office_text = office_path.read_text()
+    taken, skipped = office_lines(office_text)
+    assert {line.split("=", 1)[0] for line in taken} == CONFINEMENT and {line.split("=", 1)[0] for line in skipped} <= OPERATIONAL
+    assert refused(office_lines, office_text.replace("[Service]", "[Service]\nPrivateNetwork=yes", 1))
+    assert refused(office_lines, office_text.replace("\nNoNewPrivileges=", "\n#NoNewPrivileges="))
+    properties = relay_properties(office_text, Path("/run/qorpera-remount-x"))
+    assert properties.count("--property") == len(taken) + 3 and properties[-6:] == ["--property", "ReadWritePaths=/run/qorpera-remount-x/standin", "--property", "RuntimeMaxSec=420", "--property", "KillMode=control-group"]
+    assert relay_properties(office_text, Path("/run/qorpera-remount-x"), True)[-2:] == ["--property", "ReadWritePaths=-/run/qorpera-folder/mounts"]
+    point = "/run/qorpera-folder/mounts/q3/company"
+    sample = "\n".join([
+        "36 25 0:30 / /run/qorpera-folder/mounts/q3 rw,nosuid,nodev shared:12 - tmpfs tmpfs rw",
+        f"40 36 0:41 / {point} rw,nosuid,nodev shared:13 - fuse.qorpera qorpera-company rw,user_id=0,group_id=0,allow_other",
+        f"41 40 0:42 / {point} rw,nosuid,nodev shared:14 - fuse.qorpera qorpera-company rw,user_id=0,group_id=0,allow_other",
+        "50 25 0:43 / /a\\040b rw master:3 - tmpfs tmp\\011x rw",
+        "not a mountinfo line",
+    ])
+    entries = mountinfo(sample)
+    assert len(entries) == 4 and served(point, entries) and count(point, entries) == 2 and shared("/run/qorpera-folder/mounts/q3", entries)
+    assert entries[3]["mountpoint"] == "/a b" and entries[3]["source"] == "tmp\tx" and not shared("/a b", entries) and not served("/a b", entries)
+    covered = mountinfo(sample + f"\n60 41 0:44 / {point} rw - tmpfs tmpfs rw")
+    assert not served(point, covered) and count(point, covered) == 2
+    assert choose_mode([{"mode": "0000", "served": False}, {"mode": "0700", "served": True}, {"mode": "0755", "served": True}]) == "0700"
+    assert choose_mode([{"mode": mode, "served": False} for mode in MODES]) is None
+    events = [{"at": 9.0, "names": ["before.txt"]}, {"at": 10.5, "listErrno": 107}, {"at": 10.6, "dev": 1, "names": []}, {"at": 10.7, "listErrno": 107}, {"at": 12.25, "names": ["after.txt", "before.txt"]}]
+    assert restart_seconds(events, 10.0) == 2.25 and restart_seconds(events[:4], 10.0) is None
+    assert gone(events, 10.0) == [{"listErrno": 107}, {"dev": 1, "names": []}]
+    with tempfile.TemporaryDirectory(prefix="qorpera-remount-wire-") as tmp:
+        node = RemountNode(Path(tmp) / "node.sock", heartbeat=0.2)
+        try:
+            def hello(view, role, abandon=False):
+                conn = socket.socket(socket.AF_UNIX)
+                conn.settimeout(3)
+                conn.connect(str(Path(tmp) / "node.sock"))
+                base.send(conn, "H", {"protocol": 3, "environmentId": "synthetic", "viewId": view, "pass": "synthetic-pass", "role": role, **({"abandon": True} if abandon else {})})
+                kind, body = base.receive(conn)
+                return conn, kind, json.loads(body)
+
+            def call(conn, kind, value):
+                base.send(conn, kind, value)
+                kind, body = base.receive(conn)
+                return kind, body if kind == "d" else json.loads(body)
+
+            def part(handle, offset, chunk, data):
+                header = json.dumps({"handle": handle, "index": 0, "offset": offset, "bytes": len(chunk), "sha256": hashlib.sha256(chunk).hexdigest()}).encode()
+                return struct.pack(">I", len(header)) + header + data
+
+            feed, kind, ok = hello("w", "feed")
+            assert kind == "h" and ok == {"protocol": 3, "viewId": "w", "asOfSeq": 0, "readOnly": False}
+            # A heartbeat is a change with no paths.
+            kind, body = base.receive(feed)
+            assert kind == "c" and json.loads(body) == {"seq": 0, "resync": False, "paths": []}
+            base.send(feed, "a", {"seq": 0})
+            io, kind, _ = hello("w", "io")
+            kind, opened = call(io, "O", {"path": "new.txt", "create": True, "exclusive": True, "truncate": False})
+            assert kind == "o" and opened["size"] == 0 and node.files["new.txt"] == b""
+            for offset in (0, 3):
+                assert call(io, "K", part(opened["handle"], offset, b"abcdef", b"abcdef"[offset:offset + 3]))[0] == "k"
+            assert call(io, "G", {"handle": opened["handle"], "index": 0, "offset": 2, "length": 3}) == ("d", b"cde") and node.files["new.txt"] == b""
+            # A truncating open empties at once; a kept one starts from the saved bytes.
+            assert call(io, "O", {"path": "loss-truncate.txt", "create": False, "exclusive": False, "truncate": True})[0] == "o" and node.files["loss-truncate.txt"] == b""
+            kind, kept = call(io, "O", {"path": "loss-keep.txt", "create": False, "exclusive": False, "truncate": False})
+            assert kept["size"] == 12 and kept["version"] == version(b"saved before")
+            assert call(io, "O", {"path": "loss-keep.txt", "create": True, "exclusive": True, "truncate": False}) == ("e", {"code": "EXISTS", "message": ""})
+            # The next mount's abandon drops every handle the view held and commits none of them.
+            again, kind, _ = hello("w", "io", abandon=True)
+            assert kind == "h" and not node.handles and not node.owners
+            assert {key: node.ops[-1][key] for key in ("op", "viewId", "names")} == {"op": "abandoned", "viewId": "w", "names": ["loss-keep.txt", "loss-truncate.txt", "new.txt"]}
+            assert node.files["new.txt"] == b"" and node.files["loss-keep.txt"] == b"saved before"
+            again.close()
+            kind, opened = call(io, "O", {"path": "done.txt", "create": True, "exclusive": False, "truncate": True})
+            assert call(io, "K", part(opened["handle"], 0, b"done", b"done"))[0] == "k"
+            assert call(io, "C", {"handle": opened["handle"], "size": 4}) == ("k", {"version": version(b"done")})
+            listing = {entry["name"]: entry["version"] for entry in call(io, "L", {"path": ""})[1]["entries"]}
+            assert listing["done.txt"] == version(b"done") and listing["before.txt"] == version(b"before")
+            assert call(io, "R", {"path": "done.txt", "version": version(b"done"), "offset": 1, "length": 2}) == ("d", b"on")
+            # A closed view: its feed hears VIEW_CLOSED and a new hello is refused.
+            node.close_view("w")
+            kind = "c"
+            while kind == "c":
+                kind, body = base.receive(feed)
+            assert kind == "e" and json.loads(body)["code"] == "VIEW_CLOSED"
+            late, kind, answer = hello("w", "io")
+            assert kind == "e" and answer["code"] == "VIEW_CLOSED"
+            for conn in (feed, io, late):
+                conn.close()
+            time.sleep(0.3)
+            assert not node.errors, node.errors
+            assert [(entry["viewId"], entry["role"], entry["abandon"]) for entry in node.hellos] == [("w", "feed", False), ("w", "io", False), ("w", "io", True), ("w", "io", False)]
+        finally:
+            node.close()
+    print(json.dumps({"wireFixture": "passed", "privilegedProof": "not-run"}))
+
+
 if __name__ == "__main__":
     mode = sys.argv[1]
     if mode == "proof":
