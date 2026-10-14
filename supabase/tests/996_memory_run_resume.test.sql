@@ -24,8 +24,9 @@ begin
 		'{"stepsRead":0,"unknownCalls":[]}'), '55000', 'Run is not resumed');
 end $$;
 
--- An indexed log has one finished step, one pending call, and one erased placeholder. Receipts have no call/step
--- mapping, so its unknown operation must remain a separate warning even if it might have been the same action.
+-- An indexed log has one finished step, one pending call, and one erased step, finished as W1b's index writes it. The
+-- erased step's result is gone, so it is outcome unknown too (§12). Receipts have no call/step mapping, so its unknown
+-- operation must remain a separate warning even if it might have been the same action.
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb; v_run public.qorpera_execution_runs;
 	v_receipt uuid := extensions.gen_random_uuid();
@@ -38,7 +39,7 @@ begin
 	update public.qorpera_memory_run_logs set step_count = 3 where run_id = v_run.id;
 	insert into public.qorpera_memory_run_steps(environment_id, run_id, j, tool, call_id, narrow, erased, finished,
 		line_sha256, fixed_sha256, block_path, block_key, block_path_version, commit_id)
-	select v_run.environment_id, v_run.id, j, 'company_read', 'resume-call-' || j, false, j = 2, j = 0,
+	select v_run.environment_id, v_run.id, j, 'company_read', 'resume-call-' || j, false, j = 2, j in (0, 2),
 		repeat('a', 64), repeat('b', 64), 'agents/alice/runs/' || v_run.id || '/log/00000000.jsonl',
 		'agents/alice/runs/' || v_run.id || '/log/00000000.jsonl', extensions.gen_random_uuid(), extensions.gen_random_uuid()
 	from generate_series(0, 2) j;
@@ -46,6 +47,7 @@ begin
 	perform set_config('qorpera_test.resume_next', pg_temp.base_start(v_run.id)::text, true);
 	perform set_config('qorpera_test.resume_request', jsonb_build_object('stepsRead', 3, 'unknownCalls', jsonb_build_array(
 		jsonb_build_object('call', 'resume-call-1', 'step', 1, 'receiptId', null),
+		jsonb_build_object('call', 'resume-call-2', 'step', 2, 'receiptId', null),
 		jsonb_build_object('call', null, 'step', null, 'receiptId', v_receipt)))::text, true);
 end $$;
 
@@ -65,6 +67,25 @@ begin
 	perform pg_temp.base_assert(public.qorpera_memory_run_resume(v_next) = v_before, 'same context after native start');
 end $$;
 
+-- After its start, the newest start must be on this binding's lease. The start keeps the leaseId as the binding spelled
+-- it, so the two compare as uuids. A start on another lease ends the resume.
+savepoint resume_lease;
+do $$
+declare v_next jsonb := current_setting('qorpera_test.resume_next')::jsonb; v_start bigint;
+begin
+	select max(id) into v_start from public.qorpera_execution_run_events
+	where run_id = (v_next ->> 'runId')::uuid and event_type = 'runner_started';
+	update public.qorpera_execution_run_events set payload = payload || jsonb_build_object('leaseId', upper(v_next ->> 'leaseId'))
+	where id = v_start;
+	perform pg_temp.base_assert(public.qorpera_memory_run_resume(v_next) ->> 'why' = 'restart', 'the start lease compares as a uuid');
+	update public.qorpera_execution_run_events set payload = payload || jsonb_build_object('leaseId', extensions.gen_random_uuid())
+	where id = v_start;
+	perform pg_temp.base_error(format('select public.qorpera_memory_run_resume(%L)', v_next), '55000', 'Run resume is unavailable');
+	perform pg_temp.base_error(format('select public.qorpera_memory_run_resume_record(%L, %L)', v_next,
+		current_setting('qorpera_test.resume_request')), '55000', 'Run resume is unavailable');
+end $$;
+rollback to savepoint resume_lease;
+
 -- Closed shapes, integer limits, distinct identifiers and complete unknown sets.
 do $$
 declare v_next jsonb := current_setting('qorpera_test.resume_next')::jsonb;
@@ -79,20 +100,38 @@ begin
 		v_request || '{"unknownCalls":[{"call":"x","step":-1,"receiptId":null}]}',
 		v_request || '{"unknownCalls":[{"call":"x","step":null,"receiptId":null}]}',
 		v_request || '{"unknownCalls":[{"call":null,"step":null,"receiptId":"bad"}]}',
-		jsonb_set(v_request, '{unknownCalls,1,step}', '1'),
+		jsonb_set(v_request, '{unknownCalls,2,step}', '1'),
 		jsonb_set(v_request, '{unknownCalls}', (v_request -> 'unknownCalls') || (v_request -> 'unknownCalls')),
 		jsonb_set(v_request, '{unknownCalls,0,call}', '"wrong-call"'),
 		jsonb_set(v_request, '{unknownCalls,0,step}', '0'),
-		jsonb_set(v_request, '{unknownCalls,0}', '{"call":"resume-call-2","step":2,"receiptId":null}'),
-		jsonb_set(v_request, '{unknownCalls,1,receiptId}', to_jsonb(extensions.gen_random_uuid())),
-		jsonb_set(v_request, '{unknownCalls}', jsonb_build_array(v_request #> '{unknownCalls,0}')),
-		jsonb_set(v_request, '{unknownCalls}', jsonb_build_array(v_request #> '{unknownCalls,1}')))) loop
+		jsonb_set(v_request, '{unknownCalls,1,call}', '"resume-call-1"'),
+		jsonb_set(v_request, '{unknownCalls,2,receiptId}', to_jsonb(extensions.gen_random_uuid())),
+		jsonb_set(v_request, '{unknownCalls}', jsonb_build_array(v_request #> '{unknownCalls,1}', v_request #> '{unknownCalls,2}')),
+		jsonb_set(v_request, '{unknownCalls}', jsonb_build_array(v_request #> '{unknownCalls,0}', v_request #> '{unknownCalls,2}')),
+		jsonb_set(v_request, '{unknownCalls}', jsonb_build_array(v_request #> '{unknownCalls,0}', v_request #> '{unknownCalls,1}')))) loop
 		perform pg_temp.base_error(format('select public.qorpera_memory_run_resume_record(%L, %L)', v_next, v_bad), '22023');
 	end loop;
 	perform pg_temp.base_error(format('select public.qorpera_memory_run_resume_record(%L, %L)', v_next,
 		v_request || '{"stepsRead":4}'), '55000', 'Run resume log is unavailable or changed');
 	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_memory_run_resumes), 'refusals record nothing');
 end $$;
+
+-- The record asks the gate too: a narrow log, or one with a step erase open, is not resumed from.
+savepoint resume_gate;
+update public.qorpera_memory_run_logs set narrow = true
+where run_id = (current_setting('qorpera_test.resume_next')::jsonb ->> 'runId')::uuid;
+select pg_temp.base_error(format('select public.qorpera_memory_run_resume_record(%L, %L)',
+	current_setting('qorpera_test.resume_next'), current_setting('qorpera_test.resume_request')),
+	'55000', 'Run resume log is unavailable or changed') \g /dev/null
+rollback to savepoint resume_gate;
+insert into public.qorpera_memory_run_generations(environment_id, run_id, erase_open)
+select run.environment_id, run.id, extensions.gen_random_uuid() from public.qorpera_execution_runs as run
+where run.id = (current_setting('qorpera_test.resume_next')::jsonb ->> 'runId')::uuid
+on conflict (environment_id, run_id) do update set erase_open = excluded.erase_open;
+select pg_temp.base_error(format('select public.qorpera_memory_run_resume_record(%L, %L)',
+	current_setting('qorpera_test.resume_next'), current_setting('qorpera_test.resume_request')),
+	'55000', 'Run resume log is unavailable or changed') \g /dev/null
+rollback to savepoint resume_gate;
 
 -- One durable observation, exact replay, and no recomputation after the live log changes.
 do $$
@@ -103,7 +142,8 @@ begin
 	perform pg_temp.base_assert(v_answer = jsonb_build_object('schema', 'qorpera.memory-run-resume-record/v1',
 		'why', 'restart', 'stepsRead', 3, 'unknownCalls', jsonb_build_array(
 			(v_request #> '{unknownCalls,0}') || '{"logicalOperationKey":null}',
-			(v_request #> '{unknownCalls,1}') || '{"logicalOperationKey":"resume-operation"}')), 'record enriches only receipt key');
+			(v_request #> '{unknownCalls,1}') || '{"logicalOperationKey":null}',
+			(v_request #> '{unknownCalls,2}') || '{"logicalOperationKey":"resume-operation"}')), 'record enriches only receipt key');
 	perform pg_temp.base_assert(public.qorpera_memory_run_resume_record(v_next, v_request) = v_answer, 'same request replays');
 	perform pg_temp.base_error(format('select public.qorpera_memory_run_resume_record(%L, %L)', v_next,
 		v_request || '{"stepsRead":4}'), '23505', 'Run resume was recorded otherwise');
@@ -129,8 +169,8 @@ begin
 	perform pg_temp.rc_begin(v_after);
 	perform pg_temp.base_assert(public.qorpera_memory_run_resume(v_after) ->> 'why' = 'limit_reset', 'real usage-limit reason');
 	v_answer := public.qorpera_memory_run_resume_record(v_after, current_setting('qorpera_test.resume_request')::jsonb);
-	perform pg_temp.base_assert(v_answer ->> 'why' = 'limit_reset' and jsonb_array_length(v_answer -> 'unknownCalls') = 2,
-		'new attempt keeps both unknown sources');
+	perform pg_temp.base_assert(v_answer ->> 'why' = 'limit_reset' and jsonb_array_length(v_answer -> 'unknownCalls') = 3,
+		'new attempt keeps every unknown source');
 	perform pg_temp.base_assert((select count(*) = 2 from public.qorpera_memory_run_resumes), 'one row per attempt');
 	perform pg_temp.base_error(format('select public.qorpera_memory_run_resume_record(%L, null)', v_next), '42501');
 end $$;
