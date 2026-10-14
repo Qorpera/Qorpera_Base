@@ -100,7 +100,8 @@ export class FakeCore implements FolderCore {
 	profileCalls = 0;
 	/** Core views, as C1b-3a keeps them: id to pass and state, the view's kind and the machine allocation it was opened
 	 * on (null for a run box: 20260930104000), what each renewal said was unsaved since, and for a shell command's view
-	 * (20260930183000) whether its command has ended. */
+	 * (20260930183000) whether its command has ended. A coding session's names its coding machine, and a coding or code
+	 * host view the service that serves it (F3 5a `served_by`). */
 	readonly views = new Map<
 		string,
 		{
@@ -110,10 +111,14 @@ export class FakeCore implements FolderCore {
 			environmentId: string;
 			kind: string;
 			machineId: string | null;
+			codingMachineId: string | null;
+			servedBy: string | null;
 			unsaved: (string | null)[];
 			ended: boolean;
 		}
 	>();
+	/** Every clean stop the core heard (F3 5a `qorpera_folder_service_stopped`), by service. */
+	readonly stopped: string[] = [];
 	renewalFails = false;
 	/** The database's clock, for leases. */
 	now: () => number = Date.now;
@@ -126,7 +131,12 @@ export class FakeCore implements FolderCore {
 	openView(
 		viewId: string,
 		pass: string,
-		options: { environmentId?: string; kind?: string; machineId?: string | null } = {},
+		options: {
+			environmentId?: string;
+			kind?: string;
+			machineId?: string | null;
+			codingMachineId?: string | null;
+		} = {},
 	): void {
 		this.views.set(viewId, {
 			pass,
@@ -135,9 +145,18 @@ export class FakeCore implements FolderCore {
 			environmentId: options.environmentId ?? ENV,
 			kind: options.kind ?? "run_box",
 			machineId: options.machineId ?? null,
+			codingMachineId: options.codingMachineId ?? null,
+			servedBy: null,
 			unsaved: [],
 			ended: false,
 		});
+	}
+
+	/** Whose read set a view's releases reach and its commits are checked against: a coding session's is its machine's
+	 * (F3 5a), every other view's its own. */
+	readSetOf(viewId: string): string {
+		const coding = this.views.get(viewId)?.codingMachineId;
+		return coding ? `machine:${coding}` : viewId;
 	}
 
 	/** The office's report ends a shell command's view's command: the view still renews, and saves only its final. */
@@ -380,8 +399,10 @@ export class FakeCore implements FolderCore {
 		if (units.length === 0 && !final) throw new CoreRefusal("invalid");
 		if (view?.kind === "computer_shell_command" && view.ended && !final)
 			throw new CoreRefusal("denied", COMMAND_ENDED);
-		// The view's read set is checked again before its save (20260928469330): a read it no longer sees refuses it.
-		if (actor.kind === "view" && [...(this.readSets.get(actor.viewId)?.keys() ?? [])].some((p) => this.hidden(p)))
+		// The view's read set is checked again before its save (20260928469330): a read it no longer sees refuses it. A
+		// coding view's is its machine's (F3 5a).
+		const readSet = actor.kind === "view" ? this.readSets.get(this.readSetOf(actor.viewId)) : undefined;
+		if ([...(readSet?.keys() ?? [])].some((p) => this.hidden(p)))
 			throw new CoreRefusal("denied", "A read is no longer readable");
 		if (this.commitRefusal) throw new CoreRefusal(this.commitRefusal);
 		if (this.commitFailures.count > 0 && this.commitFailures.mode === "down") {
@@ -571,6 +592,8 @@ export class FakeCore implements FolderCore {
 	releaseFailures: { mode: "lost" | "down"; count: number } = { mode: "down", count: 0 };
 	/** When set, the core refuses every release not asked before, and why (the pause, the run check, and the like). */
 	releaseRefusal: CoreRefusal["reason"] | undefined;
+	/** When set, every release waits for it before it is heard. */
+	releaseGate: Promise<void> | undefined;
 
 	/** A release id used once per view: the same reads replay (the view's pass checked, open or not), others are refused
 	 * (22023). A read of a path the view does not see now is refused whole (42501, as `qorpera_folder_release_pairs`
@@ -581,6 +604,7 @@ export class FakeCore implements FolderCore {
 		releaseId: string,
 		reads: readonly ReleasedRead[],
 	): Promise<ReleaseAnswer> {
+		await this.releaseGate;
 		this.releases.push({ viewId: actor.viewId, releaseId, reads });
 		if (reads.length > 10_000 || reads.some((r) => r.path === "")) throw new CoreRefusal("invalid");
 		const view = this.views.get(actor.viewId);
@@ -601,9 +625,12 @@ export class FakeCore implements FolderCore {
 		}
 		if (reads.some((r) => this.hidden(r.path)))
 			throw new CoreRefusal("unreadable", "A released read is no longer readable");
-		const set = this.readSets.get(actor.viewId) ?? new Map<string, ReleasedRead>();
-		for (const read of reads) set.set(read.path, read);
-		this.readSets.set(actor.viewId, set);
+		// A code host's view records nothing (F3 5a): its machine reaches no model.
+		if (view.kind !== "code_host") {
+			const set = this.readSets.get(this.readSetOf(actor.viewId)) ?? new Map<string, ReleasedRead>();
+			for (const read of reads) set.set(read.path, read);
+			this.readSets.set(this.readSetOf(actor.viewId), set);
+		}
 		this.#releaseAnswers.set(key, request);
 		return this.#released({ releaseId, replay: false });
 	}
@@ -617,20 +644,44 @@ export class FakeCore implements FolderCore {
 		return answer;
 	}
 
-	async renewView(viewId: string, pass: string, unsavedSince: string | null): Promise<ViewRenewal> {
+	/** A coding or code host view's renewal names its service (22023 without one): the first sets `served_by`, and
+	 * another service's while it is set closes the view (`service_crashed`, F3 5a). */
+	async renewView(viewId: string, pass: string, unsavedSince: string | null, service: string): Promise<ViewRenewal> {
 		const view = this.views.get(viewId);
 		if (!view || view.pass !== pass) throw new CoreRefusal("denied");
 		if (this.renewalFails) throw new Error("The database did not answer");
+		const served = view.kind === "coding_session" || view.kind === "code_host";
+		if (served && !service) throw new CoreRefusal("invalid");
 		view.renewals++;
 		view.unsaved.push(unsavedSince);
+		if (view.state === "open" && served) {
+			if (view.servedBy !== null && view.servedBy !== service) {
+				view.state = "closed";
+				return { state: "closed", reason: "service_crashed" };
+			}
+			view.servedBy = service;
+		}
 		return view.state === "open"
 			? {
 					state: "open",
 					leaseUntil: new Date(this.now() + 120_000).toISOString(),
 					kind: view.kind,
 					machineId: view.machineId,
+					companyId: PROFILE,
+					codingMachineId: view.codingMachineId,
 				}
 			: { state: "closed", reason: "ended" };
+	}
+
+	async serviceStopped(service: string): Promise<number> {
+		this.stopped.push(service);
+		let cleared = 0;
+		for (const view of this.views.values())
+			if (view.servedBy === service) {
+				view.servedBy = null;
+				cleared++;
+			}
+		return cleared;
 	}
 }
 
@@ -669,6 +720,26 @@ export const OFFICE: MachineRef = {
 /** No operator mount: the execution host presents run boxes, and the office project's machines their desktops. */
 export function companyGrants(): MountGrants {
 	return new MountGrants([], [EXEC_HOST], [OFFICE_PROJECT]);
+}
+
+/** The node's coding machine project (F3 5c), a coding machine, and the machine the node made for it, named after it. */
+export const CODING_PROJECT = "qn25b2-coding";
+export const CODING_MACHINE_ID = "c0de0000-1111-4222-8333-444455556666";
+export const CODING: MachineRef = {
+	project: CODING_PROJECT,
+	name: `qorpera-coding-machine-${CODING_MACHINE_ID.replaceAll("-", "")}`,
+	physicalId: "dddddddd-eeee-4fff-8000-111111111111",
+};
+/** The company's code host, alone in its own project (F3 5b). */
+export const CODE_HOST: MachineRef = {
+	project: `qorpera-codehost-${PROFILE.replaceAll("-", "")}`,
+	name: "qorpera-codehost",
+	physicalId: "eeeeeeee-ffff-4000-8111-222222222222",
+};
+
+/** As `companyGrants`, and the coding project's machines present their own coding sessions' views. */
+export function codingGrants(): MountGrants {
+	return new MountGrants([], [EXEC_HOST], [OFFICE_PROJECT], [CODING_PROJECT]);
 }
 
 /** The object gateway's route for the folder service, onto the stand-in share: each put checked against its hash,
