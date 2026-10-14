@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { isUuid, type JsonValue, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import { cloudActionEffect } from "./cloud-action-review.ts";
 import type {
@@ -19,16 +19,16 @@ import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
  *   and fills in the results of this run's own pending steps. It keeps every other line as the file has it, so it never
  *   brings back an erased step, and it never fills in a line marked erased.
  * - An effectful call (anything `cloudActionEffect` does not class as a read) is committed before it runs, as a step
- *   with no result yet, once no call before it is still waiting for its answer. The call runs only once that commit
+ *   with no result yet, once every earlier call has an answer or a pending record. Worker dispatch and followup also
+ *   wait for earlier answers, so the worker inherits its origin's narrow status. The call runs only once its commit
  *   has landed. A denied call that closes what it stood for (P40b) is committed the same way before it closes it.
  * - A send, a card, a `send_mail`, a report (`report_work`, `coding_finish`) or a coding session's question
  *   (`coding_ask`) keeps no copy of its arguments: `args` is "", and `args_bytes` and `args_hash` stay. A report's or
- *   a question's result holds none of its words either (a coding turn's receipt leaves them out). For now its
- *   `args_hash` is the boundary's plain digest of the call, as for every step, so a guess of its words can be checked
- *   against it. W1c-3 replaces it with the platform's keyed hash before any run is built with a
- *   log.
- * - Narrow steps, for folders not shared with every agent, are not built here: every step keeps its full line. W1c-3
- *   brings their line shape, with the platform's keyed hashes, before any run is built with a log.
+ *   a question's result holds none of its words either (a coding turn's receipt leaves them out). Every stored hash
+ *   comes from the platform's per-run keyed-hash service, never from a plain digest.
+ * - The protection port classifies every step before any bytes are staged. A narrow step and every later step keep
+ *   only keyed hashes and receipt identifiers in the folder; their full content stays in this process. Production
+ *   wiring still needs the folder adapter and origin/refusal handling before any run is built with a log.
  * - The run's tree, its step lines (§7.5), sits beside the log in `runs/<run>/t<n>/`. W2's step-line writer reads and
  *   commits its blocks through `treeRead` and `commitTree`, also after `close`, for the lines built at closing. Only
  *   its batches check the run's generation: they are derived, and are refused when it moved.
@@ -140,6 +140,68 @@ export interface CloudRunLogRelease {
 	readonly reads: readonly Pick<CloudCompanyFolderRelease, "path" | "version">[];
 }
 
+/** Trusted platform operations, bound to this run's live lease. No agent-selected classification or local secret.
+ * An unavailable or incomplete operation must throw: the log has no unprotected fallback. */
+export interface CloudRunLogProtection {
+	/** Checks complete argument and result needles, every read path, and the run's machine against §4.5's every-agent
+	 * rule. resultPaths comes from the whole tool result before its envelope is fitted; readPaths is never clipped.
+	 * The adapter sends these paths through qorpera_memory_step_narrow, in chunks of at most 1,024, and combines its
+	 * machine and restricted answers. Its log flag is separate: it says some part of the log is narrow, not that a
+	 * pending earlier step is narrow. It must not infer sharing from paths or ordinary grant metadata. */
+	narrow(
+		runId: string,
+		step: {
+			readonly j: number;
+			readonly argumentsText: string;
+			readonly result: string | null;
+			readonly releases: readonly string[];
+			readonly readPaths: readonly string[];
+			readonly resultPaths: readonly string[];
+		},
+		signal: AbortSignal,
+	): Promise<{ readonly log: boolean; readonly narrow: boolean }>;
+	/** qorpera_memory_step_hashes: HMAC(platform company key, run id + ":" + digest), in input order. The key never
+	 * leaves the platform. The supplied digests are SHA-256; the returned values, and only those, may be stored. */
+	hashes(runId: string, digests: readonly string[], signal: AbortSignal): Promise<readonly string[]>;
+}
+
+/** The path needles §4.5 names, before any log/result clipping. JSON text receipts are inspected as their JSON
+ * value; ordinary text has no structured needles. SQL alone decides which strings name valid, restricted paths. */
+export function cloudRunLogPaths(value: JsonValue): readonly string[] {
+	let root = value;
+	if (typeof root === "string") {
+		try {
+			root = JSON.parse(root) as JsonValue;
+		} catch {
+			return [];
+		}
+	}
+	const paths = new Set<string>();
+	const pending: JsonValue[] = [root];
+	while (pending.length) {
+		const entry = pending.pop();
+		if (entry === null || typeof entry !== "object") continue;
+		if (Array.isArray(entry)) {
+			for (const child of entry) pending.push(child);
+			continue;
+		}
+		for (const [key, child] of Object.entries(entry)) {
+			// SQL's lax jsonpath wraps scalar paths and unwraps arrays under each of these names. Malformed tool
+			// arguments are still logged, so their string needles participate before the tool refuses their shape.
+			if (key === "path" || key === "from" || key === "to" || key === "paths") {
+				const leaves: JsonValue[] = [child];
+				while (leaves.length) {
+					const leaf = leaves.pop();
+					if (typeof leaf === "string") paths.add(leaf);
+					else if (Array.isArray(leaf)) for (const nested of leaf) leaves.push(nested);
+				}
+			}
+			pending.push(child);
+		}
+	}
+	return [...paths];
+}
+
 /** One step as its line stores it, for the run's step lines (W2). A hashes-only step has `args` "". */
 export interface CloudRunLogStep {
 	readonly j: number;
@@ -154,6 +216,8 @@ export interface CloudRunLogStep {
 	readonly at: string;
 	/** An erased step (§10.1) keeps only its number, call id and tool: `args` and `text` are "", `result` is null. */
 	readonly erased?: true;
+	/** Only this process can supply a narrow step's content. No summary over it may be persisted. */
+	readonly narrow?: true;
 }
 
 /** The steps one change set made final, in step order, and the blocks it saved. */
@@ -191,11 +255,13 @@ interface Step {
 	readonly call: string;
 	readonly tool: string;
 	readonly hashOnly: boolean;
-	/** The arguments as far as `args` can store them. */
-	readonly argumentsText: string;
+	/** Complete until final classification; a final public/erased step releases this copy. Narrow work stays in memory. */
+	argumentsText: string;
 	readonly argsBytes: number;
 	/** Null for arguments the boundary could not read, as its envelope has it. */
-	readonly argsHash: string | null;
+	readonly argsDigest: string | null;
+	/** The platform's keyed hash, cached across a pending line, its fill and retries. */
+	argsHash: string | null | undefined;
 	readonly text: string;
 	readonly at: string;
 	/** The envelope, once the call has its result. */
@@ -205,9 +271,13 @@ interface Step {
 	reads: readonly string[];
 	readsCut: boolean;
 	releases: readonly string[];
+	/** Complete privacy-classification inputs, separate from the clipped stored read copy. Dropped once final. */
+	readPaths: readonly string[];
+	resultPaths: readonly string[];
 	/** As committed: not yet, pending (no result), or final. An erased line is final. */
 	state: "new" | "pending" | "final";
 	erased: boolean;
+	narrow: boolean;
 	block: number | null;
 	/** `args` and `text` as its committed line stores them. */
 	stored: Stored | null;
@@ -218,10 +288,19 @@ interface Stored {
 	readonly text: string;
 }
 
+/** Classification is finished. A public line's stored copy serves its view; only narrow work needs full arguments. */
+function releaseFinalInputs(step: Step): void {
+	step.reads = [];
+	step.readPaths = [];
+	step.resultPaths = [];
+	if (!step.narrow || step.erased) step.argumentsText = "";
+}
+
 interface Line {
 	readonly j: number;
 	readonly text: string;
 	readonly pending: boolean;
+	readonly narrow?: true;
 	/** Its `args` and `text`, where the line has them as strings. */
 	readonly stored?: Stored;
 }
@@ -287,7 +366,9 @@ function parseBlock(text: string): Line[] {
 		lines.push({
 			j: record.j as number,
 			text: raw,
-			pending: record.erased !== true && record.result === null,
+			pending:
+				record.erased !== true && (record.narrow === true ? record.finished === false : record.result === null),
+			...(record.narrow === true ? { narrow: true as const } : {}),
 			...(typeof record.args === "string" && typeof record.text === "string"
 				? { stored: { args: record.args, text: record.text } }
 				: {}),
@@ -305,7 +386,7 @@ function erasedLine(text: string): boolean {
 }
 
 /** An erased step as the run's step lines see it (§10.1): its number, call id and tool only. */
-function erasedStep(step: Pick<CloudRunLogStep, "j" | "call" | "tool" | "hashOnly">): CloudRunLogStep {
+function erasedStep(step: Pick<CloudRunLogStep, "j" | "call" | "tool" | "hashOnly" | "narrow">): CloudRunLogStep {
 	return Object.freeze({ ...step, args: "", result: null, text: "", at: "", erased: true as const });
 }
 
@@ -314,7 +395,13 @@ function loggedStep(line: Line): CloudRunLogStep {
 	const record = JSON.parse(line.text) as Record<string, unknown>;
 	if (typeof record.tool !== "string" || typeof record.call !== "string") throw new Error("Invalid run log block");
 	const hashOnly = HASH_ONLY_TOOLS.has(record.tool) || record.narrow === true;
-	const step = { j: line.j, call: record.call, tool: record.tool, hashOnly };
+	const step = {
+		j: line.j,
+		call: record.call,
+		tool: record.tool,
+		hashOnly,
+		...(line.narrow ? { narrow: true as const } : {}),
+	};
 	if (record.erased === true) return erasedStep(step);
 	const result = record.result;
 	return Object.freeze({
@@ -330,6 +417,9 @@ export class CloudRunLog {
 	readonly #runId: string;
 	readonly #conversationId: string;
 	readonly #parent?: { readonly runId: string; readonly step: number };
+	readonly #continues?: string;
+	readonly #startNarrow: boolean;
+	readonly #protection: CloudRunLogProtection;
 	readonly #folder: CloudRunLogFolder;
 	readonly #effectful: (tool: Pick<CloudNativeTool, "name" | "source">, parsed: JsonValue) => boolean;
 	readonly #signal: AbortSignal;
@@ -355,6 +445,7 @@ export class CloudRunLog {
 	#closed = false;
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	#queue: Promise<void> = Promise.resolve();
+	#narrowFrom = Number.POSITIVE_INFINITY;
 
 	constructor(options: {
 		runId: string;
@@ -362,6 +453,10 @@ export class CloudRunLog {
 		conversationId: string;
 		/** The dispatching step of a worker's run. */
 		parent?: { runId: string; step: number };
+		/** The platform-verified origin: continuations and workers inherit narrow status (§4.5). */
+		continues?: string;
+		narrow?: boolean;
+		protection: CloudRunLogProtection;
 		folder: CloudRunLogFolder;
 		/** The run's own signal: timed batches stop with it. */
 		signal: AbortSignal;
@@ -377,12 +472,24 @@ export class CloudRunLog {
 			!isUuid(options.conversationId) ||
 			(options.parent &&
 				(!isUuid(options.parent.runId) || !Number.isSafeInteger(options.parent.step) || options.parent.step < 0)) ||
+			(options.continues !== undefined && !isUuid(options.continues)) ||
+			(options.narrow !== undefined && typeof options.narrow !== "boolean") ||
 			(options.firstStep !== undefined && (!Number.isSafeInteger(options.firstStep) || options.firstStep < 0))
 		)
 			throw new Error("Invalid run log");
+		if (
+			!options.protection ||
+			typeof options.protection.narrow !== "function" ||
+			typeof options.protection.hashes !== "function"
+		)
+			throw new Error("Invalid run log protection");
 		this.#runId = options.runId;
 		this.#conversationId = options.conversationId;
 		this.#parent = options.parent ? { ...options.parent } : undefined;
+		this.#continues = options.continues;
+		this.#startNarrow = options.narrow === true;
+		this.#protection = options.protection;
+		if (this.#startNarrow) this.#narrowFrom = 0;
 		this.#folder = options.folder;
 		this.#effectful = options.effectful ?? ((tool, parsed) => cloudActionEffect(tool, parsed) !== "read");
 		this.#signal = options.signal;
@@ -419,7 +526,8 @@ export class CloudRunLog {
 	}
 
 	/** Starts a step for a call the model sees, in the order the calls came, and returns its number. `argumentSha256` is
-	 * null for arguments the boundary could not read. */
+	 * null for arguments the boundary could not read. Otherwise the log hashes the UTF-8 bytes of argumentsText itself,
+	 * not the boundary's namespace/tool/call digest: this fixes the hash input shared with erasure and zoom (§4.5). */
 	step(call: { call: string; tool: string; argumentsText: string; argumentSha256: string | null }): number {
 		if (this.#closed) throw new Error("Run log closed");
 		if (call.argumentSha256 !== null && !SHA256_HEX_PATTERN.test(call.argumentSha256))
@@ -432,9 +540,11 @@ export class CloudRunLog {
 			call: call.call,
 			tool: call.tool,
 			hashOnly: HASH_ONLY_TOOLS.has(call.tool),
-			argumentsText: clip(call.argumentsText, CLOUD_RUN_LOG_FIELD_BYTES),
+			argumentsText: call.argumentsText,
 			argsBytes: Buffer.byteLength(call.argumentsText),
-			argsHash: call.argumentSha256,
+			argsDigest:
+				call.argumentSha256 === null ? null : createHash("sha256").update(call.argumentsText).digest("hex"),
+			argsHash: undefined,
 			text,
 			at: this.#now()
 				.toISOString()
@@ -443,8 +553,11 @@ export class CloudRunLog {
 			reads: [],
 			readsCut: false,
 			releases: [],
+			readPaths: [],
+			resultPaths: [],
 			state: "new",
 			erased: false,
+			narrow: false,
 			block: null,
 			stored: null,
 		});
@@ -453,18 +566,32 @@ export class CloudRunLog {
 
 	/** Commits every step up to `j`, with `j` pending, before its effectful call runs. A step before it that has neither
 	 * its result nor a committed line (a call still in its release check) is waited for. Throws when that cannot land:
-	 * the call must not run. */
-	async precommit(j: number, signal: AbortSignal): Promise<void> {
+	 * the call must not run. An origin-bearing effect also waits for every earlier result: a worker inherits this
+	 * pending record's narrow status when it starts, before the record can be filled. The wait is outside the commit
+	 * queue so earlier calls can finish and flush while the origin waits. */
+	async precommit(j: number, signal: AbortSignal, options: { afterEarlierResults?: boolean } = {}): Promise<void> {
 		const step = this.#step(j);
 		if (step.result !== null || step.state !== "new") throw new Error("Invalid run log precommit");
-		while (!this.#gone && this.#waiting(j)) await this.#wait(signal);
+		while (
+			!this.#gone &&
+			!this.#closed &&
+			(this.#waiting(j) || (options.afterEarlierResults && this.#blockedBefore(j)))
+		)
+			await this.#wait(signal);
 		if (this.#gone) throw new CloudRunLogGone();
+		if (this.#closed) throw new CloudRunLogUnavailable("closed");
 		await this.#enqueue(signal, j);
+		if (this.#closed) throw new CloudRunLogUnavailable("closed");
 		if (this.#step(j).state === "new") throw new CloudRunLogUnavailable("not_committed");
 	}
 
 	/** The call's result, the envelope the model got, and the releases it made. */
-	finish(j: number, envelope: string, releases: readonly CloudRunLogRelease[]): void {
+	finish(
+		j: number,
+		envelope: string,
+		releases: readonly CloudRunLogRelease[],
+		resultPaths: readonly string[] = [],
+	): void {
 		const step = this.#step(j);
 		if (step.result !== null) throw new Error("Run log step already finished");
 		// Only what its line stores is kept: a search can record many thousands of reads.
@@ -483,6 +610,11 @@ export class CloudRunLog {
 		// A line marked erased while its call ran is never filled in.
 		step.reads = step.state === "final" ? [] : reads;
 		step.releases = releases.map((release) => release.releaseId);
+		step.readPaths =
+			step.state === "final"
+				? []
+				: [...new Set(releases.flatMap((release) => release.reads.map((read) => read.path)))];
+		step.resultPaths = step.state === "final" ? [] : [...new Set(resultPaths)];
 		this.#wake();
 		if (this.#closed) return;
 		const waiting = this.#steps.filter((candidate) => candidate.result !== null && candidate.state !== "final");
@@ -504,6 +636,7 @@ export class CloudRunLog {
 	/** At run end: no more steps, and every finished step is committed. */
 	async close(signal: AbortSignal): Promise<void> {
 		this.#closed = true;
+		this.#wake();
 		if (this.#timer) clearTimeout(this.#timer);
 		this.#timer = undefined;
 		await this.#enqueue(signal);
@@ -514,11 +647,21 @@ export class CloudRunLog {
 		return this.#steps
 			.filter((step) => step.state !== "new")
 			.map((step) => {
-				const base = { j: step.j, call: step.call, tool: step.tool, hashOnly: step.hashOnly };
+				const base = {
+					j: step.j,
+					call: step.call,
+					tool: step.tool,
+					hashOnly: step.hashOnly,
+					...(step.narrow ? { narrow: true as const } : {}),
+				};
 				if (step.erased) return erasedStep(base);
 				return Object.freeze({
 					...base,
-					args: step.stored?.args ?? (step.hashOnly ? "" : step.argumentsText),
+					args: step.narrow
+						? step.hashOnly
+							? ""
+							: step.argumentsText
+						: (step.stored?.args ?? (step.hashOnly ? "" : clip(step.argumentsText, CLOUD_RUN_LOG_FIELD_BYTES))),
 					result: step.state === "pending" ? null : step.result,
 					text: step.stored?.text ?? clip(step.text, CLOUD_RUN_LOG_FIELD_BYTES),
 					at: step.at,
@@ -767,15 +910,28 @@ export class CloudRunLog {
 		for (const step of this.#steps) {
 			if (step.state !== "new") continue;
 			if (step.result === null && step.j !== precommit) break;
+			if (precommit === undefined && this.#blockedBefore(step.j)) break;
 			ready.push(step);
 			if (ready.length === CLOUD_RUN_LOG_COMMIT_STEPS) break;
 		}
 		return ready;
 	}
 
-	/** This run's pending steps whose results are in. */
+	/** Results become immutable only in step order: an earlier pending result can still make every later step narrow.
+	 * Later effectful calls may pre-commit and execute in parallel, but their results stay in memory until this hole
+	 * closes. */
 	#fills(): Step[] {
-		return this.#steps.filter((step) => step.state === "pending" && step.result !== null);
+		const fills: Step[] = [];
+		for (const step of this.#steps) {
+			if (step.state === "final") continue;
+			if (step.result === null) break;
+			if (step.state === "pending") fills.push(step);
+		}
+		return fills;
+	}
+
+	#blockedBefore(j: number): boolean {
+		return this.#steps.some((step) => step.j < j && step.state !== "final" && step.result === null);
 	}
 
 	async #batch(signal: AbortSignal, precommit?: number): Promise<void> {
@@ -840,13 +996,15 @@ export class CloudRunLog {
 			block.lines = parseBlock(file.text);
 			block.stale = false;
 			for (const line of block.lines) {
+				if (line.narrow) this.#narrowFrom = Math.min(this.#narrowFrom, line.j);
 				const step = this.#steps[line.j - this.#first];
 				if (!step || step.j !== line.j) continue;
 				step.block = block.first;
 				step.erased = erasedLine(line.text);
+				step.narrow = line.narrow === true;
 				step.state = step.erased || !line.pending ? "final" : "pending";
 				step.stored = line.stored ?? null;
-				if (step.state === "final") step.reads = [];
+				if (step.state === "final") releaseFinalInputs(step);
 			}
 		}
 	}
@@ -855,8 +1013,64 @@ export class CloudRunLog {
 		return `${this.#place!.path}/log/${blockName(first)}`;
 	}
 
+	/** Classifies an immutable snapshot before serializing it. A call may finish while the platform is answering a
+	 * pre-commit; that result is filled by a later pass, never spliced into a line classified as pending. */
+	async #protectedLine(step: Step, snapshot: Step, pending: boolean, signal: AbortSignal): Promise<Line> {
+		const classification = await this.#protection.narrow(
+			this.#runId,
+			{
+				j: snapshot.j,
+				argumentsText: snapshot.argumentsText,
+				result: snapshot.result,
+				releases: snapshot.releases,
+				readPaths: snapshot.readPaths,
+				resultPaths: snapshot.resultPaths,
+			},
+			signal,
+		);
+		if (!classification || typeof classification.log !== "boolean" || typeof classification.narrow !== "boolean")
+			throw new CloudRunLogUnavailable("protection_invalid");
+		// A committed later pending line also raises SQL's log flag. The known start remains the boundary: that
+		// flag alone must not redact an earlier public fill. A log with no trusted start cannot be safely interpreted.
+		if (classification.log && this.#narrowFrom === Number.POSITIVE_INFINITY)
+			throw new CloudRunLogUnavailable("protection_narrow_start_unknown");
+		if (classification.narrow) this.#narrowFrom = Math.min(this.#narrowFrom, step.j);
+		snapshot.narrow = step.j >= this.#narrowFrom;
+		const digests: string[] = [];
+		if (step.argsHash === undefined && step.argsDigest !== null) digests.push(step.argsDigest);
+		// result_hash keys SHA-256 of the exact delivered envelope's UTF-8 bytes, never the larger raw result (§4.5).
+		if (snapshot.narrow && !pending) digests.push(createHash("sha256").update(snapshot.result!).digest("hex"));
+		const hashes = digests.length ? await this.#protection.hashes(this.#runId, digests, signal) : [];
+		if (
+			!Array.isArray(hashes) ||
+			hashes.length !== digests.length ||
+			digests.some((_, index) => typeof hashes[index] !== "string" || !SHA256_HEX_PATTERN.test(hashes[index]!))
+		)
+			throw new CloudRunLogUnavailable("protection_invalid");
+		signal.throwIfAborted();
+		if (step.argsHash === undefined) step.argsHash = step.argsDigest === null ? null : hashes[0]!;
+		snapshot.argsHash = step.argsHash;
+		step.narrow = snapshot.narrow;
+		return this.#line(snapshot, pending, snapshot.narrow && !pending ? hashes.at(-1)! : null);
+	}
+
 	/** A step's line as stored, fitted so it never passes CLOUD_RUN_LOG_STEP_BYTES with its newline. */
-	#line(step: Step, pending: boolean): Line {
+	#line(step: Step, pending: boolean, resultHash: string | null): Line {
+		if (step.narrow) {
+			const text = JSON.stringify({
+				j: step.j,
+				tool: step.tool,
+				call: step.call,
+				at: step.at,
+				finished: !pending,
+				releases: pending ? [] : step.releases,
+				args_hash: step.argsHash,
+				...(!pending ? { result_hash: resultHash } : {}),
+				narrow: true,
+			});
+			if (Buffer.byteLength(text) + 1 > CLOUD_RUN_LOG_STEP_BYTES) throw new CloudRunLogUnavailable("step_too_large");
+			return { j: step.j, text, pending, narrow: true };
+		}
 		let reads = CLOUD_RUN_LOG_READS_BYTES;
 		let text = CLOUD_RUN_LOG_FIELD_BYTES;
 		let args = CLOUD_RUN_LOG_FIELD_BYTES;
@@ -909,6 +1123,8 @@ export class CloudRunLog {
 			`run = "${this.#runId}"`,
 			`conversation = "${this.#conversationId}"`,
 			...(this.#parent ? [`parent = "${this.#parent.runId}"`, `step = ${this.#parent.step}`] : []),
+			...(this.#continues ? [`continues = "${this.#continues}"`] : []),
+			...(this.#startNarrow ? ["narrow = true"] : []),
 			"",
 		].join("\n");
 	}
@@ -919,6 +1135,18 @@ export class CloudRunLog {
 		const place = this.#place!;
 		const ready = this.#ready(precommit);
 		const fills = this.#fills();
+		// Prepare in step order, so a narrow result fences all later lines in this same change set. Do this before
+		// constructing any unit: a failed protection request must not stage even an earlier public line.
+		const prepared = new Map<number, Line>();
+		const candidates = [...fills, ...ready]
+			.sort((a, b) => a.j - b.j)
+			.map((step) => ({
+				step,
+				snapshot: { ...step },
+				pending: step.result === null || this.#blockedBefore(step.j),
+			}));
+		for (const { step, snapshot, pending } of candidates)
+			prepared.set(step.j, await this.#protectedLine(step, snapshot, pending, signal));
 		// Each touched block's new lines, starting from the lines the file has.
 		const touched = new Map<number, Line[]>();
 		const lines = (first: number): Line[] => {
@@ -943,15 +1171,15 @@ export class CloudRunLog {
 			if (erasedLine(read[index]!.text) || !read[index]!.pending) {
 				step.erased = erasedLine(read[index]!.text);
 				step.state = "final";
-				step.reads = [];
+				releaseFinalInputs(step);
 				continue;
 			}
-			lines(step.block!)[index] = this.#line(step, false);
+			lines(step.block!)[index] = prepared.get(step.j)!;
 			placed.set(step.j, step.block!);
 		}
 		let last = Math.max(-1, ...this.#blocks.keys(), ...touched.keys());
 		for (const step of ready) {
-			const line = this.#line(step, step.result === null);
+			const line = prepared.get(step.j)!;
 			// A new step joins the last block only if the block, a pending step counted at its full size, still fits.
 			const block = last >= 0 ? (touched.get(last) ?? this.#blocks.get(last)?.lines) : undefined;
 			const counted = block?.reduce((total, current) => total + lineBytes(current), 0) ?? 0;
@@ -1068,10 +1296,11 @@ export class CloudRunLog {
 					if (placed.get(line.j) === first || step.block === first) {
 						step.block = first;
 						step.erased = erasedLine(line.text);
+						step.narrow = line.narrow === true;
 						step.state = step.erased || !line.pending ? "final" : "pending";
 						step.stored = line.stored ?? null;
 						// Its line is stored: the copy of its reads is no longer needed.
-						if (step.state === "final") step.reads = [];
+						if (step.state === "final") releaseFinalInputs(step);
 						if (placed.get(line.j) === first && !line.pending) final.push(line.j);
 					}
 				}
