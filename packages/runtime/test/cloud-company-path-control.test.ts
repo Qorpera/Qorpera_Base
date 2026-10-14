@@ -66,8 +66,6 @@ describe("Company File bounded control transport", () => {
 		"qorpera_verify_company_path_tree",
 		"qorpera_prepare_company_path_mutation",
 		"qorpera_commit_company_path_mutation",
-		"qorpera_prepare_company_path_approval",
-		"qorpera_apply_company_path_approval",
 		"qorpera_native_presence_register",
 		"qorpera_company_presence_scope",
 		"qorpera_native_presence_subject",
