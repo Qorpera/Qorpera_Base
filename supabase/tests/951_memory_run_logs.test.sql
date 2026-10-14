@@ -783,4 +783,58 @@ begin
 		'the moved room log''s steps');
 end $$;
 
+-- 12. Deletes retire a log and take its steps; an erase takes the retired rows under its roots -------------------------
+create function pg_temp.pdelete(p_key text, p_path text, p_log jsonb default null) returns jsonb language sql as $$
+	select public.qorpera_folder_memory_commit('63400000-0000-4000-8000-000000000020', '{"kind":"platform"}', p_key,
+		jsonb_build_array(jsonb_build_object('op','delete','path',p_path,'expectedVersion',pg_temp.version(p_path),'asOfSeq',pg_temp.seq())),
+		case when p_log is null then '{}'::jsonb else jsonb_build_object('runLog', p_log) end)
+$$;
+do $$
+declare
+	env constant uuid := '63400000-0000-4000-8000-000000000020'; nora constant uuid := pg_temp.run_id('nora');
+	room constant uuid := pg_temp.run_id('room'); log constant text := 'agents/nora/memory/thread/runs/' || pg_temp.run_id('nora');
+	a constant jsonb := pg_temp.actor('nora'); nlog constant jsonb := jsonb_build_object('run', pg_temp.run_id('nora'), 'path', log);
+	other constant uuid := extensions.gen_random_uuid(); r jsonb;
+begin
+	-- Only a log is deleted, whole: not one of its blocks.
+	r := pg_temp.pdelete('w1b:delete:1', log || '/log/00000002.jsonl', nlog);
+	perform pg_temp.refused(r, 1, 'structured_rule', 'a summary tree holds only tree.toml and its blocks; only blocks are deleted');
+	-- A step row gone from under its block (only a fault leaves that) refuses the block's rewrite.
+	perform pg_temp.fx(format('delete from public.qorpera_memory_run_steps where environment_id = %L and run_id = %L and j = 2',
+		env, nora));
+	r := pg_temp.logc('nora', 'w1b:delete:2', jsonb_build_array(pg_temp.rfile(log || '/log/00000002.jsonl',
+		pg_temp.block(array[pg_temp.step(2)]), a)), log);
+	perform pg_temp.refused(r, 1, 'structured_rule', 'step 2 is missing from its block', 'value', 1);
+
+	-- A deleted log folder retires the log and takes every step; the run's log does not come back.
+	perform pg_temp.expect(pg_temp.pdelete('w1b:delete:3', log, nlog), 1, 'saved');
+	perform pg_temp.same((select jsonb_build_array(l.retired_at is not null, (select count(*) from public.qorpera_memory_run_steps s
+		where s.environment_id = env and s.run_id = nora)) from public.qorpera_memory_run_logs l
+		where l.environment_id = env and l.run_id = nora), '[true, 0]', 'a deleted log retires');
+	r := pg_temp.logc('nora', 'w1b:delete:4', jsonb_build_array(pg_temp.log_folder(log, pg_temp.rtoml(nora, pg_temp.thread('nora')), a)),
+		log);
+	perform pg_temp.expect(r, 1, 'refused', 'memory_run_log_gone');
+	-- A request for the log of a run the company does not have is not a memory request.
+	perform pg_temp.raises_like(format('select public.qorpera_folder_memory_commit(%L, %L, %L, %L, %L)', env, '{"kind":"platform"}',
+		'w1b:delete:5', jsonb_build_array(jsonb_build_object('op','mkdir','path','agents/nora/memory/thread/runs/' || other)),
+		jsonb_build_object('runLog', jsonb_build_object('run', other, 'path', 'agents/nora/memory/thread/runs/' || other))),
+		'22023', 'Memory request is invalid');
+
+	-- A deleted group folder retires the logs in it.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'w1b:delete:6', jsonb_build_array(jsonb_build_object('op','delete',
+		'path','agents/groups/launch-team','expectedVersion',pg_temp.version('agents/groups/launch-team'),'asOfSeq',pg_temp.seq()))),
+		1, 'saved');
+	perform pg_temp.same((select jsonb_build_array(l.retired_at is not null, (select count(*) from public.qorpera_memory_run_steps s
+		where s.environment_id = env and s.run_id = room)) from public.qorpera_memory_run_logs l
+		where l.environment_id = env and l.run_id = room), '[true, 0]', 'a deleted group''s log retires');
+
+	-- An erase deletes the retired log rows under its roots, and only those.
+	r := public.qorpera_folder_erase(env, pg_temp.member(1), '["agents/groups/launch-team", "agents/groups/launch"]', 'w1b:erase:1');
+	perform pg_temp.same((select jsonb_agg(l.run_id order by l.run_id) from public.qorpera_memory_run_logs l
+		where l.environment_id = env and l.run_id in (nora, room)), jsonb_build_array(nora), 'an erase takes the room''s log row');
+	r := public.qorpera_folder_erase(env, pg_temp.member(1), jsonb_build_array(log), 'w1b:erase:2');
+	perform pg_temp.same(to_jsonb(array[(select count(*) from public.qorpera_memory_run_logs l
+		where l.environment_id = env and l.run_id = nora)]), '[0]', 'an erase of the log takes its row');
+end $$;
+
 rollback;
