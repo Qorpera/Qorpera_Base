@@ -12,12 +12,13 @@ export const MAX_FILE_BYTES = 64 * CHUNK_BYTES;
  * (RUNTIME-FOLDER-WRITES.md, "Pending changes and base versions"). */
 export interface LiveRef {
 	readonly path: string;
-	readonly kind: "file" | "folder";
+	readonly kind: "file" | "folder" | "symlink";
 	/** For a save, the version the machine last read; for a move or removal, the version the name showed then. */
 	readonly version: string;
 	/** A folder's: the view's feed position when it was moved or removed (the unit's `asOfSeq`). */
 	readonly asOfSeq?: number;
-	/** A file's live entry then: its manifest, for a new manifest over the same chunks (the executable bit). */
+	/** A file's or link's live entry then: a file's manifest, for a new manifest over the same chunks (the executable
+	 * bit); a link's target. */
 	readonly entry?: TreeEntry;
 }
 
@@ -45,8 +46,12 @@ export interface PendingFile {
 	readonly kind: "file";
 	/** The live file it was opened, renamed or moved from; none for a new file. */
 	origin: LiveRef | undefined;
-	/** New bytes; none while its bytes are still the origin's (a rename, or only the executable bit). */
+	/** New bytes; none while its bytes are still the origin's (a rename, or only the executable bit), or the live
+	 * version's a hard link copied (`copyOf`). */
 	content: Content | undefined;
+	/** A hard link's new name, made from a live file's version (`J`): a new file whose bytes are still that version's,
+	 * none sent or stored again. */
+	copyOf: TreeEntry | undefined;
 	executable: boolean;
 	/** The origin's media type; a new file's comes from its name when it is staged. */
 	mediaType: string | undefined;
@@ -68,20 +73,37 @@ export interface PendingFolder {
 	mtimeMs: number;
 }
 
+/** A symbolic link (protocol 4): its target, as written. A link is never changed in place, only made, moved or
+ * removed. */
+export interface PendingLink {
+	readonly kind: "symlink";
+	/** The live link it was renamed or moved from; none for a new link. */
+	origin: LiveRef | undefined;
+	readonly target: string;
+	version: string;
+	mtimeMs: number;
+}
+
 /** Hides a live path the view removed, or moved away. */
 interface Gone {
 	readonly kind: "gone";
 }
 
-type Node = PendingFile | PendingFolder | Gone;
+type Node = PendingFile | PendingFolder | PendingLink | Gone;
+
+/** Where a read finds a path's bytes (`PendingView.source`). */
+export type Source =
+	| { readonly live: TreeEntry }
+	| { readonly content: Content }
+	| { readonly target: string; readonly live: TreeEntry | undefined };
 
 /** What a path shows in this view: a pending node, or a live entry (inside a moved folder, through its origin). */
 export type Resolved =
 	| {
 			readonly kind: "node";
 			readonly path: string;
-			readonly node: PendingFile | PendingFolder;
-			/** The live folder whose children a moved folder shows; null for a new one, or a file. */
+			readonly node: PendingFile | PendingFolder | PendingLink;
+			/** The live folder whose children a moved folder shows; null for a new one, a file or a link. */
 			readonly source: string | null;
 	  }
 	| { readonly kind: "live"; readonly path: string; readonly entry: TreeEntry; readonly source: string };
@@ -254,7 +276,9 @@ export class PendingView {
 			const node = this.#nodes.get(at);
 			if (node) {
 				if (node.kind === "gone") return undefined;
-				if (node.kind === "file") return last ? { kind: "node", path, node, source: null } : undefined;
+				// Nothing is below a file, and a path through a link is absent: a link is never followed.
+				if (node.kind === "file" || node.kind === "symlink")
+					return last ? { kind: "node", path, node, source: null } : undefined;
 				source = node.origin ? node.origin.path : null;
 				if (last) return { kind: "node", path, node, source };
 				continue;
@@ -285,7 +309,18 @@ export class PendingView {
 				mtimeMs: node.mtimeMs,
 				implicit: false,
 			};
-		const origin = node.origin?.entry;
+		if (node.kind === "symlink")
+			return {
+				path,
+				kind: "symlink",
+				version: node.version,
+				bytes: Buffer.byteLength(node.target),
+				executable: false,
+				mtimeMs: node.mtimeMs,
+				implicit: false,
+				target: node.target,
+			};
+		const origin = node.origin?.entry ?? node.copyOf;
 		return {
 			path,
 			kind: "file",
@@ -298,21 +333,27 @@ export class PendingView {
 		};
 	}
 
-	/** Where a read of `path` at `version` finds its bytes: the live entry it shows (its own version), or the pending
-	 * chunks. Undefined when the path no longer shows that version. */
-	source(path: string, version: string): { live: TreeEntry } | { content: Content } | undefined {
+	/** Where a read of `path` at `version` finds its bytes: the live entry it shows (its own version), the pending
+	 * chunks, or a link's target (with the live link it shows, if any). Undefined when the path no longer shows that
+	 * version. */
+	source(path: string, version: string): Source | undefined {
 		const r = this.resolve(path);
 		if (!r) return undefined;
-		if (r.kind === "live")
-			return r.entry.version === version && r.entry.kind === "file" ? { live: r.entry } : undefined;
+		if (r.kind === "live") {
+			if (r.entry.version !== version) return undefined;
+			if (r.entry.kind === "symlink") return { target: r.entry.target!, live: r.entry };
+			return r.entry.kind === "file" ? { live: r.entry } : undefined;
+		}
 		const node = r.node;
-		if (node.kind !== "file" || node.version !== version) return undefined;
+		if (node.kind === "folder" || node.version !== version) return undefined;
+		if (node.kind === "symlink") return { target: node.target, live: node.origin?.entry };
 		if (node.content) return { content: node.content };
-		return node.origin?.entry ? { live: node.origin.entry } : undefined;
+		const origin = node.origin?.entry ?? node.copyOf;
+		return origin ? { live: origin } : undefined;
 	}
 
-	/** One page of a folder's names, as `ViewTree.children` gives them. */
-	children(path: string, after: string | undefined, limit: number) {
+	/** One page of a folder's names, as `ViewTree.children` gives them; links only when `links` (protocol 4). */
+	children(path: string, after: string | undefined, limit: number, links = true) {
 		const r = this.resolve(path);
 		if (!r) return "not_found" as const;
 		const folder = r.kind === "live" ? r.entry.kind === "folder" : r.node.kind === "folder";
@@ -327,7 +368,7 @@ export class PendingView {
 		let i = start;
 		for (; i < sorted.length && entries.length < limit; i++) {
 			const entry = this.get(join(path, sorted[i]!));
-			if (entry) entries.push(wireEntry(entry));
+			if (entry && (links || entry.kind !== "symlink")) entries.push(wireEntry(entry));
 		}
 		return { entries, next: i < sorted.length ? sorted[i - 1]! : null };
 	}
@@ -404,7 +445,7 @@ export class PendingView {
 	}
 
 	/** A file the view moved here (its origin is another live path). */
-	#moved(path: string, node: PendingFile | PendingFolder): boolean {
+	#moved(path: string, node: PendingFile | PendingFolder | PendingLink): boolean {
 		return node.origin !== undefined && node.origin.path !== path;
 	}
 
@@ -430,12 +471,15 @@ export class PendingView {
 			this.#set(path, node);
 		} else {
 			if (options.exclusive) fail(ErrorCode.exists, "The file exists");
+			// The kernel follows a link before opening; a program that reaches one here asked for its name to be new.
+			if ((r.kind === "live" ? r.entry.kind : r.node.kind) === "symlink")
+				fail(ErrorCode.exists, "A link has this name");
 			if (r.kind === "live") {
 				if (r.entry.kind === "folder") fail(ErrorCode.notAFile, "Not a file");
 				node = this.#fromLive(r.entry, r.source, options.base);
 				this.#set(path, node);
 			} else {
-				if (r.node.kind === "folder") fail(ErrorCode.notAFile, "Not a file");
+				if (r.node.kind === "folder" || r.node.kind === "symlink") fail(ErrorCode.notAFile, "Not a file");
 				if (this.#moved(path, r.node)) throw new PublishFirst("a change to a file this view moved");
 				node = r.node;
 			}
@@ -451,7 +495,7 @@ export class PendingView {
 		this.#handles.set(handle, { node });
 		return {
 			handle,
-			size: node.content ? node.content.size : (node.origin?.entry?.bytes ?? 0),
+			size: node.content ? node.content.size : ((node.origin?.entry ?? node.copyOf)?.bytes ?? 0),
 			version: node.version,
 		};
 	}
@@ -463,18 +507,18 @@ export class PendingView {
 		return open.node;
 	}
 
-	/** The live entry whose chunks a handle's first chunk replaces one of, when the file still has its origin's bytes:
-	 * the service reads its manifest and calls `beginContent` first. */
+	/** The live entry whose chunks a handle's first chunk replaces one of, when the file still has its origin's bytes
+	 * (or a hard link's source's): the service reads its manifest and calls `beginContent` first. */
 	originToCopy(handle: number): TreeEntry | undefined {
 		const node = this.file(handle);
-		return node.content === undefined ? node.origin?.entry : undefined;
+		return node.content === undefined ? (node.origin?.entry ?? node.copyOf) : undefined;
 	}
 
 	/** The file's bytes become its own, starting from its origin's chunks. */
 	beginContent(handle: number, originChunks: readonly ChunkRef[]): void {
 		const node = this.file(handle);
 		if (node.content !== undefined) return;
-		node.content = { chunks: [...originChunks], size: node.origin?.entry?.bytes ?? 0 };
+		node.content = { chunks: [...originChunks], size: (node.origin?.entry ?? node.copyOf)?.bytes ?? 0 };
 	}
 
 	/** Chunk `index` of the file's bytes is now `chunk` (already on the storage server). */
@@ -555,6 +599,63 @@ export class PendingView {
 		this.#set(path, { kind: "folder", origin: undefined, version: randomUUID(), mtimeMs: this.#now() });
 	}
 
+	/** symlink(2) (`Y`): a new link at `path`, whose target the service checked. Answers its version. */
+	symlink(path: string, target: string): string {
+		if (this.#insideMoved(path)) throw new PublishFirst("a change inside a folder this view moved");
+		if (this.resolve(path)) fail(ErrorCode.exists, "The path exists");
+		this.#newName(path);
+		const version = randomUUID();
+		this.#set(path, { kind: "symlink", origin: undefined, target, version, mtimeMs: this.#now() });
+		return version;
+	}
+
+	/** link(2) (`J`): a new name `to` for what `from` shows at `base` (the version the machine showed; its current one
+	 * when none). A file's new name is a new file whose bytes are still that version's, sent and stored once; a link's
+	 * is a new link with its target. `replaced` finds a version of a live path the view still serves after a newer one
+	 * replaced it. Answers the new name's version. */
+	link(
+		from: string,
+		to: string,
+		base: string | undefined,
+		replaced: (livePath: string, version: string) => TreeEntry | undefined,
+	): string {
+		if (this.#insideMoved(to)) throw new PublishFirst("a change inside a folder this view moved");
+		const source = this.resolve(from);
+		if (!source) fail(ErrorCode.notFound, "No such file");
+		let made: PendingFile | PendingLink;
+		const version = randomUUID();
+		const mtimeMs = this.#now();
+		const link = (target: string): PendingLink => ({ kind: "symlink", origin: undefined, target, version, mtimeMs });
+		if (source.kind === "live") {
+			if (source.entry.kind === "folder") fail(ErrorCode.notPermitted, "A folder has no hard links");
+			let entry: TreeEntry | undefined = source.entry;
+			if (base !== undefined && base !== entry.version) entry = replaced(source.source, base);
+			if (!entry) fail(ErrorCode.stale, "That version is no longer served");
+			made = entry.kind === "symlink" ? link(entry.target!) : this.#copied(entry, version, mtimeMs);
+		} else {
+			const node = source.node;
+			if (node.kind === "folder") fail(ErrorCode.notPermitted, "A folder has no hard links");
+			if (base !== undefined && base !== node.version) fail(ErrorCode.stale, "That version is no longer served");
+			if (node.kind === "symlink") made = link(node.target);
+			else {
+				// What a file open for writing will be is not known yet (P1).
+				if (node.open > 0) fail(ErrorCode.busy, "The file is open for writing");
+				const copyOf = node.content === undefined ? (node.origin?.entry ?? node.copyOf) : undefined;
+				made = {
+					...this.#copied(copyOf, version, mtimeMs),
+					content: node.content,
+					executable: node.executable,
+					mediaType: node.staged?.file.mediaType ?? node.mediaType,
+					staged: node.staged?.version === node.version ? { version, file: node.staged.file } : undefined,
+				};
+			}
+		}
+		if (this.resolve(to)) fail(ErrorCode.exists, "The path exists");
+		this.#newName(to);
+		this.#set(to, made);
+		return version;
+	}
+
 	unlink(path: string, base?: string): void {
 		if (this.#insideMoved(path)) throw new PublishFirst("a change inside a folder this view moved");
 		const r = this.resolve(path);
@@ -614,8 +715,8 @@ export class PendingView {
 		if (target) {
 			if (options.noReplace) fail(ErrorCode.exists, "The path exists");
 			const targetKind = target.kind === "live" ? target.entry.kind : target.node.kind;
-			if (kind === "file" && targetKind === "folder") fail(ErrorCode.notAFile, "Not a file");
-			if (kind === "folder" && targetKind === "file") fail(ErrorCode.notAFolder, "Not a folder");
+			if (kind !== "folder" && targetKind === "folder") fail(ErrorCode.notAFile, "Not a file");
+			if (kind === "folder" && targetKind !== "folder") fail(ErrorCode.notAFolder, "Not a folder");
 			if (targetKind === "folder" && this.#hasChildren(to)) fail(ErrorCode.notEmpty, "The folder is not empty");
 			checkRemovable(to);
 			if (target.kind === "live" && target.entry.kind === "folder" && this.#pendingBelow(to, target.source))
@@ -629,9 +730,22 @@ export class PendingView {
 				throw new PublishFirst("moves that take each other's places");
 		}
 		// The moving node: a pending one as it is, or one made from the live entry, at the writer's base.
-		let node: PendingFile | PendingFolder;
+		let node: PendingFile | PendingFolder | PendingLink;
 		if (source.kind === "node") node = source.node;
 		else if (source.entry.kind === "file") node = this.#fromLive(source.entry, source.source, options.fromBase);
+		else if (source.entry.kind === "symlink")
+			node = {
+				kind: "symlink",
+				origin: {
+					path: source.source,
+					kind: "symlink",
+					version: options.fromBase ?? source.entry.version,
+					entry: source.entry,
+				},
+				target: source.entry.target!,
+				version: source.entry.version,
+				mtimeMs: source.entry.mtimeMs,
+			};
 		else
 			node = {
 				kind: "folder",
@@ -662,7 +776,8 @@ export class PendingView {
 		if (this.#insideMoved(path)) throw new PublishFirst("a change inside a folder this view moved");
 		const r = this.resolve(path);
 		if (!r) fail(ErrorCode.notFound, "No such file");
-		if ((r.kind === "live" ? r.entry.kind : r.node.kind) === "folder") return;
+		// A folder's and a link's modes are the folder's own.
+		if ((r.kind === "live" ? r.entry.kind : r.node.kind) !== "file") return;
 		if (r.kind === "live" && r.entry.executable === executable) return;
 		if (r.kind === "node" && this.#moved(path, r.node)) throw new PublishFirst("a change to a file this view moved");
 		const node = r.kind === "node" ? (r.node as PendingFile) : this.#fromLive(r.entry, r.source, base);
@@ -681,7 +796,7 @@ export class PendingView {
 	liveChanged(paths: readonly string[]): void {
 		for (const path of paths) {
 			const removed = this.#removed.get(path);
-			if (!removed || removed.kind !== "file") continue;
+			if (!removed || removed.kind === "folder") continue;
 			if (this.#live().get(path)?.version === removed.version) continue;
 			this.#removed.delete(path);
 			if (this.#nodes.get(path)?.kind === "gone") this.#unset(path);
@@ -712,6 +827,7 @@ export class PendingView {
 			kind: "file",
 			origin: undefined,
 			content: { chunks: [], size: 0 },
+			copyOf: undefined,
 			executable: false,
 			mediaType: undefined,
 			open: 0,
@@ -726,11 +842,28 @@ export class PendingView {
 			kind: "file",
 			origin: { path: source, kind: "file", version: base ?? entry.version, entry },
 			content: undefined,
+			copyOf: undefined,
 			executable: entry.executable,
 			mediaType: entry.mediaType,
 			open: 0,
 			version: entry.version,
 			mtimeMs: entry.mtimeMs,
+			staged: undefined,
+		};
+	}
+
+	/** A hard link's new file, its bytes still those of the live version `entry`. */
+	#copied(entry: TreeEntry | undefined, version: string, mtimeMs: number): PendingFile {
+		return {
+			kind: "file",
+			origin: undefined,
+			content: undefined,
+			copyOf: entry,
+			executable: entry?.executable ?? false,
+			mediaType: entry?.mediaType,
+			open: 0,
+			version,
+			mtimeMs,
 			staged: undefined,
 		};
 	}
@@ -747,7 +880,7 @@ export class PendingView {
 		if (r.kind === "live") {
 			// The machine removes what its name showed; a newer version it never saw is not taken (ESTALE: it looks again).
 			// A file replaced by a save keeps the save's base, so the save conflicts instead.
-			if (!save && r.entry.kind === "file" && base !== undefined && base !== r.entry.version)
+			if (!save && r.entry.kind !== "folder" && base !== undefined && base !== r.entry.version)
 				fail(ErrorCode.stale, "The file changed since the machine saw it");
 			this.#removed.set(r.source, {
 				path: r.source,
@@ -809,7 +942,7 @@ export class PendingView {
 	// ---- What a boundary publishes ------------------------------------------------------------------------------
 
 	/** Every pending node, by path. */
-	nodes(): ReadonlyMap<string, PendingFile | PendingFolder | { readonly kind: "gone" }> {
+	nodes(): ReadonlyMap<string, PendingFile | PendingFolder | PendingLink | { readonly kind: "gone" }> {
 		return this.#nodes;
 	}
 
@@ -826,10 +959,13 @@ export class PendingView {
 
 	/** After a boundary: the view shows the live folder again, except the nodes the boundary keeps (`keep`: files
 	 * still open, names never published, and new bytes the core did not save). Every removal and move was published
-	 * (saved, or failed losing nothing), so the gone nodes go too. */
-	settle(keep: ReadonlySet<string>): void {
+	 * (saved, or failed losing nothing), so the gone nodes go too, and the removals but those `replacing` names: a kept
+	 * new file or link whose unit replaced the live one (an editor's save or `ln -sf` the core did not take) replaces
+	 * the same version again at the next boundary. */
+	settle(keep: ReadonlySet<string>, replacing: readonly string[] = []): void {
 		for (const path of [...this.#nodes.keys()]) if (!keep.has(path)) this.#unset(path);
-		this.#removed.clear();
+		const replaced = new Set(replacing.map(folderKey));
+		for (const path of [...this.#removed.keys()]) if (!replaced.has(folderKey(path))) this.#removed.delete(path);
 	}
 
 	/** Forgets everything (the view closed). Open handles stay valid but detached. */

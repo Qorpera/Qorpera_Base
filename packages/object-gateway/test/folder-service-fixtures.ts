@@ -24,7 +24,7 @@ import {
 } from "../src/folder-service/core.ts";
 import type { MachineRef } from "../src/folder-service/machines.ts";
 import { MountGrants, parseOperatorMounts } from "../src/folder-service/mounts.ts";
-import type { CommitUnit } from "../src/folder-service/plan.ts";
+import type { CommitUnit, NewFolderEntry } from "../src/folder-service/plan.ts";
 import type { BridgeInfo } from "../src/folder-service/protocol.ts";
 import type { FolderUploads, Upload } from "../src/folder-service/staging.ts";
 
@@ -86,6 +86,11 @@ export async function storeFile(
 
 export function folder(path: string, version = 1): CoreEntry {
 	return { path, kind: "folder", version: v(version), updatedAt: "2026-10-01T12:00:00.000Z" };
+}
+
+/** A link's core entry (20260930380000): its target, and nothing of a file's. */
+export function link(path: string, target: string, version = 1): CoreEntry {
+	return { path, kind: "symlink", version: v(version), target, updatedAt: "2026-10-01T12:00:00.000Z" };
 }
 
 /** The folder core, in memory: one company, a journal of change sets and access changes, and a visibility rule for
@@ -286,8 +291,8 @@ export class FakeCore implements FolderCore {
 	refuse: (path: string) => boolean = () => false;
 	/** A path's units the core parks for review, applying nothing (P40: an agent's change that needs a member's). */
 	park: (path: string) => boolean = () => false;
-	/** Whether a conflicting write or new folder keeps its files on the receipt (P17 keeps them only when their bytes
-	 * would have passed); the copies kept, by commit. */
+	/** Whether a conflicting write, link or new folder keeps its files and links on the receipt (P17 keeps them only
+	 * when their bytes would have passed); the copies kept, by commit. */
 	copyConflicts = true;
 	readonly copies = new Map<string, ConflictCopy[]>();
 	/** Intents the core let lapse (their renewal is refused), the next renewals that do not get through, and every
@@ -434,23 +439,45 @@ export class FakeCore implements FolderCore {
 			}
 			if (this.refuse(path) || (u.op === "move" && this.refuse(u.from))) return no("denied", "denied");
 			if (this.park(path)) return no("waiting_for_review", "parked");
+			// The receipt keeps a conflicting unit's files and links (20260930380000), each with its place in the unit.
 			const conflict = (reason: string): CommitOutcome => {
-				const files =
+				const made: NewFolderEntry[] =
 					u.op === "write"
-						? [{ path: u.path, file: u.file }]
-						: u.op === "new_folder"
-							? u.contents.flatMap((c) => (c.file ? [{ path: `${u.path}/${c.path}`, file: c.file }] : []))
-							: [];
+						? [{ path: u.path, kind: "file", file: u.file }]
+						: u.op === "symlink"
+							? [{ path: u.path, kind: "symlink", target: u.target }]
+							: u.op === "new_folder"
+								? u.contents.map((c) => ({ ...c, path: `${u.path}/${c.path}` }))
+								: [];
 				if (this.copyConflicts)
-					for (const [i, { path, file }] of files.entries())
-						kept.push({ unit, file: i + 1, path, manifestSha256: file.manifestSha256 });
+					for (const [i, c] of made.filter((e) => e.kind !== "folder").entries())
+						kept.push(
+							c.file
+								? { unit, file: i + 1, path: c.path, kind: "file", manifestSha256: c.file.manifestSha256 }
+								: { unit, file: i + 1, path: c.path, kind: "symlink", target: c.target! },
+						);
 				return no("conflict", reason);
 			};
 			switch (u.op) {
-				case "write": {
+				case "write":
+				case "symlink": {
+					// A write or a link replaces the file or link at the version it names (a link's write makes it a file).
 					const e = this.entries.get(u.path);
-					if (u.expectedVersion !== undefined ? e?.kind !== "file" || e.version !== u.expectedVersion : e)
+					if (u.expectedVersion !== undefined ? e?.kind === "folder" || e?.version !== u.expectedVersion : e)
 						return conflict(u.expectedVersion !== undefined ? "version_changed" : "exists");
+					if (u.op === "symlink") {
+						if (!parentOk(u.path)) return no("refused", "parent_missing");
+						const entry: CoreEntry = {
+							path: u.path,
+							kind: "symlink",
+							version: v(this.#nextVersion++),
+							target: u.target,
+							updatedAt: now,
+						};
+						this.entries.set(u.path, entry);
+						changes.push({ ...entry, op: "write" });
+						return { unit, outcome: "saved", reason: null, version: entry.version };
+					}
 					if (!parentOk(u.path)) return no("refused", "parent_missing");
 					const entry: CoreEntry = {
 						path: u.path,
@@ -478,21 +505,13 @@ export class FakeCore implements FolderCore {
 					changes.push({ ...entry, op: "mkdir" });
 					if (u.op === "new_folder")
 						for (const c of u.contents) {
+							const at = { path: `${u.path}/${c.path}`, version: v(this.#nextVersion++), updatedAt: now };
 							const inner: CoreEntry =
 								c.kind === "folder"
-									? {
-											path: `${u.path}/${c.path}`,
-											kind: "folder",
-											version: v(this.#nextVersion++),
-											updatedAt: now,
-										}
-									: {
-											path: `${u.path}/${c.path}`,
-											kind: "file",
-											version: v(this.#nextVersion++),
-											...c.file!,
-											updatedAt: now,
-										};
+									? { ...at, kind: "folder" }
+									: c.kind === "symlink"
+										? { ...at, kind: "symlink", target: c.target! }
+										: { ...at, kind: "file", ...c.file! };
 							this.entries.set(inner.path, inner);
 							changes.push({ ...inner, op: c.kind === "folder" ? "mkdir" : "write" });
 						}

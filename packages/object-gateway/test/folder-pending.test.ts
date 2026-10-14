@@ -19,23 +19,30 @@ const version = () => `00000000-0000-4000-8000-${(++versions).toString(16).padSt
 
 interface State {
 	readonly path: string;
-	readonly kind: "file" | "folder";
+	readonly kind: "file" | "folder" | "symlink";
 	readonly version: string;
 	readonly manifest?: string;
+	/** A link's (protocol 4). */
+	readonly target?: string;
 }
 
 /** The live folder as the core keeps it: by folded key, each with its spelled path. */
 type Folder = Map<string, State>;
 
-function folderOf(paths: Record<string, string | null>): Folder {
+/** A path's content: a file's text, a folder (null), or a link's target. */
+type Content = string | null | { readonly link: string };
+
+function folderOf(paths: Record<string, Content>): Folder {
 	const state: Folder = new Map();
 	for (const [path, content] of Object.entries(paths))
-		state.set(folderKey(path), {
-			path,
-			kind: content === null ? "folder" : "file",
-			version: version(),
-			...(content === null ? {} : { manifest: hash(`manifest:${content}`) }),
-		});
+		state.set(
+			folderKey(path),
+			content === null
+				? { path, kind: "folder", version: version() }
+				: typeof content === "object"
+					? { path, kind: "symlink", version: version(), target: content.link }
+					: { path, kind: "file", version: version(), manifest: hash(`manifest:${content}`) },
+		);
 	return state;
 }
 
@@ -45,16 +52,18 @@ function treeOf(state: Folder): ViewTree {
 		tree.put(
 			e.kind === "folder"
 				? { path: e.path, kind: "folder", version: e.version }
-				: {
-						path: e.path,
-						kind: "file",
-						version: e.version,
-						manifestSha256: e.manifest!,
-						fileSha256: hash(e.manifest!),
-						bytes: 3,
-						mediaType: "text/plain",
-						executable: false,
-					},
+				: e.kind === "symlink"
+					? { path: e.path, kind: "symlink", version: e.version, target: e.target! }
+					: {
+							path: e.path,
+							kind: "file",
+							version: e.version,
+							manifestSha256: e.manifest!,
+							fileSha256: hash(e.manifest!),
+							bytes: 3,
+							mediaType: "text/plain",
+							executable: false,
+						},
 		);
 	return tree;
 }
@@ -65,8 +74,9 @@ const chunk = (text: string, bytes = text.length): ChunkRef => ({ sha256: hash(`
 /** What a staged file's reference would be: named after its chunks and bit. */
 function staged(node: PendingFile): FileRef {
 	const chunks = node.content?.chunks ?? [];
-	const size = node.content?.size ?? node.origin?.entry?.bytes ?? 0;
-	const id = node.content ? chunks.map((c) => c.sha256).join(",") : `as:${node.origin?.entry?.manifestSha256}`;
+	const origin = node.origin?.entry ?? node.copyOf;
+	const size = node.content?.size ?? origin?.bytes ?? 0;
+	const id = node.content ? chunks.map((c) => c.sha256).join(",") : `as:${origin?.manifestSha256}`;
 	return {
 		manifestSha256: hash(`manifest:${id}:${node.executable}`),
 		fileSha256: hash(id),
@@ -77,7 +87,7 @@ function staged(node: PendingFile): FileRef {
 }
 
 /** A view over a live folder; `publish` commits a boundary into it and settles the view, as the service does. */
-function setup(paths: Record<string, string | null>) {
+function setup(paths: Record<string, Content>) {
 	let state = folderOf(paths);
 	let tree = treeOf(state);
 	let seq = 10;
@@ -118,7 +128,8 @@ function setup(paths: Record<string, string | null>) {
 			seq++;
 			view.settle(plan.keep);
 			const now: Record<string, string> = {};
-			for (const e of state.values()) now[e.path] = e.kind === "folder" ? "folder" : e.manifest!;
+			for (const e of state.values())
+				now[e.path] = e.kind === "folder" ? "folder" : e.kind === "symlink" ? `link:${e.target}` : e.manifest!;
 			const expected = Object.fromEntries(Object.entries(before).filter(([p]) => !plan.keep.has(p)));
 			for (const p of plan.keep) delete now[p];
 			expect(now).toEqual(expected);
@@ -147,17 +158,23 @@ function commit(folder: Folder, units: readonly CommitUnit[]) {
 		[...state.keys()].filter((k) => k === folderKey(path) || k.startsWith(`${folderKey(path)}/`));
 	const outcomes = units.map((u) => {
 		switch (u.op) {
-			case "write": {
+			case "write":
+			case "symlink": {
+				// Either replaces a file or a link at the version it names.
 				const now = state.get(folderKey(u.path));
-				if (u.expectedVersion !== undefined ? now?.kind !== "file" || now.version !== u.expectedVersion : now)
+				if (
+					u.expectedVersion !== undefined
+						? now === undefined || now.kind === "folder" || now.version !== u.expectedVersion
+						: now
+				)
 					return "conflict";
 				if (!parentOk(u.path)) return "refused";
-				state.set(folderKey(u.path), {
-					path: u.path,
-					kind: "file",
-					version: version(),
-					manifest: u.file.manifestSha256,
-				});
+				state.set(
+					folderKey(u.path),
+					u.op === "symlink"
+						? { path: u.path, kind: "symlink", version: version(), target: u.target }
+						: { path: u.path, kind: "file", version: version(), manifest: u.file.manifestSha256 },
+				);
 				return "saved";
 			}
 			case "mkdir":
@@ -172,6 +189,7 @@ function commit(folder: Folder, units: readonly CommitUnit[]) {
 							kind: c.kind,
 							version: version(),
 							...(c.file ? { manifest: c.file.manifestSha256 } : {}),
+							...(c.target !== undefined ? { target: c.target } : {}),
 						});
 				return "saved";
 			}
@@ -202,7 +220,7 @@ function commit(folder: Folder, units: readonly CommitUnit[]) {
 	return { outcomes, state };
 }
 
-/** The folder as the view shows it: each path's kind and, for a file, its bytes' identity. */
+/** The folder as the view shows it: each path's kind and, for a file, its bytes' identity; for a link, its target. */
 function shown(view: PendingView, path = ""): Record<string, string> {
 	const out: Record<string, string> = {};
 	const page = view.children(path, undefined, 100_000);
@@ -213,10 +231,12 @@ function shown(view: PendingView, path = ""): Record<string, string> {
 		if (entry.kind === "folder") {
 			out[child] = "folder";
 			Object.assign(out, shown(view, child));
-		} else if (r.kind === "live") out[child] = r.entry.manifestSha256!;
+		} else if (entry.kind === "symlink") out[child] = `link:${view.get(child)!.target}`;
+		else if (r.kind === "live") out[child] = r.entry.manifestSha256!;
 		else {
 			const node = r.node as PendingFile;
-			const changed = node.content !== undefined || node.executable !== node.origin?.entry?.executable;
+			const changed =
+				node.content !== undefined || !node.origin || node.executable !== node.origin.entry?.executable;
 			out[child] = changed ? staged(node).manifestSha256 : node.origin!.entry!.manifestSha256!;
 		}
 	}
@@ -622,5 +642,155 @@ describe("a view's pending changes", () => {
 		expect(f.view.get("docs/plan.md")).toBeDefined();
 		expect(f.view.get("docs/Plan.md")).toBeUndefined();
 		f.publish();
+	});
+});
+
+describe("a view's links (protocol 4)", () => {
+	/** No live version replaced: `J` from a version the view no longer serves. */
+	const none = () => undefined;
+
+	it("shows a new link at once with its target, and publishes it as a symlink of an absent path", () => {
+		const f = setup({ docs: null, "docs/v1.md": "one" });
+		const version = f.view.symlink("docs/latest", "v1.md");
+		expect(f.view.get("docs/latest")).toMatchObject({ kind: "symlink", version, bytes: 5, target: "v1.md" });
+		expect(f.view.source("docs/latest", version)).toEqual({ target: "v1.md", live: undefined });
+		refused(() => f.view.symlink("docs/latest", "v2.md"), "EXISTS");
+		refused(() => f.view.mkdir("docs/latest"), "EXISTS");
+		refused(() => f.view.openWrite("docs/latest", { create: true, exclusive: false, truncate: true }), "EXISTS");
+		// A link is never followed: nothing is below one.
+		refused(() => f.view.mkdir("docs/latest/x"), "NOT_A_FOLDER");
+		expect(f.view.get("docs/latest/x")).toBeUndefined();
+		// Below protocol 4 a listing leaves it out.
+		const page = f.view.children("docs", undefined, 100, false);
+		expect(typeof page === "object" && page.entries.map((e) => e.name)).toEqual(["v1.md"]);
+		expect(f.publish()).toEqual([{ op: "symlink", path: "docs/latest", target: "v1.md" }]);
+		expect(f.tree().get("docs/latest")).toMatchObject({ kind: "symlink", target: "v1.md" });
+	});
+
+	it("publishes ln -sf (a link renamed over the old one) as one symlink unit at the replaced version", () => {
+		const f = setup({ docs: null, "docs/latest": { link: "v1.md" } });
+		const old = f.tree().get("docs/latest")!.version;
+		f.view.symlink("docs/CuXXXXXX", "v2.md");
+		f.view.rename("docs/CuXXXXXX", "docs/latest", { noReplace: false, toBase: old });
+		expect(f.publish()).toEqual([{ op: "symlink", path: "docs/latest", target: "v2.md", expectedVersion: old }]);
+	});
+
+	it("publishes a new file renamed over a link, and a new link renamed over a file, at the replaced version", () => {
+		const f = setup({ "notes.md": { link: "real.md" }, "plan.md": "text" });
+		const link = f.tree().get("notes.md")!.version;
+		const file = f.tree().get("plan.md")!.version;
+		write(f.view, ".notes.md.tmp", "own text");
+		f.view.rename(".notes.md.tmp", "notes.md", { noReplace: false, toBase: link });
+		f.view.symlink("plan.md.new", "elsewhere.md");
+		f.view.rename("plan.md.new", "plan.md", { noReplace: false, toBase: file });
+		expect(f.publish()).toEqual([
+			{ op: "write", path: "notes.md", file: expect.any(Object), expectedVersion: link },
+			{ op: "symlink", path: "plan.md", target: "elsewhere.md", expectedVersion: file },
+		]);
+	});
+
+	it("publishes a removed link as a delete and a renamed one as a move; a folder holding one is not empty", () => {
+		const f = setup({ D: null, "D/l": { link: "x" }, gone: { link: "a" }, old: { link: "b" } });
+		refused(() => f.view.rmdir("D"), "NOT_EMPTY");
+		f.view.unlink("gone");
+		f.view.rename("old", "new");
+		expect(f.publish()).toEqual([
+			{ op: "delete", path: "gone", expectedVersion: expect.any(String) },
+			{ op: "move", from: "old", to: "new", expectedVersion: expect.any(String) },
+		]);
+		f.view.unlink("D/l");
+		f.view.rmdir("D");
+		expect(f.publish()).toEqual([{ op: "delete", path: "D", expectedVersion: expect.any(String), asOfSeq: 11 }]);
+	});
+
+	it("publishes links made in a new folder with its content", () => {
+		const f = setup({});
+		f.view.mkdir("site");
+		f.view.mkdir("site/assets");
+		write(f.view, "site/index.html", "<p>");
+		f.view.symlink("site/home.html", "index.html");
+		f.view.symlink("site/assets/logo", "../logo.svg");
+		expect(f.publish()).toEqual([
+			{
+				op: "new_folder",
+				path: "site",
+				contents: [
+					{ path: "assets", kind: "folder" },
+					{ path: "index.html", kind: "file", file: expect.any(Object) },
+					{ path: "home.html", kind: "symlink", target: "index.html" },
+					{ path: "assets/logo", kind: "symlink", target: "../logo.svg" },
+				],
+			},
+		]);
+	});
+
+	it("publishes J from a live file as a new file over the source's bytes", () => {
+		const f = setup({ "a.md": "a" });
+		const source = f.tree().get("a.md")!;
+		const version = f.view.link("a.md", "b.md", undefined, none);
+		expect(f.view.get("b.md")).toMatchObject({ kind: "file", version, bytes: source.bytes });
+		expect(f.view.source("b.md", version)).toEqual({ live: source });
+		expect((f.view.nodes().get("b.md") as PendingFile).copyOf).toBe(source);
+		const [unit] = f.publish();
+		expect(unit).toEqual({ op: "write", path: "b.md", file: expect.any(Object) });
+	});
+
+	it("publishes J from a version another machine replaced as that version's bytes", () => {
+		const f = setup({ "a.md": "v1" });
+		const read = f.tree().get("a.md")!;
+		f.change("a.md", "v2");
+		refused(() => f.view.link("a.md", "b.md", read.version, none), "STALE");
+		f.view.link("a.md", "b.md", read.version, (path, version) =>
+			path === "a.md" && version === read.version ? read : undefined,
+		);
+		expect((f.view.nodes().get("b.md") as PendingFile).copyOf).toBe(read);
+		f.publish();
+	});
+
+	it("publishes J from a pending file as a second write of the same staged bytes", () => {
+		const f = setup({ "a.md": "old" });
+		write(f.view, "a.md", "new text");
+		write(f.view, "fresh.md", "fresh");
+		f.view.link("a.md", "b.md", undefined, none);
+		f.view.link("fresh.md", "c.md", f.view.get("fresh.md")!.version, none);
+		const units = f.publish();
+		const file = (path: string) => units.find((u) => u.op === "write" && u.path === path)!;
+		expect(units).toHaveLength(4);
+		expect(file("b.md")).toEqual({ ...file("a.md"), path: "b.md", expectedVersion: undefined });
+		expect(file("c.md")).toEqual({ ...file("fresh.md"), path: "c.md" });
+	});
+
+	it("publishes J from a link as a link with its target", () => {
+		const f = setup({ latest: { link: "v1.md" } });
+		f.view.link("latest", "also", undefined, none);
+		f.view.symlink("mine", "v2.md");
+		f.view.link("mine", "mine2", undefined, none);
+		expect(f.publish()).toEqual([
+			{ op: "symlink", path: "also", target: "v1.md" },
+			{ op: "symlink", path: "mine", target: "v2.md" },
+			{ op: "symlink", path: "mine2", target: "v2.md" },
+		]);
+	});
+
+	it("refuses J from a file open for writing, onto a present name, from a stale version, and from a folder", () => {
+		const f = setup({ D: null, "a.md": "a", "c.md": "c" });
+		f.view.openWrite("open.md", { create: true, exclusive: false, truncate: true });
+		refused(() => f.view.link("open.md", "b.md", undefined, none), "BUSY");
+		refused(() => f.view.link("a.md", "c.md", undefined, none), "EXISTS");
+		refused(() => f.view.link("a.md", "b.md", "00000000-0000-4000-8000-ffffffffffff", none), "STALE");
+		refused(() => f.view.link("D", "E", undefined, none), "NOT_PERMITTED");
+		refused(() => f.view.link("missing", "b.md", undefined, none), "NOT_FOUND");
+		write(f.view, "new.md", "n");
+		refused(() => f.view.link("new.md", "b.md", "00000000-0000-4000-8000-ffffffffffff", none), "STALE");
+		expect(f.view.get("b.md")).toBeUndefined();
+	});
+
+	it("never publishes a lock link, and counts it as no unsaved work", () => {
+		const f = setup({ "notes.md": "n" });
+		f.view.symlink(".#notes.md", "jonas@mac.local.4242:1760000000");
+		expect(f.view.unsaved).toBe(false);
+		expect(f.plan().keep).toEqual(new Set([".#notes.md"]));
+		expect(f.publish()).toEqual([]);
+		expect(f.view.get(".#notes.md")).toMatchObject({ kind: "symlink" });
 	});
 });

@@ -206,6 +206,27 @@ describe("writes through the mount", () => {
 		expect(core.entries.has("plan.md.new")).toBe(false);
 	});
 
+	it("tries a refused save through a temporary file renamed over its target again at the version it replaced", async () => {
+		const { root, core, open } = await fixture();
+		core.seed([await storeFile(root, "plan.md", "v1", 1, BIG)]);
+		const view = await open();
+		const read1 = core.entries.get("plan.md")!.version;
+		await write(view, "plan.md.new", "mine");
+		await view.rename({ from: "plan.md.new", to: "plan.md", toBase: read1, noReplace: false });
+		core.refuse = (path) => path === "plan.md";
+		expect((await view.publish()).paths).toEqual([
+			{ path: "plan.md", outcome: "denied", reason: "denied", kept: true },
+		]);
+		expect(await read(view, "plan.md")).toBe("mine");
+		// Kept, the save still replaces the version the editor renamed over, so it saves instead of conflicting.
+		core.refuse = () => false;
+		expect((await view.publish()).paths).toEqual([{ path: "plan.md", outcome: "saved" }]);
+		expect(core.commits.at(-1)!.units).toEqual([
+			expect.objectContaining({ op: "write", path: "plan.md", expectedVersion: read1 }),
+		]);
+		expect(core.entries.get("plan.md")?.fileSha256).toBe(hashOf("mine"));
+	});
+
 	it("keeps a stale save as a conflict when the service restarted between the read and the save", async () => {
 		const { root, core, open, restart } = await fixture();
 		core.seed([await storeFile(root, "plan.md", "v1", 1, BIG)]);

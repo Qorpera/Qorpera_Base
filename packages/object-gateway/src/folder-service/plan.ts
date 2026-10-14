@@ -12,15 +12,12 @@ export type CommitUnit =
 			readonly file: FileRef;
 			readonly expectedVersion?: string;
 	  } & Structured)
+	| { readonly op: "symlink"; readonly path: string; readonly target: string; readonly expectedVersion?: string }
 	| { readonly op: "mkdir"; readonly path: string }
 	| ({
 			readonly op: "new_folder";
 			readonly path: string;
-			readonly contents: readonly {
-				readonly path: string;
-				readonly kind: "file" | "folder";
-				readonly file?: FileRef;
-			}[];
+			readonly contents: readonly NewFolderEntry[];
 	  } & Structured)
 	| { readonly op: "delete"; readonly path: string; readonly expectedVersion: string; readonly asOfSeq?: number }
 	| {
@@ -31,12 +28,20 @@ export type CommitUnit =
 			readonly asOfSeq?: number;
 	  };
 
+/** One path a `new_folder` makes: a file with its staged reference, a folder, or a link with its target. */
+export interface NewFolderEntry {
+	readonly path: string;
+	readonly kind: "file" | "folder" | "symlink";
+	readonly file?: FileRef;
+	readonly target?: string;
+}
+
 export interface PlannedUnit {
 	readonly unit: CommitUnit;
 	/** The view's paths this unit publishes, for the report and for what stays pending when it does not save. */
 	readonly paths: readonly string[];
-	/** It carries new bytes (a write, or a new folder's files): if the core does not save it, and does not keep it as a
-	 * conflict copy, its paths stay pending. */
+	/** It carries new content (a write, a link, or a new folder's files and links): if the core does not save it, and
+	 * does not keep it as a conflict copy, its paths stay pending. */
 	readonly bytes: boolean;
 }
 
@@ -57,11 +62,12 @@ type Item =
 	| {
 			kind: "create";
 			path: string;
-			contents: { path: string; kind: "file" | "folder"; file?: FileRef }[] | null;
+			contents: NewFolderEntry[] | null;
 			paths: string[];
 	  }
 	| { kind: "move"; from: string; to: string; ref: LiveRef; paths: string[] }
-	| { kind: "new"; path: string; file: FileRef; expected?: string; paths: string[] };
+	| { kind: "new"; path: string; file: FileRef; expected?: string; paths: string[] }
+	| { kind: "link"; path: string; target: string; expected?: string; paths: string[] };
 
 /** `path` is strictly below `folder`, by folded keys. */
 function below(path: string, folder: string): boolean {
@@ -73,8 +79,8 @@ function below(path: string, folder: string): boolean {
  * writing, bytes not staged yet, and names never published, as one change set. `PendingView` keeps every pending
  * change publishable that way: each unit names a live path as it is, no unit needs a version another unit makes, and
  * no unit's failure can lose another's work. A removed folder is one subtree removal; a new folder whose whole content
- * is new is one `new_folder`; a new file where the view removed a live file is that file's next version. Units are
- * ordered so a path is freed before it is filled, and a new folder made before what goes in it.
+ * is new is one `new_folder`; a new file or link where the view removed a live file or link is that path's next
+ * version. Units are ordered so a path is freed before it is filled, and a new folder made before what goes in it.
  */
 export function planBoundary(view: PendingView, staged: (node: PendingFile) => FileRef | undefined): BoundaryPlan {
 	const keep = new Set<string>();
@@ -84,6 +90,7 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 	const creates: (Item & { kind: "create" })[] = [];
 	const moves: (Item & { kind: "move" })[] = [];
 	const news: (Item & { kind: "new" })[] = [];
+	const links: (Item & { kind: "link" })[] = [];
 	const nodes = view.nodes();
 
 	for (const [path, node] of nodes) {
@@ -94,6 +101,13 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 		}
 		if (node.kind === "folder") {
 			if (!node.origin) creates.push({ kind: "create", path, contents: null, paths: [path] });
+			else if (node.origin.path !== path)
+				moves.push({ kind: "move", from: node.origin.path, to: path, ref: node.origin, paths: [path] });
+			continue;
+		}
+		if (node.kind === "symlink") {
+			// A link is never changed in place: made, or moved.
+			if (!node.origin) links.push({ kind: "link", path, target: node.target, paths: [path] });
 			else if (node.origin.path !== path)
 				moves.push({ kind: "move", from: node.origin.path, to: path, ref: node.origin, paths: [path] });
 			continue;
@@ -134,7 +148,7 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 		// A folder's removal takes everything in it as of its position: a file in it whose live version is not the one
 		// its own removal named (it changed before that removal, from a base the machine had not seen) would go
 		// unseen, so the folder stays, and so does what was removed in it.
-		if (inside.some(([p, r]) => r.kind === "file" && view.liveVersion(p) !== r.version)) {
+		if (inside.some(([p, r]) => r.kind !== "folder" && view.liveVersion(p) !== r.version)) {
 			for (const p of [path, ...inside.map(([q]) => q)])
 				dropped.push({ path: p, reason: "something in the folder changed since the machine saw it" });
 			continue;
@@ -152,10 +166,10 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 		});
 	}
 
-	// A new file where the view removed a live file (its folder still there) is that file's next version: an editor's
-	// temporary file renamed over its target.
-	for (const item of news) {
-		const index = deletes.findIndex((d) => d.ref.kind === "file" && folderKey(d.path) === folderKey(item.path));
+	// A new file or link where the view removed a live file or link (its folder still there) is that path's next
+	// version: an editor's temporary file renamed over its target, or `ln -sf`'s link renamed over the old one.
+	for (const item of [...news, ...links]) {
+		const index = deletes.findIndex((d) => d.ref.kind !== "folder" && folderKey(d.path) === folderKey(item.path));
 		if (index < 0) continue;
 		item.expected = deletes[index]!.ref.version;
 		deletes.splice(index, 1);
@@ -169,17 +183,21 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 		const eligible = inside.every(([p, n]) => {
 			if (unpublished(p)) return true;
 			if (n.kind === "gone" || n.origin) return false;
-			return n.kind === "folder" || news.some((i) => i.path === p && i.expected === undefined);
+			return n.kind === "folder" || [...news, ...links].some((i) => i.path === p && i.expected === undefined);
 		});
 		if (!eligible) continue;
-		const contents: { path: string; kind: "file" | "folder"; file?: FileRef }[] = [];
-		for (const item of [...creates, ...news]) {
+		const contents: NewFolderEntry[] = [];
+		for (const item of [...creates, ...news, ...links]) {
 			if (!below(item.path, create.path)) continue;
 			absorbed.add(item);
 			create.paths.push(...item.paths);
 			const rel = item.path.slice(create.path.length + 1);
 			contents.push(
-				item.kind === "new" ? { path: rel, kind: "file", file: item.file } : { path: rel, kind: "folder" },
+				item.kind === "new"
+					? { path: rel, kind: "file", file: item.file }
+					: item.kind === "link"
+						? { path: rel, kind: "symlink", target: item.target }
+						: { path: rel, kind: "folder" },
 			);
 		}
 		create.contents = contents.sort((a, b) => a.path.split("/").length - b.path.split("/").length);
@@ -191,6 +209,7 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 		...creates.filter((i) => !absorbed.has(i)),
 		...moves,
 		...news.filter((i) => !absorbed.has(i)),
+		...links.filter((i) => !absorbed.has(i)),
 	];
 	const units: PlannedUnit[] = [];
 	for (const item of schedule(items, waiting, keep)) units.push(unitOf(item));
@@ -211,6 +230,17 @@ function unitOf(item: Item): PlannedUnit {
 					op: "write",
 					path: item.path,
 					file: item.file,
+					...(item.expected ? { expectedVersion: item.expected } : {}),
+				},
+				paths: item.paths,
+				bytes: true,
+			};
+		case "link":
+			return {
+				unit: {
+					op: "symlink",
+					path: item.path,
+					target: item.target,
 					...(item.expected ? { expectedVersion: item.expected } : {}),
 				},
 				paths: item.paths,
@@ -248,7 +278,12 @@ function unitOf(item: Item): PlannedUnit {
 
 /** The path an item fills, and the one it frees, by folded key. */
 function fills(item: Item): string | undefined {
-	const path = item.kind === "create" || item.kind === "new" ? item.path : item.kind === "move" ? item.to : undefined;
+	const path =
+		item.kind === "create" || item.kind === "new" || item.kind === "link"
+			? item.path
+			: item.kind === "move"
+				? item.to
+				: undefined;
 	return path === undefined ? undefined : folderKey(path);
 }
 
