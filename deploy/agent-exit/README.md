@@ -584,7 +584,11 @@ machines (the entries LXD backs), and:
   in one transaction: the exit sends every machine's plain DNS (UDP and TCP port 53, to any address, the exit's own
   included) to its company's resolver, and a machine may ask the exit on that port only, so it never reaches another
   company's resolver. A machine whose resolver changes has its DNS connections ended at once, so none goes on to the
-  old one;
+  old one, and so has every machine once in each exit table the reconciler has not seen yet (its first, or one the
+  exit's reload made again): a connection keeps where it was first sent, maybe the main dnsmasq of an exit before
+  E8b-2. A connection that could not be ended is tried again on each pass, a problem until it is;
+- when it starts, reloads every resolver that runs: a reconciler before it may have rewritten a servers file and
+  stopped before the reload;
 - fails closed: a machine without an element (no `rules.json` yet, its company not in it yet, its company's rules not
   as the reader writes them, no port left) has its DNS dropped, counted in `refused_dns`. A company that just got rules
   keeps the main dnsmasq until its resolver answers (both UDP and TCP), for at most 10 seconds; then its machines have

@@ -359,7 +359,9 @@ node, and its login; E8b-2, per-company names on each node's exit; E8c, "only li
     and fills an nft map from each verified machine's address to that port, or to the exit's own dnsmasq for a
     company without rules. A machine of a company not known yet, or with rules that cannot be used, has no element
     and its lookups are dropped. A company that just got rules keeps the exit's own dnsmasq until its resolver
-    answers, at most 10 seconds. All resolvers log to the exit's one `dns.log`. `verify` fails when the reconciler's
+    answers, at most 10 seconds. It ends a machine's open DNS connections when its port changes, and every machine's
+    once in each exit table it has not seen (one the exit's reload made again); on start it reloads every resolver
+    that runs. All resolvers log to the exit's one `dns.log`. `verify` fails when the reconciler's
     status is stale or names a problem: no usable rules, a resolver not answering, a map it cannot read or set.
 - **Block list:** the exit's DNS refuses a blocked name for that company's machines. No address is blocked, so other
   sites behind the same CDN are untouched. A machine that reaches a site by address, or through its own encrypted

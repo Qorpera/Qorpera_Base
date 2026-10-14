@@ -1095,7 +1095,8 @@ for d in ("seen", "verified", "rules"):
 os.makedirs(run, exist_ok=True)
 rules_path, status_path = os.path.join(state, "rules", "rules.json"), os.path.join(root, "rules-status.json")
 args = types.SimpleNamespace(state_dir=state, run_dir=run, rules=rules_path, rules_status=status_path, netns="qexit")
-world = {"units": {}, "listening": set(), "map": {}, "set": set(), "calls": [], "flushed": [], "wrote": 0, "fail": set()}
+world = {"units": {}, "listening": set(), "map": {}, "set": set(), "table": 1, "calls": [], "flushed": [], "wrote": 0,
+         "fail": set()}
 reader = {"ok": True, "problem": None, "lag": 0}
 
 def answer(code=0, stdout="", stderr=""):
@@ -1126,6 +1127,9 @@ def fake_run(command, input=None, capture_output=True, text=True):
         return answer(stdout="".join(f"{kind} {how} 0 0 10.210.0.1:{port} 0.0.0.0:*\n" for port in sorted(world["listening"])
                                      for kind, how in (("udp", "UNCONN"), ("tcp", "LISTEN"))))
     if command[:3] == ["nft", "-j", "list"]:
+        if command[3] == "tables":
+            return answer(stdout=json.dumps({"nftables": [{"metainfo": {}}, {"table": {
+                "family": "inet", "name": "qorpera_agent_exit", "handle": world["table"]}}]}))
         if command[3] == "map":
             return answer(stdout=json.dumps({"nftables": [{"metainfo": {}}, {"map": {"name": "dns_port", "elem": [
                 [a, p] for a, p in world["map"].items()]}}]}))
@@ -1146,6 +1150,8 @@ def fake_run(command, input=None, capture_output=True, text=True):
                     world["set"].update((a, int(p)) for a, p in (pair.split(" . ") for pair in pairs))
         return answer()
     if command[0] == "conntrack":
+        if "conntrack" in world["fail"]:
+            return answer(1, stderr="conntrack v1.4.8 (conntrack-tools): Operation failed: Device or resource busy")
         if command[3] not in world["flushed"]:
             world["flushed"].append(command[3])
         return answer(1, stderr="conntrack v1.4.8 (conntrack-tools): 0 flow entries have been deleted.")
@@ -1389,7 +1395,9 @@ plug.write_replace(os.path.join(state, "names", "ports.json"), json.dumps(
 steps["read"] = names.read_ports(os.path.join(state, "names", "ports.json"))
 `);
 		assert.deepEqual([s.two.resolvers, s.two.ports], [{ c1: 10001, c2: 10002 }, { c1: 10001, c2: 10002 }]);
-		assert.deepEqual([s.restarted.resolvers, s.restarted.calls], [{ c1: 10001, c2: 10002 }, []], "a new reconciler keeps the ports");
+		// A new reconciler keeps the ports, starts nothing again, and reloads what runs (it cannot know what the one
+		// before it owed).
+		assert.deepEqual([s.restarted.resolvers, s.restarted.calls], [{ c1: 10001, c2: 10002 }, ["reload 10001", "reload 10002"]]);
 		// c1 gives 10001 back in the pass c3 comes in: c3 does not get it.
 		assert.deepEqual(s.swapped.resolvers, { c2: 10002, c3: 10003 });
 		assert.deepEqual(s.swapped.calls, ["reset-failed 10003", "start --no-block 10003", "stop 10001", "reset-failed 10001"]);
@@ -1446,6 +1454,44 @@ steps["crashed"] = {"status": json.load(open(os.path.join(run, "names.json"))), 
 		// A pass that fails as a whole is a problem, and touches nothing.
 		assert.deepEqual([s.crashed.calls, s.crashed.map], [[], { "10.210.1.1": 10001, "10.210.1.2": 53 }]);
 		assert.match(s.crashed.status.problems.join(" | "), /^JSONDecodeError: /);
+	});
+
+	test("what a reconciler owed is done by the next: every resolver that runs reloaded, every machine's DNS connections ended once per table", () => {
+		const s = scenario(String.raw`
+machine("10.210.1.1", "c1")
+machine("10.210.1.2", "c2")
+rules(c1=ruled(block=["b.test"]), c2=None)
+world["listening"].add(10001)
+step("first")
+step("settled")
+world["table"] += 1
+step("rebuilt")
+step("after")
+world["fail"] = {"reload"}
+rules(c1=ruled(block=["c.test"]), c2=None)
+step("reload_fails")
+world["fail"] = set()
+reconciler[0] = None
+step("restarted")
+world["fail"] = {"conntrack"}
+rules(c1=None, c2=None)
+step("flush_fails")
+world["fail"] = set()
+reconciler[0] = None
+step("again")
+`);
+		assert.deepEqual([s.first.flushed, s.settled.flushed, s.settled.calls], [["10.210.1.1", "10.210.1.2"], [], []]);
+		// A table up made again, filled from the files: its map is right, but connections made before it may still go
+		// where an older map sent them (to the main dnsmasq, on an exit upgraded to E8b-2).
+		assert.deepEqual([s.rebuilt.wrote, s.rebuilt.flushed, s.after.flushed], [0, ["10.210.1.1", "10.210.1.2"], []]);
+		assert.deepEqual([s.reload_fails.calls, s.reload_fails.problems], [[], ["cannot reload the resolver on port 10001: reload failed"]]);
+		assert.deepEqual(s.reload_fails.servers, { "10001.servers": "server=/c.test/\n" });
+		// Stopped after replacing the file and before its reload: the next reconciler finds the file as it wants it.
+		assert.deepEqual([s.restarted.calls, s.restarted.flushed, s.restarted.problems], [["reload 10001"], ["10.210.1.1", "10.210.1.2"], []]);
+		// Stopped after changing the map and before ending the connections the change left behind.
+		assert.deepEqual([s.flush_fails.map, s.flush_fails.flushed], [main, []]);
+		assert.deepEqual(s.flush_fails.problems, ["the DNS connections of 10.210.1.1 could not be ended yet"]);
+		assert.deepEqual([s.again.wrote, s.again.flushed, s.again.problems], [0, ["10.210.1.1", "10.210.1.2"], []]);
 	});
 
 	test("elements: the map as the files say, for up; nothing without rules", () => {

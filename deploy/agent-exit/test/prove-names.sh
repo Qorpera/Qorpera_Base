@@ -644,7 +644,12 @@ else
 	within 180 '[[ $(lease_of m3) == "$a3" ]]'
 	lx file push "$work/rcode.py" m3/root/rcode.py >/dev/null
 	within 30 'says m3 10.210.0.1 blocked.example.com "NOERROR 198.51.100.1"'
-	pass "the previous release, installed and switched on with its own step 1, is healthy; m3 ($C1) at $a3 resolves blocked.example.com"
+	# A flow from m3's port 40054 to 9.9.9.9:53 that the previous release sent to the main dnsmasq. Asked twice, over
+	# 2 s apart, so the kernel keeps it 120 s without a packet: it outlasts step 9 below.
+	expect m3 9.9.9.9 blocked.example.com "NOERROR 198.51.100.1" 53 40054
+	sleep 2.5
+	expect m3 9.9.9.9 blocked.example.com "NOERROR 198.51.100.1" 53 40054
+	pass "the previous release, installed and switched on with its own step 1, is healthy; m3 ($C1) at $a3 resolves blocked.example.com, also on a flow from its port 40054 to 9.9.9.9"
 
 	{
 		bash "$here/install-agent-exit.sh" "$package" &&
@@ -656,8 +661,17 @@ else
 		healthy && says m3 10.210.0.1 blocked.example.com NXDOMAIN &&
 			names_is "s['resolvers'] == {'$C1': 10001} and s['mapped'] == {'$a3': 10001} and s['problems'] == []"
 	}
-	within 30 stepped
-	pass "ROLLOUT.md step 9 on the previous release's exit: healthy within 30 s, $C1 has its resolver on port 10001 and m3 its blocked names"
+	# `up` made the exit's table again, its map from the files, maybe with m3 already on its company's resolver. The flow
+	# from port 40054, asked again and again meanwhile, ends either way: the reconciler ends every machine's DNS
+	# connections once in each table it has not seen.
+	deadline=$((SECONDS + 30))
+	until stepped; do
+		ask m3 9.9.9.9 blocked.example.com 53 40054 >/dev/null || true
+		((SECONDS < deadline)) || fail "not within 30 s: stepped"
+		sleep 0.5
+	done
+	expect m3 9.9.9.9 blocked.example.com NXDOMAIN 53 40054
+	pass "ROLLOUT.md step 9 on the previous release's exit: healthy within 30 s, $C1 has its resolver on port 10001 and m3 its blocked names, also on its flow from port 40054 opened before the step"
 
 	{
 		bash "$previous/install-agent-exit.sh" "$package" &&

@@ -220,6 +220,16 @@ def loaded_map(text_map, text_set):
     return mapped, allowed
 
 
+def table_handle(text, name):
+    """The handle of the exit's table as `nft -j list tables` gives it. The kernel numbers each new table anew, so a
+    table `up` made again has another one than the table before it."""
+    for item in json.loads(text).get("nftables", []):
+        found = item.get("table") or {}
+        if found.get("name") == name:
+            return found.get("handle")
+    return None
+
+
 class Names:
     def __init__(self, args):
         self.args = args
@@ -238,6 +248,14 @@ class Names:
         self.started = {}
         self.restarted = {}
         self.unflushed = set()
+        # What a reconciler before this one still owed (a reload after replacing a servers file, connections to end
+        # after changing the map) is known only to it. So the first pass reloads every resolver that runs, and every
+        # table not seen yet (the first, or one `up` made again from the files) has every machine's DNS connections
+        # ended once its map is right.
+        self.reload_all = True
+        self.table = None
+        self.flush_all = False
+        self.machines = set()
         self.problems = []
 
     def run(self, command):
@@ -357,6 +375,10 @@ class Names:
                 # and members read anyway.
                 plug.write_replace(path, text, 0o644)
                 self.reload_pending.add(port)
+        if self.reload_all:
+            # A reconciler before this one may have replaced a file and stopped before its reload.
+            self.reload_pending |= set(ports.values())
+            self.reload_all = False
         for port in sorted(self.reload_pending):
             if units.get(port) != "active":
                 # Not running: it reads the new file when it starts.
@@ -408,20 +430,27 @@ class Names:
 
     def sync_map(self, mapped, waiting=frozenset()):
         """Makes dns_port and dns_allowed hold `mapped`, in one transaction, and ends the DNS connections of every
-        machine whose resolver changed or went. While a resolver is in `waiting` (started under START_GRACE ago, not
-        answering yet) a machine of it keeps the element it has if that is the main dnsmasq or this resolver, and gets
-        none otherwise: a company that just got rules has names meanwhile, and its rules apply once its resolver
-        answers. Returns the map as it is now ({} when it cannot be read)."""
+        machine whose resolver changed or went, and of every machine once in each table not seen before. While a
+        resolver is in `waiting` (started under START_GRACE ago, not answering yet) a machine of it keeps the element
+        it has if that is the main dnsmasq or this resolver, and gets none otherwise: a company that just got rules has
+        names meanwhile, and its rules apply once its resolver answers. Returns the map as it is now ({} when it cannot
+        be read)."""
         if not self.kernel:
             return mapped
         family, table = plug.EXIT_TABLE
-        answers = [self.in_exit("nft", "-j", "list", what, family, table, name)
-                   for what, name in (("map", "dns_port"), ("set", "dns_allowed"))]
+        answers = [self.in_exit("nft", "-j", "list", "tables", family)]
+        answers += [self.in_exit("nft", "-j", "list", what, family, table, name)
+                    for what, name in (("map", "dns_port"), ("set", "dns_allowed"))]
         failed = [a for a in answers if a.returncode != 0]
         if failed:
             self.problems.append(f"cannot read the exit's DNS map: {failed[0].stderr.strip()[:200]}")
             return {}
-        loaded, allowed = loaded_map(answers[0].stdout, answers[1].stdout)
+        handle = table_handle(answers[0].stdout, table)
+        if handle != self.table:
+            # Connections made before this table may still go where an older map sent them, to the main dnsmasq
+            # before a company had rules (an exit upgraded to E8b-2 included).
+            self.table, self.flush_all = handle, True
+        loaded, allowed = loaded_map(answers[1].stdout, answers[2].stdout)
         mapped = {address: loaded[address] if port in waiting else port for address, port in mapped.items()
                   if port not in waiting or loaded.get(address) in (MAIN_PORT, port)}
         if loaded != mapped or allowed != set(mapped.items()):
@@ -432,6 +461,9 @@ class Names:
                 self.problems.append(f"cannot set the exit's DNS map: {result.stderr.strip()[:200]}")
                 return loaded
             self.unflushed |= {address for address, port in loaded.items() if mapped.get(address) != port}
+        if self.flush_all:
+            self.unflushed |= set(loaded) | set(mapped) | self.machines
+            self.flush_all = False
         for address in sorted(self.unflushed):
             if self.flush(address):
                 self.unflushed.discard(address)
@@ -456,6 +488,7 @@ class Names:
         self.check_reader(at)
         rules = self.read_rules()
         clients = verified_clients(self.args.state_dir, self.clients_cache)
+        self.machines = set(clients)
         if rules is None:
             return self.write_status(at, {}, self.sync_map({}))
         for company in sorted({c for c in clients.values() if rules.get(c) is False}):
