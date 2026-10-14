@@ -287,8 +287,9 @@ begin
 end $$;
 
 -- 9. A run whose agent and member may write the trees' folders (as a live agent's default grant on the shared root
--- gives) passes the commit's authority check, so the run rule alone refuses: a block's delete, a folder outside t0 to
--- t14, another conversation's tree under that conversation's generation, and a second session's generation.
+-- gives) passes the commit's authority check, so the run rule alone refuses: a block's delete, a run log's folder,
+-- another conversation's tree under that conversation's generation, and a second session's generation. (A tier folder
+-- past t14 never reaches the run rule: M1a's tree check refuses it first, block 2.)
 do $$
 declare env constant uuid := '63400000-0000-4000-8000-000000000020'; root constant text := 'agents/nora/memory/thread';
 	other constant text := 'agents/otto/memory/thread'; s uuid := pg_temp.thread('nora'); a jsonb; p text; r jsonb; u jsonb;
@@ -303,15 +304,14 @@ begin
 			'member', '63400000-0000-4000-8000-000000000002', array['read','write']);
 	end loop;
 	a := public.qorpera_folder_tool_run(pg_temp.b('nora'), '[]'::jsonb) -> 'resolved';
-	foreach p in array array[root || '/t0/00000000.jsonl', root || '/runs', root || '/t15', other || '/t1', root || '/t2'] loop
+	foreach p in array array[root || '/t0/00000000.jsonl', root || '/runs', other || '/t1', root || '/t2'] loop
 		if not public.qorpera_folder_actor_allowed(env, '63400000-0000-4000-8000-000000000010', a, p, 'write') then
 			raise exception 'Nora''s run may write %', p; end if;
 	end loop;
 	foreach u in array array[
 		jsonb_build_object('op', 'delete', 'path', root || '/t0/00000000.jsonl',
 			'expectedVersion', pg_temp.read(root || '/t0/00000000.jsonl') #>> '{entry,version}'),
-		jsonb_build_object('op', 'mkdir', 'path', root || '/runs'),
-		jsonb_build_object('op', 'mkdir', 'path', root || '/t15')] loop
+		jsonb_build_object('op', 'mkdir', 'path', root || '/runs')] loop
 		i := i + 1;
 		r := pg_temp.writer_commit('nora', 'writer-granted-' || i, jsonb_build_array(u), pg_temp.generations(s, 1));
 		perform pg_temp.same(pg_temp.expect(r, 1, 'refused', 'structured_rule') #> '{problems,0,message}', to_jsonb(outside),
@@ -327,7 +327,7 @@ begin
 	perform pg_temp.same(pg_temp.expect(r, 1, 'refused', 'structured_rule') #> '{problems,0,message}', to_jsonb(scope),
 		'The run rule refuses a second session''s generation');
 	perform pg_temp.same(pg_temp.read(root || '/t0/00000000.jsonl') -> 'found', 'true', 'The refused delete kept the block');
-	foreach p in array array[root || '/runs', root || '/t15', other || '/t1', root || '/t2'] loop
+	foreach p in array array[root || '/runs', other || '/t1', root || '/t2'] loop
 		perform pg_temp.same(pg_temp.read(p) -> 'found', 'false', 'No refused folder ' || p);
 	end loop;
 end $$;
