@@ -44,7 +44,7 @@ The cloud runtime owns execution, receipts, authorization fences, provider crede
 | Wake bus | Cloud-owned scheduling/dedup/silence | No browser wake executor. Test outcomes with every client offline against accepted release. |
 | Shared office/start/access | `CloudMemberCompanyComputerClient` factories | Start/status/cancel and observed-version grants exist. |
 | Watch/control/private sign-in | SDK views, `MemberCompanyBrowserSession`, browser recovery | Explicit trusted WSS origin, private acknowledgement, consent and cleanup exist. Viewer closure does not stop work or end privacy. |
-| Artifacts and activity | SDK file exports, attachments, `CloudMemberCompanyPresence` | Explicit verified downloads and lossy read-only activity exist; no raw runtime credential or local path authority. |
+| Artifacts and activity | SDK file exports (deleted with snapshot-v1 in legacy sweep step C), attachments, `CloudMemberCompanyPresence` | Explicit verified downloads and lossy read-only activity exist; no raw runtime credential or local path authority. |
 | VM reset and durability | Track A's governed runtime lifecycle | No invented member reset API. Runtime release gate remains open. |
 
 ## Checkpoint procedure
