@@ -99,8 +99,8 @@ create function pg_temp.a_grants(p_revoked boolean) returns void language sql as
 $$;
 
 
--- The migration's marker is in every function it patches and in the new root check, which is internal. The view's
--- machine columns belong to test machines alone, and a placement records a disk used without the folder check.
+-- The migration's marker is in every function it patches and in the new root check, which is internal. A placement
+-- records a disk used without the folder check.
 do $$
 declare f regprocedure; r name; v_root constant text := 'public.qorpera_folder_reads_root(uuid,uuid,uuid,uuid)';
 begin

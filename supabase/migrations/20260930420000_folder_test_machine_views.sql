@@ -42,7 +42,7 @@ $patch$;
 create function public.qorpera_folder_reads_root(p_environment_id uuid, p_profile_id uuid, p_staff_agent_id uuid,
 	p_member_user_id uuid)
 returns boolean language plpgsql stable security definer set search_path = '' as $$
-declare v_root public.qorpera_company_path_resources%rowtype;
+declare v_root public.qorpera_company_path_resources%rowtype; -- 20260930420000
 begin
 	select * into v_root from public.qorpera_company_path_resources where environment_id = p_environment_id and path = '';
 	return coalesce(public.qorpera_folder_principal_allowed(p_profile_id, v_root, 'member', p_member_user_id, 'read')
