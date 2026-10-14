@@ -145,3 +145,154 @@ def show(unit):
 
 def version(value):
     return "v-" + hashlib.sha256(value).hexdigest()[:16]
+
+
+class RemountNode(base.FolderNode):
+    """The substrate's synthetic node with what a restart needs: per-view hellos, an abandon that drops the earlier
+    mount's open handles, feed heartbeats, a closed view, and versions that change with content."""
+    def __init__(self, path, heartbeat=10):
+        self.hellos = []
+        self.ops = []
+        self.feeds = []
+        self.closed_views = set()
+        self.owners = {}
+        self.parts = {}
+        self.numbers = itertools.count(1)
+        self.sending = threading.Lock()
+        self.stopped = threading.Event()
+        self.heartbeat = heartbeat
+        super().__init__(path)
+        with self.lock:
+            # Files an earlier mount opens and loses: one truncated at open, one rewritten in place.
+            self.files["loss-truncate.txt"] = b"saved before"
+            self.files["loss-keep.txt"] = b"saved before"
+        threading.Thread(target=self.beat, daemon=True).start()
+
+    def beat(self):
+        """The node's feed heartbeat: a change with no paths, so the program's 45 s feed timeout never fires."""
+        while not self.stopped.wait(self.heartbeat):
+            with self.sending:
+                for feed in list(self.feeds):
+                    try:
+                        base.send(feed[1], "c", {"seq": 0, "resync": False, "paths": []})
+                    except OSError:
+                        self.feeds.remove(feed)
+
+    def close_view(self, view):
+        """What the node does when a view ends: the mount hears VIEW_CLOSED on its feed and exits 3."""
+        with self.sending:
+            self.closed_views.add(view)
+            for feed in [feed for feed in self.feeds if feed[0] == view]:
+                try:
+                    base.send(feed[1], "e", {"code": "VIEW_CLOSED", "message": "the view is closed"})
+                except OSError:
+                    pass
+
+    def close(self):
+        self.stopped.set()
+        self.listener.close()
+
+    def serve(self, conn):
+        feed = None
+        try:
+            with conn:
+                kind, body = base.receive(conn)
+                hello = json.loads(body)
+                assert kind == "H" and hello["protocol"] == base.PROTOCOL and hello["pass"] == "synthetic-pass"
+                assert hello["role"] in ("io", "feed")
+                view = hello["viewId"]
+                with self.lock:
+                    self.hellos.append({"at": time.monotonic(), "viewId": view, "role": hello["role"], "abandon": bool(hello.get("abandon"))})
+                    if view in self.closed_views:
+                        base.send(conn, "e", {"code": "VIEW_CLOSED", "message": "the view is closed"})
+                        return
+                    if hello.get("abandon"):
+                        # The earlier mount's open handles go; nothing it never committed is kept.
+                        dropped = sorted(self.handles[handle][0] for handle, owner in self.owners.items() if owner == view)
+                        for handle in [handle for handle, owner in self.owners.items() if owner == view]:
+                            self.handles.pop(handle, None)
+                            self.owners.pop(handle)
+                        self.ops.append({"at": time.monotonic(), "op": "abandoned", "viewId": view, "names": dropped})
+                with self.sending:
+                    base.send(conn, "h", {"protocol": base.PROTOCOL, "viewId": view, "asOfSeq": 0, "readOnly": False})
+                    if hello["role"] == "feed":
+                        feed = (view, conn)
+                        self.feeds.append(feed)
+                while True:
+                    kind, body = base.receive(conn)
+                    if feed:
+                        assert kind == "a", f"feed sent {kind}"
+                        continue
+                    with self.lock:
+                        reply = self.operate(view, kind, body)
+                    base.send(conn, *reply)
+        except (EOFError, BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as error:
+            self.errors.append(repr(error))
+        finally:
+            if feed:
+                with self.sending:
+                    if feed in self.feeds:
+                        self.feeds.remove(feed)
+
+    def operate(self, view, kind, body):
+        if kind == "K":
+            size = struct.unpack(">I", body[:4])[0]
+            part = json.loads(body[4:4 + size])
+            data = body[4 + size:]
+            assert part["index"] == 0 and part["handle"] in self.handles
+            key = (part["handle"], part["index"])
+            if part["offset"] == 0:
+                self.parts[key] = b""
+            assert part["offset"] == len(self.parts[key])
+            self.parts[key] += data
+            if len(self.parts[key]) == part["bytes"]:
+                chunk = self.parts.pop(key)
+                assert hashlib.sha256(chunk).hexdigest() == part["sha256"]
+                self.handles[part["handle"]][1] = chunk
+            return "k", {}
+        request = json.loads(body)
+        if kind == "I":
+            # The substrate's rule: the reads a write hands over are taken only as a consecutive prefix.
+            reads = request["reads"]
+            taken = self.logs.get(request["log"], reads[0]["seq"] - 1 if reads else 0)
+            for read in reads:
+                if read["seq"] <= taken:
+                    continue
+                assert read["seq"] == taken + 1
+                taken = read["seq"]
+            self.logs[request["log"]] = taken
+            return "i", {"log": request["log"], "taken": taken, "released": taken}
+        if kind == "L":
+            assert request["path"] == ""
+            return "l", {"entries": [{"name": name, "kind": "file", "size": len(value), "mtimeMs": 1700000000000, "executable": False, "version": version(value)} for name, value in sorted(self.files.items())], "next": None}
+        if kind == "R":
+            value = self.files[request["path"]]
+            return "d", value[request["offset"]:request["offset"] + request["length"]]
+        if kind == "O":
+            name = request["path"]
+            if request["exclusive"] and name in self.files:
+                return "e", {"code": "EXISTS", "message": ""}
+            assert request["create"] or name in self.files, f"open of a missing {name}"
+            if request["truncate"] or name not in self.files:
+                # A truncating open empties the file at once; a new one exists, empty, from its open.
+                self.files[name] = b""
+            handle = next(self.numbers)
+            self.handles[handle] = [name, self.files[name]]
+            self.owners[handle] = view
+            self.ops.append({"at": time.monotonic(), "op": "open", "viewId": view, "name": name, "handle": handle, "create": request["create"], "truncate": request["truncate"]})
+            return "o", {"handle": handle, "size": len(self.files[name]), "version": version(self.files[name])}
+        if kind == "C":
+            name, value = self.handles.pop(request["handle"])
+            self.owners.pop(request["handle"], None)
+            assert len(value) == request["size"]
+            self.files[name] = value
+            self.ops.append({"at": time.monotonic(), "op": "commit", "viewId": view, "name": name})
+            return "k", {"version": version(value)}
+        if kind == "G":
+            value = self.handles[request["handle"]][1]
+            return "d", value[request["offset"]:request["offset"] + request["length"]]
+        if kind == "P":
+            return "p", {"commitId": "synthetic", "seq": 0, "paths": []}
+        raise ValueError(f"unsupported fixture operation {kind}")
