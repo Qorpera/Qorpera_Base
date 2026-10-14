@@ -35,6 +35,7 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_close_proposal",
 	"qorpera_folder_archive_coding_worker",
 	"qorpera_folder_manage_hook",
+	"qorpera_folder_note_interface_changes",
 ]);
 
 /** No end-user token, arbitrary URL, redirect, provider credential or retry. */
@@ -120,6 +121,8 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_folder_close_proposal",
 			// A coding session's archive (C3b).
 			"qorpera_folder_archive_coding_worker",
+			// An agent's page and table changes in its conversation, with Undo (I10).
+			"qorpera_folder_note_interface_changes",
 			// Event wakes (W2), and a folder-v2 agent's own hooks and mailboxes (E3a).
 			"qorpera_list_agent_event_hooks",
 			"qorpera_read_agent_event",

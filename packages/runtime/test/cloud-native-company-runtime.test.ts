@@ -18,6 +18,7 @@ import type {
 	CloudCompanyPathPresence,
 	CloudCompanyPathPresenceFactory,
 } from "@qorpera/runtime/cloud-company-path-presence";
+import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
 import { compileCloudNativeCompanyInstructions } from "@qorpera/runtime/cloud-native-company-context";
 import { CloudNativeCompanyRuntime } from "@qorpera/runtime/cloud-native-company-runtime";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
@@ -339,6 +340,11 @@ async function fixture(
 			}
 			if (method === "qorpera_folder_agent_proposals" && proposalsAnswer !== undefined) return proposalsAnswer;
 			expect(args.p_binding).toEqual(f.binding);
+			// What a run's machine saved under interfaces/ or tables/, noted in its conversation (Interfaces I10).
+			if (method === "qorpera_folder_note_interface_changes") {
+				expect(args.p_request).toEqual({});
+				return { schema: "qorpera.interface-change-notes/v1", noted: 1 };
+			}
 			if (method === "qorpera_begin_native_company_execution_v2") {
 				if (nativeStarted) throw new Error("Earlier native execution requires reconciliation");
 				nativeStarted = true;
@@ -779,6 +785,13 @@ it("composes office tools with the actual admitted native run and existing effec
 	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
 	expect(f.officeClose).toHaveBeenCalledTimes(1);
 	expect(f.officeCall.mock.calls.filter(([, args]) => args.p_action === "release")).toHaveLength(1);
+	// What the machine saved under interfaces/ or tables/ is noted in the run's conversation once, after it closed
+	// (Interfaces I10).
+	const notes = f.pathCall.mock.calls.flatMap(([method], index) =>
+		method === "qorpera_folder_note_interface_changes" ? [f.pathCall.mock.invocationCallOrder[index]] : [],
+	);
+	expect(notes).toHaveLength(1);
+	expect(notes[0]).toBeGreaterThan(f.officeClose.mock.invocationCallOrder[0]);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
 	expect(names).toContain("computer_shell");
@@ -800,6 +813,36 @@ it("fails the native result when office cleanup is unconfirmed, without repeatin
 	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow("cleanup");
 	expect(f.officeEndpoint.perform).toHaveBeenCalledTimes(1);
 	expect(f.officeClose).toHaveBeenCalledTimes(1);
+	// A failed run's machine changes are noted too.
+	const methods = f.pathCall.mock.calls.map(([method]) => method);
+	expect(methods.filter((method) => method === "qorpera_folder_note_interface_changes")).toHaveLength(1);
+});
+
+it("keeps the run's outcome when its machine's changes could not be noted, and logs the category only", async () => {
+	const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	try {
+		const f = await fixture("company-office");
+		const original = f.pathCall.getMockImplementation()!;
+		f.pathCall.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_folder_note_interface_changes")
+				throw new CloudCompanyFolderRpcError("55000", "PRIVATE_NOTE_ERROR");
+			return original(method, args, signal);
+		});
+		const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		expect(result.delivery.messageCount).toBe(2);
+		expect(f.officeClose).toHaveBeenCalledTimes(1);
+		expect(logged.mock.calls.filter(([line]) => String(line).startsWith("The run's interface changes"))).toEqual([
+			["The run's interface changes were not noted (authority_unavailable)"],
+		]);
+	} finally {
+		logged.mockRestore();
+	}
+});
+
+it("asks for no interface change notes after a run with no machine: its tools note their own", async () => {
+	const f = await fixture("company-runtime");
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_folder_note_interface_changes");
 });
 
 it("closes an initialized office session when native execution admission fails", async () => {

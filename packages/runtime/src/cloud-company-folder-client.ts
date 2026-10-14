@@ -69,6 +69,7 @@ const RUN_EFFECTS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_close_proposal",
 	"qorpera_folder_manage_hook",
 	"qorpera_folder_archive_coding_worker",
+	"qorpera_folder_note_interface_changes",
 ]);
 /** SQL's refusal (55000) of an archive or a cancel by the run that was asked about a quiet coding session, once the
  * session has a new turn (`qorpera_coding_question_stale`). */
@@ -1679,6 +1680,27 @@ export class CloudCompanyFolderClient {
 		)
 			invalid();
 		return input.status as (typeof PROPOSAL_STATUSES)[number];
+	}
+
+	/** Notes the run's changes under interfaces/ and tables/ in its conversation (I10,
+	 * `qorpera_folder_note_interface_changes`, a run effect): each of the run's commits there that has no note gets one,
+	 * which the web draws with Undo, whatever tool or machine saved it. Answers how many it made: 0 when the run has no
+	 * open conversation, or every such commit has its note. */
+	async noteInterfaceChanges(signal: AbortSignal): Promise<number> {
+		const value = await this.#retried(
+			"qorpera_folder_note_interface_changes",
+			{ p_binding: this.#binding, p_request: {} },
+			RECORD_RETRY,
+			signal,
+		);
+		const input = record(value, ["schema", "noted"]);
+		if (
+			input.schema !== "qorpera.interface-change-notes/v1" ||
+			!Number.isSafeInteger(input.noted) ||
+			(input.noted as number) < 0
+		)
+			invalid();
+		return input.noted as number;
 	}
 
 	/** A file's text, checked against its entry, or null when nothing is at the path. A folder, a file larger than
