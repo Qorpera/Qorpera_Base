@@ -38,9 +38,11 @@ ROOT = Path("/run/qorpera-folder")
 UNIT = "qorpera-office-folder-mount@{}.service"
 UNIT_FILE = Path("/run/systemd/system/qorpera-office-folder-mount@.service")
 OFFICE_UNIT = "qorpera-company-computer.service"
-# The mountpoint's mode while nothing is mounted over it, in the order tried: the main run uses the first one the
-# unit's own mount user (root holding only CAP_SYS_ADMIN) serves over.
+# The mountpoint's mode while nothing is mounted over it, each measured in its own view; 0700 is #1047's.
 MODES = ("0000", "0700", "0755")
+# The main run's mode: the candidate 0000 if the unit's own mount user (root holding only CAP_SYS_ADMIN) serves over
+# it, else 0755, the plan's fallback.
+CHOSEN = ("0000", "0755")
 CONFINEMENT = {"User", "Group", "UMask", "LimitCORE", "PrivateTmp", "PrivateDevices", "ProtectSystem", "ProtectHome", "ProtectProc", "ProcSubset", "ProtectHostname", "ProtectClock", "ProtectKernelTunables", "ProtectKernelLogs", "ProtectKernelModules", "ProtectControlGroups", "NoNewPrivileges", "CapabilityBoundingSet", "AmbientCapabilities", "RestrictNamespaces", "RestrictAddressFamilies", "RestrictSUIDSGID", "LockPersonality", "MemoryMax", "MemorySwapMax", "TasksMax", "CPUQuota", "InaccessiblePaths"}
 # What the office service needs to run the application, not to confine it: recorded as left out.
 OPERATIONAL = {"Type", "StateDirectory", "StateDirectoryMode", "WorkingDirectory", "Environment", "LoadCredential", "ExecStart", "Restart", "RestartSec", "KillMode", "KillSignal", "SendSIGKILL", "TimeoutStopSec", "ReadWritePaths"}
@@ -122,10 +124,19 @@ def at(path, entries):
     return [entry for entry in entries if entry["mountpoint"] == str(path)]
 
 
+# Root's direct mount drops the program's Subtype option: a real folder mount reads `fuse qorpera-company`, not #1047's
+# `fuse.qorpera` (run 20261014T221714-41263-9a93d28c; the 2026-10-14 substrate evidence shows the same line).
+FOLDER_TYPES = ("fuse", "fuse.qorpera")
+
+
+def folder(entry):
+    return entry["fstype"] in FOLDER_TYPES and entry["source"] == "qorpera-company"
+
+
 def served(path, entries=None):
-    """#1047's test: the top mount at the path is the folder program's."""
+    """#1047's test, with the type a real mount has: the top mount at the path is the folder program's."""
     top = at(path, mountinfo() if entries is None else entries)
-    return bool(top) and top[-1]["fstype"] == "fuse.qorpera" and top[-1]["source"] == "qorpera-company"
+    return bool(top) and folder(top[-1])
 
 
 def shared(path, entries=None):
@@ -135,7 +146,7 @@ def shared(path, entries=None):
 
 def count(path, entries=None):
     """Folder mounts stacked at the path: a dead one left under a live one counts too."""
-    return sum(1 for entry in at(path, mountinfo() if entries is None else entries) if entry["fstype"] == "fuse.qorpera")
+    return sum(1 for entry in at(path, mountinfo() if entries is None else entries) if folder(entry))
 
 
 def show(unit):
@@ -588,8 +599,9 @@ def gap_trial(relay, mode, troubles):
 
 
 def choose_mode(trials):
-    """The first mode, in MODES order, that the unit's mount user served over."""
-    return next((trial["mode"] for trial in trials if trial["served"]), None)
+    """The first mode, in CHOSEN order, that the unit's mount user served over."""
+    served = {trial["mode"] for trial in trials if trial["served"]}
+    return next((mode for mode in CHOSEN if mode in served), None)
 
 
 VIEW = "q3"
@@ -670,7 +682,7 @@ class Proof:
         self.mode = choose_mode(trials)
         self.note("mode", self.mode)
         if self.mode is None:
-            raise RuntimeError("The mount came up over none of the modes")
+            raise RuntimeError("The mount came up over neither 0000 nor 0755")
 
     def first_mount(self):
         """Namespaces started before the mount, then the unit started: does the mount reach them?"""
@@ -979,7 +991,8 @@ def selftest(office_path, mount_path):
     sample = "\n".join([
         "36 25 0:30 / /run/qorpera-folder/mounts/q3 rw,nosuid,nodev shared:12 - tmpfs tmpfs rw",
         f"40 36 0:41 / {point} rw,nosuid,nodev shared:13 - fuse.qorpera qorpera-company rw,user_id=0,group_id=0,allow_other",
-        f"41 40 0:42 / {point} rw,nosuid,nodev shared:14 - fuse.qorpera qorpera-company rw,user_id=0,group_id=0,allow_other",
+        # The line a real mount has.
+        f"41 40 0:42 / {point} rw,nosuid,nodev,noatime shared:14 - fuse qorpera-company rw,user_id=0,group_id=0,default_permissions,allow_other",
         "50 25 0:43 / /a\\040b rw master:3 - tmpfs tmp\\011x rw",
         "not a mountinfo line",
     ])
@@ -988,7 +1001,11 @@ def selftest(office_path, mount_path):
     assert entries[3]["mountpoint"] == "/a b" and entries[3]["source"] == "tmp\tx" and not shared("/a b", entries) and not served("/a b", entries)
     covered = mountinfo(sample + f"\n60 41 0:44 / {point} rw - tmpfs tmpfs rw")
     assert not served(point, covered) and count(point, covered) == 2
-    assert choose_mode([{"mode": "0000", "served": False}, {"mode": "0700", "served": True}, {"mode": "0755", "served": True}]) == "0700"
+    stranger = mountinfo(f"40 36 0:41 / {point} rw - fuse sshfs rw")
+    assert not served(point, stranger) and count(point, stranger) == 0
+    assert choose_mode([{"mode": "0000", "served": False}, {"mode": "0700", "served": True}, {"mode": "0755", "served": True}]) == "0755"
+    assert choose_mode([{"mode": mode, "served": True} for mode in MODES]) == "0000"
+    assert choose_mode([{"mode": mode, "served": mode == "0700"} for mode in MODES]) is None
     assert choose_mode([{"mode": mode, "served": False} for mode in MODES]) is None
     events = [{"at": 9.0, "names": ["before.txt"]}, {"at": 10.5, "listErrno": 107}, {"at": 10.6, "dev": 1, "names": []}, {"at": 10.7, "listErrno": 107}, {"at": 12.25, "names": ["after.txt", "before.txt"]}]
     assert restart_seconds(events, 10.0) == 2.25 and restart_seconds(events[:4], 10.0) is None

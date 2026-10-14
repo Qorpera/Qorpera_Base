@@ -176,8 +176,8 @@ own view. For each it records the bare mountpoint's mode and owner, then starts 
 command namespace and a shell spawned with `--chdir /company` before the mount,
 and has them look and write. It starts the mount unit, waits up to 15 s for it
 to serve, and has them look and write again, beside the unit's state and journal.
-The rest of the run uses the first mode that was served; if none was, the run
-stops there.
+The rest of the run uses `0000` if it was served, else `0755`, the plan's
+fallback; `0700` is only measured. If neither was served, the run stops there.
 
 ## Limitations
 
