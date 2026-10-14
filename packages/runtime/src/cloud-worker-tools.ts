@@ -1,4 +1,4 @@
-import type { CloudCompanyPathControl, CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
+import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import type { CloudFolderTodoChange, CloudFolderTodoListing, CloudFolderTodos } from "./cloud-folder-todos.ts";
 import type {
 	CloudFolderWorkerChange,
@@ -13,15 +13,12 @@ import {
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
 import {
-	CloudControlRefusalRelay,
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
 	type CloudToolContext,
-	cloudOperationKeyOf,
-	cloudToolJsonText,
 	MAX_CLOUD_TOOL_RESULT_BYTES,
 } from "./cloud-native-tool-boundary.ts";
-import type { CloudRuntimeObservationSpan, CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
+import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 import type { CloudWakeEnvelope } from "./cloud-wake-bus.ts";
 
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
@@ -35,13 +32,6 @@ const WORKER_STATES = ["active", "blocked", "succeeded", "failed", "cancelled"] 
 export const CURSOR = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** Room for the result fence's provenance around a page, as read_context reserves. */
 const PAGE_FENCE_RESERVE_BYTES = 3072;
-
-type Gateway = Pick<CloudCompanyPathGateway, "read" | "mutate">;
-interface Publication {
-	path: string;
-	revision: number;
-	text: string;
-}
 
 function object(value: unknown, allowed: readonly string[], required: readonly string[]): Record<string, unknown> {
 	if (
@@ -101,49 +91,6 @@ export function fitsOneResult(text: string): boolean {
 		Buffer.byteLength(JSON.stringify(text).replace(/[<>&\u2028\u2029]/g, "\\u0000")) <=
 		MAX_CLOUD_TOOL_RESULT_BYTES - PAGE_FENCE_RESERVE_BYTES
 	);
-}
-/** A kernel page (up to 32 todos or 16 workers, each with its cursor) shown as the
- * longest prefix that fits one tool result, so the model never reads a count or a
- * cursor past items it did not see. What is left out is counted, and the cursor is
- * the last item shown. A single item is always shown, even when it alone is cut. */
-function fittedPage(
-	result: Record<string, unknown>,
-	items: "todos" | "workers",
-	more: "moreTodos" | "moreWorkers",
-	frame: Record<string, unknown>,
-): string {
-	const listed = result[items],
-		after = result[more],
-		next = result.nextCursor;
-	if (
-		!Array.isArray(listed) ||
-		listed.some(
-			(item) =>
-				!item ||
-				typeof item !== "object" ||
-				Array.isArray(item) ||
-				typeof item.cursor !== "string" ||
-				!CURSOR.test(item.cursor),
-		) ||
-		!Number.isSafeInteger(after) ||
-		(after as number) < 0 ||
-		(after as number) > 0 !== (next !== null) ||
-		(next !== null && next !== listed.at(-1)?.cursor)
-	)
-		throw new Error("Work receipt differs");
-	const render = (count: number) => {
-		const left = (after as number) + listed.length - count;
-		return cloudToolJsonText({
-			...frame,
-			[items]: listed.slice(0, count).map(({ cursor: _cursor, ...item }) => item),
-			[more]: left,
-			nextCursor: left === 0 ? null : (listed[count - 1].cursor as string),
-		});
-	};
-	// Grown from one item, so a wide page is never rendered whole (cloudToolJsonText refuses 64 KiB).
-	let count = Math.min(listed.length, 1);
-	while (count < listed.length && fitsOneResult(render(count + 1))) count++;
-	return render(count);
 }
 function paths(value: unknown, max: number, maxBytes: number): string[] {
 	if (value === undefined) return [];
@@ -225,23 +172,18 @@ export const CLOUD_WORKER_REPORT_TOOL_DESCRIPTION =
 	"Keep operationKey stable; an unconfirmed result needs the same key again. After a confirmed report, stop.";
 
 /** Order 5 (contract 13). The cloud derives the agent, the parent and the todo
- * from the run; the model chooses only the work. A todo or worker change is a
- * kernel row first, then its canonical document is published to the Company
- * File through the governed path gateway and confirmed against the revision
- * this run wrote. The kernel takes a todo document only as the current
- * revision's exact bytes, so a publication overtaken by a newer revision is
- * refused rather than written over it. A failed publication never fails the
- * change: the next list publishes what is outstanding.
+ * from the run; the model chooses only the work. A company run's todos are files
+ * in its agent's folder and its workers are folders of those todos: the folder
+ * writers (`CloudFolderTodos`, `CloudFolderWorkers`) save each change through the
+ * folder core, which decides it (legacy sweep step C, C-P2: no kernel rows).
  */
 export function cloudWorkerTools(
 	binding: CloudNativeToolBinding,
 	identity: CloudNativeToolIdentity,
-	control: CloudCompanyPathControl,
-	gateway: Gateway,
 	wake: Pick<CloudWakeEnvelope, "kind" | "source">,
-	/** Whether this run's workers can use company machines (only when a node serves them); and, for a folder-v2
-	 * run, its todos and workers as files. */
-	options: { machines?: boolean; folderTodos?: CloudFolderTodos; folderWorkers?: CloudFolderWorkers } = {},
+	/** Whether this run's workers can use company machines (only when a node serves them); and the run's todos and
+	 * workers as files. */
+	options: { machines?: boolean; folderTodos: CloudFolderTodos; folderWorkers: CloudFolderWorkers },
 ): readonly CloudNativeTool[] {
 	const admitted = parseCloudNativeToolBinding(binding),
 		expected = Object.freeze({ ...identity });
@@ -263,100 +205,7 @@ export function cloudWorkerTools(
 			throw new Error("Worker tool identity differs");
 		context.signal.throwIfAborted();
 	};
-	// Each tool's first effect: a refusal of it reaches the model as the tool's answer, unless an earlier attempt of the
-	// same operation key ended unknown (control calls, 4 Oct 2026).
-	const refusals = new CloudControlRefusalRelay();
-	const call = (
-		method: "qorpera_manage_agent_todo" | "qorpera_manage_agent_worker" | "qorpera_report_worker_result",
-		request: Record<string, unknown>,
-		signal: AbortSignal,
-	) =>
-		refusals.call(cloudOperationKeyOf(request), () =>
-			cloudToolRequest(
-				(requestSignal) => control.call(method, { p_binding: admitted, p_request: request }, requestSignal),
-				signal,
-			),
-		) as Promise<Record<string, unknown> | null>;
-
-	const publish = async (
-		value: unknown,
-		signal: AbortSignal,
-		observation: CloudRuntimeObservationSpan | undefined,
-	): Promise<{ path: string; published: boolean } | null> => {
-		if (value === null || value === undefined) return null;
-		const publication = value as Publication;
-		const prefix = `work/todos/${expected.staffAgentId}/`;
-		if (
-			typeof publication.path !== "string" ||
-			!publication.path.startsWith(prefix) ||
-			!publication.path.endsWith(".json") ||
-			!WORK_KEY.test(publication.path.slice(prefix.length, -5)) ||
-			!Number.isSafeInteger(publication.revision) ||
-			publication.revision < 1 ||
-			typeof publication.text !== "string"
-		)
-			throw new Error("Todo publication differs");
-		const todoKey = publication.path.slice(prefix.length, -5);
-		try {
-			const current = await gateway.read(publication.path, 0, 4, signal);
-			if (current.kind === "absent") {
-				// The gateway never invents parent folders.
-				for (const folder of ["work", "work/todos", prefix.slice(0, -1)]) {
-					const seen = await gateway.read(folder, 0, 4, signal);
-					if (seen.kind === "absent")
-						await gateway.mutate(
-							"mkdir",
-							{ path: folder, operationKey: `todo-folder:${folder.split("/").length}`, expectedVersion: null },
-							signal,
-							observation,
-						);
-				}
-			}
-			const written = await gateway.mutate(
-				"write",
-				{
-					path: publication.path,
-					// One key per revision and per file version it replaces: a retry replays the same write,
-					// while a document the file has lost since (a member's edit, an older runner) is written again.
-					operationKey: `todo-doc:${todoKey}:${publication.revision}:${(current.version as string | null) ?? "absent"}`,
-					expectedVersion: (current.version as string | null) ?? null,
-					text: publication.text,
-				},
-				signal,
-				observation,
-			);
-			if (written.state !== "applied" || written.snapshotId === null)
-				return { path: publication.path, published: false };
-			const confirmed = (await cloudToolRequest(
-				(requestSignal) =>
-					control.call(
-						"qorpera_confirm_agent_todo_publication",
-						{
-							p_binding: admitted,
-							p_request: { todoKey, revision: publication.revision, snapshotId: written.snapshotId },
-						},
-						requestSignal,
-					),
-				signal,
-			)) as Record<string, unknown> | null;
-			return { path: publication.path, published: confirmed?.published === true };
-		} catch (error) {
-			if (signal.aborted) throw error;
-			// The kernel row is the change; its document is published again on the next list.
-			return { path: publication.path, published: false };
-		}
-	};
-	const receipt = async (
-		result: Record<string, unknown> | null,
-		schema: string,
-		context: CloudToolContext,
-	): Promise<{ kind: "text"; value: string }> => {
-		if (!result || typeof result !== "object" || result.schema !== schema || result.runId !== admitted.runId)
-			throw new Error("Work receipt differs");
-		const { publication, ...rest } = result;
-		const document = await publish(publication, context.signal, context.observation);
-		return { kind: "text", value: cloudToolJsonText({ ...rest, document }) };
-	};
+	const { folderTodos, folderWorkers } = options;
 
 	if (wake.kind === "agent" && wake.source.kind === "worker-dispatch") {
 		const report: CloudNativeTool = {
@@ -401,23 +250,17 @@ export function cloudWorkerTools(
 			},
 			async execute(value, context) {
 				assertContext(context);
-				const request = value as Record<string, unknown>;
-				// A folder-v2 worker reports in its results file; the folder core decides the save.
-				if (options.folderWorkers)
-					return options.folderWorkers.report(request as unknown as CloudFolderWorkerReport, context);
-				const result = await call("qorpera_report_worker_result", request, context.signal);
-				if (result?.outcome !== request.outcome) throw new Error("Work receipt differs");
-				return receipt(result, "qorpera.worker-report-receipt/v1", context);
+				// A worker reports in its results file; the folder core decides the save.
+				return folderWorkers.report(value as unknown as CloudFolderWorkerReport, context);
 			},
 		};
 		return [report];
 	}
 
-	const folderTodos = options.folderTodos;
 	const todo: CloudNativeTool = {
 		name: "manage_todo" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: folderTodos ? CLOUD_TODO_TOOL_DESCRIPTION_FOLDER : CLOUD_TODO_TOOL_DESCRIPTION,
+		description: CLOUD_TODO_TOOL_DESCRIPTION_FOLDER,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -476,44 +319,17 @@ export function cloudWorkerTools(
 		async execute(value, context) {
 			assertContext(context);
 			const request = value as Record<string, unknown>;
-			// A folder-v2 agent's todos are files; the folder core decides each save.
-			if (folderTodos)
-				return request.action === "list"
-					? folderTodos.list(request as unknown as CloudFolderTodoListing, context, fitsOneResult)
-					: folderTodos.change(request as unknown as CloudFolderTodoChange, context);
-			const result = await call("qorpera_manage_agent_todo", request, context.signal);
-			if (request.action !== "list") {
-				if (
-					!result ||
-					result.action !== request.action ||
-					(result.todo as { todoKey?: unknown } | null)?.todoKey !== request.todoKey
-				)
-					throw new Error("Work receipt differs");
-				return receipt(result, "qorpera.agent-todo-receipt/v1", context);
-			}
-			if (
-				!result ||
-				result.schema !== "qorpera.agent-todos/v1" ||
-				result.runId !== admitted.runId ||
-				!Array.isArray(result.todos) ||
-				!Array.isArray(result.unpublished)
-			)
-				throw new Error("Work receipt differs");
-			// What an earlier run changed but could not publish is published now.
-			const documents = [];
-			for (const publication of result.unpublished)
-				documents.push(await publish(publication, context.signal, context.observation));
-			return {
-				kind: "text",
-				value: fittedPage(result, "todos", "moreTodos", { schema: result.schema, runId: result.runId, documents }),
-			};
+			// An agent's todos are files in its folder; the folder core decides each save.
+			return request.action === "list"
+				? folderTodos.list(request as unknown as CloudFolderTodoListing, context, fitsOneResult)
+				: folderTodos.change(request as unknown as CloudFolderTodoChange, context);
 		},
 	};
 
 	const worker: CloudNativeTool = {
 		name: "manage_worker" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: (options.folderWorkers ? folderWorkerDescription : (text: string) => text)(
+		description: folderWorkerDescription(
 			options.machines ? CLOUD_WORKER_TOOL_DESCRIPTION : CLOUD_WORKER_TOOL_DESCRIPTION_WITHOUT_MACHINES,
 		),
 		inputSchema: {
@@ -662,33 +478,10 @@ export function cloudWorkerTools(
 		async execute(value, context) {
 			assertContext(context);
 			const request = value as Record<string, unknown>;
-			// A folder-v2 agent's workers are folders of its todos; the folder core decides each save.
-			if (options.folderWorkers)
-				return request.action === "status"
-					? options.folderWorkers.status(request as CloudFolderWorkerStatus, context, fitsOneResult)
-					: options.folderWorkers.change(request as unknown as CloudFolderWorkerChange, context);
-			const result = await call("qorpera_manage_agent_worker", request, context.signal);
-			if (request.action === "status") {
-				if (
-					!result ||
-					result.schema !== "qorpera.agent-workers/v1" ||
-					result.runId !== admitted.runId ||
-					!Array.isArray(result.workers)
-				)
-					throw new Error("Work receipt differs");
-				return {
-					kind: "text",
-					value: fittedPage(result, "workers", "moreWorkers", { schema: result.schema, runId: result.runId }),
-				};
-			}
-			if (
-				!result ||
-				result.action !== request.action ||
-				result.todoKey !== request.todoKey ||
-				(result.worker as { workerKey?: unknown } | null)?.workerKey !== request.workerKey
-			)
-				throw new Error("Work receipt differs");
-			return receipt(result, "qorpera.agent-worker-receipt/v1", context);
+			// An agent's workers are folders of its todos; the folder core decides each save.
+			return request.action === "status"
+				? folderWorkers.status(request as CloudFolderWorkerStatus, context, fitsOneResult)
+				: folderWorkers.change(request as unknown as CloudFolderWorkerChange, context);
 		},
 	};
 	return [todo, worker];
@@ -796,7 +589,7 @@ export async function describeCloudAgentOpenWork(
 
 /** What a worker may use: its parent's reading tools, writing only when the
  * dispatch grants it, its office tools, and its single report. It has no mouth,
- * no coworker channel, no hiring, no routines and no workers of its own.
+ * no coworker channel, no hiring, no routines, no interface saves and no workers of its own.
  */
 export function cloudWorkerToolFilter(wake: Pick<CloudWakeEnvelope, "kind" | "source" | "payload">) {
 	const isWorker = wake.kind === "agent" && wake.source.kind === "worker-dispatch";
@@ -806,7 +599,10 @@ export function cloudWorkerToolFilter(wake: Pick<CloudWakeEnvelope, "kind" | "so
 	const readOnly = isWorker && wake.payload.access !== "write";
 	return {
 		isWorker,
+		// A worker never saves an interface or a table's settings: the change can give a button, an access or who writes
+		// a table, a delegation as hiring and routines are. Rows of a table are written as files are.
 		companyFile: (tool: CloudNativeTool) =>
-			!readOnly || !["company_write", "company_mkdir", "company_delete"].includes(tool.name),
+			!(isWorker && tool.name === "save_interface") &&
+			(!readOnly || !["company_write", "company_mkdir", "company_delete", "table_write"].includes(tool.name)),
 	};
 }

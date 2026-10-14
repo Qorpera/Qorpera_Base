@@ -36,8 +36,8 @@
 		"sha256Helpers": 5
 	},
 	"runtime": {
-		"uuidPatterns": 63,
-		"recordHelpers": 32,
+		"uuidPatterns": 60,
+		"recordHelpers": 31,
 		"uuidHelpers": 13,
 		"sha256Helpers": 4
 	},

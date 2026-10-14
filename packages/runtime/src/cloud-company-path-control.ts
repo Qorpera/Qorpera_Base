@@ -148,15 +148,18 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_list_agent_event_hooks",
 			"qorpera_read_agent_event",
 			"qorpera_folder_manage_hook",
-			// Company mail (M2b), finding received mail, and a received attachment's stored bytes (M2c-1).
+			// Company mail (M2b), and finding received mail.
 			"qorpera_send_agent_mail",
 			"qorpera_find_agent_mail",
-			"qorpera_native_mail_attachment",
 			// Company accounts (A1-4): the company's accounts and mailboxes, and the id of the agent's todo by key.
 			"qorpera_find_company_accounts",
-			// Summary trees (M1b-3): zoom, and the platform read of the tree blocks a zoom result showed.
+			// Summary trees (M1b-3): zoom, and the platform read of the tree blocks a zoom result or a view showed. The
+			// primary view, its record and the branches (M1b-4a, M4).
 			"qorpera_memory_zoom",
 			"qorpera_memory_release",
+			"qorpera_memory_view",
+			"qorpera_memory_view_record",
+			"qorpera_memory_branches",
 		];
 		if (!permitted.includes(method)) throw new Error("Unknown Company File control operation");
 		const body = JSON.stringify(argumentsValue);
@@ -206,8 +209,10 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 											method === "qorpera_folder_apply_proposal" ||
 											method === "qorpera_folder_agent_proposals" ||
 											// A zoom with no line reads the conversation's whole tree, every line up to
-											// 2,048 bytes as stored.
-											method === "qorpera_memory_zoom")
+											// 2,048 bytes as stored; so do the view, and the branches for up to 8 trees.
+											method === "qorpera_memory_zoom" ||
+											method === "qorpera_memory_view" ||
+											method === "qorpera_memory_branches")
 									? 16 * 1024 * 1024
 									: // One routine whole (32 KiB of instructions, each character escaped at worst), or a
 										// page of 32 with theirs cut; a page of 16 workers with their outputs' paths.

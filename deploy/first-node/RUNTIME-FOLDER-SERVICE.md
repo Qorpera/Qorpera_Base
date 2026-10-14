@@ -391,7 +391,8 @@ computer desktop's view, which the core opens for an office screen (C1b-3a):
 - **Writes.** A desktop's view writes as an operator mount with `write` does (RUNTIME-FOLDER-WRITES.md), acting as the
   view. It publishes 2 s after its last change (`DESKTOP_QUIET_MS`, the desktop rule of RUNTIME-COMPANY-FOLDER.md §2),
   when its machine asks, and when its last connection leaves: what is pending then is published under the lease it
-  still has, and the view is dropped after. A machine that comes back meanwhile joins it.
+  still has, and the view is dropped after, unless that publish has no answer or a refusal that may lift (then it is
+  kept: Step 4c, "Kept"). A machine that comes back meanwhile joins it.
 - **The seat in use.** Each renewal tells the core since when the view has had changes not published
   (`p_unsaved_since`, C1b-3 §9), or null. Unsaved means what a boundary publishes: a removal, or a new, moved or
   changed file or folder. A lock, swap, backup or trash name a program holds is never published and is none, nor is a
@@ -427,7 +428,8 @@ In slice 4b the core opens a view of its own for an offline shell command (`comp
   view's pass, asks the final again, and since the core answers a replay on a closed view, given its pass, its answer
   is the report (`closed`). If the core refuses it instead, the final did not close the view: the view goes, and the
   machine hears `VIEW_CLOSED` with why it closed. Such a view does nothing else (`VIEW_CLOSED`, a `P` without `final`
-  included), and a hello with another pass is `VIEW_REFUSED`.
+  included; it takes a read log's `I` and keeps none of it: Step 4c, "A final asked again"), and a hello with another
+  pass is `VIEW_REFUSED`.
 - **Refused whole.** The core may refuse a change set whole, a final included: `denied` (42501: among others, a read
   of the command's that is no longer readable, or a change set other than the final once the command has ended),
   `stopped` (55000: the company is paused) or `invalid` (22023: among others, more than the core's 1000 units in one
@@ -441,15 +443,109 @@ In slice 4b the core opens a view of its own for an offline shell command (`comp
   refuses whole stays pending, so the final carries it.
 - **Kept for the final.** A command's view that its own machine has held is kept when its last connection leaves: its
   pending changes stay, nothing is published, and its lease is still renewed, until the final closes it or the core
-  does. Its renewals always say nothing is unsaved (no seat waits on a command).
+  does, or a boundary of it is refused for good (then it is dropped: Step 4c, "Kept"). Its renewals always say nothing
+  is unsaved (no seat waits on a command).
 - **Tests.** `packages/object-gateway/test/folder-command-views.test.ts`, with the stand-in core, which saves only the
   final of a view whose command ended, closes the view with the final, and answers a replay on a closed view given its
   pass, as the core does. Among them: a final refused whole, empty or not; a final whose answers were all lost while
   a renewal closed the view, after its tries or between them, asked again on the same connection and on a new one; and
   a final refused once a renewal closed the view between its ask and its answer.
 
+## Step 4c: read releases
+
+In slice 4c-1 the folder service takes the reads a company machine logs on a core view, and releases them to the core
+with the view as the actor before anything made from them is published (RUNTIME-FOLDER-COMPANY-MACHINES.md, "Reads"):
+
+- **Protocol 3.** A machine that logs its reads says protocol 3 in its hello. A core view (a desktop's or a command's)
+  takes writes only from it: on protocol 2 its hello says `readOnly`. An operator mount's view still writes from
+  protocol 2. On a writing connection the machine sends `I` with consecutive entries of its log,
+  `{log, reads: [{seq, path, version, authority?}], lost?}`: `log` is the mount's (new each time the mount is made),
+  `version` the version the read showed (null for a folder's listing) and `authority` the receipt the service gave the
+  path. The answer, `i`, says how far the view holds the log: every entry up to `taken`, and up to `released` the core
+  has them. A batch that leaves a gap is not taken, and the machine sends it again from `taken`. A path is never empty,
+  so the program logs no listing of the root (slice 4c-2): a company-wide view opens only when its actor reads the
+  root resource (C1b-3 §2).
+- **Reads before writes.** The service releases only the entries it holds, and a desktop's view publishes on its own
+  quiet period. So a machine has a read's entry taken (an answer with `taken` at or past its `seq`) before it sends
+  any change made after that read, on any of its connections, and before `P`: a change that arrived first could be
+  published with the read not released.
+- **Releases.** Each boundary (a quiet publish, a `P`, the last connection leaving) first releases the reads the core
+  does not have yet, at most 10,000 in one release (`RELEASE_READS`, the core's bound), and publishes only once they are
+  released (the log's rule 1). A read goes with its version only when that names bytes the core made that the view
+  showed (a file the view saved and has not published goes with the live version under it, or none), and with no
+  receipt when it was logged without one: the core then checks the path again. A release with no answer, or refused, is
+  asked again first under the same id, and the core replays it. A member-held desktop view records no reads: the core
+  refuses its release (22023), and its reads count as released. So do an operator mount's, which has no read set.
+- **Refused.** A boundary whose release the core refuses publishes nothing, and its report has `refused` with the
+  release's reason: `unreadable` (42501, "A released read is no longer readable": a read's access narrowed before it was
+  released), `run_ended` (42501, "Run is unavailable": the run the view acts for has ended, or its deadline passed while
+  its job is still leased), `denied` (any other 42501), `stopped` (55000, the pause) or `invalid`. A release with no
+  answer after three tries leaves the boundary with none: each path's save did not get through yet. A change set refused
+  because a read released earlier is no longer readable ("A read is no longer readable") is `denied`, as before.
+- **A log that cannot be shown complete.** A batch with `lost: true` says the machine cannot show its log complete (the
+  log's rule 4). From then on every boundary of the view is refused `unproven`, a boundary with no answer asked again
+  included; the office service's way out (slice 4d) stops the mount's users and closes the view. The service keeps
+  this with the view, in memory: a view dropped or closed, or a folder service restarted, forgets it. So after every
+  new hello on the mount the machine's first `I`, before any change, says `lost: true` again, until the mount is made
+  again.
+- **Kept.** A desktop's view whose last connection leaves while its last boundary had no answer, or a refusal that may
+  lift (the pause, the run check), is kept like a command's: its pending changes and unreleased reads stay and its lease
+  is renewed, and a later publish from its machine publishes it; nothing else does (its quiet period ends with its last
+  connection). Once a boundary hears another answer (a save, or a refusal for good) it is dropped like any other view
+  no machine holds. A command's view is kept for its final unless its last boundary was refused for good. A boundary
+  still running when the last connection leaves, or one that runs after it (a change that landed then), decides again
+  when it ends: the view stays kept, or is let go. Until then the view is not forgotten as idle, however long the
+  boundary takes. A desktop's change set refused by the pause or the run check stays
+  pending, as a command's does, for a later boundary to carry.
+- **A final asked again.** A command's view that closed while its final had no answer (Step 4b, "No answer") takes `I`
+  and keeps none of it, a `lost` included: the core answers that view nothing but the final's replay, which publishes
+  nothing new, so nothing can come of those reads. The answer says every entry taken and released. So a dead
+  program's `qorpera-folder publish --state-dir --final` (slice 4c-2) hands its log over first, as for any view, then
+  asks the final again.
+- **Twice.** A view keeps its reads in memory only: after it connects again a machine sends every read it has not heard
+  released. A view dropped, or a folder service restarted, may so have some released twice, which files nothing new. A
+  view that goes takes its unreleased reads with it: they reached no save of it.
+- **Tests.** `packages/object-gateway/test/folder-read-releases.test.ts`, with the stand-in core, which releases as the
+  core does and refuses as it does; and the acceptance script's F3-4c lines on the hosted database: a desktop view's
+  read released through the service before its save; after a narrowing of a read's path, every later save of the view
+  refused (two in a row); and a read not yet released when a narrowing comes, every later boundary refused
+  `unreadable`.
+
+### Slice 4c-2: the program's durable log
+
+The Rust program speaks protocol 3. Writable mounts log every file open, including cached and empty files, and every non-root
+folder open before answering FUSE, with the version and receipt shown. `reads.jsonl` in its private `--state-dir`
+keeps the mount UUID, consecutive entries and synced released markers. Threads and separate publishers take an OS
+lock on `reads.lock`, whose inode stays fixed across journal compaction. A program restart reopens the same log; a
+new mount starts with empty state. `/run` outlives these processes, not a VM restart.
+
+Before each mutation and `P`, on that same connection, the program sends entries beyond both the durable released
+prefix and that connection's `i.taken`. Each new connection starts without a taken watermark, and sends at least one
+intake, including an empty log's lost flag. Later empty intakes are skipped unless the journal becomes lost. The lock
+spans that handover and the mutation's send, so no earlier completed open can be left behind. Batches index directly
+into the consecutive retained suffix. A dropped acknowledgement is replayed before the mutation; `taken` is never durable proof. Only a synced
+released marker permits prefix compaction. A missing or corrupt journal leaves a permanent lost marker, reports
+`lost: true` after reconnects and refuses further opens; a torn unanswered last append alone can be trimmed.
+
+`publish --view-file <file> --state-dir <dir> [--final] [--json]` reads that same journal, even after the mount died.
+It never creates a missing state directory: that fails locally, without contacting or poisoning the healthy view.
+Missing proof inside an existing state directory still marks the journal lost.
+An ordinary boundary's report is followed by an empty `I` to prove the captured prefix released: an unanswered
+no-write release otherwise has the same empty paths as a successful one. A final's success requires `closed: true`.
+JSON mode prints only the report to stdout and diagnostics to stderr. Exit 0 is success, 1 failed/unknown, 2 usage,
+3 closed/refused view and 4 a boundary or path refused. An answered report remains printed if a later release poll or
+closure check fails, with exit 1: its receipts remain useful, but completion is unproven. Exit 1 or 3 can have no report;
+the helper must use the code.
+
+Tests: Rust journal, CLI, link and actual FUSE tests; `folder-mount-e2e.test.ts` runs the built program against the
+actual service with a stand-in core and share. It covers cached/empty/listing receipts, a lost intake answer before a
+write, durable released prefixes and unsubmitted reads across service restarts, automatic quiet saves, a dead mount's
+publisher, unanswered/no-report boundaries, final closure, and permanently lost proof. View switching, office helper
+lifecycle and live deployment remain later slices.
+
 ## Not here
 
-The read log and moves to a newer view (slice 4c); the office service's side of a command's view (opening it,
-mounting it for the command, and the final boundary at the command's end: slice 4d); coding machines and test machines
-(each with its own mount). Each is a later step.
+Moves to a newer view in place (`switch`), a closed desktop view kept for its minute, and a kept view refused because
+a newer one replaced it (slice 4c-3); the office service's side of a command's view (opening it, mounting it for the command, and the final
+boundary at the command's end: slice 4d); coding machines and test machines (each with its own mount). Each is a later
+step.

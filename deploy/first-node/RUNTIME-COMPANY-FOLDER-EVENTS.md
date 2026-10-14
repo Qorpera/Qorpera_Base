@@ -594,6 +594,15 @@ copy, and add, pause, resume or remove (after a confirmation). Settings adds add
 a signed hook needs its sender's signing secret, and members never paste one (agents open those, §5.5). No SQL: all
 four calls answer for `folder-v2` since E1.
 
+E4b (migration 20260930280000, test 418): the member path now says the same. On a `folder-v2` company
+`qorpera_create_event_hook` refuses a Stripe, GitHub or HMAC proof with the host's words (0A000, §5.5), after the
+request's own checks and before any lock, and makes and marks nothing. A signed hook made there would have no secret and
+answer every sender not_ready. Address hooks, mailboxes and the snapshot-v1 branch are unchanged. W1b's member capture of a
+hook's secret stays snapshot-v1's too: on a `folder-v2` company `qorpera_begin_cloud_secret_capture` refuses the
+`event_hook` connector with 0A000 ("A hook's signing secret comes from the vault"), after its own checks and before any
+lock, for a new secret, over the vault's, and for a member's own. Other connectors are unchanged. The runtime contract's
+amendment "events wake agents", item 2, says so (amended 9 October 2026).
+
 ## 7. Later, not in E1–E4
 
 - **Events and mail as files.** The sources disagree on where these go:

@@ -60,6 +60,16 @@ import {
 	isCloudRuntimeReasoningEffort,
 	isCloudRuntimeServiceTier,
 } from "./cloud-runtime-policy.ts";
+import {
+	COMPACT_EFFORT,
+	COMPACT_MODEL,
+	type MemoryCompactChannel,
+	type MemoryCompactReply,
+	MemoryCompactStop,
+	type MemoryCompactStopReason,
+	type MemoryCompactThread,
+	type MemoryCompactUsage,
+} from "./memory-tree/compact.ts";
 
 export const CLOUD_CODEX_BOUNDARY_VERSION = "0.155.1";
 const CLIENT_NAME = "qorpera_cloud_boundary";
@@ -107,10 +117,10 @@ function tokenCounters(snapshot: Record<string, unknown>): CloudRuntimeObservati
 }
 
 /** Waits for a promise unless the signal stops the wait first. */
-function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-	if (signal.aborted) return Promise.reject(new Error("Native review cancelled"));
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal, cancelled = "Native review cancelled"): Promise<T> {
+	if (signal.aborted) return Promise.reject(new Error(cancelled));
 	return new Promise<T>((resolve, reject) => {
-		const abort = () => reject(new Error("Native review cancelled"));
+		const abort = () => reject(new Error(cancelled));
 		signal.addEventListener("abort", abort, { once: true });
 		promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
 	});
@@ -119,6 +129,11 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 /** What the reviewer's verdict call returns, and what an unknown reviewer output becomes. */
 const REVIEW_RECORDED_OUTPUT = JSON.stringify({ recorded: true });
 const REVIEW_UNAVAILABLE_OUTPUT = JSON.stringify({ recorded: false });
+/** What any output of a compactor thread is answered with: it has no tools, so it gets nothing of the agent's. */
+const COMPACT_UNAVAILABLE_OUTPUT = JSON.stringify({ available: false });
+/** A bound on one compactor reply, far above any line (RUNTIME-AGENT-MEMORY-TREE.md §7.3 sends a line over NODE back
+ * to its thread): a reply past it fails its send, and the thread's turn is ended. */
+const MAX_COMPACT_REPLY_BYTES = 16 * 1024;
 
 /** What binds a model request: a context composition request has no outputs. */
 type ModelRequestIdentity = Pick<CloudNativeFenceRequest, "threadId" | "turnId" | "purpose"> & {
@@ -132,6 +147,33 @@ interface ReviewThread {
 	/** Exact outputs this host issued for the reviewer's calls. */
 	readonly issued: Map<string, string>;
 	resolve(value: unknown): void;
+	reject(error: Error): void;
+}
+
+/** The threads a run's app-server holds beside the agent's: auto-review's and the memory compactor's. */
+type SideThreadKind = "review" | "compact";
+
+/** The side thread now starting: the prewarm that arrives before its id is its own. */
+interface StartingSide {
+	readonly kind: SideThreadKind;
+	prewarmThreadId?: string;
+}
+
+/** A memory compactor thread (RUNTIME-AGENT-MEMORY-TREE.md §7.1): no tools, one request at a time. */
+interface CompactThread {
+	readonly threadId: string;
+	turn?: CompactTurn;
+	/** The thread's latest cumulative usage, and the one its last reply counted up to. */
+	total?: Record<string, unknown>;
+	counted?: Record<string, unknown>;
+}
+
+interface CompactTurn {
+	id?: string;
+	readonly parts: string[];
+	bytes: number;
+	usageSignal: NativeRuntimeUsageSignal | null;
+	resolve(reply: MemoryCompactReply): void;
 	reject(error: Error): void;
 }
 
@@ -341,6 +383,50 @@ function identifier(value: unknown): string {
 	return value;
 }
 
+/** A native usage report's cumulative and last snapshots; undefined when malformed. */
+function nativeTokenUsage(
+	value: unknown,
+): { total: Record<string, unknown>; last: Record<string, unknown> } | undefined {
+	const usage = object(value);
+	if (
+		Object.keys(usage).sort().join() !== "last,modelContextWindow,total" ||
+		(usage.modelContextWindow !== null &&
+			(!Number.isSafeInteger(usage.modelContextWindow) || (usage.modelContextWindow as number) < 0))
+	)
+		return undefined;
+	const total = object(usage.total);
+	const last = object(usage.last);
+	for (const snapshot of [total, last]) {
+		if (
+			Object.keys(snapshot).sort().join() !== [...TOKEN_COUNTERS].sort().join() ||
+			TOKEN_COUNTERS.some((key) => !Number.isSafeInteger(snapshot[key]) || (snapshot[key] as number) < 0)
+		)
+			return undefined;
+	}
+	return { total, last };
+}
+
+/** What a compactor reply used: how far its thread's cumulative usage grew since the reply before it. */
+function compactUsage(
+	total: Record<string, unknown> | undefined,
+	counted: Record<string, unknown> | undefined,
+): MemoryCompactUsage | undefined {
+	if (!total) return undefined;
+	const grown = (key: (typeof TOKEN_COUNTERS)[number]) => (total[key] as number) - ((counted?.[key] as number) ?? 0);
+	const usage = { input: grown("inputTokens"), cached: grown("cachedInputTokens"), output: grown("outputTokens") };
+	return usage.input < 0 || usage.cached < 0 || usage.output < 0 ? undefined : usage;
+}
+
+/** Why the provider's signal stops the run's compactor (§7.2). A plan's 429 is its usage limit, as for the run. */
+function compactStopReason(
+	signal: NativeRuntimeUsageSignal | null,
+	chatGptPlan: boolean,
+): MemoryCompactStopReason | null {
+	if (signal === "usage_limit" || (signal === "rate_limited" && chatGptPlan)) return "usage-limit";
+	if (signal === "rate_limited") return "rate-limit";
+	return signal === "provider_outage" ? "outage" : null;
+}
+
 /** Only pinned native error discriminants are inspected, never diagnostic text. */
 function nativeErrorCategory(value: unknown): CloudRuntimeErrorCategory | undefined {
 	if (value === null) return "provider_failed";
@@ -525,10 +611,16 @@ class CodexBoundaryRpc {
 	readonly #reviews = new Map<string, ReviewThread>();
 	/** Ended reviews keep their issued outputs: a closing request may still arrive before the interrupt lands. */
 	readonly #endedReviews = new Map<string, ReviewThread>();
-	#startingReview?: { prewarmThreadId?: string };
 	#reviewQueue: Promise<void> = Promise.resolve();
-	/** The latest reviewer thread start, settled or not: the next review waits for it. */
-	#reviewStarting: Promise<void> = Promise.resolve();
+	/** The memory compactor (RUNTIME-AGENT-MEMORY-TREE.md §7.1): fresh tool-less threads in this same app-server, on
+	 * the run's payer, during the agent's turn and at closing after it. Their model requests pass the result fence on
+	 * their own lane and are never recorded as the agent's context. */
+	readonly #compactions = new Map<string, CompactThread>();
+	/** Ended compactor threads: a request already on its way stays on the compactor's lane. */
+	readonly #endedCompactions = new Set<string>();
+	#startingSide?: StartingSide;
+	/** The latest side thread start, settled or not: the next one waits for it. */
+	#sideStarting: Promise<void> = Promise.resolve();
 	#turnEndRequested = false;
 	#finished = false;
 	#closed = false;
@@ -695,9 +787,40 @@ class CodexBoundaryRpc {
 			request.threadId !== this.#prewarmThreadId &&
 			(this.#reviews.has(request.threadId) ||
 				this.#endedReviews.has(request.threadId) ||
-				(this.#startingReview !== undefined &&
-					request.purpose === "prewarm" &&
-					(this.#startingReview.prewarmThreadId ?? request.threadId) === request.threadId))
+				this.#startingPrewarm("review", request))
+		);
+	}
+
+	/** A model request of a memory compactor thread. */
+	isCompactRequest(request: Pick<CloudNativeFenceRequest, "threadId" | "purpose">): boolean {
+		return (
+			request.threadId !== this.#threadId &&
+			request.threadId !== this.#prewarmThreadId &&
+			(this.#compactions.has(request.threadId) ||
+				this.#endedCompactions.has(request.threadId) ||
+				this.#startingPrewarm("compact", request))
+		);
+	}
+
+	/** The prewarm of the side thread of this kind now starting: the first one while it starts, then only its own. A
+	 * known side thread's late prewarm is never it. */
+	#startingPrewarm(kind: SideThreadKind, request: Pick<CloudNativeFenceRequest, "threadId" | "purpose">): boolean {
+		const starting = this.#startingSide;
+		return (
+			starting?.kind === kind &&
+			request.purpose === "prewarm" &&
+			!this.#sideThread(request.threadId) &&
+			(starting.prewarmThreadId ?? request.threadId) === request.threadId
+		);
+	}
+
+	/** A reviewer's or a compactor's thread, live or ended. */
+	#sideThread(threadId: string): boolean {
+		return (
+			this.#reviews.has(threadId) ||
+			this.#endedReviews.has(threadId) ||
+			this.#compactions.has(threadId) ||
+			this.#endedCompactions.has(threadId)
 		);
 	}
 
@@ -705,8 +828,9 @@ class CodexBoundaryRpc {
 	#assertReviewRequest(request: ModelRequestIdentity): void {
 		if (request.purpose === "prewarm") {
 			if (request.outputs.length !== 0) throw new Error("Native review binding failed");
-			if (this.#startingReview && !this.#reviews.has(request.threadId) && !this.#endedReviews.has(request.threadId))
-				this.#startingReview.prewarmThreadId = request.threadId;
+			const starting = this.#startingSide;
+			if (starting?.kind === "review" && !this.#sideThread(request.threadId))
+				starting.prewarmThreadId = request.threadId;
 			return;
 		}
 		// A request of an ended review changes nothing: its outputs are only our own acknowledgements.
@@ -727,20 +851,46 @@ class CodexBoundaryRpc {
 		}));
 	}
 
+	/** The compactor's lane: each thread's prewarm and its turns, one at a time, nothing of the agent's. */
+	#assertCompactRequest(request: ModelRequestIdentity): void {
+		if (request.purpose === "prewarm") {
+			if (request.outputs.length !== 0) throw new Error("Native compaction binding failed");
+			const starting = this.#startingSide;
+			if (starting?.kind === "compact" && !this.#sideThread(request.threadId))
+				starting.prewarmThreadId = request.threadId;
+			return;
+		}
+		// A request of an ended thread changes nothing: its outputs are answered as unavailable.
+		if (this.#endedCompactions.has(request.threadId)) return;
+		const turn = this.#compactions.get(request.threadId)?.turn;
+		if (!turn || request.turnId === null || (turn.id !== undefined && turn.id !== request.turnId))
+			throw new Error("Native compaction binding failed");
+		turn.id = request.turnId;
+	}
+
+	/** Released outputs of a compactor request: its thread has no tools, so each one is unavailable. */
+	releaseCompactOutputs(request: CloudNativeFenceRequest): CloudNativeFencedResult[] {
+		return request.outputs.map((output) => ({
+			kind: output.kind,
+			callId: output.callId,
+			output: COMPACT_UNAVAILABLE_OUTPUT,
+		}));
+	}
+
 	/** One review: a fresh reviewer thread, its turn, and the verdict its one tool call carries. */
 	review(
 		input: Parameters<CloudActionReviewer["review"]>[0] & { cwd: string },
 		signal: AbortSignal,
 	): Promise<unknown> {
-		// Reviews run one at a time, and never while an earlier reviewer thread is still
-		// starting; a review that waits longer than its caller does stops waiting. (A
-		// caller that stops while queued lets the queue move on without waiting for the
-		// review ahead of it; that is safe because the boundary runs one call at a time,
-		// so at most one review is outstanding.)
+		// Reviews run one at a time, and a reviewer thread never starts while an earlier
+		// side thread is still starting (#startSide); a review that waits longer than its
+		// caller does stops waiting. (A caller that stops while queued lets the queue move
+		// on without waiting for the review ahead of it; that is safe because the boundary
+		// runs one call at a time, so at most one review is outstanding.)
 		const run = untilAborted(this.#reviewQueue, signal).then(() => this.#review(input, signal));
 		this.#reviewQueue = run.then(
-			() => this.#reviewStarting,
-			() => this.#reviewStarting,
+			() => undefined,
+			() => undefined,
 		);
 		return run;
 	}
@@ -748,12 +898,10 @@ class CodexBoundaryRpc {
 	async #review(input: Parameters<CodexBoundaryRpc["review"]>[0], signal: AbortSignal): Promise<unknown> {
 		signal.throwIfAborted();
 		if (this.#failure || this.#closed || this.#finished) throw new Error("Native review is unavailable");
-		const starting = { prewarmThreadId: undefined as string | undefined };
-		this.#startingReview = starting;
 		// The start is followed to its end even when the caller stops waiting (its
 		// prewarm must stay on the reviewer's lane); a thread nobody waits for any
 		// more is ended at once, so its later messages are ignored.
-		const started = this.request("thread/start", {
+		const started = this.#startSide("review", signal, {
 			model: input.model,
 			cwd: input.cwd,
 			runtimeWorkspaceRoots: [],
@@ -764,25 +912,7 @@ class CodexBoundaryRpc {
 			sandbox: "read-only",
 			developerInstructions: input.instructions,
 			dynamicTools: [CLOUD_ACTION_REVIEW_SPECIFICATION],
-		})
-			.then((result) => {
-				const id = identifier(object(object(result).thread).id);
-				if (
-					id === this.#threadId ||
-					this.#reviews.has(id) ||
-					this.#endedReviews.has(id) ||
-					(starting.prewarmThreadId !== undefined && starting.prewarmThreadId !== id)
-				)
-					throw new Error("Native review binding failed");
-				return id;
-			})
-			.finally(() => {
-				if (this.#startingReview === starting) this.#startingReview = undefined;
-			});
-		this.#reviewStarting = started.then(
-			() => undefined,
-			() => undefined,
-		);
+		});
 		let threadId: string;
 		try {
 			threadId = await untilAborted(started, signal);
@@ -913,10 +1043,244 @@ class CodexBoundaryRpc {
 		return true;
 	}
 
-	/** A model request's thread and turn: the run's, its prewarm's, or a reviewer's. Both requests Codex makes
-	 * before a provider request, its context composition and then its fence, are bound here. */
-	#bindModelRequest(request: ModelRequestIdentity): "review" | "prewarm" | "turn" {
-		if (this.#failure || this.#closed || this.#finished) throw new Error("Native result boundary stopped");
+	/** Starts a side thread once the one before it has started, so that a prewarm arriving before a thread's id is
+	 * that thread's. The start is followed to its end even when the caller stops waiting. */
+	#startSide(kind: SideThreadKind, signal: AbortSignal, params: JsonValue): Promise<string> {
+		const started = this.#sideStarting.then(async () => {
+			signal.throwIfAborted();
+			const starting: StartingSide = { kind };
+			this.#startingSide = starting;
+			try {
+				const id = identifier(object(object(await this.request("thread/start", params)).thread).id);
+				if (
+					id === this.#threadId ||
+					this.#sideThread(id) ||
+					(starting.prewarmThreadId !== undefined && starting.prewarmThreadId !== id)
+				)
+					throw new Error(`Native ${kind === "review" ? "review" : "compaction"} binding failed`);
+				return id;
+			} finally {
+				if (this.#startingSide === starting) this.#startingSide = undefined;
+			}
+		});
+		this.#sideStarting = started.then(
+			() => undefined,
+			() => undefined,
+		);
+		return started;
+	}
+
+	/** Opens a compactor thread (RUNTIME-AGENT-MEMORY-TREE.md §7.1): fresh, ephemeral and tool-less, its system prompt
+	 * the developer instructions. While the run's process lasts it opens after the agent's turn too, for closing. */
+	async compact(
+		input: { model: string; effort: CloudRuntimeReasoningEffort; instructions: string; cwd: string },
+		signal: AbortSignal,
+	): Promise<MemoryCompactThread> {
+		signal.throwIfAborted();
+		if (this.#failure || this.#closed || !this.#threadId) throw this.#compactStop();
+		const started = this.#startSide("compact", signal, {
+			model: input.model,
+			cwd: input.cwd,
+			runtimeWorkspaceRoots: [],
+			environments: [],
+			ephemeral: true,
+			approvalPolicy: "never",
+			approvalsReviewer: "user",
+			sandbox: "read-only",
+			developerInstructions: input.instructions,
+			dynamicTools: [],
+		});
+		let threadId: string;
+		try {
+			threadId = await untilAborted(started, signal, "Native compaction cancelled");
+		} catch (error) {
+			// A thread that starts after its caller stopped is ended at once: its requests stay on this lane.
+			void started.then(
+				(id) => this.#endCompaction(id),
+				() => undefined,
+			);
+			throw this.#failure || this.#closed ? this.#compactStop() : error;
+		}
+		const thread: CompactThread = { threadId };
+		this.#compactions.set(threadId, thread);
+		return {
+			send: (text, sendSignal) => this.#compactSend(thread, text, input.effort, sendSignal),
+			// What the thread's failed sends used: its usage grown since the last reply carried it.
+			unreported: () => {
+				const usage = thread.total === thread.counted ? undefined : compactUsage(thread.total, thread.counted);
+				thread.counted = thread.total;
+				return usage;
+			},
+			close: () => this.#endCompaction(threadId),
+		};
+	}
+
+	/** One request in a compactor thread: a turn, answered with the text the model replied and what it used. */
+	async #compactSend(
+		thread: CompactThread,
+		text: string,
+		effort: CloudRuntimeReasoningEffort,
+		signal: AbortSignal,
+	): Promise<MemoryCompactReply> {
+		signal.throwIfAborted();
+		if (this.#failure || this.#closed) throw this.#compactStop();
+		if (this.#compactions.get(thread.threadId) !== thread || thread.turn) throw new Error("Native compaction ended");
+		let resolveReply: (reply: MemoryCompactReply) => void = () => undefined;
+		let rejectReply: (error: Error) => void = () => undefined;
+		const reply = new Promise<MemoryCompactReply>((resolve, reject) => {
+			resolveReply = resolve;
+			rejectReply = reject;
+		});
+		void reply.catch(() => undefined);
+		const turn: CompactTurn = { parts: [], bytes: 0, usageSignal: null, resolve: resolveReply, reject: rejectReply };
+		thread.turn = turn;
+		const abort = (): void => {
+			if (thread.turn === turn) this.#endCompaction(thread.threadId, new Error("Native compaction cancelled"));
+		};
+		signal.addEventListener("abort", abort, { once: true });
+		try {
+			const started = object(
+				await this.request("turn/start", {
+					threadId: thread.threadId,
+					input: [{ type: "text", text, text_elements: [] }],
+					effort,
+					environments: [],
+					runtimeWorkspaceRoots: [],
+					sandboxPolicy: { type: "readOnly", networkAccess: false },
+				}),
+			);
+			const turnId = identifier(object(started.turn).id);
+			if (thread.turn !== turn) {
+				// Ended before its id was known: interrupt it now.
+				if (turn.id === undefined)
+					void this.request("turn/interrupt", { threadId: thread.threadId, turnId }).catch(() => undefined);
+			} else if (turn.id !== undefined && turn.id !== turnId) throw new Error("Native compaction binding failed");
+			else turn.id = turnId;
+			return await reply;
+		} catch (error) {
+			const failure =
+				this.#failure || this.#closed
+					? this.#compactStop()
+					: error instanceof Error
+						? error
+						: new Error("Native compaction failed");
+			if (thread.turn === turn) this.#endCompaction(thread.threadId, failure);
+			throw failure;
+		} finally {
+			signal.removeEventListener("abort", abort);
+		}
+	}
+
+	/** Ends a compactor thread: its open turn is interrupted and rejected, and its later requests stay on its lane. */
+	#endCompaction(threadId: string, error: Error = new Error("Native compaction ended")): void {
+		const thread = this.#compactions.get(threadId);
+		this.#compactions.delete(threadId);
+		const turn = thread?.turn;
+		if (thread && turn) {
+			thread.turn = undefined;
+			if (turn.id !== undefined)
+				void this.request("turn/interrupt", { threadId, turnId: turn.id }).catch(() => undefined);
+			turn.reject(error);
+		}
+		this.#endedCompactions.add(threadId);
+		if (this.#endedCompactions.size > TRACKED_REQUESTS)
+			this.#endedCompactions.delete(this.#endedCompactions.values().next().value as string);
+	}
+
+	/** What stops the run's compactor when this process can no longer answer: the provider's signal, else an outage. */
+	#compactStop(): MemoryCompactStop {
+		return new MemoryCompactStop(compactStopReason(this.#providerUsageSignal, this.chatGptPlan) ?? "outage");
+	}
+
+	/** Messages of a compactor thread. Returns false when the message is not the compactor's. A malformed one ends
+	 * only its thread: what a compactor says never fails the run. */
+	#compactMessage(message: Record<string, unknown>): boolean {
+		const params =
+			message.params && typeof message.params === "object" && !Array.isArray(message.params)
+				? (message.params as Record<string, unknown>)
+				: undefined;
+		const threadId = typeof params?.threadId === "string" ? params.threadId : undefined;
+		if (
+			!threadId ||
+			threadId === this.#threadId ||
+			!(this.#compactions.has(threadId) || this.#endedCompactions.has(threadId))
+		)
+			return false;
+		if (message.id !== undefined) {
+			// The compactor has no tools: every request of its threads is refused.
+			this.#write({
+				id: message.id,
+				error: { code: -32601, message: "Operation not available in this cloud compaction" },
+			});
+			return true;
+		}
+		const thread = this.#compactions.get(threadId);
+		if (!thread) return true;
+		try {
+			this.#compactNotification(thread, message.method, params!);
+		} catch {
+			this.#endCompaction(threadId, new Error("Invalid native boundary protocol"));
+		}
+		// The compactor's reasoning and diagnostics are never delivered or kept: its reply is only its line.
+		return true;
+	}
+
+	#compactNotification(thread: CompactThread, method: unknown, params: Record<string, unknown>): void {
+		if (method === "thread/tokenUsage/updated") {
+			const usage = nativeTokenUsage(params.tokenUsage);
+			if (usage) thread.total = usage.total;
+			return;
+		}
+		const turn = thread.turn;
+		if (!turn) return;
+		if (method === "turn/started" || method === "turn/completed") {
+			const turnId = identifier(object(params.turn).id);
+			if (turn.id !== undefined && turn.id !== turnId) throw new Error("Native compaction binding failed");
+			turn.id = turnId;
+		} else if (turn.id === undefined || params.turnId !== turn.id) return;
+		if (method === "item/agentMessage/delta" && typeof params.delta === "string") {
+			turn.parts.push(params.delta);
+			turn.bytes += Buffer.byteLength(params.delta);
+			if (turn.bytes > MAX_COMPACT_REPLY_BYTES)
+				this.#endCompaction(thread.threadId, new Error("Native compaction reply too large"));
+		} else if (method === "error" && params.willRetry === false) {
+			turn.usageSignal = nativeRuntimeUsageSignal(object(params.error).codexErrorInfo);
+		} else if (method === "turn/completed") {
+			const ended = object(params.turn);
+			thread.turn = undefined;
+			if (ended.status === "completed" && ended.error == null) {
+				const usage = thread.total === thread.counted ? undefined : compactUsage(thread.total, thread.counted);
+				thread.counted = thread.total;
+				const text = turn.parts.join("");
+				turn.resolve(usage ? { text, usage } : { text });
+				return;
+			}
+			const error =
+				ended.error && typeof ended.error === "object" && !Array.isArray(ended.error)
+					? (ended.error as Record<string, unknown>)
+					: undefined;
+			const signal =
+				ended.status === "interrupted"
+					? null
+					: error?.codexErrorInfo === undefined
+						? turn.usageSignal
+						: nativeRuntimeUsageSignal(error.codexErrorInfo);
+			const reason = compactStopReason(signal, this.chatGptPlan);
+			turn.reject(reason ? new MemoryCompactStop(reason) : new Error("Native compaction did not complete"));
+			this.#endCompaction(thread.threadId);
+		}
+	}
+
+	/** A model request's thread and turn: the run's, its prewarm's, a reviewer's or the compactor's. Both requests
+	 * Codex makes before a provider request, its context composition and then its fence, are bound here. */
+	#bindModelRequest(request: ModelRequestIdentity): "review" | "compact" | "prewarm" | "turn" {
+		if (this.#failure || this.#closed) throw new Error("Native result boundary stopped");
+		// The compactor's lane stays open after the agent's turn: closing builds its lines then (§7.1).
+		if (this.isCompactRequest(request)) {
+			this.#assertCompactRequest(request);
+			return "compact";
+		}
+		if (this.#finished) throw new Error("Native result boundary stopped");
 		if (this.isReviewRequest(request)) {
 			this.#assertReviewRequest(request);
 			return "review";
@@ -956,7 +1320,7 @@ class CodexBoundaryRpc {
 
 	assertModelRequest(request: CloudNativeFenceRequest): void {
 		const lane = this.#bindModelRequest(request);
-		if (lane === "review") return;
+		if (lane === "review" || lane === "compact") return;
 		if (lane === "prewarm") {
 			this.#observeFence(request);
 			return;
@@ -991,6 +1355,7 @@ class CodexBoundaryRpc {
 		for (const pending of this.#pending.values()) pending.reject(this.#failure);
 		this.#pending.clear();
 		for (const review of this.#reviews.values()) review.reject(this.#failure);
+		for (const threadId of [...this.#compactions.keys()]) this.#endCompaction(threadId, this.#compactStop());
 		this.#rejectCompleted(this.#failure);
 	}
 
@@ -1033,6 +1398,7 @@ class CodexBoundaryRpc {
 		for (const pending of this.#pending.values()) pending.reject(new Error("Native boundary transport closed"));
 		this.#pending.clear();
 		for (const review of this.#reviews.values()) review.reject(new Error("Native boundary transport closed"));
+		for (const threadId of [...this.#compactions.keys()]) this.#endCompaction(threadId, this.#compactStop());
 		this.#child.stdin.end();
 	}
 
@@ -1130,22 +1496,9 @@ class CodexBoundaryRpc {
 				return;
 			}
 			if (!this.#turnObservation) return;
-			const usage = object(params.tokenUsage);
-			if (
-				Object.keys(usage).sort().join() !== "last,modelContextWindow,total" ||
-				(usage.modelContextWindow !== null &&
-					(!Number.isSafeInteger(usage.modelContextWindow) || (usage.modelContextWindow as number) < 0))
-			)
-				return;
-			const total = object(usage.total);
-			const last = object(usage.last);
-			for (const snapshot of [total, last]) {
-				if (
-					Object.keys(snapshot).sort().join() !== [...TOKEN_COUNTERS].sort().join() ||
-					TOKEN_COUNTERS.some((key) => !Number.isSafeInteger(snapshot[key]) || (snapshot[key] as number) < 0)
-				)
-					return;
-			}
+			const usage = nativeTokenUsage(params.tokenUsage);
+			if (!usage) return;
+			const { total, last } = usage;
 			// Native cumulative snapshots can be replayed/recomputed. Never sum updates
 			// or label these counters billing-exact provider usage.
 			this.#turnObservation.update(tokenCounters(total));
@@ -1170,7 +1523,7 @@ class CodexBoundaryRpc {
 	#message(message: Record<string, unknown>): void {
 		if (this.#failure || this.#closed) return;
 		this.#lastActivityAt = Date.now();
-		if (message.method !== undefined && this.#reviewMessage(message)) return;
+		if (message.method !== undefined && (this.#reviewMessage(message) || this.#compactMessage(message))) return;
 		if (message.method === undefined) {
 			if (typeof message.id !== "number") throw new Error("Invalid native response id");
 			const pending = this.#pending.get(message.id);
@@ -1492,15 +1845,21 @@ async function startCloudCodexProcess(
 				rpc.assertModelRequest(request);
 			},
 			releaseReviewOutputs: (request) =>
-				rpc?.isReviewRequest(request) ? rpc.releaseReviewOutputs(request) : undefined,
+				rpc?.isReviewRequest(request)
+					? rpc.releaseReviewOutputs(request)
+					: rpc?.isCompactRequest(request)
+						? rpc.releaseCompactOutputs(request)
+						: undefined,
 			context: {
 				assertRequest: (request) => {
 					if (!rpc?.bound) throw new Error("Native result boundary not initialized");
 					rpc.assertContextRequest(request);
 				},
-				// A reviewer's request is its own, never composed from the agent's run.
+				// A reviewer's or the compactor's request is its own, never composed from the agent's run.
 				compose: (request, composeSignal) =>
-					rpc?.isReviewRequest(request) ? undefined : binding.composeContext?.(request, composeSignal),
+					rpc?.isReviewRequest(request) || rpc?.isCompactRequest(request)
+						? undefined
+						: binding.composeContext?.(request, composeSignal),
 			},
 			recordContextView: async (request, outputs, contextSignal) => {
 				await binding.recordContextView?.(request, outputs, contextSignal);
@@ -1812,6 +2171,12 @@ export async function runCloudCodexToolSession(options: {
 	beforeModelStart?: (signal: AbortSignal) => Promise<void>;
 	/** Auto-review (v130): this session answers the boundary's reviews while the agent's turn runs. */
 	reviewer?: CloudActionReviewChannel;
+	/** The memory compactor (RUNTIME-AGENT-MEMORY-TREE.md §7.1): this session answers the run's compactor calls, while
+	 * the agent's turn runs and at closing. */
+	compactor?: MemoryCompactChannel;
+	/** Closing (§7.1): runs once the agent's turn has completed and been checked, before the process goes. What it
+	 * throws never fails the run: the lines it left unbuilt stay missing, for a settle to build (§5.4). */
+	closing?: (signal: AbortSignal) => Promise<void>;
 	/** Optional metadata-only logical-turn/gate observations; not provider HTTP timing. */
 	observability?: CloudRuntimeObservability;
 	recordContextView?: (
@@ -1950,6 +2315,10 @@ export async function runCloudCodexToolSession(options: {
 		options.reviewer?.attach({
 			review: (input, reviewSignal) => reviewing.review({ ...input, cwd: started.workspace }, reviewSignal),
 		});
+		const compaction = { model: COMPACT_MODEL, effort: COMPACT_EFFORT, cwd: started.workspace };
+		options.compactor?.attach((system, compactSignal) =>
+			rpc.compact({ ...compaction, instructions: system }, compactSignal),
+		);
 		stage = "codex-turn-start";
 		rpc.startTurn();
 		rpc.observeTurnStart(Buffer.byteLength(options.prompt));
@@ -1968,6 +2337,11 @@ export async function runCloudCodexToolSession(options: {
 		rpc.assertCompleted();
 		signal.throwIfAborted();
 		rpc.finishObservations(true, signal);
+		try {
+			await options.closing?.(signal);
+		} catch {
+			// The verified turn stands: what closing left unbuilt stays missing (§5.4).
+		}
 		return {
 			providerSessionId: threadId,
 			toolCalls: rpc.toolCalls,
@@ -1990,6 +2364,7 @@ export async function runCloudCodexToolSession(options: {
 		);
 	} finally {
 		options.reviewer?.attach(undefined);
+		options.compactor?.attach(undefined);
 		if (idleWatch !== undefined) clearInterval(idleWatch);
 		signal.removeEventListener("abort", abort);
 		options.boundary.close();

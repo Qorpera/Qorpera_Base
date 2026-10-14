@@ -54,9 +54,6 @@ async function fixture(backup: (request: NativeProviderLoginRequest) => Promise<
 				await writeFile(join(identityRoot, "codex", "auth.json"), '{"syntheticCredential":true}', { mode: 0o600 });
 				return { prompt: Promise.resolve({}), completed: Promise.resolve({}), cancel: async () => undefined };
 			},
-			execute: async () => {
-				throw new Error("Unexpected provider work");
-			},
 		},
 	});
 	return { host, request, put, complete };

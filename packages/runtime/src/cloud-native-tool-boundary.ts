@@ -12,7 +12,13 @@ import {
 import { CloudControlRpcRefused } from "./cloud-control-errors.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
-import { type CloudRunLog, CloudRunLogGone, type CloudRunLogRelease, cloudRunLogReleases } from "./cloud-run-log.ts";
+import {
+	type CloudRunLog,
+	CloudRunLogGone,
+	type CloudRunLogRelease,
+	cloudRunLogPaths,
+	cloudRunLogReleases,
+} from "./cloud-run-log.ts";
 import {
 	type CloudRuntimeObservability,
 	type CloudRuntimeObservationSpan,
@@ -108,6 +114,10 @@ export interface CloudNativeTool {
 	 * is cut to a bound (P40b: a proposal's every change). It throws when it cannot give all of it: the call is then
 	 * never reviewed on a part. */
 	reviewContents?(parsed: JsonValue): JsonValue;
+	/** What the call would change, read from the company's current state before the automatic review (I8b: an
+	 * interface save's card and effect come from the files it replaces). Its value takes the parsed arguments' place for
+	 * the review, the work log and the effect; it changes nothing. A `CloudToolRefusal` refuses the call before review. */
+	prepare?(parsed: JsonValue, context: CloudToolContext): Promise<JsonValue>;
 	/** The cloud adapter still owns effect-time authorization, durable receipts and secret handling. */
 	execute(argumentsValue: JsonValue, context: CloudToolContext): Promise<CloudToolContent>;
 	/** After the automatic review denied the call (the reviewer, or a member on its card), with the denial's id: a call
@@ -340,6 +350,13 @@ interface CloudNativeCall {
 	readonly digest: string;
 	readonly result: Promise<CloudDynamicToolResponse>;
 	readonly observation?: CloudRuntimeObservationSpan;
+}
+
+interface LoggedCall {
+	readonly step: number;
+	readonly releases: CloudRunLogRelease[];
+	/** Only path needles from the whole result, never its content. */
+	readonly resultPaths: string[];
 }
 
 function untilStopped<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
@@ -644,8 +661,8 @@ export class CloudNativeToolBoundary {
 		if (!runLog || previous?.digest === digest)
 			return this.#respond(callId, tool, argumentsText, digest, previous, observation);
 		// Every call the model sees is a step of the run's work log, in the order the calls came, kept with the envelope
-		// it got and every release its result was issued under (RUNTIME-AGENT-MEMORY-TREE.md §4.5). `args_hash` is the
-		// call's digest, as receipts and reviews have it.
+		// it got and every release its result was issued under (RUNTIME-AGENT-MEMORY-TREE.md §4.5). The log hashes the
+		// complete argument text and asks the platform to key that digest before it stores `args_hash`.
 		const step = runLog.step({
 			call: callId,
 			tool: tool?.name ?? (namespace === "qorpera" && TOOL_NAME.test(name) ? name : "unrecognized"),
@@ -653,9 +670,14 @@ export class CloudNativeToolBoundary {
 			argumentSha256: digest,
 		});
 		const releases: CloudRunLogRelease[] = [];
+		const resultPaths: string[] = [];
 		let response: CloudDynamicToolResponse | undefined;
 		try {
-			response = await this.#respond(callId, tool, argumentsText, digest, previous, observation, { step, releases });
+			response = await this.#respond(callId, tool, argumentsText, digest, previous, observation, {
+				step,
+				releases,
+				resultPaths,
+			});
 			return response;
 		} finally {
 			// The answer the model got, after the release check. A call that threw ends its turn unconfirmed, with nothing
@@ -663,7 +685,7 @@ export class CloudNativeToolBoundary {
 			const answer =
 				response ??
 				this.#result(callId, tool, digest, "unconfirmed", { kind: "text", value: "TOOL_OUTCOME_UNCONFIRMED" });
-			runLog.finish(step, answer.contentItems[0].text, response ? releases : []);
+			runLog.finish(step, answer.contentItems[0].text, response ? releases : [], response ? resultPaths : []);
 		}
 	}
 
@@ -674,7 +696,7 @@ export class CloudNativeToolBoundary {
 		digest: string | null,
 		previous: CloudNativeCall | undefined,
 		observation?: CloudRuntimeObservationSpan,
-		logged?: { step: number; releases: CloudRunLogRelease[] },
+		logged?: LoggedCall,
 	): Promise<CloudDynamicToolResponse> {
 		if (argumentsText === null || digest === null)
 			return this.#result(callId, tool, null, "denied", { kind: "text", value: "INVALID_ARGUMENTS" });
@@ -728,6 +750,7 @@ export class CloudNativeToolBoundary {
 			release?.finish("denied", { errorCategory: "authority_unavailable" });
 			// The model gets only the denial: its step keeps no reads or releases of the result held back.
 			logged?.releases.splice(0);
+			logged?.resultPaths.splice(0);
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
 		}
 	}
@@ -738,14 +761,14 @@ export class CloudNativeToolBoundary {
 		digest: string,
 		argumentsText: string,
 		observation?: CloudRuntimeObservationSpan,
-		logged?: { step: number; releases: CloudRunLogRelease[] },
+		logged?: LoggedCall,
 	): Promise<CloudDynamicToolResponse> {
 		if (!logged) return this.#act(callId, tool, digest, argumentsText, observation);
 		if (this.#runLog?.gone)
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: WORK_LOG_GONE });
 		// Every release the call makes is kept with its step.
 		return cloudRunLogReleases(logged.releases, () =>
-			this.#act(callId, tool, digest, argumentsText, observation, logged.step),
+			this.#act(callId, tool, digest, argumentsText, observation, logged.step, logged.resultPaths),
 		);
 	}
 
@@ -756,6 +779,7 @@ export class CloudNativeToolBoundary {
 		argumentsText: string,
 		observation?: CloudRuntimeObservationSpan,
 		step?: number,
+		resultPaths?: string[],
 	): Promise<CloudDynamicToolResponse> {
 		if (tool.name === "computer_screenshot" && tool.source === "runtime" && !this.#captures)
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "TOOL_UNAVAILABLE" });
@@ -790,6 +814,28 @@ export class CloudNativeToolBoundary {
 			...(this.#identity ? { identity: this.#identity } : {}),
 			...(observation ? { observation } : {}),
 		};
+		if (tool.prepare) {
+			// What the call changes is read before its review, so the card and the effect class are the ones that run.
+			try {
+				parsed = await untilStopped(() => tool.prepare!(parsed, context), this.#signal);
+				if (Buffer.byteLength(cloudToolJsonText(parsed)) > MAX_ARGUMENT_BYTES)
+					throw new Error("Oversized prepared arguments");
+			} catch (error) {
+				if (this.#signal.aborted)
+					return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
+				if (error instanceof CloudToolRefusal) {
+					const reason =
+						Buffer.byteLength(error.message) <= 1024 && REFUSAL_PLAIN.test(error.message)
+							? `: ${error.message}`
+							: "";
+					return this.#result(callId, tool, digest, "denied", { kind: "text", value: `REFUSED${reason}` });
+				}
+				return this.#result(callId, tool, digest, "denied", {
+					kind: "text",
+					value: "TOOL_UNAVAILABLE: What this call changes could not be read, so it did not happen. You may try the identical call once more; if it fails again, tell the member.",
+				});
+			}
+		}
 		const runLog = this.#runLog;
 		let actionReviewId: string | undefined;
 		if (this.#review) {
@@ -841,7 +887,16 @@ export class CloudNativeToolBoundary {
 		// not run: the log must show every effect the run had.
 		if (runLog && step !== undefined && runLog.effectful(tool, parsed)) {
 			try {
-				await untilStopped(() => runLog.precommit(step, this.#signal), this.#signal);
+				// A worker inherits its origin's narrow status as it starts. Earlier results must be classified before
+				// this pending record is committed: filling it narrow after the worker starts would be too late.
+				const afterEarlierResults =
+					tool.source === "runtime" &&
+					tool.name === "manage_worker" &&
+					parsed !== null &&
+					typeof parsed === "object" &&
+					!Array.isArray(parsed) &&
+					(parsed.action === "dispatch" || parsed.action === "followup");
+				await untilStopped(() => runLog.precommit(step, this.#signal, { afterEarlierResults }), this.#signal);
 			} catch (error) {
 				return this.#result(callId, tool, digest, "denied", {
 					kind: "text",
@@ -855,6 +910,9 @@ export class CloudNativeToolBoundary {
 				this.#signal,
 			);
 			const response = this.#result(callId, tool, digest, "ok", content);
+			// The envelope may omit a restricted path when it is fitted to 8 KiB. Keep only the whole result's path
+			// needles for trusted log classification; its raw content is never handed to the log or persisted there.
+			if (resultPaths) for (const path of cloudRunLogPaths(content.value)) resultPaths.push(path);
 			if (tool.name === "computer_screenshot" && tool.source === "runtime") {
 				const imageUrl = await untilStopped(
 					() => this.#captures!.issue(callId, response.contentItems[0].text, content, this.#signal),

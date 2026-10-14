@@ -327,6 +327,24 @@ useradd --system --no-create-home --groups qorpera-agent-plug creator
 as_creator() { setpriv --reuid=creator --regid=creator --init-groups -- sh -c 'umask 077; exec "$@"' sh "$@"; }
 bash "$tool" check >"$work/check.out" || fail "check: $(cat "$work/check.out")"
 pass "check: rules parse and the tools are present"
+# The exit's database login (E8b): from stdin into a root-only file, as the rollout script sends it; it prints the
+# file's sha256, never the login, and refuses anything else with the old file kept.
+export QORPERA_AGENT_EXIT_LOGIN_DIR=$work/login
+login='postgresql://qorpera_agent_exit.abcdefghij0123456789:Zq7_xW-ab3Cd4Ef5Gh6Ij7Kl8Mn9Op0Qr1St2Uv3Wx'
+login+='@aws-0-eu-central-1.pooler.supabase.com:5432/postgres?sslmode=verify-full'
+out=$(printf '%s' "$login" | bash "$tool" database-url)
+login_sha256=$(printf '%s' "$login" | sha256sum | cut -d' ' -f1)
+[[ $out == "$work/login/database-url mode=400 owner=root:root bytes=${#login} sha256=$login_sha256" ]] ||
+	fail "database-url: $out"
+[[ $(stat -c '%a %U:%G' "$work/login") == "700 root:root" ]] || fail "the login folder is not root's alone"
+for bad in "${login/verify-full/require}" "${login/qorpera_agent_exit/postgres}" "${login/5432/5432\/x}" \
+	"$login"$'\nx' "${login/Zq7_/Zq7%}" ""; do
+	if printf '%s' "$bad" | bash "$tool" database-url >"$work/login.out" 2>&1; then fail "database-url took: $bad"; fi
+	grep -q 'Zq7' "$work/login.out" && fail "database-url printed the login"
+done
+[[ $(cat "$work/login/database-url") == "$login" && $(ls -A "$work/login") == database-url ]] ||
+	fail "a refused login changed the login folder"
+pass "database-url: the login from stdin into a root-only 0400 file; prints its sha256; refuses any other form"
 bash "$tool" up >/dev/null
 bash "$tool" up >/dev/null || fail "a second up must repair, not fail"
 pass "up twice"

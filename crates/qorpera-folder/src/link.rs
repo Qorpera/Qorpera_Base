@@ -4,15 +4,16 @@
 use crate::frame::{kind, read_frame, write_frame};
 use crate::proto::{
 	code, Ack, Change, ChunkHeader, CloseRequest, Entry, ErrorReply, ExecutableRequest, GetChunk, Hello, HelloOk,
-	ListRequest, Listing, OpenRequest, Opened, PathRequest, ReadRequest, RemoveRequest, RenameRequest, Report, Role, Saved,
-	MAX_READ, PART, PROTOCOL,
+	ListRequest, Listing, OpenRequest, Opened, PathRequest, PublishRequest, ReadRequest, ReadsAnswer, RemoveRequest,
+	RenameRequest, Report, Role, Saved, MAX_READ, PART, PROTOCOL,
 };
+use crate::reads::{Locked, ReadLog};
 use crate::transport::{connect, Stream};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 /// How long a list or a read may wait for its answer, and a request to be sent. A cold read of a 4 MiB piece from the
@@ -51,6 +52,43 @@ impl std::fmt::Display for Fail {
 	}
 }
 
+/// A failed publication may still have an answered report whose receipts must reach the caller. Its release or
+/// final closure remains unproven; retaining the report never changes the failure into a success.
+#[derive(Debug)]
+pub struct PublishFailure {
+	pub failure: Fail,
+	pub report: Option<Report>,
+}
+
+impl From<Fail> for PublishFailure {
+	fn from(failure: Fail) -> Self {
+		Self { failure, report: None }
+	}
+}
+
+impl std::fmt::Display for PublishFailure {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		self.failure.fmt(f)
+	}
+}
+
+struct Connection {
+	stream: Stream,
+	/// Volatile service knowledge belongs to this exact connection, never its replacement.
+	taken: u64,
+	/// Even an empty first intake conveys lost=false; a later sticky lost=true must be sent again.
+	intake_lost: Option<bool>,
+}
+
+impl std::ops::Deref for Connection {
+	type Target = Stream;
+	fn deref(&self) -> &Stream { &self.stream }
+}
+
+impl std::ops::DerefMut for Connection {
+	fn deref_mut(&mut self) -> &mut Stream { &mut self.stream }
+}
+
 pub struct View {
 	pub environment_id: String,
 	pub view_id: String,
@@ -70,7 +108,7 @@ impl std::fmt::Debug for View {
 pub struct Link {
 	addr: String,
 	view: View,
-	free: Mutex<Vec<Stream>>,
+	free: Mutex<Vec<Connection>>,
 	ready: Condvar,
 	open: Mutex<usize>,
 	max: usize,
@@ -80,6 +118,7 @@ pub struct Link {
 	on_closed: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 	/// REQUEST_TIMEOUT, shorter in tests.
 	timeout: Duration,
+	reads: Option<Arc<ReadLog>>,
 }
 
 impl Link {
@@ -94,7 +133,17 @@ impl Link {
 			closed: AtomicBool::new(false),
 			on_closed: Mutex::new(None),
 			timeout: REQUEST_TIMEOUT,
+			reads: None,
 		}
+	}
+
+	pub fn with_reads(mut self, reads: Arc<ReadLog>) -> Link {
+		self.reads = Some(reads);
+		self
+	}
+
+	pub fn record_read(&self, path: &str, version: Option<&str>, authority: Option<&crate::proto::Authority>) -> io::Result<()> {
+		self.reads.as_ref().map_or(Ok(()), |log| log.note(path, version, authority))
 	}
 
 	/// `f` runs once, on whichever thread first learns that the view closed.
@@ -116,7 +165,7 @@ impl Link {
 		self.closed.load(Ordering::SeqCst)
 	}
 
-	fn hello(&self, role: Role, timeout: Duration) -> Result<(Stream, HelloOk), Fail> {
+	fn hello(&self, role: Role, timeout: Duration) -> Result<(Connection, HelloOk), Fail> {
 		let mut s = connect(&self.addr).map_err(Fail::Link)?;
 		s.set_timeouts(Some(timeout), Some(self.timeout)).map_err(Fail::Link)?;
 		let hello = Hello {
@@ -130,13 +179,13 @@ impl Link {
 		if ok.protocol != PROTOCOL || ok.view_id != self.view.view_id {
 			return Err(Fail::Link(io::Error::other("the node answered for another view or protocol")));
 		}
-		Ok((s, ok))
+		Ok((Connection { stream: s, taken: 0, intake_lost: None }, ok))
 	}
 
 	/// Opens the feed: the node's answer to the hello, then a stream of changes.
 	pub fn open_feed(&self) -> Result<(Feed, HelloOk), Fail> {
 		match self.hello(Role::Feed, FEED_TIMEOUT) {
-			Ok((stream, ok)) => Ok((Feed { stream }, ok)),
+			Ok((connection, ok)) => Ok((Feed { stream: connection.stream }, ok)),
 			Err(f) => {
 				self.note(&f);
 				Err(f)
@@ -219,13 +268,19 @@ impl Link {
 				Err(Fail::Link(_)) if attempt == 1 => continue,
 				Err(f) => return Err(f),
 			};
-			if let Err(e) = s.set_timeouts(None, Some(self.timeout)).and_then(|()| write_frame(&mut s, request, payload)) {
+			if let Err(f) = self.send_change(&mut s, request, payload) {
+				// No mutation went out when handing over reads failed. A fresh connection must take the journal
+				// again: an earlier I acknowledgement does not survive the service that acknowledged it.
+				if let Fail::Remote(_) = f {
+					self.answered(s, &f);
+					return Err(f);
+				}
 				self.lost();
 				self.drop_idle();
 				if attempt == 1 {
 					continue;
 				}
-				return Err(Fail::Link(e));
+				return Err(f);
 			}
 			return match read_answer(&mut s, answer) {
 				Ok(data) => {
@@ -249,8 +304,45 @@ impl Link {
 		}
 	}
 
+	/// The journal lock spans the I/i barrier and the mutation's send, so every open already returned is accounted
+	/// for. Release it before waiting for the mutation's answer: a slow boundary must not hold up unrelated reads.
+	fn send_change(&self, s: &mut Connection, request: u8, payload: &[u8]) -> Result<u64, Fail> {
+		let mut held = self.reads.as_ref().map(|log| log.locked()).transpose().map_err(Fail::Link)?;
+		if let Some(log) = &mut held {
+			self.hand_over(s, log)?;
+			if log.lost() && request != kind::PUBLISH {
+				return Err(Fail::Remote(ErrorReply { code: code::DENIED.into(), message: "the read journal is unproven".into() }));
+			}
+		}
+		let through = held.as_ref().map_or(0, |log| log.last());
+		s.set_timeouts(None, Some(self.timeout)).map_err(Fail::Link)?;
+		write_frame(&mut s.stream, request, payload).map_err(Fail::Link)?;
+		Ok(through)
+	}
+
+	fn hand_over(&self, s: &mut Connection, log: &mut Locked<'_>) -> Result<(), Fail> {
+		let mut after = log.released().max(s.taken);
+		if after >= log.last() && s.intake_lost == Some(log.lost()) {
+			return Ok(());
+		}
+		s.set_timeouts(Some(self.timeout), Some(self.timeout)).map_err(Fail::Link)?;
+		loop {
+			let request = log.request(after);
+			let sent = request.reads.last().map(|read| read.seq);
+			let answer: ReadsAnswer = exchange(s, kind::READS, &json(&request), kind::READS_OK).and_then(|b| parse(&b))?;
+			log.acknowledge(&answer).map_err(Fail::Link)?;
+			if sent.is_some_and(|seq| answer.taken < seq) {
+				return Err(Fail::Link(io::Error::other("the service did not take the complete read prefix")));
+			}
+			s.taken = s.taken.max(answer.taken);
+			s.intake_lost = Some(request.lost);
+			after = s.taken.max(log.released());
+			if request.lost || after >= log.last() { return Ok(()); }
+		}
+	}
+
 	/// A connection a change used, with a request's read timeout again; ended when it will not take it.
-	fn after_change(&self, s: Stream) -> Option<Stream> {
+	fn after_change(&self, s: Connection) -> Option<Connection> {
 		if s.set_timeouts(Some(self.timeout), Some(self.timeout)).is_ok() {
 			return Some(s);
 		}
@@ -270,7 +362,7 @@ impl Link {
 
 	/// A connection the node answered with an error: back to the pool, unless the error says the node may have ended it
 	/// (it ends a connection after a failure of its own, which it answers as UNAVAILABLE).
-	fn answered(&self, s: Stream, f: &Fail) {
+	fn answered(&self, s: Connection, f: &Fail) {
 		match f {
 			Fail::Remote(e) if e.code == code::UNAVAILABLE => {
 				s.shutdown();
@@ -360,23 +452,53 @@ impl Link {
 	/// that waits as long as the boundary takes (staging, the commit, the feed): the node answers, or its service goes
 	/// and the connection with it. When the link breaks after the request went out, the boundary may have run, and its
 	/// report is lost: a second one would publish only what is still pending, and leave the first one's conflicts out.
-	pub fn publish(&self) -> Result<Report, Fail> {
+	pub fn publish(&self) -> Result<Report, PublishFailure> {
+		self.publish_final(false)
+	}
+
+	pub fn publish_final(&self, final_boundary: bool) -> Result<Report, PublishFailure> {
 		let (mut s, _) = self.hello(Role::Io, self.timeout).inspect_err(|f| self.note(f))?;
-		let answer = s.set_timeouts(None, Some(self.timeout)).map_err(Fail::Link).and_then(|()| {
-			write_frame(&mut s, kind::PUBLISH, b"{}").map_err(Fail::Link)?;
-			read_answer(&mut s, kind::REPORT).map_err(|f| match f {
+		let mut received = None;
+		let answer = (|| -> Result<(), Fail> {
+			let through = self.send_change(&mut s, kind::PUBLISH, &json(&PublishRequest { final_boundary }))?;
+			let bytes = read_answer(&mut s, kind::REPORT).map_err(|f| match f {
 				Fail::Link(e) => Fail::Link(io::Error::new(
 					e.kind(),
 					format!("the request went out but no answer came ({e}), so whether the boundary ran is unknown"),
 				)),
 				f => f,
-			})
-		});
+			})?;
+			received = Some(parse::<Report>(&bytes)?);
+			let report = received.as_ref().unwrap();
+			if report.refused.is_none() && !report.closed {
+				if let Some(reads) = &self.reads {
+					let mut log = reads.locked().map_err(Fail::Link)?;
+					// Poll only: reads begun after the boundary are for the next one. An empty paths report also
+					// represents an unanswered no-write release, so it is not by itself proof of completion.
+					let request = log.request(log.last());
+					s.set_timeouts(Some(self.timeout), Some(self.timeout)).map_err(Fail::Link)?;
+					let acknowledged: ReadsAnswer = exchange(&mut s, kind::READS, &json(&request), kind::READS_OK).and_then(|b| parse(&b))?;
+					log.acknowledge(&acknowledged).map_err(Fail::Link)?;
+					if log.lost() || log.released() < through {
+						return Err(Fail::Link(io::Error::other("the boundary's read release did not complete; ask again")));
+					}
+				}
+				// Keep non-success path reports intact: the helper distinguishes a definitive refusal from a
+				// retryable one. Only an otherwise successful final needs this additional closure proof.
+				if final_boundary && report.paths.iter().all(|entry| entry.outcome == "saved") {
+					return Err(Fail::Link(io::Error::other("the final boundary did not close the view; ask again")));
+				}
+			}
+			Ok(())
+		})();
 		s.shutdown();
 		if let Err(f) = &answer {
 			self.note(f);
 		}
-		answer.and_then(|b| parse(&b))
+		match answer {
+			Ok(()) => Ok(received.unwrap()),
+			Err(failure) => Err(PublishFailure { failure, report: received }),
+		}
 	}
 
 	fn note(&self, f: &Fail) {
@@ -391,7 +513,7 @@ impl Link {
 	}
 
 	/// A free connection, or a new one while fewer than `max` are open, or a wait for one.
-	fn take(&self) -> Result<Stream, Fail> {
+	fn take(&self) -> Result<Connection, Fail> {
 		let mut free = self.free.lock().unwrap();
 		loop {
 			if self.closed() {
@@ -416,7 +538,7 @@ impl Link {
 		}
 	}
 
-	fn give(&self, s: Stream) {
+	fn give(&self, s: Connection) {
 		self.free.lock().unwrap().push(s);
 		self.ready.notify_one();
 	}
@@ -501,7 +623,7 @@ mod tests {
 	use std::sync::Arc;
 
 	fn entry(name: &str) -> Entry {
-		Entry { name: name.into(), kind: EntryKind::File, size: 3, mtime_ms: 0, executable: false, version: "v1".into() }
+		Entry { name: name.into(), kind: EntryKind::File, size: 3, mtime_ms: 0, executable: false, version: "v1".into(), authority: None }
 	}
 
 	/// A node stand-in on a Unix socket: checks the hello, pages a listing two entries at a time, serves
@@ -569,6 +691,65 @@ mod tests {
 
 	fn view(pass: &str) -> View {
 		View { environment_id: "env-1".into(), view_id: "view-1".into(), pass: pass.into() }
+	}
+
+	#[test]
+	fn each_connection_takes_only_new_reads_and_still_reports_later_lost_proof() {
+		for count in [0, 40] {
+			let dir = tempdir();
+			let state = dir.join("state");
+			let reads = Arc::new(ReadLog::open(&state, true).unwrap());
+			for n in 0..count { reads.note(&format!("input/{n}"), Some("v1"), None).unwrap(); }
+			let path = dir.join("node.sock");
+			let listener = UnixListener::bind(&path).unwrap();
+			let received = Arc::new(Mutex::new(Vec::<crate::proto::ReadsRequest>::new()));
+			let received_by_node = received.clone();
+			std::thread::spawn(move || {
+				for conn in listener.incoming() {
+					let mut s = conn.unwrap();
+					let received = received_by_node.clone();
+					std::thread::spawn(move || {
+						let (_, body) = read_frame(&mut s).unwrap();
+						let hello: Hello = serde_json::from_slice(&body).unwrap();
+						let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false };
+						write_frame(&mut s, kind::HELLO_OK, &json(&ok)).unwrap();
+						let mut taken = 0;
+						while let Ok((kind, body)) = read_frame(&mut s) {
+							if kind == kind::READS {
+								let request: crate::proto::ReadsRequest = serde_json::from_slice(&body).unwrap();
+								taken = request.reads.last().map_or(taken, |read| read.seq);
+								let answer = ReadsAnswer { log: request.log.clone(), taken, released: 0 };
+								received.lock().unwrap().push(request);
+								if write_frame(&mut s, kind::READS_OK, &json(&answer)).is_err() { break; }
+							} else {
+								assert_eq!(kind, kind::MKDIR);
+								if write_frame(&mut s, kind::DONE, b"{}").is_err() { break; }
+							}
+						}
+					});
+				}
+			});
+			let link = Link::new(format!("unix:{}", path.display()), view("right"), 1).with_reads(reads.clone());
+			link.mkdir("first").unwrap();
+			link.mkdir("second").unwrap();
+			assert_eq!(received.lock().unwrap().len(), 1, "no repeated intake, including an empty log");
+			assert_eq!(received.lock().unwrap()[0].reads.len(), count);
+			reads.note("new", Some("v2"), None).unwrap();
+			link.mkdir("third").unwrap();
+			assert_eq!(received.lock().unwrap()[1].reads.len(), 1);
+			assert_eq!(received.lock().unwrap()[1].reads[0].seq, count as u64 + 1);
+			link.drop_idle(); // A new stream represents a service with no volatile taken watermark.
+			link.mkdir("after-reconnect").unwrap();
+			assert_eq!(received.lock().unwrap()[2].reads.len(), count + 1);
+			std::fs::write(state.join("reads.lost"), b"").unwrap();
+			assert!(link.mkdir("must-not-go-out").is_err());
+			let got = received.lock().unwrap();
+			assert_eq!(got.len(), 4);
+			assert!(got[3].lost && got[3].reads.is_empty(), "a live stream must hear newly lost proof");
+			drop(got);
+			link.drop_idle();
+			std::fs::remove_dir_all(dir).unwrap();
+		}
 	}
 
 	#[test]
@@ -655,8 +836,8 @@ mod tests {
 				std::thread::spawn(move || {
 					let (_, body) = read_frame(&mut s).unwrap();
 					let hello: Hello = serde_json::from_slice(&body).unwrap();
-					assert_eq!(hello.protocol, 2);
-					let ok = HelloOk { protocol: 2, view_id: hello.view_id, as_of_seq: 1, read_only: false };
+					assert_eq!(hello.protocol, PROTOCOL);
+					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false };
 					write_frame(&mut s, kind::HELLO_OK, &serde_json::to_vec(&ok).unwrap()).unwrap();
 					let done = |s: &mut std::os::unix::net::UnixStream, body: &str| write_frame(s, kind::DONE, body.as_bytes()).unwrap();
 					while let Ok((k, body)) = read_frame(&mut s) {
@@ -732,7 +913,7 @@ mod tests {
 				std::thread::spawn(move || {
 					let (_, body) = read_frame(&mut s).unwrap();
 					let hello: Hello = serde_json::from_slice(&body).unwrap();
-					let ok = HelloOk { protocol: 2, view_id: hello.view_id, as_of_seq: 1, read_only: false };
+					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false };
 					write_frame(&mut s, kind::HELLO_OK, &serde_json::to_vec(&ok).unwrap()).unwrap();
 					while let Ok((k, body)) = read_frame(&mut s) {
 						let mut offset = 0;
@@ -786,7 +967,7 @@ mod tests {
 					std::thread::spawn(move || {
 						let Ok((_, body)) = read_frame(&mut s) else { return };
 						let hello: Hello = serde_json::from_slice(&body).unwrap();
-						let ok = HelloOk { protocol: 2, view_id: hello.view_id, as_of_seq: 1, read_only: false };
+						let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false };
 						write_frame(&mut s, kind::HELLO_OK, &serde_json::to_vec(&ok).unwrap()).unwrap();
 						while let Ok((k, body)) = read_frame(&mut s) {
 							assert_eq!(k, kind::MKDIR);
@@ -859,7 +1040,7 @@ mod tests {
 				std::thread::spawn(move || {
 					let (_, body) = read_frame(&mut s).unwrap();
 					let hello: Hello = serde_json::from_slice(&body).unwrap();
-					let ok = HelloOk { protocol: 2, view_id: hello.view_id, as_of_seq: 1, read_only: false };
+					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false };
 					write_frame(&mut s, kind::HELLO_OK, &serde_json::to_vec(&ok).unwrap()).unwrap();
 					while let Ok((k, _)) = read_frame(&mut s) {
 						std::thread::sleep(delay);
@@ -900,7 +1081,8 @@ mod tests {
 		let (addr, got, _) = dropping_node(&dir, |k, _| k == kind::PUBLISH);
 		let link = Link::new(addr, view("right"), 2);
 		let err = link.publish().unwrap_err();
-		assert!(matches!(err, Fail::Link(_)) && err.to_string().contains("unknown"), "{err}");
+		assert!(matches!(err.failure, Fail::Link(_)) && err.to_string().contains("unknown"), "{err}");
+		assert!(err.report.is_none());
 		assert_eq!(got.lock().unwrap().iter().filter(|(k, _)| *k == kind::PUBLISH).count(), 1);
 		std::fs::remove_dir_all(dir).unwrap();
 	}

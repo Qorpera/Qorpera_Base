@@ -1,6 +1,3 @@
-import { createHash } from "node:crypto";
-import { lstat, readFile, realpath } from "node:fs/promises";
-import { basename, relative, resolve, sep } from "node:path";
 import {
 	type CloudRunnerModelRequest,
 	type CloudRunnerModelResponse,
@@ -18,22 +15,9 @@ import type {
 	HostedSessionEventType,
 	HostedSessionExecutionIdentity,
 } from "@qorpera/cloud-client/hosted-primary";
-import {
-	type CapturedCloudCompanyTree,
-	type CloudCompanyTreeReference,
-	captureCloudCompanyTreeWithReachability,
-} from "@qorpera/cloud-client/node/cloud-company-snapshot";
 import type { ResolvedCompanySubstrateReference } from "@qorpera/cloud-client/node/cloud-company-substrate";
-import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { CloudRunnerCapability, CloudRunnerJob } from "@qorpera/cloud-client/node/cloud-runner-protocol";
 import type { JsonValue } from "@qorpera/contracts";
-import type {
-	CloudRunnerCompanyFilePublicationInput,
-	CloudRunnerCompanyFilePublisher,
-	CloudRunnerOutputPublicationInput,
-	CloudRunnerOutputPublisher,
-	CloudRunnerSubstrateResolver,
-} from "./cloud-runner-sandbox.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -45,18 +29,17 @@ const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 const MAX_COMPANY_FILE_OUTPUT_OBJECTS = 8_500_000;
 const MAX_COMPANY_FILE_OUTPUT_BYTES = 1_099_511_627_776;
 const RUNNER_TRANSCRIPT_ENTRY_SCHEMA = "qorpera.runner-transcript-entry/v1";
-const REACHABILITY_BATCH_SIZE = 500;
-const VERIFICATION_RETRY_DELAY_MS = 25;
 const BROKER_REQUEST_TIMEOUT_MS = 5 * 60_000;
 /* Wall-clock budgets for transient broker retries. The short budget keeps
  * cadence-sensitive calls (renewals, listings) inside their renewal rhythm;
- * the durable budget lets object transfer and the completion path ride out a
+ * the durable budget lets the execution and completion paths ride out a
  * platform incident measured in minutes rather than losing a finished
  * attempt to it. */
 const TRANSIENT_RETRY_BUDGET_MS = 20_000;
 /* Sized from the 2026-08-25 incident record: platform shedding waves ran two
- * to five minutes, and a verify_company_revision call that had survived the
- * whole pipeline died after exhausting a 150-second budget mid-wave. Six
+ * to five minutes, and a completion-path call (verify_company_revision, since
+ * removed) that had survived the whole pipeline died after exhausting a
+ * 150-second budget mid-wave. Six
  * minutes spans every observed wave and stays serviceable because lease
  * renewals run in parallel against the six-minute rolling job lease. */
 const DURABLE_RETRY_BUDGET_MS = 360_000;
@@ -182,15 +165,6 @@ export interface CloudRunnerNativeAuthority {
 	expiresAt: string;
 }
 
-export interface RegisterCloudRunnerArtifactInput {
-	clientArtifactId: string;
-	artifactType: string;
-	name: string;
-	objectSha256: string;
-	bytes: number;
-	mediaType: string;
-}
-
 export interface BeginCloudRunnerOperationInput {
 	receiptId: string;
 	logicalOperationKey: string;
@@ -211,46 +185,6 @@ export interface CompleteCloudRunnerOperationInput {
 export interface BindCloudRunnerProviderSessionInput {
 	providerSessionId: string;
 	contextCheckpointObjectSha256?: string;
-}
-
-export interface PrepareCloudRunnerCompanyRevisionInput {
-	clientRevisionId: string;
-	treeManifestSha256: string;
-	treeManifestBytes: number;
-	treeContractVersion: 3;
-	fileCount: number;
-	totalBytes: number;
-}
-
-export interface BeginCloudRunnerCompanyRevisionGraphInput {
-	snapshotId: string;
-	clientGraphId: string;
-	rootObjectSha256: string;
-	contentSha256: string;
-	objectCount: number;
-	storageBytes: number;
-}
-
-export interface AppendCloudRunnerCompanyRevisionGraphInput {
-	graphId: string;
-	entries: readonly { sha256: string; bytes: number }[];
-}
-
-export interface CloudRunnerCompanyRevisionGraph {
-	graphId: string;
-	snapshotId: string;
-	clientGraphId: string;
-	rootObjectSha256: string;
-	contentSha256: string;
-	objectCount: number;
-	storageBytes: number;
-	status: "uploading" | "complete";
-	closureVerified: boolean;
-}
-
-export interface CloudRunnerCompanyRevisionVerification {
-	verified: boolean;
-	pending: boolean;
 }
 
 export interface AppendCloudRunnerTranscriptEventInput {
@@ -328,15 +262,6 @@ export interface CloudRunnerBrokerTransport {
 	listTranscript(authority: CloudRunnerBrokerAuthority, afterSequence: number, limit: number): Promise<unknown>;
 	listOperations(authority: CloudRunnerBrokerAuthority, afterSequence: number, limit: number): Promise<unknown>;
 	listArtifacts(authority: CloudRunnerBrokerAuthority, afterOrdinal: number, limit: number): Promise<unknown>;
-	getObject(authority: CloudRunnerBrokerAuthority, sha256: string): Promise<Uint8Array>;
-	putObject(
-		authority: CloudRunnerBrokerAuthority,
-		sha256: string,
-		bytes: Uint8Array,
-		mediaType: string,
-		purpose: "artifact" | "company_file",
-	): Promise<"exists" | "stored">;
-	registerArtifact(authority: CloudRunnerBrokerAuthority, input: RegisterCloudRunnerArtifactInput): Promise<unknown>;
 	requestModel(authority: CloudRunnerBrokerAuthority, input: CloudRunnerModelRequest): Promise<unknown>;
 	beginOperation(
 		authority: CloudRunnerBrokerAuthority,
@@ -351,32 +276,6 @@ export interface CloudRunnerBrokerTransport {
 	bindProviderSession(
 		authority: CloudRunnerBrokerAuthority,
 		input: BindCloudRunnerProviderSessionInput,
-	): Promise<unknown>;
-	prepareCompanyRevision(
-		authority: CloudRunnerBrokerAuthority,
-		assignmentId: string,
-		input: PrepareCloudRunnerCompanyRevisionInput,
-	): Promise<unknown>;
-	beginCompanyRevisionGraph(
-		authority: CloudRunnerBrokerAuthority,
-		assignmentId: string,
-		input: BeginCloudRunnerCompanyRevisionGraphInput,
-	): Promise<unknown>;
-	appendCompanyRevisionGraph(
-		authority: CloudRunnerBrokerAuthority,
-		assignmentId: string,
-		input: AppendCloudRunnerCompanyRevisionGraphInput,
-	): Promise<unknown>;
-	completeCompanyRevisionGraph(
-		authority: CloudRunnerBrokerAuthority,
-		assignmentId: string,
-		graphId: string,
-	): Promise<unknown>;
-	verifyCompanyRevision(
-		authority: CloudRunnerBrokerAuthority,
-		assignmentId: string,
-		snapshotId: string,
-		graphId: string,
 	): Promise<unknown>;
 	appendTranscriptEvent(
 		authority: CloudRunnerBrokerAuthority,
@@ -853,32 +752,6 @@ function parseSnapshot(value: unknown): HostedCompanySnapshot {
 	};
 }
 
-function parseCompanyRevisionGraph(value: unknown): CloudRunnerCompanyRevisionGraph {
-	const input = record(value, "Company File reachability graph");
-	if (input.root_kind !== "company_snapshot" || (input.status !== "uploading" && input.status !== "complete")) {
-		throw new Error("Runner broker returned invalid Company File reachability graph");
-	}
-	return {
-		graphId: uuid(input.graph_id, "Company File graph id"),
-		snapshotId: uuid(input.root_id, "Company File graph snapshot id"),
-		clientGraphId: uuid(input.client_graph_id, "Company File client graph id"),
-		rootObjectSha256: sha256(input.root_object_sha256, "Company File graph root hash"),
-		contentSha256: sha256(input.content_sha256, "Company File graph content hash"),
-		objectCount: integer(input.object_count, "Company File graph object count", 1, 400_000),
-		storageBytes: integer(input.storage_bytes, "Company File graph storage bytes", 0, 2_199_023_255_552),
-		status: input.status,
-		closureVerified: input.closure_verified === true,
-	};
-}
-
-function parseCompanyRevisionVerification(value: unknown): CloudRunnerCompanyRevisionVerification {
-	const input = record(value, "Company File verification");
-	if (typeof input.verified !== "boolean" || typeof input.pending !== "boolean" || input.verified === input.pending) {
-		throw new Error("Runner broker returned invalid Company File verification");
-	}
-	return { verified: input.verified, pending: input.pending };
-}
-
 function parseArtifactIndex(value: unknown): HostedArtifactIndex {
 	const input = record(value, "artifact index");
 	integer(input.contract_version, "artifact index contract version", 1, 1);
@@ -1186,14 +1059,6 @@ function requiredAuthority(authority: CloudRunnerBrokerAuthority): void {
 	}
 }
 
-function requiredMediaType(mediaType: string): string {
-	const normalized = mediaType.trim().toLowerCase();
-	if (!normalized || normalized.length > 256 || !normalized.includes("/") || /[\0\r\n]/.test(normalized)) {
-		throw new Error("Runner broker media type is invalid");
-	}
-	return normalized;
-}
-
 export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTransport {
 	readonly #url: string;
 	readonly #publishableKey: string;
@@ -1278,113 +1143,6 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		return this.#post(authority, { action: "artifacts", afterOrdinal, limit });
 	}
 
-	async getObject(authority: CloudRunnerBrokerAuthority, objectSha256: string): Promise<Uint8Array> {
-		requiredAuthority(authority);
-		sha256(objectSha256, "object hash");
-		const response = await this.#transientFetch(
-			"Runner broker object read",
-			authority,
-			() =>
-				this.#fetch(this.#url, {
-					method: "GET",
-					headers: { ...this.#headers(authority, objectSha256), "x-qorpera-object-transport": "signed-url" },
-					signal: this.#requestSignal(authority),
-				}),
-			DURABLE_RETRY_BUDGET_MS,
-		);
-		let bytes: Uint8Array;
-		if ((response.headers.get("content-type") ?? "").includes("application/json")) {
-			/* The broker authorized the read and answered with a short-lived
-			 * signed URL instead of proxying the bytes; the content hash we
-			 * addressed is verified below, so the download needs no trusted
-			 * channel. */
-			const envelope = record(await response.json(), "object read response");
-			const value = record(envelope.value, "object read authority");
-			if (typeof value.signedUrl !== "string" || !value.signedUrl) {
-				throw new Error("Runner broker object read returned an invalid signed URL");
-			}
-			const signedUrl = new URL(value.signedUrl);
-			if (
-				signedUrl.protocol !== "https:" &&
-				!(
-					signedUrl.protocol === "http:" &&
-					(signedUrl.hostname === "127.0.0.1" || signedUrl.hostname === "localhost")
-				)
-			) {
-				throw new Error("Runner broker object read returned an invalid signed URL");
-			}
-			const download = await this.#transientFetch(
-				"Runner broker object download",
-				authority,
-				() => this.#fetch(signedUrl.href, { method: "GET", signal: this.#requestSignal(authority) }),
-				DURABLE_RETRY_BUDGET_MS,
-			);
-			bytes = new Uint8Array(await download.arrayBuffer());
-		} else {
-			if (response.headers.get("x-qorpera-object-sha256") !== objectSha256) {
-				throw new Error("Runner broker object read returned an inconsistent hash");
-			}
-			bytes = new Uint8Array(await response.arrayBuffer());
-		}
-		if (createHash("sha256").update(bytes).digest("hex") !== objectSha256) {
-			throw new Error("Runner broker object read failed SHA-256 integrity verification");
-		}
-		return bytes;
-	}
-
-	async putObject(
-		authority: CloudRunnerBrokerAuthority,
-		objectSha256: string,
-		bytes: Uint8Array,
-		mediaType: string,
-		purpose: "artifact" | "company_file",
-	): Promise<"exists" | "stored"> {
-		requiredAuthority(authority);
-		sha256(objectSha256, "object hash");
-		if (bytes.byteLength > MAX_OBJECT_BYTES) throw new Error("Runner broker output object exceeds 8 MiB");
-		const response = await this.#transientFetch(
-			"Runner broker object write",
-			authority,
-			() =>
-				this.#fetch(this.#url, {
-					method: "PUT",
-					headers: {
-						...this.#headers(authority, objectSha256),
-						"content-length": String(bytes.byteLength),
-						"content-type": requiredMediaType(mediaType),
-						"x-qorpera-object-purpose": purpose,
-					},
-					body: Uint8Array.from(bytes).buffer,
-					signal: this.#requestSignal(authority),
-				}),
-			DURABLE_RETRY_BUDGET_MS,
-		);
-		const envelope = record(await response.json(), "object write response");
-		const value = record(envelope.value, "object write result");
-		if (value.status !== "exists" && value.status !== "stored") {
-			throw new Error("Runner broker object write returned invalid status");
-		}
-		if (value.sha256 !== objectSha256 || value.bytes !== bytes.byteLength) {
-			throw new Error("Runner broker object write returned inconsistent metadata");
-		}
-		return value.status;
-	}
-
-	async registerArtifact(
-		authority: CloudRunnerBrokerAuthority,
-		input: RegisterCloudRunnerArtifactInput,
-	): Promise<unknown> {
-		return this.#post(authority, {
-			action: "register_artifact",
-			clientArtifactId: input.clientArtifactId,
-			artifactType: input.artifactType,
-			name: input.name,
-			objectSha256: input.objectSha256,
-			bytes: input.bytes,
-			mediaType: input.mediaType,
-		});
-	}
-
 	async requestModel(authority: CloudRunnerBrokerAuthority, input: CloudRunnerModelRequest): Promise<unknown> {
 		const request = validateCloudRunnerModelRequest(input);
 		return this.#post(authority, {
@@ -1466,93 +1224,6 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		});
 	}
 
-	async prepareCompanyRevision(
-		authority: CloudRunnerBrokerAuthority,
-		assignmentId: string,
-		input: PrepareCloudRunnerCompanyRevisionInput,
-	): Promise<unknown> {
-		uuid(assignmentId, "assignment id");
-		uuid(input.clientRevisionId, "client revision id");
-		sha256(input.treeManifestSha256, "tree manifest hash");
-		integer(input.treeManifestBytes, "tree manifest bytes", 1, 8 * 1024 * 1024);
-		integer(input.treeContractVersion, "tree contract version", 3, 3);
-		integer(input.fileCount, "tree file count", 0, 50_000);
-		integer(input.totalBytes, "tree total bytes", 0, 1_099_511_627_776);
-		return this.#post(authority, {
-			action: "prepare_company_revision",
-			assignmentId,
-			clientRevisionId: input.clientRevisionId,
-			treeManifestSha256: input.treeManifestSha256,
-			treeManifestBytes: input.treeManifestBytes,
-			treeContractVersion: input.treeContractVersion,
-			fileCount: input.fileCount,
-			totalBytes: input.totalBytes,
-		});
-	}
-
-	async beginCompanyRevisionGraph(
-		authority: CloudRunnerBrokerAuthority,
-		assignmentId: string,
-		input: BeginCloudRunnerCompanyRevisionGraphInput,
-	): Promise<unknown> {
-		uuid(assignmentId, "assignment id");
-		uuid(input.snapshotId, "Company File snapshot id");
-		uuid(input.clientGraphId, "Company File client graph id");
-		sha256(input.rootObjectSha256, "Company File graph root hash");
-		sha256(input.contentSha256, "Company File graph content hash");
-		integer(input.objectCount, "Company File graph object count", 1, 400_000);
-		integer(input.storageBytes, "Company File graph storage bytes", 0, 2_199_023_255_552);
-		return this.#post(authority, { action: "begin_company_revision_graph", assignmentId, ...input });
-	}
-
-	async appendCompanyRevisionGraph(
-		authority: CloudRunnerBrokerAuthority,
-		assignmentId: string,
-		input: AppendCloudRunnerCompanyRevisionGraphInput,
-	): Promise<unknown> {
-		uuid(assignmentId, "assignment id");
-		uuid(input.graphId, "Company File graph id");
-		if (input.entries.length < 1 || input.entries.length > REACHABILITY_BATCH_SIZE) {
-			throw new Error("Company File graph page is invalid");
-		}
-		const entries = input.entries.map((entry) => ({
-			sha256: sha256(entry.sha256, "Company File graph object hash"),
-			bytes: integer(entry.bytes, "Company File graph object bytes", 0, MAX_OBJECT_BYTES),
-		}));
-		return this.#post(authority, {
-			action: "append_company_revision_graph",
-			assignmentId,
-			graphId: input.graphId,
-			entries,
-		});
-	}
-
-	async completeCompanyRevisionGraph(
-		authority: CloudRunnerBrokerAuthority,
-		assignmentId: string,
-		graphId: string,
-	): Promise<unknown> {
-		return this.#post(authority, {
-			action: "complete_company_revision_graph",
-			assignmentId: uuid(assignmentId, "assignment id"),
-			graphId: uuid(graphId, "Company File graph id"),
-		});
-	}
-
-	async verifyCompanyRevision(
-		authority: CloudRunnerBrokerAuthority,
-		assignmentId: string,
-		snapshotId: string,
-		graphId: string,
-	): Promise<unknown> {
-		return this.#post(authority, {
-			action: "verify_company_revision",
-			assignmentId: uuid(assignmentId, "assignment id"),
-			snapshotId: uuid(snapshotId, "Company File snapshot id"),
-			graphId: uuid(graphId, "Company File graph id"),
-		});
-	}
-
 	async appendTranscriptEvent(
 		authority: CloudRunnerBrokerAuthority,
 		assignmentId: string,
@@ -1584,7 +1255,7 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		});
 	}
 
-	#headers(authority: CloudRunnerBrokerAuthority, objectSha256?: string): Record<string, string> {
+	#headers(authority: CloudRunnerBrokerAuthority): Record<string, string> {
 		requiredAuthority(authority);
 		return {
 			accept: "application/json",
@@ -1592,7 +1263,6 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 			authorization: `Bearer ${authority.sessionToken}`,
 			"x-qorpera-job-id": authority.jobId,
 			"x-qorpera-lease-token": authority.leaseToken,
-			...(objectSha256 ? { "x-qorpera-object-sha256": objectSha256 } : {}),
 			"x-qorpera-runner-id": authority.runnerId,
 		};
 	}
@@ -1668,15 +1338,12 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 	}
 }
 
-export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
+export class CloudRunnerJobBroker {
 	readonly #options: CloudRunnerJobBrokerOptions;
 	#description?: CloudRunnerBrokerDescription;
 	#nativeAuthority?: CloudRunnerNativeAuthority;
 	#start?: CloudRunnerStart;
 	readonly #canonicalReceiptIds = new Map<string, string>();
-	readonly #durableObjectShas = new Set<string>();
-	readonly objects: CloudContentAddressedStore;
-	readonly companyFileObjects: CloudContentAddressedStore;
 
 	constructor(options: CloudRunnerJobBrokerOptions) {
 		if (
@@ -1689,10 +1356,6 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 		}
 		this.#options = options;
 		this.#start = options.start;
-		this.objects = new CloudContentAddressedStore(new CloudRunnerBrokerObjectTransport(this, "artifact"));
-		this.companyFileObjects = new CloudContentAddressedStore(
-			new CloudRunnerBrokerObjectTransport(this, "company_file"),
-		);
 	}
 
 	async describe(): Promise<CloudRunnerBrokerDescription> {
@@ -1930,22 +1593,6 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 		});
 	}
 
-	async registerArtifact(input: RegisterCloudRunnerArtifactInput): Promise<HostedArtifact> {
-		const artifact = parseArtifact(await this.#options.transport.registerArtifact(this.#authority(), input));
-		if (
-			artifact.profileId !== this.#options.job.profileId ||
-			artifact.environmentId !== this.#options.job.environmentId ||
-			artifact.clientArtifactId !== input.clientArtifactId ||
-			artifact.rootObjectSha256 !== input.objectSha256 ||
-			artifact.rootContract !== "qorpera.object/v1" ||
-			artifact.contentSha256 !== input.objectSha256 ||
-			artifact.bytes !== input.bytes
-		) {
-			throw new Error("Runner broker registered an inconsistent artifact");
-		}
-		return artifact;
-	}
-
 	async requestModel(input: CloudRunnerModelRequest): Promise<CloudRunnerModelResponse> {
 		if ((await this.describe()).sponsor.authenticationMode === "native_subscription") {
 			throw new Error("Native subscription traffic must use the provider-native harness");
@@ -2004,77 +1651,6 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 		return binding;
 	}
 
-	async prepareCompanyRevision(input: PrepareCloudRunnerCompanyRevisionInput): Promise<HostedCompanySnapshot> {
-		const description = await this.describe();
-		substrateOf(description);
-		const snapshot = parseSnapshot(
-			await this.#options.transport.prepareCompanyRevision(this.#authority(), this.#assignmentId(), input),
-		);
-		if (
-			snapshot.profileId !== description.run.profileId ||
-			snapshot.environmentId !== description.run.environmentId ||
-			snapshot.clientSnapshotId !== input.clientRevisionId ||
-			snapshot.parentSnapshotId !== description.run.companySnapshotId ||
-			snapshot.tree.manifestSha256 !== input.treeManifestSha256 ||
-			snapshot.tree.manifestBytes !== input.treeManifestBytes ||
-			snapshot.tree.contractVersion !== input.treeContractVersion ||
-			snapshot.tree.fileCount !== input.fileCount ||
-			snapshot.tree.totalBytes !== input.totalBytes
-		) {
-			throw new Error("Runner broker prepared another Company File revision");
-		}
-		return snapshot;
-	}
-
-	async beginCompanyRevisionGraph(
-		input: BeginCloudRunnerCompanyRevisionGraphInput,
-	): Promise<CloudRunnerCompanyRevisionGraph> {
-		const graph = parseCompanyRevisionGraph(
-			await this.#options.transport.beginCompanyRevisionGraph(this.#authority(), this.#assignmentId(), input),
-		);
-		if (
-			graph.snapshotId !== input.snapshotId ||
-			graph.clientGraphId !== input.clientGraphId ||
-			graph.rootObjectSha256 !== input.rootObjectSha256 ||
-			graph.contentSha256 !== input.contentSha256 ||
-			graph.objectCount !== input.objectCount ||
-			graph.storageBytes !== input.storageBytes
-		) {
-			throw new Error("Runner broker prepared another Company File reachability graph");
-		}
-		return graph;
-	}
-
-	async appendCompanyRevisionGraph(input: AppendCloudRunnerCompanyRevisionGraphInput): Promise<number> {
-		const count = await this.#options.transport.appendCompanyRevisionGraph(
-			this.#authority(),
-			this.#assignmentId(),
-			input,
-		);
-		return integer(count, "Company File graph uploaded count", input.entries.length, 400_000);
-	}
-
-	async completeCompanyRevisionGraph(graphId: string): Promise<CloudRunnerCompanyRevisionGraph> {
-		const graph = parseCompanyRevisionGraph(
-			await this.#options.transport.completeCompanyRevisionGraph(this.#authority(), this.#assignmentId(), graphId),
-		);
-		if (graph.graphId !== graphId || graph.status !== "complete") {
-			throw new Error("Runner broker did not complete the Company File reachability graph");
-		}
-		return graph;
-	}
-
-	async verifyCompanyRevision(snapshotId: string, graphId: string): Promise<CloudRunnerCompanyRevisionVerification> {
-		return parseCompanyRevisionVerification(
-			await this.#options.transport.verifyCompanyRevision(
-				this.#authority(),
-				this.#assignmentId(),
-				snapshotId,
-				graphId,
-			),
-		);
-	}
-
 	async appendTranscriptEvent(input: AppendCloudRunnerTranscriptEventInput): Promise<CloudRunnerTranscriptEvent> {
 		const rawEntry = record(input.entry, "transcript entry");
 		const expectedEntryType = input.eventType === "message" ? "message" : "custom";
@@ -2125,41 +1701,6 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 		return event;
 	}
 
-	async profileId(): Promise<string> {
-		// The job's company, which describe() checked against the substrate's when there is one.
-		return (await this.describe()).job.profileId;
-	}
-
-	async readObject(objectSha256: string): Promise<Uint8Array> {
-		const bytes = await this.#options.transport.getObject(this.#authority(), objectSha256);
-		this.#durableObjectShas.add(objectSha256);
-		return bytes;
-	}
-
-	async writeObject(
-		objectSha256: string,
-		bytes: Uint8Array,
-		mediaType: string,
-		purpose: "artifact" | "company_file",
-	): Promise<"exists" | "stored"> {
-		/* A capture restages every reachable object, but most of them were
-		 * just materialized from the broker and content-verified against
-		 * this same hash; resending those bytes through the broker function
-		 * multiplies publication traffic by the whole company size. Server
-		 * side revision verification still proves durable reachability of
-		 * every published object, so the skip cannot forge durability. */
-		if (this.#durableObjectShas.has(objectSha256)) return "stored";
-		const result = await this.#options.transport.putObject(
-			this.#authority(),
-			objectSha256,
-			bytes,
-			mediaType,
-			purpose,
-		);
-		this.#durableObjectShas.add(objectSha256);
-		return result;
-	}
-
 	#authority(): CloudRunnerBrokerAuthority {
 		const credentials = this.#options.credentials();
 		const authority = {
@@ -2181,257 +1722,5 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 	#runId(): string {
 		if (!this.#options.job.runId) throw new Error("Runner job has no durable execution run");
 		return this.#options.job.runId;
-	}
-}
-
-class CloudRunnerBrokerObjectTransport implements CloudObjectTransport {
-	readonly #broker: CloudRunnerJobBroker;
-	readonly #purpose: "artifact" | "company_file";
-
-	constructor(broker: CloudRunnerJobBroker, purpose: "artifact" | "company_file") {
-		this.#broker = broker;
-		this.#purpose = purpose;
-	}
-
-	async put(path: string, bytes: Uint8Array, mediaType: string): Promise<"exists" | "stored"> {
-		const sha = await this.#pathSha(path);
-		return this.#broker.writeObject(sha, bytes, mediaType, this.#purpose);
-	}
-
-	async get(path: string): Promise<Uint8Array> {
-		const sha = await this.#pathSha(path);
-		return this.#broker.readObject(sha);
-	}
-
-	async #pathSha(path: string): Promise<string> {
-		const profileId = await this.#broker.profileId();
-		const prefix = `${profileId}/`;
-		if (!path.startsWith(prefix) || path.indexOf("/", prefix.length) !== -1) {
-			throw new Error("Runner broker object path is outside its job profile");
-		}
-		return sha256(path.slice(prefix.length), "object path hash");
-	}
-}
-
-function deterministicArtifactId(jobId: string, path: string, contentSha256: string): string {
-	const bytes = createHash("sha256").update(`qorpera.runner-output/v1:${jobId}:${path}:${contentSha256}`).digest();
-	bytes[6] = (bytes[6] & 0x0f) | 0x50;
-	bytes[8] = (bytes[8] & 0x3f) | 0x80;
-	const hex = bytes.toString("hex", 0, 16);
-	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-
-function deterministicUuid(value: string): string {
-	const bytes = createHash("sha256").update(value).digest();
-	bytes[6] = (bytes[6] & 0x0f) | 0x50;
-	bytes[8] = (bytes[8] & 0x3f) | 0x80;
-	const hex = bytes.toString("hex", 0, 16);
-	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-
-function sameTree(
-	left: CloudCompanyTreeReference,
-	right: {
-		manifestSha256: string;
-		manifestBytes: number;
-		contractVersion: number;
-		fileCount: number;
-		totalBytes: number;
-	},
-): boolean {
-	return (
-		left.manifestSha256 === right.manifestSha256 &&
-		left.manifestBytes === right.manifestBytes &&
-		left.contractVersion === right.contractVersion &&
-		left.fileCount === right.fileCount &&
-		left.totalBytes === right.totalBytes
-	);
-}
-
-function canonicalReachability(captured: CapturedCloudCompanyTree): CapturedCloudCompanyTree["restore"]["objects"] {
-	const objects = new Map<string, number>();
-	for (const object of captured.restore.objects) {
-		const existingBytes = objects.get(object.sha256);
-		if (existingBytes !== undefined && existingBytes !== object.bytes) {
-			throw new Error("Runner Company File reachability contains inconsistent object sizes");
-		}
-		objects.set(object.sha256, object.bytes);
-	}
-	return [...objects.entries()]
-		.map(([sha256, bytes]) => ({ sha256, bytes }))
-		.sort((left, right) => left.sha256.localeCompare(right.sha256, "en"));
-}
-
-function reachabilityHash(objects: readonly { sha256: string; bytes: number }[]): string {
-	return createHash("sha256")
-		.update(objects.map((object) => `${object.sha256}:${object.bytes}`).join("\n"))
-		.digest("hex");
-}
-
-async function verificationDelay(signal: AbortSignal | undefined): Promise<void> {
-	if (signal?.aborted) throw new Error("Runner execution was cancelled");
-	await new Promise<void>((resolveDelay, rejectDelay) => {
-		const timer = setTimeout(() => {
-			signal?.removeEventListener("abort", abort);
-			resolveDelay();
-		}, VERIFICATION_RETRY_DELAY_MS);
-		const abort = (): void => {
-			clearTimeout(timer);
-			rejectDelay(new Error("Runner execution was cancelled"));
-		};
-		signal?.addEventListener("abort", abort, { once: true });
-	});
-}
-
-export class CloudRunnerBrokerCompanyFilePublisher implements CloudRunnerCompanyFilePublisher {
-	readonly #broker: CloudRunnerJobBroker;
-
-	constructor(broker: CloudRunnerJobBroker) {
-		this.#broker = broker;
-	}
-
-	async publish(input: CloudRunnerCompanyFilePublicationInput): Promise<string | undefined> {
-		const description = await this.#broker.describe();
-		const substrate = substrateOf(description);
-		if (
-			input.profileId !== description.run.profileId ||
-			input.environmentId !== description.run.environmentId ||
-			input.jobId !== description.job.jobId ||
-			input.baseSnapshot.snapshotId !== description.run.companySnapshotId ||
-			input.baseSnapshot.profileId !== input.profileId ||
-			input.baseSnapshot.environmentId !== input.environmentId
-		) {
-			throw new Error("Runner Company File publication is outside its leased job");
-		}
-		const captured = await captureCloudCompanyTreeWithReachability(
-			input.companyRoot,
-			input.profileId,
-			this.#broker.companyFileObjects,
-			{ forceFullVerification: true },
-		);
-		if (sameTree(captured.tree, substrate.snapshot.tree)) return undefined;
-		const objects = canonicalReachability(captured);
-		const storageBytes = objects.reduce((total, object) => total + object.bytes, 0);
-		if (
-			objects.length < 1 ||
-			objects.length > 400_000 ||
-			objects.length > substrate.companyFileOutputLimits.maxObjectCount ||
-			storageBytes > substrate.companyFileOutputLimits.maxTotalBytes
-		) {
-			throw new Error("Runner Company File output exceeds its durable publication limits");
-		}
-		const clientRevisionId = deterministicUuid(
-			`qorpera.runner-company-revision/v1:${description.run.runId}:${captured.tree.manifestSha256}`,
-		);
-		const snapshot = await this.#broker.prepareCompanyRevision({
-			clientRevisionId,
-			treeManifestSha256: captured.tree.manifestSha256,
-			treeManifestBytes: captured.tree.manifestBytes,
-			treeContractVersion: 3,
-			fileCount: captured.tree.fileCount,
-			totalBytes: captured.tree.totalBytes,
-		});
-		let graph = await this.#broker.beginCompanyRevisionGraph({
-			snapshotId: snapshot.snapshotId,
-			clientGraphId: deterministicUuid(`qorpera.runner-company-graph/v1:${snapshot.snapshotId}`),
-			rootObjectSha256: captured.tree.manifestSha256,
-			contentSha256: reachabilityHash(objects),
-			objectCount: objects.length,
-			storageBytes,
-		});
-		if (graph.status === "uploading") {
-			for (let offset = 0; offset < objects.length; offset += REACHABILITY_BATCH_SIZE) {
-				await this.#broker.appendCompanyRevisionGraph({
-					graphId: graph.graphId,
-					entries: objects.slice(offset, offset + REACHABILITY_BATCH_SIZE),
-				});
-			}
-			graph = await this.#broker.completeCompanyRevisionGraph(graph.graphId);
-		}
-		while (true) {
-			const verification = await this.#broker.verifyCompanyRevision(snapshot.snapshotId, graph.graphId);
-			if (verification.verified) return snapshot.snapshotId;
-			await verificationDelay(input.signal);
-		}
-	}
-}
-
-function outputPath(root: string, path: string): string {
-	if (!path || path.includes("\\") || path.split("/").some((part) => !part || part === "." || part === "..")) {
-		throw new Error("Runner output publication path is invalid");
-	}
-	const absolute = resolve(root, ...path.split("/"));
-	const child = relative(resolve(root), absolute);
-	if (!child || child === ".." || child.startsWith(`..${sep}`)) {
-		throw new Error("Runner output publication path escapes its root");
-	}
-	return absolute;
-}
-
-export class CloudRunnerBrokerOutputPublisher implements CloudRunnerOutputPublisher {
-	readonly #broker: CloudRunnerJobBroker;
-
-	constructor(broker: CloudRunnerJobBroker) {
-		this.#broker = broker;
-	}
-
-	async publish(input: CloudRunnerOutputPublicationInput): Promise<JsonValue> {
-		const description = await this.#broker.describe();
-		const { version } = substrateOf(description);
-		if (
-			input.profileId !== version.profileId ||
-			input.environmentId !== version.environmentId ||
-			input.jobId !== description.job.jobId ||
-			input.substrateVersionId !== version.versionId ||
-			input.files.length > description.outputLimits.maxObjectCount
-		) {
-			throw new Error("Runner output publication is outside its leased job");
-		}
-		const physicalRoot = await realpath(input.outputRoot);
-		let totalBytes = 0;
-		const artifacts: HostedArtifact[] = [];
-		for (const file of input.files) {
-			if (file.bytes > description.outputLimits.maxObjectBytes) {
-				throw new Error("Runner output file exceeds the broker object limit");
-			}
-			totalBytes += file.bytes;
-			if (!Number.isSafeInteger(totalBytes) || totalBytes > description.outputLimits.maxTotalBytes) {
-				throw new Error("Runner output exceeds the broker job limit");
-			}
-			const absolutePath = outputPath(physicalRoot, file.path);
-			const entryStat = await lstat(absolutePath);
-			if (
-				!entryStat.isFile() ||
-				entryStat.isSymbolicLink() ||
-				entryStat.nlink !== 1 ||
-				entryStat.size !== file.bytes
-			) {
-				throw new Error("Runner output changed before publication");
-			}
-			const bytes = await readFile(absolutePath);
-			if (createHash("sha256").update(bytes).digest("hex") !== file.sha256) {
-				throw new Error("Runner output changed before publication");
-			}
-			const object = await this.#broker.objects.putObject(input.profileId, bytes, "application/octet-stream");
-			const outputName = basename(file.path).slice(0, 256);
-			artifacts.push(
-				await this.#broker.registerArtifact({
-					clientArtifactId: deterministicArtifactId(input.jobId, file.path, object.sha256),
-					artifactType: "runner_output",
-					name: outputName,
-					objectSha256: object.sha256,
-					bytes: object.bytes,
-					mediaType: object.mediaType,
-				}),
-			);
-		}
-		return {
-			artifacts: artifacts.map((artifact) => ({
-				artifact_id: artifact.artifactId,
-				name: artifact.name,
-				content_sha256: artifact.contentSha256,
-				bytes: artifact.bytes,
-			})),
-		};
 	}
 }

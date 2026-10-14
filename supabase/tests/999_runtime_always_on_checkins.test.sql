@@ -10,8 +10,7 @@
 -- 4. After a late drain Ada is asked once, for the latest week passed, never for each week missed.
 -- 5. A move to another node keeps the count.
 -- 6. A stop leaves the question standing no more, and a new start restarts the count.
--- 7. Who is not asked: a machine a member started (no agent starter), an archived starter, a task machine, a company not
---    on folder-v2.
+-- 7. Who is not asked: a machine a member started (no agent starter), an archived starter, a task machine.
 -- 8. Delivery by the folder drain's step, once the parent ended; a question no longer standing is suppressed.
 -- 9. Bounds, the kind, privileges and markers. The fixture is removed at the end.
 
@@ -240,13 +239,6 @@ begin;
 update public.qorpera_company_machines set lifetime = 'task' where id = '99900000-0000-4000-8000-0000000000a1';
 select pg_temp.check(not public.qorpera_machine_checkin_current(pg_temp.question(336)) and not pg_temp.asked_again(),
 	'a task machine has no weekly check-in');
-rollback;
-begin;
-set local session_replication_role = replica;
-delete from public.qorpera_company_files where environment_id = '64800000-0000-4000-8000-000000000020';
-set local session_replication_role = origin;
-select pg_temp.check(not pg_temp.asked_again() and pg_temp.due() -> 'items' = '[]'::jsonb,
-	'a company not on the folder-v2 core is not asked about, nor due');
 rollback;
 
 -- 8. Delivery, by the drain's step (as in 872). The company's login may pay for autonomous work: a check-in is paid as

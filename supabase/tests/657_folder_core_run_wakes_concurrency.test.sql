@@ -1,11 +1,12 @@
 -- @fixture 648_folder_core_run_fence_concurrency.test.sql until "-- A. Two tool calls of one run"
 -- Company folder core, C1c-2c part 1 under concurrency (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md §5.6, §5.9
--- tests 11, 13, 14 and 15): a coworker message against the recipient's own send into its thread, and two agents
+-- tests 11, 13 and 15): a coworker message against the recipient's own send into its thread, and two agents
 -- messaging each other, in both orders and for a first message, without a deadlock; a thread that changed while the
 -- message waited refuses as retryable; a wake insert with rank 0 and admission held never meets 55P03, and the routine
 -- lifecycle's FOR NO KEY UPDATE runs beside a routine run's tool call and after a routine save; removing another member
--- while a run messages; the materializer never touches a folder-v2 company row; a save archiving the sender against its
--- message; the scheduler waits for a message into its agent's thread before admission. 648's committed fixture (Ada's leased human run), with a Co-Founder run in its thread, removed at the end.
+-- while a run messages; a save archiving the sender against its message; the scheduler waits for a message into its
+-- agent's thread before admission. 648's committed fixture (Ada's leased human run), with a Co-Founder run in its
+-- thread, removed at the end.
 
 -- Ada's run acknowledges, so its tool calls may work.
 select public.qorpera_send_native_agent_message((b ->> 'leaseId')::uuid, (b ->> 'runId')::uuid, (b ->> 'jobId')::uuid,
@@ -86,11 +87,6 @@ begin
 		'medium', '64800000-0000-4000-8000-0000000000b1', 1, repeat('e', 64), v_requester);
 	insert into public.qorpera_cloud_routine_schedule_cursors(routine_id, routine_version, trigger_id, next_due_at)
 	values ('65700000-0000-4000-8000-0000000000e3', 1, 's1', date_trunc('second', clock_timestamp()));
-	-- A queued snapshot-v1 wake the materializer takes.
-	insert into public.qorpera_wake_occurrences(id, profile_id, environment_id, trigger_id, occurrence_key, scheduled_for, not_before,
-		wake_kind, source_kind, status, payload, admission_scan_at)
-	values ('65700000-0000-4000-8000-0000000000e2', '64800000-0000-4000-8000-000000000011', '64800000-0000-4000-8000-000000000021',
-		'coworker', 'snapshot-race', clock_timestamp(), clock_timestamp(), 'agent', 'coworker', 'queued', '{}', '2026-01-01T00:00:00Z');
 end $$;
 set session_replication_role = origin;
 select set_config('qorpera_test.cofounder', jsonb_build_object('leaseId','65700000-0000-4000-8000-0000000000b6',
@@ -510,33 +506,8 @@ begin
 	if v_join <> 'ok' or v_message <> 'ok' then raise exception 'A member joining beside a message: % / %', v_join, v_message; end if;
 end $$;
 
--- F. The materializer passes over folder-v2 wakes without touching the company: with the folder-v2 company row held FOR
--- UPDATE elsewhere, a pass finishes without waiting, takes the snapshot-v1 wake, and leaves the folder-v2 wakes as they
--- were.
-do $$
-declare v_state text; v_scans jsonb;
-begin
-	select jsonb_object_agg(id, admission_scan_at) into v_scans from public.qorpera_wake_occurrences
-	where profile_id = '64800000-0000-4000-8000-000000000010' and status = 'queued';
-	if v_scans is null then raise exception 'The races left folder-v2 wakes queued'; end if;
-	perform dblink_exec('fence_two', 'begin');
-	perform * from dblink('fence_two', $q$select 1 from public.qorpera_profiles where id = '64800000-0000-4000-8000-000000000010'
-		for update$q$) as t(x integer);
-	perform dblink_send_query('fence_one', 'select public.qorpera_materialize_wake_execution_runs(64)::text');
-	if not pg_temp.finishes_unblocked('fence_one', 'fence_two') then raise exception 'The materializer must not wait for a folder-v2 company'; end if;
-	v_state := pg_temp.outcome('fence_one');
-	if v_state <> 'ok' then raise exception 'The materializer pass: %', v_state; end if;
-	perform dblink_send_query('fence_one', 'select public.qorpera_materialize_session_execution_runs(64)::text');
-	if not pg_temp.finishes_unblocked('fence_one', 'fence_two') then raise exception 'The session materializer must not wait'; end if;
-	v_state := pg_temp.outcome('fence_one');
-	if v_state <> 'ok' then raise exception 'The session materializer pass: %', v_state; end if;
-	perform dblink_exec('fence_two', 'rollback');
-	if (select admission_scan_at from public.qorpera_wake_occurrences where id = '65700000-0000-4000-8000-0000000000e2')
-		= '2026-01-01T00:00:00Z' then raise exception 'The materializer takes the snapshot-v1 wake'; end if;
-	if exists (select 1 from jsonb_each_text(v_scans) s join public.qorpera_wake_occurrences w on w.id = s.key::uuid
-		where w.status <> 'queued' or w.admission_scan_at is distinct from s.value::timestamptz) then
-		raise exception 'The materializer touched a folder-v2 wake'; end if;
-end $$;
+-- (F, the materializers' passes beside a held folder-v2 company row, went with the materializers in the legacy sweep's
+-- F3b, 20260930295000.)
 
 -- G. A save archiving Ada against her message, in both orders. The save takes her thread room FOR UPDATE at rank 4, the
 -- message the room KEY SHARE there, before either touches a conversation: whichever is second waits at the room, and

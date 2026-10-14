@@ -276,21 +276,21 @@ checked by each slice's functional test (647, 652, 656, 658). No snapshot-v1 dig
 
 | Function | `folder-v2` | Slice |
 | --- | --- | --- |
-| `native_tool_locked_run` (its callers include F2-1b's `qorpera_prepare_routine_login`) | `folder_tool_run(binding, '[]')`, returning the run row | 2a |
-| `validate_native_provider_execution_lease` (also called directly by the runtime) | `folder_native_lease_current` plus the stop check | 2a |
+| `native_tool_locked_run` (its callers include F2-1b's `qorpera_prepare_routine_login`) | `folder_tool_run(binding, '[]')`, returning the run row (since legacy sweep F1c, 20260930246000, it only calls it) | 2a |
+| `validate_native_provider_execution_lease` (also called directly by the runtime) | `folder_native_lease_current` plus the stop check (since legacy sweep F1c, 20260930246000, it only calls `folder_validate_native_lease`, and the snapshot-v1 check `validate_native_provider_execution_lease_before_recover` is dropped) | 2a |
 | `run_wake_authorized`, and `wake_authorized` itself (the materializer calls it directly; its agent branch passes vacuously on `folder-v2`) | `wake_authorized` dispatches to `folder_wake_authorized` (since legacy sweep F1b, 20260930245000, it only calls it); `run_wake_authorized` keeps its text, calls it with the run's wake and compares the policy kind | 2a |
 | `company_path_assert_context` | by the company's core: `run_reads_current`, never the loop | 2a |
 | the five "unchanged" callers (§3) | a text patch: their actor call becomes `company_run_actor`; `begin_native_company_execution_v2` also takes the run mutex; the digest is of the patched text | 2a |
-| the read-type branches: `describe_company_run_context` (company name from `qorpera_folder_company_index`; its session check stays `FOR SHARE`, after rank 10's recheck at the sessions rank of §5.7; and F2's folder facts: `|| case when v_folder is null then '{}' else jsonb_build_object('folder', v_folder) end`, with `v_folder := qorpera_company_state_run_folder(env, staff, <the coworker ids the body lists>)`, called by name at run time so snapshot-v1 never needs it. It is given the same ids the body puts in `coworkers` and names no others, so `folder` never names an unlisted coworker even when a roster change lands between the two statements; a coworker whose folder retired in between is left out, as one without a folder is. From F2-1b's migration 20260929440000 on #534; the runtime's closed parser checks that every coworker in `folder` is listed, and memory and skills then use `agents/<handle>`), the presence functions (a folder `presence_path_routes` on `qorpera_folder_path_resource` and `folder_actor_allowed`; a refusal is 42501, which `native_presence_subject` reads as "absent"), `native_company_object_actor`, `member_file_export_source` (no gc fence) | their `folder-v2` body | 2a |
+| the read-type branches: `describe_company_run_context` (company name from `qorpera_folder_company_index`; its session check stays `FOR SHARE`, after rank 10's recheck at the sessions rank of §5.7; and F2's folder facts: `|| case when v_folder is null then '{}' else jsonb_build_object('folder', v_folder) end`, with `v_folder := qorpera_company_state_run_folder(env, staff, <the coworker ids the body lists>)`, called by name at run time so snapshot-v1 never needs it. It is given the same ids the body puts in `coworkers` and names no others, so `folder` never names an unlisted coworker even when a roster change lands between the two statements; a coworker whose folder retired in between is left out, as one without a folder is. From F2-1b's migration 20260929440000 on #534; the runtime's closed parser checks that every coworker in `folder` is listed, and memory and skills then use `agents/<handle>`), the presence functions (a folder `presence_path_routes` on `qorpera_folder_path_resource` and `folder_actor_allowed`; a refusal is 42501, which `native_presence_subject` reads as "absent"), `native_company_object_actor`, `member_file_export_source` (no gc fence) | their `folder-v2` body; legacy sweep F1d (20260930247000) left `describe_company_run_context` only that body | 2a |
 | `native_office_start`, `_start_descriptor`, `_capture`, `_file_export`, `native_shared_file_export_source`, `self_approve_organization_proposal`, **`native_machine_start`** | refuse 0A000 until C1c-3: after the run check they take the gc fence or a legacy proposal lock. Machine start holds the machine row and then asks for the company row `FOR UPDATE`, the reverse of #419's custody order (served since 3f, §6.5). The office start and its descriptor serve folder-v2 since 3l (§6.16). The capture serves folder-v2 since P06d part 2 (§6.21), storing nothing (3l part 3 refused screenshots before it, §6.22) | 2a |
-| `send_native_agent_message`, `send_runner_agent_message`, `append_native_interaction_request`, `append_runner_transcript_event`, `begin_`/`complete_native_tool_operation`, `begin_`/`complete_run_operation_receipt` | 2a: refuse 0A000. 2b-1: the folder receipts (`begin_`/`complete_native_tool_operation`). 2b-2: the folder native send and interaction request. The runner broker's `append_runner_transcript_event`, its send and its direct receipt calls keep refusing (C3) | 2a, 2b |
+| `send_native_agent_message`, `send_runner_agent_message`, `append_native_interaction_request`, `append_runner_transcript_event`, `begin_`/`complete_native_tool_operation`, `begin_`/`complete_run_operation_receipt` | 2a: refuse 0A000. 2b-1: the folder receipts (`begin_`/`complete_native_tool_operation`). 2b-2: the folder native send and interaction request. The runner broker's `append_runner_transcript_event`, its send and its direct receipt calls keep refusing (C3). Legacy sweep F1c (20260930246000) left `begin_`/`complete_native_tool_operation` only their folder receipts, and F1e (20260930248000) `send_native_agent_message` and `append_native_interaction_request` only their folder bodies | 2a, 2b |
 | `record_action_review` | 2a: under the mutex; its card path refuses through the transcript append. 2b: the folder card path (§5.6) | 2a, 2b |
-| `assert_company_path_reads`, `record_native_context_view`, `add_agent_review_rule` | their `folder-v2` body (§5.6) | 2b |
+| `assert_company_path_reads`, `record_native_context_view`, `add_agent_review_rule` | their `folder-v2` body (§5.6); legacy sweep F1e (20260930248000) left `add_agent_review_rule` only that body | 2b |
 | `enforce_company_context_send` | requires the marker the folder send sets; refuses without it | 2b |
 | `pin_wake_occurrence`, `routine_occurrence_lifecycle` | their `folder-v2` modes (§5.6): text patches, each keeping the legacy statement as its `else` branch; the digest was of the patched text with the patch reversed (removed since 3 October, as above). Legacy sweep F1a (20260930244000) removed `routine_occurrence_lifecycle`'s `else`, and F1b (20260930245000) `pin_wake_occurrence`'s | 2c part 1 |
-| `send_coworker_message`, `read_native_wake` | their `folder-v2` bodies (§5.6), by a first line. Legacy sweep F1b (20260930245000) left `read_native_wake` only that line | 2c part 1 |
+| `send_coworker_message`, `read_native_wake` | their `folder-v2` bodies (§5.6), by a first line. Legacy sweep F1b (20260930245000) left `read_native_wake` only that line, and F1e (20260930248000) `send_coworker_message` | 2c part 1 |
 | `enqueue_routine_wake` (routine firing) | its `folder-v2` mode in place of the gc fence, after its argument checks (§5.6); moved here from C1c-3 because part 1 closes the legacy path (F2-6's test 709 fires file routines). Legacy sweep F1a (20260930244000) removed the legacy path, here and in `advance_routine_next_due` | 2c part 1 |
-| the legacy multi-company loops: `materialize_wake_execution_runs`, the drains (`office_activation`, `worker`, `machine`, `company_file` with the dynamic-routine tick), `materialize_session_execution_runs` | skip `folder-v2` companies in the scan's `WHERE` clause, before their first lock. `materialize_session_turn_requests` needs no skip: its scan requires the company's head snapshot, which a `folder-v2` company never has (`qorpera_company_files_core_head`) | 2c part 1 |
+| the legacy multi-company loops: `materialize_wake_execution_runs`, the drains (`office_activation`, `worker`, `machine`, `company_file` with the dynamic-routine tick), `materialize_session_execution_runs` | skip `folder-v2` companies in the scan's `WHERE` clause, before their first lock. `materialize_session_turn_requests` needs no skip: its scan requires the company's head snapshot, which a `folder-v2` company never has (`qorpera_company_files_core_head`). Legacy sweep F3b (20260930295000) dropped all of them, the event drain, the Company Proposal review materializer and their helpers included | 2c part 1 |
 | `handoff_run_sponsor`, receipt recovery | their `folder-v2` modes (§5.6, §5.9) | 2c part 2 |
 | `complete_runner_job_v6` | the folder completion lane, in place of C1c-1's guard | 2c part 2 |
 
@@ -425,7 +425,7 @@ checked by each slice's functional test (647, 652, 656, 658). No snapshot-v1 dig
     - The dynamic-routine tick (`restore_dynamic_routine_runs`, inside the Company File drain) skips `folder-v2` too:
       it is routine firing, which gets its folder mode in C1c-3. The routine expiry sweep does not skip: it inserts no
       wake and takes no company row, and F2-6 relies on it for file routines (its 40P01 against a multi-routine save
-      is documented there).
+      is documented there). Legacy sweep F3b (20260930295000) dropped the tick with the drain.
     - Routine firing (`enqueue_routine_wake`, which the scheduler calls per routine after `list_routine_schedule_heads`)
       gets its `folder-v2` mode here, not in C1c-3: part 1 closes the legacy path, and F2-6's test 709 fires file
       routines. `qorpera_folder_enqueue_routine_wake`, after the legacy argument checks, in place of the gc fence: the
@@ -502,7 +502,8 @@ checked by each slice's functional test (647, 652, 656, 658). No snapshot-v1 dig
   7. the job update.
 
   It reuses `complete_runner_job_v4`, v3 and v2 and `bind_execution_provider_session`, and never routes to
-  `complete_runner_job_before_path_runtime`. The run-results check forbids `published` and `review_pending` without a
+  `complete_runner_job_before_path_runtime` (legacy sweep F1d, 20260930247000, dropped it: `complete_runner_job_v6`
+  hands every job to the folder completion). The run-results check forbids `published` and `review_pending` without a
   snapshot, so run results gain a nullable `folder_commit_id`. The check then allows `published` and `review_pending`
   with exactly one of a snapshot and a folder commit (the row names no core, so the check cannot branch on it). A run
   with several commits records its last saving commit (the highest `seq`). The `folder-v2` dispositions:
@@ -545,12 +546,12 @@ checked by each slice's functional test (647, 652, 656, 658). No snapshot-v1 dig
   receipts satisfied by commits (C1c-2c part 2: one more condition, `folder_commit_id is null`, which only
   `folder-v2` receipts can fail). Removed by 20260930059000 (the payer never changes without the member; test 658's
   handoff part went with it).
-- **Receipt recovery** (2c part 2). `terminalize_runner_attempt_before_native_start` needs no change: it marks
-  executing receipts ambiguous on either core. `resolve_run_operation_receipt` dispatches a `folder-v2` receipt to
-  `qorpera_folder_resolve_run_receipt`: `confirmed_completed` records the commit that carries the receipt (one per
-  receipt) and refuses a snapshot or proposal, and a revision receipt that no commit carries cannot be confirmed
-  completed (22023); `confirmed_not_run` refuses while a commit carries the receipt (55000, "A folder commit carries
-  this operation: it ran").
+- **Receipt recovery** (2c part 2). `terminalize_runner_attempt_before_native_start` needs no change: it marks executing
+  receipts ambiguous on either core. `resolve_run_operation_receipt` dispatches a `folder-v2` receipt to
+  `qorpera_folder_resolve_run_receipt` (every receipt since legacy sweep F1c, 20260930246000): `confirmed_completed`
+  records the commit that carries the receipt (one per receipt) and refuses a snapshot or proposal, and a revision
+  receipt that no commit carries cannot be confirmed completed (22023); `confirmed_not_run` refuses while a commit
+  carries the receipt (55000, "A folder commit carries this operation: it ran").
 
 ### 5.7 Additions to core §3's order
 
@@ -575,7 +576,8 @@ conversation `FOR UPDATE` before the review row, because the review row's foreig
 - Renewal's move to `FOR NO KEY UPDATE`: done in C3's first part (P23, migration 20260930002200, test 825; 648 C).
   - On `folder-v2`, `qorpera_renew_runner_job` takes the job `FOR NO KEY UPDATE`, and so does the native lease renewal.
     The native renewal does it through `qorpera_folder_renewal_locked_job`, which is `qorpera_runner_broker_locked_job`'s
-    text with that lock clause.
+    text with that lock clause. Since legacy sweep F1c (20260930246000) every native renewal does, and since
+    F1d (20260930247000) every job renewal (825 C).
   - Both now run beside the run's tool calls (the job `KEY SHARE`). Every lease-ending change still takes `FOR UPDATE`
     and waits for those calls.
   - The other callers of `locked_job` (acquire, release, model authority) keep `FOR UPDATE`.
@@ -653,12 +655,13 @@ Concurrency tests (dblink, with `current_database()`), by slice:
       send: no deadlock. Also A → B and B → A at the same time, and a **first** message between two agents (the pair
       session is created) against a send into either thread.
   12. Completion waits for a send and for a release in flight. A `folder-v2` job never reaches
-      `before_path_runtime`. Each disposition.
+      `before_path_runtime` (legacy sweep F1d, 20260930247000, dropped it). Each disposition.
   13. A `folder-v2` wake insert without admission refuses. With rank 0 and admission held it never meets 55P03 (C2's
       creation shape). The routine lifecycle at `FOR NO KEY UPDATE` runs beside a routine-file commit and beside the
       routine run's tool call.
   14. A materializer pass with a `folder-v2` wake beside a snapshot-v1 wake: the snapshot-v1 wake materializes, and the
-      `folder-v2` company row is never locked.
+      `folder-v2` company row is never locked (legacy sweep F3b, 20260930295000, dropped the materializers and their
+      tests, 656 §7's loops and 657 F).
   15. Removing another member while a run sends: no deadlock. Removing the run's own requester is C1c-3's case, and so
       is removing the member who owns the run's sponsor login: that revokes the login, and the cascade ends the run's
       job, which needs the job lock a completion or tool call holds (40P01 today on both lanes; C1c-3's reordered
@@ -667,7 +670,7 @@ Concurrency tests (dblink, with `current_database()`), by slice:
   Part 1 builds 11 (657 A, B, G: the first message and the recipient's own send, crossed messages, archiving the
   sender; the archiving save is rolled back in its first order, and 647 covers an archived run's agent), 13 (656 §2
   and §3, 657 D; "beside a routine-file commit" is a wait at the routine, then the insert lands), 14 (656 §7 for every
-  loop, 657 F with the `folder-v2` company row held `FOR UPDATE` elsewhere) and 15 (657 E), plus the thread that
+  loop, 657 F with the `folder-v2` company row held `FOR UPDATE` elsewhere, until legacy sweep F3b) and 15 (657 E), plus the thread that
   changed while a message waited (657 C). Part 2 builds 12 (658 §2–§4 for the dispositions and the lane's checks, 659
   A and B for a send and a release in flight, 659 C for a tool call during completion; a `folder-v2` job never
   reaches `before_path_runtime`, shown by its `company_file.runtime`), plus the handoff (658 §7) and recovery (658
@@ -805,7 +808,8 @@ Decisions:
   before the folder clock (661 K: a coworker message holds the clock and then wants admission); admission only when a
   wake follows; the wakes. Images refuse first, before the pause and the login (660 §3), until C1d. A group chat with
   no agent posts without admission; F2's group files need two agents, so on `folder-v2` that happens only once none
-  of a chat's agents is active any more, for example all archived (660 §4 uses hand-built rows).
+  of a chat's agents is active any more, for example all archived (660 §4 uses hand-built rows). Since legacy sweep
+  F1e (20260930248000) `qorpera_post_company_room_message` only calls it.
 - **The room `FOR SHARE` is a named exception to core §9** ("`FOR KEY SHARE` for rows referenced"). Snapshot-v1
   posting took its room `FOR SHARE` too.
   - A save that changes a group chat (F2's group hook) takes the room `FOR NO KEY UPDATE` at rank 4 and names no
@@ -999,7 +1003,8 @@ Decisions:
   the definition before 3f (824 H until 3 October; legacy sweep A, #829, removed that digest).
 - **Decided with 3f** (§6.1): the machine-event drain on `folder-v2` goes with 3i; the worker drain is F2's (F2-5b-3,
   the shared folder drains' `workers`). Both deliver to a
-  parent run and need the per-company admission loop (`qorpera_drain_machine_wakes` skips `folder-v2`; until 3i, a
+  parent run and need the per-company admission loop (`qorpera_drain_machine_wakes` skipped `folder-v2` until legacy
+  sweep F3b, 20260930295000, dropped it; until 3i, a
   `folder-v2` run is not told when its machine is running or its command ended). Who creates a `folder-v2` office stays
   with 3j.
 - Not in 3f:
@@ -1007,6 +1012,12 @@ Decisions:
   - a run's own machine reservation and model logins (§6.1's other sites: C3 at the latest);
   - `stop_company_work`'s machine stop, under deletion's gc fence (3g).
   - `record_company_machine_error` updates one machine row and takes no company lock, on either core.
+- **Legacy sweep F2c (20260930292000)** left each of these paths only its `folder-v2` branch: the executor's brief fence,
+  placing, custody's suspend and release, a member's start, stop or delete, the sweep and giving up an executor lost
+  their gc fence. A company without a folder fails in the machine fence (42501 "Company folder is unavailable", 824 A
+  and D), and the sweep skips it (824 E). 824 E5 now sweeps a second `folder-v2` company's machine first. The node
+  reservation takes the machine fence for every kind (§6.8, §6.15), and the machine, always-on and coding check-ins
+  ask on every company.
 
 ### 6.6 C1c-3d-1 as built (migration 20260930002650, tests 817 and 818)
 
@@ -1144,6 +1155,24 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
 | The interlock trigger | gc fence on every company-computer write | returns first: a folder-v2 company has no version-1 cutover |
 | A hire's default access (`runtime_office_default_access_for_staff`) | offices in scan order | offices by id (both cores) |
 
+- **Legacy sweep F2a (20260930290000)** left the start chain only its folder-v2 mode: the assertion, provider set,
+  member start, cancel and withdrawal, the provider's reserve and check, the fleet offer and placement, activation, its
+  startup lock and registration lost their gc fence branch, so a company without a folder fails in the machine fence
+  (42501). A member's start status is plain reads on every company, so a member of such a company gets an answer.
+  Registration, start source, guest binding and restart surfaces accept only a ready folder-v2
+  Company File (`path_gateway_version = 1` is gone), and adoption refuses a non-empty mapping on every company.
+  `member_office_catalog` and the office reservation follow in later F2 steps.
+- **Legacy sweep F2b (20260930291000)** left a computer in use only its folder-v2 path. `member_office_catalog`, a
+  screen's open, the access grant, the screen events and observations, and a member's new computer take the machine
+  fence on every company, so a company without a folder fails in it (42501); an agent's start fails in its tool run.
+  The access status is plain reads, the start descriptor shares the active agents, and a hire's default access takes
+  the seat locks, all on every company. The office preludes run on every company too: the viewers' and the browser
+  grant's member rows, and a private heartbeat's and a successor activation's fence. The shared surface, an agent's
+  screen and the start descriptor accept only a ready folder-v2 Company File; screenshots keep only §6.21's path;
+  shell check-ins ask on every company. The office reservation follows in F2c.
+- **Legacy sweep F2c (20260930292000)** left the office reservation only its `folder-v2` path:
+  `reserve_runtime_machine` takes the machine fence on every company, and its office branch accepts only a ready
+  `folder-v2` Company File (`path_gateway_version = 1` is gone).
 - **Who creates a folder-v2 office** (the coordinator, 3 October): the folder mode of `qorpera_register_runtime_office`,
   called as the company's owner the first time the company needs its computer. Today no product path registers a
   company's first computer (later ones come from `add_runtime_office_computer`); the coordinator does it, and P38
@@ -1213,13 +1242,17 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
   turn admission.
 - Not in 3h: custody (`coding_machine_custody`, `authorize_coding_machine_custody`), attach and claim take no company
   lock and need no change; the secret broker's coding credential takes the company row `KEY SHARE` already (v123).
+- **Legacy sweep F2c (20260930292000)** left each of these calls only its `folder-v2` line, so a company without a
+  folder fails in the machine fence (42501). The gc fence lines, and with them 20260925123000's text, are gone: the
+  activation template's check for that migration now looks for the folder fence line in each of the four bodies.
+  Coding check-ins ask on every company. The claim's `folder-v2` filter and the worker locks' refusal stay (step G).
 
 ### 6.9 C1c-3e as built: a dynamic routine's next run (migration 20260930009500, test 819)
 
 An agent's dynamic routine (`when: once`) gets its next run from the control-plane tick
 (`qorpera_restore_dynamic_routine_runs`, inside the Company File drain that `reconcile` runs). That tick visits every
 company in one transaction, so since C1c-2c part 1 it skips `folder-v2`, and a `folder-v2` dynamic routine never ran
-again after its first. 3e gives it a `folder-v2` path with one company per transaction, as routine firing has
+again after its first (legacy sweep F3b, 20260930295000, dropped that tick). 3e gives it a `folder-v2` path with one company per transaction, as routine firing has
 (`qorpera_folder_enqueue_routine_wake`, §5.6):
 - **`qorpera_folder_dynamic_routines_due(after, limit)`** (service role) lists the `folder-v2` dynamic routines that may
   be missing their run, with the legacy tick's own filter, paged by routine id like the schedule heads, without a lock.
@@ -1463,9 +1496,10 @@ refused with 0A000.
 **The executor's quiet-session archive** (`archive_quiet_coding_sessions`) takes the quiet `folder-v2` sessions of one
 environment per call, up to 8. It enters their coding workers once, together (`qorpera_lock_coding_workers`: every
 worker's targets merged, so each rank is taken once in its tables' key order, and no rank is taken again after a later
-one, review r2), then archives each session in id order. The legacy quiet check-ins (`ask_quiet_coding_sessions`, a wake
-inserter with no fence that locks other companies' coding rows NOWAIT) run only when the archive entered no company, and
-skip `folder-v2` sessions, which C3c's drain asks per company (§6.20).
+one, review r2), then archives each session in id order. C3c's drain asks the quiet sessions per company (§6.20). The
+legacy quiet check-ins (`ask_quiet_coding_sessions`, a wake inserter with no fence that locked other companies' coding
+rows NOWAIT), which ran only when the archive entered no company and skipped `folder-v2` sessions, went in the legacy
+sweep's F3a (20260930294000).
 
 **The owner's calls.** A delegation locks the worker through the same entry. The answer, the delegation and the owner's
 archive check the owner again once the entry holds the owner's member row, so a removal that committed while they waited
@@ -1558,6 +1592,12 @@ reverse of core §3's order, and on `folder-v2` a stall of every effect of the c
   path also takes the model login before the identity). 900 I checks that each patched branch is present, with no
   snapshot-v1 text pins (since 3 Oct); 824 H reversed the node reservation's new layer first (no digests since 3
   October; legacy sweep A, #829).
+- **Legacy sweep F2d (20260930293000)** removed the reservations' and releases' `else` branches (the node
+  reservation's went in F2c, 20260930292000): `qorpera_folder_sign_in_machine_locks` takes the fence for a sign-in or
+  refresh of any company and answers null only for an unknown one, so a company without a folder fails at the fence
+  (42501 "Company folder is unavailable", 900 G). A release whose sign-in appears between the helper's read and its own
+  select is now refused (42501) instead of taking the gc fence; a sign-in is committed by its begin call before the
+  gateway has its id, so this does not happen.
 - **A window P13's second part closed** (20260930049000, test 901, §6.17): `qorpera_request_login_identity_recovery` and
   `_account_refresh_identity_recovery` took the sign-in `FOR SHARE` and then the gc fence, the reverse of the new
   reservation (the row `KEY SHARE`, then the sign-in `FOR UPDATE`). They could deadlock on one sign-in when two gateway
@@ -1617,7 +1657,8 @@ Found by P13's activation check (test 838). Folder-v2 only.
 - The old body's comment that "the profile fence serializes both reservation paths" (`20260908003800`) holds only off
   `folder-v2`; there the identity's machine lock does.
 
-A company that is not `folder-v2` keeps the gc fence in each `else` branch, untested.
+A company that is not `folder-v2` keeps the gc fence in each `else` branch, untested. Legacy sweep F2c (20260930292000)
+removed those branches: every company takes these paths, and one without a folder fails at its fence (42501).
 
 **Tests.** 849:
 - A: beside a folder effect or member management (the fence `FOR NO KEY UPDATE`), none of the six calls waits.
@@ -1640,7 +1681,7 @@ each `else`.
 |---|---|---|
 | `native_office_start` (an agent's `computer_start`) | refused with 0A000 | `qorpera_folder_office_start_enter(binding)`, then the seat lock and every computer of the company by id, as before; no gc fence (the tool run holds the folder fence and rank 0) |
 | `native_office_start_descriptor` | refused with 0A000 | serves folder-v2; its new computer takes the company's agents `KEY SHARE` before the seat lock (as `member_agent_office` does, §6.12); the gate accepts a ready folder-v2 Company File |
-| `assert_runtime_office_start_source`, an agent's start | the agent and its access `FOR SHARE` | on folder-v2 `FOR SHARE NOWAIT` (every caller took the agent before the computer, unless its start appeared since) |
+| `assert_runtime_office_start_source`, an agent's start | the agent and its access `FOR SHARE` | on folder-v2 `FOR SHARE NOWAIT` (every caller took the agent before the computer, unless its start appeared since); legacy sweep F2a (20260930290000) left only that |
 | `qorpera_folder_office_enter` (3j's prelude), run again inside the call | the start's agent `FOR SHARE` | `FOR SHARE NOWAIT` when nested |
 
 - **The prelude.** An agent's tool run takes its requester and agent only `KEY SHARE`. But the start-source check shares
@@ -1729,9 +1770,11 @@ each `else`.
     read again when it becomes a run, and on every tool call of that run.
   - The edge function's `FOLDER_DRAINS` gets `office_wakes` (maximum 40), and the orchestrator's `CLOUD_FOLDER_DRAINS`
     gets `{name: "office_wakes", companyLimit: 16}`.
-  - Since P28a nothing calls the old drain (`qorpera_drain_office_activation_wakes`). It stays until the legacy removal.
+  - Since P28a nothing calls the old drain (`qorpera_drain_office_activation_wakes`). Legacy sweep F3b (20260930295000)
+    dropped it.
 - **The waiter check.** `qorpera_folder_office_waiter_authorized(waiter)` makes the checks of
-  `qorpera_office_waiter_authorized` as plain reads, and that function answers with it on folder-v2. A folder-v2 write's
+  `qorpera_office_waiter_authorized` as plain reads, and that function answers with it on folder-v2 (since legacy sweep
+  F2a, 20260930290000, on every company). A folder-v2 write's
   completed receipt counts as having its revision when it names its folder commit. The old check took
   the company row and every row `NOWAIT`. That would turn a screen heartbeat (the computer `FOR UPDATE`) into a refused
   tool call of the woken run.
@@ -1830,7 +1873,10 @@ recovery requests also took the sign-in before it (§6.14's window).
   - Against a sign-in's or a run's machine reservation (the fence, rank 0, the requester's member row, the identity's
     machine lock, the sign-in `FOR UPDATE`, the identity `FOR SHARE`): the member locks are compatible, recovery takes
     neither the machine lock nor the sign-in, and the backup takes the sign-in before the identity, as they do (901 J).
-- **Snapshot-v1** keeps the gc fence in each `else` branch, untested (`folder-v2` only since 3 Oct).
+- **Snapshot-v1** keeps the gc fence in each `else` branch, untested (`folder-v2` only since 3 Oct). Legacy sweep F2d
+  (20260930293000) removed those branches and the decision's `folder-v2` condition: every company takes these paths,
+  and one without a folder fails at its fence (42501 "Company folder is unavailable", 901 M). A key backup's and a
+  login's or refresh's recovery request no longer hold their sign-in `FOR SHARE` on any company.
 
 **Tests.** 901 (dblink, waits checked through `pg_blocking_pids`, locks probed `NOWAIT`):
 - A: beside a folder effect (the fence and the company row `KEY SHARE`), every call finishes: target registration, backup
@@ -1857,6 +1903,7 @@ recovery requests also took the sign-in before it (§6.14's window).
   deletion requested, its machines ended over ten minutes ago), serialize on the identity's machine lock; the second
   replays the first's target or receipt.
 - K: each patched branch is present, with no snapshot-v1 text pins.
+- M: on a company without a folder, the owner's recovery member role and recovery decision fail at the fence (F2d).
 
 Fault runs (a temporary driver on the test machine), 26 faults, each caught where intended: a site or the helper that
 keeps the gc fence in A; the login's request holding its sign-in in B (or, without B, in C); a dropped re-check, or the
@@ -2056,6 +2103,10 @@ on `storage: none` and leaves its receipt open. The coordinator settles the offi
   (`qorpera_folder_record_context_view`) now takes a screenshot output: it checks the output's shape in its loop
   (22023 "Native capture invalid") and the view's screenshots as one set after it. Before, it refused any screenshot
   with 0A000.
+- **Legacy sweep F2b (20260930291000)** made this the only path: the capture, the capture-set check and the read keep
+  their folder-v2 branch on every company. The stored path's tails go: 20260930190000's 0A000 refusal of a snapshot-v1
+  screenshot and the object reads. `qorpera_native_office_operation` keeps a screenshot's target resources on every
+  company.
 - **Tests:**
   - 910 (648's committed fixture; the computer up and Ada's screen acquired):
     - A: Ada's desktop screenshot runs through the operation and the capture with nothing stored, and its resource

@@ -106,7 +106,7 @@ type Answer = { [key: string]: JsonValue };
 const render = (value: Answer): string => cloudToolJsonText(value, RENDER_BYTES);
 
 /** A text cut to `chars` code points, marked when cut. */
-function clip(text: string, chars: number): string {
+export function clip(text: string, chars: number): string {
 	const points = Array.from(text);
 	return points.length <= chars ? text : `${points.slice(0, chars).join("")}${CUT}`;
 }
@@ -125,7 +125,7 @@ function largest(low: number, high: number, ok: (n: number) => boolean): number 
 	return low;
 }
 
-const problemText = (file: string, problem: InterfaceProblem): string =>
+export const problemText = (file: string, problem: InterfaceProblem): string =>
 	clip(`${file}${problem.line === null ? "" : ` line ${problem.line}`}: ${problem.message}`, CELL_CHARS);
 
 /** A column's type as a few words: `text, at most 80, optional`. */
@@ -182,13 +182,13 @@ function whereText(narrow: readonly Where[]): string {
 	);
 }
 
-type FileRead =
+export type FileRead =
 	| { readonly kind: "absent" }
 	| { readonly kind: "text"; readonly entry: CloudCompanyFolderEntry; readonly text: string }
 	| { readonly kind: "not_text"; readonly entry: CloudCompanyFolderEntry; readonly why: string };
 
 /** A file's whole text, or why it has none: a folder, too large, or not UTF-8. */
-async function readFile(
+export async function readFile(
 	folder: CloudCompanyFolderClient,
 	path: string,
 	maxBytes: number,
@@ -216,7 +216,7 @@ async function readFile(
 	return { kind: "not_text", entry, why };
 }
 
-type TableRead =
+export type TableRead =
 	| { readonly kind: "absent" }
 	| { readonly kind: "broken"; readonly entry: CloudCompanyFolderEntry; readonly problems: readonly string[] }
 	| {
@@ -224,13 +224,19 @@ type TableRead =
 			readonly entry: CloudCompanyFolderEntry;
 			readonly definition: TableFile;
 			readonly rowsEntry: CloudCompanyFolderEntry | null;
+			/** The rows file's text; null when there is none, or it is not text. */
+			readonly rowsText: string | null;
 			readonly rows: readonly TableRow[];
 			readonly problems: readonly string[];
 	  };
 
 /** A table as its files say now: its definition, and the rows of its rows file that fit it, with the problems of
  * those that don't. A table without a rows file has no rows yet. */
-async function readTable(folder: CloudCompanyFolderClient, name: string, signal: AbortSignal): Promise<TableRead> {
+export async function readTable(
+	folder: CloudCompanyFolderClient,
+	name: string,
+	signal: AbortSignal,
+): Promise<TableRead> {
 	const file = await readFile(folder, `tables/${name}/table.toml`, TABLE_FILE_MAX_BYTES, signal);
 	if (file.kind === "absent") return file;
 	if (file.kind === "not_text") return { kind: "broken", entry: file.entry, problems: [`table.toml ${file.why}`] };
@@ -244,13 +250,14 @@ async function readTable(folder: CloudCompanyFolderClient, name: string, signal:
 	const definition = parsed.file;
 	const rows = await readFile(folder, `tables/${name}/rows.csv`, TABLE_ROWS_MAX_BYTES, signal);
 	if (rows.kind === "absent")
-		return { kind: "ok", entry: file.entry, definition, rowsEntry: null, rows: [], problems: [] };
+		return { kind: "ok", entry: file.entry, definition, rowsEntry: null, rowsText: null, rows: [], problems: [] };
 	if (rows.kind === "not_text")
 		return {
 			kind: "ok",
 			entry: file.entry,
 			definition,
 			rowsEntry: rows.entry,
+			rowsText: null,
 			rows: [],
 			problems: [`rows.csv ${rows.why}`],
 		};
@@ -260,6 +267,7 @@ async function readTable(folder: CloudCompanyFolderClient, name: string, signal:
 		entry: file.entry,
 		definition,
 		rowsEntry: rows.entry,
+		rowsText: rows.text,
 		rows: read.rows,
 		problems: read.problems.map((problem) => problemText("rows.csv", problem)),
 	};

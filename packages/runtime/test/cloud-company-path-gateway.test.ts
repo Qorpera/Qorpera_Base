@@ -1807,67 +1807,6 @@ describe("cloud Company File path gateway", () => {
 	});
 });
 
-describe("Company File writes of saved mail attachments", () => {
-	/** The chunks the mail attachment worker stores: this company's objects, 4 MiB each but the last. */
-	function stored(f: ReturnType<typeof fixture>, bytes: Uint8Array) {
-		const chunks = [];
-		for (let offset = 0; offset < bytes.length; offset += 4 * 1024 * 1024) {
-			const chunk = bytes.slice(offset, offset + 4 * 1024 * 1024);
-			const sha256 = createHash("sha256").update(chunk).digest("hex");
-			f.objects.set(`${f.identity.companyId}/${sha256}`, chunk);
-			chunks.push({ sha256, bytes: chunk.length });
-		}
-		return { fileSha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.length, chunks };
-	}
-	for (const length of [0, 9, 4 * 1024 * 1024, 9 * 1024 * 1024 + 7])
-		it(`writes an attachment of ${length} bytes as a file through the usual mutation`, async () => {
-			const f = fixture();
-			const bytes = Buffer.alloc(length, 0x25);
-			if (length) bytes[length - 1] = 0;
-			const result = await f.gateway.mutate(
-				"write",
-				{ path: "invoice.pdf", operationKey: "save-1", expectedVersion: null, attachment: stored(f, bytes) },
-				f.signal,
-			);
-			expect(result.state).toBe("applied");
-			const entry = f.entries.get("invoice.pdf");
-			if (entry?.kind !== "file") throw new Error("File absent");
-			expect(Buffer.from((await f.store.restoreFile(f.identity.companyId, entry.file)).bytes).equals(bytes)).toBe(
-				true,
-			);
-			expect(f.call.mock.calls.map(([name]) => name)).toEqual([
-				"qorpera_check_company_path_mutation",
-				"qorpera_verify_company_path_file",
-				"qorpera_prepare_company_path_mutation",
-				"qorpera_verify_company_path_tree",
-				"qorpera_commit_company_path_mutation",
-			]);
-		});
-	it("refuses an attachment whose bytes do not match its digest, or whose chunks are not the stored shape", async () => {
-		const f = fixture();
-		const content = stored(f, Buffer.alloc(5 * 1024 * 1024, 1));
-		const write = (attachment: typeof content, text?: string) =>
-			f.gateway.mutate(
-				"write",
-				{ path: "a.bin", operationKey: "save-2", expectedVersion: null, attachment, ...(text ? { text } : {}) },
-				f.signal,
-			);
-		await expect(write({ ...content, fileSha256: "0".repeat(64) })).rejects.toThrow("does not match its digest");
-		await expect(write({ ...content, chunks: content.chunks.slice(0, 1) })).rejects.toThrow(
-			"Invalid mail attachment",
-		);
-		await expect(write({ ...content, bytes: 41 * 1024 * 1024 })).rejects.toThrow();
-		await expect(write({ ...content, chunks: [content.chunks[1]!, content.chunks[0]!] })).rejects.toThrow(
-			"Invalid mail attachment",
-		);
-		await expect(write(content, "and text")).rejects.toThrow("exactly one source");
-		f.objects.set(`${f.identity.companyId}/${content.chunks[0]!.sha256}`, Buffer.alloc(4 * 1024 * 1024, 2));
-		await expect(write(content)).rejects.toThrow();
-		expect(f.transport.put).not.toHaveBeenCalled();
-		expect(f.call).not.toHaveBeenCalled();
-	});
-});
-
 describe("Company File writes from shared exports", () => {
 	const args = (source: ObjectStorageFileSelection, path = "output.bin") => ({
 		path,
