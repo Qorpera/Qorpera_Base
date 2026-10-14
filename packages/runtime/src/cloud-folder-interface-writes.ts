@@ -523,7 +523,7 @@ async function planSave(
 		const holder = at.of && at.name ? holders.get(`${at.of}/${at.name}`) : undefined;
 		let ownersOnly = false;
 		if (at.of && at.name && holder) {
-			if (holder.entry?.kind === "file") {
+			if (holder.entry && holder.entry.kind !== "folder") {
 				block(item, "not_a_folder");
 				continue;
 			}
@@ -548,7 +548,7 @@ async function planSave(
 		else if (ownersOnly) block(item, "owners_only");
 		else if (current.kind === "absent") {
 			if (file.expectedVersion !== null) block(item, "missing");
-		} else if (current.entry.kind === "folder") block(item, "not_a_file");
+		} else if (current.entry.kind !== "file") block(item, "not_a_file");
 		else if (file.expectedVersion === null) block(item, "exists");
 		else if (current.entry.version !== file.expectedVersion) block(item, "version_changed");
 		else {
@@ -870,9 +870,9 @@ const BLOCKED_NEXT: Readonly<Record<Blocked, string>> = {
 	exists: `Nothing was saved. A file is already at a path you gave no version for: ${READ_AGAIN}.`,
 	missing: "Nothing was saved. A path you gave a version for is gone: read again, and save with a new operationKey.",
 	version_changed: `Nothing was saved. A file changed since your version: ${READ_AGAIN}.`,
-	not_a_file: "Nothing was saved. A path you gave is a folder, not a file.",
+	not_a_file: "Nothing was saved. A path you gave is a folder or a link, not a file.",
 	not_a_folder:
-		"Nothing was saved. Something at an interface's or table's folder is a file, not a folder: choose another name.",
+		"Nothing was saved. Something at an interface's or table's folder is a file or a link, not a folder: choose another name.",
 	folder_missing:
 		"Nothing was saved. A README goes in an interface's or table's folder that exists, or in the same call as the interface.toml or table.toml that makes it.",
 	owners_only:

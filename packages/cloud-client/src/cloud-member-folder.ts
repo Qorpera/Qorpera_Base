@@ -122,20 +122,42 @@ function file(value: Record<string, unknown>, required: boolean, what: string): 
 	};
 }
 
+/** A file, a folder, or a link (`symlink`, LK1): a link holds its target and no bytes, and nothing is below it. */
+const KINDS = ["file", "folder", "symlink"] as const;
+export type CloudMemberFolderKind = (typeof KINDS)[number];
+
+/** A link's target where the row holds one, else none: 1 to 4,095 bytes of text, exactly as written. The folder never
+ * follows it, so it may name any path, inside the company or not. */
+function target(value: Record<string, unknown>, holds: boolean, what: string): string | null {
+	if (!holds) {
+		if (Object.hasOwn(value, "target")) invalid(what);
+		return null;
+	}
+	if (
+		typeof value.target !== "string" ||
+		value.target.length === 0 ||
+		new TextEncoder().encode(value.target).length > 4095
+	)
+		invalid(what);
+	return value.target;
+}
+
 export interface CloudMemberFolderEntry {
 	readonly path: string;
-	readonly kind: "file" | "folder";
+	readonly kind: CloudMemberFolderKind;
 	readonly version: string;
 	readonly seq: number;
 	readonly updatedAt: string;
 	readonly file: CloudMemberFolderFile | null;
+	/** A link's target; null for a file or a folder. */
+	readonly target: string | null;
 }
 
 export function parseCloudMemberFolderEntry(value: unknown): CloudMemberFolderEntry {
-	const entry = closed(value, ["path", "kind", "version", "seq", "updatedAt"], FILE_KEYS, "entry");
-	const kind = oneOf(entry.kind, ["file", "folder"] as const, "entry");
+	const entry = closed(value, ["path", "kind", "version", "seq", "updatedAt"], [...FILE_KEYS, "target"], "entry");
+	const kind = oneOf(entry.kind, KINDS, "entry");
 	const content = file(entry, kind === "file", "entry");
-	if (kind === "folder" && content !== null) invalid("entry");
+	if (kind !== "file" && content !== null) invalid("entry");
 	return {
 		path: text(entry.path, "entry"),
 		kind,
@@ -143,6 +165,7 @@ export function parseCloudMemberFolderEntry(value: unknown): CloudMemberFolderEn
 		seq: seq(entry.seq, "entry", 1),
 		updatedAt: instant(entry.updatedAt, "entry"),
 		file: content,
+		target: target(entry, kind === "symlink", "entry"),
 	};
 }
 
@@ -203,7 +226,8 @@ export interface CloudMemberFolderVersion {
 	readonly version: string;
 	readonly seq: number;
 	readonly op: CloudMemberFolderOp;
-	readonly kind: "file" | "folder";
+	/** A link's write is a `write` of kind `symlink`. */
+	readonly kind: CloudMemberFolderKind;
 	readonly path: string;
 	readonly at: string;
 	readonly by: CloudMemberFolderBy;
@@ -212,6 +236,8 @@ export interface CloudMemberFolderVersion {
 	/** Where a `move_out` went, when the member may read it. */
 	readonly to: string | null;
 	readonly file: CloudMemberFolderFile | null;
+	/** A link's target at this version; null for a file, a folder or a delete. */
+	readonly target: string | null;
 }
 
 export interface CloudMemberFolderPathHistory {
@@ -229,14 +255,14 @@ export function parseCloudMemberFolderPathHistory(value: unknown, limit: number)
 		const item = closed(
 			input,
 			["version", "seq", "op", "kind", "path", "at", "by"],
-			[...FILE_KEYS, "from", "to"],
+			[...FILE_KEYS, "from", "to", "target"],
 			"version",
 		);
 		const op = oneOf(item.op, OPS, "version");
-		const kind = oneOf(item.kind, ["file", "folder"] as const, "version");
+		const kind = oneOf(item.kind, KINDS, "version");
 		if (("from" in item && op !== "move_in") || ("to" in item && op !== "move_out")) invalid("version");
 		const content = file(item, false, "version");
-		if (kind === "folder" && content !== null) invalid("version");
+		if (kind !== "file" && content !== null) invalid("version");
 		return {
 			version: idOf(item.version, "version"),
 			seq: seq(item.seq, "version", 1),
@@ -248,6 +274,7 @@ export function parseCloudMemberFolderPathHistory(value: unknown, limit: number)
 			from: "from" in item ? text(item.from, "version") : null,
 			to: "to" in item ? text(item.to, "version") : null,
 			file: content,
+			target: target(item, kind === "symlink" && op !== "delete", "version"),
 		};
 	});
 	const next = page.next === null ? null : idOf(page.next, "path history");
@@ -264,7 +291,7 @@ export interface CloudMemberFolderChangeSet {
 	readonly paths: readonly {
 		readonly path: string;
 		readonly op: CloudMemberFolderOp;
-		readonly kind: "file" | "folder";
+		readonly kind: CloudMemberFolderKind;
 		readonly version: string;
 	}[];
 	/** It has others the member may read, or more than one call examined. */
@@ -300,7 +327,7 @@ export function parseCloudMemberFolderHistory(value: unknown, limit = 50): Cloud
 				return {
 					path: text(path.path, "change set"),
 					op: oneOf(path.op, OPS, "change set"),
-					kind: oneOf(path.kind, ["file", "folder"] as const, "change set"),
+					kind: oneOf(path.kind, KINDS, "change set"),
 					version: idOf(path.version, "change set"),
 				};
 			}),
@@ -321,12 +348,14 @@ export interface CloudMemberFolderFeedPosition {
 export interface CloudMemberFolderChange {
 	readonly unitNo: number;
 	readonly op: CloudMemberFolderOp;
-	readonly kind: "file" | "folder";
+	readonly kind: CloudMemberFolderKind;
 	readonly path: string;
 	readonly version: string;
 	readonly priorVersion: string | null;
 	readonly updatedAt: string | null;
 	readonly file: CloudMemberFolderFile | null;
+	/** A link's target; null for a file, a folder or a delete. */
+	readonly target: string | null;
 }
 
 export type CloudMemberFolderEvent =
@@ -391,22 +420,24 @@ export function parseCloudMemberFolderChanges(value: unknown): CloudMemberFolder
 				const change = closed(
 					changeInput,
 					["unitNo", "op", "kind", "path", "version"],
-					[...FILE_KEYS, "priorVersion", "updatedAt"],
+					[...FILE_KEYS, "priorVersion", "updatedAt", "target"],
 					"feed change",
 				);
 				if (!Number.isSafeInteger(change.unitNo) || (change.unitNo as number) < 1) invalid("feed change");
-				const kind = oneOf(change.kind, ["file", "folder"] as const, "feed change");
+				const op = oneOf(change.op, OPS, "feed change");
+				const kind = oneOf(change.kind, KINDS, "feed change");
 				const content = file(change, false, "feed change");
-				if (kind === "folder" && content !== null) invalid("feed change");
+				if (kind !== "file" && content !== null) invalid("feed change");
 				return {
 					unitNo: change.unitNo as number,
-					op: oneOf(change.op, OPS, "feed change"),
+					op,
 					kind,
 					path: text(change.path, "feed change"),
 					version: idOf(change.version, "feed change"),
 					priorVersion: "priorVersion" in change ? idOf(change.priorVersion, "feed change") : null,
 					updatedAt: "updatedAt" in change ? instant(change.updatedAt, "feed change") : null,
 					file: content,
+					target: target(change, kind === "symlink" && op !== "delete", "feed change"),
 				};
 			}),
 		};

@@ -343,7 +343,13 @@ export class CloudFolderProposals {
 				path: unit.path,
 				...(unit.to === null ? {} : { to: unit.to }),
 				...(unit.items === null ? {} : { items: unit.items }),
-				...(unit.contains.length > 0 ? { contains: unit.contains.map(({ path, kind }) => ({ path, kind })) } : {}),
+				...(unit.contains.length > 0
+					? {
+							contains: unit.contains.map(({ path, kind, target }) =>
+								target === undefined ? { path, kind } : { path, kind, target },
+							),
+						}
+					: {}),
 				...(unit.structured.length > 0
 					? { files: unit.structured.map(({ path, kind, parse }) => ({ path, kind, parse })) }
 					: {}),

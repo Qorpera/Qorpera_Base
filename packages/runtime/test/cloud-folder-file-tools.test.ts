@@ -214,6 +214,81 @@ it("lists an absent path as absent and refuses to list a file", async () => {
 	expect(f.releases).toHaveLength(0);
 });
 
+it("reads and lists a link as the target it holds, never following it, and lists nothing under it", async () => {
+	const f = await fixture({ files: { "docs/plan.md": "the plan" }, links: { "docs/latest": "plan.md" } });
+	const version = f.links.get("docs/latest")?.version;
+	const read = await f.call("company_read", { path: "docs/latest", offset: 0, limit: 4 });
+	expect(parse(read)).toEqual({ path: "docs/latest", kind: "symlink", version, target: "plan.md" });
+	// The link is released, and nothing of the file it names.
+	expect(read.companyReadId).toBe(f.releases[0]?.p_release_id);
+	expect(f.releases[0]?.p_reads).toEqual([{ path: "docs/latest", version, authority: expect.any(Object) }]);
+	// A path through a link is absent: the core never resolves one (LK1).
+	const through = await f.call("company_read", { path: "docs/latest/plan.md", offset: 0, limit: 4 });
+	expect(parse(through)).toEqual({ path: "docs/latest/plan.md", kind: "absent", version: null });
+	const page = parse(await f.call("company_list", { path: "docs", after: null, limit: 5 }));
+	expect(page.entries).toEqual([
+		{ path: "docs/latest", kind: "symlink", version, bytes: null, target: "plan.md" },
+		{ path: "docs/plan.md", kind: "file", version: f.files.get("docs/plan.md")?.version, bytes: 8 },
+	]);
+	await refuses(
+		f.call("company_list", { path: "docs/latest", after: null, limit: 5 }),
+		CloudToolRefusal,
+		"COMPANY_FILE_NOT_A_FOLDER: that path is a link",
+	);
+	expect(f.releases).toHaveLength(2);
+});
+
+it("never writes over a link at its version, naming its target, and meets one as there when creating a file", async () => {
+	const f = await fixture({ links: { "docs/latest": "plan.md" } });
+	const expectedVersion = f.links.get("docs/latest")?.version as string;
+	const refused = await f.call("company_write", {
+		path: "docs/latest",
+		operationKey: "write-1",
+		expectedVersion,
+		text: "x",
+	});
+	expect(parse(refused)).toEqual({
+		schema: "qorpera.company-folder-result/v1",
+		state: "not_applied",
+		operationKey: "write-1",
+		path: "docs/latest",
+		version: null,
+		reason: "link",
+		target: "plan.md",
+		next: expect.stringContaining("COMPANY_FILE_IS_A_LINK: nothing was written"),
+	});
+	// The target shown is a read of the link, released; nothing was written and no receipt taken.
+	expect(refused.companyReadId).toBe(f.releases[0]?.p_release_id);
+	expect(f.releases[0]?.p_reads).toEqual([
+		{ path: "docs/latest", version: expectedVersion, authority: expect.any(Object) },
+	]);
+	expect(f.commits).toHaveLength(0);
+	expect(f.ledger.size).toBe(0);
+	const exists = parse(
+		await f.call("company_write", { path: "docs/latest", operationKey: "write-2", expectedVersion: null, text: "x" }),
+	);
+	expect(exists).toMatchObject({ state: "not_applied", outcome: "conflict", reason: "exists" });
+	const mkdir = parse(
+		await f.call("company_mkdir", { path: "docs/latest", operationKey: "mkdir-1", expectedVersion: null }),
+	);
+	expect(mkdir).toMatchObject({ state: "not_applied", outcome: "conflict", reason: "exists" });
+	expect(f.links.get("docs/latest")).toMatchObject({ version: expectedVersion, target: "plan.md" });
+	expect(f.files.has("docs/latest")).toBe(false);
+	expect(f.folders.has("docs/latest")).toBe(false);
+});
+
+it("deletes a link, never the file it names", async () => {
+	const f = await fixture({ files: { "docs/plan.md": "the plan" }, links: { "docs/latest": "plan.md" } });
+	const expectedVersion = f.links.get("docs/latest")?.version as string;
+	const answer = parse(
+		await f.call("company_delete", { path: "docs/latest", operationKey: "delete-1", expectedVersion }),
+	);
+	expect(answer).toMatchObject({ state: "applied", outcome: "saved" });
+	expect(f.commits[0]?.units).toEqual([{ op: "delete", path: "docs/latest", expectedVersion }]);
+	expect(f.links.has("docs/latest")).toBe(false);
+	expect(f.text("docs/plan.md")).toBe("the plan");
+});
+
 it("writes a file as one change set under the call's receipt, and replays the same call from it", async () => {
 	const f = await fixture({ folders: ["docs"] });
 	const write = { path: "docs/new.md", operationKey: "write-1", expectedVersion: null, text: "# New\n" };

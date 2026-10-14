@@ -209,9 +209,12 @@ interface CloudCompanyFolderEntryBase {
 	readonly authority: CloudCompanyFolderAuthority;
 }
 
+/** A link (`symlink`, made through a view, LK1) holds its target exactly as written: 1 to 4,095 bytes naming any path,
+ * which the folder never follows. Nothing is below a link. */
 export type CloudCompanyFolderEntry =
 	| (CloudCompanyFolderEntryBase & { readonly kind: "file"; readonly file: CloudCompanyFolderFile })
-	| (CloudCompanyFolderEntryBase & { readonly kind: "folder" });
+	| (CloudCompanyFolderEntryBase & { readonly kind: "folder" })
+	| (CloudCompanyFolderEntryBase & { readonly kind: "symlink"; readonly target: string });
 
 export type CloudCompanyFolderFileEntry = Extract<CloudCompanyFolderEntry, { kind: "file" }>;
 
@@ -264,11 +267,16 @@ export interface CloudCompanyFolderRoutinePage {
  * structured files it writes with their parses (SQL leaves out a parse's null fields). */
 export interface CloudCompanyFolderProposalUnit {
 	readonly unit: number;
-	readonly op: CloudCompanyFolderUnit["op"];
+	readonly op: CloudCompanyFolderOp;
 	readonly path: string;
 	readonly to: string | null;
 	readonly items: number | null;
-	readonly contains: readonly { readonly path: string; readonly kind: "file" | "folder" }[];
+	/** A link's item carries its target. */
+	readonly contains: readonly {
+		readonly path: string;
+		readonly kind: "file" | "folder" | "symlink";
+		readonly target?: string;
+	}[];
 	readonly structured: readonly {
 		readonly path: string;
 		readonly kind: string;
@@ -410,11 +418,15 @@ export type CloudCompanyFolderUnit =
 	  }
 	| { readonly op: "copy"; readonly from: string; readonly to: string; readonly expectedVersion?: string };
 
+/** A unit's op as the core answers it. A run's change set never makes a link, but a view's does (`symlink`, LK1), and
+ * a view's parked change set is listed and applied with it. */
+export type CloudCompanyFolderOp = CloudCompanyFolderUnit["op"] | "symlink";
+
 export type CloudCompanyFolderOutcome = "saved" | "conflict" | "refused" | "denied" | "waiting_for_review";
 
 export interface CloudCompanyFolderUnitResult {
 	readonly unit: number;
-	readonly op: CloudCompanyFolderUnit["op"];
+	readonly op: CloudCompanyFolderOp;
 	/** The path as stored for a saved write, mkdir, new folder or delete; the requested path of a unit that was not
 	 * saved; and the source of a move or copy, whose target is `to`. */
 	readonly path: string;
@@ -721,9 +733,17 @@ function authority(value: unknown): CloudCompanyFolderAuthority {
 const ENTRY_KEYS = ["path", "kind", "version", "seq", "updatedAt", "authority"] as const;
 const FILE_KEYS = ["manifestSha256", "fileSha256", "bytes", "mediaType", "executable"] as const;
 
+/** Whether a link's target is one the core keeps: a string of 1 to 4,095 UTF-8 bytes. */
+function linkTarget(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0 && new TextEncoder().encode(value).byteLength <= 4095;
+}
+
 function entry(value: unknown): CloudCompanyFolderEntry {
 	const kind = (value as { kind?: unknown } | null)?.kind;
-	const input = record(value, kind === "file" ? [...ENTRY_KEYS, ...FILE_KEYS] : ENTRY_KEYS);
+	const input = record(
+		value,
+		kind === "file" ? [...ENTRY_KEYS, ...FILE_KEYS] : kind === "symlink" ? [...ENTRY_KEYS, "target"] : ENTRY_KEYS,
+	);
 	if (typeof input.path !== "string" || !input.path || typeof input.updatedAt !== "string") invalid();
 	const base = {
 		path: input.path,
@@ -733,6 +753,10 @@ function entry(value: unknown): CloudCompanyFolderEntry {
 		authority: authority(input.authority),
 	};
 	if (input.kind === "folder") return { ...base, kind: "folder" };
+	if (input.kind === "symlink") {
+		if (!linkTarget(input.target)) invalid();
+		return { ...base, kind: "symlink", target: input.target };
+	}
 	if (
 		input.kind !== "file" ||
 		typeof input.manifestSha256 !== "string" ||
@@ -779,18 +803,14 @@ function problems(value: unknown): CompanyStateProblem[] {
 
 const OUTCOMES: readonly CloudCompanyFolderOutcome[] = ["saved", "conflict", "refused", "denied", "waiting_for_review"];
 
-const OPS: readonly CloudCompanyFolderUnit["op"][] = ["write", "mkdir", "new_folder", "delete", "move", "copy"];
+const OPS: readonly CloudCompanyFolderOp[] = ["write", "mkdir", "new_folder", "delete", "move", "copy", "symlink"];
 
 /** A commit's answer for one unit, whose op is the one sent (undefined: a proposal's unit past its list, any op). */
-function unitResult(
-	value: unknown,
-	index: number,
-	op: CloudCompanyFolderUnit["op"] | undefined,
-): CloudCompanyFolderUnitResult {
+function unitResult(value: unknown, index: number, op: CloudCompanyFolderOp | undefined): CloudCompanyFolderUnitResult {
 	const input = record(value, ["unit", "op", "path", "outcome"], ["to", "version", "reason", "problems"]);
 	if (
 		input.unit !== index + 1 ||
-		!OPS.includes(input.op as CloudCompanyFolderUnit["op"]) ||
+		!OPS.includes(input.op as CloudCompanyFolderOp) ||
 		(op !== undefined && input.op !== op) ||
 		typeof input.path !== "string" ||
 		!OUTCOMES.includes(input.outcome as CloudCompanyFolderOutcome) ||
@@ -801,7 +821,7 @@ function unitResult(
 		invalid();
 	return {
 		unit: index + 1,
-		op: input.op as CloudCompanyFolderUnit["op"],
+		op: input.op as CloudCompanyFolderOp,
 		path: input.path,
 		to: (input.to as string | undefined) ?? null,
 		version: input.version === undefined ? null : uuid(input.version),
@@ -1477,7 +1497,7 @@ export class CloudCompanyFolderClient {
 				const unit = record(item, ["unit", "op", "path"], ["to", "items", "contains", "structured"]);
 				if (
 					unit.unit !== index + 1 ||
-					!OPS.includes(unit.op as CloudCompanyFolderUnit["op"]) ||
+					!OPS.includes(unit.op as CloudCompanyFolderOp) ||
 					typeof unit.path !== "string" ||
 					(unit.to !== undefined && typeof unit.to !== "string") ||
 					(unit.contains !== undefined && (unit.op !== "new_folder" || !Array.isArray(unit.contains))) ||
@@ -1486,19 +1506,23 @@ export class CloudCompanyFolderClient {
 					invalid();
 				return {
 					unit: index + 1,
-					op: unit.op as CloudCompanyFolderUnit["op"],
+					op: unit.op as CloudCompanyFolderOp,
 					path: unit.path,
 					to: (unit.to as string | undefined) ?? null,
 					items: unit.items === undefined ? null : counter(unit.items),
 					contains: ((unit.contains as unknown[] | undefined) ?? []).map((entry) => {
-						const contained = record(entry, ["path", "kind"]);
+						const contained = record(entry, ["path", "kind"], ["target"]);
 						if (
 							typeof contained.path !== "string" ||
 							!contained.path ||
-							(contained.kind !== "file" && contained.kind !== "folder")
+							(contained.kind !== "file" && contained.kind !== "folder" && contained.kind !== "symlink") ||
+							(contained.kind === "symlink") !== (contained.target !== undefined) ||
+							(contained.target !== undefined && !linkTarget(contained.target))
 						)
 							invalid();
-						return { path: contained.path, kind: contained.kind };
+						return contained.kind === "symlink"
+							? { path: contained.path, kind: "symlink", target: contained.target as string }
+							: { path: contained.path, kind: contained.kind };
 					}),
 					structured: ((unit.structured as unknown[] | undefined) ?? []).map((file) => {
 						const entry = record(file, ["path", "kind", "parse"]);
@@ -1681,8 +1705,8 @@ export class CloudCompanyFolderClient {
 		return input.status as (typeof PROPOSAL_STATUSES)[number];
 	}
 
-	/** A file's text, checked against its entry, or null when nothing is at the path. A folder, a file larger than
-	 * `maxBytes`, or bytes that are not UTF-8 text are not text here. */
+	/** A file's text, checked against its entry, or null when nothing is at the path. A folder, a link (not followed),
+	 * a file larger than `maxBytes`, or bytes that are not UTF-8 text are not text here. */
 	async readText(
 		path: string,
 		maxBytes: number,
@@ -1691,6 +1715,7 @@ export class CloudCompanyFolderClient {
 		if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new Error("Invalid Company folder text bound");
 		const { entry: found } = await this.read(path, signal);
 		if (!found) return null;
+		if (found.kind === "symlink") throw new CloudCompanyPathNotText("Company folder path is a link");
 		if (found.kind !== "file") throw new CloudCompanyPathNotText("Company folder path is a folder");
 		if (found.file.bytes > maxBytes)
 			throw new CloudCompanyPathNotText("Company folder file is larger than text here");

@@ -74,6 +74,7 @@ describe("reading a state file", () => {
 									executable: false,
 								}
 							: null,
+					target: null,
 				},
 			})),
 			readFile: vi.fn(async () => bytes),

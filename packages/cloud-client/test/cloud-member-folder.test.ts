@@ -72,6 +72,32 @@ describe("member folder answers", () => {
 		expect(() => parseCloudMemberFolderRead({ schema: "qorpera.folder-read/v1", asOfSeq: 9, found: true })).toThrow();
 	});
 
+	it("reads a link with the target it holds, and refuses a target out of the core's bounds or on another kind", () => {
+		const read = (entry: unknown) =>
+			parseCloudMemberFolderRead({ schema: "qorpera.folder-read/v1", asOfSeq: 9, found: true, entry }).entry;
+		const bare = { path: "docs/latest", kind: "symlink", version, seq: 5, updatedAt: at };
+		const link = { ...bare, target: "../q3 plan.md" };
+		expect(read(link)).toEqual({ ...link, file: null });
+		// The bound is 4,095 bytes, not characters.
+		expect(read({ ...link, target: `${"é".repeat(2047)}x` })?.target).toHaveLength(2048);
+		expect(read({ path: "notes", kind: "folder", version, seq: 1, updatedAt: at })?.target).toBeNull();
+		const listed = parseCloudMemberFolderList(
+			{ schema: "qorpera.folder-list/v1", asOfSeq: 3, entries: [link], next: null },
+			2,
+		);
+		expect(listed.entries[0]?.target).toBe("../q3 plan.md");
+		for (const bad of [
+			bare,
+			{ ...link, target: "" },
+			{ ...link, target: "é".repeat(2048) },
+			{ ...link, target: 7 },
+			{ ...link, ...fileFields },
+			{ path: "notes", kind: "folder", version, seq: 1, updatedAt: at, target: "a" },
+			{ path: "notes/a.txt", kind: "file", version, seq: 4, updatedAt: at, ...fileFields, target: "a" },
+		])
+			expect(() => read(bad)).toThrow("Invalid company folder entry");
+	});
+
 	it("pages a listing only when it is full, from its last path", () => {
 		const entries = ["a", "b"].map((name) => ({ path: name, kind: "folder", version, seq: 1, updatedAt: at }));
 		expect(
@@ -258,6 +284,65 @@ describe("member folder answers", () => {
 				more: false,
 			}).resync,
 		).toBe(true);
+	});
+
+	it("reads a link's versions and changes with the target each holds, and a link's delete without one", () => {
+		const version3 = "63000000-0000-4000-8000-0000000000a3";
+		const path = "docs/latest";
+		const by = { kind: "member", userId: member };
+		const deleted = { version, seq: 9, op: "delete", kind: "symlink", path, at, by };
+		const linked = { version: version2, seq: 7, op: "write", kind: "symlink", path, at, by, target: "a.md" };
+		const written = { version: version3, seq: 4, op: "write", kind: "file", path, at, by, ...fileFields };
+		const history = (items: unknown[]) =>
+			parseCloudMemberFolderPathHistory(
+				{ schema: "qorpera.folder-path-history/v1", asOfSeq: 9, items, next: null },
+				10,
+			);
+		const versions = history([deleted, linked, written]).items;
+		expect(versions.map((item) => [item.op, item.kind, item.target, item.file === null])).toEqual([
+			["delete", "symlink", null, true],
+			["write", "symlink", "a.md", true],
+			["write", "file", null, false],
+		]);
+		for (const bad of [
+			{ ...deleted, target: "a.md" },
+			{ version: version2, seq: 7, op: "write", kind: "symlink", path, at, by },
+			{ ...linked, ...fileFields },
+			{ ...written, target: "a.md" },
+		])
+			expect(() => history([bad])).toThrow("Invalid company folder version");
+		const sets = parseCloudMemberFolderHistory({
+			schema: "qorpera.folder-history/v1",
+			asOfSeq: 9,
+			items: [{ seq: 7, at, by, paths: [{ path, op: "write", kind: "symlink", version: version2 }], more: false }],
+			next: null,
+		});
+		expect(sets.items[0]?.paths[0]?.kind).toBe("symlink");
+		const feed = (changes: unknown[]) =>
+			parseCloudMemberFolderChanges({
+				schema: "qorpera.folder-feed/v1",
+				asOfSeq: 9,
+				resync: false,
+				events: [{ seq: 9, kind: "change_set", commitId: version, at, by, changes }],
+				next: { afterSeq: 9, cursor: null },
+				more: false,
+			});
+		const moved = { unitNo: 1, op: "move_in", kind: "symlink", path, version: version2, target: "a.md" };
+		const gone = { unitNo: 2, op: "delete", kind: "symlink", path: "docs/old", version };
+		expect(feed([moved, gone]).events[0]).toMatchObject({
+			changes: [
+				{ op: "move_in", kind: "symlink", target: "a.md", file: null },
+				{ op: "delete", kind: "symlink", target: null, file: null },
+			],
+		});
+		for (const bad of [
+			{ ...gone, target: "a.md" },
+			{ unitNo: 1, op: "write", kind: "symlink", path, version: version2 },
+			{ ...moved, target: "x".repeat(4096) },
+			{ ...moved, ...fileFields },
+			{ unitNo: 1, op: "write", kind: "file", path, version: version2, ...fileFields, target: "a.md" },
+		])
+			expect(() => feed([bad])).toThrow("Invalid company folder feed change");
 	});
 
 	it("names an author exactly", () => {

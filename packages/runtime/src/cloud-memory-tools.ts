@@ -80,7 +80,8 @@ export interface CloudMemoryFact {
 interface NotebookFile {
 	readonly path: string;
 	/** absent keeps the version a deletion left (null if it never existed): recreating the
-	 * file must name it. unreadable is a file that is not notebook text (too large, not UTF-8). */
+	 * file must name it. unreadable is a file that is not notebook text (too large, not UTF-8, or a link, never
+	 * followed). */
 	readonly state: "file" | "absent" | "unreadable";
 	readonly version: string | null;
 	readonly lines: string[];
@@ -513,7 +514,7 @@ export function cloudMemoryTools(
 							saved: false,
 							tier,
 							path,
-							hint: "This notebook file is not plain notes (over 32 KiB or not UTF-8 text), so nothing was written. Ask a member to fix or move it.",
+							hint: "This notebook file is not plain notes (over 32 KiB, not UTF-8 text, or a link), so nothing was written. Ask a member to fix or move it.",
 						});
 					const text = `${[...current.lines, line].join("\n")}\n`;
 					if (Buffer.byteLength(text) > (tier === "profile" ? MAX_PROFILE_BYTES : MAX_FILE_BYTES))
