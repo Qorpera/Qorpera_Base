@@ -574,4 +574,33 @@ begin
 	perform pg_temp.expect(r, 1, 'refused', 'memory_run_log_moved');
 end $$;
 
+-- 7. The index of a log's steps ----------------------------------------------------------------------------------------
+do $$
+declare
+	env constant uuid := '63400000-0000-4000-8000-000000000020'; nora constant uuid := pg_temp.run_id('nora');
+	log constant text := 'agents/nora/memory/thread/runs/' || pg_temp.run_id('nora'); s jsonb; l public.qorpera_memory_run_logs;
+begin
+	-- Steps 0 to 3 are plain and finished, 4 narrow and finished, 5 narrow and pending: needles only for a plain step.
+	perform pg_temp.same((select jsonb_agg(jsonb_build_array(s.j, s.tool, s.call_id, s.needles, s.narrow, s.erased, s.finished,
+		s.block_key) order by s.j) from public.qorpera_memory_run_steps s where s.environment_id = env and s.run_id = nora),
+		jsonb_build_array(
+			jsonb_build_array(0, 'read_file', 'c0', array['contracts', 'contracts/a.md'], false, false, true, log || '/log/00000000.jsonl'),
+			jsonb_build_array(1, 'read_file', 'c1', array[]::text[], false, false, true, log || '/log/00000000.jsonl'),
+			jsonb_build_array(2, 'read_file', 'c2', array[]::text[], false, false, true, log || '/log/00000002.jsonl'),
+			jsonb_build_array(3, 'read_file', 'c3', array[]::text[], false, false, true, log || '/log/00000003.jsonl'),
+			jsonb_build_array(4, 'read_file', 'c4', array[]::text[], true, false, true, log || '/log/00000004.jsonl'),
+			jsonb_build_array(5, 'read_file', 'c5', array[]::text[], true, false, false, log || '/log/00000005.jsonl')),
+		'nora''s steps');
+	-- A row keeps the line's hashes and its block's version.
+	s := public.qorpera_memory_run_step_line(pg_temp.step(0, '{"path":"contracts/a.md"}'));
+	perform pg_temp.same((select jsonb_build_array(r.args_hash, r.line_sha256, r.fixed_sha256, r.block_path_version)
+		from public.qorpera_memory_run_steps r where r.environment_id = env and r.run_id = nora and r.j = 0),
+		jsonb_build_array(s -> 'args_hash', s -> 'line_sha256', s -> 'fixed_sha256', pg_temp.version(log || '/log/00000000.jsonl')),
+		'step 0''s hashes');
+	-- The log counts its steps and knows where it went narrow.
+	select * into l from public.qorpera_memory_run_logs where environment_id = env and run_id = nora;
+	perform pg_temp.same(jsonb_build_array(l.step_count, l.narrow_from, l.narrow), '[6, 4, false]', 'nora''s log, counted');
+	perform pg_temp.same(public.qorpera_memory_run_log_place(env, nora) -> 'last', '5', 'the last step');
+end $$;
+
 rollback;
