@@ -949,7 +949,8 @@ export function canonicalGif(bytes: Uint8Array): {
 /*
  * WebP. The library decodes a canonical still file rebuilt from the original's first image (the only one of a still
  * file, the first frame of an animation, shown alone): a lossless VP8L bitstream alone, or a lossy VP8 one with its
- * ALPH chunk when it has one. Its size is read from the bitstream itself first.
+ * ALPH chunk when it has one. Its size is read from the bitstream itself first. The chunks are walked only up to that
+ * image, at most MAX_WEBP_CHUNKS of them before it, and nothing is kept of the ones skipped.
  */
 function webpRaster(bytes: Uint8Array): Raster {
 	const webp = canonicalWebp(bytes);
@@ -963,47 +964,54 @@ interface RiffChunk {
 	data: Uint8Array;
 }
 
+/** The chunks a WebP may hold before its image (VP8X, ICCP, ANIM, ALPH, and ones this reader skips); more is refused. */
+const MAX_WEBP_CHUNKS = 64;
+const VP8X = 0x56503858;
+const ANMF = 0x414e4d46;
+const VP8L = 0x5650384c;
+const VP8 = 0x56503820;
+const ALPH = 0x414c5048;
+
 /** The canonical WebP the library decodes, and its size. */
 export function canonicalWebp(bytes: Uint8Array): { file: Buffer; width: number; height: number } {
 	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 	if (bytes.byteLength < 12) unreadable("the WebP ends early");
 	const end = 8 + view.getUint32(4, true);
 	if (end > bytes.byteLength || end < 12) unreadable("the WebP ends early");
-	/** The chunks from one offset to another. */
-	const chunks = (from: number, to: number): RiffChunk[] => {
-		const found: RiffChunk[] = [];
-		for (let at = from; at + 8 <= to; ) {
+	/**
+	 * The image among the chunks from one offset to another: the first VP8L or VP8 chunk (or, when `frames`, ANMF), and
+	 * the ALPH chunk before it. The chunks after it are not read, and of the ones before it only their tags and sizes.
+	 */
+	const image = (from: number, to: number, frames: boolean): { tag: number; data: Uint8Array; alpha?: Uint8Array } => {
+		let alpha: Uint8Array | undefined;
+		for (let at = from, skipped = 0; at + 8 <= to; ) {
+			const tag = view.getUint32(at);
 			const size = view.getUint32(at + 4, true);
 			if (at + 8 + size > to) unreadable("the WebP ends early");
-			found.push({
-				tag: String.fromCharCode(...bytes.subarray(at, at + 4)),
-				data: bytes.subarray(at + 8, at + 8 + size),
-			});
+			if (tag === VP8L || tag === VP8 || (frames && tag === ANMF))
+				return { tag, data: bytes.subarray(at + 8, at + 8 + size), alpha };
+			if (++skipped > MAX_WEBP_CHUNKS) unreadable("the WebP has too many chunks before its image");
+			if (tag === ALPH) alpha ??= bytes.subarray(at + 8, at + 8 + size);
 			at += 8 + size + (size & 1);
 		}
-		return found;
+		unreadable("the WebP has no image");
 	};
-	let image = chunks(12, end);
-	const frame = image[0]?.tag === "VP8X" ? image.find((chunk) => chunk.tag === "ANMF") : undefined;
-	if (frame) {
-		if (frame.data.byteLength < 16) unreadable("the WebP's first frame is not valid");
-		const start = frame.data.byteOffset - bytes.byteOffset;
-		image = chunks(start + 16, start + frame.data.byteLength);
+	let found = image(12, end, end >= 20 && view.getUint32(12) === VP8X);
+	if (found.tag === ANMF) {
+		if (found.data.byteLength < 16) unreadable("the WebP's first frame is not valid");
+		const start = found.data.byteOffset - bytes.byteOffset;
+		found = image(start + 16, start + found.data.byteLength, false);
 	}
-	const lossless = image.find((chunk) => chunk.tag === "VP8L");
-	if (lossless) {
-		const data = lossless.data;
+	const data = found.data;
+	if (found.tag === VP8L) {
 		if (data.byteLength < 5 || data[0] !== 0x2f) unreadable("the WebP's image data is not valid");
 		const bits = data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24);
 		if (bits >>> 29 !== 0) unreadable("the WebP's image data is not valid");
 		const width = (bits & 0x3fff) + 1;
 		const height = ((bits >>> 14) & 0x3fff) + 1;
 		checkPixels(width, height);
-		return { file: riff([lossless]), width, height };
+		return { file: riff([{ tag: "VP8L", data }]), width, height };
 	}
-	const lossy = image.find((chunk) => chunk.tag === "VP8 ");
-	if (!lossy) unreadable("the WebP has no image");
-	const data = lossy.data;
 	if (data.byteLength < 10 || data[0] & 1 || data[3] !== 0x9d || data[4] !== 0x01 || data[5] !== 0x2a)
 		unreadable("the WebP's image data is not valid");
 	const width = data[6] | (data[7] << 8);
@@ -1011,13 +1019,13 @@ export function canonicalWebp(bytes: Uint8Array): { file: Buffer; width: number;
 	if (width >> 14 || height >> 14) unreadable("the WebP's image is scaled, which this reader does not support");
 	if (width === 0 || height === 0) unreadable("the WebP has no pixels");
 	checkPixels(width, height);
-	const alpha = image.find((chunk) => chunk.tag === "ALPH");
-	if (!alpha) return { file: riff([lossy]), width, height };
+	const lossy = { tag: "VP8 ", data };
+	if (!found.alpha) return { file: riff([lossy]), width, height };
 	const extended = Buffer.alloc(10);
 	extended[0] = 0x10;
 	extended.writeUIntLE(width - 1, 4, 3);
 	extended.writeUIntLE(height - 1, 7, 3);
-	return { file: riff([{ tag: "VP8X", data: extended }, alpha, lossy]), width, height };
+	return { file: riff([{ tag: "VP8X", data: extended }, { tag: "ALPH", data: found.alpha }, lossy]), width, height };
 }
 
 function riff(chunks: RiffChunk[]): Buffer {

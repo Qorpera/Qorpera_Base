@@ -480,6 +480,28 @@ it("shows a still WebP, and the first frame of an animated one", () => {
 	expect(refusal(webp(["VP8X", extended], ["ANIM", Buffer.alloc(6)])).message).toBe("the WebP has no image");
 });
 
+it("reads a WebP's chunks only up to its image, and refuses one with many chunks before it", () => {
+	const image = webp(["VP8L", vp8l(1, 1, RED)]);
+	/** The image with empty chunks (eight bytes each) before and after it. */
+	const padded = (before: number, after: number) => {
+		const empty = (count: number) => {
+			const run = Buffer.alloc(8 * count);
+			for (let i = 0; i < count; i++) run.write("JUNK", 8 * i, "latin1");
+			return run;
+		};
+		const body = Buffer.concat([empty(before), image.subarray(12), empty(after)]);
+		const head = Buffer.from(image.subarray(0, 12));
+		head.writeUInt32LE(4 + body.byteLength, 4);
+		return Buffer.concat([head, body]);
+	};
+	expect(folderImageView(padded(64, 0))).toMatchObject({ format: "webp", width: 1, height: 1 });
+	expect(refusal(padded(65, 0)).message).toBe("the WebP has too many chunks before its image");
+	// A file under the size cap holds millions of empty chunks: the reader stops at the 65th, and never reads the
+	// ones after the image.
+	expect(refusal(padded(1_000_000, 0)).message).toBe("the WebP has too many chunks before its image");
+	expect(folderImageView(padded(0, 1_000_000))).toMatchObject({ format: "webp", width: 1, height: 1 });
+});
+
 it("reads and converts one image at a time, and a call that stops waiting never runs", async () => {
 	const order: string[] = [];
 	let open = () => {};
