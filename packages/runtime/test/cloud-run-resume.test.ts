@@ -32,6 +32,7 @@ function row(j: number, result: unknown = { ok: true }): Record<string, unknown>
 		result,
 		reads: [],
 		releases: [],
+		paths: [],
 		text: "",
 		at: "2026-10-09T12:00:00Z",
 	};
