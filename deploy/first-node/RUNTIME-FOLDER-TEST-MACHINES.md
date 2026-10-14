@@ -113,7 +113,7 @@ is the machine's `started_by_staff_agent_id` and the member it acted for, `reque
 and the member read the company folder's root now. The test is made at each boot, so a starter whose authority widens
 gets `/company` at the machine's next boot, and one whose authority narrows loses it (renew, below).
 
-**The view.** Each boot that passes has one open `test_machine` view (C1b-3 §1: "one open view … per test machine";
+**The view.** Each boot that passes has one open `test_machine` view (C1b-3 §1: "One open view per screen, per coding session, and later per test machine";
 the partial unique index on `(company_machine_id) where state='open'`, new in 6a). The executor opens it right after
 `qorpera_mark_company_machine_running` records the boot, in its own transaction (C1b-3 §5), with the opener
 `{"kind":"platform"}` and the anchor `{companyMachineId, placementId, bootId}`. The open takes the machine fence
@@ -175,8 +175,8 @@ mount propagation proof for a container started before the mount came up.
 - **Links and special files** (items 4–6) are the folder program's and the service's, from the links slices (step 4's
   links lane), so a test machine gets them with the program.
 - **Item 8's caches** stay on the machine's disk: "The folder program keeps item 8's caches on the machine." Step 6
-  uses that part of the program as whichever slice builds it first leaves it ("whichever of it and 5d lands first
-  builds the program's part"). 6e, which retires the copy to the machine's disk, waits for it.
+  uses that part of the program as whichever slice builds it first leaves it (step 5's plan: "whichever of it and 5d
+  lands first builds the program's part, and the other reuses it"). 6e, which retires the copy to the machine's disk, waits for it.
 - **The toolbox** (item 7): "Agents' own machines and test machines start from a base image that carries it." 6c adds
   to `build-machine-image.sh` what today's image lacks of 4e's list (`tsc` and `tsx`, uv, ripgrep, fd, sqlite3, zip and
   LibreOffice), with `fuse3` and the folder program, in a new image generation. The image tests are 4e's: every
@@ -214,6 +214,10 @@ made under one command next to a change made while two ran. Crediting every unit
 whenever the second command's agent may not change it, and would misname its saver. Per-unit credits keep the design's
 rule ("it can misname the saver, never widen the view") as close as the windows allow (amended below).
 
+**A unit that needs the automatic review** is reviewed through the actor's run when that run is live, as a view
+resolving to a live run is (C1b-3 §7). Otherwise it gets `review_required`, and C2 parks it until that agent's next turn
+for the same member (design: "waits for that agent's next turn … and the agent is told").
+
 **Changes made while no command runs** (a Docker container, a program a command left outside its unit, root's
 timers) go to the starter "at the next publish or at stop" (design).
 
@@ -249,7 +253,8 @@ company machine is the company's own scratch compute").
 - **A boot without `/company`.** Read with item 10, the design leaves such a machine's commands unreviewed. This plan
   reviews every `machine_run` instead (Q2), for three reasons. `cloudActionEffect` is a pure function of the tool and
   its arguments, and whether a machine has `/company` is decided per boot, so it can change between the review and the
-  start. A machine's disk may still hold copies of company files from an earlier boot that had `/company`. And a
+  start. Commands of an earlier boot that had `/company` may have copied company files to the disk (the platform keeps
+none there, "Nothing on a node", but root can copy). And a
   folderless machine is still a networked command run on the company's behalf. If the coordinator keeps the design's
   reading, 6d instead classes the call from the machine's state at the call, and `qorpera_authorize_machine_command`
   refuses an unreviewed start on a boot that has a view.
