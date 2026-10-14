@@ -34,6 +34,9 @@ The wrapper:
   (`-d root,size=81GiB`, since A1's disk is 80 GiB; the dir pool keeps it sparse);
 - installs nothing in the guest. It loads the FUSE module only inside the nested
   VM, and only if `/dev/fuse` is missing (`fuse: loaded`, else `present`);
+- logs the office service's state after boot. A1 starts its office at boot, and
+  with no boot credentials `Restart=on-failure` can hold it in auto-restart. Only
+  that loop is stopped, and the log says so;
 - builds the folder program and requires its sha256 to match
   `deploy/folder-service/folder-program-linux-x64.json`;
 - runs `scripts/test-office-folder-remount.mjs --execute` against the VM.

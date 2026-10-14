@@ -131,6 +131,14 @@ else
 	lx exec "$vm" -- test -c /dev/fuse
 	fuse=loaded
 fi
+# A1 starts its office at boot. With no boot credentials it fails, and Restart=on-failure can hold it in auto-restart.
+# Only that loop is stopped; the launcher still refuses an office that runs, or any credential or boot name.
+office_state=$(lx exec "$vm" -- systemctl show -p ActiveState,SubState --value qorpera-company-computer.service | paste -sd/ -)
+echo "Office service after boot: $office_state"
+if [[ "$office_state" == activating/auto-restart ]]; then
+	lx exec "$vm" -- systemctl stop qorpera-company-computer.service
+	echo "Office service stopped out of its auto-restart loop: $(lx exec "$vm" -- systemctl show -p ActiveState,SubState --value qorpera-company-computer.service | paste -sd/ -)"
+fi
 
 cd "$repo"
 node scripts/build-folder-program.mjs --out "$work/qorpera-folder" >"$work/build-record.json"
