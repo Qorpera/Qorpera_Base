@@ -41,8 +41,9 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
          --allow-secrets            copy untracked files that look like secrets (.env*, *.pem, keys)
          --base REF                 compare against REF for changed (default: origin/master)
          --machine NAME             run on this machine only (node02, node01)
-         --tree NAME                copy against the machine's shared base copy NAME, not this checkout's own
-                                    (for checkouts made fresh per run, such as pr-loop's merged trees)
+         --tree NAME                copy against the machine's shared base copy NAME, not this checkout's own,
+                                    comparing file contents (for checkouts made fresh per run, such as
+                                    pr-loop's merged trees)
          --no-status                do not post the result as a GitHub status on the commit
          --dry-run                  print what would run and where, change nothing
 
@@ -130,7 +131,8 @@ export function parseArgs(argv) {
 			if (value === undefined) throw new Error(`${flag} needs a value`);
 			if (flag === "--record") options.record = value;
 			else if (flag === "--tree") {
-				if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)) throw new Error(`Invalid --tree ${value}`);
+				// Never NAME.lock: that is the lock file of the base copy NAME.
+				if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value) || value.endsWith(".lock")) throw new Error(`Invalid --tree ${value}`);
 				options.tree = value;
 			}
 			else if (flag === "--machine") {
@@ -278,11 +280,18 @@ export function pruneScript() {
 	].join("\n");
 }
 
+/** How rsync tells a file equal to the base copy's. A checkout's own base copy holds only its earlier files,
+ * so rsync's quick check (size and mtime) is enough. A shared one (--tree) holds other checkouts' files, where
+ * an equal size and mtime proves nothing (fresh checkouts made in the same second), so it compares contents. */
+export function baseCopyCompare(shared) {
+	return shared ? ["--checksum"] : [];
+}
+
 /** One ssh session: refresh the base copy, take a free runner user under a lock held until the
  * session ends, hand it the run directory, then install and run as that user. The status file
  * carries the runner user and times back to the record. Exit codes 90 (install or build) and 91-94
  * (harness: cd, runner user, chown, CPU slot) are recorded as setup-failed. */
-export function runScript({ run, runDir, treeDir, files, copySeconds, install, build, runCommand }) {
+export function runScript({ run, runDir, treeDir, shared = false, files, copySeconds, install, build, runCommand }) {
 	const status = `${runDir}/.run-on-node-status`;
 	const queue = "/run/lock/qorpera-test-machine-queue";
 	const inner = [
@@ -306,7 +315,7 @@ export function runScript({ run, runDir, treeDir, files, copySeconds, install, b
 	return [
 		"set -uo pipefail",
 		// The base copy is only a cache: a busy or failed refresh never fails the run.
-		`flock -w 60 ${treeDir}.lock rsync -a --delete ${runDir}/ ${treeDir}/ || echo "== run-on-node: base copy refresh skipped"`,
+		`flock -w 60 ${treeDir}.lock ${["rsync", "-a", "--delete", ...baseCopyCompare(shared), `${runDir}/`, `${treeDir}/`].join(" ")} || echo "== run-on-node: base copy refresh skipped"`,
 		// Arrival-ordered queue for the CPU slots: a ticket per waiting run, its name sorting by arrival.
 		// The run holds a lock on its own ticket (fd 7) while it waits, so a ticket nobody holds belongs
 		// to a run that died, whatever its pid became; it is dropped. Only the first ticket may take a
@@ -728,6 +737,7 @@ async function main() {
 				"-a",
 				"--prune-empty-dirs",
 				`--filter=merge ${rules}`,
+				...baseCopyCompare(Boolean(options.tree)),
 				`--copy-dest=${treeDir}/`,
 				// The base copy is read under a shared lock; its refresh below takes the exclusive one.
 				`--rsync-path=flock -s ${treeDir}.lock rsync`,
@@ -778,6 +788,7 @@ async function main() {
 			run,
 			runDir,
 			treeDir,
+			shared: Boolean(options.tree),
 			files: files.length,
 			copySeconds: (synced - copyStarted) / 1000,
 			install: options.install,
