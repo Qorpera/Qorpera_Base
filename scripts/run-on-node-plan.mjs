@@ -23,8 +23,6 @@ const FUNCTION_TESTS = [
 	"supabase/functions/computer-billing/computer-billing.test.ts",
 	"supabase/functions/_shared/computer-hour-notices.test.ts",
 	"supabase/functions/chatgpt-plan-callback/chatgpt-plan-callback.test.ts",
-	"supabase/functions/company-file-verifier/object-loader.test.ts",
-	"supabase/functions/company-file-verifier/company-file-verifier.test.ts",
 	"supabase/functions/runner-orchestrator/runner-orchestrator.test.ts",
 	"supabase/functions/event-intake/event-intake.test.ts",
 	"supabase/functions/mail-intake/mail-intake.test.ts",

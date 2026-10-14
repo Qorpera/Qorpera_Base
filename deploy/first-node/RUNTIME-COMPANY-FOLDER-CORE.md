@@ -1063,8 +1063,8 @@ the old code until the reset, so it is removed in C6:
     20260930410000, with the workspace ensure and the lists);
   - `submit/rebase/accept_company_proposal` (dropped by D2 too), the runner
     revision lane;
-  - `promote_company_file_graph_to_supabase`;
-  - the `company-file-verifier` edge function;
+  - `promote_company_file_graph_to_supabase` and the `company-file-verifier`
+    edge function (both gone with legacy sweep E2, 20260930502000);
   - the desktop callers in `cloud-client/src/hosted-primary.ts`.
 - **Code that exists only for the head:**
   - the head and workspace guard triggers;

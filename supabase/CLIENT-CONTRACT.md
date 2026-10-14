@@ -75,7 +75,7 @@ they answer 42501 "native host call is refused".
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-119 functions, grouped for navigation. Signatures: see the migration that defines each.
+113 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
@@ -229,26 +229,22 @@ they answer 42501 "native host call is refused".
 - `qorpera_set_provider_connection_status`
 
 
-### Objects, artifacts, retention (6)
+### Objects, artifacts, retention (1)
 
-A folder-v2 company keeps its bytes in its company folder and has no artifacts: `qorpera_complete_object_reachability_graph`
-answers 0A000 for it (20260930041000). The artifact registration, index, retention hold and GC plan functions went
-with legacy sweep E1 (20260930400000).
+A folder-v2 company keeps its bytes in its company folder and has no artifacts. The artifact registration, index,
+retention hold and GC plan functions went with legacy sweep E1 (20260930400000), and the reachability graph and restore
+proof functions with E2 (20260930502000).
 The raw object reads and uploads by hash and the read lease went with legacy sweep E3 (20260930450000).
 
-- `qorpera_append_object_reachability_entries`
-- `qorpera_begin_object_reachability_graph`
-- `qorpera_complete_object_reachability_graph`
-- `qorpera_create_object_restore_proof`
-- `qorpera_get_object_reachability_graph`
 - `qorpera_profile_object_writes_allowed`
 
 
-### Company File and snapshots (3)
+### Company File (2)
+
+`qorpera_get_company_snapshot` went with legacy sweep E2 (20260930502000).
 
 - `qorpera_company_uses_path_gateway`
 - `qorpera_get_company_file`
-- `qorpera_get_company_snapshot`
 
 
 ### Organization and staff (4)
@@ -1203,8 +1199,8 @@ machine.
   an `email.received` without a valid message id), 401 (bad or stale
   signature), 405, 413 (over 64 KiB), 429 (a mailbox over its limits, with
   `Retry-After`) or 503 (mail switched off, or retry).
-- `profile-invitation-email`, `company-file-verifier`, `artifact-gc-worker`,
-  `runner-control`, `runner-broker`, `runner-orchestrator`,
+- `profile-invitation-email`, `artifact-gc-worker`, `runner-control`,
+  `runner-broker`, `runner-orchestrator`,
   `computer-hour-notices` (20260928249160, founders' hour emails),
   `mail-outbox` (20260928309740, email agents send from company mailboxes) —
   service or runner authority only. Clients never call them.
