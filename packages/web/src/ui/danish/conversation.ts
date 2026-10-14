@@ -426,4 +426,30 @@ export const CONVERSATION: Record<string, string> = {
 	"a test machine": "en testmaskine",
 	"the agent's workspace": "agentens arbejdsområde",
 	"More saved changes wait after these.": "Flere gemte ændringer venter efter disse.",
+
+	// An agent's interface change, with Undo (ui/interface-change-line.ts)
+	"the interface “{name}”": "interfacet “{name}”",
+	"the table “{name}”": "tabellen “{name}”",
+	"the order of the interfaces": "rækkefølgen af interfaces",
+	"made {things}": "oprettede {things}",
+	"changed {things}": "ændrede {things}",
+	"deleted {things}": "slettede {things}",
+	"1 other change": "1 anden ændring",
+	"{count} other changes": "{count} andre ændringer",
+	Undo: "Fortryd",
+	"Undoing…": "Fortryder…",
+	"Undo: {change}": "Fortryd: {change}",
+	"Undone.": "Fortrudt.",
+	"Not undone: it changed again since.": "Ikke fortrudt: det er ændret igen siden.",
+	"This change is too large to undo here. Ask the agent to change it back.":
+		"Ændringen er for stor til at fortryde her. Bed agenten om at ændre det tilbage.",
+	"This change can't be undone here. Ask the agent to change it back.":
+		"Ændringen kan ikke fortrydes her. Bed agenten om at ændre det tilbage.",
+	"You don't have access to change this.": "Du har ikke adgang til at ændre dette.",
+	"The Company File refused it.": "Virksomhedsfilen afviste det.",
+	"It changed again since.": "Det er ændret igen siden.",
+	"It wasn't saved.": "Det blev ikke gemt.",
+	"Undone in part. {reason}": "Delvist fortrudt. {reason}",
+	"Not undone. {reason}": "Ikke fortrudt. {reason}",
+	"Could not undo. Try again.": "Kunne ikke fortryde. Prøv igen.",
 };
