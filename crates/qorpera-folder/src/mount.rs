@@ -95,6 +95,9 @@ pub struct Options {
 	/// The folder the mount's version map is kept in (under /run/qorpera-folder/), so a program started again for the
 	/// mount bases saves on what was read before; None keeps it in memory.
 	pub state: Option<PathBuf>,
+	/// The read journal the caller already opened in `state` (the CLI does, to check the view proof). Only a writable
+	/// view logs its reads: a read-only one hands none over, so its journal would never be emptied. None opens it here.
+	pub reads: Option<Arc<ReadLog>>,
 }
 
 /// Why the program stopped.
@@ -1222,7 +1225,7 @@ pub enum Failed {
 
 /// Mounts the view and serves it until a signal, the view's end, or an unmount. Returns why it stopped. The caller
 /// holds the state's daemon.lock.
-pub fn run(mut link: Link, options: Options) -> Result<Stop, Failed> {
+pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 	let signals = block_stop_signals();
 	// Open the feed before anything is listed, so no change after the first listing can be missed. This
 	// also checks the view: a refused view never gets mounted.
@@ -1235,10 +1238,15 @@ pub fn run(mut link: Link, options: Options) -> Result<Stop, Failed> {
 	})?;
 	let writable = !ok.read_only;
 	if writable && !link.has_reads() {
-		let dir = options.state.as_ref().ok_or_else(|| Failed::Other("a writable mount needs its private state directory".into()))?;
-		// Open the journal before the version map creates files: only unused state can start a new read sequence.
-		let reads = ReadLog::open(dir, true).map_err(|e| Failed::Other(format!("read journal: {e}")))?;
-		link = link.with_reads(Arc::new(reads));
+		let reads = match options.reads.take() {
+			Some(reads) => reads,
+			None => {
+				let dir = options.state.as_ref().ok_or_else(|| Failed::Other("a writable mount needs its private state directory".into()))?;
+				// Open the journal before the version map creates files: only unused state can start a new read sequence.
+				Arc::new(ReadLog::open(dir, true).map_err(|e| Failed::Other(format!("read journal: {e}")))?)
+			}
+		};
+		link = link.with_reads(reads);
 	}
 	if writable {
 		// The caller holds the state's daemon.lock: what an earlier program left open goes before a file is served here.

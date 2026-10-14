@@ -142,8 +142,9 @@ fn mount(args: &[String]) -> Result<ExitCode, Usage> {
 		Ok(prepared) => prepared,
 		Err(e) => { eprintln!("qorpera-folder: private mount state: {e}"); return Ok(ExitCode::FAILURE); }
 	};
-	let link = link::Link::new(addr, view, threads).with_reads(reads).with_view_file(store, true, false);
-	let options = mount::Options { mountpoint, threads, ttl: Duration::from_secs(ttl), allow_other, owner, state: Some(state) };
+	// The journal goes to the mount, which logs reads only once the node says the view can write.
+	let link = link::Link::new(addr, view, threads).with_view_file(store, true, false);
+	let options = mount::Options { mountpoint, threads, ttl: Duration::from_secs(ttl), allow_other, owner, state: Some(state), reads: Some(reads) };
 	match mount::run(link, options) {
 		Ok(mount::Stop::ViewClosed) => {
 			eprintln!("qorpera-folder: the node closed the view; unmounted");
