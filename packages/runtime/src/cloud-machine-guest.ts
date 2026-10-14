@@ -857,8 +857,10 @@ export async function executeMachineCommand(commandId: string, ports: MachineGue
 // LXD config, a unit's environment or a log. The folder program reads a view only from a file, so the view goes to one
 // root-only file in /run, which is memory (refused when it is not), next to the program's state folder. One static
 // unit (deploy/machine/qorpera-machine-folder.service) runs the program at /company, where every command and container
-// sees it, and systemd starts it again whenever it exits until it exits 3 (the node closed or refused the view). One
-// view per boot: handing the same view again only starts the program if it was stopped.
+// sees it, and systemd starts it again whenever it exits until it exits 3 (the node closed or refused the view). The
+// newest view wins, as the platform's open supersedes the one before (the executor opens again after its restart, or
+// after the view lapsed): handing the same view again only starts the program if it was stopped; another view stops
+// it, takes its mount away and starts it on the new view with an empty state folder.
 export const MACHINE_FOLDER = Object.freeze({
 	root: "/run/qorpera-folder",
 	mountpoint: "/company",
@@ -942,8 +944,18 @@ function mountOf(mountinfo: string, path: string): { mountpoint: string; fstype:
 	return top;
 }
 
-/** Shows the boot's view at /company: writes it to the folder's private file
- * in memory, then starts the program's unit and waits for the mount. */
+/** Whether the view held is exactly this one; a held file in any other shape is not. */
+function sameFolderView(held: unknown, view: FolderView): boolean {
+	try {
+		const known = folderView(held);
+		return known.environmentId === view.environmentId && known.viewId === view.viewId && known.pass === view.pass;
+	} catch {
+		return false;
+	}
+}
+
+/** Shows the boot's newest view at /company: writes it to the folder's private
+ * file in memory, then starts the program's unit and waits for the mount. */
 export async function mountMachineFolder(input: Buffer, ports: MachineGuestPorts = {}): Promise<MachineFolderAnswer> {
 	requireRoot(ports);
 	const view = parseFolderView(input);
@@ -955,26 +967,13 @@ export async function mountMachineFolder(input: Buffer, ports: MachineGuestPorts
 	const mountinfo = ports.readMountinfo ?? (() => readFile("/proc/self/mountinfo", "utf8"));
 	if (mountOf(await mountinfo(), root)?.fstype !== "tmpfs") throw new Error("MACHINE_FOLDER_NOT_IN_MEMORY");
 	await mkdir(root, { recursive: true, mode: 0o700 });
-	const held = await missing(() => readJson(file, FOLDER_VIEW_MAX_BYTES));
-	if (held === undefined) {
-		// The program's version map and read log start only in an empty state folder.
-		await rm(state, { recursive: true, force: true });
-		await mkdir(state, { mode: 0o700 });
-		await writeJson(file, view, 0o600);
-	} else {
-		const known = folderView(held);
-		if (known.environmentId !== view.environmentId || known.viewId !== view.viewId || known.pass !== view.pass)
-			throw new Error("MACHINE_FOLDER_VIEW_TAKEN");
-	}
-	await mkdir(mountpoint, { recursive: true, mode: 0o755 });
 	const run = ports.system ?? system;
-	await run("/usr/bin/systemctl", ["start", MACHINE_FOLDER.unit]);
-	// The unit is up once the program runs (Type=exec); the mount comes after the node accepts the view.
-	for (let poll = 0; ; poll += 1) {
+	const programMounted = async () => {
 		const top = mountOf(await mountinfo(), mountpoint);
-		if (top?.mountpoint === mountpoint && top.fstype === "fuse.qorpera" && top.source === "qorpera-company")
-			return { schema: "qorpera.machine-guest-folder/v1", viewId: view.viewId, mount: "mounted" };
-		const fields = Object.fromEntries(
+		return top?.mountpoint === mountpoint && top.fstype === "fuse.qorpera" && top.source === "qorpera-company";
+	};
+	const unitState = async (): Promise<Record<string, string>> =>
+		Object.fromEntries(
 			(
 				await run("/usr/bin/systemctl", [
 					"show",
@@ -986,6 +985,30 @@ export async function mountMachineFolder(input: Buffer, ports: MachineGuestPorts
 				.split("\n")
 				.map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
 		);
+	const held = await missing(() => readJson(file, FOLDER_VIEW_MAX_BYTES));
+	if (held === undefined || !sameFolderView(held, view)) {
+		if (held !== undefined) {
+			// The newest view wins: the program of the view before stops, and its mount goes with it (ExecStopPost). A
+			// program that exited 3 stays failed; reset, it starts again. Only a failed unit: systemd may unload a
+			// stopped one, and resetting a unit not loaded fails.
+			await run("/usr/bin/systemctl", ["stop", MACHINE_FOLDER.unit]);
+			if ((await unitState()).ActiveState === "failed")
+				await run("/usr/bin/systemctl", ["reset-failed", MACHINE_FOLDER.unit]);
+			if (await programMounted()) throw new Error("MACHINE_FOLDER_STILL_MOUNTED");
+		}
+		// The program's version map and read log start only in an empty state folder: a view before's never carry (SQL
+		// carries the read set).
+		await rm(state, { recursive: true, force: true });
+		await mkdir(state, { mode: 0o700 });
+		await writeJson(file, view, 0o600);
+	}
+	await mkdir(mountpoint, { recursive: true, mode: 0o755 });
+	await run("/usr/bin/systemctl", ["start", MACHINE_FOLDER.unit]);
+	// The unit is up once the program runs (Type=exec); the mount comes after the node accepts the view.
+	for (let poll = 0; ; poll += 1) {
+		if (await programMounted())
+			return { schema: "qorpera.machine-guest-folder/v1", viewId: view.viewId, mount: "mounted" };
+		const fields = await unitState();
 		// Exit 3: the node closed or refused the view, and systemd does not start the program again.
 		if (
 			fields.ActiveState === "failed" &&

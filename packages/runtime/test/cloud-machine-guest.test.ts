@@ -550,10 +550,25 @@ async function folderMachine() {
 		`25 22 0:24 / ${join(m.root, "run")} rw,nosuid,nodev shared:5 - tmpfs tmpfs rw,size=1638400k,mode=755`,
 	];
 	const program = { answer: "mount" as "mount" | "close" | "silent", starts: 0, state: "ActiveState=inactive\n" };
+	/** What the unit's view file and state folder held at each stop and start. */
+	const seen: { command: string; view: unknown; state: string[] }[] = [];
 	const delegate = m.system;
 	const system = vi.fn(async (executable: string, args: readonly string[]) => {
 		if (executable !== "/usr/bin/systemctl" || args[1] !== MACHINE_FOLDER.unit) return delegate(executable, args);
-		if (args[0] === "start") {
+		if (args[0] === "start" || args[0] === "stop")
+			seen.push({
+				command: args[0],
+				view: JSON.parse(await readFile(join(folderRoot, "view.json"), "utf8")),
+				state: (await readdir(join(folderRoot, "state"))).sort(),
+			});
+		if (args[0] === "stop") {
+			// The program ends and ExecStopPost takes its mount away; a failed unit stays failed.
+			const at = mounts.findIndex((line) => line.includes(" fuse.qorpera "));
+			if (at >= 0) mounts.splice(at, 1);
+			if (!program.state.startsWith("ActiveState=failed")) program.state = "ActiveState=inactive\n";
+		} else if (args[0] === "reset-failed") {
+			if (program.state.startsWith("ActiveState=failed")) program.state = "ActiveState=inactive\n";
+		} else if (args[0] === "start") {
 			program.starts += 1;
 			if (program.answer === "mount") {
 				mounts.push(
@@ -579,10 +594,27 @@ async function folderMachine() {
 		mounts.splice(mounts.findIndex((line) => line.includes(" fuse.qorpera ")));
 		program.state = "ActiveState=activating\nResult=exit-code\nExecMainCode=2\nExecMainStatus=9\n";
 	};
-	return { ...m, system, folderRoot, mountpoint, mounts, program, exited };
+	return { ...m, system, folderRoot, mountpoint, mounts, program, seen, exited };
 }
 function aView() {
 	return { environmentId: randomUUID(), viewId: randomUUID(), pass: `qfp_${randomUUID().replaceAll("-", "")}` };
+}
+/** What the helper told systemd to do with the folder's unit, in order (its looks left out). */
+function unitCommands(m: Awaited<ReturnType<typeof folderMachine>>): string[] {
+	return m.system.mock.calls
+		.filter(([executable, args]) => executable === "/usr/bin/systemctl" && args[1] === MACHINE_FOLDER.unit)
+		.map(([, args]) => args[0])
+		.filter((command) => command !== "show");
+}
+/** `folder-mount` as the executor runs it: the view on exec stdin, the answer in the nonce's reply file. */
+async function runMachineGuestCliWithInput(
+	m: Awaited<ReturnType<typeof folderMachine>>,
+	view: ReturnType<typeof aView>,
+): Promise<unknown> {
+	m.ports.readInput = async () => Buffer.from(JSON.stringify(view));
+	const nonce = randomUUID();
+	expect(await runMachineGuestCli([nonce, "folder-mount"], m.ports)).toBe(0);
+	return JSON.parse(await readFile(join(m.root, "run", "replies", `${nonce}.json`), "utf8"));
 }
 /** Every file below a folder. */
 async function filesBelow(folder: string): Promise<string[]> {
@@ -600,9 +632,11 @@ describe("company folder on the machine", () => {
 		const input = vi.fn(async (_maxBytes: number) => Buffer.from(JSON.stringify(view)));
 		m.ports.readInput = input;
 		const nonce = randomUUID();
+		let output = "";
 		try {
 			expect(await runMachineGuestCli([nonce, "folder-mount"], m.ports)).toBe(0);
 		} finally {
+			output = JSON.stringify(printed.map((spy) => spy.mock.calls));
 			for (const spy of printed) spy.mockRestore();
 		}
 		expect(input).toHaveBeenCalledWith(4096);
@@ -632,7 +666,7 @@ describe("company folder on the machine", () => {
 					executable !== "/usr/bin/systemctl" || args.some((arg) => /env|credential/i.test(arg)),
 			),
 		).toBe(false);
-		for (const spy of printed) expect(JSON.stringify(spy.mock.calls)).not.toContain(view.pass);
+		expect(output).not.toContain(view.pass);
 		expect(JSON.stringify(process.env)).not.toContain(view.pass);
 		// The unit reads the pass only from that file: no environment of its own, and the paths are the helper's.
 		const unit = await readFile(FOLDER_UNIT, "utf8");
@@ -669,14 +703,9 @@ describe("company folder on the machine", () => {
 		// Handing the same view again (the executor checking on its machine) starts a stopped program and keeps the rest.
 		expect(await mountMachineFolder(Buffer.from(JSON.stringify(view)), m.ports)).toMatchObject({ mount: "mounted" });
 		expect(m.program.starts).toBe(2);
+		expect(unitCommands(m)).toEqual(["start", "start"]);
 		expect(await readFile(join(m.folderRoot, "state", "versions"), "utf8")).toBe("kept");
 		expect(JSON.parse(await readFile(join(m.folderRoot, "view.json"), "utf8"))).toEqual(view);
-		// One view per boot: another view, or this view with another pass, is refused and changes nothing.
-		for (const other of [{ ...view, viewId: randomUUID() }, { ...view, pass: aView().pass }, aView()])
-			await expect(mountMachineFolder(Buffer.from(JSON.stringify(other)), m.ports)).rejects.toThrow(
-				"MACHINE_FOLDER_VIEW_TAKEN",
-			);
-		expect(m.program.starts).toBe(2);
 		// The node closed the view: the program exits 3 and is not started again.
 		m.exited();
 		m.program.answer = "close";
@@ -692,6 +721,89 @@ describe("company folder on the machine", () => {
 			mount: "unanswered",
 		});
 		expect(silent.system.mock.calls.filter(([, args]) => args[0] === "show")).toHaveLength(100);
+	});
+
+	it("lets a newer view replace the one before in the same boot: stopped, state emptied, the new file, started", async () => {
+		// The platform's open supersedes the machine's open view, even on the same boot: the executor opens again after
+		// its restart (it never gets the old pass back) or after the view lapsed.
+		const m = await folderMachine();
+		const view = aView();
+		const printed = [vi.spyOn(process.stdout, "write"), vi.spyOn(process.stderr, "write"), vi.spyOn(console, "log")];
+		const views = [view];
+		let output = "";
+		try {
+			expect(await mountMachineFolder(Buffer.from(JSON.stringify(view)), m.ports)).toMatchObject({
+				mount: "mounted",
+			});
+			// Another view, the same view with another pass, a view of another environment: each replaces the one held.
+			for (const next of [{ ...view, viewId: randomUUID() }, { ...view, pass: aView().pass }, aView()]) {
+				const before = views.at(-1)!;
+				await writeFile(join(m.folderRoot, "state", "versions"), "the view before's");
+				const commands = unitCommands(m).length;
+				const answer = await runMachineGuestCliWithInput(m, next);
+				expect(answer).toEqual({
+					schema: "qorpera.machine-guest-folder/v1",
+					viewId: next.viewId,
+					mount: "mounted",
+				});
+				expect(unitCommands(m).slice(commands)).toEqual(["stop", "start"]);
+				// It stopped the program on the view before, then started it on the new view with an empty state folder.
+				expect(m.seen.slice(-2)).toEqual([
+					{ command: "stop", view: before, state: ["versions"] },
+					{ command: "start", view: next, state: [] },
+				]);
+				const viewFile = join(m.folderRoot, "view.json");
+				expect(JSON.parse(await readFile(viewFile, "utf8"))).toEqual(next);
+				expect((await stat(viewFile)).mode & 0o777).toBe(0o600);
+				expect((await readdir(m.folderRoot)).sort()).toEqual(["state", "view.json"]);
+				views.push(next);
+			}
+			// The node closed the newest view (exit 3, the unit failed): a newer one resets the failed unit and gets /company
+			// back.
+			m.exited();
+			m.program.answer = "close";
+			expect(await mountMachineFolder(Buffer.from(JSON.stringify(views.at(-1))), m.ports)).toMatchObject({
+				mount: "closed",
+			});
+			m.program.answer = "mount";
+			const reopened = aView();
+			const commands = unitCommands(m).length;
+			expect(await runMachineGuestCliWithInput(m, reopened)).toMatchObject({ mount: "mounted" });
+			expect(unitCommands(m).slice(commands)).toEqual(["stop", "reset-failed", "start"]);
+			views.push(reopened);
+		} finally {
+			output = JSON.stringify(printed.map((spy) => spy.mock.calls));
+			for (const spy of printed) spy.mockRestore();
+		}
+		// No pass in any argument, reply, log or file but the view file, which holds only the newest.
+		const calls = JSON.stringify(m.system.mock.calls);
+		for (const { pass } of views) {
+			expect(calls).not.toContain(pass);
+			expect(output).not.toContain(pass);
+			for (const file of await filesBelow(m.root))
+				if (pass !== views.at(-1)!.pass || file !== join(m.folderRoot, "view.json"))
+					expect(await readFile(file, "utf8"), file).not.toContain(pass);
+		}
+	});
+
+	it("never answers a newer view while the mount of the view before is still there", async () => {
+		const m = await folderMachine();
+		expect(await mountMachineFolder(Buffer.from(JSON.stringify(aView())), m.ports)).toMatchObject({
+			mount: "mounted",
+		});
+		// A stop that left the old mount in place (its umount failed).
+		const stop = m.system.getMockImplementation()!;
+		const mount = m.mounts.find((line) => line.includes(" fuse.qorpera "))!;
+		m.system.mockImplementation(async (executable, args) => {
+			const out = await stop(executable, args);
+			if (args[0] === "stop" && !m.mounts.includes(mount)) m.mounts.push(mount);
+			return out;
+		});
+		const starts = m.program.starts;
+		await expect(mountMachineFolder(Buffer.from(JSON.stringify(aView())), m.ports)).rejects.toThrow(
+			"MACHINE_FOLDER_STILL_MOUNTED",
+		);
+		expect(m.program.starts).toBe(starts);
 	});
 
 	it("refuses a view it cannot keep in memory, a view not in its exact shape and a machine not prepared for this boot", async () => {
