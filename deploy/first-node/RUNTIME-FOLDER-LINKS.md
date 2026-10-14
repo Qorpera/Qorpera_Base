@@ -71,9 +71,10 @@ Unix socket bound in `/company`. Programs keep them in `/tmp` or elsewhere in th
   versions with their targets, across changes of kind (a file replaced by a link and back).
 - Restoring a link's old version is a save of its target, through the member commit route like a file's restore
   ([RUNTIME-FOLDER-WRITES.md](RUNTIME-FOLDER-WRITES.md), "Restore in the web app").
-- Erasing a path erases its links' versions and targets with it. A link elsewhere whose target names an erased path
-  keeps its target, as a document that mentions the path keeps its text. A hard link is a copy: erasure's copies
-  warning names it as a copy elsewhere holding the erased bytes, as for any copy.
+- A link's conflict is kept on the run's receipt as a file's is: a conflict copy holding the losing target.
+- Erasing a path erases its links' versions, targets and conflict copies with it. A link elsewhere whose target names
+  an erased path keeps its target, as a document that mentions the path keeps its text. A hard link is a copy:
+  erasure's copies warning names it as a copy elsewhere holding the erased bytes, as for any copy.
 - GC is unchanged: links hold no bytes, and hard links share a manifest that GC already roots per manifest.
 
 **What stays different from a local disk** (item 9, and item 5's own choice): a save through one of two hard-linked
@@ -92,9 +93,9 @@ folder's, as a file's are (a `touch -h` or `chmod` on a link changes nothing and
 | Authority | a `symlink` unit needs write authority on its path. The commit's authority chain refuses any op that has no check of its own, so an op added later can never pass unchecked |
 | Structured paths | the hooks refuse a link at a structured path, a structured folder's place and a summary tree's paths; every structured check says what it does with a link, and none lets an op it does not know through |
 | Review | a `symlink` unit takes a write's review class at its path (plain, since links never stand at structured paths); a `new_folder` holding links takes the folder's |
-| Conflicts | a link's conflict keeps no conflict copy (it has no bytes); P17's copies of a `new_folder` keep its files and pass over its links |
+| Conflicts | a link's conflict is kept on the run's receipt as a file's is (the contract keeps every conflicting version there): a conflict copy of kind `symlink` holding its target, for a `symlink` unit and for each link of a conflicting `new_folder`, beside its files (P17). `qorpera_folder_conflict_copies` takes `kind` and `target` (a link's copy has no file columns), and `qorpera_folder_conflict_copies_of` lists each copy's kind and a link's target. A link's copy holds no bytes, so storage and GC are unchanged |
 | Reads | `qorpera_folder_read`, `qorpera_folder_list`, the feed and member history give `target` for a link, and only for a link. A read of a link's version is released and rechecked as a file's is |
-| Erasure | removes a link's versions and targets with its path; no stored outcome, proposal or journal row keeps a target after it |
+| Erasure | removes a link's versions, targets and conflict copies with its path; no stored outcome, proposal or journal row keeps a target after it |
 
 Migration `20260930380000` (wave-4 claim, registry 14 October 15:51Z). It patches `qorpera_folder_commit` and its
 neighbors by anchor, with `pg_temp.lk1_replace` counting each anchor's occurrences, as `pg_temp.m1a_generation_replace`
@@ -132,8 +133,9 @@ How the service turns them into units at a boundary, with its pending changes (3
   a pending source it takes the pending file's staged reference; from a link it makes a pending link with the same
   target.
 - A link whose name is never published (an editor's lock link such as Emacs's `.#name`) stays pending, as such a
-  file does. A refused or conflicting link stays pending or is reported like a file's change; its report line carries
-  its target.
+  file does. A refused link stays pending, as a file's change does. A conflicting link is kept on the receipt as a
+  file is: the view lets it go only once `qorpera_folder_conflict_copies_of` lists it, and its report line says it was
+  kept and carries its target.
 
 The member commit route (`packages/object-gateway/src/member-folder-commits.ts`) and the member's client take a
 `symlink` unit, so a member's restore of a link's old version and P27's web file page can save one.
@@ -148,12 +150,15 @@ The member commit route (`packages/object-gateway/src/member-folder-commits.ts`)
   (the kernel refuses an empty target and one over 4,095 bytes before the program sees it).
 - **`link`** sends `J` with the source inode's version as `fromBase`, after logging a read of the source, and answers the new name
   as a new inode with one link. The kernel takes a new node id in `link`'s reply as long as its type matches; LK4
-  proves that on the test machine before anything else (Q3).
+  proves that on the test machine before anything else. If it does not, LK4 tries the kernel's other routes (the
+  source's node in the reply, then the new name's entry dropped so its next lookup finds a node of its own); if none
+  works, it stops and reports to the coordinator with the evidence, since `link` is item 5 and a gap there needs
+  Jonas's word.
 - **`setattr`** on a link keeps nothing and is not an error (times and modes are the folder's).
 - **`mknod`** stays `EPERM` for every type (`EROFS` on a read-only mount).
 - **Read-only mounts** answer `symlink` and `link` with `EROFS`, and show links.
 
-## The server-side tools (LK2, LK5)
+## The server-side tools and the web app (LK2, LK5, LK6)
 
 - **`company_read`** of a link answers `{path, kind: "symlink", version, target}` and releases the read, as for a file.
   A path through a link is absent.
@@ -165,8 +170,10 @@ The member commit route (`packages/object-gateway/src/member-folder-commits.ts`)
   missing one is, and an interface serves no link.
 - **`company_search`** (LK5) says protocol 4 to the folder service, shows a link's hit with its target, and releases
   the link's read with the page, as for any hit.
-- **The web app** shows a link's row with its target (`→ target`), its history with each version's target, and opens
-  no bytes for it. The restore button is P27's (Q1).
+- **The web app** lists a link with its target (`→ target`) from LK2, so it never breaks on one. LK6 shows a link in
+  the member's file page (its target, no bytes) and history (each version's target, across changes of kind), and its
+  restore button saves an old version of a link with the `symlink` unit through the member route, as P27's restore
+  saves a file's. LK6 reuses the web's file page and history parts and builds no new ones.
 
 ## Git
 
@@ -182,18 +189,20 @@ LK4's FUSE tests run a checkout with a link and `git clone --local`.
 Each is its own PR with an exact-head review. Readers come before writers: LK2 is live before LK3, so every reader of
 the folder knows a link before anything can make one. LK1's SQL alone lets no caller make a link (the member route
 refuses every kind but a file until LK3, and no tool makes one). LK3's service is live on both nodes before LK4's
-program reaches any image, and before LK5.
+program reaches any image, and before LK5. LK6 follows LK3. Step 4's image (4e) does not wait for LK4: it ships the
+folder program that exists then, and a later image generation carries LK4 (the coordinator rolls images).
 
 | Slice | What | Tests |
 | --- | --- | --- |
-| LK1 | SQL: the core (above). Migration `20260930380000`. Updates RUNTIME-COMPANY-FOLDER-CORE.md §3's units and kinds | 460: a link made with targets kept exactly (relative with `..`, absolute, outside `/company`, with spaces, 4,095 bytes), read, listed, in the feed and member history with its target; an empty target, one of 4,096 bytes and one with a NUL refused as an invalid unit; a `symlink` on a present path without a version `exists`, with a file's version replacing it (kind `symlink`, prior version chained), with a folder's refused; a `write` with a link's version making it a file again; a path under a link absent to `qorpera_folder_read` and `parent_missing` for a save; move, copy and delete of a link and of a folder holding links; a `new_folder` with links; a `symlink` unit without write authority `denied`; a reserved name refused for a link; a link refused at `agents/<a>/agent.md`, at `agents/<a>` and in a summary tree, and a move or copy of a link or of a folder holding one into those places refused; a view's read of a link released and rechecked; a hard link (a `write` of another path's file reference) stored once, and each name's next save changing only that name. 461: an in-house agent's view's `symlink` unit lands (plain), its delete and its move of a link are parked (P40) and land on review, and a new agent folder holding a link is parked with it; a link's conflict keeps no copy and a conflicting `new_folder`'s copies keep its files only; after erasing a link's path no table holds its target text, and a link elsewhere naming the erased path keeps its target; GC keeps bytes two names share until both are gone |
-| LK2 | Runtime and web, readers only: the client parses `symlink` with `target`; `company_read`, `company_list`, `company_write`, `company_delete` and `company_mkdir` as above; skills, routines and interfaces never follow a link; cloud-client and web: link rows, previews and history | the runtime's tests with a stand-in folder: a link read (kind, target, version, released), a path through a link absent, a list page with a link's target and its release, `company_write` refused on a link with its target named, `company_delete` of a link deleting the link, a skill whose `SKILL.md` is a link not loaded, an interface not serving a link; the web's tests: a link's row, preview and history labels |
-| LK3 | Folder service, protocol 4 (above): listings, `R`, search, `Y`, `J`, pending links and their units; links hidden below protocol 4; the member commit route and client take `symlink` | the service's tests with the stand-in core and gateway: the hello at 4, and #1018's fields at 3 and 4; at protocols 1 to 3 no link listed or found, `R` on one `NOT_FOUND`, a folder holding one not empty; at 4 a link listed with its size, `R` serving its target at the current and a replaced version; `Y` making a pending link that reads back, `EXISTS` on a present path; `ln -sf` as one `symlink` unit with the replaced version; a file renamed over a link as a `write` with its version, and a link over a file as a `symlink` with the file's; a removed link as a `delete`, a renamed one as a `move`; a link in a new folder in its contents; `J` from a live file as a `write` of the source's reference with no bytes put, from a pending file with its staged reference, from a link as a link with its target; `J` from a file open for writing `BUSY`, onto a present name `EXISTS`, naming a version no longer served `STALE`; a lock link never published; a refused link kept pending, and a conflicting one reported with its target; the 3c boundary model, links included, ending as the view showed it; search: a link found by name with its target and its read, never by its target, and never walked through; the member route's tests: a `symlink` unit saved, a target over 4,095 bytes refused. `scripts/test-folder-core-acceptance.mjs`'s F3-LK lines on the hosted database: a boundary with `Y`, `J` and an `ln -sf` committed by the real core |
+| LK1 | SQL: the core (above). Migration `20260930380000`. Updates RUNTIME-COMPANY-FOLDER-CORE.md §3's units and kinds | 460: a link made with targets kept exactly (relative with `..`, absolute, outside `/company`, with spaces, 4,095 bytes), read, listed, in the feed and member history with its target; an empty target, one of 4,096 bytes and one with a NUL refused as an invalid unit; a `symlink` on a present path without a version `exists`, with a file's version replacing it (kind `symlink`, prior version chained), with a folder's refused; a `write` with a link's version making it a file again; a path under a link absent to `qorpera_folder_read` and `parent_missing` for a save; move, copy and delete of a link and of a folder holding links; a `new_folder` with links; a `symlink` unit without write authority `denied`; a reserved name refused for a link; a link refused at `agents/<a>/agent.md`, at `agents/<a>` and in a summary tree, and a move or copy of a link or of a folder holding one into those places refused; a view's read of a link released and rechecked; a hard link (a `write` of another path's file reference) stored once, and each name's next save changing only that name. 461: an in-house agent's view's `symlink` unit lands (plain), its delete and its move of a link are parked (P40) and land on review, and a new agent folder holding a link is parked with it; a `symlink` unit's conflict keeps the losing link on the receipt (`qorpera_folder_conflict_copies_of` lists it with kind `symlink` and its target), and a conflicting `new_folder`'s copies keep each of its links beside its files; after erasing a link's path no table holds its target text, its conflict copies included, and a link elsewhere naming the erased path keeps its target; GC keeps bytes two names share until both are gone |
+| LK2 | Runtime and web, readers only: the client parses `symlink` with `target`; `company_read`, `company_list`, `company_write`, `company_delete` and `company_mkdir` as above; skills, routines and interfaces never follow a link; cloud-client and the web's folder list: a link's row with its target | the runtime's tests with a stand-in folder: a link read (kind, target, version, released), a path through a link absent, a list page with a link's target and its release, `company_write` refused on a link with its target named, `company_delete` of a link deleting the link, a skill whose `SKILL.md` is a link not loaded, an interface not serving a link; cloud-client's parser taking a link and its target; the web's tests: a link's row with its target |
+| LK3 | Folder service, protocol 4 (above): listings, `R`, search, `Y`, `J`, pending links and their units; links hidden below protocol 4; the member commit route and client take `symlink` | the service's tests with the stand-in core and gateway: the hello at 4, and #1018's fields at 3 and 4; at protocols 1 to 3 no link listed or found, `R` on one `NOT_FOUND`, a folder holding one not empty; at 4 a link listed with its size, `R` serving its target at the current and a replaced version; `Y` making a pending link that reads back, `EXISTS` on a present path; `ln -sf` as one `symlink` unit with the replaced version; a file renamed over a link as a `write` with its version, and a link over a file as a `symlink` with the file's; a removed link as a `delete`, a renamed one as a `move`; a link in a new folder in its contents; `J` from a live file as a `write` of the source's reference with no bytes put, from a pending file with its staged reference, from a link as a link with its target; `J` from a file open for writing `BUSY`, onto a present name `EXISTS`, naming a version no longer served `STALE`; a lock link never published; a refused link kept pending; a conflicting link (alone, and in a new folder) kept in the view until the receipt lists it, then reported as kept with its target; the 3c boundary model, links included, ending as the view showed it; search: a link found by name with its target and its read, never by its target, and never walked through; the member route's tests: a `symlink` unit saved, a target over 4,095 bytes refused. `scripts/test-folder-core-acceptance.mjs`'s F3-LK lines on the hosted database: a boundary with `Y`, `J` and an `ln -sf` committed by the real core |
 | LK4 | Folder program: `symlink`, `readlink`, `link` (above); a new build record and the installer pins. First, the probe of `link`'s reply on the test machine | FUSE tests on the test machine: `ln -s` (relative and absolute), `readlink`, `ls -l`; reading through a link to a file in the view, and to a path the view cannot read (`ENOENT`); a link to a machine file outside `/company`; `ln -sf`; `mv` and `rm` of a link; `cp -a` and `tar` of a folder with links keeping them; `ln a b`, then a save to `a` leaving `b` as it was, each with one link; `git clone --local` of a repository in the folder; a checkout of a commit holding a mode-120000 link; Python's `os.symlink`, `os.link` and `os.readlink` and Node's `fs.symlink` and `fs.link`; `mkfifo`, `mknod` and a Unix socket's bind `EPERM`; a non-UTF-8 target `EINVAL`; `EROFS` on a read-only mount; each `readlink` logged as a read of the link's path and version, released before the next publish, and logged again after a `switch`; a hard link logged as a read of its source |
 | LK5 | Runtime: `company_search` says protocol 4 and shows link hits (above), once LK3 is live on both nodes | the search tool's tests with a stand-in service: the hello at 4, a link's hit shown with its target, its read released with the page |
+| LK6 | Web, after LK3: a link in the member's file page and history, and the restore of a link's old version (above), in the web's existing file page and history parts | the web's tests: a link's file page showing its target and fetching no bytes; its history listing each version's target, a file's versions and a link's on one path; restoring a link's old version sending a `symlink` unit with the current version as `expectedVersion`, over a current file too (the file's version), and a file's old version restored over a current link as a `write` with the link's version |
 
 **Live proof.** Step 4's acceptance (4g) shows links on a company machine (contract item 10: "its acceptance shows
-it"); the coordinator runs it. From a computer's shell: `ln -s ../reports/latest.csv today.csv` and reading through it;
+it"); the coordinator runs it, on the image generation that carries LK4. From a computer's shell: `ln -s ../reports/latest.csv today.csv` and reading through it;
 `ln -sf` to another target, landing as one change of the link, the web app's history showing both targets; `ln` of a
 large file, landing at once with no bytes sent, and a save to one name leaving the other as it was; `git clone` of a
 repository with links, `git status` clean after it; `npm install` into the machine's own cache is item 8's, not this
@@ -206,21 +215,24 @@ reviewed in its next run.
 **Settled in the implementation.** This plan fixes the rules and the tests above. How each slice builds them is
 designed in its PR and reviewed there against these rules: the core's columns, indexes and anchors (LK1); the
 service's pending links and their place in the boundary plan (LK3); the program's version map and read log entries
-for links (LK4). A case a slice's review finds that these rules already decide is fixed in that slice, with a test;
+for links (LK4); which web parts show a link (LK6). A case a slice's review finds that these rules already decide is fixed in that slice, with a test;
 this plan changes only if a rule is wrong.
 
-## Proposals and questions
+## Proposals and decisions
 
-- **P1 (LK3).** A hard link of a file open for writing in the view is `BUSY`. On a disk it works. If a tool needs it
+Proposals, left for after 4g:
+- **P1.** A hard link of a file open for writing in the view is `BUSY` (LK3). On a disk it works. If a tool needs it
   (4g shows), `J` could publish the open file's last close first, as a change that must publish first does.
-- **P2 (after LK1).** A link's losing side in a conflict lives only in the report. If members need it back, the
-  receipt could keep it as P17 keeps a file's conflict copy.
-- **P3 (after 4g).** Every `readlink` is logged. If 4g's numbers show the log's cost (a `node_modules/.bin` walk
-  reads many links), the program could log a version once per view.
-- **Q1 (coordinator).** The web's restore button for a link: P27's file page and history (the Interfaces session), or
-  a slice of this plan? LK3 gives the member route the `symlink` unit it needs.
-- **Q2 (coordinator).** 4g must show links, so its image needs LK4's program. Does 4e's image wait for LK4, or does a
-  later image generation carry it before 4g?
-- **Q3 (coordinator, only if LK4's probe fails).** If the kernel does not take a new inode in `link`'s reply, `link`
-  stays `EPERM`: a clone from a path and most package stores fall back to copying, `git clone --local` fails, and
-  item 5 is not met. Record that as a difference from a local disk, as item 9 records the others?
+- **P2** is no longer a proposal: the contract keeps every conflicting version on the run's receipt, so LK1 keeps a
+  link's (above).
+- **P3.** Every `readlink` is logged. If 4g's numbers show the log's cost (a `node_modules/.bin` walk reads many
+  links), the program could log a version once per view.
+
+Decided by the coordinator, 14 October 2026:
+- **The web's restore button for a link is this plan's** (LK6, above), not P27's; the Interfaces session keeps its own
+  list, and LK2 and LK6 name the web files they change to it before they start.
+- **4e's image does not wait for LK4.** Images can roll more than once; a later image generation carries LK4, and 4g
+  waits for that generation.
+- **If LK4's probe of `link` fails,** LK4 tries the kernel's other routes, and if none works it stops and reports to
+  the coordinator with the evidence. It does not record a difference from a local disk itself: `link` is item 5 of
+  the amendment Jonas approved, so a gap there needs his word.
