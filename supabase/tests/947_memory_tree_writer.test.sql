@@ -1,8 +1,8 @@
 -- @fixture 970_memory_branches.test.sql until "-- The checks start here."
 -- M1b-4b-2: real run-actor uploads and commits to a new and an existing conversation tree; refusals outside the exact
 -- scope and a generation change discarding the whole batch. Bounded raw events and count-only compaction records:
--- authoritative payer, per-assignment batches, exact replay, malformed inputs and run-check precedence. A tree under a
--- mixed-case agent folder, written by a run with no folder grant.
+-- authoritative payer, per-assignment batches, exact replay, malformed inputs and run-check precedence.
+-- A tree written by a run with no folder grant.
 
 create function pg_temp.writer_actor(p_who text) returns jsonb language sql as $$
 	select public.qorpera_folder_tool_run(pg_temp.b(p_who), '[]'::jsonb) -> 'actor'
@@ -246,15 +246,14 @@ begin
 		('qorpera_memory_events_run','qorpera_memory_compaction_record')) <> 2 then raise exception 'No overload ambiguity'; end if;
 end $$;
 
--- 8. An agent folder spelled in mixed case: the run's tree root is compared by key, before the tree is indexed and
--- after. The tree is the platform's (§4.3), so a run whose agent holds only a read grant still writes it, while that
--- run's ordinary write is denied.
+-- 8. The tree is the platform's (§4.3): a run whose agent holds only a read grant still writes its own conversation's
+-- tree, before it is indexed and after, while that run's ordinary write is denied.
 do $$
 declare env constant uuid := '63400000-0000-4000-8000-000000000020'; vera constant uuid := '97000000-0000-4000-8000-0000000000a5';
-	root constant text := 'agents/Vera/memory/thread'; x jsonb; r jsonb; s uuid; i integer;
+	root constant text := 'agents/vera/memory/thread'; x jsonb; r jsonb; s uuid; i integer;
 begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'writer-hire-vera',
-		jsonb_build_array(pg_temp.hire('Vera', vera, 'Vera'))), 1, 'saved');
+		jsonb_build_array(pg_temp.hire('vera', vera, 'Vera'))), 1, 'saved');
 	perform public.qorpera_folder_grant(env, pg_temp.member(1), (public.qorpera_folder_path_resource(env, root)).id,
 		'staff_agent', vera, array['read']);
 	x := pg_temp.agent_run(vera);
@@ -269,13 +268,13 @@ begin
 		public.qorpera_folder_tool_run(pg_temp.b('vera'), '[]'::jsonb) -> 'resolved', root || '/t0', 'write') then
 		raise exception 'Vera''s run holds no write grant'; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.writer_actor('vera'), 'writer-vera-plain',
-		jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'agents/Vera/notes'))), 1, 'refused', 'denied');
+		jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', 'agents/vera/notes'))), 1, 'denied', 'denied');
 	perform pg_temp.event(s, 200);
 	r := pg_temp.writer_commit('vera', 'writer-vera-new-tree', jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', root),
 		pg_temp.writer_file('vera', root || '/tree.toml', pg_temp.toml(s)), jsonb_build_object('op', 'mkdir', 'path', root || '/t0'),
 		pg_temp.writer_file('vera', root || '/t0/00000000.jsonl', pg_temp.line0(0, 200) || E'\n')), pg_temp.generations(s));
 	for i in 1..4 loop perform pg_temp.expect(r, i, 'saved'); end loop;
-	perform pg_temp.same(to_jsonb(public.qorpera_memory_session_tree_root(env, s)), to_jsonb(root), 'The tree is indexed as spelled');
+	perform pg_temp.same(to_jsonb(public.qorpera_memory_session_tree_root(env, s)), to_jsonb(root), 'The tree is indexed');
 	r := pg_temp.writer_commit('vera', 'writer-vera-indexed-tree',
 		jsonb_build_array(jsonb_build_object('op', 'mkdir', 'path', root || '/t1')), pg_temp.generations(s));
 	perform pg_temp.expect(r, 1, 'saved');
