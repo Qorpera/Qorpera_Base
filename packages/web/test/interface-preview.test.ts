@@ -313,6 +313,40 @@ describe("a review card's preview of a page an agent asks to save (I10)", () => 
 		expect(controller.store.get().interfaceFolder?.tables.has("invoices")).toBe(false);
 	});
 
+	it("shows a preview of a source that needs no read, with no change to the folder", async () => {
+		vi.useFakeTimers();
+		const fake = seeded();
+		const controller = company();
+		const { reader } = await follow(fake, controller);
+		expect(controller.store.get().interfaceFolder?.sources.has("interfaces")).toBe(false);
+		const reads = read(fake).length;
+		const save = proposedSave(
+			card([
+				{
+					path: "interfaces/pages/interface.toml",
+					expectedVersion: null,
+					text: page(ids.books, "Pages", "interfaces", '["name", "status"]', true),
+				},
+			]),
+		)!;
+		const preview = new InterfacePreview(controller, id(700), save);
+		expect(preview.element.hidden).toBe(true);
+		const owner = {};
+		reader.preview(owner, preview.pages);
+		await vi.advanceTimersByTimeAsync(1000);
+		// The pages are the folder's own, so nothing more is read; the folder is published again all the same.
+		expect(read(fake)).toHaveLength(reads);
+		expect(controller.store.get().interfaceFolder?.sources.has("interfaces")).toBe(true);
+		preview.draw();
+		expect(preview.element.hidden).toBe(false);
+		expect(texts(preview.element, ".interface-table tbody td:nth-child(1)")).toEqual(
+			expect.arrayContaining(["Pulse", "Mailbox", "Members"]),
+		);
+		reader.preview(owner, []);
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(controller.store.get().interfaceFolder?.sources.has("interfaces")).toBe(false);
+	});
+
 	it("shows under a waiting card, drawn again as the folder is read, until the card is answered", async () => {
 		vi.useFakeTimers();
 		const fake = seeded();

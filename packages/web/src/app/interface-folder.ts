@@ -603,10 +603,13 @@ export class CompanyInterfaceFolder {
 		};
 	}
 
-	/** Publishes what the folder says when a file it was read from, or a folder it listed, changed. */
+	/** Publishes what the folder says when a file it was read from, or a folder it listed, changed, or when what the
+	 * pages and previews name did: a source such as `interfaces` needs no read of its own. */
 	#show(): void {
+		const { tables, files, sources } = this.#sources();
 		const versions = JSON.stringify([
 			this.#names,
+			[tables, files, [...sources].sort()],
 			[...this.#reads.entries()].map(([key, read]) => [key, read?.version ?? null]).sort(),
 			[...this.#lists.entries()].map(([key, entries]) => [key, entries.map((entry) => entry.version)]).sort(),
 			[...this.#taken.entries()].map(([key, read]) => [key, read.version]).sort(),
