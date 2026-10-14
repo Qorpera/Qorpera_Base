@@ -4,7 +4,7 @@
   "copiedOn": "2026-10-14",
   "fullyAccepted": false,
   "officeIntegrationAccepted": false,
-  "note": "The rerun at a clean head: each run's run-on-node record and full log, and the evidence JSON extracted from between the log's OFFICE_FOLDER_SUBSTRATE_EVIDENCE markers. Commits after the run's head change only the substrate document and this evidence; see deploy/test-machine/OFFICE-FOLDER-SUBSTRATE.md, 'Rerun at a clean head (2026-10-14)'.",
+  "note": "The rerun at a clean head: each run's run-on-node record and full log, and the evidence JSON extracted from between the log's OFFICE_FOLDER_SUBSTRATE_EVIDENCE markers. Commits after the run's head changed only the substrate document and this evidence until the master merge c40d7b085 (a protocol-3 folder program, 11eda4a8…, which refuses this run's protocol-2 hello) and the protocol-3 fixture 551e23413; this run no longer matches the code. The rerun on protocol 3 is in ../2026-10-14-office-folder-substrate-v3/. See deploy/test-machine/OFFICE-FOLDER-SUBSTRATE.md, 'Rerun at a clean head (2026-10-14)'.",
   "files": [
     {
       "file": "FIRST-ATTEMPT-RUN.json",

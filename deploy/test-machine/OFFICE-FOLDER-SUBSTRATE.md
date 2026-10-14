@@ -194,9 +194,10 @@ company acceptance.
 The `office-account` probe was rerun on node01 at head
 `59053c3bad81c4707502d8d7704cf8bbce56a3fc` with a clean tree (run
 `20261014T161650-38323-c9940728`, source snapshot SHA-256
-`b8d72d7ebbbb4d0d65fc63e978b5938a0bc1839f69632e7546e34a417313a379`). Until the
-move to protocol 3 (next section), later commits changed only this document and
-the evidence folder. The run built folder
+`b8d72d7ebbbb4d0d65fc63e978b5938a0bc1839f69632e7546e34a417313a379`). Until
+master was merged in (c40d7b085, a protocol-3 folder program) and the fixture
+moved to protocol 3 (551e23413, next section), later commits changed only this
+document and the evidence folder. The run built folder
 binary `7aa0ccbc718c2886569cbf06668ec1b02e722fe1fa2aa55ce78a6a2d309810a2` and
 used fixture `0133118315f2a1861fa0a03d1fc5b1ce77dc44823be8785263ab7d9df50f06a6`,
 on the same prepared Ubuntu image `fca42260aab1…` in nested VM UUID
