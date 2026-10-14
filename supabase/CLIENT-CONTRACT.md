@@ -861,13 +861,15 @@ a write under `human-tasks/` waits for P31.
 
 - `qorpera_member_folder_read(environment, path)`: `{schema: "qorpera.folder-read/v1", asOfSeq, found, entry}`,
   `entry` null when not found; an entry has
-  `path`, `kind` (`file` or `folder`), `version`, `seq`, `updatedAt` and, for a file, `manifestSha256`,
-  `fileSha256`, `bytes`, `mediaType`, `executable`.
+  `path`, `kind` (`file`, `folder` or `symlink`), `version`, `seq`, `updatedAt` and, for a file, `manifestSha256`,
+  `fileSha256`, `bytes`, `mediaType`, `executable`; for a link (`20260930380000_folder_links`), its `target`, the
+  text it holds, never resolved. Nothing is below a link.
 - `qorpera_member_folder_list(environment, parent, after, limit)`: `qorpera.folder-list/v1`, one folder's entries in
   folder-key order (`parent` null for the top), at most `limit` (1 to 1,000); `next` is the path to pass as `after`
   for the next page, null on the last.
 - `qorpera_member_folder_path_history(environment, path, before, limit)`: `qorpera.folder-path-history/v1`, a path's
-  versions newest first (1 to 100 a page), each `{version, seq, op, kind, path, at, by}` and the content fields; a
+  versions newest first (1 to 100 a page), each `{version, seq, op, kind, path, at, by}` and the content fields (a
+  link's `target`, except on a delete); a
   `move_in` has `from` and a `move_out` has `to` when the member may read that path. `next` is a version to pass as
   `before`.
 - `qorpera_member_folder_history(environment, before, limit)`: `qorpera.folder-history/v1`, the change sets newest
@@ -876,7 +878,8 @@ a write under `human-tasks/` waits for P31.
   whose first 1,000 versions the member may read is left out (the feed still shows it). `next` is a seq to pass as
   `before`.
 - `qorpera_member_folder_changes(environment, after_seq, limit, cursor?)`: the folder feed (`qorpera.folder-feed/v1`,
-  core §6), each change set with `by` and `at`. Follow it from `next` (`afterSeq`, `cursor`); on `resync`, read
+  core §6), each change set with `by` and `at`; a link's change has its `target`. Follow it from `next` (`afterSeq`,
+  `cursor`); on `resync`, read
   again from the top.
 - `by` is `{kind: "member", userId}`, `{kind: "agent", staffAgentId}` or `{kind: "platform"}`.
 - `qorpera_member_folder_object(environment, sha256)`: the object gateway's check for one object (a manifest or a
