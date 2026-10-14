@@ -449,3 +449,86 @@ def install_unit(directory, claimed, program, office):
     UNIT_FILE.chmod(0o644)
     base.run("systemctl", "daemon-reload")
     return text
+
+
+def require_disposable_guest(directory):
+    if os.geteuid() != 0 or base.run("systemd-detect-virt", "--vm", check=False) != "kvm":
+        raise RuntimeError("A root process inside a nested KVM guest is required")
+    if Path("/etc/qorpera-test-machine-versions").exists():
+        raise RuntimeError("Never run this fixture on the shared test VM")
+    if not re.fullmatch(r"/run/qorpera-remount-[a-f0-9-]{36}", str(directory)):
+        raise RuntimeError("Refusing a path outside the UUID-scoped proof directory")
+
+
+def preflight(directory, fuse):
+    """What the image is, recorded before anything is created. Stops on an office image that holds credentials."""
+    seen = {}
+    names = {}
+    for name in ("credentials", "boots"):
+        path = Path("/etc/qorpera-office") / name
+        names[name] = sorted(os.listdir(path)) if path.is_dir() else None
+    seen["officeFileNames"] = names
+    if any(names.values()):
+        raise RuntimeError("The office image holds credentials or boots; this proof runs only on an empty one")
+    release = dict(line.split("=", 1) for line in Path("/etc/os-release").read_text().splitlines() if "=" in line)
+    node = shutil.which("node")
+    seen["versions"] = {
+        "os": release.get("PRETTY_NAME", "").strip('"'),
+        "kernel": os.uname().release,
+        "systemd": base.run("systemctl", "--version").splitlines()[0],
+        "bwrap": base.run("/usr/bin/bwrap", "--version"),
+        "node": base.run(node, "--version") if node else None,
+        "python": sys.version.split()[0],
+    }
+    missing = [path for path in ("/usr/bin/bwrap", "/usr/bin/tini", "/usr/bin/bash", "/usr/bin/python3") if not os.access(path, os.X_OK)]
+    missing += [name for name in ("node", "systemd-run", "mount", "umount", "findmnt") if not shutil.which(name)]
+    if missing:
+        raise RuntimeError(f"The image lacks {missing}")
+    seen["node"] = node
+    seen["runMount"] = base.run("findmnt", "-no", "FSTYPE,OPTIONS", "/run")
+    seen["fusermount"] = {name: shutil.which(name) for name in ("fusermount", "fusermount3")}
+    if not Path("/dev/fuse").is_char_device():
+        raise RuntimeError("/dev/fuse is missing")
+    seen["fuse"] = fuse
+    office_unit = dict(line.split("=", 1) for line in base.run("systemctl", "show", "-p", "FragmentPath,ActiveState,SubState,Result", OFFICE_UNIT).splitlines() if "=" in line)
+    if office_unit.get("ActiveState") in ("active", "activating", "reloading", "deactivating"):
+        raise RuntimeError(f"The office service is {office_unit['ActiveState']}; this proof needs it stopped")
+    seen["officeService"] = office_unit
+    if office_unit.get("FragmentPath"):
+        installed = Path(office_unit["FragmentPath"]).read_text()
+        seen["officeUnitSha256"] = hashlib.sha256(installed.encode()).hexdigest()
+        seen["officeUnitAgainstMaster"] = list(difflib.unified_diff((directory / "office.service").read_text().splitlines(), installed.splitlines(), "master", office_unit["FragmentPath"], n=0, lineterm=""))
+    seen["imageFolder"] = {
+        "opt": sorted(os.listdir("/opt/qorpera-folder")) if Path("/opt/qorpera-folder").is_dir() else None,
+        "units": sorted(str(path) for folder in ("/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system") for path in Path(folder).glob("qorpera-folder*")),
+    }
+    for path in (ROOT, UNIT_FILE):
+        if path.exists():
+            raise RuntimeError(f"{path} already exists")
+    office = pwd.getpwnam("qorpera-office")
+    if office.pw_uid == 0:
+        raise RuntimeError("The office account must be unprivileged")
+    seen["office"] = {"uid": office.pw_uid, "gid": office.pw_gid}
+    return seen, office
+
+
+def restart_seconds(events, killed):
+    """From the kill to the first time a namespace saw the folder served again, by the watcher's monotonic clock."""
+    for event in events:
+        if event["at"] >= killed and "before.txt" in event.get("names", []):
+            return round(event["at"] - killed, 3)
+    return None
+
+
+def gone(events, killed):
+    """What a namespace saw between the kill and the folder coming back: each distinct state once."""
+    seen = []
+    for event in events:
+        if event["at"] < killed:
+            continue
+        if "before.txt" in event.get("names", []):
+            break
+        state = {key: value for key, value in event.items() if key != "at"}
+        if state not in seen:
+            seen.append(state)
+    return seen
