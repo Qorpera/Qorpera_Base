@@ -129,3 +129,30 @@ Beside `recorded`, `image` holds what A1 carries (above), `relayConfinement`
 the office unit lines the relays run under, `officeLinesLeftOut` the lines that
 run the application rather than confine it, and `mountUnit` the unit text the
 proof installed.
+
+## The loss case
+
+A restarted program opens its view with an abandon hello, so the node drops
+every handle the killed program held open. Whatever a writer had not committed
+by then is lost, **whether or not the running namespaces see the new mount**:
+this is a property of the restart, not of the mount's propagation, so it holds
+for any office remount design.
+
+Before the first kill, the command namespace leaves these writers open. The
+synthetic node follows protocol 3: a truncating open empties the file at once, a
+new file exists empty from its open, and nothing reaches the file before a
+commit. After the restart, the namespace closes the old descriptors and the
+fixture reads what the node holds:
+
+| Writer before the kill | What is lost | The file after the restart |
+|---|---|---|
+| new file, written, not synced | the write | exists, empty |
+| new file, written and `fsync`ed | the write: `fsync` sends parts, not a commit | exists, empty |
+| existing file opened with truncate, written and `fsync`ed | the old content (at open) and the write | empty |
+| existing file opened in place, two bytes rewritten and `fsync`ed | the rewrite | `saved before`, as before |
+| new file written and closed before the kill | nothing | `closed` |
+
+The record keeps each step's reply, what the node held before the kill
+(`nodeBeforeKill`), the closes after it (`closesAfterKill`), what the node holds
+after (`nodeAfterRestart`), the node's `abandoned` entries, and `asExpected`. A
+mismatch is recorded, not a failed check.
