@@ -41,6 +41,8 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
          --allow-secrets            copy untracked files that look like secrets (.env*, *.pem, keys)
          --base REF                 compare against REF for changed (default: origin/master)
          --machine NAME             run on this machine only (node02, node01)
+         --tree NAME                copy against the machine's shared base copy NAME, not this checkout's own
+                                    (for checkouts made fresh per run, such as pr-loop's merged trees)
          --no-status                do not post the result as a GitHub status on the commit
          --dry-run                  print what would run and where, change nothing
 
@@ -109,6 +111,7 @@ export function parseArgs(argv) {
 		dryRun: false,
 		base: "origin/master",
 		machine: null,
+		tree: null,
 	};
 	let i = 0;
 	for (; i < argv.length && argv[i] !== "--" && argv[i].startsWith("--"); i++) {
@@ -122,10 +125,14 @@ export function parseArgs(argv) {
 		else if (flag === "--allow-secrets") options.allowSecrets = true;
 		else if (flag === "--no-status") options.noStatus = true;
 		else if (flag === "--dry-run") options.dryRun = true;
-		else if (flag === "--env" || flag === "--record" || flag === "--base" || flag === "--machine") {
+		else if (flag === "--env" || flag === "--record" || flag === "--base" || flag === "--machine" || flag === "--tree") {
 			const value = argv[++i];
 			if (value === undefined) throw new Error(`${flag} needs a value`);
 			if (flag === "--record") options.record = value;
+			else if (flag === "--tree") {
+				if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)) throw new Error(`Invalid --tree ${value}`);
+				options.tree = value;
+			}
 			else if (flag === "--machine") {
 				if (!MACHINES.some((machine) => machine.name === value))
 					throw new Error(`Unknown machine ${value} (${MACHINES.map((machine) => machine.name).join(", ")})`);
@@ -643,7 +650,11 @@ async function main() {
 		options.build = options.build ?? plan.build;
 		if (options.build && !options.install) throw new Error("--build needs --install");
 	}
-	const tree = createHash("sha256").update(`${hostname()}:${root}`).digest("hex").slice(0, 16);
+	// The base copy unchanged files are taken from on the machine: one per checkout, so a run copies only what
+	// changed since its checkout's last run. A checkout made fresh for each run (pr-loop's merged trees, a new
+	// path every time) would find none and send all ~70 MB, 4-6 minutes per run on 14 Oct; --tree names a
+	// shared one instead.
+	const tree = options.tree ? `named-${options.tree}` : createHash("sha256").update(`${hostname()}:${root}`).digest("hex").slice(0, 16);
 	const run = `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "")}-${process.pid}-${randomBytes(4).toString("hex")}`;
 	const runDir = `${HOME}/runs/${run}`;
 	const treeDir = `${HOME}/trees/${tree}`;

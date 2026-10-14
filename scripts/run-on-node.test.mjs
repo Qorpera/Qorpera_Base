@@ -68,6 +68,9 @@ test("options, install default and extra arguments", () => {
 	assert.deepEqual([parseArgs(["--no-install", "test"]).install, parseArgs(["--no-install", "test"]).build], [false, false]);
 	assert.throws(() => parseArgs(["--base", "--octopus", "changed"]), /Invalid --base/);
 	assert.equal(parseArgs(["--base", "origin/release/runtime-v150", "changed"]).base, "origin/release/runtime-v150");
+	assert.equal(parseArgs(["--tree", "pr-loop", "changed"]).tree, "pr-loop");
+	assert.equal(parseArgs(["changed"]).tree, null);
+	for (const bad of ["../x", "a/b", ".hidden", ""]) assert.throws(() => parseArgs(["--tree", bad, "changed"]), /Invalid --tree/);
 	assert.throws(() => parseArgs(["hosted-db", "extra"]), /after --/);
 	assert.throws(() => parseArgs(["--env", "1BAD=x", "hosted-db"]), /Invalid --env/);
 	assert.throws(() => parseArgs(["--bogus", "hosted-db"]), /Unknown option/);
