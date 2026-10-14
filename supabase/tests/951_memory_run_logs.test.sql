@@ -603,4 +603,60 @@ begin
 	perform pg_temp.same(public.qorpera_memory_run_log_place(env, nora) -> 'last', '5', 'the last step');
 end $$;
 
+-- 8. What a run writes as itself, without the folder's grants ----------------------------------------------------------
+do $$
+declare
+	env constant uuid := '63400000-0000-4000-8000-000000000020'; nora constant uuid := pg_temp.run_id('nora');
+	log constant text := 'agents/nora/memory/thread/runs/' || pg_temp.run_id('nora');
+	me constant jsonb := jsonb_build_object('kind', 'staff_agent', 'runId', pg_temp.run_id('nora'));
+	room constant text := 'agents/groups/launch/memory/runs/' || pg_temp.run_id('room');
+	nf constant jsonb := jsonb_build_object('contents', jsonb_build_array(jsonb_build_object('path','run.toml'),
+		jsonb_build_object('path','log')));
+begin
+	-- No memory request: nothing.
+	perform pg_temp.same(to_jsonb(array[public.qorpera_memory_run_log_admits(env, 'k', me, 'write', log || '/log/00000006.jsonl', '{}')]),
+		'[false]', 'no memory request');
+	perform set_config('qorpera.folder_memory', jsonb_build_object('environmentId', env::text, 'operationKey', 'k', 'preconditions',
+		jsonb_build_object('runLog', jsonb_build_object('run', nora, 'path', log)))::text, true);
+	-- Its own log folder, and the memory folders on the way to it; not what is beside them, not the agent's folder.
+	perform pg_temp.same(to_jsonb(array[
+		public.qorpera_memory_run_log_admits(env, 'k', me, 'write', log || '/log/00000006.jsonl', '{}'),
+		public.qorpera_memory_run_log_admits(env, 'k', me, 'mkdir', log || '/t1', '{}'),
+		public.qorpera_memory_run_log_admits(env, 'k', me, 'new_folder', log, nf),
+		public.qorpera_memory_run_log_admits(env, 'k', me, 'mkdir', 'agents/nora/memory/thread/runs', '{}'),
+		public.qorpera_memory_run_log_admits(env, 'k', me, 'mkdir', 'agents/nora/memory', '{}'),
+		public.qorpera_memory_run_log_admits(env, 'k', me, 'mkdir', 'agents/nora', '{}'),
+		public.qorpera_memory_run_log_admits(env, 'k', me, 'write', 'agents/nora/memory/thread/tree.toml', '{}'),
+		public.qorpera_memory_run_log_admits(env, 'k', me, 'mkdir', 'agents/nora/memory/thread/runs/' || gen_random_uuid(), '{}'),
+		public.qorpera_memory_run_log_admits(env, 'k', me, 'delete', log || '/log/00000005.jsonl', '{}'),
+		public.qorpera_memory_run_log_admits(env, 'k', me, 'move', log || '/log/00000005.jsonl', '{}')]),
+		'[true, true, true, true, true, false, false, false, false, false]', 'what the run writes');
+	-- Only in its request, and only as the log's run.
+	perform pg_temp.same(to_jsonb(array[
+		public.qorpera_memory_run_log_admits(env, 'other', me, 'write', log || '/log/00000006.jsonl', '{}'),
+		public.qorpera_memory_run_log_admits(gen_random_uuid(), 'k', me, 'write', log || '/log/00000006.jsonl', '{}'),
+		public.qorpera_memory_run_log_admits(env, 'k', jsonb_build_object('kind', 'staff_agent', 'runId', pg_temp.run_id('otto')), 'write',
+			log || '/log/00000006.jsonl', '{}'),
+		public.qorpera_memory_run_log_admits(env, 'k', pg_temp.actor('nora'), 'write', log || '/log/00000006.jsonl', '{}'),
+		public.qorpera_memory_run_log_admits(env, 'k', '{"kind":"platform"}', 'write', log || '/log/00000006.jsonl', '{}')]),
+		'[false, false, false, false, false]', 'whose request');
+	-- A request whose log is not a log folder admits nothing.
+	perform set_config('qorpera.folder_memory', jsonb_build_object('environmentId', env::text, 'operationKey', 'k', 'preconditions',
+		jsonb_build_object('runLog', jsonb_build_object('run', nora, 'path', log || '/log')))::text, true);
+	perform pg_temp.same(to_jsonb(array[public.qorpera_memory_run_log_admits(env, 'k', me, 'write', log || '/log/00000006.jsonl', '{}')]),
+		'[false]', 'not a log folder');
+	-- A room run's log, in the group's memory.
+	perform set_config('qorpera.folder_memory', jsonb_build_object('environmentId', env::text, 'operationKey', 'k', 'preconditions',
+		jsonb_build_object('runLog', jsonb_build_object('run', pg_temp.run_id('room'), 'path', room)))::text, true);
+	perform pg_temp.same(to_jsonb(array[
+		public.qorpera_memory_run_log_admits(env, 'k', jsonb_build_object('kind', 'staff_agent', 'runId', pg_temp.run_id('room')), 'mkdir',
+			'agents/groups/launch/memory', '{}'),
+		public.qorpera_memory_run_log_admits(env, 'k', jsonb_build_object('kind', 'staff_agent', 'runId', pg_temp.run_id('room')), 'mkdir',
+			'agents/groups/launch', '{}')]), '[true, false]', 'a room run''s log');
+	-- A memory commit inside another one is refused.
+	perform pg_temp.raises_like(format('select public.qorpera_folder_memory_commit(%L, %L, %L, %L)', env, '{"kind":"platform"}',
+		'w1b:nested', '[]'), '55000', 'A memory request is already set in this transaction');
+	perform set_config('qorpera.folder_memory', '', true);
+end $$;
+
 rollback;
