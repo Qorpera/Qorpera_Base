@@ -749,4 +749,38 @@ begin
 	perform pg_temp.refused(r, 1, 'structured_rule', 'the memory request does not belong to this change');
 end $$;
 
+-- 11. A log follows its group's rename ------------------------------------------------------------------------------------
+do $$
+declare
+	env constant uuid := '63400000-0000-4000-8000-000000000020'; room constant uuid := pg_temp.run_id('room');
+	was constant text := 'agents/groups/launch/memory/runs/' || pg_temp.run_id('room');
+	log constant text := 'agents/groups/launch-team/memory/runs/' || pg_temp.run_id('room'); a constant jsonb := pg_temp.actor('room');
+	l public.qorpera_memory_run_logs; x jsonb; r jsonb;
+begin
+	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'w1b:move:1', jsonb_build_array(jsonb_build_object('op','move',
+		'from','agents/groups/launch','to','agents/groups/launch-team','expectedVersion',pg_temp.version('agents/groups/launch'),
+		'asOfSeq',pg_temp.seq()))), 1, 'saved');
+	select * into l from public.qorpera_memory_run_logs where environment_id = env and run_id = room;
+	perform pg_temp.same(jsonb_build_array(l.run_path, l.run_key, l.toml_path_version = pg_temp.version(log || '/run.toml')),
+		jsonb_build_array(log, public.qorpera_folder_key(log), true), 'the room log follows the rename');
+	perform pg_temp.same((select jsonb_agg(jsonb_build_array(s.j, s.block_path, s.block_path_version = pg_temp.version(s.block_key))
+		order by s.j) from public.qorpera_memory_run_steps s where s.environment_id = env and s.run_id = room), jsonb_build_array(
+		jsonb_build_array(0, log || '/log/00000000.jsonl', true), jsonb_build_array(1, log || '/log/00000001.jsonl', true),
+		jsonb_build_array(2, log || '/log/00000001.jsonl', true), jsonb_build_array(3, log || '/log/00000003.jsonl', true)),
+		'the room log''s steps follow it');
+	x := public.qorpera_memory_run_log_place(env, room);
+	perform pg_temp.same(jsonb_build_array(x -> 'path', x -> 'exists', x -> 'missing', x -> 'last'),
+		jsonb_build_array(log, true, '[]'::jsonb, 3), 'the room log''s place follows it');
+
+	-- The old folder is gone (the core refuses a write there as parent_missing); a batch naming the new one is saved.
+	r := pg_temp.logc('room', 'w1b:move:2', jsonb_build_array(pg_temp.rfile(was || '/log/00000004.jsonl',
+		pg_temp.block(array[pg_temp.step(4)]), a)), was);
+	perform pg_temp.expect(r, 1, 'refused', 'parent_missing');
+	r := pg_temp.logc('room', 'w1b:move:3', jsonb_build_array(pg_temp.rfile(log || '/log/00000004.jsonl',
+		pg_temp.block(array[pg_temp.step(4)]), a)), log);
+	perform pg_temp.expect(r, 1, 'saved');
+	perform pg_temp.same(to_jsonb(array[(select step_count from public.qorpera_memory_run_logs where run_id = room)]), '[5]',
+		'the moved room log''s steps');
+end $$;
+
 rollback;
