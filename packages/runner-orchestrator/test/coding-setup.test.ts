@@ -33,7 +33,6 @@ const read = (tree: Tree) => readCodingSetup(source(tree));
 const cursor = (text: string, more: Tree = {}) => read({ ".cursor/environment.json": text, ...more });
 const devcontainer = (text: string, more: Tree = {}) => read({ ".devcontainer/devcontainer.json": text, ...more });
 const problems = (result: CodingSetupRead) => result.problems.map((p) => `${p.effect} ${p.code} ${p.at}`);
-const sha256 = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 
 function expectRefused(result: CodingSetupRead) {
 	expect(result.refused).toBe(true);
@@ -73,7 +72,7 @@ describe("which setup file", () => {
 			dockerfiles: [],
 			problems: [],
 		});
-		expect(EMPTY_CODING_SETUP_DIGEST).toBe(sha256(""));
+		expect(EMPTY_CODING_SETUP_DIGEST).toBe(createHash("sha256").update("").digest("hex"));
 		expect(EMPTY_CODING_SETUP).toEqual({ format: null, ...EMPTY });
 		expect(Object.isFrozen(EMPTY_CODING_SETUP.mcp.allowlist)).toBe(true);
 		expect(files.reads).toEqual([
@@ -603,6 +602,6 @@ describe("the setup digest", () => {
 		const framed = ["qorpera.coding-setup-digest/v1", canonical, ".cursor/Dockerfile", "FROM ubuntu:24.04\n"].map(
 			frame,
 		);
-		expect(result.digest).toBe(sha256(Buffer.concat(framed)));
+		expect(result.digest).toBe(createHash("sha256").update(Buffer.concat(framed)).digest("hex"));
 	});
 });
