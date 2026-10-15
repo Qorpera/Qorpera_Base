@@ -7,6 +7,10 @@
 - The unreleased new-boot successor request now requires `bootIntentId`, binding it to a separately prepared pre-boot intent. Prior unbound handoffs cannot be reconstructed or resumed automatically.
 - Unreleased preparation completion now uses `qorpera.office-preparation-completion/v2` and requires the independently read adoption-receipt digest. Older completions cannot satisfy the new preparation phase.
 
+### Removed
+
+- `ExecutionIntentBudget`, `ExecutionIntentCapability`, `COMPANY_OPERATION_KINDS` and `CompanyOperationKind` are gone (legacy removal, step C, HP-E2). Nothing used them. `JsonValue` and `ExecutionIdentity` stay; the hosted primary's session events still use `ExecutionIdentity`.
+
 ### Added
 
 - Added `idle-rule`: the one idle rule's busy measure for every machine kind (the 2026-10-03 amendment "one idle rule for every machine"): `idleRuleBusy(before, after)` over two samples of a program's processor seconds and bytes moved, busy at `IDLE_RULE_BUSY_CORE_SHARE` (5% of one core) or `IDLE_RULE_BUSY_BYTES_PER_SAMPLE` per `IDLE_RULE_SAMPLE_SECONDS` (512 KiB per 30-second sample, about 17 KB a second, reads and writes alike; scaled to the sample's real length). The thresholds live here so every machine kind tunes them in one place.

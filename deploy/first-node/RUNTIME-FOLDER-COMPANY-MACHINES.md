@@ -41,8 +41,9 @@ coordinator chose shape B on 4 October 2026 (C2 §8).
 **Not in step 4:** coding machines (step 5) and test machines (step 6). From the 2026-10-14 amendment, links (items 4
 and 5) and the machine's own caches for dependencies and builds (item 8) are slices of their own, for every machine
 ([RUNTIME-COMPANY-FOLDER.md](RUNTIME-COMPANY-FOLDER.md), "Decided on 14 October 2026"). The links' slices are
-[RUNTIME-FOLDER-LINKS.md](RUNTIME-FOLDER-LINKS.md) (LK1 to LK6); step 4's acceptance (4g) shows them (amendment item
-10).
+[RUNTIME-FOLDER-LINKS.md](RUNTIME-FOLDER-LINKS.md) (LK1 to LK6), and the caches' are
+[RUNTIME-FOLDER-MACHINE-CACHES.md](RUNTIME-FOLDER-MACHINE-CACHES.md) (MC1 to MC3, with the folder helper passing each
+owner's cache folder in MC3); step 4's acceptance (4g) shows them (amendment item 10).
 
 ## The parts
 
@@ -520,3 +521,5 @@ only if a rule is wrong (review round 10).
   out-of-memory kill) would then end its desktop or command, and lose what it had not handed to the service: its
   open files' unsent bytes. What the service holds for the view and the reads the program logged still reach the
   core (above). Record that loss case, as founder decision 3 records a machine's, before 4d merges.
+  The loss case applies whether or not the remount is proven: the restarted program's abandon hello drops what the
+  dead one had not committed, and [OFFICE-FOLDER-REMOUNT.md](../test-machine/OFFICE-FOLDER-REMOUNT.md) records it.

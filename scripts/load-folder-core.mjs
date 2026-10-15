@@ -6,6 +6,7 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { buildContainerName, expandTestFixture, POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
+import { sessionPerFile } from "./test-hosted-db-cluster.mjs";
 
 /**
  * The folder core's load test (C1e, deploy/first-node/RUNTIME-COMPANY-FOLDER-CORE.md §9): one folder-v2 company
@@ -132,10 +133,26 @@ function run(command, commandArgs, input) {
 		throw new Error(`${command} ${commandArgs.slice(0, 4).join(" ")} failed:\n${result.stderr.slice(-4000)}`);
 	return result.stdout;
 }
-const psql = (sql) =>
+/** `options` are the sessions' settings (PGOPTIONS), for every session the psql process opens. */
+const psql = (sql, { options } = {}) =>
 	run(
 		"docker",
-		["exec", "-i", containerName, "psql", "-q", "-U", "postgres", "-d", database, "--no-psqlrc", "-v", "ON_ERROR_STOP=1", "-At"],
+		[
+			"exec",
+			"-i",
+			...(options ? ["--env", `PGOPTIONS=${options}`] : []),
+			containerName,
+			"psql",
+			"-q",
+			"-U",
+			"postgres",
+			"-d",
+			database,
+			"--no-psqlrc",
+			"-v",
+			"ON_ERROR_STOP=1",
+			"-At",
+		],
 		sql,
 	);
 const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
@@ -807,11 +824,21 @@ try {
 	}
 	const disk = run("docker", ["exec", containerName, "sh", "-c", "df -PT /var/lib/postgresql/data | tail -1"]).trim();
 	if (/tmpfs/.test(disk)) throw new Error(`The data directory is on tmpfs, not a real disk: ${disk}`);
-	psql(readFileSync(join(repositoryRoot, "supabase", "tests", "bootstrap.sql"), "utf-8"));
 	const migrations = sortMigrationNames(readdirSync(join(repositoryRoot, "supabase", "migrations")));
 	for (const name of options.skipped) if (!migrations.includes(name)) throw new Error(`No migration ${name} to skip`);
-	for (const migration of migrations.filter((name) => !options.skipped.has(name)))
-		psql(readFileSync(join(repositoryRoot, "supabase", "migrations", migration), "utf-8"));
+	// One psql process applies the test bootstrap and every migration, each file in a fresh session as one psql run
+	// per file did, without a docker exec and a psql start per file (test-hosted-db-cluster.mjs replays them the same way).
+	// Its sessions don't wait for each commit to reach the disk; fsync stays on, and the setup and the load below commit
+	// as the server does by default.
+	const migrateStarted = performance.now();
+	run("docker", ["exec", containerName, "mkdir", "-p", "/qorpera"]);
+	run("docker", ["cp", join(repositoryRoot, "supabase", "migrations"), `${containerName}:/qorpera/migrations`]);
+	run("docker", ["cp", join(repositoryRoot, "supabase", "tests", "bootstrap.sql"), `${containerName}:/qorpera/bootstrap.sql`]);
+	const files = ["bootstrap.sql", ...migrations.filter((name) => !options.skipped.has(name)).map((name) => `migrations/${name}`)];
+	psql(`\\o /dev/null\n${sessionPerFile(database, files.map((file) => `/qorpera/${file}`))}`, {
+		options: "-c synchronous_commit=off",
+	});
+	const migrateSeconds = (performance.now() - migrateStarted) / 1000;
 	const testsRoot = join(repositoryRoot, "supabase", "tests");
 	const fixture = expandTestFixture("load-folder-core.sql", (name) =>
 		name === "load-folder-core.sql"
@@ -1016,7 +1043,7 @@ try {
 	const bigFailed = all.filter((sample) => sample.kind.startsWith("big-fence") && sample.failure && sample.failure.name !== "paused").length;
 
 	process.stdout.write(
-		`Folder core load ${seconds.toFixed(0)} s on one company: ${loadRuns.length} runs${bigRow ? ` + the big run (${options.bigPaths} released paths)` : ""}${options.probeOnly ? " (probe only: no load)" : ""}, stop every ${options.stopEvery} s, ACL, wakes, GC, 2 foreign-key writers; pool ${options.pool}, round trip ${options.rtt} ms, statement_timeout 8s, lock_timeout 8s; real disk (${disk.split(/\s+/)[1]}); setup ${setupSeconds.toFixed(0)} s${options.skipped.size ? `; without ${[...options.skipped].join(", ")}` : ""}\n`,
+		`Folder core load ${seconds.toFixed(0)} s on one company: ${loadRuns.length} runs${bigRow ? ` + the big run (${options.bigPaths} released paths)` : ""}${options.probeOnly ? " (probe only: no load)" : ""}, stop every ${options.stopEvery} s, ACL, wakes, GC, 2 foreign-key writers; pool ${options.pool}, round trip ${options.rtt} ms, statement_timeout 8s, lock_timeout 8s; real disk (${disk.split(/\s+/)[1]}); ${files.length - 1} migrations ${migrateSeconds.toFixed(0)} s, setup ${setupSeconds.toFixed(0)} s${options.skipped.size ? `; without ${[...options.skipped].join(", ")}` : ""}\n`,
 	);
 	process.stdout.write(`${table.join("\n")}\n`);
 	process.stdout.write(

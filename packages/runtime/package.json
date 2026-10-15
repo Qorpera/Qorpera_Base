@@ -29,6 +29,7 @@
 		"@qorpera/company": "^0.83.0",
 		"@supabase/supabase-js": "2.112.3",
 		"@qorpera/cloud-client": "^0.83.0",
+		"image-in-browser": "3.6.0",
 		"pg": "8.23.0",
 		"playwright-core": "1.62.1"
 	},
