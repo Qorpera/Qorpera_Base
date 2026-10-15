@@ -104,17 +104,17 @@ begin
 	foreach bad in array array['"' || c_ok || '"', '[]', 'null', '["nope"]', '[1]', jsonb_build_array(upper(c_ok))::text,
 		jsonb_build_array(c_ok, c_ok)::text,
 		(select jsonb_agg(extensions.gen_random_uuid()::text) from generate_series(1, 65))::text]::jsonb[] loop
-		perform pg_temp.refused(format('select pg_temp.vcommit(%L, %L, %L)', s, 'cr-bad', jsonb_build_array(pg_temp.mk('cr-bad-ok'),
+		perform pg_temp.refused(format('select pg_temp.vcommit(%L, %L, %L)', s, 'cr-bad-shape', jsonb_build_array(pg_temp.mk('cr-bad-ok'),
 			pg_temp.mk('cr-bad-ok-2', c_ok::uuid), jsonb_build_object('op','mkdir','path','cr-bad','credits',bad))), '22023',
 			'Change set unit 3 is invalid');
 	end loop;
 	-- 64 distinct ids are well formed (none of them runs here).
-	perform pg_temp.expect(pg_temp.vcommit(s, 'cr-64', jsonb_build_array(jsonb_build_object('op','mkdir','path','cr-64',
+	perform pg_temp.expect(pg_temp.vcommit(s, 'cr-64-ids', jsonb_build_array(jsonb_build_object('op','mkdir','path','cr-64',
 		'credits',(select jsonb_agg(extensions.gen_random_uuid()::text) from generate_series(1, 64)))))), 1, 'refused', 'command_ended');
 	rb := pg_temp.open('run_box', '{}', v);
 	perform pg_temp.refused(format('select pg_temp.vcommit(%L, %L, %L)', rb, 'cr-run-box', jsonb_build_array(pg_temp.mk('cr-rb-ok'),
 		pg_temp.mk('cr-rb', c_ok::uuid))), '22023', 'Change set unit 2 is invalid');
-	perform pg_temp.refused(format('select pg_temp.commit(%L, %L, %L)', v, 'cr-run', jsonb_build_array(pg_temp.mk('cr-run', c_ok::uuid))),
+	perform pg_temp.refused(format('select pg_temp.commit(%L, %L, %L)', v, 'cr-run-actor', jsonb_build_array(pg_temp.mk('cr-run', c_ok::uuid))),
 		'22023', 'Change set unit 1 is invalid');
 	perform pg_temp.refused(format('select pg_temp.commit(%L, %L, %L)', pg_temp.member(2), 'cr-member',
 		jsonb_build_array(pg_temp.mk('cr-member', c_ok::uuid))), '22023', 'Change set unit 1 is invalid');
@@ -139,7 +139,7 @@ declare s jsonb := current_setting('qorpera_test.credit_view')::jsonb; c_ok uuid
 	c_ended uuid := current_setting('qorpera_test.credit_ended')::uuid; r jsonb; c public.qorpera_folder_commits%rowtype;
 begin
 	perform set_config('qorpera_test.race_cmd', c_ok::text, true);
-	perform pg_temp.refused(format('select pg_temp.vcommit(%L, %L, %L)', s, 'cr-race', jsonb_build_array(pg_temp.mk('cr-race', c_ok),
+	perform pg_temp.refused(format('select pg_temp.vcommit(%L, %L, %L)', s, 'cr-race-saved', jsonb_build_array(pg_temp.mk('cr-race', c_ok),
 		pg_temp.mk('cr-race-none'))), '42501', 'Folder view command has ended');
 	if exists (select 1 from public.qorpera_company_machine_commands where id = c_ok and ended_at is not null) or pg_temp.found('cr-race') then
 		raise exception 'A refused commit keeps nothing'; end if;
