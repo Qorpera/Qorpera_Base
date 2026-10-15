@@ -2122,3 +2122,45 @@ describe("releases", () => {
 		);
 	});
 });
+
+describe("interface change notes (I10)", () => {
+	const answer = (noted: unknown) => ({ schema: "qorpera.interface-change-notes/v1", noted });
+
+	it("notes the run's changes as a run effect, asks again after a deadlock, and checks the answer", async () => {
+		let tries = 0;
+		const { client, calls, binding } = fixture(() => {
+			if (++tries === 1) throw sqlError("40P01", "deadlock detected");
+			return answer(2);
+		});
+		await expect(client.noteInterfaceChanges(signal())).resolves.toBe(2);
+		// The run's binding and an empty request, as the run effect takes them: no folder actor.
+		const call = { method: "qorpera_folder_note_interface_changes", args: { p_binding: binding, p_request: {} } };
+		expect(calls).toEqual([call, call]);
+		const none = fixture(() => answer(0));
+		await expect(none.client.noteInterfaceChanges(signal())).resolves.toBe(0);
+		for (const wrong of [
+			answer(-1),
+			answer(1.5),
+			answer("1"),
+			answer(null),
+			answer(true),
+			{ schema: "qorpera.interface-change-notes/v1" },
+			{ ...answer(1), extra: 1 },
+			{ ...answer(1), schema: "qorpera.interface-change-note/v1" },
+		]) {
+			const f = fixture(() => wrong);
+			await expect(f.client.noteInterfaceChanges(signal()), JSON.stringify(wrong)).rejects.toThrow(
+				"Company folder response is invalid",
+			);
+		}
+		// SQL's refusals as folder errors: the run stopped, or it may no longer write.
+		const stopped = fixture(() => {
+			throw sqlError("55000", "Worker was cancelled");
+		});
+		await expect(stopped.client.noteInterfaceChanges(signal())).rejects.toMatchObject({ failure: "stopped" });
+		const gone = fixture(() => {
+			throw sqlError("42501", "Run is unavailable");
+		});
+		await expect(gone.client.noteInterfaceChanges(signal())).rejects.toMatchObject({ failure: "unavailable" });
+	});
+});

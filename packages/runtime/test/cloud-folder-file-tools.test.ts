@@ -507,6 +507,33 @@ it("makes a folder, and refuses a version for one", async () => {
 	).toThrow(CloudToolArgumentRefusal);
 });
 
+// Ported from the path gateway's own tools (removed in C-P5): the run's identity, an approval or an address
+// never comes from the model.
+it("takes no identity, approval or address a model adds to a call, before anything is read", async () => {
+	const f = await fixture({ files: { "docs/plan.md": "plan" } });
+	const read = vi.spyOn(f.folder, "read");
+	const extras: { [key: string]: JsonValue }[] = [
+		{ companyId: randomUUID() },
+		{ approved: true },
+		{ binding: {} },
+		{ sha256: "a".repeat(64) },
+		{ url: "https://outside.example" },
+	];
+	const calls: [string, { [key: string]: JsonValue }][] = [
+		["company_read", { path: "docs/plan.md", offset: 0, limit: 4 }],
+		["company_list", { path: "docs", after: null, limit: 5 }],
+		["company_write", { path: "docs/plan.md", operationKey: "w-1", expectedVersion: null, text: "x" }],
+	];
+	// Each call parses as it is; only the added key refuses it.
+	for (const [name, value] of calls) f.tool(name).parseArguments(value);
+	for (const extra of extras)
+		for (const [name, value] of calls)
+			expect(() => f.tool(name).parseArguments({ ...value, ...extra })).toThrow(CloudToolArgumentRefusal);
+	expect(read).not.toHaveBeenCalled();
+	expect(f.releases).toHaveLength(0);
+	expect(f.commits).toHaveLength(0);
+});
+
 it("deletes a file with the review its call was approved under", async () => {
 	const f = await fixture({ files: { "docs/old.md": "old" } });
 	const expectedVersion = f.files.get("docs/old.md")?.version as string;
@@ -554,6 +581,55 @@ it("answers a folder that changed after the listing that found it empty as a con
 	expect(answer.next).toContain("COMPANY_FILE_VERSION_CHANGED");
 	expect(f.commits[0]?.units[0]).toMatchObject({ op: "delete", path: "busy", asOfSeq: 0 });
 	expect(f.files.has("busy/new.md")).toBe(true);
+});
+
+it("notes a change of the company's pages and tables in the run's conversation, a replay's too (I10)", async () => {
+	const f = await fixture({
+		files: { "interfaces/pulse/README.md": "About Pulse.\n", "docs/plan.md": "plan" },
+		folders: ["Tables"],
+	});
+	const note = vi.spyOn(f.folder, "noteInterfaceChanges");
+	const asked = { p_binding: f.binding, p_request: {} };
+	const version = (path: string) => f.files.get(path)?.version as string;
+	const readme = {
+		path: "interfaces/pulse/README.md",
+		operationKey: "write-1",
+		expectedVersion: version("interfaces/pulse/README.md"),
+		text: "About Pulse, by the agent.\n",
+	};
+	expect(parse(await f.call("company_write", readme))).toMatchObject({ state: "applied" });
+	// A folder by its path in any case: the folder's paths are one path in any case.
+	const mkdir = { path: "Tables/leads", operationKey: "mkdir-1", expectedVersion: null };
+	expect(parse(await f.call("company_mkdir", mkdir))).toMatchObject({ state: "applied" });
+	// SQL notes each of the run's commits there once.
+	expect(f.notes).toEqual([asked, asked]);
+	expect(await Promise.all(note.mock.results.map((result) => result.value))).toEqual([1, 1]);
+	// A change anywhere else is no page's or table's: no note is asked for.
+	const plan = { path: "docs/plan.md", operationKey: "write-2", expectedVersion: version("docs/plan.md") };
+	expect(parse(await f.call("company_write", { ...plan, text: "two" }))).toMatchObject({ state: "applied" });
+	expect(f.notes).toHaveLength(2);
+	// A note that fails after the commit is a folder error, never a refusal (which says nothing happened): the call is
+	// unconfirmed.
+	const folder = parse(await f.call("company_read", { path: "Tables/leads", offset: 0, limit: 4 })).version as string;
+	const deletion = { path: "Tables/leads", operationKey: "delete-1", expectedVersion: folder };
+	note.mockRejectedValueOnce(new CloudCompanyFolderError("unavailable"));
+	const error = await f.call("company_delete", deletion).then(
+		() => null,
+		(thrown: unknown) => thrown,
+	);
+	expect(error).toBeInstanceOf(CloudCompanyFolderError);
+	expect(error).not.toBeInstanceOf(CloudToolRefusal);
+	expect(f.folders.has("Tables/leads")).toBe(false);
+	expect(f.notes).toEqual([asked, asked]);
+	// The same call again, as a later turn makes it: its receipt answers, nothing is committed twice, and the change
+	// gets its note.
+	const commits = f.commits.length;
+	const tools = cloudFolderFileTools({ folder: f.folder, operations: f.operations(), identity: f.identity });
+	const again = tools[4] as CloudNativeTool;
+	expect(parse(await again.execute(again.parseArguments(deletion), f.context))).toMatchObject({ state: "applied" });
+	expect(f.commits).toHaveLength(commits);
+	expect(f.notes).toEqual([asked, asked, asked]);
+	await expect(note.mock.results.at(-1)?.value).resolves.toBe(1);
 });
 
 it("refuses a deletion with no approval before anything is written", async () => {

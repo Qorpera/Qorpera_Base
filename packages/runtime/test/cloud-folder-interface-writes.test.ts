@@ -271,8 +271,15 @@ it("makes a new interface as a new folder, only with the review's approval, and 
 	expect((units[0]?.contents as { path: string }[]).map((item) => item.path)).toEqual(["interface.toml", "README.md"]);
 	expect(f.text(NOTES)).toBe(page("Notes"));
 	expect(f.text(NOTES_README)).toBe(README);
-	// The same call again finds its change made, and says so, with what it read.
+	// The change is noted in the run's conversation, with Undo (I10): SQL notes the run's commits that have no note.
+	const note = { p_binding: f.binding, p_request: {} };
+	const noted = vi.spyOn(f.folder, "noteInterfaceChanges");
+	expect(f.notes).toEqual([note]);
+	// The same call again finds its change made, and says so, with what it read; the note is asked for again, and SQL
+	// finds it made.
 	const again = await f.call("save_interface", value);
+	expect(f.notes).toEqual([note, note]);
+	await expect(noted.mock.results[0]?.value).resolves.toBe(0);
 	expect(read(again)).toEqual({
 		schema: "qorpera.interface-save-result/v1",
 		state: "unchanged",
@@ -408,6 +415,11 @@ it("saves nothing when a file is not as the call expects, and says why with what
 		if (example.reads.length > 0) cites(f, answer, example.reads);
 		else expect(answer.companyReadId, example.name).toBeUndefined();
 		expect(f.commits, example.name).toEqual([]);
+		// Asked for in case a commit of this call saved before and has no note (none did).
+		expect(
+			f.notes.map((note) => note.p_request),
+			example.name,
+		).toEqual([{}]);
 	}
 });
 
@@ -433,6 +445,7 @@ it("answers a change that waits for a member as proposed, and a replay answers f
 		},
 	);
 	const value = save("readme-1", [{ path: NOTES_README, expectedVersion: f.version(NOTES_README), text: README }]);
+	const note = vi.spyOn(f.folder, "noteInterfaceChanges");
 	const first = await f.call("save_interface", value, f.direct);
 	const answer = {
 		schema: "qorpera.interface-save-result/v1",
@@ -447,6 +460,36 @@ it("answers a change that waits for a member as proposed, and a replay answers f
 	// A new set of tools, as a later turn has: the call's receipt answers, and nothing is committed again.
 	const again = await f.call("save_interface", value, f.direct, f.make());
 	expect(again.value).toBe(first.value);
+	expect(f.commits).toHaveLength(1);
+	// Each answer asks for the note; a commit that saved nothing makes none, so no Undo is offered.
+	expect(f.notes).toHaveLength(2);
+	expect(await Promise.all(note.mock.results.map((result) => result.value))).toEqual([0, 0]);
+});
+
+it("answers a save as unconfirmed when its note fails after the commit, and its repeat makes the note", async () => {
+	const f = await fixture({ files: { [NOTES]: page("Notes") } });
+	const rename = save("rename-1", [{ path: NOTES, expectedVersion: f.version(NOTES), text: page("Notebook") }]);
+	const note = vi.spyOn(f.folder, "noteInterfaceChanges");
+	note.mockRejectedValueOnce(new CloudCompanyFolderError("unavailable"));
+	// A folder error, never a refusal (which says nothing happened): the boundary answers TOOL_OUTCOME_UNCONFIRMED.
+	const error = await f.call("save_interface", rename, f.direct).then(
+		() => null,
+		(thrown: unknown) => thrown,
+	);
+	expect(error).toBeInstanceOf(CloudCompanyFolderError);
+	expect(error).not.toBeInstanceOf(CloudToolRefusal);
+	expect(f.commits).toHaveLength(1);
+	expect(f.text(NOTES)).toBe(page("Notebook"));
+	expect(f.notes).toEqual([]);
+	// The same call again finds the files saved, and notes the change its commit made.
+	const saved = await f.call("save_interface", rename, f.direct);
+	expect(read(saved)).toMatchObject({ state: "unchanged", files: [], unchanged: [NOTES] });
+	expect(f.notes).toEqual([{ p_binding: f.binding, p_request: {} }]);
+	await expect(note.mock.results[1]?.value).resolves.toBe(1);
+	expect(f.commits).toHaveLength(1);
+	// A repeat whose note fails changed nothing, so it is refused.
+	note.mockRejectedValueOnce(new CloudCompanyFolderError("unavailable"));
+	await refuses(f.call("save_interface", rename, f.direct), CloudToolRefusal, "COMPANY_FOLDER_UNAVAILABLE");
 	expect(f.commits).toHaveLength(1);
 });
 
