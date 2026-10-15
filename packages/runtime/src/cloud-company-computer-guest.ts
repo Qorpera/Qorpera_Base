@@ -27,6 +27,7 @@ import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } fro
 import { CompanyComputerActionFailedError, companyComputerActionCheck } from "./cloud-company-computer-leases.ts";
 import {
 	companyComputerPrivateFieldMasks,
+	companyComputerSecretShapes,
 	readCompanyComputerPrivateValues,
 	redactCompanyComputerSnapshot,
 } from "./cloud-company-computer-private-fields.ts";
@@ -459,9 +460,9 @@ export class CompanyComputerGuestAutomation {
 	/**
 	 * No picture while a page shows a secret the vault typed: as text, in its title or address, or in a box that is
 	 * not marked private (a "show password" that made a new box). The page is read; it is never told the value.
+	 * Nor while it shows text shaped like a hook's signing secret (E3c-3), so every page is read, a fresh screen's too.
 	 */
 	async #assertFilledNotShown(page: Page): Promise<void> {
-		if (this.#filled.current().length === 0) return;
 		for (const frame of page.frames()) {
 			let shown: unknown;
 			let timer: ReturnType<typeof setTimeout> | undefined;
@@ -876,7 +877,9 @@ export class CompanyComputerGuestAutomation {
 				// Only what can leave is hidden (16 KB, with room for hidden parts): a huge page costs no more. While
 				// something is hidden, the cut falls between words, so no part of a value slips past checks that look
 				// for whole values: at a space when no value holds one (none the vault makes does), else a line's end.
-				const hidden = [...before, ...after, ...this.#filled.current()];
+				// Text shaped like a hook's signing secret is hidden as a typed secret is (E3c-3), whoever revealed it.
+				const filled = [...this.#filled.current(), ...companyComputerSecretShapes(full)];
+				const hidden = [...before, ...after, ...filled];
 				const cut =
 					full.length <= 20_480 || hidden.length === 0
 						? 20_480
@@ -889,9 +892,7 @@ export class CompanyComputerGuestAutomation {
 				// the cut, and its first 16 KB is returned.
 				const aria = cut < 16_384 ? full : full.slice(0, cut);
 				const snapshot = await this.#pageCall(async () => {
-					const redacted = redactCompanyComputerSnapshot(aria, [...before, ...after], {
-						filled: this.#filled.current(),
-					}).replace(
+					const redacted = redactCompanyComputerSnapshot(aria, [...before, ...after], { filled }).replace(
 						/(\/url: )([^\n]*)/g,
 						(_line, label: string, address: string) => `${label}${this.#filled.hideAddress(address)}`,
 					);

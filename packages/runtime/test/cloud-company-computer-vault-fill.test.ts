@@ -1044,3 +1044,35 @@ describe("vault_fill of a signed hook's secret on the Company Computer (E3b-3)",
 		expect(f.element.type).toBe("text");
 	});
 });
+
+describe("text shaped like a hook's signing secret (E3c-3)", () => {
+	const secret = "whsec_AbCdEfGhIjKlMnOpQrStUvWx0123+/=";
+
+	it("is hidden from snapshots, titles and addresses on any page, though the vault typed nothing", async () => {
+		const f = office();
+		f.shown.text = `Signing secret ${secret}`;
+		f.shown.link = `https://vercel.com/?s=${encodeURIComponent(secret).toLowerCase()}`;
+		f.shown.url = `https://vercel.com/hooks?s=${encodeURIComponent(secret)}`;
+		f.shown.title = `Endpoint ${secret}`;
+		const snapshot = JSON.stringify(await perform(f, { kind: "browser", action: "snapshot" }));
+		const tabs = JSON.stringify(await perform(f, { kind: "browser", action: "list_tabs" }));
+		for (const shown of [snapshot, tabs]) {
+			expect(shown).toContain("[hidden]");
+			expect(shown).not.toMatch(/whsec_[A-Za-z0-9%+/=]/i);
+		}
+	});
+
+	it("takes no picture while a page shows one, and one once the page shows it masked", async () => {
+		for (const surface of ["browser", "desktop"] as const) {
+			const f = office();
+			f.shown.text = `Signing secret ${secret}`;
+			await expect(screenshot(f, surface), surface).rejects.toThrow("PRIVATE_FIELD_ON_SCREEN");
+			expect(f.page.screenshot).not.toHaveBeenCalled();
+			expect(f.commands.capturePng).not.toHaveBeenCalled();
+		}
+		const f = office();
+		f.shown.text = "Signing secret whsec_•••••••• Reveal";
+		await expect(screenshot(f, "browser")).resolves.toMatchObject({ kind: "json" });
+		expect(f.page.screenshot).toHaveBeenCalledOnce();
+	});
+});

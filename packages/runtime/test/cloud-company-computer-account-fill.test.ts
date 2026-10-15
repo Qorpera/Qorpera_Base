@@ -379,6 +379,22 @@ describe("filled values on one screen", () => {
 		);
 	});
 
+	it("hides text shaped like a hook's signing secret with nothing typed, and not a masked one (E3c-3)", () => {
+		const filled = new CompanyComputerFilledValues();
+		const secret = "whsec_AbCdEfGhIjKlMnOpQrStUvWx0123+/=";
+		expect(filled.current()).toEqual([]);
+		expect(filled.hide(`Signing secret ${secret} Copy`)).toBe("Signing secret [hidden] Copy");
+		expect(filled.hide(`https://x.example/?s=${encodeURIComponent(secret)}&a=1`)).toBe(
+			"https://x.example/?s=[hidden]&a=1",
+		);
+		expect(filled.hideAddress(`https://x.example/hooks?s=${encodeURIComponent(secret).toLowerCase()}`)).toBe(
+			"https://x.example/hooks?[hidden]",
+		);
+		expect(filled.showsDecoded(encodeURIComponent(`https://x.example/?s=${encodeURIComponent(secret)}`))).toBe(true);
+		for (const text of ["Signing secret whsec_•••••••• Reveal", "Starts with whsec_", "whsec_... (hidden)"])
+			expect(filled.shows(text), text).toBe(false);
+	});
+
 	it("drops spent codes before it drops a password", () => {
 		let now = 0;
 		const filled = new CompanyComputerFilledValues(() => now);

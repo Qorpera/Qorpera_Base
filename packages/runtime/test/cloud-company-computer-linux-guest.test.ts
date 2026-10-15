@@ -1071,7 +1071,11 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
 		// The member is typing a password into the window they opened.
 		const typed = { values: ["hunter2"] };
-		const frame = { isDetached: () => false, evaluate: async () => typed.values };
+		// Its private boxes' values; asked with the private attribute, the text it shows (nothing hidden, E3c-3).
+		const frame = {
+			isDetached: () => false,
+			evaluate: async (_script: unknown, arg?: unknown) => (typeof arg === "string" ? "" : typed.values),
+		};
 		windows.pages = [{ isClosed: () => false, frames: () => [frame] }] as never[];
 		const capture = vi
 			.spyOn(CompanyComputerLinuxCommands.prototype, "capturePng")

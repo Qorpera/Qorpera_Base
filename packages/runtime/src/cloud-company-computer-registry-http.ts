@@ -37,6 +37,8 @@ const methods = [
 	"qorpera_release_runtime_office_viewer",
 	// G2-6c: the office receiver's lease proof (migration 20260930152000); it answers a plain true.
 	"qorpera_native_binding_proven",
+	// E3c-3: where a vault_capture's box goes, read by the office itself (migration 20260930344000); it writes nothing.
+	"qorpera_native_office_hook_capture",
 ] as const;
 export type CompanyComputerRegistryMethod = (typeof methods)[number];
 
