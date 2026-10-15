@@ -278,7 +278,7 @@ select set_config('qorpera_test.enqueue', format('select public.qorpera_enqueue_
 	'70900000-0000-4000-8000-0000000000e1', '70900000-0000-4000-8000-0000000000f1', 'race-slot-1', 'file',
 	current_setting('qorpera_test.slot'), current_setting('qorpera_test.slot')::timestamptz + interval '1 hour'), false) \g /dev/null
 
-select dblink_connect(name, 'dbname=qorpera_test') from unnest(array['rrace_sched','rrace_save','rrace_hold']) name;
+select dblink_connect(name, 'dbname=' || current_database()) from unnest(array['rrace_sched','rrace_save','rrace_hold']) name;
 select dblink_exec(name, $q$set request.jwt.claims = '{"role":"service_role"}'$q$) from unnest(array['rrace_sched','rrace_save','rrace_hold']) name;
 select set_config('qorpera_test.pid_' || name, pid::text, false)
 from unnest(array['rrace_sched','rrace_save','rrace_hold']) name, lateral dblink(name, 'select pg_backend_pid()') as t(pid integer);

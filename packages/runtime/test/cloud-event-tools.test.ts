@@ -870,6 +870,64 @@ describe("agent event tools", () => {
 			}
 		});
 
+		it("opens a Stripe hook through the secret broker with no secret yet, its site always Stripe's dashboard (E3c-2)", async () => {
+			const stripeReceipt = (f: Fixture, request: Record<string, unknown>) => {
+				const base = signedReceipt(f, request);
+				return { ...base, hook: { ...base.hook, signingSecret: { ...base.hook.signingSecret, ready: false } } };
+			};
+			const eventHook = vi.fn<CloudCompanyFolderSignedHooks["eventHook"]>(async ({ request }) =>
+				stripeReceipt(f, { ...request }),
+			);
+			const f: Fixture = await fixture(undefined, { eventHook });
+			try {
+				for (const [callId, site] of [
+					["t1", undefined],
+					["t2", " Dashboard.Stripe.com "],
+				] as const) {
+					const result = await f.boundary.invoke(callId, "qorpera", "manage_hook", {
+						...CREATE,
+						name: "stripe-payments",
+						proof: "stripe",
+						...(site === undefined ? {} : { site }),
+						operationKey: `stripe-${callId}`,
+					});
+					expect(result.success, JSON.stringify(result)).toBe(true);
+					expect(result.contentItems[0].text).toContain('\\"secretSite\\":\\"dashboard.stripe.com\\"');
+					expect(result.contentItems[0].text).toContain('\\"ready\\":false');
+				}
+				expect(eventHook.mock.calls.map(([sent]) => sent.request)).toEqual(
+					["t1", "t2"].map((callId) => ({
+						...CREATE,
+						name: "stripe-payments",
+						proof: "stripe",
+						site: "dashboard.stripe.com",
+						operationKey: `stripe-${callId}`,
+					})),
+				);
+				// A Stripe answer that says its secret is there already, or a GitHub one that says it is not, is no answer.
+				eventHook.mockImplementationOnce(async ({ request }) => signedReceipt(f, { ...request }));
+				const early = await f.boundary.invoke("t3", "qorpera", "manage_hook", {
+					...CREATE,
+					name: "stripe-payments",
+					proof: "stripe",
+					operationKey: "stripe-t3",
+				});
+				expect(early.success).toBe(false);
+				expect(early.contentItems[0].text).not.toContain("secretSite");
+				eventHook.mockImplementationOnce(async ({ request }) => stripeReceipt(f, { ...request }));
+				const unready = await f.boundary.invoke("t4", "qorpera", "manage_hook", {
+					...CREATE,
+					name: "github-pushes",
+					proof: "github",
+					operationKey: "gh-t4",
+				});
+				expect(unready.success).toBe(false);
+				expect(f.call).not.toHaveBeenCalled();
+			} finally {
+				f.run.close();
+			}
+		});
+
 		it("refuses a signed hook as unavailable without the secret broker, and passes the broker's refusal on", async () => {
 			const bare = await fixture(undefined, true);
 			try {
@@ -950,10 +1008,10 @@ describe("agent event tools", () => {
 					["h13", { ...CREATE, name: "Site" }, name],
 					[
 						"h14",
-						{ ...CREATE, proof: "stripe" },
-						"A Stripe hook comes later: its secret is taken from Stripe's screen",
+						{ ...CREATE, proof: "stripe", site: "stripe.com" },
+						"A Stripe hook's secret is taken from dashboard.stripe.com",
 					],
-					["h15", { ...CREATE, proof: "basic" }, "proof is address, github or hmac-sha256"],
+					["h15", { ...CREATE, proof: "basic" }, "proof is address, github, hmac-sha256 or stripe"],
 					["h16", { ...CREATE, maxBodyBytes: 512 }, "maxBodyBytes is a whole number from 1024 to 262144"],
 					["h17", { ...CREATE, perMinute: 1.5 }, "perMinute is a whole number from 1 to 120"],
 					[

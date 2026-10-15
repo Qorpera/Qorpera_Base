@@ -1,6 +1,7 @@
 import {
 	CompanyComputerRegistryUnansweredError,
 	companyComputerAuthorityUnanswered,
+	companyComputerRegistryRefusal,
 	HttpCloudCompanyComputerRegistry,
 } from "@qorpera/runtime/cloud-company-computer-registry-http";
 import { cloudToolRequest } from "@qorpera/runtime/cloud-native-tool-authority";
@@ -65,6 +66,47 @@ describe("host-only office registry transport", () => {
 			"OFFICE_REGISTRY_UNCONFIRMED",
 		);
 		expect(f.fetcher).toHaveBeenCalledOnce();
+	});
+	it("keeps a folder view's refusal reason only when the core said one of its known refusals", async () => {
+		const f = fixture();
+		const refused = async (
+			method: "qorpera_folder_view_open" | "qorpera_folder_view_close" | "qorpera_native_office_operation",
+			message: string,
+			code = "42501",
+		) => {
+			f.fetcher.mockResolvedValueOnce(Response.json({ message, code, details: "secret" }, { status: 403 }));
+			return f.registry.call(method, {}, f.signal).then(
+				() => expect.unreachable(),
+				(error: unknown) => error,
+			);
+		};
+		const holder = await refused("qorpera_folder_view_open", "Folder view holder is not current");
+		expect(companyComputerRegistryRefusal(holder)).toEqual({ reason: "Folder view holder is not current" });
+		expect(companyComputerAuthorityUnanswered(holder)).toBe(false);
+		expect(String(holder)).not.toContain("holder");
+		expect(
+			companyComputerRegistryRefusal(
+				await refused("qorpera_folder_view_open", "Folder view anchor is invalid", "22023"),
+			),
+		).toEqual({ reason: "Folder view anchor is invalid" });
+		// Any other text, and the same text from another method, is not kept.
+		expect(
+			companyComputerRegistryRefusal(await refused("qorpera_folder_view_open", "secret profile contents")),
+		).toEqual({});
+		expect(
+			companyComputerRegistryRefusal(
+				await refused("qorpera_folder_view_close", "Folder view holder is not current"),
+			),
+		).toEqual({});
+		expect(
+			companyComputerRegistryRefusal(
+				await refused("qorpera_native_office_operation", "Folder view holder is not current"),
+			),
+		).toEqual({});
+		// A database that says "try again" did not answer: no refusal, no reason.
+		const busy = await refused("qorpera_folder_view_open", "Folder view holder is not current", "55P03");
+		expect(companyComputerRegistryRefusal(busy)).toBeUndefined();
+		expect(companyComputerAuthorityUnanswered(busy)).toBe(true);
 	});
 	it("rejects extra origin components, unknown methods and overlarge requests before network access", async () => {
 		for (const supabaseUrl of [
