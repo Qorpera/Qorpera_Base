@@ -156,14 +156,17 @@ $new$,
 	$old$		if v_ok and v_op = 'write' then
 			if v_unit ? 'expectedVersion'$old$,
 	$new$		-- 20260930446200 (step 5b): under repo.git, an object written onto its own bytes and a mkdir onto a folder are
-		-- saved as they stand, with no change (git writes what it already has). An object with other bytes is refused
-		-- for all but the platform.
+		-- saved as they stand, with no change (git writes what it already has). Its own bytes are the same file whatever
+		-- its manifest's chunks: hash, size, media type and bit (the unit's file is still held to possession below). An
+		-- object with other bytes is refused for all but the platform.
 		v_unchanged := false;
 		if v_ok and v_row.kind is not null and v_key ~ '^code/[^/]+/[^/]+/repo\.git/' then
 			if v_op = 'mkdir' and v_row.kind = 'folder' then
 				v_unchanged := true;
 			elsif v_op = 'write' and public.qorpera_folder_git_object(v_key) then
-				if v_row.kind = 'file' and v_row.manifest_sha256 = v_unit -> 'file' ->> 'manifestSha256' then
+				if v_row.kind = 'file' and v_row.file_sha256 = v_unit -> 'file' ->> 'fileSha256'
+					and v_row.bytes::text = v_unit -> 'file' ->> 'bytes' and v_row.media_type = v_unit -> 'file' ->> 'mediaType'
+					and v_row.executable::text = v_unit -> 'file' ->> 'executable' then
 					v_unchanged := true;
 				elsif v_git_class <> 'platform' then
 					v_ok := false; v_reason := 'git_object_delete';
