@@ -36,7 +36,7 @@ export function nativeCompanyContextFixture() {
 						: "company_service",
 		authorUserId: sourceKind === "input" ? identity.requesterUserId : null,
 		sequence: sourceKind === "history" ? 1 : null,
-		attachmentCount: 0,
+		images: [],
 		content: {
 			text,
 			originalBytes: Buffer.byteLength(text),
