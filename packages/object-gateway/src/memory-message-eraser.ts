@@ -23,8 +23,9 @@ import type { ObjectGatewayReplication } from "./replication.ts";
  *
  * Each pass reads the queue (`_due`, the longest waiting first) and steps each erase on until a step leaves it where it
  * was (it waits on a lock, a run, P18 or its next block) or it is done or refused. A step that rolled back leaves the
- * row as it was, so the next pass carries on from the state the row holds; an erase whose step failed rests a minute
- * first, so ones that keep failing do not hold the queue's head. Problems are reported as codes, never with a message.
+ * row as it was, so the next pass carries on from the state the row holds. Passes go round the queue: an erase that had
+ * its turn waits until every other erase due had one, and one whose step failed also rests a minute, so ones that keep
+ * failing or waiting never hold the queue's head. Problems are reported as codes, never with a message.
  * Built switched off: the gateway runs it only with QORPERA_MEMORY_MESSAGE_ERASER=1.
  */
 
@@ -47,8 +48,7 @@ const MAX_DUE = 1000;
 /** A step moves an erase on by one state at most, and its states only move forward: four steps take one from pending
  * to done. */
 const STEPS_PER_ERASE = 4;
-/** How long an erase whose step failed waits before a pass takes it again. A failed step leaves its row unchanged, so
- * the queue, the longest waiting first, would name it first on every pass. */
+/** How long an erase whose step failed waits before a pass takes it again, even when its round is over sooner. */
 const REST_MS = 60_000;
 
 type EraseRpc = Extract<
@@ -168,8 +168,9 @@ export interface MemoryMessageEraserOptions {
 export class MemoryMessageEraser {
 	readonly #options: MemoryMessageEraserOptions;
 	readonly #folder: PlatformFolderWriter;
-	/** Each erase whose step failed, and when a pass may take it again. */
-	readonly #resting = new Map<string, number>();
+	/** Each erase taken in this round or resting: the round it was taken in, and until when it rests (0: not). */
+	readonly #turns = new Map<string, { readonly round: number; readonly until: number }>();
+	#round = 0;
 
 	constructor(options: MemoryMessageEraserOptions) {
 		this.#options = options;
@@ -178,35 +179,54 @@ export class MemoryMessageEraser {
 
 	/**
 	 * Steps the due erases on, at most `max` of them, until `signal` ends (no new step is taken then); returns how many
-	 * were taken. An erase whose step failed rests (`REST_MS`): passes skip it meanwhile and ask the queue for as many
-	 * more. A lock conflict, a state that refuses the call now (423) or an outage only rests it; any other failure rests
-	 * it too, and once every other erase had its turn, the pass rejects with the first such failure's code.
+	 * were taken. Each pass takes the longest waiting erases that have not had their turn in this round, asking the
+	 * queue for as many more as it skips. When every erase due had its turn, the next round begins, with the longest
+	 * waiting first again. An erase whose step failed also rests (`REST_MS`) before a later round takes it.
+	 * - A lock conflict or a state that refuses the call now (423) only rests it.
+	 * - An outage rests it and ends the pass: the database client's circuit may have opened on it, and would refuse
+	 *   the next erase's step without asking the database.
+	 * - Any other failure rests it too, and once the pass's other erases had their turn, the pass rejects with the
+	 *   first such failure's code.
+	 * The queue lists at most `MAX_DUE` erases at once: when nearly that many had their turn in one round and are still
+	 * due, the round ends there, and the ones behind them wait for the queue to shrink.
 	 */
 	async eraseDue(max = 20, signal: AbortSignal = AbortSignal.timeout(30_000)): Promise<number> {
 		if (signal.aborted || !Number.isSafeInteger(max) || max < 1) return 0;
-		const now = Date.now();
-		for (const [eraseId, until] of this.#resting) if (until <= now) this.#resting.delete(eraseId);
-		const answer = await this.#options.authority.publisher(
-			"qorpera_memory_message_erase_due",
-			{ p_limit: Math.min(max + this.#resting.size, MAX_DUE) },
-			signal,
+		const limit = Math.min(max + this.#turns.size, MAX_DUE);
+		const queue = dueErases(
+			await this.#options.authority.publisher("qorpera_memory_message_erase_due", { p_limit: limit }, signal),
 		);
+		const now = Date.now();
+		const free = (erase: DueErase) => {
+			const turn = this.#turns.get(erase.eraseId);
+			return turn === undefined || (turn.round !== this.#round && turn.until <= now);
+		};
+		if (!queue.some(free)) {
+			// Every erase due had its turn (or rests): the next round begins. An erase the whole queue no longer
+			// lists is done or refused.
+			this.#round++;
+			const listed = new Set(queue.map((erase) => erase.eraseId));
+			for (const [eraseId, turn] of this.#turns)
+				if (turn.until <= now || (queue.length < limit && !listed.has(eraseId))) this.#turns.delete(eraseId);
+		}
 		let taken = 0;
 		let failed: string | null = null;
-		for (const erase of dueErases(answer)) {
+		for (const erase of queue) {
 			if (signal.aborted || taken >= max) break;
-			if (this.#resting.has(erase.eraseId)) continue;
+			if (!free(erase)) continue;
 			taken++;
+			this.#turns.set(erase.eraseId, { round: this.#round, until: 0 });
 			try {
 				await this.#carry(erase, signal);
 			} catch (error) {
 				// A call the pass's deadline cut off says nothing about its erase: its step lands once, in that call or
 				// in a later pass.
 				if (signal.aborted) break;
-				this.#resting.set(erase.eraseId, Date.now() + REST_MS);
+				this.#turns.set(erase.eraseId, { round: this.#round, until: Date.now() + REST_MS });
 				const code = platformFolderProblemCode(error);
+				if (code === "unavailable") break;
 				const notNow = error instanceof ObjectDependencyError && error.status === 423;
-				if (code !== "lock_conflict" && code !== "unavailable" && !notNow) failed ??= code;
+				if (code !== "lock_conflict" && !notNow) failed ??= code;
 			}
 		}
 		if (failed !== null) problem(failed);
