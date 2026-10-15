@@ -17,6 +17,7 @@ import {
 	type CloudWakeEnvelope,
 	type CloudWakePolicy,
 	cloudCoworkerMessageTool,
+	cloudWakeIsConversationPost,
 	cloudWakeIsOwnThread,
 	HttpCloudWakeControl,
 	parseCloudWakeEnvelope,
@@ -779,6 +780,14 @@ describe("immutable cloud wake policies", () => {
 		expect(own.map(({ scenario }) => scenario)).toEqual(["room-required"]);
 		const room = policies.find(({ scenario }) => scenario === "room")!.policy;
 		expect(cloudWakeIsOwnThread({ kind: "human", policy: { ...room, final: "required" } })).toBe(false);
+	});
+	it("reads a post in a conversation, the agent's thread or a group chat, only from a room policy", () => {
+		// The summary tree's gate (M4c): both kinds of room the kernel admits, never any other wake.
+		const posts = policies.filter(({ policy }) => cloudWakeIsConversationPost({ kind: policy.kind!, policy }));
+		expect(posts.map(({ scenario }) => scenario).sort()).toEqual(["room", "room-required"]);
+		const room = policies.find(({ scenario }) => scenario === "room")!.policy;
+		expect(cloudWakeIsConversationPost({ kind: "human", policy: room })).toBe(false);
+		expect(cloudWakeIsConversationPost({ kind: "room", policy: REQUIRED_CLOUD_WAKE_POLICY })).toBe(false);
 	});
 	it("allows a successful silent routine through the existing mouth component", async () => {
 		const send = vi.fn();

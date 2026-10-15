@@ -198,6 +198,15 @@ export function cloudWakeIsOwnThread(wake: Pick<CloudWakeEnvelope, "kind" | "pol
 	return wake.kind === "room" && wake.policy.kind === "room" && wake.policy.final === "required";
 }
 
+/**
+ * A room wake: a post in a conversation the agent takes part in, its own shared
+ * thread or a group chat (summary trees M4c), from the admitted policy alone.
+ * Never from model input.
+ */
+export function cloudWakeIsConversationPost(wake: Pick<CloudWakeEnvelope, "kind" | "policy">): boolean {
+	return wake.kind === "room" && wake.policy.kind === "room";
+}
+
 export interface CloudWakeEnvelope {
 	readonly schema: typeof CLOUD_WAKE_SCHEMA;
 	readonly id: string;

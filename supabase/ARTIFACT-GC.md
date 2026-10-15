@@ -82,8 +82,8 @@ order by status;
 - Cancelling the five-minute cron stops new claims. It does not invalidate active five-minute leases; wait for those leases to expire before incident analysis.
 
 NAS objects are removed only through the trusted object gateway. Qorpera
-Computers use the lease-scoped runner broker and never receive NAS filesystem
-authority, the gateway control token, or database service credentials.
+Computers never receive NAS filesystem authority, the gateway control token, or
+database service credentials.
 
 Folder-v2 GC state, without object names:
 
