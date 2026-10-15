@@ -145,8 +145,16 @@ describe("a member's erase of one message", () => {
 		expect(service.publisher).not.toHaveBeenCalled();
 	});
 
+	it("answers 403 to a member who is no owner or admin asking, and 404 when they read an erase", async () => {
+		// The database refuses the request with 42501 and hides the erase from the read with P0002.
+		const service = await fixture();
+		service.state.refusal = new ObjectDependencyError(403);
+		expect((await service.request(asked, { method: "POST" })).status).toBe(403);
+		service.state.refusal = new ObjectDependencyError(404);
+		expect((await service.request(read)).status).toBe(404);
+	});
+
 	it.each([
-		["a member who is no owner or admin", new ObjectDependencyError(403), 403],
 		["a missing conversation, message or erase", new ObjectDependencyError(404), 404],
 		["an invalid request", new ObjectDependencyError(400), 400],
 		["an unavailable database", new ObjectDependencyError(500), 503],

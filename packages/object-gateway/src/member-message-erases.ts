@@ -15,8 +15,8 @@ import { UUID } from "./native-objects.ts";
  * - `GET …/<environmentId>/<eraseId>`: where the erase stands (`qorpera_memory_message_erase_status`), the member
  *   named the same way.
  * Both answer the erase (`qorpera.memory-message-erase/v1`) as the database gave it. The database's refusals keep their
- * statuses: 42501 (not a member, or not an owner or admin) is 403, P0002 (no such conversation, message or erase) 404,
- * 22023 400, and 55000 (a paused company) 423.
+ * statuses: 42501 (not a member, or not an owner or admin asking) is 403, P0002 (no such conversation, message or
+ * erase, or one a member who is no owner or admin reads) 404, 22023 400, and 55000 (a paused company) 423.
  */
 
 const ROUTE = /^\/v1\/member-message-erases\/([0-9a-f-]{36})\/([0-9a-f-]{36})(?:\/([0-9a-f-]{36}))?$/;
