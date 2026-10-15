@@ -3426,7 +3426,7 @@ export class LxdUnixClient
 	 * time, each once the last has drained, so the source is read no faster than the command reads), stdout is kept up
 	 * to its bound and only the end of stderr. The output's end messages, not a deadline, end the wait; the signal is
 	 * the only bound. As there, every early exit closes the stdout websocket, on which LXD kills the command; the end of
-	 * the call also closes a source it did not read to its end. */
+	 * the call also stops a handshake LXD has not answered and closes a source it did not read to its end. */
 	async execInstancePipe(
 		project: string,
 		name: string,
@@ -3481,8 +3481,9 @@ export class LxdUnixClient
 		let stdoutEnded = false;
 		let stderrEnded = false;
 		let inputSent = false;
-		// Stops the input, which closes a source not read to its end.
-		const inputStop = new AbortController();
+		// Aborted when the call ends: it stops a handshake LXD has not answered, and the input, which closes a source
+		// not read to its end.
+		const callEnd = new AbortController();
 		const sockets: NodeWebSocket[] = [];
 		let failure: Error | undefined;
 		let settle: () => void = () => undefined;
@@ -3492,12 +3493,13 @@ export class LxdUnixClient
 		// Ends the call: the stdout websocket closes first, which kills a command still running.
 		const fail = (error: Error): void => {
 			failure ??= error;
-			inputStop.abort();
+			callEnd.abort();
 			for (const socket of sockets) socket.close();
 			settle();
 		};
 		const aborted = (): void => fail(new Error("LXD exec pipe was stopped"));
 		signal.addEventListener("abort", aborted, { once: true });
+		const handshake = AbortSignal.any([signal, callEnd.signal]);
 		try {
 			for (const stream of streams) {
 				const socket = await NodeWebSocket.connect(
@@ -3527,7 +3529,8 @@ export class LxdUnixClient
 						},
 					},
 					EXEC_STREAM_CONNECT_MS,
-					{ socketPath: this.#socketPath },
+					// The signal and the call's end also stop a handshake LXD has not answered yet.
+					{ socketPath: this.#socketPath, signal: handshake },
 				);
 				sockets.push(socket);
 				if (failure || signal.aborted) {
@@ -3537,7 +3540,7 @@ export class LxdUnixClient
 			}
 			// The input runs beside the output: a command may print before it has read all of its stdin. Only the
 			// source's own failure fails the call; a websocket that closed under the input leaves it to the exit code.
-			pipeInput(sockets[2]!, stdin, inputStop.signal).then(
+			pipeInput(sockets[2]!, stdin, callEnd.signal).then(
 				(sent) => {
 					inputSent = sent;
 				},
@@ -3558,7 +3561,7 @@ export class LxdUnixClient
 			fail(error instanceof Error ? error : new Error("LXD exec pipe failed"));
 			throw failure;
 		} finally {
-			inputStop.abort();
+			callEnd.abort();
 			signal.removeEventListener("abort", aborted);
 			for (const socket of sockets) socket.close();
 		}

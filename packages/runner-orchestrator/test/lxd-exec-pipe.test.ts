@@ -50,6 +50,10 @@ class FakeExecPipe {
 	inputEnded = false;
 	killed = false;
 	holdInput = false;
+	/** The fd whose upgrade it never answers, as an LXD that stalls the handshake. */
+	withhold?: string;
+	withheldSeen = false;
+	withheldClosed = false;
 	socket = "";
 	readonly #sockets = new Set<Socket>();
 	readonly #connected = new Map<string, Socket>();
@@ -105,6 +109,11 @@ class FakeExecPipe {
 		this.#connected.get("0")?.resume();
 	}
 
+	/** LXD drops the fd's websocket without its end message. */
+	drop(fd: string): void {
+		this.#connected.get(fd)?.destroy();
+	}
+
 	close(): void {
 		for (const socket of this.#sockets) socket.destroy();
 	}
@@ -116,6 +125,19 @@ class FakeExecPipe {
 		const key = request.headers["sec-websocket-key"];
 		if (url.pathname !== `${OPERATION}/websocket` || !fd || fd === "control" || typeof key !== "string") {
 			socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+			return;
+		}
+		if (fd === this.withhold) {
+			this.withheldSeen = true;
+			// Reads on, so the client's end of the connection is seen; the server keeps its sockets half open.
+			const closed = (): void => {
+				this.withheldClosed = true;
+				socket.destroy();
+			};
+			socket.once("end", closed);
+			socket.once("error", closed);
+			socket.once("close", closed);
+			socket.resume();
 			return;
 		}
 		this.upgrades.push(fd);
@@ -450,6 +472,36 @@ describe("LXD exec pipe", () => {
 		await vi.waitFor(() => expect(state.closed).toBe(true));
 		expect(state.pulled).toBe(1);
 		expect(exec.input.byteLength).toBe(0);
+	});
+
+	it("stops a handshake LXD never answers on the signal or when the call ends, well before its own timeout", async () => {
+		const command: FakeCommand = async (io) => {
+			await io.input();
+			return 0;
+		};
+		const stopped = await fake(command);
+		stopped.withhold = "2";
+		const controller = new AbortController();
+		const call = run(stopped, {}, controller.signal);
+		await vi.waitFor(() => expect(stopped.withheldSeen).toBe(true));
+		const abortedAt = Date.now();
+		controller.abort();
+		await expect(call).rejects.toThrow("LXD exec pipe was stopped");
+		// The handshake's own timeout is 10 s.
+		expect(Date.now() - abortedAt).toBeLessThan(1_000);
+		await vi.waitFor(() => expect(stopped.withheldClosed).toBe(true));
+		// The stdout websocket already connected is closed too.
+		expect(stopped.upgrades).toEqual(["1"]);
+		await vi.waitFor(() => expect(stopped.killed).toBe(true));
+		const dropped = await fake(command);
+		dropped.withhold = "2";
+		const ended = run(dropped);
+		await vi.waitFor(() => expect(dropped.withheldSeen).toBe(true));
+		const droppedAt = Date.now();
+		dropped.drop("1");
+		await expect(ended).rejects.toThrow("LXD exec pipe ended before its output");
+		expect(Date.now() - droppedAt).toBeLessThan(1_000);
+		await vi.waitFor(() => expect(dropped.withheldClosed).toBe(true));
 	});
 
 	it("fails with the source's own error, or on a chunk that is not bytes, and kills the command", async () => {
