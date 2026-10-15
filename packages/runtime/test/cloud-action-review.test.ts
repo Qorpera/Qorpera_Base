@@ -360,6 +360,33 @@ describe("what the card shows", () => {
 		});
 	});
 
+	it("names Stripe as a Stripe hook's signer and its dashboard as the one site its secret is read from (E3c)", () => {
+		const details = {
+			purpose: "Payments the company takes.",
+			"signed by": "Stripe",
+			site: "dashboard.stripe.com",
+			effect:
+				"Stripe makes the hook's secret; the vault reads it off dashboard.stripe.com, and no one sees it. Only events Stripe signs with it can wake the company's routines",
+		};
+		const stripe = {
+			action: "create",
+			kind: "hook",
+			name: "stripe-live",
+			purpose: "Payments the company takes.",
+			proof: "stripe",
+			operationKey: "k",
+		};
+		expect(describeCloudAction(tool("manage_hook"), stripe)).toEqual({
+			title: "Open a hook",
+			target: "stripe-live",
+			details,
+		});
+		// The site is Stripe's dashboard whatever the call names; the tool refuses any other.
+		expect(describeCloudAction(tool("manage_hook"), { ...stripe, site: "stripe.example.com" }).details).toEqual(
+			details,
+		);
+	});
+
 	it("shows the text a Drive file gets, and names the file by its id only when nothing else names it", () => {
 		const content = `# Q3 plan\n\n- Grow sales\n${"Detail of the plan. ".repeat(4000)}`;
 		const created = describeCloudAction(tool("google_drive_create_file", "connector"), {

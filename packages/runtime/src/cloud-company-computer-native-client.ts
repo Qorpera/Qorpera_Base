@@ -34,7 +34,15 @@ import {
 	parseCompanyComputerStartDescriptor,
 } from "./cloud-company-computer-start.ts";
 import type { CompanyComputerCloudEndpoint } from "./cloud-company-computer-tools.ts";
-import type { EventHookFillAnswer, EventHookFillRequest, EventHookRefusal } from "./cloud-event-hook-vault.ts";
+import type {
+	EventHookAnswer,
+	EventHookCaptureAnswer,
+	EventHookCaptureRequest,
+	EventHookFillAnswer,
+	EventHookFillRequest,
+	EventHookRefusal,
+	EventHookRequest,
+} from "./cloud-event-hook-vault.ts";
 import { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
 import { type CloudNativeToolRun, cloudToolRequest, isNativeJobHolder } from "./cloud-native-tool-authority.ts";
 import { CloudToolAuthorizeRefusal } from "./cloud-native-tool-boundary.ts";
@@ -48,9 +56,32 @@ export interface CompanyComputerAccountFills {
 	): Promise<CompanyAccountFillAnswer | CompanyAccountRefusal>;
 }
 
-/** The vault, for a vault_fill of a signed hook's secret (E3b-3): HttpCloudSecretBrokerClient. */
+/** The vault, for a vault_fill of a signed hook's secret (E3b-3) and a vault_capture of a Stripe hook's, with its
+ * capture key's rekey (E3c-2): HttpCloudSecretBrokerClient. */
 export interface CompanyComputerHookFills {
 	eventHookFill(request: EventHookFillRequest, signal: AbortSignal): Promise<EventHookFillAnswer | EventHookRefusal>;
+	eventHook(request: EventHookRequest, signal: AbortSignal): Promise<EventHookAnswer>;
+	eventHookCapture(
+		request: EventHookCaptureRequest,
+		signal: AbortSignal,
+	): Promise<EventHookCaptureAnswer | EventHookRefusal>;
+}
+
+const HOOKS_UNAVAILABLE = {
+	schema: "qorpera.event-hook-refusal/v1",
+	code: "0A000",
+	message: "Signed hooks are not set up for this company's computers",
+} as const;
+
+/** A vault's refusal as the call's answer, in the model's words: nothing was typed or stored. */
+function vaultRefused(
+	action: "vault_fill" | "vault_capture",
+	refusal: { readonly code: string; readonly message: string },
+): CompanyComputerToolContent {
+	return {
+		kind: "json",
+		value: { action, completed: false, refused: { code: refusal.code, message: refusal.message } },
+	};
 }
 
 export const COMPANY_COMPUTER_NATIVE_SCHEMA = "qorpera.company-computer-native/v1";
@@ -272,23 +303,36 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		// refusal (accounts switched off, no such account, an older computer) is the call's answer, unsent. A signed
 		// hook's secret (E3b-3) comes the same way, from the vault's hook route.
 		let fill: Readonly<Record<string, string>> | undefined;
-		const action = operation.arguments as { kind?: unknown; action?: unknown };
+		const action = operation.arguments as { kind?: unknown; action?: unknown; hook?: unknown };
+		const request = {
+			binding: this.#run.binding,
+			receiptId: context.receiptId,
+			idempotencyKey: context.idempotencyKey,
+			envelope: cloudNativeToolOperationEnvelope(this.#run.identity, operation),
+		};
+		// A vault_capture of a Stripe hook's secret (E3c-2): the office reads only a current capture key, so one made under
+		// an older broker authority or company key is made again first (a current one is only read). A refusal is the
+		// call's answer, and the office is never asked.
+		const capture = action.kind === "browser" && action.action === "vault_capture";
+		if (capture) {
+			const rekey = this.#hookFills
+				? await this.#hookFills.eventHook(
+						{ binding: this.#run.binding, request: { action: "rekey", hook: action.hook as string } },
+						signal,
+					)
+				: HOOKS_UNAVAILABLE;
+			// A receipt is any record, so the schema alone does not narrow the answer.
+			if (rekey.schema === "qorpera.event-hook-refusal/v1")
+				return vaultRefused("vault_capture", rekey as EventHookRefusal);
+			if (rekey.schema !== "qorpera.event-hook-rekey-answer/v1" || rekey.hook !== action.hook)
+				throw new Error("OFFICE_NATIVE_UNCONFIRMED");
+		}
 		if (action.kind === "browser" && action.action === "vault_fill") {
-			const request = {
-				binding: this.#run.binding,
-				receiptId: context.receiptId,
-				idempotencyKey: context.idempotencyKey,
-				envelope: cloudNativeToolOperationEnvelope(this.#run.identity, operation),
-			};
 			const answer =
 				"hook" in action
 					? this.#hookFills
 						? await this.#hookFills.eventHookFill(request, signal)
-						: ({
-								schema: "qorpera.event-hook-refusal/v1",
-								code: "0A000",
-								message: "Signed hooks are not set up for this company's computers",
-							} as const)
+						: HOOKS_UNAVAILABLE
 					: this.#accountFills
 						? await this.#accountFills.companyAccountFill(request, signal)
 						: ({
@@ -300,14 +344,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 				answer.schema !== "qorpera.company-account-fill-answer/v1" &&
 				answer.schema !== "qorpera.event-hook-fill-answer/v1"
 			)
-				return {
-					kind: "json",
-					value: {
-						action: "vault_fill",
-						completed: false,
-						refused: { code: answer.code, message: answer.message },
-					},
-				};
+				return vaultRefused("vault_fill", answer);
 			fill = answer.box;
 		}
 		// Retain cleanup after ambiguous delivery. Never mark a remote session
@@ -325,11 +362,17 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 			signal,
 			screenshot ? COMPANY_COMPUTER_NATIVE_MAX_SCREENSHOT_RESPONSE : COMPANY_COMPUTER_NATIVE_MAX_RESPONSE,
 		);
-		// Only a screenshot's answer may carry its pixels (folder-v2: the PNG is stored nowhere).
+		// Only a screenshot's answer may carry its pixels (folder-v2: the PNG is stored nowhere), and only a
+		// vault_capture's the box the office sealed the secret in.
 		const inline = screenshot && !!answer && typeof answer === "object" && "image" in answer;
+		const boxed = capture && !!answer && typeof answer === "object" && "box" in answer;
 		const response = officeNativeRecord(
 			answer,
-			inline ? "content,idempotencyKey,image,receiptId,schema" : "content,idempotencyKey,receiptId,schema",
+			inline
+				? "content,idempotencyKey,image,receiptId,schema"
+				: boxed
+					? "box,content,idempotencyKey,receiptId,schema"
+					: "content,idempotencyKey,receiptId,schema",
 		);
 		if (
 			response.schema !== COMPANY_COMPUTER_NATIVE_SCHEMA ||
@@ -355,6 +398,43 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 			const asset = parseCompanyComputerScreenshotAsset(content.value);
 			if (asset.assetId !== context.receiptId || !this.#screenshots) throw new Error("INVALID_OFFICE_NATIVE_RESULT");
 			this.#screenshots.holdInline(asset, Buffer.from(response.image, "base64"));
+		}
+		if (boxed) {
+			// The office read the secret off the hook's page and sealed it to the hook's capture key, which only the vault
+			// opens; this host carries the box there, under this call's receipt. The call's answer is the vault's (the
+			// version it holds), never the box. An office answer without a box (a site stop) is the call's as it is.
+			const box = officeNativeRecord(response.box, "ciphertext,ephemeralPublicKey,iv,schema,tag");
+			const read = content.value as { action?: unknown; completed?: unknown } | null;
+			if (
+				!this.#hookFills ||
+				content.kind !== "json" ||
+				!read ||
+				typeof read !== "object" ||
+				read.action !== "vault_capture" ||
+				read.completed !== true ||
+				Object.values(box).some((part) => typeof part !== "string")
+			)
+				throw new Error("INVALID_OFFICE_NATIVE_RESULT");
+			const stored = await this.#hookFills.eventHookCapture(
+				{ ...request, box: box as Record<string, string> },
+				signal,
+			);
+			await this.#run.assertActive(signal);
+			if (stored.schema === "qorpera.event-hook-refusal/v1") return vaultRefused("vault_capture", stored);
+			if (stored.hook !== action.hook) throw new Error("OFFICE_NATIVE_UNCONFIRMED");
+			return {
+				kind: "json",
+				value: {
+					action: "vault_capture",
+					completed: true,
+					captured: {
+						hook: stored.hook,
+						field: "signing_secret",
+						version: stored.version,
+						unchanged: stored.unchanged,
+					},
+				},
+			};
 		}
 		await this.#run.assertActive(signal);
 		return structuredClone(content) as unknown as CompanyComputerToolContent;

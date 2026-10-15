@@ -2,16 +2,32 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { build } from "esbuild";
+import { RECORD, readFolderProgramRecord } from "./folder-program-artifact.mjs";
 
 // The company machine guest (2026-09-28): the command helper and its watchdog
 // units, packaged as reviewable files with their checksums. Installing them
 // into the machine image is deploy/machine/build-machine-image.sh's job.
-if (process.argv.length !== 4 || process.argv[2] !== "--out") {
-	throw new Error("Usage: package-machine-guest.mjs --out <new-directory>");
-}
-const output = resolve(process.argv[3]);
-const units = ["qorpera-machine.slice", "qorpera-machine-watchdog.service", "qorpera-machine-watchdog.timer"];
+// Since F3 step 6c it also carries the company folder's program (the build
+// RECORD names, made by scripts/build-folder-program.mjs) and its unit, which
+// mounts the folder at /company once the host hands the machine a view.
+const USAGE = "Usage: package-machine-guest.mjs --out <new-directory> --folder-program <built qorpera-folder>";
+const args = process.argv.slice(2);
+if (args.length !== 4 || args[0] !== "--out" || args[2] !== "--folder-program") throw new Error(USAGE);
+const output = resolve(args[1]);
+const units = [
+	"qorpera-machine.slice",
+	"qorpera-machine-watchdog.service",
+	"qorpera-machine-watchdog.timer",
+	"qorpera-machine-folder.service",
+];
 await Promise.all(units.map((unit) => readFile(`deploy/machine/${unit}`)));
+// Only the recorded build: the image script pins the same bytes.
+const program = await readFile(resolve(args[3]));
+const record = readFolderProgramRecord();
+const programSha256 = createHash("sha256").update(program).digest("hex");
+if (program.length !== record.bytes || programSha256 !== record.sha256) {
+	throw new Error(`--folder-program is ${programSha256}, not the build ${RECORD} records (${record.sha256})`);
+}
 await mkdir(output, { recursive: false, mode: 0o700 });
 const artifacts = [];
 await build({
@@ -49,6 +65,16 @@ for (const unit of units) {
 		bytes: bytes.length,
 	});
 }
+await writeFile(resolve(output, "qorpera-folder"), program, { mode: 0o755 });
+artifacts.push({
+	file: "qorpera-folder",
+	source: RECORD,
+	installedPath: "/opt/qorpera-folder/qorpera-folder",
+	owner: "root:root",
+	mode: "0555",
+	sha256: programSha256,
+	bytes: program.length,
+});
 // The node proof (deploy/machine/prove-machine-node.ts) is packaged beside it for
 // the operator; it is never installed in the image.
 await build({

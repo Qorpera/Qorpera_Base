@@ -8,7 +8,6 @@ import {
 import { CloudCompanyComputerSignIn } from "./cloud-company-computer-sign-in.ts";
 import { CloudCompanyComputerStart } from "./cloud-company-computer-start.ts";
 import { CloudCompanyComputerViews } from "./cloud-company-computer-views.ts";
-import type { CloudMemberCompanyFileReader } from "./cloud-member-company-file.ts";
 import { readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts";
 
 export interface MemberCompanyComputerCatalog {
@@ -62,10 +61,15 @@ function record(value: unknown, keys: string): Record<string, unknown> {
 		throw new Error("Invalid Company Computer response");
 	return value as Record<string, unknown>;
 }
-type Options = Pick<
-	ConstructorParameters<typeof CloudMemberCompanyFileReader>[0],
-	"companyId" | "environmentId" | "supabaseUrl" | "publishableKey" | "accessToken" | "fetch" | "timeoutMs"
->;
+interface Options {
+	companyId: string;
+	environmentId: string;
+	supabaseUrl: string;
+	publishableKey: string;
+	accessToken: (signal: AbortSignal) => Promise<string>;
+	fetch?: typeof fetch;
+	timeoutMs?: number;
+}
 
 /** Shared authenticated transport and discovery for member hosts. No provider
  * credentials, execution, machine lifecycle ownership or inferred endpoint. */

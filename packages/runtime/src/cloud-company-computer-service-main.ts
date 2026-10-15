@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { createSecureContext } from "node:tls";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import {
 	type CompanyComputerLifecycleStage,
 	companyComputerFailureDiagnostic,
 } from "./cloud-company-computer-diagnostics.ts";
+import { COMPANY_COMPUTER_FOLDER_HELPER_SOCKET } from "./cloud-company-computer-folder-helper-client.ts";
 import { CompanyComputerLinuxBoundary } from "./cloud-company-computer-linux-boundary.ts";
 import { startCompanyComputerLinuxOfficeService } from "./cloud-company-computer-linux-service.ts";
 import { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-registry-http.ts";
@@ -123,6 +124,10 @@ export async function runCompanyComputerServiceMain(environment: NodeJS.ProcessE
 			native: { ...config.native, token: nativeToken, tls },
 			startup,
 			screenLifecycle,
+			// An image with the folder helper has its socket from boot (socket activation); one without has no `/company`.
+			...(companyComputerFolderHelperPresent()
+				? { folderHelper: { socket: COMPANY_COMPUTER_FOLDER_HELPER_SOCKET } }
+				: {}),
 			viewer: { ...config.viewer, tls },
 			signal: stop.signal,
 		});
@@ -160,6 +165,14 @@ export async function runCompanyComputerServiceMain(environment: NodeJS.ProcessE
 		}
 	}
 	if (failure) throw failure;
+}
+
+function companyComputerFolderHelperPresent(): boolean {
+	try {
+		return lstatSync(COMPANY_COMPUTER_FOLDER_HELPER_SOCKET).isSocket();
+	} catch {
+		return false;
+	}
 }
 
 if (

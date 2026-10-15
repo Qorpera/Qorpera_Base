@@ -10,11 +10,6 @@ import {
 } from "./dependency.ts";
 import type { FolderGcAuthority } from "./folder-gc.ts";
 import type { FolderActor, FolderObjectAuthority } from "./folder-objects.ts";
-import type {
-	AuthorizedMemberCompanyObject,
-	MemberCompanyObjectAuthority,
-	MemberCompanyObjectIdentity,
-} from "./member-company-objects.ts";
 import type { MemberFolderObjectAuthority } from "./member-folder-objects.ts";
 import type { LegacyObjectMigrationItem } from "./migration.ts";
 import { type ObjectReadLease, parseObjectReadLease } from "./read-lease.ts";
@@ -103,12 +98,7 @@ function deletionAuthorization(value: unknown): ObjectDeletionAuthorization {
 }
 
 export class SupabaseObjectAuthority
-	implements
-		ObjectGatewayAuthority,
-		FolderObjectAuthority,
-		FolderGcAuthority,
-		MemberCompanyObjectAuthority,
-		MemberFolderObjectAuthority
+	implements ObjectGatewayAuthority, FolderObjectAuthority, FolderGcAuthority, MemberFolderObjectAuthority
 {
 	readonly #projectUrl: string;
 	readonly #publishableKey: string;
@@ -232,69 +222,6 @@ export class SupabaseObjectAuthority
 				this.#secretKey,
 			),
 		);
-	}
-
-	async authorizeMemberCompanyObject(
-		userToken: string,
-		identity: MemberCompanyObjectIdentity,
-		mode?: "snapshot",
-	): Promise<AuthorizedMemberCompanyObject> {
-		const value = record(
-			await this.#rpc(
-				mode === "snapshot"
-					? "qorpera_authorize_member_company_snapshot_object"
-					: "qorpera_authorize_member_company_path_object",
-				{
-					p_environment_id: identity.environmentId,
-					p_path: identity.path,
-					...(mode === "snapshot" ? { p_snapshot_id: identity.version } : { p_version: identity.version }),
-					p_sha256: identity.sha256,
-				},
-				userToken,
-				this.#publishableKey,
-				true,
-			),
-			"member Company File authority",
-		);
-		const keys = [
-			"schema",
-			"companyId",
-			"environmentId",
-			"path",
-			"version",
-			"sha256",
-			"bytes",
-			"backend",
-			"actorUserId",
-			"resourceId",
-			"resourceVersion",
-		];
-		if (
-			Object.keys(value).length !== keys.length ||
-			Object.keys(value).some((key) => !keys.includes(key)) ||
-			value.schema !== "qorpera.member-company-object/v2" ||
-			typeof value.companyId !== "string" ||
-			!UUID_PATTERN.test(value.companyId) ||
-			["actorUserId", "resourceId", "resourceVersion"].some(
-				(key) => typeof value[key] !== "string" || !UUID_PATTERN.test(value[key]),
-			) ||
-			Object.entries(identity).some(([key, expected]) => value[key] !== expected) ||
-			!Number.isSafeInteger(value.bytes) ||
-			(value.bytes as number) < 0 ||
-			(value.bytes as number) > 8 * 1024 * 1024 ||
-			(value.backend !== "nas-object-gateway" && value.backend !== "supabase-storage")
-		)
-			throw new ObjectDependencyError(503);
-		return {
-			schema: "qorpera.member-company-object/v2",
-			companyId: value.companyId,
-			actorUserId: value.actorUserId as string,
-			resourceId: value.resourceId as string,
-			resourceVersion: value.resourceVersion as string,
-			...identity,
-			bytes: value.bytes as number,
-			backend: value.backend,
-		};
 	}
 
 	#authorizedObject(value: unknown): AuthorizedObject {

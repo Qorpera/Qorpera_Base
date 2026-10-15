@@ -8,7 +8,6 @@ const config: MemberWebConfig = {
 	schema: "qorpera.member-web-config/v1",
 	supabaseUrl: "https://control.test",
 	publishableKey: "sb_publishable_fixture1",
-	objectGatewayUrl: "https://objects.test",
 	officeViewerOrigin: null,
 };
 const session = (n = 1) => ({ user: { id: id(n) }, access_token: `member-${n}` }) as Session;
@@ -33,7 +32,6 @@ function fixture() {
 	const state = {
 		session: session() as Session | null,
 		rows: [row(), row(20)],
-		mode: "governed",
 		rpc: undefined as ((url: string, init: RequestInit) => Promise<Response>) | undefined,
 	};
 	const getSession = vi.fn(async () => ({ data: { session: state.session }, error: null }));
@@ -43,8 +41,6 @@ function fixture() {
 		expect(init?.cache).toBe("no-store");
 		if (state.rpc) return state.rpc(url, init!);
 		if (url.endsWith("qorpera_list_hosted_profiles")) return Response.json(state.rows);
-		if (url.endsWith("qorpera_member_company_file_mode"))
-			return Response.json({ companyId: id(10), environmentId: id(11), mode: state.mode });
 		if (url.endsWith("qorpera_member_office_catalog"))
 			return Response.json({
 				companyId: id(10),
@@ -115,16 +111,25 @@ describe("web account boundaries", () => {
 		await expect(account.companies()).rejects.toThrow("Sign in");
 		expect(request).not.toHaveBeenCalled();
 	});
-	it("discards late company-mode results after switching companies", async () => {
+	it("discards late Company Computer results after switching companies", async () => {
 		const { account, state } = fixture();
 		await account.companies();
 		const first = account.openCompany(id(11)),
 			delayed = deferred<Response>();
 		state.rpc = async () => delayed.promise;
-		const pending = first.files(),
+		const pending = first.computer.catalog(first.signal),
 			result = expect(pending).rejects.toThrow();
 		account.openCompany(id(21));
-		delayed.resolve(Response.json({ companyId: id(10), environmentId: id(11), mode: "governed" }));
+		delayed.resolve(
+			Response.json({
+				companyId: id(10),
+				environmentId: id(11),
+				canManage: true,
+				scope: null,
+				staff: [],
+				nextAfter: null,
+			}),
+		);
 		await result;
 	});
 	it("rejects obsolete catalog refreshes rather than overwriting newer choices", async () => {
@@ -140,17 +145,18 @@ describe("web account boundaries", () => {
 		expect(() => account.openCompany(id(11))).toThrow();
 		account.openCompany(id(31)).current();
 	});
-	it.each(["legacy", "invalid"])(
-		"refuses %s File mode without disabling independent computer access",
-		async (mode) => {
-			const { account, state } = fixture();
-			state.mode = mode;
-			await account.companies();
-			const company = account.openCompany(id(11));
-			await expect(company.files()).rejects.toThrow();
-			expect((await company.computer.catalog(company.signal)).scope).toBeNull();
-		},
-	);
+	it("opens a company straight to its Company Computer", async () => {
+		const { account } = fixture();
+		await account.companies();
+		const company = account.openCompany(id(11));
+		expect((await company.computer.catalog(company.signal)).scope).toBeNull();
+	});
+	it("accepts a company list without the legacy bootstrap_state", async () => {
+		const { account, state } = fixture();
+		const { bootstrap_state: _, ...current } = row();
+		state.rpc = async () => Response.json([current]);
+		expect((await account.companies()).map((company) => company.companyId)).toEqual([id(10)]);
+	});
 	it.each(["scope", "extra", "oversized", "status"])("rejects %s catalog responses", async (kind) => {
 		const { account, state } = fixture();
 		state.rpc = async () =>

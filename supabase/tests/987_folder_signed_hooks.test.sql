@@ -6,9 +6,9 @@
 -- 0. before an owed acknowledgement the broker's describe and open are refused, and write nothing;
 -- A. the broker describes an opening, opens a GitHub hook (the hook, its event_hook secret, version 1 and the audit row, in
 --    one step) and an HMAC hook; a replay answers from the receipt and stores nothing; the host opens an address hook;
--- B. every refusal writes nothing: the request (Stripe, a site), the envelope, the broker's authority, a company that is
---    not on the company folder, a signed proof on the host's path, Postgres' own session, and a requester who is no longer
---    an owner or admin;
+-- B. every refusal writes nothing: the request (a site; a Stripe hook, which opens with a capture key: test 419), the
+--    envelope, the broker's authority, a company that is not on the company folder, a signed proof on the host's path,
+--    Postgres' own session, and a requester who is no longer an owner or admin;
 -- C. the fill: bound to the executing computer_browser receipt of exactly that vault_fill call, the run's screen lease on
 --    the company's computer, a live signed hook of the run's company and its secret sealed for this authority; A1's fill
 --    refuses a hook's call; a removal revokes the secret;
@@ -355,10 +355,10 @@ set local session authorization qorpera_secret_broker;
 select set_config('qorpera_test.e3b_b_broker', coalesce(string_agg(format('%s: %s', name, got), E'\n' order by name)
 	filter (where got is distinct from expected), ''), true)
 from (values
-	-- The request.
+	-- The request. A Stripe hook brings its capture key, not an envelope (E3c-1, test 419).
 	('stripe', pg_temp.e3b_call('qorpera_folder_open_signed_hook',
 		pg_temp.e3b_open_args(pg_temp.e3b_create('e3b-b-1', 'stripe-pays', '{"proof": "stripe"}'), '204')),
-		'0A000:A Stripe hook comes later: its secret is taken from Stripe''s screen'),
+		'42501:hook capture key is unavailable'),
 	('hmac without a site', pg_temp.e3b_call('qorpera_folder_open_signed_hook',
 		pg_temp.e3b_open_args(pg_temp.e3b_create('e3b-b-2', 'shop-pays', '{"proof": "hmac-sha256"}'), '204')),
 		'22023:An HMAC hook names the site its secret is typed into'),
@@ -467,7 +467,7 @@ from (values
 	('site on an address hook', pg_temp.e3b_host(pg_temp.e3b_create('e3b-b-32', 'repo-pushes', '{"site": "github.com"}')),
 		'22023:Only a signed hook names the site its secret is typed into'),
 	('stripe', pg_temp.e3b_host(pg_temp.e3b_create('e3b-b-33', 'repo-pushes', '{"proof": "stripe"}')),
-		'0A000:A Stripe hook comes later: its secret is taken from Stripe''s screen'),
+		'0A000:A signed hook is opened through the vault'),
 	('hmac without a site', pg_temp.e3b_host(pg_temp.e3b_create('e3b-b-34', 'repo-pushes', '{"proof": "hmac-sha256"}')),
 		'22023:An HMAC hook names the site its secret is typed into')
 ) as call(name, got, expected);
@@ -738,7 +738,7 @@ begin
 	-- The effect and the authority check are no role's; the broker calls three functions; the host manage_hook.
 	foreach v_role in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
 		foreach v_function in array array[
-			'public.qorpera_folder_manage_hook_effect(jsonb,jsonb,public.qorpera_cloud_secret_broker_authorities,uuid,uuid,uuid,text,bytea,text)',
+			'public.qorpera_folder_manage_hook_effect(jsonb,jsonb,public.qorpera_cloud_secret_broker_authorities,uuid,uuid,uuid,text,bytea,text,text)',
 			'public.qorpera_folder_signed_hook_authority(uuid,text,jsonb)'] loop
 			perform pg_temp.base_assert(not has_function_privilege(v_role, v_function, 'execute'), format('D: %s runs %s', v_role, v_function));
 		end loop;
