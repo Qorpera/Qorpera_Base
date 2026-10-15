@@ -21,7 +21,8 @@ export const CODING_SNAPSHOT_RPCS = [
 	"qorpera_record_coding_snapshot_removed",
 ] as const;
 
-/** The most of a build's log SQL keeps, in UTF-8 bytes. */
+/** The most of a build's log SQL keeps: its UTF-8 bytes as a JSON string, the quotes aside. That is the form the coding
+ * control carries it in both ways, within its 128 KiB request and 256 KiB answer. */
 export const CODING_SNAPSHOT_LOG_BYTES = 65536;
 const LOG_CUT = "[earlier output cut]\n";
 
@@ -54,12 +55,13 @@ export type CodingSnapshotPlan =
 	| { state: "failed"; snapshot: CodingSnapshot | null; failure: CodingSnapshotFailure };
 
 /** How a build ended. `abandoned` is tried again at the next attach; `failed` only after a new commit or setup. The log is
- * already masked (5j); it is cut to its last `CODING_SNAPSHOT_LOG_BYTES` here. */
+ * already masked (5j); it is cut here to its last `CODING_SNAPSHOT_LOG_BYTES` as JSON. */
 export type CodingSnapshotOutcome =
 	| { kind: "ready"; imageFingerprint: string; log?: string }
 	| { kind: "failed" | "abandoned"; code: string; log?: string };
 
-/** A snapshot whose image may be on this node. One due for removal is removed, then recorded with `removed`. */
+/** A snapshot whose image may be on this node. A retired one is due for removal (a newer snapshot retired it, or the list
+ * did when its member left the company): its image is removed, then recorded with `removed`. */
 export type CodingSnapshotState = {
 	snapshotId: string;
 	state: "building" | "ready" | "retired";
@@ -81,19 +83,31 @@ export interface CodingSnapshotRecordsOptions {
 
 /**
  * A build log SQL can keep: lone surrogates and NUL (which PostgreSQL text cannot hold) become U+FFFD, and a log over
- * `CODING_SNAPSHOT_LOG_BYTES` keeps its end, cut at a character, after a line saying earlier output was cut.
+ * `CODING_SNAPSHOT_LOG_BYTES` as JSON keeps its end, cut at a character, after a line saying earlier output was cut.
  */
 export function codingSnapshotLog(text: string): string {
 	const clean = text.replace(
 		/\0|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
 		REPLACEMENT,
 	);
-	const bytes = Buffer.from(clean, "utf8");
-	if (bytes.length <= CODING_SNAPSHOT_LOG_BYTES) return clean;
-	let start = bytes.length - (CODING_SNAPSHOT_LOG_BYTES - Buffer.byteLength(LOG_CUT));
-	// Past a character's continuation bytes, to its next first byte.
-	while (((bytes[start] ?? 0) & 0xc0) === 0x80) start++;
-	return LOG_CUT + bytes.subarray(start).toString("utf8");
+	if (jsonBytes(clean) <= CODING_SNAPSHOT_LOG_BYTES) return clean;
+	// Back from the end, a character at a time while it fits: a surrogate pair is one (no lone surrogate is left).
+	let budget = CODING_SNAPSHOT_LOG_BYTES - jsonBytes(LOG_CUT);
+	let start = clean.length;
+	while (start > 0) {
+		const code = clean.charCodeAt(start - 1);
+		const width = code >= 0xdc00 && code <= 0xdfff ? 2 : 1;
+		const bytes = jsonBytes(clean.slice(start - width, start));
+		if (bytes > budget) break;
+		budget -= bytes;
+		start -= width;
+	}
+	return LOG_CUT + clean.slice(start);
+}
+
+/** A text's UTF-8 bytes as a JSON string, the quotes aside: an escaped control character takes 2 or 6. */
+function jsonBytes(text: string): number {
+	return Buffer.byteLength(JSON.stringify(text)) - 2;
 }
 
 export class CodingSnapshotRecords {
@@ -194,7 +208,8 @@ export class CodingSnapshotRecords {
 		});
 	}
 
-	/** The snapshots whose images may be on this node. An image not listed is not kept. */
+	/** The snapshots whose images may be on this node. An image not listed is not kept. The ready snapshot of a member who
+	 * left the company is retired first. */
 	async list(signal: AbortSignal): Promise<CodingSnapshotState[]> {
 		const answer = await this.#call(
 			"qorpera_list_coding_snapshots",
@@ -209,7 +224,7 @@ export class CodingSnapshotRecords {
 		});
 	}
 
-	/** After the image of a snapshot due for removal is gone from the node; sent again, the same answer. */
+	/** After the image of a retired snapshot is gone from the node; sent again, the same answer. */
 	async removed(snapshotId: string, signal: AbortSignal): Promise<void> {
 		if (!isUuid(snapshotId)) throw new Error("CODING_SNAPSHOT_INPUT_INVALID");
 		const answer = await this.#call(
@@ -345,12 +360,11 @@ function parseState(input: unknown): CodingSnapshotState {
 		typeof value.commitSha !== "string" ||
 		!COMMIT.test(value.commitSha) ||
 		typeof value.removeDue !== "boolean" ||
-		// A running build has a lease and no image yet; a built one has an image and no lease. A retired one is always due.
+		// A running build has a lease and no image yet; a built one has an image and no lease. Only a retired one is due.
 		(state === "building") !== (value.leaseUntil !== null) ||
 		(state === "building") !== (value.builtAt === null) ||
 		(state === "building") !== (value.imageFingerprint === null) ||
-		(state === "building" && value.removeDue) ||
-		(state === "retired" && !value.removeDue)
+		value.removeDue !== (state === "retired")
 	) {
 		throw new Error("state");
 	}

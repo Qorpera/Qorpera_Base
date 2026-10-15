@@ -23,6 +23,9 @@ const build: CodingSnapshotBuild = { buildId: BUILD, leaseToken: TOKEN, leaseUnt
 const signal = () => new AbortController().signal;
 // U+FFFD, the replacement character.
 const R = String.fromCharCode(0xfffd);
+const CUT = "[earlier output cut]\n";
+/** A text's UTF-8 bytes as a JSON string, the quotes aside. */
+const jsonBytes = (text: string) => Buffer.byteLength(JSON.stringify(text)) - 2;
 
 /** A control that answers each call with the next scripted answer and keeps what it was asked. */
 function fake(...answers: unknown[]) {
@@ -282,6 +285,8 @@ describe("coding snapshot records (5h-2)", () => {
 			[entry({ state: "failed" })],
 			[entry({ removeDue: "no" })],
 			[entry({ state: "retired", removeDue: false })],
+			// Only a retired snapshot is due: the list retires a departed member's first.
+			[entry({ removeDue: true })],
 			[entry({ leaseUntil: AT })],
 			[entry({ builtAt: null })],
 			[entry({ imageFingerprint: null })],
@@ -328,12 +333,31 @@ describe("coding snapshot records (5h-2)", () => {
 		expect(codingSnapshotLog(exact)).toBe(exact);
 		const long = `${"head\n".repeat(20000)}${"é".repeat(40000)}tail`;
 		const cut = codingSnapshotLog(long);
-		expect(cut.startsWith("[earlier output cut]\n")).toBe(true);
+		expect(cut.startsWith(CUT)).toBe(true);
 		expect(cut.endsWith("étail")).toBe(true);
 		expect(cut).not.toContain("head");
 		expect(cut).not.toContain(R);
-		expect(Buffer.byteLength(cut)).toBeLessThanOrEqual(CODING_SNAPSHOT_LOG_BYTES);
-		// The cut lands on a character: one byte short of the limit, since "é" is two.
-		expect(Buffer.byteLength(cut)).toBe(CODING_SNAPSHOT_LOG_BYTES - 1);
+		// "é" is two bytes and the cut line 22 as JSON (its newline escaped): the cut lands on the limit.
+		expect(jsonBytes(cut)).toBe(CODING_SNAPSHOT_LOG_BYTES);
+	});
+
+	it("measures the log as JSON, the form the control carries it in", () => {
+		// ESC, a control character.
+		const esc = String.fromCharCode(0x1b);
+		// An escaped control character takes six bytes: 10922 of them and four more bytes are the limit.
+		const exact = `${esc.repeat(10922)}xxxx`;
+		expect(jsonBytes(exact)).toBe(CODING_SNAPSHOT_LOG_BYTES);
+		expect(codingSnapshotLog(exact)).toBe(exact);
+		const over = codingSnapshotLog(`${exact}x`);
+		expect(over.startsWith(CUT)).toBe(true);
+		expect(over.endsWith(`${esc}xxxxx`)).toBe(true);
+		expect(jsonBytes(over)).toBeLessThanOrEqual(CODING_SNAPSHOT_LOG_BYTES);
+		// 30000 of them, 180000 bytes as JSON, keep their last 10919; quotes take two bytes each.
+		expect(codingSnapshotLog(esc.repeat(30000))).toBe(CUT + esc.repeat(10919));
+		expect(codingSnapshotLog('"'.repeat(40000))).toBe(CUT + '"'.repeat(32757));
+		// A surrogate pair is one character: the cut keeps whole emoji, two bytes short of the limit.
+		const emoji = codingSnapshotLog(`${"head\n".repeat(20000)}${"😀".repeat(20000)}tail`);
+		expect(emoji).toBe(`${CUT}${"😀".repeat(16377)}tail`);
+		expect(jsonBytes(emoji)).toBe(CODING_SNAPSHOT_LOG_BYTES - 2);
 	});
 });

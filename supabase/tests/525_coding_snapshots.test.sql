@@ -167,6 +167,9 @@ begin
 		'retired', repeat('f', 64)), '22023', 'Coding snapshot input invalid', 'an outcome that is not one');
 	perform pg_temp.snap_refused(format('select public.qorpera_finish_coding_snapshot_build(%L, %L, %L, null, %L, %L)', v_build, v_token,
 		'failed', 'BROKEN', repeat('x', 65537)), '22023', 'Coding snapshot input invalid', 'a log over 64 KiB');
+	-- 64 KiB as a JSON string, where an escape character takes six bytes: 10927 bytes of text, one byte over as JSON.
+	perform pg_temp.snap_refused(format('select public.qorpera_finish_coding_snapshot_build(%L, %L, %L, null, %L, %L)', v_build, v_token,
+		'failed', 'BROKEN', repeat(chr(27), 10922) || 'xxxxx'), '22023', 'Coding snapshot input invalid', 'a log over 64 KiB as JSON');
 	perform pg_temp.snap_refused(format('select public.qorpera_finish_coding_snapshot_build(%L, %L, %L, %L)', v_build, v_other_token,
 		'ready', repeat('f', 64)), '42501', 'Coding snapshot build lease unavailable', 'a finish with another token');
 
@@ -253,8 +256,11 @@ begin
 		from public.qorpera_coding_snapshots where id = v_other), 'the lapsed build was given up');
 	perform pg_temp.snap_refused(format('select public.qorpera_finish_coding_snapshot_build(%L, %L, %L, %L)', v_other, v_other_token,
 		'ready', repeat('c', 64)), '42501', 'Coding snapshot build lease unavailable', 'a finish after it was given up');
+	-- Its log is exactly 64 KiB as a JSON string.
 	perform public.qorpera_finish_coding_snapshot_build((v -> 'build' ->> 'buildId')::uuid, (v -> 'build' ->> 'leaseToken')::uuid,
-		'abandoned', null, 'BUILDER_LOST');
+		'abandoned', null, 'BUILDER_LOST', repeat(chr(27), 10922) || 'xxxx');
+	perform pg_temp.snap_ok((select octet_length(to_jsonb(log)::text) = 65538 from public.qorpera_coding_snapshots
+		where id = (v -> 'build' ->> 'buildId')::uuid), 'a log of 64 KiB as JSON is kept');
 	perform pg_temp.snap_ok(pg_temp.snap_begin(4, 'a', '1', '1') ->> 'state' = 'started', 'an abandoned build is tried again');
 
 	-- K. The node's list: what may be on it, and what is due for removal. Removal is recorded for a due one only.
@@ -288,17 +294,30 @@ begin
 		'ready', repeat('f', 64));
 	perform pg_temp.snap_ok(pg_temp.snap_begin(1, 'a', '3', '3') ->> 'state' = 'current', 'the removed image''s fingerprint is free');
 
-	-- L. A member who left: their ready snapshot is due, and its removal retires it.
+	-- L. A member who left: the list retires their ready snapshot before it names it due. A member who comes back before
+	-- the image is removed builds again (the image is never current after it), and the removal is still recorded.
 	perform public.qorpera_finish_coding_snapshot_build(v_two, v_two_token, 'ready', repeat('9', 64));
-	perform pg_temp.snap_ok(not (pg_temp.snap_entry('a', v_two) ->> 'removeDue')::boolean, 'M2''s snapshot is kept while M2 is a member');
+	perform pg_temp.snap_ok(not (pg_temp.snap_entry('a', v_two) ->> 'removeDue')::boolean
+		and pg_temp.snap_begin(5, 'a', '1', '1') ->> 'state' = 'current', 'M2''s snapshot is kept and current while M2 is a member');
 	set local session_replication_role = replica;
 	delete from public.qorpera_profile_members where profile_id = '52500000-0000-4000-8000-000000000010'
 		and user_id = '52500000-0000-4000-8000-000000000002';
 	set local session_replication_role = origin;
-	perform pg_temp.snap_ok((pg_temp.snap_entry('a', v_two) ->> 'removeDue')::boolean, 'M2 left: due');
+	perform pg_temp.snap_ok((select state = 'ready' from public.qorpera_coding_snapshots where id = v_two), 'ready until a list');
+	v := pg_temp.snap_entry('a', v_two);
+	perform pg_temp.snap_ok(v ->> 'state' = 'retired' and (v ->> 'removeDue')::boolean, 'M2 left: the list retires it, due: ' || v::text);
+	perform pg_temp.snap_ok((select state = 'retired' and retired_at is not null and removed_at is null
+		from public.qorpera_coding_snapshots where id = v_two), 'the retirement is recorded before the image goes');
+	set local session_replication_role = replica;
+	insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role) values ('52500000-0000-4000-8000-000000000010',
+		'52500000-0000-4000-8000-000000000002', 'snapshot-member-two@example.test', 'M2', 'contributor');
+	set local session_replication_role = origin;
+	v := pg_temp.snap_begin(5, 'a', '1', '1');
+	perform pg_temp.snap_ok(v ->> 'state' = 'started' and v -> 'snapshot' = 'null', 'M2 came back: a new build, not the old image: ' || v::text);
+	perform pg_temp.snap_ok((pg_temp.snap_entry('a', v_two) ->> 'removeDue')::boolean, 'still due after M2 came back');
 	perform public.qorpera_record_coding_snapshot_removed(v_two, 'exec-a', repeat('a', 64));
-	perform pg_temp.snap_ok((select state = 'retired' and retired_at is not null and removed_at is not null
-		from public.qorpera_coding_snapshots where id = v_two), 'retired and removed');
+	perform pg_temp.snap_ok((select state = 'retired' and removed_at is not null from public.qorpera_coding_snapshots where id = v_two),
+		'removed');
 end
 $$;
 

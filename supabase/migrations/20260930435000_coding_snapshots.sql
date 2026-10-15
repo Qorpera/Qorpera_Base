@@ -9,10 +9,12 @@
 --    setup tries again, an abandoned build is tried again at once) or started (a build lease for the caller). Every answer
 --    names this node's snapshot, which a new machine starts from meanwhile: a failure never takes it away.
 -- 3. The build's lease is renewed and finished with its own token. The log is the build's output already masked by 5j, at
---    most 64 KiB; a failed build's comes back with every failed answer, for the member and the agent.
--- 4. The node's list: each snapshot whose image may be on the node, and whether it is due for removal (retired, or its
---    member left the company). The executor removes the image, then records it. An image the list does not name is not
---    kept: a build whose lease lapsed cannot finish.
+--    most 64 KiB as a JSON string (its quotes aside), the form the coding control carries it in both ways; a failed
+--    build's comes back with every failed answer, for the member and the agent.
+-- 4. The node's list: each snapshot whose image may be on the node, and whether it is due for removal: retired, by a newer
+--    snapshot or by the list itself when the member left the company (so a member who comes back builds again). The
+--    executor removes the image, then records it. An image the list does not name is not kept: a build whose lease lapsed
+--    cannot finish.
 -- Every body carries the marker 20260930435000 for the deploy guard.
 
 set local lock_timeout = '3s';
@@ -34,7 +36,8 @@ create table public.qorpera_coding_snapshots (
 	lease_until timestamptz,
 	image_fingerprint text check (image_fingerprint ~ '^[0-9a-f]{64}$'),
 	failure text check (failure ~ '^[A-Z][A-Z0-9_:]{0,119}$'),
-	log text check (octet_length(log) <= 65536),
+	-- 64 KiB as a JSON string, its two quotes aside.
+	log text check (octet_length(to_jsonb(log)::text) <= 65538),
 	started_at timestamptz not null default clock_timestamp(),
 	finished_at timestamptz,
 	retired_at timestamptz,
@@ -105,6 +108,11 @@ begin
 	if coalesce(p_machine_id_sha256, '') !~ '^[0-9a-f]{64}$' or coalesce(p_setup_digest, '') !~ '^[0-9a-f]{64}$'
 		or coalesce(p_commit_sha, '') !~ '^[0-9a-f]{40}$' or p_lease_seconds is null or p_lease_seconds not between 30 and 300 then
 		raise exception 'Coding snapshot input invalid' using errcode = '22023'; end if;
+	-- The company's profile row first, as every coding machine call (20260925123000): a machine plan or an agent tool call
+	-- holds it (the fence) while it locks this session, and the snapshot's insert below checks its key. A key share is the
+	-- most this takes of it.
+	perform 1 from public.qorpera_profiles as profile where profile.id = (select worker.profile_id
+		from public.qorpera_runtime_workers as worker where worker.id = p_worker_id) for key share;
 	v_session := public.qorpera_coding_leased_session(p_worker_id, p_lease_token);
 	select * into strict v_worker from public.qorpera_runtime_workers where id = v_session.worker_id;
 	perform 1 from public.qorpera_coding_executors where environment_id = v_worker.environment_id and owner = v_session.lease_owner
@@ -150,7 +158,7 @@ begin
 end
 $$;
 comment on function public.qorpera_begin_coding_snapshot_build(uuid, uuid, text, text, text, integer) is
-	'5h-2 (20260930435000): at attach, the session''s snapshot on this node and whether to build one. Locks the leased session, the executor (share), the member''s repository (advisory), then its snapshot rows.';
+	'5h-2 (20260930435000): at attach, the session''s snapshot on this node and whether to build one. Locks the company''s profile row (key share), the leased session, the executor (share), the member''s repository (advisory), then its snapshot rows.';
 
 -- 4. The build's lease --------------------------------------------------------------------------------------------------
 
@@ -180,7 +188,8 @@ begin
 	if auth.role() is distinct from 'service_role' then raise exception 'Coding executor authority required' using errcode = '42501'; end if;
 	if p_build_id is null or p_lease_token is null or p_outcome is null or p_outcome not in ('ready','failed','abandoned')
 		or (p_outcome = 'ready') <> (p_image_fingerprint is not null) or (p_outcome = 'ready') = (p_failure is not null)
-		or p_image_fingerprint !~ '^[0-9a-f]{64}$' or p_failure !~ '^[A-Z][A-Z0-9_:]{0,119}$' or octet_length(p_log) > 65536 then
+		or p_image_fingerprint !~ '^[0-9a-f]{64}$' or p_failure !~ '^[A-Z][A-Z0-9_:]{0,119}$'
+		or octet_length(to_jsonb(p_log)::text) > 65538 then
 		raise exception 'Coding snapshot input invalid' using errcode = '22023'; end if;
 	select * into v_row from public.qorpera_coding_snapshots where id = p_build_id;
 	if v_row.id is null or v_row.lease_token is distinct from p_lease_token then
@@ -216,19 +225,33 @@ comment on function public.qorpera_finish_coding_snapshot_build(uuid, uuid, text
 -- 5. The node's images --------------------------------------------------------------------------------------------------
 
 create function public.qorpera_list_coding_snapshots(p_owner text, p_machine_id_sha256 text)
-returns jsonb language plpgsql stable security definer set search_path = '' as $$
+returns jsonb language plpgsql volatile security definer set search_path = '' as $$
+declare v_row public.qorpera_coding_snapshots%rowtype;
 begin
 	-- 5h-2 (20260930435000)
 	if auth.role() is distinct from 'service_role' or coalesce(p_owner, '') !~ '^[A-Za-z0-9_.:-]{1,120}$'
 		or coalesce(p_machine_id_sha256, '') !~ '^[0-9a-f]{64}$' then
 		raise exception 'Coding snapshot custody required' using errcode = '42501'; end if;
+	-- A ready snapshot whose member left the company is retired before the list names it due: once its image may go, no
+	-- attach answers current with it, and a member who comes back builds again. Each under its member's repository's lock,
+	-- as a build's finish, in one order.
+	for v_row in select * from public.qorpera_coding_snapshots snapshot where snapshot.owner = p_owner
+		and snapshot.machine_id_sha256 = p_machine_id_sha256 and snapshot.state = 'ready' and not exists (select 1
+			from public.qorpera_profile_members member where member.profile_id = snapshot.profile_id
+				and member.user_id = snapshot.member_user_id)
+		order by snapshot.environment_id, snapshot.member_user_id, snapshot.repository, snapshot.id
+	loop
+		perform public.qorpera_coding_snapshot_lock(v_row.environment_id, v_row.member_user_id, v_row.repository);
+		update public.qorpera_coding_snapshots snapshot set state = 'retired', retired_at = clock_timestamp()
+		where snapshot.id = v_row.id and snapshot.state = 'ready' and not exists (select 1
+			from public.qorpera_profile_members member where member.profile_id = snapshot.profile_id
+				and member.user_id = snapshot.member_user_id);
+	end loop;
 	return coalesce((select jsonb_agg(listed.entry order by listed.started_at, listed.id) from (
 		select snapshot.started_at, snapshot.id, jsonb_build_object('schema','qorpera.coding-snapshot-state/v1',
 			'snapshotId',snapshot.id,'state',snapshot.state,'imageFingerprint',snapshot.image_fingerprint,'setupDigest',snapshot.setup_digest,'commitSha',snapshot.commit_sha,
 			'startedAt',snapshot.started_at,'builtAt',snapshot.finished_at,'leaseUntil',snapshot.lease_until,
-			'removeDue',snapshot.state = 'retired' or (snapshot.state = 'ready' and not exists (select 1
-				from public.qorpera_profile_members member where member.profile_id = snapshot.profile_id
-					and member.user_id = snapshot.member_user_id))) entry
+			'removeDue',snapshot.state = 'retired') entry
 		from public.qorpera_coding_snapshots snapshot
 		where snapshot.owner = p_owner and snapshot.machine_id_sha256 = p_machine_id_sha256 and snapshot.removed_at is null
 			and (snapshot.state in ('ready','retired') or (snapshot.state = 'building' and snapshot.lease_until > clock_timestamp()))) listed),
@@ -236,7 +259,7 @@ begin
 end
 $$;
 
--- The image is gone from the node. Only a snapshot due for removal; a ready one whose member left is retired with it.
+-- The image is gone from the node. Only a retired snapshot: one the list named due for removal.
 create function public.qorpera_record_coding_snapshot_removed(p_snapshot_id uuid, p_owner text, p_machine_id_sha256 text)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare v_row public.qorpera_coding_snapshots%rowtype;
@@ -251,15 +274,8 @@ begin
 	perform public.qorpera_coding_snapshot_lock(v_row.environment_id, v_row.member_user_id, v_row.repository);
 	select * into strict v_row from public.qorpera_coding_snapshots where id = p_snapshot_id for update;
 	if v_row.removed_at is null then
-		if v_row.state = 'retired' then
-			update public.qorpera_coding_snapshots set removed_at = clock_timestamp() where id = v_row.id returning * into v_row;
-		elsif v_row.state = 'ready' and not exists (select 1 from public.qorpera_profile_members member
-			where member.profile_id = v_row.profile_id and member.user_id = v_row.member_user_id) then
-			update public.qorpera_coding_snapshots set state = 'retired', retired_at = clock_timestamp(), removed_at = clock_timestamp()
-			where id = v_row.id returning * into v_row;
-		else
-			raise exception 'Coding snapshot is not due for removal' using errcode = '55000';
-		end if;
+		if v_row.state <> 'retired' then raise exception 'Coding snapshot is not due for removal' using errcode = '55000'; end if;
+		update public.qorpera_coding_snapshots set removed_at = clock_timestamp() where id = v_row.id returning * into v_row;
 	end if;
 	-- Sent again, the same answer.
 	return jsonb_build_object('schema','qorpera.coding-snapshot-removed/v1','snapshotId',v_row.id,'removedAt',v_row.removed_at);
