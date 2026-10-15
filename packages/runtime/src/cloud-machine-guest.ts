@@ -74,6 +74,8 @@ export interface MachineGuestPorts {
 	folderMountpoint?: string;
 	/** This process's /proc/self/mountinfo. */
 	readMountinfo?: () => Promise<string>;
+	/** How long folder-mount waits for the folder's lock (FOLDER_LOCK_WAIT_SECONDS). */
+	folderLockWaitSeconds?: number;
 	/** Exec stdin, at most this many bytes. */
 	readInput?: (maxBytes: number) => Promise<Buffer>;
 	sleep?: (ms: number) => Promise<void>;
@@ -860,7 +862,8 @@ export async function executeMachineCommand(commandId: string, ports: MachineGue
 // sees it, and systemd starts it again whenever it exits until it exits 3 (the node closed or refused the view). The
 // newest view wins, as the platform's open supersedes the one before (the executor opens again after its restart, or
 // after the view lapsed): handing the same view again only starts the program if it was stopped; another view stops
-// it, takes its mount away and starts it on the new view with an empty state folder.
+// it, takes its mount away and starts it on the new view with an empty state folder. One folder-mount runs at a time:
+// it holds an flock on the root-only lock file beside the view file from its look at the view held to its answer.
 export const MACHINE_FOLDER = Object.freeze({
 	root: "/run/qorpera-folder",
 	mountpoint: "/company",
@@ -868,6 +871,8 @@ export const MACHINE_FOLDER = Object.freeze({
 });
 const FOLDER_VIEW_MAX_BYTES = 4096;
 const FOLDER_POLLS = 100;
+/** How long a folder-mount waits for one still running (its stop, start and readiness), in seconds. */
+const FOLDER_LOCK_WAIT_SECONDS = 60;
 interface FolderView {
 	environmentId: string;
 	viewId: string;
@@ -961,12 +966,52 @@ export async function mountMachineFolder(input: Buffer, ports: MachineGuestPorts
 	const view = parseFolderView(input);
 	await identity(ports);
 	const root = ports.folderRoot ?? MACHINE_FOLDER.root,
-		mountpoint = ports.folderMountpoint ?? MACHINE_FOLDER.mountpoint,
-		file = join(root, "view.json"),
-		state = join(root, "state");
+		mountpoint = ports.folderMountpoint ?? MACHINE_FOLDER.mountpoint;
 	const mountinfo = ports.readMountinfo ?? (() => readFile("/proc/self/mountinfo", "utf8"));
 	if (mountOf(await mountinfo(), root)?.fstype !== "tmpfs") throw new Error("MACHINE_FOLDER_NOT_IN_MEMORY");
 	await mkdir(root, { recursive: true, mode: 0o700 });
+	// One folder-mount at a time, from its look at the view held to the mount's readiness: a retry or an executor
+	// restart can overlap one still running, whose look would find no view held and empty the live state folder.
+	const lock = await open(join(root, "lock"), constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+	try {
+		if (!(await lockOpenFile(lock.fd, ports.folderLockWaitSeconds ?? FOLDER_LOCK_WAIT_SECONDS)))
+			throw new Error("MACHINE_FOLDER_BUSY");
+		return await showFolderView(view, ports, root, mountpoint, mountinfo);
+	} finally {
+		await lock.close();
+	}
+}
+
+/** Takes the folder's lock: util-linux flock locks the open file it shares with
+ * the helper, so the lock outlives flock and goes when the helper closes the
+ * file or dies. False when another holds it past the wait. */
+function lockOpenFile(fd: number, waitSeconds: number): Promise<boolean> {
+	return new Promise((done, fail) => {
+		// The open file is the child's fd 3; flock exits 75 when the wait runs out.
+		const args = ["--exclusive", "--wait", String(waitSeconds), "--conflict-exit-code", "75", "3"];
+		const child = spawn("/usr/bin/flock", args, {
+			env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" },
+			stdio: ["ignore", "ignore", "ignore", fd],
+		});
+		child.once("error", () => fail(new Error("MACHINE_FOLDER_LOCK_FAILED")));
+		child.once("exit", (code) => {
+			if (code === 0) done(true);
+			else if (code === 75) done(false);
+			else fail(new Error("MACHINE_FOLDER_LOCK_FAILED"));
+		});
+	});
+}
+
+/** The folder-mount sequence, under the folder's lock. */
+async function showFolderView(
+	view: FolderView,
+	ports: MachineGuestPorts,
+	root: string,
+	mountpoint: string,
+	mountinfo: () => Promise<string>,
+): Promise<MachineFolderAnswer> {
+	const file = join(root, "view.json"),
+		state = join(root, "state");
 	const run = ports.system ?? system;
 	const programMounted = async () => {
 		const top = mountOf(await mountinfo(), mountpoint);
@@ -1006,9 +1051,11 @@ export async function mountMachineFolder(input: Buffer, ports: MachineGuestPorts
 	await run("/usr/bin/systemctl", ["start", MACHINE_FOLDER.unit]);
 	// The unit is up once the program runs (Type=exec); the mount comes after the node accepts the view.
 	for (let poll = 0; ; poll += 1) {
-		if (await programMounted())
-			return { schema: "qorpera.machine-guest-folder/v1", viewId: view.viewId, mount: "mounted" };
 		const fields = await unitState();
+		// Mounted only while the unit runs the program and its mount is on top of /company: starting a unit already
+		// active does nothing, and a mount without its program serves nothing.
+		if (fields.ActiveState === "active" && (await programMounted()))
+			return { schema: "qorpera.machine-guest-folder/v1", viewId: view.viewId, mount: "mounted" };
 		// Exit 3: the node closed or refused the view, and systemd does not start the program again.
 		if (
 			fields.ActiveState === "failed" &&

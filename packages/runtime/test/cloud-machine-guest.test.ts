@@ -569,6 +569,8 @@ async function folderMachine() {
 		} else if (args[0] === "reset-failed") {
 			if (program.state.startsWith("ActiveState=failed")) program.state = "ActiveState=inactive\n";
 		} else if (args[0] === "start") {
+			// Starting a unit already active does nothing.
+			if (program.state.startsWith("ActiveState=active")) return "";
 			program.starts += 1;
 			if (program.answer === "mount") {
 				mounts.push(
@@ -616,6 +618,38 @@ async function runMachineGuestCliWithInput(
 	expect(await runMachineGuestCli([nonce, "folder-mount"], m.ports)).toBe(0);
 	return JSON.parse(await readFile(join(m.root, "run", "replies", `${nonce}.json`), "utf8"));
 }
+/** The program writes its live state on each start (`live <start>`), and the first `command` on its unit waits until
+ * released: a folder-mount held there holds the folder's lock. */
+function holdAt(m: Awaited<ReturnType<typeof folderMachine>>, command: string) {
+	let release = () => {};
+	let reached = () => {};
+	const gate = new Promise<void>((done) => {
+		release = () => done();
+	});
+	const at = new Promise<void>((done) => {
+		reached = () => done();
+	});
+	const inner = m.system.getMockImplementation()!;
+	let held = false;
+	m.system.mockImplementation(async (executable, args) => {
+		if (executable === "/usr/bin/systemctl" && args[1] === MACHINE_FOLDER.unit && args[0] === command && !held) {
+			held = true;
+			reached();
+			await gate;
+		}
+		const starts = m.program.starts;
+		const out = await inner(executable, args);
+		if (m.program.starts > starts)
+			await writeFile(join(m.folderRoot, "state", "journal"), `live ${m.program.starts}`);
+		return out;
+	});
+	return { reached: at, release };
+}
+/** Every call on the folder's unit so far, its looks included. */
+function unitCalls(m: Awaited<ReturnType<typeof folderMachine>>): number {
+	const calls = m.system.mock.calls.filter(([executable]) => executable === "/usr/bin/systemctl");
+	return calls.filter(([, args]) => args[1] === MACHINE_FOLDER.unit).length;
+}
 /** Every file below a folder. */
 async function filesBelow(folder: string): Promise<string[]> {
 	const files: string[] = [];
@@ -653,6 +687,9 @@ describe("company folder on the machine", () => {
 		expect((await stat(m.folderRoot)).mode & 0o777).toBe(0o700);
 		expect((await stat(join(m.folderRoot, "state"))).mode & 0o777).toBe(0o700);
 		expect(await readdir(join(m.folderRoot, "state"))).toEqual([]);
+		// Beside them, the empty lock file each folder-mount holds while it runs.
+		expect((await stat(join(m.folderRoot, "lock"))).mode & 0o777).toBe(0o600);
+		expect(await readFile(join(m.folderRoot, "lock"), "utf8")).toBe("");
 		for (const file of await filesBelow(m.root))
 			if (file !== viewFile) expect(await readFile(file, "utf8"), file).not.toContain(view.pass);
 		// It starts the static unit by name: no transient unit, no environment, no argument carries the pass.
@@ -755,7 +792,7 @@ describe("company folder on the machine", () => {
 				const viewFile = join(m.folderRoot, "view.json");
 				expect(JSON.parse(await readFile(viewFile, "utf8"))).toEqual(next);
 				expect((await stat(viewFile)).mode & 0o777).toBe(0o600);
-				expect((await readdir(m.folderRoot)).sort()).toEqual(["state", "view.json"]);
+				expect((await readdir(m.folderRoot)).sort()).toEqual(["lock", "state", "view.json"]);
 				views.push(next);
 			}
 			// The node closed the newest view (exit 3, the unit failed): a newer one resets the failed unit and gets /company
@@ -804,6 +841,112 @@ describe("company folder on the machine", () => {
 			"MACHINE_FOLDER_STILL_MOUNTED",
 		);
 		expect(m.program.starts).toBe(starts);
+	});
+
+	it("runs one folder-mount at a time: one overlapping a first install waits, finds the view held and keeps the live state", async () => {
+		// A retry or an executor restart can overlap a folder-mount still running. Unlocked, a second first look finds no
+		// view held too, and empties the state folder under the program the first started.
+		const m = await folderMachine();
+		const view = aView();
+		const held = holdAt(m, "show");
+		const first = mountMachineFolder(Buffer.from(JSON.stringify(view)), m.ports);
+		// The first started the program, which writes its live state, and is waiting for the mount.
+		await held.reached;
+		const calls = unitCalls(m);
+		const second = mountMachineFolder(Buffer.from(JSON.stringify(view)), m.ports);
+		await new Promise((done) => setTimeout(done, 500));
+		// The second waits for the lock: nothing on the unit, and the live state is still there.
+		expect(unitCalls(m)).toBe(calls);
+		expect(await readFile(join(m.folderRoot, "state", "journal"), "utf8")).toBe("live 1");
+		held.release();
+		for (const answer of [await first, await second])
+			expect(answer).toEqual({ schema: "qorpera.machine-guest-folder/v1", viewId: view.viewId, mount: "mounted" });
+		// One start of the program; the second found the view held, so its start found the unit active.
+		expect(m.program.starts).toBe(1);
+		expect(unitCommands(m)).toEqual(["start", "start"]);
+		expect(await readFile(join(m.folderRoot, "state", "journal"), "utf8")).toBe("live 1");
+		expect(JSON.parse(await readFile(join(m.folderRoot, "view.json"), "utf8"))).toEqual(view);
+		// Two first looks at once: one installs, the other finds the view held.
+		const both = await folderMachine();
+		holdAt(both, "none");
+		const twice = aView();
+		const mount = () => mountMachineFolder(Buffer.from(JSON.stringify(twice)), both.ports);
+		const answers = await Promise.all([mount(), mount()]);
+		for (const answer of answers) expect(answer).toMatchObject({ viewId: twice.viewId, mount: "mounted" });
+		expect(both.program.starts).toBe(1);
+		expect(unitCommands(both)).toEqual(["start", "start"]);
+		expect(await readFile(join(both.folderRoot, "state", "journal"), "utf8")).toBe("live 1");
+	});
+
+	it("lets a newer view overlapping a first install wait, then replace it", async () => {
+		const m = await folderMachine();
+		const view = aView();
+		const newer = aView();
+		const held = holdAt(m, "show");
+		const first = mountMachineFolder(Buffer.from(JSON.stringify(view)), m.ports);
+		await held.reached;
+		const calls = unitCalls(m);
+		const replace = mountMachineFolder(Buffer.from(JSON.stringify(newer)), m.ports);
+		await new Promise((done) => setTimeout(done, 500));
+		expect(unitCalls(m)).toBe(calls);
+		expect(JSON.parse(await readFile(join(m.folderRoot, "view.json"), "utf8"))).toEqual(view);
+		held.release();
+		expect(await first).toMatchObject({ viewId: view.viewId, mount: "mounted" });
+		expect(await replace).toMatchObject({ viewId: newer.viewId, mount: "mounted" });
+		// The first's program ran with its view until the newer stopped it; the newer's starts on an empty state folder.
+		expect(unitCommands(m)).toEqual(["start", "stop", "start"]);
+		expect(m.seen).toEqual([
+			{ command: "start", view, state: [] },
+			{ command: "stop", view, state: ["journal"] },
+			{ command: "start", view: newer, state: [] },
+		]);
+		expect(await readFile(join(m.folderRoot, "state", "journal"), "utf8")).toBe("live 2");
+		expect(JSON.parse(await readFile(join(m.folderRoot, "view.json"), "utf8"))).toEqual(newer);
+	});
+
+	it("refuses a folder-mount that cannot get the lock within its wait, and the lock goes with the one that held it", async () => {
+		const m = await folderMachine();
+		const view = aView();
+		const held = holdAt(m, "show");
+		const first = mountMachineFolder(Buffer.from(JSON.stringify(view)), m.ports);
+		await held.reached;
+		const calls = unitCalls(m);
+		m.ports.folderLockWaitSeconds = 1;
+		await expect(mountMachineFolder(Buffer.from(JSON.stringify(aView())), m.ports)).rejects.toThrow(
+			"MACHINE_FOLDER_BUSY",
+		);
+		expect(unitCalls(m)).toBe(calls);
+		held.release();
+		expect(await first).toMatchObject({ mount: "mounted" });
+		// Done, the first let the lock go.
+		expect(await mountMachineFolder(Buffer.from(JSON.stringify(view)), m.ports)).toMatchObject({
+			mount: "mounted",
+		});
+		expect(m.program.starts).toBe(1);
+	});
+
+	it("answers mounted only while the unit runs the program and its mount is on top of /company", async () => {
+		const m = await folderMachine();
+		const view = aView();
+		expect(await mountMachineFolder(Buffer.from(JSON.stringify(view)), m.ports)).toMatchObject({
+			mount: "mounted",
+		});
+		// The unit is active but its mount is gone: the same view again starts nothing and is not mounted.
+		m.mounts.splice(m.mounts.findIndex((line) => line.includes(" fuse.qorpera ")));
+		expect(await mountMachineFolder(Buffer.from(JSON.stringify(view)), m.ports)).toMatchObject({
+			mount: "unanswered",
+		});
+		expect(m.program.starts).toBe(1);
+		// A mount left behind by a program that ended (it exits 3 when started again) is not mounted either.
+		const left = await folderMachine();
+		expect(await mountMachineFolder(Buffer.from(JSON.stringify(view)), left.ports)).toMatchObject({
+			mount: "mounted",
+		});
+		left.program.state = "ActiveState=activating\nResult=exit-code\nExecMainCode=2\nExecMainStatus=9\n";
+		left.program.answer = "close";
+		expect(await mountMachineFolder(Buffer.from(JSON.stringify(view)), left.ports)).toMatchObject({
+			mount: "closed",
+		});
 	});
 
 	it("refuses a view it cannot keep in memory, a view not in its exact shape and a machine not prepared for this boot", async () => {
