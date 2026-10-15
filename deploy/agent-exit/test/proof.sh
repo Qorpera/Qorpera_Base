@@ -971,13 +971,17 @@ refused_now plugged 1.0.0.1 443 || fail "an unlisted address reached"
 refused_now plugged 1.1.1.1 8443 || fail "a listed address on another port reached"
 ip netns exec plugged busybox ping -c 1 -W 1 1.1.1.1 >/dev/null && fail "a listed address answered a ping"
 (($(counted refused_not_listed) >= not_listed + 3)) || fail "refused_not_listed: $not_listed, then $(counted refused_not_listed)"
-wait_for "grep -q '\"dst\":\"1.0.0.1\",\"event\":\"refused\".*\"rule\":\"not_listed\"' $log_file"
 connects agent 1.0.0.1 443 || fail "an open company's machine lost its way out"
 asks plugged 10.210.0.1 two.listed.test "NOERROR 1.0.0.1" || fail "a name under a listed one: $(ask_code plugged 10.210.0.1 two.listed.test)"
 ip netns exec plugged python3 -c 'import socket, time; s = socket.create_connection(("1.0.0.1", 443)); time.sleep(600)' &
 pids+=($!)
 wait_for "shows 'dst=1.0.0.1 sport=[0-9]* dport=443' ip netns exec qexit conntrack -L -s 10.210.1.2 2>/dev/null"
-pass "only listed: unlisted names are no such name; the machine reaches TCP 443 on a listed name's addresses only, refused and logged as not_listed otherwise; the switch restarts the resolver and ends the connections made before"
+# The refused flow keeps the mark it was refused with (0x80000004, not listed): 1.0.0.1 listed since changes neither
+# it nor its log line.
+kept=$(ip netns exec qexit nft -j list set inet qorpera_agent_exit refused_flows | python3 "$here/qorpera-agent-exit-log.py" --parse-set)
+[[ $kept == *'[["10.210.1.2", "1.0.0.1", "tcp", 443, 2147483652], '* ]] || fail "the refusal of 1.0.0.1 as kept: $kept"
+wait_for "grep -q '\"dst\":\"1.0.0.1\",\"event\":\"refused\".*\"rule\":\"not_listed\"' $log_file"
+pass "only listed: unlisted names are no such name; the machine reaches TCP 443 on a listed name's addresses only, refused and logged as not_listed otherwise (also once the address is listed); the switch restarts the resolver and ends the connections made before"
 
 # A wider list reloads the resolver; a narrower one restarts it with its set emptied and ends the connections again.
 python3 "$work/db.py" "$db" 'c1=only:only.test+listed.test,more.test'
@@ -1007,10 +1011,16 @@ connects plugged 1.0.0.1 443 || fail "an open company's machine cannot reach any
 pass "back to open: the resolver asks for every name again, its chain and set go, and the machine reaches out"
 
 # Fail closed: a company whose rules are not usable has no element, and its machines' DNS is dropped wherever it goes;
-# with no element in reach either, they reach nothing outside.
+# with no element in reach either, they reach nothing outside, and a connection made before is ended (the exit lets
+# an established one go on).
+ip netns exec plugged python3 -c 'import socket, time; s = socket.create_connection(("1.1.1.1", 8443)); time.sleep(600)' &
+pids+=($!)
+wait_for "shows 'dport=8443' ip netns exec qexit conntrack -L -s 10.210.1.2 2>/dev/null"
 refused=$(refused_dns)
 python3 "$work/db.py" "$db" 'c1=bad'
 wait_for "names_is \"s['resolvers'] == {'c0': 10001} and s['mapped'] == {'10.210.1.1': 10001}\""
+shows 'dport=8443' ip netns exec qexit conntrack -L -s 10.210.1.2 2>/dev/null &&
+	fail "a connection made before the rules were unusable goes on"
 dns_is "10.210.1.1:10001" || fail "the DNS map with c1's rules not usable: $(dns_map) / $(dns_allowed)"
 for server in 10.210.0.1 8.8.8.8; do
 	asks plugged "$server" open.test "no answer" || fail "c1's machine got DNS via $server: $(ask_code plugged "$server" open.test)"
@@ -1019,15 +1029,16 @@ done
 asks agent 10.210.0.1 open.test "NOERROR 1.1.1.1" || fail "c0's machine lost DNS"
 [[ $(reach_map) == "10.210.1.1:open" ]] || fail "the reach map with c1's rules not usable: $(reach_map)"
 refused_now plugged 1.1.1.1 443 || fail "c1's machine reached a site with its rules not usable"
-# A flow refused once is logged once an hour: 443 to 1.1.1.1 was refused before (not listed), port 80 never was.
+# A flow is logged once an hour for each rule that refused it: 443 to 1.1.1.1, refused before as not listed, again.
 refused_now plugged 1.1.1.1 80 || fail "c1's machine reached a site on port 80 with its rules not usable"
 wait_for "grep -q '\"dport\":80,\"dst\":\"1.1.1.1\",\"event\":\"refused\".*\"rule\":\"rules_unknown\"' $log_file"
+wait_for "grep -q '\"dport\":443,\"dst\":\"1.1.1.1\",\"event\":\"refused\".*\"rule\":\"rules_unknown\"' $log_file"
 connects agent 1.1.1.1 443 || fail "c0's machine lost its way out"
 if bash "$tool" verify 2>"$work/verify.err"; then fail "verify passed with a company's rules not usable"; fi
 grep -q "names: c1: its rules are not as the rules reader writes them" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
 wait_for "test ! -e $work/units/10002.pid"
 [[ -e $servers_dir/10002.servers ]] && fail "a stopped resolver's servers file stayed"
-pass "a company whose rules are not usable: no element, its machines' DNS dropped (to the exit or elsewhere) and counted, their flows refused and logged as rules_unknown, its resolver stopped, verify fails"
+pass "a company whose rules are not usable: no element, its machines' DNS dropped (to the exit or elsewhere) and counted, their flows refused and logged as rules_unknown, their connections ended, its resolver stopped, verify fails"
 
 # A company the rules file does not list yet: no element either.
 python3 "$work/db.py" "$db" 'c1=null'

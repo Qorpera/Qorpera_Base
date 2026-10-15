@@ -374,36 +374,50 @@ describe("the connection logger", () => {
 		]);
 	});
 
-	test("the refused-flow sets become one key per element, with or without timeouts, any protocol as text", () => {
-		const set = JSON.stringify({
-			nftables: [
-				{ metainfo: { version: "1.1.6" } },
-				{
-					set: {
-						family: "inet",
-						name: "refused_flows",
-						table: "qorpera_agent_exit",
-						elem: [
-							{ elem: { val: { concat: ["10.210.0.10", "192.168.1.40", "tcp", 2049] }, timeout: 3600, expires: 3590 } },
-							{ concat: ["10.210.0.11", "1.1.1.1", "tcp", 25] },
-							{ elem: { val: { concat: ["10.210.0.10", "192.168.1.40", 253] }, timeout: 3600, expires: 3500 } },
-						],
-					},
-				},
+	test("the refused-flow sets become one key per element, with the mark it was refused with, any protocol as text", () => {
+		const set = (name, elem) => ({ set: { family: "inet", name, table: "qorpera_agent_exit", elem } });
+		const flows = (elem) => JSON.stringify({ nftables: [{ metainfo: { version: "1.1.6" } }, set("refused_flows", elem)] });
+		const other = (elem) => JSON.stringify({ nftables: [{ metainfo: { version: "1.1.6" } }, set("refused_other", elem)] });
+		assert.deepEqual(
+			run(
+				"--parse-set",
+				flows([
+					{ elem: { val: { concat: ["10.210.0.10", "192.168.1.40", "tcp", 2049, 0] }, timeout: 3600, expires: 3590 } },
+					{ concat: ["10.210.0.11", "1.1.1.1", "tcp", 443, 2147483652] },
+					{ concat: ["10.210.0.11", "1.1.1.1", "udp", 443, "0x80000003"] },
+					// A set from before E8c kept no mark.
+					{ concat: ["10.210.0.11", "1.1.1.1", "tcp", 25] },
+				]),
+			),
+			[
+				[["10.210.0.10", "192.168.1.40", "tcp", 2049, 0], 3590],
+				[["10.210.0.11", "1.1.1.1", "tcp", 443, 0x80000004], null],
+				[["10.210.0.11", "1.1.1.1", "udp", 443, 0x80000003], null],
+				[["10.210.0.11", "1.1.1.1", "tcp", 25, 0], null],
 			],
-		});
-		assert.deepEqual(run("--parse-set", set), [
-			[["10.210.0.10", "192.168.1.40", "tcp", 2049], 3590],
-			[["10.210.0.11", "1.1.1.1", "tcp", 25], null],
-			[["10.210.0.10", "192.168.1.40", "253"], 3500],
-		]);
+		);
+		assert.deepEqual(
+			run(
+				"--parse-set",
+				other([
+					{ elem: { val: { concat: ["10.210.0.10", "192.168.1.40", 253, 0] }, timeout: 3600, expires: 3500 } },
+					{ concat: ["10.210.0.11", "1.1.1.1", "icmp", 2147483652] },
+					{ concat: ["10.210.0.11", "1.1.1.1", "icmp"] },
+				]),
+			),
+			[
+				[["10.210.0.10", "192.168.1.40", "253", null, 0], 3500],
+				[["10.210.0.11", "1.1.1.1", "icmp", null, 0x80000004], null],
+				[["10.210.0.11", "1.1.1.1", "icmp", null, 0], null],
+			],
+		);
 	});
 
 	test("a refused flow is logged when new or added again, with the rule that refused it", () => {
-		const nas = ["10.210.0.10", "192.168.1.40", "tcp", 2049];
-		const mail = ["10.210.0.10", "1.1.1.1", "tcp", 25];
-		const other = ["10.210.0.10", "192.168.1.40", "253"];
-		const busy = ["10.210.0.11", "8.8.4.4", "tcp", 443];
+		const nas = ["10.210.0.10", "192.168.1.40", "tcp", 2049, 0];
+		const mail = ["10.210.0.10", "1.1.1.1", "tcp", 25, 0];
+		const other = ["10.210.0.10", "192.168.1.40", "253", null, 0];
+		const busy = ["10.210.0.11", "8.8.4.4", "tcp", 443, 0];
 		const diff = run(
 			"--diff-sets",
 			JSON.stringify({
@@ -426,46 +440,38 @@ describe("the connection logger", () => {
 		]);
 	});
 
-	test("with the reach map (E8c), a refusal of an unknown machine or of an unlisted address says so", () => {
-		const open = ["10.210.1.1", "8.8.4.4", "tcp", 443];
-		const unknown = ["10.210.1.9", "8.8.4.4", "tcp", 443];
-		const listed = ["10.210.1.2", "203.0.113.5", "tcp", 443];
-		const unlisted = ["10.210.1.2", "203.0.113.6", "tcp", 443];
-		const plain = ["10.210.1.2", "203.0.113.5", "tcp", 80];
-		const quic = ["10.210.1.2", "203.0.113.5", "udp", 443];
-		const ping = ["10.210.1.2", "203.0.113.5", "1"];
-		const mail = ["10.210.1.2", "203.0.113.5", "tcp", 25];
-		const elem = (address, target) => [address, { goto: { target } }];
-		const reach = {
-			nftables: [
-				{ metainfo: { version: "1.1.6" } },
-				{
-					map: {
-						family: "inet",
-						name: "reach",
-						table: "qorpera_agent_exit",
-						type: "ipv4_addr",
-						map: "verdict",
-						elem: [elem("10.210.1.1", "open"), elem("10.210.1.2", "only_10001")],
-					},
-				},
-			],
-		};
-		const allowed = {
-			only_10001: {
-				nftables: [{ set: { family: "inet", name: "allow_10001", table: "qorpera_agent_exit", elem: ["203.0.113.5"] } }],
-			},
-		};
-		const keys = [open, unknown, listed, unlisted, plain, quic, ping, mail];
-		const diff = run(
-			"--diff-sets",
-			JSON.stringify({ previous: [], current: keys.map((key) => [key, 3600]), reach, allowed }),
-		);
+	// The logger reads no rules: a refusal is logged with the rule its mark says, also when the rules changed between the
+	// refusal and the logger's read (the machine's company known since, or the address listed since).
+	test("with E8c, a refusal says the rule it was refused by from its mark: rules not known, not listed", () => {
+		const unknown = 0x80000003;
+		const notListed = 0x80000004;
+		const keys = [
+			["10.210.1.1", "8.8.4.4", "tcp", 443, 0],
+			["10.210.1.9", "8.8.4.4", "tcp", 443, unknown],
+			["10.210.1.9", "8.8.4.4", "1", null, unknown],
+			["10.210.1.2", "203.0.113.6", "tcp", 443, notListed],
+			["10.210.1.2", "203.0.113.6", "tcp", 443, unknown],
+			["10.210.1.2", "203.0.113.5", "udp", 443, notListed],
+			["10.210.1.2", "203.0.113.5", "1", null, notListed],
+			["10.210.1.2", "203.0.113.5", "tcp", 25, 0],
+			["10.210.1.2", "192.168.1.40", "tcp", 443, 0],
+		];
+		const diff = run("--diff-sets", JSON.stringify({ previous: [], current: keys.map((key) => [key, 3600]) }));
 		const rules = new Map(diff.map(([key, rule]) => [JSON.stringify(key), rule]));
 		assert.deepEqual(
 			keys.map((key) => rules.get(JSON.stringify(key))),
-			// A listed address on 443 refused anyway was refused by the open bounds.
-			["open_limit", "rules_unknown", "open_limit", "not_listed", "not_listed", "not_listed", "not_listed", "mail"],
+			// The same flow refused by two rules is two refusals.
+			[
+				"open_limit",
+				"rules_unknown",
+				"rules_unknown",
+				"not_listed",
+				"rules_unknown",
+				"not_listed",
+				"not_listed",
+				"mail",
+				"our_networks",
+			],
 		);
 	});
 });
@@ -1384,16 +1390,18 @@ step("unknown")
 step("long", 31)
 rules(c1=None, c9=None)
 step("known")
-for bad in ({"version": "v1", "mode": "open", "block": [], "allow": []},
+for n, bad in enumerate(({"version": "v1", "mode": "open", "block": [], "allow": []},
             dict(ruled(), mode="closed"), dict(ruled(), extra=1),
             ruled(block=["Upper.test"]), ruled(block=["10.0.0.1"]), ruled(block=["a..test"]), ruled(block=["*.*.test"]),
             ruled(block=["x" * 64 + ".test"]), ruled(block=["a.test", "a.test"]), ruled(block=["a.test"], allow=["a.test"]),
-            ruled(block=[f"n{i}.test" for i in range(1001)])):
+            ruled(block=[f"n{i}.test" for i in range(1001)]))):
     rules(c1=None, c9=bad)
     step("bad", 1)
     assert steps["bad"]["problems"] == ["c9: its rules are not as the rules reader writes them; its machines get no DNS and no way out"], (bad, steps["bad"])
     assert steps["bad"]["map"] == {"10.210.1.1": 53}, (bad, steps["bad"])
     assert steps["bad"]["reach"] == {"10.210.1.1": "open"}, (bad, steps["bad"])
+    # Its element went the first time: the connections it made before are ended (the exit lets established ones go on).
+    assert steps["bad"]["cut"] == (["10.210.1.2"] if n == 0 else []), (bad, steps["bad"])
 rules(c1=None, c9=None)
 step("fixed")
 plug.write_replace(rules_path, "{", 0o600)
@@ -1403,7 +1411,10 @@ step("not_an_id")
 os.unlink(rules_path)
 step("removed")
 `);
-		assert.deepEqual([s.nofile.map, s.nofile.resolvers], [{}, {}]);
+		// The first table seen: every machine without a reach element has its connections ended (what a reconciler before
+		// this one owed is not known).
+		assert.deepEqual([s.nofile.map, s.nofile.resolvers, s.nofile.cut], [{}, {}, ["10.210.1.1", "10.210.1.2"]]);
+		assert.deepEqual([s.unknown.cut, s.known.cut], [[], []]);
 		assert.deepEqual(s.nofile.problems, ["no rules file yet: every machine's DNS is dropped until the rules reader writes it"]);
 		assert.deepEqual([s.unknown.map, s.unknown.problems], [{ "10.210.1.1": 53 }, []], "not listed yet: no DNS, and no problem at first");
 		assert.deepEqual(s.long.problems, ["c9: not in the rules file for 31s; its machines get no DNS and no way out"]);
@@ -1415,6 +1426,7 @@ step("removed")
 		assert.deepEqual(s.garbled.map, main);
 		assert.deepEqual(s.not_an_id.problems, ["cannot use the rules file: a company that is not an id; the rules last read stay"]);
 		assert.deepEqual([s.removed.map, s.removed.allowed, s.removed.flushed], [{}, [], ["10.210.1.1", "10.210.1.2"]]);
+		assert.deepEqual([s.removed.reach, s.removed.cut], [{}, ["10.210.1.1", "10.210.1.2"]]);
 	});
 
 	test("the rules reader: silent for 30 s, or failing for 2 minutes, is a problem; its last rules stay meanwhile", () => {
@@ -1618,6 +1630,13 @@ world["fail"] = set()
 reconciler[0] = None
 world["listening"].add(10001)
 step("cut_again")
+world["listening"].add(10001)
+world["fail"] = {"list"}
+rules(c1=ruled(allow=["a.test"], mode="only-listed", block=["b.test", "x.a.test"]), c2=None)
+step("unread")
+world["fail"] = set()
+world["listening"].add(10001)
+step("read_again")
 rules(c1=ruled(block=["b.test"]), c2=None)
 step("reopened")
 world["listening"].add(10001)
@@ -1651,6 +1670,14 @@ step("unplugged")
 		assert.equal(s.cut_fails.servers["10001.owed"], "cut\n");
 		assert.deepEqual([s.cut_again.calls, s.cut_again.cut, s.cut_again.problems], [restart(10001), ["10.210.1.1"], []]);
 		assert.ok(!("10001.owed" in s.cut_again.servers));
+		// Narrower while the exit's table cannot be read: which sets there are is not known, so the restart stays owed (and
+		// the resolver goes on with its set) until it can be.
+		assert.deepEqual([s.unread.calls, s.unread.cut, s.unread.servers["10001.owed"]], [[], [], "cut\n"]);
+		assert.deepEqual(s.unread.problems, [
+			"cannot read the exit's chains: Error: No such file or directory",
+			"cannot read the exit's DNS map: Error: No such file or directory",
+		]);
+		assert.deepEqual([s.read_again.calls, s.read_again.cut, s.read_again.problems], [restart(10001), ["10.210.1.1"], []]);
 		// Back to open: restarted without --nftset, its set and chain removed once no element goes to it; nothing cut.
 		assert.deepEqual([s.reopened.calls, s.reopened.cut, s.reopened.only, s.reopened.modes], [restart(10001), [], [], { "10001.mode": "open\n" }]);
 		assert.deepEqual([s.reopened.reach, s.reopened.servers], [{ "10.210.1.1": "open", "10.210.1.2": "open" }, { "10001.servers": "server=/b.test/\n" }]);
@@ -1720,7 +1747,7 @@ rules(c1=ruled(block=["b.test"]), c2=None, c3=ruled(), c4=ruled(mode="only-liste
 			"add chain inet qorpera_agent_exit only_10004",
 			"flush chain inet qorpera_agent_exit only_10004",
 			"add rule inet qorpera_agent_exit only_10004 tcp dport 443 ip daddr @allow_10004 goto open",
-			'add rule inet qorpera_agent_exit only_10004 counter name "refused_not_listed" goto refuse',
+			'add rule inet qorpera_agent_exit only_10004 meta mark set 0x80000004 counter name "refused_not_listed" goto refuse',
 			"add element inet qorpera_agent_exit dns_port { 10.210.1.2 : 53, 10.210.1.6 : 10004, 10.210.1.10 : 10001 }",
 			"add element inet qorpera_agent_exit dns_allowed { 10.210.1.2 . 53, 10.210.1.6 . 10004, 10.210.1.10 . 10001 }",
 			"add element inet qorpera_agent_exit reach { 10.210.1.2 : goto open, 10.210.1.3 : goto open, 10.210.1.6 : goto only_10004, 10.210.1.10 : goto open }",

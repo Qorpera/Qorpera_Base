@@ -618,7 +618,8 @@ pass "C2's resolver, killed, is back within 30 s (pid $r2 -> $(main_pid 10002), 
 # puts each address it gives out in allow_10002.
 in_m m2 python3 -c 'import socket, time; s = socket.create_connection(("198.51.100.2", 443)); time.sleep(600)' >/dev/null 2>&1 &
 pids+=($!)
-held() { shows "dst=198.51.100.2 sport=[0-9]* dport=443" ip netns exec qexit conntrack -L -s "$a2" 2>/dev/null; }
+# Established only: a refused or closed one leaves an entry in another state.
+held() { shows "ESTABLISHED src=$a2 dst=198.51.100.2 sport=[0-9]* dport=443" ip netns exec qexit conntrack -L -s "$a2" 2>/dev/null; }
 within 30 held
 r2=$(main_pid 10002)
 asked=$(wc -l <"$work/upstream.log")
@@ -663,14 +664,16 @@ expect_tcp m2 198.51.100.1 443 open
 within 30 healthy
 pass "the exit's reload empties allow_10002 and keeps C2's resolver (pid $r2), reloaded: listed.example.com asked again reaches 198.51.100.1 again"
 
-# A narrower list restarts the resolver with allow_10002 emptied and ends m2's connections again.
+# A narrower list restarts the resolver with allow_10002 emptied and ends m2's connections again. The reload emptied
+# the set, so two.listed.example.com is asked again for m2's connection to its address.
+expect m2 10.210.0.1 two.listed.example.com "NOERROR 198.51.100.2"
 in_m m2 python3 -c 'import socket, time; s = socket.create_connection(("198.51.100.2", 443)); time.sleep(600)' >/dev/null 2>&1 &
 pids+=($!)
 within 30 held
 rules "$C2=only:other.example.com+two.listed.example.com"
 within 30 'says m2 10.210.0.1 listed.example.com NXDOMAIN && only'
 [[ $(main_pid 10002) != "$r2" ]] || fail "a narrower list did not restart C2's resolver"
-held && fail "m2's connection to an address no longer listed goes on"
+held && fail "m2's connection made before the narrower list goes on"
 expect_tcp m2 198.51.100.1 443 refused
 expect_tcp m2 198.51.100.2 443 refused
 expect m2 10.210.0.1 two.listed.example.com "NOERROR 198.51.100.2"
@@ -811,8 +814,9 @@ if [[ -n $previous ]] && ((step == 9)); then
 	{
 		bash "$here/install-agent-exit.sh" "$package" &&
 			systemctl enable --now qorpera-agent-exit-names.service &&
+			systemctl restart qorpera-agent-exit-log.service &&
 			systemctl reload qorpera-agent-exit.service &&
-			systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service
+			systemctl restart qorpera-agent-plug.service
 	} >"$work/step9-b.out" 2>&1 || fail "step 9: $(cat "$work/step9-b.out")"
 	stepped() {
 		healthy && says m3 10.210.0.1 blocked.example.com NXDOMAIN &&
@@ -863,9 +867,9 @@ elif [[ -n $previous ]]; then
 
 	{
 		bash "$here/install-agent-exit.sh" "$package" &&
-			systemctl restart qorpera-agent-exit-names.service &&
+			systemctl restart qorpera-agent-exit-names.service qorpera-agent-exit-log.service &&
 			systemctl reload qorpera-agent-exit.service &&
-			systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service
+			systemctl restart qorpera-agent-plug.service
 	} >"$work/step10.out" 2>&1 || fail "step 10: $(cat "$work/step10.out")"
 	stepped() {
 		healthy && names_is "s['reach'] == {'$a3': 'only_10001'} and s['problems'] == []" &&

@@ -376,8 +376,9 @@ E8b-2 to a node that runs the exit", says why this order):
 ```bash
 bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules
 systemctl enable --now qorpera-agent-exit-names.service
+systemctl restart qorpera-agent-exit-log.service
 systemctl reload qorpera-agent-exit.service
-systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service
+systemctl restart qorpera-agent-plug.service
 ```
 
 From a release with E8c-1 this brings it too: the reload's rules send each machine on by the map `reach`, so a company
@@ -408,9 +409,9 @@ head with the reader's package built, in one go (`README.md`, "Adding E8c-1 to a
 
 ```bash
 bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules
-systemctl restart qorpera-agent-exit-names.service
+systemctl restart qorpera-agent-exit-names.service qorpera-agent-exit-log.service
 systemctl reload qorpera-agent-exit.service
-systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service
+systemctl restart qorpera-agent-plug.service
 ```
 
 What the companies see:
