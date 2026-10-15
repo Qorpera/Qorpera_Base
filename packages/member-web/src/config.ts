@@ -2,7 +2,6 @@ export interface MemberWebConfig {
 	schema: "qorpera.member-web-config/v1";
 	supabaseUrl: string;
 	publishableKey: string;
-	objectGatewayUrl: string;
 	officeViewerOrigin: string | null;
 }
 function origin(value: unknown, websocket = false): string {
@@ -29,7 +28,7 @@ export function parseMemberWebConfig(value: unknown): MemberWebConfig {
 		!value ||
 		typeof value !== "object" ||
 		Array.isArray(value) ||
-		Object.keys(value).sort().join() !== "objectGatewayUrl,officeViewerOrigin,publishableKey,schema,supabaseUrl"
+		Object.keys(value).sort().join() !== "officeViewerOrigin,publishableKey,schema,supabaseUrl"
 	)
 		throw new Error("Invalid web configuration");
 	const row = value as Record<string, unknown>;
@@ -54,13 +53,10 @@ export function parseMemberWebConfig(value: unknown): MemberWebConfig {
 		schema: row.schema,
 		supabaseUrl: origin(row.supabaseUrl),
 		publishableKey: key,
-		objectGatewayUrl: origin(row.objectGatewayUrl),
 		officeViewerOrigin: row.officeViewerOrigin === null ? null : origin(row.officeViewerOrigin, true),
 	};
 }
 
 export function memberWebCsp(config: MemberWebConfig): string {
-	const realtime = new URL(config.supabaseUrl);
-	realtime.protocol = realtime.protocol === "https:" ? "wss:" : "ws:";
-	return `default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' ${config.supabaseUrl} ${realtime.origin} ${config.objectGatewayUrl}${config.officeViewerOrigin ? ` ${config.officeViewerOrigin}` : ""}; img-src data: blob:; font-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
+	return `default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' ${config.supabaseUrl}${config.officeViewerOrigin ? ` ${config.officeViewerOrigin}` : ""}; img-src data: blob:; font-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
 }

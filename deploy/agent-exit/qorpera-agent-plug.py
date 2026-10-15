@@ -27,7 +27,8 @@ The reconciler (root, the plug unit) reads LXD every few seconds and keeps the m
 - a machine that stopped (asleep) keeps its address and its entry, and its connections are flushed once;
 - a machine that is gone (missing from two reads of LXD in a row after it was seen, or never created within an hour of
   its last plug) is unplugged under the plug lock: its address is quarantined for 15 minutes first, then its lease is
-  removed (dnsmasq reloads), its connections and the exit's per-machine counts are cleared, and its entry is removed;
+  removed (dnsmasq reloads), its connections, the exit's per-machine counts and its DNS elements (E8b) are cleared,
+  and its entry is removed;
 - every entry is checked against its machine's LXD config, a running machine's card must be a port of qagent0, and
   every machine on qagent0 must have an entry. Anything else is a problem, and a problem makes the exit unhealthy
   (`qorpera-agent-exit.sh verify` reads <run-dir>/plug.json);
@@ -71,7 +72,8 @@ BRIDGE = "qagent0"
 EXIT_TABLE = ("inet", "qorpera_agent_exit")
 BRIDGE_TABLE = ("bridge", "qorpera_agent_exit_bridge")
 # The exit's per-machine sets: a machine's counts and refused flows go with it.
-EXIT_SETS = ("new_by_client", "refused_by_client", "open_by_client", "refusal_rate", "refused_flows", "refused_other")
+EXIT_SETS = ("new_by_client", "refused_by_client", "open_by_client", "refusal_rate", "refused_flows", "refused_other",
+             "dns_allowed")
 # The exit's side of its uplink: in phase 1 the node masquerades it, so each agent connection has a twin on the node.
 UPLINK = "10.209.255.2"
 KINDS = ("machine", "coding", "office")
@@ -681,6 +683,12 @@ class Reconciler:
                            f"{{ {address} }}"])
         if result.returncode != 0:
             print(f"cannot clear {address} from the exit's braked map: {result.stderr.strip()[:200]}", flush=True)
+        # And its names (E8b): the names reconciler drops an unverified machine's element within a pass, but while it is
+        # down the next machine at this address would ask the old company's resolver.
+        result = self.run(["ip", "netns", "exec", self.args.netns, "nft", "destroy", "element", family, table, "dns_port",
+                           f"{{ {address} }}"])
+        if result.returncode != 0:
+            print(f"cannot clear {address} from the exit's DNS map: {result.stderr.strip()[:200]}", flush=True)
 
     def bridge_state(self):
         """What the bridge rules hold now: the ports and pairs sets, the dhcp chain's per-machine rules (by their

@@ -597,6 +597,11 @@ and receive files by mail, and a received attachment is fetched when an agent sa
   time. `mail-attachments` claims one fetch a call, for the same reason.
 - **folder-v2.** Refused both ways (`0A000`) until the folder-v2 core adds mail attachments as a GC root (C1d). No
   production company uses folder-v2 today.
+- **Saving went with snapshot-v1.** C-P4 removed `save_attachment` from the runtime. Legacy sweep D4
+  (`20260930333000`) dropped its request (`qorpera_native_mail_attachment`, with its row in the native host's call
+  list), the request's immediate call to the worker (`qorpera_mail_attachments_kick`) and its receipt. Nothing records
+  a fetch any more. The fetch table, the worker's claim, completion and failure, `mail-attachments` and its minute's
+  cron stay until step E, which removes the lanes that store into the company's objects. Sending is unchanged.
 
 **Members read mail (I5a)** (migration `20260928439980_runtime_company_mail_member_read`; shapes agreed with the
 Interfaces session on 2 October for the Mailbox, `RUNTIME-INTERFACES.md` §4, sources `mail` and `mail_addresses`).

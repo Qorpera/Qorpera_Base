@@ -274,8 +274,9 @@ desktop (`packages/shell/userland/localization.js`): Company File is
 `describeError`) stays English, as the server's own messages do. The computer
 screen viewer (`member-web/ui/screen-viewer.js`) is copied unchanged from the
 desktop, so `ui/computer-viewer.ts` translates its fixed text inside its own
-overlay. The live Company File panel (`member-web/src/file-panel.ts`) takes
-`t` as an option so member-web stays independent.
+overlay. The live Company File panel (`member-web/src/file-panel.ts`) took
+`t` as an option so member-web stayed independent; it went with snapshot-v1
+(step C, C2).
 
 ## 2026-09-24 — The web app is drawn at 130% (design pixels)
 

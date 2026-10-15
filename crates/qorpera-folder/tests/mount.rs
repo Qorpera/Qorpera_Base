@@ -48,6 +48,16 @@ fn mounted(path: &Path) -> bool {
 	std::fs::read_to_string("/proc/self/mountinfo").unwrap().lines().any(|l| l.split(' ').nth(4) == Some(path.to_str().unwrap()))
 }
 
+/// Takes down a mount a stopped program left behind. The program tries its unmount once; under load the kernel can
+/// still count a descriptor on the mount for a moment (EBUSY, #1021's merge test), and the mount stays. Unmounts it
+/// here, again while it is busy, so the next program mounts at an empty mountpoint and not over this one.
+fn unmounted(path: &Path) {
+	let c = c_path(path);
+	// SAFETY: a path from CString, and no flags.
+	let gone = eventually(Duration::from_secs(10), || !mounted(path) || unsafe { libc::umount2(c.as_ptr(), 0) } == 0);
+	assert!(gone && !mounted(path), "{} stayed mounted", path.display());
+}
+
 fn start(node: &FakeNode) -> (PathBuf, std::thread::JoinHandle<Stop>) {
 	start_with(node, None)
 }
@@ -57,13 +67,15 @@ fn start_with(node: &FakeNode, state: Option<PathBuf>) -> (PathBuf, std::thread:
 	let state = Some(state.unwrap_or_else(|| node.dir.join("state")));
 	let mountpoint = node.dir.join("company");
 	std::fs::create_dir_all(&mountpoint).unwrap();
+	// Below, "mounted" must mean this program's mount, not one left here before.
+	assert!(!mounted(&mountpoint), "{} is still mounted from before", mountpoint.display());
 	let link = Link::new(
 		node.addr.clone(),
 		View { environment_id: "env".into(), view_id: "view".into(), pass: PASS.into() },
 		4,
 	);
 	let options =
-		Options { mountpoint: mountpoint.clone(), threads: 4, ttl: Duration::from_secs(3600), allow_other: false, owner: None, state };
+		Options { mountpoint: mountpoint.clone(), threads: 4, ttl: Duration::from_secs(3600), allow_other: false, owner: None, state, reads: None };
 	let runner = std::thread::spawn(move || match mount::run(link, options) {
 		Ok(stop) => stop,
 		Err(e) => panic!("mount failed: {e:?}"),
@@ -206,7 +218,7 @@ fn a_refused_view_is_never_mounted() {
 		2,
 	);
 	let options =
-		Options { mountpoint: mountpoint.clone(), threads: 2, ttl: Duration::from_secs(1), allow_other: false, owner: None, state: None };
+		Options { mountpoint: mountpoint.clone(), threads: 2, ttl: Duration::from_secs(1), allow_other: false, owner: None, state: None, reads: None };
 	match mount::run(link, options) {
 		Err(mount::Failed::View(_)) => {}
 		other => panic!("{other:?}"),
@@ -307,6 +319,7 @@ fn the_version_map_and_unreleased_read_log_outlive_the_program() {
 	assert_eq!(before.reads[0].version.as_deref(), Some("v1"));
 	node.close_view();
 	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+	unmounted(&company);
 	// Another machine saves while the program is down; the program starts again with the same map.
 	node.reopen_view();
 	node.put("notes.md", "theirs", false);
@@ -604,6 +617,10 @@ fi
 		let log_meta = std::fs::metadata(state.join("versions.jsonl")).unwrap();
 		assert_eq!((state_meta.uid(), state_meta.mode() & 0o777), (0, 0o700));
 		assert_eq!((log_meta.uid(), log_meta.mode() & 0o777), (0, 0o600));
+	} else {
+		// The account read docs/plan.md, but a read-only mount hands no reads over, so it never logs them.
+		let journal = ReadLog::open(&state, false).unwrap();
+		assert!(journal.locked().unwrap().request(0).reads.is_empty(), "a read-only mount logged its reads");
 	}
 }
 
