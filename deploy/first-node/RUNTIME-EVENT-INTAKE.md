@@ -44,6 +44,7 @@ review (`20260928429982_runtime_company_mail_find_and_tags`), and so are attachm
 | M2a | Company mailboxes, receiving: owners create them, the mail provider's webhook fills them, routines wake on mail | `20260928299650` |
 | M2b | Sending as a mailbox, as the agent with an AI line: `send_mail`, the outbox and its sender | `20260928309740` |
 | M2b+ | Founder decisions of 1 October: no sender that reads as Qorpera | `20260928319810` |
+| M2b++ | Qorpera's own company (P6) sends under its own name and its agents' names | `20260930475000` |
 | M2c-1 | Attachments: an agent saves a received one into the company folder, and sends company files | `20260928429984` |
 | M2c-2 | Threads and sent mail as files in the folder | registered when started |
 | I5a | Members read mail (the Interfaces Mailbox): threads, mailboxes, waiting sends | `20260928439980` |
@@ -485,6 +486,9 @@ again, finds the mailbox (live, of the run's company and environment, not paused
   agent's name, the company's name or the mailbox's local part reads as Qorpera however it is spelled (case,
   separators, accents, full width, look-alike Cyrillic or Greek letters and digits), and no mailbox is created
   with such a name (22023). Names are not refused where they are set; the check guards the From line.
+  Qorpera's own company is the one exception (`20260930475000`, P6 "Qorpera runs on Qorpera"): operators name it in
+  `qorpera_mail_settings.own_company_profile_id` (null until set; cleared when that company is deleted), and it sends
+  under its own name and its agents' names. Its mailboxes follow the rule like every company's.
 - A reply to a received email of the company (`mail.received`, verified) carries that email's thread:
   `In-Reply-To` its message id, and `References` the thread's first id and its newest ids that fit one header line
   (980 characters, RFC 5322 3.6.4). An email whose text was cleared (after 7 days), or without a usable message

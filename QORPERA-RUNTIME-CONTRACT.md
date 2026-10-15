@@ -4272,7 +4272,9 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    email sent automatically is never answered, and a company never emails
    its own mailboxes. No email goes out as if from Qorpera: a sender name or
    mailbox that reads as Qorpera is refused (founder decision, 1 October
-   2026). Sending has its own platform switch, built off, and each company
+   2026), except a sender name of Qorpera's own company, which operators
+   name; a mailbox that reads as Qorpera is refused for every company.
+   Sending has its own platform switch, built off, and each company
    an hourly and a daily limit on recipients that operators set.
 
 Section 21, item 33, is the event-wake acceptance item.

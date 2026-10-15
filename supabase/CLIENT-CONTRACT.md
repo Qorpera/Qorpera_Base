@@ -763,6 +763,9 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
 - Sender names (20260928319810_runtime_company_mail_sender_names): `qorpera_create_company_mailbox` also reserves
   (22023) any local part that reads as Qorpera (case, separators, accents, full width and look-alike letters or
   digits folded), and no email goes out when the agent's or the company's name or the mailbox reads as Qorpera.
+- Own company sender (20260930475000_mail_own_company_sender): the one company that operators name in
+  `qorpera_mail_settings.own_company_profile_id` (Qorpera's own) sends under a company or agent name that reads as
+  Qorpera. Its mailbox names are still reserved and checked. No client surface; the settings stay closed.
 - Attachments (20260928429984_runtime_company_mail_attachments, step M2c-1): agents attach company files to
   `send_mail`; there is no client surface. Saving a received email's attachment (the runtime tool `save_attachment`)
   served only snapshot-v1 companies: C-P4 removed the tool, and legacy sweep D4 (20260930333000) dropped its request.
