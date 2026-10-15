@@ -1121,6 +1121,8 @@ pass "a removed machine is quarantined first, then loses its lease (no more DHCP
 
 python3 "$work/age.py" "$clients_dir" 10.210.1.1
 wait_for "test \"\$(ls $clients_dir)\" = 10.210.1.1.json"
+# The plug removes the entry before it prints why, so wait for the line too.
+for _ in $(seq 1 50); do grep -q "the machine was never created" "$work/plug.out" && break; sleep 0.2; done
 grep -q "the machine was never created" "$work/plug.out" || fail "plug: $(cat "$work/plug.out")"
 [[ $(client_history | grep -c '"event":"unplugged"') == 2 ]] || fail "unplugged lines: $(client_history | grep -c '"event":"unplugged"')"
 [[ $(client_history | grep -c '"event":"dropped"') == 22 ]] || fail "dropped lines: $(client_history | grep -c '"event":"dropped"')"
@@ -1437,6 +1439,8 @@ wait_for "shows '10.210.0.1:53 ' ip netns exec qexit ss -lnu"
 for _ in $(seq 1 100); do [[ -n $(resolver_pid 10001) && $(resolver_pid 10001) != "$resolver" ]] && break; sleep 0.2; done
 [[ -n $(resolver_pid 10001) && $(resolver_pid 10001) != "$resolver" ]] ||
 	fail "c0's resolver stayed in the old namespace: $(tail -3 "$work/names.out")"
+# names restarts the resolver in the middle of a pass and prints the pass's problems at its end.
+for _ in $(seq 1 50); do grep -q "problem: the resolver of c0 (port 10001) is not answering" "$work/names.out" && break; sleep 0.2; done
 grep -q "problem: the resolver of c0 (port 10001) is not answering" "$work/names.out" || fail "names: $(tail -3 "$work/names.out")"
 wait_for "bash $tool verify >/dev/null 2>&1"
 # The new br0 has a new MAC; the machine has the gateway's as a static neighbour (above), so it takes the new one.
