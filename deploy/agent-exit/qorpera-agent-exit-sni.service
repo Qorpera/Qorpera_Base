@@ -27,7 +27,7 @@ PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
-RestrictAddressFamilies=AF_NETLINK AF_UNIX AF_INET
+RestrictAddressFamilies=AF_NETLINK
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_DAC_READ_SEARCH
 
 [Install]
