@@ -688,9 +688,10 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   (names beginning `mail-` belong to mailboxes, from 20260928299650),
   purpose, proof or limit. From 20260930280000 (E4b) a `folder-v2` company
   then refuses a `stripe`, `github` or `hmac-sha256` proof with 0A000 ("A
-  Stripe hook comes later: its secret is taken from Stripe's screen", or "A
-  signed hook is opened through the vault") and makes nothing: its signed
-  hooks are opened by agents through the vault (E3b, E3c).
+  signed hook is opened through the vault"; until 20260930344000, E3c-1, a
+  `stripe` one got "A Stripe hook comes later: its secret is taken from
+  Stripe's screen") and makes nothing: its signed hooks are opened by agents
+  through the vault (E3b, E3c).
 - `qorpera_set_event_hook_status(p_hook_id, p_status)` with `active`,
   `paused` or `removed` → the same descriptor. Removing is final (55000
   afterwards) and frees the name. Owners and admins only.
@@ -705,7 +706,13 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
 - Signed hooks (20260928409980_runtime_event_signed_hooks, step W1b): the
   descriptor of a `stripe`, `github` or `hmac-sha256` (Standard Webhooks,
   also Svix's headers) hook carries `signingSecret` (`connectorId`
-  `event_hook`, `secretName` `h<hook id without hyphens>`, `ready`). On a
+  `event_hook`, `secretName` `h<hook id without hyphens>`, `ready`). From
+  20260930344000 (E3c-1) a `stripe` hook's `signingSecret` also carries, once
+  the vault has its secret, `version` (the current one), `capturedAt` (when
+  that version was stored) and, if a delivery was refused under that
+  version, `lastRefusal` `{receivedAt, reason}` (the newest one). A `github`
+  or `hmac-sha256` hook's keeps exactly `connectorId`, `secretName` and
+  `ready`, and so does a `stripe` hook's before its first capture. On a
   snapshot-v1 company an owner or admin saves the sender's signing secret with
   `qorpera_begin_cloud_secret_capture(company, environment, 'company', null,
   'event_hook', secretName, purpose)` and then
