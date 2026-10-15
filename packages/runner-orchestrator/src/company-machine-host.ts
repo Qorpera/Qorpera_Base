@@ -797,7 +797,8 @@ export class LxdCompanyMachineHost {
 	}
 	async #remove(e: CompanyMachineEntry, signal: AbortSignal): Promise<CompanyMachineOutcome> {
 		if (!e.released) {
-			// A machine that runs ends its boot's folder before it goes (F3 6d).
+			// A machine SQL still counts as running (its VM powered off by itself; LXD deletes only a stopped
+			// one) ends its boot's folder before it goes (F3 6d).
 			if (this.#options.folder && e.runningAt !== null && e.bootId !== null)
 				await this.#endFolder(e, e.bootId, signal, false);
 			const state = await this.#physical(e, "deleted", signal);

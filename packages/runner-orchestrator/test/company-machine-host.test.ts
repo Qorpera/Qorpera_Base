@@ -1186,11 +1186,13 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		});
 	});
 
-	it("ends a running machine's folder before it is deleted", async () => {
+	it("ends the boot's folder before it deletes a machine SQL still counts as running", async () => {
 		const f = await fixture({ folder: true });
 		await f.host.pass(f.signal);
 		f.running();
 		const [view] = f.views.opened;
+		// Its VM powered off by itself (LXD deletes only a stopped VM), and SQL still has its boot.
+		Object.assign(f.instance() as object, { status: "Stopped", statusCode: 102 });
 		Object.assign(f.entry, { desiredState: "deleted", removeDue: true, reserved: false });
 		const from = f.order.length;
 		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "release", state: "done" }]);

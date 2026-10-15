@@ -126,13 +126,19 @@ describe("the folder service's control socket client (F3 6d)", () => {
 		const { control, path } = await serve(() => undefined);
 		await expect(control.boundary(machine, [], signal())).rejects.toThrow("FOLDER_CONTROL_UNANSWERED");
 		// A service that never answers: the caller's signal ends the wait.
+		const held: Socket[] = [];
 		server?.removeAllListeners("connection");
-		server?.on("connection", (socket: Socket) => socket.on("error", () => undefined));
+		server?.on("connection", (socket: Socket) => {
+			held.push(socket);
+			socket.on("error", () => undefined);
+		});
 		const waited = control.boundary(machine, [], AbortSignal.timeout(200));
 		await expect(waited).rejects.toThrow("FOLDER_CONTROL_UNANSWERED");
 		const aborted = new AbortController();
 		aborted.abort();
 		await expect(control.restarted(machine, aborted.signal)).rejects.toThrow("FOLDER_CONTROL_UNANSWERED");
+		// The silent stand-in keeps its half of that connection open, so the server could not close: end it here.
+		for (const socket of held) socket.destroy();
 		await new Promise<void>((resolve) => server?.close(() => resolve()));
 		server = undefined;
 		await expect(new UnixFolderControl(path).restarted(machine, signal())).rejects.toThrow(
