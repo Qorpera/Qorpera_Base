@@ -47,6 +47,16 @@ export type CompanyComputerAction =
 	  }
 	/** A signed hook's secret the vault types into the hook's site (E3b-3): a text box, made a password box first. */
 	| { kind: "browser"; action: "vault_fill"; role: "textbox"; name: string; hook: string; field: "signing_secret" }
+	/** A Stripe hook's secret the office reads off the hook's site into the vault, after a click on the control that
+	 * shows it (E3c-2). */
+	| {
+			kind: "browser";
+			action: "vault_capture";
+			role: "button" | "link";
+			name: string;
+			hook: string;
+			field: "signing_secret";
+	  }
 	| { kind: "screenshot"; surface: "browser" | "desktop" }
 	| { kind: "desktop"; action: "click"; x: number; y: number; button: "left" | "middle" | "right" }
 	| { kind: "desktop"; action: "move"; x: number; y: number }
@@ -213,6 +223,21 @@ export function parseCompanyComputerAction(value: unknown): CompanyComputerActio
 				name: text(input.name, 512),
 				account,
 				field: input.field,
+			};
+		}
+		if (input.action === "vault_capture") {
+			// A Stripe hook's secret the office reads into the vault (E3c-2), as SQL's check reads it.
+			keys(input, ["kind", "action", "role", "name", "hook", "field"]);
+			const hook = normalizeUuid(input.hook);
+			if ((input.role !== "button" && input.role !== "link") || hook === null || input.field !== "signing_secret")
+				throw new Error("INVALID_COMPUTER_ARGUMENTS");
+			return {
+				kind: "browser",
+				action: "vault_capture",
+				role: input.role,
+				name: text(input.name, 512),
+				hook,
+				field: "signing_secret",
 			};
 		}
 	}
@@ -447,6 +472,13 @@ const actionSchemas = {
 		// A signed hook's secret, typed by the vault on the hook's site (E3b-3).
 		actionSchema("browser", "vault_fill", {
 			role: { const: "textbox" },
+			name: { type: "string", maxLength: 512 },
+			hook: { type: "string", pattern: COMPANY_COMPUTER_UUID.source },
+			field: { const: "signing_secret" },
+		}),
+		// A Stripe hook's secret, read off its site into the vault after a click on the control that shows it (E3c-2).
+		actionSchema("browser", "vault_capture", {
+			role: { enum: ["button", "link"] },
 			name: { type: "string", maxLength: 512 },
 			hook: { type: "string", pattern: COMPANY_COMPUTER_UUID.source },
 			field: { const: "signing_secret" },
