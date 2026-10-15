@@ -108,6 +108,10 @@ class Run:
         check(verdicts == [(self.ident, ACCEPT, 0)], f"a SYN goes on: {verdicts}")
         return self.send(packet(machine, port, seq + 1, ACK | PSH, data))
 
+    def reply(self, ack, flags=ACK, machine="10.210.1.1", seq=9001):
+        """A packet from the server to the machine: the verdicts on it."""
+        return self.send(packet(machine, 40000, seq, flags, ack=ack, inbound=True), inbound=True)
+
 
 def main():
     for rules, name, want in [(RULES["c1"], "x.test", True), (RULES["c1"], "b.x.test", True),
@@ -122,7 +126,7 @@ def main():
     data = hello("x.test")
     ident, verdicts = run.flow(data=data)
     check(verdicts == [(ident, ACCEPT, 0)], f"an allowed ClientHello goes on: {verdicts}")
-    _, verdicts = run.send(packet("10.210.1.1", 40000, 9000, SYN | ACK, ack=5001), inbound=True)
+    _, verdicts = run.reply(5001, SYN | ACK, seq=9000)
     check(verdicts == [(run.ident, ACCEPT, 0)], f"a server packet before the hello is acknowledged: {verdicts}")
     _, verdicts = run.send(packet("10.210.1.1", 40000, 5001, ACK | PSH, data))
     check(verdicts == [(run.ident, ACCEPT, 0)], f"the same hello again goes on: {verdicts}")
@@ -130,7 +134,9 @@ def main():
     check(verdicts == [(run.ident, REPEAT, REFUSED)], f"other bytes for the hello are refused: {verdicts}")
     run = Run()
     run.flow(data=data)
-    _, verdicts = run.send(packet("10.210.1.1", 40000, 9001, ACK, ack=5001 + len(data)), inbound=True)
+    _, verdicts = run.reply(5001 + len(data) - 1)
+    check(verdicts == [(run.ident, ACCEPT, 0)], f"an ack short of the hello's end changes nothing: {verdicts}")
+    _, verdicts = run.reply(5001 + len(data))
     check(verdicts == [(run.ident, REPEAT, LISTED)], f"the server's ack of the hello unmarks the flow: {verdicts}")
     _, verdicts = run.send(packet("10.210.1.1", 40000, 5001, ACK | PSH, data))
     check(verdicts == [(run.ident, ACCEPT, 0)], f"a packet queued before the unmarking goes on: {verdicts}")
@@ -144,7 +150,7 @@ def main():
         check(len(run.lines) == 1 and name in run.lines[0], f"the refusal is reported: {run.lines}")
         _, verdicts = run.send(packet(machine, 40000, 5001, ACK, hello(name)))
         check(verdicts == [(run.ident, DROP, 0)], f"a refused flow's packets are dropped: {verdicts}")
-        _, verdicts = run.send(packet(machine, 40000, 9001, ACK, ack=5001), inbound=True)
+        _, verdicts = run.reply(5001, machine=machine)
         check(verdicts == [(run.ident, DROP, 0)], f"the server's too: {verdicts}")
     for machine in ("10.210.1.2", "10.210.1.4"):
         run = Run()
