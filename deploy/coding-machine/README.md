@@ -10,7 +10,7 @@ installs the guest agent, makes the machines and runs the sessions.
 | Part | Why |
 |---|---|
 | Ubuntu 26.04 without cloud-init | A coding machine has no `/dev/lxd` (`security.devlxd=false`), so cloud-init would wait for it at every boot. The image brings what cloud-init gave: `10-qorpera-coding.yaml` (IPv4 by DHCP on the one card, no IPv6, no router advertisements), the hostname `qorpera-coding`, and `qorpera-grow-root.service`, which grows the root file system to the machine's disk at boot. The LXD agent runs without cloud-init. |
-| Toolchains | C and C++ (`build-essential`, CMake, autotools), Python 3 (venv, pip, pipx), Go, Rust and Cargo, Java (the default headless JDK) and Node.js 24.21.0 (pinned), with the usual command-line tools (ripgrep, fd, jq, sqlite3, rsync, strace and so on). The setup file installs the rest (5h). |
+| Toolchains | The toolbox of every machine and the languages of a coding machine (the contract's 2026-10-14 amendment, items 7 and 11): C and C++ (`build-essential`, clang, CMake, autotools), Python 3 (venv, pip, pipx) with uv 0.13.1, Go, Rust and Cargo, Java (the default headless JDK), Ruby (gem, bundler), Node.js 24.21.0 with TypeScript 7.0.2 (`tsc`) and tsx 4.23.15, mise 2026.10.10 for any other language or version (into the user's home), LibreOffice (`soffice`, no GUI) and the usual command-line tools (ripgrep, fd, jq, sqlite3, curl, zip, unzip, rsync, strace and so on). The setup file installs the rest (5h). |
 | git 2.56.0, the only git | Built from the pinned tarball into `/usr/local`, with its Rust parts. There is no `/etc/gitconfig`: the executor hands each command its git settings in the environment (`GIT_CONFIG_COUNT`, the plan's "The environment is the host's"). Its build libraries stay for agents. |
 | Chromium 151.0.7922.34 | Chrome for Testing in `/usr/lib/qorpera-chromium`, `chromium` on the path. It runs with its sandbox as a session's user: `60-qorpera-coding.conf` lets unprivileged users make user namespaces (`kernel.apparmor_restrict_unprivileged_userns = 0`), which rootless Docker needs too. |
 | tmux | Terminals the member watches (5g). |
@@ -23,8 +23,9 @@ installs the guest agent, makes the machines and runs the sessions.
 | Places for 5g | `/opt/qorpera-guest` (the guest agent), `/company` (empty; each unit binds the session's mount there), `/run/qorpera-folder/mounts` (the folder programs' mounts, made at boot by `qorpera-coding.tmpfiles`). |
 | What is gone | apt's five self-update units are masked (the guest refuses an image where one is not). snapd, openssh-server, the cloud image's own git, the `ubuntu` account and cloud-init's sudoers file are removed, and so are the cloud image's LXD metadata templates, which would write `/etc/hostname`, `/etc/hosts` and cloud-init's seed into every machine made from the image, naming each after its instance. The build's logs, caches, apt lists, machine id and SSH host keys are cleared before the image is published. |
 
-`coding-image.json` pins Node.js, git and Chromium by version, URL and sha-256. To move one, change its pin, build,
-and run the proof again. The code host (5e) builds its git from the same pin.
+`coding-image.json` pins Node.js, git, Chromium, uv and mise by version, URL and sha-256, and TypeScript and tsx by
+their exact npm versions (the company machine image's pins, `../machine/build-machine-image.sh`). To move one, change
+its pin, build, and run the proof again. The code host (5e) builds its git from the same pin.
 
 ### Why socat carries the socket
 

@@ -9,7 +9,9 @@
 # - the session: its user in the sudo group, NOPASSWD sudo, its rootless Docker daemon started on first
 #   use, compose running a two-service app (a build, a published port, /company bound into a container), stdin closed
 #   half-way through the socket, container limits, `sudo docker` reaching the system daemon, Chromium with its
-#   sandbox, tmux and the pinned git.
+#   sandbox, tmux, the pinned git, and the toolbox and languages of the contract's 2026-10-14 amendment (items 7 and
+#   11): TypeScript (tsc, tsx, node), C and C++ (gcc, clang), Ruby, Python with uv, mise installing a language in the
+#   user's home, LibreOffice converting a document, and sqlite3, zip and unzip.
 # Prints PASS lines, then ALL PASSED.
 set -euo pipefail
 
@@ -21,6 +23,12 @@ MOUNT=/run/qorpera-folder/mounts/$W32
 GIT_VERSION=${QORPERA_PROOF_GIT:?the pinned git version}
 NODE_VERSION=${QORPERA_PROOF_NODE:?the pinned Node version}
 CHROMIUM_VERSION=${QORPERA_PROOF_CHROMIUM:?the pinned Chromium version}
+TYPESCRIPT_VERSION=${QORPERA_PROOF_TYPESCRIPT:?the pinned TypeScript version}
+TSX_VERSION=${QORPERA_PROOF_TSX:?the pinned tsx version}
+UV_VERSION=${QORPERA_PROOF_UV:?the pinned uv version}
+MISE_VERSION=${QORPERA_PROOF_MISE:?the pinned mise version}
+# What mise installs in the proof: a Node.js other than the image's, from nodejs.org (checked against its SHASUMS256).
+MISE_NODE=22.20.0
 # The test machine's proxy (test/proof-proxy.py): its bridge forwards nothing, so this machine's downloads, the
 # session's Docker pulls among them, go through it. A coding machine on a node has no proxy.
 PROXY=${QORPERA_PROOF_PROXY:?the proxy of the test machine}
@@ -83,9 +91,14 @@ pass "apt's self-update units masked, no snapd"
 [[ ! -e /etc/gitconfig ]] || fail "/etc/gitconfig is there"
 [[ $(node --version) == "v$NODE_VERSION" ]] || fail "node is not $NODE_VERSION"
 [[ $(chromium --version) == *" $CHROMIUM_VERSION"* ]] || fail "chromium is not $CHROMIUM_VERSION"
+[[ $(tsc --version) == *"$TYPESCRIPT_VERSION"* && $(first tsx --version) == *"$TSX_VERSION"* ]] ||
+	fail "tsc or tsx is not the pinned one: $(tsc --version), $(first tsx --version)"
+[[ $(uv --version) == "uv $UV_VERSION"* ]] || fail "uv is not $UV_VERSION: $(uv --version)"
+[[ $(mise --version 2>/dev/null) == "$MISE_VERSION"* ]] || fail "mise is not $MISE_VERSION: $(mise --version 2>&1)"
 echo "$(python3 --version), $(go version), $(rustc --version), $(first java -version), $(tmux -V)"
+echo "$(first gcc --version), $(first clang --version), $(ruby --version), $(first soffice --version)"
 echo "$(docker --version), $(docker compose version), $(first docker buildx version)"
-pass "git $GIT_VERSION (no system configuration), Node $NODE_VERSION, Chromium $CHROMIUM_VERSION and the toolchains"
+pass "git $GIT_VERSION (no system configuration), Node $NODE_VERSION, Chromium $CHROMIUM_VERSION, TypeScript $TYPESCRIPT_VERSION, tsx $TSX_VERSION, uv $UV_VERSION, mise $MISE_VERSION and the toolchains"
 [[ -d /opt/qorpera-guest && -d /run/qorpera-folder/mounts && -d /company && -z $(ls -A /company) ]] ||
 	fail "the guest agent's place, the mounts' place or an empty /company is missing"
 pass "/opt/qorpera-guest, /run/qorpera-folder/mounts and an empty /company"
@@ -228,4 +241,52 @@ pass "tmux runs a session"
 COMMITS=$(as_session bash -c 'cd "$(mktemp -d)" && git init -q && git -c user.name=proof -c user.email=proof@example.invalid commit -q --allow-empty -m proof && git rev-list --count HEAD')
 [[ $COMMITS == 1 ]] || fail "git gave '$COMMITS'"
 pass "git $GIT_VERSION commits as the session"
+
+# --- The toolbox and the languages, as the session (the contract's 2026-10-14 amendment, items 7 and 11) -------------
+WORK=$HOMEDIR/languages
+install -d -m 0755 -o "$SESSION_UID" -g "$SESSION_UID" "$WORK"
+cat >"$WORK/hello.ts" <<'TS'
+/// <reference lib="dom" />
+const greeting: string = "typescript";
+console.log(greeting);
+TS
+printf '#include <stdio.h>\nint main(void) { puts("c"); return 0; }\n' >"$WORK/hello.c"
+printf '#include <iostream>\nint main() { std::cout << "c++" << std::endl; }\n' >"$WORK/hello.cpp"
+printf 'Qorpera proof\n' >"$WORK/note.txt"
+chown "$SESSION_UID:$SESSION_UID" "$WORK/hello.ts" "$WORK/hello.c" "$WORK/hello.cpp" "$WORK/note.txt"
+TS_OUT=$(as_session bash -c 'cd ~/languages && tsc --noEmit hello.ts && tsx hello.ts && node hello.ts') ||
+	fail "TypeScript failed: $TS_OUT"
+[[ $TS_OUT == $'typescript\ntypescript' ]] || fail "TypeScript gave '$TS_OUT'"
+pass "tsc checks a TypeScript file, and tsx and node run it"
+C_OUT=$(as_session bash -c 'cd ~/languages && gcc -o c-gcc hello.c && ./c-gcc && clang -o c-clang hello.c && ./c-clang &&
+	g++ -o cpp-gcc hello.cpp && ./cpp-gcc && clang++ -o cpp-clang hello.cpp && ./cpp-clang') || fail "C or C++ failed: $C_OUT"
+[[ $C_OUT == $'c\nc\nc++\nc++' ]] || fail "C and C++ gave '$C_OUT'"
+pass "gcc, clang, g++ and clang++ build and run"
+RUBY_OUT=$(as_session bash -c 'ruby -e "puts [1, 2, 3].sum" && gem --version >/dev/null && bundle --version >/dev/null') ||
+	fail "Ruby failed: $RUBY_OUT"
+[[ $RUBY_OUT == 6 ]] || fail "Ruby gave '$RUBY_OUT'"
+pass "Ruby runs, with gem and bundler"
+# uv makes a project, adds a package from PyPI (through the proxy) and runs it, with the image's Python.
+UV_OUT=$(as_session env HTTP_PROXY="$PROXY" HTTPS_PROXY="$PROXY" UV_PYTHON_DOWNLOADS=never bash -c \
+	'cd "$(mktemp -d)" && uv init --quiet --bare --name proof && uv add --quiet six && uv run --quiet python -c "import six; print(six.__name__)"') ||
+	fail "uv failed: $UV_OUT"
+[[ $UV_OUT == six ]] || fail "uv gave '$UV_OUT'"
+[[ $(as_session pip --version) == pip* ]] || fail "pip does not answer"
+pass "uv adds a package to a project and runs it; pip answers"
+# mise installs another Node.js into the user's home, without root.
+MISE_OUT=$(as_session env HTTP_PROXY="$PROXY" HTTPS_PROXY="$PROXY" MISE_NODE_GPG_VERIFY=false \
+	mise exec "node@$MISE_NODE" -- node --version) || fail "mise failed: $MISE_OUT"
+[[ $MISE_OUT == "v$MISE_NODE" && -x $HOMEDIR/.local/share/mise/installs/node/$MISE_NODE/bin/node ]] ||
+	fail "mise gave '$MISE_OUT'"
+[[ $(stat -c %u "$HOMEDIR/.local/share/mise/installs/node/$MISE_NODE/bin/node") == "$SESSION_UID" ]] ||
+	fail "mise's Node is not the session's own"
+pass "mise installs Node.js $MISE_NODE in the session's home, as the session"
+PDF=$(as_session bash -c 'cd ~/languages && timeout 300 soffice --headless --convert-to pdf --outdir . note.txt >/dev/null 2>&1 &&
+	head -c 5 note.pdf') || fail "LibreOffice did not convert"
+[[ $PDF == %PDF- ]] || fail "LibreOffice gave '$PDF'"
+pass "LibreOffice converts a document to PDF as the session"
+TOOLS=$(as_session bash -c 'cd ~/languages && sqlite3 :memory: "select 40 + 2" && zip -q note.zip note.txt && unzip -p note.zip note.txt &&
+	rg -c Qorpera note.txt && fd --type f --glob note.txt && jq -n "1 + 1"') || fail "the command-line tools failed: $TOOLS"
+[[ $TOOLS == $'42\nQorpera proof\n1\nnote.txt\n2' ]] || fail "the command-line tools gave '$TOOLS'"
+pass "sqlite3, zip, unzip, ripgrep, fd and jq work as the session"
 echo "ALL PASSED"

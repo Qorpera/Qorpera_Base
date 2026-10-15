@@ -3,13 +3,15 @@
 #
 #   build-coding-image.sh <build-project> <build-network> <storage-pool> [coding-project ...] > image-build.json
 #
-# One image for every member's coding machine (RUNTIME-FOLDER-CODING-MACHINES.md, 5f): Ubuntu 26.04 with the
-# common toolchains (C and C++, Python, Go, Rust, Java, Node), the pinned git as its only git, tmux, Chromium,
-# rootful Docker for root and a rootless Docker daemon per session (started on first use), NOPASSWD sudo for the
-# group every session's user joins, and the guest agent's place (/opt/qorpera-guest, filled by 5g). apt's and
-# snapd's self-updates are gone, and so is cloud-init: a coding machine has no /dev/lxd (security.devlxd=false), so
-# its network, hostname and root size come from the image. coding-image.json pins Node, git and Chromium by version
-# and sha-256. README.md says what each installed file is for.
+# One image for every member's coding machine (RUNTIME-FOLDER-CODING-MACHINES.md, 5f): Ubuntu 26.04 with every
+# machine's toolbox and a coding machine's languages (the contract's 2026-10-14 amendment, items 7 and 11: C and C++
+# with gcc and clang, Python with pip and uv, Go, Rust, Java, Ruby, Node with tsc and tsx, mise for any other
+# language, LibreOffice), the pinned git as its only git, tmux, Chromium, rootful Docker for root and a rootless
+# Docker daemon per session (started on first use), NOPASSWD sudo for the group every session's user joins, and the
+# guest agent's place (/opt/qorpera-guest, filled by 5g). apt's and snapd's self-updates are gone, and so is
+# cloud-init: a coding machine has no /dev/lxd (security.devlxd=false), so its network, hostname and root size come
+# from the image. coding-image.json pins Node, git, Chromium, uv and mise by version and sha-256, and tsc and tsx by
+# their exact npm versions (the company machine image's pins). README.md says what each installed file is for.
 #
 # The builder runs as build-machine-image.sh's does: in the node's declared image build space, as a build machine
 # (no profiles, its own root disk, the isolation NIC, never autostarting, the builder marker), deleted on every
@@ -33,14 +35,21 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 PINS=$HERE/coding-image.json
 pin() { jq -er "$1" "$PINS"; }
 [[ $(pin .schema) == qorpera.coding-image-pins/v1 && $(pin .base) == ubuntu:26.04 ]] || { echo "unexpected $PINS" >&2; exit 1; }
-for tool in node git chromium; do
+for tool in node git chromium uv mise; do
 	[[ $(pin ".$tool.version") =~ ^[0-9]+(\.[0-9]+)+$ ]] || { echo "invalid $tool version" >&2; exit 1; }
 	[[ $(pin ".$tool.url") =~ ^https://[A-Za-z0-9./_~%+-]+$ ]] || { echo "invalid $tool url" >&2; exit 1; }
 	[[ $(pin ".$tool.sha256") =~ ^[0-9a-f]{64}$ ]] || { echo "invalid $tool sha-256" >&2; exit 1; }
 done
+for package in typescript tsx; do
+	[[ $(pin ".npm.$package") =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid $package version" >&2; exit 1; }
+done
 NODE_VERSION=$(pin .node.version)
 GIT_VERSION=$(pin .git.version)
 CHROMIUM_VERSION=$(pin .chromium.version)
+UV_VERSION=$(pin .uv.version)
+MISE_VERSION=$(pin .mise.version)
+TYPESCRIPT_VERSION=$(pin .npm.typescript)
+TSX_VERSION=$(pin .npm.tsx)
 case ${QORPERA_BUILDER_NIC:-filtered} in
 	filtered) NIC=(-d eth0,security.mac_filtering=true -d eth0,security.ipv4_filtering=true
 		-d eth0,security.ipv6_filtering=true -d eth0,security.port_isolation=true) ;;
@@ -99,7 +108,9 @@ lx exec "$BUILDER" -- cloud-init status --wait >/dev/null
 lx exec "$BUILDER" -- env \
 	NODE_VERSION="$NODE_VERSION" NODE_URL="$(pin .node.url)" NODE_SHA256="$(pin .node.sha256)" \
 	GIT_VERSION="$GIT_VERSION" GIT_URL="$(pin .git.url)" GIT_SHA256="$(pin .git.sha256)" \
-	CHROMIUM_URL="$(pin .chromium.url)" CHROMIUM_SHA256="$(pin .chromium.sha256)" PROXY="$PROXY" bash -euo pipefail -c '
+	CHROMIUM_URL="$(pin .chromium.url)" CHROMIUM_SHA256="$(pin .chromium.sha256)" \
+	UV_URL="$(pin .uv.url)" UV_SHA256="$(pin .uv.sha256)" MISE_URL="$(pin .mise.url)" MISE_SHA256="$(pin .mise.sha256)" \
+	TYPESCRIPT_VERSION="$TYPESCRIPT_VERSION" TSX_VERSION="$TSX_VERSION" PROXY="$PROXY" bash -euo pipefail -c '
 	export DEBIAN_FRONTEND=noninteractive
 	# A test machine'"'"'s proxy, given only in apt'"'"'s options and this environment, so the image keeps neither. It takes one
 	# request per connection.
@@ -113,8 +124,9 @@ lx exec "$BUILDER" -- env \
 	apt-get "${APT[@]}" install -y --no-install-recommends \
 		ca-certificates curl gnupg jq unzip zip xz-utils zstd rsync less file patch procps psmisc lsof strace \
 		iproute2 nftables iputils-ping bind9-dnsutils netcat-openbsd openssh-client tmux ripgrep fd-find tree sqlite3 \
-		make cmake pkg-config build-essential autoconf automake libtool \
+		make cmake pkg-config build-essential clang autoconf automake libtool \
 		python3 python3-venv python3-pip python3-dev python-is-python3 pipx golang-go rustc cargo default-jdk-headless \
+		ruby ruby-dev ruby-bundler libreoffice-nogui \
 		docker.io docker-compose-v2 docker-buildx rootlesskit slirp4netns passt uidmap dbus-user-session socat \
 		fuse3 cloud-guest-utils \
 		libcurl4-openssl-dev libexpat1-dev libpcre2-dev zlib1g-dev libssl-dev gettext \
@@ -127,6 +139,18 @@ lx exec "$BUILDER" -- env \
 	ln -sfn "/opt/node-v${NODE_VERSION}-linux-x64" /opt/node
 	for tool in node npm npx corepack; do ln -sf "/opt/node/bin/$tool" "/usr/local/bin/$tool"; done
 	ln -sf /opt/node/bin/node /usr/bin/node
+	# No install scripts: tsc and tsx need none (each ships its binary, TypeScript 7 its compiler and esbuild under tsx,
+	# as a platform package).
+	npm install -g --ignore-scripts --no-fund --no-audit "typescript@$TYPESCRIPT_VERSION" "tsx@$TSX_VERSION"
+	for tool in tsc tsx; do ln -sf "/opt/node/bin/$tool" "/usr/local/bin/$tool"; done
+	curl -fsSLo /tmp/uv.tar.gz "$UV_URL"
+	echo "$UV_SHA256  /tmp/uv.tar.gz" | sha256sum -c -
+	tar -xzf /tmp/uv.tar.gz -C /tmp
+	install -o root -g root -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uv /tmp/uv-x86_64-unknown-linux-gnu/uvx /usr/local/bin/
+	# mise installs any other language or version in the home of the user who asks (~/.local/share/mise), without root.
+	curl -fsSLo /tmp/mise "$MISE_URL"
+	echo "$MISE_SHA256  /tmp/mise" | sha256sum -c -
+	install -o root -g root -m 0755 /tmp/mise /usr/local/bin/mise
 	curl -fsSLo /tmp/git.tar.xz "$GIT_URL"
 	echo "$GIT_SHA256  /tmp/git.tar.xz" | sha256sum -c -
 	tar -xJf /tmp/git.tar.xz -C /tmp
@@ -143,7 +167,8 @@ lx exec "$BUILDER" -- env \
 	mv /tmp/chromium/chrome-linux64 /usr/lib/qorpera-chromium
 	ln -sf /usr/lib/qorpera-chromium/chrome /usr/local/bin/chromium
 	ln -sf /usr/bin/fdfind /usr/local/bin/fd
-	rm -rf /tmp/node.tar.xz /tmp/git.tar.xz "/tmp/git-$GIT_VERSION" /tmp/git-build.log /tmp/chromium.zip /tmp/chromium
+	rm -rf /tmp/node.tar.xz /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu /tmp/mise /tmp/git.tar.xz "/tmp/git-$GIT_VERSION" \
+		/tmp/git-build.log /tmp/chromium.zip /tmp/chromium
 	install -d -o root -g root -m 0755 /company /opt/qorpera-guest /usr/local/libexec/qorpera-coding \
 		/etc/systemd/system/user@.service.d
 '
@@ -152,6 +177,7 @@ for entry in "${FILES[@]}"; do
 	lx file push "$HERE/$source" "$BUILDER$destination" --uid 0 --gid 0 --mode "$mode"
 done
 lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" GIT_VERSION="$GIT_VERSION" CHROMIUM_VERSION="$CHROMIUM_VERSION" \
+	UV_VERSION="$UV_VERSION" MISE_VERSION="$MISE_VERSION" TYPESCRIPT_VERSION="$TYPESCRIPT_VERSION" TSX_VERSION="$TSX_VERSION" \
 	bash -euo pipefail -c '
 	export DEBIAN_FRONTEND=noninteractive
 	refuse() { echo "check failed: $*" >&2; exit 1; }
@@ -190,6 +216,16 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" GIT_VERSION="$GIT_VERSION
 	[[ $DOM == *qorpera-coding-image* ]] || refuse "chromium does not render"
 	python3 --version && go version && rustc --version && cargo --version && first java -version
 	first gcc --version && first cmake --version && tmux -V && first rg --version && fd --version && jq --version
+	# The toolbox every machine has, and a coding machine'"'"'s languages (the contract'"'"'s 2026-10-14 amendment, items 7
+	# and 11): the pinned ones at their versions, and every command answers --version (unzip has none: -v).
+	[[ $(tsc --version) == *"$TYPESCRIPT_VERSION"* ]] || refuse "tsc is not $TYPESCRIPT_VERSION"
+	[[ $(first tsx --version) == *"$TSX_VERSION"* ]] || refuse "tsx is not $TSX_VERSION"
+	[[ $(uv --version) == "uv $UV_VERSION"* ]] || refuse "uv is not $UV_VERSION"
+	[[ $(mise --version 2>/dev/null) == "$MISE_VERSION"* ]] || refuse "mise is not $MISE_VERSION"
+	for tool in bash npm npx uvx pip pip3 pipx clang clang++ ruby gem bundle sqlite3 curl zip libreoffice soffice; do
+		"$tool" --version >/dev/null || refuse "$tool does not answer --version"
+	done
+	unzip -v >/dev/null
 	docker --version && docker compose version && docker buildx version
 	rootlesskit --version && first slirp4netns --version && command -v pasta newuidmap newgidmap
 	first sudo --version
@@ -217,9 +253,10 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" GIT_VERSION="$GIT_VERSION
 	echo "lxd-agent.service: $(systemctl is-enabled lxd-agent.service 2>&1 || true)"
 	if installed openssh-server || installed snapd; then refuse "openssh-server or snapd is installed"; fi
 	if getent passwd ubuntu >/dev/null; then refuse "the ubuntu account is there"; fi
-	# Nothing of this build stays: logs, keys, caches, the machine id.
+	# Nothing of this build stays: logs, keys, caches (LibreOffice'"'"'s and mise'"'"'s too), the machine id.
 	apt-get clean
-	rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /root/.cache /root/.npm /root/.cargo
+	rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /root/.cache /root/.npm /root/.cargo /root/.config/libreoffice \
+		/root/.config/mise /root/.local/share/mise /root/.local/state/mise
 	cloud-init clean --logs --machine-id
 	rm -f /etc/ssh/ssh_host_*
 	journalctl --rotate --vacuum-time=1s >/dev/null 2>&1 || true
@@ -279,7 +316,8 @@ SOURCES=()
 for entry in "${FILES[@]}"; do read -r source _ _ <<<"$entry"; SOURCES+=("$HERE/$source"); done
 BOOTSTRAP=$(cat "$0" "$PINS" "${SOURCES[@]}" | sha256sum | cut -d' ' -f1)
 jq -n --arg imageFingerprint "$FINGERPRINT" --arg bootstrapSha256 "$BOOTSTRAP" --arg alias "$ALIAS" \
-	--arg git "$GIT_VERSION" --arg node "$NODE_VERSION" --arg chromium "$CHROMIUM_VERSION" \
+	--arg git "$GIT_VERSION" --arg node "$NODE_VERSION" --arg chromium "$CHROMIUM_VERSION" --arg uv "$UV_VERSION" \
+	--arg mise "$MISE_VERSION" --arg typescript "$TYPESCRIPT_VERSION" --arg tsx "$TSX_VERSION" \
 	--args '{schema: "qorpera.coding-image-build/v1", alias: $alias, imageFingerprint: $imageFingerprint,
 	  bootstrapSha256: $bootstrapSha256, projects: $ARGS.positional, git: $git, node: $node, chromium: $chromium,
-	  rootDiskBytes: 17179869184}' "${CODING[@]}" >&3
+	  uv: $uv, mise: $mise, typescript: $typescript, tsx: $tsx, rootDiskBytes: 17179869184}' "${CODING[@]}" >&3
