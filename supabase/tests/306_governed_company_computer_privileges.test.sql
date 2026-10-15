@@ -41,7 +41,8 @@ begin
 	-- (20260930152000) adds the lease proof the runtime routes ask before they serve a run binding; it takes no
 	-- principal, because it only answers whether the caller's lease token is that run's job's. Signed hooks
 	-- (20260930160000) add describing and opening a GitHub or HMAC hook whose secret the broker makes, each bound to
-	-- the agent's manage_hook run, and reading that secret for a vault_fill browser call.
+	-- the agent's manage_hook run, and reading that secret for a vault_fill browser call. Coding environment secrets
+	-- (20260930438000) add reading a coding session's environment, bound to its live lease.
 	select array_agg(function.oid::regprocedure::text order by function.oid::regprocedure::text collate "C") into v_functions
 	from pg_proc as function
 	join pg_namespace as namespace on namespace.oid = function.pronamespace
@@ -51,6 +52,7 @@ begin
 	if v_functions is distinct from array[
 		'qorpera_add_company_account_version(uuid,text,jsonb,uuid,text,text,uuid,bigint,text,text,bytea,text)',
 		'qorpera_authorize_cloud_secret_operation(uuid,text,jsonb,uuid,text,text,uuid,text,text,bigint,text,text)',
+		'qorpera_authorize_coding_environment(uuid,text,uuid,uuid,text)',
 		'qorpera_authorize_coding_repository_credential(uuid,text,uuid,uuid,text,jsonb)',
 		'qorpera_broker_principal_companies(uuid,text)',
 		'qorpera_broker_principal_event_verifications_due(uuid,text)',
