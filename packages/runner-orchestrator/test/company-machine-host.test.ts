@@ -75,6 +75,8 @@ async function fixture(options: { helperSha256?: string; previousHelperSha256s?:
 		reads: "released" as FolderReads,
 		/** Each window close's reads, in turn (then `reads`). */
 		closes: [] as FolderReads[],
+		/** What a window close waits for before it answers. */
+		gate: undefined as Promise<void> | undefined,
 		held: [] as string[],
 		down: false,
 		requests: [] as Record<string, unknown>[],
@@ -287,11 +289,12 @@ async function fixture(options: { helperSha256?: string; previousHelperSha256s?:
 		openWindow: async (machine, window) => ask({ op: "open", machine, ...window }),
 		closeWindow: async (machine, commandId) => {
 			ask({ op: "close", machine, commandId });
+			await service.gate;
 			return answer(machine, service.closes.shift() ?? service.reads);
 		},
 	};
 	const agentPlug = vi.fn(testAgentPlug);
-	const make = () =>
+	const make = (upgraded: Omit<typeof options, "folder"> = {}) =>
 		new LxdCompanyMachineHost({
 			control,
 			owner: "mx-a",
@@ -309,6 +312,7 @@ async function fixture(options: { helperSha256?: string; previousHelperSha256s?:
 			helperSha256,
 			agentPlug,
 			...pins,
+			...upgraded,
 			...(withFolder ? { folder } : {}),
 		});
 	let host = make();
@@ -337,9 +341,9 @@ async function fixture(options: { helperSha256?: string; previousHelperSha256s?:
 		reboot: () => {
 			boot = randomUUID();
 		},
-		/** The executor's process restarts: a new host, with nothing in memory. */
-		restart: () => {
-			host = make();
+		/** The executor's process restarts: a new host, with nothing in memory (and maybe new helper pins). */
+		restart: (upgraded: Omit<typeof options, "folder"> = {}) => {
+			host = make(upgraded);
 		},
 		/** SQL knows the boot runs, as after its mark. */
 		running: (commands: string[] = []) => {
@@ -917,10 +921,14 @@ function start(f: Fixture, commandId = randomUUID(), who: Credit = credit()) {
 		f.signal,
 	);
 }
-function read(f: Fixture, commandId: string) {
+/** A read of `commandId`'s log: its tail, or from `offset`. */
+function read(f: Fixture, commandId: string, offset?: number) {
 	return f.host.command(
 		{ machineId: id(2), placementId: id(6), commandId, inputSha256: "e".repeat(64), bootId: f.boot, ...credit() },
-		{ action: "read", read: { commandId, tail: true, limit: 100 } },
+		{
+			action: "read",
+			read: offset === undefined ? { commandId, tail: true, limit: 100 } : { commandId, offset, limit: 100 },
+		},
 		f.signal,
 	);
 }
@@ -976,7 +984,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		expect(f.handovers).toHaveLength(1);
 	});
 
-	it("runs a boot without /company when SQL refuses its view, and then fences none of its commands", async () => {
+	it("runs a boot without /company when SQL refuses its first view and the service holds none", async () => {
 		const refusals = [
 			["qorpera.test-machine/new-disk", "FOLDER_NONE:NEW_DISK"],
 			[null, "FOLDER_NONE:REFUSED"],
@@ -993,19 +1001,36 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 			expect(recorded(f)).toEqual([[{ commandId: id(7), state: "succeeded", exitCode: 0, outputTail: "ok" }]]);
 			f.result(finished);
 			expect(await start(f)).toMatchObject({ state: "succeeded", exitCode: 0, output: "ok\n" });
-			// No window and no boundary: the service is never asked about this boot.
-			expect(f.service.requests).toEqual([]);
+			// One plain boundary showed no view of the machine and its reads released; then no window and no boundary.
+			expect(f.service.requests).toEqual([{ op: "boundary", machine: id(6), final: [] }]);
 			expect(f.methods().filter((method) => method === "qorpera_folder_view_open")).toHaveLength(1);
 		}
 	});
 
-	it("gives a guest of an earlier image, which has no folder-mount, no view", async () => {
-		const f = await fixture({ folder: true, helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256] });
+	it("gives a guest of an earlier image no view, and fences it while the service may have one reach it", async () => {
+		const pins = { helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256] };
+		const f = await fixture({ folder: true, ...pins });
 		expect(await f.host.pass(f.signal)).toEqual([
 			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_NONE:OLD_HELPER" },
 		]);
 		expect(f.methods()).not.toContain("qorpera_folder_view_open");
 		expect(f.handovers).toEqual([]);
+		// A view of the machine the service still holds, or reads it has not released: the boot stays fenced.
+		for (const service of [{ held: [randomUUID()] }, { reads: "unproven" as const }]) {
+			const g = await fixture({ folder: true, ...pins });
+			Object.assign(g.service, service);
+			expect(await g.host.pass(g.signal)).toEqual([
+				{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_FENCED:OLD_HELPER" },
+			]);
+			g.running();
+			g.service.reads = "unproven";
+			g.result(finished);
+			const commandId = randomUUID();
+			expect(await start(g, commandId)).toMatchObject({ state: "running", output: "" });
+			expect(g.service.requests.at(-1)).toMatchObject({ op: "open", machine: id(6), commandId });
+			expect(await read(g, commandId)).toMatchObject({ state: "running", exitCode: null, output: "" });
+			expect(g.handovers).toEqual([]);
+		}
 	});
 
 	it("hands the same view over again next pass when the guest did not take it, and a start waits", async () => {
@@ -1031,7 +1056,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		expect(f.order.indexOf("push")).toBeGreaterThan(f.order.indexOf("folder:open"));
 	});
 
-	it("opens a new view when the node closed the one handed over, twice more, then runs without one", async () => {
+	it("opens a new view when the node closed the one handed over, twice more, then stays fenced", async () => {
 		const f = await fixture({ folder: true });
 		f.mounts.push("closed", "closed", "closed");
 		expect(await f.host.pass(f.signal)).toEqual([
@@ -1040,7 +1065,7 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		f.running();
 		const closed = { placementId: id(6), step: "commands", state: "done", folder: "MACHINE_FOLDER_CLOSED" };
 		expect(await f.host.pass(f.signal)).toEqual([closed]);
-		expect(await f.host.pass(f.signal)).toEqual([{ ...closed, folder: "FOLDER_NONE:CLOSED" }]);
+		expect(await f.host.pass(f.signal)).toEqual([{ ...closed, folder: "FOLDER_FENCED:CLOSED" }]);
 		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
 		expect(f.views.opened).toHaveLength(3);
 		expect(f.handovers.map((handover) => handover.stdin.viewId)).toEqual(f.views.opened.map((view) => view.viewId));
@@ -1048,6 +1073,45 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		expect(f.calls.filter((call) => call.method === "qorpera_folder_view_close").map((call) => call.args)).toEqual(
 			f.views.opened.map((view) => ({ p_view_id: view.viewId, p_pass: view.pass })),
 		);
+		// The guest had the passes, and may have read with them: its commands get windows, and wait for released reads.
+		expect(f.service.requests).toEqual([]);
+		f.service.reads = "unproven";
+		f.result(finished);
+		const commandId = randomUUID();
+		expect(await start(f, commandId)).toMatchObject({ state: "running", output: "" });
+		expect(f.service.requests).toEqual([expect.objectContaining({ op: "open", commandId })]);
+		expect(await read(f, commandId)).toMatchObject({ state: "running", exitCode: null, output: "" });
+		f.running([commandId]);
+		f.observe({ ...idle, ended: [{ commandId, state: "succeeded", exitCode: 0, outputTail: "ok" }] });
+		await f.host.pass(f.signal);
+		expect(f.service.requests.at(-1)).toEqual({ op: "close", machine: id(6), commandId });
+		expect(recorded(f)).toEqual([]);
+		// The final at the stop names every view the guest was handed.
+		f.running();
+		f.entry.sleepDue = true;
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
+		expect(f.service.requests.filter((request) => request.op === "boundary").at(-1)).toEqual({
+			op: "boundary",
+			machine: id(6),
+			final: f.views.opened.map((view) => view.viewId),
+		});
+	});
+
+	it("stays fenced when SQL refuses a view after the guest was handed one", async () => {
+		const f = await fixture({ folder: true });
+		f.mounts.push("closed");
+		await f.host.pass(f.signal);
+		f.running();
+		f.views.refusal = null;
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_FENCED:REFUSED" },
+		]);
+		f.service.reads = "denied";
+		f.result(finished);
+		const commandId = randomUUID();
+		await start(f, commandId);
+		expect(await read(f, commandId)).toMatchObject({ state: "running", exitCode: null, output: "" });
+		expect(f.service.requests.map((request) => request.op)).toEqual(["open", "boundary"]);
 	});
 
 	it("refuses a start it cannot fence: no boot, no run to credit, or no window", async () => {
@@ -1076,9 +1140,10 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		f.result(finished);
 		const receipt = await start(f, commandId, who);
 		expect(f.service.requests).toEqual([{ op: "open", machine: id(6), commandId, ...who }]);
-		// A start asks no boundary (the gateway's time is mostly spent): its output waits for the next read.
-		const log = { ...finished.log, nextOffset: 0 };
-		const kept = { state: "running", exitCode: null, output: "", truncated: true, log };
+		// A start asks no boundary (the gateway's time is mostly spent): its output waits for the next read. A held
+		// receipt says nothing of the guest's: not its log's size, its end or its exit.
+		const log = { offset: 0, nextOffset: 0, totalBytes: 0, limitBytes: 67108864, limitReached: false };
+		const kept = { state: "running", exitCode: null, output: "", truncated: false, log };
 		expect(receipt).toMatchObject(kept);
 		expect(parseCloudMachineCommandReceipt(receipt)).toEqual(receipt);
 		for (const reads of ["unanswered", "unproven", "denied"] as const) {
@@ -1093,13 +1158,40 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		// Each read asked the machine's boundary, naming no view final.
 		const boundary = { op: "boundary", machine: id(6), final: [] };
 		expect(f.service.requests.slice(1)).toEqual([boundary, boundary, boundary, boundary, boundary]);
+		// A read from an offset is held where its reader stands.
+		f.service.reads = "unproven";
+		const from = await read(f, commandId, 2);
+		expect(from).toMatchObject({ ...kept, log: { ...log, offset: 2, nextOffset: 2, totalBytes: 2 } });
+		expect(parseCloudMachineCommandReceipt(from)).toEqual(from);
 		// Nothing printed and no end: nothing to hold, and nothing asked.
 		f.result({});
-		expect(await read(f, commandId)).toMatchObject({ state: "running", output: "" });
-		expect(f.service.requests).toHaveLength(6);
+		expect(await read(f, commandId)).toMatchObject(kept);
+		expect(f.service.requests).toHaveLength(7);
 	});
 
-	it("records an end only once its command's window closed, its tail only once the reads are released", async () => {
+	it("holds an end with nothing printed, cancelled or lost, until the machine's reads are released", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		f.running();
+		const commandId = randomUUID();
+		await start(f, commandId);
+		const kept = { state: "running", exitCode: null, output: "", truncated: false };
+		for (const state of ["cancelled", "lost"] as const) {
+			f.result({ state, exitCode: null, output: "" });
+			for (const reads of ["unanswered", "unproven"] as const) {
+				f.service.reads = reads;
+				expect(await read(f, commandId)).toMatchObject(kept);
+			}
+			f.service.down = true;
+			expect(await read(f, commandId)).toMatchObject(kept);
+			f.service.down = false;
+			f.service.reads = "released";
+			expect(await read(f, commandId)).toMatchObject({ state, exitCode: null, output: "" });
+		}
+		expect(f.service.requests.filter((request) => request.op === "boundary")).toHaveLength(8);
+	});
+
+	it("records an end only once its command's window closed with the machine's reads released", async () => {
 		const f = await fixture({ folder: true });
 		await f.host.pass(f.signal);
 		f.running([id(7), id(8), id(9)]);
@@ -1108,19 +1200,74 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		f.service.closes.push("released", "unproven", "unanswered");
 		await f.host.pass(f.signal);
 		expect(f.service.requests).toEqual([7, 8, 9].map((n) => ({ op: "close", machine: id(6), commandId: id(n) })));
-		// An unanswered close leaves its end for a later pass; an unreleased one keeps its tail.
-		expect(recorded(f)).toEqual([[ended[0], { ...ended[1], outputTail: "" }]]);
+		// How a command ended, its exit and its tail are output too: an unreleased or unanswered close leaves the end
+		// for a later pass.
+		expect(recorded(f)).toEqual([[ended[0]]]);
 		expect(f.order.indexOf("sql:qorpera_record_company_machine_commands")).toBeGreaterThan(
 			f.order.lastIndexOf("folder:close"),
 		);
-		f.entry.commands = [id(9)];
-		f.observe({ ...idle, ended: [ended[2]] });
+		f.entry.commands = [id(8), id(9)];
+		f.observe({ ...idle, ended: ended.slice(1) });
 		f.service.down = true;
 		await f.host.pass(f.signal);
-		expect(recorded(f)).toHaveLength(1);
 		f.service.down = false;
+		f.service.reads = "unproven";
 		await f.host.pass(f.signal);
-		expect(recorded(f)).toEqual([[ended[0], { ...ended[1], outputTail: "" }], [ended[2]]]);
+		expect(recorded(f)).toHaveLength(1);
+		f.service.reads = "released";
+		await f.host.pass(f.signal);
+		expect(recorded(f)).toEqual([[ended[0]], ended.slice(1)]);
+	});
+
+	it("leaves a start's window open while it is delivered, though a pass meanwhile sees its command lost", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		const commandId = randomUUID();
+		f.running([commandId]);
+		// The window is open, and the inbox push waits: the guest does not have the command yet.
+		let deliver = () => {};
+		const delivered = new Promise<void>((resolve) => {
+			deliver = resolve;
+		});
+		f.client.pushInstanceFile.mockImplementationOnce(async () => {
+			await delivered;
+			f.order.push("push");
+		});
+		const started = start(f, commandId);
+		await vi.waitFor(() => expect(f.order).toContain("folder:open"));
+		f.observe({ ...idle, ended: [{ commandId, state: "lost" }] });
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
+		expect(f.service.requests.map((request) => request.op)).toEqual(["open"]);
+		expect(recorded(f)).toEqual([]);
+		deliver();
+		expect(await started).toMatchObject({ state: "running" });
+		// Delivered, a command its guest calls lost is ended: its window closes first.
+		await f.host.pass(f.signal);
+		expect(f.service.requests.map((request) => request.op)).toEqual(["open", "close"]);
+		expect(recorded(f)).toEqual([[{ commandId, state: "lost", outputTail: "" }]]);
+	});
+
+	it("opens a start's window only once a close of it on its way is answered", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		const commandId = randomUUID();
+		f.running([commandId]);
+		// A pass sees the command lost before its start came, and the service answers that close late.
+		let answer = () => {};
+		f.service.gate = new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+		f.observe({ ...idle, ended: [{ commandId, state: "lost" }] });
+		const passed = f.host.pass(f.signal);
+		await vi.waitFor(() => expect(f.order).toContain("folder:close"));
+		const started = start(f, commandId);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(f.order).not.toContain("folder:open");
+		answer();
+		await passed;
+		expect(await started).toMatchObject({ state: "running" });
+		expect(f.service.requests.map((request) => request.op)).toEqual(["close", "open"]);
+		expect(f.order.indexOf("push")).toBeGreaterThan(f.order.indexOf("folder:open"));
 	});
 
 	it("ends the boot's folder at a stop, before SQL ends its commands and the machine powers off", async () => {
@@ -1246,11 +1393,41 @@ describe("company machine host with the node's folder service (F3 6d)", () => {
 		f.service.down = false;
 		f.views.refusal = "qorpera.test-machine/new-disk";
 		expect(await f.host.pass(f.signal)).toEqual([
-			{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_REFUSED" },
+			{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_FENCED:NEW_DISK" },
 		]);
 		await start(f);
 		expect(f.service.requests.at(-1)).toMatchObject({ op: "open", machine: id(6) });
 		expect(f.handovers).toHaveLength(1);
+	});
+
+	it("after its own restart with a newer helper, keeps fencing the guest whose earlier helper took a view", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		f.running();
+		const [view] = f.views.opened;
+		// The node's helper moved on; the guest still runs, mounted, with the one it booted with.
+		f.restart({ helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256] });
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_FENCED:OLD_HELPER" },
+		]);
+		expect(f.views.opened).toHaveLength(1);
+		expect(f.handovers).toHaveLength(1);
+		const commandId = randomUUID();
+		f.result(finished);
+		await start(f, commandId);
+		expect(f.service.requests).toEqual([expect.objectContaining({ op: "open", machine: id(6), commandId })]);
+		f.service.reads = "unproven";
+		expect(await read(f, commandId)).toMatchObject({ state: "running", exitCode: null, output: "" });
+		f.service.reads = "released";
+		expect(await read(f, commandId)).toMatchObject(finished);
+		// At the stop its final names the view the service holds.
+		f.entry.sleepDue = true;
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
+		expect(f.service.requests.filter((request) => request.op === "boundary").at(-1)).toEqual({
+			op: "boundary",
+			machine: id(6),
+			final: [view.viewId],
+		});
 	});
 });
 

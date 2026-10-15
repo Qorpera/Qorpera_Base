@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
@@ -24,7 +25,7 @@ import {
 	lxdCompanyMachineName,
 	parseCompanyMachinePolicy,
 } from "./company-machine.ts";
-import type { FolderControl, FolderReads } from "./folder-control.ts";
+import type { FolderControl, FolderReads, MachineBoundary } from "./folder-control.ts";
 import type { LxdInstanceExecStreamClient, LxdTrackedClient } from "./lxd-client.ts";
 import { checkDirectory, code } from "./lxd-office-journal-files.ts";
 
@@ -48,6 +49,8 @@ const FINAL_BOUNDARY_MS = 60000;
 const FOLDER_MOUNT_MS = 100000;
 /** Views one boot is opened, while its guest answers that the node closed them. */
 const FOLDER_OPENS = 3;
+/** A command's log limit in the guest (the helper's MACHINE_GUEST_MAX_LOG_BYTES), as a held receipt states it. */
+const LOG_LIMIT_BYTES = 67108864;
 
 export const COMPANY_MACHINE_HOST_RPCS = [
 	"qorpera_admit_executor_machines",
@@ -146,10 +149,13 @@ export interface CompanyMachineCommandAuthority {
 interface BootFolder {
 	bootId: string;
 	/** pending: not settled yet, and a start waits; open: the boot's commands are fenced, by their windows and the
-	 * machine's boundaries; none: the boot runs without /company, and this process knows it. */
+	 * machine's boundaries, with or without a view; none: no pass can have reached the boot's guest (#viewless), which
+	 * runs without /company. */
 	state: "pending" | "open" | "none";
 	/** This process saw the boot start; false once it restarted, and then the service's views decide. */
 	known: boolean;
+	/** This process handed the guest a pass of the boot (answered or not): the boot is fenced for good. */
+	handed: boolean;
 	/** The view this process opened, with its pass. */
 	view?: { viewId: string; pass: string };
 	/** Every view of the boot the service may hold, which its final boundary closes. */
@@ -168,16 +174,23 @@ function record(value: unknown, error: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(error);
 	return value as Record<string, unknown>;
 }
-/** A receipt whose output is held back: still running, nothing printed, its log where it was. */
-function held(receipt: CloudMachineCommandReceipt): CloudMachineCommandReceipt {
-	const { log } = receipt;
+/** A receipt whose output is held back, made from the request alone: still running, and nothing printed past where
+ * the reader stands (`offset`). No size, end or exit of the guest's is in it. */
+function held(receipt: CloudMachineCommandReceipt, offset: number): CloudMachineCommandReceipt {
+	const at = Math.min(offset, LOG_LIMIT_BYTES);
 	const kept: CloudMachineCommandReceipt = {
 		...receipt,
 		state: "running",
 		exitCode: null,
 		output: "",
-		truncated: log.offset < log.totalBytes || log.limitReached,
-		log: Object.freeze({ ...log, nextOffset: log.offset }),
+		truncated: false,
+		log: Object.freeze({
+			offset: at,
+			nextOffset: at,
+			totalBytes: at,
+			limitBytes: LOG_LIMIT_BYTES,
+			limitReached: false,
+		}),
 	};
 	return Object.freeze(kept);
 }
@@ -225,6 +238,10 @@ export class LxdCompanyMachineHost {
 	readonly #starting = new Map<string, number>();
 	/** Per placement: its running boot's folder. */
 	readonly #folders = new Map<string, BootFolder>();
+	/** Per placement and command: the starts being delivered (from their window's open to the guest's answer). */
+	readonly #delivering = new Map<string, number>();
+	/** Per placement and command: a window close on its way, answered with the machine's reads. */
+	readonly #closing = new Map<string, Promise<FolderReads>>();
 	readonly #generation = Math.floor(Date.now() / 1000);
 	constructor(options: CompanyMachineHostOptions) {
 		if (
@@ -460,7 +477,15 @@ export class LxdCompanyMachineHost {
 			this.#guests.delete(e.placementId);
 			if (!folder) return { placementId: e.placementId, step: "start", state: "done" };
 			// Then the boot's own view, opened once SQL knows the boot (the view's anchor), and handed to its guest.
-			const f: BootFolder = { bootId, state: "pending", known: true, views: new Set(), opens: 0, asked: true };
+			const f: BootFolder = {
+				bootId,
+				state: "pending",
+				known: true,
+				handed: false,
+				views: new Set(),
+				opens: 0,
+				asked: true,
+			};
 			this.#folders.set(e.placementId, f);
 			return {
 				placementId: e.placementId,
@@ -475,7 +500,7 @@ export class LxdCompanyMachineHost {
 			let f = this.#folders.get(e.placementId);
 			if (f?.bootId !== bootId) {
 				// This process did not see the boot start (it restarted): the views the service holds decide.
-				f = { bootId, state: "pending", known: false, views: new Set(), opens: 0, asked: false };
+				f = { bootId, state: "pending", known: false, handed: false, views: new Set(), opens: 0, asked: false };
 				this.#folders.set(e.placementId, f);
 			}
 			if (f.state === "pending") settled = await this.#settle(e, f, helperSha256, signal);
@@ -548,17 +573,13 @@ export class LxdCompanyMachineHost {
 	/** Settles a boot's folder (F3 6d) as far as it can this pass, and says what came of it. A boot this process saw
 	 * start gets a view of its own: opened in SQL as the platform for this boot, then handed to the guest. After this
 	 * process restarted, a view the service still holds keeps the boot's /company (a new one would take it away from the
-	 * commands that run) and its boundaries keep fencing. A refused open runs the boot without /company; a busy or
-	 * unconfirmed one, or a hand-over without an answer, is tried again next pass, and starts wait meanwhile. */
+	 * commands that run) and its boundaries keep fencing. A boot that gets no view of its own (a guest of an earlier
+	 * image, a refused open, views the guest answers closed) is left to #viewless; a busy or unconfirmed open, or a
+	 * hand-over without an answer, is tried again next pass, and starts wait meanwhile. */
 	async #settle(e: CompanyMachineEntry, f: BootFolder, helperSha256: string, signal: AbortSignal): Promise<string> {
 		const folder = this.#options.folder as FolderControl;
-		// A guest of an earlier image has no folder-mount, so it never had a view either.
-		if (helperSha256 !== this.#options.helperSha256) {
-			f.state = "none";
-			f.known = true;
-			f.reason = "old-helper";
-			return "FOLDER_NONE:OLD_HELPER";
-		}
+		// A guest of an earlier image is handed no view: whether its helper ever took one is not this image's to say.
+		if (helperSha256 !== this.#options.helperSha256) return this.#viewless(e, f, "old-helper", signal);
 		if (!f.asked) {
 			let held: string[];
 			try {
@@ -592,15 +613,12 @@ export class LxdCompanyMachineHost {
 				);
 			} catch (error) {
 				if (!(error instanceof CodingControlRefused)) return errorCode(error);
-				// After a restart, what the boot had before is not known: its commands stay fenced.
-				if (!f.known) {
-					f.state = "open";
-					return "FOLDER_REFUSED";
-				}
-				const newDisk = error.detail === "qorpera.test-machine/new-disk";
-				f.state = "none";
-				f.reason = newDisk ? "new-disk" : "refused";
-				return newDisk ? "FOLDER_NONE:NEW_DISK" : "FOLDER_NONE:REFUSED";
+				return this.#viewless(
+					e,
+					f,
+					error.detail === "qorpera.test-machine/new-disk" ? "new-disk" : "refused",
+					signal,
+				);
 			}
 			if (
 				opened.schema !== "qorpera.folder-view/v1" ||
@@ -613,6 +631,9 @@ export class LxdCompanyMachineHost {
 			f.view = { viewId: opened.viewId, pass: opened.pass };
 			f.opens++;
 		}
+		// From here the guest may hold the pass, whatever it answers: the boot is fenced for good.
+		f.handed = true;
+		f.views.add(f.view.viewId);
 		let mount: string;
 		try {
 			mount = await this.#mount(e, f.view, signal);
@@ -625,13 +646,39 @@ export class LxdCompanyMachineHost {
 			await this.#closeView(f.view, signal);
 			f.view = undefined;
 			if (f.opens < FOLDER_OPENS) return "MACHINE_FOLDER_CLOSED";
-			f.state = "none";
-			f.reason = "closed";
-			return "FOLDER_NONE:CLOSED";
+			return this.#viewless(e, f, "closed", signal);
 		}
-		f.views.add(f.view.viewId);
 		f.state = "open";
 		return mount === "mounted" ? "FOLDER_MOUNTED" : "FOLDER_UNANSWERED";
+	}
+	/** A boot without a view of its own runs without /company only when no pass can have reached its guest: this
+	 * process saw it start, handed it none, and the service holds no view of the machine and has its reads released.
+	 * Any other boot stays fenced, by its windows and the machine's boundaries; reads that stay unproven then hold its
+	 * output and its ends for good (6d-2 reboots such a guest). */
+	async #viewless(
+		e: CompanyMachineEntry,
+		f: BootFolder,
+		reason: NonNullable<BootFolder["reason"]>,
+		signal: AbortSignal,
+	): Promise<string> {
+		const code = reason.toUpperCase().replace("-", "_");
+		f.reason = reason;
+		if (f.known && !f.handed) {
+			let boundary: MachineBoundary;
+			try {
+				const checked = AbortSignal.any([signal, AbortSignal.timeout(BOUNDARY_MS)]);
+				boundary = await (this.#options.folder as FolderControl).boundary(e.placementId, [], checked);
+			} catch (error) {
+				return errorCode(error);
+			}
+			if (!boundary.views.length && boundary.reads === "released") {
+				f.state = "none";
+				return `FOLDER_NONE:${code}`;
+			}
+			for (const view of boundary.views) f.views.add(view.viewId);
+		}
+		f.state = "open";
+		return `FOLDER_FENCED:${code}`;
 	}
 	/** Hands a view to the guest's folder program (folder-mount, F3 6c) on exec stdin: its pass is never in an argument,
 	 * a file on this host or a log. The newest view the guest is handed wins. */
@@ -697,9 +744,10 @@ export class LxdCompanyMachineHost {
 		}
 		this.#folders.delete(e.placementId);
 	}
-	/** The end order (F3 6d): each ended command's window closes first, and only the boundary that answers it lets its
-	 * end be recorded, with its output tail only once the machine's reads are released. An end without one is looked
-	 * at again next pass. */
+	/** The end order (F3 6d): each ended command's window closes first, and its end (how it ended, its exit and its
+	 * output tail) is recorded only once that close answers the machine's reads released. Any other answer, or none,
+	 * leaves the end for a later look. A start still being delivered is not ended: its guest does not have it yet, and
+	 * its window stays open. */
 	async #ends(
 		e: CompanyMachineEntry,
 		bootId: string,
@@ -712,14 +760,17 @@ export class LxdCompanyMachineHost {
 		const checked = AbortSignal.any([signal, AbortSignal.timeout(WINDOWS_MS)]);
 		const ended: Record<string, unknown>[] = [];
 		for (const item of look.ended) {
-			let reads: FolderReads;
-			try {
-				reads = (await folder.closeWindow(e.placementId, item.commandId as string, checked)).reads;
-			} catch {
-				continue;
-			}
-			if (reads === "unanswered") continue;
-			ended.push(reads === "released" ? item : { ...item, outputTail: "" });
+			const key = `${e.placementId}/${item.commandId as string}`;
+			if (this.#delivering.has(key)) continue;
+			// A start that comes meanwhile opens its window only once this close is answered (#command).
+			const closing = folder.closeWindow(e.placementId, item.commandId as string, checked).then(
+				(boundary) => boundary.reads,
+				() => "unanswered" as const,
+			);
+			this.#closing.set(key, closing);
+			const reads = await closing;
+			if (this.#closing.get(key) === closing) this.#closing.delete(key);
+			if (reads === "released") ended.push(item);
 		}
 		return { ended, busy: look.busy };
 	}
@@ -924,8 +975,25 @@ export class LxdCompanyMachineHost {
 		return [...admission, ...outcomes];
 	}
 
-	/** Runs one authorized command action on a machine of this node. */
+	/** Runs one authorized command action on a machine of this node. A start on a machine with a folder is delivered
+	 * meanwhile: a pass that looks before its guest has it leaves its window open (#ends). */
 	async command(
+		authority: CompanyMachineCommandAuthority,
+		request: CompanyMachineCommand,
+		signal: AbortSignal,
+	): Promise<CloudMachineCommandReceipt> {
+		if (request.action !== "start" || !this.#options.folder) return this.#command(authority, request, signal);
+		const key = `${authority.placementId}/${authority.commandId}`;
+		this.#delivering.set(key, (this.#delivering.get(key) ?? 0) + 1);
+		try {
+			return await this.#command(authority, request, signal);
+		} finally {
+			const left = (this.#delivering.get(key) ?? 1) - 1;
+			if (left) this.#delivering.set(key, left);
+			else this.#delivering.delete(key);
+		}
+	}
+	async #command(
 		authority: CompanyMachineCommandAuthority,
 		request: CompanyMachineCommand,
 		signal: AbortSignal,
@@ -955,6 +1023,11 @@ export class LxdCompanyMachineHost {
 				const window = { commandId, runId, staffAgentId, requestedByUserId };
 				// The service opens a window in memory: a few seconds are ample, and the start stays in the gateway's 30.
 				const checked = AbortSignal.any([signal, AbortSignal.timeout(5000)]);
+				// A pass that saw the command before its guest had it closes its window: that close is answered first, so
+				// the open comes after it.
+				const closing = this.#closing.get(`${authority.placementId}/${commandId}`);
+				if (closing && !checked.aborted) await Promise.race([closing, once(checked, "abort")]);
+				if (checked.aborted) throw new Error("FOLDER_CONTROL_UNANSWERED");
 				await folder.openWindow(authority.placementId, window, checked);
 			}
 			await this.#options.client.pushInstanceFile(
@@ -1012,17 +1085,18 @@ export class LxdCompanyMachineHost {
 			receipt.inputSha256 !== authority.inputSha256
 		)
 			throw new Error("COMPANY_MACHINE_COMMAND_INVALID");
-		if (!folder || (receipt.output === "" && receipt.exitCode === null)) return receipt;
+		if (!folder) return receipt;
 		const f = this.#folders.get(authority.placementId);
 		if (f?.bootId === authority.bootId && f?.state === "none") return receipt;
 		// What the command printed, and how it ended, leave only once every read the machine was served is released
-		// (F3 6d): a boundary first. A start, whose wait took most of the gateway's time, holds them for the next read.
-		if (request.action !== "start") {
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(BOUNDARY_MS)]);
-			const answer = await folder.boundary(authority.placementId, [], checked).catch(() => undefined);
-			if (answer?.reads === "released") return receipt;
-		}
-		return held(receipt);
+		// (F3 6d): a boundary first. A start, whose wait took most of the gateway's time, holds them for the next read,
+		// and a command still running with nothing printed has nothing to let out.
+		const at = (request.action === "read" && !request.read.tail && request.read.offset) || 0;
+		if (request.action === "start" || (receipt.state === "running" && receipt.log.totalBytes === 0))
+			return held(receipt, at);
+		const checked = AbortSignal.any([signal, AbortSignal.timeout(BOUNDARY_MS)]);
+		const answer = await folder.boundary(authority.placementId, [], checked).catch(() => undefined);
+		return answer?.reads === "released" ? receipt : held(receipt, at);
 	}
 	/** A start waits for its boot's folder to settle (opened and handed over, or known to be none), for at most 20 s
 	 * (the gateway's request is bounded at 30 s): a boot still unsettled refuses the start, which so never runs
