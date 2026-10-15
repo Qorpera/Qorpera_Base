@@ -671,9 +671,48 @@ In slice 5c the folder service serves coding machines' views (RUNTIME-FOLDER-COD
   answers only boundaries and restarts. The core's side (the fan-out, `served_by`, `service_crashed`) is 5a's SQL
   tests.
 
+## Step 6b: test machine views
+
+In slice 6b the folder service serves agents' test machines' views (RUNTIME-FOLDER-TEST-MACHINES.md, "Views and
+machines", "Commands and credit" and "Boundaries"), against 6a's core (migration slots `20260930420000`–`429000`):
+
+- **Which machine.** A `test_machine` view's machine is its placement (`machineId`). It is served only to the instance
+  named after it, `qorpera-machine-<placement id without dashes>`, in one of the node's `testMachineProjects`; an image
+  builder (`qorpera-machine-build-…`) never is. It writes over protocol 3 and publishes 2 s after its last change. A
+  project listed there and in `companyMachineProjects` or `codingMachineProjects` stops the service at start.
+- **As a coding machine.** The control socket's `machine` is the placement id, and 5c's machine rules hold as they are:
+  the read record, the releases before each commit, the boundaries, held refusals, a lost machine and `restarted`,
+  `served_by` and the clean stop.
+- **Command windows.** The executor opens a window when a command starts on the machine:
+  `{"op":"open","machine":"<placement id>","commandId","runId","staffAgentId","requestedByUserId"}` answers
+  `{"opened":{"machine","commandId"}}`. Opening it again is a no-op; the same command with other ids is `BAD_REQUEST`.
+  `{"op":"close","machine","commandId"}` closes it, runs the machine's boundary (the command's end boundary) and answers
+  as a boundary does. Closing a window that is not open is a no-op. Windows are kept in memory only: a restart of the
+  service, `restarted` and the machine's final boundary close them all, and the executor opens them again (6d).
+- **Tags and credits.** Each change a test machine's view takes (an open that creates or truncates, a write, a close
+  that cuts a file, a folder made or removed, a file removed, the executable bit, a rename) is tagged, as it enters,
+  with the commands whose windows are open, or with the starter when none is. A rename moves the tags of its source and of
+  everything under it to its target, in place of the target's. Each unit of a commit carries `credits`, the sorted
+  commands its paths are tagged with, and none when only the starter changed them. A unit that mixes both is credited to
+  the commands alone: `credits` cannot name the starter, and leaving it out would credit the commands' changes to the
+  starter. A commit tried again, or replayed under its key at the next boundary, sends the same credits. A path's tags
+  go when a boundary settles it, and every tag goes with the view.
+- **`command_ended`.** A unit the core refuses because a command it is credited to has ended is kept, as any refused
+  unit, and sent again at each boundary with the same credits, until the final. It is never credited to the starter
+  instead.
+- **The final.** A test machine's view named in a boundary's `final` clears its quiet period and publishes with `final`;
+  the core closes the view.
+- **Tests.** `packages/object-gateway/test/folder-test-machine-views.test.ts`, against the stand-in core: a test
+  machine's view is refused from another test machine, an office, a coding machine, an image builder, an unlisted
+  project and the execution host, and an overlapping project stops the service; a change made in one window is credited
+  to it, one made in two windows to both, one in none to the starter (no `credits`); a rename keeps its tags; a retry
+  sends the same credits; a `command_ended` refusal is kept and sent again; a quiet publish comes about 2 s after the
+  last change; a close publishes the command's changes before it answers; the final boundary publishes with `final`;
+  the control socket refuses a window from another uid, and a malformed one.
+
 ## Not here
 
 The office service's side of a command's view (opening it, mounting it for the command, and the final
 boundary at the command's end: slice 4d); a coding machine's flush of its folder programs before a boundary and git on
 the mount (slice 5d); the executor's side of coding views (opening them, mounting them, asking boundaries: slice 5g);
-test machines (step 6). Each is a later slice.
+the rest of step 6 (6a's core, 6c's image and folder program, 6d's executor). Each is a later slice.
