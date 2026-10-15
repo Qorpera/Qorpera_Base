@@ -16,7 +16,8 @@
 -- The read set's fan-out to the commands' runs and the take-in (part 3) and the crashed service refusal (part 4) come
 -- later.
 --
--- Exact-text patch: it fails unless the function has the text given exactly once. Body marker "20260930421000".
+-- Exact-text patches: each fails unless the function has the text given exactly once; the function is replaced once,
+-- after the last. Body marker "20260930421000".
 
 set local lock_timeout = '3s';
 
@@ -26,15 +27,38 @@ do $$ begin
 		raise exception 'Test machine credits (20260930421000) are already applied'; end if;
 end $$;
 
+-- The patches edit the definition's text in order; the function is replaced once, after the last one (one patch opens
+-- a loop that a later one closes, so a single patch does not compile on its own).
+create temporary table folder_test_machine_credits_defs (fn regprocedure not null, def text not null);
 create function pg_temp.folder_test_machine_credits_patch(p_function regprocedure, p_old text, p_new text) returns void
 language plpgsql as $patch$
-declare v_definition text := pg_get_functiondef(p_function);
+declare v_definition text;
 begin
+	select def into v_definition from pg_temp.folder_test_machine_credits_defs where fn = p_function;
+	if v_definition is null then
+		v_definition := pg_get_functiondef(p_function);
+		insert into pg_temp.folder_test_machine_credits_defs(fn, def) values (p_function, v_definition);
+	end if;
 	if (length(v_definition) - length(replace(v_definition, p_old, ''))) / length(p_old) <> 1 then
 		raise exception '% does not have the text this migration expects: %', p_function, left(p_old, 80); end if;
-	execute replace(v_definition, p_old, p_new);
+	update pg_temp.folder_test_machine_credits_defs set def = replace(v_definition, p_old, p_new) where fn = p_function;
 end
 $patch$;
+create function pg_temp.folder_test_machine_credits_apply() returns void language plpgsql as $apply$
+declare v_fn regprocedure; v_def text; v_context text;
+begin
+	for v_fn, v_def in select fn, def from pg_temp.folder_test_machine_credits_defs loop
+		begin
+			execute v_def;
+		exception when others then
+			-- A short message: the statement's own text would be the whole function.
+			get stacked diagnostics v_context = pg_exception_context;
+			raise exception '% does not compile after the patches: % (%)', v_fn, sqlerrm, split_part(v_context, E'\n', 1);
+		end;
+	end loop;
+	drop table pg_temp.folder_test_machine_credits_defs;
+end
+$apply$;
 
 -- 4. The commands a test machine's commit credits: the valid ones, in start order; null when it credits none. No
 -- foreign key: a removed machine's commands go, and the commit's history stays.
@@ -237,6 +261,7 @@ select pg_temp.folder_test_machine_credits_patch('public.qorpera_folder_commit(u
 			where o.value ->> 'outcome' = 'saved' and not exists (select 1 from public.qorpera_company_machine_commands m
 				where m.id = c.id::uuid and m.ended_at is null)) then
 			raise exception 'Folder view command has ended' using errcode = '42501'; end if;$new$);
+select pg_temp.folder_test_machine_credits_apply();
 
 -- The commit may have a private owner in production: it reaches the commands, the runs and jobs it reads them with,
 -- and the credited agents' staff rows.
