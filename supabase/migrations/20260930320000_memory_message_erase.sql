@@ -194,6 +194,24 @@ returns table (root_key text) language sql stable set search_path = '' as $$
 		or (k.key ~ '^agents/[^/]+/memory/thread/tree\.toml$' and k.key !~ '^agents/groups/')
 $$;
 
+-- The images folders by their input's id: the room's image commit makes a message's folder before its tree has a tree.toml.
+create index qorpera_folder_path_versions_image_folders on public.qorpera_folder_path_versions(environment_id,
+	(substring(path from '/images/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$')))
+	where kind = 'folder' and path ~ '/images/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
+
+-- Every images folder of input I at a tree root, by the index above, live or not: a root its owner left before the
+-- summary wrote its first tree.toml is known to no tree (qorpera_memory_erase_roots), yet holds I's image.
+create function public.qorpera_memory_erase_image_folders(p_environment_id uuid, p_client_input_id uuid)
+returns table (key text) language sql stable set search_path = '' as $$
+	select distinct k.key collate "C"
+	from public.qorpera_folder_path_versions v
+	cross join lateral (select public.qorpera_folder_key(v.path) as key) k
+	where v.environment_id = p_environment_id and v.kind = 'folder'
+		and v.path ~ '/images/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+		and substring(v.path from '/images/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$') = p_client_input_id::text
+		and k.key = public.qorpera_memory_tree_root_key(k.key) || '/images/' || p_client_input_id::text
+$$;
+
 -- The read receipts whose result may hold message i of C, in the whole company (§10 step 4): a zoom of i's own line,
 -- or of a line whose children have i among their sources (start+size overlaps [i, 16·⌊i/16⌋ + 32)), and a
 -- read_context page whose range holds i.
@@ -308,16 +326,19 @@ begin
 				and not public.qorpera_memory_erase_drops(v_row.message_index, n.l, n.k)) end
 	from jsonb_array_elements(p_units) u
 	cross join lateral (select public.qorpera_folder_key(u ->> 'path') as key) k;
-	-- By key alone (step 3 asks them with no cutoff): each candidate block, and the images folder, with versions but not
-	-- live under the current root, and each with versions under an earlier root of C, live or not.
+	-- By key alone (step 3 asks them with no cutoff): each candidate block with versions but not live under the current
+	-- root, and each with versions under an earlier root of C, live or not; and the images folder at every root it ever
+	-- had, found by its input's id, where not live under the current root.
 	insert into public.qorpera_memory_message_erase_blocks(erase_id, block_key, path, kind)
 	select v_row.id, c.key, (select v.path from public.qorpera_folder_path_versions v
 			where v.environment_id = v_env and v.key_sha256 = extensions.digest(c.key, 'sha256') order by v.created_at desc limit 1),
 		c.kind
-	from (select r.root_key from public.qorpera_memory_erase_roots(v_env, v_row.session_id) r
-		union select v_root where v_root is not null) r
-	cross join lateral (select b.block_key as key, 'block' as kind from public.qorpera_memory_erase_candidates(r.root_key, v_row.message_index) b
-		union all select r.root_key || '/images/' || v_row.client_input_id::text, 'images' where v_row.client_input_id is not null) c
+	from (select b.block_key as key, 'block' as kind
+		from (select r.root_key from public.qorpera_memory_erase_roots(v_env, v_row.session_id) r
+			union select v_root where v_root is not null) r
+		cross join lateral public.qorpera_memory_erase_candidates(r.root_key, v_row.message_index) b
+		union all select i.key, 'images' from public.qorpera_memory_erase_image_folders(v_env, v_row.client_input_id) i
+		where v_row.client_input_id is not null) c
 	where exists (select 1 from public.qorpera_folder_path_versions v
 		where v.environment_id = v_env and v.key_sha256 = extensions.digest(c.key, 'sha256'))
 	on conflict (erase_id, block_key) do nothing;
@@ -900,6 +921,7 @@ revoke all on function public.qorpera_memory_erase_line(public.qorpera_memory_tr
 revoke all on function public.qorpera_memory_erase_deletes(uuid, text, bigint, uuid) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_erase_toml_manifests(uuid) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_erase_roots(uuid, uuid) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_memory_erase_image_folders(uuid, uuid) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_erase_receipts(uuid, uuid, bigint) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_message_erase_context(uuid, text) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_message_erase_lock_targets(jsonb) from public, anon, authenticated, service_role;

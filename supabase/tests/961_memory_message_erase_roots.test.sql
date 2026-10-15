@@ -2,7 +2,8 @@
 -- Summary trees M3 (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §10; 20260930320000): a message's erase across its
 -- owner's life. A member's message with an image, its agent renamed first (the tree and the image under an earlier root),
 -- its agent deleted (no root, nothing to rewrite), its agent hired again; a later erase of the conversation, a block live
--- again, another request at a block's key, and a member who is no longer an owner or admin.
+-- again, another request at a block's key, a member who is no longer an owner or admin, and an image written before
+-- its agent's tree had a tree.toml (the agent renamed and deleted: found by the input's id alone).
 
 -- An erase's blocks as key:kind:kept lines:cutoff?, by key (whole keys: some lie under earlier roots).
 create function pg_temp.keys(p_id uuid) returns jsonb language sql as $$
@@ -366,6 +367,51 @@ begin
 		s, (pg_temp.event(s, 9)).event_id);
 	if (r ->> 'eraseId')::uuid = z or r ->> 'state' <> 'pending' or pg_temp.erase_of(s, 9) <> (r ->> 'eraseId')::uuid then
 		raise exception 'Asked again, a new erase: %', r; end if;
+end $$;
+
+-- 7. Otto's message image written before his tree's first tree.toml; Otto renamed, then deleted: no tree ever named the
+-- conversation, and the erase finds both images folders by the input's id ---------------------------------------------
+
+do $$
+declare
+	otto constant uuid := '70000000-0000-4000-8000-0000000000a5'; s uuid; r jsonb; eid uuid; i integer;
+	root constant text := 'agents/otto-lind/memory/thread'; moved constant text := 'agents/otto-berg/memory/thread';
+	cid constant uuid := '96100000-0000-4000-8000-0000000000ca';
+begin
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'm3x-hire-3', jsonb_build_array(pg_temp.hire('otto-lind', otto, 'Otto Lind'))),
+		1, 'saved');
+	s := pg_temp.thread(otto);
+	perform pg_temp.events(s, 2);
+	perform pg_temp.member(s, 3, cid);
+	-- The room's image commit makes the folders it needs; the summary has written no tree.toml yet.
+	r := pg_temp.memory('m3x-image-3', jsonb_build_array(jsonb_build_object('op','mkdir','path',root),
+		jsonb_build_object('op','mkdir','path',root || '/images')) || pg_temp.image(root, cid), array[s]);
+	for i in 1..4 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	r := pg_temp.commit(pg_temp.owner(), 'm3x-rename-2', jsonb_build_array(
+		pg_temp.write('agents/otto-lind/agent.md', 'agent', pg_temp.agent_text(otto, 'Otto Berg'), pg_temp.agent_parse(otto, 'Otto Berg'),
+			pg_temp.version('agents/otto-lind/agent.md')),
+		jsonb_build_object('op','move','from','agents/otto-lind','to','agents/otto-berg',
+			'expectedVersion',pg_temp.version('agents/otto-lind'),'asOfSeq',pg_temp.seq())));
+	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
+	r := pg_temp.commit(pg_temp.owner(), 'm3x-delete-2', jsonb_build_array(jsonb_build_object('op','delete','path','agents/otto-berg',
+		'expectedVersion',pg_temp.version('agents/otto-berg'),'asOfSeq',pg_temp.seq())));
+	perform pg_temp.expect(r, 1, 'saved');
+	perform pg_temp.service();
+	if exists (select 1 from public.qorpera_memory_erase_roots('70000000-0000-4000-8000-000000000020', s)) then
+		raise exception 'No tree ever named the conversation'; end if;
+	eid := (public.qorpera_memory_message_erase_request('70000000-0000-4000-8000-000000000020', '70000000-0000-4000-8000-000000000001',
+		s, (pg_temp.event(s, 3)).event_id) ->> 'eraseId')::uuid;
+	r := public.qorpera_memory_message_erase_open('70000000-0000-4000-8000-000000000020', eid);
+	perform pg_temp.same(r - 'eraseId' - 'sessionId' - 'eventId', '{"schema":"qorpera.memory-message-erase/v1","state":"open",'
+		'"blocks":2,"runsPending":0}', 'Step 1 with no tree ever');
+	perform pg_temp.same(pg_temp.keys(eid), jsonb_build_array(moved || '/images/' || cid || ':images:-:key',
+		root || '/images/' || cid || ':images:-:key'), 'The images folders by the input''s id');
+	perform pg_temp.same(pg_temp.rewrite(eid) -> 'state', '"rewritten"', 'Step 2 with no tree ever');
+	perform pg_temp.same(pg_temp.ask_all(eid) - 'eraseId' - 'sessionId' - 'eventId', '{"schema":"qorpera.memory-message-erase/v1",'
+		'"state":"requested","blocks":2,"runsPending":0,"waits":0}', 'Step 3 with no tree ever');
+	perform pg_temp.drain(b.erasure_id) from public.qorpera_memory_message_erase_blocks b where b.erase_id = eid;
+	perform pg_temp.same(jsonb_build_array(pg_temp.versions_at(root || '/images/' || cid), pg_temp.versions_at(moved || '/images/' || cid)),
+		'[0, 0]', 'No version of the image left');
 end $$;
 
 rollback;
