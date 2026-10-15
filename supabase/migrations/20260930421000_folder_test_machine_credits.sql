@@ -64,7 +64,7 @@ $apply$;
 -- foreign key: a removed machine's commands go, and the commit's history stays.
 alter table public.qorpera_folder_commits add column credits uuid[],
 	add constraint qorpera_folder_commits_credits check (credits is null
-		or (view_kind = 'test_machine' and cardinality(credits) > 0 and array_position(credits, null) is null));
+		or (view_kind is not distinct from 'test_machine' and cardinality(credits) > 0 and array_position(credits, null) is null));
 
 -- Its own variables.
 select pg_temp.folder_test_machine_credits_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
