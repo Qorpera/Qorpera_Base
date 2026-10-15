@@ -145,8 +145,9 @@ describe("member-visible native activity", () => {
 		const f = await fixture();
 		f.publisher.mockResolvedValueOnce(null);
 		expect((await f.observe()).view.paths[0].participants).toEqual([]);
+		const now = Date.now();
 		f.input.candidates = [
-			await f.sign({ issuedAt: Date.now() - 31000, expiresAt: Date.now() - 1000 }),
+			await f.sign({ issuedAt: now - 31000, expiresAt: now - 1000 }),
 			await f.sign({ companyId: id(99) }),
 			{ ...(await f.sign()), signature: `${"A".repeat(86)}==` },
 		];

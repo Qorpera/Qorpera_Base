@@ -213,7 +213,7 @@ it("returns each branch read with the blocks its lines show; placeholders and ea
 	};
 	const ops: Conversation = { ref: "group:ops", name: "Ops", messages: 3, text: () => "o" };
 	const { read, calls } = host([bo, launch, ops], (l, k) => `${2 ** l * k}+${2 ** l}`);
-	const { branches, conversations, blocks } = await memoryRunBranches(read, 1_200);
+	const { branches, conversations, blocks } = await memoryRunBranches(read, null, 1_200);
 	expect(branches).toEqual([
 		{
 			ref: "thread:bo",
@@ -328,6 +328,11 @@ it("refuses an answer that is not the host call's", async () => {
 	];
 	for (const answer of firsts)
 		await expect(memoryRunBranches(answers(answer))).rejects.toThrow(/^Invalid memory branches answer/);
+	// The run's own conversation is never one of its branches: a group chat's run has the agent's thread, not the chat.
+	await expect(memoryRunBranches(answers(first), branch.sessionId)).rejects.toThrow(
+		"Invalid memory branches answer: a branch is the run's own conversation",
+	);
+	expect((await memoryRunBranches(answers(first), session(1))).branches).toHaveLength(1);
 
 	const [block] = tree.blocks;
 	const [row] = tree.lines;
