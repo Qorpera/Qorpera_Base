@@ -105,6 +105,24 @@ async function until(done: () => boolean, ms = 3_000): Promise<void> {
 	expect(done()).toBe(true);
 }
 
+/** Holds the core's next commit until `release`: `reached` once the commit is asked. */
+function holdCommit(core: FakeCore): { reached: Promise<void>; release: () => void } {
+	let reach!: () => void;
+	let release!: () => void;
+	const reached = new Promise<void>((resolve) => {
+		reach = resolve;
+	});
+	const held = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	core.commitHook = () => {
+		core.commitHook = undefined;
+		reach();
+		return held;
+	};
+	return { reached, release };
+}
+
 describe("test machine views", () => {
 	it("serves a test machine's view to its own instance alone", async () => {
 		const test = { kind: "test_machine", companyId: PROFILE, codingMachineId: null };
@@ -407,6 +425,64 @@ describe("test machine views", () => {
 		expect(core.entries.get("docs/a.md")?.fileSha256).toBe(hashOf("second"));
 		expect(core.entries.get("docs/b.md")?.fileSha256).toBe(hashOf("a"));
 	});
+
+	it("credits a file's bytes to their command when it is closed and removed behind a running boundary", async () => {
+		const { root, core, service, open } = await company();
+		core.seed([await storeFile(root, "docs/a.md", "a", 2)]);
+		const view = await open();
+		// The first command writes docs/a.md, not cut, and its window closes with the file still open: nothing goes.
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		const { handle } = await view.open({ path: "docs/a.md", create: false, exclusive: false, truncate: false });
+		const data = Buffer.from("first");
+		await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
+		await service.closeWindow(PLACEMENT, FIRST);
+		expect(core.commits).toEqual([]);
+		// The starter's boundary is held at its commit while the file is closed and removed, both of which wait for it.
+		await write(view, "docs/other.md", "o");
+		const { reached, release } = holdCommit(core);
+		const running = service.boundary(PLACEMENT);
+		await reached;
+		const closing = view.close(handle, data.byteLength);
+		const unlinking = view.unlink("docs/a.md", undefined);
+		release();
+		await running;
+		await closing;
+		await unlinking;
+		// The removal takes the bytes the close fixed, and so the command they came under.
+		await service.boundary(PLACEMENT);
+		expect(core.commits.map(creditsOf)).toEqual([[["docs/other.md", undefined]], [["docs/a.md", [FIRST]]]]);
+		expect(core.commits[1]?.units.map((u) => u.op)).toEqual(["delete"]);
+		expect(core.entries.has("docs/a.md")).toBe(false);
+	});
+
+	it("keeps a refused replacement's credits, the removal's it took in, at each boundary it goes again", async () => {
+		const { root, core, service, open } = await company();
+		core.seed([await storeFile(root, "docs/a.md", "a", 2)]);
+		const view = await open();
+		// The first command removes docs/a.md, and its boundary is refused whole; then the command ends.
+		service.openWindow(PLACEMENT, windowOf(FIRST));
+		await view.unlink("docs/a.md", undefined);
+		core.commitRefusal = "stopped";
+		const refused = await service.closeWindow(PLACEMENT, FIRST);
+		expect(refused).toMatchObject({ views: [{ report: { refused: "stopped" } }] });
+		core.commitRefusal = undefined;
+		core.endedCommands.add(FIRST);
+		// The starter makes a new docs/a.md: the file's next version, which carries the removal and so the command.
+		await write(view, "docs/a.md", "new");
+		for (let i = 0; i < 3; i++)
+			expect(await service.boundary(PLACEMENT)).toMatchObject({
+				views: [
+					{
+						report: {
+							paths: [{ path: "docs/a.md", outcome: "refused", reason: "command_ended", kept: true }],
+						},
+					},
+				],
+			});
+		expect(core.commits.map(creditsOf)).toEqual(Array.from({ length: 4 }, () => [["docs/a.md", [FIRST]]]));
+		expect(core.commits.map((c) => c.units.map((u) => u.op))).toEqual([["delete"], ["write"], ["write"], ["write"]]);
+		expect(core.entries.get("docs/a.md")?.fileSha256).toBe(hashOf("a"));
+	});
 });
 
 /** A seeded generator (mulberry32): a seed gives the same sequence at every run. */
@@ -511,9 +587,13 @@ class CreditModel {
 		return sortUnits(units);
 	}
 
-	/** After a boundary the core answered: what it kept pending stays, with its tags; the rest is live now, or gone. */
+	/** After a boundary the core answered: what it kept pending stays, with its tags, and a new file kept takes those of
+	 * the removal it was the next version of, which goes; the rest is live now, or gone. */
 	settle(kept: ReadonlySet<string>, live: ReadonlySet<string>): void {
-		for (const path of [...this.files.keys()]) if (!kept.has(path)) this.files.delete(path);
+		for (const [path, file] of [...this.files]) {
+			if (!kept.has(path)) this.files.delete(path);
+			else if (file.origin === undefined) for (const tag of this.removals.get(path) ?? []) file.tags.add(tag);
+		}
 		this.removals.clear();
 		this.hidden.clear();
 		this.live = live;
@@ -540,10 +620,12 @@ describe("test machine credits against a model", () => {
 	const THIRD = "c0aa0003-0000-4a00-8b00-000000000003";
 	const COMMANDS = [FIRST, SECOND, THIRD];
 	const PATHS = ["docs/a.md", "docs/b.md", "docs/c.md"];
-	const STEPS = 14;
+	const STEPS = 18;
 
-	/** One seeded sequence of changes, windows and boundaries (accepted, or refused whole as `stopped`), with every
-	 * boundary's units and credits checked against the model's. */
+	/** One seeded sequence of changes, windows and boundaries (accepted, or refused whole as `stopped`; a unit credited
+	 * to a command that ended is refused, and kept), with every boundary's units and credits checked against the
+	 * model's, and each unit a boundary kept pending, nothing changed since, sent again as it was. Some boundaries are
+	 * held at their commit while the machine closes a file it wrote before and makes other changes, which wait. */
 	async function sequence(seed: number): Promise<void> {
 		const random = seeded(seed);
 		const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)] as T;
@@ -556,6 +638,9 @@ describe("test machine credits against a model", () => {
 		const ended = new Set<string>();
 		const steps: string[] = [];
 		const tags = (): string[] => (windows.size === 0 ? [STARTER] : [...windows]);
+		// The units the last boundary left pending, by op and path, and the paths changed since.
+		let kept = new Map<string, ModelUnit>();
+		const touched = new Set<string>();
 		const boundary = async (run: () => Promise<MachineBoundary>, stopped: boolean): Promise<void> => {
 			steps.push(stopped ? "boundary (stopped)" : "boundary");
 			const why = `seed ${seed}: ${steps.join(", ")}`;
@@ -566,44 +651,156 @@ describe("test machine credits against a model", () => {
 			core.commitRefusal = undefined;
 			const commits = core.commits.slice(before);
 			expect(commits.length, why).toBe(expected.length === 0 ? 0 : 1);
-			if (expected.length === 0) return;
 			const units: ModelUnit[] = [];
 			for (const u of commits[0]?.units ?? [])
 				units.push([u.op, u.op === "move" ? u.to : u.path, (u as CreditedUnit).credits]);
+			// A unit kept pending goes again as it went, credits and all, until a change is made to it.
+			for (const [key, unit] of kept) {
+				if (touched.has(unit[1])) continue;
+				const again = units.find((u) => `${u[0]} ${u[1]}` === key);
+				expect(again, `${why}: ${key} again`).toEqual(unit);
+			}
+			kept = new Map();
+			touched.clear();
+			if (expected.length === 0) return;
 			expect(sortUnits(units), why).toEqual(expected);
 			const report = answer.views[0]?.report;
 			expect(report?.refused, why).toBe(stopped ? "stopped" : undefined);
+			const keep = new Set(report?.paths.filter((p) => p.kept).map((p) => p.path));
+			for (const unit of units) if (stopped || keep.has(unit[1])) kept.set(`${unit[0]} ${unit[1]}`, unit);
 			if (stopped) return;
-			const kept = new Set(report?.paths.filter((p) => p.kept).map((p) => p.path));
-			model.settle(kept, new Set(PATHS.filter((p) => core.entries.get(p)?.kind === "file")));
+			model.settle(keep, new Set(PATHS.filter((p) => core.entries.get(p)?.kind === "file")));
+		};
+		/** A boundary held at its commit (the executor's, or a window's close) while the machine closes a file it wrote
+		 * before, perhaps removes it, and makes another change: each waits for the boundary to settle, then is made in
+		 * turn. Each is on a path the boundary publishes nothing at, or a write, which any outcome leaves free to make;
+		 * so the model makes them once it settled. */
+		const held = async (step: number): Promise<void> => {
+			// Neither pending nor hidden: the boundary leaves these as they are.
+			const alone = PATHS.filter((p) => !model.files.has(p) && !model.hidden.has(p));
+			const used = new Set<string>();
+			const changes: { label: string; made: () => Promise<unknown>; model: () => void }[] = [];
+			let file: { path: string; handle: number; bytes: number; tags: readonly string[] } | undefined;
+			if (alone.length > 0 && random() < 0.7) {
+				const path = pick(alone);
+				steps.push(`hold ${path}`);
+				const create = !model.shows(path);
+				const { handle } = await view.open({ path, create, exclusive: false, truncate: false });
+				const data = Buffer.from(`${seed}.${step}`);
+				await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
+				file = { path, handle, bytes: data.byteLength, tags: tags() };
+				used.add(path);
+			}
+			const command = windows.size > 0 && random() < 0.5 ? pick([...windows]) : undefined;
+			if (command !== undefined) windows.delete(command);
+			const stopped = random() < 0.2;
+			const now = tags();
+			if (file !== undefined) {
+				const { path, handle, bytes, tags: wrote } = file;
+				// Its bytes are those of the windows open as they came; the close, which cuts nothing, adds none.
+				changes.push({
+					label: `close ${path}`,
+					made: () => view.close(handle, bytes),
+					model: () => model.write(path, wrote),
+				});
+				if (random() < 0.5)
+					changes.push({
+						label: `unlink ${path}`,
+						made: () => view.unlink(path, undefined),
+						model: () => model.remove(path, now),
+					});
+			}
+			for (let i = file === undefined ? 0 : 1; i < 2; i++) {
+				const roll = random();
+				const free = PATHS.filter((p) => !used.has(p));
+				const shown = free.filter((p) => alone.includes(p) && model.live.has(p));
+				if (roll < 0.4) {
+					const writable = free.filter((p) => model.canWrite(p));
+					if (writable.length === 0) continue;
+					const path = pick(writable);
+					const text = `${seed}.${step}.${i}`;
+					used.add(path);
+					changes.push({
+						label: `write ${path}`,
+						made: () => write(view, path, text),
+						model: () => model.write(path, now),
+					});
+				} else if (roll < 0.7) {
+					if (shown.length === 0) continue;
+					const path = pick(shown);
+					used.add(path);
+					changes.push({
+						label: `unlink ${path}`,
+						made: () => view.unlink(path, undefined),
+						model: () => model.remove(path, now),
+					});
+				} else {
+					if (shown.length === 0) continue;
+					const from = pick(shown);
+					const targets = free.filter((p) => alone.includes(p) && p !== from);
+					if (targets.length === 0) continue;
+					const to = pick(targets);
+					if (!model.canRename(from, to)) continue;
+					used.add(from);
+					used.add(to);
+					changes.push({
+						label: `rename ${from} ${to}`,
+						made: () => view.rename({ from, to, noReplace: false }),
+						model: () => model.rename(from, to, now),
+					});
+				}
+			}
+			steps.push(command === undefined ? "held" : `close ${COMMANDS.indexOf(command) + 1} held`);
+			const run = async (): Promise<MachineBoundary> => {
+				const { reached, release } = holdCommit(core);
+				const answering = command ? service.closeWindow(PLACEMENT, command) : service.boundary(PLACEMENT);
+				// A boundary with nothing to publish asks no commit: what is changed meanwhile then waits for nothing.
+				await Promise.race([reached, answering]);
+				const made = changes.map((change) => change.made());
+				release();
+				const answer = await answering;
+				core.commitHook = undefined;
+				await Promise.all(made);
+				return answer;
+			};
+			await boundary(run, stopped);
+			for (const change of changes) {
+				steps.push(`then ${change.label}`);
+				change.model();
+			}
+			for (const path of used) touched.add(path);
 		};
 		for (let step = 0; step < STEPS; step++) {
 			const roll = random();
 			const path = pick(PATHS);
 			const other = pick(PATHS);
-			if (roll < 0.3) {
+			if (roll < 0.26) {
 				if (!model.canWrite(path)) continue;
 				steps.push(`write ${path}`);
 				await write(view, path, `${seed}.${step}`);
 				model.write(path, tags());
-			} else if (roll < 0.55) {
+				touched.add(path);
+			} else if (roll < 0.47) {
 				if (!model.canRename(path, other)) continue;
 				steps.push(`rename ${path} ${other}`);
 				await view.rename({ from: path, to: other, noReplace: false });
 				model.rename(path, other, tags());
-			} else if (roll < 0.67) {
+				touched.add(path);
+				touched.add(other);
+			} else if (roll < 0.57) {
 				if (!model.shows(path)) continue;
 				steps.push(`unlink ${path}`);
 				await view.unlink(path, undefined);
 				model.remove(path, tags());
-			} else if (roll < 0.77) {
+				touched.add(path);
+			} else if (roll < 0.65) {
 				const free = COMMANDS.filter((c) => !windows.has(c) && !ended.has(c));
 				if (free.length === 0) continue;
 				const command = pick(free);
 				steps.push(`open ${COMMANDS.indexOf(command) + 1}`);
 				service.openWindow(PLACEMENT, windowOf(command));
 				windows.add(command);
-			} else if (roll < 0.9) {
+			} else if (roll < 0.76) {
 				if (windows.size === 0) continue;
 				const command = pick([...windows]);
 				steps.push(`close ${COMMANDS.indexOf(command) + 1}`);
@@ -615,15 +812,20 @@ describe("test machine credits against a model", () => {
 					ended.add(command);
 					core.endedCommands.add(command);
 				}
-			} else await boundary(() => service.boundary(PLACEMENT), random() < 0.3);
+			} else if (roll < 0.84) {
+				// Boundaries in a row, nothing changed between them: what one keeps pending goes again as it went.
+				for (let times = 2 + Math.floor(random() * 2); times > 0; times--)
+					await boundary(() => service.boundary(PLACEMENT), random() < 0.2);
+			} else if (roll < 0.93) await held(step);
+			else await boundary(() => service.boundary(PLACEMENT), random() < 0.3);
 		}
 		await boundary(() => service.boundary(PLACEMENT), false);
 		for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 	}
 
-	for (const first of [1, 51, 101, 151])
-		it(`credits each unit as the model does, seeds ${first} to ${first + 49}`, { timeout: 60_000 }, async () => {
-			for (let seed = first; seed < first + 50; seed++) await sequence(seed);
+	for (const first of [1, 101, 201, 301])
+		it(`credits each unit as the model does, seeds ${first} to ${first + 99}`, { timeout: 60_000 }, async () => {
+			for (let seed = first; seed < first + 100; seed++) await sequence(seed);
 		});
 });
 

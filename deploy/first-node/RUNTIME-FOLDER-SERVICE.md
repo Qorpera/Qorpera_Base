@@ -696,13 +696,18 @@ machines", "Commands and credit" and "Boundaries"), against 6a's core (migration
   with what it has inside) until it is removed, settled, or left with nothing to publish (a move moved back, a file made
   and removed again). A pending removal of a live path is kept by that path, which no rename moves: it takes the
   remover's tags and those of the file or folder it took, and holds them only while it is the removal pending there.
-  Chunks take the windows open as they arrive and become the file's at the close that fixes them; abandoned unfixed,
-  they lose their tags. Each unit's `credits` are read from what it publishes as the boundary plans it: a removal's from
+  Chunks take the windows open as they arrive and become the file's in the step of the close that fixes them, so a
+  change made after the close (a removal waiting behind the same boundary) takes them with the file; a file abandoned,
+  or removed, with chunks unfixed loses them and their tags. Each change and its tags are made in one synchronous step,
+  after the change's last wait, and so are a boundary's plan and its credits, and its settling: no other change sees one
+  without the other. Each unit's `credits` are read from what it publishes as the boundary plans it: a removal's from
   the removals it names, any other unit's from its files and folders, and a new file published as the next version of a
   live file the view removed also from that removal. They are the sorted commands, and none when only the starter
   changed them. A unit that mixes both is credited to the commands alone: `credits` cannot name the starter, and leaving
   it out would credit the commands' changes to the starter. A commit tried again, or replayed under its key at the next
-  boundary, sends the same credits. Every tag goes with the view.
+  boundary, sends the same credits. A new file the core refused and the boundary keeps pending takes the tags of the
+  removal it carried as the settling drops that removal, so a unit kept pending goes again with the same credits. Every
+  tag goes with the view.
 - **`command_ended`.** A unit the core refuses because a command it is credited to has ended is kept, as any refused
   unit, and sent again at each boundary with the same credits, until the final. It is never credited to the starter
   instead.
@@ -713,14 +718,19 @@ machines", "Commands and credit" and "Boundaries"), against 6a's core (migration
   project and the execution host, and an overlapping project stops the service; a change made in one window is credited
   to it, one made in two windows to both, one in none to the starter (no `credits`); a rename keeps its tags; a moved
   file's removal is credited at its origin, also when a new file made there replaces the moved one; a file removed and
-  made again is credited to its maker alone, not to the command whose refused boundary left it pending; a cut takes the
-  windows open at its close; an undone change's tags go; a retry sends the same credits; a `command_ended` refusal is
-  kept and sent again; a quiet publish comes about 2 s after the last change; a close publishes the command's changes
-  before it answers; the final boundary publishes with `final`; the control socket refuses a window from another uid,
-  and a malformed one. A seeded randomized test (200 short sequences of writes, renames, renames over a file, unlinks,
-  windows opened and closed, and boundaries accepted, refused whole or ended, on three files) checks each boundary's
-  units and credits against a model: a unit is credited to exactly the commands whose windows were open when a change
-  now in it was made.
+  made again is credited to its maker alone, not to the command whose refused boundary left it pending; a file a command
+  wrote, closed and removed by the starter while a boundary runs, both waiting for it, has its removal credited to the
+  command; a refused new file that took in a command's removal is sent with the same credits at three boundaries; a cut
+  takes the windows open at its close; an undone change's tags go; a retry sends the same credits; a `command_ended`
+  refusal is kept and sent again; a quiet publish comes about 2 s after the last change; a close publishes the command's
+  changes before it answers; the final boundary publishes with `final`; the control socket refuses a window from another
+  uid, and a malformed one. A seeded randomized test (400 sequences of 18 steps on three files: writes, renames, renames
+  over a file, unlinks, windows opened and closed, boundaries accepted, refused whole or ended, several in a row, and
+  boundaries held at their commit while the machine closes a file it wrote before the boundary began, may remove it, and
+  writes, unlinks or renames, each waiting for the boundary) checks each boundary's units and credits against a model: a
+  unit is credited to exactly the commands whose windows were open when a change now in it was made. It also checks that
+  a unit a boundary kept pending, or refused whole, goes again with the same credits until a change is made to it. The
+  model holds a file open only across a held boundary.
 
 ## Not here
 

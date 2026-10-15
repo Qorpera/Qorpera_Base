@@ -17,7 +17,7 @@ import {
 import type { CoreAccess, Grant, MountGrants, ViewIdentity } from "./mounts.ts";
 import { type NasObjects, ObjectIntegrityError, ObjectUnavailableError } from "./objects.ts";
 import { CHUNK_BYTES, type ChunkRef, type FileRef, type PendingFile, PendingView, PublishFirst } from "./pending.ts";
-import { type BoundaryPlan, type CommitUnit, planBoundary } from "./plan.ts";
+import { type BoundaryPlan, type CommitUnit, type PlannedUnit, planBoundary } from "./plan.ts";
 import {
 	type BridgeInfo,
 	type ChunkPart,
@@ -934,13 +934,24 @@ export class FolderService {
 				// with no chunk sent. Its bytes become its own from the origin's chunks first, and the close cuts them.
 				const origin = view.pending?.originToCopy(handle);
 				if (origin && size !== origin.bytes) await this.#beginFromOrigin(view, handle, origin);
-				// Its writes were credited as their chunks came: the close changes the file itself only when it cuts it.
-				const file = view.pending?.file(handle);
-				const cuts = file !== undefined && Math.ceil(size / CHUNK_BYTES) < (file.content?.chunks.length ?? 0);
-				const cut = cuts ? this.#pathOfNode(view, file) : undefined;
-				const node = await this.#change(view, cut ? [cut] : [], (pending) => pending.close(handle, size), tags);
-				// The chunks the close fixed are the file's now, and so are the tags they were sent under.
-				if (tags !== undefined) view.credit.fixed(node);
+				const node = await this.#change(
+					view,
+					// Its writes were credited as their chunks came: the close changes the file itself only when it cuts it.
+					(pending) => {
+						const file = pending.file(handle);
+						const cuts = Math.ceil(size / CHUNK_BYTES) < (file.content?.chunks.length ?? 0);
+						const cut = cuts ? this.#pathOfNode(view, file) : undefined;
+						return cut === undefined ? [] : [cut];
+					},
+					(pending) => {
+						const closed = pending.close(handle, size);
+						// The chunks the close fixed are the file's now, and so are the tags they came under: in the same
+						// step, so no change made after it sees the file without them.
+						if (tags !== undefined) view.credit.fixed(closed);
+						return closed;
+					},
+					tags,
+				);
 				view.handles.delete(handle);
 				for (const key of [...view.uploads.keys()]) if (key.startsWith(`${handle}:`)) view.uploads.delete(key);
 				const path = node.open === 0 ? this.#pathOfNode(view, node) : undefined;
@@ -1621,12 +1632,13 @@ export class FolderService {
 
 	/** One change to the view's pending changes. A change that needs what is pending published first publishes it,
 	 * then is made again; if it is still blocked then, the machine hears BUSY. `changed`: what it changes, for a test
-	 * machine's credits (F3 6b), which go to `tags`: the command windows open as the machine asked it, taken before
-	 * anything is awaited (a request that awaits before its change passes those it took on entry). A window that closes
-	 * while the change waits for a boundary keeps it. */
+	 * machine's credits (F3 6b), read as it is made, which go to `tags`: the command windows open as the machine asked
+	 * it, taken before anything is awaited (a request that awaits before its change passes those it took on entry). A
+	 * window that closes while the change waits for a boundary keeps it. The change and its tags are made in one
+	 * synchronous step, after the last await: no other change sees one without the other. */
 	async #change<T>(
 		view: View,
-		changed: Changed,
+		changed: Changed | ((pending: PendingView) => Changed),
 		change: (pending: PendingView) => T,
 		tags = this.#windowsOf(view),
 	): Promise<T> {
@@ -1635,7 +1647,8 @@ export class FolderService {
 		if (!pending) throw new ProtocolError(ErrorCode.readOnly, "This view is read-only");
 		// What the change may remove and what it changes showed, as they are when it is made.
 		const make = (): readonly [T, Before | undefined] => {
-			const seen = tags === undefined ? undefined : view.credit.before(pending, changed);
+			if (tags === undefined) return [change(pending), undefined];
+			const seen = view.credit.before(pending, typeof changed === "function" ? changed(pending) : changed);
 			return [change(pending), seen];
 		};
 		let made: readonly [T, Before | undefined];
@@ -1855,6 +1868,8 @@ export class FolderService {
 			if (upload.next < upload.bytes) return;
 			await upload.upload?.end();
 			pending.setChunk(part.handle, part.index, { sha256: part.sha256, bytes: part.bytes });
+			// Its tags, in the same step: a close made after it fixes both.
+			if (tags !== undefined) view.credit.wrote(pending.file(part.handle), tags);
 			done();
 		} catch (error) {
 			done();
@@ -1863,7 +1878,6 @@ export class FolderService {
 				? error
 				: new ProtocolError(ErrorCode.unavailable, "The chunk could not be saved now");
 		}
-		if (tags !== undefined) view.credit.wrote(pending.file(part.handle), tags);
 		this.#touch(view);
 	}
 
@@ -2610,6 +2624,7 @@ export class FolderService {
 			settlement.keep,
 			settlement.plan.units.flatMap((u) => u.paths),
 			settlement.saved,
+			settlement.plan.units,
 		);
 	}
 
@@ -2651,12 +2666,14 @@ export class FolderService {
 		}
 	}
 
-	/** Shows the live folder again but for the nodes kept, and tells the machines the paths that change by it. */
+	/** Shows the live folder again but for the nodes kept, and tells the machines the paths that change by it. `units`:
+	 * the boundary's, for a test machine's credits. */
 	#settleNodes(
 		view: View,
 		keep: ReadonlySet<string>,
 		paths: readonly string[],
 		saved: ReadonlySet<string> = new Set(),
+		units: readonly PlannedUnit[] = [],
 	): void {
 		const pending = view.pending;
 		if (!pending) return;
@@ -2668,8 +2685,11 @@ export class FolderService {
 				if (!saved.has(parent)) keepAll.add(parent);
 			}
 		const before = [...pending.nodes().keys()];
-		pending.settle(new Set([...keepAll].filter((p) => pending.nodes().has(p))));
-		// What still waits keeps its credits, to go with it when it is published (F3 6b).
+		const kept = new Set([...keepAll].filter((p) => pending.nodes().has(p)));
+		// What still waits keeps its credits, to go with it when it is published again (F3 6b): a new file kept that
+		// took in a removal settling drops keeps that removal's, in the same step.
+		view.credit.kept(units, pending, kept);
+		pending.settle(kept);
 		view.credit.prune(pending);
 		if (pending.empty) view.intents.clear();
 		// Nothing left unsaved (a lock or swap file a program still holds is none): the next renewal tells the core so,

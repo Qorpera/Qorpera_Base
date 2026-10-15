@@ -99,14 +99,18 @@ export interface Before {
  * nothing else:
  * - a pending node (the object, never its path) has the tags of the changes made to it since it last had nothing to
  *   publish. They go with it through renames, and go when it does: removed, settled, or back to nothing to publish.
- *   Chunks no close fixed are its own until a close fixes them, and lost with them when the file is abandoned.
+ *   Chunks no close fixed have theirs apart until the close that fixes them takes them in the same step; a file
+ *   abandoned, or removed, before that loses them, and their tags.
  * - a pending removal of a live path (the path removed, or the origin of the node removed) has the tags of the change
  *   that removed it and of the node it took. They are kept by that live path, which no rename moves, and hold while
  *   that removal is the one pending there: published, dropped or replaced, it has none.
  * A unit's credits are read from what it publishes as its boundary plans it: a delete's from the removals it names;
  * any other unit's from the nodes it names, and a new file published as the next version of a live file the view
- * removed (with that file's `expectedVersion`) also from that removal. A change undone (a file made and removed, a
- * move moved back) leaves nothing that holds its tags.
+ * removed (with that file's `expectedVersion`) also from that removal. Such a file the core refused and the boundary
+ * keeps pending takes that removal's tags as it settles, which drops the removal: sent again, a unit kept pending is
+ * credited as it was. A change undone (a file made and removed, a move moved back) leaves nothing that holds its tags.
+ * Each of these is made in the same synchronous step as the change to the pending view it follows, so no other change
+ * sees one without the other.
  */
 export class CreditTags {
 	#nodes = new WeakMap<Node, Set<string>>();
@@ -155,12 +159,12 @@ export class CreditTags {
 				if (node.kind !== "gone" && path.startsWith(`${before.moved}/`)) this.#add(this.#nodes, node, tags);
 	}
 
-	/** A chunk set in a file open for writing, under these tags. */
+	/** A chunk set in a file open for writing, under these tags: in the step that sets it. */
 	wrote(file: PendingFile, tags: readonly string[]): void {
 		this.#add(this.#unfixed, file, tags);
 	}
 
-	/** A close fixed the file's chunks: their tags are the file's. */
+	/** A close fixed the file's chunks: their tags are the file's, from the close's own step on. */
 	fixed(file: PendingFile): void {
 		const unfixed = this.#unfixed.get(file);
 		this.#unfixed.delete(file);
@@ -179,7 +183,7 @@ export class CreditTags {
 	 * `credits` cannot name the starter, and leaving it out would credit the commands' changes to the starter. */
 	credits(units: readonly PlannedUnit[], pending: PendingView): (readonly string[] | undefined)[] {
 		if (!this.#used) return units.map(() => undefined);
-		let removed: Map<string, string> | undefined;
+		const removed = this.#removedByKey(pending);
 		return units.map(({ unit, paths }) => {
 			const ids = new Set<string>();
 			const add = (tags: Iterable<string> | undefined): void => {
@@ -194,16 +198,25 @@ export class CreditTags {
 				if (node === undefined || node.kind === "gone") continue;
 				add(this.#nodes.get(node));
 				if (node.kind === "file") add(this.#unfixed.get(node));
-				// A new file published as the next version of the live file the view removed there: the removal is in it.
-				if (unit.op === "write" && unit.expectedVersion !== undefined && node.origin === undefined) {
-					removed ??= new Map([...pending.removed().keys()].map((at) => [folderKey(at), at]));
-					const at = removed.get(folderKey(path));
-					if (at !== undefined && pending.removed().get(at)?.version === unit.expectedVersion)
-						add(this.#removal(pending, at));
-				}
+				add(this.#replaced(unit, node, path, pending, removed));
 			}
 			return ids.size === 0 ? undefined : [...ids].sort();
 		});
+	}
+
+	/** As a boundary settles, before the view drops every removal: a file it keeps pending (the core refused it) that it
+	 * published as the next version of a live file the view removed takes that removal's tags, so that sent again it is
+	 * credited as it was. `keep`: the nodes the settle keeps. */
+	kept(units: readonly PlannedUnit[], pending: PendingView, keep: ReadonlySet<string>): void {
+		if (!this.#used) return;
+		const removed = this.#removedByKey(pending);
+		for (const { unit, paths } of units)
+			for (const path of paths) {
+				const node = pending.nodes().get(path);
+				if (!keep.has(path) || node === undefined || node.kind === "gone") continue;
+				const tags = this.#replaced(unit, node, path, pending, removed);
+				if (tags !== undefined) this.#add(this.#nodes, node, [...tags]);
+			}
 	}
 
 	/** At a boundary, and once it settled: tags of nothing pending go. A node with nothing to publish has none, so what
@@ -219,6 +232,30 @@ export class CreditTags {
 		this.#unfixed = new WeakMap();
 		this.#removals.clear();
 		this.#used = false;
+	}
+
+	/** The tags of the removal a unit publishing a new file at `path` takes in: one of a live file the view removed
+	 * there, whose version the unit names as its `expectedVersion`. */
+	#replaced(
+		unit: CommitUnit,
+		node: Node,
+		path: string,
+		pending: PendingView,
+		removed: () => ReadonlyMap<string, string>,
+	): ReadonlySet<string> | undefined {
+		if (unit.op !== "write" || unit.expectedVersion === undefined || node.origin !== undefined) return undefined;
+		const at = removed().get(folderKey(path));
+		if (at === undefined || pending.removed().get(at)?.version !== unit.expectedVersion) return undefined;
+		return this.#removal(pending, at);
+	}
+
+	/** The view's removals by folded key, made when first asked. */
+	#removedByKey(pending: PendingView): () => ReadonlyMap<string, string> {
+		let removed: Map<string, string> | undefined;
+		return () => {
+			removed ??= new Map([...pending.removed().keys()].map((at) => [folderKey(at), at]));
+			return removed;
+		};
 	}
 
 	#removal(pending: PendingView, at: string): ReadonlySet<string> | undefined {
