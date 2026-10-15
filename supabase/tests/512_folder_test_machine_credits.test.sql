@@ -110,7 +110,7 @@ begin
 	end loop;
 	-- 64 distinct ids are well formed (none of them runs here).
 	perform pg_temp.expect(pg_temp.vcommit(s, 'cr-64-ids', jsonb_build_array(jsonb_build_object('op','mkdir','path','cr-64',
-		'credits',(select jsonb_agg(extensions.gen_random_uuid()::text) from generate_series(1, 64)))))), 1, 'refused', 'command_ended');
+		'credits',(select jsonb_agg(extensions.gen_random_uuid()::text) from generate_series(1, 64))))), 1, 'refused', 'command_ended');
 	rb := pg_temp.open('run_box', '{}', v);
 	perform pg_temp.refused(format('select pg_temp.vcommit(%L, %L, %L)', rb, 'cr-run-box', jsonb_build_array(pg_temp.mk('cr-rb-ok'),
 		pg_temp.mk('cr-rb', c_ok::uuid))), '22023', 'Change set unit 2 is invalid');
