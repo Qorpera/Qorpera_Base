@@ -3,7 +3,6 @@ import type { JsonValue } from "@qorpera/contracts";
 import type { CloudActionGateResult } from "./cloud-action-review.ts";
 import type { CompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
 import {
-	CloudCompanyFormationRefused,
 	CloudCompanyPathParentMissing,
 	CloudCompanyPathRpcRefusal,
 	CloudCompanyPathToolRefusal,
@@ -55,9 +54,6 @@ const WORK_LOG_GONE =
 const OUTCOME_UNKNOWN =
 	"OUTCOME_UNKNOWN: Your run was cut off while this action ran, so it may or may not have happened, and this operation key cannot run it again. Check whether it happened before you repeat it; repeat it only if it did not, under a new operation key.";
 
-/** Prefix for a formation write the organization projection would refuse; the gateway's reason follows. */
-const COMPANY_FORMATION_REFUSED = "COMPANY_FORMATION_REFUSED: nothing was written; ";
-
 /** Fixed wording for a definite missing-folder refusal of a Company File write or mkdir. */
 const COMPANY_FILE_PARENT_MISSING =
 	"COMPANY_FILE_PARENT_MISSING: nothing was written; the folder this path goes in does not exist. When a member or your assignment named this folder, or a category of files needs it as its home, create it with company_mkdir first, and any missing folder above it, outermost first (expectedVersion is the version company_read reports for that folder, null if it never existed), then repeat this call unchanged. Otherwise, for a single file, choose an existing folder where it fits and write it there; if none fits, create one named for its category (contracts/, not acme-nda/). If company_read shows a file at that path, it is not a folder: do not replace the file; choose another path.";
@@ -72,6 +68,8 @@ const MAX_SOURCE_BYTES = 1024 * 1024;
  * replaces it, so a cut answer never grows. */
 const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/=]{10,}/g;
 const WEBHOOK_SECRET_REDACTED = "whsec_[REDACTED]";
+/** The pinned fence's bound on one tool result's PNG. */
+const MAX_SHOWN_IMAGE_BYTES = 8 * 1024 * 1024;
 /** A run carries every tool its agent is granted, with no count cap (founder,
  * 2026-09-24: a provider's own limit, such as OpenAI's per-request function
  * count, is enforced by the provider). Only the serialized catalog is bounded,
@@ -93,6 +91,11 @@ function remember<K>(store: Set<K> | Map<K, unknown>, limit: number): void {
 	while (store.size > limit) store.delete(store.keys().next().value as K);
 }
 
+/** An exact issued envelope of a call, as the images issued with it are kept. */
+function issuedKey(callId: string, envelope: string): string {
+	return `${callId}:${createHash("sha256").update(envelope).digest("hex")}`;
+}
+
 export interface CloudToolContext {
 	readonly companyId: string;
 	readonly runId: string;
@@ -112,6 +115,8 @@ export interface CloudNativeTool {
 	readonly description: string;
 	readonly source: "company_file" | "connector" | "worker" | "runtime";
 	readonly inputSchema: { [key: string]: JsonValue };
+	/** Its answers may show the model an image (`CloudToolContent.image`): the native session must then carry images. */
+	readonly images?: true;
 	/** A required, closed parser: native provider schema hints are not validation. */
 	parseArguments(value: JsonValue): JsonValue;
 	/** Everything a call would change, in full, for the automatic review, when its arguments only name it and its card
@@ -135,6 +140,9 @@ export type CloudToolContent = ({ kind: "text"; value: string } | { kind: "json"
 	companyReadId?: string;
 	/** Host-only: a confirmed final public send. The turn ends after this result is fenced. */
 	completesTurn?: boolean;
+	/** Host-only: the PNG an `images` tool shows with an answer that cites its read (a folder image company_read
+	 * converted), handed to the model right after the envelope. */
+	image?: { png: Buffer; sha256: string };
 };
 
 /** The auto-review step (runtime v130) an acting call passes before it runs. */
@@ -393,6 +401,9 @@ export class CloudNativeToolBoundary {
 	readonly #signal: AbortSignal;
 	readonly #calls = new Map<string, CloudNativeCall>();
 	readonly #issuedResults = new Set<string>();
+	/** The image issued with each exact envelope that showed one, by `callId:sha256(envelope)`: only its hash (never
+	 * pixels), kept as long as the issued results are. */
+	readonly #shownImages = new Map<string, string>();
 	readonly #nativeResults = new Map<string, { digest: string; output: string; imageSha256?: string }>();
 	#pending: Promise<void> = Promise.resolve();
 
@@ -438,6 +449,7 @@ export class CloudNativeToolBoundary {
 				!tool.description.trim() ||
 				Buffer.byteLength(tool.description) > 4096 ||
 				!["company_file", "connector", "worker", "runtime"].includes(tool.source) ||
+				(tool.images !== undefined && tool.images !== true) ||
 				tool.inputSchema.type !== "object" ||
 				tool.inputSchema.additionalProperties !== false ||
 				Buffer.byteLength(cloudToolJsonText(tool.inputSchema)) > MAX_ARGUMENT_BYTES
@@ -472,8 +484,9 @@ export class CloudNativeToolBoundary {
 		};
 	}
 
+	/** Whether a result may carry an image: a screenshot, or an image a tool shows. */
 	get captureImagesEnabled(): boolean {
-		return this.#captures !== undefined;
+		return this.#captures !== undefined || [...this.#tools.values()].some((tool) => tool.images === true);
 	}
 
 	close(): void {
@@ -549,9 +562,16 @@ export class CloudNativeToolBoundary {
 					imageSha256 = image.sha256;
 				}
 			}
-			if (imageSha256 && !this.#captures) throw new Error("Native captures unavailable");
-			const capture = text === undefined ? undefined : this.#captures?.verify(input.callId, text, imageSha256);
-			const image = capture ? { imageSha256: capture.sha256, capture } : {};
+			// An image a tool showed comes back with exactly the envelope it was issued with, and that envelope never without it.
+			const shown = text === undefined ? undefined : this.#shownImages.get(issuedKey(input.callId, text));
+			if (shown !== undefined && imageSha256 !== shown) throw new Error("Native image not issued");
+			if (imageSha256 && shown === undefined && !this.#captures) throw new Error("Native captures unavailable");
+			const capture =
+				text === undefined || shown !== undefined
+					? undefined
+					: this.#captures?.verify(input.callId, text, imageSha256);
+			const image =
+				shown !== undefined ? { imageSha256: shown } : capture ? { imageSha256: capture.sha256, capture } : {};
 			const previous = this.#nativeResults.get(key);
 			if (previous) {
 				// Compaction may retain the already-fenced body. Only our exact prior
@@ -619,7 +639,6 @@ export class CloudNativeToolBoundary {
 					REVIEW_UNAVAILABLE: "review_unavailable",
 					COMPANY_FILE_VERSION_CHANGED: "stale_version",
 					COMPANY_FILE_PARENT_MISSING: "parent_missing",
-					COMPANY_FORMATION_REFUSED: "invalid_arguments",
 					WORK_LOG_UNAVAILABLE: "transport_unavailable",
 					WORK_LOG_GONE: "authority_unavailable",
 				} as const;
@@ -924,6 +943,24 @@ export class CloudNativeToolBoundary {
 				);
 				response.contentItems.push({ type: "inputImage", imageUrl });
 			}
+			if (content.image) {
+				// Only a tool that shows images, after an answer citing the read it showed: the image is released with it.
+				const { png, sha256 } = content.image;
+				if (
+					tool.images !== true ||
+					content.companyReadId === undefined ||
+					!Buffer.isBuffer(png) ||
+					png.byteLength > MAX_SHOWN_IMAGE_BYTES ||
+					createHash("sha256").update(png).digest("hex") !== sha256
+				)
+					throw new Error("Invalid shown image");
+				this.#shownImages.set(issuedKey(callId, response.contentItems[0].text), sha256);
+				remember(this.#shownImages, CLOUD_NATIVE_RESULT_RETENTION_LIMIT * 2);
+				response.contentItems.push({
+					type: "inputImage",
+					imageUrl: `data:image/png;base64,${png.toString("base64")}`,
+				});
+			}
 			if (tool.source !== "company_file")
 				observation?.update({
 					outputBytes: (JSON.parse(response.contentItems[0].text) as CloudToolResult).content.originalBytes,
@@ -946,7 +983,7 @@ export class CloudNativeToolBoundary {
 				error instanceof CloudCompanyPathToolRefusal &&
 				!this.#signal.aborted &&
 				tool.source === "company_file" &&
-				["company_read", "company_list", "company_write", "company_mkdir", "company_delete"].includes(tool.name)
+				["company_write", "company_mkdir", "company_delete"].includes(tool.name)
 			) {
 				observation?.finish("denied", { errorCategory: "authority_unavailable" });
 				return this.#result(callId, tool, digest, "denied", { kind: "text", value: "COMPANY_FILE_ACCESS_DENIED" });
@@ -971,19 +1008,6 @@ export class CloudNativeToolBoundary {
 			) {
 				observation?.finish("denied", { errorCategory: "parent_missing" });
 				return this.#result(callId, tool, digest, "denied", { kind: "text", value: COMPANY_FILE_PARENT_MISSING });
-			}
-			// Refused after the check, before anything is staged: the reason names only fixed formation keys and numbers.
-			if (
-				error instanceof CloudCompanyFormationRefused &&
-				!this.#signal.aborted &&
-				tool.source === "company_file" &&
-				tool.name === "company_write"
-			) {
-				observation?.finish("denied", { errorCategory: "invalid_arguments" });
-				return this.#result(callId, tool, digest, "denied", {
-					kind: "text",
-					value: `${COMPANY_FORMATION_REFUSED}${error.reason}`,
-				});
 			}
 			// A call its run was cut off in: it may have happened, and its key is spent, so the model checks first.
 			if (error instanceof CloudToolOutcomeUnknown && !this.#signal.aborted) {

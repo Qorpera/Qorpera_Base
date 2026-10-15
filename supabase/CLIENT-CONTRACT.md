@@ -75,7 +75,7 @@ they answer 42501 "native host call is refused".
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-175 functions, grouped for navigation. Signatures: see the migration that defines each.
+154 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
@@ -191,8 +191,7 @@ they answer 42501 "native host call is refused".
     login lapsed works);
   - only the member whose plan pays retries a failed run on it
     (`qorpera_resolve_failed_execution_run` 'retry': 55000 for anyone else;
-    acknowledging stays open) or a change's review on it
-    (`qorpera_retry_company_proposal_review`: 42501 for anyone else).
+    acknowledging stays open).
 - `qorpera_select_member_session_account(p_profile_id, p_session_id)` and
   `qorpera_choose_member_session_account(p_profile_id, p_session_id,
   p_connection_id)` (20260930059000, the payer never changes without the
@@ -261,37 +260,19 @@ and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
 - `qorpera_stage_operation_receipt_objects`
 
 
-### Company File, snapshots, proposals, workspaces (21)
+### Company File, snapshots, workspaces (5)
 
-- `qorpera_accept_company_proposal`
-- `qorpera_append_company_proposal_comment`
-- `qorpera_capture_company_substrate_version`
-- `qorpera_capture_company_substrate_version_v2`
 - `qorpera_company_uses_path_gateway`
 - `qorpera_get_company_file`
-- `qorpera_get_company_proposal`
 - `qorpera_get_company_snapshot`
-- `qorpera_get_company_substrate_version`
-- `qorpera_list_company_proposal_comments`
-- `qorpera_list_company_proposals`
 - `qorpera_list_company_snapshots`
-- `qorpera_list_company_substrate_operations`
 - `qorpera_list_company_workspaces`
-- `qorpera_prepare_company_file_proposal`
-- `qorpera_prepare_company_file_revision`
-- `qorpera_publish_company_file_revision`
-- `qorpera_rebase_company_proposal`
-- `qorpera_reject_company_proposal`
-- `qorpera_retry_company_proposal_review`
-- `qorpera_submit_company_proposal`
 
 
-### Organization and staff (6)
+### Organization and staff (4)
 
-- `qorpera_company_organization_bootstrap`
 - `qorpera_company_organization_json`
 - `qorpera_configure_staff_execution_authority`
-- `qorpera_delete_profile_staff`
 - `qorpera_list_profile_staff`
 - `qorpera_put_staff_provider_model`
 
@@ -467,7 +448,7 @@ and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
 - `qorpera_upsert_scoped_compute_identity`
 
 
-### Accounts, profiles, membership (22)
+### Accounts, profiles, membership (19)
 
 - `qorpera_accept_profile_invitation`
 - `qorpera_accept_profile_invitations`
@@ -475,8 +456,6 @@ and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
 - `qorpera_can_read_profile`
 - `qorpera_can_write_profile`
 - `qorpera_cancel_profile_invitation`
-- `qorpera_create_cloud_company`
-- `qorpera_create_hosted_profile`
 - `qorpera_decline_profile_invitation`
 - `qorpera_delete_hosted_profile`
 - `qorpera_get_account_entitlement`
@@ -486,7 +465,6 @@ and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
 - `qorpera_list_profile_invitations`
 - `qorpera_member_role`
 - `qorpera_profile_team_info`
-- `qorpera_promote_local_profile`
 - `qorpera_remove_profile_member`
 - `qorpera_retry_profile_invitation_delivery`
 - `qorpera_session_profile_id`
@@ -873,13 +851,15 @@ a write under `human-tasks/` waits for P31.
 
 - `qorpera_member_folder_read(environment, path)`: `{schema: "qorpera.folder-read/v1", asOfSeq, found, entry}`,
   `entry` null when not found; an entry has
-  `path`, `kind` (`file` or `folder`), `version`, `seq`, `updatedAt` and, for a file, `manifestSha256`,
-  `fileSha256`, `bytes`, `mediaType`, `executable`.
+  `path`, `kind` (`file`, `folder` or `symlink`), `version`, `seq`, `updatedAt` and, for a file, `manifestSha256`,
+  `fileSha256`, `bytes`, `mediaType`, `executable`; for a link (`20260930380000_folder_links`), its `target`, the
+  text it holds, never resolved. Nothing is below a link.
 - `qorpera_member_folder_list(environment, parent, after, limit)`: `qorpera.folder-list/v1`, one folder's entries in
   folder-key order (`parent` null for the top), at most `limit` (1 to 1,000); `next` is the path to pass as `after`
   for the next page, null on the last.
 - `qorpera_member_folder_path_history(environment, path, before, limit)`: `qorpera.folder-path-history/v1`, a path's
-  versions newest first (1 to 100 a page), each `{version, seq, op, kind, path, at, by}` and the content fields; a
+  versions newest first (1 to 100 a page), each `{version, seq, op, kind, path, at, by}` and the content fields (a
+  link's `target`, except on a delete); a
   `move_in` has `from` and a `move_out` has `to` when the member may read that path. `next` is a version to pass as
   `before`.
 - `qorpera_member_folder_history(environment, before, limit)`: `qorpera.folder-history/v1`, the change sets newest
@@ -888,7 +868,8 @@ a write under `human-tasks/` waits for P31.
   whose first 1,000 versions the member may read is left out (the feed still shows it). `next` is a seq to pass as
   `before`.
 - `qorpera_member_folder_changes(environment, after_seq, limit, cursor?)`: the folder feed (`qorpera.folder-feed/v1`,
-  core §6), each change set with `by` and `at`. Follow it from `next` (`afterSeq`, `cursor`); on `resync`, read
+  core §6), each change set with `by` and `at`; a link's change has its `target`. Follow it from `next` (`afterSeq`,
+  `cursor`); on `resync`, read
   again from the top.
 - `by` is `{kind: "member", userId}`, `{kind: "agent", staffAgentId}` or `{kind: "platform"}`.
 - `qorpera_member_folder_object(environment, sha256)`: the object gateway's check for one object (a manifest or a
@@ -1241,7 +1222,7 @@ does locally that the contract forbids.
 | `chat:open` | qorpera_ensure_staff_session / qorpera_ensure_member_private_staff_session |
 | `companies:list` | qorpera_list_hosted_profiles |
 | `company:close` | client state |
-| `company:new` | qorpera_create_cloud_company + qorpera_company_organization_bootstrap |
+| `company:new` | the founding lobby (qorpera_open_company_founding, qorpera_start_company_founding); the old create RPCs and the bootstrap went with legacy sweep D1 (20260930330000) |
 | `company:open` | select cloud profile (no folder; desktop-only local projection is transitional) |
 | `company:pending-creation` | client state over the same RPCs |
 | `company:product-add` | Order 9 (coding workers / repositories) — not yet |
@@ -1272,7 +1253,7 @@ does locally that the contract forbids.
 | `profile:leave-cloud` | qorpera_leave_hosted_profile |
 | `profile:list-invitations` | qorpera_list_profile_invitations |
 | `profile:materialize-cloud` | desktop-only transitional (local checkout) — no web equivalent by design |
-| `profile:migrate-local` | desktop-only transitional (qorpera_promote_local_profile) — no web equivalent by design |
+| `profile:migrate-local` | desktop-only transitional — no web equivalent by design (qorpera_promote_local_profile went with legacy sweep D1, 20260930330000) |
 | `room:archive` | qorpera_close_shared_session |
 | `room:create` | rooms: Order 3 fan-out; today shared sessions (qorpera_create_shared_session_v4) |
 | `room:open` | qorpera_read_session_events_tail (the newest page; older pages on "Show earlier") + qorpera_read_session_events (new events) + Realtime |
@@ -1286,11 +1267,11 @@ does locally that the contract forbids.
 | `settings:overlay` | client-local preference |
 | `settings:sidebar-translucency` | client-local preference |
 | `staff:archive` | review (staff lifecycle RPC, Order 0 organization kernel) |
-| `staff:bootstrap` | qorpera_company_organization_bootstrap |
+| `staff:bootstrap` | none: the company's creation seeds the Co-Founder (qorpera_company_organization_bootstrap went with legacy sweep D1, 20260930330000) |
 | `staff:catalog` | qorpera_company_organization_json / qorpera_list_profile_staff |
 | `staff:copy-conversation-id` | client |
 | `staff:create` | organization kernel RPC (in rework: responsibilities) — review |
-| `staff:delete` | qorpera_delete_profile_staff |
+| `staff:delete` | review (an agent's files in the company folder; qorpera_delete_profile_staff went with legacy sweep D1, 20260930330000) |
 | `staff:intro-ready` | review |
 | `staff:open` | qorpera_ensure_staff_session |
 | `staff:restore` | review |
@@ -1431,6 +1412,9 @@ above.
     Until this lands the web client derives the placeholder character from the
     profile id (stable across renames) and says so in its own code; it offers
     no logo picker, because there is nowhere to put the answer.
+
+    *`qorpera_create_hosted_profile` went with legacy sweep D1
+    (20260930330000); a company is created through the founding lobby.*
 11. **A member cannot set an agent's appearance once a company is bootstrapped.**
     `qorpera_put_profile_staff` is listed in §2 and granted to `authenticated`,
     but on a company whose bootstrap job has completed every member write to
@@ -1459,6 +1443,10 @@ above.
     member-callable only before bootstrap completes; a client reading §2 today
     would build exactly the screen that this trigger refuses, which is what
     happened here.
+
+    *Legacy sweep D1 (20260930330000) dropped `qorpera_put_profile_staff`,
+    `qorpera_delete_profile_staff` and the trigger. A `folder-v2` agent
+    changes through its files in the company folder.*
 
 ### 2026-09-19 — from the web client session (`packages/web`, PR #118)
 

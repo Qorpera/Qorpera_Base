@@ -36,6 +36,23 @@ pub struct Hello {
 	pub view_id: String,
 	pub pass: String,
 	pub role: Role,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub previous: Option<Previous>,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub abandon: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Previous {
+	pub view_id: String,
+	pub pass: String,
+}
+
+impl std::fmt::Debug for Previous {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("Previous").field("view_id", &self.view_id).finish_non_exhaustive()
+	}
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -46,6 +63,8 @@ pub struct HelloOk {
 	/// The folder's change number when the view was checked.
 	pub as_of_seq: u64,
 	pub read_only: bool,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub switchable: bool,
 }
 
 /// The first frame from the bridge on the node: the peer's CID as the node's kernel reported it, and the
@@ -460,6 +479,8 @@ mod tests {
 			view_id: "v".into(),
 			pass: "p".into(),
 			role: Role::Feed,
+			previous: None,
+			abandon: false,
 		};
 		assert_eq!(
 			serde_json::to_string(&hello).unwrap(),

@@ -155,6 +155,7 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 					viewId: hello.viewId,
 					asOfSeq: handle.asOfSeq,
 					readOnly: !writing,
+					...(handle.switchable ? { switchable: true } : {}),
 				}),
 			);
 			if (role === "feed")

@@ -65,6 +65,10 @@ native process completion -> closed private receipt -> existing run completion
 - `packages/shell/src/cloud-agent-mouth.ts` provides one authenticated,
   loopback-only MCP endpoint per run. It exposes only `send_message` with
   `text`, `phase` (`progress` or `final`), and `idempotencyKey`.
+  That endpoint and its token have since been removed (legacy sweep step C,
+  C-R4): `CloudAgentMouth`, now in `packages/runtime/src/cloud-agent-mouth.ts`,
+  keeps `send`, `finish` and `close`, and a company run reaches it in process
+  through its `send_message` tool.
 - The model cannot choose the company, agent, run, sponsor or recipient.
   Those are bound by the native host and resolved against durable authority.
   The model receives only a random, short-lived mouth token, never the
@@ -103,17 +107,20 @@ no session persistence, no file-based settings, and disabled executable hooks;
 the [Claude CLI reference](https://code.claude.com/docs/en/cli-reference) and
 [hook configuration](https://code.claude.com/docs/en/hooks). Full Claude provider
 compatibility and cloud acceptance remain the previously agreed backlog item.
+Neither configuration remains: the mouth has no MCP endpoint any more (legacy
+sweep step C), and the cloud Codex session starts with `mcp_servers={}`.
 
 ## Verification
 
 Run focused tests from `packages/runtime`:
 
 ```sh
-node ../../node_modules/vitest/dist/cli.js --run test/cloud-agent-mouth.test.ts test/cloud-native-provider-host.test.ts test/cloud-native-provider.test.ts test/cloud-runner-worker.test.ts test/cloud-runner-broker.test.ts test/cloud-runner-sandbox.test.ts test/official-codex-mouth.test.ts
+node ../../node_modules/vitest/dist/cli.js --run test/cloud-agent-mouth.test.ts test/cloud-native-provider-host.test.ts test/cloud-native-provider.test.ts test/cloud-runner-worker.test.ts test/cloud-runner-broker.test.ts
 ```
 
 The v47 activation focused suite passed 89 tests across nine files, two of them desktop tests since
-removed with the desktop app. They exercise
+removed with the desktop app, and two more (`cloud-runner-sandbox`, `official-codex-mouth`) since
+removed in legacy sweep step C. They exercise
 private-output canaries, immediate sends, lost-response
 replay, transport authentication, malformed arguments/receipts, cancellation,
 final-delivery obligations, silent no-audience jobs, provider process contracts,
@@ -170,13 +177,13 @@ the new production RPC, official model behavior, or all-clients-offline wake
 dispatch has been deployed and accepted. The temporary NAS proof tree is
 removed after validation; no existing company files are modified.
 
-The reusable probe is
-`packages/runtime/test/fixtures/run-cloud-mouth-probe.ts`. Cloud images run
-bundled JavaScript; bundle this entry with the repository's esbuild for
-Node 22.19 and place `cloud-mouth-harness.cjs` beside the resulting module.
-Pass the live company parent path as its first argument. Do not point a local
-test runner at production credentials or replace a signed service with this
-test bundle.
+The reusable probe was
+`packages/runtime/test/fixtures/run-cloud-mouth-probe.ts`; it and
+`cloud-mouth-harness.cjs` have since been removed (legacy sweep step C, C-R3).
+Cloud images ran it as bundled JavaScript built with the repository's esbuild
+for Node 22.19, with the harness beside the resulting module and the live
+company parent path as its first argument. Do not point a local test runner at
+production credentials or replace a signed service with a test bundle.
 
 ## Production activation
 
@@ -480,11 +487,12 @@ The first v47 probe bundle accidentally exported the fixture without invoking
 it. That empty-success result was rejected before signing or activation. The
 corrected verifier requires the exact proof fields, and the candidate was
 booted and verified again. The digest above refers to that second, valid
-acceptance record. Use the executable entry point
+acceptance record. Its executable entry point was
 `packages/runtime/test/fixtures/run-official-codex-mouth-probe.ts`, not the library
-fixture alone, when bundling future probes. Pass the installed Codex command
-as its first argument; the cloud probe uses `/usr/local/bin/codex`. Its
-standalone regression requires a nonempty, exact proof object.
+fixture alone, with the installed Codex command as its first argument (the cloud
+probe used `/usr/local/bin/codex`); its standalone regression required a
+nonempty, exact proof object. Both have since been removed (legacy sweep step C,
+C-R3).
 
 Both job-drain checks were empty before activation. The signature was verified
 off-node and on-node with the existing trust root, then the provider pins were

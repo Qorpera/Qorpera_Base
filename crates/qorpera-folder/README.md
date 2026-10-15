@@ -46,8 +46,27 @@ forgetting a prefix; compaction replaces the journal while preserving the lock i
 `I` polls the released watermark before reporting success, including no-write boundaries. A torn unanswered final
 append is trimmed, but a missing or damaged journal is permanently marked lost and sent as `lost: true` after each
 reconnect. No later boundary can rehabilitate that mount. A fresh mount needs a new empty state folder; restarting
-its program keeps the old one. `/run` survives program and service restarts, not a VM restart. Switching views and
-helper-managed mount lifetimes are separate slices of `RUNTIME-FOLDER-COMPANY-MACHINES.md`.
+its program keeps the old one. `/run` survives program and service restarts, not a VM restart.
+
+For desktop view changes (F3 4c-3), keep one explicit `--state-dir` across atomic replacements of `--view-file`,
+restarts and publisher calls. A private `view.json` beside the journal records the last accepted credentials. The
+next hello proves that old view before checkpointing its successor; a crash between the primary file's replacement
+and hello therefore retains the proof needed to move pending work. The node accepts only a same-company,
+same-machine desktop transfer. Open handles, conflict bases and unreleased reads stay; every connection belongs to
+one accepted epoch, so old replies and refusals cannot enter or close its successor. A closed desktop enters a fixed
+one-minute grace awaiting an accepted successor, then exits 3. A bad replacement does not extend that grace.
+
+The daemon holds a fixed private `daemon.lock` for its entire lifetime, before any state or connection mutation.
+A publisher that finds it busy leaves open writers alone, even if all service streams disconnected. A publisher
+that acquires it holds the lock through its authenticated `abandon` hello and boundary, excluding a daemon restart
+while orphan handles are abandoned back to their last fixed saves. A writable mount sends the same request once, on
+one IO hello after its feed accepts the view and before it serves a file, so what a program before it on the same
+state left open (one systemd restarted after a crash) goes back too; no later hello of its own carries it.
+Protocol-3 handles survive stream loss; only this explicit request abandons them. A publisher never creates missing
+state or lock files. The service fences and
+drains admitted old work before moving pending state, keeps a closed desktop for its fixed minute, restages files
+under the successor's upload scope, and replays any unanswered commit with its original actor and operation key.
+The office helper and live activation remain separate slices of `RUNTIME-FOLDER-COMPANY-MACHINES.md`.
 
 Tests run in the pinned Rust image on the node 2 test machine (`node scripts/run-on-node.mjs changed`, step
 `folder-program`); the FUSE tests need `QORPERA_FOLDER_FUSE_TESTS=1`, root and `/dev/fuse`. Release builds:

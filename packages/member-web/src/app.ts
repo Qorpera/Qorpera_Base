@@ -4,7 +4,6 @@ import { type WebCompanySession, WebMemberAccount } from "./account.ts";
 import { createWebAuth, loadMemberWebConfig, webOAuthDestination } from "./auth.ts";
 import type { MemberWebConfig } from "./config.ts";
 import { button, element, input, type Work } from "./dom.ts";
-import { showFilePanel } from "./file-panel.ts";
 import { showOfficePanel } from "./office-panel.ts";
 import { showRecoveryPanel } from "./recovery-panel.ts";
 
@@ -34,8 +33,7 @@ export function mountMemberWeb(
 	let epoch = 0,
 		eventRevision = 0,
 		busy: symbol | undefined,
-		dispose: (() => void) | undefined,
-		leaveMessage: (() => string | null) | undefined;
+		dispose: (() => void) | undefined;
 	let closed = false,
 		signingOut = false,
 		initialized = false;
@@ -49,7 +47,6 @@ export function mountMemberWeb(
 		++epoch;
 		dispose?.();
 		dispose = undefined;
-		leaveMessage = undefined;
 		busy = undefined;
 		panel.inert = false;
 		panel.replaceChildren();
@@ -80,10 +77,6 @@ export function mountMemberWeb(
 				}
 			}
 		};
-	const mayLeave = () => {
-		const warning = leaveMessage?.();
-		return !warning || window.confirm(warning);
-	};
 	const install = async (expected: number, action: () => Promise<() => void>) => {
 		const cleanup = await action();
 		if (closed || epoch !== expected) cleanup();
@@ -95,21 +88,18 @@ export function mountMemberWeb(
 			const node = element("button", label);
 			node.type = "button";
 			node.onclick = () => {
-				if (!closed && !signingOut && mayLeave()) action();
+				if (!closed && !signingOut) action();
 			};
 			navigation.append(node);
 		};
 		navButton("Companies", home);
-		if (company) {
-			navButton("Files", () => openPanel(company, "files"));
-			navButton("Company Computer", () => openPanel(company, "computer"));
-		}
+		if (company) navButton("Company Computer", () => openComputer(company));
 		navButton("Browser access cleanup", recovery);
 		navButton("Sign out", () => {
 			void signOut();
 		});
 	};
-	function openPanel(company: WebCompanySession, kind: "files" | "computer") {
+	function openComputer(company: WebCompanySession) {
 		clearPanel();
 		const expected = epoch,
 			work = workFor(expected);
@@ -117,27 +107,18 @@ export function mountMemberWeb(
 		panel.append(element("h2", `${company.company.name} · ${company.company.environmentName}`));
 		const content = element("div");
 		panel.append(content);
-		const common = {
-			root: content,
-			company,
-			work,
-			status: (text: string) => {
-				current(expected);
-				status(text);
-			},
-			current: () => current(expected),
-		};
 		void work(async () =>
 			install(expected, () =>
-				kind === "files"
-					? showFilePanel({
-							...common,
-							beforeLeave: (check) => {
-								current(expected);
-								leaveMessage = check;
-							},
-						})
-					: showOfficePanel(common),
+				showOfficePanel({
+					root: content,
+					company,
+					work,
+					status: (text: string) => {
+						current(expected);
+						status(text);
+					},
+					current: () => current(expected),
+				}),
 			),
 		);
 	}
@@ -158,7 +139,7 @@ export function mountMemberWeb(
 					for (const company of companies) {
 						const row = button(
 							`${company.name} · ${company.environmentName}`,
-							async () => openPanel(account.openCompany(company.environmentId), "files"),
+							async () => openComputer(account.openCompany(company.environmentId)),
 							work,
 						);
 						list.append(row);
@@ -290,20 +271,12 @@ export function mountMemberWeb(
 			status("Account restoration failed. Sign in again.");
 		}
 	});
-	const beforeUnload = (event: BeforeUnloadEvent) => {
-		if (leaveMessage?.()) {
-			event.preventDefault();
-			event.returnValue = "";
-		}
-	};
-	window.addEventListener("beforeunload", beforeUnload);
 	return {
 		close() {
 			closed = true;
 			subscription.unsubscribe();
 			account.close();
 			clearPanel();
-			window.removeEventListener("beforeunload", beforeUnload);
 		},
 	};
 }
