@@ -1084,7 +1084,6 @@ Member requests authenticate with the user token; the gateway checks
 Supabase authority, hashes uploads server-side, and confirms the catalog
 only after durable storage.
 
-- `GET/PUT /v1/member-company-objects/…` — content-addressed objects
 - `GET /v1/member-folder-objects/<environmentId>/<sha256>` — a folder-v2 company's bytes for a member (folder core
   C4, P27b), one manifest or chunk of a file the member may read, now or in a version they may read
   (`qorpera_member_folder_object`, checked before and after the read). Behind the member company gateway like the
