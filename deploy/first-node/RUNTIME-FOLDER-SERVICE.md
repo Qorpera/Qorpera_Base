@@ -695,8 +695,11 @@ machines", "Commands and credit" and "Boundaries"), against 6a's core (migration
   everything under it to its target, in place of the target's. Each unit of a commit carries `credits`, the sorted
   commands its paths are tagged with, and none when only the starter changed them. A unit that mixes both is credited to
   the commands alone: `credits` cannot name the starter, and leaving it out would credit the commands' changes to the
-  starter. A commit tried again, or replayed under its key at the next boundary, sends the same credits. A path's tags
-  go when a boundary settles it, and every tag goes with the view.
+  starter. A commit tried again, or replayed under its key at the next boundary, sends the same credits. A file the
+  view moved and then removed (unlinked, or replaced by a rename) is published as the removal of its origin, which
+  takes the file's tags and the removal's. A path a change leaves nothing pending at (a file made and removed again)
+  loses its tags. Each boundary drops the tags of every path its plan does not name (a move moved back), even when it
+  publishes nothing; a path's tags go when a boundary settles it, and every tag goes with the view.
 - **`command_ended`.** A unit the core refuses because a command it is credited to has ended is kept, as any refused
   unit, and sent again at each boundary with the same credits, until the final. It is never credited to the starter
   instead.
@@ -705,10 +708,11 @@ machines", "Commands and credit" and "Boundaries"), against 6a's core (migration
 - **Tests.** `packages/object-gateway/test/folder-test-machine-views.test.ts`, against the stand-in core: a test
   machine's view is refused from another test machine, an office, a coding machine, an image builder, an unlisted
   project and the execution host, and an overlapping project stops the service; a change made in one window is credited
-  to it, one made in two windows to both, one in none to the starter (no `credits`); a rename keeps its tags; a retry
-  sends the same credits; a `command_ended` refusal is kept and sent again; a quiet publish comes about 2 s after the
-  last change; a close publishes the command's changes before it answers; the final boundary publishes with `final`;
-  the control socket refuses a window from another uid, and a malformed one.
+  to it, one made in two windows to both, one in none to the starter (no `credits`); a rename keeps its tags; a moved
+  file's removal is credited at its origin; a cut takes the windows open at its close; an undone change's tags go; a
+  retry sends the same credits; a `command_ended` refusal is kept and sent again; a quiet publish comes about 2 s after
+  the last change; a close publishes the command's changes before it answers; the final boundary publishes with
+  `final`; the control socket refuses a window from another uid, and a malformed one.
 
 ## Not here
 
