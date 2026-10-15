@@ -782,6 +782,20 @@ export function mountApplication(
 				current,
 			).folder();
 		};
+		// The member's erases of single messages under a caller's checks (summary trees M3c).
+		const messageErases = (current: () => void) => {
+			current();
+			const role = controller.store.get().team?.role;
+			if (!role) throw new Error(t("Conversation access changed."));
+			return new WebCompanyFiles(
+				cloud,
+				controller.profile,
+				controller.userId,
+				role,
+				controller.signal,
+				current,
+			).messageErases();
+		};
 		const groupActions: Pick<WorkspaceActions, "updateGroup" | "deleteGroup"> = {
 			updateGroup: createGroupUpdater({ company: controller, current: companyCurrent, folder: groupFolder }),
 			deleteGroup: createGroupDeleter({ company: controller, current: companyCurrent, folder: groupFolder }),
@@ -1245,6 +1259,14 @@ export function mountApplication(
 									AbortSignal.any([controller.signal, signal]),
 									check,
 								);
+							},
+							// A message is erased for the whole company through the member's own route; the route checks the
+							// role, and the thread offers it to the roles that route takes (M3c).
+							messageErases: {
+								request: (sessionId, eventId, signal) =>
+									messageErases(() => checkConversationAccess(sessionId)).request(sessionId, eventId, signal),
+								status: (erase, signal) =>
+									messageErases(() => checkConversationAccess(erase.sessionId)).status(erase, signal),
 							},
 							...agentActions,
 							...workspaceActions,

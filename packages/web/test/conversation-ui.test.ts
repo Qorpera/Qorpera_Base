@@ -10,6 +10,7 @@ import { NewConversationView } from "../src/app/views/new-conversation.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { CodingSession } from "../src/cloud/coding-session.ts";
+import { type MessageErase, MessageEraseError } from "../src/cloud/message-erases.ts";
 import { createWebSessionRunControl } from "../src/cloud/session-run-control.ts";
 import type { TranscriptItem, TranscriptMessage } from "../src/cloud/transcript.ts";
 import type { HostedSessionEvent } from "../src/cloud/types.ts";
@@ -268,7 +269,7 @@ describe("conversation UI boundaries", () => {
 	});
 	/** A thread the controller reads from a cloud whose `history` and erasure `generation` the test changes; `hold`
 	 * keeps the forward read after one sequence on its way until released. */
-	async function erasable(history: HostedSessionEvent[], generation: number) {
+	async function erasable(history: HostedSessionEvent[], generation: number, actions: WorkspaceActions = {}) {
 		const f = fixture();
 		const server: {
 			history: HostedSessionEvent[];
@@ -285,7 +286,7 @@ describe("conversation UI boundaries", () => {
 		vi.mocked(f.api.readSessionMemoryGeneration).mockImplementation(async () => server.generation);
 		const company = new CompanyController(f.api, profileA, userA.id);
 		company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
-		const view = new ConversationView(company, session.sessionId, {});
+		const view = new ConversationView(company, session.sessionId, actions);
 		document.body.append(view.el);
 		dispose = () => {
 			view.dispose();
@@ -294,7 +295,7 @@ describe("conversation UI boundaries", () => {
 		await settle();
 		const bubbles = () =>
 			[...view.el.querySelectorAll(".message")].map((message) => message.querySelector(".bubble")?.textContent);
-		return { ...f, server, company, bubbles };
+		return { ...f, server, company, view, bubbles };
 	}
 	const erasedCopy = (item: HostedSessionEvent): HostedSessionEvent => ({ ...item, body: { erased: true } });
 	it("draws a message it showed as (erased) once a full read finds the erase; no read brings it back", async () => {
@@ -379,6 +380,187 @@ describe("conversation UI boundaries", () => {
 		await settle();
 		expect(f.bubbles()).toEqual(["(erased)", "Five"]);
 		expect(state.get().memoryGeneration).toBe(1);
+	});
+	/** The menu a right-click on a thread's message opens, and the status lines above the composer (M3e). */
+	const messageMenu = (message: Element) => {
+		const opened = message.dispatchEvent(
+			new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }),
+		);
+		const menu = document.querySelector<HTMLElement>("[role=menu]");
+		return { offered: !opened, menu, items: [...(menu?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])] };
+	};
+	const notices = (root: ParentNode) => [...root.querySelectorAll(".notice")].map((item) => item.textContent);
+	/** The words the thread names a message by: its author and time, as its own label reads. */
+	const named = (message: Element) => {
+		const [author, time] = message.getAttribute("aria-label")!.split(" · ");
+		return { author: author!, time: time! };
+	};
+	const erases = (answers: MessageErase["state"][]) => {
+		const erase = (state: MessageErase["state"]): MessageErase => ({
+			eraseId: id(90),
+			state,
+			sessionId: session.sessionId,
+			eventId: id(1001),
+		});
+		const request = vi.fn(async (_session: string, _event: string, _signal: AbortSignal) => erase(answers[0]!));
+		let read = 0;
+		const status = vi.fn(async (_erase: MessageErase, _signal: AbortSignal) => erase(answers[++read] ?? "done"));
+		return { request, status };
+	};
+	it("offers Erase on a message's own menu to an owner or admin, never for one on its way or erased", async () => {
+		const f = setup({ messageErases: erases(["pending"]) });
+		const sent: TranscriptMessage = {
+			kind: "member",
+			id: id(83),
+			sequence: 1,
+			text: "Before",
+			attachmentCount: 0,
+			authorUserId: userB.id,
+			createdAt: timestamp,
+		};
+		const items = [
+			sent,
+			{ ...sent, id: id(84), sequence: 2, text: "", erased: true as const },
+			{ ...sent, id: id(85), sequence: 3, text: "On its way", pending: "queued" as const },
+		];
+		f.company.conversation(session.sessionId).set({ projection: { items, hiddenCount: 0, lastSequence: 3 } });
+		f.view.update();
+		const messages = () => [...f.view.el.querySelectorAll(".message")];
+		const first = messageMenu(messages()[0]!);
+		expect(first.offered).toBe(true);
+		expect(first.menu?.getAttribute("aria-label")).toBe(`Message from ${named(messages()[0]!).author}`);
+		expect(first.items.map((item) => item.textContent)).toEqual(["Erase message"]);
+		first.menu!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(document.querySelector("[role=menu]")).toBeNull();
+		// The erased one and the one still on its way keep the browser's own menu.
+		expect(messageMenu(messages()[1]!).offered).toBe(false);
+		expect(messageMenu(messages()[2]!).offered).toBe(false);
+		// The route takes owners and admins: a contributor or a viewer is not offered it.
+		for (const role of ["admin", "contributor", "viewer"] as const) {
+			f.company.store.set({ team: { ...team, role } });
+			const menu = messageMenu(messages()[0]!);
+			expect(menu.offered).toBe(role === "admin");
+			menu.menu?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		}
+		// Nor without the erase route.
+		dispose?.();
+		const bare = setup();
+		bare.company.conversation(session.sessionId).set({ projection: { items, hiddenCount: 0, lastSequence: 3 } });
+		bare.view.update();
+		expect(messageMenu(bare.view.el.querySelector(".message")!).offered).toBe(false);
+	});
+	it("erases a message once confirmed, says how far it got and draws it (erased)", async () => {
+		const before = event(1, "Before");
+		const reply = event(2, "Reply");
+		const route = erases(["pending", "open", "done"]);
+		const f = await erasable([before, reply], 0, { messageErases: route });
+		const message = f.view.el.querySelector(".message")!;
+		const what = named(message);
+		messageMenu(message).items[0]!.click();
+		await settle();
+		const dialog = document.querySelector(".modal-backdrop")!;
+		expect(dialog.textContent).toContain(
+			`Erase the message from ${what.author} at ${what.time}? It is erased for everyone: the thread shows (erased) in its place, and the company's memory forgets it. This can't be undone.`,
+		);
+		button(dialog, "Erase").click();
+		await settle();
+		expect(route.request).toHaveBeenCalledWith(session.sessionId, before.eventId, expect.any(AbortSignal));
+		expect(notices(f.view.el)).toContain(`Erasing the message from ${what.author} at ${what.time}…`);
+		// The cloud blanks it: the next read of the erase says `open`, and the thread reads itself again in full.
+		f.server.history = [{ ...before, body: { erased: true } }, reply];
+		f.server.generation = 1;
+		await vi.advanceTimersByTimeAsync(1000);
+		await settle();
+		await settle();
+		expect(route.status).toHaveBeenCalledTimes(1);
+		expect(f.bubbles()).toEqual(["(erased)", "Reply"]);
+		expect(notices(f.view.el)).toContain(
+			`The message from ${what.author} at ${what.time} is erased from the thread. Clearing it from the company's memory…`,
+		);
+		await vi.advanceTimersByTimeAsync(2000);
+		await settle();
+		expect(notices(f.view.el)).toContain(
+			`Erased the message from ${what.author} at ${what.time}: it is gone from the thread and from the company's memory.`,
+		);
+		// Done: it reads no more.
+		await vi.advanceTimersByTimeAsync(120_000);
+		expect(route.status).toHaveBeenCalledTimes(2);
+		// No menu on the erased message.
+		expect(messageMenu(f.view.el.querySelector(".message")!).offered).toBe(false);
+	});
+	it("asks nothing when the member does not confirm", async () => {
+		const route = erases(["pending"]);
+		const f = await erasable([event(1, "Before")], 0, { messageErases: route });
+		messageMenu(f.view.el.querySelector(".message")!).items[0]!.click();
+		await settle();
+		button(document.querySelector(".modal-backdrop")!, "Cancel").click();
+		await settle();
+		expect(route.request).not.toHaveBeenCalled();
+		expect(notices(f.view.el)).toEqual([]);
+	});
+	it("says in plain words why an erase stopped", async () => {
+		const cases: [Partial<Record<"request" | "status", MessageEraseError>>, MessageErase["state"][], string][] = [
+			[{ request: new MessageEraseError("no", 403) }, [], "Only an owner or admin can erase messages."],
+			[{ request: new MessageEraseError("no", 404) }, [], "The message from {author} at {time} can't be erased."],
+			[{ request: new MessageEraseError("no", 423) }, [], "The company is paused, so no message can be erased now."],
+			[
+				{ request: new MessageEraseError("no", 503) },
+				[],
+				"Could not erase the message from {author} at {time}. Try again.",
+			],
+			[
+				{},
+				["pending", "refused"],
+				"The message from {author} at {time} was not erased: only an owner or admin can erase messages.",
+			],
+			[
+				{ status: new MessageEraseError("no", 404) },
+				["pending"],
+				"Could not read how the erase of the message from {author} at {time} is going.",
+			],
+		];
+		for (const [failures, answers, line] of cases) {
+			const route = erases(answers);
+			if (failures.request) route.request.mockRejectedValue(failures.request);
+			if (failures.status) route.status.mockRejectedValue(failures.status);
+			const f = await erasable([event(1, "Before")], 0, { messageErases: route });
+			const message = f.view.el.querySelector(".message")!;
+			const what = named(message);
+			messageMenu(message).items[0]!.click();
+			await settle();
+			button(document.querySelector(".modal-backdrop")!, "Erase").click();
+			await settle();
+			await vi.advanceTimersByTimeAsync(1000);
+			await settle();
+			expect(notices(f.view.el)).toEqual([line.replace("{author}", what.author).replace("{time}", what.time)]);
+			// It reads no more after it stopped.
+			const reads = route.status.mock.calls.length;
+			await vi.advanceTimersByTimeAsync(120_000);
+			expect(route.status).toHaveBeenCalledTimes(reads);
+			dispose?.();
+			dispose = undefined;
+			document.body.replaceChildren();
+		}
+	});
+	it("keeps reading an erase after a read that failed on the way", async () => {
+		const route = erases(["pending", "done"]);
+		route.status.mockRejectedValueOnce(new MessageEraseError("Message erase is unavailable (503)", 503));
+		const f = await erasable([event(1, "Before")], 0, { messageErases: route });
+		const message = f.view.el.querySelector(".message")!;
+		const what = named(message);
+		messageMenu(message).items[0]!.click();
+		await settle();
+		button(document.querySelector(".modal-backdrop")!, "Erase").click();
+		await settle();
+		await vi.advanceTimersByTimeAsync(1000);
+		await settle();
+		expect(notices(f.view.el)).toEqual([`Erasing the message from ${what.author} at ${what.time}…`]);
+		await vi.advanceTimersByTimeAsync(2000);
+		await settle();
+		expect(route.status).toHaveBeenCalledTimes(2);
+		expect(notices(f.view.el)).toEqual([
+			`Erased the message from ${what.author} at ${what.time}: it is gone from the thread and from the company's memory.`,
+		]);
 	});
 	it("closes attachment previews and clears private drafts when the account signs out", async () => {
 		const f = fixture(),

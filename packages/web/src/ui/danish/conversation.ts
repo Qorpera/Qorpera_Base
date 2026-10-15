@@ -73,6 +73,25 @@ export const CONVERSATION: Record<string, string> = {
 	"Agent reply · speaker unavailable": "Agentsvar · afsender ukendt",
 	"(empty)": "(tom)",
 	"(erased)": "(slettet)",
+	"Erase message": "Slet besked",
+	Erase: "Slet",
+	"Erase the message from {author} at {time}? It is erased for everyone: the thread shows (erased) in its place, and the company's memory forgets it. This can't be undone.":
+		"Slet beskeden fra {author} kl. {time}? Den slettes for alle: tråden viser (slettet) i stedet, og virksomhedens hukommelse glemmer den. Det kan ikke fortrydes.",
+	"Erasing the message from {author} at {time}…": "Sletter beskeden fra {author} kl. {time}…",
+	"The message from {author} at {time} is erased from the thread. Clearing it from the company's memory…":
+		"Beskeden fra {author} kl. {time} er slettet fra tråden. Fjerner den fra virksomhedens hukommelse…",
+	"Erased the message from {author} at {time}: it is gone from the thread and from the company's memory.":
+		"Beskeden fra {author} kl. {time} er slettet: den er væk fra tråden og fra virksomhedens hukommelse.",
+	"The message from {author} at {time} was not erased: only an owner or admin can erase messages.":
+		"Beskeden fra {author} kl. {time} blev ikke slettet: kun en ejer eller administrator kan slette beskeder.",
+	"Only an owner or admin can erase messages.": "Kun en ejer eller administrator kan slette beskeder.",
+	"The message from {author} at {time} can't be erased.": "Beskeden fra {author} kl. {time} kan ikke slettes.",
+	"The company is paused, so no message can be erased now.":
+		"Virksomheden er sat på pause, så ingen besked kan slettes lige nu.",
+	"Could not erase the message from {author} at {time}. Try again.":
+		"Kunne ikke slette beskeden fra {author} kl. {time}. Prøv igen.",
+	"Could not read how the erase of the message from {author} at {time} is going.":
+		"Kunne ikke læse, hvordan sletningen af beskeden fra {author} kl. {time} går.",
 	Failed: "Mislykkedes",
 	"Failed · {reason}": "Mislykkedes · {reason}",
 	Processing: "Behandles",

@@ -6,6 +6,7 @@ import {
 	type InterfaceChangeSubject,
 	interfaceChangeUndoable,
 } from "../../cloud/interface-changes.ts";
+import { type MessageErase, MessageEraseError } from "../../cloud/message-erases.ts";
 import { type MessageQuote, QUOTES_MAX } from "../../cloud/quotes.ts";
 import {
 	ACTION_REVIEW_SCHEMA,
@@ -29,13 +30,14 @@ import {
 import { agentFigure } from "../../ui/avatar.ts";
 import { CodingSessionSlot, codingSessionLine, harnessMark } from "../../ui/coding-session.ts";
 import { CodingSessionThreadView } from "../../ui/coding-session-thread.ts";
+import { menuPoint, openContextMenu } from "../../ui/context-menu.ts";
 import {
 	conversationTimestampLabel,
 	conversationTimestampTitle,
 	needsConversationTimestamp,
 	parseConversationTimestamp,
 } from "../../ui/conversation-timestamps.ts";
-import { fmtTime, h, icon, notice, personAvatar, replace } from "../../ui/dom.ts";
+import { confirmDialog, fmtTime, h, icon, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { renderInteractionCard } from "../../ui/interaction-card.ts";
 import {
@@ -124,6 +126,36 @@ interface MessageParts {
 	/** Received files: disposed with their part (it may hold an open preview). */
 	files?: { key: string; view: ReceivedAttachments };
 	caption?: HTMLElement;
+}
+
+/** The member's erase of one message here, as the line above the composer tells it: which message (its author and
+ * time, never a file), how far the erase got, and why it stopped if it did. */
+interface EraseLine {
+	readonly what: { readonly author: string; readonly time: string };
+	erase?: MessageErase;
+	failure?: string;
+}
+
+/** Waits `ms`, or less if `signal` aborts first. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+	return new Promise((resolve) => {
+		const done = () => {
+			clearTimeout(timer);
+			signal.removeEventListener("abort", done);
+			resolve();
+		};
+		const timer = setTimeout(done, ms);
+		signal.addEventListener("abort", done, { once: true });
+	});
+}
+
+/** Why an erase could not be asked for, in the member's words. */
+function eraseFailure(error: unknown, what: EraseLine["what"]): string {
+	const status = error instanceof MessageEraseError ? error.status : null;
+	if (status === 401 || status === 403) return t("Only an owner or admin can erase messages.");
+	if (status === 404) return t("The message from {author} at {time} can't be erased.", what);
+	if (status === 423) return t("The company is paused, so no message can be erased now.");
+	return t("Could not erase the message from {author} at {time}. Try again.", what);
 }
 
 /** Elements that hold a handler of their own or what the member typed or opened. */
@@ -268,6 +300,10 @@ export class ConversationView {
 	readonly #actions: WorkspaceActions;
 	/** Undo of an agent's interface change, by its commit, while the member is in this thread. */
 	readonly #undos = new Map<string, InterfaceUndoState>();
+	/** Each message drawn in the thread: what it is and who wrote it, for its right-click menu. */
+	readonly #messageItems = new WeakMap<Element, { item: TranscriptMessage; author: string }>();
+	/** The member's latest erase of a message here, from the ask until it is done or fails (summary trees M3c). */
+	#erase: EraseLine | undefined;
 	readonly #run: SessionRunView | undefined;
 	readonly #execution: SessionExecutionView | undefined;
 	#details: AgentDetails | GroupDetails | undefined;
@@ -668,6 +704,8 @@ export class ConversationView {
 			}
 			this.#stickToBottom = scrollHeight - scrollTop - clientHeight < 48 * uiScale();
 		});
+		// A message's own menu: a right-click, or Shift+F10 or the menu key from a link in it.
+		this.#log.addEventListener("contextmenu", (event) => this.#openMessageMenu(event));
 		if (typeof ResizeObserver !== "undefined") {
 			this.#sizes = new ResizeObserver(() => this.#pinToBottom());
 			this.#sizes.observe(this.#messages);
@@ -989,6 +1027,139 @@ export class ConversationView {
 		if (this.#lifetime.signal.aborted) return;
 		this.#undos.set(change.commitId, state);
 		this.update();
+	}
+
+	/** A message's menu: Erase, for an owner or admin, the roles the erase route takes (M3c). A message on its way or
+	 * already erased has none, and with nothing to offer the browser's own menu stays. */
+	#openMessageMenu(event: MouseEvent): void {
+		const element = event.target instanceof Element ? event.target.closest<HTMLElement>("article.message") : null;
+		const drawn = element ? this.#messageItems.get(element) : undefined;
+		const role = this.#company.store.get().team?.role;
+		if (
+			!element ||
+			!drawn ||
+			drawn.item.pending ||
+			drawn.item.erased ||
+			!this.#actions.messageErases ||
+			(role !== "owner" && role !== "admin")
+		)
+			return;
+		event.preventDefault();
+		const { item, author } = drawn;
+		const point = menuPoint(event, element);
+		openContextMenu({
+			label: t("Message from {name}", { name: author }),
+			x: point.x,
+			y: point.y,
+			items: [
+				{
+					label: t("Erase message"),
+					icon: "trash",
+					danger: true,
+					select: () => void this.#eraseMessage(item, author),
+				},
+			],
+			opener: element,
+			// The message is redrawn as it changes; focus goes back to the new one.
+			findOpener: () =>
+				this.#log.querySelector<HTMLElement>(`article.message[data-message-id="${CSS.escape(item.id)}"]`),
+		});
+	}
+
+	/** Erase one message for the whole company once the member confirms. The line above the composer says how it goes,
+	 * and the thread shows "(erased)" in its place once the cloud has blanked it (a full read, M3d). */
+	async #eraseMessage(item: TranscriptMessage, author: string): Promise<void> {
+		const erases = this.#actions.messageErases;
+		const signal = this.#lifetime.signal;
+		const what = { author, time: fmtTime(item.createdAt) };
+		if (
+			!erases ||
+			!(await confirmDialog(
+				t(
+					"Erase the message from {author} at {time}? It is erased for everyone: the thread shows (erased) in its place, and the company's memory forgets it. This can't be undone.",
+					what,
+				),
+				t("Erase"),
+				true,
+				undefined,
+				signal,
+			)) ||
+			signal.aborted
+		)
+			return;
+		const line: EraseLine = { what };
+		this.#erase = line;
+		this.update();
+		let erase: MessageErase;
+		try {
+			erase = await erases.request(this.#sessionId, item.id, signal);
+		} catch (error) {
+			if (signal.aborted || this.#erase !== line) return;
+			line.failure = eraseFailure(error, what);
+			this.update();
+			return;
+		}
+		// Read again after 1, 2, 4… seconds, then every 30 seconds, until it is done or refused.
+		let reread = false;
+		for (let wait = 1000; ; wait = Math.min(wait * 2, 30_000)) {
+			if (signal.aborted || this.#erase !== line) return;
+			// From `open` on the message is blank in the cloud: a full read draws it as "(erased)".
+			if (!reread && erase.state !== "pending" && erase.state !== "refused") {
+				reread = true;
+				void this.#company.loadConversation(this.#sessionId);
+			}
+			line.erase = erase;
+			this.update();
+			if (erase.state === "done" || erase.state === "refused") return;
+			await pause(wait, signal);
+			if (signal.aborted || this.#erase !== line) return;
+			try {
+				erase = await erases.status(erase, signal);
+			} catch (error) {
+				const status = error instanceof MessageEraseError ? error.status : null;
+				// Refused or gone for this member: say so once. Anything else is read again at the next turn.
+				if (status === 401 || status === 403 || status === 404) {
+					if (signal.aborted || this.#erase !== line) return;
+					line.failure = t("Could not read how the erase of the message from {author} at {time} is going.", what);
+					this.update();
+					return;
+				}
+			}
+		}
+	}
+
+	/** How the member's erase goes, in plain words: which message, and where it is gone from so far. */
+	#eraseNotice({ what, erase, failure }: EraseLine): HTMLElement {
+		if (failure) return notice("danger", failure);
+		switch (erase?.state) {
+			case undefined:
+			case "pending":
+				return notice("neutral", t("Erasing the message from {author} at {time}…", what));
+			case "refused":
+				return notice(
+					"danger",
+					t(
+						"The message from {author} at {time} was not erased: only an owner or admin can erase messages.",
+						what,
+					),
+				);
+			case "done":
+				return notice(
+					"ok",
+					t(
+						"Erased the message from {author} at {time}: it is gone from the thread and from the company's memory.",
+						what,
+					),
+				);
+			default:
+				return notice(
+					"neutral",
+					t(
+						"The message from {author} at {time} is erased from the thread. Clearing it from the company's memory…",
+						what,
+					),
+				);
+		}
 	}
 
 	/** Take over the agent's computer for a card: open its screen here and give it the keyboard. */
@@ -1850,6 +2021,7 @@ export class ConversationView {
 			if (base?.key === itemKey && base.time === time) {
 				base.input = input;
 				drawn.set(slot, base);
+				this.#messageItems.set(base.element, { item, author });
 				return base.element;
 			}
 			const entry = this.#drawMessage(
@@ -1873,6 +2045,7 @@ export class ConversationView {
 			const former = this.#drawn.get(slot)?.element;
 			if (!base && former) replaced.set(entry.element, former);
 			drawn.set(slot, entry);
+			this.#messageItems.set(entry.element, { item, author });
 			return entry.element;
 		};
 		// A card's actions reach the thread's agent as it is when clicked, not as it was drawn.
@@ -2634,6 +2807,7 @@ export class ConversationView {
 			company.waitingForHours,
 			minutes,
 			stoppable,
+			this.#erase && [this.#erase.what, this.#erase.erase?.state, this.#erase.failure],
 		]);
 		if (key === this.#statusKey) return;
 		this.#statusKey = key;
@@ -2641,6 +2815,7 @@ export class ConversationView {
 		if (conversation.error) children.push(notice("danger", conversation.error));
 		if (conversation.sendError) children.push(notice("danger", conversation.sendError));
 		if (conversation.interactionError) children.push(notice("danger", conversation.interactionError));
+		if (this.#erase) children.push(this.#eraseNotice(this.#erase));
 		if (canWrite && !this.#actions.sendMessage)
 			children.push(
 				h(
