@@ -43,6 +43,8 @@ class FakeLxd implements LxdCodeHostClient {
 	made?: (instance: LxdInstanceRecord & { config: Record<string, string> }) => void;
 	/** The next this many stops fail. */
 	failStop = 0;
+	/** Called on every exec, before it answers. */
+	onExec?: () => void;
 	async getProject(name: string): Promise<LxdProjectRecord | undefined> {
 		const project = this.projects.get(name);
 		if (!project) return undefined;
@@ -113,6 +115,7 @@ class FakeLxd implements LxdCodeHostClient {
 	}
 	async execInstance(project: string): Promise<void> {
 		this.calls.push(`exec ${project}`);
+		this.onExec?.();
 		if (this.agentDown > 0) {
 			this.agentDown -= 1;
 			throw new Error("LXD instance agent not running");
@@ -529,6 +532,61 @@ describe("LxdCodeHosts", () => {
 		expect(lxd.calls).toEqual([`project ${next}`]);
 		expect(events).not.toContainEqual({ event: "code-host", step: "stopped", project });
 	});
+	it("checks the project again after the wait for a start: one changed meanwhile is not touched, and keeps the start", async () => {
+		const { lxd, events, codeHosts } = hosts({ running: 1 });
+		const [busy, waited, next] = [1, 2, 3].map((n) => codeHostProject(company(n)));
+		const first = held();
+		const running = codeHosts.use(company(1), signal(), first.job);
+		await vi.waitFor(() => expect(lxd.running(company(1))).toBe(true));
+		// Company 2's project passes its first check, then its job waits for company 1's start.
+		await lxd.createProject(waited, CODE_HOST_PROJECT_CONFIG);
+		const waiting = codeHosts.use(company(2), signal(), async () => "ran");
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		(lxd.projects.get(waited) as { config: Record<string, string> }).config.restricted = "false";
+		lxd.calls.length = 0;
+		first.release();
+		await running;
+		await expect(waiting).rejects.toThrow("CODE_HOST_PROJECT_DIFFERS");
+		expect(lxd.calls).toEqual([`stop ${busy}`]);
+		expect(events).toContainEqual({ event: "code-host-error", step: "refused", project: waited });
+		// It may run (its project is not the executor's to judge now): another company waits rather than stop it.
+		const abort = new AbortController();
+		const third = codeHosts.use(company(3), abort.signal, async () => "ran");
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		abort.abort(new Error("JOB_CANCELLED"));
+		await expect(third).rejects.toThrow("JOB_CANCELLED");
+		await codeHosts.close();
+		expect(lxd.calls).toEqual([`stop ${busy}`, `project ${next}`]);
+	});
+	it.each(["its agent wait runs out", "its job is cancelled"])(
+		"checks the project again before it stops a failed start: one changed while %s is not touched",
+		async (end) => {
+			const { lxd, events, codeHosts } = hosts({ running: 1, agentWaitMs: 50 });
+			const project = codeHostProject(company(1));
+			const abort = new AbortController();
+			lxd.agentDown = Number.POSITIVE_INFINITY;
+			lxd.onExec = () => {
+				(lxd.projects.get(project) as { config: Record<string, string> }).config.restricted = "false";
+				if (end === "its job is cancelled") abort.abort(new Error("JOB_CANCELLED"));
+			};
+			await expect(codeHosts.use(company(1), abort.signal, async () => "ran")).rejects.toThrow(
+				end === "its job is cancelled" ? "JOB_CANCELLED" : "CODE_HOST_AGENT_UNAVAILABLE",
+			);
+			expect(lxd.running(company(1))).toBe(true);
+			expect(events).toContainEqual({ event: "code-host-error", step: "refused", project });
+			// It keeps its start: another company waits rather than stop it.
+			lxd.onExec = undefined;
+			lxd.agentDown = 0;
+			const other = new AbortController();
+			const waiting = codeHosts.use(company(2), other.signal, async () => "ran");
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			other.abort(new Error("JOB_CANCELLED"));
+			await expect(waiting).rejects.toThrow("JOB_CANCELLED");
+			await codeHosts.close();
+			expect(lxd.running(company(1))).toBe(true);
+			expect(lxd.calls).not.toContain(`stop ${project}`);
+		},
+	);
 	it("removes a company's code host and project after its runs ended", async () => {
 		const { lxd, events, codeHosts } = hosts();
 		const project = codeHostProject(company(1));
