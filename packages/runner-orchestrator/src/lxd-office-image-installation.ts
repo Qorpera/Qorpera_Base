@@ -163,7 +163,8 @@ export function officeImageDestination(file: string): { path: string; mode: numb
 	if (["qorpera-office-folder-helper.service", "qorpera-office-folder-helper.socket"].includes(file))
 		return { path: `/etc/systemd/system/${file}`, mode: 0o644 };
 	if (file === "qorpera-folder") return { path: OFFICE_IMAGE_FOLDER_PROGRAM, mode: 0o555 };
-	if (file === "qorpera-company-computer-folder-helper.mjs") return { path: `${OFFICE_IMAGE_ROOT}/${file}`, mode: 0o444 };
+	if (file === "qorpera-company-computer-folder-helper.mjs")
+		return { path: `${OFFICE_IMAGE_ROOT}/${file}`, mode: 0o444 };
 	if (["qorpera-company-computer.service", "qorpera-company-computer-preparation.service"].includes(file))
 		return { path: `/etc/systemd/system/${file}`, mode: 0o644 };
 	if (["qorpera-office-runtime.conf", "qorpera-office-preparation.conf"].includes(file))

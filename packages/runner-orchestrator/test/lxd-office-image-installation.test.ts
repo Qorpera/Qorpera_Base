@@ -209,7 +209,9 @@ describe("office image installation contract", () => {
 			{ path: OFFICE_IMAGE_FOLDER_PROGRAM, mode: 0o555 },
 		]);
 		const folder = OFFICE_IMAGE_FOLDER_PACKAGE_FILES.map((file) => ({ file, bytes: 1, sha256: sha }));
-		expect(() => parseOfficeImagePackage({ ...manifest, artifacts: [...manifest.artifacts, ...folder] })).not.toThrow();
+		expect(() =>
+			parseOfficeImagePackage({ ...manifest, artifacts: [...manifest.artifacts, ...folder] }),
+		).not.toThrow();
 		for (const missing of OFFICE_IMAGE_FOLDER_PACKAGE_FILES)
 			expect(() =>
 				parseOfficeImagePackage({
