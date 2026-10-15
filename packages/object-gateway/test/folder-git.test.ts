@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CoreAnswerError, SupabaseFolderCore } from "../src/folder-service/core.ts";
+import { CoreAnswerError, type CoreReceipt, SupabaseFolderCore } from "../src/folder-service/core.ts";
 import {
 	type GitUnit,
 	gitBatches,
@@ -17,13 +17,7 @@ import {
 } from "../src/folder-service/git.ts";
 import type { Transport } from "../src/folder-service/https-request.ts";
 import { NasObjects } from "../src/folder-service/objects.ts";
-import {
-	type BridgeInfo,
-	type CoreReceipt,
-	type Hello,
-	ProtocolError,
-	type ReadLogEntry,
-} from "../src/folder-service/protocol.ts";
+import { type BridgeInfo, type Hello, ProtocolError, type ReadLogEntry } from "../src/folder-service/protocol.ts";
 import { FolderService, type ViewHandle } from "../src/folder-service/service.ts";
 import { FolderStaging } from "../src/folder-service/staging.ts";
 import {
