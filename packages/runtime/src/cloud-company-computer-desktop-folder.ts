@@ -61,7 +61,9 @@ const CAPTURE_UNANSWERED = "the company folder did not answer before the screens
 const CAPTURE_PAUSED = "the company is paused, so the company folder holds the screenshot back";
 const CAPTURE_RUN_ENDED = "this run can no longer act in the company folder";
 const CAPTURE_REFUSED = "the company folder refused the screen's view";
-const CAPTURE_RESTARTED = "the company folder was restarted on this screen; take the screenshot again";
+/** Also the guest's answer for a desktop that stopped or started again since the action began. */
+export const COMPANY_COMPUTER_CAPTURE_RESTARTED =
+	"the company folder was restarted on this screen; take the screenshot again";
 
 /**
  * Open a desktop's view for whoever now holds its screen (RUNTIME-FOLDER-COMPANY-MACHINES.md, "Views and machines").
@@ -200,6 +202,9 @@ interface Folder {
 	view?: CompanyComputerFolderView;
 	mounted: boolean;
 	epoch: number;
+	/** Rule 4's way out began on the mount: no desktop starts on it again. `stopped` once no desktop runs on it; then it
+	 * goes without a boundary. */
+	refused?: { stopped: boolean };
 	/** This screen's helper requests, one at a time. */
 	chain: Promise<unknown>;
 	later?: ReturnType<typeof setTimeout>;
@@ -290,6 +295,9 @@ export class CompanyComputerDesktopFolders {
 		signal: AbortSignal,
 		until: number,
 	): Promise<CompanyComputerDesktopCompany | CompanyComputerFolderRefusal> {
+		// Rule 4's way out that a capture began: once the mount's desktop has stopped, it goes, and the holder gets a new
+		// one. Until then no holder gets it.
+		if (folder.refused && !(folder.refused.stopped && (await this.#drop(folder, signal)))) return UNAVAILABLE;
 		if (folder.mounted && folder.view && sameHolder(folder.holder, holder)) {
 			// The holder's view already: unless its program has ended, the mount serves it as it is.
 			const listed = await this.#helper({ op: "list" }, LIST_WAIT_MS);
@@ -355,10 +363,19 @@ export class CompanyComputerDesktopFolders {
 		return true;
 	}
 
-	/** The screen's mount as it is, for a desktop that starts with nobody new holding it. */
+	/** The mount goes without a boundary, and its view closes. False when the helper kept it. */
+	async #drop(folder: Folder, signal?: AbortSignal): Promise<boolean> {
+		const dropped = (await this.#helper({ op: "drop", name: folder.name }, DROP_WAIT_MS, signal))?.answer;
+		if (dropped !== "dropped" && dropped !== "unknown") return false;
+		await this.#gone(folder);
+		return true;
+	}
+
+	/** The screen's mount as it is, for a desktop that starts with nobody new holding it. None while rule 4's way out
+	 * is on it. */
 	mounted(screenId: string): CompanyComputerDesktopCompany | undefined {
 		const folder = this.#folders.get(screenId);
-		return folder?.mounted ? { name: folder.name, epoch: folder.epoch } : undefined;
+		return folder?.mounted && !folder.refused ? { name: folder.name, epoch: folder.epoch } : undefined;
 	}
 
 	/** The screen's desktop ended, or never started: its mount goes, and its view closes. `still` is asked when the
@@ -370,7 +387,11 @@ export class CompanyComputerDesktopFolders {
 		folder.later = undefined;
 		return this.#queue(folder, async () => {
 			if (!still()) return;
-			if (folder.mounted) await this.#unmount(folder);
+			if (folder.refused) {
+				// Rule 4's way out: no desktop runs on the mount now, and it has no boundary to give.
+				folder.refused.stopped = true;
+				if (folder.mounted) await this.#drop(folder);
+			} else if (folder.mounted) await this.#unmount(folder);
 			else if (folder.view) {
 				const view = folder.view;
 				Object.assign(folder, { view: undefined, holder: undefined });
@@ -409,6 +430,8 @@ export class CompanyComputerDesktopFolders {
 	}
 
 	async #drain(folder: Folder, signal: AbortSignal, until: number): Promise<void> {
+		// No desktop runs on the mount now: a mount rule 4's way out began on may go at the screen's next hold.
+		if (folder.refused) folder.refused.stopped = true;
 		let answered = false;
 		while (folder.mounted) {
 			signal.throwIfAborted();
@@ -461,21 +484,25 @@ export class CompanyComputerDesktopFolders {
 	 * The boundary before a screen capture reaches the holding run ("Before output reaches a model"): the desktop's
 	 * reads are released, and its changes published, first. Answers why the capture is held back, or nothing when it
 	 * may go on. A desktop started without `/company` (no `epoch`) needs none. Only a release refused because a read is
-	 * no longer readable, a read log that cannot be shown complete, and a closed view take rule 4's way out: the mount
-	 * goes and its view closes, so the screen's next action starts its desktop on a new mount under a new view. Every
-	 * other refusal, and no answer by `until` (performance.now()), holds the capture back and stops nothing.
+	 * no longer readable, a read log that cannot be shown complete, and a closed view take rule 4's way out: the mount's
+	 * users stop first (`stop`: its desktop, with the apps that hold what it read, never the capture's own session),
+	 * then the mount goes and its view closes, so the screen's next action starts its desktop on a new mount under a new
+	 * view. A stop or a drop that fails holds the capture back, and no desktop starts on the mount again: the screen's
+	 * next hold drops it once its desktop has stopped. Every other refusal, and no answer by `until` (performance.now()),
+	 * holds the capture back and stops nothing.
 	 */
 	capture(
 		screenId: string,
 		epoch: number | undefined,
 		signal: AbortSignal,
 		until: number,
+		stop: () => Promise<void>,
 	): Promise<string | undefined> {
 		if (epoch === undefined) return Promise.resolve(undefined);
 		const folder = this.#folders.get(screenId);
-		if (!folder) return Promise.resolve(CAPTURE_RESTARTED);
+		if (!folder) return Promise.resolve(COMPANY_COMPUTER_CAPTURE_RESTARTED);
 		const work = this.#queue(folder, () =>
-			this.#capture(folder, epoch, signal, until).catch(() => {
+			this.#capture(folder, epoch, signal, until, stop).catch(() => {
 				signal.throwIfAborted();
 				return CAPTURE_UNANSWERED;
 			}),
@@ -483,9 +510,16 @@ export class CompanyComputerDesktopFolders {
 		return within(work, signal, until, CAPTURE_UNANSWERED);
 	}
 
-	async #capture(folder: Folder, epoch: number, signal: AbortSignal, until: number): Promise<string | undefined> {
-		// The desktop runs on a mount that is gone: the next action starts it on the screen's new one.
-		if (!folder.mounted || folder.epoch !== epoch) return CAPTURE_RESTARTED;
+	async #capture(
+		folder: Folder,
+		epoch: number,
+		signal: AbortSignal,
+		until: number,
+		stop: () => Promise<void>,
+	): Promise<string | undefined> {
+		// The desktop runs on a mount that is gone, or that rule 4's way out is on: the next action starts it on the
+		// screen's new one.
+		if (!folder.mounted || folder.epoch !== epoch || folder.refused) return COMPANY_COMPUTER_CAPTURE_RESTARTED;
 		const timeoutMs = Math.min(COMPANY_COMPUTER_FOLDER_BOUNDARY_MS, Math.floor(until - performance.now()) - 1000);
 		if (timeoutMs < 1000) return CAPTURE_UNANSWERED;
 		const answer = await this.#helper(
@@ -499,18 +533,24 @@ export class CompanyComputerDesktopFolders {
 			return undefined;
 		if (answer?.answer === "unknown") {
 			await this.#gone(folder);
-			return CAPTURE_RESTARTED;
+			return COMPANY_COMPUTER_CAPTURE_RESTARTED;
 		}
 		if (
 			answer?.answer === "closed" ||
 			(answer?.answer === "refused" &&
 				(answer.report.refused === "unreadable" || answer.report.refused === "unproven"))
 		) {
-			// Rule 4's way out. A drop that fails leaves the mount, and the next capture asks again.
-			const dropped = (await this.#helper({ op: "drop", name: folder.name }, DROP_WAIT_MS, signal))?.answer;
-			if (dropped !== "dropped" && dropped !== "unknown") return CAPTURE_REFUSED;
-			await this.#gone(folder);
-			return CAPTURE_RESTARTED;
+			// Rule 4's way out: the mount's users stop before it goes. A stop that fails drains the screen.
+			const refused = { stopped: false };
+			folder.refused = refused;
+			try {
+				await stop();
+			} catch {
+				return CAPTURE_REFUSED;
+			}
+			refused.stopped = true;
+			// The way out ends even when the capture's action does not wait for it.
+			return (await this.#drop(folder)) ? COMPANY_COMPUTER_CAPTURE_RESTARTED : CAPTURE_REFUSED;
 		}
 		if (answer?.answer !== "refused") return CAPTURE_UNANSWERED;
 		if (answer.report.refused === "stopped") return CAPTURE_PAUSED;
@@ -521,7 +561,7 @@ export class CompanyComputerDesktopFolders {
 	/** The mount is no longer the helper's: its view closes. */
 	async #gone(folder: Folder): Promise<void> {
 		const view = folder.view;
-		Object.assign(folder, { mounted: false, view: undefined, holder: undefined });
+		Object.assign(folder, { mounted: false, view: undefined, holder: undefined, refused: undefined });
 		if (view) await closeCompanyComputerDesktopFolderView(this.#registry, view);
 	}
 
