@@ -117,6 +117,14 @@ lxc --force-local storage create "$pool" dir </dev/null
 made_pool=1
 lx image import "$base_stage/img" "$base_stage/img.root"
 [[ $(lx image list --format json | jq -r 'if length == 1 then .[0].fingerprint else empty end') == "$base" ]] || fail "the project does not hold exactly the staged base"
+# The test machine runs four test slots: a 4 GiB VM waits until it cannot push a test run out of memory.
+for _attempt in $(seq 1 120); do
+	available=$(awk '$1 == "MemAvailable:" {print $2}' /proc/meminfo)
+	((available >= 6 * 1024 * 1024)) && break
+	echo "MemAvailable is $((available / 1024)) MiB, under 6 GiB; waiting"
+	sleep 30
+done
+((available >= 6 * 1024 * 1024)) || fail "MemAvailable stayed under 6 GiB for an hour"
 # No profile, so no NIC. The dir pool keeps the disk sparse.
 lx init "$base" "$vm" --vm --no-profiles --storage "$pool" \
 	-c limits.cpu=2 -c limits.memory=4GiB -d root,size=24GiB \
@@ -222,6 +230,13 @@ lx exec "$vm" -- systemd-run --quiet --wait --pipe --collect --unit qorpera-tool
 	>"$work/probe.json"
 jq -e '.result == "passed" and .uid == '"$office_id" "$work/probe.json" >/dev/null || fail "toolbox probe: $(cat "$work/probe.json")"
 
+# After the whole build the office service is still disabled and has never started. Its credentials exist only once
+# the node's preparation writes them for a boot; the node's activation starts it (preparation, then service-start).
+lx exec "$vm" -- systemctl show qorpera-company-computer.service --property LoadState,UnitFileState,ActiveState \
+	--property InactiveExitTimestampMonotonic,ExecMainStartTimestampMonotonic >"$work/office-unit"
+[[ $(sort "$work/office-unit" | tr '\n' ' ') == "ActiveState=inactive ExecMainStartTimestampMonotonic=0 InactiveExitTimestampMonotonic=0 LoadState=loaded UnitFileState=disabled " ]] ||
+	fail "the office unit is not installed, disabled and never started: $(tr '\n' ' ' <"$work/office-unit")"
+
 # Seal: nothing of the build stays in the image, and the next boot is a new machine.
 lx exec "$vm" -- rm -rf /root/push "$probe"
 lx exec "$vm" -- cloud-init clean --logs --machine-id
@@ -248,8 +263,10 @@ jq -n --slurpfile measured "$work/measured.json" --slurpfile probe "$work/probe.
 	--arg base "$base" --arg candidate "$candidate" --arg staged "${staged:+$staged/img.tar.gz}" \
 	--arg recipe "$(sha256sum "$recipe" | awk '{print $1}')" \
 	--arg package "$(sha256sum "$push/package/manifest.json" | awk '{print $1}')" \
-	--arg closure "$(wc -l <"$work/wanted")" --rawfile root "$work/root-toolbox.txt" \
+	--arg closure "$(wc -l <"$work/wanted")" --rawfile root "$work/root-toolbox.txt" --rawfile office "$work/office-unit" \
 	'{base: $base, candidate: $candidate, staged: (if $staged == "" then null else $staged end), recipeSha256: $recipe,
 	packageManifestSha256: $package, aptClosurePackages: ($closure | tonumber), dependencies: $measured[0],
-	rootToolbox: ($root | split("\n") | map(select(startswith("toolbox: ")) | ltrimstr("toolbox: "))), shellToolbox: $probe[0], network: "none"}' >"$work/evidence.json"
+	rootToolbox: ($root | split("\n") | map(select(startswith("toolbox: ")) | ltrimstr("toolbox: "))), shellToolbox: $probe[0],
+	officeUnit: ($office | split("\n") | map(select(. != "") | split("=") | {key: .[0], value: (.[1:] | join("="))}) | from_entries),
+	network: "none"}' >"$work/evidence.json"
 echo "Office image candidate $candidate from base $base${staged:+, staged at $staged/img.tar.gz}"

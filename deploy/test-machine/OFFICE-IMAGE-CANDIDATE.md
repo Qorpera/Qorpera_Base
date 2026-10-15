@@ -16,7 +16,8 @@ node scripts/run-on-node.mjs --machine node01 --sudo --no-status -- \
 It needs the default `--install` (esbuild and the packaged Playwright come from `npm ci`). It refuses any machine but
 `qorpera-testvm-node01`, a remote LXD, a base that is not the staged split image named by
 [`office-image-dependencies.json`](../lxd-company-computer-guest/office-image-dependencies.json), and less than
-32 GiB free for LXD. KVM and `vhost_vsock` must already be loaded; the run never loads a module.
+32 GiB free for LXD. KVM and `vhost_vsock` must already be loaded; the run never loads a module. Before it creates
+the VM it waits until the test machine has 6 GiB available, so the 4 GiB VM never pushes a test run out of memory.
 
 ## What it does
 
@@ -38,7 +39,9 @@ It needs the default `--install` (esbuild and the packaged Playwright come from 
    computer's shell host, which runs the image's `/usr/bin/node` through its read-only `/usr` and refuses any
    capability, a missing `no_new_privs` or limits above the office unit's. The shell finds that Node.js and no swap,
    then runs every toolbox check of the recipe; each must exit 0 and print a version.
-6. It removes the build inputs, cleans cloud-init and the journal, stops the VM and publishes the candidate in the
+6. It checks that the office service is still installed, disabled and never started. The node's activation starts it
+   (preparation, then the service-start request); its credentials exist only once preparation writes them for a boot.
+7. It removes the build inputs, cleans cloud-init and the journal, stops the VM and publishes the candidate in the
    claimed project.
 
 On exit it deletes the VM, every image in the project, the project and the pool. It compares the test machine's links,
@@ -54,7 +57,7 @@ them.
 
 The evidence between `OFFICE_IMAGE_CANDIDATE_EVIDENCE_BEGIN` and `OFFICE_IMAGE_CANDIDATE_EVIDENCE_END` gives the base
 and candidate fingerprints, the stage path, the recipe and package manifest hashes, the size of the apt closure, the
-installer's dependency measurements and the toolbox's first lines as root and from the shell.
+installer's dependency measurements, the toolbox's first lines as root and from the shell, and the office unit's state.
 
 ## What it does not cover
 
