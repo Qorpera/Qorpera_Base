@@ -911,10 +911,11 @@ Folder-v2 companies only (Interfaces I9c; `deploy/first-node/RUNTIME-INTERFACES.
 accepts by saving themselves into that cell with the member commit route, which the claim rule allows while the offer
 is open and the cell is as the offer read it. Each call answers 42501 for a caller who is not a member of a folder-v2
 company with that environment, and 55000 while the company is being deleted. An offer is
-`{id, table, folder, key, column, from, was, to, state, at, closedAt}`: `table` is the table's id, `folder` its folder
-now, `key` the row's typed key (a JSON array, as the client's table parse gives it), `from`, `was` and `to` user ids
-(`was` null for an empty cell), `state` `open`, `accepted`, `declined`, `withdrawn` or `lapsed`. A closed offer has
-`key` and `column` null.
+`{id, table, folder, key, column, from, was, to, state, agent, at, closedAt}`: `table` is the table's id, `folder` its
+folder now, `key` the row's typed key (a JSON array, as the client's table parse gives it), `from`, `was` and `to` user
+ids (`was` null for an empty cell), `state` `open`, `accepted`, `declined`, `withdrawn` or `lapsed`. `agent` is null
+for a cell's offer; an agent's id is an agent offered to an area's supervisor ("Supervision consent" below), with
+`column` `agents` and `was` null. A closed offer has `key` and `column` null.
 
 - `qorpera_offer_interface_cell(environment, {table, key, column, was, to})`: `was` is the cell as the caller read
   it. Answers `{schema: "qorpera.interface-offer/v1", ok: true, created, offer}`; `created` is false when the same
@@ -965,6 +966,24 @@ environment.
   supervisions, truncated}`, the live consents of current members on the areas, when the caller may read them, newest
   first, at most 500. Read it again after a folder change to `tables/areas` and on focus. A row whose `supervisor` cell
   names a member with no consent here is waiting for theirs: offer them "Consent" when it names the caller.
+- Agents join a supervised area by its supervisor (20260930372000_interface_supervision_agents). While an area's
+  consent is live, only its member's save adds an agent to the row's `agents` cell; anyone else's save that adds one
+  is refused (`areas`: "only the area's supervisor adds its agents; offer the agent to them"). Removing an agent stays
+  free, and so does adding one to an area nobody supervises.
+- `qorpera_offer_interface_agent(environment, {key, agent})`: the caller offers a hired agent to the area's
+  supervisor. Answers `{schema: "qorpera.interface-offer/v1", ok: true, created, offer}`, an offer with `agent` set
+  and `to` the supervisor (see "Offers of a claimed cell"); `created` is false when the agent is already offered to
+  that area, with that open offer (whoever made it). A refusal is `{schema, ok: false, reason, message}`, show the
+  message:
+  - `gone`: "This area is gone." (no such row, or the areas unreadable to the caller);
+  - `agent`: "Offer an agent the company has hired.";
+  - `changed`: "The agent is in this area already.";
+  - `supervisor`: "Nobody supervises this area: add the agent yourself." or "You supervise this area: add the agent
+    yourself.";
+  - `write`: "You or they may not change this table's rows.".
+  A request of another shape is 22023 (`key` a non-empty array, at most 4,096 bytes; `agent` an agent id), a paused
+  company 55000. The supervisor accepts by saving the agent into the row's `agents` cell; they decline, and its maker
+  withdraws, with the offers' calls above. The offer lapses when the consent ends.
 - Member notification `interface_supervision_ended` (subject
   `qorpera.member-notification.interface-supervision-ended/v1`: `supervisionId, tableId, key (null when longer than
   1,024 bytes), supervisorUserId, reason ('released'|'gone'|'withdrawn'|'left'), byUserId (null when no member ended

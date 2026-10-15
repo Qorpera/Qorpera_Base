@@ -519,14 +519,15 @@ Jonas, 2 October 2026 (decision 4); contract amendment item 10.
     for that member. A save that keeps the cell makes no consent (after a withdrawal, say); the member consents again
     with a call of their own.
 - **Adding agents needs the supervisor's yes.** While an area has a live consent record, a member other than the
-  supervisor who adds an agent to its `agents` makes an offer to the supervisor. The file changes only when the supervisor says yes. Agents never change
-  `agents`.
+  supervisor who adds an agent to its `agents` makes an offer to the supervisor; the save check refuses their save
+  that adds it. The file changes only when the supervisor says yes, by saving the agent into `agents`. Removing an
+  agent needs no yes. Agents never change `agents`.
 - **One area per agent.** An agent sits in at most one area's `agents`; the save check refuses a second, because it
   decides who pays.
 - A member's own messages still run on their own account.
 - **Areas grant nothing.** They are not the retired responsibility objects (2026-09-20 amendment, item 1).
-- **Built so far** (I9b): the consent records and an agent's self (§6.1 rule 8). Until the rest is built (adding
-  agents by offer, agents' offers, work alone, and clearing a leaver's cells), today's rules apply to it.
+- **Built so far** (I9b): the consent records, an agent's self (§6.1 rule 8) and adding agents by offer. Until the
+  rest is built (agents' offers, work alone, and clearing a leaver's cells), today's rules apply to it.
 
 ### 5.2 The table store (later)
 
@@ -729,7 +730,8 @@ parser's codes for (1), `structured_rule` with these codes for the rest.
    - its `table.toml` keeps `owner` (`member`, `needs_yes`), `supervisor` (`member`, `needs_yes`) and `agents`
      (`agents`), each `optional`, by name and type;
    - after a rows save, no agent id is in more than one row's `agents` (one area per agent);
-   - the supervisor's yes for adding agents waits for I9b's agents-join offers.
+   - while a row's consent is live (§5.1), a save that adds an agent to its `agents` is its supervisor's; anyone
+     else offers the agent to them (built in I9b).
 
 **Index effects:** none until I7. Decide reads the stored parses on the path versions: the main interface, a table's
 definition and its rows. F2's per-table index row (keyed by the table's id) is the lock a rows save and a definition
@@ -894,9 +896,17 @@ so a withdrawal or a leaving waits for it. An agent's commit with a unit in `tab
 index row FOR SHARE at rank 5, before its paths, so a save of the areas waits for it or goes first. Consent and
 withdraw hold that row FOR SHARE too, and a consent called while its live one is being withdrawn makes a new one.
 Each end is told once (`interface_supervision_ended`), and the web client
-shows it in the notices. An area's `supervisor` is now offered like any other claimed cell. Not built yet: the
-board's Consent and Withdraw, adding agents by offer, agents' offers and `table_write`'s claims (a row write still
-refuses a claim), work alone, and clearing a leaver's cells.
+shows it in the notices. An area's `supervisor` is now offered like any other claimed cell.
+
+**Built: I9b, adding agents by offer** (`supabase/migrations/20260930372000_interface_supervision_agents.sql`, test
+454). While a row's consent is live, rule 9 refuses a save that adds an agent to its `agents` unless the consent's
+member makes it; removing one stays free. Anyone else who may write the rows offers a hired agent to the supervisor
+with `qorpera_offer_interface_agent` (`supabase/CLIENT-CONTRACT.md`, "Supervision consent"). It is an offer like a
+cell's (§5), kept with its agent and its consent, at most one open per row and agent. The supervisor's save that puts
+the agent in the row accepts it, before that save's consent ends are settled; the offers' calls decline and withdraw
+it; it lapses when the consent ends. A cell's settle leaves agents' offers alone. The web client reads them with the
+other offers and doesn't draw them yet. Not built yet: the board's Consent, Withdraw and agent offers; agents' own
+offers and `table_write`'s claims (a row write still refuses a claim); work alone; and clearing a leaver's cells.
 
 **Built: I9c, the web** (`packages/web/src/cloud/interface-offers.ts`, `app/interface-offers.ts`,
 `app/interface-claims.ts`, `app/views/interface.ts`). The client reads the company's open offers when it opens, after
