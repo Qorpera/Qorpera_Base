@@ -352,11 +352,9 @@ export class EphemeralCloudRunnerWorker {
 			const broker = this.#options.runner.broker(job, this.#options.brokerTransport, executionAbort.signal, start);
 			let execution: CloudRunnerExecutionResult;
 			try {
-				// One lane: a native company run (folder-v2). Any other run is refused, never downgraded.
+				// One lane: a native company run (folder-v2). The broker's description admits no other run (C-R8), and a
+				// run that is not native is refused here, never downgraded.
 				const description = await broker.describe();
-				if (description.companyRuntime !== "company-path-v1") {
-					throw new Error("Runner does not support a whole-tree company run; no fallback is permitted");
-				}
 				if (description.sponsor.authenticationMode !== "native_subscription") {
 					throw new Error(
 						"Governed company execution requires the native cloud runtime; no fallback is permitted",

@@ -3,7 +3,6 @@ import type { JsonValue } from "@qorpera/contracts";
 import type { CloudActionGateResult } from "./cloud-action-review.ts";
 import type { CompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
 import {
-	CloudCompanyFormationRefused,
 	CloudCompanyPathParentMissing,
 	CloudCompanyPathRpcRefusal,
 	CloudCompanyPathToolRefusal,
@@ -12,7 +11,13 @@ import {
 import { CloudControlRpcRefused } from "./cloud-control-errors.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
-import { type CloudRunLog, CloudRunLogGone, type CloudRunLogRelease, cloudRunLogReleases } from "./cloud-run-log.ts";
+import {
+	type CloudRunLog,
+	CloudRunLogGone,
+	type CloudRunLogRelease,
+	cloudRunLogPaths,
+	cloudRunLogReleases,
+} from "./cloud-run-log.ts";
 import {
 	type CloudRuntimeObservability,
 	type CloudRuntimeObservationSpan,
@@ -48,9 +53,6 @@ const WORK_LOG_GONE =
 /** The answer to a repeat of a call its run was cut off in (W5, RUNTIME-AGENT-MEMORY-TREE.md §12). */
 const OUTCOME_UNKNOWN =
 	"OUTCOME_UNKNOWN: Your run was cut off while this action ran, so it may or may not have happened, and this operation key cannot run it again. Check whether it happened before you repeat it; repeat it only if it did not, under a new operation key.";
-
-/** Prefix for a formation write the organization projection would refuse; the gateway's reason follows. */
-const COMPANY_FORMATION_REFUSED = "COMPANY_FORMATION_REFUSED: nothing was written; ";
 
 /** Fixed wording for a definite missing-folder refusal of a Company File write or mkdir. */
 const COMPANY_FILE_PARENT_MISSING =
@@ -346,6 +348,13 @@ interface CloudNativeCall {
 	readonly observation?: CloudRuntimeObservationSpan;
 }
 
+interface LoggedCall {
+	readonly step: number;
+	readonly releases: CloudRunLogRelease[];
+	/** Only path needles from the whole result, never its content. */
+	readonly resultPaths: string[];
+}
+
 function untilStopped<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
 	if (signal.aborted) return Promise.reject(new Error("Cloud tool boundary stopped"));
 	return new Promise<T>((resolve, reject) => {
@@ -602,7 +611,6 @@ export class CloudNativeToolBoundary {
 					REVIEW_UNAVAILABLE: "review_unavailable",
 					COMPANY_FILE_VERSION_CHANGED: "stale_version",
 					COMPANY_FILE_PARENT_MISSING: "parent_missing",
-					COMPANY_FORMATION_REFUSED: "invalid_arguments",
 					WORK_LOG_UNAVAILABLE: "transport_unavailable",
 					WORK_LOG_GONE: "authority_unavailable",
 				} as const;
@@ -648,8 +656,8 @@ export class CloudNativeToolBoundary {
 		if (!runLog || previous?.digest === digest)
 			return this.#respond(callId, tool, argumentsText, digest, previous, observation);
 		// Every call the model sees is a step of the run's work log, in the order the calls came, kept with the envelope
-		// it got and every release its result was issued under (RUNTIME-AGENT-MEMORY-TREE.md §4.5). `args_hash` is the
-		// call's digest, as receipts and reviews have it.
+		// it got and every release its result was issued under (RUNTIME-AGENT-MEMORY-TREE.md §4.5). The log hashes the
+		// complete argument text and asks the platform to key that digest before it stores `args_hash`.
 		const step = runLog.step({
 			call: callId,
 			tool: tool?.name ?? (namespace === "qorpera" && TOOL_NAME.test(name) ? name : "unrecognized"),
@@ -657,9 +665,14 @@ export class CloudNativeToolBoundary {
 			argumentSha256: digest,
 		});
 		const releases: CloudRunLogRelease[] = [];
+		const resultPaths: string[] = [];
 		let response: CloudDynamicToolResponse | undefined;
 		try {
-			response = await this.#respond(callId, tool, argumentsText, digest, previous, observation, { step, releases });
+			response = await this.#respond(callId, tool, argumentsText, digest, previous, observation, {
+				step,
+				releases,
+				resultPaths,
+			});
 			return response;
 		} finally {
 			// The answer the model got, after the release check. A call that threw ends its turn unconfirmed, with nothing
@@ -667,7 +680,7 @@ export class CloudNativeToolBoundary {
 			const answer =
 				response ??
 				this.#result(callId, tool, digest, "unconfirmed", { kind: "text", value: "TOOL_OUTCOME_UNCONFIRMED" });
-			runLog.finish(step, answer.contentItems[0].text, response ? releases : []);
+			runLog.finish(step, answer.contentItems[0].text, response ? releases : [], response ? resultPaths : []);
 		}
 	}
 
@@ -678,7 +691,7 @@ export class CloudNativeToolBoundary {
 		digest: string | null,
 		previous: CloudNativeCall | undefined,
 		observation?: CloudRuntimeObservationSpan,
-		logged?: { step: number; releases: CloudRunLogRelease[] },
+		logged?: LoggedCall,
 	): Promise<CloudDynamicToolResponse> {
 		if (argumentsText === null || digest === null)
 			return this.#result(callId, tool, null, "denied", { kind: "text", value: "INVALID_ARGUMENTS" });
@@ -732,6 +745,7 @@ export class CloudNativeToolBoundary {
 			release?.finish("denied", { errorCategory: "authority_unavailable" });
 			// The model gets only the denial: its step keeps no reads or releases of the result held back.
 			logged?.releases.splice(0);
+			logged?.resultPaths.splice(0);
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
 		}
 	}
@@ -742,14 +756,14 @@ export class CloudNativeToolBoundary {
 		digest: string,
 		argumentsText: string,
 		observation?: CloudRuntimeObservationSpan,
-		logged?: { step: number; releases: CloudRunLogRelease[] },
+		logged?: LoggedCall,
 	): Promise<CloudDynamicToolResponse> {
 		if (!logged) return this.#act(callId, tool, digest, argumentsText, observation);
 		if (this.#runLog?.gone)
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: WORK_LOG_GONE });
 		// Every release the call makes is kept with its step.
 		return cloudRunLogReleases(logged.releases, () =>
-			this.#act(callId, tool, digest, argumentsText, observation, logged.step),
+			this.#act(callId, tool, digest, argumentsText, observation, logged.step, logged.resultPaths),
 		);
 	}
 
@@ -760,6 +774,7 @@ export class CloudNativeToolBoundary {
 		argumentsText: string,
 		observation?: CloudRuntimeObservationSpan,
 		step?: number,
+		resultPaths?: string[],
 	): Promise<CloudDynamicToolResponse> {
 		if (tool.name === "computer_screenshot" && tool.source === "runtime" && !this.#captures)
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "TOOL_UNAVAILABLE" });
@@ -867,7 +882,16 @@ export class CloudNativeToolBoundary {
 		// not run: the log must show every effect the run had.
 		if (runLog && step !== undefined && runLog.effectful(tool, parsed)) {
 			try {
-				await untilStopped(() => runLog.precommit(step, this.#signal), this.#signal);
+				// A worker inherits its origin's narrow status as it starts. Earlier results must be classified before
+				// this pending record is committed: filling it narrow after the worker starts would be too late.
+				const afterEarlierResults =
+					tool.source === "runtime" &&
+					tool.name === "manage_worker" &&
+					parsed !== null &&
+					typeof parsed === "object" &&
+					!Array.isArray(parsed) &&
+					(parsed.action === "dispatch" || parsed.action === "followup");
+				await untilStopped(() => runLog.precommit(step, this.#signal, { afterEarlierResults }), this.#signal);
 			} catch (error) {
 				return this.#result(callId, tool, digest, "denied", {
 					kind: "text",
@@ -881,6 +905,9 @@ export class CloudNativeToolBoundary {
 				this.#signal,
 			);
 			const response = this.#result(callId, tool, digest, "ok", content);
+			// The envelope may omit a restricted path when it is fitted to 8 KiB. Keep only the whole result's path
+			// needles for trusted log classification; its raw content is never handed to the log or persisted there.
+			if (resultPaths) for (const path of cloudRunLogPaths(content.value)) resultPaths.push(path);
 			if (tool.name === "computer_screenshot" && tool.source === "runtime") {
 				const imageUrl = await untilStopped(
 					() => this.#captures!.issue(callId, response.contentItems[0].text, content, this.#signal),
@@ -910,7 +937,7 @@ export class CloudNativeToolBoundary {
 				error instanceof CloudCompanyPathToolRefusal &&
 				!this.#signal.aborted &&
 				tool.source === "company_file" &&
-				["company_read", "company_list", "company_write", "company_mkdir", "company_delete"].includes(tool.name)
+				["company_write", "company_mkdir", "company_delete"].includes(tool.name)
 			) {
 				observation?.finish("denied", { errorCategory: "authority_unavailable" });
 				return this.#result(callId, tool, digest, "denied", { kind: "text", value: "COMPANY_FILE_ACCESS_DENIED" });
@@ -935,19 +962,6 @@ export class CloudNativeToolBoundary {
 			) {
 				observation?.finish("denied", { errorCategory: "parent_missing" });
 				return this.#result(callId, tool, digest, "denied", { kind: "text", value: COMPANY_FILE_PARENT_MISSING });
-			}
-			// Refused after the check, before anything is staged: the reason names only fixed formation keys and numbers.
-			if (
-				error instanceof CloudCompanyFormationRefused &&
-				!this.#signal.aborted &&
-				tool.source === "company_file" &&
-				tool.name === "company_write"
-			) {
-				observation?.finish("denied", { errorCategory: "invalid_arguments" });
-				return this.#result(callId, tool, digest, "denied", {
-					kind: "text",
-					value: `${COMPANY_FORMATION_REFUSED}${error.reason}`,
-				});
 			}
 			// A call its run was cut off in: it may have happened, and its key is spent, so the model checks first.
 			if (error instanceof CloudToolOutcomeUnknown && !this.#signal.aborted) {

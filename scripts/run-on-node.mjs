@@ -41,6 +41,9 @@ Options: --install / --no-install   run npm ci --ignore-scripts first (default: 
          --allow-secrets            copy untracked files that look like secrets (.env*, *.pem, keys)
          --base REF                 compare against REF for changed (default: origin/master)
          --machine NAME             run on this machine only (node02, node01)
+         --tree NAME                copy against the machine's shared base copy NAME, not this checkout's own,
+                                    comparing file contents (for checkouts made fresh per run, such as
+                                    pr-loop's merged trees)
          --no-status                do not post the result as a GitHub status on the commit
          --dry-run                  print what would run and where, change nothing
 
@@ -109,6 +112,7 @@ export function parseArgs(argv) {
 		dryRun: false,
 		base: "origin/master",
 		machine: null,
+		tree: null,
 	};
 	let i = 0;
 	for (; i < argv.length && argv[i] !== "--" && argv[i].startsWith("--"); i++) {
@@ -122,10 +126,15 @@ export function parseArgs(argv) {
 		else if (flag === "--allow-secrets") options.allowSecrets = true;
 		else if (flag === "--no-status") options.noStatus = true;
 		else if (flag === "--dry-run") options.dryRun = true;
-		else if (flag === "--env" || flag === "--record" || flag === "--base" || flag === "--machine") {
+		else if (flag === "--env" || flag === "--record" || flag === "--base" || flag === "--machine" || flag === "--tree") {
 			const value = argv[++i];
 			if (value === undefined) throw new Error(`${flag} needs a value`);
 			if (flag === "--record") options.record = value;
+			else if (flag === "--tree") {
+				// Never NAME.lock: that is the lock file of the base copy NAME.
+				if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value) || value.endsWith(".lock")) throw new Error(`Invalid --tree ${value}`);
+				options.tree = value;
+			}
 			else if (flag === "--machine") {
 				if (!MACHINES.some((machine) => machine.name === value))
 					throw new Error(`Unknown machine ${value} (${MACHINES.map((machine) => machine.name).join(", ")})`);
@@ -256,7 +265,8 @@ export function treeDigest(root, files) {
 
 /** Best-effort cleanup at the start of every run: runs older than a day by the UTC time in
  * their name (never by mtime: rsync -a gives a run directory the worktree's old mtime),
- * worktree copies unused for 14 days, and hosted-db containers older than 6 hours. */
+ * worktree copies unused for 3 days (each worktree has its own copy, and with many sessions 14 days filled
+ * node02's disk on 2026-10-09), and hosted-db containers older than 6 hours. */
 export function pruneScript() {
 	return [
 		"set -u",
@@ -264,17 +274,24 @@ export function pruneScript() {
 		"cutoff=$(date -u -d '-1 day' +%Y%m%dT%H%M%S)",
 		`for d in ${HOME}/runs/*/; do n=$(basename "$d"); if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then sudo -n rm -rf -- "$d"; fi; done`,
 		`for f in ${ARRIVING}/*; do n=$(basename "$f"); if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "\${n%%-*}" < "$cutoff" ]]; then rm -f -- "$f"; fi; done`,
-		`find ${HOME}/trees -maxdepth 1 -name '*.lock' -mtime +14 2>/dev/null | while read -r l; do flock -n "$l" sudo -n rm -rf -- "\${l%.lock}" && rm -f -- "$l"; done`,
+		`find ${HOME}/trees -maxdepth 1 -name '*.lock' -mtime +2 2>/dev/null | while read -r l; do flock -n "$l" sudo -n rm -rf -- "\${l%.lock}" && rm -f -- "$l"; done`,
 		`for id in $(docker ps -aq --filter name=^qorpera-hosted-db- 2>/dev/null); do c=$(docker inspect -f '{{.Created}}' "$id") && [ $(( $(date +%s) - $(date -d "$c" +%s) )) -gt 21600 ] && docker rm -f "$id" >/dev/null; done`,
 		"true",
 	].join("\n");
+}
+
+/** How rsync tells a file equal to the base copy's. A checkout's own base copy holds only its earlier files,
+ * so rsync's quick check (size and mtime) is enough. A shared one (--tree) holds other checkouts' files, where
+ * an equal size and mtime proves nothing (fresh checkouts made in the same second), so it compares contents. */
+export function baseCopyCompare(shared) {
+	return shared ? ["--checksum"] : [];
 }
 
 /** One ssh session: refresh the base copy, take a free runner user under a lock held until the
  * session ends, hand it the run directory, then install and run as that user. The status file
  * carries the runner user and times back to the record. Exit codes 90 (install or build) and 91-94
  * (harness: cd, runner user, chown, CPU slot) are recorded as setup-failed. */
-export function runScript({ run, runDir, treeDir, files, copySeconds, install, build, runCommand }) {
+export function runScript({ run, runDir, treeDir, shared = false, files, copySeconds, install, build, runCommand }) {
 	const status = `${runDir}/.run-on-node-status`;
 	const queue = "/run/lock/qorpera-test-machine-queue";
 	const inner = [
@@ -298,7 +315,7 @@ export function runScript({ run, runDir, treeDir, files, copySeconds, install, b
 	return [
 		"set -uo pipefail",
 		// The base copy is only a cache: a busy or failed refresh never fails the run.
-		`flock -w 60 ${treeDir}.lock rsync -a --delete ${runDir}/ ${treeDir}/ || echo "== run-on-node: base copy refresh skipped"`,
+		`flock -w 60 ${treeDir}.lock ${["rsync", "-a", "--delete", ...baseCopyCompare(shared), `${runDir}/`, `${treeDir}/`].join(" ")} || echo "== run-on-node: base copy refresh skipped"`,
 		// Arrival-ordered queue for the CPU slots: a ticket per waiting run, its name sorting by arrival.
 		// The run holds a lock on its own ticket (fd 7) while it waits, so a ticket nobody holds belongs
 		// to a run that died, whatever its pid became; it is dropped. Only the first ticket may take a
@@ -642,7 +659,11 @@ async function main() {
 		options.build = options.build ?? plan.build;
 		if (options.build && !options.install) throw new Error("--build needs --install");
 	}
-	const tree = createHash("sha256").update(`${hostname()}:${root}`).digest("hex").slice(0, 16);
+	// The base copy unchanged files are taken from on the machine: one per checkout, so a run copies only what
+	// changed since its checkout's last run. A checkout made fresh for each run (pr-loop's merged trees, a new
+	// path every time) would find none and send all ~70 MB, 4-6 minutes per run on 14 Oct; --tree names a
+	// shared one instead.
+	const tree = options.tree ? `named-${options.tree}` : createHash("sha256").update(`${hostname()}:${root}`).digest("hex").slice(0, 16);
 	const run = `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "")}-${process.pid}-${randomBytes(4).toString("hex")}`;
 	const runDir = `${HOME}/runs/${run}`;
 	const treeDir = `${HOME}/trees/${tree}`;
@@ -716,6 +737,7 @@ async function main() {
 				"-a",
 				"--prune-empty-dirs",
 				`--filter=merge ${rules}`,
+				...baseCopyCompare(Boolean(options.tree)),
 				`--copy-dest=${treeDir}/`,
 				// The base copy is read under a shared lock; its refresh below takes the exclusive one.
 				`--rsync-path=flock -s ${treeDir}.lock rsync`,
@@ -766,6 +788,7 @@ async function main() {
 			run,
 			runDir,
 			treeDir,
+			shared: Boolean(options.tree),
 			files: files.length,
 			copySeconds: (synced - copyStarted) / 1000,
 			install: options.install,

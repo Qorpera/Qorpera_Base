@@ -17,7 +17,7 @@
  * small, else by name). read_skill loads a body on demand, in pages, with the
  * exact version it read; search_skills searches names and descriptions across
  * both libraries; update_skill creates, changes or deletes a skill through the
- * governed mutation gateway. A change names the version the agent read, so an
+ * folder core's commits (CloudFolderNotebooks). A change names the version the agent read, so an
  * edit someone else made meanwhile is never overwritten unseen (contract 5.2).
  * A skill is guidance: it grants nothing and never replaces a current source. */
 import { createHash } from "node:crypto";
@@ -31,13 +31,14 @@ import {
 	renderCloudSkillFile,
 } from "@qorpera/cloud-client/cloud-skill-file";
 import type { JsonValue } from "@qorpera/contracts";
-import type { CloudCompanyPathGateway, CloudCompanyPathResult } from "./cloud-company-path-gateway.ts";
+import type { CloudCompanyPathResult } from "./cloud-company-path-gateway.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import {
 	CloudCompanyPathParentMissing,
 	CloudCompanyPathRpcRefusal,
 	CloudCompanyPathToolRefusal,
 } from "./cloud-company-path-refusal.ts";
+import type { CloudFolderNotebookGateway } from "./cloud-folder-notebooks.ts";
 import { ensureCloudCompanyFolders, retryingCloudCompanyChange } from "./cloud-memory-tools.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
@@ -78,8 +79,6 @@ const RESULT_FENCE_RESERVE_BYTES = 3072;
 const VERSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** The characters the result fence and prompt escape as six-byte \uXXXX sequences. */
 const FENCE_ESCAPED = new RegExp(`[<>&${String.fromCodePoint(0x2028, 0x2029)}]`, "g");
-
-export type CloudSkillGateway = Pick<CloudCompanyPathGateway, "readTrusted" | "listTrusted" | "mutate">;
 
 /** One catalog line. problem names a skill file that cannot guide this agent yet. */
 export interface CloudSkillEntry {
@@ -149,8 +148,12 @@ interface SkillFile {
 
 type SkillLocation = Pick<SkillFile, "name" | "scope" | "path" | "folder">;
 
-async function readSkill(gateway: CloudSkillGateway, at: SkillLocation, signal: AbortSignal): Promise<SkillFile> {
-	let found: Awaited<ReturnType<CloudSkillGateway["readTrusted"]>>;
+async function readSkill(
+	gateway: CloudFolderNotebookGateway,
+	at: SkillLocation,
+	signal: AbortSignal,
+): Promise<SkillFile> {
+	let found: Awaited<ReturnType<CloudFolderNotebookGateway["readTrusted"]>>;
 	try {
 		found = await gateway.readTrusted(at.path, signal);
 	} catch (error) {
@@ -171,7 +174,7 @@ async function readSkill(gateway: CloudSkillGateway, at: SkillLocation, signal: 
 /** A skill by name in one library: its folder first, then a flat file. When neither
  * exists, the folder's absent SKILL.md, whose version a creation must name. */
 async function findSkill(
-	gateway: CloudSkillGateway,
+	gateway: CloudFolderNotebookGateway,
 	scope: CloudSkillScope,
 	root: string,
 	name: string,
@@ -187,7 +190,7 @@ async function findSkill(
 /** Every skill in one library by name: skill folders, then flat <name>.md files.
  * An absent library lists empty; a failed listing is a failure, never an empty library. */
 async function listLibrary(
-	gateway: CloudSkillGateway,
+	gateway: CloudFolderNotebookGateway,
 	scope: CloudSkillScope,
 	root: string,
 	signal: AbortSignal,
@@ -211,7 +214,7 @@ async function listLibrary(
 /** Reads side by side, at most `concurrency` at once; after one failure the answer is
  * already a failure, so the rest stop. */
 async function readAll(
-	gateway: CloudSkillGateway,
+	gateway: CloudFolderNotebookGateway,
 	locations: readonly SkillLocation[],
 	concurrency: number,
 	signal: AbortSignal,
@@ -283,7 +286,7 @@ function budget(entries: CloudSkillEntry[]): CloudSkillEntry[] {
  * acknowledgement beside the notebook. A library that cannot be listed is named
  * unavailable and the other still composes; only when neither can is this a failure. */
 export async function composeCloudAgentSkills(
-	gateway: CloudSkillGateway,
+	gateway: CloudFolderNotebookGateway,
 	owner: CloudSkillOwner,
 	signal: AbortSignal,
 	place: CloudAgentFolderPlace,
@@ -402,7 +405,7 @@ export const CLOUD_UPDATE_SKILL_DESCRIPTION =
 
 /** The cloud derives the owner from the run: the own library is always the executing agent's. */
 export function cloudSkillTools(
-	gateway: CloudSkillGateway,
+	gateway: CloudFolderNotebookGateway,
 	identity: CloudNativeToolIdentity,
 	place: CloudAgentFolderPlace,
 ): readonly CloudNativeTool[] {

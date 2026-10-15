@@ -226,9 +226,6 @@ async function fixture() {
 				throw new Error("Unexpected synthetic company RPC");
 			},
 		},
-		objectStore: () => {
-			throw new Error("A coding turn has no Company File");
-		},
 		folderBytes: () => {
 			throw new Error("A coding turn has no company folder");
 		},

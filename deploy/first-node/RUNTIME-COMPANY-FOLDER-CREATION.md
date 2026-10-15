@@ -34,7 +34,7 @@ In short:
     requires the fence row to exist as soon as Open returns.
 - **The web** reads `companyReady` (from `_ready`) and polls until it is true. Then it expects the company in
   `qorpera_list_hosted_profiles`.
-- **Today's creation (`snapshot-v1`):**
+- **The old creation (`snapshot-v1`; legacy sweep D1, 20260930330000, dropped it):**
   - The request does the profile, the environment (its trigger makes the Company File row), the Co-Founder and a
     bootstrap job.
   - The object gateway's `CompanyBootstrapProvisioner` stages the files and finalizes.
@@ -46,6 +46,7 @@ In short:
   - Enabling the folder core after a bootstrap job is queued leaves the company hidden for good.
   - Claim, finalize and Co-Founder seeding already refuse `folder-v2`. Not yet guarded:
     `qorpera_enqueue_company_bootstrap`, and `qorpera_folder_enable` with a queued job.
+  - Legacy sweep D1 (20260930330000) dropped the old chain, so neither trap remains.
 - **Bytes:**
   - A commit unit only references stored bytes (a version-2 proof and catalog rows). SQL cannot store the bytes.
   - The platform can stage through `qorpera_folder_open_upload`, `_authorize_object_upload`, `_confirm_object` and
@@ -61,9 +62,10 @@ In short:
 
 1. **Open** (`qorpera_folder_company_open(user, clientCreationId, name)`, called by the lobby as the member):
    - It inserts the creation request first (`qorpera_company_creation_requests`, `on conflict do nothing`). A
-     repeat returns the same company. A name mismatch refuses, as `qorpera_create_cloud_company` does. A creation id
-     the old path already used refuses (`23505`, as the lobby does for a company with a bootstrap job). The reverse
-     (a folder-path id sent to the old path) fails at its own strict job lookup.
+     repeat returns the same company. A name mismatch refuses, as `qorpera_create_cloud_company` did. A creation id
+     the old path already used refused (`23505`, as the lobby did for a company with a bootstrap job), and the reverse
+     (a folder-path id sent to the old path) failed at its own strict job lookup. Since legacy sweep D1
+     (20260930330000) there is no old path: a creation id names a `folder-v2` company or none.
    - It makes the profile, the owner member (email and display name read from `auth.users`, so the same body serves
      the operator functions, which have no member's session), and the environment named after the company (contract
      version 2). The provision
@@ -71,13 +73,14 @@ In short:
    - In the same transaction, `qorpera_folder_enable_internal` switches that row to `folder-v2`: the clock, fence and
      admission rows, and the root and `rules/` resources.
    - `qorpera_folder_enable` becomes a role check around the same internal function. Both refuse an environment
-     with a bootstrap job (F1's promise on #444). The file row's `state` is then `ready`, and nothing may read that
+     with a bootstrap job (F1's promise on #444; legacy sweep D1, 20260930330000, dropped the jobs and the check).
+     The file row's `state` is then `ready`, and nothing may read that
      as "the company is ready".
    - No staff, no thread, no seed, no wake. It returns `{profile_id, environment_id}`. Vault By Default registers the
      company for sign-in on its own.
 2. **Start** (`qorpera_folder_company_seed(profile, input)`, called inside Start):
    - It checks the input (the schema, the fields, their sizes as the lobby keeps them) and that the company is
-     `folder-v2` with no bootstrap job.
+     `folder-v2` with no Co-Founder (and, until legacy sweep D1, 20260930330000, no bootstrap job).
    - It inserts one row into `qorpera_folder_company_creations`: `state = 'queued'`, the input,
      `kickoff_user_id = kickoffRequestedBy`, and the ids the seed needs: `cofounder_id` and `first_todo_id`, each a
      random version-4 UUID (`gen_random_uuid()`), made once here. Every client checks a staff id's version and variant
@@ -171,7 +174,8 @@ One transaction, numbered with the core's steps (core §3):
     (P15)"), through `qorpera_queue_agent_first_run`. Its sponsor is `qorpera_member_first_run_sponsor` of the
     kickoff's author, read again then, together with the same `qorpera_sponsor_serves_requester` check Start made.
     With no usable login the kickoff stays pending, and its author starts it later, as today.
-  - `qorpera_company_first_runs` is not written (it needs a formation).
+  - `qorpera_company_first_runs` is not written (it needs a formation; legacy sweep D1, 20260930330000, dropped the
+    table).
 - **Step 9:** the check (verify).
 - **Step 11:** the folder clock.
 - **After the clock:** the creation row becomes `state = 'completed'`, with the commit id, and the input is nulled
@@ -189,8 +193,9 @@ so the create function sorts the outcome itself and answers `completed`, `failed
   `bytes_unverified` outcome (a deleting object: "the writer redoes its call once GC has finished", core §8 G3).
 - **Final** (`failed`: the row keeps the outcomes and the input): a parse, schema or 5.6 refusal, an unexpected
   `conflict`, and a Co-Founder or first run that does not match the row.
-- **Before the block,** a company with a bootstrap job (`old_chain`) or a recorded Co-Founder (`cofounder_exists`),
-  or whose kickoff member is gone (`kickoff_member_left`), answers `failed`.
+- **Before the block,** a company with a recorded Co-Founder (`cofounder_exists`), or whose kickoff member is gone
+  (`kickoff_member_left`), answers `failed`. A bootstrap job answered `old_chain` until legacy sweep D1
+  (20260930330000) dropped the old chain.
 - **Stale:** a create call that is not the lease's worker and generation answers `stale` and changes nothing; the
   worker drops the claim.
 - Errors the block does not catch (`QRC01`, `55000`, `55P03`, `40P01`, and defects such as `22023` or `XX000`) roll the
@@ -209,7 +214,7 @@ so the create function sorts the outcome itself and answers `completed`, `failed
   only for such a run. So a run-less wake at creation would fail today, while the kickoff and turn request fit both
   unchanged.
 - This matches contract 14.1 ("exactly one first-run kickoff … a silent system input"), the 2026-09-18 amendment and
-  launch item 3, the way `snapshot-v1` meets them today.
+  launch item 3, the way `snapshot-v1` met them.
 - Exactly one:
   - one creation row per company;
   - `qorpera_agent_first_runs` is unique per agent;
@@ -243,7 +248,7 @@ so the create function sorts the outcome itself and answers `completed`, `failed
   `folder-v2` company with no creation row (none exists outside tests) stays hidden. The core flag and the creation
   row are joined once, not called per row.
 - **Founder departure** (`qorpera_guard_founder_departure`, and the team page's `leave` capability): a founder named
-  as a creation's `kickoff_user_id` cannot leave while it is `queued` or `leased`, as with a bootstrap job. `failed`
+  as a creation's `kickoff_user_id` cannot leave while it is `queued` or `leased`, as a bootstrap job held them. `failed`
   and `blocked` do not hold them.
 - **Company delete** (`qorpera_stop_company_work`, called with the company fence held): it marks `queued` and `leased`
   creations `blocked` with `FOR UPDATE SKIP LOCKED`, as it treats runner jobs, since the creation row sits before the
@@ -255,6 +260,9 @@ so the create function sorts the outcome itself and answers `completed`, `failed
     byte);
   - `qorpera_folder_company_create` refuses a company with a bootstrap job or a Co-Founder;
   - Open never runs the old chain.
+
+  Legacy sweep D1 (20260930330000) dropped the old chain, the enqueue with it, and the bootstrap-job checks; the
+  Co-Founder check stays.
 - **Other platform writers** (P22's connection files) skip a company whose creation is not `completed`. Otherwise
   the creation's `mkdir connections` meets a `conflict`, and the creation then fails on every requeue. The skip goes
   into P22a's claim (`qorpera_claim_connection_file(uuid,integer)`, migration 20260930006000), after the candidate
@@ -340,7 +348,7 @@ and 817 §1's):
 - `qorpera_list_hosted_profiles` (hiding);
 - `qorpera_guard_founder_departure` and `qorpera_profile_team_info` (`leave`);
 - `qorpera_stop_company_work` (creations blocked);
-- `qorpera_enqueue_company_bootstrap` (a `folder-v2` refusal prefix);
+- `qorpera_enqueue_company_bootstrap` (a `folder-v2` refusal prefix; legacy sweep D1, 20260930330000, dropped it);
 - `qorpera_folder_enable` (a role check around the new `qorpera_folder_enable_internal`, with the bootstrap-job
   refusal);
 - `qorpera_company_founding_json` (`start.companySetup`);

@@ -3,14 +3,9 @@ import {
 	type MemberBrowserRecoveryRpc,
 } from "@qorpera/cloud-client/cloud-member-browser-recovery";
 import { CloudMemberCompanyComputerClient } from "@qorpera/cloud-client/cloud-member-company-computer";
-import {
-	CloudMemberCompanyFileClient,
-	parseCloudMemberCompanyMode,
-} from "@qorpera/cloud-client/cloud-member-company-editor";
-import { CloudMemberCompanyPresence } from "@qorpera/cloud-client/cloud-member-company-presence";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
-import { type CompanyPathPresenceView, presenceUuid } from "@qorpera/cloud-client/company-path-presence";
-import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
+import { presenceUuid } from "@qorpera/cloud-client/company-path-presence";
+import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import { type MemberWebConfig, parseMemberWebConfig } from "./config.ts";
 
 export interface WebCompany {
@@ -20,10 +15,7 @@ export interface WebCompany {
 	environmentName: string;
 	role: "owner" | "admin" | "contributor" | "viewer";
 }
-type Rpc =
-	| "qorpera_list_hosted_profiles"
-	| "qorpera_member_company_file_mode"
-	| Parameters<MemberBrowserRecoveryRpc>[0];
+type Rpc = "qorpera_list_hosted_profiles" | Parameters<MemberBrowserRecoveryRpc>[0];
 type Context = {
 	memberId: string;
 	signal: AbortSignal;
@@ -35,12 +27,15 @@ function companies(value: unknown): WebCompany[] {
 	if (!Array.isArray(value) || value.length > 2000) throw new Error("Company list is unavailable");
 	const seen = new Set<string>();
 	return value.map((value) => {
+		// bootstrap_state is the legacy snapshot's; the list may still send it, and nothing here reads it.
 		if (
 			!value ||
 			typeof value !== "object" ||
 			Array.isArray(value) ||
-			Object.keys(value).sort().join() !==
-				"bootstrap_state,contract_version,created_at,environment_id,environment_name,profile_id,profile_name,role"
+			Object.keys(value)
+				.filter((key) => key !== "bootstrap_state")
+				.sort()
+				.join() !== "contract_version,created_at,environment_id,environment_name,profile_id,profile_name,role"
 		)
 			throw new Error("Invalid company list");
 		const companyId = presenceUuid(value.profile_id),
@@ -55,8 +50,7 @@ function companies(value: unknown): WebCompany[] {
 			!Number.isSafeInteger(value.contract_version) ||
 			value.contract_version < 1 ||
 			typeof value.created_at !== "string" ||
-			!Number.isFinite(Date.parse(value.created_at)) ||
-			typeof value.bootstrap_state !== "string"
+			!Number.isFinite(Date.parse(value.created_at))
 		)
 			throw new Error("Invalid company list");
 		seen.add(key);
@@ -213,7 +207,6 @@ export class WebCompanySession {
 	readonly computer: CloudMemberCompanyComputerClient;
 	readonly #config: MemberWebConfig;
 	readonly #context: Context;
-	readonly #options: ConstructorParameters<typeof CloudMemberCompanyFileClient>[0];
 	constructor(options: {
 		config: MemberWebConfig;
 		company: WebCompany;
@@ -226,12 +219,11 @@ export class WebCompanySession {
 		this.signal = options.signal;
 		this.#config = options.config;
 		this.#context = options.context;
-		this.#options = {
+		this.computer = new CloudMemberCompanyComputerClient({
 			companyId: this.company.companyId,
 			environmentId: this.company.environmentId,
 			supabaseUrl: options.config.supabaseUrl,
 			publishableKey: options.config.publishableKey,
-			objectGatewayUrl: options.config.objectGatewayUrl,
 			accessToken: async (signal) => {
 				this.current();
 				const token = await options.context.token(signal);
@@ -251,28 +243,12 @@ export class WebCompanySession {
 				this.current();
 				return response;
 			},
-		};
-		this.computer = new CloudMemberCompanyComputerClient(this.#options);
+		});
 	}
 	current = (): void => {
 		this.#context.current();
 		this.signal.throwIfAborted();
 	};
-	async files(): Promise<CloudMemberCompanyFileClient> {
-		this.current();
-		const mode = parseCloudMemberCompanyMode(
-			await this.#context.rpc(
-				"qorpera_member_company_file_mode",
-				{ p_profile_id: this.company.companyId },
-				this.signal,
-			),
-			this.company.companyId,
-		);
-		this.current();
-		if (mode.environmentId !== this.company.environmentId || mode.mode !== "governed")
-			throw new Error("This company does not have a governed cloud File interface.");
-		return new CloudMemberCompanyFileClient(this.#options);
-	}
 	views(scope: Parameters<CloudMemberCompanyComputerClient["views"]>[0]) {
 		this.current();
 		if (!this.#config.officeViewerOrigin) throw new Error("Cloud screen viewing has not been configured");
@@ -281,13 +257,5 @@ export class WebCompanySession {
 			this.memberId,
 			`${this.#config.officeViewerOrigin}/office/${scope.companyComputerId}/view`,
 		);
-	}
-	presence(onChange: (view: CompanyPathPresenceView) => void): CloudMemberCompanyPresence {
-		this.current();
-		const client = createClient(this.#config.supabaseUrl, this.#config.publishableKey, {
-			auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-			accessToken: () => withCloudDeadline((signal) => this.#options.accessToken(signal), 2000, this.signal),
-		});
-		return new CloudMemberCompanyPresence({ ...this.#options, client, signal: this.signal, onChange });
 	}
 }

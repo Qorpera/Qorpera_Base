@@ -585,21 +585,20 @@ it("archives a coding session as a run effect under its own receipt, and relays 
 
 it("routes manage_worker and report_work to the folder writer, and says how workers work there", async () => {
 	const f = await fixture({ files: { [TODO]: todoText() } });
-	const gateway = { read: async () => ({}), mutate: async () => ({}) } as never;
-	const control = {
-		call: async () => {
-			throw new Error("The legacy worker functions are not called");
+	// The todo writer is not this test's; the worker tools never reach it.
+	const folderTodos = {
+		list: async () => {
+			throw new Error("The todo writer is not called");
+		},
+		change: async () => {
+			throw new Error("The todo writer is not called");
 		},
 	} as never;
 	const [, manage] = cloudWorkerTools(
 		f.binding,
 		f.identity,
-		control,
-		gateway,
 		{ kind: "human", source: { kind: "input", id: f.identity.runId, occurrenceKey: "x" } } as never,
-		{
-			folderWorkers: f.workers(),
-		},
+		{ folderTodos, folderWorkers: f.workers() },
 	);
 	expect(manage?.description).toContain("status lists the workers of one todo (name its todoKey)");
 	expect(manage?.description).toContain("holds brief.md");
@@ -615,10 +614,8 @@ it("routes manage_worker and report_work to the folder writer, and says how work
 	const [, withMachines] = cloudWorkerTools(
 		f.binding,
 		f.identity,
-		control,
-		gateway,
 		{ kind: "human", source: { kind: "input", id: f.identity.runId, occurrenceKey: "x" } } as never,
-		{ machines: true, folderWorkers: f.workers() },
+		{ machines: true, folderTodos, folderWorkers: f.workers() },
 	);
 	expect(withMachines?.description).toContain("running tests or builds on the company's machines");
 	expect(withMachines?.description).toContain("a session busy for hours after a turn brings you check-ins");
@@ -631,10 +628,8 @@ it("routes manage_worker and report_work to the folder writer, and says how work
 	const [report] = cloudWorkerTools(
 		reporting.binding,
 		reporting.identity,
-		control,
-		gateway,
 		{ kind: "agent", source: { kind: "worker-dispatch", id: reporting.identity.runId, occurrenceKey: "y" } } as never,
-		{ folderWorkers: reporting.workers() },
+		{ folderTodos, folderWorkers: reporting.workers() },
 	);
 	expect(report?.name).toBe("report_work");
 	const parsed = report?.parseArguments({ operationKey: "report-1", outcome: "succeeded", summary: "Done." });

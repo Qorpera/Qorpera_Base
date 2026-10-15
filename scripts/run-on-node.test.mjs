@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
 import {
+	baseCopyCompare,
 	CLOSED,
 	CPU_SLOTS,
 	candidateMachines,
@@ -68,6 +69,9 @@ test("options, install default and extra arguments", () => {
 	assert.deepEqual([parseArgs(["--no-install", "test"]).install, parseArgs(["--no-install", "test"]).build], [false, false]);
 	assert.throws(() => parseArgs(["--base", "--octopus", "changed"]), /Invalid --base/);
 	assert.equal(parseArgs(["--base", "origin/release/runtime-v150", "changed"]).base, "origin/release/runtime-v150");
+	assert.equal(parseArgs(["--tree", "pr-loop", "changed"]).tree, "pr-loop");
+	assert.equal(parseArgs(["changed"]).tree, null);
+	for (const bad of ["../x", "a/b", ".hidden", "", "pr-loop.lock"]) assert.throws(() => parseArgs(["--tree", bad, "changed"]), /Invalid --tree/);
 	assert.throws(() => parseArgs(["hosted-db", "extra"]), /after --/);
 	assert.throws(() => parseArgs(["--env", "1BAD=x", "hosted-db"]), /Invalid --env/);
 	assert.throws(() => parseArgs(["--bogus", "hosted-db"]), /Unknown option/);
@@ -438,6 +442,12 @@ test("cleanup prunes runs by the UTC time in their name, never by mtime", () => 
 	assert.equal(spawnSync("bash", ["-n", "-c", script]).status, 0);
 });
 
+test("cleanup removes worktree copies unused for 3 days, only when no run holds their lock", () => {
+	const script = pruneScript();
+	assert.match(script, /find \/home\/tester\/trees -maxdepth 1 -name '\*\.lock' -mtime \+2 /);
+	assert.match(script, /flock -n "\$l" sudo -n rm -rf -- "\$\{l%\.lock\}"/);
+});
+
 function files(root) {
 	const out = [];
 	const walk = (dir) => {
@@ -450,6 +460,50 @@ function files(root) {
 	walk(root);
 	return out.sort();
 }
+
+test("a shared base copy compares contents: another checkout's same-size, same-mtime file is never reused", () => {
+	const temporary = mkdtempSync(join(tmpdir(), "run-on-node-test-"));
+	try {
+		const when = new Date("2026-10-14T21:00:00Z");
+		const checkout = (name, bytes) => {
+			mkdirSync(join(temporary, name));
+			writeFileSync(join(temporary, name, "f.ts"), bytes);
+			utimesSync(join(temporary, name, "f.ts"), when, when);
+			return join(temporary, name);
+		};
+		const first = checkout("first", "aaaa\n");
+		const second = checkout("second", "bbbb\n");
+		const treeDir = join(temporary, "tree");
+		const refresh = (runDir, shared) => {
+			const line = runScript({ run: "R", runDir, treeDir, shared, files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" })
+				.split("\n")
+				.find((l) => l.includes("base copy refresh"));
+			const result = spawnSync("bash", ["-c", line]);
+			assert.equal(result.status, 0, result.stderr?.toString());
+		};
+		const upload = (root, runDir, shared) => {
+			const rsync = spawnSync("rsync", ["-a", ...baseCopyCompare(shared), `--copy-dest=${treeDir}/`, `${root}/`, `${runDir}/`]);
+			assert.equal(rsync.status, 0, rsync.stderr?.toString());
+		};
+		mkdirSync(treeDir);
+		refresh(first, true);
+		assert.equal(readFileSync(join(treeDir, "f.ts"), "utf8"), "aaaa\n");
+
+		upload(second, join(temporary, "run"), true);
+		assert.equal(readFileSync(join(temporary, "run/f.ts"), "utf8"), "bbbb\n");
+		refresh(join(temporary, "run"), true);
+		assert.equal(readFileSync(join(treeDir, "f.ts"), "utf8"), "bbbb\n");
+
+		// Why: rsync's quick check alone takes the base copy's bytes for the other checkout's file. A checkout's own
+		// base copy keeps the quick check.
+		upload(first, join(temporary, "quick"), false);
+		assert.equal(readFileSync(join(temporary, "quick/f.ts"), "utf8"), "bbbb\n");
+		assert.deepEqual(baseCopyCompare(false), []);
+		assert.doesNotMatch(runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" }), /--checksum/);
+	} finally {
+		rmSync(temporary, { recursive: true, force: true });
+	}
+});
 
 test("the copied tree is exactly what git sees, and the digest covers untracked contents", () => {
 	const temporary = mkdtempSync(join(tmpdir(), "run-on-node-test-"));

@@ -148,7 +148,7 @@ function wakeProtocol(wake: CloudWakeEnvelope | null): readonly string[] {
 		];
 	if (wake.kind === "room") return WAKE_PROTOCOL.room;
 	if (wake.source.kind === "worker-dispatch") return WAKE_PROTOCOL.workerDispatch;
-	// A quiet coding session's check-in (SQL qorpera_ask_quiet_coding_sessions) arrives in the report shape.
+	// A quiet coding session's check-in (SQL qorpera_folder_coding_checkins_company) arrives in the report shape.
 	if (wake.source.kind === "worker-completion")
 		return wake.source.occurrenceKey.startsWith("coding-quiet:")
 			? WAKE_PROTOCOL.codingQuiet
