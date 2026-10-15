@@ -804,7 +804,8 @@ declare
 begin
 	-- Only a log is deleted, whole: not one of its blocks.
 	r := pg_temp.pdelete('w1b:delete:1', log || '/log/00000002.jsonl', nlog);
-	perform pg_temp.refused(r, 1, 'structured_rule', 'a summary tree holds only tree.toml and its blocks; only blocks are deleted');
+	perform pg_temp.refused(r, 1, 'structured_rule',
+		'a summary tree holds only tree.toml, its blocks and its images; only blocks and images are deleted');
 	-- A step row gone from under its block (only a fault leaves that) refuses the block's rewrite.
 	perform pg_temp.fx(format('delete from public.qorpera_memory_run_steps where environment_id = %L and run_id = %L and j = 2',
 		env, nora));
