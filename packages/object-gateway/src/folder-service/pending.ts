@@ -803,17 +803,18 @@ export class PendingView {
 		const fresh = node.kind !== "folder" && node.origin === undefined ? node : undefined;
 		const lets =
 			fresh && (target !== undefined || folderKey(from) !== folderKey(to) || unpublished(from) || unpublished(to));
-		const shown = fresh && lets ? this.#release(fresh) : undefined;
+		if (fresh && lets) this.#release(fresh);
 		const take = fresh !== undefined && !unpublished(to);
 		const replaces = target ? this.#replaced(target, to, options.toBase, take) : undefined;
-		// A new folder's pending nodes move with it; then `from` is hidden if the live folder still shows something.
+		// A new folder's pending nodes move with it; then `from` is hidden if the live folder still shows what the node
+		// holds there.
 		const moved: [string, Node][] = [];
 		for (const [path, n] of this.#nodes) if (path !== from && within(path, from)) moved.push([path, n]);
 		for (const [path] of moved) this.#unset(path);
 		this.#unset(from);
-		if (shown !== from) this.#hide(from);
 		this.#dropUnder(to);
 		if (fresh && lets) fresh.replaces = target ? replaces : this.#takeRemoved(to);
+		this.#hideHeld(from, node);
 		this.#set(to, node);
 		for (const [path, n] of moved) this.#set(to + path.slice(from.length), n);
 		node.mtimeMs = this.#now();
@@ -954,24 +955,25 @@ export class PendingView {
 				version: base ?? r.entry.version,
 				...(r.entry.kind === "folder" ? { asOfSeq: this.#seq() } : { entry: r.entry }),
 			});
-		} else {
-			const origin = r.node.origin;
-			// A changed file whose live version moved on since its base is not removed with it: the change goes, and the
-			// newer version shows again, as a conflict would have left it.
-			const current = origin && this.#live().get(origin.path)?.version === origin.version;
-			this.#dropUnder(r.path);
-			this.#unset(r.path);
-			if (origin && !current) {
-				// Its live origin moved on: the newer version shows again where it is, not hidden by this change's move.
-				if (this.#nodes.get(origin.path)?.kind === "gone") this.#unset(origin.path);
-				return;
-			}
-			if (origin)
-				this.#removed.set(origin.path, origin.kind === "folder" ? { ...origin, asOfSeq: this.#seq() } : origin);
-			// A new file or link lets the live one it replaced go: removed at its base, or shown again if newer.
-			else if (r.node.kind !== "folder" && this.#release(r.node) === r.path) return;
+			return;
 		}
-		this.#hide(r.path);
+		const origin = r.node.origin;
+		// A changed file whose live version moved on since its base is not removed with it: the change goes, and the
+		// newer version shows again, as a conflict would have left it.
+		const current = origin && this.#live().get(origin.path)?.version === origin.version;
+		this.#dropUnder(r.path);
+		this.#unset(r.path);
+		if (origin && !current) {
+			// Its live origin moved on: the newer version shows again where it is, not hidden by this change's move.
+			if (this.#nodes.get(origin.path)?.kind === "gone") this.#unset(origin.path);
+			return;
+		}
+		if (origin)
+			this.#removed.set(origin.path, origin.kind === "folder" ? { ...origin, asOfSeq: this.#seq() } : origin);
+		// A new file or link lets the live one it replaced go: removed at its base, or shown again if newer.
+		else if (r.node.kind !== "folder") this.#release(r.node);
+		// What the live folder still shows at the path the view never took: what the node held is removed now, so it is
+		// another machine's (made, or renamed there only in case), and shows again.
 	}
 
 	// ---- A new file or link that replaces a live one ---------------------------------------------------------------
@@ -1009,17 +1011,13 @@ export class PendingView {
 	}
 
 	/** A new file or link lets the live one it replaced go: that one is removed at the writer's base if the feed has not
-	 * changed it since; else its newer version shows again, as a conflict would leave it. Answers where it shows. */
-	#release(node: PendingFile | PendingLink): string | undefined {
+	 * changed it since; else its newer version shows again, as a conflict would leave it. */
+	#release(node: PendingFile | PendingLink): void {
 		const base = node.replaces;
-		if (!base) return undefined;
+		if (!base) return;
 		node.replaces = undefined;
-		if (this.#live().get(base.path)?.version === base.version) {
-			this.#removed.set(base.path, base);
-			return undefined;
-		}
-		if (this.#nodes.get(base.path)?.kind === "gone") this.#unset(base.path);
-		return base.path;
+		if (this.#live().get(base.path)?.version === base.version) this.#removed.set(base.path, base);
+		else if (this.#nodes.get(base.path)?.kind === "gone") this.#unset(base.path);
 	}
 
 	/** Drops a file's or link's removal whose live entry changed since the machine saw it. Answers whether it did. */
@@ -1045,6 +1043,16 @@ export class PendingView {
 	/** A path the live folder would still show something at gets a gone node. */
 	#hide(path: string): void {
 		if (this.resolve(path)) this.#set(path, { kind: "gone" });
+	}
+
+	/** After `node` left `path`: a gone node there if the live folder still shows what the node holds (its origin, or
+	 * the live one it still replaces). Anything else there the view never took, and it shows: another machine's (made,
+	 * or renamed there only in case), or a newer version the node let go. */
+	#hideHeld(path: string, node: PendingFile | PendingFolder | PendingLink): void {
+		const r = this.resolve(path);
+		if (r?.kind !== "live") return;
+		if (r.source === node.origin?.path || (node.kind !== "folder" && r.source === node.replaces?.path))
+			this.#set(path, { kind: "gone" });
 	}
 
 	#set(path: string, node: Node): void {

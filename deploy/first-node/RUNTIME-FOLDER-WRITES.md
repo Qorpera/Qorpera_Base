@@ -132,7 +132,8 @@ first, and its last boundary is final: one change set with everything pending, o
   removed it): a `write` or `symlink` naming the version the machine saw there. The new file or link holds that version
   itself from then on, and nothing else done at that path, spelled in any case, changes it: such a change is a unit of
   its own, and the replacement conflicts if the version it names is gone. Removed, or moved to another path, it lets
-  the live one go: removed at that version, or shown again if another machine changed it since;
+  the live one go: removed at that version, or shown again if another machine changed it since (renamed only in case
+  to the new one's name, too: the newer version shows there);
 - a new folder with everything created inside it: one `new_folder`;
 - a deleted folder with everything inside it: one `delete` with `asOfSeq`; a deleted file: `delete`;
 - `mkdir` of an empty folder: `mkdir`.
@@ -156,7 +157,10 @@ before what goes in it. Then:
 - **A removal never takes a version the machine did not see.** A removal of a file names the version the name showed;
   if another machine's change reaches the feed before the boundary, the removal is dropped and the file shows again.
   A removed or moved folder names the view's position (`asOfSeq`), and the core refuses it if anything in it changed
-  since.
+  since. So the view hides a live entry only while a change holds it: a pending file, link or folder removed or moved
+  away hides at its path only what it held there (the entry it was made from, or the one it replaces), and anything
+  else the live folder has there shows again (another machine made it, or renamed it there only in case), so a
+  removal of its folder cannot take it unseen.
 
 **Changes that publish what is pending first.** A change that could not be published together with what is pending
 first publishes what is pending (a boundary, as when the machine asks), then is made on the live folder. These are:

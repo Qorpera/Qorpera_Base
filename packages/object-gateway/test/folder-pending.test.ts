@@ -575,6 +575,55 @@ describe("a view's pending changes", () => {
 		refused(() => f.view.rmdir("D"), "NOT_EMPTY");
 	});
 
+	it("shows the newer version another machine renamed only in case to a replacement's name when the replacement goes", () => {
+		const kinds: [string, Content, (f: ReturnType<typeof setup>) => void][] = [
+			["a file", "v1", (f) => write(f.view, "D/a", "mine")],
+			["a link", { link: "v1.md" }, (f) => f.view.symlink("D/a", "v2.md")],
+		];
+		const goes: [string, (f: ReturnType<typeof setup>) => void][] = [
+			["removed", (f) => f.view.unlink("D/a")],
+			["moved away", (f) => f.view.rename("D/a", "out")],
+		];
+		for (const [kind, live, make] of kinds)
+			for (const [how, go] of goes) {
+				const f = setup({ D: null, "D/A": live });
+				f.view.unlink("D/A", f.view.get("D/A")!.version);
+				make(f);
+				// Another machine renames the removed one only in case, to the new one's name: a new version there.
+				f.move("D/A", "D/a");
+				const theirs = f.tree().get("D/a")!.version;
+				go(f);
+				// The base the new one let go is gone; the newer version shows at its name, so the folder is not empty.
+				expect(f.view.get("D/a")?.version, `${kind} ${how}`).toBe(theirs);
+				refused(() => f.view.rmdir("D"), "NOT_EMPTY");
+				f.publish();
+				expect(f.tree().get("D/a")?.version, `${kind} ${how}`).toBe(theirs);
+			}
+	});
+
+	it("shows what another machine made at a new name when the view's new one there goes", () => {
+		const kinds: [string, Record<string, Content>, (f: ReturnType<typeof setup>) => void][] = [
+			["a file", { "D/x": "theirs" }, (f) => write(f.view, "D/x", "mine")],
+			["a link", { "D/x": "theirs" }, (f) => f.view.symlink("D/x", "v2.md")],
+			["a folder", { "D/x": null, "D/x/f": "theirs" }, (f) => f.view.mkdir("D/x")],
+		];
+		for (const [kind, theirs, make] of kinds)
+			for (const how of ["removed", "moved away"]) {
+				const f = setup({ D: null });
+				make(f);
+				// Another machine makes the same name: in the core it is new, as the view's is not published yet.
+				f.make(theirs);
+				const made = f.tree().get("D/x")!.version;
+				if (how === "moved away") f.view.rename("D/x", "y");
+				else if (kind === "a folder") f.view.rmdir("D/x");
+				else f.view.unlink("D/x");
+				expect(f.view.get("D/x")?.version, `${kind} ${how}`).toBe(made);
+				refused(() => f.view.rmdir("D"), "NOT_EMPTY");
+				f.publish();
+				expect(f.tree().get("D/x")?.version, `${kind} ${how}`).toBe(made);
+			}
+	});
+
 	it("removes a folder as of the oldest position of the folders removed in it", () => {
 		const f = setup({ D: null, "D/sub": null });
 		f.view.rmdir("D/sub");
