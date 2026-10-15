@@ -631,4 +631,32 @@ describe("a view's pending changes", () => {
 		expect(f.view.get("docs/Plan.md")).toBeUndefined();
 		f.publish();
 	});
+
+	it("moves a new folder only where the folder takes every name in it; a refused move leaves the rest to publish", () => {
+		const f = setup({ code: null, "code/acme": null, "code/acme/app": null, docs: null });
+		f.view.mkdir("code/acme/app/tmp");
+		f.view.mkdir("code/acme/app/tmp/a%b");
+		f.view.mkdir("code/acme/app/tmp/.git");
+		f.view.mkdir("docs/kept");
+		const before = shown(f.view);
+		// '%' only under code/, and '.git' only below code/<owner>/<name>/.
+		refused(() => f.view.rename("code/acme/app/tmp", "docs/tmp"), "BAD_REQUEST");
+		refused(() => f.view.rename("code/acme/app/tmp", "code/tmp"), "NOT_PERMITTED");
+		expect(shown(f.view)).toEqual(before);
+		const units = f.publish();
+		expect(units).toHaveLength(2);
+		expect(units).toEqual(
+			expect.arrayContaining([
+				{ op: "mkdir", path: "docs/kept" },
+				{
+					op: "new_folder",
+					path: "code/acme/app/tmp",
+					contents: expect.arrayContaining([
+						{ path: "a%b", kind: "folder" },
+						{ path: ".git", kind: "folder" },
+					]),
+				},
+			]),
+		);
+	});
 });
