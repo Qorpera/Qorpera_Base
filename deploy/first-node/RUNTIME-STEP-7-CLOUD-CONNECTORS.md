@@ -259,10 +259,13 @@ location = /v1/repository-credentials {
 # F3 5j-3: a coding session's environment variables, for the same executor
 # token, routed by the same ?company= map. The answer carries the values (the
 # broker marks it Cache-Control: no-store); never add body logging or a proxy
-# cache here.
+# cache here. Buffering stays off: with it on, an answer larger than the
+# memory buffers going to a slow executor spills to a file under
+# proxy_temp_path, values included. Off, nginx passes it through in memory.
 location = /v1/coding-environment {
     limit_except POST { deny all; }
     if ($qorpera_operations_broker = "") { return 404; }
+    proxy_buffering off;
     proxy_pass http://$qorpera_operations_broker;
 }
 ```
