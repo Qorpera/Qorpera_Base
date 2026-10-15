@@ -141,12 +141,14 @@ export async function memoryComposeView(
 		const block = part.text === null ? undefined : tree.lines.get(memoryNodeAddress(part.l, part.k))?.block;
 		if (block) shown.set(memoryBlockKey(block), block);
 	}
-	const run = await memoryRunBranches((sessions) =>
-		cloudToolRequest(
-			(requestSignal) =>
-				control.call("qorpera_memory_branches", { p_binding: binding, p_request: { sessions } }, requestSignal),
-			signal,
-		),
+	const run = await memoryRunBranches(
+		(sessions) =>
+			cloudToolRequest(
+				(requestSignal) =>
+					control.call("qorpera_memory_branches", { p_binding: binding, p_request: { sessions } }, requestSignal),
+				signal,
+			),
+		read.sessionId,
 	);
 	const own: MemoryViewConversation = {
 		sessionId: read.sessionId,

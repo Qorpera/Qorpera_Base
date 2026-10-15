@@ -353,6 +353,68 @@ describe("company notices", () => {
 		expect(shown.view.el.hidden).toBe(true);
 	});
 
+	it("says whose supervision of an area's agents ended and why, and dismisses it like any line (20260930371000)", async () => {
+		type Ended = Extract<
+			MemberNotification["subject"],
+			{ schema: "qorpera.member-notification.interface-supervision-ended/v1" }
+		>;
+		const ended = (n: number, subject: Partial<Ended> = {}): MemberNotification => ({
+			...item(n),
+			kind: "interface_supervision_ended",
+			subject: {
+				schema: "qorpera.member-notification.interface-supervision-ended/v1",
+				supervisionId: id(81),
+				tableId: id(82),
+				key: ["Sales"],
+				supervisorUserId: id(84),
+				reason: "withdrawn",
+				byUserId: id(84),
+				at: timestamp,
+				...subject,
+			},
+		});
+		const names: Record<string, string> = { [id(84)]: "Anna" };
+		const show = async (notice: MemberNotification, named = true) => {
+			const client = {
+				listNotifications: vi.fn(async () => [notice]),
+				acknowledgeNotification: vi.fn(async () => ({ ...notice, acknowledgedAt: timestamp })),
+			};
+			const view = new ExecutionNotices(
+				client,
+				new AbortController().signal,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				named ? (userId) => names[userId] : undefined,
+			);
+			document.body.append(view.el);
+			cleanup.push(() => view.dispose());
+			await settle();
+			return { client, view, text: view.el.querySelector("p")?.textContent };
+		};
+		expect((await show(ended(71))).text).toBe("Anna stopped supervising the agents in the area Sales.");
+		expect((await show(ended(72, { reason: "released", byUserId: id(85) }))).text).toBe(
+			"Anna no longer supervises the agents in the area Sales.",
+		);
+		expect((await show(ended(73, { reason: "gone", key: ["North", 2, null, ["a", "b"]] }))).text).toBe(
+			"Anna no longer supervises the agents in the area North, 2, a, b: the area is gone.",
+		);
+		expect((await show(ended(74, { reason: "left", byUserId: null }))).text).toBe(
+			"Anna left the company, so the agents in the area Sales have no supervisor.",
+		);
+		// Without the name (another window's list) or the key (too long to carry), the line still says what happened.
+		expect((await show(ended(75, { key: null }), false)).text).toBe(
+			"A member stopped supervising the agents in an area.",
+		);
+		const shown = await show(ended(76));
+		const dismiss = shown.view.el.querySelector<HTMLButtonElement>('[data-action="dismiss-notification"]')!;
+		dismiss.click();
+		await settle();
+		expect(shown.client.acknowledgeNotification).toHaveBeenCalledWith(id(76), expect.any(AbortSignal));
+		expect(shown.view.el.hidden).toBe(true);
+	});
+
 	it("offers Stop for a worker's run to a member who may stop it, and the stopped run's notice is done (gap 4b)", async () => {
 		const stalled = (n: number, worker: boolean): MemberNotification => ({
 			...item(70 + n),

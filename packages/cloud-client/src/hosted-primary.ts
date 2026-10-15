@@ -366,62 +366,8 @@ export interface HostedPrimaryTransport {
 		p_body: JsonValue;
 	}): Promise<unknown>;
 	listSessionInputs(input: { p_session_id: string; p_after_position: number; p_limit: number }): Promise<unknown>;
-	claimSessionTurn(input: {
-		p_session_id: string;
-		p_claimant_id: string;
-		p_lease_seconds: number;
-		p_company_snapshot_id: string;
-		p_staff_version: number;
-	}): Promise<unknown>;
-	renewSessionTurn(input: {
-		p_session_id: string;
-		p_turn_id: string;
-		p_claimant_id: string;
-		p_lease_seconds: number;
-	}): Promise<unknown>;
-	completeSessionTurn(input: {
-		p_session_id: string;
-		p_turn_id: string;
-		p_claimant_id: string;
-		p_trail_end_sequence: number;
-	}): Promise<unknown>;
-	quarantineSessionTurn(input: {
-		p_session_id: string;
-		p_turn_id: string;
-		p_claimant_id: string;
-		p_reason: string;
-	}): Promise<unknown>;
-	listSessionRecoveries(input: {
-		p_session_id: string;
-		p_after_completed_at: string | null;
-		p_after_id: string | null;
-		p_limit: number;
-	}): Promise<unknown>;
-	listSessionExecutionRunRecoveries(input: { p_session_id: string; p_limit: number }): Promise<unknown>;
 	listStaffExecutionActivity(input: { p_environment_id: string }): Promise<unknown>;
 	resolveFailedExecutionRun(input: { p_run_id: string; p_action: "retry" | "discard" }): Promise<unknown>;
-	resolveSessionRecovery(input: {
-		p_session_id: string;
-		p_turn_id: string;
-		p_resolution: "retry" | "discard";
-	}): Promise<unknown>;
-	getSessionTurnStatus(input: { p_session_id: string; p_turn_id: string; p_claimant_id: string }): Promise<unknown>;
-	claimWake(input: {
-		p_environment_id: string;
-		p_wake_key: string;
-		p_claimant_id: string;
-		p_lease_seconds: number;
-		p_staff_agent_id: string;
-		p_company_snapshot_id: string;
-		p_staff_version: number;
-	}): Promise<unknown>;
-	renewWake(input: {
-		p_environment_id: string;
-		p_wake_key: string;
-		p_claimant_id: string;
-		p_lease_seconds: number;
-	}): Promise<unknown>;
-	completeWake(input: { p_environment_id: string; p_wake_key: string; p_claimant_id: string }): Promise<unknown>;
 	beginOperationReceipt(input: {
 		p_execution_kind: HostedOperationExecution["kind"];
 		p_execution_id: string;
@@ -558,80 +504,12 @@ export interface HostedPrimaryDatabase {
 				Args: { p_session_id: string; p_after_position: number; p_limit: number };
 				Returns: JsonValue;
 			};
-			qorpera_claim_session_turn: {
-				Args: {
-					p_session_id: string;
-					p_claimant_id: string;
-					p_lease_seconds: number;
-					p_company_snapshot_id: string;
-					p_staff_version: number;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_renew_session_turn_v2: {
-				Args: { p_session_id: string; p_turn_id: string; p_claimant_id: string; p_lease_seconds: number };
-				Returns: JsonValue;
-			};
-			qorpera_complete_session_turn_v2: {
-				Args: {
-					p_session_id: string;
-					p_turn_id: string;
-					p_claimant_id: string;
-					p_trail_end_sequence: number;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_quarantine_session_turn: {
-				Args: { p_session_id: string; p_turn_id: string; p_claimant_id: string; p_reason: string };
-				Returns: JsonValue;
-			};
-			qorpera_list_session_recoveries: {
-				Args: {
-					p_session_id: string;
-					p_after_completed_at: string | null;
-					p_after_id: string | null;
-					p_limit: number;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_list_session_execution_run_recoveries: {
-				Args: { p_session_id: string; p_limit: number };
-				Returns: JsonValue;
-			};
 			qorpera_list_staff_execution_activity: {
 				Args: { p_environment_id: string };
 				Returns: JsonValue;
 			};
 			qorpera_resolve_failed_execution_run: {
 				Args: { p_run_id: string; p_action: string };
-				Returns: JsonValue;
-			};
-			qorpera_resolve_session_recovery: {
-				Args: { p_session_id: string; p_turn_id: string; p_resolution: string };
-				Returns: JsonValue;
-			};
-			qorpera_get_session_turn_status: {
-				Args: { p_session_id: string; p_turn_id: string; p_claimant_id: string };
-				Returns: JsonValue;
-			};
-			qorpera_claim_wake_v2: {
-				Args: {
-					p_environment_id: string;
-					p_wake_key: string;
-					p_claimant_id: string;
-					p_lease_seconds: number;
-					p_staff_agent_id: string;
-					p_company_snapshot_id: string;
-					p_staff_version: number;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_renew_wake: {
-				Args: { p_environment_id: string; p_wake_key: string; p_claimant_id: string; p_lease_seconds: number };
-				Returns: JsonValue;
-			};
-			qorpera_complete_wake: {
-				Args: { p_environment_id: string; p_wake_key: string; p_claimant_id: string };
 				Returns: JsonValue;
 			};
 			qorpera_begin_operation_receipt: {
@@ -800,48 +678,6 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 		return data;
 	}
 
-	async claimSessionTurn(input: Parameters<HostedPrimaryTransport["claimSessionTurn"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_claim_session_turn", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async renewSessionTurn(input: Parameters<HostedPrimaryTransport["renewSessionTurn"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_renew_session_turn_v2", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async completeSessionTurn(input: Parameters<HostedPrimaryTransport["completeSessionTurn"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_complete_session_turn_v2", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async quarantineSessionTurn(
-		input: Parameters<HostedPrimaryTransport["quarantineSessionTurn"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_quarantine_session_turn", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async listSessionRecoveries(
-		input: Parameters<HostedPrimaryTransport["listSessionRecoveries"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_list_session_recoveries", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async listSessionExecutionRunRecoveries(
-		input: Parameters<HostedPrimaryTransport["listSessionExecutionRunRecoveries"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_list_session_execution_run_recoveries", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
 	async listStaffExecutionActivity(
 		input: Parameters<HostedPrimaryTransport["listStaffExecutionActivity"]>[0],
 	): Promise<unknown> {
@@ -854,38 +690,6 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 		input: Parameters<HostedPrimaryTransport["resolveFailedExecutionRun"]>[0],
 	): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_resolve_failed_execution_run", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async resolveSessionRecovery(
-		input: Parameters<HostedPrimaryTransport["resolveSessionRecovery"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_resolve_session_recovery", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async getSessionTurnStatus(input: Parameters<HostedPrimaryTransport["getSessionTurnStatus"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_get_session_turn_status", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async claimWake(input: Parameters<HostedPrimaryTransport["claimWake"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_claim_wake_v2", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async renewWake(input: Parameters<HostedPrimaryTransport["renewWake"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_renew_wake", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async completeWake(input: Parameters<HostedPrimaryTransport["completeWake"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_complete_wake", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -1608,45 +1412,6 @@ export interface PendingSessionInputPage {
 	hasMore: boolean;
 }
 
-export interface HostedOperationRecoveryReceipt {
-	operationId: string;
-	operationKind: string;
-	/** `outcome_unknown`: the run was cut off while it ran, and a resume settled it (W5). */
-	status: "executing" | "completed" | "ambiguous" | "cancelled" | "outcome_unknown";
-	recoveryResolution?: "confirmed_completed" | "confirmed_not_run";
-	createdAt: string;
-}
-
-export interface HostedSessionRecovery {
-	turnId: string;
-	companySnapshotId: string;
-	staffVersion: number;
-	trailStartSequence: number;
-	trailEndSequence: number;
-	failureReason: string;
-	claimedAt: string;
-	failedAt: string;
-	operationReceipts: HostedOperationRecoveryReceipt[];
-	inputs: SessionTurnInput[];
-}
-
-export interface HostedSessionRecoveryPage {
-	items: HostedSessionRecovery[];
-	hasMore: boolean;
-	nextCompletedAt?: string;
-	nextId?: string;
-}
-
-export interface HostedExecutionRunRecovery {
-	runId: string;
-	sessionId: string;
-	failureReason: string;
-	failedAt: string;
-	operationReceipts: HostedOperationRecoveryReceipt[];
-	inputs: SessionTurnInput[];
-	proposalId?: string;
-}
-
 export interface HostedStaffExecutionActivity {
 	runId: string;
 	staffAgentId: string;
@@ -1654,32 +1419,6 @@ export interface HostedStaffExecutionActivity {
 	jobStatus: "queued" | "leased" | "completed" | "failed" | "cancelled";
 	activity: "waiting" | "working" | "needs_attention";
 	updatedAt: string;
-}
-
-export type SessionTurnClaim =
-	| { claimed: true; turnId: string; companySnapshotId: string; staffVersion: number; inputs: SessionTurnInput[] }
-	| { claimed: false; reason: "turn-in-flight" | "queue-empty" | "stale-revision" };
-
-export type SessionTurnStatus =
-	| { status: "unavailable" }
-	| {
-			status: "active" | "completed" | "quarantined" | "review_pending";
-			inputCount: number;
-			remainingInputCount: number;
-	  };
-
-export class SessionTurnOwnershipError extends Error {
-	constructor(action: "renew" | "complete") {
-		super(`Session turn ownership was lost before ${action}`);
-		this.name = "SessionTurnOwnershipError";
-	}
-}
-
-export class WakeOwnershipError extends Error {
-	constructor(action: "renew" | "complete") {
-		super(`Wake ownership was lost before ${action}`);
-		this.name = "WakeOwnershipError";
-	}
 }
 
 function parseStaffSessionHandle(value: unknown): StaffSessionHandle {
@@ -1701,26 +1440,6 @@ function parseStaffSessionHandle(value: unknown): StaffSessionHandle {
 		created: payload.created === true,
 		createdByUserId: uuid(payload.created_by_user_id, "Session creator"),
 		createdAt: timestamp(payload.created_at, "Session creation time"),
-	};
-}
-
-function parseSessionTurnClaim(value: unknown): SessionTurnClaim {
-	const payload = record(value, "session turn claim");
-	if (payload.claimed !== true) {
-		const reason =
-			payload.reason === "turn-in-flight"
-				? "turn-in-flight"
-				: payload.reason === "stale-revision"
-					? "stale-revision"
-					: "queue-empty";
-		return { claimed: false, reason };
-	}
-	return {
-		claimed: true,
-		turnId: uuid(payload.turn_id, "session turn id"),
-		companySnapshotId: uuid(payload.company_snapshot_id, "claimed Company File revision"),
-		staffVersion: boundedInteger(payload.staff_version, "claimed staff version", 1, Number.MAX_SAFE_INTEGER),
-		inputs: parseSessionInputs(payload.inputs, "session turn inputs"),
 	};
 }
 
@@ -1789,115 +1508,6 @@ function parsePendingSessionInputs(value: unknown): PendingSessionInputPage {
 	};
 }
 
-function parseSessionRecoveryPage(value: unknown): HostedSessionRecoveryPage {
-	const page = record(value, "session recovery page");
-	const items = array(page.items, "session recoveries").map((entry) => {
-		const recovery = record(entry, "session recovery");
-		const operationReceipts = array(recovery.operation_receipts, "session recovery operation receipts").map(
-			(entry) => {
-				const receipt = record(entry, "session recovery operation receipt");
-				const recoveryResolution = receipt.recovery_resolution;
-				const parsedRecoveryResolution: HostedOperationRecoveryReceipt["recoveryResolution"] =
-					recoveryResolution === "confirmed_completed" || recoveryResolution === "confirmed_not_run"
-						? recoveryResolution
-						: undefined;
-				if (
-					!["executing", "completed", "ambiguous", "cancelled", "outcome_unknown"].includes(String(receipt.status))
-				) {
-					throw new Error("Hosted primary returned invalid session recovery receipt status");
-				}
-				return {
-					operationId: uuid(receipt.operation_id, "Session recovery operation id"),
-					operationKind: nonEmptyString(receipt.operation_kind, "Session recovery operation kind", 64),
-					status: receipt.status as HostedOperationRecoveryReceipt["status"],
-					...(parsedRecoveryResolution ? { recoveryResolution: parsedRecoveryResolution } : {}),
-					createdAt: timestamp(receipt.created_at, "Session recovery operation creation time"),
-				};
-			},
-		);
-		return {
-			turnId: uuid(recovery.turn_id, "Session recovery turn id"),
-			companySnapshotId: uuid(recovery.company_snapshot_id, "Session recovery Company File revision"),
-			staffVersion: boundedInteger(
-				recovery.staff_version,
-				"Session recovery staff version",
-				1,
-				Number.MAX_SAFE_INTEGER,
-			),
-			trailStartSequence: boundedInteger(
-				recovery.trail_start_sequence,
-				"Session recovery trail start",
-				0,
-				Number.MAX_SAFE_INTEGER,
-			),
-			trailEndSequence: boundedInteger(
-				recovery.trail_end_sequence,
-				"Session recovery trail end",
-				0,
-				Number.MAX_SAFE_INTEGER,
-			),
-			failureReason: nonEmptyString(recovery.failure_reason, "Session recovery reason", 2048),
-			claimedAt: timestamp(recovery.claimed_at, "Session recovery claim time"),
-			failedAt: timestamp(recovery.failed_at, "Session recovery failure time"),
-			operationReceipts,
-			inputs: parseSessionInputs(recovery.inputs, "session recovery inputs"),
-		};
-	});
-	const nextCompletedAt = page.next_completed_at;
-	const nextId = page.next_id;
-	return {
-		items,
-		hasMore: page.has_more === true,
-		...(nextCompletedAt === null || nextCompletedAt === undefined
-			? {}
-			: { nextCompletedAt: timestamp(nextCompletedAt, "Session recovery next cursor time") }),
-		...(nextId === null || nextId === undefined ? {} : { nextId: uuid(nextId, "Session recovery next cursor id") }),
-	};
-}
-
-function parseExecutionRunRecovery(value: unknown): HostedExecutionRunRecovery {
-	const recovery = record(value, "execution run recovery");
-	const run = record(recovery.run, "execution run recovery run");
-	const job = record(recovery.job, "execution run recovery job");
-	if (run.source_kind !== "session_turn" || (job.status !== "failed" && job.status !== "cancelled")) {
-		throw new Error("Hosted primary returned an invalid execution run recovery");
-	}
-	const operationReceipts: HostedOperationRecoveryReceipt[] = array(
-		recovery.operations,
-		"execution run recovery operations",
-	).map((entry) => {
-		const receipt = record(entry, "execution run recovery operation");
-		if (!["executing", "completed", "ambiguous", "cancelled", "outcome_unknown"].includes(String(receipt.status))) {
-			throw new Error("Hosted primary returned an invalid execution run recovery operation");
-		}
-		const recoveryResolution = receipt.recovery_resolution;
-		return {
-			operationId: uuid(receipt.operation_id, "Execution run recovery operation id"),
-			operationKind: nonEmptyString(receipt.operation_kind, "Execution run recovery operation kind", 64),
-			status: receipt.status as HostedOperationRecoveryReceipt["status"],
-			...(recoveryResolution === "confirmed_completed" || recoveryResolution === "confirmed_not_run"
-				? { recoveryResolution }
-				: {}),
-			createdAt: timestamp(receipt.created_at, "Execution run recovery operation creation time"),
-		};
-	});
-	const proposalId = recovery.proposal_id;
-	return {
-		runId: uuid(run.run_id, "Execution run recovery id"),
-		sessionId: uuid(run.session_id, "Execution run recovery session id"),
-		failureReason:
-			typeof job.last_error === "string"
-				? nonEmptyString(job.last_error, "Execution run recovery reason", 2048)
-				: "Cloud runner execution was cancelled.",
-		failedAt: timestamp(job.finished_at ?? job.cancelled_at, "Execution run recovery failure time"),
-		operationReceipts,
-		inputs: parseSessionInputs(recovery.inputs, "execution run recovery inputs"),
-		...(proposalId === null || proposalId === undefined
-			? {}
-			: { proposalId: uuid(proposalId, "Execution run recovery proposal id") }),
-	};
-}
-
 function parseStaffExecutionActivity(value: unknown): HostedStaffExecutionActivity {
 	const activity = record(value, "staff execution activity");
 	if (
@@ -1919,31 +1529,6 @@ function parseStaffExecutionActivity(value: unknown): HostedStaffExecutionActivi
 		activity: activity.activity as HostedStaffExecutionActivity["activity"],
 		updatedAt: timestamp(activity.updated_at, "Staff execution activity time"),
 	};
-}
-
-export type WakeClaimResult =
-	| { claimed: true; executionId: string; companySnapshotId: string; staffVersion: number }
-	| { claimed: false; reason: "in-flight" | "already-run" | "stale-revision" | "requires-review" };
-
-function parseWakeClaimResult(value: unknown): WakeClaimResult {
-	const payload = record(value, "wake claim");
-	if (payload.claimed === true) {
-		return {
-			claimed: true,
-			executionId: uuid(payload.execution_id, "wake execution id"),
-			companySnapshotId: uuid(payload.company_snapshot_id, "wake company snapshot id"),
-			staffVersion: boundedInteger(payload.staff_version, "wake staff version", 1, Number.MAX_SAFE_INTEGER),
-		};
-	}
-	const reason =
-		payload.reason === "requires-review"
-			? "requires-review"
-			: payload.reason === "already-run"
-				? "already-run"
-				: payload.reason === "stale-revision"
-					? "stale-revision"
-					: "in-flight";
-	return { claimed: false, reason };
 }
 
 export interface HostedFriend {
@@ -2101,123 +1686,6 @@ export class QorperaHostedPrimary {
 		throw new Error("Session input queue exceeded its bounded read contract");
 	}
 
-	async claimSessionTurn(
-		sessionId: string,
-		claimantId: string,
-		companySnapshotId: string,
-		staffVersion: number,
-		leaseSeconds = 120,
-	): Promise<SessionTurnClaim> {
-		requiredUuid(sessionId, "Session id");
-		requiredUuid(claimantId, "Claimant id");
-		requiredUuid(companySnapshotId, "Company File revision");
-		if (!Number.isSafeInteger(staffVersion) || staffVersion < 1) throw new Error("Staff version is invalid");
-		return parseSessionTurnClaim(
-			await this.transport.claimSessionTurn({
-				p_session_id: sessionId,
-				p_claimant_id: claimantId,
-				p_lease_seconds: leaseSeconds,
-				p_company_snapshot_id: companySnapshotId,
-				p_staff_version: staffVersion,
-			}),
-		);
-	}
-
-	async renewSessionTurn(sessionId: string, turnId: string, claimantId: string, leaseSeconds = 120): Promise<void> {
-		requiredUuid(sessionId, "Session id");
-		requiredUuid(turnId, "Turn id");
-		requiredUuid(claimantId, "Claimant id");
-		const result = record(
-			await this.transport.renewSessionTurn({
-				p_session_id: sessionId,
-				p_turn_id: turnId,
-				p_claimant_id: claimantId,
-				p_lease_seconds: leaseSeconds,
-			}),
-			"session turn renewal",
-		);
-		if (boundedInteger(result.renewed, "Renewed input count", 0, Number.MAX_SAFE_INTEGER) === 0) {
-			throw new SessionTurnOwnershipError("renew");
-		}
-	}
-
-	async completeSessionTurn(
-		sessionId: string,
-		turnId: string,
-		claimantId: string,
-		trailEndSequence: number,
-	): Promise<void> {
-		requiredUuid(sessionId, "Session id");
-		requiredUuid(turnId, "Turn id");
-		requiredUuid(claimantId, "Claimant id");
-		boundedInteger(trailEndSequence, "trail end sequence", 0, Number.MAX_SAFE_INTEGER);
-		const result = record(
-			await this.transport.completeSessionTurn({
-				p_session_id: sessionId,
-				p_turn_id: turnId,
-				p_claimant_id: claimantId,
-				p_trail_end_sequence: trailEndSequence,
-			}),
-			"session turn completion",
-		);
-		if (boundedInteger(result.completed, "Completed input count", 0, Number.MAX_SAFE_INTEGER) === 0) {
-			throw new SessionTurnOwnershipError("complete");
-		}
-	}
-
-	async quarantineSessionTurn(sessionId: string, turnId: string, claimantId: string, reason: string): Promise<void> {
-		requiredUuid(sessionId, "Session id");
-		requiredUuid(turnId, "Turn id");
-		requiredUuid(claimantId, "Claimant id");
-		const result = record(
-			await this.transport.quarantineSessionTurn({
-				p_session_id: sessionId,
-				p_turn_id: turnId,
-				p_claimant_id: claimantId,
-				p_reason: requiredText(reason, "Quarantine reason", 2048),
-			}),
-			"session turn quarantine",
-		);
-		if (boundedInteger(result.quarantined, "Quarantined turn count", 0, 1) === 0) {
-			throw new SessionTurnOwnershipError("complete");
-		}
-	}
-
-	async listSessionRecoveries(
-		sessionId: string,
-		after?: { completedAt: string; turnId: string },
-		limit = 10,
-	): Promise<HostedSessionRecoveryPage> {
-		requiredUuid(sessionId, "Session id");
-		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) {
-			throw new Error("Session recovery page size is invalid");
-		}
-		if (after) {
-			timestamp(after.completedAt, "Session recovery cursor time");
-			requiredUuid(after.turnId, "Session recovery cursor id");
-		}
-		return parseSessionRecoveryPage(
-			await this.transport.listSessionRecoveries({
-				p_session_id: sessionId,
-				p_after_completed_at: after?.completedAt ?? null,
-				p_after_id: after?.turnId ?? null,
-				p_limit: limit,
-			}),
-		);
-	}
-
-	async listSessionExecutionRunRecoveries(sessionId: string, limit = 20): Promise<HostedExecutionRunRecovery[]> {
-		requiredUuid(sessionId, "Session id");
-		boundedInteger(limit, "Execution run recovery limit", 1, 20);
-		return array(
-			await this.transport.listSessionExecutionRunRecoveries({
-				p_session_id: sessionId,
-				p_limit: limit,
-			}),
-			"execution run recoveries",
-		).map(parseExecutionRunRecovery);
-	}
-
 	async listStaffExecutionActivity(environmentId: string): Promise<HostedStaffExecutionActivity[]> {
 		requiredUuid(environmentId, "Environment id");
 		return array(
@@ -2234,116 +1702,6 @@ export class QorperaHostedPrimary {
 		);
 		if (result.resolved !== true || result.action !== action || result.run_id !== runId) {
 			throw new Error("Hosted primary returned an invalid execution run recovery resolution");
-		}
-	}
-
-	async resolveSessionRecovery(
-		sessionId: string,
-		turnId: string,
-		resolution: "retry" | "discard",
-	): Promise<{ resolution: "retry" | "discard"; inputCount: number }> {
-		requiredUuid(sessionId, "Session id");
-		requiredUuid(turnId, "Session recovery turn id");
-		const result = record(
-			await this.transport.resolveSessionRecovery({
-				p_session_id: sessionId,
-				p_turn_id: turnId,
-				p_resolution: resolution,
-			}),
-			"session recovery resolution",
-		);
-		if (result.resolved !== true || (result.resolution !== "retry" && result.resolution !== "discard")) {
-			throw new Error("Hosted primary returned invalid session recovery resolution");
-		}
-		return {
-			resolution: result.resolution,
-			inputCount: boundedInteger(result.input_count, "Session recovery input count", 0, 32),
-		};
-	}
-
-	async getSessionTurnStatus(sessionId: string, turnId: string, claimantId: string): Promise<SessionTurnStatus> {
-		requiredUuid(sessionId, "Session id");
-		requiredUuid(turnId, "Turn id");
-		requiredUuid(claimantId, "Claimant id");
-		const result = record(
-			await this.transport.getSessionTurnStatus({
-				p_session_id: sessionId,
-				p_turn_id: turnId,
-				p_claimant_id: claimantId,
-			}),
-			"session turn status",
-		);
-		if (result.status === "unavailable") return { status: "unavailable" };
-		if (
-			result.status !== "active" &&
-			result.status !== "completed" &&
-			result.status !== "quarantined" &&
-			result.status !== "review_pending"
-		) {
-			throw new Error("Hosted primary returned invalid session turn status");
-		}
-		return {
-			status: result.status,
-			inputCount: boundedInteger(result.input_count, "Session turn input count", 1, 32),
-			remainingInputCount: boundedInteger(result.remaining_input_count, "Session turn remaining input count", 0, 32),
-		};
-	}
-
-	async claimWake(
-		environmentId: string,
-		wakeKey: string,
-		claimantId: string,
-		staffAgentId: string,
-		companySnapshotId: string,
-		staffVersion: number,
-		leaseSeconds = 300,
-	): Promise<WakeClaimResult> {
-		requiredUuid(environmentId, "Environment id");
-		requiredUuid(claimantId, "Claimant id");
-		requiredUuid(staffAgentId, "Staff agent id");
-		requiredUuid(companySnapshotId, "Company snapshot id");
-		if (!Number.isSafeInteger(staffVersion) || staffVersion < 1) throw new Error("Staff version must be positive");
-		return parseWakeClaimResult(
-			await this.transport.claimWake({
-				p_environment_id: environmentId,
-				p_wake_key: requiredText(wakeKey, "Wake key", 200),
-				p_claimant_id: claimantId,
-				p_lease_seconds: leaseSeconds,
-				p_staff_agent_id: staffAgentId,
-				p_company_snapshot_id: companySnapshotId,
-				p_staff_version: staffVersion,
-			}),
-		);
-	}
-
-	async renewWake(environmentId: string, wakeKey: string, claimantId: string, leaseSeconds = 300): Promise<void> {
-		requiredUuid(environmentId, "Environment id");
-		requiredUuid(claimantId, "Claimant id");
-		const result = record(
-			await this.transport.renewWake({
-				p_environment_id: environmentId,
-				p_wake_key: requiredText(wakeKey, "Wake key", 200),
-				p_claimant_id: claimantId,
-				p_lease_seconds: leaseSeconds,
-			}),
-			"wake renewal",
-		);
-		if (boundedInteger(result.renewed, "Renewed wake count", 0, 1) === 0) throw new WakeOwnershipError("renew");
-	}
-
-	async completeWake(environmentId: string, wakeKey: string, claimantId: string): Promise<void> {
-		requiredUuid(environmentId, "Environment id");
-		requiredUuid(claimantId, "Claimant id");
-		const result = record(
-			await this.transport.completeWake({
-				p_environment_id: environmentId,
-				p_wake_key: requiredText(wakeKey, "Wake key", 200),
-				p_claimant_id: claimantId,
-			}),
-			"wake completion",
-		);
-		if (boundedInteger(result.completed, "Completed wake count", 0, 1) === 0) {
-			throw new WakeOwnershipError("complete");
 		}
 	}
 

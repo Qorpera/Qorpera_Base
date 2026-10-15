@@ -3,10 +3,10 @@
 -- file under the conversation's summary-tree root, <root>/images/<client input id>/<sha256>.<ext>. The begin: the room,
 -- the image, the input id and its member, the limits. The gateway's save: one platform memory commit that makes the
 -- folders still missing, a replay, the limits again. The post and the input trigger: each image a live file this member
--- uploaded for this input; a submitted input's images do not change. The download, the zoom's closed attachment, the
--- path rules (members and the plain commit refused; a memory commit writes only an input's images, naming the
--- generation), the grants, and an erased message. The sweep is 411, the races 412. The conversations are a hired
--- agent's thread and a group chat.
+-- uploaded for this input; a submitted input's images do not change. The download, the path rules (members and the
+-- plain commit refused; a memory commit writes only an input's images, naming the generation), the grants, and an
+-- erased message. The sweep is 411, the races 412, what a run and the zoom read of an image 413. The conversations are
+-- a hired agent's thread and a group chat.
 
 -- 970's helpers, with their own ids.
 create function pg_temp.same(p_got jsonb, p_want jsonb, p_what text) returns void language plpgsql as $$
@@ -373,17 +373,7 @@ begin
 	perform pg_temp.path_claims('service_role');
 end $$;
 
--- 7. The zoom: a member's image stays the closed attachment the runtime reads, its media type and bytes (the path comes
--- with the runtime that opens it).
-do $$
-declare ns uuid := pg_temp.thread('nora'); f constant jsonb := pg_temp.file('nora one');
-begin
-	perform pg_temp.same((select e.value -> 'attachments' from jsonb_array_elements(public.qorpera_memory_events(ns, 0, 50)) e
-		where e.value ->> 'eventId' = current_setting('qorpera_test.nora_input')),
-		jsonb_build_array(jsonb_build_object('mediaType', 'image/png', 'bytes', f -> 'bytes')), 'The zoom''s image');
-end $$;
-
--- 8. The paths: a member's commit and the plain commit never touch a conversation's images, before its tree.toml too. A
+-- 7. The paths: a member's commit and the plain commit never touch a conversation's images, before its tree.toml too. A
 -- memory commit writes only an input's folder of images, each named by its hash, deletes only those, and names the
 -- conversation's generation.
 do $$
@@ -418,7 +408,7 @@ begin
 		raise exception 'Nothing refused changed the images'; end if;
 end $$;
 
--- 9. The grants: the begin and the download are a member's, the save the service role's; the helpers, the sweep and its
+-- 8. The grants: the begin and the download are a member's, the save the service role's; the helpers, the sweep and its
 -- schedule no API role's, nor the uploads. The three calls and the sweep are the definer's.
 do $$
 declare
@@ -447,7 +437,7 @@ begin
 	if v_bad is not null then raise exception 'Wrong definers: %', v_bad; end if;
 end $$;
 
--- 10. An erased message serves no image.
+-- 9. An erased message serves no image.
 do $$
 declare ns uuid := pg_temp.thread('nora'); inp uuid := current_setting('qorpera_test.nora_input')::uuid;
 begin
