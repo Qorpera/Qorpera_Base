@@ -24,6 +24,9 @@ export interface MemberInterfaceOffer {
 	readonly was: string | null;
 	readonly to: string;
 	readonly state: InterfaceOfferState;
+	/** The agent offered to an area's supervisor, to add to the area's agents (I9b, migration
+	 * 20260930372000_interface_supervision_agents); null for a cell's offer. */
+	readonly agent: string | null;
 	readonly at: string;
 }
 
@@ -77,6 +80,7 @@ export function parseInterfaceOffer(value: unknown): MemberInterfaceOffer {
 		was: nullable(item.was, (was) => uuid(was, "offer cell")),
 		to: uuid(item.to, "offer to"),
 		state: oneOf(item.state, INTERFACE_OFFER_STATES, "offer state"),
+		agent: nullable(item.agent, (agent) => uuid(agent, "offer agent")),
 		at: timestamp(item.at, "offer time"),
 	};
 }
