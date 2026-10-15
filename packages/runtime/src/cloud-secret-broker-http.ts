@@ -49,8 +49,10 @@ import {
 	type CloudSecretCaptureRequest,
 	type CloudSecretDescriptor,
 	type CloudSecretOperationRequest,
+	type CodingEnvironmentRequest,
 	type CodingRepositoryCredentialRequest,
 	parseCloudSecretAccountLabel,
+	parseCodingEnvironmentRequest,
 	parseCodingRepositoryCredentialRequest,
 } from "./cloud-secret-broker.ts";
 import type { CloudSecretBrokerCompanies } from "./cloud-secret-broker-shared.ts";
@@ -189,6 +191,18 @@ function parseRepositoryCredentialRequest(value: unknown): CodingRepositoryCrede
 		leaseToken: input.leaseToken,
 		executorOwner: input.executorOwner,
 		repository: input.repository,
+	});
+}
+
+function parseCodingEnvironmentHttpRequest(value: unknown): CodingEnvironmentRequest {
+	const input = record(value, "Coding environment request");
+	exact(input, ["schema", "workerId", "leaseToken", "executorOwner"], "Coding environment request");
+	if (input.schema !== "qorpera.coding-environment-request/v1")
+		throw new Error("Coding environment request is invalid");
+	return parseCodingEnvironmentRequest({
+		workerId: input.workerId,
+		leaseToken: input.leaseToken,
+		executorOwner: input.executorOwner,
 	});
 }
 
@@ -429,10 +443,10 @@ export interface HttpCloudSecretBrokerServiceOptions {
 	/** Connector OAuth flows (Step 7); absent means the OAuth routes answer 404. */
 	readonly oauth?: CloudConnectorOAuthFlows;
 	/** The coding executor's own bearer for `/v1/repository-credentials`
-	 * (bundle v88; credential `qorpera-cloud-secret-coding-executor`). Distinct
-	 * from the runtime token every guest holds; absent means the route answers
-	 * 404. The runtime token never opens that route, and this token never opens
-	 * `/v1/operations`. */
+	 * (bundle v88) and `/v1/coding-environment` (5j-3); credential
+	 * `qorpera-cloud-secret-coding-executor`. Distinct from the runtime token
+	 * every guest holds; absent means both routes answer 404. The runtime token
+	 * never opens those routes, and this token never opens `/v1/operations`. */
 	readonly codingExecutorToken?: string;
 	/** The lease proof every runtime-token route asks before it serves a run binding (G2-6a). Absent, those routes
 	 * refuse every request. */
@@ -466,7 +480,9 @@ interface RequestScope {
  * member ticket; operation execution additionally requires a private service
  * token and the database's current run/grant/receipt authorization; a coding
  * executor's repository token requires the executor's own separate token and
- * the database's current session lease, repository grant and connection grant.
+ * the database's current session lease, repository grant and connection grant,
+ * and a coding session's environment requires that same token and the
+ * session's current lease.
  */
 export class HttpCloudSecretBrokerService {
 	/** One company's broker, or the shared vault's companies (Vault By Default). */
@@ -914,6 +930,21 @@ export class HttpCloudSecretBrokerService {
 					AbortSignal.timeout(10_000),
 				);
 				response(reply, 200, { schema: credential.schema, token: credential.token });
+				return;
+			}
+			// A coding session's environment (5j-3), under the same gate as the
+			// repository token: only the executor's own bearer, the kernel's lease
+			// check behind it, and an answer that is never cached.
+			if (
+				path === "/v1/coding-environment" &&
+				this.#codingExecutorToken !== undefined &&
+				tokenMatches(this.#codingExecutorToken, request.headers.authorization)
+			) {
+				const environment = await scope.broker.codingEnvironment(
+					parseCodingEnvironmentHttpRequest(await readRequest(request)),
+					AbortSignal.timeout(10_000),
+				);
+				response(reply, 200, { schema: environment.schema, environment: { ...environment.environment } });
 				return;
 			}
 			response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });

@@ -183,8 +183,11 @@ request; the authority's `service_origin` stays that bare origin.
   random bytes, base64url, distinct from the runtime token, the capability and
   the database password; the broker refuses to start otherwise). The executor
   holds the same value as `qorpera-coding-broker-executor`; no guest, provider
-  or exec host ever receives it. A broker without the credential answers 404 on
-  the route; the executor's token opens nothing else (`/v1/operations` stays
+  or exec host ever receives it. Since 5j-3 the same token, and only it, also
+  opens `/v1/coding-environment`, which returns a leased session's environment
+  variables opened from its `environment` secrets (`{schema, environment}`,
+  `Cache-Control: no-store`). A broker without the credential answers 404 on
+  both routes; the executor's token opens nothing else (`/v1/operations` stays
   runtime-token only). Give it only to the brokers of companies that run coding
   sessions, in a drop-in:
   `LoadCredential=qorpera-cloud-secret-coding-executor:/etc/qorpera-secret-broker/coding-executor`.
@@ -253,6 +256,15 @@ location = /v1/repository-credentials {
     if ($qorpera_operations_broker = "") { return 404; }
     proxy_pass http://$qorpera_operations_broker;
 }
+# F3 5j-3: a coding session's environment variables, for the same executor
+# token, routed by the same ?company= map. The answer carries the values (the
+# broker marks it Cache-Control: no-store); never add body logging or a proxy
+# cache here.
+location = /v1/coding-environment {
+    limit_except POST { deny all; }
+    if ($qorpera_operations_broker = "") { return 404; }
+    proxy_pass http://$qorpera_operations_broker;
+}
 ```
 
 The executor always sends `?company=<profileId>`. The operations map's empty
@@ -261,8 +273,9 @@ without `company=` to the acceptance broker; that broker refuses any session
 outside its company in the database ("coding session is unavailable to this
 broker", SQL test 399), so the fallback releases nothing.
 
-All of these pass `nginx -t` (nginx 1.28.3, node 2's build, in a scratch
-prefix with a stand-in capture map); a regex with `{}` must stay quoted. The callback's
+All of these up to bundle v88's pass `nginx -t` (nginx 1.28.3, node 2's build,
+in a scratch prefix with a stand-in capture map); check 5j-3's with `nginx -t`
+when it is added. A regex with `{}` must stay quoted. The callback's
 `error_log … crit` was chosen over accepting the leak: with the broker down,
 nginx's default "error" level would record `request: "GET
 /v1/oauth/callback?code=…&state=…"`; at "crit" a scratch run with a refused

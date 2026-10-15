@@ -984,7 +984,8 @@ machine sets itself (`home`, `path`, `tmpdir`, `user`, `shell`, `lang`, `tz`, th
 any name that starts `lc_`, `git_`, `ld_`, `dyld_`, `ssh_`, `xdg_`, `docker_` or `qorpera_`), and never one that names
 a harness's login or provider (`anthropic_`, `claude_`, `codex_`, `openai_`), so no secret changes who pays for a
 session. The begin refuses any other name with 22023 "That name is not available for an environment variable". A
-value never comes back to a client.
+value never comes back to a client. The broker's screen seals only the one field `value`, at least 8 UTF-8 bytes long
+and without a NUL, so the coding machine can mask it in its output; it refuses any other capture for `environment`.
 
 A coding session gets its member's own environment secrets and the company's that an owner or administrator granted on
 its repository; a company secret with no grant reaches no session. When the member's and a granted company secret have
