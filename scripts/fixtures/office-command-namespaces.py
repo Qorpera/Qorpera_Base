@@ -444,7 +444,7 @@ SHELL_SCRIPT = r"""
 set -eu
 printf 'shell\n' > /tmp/shell-marker
 /usr/bin/python3 /qorpera-probe.py shell-state
-printf 'ready\n' > /qorpera-share/shell-ready.json.tmp
+printf '{"ready": true}\n' > /qorpera-share/shell-ready.json.tmp
 mv /qorpera-share/shell-ready.json.tmp /qorpera-share/shell-ready.json
 while :; do /usr/bin/sleep 1; done
 """
