@@ -242,6 +242,9 @@ empty 503 it gives every refused request. The node-level tokens stay as transpor
   sends the header.
 - **`/v1/event-hook-fills`** (E3b-3, a `vault_fill` of a signed hook's secret; same section): proven the same way, and
   the computer's broker client sends the header there as on `/v1/company-account-fills`.
+- **`/v1/event-hook-captures`** (E3c-2, a `vault_capture` of a Stripe hook's secret off Stripe's page; §5.8): proven
+  the same way, and the computer's broker client sends the header there, and on the Stripe hook's `rekey` through
+  `/v1/event-hooks`.
 - **The native object route:** gone instead of proven (legacy removal, step C; migration `20260930190000`).
   `/v1/native-company-objects`, its native-objects clients and their SQL served only snapshot-v1 companies: a
   folder-v2 capture is stored nowhere, and the computer's file imports and exports are off until the folder carries

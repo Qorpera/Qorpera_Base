@@ -1,0 +1,30 @@
+{
+  "schema": "qorpera.office-folder-substrate-evidence/v1",
+  "recordedOn": "2026-10-14",
+  "copiedOn": "2026-10-14",
+  "fullyAccepted": false,
+  "officeIntegrationAccepted": false,
+  "note": "The rerun on protocol 3, after master's #1011 moved the folder protocol to 3: the run-on-node record and full log, and the evidence JSON extracted from between the log's OFFICE_FOLDER_SUBSTRATE_EVIDENCE markers. Commits after the run's head change only the substrate document and this evidence; see deploy/test-machine/OFFICE-FOLDER-SUBSTRATE.md, 'Rerun on protocol 3 (2026-10-14)'.",
+  "files": [
+    {
+      "file": "OFFICE-ACCOUNT-RUN.json",
+      "run": "20261014T165304-74801-23846909",
+      "head": "551e234132707eee050bc01f11f28e7a6d46dbb4",
+      "sha256": "38605025f9ab6b737dbd111d95dac8b1eebd2d278a8a42758f459f908adfe6bb",
+      "bytes": 1509
+    },
+    {
+      "file": "OFFICE-ACCOUNT-RUN.log",
+      "sha256": "66145e0dac993f664f214944c635f3a9e0bc2894e228c0a8983bafe2f5c7f975",
+      "bytes": 42419
+    },
+    {
+      "file": "OFFICE-ACCOUNT-EVIDENCE.json",
+      "ownerMode": "office-account",
+      "folderSha256": "11eda4a82f07c487874a027359d6385c4645d80be73cedaf548b9b18dccae445",
+      "fixtureSha256": "4e0f98e97bd38d7ae91a0483c5402b7f61c0eb83a81c809538f9ef22c57005fe",
+      "sha256": "bbb6d88951ad304006112d6b24e2c59ef31604748015e6ccacac82ead338b27a",
+      "bytes": 18022
+    }
+  ]
+}

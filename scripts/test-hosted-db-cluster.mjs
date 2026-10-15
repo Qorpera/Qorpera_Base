@@ -209,6 +209,30 @@ export class HostedDbCluster {
 			throw new Error(`psql on ${database} failed (exit ${result.status}):\n${result.stderr.toString().slice(-8000)}`);
 	}
 
+	/** `script` without blocking this process: the promise settles when psql ends, and child processes this
+	 * process started meanwhile are seen as they exit. */
+	scriptInBackground(database, text, { progress = false } = {}) {
+		const child = spawn("docker", this.psqlArgs(database, ["-q"]), {
+			cwd: repositoryRoot,
+			stdio: ["pipe", progress ? "inherit" : "ignore", "pipe"],
+		});
+		let stderr = "";
+		child.stderr.setEncoding("utf8");
+		child.stderr.on("data", (chunk) => {
+			stderr = (stderr + chunk).slice(-8000);
+		});
+		// psql stopping on an error before it read everything is reported by its exit below.
+		child.stdin.on("error", () => {});
+		child.stdin.end(`\\o /dev/null\n${text}`);
+		return new Promise((resolveScript, rejectScript) => {
+			child.on("error", rejectScript);
+			child.on("close", (code, signal) => {
+				if (code === 0) resolveScript();
+				else rejectScript(new Error(`psql on ${database} failed (exit ${code ?? signal}):\n${stderr}`));
+			});
+		});
+	}
+
 	/** Applies these migrations to an existing database, each in a fresh session, in one psql process. */
 	migrate(database, names) {
 		if (names.length === 0) return;

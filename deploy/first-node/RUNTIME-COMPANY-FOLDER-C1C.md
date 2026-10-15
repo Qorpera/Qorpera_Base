@@ -93,11 +93,12 @@ before any lock. The error is 0A000, "This Company File path does not serve fold
   upload intents.
 - **The member whole-tree lane:** `prepare_` and `publish_company_file_revision`, `prepare_company_file_proposal`,
   `submit_` and `rebase_company_proposal`. The v149 activation guard only checks that their text still contains the
-  company fence, which it does.
+  company fence, which it does. Legacy sweep D2 (20260930331000) dropped them, with the rest of the old proposal lane.
 - **The approval and member-command actors** (`company_path_approved_actor`, `member_company_path_command_actor`)
   refuse before their company fence.
 - **The office's Company File transfers** (`native_office_company_file_source`, `confirm_office_company_file_import`):
-  the folder views replace them (C1b-3). The binding names no company, so the guard reads the run's job.
+  the folder views replace them (C1b-3). The binding names no company, so the guard reads the run's job. Legacy sweep
+  D3 (20260930332000) dropped the confirmation, with the office's file import and export.
 - **The runner broker's whole-tree lane** (`runner_broker_describe`, `runner_broker_authorize_input_object`),
   **completion's legacy lane** (`complete_runner_job_v6`) and **the runner's revision lane**
   (`runner_prepare_company_revision`, `runner_begin_`, `_append_` and `_complete_company_revision_graph`,
@@ -108,11 +109,12 @@ before any lock. The error is 0A000, "This Company File path does not serve fold
   `folder-v2` job until its lease ends; none can exist before C1c-2.
 - **The snapshot bootstrap:** the worker no longer claims a `folder-v2` company's job, so one job left from before a
   company became `folder-v2` cannot hold the queue; finalizing one refuses; the Co-Founder seed refuses. A `folder-v2`
-  company is created by one commit (C2).
+  company is created by one commit (C2). Legacy sweep D1 (20260930330000) dropped the old chain: the bootstrap jobs,
+  their functions and the seed.
 - **The legacy pause** refuses: `folder-v2` companies stop through `qorpera_folder_pause`, which drains effects.
 - **Old row writers:** `put_profile_staff`, `delete_profile_staff`, `put_staff_provider_model`,
   `confirm_agent_todo_publication`. The binding check reads the run's job, and reads the job id as the run lookup
-  does (any spelling uuid input accepts).
+  does (any spelling uuid input accepts). Legacy sweep D1 (20260930330000) dropped the two staff writers.
 - **Left as they are, on purpose:**
   - `upsert_cloud_routine`: F2-6 (#523) decides its `folder-v2` rule. It refuses new routines, but still accepts saves
     of routines that existed as rows before the company became `folder-v2` (test 708);
@@ -130,13 +132,16 @@ before any lock. The error is 0A000, "This Company File path does not serve fold
   - `qorpera_company_uses_path_gateway`: the web's Company File page reads it, so its meaning stays; the object
     paths check the core themselves;
   - a snapshot bootstrap job left from before a company became `folder-v2` stays queued (and the company stays hidden
-    if the job set `hidden_until_ready`) until C2's creation replaces the old chain.
+    if the job set `hidden_until_ready`) until C2's creation replaces the old chain. Legacy sweep D1 (20260930330000)
+    dropped the jobs, which it requires to be none.
 
 **Test 646** calls every guarded function on a `folder-v2` company and expects 0A000, with a snapshot-v1 control
 for each that must not be refused (the Storage policies and the bootstrap claim included). Each guard was removed in
 turn: the test failed for 31 of 34. The other three (`runner_begin_company_revision_graph`, `runner_authorize_` and
 `_finalize_company_revision_verification`) call `runner_company_revision_snapshot` first, whose own guard refuses;
-they keep theirs in case that call moves.
+they keep theirs in case that call moves. Legacy sweep D1 (20260930330000) removed the bootstrap claim's and the staff
+writers' cases with the functions, legacy sweep D2 (20260930331000) the whole-tree lane's, and legacy sweep D3
+(20260930332000) the office import confirmation's. `folder-v2` proposals are tested by 926, 927 and 937.
 
 ## 5. C1c-2: run paths on the folder fence
 
@@ -1319,8 +1324,8 @@ again after its first (legacy sweep F3b, 20260930295000, dropped that tick). 3e 
   its stop. The stop's job pass still skips the jobs effects hold; the finisher ends them.
   - The request's stop now runs beside folder effects, where the row `FOR UPDATE` kept them apart. Its locks after
     rank 0 (jobs `SKIP LOCKED`, never waited for, and their termination: run events, wake occurrences, inputs; no
-    conversation write or operation clock; then bootstrap jobs (none on `folder-v2`) and the folder creations not yet
-    made, `SKIP LOCKED` (P14a); then coding todos, workers and sessions, the machine advisory lock and machines,
+    conversation write or operation clock; then bootstrap jobs (none on `folder-v2`; legacy sweep D1, 20260930330000,
+    dropped them and this step) and the folder creations not yet made, `SKIP LOCKED` (P14a); then coding todos, workers and sessions, the machine advisory lock and machines,
     invitations, seats, access state) come in the order every folder path takes them (3f's machines, 3h's coding calls,
     3d-2's vault, 3c's member management); no cycle found (review r2 traced the job end's triggers).
   - The old `FOR UPDATE` also waited for a transaction that had just inserted a row pointing at the company (a job

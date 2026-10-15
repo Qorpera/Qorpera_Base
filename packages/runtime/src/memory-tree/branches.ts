@@ -143,10 +143,14 @@ export function memoryTreeRead(value: unknown): [string, MemoryTreeRead] {
 	return [id(read.sessionId, "a tree's session"), { generation, messages, lines }];
 }
 
-/** An answer to a call for the trees of `sessions`: the branches, and the trees by session. */
+/**
+ * An answer to a call for the trees of `sessions`: the branches, and the trees by session. None is `own`, the run's
+ * own conversation, which the host leaves out (a group chat's run has the agent's thread as a branch, never the chat).
+ */
 function answer(
 	value: unknown,
 	sessions: readonly string[],
+	own: string | null,
 ): { branches: Listed[]; trees: Map<string, MemoryTreeRead> } {
 	try {
 		const read = parseClosedRecord(value, "the answer", ["schema", "branches", "trees"]);
@@ -154,6 +158,9 @@ function answer(
 		const branches = list(read.branches, "its branches").map(listed);
 		if (new Set(branches.map((branch) => branch.sessionId)).size !== branches.length) {
 			throw new WireValueError("a branch", "is there twice");
+		}
+		if (branches.some((branch) => branch.sessionId === own)) {
+			throw new WireValueError("a branch", "is the run's own conversation");
 		}
 		const trees = new Map<string, MemoryTreeRead>();
 		for (const item of list(read.trees, "its trees")) {
@@ -183,18 +190,23 @@ function shown(branch: Listed): MemoryBranchView {
 }
 
 /**
- * The run's branches (§5.5), from `read`, the host call for the run: folded within `budget` as memoryBranches folds
- * them, with their names as they are shown; each branch read with its generation and the blocks of its lines shown.
+ * The run's branches (§5.5), from `read`, the host call for the run in the conversation `own` (when it has one):
+ * folded within `budget` as memoryBranches folds them, with their names as they are shown; each branch read with its
+ * generation and the blocks of its lines shown.
  */
-export async function memoryRunBranches(read: MemoryBranchesRead, budget = BRANCHES): Promise<MemoryRunBranches> {
-	const all = answer(await read([]), []).branches;
+export async function memoryRunBranches(
+	read: MemoryBranchesRead,
+	own: string | null = null,
+	budget = BRANCHES,
+): Promise<MemoryRunBranches> {
+	const all = answer(await read([]), [], own).branches;
 	const branches: MemoryBranchView[] = [];
 	const conversations: MemoryViewConversation[] = [];
 	let room = budget;
 	while (branches.length < all.length && room >= BRANCH_MIN) {
 		const batch = all.slice(branches.length, branches.length + BRANCH_READS);
 		const sessions = batch.map((branch) => branch.sessionId);
-		const { trees } = answer(await read(sessions), sessions);
+		const { trees } = answer(await read(sessions), sessions, own);
 		const sources = batch.map((branch): MemoryBranchSource => {
 			const found = trees.get(branch.sessionId);
 			const built: MemoryTreeBuilt = (l, k) => found?.lines.get(memoryNodeAddress(l, k))?.text;

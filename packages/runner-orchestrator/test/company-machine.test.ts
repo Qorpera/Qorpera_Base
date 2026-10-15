@@ -86,6 +86,7 @@ describe("company machine plan", () => {
 				"boot.autostart": "false",
 				"limits.cpu": "8",
 				"limits.memory": "34359738368",
+				"security.devlxd": "false",
 				"user.qorpera.schema": "qorpera.lxd-company-machine/v1",
 				"user.qorpera.machine_id": id(2),
 				"user.qorpera.placement_id": id(5),
@@ -180,6 +181,41 @@ describe("company machine plan", () => {
 			other.expandedDevices = structuredClone(other.devices);
 			expect(() => journal.assertInstance(other)).toThrow("COMPANY_MACHINE_DRIFTED");
 		}
+	});
+
+	it("gives the guest no /dev/lxd, and no pass ever reaches the machine's LXD config", () => {
+		const pass = `qfp_${"z".repeat(40)}`;
+		const { request } = lxdCompanyMachinePlan(companyMachineBinding({ repositoryWorkerId: id(9) }), storage);
+		expect(request.config["security.devlxd"]).toBe("false");
+		// Its config is its limits, its boot and the binding's markers: no key names a pass, secret or cloud-init.
+		for (const key of Object.keys(request.config))
+			expect(key).toMatch(
+				/^(boot\.(mode|autostart)|limits\.(cpu|memory)|security\.devlxd|user\.qorpera\.[a-z0-9_]+)$/,
+			);
+		expect(Object.keys(request.config).filter((key) => /pass|secret|token|credential|cloud-init/i.test(key))).toEqual(
+			[],
+		);
+		// A binding cannot carry one: its keys are exact.
+		expect(() =>
+			lxdCompanyMachinePlan({ ...companyMachineBinding(), pass } as unknown as LxdCompanyMachineBinding),
+		).toThrow("INVALID_COMPANY_MACHINE_BINDING");
+		// An instance that has /dev/lxd back, or that a pass was put into, has drifted.
+		const journal = lxdCompanyMachineJournalPlan(companyMachineBinding(), storage);
+		for (const [key, value] of [
+			["security.devlxd", "true"],
+			["user.qorpera.pass", pass],
+			["cloud-init.user-data", pass],
+			["environment.QORPERA_FOLDER_PASS", pass],
+		]) {
+			const other = instance(journal.request!);
+			(other.config as Record<string, string>)[key] = value;
+			(other.expandedConfig as Record<string, string>)[key] = value;
+			expect(() => journal.assertInstance(other)).toThrow("COMPANY_MACHINE_DRIFTED");
+		}
+		const before = instance(journal.request!);
+		delete (before.config as Record<string, string>)["security.devlxd"];
+		delete (before.expandedConfig as Record<string, string>)["security.devlxd"];
+		expect(() => journal.assertInstance(before)).toThrow("COMPANY_MACHINE_DRIFTED");
 	});
 
 	it("names its plug claim: the machine, its company and this placement's instance", () => {

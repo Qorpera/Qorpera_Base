@@ -6,6 +6,7 @@ import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
 import { takeConnectorReturn } from "../cloud/connectors.ts";
+import { undoInterfaceChange } from "../cloud/interface-changes.ts";
 import { interfaceOfferCalls } from "../cloud/interface-offers.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
@@ -1231,6 +1232,20 @@ export function mountApplication(
 								checkConversationAccess,
 								() => memberFolder(() => checkConversationAccess(), t("Conversation access changed.")),
 							),
+							// An agent's interface change is undone as the member's own change set, by a member who can write.
+							undoInterfaceChange: (change, signal) => {
+								const check = () => {
+									checkConversationAccess();
+									if (!controller.store.get().team?.capabilities.write)
+										throw new Error(t("Conversation access changed."));
+								};
+								return undoInterfaceChange(
+									memberFolder(check, t("Conversation access changed.")),
+									change,
+									AbortSignal.any([controller.signal, signal]),
+									check,
+								);
+							},
 							...agentActions,
 							...workspaceActions,
 							computer,

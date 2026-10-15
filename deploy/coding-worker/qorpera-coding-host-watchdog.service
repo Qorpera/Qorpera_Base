@@ -1,0 +1,33 @@
+[Unit]
+Description=Stop member coding machines whose host lease is not live
+After=snap.lxd.daemon.service
+# The timer starts this 5 s after each pass; the default start limit (5 starts in
+# 10 s) must never refuse a pass.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+# The executor's own account: it reads the leases the executor writes under
+# /run/qorpera-coding-host (0700) and the executor's configuration for its LXD
+# project, and only stops VMs. It never needs SQL, the NAS or the network.
+User=qorpera-coding-executor
+Group=qorpera-coding-executor
+SupplementaryGroups=lxd
+ExecStart=/usr/bin/node /opt/qorpera-coding-executor/qorpera-coding-host-watchdog.mjs
+LoadCredential=qorpera-coding-executor-config:/etc/qorpera/coding-executor.json
+# A pass gives up after 45 s, each stop after 30 s.
+TimeoutStartSec=60
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+UMask=0077
+MemoryMax=256M
+TasksMax=64
+LimitCORE=0
