@@ -166,8 +166,6 @@ it("classifies every database call the host's clients can make: inside a job, be
 		"qorpera_check_runtime_office_viewer",
 		"qorpera_native_binding_proven",
 		"qorpera_native_office_browser_grant",
-		"qorpera_native_office_file_export",
-		"qorpera_native_office_file_import",
 		"qorpera_office_screen_browser_grant",
 		"qorpera_record_runtime_screen_event",
 		"qorpera_redeem_runtime_office_viewer",
