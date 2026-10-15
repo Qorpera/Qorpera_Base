@@ -1066,6 +1066,12 @@ only after durable storage.
   On folder-v2 the routes move onto `qorpera_room_image_begin`, `qorpera_room_image_commit` and
   `qorpera_room_image_download` with the gateway change that follows 20260930260000; until it deploys they serve
   snapshot-v1 sessions only.
+- `POST /v1/member-message-erases/<environmentId>/<sessionId>/<eventId>` (no body) and
+  `GET /v1/member-message-erases/<environmentId>/<eraseId>` — an owner's or admin's erase of one message of a
+  conversation, and where it stands (M3c; `qorpera_memory_message_erase_request` and `_status` for the member the
+  token names). Both answer `qorpera.memory-message-erase/v1` (`eraseId`, `state`, `sessionId`, `eventId`, `blocks`,
+  `runsPending`); 403 for anyone else, 404 for a missing conversation, message or erase, 423 in a paused company.
+  Behind the member company gateway like the other member routes.
 - `POST /v1/read-leases/revoke` — revoke a read lease
 - `/healthz`, `/livez`, `/readyz`
 

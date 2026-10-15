@@ -10,6 +10,8 @@ const FILE = new RegExp(
 const UPLOAD = new RegExp(`^/v1/member-company-file/${UUID}/uploads$`);
 const EXPORT = new RegExp(`^/v1/member-file-exports/${UUID}/${UUID}/[0-9a-f]{64}$`);
 const PRESENCE = new RegExp(`^/v1/member-company-presence/${UUID}/${UUID}$`);
+/** A member's erase of one message: its request (an event id after the session) or where it stands (M3c). */
+const ERASE = new RegExp(`^/v1/member-message-erases/${UUID}/${UUID}(/${UUID})?$`);
 const MAX_BYTES = 8 * 1024 * 1024;
 
 export interface MemberCompanyGatewayOptions {
@@ -28,6 +30,8 @@ function route(path: string): { method: string; headers: string[] } | undefined 
 	if (PRESENCE.test(path)) return { method: "POST", headers: ["authorization", "content-type"] };
 	if (UPLOAD.test(path))
 		return { method: "PUT", headers: ["authorization", "content-type", "x-qorpera-company-upload"] };
+	const erase = ERASE.exec(path);
+	if (erase) return { method: erase[1] ? "POST" : "GET", headers: ["authorization"] };
 	const match = FILE.exec(path);
 	if (!match) return undefined;
 	const [, kind, id, action] = match;

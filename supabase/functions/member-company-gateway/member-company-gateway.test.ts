@@ -265,6 +265,9 @@ describe("public member Company File gateway", () => {
 		["a folder object write", request(`/v1/member-folder-objects/${id}/${"b".repeat(64)}`, { method: "PUT" }), 405],
 		["a folder commit read", request(`/v1/member-folder-commits/${id}`), 405],
 		["a folder commit with a tail", request(`/v1/member-folder-commits/${id}/${id}`, { method: "POST" }), 404],
+		["an erase request read", request(`/v1/member-message-erases/${id}/${id}/${id}`), 405],
+		["an erase status write", request(`/v1/member-message-erases/${id}/${id}`, { method: "POST" }), 405],
+		["an erase with a tail", request(`/v1/member-message-erases/${id}/${id}/${id}/${id}`, { method: "POST" }), 404],
 	] as const)
 		it(`rejects ${name} before forwarding`, async () => {
 			const response = await forwardMemberCompanyGateway(req, {
@@ -407,6 +410,35 @@ describe("public member Company File gateway", () => {
 			},
 		);
 		assert.equal(response.status, 200);
+	});
+	it("forwards a member's message erase and its status with the member's token alone", async () => {
+		const seen: string[] = [];
+		const fetchImplementation: typeof fetch = async (url, init) => {
+			const headers = new Headers(init?.headers);
+			assert.deepEqual([...headers.keys()].filter((name) => name !== "content-length"), ["authorization"]);
+			seen.push(`${init?.method} ${new URL(String(url)).pathname}`);
+			return Response.json({ schema: "qorpera.memory-message-erase/v1" });
+		};
+		for (const [path, method] of [
+			[`/v1/member-message-erases/${id}/${id}/${id}`, "POST"],
+			[`/v1/member-message-erases/${id}/${id}`, "GET"],
+		] as const)
+			assert.equal(
+				(await forwardMemberCompanyGateway(request(path, { method }), { upstreamUrl, fetchImplementation })).status,
+				200,
+			);
+		assert.deepEqual(seen, [
+			`POST /v1/member-message-erases/${id}/${id}/${id}`,
+			`GET /v1/member-message-erases/${id}/${id}`,
+		]);
+		const preflight = await forwardMemberCompanyGateway(
+			request(`/v1/member-message-erases/${id}/${id}/${id}`, {
+				method: "OPTIONS",
+				headers: { "access-control-request-method": "POST", "access-control-request-headers": "content-type" },
+			}),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(preflight.status, 403);
 	});
 	for (const kind of ["edits", "proposals"])
 		it(`forwards exact ${kind} review requests`, async () => {

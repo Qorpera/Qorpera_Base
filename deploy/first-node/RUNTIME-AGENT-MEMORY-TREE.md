@@ -1308,7 +1308,9 @@ the compactor's window holds raw messages, never lines (§7.3). With lines in it
 and every later line would depend on every earlier message.
 
 **Erasing one message** (new, M3). Owners and admins may erase, with the same role check as P18's erasure of paths
-(`RUNTIME-COMPANY-FOLDER-ERASURE.md` §3, rank 1). Authorship gives no extra right: members count as one.
+(`RUNTIME-COMPANY-FOLDER-ERASURE.md` §3, rank 1). Authorship gives no extra right: members count as one. A member
+asks with the object gateway's `POST /v1/member-message-erases/<environment>/<session>/<event>` and reads where the
+erase stands with `GET /v1/member-message-erases/<environment>/<erase>` (M3c, `packages/object-gateway/README.md`).
 
 **Its row.** The request first writes a row in `qorpera_memory_message_erases` (id, conversation, event, requested
 by, the generation step 1 raised C to, the blocks step 1 deleted, the ids of its accepted block-history requests,

@@ -177,6 +177,18 @@ describe("member browser CORS", () => {
 		expect(service.get).not.toHaveBeenCalled();
 	});
 	it.each([
+		[`/v1/member-message-erases/${id(1)}/${id(7)}/${id(8)}`, "POST"],
+		[`/v1/member-message-erases/${id(1)}/${id(7)}`, "GET"],
+	])("allows a member's message erase %s %s with only authorization", async (route, method) => {
+		const service = await fixture(),
+			response = await service.request(route, preflight(method, "authorization"));
+		expect(response.status).toBe(204);
+		expect(response.headers.get("access-control-allow-methods")).toBe(method);
+		expect(response.headers.get("access-control-allow-headers")).toBe("authorization");
+		expect(service.authorize).not.toHaveBeenCalled();
+		expect(service.get).not.toHaveBeenCalled();
+	});
+	it.each([
 		[objectRoute, "PUT", "authorization"],
 		[objectRoute, "GET", "authorization,x-qorpera-native-token"],
 		[objectRoute, "GET", "authorization,"],
@@ -195,6 +207,10 @@ describe("member browser CORS", () => {
 		[`/v1/member-folder-objects/${id(1)}/${sha256}`, "GET", "authorization,x-qorpera-company-path"],
 		[`/v1/member-folder-objects/${id(1)}/${id(2)}/${sha256}`, "GET", "authorization"],
 		[`/v1/member-folder-objects/${id(1)}/${sha256}?x=1`, "GET", "authorization"],
+		[`/v1/member-message-erases/${id(1)}/${id(7)}/${id(8)}`, "GET", "authorization"],
+		[`/v1/member-message-erases/${id(1)}/${id(7)}/${id(8)}`, "POST", "authorization,content-type"],
+		[`/v1/member-message-erases/${id(1)}/${id(7)}`, "POST", "authorization"],
+		[`/v1/member-message-erases/${id(1)}`, "GET", "authorization"],
 	])("refuses preflight %s %s %s without I/O", async (route, method, headers) => {
 		const service = await fixture(),
 			response = await service.request(route, preflight(method, headers));
