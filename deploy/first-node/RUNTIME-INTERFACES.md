@@ -313,8 +313,7 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
     were looking.". A file that keeps changing past the retries also says "That changed while you were looking.". A
     refusal shows its problems.
   - A card stays where it is, saving, until the save has landed and the folder's feed shows the change.
-  - An area's `supervisor` is not taken from a board yet: a take there is a consent (§5.1), which the board shows with
-    I9b's web part.
+  - An area's `supervisor` is taken and let go the same way, from its card and its detail (below).
 - **Offer and its answers on a board (built in I9c).** They act on each card's own `holder` column too.
   - **Offer** shows where Take or Release could (a card no one holds, or the viewer's own) when the block lists it. It
     opens the members the card may go to: each other member who may change the table's rows, but those it is offered
@@ -326,6 +325,19 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
     as the offer read it; a cell that changed says "That changed while you were looking.".
   - `answer` is not drawn on a board: a waiting offer's answers are on its card. In `waiting` (§4) an offer to the
     viewer is a row of kind `offer`, and its `answer` button is Accept and Not now.
+- **An area's supervision (built in I9b).** It is drawn for `table:areas` where the page reads the supervision
+  consents (§5.1) and the table keeps `supervisor` as a member cell that needs a yes. A live consent counts before the
+  cell, so the consent a save makes shows before the folder does.
+  - An area's card says whose yes its `supervisor` waits for ("Waiting for …'s yes to supervise its agents."), with
+    Supervise where it waits for the viewer's own. Right after the viewer took an area no one supervises, its card
+    asks "Supervise its agents too?" with Supervise and Not now (§5.1: taking the `owner` offers its supervision).
+  - Its detail says "Nobody supervises its agents." with Supervise; "You supervise its agents." with Pause and Step
+    down; "Waiting for your yes to supervise its agents." with Supervise and Step down; and whose yes it waits for
+    otherwise.
+  - Supervise on an empty cell and Step down are a take's and a release's write of the `supervisor` cell, and that save
+    makes or ends the viewer's consent. Supervise where the cell names the viewer already consents again, and Pause
+    withdraws the consent; neither writes a file. Only a viewer who may change the areas' rows takes or lets go of the
+    cell.
 - **Never possible:** a link to another site, a script, or a request to any address.
 
 ## 4. Sources
@@ -526,9 +538,10 @@ Jonas, 2 October 2026 (decision 4); contract amendment item 10.
   decides who pays.
 - A member's own messages still run on their own account.
 - **Areas grant nothing.** They are not the retired responsibility objects (2026-09-20 amendment, item 1).
-- **Built so far** (I9b): the consent records, an agent's self (§6.1 rule 8), adding agents by offer, and an agent's
-  `table_write` claims for its supervisor. Until the rest is built (agents' offers, work alone, and clearing a
-  leaver's cells), today's rules apply to it.
+- **Built so far** (I9b): the consent records, an agent's self (§6.1 rule 8), adding agents by offer, an agent's
+  `table_write` claims for its supervisor, and the board's Supervise, Pause and Step down (§3.3). Until the rest is
+  built (agents' offers on the board, agents' own offers, work alone, and clearing a leaver's cells), today's rules
+  apply to it.
 
 ### 5.2 The table store (later)
 
@@ -842,7 +855,7 @@ field's text in `rows.csv` and keep every other byte as written (a first line wi
 end). A rows file with rows that don't fit its definition is not written. Lookup columns are drawn as names or a count,
 and the folder reader reads the tables that board parts and lookups name. The Members page's People view draws its
 table; its `file:rules/shared-areas.md` block came with the folder pages (below). Offers came with I9c, and the
-supervision's consent records with I9b (below); the board doesn't show them yet.
+supervision's consent records with I9b (below).
 
 **Built: I5c** (web; `packages/web/src/cloud/mail.ts`, `app/company-mail.ts`, `app/interface-mail.ts`,
 `app/interface-badge.ts`, `app/views/interface-mail.ts`). The `mail` and `mail_addresses` sources read the member mail
@@ -907,8 +920,8 @@ cell's (§5), kept with its agent and its consent, at most one open per row and 
 rows that puts the agent in the row accepts it, before that save's consent ends are settled (a definition saved alone
 accepts none, even when a new key names another row that holds the agent); the offers' calls decline and withdraw it;
 it lapses when the consent ends. A cell's settle leaves agents' offers alone. The web client reads them with the other
-offers and doesn't draw them yet. Not built yet: the board's Consent, Withdraw and agent offers; agents' own offers;
-work alone; and clearing a leaver's cells.
+offers and doesn't draw them yet. Not built yet: the board's agent offers; agents' own offers; work alone; and
+clearing a leaver's cells.
 
 **Built: I9b, an agent's claims** (`packages/runtime/src/cloud-folder-interface-writes.ts`). `table_write` changes a
 claim for the member who supervises the agent's area. For a change that touches a claim it reads `tables/areas`
@@ -918,6 +931,14 @@ empties a cell that holds them, and never changes an area's owner, supervisor or
 released with the areas' files too; a change that touches no claim reads no areas. Whether the supervisor's consent
 is live is the folder core's to say at the commit (rule 8); when it refuses the claim there, the answer gives the same
 next step as the refusal before the receipt.
+
+**Built: I9b, the board's supervision** (web; `packages/web/src/cloud/interface-supervisions.ts`,
+`app/interface-offers.ts`, `app/interface-claims.ts`, `app/views/interface.ts`). The client reads the live consents
+with the offers, at the same times; a cloud without the list, or a member it doesn't answer, draws no supervision. An
+area's card and detail draw its supervision line and buttons (§3.3). Supervise on an empty cell and Step down write the
+`supervisor` cell with the take's and the release's write, then read the consents again; Supervise where the cell
+names the viewer and Pause call consent and withdraw. The question on a card the viewer just took lasts until they
+answer it, or until the area is no longer theirs or someone supervises it.
 
 **Built: I9c, the web** (`packages/web/src/cloud/interface-offers.ts`, `app/interface-offers.ts`,
 `app/interface-claims.ts`, `app/views/interface.ts`). The client reads the company's open offers when it opens, after

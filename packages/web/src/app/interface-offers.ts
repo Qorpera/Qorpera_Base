@@ -1,3 +1,4 @@
+import type { TableValue } from "@qorpera/cloud-client/interfaces";
 import { CloudRpcError } from "../cloud/client.ts";
 import type {
 	InterfaceOfferAnswer,
@@ -5,21 +6,35 @@ import type {
 	InterfaceOfferRequest,
 	MemberInterfaceOffers,
 } from "../cloud/interface-offers.ts";
+import type {
+	InterfaceSupervisionAnswer,
+	InterfaceSupervisionCalls,
+	MemberInterfaceSupervision,
+} from "../cloud/interface-supervisions.ts";
 
 /* The company's open offers of claimed cells (Interfaces step I9c; deploy/first-node/RUNTIME-INTERFACES.md §5
- * "Offers", supabase/CLIENT-CONTRACT.md "Offers of a claimed cell"). They are read when the company opens, again after
- * the folder the pages read changes (app/application.ts), when the window comes back into focus, and each minute while
- * it shows; making, declining or withdrawing one reads them again. A cloud without the calls, or a member the calls
- * don't answer, publishes nothing, so no page draws an offer. A read that fails keeps what was read before. */
+ * "Offers", supabase/CLIENT-CONTRACT.md "Offers of a claimed cell"), and its live supervision consents (step I9b, §5.1;
+ * "Supervision consent"). They are read when the company opens, again after the folder the pages read changes
+ * (app/application.ts), when the window comes back into focus, and each minute while it shows; making, declining or
+ * withdrawing one reads them again. A cloud without the offers' calls, or a member the calls don't answer, publishes
+ * nothing, so no page draws an offer; without the consents' calls, no page draws an area's supervision. A read that
+ * fails keeps what was read before. */
 
-export type InterfaceOffersState = MemberInterfaceOffers;
+export interface InterfaceOffersState extends MemberInterfaceOffers {
+	/** The live consents, or null where they can't be read. */
+	readonly supervisions: readonly MemberInterfaceSupervision[] | null;
+}
 
-/** What a page does with offers. Each call reads the offers again once it is answered, and settles when that read has
- * been published, so a page drawn then shows the change. */
+/** What a page does with offers and consents. Each call reads them again once it is answered, and settles when that
+ * read has been published, so a page drawn then shows the change. */
 export interface InterfaceOfferActions {
 	offer(request: InterfaceOfferRequest): Promise<InterfaceOfferAnswer>;
 	decline(offer: string): Promise<void>;
 	withdraw(offer: string): Promise<void>;
+	/** Consents again to supervise the area whose row has this key (step I9b). */
+	consent(key: readonly TableValue[]): Promise<InterfaceSupervisionAnswer>;
+	/** Ends the member's own live consent (step I9b). */
+	withdrawSupervision(supervision: string): Promise<void>;
 	/** Reads the offers again (after an accept, whose save settles the offer), settling once a read that started after
 	 * the call is answered. */
 	refresh(): Promise<void>;
@@ -27,8 +42,12 @@ export interface InterfaceOfferActions {
 
 const POLL_MS = 60_000;
 
+/** Calls the cloud doesn't have, or doesn't answer for this member. */
+const unanswered = (error: unknown) => error instanceof CloudRpcError && (error.missing || error.denied);
+
 export class CompanyInterfaceOffers implements InterfaceOfferActions {
 	readonly #calls: InterfaceOfferCalls;
+	readonly #supervisions: InterfaceSupervisionCalls;
 	readonly #publish: (state: InterfaceOffersState | undefined) => void;
 	readonly #stop = new AbortController();
 	#poll?: ReturnType<typeof setInterval>;
@@ -41,10 +60,12 @@ export class CompanyInterfaceOffers implements InterfaceOfferActions {
 
 	constructor(
 		calls: InterfaceOfferCalls,
+		supervisions: InterfaceSupervisionCalls,
 		publish: (state: InterfaceOffersState | undefined) => void,
 		signal: AbortSignal,
 	) {
 		this.#calls = calls;
+		this.#supervisions = supervisions;
 		this.#publish = publish;
 		signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#stop.signal });
 	}
@@ -106,15 +127,40 @@ export class CompanyInterfaceOffers implements InterfaceOfferActions {
 		}
 	}
 
+	async consent(key: readonly TableValue[]): Promise<InterfaceSupervisionAnswer> {
+		try {
+			return await this.#supervisions.consent(key);
+		} finally {
+			await this.refresh();
+		}
+	}
+
+	async withdrawSupervision(supervision: string): Promise<void> {
+		try {
+			await this.#supervisions.withdraw(supervision);
+		} finally {
+			await this.refresh();
+		}
+	}
+
 	async #read(): Promise<void> {
 		let state: InterfaceOffersState | undefined;
 		try {
-			state = await this.#calls.list();
+			const [offers, supervisions] = await Promise.all([
+				this.#calls.list(),
+				this.#supervisions.list().then(
+					(read) => read.supervisions,
+					(error: unknown) => {
+						if (unanswered(error)) return null;
+						throw error;
+					},
+				),
+			]);
 			// The offers of agents to an area's supervisor (I9b) wait for the Members board: the pages draw cells' offers.
-			state = { ...state, offers: state.offers.filter((offer) => offer.agent === null) };
+			state = { ...offers, offers: offers.offers.filter((offer) => offer.agent === null), supervisions };
 		} catch (error) {
 			// Not deployed, or not answered for this member: there are no offers to draw. Anything else keeps the last.
-			if (!(error instanceof CloudRpcError && (error.missing || error.denied))) return;
+			if (!unanswered(error)) return;
 			state = undefined;
 		}
 		if (this.#stop.signal.aborted) return;
