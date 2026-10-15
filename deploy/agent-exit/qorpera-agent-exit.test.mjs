@@ -66,6 +66,9 @@ test("the installer pins the files in this folder", () => {
 		["RULES_UNIT", "qorpera-agent-exit-rules.service"],
 		["NAMES", "qorpera-agent-exit-names.py"],
 		["NAMES_UNIT", "qorpera-agent-exit-names.service"],
+		["SNI", "qorpera-agent-exit-sni.py"],
+		["SNI_RULES", "qorpera-agent-exit-sni.nft"],
+		["SNI_UNIT", "qorpera-agent-exit-sni.service"],
 		["RESOLVER_UNIT", "qorpera-agent-exit-resolver@.service"],
 		["RULES_CA", "../cloud-secret-broker/supabase-prod-ca-2021.crt"],
 	]) {

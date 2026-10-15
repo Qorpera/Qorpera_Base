@@ -8,12 +8,12 @@
 # enables nothing: README.md has the switch-on steps.
 set -euo pipefail
 
-EXPECTED_TOOL_SHA256="117d8d04b168a6bf943e7e2cbaadebaa23edf3d26b2e9b8027cb04db818b0115"
-EXPECTED_EXIT_RULES_SHA256="76ff1e1b8e4545840e57414a8172de26697e39eb1dcfe9521e6826055224142d"
+EXPECTED_TOOL_SHA256="b09af43610de3359b694b9b0a1c8fd0dfe0081c7f3b41ec62b99a940b3219f6e"
+EXPECTED_EXIT_RULES_SHA256="01efcc99eea51c252030ab2d927b328692ed004191abe0854c86f4f238b900d0"
 EXPECTED_HOST_RULES_SHA256="f916b1e859cf4e07707d0f5d5369356c4d57df0417b192b366c001bf36130ef4"
 EXPECTED_BRIDGE_RULES_SHA256="271f3f7ba20b794c54bf5676740f55452026a39d7af8b3af20574091bd1e3ac8"
-EXPECTED_LOGGER_SHA256="8c0f1352451ca1a769ed58eceb668e01c64ea66555a3fd0f340ace3055421d41"
-EXPECTED_UNIT_SHA256="db5134ecada1e34a86030af105403c2a15ccd0695c0d0104d2eb8aa6a849cbd7"
+EXPECTED_LOGGER_SHA256="a3db1a9f57e0c51c0c6987e6079a27422877acc9818ca9e3d276e0b1b6067d8e"
+EXPECTED_UNIT_SHA256="027b179a9229c10b2e99b8c8418d35945986734ecd85443c3300367519b57139"
 EXPECTED_DNS_UNIT_SHA256="fdbee4fdd95fb66eefc4c062aa814202374377225320441f3b13191abeeb6d8a"
 EXPECTED_LOG_UNIT_SHA256="53f75dfda39d62df68f2c48c1ebe17a6f2cd6bf90094e57670b00458a9ce7b63"
 EXPECTED_PLUG_SHA256="96910230548561b9835a3cee67f23209233e7a6896206df202c3c7deb98dfdb1"
@@ -26,9 +26,12 @@ EXPECTED_LOGS_TIMER_SHA256="64f27bbab37ae889b6a4be8be94816ba30e635ba090a51be84c5
 EXPECTED_SHIP_UNIT_SHA256="a122ffe3c84559b89c37cca3390972d9fc46507218d77d4701000876825959de"
 EXPECTED_SHIP_TIMER_SHA256="cc812def189de59af2a57be07f0a1fc2b5469742395681d81d0d446814dddfd8"
 EXPECTED_RULES_UNIT_SHA256="5669346ed525d77def7f3366e89e842cd753248b3c1f771029d1c0317f66d8bc"
-EXPECTED_NAMES_SHA256="96439aeca69acb6b43c4406e154deb264a95411134ee4f5852ae9805b30b6f12"
+EXPECTED_NAMES_SHA256="00a28dadb6327c52c6deeb5bbce0ab0054a93431a33a16366d549c0b5421b452"
 EXPECTED_NAMES_UNIT_SHA256="4b1146e98a366712012bbba5210ffcca4606f5231a2de627062b5902d795d252"
 EXPECTED_RESOLVER_UNIT_SHA256="124b74f25fa4b9f26bc7b13b15148c8e104b8236d68a82cf7e0582c15bc0309c"
+EXPECTED_SNI_SHA256="393b49f5b438746108ef00dc1ded1922e7e2470e0c951dfa406cabfdb6cc97d8"
+EXPECTED_SNI_RULES_SHA256="4db5bc7c80966d5ef0f18a84aee943d4c7f2c4001fae70ddc427aef993e8d5b9"
+EXPECTED_SNI_UNIT_SHA256="33051e68c4a55cb206c96104e26c5870ee02ab6698b20949151bc4512195abcd"
 EXPECTED_RULES_CA_SHA256="700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7"
 SOURCE_ROOT=$(cd "$(dirname "$0")" && pwd)
 INSTALL_ROOT="/usr/local/libexec/qorpera-agent-exit"
@@ -72,6 +75,9 @@ pin qorpera-agent-exit-rules.service "$EXPECTED_RULES_UNIT_SHA256"
 pin qorpera-agent-exit-names.py "$EXPECTED_NAMES_SHA256"
 pin qorpera-agent-exit-names.service "$EXPECTED_NAMES_UNIT_SHA256"
 pin qorpera-agent-exit-resolver@.service "$EXPECTED_RESOLVER_UNIT_SHA256"
+pin qorpera-agent-exit-sni.py "$EXPECTED_SNI_SHA256"
+pin qorpera-agent-exit-sni.nft "$EXPECTED_SNI_RULES_SHA256"
+pin qorpera-agent-exit-sni.service "$EXPECTED_SNI_UNIT_SHA256"
 
 # The rules reader's package: its three files and manifest, nothing else, each file as the manifest says; its unit
 # this folder's and its CA Supabase's, as pinned. The program is built from the checkout, so node checks it, not a pin.
@@ -124,13 +130,16 @@ install -m 0755 "$SOURCE_ROOT/qorpera-agent-exit-log.py" "$INSTALL_ROOT/qorpera-
 install -m 0755 "$SOURCE_ROOT/qorpera-agent-plug.py" "$INSTALL_ROOT/qorpera-agent-plug.py"
 install -m 0755 "$SOURCE_ROOT/qorpera-agent-exit-logs.py" "$INSTALL_ROOT/qorpera-agent-exit-logs.py"
 install -m 0755 "$SOURCE_ROOT/qorpera-agent-exit-names.py" "$INSTALL_ROOT/qorpera-agent-exit-names.py"
+install -m 0755 "$SOURCE_ROOT/qorpera-agent-exit-sni.py" "$INSTALL_ROOT/qorpera-agent-exit-sni.py"
+install -m 0644 "$SOURCE_ROOT/qorpera-agent-exit-sni.nft" "$INSTALL_ROOT/qorpera-agent-exit-sni.nft"
 install -m 0644 "$PACKAGE/qorpera-agent-exit-rules.mjs" "$INSTALL_ROOT/qorpera-agent-exit-rules.mjs"
 install -m 0644 "$PACKAGE/supabase-prod-ca-2021.crt" "$INSTALL_ROOT/supabase-prod-ca-2021.crt"
 install -m 0644 "$PACKAGE/qorpera-agent-exit-rules.service" /etc/systemd/system/qorpera-agent-exit-rules.service
 for unit in qorpera-agent-exit.service qorpera-agent-exit-dns.service qorpera-agent-exit-log.service \
 	qorpera-agent-plug.service qorpera-agent-exit-health.service qorpera-agent-exit-health.timer \
 	qorpera-agent-exit-logs.service qorpera-agent-exit-logs.timer qorpera-agent-exit-ship.service \
-	qorpera-agent-exit-ship.timer qorpera-agent-exit-names.service qorpera-agent-exit-resolver@.service; do
+	qorpera-agent-exit-ship.timer qorpera-agent-exit-names.service qorpera-agent-exit-resolver@.service \
+	qorpera-agent-exit-sni.service; do
 	install -m 0644 "$SOURCE_ROOT/$unit" "/etc/systemd/system/$unit"
 done
 systemctl daemon-reload
