@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""The server name checker's judge (E8c-2), driven with made-up packets: no queue, no kernel module.
+"""The server name checker's judge (E8c-2), driven with made-up packets, and its queue's config with made-up answers:
+no queue, no kernel module.
 
   python3 sni-judge.py <qorpera-agent-exit-sni.py>
 """
 
+import errno
 import importlib.util
 import socket
 import ssl
+import struct
 import sys
+import types
 
 spec = importlib.util.spec_from_file_location("qorpera_agent_exit_sni", sys.argv[1])
 sni = importlib.util.module_from_spec(spec)
@@ -257,6 +261,57 @@ def main():
     run.judge.expire(run.at)
     check(run.judge.flows == {}, "a flow not seen for FLOW_IDLE seconds is forgotten")
     print("PASS: other protocols go on, fragments and packets that cannot be read are dropped; idle flows are forgotten")
+
+    queue = sni.Queue.__new__(sni.Queue)
+    queue.number, queue.seq = 0, 0
+    # Packet 7 comes before the answer to config 1; its verdict (message 2) fails, as one for a packet gone would.
+    held = netlink((sni.NFNL_SUBSYS_QUEUE << 8) | sni.MSG_PACKET, 0,
+                   struct.pack("!BBH", 2, 0, 0) + sni.attribute(sni.A_PACKET_HDR, struct.pack("!IHB", 7, 0x0800, 2)))
+    queue.sock = Kernel([held, answer(2, errno.ENOENT) + answer(1, 0), answer(3, errno.EPERM)])
+    queue.request(sni.attribute(sni.CFG_CMD, struct.pack("!BxH", sni.CMD_BIND, 0)))
+    sent = [struct.unpack_from("=IHHII", data) for data in queue.sock.sent]
+    check([(kind, seq) for _, kind, _, seq, _ in sent] == [((3 << 8) | 2, 1), ((3 << 8) | 1, 2)],
+          f"one config message, then a verdict: {sent}")
+    verdict = sni.attributes(queue.sock.sent[1][20:]).get(sni.A_VERDICT_HDR, b"")
+    check(verdict == struct.pack("!II", DROP, 7), f"a packet queued before the answer is dropped: {verdict}")
+    try:
+        queue.request(sni.attribute(sni.CFG_QUEUE_MAXLEN, struct.pack("!I", 8)))
+        fail("a config the kernel refuses is not an error")
+    except OSError as error:
+        check(error.errno == errno.EPERM, f"the kernel's answer is the error: {error}")
+    print("PASS: a queue config takes the kernel's answer to it, not a verdict's, and drops a packet queued meanwhile")
+
+    found = sni.Checker(types.SimpleNamespace(bridge="lo", run_dir="/run")).bridge
+    check(found == socket.if_nametoindex("lo"), f"the bridge's index: {found}")
+    try:
+        sni.Checker(types.SimpleNamespace(bridge="qnone0", run_dir="/run"))
+        fail("a bridge not in the namespace is not an error")
+    except OSError as error:
+        check("no link qnone0" in str(error), f"a bridge not in the namespace: {error}")
+    print("PASS: the checker finds the bridge's index by netlink, and will not start without the bridge")
+
+
+class Kernel:
+    """The queue socket's stand-in: what the kernel answers, one read at a time, and what was sent."""
+
+    def __init__(self, reads):
+        self.reads, self.sent = list(reads), []
+
+    def send(self, data):
+        self.sent.append(data)
+
+    def recv(self, _size):
+        if not self.reads:
+            fail("the queue waits for an answer the kernel already gave")
+        return self.reads.pop(0)
+
+
+def netlink(kind, seq, body):
+    return struct.pack("=IHHII", 16 + len(body), kind, 0, seq, 0) + body
+
+
+def answer(seq, error):
+    return netlink(sni.NLMSG_ERROR, seq, struct.pack("=i", -error) + bytes(16))
 
 
 main()

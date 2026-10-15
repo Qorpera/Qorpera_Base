@@ -913,7 +913,9 @@ on the tailnet. It checks:
   (and a name an open company blocks), a machine not verified, a company not known or with unusable rules, other bytes
   sent again, a hello not whole in 5 seconds, urgent data, data before the flow's start or of a flow whose SYN it did
   not see are refused, and the refused flow's packets dropped both ways; a hello in two records and in pieces is held
-  whole; a machine's reset and a flow idle 120 seconds are forgotten. And, as the container has no queue modules,
+  whole; a machine's reset and a flow idle 120 seconds are forgotten. With made-up kernel answers: the queue's config
+  waits for the answer to it, not a verdict's, dropping a packet queued meanwhile; the bridge's index comes by
+  netlink, and without the bridge the checker does not start. And, as the container has no queue modules,
   that the exit loads no `sni` chain and no queue rule, `check` says "only listed by address alone", and "only
   listed" goes by address;
 - an interrupted rebuild: the logger leaves the old namespace by itself, and `verify` fails until DNS follows;

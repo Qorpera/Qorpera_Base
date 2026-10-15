@@ -382,11 +382,13 @@ class Queue:
 
     def request(self, payload):
         """One config message, answered: an error raises OSError. Packets queued meanwhile (before the copy mode is
-        set they come without their bytes) are dropped; TCP sends them again."""
+        set they come without their bytes) are dropped; TCP sends them again. Their verdicts take sequence numbers of
+        their own, so the answer is matched to the request's."""
         self.sock.send(self.message(MSG_CONFIG, payload, NLM_F_REQUEST | NLM_F_ACK))
+        asked = self.seq
         while True:
             for kind, seq, body in self.receive():
-                if kind == NLMSG_ERROR and seq == self.seq:
+                if kind == NLMSG_ERROR and seq == asked:
                     error = struct.unpack_from("=i", body)[0]
                     if error:
                         raise OSError(-error, os.strerror(-error))
@@ -436,7 +438,11 @@ class Checker:
         self.problems = []
         self.judge = Judge(self.decide)
         self.namespace = os.stat("/proc/self/ns/net").st_ino
-        self.bridge = socket.if_nametoindex(args.bridge)
+        # glibc lists the links over netlink; if_nametoindex would open an AF_UNIX socket, which the unit refuses.
+        indexes = {name: index for index, name in socket.if_nameindex()}
+        if args.bridge not in indexes:
+            raise OSError(f"no link {args.bridge} in this namespace")
+        self.bridge = indexes[args.bridge]
         self.status_path = os.path.join(args.run_dir, "sni.json")
 
     def decide(self, machine, name):
@@ -533,7 +539,11 @@ def main():
               file=sys.stderr, flush=True)
         return
     try:
-        Checker(args).run()
+        checker = Checker(args)
+    except OSError as error:
+        sys.exit(f"cannot start (the kernel drops what the sni chain queues): {error}")
+    try:
+        checker.run()
     except OSError as error:
         sys.exit(f"the queue failed (the kernel drops what it held): {error}")
 
