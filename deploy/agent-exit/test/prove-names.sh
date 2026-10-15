@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Each company's names (E8b-2) on real systemd and a real LXD, inside the throwaway VM test/prove-names-vm.sh makes
-# (never on a node, never on a shared test machine: it loads br_netfilter, installs the exit's units, a group and a user,
-# and changes this kernel's tables). Run it only through that script:
+# Each company's names (E8b-2) and where its machines may go (E8c-1) on real systemd and a real LXD, inside the
+# throwaway VM test/prove-names-vm.sh makes (never on a node, never on a shared test machine: it loads br_netfilter,
+# installs the exit's units, a group and a user, and changes this kernel's tables). Run it only through that script:
 #
 #   node scripts/run-on-node.mjs --machine node01 --sudo --no-status -- \
 #     bash deploy/agent-exit/test/prove-names-vm.sh </dev/null
@@ -20,11 +20,17 @@
 # - a new rules version applies within seconds by a reload of the same dnsmasq; a company's move to its own resolver
 #   ends its machines' open DNS flows; ROLLOUT.md's step 9 on a running exit keeps the resolvers; a killed resolver
 #   comes back;
-# - the exit fails closed: rules that cannot be used, or no rules file, leave the machines no DNS, and verify says why;
+# - "only listed" (E8c-1): a company's switch restarts its resolver and ends its machines' connections; the unit's own
+#   dnsmasq (in its sandbox, as nobody) puts each address it gives out in the company's set, and its machines reach TCP
+#   443 on those only; the exit's reload empties the set and the reconciler reloads the resolver; a narrower list
+#   restarts it again; back to open, the company's chain and set go;
+# - the exit fails closed: rules that cannot be used, or no rules file, leave the machines no DNS and no way out, and
+#   verify says why;
 # - a company whose last machine goes gives its resolver and its port back; the exit's stop (step 1's undo) stops every
 #   resolver and leaves nothing behind;
-# - with QORPERA_AGENT_EXIT_PROOF_PREVIOUS (a previous release's deploy/agent-exit folder): step 9 on an exit that
-#   release switched on, and step 9's undo.
+# - with QORPERA_AGENT_EXIT_PROOF_PREVIOUS (a previous release's deploy/agent-exit folder): on an exit that release
+#   switched on, step 9 and its undo (a release before E8b-2), or step 10 and its undo (a release with E8b-2: an "only
+#   listed" company's resolver restarts and its machine's connection ends).
 # The plug and the names reconciler run at their own intervals (5 and 2 seconds). Prints PASS lines, then ALL PASSED.
 set -euo pipefail
 
@@ -104,6 +110,46 @@ dns_allowed() { nft_elements set dns_allowed; }
 # The exit's DNS map and its allowed set both hold exactly these "address:port" pairs.
 dns_is() { [[ $(dns_map) == "$1" && $(dns_allowed) == "$1" ]]; }
 pairs() { printf '%s\n' "$@" | LC_ALL=C sort | paste -sd' ' -; }
+# The map reach as "address:chain" pairs (E8c-1), and a set's addresses.
+reach_map() {
+	local text
+	text=$(ip netns exec qexit nft -j list map inet qorpera_agent_exit reach)
+	python3 -c '
+import json, sys
+found = []
+for item in json.loads(sys.argv[1])["nftables"]:
+    for key, verdict in (item.get("map") or {}).get("elem", []) or []:
+        found.append("%s:%s" % (key, verdict["goto"]["target"]))
+print(" ".join(sorted(found)))' "$text"
+}
+set_addresses() {
+	local text
+	text=$(ip netns exec qexit nft -j list set inet qorpera_agent_exit "$1") || return 1
+	python3 -c '
+import json, sys
+found = []
+for item in json.loads(sys.argv[1])["nftables"]:
+    found += [elem for elem in (item.get("set") or {}).get("elem", []) or [] if isinstance(elem, str)]
+print(" ".join(sorted(found)))' "$text"
+}
+# A machine's TCP connection to an address and port: "open", "refused" (at once: a reset or an ICMP error) or
+# "timeout". `expect_tcp MACHINE ADDRESS PORT WANTED`.
+tcp_to() {
+	in_m "$1" python3 -c '
+import socket, sys
+try:
+    socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=3).close()
+    print("open")
+except socket.timeout:
+    print("timeout")
+except OSError:
+    print("refused")' "$2" "$3" 2>&1
+}
+expect_tcp() {
+	local got
+	got=$(tcp_to "$1" "$2" "$3") || true
+	[[ $got == "$4" ]] || fail "$1 to $2:$3: \"$got\", not \"$4\""
+}
 refused_dns() {
 	local text
 	text=$(ip netns exec qexit nft list counter inet qorpera_agent_exit refused_dns)
@@ -141,6 +187,11 @@ diagnose() {
 	cat "$RUN/names.json" 2>&1 || true
 	echo "--- plug.json"
 	cat "$RUN/plug.json" 2>&1 || true
+	echo "--- names/"
+	ls -l "$RUN/names" 2>&1 || true
+	echo "--- the reach map and the only-listed chains and sets"
+	ip netns exec qexit nft list map inet qorpera_agent_exit reach 2>&1 || true
+	ip netns exec qexit nft list ruleset 2>&1 | grep -A 4 -E '(chain only|set allow)_' || true
 	echo "--- units"
 	systemctl list-units --all --plain --no-legend --full 'qorpera-agent-*' 2>&1 || true
 	journalctl --sync 2>/dev/null || true
@@ -186,6 +237,7 @@ ip link add vinet0 type veth peer name eth0 netns inet
 ip addr add 198.51.100.254/24 dev vinet0
 ip link set vinet0 up
 ip -n inet addr add 198.51.100.1/24 dev eth0
+ip -n inet addr add 198.51.100.2/24 dev eth0
 ip -n inet link set eth0 up
 ip -n inet route add default via 198.51.100.254
 # The exit's upstreams, in the stand-in internet.
@@ -193,26 +245,35 @@ ip -n inet addr add 9.9.9.9/32 dev lo
 ip -n inet addr add 1.1.1.1/32 dev lo
 for upstream in 9.9.9.9 1.1.1.1; do ip route add "$upstream/32" via 198.51.100.1; done
 cat >"$work/serve.py" <<'EOF'
-import socket
-# A web server on 198.51.100.1:80: reads the request, answers "ok", closes.
-s = socket.socket()
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(("198.51.100.1", 80))
-s.listen(64)
-print("ready", flush=True)
-while True:
-    c = s.accept()[0]
+import socket, threading
+# A web server on 198.51.100.1:80 and :443 (plain HTTP on both) and 198.51.100.2:443: reads the request, answers "ok",
+# closes. Each connection has a thread of its own, so one that sends nothing is held open.
+def serve(c):
     try:
         c.recv(65536)
         c.sendall(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok")
     except OSError:
         pass
     c.close()
+def listen(s):
+    while True:
+        threading.Thread(target=serve, args=(s.accept()[0],), daemon=True).start()
+bound = []
+for where in [("198.51.100.1", 80), ("198.51.100.1", 443), ("198.51.100.2", 443)]:
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(where)
+    s.listen(64)
+    bound.append(s)
+for s in bound:
+    threading.Thread(target=listen, args=(s,), daemon=True).start()
+print("ready", flush=True)
+threading.Event().wait()
 EOF
 cat >"$work/upstream.py" <<'EOF'
 import socket, struct, sys, threading
-# The upstreams argv[1] (comma separated), on UDP and TCP port 53: every A question is answered 198.51.100.1, every other
-# with no address. Each question asked is logged to argv[2] as "name type" (in the case it was asked in).
+# The upstreams argv[1] (comma separated), on UDP and TCP port 53: every A question is answered 198.51.100.1 (one for a
+# name starting "two." 198.51.100.2), every other with no address. Each question asked is logged to argv[2] as "name type" (in the case it was asked in).
 log = open(sys.argv[2], "a", buffering=1)
 lock = threading.Lock()
 def answer(q):
@@ -226,7 +287,8 @@ def answer(q):
         log.write(f"{'.'.join(labels)} {qtype}\n")
     an = b""
     if qtype == 1:
-        an = b"\xc0\x0c" + struct.pack(">HHIH", 1, 1, 60, 4) + socket.inet_aton("198.51.100.1")
+        address = "198.51.100.2" if labels[0] == "two" else "198.51.100.1"
+        an = b"\xc0\x0c" + struct.pack(">HHIH", 1, 1, 60, 4) + socket.inet_aton(address)
     return struct.pack(">HHHHHH", tid, 0x8180, 1, 1 if an else 0, 0, 0) + q[12:i + 5] + an
 def udp(s):
     while True:
@@ -331,8 +393,9 @@ EOF
 cat >"$work/db.py" <<'EOF'
 import json, os, sys, uuid
 # Sets companies' rules in the rules reader's stand-in database argv[1]; each further argument is company=null (no
-# rules), company=bad (rules not as the reader writes them), company=a,b (open, these names blocked, none if empty) or
-# company=only:a,b (only listed: listed.test allowed, these blocked). Each change is a new version.
+# rules), company=bad (rules not as the reader writes them), company=a,b (open, these names blocked, none if empty),
+# company=only:a,b (only listed: listed.example.com allowed, these blocked) or company=only:a,b+c,d (c and d allowed).
+# Each change is a new version.
 path = sys.argv[1]
 db = json.load(open(path))
 for spec in sys.argv[2:]:
@@ -343,9 +406,10 @@ for spec in sys.argv[2:]:
         db[company] = {"version": "1", "mode": "open", "block": [], "allow": []}
     else:
         mode = "only-listed" if value.startswith("only:") else "open"
-        names = [n for n in value.removeprefix("only:").split(",") if n]
+        value, _, allowed = value.removeprefix("only:").partition("+")
+        names = [n for n in value.split(",") if n]
         db[company] = {"version": str(uuid.uuid4()), "mode": mode, "block": names,
-                       "allow": ["listed.test"] if mode == "only-listed" else []}
+                       "allow": (allowed.split(",") if allowed else ["listed.example.com"]) if mode == "only-listed" else []}
 with open(path + ".tmp", "w") as f:
     json.dump(db, f)
 os.replace(path + ".tmp", path)
@@ -548,6 +612,83 @@ back() {
 within 30 back
 pass "C2's resolver, killed, is back within 30 s (pid $r2 -> $(main_pid 10002), $(restarts 10002) restarts), and blocks again"
 
+# --- "Only listed" (E8c-1): TCP 443 to the addresses listed names were given ------------------------------------
+# m2 holds a connection made in open mode (its output not on this script's, which the VM's exec waits to close); then
+# C2 switches to "only listed" (listed.example.com). The resolver unit's own dnsmasq, in its sandbox and as nobody,
+# puts each address it gives out in allow_10002.
+in_m m2 python3 -c 'import socket, time; s = socket.create_connection(("198.51.100.2", 443)); time.sleep(600)' >/dev/null 2>&1 &
+pids+=($!)
+held() { shows "dst=198.51.100.2 sport=[0-9]* dport=443" ip netns exec qexit conntrack -L -s "$a2" 2>/dev/null; }
+within 30 held
+r2=$(main_pid 10002)
+asked=$(wc -l <"$work/upstream.log")
+rules "$C2=only:other.example.com+listed.example.com"
+only() {
+	names_is "s['reach'] == {'$a1': 'open', '$a2': 'only_10002'} and s['problems'] == []" &&
+		[[ $(reach_map) == "$(pairs "$a1:open" "$a2:only_10002")" && ! -e $RUN/names/10002.owed ]]
+}
+within 30 only
+[[ $(main_pid 10002) != "$r2" && $(unit_state 10002) == active ]] ||
+	fail "the switch did not restart C2's resolver ($r2 -> $(main_pid 10002), $(unit_state 10002))"
+r2=$(main_pid 10002)
+[[ $(cat "$RUN/names/10002.mode") == only-listed ]] || fail "10002.mode holds: $(cat "$RUN/names/10002.mode")"
+held && fail "m2's connection made before the switch goes on"
+[[ -z $(set_addresses allow_10002) ]] || fail "allow_10002 holds $(set_addresses allow_10002) before a listed name was asked"
+expect_tcp m2 198.51.100.1 443 refused
+for server in 10.210.0.1 9.9.9.9; do
+	expect m2 "$server" open.example.com NXDOMAIN
+	expect m2 "$server" other.example.com NXDOMAIN
+done
+page=$(in_m m2 python3 -c 'import urllib.request; print(urllib.request.urlopen("http://listed.example.com:443/", timeout=5).read().decode())' 2>&1) ||
+	fail "m2 could not fetch http://listed.example.com:443/: $page"
+[[ $page == ok ]] || fail "m2 fetched http://listed.example.com:443/: $page"
+[[ $(set_addresses allow_10002) == 198.51.100.1 ]] || fail "allow_10002 holds: $(set_addresses allow_10002)"
+expect_tcp m2 198.51.100.1 80 refused
+expect_tcp m2 198.51.100.2 443 refused
+expect_tcp m1 198.51.100.2 443 open
+expect m2 10.210.0.1 two.listed.example.com "NOERROR 198.51.100.2"
+expect_tcp m2 198.51.100.2 443 open
+shows '^open\.example\.com ' tail -n "+$((asked + 1))" "$work/upstream.log" && fail "an unlisted name of m2's reached the upstreams"
+healthy || fail "not healthy with C2 only listed: $(verify_problems)"
+pass "$C2 switched to only listed.example.com: its resolver restarted (pid $r2) and m2's connection made before ended; unlisted names are NXDOMAIN and never reach the upstreams; m2 reaches TCP 443 only on the addresses its resolver gave out (put in allow_10002 by the unit's own dnsmasq), never port 80 or another address; m1 (open) reaches any"
+
+# The exit's reload (up, as ROLLOUT.md step 9 runs it) builds the table again with allow_10002 empty: the reconciler
+# reloads C2's resolver (its cache emptied), so a listed name asked again puts its address back.
+systemctl reload qorpera-agent-exit.service
+within 30 'only && [[ -z $(set_addresses allow_10002) ]]'
+expect_tcp m2 198.51.100.1 443 refused
+within 30 'says m2 10.210.0.1 listed.example.com "NOERROR 198.51.100.1" && [[ $(set_addresses allow_10002) == 198.51.100.1 ]]'
+expect_tcp m2 198.51.100.1 443 open
+[[ $(main_pid 10002) == "$r2" ]] || fail "the exit's reload restarted C2's resolver ($r2 -> $(main_pid 10002))"
+within 30 healthy
+pass "the exit's reload empties allow_10002 and keeps C2's resolver (pid $r2), reloaded: listed.example.com asked again reaches 198.51.100.1 again"
+
+# A narrower list restarts the resolver with allow_10002 emptied and ends m2's connections again.
+in_m m2 python3 -c 'import socket, time; s = socket.create_connection(("198.51.100.2", 443)); time.sleep(600)' >/dev/null 2>&1 &
+pids+=($!)
+within 30 held
+rules "$C2=only:other.example.com+two.listed.example.com"
+within 30 'says m2 10.210.0.1 listed.example.com NXDOMAIN && only'
+[[ $(main_pid 10002) != "$r2" ]] || fail "a narrower list did not restart C2's resolver"
+held && fail "m2's connection to an address no longer listed goes on"
+expect_tcp m2 198.51.100.1 443 refused
+expect_tcp m2 198.51.100.2 443 refused
+expect m2 10.210.0.1 two.listed.example.com "NOERROR 198.51.100.2"
+expect_tcp m2 198.51.100.2 443 open
+pass "a narrower list restarts C2's resolver (pid $(main_pid 10002)) with allow_10002 emptied and ends m2's connections"
+
+# Back to open: the resolver restarted without the set; the chain and the set go; m2 reaches any address.
+rules "$C2=other.example.com"
+within 30 "names_is \"s['reach'] == {'$a1': 'open', '$a2': 'open'} and s['problems'] == []\" && [[ \$(reach_map) == \"$(pairs "$a1:open" "$a2:open")\" ]]"
+within 30 'says m2 10.210.0.1 open.example.com "NOERROR 198.51.100.1"'
+within 30 '! ip netns exec qexit nft list chain inet qorpera_agent_exit only_10002 >/dev/null 2>&1'
+ip netns exec qexit nft list set inet qorpera_agent_exit allow_10002 >/dev/null 2>&1 && fail "allow_10002 stayed"
+expect m2 10.210.0.1 other.example.com NXDOMAIN
+expect_tcp m2 198.51.100.2 443 open
+expect_tcp m2 198.51.100.1 80 open
+within 30 healthy
+pass "$C2 back to open: its resolver asks for every name again, only_10002 and allow_10002 go, m2 reaches any address"
+
 # --- The exit fails closed -----------------------------------------------------------------------------------------
 rules "$C2=bad"
 within 30 "names_is \"'$a2' not in s['mapped']\""
@@ -555,9 +696,12 @@ refused=$(refused_dns)
 expect m2 10.210.0.1 open.example.com "no answer"
 expect m2 9.9.9.9 open.example.com "no answer"
 (($(refused_dns) >= refused + 2)) || fail "refused_dns went from $refused to $(refused_dns)"
-c2_bad="$NOT_HEALTHY names: $C2: its rules are not as the rules reader writes them; its machines get no DNS"
+[[ $(reach_map) == "$a1:open" ]] || fail "the reach map with C2's rules not usable: $(reach_map)"
+expect_tcp m2 198.51.100.1 80 refused
+expect_tcp m1 198.51.100.1 80 open
+c2_bad="$NOT_HEALTHY names: $C2: its rules are not as the rules reader writes them; its machines get no DNS and no way out"
 within 30 '[[ $(unit_state 10002) == inactive && ! -e $RUN/names/10002.servers ]] && verify_says "$c2_bad"'
-pass "rules the reader never writes leave m2 no DNS, to the exit or to 9.9.9.9 (refused_dns counts it), stop C2's resolver and remove its file; verify says why"
+pass "rules the reader never writes leave m2 no DNS, to the exit or to 9.9.9.9 (refused_dns counts it), and no way out; stop C2's resolver and remove its file; verify says why"
 
 rules "$C2=other.example.com"
 within 30 "names_is \"'$C2' in s['resolvers'] and s['mapped'].get('$a2') == s['resolvers']['$C2'] and s['mapped'].get('$a1') == 10001 and s['problems'] == []\""
@@ -571,10 +715,11 @@ touch "$db.pause"
 # A pass of the stand-in under way when it was paused writes no more after this.
 sleep 1
 rm -f "$STATE/rules/rules.json"
-within 30 'names_is "s['"'"'mapped'"'"'] == {}" && dns_is "" && verify_says "$NO_RULES_FILE"'
+within 30 'names_is "s['"'"'mapped'"'"'] == {}" && dns_is "" && [[ -z $(reach_map) ]] && verify_says "$NO_RULES_FILE"'
+expect_tcp m1 198.51.100.1 80 refused
 rm -f "$db.pause"
 within 30 'healthy && both_rules'
-pass "C2's rules back: its resolver on port $p2; with no rules file no machine has DNS and verify says why; the file back, the exit is healthy again with the map as before"
+pass "C2's rules back: its resolver on port $p2; with no rules file no machine has DNS or a way out and verify says why; the file back, the exit is healthy again with the map as before"
 
 # --- The last machine of a company goes ---------------------------------------------------------------------------
 lx delete --force m2 >/dev/null
@@ -618,10 +763,15 @@ all_off() {
 within 30 all_off
 pass "step 1's undo with C1's resolver running and the names reconciler stopped: within 30 s every qorpera-agent-* unit is inactive and none enabled, no resolver runs, and no namespace, bridge or nft table of the exit is left"
 
-# --- Step 9 from the previous release, and its undo -----------------------------------------------------------------
+# --- Step 9 or 10 from the previous release, and its undo ---------------------------------------------------------
+# Step 9 (E8b-2) from a release before E8b-2; step 10 (E8c-1) from one with E8b-2 (it has the names tool).
 if [[ -z $previous ]]; then
-	echo "SKIP: step 9 from a previous release and its undo (no QORPERA_AGENT_EXIT_PROOF_PREVIOUS)"
+	echo "SKIP: step 9 or 10 from a previous release and its undo (no QORPERA_AGENT_EXIT_PROOF_PREVIOUS)"
 else
+	step=9 names_unit=()
+	if [[ -e $previous/qorpera-agent-exit-names.py ]]; then
+		step=10 names_unit=(qorpera-agent-exit-names.service)
+	fi
 	rm -rf /usr/local/libexec/qorpera-agent-exit "$STATE" "$RUN" "$LOGS" /etc/systemd/system/qorpera-agent-exit* \
 		/etc/systemd/system/qorpera-agent-plug.service
 	systemctl daemon-reload
@@ -632,10 +782,15 @@ else
 		fail "the previous release's install: $(cat "$work/install-previous.out")"
 	install -d -m 0700 "$STATE/rules"
 	install -d -m 0755 /run/qorpera-agent-exit-rules
-	# The previous release's step 1.
+	if ((step == 10)); then
+		# E8b-2 runs "only listed" as its block list alone, every other name answered.
+		rules "$C1=only:blocked.example.com+listed.example.com"
+	fi
+	# The previous release's step 1 (with E8b-2: its names reconciler too).
 	{
 		systemctl enable --now qorpera-agent-exit.service qorpera-agent-exit-dns.service qorpera-agent-exit-log.service \
-			qorpera-agent-plug.service qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer qorpera-agent-exit-ship.timer &&
+			qorpera-agent-plug.service "${names_unit[@]}" qorpera-agent-exit-health.timer qorpera-agent-exit-logs.timer \
+			qorpera-agent-exit-ship.timer &&
 			systemctl start qorpera-agent-exit-ship.service
 	} >"$work/previous-step1.out" 2>&1 || fail "the previous release's step 1: $(cat "$work/previous-step1.out")"
 	start_reader
@@ -643,6 +798,8 @@ else
 	a3=$(machine m3 "$C1") || fail "cannot plug in and start m3"
 	within 180 '[[ $(lease_of m3) == "$a3" ]]'
 	lx file push "$work/rcode.py" m3/root/rcode.py >/dev/null
+fi
+if [[ -n $previous ]] && ((step == 9)); then
 	within 30 'says m3 10.210.0.1 blocked.example.com "NOERROR 198.51.100.1"'
 	# A flow from m3's port 40054 to 9.9.9.9:53 that the previous release sent to the main dnsmasq. Asked twice, over
 	# 2 s apart, so the kernel keeps it 120 s without a packet: it outlasts step 9 below.
@@ -655,7 +812,7 @@ else
 		bash "$here/install-agent-exit.sh" "$package" &&
 			systemctl enable --now qorpera-agent-exit-names.service &&
 			systemctl reload qorpera-agent-exit.service &&
-			systemctl restart qorpera-agent-plug.service
+			systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service
 	} >"$work/step9-b.out" 2>&1 || fail "step 9: $(cat "$work/step9-b.out")"
 	stepped() {
 		healthy && says m3 10.210.0.1 blocked.example.com NXDOMAIN &&
@@ -671,14 +828,17 @@ else
 		sleep 0.5
 	done
 	expect m3 9.9.9.9 blocked.example.com NXDOMAIN 53 40054
-	pass "ROLLOUT.md step 9 on the previous release's exit: healthy within 30 s, $C1 has its resolver on port 10001 and m3 its blocked names, also on its flow from port 40054 opened before the step"
+	[[ $(reach_map) == "$a3:open" ]] || fail "reach after step 9: $(reach_map)"
+	expect_tcp m3 198.51.100.1 80 open
+	pass "ROLLOUT.md step 9 on the previous release's exit: healthy within 30 s, $C1 has its resolver on port 10001 and m3 its blocked names, also on its flow from port 40054 opened before the step; reach sends m3 to open and it reaches 198.51.100.1:80"
 
 	{
 		bash "$previous/install-agent-exit.sh" "$package" &&
 			systemctl reload qorpera-agent-exit.service &&
 			systemctl disable --now qorpera-agent-exit-names.service &&
 			systemctl stop 'qorpera-agent-exit-resolver@*.service' &&
-			systemctl restart qorpera-agent-plug.service
+			rm -f "$RUN"/names/*.mode "$RUN"/names/*.owed &&
+			systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service
 	} >"$work/step9-undo.out" 2>&1 || fail "step 9's undo: $(cat "$work/step9-undo.out")"
 	undone() {
 		says m3 10.210.0.1 blocked.example.com "NOERROR 198.51.100.1" && [[ -z $(active_resolvers) ]] &&
@@ -687,7 +847,56 @@ else
 			healthy
 	}
 	within 30 undone
-	pass "step 9's undo: within 30 s m3 resolves blocked.example.com again, no resolver runs, the names unit is off and disabled, and the previous release's exit is healthy"
+	expect_tcp m3 198.51.100.1 80 open
+	pass "step 9's undo: within 30 s m3 resolves blocked.example.com again, no resolver runs, the names unit is off and disabled, and the previous release's exit is healthy; m3 reaches 198.51.100.1:80"
+elif [[ -n $previous ]]; then
+	# E8b-2 runs C1's resolver with its block list alone: every other name is answered and m3 goes anywhere. m3 holds a
+	# connection through step 10 (its output not on this script's, which the VM's exec waits to close).
+	within 30 'says m3 10.210.0.1 blocked.example.com NXDOMAIN && says m3 10.210.0.1 open.example.com "NOERROR 198.51.100.1"'
+	expect_tcp m3 198.51.100.1 80 open
+	in_m m3 python3 -c 'import socket, time; s = socket.create_connection(("198.51.100.1", 80)); time.sleep(600)' >/dev/null 2>&1 &
+	pids+=($!)
+	held3() { shows "dst=198.51.100.1 sport=[0-9]* dport=80" ip netns exec qexit conntrack -L -s "$a3" 2>/dev/null; }
+	within 30 held3
+	r1=$(main_pid 10001)
+	pass "the previous release (E8b-2), installed and switched on with its own step 1, is healthy; m3 ($C1, \"only listed\") at $a3 has blocked.example.com blocked and open.example.com answered, reaches 198.51.100.1:80 and holds a connection there"
+
+	{
+		bash "$here/install-agent-exit.sh" "$package" &&
+			systemctl restart qorpera-agent-exit-names.service &&
+			systemctl reload qorpera-agent-exit.service &&
+			systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service
+	} >"$work/step10.out" 2>&1 || fail "step 10: $(cat "$work/step10.out")"
+	stepped() {
+		healthy && names_is "s['reach'] == {'$a3': 'only_10001'} and s['problems'] == []" &&
+			[[ $(reach_map) == "$a3:only_10001" && $(cat "$RUN/names/10001.mode" 2>/dev/null) == only-listed ]] &&
+			[[ ! -e $RUN/names/10001.owed ]]
+	}
+	within 30 stepped
+	[[ $(main_pid 10001) != "$r1" ]] || fail "step 10 did not restart $C1's resolver (pid $r1)"
+	held3 && fail "m3's connection made before step 10 goes on"
+	expect m3 10.210.0.1 open.example.com NXDOMAIN
+	expect m3 10.210.0.1 blocked.example.com NXDOMAIN
+	expect_tcp m3 198.51.100.1 80 refused
+	expect m3 10.210.0.1 listed.example.com "NOERROR 198.51.100.1"
+	expect_tcp m3 198.51.100.1 443 open
+	pass "ROLLOUT.md step 10 on the previous release's exit: healthy within 30 s, $C1's resolver restarted into \"only listed\" (open.example.com is NXDOMAIN), m3's connection made before ended, and after asking for listed.example.com m3 reaches 198.51.100.1 on 443 and not on 80"
+
+	{
+		bash "$previous/install-agent-exit.sh" "$package" &&
+			systemctl reload qorpera-agent-exit.service &&
+			systemctl restart qorpera-agent-exit-names.service &&
+			rm -f "$RUN"/names/*.mode "$RUN"/names/*.owed &&
+			systemctl stop 'qorpera-agent-exit-resolver@*.service' &&
+			systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service
+	} >"$work/step10-undo.out" 2>&1 || fail "step 10's undo: $(cat "$work/step10-undo.out")"
+	undone() {
+		healthy && [[ $(unit_state 10001) == active && ! -e $RUN/names/10001.mode ]] &&
+			says m3 10.210.0.1 open.example.com "NOERROR 198.51.100.1" && says m3 10.210.0.1 blocked.example.com NXDOMAIN
+	}
+	within 30 undone
+	expect_tcp m3 198.51.100.1 80 open
+	pass "step 10's undo: within 30 s the previous release's exit is healthy and runs $C1's resolver on port 10001 again; m3 has blocked.example.com blocked, open.example.com answered and reaches 198.51.100.1:80"
 fi
 
 echo "ALL PASSED"
