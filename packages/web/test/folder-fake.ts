@@ -240,13 +240,16 @@ export function folderFake(
 					};
 				}
 				if (parentMissing(unit.path)) return refused("parent_missing");
-				const problems = problemsOf(unit.path, unit.text);
+				// A write names its text, or a file already in the folder (a restore), whose bytes the core copies.
+				const text = "text" in unit ? unit.text : texts.get(unit.file.fileSha256);
+				if (text === undefined) throw new Error("The fake writes only a file it handed out");
+				const problems = problemsOf(unit.path, text);
 				if (problems.length) return refused("invalid", problems);
 				return {
 					outcome: "saved",
 					reason: null,
 					problems: [],
-					version: set(unit.path, "file", unit.text, at).version,
+					version: set(unit.path, "file", text, at).version,
 				};
 			}
 			case "mkdir": {
