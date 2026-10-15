@@ -234,20 +234,47 @@ describe("a capture whose broker request failed", () => {
 		purpose: "Packages",
 		existingSecretId: id(30),
 	};
+	const added = { ...replacement, existingSecretId: undefined };
 	const offline = () => new TypeError("Failed to fetch");
 
-	it("sends the next try with the same ticket, asking the cloud for none and keeping no value", async () => {
+	it("sends a replacement's retry with the kept ticket, then with a fresh one, and keeps no value", async () => {
 		const { cloud, fetch, client } = setup(ticketing().rpc);
 		fetch.mockRejectedValueOnce(offline());
 		await expect(client.capture({ ...replacement, value: "fake-value-1" })).rejects.toThrow("Failed to fetch");
 		await client.capture({ ...replacement, value: "fake-value-2" });
-		expect(cloud.rpc).toHaveBeenCalledTimes(1);
+		expect(cloud.rpc).toHaveBeenCalledTimes(2);
 		// Each try carries the value it was given: only the ticket was kept, and the cloud never saw a value.
 		expect(sent(fetch)).toEqual([
 			[broker(id(20)), "fake-value-1"],
 			[broker(id(20)), "fake-value-2"],
+			[broker(id(21)), "fake-value-2"],
 		]);
 		expect(JSON.stringify(cloud.rpc.mock.calls)).not.toContain("fake-value");
+	});
+
+	it("saves the retry's value when the earlier try, still running, saved its own with the kept ticket", async () => {
+		const { fetch, client } = setup(ticketing().rpc);
+		// The broker saves a ticket's first value; a send on a saved ticket is a replay (SQL test 305) that saves
+		// nothing and answers 200, as when the retry reached the broker while the earlier try was still running.
+		const saved: string[] = [];
+		const used = new Set<string>();
+		const fakeBroker = async (url: string | URL | Request, init?: RequestInit) => {
+			const ticketId = String(url).split("/v1/captures/")[1]?.split("?")[0] ?? "";
+			if (!used.has(ticketId)) {
+				used.add(ticketId);
+				saved.push(JSON.parse(String(init?.body)).fields.value);
+			}
+			return Response.json({});
+		};
+		fetch.mockImplementation(fakeBroker);
+		// The earlier try's value is saved, but its answer never arrives.
+		fetch.mockImplementationOnce(async (url, init) => {
+			await fakeBroker(url, init);
+			throw offline();
+		});
+		await expect(client.capture({ ...replacement, value: "fake-value-1" })).rejects.toThrow("Failed to fetch");
+		await client.capture({ ...replacement, value: "fake-value-2" });
+		expect(saved).toEqual(["fake-value-1", "fake-value-2"]);
 	});
 
 	it("asks for one fresh ticket when the kept one was used by a try whose answer was lost", async () => {
@@ -280,11 +307,12 @@ describe("a capture whose broker request failed", () => {
 			"The connection could not be started. Try again.",
 		);
 		await client.capture({ ...replacement, value: "fake-value-3" });
-		expect(cloud.rpc).toHaveBeenCalledTimes(2);
+		expect(cloud.rpc).toHaveBeenCalledTimes(3);
 		expect(sent(fetch)).toEqual([
 			[broker(id(20)), "fake-value-1"],
 			[broker(id(20)), "fake-value-2"],
 			[broker(id(20)), "fake-value-3"],
+			[broker(id(21)), "fake-value-3"],
 		]);
 	});
 
@@ -297,19 +325,48 @@ describe("a capture whose broker request failed", () => {
 		tickets.refusals.push(offline());
 		await expect(client.capture({ ...replacement, value: "fake-value-2" })).rejects.toThrow("Failed to fetch");
 		await client.capture({ ...replacement, value: "fake-value-3" });
+		expect(cloud.rpc).toHaveBeenCalledTimes(3);
+		expect(sent(fetch).map(([url]) => url)).toEqual([broker(id(20)), broker(id(20)), broker(id(20)), broker(id(21))]);
+	});
+
+	it("keeps the fresh ticket when saving the value with it fails", async () => {
+		const { cloud, fetch, client } = setup(ticketing().rpc);
+		fetch.mockRejectedValueOnce(offline());
+		await expect(client.capture({ ...replacement, value: "fake-value-1" })).rejects.toThrow("Failed to fetch");
+		fetch.mockResolvedValueOnce(Response.json({}));
+		fetch.mockRejectedValueOnce(offline());
+		await expect(client.capture({ ...replacement, value: "fake-value-2" })).rejects.toThrow("Failed to fetch");
+		await client.capture({ ...replacement, value: "fake-value-3" });
+		expect(cloud.rpc).toHaveBeenCalledTimes(3);
+		expect(sent(fetch).map(([url]) => url)).toEqual([
+			broker(id(20)),
+			broker(id(20)),
+			broker(id(21)),
+			broker(id(21)),
+			broker(id(22)),
+		]);
+	});
+
+	it("asks a new variable's every try for a fresh ticket", async () => {
+		const { cloud, fetch, client } = setup(ticketing().rpc);
+		fetch.mockRejectedValueOnce(offline());
+		await expect(client.capture({ ...added, value: "fake-value-1" })).rejects.toThrow("Failed to fetch");
+		await client.capture({ ...added, value: "fake-value-2" });
 		expect(cloud.rpc).toHaveBeenCalledTimes(2);
-		expect(sent(fetch).map(([url]) => url)).toEqual([broker(id(20)), broker(id(20)), broker(id(20))]);
+		expect(sent(fetch)).toEqual([
+			[broker(id(20)), "fake-value-1"],
+			[broker(id(21)), "fake-value-2"],
+		]);
 	});
 
 	it("passes on a new name's 23505: the earlier try saved it, so the next try replaces it", async () => {
 		const tickets = ticketing();
 		const { fetch, client } = setup(tickets.rpc);
-		const added = { ...replacement, existingSecretId: undefined };
 		fetch.mockRejectedValueOnce(offline());
 		await expect(client.capture({ ...added, value: "fake-value-1" })).rejects.toThrow("Failed to fetch");
-		fetch.mockResolvedValueOnce(new Response(null, { status: 403 }));
 		tickets.refusals.push(duplicate());
 		await expect(client.capture({ ...added, value: "fake-value-2" })).rejects.toMatchObject({ code: "23505" });
+		expect(fetch).toHaveBeenCalledTimes(1);
 	});
 
 	it.each([
@@ -330,8 +387,8 @@ describe("a capture whose broker request failed", () => {
 		await expect(client.capture({ ...replacement, value: "fake-value-1" })).rejects.toThrow("Failed to fetch");
 		await client.capture({ ...replacement, value: "fake-value-2" });
 		await client.capture({ ...replacement, value: "fake-value-3" });
-		expect(cloud.rpc).toHaveBeenCalledTimes(2);
-		expect(sent(fetch).map(([url]) => url)).toEqual([broker(id(20)), broker(id(20)), broker(id(21))]);
+		expect(cloud.rpc).toHaveBeenCalledTimes(3);
+		expect(sent(fetch).map(([url]) => url)).toEqual([broker(id(20)), broker(id(20)), broker(id(21)), broker(id(22))]);
 	});
 
 	it("stops at an abort without asking for a fresh ticket, and keeps the ticket for the next try", async () => {
@@ -348,7 +405,7 @@ describe("a capture whose broker request failed", () => {
 		);
 		expect(cloud.rpc).toHaveBeenCalledTimes(1);
 		await client.capture({ ...replacement, value: "fake-value-3" });
-		expect(cloud.rpc).toHaveBeenCalledTimes(1);
-		expect(sent(fetch).map(([url]) => url)).toEqual([broker(id(20)), broker(id(20)), broker(id(20))]);
+		expect(cloud.rpc).toHaveBeenCalledTimes(2);
+		expect(sent(fetch).map(([url]) => url)).toEqual([broker(id(20)), broker(id(20)), broker(id(20)), broker(id(21))]);
 	});
 });

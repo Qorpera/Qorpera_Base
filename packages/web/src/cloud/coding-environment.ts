@@ -148,8 +148,9 @@ export function createWebCodingEnvironment(
 	)
 		throw new Error("Invalid company for coding variables.");
 	const capture = createSecretCapture(cloud, profile, fetchImplementation);
-	// A ticket whose send failed, by the variable it saves; never the value. SQL allows one open replacement of a
-	// variable and a ticket stays open ten minutes, so the next try reuses it rather than ask for one SQL refuses.
+	// A replacement's ticket whose send failed, by the variable it replaces; never the value. SQL allows one open
+	// replacement of a variable and a ticket stays open ten minutes, so the next try reuses it rather than ask for
+	// one SQL refuses.
 	const kept = new Map<string, HostedConnectorCaptureTicket>();
 	async function sendKeeping(
 		key: string,
@@ -190,14 +191,20 @@ export function createWebCodingEnvironment(
 				existingSecretId: input.existingSecretId,
 			};
 			const fields = { value: input.value };
-			// A ticket also fixes the purpose, so a new variable whose purpose changed asks for its own.
-			const key = `${input.ownerKind}\n${input.name}\n${input.existingSecretId ?? ""}\n${input.purpose}`;
+			// A new variable asks for a fresh ticket each try. SQL lets several adds of one name be open, so none is
+			// refused for an earlier one; the first to save wins, the others are refused, and a name the earlier try
+			// saved is refused at the start (23505), which the caller hears.
+			if (input.existingSecretId === undefined) {
+				await capture.send(await capture.ticket(target), fields, signal);
+				return;
+			}
+			// A ticket also fixes the purpose, so a replacement whose purpose changed asks for its own.
+			const key = `${input.ownerKind}\n${input.name}\n${input.existingSecretId}\n${input.purpose}`;
 			const reused = kept.get(key);
 			kept.delete(key);
 			if (reused !== undefined && Date.parse(reused.expiresAt) - Date.now() > KEPT_TICKET_MARGIN_MS) {
 				try {
 					await capture.send(reused, fields, signal);
-					return;
 				} catch (error) {
 					if (signal?.aborted) {
 						kept.set(key, reused);
@@ -206,17 +213,17 @@ export function createWebCodingEnvironment(
 					// The broker refuses a used ticket as it refuses any other, so the earlier try may have saved the
 					// value. A fresh ticket tells: SQL refuses a second open replacement of one variable (23505).
 					const fresh = await capture.ticket(target).catch((begin: unknown) => {
-						const duplicate = begin instanceof CloudRpcError && begin.code === "23505";
-						// For a new variable, 23505 means the earlier try saved it: the caller hears that, the ticket goes.
-						if (duplicate && input.existingSecretId === undefined) throw begin;
-						// Otherwise the kept ticket may still be open (a replacement's 23505 says it is, so nothing was
-						// saved and the broker's error is the one to show): the next try sends with it again.
+						// The kept ticket may still be open (a 23505 says it is, so nothing was saved and the broker's
+						// error is the one to show): the next try sends with it again.
 						kept.set(key, reused);
-						throw duplicate ? error : begin;
+						throw begin instanceof CloudRpcError && begin.code === "23505" ? error : begin;
 					});
 					await sendKeeping(key, fresh, fields, signal);
 					return;
 				}
+				// The earlier try may still have been running at the broker and saved its own value with this ticket.
+				// SQL answers a send on a saved ticket as a replay that saves nothing, so this answer can't tell whose
+				// value was saved. The ticket is used either way: a fresh one saves this value, as one more version.
 			}
 			await sendKeeping(key, await capture.ticket(target), fields, signal);
 		},
