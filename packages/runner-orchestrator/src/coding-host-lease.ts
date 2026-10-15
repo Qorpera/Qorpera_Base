@@ -87,12 +87,15 @@ async function syncDirectory(root: string): Promise<void> {
 		await directory.close();
 	}
 }
-async function readLease(root: string, name: string): Promise<CodingHostLease> {
-	await protectedRoot(root);
-	const file = await open(join(root, `${name}.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
-	let value: Record<string, unknown>;
+/** How often a lease is opened again when a renewal replaced it while it was being read. */
+const LEASE_OPENS = 3;
+/** The lease file's JSON, or undefined when a renewal renamed its replacement over the file just opened (no link
+ * left): the name then holds the newer lease. A file with any other link count is refused. */
+async function readLeaseFile(path: string): Promise<unknown> {
+	const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
 	try {
 		const metadata = await file.stat();
+		if (metadata.isFile() && metadata.nlink === 0) return undefined;
 		if (
 			!metadata.isFile() ||
 			metadata.nlink !== 1 ||
@@ -101,10 +104,19 @@ async function readLease(root: string, name: string): Promise<CodingHostLease> {
 			metadata.size > 4096
 		)
 			throw new Error("CODING_HOST_LEASE_UNPROTECTED");
-		value = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(await file.readFile()));
+		return JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(await file.readFile()));
 	} finally {
 		await file.close();
 	}
+}
+async function readLease(root: string, name: string): Promise<CodingHostLease> {
+	await protectedRoot(root);
+	let read: unknown;
+	for (let opens = 0; read === undefined; opens++) {
+		if (opens === LEASE_OPENS) throw new Error("CODING_HOST_LEASE_UNPROTECTED");
+		read = await readLeaseFile(join(root, `${name}.json`));
+	}
+	const value = read as Record<string, unknown>;
 	if (
 		!value ||
 		typeof value !== "object" ||
@@ -149,35 +161,25 @@ function verdictOf(
 		return "unreadable";
 	return nowMs < lease.expiresAtBootMs ? "live" : "lapsed";
 }
-async function judge(
-	root: string,
-	project: string,
-	name: string,
-	bootId: string,
-	nowMs: number,
-	ttlMs: number,
-): Promise<CodingHostLeaseVerdict> {
-	let lease: CodingHostLease;
+/** A machine's lease as read, or why none could be. */
+async function snapshot(root: string, name: string): Promise<CodingHostLease | "missing" | "unreadable"> {
 	try {
-		lease = await readLease(root, name);
+		return await readLease(root, name);
 	} catch (error) {
 		return errno(error, "ENOENT") ? "missing" : "unreadable";
 	}
-	return verdictOf(lease, project, name, bootId, nowMs, ttlMs);
 }
-export function judgeCodingHostLease(
+/** Judges the lease read for `name` at `options.nowMs`, which must be read after the lease: a renewal is never
+ * newer than the clock read after it. */
+export async function judgeCodingHostLease(
 	name: string,
 	project: string,
 	options: { root?: string; bootId: string; nowMs: number; ttlMs?: number },
 ): Promise<CodingHostLeaseVerdict> {
-	return judge(
-		options.root ?? CODING_HOST_LEASE_ROOT,
-		project,
-		name,
-		options.bootId,
-		options.nowMs,
-		options.ttlMs ?? CODING_HOST_LEASE_TTL_MS,
-	);
+	const lease = await snapshot(options.root ?? CODING_HOST_LEASE_ROOT, name);
+	return typeof lease === "string"
+		? lease
+		: verdictOf(lease, project, name, options.bootId, options.nowMs, options.ttlMs ?? CODING_HOST_LEASE_TTL_MS);
 }
 
 /** The executor's leases, one per member machine it holds on this node: its
@@ -323,9 +325,11 @@ export interface CodingHostWatchdogOutcome {
  * machines (qorpera-coding-machine-<32 hex>) are judged; kept per-session VMs,
  * company machines and every other project are left alone. The leases are read
  * after the listing, so a machine started meanwhile, whose lease is written
- * before its start, is never mistaken for one without. The stops run side by
- * side; each outcome is returned. An inventory LXD cannot confirm throws, and
- * nothing is stopped. */
+ * before its start, is never mistaken for one without; the clock is read after
+ * the leases, so a renewal published meanwhile is never taken for one from the
+ * future. The stops run side by side; each outcome is returned. An inventory
+ * LXD cannot confirm, or a clock that cannot be read, throws, and nothing is
+ * stopped. */
 export async function runCodingHostWatchdog(options: {
 	client: LxdHostInventoryClient & Pick<LxdClient, "setInstancePower">;
 	project: string;
@@ -345,12 +349,16 @@ export async function runCodingHostWatchdog(options: {
 			instance.statusCode !== STOPPED,
 	);
 	if (!candidates.length) return [];
+	const leases = await Promise.all(candidates.map(async ({ name }) => ({ name, lease: await snapshot(root, name) })));
 	const bootId = await clock.bootId(),
 		now = await clock.uptimeMs();
 	if (!isUuid(bootId) || !Number.isSafeInteger(now) || now < 0) throw new Error("CODING_HOST_CLOCK_UNAVAILABLE");
 	const outcomes = await Promise.all(
-		candidates.map(async ({ name }): Promise<CodingHostWatchdogOutcome | null> => {
-			const verdict = await judge(root, options.project, name, bootId, now, CODING_HOST_LEASE_TTL_MS);
+		leases.map(async ({ name, lease }): Promise<CodingHostWatchdogOutcome | null> => {
+			const verdict =
+				typeof lease === "string"
+					? lease
+					: verdictOf(lease, options.project, name, bootId, now, CODING_HOST_LEASE_TTL_MS);
 			if (verdict === "live") return null;
 			try {
 				await options.client.setInstancePower(options.project, name, "stop", options.signal);

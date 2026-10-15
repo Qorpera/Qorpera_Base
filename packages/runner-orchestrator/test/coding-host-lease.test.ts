@@ -13,8 +13,24 @@ import {
 import { lxdCodingMachineName } from "../src/coding-machine.ts";
 import type { LxdHostInventoryInstance } from "../src/lxd-client.ts";
 
+// open answers as the file system does; a test may set `opened.hook` to run right after a lease file is opened, as a
+// renewal landing between a reader's open and its stat would.
+const opened = vi.hoisted(() => ({ hook: undefined as ((path: string) => Promise<void>) | undefined }));
+vi.mock("node:fs/promises", async (original) => {
+	const actual = await original<typeof import("node:fs/promises")>();
+	return {
+		...actual,
+		open: async (...args: Parameters<typeof actual.open>) => {
+			const handle = await actual.open(...args);
+			if (opened.hook && String(args[0]).endsWith(".json")) await opened.hook(String(args[0]));
+			return handle;
+		},
+	};
+});
+
 const roots: string[] = [];
 afterEach(async () => {
+	opened.hook = undefined;
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -314,6 +330,56 @@ describe("the host watchdog", () => {
 		});
 		expect(await run()).toEqual([]);
 		expect(stops()).toEqual([]);
+	});
+	it("reads the clock only after the leases, so a renewal published meanwhile is not taken for one from the future", async () => {
+		const f = await fixture();
+		const a = f.machine();
+		await f.leases.renew(a);
+		f.now.uptimeMs += 10_000;
+		const { client, signal, stops } = lxd(f, [instance({ name: a.name })]);
+		// The keeper renews while the watchdog reads the clock: the uptime it gets is from just before the renewal.
+		let racing = true;
+		const clock: CodingHostClock = {
+			bootId: f.clock.bootId,
+			uptimeMs: async () => {
+				const sampled = f.now.uptimeMs;
+				if (racing) {
+					racing = false;
+					f.now.uptimeMs += 1;
+					await f.leases.renew(a);
+				}
+				return sampled;
+			},
+		};
+		expect(await runCodingHostWatchdog({ client, project: "coding", signal, root: f.root, clock })).toEqual([]);
+		expect(stops()).toEqual([]);
+		expect((await f.read(a.name)).renewedAtBootMs).toBe(f.now.uptimeMs);
+	});
+	it("opens a lease again when a renewal replaced it while it was read, and refuses one replaced every time", async () => {
+		const f = await fixture();
+		const a = f.machine();
+		await f.leases.renew(a);
+		const { run, stops } = lxd(f, [instance({ name: a.name })]);
+		// The renewal renames its file over the lease between the watchdog's open and its stat: the file opened has no
+		// link left, and the name holds the newer lease.
+		opened.hook = async () => {
+			opened.hook = undefined;
+			f.now.uptimeMs += 1;
+			await f.leases.renew(a);
+		};
+		expect(await run()).toEqual([]);
+		expect(stops()).toEqual([]);
+		expect(opened.hook).toBeUndefined();
+		// A lease replaced at every open is never read: unreadable.
+		let renewals = 0;
+		opened.hook = async () => {
+			renewals += 1;
+			await f.leases.renew(a);
+		};
+		expect(await f.verdict(a.name)).toBe("unreadable");
+		expect(renewals).toBe(3);
+		opened.hook = undefined;
+		expect(await f.verdict(a.name)).toBe("live");
 	});
 	it("reports each stop LXD refuses and still stops the rest", async () => {
 		const f = await fixture();
