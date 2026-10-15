@@ -85,7 +85,12 @@ install -m 0400 -- "$FOLDER" "$WORK/qorpera-folder"
 lx init "$BASE" "$BUILDER" --vm --no-profiles --storage "$POOL" -d root,size=10GiB -n "$NETWORK" "${NIC[@]}" \
 	-c limits.cpu=4 -c limits.memory=4GiB -c boot.mode=uefi-secureboot -c boot.autostart=false \
 	-c user.qorpera.image_builder=true -c user.qorpera.purpose=code-host-image </dev/null
-lx start "$BUILDER"
+lx start "$BUILDER" || {
+	# QEMU's own reason is only in the instance's log, which the cleanup deletes with the builder.
+	lx info --show-log "$BUILDER" | tail -n 40 || true
+	free -m || true
+	exit 1
+}
 for _ in $(seq 1 90); do lx exec "$BUILDER" -- true >/dev/null 2>&1 && break; sleep 2; done
 lx exec "$BUILDER" -- cloud-init status --wait >/dev/null
 lx exec "$BUILDER" -- env GIT_VERSION="$GIT_VERSION" GIT_URL="$(pin .git.url)" GIT_SHA256="$(pin .git.sha256)" \
