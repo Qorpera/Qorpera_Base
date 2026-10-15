@@ -1354,7 +1354,11 @@ describe("code hosts (F3 step 5e)", () => {
 		const f = withHosts();
 		f.inventory.instances[0].project = codeHostProject(company(1));
 		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
-		expect(result.entries[0]).toMatchObject({ category: "unmanaged", allocation: null, reason: "UNREGISTERED_INSTANCE" });
+		expect(result.entries[0]).toMatchObject({
+			category: "unmanaged",
+			allocation: null,
+			reason: "UNREGISTERED_INSTANCE",
+		});
 		expect(result.state).toBe("unavailable");
 	});
 	it("counts `running` code hosts against headroom whether any runs or not", () => {

@@ -1,9 +1,8 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
+import { isUuid, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import type { LxdCodeHostClient, LxdCreateInstanceRequest, LxdInstanceRecord, LxdProjectRecord } from "./lxd-client.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const SHA = /^[0-9a-f]{64}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const GiB = 1024 ** 3;
 const STOPPED = 102,
@@ -18,7 +17,7 @@ export const CODE_HOST_INSTANCE = "code-host";
 export const CODE_HOST_PROJECT = /^qorpera-codehost-([0-9a-f]{32})$/;
 
 export function codeHostProject(companyId: string): string {
-	if (typeof companyId !== "string" || !UUID.test(companyId)) throw new Error("INVALID_CODE_HOST_COMPANY");
+	if (!isUuid(companyId)) throw new Error("INVALID_CODE_HOST_COMPANY");
 	return `qorpera-codehost-${companyId.replaceAll("-", "")}`;
 }
 
@@ -27,7 +26,7 @@ export function codeHostCompany(project: string): string | undefined {
 	const hex = CODE_HOST_PROJECT.exec(project)?.[1];
 	if (!hex) return undefined;
 	const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-	return UUID.test(id) ? id : undefined;
+	return isUuid(id) ? id : undefined;
 }
 
 /** A node's code hosts: each made from this image with these limits, at most `running` of them started at once.
@@ -60,7 +59,7 @@ export function parseCodeHostPolicy(value: unknown): Readonly<CodeHostPolicy> {
 		Array.isArray(input) ||
 		Object.keys(input).sort().join() !== [...CODE_HOST_POLICY_KEYS].sort().join() ||
 		typeof input.imageFingerprint !== "string" ||
-		!SHA.test(input.imageFingerprint) ||
+		!SHA256_HEX_PATTERN.test(input.imageFingerprint) ||
 		typeof input.storagePool !== "string" ||
 		!NAME.test(input.storagePool) ||
 		!whole(input.cpus, 1, 64) ||
@@ -194,8 +193,10 @@ interface Host {
 /** The coding executor's code hosts on its node. A company's jobs share its code host: the first starts it (and
  * makes its project and VM when missing, or the VM again when made under another policy), and it stops
  * `idleStopMs` after the last. At most the policy's `running` are started at once: a job for another company
- * stops the least recently used idle one, else waits its turn. The executor only ever touches projects named like
- * a code host's, and refuses (logs, touches nothing) one whose settings differ or that holds anything else. */
+ * stops the least recently used idle one, else waits its turn. A code host counts against `running` until its stop
+ * is confirmed. The executor only ever touches projects named like a code host's, and refuses (logs, touches
+ * nothing) one whose settings differ or that holds anything else, checked again before every stop: a refused
+ * project's code host keeps its start. */
 export class LxdCodeHosts {
 	readonly #client: LxdCodeHostClient;
 	readonly #policy: Readonly<CodeHostPolicy>;
@@ -240,7 +241,8 @@ export class LxdCodeHosts {
 	}
 
 	/** At the executor's start: every code host still started is stopped, since one without its executor would keep
-	 * its views open, and one made under another policy goes. Returns how many were stopped. */
+	 * its views open, and one made under another policy goes. Returns how many were stopped. One that may still run
+	 * (its stop failed, or its project is refused) counts against `running`, and its stop is tried again later. */
 	async housekeep(signal: AbortSignal): Promise<number> {
 		let stopped = 0;
 		for (const name of await this.#client.listProjectNames(signal)) {
@@ -249,7 +251,14 @@ export class LxdCodeHosts {
 			const host = this.#host(companyId);
 			try {
 				await this.#step(host, async () => {
-					if (host.jobs > 0 || !(await this.#project(host, signal, false))) return;
+					if (host.jobs > 0) return;
+					// Its VM may run: it counts until its stop is confirmed.
+					host.started = true;
+					if (!(await this.#project(host, signal, false))) {
+						host.started = false;
+						this.#notify();
+						return;
+					}
 					clearTimeout(host.idle);
 					host.idle = undefined;
 					if (await this.#halt(host, signal)) stopped += 1;
@@ -262,6 +271,8 @@ export class LxdCodeHosts {
 					}
 				});
 			} catch (error) {
+				// Still counted: its idle stop, another company's start or close() tries its stop again.
+				this.#rest(host);
 				if (signal.aborted) throw error;
 				this.#log({ event: "code-host-error", step: "housekeep", project: name, error });
 			}
@@ -316,6 +327,8 @@ export class LxdCodeHosts {
 		const fresh = !host.started;
 		await this.#turn(host, signal);
 		try {
+			// The wait for a start has no bound: the project is checked again before its VM is touched.
+			await this.#project(host, signal, true);
 			let instance = await this.#client.getInstance(host.project, CODE_HOST_INSTANCE, signal);
 			if (instance && !codeHostInstanceMatches(this.#policy, host.project, instance)) {
 				// Made under another policy (another image, other limits): its disk is scratch.
@@ -336,8 +349,9 @@ export class LxdCodeHosts {
 			else if (instance.statusCode !== RUNNING) throw new Error("CODE_HOST_STATE_UNAVAILABLE");
 			await this.#agent(host, signal);
 		} catch (error) {
-			// Started for this job only: stop it again rather than hold a start until it idles out.
-			if (fresh) await this.#halt(host, AbortSignal.timeout(this.#agentWaitMs)).catch(() => undefined);
+			// Started for this job only: stop it again rather than hold a start until it idles out, unless its project
+			// was refused meanwhile (it then keeps the start, and its idle stop tries again).
+			if (fresh) await this.#stopChecked(host, AbortSignal.timeout(this.#agentWaitMs)).catch(() => undefined);
 			throw error;
 		}
 	}
@@ -364,6 +378,9 @@ export class LxdCodeHosts {
 		if (host.started) return;
 		const turn = {};
 		this.#turns.push(turn);
+		// Idle hosts this turn failed to stop (a refused project, an error of LXD's): they keep their starts, and their
+		// own idle stops try again.
+		const failed = new Set<Host>();
 		try {
 			for (;;) {
 				if (this.#turns[0] === turn) {
@@ -372,9 +389,11 @@ export class LxdCodeHosts {
 						host.started = true;
 						return;
 					}
-					const idle = hosts.filter((h) => h.started && h.jobs === 0).sort((a, b) => a.lastUsed - b.lastUsed)[0];
+					const idle = hosts
+						.filter((h) => h.started && h.jobs === 0 && !failed.has(h))
+						.sort((a, b) => a.lastUsed - b.lastUsed)[0];
 					if (idle) {
-						await this.#step(idle, () => this.#stopIdle(idle));
+						await this.#step(idle, () => this.#stopIdle(idle)).catch(() => failed.add(idle));
 						continue;
 					}
 				}
@@ -430,11 +449,22 @@ export class LxdCodeHosts {
 		clearTimeout(host.idle);
 		host.idle = undefined;
 		try {
-			await this.#halt(host, AbortSignal.timeout(this.#agentWaitMs));
+			await this.#stopChecked(host, AbortSignal.timeout(this.#agentWaitMs));
 		} catch (error) {
 			this.#log({ event: "code-host-error", step: "stop", project: host.project, error });
 			if (!this.#closed) this.#rest(host);
 			throw error;
+		}
+	}
+
+	/** Its project is checked again first: one refused since is not touched (this throws), and the host keeps its
+	 * start. */
+	async #stopChecked(host: Host, signal: AbortSignal): Promise<void> {
+		if (await this.#project(host, signal, false)) await this.#halt(host, signal);
+		else {
+			// The project is gone, and its VM with it.
+			host.started = false;
+			this.#notify();
 		}
 	}
 
@@ -457,7 +487,10 @@ export class LxdCodeHosts {
 		const stop = () => void this.#step(host, () => this.#stopIdle(host)).catch(() => undefined);
 		clearTimeout(host.idle);
 		host.idle = undefined;
-		if (this.#closed) return stop();
+		if (this.#closed) {
+			stop();
+			return;
+		}
 		host.idle = setTimeout(stop, this.#idleStopMs);
 		host.idle.unref();
 	}

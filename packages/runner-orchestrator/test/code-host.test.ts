@@ -41,6 +41,10 @@ class FakeLxd implements LxdCodeHostClient {
 	agentDown = 0;
 	/** What LXD makes differs from the request. */
 	made?: (instance: LxdInstanceRecord & { config: Record<string, string> }) => void;
+	/** The next this many stops fail. */
+	failStop = 0;
+	/** Called on every exec, before it answers. */
+	onExec?: () => void;
 	async getProject(name: string): Promise<LxdProjectRecord | undefined> {
 		const project = this.projects.get(name);
 		if (!project) return undefined;
@@ -102,11 +106,16 @@ class FakeLxd implements LxdCodeHostClient {
 		this.calls.push(`${action} ${project}`);
 		const instance = this.instances.get(project);
 		if (!instance) throw new Error("Instance not found");
+		if (action === "stop" && this.failStop > 0) {
+			this.failStop -= 1;
+			throw new Error("Failed to stop instance");
+		}
 		instance.status = action === "start" ? "Running" : "Stopped";
 		instance.statusCode = action === "start" ? 103 : 102;
 	}
 	async execInstance(project: string): Promise<void> {
 		this.calls.push(`exec ${project}`);
+		this.onExec?.();
 		if (this.agentDown > 0) {
 			this.agentDown -= 1;
 			throw new Error("LXD instance agent not running");
@@ -156,7 +165,17 @@ describe("code host names", () => {
 			"qorpera-codehost-11111111000000008000000000000000",
 		])
 			expect(codeHostCompany(other)).toBeUndefined();
-		for (const bad of ["", "not-a-uuid", company(1).toUpperCase(), company(1).replaceAll("-", ""), 7])
+		const lettered = "abcdef12-0000-4000-8000-00000000000a";
+		expect(codeHostProject(lettered)).toBe(`qorpera-codehost-${lettered.replaceAll("-", "")}`);
+		expect(codeHostCompany(codeHostProject(lettered))).toBe(lettered);
+		for (const bad of [
+			"",
+			"not-a-uuid",
+			"ABCDEF12-0000-4000-8000-00000000000A",
+			company(1).replaceAll("-", ""),
+			"11111111-0000-0000-8000-000000000000",
+			7,
+		])
 			expect(() => codeHostProject(bad as string)).toThrow("INVALID_CODE_HOST_COMPANY");
 	});
 });
@@ -257,9 +276,9 @@ describe("code host policy", () => {
 		expect(codeHostProjectMatches(project())).toBe(true);
 		expect(codeHostProjectMatches(project({ usedBy: [] }))).toBe(true);
 		expect(codeHostProjectMatches(project({ name: "qorpera-build" }))).toBe(false);
-		expect(codeHostProjectMatches(project({ config: { ...CODE_HOST_PROJECT_CONFIG, "features.images": "true" } }))).toBe(
-			false,
-		);
+		expect(
+			codeHostProjectMatches(project({ config: { ...CODE_HOST_PROJECT_CONFIG, "features.images": "true" } })),
+		).toBe(false);
 		const { "limits.instances": _limit, ...withoutLimit } = CODE_HOST_PROJECT_CONFIG;
 		expect(codeHostProjectMatches(project({ config: withoutLimit }))).toBe(false);
 		for (const extra of [
@@ -285,7 +304,12 @@ describe("LxdCodeHosts", () => {
 		});
 		expect(lease).toEqual({ companyId: company(1), project, name: "code-host" });
 		expect(lxd.projects.get(project)?.config).toEqual(CODE_HOST_PROJECT_CONFIG);
-		expect(lxd.calls).toEqual([`project ${project}`, `create ${project}`, `start ${project}`, ...Array(2).fill(`exec ${project}`)]);
+		expect(lxd.calls).toEqual([
+			`project ${project}`,
+			`create ${project}`,
+			`start ${project}`,
+			...Array(2).fill(`exec ${project}`),
+		]);
 		expect(events).toEqual([{ event: "code-host", step: "project-made", project }]);
 		// A second job finds it running.
 		lxd.calls.length = 0;
@@ -360,7 +384,13 @@ describe("LxdCodeHosts", () => {
 		await lxd.setInstancePower(project, "code-host", "start");
 		lxd.calls.length = 0;
 		await codeHosts.use(company(1), signal(), async () => undefined);
-		expect(lxd.calls).toEqual([`stop ${project}`, `delete ${project}`, `create ${project}`, `start ${project}`, `exec ${project}`]);
+		expect(lxd.calls).toEqual([
+			`stop ${project}`,
+			`delete ${project}`,
+			`create ${project}`,
+			`start ${project}`,
+			`exec ${project}`,
+		]);
 		expect(events).toEqual([{ event: "code-host", step: "replaced", project }]);
 		expect(lxd.instances.get(project)?.config["volatile.base_image"]).toBe(policy.imageFingerprint);
 		await codeHosts.close();
@@ -402,13 +432,16 @@ describe("LxdCodeHosts", () => {
 	it("gives up on an agent that never answers, and stops the VM again", async () => {
 		const { lxd, codeHosts } = hosts({ agentWaitMs: 50 });
 		lxd.agentDown = Number.POSITIVE_INFINITY;
-		await expect(codeHosts.use(company(1), signal(), async () => "ran")).rejects.toThrow("CODE_HOST_AGENT_UNAVAILABLE");
+		await expect(codeHosts.use(company(1), signal(), async () => "ran")).rejects.toThrow(
+			"CODE_HOST_AGENT_UNAVAILABLE",
+		);
 		expect(lxd.running(company(1))).toBe(false);
 	});
 	it("at the executor's start stops every started code host and deletes outdated ones, past a refused project", async () => {
 		const { lxd, events, codeHosts } = hosts();
 		const [running, outdated, refused, empty] = [1, 2, 3, 4].map((n) => codeHostProject(company(n)));
-		for (const project of [running, outdated, refused, empty]) await lxd.createProject(project, CODE_HOST_PROJECT_CONFIG);
+		for (const project of [running, outdated, refused, empty])
+			await lxd.createProject(project, CODE_HOST_PROJECT_CONFIG);
 		await lxd.createInstance(running, codeHostRequest(policy, company(1)));
 		await lxd.setInstancePower(running, "code-host", "start");
 		await lxd.createInstance(outdated, codeHostRequest({ ...policy, memoryBytes: 8 * GiB }, company(2)));
@@ -423,14 +456,137 @@ describe("LxdCodeHosts", () => {
 			{ event: "code-host", step: "stopped", project: running },
 			{ event: "code-host", step: "outdated", project: outdated },
 			{ event: "code-host-error", step: "refused", project: refused },
-			{ event: "code-host-error", step: "housekeep", project: refused, error: new Error("CODE_HOST_PROJECT_DIFFERS") },
+			{
+				event: "code-host-error",
+				step: "housekeep",
+				project: refused,
+				error: new Error("CODE_HOST_PROJECT_DIFFERS"),
+			},
 		]);
-		// Nothing started counts against `running` afterwards.
+		// Only the refused project's code host still counts against `running`, since it may run: the next company
+		// starts at once, and the one after stops that one rather than touch the refused project.
+		events.length = 0;
 		await codeHosts.use(company(5), signal(), async () => undefined);
 		await codeHosts.use(company(6), signal(), async () => undefined);
-		expect([lxd.running(company(5)), lxd.running(company(6))]).toEqual([true, true]);
+		expect([3, 5, 6].map((n) => lxd.running(company(n)))).toEqual([true, false, true]);
+		expect(events).toEqual([
+			{ event: "code-host", step: "project-made", project: codeHostProject(company(5)) },
+			{ event: "code-host", step: "project-made", project: codeHostProject(company(6)) },
+			{ event: "code-host-error", step: "refused", project: refused },
+			{ event: "code-host-error", step: "stop", project: refused, error: new Error("CODE_HOST_PROJECT_DIFFERS") },
+			{ event: "code-host", step: "stopped", project: codeHostProject(company(5)) },
+		]);
 		await codeHosts.close();
+		expect(lxd.running(company(3))).toBe(true);
 	});
+	it.each(["another company's start", "close"])(
+		"keeps a code host whose stop failed at the executor's start counted, and stops it at %s",
+		async (later) => {
+			const { lxd, events, codeHosts } = hosts({ running: 1 });
+			const [project, next] = [1, 2].map((n) => codeHostProject(company(n)));
+			await lxd.createProject(project, CODE_HOST_PROJECT_CONFIG);
+			await lxd.createInstance(project, codeHostRequest(policy, company(1)));
+			await lxd.setInstancePower(project, "code-host", "start");
+			lxd.calls.length = 0;
+			lxd.failStop = 1;
+			await expect(codeHosts.housekeep(signal())).resolves.toBe(0);
+			expect(lxd.running(company(1))).toBe(true);
+			expect(events).toEqual([
+				{ event: "code-host-error", step: "housekeep", project, error: new Error("Failed to stop instance") },
+			]);
+			if (later === "close") {
+				await codeHosts.close();
+				expect(lxd.calls).toEqual([`stop ${project}`, `stop ${project}`]);
+			} else {
+				await codeHosts.use(company(2), signal(), async () => undefined);
+				expect(lxd.calls).toEqual([
+					`stop ${project}`,
+					`project ${next}`,
+					`stop ${project}`,
+					`create ${next}`,
+					`start ${next}`,
+					`exec ${next}`,
+				]);
+				await codeHosts.close();
+			}
+			expect(lxd.running(company(1))).toBe(false);
+		},
+	);
+	it("keeps the start of a code host whose project was changed after its use, and never stops it", async () => {
+		const { lxd, events, codeHosts } = hosts({ running: 1, idleStopMs: 20 });
+		const [project, next] = [1, 2].map((n) => codeHostProject(company(n)));
+		await codeHosts.use(company(1), signal(), async () => undefined);
+		(lxd.projects.get(project) as { config: Record<string, string> }).config.restricted = "false";
+		lxd.calls.length = 0;
+		// Its idle stop refuses the project, and so does its next job.
+		await vi.waitFor(() => expect(events).toContainEqual({ event: "code-host-error", step: "refused", project }));
+		await expect(codeHosts.use(company(1), signal(), async () => "ran")).rejects.toThrow("CODE_HOST_PROJECT_DIFFERS");
+		// Another company waits for its start rather than stop the refused project's code host, until its job ends.
+		const abort = new AbortController();
+		const waiting = codeHosts.use(company(2), abort.signal, async () => "ran");
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		abort.abort(new Error("JOB_CANCELLED"));
+		await expect(waiting).rejects.toThrow("JOB_CANCELLED");
+		await codeHosts.close();
+		expect(lxd.running(company(1))).toBe(true);
+		expect(lxd.calls).toEqual([`project ${next}`]);
+		expect(events).not.toContainEqual({ event: "code-host", step: "stopped", project });
+	});
+	it("checks the project again after the wait for a start: one changed meanwhile is not touched, and keeps the start", async () => {
+		const { lxd, events, codeHosts } = hosts({ running: 1 });
+		const [busy, waited, next] = [1, 2, 3].map((n) => codeHostProject(company(n)));
+		const first = held();
+		const running = codeHosts.use(company(1), signal(), first.job);
+		await vi.waitFor(() => expect(lxd.running(company(1))).toBe(true));
+		// Company 2's project passes its first check, then its job waits for company 1's start.
+		await lxd.createProject(waited, CODE_HOST_PROJECT_CONFIG);
+		const waiting = codeHosts.use(company(2), signal(), async () => "ran");
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		(lxd.projects.get(waited) as { config: Record<string, string> }).config.restricted = "false";
+		lxd.calls.length = 0;
+		first.release();
+		await running;
+		await expect(waiting).rejects.toThrow("CODE_HOST_PROJECT_DIFFERS");
+		expect(lxd.calls).toEqual([`stop ${busy}`]);
+		expect(events).toContainEqual({ event: "code-host-error", step: "refused", project: waited });
+		// It may run (its project is not the executor's to judge now): another company waits rather than stop it.
+		const abort = new AbortController();
+		const third = codeHosts.use(company(3), abort.signal, async () => "ran");
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		abort.abort(new Error("JOB_CANCELLED"));
+		await expect(third).rejects.toThrow("JOB_CANCELLED");
+		await codeHosts.close();
+		expect(lxd.calls).toEqual([`stop ${busy}`, `project ${next}`]);
+	});
+	it.each(["its agent wait runs out", "its job is cancelled"])(
+		"checks the project again before it stops a failed start: one changed while %s is not touched",
+		async (end) => {
+			const { lxd, events, codeHosts } = hosts({ running: 1, agentWaitMs: 50 });
+			const project = codeHostProject(company(1));
+			const abort = new AbortController();
+			lxd.agentDown = Number.POSITIVE_INFINITY;
+			lxd.onExec = () => {
+				(lxd.projects.get(project) as { config: Record<string, string> }).config.restricted = "false";
+				if (end === "its job is cancelled") abort.abort(new Error("JOB_CANCELLED"));
+			};
+			await expect(codeHosts.use(company(1), abort.signal, async () => "ran")).rejects.toThrow(
+				end === "its job is cancelled" ? "JOB_CANCELLED" : "CODE_HOST_AGENT_UNAVAILABLE",
+			);
+			expect(lxd.running(company(1))).toBe(true);
+			expect(events).toContainEqual({ event: "code-host-error", step: "refused", project });
+			// It keeps its start: another company waits rather than stop it.
+			lxd.onExec = undefined;
+			lxd.agentDown = 0;
+			const other = new AbortController();
+			const waiting = codeHosts.use(company(2), other.signal, async () => "ran");
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			other.abort(new Error("JOB_CANCELLED"));
+			await expect(waiting).rejects.toThrow("JOB_CANCELLED");
+			await codeHosts.close();
+			expect(lxd.running(company(1))).toBe(true);
+			expect(lxd.calls).not.toContain(`stop ${project}`);
+		},
+	);
 	it("removes a company's code host and project after its runs ended", async () => {
 		const { lxd, events, codeHosts } = hosts();
 		const project = codeHostProject(company(1));
@@ -464,7 +620,9 @@ describe("LxdCodeHosts", () => {
 	});
 	it("refuses waits outside 1 ms to a day, and a bad policy", () => {
 		for (const options of [{ idleStopMs: 0 }, { agentWaitMs: 86_400_001 }, { idleStopMs: 1.5 }])
-			expect(() => new LxdCodeHosts({ client: new FakeLxd(), policy, ...options })).toThrow("INVALID_CODE_HOST_POLICY");
+			expect(() => new LxdCodeHosts({ client: new FakeLxd(), policy, ...options })).toThrow(
+				"INVALID_CODE_HOST_POLICY",
+			);
 		expect(() => new LxdCodeHosts({ client: new FakeLxd(), policy: { ...policy, running: 0 } })).toThrow(
 			"INVALID_CODE_HOST_POLICY",
 		);

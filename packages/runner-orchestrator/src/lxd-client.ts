@@ -3118,22 +3118,34 @@ export class LxdUnixClient
 
 	async createProject(name: string, config: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<void> {
 		if (!INSTANCE_NAME.test(name)) throw new Error("LXD project name is invalid");
-		const result = await this.#request("POST", "/1.0/projects", { name, description: "", config: { ...config } }, signal);
-		await this.#waitForOperation(result, signal);
+		const result = await this.#request(
+			"POST",
+			"/1.0/projects",
+			{ name, description: "", config: { ...config } },
+			signal,
+		);
+		const envelope = record(result.body, "LXD response");
+		if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD request failed");
+		// A project's create answers synchronously, with null metadata.
+		if (envelope.type !== "sync") await this.#waitForOperation(result, signal);
 	}
 
 	async deleteProject(name: string, signal?: AbortSignal): Promise<boolean> {
 		if (!INSTANCE_NAME.test(name)) throw new Error("LXD project name is invalid");
 		const result = await this.#request("DELETE", `/1.0/projects/${encodeURIComponent(name)}`, undefined, signal);
 		if (result.status === 404) return false;
-		await this.#waitForOperation(result, signal);
+		const envelope = record(result.body, "LXD response");
+		if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD request failed");
+		// A project's delete answers synchronously, with or without metadata.
+		if (envelope.type !== "sync") await this.#waitForOperation(result, signal);
 		return true;
 	}
 
 	async listProjectNames(signal?: AbortSignal): Promise<string[]> {
 		const result = await this.#request("GET", "/1.0/projects", undefined, signal);
 		return strings(envelopeMetadata(result), "LXD projects").map((url) => {
-			if (!url.startsWith("/1.0/projects/") || url.slice(14).includes("/")) throw new Error("LXD projects is invalid");
+			if (!url.startsWith("/1.0/projects/") || url.slice(14).includes("/"))
+				throw new Error("LXD projects is invalid");
 			return decodeURIComponent(url.slice(14));
 		});
 	}
