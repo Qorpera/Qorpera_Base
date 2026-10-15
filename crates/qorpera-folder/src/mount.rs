@@ -507,6 +507,20 @@ fn name_of(name: &OsStr) -> Result<&str, Errno> {
 	name.to_str().filter(|n| valid_name(n)).ok_or(Errno::EINVAL)
 }
 
+/// In a git object store: `objects` or below it, in a repository's `.git` or a bare one's `<name>.git` (a code area's
+/// `repo.git` too: the rule of 5d's `git::object`, for every repository). Git checks that a hard link there is the
+/// source's own inode, which a new name here never is (RUNTIME-FOLDER-LINKS.md "Git").
+fn git_objects(path: &str) -> bool {
+	let mut rest = path;
+	while let Some((name, below)) = rest.split_once('/') {
+		if name.ends_with(".git") && (below == "objects" || below.starts_with("objects/")) {
+			return true;
+		}
+		rest = below;
+	}
+	false
+}
+
 /// QORPERA_FOLDER_DEBUG=1 logs every listing fetched and every change applied.
 fn debug() -> bool {
 	static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -1086,7 +1100,8 @@ impl Filesystem for FolderFs {
 
 	/// A hard link: a new name with the source's content as this mount shows it, stored once. The two names are never
 	/// joined (RUNTIME-FOLDER-LINKS.md): the new one is an inode of its own with one link, so a save to either never shows
-	/// through the other. Making it is a read of the source, logged before the node is asked.
+	/// through the other. Making it is a read of the source, logged before the node is asked. From or into a git object
+	/// store it is EXDEV, which git and other tools take as "copy instead".
 	fn link(&self, _req: &Request, ino: INodeNo, newparent: INodeNo, newname: &OsStr, reply: ReplyEntry) {
 		let (to, name) = match self.place(newparent, newname) {
 			Ok(p) => p,
@@ -1100,6 +1115,9 @@ impl Filesystem for FolderFs {
 			Ok(p) => p,
 			Err(e) => return reply.error(Errno::from_i32(e)),
 		};
+		if git_objects(&from) || git_objects(&to) {
+			return reply.error(Errno::EXDEV);
+		}
 		if let Err(e) = self.s.link.record_read(&from, Some(&attr.version), attr.authority.as_ref()) {
 			eprintln!("qorpera-folder: could not record a hard link's read: {e}");
 			return reply.error(Errno::EIO);
@@ -1496,5 +1514,28 @@ mod tests {
 		assert!(answered.map.len() <= ANSWERED_MAX / 2 + 1);
 		assert!(answered.map.contains_key(&(1, newest)) && answered.map.contains_key(&(1, "next".into())));
 		assert!(!answered.map.contains_key(&(1, "0".into())));
+	}
+
+	#[test]
+	fn knows_a_git_object_store_in_any_repository() {
+		for path in [
+			"code/app/.git/objects",
+			"code/app/.git/objects/ab/cdef",
+			"code/app/.git/objects/pack/tmp_pack_x",
+			"code/site.git/objects/ab/cdef",
+			"code/qorpera/app/repo.git/objects/ab/cdef",
+		] {
+			assert!(git_objects(path), "{path}");
+		}
+		for path in [
+			"docs/plan.md",
+			"code/app/.git/refs/heads/main",
+			"code/app/.git/objects.lock",
+			"code/app/objects/ab/cdef",
+			"code/app/.github/objects/ab",
+			"code/qorpera/app/repo.git/refs/heads/main",
+		] {
+			assert!(!git_objects(path), "{path}");
+		}
 	}
 }

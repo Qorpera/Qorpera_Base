@@ -922,7 +922,7 @@ describe.skipIf(!program)("durable read proof through a real FUSE mount", () => 
 });
 
 describe.skipIf(!program)("links through a real FUSE mount", () => {
-	it("clones with --local, checks out a link, and makes links from Python and Node, each hard link a read of its source", async () => {
+	it("clones by copying the objects, fails a --local clone with git's own error, checks out a link, and makes links from Python and Node, each hard link a read of its source", async () => {
 		// A repository goes under `code/`: elsewhere the folder takes no `.git`.
 		const m = await loggedMount("computer_shell_command", [folder("code")]);
 		const docs = join(m.company, "docs");
@@ -937,6 +937,7 @@ describe.skipIf(!program)("links through a real FUSE mount", () => {
 		expect((await git(repo, "config", "core.symlinks")).stdout).not.toContain("false");
 		await writeFile(join(repo, "plan.md"), "the plan");
 		await ok(git(repo, "add", "plan.md"));
+		// Each object git writes is a link from its temporary name, which answers EXDEV in an object store: git renames.
 		await ok(git(repo, "commit", "-q", "-m", "plan"));
 		await symlink("plan.md", join(repo, "latest")); // Node's fs.symlink
 		await ok(git(repo, "add", "latest"));
@@ -947,18 +948,13 @@ describe.skipIf(!program)("links through a real FUSE mount", () => {
 		);
 		expect(objects).toHaveLength(6); // Two commits, two trees, the file and the link.
 
-		// A clone from a path hard-links the objects; with --local it fails where a link fails.
-		await ok(git(code, "clone", "-q", "--local", "--template=", "repo", "copy"));
-		const hardLinks = () =>
-			m.requests.flatMap((request) =>
-				request.kind === Kind.link ? [request.body as { from: string; fromBase?: string; to: string }] : [],
-			);
-		expect(
-			hardLinks()
-				.filter((made) => made.to.startsWith("code/copy/.git/objects/"))
-				.map((made) => made.to)
-				.sort(),
-		).toEqual(objects.map((name) => `code/copy/.git/objects/${name}`).sort());
+		// A clone from a path tries to hard-link the objects. The first link answers EXDEV, so git copies them all; with
+		// --local it fails instead, with git's own error, and removes what it made.
+		await ok(git(code, "clone", "-q", "--template=", "repo", "copy"));
+		const local = await git(code, "clone", "-q", "--local", "--template=", "repo", "local");
+		expect(local.code, local.stderr).toBe(128);
+		expect(local.stderr).toMatch(/fatal: failed to create link '.*': Invalid cross-device link/);
+		await expect(lstat(join(code, "local"))).rejects.toMatchObject({ code: "ENOENT" });
 		// The clone checked out the commit holding a mode-120000 entry as a link; a checkout before it removes the link
 		// and one back makes it again.
 		const copy = join(code, "copy");
@@ -985,6 +981,12 @@ describe.skipIf(!program)("links through a real FUSE mount", () => {
 		expect((await lstat(join(docs, "node-copy"))).nlink).toBe(1);
 		expect((await lstat(join(docs, "plan.md"))).nlink).toBe(1);
 
+		// Only the links outside an object store reached the node.
+		const hardLinks = () =>
+			m.requests.flatMap((request) =>
+				request.kind === Kind.link ? [request.body as { from: string; fromBase?: string; to: string }] : [],
+			);
+		expect(hardLinks().map((made) => made.to).sort()).toEqual(["docs/node-copy", "docs/py-copy"]);
 		const reads = (await m.journal()).flatMap((line) => (line.read ? [line.read] : []));
 		// Each hard link is a read of its source at the version it showed, and each readlink a read of the link.
 		for (const made of hardLinks())
