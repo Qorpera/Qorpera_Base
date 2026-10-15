@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Disposable nested-VM proof of option (c) for F3 4d, "Who makes the namespaces".
+"""Disposable nested-VM proof of option (c') for F3 4d, "Who makes the namespaces".
 
 A command's shell (a stand-in for the office's bwrap sandbox, under the office unit's own confinement) holds its
 namespaces. The folder helper's per-command child A, root in the initial user namespace under the helper unit's own
@@ -7,14 +7,25 @@ confinement, pins the command's company tree, moves itself into the shell's cgro
 ipc and cgroup namespaces (and its network namespace for a networked command) with setns, and forks B into the shell's
 pid namespace. B chroots into the shell's root, unshares a mount namespace (and a network namespace for an offline
 command; both owned by the initial user namespace), brings lo up for an offline command, attaches the company tree at
-/run/qorpera-company with fd-based mounts, closes every fd but stdio, sets its capability sets to exactly the shell's,
-drops to the office account, sets no-new-privs, adds a seccomp filter (no CLONE_NEWUSER, no clone3, the office's
-address families only), starts in /company and execs the command. Neither A nor B ever joins the shell's user namespace.
+/run/qorpera-company with fd-based mounts, and closes every fd but stdio and the shell's user-namespace fd. Still root
+in the initial user namespace, it drops to the office account with no capabilities; then it joins the shell's user
+namespace (the office account owns it, so an unprivileged setns is allowed), where it is a member and not the parent,
+so the owner rule gives it nothing. There it drops the bounding set to the shell's, locks SECBIT_NOROOT, sets its
+capabilities to zero, sets no-new-privs, adds a seccomp filter (no CLONE_NEWUSER, no clone3, no setns, the office's
+address families only), starts in /company and execs the command. A is the only process that joins the shell's
+namespaces as root, and it never joins the user namespace; B joins the user namespace only after it is unprivileged.
 
-State only, no attack code (coordinator, 14 Oct). A synthetic protocol-3 node backs a real qorpera-folder mount. The
-shell and the starter run under keys copied from the real office and helper unit files, and a networked command's
-namespace gets the real plumb's veth, address, route and filter. No SQL, model, vsock provenance or production
-request authorization is claimed.
+This closes the owner-rule gap round 1 found (c' amendment, coordinator 15 Oct): under plain (c) the command ran as the
+office account in the initial user namespace, the *parent* of the shell's, so user_namespaces(7) rule 3 gave it every
+capability over the namespaces the shell's user namespace owns -- zero cap sets notwithstanding. (c') makes it a member
+of the shell's user namespace instead, like the shell's own commands, so no rule applies.
+
+State only, no attack code (coordinator, 14 Oct), and no live attempt to change the filter or to join a namespace
+from the command (15 Oct): the setns refusal is shown on the installed program, and live with setns(-1, 0), which
+names no namespace (the filter answers EPERM; without it the kernel answers EBADF). A synthetic protocol-3 node backs a
+real qorpera-folder mount. The shell and the starter run under keys copied from the real office and helper unit
+files, and a networked command's namespace gets the real plumb's veth, address, route and filter. No SQL, model,
+vsock provenance or production request authorization is claimed.
 """
 import os
 import sys
@@ -33,6 +44,7 @@ if sys.argv[1:2] == ["command"]:
 import ctypes
 import errno
 import fcntl
+import hashlib
 import json
 from pathlib import Path
 import pwd
@@ -51,10 +63,17 @@ LIBC = ctypes.CDLL(None, use_errno=True)
 PR_SET_DUMPABLE = 4
 PR_SET_KEEPCAPS = 8
 PR_CAPBSET_DROP = 24
+PR_GET_SECUREBITS = 27
+PR_SET_SECUREBITS = 28
 PR_SET_NO_NEW_PRIVS = 38
 PR_CAP_AMBIENT = 47
-PR_CAP_AMBIENT_RAISE = 2
 PR_CAP_AMBIENT_CLEAR_ALL = 4
+# SECBIT_NOROOT | SECBIT_NOROOT_LOCKED: a uid-0 exec gains no capabilities, and the bit can't be cleared. Setting it
+# needs CAP_SETPCAP, so B sets it while it still holds that capability, before capset to zero (the coordinator's (c')
+# order says the NOROOT bits then capset; the kernel forces this sub-order).
+SECBIT_NOROOT = 1 << 0
+SECBIT_NOROOT_LOCKED = 1 << 1
+SECUREBITS_LOCKED_NOROOT = SECBIT_NOROOT | SECBIT_NOROOT_LOCKED
 CLONE_NEWNS = 0x00020000
 CLONE_NEWUSER = 0x10000000
 CLONE_NEWNET = 0x40000000
@@ -70,6 +89,7 @@ MS_REC = 0x4000
 MS_PRIVATE = 0x40000
 MS_SLAVE = 0x80000
 NS_GET_USERNS = 0xB701
+NS_GET_PARENT = 0xB702
 NS_GET_OWNER_UID = 0xB704
 SIOCGIFFLAGS = 0x8913
 SIOCSIFFLAGS = 0x8914
@@ -159,10 +179,15 @@ def ns_links(pid="self"):
 
 def ns_owner(pid, name):
     """Who owns a process's namespace: the owning user namespace (NS_GET_USERNS) and that user namespace's owner uid
-    (NS_GET_OWNER_UID, valid only on a user-namespace fd)."""
+    (NS_GET_OWNER_UID, valid only on a user-namespace fd). NS_GET_USERNS answers EPERM when the owner is neither the
+    caller's own user namespace nor a descendant of it, so from inside a nested user namespace this records the errno
+    instead; the owner reads that back (c') are all made from the guest's initial user namespace, where they resolve."""
     fd = os.open(f"/proc/{pid}/ns/{name}", os.O_RDONLY)
     try:
-        owner = fcntl.ioctl(fd, NS_GET_USERNS)
+        try:
+            owner = fcntl.ioctl(fd, NS_GET_USERNS)
+        except OSError as error:
+            return {"error": errno.errorcode.get(error.errno, error.errno)}
         try:
             uid = struct.unpack("I", fcntl.ioctl(owner, NS_GET_OWNER_UID, bytes(4)))[0]
             return {"userns": f"user:[{os.fstat(owner).st_ino}]", "uid": uid}
@@ -174,6 +199,38 @@ def ns_owner(pid, name):
 
 def ns_owners(pid="self"):
     return {name: ns_owner(pid, name) for name in ("mnt", "pid", "net", "uts", "ipc", "cgroup")}
+
+
+def userns_chain(pid):
+    """A process's own user namespace and every ancestor up to the caller's, as `user:[inode]` strings, by walking
+    NS_GET_PARENT until it answers EPERM (the caller's own user namespace is the top it may see). Outside only: the
+    owner rule holds when the user namespace that owns one of the command's namespaces is in this chain -- the command
+    is a member of it or a descendant, never its parent (where rule 3 would hand the command every capability)."""
+    fd = os.open(f"/proc/{pid}/ns/user", os.O_RDONLY)
+    chain = []
+    try:
+        while True:
+            chain.append(f"user:[{os.fstat(fd).st_ino}]")
+            try:
+                parent = fcntl.ioctl(fd, NS_GET_PARENT)
+            except OSError as error:
+                if error.errno in (errno.EPERM, errno.ENOENT):
+                    break
+                raise
+            os.close(fd)
+            fd = parent
+    finally:
+        os.close(fd)
+    return chain
+
+
+def get_securebits():
+    ctypes.set_errno(0)
+    value = LIBC.prctl(PR_GET_SECUREBITS, 0, 0, 0, 0)
+    if value < 0:
+        err = ctypes.get_errno()
+        raise OSError(err, f"PR_GET_SECUREBITS: {os.strerror(err)}")
+    return value
 
 
 def propagation(mountinfo, point):
@@ -386,10 +443,21 @@ def unit_gone(unit):
 SHELL_SCRIPT = r"""
 set -eu
 printf 'shell\n' > /tmp/shell-marker
+/usr/bin/python3 /qorpera-probe.py shell-state
 printf 'ready\n' > /qorpera-share/shell-ready.json.tmp
 mv /qorpera-share/shell-ready.json.tmp /qorpera-share/shell-ready.json
 while :; do /usr/bin/sleep 1; done
 """
+
+
+def shell_state_main():
+    """One of the shell's own commands records what such a command is: the target a command the helper starts must
+    equal (its user namespace, ids, maps, capabilities and securebits)."""
+    emit(Path(SHARE) / "shell-state.json", {
+        "uid": list(os.getresuid()), "gid": list(os.getresgid()), "groups": os.getgroups(),
+        "uidMap": Path("/proc/self/uid_map").read_text().split("\n")[:-1],
+        "gidMap": Path("/proc/self/gid_map").read_text().split("\n")[:-1],
+        "ns": ns_links(), "caps": caps_of(), "securebits": get_securebits()})
 
 
 def start_shell(directory, share, office_unit):
@@ -415,7 +483,8 @@ def start_shell(directory, share, office_unit):
                 except (OSError, KeyError):
                     continue
         return None
-    return {"unit": "qorpera-cmdns-shell", "leader": leader, "pid": eventually(shell_init, 15), "properties": properties}
+    return {"unit": "qorpera-cmdns-shell", "leader": leader, "pid": eventually(shell_init, 15), "properties": properties,
+            "state": json.loads((share / "shell-state.json").read_text())}
 
 
 def plumb_networked(shell_pid):
@@ -448,7 +517,12 @@ def command_main(mode):
     s = status()
     record = {"execFds": EXEC_FDS, "execFdTargets": EXEC_FD_TARGETS, "pid": os.getpid(), "setsidChild": child,
               "uid": list(os.getresuid()), "gid": list(os.getresgid()), "groups": os.getgroups(),
-              "caps": caps_of(), "seccomp": s["Seccomp"], "seccompFilters": s.get("Seccomp_filters"),
+              "uidMap": Path("/proc/self/uid_map").read_text().split("\n")[:-1],
+              "gidMap": Path("/proc/self/gid_map").read_text().split("\n")[:-1],
+              "caps": caps_of(), "securebits": get_securebits(),
+              "seccomp": s["Seccomp"], "seccompFilters": s.get("Seccomp_filters"),
+              # Read from inside, the owners answer EPERM: none of them is the command's user namespace or one below
+              # it. The owner rule is checked on the probe's reading from the initial user namespace.
               "ns": ns_links(), "nsOwner": ns_owners(),
               "lsm": Path("/proc/self/attr/current").read_text().strip(),
               "cwd": os.readlink("/proc/self/cwd"),
@@ -461,6 +535,8 @@ def command_main(mode):
     record["tmpDevIno"] = list(os.stat("/tmp")[1:3][::-1])
     record["unshareNewUser"] = errno_of(lambda: syscall("unshare", CLONE_NEWUSER))
     record["clone3"] = errno_of(lambda: syscall("clone3", 0, 0))
+    # No namespace is named: the filter answers EPERM by the call's number, and the kernel would answer EBADF.
+    record["setnsBadFd"] = errno_of(lambda: syscall("setns", ctypes.c_long(-1), 0))
     record["vsock"] = errno_of(lambda: socket.socket(AF_VSOCK, socket.SOCK_STREAM))
     record["interfaces"] = sorted(name for _, name in socket.if_nameindex())
     record["loopback"] = loopback_works()
@@ -511,7 +587,7 @@ def udp_send(address, port):
         sock.send(b"x")
 
 
-# --- The (c) starter: the helper's per-command child A and its child B. ---
+# --- The (c') starter: the helper's per-command child A and its child B. ---
 def cap_masks(pid):
     s = status(pid)
     return {key: int(s[key], 16) for key in CAP_KEYS}
@@ -526,7 +602,8 @@ def capset_v3(effective, permitted, inheritable):
 
 
 def set_bounding_set(mask):
-    """Drop every bounding-set bit not in mask. Needs CAP_SETPCAP effective, which the drop itself doesn't remove."""
+    """Drop every bounding-set bit not in mask. Needs CAP_SETPCAP effective in the current user namespace, which the
+    drop itself doesn't remove."""
     for cap in range(64):
         if not (mask >> cap) & 1:
             ctypes.set_errno(0)
@@ -534,17 +611,22 @@ def set_bounding_set(mask):
                 raise OSError(ctypes.get_errno(), f"capbset drop {cap}")
 
 
-def set_ambient_set(mask):
+def clear_ambient():
     checked(LIBC.prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0), "ambient clear")
-    for cap in range(64):
-        if (mask >> cap) & 1:
-            checked(LIBC.prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, cap, 0, 0), f"ambient raise {cap}")
+
+
+def program_digest(program):
+    """The installed filter's identity: B reports it, and the check compares it with the program the selftest and the
+    setns check interpret."""
+    return hashlib.sha256(b"".join(struct.pack("<HBBI", *row) for row in program)).hexdigest()
 
 
 def seccomp_command_program(families):
-    """B's pre-exec classic-BPF filter: unshare/clone with CLONE_NEWUSER -> EPERM, clone3 -> ENOSYS (so callers fall back
-    to clone, which the flag check covers), socket() outside `families` -> EAFNOSUPPORT, any other architecture or an
-    x32 number -> ENOSYS, everything else allowed. Returns (code, jt, jf, k) rows, with jump offsets resolved from labels."""
+    """B's pre-exec classic-BPF filter: setns -> EPERM outright (defense in depth, c' amendment 15 Oct -- the command
+    has no business joining a namespace by any fd, so the filter refuses every setns regardless of its fd's type or a
+    pidfd), unshare/clone with CLONE_NEWUSER -> EPERM, clone3 -> ENOSYS (so callers fall back to clone, which the flag
+    check covers), socket() outside `families` -> EAFNOSUPPORT, any other architecture or an x32 number -> ENOSYS,
+    everything else allowed. Returns (code, jt, jf, k) rows, with jump offsets resolved from labels."""
     BPF_LD_W_ABS, BPF_JEQ_K, BPF_JGE_K, BPF_JSET_K, BPF_RET_K = 0x20, 0x15, 0x35, 0x45, 0x06
     ALLOW, ERRNO = 0x7FFF0000, 0x00050000
     ops = []
@@ -559,6 +641,7 @@ def seccomp_command_program(families):
     load(0)                                                   # syscall number
     jump(BPF_JGE_K, X32_SYSCALL_BIT, "enosys", None)          # x32 numbers would slip past the checks below
     jump(BPF_JEQ_K, NR["clone3"], "enosys", None)
+    jump(BPF_JEQ_K, NR["setns"], "eperm", None)               # never join another namespace
     jump(BPF_JEQ_K, NR["unshare"], "flags", None)
     jump(BPF_JEQ_K, NR["clone"], "flags", None)
     jump(BPF_JEQ_K, NR["socket"], None, "allow")
@@ -568,7 +651,8 @@ def seccomp_command_program(families):
     ret(ERRNO | errno.EAFNOSUPPORT)
     label("flags")
     load(16)                                                  # unshare/clone: args[0] low, the flags
-    jump(BPF_JSET_K, CLONE_NEWUSER, None, "allow")
+    jump(BPF_JSET_K, CLONE_NEWUSER, "eperm", "allow")
+    label("eperm")
     ret(ERRNO | errno.EPERM)
     label("enosys")
     ret(ERRNO | errno.ENOSYS)
@@ -648,6 +732,8 @@ def starter_main(shell, mode, control, tree):
         root_fd = os.open(f"/proc/{shell}/root", os.O_PATH | os.O_DIRECTORY)
         names = ["mnt", "pid", "uts", "ipc", "cgroup"] + (["net"] if networked else [])
         ns_fds = {name: os.open(f"/proc/{shell}/ns/{name}", os.O_RDONLY) for name in names}
+        # The shell's user namespace, for B to join once it is unprivileged. A never joins it.
+        user_fd = os.open(f"/proc/{shell}/ns/user", os.O_RDONLY)
         shell_caps = cap_masks(shell)
         cgroup = _cgroup_path(shell)
         before = {"pid": os.getpid(), "user": os.readlink("/proc/self/ns/user"), "uid": list(os.getresuid()), "caps": caps_of()}
@@ -657,14 +743,17 @@ def starter_main(shell, mode, control, tree):
         for name in names:
             checked(LIBC.setns(ns_fds[name], 0), f"setns {name}")
             os.close(ns_fds[name])
+        # B is forked from a single-threaded A without CLONE_FS, so it has one thread and its own fs_struct, as
+        # joining a user namespace requires (userns_install answers EINVAL otherwise).
         b_pid = os.fork()
         if b_pid:
             os.close(writer)
             os.close(tree_fd)
             os.close(root_fd)
+            os.close(user_fd)
             os.waitpid(b_pid, 0)
             os._exit(0)
-        run_b(networked, tree_fd, root_fd, writer, office_uid, office_gid, shell_caps, before)
+        run_b(networked, tree_fd, root_fd, user_fd, writer, office_uid, office_gid, shell_caps, before)
     except BaseException as error:
         try:
             os.write(writer, json.dumps({"error": f"A/B: {error!r}"}).encode())
@@ -705,8 +794,19 @@ def open_in_root(path, root="/"):
     return fd
 
 
-def run_b(networked, tree_fd, root_fd, writer, office_uid, office_gid, shell_caps, before):
-    """B: in the shell's pid namespace (A's setns applies to its children), still root in the initial user namespace."""
+def close_all_but(keep):
+    """Close every fd from 3 up except those in keep."""
+    low = 3
+    for fd in sorted(keep):
+        if fd > low:
+            syscall("close_range", low, fd - 1, 0)
+        low = max(low, fd + 1)
+    syscall("close_range", low, ctypes.c_uint(0xFFFFFFFF), 0)
+
+
+def run_b(networked, tree_fd, root_fd, user_fd, writer, office_uid, office_gid, shell_caps, before):
+    """B: in the shell's pid namespace (A's setns applies to its children), root in the initial user namespace until
+    it drops to the office account, and only then a member of the shell's user namespace."""
     os.fchdir(root_fd)
     os.chroot(".")
     os.chdir("/")
@@ -725,22 +825,38 @@ def run_b(networked, tree_fd, root_fd, writer, office_uid, office_gid, shell_cap
     syscall("mount_setattr", tree_fd, b"", AT_EMPTY_PATH | AT_RECURSIVE, attr, ctypes.c_size_t(len(attr)))
     for fd in (tree_fd, target):
         os.close(fd)
-    # Only stdio and the report pipe stay open, and the pipe closes before exec.
-    if writer > 3:
-        syscall("close_range", 3, writer - 1, 0)
-    syscall("close_range", writer + 1, ctypes.c_uint(0xFFFFFFFF), 0)
-    # Exactly the shell's capability sets, in an order the kernel accepts: the bounding set while CAP_SETPCAP is still
-    # effective, then the office account's ids (keeping the permitted set across them), then the rest.
-    set_bounding_set(shell_caps["CapBnd"])
-    checked(LIBC.prctl(PR_SET_KEEPCAPS, 1, 0, 0, 0), "keepcaps")
+    # Only stdio, the report pipe and the shell's user-namespace fd stay open; both close before exec.
+    close_all_but({writer, user_fd})
+    # Still root in the initial user namespace: the office account's ids with no capabilities. With the ambient set
+    # and keep-caps cleared, the uid change empties the permitted and effective sets.
+    clear_ambient()
+    checked(LIBC.prctl(PR_SET_KEEPCAPS, 0, 0, 0, 0), "keepcaps")
     os.setgroups([])
     os.setresgid(office_gid, office_gid, office_gid)
     os.setresuid(office_uid, office_uid, office_uid)
-    capset_v3(shell_caps["CapEff"], shell_caps["CapPrm"], shell_caps["CapInh"])
-    set_ambient_set(shell_caps["CapAmb"])
+    after_drop = {"user": os.readlink("/proc/self/ns/user"), "uid": list(os.getresuid()), "gid": list(os.getresgid()),
+                  "caps": caps_of()}
+    # Join the shell's user namespace as a member. The office account owns bwrap's outer user namespace, whose parent
+    # is ours, so the kernel allows the join with no capabilities. The join hands B a full set that counts only in the
+    # shell's user namespace and below, where nothing of the command's is owned.
+    checked(LIBC.setns(user_fd, CLONE_NEWUSER), "setns user")
+    os.close(user_fd)
+    inside = {"user": os.readlink("/proc/self/ns/user"), "uid": list(os.getresuid()), "gid": list(os.getresgid())}
+    # The office account must not be root (or unmapped) in there: a later exec as uid 0 would get its capabilities back.
+    if {*inside["uid"], *inside["gid"]} & {0, 65534}:
+        raise RuntimeError(f"the office account is {inside['uid']}/{inside['gid']} in the shell's user namespace")
+    # In there: the shell's bounding set, no ambient set, SECBIT_NOROOT locked (it needs CAP_SETPCAP, so it comes before
+    # the capset), then no capabilities at all, no-new-privs and the filter.
+    set_bounding_set(shell_caps["CapBnd"])
+    clear_ambient()
+    checked(LIBC.prctl(PR_SET_SECUREBITS, SECUREBITS_LOCKED_NOROOT, 0, 0, 0), "securebits")
+    capset_v3(0, 0, 0)
     checked(LIBC.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), "no_new_privs")
-    install_seccomp(seccomp_command_program(OFFICE_FAMILIES))
-    os.write(writer, json.dumps({"bShellPid": os.getpid(), "shellCaps": {k: f"{v:016x}" for k, v in shell_caps.items()}, "aBefore": before}).encode())
+    program = seccomp_command_program(OFFICE_FAMILIES)
+    install_seccomp(program)
+    os.write(writer, json.dumps({"bShellPid": os.getpid(), "shellCaps": {k: f"{v:016x}" for k, v in shell_caps.items()},
+                                 "aBefore": before, "bAfterDrop": after_drop, "bInside": inside,
+                                 "filterSha256": program_digest(program)}).encode())
     os.close(writer)
     os.chdir("/company")
     os.execve("/usr/bin/python3", ["/usr/bin/python3", PROBE, "command", "networked" if networked else "offline"],
@@ -842,7 +958,8 @@ def probe(directory, mode):
             plumb_networked(s)
         tmp = os.stat(f"/proc/{s}/root/tmp")
         record["shellOutside"] = {"pid": s, "uid": status(s)["Uid"].split(), "caps": caps_of(s), "ns": ns_links(s),
-                                  "nsOwner": ns_owners(s), "cgroup": _cgroup_path(s), "tmpDevIno": [tmp.st_dev, tmp.st_ino],
+                                  "nsOwner": ns_owners(s), "usernsChain": userns_chain(s), "cgroup": _cgroup_path(s),
+                                  "tmpDevIno": [tmp.st_dev, tmp.st_ino],
                                   "lsm": Path(f"/proc/{s}/attr/current").read_text().strip()}
         record["helperPropagation"] = propagation(Path("/proc/self/mountinfo").read_text(), str(mount))
 
@@ -852,8 +969,11 @@ def probe(directory, mode):
         record["command"] = await_record(share, "command", "report")
         a_pid, top_pid = starter["aPid"], starter["topPid"]
         setsid = children_of(command)
+        # From the initial user namespace, where every owner resolves (NS_GET_USERNS, NS_GET_OWNER_UID, NS_GET_PARENT).
         record["commandOutside"] = {"pid": command, "cgroup": _cgroup_path(command), "nspid": status(command)["NSpid"].split(),
-                                    "ppid": int(status(command)["PPid"]), "setsidChildren": setsid}
+                                    "ppid": int(status(command)["PPid"]), "setsidChildren": setsid,
+                                    "user": os.readlink(f"/proc/{command}/ns/user"), "nsOwner": ns_owners(command),
+                                    "usernsChain": userns_chain(command)}
         record["starterA"] = {"pid": a_pid, "user": os.readlink(f"/proc/{a_pid}/ns/user"), "uid": status(a_pid)["Uid"].split(),
                               "caps": caps_of(a_pid), "cgroup": _cgroup_path(a_pid), "ns": ns_links(a_pid)}
         record["starterTop"] = {"pid": top_pid, "cgroup": _cgroup_path(top_pid)}
@@ -914,32 +1034,61 @@ def probe(directory, mode):
         print(json.dumps(record))
 
 
+COMMAND_NAMESPACES = ("mnt", "pid", "net", "uts", "ipc", "cgroup")
+
+
 def checks_for(record, node_errors):
     c, so, co = record["command"], record["shellOutside"], record["commandOutside"]
     a, st, office = record["starterA"], record["starter"], record["office"]
+    # One of the shell's own commands, as it recorded itself: what a command the helper starts must equal.
+    ss = record["shell"]["state"]
     initial = record["initialUser"]
     initial_owner = {"userns": initial, "uid": 0}
     helper_shared = [f for f in record["helperPropagation"] or [] if f.startswith("shared:")]
     company = c["propagation"].get(COMPANY_PARENT) or []
     restart, stop = record["afterHelperRestart"], record["afterOfficeStop"]
+    chain, dropped = co["usernsChain"], st["bAfterDrop"]
+    program = seccomp_command_program(OFFICE_FAMILIES)
     checks = {
         # The coordinator's four state checks (14 Oct): the shell's capabilities, the shell's cgroup and both stops,
         # no new user namespace and no clone3, and a working loopback (with the network checks below).
-        "capsEqualShell": all(c["caps"][key] == so["caps"][key] for key in ("CapBnd", "CapEff", "CapPrm", "CapAmb", "NoNewPrivs")),
+        "capsEqualShell": all(c["caps"][key] == ss["caps"][key] for key in ("CapBnd", "CapEff", "CapPrm", "CapAmb", "NoNewPrivs")),
         "cgroupEqualsShell": co["cgroup"] == so["cgroup"] == a["cgroup"],
         "officeStopKilledCommand": stop == {"command": False, "setsidChild": False, "starterA": False},
         "helperRestartLeftCommand": restart["command"] is True and restart["setsidChild"] is True and restart["top"] is False,
         "newUserRefused": c["unshareNewUser"] == errno.EPERM,
         "clone3Refused": c["clone3"] == errno.ENOSYS,
         "loopbackWorks": c["loopback"] is True,
+        # The (c') checks (15 Oct). The command is in the shell's own user namespace, with the ids and maps of the
+        # shell's commands, and the office account is not root there.
+        "commandInShellUserns": c["ns"]["user"] == co["user"] == ss["ns"]["user"] == so["ns"]["user"] != initial,
+        "idsEqualShellCommand": c["uid"] == ss["uid"] and c["gid"] == ss["gid"] and not {*c["uid"], *c["gid"]} & {0, 65534},
+        "uidGidMapEqualShell": c["uidMap"] == ss["uidMap"] and c["gidMap"] == ss["gidMap"] and bool(c["uidMap"]),
+        # A uid-0 exec gains nothing, and the bit can't be cleared.
+        "securebitsNoRootLocked": c["securebits"] == SECUREBITS_LOCKED_NOROOT,
+        # The installed filter is the program interpreted here, and it answers setns EPERM by its number alone, before
+        # any argument: a namespace fd of any type (0 included) and a pidfd alike.
+        "setnsRefusedByFilter": st["filterSha256"] == program_digest(program) and all(
+            run_bpf(program, AUDIT_ARCH_X86_64, NR["setns"], arg) == 0x00050000 | errno.EPERM
+            for arg in (0, 3, CLONE_NEWUSER, CLONE_NEWNET, CLONE_NEWNS)),
+        # And it is in the process that runs the command: its own setns(-1, 0), which names no namespace, gets the
+        # filter's EPERM, not the kernel's EBADF.
+        "setnsRefusedLive": c["setnsBadFd"] == errno.EPERM,
+        # The owner rule (user_namespaces(7)): the command is a member of every user namespace that owns one of its
+        # namespaces (or of one below it), never its parent. Read from the initial user namespace: the command's chain
+        # runs from its own user namespace up to the initial one, and every owner is on it.
+        "ownerRuleNeverParent": bool(chain) and chain[0] == co["user"] and chain[-1] == initial
+                                and all(co["nsOwner"][name].get("userns") in chain for name in COMMAND_NAMESPACES),
+        # B held no capability when it joined: the office account's ids in the initial user namespace, nothing permitted.
+        "unprivilegedBeforeJoin": dropped["user"] == initial and dropped["uid"] == [office["uid"]] * 3
+                                  and all(dropped["caps"][key] == "0" * 16 for key in ("CapPrm", "CapEff", "CapAmb")),
         # Ids, namespace owners and the fds at exec.
-        "capInhEqualShell": c["caps"]["CapInh"] == so["caps"]["CapInh"],
+        "capInhEqualShell": c["caps"]["CapInh"] == ss["caps"]["CapInh"],
         "seccompFiltered": c["seccomp"] == "2",
         "commandIsOffice": c["uid"] == [office["uid"]] * 3 and c["gid"] == [office["gid"]] * 3 and c["groups"] == [],
-        "commandInInitialUserns": c["ns"]["user"] == initial,
         "starterRootInInitialUserns": a["user"] == initial and a["uid"] == ["0"] * 4,
         "mountNsIsCommandsOwn": c["ns"]["mnt"] != so["ns"]["mnt"],
-        "mountNsOwnedByInitialUserns": c["nsOwner"]["mnt"] == initial_owner,
+        "mountNsOwnedByInitialUserns": co["nsOwner"]["mnt"] == initial_owner,
         "sharesShellPidUtsIpcCgroup": all(c["ns"][name] == so["ns"][name] for name in ("pid", "uts", "ipc", "cgroup")),
         "inShellPidNs": len(co["nspid"]) == 2 and int(co["nspid"][-1]) == c["pid"] == st["bShellPid"],
         "parentIsStarterA": co["ppid"] == st["aPid"],
@@ -964,7 +1113,7 @@ def checks_for(record, node_errors):
     else:
         checks.update({
             "netNsIsCommandsOwn": c["ns"]["net"] != so["ns"]["net"],
-            "netNsOwnedByInitialUserns": c["nsOwner"]["net"] == initial_owner,
+            "netNsOwnedByInitialUserns": co["nsOwner"]["net"] == initial_owner,
             "onlyLoopback": c["interfaces"] == ["lo"],
             "noRoute": c["outside"] == errno.ENETUNREACH,
         })
@@ -1001,31 +1150,46 @@ def run_bpf(program, arch, nr, arg0):
 
 
 def synthetic_record(mode):
-    initial = "user:[4026531837]"
-    shell_owner = {"userns": "user:[4026532301]", "uid": 990}
-    zero = "0000000000000000"
+    # bwrap's --disable-userns makes two user namespaces: the outer one (owned by the office account, a child of the
+    # initial one) owns the shell's other namespaces, and the shell itself runs in the inner one, mapped 990 -> 990.
+    initial, outer, inner = "user:[4026531837]", "user:[4026532300]", "user:[4026532301]"
+    outer_owner, initial_owner = {"userns": outer, "uid": 990}, {"userns": initial, "uid": 0}
+    zero = "0" * 16
     caps = {"CapInh": zero, "CapPrm": zero, "CapEff": zero, "CapBnd": zero, "CapAmb": zero, "NoNewPrivs": "1"}
-    shell_ns = {"user": "user:[4026532301]", "mnt": "mnt:[4026532302]", "pid": "pid:[4026532303]", "net": "net:[4026532304]",
+    shell_ns = {"user": inner, "mnt": "mnt:[4026532302]", "pid": "pid:[4026532303]", "net": "net:[4026532304]",
                 "uts": "uts:[4026532305]", "ipc": "ipc:[4026532306]", "cgroup": "cgroup:[4026532307]"}
-    owners = {name: shell_owner for name in ("mnt", "pid", "net", "uts", "ipc", "cgroup")}
-    command_ns = {**shell_ns, "user": initial, "mnt": "mnt:[4026532310]"}
-    command_owners = {**owners, "mnt": {"userns": initial, "uid": 0}}
+    owners = {name: outer_owner for name in COMMAND_NAMESPACES}
+    command_ns = {**shell_ns, "mnt": "mnt:[4026532310]"}
+    command_owners = {**owners, "mnt": initial_owner}
+    maps = ["       990        990          1"]
     command = {"execFds": [0, 1, 2, 3], "pid": 7, "uid": [990] * 3, "gid": [990] * 3, "groups": [], "caps": dict(caps),
-               "seccomp": "2", "ns": command_ns, "nsOwner": command_owners, "cwd": f"{COMPANY_PARENT}/company",
+               "uidMap": maps, "gidMap": maps, "securebits": SECUREBITS_LOCKED_NOROOT,
+               "seccomp": "2", "ns": command_ns, "nsOwner": {name: {"error": "EPERM"} for name in COMMAND_NAMESPACES},
+               "cwd": f"{COMPANY_PARENT}/company",
                "propagation": {COMPANY_PARENT: ["master:41"], f"{COMPANY_PARENT}/company": ["master:42"]},
                "companyRead": "written-by-command", "tmpMarker": "shell", "tmpDevIno": [40, 1],
-               "unshareNewUser": errno.EPERM, "clone3": errno.ENOSYS, "vsock": errno.EAFNOSUPPORT, "loopback": True}
+               "unshareNewUser": errno.EPERM, "clone3": errno.ENOSYS, "setnsBadFd": errno.EPERM, "vsock": errno.EAFNOSUPPORT,
+               "loopback": True}
     if mode == "networked":
         command.update({"interfaces": ["eth0", "lo"], "blocked": errno.EPERM, "dns": 0})
     else:
         command_ns["net"] = "net:[4026532311]"
-        command_owners["net"] = {"userns": initial, "uid": 0}
+        command_owners["net"] = initial_owner
         command.update({"interfaces": ["lo"], "outside": errno.ENETUNREACH})
     cgroup = "/system.slice/qorpera-cmdns-shell.service"
+    shell_state = {"uid": [990] * 3, "gid": [990] * 3, "groups": [65534], "uidMap": maps, "gidMap": maps,
+                   "ns": dict(shell_ns), "caps": dict(caps), "securebits": 0}
+    dropped = {"user": initial, "uid": [990] * 3, "gid": [990] * 3, "caps": {**caps, "CapBnd": "00000000002010c3"}}
     record = {"mode": mode, "office": {"uid": 990, "gid": 990}, "initialUser": initial, "command": command,
-              "shellOutside": {"caps": dict(caps), "ns": shell_ns, "nsOwner": owners, "cgroup": cgroup, "tmpDevIno": [40, 1]},
-              "helperPropagation": ["shared:41"], "starter": {"aPid": 300, "topPid": 299, "bShellPid": 7},
-              "commandOutside": {"cgroup": cgroup, "nspid": ["301", "7"], "ppid": 300, "setsidChildren": [302]},
+              "shell": {"pid": 200, "state": shell_state},
+              "shellOutside": {"caps": dict(caps), "ns": shell_ns, "nsOwner": owners, "usernsChain": [inner, outer, initial],
+                               "cgroup": cgroup, "tmpDevIno": [40, 1]},
+              "helperPropagation": ["shared:41"],
+              "starter": {"aPid": 300, "topPid": 299, "bShellPid": 7, "bAfterDrop": dropped,
+                          "bInside": {"user": inner, "uid": [990] * 3, "gid": [990] * 3},
+                          "filterSha256": program_digest(seccomp_command_program(OFFICE_FAMILIES))},
+              "commandOutside": {"cgroup": cgroup, "nspid": ["301", "7"], "ppid": 300, "setsidChildren": [302],
+                                 "user": inner, "nsOwner": command_owners, "usernsChain": [inner, outer, initial]},
               "starterA": {"user": initial, "uid": ["0"] * 4, "cgroup": cgroup},
               "remount": {"list": ["after.txt", "before.txt", "from-command.txt"]}, "nodeHasCommandWrite": True,
               "afterHelperRestart": {"command": True, "setsidChild": True, "starterA": True, "top": False},
@@ -1053,6 +1217,10 @@ def selftest():
     assert run_bpf(program, x86, NR["unshare"], CLONE_NEWNS) == allow
     assert run_bpf(program, x86, NR["clone"], CLONE_NEWUSER | 17) == eperm
     assert run_bpf(program, x86, NR["clone"], 17) == allow
+    # setns by its number alone: whatever the fd (a namespace's of any type, or a pidfd) and flags.
+    for arg in (0, 3, CLONE_NEWUSER, CLONE_NEWNET, CLONE_NEWNS):
+        assert run_bpf(program, x86, NR["setns"], arg) == eperm
+    assert run_bpf(program, x86, NR["setns"] | X32_SYSCALL_BIT, 0) == enosys
     for family in OFFICE_FAMILIES:
         assert run_bpf(program, x86, NR["socket"], int(family)) == allow
     for family in (AF_VSOCK, AF_PACKET, 0):
@@ -1101,13 +1269,23 @@ def selftest():
             "newUserRefused": lambda r: r["command"].update(unshareNewUser=0),
             "clone3Refused": lambda r: r["command"].update(clone3=errno.EPERM),
             "loopbackWorks": lambda r: r["command"].update(loopback=False),
+            "commandInShellUserns": lambda r: r["command"]["ns"].update(user="user:[4026531837]"),
+            # Equal to the shell's commands is not enough: never root in there.
+            "idsEqualShellCommand": lambda r: (r["command"].update(uid=[0] * 3), r["shell"]["state"].update(uid=[0] * 3)),
+            "uidGidMapEqualShell": lambda r: r["command"].update(gidMap=["         0        990          1"]),
+            "securebitsNoRootLocked": lambda r: r["command"].update(securebits=SECBIT_NOROOT),
+            "setnsRefusedByFilter": lambda r: r["starter"].update(filterSha256="0" * 64),
+            "setnsRefusedLive": lambda r: r["command"].update(setnsBadFd=errno.EBADF),
+            # Plain (c), the gap this check is for: the command in the initial user namespace, the parent of the user
+            # namespace that owns the shell's pid, uts, ipc and cgroup namespaces.
+            "ownerRuleNeverParent": lambda r: r["commandOutside"].update(user="user:[4026531837]", usernsChain=["user:[4026531837]"]),
+            "unprivilegedBeforeJoin": lambda r: r["starter"]["bAfterDrop"]["caps"].update(CapEff="0000000000200000"),
             "capInhEqualShell": lambda r: r["command"]["caps"].update(CapInh="0000000000000001"),
             "seccompFiltered": lambda r: r["command"].update(seccomp="0"),
             "commandIsOffice": lambda r: r["command"].update(groups=[990]),
-            "commandInInitialUserns": lambda r: r["command"]["ns"].update(user="user:[4026532301]"),
             "starterRootInInitialUserns": lambda r: r["starterA"].update(user="user:[4026532301]"),
             "mountNsIsCommandsOwn": lambda r: r["command"]["ns"].update(mnt="mnt:[4026532302]"),
-            "mountNsOwnedByInitialUserns": lambda r: r["command"]["nsOwner"].update(mnt={"userns": "user:[4026532301]", "uid": 990}),
+            "mountNsOwnedByInitialUserns": lambda r: r["commandOutside"]["nsOwner"].update(mnt={"userns": "user:[4026532300]", "uid": 990}),
             "sharesShellPidUtsIpcCgroup": lambda r: r["command"]["ns"].update(ipc="ipc:[1]"),
             "inShellPidNs": lambda r: r["commandOutside"].update(nspid=["301"]),
             "parentIsStarterA": lambda r: r["commandOutside"].update(ppid=1),
@@ -1130,7 +1308,7 @@ def selftest():
         else:
             flips.update({
                 "netNsIsCommandsOwn": lambda r: r["command"]["ns"].update(net="net:[4026532304]"),
-                "netNsOwnedByInitialUserns": lambda r: r["command"]["nsOwner"].update(net={"userns": "user:[4026532301]", "uid": 990}),
+                "netNsOwnedByInitialUserns": lambda r: r["commandOutside"]["nsOwner"].update(net={"userns": "user:[4026532300]", "uid": 990}),
                 "onlyLoopback": lambda r: r["command"].update(interfaces=["eth0", "lo"]),
                 "noRoute": lambda r: r["command"].update(outside=0),
             })
@@ -1199,6 +1377,8 @@ if __name__ == "__main__":
         except Exception as error:
             emit(Path(SHARE) / "command-done.json", {"error": repr(error)})
             raise
+    elif action == "shell-state":
+        shell_state_main()
     elif action == "selftest":
         selftest()
     else:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# F3 4d-3: proof of option (c) for "Who makes the namespaces" (RUNTIME-FOLDER-COMPANY-MACHINES.md) in a disposable
+# F3 4d-3: proof of option (c') for "Who makes the namespaces" (RUNTIME-FOLDER-COMPANY-MACHINES.md) in a disposable
 # nested VM with no NIC, on a prepared substrate like #1007's, not a built office image. The office and helper unit files
 # are copied as they are; scripts/fixtures/office-command-namespaces.py runs one offline and one networked command.
 #
@@ -155,10 +155,10 @@ jq -n --arg image "$fingerprint" --arg uuid "$uuid" --arg folder "$folder_sha" \
 	--arg probe "$(sha "$probe")" --arg office "$(sha "$office")" --arg helper "$(sha "$helper")" \
 	--arg kernel "$(lx exec "$vm" -- uname -r)" --arg bwrap "$(lx exec "$vm" -- bwrap --version)" \
 	--slurpfile offline "$work/offline.json" --slurpfile networked "$work/networked.json" \
-	'{schema: "qorpera.office-command-namespaces.v1", imageKind: "prepared-substrate", image: $image, vmUuid: $uuid,
+	'{schema: "qorpera.office-command-namespaces.v2", imageKind: "prepared-substrate", image: $image, vmUuid: $uuid,
 	  kernel: $kernel, bwrap: $bwrap, sha256: {folderProgram: $folder, probe: $probe, officeUnit: $office, helperUnit: $helper},
 	  offline: $offline[0], networked: $networked[0],
 	  result: (if $offline[0].result == "passed" and $networked[0].result == "passed" then "passed" else "failed" end)}' \
 	>"$work/evidence.json"
 [[ $(jq -r .result "$work/evidence.json") == passed ]] || fail "a mode failed; see the evidence"
-echo "PASS: office command namespaces (option c), offline and networked"
+echo "PASS: office command namespaces (option c'), offline and networked"

@@ -16,17 +16,21 @@ LimitCORE=0
 NoNewPrivileges=yes
 # The helper's own long-running process only needs CAP_SYS_ADMIN (its mount units do the mounting). The rest are for
 # the per-command child it forks to start a networked or offline command (RUNTIME-FOLDER-COMPANY-MACHINES.md, "Who
-# makes the namespaces", option c): the child enters the shell's namespaces, binds the command's mount at /company,
-# then drops to the office account with exactly the shell's capabilities before exec. Widening this set never widens
-# what a command gets: the child ends on the shell's bounding and ambient sets, read from /proc/<shell>/status.
+# makes the namespaces", option c'): the child enters the shell's namespaces, binds the command's mount at /company,
+# drops to the office account with no capabilities, and only then joins the shell's user namespace, where it drops to
+# the shell's bounding set and to no capabilities before exec. Widening this set never widens what a command gets:
+# the child holds none of these by the time it joins, and its capabilities in the shell's user namespace come from
+# that join, not from here.
 #   CAP_SYS_ADMIN   setns into the shell's mnt/pid/ipc/uts/cgroup namespaces; open_tree/move_mount the command's tree.
 #   CAP_SYS_CHROOT  chroot into the shell's root through the pinned /proc/<shell>/root.
 #   CAP_SYS_PTRACE  read another uid's /proc/<shell>/ns/* and /proc/<shell>/root (the office account owns the shell).
 #   CAP_SETUID      setresuid to the office account for the command.
 #   CAP_SETGID      setresgid and setgroups to the office account for the command.
 #   CAP_NET_ADMIN   bring lo up in an offline command's new network namespace (a networked command keeps the computer's).
-#   CAP_SETPCAP     drop the bounding set down to the shell's before exec.
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_CHROOT CAP_SYS_PTRACE CAP_SETUID CAP_SETGID CAP_NET_ADMIN CAP_SETPCAP
+# No CAP_SETPCAP: the child sets its bounding set and securebits inside the shell's user namespace, with the
+# capabilities the join gives it there.
+# No RestrictNamespaces: the child's last setns is CLONE_NEWUSER, into the shell's user namespace.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_CHROOT CAP_SYS_PTRACE CAP_SETUID CAP_SETGID CAP_NET_ADMIN
 DevicePolicy=closed
 # A command inherits this filter, so it holds the office account's set (AF_UNIX AF_INET AF_INET6 AF_NETLINK), plus
 # AF_VSOCK for the helper's own transport. The child brings lo up through an AF_INET socket, and before exec adds its
