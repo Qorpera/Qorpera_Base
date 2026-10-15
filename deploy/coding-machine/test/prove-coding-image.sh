@@ -135,7 +135,10 @@ set +e
 	lx file push "$HERE/test/prove-in-coding-machine.sh" "$VM/root/prove-in-coding-machine.sh" >/dev/null
 	timeout 1800 lxc --project "$CODING" exec "$VM" -- env QORPERA_PROOF_GIT="$(jq -r .git "$WORK/image-build.json")" \
 		QORPERA_PROOF_NODE="$(jq -r .node "$WORK/image-build.json")" \
-		QORPERA_PROOF_CHROMIUM="$(jq -r .chromium "$WORK/image-build.json")" QORPERA_PROOF_PROXY="$PROXY" \
+		QORPERA_PROOF_CHROMIUM="$(jq -r .chromium "$WORK/image-build.json")" \
+		QORPERA_PROOF_TYPESCRIPT="$(jq -r .typescript "$WORK/image-build.json")" \
+		QORPERA_PROOF_TSX="$(jq -r .tsx "$WORK/image-build.json")" QORPERA_PROOF_UV="$(jq -r .uv "$WORK/image-build.json")" \
+		QORPERA_PROOF_MISE="$(jq -r .mise "$WORK/image-build.json")" QORPERA_PROOF_PROXY="$PROXY" \
 		bash /root/prove-in-coding-machine.sh </dev/null | tee "$WORK/inner.out"
 	grep -qx "ALL PASSED" "$WORK/inner.out" || fail "the proof inside the machine did not finish"
 
