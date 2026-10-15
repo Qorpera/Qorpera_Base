@@ -17,10 +17,8 @@
 --
 -- Only RPCs keyed by an identifier account A actually owns are listed. Others
 -- in the granted surface are keyed by a workspace, plan, version or job id
--- (or, for qorpera_promote_local_profile, by a caller-supplied idempotency
--- key that never addresses another account's data at all) and would test
--- nothing here; covering those needs fixtures that create those objects for A
--- first, and is left for when this suite grows them.
+-- and would test nothing here; covering those needs fixtures that create
+-- those objects for A first, and is left for when this suite grows them.
 
 select set_config('qorpera_test.rpc_profile_a',
 	(select profile.id::text from public.qorpera_profiles as profile

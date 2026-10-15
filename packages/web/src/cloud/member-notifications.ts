@@ -1,4 +1,5 @@
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
+import type { TableValue } from "@qorpera/cloud-client/interfaces";
 import { type Cloud, CloudRpcError } from "./client.ts";
 
 export type MemberNotificationSubject =
@@ -48,6 +49,21 @@ export type MemberNotificationSubject =
 			changedByUserId: string | null;
 			reason: "save" | "pick";
 			at: string;
+	  }
+	| {
+			/** A member no longer supervises the agents of an area (Interfaces I9b, 20260930371000): they withdrew their
+			 * consent, the area's `supervisor` names someone else or no one, the area is gone, or they left the company. */
+			schema: "qorpera.member-notification.interface-supervision-ended/v1";
+			supervisionId: string;
+			/** The areas table's id. */
+			tableId: string;
+			/** The area's row key, as the client's table parse gives it; null when too long to carry. */
+			key: readonly TableValue[] | null;
+			supervisorUserId: string;
+			reason: "withdrawn" | "released" | "gone" | "left";
+			/** The member whose save or call ended it; null when no member did (a leaving, the platform's or an agent's save). */
+			byUserId: string | null;
+			at: string;
 	  };
 export interface MemberNotification {
 	notificationId: string;
@@ -57,7 +73,8 @@ export interface MemberNotification {
 		| "company_ceiling_tripped"
 		| "routine_needs_model_account"
 		| "run_no_progress"
-		| "routine_payer_changed";
+		| "routine_payer_changed"
+		| "interface_supervision_ended";
 	createdAt: string;
 	acknowledgedAt: string | null;
 	subject: MemberNotificationSubject;
@@ -107,6 +124,16 @@ function date(value: unknown): string {
 	)
 		throw invalid();
 	return value;
+}
+/** A table row's typed key: at least one value, each text, a number, a yes/no, empty, or a list of text. */
+function keyValues(value: unknown): TableValue[] {
+	if (!Array.isArray(value) || value.length === 0 || value.length > 64) throw invalid();
+	return value.map((item: unknown) => {
+		if (item === null || typeof item === "string" || typeof item === "boolean") return item;
+		if (typeof item === "number" && Number.isFinite(item)) return item;
+		if (Array.isArray(item) && item.every((entry) => typeof entry === "string")) return item as string[];
+		throw invalid();
+	});
 }
 /** A retired record is skipped only when its envelope is otherwise sound; anything
  * else falls through to full validation and fails the read like any bad record. */
@@ -186,6 +213,22 @@ function notification(value: unknown, profileId: string): MemberNotification {
 			payerUserId: payer === "member" ? uuid(s.payerUserId) : s.payerUserId === null ? null : invalidFlag(),
 			changedByUserId: s.changedByUserId === null ? null : uuid(s.changedByUserId),
 			reason,
+			at: date(s.at),
+		};
+	} else if (
+		kind === "interface_supervision_ended" &&
+		s.schema === "qorpera.member-notification.interface-supervision-ended/v1"
+	) {
+		const reason = s.reason;
+		if (reason !== "withdrawn" && reason !== "released" && reason !== "gone" && reason !== "left") throw invalid();
+		subject = {
+			schema: s.schema,
+			supervisionId: uuid(s.supervisionId),
+			tableId: uuid(s.tableId),
+			key: s.key === null ? null : keyValues(s.key),
+			supervisorUserId: uuid(s.supervisorUserId),
+			reason,
+			byUserId: s.byUserId === null ? null : uuid(s.byUserId),
 			at: date(s.at),
 		};
 	} else throw invalid();

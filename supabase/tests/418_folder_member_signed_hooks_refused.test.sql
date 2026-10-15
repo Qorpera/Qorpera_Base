@@ -29,7 +29,8 @@ declare v_hooks bigint := (select count(*) from public.qorpera_event_hooks); v_a
 begin
 	perform pg_temp.as_owner();
 	v_answer := pg_temp.create_hook('billing', 'stripe');
-	if v_answer is distinct from '0A000 A Stripe hook comes later: its secret is taken from Stripe''s screen' then
+	-- 20260930344000 (E3c-1): a Stripe hook too is opened through the vault.
+	if v_answer is distinct from '0A000 A signed hook is opened through the vault' then
 		raise exception 'A member opens no Stripe hook on folder-v2: %', v_answer; end if;
 	v_answer := pg_temp.create_hook('prs', 'github');
 	if v_answer is distinct from '0A000 A signed hook is opened through the vault' then
