@@ -1858,7 +1858,7 @@ export class ConversationView {
 				mine,
 				room,
 				{
-					body: `${JSON.stringify([item.kind, item.text, item.quotes ?? null, Boolean(item.attachmentCount), locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}`,
+					body: `${JSON.stringify([item.kind, item.text, item.quotes ?? null, Boolean(item.attachmentCount), Boolean(item.erased), locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}`,
 					files: JSON.stringify([
 						locale,
 						item.attachmentCount,
@@ -2535,6 +2535,7 @@ export class ConversationView {
 			item.kind === "agent" ? "from-agent" : "from-member",
 			mine && "mine",
 			item.phase === "progress" && "message-progress",
+			item.erased && "message-erased",
 			item.pending && `pending-${item.pending}`,
 			// A message still coming in keeps coming in while it changes ("Queued" to "Processing").
 			element.classList.contains("is-arriving") && "is-arriving",
@@ -2555,17 +2556,19 @@ export class ConversationView {
 		let body = before?.body;
 		if (body?.key !== keys.body) {
 			const nodes = (
-				item.kind === "agent"
-					? markdownBubbles(item.text)
-					: item.text || !item.attachmentCount
-						? [
-								h(
-									"div",
-									{ class: "text" },
-									...(item.text ? this.#withMentions(item.text, item.quotes) : [t("(empty)")]),
-								),
-							]
-						: []
+				item.erased
+					? [h("div", { class: "text" }, t("(erased)"))]
+					: item.kind === "agent"
+						? markdownBubbles(item.text)
+						: item.text || !item.attachmentCount
+							? [
+									h(
+										"div",
+										{ class: "text" },
+										...(item.text ? this.#withMentions(item.text, item.quotes) : [t("(empty)")]),
+									),
+								]
+							: []
 			).map((part) => h("div", { class: "bubble" }, part));
 			// Marked before they join the log, which then reads them once.
 			this.#markSkills(nodes);

@@ -226,6 +226,44 @@ describe("conversation UI boundaries", () => {
 		}
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
+	it("draws an erased message as (erased), also in place of one already drawn", () => {
+		const f = setup();
+		const member: TranscriptMessage = {
+			kind: "member",
+			id: id(83),
+			sequence: 1,
+			text: "Before",
+			attachmentCount: 0,
+			authorUserId: userB.id,
+			createdAt: timestamp,
+		};
+		const agent: TranscriptMessage = {
+			kind: "agent",
+			id: id(84),
+			sequence: 2,
+			text: "Reply",
+			attachmentCount: 0,
+			createdAt: timestamp,
+		};
+		const state = f.company.conversation(session.sessionId);
+		state.set({ projection: { items: [member, agent], hiddenCount: 0, lastSequence: 2 } });
+		f.view.update();
+		state.set({
+			projection: {
+				items: [
+					{ ...member, text: "", erased: true },
+					{ ...agent, text: "", erased: true },
+				],
+				hiddenCount: 0,
+				lastSequence: 2,
+			},
+		});
+		f.view.update();
+		const messages = [...f.view.el.querySelectorAll<HTMLElement>(".message")];
+		const bubbles = messages.map((message) => message.querySelector(".bubble")?.textContent);
+		expect(bubbles).toEqual(["(erased)", "(erased)"]);
+		expect(messages.every((message) => message.classList.contains("message-erased"))).toBe(true);
+	});
 	it("closes attachment previews and clears private drafts when the account signs out", async () => {
 		const f = fixture(),
 			root = document.createElement("div");
