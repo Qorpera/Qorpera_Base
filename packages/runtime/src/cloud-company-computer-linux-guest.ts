@@ -700,7 +700,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	/**
 	 * Rule 4's way out on the screen's mount (`CompanyComputerDesktopFolders.capture`): the desktop that uses it stops
 	 * before the mount goes, after the screen's start or restart under way, and starts again for whoever comes next. A
-	 * screen being drained stops its desktop itself. A stop that fails drains the screen.
+	 * screen being drained stops its desktop itself. A stop that fails drains the screen: the mount goes once the drain
+	 * confirms the desktop and its browser gone, and stays for the stop control when it cannot.
 	 */
 	#stopForRefusal(screen: SharedScreen): Promise<void> {
 		// Not inside the screen's opening: the drain waits for that.
@@ -1363,7 +1364,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	 * `reason` names a stop the service decided itself; a drain request or privacy fence is inferred. A drain request
 	 * gives `until` (performance.now()): the screen's mount gets the drain's boundary before it answers (F3 4d, "Drains
 	 * and stops"), and the drain fails when the boundary has no final answer by then. Any other stop lets the mount go
-	 * after it.
+	 * after it. A stop that cannot confirm what it closed gone (the screen's sessions, private surface, browser or shell)
+	 * fails, and the mount stays for the stop control: the browser's namespace, say, may still read it.
 	 */
 	async stopResources(
 		binding: CompanyComputerScreenBinding,
@@ -1413,6 +1415,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					{ screenId: screen.binding.screenId, shell: screen.shell },
 				].slice(-32);
 			if (screen) this.#shellSamples.delete(screen.binding.screenId);
+			const rejected = results.find((result) => result.status === "rejected");
 			if (screen) {
 				await screen.opening.catch(() => undefined);
 				try {
@@ -1424,16 +1427,15 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						.catch(() => undefined);
 					throw error;
 				}
-				// No desktop uses the screen's mount now; it goes, unless a new desktop of the screen took it meanwhile.
-				// A drain request's boundary follows below instead.
-				if (stop.until === undefined)
+				// No desktop uses the screen's mount now; it goes, unless a new desktop of the screen took it meanwhile, or
+				// something else that may use it is not confirmed gone. A drain request's boundary follows below instead.
+				if (stop.until === undefined && !rejected)
 					void this.#options.folders?.release(binding.screenId, () => {
 						const now = this.#screens.get(binding.screenOrdinal);
 						return !now || now === screen;
 					});
 				await screen.lifecycle?.closed(new AbortController().signal);
 			}
-			const rejected = results.find((result) => result.status === "rejected");
 			if (rejected) throw new Error("OFFICE_GUEST_DRAIN_UNCONFIRMED", { cause: rejected.reason });
 			if (screen && this.#screens.get(binding.screenOrdinal) === screen) this.#screens.delete(binding.screenOrdinal);
 		};

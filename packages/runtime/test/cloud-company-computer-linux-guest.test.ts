@@ -1812,8 +1812,8 @@ describe("each desktop's mount of the company folder (helper stand-in; the mount
 		await session.close();
 	});
 	/** A run's desktop on the screen's mount, whose screenshots the company folder decides on. */
-	async function screenshots(h: ReturnType<typeof folderHelper>) {
-		const f = await fixture({ desktop: true, folderHelper: h.ask });
+	async function screenshots(h: ReturnType<typeof folderHelper>, browser = false) {
+		const f = await fixture({ desktop: true, browser, folderHelper: h.ask });
 		const session = await f.create();
 		h.answer("mount", { answer: "mounted" });
 		await session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect());
@@ -1896,5 +1896,28 @@ describe("each desktop's mount of the company folder (helper stand-in; the mount
 		expect(h.ops()).toEqual(["mount", "list", "boundary", "drop"]);
 		expect(f.events().find((event) => event.state === "closing")).toMatchObject({ reason: "AUTHORITY_LOST" });
 		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("keeps the mount for the stop control when neither the way out nor its drain can confirm the browser gone", async () => {
+		const h = folderHelper();
+		const { f, session, desktop } = await screenshots(h, true);
+		physical.browserRequest.mockResolvedValueOnce(true);
+		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
+		browsers[0].close.mockRejectedValue(new Error("namespace still running"));
+		h.answer("boundary", refusal("unreadable"));
+		h.answer("drop", { answer: "dropped" });
+		await expect(session.endpoint.perform(desktop, f.lease, f.effect())).rejects.toThrow();
+		await vi.waitFor(() => expect(f.failure).toHaveBeenCalledOnce());
+		const failed = f.failure.mock.calls[0][0] as Error & { cause: Error & { cause: AggregateError } };
+		expect(failed.cause.message).toBe("OFFICE_DESKTOP_STOP_FAILED");
+		// The way out's stop failed on the browser, and so did the drain after it.
+		expect(failed.cause.cause.errors).toHaveLength(2);
+		expect(failed.cause.cause.errors[1]).toMatchObject({ message: "OFFICE_GUEST_DRAIN_UNCONFIRMED" });
+		await expect(f.guest.close()).rejects.toThrow("OFFICE_GUEST_DRAIN_UNCONFIRMED");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		// The drain stopped the desktop, but the browser's own namespace may still read the mount: no drop, no view
+		// closed. The mount is the stop control's now.
+		expect(displays[0].stop).toHaveBeenCalledOnce();
+		expect(h.ops()).toEqual(["mount", "list", "boundary"]);
+		expect(f.order).not.toContain("qorpera_folder_view_close:read");
 	});
 });
