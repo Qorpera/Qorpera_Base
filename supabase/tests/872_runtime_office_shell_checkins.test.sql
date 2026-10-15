@@ -241,9 +241,10 @@ select pg_temp.check((select count(*) = 1 and bool_and(q.machine_kind = 'compute
 	from public.qorpera_machine_checkins q), 'the question names the screen, the run that started the crawl and what runs');
 select pg_temp.check(public.qorpera_machine_checkin_current(q), 'the question stands while the crawl stays busy')
 from public.qorpera_machine_checkins q;
--- A snapshot-v1 environment asks nothing.
+-- Another environment, 648's control company with no computer, asks nothing. (Legacy sweep F2b, 20260930291000, asks
+-- on every company, so this checks only that asking is per environment.)
 select pg_temp.check(public.qorpera_ask_busy_office_shells('64800000-0000-4000-8000-000000000021', 32) = 0,
-	'a snapshot-v1 environment asks nothing');
+	'another environment asks nothing');
 
 -- 3. At three busy hours it is asked again, and the hour-one question no longer stands.
 update public.qorpera_runtime_office_shell_commands set worked_at = worked_at - interval '2 hours' where command_id = pg_temp.command(5);

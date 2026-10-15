@@ -114,15 +114,10 @@ end $$;
 
 -- The checks start here: a test that runs after this file's fixture part stops at this line.
 
--- 2. The lease check without locks is the legacy check without its three FOR SHARE, and nothing else.
+-- 2. The lease check takes no lock. (It was the legacy check without its three FOR SHARE; legacy sweep F1c,
+-- 20260930246000, dropped the legacy check.)
 do $$
 begin
-	if replace(pg_get_functiondef('public.qorpera_folder_native_lease_current(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text)'::regprocedure),
-			'FUNCTION public.qorpera_folder_native_lease_current(', 'FUNCTION public.qorpera_validate_native_provider_execution_lease_before_recover(')
-		is distinct from replace(pg_get_functiondef(
-			'public.qorpera_validate_native_provider_execution_lease_before_recover(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text)'::regprocedure),
-			E'\n\tfor share;', ';') then
-		raise exception 'The lock-free lease check differs from the legacy one'; end if;
 	if pg_get_functiondef('public.qorpera_folder_native_lease_current(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text)'::regprocedure)
 		~* 'for (update|share|no key update|key share)' then raise exception 'The folder lease check locks'; end if;
 end $$;
@@ -515,12 +510,13 @@ begin
 		raise exception 'A refused effect must not count'; end if;
 end $$;
 
--- 10. Snapshot-v1 controls: each dispatcher runs its legacy body for a snapshot-v1 company.
+-- 10. Snapshot-v1 controls: each dispatcher runs its legacy body for a snapshot-v1 company. (Since legacy sweep F1c,
+-- 20260930246000, the run check and the lease check are the folder core's for every company.)
 do $$
 declare s jsonb := current_setting('qorpera_test.snapshot_binding')::jsonb; v jsonb;
 begin
-	-- The run check and the lease check fail in the legacy lease check (the stored tuple), not in the folder run check.
-	perform pg_temp.raises_like(format('select pg_temp.ntlr(%L)', s), '42501', 'native execution binding is unavailable');
+	-- The run check fails in the folder run check; the lease check fails on the stored tuple.
+	perform pg_temp.raises_like(format('select pg_temp.ntlr(%L)', s), '42501', 'native tool run is unavailable');
 	perform pg_temp.raises_like(format('select pg_temp.lease(%L)', s), '42501', 'native execution binding is unavailable');
 	-- The context assertion runs the legacy loop: a run with no legacy read paths passes, with no folder actor.
 	perform public.qorpera_company_path_assert_context(jsonb_build_object('environmentId', '64700000-0000-4000-8000-000000000021',

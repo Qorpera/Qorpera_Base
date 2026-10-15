@@ -140,15 +140,6 @@ describe("disposable cloud runner", () => {
 				brokerAuthorities.push({ ...authority });
 				return {};
 			}),
-			listInputs: vi.fn(async () => []),
-			listTranscript: vi.fn(async () => []),
-			listOperations: vi.fn(async () => []),
-			listArtifacts: vi.fn(async () => []),
-			requestModel: vi.fn(async () => ({})),
-			beginOperation: vi.fn(async () => ({})),
-			completeOperation: vi.fn(async () => ({})),
-			bindProviderSession: vi.fn(async () => ({})),
-			appendTranscriptEvent: vi.fn(async () => ({})),
 		};
 		const broker = runner.broker(claimedJob as NonNullable<typeof claimedJob>, brokerTransport);
 		await expect(broker.describe()).rejects.toThrow("runtime selection");

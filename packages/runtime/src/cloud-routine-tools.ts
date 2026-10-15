@@ -1,4 +1,3 @@
-import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import type { CloudFolderRoutineDecision, CloudFolderRoutineDecisionRequest } from "./cloud-folder-routine-decision.ts";
 import {
 	CLOUD_FOLDER_ROUTINE_NAME,
@@ -10,17 +9,9 @@ import {
 import {
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
-	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
-import {
-	CloudControlRefusalRelay,
-	type CloudNativeTool,
-	CloudToolArgumentRefusal,
-	type CloudToolContext,
-	cloudOperationKeyOf,
-	cloudToolJsonText,
-} from "./cloud-native-tool-boundary.ts";
+import { type CloudNativeTool, CloudToolArgumentRefusal, type CloudToolContext } from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 import { CLOUD_RUNTIME_REASONING_EFFORTS, isCloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
 import { CURSOR, fitsOneResult } from "./cloud-worker-tools.ts";
@@ -95,8 +86,8 @@ function instant(value: unknown, label: string): string {
  * scheduler's closed trigger forms are compiled here. The trigger id is
  * host-owned and every routine has exactly one trigger (contract 16.3). A
  * dynamic routine has one next run instead of a cadence ("once"); its runs
- * choose the next one. Without firstRunAt the kernel stamps the save instant,
- * so a retried save with the same key stays the same request.
+ * choose the next one. Without firstRunAt the routine file's writer stamps the
+ * save instant, so a retried save with the same key stays the same request.
  */
 function compileTrigger(value: unknown): Record<string, unknown> {
 	const kind = (value as { kind?: unknown } | null)?.kind;
@@ -263,7 +254,8 @@ const CLOUD_ROUTINE_DECISION_DESCRIPTION_FOLDER = CLOUD_ROUTINE_DECISION_DESCRIP
 	);
 
 /** The cloud derives the agent, requester and model account from the run. The
- * model chooses only what to do, when, and how long.
+ * model chooses only what to do, when, and how long. Returns the check of each
+ * call's context.
  */
 function routineAuthority(binding: CloudNativeToolBinding, identity: CloudNativeToolIdentity) {
 	const admitted = parseCloudNativeToolBinding(binding),
@@ -274,7 +266,7 @@ function routineAuthority(binding: CloudNativeToolBinding, identity: CloudNative
 		)
 	)
 		throw new Error("Routine binding differs");
-	const assertContext = (context: CloudToolContext) => {
+	return (context: CloudToolContext) => {
 		if (
 			context.runId !== expected.runId ||
 			context.companyId !== expected.companyId ||
@@ -286,30 +278,29 @@ function routineAuthority(binding: CloudNativeToolBinding, identity: CloudNative
 			throw new Error("Routine tool identity differs");
 		context.signal.throwIfAborted();
 	};
-	// One per tool of a run (control calls, 4 Oct 2026).
-	return { admitted, assertContext, refusals: new CloudControlRefusalRelay() };
 }
 
 export function cloudRoutineTools(
 	binding: CloudNativeToolBinding,
 	identity: CloudNativeToolIdentity,
-	control: CloudCompanyPathControl,
 	/** In a dynamic routine's run: its key, whether its decision is still owed, and a
 	 * callback for a conclusion made here (which settles that decision). */
-	ownDynamicRoutine?: {
-		readonly routineKey: string;
-		readonly decisionOwed: () => boolean;
-		readonly settled: () => void;
-	},
-	/** A folder-v2 run's routines, written as the files in its folder. */
-	folderRoutines?: CloudFolderRoutines,
+	ownDynamicRoutine:
+		| {
+				readonly routineKey: string;
+				readonly decisionOwed: () => boolean;
+				readonly settled: () => void;
+		  }
+		| undefined,
+	/** The run's routines, written as the files in its folder. */
+	folderRoutines: CloudFolderRoutines,
 ): readonly CloudNativeTool[] {
-	const { admitted, assertContext, refusals } = routineAuthority(binding, identity);
+	const assertContext = routineAuthority(binding, identity);
 	const reportSchema = { type: "string", enum: [...REPLY] };
 	const zoneSchema = { type: "string", minLength: 1, maxLength: 64 };
 	const timeSchema = { type: "string", pattern: LOCAL_TIME.source };
-	// A folder-v2 change binds its operation key to its request: reusing the key with other arguments is refused with
-	// the arguments, before the automatic review, as hire_agent and create_group_chat do.
+	// A change binds its operation key to its request: reusing the key with other arguments is refused with the
+	// arguments, before the automatic review, as hire_agent and create_group_chat do.
 	const bound = new Map<string, string>();
 	const refuseRebinding = (request: Record<string, unknown>) => {
 		const previous = bound.get(request.operationKey as string);
@@ -321,7 +312,7 @@ export function cloudRoutineTools(
 	const tool: CloudNativeTool = {
 		name: "manage_routine" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: folderRoutines ? CLOUD_ROUTINE_TOOL_DESCRIPTION_FOLDER : CLOUD_ROUTINE_TOOL_DESCRIPTION,
+		description: CLOUD_ROUTINE_TOOL_DESCRIPTION_FOLDER,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -329,14 +320,12 @@ export function cloudRoutineTools(
 			properties: {
 				action: { type: "string", enum: [...ACTIONS] },
 				operationKey: { type: "string", pattern: OPERATION_KEY.source },
-				// A folder-v2 routine's key is its file's name.
-				routineKey: folderRoutines
-					? {
-							type: "string",
-							pattern: CLOUD_FOLDER_ROUTINE_NAME.source,
-							maxLength: CLOUD_FOLDER_ROUTINE_NAME_BYTES,
-						}
-					: { type: "string", pattern: ROUTINE_KEY.source },
+				// A routine's key is its file's name.
+				routineKey: {
+					type: "string",
+					pattern: CLOUD_FOLDER_ROUTINE_NAME.source,
+					maxLength: CLOUD_FOLDER_ROUTINE_NAME_BYTES,
+				},
 				title: { type: "string", minLength: 1, maxLength: 160 },
 				intent: { type: "string", minLength: 1, maxLength: 32768 },
 				summary: { type: "string", minLength: 1, maxLength: 2000 },
@@ -424,7 +413,7 @@ export function cloudRoutineTools(
 					required: ["start", "end", "timeZone"],
 					properties: { start: timeSchema, end: timeSchema, timeZone: zoneSchema },
 				},
-				...(folderRoutines ? { cursor: { type: "string", pattern: CURSOR.source } } : {}),
+				cursor: { type: "string", pattern: CURSOR.source },
 			},
 		},
 		parseArguments(value) {
@@ -432,11 +421,7 @@ export function cloudRoutineTools(
 			if (typeof action !== "string" || !ACTIONS.includes(action as (typeof ACTIONS)[number]))
 				throw new Error("Invalid routine action");
 			if (action === "list") {
-				if (!folderRoutines) {
-					object(value, ["action"], ["action"]);
-					return { action } as never;
-				}
-				// A folder-v2 list pages, or shows one routine.
+				// A list pages, or shows one routine.
 				const l = object(value, ["action", "routineKey", "cursor"], ["action"]);
 				if (l.routineKey !== undefined && l.cursor !== undefined)
 					throw new CloudToolArgumentRefusal("list takes a routineKey or a cursor, not both");
@@ -452,9 +437,9 @@ export function cloudRoutineTools(
 					...(l.cursor === undefined ? {} : { cursor: l.cursor }),
 				} as never;
 			}
-			// A folder-v2 routine's key is its file's name; the rule is said in words.
+			// A routine's key is its file's name; the rule is said in words.
 			const named = (value as { routineKey?: unknown } | null)?.routineKey;
-			if (folderRoutines && typeof named === "string") folderRoutines.path(named);
+			if (typeof named === "string") folderRoutines.path(named);
 			if (action === "conclude") {
 				const c = object(
 					value,
@@ -474,8 +459,8 @@ export function cloudRoutineTools(
 					routineKey: c.routineKey,
 					summary: text(c.summary, 2000),
 				};
-				if (folderRoutines) refuseRebinding(request);
-				folderRoutines?.check(request as CloudFolderRoutineChange);
+				refuseRebinding(request);
+				folderRoutines.check(request as CloudFolderRoutineChange);
 				return request as never;
 			}
 			const upsert = action === "upsert";
@@ -506,7 +491,7 @@ export function cloudRoutineTools(
 				!ROUTINE_KEY.test(a.routineKey)
 			)
 				throw new Error("Invalid routine key");
-			// The kernel refuses these too; this says why in words the model can act on.
+			// Refused here, in words the model can act on.
 			// Pausing or removing it would revoke this very run; saving or resuming it
 			// before the decision would drop that decision.
 			if (ownDynamicRoutine?.routineKey === a.routineKey) {
@@ -521,8 +506,8 @@ export function cloudRoutineTools(
 			}
 			if (!upsert) {
 				const request = { action, operationKey: a.operationKey, routineKey: a.routineKey };
-				if (folderRoutines) refuseRebinding(request);
-				folderRoutines?.check(request as CloudFolderRoutineChange);
+				refuseRebinding(request);
+				folderRoutines.check(request as CloudFolderRoutineChange);
 				return request as never;
 			}
 			const request: Record<string, unknown> = {
@@ -534,7 +519,7 @@ export function cloudRoutineTools(
 				trigger: compileTrigger(a.trigger),
 			};
 			if (a.expiresAt !== undefined) request.expiresAt = instant(a.expiresAt, "expiresAt");
-			// A dynamic routine's run after its end would never happen; the kernel refuses it too.
+			// A dynamic routine's run after its end would never happen.
 			const firstRunAt = (request.trigger as { kind: string; at?: string }).at;
 			if (
 				firstRunAt !== undefined &&
@@ -559,7 +544,7 @@ export function cloudRoutineTools(
 			}
 			if (a.effort !== undefined && !isCloudRuntimeReasoningEffort(a.effort))
 				throw new Error("Invalid routine effort");
-			// The kernel starts a new routine at medium and keeps a saved routine's effort when none is given.
+			// The routine file's writer starts a new routine at medium and keeps a saved routine's effort when none is given.
 			if (a.effort !== undefined) request.effort = a.effort;
 			if (a.quietHours !== undefined) {
 				const quiet = object(a.quietHours, ["start", "end", "timeZone"], ["start", "end", "timeZone"]);
@@ -569,85 +554,50 @@ export function cloudRoutineTools(
 				request.quietHours = { start, end, timeZone: timeZone(quiet.timeZone) };
 			}
 			// The file's own checks, before the automatic review, so a card is never raised for a save that cannot be.
-			if (folderRoutines) refuseRebinding(request);
-			folderRoutines?.check(request as unknown as CloudFolderRoutineChange);
+			refuseRebinding(request);
+			folderRoutines.check(request as unknown as CloudFolderRoutineChange);
 			return request as never;
 		},
 		async execute(value, context) {
 			assertContext(context);
 			// The boundary passes the already parsed request; its compiled trigger is not re-parseable input.
 			const request = value as Record<string, unknown>;
-			// A folder-v2 agent's routines are files; the folder core decides each save.
-			if (folderRoutines) {
-				if (request.action === "list")
-					return folderRoutines.list(request as unknown as CloudFolderRoutineListing, context, fitsOneResult);
-				refuseRebinding(request);
-				if (!bound.has(request.operationKey as string))
-					bound.set(request.operationKey as string, JSON.stringify(request));
-				const changed = await folderRoutines.change(request as unknown as CloudFolderRoutineChange, context);
-				// Concluding its own routine here is a decision too.
-				if (ownDynamicRoutine && changed.concluded && request.routineKey === ownDynamicRoutine.routineKey)
-					ownDynamicRoutine.settled();
-				return changed.content;
-			}
-			// The tool's first effect: a refusal of it is the tool's answer (control calls, 4 Oct 2026).
-			const result = await refusals.call(cloudOperationKeyOf(request), () =>
-				cloudToolRequest(
-					(requestSignal) =>
-						control.call(
-							"qorpera_manage_agent_routine",
-							{ p_binding: admitted, p_request: request },
-							requestSignal,
-						),
-					context.signal,
-				),
-			);
-			const r = result as Record<string, unknown> | null;
-			if (
-				!r ||
-				typeof r !== "object" ||
-				r.runId !== admitted.runId ||
-				(request.action === "list"
-					? r.schema !== "qorpera.agent-routines/v1" || !Array.isArray(r.routines)
-					: r.schema !== "qorpera.agent-routine-receipt/v1" ||
-						r.action !== request.action ||
-						!r.routine ||
-						typeof r.routine !== "object" ||
-						(r.routine as { routineKey?: unknown }).routineKey !== request.routineKey)
-			)
-				throw new Error("Routine receipt differs");
+			// An agent's routines are files; the folder core decides each save.
+			if (request.action === "list")
+				return folderRoutines.list(request as unknown as CloudFolderRoutineListing, context, fitsOneResult);
+			refuseRebinding(request);
+			if (!bound.has(request.operationKey as string))
+				bound.set(request.operationKey as string, JSON.stringify(request));
+			const changed = await folderRoutines.change(request as unknown as CloudFolderRoutineChange, context);
 			// Concluding its own routine here is a decision too.
-			if (ownDynamicRoutine && request.action === "conclude" && request.routineKey === ownDynamicRoutine.routineKey)
+			if (ownDynamicRoutine && changed.concluded && request.routineKey === ownDynamicRoutine.routineKey)
 				ownDynamicRoutine.settled();
-			return { kind: "text", value: cloudToolJsonText(r) };
+			return changed.content;
 		},
 	};
 	return [tool];
 }
 
-/** Offered only in a run of a dynamic routine. The kernel refuses this run's final
- * message and its completion until the routine moved on; `decided` tells the host
- * mouth, which shows the model that reason first. Once nothing is owed, a second
- * decision is refused here: the kernel would answer settled and change nothing.
+/** Offered only in a run of a dynamic routine. The host refuses this run's final
+ * message and its completion, showing the model why, until the routine moved on
+ * (`decided` tells it so). Once nothing is owed, a second
+ * decision is refused here: the routine's file would answer settled and change nothing.
  */
 export function cloudRoutineDecisionTool(
 	binding: CloudNativeToolBinding,
 	identity: CloudNativeToolIdentity,
-	control: CloudCompanyPathControl,
 	options: {
 		readonly decisionOwed: () => boolean;
 		readonly decided: () => void;
-		/** A folder-v2 run's decision, written into the routine's file. */
-		readonly folderDecision?: CloudFolderRoutineDecision;
+		/** The run's decision, written into the routine's file. */
+		readonly folderDecision: CloudFolderRoutineDecision;
 	},
 ): CloudNativeTool {
-	const { admitted, assertContext, refusals } = routineAuthority(binding, identity);
+	const assertContext = routineAuthority(binding, identity);
 	return {
 		name: "decide_routine" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
-		description: options.folderDecision
-			? CLOUD_ROUTINE_DECISION_DESCRIPTION_FOLDER
-			: CLOUD_ROUTINE_DECISION_DESCRIPTION,
+		description: CLOUD_ROUTINE_DECISION_DESCRIPTION_FOLDER,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -692,48 +642,20 @@ export function cloudRoutineDecisionTool(
 				request.effort = n.effort;
 			}
 			if (n.report !== undefined) request.report = reply(n.report);
-			// A folder-v2 rewrite's file is checked now, before the automatic review.
-			options.folderDecision?.check(request as unknown as CloudFolderRoutineDecisionRequest);
+			// A rewrite's file is checked now, before the automatic review.
+			options.folderDecision.check(request as unknown as CloudFolderRoutineDecisionRequest);
 			return request as never;
 		},
 		async execute(value, context) {
 			assertContext(context);
 			const request = value as Record<string, unknown>;
-			// A folder-v2 routine is a file; the folder core takes the save as the decision while it is owed.
-			if (options.folderDecision) {
-				const decision = await options.folderDecision.decide(
-					request as unknown as CloudFolderRoutineDecisionRequest,
-					context,
-				);
-				if (decision.decided) options.decided();
-				return decision.content;
-			}
-			const result = await refusals.call(cloudOperationKeyOf(request), () =>
-				cloudToolRequest(
-					(requestSignal) =>
-						control.call(
-							"qorpera_decide_agent_routine",
-							{ p_binding: admitted, p_request: request },
-							requestSignal,
-						),
-					context.signal,
-				),
+			// A routine is a file; the folder core takes the save as the decision while it is owed.
+			const decision = await options.folderDecision.decide(
+				request as unknown as CloudFolderRoutineDecisionRequest,
+				context,
 			);
-			const r = result as Record<string, unknown> | null;
-			const receipt =
-				r?.schema === "qorpera.agent-routine-receipt/v1" &&
-				r.action === (request.action === "next" ? "upsert" : "conclude") &&
-				!!r.routine &&
-				typeof r.routine === "object";
-			const outcome =
-				r?.schema === "qorpera.agent-routine-decision/v1" && (r.state === "settled" || r.state === "refused")
-					? r.state
-					: undefined;
-			if (!r || typeof r !== "object" || r.runId !== admitted.runId || (!receipt && !outcome))
-				throw new Error("Routine decision receipt differs");
-			if (outcome === "refused") return { kind: "text", value: cloudToolJsonText(r) };
-			options.decided();
-			return { kind: "text", value: cloudToolJsonText(r) };
+			if (decision.decided) options.decided();
+			return decision.content;
 		},
 	};
 }

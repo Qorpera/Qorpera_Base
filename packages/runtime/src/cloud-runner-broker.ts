@@ -1,24 +1,5 @@
-import {
-	type CloudRunnerModelRequest,
-	type CloudRunnerModelResponse,
-	parseCloudRunnerModelResponse,
-	validateCloudRunnerModelRequest,
-} from "@qorpera/cloud-client/cloud-runner-model";
-import type {
-	HostedArtifact,
-	HostedArtifactIndex,
-	HostedArtifactIndexEntry,
-	HostedCompanyOperation,
-	HostedCompanyOperationType,
-	HostedCompanySnapshot,
-	HostedCompanySubstrateVersion,
-	HostedSessionEventType,
-	HostedSessionExecutionIdentity,
-} from "@qorpera/cloud-client/hosted-primary";
-import type { ResolvedCompanySubstrateReference } from "@qorpera/cloud-client/node/cloud-company-substrate";
 import type { CloudRunnerCapability, CloudRunnerJob } from "@qorpera/cloud-client/node/cloud-runner-protocol";
 import type { JsonValue } from "@qorpera/contracts";
-import type { CloudRunnerSubstrateResolver } from "./cloud-runner-sandbox.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -27,12 +8,9 @@ const TYPE_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 const MAX_OBJECT_BYTES = 8 * 1024 * 1024;
 const MAX_OUTPUT_OBJECTS = 100;
 const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
-const MAX_COMPANY_FILE_OUTPUT_OBJECTS = 8_500_000;
-const MAX_COMPANY_FILE_OUTPUT_BYTES = 1_099_511_627_776;
-const RUNNER_TRANSCRIPT_ENTRY_SCHEMA = "qorpera.runner-transcript-entry/v1";
 const BROKER_REQUEST_TIMEOUT_MS = 5 * 60_000;
 /* Wall-clock budgets for transient broker retries. The short budget keeps
- * cadence-sensitive calls (renewals, listings) inside their renewal rhythm;
+ * cadence-sensitive calls (the native authority's) inside their renewal rhythm;
  * the durable budget lets the execution and completion paths ride out a
  * platform incident measured in minutes rather than losing a finished
  * attempt to it. */
@@ -53,29 +31,18 @@ export interface CloudRunnerBrokerAuthority {
 	signal?: AbortSignal;
 }
 
+/** A folder-v2 run, which the broker describes in the path lane with no Company File substrate anywhere (folder core
+ * C3, P23): no version, snapshot, proposal snapshot, artifact index or Company File output limits. */
 export interface CloudRunnerBrokerDescription {
-	companyRuntime: "whole-tree-v1" | "company-path-v1";
+	companyRuntime: "company-path-v1";
 	job: CloudRunnerJob;
 	run: CloudRunnerExecutionRun;
 	sponsor: CloudRunnerExecutionSponsor;
-	/** The Company File substrate: version, snapshot and companyFileOutputLimits are present together, or absent
-	 * together for a folder-v2 run, which the broker describes in the path lane with no substrate (folder core C3,
-	 * P23). */
-	version?: HostedCompanySubstrateVersion;
-	snapshot?: HostedCompanySnapshot;
-	proposalSnapshot?: HostedCompanySnapshot;
-	artifactIndex?: HostedArtifactIndex;
 	outputLimits: {
 		maxObjectBytes: number;
 		maxObjectCount: number;
 		maxTotalBytes: number;
 		rootContract: "qorpera.object/v1";
-	};
-	companyFileOutputLimits?: {
-		maxObjectBytes: number;
-		maxObjectCount: number;
-		maxTotalBytes: number;
-		treeContractVersion: 3;
 	};
 }
 
@@ -117,16 +84,6 @@ export interface CloudRunnerExecutionRun {
 	createdByUserId: string;
 	requestedByUserId: string;
 	sponsoredByUserId?: string;
-	createdAt: string;
-}
-
-export interface CloudRunnerQueuedInput {
-	inputId: string;
-	position: number;
-	kind: "kickoff" | "user_message";
-	authorUserId: string;
-	authorDisplayName: string;
-	body: JsonValue;
 	createdAt: string;
 }
 
@@ -183,64 +140,6 @@ export interface CompleteCloudRunnerOperationInput {
 	proposalId?: string;
 }
 
-export interface BindCloudRunnerProviderSessionInput {
-	providerSessionId: string;
-	contextCheckpointObjectSha256?: string;
-}
-
-export interface AppendCloudRunnerTranscriptEventInput {
-	eventId: string;
-	eventType:
-		| "message"
-		| "run_receipt"
-		| "artifact_receipt"
-		| "authorization_request"
-		| "authorization_decision"
-		| "interaction_request";
-	entry: JsonValue;
-	expectedSequence?: number;
-}
-
-export interface CloudRunnerOperationReceipt {
-	state: "executing" | "completed" | "ambiguous" | "cancelled";
-	receiptId: string;
-	result?: JsonValue;
-	outputSnapshotId?: string;
-	proposalId?: string;
-}
-
-export interface CloudRunnerProviderSessionBinding {
-	runId: string;
-	providerConnectionId: string;
-	providerSessionId: string;
-}
-
-export interface CloudRunnerTranscriptEvent {
-	sessionId: string;
-	sequence: number;
-	eventId: string;
-	eventType: AppendCloudRunnerTranscriptEventInput["eventType"];
-	entry: JsonValue;
-	eventHash: string;
-	previousHash?: string;
-	executionRunId: string;
-	assignmentId: string;
-	createdAt: string;
-}
-
-export interface CloudRunnerTranscriptContextEvent {
-	sessionId: string;
-	sequence: number;
-	eventId: string;
-	eventType: HostedSessionEventType;
-	actorUserId: string;
-	body: JsonValue;
-	eventHash: string;
-	previousHash?: string;
-	execution?: HostedSessionExecutionIdentity;
-	createdAt: string;
-}
-
 export interface CloudRunnerBrokerTransport {
 	describe(authority: CloudRunnerBrokerAuthority): Promise<unknown>;
 	acquireNativeAuthority?(
@@ -258,30 +157,6 @@ export interface CloudRunnerBrokerTransport {
 		authority: CloudRunnerBrokerAuthority,
 		leaseId: string,
 		status: "released" | "revoked" | "expired",
-	): Promise<unknown>;
-	listInputs(authority: CloudRunnerBrokerAuthority): Promise<unknown>;
-	listTranscript(authority: CloudRunnerBrokerAuthority, afterSequence: number, limit: number): Promise<unknown>;
-	listOperations(authority: CloudRunnerBrokerAuthority, afterSequence: number, limit: number): Promise<unknown>;
-	listArtifacts(authority: CloudRunnerBrokerAuthority, afterOrdinal: number, limit: number): Promise<unknown>;
-	requestModel(authority: CloudRunnerBrokerAuthority, input: CloudRunnerModelRequest): Promise<unknown>;
-	beginOperation(
-		authority: CloudRunnerBrokerAuthority,
-		assignmentId: string,
-		input: BeginCloudRunnerOperationInput,
-	): Promise<unknown>;
-	completeOperation(
-		authority: CloudRunnerBrokerAuthority,
-		assignmentId: string,
-		input: CompleteCloudRunnerOperationInput,
-	): Promise<unknown>;
-	bindProviderSession(
-		authority: CloudRunnerBrokerAuthority,
-		input: BindCloudRunnerProviderSessionInput,
-	): Promise<unknown>;
-	appendTranscriptEvent(
-		authority: CloudRunnerBrokerAuthority,
-		assignmentId: string,
-		input: AppendCloudRunnerTranscriptEventInput,
 	): Promise<unknown>;
 }
 
@@ -366,13 +241,6 @@ function optionalUuid(value: unknown, label: string): string | undefined {
 	return value === null || value === undefined ? undefined : uuid(value, label);
 }
 
-function operationType(value: unknown): HostedCompanyOperationType {
-	if (value !== "staff_state" && value !== "session_state" && value !== "session_event") {
-		throw new Error("Runner broker returned invalid company operation type");
-	}
-	return value;
-}
-
 function capability(value: unknown): CloudRunnerCapability {
 	if (value !== "agent_turn" && value !== "git_worktree" && value !== "company_substrate") {
 		throw new Error("Runner broker returned invalid job capability");
@@ -383,20 +251,6 @@ function capability(value: unknown): CloudRunnerCapability {
 function json(value: unknown, label: string): JsonValue {
 	const encoded = JSON.stringify(value);
 	if (encoded === undefined || Buffer.byteLength(encoded) > 64 * 1024) {
-		throw new Error(`Runner broker returned invalid ${label}`);
-	}
-	return value as JsonValue;
-}
-
-function objectJson(value: unknown, label: string, maximumBytes = 64 * 1024): JsonValue {
-	const encoded = JSON.stringify(value);
-	if (
-		!value ||
-		typeof value !== "object" ||
-		Array.isArray(value) ||
-		encoded === undefined ||
-		Buffer.byteLength(encoded) > maximumBytes
-	) {
 		throw new Error(`Runner broker returned invalid ${label}`);
 	}
 	return value as JsonValue;
@@ -708,250 +562,12 @@ function parseNativeAuthority(value: unknown): CloudRunnerNativeAuthority {
 	};
 }
 
-function parseVersion(value: unknown): HostedCompanySubstrateVersion {
-	const input = record(value, "substrate version");
-	return {
-		versionId: uuid(input.version_id, "substrate version id"),
-		profileId: uuid(input.profile_id, "substrate profile id"),
-		environmentId: uuid(input.environment_id, "substrate environment id"),
-		companySnapshotId: uuid(input.company_snapshot_id, "substrate snapshot id"),
-		clientVersionId: uuid(input.client_version_id, "substrate client version id"),
-		contractVersion: integer(input.contract_version, "substrate contract version", 1, 1),
-		operationSequence: integer(input.operation_sequence, "substrate operation sequence", 0, Number.MAX_SAFE_INTEGER),
-		operationCount: integer(input.operation_count, "substrate operation count", 0, Number.MAX_SAFE_INTEGER),
-		...(optionalUuid(input.artifact_index_id, "substrate artifact index id")
-			? { artifactIndexId: uuid(input.artifact_index_id, "substrate artifact index id") }
-			: {}),
-		...(input.artifact_manifest_sha256 === null || input.artifact_manifest_sha256 === undefined
-			? {}
-			: { artifactManifestSha256: sha256(input.artifact_manifest_sha256, "substrate artifact manifest hash") }),
-		contentSha256: sha256(input.content_sha256, "substrate content hash"),
-		createdByUserId: uuid(input.created_by_user_id, "substrate creator id"),
-		createdAt: timestamp(input.created_at, "substrate creation time"),
-	};
-}
-
-function parseSnapshot(value: unknown): HostedCompanySnapshot {
-	const input = record(value, "company snapshot");
-	const parentSnapshotId = optionalUuid(input.parent_snapshot_id, "company parent snapshot id");
-	return {
-		snapshotId: uuid(input.snapshot_id, "company snapshot id"),
-		profileId: uuid(input.profile_id, "company snapshot profile id"),
-		environmentId: uuid(input.environment_id, "company snapshot environment id"),
-		workspaceId: uuid(input.workspace_id, "company snapshot workspace id"),
-		clientSnapshotId: uuid(input.client_snapshot_id, "company client snapshot id"),
-		...(parentSnapshotId ? { parentSnapshotId } : {}),
-		tree: {
-			manifestSha256: sha256(input.tree_manifest_sha256, "company tree manifest hash"),
-			manifestBytes: integer(input.tree_manifest_bytes, "company tree manifest bytes", 1, 8 * 1024 * 1024),
-			contractVersion: integer(input.tree_contract_version, "company tree contract version", 1, 3),
-			fileCount: integer(input.file_count, "company tree file count", 0, 50_000),
-			totalBytes: integer(input.total_bytes, "company tree total bytes", 0, Number.MAX_SAFE_INTEGER),
-		},
-		createdByUserId: uuid(input.created_by_user_id, "company snapshot creator id"),
-		createdAt: timestamp(input.created_at, "company snapshot creation time"),
-	};
-}
-
-function parseArtifactIndex(value: unknown): HostedArtifactIndex {
-	const input = record(value, "artifact index");
-	integer(input.contract_version, "artifact index contract version", 1, 1);
-	return {
-		indexId: uuid(input.index_id, "artifact index id"),
-		profileId: uuid(input.profile_id, "artifact index profile id"),
-		environmentId: uuid(input.environment_id, "artifact index environment id"),
-		clientIndexId: uuid(input.client_index_id, "artifact index client id"),
-		contractVersion: 1,
-		contentSha256: sha256(input.content_sha256, "artifact index content hash"),
-		artifactCount: integer(input.artifact_count, "artifact index count", 0, 5000),
-		totalBytes: integer(input.total_bytes, "artifact index bytes", 0, Number.MAX_SAFE_INTEGER),
-		createdByUserId: uuid(input.created_by_user_id, "artifact index creator id"),
-		createdAt: timestamp(input.created_at, "artifact index creation time"),
-	};
-}
-
-function parseArtifact(value: unknown): HostedArtifact {
-	const input = record(value, "artifact");
-	const rootContract = input.root_contract;
-	if (rootContract !== "qorpera.object/v1" && rootContract !== "qorpera.cloud-file-manifest/v1") {
-		throw new Error("Runner broker returned invalid artifact root contract");
-	}
-	const artifactType = text(input.artifact_type, "artifact type", 64);
-	if (!TYPE_PATTERN.test(artifactType)) throw new Error("Runner broker returned invalid artifact type");
-	const mediaType = text(input.media_type, "artifact media type", 256).toLowerCase();
-	if (!mediaType.includes("/") || mediaType !== input.media_type) {
-		throw new Error("Runner broker returned invalid artifact media type");
-	}
-	const sessionId = optionalUuid(input.session_id, "artifact session id");
-	return {
-		artifactId: uuid(input.artifact_id, "artifact id"),
-		profileId: uuid(input.profile_id, "artifact profile id"),
-		environmentId: uuid(input.environment_id, "artifact environment id"),
-		clientArtifactId: uuid(input.client_artifact_id, "artifact client id"),
-		...(sessionId ? { sessionId } : {}),
-		artifactType,
-		name: text(input.name, "artifact name", 256),
-		rootObjectSha256: sha256(input.root_object_sha256, "artifact root hash"),
-		rootContract,
-		contentSha256: sha256(input.content_sha256, "artifact content hash"),
-		bytes: integer(input.bytes, "artifact bytes", 0, Number.MAX_SAFE_INTEGER),
-		mediaType,
-		createdByUserId: uuid(input.created_by_user_id, "artifact creator id"),
-		createdAt: timestamp(input.created_at, "artifact creation time"),
-		eligibleForGcAt: timestamp(input.eligible_for_gc_at, "artifact recovery expiry"),
-	};
-}
-
-function parseOperation(value: unknown): HostedCompanyOperation {
-	const input = record(value, "company operation");
-	const environmentId = optionalUuid(input.environment_id, "company operation environment id");
-	return {
-		profileId: uuid(input.profile_id, "company operation profile id"),
-		sequence: integer(input.sequence, "company operation sequence", 1, Number.MAX_SAFE_INTEGER),
-		...(environmentId ? { environmentId } : {}),
-		operationType: operationType(input.operation_type),
-		entityId: uuid(input.entity_id, "company operation entity id"),
-		entityVersion: integer(input.entity_version, "company operation entity version", 0, Number.MAX_SAFE_INTEGER),
-		contentSha256: sha256(input.content_sha256, "company operation content hash"),
-		payload: json(input.payload, "company operation payload"),
-		actorUserId: uuid(input.actor_user_id, "company operation actor id"),
-		createdAt: timestamp(input.created_at, "company operation creation time"),
-	};
-}
-
-function parseOperationReceipt(value: unknown): CloudRunnerOperationReceipt {
-	const input = record(value, "operation receipt");
-	if (
-		input.state !== "executing" &&
-		input.state !== "completed" &&
-		input.state !== "ambiguous" &&
-		input.state !== "cancelled"
-	) {
-		throw new Error("Runner broker returned invalid operation receipt state");
-	}
-	const result =
-		input.result === null || input.result === undefined ? undefined : objectJson(input.result, "operation result");
-	return {
-		state: input.state,
-		receiptId: uuid(input.receipt_id, "operation receipt id"),
-		...(result === undefined ? {} : { result }),
-		...(optionalUuid(input.output_snapshot_id, "operation output snapshot id")
-			? { outputSnapshotId: uuid(input.output_snapshot_id, "operation output snapshot id") }
-			: {}),
-		...(optionalUuid(input.proposal_id, "operation proposal id")
-			? { proposalId: uuid(input.proposal_id, "operation proposal id") }
-			: {}),
-	};
-}
-
-function parseProviderSessionBinding(value: unknown): CloudRunnerProviderSessionBinding {
-	const input = record(value, "provider session binding");
-	return {
-		runId: uuid(input.run_id, "provider session run id"),
-		providerConnectionId: uuid(input.provider_connection_id, "provider session connection id"),
-		providerSessionId: text(input.provider_session_id, "provider session id", 1024),
-	};
-}
-
-function parseTranscriptEvent(value: unknown): CloudRunnerTranscriptEvent {
-	const input = record(value, "transcript event");
-	if (
-		input.event_type !== "message" &&
-		input.event_type !== "run_receipt" &&
-		input.event_type !== "artifact_receipt" &&
-		input.event_type !== "authorization_request" &&
-		input.event_type !== "authorization_decision" &&
-		input.event_type !== "interaction_request"
-	) {
-		throw new Error("Runner broker returned invalid transcript event type");
-	}
-	const body = record(input.body, "transcript event body");
-	if (body.schema !== RUNNER_TRANSCRIPT_ENTRY_SCHEMA) {
-		throw new Error("Runner broker returned invalid transcript event schema");
-	}
-	const entry = objectJson(body.entry, "transcript entry", 256 * 1024);
-	const previousHash =
-		input.previous_hash === null ? undefined : sha256(input.previous_hash, "transcript previous hash");
-	return {
-		sessionId: uuid(input.session_id, "transcript session id"),
-		sequence: integer(input.sequence, "transcript event sequence", 1, Number.MAX_SAFE_INTEGER),
-		eventId: uuid(input.event_id, "transcript event id"),
-		eventType: input.event_type,
-		entry,
-		eventHash: sha256(input.event_hash, "transcript event hash"),
-		...(previousHash ? { previousHash } : {}),
-		executionRunId: uuid(input.execution_id, "transcript execution run id"),
-		assignmentId: uuid(input.runner_assignment_id, "transcript runner assignment id"),
-		createdAt: timestamp(input.created_at, "transcript event creation time"),
-	};
-}
-
-function parseTranscriptContextEvent(value: unknown): CloudRunnerTranscriptContextEvent {
-	const input = record(value, "transcript context event");
-	if (
-		input.event_type !== "message" &&
-		input.event_type !== "session_info" &&
-		input.event_type !== "run_receipt" &&
-		input.event_type !== "artifact_receipt" &&
-		input.event_type !== "authorization_request" &&
-		input.event_type !== "authorization_decision" &&
-		input.event_type !== "interaction_request" &&
-		input.event_type !== "interaction_answer"
-	) {
-		throw new Error("Runner broker returned invalid transcript context event type");
-	}
-	const executionKind = input.execution_kind;
-	const executionId = input.execution_id;
-	const claimantId = input.execution_claimant_id;
-	const assignmentId = input.runner_assignment_id;
-	if (
-		(executionKind === null || executionKind === undefined) !== (executionId === null || executionId === undefined) ||
-		(executionKind === null || executionKind === undefined) !== (claimantId === null || claimantId === undefined) ||
-		(executionKind !== null &&
-			executionKind !== undefined &&
-			executionKind !== "turn" &&
-			executionKind !== "wake" &&
-			executionKind !== "run") ||
-		(executionKind === "run") !== (assignmentId !== null && assignmentId !== undefined)
-	) {
-		throw new Error("Runner broker returned invalid transcript context execution");
-	}
-	const previousHash =
-		input.previous_hash === null || input.previous_hash === undefined
-			? undefined
-			: sha256(input.previous_hash, "transcript context previous hash");
-	const execution: HostedSessionExecutionIdentity | undefined =
-		executionKind === "run"
-			? {
-					kind: "run",
-					id: uuid(executionId, "transcript context execution id"),
-					claimantId: uuid(claimantId, "transcript context claimant id"),
-					runnerAssignmentId: uuid(assignmentId, "transcript context assignment id"),
-				}
-			: executionKind === "turn" || executionKind === "wake"
-				? {
-						kind: executionKind,
-						id: uuid(executionId, "transcript context execution id"),
-						claimantId: uuid(claimantId, "transcript context claimant id"),
-					}
-				: undefined;
-	return {
-		sessionId: uuid(input.session_id, "transcript context session id"),
-		sequence: integer(input.sequence, "transcript context sequence", 1, Number.MAX_SAFE_INTEGER),
-		eventId: uuid(input.event_id, "transcript context event id"),
-		eventType: input.event_type,
-		actorUserId: uuid(input.actor_user_id, "transcript context actor id"),
-		body: json(input.body, "transcript context body"),
-		eventHash: sha256(input.event_hash, "transcript context event hash"),
-		...(previousHash ? { previousHash } : {}),
-		...(execution ? { execution } : {}),
-		createdAt: timestamp(input.created_at, "transcript context creation time"),
-	};
-}
-
+/** A run's description. Only a folder-v2 run's is accepted: the path lane with no Company File substrate anywhere
+ * (folder core C3, P23). A description naming a substrate (the whole-tree lane's, or a version, snapshot, proposal
+ * snapshot, artifact index, Company File output limits, or a substrate on the job or the run) is refused. */
 export function parseCloudRunnerBrokerDescription(value: unknown): CloudRunnerBrokerDescription {
 	const input = record(value, "description");
-	if (input.company_runtime !== "whole-tree-v1" && input.company_runtime !== "company-path-v1") {
+	if (input.company_runtime !== "company-path-v1") {
 		throw new Error("Runner broker returned an invalid Company File runtime selection");
 	}
 	const limits = record(input.output_limits, "output limits");
@@ -960,94 +576,29 @@ export function parseCloudRunnerBrokerDescription(value: unknown): CloudRunnerBr
 	}
 	const job = parseBrokerJob(input.job);
 	const run = parseExecutionRun(input.run);
-	// A folder-v2 run (folder core C3, P23): the path lane with no substrate anywhere. Only that lane serves it, so a
-	// whole-tree reader can never be handed one; a substrate named on one side only is refused.
 	const absent = (value: unknown) => value === null || value === undefined;
-	if (absent(input.version) && absent(input.snapshot)) {
-		if (
-			input.company_runtime !== "company-path-v1" ||
-			!absent(input.company_file_output_limits) ||
-			!absent(input.proposal_snapshot) ||
-			!absent(input.artifact_index) ||
-			job.substrateVersionId !== undefined ||
-			run.substrateVersionId !== undefined
-		) {
-			throw new Error("Runner broker returned a run without a Company File substrate outside the path lane");
-		}
-		return {
-			companyRuntime: input.company_runtime,
-			job,
-			run,
-			sponsor: parseExecutionSponsor(input.sponsor),
-			outputLimits: {
-				maxObjectBytes: integer(limits.max_object_bytes, "output object bytes", 0, MAX_OBJECT_BYTES),
-				maxObjectCount: integer(limits.max_object_count, "output object count", 0, MAX_OUTPUT_OBJECTS),
-				maxTotalBytes: integer(limits.max_total_bytes, "output total bytes", 0, MAX_OUTPUT_BYTES),
-				rootContract: limits.root_contract,
-			},
-		};
+	if (
+		!absent(input.version) ||
+		!absent(input.snapshot) ||
+		!absent(input.proposal_snapshot) ||
+		!absent(input.artifact_index) ||
+		!absent(input.company_file_output_limits) ||
+		job.substrateVersionId !== undefined ||
+		run.substrateVersionId !== undefined
+	) {
+		throw new Error("Runner broker returned a run with a Company File substrate");
 	}
-	if (job.substrateVersionId === undefined || run.substrateVersionId === undefined) {
-		throw new Error("Runner broker returned a Company File substrate for a run without one");
-	}
-	const companyFileLimits = record(input.company_file_output_limits, "Company File output limits");
-	integer(companyFileLimits.tree_contract_version, "Company File output tree contract", 3, 3);
 	return {
 		companyRuntime: input.company_runtime,
 		job,
 		run,
 		sponsor: parseExecutionSponsor(input.sponsor),
-		version: parseVersion(input.version),
-		snapshot: parseSnapshot(input.snapshot),
-		...(input.proposal_snapshot === null || input.proposal_snapshot === undefined
-			? {}
-			: { proposalSnapshot: parseSnapshot(input.proposal_snapshot) }),
-		...(input.artifact_index === null || input.artifact_index === undefined
-			? {}
-			: { artifactIndex: parseArtifactIndex(input.artifact_index) }),
 		outputLimits: {
 			maxObjectBytes: integer(limits.max_object_bytes, "output object bytes", 0, MAX_OBJECT_BYTES),
 			maxObjectCount: integer(limits.max_object_count, "output object count", 0, MAX_OUTPUT_OBJECTS),
 			maxTotalBytes: integer(limits.max_total_bytes, "output total bytes", 0, MAX_OUTPUT_BYTES),
 			rootContract: limits.root_contract,
 		},
-		companyFileOutputLimits: {
-			maxObjectBytes: integer(
-				companyFileLimits.max_object_bytes,
-				"Company File output object bytes",
-				1,
-				MAX_OBJECT_BYTES,
-			),
-			maxObjectCount: integer(
-				companyFileLimits.max_object_count,
-				"Company File output object count",
-				1,
-				MAX_COMPANY_FILE_OUTPUT_OBJECTS,
-			),
-			maxTotalBytes: integer(
-				companyFileLimits.max_total_bytes,
-				"Company File output total bytes",
-				1,
-				MAX_COMPANY_FILE_OUTPUT_BYTES,
-			),
-			treeContractVersion: 3,
-		},
-	};
-}
-
-/** A folder-v2 run has no Company File substrate (folder core C3, P23): whatever needs one refuses it. */
-function substrateOf(description: CloudRunnerBrokerDescription): {
-	version: HostedCompanySubstrateVersion;
-	snapshot: HostedCompanySnapshot;
-	companyFileOutputLimits: NonNullable<CloudRunnerBrokerDescription["companyFileOutputLimits"]>;
-} {
-	if (!description.version || !description.snapshot || !description.companyFileOutputLimits) {
-		throw new Error("This run has no Company File substrate");
-	}
-	return {
-		version: description.version,
-		snapshot: description.snapshot,
-		companyFileOutputLimits: description.companyFileOutputLimits,
 	};
 }
 
@@ -1124,136 +675,6 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 		uuid(leaseId, "native authority lease id");
 		integer(leaseSeconds, "native authority lease seconds", 30, 900);
 		return this.#post(authority, { action: "renew_native_authority", leaseId, leaseSeconds });
-	}
-
-	async listInputs(authority: CloudRunnerBrokerAuthority): Promise<unknown> {
-		return this.#post(authority, { action: "inputs" });
-	}
-
-	async listTranscript(authority: CloudRunnerBrokerAuthority, afterSequence: number, limit: number): Promise<unknown> {
-		integer(afterSequence, "transcript cursor", 0, Number.MAX_SAFE_INTEGER);
-		integer(limit, "transcript page size", 1, 500);
-		return this.#post(authority, { action: "transcript", afterSequence, limit });
-	}
-
-	async listOperations(authority: CloudRunnerBrokerAuthority, afterSequence: number, limit: number): Promise<unknown> {
-		return this.#post(authority, { action: "operations", afterSequence, limit });
-	}
-
-	async listArtifacts(authority: CloudRunnerBrokerAuthority, afterOrdinal: number, limit: number): Promise<unknown> {
-		return this.#post(authority, { action: "artifacts", afterOrdinal, limit });
-	}
-
-	async requestModel(authority: CloudRunnerBrokerAuthority, input: CloudRunnerModelRequest): Promise<unknown> {
-		const request = validateCloudRunnerModelRequest(input);
-		return this.#post(authority, {
-			action: "model",
-			requestId: request.requestId,
-			provider: request.provider,
-			model: request.model,
-			input: request.input,
-			maxOutputTokens: request.maxOutputTokens,
-		});
-	}
-
-	async beginOperation(
-		authority: CloudRunnerBrokerAuthority,
-		assignmentId: string,
-		input: BeginCloudRunnerOperationInput,
-	): Promise<unknown> {
-		uuid(assignmentId, "assignment id");
-		uuid(input.receiptId, "operation receipt id");
-		const logicalOperationKey = text(input.logicalOperationKey, "logical operation key", 256);
-		const operationKind = text(input.operationKind, "operation kind", 64);
-		if (!TYPE_PATTERN.test(operationKind)) throw new Error("Runner broker operation kind is invalid");
-		sha256(input.inputSha256, "operation input hash");
-		const downstreamIdempotencyKey = text(input.downstreamIdempotencyKey, "downstream idempotency key", 256);
-		if (typeof input.requiresCompanyRevision !== "boolean") {
-			throw new Error("Runner broker Company File operation flag is invalid");
-		}
-		return this.#post(authority, {
-			action: "begin_operation",
-			assignmentId,
-			receiptId: input.receiptId,
-			logicalOperationKey,
-			operationKind,
-			inputSha256: input.inputSha256,
-			downstreamIdempotencyKey,
-			requiresCompanyRevision: input.requiresCompanyRevision,
-		});
-	}
-
-	async completeOperation(
-		authority: CloudRunnerBrokerAuthority,
-		assignmentId: string,
-		input: CompleteCloudRunnerOperationInput,
-	): Promise<unknown> {
-		uuid(assignmentId, "assignment id");
-		uuid(input.receiptId, "operation receipt id");
-		sha256(input.inputSha256, "operation input hash");
-		const result = objectJson(input.result, "operation result");
-		if (input.outputSnapshotId) uuid(input.outputSnapshotId, "operation output snapshot id");
-		if (input.proposalId) uuid(input.proposalId, "operation proposal id");
-		if (input.outputSnapshotId && input.proposalId) {
-			throw new Error("Runner broker operation cannot publish a snapshot and proposal together");
-		}
-		return this.#post(authority, {
-			action: "complete_operation",
-			assignmentId,
-			receiptId: input.receiptId,
-			inputSha256: input.inputSha256,
-			result,
-			...(input.outputSnapshotId ? { outputSnapshotId: input.outputSnapshotId } : {}),
-			...(input.proposalId ? { proposalId: input.proposalId } : {}),
-		});
-	}
-
-	async bindProviderSession(
-		authority: CloudRunnerBrokerAuthority,
-		input: BindCloudRunnerProviderSessionInput,
-	): Promise<unknown> {
-		const providerSessionId = text(input.providerSessionId, "provider session id", 1024);
-		if (input.contextCheckpointObjectSha256) {
-			sha256(input.contextCheckpointObjectSha256, "provider context checkpoint hash");
-		}
-		return this.#post(authority, {
-			action: "bind_provider_session",
-			providerSessionId,
-			...(input.contextCheckpointObjectSha256
-				? { contextCheckpointObjectSha256: input.contextCheckpointObjectSha256 }
-				: {}),
-		});
-	}
-
-	async appendTranscriptEvent(
-		authority: CloudRunnerBrokerAuthority,
-		assignmentId: string,
-		input: AppendCloudRunnerTranscriptEventInput,
-	): Promise<unknown> {
-		uuid(assignmentId, "assignment id");
-		uuid(input.eventId, "transcript event id");
-		if (
-			input.eventType !== "message" &&
-			input.eventType !== "run_receipt" &&
-			input.eventType !== "artifact_receipt" &&
-			input.eventType !== "authorization_request" &&
-			input.eventType !== "authorization_decision" &&
-			input.eventType !== "interaction_request"
-		) {
-			throw new Error("Runner broker transcript event type is invalid");
-		}
-		const entry = objectJson(input.entry, "transcript entry", 256 * 1024);
-		if (input.expectedSequence !== undefined) {
-			integer(input.expectedSequence, "transcript event sequence", 0, Number.MAX_SAFE_INTEGER);
-		}
-		return this.#post(authority, {
-			action: "append_transcript",
-			assignmentId,
-			eventId: input.eventId,
-			eventType: input.eventType,
-			entry,
-			...(input.expectedSequence === undefined ? {} : { expectedSequence: input.expectedSequence }),
-		});
 	}
 
 	#headers(authority: CloudRunnerBrokerAuthority): Record<string, string> {
@@ -1339,12 +760,11 @@ export class SupabaseCloudRunnerBrokerTransport implements CloudRunnerBrokerTran
 	}
 }
 
-export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
+export class CloudRunnerJobBroker {
 	readonly #options: CloudRunnerJobBrokerOptions;
 	#description?: CloudRunnerBrokerDescription;
 	#nativeAuthority?: CloudRunnerNativeAuthority;
 	#start?: CloudRunnerStart;
-	readonly #canonicalReceiptIds = new Map<string, string>();
 
 	constructor(options: CloudRunnerJobBrokerOptions) {
 		if (
@@ -1378,115 +798,19 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 			description.run.profileId !== description.job.profileId ||
 			description.run.environmentId !== description.job.environmentId ||
 			description.run.sessionId !== description.job.sessionId ||
-			description.run.substrateVersionId !== description.job.substrateVersionId ||
-			description.run.companySnapshotId !== description.snapshot?.snapshotId ||
 			description.job.profileId !== this.#options.job.profileId ||
 			description.job.environmentId !== this.#options.job.environmentId ||
 			description.run.sponsorBindingId !== description.sponsor.bindingId ||
 			description.run.sponsorVersion !== description.sponsor.version ||
 			description.run.requiredCapability !== description.job.requiredCapability ||
 			description.run.jobType !== description.job.jobType ||
-			(description.version !== undefined &&
-				(description.snapshot === undefined ||
-					description.version.versionId !== this.#options.job.substrateVersionId ||
-					description.version.profileId !== this.#options.job.profileId ||
-					description.version.environmentId !== this.#options.job.environmentId ||
-					description.snapshot.snapshotId !== description.version.companySnapshotId ||
-					description.snapshot.profileId !== description.version.profileId ||
-					description.snapshot.environmentId !== description.version.environmentId ||
-					description.version.artifactIndexId !== description.artifactIndex?.indexId ||
-					description.version.artifactManifestSha256 !== description.artifactIndex?.contentSha256)) ||
-			(description.run.sourceKind === "proposal_review") !== (description.proposalSnapshot !== undefined) ||
-			(description.proposalSnapshot !== undefined &&
-				(description.proposalSnapshot.profileId !== description.run.profileId ||
-					description.proposalSnapshot.environmentId !== description.run.environmentId ||
-					description.proposalSnapshot.tree.contractVersion !== 3))
+			// A proposal review reads a proposal snapshot, which a folder-v2 run has none of.
+			description.run.sourceKind === "proposal_review"
 		) {
 			throw new Error("Runner broker returned another job substrate");
 		}
 		this.#description = description;
 		return description;
-	}
-
-	async listTranscript(afterSequence = 0, limit = 200): Promise<CloudRunnerTranscriptContextEvent[]> {
-		const description = await this.describe();
-		integer(afterSequence, "transcript cursor", 0, description.run.transcriptStartSequence);
-		integer(limit, "transcript page size", 1, 500);
-		const events = array(
-			await this.#options.transport.listTranscript(this.#authority(), afterSequence, limit),
-			"transcript page",
-		).map(parseTranscriptContextEvent);
-		if (
-			events.some(
-				(event, index) =>
-					event.sessionId !== description.run.sessionId ||
-					event.sequence <= afterSequence ||
-					event.sequence > description.run.transcriptStartSequence ||
-					(index > 0 && event.sequence <= events[index - 1].sequence),
-			)
-		) {
-			throw new Error("Runner broker returned transcript outside the pinned run context");
-		}
-		return events;
-	}
-
-	async listInputs(): Promise<CloudRunnerQueuedInput[]> {
-		const description = await this.describe();
-		const inputs = array(await this.#options.transport.listInputs(this.#authority()), "execution inputs", 32).map(
-			(value) => {
-				const input = record(value, "execution input");
-				if (input.kind !== "kickoff" && input.kind !== "user_message") {
-					throw new Error("Runner broker returned invalid execution input kind");
-				}
-				const kind: CloudRunnerQueuedInput["kind"] = input.kind;
-				return {
-					inputId: uuid(input.input_id, "execution input id"),
-					position: integer(input.position, "execution input position", 1, Number.MAX_SAFE_INTEGER),
-					kind,
-					authorUserId: uuid(input.author_user_id, "execution input author id"),
-					authorDisplayName: text(input.author_display_name, "execution input author name", 256),
-					body: objectJson(input.body, "execution input body", 128 * 1024),
-					createdAt: timestamp(input.created_at, "execution input creation time"),
-				};
-			},
-		);
-		if (
-			inputs.length !== description.run.inputIds.length ||
-			inputs.some((input, index) => input.inputId !== description.run.inputIds[index])
-		) {
-			throw new Error("Runner broker returned another execution input set");
-		}
-		return inputs;
-	}
-
-	async resolve(versionId: string): Promise<ResolvedCompanySubstrateReference> {
-		const description = await this.describe();
-		const { version, snapshot } = substrateOf(description);
-		if (versionId !== version.versionId) throw new Error("Runner broker cannot resolve another substrate");
-		return {
-			version,
-			snapshot,
-			...(description.artifactIndex ? { artifactIndex: description.artifactIndex } : {}),
-		};
-	}
-
-	async resolveExecution(job: CloudRunnerJob): Promise<{
-		run: CloudRunnerExecutionRun;
-		sponsor: CloudRunnerExecutionSponsor;
-	}> {
-		const description = await this.describe();
-		if (
-			job.jobId !== description.job.jobId ||
-			job.runId !== description.run.runId ||
-			job.assignmentId !== description.job.assignmentId
-		) {
-			throw new Error("Runner broker cannot resolve another execution");
-		}
-		return {
-			run: description.run,
-			sponsor: description.sponsor,
-			...(description.proposalSnapshot ? { proposalSnapshot: description.proposalSnapshot } : {}),
-		};
 	}
 
 	async acquireNativeAuthority(leaseSeconds = NATIVE_AUTHORITY_LEASE_SECONDS): Promise<CloudRunnerNativeAuthority> {
@@ -1565,143 +889,6 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 		return this.#nativeAuthority;
 	}
 
-	async listOperations(
-		version: HostedCompanySubstrateVersion,
-		afterSequence = 0,
-		limit = 200,
-	): Promise<HostedCompanyOperation[]> {
-		const description = await this.describe();
-		if (version.versionId !== substrateOf(description).version.versionId) {
-			throw new Error("Runner broker cannot list operations for another substrate");
-		}
-		return array(
-			await this.#options.transport.listOperations(this.#authority(), afterSequence, limit),
-			"company operation page",
-		).map(parseOperation);
-	}
-
-	async listArtifacts(index: HostedArtifactIndex, afterOrdinal = 0, limit = 200): Promise<HostedArtifactIndexEntry[]> {
-		const description = await this.describe();
-		if (index.indexId !== description.artifactIndex?.indexId) {
-			throw new Error("Runner broker cannot list another artifact index");
-		}
-		return array(
-			await this.#options.transport.listArtifacts(this.#authority(), afterOrdinal, limit),
-			"artifact page",
-		).map((value) => {
-			const input = record(value, "artifact index entry");
-			return { ...parseArtifact(input), ordinal: integer(input.ordinal, "artifact ordinal", 1, 5000) };
-		});
-	}
-
-	async requestModel(input: CloudRunnerModelRequest): Promise<CloudRunnerModelResponse> {
-		if ((await this.describe()).sponsor.authenticationMode === "native_subscription") {
-			throw new Error("Native subscription traffic must use the provider-native harness");
-		}
-		const request = validateCloudRunnerModelRequest(input);
-		const response = parseCloudRunnerModelResponse(
-			await this.#options.transport.requestModel(this.#authority(), request),
-		);
-		if (
-			response.requestId !== request.requestId ||
-			response.provider !== request.provider ||
-			response.model !== request.model ||
-			response.usage.outputTokens > request.maxOutputTokens
-		) {
-			throw new Error("Runner model broker returned another request");
-		}
-		return response;
-	}
-
-	async beginOperation(input: BeginCloudRunnerOperationInput): Promise<CloudRunnerOperationReceipt> {
-		const receipt = parseOperationReceipt(
-			await this.#options.transport.beginOperation(this.#authority(), this.#assignmentId(), input),
-		);
-		this.#canonicalReceiptIds.set(input.receiptId, receipt.receiptId);
-		this.#canonicalReceiptIds.set(receipt.receiptId, receipt.receiptId);
-		return receipt;
-	}
-
-	async completeOperation(input: CompleteCloudRunnerOperationInput): Promise<CloudRunnerOperationReceipt> {
-		const receiptId = this.#canonicalReceiptIds.get(input.receiptId) ?? input.receiptId;
-		const receipt = parseOperationReceipt(
-			await this.#options.transport.completeOperation(this.#authority(), this.#assignmentId(), {
-				...input,
-				receiptId,
-			}),
-		);
-		if (receipt.receiptId !== receiptId || receipt.state !== "completed") {
-			throw new Error("Runner operation broker returned an incomplete receipt");
-		}
-		return receipt;
-	}
-
-	async bindProviderSession(input: BindCloudRunnerProviderSessionInput): Promise<CloudRunnerProviderSessionBinding> {
-		const description = await this.describe();
-		const providerSessionId = input.providerSessionId.trim();
-		const binding = parseProviderSessionBinding(
-			await this.#options.transport.bindProviderSession(this.#authority(), { ...input, providerSessionId }),
-		);
-		if (
-			binding.runId !== this.#runId() ||
-			binding.providerConnectionId !== description.sponsor.providerConnectionId ||
-			binding.providerSessionId !== providerSessionId
-		) {
-			throw new Error("Runner broker bound another provider session");
-		}
-		return binding;
-	}
-
-	async appendTranscriptEvent(input: AppendCloudRunnerTranscriptEventInput): Promise<CloudRunnerTranscriptEvent> {
-		const rawEntry = record(input.entry, "transcript entry");
-		const expectedEntryType = input.eventType === "message" ? "message" : "custom";
-		if (
-			rawEntry.type !== expectedEntryType ||
-			(input.eventType !== "message" && rawEntry.customType !== input.eventType) ||
-			rawEntry.id !== input.eventId ||
-			(rawEntry.parentId !== null && typeof rawEntry.parentId !== "string") ||
-			typeof rawEntry.timestamp !== "string" ||
-			!Number.isFinite(Date.parse(rawEntry.timestamp)) ||
-			rawEntry.execution !== undefined
-		) {
-			throw new Error("Runner broker transcript entry is invalid");
-		}
-		const entry = objectJson(
-			{
-				...rawEntry,
-				execution: {
-					kind: "run",
-					id: this.#runId(),
-					claimantId: this.#runId(),
-					runnerAssignmentId: this.#assignmentId(),
-				},
-			},
-			"transcript entry",
-			256 * 1024,
-		);
-		const event = parseTranscriptEvent(
-			await this.#options.transport.appendTranscriptEvent(this.#authority(), this.#assignmentId(), {
-				...input,
-				entry,
-			}),
-		);
-		const returnedEntry = record(event.entry, "transcript entry");
-		const returnedExecution = record(returnedEntry.execution, "transcript execution identity");
-		if (
-			event.executionRunId !== this.#runId() ||
-			event.assignmentId !== this.#assignmentId() ||
-			event.eventId !== input.eventId ||
-			event.eventType !== input.eventType ||
-			returnedExecution.kind !== "run" ||
-			returnedExecution.id !== this.#runId() ||
-			returnedExecution.claimantId !== this.#runId() ||
-			returnedExecution.runnerAssignmentId !== this.#assignmentId()
-		) {
-			throw new Error("Runner broker appended another transcript event");
-		}
-		return event;
-	}
-
 	#authority(): CloudRunnerBrokerAuthority {
 		const credentials = this.#options.credentials();
 		const authority = {
@@ -1718,10 +905,5 @@ export class CloudRunnerJobBroker implements CloudRunnerSubstrateResolver {
 	#assignmentId(): string {
 		if (!this.#options.job.assignmentId) throw new Error("Runner job has no orchestrator assignment");
 		return this.#options.job.assignmentId;
-	}
-
-	#runId(): string {
-		if (!this.#options.job.runId) throw new Error("Runner job has no durable execution run");
-		return this.#options.job.runId;
 	}
 }

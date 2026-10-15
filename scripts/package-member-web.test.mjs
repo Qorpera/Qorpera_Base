@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { packageMemberWeb } from "./package-member-web.mjs";
 import { assertMemberWebInputs } from "./check-headless-packages.mjs";
-const config = { schema: "qorpera.member-web-config/v1", supabaseUrl: "https://control.test", publishableKey: "sb_publishable_fixture1", objectGatewayUrl: "https://objects.test", officeViewerOrigin: null };
+const config = { schema: "qorpera.member-web-config/v1", supabaseUrl: "https://control.test", publishableKey: "sb_publishable_fixture1", officeViewerOrigin: null };
 test("standalone web package contains only hashed static assets and explicit public configuration", async () => {
 	const scratch = await mkdtemp(join(tmpdir(), "qorpera-web-package-"));
 	try {

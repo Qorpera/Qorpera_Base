@@ -1,8 +1,9 @@
 -- @fixture 648_folder_core_run_fence_concurrency.test.sql until "-- A. Two tool calls of one run"
 -- Company folder core, C3 (P23 part 1, migration 20260930002200): a folder-v2 run's lease renewals take its job FOR NO KEY
 -- UPDATE. Beside a tool call in flight (the job KEY SHARE) the job renewal and the native lease renewal run at once;
--- behind a change that ends the lease (the job FOR UPDATE) they wait. The snapshot-v1 company's renewal still takes the
--- job FOR UPDATE and waits for a KEY SHARE holder. The folder copy of locked_job differs from it by its lock clause only.
+-- behind a change that ends the lease (the job FOR UPDATE) they wait. Since legacy sweep F1d (20260930247000) the
+-- snapshot-v1 company's renewal takes the folder-v2 path too and runs beside a KEY SHARE holder. The folder copy of
+-- locked_job differs from it by its lock clause only.
 -- 648's committed fixture, removed at the end.
 
 -- The run's native lease carries its job's lease token, as a real lease does (648's fixture gives it another), and the
@@ -88,7 +89,8 @@ begin
 	end loop;
 end $$;
 
--- C. The snapshot-v1 company's renewal still takes the job FOR UPDATE: it waits for a holder of the job KEY SHARE.
+-- C. Since legacy sweep F1d (20260930247000) the snapshot-v1 company's renewal takes the job FOR NO KEY UPDATE too: it
+-- runs beside a holder of the job KEY SHARE.
 do $$
 declare v_state text;
 begin
@@ -96,12 +98,12 @@ begin
 	perform * from dblink('fence_one', $q$select 1 from public.qorpera_runner_jobs where id = '64800000-0000-4000-8000-0000000000e2'
 		for key share$q$) as t(x integer);
 	perform dblink_send_query('fence_two', pg_temp.sql_renew_job('64800000-0000-4000-8000-0000000000e4', '64800000-0000-4000-8000-0000000000e2'));
-	if not pg_temp.waits_for('fence_two', 'fence_one') then
+	if not pg_temp.finishes_unblocked('fence_two', 'fence_one') then
 		perform dblink_exec('fence_one', 'rollback');
-		raise exception 'C: the snapshot-v1 renewal must wait for a KEY SHARE holder'; end if;
-	perform dblink_exec('fence_one', 'rollback');
+		raise exception 'C: the snapshot-v1 renewal waited for a KEY SHARE holder'; end if;
 	v_state := pg_temp.outcome('fence_two');
-	if v_state <> 'ok' then raise exception 'C: the snapshot-v1 renewal after it: %', v_state; end if;
+	perform dblink_exec('fence_one', 'rollback');
+	if v_state <> 'ok' then raise exception 'C: the snapshot-v1 renewal beside it: %', v_state; end if;
 end $$;
 
 -- D. The folder copy of locked_job is locked_job with its name, its marker line and its lock clause changed, and
