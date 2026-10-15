@@ -923,19 +923,24 @@ describe.skipIf(!program)("durable read proof through a real FUSE mount", () => 
 
 describe.skipIf(!program)("links through a real FUSE mount", () => {
 	it("clones with --local, checks out a link, and makes links from Python and Node, each hard link a read of its source", async () => {
-		const m = await loggedMount();
+		// A repository goes under `code/`: elsewhere the folder takes no `.git`.
+		const m = await loggedMount("computer_shell_command", [folder("code")]);
 		const docs = join(m.company, "docs");
-		const repo = join(docs, "repo");
-		const ok = { code: 0 };
-		expect(await git(docs, "init", "-q", "--template=", "repo"), m.output()).toMatchObject(ok);
+		const code = join(m.company, "code");
+		const repo = join(code, "repo");
+		const ok = async (ran: Promise<{ code: number | null; stderr: string }>) => {
+			const done = await ran;
+			expect(done.code, done.stderr + m.output()).toBe(0);
+		};
+		await ok(git(code, "init", "-q", "--template=", "repo"));
 		// Git's probe link worked, so it keeps links as links.
 		expect((await git(repo, "config", "core.symlinks")).stdout).not.toContain("false");
 		await writeFile(join(repo, "plan.md"), "the plan");
-		expect(await git(repo, "add", "plan.md")).toMatchObject(ok);
-		expect(await git(repo, "commit", "-q", "-m", "plan")).toMatchObject(ok);
+		await ok(git(repo, "add", "plan.md"));
+		await ok(git(repo, "commit", "-q", "-m", "plan"));
 		await symlink("plan.md", join(repo, "latest")); // Node's fs.symlink
-		expect(await git(repo, "add", "latest")).toMatchObject(ok);
-		expect(await git(repo, "commit", "-q", "-m", "latest")).toMatchObject(ok);
+		await ok(git(repo, "add", "latest"));
+		await ok(git(repo, "commit", "-q", "-m", "latest"));
 		expect((await git(repo, "ls-tree", "HEAD", "latest")).stdout).toMatch(/^120000 blob [0-9a-f]{40}\tlatest\n$/);
 		const objects = (await readdir(join(repo, ".git/objects"), { recursive: true })).filter((name) =>
 			/^[0-9a-f]{2}\/[0-9a-f]{38}$/.test(name),
@@ -943,26 +948,26 @@ describe.skipIf(!program)("links through a real FUSE mount", () => {
 		expect(objects).toHaveLength(6); // Two commits, two trees, the file and the link.
 
 		// A clone from a path hard-links the objects; with --local it fails where a link fails.
-		expect(await git(docs, "clone", "-q", "--local", "--template=", "repo", "copy")).toMatchObject(ok);
+		await ok(git(code, "clone", "-q", "--local", "--template=", "repo", "copy"));
 		const hardLinks = () =>
 			m.requests.flatMap((request) =>
 				request.kind === Kind.link ? [request.body as { from: string; fromBase?: string; to: string }] : [],
 			);
 		expect(
 			hardLinks()
-				.filter((made) => made.to.startsWith("docs/copy/.git/objects/"))
+				.filter((made) => made.to.startsWith("code/copy/.git/objects/"))
 				.map((made) => made.to)
 				.sort(),
-		).toEqual(objects.map((name) => `docs/copy/.git/objects/${name}`).sort());
+		).toEqual(objects.map((name) => `code/copy/.git/objects/${name}`).sort());
 		// The clone checked out the commit holding a mode-120000 entry as a link; a checkout before it removes the link
 		// and one back makes it again.
-		const copy = join(docs, "copy");
+		const copy = join(code, "copy");
 		expect(await readlink(join(copy, "latest"))).toBe("plan.md");
 		expect(await readFile(join(copy, "latest"), "utf8")).toBe("the plan");
 		expect(await git(copy, "status", "--porcelain")).toMatchObject({ code: 0, stdout: "" });
-		expect(await git(copy, "checkout", "-q", "HEAD~1")).toMatchObject(ok);
+		await ok(git(copy, "checkout", "-q", "HEAD~1"));
 		await expect(lstat(join(copy, "latest"))).rejects.toMatchObject({ code: "ENOENT" });
-		expect(await git(copy, "checkout", "-q", "main")).toMatchObject(ok);
+		await ok(git(copy, "checkout", "-q", "main"));
 		expect(await readlink(join(copy, "latest"))).toBe("plan.md");
 
 		const python = await run(
@@ -988,7 +993,7 @@ describe.skipIf(!program)("links through a real FUSE mount", () => {
 			{ version: v(1), authority: m.receipt },
 			{ version: v(1), authority: m.receipt },
 		]);
-		expect(reads.map((read) => read.path)).toEqual(expect.arrayContaining(["docs/copy/latest", "docs/py-link"]));
+		expect(reads.map((read) => read.path)).toEqual(expect.arrayContaining(["code/copy/latest", "docs/py-link"]));
 		m.core.commitHook = async () => {
 			expect(m.core.readSets.get(m.viewId)?.get("docs/plan.md")).toEqual({
 				path: "docs/plan.md",
@@ -998,13 +1003,13 @@ describe.skipIf(!program)("links through a real FUSE mount", () => {
 		};
 		const report = await m.publish();
 		expect(report, m.output()).toMatchObject({ code: 0, stderr: "" });
-		for (const path of ["docs/repo/latest", "docs/copy/latest", "docs/py-link"])
+		for (const path of ["code/repo/latest", "code/copy/latest", "docs/py-link"])
 			expect(m.core.entries.get(path), path).toMatchObject({ kind: "symlink", target: "plan.md" });
 		for (const path of ["docs/py-copy", "docs/node-copy"])
 			expect(m.core.entries.get(path), path).toMatchObject({ kind: "file", fileSha256: hashOf("the plan") });
 		for (const name of objects)
-			expect(m.core.entries.get(`docs/copy/.git/objects/${name}`)?.fileSha256, name).toBe(
-				m.core.entries.get(`docs/repo/.git/objects/${name}`)?.fileSha256,
+			expect(m.core.entries.get(`code/copy/.git/objects/${name}`)?.fileSha256, name).toBe(
+				m.core.entries.get(`code/repo/.git/objects/${name}`)?.fileSha256,
 			);
 	}, 60_000);
 
