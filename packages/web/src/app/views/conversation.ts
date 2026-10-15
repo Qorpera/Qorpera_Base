@@ -704,8 +704,9 @@ export class ConversationView {
 			}
 			this.#stickToBottom = scrollHeight - scrollTop - clientHeight < 48 * uiScale();
 		});
-		// A message's own menu: a right-click, or Shift+F10 or the menu key from a link in it.
-		this.#log.addEventListener("contextmenu", (event) => this.#openMessageMenu(event));
+		// A message's own menu: a right-click, or Shift+F10 or the menu key from a link in it. Also on an earlier page's
+		// message, which stands outside the live log.
+		this.#messages.addEventListener("contextmenu", (event) => this.#openMessageMenu(event));
 		if (typeof ResizeObserver !== "undefined") {
 			this.#sizes = new ResizeObserver(() => this.#pinToBottom());
 			this.#sizes.observe(this.#messages);
@@ -1047,6 +1048,9 @@ export class ConversationView {
 		event.preventDefault();
 		const { item, author, mine } = drawn;
 		const point = menuPoint(event, element);
+		// Focus goes back to the link the menu was opened from, else to the message itself.
+		const focused = document.activeElement;
+		const opener = focused instanceof HTMLElement && element.contains(focused) ? focused : this.#focusable(element);
 		openContextMenu({
 			label: t("Message from {name}", { name: author }),
 			x: point.x,
@@ -1059,13 +1063,24 @@ export class ConversationView {
 					select: () => void this.#eraseMessage(item, author, mine),
 				},
 			],
-			opener: element,
+			opener,
 			// The message is redrawn as it changes; focus goes back to the new one.
-			findOpener: () =>
-				[...this.#log.querySelectorAll<HTMLElement>("article.message")].find(
-					(message) => message.dataset.messageId === item.id,
-				) ?? null,
+			findOpener: () => this.#threadMessage(item.id) ?? null,
 		});
+	}
+
+	/** A message of the thread (the live log or an earlier page), ready for the keyboard. */
+	#threadMessage(id: string): HTMLElement | undefined {
+		const message = [...this.#messages.querySelectorAll<HTMLElement>("article.message")].find(
+			(element) => element.dataset.messageId === id,
+		);
+		return message && this.#focusable(message);
+	}
+
+	/** A message has no tab stop of its own; it takes focus only when given back to it. */
+	#focusable(message: HTMLElement): HTMLElement {
+		if (!message.hasAttribute("tabindex")) message.tabIndex = -1;
+		return message;
 	}
 
 	/** Erase one message for the whole company once the member confirms. The line above the composer says how it goes,
@@ -1088,8 +1103,13 @@ export class ConversationView {
 				signal,
 			)) ||
 			signal.aborted
-		)
+		) {
+			// Cancelled: the dialog gave focus back to the link or message the menu was on, or, if a redraw took that, the
+			// message has it.
+			if (!signal.aborted && (!document.activeElement?.isConnected || document.activeElement === document.body))
+				this.#threadMessage(item.id)?.focus({ preventScroll: true });
 			return;
+		}
 		const line: EraseLine = { what };
 		this.#erase = line;
 		this.update();
@@ -2478,6 +2498,7 @@ export class ConversationView {
 		const reviewCard = active?.closest<HTMLElement>("[data-review-id]")?.dataset.reviewId;
 		const proposalCard = active?.closest<HTMLElement>("[data-proposal-id]")?.dataset.proposalId;
 		const changeLine = active?.closest<HTMLElement>("[data-interface-change]")?.dataset.interfaceChange;
+		const focusedMessage = active?.closest<HTMLElement>("article.message[data-message-id]")?.dataset.messageId;
 		// Nodes already in place stay put: a live log re-reads what is taken out and put back.
 		// (replaceChildren would also drop keyboard focus, selection and an in-progress IME edit.)
 		const separatorOf = new Map<HTMLElement, HTMLTimeElement>();
@@ -2673,6 +2694,16 @@ export class ConversationView {
 			);
 			const retry = line?.querySelector<HTMLButtonElement>("button:not(:disabled)");
 			(retry ?? line)?.focus({ preventScroll: true });
+		}
+		// A link in a message that was redrawn without it (the message erased) leaves the keyboard on the message.
+		const lost = !document.activeElement?.isConnected || document.activeElement === document.body;
+		if (focusedMessage && active && !active.isConnected && lost) {
+			const target = this.#threadMessage(focusedMessage);
+			if (target) target.focus({ preventScroll: true });
+			else {
+				this.#messages.tabIndex = -1;
+				this.#messages.focus({ preventScroll: true });
+			}
 		}
 		this.#pinToBottom();
 	}

@@ -501,6 +501,86 @@ describe("conversation UI boundaries", () => {
 		expect(route.request).not.toHaveBeenCalled();
 		expect(notices(f.view.el)).toEqual([]);
 	});
+	it("offers Erase on a message an earlier page brought, outside the live log", async () => {
+		const route = erases(["pending"]);
+		const f = setup({ messageErases: route });
+		const state = f.company.conversation(session.sessionId);
+		const message = (sequence: number, text: string): TranscriptMessage => ({
+			kind: "member",
+			id: id(80 + sequence),
+			sequence,
+			text,
+			attachmentCount: 0,
+			authorUserId: userB.id,
+			createdAt: timestamp,
+		});
+		const newest = { items: [message(3, "Three")], hiddenCount: 0, lastSequence: 3 };
+		state.set({ loading: false, hasEarlier: true, projection: newest });
+		f.view.update();
+		state.set({ earlierLoading: true });
+		f.view.update();
+		const items = [message(1, "One"), message(3, "Three")];
+		state.set({ earlierLoading: false, hasEarlier: false, projection: { items, hiddenCount: 0, lastSequence: 3 } });
+		f.view.update();
+		const older = f.view.el.querySelector<HTMLElement>(".thread-older .message")!;
+		expect(older.textContent).toContain("One");
+		const menu = messageMenu(older);
+		expect(menu.offered).toBe(true);
+		menu.items[0]!.click();
+		await settle();
+		button(document.querySelector(".modal-backdrop")!, "Erase").click();
+		await settle();
+		expect(route.request).toHaveBeenCalledWith(session.sessionId, id(81), expect.any(AbortSignal));
+	});
+	it("gives the keyboard back to the link or the message the menu was opened on", async () => {
+		const route = erases(["pending"]);
+		const f = setup({ messageErases: route });
+		const reply: TranscriptMessage = {
+			kind: "agent",
+			id: id(83),
+			sequence: 1,
+			text: "See [the plan](https://example.com/plan).",
+			attachmentCount: 0,
+			phase: "final",
+			createdAt: timestamp,
+			authorUserId: userA.id,
+		};
+		const state = f.company.conversation(session.sessionId);
+		state.set({ loading: false, projection: { items: [reply], hiddenCount: 0, lastSequence: 1 } });
+		f.view.update();
+		const message = f.view.el.querySelector<HTMLElement>(".message")!;
+		const link = message.querySelector<HTMLElement>("a[href]")!;
+		const pressEscape = (menu: HTMLElement | null) =>
+			menu?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		// Shift+F10 on a link in the message, then Escape: the link has the keyboard again.
+		link.focus();
+		const fromLink = messageMenu(link);
+		expect(fromLink.offered).toBe(true);
+		pressEscape(fromLink.menu);
+		expect(document.activeElement).toBe(link);
+		// And again after Cancel in the dialog that Erase opens.
+		messageMenu(link).items[0]!.click();
+		await settle();
+		button(document.querySelector(".modal-backdrop")!, "Cancel").click();
+		await settle();
+		expect(document.activeElement).toBe(link);
+		// A right-click elsewhere in it, with the keyboard outside the message: the message itself takes the keyboard.
+		link.blur();
+		pressEscape(messageMenu(message.querySelector(".bubble")!).menu);
+		expect(document.activeElement).toBe(message);
+		messageMenu(message).items[0]!.click();
+		await settle();
+		button(document.querySelector(".modal-backdrop")!, "Cancel").click();
+		await settle();
+		expect(document.activeElement).toBe(message);
+		expect(route.request).not.toHaveBeenCalled();
+		// The message erased and drawn again without its link: the message keeps the keyboard.
+		link.focus();
+		state.set({ projection: { items: [{ ...reply, text: "", erased: true }], hiddenCount: 0, lastSequence: 1 } });
+		f.view.update();
+		expect(link.isConnected).toBe(false);
+		expect(document.activeElement).toBe(f.view.el.querySelector(".message"));
+	});
 	it("says in plain words why an erase stopped", async () => {
 		const cases: [Partial<Record<"request" | "status", MessageEraseError>>, MessageErase["state"][], string][] = [
 			[{ request: new MessageEraseError("no", 403) }, [], "Only an owner or admin can erase messages."],
