@@ -24,26 +24,6 @@ export {
 	recentDeliveredStaffAgentMessages,
 	staffAgentMessagesPath,
 } from "./company-agent-messages.ts";
-export type {
-	CompanyArtifactConnectionTransition,
-	CompanyArtifactFounderUpdate,
-	CompanyArtifactMetricDirection,
-	CompanyArtifactObservationUpdate,
-	CompanyArtifactRecord,
-	CompanyArtifactSourceAssessmentUpdate,
-	CompanyArtifactSourceAssessor,
-	CompanyArtifactSourceIssueUpdate,
-	StarterArtifactDefinition,
-} from "./company-artifacts.ts";
-export {
-	assessCompanyArtifactSource,
-	createStarterCompanyArtifact,
-	readCompanyArtifacts,
-	recordCompanyArtifactObservation,
-	reportCompanyArtifactSourceIssue,
-	transitionCompanyArtifactConnection,
-	updateCompanyArtifact,
-} from "./company-artifacts.ts";
 
 export interface StaffAgentAppearance {
 	color: string;

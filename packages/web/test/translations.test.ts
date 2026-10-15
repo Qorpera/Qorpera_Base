@@ -21,9 +21,8 @@ function sourceFiles(dir: string): string[] {
 	});
 }
 
-// Shared code that takes t() as an option: the live Company File panel
-// (member-web) and the routine trigger words (cloud-client).
-const SHARED = ["../../member-web/src/file-panel.ts", "../../cloud-client/src/cloud-routines.ts"].map((path) =>
+// Shared code that takes t() as an option: the routine trigger words (cloud-client).
+const SHARED = ["../../cloud-client/src/cloud-routines.ts"].map((path) =>
 	fileURLToPath(new URL(path, import.meta.url)),
 );
 const sources = [...sourceFiles(SRC), ...SHARED].map((path) => ({
@@ -101,8 +100,7 @@ describe("Danish interface text", () => {
 	it("leaves no English unwrapped where interface text goes", () => {
 		// The data layer (src/cloud) writes no interface text; the developer's cloud
 		// check stays English by decision (DECISIONS.md, 2026-09-24).
-		const checked = (path: string) =>
-			!path.startsWith("cloud/") && path !== "app/views/cloudcheck.ts" && !path.startsWith("member-web/");
+		const checked = (path: string) => !path.startsWith("cloud/") && path !== "app/views/cloudcheck.ts";
 		// Names and examples that read the same in every language.
 		const allowed = new Set(["Qorpera", "Co-Founder", "finance/invoices"]);
 		// A string or a template literal (\x60 is the backtick).

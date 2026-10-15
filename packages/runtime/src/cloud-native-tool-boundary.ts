@@ -3,7 +3,6 @@ import type { JsonValue } from "@qorpera/contracts";
 import type { CloudActionGateResult } from "./cloud-action-review.ts";
 import type { CompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
 import {
-	CloudCompanyFormationRefused,
 	CloudCompanyPathParentMissing,
 	CloudCompanyPathRpcRefusal,
 	CloudCompanyPathToolRefusal,
@@ -54,9 +53,6 @@ const WORK_LOG_GONE =
 /** The answer to a repeat of a call its run was cut off in (W5, RUNTIME-AGENT-MEMORY-TREE.md §12). */
 const OUTCOME_UNKNOWN =
 	"OUTCOME_UNKNOWN: Your run was cut off while this action ran, so it may or may not have happened, and this operation key cannot run it again. Check whether it happened before you repeat it; repeat it only if it did not, under a new operation key.";
-
-/** Prefix for a formation write the organization projection would refuse; the gateway's reason follows. */
-const COMPANY_FORMATION_REFUSED = "COMPANY_FORMATION_REFUSED: nothing was written; ";
 
 /** Fixed wording for a definite missing-folder refusal of a Company File write or mkdir. */
 const COMPANY_FILE_PARENT_MISSING =
@@ -615,7 +611,6 @@ export class CloudNativeToolBoundary {
 					REVIEW_UNAVAILABLE: "review_unavailable",
 					COMPANY_FILE_VERSION_CHANGED: "stale_version",
 					COMPANY_FILE_PARENT_MISSING: "parent_missing",
-					COMPANY_FORMATION_REFUSED: "invalid_arguments",
 					WORK_LOG_UNAVAILABLE: "transport_unavailable",
 					WORK_LOG_GONE: "authority_unavailable",
 				} as const;
@@ -967,19 +962,6 @@ export class CloudNativeToolBoundary {
 			) {
 				observation?.finish("denied", { errorCategory: "parent_missing" });
 				return this.#result(callId, tool, digest, "denied", { kind: "text", value: COMPANY_FILE_PARENT_MISSING });
-			}
-			// Refused after the check, before anything is staged: the reason names only fixed formation keys and numbers.
-			if (
-				error instanceof CloudCompanyFormationRefused &&
-				!this.#signal.aborted &&
-				tool.source === "company_file" &&
-				tool.name === "company_write"
-			) {
-				observation?.finish("denied", { errorCategory: "invalid_arguments" });
-				return this.#result(callId, tool, digest, "denied", {
-					kind: "text",
-					value: `${COMPANY_FORMATION_REFUSED}${error.reason}`,
-				});
 			}
 			// A call its run was cut off in: it may have happened, and its key is spent, so the model checks first.
 			if (error instanceof CloudToolOutcomeUnknown && !this.#signal.aborted) {

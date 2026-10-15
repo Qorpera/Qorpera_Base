@@ -827,7 +827,8 @@ revoke all on function public.qorpera_memory_run_log_admits(uuid, text, jsonb, t
 
 -- A run log file's own rules, for each one a unit writes (§4.5). run.toml names the run's origin and never changes. A
 -- log block is 1 to 16 step lines from its number on, after the log's last step or a block of the same commit: a step
--- stays in its block, a finished or erased line never changes and a pending one only to its finished form; a new
+-- stays in its block, a finished or erased line never changes and a pending one only to its finished form, which
+-- names every path it named (or is narrow); a new
 -- erased line is the erase's (W5). A narrow log, a log from its first narrow step on and a run whose machine went narrow
 -- take only narrow lines; a line that is not narrow names only paths every agent reads. A run tree block parses. Returns
 -- a refusal or null.
@@ -924,6 +925,11 @@ begin
 				v_problem := 'step ' || (v_start + v_no - 1) || ' changes only to its finished form';
 			elsif (v_old.run_id is null or v_old.line_sha256 <> v_parsed ->> 'line_sha256') and (v_parsed ->> 'erased')::boolean then
 				v_problem := 'only an erase writes an erased step';
+			-- A pending line's paths stay in its finished form, so an erase still finds what its arguments hold; only the
+			-- narrow form, which holds none of it, drops them.
+			elsif v_old.run_id is not null and not (v_old.erased or v_old.finished) and not (v_parsed ->> 'narrow')::boolean
+				and not (v_old.needles <@ public.qorpera_memory_run_step_needles(v_parsed -> 'paths')) then
+				v_problem := 'step ' || (v_start + v_no - 1) || ' keeps every path it named while pending';
 			elsif v_old.run_id is null and v_start + v_no - 1 < coalesce(v_row.step_count, 0) then
 				v_problem := 'step ' || (v_start + v_no - 1) || ' is missing from its block';
 			elsif (v_old.run_id is null or v_old.line_sha256 <> v_parsed ->> 'line_sha256')

@@ -26,19 +26,10 @@ const roomId = "11111111-1111-4111-8111-111111111116";
 const pathVersionId = "11111111-1111-4111-8111-111111111117";
 const workspaceId = "22222222-2222-4222-8222-222222222222";
 const snapshotId = "44444444-4444-4444-8444-444444444444";
-const artifactId = "88888888-8888-4888-8888-888888888888";
-const clientArtifactId = "99999999-9999-4999-8999-999999999999";
 const artifactIndexId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const clientArtifactIndexId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-const artifactHoldId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
-const clientArtifactHoldId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const objectGraphId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const objectProofId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
-const artifactGcPlanId = "12121212-1212-4121-8121-121212121212";
-const clientArtifactGcPlanId = "13131313-1313-4131-8131-131313131313";
 const treeManifestSha256 = "b".repeat(64);
-const artifactContentSha256 = "d".repeat(64);
-const artifactIndexContentSha256 = "e".repeat(64);
 
 function profileRecord() {
 	return {
@@ -234,83 +225,6 @@ function accountEntitlementRecord() {
 	};
 }
 
-function artifactRecord() {
-	return {
-		artifact_id: artifactId,
-		profile_id: profileId,
-		environment_id: environmentId,
-		client_artifact_id: clientArtifactId,
-		session_id: sessionId,
-		artifact_type: "report",
-		name: "90-day financial snapshot",
-		root_object_sha256: treeManifestSha256,
-		root_contract: "qorpera.cloud-file-manifest/v1",
-		content_sha256: artifactContentSha256,
-		bytes: 4096,
-		media_type: "application/pdf",
-		created_by_user_id: actorUserId,
-		created_at: createdAt,
-		eligible_for_gc_at: "2026-09-15T12:00:00.000Z",
-	};
-}
-
-function artifactGcPlanRecord(status = "waiting") {
-	return {
-		plan_id: artifactGcPlanId,
-		profile_id: profileId,
-		artifact_id: artifactId,
-		graph_id: objectGraphId,
-		restore_proof_id: objectProofId,
-		client_plan_id: clientArtifactGcPlanId,
-		status,
-		object_count: 2,
-		storage_bytes: 5120,
-		not_before: "2026-08-17T12:00:00.000Z",
-		next_attempt_at: "2026-08-17T12:00:00.000Z",
-		attempt_count: 0,
-		last_error: null,
-		created_by_user_id: actorUserId,
-		created_at: createdAt,
-		started_at: null,
-		completed_at: status === "completed" ? "2026-08-17T12:00:00.000Z" : null,
-		cancelled_by_user_id: status === "cancelled" ? actorUserId : null,
-		cancelled_at: status === "cancelled" ? "2026-08-16T13:00:00.000Z" : null,
-		pending_object_count: status === "completed" ? 0 : 2,
-		deleted_object_count: status === "completed" ? 2 : 0,
-		retained_object_count: 0,
-	};
-}
-
-function artifactIndexRecord() {
-	return {
-		index_id: artifactIndexId,
-		profile_id: profileId,
-		environment_id: environmentId,
-		client_index_id: clientArtifactIndexId,
-		contract_version: 1,
-		content_sha256: artifactIndexContentSha256,
-		artifact_count: 1,
-		total_bytes: 4096,
-		created_by_user_id: actorUserId,
-		created_at: createdAt,
-	};
-}
-
-function artifactHoldRecord(released = false) {
-	return {
-		hold_id: artifactHoldId,
-		profile_id: profileId,
-		artifact_id: artifactId,
-		client_hold_id: clientArtifactHoldId,
-		reason: "Financial evidence",
-		expires_at: null,
-		created_by_user_id: actorUserId,
-		created_at: createdAt,
-		released_by_user_id: released ? actorUserId : null,
-		released_at: released ? "2026-08-17T12:00:00.000Z" : null,
-	};
-}
-
 function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrimaryTransport {
 	return {
 		getCompanyOrganization: vi.fn(async () => companyOrganizationRecord()),
@@ -424,37 +338,6 @@ function transport(overrides: Partial<HostedPrimaryTransport> = {}): HostedPrima
 		appendAccountEvent: vi.fn(async (input) => eventRecord(input.p_event_type)),
 		readSessionEvents: vi.fn(async () => [eventRecord()]),
 		getCompanyFile: vi.fn(async () => companyFileRecord()),
-		registerArtifact: vi.fn(async () => artifactRecord()),
-		createArtifactIndex: vi.fn(async () => artifactIndexRecord()),
-		getArtifactIndex: vi.fn(async () => artifactIndexRecord()),
-		listArtifactIndexEntries: vi.fn(async () => [{ ...artifactRecord(), ordinal: 1 }]),
-		createArtifactRetentionHold: vi.fn(async () => artifactHoldRecord()),
-		releaseArtifactRetentionHold: vi.fn(async () => artifactHoldRecord(true)),
-		listArtifactGcCandidates: vi.fn(async () => [
-			{
-				...artifactRecord(),
-				reachability_graph_id: objectGraphId,
-				reachability_ready: true,
-				deletable_object_count: 2,
-				deletable_storage_bytes: 5120,
-				object_deletion_ready: true,
-				blocked_reason: null,
-			},
-		]),
-		createArtifactGcPlan: vi.fn(async () => artifactGcPlanRecord()),
-		listArtifactGcPlans: vi.fn(async () => [artifactGcPlanRecord()]),
-		listArtifactGcAudit: vi.fn(async () => [
-			{
-				receipt_id: 1,
-				plan_id: artifactGcPlanId,
-				event_type: "created",
-				payload: { object_count: 2 },
-				actor_user_id: actorUserId,
-				created_at: createdAt,
-			},
-		]),
-		cancelArtifactGcPlan: vi.fn(async () => artifactGcPlanRecord("cancelled")),
-		retryArtifactGcPlan: vi.fn(async () => artifactGcPlanRecord("retrying")),
 		...overrides,
 	};
 }
@@ -871,87 +754,6 @@ describe("Qorpera hosted primary", () => {
 			state: "ready",
 			storageLimitBytes: 50 * 1024 * 1024 * 1024,
 		});
-	});
-
-	it("registers immutable artifacts, indexes them, and exposes only guarded cleanup controls", async () => {
-		const fake = transport();
-		const primary = new QorperaHostedPrimary(fake);
-		await expect(
-			primary.registerArtifact({
-				environmentId,
-				clientArtifactId,
-				sessionId,
-				artifactType: "report",
-				name: " 90-day financial snapshot ",
-				rootObjectSha256: treeManifestSha256,
-				rootContract: "qorpera.cloud-file-manifest/v1",
-				contentSha256: artifactContentSha256,
-				bytes: 4096,
-				mediaType: "Application/PDF",
-			}),
-		).resolves.toMatchObject({ artifactId, artifactType: "report", mediaType: "application/pdf" });
-		expect(fake.registerArtifact).toHaveBeenCalledWith({
-			p_environment_id: environmentId,
-			p_client_artifact_id: clientArtifactId,
-			p_session_id: sessionId,
-			p_artifact_type: "report",
-			p_name: "90-day financial snapshot",
-			p_root_object_sha256: treeManifestSha256,
-			p_root_contract: "qorpera.cloud-file-manifest/v1",
-			p_content_sha256: artifactContentSha256,
-			p_bytes: 4096,
-			p_media_type: "application/pdf",
-		});
-
-		await expect(
-			primary.createArtifactIndex({
-				environmentId,
-				clientIndexId: clientArtifactIndexId,
-				artifactIds: [artifactId],
-			}),
-		).resolves.toMatchObject({ indexId: artifactIndexId, artifactCount: 1, totalBytes: 4096 });
-		await expect(primary.getArtifactIndex(artifactIndexId)).resolves.toMatchObject({ indexId: artifactIndexId });
-		await expect(primary.listArtifactIndexEntries(artifactIndexId, 0, 50)).resolves.toMatchObject([
-			{ ordinal: 1, artifactId },
-		]);
-		await expect(
-			primary.createArtifactRetentionHold(artifactId, clientArtifactHoldId, "Financial evidence"),
-		).resolves.toMatchObject({ holdId: artifactHoldId, artifactId });
-		await expect(primary.releaseArtifactRetentionHold(artifactHoldId)).resolves.toMatchObject({
-			holdId: artifactHoldId,
-			releasedByUserId: actorUserId,
-		});
-		await expect(primary.listArtifactGcCandidates(profileId, 50)).resolves.toMatchObject([
-			{
-				artifactId,
-				objectDeletionReady: true,
-				reachabilityReady: true,
-				reachabilityGraphId: objectGraphId,
-				deletableObjectCount: 2,
-				deletableStorageBytes: 5120,
-			},
-		]);
-
-		await expect(primary.createArtifactGcPlan(artifactId, clientArtifactGcPlanId)).resolves.toMatchObject({
-			planId: artifactGcPlanId,
-			status: "waiting",
-			pendingObjectCount: 2,
-		});
-		expect(fake.createArtifactGcPlan).toHaveBeenCalledWith({
-			p_artifact_id: artifactId,
-			p_client_plan_id: clientArtifactGcPlanId,
-		});
-		await expect(primary.listArtifactGcPlans(profileId, 50)).resolves.toMatchObject([
-			{ planId: artifactGcPlanId, status: "waiting" },
-		]);
-		await expect(primary.listArtifactGcAudit(artifactGcPlanId, 0, 50)).resolves.toMatchObject([
-			{ receiptId: 1, planId: artifactGcPlanId, eventType: "created" },
-		]);
-		await expect(primary.cancelArtifactGcPlan(artifactGcPlanId)).resolves.toMatchObject({
-			status: "cancelled",
-			cancelledByUserId: actorUserId,
-		});
-		await expect(primary.retryArtifactGcPlan(artifactGcPlanId)).resolves.toMatchObject({ status: "retrying" });
 	});
 
 	it("pages events and rejects malformed or oversized boundary data", async () => {
