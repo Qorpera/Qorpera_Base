@@ -1,0 +1,14 @@
+# Carries each connection on qorpera-docker.socket to the rootless daemon's own
+# socket. It starts the daemon first and stops with it. socat rather than
+# systemd-socket-proxyd: when a client closes only its sending side (docker run -i
+# when its stdin ends), the daemon must see that half-close and still answer, and
+# systemd-socket-proxyd closes the whole connection instead. -t is how long a
+# half-closed connection waits for the other side (23 days; socat's default is
+# half a second).
+[Unit]
+Description=The session's Docker socket, carried to its rootless daemon
+Requires=qorpera-docker.socket qorpera-dockerd.service
+After=qorpera-docker.socket qorpera-dockerd.service
+
+[Service]
+ExecStart=/usr/bin/socat -t 2000000 ACCEPT-FD:3,fork UNIX-CONNECT:%t/docker-rootless/docker.sock
