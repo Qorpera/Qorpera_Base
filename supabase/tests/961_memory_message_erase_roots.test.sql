@@ -407,8 +407,9 @@ begin
 	perform pg_temp.same(pg_temp.keys(eid), jsonb_build_array(moved || '/images/' || cid || ':images:-:key',
 		root || '/images/' || cid || ':images:-:key'), 'The images folders by the input''s id');
 	perform pg_temp.same(pg_temp.rewrite(eid) -> 'state', '"rewritten"', 'Step 2 with no tree ever');
+	-- Both keys are one folder before and after the move, so the second request waits once for the first's versions phase.
 	perform pg_temp.same(pg_temp.ask_all(eid) - 'eraseId' - 'sessionId' - 'eventId', '{"schema":"qorpera.memory-message-erase/v1",'
-		'"state":"requested","blocks":2,"runsPending":0,"waits":0}', 'Step 3 with no tree ever');
+		'"state":"requested","blocks":2,"runsPending":0,"waits":1}', 'Step 3 with no tree ever');
 	perform pg_temp.drain(b.erasure_id) from public.qorpera_memory_message_erase_blocks b where b.erase_id = eid;
 	perform pg_temp.same(jsonb_build_array(pg_temp.versions_at(root || '/images/' || cid), pg_temp.versions_at(moved || '/images/' || cid)),
 		'[0, 0]', 'No version of the image left');

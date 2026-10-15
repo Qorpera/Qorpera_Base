@@ -548,12 +548,16 @@ end $$;
 
 do $$
 declare
-	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); v_run public.qorpera_execution_runs;
+	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); v_run public.qorpera_execution_runs; r jsonb;
 begin
 	select * into v_run from public.qorpera_execution_runs where id = '96000000-0000-4000-8000-0000000000a1';
-	perform pg_temp.same(public.qorpera_company_context_source(v_run, 'history', (pg_temp.event(s, 7)).event_id) - 'id',
+	r :=public.qorpera_company_context_source(v_run, 'history', (pg_temp.event(s, 7)).event_id);
+	-- Master's chat images (20260930360000) list a message's images in place of its attachment count: neither names any.
+	perform pg_temp.same(r - 'id' - 'attachmentCount' - 'images',
 		jsonb_build_object('kind', 'historical_data', 'sourceKind', 'history', 'actorKind', 'company_service', 'authorUserId', null,
-			'sequence', 7, 'attachmentCount', 0, 'text', '(erased)'), 'An erased message reads (erased)');
+			'sequence', 7, 'text', '(erased)'), 'An erased message reads (erased)');
+	perform pg_temp.same(jsonb_build_array(coalesce(r -> 'attachmentCount', '0'), coalesce(r -> 'images', '[]')), '[0, []]',
+		'An erased message names no attachment or image');
 	perform pg_temp.same(public.qorpera_company_context_source(v_run, 'history', (pg_temp.event(s, 6)).event_id) -> 'text',
 		to_jsonb((pg_temp.event(s, 6)).body::text), 'Its neighbour reads as it was');
 end $$;
