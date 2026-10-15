@@ -27,6 +27,7 @@ import { MountGrants, parseOperatorMounts } from "../src/folder-service/mounts.t
 import type { CommitUnit } from "../src/folder-service/plan.ts";
 import type { BridgeInfo } from "../src/folder-service/protocol.ts";
 import type { FolderUploads, Upload } from "../src/folder-service/staging.ts";
+import type { CreditedUnit } from "../src/folder-service/windows.ts";
 
 export const ENV = "11111111-2222-4333-8444-555555555555";
 export const PROFILE = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
@@ -303,6 +304,8 @@ export class FakeCore implements FolderCore {
 	#nextVersion = 1000;
 	/** A path's units the core refuses (no write authority there). */
 	refuse: (path: string) => boolean = () => false;
+	/** Commands that have ended (F3 6a-2): a test machine's unit credited to one of them is refused. */
+	readonly endedCommands = new Set<string>();
 	/** A path's units the core parks for review, applying nothing (P40: an agent's change that needs a member's). */
 	park: (path: string) => boolean = () => false;
 	/** Whether a conflicting write or new folder keeps its files on the receipt (P17 keeps them only when their bytes
@@ -378,7 +381,8 @@ export class FakeCore implements FolderCore {
 	/** The core's unit rules (core §3), each unit whole or not at all, applied in order; the saved ones are one change
 	 * set on the journal. A key asked again with the same units (and the same `final`) answers the same, its view
 	 * closed or not, given its pass; with others, 22023. A command view's final (20260930183000) closes it, saved or
-	 * not, and may be empty; once its command has ended, the view saves nothing else (42501). */
+	 * not, and may be empty; once its command has ended, the view saves nothing else (42501). A test machine's final
+	 * closes its view the same way (F3 6a). */
 	async commit(environmentId: string, actor: CommitActor, key: string, units: readonly unknown[]) {
 		await this.commitGate;
 		await this.commitHook?.(this.commits.length);
@@ -395,7 +399,8 @@ export class FakeCore implements FolderCore {
 			return this.#answered(earlier.answer);
 		}
 		const view = this.#check(actor, environmentId);
-		if (final && view?.kind !== "computer_shell_command") throw new CoreRefusal("invalid");
+		if (final && view?.kind !== "computer_shell_command" && view?.kind !== "test_machine")
+			throw new CoreRefusal("invalid");
 		if (units.length === 0 && !final) throw new CoreRefusal("invalid");
 		if (view?.kind === "computer_shell_command" && view.ended && !final)
 			throw new CoreRefusal("denied", COMMAND_ENDED);
@@ -453,6 +458,8 @@ export class FakeCore implements FolderCore {
 				)
 					return no("refused", "bytes_unverified");
 			}
+			const credits = (u as CreditedUnit).credits ?? [];
+			if (credits.some((id) => this.endedCommands.has(id))) return no("refused", "command_ended");
 			if (this.refuse(path) || (u.op === "move" && this.refuse(u.from))) return no("denied", "denied");
 			if (this.park(path)) return no("waiting_for_review", "parked");
 			const conflict = (reason: string): CommitOutcome => {
@@ -744,6 +751,21 @@ export const CODE_HOST: MachineRef = {
 /** As `companyGrants`, and the coding project's machines present their own coding sessions' views. */
 export function codingGrants(): MountGrants {
 	return new MountGrants([], [EXEC_HOST], [OFFICE_PROJECT], [CODING_PROJECT]);
+}
+
+/** The node's test machine project (F3 6b), a test machine's placement, and the instance the node made for it, named
+ * after it (`lxdCompanyMachineName`). */
+export const TEST_PROJECT = "qn25b2-machines";
+export const PLACEMENT = "7e570000-1111-4222-8333-444455556666";
+export const TEST_MACHINE: MachineRef = {
+	project: TEST_PROJECT,
+	name: `qorpera-machine-${PLACEMENT.replaceAll("-", "")}`,
+	physicalId: "ffffffff-0000-4111-8222-333333333333",
+};
+
+/** As `codingGrants`, and the test machine project's instances present their own test machines' views. */
+export function testGrants(): MountGrants {
+	return new MountGrants([], [EXEC_HOST], [OFFICE_PROJECT], [CODING_PROJECT], [TEST_PROJECT]);
 }
 
 /** The object gateway's route for the folder service, onto the stand-in share: each put checked against its hash,
