@@ -1,13 +1,15 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, realpath, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parseCloudMachineCommandReceipt } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CodingControlBusy } from "../src/coding-executor.ts";
+import { CodingControlBusy, CodingControlRefused } from "../src/coding-executor.ts";
 import type { CodingMachineIntent } from "../src/coding-machine.ts";
 import { type LxdCompanyMachineBinding, lxdCompanyMachinePlan } from "../src/company-machine.ts";
 import { type CompanyMachineEntry, LxdCompanyMachineHost } from "../src/company-machine-host.ts";
-import type { LxdInstanceRecord, LxdTrackedInstanceAction } from "../src/lxd-client.ts";
+import type { FolderControl, FolderReads } from "../src/folder-control.ts";
+import type { LxdExecStreamRequest, LxdInstanceRecord, LxdTrackedInstanceAction } from "../src/lxd-client.ts";
 import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 
 const state = vi.hoisted(() => ({ controlPath: "" }));
@@ -54,13 +56,34 @@ function binding(): LxdCompanyMachineBinding {
 	};
 }
 
-/** SQL's side: one machine as the executor's list shows it, and every call recorded. */
-async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: string[] } = {}) {
+/** SQL's side: one machine as the executor's list shows it, and every call recorded. With `folder`, the node's folder
+ * service too (F3 6d): every request recorded, in one order with SQL's calls and the guest's helper. */
+async function fixture(options: { helperSha256?: string; previousHelperSha256s?: string[]; folder?: boolean } = {}) {
+	const { folder: withFolder, ...pins } = options;
 	state.controlPath = await realpath(await mkdtemp(join(tmpdir(), "company-machine-host-")));
 	await chmod(state.controlPath, 0o700);
 	roots.push(state.controlPath);
 	const plan = lxdCompanyMachinePlan(binding());
-	const boot = randomUUID();
+	let boot = randomUUID();
+	/** SQL's calls (`sql:`), the folder service's requests (`folder:`), the helper's actions (`exec:`), the hand-overs
+	 * (`mount`), the inbox pushes (`push`) and LXD's operations (`lxd:`), in the order they were made. */
+	const order: string[] = [];
+	/** The views SQL opened, and the refusal its next open gives (a detail). */
+	const views = { opened: [] as { viewId: string; pass: string }[], refusal: undefined as string | null | undefined };
+	/** The folder service: the reads its boundaries answer, the views it holds, and whether it answers at all. */
+	const service = {
+		reads: "released" as FolderReads,
+		/** Each window close's reads, in turn (then `reads`). */
+		closes: [] as FolderReads[],
+		held: [] as string[],
+		down: false,
+		requests: [] as Record<string, unknown>[],
+	};
+	/** What the guest's folder-mount answers, in turn (then mounted): its mount, or a refusal's code. */
+	const mounts: string[] = [];
+	const handovers: { command: readonly string[]; stdin: Record<string, unknown> }[] = [];
+	/** Fields a command's receipt has besides the running one's. */
+	let result: Record<string, unknown> = {};
 	const entry: CompanyMachineEntry & { schema: string } = {
 		schema: "qorpera.company-machine-state/v2",
 		machineId: id(2),
@@ -90,7 +113,16 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 	const control = {
 		call: vi.fn(async (method: string, args: Record<string, unknown>) => {
 			calls.push({ method, args });
+			order.push(`sql:${method}`);
 			if (busy.has(method)) throw new CodingControlBusy();
+			if (method === "qorpera_folder_view_open") {
+				if (views.refusal !== undefined) throw new CodingControlRefused(views.refusal);
+				const view = { viewId: randomUUID(), pass: randomBytes(32).toString("base64url") };
+				views.opened.push(view);
+				const leaseUntil = new Date(Date.now() + 120000).toISOString();
+				return { schema: "qorpera.folder-view/v1", ...view, leaseUntil };
+			}
+			if (method === "qorpera_folder_view_close") return { state: "closed" };
 			if (method === "qorpera_admit_executor_machines") {
 				const next = admissions.shift() ?? [];
 				if (next instanceof Error) throw next;
@@ -128,6 +160,7 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 	const client = {
 		getInstance: vi.fn(async () => instance),
 		submitInstanceOperation: vi.fn(async (_project: string, action: LxdTrackedInstanceAction) => {
+			order.push(`lxd:${action.action}`);
 			pending = action;
 			return { project: "machines", instanceName: plan.request.name, operationId: randomUUID() };
 		}),
@@ -156,6 +189,7 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 		execInstance: vi.fn(async (_project: string, _name: string, command: readonly string[]) => {
 			if (command[0] !== "/usr/bin/node") return;
 			const [nonce, action, ...args] = command.slice(2);
+			order.push(`exec:${action}`);
 			replies.set(
 				nonce,
 				action === "prepare"
@@ -197,9 +231,29 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 											limitBytes: 67108864,
 											limitReached: false,
 										},
+										...result,
 									},
 			);
 		}),
+		...(withFolder
+			? {
+					// The guest's folder-mount (F3 6c): the view on stdin, its answer in the reply file.
+					execInstanceStream: vi.fn(async (_project: string, _name: string, request: LxdExecStreamRequest) => {
+						order.push("mount");
+						const stdin = JSON.parse(request.stdin.toString("utf8")) as Record<string, unknown>;
+						handovers.push({ command: request.command, stdin });
+						const mount = mounts.shift() ?? "mounted";
+						replies.set(
+							request.command[2],
+							["mounted", "closed", "unanswered"].includes(mount)
+								? { schema: "qorpera.machine-guest-folder/v1", viewId: stdin.viewId, mount }
+								: { schema: "qorpera.machine-guest-refusal/v1", code: mount },
+						);
+						if (mount === "mounted") service.held.push(stdin.viewId as string);
+						return { exitCode: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+					}),
+				}
+			: {}),
 		readInstanceFile: vi.fn(async (_project: string, _name: string, path: string) => {
 			if (path === "/opt/qorpera-machine/cloud-machine-guest.mjs")
 				return { content: helper, uid: 0, gid: 0, mode: 0o444 };
@@ -207,27 +261,57 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 			if (!nonce || !replies.has(nonce)) throw new Error("LXD instance file unavailable");
 			return { content: Buffer.from(JSON.stringify(replies.get(nonce))), uid: 0, gid: 0, mode: 0o600 };
 		}),
-		pushInstanceFile: vi.fn(async () => {}),
+		pushInstanceFile: vi.fn(async () => {
+			order.push("push");
+		}),
+	};
+	const ask = (request: Record<string, unknown>) => {
+		service.requests.push(request);
+		order.push(`folder:${request.op}`);
+		if (service.down) throw new Error("FOLDER_CONTROL_UNANSWERED");
+	};
+	const answer = (machine: string, reads: FolderReads) => ({
+		machine,
+		reads,
+		views: service.held.map((viewId) => ({ viewId, report: {} })),
+	});
+	const folder: FolderControl = {
+		boundary: async (machine, final) => {
+			ask({ op: "boundary", machine, final: [...final] });
+			const boundary = answer(machine, service.reads);
+			// A final closes its views in the core.
+			service.held = service.held.filter((viewId) => !final.includes(viewId));
+			return boundary;
+		},
+		restarted: async (machine) => ask({ op: "restarted", machine }),
+		openWindow: async (machine, window) => ask({ op: "open", machine, ...window }),
+		closeWindow: async (machine, commandId) => {
+			ask({ op: "close", machine, commandId });
+			return answer(machine, service.closes.shift() ?? service.reads);
+		},
 	};
 	const agentPlug = vi.fn(testAgentPlug);
-	const host = new LxdCompanyMachineHost({
-		control,
-		owner: "mx-a",
-		machineIdSha256: "d".repeat(64),
-		policy,
-		client,
-		journalRoot: state.controlPath,
-		storagePolicy: {
-			schema: "qorpera.coding-nas-policy/v1",
-			mountPoint: "/nas",
-			rootPath: "/nas/coding",
-			source: "10.0.0.2:/coding",
-			serverAddress: "10.0.0.2",
-		},
-		helperSha256,
-		agentPlug,
-		...pins,
-	});
+	const make = () =>
+		new LxdCompanyMachineHost({
+			control,
+			owner: "mx-a",
+			machineIdSha256: "d".repeat(64),
+			policy,
+			client,
+			journalRoot: state.controlPath,
+			storagePolicy: {
+				schema: "qorpera.coding-nas-policy/v1",
+				mountPoint: "/nas",
+				rootPath: "/nas/coding",
+				source: "10.0.0.2:/coding",
+				serverAddress: "10.0.0.2",
+			},
+			helperSha256,
+			agentPlug,
+			...pins,
+			...(withFolder ? { folder } : {}),
+		});
+	let host = make();
 	const signal = new AbortController().signal;
 	return {
 		entry,
@@ -236,10 +320,34 @@ async function fixture(pins: { helperSha256?: string; previousHelperSha256s?: st
 		admissions,
 		busy,
 		client,
-		host,
+		get host() {
+			return host;
+		},
 		agentPlug,
 		signal,
-		boot,
+		get boot() {
+			return boot;
+		},
+		order,
+		views,
+		service,
+		mounts,
+		handovers,
+		/** The guest boots again (its helper answers a new boot id). */
+		reboot: () => {
+			boot = randomUUID();
+		},
+		/** The executor's process restarts: a new host, with nothing in memory. */
+		restart: () => {
+			host = make();
+		},
+		/** SQL knows the boot runs, as after its mark. */
+		running: (commands: string[] = []) => {
+			Object.assign(entry, { runningAt: new Date().toISOString(), bootId: boot, commands });
+		},
+		result: (value: Record<string, unknown>) => {
+			result = value;
+		},
 		instance: () => instance,
 		observe: (value: unknown) => {
 			observed = value;
@@ -794,6 +902,353 @@ describe("company machine host", () => {
 			),
 		).rejects.toThrow("COMPANY_MACHINE_COMMAND_INVALID");
 		expect(f.client.execInstance.mock.calls.at(-1)?.[2].slice(3)).toEqual(["read", commandId, "tail", "100"]);
+	});
+});
+
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+/** Who a command's window credits: its run, the run's agent and the member who asked. */
+const credit = () => ({ runId: randomUUID(), staffAgentId: randomUUID(), requestedByUserId: randomUUID() });
+type Credit = { runId?: string; staffAgentId?: string; requestedByUserId?: string; bootId?: string | null };
+/** A start of `commandId`, as the gateway authorizes it for the boot SQL knows. */
+function start(f: Fixture, commandId = randomUUID(), who: Credit = credit()) {
+	return f.host.command(
+		{ machineId: id(2), placementId: id(6), commandId, inputSha256: "e".repeat(64), bootId: f.boot, ...who },
+		{ action: "start", commandId, inputSha256: "e".repeat(64), command: "npm test", timeoutMs: null },
+		f.signal,
+	);
+}
+function read(f: Fixture, commandId: string) {
+	return f.host.command(
+		{ machineId: id(2), placementId: id(6), commandId, inputSha256: "e".repeat(64), bootId: f.boot, ...credit() },
+		{ action: "read", read: { commandId, tail: true, limit: 100 } },
+		f.signal,
+	);
+}
+/** A command that printed one line and exited. */
+const finished = {
+	state: "succeeded",
+	exitCode: 0,
+	output: "ok\n",
+	truncated: false,
+	log: { offset: 0, nextOffset: 3, totalBytes: 3, limitBytes: 67108864, limitReached: false },
+};
+const idle = { at: 0, cpuUsec: 0, ioBytes: 0 };
+const recorded = (f: Fixture) =>
+	f.calls.filter((call) => call.method === "qorpera_record_company_machine_commands").map((call) => call.args.p_ended);
+
+describe("company machine host with the node's folder service (F3 6d)", () => {
+	it("opens the boot's own view once SQL knows the boot, and hands it to the guest on stdin alone", async () => {
+		const f = await fixture({ folder: true });
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+		]);
+		expect(f.views.opened).toHaveLength(1);
+		const [view] = f.views.opened;
+		expect(f.calls.find((call) => call.method === "qorpera_folder_view_open")?.args).toEqual({
+			p_environment_id: id(4),
+			p_opener: { kind: "platform" },
+			p_kind: "test_machine",
+			p_anchor: { companyMachineId: id(2), placementId: id(6), bootId: f.boot },
+		});
+		const opened = f.order.indexOf("sql:qorpera_folder_view_open");
+		expect(opened).toBeGreaterThan(f.order.indexOf("sql:qorpera_mark_company_machine_running"));
+		expect(f.order.indexOf("sql:qorpera_mark_company_machine_running")).toBeGreaterThan(-1);
+		expect(f.order.indexOf("mount")).toBeGreaterThan(opened);
+		const helperPath = "/opt/qorpera-machine/cloud-machine-guest.mjs";
+		expect(f.handovers).toEqual([
+			{
+				command: ["/usr/bin/node", helperPath, expect.any(String), "folder-mount"],
+				stdin: { environmentId: id(4), viewId: view.viewId, pass: view.pass },
+			},
+		]);
+		// The pass is in no argument, file or request of the executor's but the hand-over's stdin.
+		const elsewhere = JSON.stringify([
+			f.client.execInstance.mock.calls.map((call) => call.slice(0, 3)),
+			f.client.pushInstanceFile.mock.calls,
+			f.service.requests,
+			f.handovers.map((handover) => handover.command),
+		]);
+		expect(elsewhere).not.toContain(view.pass);
+		// Settled: the next pass of the boot opens and hands over nothing.
+		f.running();
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
+		expect(f.views.opened).toHaveLength(1);
+		expect(f.handovers).toHaveLength(1);
+	});
+
+	it("runs a boot without /company when SQL refuses its view, and then fences none of its commands", async () => {
+		const refusals = [
+			["qorpera.test-machine/new-disk", "FOLDER_NONE:NEW_DISK"],
+			[null, "FOLDER_NONE:REFUSED"],
+		] as const;
+		for (const [detail, code] of refusals) {
+			const f = await fixture({ folder: true });
+			f.views.refusal = detail;
+			const outcome = { placementId: id(6), step: "start", state: "done", folder: code };
+			expect(await f.host.pass(f.signal)).toEqual([outcome]);
+			expect(f.handovers).toEqual([]);
+			f.running([id(7)]);
+			f.observe({ ...idle, ended: [{ commandId: id(7), state: "succeeded", exitCode: 0, outputTail: "ok" }] });
+			expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
+			expect(recorded(f)).toEqual([[{ commandId: id(7), state: "succeeded", exitCode: 0, outputTail: "ok" }]]);
+			f.result(finished);
+			expect(await start(f)).toMatchObject({ state: "succeeded", exitCode: 0, output: "ok\n" });
+			// No window and no boundary: the service is never asked about this boot.
+			expect(f.service.requests).toEqual([]);
+			expect(f.methods().filter((method) => method === "qorpera_folder_view_open")).toHaveLength(1);
+		}
+	});
+
+	it("gives a guest of an earlier image, which has no folder-mount, no view", async () => {
+		const f = await fixture({ folder: true, helperSha256: "0".repeat(64), previousHelperSha256s: [helperSha256] });
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_NONE:OLD_HELPER" },
+		]);
+		expect(f.methods()).not.toContain("qorpera_folder_view_open");
+		expect(f.handovers).toEqual([]);
+	});
+
+	it("hands the same view over again next pass when the guest did not take it, and a start waits", async () => {
+		const f = await fixture({ folder: true });
+		f.mounts.push("MACHINE_FOLDER_UNAVAILABLE");
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "MACHINE_FOLDER_UNAVAILABLE" },
+		]);
+		f.running();
+		const started = start(f);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(f.order).not.toContain("push");
+		expect(f.service.requests).toEqual([]);
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_MOUNTED" },
+		]);
+		expect(await started).toMatchObject({ state: "running" });
+		expect(f.views.opened).toHaveLength(1);
+		const [view] = f.views.opened;
+		expect(f.handovers.map((handover) => handover.stdin.viewId)).toEqual([view.viewId, view.viewId]);
+		// The window opens after the hand-over, and before the guest's inbox gets the command.
+		expect(f.order.indexOf("folder:open")).toBeGreaterThan(f.order.lastIndexOf("mount"));
+		expect(f.order.indexOf("push")).toBeGreaterThan(f.order.indexOf("folder:open"));
+	});
+
+	it("opens a new view when the node closed the one handed over, twice more, then runs without one", async () => {
+		const f = await fixture({ folder: true });
+		f.mounts.push("closed", "closed", "closed");
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "MACHINE_FOLDER_CLOSED" },
+		]);
+		f.running();
+		const closed = { placementId: id(6), step: "commands", state: "done", folder: "MACHINE_FOLDER_CLOSED" };
+		expect(await f.host.pass(f.signal)).toEqual([closed]);
+		expect(await f.host.pass(f.signal)).toEqual([{ ...closed, folder: "FOLDER_NONE:CLOSED" }]);
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
+		expect(f.views.opened).toHaveLength(3);
+		expect(f.handovers.map((handover) => handover.stdin.viewId)).toEqual(f.views.opened.map((view) => view.viewId));
+		// Each closed view is closed in SQL too, with its own pass.
+		expect(f.calls.filter((call) => call.method === "qorpera_folder_view_close").map((call) => call.args)).toEqual(
+			f.views.opened.map((view) => ({ p_view_id: view.viewId, p_pass: view.pass })),
+		);
+	});
+
+	it("refuses a start it cannot fence: no boot, no run to credit, or no window", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		f.running();
+		await expect(start(f, randomUUID(), { ...credit(), runId: "run" })).rejects.toThrow(
+			"COMPANY_MACHINE_COMMAND_INVALID",
+		);
+		await expect(start(f, randomUUID(), { ...credit(), bootId: null })).rejects.toThrow(
+			"COMPANY_MACHINE_FOLDER_UNANSWERED",
+		);
+		expect(f.service.requests).toEqual([]);
+		f.service.down = true;
+		await expect(start(f)).rejects.toThrow("FOLDER_CONTROL_UNANSWERED");
+		expect(f.order).not.toContain("push");
+		expect(f.methods()).not.toContain("qorpera_folder_view_close");
+	});
+
+	it("holds what a command printed, and how it ended, until the machine's reads are released", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		f.running();
+		const commandId = randomUUID();
+		const who = credit();
+		f.result(finished);
+		const receipt = await start(f, commandId, who);
+		expect(f.service.requests).toEqual([{ op: "open", machine: id(6), commandId, ...who }]);
+		// A start asks no boundary (the gateway's time is mostly spent): its output waits for the next read.
+		const log = { ...finished.log, nextOffset: 0 };
+		const kept = { state: "running", exitCode: null, output: "", truncated: true, log };
+		expect(receipt).toMatchObject(kept);
+		expect(parseCloudMachineCommandReceipt(receipt)).toEqual(receipt);
+		for (const reads of ["unanswered", "unproven", "denied"] as const) {
+			f.service.reads = reads;
+			expect(await read(f, commandId)).toMatchObject(kept);
+		}
+		f.service.down = true;
+		expect(await read(f, commandId)).toMatchObject(kept);
+		f.service.down = false;
+		f.service.reads = "released";
+		expect(await read(f, commandId)).toMatchObject(finished);
+		// Each read asked the machine's boundary, naming no view final.
+		const boundary = { op: "boundary", machine: id(6), final: [] };
+		expect(f.service.requests.slice(1)).toEqual([boundary, boundary, boundary, boundary, boundary]);
+		// Nothing printed and no end: nothing to hold, and nothing asked.
+		f.result({});
+		expect(await read(f, commandId)).toMatchObject({ state: "running", output: "" });
+		expect(f.service.requests).toHaveLength(6);
+	});
+
+	it("records an end only once its command's window closed, its tail only once the reads are released", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		f.running([id(7), id(8), id(9)]);
+		const ended = [7, 8, 9].map((n) => ({ commandId: id(n), state: "failed", exitCode: 1, outputTail: `tail ${n}` }));
+		f.observe({ ...idle, ended });
+		f.service.closes.push("released", "unproven", "unanswered");
+		await f.host.pass(f.signal);
+		expect(f.service.requests).toEqual([7, 8, 9].map((n) => ({ op: "close", machine: id(6), commandId: id(n) })));
+		// An unanswered close leaves its end for a later pass; an unreleased one keeps its tail.
+		expect(recorded(f)).toEqual([[ended[0], { ...ended[1], outputTail: "" }]]);
+		expect(f.order.indexOf("sql:qorpera_record_company_machine_commands")).toBeGreaterThan(
+			f.order.lastIndexOf("folder:close"),
+		);
+		f.entry.commands = [id(9)];
+		f.observe({ ...idle, ended: [ended[2]] });
+		f.service.down = true;
+		await f.host.pass(f.signal);
+		expect(recorded(f)).toHaveLength(1);
+		f.service.down = false;
+		await f.host.pass(f.signal);
+		expect(recorded(f)).toEqual([[ended[0], { ...ended[1], outputTail: "" }], [ended[2]]]);
+	});
+
+	it("ends the boot's folder at a stop, before SQL ends its commands and the machine powers off", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		f.running();
+		await f.host.pass(f.signal);
+		const [view] = f.views.opened;
+		f.entry.sleepDue = true;
+		f.snapshot({ commands: [id(7)], containers: false });
+		const from = f.order.length;
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
+		// The final boundary of its view, the view's close in SQL, and once powered off, its windows end.
+		expect(f.service.requests).toEqual([
+			{ op: "boundary", machine: id(6), final: [view.viewId] },
+			{ op: "restarted", machine: id(6) },
+		]);
+		expect(f.calls.find((call) => call.method === "qorpera_folder_view_close")?.args).toEqual({
+			p_view_id: view.viewId,
+			p_pass: view.pass,
+		});
+		const after = f.order.slice(from);
+		const at = (step: string) => after.indexOf(step);
+		expect(at("exec:stop-commands")).toBeGreaterThan(-1);
+		expect(at("folder:boundary")).toBeGreaterThan(at("exec:stop-commands"));
+		expect(at("sql:qorpera_folder_view_close")).toBeGreaterThan(at("folder:boundary"));
+		expect(at("sql:qorpera_record_company_machine_stop")).toBeGreaterThan(at("sql:qorpera_folder_view_close"));
+		expect(at("lxd:stop")).toBeGreaterThan(at("sql:qorpera_record_company_machine_stop"));
+		expect(at("folder:restarted")).toBeGreaterThan(at("lxd:stop"));
+		expect(at("sql:qorpera_suspend_company_machine")).toBeGreaterThan(at("folder:restarted"));
+	});
+
+	it("ends the boot before when the machine booted again, before SQL is told of the new boot", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		f.running();
+		const [old] = f.views.opened;
+		f.reboot();
+		const from = f.order.length;
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+		]);
+		expect(f.service.requests).toEqual([
+			{ op: "boundary", machine: id(6), final: [old.viewId] },
+			{ op: "restarted", machine: id(6) },
+		]);
+		expect(f.order.slice(from).filter((step) => /^folder:|view_|mark_company|^mount$/.test(step))).toEqual([
+			"folder:boundary",
+			"sql:qorpera_folder_view_close",
+			"folder:restarted",
+			"sql:qorpera_mark_company_machine_running",
+			"sql:qorpera_folder_view_open",
+			"mount",
+		]);
+		expect(f.calls.find((call) => call.method === "qorpera_folder_view_close")?.args).toEqual({
+			p_view_id: old.viewId,
+			p_pass: old.pass,
+		});
+		expect(f.calls.filter((call) => call.method === "qorpera_folder_view_open").at(-1)?.args.p_anchor).toEqual({
+			companyMachineId: id(2),
+			placementId: id(6),
+			bootId: f.boot,
+		});
+	});
+
+	it("ends a running machine's folder before it is deleted", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		f.running();
+		const [view] = f.views.opened;
+		Object.assign(f.entry, { desiredState: "deleted", removeDue: true, reserved: false });
+		const from = f.order.length;
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "release", state: "done" }]);
+		expect(f.service.requests).toEqual([{ op: "boundary", machine: id(6), final: [view.viewId] }]);
+		const after = f.order.slice(from);
+		expect(after.indexOf("sql:qorpera_folder_view_close")).toBeGreaterThan(after.indexOf("folder:boundary"));
+		expect(after.findIndex((step) => step.startsWith("lxd:"))).toBeGreaterThan(
+			after.indexOf("sql:qorpera_folder_view_close"),
+		);
+	});
+
+	it("after its own restart keeps the views the service holds, and opens none to take /company away", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		f.running();
+		const [view] = f.views.opened;
+		f.restart();
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_HELD" },
+		]);
+		expect(f.service.requests).toEqual([{ op: "boundary", machine: id(6), final: [] }]);
+		expect(f.views.opened).toHaveLength(1);
+		expect(f.handovers).toHaveLength(1);
+		// Its commands stay fenced.
+		await start(f);
+		expect(f.service.requests.at(-1)).toMatchObject({ op: "open", machine: id(6) });
+		// At the stop its final names the held view; with no pass in this process, the view lapses with its lease.
+		f.entry.sleepDue = true;
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
+		expect(f.service.requests.filter((request) => request.op === "boundary").at(-1)).toEqual({
+			op: "boundary",
+			machine: id(6),
+			final: [view.viewId],
+		});
+		expect(f.methods()).not.toContain("qorpera_folder_view_close");
+	});
+
+	it("after its own restart, fences a boot whose view SQL refuses, and waits while the service is down", async () => {
+		const f = await fixture({ folder: true });
+		await f.host.pass(f.signal);
+		f.running();
+		f.service.held = [];
+		f.restart();
+		f.service.down = true;
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_CONTROL_UNANSWERED" },
+		]);
+		await expect(start(f, randomUUID(), { ...credit(), bootId: null })).rejects.toThrow(
+			"COMPANY_MACHINE_FOLDER_UNANSWERED",
+		);
+		f.service.down = false;
+		f.views.refusal = "qorpera.test-machine/new-disk";
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "commands", state: "done", folder: "FOLDER_REFUSED" },
+		]);
+		await start(f);
+		expect(f.service.requests.at(-1)).toMatchObject({ op: "open", machine: id(6) });
+		expect(f.handovers).toHaveLength(1);
 	});
 });
 

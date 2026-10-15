@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { CodingExecutorHttpControl } from "../../../deploy/coding-worker/control.ts";
-import { CodingControlBusy } from "../../runner-orchestrator/src/coding-executor.ts";
+import { CodingControlBusy, CodingControlRefused } from "../../runner-orchestrator/src/coding-executor.ts";
 
 describe("dedicated coding executor control", () => {
 	it("uses a closed RPC set and fixed HTTPS origin without retries", async () => {
@@ -71,6 +71,52 @@ describe("dedicated coding executor control", () => {
 			await expect(call).rejects.toThrow(expected);
 			if (expected === "CODING_CONTROL_BUSY") await expect(call).rejects.toBeInstanceOf(CodingControlBusy);
 			// The control never retries by itself.
+			expect(fetcher).toHaveBeenCalledTimes(1);
+		}
+	});
+	it("tells a folder view open's 42501 refusal apart, with its detail, and nothing else's (F3 6d)", async () => {
+		const refusal = {
+			code: "42501",
+			details: "qorpera.test-machine/new-disk",
+			hint: null,
+			message: "Test machine disk was used without the folder check",
+		};
+		const answer = (status: number, body: string) => async () =>
+			new Response(body, { status, headers: { "content-type": "application/json" } });
+		const body = (change: Record<string, unknown> = {}) => JSON.stringify({ ...refusal, ...change });
+		const open = "qorpera_folder_view_open";
+		const refused = "CODING_CONTROL_REFUSED";
+		const unconfirmed = "CODING_CONTROL_UNCONFIRMED";
+		const cases: [method: string, status: number, body: string, expected: string, detail?: string | null][] = [
+			[open, 403, body(), refused, refusal.details],
+			[open, 401, body(), refused, refusal.details],
+			// No detail, or one that is not a qorpera.* code, is a refusal without one.
+			[open, 403, body({ details: null }), refused, null],
+			[open, 403, body({ details: "pass abc" }), refused, null],
+			[open, 403, body({ code: "22023" }), unconfirmed],
+			[open, 400, body(), unconfirmed],
+			[open, 500, body(), unconfirmed],
+			[open, 403, body({ extra: 1 }), unconfirmed],
+			[open, 403, "42501", unconfirmed],
+			// Still busy, as every call.
+			[open, 500, body({ code: "55P03" }), "CODING_CONTROL_BUSY"],
+			// Every other call's refusal stays unconfirmed.
+			["qorpera_folder_view_close", 403, body(), unconfirmed],
+			["qorpera_mark_company_machine_running", 403, body(), unconfirmed],
+		];
+		for (const [method, status, text, expected, detail] of cases) {
+			const fetcher = vi.fn<typeof fetch>(answer(status, text));
+			const control = new CodingExecutorHttpControl({
+				supabaseUrl: "https://project.supabase.co",
+				serviceRoleKey: "private",
+				fetch: fetcher,
+			});
+			const call = control.call(method, {}, new AbortController().signal);
+			await expect(call).rejects.toThrow(expected);
+			if (expected === "CODING_CONTROL_REFUSED") {
+				await expect(call).rejects.toBeInstanceOf(CodingControlRefused);
+				await expect(call).rejects.toMatchObject({ detail });
+			}
 			expect(fetcher).toHaveBeenCalledTimes(1);
 		}
 	});

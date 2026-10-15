@@ -94,10 +94,18 @@ describe("coding executor service configuration", () => {
 		expect(parseCodingExecutorConfiguration({ ...fixture(), machines }).machines).toEqual({
 			...machines,
 			previousHelperSha256s: [],
+			folder: false,
 		});
 		// The helpers of earlier images whose machines still run on this node.
 		const upgraded = { ...machines, previousHelperSha256s: ["c".repeat(64)] };
-		expect(parseCodingExecutorConfiguration({ ...fixture(), broker, machines: upgraded }).machines).toEqual(upgraded);
+		expect(parseCodingExecutorConfiguration({ ...fixture(), broker, machines: upgraded }).machines).toEqual({
+			...upgraded,
+			folder: false,
+		});
+		// Each boot's company folder through the node's folder service (F3 6d): switched on only by true.
+		expect(
+			parseCodingExecutorConfiguration({ ...fixture(), machines: { ...upgraded, folder: true } }).machines,
+		).toEqual({ ...upgraded, folder: true });
 		for (const bad of [
 			{ ...machines, helperSha256: "x" },
 			{ ...machines, previousHelperSha256s: ["b".repeat(64)] },
@@ -105,6 +113,8 @@ describe("coding executor service configuration", () => {
 			{ ...machines, policy: { ...machines.policy, providerId: "other-node" } },
 			{ ...machines, policy: { ...machines.policy, cpus: 4 } },
 			{ ...machines, extra: true },
+			{ ...machines, folder: false },
+			{ ...machines, folder: "true" },
 		])
 			expect(() => parseCodingExecutorConfiguration({ ...fixture(), machines: bad })).toThrow();
 	});

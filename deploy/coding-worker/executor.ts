@@ -10,6 +10,7 @@ import { CloudCodingExecutor } from "../../packages/runner-orchestrator/src/codi
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { createCodingNasStorage } from "../../packages/runner-orchestrator/src/coding-storage.ts";
 import { lxdCodingMachinePlan } from "../../packages/runner-orchestrator/src/coding-machine.ts";
+import { UnixFolderControl } from "../../packages/runner-orchestrator/src/folder-control.ts";
 import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client.ts";
 import { HttpCloudCodingCommandService } from "../../packages/runtime/src/cloud-coding-command-http.ts";
 import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-code.ts";
@@ -46,8 +47,10 @@ interface Config {
 	 * into every machine placed here, and the pin of the machine guest helper
 	 * the reviewed machine image carries (plus the helpers of earlier images
 	 * whose machines still run here). Absent: this executor makes no machines,
-	 * but still forwards machine commands to its peers. */
-	machines: { policy: CompanyMachinePolicy; helperSha256: string; previousHelperSha256s: string[] } | null;
+	 * but still forwards machine commands to its peers. `folder` (F3 6d), only
+	 * ever true: each boot gets a company folder view through the node's folder
+	 * service, whose control socket fences its commands' windows and output. */
+	machines: { policy: CompanyMachinePolicy; helperSha256: string; previousHelperSha256s: string[]; folder: boolean } | null;
 }
 const RESERVED_CREDENTIALS = new Set(["qorpera-coding-executor-config", "qorpera-coding-registry", "qorpera-coding-command", "qorpera-coding-peer-command"]);
 const CONFIG_KEYS = "commandPeers,commandPort,guest,owner,peerCommandPort,repositories,schema,storagePolicy,supabaseUrl,vmPolicy";
@@ -130,16 +133,17 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 	let machines: Config["machines"] = null;
 	if (config.machines !== undefined) {
 		const entry = object(config.machines);
-		const keys = Object.keys(entry).sort().join();
+		const keys = Object.keys(entry).filter((key) => key !== "folder").sort().join();
 		const previous = entry.previousHelperSha256s ?? [];
 		if ((keys !== "helperSha256,policy" && keys !== "helperSha256,policy,previousHelperSha256s") ||
+			(entry.folder !== undefined && entry.folder !== true) ||
 			typeof entry.helperSha256 !== "string" || !/^[0-9a-f]{64}$/.test(entry.helperSha256) || !Array.isArray(previous) ||
 			previous.length > 16 || previous.some((sha) => typeof sha !== "string" || !/^[0-9a-f]{64}$/.test(sha)) ||
 			new Set([entry.helperSha256, ...previous]).size !== previous.length + 1) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 		const policy = parseCompanyMachinePolicy(entry.policy);
 		// Commands route to this executor by the coding provider's peer identity.
 		if (policy.providerId !== vmPolicy.providerId) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
-		machines = { policy, helperSha256: entry.helperSha256, previousHelperSha256s: previous as string[] };
+		machines = { policy, helperSha256: entry.helperSha256, previousHelperSha256s: previous as string[], folder: entry.folder === true };
 	}
 	return {
 		schema: "qorpera.coding-executor-service/v7", owner: config.owner, supabaseUrl: origin(config.supabaseUrl),
@@ -201,13 +205,15 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		control, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
 		policy: config.machines.policy, client: new LxdUnixClient(), journalRoot, storagePolicy: config.storagePolicy,
 		helperSha256: config.machines.helperSha256, previousHelperSha256s: config.machines.previousHelperSha256s,
+		...(config.machines.folder ? { folder: new UnixFolderControl() } : {}),
 	}) : undefined;
 	const machineRouter = new MachineCommandRouter({
 		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential,
 		...(machineHost ? {
 			executeLocal: (request, authority, signal) => machineHost.command(
 				{ machineId: authority.machineId, placementId: authority.placementId, commandId: request.input.commandId,
-					inputSha256: authority.inputSha256 },
+					inputSha256: authority.inputSha256, bootId: authority.bootId, runId: authority.runId,
+					staffAgentId: authority.staffAgentId, requestedByUserId: authority.requestedByUserId },
 				request.action === "start" ? { action: "start", commandId: request.input.commandId, inputSha256: request.input.inputSha256,
 					command: request.input.command, timeoutMs: request.input.timeoutMs }
 					: request.action === "read" ? { action: "read", read: request.input } : { action: "cancel", commandId: request.input.commandId },
@@ -327,7 +333,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				try {
 					for (const outcome of await machineHost.pass(stop.signal))
 						if (outcome.state === "failed") console.error(JSON.stringify({ event: "company-machine-error", ...outcome }));
-						else if ((outcome.state === "done" && outcome.step !== "commands") || (outcome.state === "not-now" && outcome.code))
+						else if ((outcome.state === "done" && outcome.step !== "commands") || (outcome.state === "not-now" && outcome.code) || outcome.folder)
 							console.log(JSON.stringify({ event: "company-machine", ...outcome }));
 				} catch (error) {
 					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "company-machine-error", code: errorCode(error) }));
