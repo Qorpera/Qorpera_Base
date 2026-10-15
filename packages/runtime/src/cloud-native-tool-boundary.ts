@@ -908,7 +908,18 @@ export class CloudNativeToolBoundary {
 			// The envelope may omit a restricted path when it is fitted to 8 KiB. Keep only the whole result's path
 			// needles for trusted log classification; its raw content is never handed to the log or persisted there.
 			if (resultPaths) for (const path of cloudRunLogPaths(content.value)) resultPaths.push(path);
-			if (tool.name === "computer_screenshot" && tool.source === "runtime") {
+			if (
+				tool.name === "computer_screenshot" &&
+				tool.source === "runtime" &&
+				// No picture when the office gave the screen back or the company folder held the capture back (F3 4d).
+				!(
+					content.kind === "json" &&
+					content.value !== null &&
+					typeof content.value === "object" &&
+					!Array.isArray(content.value) &&
+					content.value.completed === false
+				)
+			) {
 				const imageUrl = await untilStopped(
 					() => this.#captures!.issue(callId, response.contentItems[0].text, content, this.#signal),
 					this.#signal,

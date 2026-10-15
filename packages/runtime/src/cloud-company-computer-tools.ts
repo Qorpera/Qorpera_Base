@@ -111,6 +111,21 @@ export function isCompanyComputerFolderGiveBack(content: CompanyComputerToolCont
 	);
 }
 
+/**
+ * The answer to a screenshot whose capture the company folder held back (F3 4d, "Before output reaches a model"): the
+ * desktop's boundary was refused or had no answer, so no picture reaches the run. The screen stays the run's.
+ */
+export function companyComputerCaptureHeldBack(
+	screenId: string,
+	surface: "browser" | "desktop",
+	message: string,
+): CompanyComputerToolContent {
+	return {
+		kind: "json",
+		value: { screenId, surface, completed: false, heldBack: { code: "COMPANY_FOLDER_HELD_BACK", message } },
+	};
+}
+
 export interface CompanyComputerToolArguments {
 	operationKey: string;
 	action: CompanyComputerAction;

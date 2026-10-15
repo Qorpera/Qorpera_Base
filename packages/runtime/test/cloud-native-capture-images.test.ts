@@ -93,6 +93,26 @@ it("does not execute a screenshot when the native image adapter is unavailable",
 	expect(f.execute).not.toHaveBeenCalled();
 });
 
+it.each([
+	{
+		screenId: asset.screenId,
+		surface: "desktop",
+		completed: false,
+		heldBack: { code: "COMPANY_FOLDER_HELD_BACK", message: "held back" },
+	},
+	{ completed: false, refused: { code: "COMPANY_FOLDER_UNAVAILABLE", message: "given back" } },
+])("issues no picture for a screenshot the company folder held back or gave back (F3 4d): %j", async (value) => {
+	const f = fixture({ kind: "json", value });
+	const result = await f.invoke();
+	expect(result.success).toBe(true);
+	expect(result.contentItems).toHaveLength(1);
+	const envelope = JSON.parse(result.contentItems[0].text);
+	expect(envelope.status).toBe("ok");
+	expect(JSON.parse(envelope.content.text)).toEqual(value);
+	expect(f.reader.read).not.toHaveBeenCalled();
+	expect(await f.boundary.fenceNativeResults([])).toEqual([]);
+});
+
 it.each(["hash", "envelope", "call", "missing"])("rejects %s substitution before native release", async (fault) => {
 	const f = fixture();
 	const result = await f.invoke();

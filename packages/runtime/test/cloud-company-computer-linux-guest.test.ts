@@ -1744,4 +1744,71 @@ describe("each desktop's mount of the company folder (helper stand-in; the mount
 			timeoutMs: 30000,
 		});
 	});
+	it("answers a drain only once the screen's mount published its last changes and went, after its desktop stopped", async () => {
+		const h = folderHelper();
+		const f = await fixture({ folderHelper: h.ask });
+		const session = await f.create();
+		h.answer("mount", { answer: "mounted" });
+		await session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect());
+		await session.close();
+		const unmount = computerDeferred<unknown>();
+		h.answer("unmount", unmount.promise);
+		let drained = false;
+		const stopping = f.guest
+			.stopResources(f.binding, new AbortController().signal, { until: performance.now() + 19000 })
+			.then(() => {
+				drained = true;
+			});
+		await vi.waitFor(() => expect(h.ops()).toEqual(["mount", "unmount"]));
+		expect(displays[0].stop).toHaveBeenCalledOnce();
+		expect(h.asked[1]).toMatchObject({ op: "unmount", name: `desktop-${f.binding.screenId}`, final: false });
+		expect(drained).toBe(false);
+		unmount.resolve({ answer: "saved", report: { commitId: null, seq: null, paths: [] }, unmounted: true });
+		await stopping;
+		// The view closed before the drain was answered, and no release asked a second boundary.
+		expect(f.order.filter((entry) => entry.startsWith("qorpera_folder_view"))).toEqual([
+			"qorpera_folder_view_open:read",
+			"qorpera_folder_view_close:read",
+		]);
+		expect(h.ops()).toEqual(["mount", "unmount"]);
+	});
+	it("holds a desktop screenshot back until the company folder released the desktop's reads, and says why", async () => {
+		const h = folderHelper();
+		const f = await fixture({ desktop: true, folderHelper: h.ask });
+		const session = await f.create();
+		h.answer("mount", { answer: "mounted" });
+		await session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect());
+		const png = Buffer.alloc(33);
+		Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(png);
+		png.writeUInt32BE(13, 8);
+		png.write("IHDR", 12, "ascii");
+		png.writeUInt32BE(1920, 16);
+		png.writeUInt32BE(1200, 20);
+		const capture = vi.spyOn(CompanyComputerLinuxCommands.prototype, "capturePng").mockResolvedValue(png);
+		h.answer(
+			"boundary",
+			{ answer: "refused", report: { commitId: null, seq: null, paths: [], refused: "stopped" } },
+			{ answer: "saved", report: { commitId: "commit-1", seq: 1, paths: [] } },
+		);
+		const desktop = f.operation({ kind: "screenshot", surface: "desktop" });
+		await expect(session.endpoint.perform(desktop, f.lease, f.effect())).resolves.toEqual({
+			kind: "json",
+			value: {
+				screenId: f.binding.screenId,
+				surface: "desktop",
+				completed: false,
+				heldBack: {
+					code: "COMPANY_FOLDER_HELD_BACK",
+					message: "the company is paused, so the company folder holds the screenshot back",
+				},
+			},
+		});
+		expect(capture).toHaveBeenCalledOnce();
+		expect(h.asked.at(-1)).toMatchObject({ op: "boundary", name: `desktop-${f.binding.screenId}`, final: false });
+		// Released: the picture goes on to its publish, which this fixture refuses.
+		await expect(session.endpoint.perform(desktop, f.lease, f.effect())).rejects.toThrow("NO_FIXTURE_CAPTURE");
+		expect(h.ops()).toEqual(["mount", "list", "boundary", "list", "boundary"]);
+		expect(f.failure).not.toHaveBeenCalled();
+		await session.close();
+	});
 });

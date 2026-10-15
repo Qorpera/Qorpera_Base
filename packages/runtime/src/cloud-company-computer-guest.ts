@@ -38,7 +38,11 @@ import {
 	CompanyComputerSiteStops,
 	readCompanyComputerSiteStop,
 } from "./cloud-company-computer-site-stops.ts";
-import { type CompanyComputerAction, parseCompanyComputerAction } from "./cloud-company-computer-tools.ts";
+import {
+	type CompanyComputerAction,
+	companyComputerCaptureHeldBack,
+	parseCompanyComputerAction,
+} from "./cloud-company-computer-tools.ts";
 
 export { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 
@@ -422,6 +426,7 @@ export class CompanyComputerGuestAutomation {
 	/** Secrets the vault typed on this screen, hidden wherever the agent would see them (shared across runs). */
 	readonly #filled: CompanyComputerFilledValues;
 	readonly #siteStops: CompanyComputerSiteStops;
+	readonly #capture?: (signal: AbortSignal, until: number) => Promise<string | undefined>;
 	#tabLease?: string;
 	#page?: Page;
 
@@ -439,6 +444,8 @@ export class CompanyComputerGuestAutomation {
 		filled?: CompanyComputerFilledValues;
 		/** The sites this computer stopped on (A1-4c), shared by its screens. */
 		siteStops?: CompanyComputerSiteStops;
+		/** The company folder's boundary before a capture is published (F3 4d): why it is held back, or nothing. */
+		capture?: (signal: AbortSignal, until: number) => Promise<string | undefined>;
 	}) {
 		assertCompanyComputerScreenBinding(options.binding, options.binding);
 		assertCompanyComputerGuestLayout(options.layout);
@@ -454,6 +461,7 @@ export class CompanyComputerGuestAutomation {
 		this.#fillKey = options.fillKey;
 		this.#filled = options.filled ?? new CompanyComputerFilledValues();
 		this.#siteStops = options.siteStops ?? new CompanyComputerSiteStops();
+		this.#capture = options.capture;
 	}
 
 	/**
@@ -630,6 +638,8 @@ export class CompanyComputerGuestAutomation {
 		lease: CompanyComputerScreenLease,
 		effect: CompanyComputerEffectContext,
 		operation: CompanyComputerOperation,
+		/** `performance.now()` by which the reply must be on its way back to the run. */
+		replyBy?: number,
 	): Promise<CompanyComputerToolContent> {
 		const action = parseCompanyComputerAction(value);
 		assertCompanyComputerScreenBinding(lease.binding, this.#binding);
@@ -736,7 +746,7 @@ export class CompanyComputerGuestAutomation {
 					}),
 				);
 				await this.#assertFilledNotShown(page);
-				return this.#publish(png, lease, effect, "browser", operation);
+				return this.#publish(png, lease, effect, "browser", operation, replyBy);
 			}
 			// A site this computer stopped on is never acted on again (A1-4c): a person continues there. A page that
 			// shows such a check now stops it before anything is clicked or typed, whatever its address; going to
@@ -964,7 +974,7 @@ export class CompanyComputerGuestAutomation {
 			await this.#assertNoPrivateValueShown(signal);
 			const png = await this.#commands.capturePng({ display, signal, maxBytes: 8 * 1024 * 1024 });
 			await this.#assertNoPrivateValueShown(signal);
-			return this.#publish(png, lease, effect, "desktop", operation);
+			return this.#publish(png, lease, effect, "desktop", operation, replyBy);
 		}
 		// Desktop input reaches the same browser window: none while a shown tab is on a site the computer stopped on, or
 		// shows such a check now (A1-4c). Moving the pointer only looks.
@@ -1081,6 +1091,7 @@ export class CompanyComputerGuestAutomation {
 		effect: CompanyComputerEffectContext,
 		surface: "browser" | "desktop",
 		operation: CompanyComputerOperation,
+		replyBy?: number,
 	): Promise<CompanyComputerToolContent> {
 		if (
 			bytes.length < 33 ||
@@ -1107,6 +1118,11 @@ export class CompanyComputerGuestAutomation {
 		await companyComputerActionCheck(this.#boundary.assertReady(this.#binding, effect.signal));
 		await companyComputerActionCheck(this.#browser?.assertActive(effect.signal) ?? Promise.resolve());
 		effect.signal.throwIfAborted();
+		// The desktop's reads are released and its changes published before the picture reaches the run (F3 4d); the
+		// last four seconds stay for the publish.
+		const held = await this.#capture?.(effect.signal, (replyBy ?? performance.now() + 10_000) - 4000);
+		effect.signal.throwIfAborted();
+		if (held) return companyComputerCaptureHeldBack(this.#binding.screenId, surface, held);
 		const digest = createHash("sha256").update(bytes).digest("hex");
 		const asset = await this.#screenshots.publish(Uint8Array.from(bytes), lease, effect, operation);
 		if (

@@ -580,13 +580,14 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 									renew();
 									return;
 								}
-								void this.stopResources(binding, new AbortController().signal, "AUTHORITY_LOST").catch(
-									(error) =>
-										this.#fail(
-											new Error("OFFICE_SHARED_PULSE_FAILED", {
-												cause: new AggregateError([pulseError, error]),
-											}),
-										),
+								void this.stopResources(binding, new AbortController().signal, {
+									reason: "AUTHORITY_LOST",
+								}).catch((error) =>
+									this.#fail(
+										new Error("OFFICE_SHARED_PULSE_FAILED", {
+											cause: new AggregateError([pulseError, error]),
+										}),
+									),
 								);
 							},
 						);
@@ -675,8 +676,11 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			screen.companyEpoch = company.epoch;
 			this.#watchDesktop(screen, handle);
 		} catch (error) {
-			void this.stopResources(screen.binding, new AbortController().signal, "AUTHORITY_LOST").catch((drainError) =>
-				this.#fail(new Error("OFFICE_DESKTOP_RESTART_FAILED", { cause: new AggregateError([error, drainError]) })),
+			void this.stopResources(screen.binding, new AbortController().signal, { reason: "AUTHORITY_LOST" }).catch(
+				(drainError) =>
+					this.#fail(
+						new Error("OFFICE_DESKTOP_RESTART_FAILED", { cause: new AggregateError([error, drainError]) }),
+					),
 			);
 			throw error;
 		}
@@ -1038,7 +1042,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					await current?.close();
 					if (owned.opening && (await owned.opening.catch(() => undefined)) === current) owned.opening = undefined;
 				},
-				perform: async (action, currentLease, context, operation) => {
+				perform: async (action, currentLease, context, operation, replyBy) => {
 					const checked = AbortSignal.any([signal, context.signal]);
 					checked.throwIfAborted();
 					if (action.kind === "browser" || (action.kind === "screenshot" && action.surface === "browser")) {
@@ -1072,8 +1076,16 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						fillKey: this.#options.fillKey,
 						filled: this.#filledOn(binding.screenOrdinal),
 						siteStops: this.#siteStops,
+						// Asked with the mount the desktop runs on now, which a desktop started again moves.
+						capture: (captured, until) =>
+							this.#options.folders?.capture(
+								binding.screenId,
+								this.#screens.get(binding.screenOrdinal)?.companyEpoch,
+								captured,
+								until,
+							) ?? Promise.resolve(undefined),
 					});
-					return automation.perform(action, currentLease, { ...context, signal: checked }, operation);
+					return automation.perform(action, currentLease, { ...context, signal: checked }, operation, replyBy);
 				},
 				settle: (action, content, requestSignal, replyBy) =>
 					automation
@@ -1307,11 +1319,16 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			signal.throwIfAborted();
 		},
 	};
-	/** `reason` names a stop the service decided itself; a drain request or privacy fence is inferred. */
+	/**
+	 * `reason` names a stop the service decided itself; a drain request or privacy fence is inferred. A drain request
+	 * gives `until` (performance.now()): the screen's mount gets the drain's boundary before it answers (F3 4d, "Drains
+	 * and stops"), and the drain fails when the boundary has no final answer by then. Any other stop lets the mount go
+	 * after it.
+	 */
 	async stopResources(
 		binding: CompanyComputerScreenBinding,
 		signal: AbortSignal,
-		reason?: Extract<ScreenClosingReason, "AUTHORITY_LOST">,
+		stop: { reason?: Extract<ScreenClosingReason, "AUTHORITY_LOST">; until?: number } = {},
 	): Promise<void> {
 		assertCompanyComputerScreenBinding(binding, binding);
 		assertCompanyComputerScope(binding, this.#options.scope);
@@ -1334,7 +1351,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						? "OFFICE_SERVICE_STOPPING"
 						: this.#privacy?.state === "entering"
 							? "PRIVACY_FENCE"
-							: (reason ?? "SCREEN_DRAIN_REQUESTED"),
+							: (stop.reason ?? "SCREEN_DRAIN_REQUESTED"),
 					new AbortController().signal,
 				)
 				.catch(() => undefined);
@@ -1368,10 +1385,12 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					throw error;
 				}
 				// No desktop uses the screen's mount now; it goes, unless a new desktop of the screen took it meanwhile.
-				void this.#options.folders?.release(binding.screenId, () => {
-					const now = this.#screens.get(binding.screenOrdinal);
-					return !now || now === screen;
-				});
+				// A drain request's boundary follows below instead.
+				if (stop.until === undefined)
+					void this.#options.folders?.release(binding.screenId, () => {
+						const now = this.#screens.get(binding.screenOrdinal);
+						return !now || now === screen;
+					});
 				await screen.lifecycle?.closed(new AbortController().signal);
 			}
 			const rejected = results.find((result) => result.status === "rejected");
@@ -1380,6 +1399,14 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		};
 		if (screen) screen.closing ??= drain();
 		await cloudToolRequest(() => screen?.closing ?? drain(), signal, 30000);
+		// With or without a desktop: the mount goes now, with the run's last changes, unless a new desktop took it.
+		if (stop.until !== undefined)
+			await this.#options.folders?.drain(
+				binding.screenId,
+				signal,
+				stop.until,
+				() => !this.#screens.has(binding.screenOrdinal),
+			);
 	}
 	close(): Promise<void> {
 		this.#stop.abort();

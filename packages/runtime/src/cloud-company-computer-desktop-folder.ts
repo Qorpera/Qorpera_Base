@@ -8,6 +8,7 @@ import {
 	askCompanyComputerFolderHelper,
 	COMPANY_COMPUTER_FOLDER_BOUNDARY_MS,
 	COMPANY_COMPUTER_FOLDER_ROOT,
+	type CompanyComputerFolderAnswer,
 	type CompanyComputerFolderRequest,
 	type CompanyComputerFolderView,
 	companyComputerFolderName,
@@ -50,6 +51,17 @@ const LIST_WAIT_MS = 10000;
 const DROP_WAIT_MS = 60000;
 /** A mount made for a run whose screen was given back goes after this, unless a desktop or a holder came. */
 const RELEASE_LATER_MS = 60000;
+/** Between two boundaries a retry gets past (no answer, QRC01, the run check). */
+const BOUNDARY_RETRY_MS = 1000;
+/** The least time a drain's boundary is still asked with: the helper takes at least a second. */
+const DRAIN_LAST_ASK_MS = 2000;
+
+/** Why a capture is held back (RUNTIME-FOLDER-COMPANY-MACHINES.md, "Before output reaches a model"). */
+const CAPTURE_UNANSWERED = "the company folder did not answer before the screenshot's deadline; take it again";
+const CAPTURE_PAUSED = "the company is paused, so the company folder holds the screenshot back";
+const CAPTURE_RUN_ENDED = "this run can no longer act in the company folder";
+const CAPTURE_REFUSED = "the company folder refused the screen's view";
+const CAPTURE_RESTARTED = "the company folder was restarted on this screen; take the screenshot again";
 
 /**
  * Open a desktop's view for whoever now holds its screen (RUNTIME-FOLDER-COMPANY-MACHINES.md, "Views and machines").
@@ -202,6 +214,7 @@ export class CompanyComputerDesktopFolders {
 	readonly #registry: Pick<HttpCloudCompanyComputerRegistry, "call">;
 	readonly #ask: typeof askCompanyComputerFolderHelper;
 	readonly #socket?: string;
+	readonly #log: (line: string) => void;
 	readonly #folders = new Map<string, Folder>();
 
 	constructor(options: {
@@ -210,10 +223,13 @@ export class CompanyComputerDesktopFolders {
 		socket?: string;
 		/** Test seam for the helper. */
 		ask?: typeof askCompanyComputerFolderHelper;
+		/** Where a drain's answers are logged; stderr by default. */
+		log?: (line: string) => void;
 	}) {
 		this.#registry = options.registry;
 		this.#ask = options.ask ?? askCompanyComputerFolderHelper;
 		this.#socket = options.socket;
+		this.#log = options.log ?? ((line) => console.error(line));
 	}
 
 	#helper<Request extends CompanyComputerFolderRequest>(request: Request, timeoutMs?: number, signal?: AbortSignal) {
@@ -376,6 +392,140 @@ export class CompanyComputerDesktopFolders {
 	}
 
 	/**
+	 * A drain's boundary on the screen's mount, after its desktop stopped and before the drain's acknowledgement
+	 * ("Drains and stops"): the mount's last changes are published, then it goes and its view closes. A boundary with no
+	 * answer, or refused in a way a retry gets past (QRC01, the run check), is asked again until `until`
+	 * (performance.now()); then the drain fails, and the mount stays for the stop control. Every other answer is final,
+	 * the pause's included: a mount still there after it goes without another boundary, and none of its refused changes
+	 * carry into the next holder's view. The answer is logged with the drain. `still` is asked when the request's turn
+	 * comes: a desktop started meanwhile keeps the mount.
+	 */
+	drain(screenId: string, signal: AbortSignal, until: number, still: () => boolean = () => true): Promise<void> {
+		const folder = this.#folders.get(screenId);
+		if (!folder) return Promise.resolve();
+		clearTimeout(folder.later);
+		folder.later = undefined;
+		return this.#queue(folder, () => (still() ? this.#drain(folder, signal, until) : Promise.resolve()));
+	}
+
+	async #drain(folder: Folder, signal: AbortSignal, until: number): Promise<void> {
+		let answered = false;
+		while (folder.mounted) {
+			signal.throwIfAborted();
+			const remaining = Math.floor(until - performance.now());
+			if (remaining < DRAIN_LAST_ASK_MS) {
+				const late = answered ? "the mount did not go" : "no final answer";
+				this.#log(`office-folder: drain ${folder.name}: ${late} by the drain's deadline`);
+				throw new Error("OFFICE_FOLDER_DRAIN_UNANSWERED");
+			}
+			if (!answered) {
+				const answer = await this.#helper(
+					{
+						op: "unmount",
+						name: folder.name,
+						final: false,
+						timeoutMs: Math.min(COMPANY_COMPUTER_FOLDER_BOUNDARY_MS, remaining - 1000),
+					},
+					remaining,
+					signal,
+				);
+				signal.throwIfAborted();
+				if (
+					!answer ||
+					answer.answer === "invalid" ||
+					answer.answer === "unanswered" ||
+					(answer.answer === "refused" && answer.report.refused === "run_ended")
+				) {
+					await pause(Math.min(BOUNDARY_RETRY_MS, until - performance.now()), signal);
+					continue;
+				}
+				answered = true;
+				this.#log(`office-folder: drain ${folder.name}: ${JSON.stringify(drainLogged(answer))}`);
+				if (answer.answer === "unknown" || answer.unmounted) {
+					folder.mounted = false;
+					break;
+				}
+			}
+			// A final answer that left the mount: it goes without a boundary.
+			const dropped = (
+				await this.#helper({ op: "drop", name: folder.name }, Math.min(DROP_WAIT_MS, remaining), signal)
+			)?.answer;
+			signal.throwIfAborted();
+			if (dropped === "dropped" || dropped === "unknown") folder.mounted = false;
+			else await pause(Math.min(BOUNDARY_RETRY_MS, until - performance.now()), signal);
+		}
+		await this.#gone(folder);
+	}
+
+	/**
+	 * The boundary before a screen capture reaches the holding run ("Before output reaches a model"): the desktop's
+	 * reads are released, and its changes published, first. Answers why the capture is held back, or nothing when it
+	 * may go on. A desktop started without `/company` (no `epoch`) needs none. Only a release refused because a read is
+	 * no longer readable, a read log that cannot be shown complete, and a closed view take rule 4's way out: the mount
+	 * goes and its view closes, so the screen's next action starts its desktop on a new mount under a new view. Every
+	 * other refusal, and no answer by `until` (performance.now()), holds the capture back and stops nothing.
+	 */
+	capture(
+		screenId: string,
+		epoch: number | undefined,
+		signal: AbortSignal,
+		until: number,
+	): Promise<string | undefined> {
+		if (epoch === undefined) return Promise.resolve(undefined);
+		const folder = this.#folders.get(screenId);
+		if (!folder) return Promise.resolve(CAPTURE_RESTARTED);
+		const work = this.#queue(folder, () =>
+			this.#capture(folder, epoch, signal, until).catch(() => {
+				signal.throwIfAborted();
+				return CAPTURE_UNANSWERED;
+			}),
+		);
+		return within(work, signal, until, CAPTURE_UNANSWERED);
+	}
+
+	async #capture(folder: Folder, epoch: number, signal: AbortSignal, until: number): Promise<string | undefined> {
+		// The desktop runs on a mount that is gone: the next action starts it on the screen's new one.
+		if (!folder.mounted || folder.epoch !== epoch) return CAPTURE_RESTARTED;
+		const timeoutMs = Math.min(COMPANY_COMPUTER_FOLDER_BOUNDARY_MS, Math.floor(until - performance.now()) - 1000);
+		if (timeoutMs < 1000) return CAPTURE_UNANSWERED;
+		const answer = await this.#helper(
+			{ op: "boundary", name: folder.name, final: false, timeoutMs },
+			timeoutMs + 1000,
+			signal,
+		);
+		signal.throwIfAborted();
+		// Saved, or refused only for some paths (refused or conflicting saves): the reads were released.
+		if (answer?.answer === "saved" || (answer?.answer === "refused" && answer.report.refused === undefined))
+			return undefined;
+		if (answer?.answer === "unknown") {
+			await this.#gone(folder);
+			return CAPTURE_RESTARTED;
+		}
+		if (
+			answer?.answer === "closed" ||
+			(answer?.answer === "refused" &&
+				(answer.report.refused === "unreadable" || answer.report.refused === "unproven"))
+		) {
+			// Rule 4's way out. A drop that fails leaves the mount, and the next capture asks again.
+			const dropped = (await this.#helper({ op: "drop", name: folder.name }, DROP_WAIT_MS, signal))?.answer;
+			if (dropped !== "dropped" && dropped !== "unknown") return CAPTURE_REFUSED;
+			await this.#gone(folder);
+			return CAPTURE_RESTARTED;
+		}
+		if (answer?.answer !== "refused") return CAPTURE_UNANSWERED;
+		if (answer.report.refused === "stopped") return CAPTURE_PAUSED;
+		if (answer.report.refused === "run_ended") return CAPTURE_RUN_ENDED;
+		return CAPTURE_REFUSED;
+	}
+
+	/** The mount is no longer the helper's: its view closes. */
+	async #gone(folder: Folder): Promise<void> {
+		const view = folder.view;
+		Object.assign(folder, { mounted: false, view: undefined, holder: undefined });
+		if (view) await closeCompanyComputerDesktopFolderView(this.#registry, view);
+	}
+
+	/**
 	 * At start, after the startup check admitted this activation: every mount the helper still holds belongs to an
 	 * ended view, and goes without a boundary (`drop`; "The office's stop publishes the mounts left"). Answers whether
 	 * all went.
@@ -395,6 +545,30 @@ export class CompanyComputerDesktopFolders {
 function sameHolder(a: CompanyComputerScreenHolder | undefined, b: CompanyComputerScreenHolder): boolean {
 	if (a?.kind === "run") return b.kind === "run" && a.runId === b.runId;
 	return a?.kind === "member" && b.kind === "member" && a.userId === b.userId;
+}
+
+/** A drain's answer as the office logs it ("The report"): the commit and how many paths had each outcome. No path
+ * and no reason, which are the company's; the helper's words pass only when they are plain names. */
+function drainLogged(answer: CompanyComputerFolderAnswer<"unmount">): Record<string, unknown> {
+	const report = "report" in answer ? answer.report : undefined;
+	const outcomes = new Map<string, number>();
+	for (const { outcome } of report?.paths ?? []) outcomes.set(word(outcome), (outcomes.get(word(outcome)) ?? 0) + 1);
+	return {
+		answer: answer.answer,
+		...("unmounted" in answer ? { unmounted: answer.unmounted } : {}),
+		...(report
+			? {
+					refused: report.refused === undefined ? null : word(report.refused),
+					commitId: report.commitId === null || /^[\w-]{1,64}$/.test(report.commitId) ? report.commitId : "other",
+					seq: report.seq,
+					outcomes: Object.fromEntries(outcomes),
+				}
+			: {}),
+	};
+}
+
+function word(value: string): string {
+	return /^[a-z_]{1,32}$/.test(value) ? value : "other";
 }
 
 /** The work's answer, or `late` once `until` (performance.now()) passes; the work goes on either way. */
