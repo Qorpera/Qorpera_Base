@@ -764,8 +764,13 @@ export class PendingView {
 		for (const [path, n] of this.#nodes) if (path !== from && within(path, from)) moved.push([path, n]);
 		for (const [path] of moved) this.#unset(path);
 		this.#unset(from);
-		// A new file or link moving off what it replaced, which the feed has changed since: the newer version shows.
-		const left = node.kind !== "folder" && node.origin === undefined && this.#dropReplaced(from);
+		// A new file or link moving off what it replaced, which the feed has changed since: the newer version shows. One
+		// renamed only in case still replaces it, and keeps that version's removal.
+		const left =
+			node.kind !== "folder" &&
+			node.origin === undefined &&
+			folderKey(from) !== folderKey(to) &&
+			this.#dropReplaced(from);
 		if (!left) this.#hide(from);
 		this.#dropUnder(to);
 		this.#set(to, node);
