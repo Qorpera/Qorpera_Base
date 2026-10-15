@@ -415,6 +415,40 @@ fn a_cache_move_the_node_does_not_take_at_once_goes_on_through_the_same_handle()
 }
 
 #[test]
+fn a_file_a_given_up_cache_move_left_empty_stays_marked_until_the_node_takes_it_out() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("code/o/n/worktrees/w/README", "readme", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	let modules = company.join("code/o/n/worktrees/w/node_modules");
+	std::fs::create_dir(&modules).unwrap();
+	std::fs::write(modules.join("x.js"), "cached").unwrap();
+	// Git comes to track it while a boundary settles: the move's write of x.js is kept, its handle open at the node.
+	let git = company.join("code/o/n/repo.git/worktrees/w");
+	std::fs::write(git.join("index.lock"), git_index(&["node_modules/x.js"])).unwrap();
+	node.busy(1_000_000, 0);
+	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
+	assert!(eventually(Duration::from_secs(10), || node.open_handles() == 1));
+	// x.js leaves the machine's disk before the node takes a chunk: the move gives it up, closing it empty, and the
+	// node answers the unlinks of the empty file BUSY.
+	node.busy_unlinks(1_000_000);
+	std::fs::remove_file(node.dir.join("state/local/cache/code/o/n/worktrees/w/node_modules/x.js")).unwrap();
+	let (x, marker) = ("code/o/n/worktrees/w/node_modules/x.js", node.dir.join("state/caches.moving"));
+	let tried = || node.busy_unlinks_left() < 1_000_000 && node.open_handles() == 0;
+	assert!(eventually(Duration::from_secs(20), tried), "handles open at the node: {}", node.open_handles());
+	// Until the node takes the unlink, the empty file is in the folder and `qorpera-folder publish` refuses.
+	assert!(node.content(x).is_some_and(|c| c.is_empty()) && marker.exists());
+	node.busy_unlinks(0);
+	let out = eventually(Duration::from_secs(20), || !node.exists(x) && !marker.exists());
+	assert!(out, "x.js in the folder: {}, handles open: {}, marker: {}", node.exists(x), node.open_handles(), marker.exists());
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
+#[test]
 fn one_writer_per_file_across_duplicated_inherited_and_truncating_descriptors() {
 	if !wanted() {
 		return;

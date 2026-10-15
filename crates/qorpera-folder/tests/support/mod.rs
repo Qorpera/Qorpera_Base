@@ -50,9 +50,10 @@ struct State {
 	publishes: usize,
 	/// Chunks asked back.
 	gets: usize,
-	/// How many of the next chunks and closes to answer BUSY (a boundary settling).
+	/// How many of the next chunks, closes and file unlinks to answer BUSY (a boundary settling).
 	busy_chunks: usize,
 	busy_closes: usize,
+	busy_unlinks: usize,
 	logs: std::collections::HashMap<String, u64>,
 	unproven: bool,
 }
@@ -210,6 +211,16 @@ impl FakeNode {
 		let mut s = self.state.lock().unwrap();
 		s.busy_chunks = chunks;
 		s.busy_closes = closes;
+	}
+
+	/// The next `unlinks` unlinks of a file are answered BUSY.
+	pub fn busy_unlinks(&self, unlinks: usize) {
+		self.state.lock().unwrap().busy_unlinks = unlinks;
+	}
+
+	/// How many of the unlinks `busy_unlinks` asked for were not answered BUSY yet.
+	pub fn busy_unlinks_left(&self) -> usize {
+		self.state.lock().unwrap().busy_unlinks
 	}
 }
 
@@ -429,6 +440,10 @@ fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<
 		}
 		kind::UNLINK | kind::RMDIR => {
 			let req: RemoveRequest = serde_json::from_slice(body).unwrap();
+			if k == kind::UNLINK && st.busy_unlinks > 0 {
+				st.busy_unlinks -= 1;
+				return error(s, code::BUSY);
+			}
 			let Some(n) = st.entries.get(&req.path).cloned() else { return error(s, code::NOT_FOUND) };
 			if n.folder != (k == kind::RMDIR) {
 				return error(s, if n.folder { code::NOT_A_FILE } else { code::NOT_A_FOLDER });

@@ -5,14 +5,15 @@
 //! through to a file beside the cached folders and read back by a program started again. The cache folders of a name
 //! that left move into the folder (`mount/on_disk.rs`); a move not finished is written through too, tried again, and
 //! while one is left a marker in the mount's state directory (`MOVING`) makes `qorpera-folder publish` refuse, so no
-//! boundary leaves out files git tracks.
+//! boundary leaves out files git tracks. So does a file a move left empty in the folder when it gave up on it (its disk
+//! file went), until the folder no longer has it.
 //!
 //! A wrong list only keeps the session's own files unpublished, which root in the machine could do anyway.
 
 use crate::git::CACHE_NAMES;
 use crate::index;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -21,13 +22,16 @@ use std::path::{Path, PathBuf};
 /// The marker in a mount's state directory that is there while a move is unfinished.
 pub const MOVING: &str = "caches.moving";
 
-/// One line of the file: a name that left a worktree's list, or (`moved`) whose cache folders all moved into the folder.
+/// One line of the file: a name that left a worktree's list, or (`moved`) whose cache folders all moved into the folder;
+/// with no worktree, a file in the folder a move left empty (`n`, at the version `empty`), or (`moved`) out of it.
 #[derive(Serialize, Deserialize)]
 struct Line {
 	w: String,
 	n: String,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	moved: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	empty: Option<String>,
 }
 
 #[derive(Default)]
@@ -42,6 +46,8 @@ struct Worktree {
 pub struct CacheList {
 	/// By worktree path (`code/<owner>/<name>/worktrees/<worker>`).
 	worktrees: HashMap<String, Worktree>,
+	/// The files in the folder moves left empty, by path, with the versions they were left at: to take out of it.
+	empties: BTreeMap<String, String>,
 	/// Where the names that left are written through; None keeps them in memory only.
 	file: Option<File>,
 	/// `MOVING` in the mount's state directory; None keeps no marker.
@@ -50,7 +56,7 @@ pub struct CacheList {
 
 impl CacheList {
 	pub fn memory() -> CacheList {
-		CacheList { worktrees: HashMap::new(), file: None, marker: None }
+		CacheList { worktrees: HashMap::new(), empties: BTreeMap::new(), file: None, marker: None }
 	}
 
 	/// The list kept in `path`, with the names an earlier program saw leave and the moves it did not finish; the marker
@@ -61,6 +67,13 @@ impl CacheList {
 			Ok(text) => {
 				for line in text.split(|b| *b == b'\n') {
 					let Ok(l) = serde_json::from_slice::<Line>(line) else { continue };
+					if l.w.is_empty() {
+						match l.empty {
+							Some(version) => out.empties.insert(l.n, version),
+							None => out.empties.remove(&l.n),
+						};
+						continue;
+					}
 					let w = out.worktrees.entry(l.w).or_default();
 					if l.moved {
 						w.moving.remove(&l.n);
@@ -111,7 +124,7 @@ impl CacheList {
 		w.left.extend(leaving.iter().cloned());
 		w.moving.extend(leaving.iter().cloned());
 		for name in &leaving {
-			self.write(&Line { w: worktree.to_string(), n: name.clone(), moved: false });
+			self.write(&Line { w: worktree.to_string(), n: name.clone(), moved: false, empty: None });
 		}
 		if !leaving.is_empty() {
 			self.mark();
@@ -131,7 +144,28 @@ impl CacheList {
 		if !self.worktrees.get_mut(worktree).is_some_and(|w| w.moving.remove(name)) {
 			return;
 		}
-		self.write(&Line { w: worktree.to_string(), n: name.to_string(), moved: true });
+		self.write(&Line { w: worktree.to_string(), n: name.to_string(), moved: true, empty: None });
+		self.mark();
+	}
+
+	/// A move gave up on the file `path` (its disk file went) and left it empty in the folder, at `version`.
+	pub fn emptied(&mut self, path: &str, version: &str) {
+		self.empties.insert(path.to_string(), version.to_string());
+		self.write(&Line { w: String::new(), n: path.to_string(), moved: false, empty: Some(version.to_string()) });
+		self.mark();
+	}
+
+	/// The files in the folder moves left empty, with the versions they were left at.
+	pub fn empties(&self) -> Vec<(String, String)> {
+		self.empties.iter().map(|(path, version)| (path.clone(), version.clone())).collect()
+	}
+
+	/// The file `path` a move left empty is out of the folder (or another version took its place).
+	pub fn emptied_out(&mut self, path: &str) {
+		if self.empties.remove(path).is_none() {
+			return;
+		}
+		self.write(&Line { w: String::new(), n: path.to_string(), moved: true, empty: None });
 		self.mark();
 	}
 
@@ -144,11 +178,11 @@ impl CacheList {
 		}
 	}
 
-	/// Puts the marker there while a move is unfinished, and takes it away once none is (after the line saying so, so
-	/// a program stopped between the two puts it right when started again).
+	/// Puts the marker there while a move is unfinished, or a file one left empty is in the folder, and takes it away
+	/// once none is (after the line saying so, so a program stopped between the two puts it right when started again).
 	fn mark(&self) {
 		let Some(marker) = &self.marker else { return };
-		let done = if self.worktrees.values().any(|w| !w.moving.is_empty()) {
+		let done = if !self.empties.is_empty() || self.worktrees.values().any(|w| !w.moving.is_empty()) {
 			OpenOptions::new().create(true).truncate(false).write(true).mode(0o600).open(marker).and_then(|f| f.sync_all())
 		} else {
 			match std::fs::remove_file(marker) {
@@ -214,6 +248,28 @@ mod tests {
 		again.moved(w, "dist");
 		assert!(again.moves(None).is_empty() && !marker.exists());
 		assert!(CacheList::open(&file, Some(marker.clone())).unwrap().moves(None).is_empty());
+		std::fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn files_moves_left_empty_are_kept_and_marked_until_out_of_the_folder() {
+		let dir = std::env::temp_dir().join(format!("qorpera-cache-empties-{}", std::process::id()));
+		std::fs::create_dir_all(&dir).unwrap();
+		let (file, marker) = (dir.join("left.jsonl"), dir.join(MOVING));
+		let _ = std::fs::remove_file(&file);
+		let (w, x) = ("code/o/n/worktrees/w", "code/o/n/worktrees/w/build/x");
+		let mut list = CacheList::open(&file, Some(marker.clone())).unwrap();
+		list.indexed(w, &["build/a".to_string()]);
+		list.emptied(x, "v1");
+		list.moved(w, "build");
+		// The move is done, but the file it left empty is still in the folder.
+		assert!(list.moves(None).is_empty() && marker.exists());
+		let mut again = CacheList::open(&file, Some(marker.clone())).unwrap();
+		assert_eq!(again.empties(), [(x.to_string(), "v1".to_string())]);
+		assert!(marker.exists() && !again.listed(w, "build"));
+		again.emptied_out(x);
+		assert!(again.empties().is_empty() && !marker.exists());
+		assert!(CacheList::open(&file, Some(marker.clone())).unwrap().empties().is_empty());
 		std::fs::remove_dir_all(&dir).unwrap();
 	}
 }

@@ -236,14 +236,9 @@ impl Local {
 		path_in(&self.names.lock().unwrap(), ino)
 	}
 
-	/// Where the local inode is on the disk.
-	pub fn disk_of(&self, ino: u64) -> Result<(PathBuf, Area), i32> {
-		self.disk_at(&self.names.lock().unwrap(), ino)
-	}
-
-	/// `disk_of` by `names`. What changes a local file or its names finds it with the names held until it is done, so
-	/// no unlink or rename between finding and changing it (of a hard link's name, or a folder above) has it change
-	/// another file by the same name.
+	/// Where the local inode is on the disk, by `names`. What reads or changes a local file or its names finds it with
+	/// the names held until it is done, so no unlink or rename between finding and using it (of a hard link's name, or
+	/// a folder above) has it read or change another file by the same name.
 	fn disk_at(&self, names: &Names, ino: u64) -> Result<(PathBuf, Area), i32> {
 		let (path, area) = path_in(names, ino).ok_or(libc::ENOENT)?;
 		Ok((self.disk(area, &path), area))
@@ -272,9 +267,10 @@ impl Local {
 		Ok(self.attr(&meta))
 	}
 
-	/// The attributes of a local inode, from the disk.
+	/// The attributes of a local inode, from the disk (with the names held, as `disk_at` says).
 	pub fn getattr(&self, ino: u64) -> Result<FileAttr, i32> {
-		let (disk, _) = self.disk_of(ino)?;
+		let names = self.names.lock().unwrap();
+		let (disk, _) = self.disk_at(&names, ino)?;
 		fs::symlink_metadata(disk).map(|m| self.attr(&m)).map_err(errno)
 	}
 
@@ -379,7 +375,8 @@ impl Local {
 	}
 
 	pub fn readlink(&self, ino: u64) -> Result<Vec<u8>, i32> {
-		let (disk, _) = self.disk_of(ino)?;
+		let names = self.names.lock().unwrap();
+		let (disk, _) = self.disk_at(&names, ino)?;
 		fs::read_link(disk).map(|t| t.as_os_str().as_bytes().to_vec()).map_err(errno)
 	}
 
@@ -411,6 +408,27 @@ impl Local {
 		let ino = fs::symlink_metadata(&disk).map_err(errno)?.ino() | LOCAL;
 		fs::remove_dir(disk).map_err(errno)?;
 		forget(&mut names, ino, up, name);
+		Ok(())
+	}
+
+	/// Takes the file, or the empty folder, at `disk` off the disk once a cache move has it in the folder
+	/// (`mount/on_disk.rs`), with every name that reached it there: a hard link to it elsewhere keeps just its own.
+	pub fn moved_out(&self, disk: &Path) -> Result<(), i32> {
+		let mut names = self.names.lock().unwrap();
+		let meta = fs::symlink_metadata(disk).map_err(errno)?;
+		let removed = if meta.is_dir() { fs::remove_dir(disk) } else { fs::remove_file(disk) };
+		removed.map_err(errno)?;
+		let ino = meta.ino() | LOCAL;
+		let gone: Vec<(Up, String)> = names
+			.get(&ino)
+			.into_iter()
+			.flatten()
+			.filter(|(up, name, area)| self.disk_under(&names, up, name, *area).is_ok_and(|(at, _)| at == disk))
+			.map(|(up, name, _)| (up.clone(), name.clone()))
+			.collect();
+		for (up, name) in gone {
+			forget(&mut names, ino, &up, &name);
+		}
 		Ok(())
 	}
 
@@ -747,6 +765,57 @@ mod tests {
 			assert_eq!(opens, Ok(()));
 		});
 		assert_eq!(fs::read(dir.join("cache/code/o/n/worktrees/w/target/a")).unwrap(), b"a");
+		fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn a_stat_or_readlink_by_a_hard_links_name_never_reaches_the_link_that_took_its_place() {
+		let (l, dir) = local("stat-race", "v1");
+		let up = Up::Mount("code/o/n/worktrees/w/target".to_string());
+		let a = l.symlink(up.clone(), "a", Area::Cache, Path::new("to-a")).unwrap().ino.0;
+		let sub = Up::Local(l.mkdir(up.clone(), "subdir", Area::Cache, 0o755).unwrap().ino.0);
+		let stop = AtomicBool::new(false);
+		std::thread::scope(|s| {
+			// `a`'s second name comes and goes, another link taking its place each time.
+			let other = s.spawn(|| {
+				while !stop.load(Ordering::SeqCst) {
+					l.link(a, sub.clone(), "b", Area::Cache).unwrap();
+					l.unlink(&sub, "b", Area::Cache).unwrap();
+					l.symlink(sub.clone(), "b", Area::Cache, Path::new("to-other")).unwrap();
+					l.unlink(&sub, "b", Area::Cache).unwrap();
+				}
+			});
+			let reads = (0..2000).try_for_each(|_| {
+				let attr = l.getattr(a)?;
+				let target = l.readlink(a)?;
+				if attr.ino.0 != a || attr.size != 4 || target != b"to-a" {
+					return Err(-1);
+				}
+				Ok(())
+			});
+			stop.store(true, Ordering::SeqCst);
+			other.join().unwrap();
+			assert_eq!(reads, Ok(()), "a stat or readlink of a reached the link that took b");
+		});
+		fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn a_hard_link_a_cache_move_leaves_on_the_disk_keeps_its_own_names() {
+		let (l, dir) = local("moved-out", "v1");
+		let target = Up::Mount("code/o/n/worktrees/w/target".to_string());
+		let (attr, fh) = l.create(target, "a", Area::Cache, 0o644, libc::O_WRONLY).unwrap();
+		l.release(fh);
+		let a = attr.ino.0;
+		l.link(a, Up::Mount("code/o/n/worktrees/w/node_modules".to_string()), "b", Area::Cache).unwrap();
+		assert_eq!(l.path(a), Some(("code/o/n/worktrees/w/node_modules/b".to_string(), Area::Cache)));
+		// Git came to track node_modules: the move has b in the folder, and takes it and its folder off the disk.
+		let modules = dir.join("cache/code/o/n/worktrees/w/node_modules");
+		l.moved_out(&modules.join("b")).unwrap();
+		l.moved_out(&modules).unwrap();
+		assert_eq!(l.path(a), Some(("code/o/n/worktrees/w/target/a".to_string(), Area::Cache)));
+		assert_eq!(l.getattr(a).map(|attr| attr.nlink), Ok(1));
+		l.release(l.open_file(a, libc::O_RDONLY).unwrap());
 		fs::remove_dir_all(&dir).unwrap();
 	}
 

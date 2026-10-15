@@ -217,26 +217,31 @@ impl Shared {
 			}
 		}
 		// A write kept for a move that is done or no longer to be made (its file left the disk, or is a cache again) is
-		// closed empty and removed: a handle of the view's left open keeps its boundaries from publishing.
+		// closed empty, and the empty file taken out of the folder: a handle of the view's left open keeps its
+		// boundaries from publishing. Until it is out, the cache list keeps it and `qorpera-folder publish` refuses.
 		let moves = local.cache.lock().unwrap().moves(None);
 		let left: Vec<String> =
 			held.keys().filter(|path| !moves.iter().any(|(w, n)| in_cache(path, w, n))).cloned().collect();
 		for path in left {
 			let writer = held.remove(&path).expect("held");
-			let removed = match self.link.close_write(writer.handle, 0) {
-				Ok(version) => match self.link.unlink(&path, Some(version)) {
-					Err(f) if f.errno() != libc::ENOENT => Err(f),
-					_ => Ok(()),
-				},
+			match self.link.close_write(writer.handle, 0) {
+				Ok(version) => local.cache.lock().unwrap().emptied(&path, &version),
 				Err(f) if again(&f) => {
-					held.insert(path.clone(), writer);
-					Err(f)
+					eprintln!("qorpera-folder: the kept write of {path} could not be given up yet (errno {})", f.errno());
+					held.insert(path, writer);
 				}
 				// The node has no such handle open any more.
-				Err(_) => Ok(()),
-			};
-			if let Err(f) = removed {
-				eprintln!("qorpera-folder: the kept write of {path} could not be given up yet (errno {})", f.errno());
+				Err(_) => {}
+			}
+		}
+		let empties = local.cache.lock().unwrap().empties();
+		for (path, version) in empties {
+			match self.link.unlink(&path, Some(version)) {
+				Err(f) if again(&f) => {
+					eprintln!("qorpera-folder: {path}, left empty, could not be taken out of the folder yet (errno {})", f.errno())
+				}
+				// Out, or no longer the empty file: gone, or another version in its place.
+				_ => local.cache.lock().unwrap().emptied_out(&path),
 			}
 		}
 	}
@@ -269,8 +274,9 @@ impl Shared {
 		Ok(())
 	}
 
-	/// Each file leaves the disk once it is in the folder, and each folder once it is empty: what stays is what has not
-	/// moved yet, and what cannot (links wait for the folder's own), seen in the folder's place as a cache's are.
+	/// Each file leaves the disk once it is in the folder, and each folder once it is empty, with their names there
+	/// (`Local::moved_out`): what stays is what has not moved yet, and what cannot (links wait for the folder's own),
+	/// seen in the folder's place as a cache's are.
 	fn move_folder(&self, local: &Local, held: &mut HashMap<String, Writer>, path: &str, disk: &Path) -> Result<(), i32> {
 		let made = |p: &str| match self.link.mkdir(p) {
 			Err(f) if f.errno() != libc::EEXIST => Err(f.errno()),
@@ -284,16 +290,16 @@ impl Shared {
 				made(&to)?;
 			} else if meta.is_file() {
 				self.write_in(held, &to, &disk.join(rel), meta.permissions().mode() & 0o100 != 0)?;
-				fs::remove_file(disk.join(rel)).map_err(local::errno)?;
+				local.moved_out(&disk.join(rel))?;
 			} else {
 				eprintln!("qorpera-folder: {to} is not a file or a folder, and stays out of the folder");
 			}
 		}
 		// Deepest first (the walk gives a folder before what is in it); one with a link left in it stays.
 		for (rel, _) in walked.iter().rev().filter(|(_, m)| m.is_dir()) {
-			let _ = fs::remove_dir(disk.join(rel));
+			let _ = local.moved_out(&disk.join(rel));
 		}
-		let _ = fs::remove_dir(disk);
+		let _ = local.moved_out(disk);
 		Ok(())
 	}
 
