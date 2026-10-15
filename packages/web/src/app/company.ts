@@ -190,8 +190,9 @@ export interface CompanyState {
 	 * Unset until the first read lands, and while the folder keeps no `interfaces/order.md`: the Interfaces tab then
 	 * draws the library's definitions (app/interfaces.ts). */
 	interfaceFolder?: InterfaceFolderState;
-	/** The company's open offers of claimed cells (Interfaces step I9c; app/interface-offers.ts). Unset until the first
-	 * read lands, and on a cloud without them: no page draws an offer then. */
+	/** The company's open offers of claimed cells (Interfaces step I9c; app/interface-offers.ts), with its live
+	 * supervision consents (I9b). Unset until the first read lands, and on a cloud without them: no page draws an offer
+	 * then. */
 	interfaceOffers?: InterfaceOffersState;
 	/** The company's mail as the member reads it (Interfaces step I5c; app/company-mail.ts). Unset until it is read. */
 	mail?: MailState;

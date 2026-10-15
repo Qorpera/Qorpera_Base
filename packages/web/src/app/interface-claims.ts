@@ -50,9 +50,10 @@ export function claimFailure(verb: ClaimVerb): string {
 	return verb === "release" ? t("The card could not be released.") : t("The offer could not be accepted.");
 }
 
-/** Takes or releases one row's holder cell in `tables/<table>/rows.csv`, or accepts the offer of a cell. Answers whether
- * it wrote: false when the cell already says it. Throws `ClaimLostError` when the cell changed under the card, and a
- * refusal (`WebCompanyFolderRejectedError`) with the problems when the rows or the claim don't pass. */
+/** Takes or releases one row's holder cell (or the cell `column` names) in `tables/<table>/rows.csv`, or accepts the
+ * offer of a cell. Answers whether it wrote: false when the cell already says it. Throws `ClaimLostError` when the cell
+ * changed under the card, and a refusal (`WebCompanyFolderRejectedError`) with the problems when the rows or the claim
+ * don't pass. */
 export async function claimTableCell(options: {
 	readonly folder: WebMemberFolder;
 	readonly table: string;
@@ -61,6 +62,8 @@ export async function claimTableCell(options: {
 	readonly verb: ClaimVerb;
 	/** The offer an accept answers. */
 	readonly offer?: ClaimOffer;
+	/** The member cell a take or release changes, when it isn't the holder: an area's `supervisor` (step I9b). */
+	readonly column?: string;
 	readonly memberId: string;
 	readonly signal: AbortSignal;
 	readonly check: () => void;
@@ -84,7 +87,8 @@ export async function claimTableCell(options: {
 				definition = parsed.file;
 				return `tables/${table}/rows.csv`;
 			},
-			rewrite: (text) => rewriteRows(definition, table, text, options.key, verb, options.offer, memberId, failure),
+			rewrite: (text) =>
+				rewriteRows(definition, table, text, options.key, verb, options.offer, options.column, memberId, failure),
 			key: () => `web:board-${verb}:${crypto.randomUUID()}`,
 			gone: t("This card is no longer here."),
 			failure,
@@ -102,11 +106,13 @@ function rewriteRows(
 	key: string,
 	verb: ClaimVerb,
 	offer: ClaimOffer | undefined,
+	cell: string | undefined,
 	memberId: string,
 	failure: string,
 ): string | null {
-	// Take and release change the holder cell; an accept the cell its offer names, a member column that needs a yes.
-	const column = verb === "accept" ? (offer?.column ?? null) : (definition?.holder ?? null);
+	// Take and release change the holder cell, or the cell they name; an accept the cell its offer names. Each is a
+	// member column that needs a yes.
+	const column = verb === "accept" ? (offer?.column ?? null) : (cell ?? definition?.holder ?? null);
 	if (
 		definition === null ||
 		column === null ||

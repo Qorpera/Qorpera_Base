@@ -965,7 +965,8 @@ environment.
 - `qorpera_member_interface_supervisions(environment)`: `{schema: "qorpera.member-interface-supervisions/v1",
   supervisions, truncated}`, the live consents of current members on the areas, when the caller may read them, newest
   first, at most 500. Read it again after a folder change to `tables/areas` and on focus. A row whose `supervisor` cell
-  names a member with no consent here is waiting for theirs: offer them "Consent" when it names the caller.
+  names a member with no consent here is waiting for theirs: offer them the consent (the web's Supervise) when it
+  names the caller.
 - Agents join a supervised area by its supervisor (20260930372000_interface_supervision_agents). While an area's
   consent is live, only its member's save adds an agent to the row's `agents` cell; anyone else's save that adds one
   is refused (`areas`: "only the area's supervisor adds its agents; offer the agent to them"). Removing an agent stays

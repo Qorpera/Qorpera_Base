@@ -60,11 +60,14 @@ export interface InterfaceOfferCalls {
 const nullable = <T>(value: unknown, parse: (value: unknown) => T): T | null =>
 	value === null || value === undefined ? null : parse(value);
 
-function keyValue(value: unknown): TableValue {
-	if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-	if (typeof value === "number" && Number.isFinite(value)) return value;
-	if (Array.isArray(value) && value.every((item) => typeof item === "string")) return value as string[];
-	throw new CloudShapeError("offer key");
+/** A row's typed key, as the client's table parse gives it. */
+export function parseInterfaceKey(value: unknown, label: string): TableValue[] {
+	return array(value, label).map((item): TableValue => {
+		if (item === null || typeof item === "string" || typeof item === "boolean") return item;
+		if (typeof item === "number" && Number.isFinite(item)) return item;
+		if (Array.isArray(item) && item.every((each) => typeof each === "string")) return item as string[];
+		throw new CloudShapeError(label);
+	});
 }
 
 export function parseInterfaceOffer(value: unknown): MemberInterfaceOffer {
@@ -74,7 +77,7 @@ export function parseInterfaceOffer(value: unknown): MemberInterfaceOffer {
 		// The table's id as its table.md gives it: a lowercase uuid (interfaces.ts `table.id`), as the database prints it.
 		table: uuid(item.table, "offer table"),
 		folder: nullable(item.folder, (folder) => nonEmptyString(folder, "offer folder")),
-		key: nullable(item.key, (key) => array(key, "offer key").map(keyValue)),
+		key: nullable(item.key, (key) => parseInterfaceKey(key, "offer key")),
 		column: nullable(item.column, (column) => nonEmptyString(column, "offer column", 200)),
 		from: uuid(item.from, "offer from"),
 		was: nullable(item.was, (was) => uuid(was, "offer cell")),
