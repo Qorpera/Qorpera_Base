@@ -29,6 +29,8 @@ office_id=20045
 # Staged office images stay on node01's test machine.
 [[ $(hostname) == qorpera-testvm-node01 ]] || fail "only node01's test machine holds the staged office images"
 [[ -f /etc/qorpera-test-machine-versions && -c /dev/kvm ]] || fail "operator test VM and nested KVM required"
+# A VM needs KVM and the vsock its LXD agent talks over; this run never loads a module on the test machine.
+[[ -d /sys/module/kvm && -d /sys/module/vhost_vsock ]] || fail "kvm or vhost_vsock is not loaded"
 [[ $(lxc remote get-default) == local ]] || fail "LXD must target its local Unix socket"
 [[ $(lxc remote list --format json | jq -r '.local.Addr') == unix:// ]] || fail "local LXD is not its Unix socket"
 for file in img img.root; do
@@ -85,7 +87,7 @@ cleanup() {
 		echo 'FAIL: a shared-test-VM kernel module disappeared' >&2
 		status=1
 	fi
-	for module in br_netfilter bridge stp llc tun macvlan macvtap vhost_net nft_meta_bridge nf_conntrack_bridge fuse; do
+	for module in br_netfilter bridge stp llc tun macvlan macvtap vhost_net nft_meta_bridge nf_conntrack_bridge fuse vhost vhost_vsock vsock; do
 		if grep -qx "$module" "$work/modules-after" && ! grep -qx "$module" "$work/modules-before"; then
 			echo "FAIL: shared-test-VM module appeared: $module" >&2
 			status=1
@@ -231,9 +233,10 @@ candidate=$(lx image list --format json | jq -r '.[] | select(.aliases | any(.na
 [[ $candidate =~ ^[0-9a-f]{64}$ ]] || fail "the published candidate has no fingerprint"
 if ((stage_candidate)); then
 	# Unified, so the folder remount proof can check the tarball against its fingerprint.
+	# Set only once this run made the directory, so a failure never deletes an earlier stage.
+	[[ ! -e "$stages/${candidate:0:12}" ]] || fail "$stages/${candidate:0:12} already exists"
+	install -d -o root -g root -m 0700 "$stages/${candidate:0:12}"
 	staged="$stages/${candidate:0:12}"
-	[[ ! -e "$staged" ]] || fail "$staged already exists"
-	install -d -o root -g root -m 0700 "$staged"
 	mkdir "$work/export"
 	lx image export "$candidate" "$work/export/"
 	exported=("$work/export"/*)
