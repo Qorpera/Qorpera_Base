@@ -19,6 +19,8 @@
 -- 5. Step 4 (qorpera_memory_message_erase_scrub): each ended run's linked receipts get P18's scrub (§6 there). W1's
 --    step scrub (§10.1) comes with W1d.
 -- 6. The readers: a parent entry id, a context source and a history line treat an erased body as opaque.
+-- 7. The room's image commit (qorpera_room_image_commit) names the conversation in its operation key, by which step 1
+--    finds an input's images folders at roots no tree knows.
 --
 -- The runtime's memory eraser drives the steps (qorpera_memory_message_erase_due). Every patched body carries the marker
 -- 20260930441000 (M3) for the deploy guard.
@@ -199,18 +201,41 @@ create index qorpera_folder_path_versions_image_folders on public.qorpera_folder
 	(substring(path from '/images/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$')))
 	where kind = 'folder' and path ~ '/images/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 
--- Every images folder of input I at a tree root, by the index above, live or not: a root its owner left before the
--- summary wrote its first tree.toml is known to no tree (qorpera_memory_erase_roots), yet holds I's image.
-create function public.qorpera_memory_erase_image_folders(p_environment_id uuid, p_client_input_id uuid)
+-- Every images folder of C's input I at a tree root, live or not: a root its owner left before the summary wrote its
+-- first tree.toml is known to no tree (qorpera_memory_erase_roots), yet holds I's image. A client input id is unique in
+-- its conversation only, so a folder counts by where it began: made by C's image commit for I (its operation key names
+-- both, below), then wherever moves took it (a move_in's prior version is the version it moved).
+create function public.qorpera_memory_erase_image_folders(p_environment_id uuid, p_session_id uuid, p_client_input_id uuid)
 returns table (key text) language sql stable set search_path = '' as $$
-	select distinct k.key collate "C"
-	from public.qorpera_folder_path_versions v
-	cross join lateral (select public.qorpera_folder_key(v.path) as key) k
-	where v.environment_id = p_environment_id and v.kind = 'folder'
-		and v.path ~ '/images/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-		and substring(v.path from '/images/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$') = p_client_input_id::text
-		and k.key = public.qorpera_memory_tree_root_key(k.key) || '/images/' || p_client_input_id::text
+	with recursive found as (
+		select v.version, k.key
+		from public.qorpera_folder_path_versions v
+		cross join lateral (select public.qorpera_folder_key(v.path) as key) k
+		where v.environment_id = p_environment_id and v.kind = 'folder' and v.op in ('mkdir','move_in')
+			and v.path ~ '/images/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+			and substring(v.path from '/images/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$') = p_client_input_id::text
+			and k.key = public.qorpera_memory_tree_root_key(k.key) || '/images/' || p_client_input_id::text
+	), back(start, version, prior_version, op, path, commit_id) as (
+		select f.version, v.version, v.prior_version, v.op, v.path, v.commit_id
+		from found f join public.qorpera_folder_path_versions v on v.version = f.version
+		union all
+		select b.start, v.version, v.prior_version, v.op, v.path, v.commit_id
+		from back b join public.qorpera_folder_path_versions v on v.version = b.prior_version
+		where b.op = 'move_in'
+	)
+	select distinct f.key collate "C"
+	from found f
+	join back b on b.start = f.version and b.op = 'mkdir'
+	join public.qorpera_folder_commits c on c.id = b.commit_id
+	where b.path ~ ('/images/' || p_client_input_id::text || '$')
+		and c.operation_key like 'chat-image:' || p_client_input_id::text || ':' || p_session_id::text || ':%'
 $$;
+-- The room's image commit names the conversation in its operation key after the input's id.
+select pg_temp.m3_replace('public.qorpera_room_image_commit(uuid,uuid,uuid,jsonb)'::regprocedure,
+	E'\t\t\t\t''chat-image:'' || p_client_input_id::text || '':'' || extensions.gen_random_uuid()::text, v_units,\n',
+	E'\t\t\t\t-- 20260930441000 (M3): the conversation, by which a message erase finds the folders this commit makes.\n'
+	|| E'\t\t\t\t''chat-image:'' || p_client_input_id::text || '':'' || p_session_id::text || '':''\n'
+	|| E'\t\t\t\t\t|| extensions.gen_random_uuid()::text, v_units,\n');
 
 -- The read receipts whose result may hold message i of C, in the whole company (§10 step 4): a zoom of i's own line,
 -- or of a line whose children have i among their sources (start+size overlaps [i, 16·⌊i/16⌋ + 32)), and a
@@ -328,7 +353,7 @@ begin
 	cross join lateral (select public.qorpera_folder_key(u ->> 'path') as key) k;
 	-- By key alone (step 3 asks them with no cutoff): each candidate block with versions but not live under the current
 	-- root, and each with versions under an earlier root of C, live or not; and the images folder at every root it ever
-	-- had, found by its input's id, where not live under the current root.
+	-- had, found by the image commit of C's that made it, where not live under the current root.
 	insert into public.qorpera_memory_message_erase_blocks(erase_id, block_key, path, kind)
 	select v_row.id, c.key, (select v.path from public.qorpera_folder_path_versions v
 			where v.environment_id = v_env and v.key_sha256 = extensions.digest(c.key, 'sha256') order by v.created_at desc limit 1),
@@ -337,7 +362,7 @@ begin
 		from (select r.root_key from public.qorpera_memory_erase_roots(v_env, v_row.session_id) r
 			union select v_root where v_root is not null) r
 		cross join lateral public.qorpera_memory_erase_candidates(r.root_key, v_row.message_index) b
-		union all select i.key, 'images' from public.qorpera_memory_erase_image_folders(v_env, v_row.client_input_id) i
+		union all select i.key, 'images' from public.qorpera_memory_erase_image_folders(v_env, v_row.session_id, v_row.client_input_id) i
 		where v_row.client_input_id is not null) c
 	where exists (select 1 from public.qorpera_folder_path_versions v
 		where v.environment_id = v_env and v.key_sha256 = extensions.digest(c.key, 'sha256'))
@@ -921,7 +946,7 @@ revoke all on function public.qorpera_memory_erase_line(public.qorpera_memory_tr
 revoke all on function public.qorpera_memory_erase_deletes(uuid, text, bigint, uuid) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_erase_toml_manifests(uuid) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_erase_roots(uuid, uuid) from public, anon, authenticated, service_role;
-revoke all on function public.qorpera_memory_erase_image_folders(uuid, uuid) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_memory_erase_image_folders(uuid, uuid, uuid) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_erase_receipts(uuid, uuid, bigint) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_message_erase_context(uuid, text) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_message_erase_lock_targets(jsonb) from public, anon, authenticated, service_role;

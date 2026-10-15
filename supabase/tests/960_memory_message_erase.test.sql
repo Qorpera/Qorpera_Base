@@ -577,7 +577,7 @@ begin
 	from unnest(v_steps || array['public.qorpera_memory_entry_id(jsonb,uuid)', 'public.qorpera_memory_erase_drops(bigint,integer,bigint)',
 		'public.qorpera_memory_erase_candidates(text,bigint)', 'public.qorpera_memory_erase_line(public.qorpera_memory_tree_nodes)',
 		'public.qorpera_memory_erase_deletes(uuid,text,bigint,uuid)', 'public.qorpera_memory_erase_toml_manifests(uuid)',
-		'public.qorpera_memory_erase_roots(uuid,uuid)', 'public.qorpera_memory_erase_image_folders(uuid,uuid)',
+		'public.qorpera_memory_erase_roots(uuid,uuid)', 'public.qorpera_memory_erase_image_folders(uuid,uuid,uuid)',
 		'public.qorpera_memory_erase_receipts(uuid,uuid,bigint)',
 		'public.qorpera_memory_message_erase_context(uuid,text)', 'public.qorpera_memory_message_erase_lock_targets(jsonb)',
 		'public.qorpera_memory_message_erase_targets(uuid,text)', 'public.qorpera_memory_message_erase_step1(jsonb,jsonb)',

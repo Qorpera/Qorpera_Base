@@ -3,7 +3,8 @@
 -- owner's life. A member's message with an image, its agent renamed first (the tree and the image under an earlier root),
 -- its agent deleted (no root, nothing to rewrite), its agent hired again; a later erase of the conversation, a block live
 -- again, another request at a block's key, a member who is no longer an owner or admin, and an image written before
--- its agent's tree had a tree.toml (the agent renamed and deleted: found by the input's id alone).
+-- its agent's tree had a tree.toml (the agent renamed and deleted: found by the image commit that made it, and another
+-- conversation's input with the same client id keeps its image).
 
 -- An erase's blocks as key:kind:kept lines:cutoff?, by key (whole keys: some lie under earlier roots).
 create function pg_temp.keys(p_id uuid) returns jsonb language sql as $$
@@ -35,13 +36,16 @@ begin
 	set local session_replication_role = origin;
 	return v_event;
 end $$;
--- The message's image, as the room's image commit writes it: root/images/<cid>/<sha256>.png, with no structured entry.
-create function pg_temp.image(p_root text, p_cid uuid) returns jsonb language sql as $$
-	select jsonb_build_array(jsonb_build_object('op','mkdir','path',p_root || '/images/' || p_cid),
-		jsonb_build_object('op','write','path',p_root || '/images/' || p_cid || '/'
-			|| encode(extensions.digest(convert_to('png ' || p_cid, 'utf8'), 'sha256'), 'hex') || '.png',
-			'file', pg_temp.seal_v2('70000000-0000-4000-8000-000000000020', '{"kind":"platform"}',
-				replace(pg_temp.manifest_v2('png ' || p_cid), '"text/markdown"', '"image/png"')) -> 'file'))
+-- The message's image, as the room's image commit writes it: the folders it lacks (p_units), then
+-- root/images/<cid>/<sha256>.png with no structured entry, under its operation key, which names the input and the
+-- conversation (20260930441000).
+create function pg_temp.image(p_root text, p_cid uuid, p_session uuid, p_units jsonb default '[]') returns jsonb language sql as $$
+	select pg_temp.memory('chat-image:' || p_cid || ':' || p_session || ':' || extensions.gen_random_uuid(), p_units
+		|| jsonb_build_array(jsonb_build_object('op','mkdir','path',p_root || '/images/' || p_cid),
+			jsonb_build_object('op','write','path',p_root || '/images/' || p_cid || '/'
+				|| encode(extensions.digest(convert_to('png ' || p_cid, 'utf8'), 'sha256'), 'hex') || '.png',
+				'file', pg_temp.seal_v2('70000000-0000-4000-8000-000000000020', '{"kind":"platform"}',
+					replace(pg_temp.manifest_v2('png ' || p_cid), '"text/markdown"', '"image/png"')) -> 'file')), array[p_session])
 $$;
 -- P18's steps until this erasure is done or waiting, as pg_cron runs them (from 883).
 create function pg_temp.drain(p_id uuid) returns void language plpgsql as $$
@@ -100,8 +104,10 @@ begin
 		pg_temp.block_file(root || '/t0/00000000.jsonl', pg_temp.block(array[pg_temp.line0(0, 1), pg_temp.line0(1, 3),
 			pg_temp.line0(2, 4), pg_temp.line0(3, 5), pg_temp.line0(4, 6), pg_temp.line0(5, 7),
 			pg_temp.line(1, 0), pg_temp.line(1, 2), pg_temp.line(2, 0), pg_temp.line(3, 0)])),
-		jsonb_build_object('op','mkdir','path',root || '/images')) || pg_temp.image(root, cid), array[s]);
-	for i in 1..7 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+		jsonb_build_object('op','mkdir','path',root || '/images')), array[s]);
+	for i in 1..5 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	r := pg_temp.image(root, cid, s);
+	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
 	-- Renamed: the tree, its nodes and the image move to the new root; the old paths keep their versions.
 	r := pg_temp.commit(pg_temp.owner(), 'm3x-rename-1', jsonb_build_array(
 		pg_temp.write('agents/nora-dahl/agent.md', 'agent', pg_temp.agent_text(nora, 'Nora Skov'), pg_temp.agent_parse(nora, 'Nora Skov'),
@@ -179,7 +185,7 @@ declare
 	cid constant uuid := '96100000-0000-4000-8000-0000000000c8';
 begin
 	perform pg_temp.member(s, 8, cid);
-	perform pg_temp.expect(pg_temp.memory('m3x-image-2', pg_temp.image(root, cid), array[s]), 2, 'saved');
+	perform pg_temp.expect(pg_temp.image(root, cid, s), 2, 'saved');
 	r := pg_temp.commit(pg_temp.owner(), 'm3x-delete-1', jsonb_build_array(jsonb_build_object('op','delete','path','agents/nora-skov',
 		'expectedVersion',pg_temp.version('agents/nora-skov'),'asOfSeq',pg_temp.seq())));
 	perform pg_temp.expect(r, 1, 'saved');
@@ -370,12 +376,15 @@ begin
 end $$;
 
 -- 7. Otto's message image written before his tree's first tree.toml; Otto renamed, then deleted: no tree ever named the
--- conversation, and the erase finds both images folders by the input's id ---------------------------------------------
+-- conversation, and the erase finds both images folders by the image commit that made them; Ida's conversation's input
+-- with the same client id keeps its image ------------------------------------------------------------------------------
 
 do $$
 declare
-	otto constant uuid := '70000000-0000-4000-8000-0000000000a5'; s uuid; r jsonb; eid uuid; i integer;
+	otto constant uuid := '70000000-0000-4000-8000-0000000000a5'; ida constant uuid := '70000000-0000-4000-8000-0000000000a6';
+	s uuid; s2 uuid; r jsonb; eid uuid; i integer;
 	root constant text := 'agents/otto-lind/memory/thread'; moved constant text := 'agents/otto-berg/memory/thread';
+	other constant text := 'agents/ida-holm/memory/thread';
 	cid constant uuid := '96100000-0000-4000-8000-0000000000ca';
 begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'm3x-hire-3', jsonb_build_array(pg_temp.hire('otto-lind', otto, 'Otto Lind'))),
@@ -384,8 +393,8 @@ begin
 	perform pg_temp.events(s, 2);
 	perform pg_temp.member(s, 3, cid);
 	-- The room's image commit makes the folders it needs; the summary has written no tree.toml yet.
-	r := pg_temp.memory('m3x-image-3', jsonb_build_array(jsonb_build_object('op','mkdir','path',root),
-		jsonb_build_object('op','mkdir','path',root || '/images')) || pg_temp.image(root, cid), array[s]);
+	r := pg_temp.image(root, cid, s, jsonb_build_array(jsonb_build_object('op','mkdir','path',root),
+		jsonb_build_object('op','mkdir','path',root || '/images')));
 	for i in 1..4 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 	r := pg_temp.commit(pg_temp.owner(), 'm3x-rename-2', jsonb_build_array(
 		pg_temp.write('agents/otto-lind/agent.md', 'agent', pg_temp.agent_text(otto, 'Otto Berg'), pg_temp.agent_parse(otto, 'Otto Berg'),
@@ -396,6 +405,22 @@ begin
 	r := pg_temp.commit(pg_temp.owner(), 'm3x-delete-2', jsonb_build_array(jsonb_build_object('op','delete','path','agents/otto-berg',
 		'expectedVersion',pg_temp.version('agents/otto-berg'),'asOfSeq',pg_temp.seq())));
 	perform pg_temp.expect(r, 1, 'saved');
+	-- Ida's conversation has an input with the same client id (unique in its conversation only), its image under her
+	-- root; Ida deleted too. Her images folder began with her conversation's image commit, not Otto's.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'm3x-hire-4', jsonb_build_array(pg_temp.hire('ida-holm', ida, 'Ida Holm'))),
+		1, 'saved');
+	s2 := pg_temp.thread(ida);
+	perform pg_temp.events(s2, 3);
+	perform pg_temp.member(s2, 4, cid);
+	r := pg_temp.image(other, cid, s2, jsonb_build_array(jsonb_build_object('op','mkdir','path',other),
+		jsonb_build_object('op','mkdir','path',other || '/images')));
+	for i in 1..4 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	r := pg_temp.commit(pg_temp.owner(), 'm3x-delete-3', jsonb_build_array(jsonb_build_object('op','delete','path','agents/ida-holm',
+		'expectedVersion',pg_temp.version('agents/ida-holm'),'asOfSeq',pg_temp.seq())));
+	perform pg_temp.expect(r, 1, 'saved');
+	perform pg_temp.same(coalesce((select jsonb_agg(f.key order by f.key) from public.qorpera_memory_erase_image_folders(
+		'70000000-0000-4000-8000-000000000020', s2, cid) f), '[]'), jsonb_build_array(other || '/images/' || cid),
+		'Ida''s images folder by her conversation''s image commit');
 	perform pg_temp.service();
 	if exists (select 1 from public.qorpera_memory_erase_roots('70000000-0000-4000-8000-000000000020', s)) then
 		raise exception 'No tree ever named the conversation'; end if;
@@ -405,7 +430,7 @@ begin
 	perform pg_temp.same(r - 'eraseId' - 'sessionId' - 'eventId', '{"schema":"qorpera.memory-message-erase/v1","state":"open",'
 		'"blocks":2,"runsPending":0}', 'Step 1 with no tree ever');
 	perform pg_temp.same(pg_temp.keys(eid), jsonb_build_array(moved || '/images/' || cid || ':images:-:key',
-		root || '/images/' || cid || ':images:-:key'), 'The images folders by the input''s id');
+		root || '/images/' || cid || ':images:-:key'), 'Otto''s images folders by his conversation''s image commit, not Ida''s');
 	perform pg_temp.same(pg_temp.rewrite(eid) -> 'state', '"rewritten"', 'Step 2 with no tree ever');
 	-- Both keys are one folder before and after the move, so the second request waits once for the first's versions phase.
 	perform pg_temp.same(pg_temp.ask_all(eid) - 'eraseId' - 'sessionId' - 'eventId', '{"schema":"qorpera.memory-message-erase/v1",'
@@ -413,6 +438,7 @@ begin
 	perform pg_temp.drain(b.erasure_id) from public.qorpera_memory_message_erase_blocks b where b.erase_id = eid;
 	perform pg_temp.same(jsonb_build_array(pg_temp.versions_at(root || '/images/' || cid), pg_temp.versions_at(moved || '/images/' || cid)),
 		'[0, 0]', 'No version of the image left');
+	if pg_temp.versions_at(other || '/images/' || cid) = 0 then raise exception 'Ida''s image keeps its history'; end if;
 end $$;
 
 rollback;
