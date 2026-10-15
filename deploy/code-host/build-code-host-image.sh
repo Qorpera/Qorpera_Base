@@ -59,13 +59,18 @@ for entry in "${FILES[@]}"; do
 done
 
 STAMP=$(date -u +%Y%m%d%H%M%S)
-BUILDER="qorpera-code-host-build-$STAMP-$$"
+# The build space is empty while the builder lives, so the process alone names it.
+BUILDER="qorpera-code-host-build-$$"
 ALIAS="qorpera-code-host-$STAMP"
 lx() { lxc --project "$PROJECT" "$@"; }
 # A project without its own images uses the default project's store.
 store() { if [[ $(lxc project get "$1" features.images) == true ]]; then echo "$1"; else echo default; fi; }
 [[ $PROJECT != default ]] || { echo "the builder must run in the node's build space, not in $PROJECT" >&2; exit 1; }
 [[ $PROJECT != qorpera-codehost-* ]] || { echo "$PROJECT is named like a code host's project" >&2; exit 1; }
+# QEMU's sockets are in LXD's log folder for the VM, "<project>_<instance>", and a socket's path has at most 107
+# bytes. QEMU does not start with a longer one: its SPICE socket's path is the longest.
+SPICE="/var/snap/lxd/common/lxd/logs/${PROJECT}_$BUILDER/qemu.spice"
+((${#SPICE} <= 107)) || { echo "the build space's name $PROJECT is too long for the builder's QEMU sockets" >&2; exit 1; }
 IN_SPACE=$(lx list -f csv -c n)
 [[ -z $IN_SPACE ]] || { echo "the build space $PROJECT is in use: build when it is empty" >&2; exit 1; }
 WORK=$(mktemp -d)
