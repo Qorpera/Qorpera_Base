@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
@@ -6,7 +7,9 @@ import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const guest = join(repositoryRoot, "deploy/lxd-company-computer-guest");
-const recipe = JSON.parse(readFileSync(join(guest, "office-image-dependencies.json"), "utf-8"));
+const recipePath = join(guest, "office-image-dependencies.json");
+const recipe = JSON.parse(readFileSync(recipePath, "utf-8"));
+const installer = readFileSync(join(guest, "install-office-image-dependencies.sh"), "utf-8");
 
 // QORPERA-RUNTIME-CONTRACT.md, the 2026-10-14 amendment's item 7: what every computer's shell runs.
 // Adding a tool needs no founder decision; dropping one of these does.
@@ -53,4 +56,28 @@ test("apt installs each package once, and the toolbox covers the contract's list
 		assert.match(command, /^[a-z][a-z0-9]*$/);
 		assert.ok(args.length === 1 && /^--?[a-z]+$/.test(args[0]), `${command} ${args.join(" ")}`);
 	}
+});
+
+test("the in-guest installer reads the recipe the way the recipe is written", () => {
+	const program = installer.match(/python3 - "\$recipe" "\$1" <<'EOF'\n([\s\S]*?)\nEOF\n/)[1];
+	const query = (name) => execFileSync("python3", ["-", recipePath, name], { input: program, encoding: "utf8", timeout: 5000 }).trimEnd();
+	const file = (download) => download.url.slice(download.url.lastIndexOf("/") + 1);
+	assert.equal(query("sha256sums"), recipe.downloads.map((download) => `${download.sha256}  ${file(download)}`).join("\n"));
+	assert.equal(query("packages"), Object.values(recipe.packages).flat().join("\n"));
+	assert.equal(query("npm"), recipe.npm.map((pkg) => `${pkg.name}@${pkg.version}`).join("\n"));
+	assert.equal(query("toolbox"), recipe.toolbox.map((check) => check.join(" ")).join("\n"));
+	for (const download of recipe.downloads) {
+		assert.equal(query(`${download.name}.file`), file(download));
+		assert.equal(query(`${download.name}.version`), download.version);
+	}
+	assert.throws(() => execFileSync("python3", ["-", recipePath, "other"], { input: program, stdio: "pipe", timeout: 5000 }));
+});
+
+test("the in-guest installer stays offline and leaves swap off", () => {
+	assert.match(installer, /sha256sum --check --strict/);
+	assert.match(installer, /apt-get install --yes --no-install-recommends --no-download /);
+	assert.match(installer, /npm install --global --prefix \/usr --offline /);
+	assert.match(installer, /systemctl mask swap\.target/);
+	assert.match(installer, /wc -l <\/proc\/swaps\) == 1/);
+	assert.doesNotMatch(installer, /\b(apt-get update|curl|wget)\b/);
 });
