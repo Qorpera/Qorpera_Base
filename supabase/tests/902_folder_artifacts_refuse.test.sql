@@ -1,8 +1,9 @@
 -- @fixture 634_folder_core_authority.test.sql until "-- Mutators: owners and admins"
--- Company folder core: artifacts refuse folder-v2 companies (migration 20260930041000). A member's registration, the
--- runner broker's artifact lane and the member functions that would take the gc fence over an artifact answer 0A000 for
--- a folder-v2 company, as their first statement, whichever of its environments they name; a company that is not
--- folder-v2 gets past the refusal. That the refusal comes before any lock is pinned by 838.
+-- Company folder core: artifacts refuse folder-v2 companies (migration 20260930041000). A member's registration, the old
+-- service-role registration and the member functions that would take the gc fence over an artifact answer 0A000 for a
+-- folder-v2 company, as their first statement, whichever of its environments they name; a company that is not folder-v2
+-- gets past the refusal. That the refusal comes before any lock is pinned by 838. (The runner broker's artifact lane is
+-- gone since 20260930334000.)
 
 -- Runs a statement that must be refused for folder-v2 (0A000), or must not be (any other outcome).
 create function pg_temp.refused(p_sql text) returns void language plpgsql as $$
@@ -103,25 +104,12 @@ begin
 end $$;
 reset role;
 
--- 2. The old registration (no member grant), and the runner broker's artifact lane, as the service role --------------------
+-- 2. The old registration (no member grant), as the service role -------------------------------------------------------
 select set_config('request.jwt.claims', '{"role":"service_role"}', true) \g /dev/null
 do $$
-declare
-	a jsonb := pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'human', '63400000-0000-4000-8000-000000000001');
 begin
 	perform pg_temp.refused($q$select public.qorpera_register_artifact('63400000-0000-4000-8000-000000000020', gen_random_uuid(),
 		null, 'report', 'A report', repeat('a', 64), repeat('a', 64), 1, 'text/plain')$q$);
-	-- A folder-v2 job's tokens are never looked at: the refusal comes first.
-	perform pg_temp.refused(format($q$select public.qorpera_runner_broker_authorize_output_object(%L, repeat('0', 64), %L,
-		repeat('0', 64), repeat('d', 64), 1, 'text/plain')$q$, a ->> 'runnerId', a ->> 'jobId'));
-	perform pg_temp.refused(format($q$select public.qorpera_runner_broker_confirm_output_object(%L, repeat('0', 64), %L,
-		repeat('0', 64), repeat('d', 64))$q$, a ->> 'runnerId', a ->> 'jobId'));
-	perform pg_temp.refused(format($q$select public.qorpera_runner_broker_register_artifact(%L, repeat('0', 64), %L, repeat('0', 64),
-		gen_random_uuid(), 'runner_output', 'out.txt', repeat('d', 64), 1, 'text/plain')$q$, a ->> 'runnerId', a ->> 'jobId'));
-	-- A job that is not folder-v2's (here: none) goes on to the broker's own checks.
-	perform pg_temp.not_refused(format($q$select public.qorpera_runner_broker_register_artifact(%L, repeat('0', 64), %L,
-		repeat('0', 64), gen_random_uuid(), 'runner_output', 'out.txt', repeat('d', 64), 1, 'text/plain')$q$, a ->> 'runnerId',
-		gen_random_uuid()));
 end $$;
 
 -- 3. Nothing was written, and every patched body carries the marker -------------------------------------------------------
@@ -136,9 +124,6 @@ begin
 		raise exception 'A refused call writes nothing'; end if;
 	foreach v_function in array array['public.qorpera_register_artifact(uuid,uuid,uuid,text,text,text,text,bigint,text)',
 		'public.qorpera_register_artifact_v2(uuid,uuid,uuid,text,text,text,text,text,bigint,text)',
-		'public.qorpera_runner_broker_authorize_output_object(uuid,text,uuid,text,text,bigint,text)',
-		'public.qorpera_runner_broker_confirm_output_object(uuid,text,uuid,text,text)',
-		'public.qorpera_runner_broker_register_artifact(uuid,text,uuid,text,uuid,text,text,text,bigint,text)',
 		'public.qorpera_create_artifact_index(uuid,uuid,uuid[])',
 		'public.qorpera_create_artifact_retention_hold(uuid,uuid,text,timestamp with time zone)',
 		'public.qorpera_complete_object_reachability_graph(uuid)',
