@@ -1689,6 +1689,48 @@ step("unplugged")
 		assert.deepEqual([Object.keys(s.unplugged.servers), s.unplugged.modes], [["10001.servers"], { "10001.mode": "open\n" }]);
 	});
 
+	test("only listed (E8c): a cut still owed never takes the marker of a newer restart; back to open, no cut is owed", () => {
+		const s = scenario(String.raw`
+machine("10.210.1.1", "c1")
+listed = dict(mode="only-listed", block=["b.test"])
+rules(c1=ruled(allow=["a.test", "c.test", "d.test"], **listed))
+step("listed")
+world["listening"].add(10001)
+world["fail"] = {"conntrack"}
+rules(c1=ruled(allow=["a.test", "c.test"], **listed))
+step("cut_fails")
+world["listening"].add(10001)
+world["fail"] = {"stop"}
+rules(c1=ruled(allow=["a.test"], **listed))
+step("stop_fails")
+world["fail"] = set()
+reconciler[0] = None
+world["listening"].add(10001)
+step("restarted")
+world["listening"].add(10001)
+world["fail"] = {"conntrack"}
+rules(c1=ruled(allow=["e.test"], **listed))
+step("cut_fails_again")
+world["fail"] = set()
+world["listening"].add(10001)
+rules(c1=ruled(block=["b.test"]))
+step("reopened")
+`);
+		const restart = (port) => [`stop ${port}`, `empty allow_${port}`, `reset-failed ${port}`, `start --no-block ${port}`];
+		assert.deepEqual([s.listed.cut, s.listed.servers["10001.owed"]], [["10.210.1.1"], undefined]);
+		assert.deepEqual([s.cut_fails.calls, s.cut_fails.cut, s.cut_fails.servers["10001.owed"]], [restart(10001), [], "cut\n"]);
+		// Narrower again, but the resolver cannot be stopped: the earlier cut waits for the newer restart (its set still
+		// holds the address the list took away), and the marker stays for the next reconciler.
+		assert.deepEqual([s.stop_fails.calls, s.stop_fails.cut, s.stop_fails.servers["10001.owed"]], [[], [], "cut\n"]);
+		assert.deepEqual(s.stop_fails.problems, ["cannot stop the resolver on port 10001: stop failed"]);
+		assert.deepEqual([s.restarted.calls, s.restarted.cut, s.restarted.problems], [restart(10001), ["10.210.1.1"], []]);
+		assert.ok(!("10001.owed" in s.restarted.servers));
+		assert.deepEqual([s.cut_fails_again.cut, s.cut_fails_again.servers["10001.owed"]], [[], "cut\n"]);
+		// Open now: the restart drops the cut still owed, as nothing is held back any more.
+		assert.deepEqual([s.reopened.calls, s.reopened.cut, s.reopened.problems], [restart(10001), [], []]);
+		assert.deepEqual([s.reopened.servers["10001.owed"], s.reopened.modes], [undefined, { "10001.mode": "open\n" }]);
+	});
+
 	test("only listed (E8c): a company not known yet, with rules not usable or with no chain yet is refused everything", () => {
 		const s = scenario(String.raw`
 machine("10.210.1.1", "c1")

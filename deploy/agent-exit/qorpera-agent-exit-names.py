@@ -356,7 +356,8 @@ class Names:
         self.upstreams = args.upstreams.split()
         # "Only listed" (E8c): a resolver whose list got narrower is owed a restart with its set emptied, and its
         # machines' connections are ended once the reach map is right. A marker <port>.owed (written before the servers
-        # file) keeps that across a restart of this reconciler: "cut" when connections are to end too.
+        # file) keeps that across a restart of this reconciler: "cut" when connections are to end too. It goes only once
+        # nothing is owed for the port: a narrower list while a cut is still owed waits for its own restart.
         self.owed = {}
         self.cut = set()
         for name in os.listdir(self.names_dir) if os.path.isdir(self.names_dir) else ():
@@ -547,14 +548,17 @@ class Names:
             if cut:
                 self.cut.add(port)
             else:
+                # Open now: a cut owed for an earlier narrower list has nothing left to end.
+                self.cut.discard(port)
                 plug.remove(os.path.join(self.names_dir, f"{port}.owed"))
 
     def cut_owed(self, clients, ports):
         """Ends every connection of each machine of a company whose list got narrower, once the reach map is right:
-        a connection let through before goes on otherwise, as the exit judges only new ones."""
+        a connection let through before goes on otherwise, as the exit judges only new ones. A port owed a restart again
+        waits for it (its set still holds what the newer list took away), and its marker stays."""
         if not self.reach_right:
             return
-        for port in sorted(self.cut):
+        for port in sorted(self.cut - set(self.owed)):
             companies = {c for c, p in ports.items() if p == port}
             done = True
             for address in sorted(a for a, c in clients.items() if c in companies and self.kernel):
