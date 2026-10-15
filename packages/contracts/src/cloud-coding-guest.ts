@@ -291,7 +291,8 @@ function command(input: Record<string, unknown>, error: string): CodingGuestComm
 	const state = input.state;
 	const ended = exit(input.exit, error);
 	if (
-		!["running", "exited", "cancelled", "timed_out", "lost"].includes(String(state)) ||
+		typeof state !== "string" ||
+		!["running", "exited", "cancelled", "timed_out", "lost"].includes(state) ||
 		(state === "exited" ? ended === null : (state === "running" || state === "lost") && ended !== null)
 	)
 		throw new Error(error);
@@ -328,7 +329,8 @@ export function parseCodingGuestAnswer<V extends CodingGuestVerb>(
 		if (
 			input.schema !== "qorpera.coding-guest-mounted/v1" ||
 			input.viewId !== (request as CodingGuestMountRequest).view.viewId ||
-			!["mounted", "closed", "unanswered"].includes(String(input.mount))
+			typeof input.mount !== "string" ||
+			!["mounted", "closed", "unanswered"].includes(input.mount)
 		)
 			throw new Error(error);
 		return Object.freeze({ ...input }) as never;

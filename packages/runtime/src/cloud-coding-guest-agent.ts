@@ -4,6 +4,7 @@ import { closeSync, constants, openSync, unlinkSync, writeSync } from "node:fs";
 import {
 	chown,
 	type FileHandle,
+	link,
 	lstat,
 	mkdir,
 	open,
@@ -203,6 +204,27 @@ async function writeJson(path: string, value: unknown, mode = 0o600): Promise<vo
 }
 /** Written whole, synced, then renamed into place. */
 async function writeText(path: string, text: string, mode: number): Promise<void> {
+	await rename(await writtenAside(path, text, mode), path);
+	await syncDirectory(dirname(path));
+}
+/** Created once, whole: written and synced under a name of its own, then linked to its own name, which fails when a
+ * record is there. So no reader sees part of one, and an existing record is never replaced. */
+async function retain(path: string, value: unknown): Promise<boolean> {
+	const temporary = await writtenAside(path, JSON.stringify(value), 0o400);
+	try {
+		await link(temporary, path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+		throw error;
+	} finally {
+		await rm(temporary, { force: true });
+	}
+	await syncDirectory(dirname(path));
+	return true;
+}
+/** The text in a new synced file next to `path`, named `<name>.<uuid>.tmp`: no reader takes such a name, so one a crash
+ * left behind is passed over. */
+async function writtenAside(path: string, text: string, mode: number): Promise<string> {
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	const handle = await open(
 		temporary,
@@ -212,29 +234,21 @@ async function writeText(path: string, text: string, mode: number): Promise<void
 	try {
 		await handle.writeFile(text);
 		await handle.sync();
+	} catch (error) {
+		await handle.close();
+		await rm(temporary, { force: true });
+		throw error;
+	}
+	await handle.close();
+	return temporary;
+}
+/** A folder's names synced, so one just made there outlives a crash. */
+async function syncDirectory(path: string): Promise<void> {
+	const handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+	try {
+		await handle.sync();
 	} finally {
 		await handle.close();
-	}
-	await rename(temporary, path);
-}
-/** Created once; an existing record is never replaced. */
-async function retain(path: string, value: unknown): Promise<boolean> {
-	try {
-		const handle = await open(
-			path,
-			constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-			0o400,
-		);
-		try {
-			await handle.writeFile(JSON.stringify(value));
-			await handle.sync();
-		} finally {
-			await handle.close();
-		}
-		return true;
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
-		throw error;
 	}
 }
 async function missing<T>(read: () => Promise<T>): Promise<T | undefined> {
@@ -609,8 +623,8 @@ function folderArgs(session: Places, uid: number, gid: number): string[] {
 		String(gid),
 	];
 }
-/** Shows the request's view. Another view stops the program first and starts it on fresh state; a stopped or failed
- * program starts again. Then waits until it mounted, the node closed the view, or the wait ran out. */
+/** Shows the request's view. Another view stops the program first and, once it ended, starts it on fresh state; a
+ * stopped or failed program starts again. Then waits until it mounted, the node closed the view, or the wait ran out. */
 async function showView(
 	at: Agent,
 	session: Places,
@@ -625,8 +639,10 @@ async function showView(
 	const held = await readJson(session.view, 4096).catch(() => undefined);
 	if (held === undefined || JSON.stringify(held) !== wanted) {
 		await ignore(at.system(TOOLS.systemctl, ["stop", session.folderUnit]));
-		if ((await unitState(at, session.folderUnit)).active === "failed")
-			await ignore(at.system(TOOLS.systemctl, ["reset-failed", session.folderUnit]));
+		const stopped = (await unitState(at, session.folderUnit)).active;
+		// A program that outlived its stop, mounted or still starting, may yet use its state and its view's pass.
+		if (stopped !== "inactive" && stopped !== "failed") throw new Error("CODING_GUEST_FOLDER_STILL_RUNNING");
+		if (stopped === "failed") await ignore(at.system(TOOLS.systemctl, ["reset-failed", session.folderUnit]));
 		if (await anythingMountedAt(at, session.mountpoint)) throw new Error("CODING_GUEST_FOLDER_STILL_MOUNTED");
 		await rm(session.folderState, { recursive: true, force: true });
 		await mkdir(session.folderState, { mode: 0o700 });
@@ -877,19 +893,23 @@ async function observe(at: Agent, command: CommandPlaces, commandId: string): Pr
 	const intent = await readIntent(command);
 	if (!intent) throw new Error("CODING_GUEST_COMMAND_UNKNOWN");
 	const sameBoot = intent.bootId === (await at.bootId());
-	const cancelled = await exists(command.cancel);
-	const exit = await readExit(command);
+	// In this order: a run removes the input only once its unit started, the relay writes its exit record before its
+	// unit ends, and a cancel writes its record before it stops the unit. So an input that is gone means the unit state
+	// read next is the started unit's, and records read after a unit that is not live are all it will write.
+	const starting = sameBoot && (await young(at, command.input));
+	const unit = sameBoot ? await unitState(at, command.unit) : undefined;
 	let state: CodingGuestCommandState;
-	if (!sameBoot) state = cancelled ? "cancelled" : exit ? "exited" : "lost";
+	let exit: CodingGuestExit | undefined;
+	if (unit && LIVE.has(unit.active)) state = "running";
 	else {
-		const unit = await unitState(at, command.unit);
-		if (LIVE.has(unit.active)) state = "running";
-		else if (cancelled) state = "cancelled";
-		else if (unit.result === "timeout" && (!exit || exit.signal === "SIGTERM" || exit.signal === "SIGKILL"))
-			state = "timed_out";
+		const cancelled = await exists(command.cancel);
+		exit = await readExit(command);
+		if (cancelled) state = "cancelled";
+		// The deadline ended what was left, even after bash itself exited (ExitType=cgroup).
+		else if (unit?.result === "timeout") state = "timed_out";
 		else if (exit) state = "exited";
 		// The run that wrote the input may not have started its unit yet.
-		else if (await young(at, command.input)) state = "running";
+		else if (starting) state = "running";
 		else state = "lost";
 	}
 	const end = await ringEnd(command.output);

@@ -160,6 +160,7 @@ describe("coding guest answers", () => {
 		["a running command with an exit", { ...command, state: "running" }],
 		["a lost command with an exit", { ...command, state: "lost" }],
 		["an unknown state", { ...command, state: "paused" }],
+		["a state in an array", { ...command, state: ["exited"], exit: null }],
 		["an exit code above 255", { ...command, exit: { code: 256, signal: null } }],
 		["an exit with both a code and a signal", { ...command, exit: { code: 1, signal: "SIGKILL" } }],
 		["a made-up signal", { ...command, exit: { code: null, signal: "KILL" } }],
@@ -177,18 +178,26 @@ describe("coding guest answers", () => {
 		const page = { ...command, schema: "qorpera.coding-guest-output/v1", offset: 100, bytes: 10, gap: 0, ...change };
 		expect(() => parseCodingGuestAnswer("output", outputRequest, page)).toThrow("Invalid coding guest answer");
 	});
-	it("refuses a mount answer for another view and a status with repeated or too many commands", () => {
-		expect(() =>
-			parseCodingGuestAnswer("mount", parseCodingGuestRequest("mount", mount), {
-				schema: "qorpera.coding-guest-mounted/v1",
-				workerId,
-				viewId: "view-2",
-				mount: "mounted",
-			}),
-		).toThrow("Invalid coding guest answer");
+	it("refuses a mount answer for another view or not one string, and a status with repeated, too many or malformed commands", () => {
+		for (const [viewId, state] of [
+			["view-2", "mounted"],
+			["view-1", ["mounted"]],
+		])
+			expect(() =>
+				parseCodingGuestAnswer("mount", parseCodingGuestRequest("mount", mount), {
+					schema: "qorpera.coding-guest-mounted/v1",
+					workerId,
+					viewId,
+					mount: state,
+				}),
+			).toThrow("Invalid coding guest answer");
 		const session = { schema: "qorpera.coding-guest-session/v1", workerId } as const;
 		const entry = { commandId, state: "running", exit: null, end: 0 };
-		for (const commands of [[entry, entry], Array.from({ length: CODING_GUEST.maxStatusCommands + 1 }, () => entry)])
+		for (const commands of [
+			[entry, entry],
+			Array.from({ length: CODING_GUEST.maxStatusCommands + 1 }, () => entry),
+			[{ ...entry, state: ["lost"] }],
+		])
 			expect(() =>
 				parseCodingGuestAnswer("status", session, { schema: "qorpera.coding-guest-status/v1", workerId, commands }),
 			).toThrow("Invalid coding guest answer");

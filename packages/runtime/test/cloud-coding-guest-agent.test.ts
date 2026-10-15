@@ -36,6 +36,8 @@ interface MachineState {
 	stuckMount: boolean;
 	/** Units a stop leaves running. */
 	stubborn: Set<string>;
+	/** Runs while `systemctl show` reads a unit, before it answers. */
+	onShow?: (unit: string) => Promise<void>;
 	processUid: number;
 	terminateAtOnce: boolean;
 	realSleep: boolean;
@@ -202,6 +204,7 @@ async function machine() {
 					await appendFile(file, `${args[args.length - 1]}:${first}:${last - first + 1}\n`);
 				}
 			if (tool === "umount" && !state.stuckMount) mounts.delete(args[args.length - 1]);
+			if (tool === "systemctl" && args[0] === "show") await state.onShow?.(args[1]);
 			if (tool === "systemctl") return systemctl(args);
 			if (tool === "systemd-run") return systemdRun(args);
 			return "";
@@ -780,6 +783,23 @@ describe("mounting a session", () => {
 		expect(m.calls.slice(-2)).toEqual([["systemctl", "stop", s.folderUnit], show(s.folderUnit)]);
 		expect(await readJsonFile(s.view)).toEqual(VIEW);
 	});
+	it("refuses another view while the program outlived its stop, not mounted yet, keeping its state and view", async () => {
+		const m = await machine();
+		const workerId = await mounted(m);
+		const s = sessionAt(m, workerId);
+		await writeFile(join(s.folderState, "journal"), "live");
+		// Still starting: active, with nothing mounted.
+		m.mounts.delete(s.mountpoint);
+		m.state.stubborn.add(s.folderUnit);
+		const other = { ...VIEW, viewId: "view-2", pass: "pass-secret-2" };
+		expect((await call(m, "mount", mountRequest(workerId, other))).line).toEqual(
+			refusal("CODING_GUEST_FOLDER_STILL_RUNNING"),
+		);
+		expect(m.calls.slice(-2)).toEqual([["systemctl", "stop", s.folderUnit], show(s.folderUnit)]);
+		expect(await readJsonFile(s.view)).toEqual(VIEW);
+		expect(await readFile(join(s.folderState, "journal"), "utf8")).toBe("live");
+		expect(m.calls.some(([tool]) => tool === "systemd-run")).toBe(false);
+	});
 	it("refuses a session or the machine while another request holds it", async () => {
 		const m = await machine();
 		let open: () => void = () => undefined;
@@ -1106,6 +1126,7 @@ describe("reading a command's state", () => {
 			cancelled: await plant(m, workerId, { cancel: true, exit: EXIT_0 }),
 			timedOut: await plant(m, workerId, { unit: TIMED_OUT }),
 			timedOutBySignal: await plant(m, workerId, { unit: TIMED_OUT, exit: SIGTERM }),
+			// bash exited, and what it left running met the deadline.
 			exitedBeforeTimeout: await plant(m, workerId, { unit: TIMED_OUT, exit: EXIT_0 }),
 			exited: await plant(m, workerId, { exit: JSON.stringify({ code: 1, signal: null }) }),
 			lost: await plant(m, workerId, { inputAgeMs: 120000 }),
@@ -1122,7 +1143,7 @@ describe("reading a command's state", () => {
 			cancelled: reads(p.cancelled, "cancelled", { code: 0, signal: null }),
 			timedOut: reads(p.timedOut, "timed_out"),
 			timedOutBySignal: reads(p.timedOutBySignal, "timed_out", { code: null, signal: "SIGTERM" }),
-			exitedBeforeTimeout: reads(p.exitedBeforeTimeout, "exited", { code: 0, signal: null }),
+			exitedBeforeTimeout: reads(p.exitedBeforeTimeout, "timed_out", { code: 0, signal: null }),
 			exited: reads(p.exited, "exited", { code: 1, signal: null }),
 			lost: reads(p.lost, "lost"),
 			forged: reads(p.forged, "lost"),
@@ -1164,6 +1185,51 @@ describe("reading a command's state", () => {
 				.map((entry) => entry.join(" "))
 				.sort(),
 		);
+	});
+	it("reads the records a command wrote while its unit was read", async () => {
+		const m = await machine();
+		const workerId = randomUUID();
+		const exited = await plant(m, workerId, { unit: ACTIVE });
+		const cancelled = await plant(m, workerId, { unit: ACTIVE });
+		// One's relay writes its exit and ends, and a cancel stops the other, as systemctl reads their units.
+		m.state.onShow = async (unit) => {
+			if (unit === exited.unit) await writeFile(join(exited.output, "exit.json"), EXIT_0);
+			if (unit === cancelled.unit)
+				await writeFile(
+					cancelled.cancel,
+					JSON.stringify({ schema: "qorpera.coding-guest-cancel/v1", commandId: cancelled.commandId }),
+				);
+			m.units.set(unit, { ...INACTIVE });
+		};
+		const states = await seen(m, workerId);
+		expect(states.get(exited.commandId)).toEqual(reads(exited, "exited", { code: 0, signal: null }));
+		expect(states.get(cancelled.commandId)).toEqual(reads(cancelled, "cancelled"));
+		expect((await readJsonFile(exited.outcome)).state).toBe("exited");
+		expect((await readJsonFile(cancelled.outcome)).state).toBe("cancelled");
+	});
+	it("publishes each record whole, passing over one a crash left half-written under a name of its own", async () => {
+		const m = await machine();
+		const workerId = await mounted(m);
+		const x = await ran(m, workerId, HELLO);
+		const crashedId = randomUUID();
+		const crashed = commandAt(m, workerId, crashedId);
+		await mkdir(crashed.directory, { recursive: true });
+		const halves = [`${x.outcome}.${randomUUID()}.tmp`, `${crashed.intent}.${randomUUID()}.tmp`];
+		for (const half of halves) await writeFile(half, '{"schema":"qorpera.coding-guest-');
+		const states = await seen(m, workerId);
+		expect([...states.keys()]).toEqual([x.commandId]);
+		expect(states.get(x.commandId)).toMatchObject({ state: "exited", exit: { code: 3, signal: null }, end: 17 });
+		expect(await readJsonFile(x.outcome)).toMatchObject({ state: "exited", end: 17 });
+		expect(await mode(x.outcome)).toBe(0o400);
+		// Nothing of its own is left aside: only the crash's halves are.
+		expect((await readdir(x.directory)).sort()).toEqual(
+			["intent.json", "outcome.json", "output", basename(halves[0])].sort(),
+		);
+		expect((await call(m, "output", outputRequest(workerId, crashed.commandId, 0))).line).toEqual(
+			refusal("CODING_GUEST_COMMAND_UNKNOWN"),
+		);
+		const again = await ran(m, workerId, "true", crashedId);
+		expect((await seen(m, workerId)).get(again.commandId)).toMatchObject({ state: "exited", exit: { code: 0 } });
 	});
 	it("refuses a command it never started, and records it did not write", async () => {
 		const m = await machine();
