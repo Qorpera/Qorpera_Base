@@ -108,7 +108,7 @@ uuid=$(lx config get "$vm" volatile.uuid)
 mkdir -p "$work/push/debs"
 lx file pull "$vm/var/lib/dpkg/status" "$work/vm-status"
 apt-get -s -q -o Dir::State::status="$work/vm-status" -o Debug::NoLocking=1 \
-	install --no-install-recommends python3 bubblewrap iproute2 util-linux fuse3 nftables procps >"$work/plan"
+	install --no-install-recommends python3 bubblewrap tini iproute2 util-linux fuse3 nftables procps >"$work/plan"
 awk '$1 == "Inst" { v = ($3 ~ /^\[/) ? $4 : $3; sub(/^\(/, "", v); print $2 "=" v }' "$work/plan" >"$work/wanted"
 if [[ -s "$work/wanted" ]]; then
 	(cd "$work/push/debs" && xargs apt-get download -q <"$work/wanted")
@@ -116,6 +116,8 @@ fi
 lx file push -r "$work/push" "$vm/root/"
 lx exec "$vm" -- bash -euc 'if compgen -G "/root/push/debs/*.deb" >/dev/null; then dpkg -i /root/push/debs/*.deb; fi'
 lx exec "$vm" -- useradd --system --user-group --no-create-home --shell /usr/sbin/nologin qorpera-office
+# The office unit hides this folder without a '-' prefix, so it must exist, as on the image. It stays empty.
+lx exec "$vm" -- install -d -m 0700 /etc/qorpera-office/credentials
 lx exec "$vm" -- modprobe fuse
 lx exec "$vm" -- test -c /dev/fuse
 

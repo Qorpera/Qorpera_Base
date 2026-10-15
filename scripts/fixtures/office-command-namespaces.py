@@ -387,13 +387,16 @@ def start_shell(directory, share, office_unit):
             "--dir", COMPANY_PARENT, "--dir", f"{COMPANY_PARENT}/company", "--symlink", f"{COMPANY_PARENT}/company", "/company",
             "--bind", str(share), SHARE, "--ro-bind", str(directory / "probe.py"), PROBE,
             "--chdir", "/", "--remount-ro", "/",
-            "--", "/usr/bin/bash", "--noprofile", "--norc", "-c", SHELL_SCRIPT, "qorpera-office-shell"]
+            # As the shell host starts it (cloud-company-computer-linux-process.ts): tini is the namespace's pid 1.
+            "--", "/usr/bin/tini", "-p", "SIGKILL", "--",
+            "/usr/bin/bash", "--noprofile", "--norc", "-c", SHELL_SCRIPT, "qorpera-office-shell"]
     properties = unit_properties(office_unit, OFFICE_KEYS) + [f"ReadWritePaths={directory}", "RuntimeMaxSec=170"]
     leader = start_unit("qorpera-cmdns-shell", properties, args)
     eventually(lambda: (share / "shell-ready.json").exists(), 25)
 
-    # bwrap (the unit's main pid) execs nothing; its one child is the shell's bash, pid 1 of the shell's pid namespace.
-    def shell_bash():
+    # bwrap (the unit's main pid) execs nothing; its one child is tini, pid 1 of the shell's pid namespace, the pid the
+    # shell host hands the helper.
+    def shell_init():
         for entry in Path("/proc").iterdir():
             if entry.name.isdigit():
                 try:
@@ -402,7 +405,7 @@ def start_shell(directory, share, office_unit):
                 except (OSError, KeyError):
                     continue
         return None
-    return {"unit": "qorpera-cmdns-shell", "leader": leader, "pid": eventually(shell_bash, 15), "properties": properties}
+    return {"unit": "qorpera-cmdns-shell", "leader": leader, "pid": eventually(shell_init, 15), "properties": properties}
 
 
 def plumb_networked(shell_pid):
