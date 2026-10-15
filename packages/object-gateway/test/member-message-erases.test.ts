@@ -31,6 +31,10 @@ const answer = (state = "pending") => ({
 	eventId,
 	blocks: 2,
 	runsPending: 1,
+	copies: [
+		{ path: "Zeta/notes.md", live: false },
+		{ path: "reports/r2.md", live: true },
+	],
 });
 
 /** The gateway with a fake database: the writer check and the erase functions of 20260930441000. */
@@ -176,6 +180,14 @@ describe("a member's erase of one message", () => {
 		["a negative count", { ...answer(), blocks: -1 }],
 		["a fractional count", { ...answer(), runsPending: 0.5 }],
 		["an id that is no UUID", { ...answer(), eraseId: "erase" }],
+		["no copies", { ...answer(), copies: null }],
+		["a copy without a path", { ...answer(), copies: [{ live: true }] }],
+		["a copy with an empty path", { ...answer(), copies: [{ path: "", live: true }] }],
+		["a copy that is not live or gone", { ...answer(), copies: [{ path: "reports/r2.md", live: "yes" }] }],
+		[
+			"a copy with one more key",
+			{ ...answer(), copies: [{ environmentId: eventId, path: "reports/r2.md", live: true }] },
+		],
 	])("answers 503 for a request whose answer has %s", async (_name, reply) => {
 		const service = await fixture();
 		service.state.reply = reply === null ? null : JSON.parse(JSON.stringify(reply));

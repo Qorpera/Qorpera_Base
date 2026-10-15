@@ -1070,8 +1070,11 @@ only after durable storage.
   `GET /v1/member-message-erases/<environmentId>/<eraseId>` — an owner's or admin's erase of one message of a
   conversation, and where it stands (M3c; `qorpera_memory_message_erase_request` and `_status` for the member the
   token names). Both answer `qorpera.memory-message-erase/v1` (`eraseId`, `state`, `sessionId`, `eventId`, `blocks`,
-  `runsPending`); 403 for someone who is no member, and for a member who is no owner or admin on POST (GET answers
-  them 404, as an erase they may not see); 404 for a missing conversation, message or erase; 423 in a paused company.
+  `runsPending`, and `copies`, migration `20260930470000`: each `{path, live}`, a file at another path that holds the
+  message's memory, which the erase leaves and the member erases by its path; `live` when the path is in the folder
+  now, else only its history holds it); 403 for someone who is no member, and for a member who is no owner or admin on
+  POST (GET answers them 404, as an erase they may not see); 404 for a missing conversation, message or erase; 423 in a
+  paused company.
   Behind the member company gateway like the other member routes.
 - `POST /v1/read-leases/revoke` — revoke a read lease
 - `/healthz`, `/livez`, `/readyz`

@@ -14,17 +14,26 @@ import { UUID } from "./native-objects.ts";
  *   one already asked for the event.
  * - `GET …/<environmentId>/<eraseId>`: where the erase stands (`qorpera_memory_message_erase_status`), the member
  *   named the same way.
- * Both answer the erase (`qorpera.memory-message-erase/v1`) as the database gave it. The database's refusals keep their
- * statuses: 42501 (not a member, or not an owner or admin asking) is 403, P0002 (no such conversation, message or
- * erase, or one a member who is no owner or admin reads) 404, 22023 400, and 55000 (a paused company) 423.
+ * Both answer the erase (`qorpera.memory-message-erase/v1`) as the database gave it, with the copies it leaves
+ * (`copies`, migration 20260930470000): files at other paths that hold the message's memory, each `{path, live}`, which
+ * the member erases by their paths. The database's refusals keep their statuses: 42501 (not a member, or not an owner
+ * or admin asking) is 403, P0002 (no such conversation, message or erase, or one a member who is no owner or admin
+ * reads) 404, 22023 400, and 55000 (a paused company) 423.
  */
 
 const ROUTE = /^\/v1\/member-message-erases\/([0-9a-f-]{36})\/([0-9a-f-]{36})(?:\/([0-9a-f-]{36}))?$/;
-const KEYS = ["schema", "eraseId", "state", "sessionId", "eventId", "blocks", "runsPending"] as const;
+const KEYS = ["schema", "eraseId", "state", "sessionId", "eventId", "blocks", "runsPending", "copies"] as const;
 const STATES = new Set(["pending", "open", "rewritten", "requested", "done", "refused"]);
 
 export interface MemberMessageEraseOptions {
 	readonly authority: Pick<MemberCompanyAuthority, "member" | "publisher">;
+}
+
+/** A copy the erase leaves: its path, and whether the path is in the folder now (else only its history holds it). */
+function copy(value: unknown): boolean {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const { path, live, ...rest } = value as Record<string, unknown>;
+	return typeof path === "string" && path !== "" && typeof live === "boolean" && Object.keys(rest).length === 0;
 }
 
 /** The database's answer: one erase, with the ids the route asked for in `expected`; 503 otherwise. */
@@ -47,6 +56,8 @@ function erase(value: unknown, expected: Record<string, string>): Record<string,
 		!STATES.has(item.state) ||
 		!count("blocks") ||
 		!count("runsPending") ||
+		!Array.isArray(item.copies) ||
+		!item.copies.every(copy) ||
 		Object.entries(expected).some(([key, wanted]) => item[key] !== wanted)
 	)
 		throw new ObjectDependencyError(503);
