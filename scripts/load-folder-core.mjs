@@ -133,10 +133,26 @@ function run(command, commandArgs, input) {
 		throw new Error(`${command} ${commandArgs.slice(0, 4).join(" ")} failed:\n${result.stderr.slice(-4000)}`);
 	return result.stdout;
 }
-const psql = (sql) =>
+/** `options` are the sessions' settings (PGOPTIONS), for every session the psql process opens. */
+const psql = (sql, { options } = {}) =>
 	run(
 		"docker",
-		["exec", "-i", containerName, "psql", "-q", "-U", "postgres", "-d", database, "--no-psqlrc", "-v", "ON_ERROR_STOP=1", "-At"],
+		[
+			"exec",
+			"-i",
+			...(options ? ["--env", `PGOPTIONS=${options}`] : []),
+			containerName,
+			"psql",
+			"-q",
+			"-U",
+			"postgres",
+			"-d",
+			database,
+			"--no-psqlrc",
+			"-v",
+			"ON_ERROR_STOP=1",
+			"-At",
+		],
 		sql,
 	);
 const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
@@ -812,12 +828,16 @@ try {
 	for (const name of options.skipped) if (!migrations.includes(name)) throw new Error(`No migration ${name} to skip`);
 	// One psql process applies the test bootstrap and every migration, each file in a fresh session as one psql run
 	// per file did, without a docker exec and a psql start per file (test-hosted-db-cluster.mjs replays them the same way).
+	// Its sessions don't wait for each commit to reach the disk; fsync stays on, and the setup and the load below commit
+	// as the server does by default.
 	const migrateStarted = performance.now();
 	run("docker", ["exec", containerName, "mkdir", "-p", "/qorpera"]);
 	run("docker", ["cp", join(repositoryRoot, "supabase", "migrations"), `${containerName}:/qorpera/migrations`]);
 	run("docker", ["cp", join(repositoryRoot, "supabase", "tests", "bootstrap.sql"), `${containerName}:/qorpera/bootstrap.sql`]);
 	const files = ["bootstrap.sql", ...migrations.filter((name) => !options.skipped.has(name)).map((name) => `migrations/${name}`)];
-	psql(`\\o /dev/null\n${sessionPerFile(database, files.map((file) => `/qorpera/${file}`))}`);
+	psql(`\\o /dev/null\n${sessionPerFile(database, files.map((file) => `/qorpera/${file}`))}`, {
+		options: "-c synchronous_commit=off",
+	});
 	const migrateSeconds = (performance.now() - migrateStarted) / 1000;
 	const testsRoot = join(repositoryRoot, "supabase", "tests");
 	const fixture = expandTestFixture("load-folder-core.sql", (name) =>
