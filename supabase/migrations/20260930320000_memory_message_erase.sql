@@ -72,6 +72,8 @@ create unique index qorpera_memory_message_erases_event on public.qorpera_memory
 	where state not in ('done','refused');
 create index qorpera_memory_message_erases_due on public.qorpera_memory_message_erases(updated_at)
 	where state not in ('done','refused');
+-- A conversation's open erases: a later erase's step 1 clears their kept lines.
+create index qorpera_memory_message_erases_open on public.qorpera_memory_message_erases(session_id) where state = 'open';
 
 -- One row per block: deleted by step 1 (its cutoff the delete's position, its kept lines {l, k, line}), or found by
 -- key alone (no cutoff). kind 'images' is the message's images folder, asked like a block found by key alone.
@@ -270,6 +272,10 @@ begin
 	update public.qorpera_shared_sessions set memory_generation = memory_generation + 1
 	where id = v_row.session_id and memory_generation = (p_context ->> 'generation')::bigint - 1;
 	if not found then raise exception 'The generation moved' using errcode = 'QME01'; end if;
+	-- An earlier erase still open is stale now: its rewrite never writes, and its kept lines (this event's among them) go.
+	update public.qorpera_memory_message_erase_blocks b set keep = null
+	from public.qorpera_memory_message_erases e
+	where e.id = b.erase_id and e.session_id = v_row.session_id and e.state = 'open' and e.id <> v_row.id and b.keep is not null;
 	update public.qorpera_session_events set body = '{"erased":true}'::jsonb
 	where session_id = v_row.session_id and sequence = v_row.sequence and event_id = v_row.event_id
 		and body <> '{"erased":true}'::jsonb;
@@ -589,7 +595,8 @@ end $$;
 
 -- The rewrite: each block step 1 deleted with a kept line not live again, at the same place under C's current root, its
 -- kept lines merged by position with the live lines the next run wrote there first (a live line wins). Each item is
--- {path, text, fileSha256, bytes, expectedVersion (null: the block is not there)}, by key; none when the owner is retired.
+-- {path, text, fileSha256, bytes, expectedVersion (null: the block is not there)}, by key; none when the owner is retired,
+-- and none unless the row is open at the session's generation (a later erase or step 2's end cleared its kept lines).
 create function public.qorpera_memory_message_erase_rewrite_plan(p_environment_id uuid, p_erase_id uuid)
 returns jsonb language sql stable set search_path = '' as $$
 	select coalesce(jsonb_agg(jsonb_build_object('path', p.key, 'text', p.text,
@@ -613,6 +620,8 @@ returns jsonb language sql stable set search_path = '' as $$
 			where n.environment_id = p_environment_id and n.block_key = k.key and n.run_id is null
 				and n.session_id = e.session_id) m) as text) p
 	where e.id = p_erase_id and e.environment_id = p_environment_id and r.root is not null and e.root_key is not null
+		and e.state = 'open'
+		and e.generation = (select s.memory_generation from public.qorpera_shared_sessions s where s.id = e.session_id)
 		and exists (select 1 from jsonb_array_elements(b.keep) x
 			where not exists (select 1 from public.qorpera_memory_tree_nodes n
 				where n.environment_id = p_environment_id and n.block_key = k.key and n.run_id is null
@@ -631,6 +640,17 @@ begin
 	v_plan := public.qorpera_memory_message_erase_rewrite_plan(p_environment_id, p_erase_id);
 	return jsonb_build_object('schema', 'qorpera.memory-message-erase-plan/v1', 'eraseId', p_erase_id,
 		'planSha256', encode(extensions.digest(convert_to(v_plan::text, 'utf8'), 'sha256'), 'hex'), 'blocks', v_plan);
+end $$;
+
+-- The row's move to step 3, its rewrite written or skipped: the kept lines go with it, so no later plan writes them.
+create function public.qorpera_memory_message_erase_rewritten(p_erase_id uuid, p_commit_id uuid, p_error text)
+returns jsonb language plpgsql volatile set search_path = '' as $$
+begin
+	update public.qorpera_memory_message_erase_blocks set keep = null where erase_id = p_erase_id and keep is not null;
+	update public.qorpera_memory_message_erases
+	set state = 'rewritten', rewrite_commit_id = p_commit_id, last_error = p_error, updated_at = clock_timestamp()
+	where id = p_erase_id;
+	return public.qorpera_memory_message_erase_reply(p_erase_id);
 end $$;
 
 -- Step 2: one memory commit at the row's generation writes the plan's blocks, each from its staged file, the plan
@@ -655,20 +675,12 @@ begin
 	if not found then raise exception 'Erase not found' using errcode = 'P0002'; end if;
 	if v_row.state <> 'open' then return public.qorpera_memory_message_erase_reply(v_row.id); end if;
 	if (select s.memory_generation from public.qorpera_shared_sessions s where s.id = v_row.session_id) <> v_row.generation then
-		update public.qorpera_memory_message_erases
-		set state = 'rewritten', last_error = 'memory_generation_stale', updated_at = clock_timestamp()
-		where id = v_row.id;
-		return public.qorpera_memory_message_erase_reply(v_row.id);
-	end if;
+		return public.qorpera_memory_message_erase_rewritten(v_row.id, null, 'memory_generation_stale'); end if;
 	v_root := public.qorpera_memory_owner_root(p_environment_id, v_row.owner_kind, v_row.owner_id);
 	v_plan := public.qorpera_memory_message_erase_rewrite_plan(p_environment_id, v_row.id);
 	if encode(extensions.digest(convert_to(v_plan::text, 'utf8'), 'sha256'), 'hex') is distinct from p_plan_sha256 then
 		raise exception 'The rewrite plan changed; plan it again' using errcode = '55000'; end if;
-	if jsonb_array_length(v_plan) = 0 then
-		update public.qorpera_memory_message_erases set state = 'rewritten', last_error = null, updated_at = clock_timestamp()
-		where id = v_row.id;
-		return public.qorpera_memory_message_erase_reply(v_row.id);
-	end if;
+	if jsonb_array_length(v_plan) = 0 then return public.qorpera_memory_message_erase_rewritten(v_row.id, null, null); end if;
 	-- Each staged file holds its block's text, in the plan's order.
 	if jsonb_typeof(p_files) is distinct from 'array' or jsonb_array_length(p_files) <> jsonb_array_length(v_plan)
 		or exists (select 1 from jsonb_array_elements(v_plan) with ordinality p(item, o)
@@ -711,17 +723,11 @@ begin
 			where id = v_row.id;
 			return public.qorpera_memory_message_erase_reply(v_row.id);
 		when sqlstate 'QME03' then
-			update public.qorpera_memory_message_erases
-			set state = 'rewritten', last_error = 'memory_generation_stale', updated_at = clock_timestamp()
-			where id = v_row.id;
-			return public.qorpera_memory_message_erase_reply(v_row.id);
+			return public.qorpera_memory_message_erase_rewritten(v_row.id, null, 'memory_generation_stale');
 	end;
 	update public.qorpera_folder_commits set requester_kind = 'member', requester_id = v_row.requested_by_user_id
 	where id = (v_result ->> 'commitId')::uuid;
-	update public.qorpera_memory_message_erases set state = 'rewritten', rewrite_commit_id = (v_result ->> 'commitId')::uuid,
-		last_error = null, updated_at = clock_timestamp()
-	where id = v_row.id;
-	return public.qorpera_memory_message_erase_reply(v_row.id);
+	return public.qorpera_memory_message_erase_rewritten(v_row.id, (v_result ->> 'commitId')::uuid, null);
 end $$;
 
 -- 8. Step 3 -----------------------------------------------------------------------------------------------------------
@@ -890,6 +896,7 @@ revoke all on function public.qorpera_memory_message_erase_step1(jsonb, jsonb) f
 revoke all on function public.qorpera_memory_message_erase_hook(uuid, text, jsonb) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_message_erase_reply(uuid) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_message_erase_rewrite_plan(uuid, uuid) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_memory_message_erase_rewritten(uuid, uuid, text) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_message_erase_request(uuid, uuid, uuid, uuid) from public, anon, authenticated;
 revoke all on function public.qorpera_memory_message_erase_status(uuid, uuid, uuid) from public, anon, authenticated;
 revoke all on function public.qorpera_memory_message_erase_due(integer) from public, anon, authenticated;

@@ -275,10 +275,15 @@ begin
 	y := (public.qorpera_memory_message_erase_request('70000000-0000-4000-8000-000000000020', '70000000-0000-4000-8000-000000000001',
 		s, (pg_temp.event(s, 8)).event_id) ->> 'eraseId')::uuid;
 	perform public.qorpera_memory_message_erase_open('70000000-0000-4000-8000-000000000020', x);
+	perform pg_temp.same(jsonb_build_array(public.qorpera_memory_message_erase_plan('70000000-0000-4000-8000-000000000020', x)
+			#> '{blocks,0,path}'), jsonb_build_array(root || '/t0/00000000.jsonl'), 'The first erase''s plan');
 	perform public.qorpera_memory_message_erase_open('70000000-0000-4000-8000-000000000020', y);
+	-- The later erase clears the first's kept lines (message 6's among them): no plan writes them again.
 	perform pg_temp.same(jsonb_build_array(pg_temp.keys(x), pg_temp.keys(y)), jsonb_build_array(
-		jsonb_build_array(root || '/t0/00000000.jsonl:block:7:cut', root || '/t2/00000000.jsonl:block:-:key'),
+		jsonb_build_array(root || '/t0/00000000.jsonl:block:-:cut', root || '/t2/00000000.jsonl:block:-:key'),
 		jsonb_build_array(root || '/t0/00000000.jsonl:block:-:key', root || '/t2/00000000.jsonl:block:-:key')), 'Both erases');
+	perform pg_temp.same(public.qorpera_memory_message_erase_plan('70000000-0000-4000-8000-000000000020', x) -> 'blocks', '[]',
+		'The first erase''s plan after the later erase');
 	if (pg_temp.erase(x)).generation <> g + 1 or (pg_temp.erase(y)).generation <> g + 2 or (pg_temp.erase(y)).commit_id is not null then
 		raise exception 'Each erase raises the generation; the second deletes nothing'; end if;
 	-- The deleted block is written again before step 3.
@@ -292,6 +297,8 @@ begin
 		or pg_temp.version(root || '/t0/00000000.jsonl') is not null then
 		raise exception 'A stale rewrite writes nothing: %', to_jsonb(pg_temp.erase(x)); end if;
 	perform pg_temp.same(pg_temp.rewrite(y) -> 'state', '"rewritten"', 'The later rewrite, with nothing to write');
+	if exists (select 1 from public.qorpera_memory_message_erase_blocks b where b.erase_id in (x, y) and b.keep is not null) then
+		raise exception 'Kept lines outlive step 2'; end if;
 	-- The block by key alone is live again: its request keeps the newest life.
 	perform pg_temp.same(pg_temp.ask_all(x) - 'eraseId' - 'sessionId' - 'eventId', '{"schema":"qorpera.memory-message-erase/v1",'
 		'"state":"requested","blocks":2,"runsPending":0,"waits":0}', 'The first erase''s step 3');

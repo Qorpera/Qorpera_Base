@@ -424,9 +424,11 @@ begin
 			and c.requester_kind = 'member' and c.requester_id = '70000000-0000-4000-8000-000000000001'
 			and c.operation_key like 'memerase:' || eid || ':%') then
 		raise exception 'The member''s rewrite commit: %', to_jsonb(er); end if;
-	-- A rewritten erase is past step 2: the plan is empty and a second call answers where it stands.
+	-- A rewritten erase is past step 2: its kept lines are gone, the plan is empty and a second call answers where it stands.
 	perform pg_temp.same(public.qorpera_memory_message_erase_plan('70000000-0000-4000-8000-000000000020', eid) -> 'blocks', '[]',
 		'Nothing left to plan');
+	if exists (select 1 from public.qorpera_memory_message_erase_blocks b where b.erase_id = eid and b.keep is not null) then
+		raise exception 'Kept lines outlive step 2'; end if;
 	perform pg_temp.same(pg_temp.rewrite(eid), r, 'Step 2 runs once');
 	perform pg_temp.same(to_jsonb((select count(*) from public.qorpera_folder_commits c where c.operation_key like 'memerase:%')), '2',
 		'Two commits');
@@ -575,7 +577,7 @@ begin
 		'public.qorpera_memory_message_erase_context(uuid,text)', 'public.qorpera_memory_message_erase_lock_targets(jsonb)',
 		'public.qorpera_memory_message_erase_targets(uuid,text)', 'public.qorpera_memory_message_erase_step1(jsonb,jsonb)',
 		'public.qorpera_memory_message_erase_hook(uuid,text,jsonb)', 'public.qorpera_memory_message_erase_reply(uuid)',
-		'public.qorpera_memory_message_erase_rewrite_plan(uuid,uuid)']) f,
+		'public.qorpera_memory_message_erase_rewrite_plan(uuid,uuid)', 'public.qorpera_memory_message_erase_rewritten(uuid,uuid,text)']) f,
 		unnest(array['anon', 'authenticated', 'service_role']) r
 	where has_function_privilege(r, f, 'execute') is distinct from (f = any(v_steps) and r = 'service_role');
 	if v_bad is not null then raise exception 'Wrong callers: %', v_bad; end if;
