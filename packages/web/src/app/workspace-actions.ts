@@ -1,5 +1,6 @@
 import type { WebCompanyComputer } from "../cloud/computer.ts";
 import type { GroupChatDetails, GroupChatDraft } from "../cloud/group-details.ts";
+import type { InterfaceChange, InterfaceUndo } from "../cloud/interface-changes.ts";
 import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
 import type { WebRoutines } from "../cloud/routines.ts";
 import type { WebSessionModel } from "../cloud/session-model.ts";
@@ -42,6 +43,8 @@ export interface WorkspaceActions {
 	sessionModel?: WebSessionModel;
 	nativeSubscription?: WebNativeSubscription;
 	routines?: WebRoutines;
+	/** Takes back an agent's change to the company's interfaces or tables, as the member's own change (I10). */
+	undoInterfaceChange?: (change: InterfaceChange, signal: AbortSignal) => Promise<InterfaceUndo>;
 	/** Supplies already-authorized bytes. No URL from a transcript is fetched. */
 	previewAttachment?: (messageId: string, attachmentIndex: number, signal: AbortSignal) => Promise<Blob>;
 	sendMessage?: (sessionId: string, text: string, signal: AbortSignal) => Promise<boolean>;

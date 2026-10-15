@@ -41,7 +41,9 @@ begin
 	-- (20260930152000) adds the lease proof the runtime routes ask before they serve a run binding; it takes no
 	-- principal, because it only answers whether the caller's lease token is that run's job's. Signed hooks
 	-- (20260930160000) add describing and opening a GitHub or HMAC hook whose secret the broker makes, each bound to
-	-- the agent's manage_hook run, and reading that secret for a vault_fill browser call. Coding environment secrets
+	-- the agent's manage_hook run, and reading that secret for a vault_fill browser call. Stripe hooks
+	-- (20260930344000) add opening a Stripe hook with its capture key, describing and replacing that key, and reading
+	-- and storing a secret a vault_capture browser call took from Stripe's screen. Coding environment secrets
 	-- (20260930438000) add reading a coding session's environment, bound to its live lease.
 	select array_agg(function.oid::regprocedure::text order by function.oid::regprocedure::text collate "C") into v_functions
 	from pg_proc as function
@@ -77,8 +79,13 @@ begin
 		'qorpera_finish_chatgpt_plan_revocation(uuid,text,uuid,uuid,bigint)',
 		'qorpera_finish_email_draft_action(uuid,text,uuid,text,jsonb)',
 		'qorpera_finish_event_verification(uuid,text,uuid,uuid,text,text,text,text)',
+		'qorpera_folder_describe_hook_capture_key(uuid,text,jsonb,uuid)',
 		'qorpera_folder_describe_signed_hook(uuid,text,jsonb)',
 		'qorpera_folder_open_signed_hook(uuid,text,jsonb,jsonb,uuid,uuid,uuid,text,bytea,text)',
+		'qorpera_folder_open_stripe_hook(uuid,text,jsonb,jsonb,uuid,uuid,uuid,text,text)',
+		'qorpera_folder_read_hook_capture(uuid,text,jsonb,uuid,text,text)',
+		'qorpera_folder_replace_hook_capture_key(uuid,text,jsonb,uuid,text,text)',
+		'qorpera_folder_store_hook_capture(uuid,text,jsonb,uuid,text,text,uuid,bigint,uuid,uuid,text,bytea,text)',
 		'qorpera_issue_model_login(uuid,text,jsonb,bigint,boolean)',
 		'qorpera_model_login_broker_company(uuid,text)',
 		'qorpera_model_logins_without_account(uuid,text)',

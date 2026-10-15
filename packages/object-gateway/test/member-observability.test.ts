@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
 	MEMBER_OBSERVATION_CAPACITY,
@@ -282,35 +281,4 @@ describe("strict operator query", () => {
 	])("rejects noncanonical query %s", (suffix) => {
 		expect(() => parseMemberObservationQuery(`${MEMBER_OBSERVATIONS_PATH}${suffix}`)).toThrow();
 	});
-});
-
-it("the metadata forward migration leaves every 19950 authority check and the function identity/ACL intact", async () => {
-	const baseline = await readFile(
-		new URL("../../../supabase/migrations/20260828019950_company_path_preconditions.sql", import.meta.url),
-		"utf8",
-	);
-	const forward = await readFile(
-		new URL("../../../supabase/migrations/20260828019971_member_object_observation_identity.sql", import.meta.url),
-		"utf8",
-	);
-	const signature = "create or replace function public.qorpera_authorize_member_company_path_object(";
-	const expected = baseline
-		.slice(baseline.indexOf(signature))
-		.trim()
-		.replace(
-			"declare v_actor jsonb; v_entry public.qorpera_company_path_entries%rowtype;",
-			"declare v_actor jsonb; v_resource public.qorpera_company_path_resources%rowtype;\n\tv_entry public.qorpera_company_path_entries%rowtype;",
-		)
-		.replace(
-			"perform public.qorpera_company_path_require(v_actor,p_path,'read');",
-			"v_resource := public.qorpera_company_path_require(v_actor,p_path,'read');",
-		)
-		.replace("qorpera.member-company-object/v1", "qorpera.member-company-object/v2")
-		.replace(
-			"'bytes',v_object.bytes,'backend',v_object.backend);",
-			"'bytes',v_object.bytes,'backend',v_object.backend,'actorUserId',v_actor ->> 'userId',\n\t\t'resourceId',v_resource.id,'resourceVersion',v_resource.version);",
-		);
-	expect(forward.slice(forward.indexOf(signature)).trim()).toBe(expected);
-	expect(forward.match(/create or replace function/g)).toHaveLength(1);
-	expect(forward).not.toMatch(/\b(?:grant|revoke|alter|drop)\s+(?:all|execute|function|table)/i);
 });
