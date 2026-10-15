@@ -63,6 +63,9 @@ AGENTS = ipaddress.ip_network("10.210.0.0/16")
 # The exit's own address on the agents' bridge: its DHCP replies are not agent connections.
 GATEWAY = ipaddress.ip_address("10.210.0.1")
 SETS = ("refused_flows", "refused_other")
+# The mark the exit gives a packet as it refuses it, kept in the refused-flow sets with the flow (E8c): which rule
+# refused it, when the flow itself does not tell. None (0): the open bounds.
+REFUSED_BY = {0x80000002: "name_not_listed", 0x80000003: "rules_unknown", 0x80000004: "not_listed"}
 INTERNAL = [
     ipaddress.ip_network(n)
     for n in (
@@ -146,16 +149,22 @@ def parse_conntrack(line):
 
 
 def parse_set(text):
-    """`nft -j list set` output to {key: expires}: key (src, dst, proto) or (src, dst, proto, dport), proto as text;
-    expires in seconds, or None when the element has no timeout."""
+    """`nft -j list set` output of refused_flows or refused_other to {key: expires}: key (src, dst, proto, dport,
+    mark), proto as text, dport None in refused_other, mark the one the packet was refused with (0 in a set from
+    before E8c, which kept none); expires in seconds, or None when the element has no timeout."""
     keys = {}
     for item in json.loads(text).get("nftables", []):
+        ports = item.get("set", {}).get("name") == "refused_flows"
         for elem in item.get("set", {}).get("elem", []) or []:
             inner = elem.get("elem") if isinstance(elem, dict) and "elem" in elem else None
             value = inner.get("val") if inner else elem
             concat = value.get("concat") if isinstance(value, dict) else None
-            if concat and len(concat) in (3, 4):
-                keys[(str(concat[0]), str(concat[1]), str(concat[2]), *concat[3:])] = inner.get("expires") if inner else None
+            if not concat or len(concat) not in ((4, 5) if ports else (3, 4)):
+                continue
+            src, dst, proto, *rest = concat
+            dport = rest.pop(0) if ports else None
+            mark = mark_of(rest[0]) if rest else 0
+            keys[(str(src), str(dst), str(proto), dport, mark)] = inner.get("expires") if inner else None
     return keys
 
 
@@ -171,65 +180,19 @@ def new_refusals(previous, current):
     return sorted(fresh, key=lambda k: tuple(str(part) for part in k))
 
 
-def reach_map(text):
-    """`nft -j list map ... reach` output to {address: chain}: "open", or a company's "only_P" (E8c)."""
-    reach = {}
-    for item in json.loads(text).get("nftables", []):
-        for pair in item.get("map", {}).get("elem", []) or []:
-            if not isinstance(pair, list) or len(pair) != 2 or not isinstance(pair[1], dict):
-                continue
-            key = pair[0].get("elem", {}).get("val") if isinstance(pair[0], dict) else pair[0]
-            verdict = pair[1].get("goto") or pair[1].get("jump") or {}
-            if isinstance(key, str) and isinstance(verdict, dict) and isinstance(verdict.get("target"), str):
-                reach[key] = verdict["target"]
-    return reach
-
-
-def set_addresses(text):
-    """`nft -j list set` output of an address set to its addresses."""
-    found = set()
-    for item in json.loads(text).get("nftables", []):
-        for elem in item.get("set", {}).get("elem", []) or []:
-            value = elem.get("elem", {}).get("val") if isinstance(elem, dict) else elem
-            if isinstance(value, str):
-                found.add(value)
-    return found
-
-
-def name_pairs(text):
-    """`nft -j list set ... refused_names` output to its (machine, server) pairs."""
-    pairs = set()
-    for item in json.loads(text).get("nftables", []):
-        for elem in item.get("set", {}).get("elem", []) or []:
-            value = elem.get("elem", {}).get("val") if isinstance(elem, dict) and "elem" in elem else elem
-            concat = value.get("concat") if isinstance(value, dict) else None
-            if concat and len(concat) == 2:
-                pairs.add((str(concat[0]), str(concat[1])))
-    return pairs
-
-
-def rule_for(key, reach=None, allowed=None, named=None):
-    """Which of the exit's refusals a refused flow came from. reach is the reach map (None: no map, rules from before
-    E8c), allowed each only_P chain's allow_P addresses ({"only_P": set}), named the (machine, server) pairs whose port
-    443 flow the server name checker refused (E8c-2)."""
-    src, dst, proto = key[0], key[1], key[2]
+def rule_for(key):
+    """Which of the exit's refusals a refused flow (a parse_set key) came from: our networks and mail by the flow
+    itself, the others by the mark the packet was refused with, so rules that changed before the logger reads the set
+    do not change it."""
+    _, dst, proto, dport, mark = key
     try:
         if any(ipaddress.ip_address(dst) in network for network in INTERNAL):
             return "our_networks"
     except ValueError:
         return "unknown"
-    if proto == "tcp" and len(key) == 4 and str(key[3]) == "25":
+    if proto == "tcp" and str(dport) == "25":
         return "mail"
-    if proto == "tcp" and len(key) == 4 and str(key[3]) == "443" and (src, dst) in (named or ()):
-        return "name_not_listed"
-    if reach is not None:
-        where = reach.get(src)
-        if where is None:
-            return "rules_unknown"
-        listed = proto == "tcp" and len(key) == 4 and str(key[3]) == "443" and dst in (allowed or {}).get(where, ())
-        if where.startswith("only_") and not listed:
-            return "not_listed"
-    return "open_limit"
+    return REFUSED_BY.get(mark, "open_limit")
 
 
 def should_pause(paused, free, size, cap, floor):
@@ -413,32 +376,6 @@ def unlogged_count(text):
     return 0
 
 
-def reach_now(netns):
-    """The reach map and its only_P chains' allow_P sets, for rule_for. No map (rules from before E8c): None. A set
-    that is gone between the two reads (its company left "only listed") counts as empty."""
-    try:
-        reach = reach_map(nft_json(netns, "map", "inet", "qorpera_agent_exit", "reach"))
-    except subprocess.CalledProcessError:
-        return None, None
-    allowed = {}
-    for where in set(reach.values()):
-        if where.startswith("only_"):
-            try:
-                allowed[where] = set_addresses(nft_json(netns, "set", "inet", "qorpera_agent_exit",
-                                                        "allow_" + where[len("only_"):]))
-            except subprocess.CalledProcessError:
-                allowed[where] = set()
-    return reach, allowed
-
-
-def named_now(netns):
-    """The pairs the server name checker refused, for rule_for; none without the set (rules from before E8c-2)."""
-    try:
-        return name_pairs(nft_json(netns, "set", "inet", "qorpera_agent_exit", "refused_names"))
-    except subprocess.CalledProcessError:
-        return set()
-
-
 def poll_refused(netns, writer, interval, guard):
     seen = {}
     unlogged = None
@@ -448,13 +385,10 @@ def poll_refused(netns, writer, interval, guard):
             current = {}
             for name in SETS:
                 current.update(parse_set(nft_json(netns, "set", "inet", "qorpera_agent_exit", name)))
-            fresh = new_refusals(seen, current)
-            reach, allowed = reach_now(netns) if fresh else (None, None)
-            named = named_now(netns) if fresh else None
-            for key in fresh:
+            for key in new_refusals(seen, current):
                 record = {"ts": time.time(), "event": "refused", "src": key[0], "dst": key[1], "proto": key[2],
-                          "rule": rule_for(key, reach, allowed, named)}
-                if len(key) == 4:
+                          "rule": rule_for(key)}
+                if key[3] is not None:
                     record["dport"] = key[3]
                 guard.see(record)
                 writer.write(record)
@@ -990,17 +924,13 @@ def main():
             print(json.dumps([list(key), expires]))
         return
     if args.diff_sets:
-        # Test mode: stdin {"previous": [[key, expires], ...], "current": [...], "reach": `nft -j list map` output or
-        # absent, "allowed": {"only_P": `nft -j list set` output}, "named": `nft -j list set` output of refused_names or
-        # absent}; prints each key to log, with its rule.
+        # Test mode: stdin {"previous": [[key, expires], ...], "current": [...]} (keys as parse_set gives them);
+        # prints each key to log, with its rule.
         both = json.load(sys.stdin)
         previous = {tuple(k): e for k, e in both["previous"]}
         current = {tuple(k): e for k, e in both["current"]}
-        reach = reach_map(json.dumps(both["reach"])) if "reach" in both else None
-        allowed = {where: set_addresses(json.dumps(text)) for where, text in both.get("allowed", {}).items()}
-        named = name_pairs(json.dumps(both["named"])) if "named" in both else None
         for key in new_refusals(previous, current):
-            print(json.dumps([list(key), rule_for(key, reach, allowed, named)]))
+            print(json.dumps([list(key), rule_for(key)]))
         return
     if not (args.netns and args.log_dir and args.heartbeat and args.pause_file and args.failing_file):
         parser.error("--netns, --log-dir, --heartbeat, --pause-file and --failing-file are required")

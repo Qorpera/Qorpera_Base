@@ -33,7 +33,7 @@ own and removes the node's masquerade.
 
 | File | What |
 | --- | --- |
-| `qorpera-agent-exit.nft` | rules inside `qexit` (`inet qorpera_agent_exit`): our own networks and TCP port 25 refused at once; IPv6, invalid packets and sources outside 10.210.0.0/16 dropped; at most 16,384 open connections per machine and 98,304 in all (decided 3 October; per address, and the bridge rules pin each machine to one); a closed agent TCP connection held 30 s, not 120 (`ct timeout agent_tcp`); plain DNS to any resolver redirected to the exit; new connections and refusals counted per machine (`new_by_client`, `refused_by_client`); refused flows kept an hour for the log (`refused_flows`, `refused_other`), each machine's share rate-limited; the brake's map, sets and chains (E7, below); each machine's plain DNS, to any address, sent to its company's resolver on 10.210.0.1 (`dns_port`, E8b, below), and dropped and counted (`refused_dns`) for a machine without an element there; masquerade out of `up0`; the exit answers DHCP, DNS (a machine only on its own resolver's port, `dns_allowed`) and ping from the agent range, only |
+| `qorpera-agent-exit.nft` | rules inside `qexit` (`inet qorpera_agent_exit`): our own networks and TCP port 25 refused at once; IPv6, invalid packets and sources outside 10.210.0.0/16 dropped; at most 16,384 open connections per machine and 98,304 in all (decided 3 October; per address, and the bridge rules pin each machine to one); a closed agent TCP connection held 30 s, not 120 (`ct timeout agent_tcp`); plain DNS to any resolver redirected to the exit; new connections and refusals counted per machine (`new_by_client`, `refused_by_client`); refused flows kept an hour for the log (`refused_flows`, `refused_other`, with the mark of the rule that refused them, E8c), each machine's share rate-limited; the brake's map, sets and chains (E7, below); each machine's plain DNS, to any address, sent to its company's resolver on 10.210.0.1 (`dns_port`, E8b, below), and dropped and counted (`refused_dns`) for a machine without an element there; masquerade out of `up0`; the exit answers DHCP, DNS (a machine only on its own resolver's port, `dns_allowed`) and ping from the agent range, only |
 | `qorpera-agent-exit-host.nft` | the node's second line (`inet qorpera_agent_exit_host`): nothing is routed into or out of `qagent0`, and the node does not track what enters from it (`notrack`; the exit tracks and bounds it); the masqueraded leg of a closed agent TCP connection is held 30 s, not 120; `qx-up` reaches public addresses only, never port 25 or the tailnet, and nothing on the node; nothing starts a connection into `qx-up`; the uplink's addresses are refused anywhere else; phase 1's masquerade, to public addresses only |
 | `qorpera-agent-exit.sh` | `check`, `up`, `down`, `dns`, `log`, `plug`, `names`, `resolver`, `logs`, `ship`, `verify`, `health`, `status`, `counts`, `lookup`, and for the rules reader's login `database-url` and `rules-start` (E8b, below) |
 | `qorpera-agent-exit-log.py` | the connection log: conntrack's start and end of each agent connection (with bytes each way), each refused flow, and a gap line whenever events were lost, a read failed or a line could not be written; one JSON line each in `/var/log/qorpera-agent-exit/flows-YYYY-MM-DD.jsonl` (mode 0640); never content. It exits when its reader watches a namespace the exit replaced, and its unit starts it in the new one. It pauses past the logs' cap or under the disk's floor (below). Its line guard is the brake (E7, below) |
@@ -627,15 +627,17 @@ reconciler runs):
 ```bash
 bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules
 systemctl enable --now qorpera-agent-exit-names.service
+systemctl restart qorpera-agent-exit-log.service
 systemctl reload qorpera-agent-exit.service
-systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service
+systemctl restart qorpera-agent-plug.service
 ```
 
 The names reconciler starts the companies' resolvers first (the old rules have no map yet: it says so until the
 reload). The reload loads the new rules with the map filled for every verified machine, so no machine loses its DNS
 for longer than its resolver takes to start. The plug's restart gives it the new code (it clears a machine's DNS
-elements on unplug), and the logger's gives it the new refusals' rules. From a release with E8c-1 this brings it too:
-the reload fills `reach` as well (below).
+elements on unplug). From a release with E8c-1 this brings it too: the reload fills `reach` as well, and its
+refused-flow sets keep each refusal's mark (below). The logger restarts before the reload for that: the new one reads
+the old sets and the new, the old one would misread the new.
 
 Check, within 30 seconds: `X verify` prints `qorpera-agent-exit: healthy`; `cat /run/qorpera-agent-exit/names.json`
 shows `"problems": []`, a resolver for each plugged company with rules and each verified machine in `mapped`;
@@ -665,7 +667,14 @@ before) for a company without rules or in "open" mode, or to its company's chain
 address in `allow_<port>` goes on to `open`; anything else is refused, counted in `refused_not_listed` and logged with
 the rule `not_listed`. A machine without an element (its company not known yet, its rules not usable, no port or no
 chain yet) is refused everything outside, counted in `refused_rules_unknown` and logged with `rules_unknown`: the exit
-fails closed. The agent plug clears a machine's element when it unplugs it.
+fails closed. An established connection goes on past `reach` (the exit judges only new ones), so the reconciler ends
+every connection of a machine whose element went, and in a table it has not seen before those of every machine
+without one (a failed end is a problem in `names.json`, and tried again each pass). The agent plug clears a machine's
+element when it unplugs it. Both refusals mark the packet
+(`0x80000003` rules not known, `0x80000004` not listed; the brake's marks stay below `0x80000000`), and
+`refused_flows` and `refused_other` keep the mark with the flow: the logger reads the rule from it, so rules that
+change before it reads the set (the address listed since, the machine's company known since) do not change the rule
+it logs.
 
 When the list changes:
 - a wider list (a name listed, a block removed) rewrites the servers file and reloads the resolver, as in "open" mode;
@@ -701,16 +710,17 @@ package built, in one go:
 
 ```bash
 bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules
-systemctl restart qorpera-agent-exit-names.service
+systemctl restart qorpera-agent-exit-names.service qorpera-agent-exit-log.service
 systemctl reload qorpera-agent-exit.service
-systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service
+systemctl restart qorpera-agent-plug.service
 ```
 
 Until the reload the names reconciler cannot set its maps (the old rules have no `reach`; it says so), and the
 machines keep their DNS and the old rules. The reload loads the new rules with `reach` filled for every verified
-machine. The plug's restart gives it the new code (it clears a machine's `reach` element on unplug), and the logger's
-gives it the new refusals' rules. A company in "only listed" mode has its resolver restarted once (about a second
-without names) and its machines' connections ended.
+machine, and refused-flow sets that keep each refusal's mark. The logger restarts before it: the new one reads the old
+sets and the new (and the rule of each refusal from its mark), the old one would misread the new. The plug's restart
+gives it the new code (it clears a machine's `reach` element on unplug). A company in "only listed" mode has its
+resolver restarted once (about a second without names) and its machines' connections ended.
 
 Check, within 30 seconds: `X verify` prints `qorpera-agent-exit: healthy`; `cat /run/qorpera-agent-exit/names.json`
 shows `"problems": []`; `ip netns exec qexit nft list map inet qorpera_agent_exit reach` has an element for each

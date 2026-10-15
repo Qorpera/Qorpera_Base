@@ -26,8 +26,9 @@ plug's verified machines every 2 seconds and keeps the exit's names true to it:
 - the exit's map reach (E8c-1, set in the same transaction as dns_port) sends each verified machine's new flows to
   the chain open (a company without rules or in "open" mode), or to its company's chain only_<port> ("only listed":
   TCP 443 to an address in allow_<port>, nothing else). A machine without an element (company not known yet, rules
-  not usable, no port, no chain yet) is refused everything. When a company becomes "only listed", or its list
-  narrower, its machines' connections are ended once the map is right, so none made before goes on;
+  not usable, no port, no chain yet) is refused everything, and a machine whose element went has its connections
+  ended. When a company becomes "only listed", or its list narrower, its machines' connections are ended once the map
+  is right, so none made before goes on;
 - a resolver no machine needs any more is stopped, its files removed and its port given back; then its chain and set.
 Each pass ends in <run-dir>/names.json with its problems; `qorpera-agent-exit.sh verify` fails on any: no rules file or
 one that cannot be used, a company not in it for 30 seconds or with rules that cannot be used, the rules reader silent
@@ -177,14 +178,15 @@ def narrower(before, after):
 
 def object_lines(port):
     """An only-listed company's allow_P set and only_P chain (E8c), made again if they are there: TCP 443 to an address
-    its resolver gave out for an allowed name goes on to the open chain, everything else is refused. The flow gets ct
-    mark 1, so the server name check (E8c-2, qorpera-agent-exit-sni.nft) reads its ClientHello while it is loaded."""
+    its resolver gave out for an allowed name goes on to the open chain, everything else is refused (with the mark the
+    logger reads as not_listed). The flow gets ct mark 1, so the server name check (E8c-2, qorpera-agent-exit-sni.nft)
+    reads its ClientHello while it is loaded."""
     family, table = plug.EXIT_TABLE
     return [f"add set {family} {table} allow_{port} {{ type ipv4_addr; size 65536; }}",
             f"add chain {family} {table} only_{port}",
             f"flush chain {family} {table} only_{port}",
             f"add rule {family} {table} only_{port} tcp dport 443 ip daddr @allow_{port} ct mark set 1 goto open",
-            f'add rule {family} {table} only_{port} counter name "refused_not_listed" goto refuse']
+            f'add rule {family} {table} only_{port} meta mark set 0x80000004 counter name "refused_not_listed" goto refuse']
 
 
 def only_chains(text, table):
@@ -365,6 +367,10 @@ class Names:
         self.objects_table = None
         self.reach_right = False
         self.reach_now = {}
+        # A machine whose reach element went has every connection ended (the exit lets an established one go on): those
+        # still to end. A table not seen yet has it done for every machine without an element, which keeps it across a
+        # restart of this reconciler.
+        self.uncut = set()
         self.problems = []
 
     def run(self, command):
@@ -518,8 +524,11 @@ class Names:
 
     def restart_owed(self, ports, units, sets):
         """Stops each wanted resolver owed a restart (`systemctl stop` returns once it is gone, so it puts no address in
-        its set after this) and empties its set (sets: the ports that have one); the pass then starts it as any
-        stopped one. Its machines' connections are ended after the reach map (cut_owed)."""
+        its set after this) and empties its set (sets: the ports that have one, None when that is not known: then every
+        restart stays owed, and each resolver goes on with the set it has); the pass then starts it as any stopped one.
+        Its machines' connections are ended after the reach map (cut_owed)."""
+        if sets is None:
+            return
         family, table = plug.EXIT_TABLE
         for port, cut in sorted(self.owed.items()):
             if port not in ports.values():
@@ -602,7 +611,8 @@ class Names:
     def sync_map(self, mapped, waiting=frozenset(), reach=None):
         """Makes dns_port and dns_allowed hold `mapped` and the reach map `reach` (None: empty, every machine refused),
         in one transaction, and ends the DNS connections of every machine whose resolver changed or went, and of every
-        machine once in each table not seen before. While a
+        machine once in each table not seen before; and every connection of a machine whose reach element went (the
+        exit judges only new ones), and once in each table not seen before of every machine without one. While a
         resolver is in `waiting` (started under START_GRACE ago, not answering yet) a machine of it keeps the element
         it has if that is the main dnsmasq or this resolver, and gets none otherwise: a company that just got rules has
         names meanwhile, and its rules apply once its resolver answers. Returns the map as it is now ({} when it cannot
@@ -637,10 +647,18 @@ class Names:
                 self.problems.append(f"cannot set the exit's DNS map: {result.stderr.strip()[:200]}")
                 return loaded
             self.unflushed |= {address for address, port in loaded.items() if mapped.get(address) != port}
+            self.uncut |= set(reached) - set(reach)
         self.reach_right, self.reach_now = True, reach
         if self.flush_all:
             self.unflushed |= set(loaded) | set(mapped) | self.machines
+            self.uncut |= (set(loaded) | set(reached) | self.machines) - set(reach)
             self.flush_all = False
+        for address in sorted(self.uncut):
+            result = self.in_exit("conntrack", "-D", "-s", address)
+            if result.returncode == 0 or (result.returncode == 1 and "0 flow entries" in result.stderr):
+                self.uncut.discard(address)
+            else:
+                self.problems.append(f"the connections of {address} could not be ended yet")
         for address in sorted(self.unflushed):
             if self.flush(address):
                 self.unflushed.discard(address)
@@ -663,7 +681,8 @@ class Names:
         """Makes the exit's table hold allow_P and only_P for each port in `needed`, before its resolver starts and its
         machines' reach elements go to only_P. A table not seen before (one `up` made again, with its sets empty) has
         those resolvers reloaded, so they ask again (a reload empties dnsmasq's cache; an answer from it fills no set).
-        Returns the ports that have them now, and the ports that have them and are not needed."""
+        Returns the ports that have them now, and the ports that have them and are not needed; None and an empty set
+        when the table cannot be read (which ports have a set is not known then)."""
         if not self.kernel:
             return set(needed), set()
         family, table = plug.EXIT_TABLE
@@ -671,7 +690,7 @@ class Names:
         failed = [a for a in answers if a.returncode != 0]
         if failed:
             self.problems.append(f"cannot read the exit's chains: {failed[0].stderr.strip()[:200]}")
-            return set(), set()
+            return None, set()
         handle = table_handle(answers[0].stdout, table)
         have = only_chains(answers[1].stdout, table)
         if needed - have:
@@ -727,11 +746,11 @@ class Names:
             ports = {c: p for c, p in read_ports(self.ports_path).items() if c in wanted}
             present, _ = self.sync_objects({p for c, p in ports.items() if rules[c]["mode"] == "only-listed"})
             return self.write_status(at, ports, self.sync_map(wanted_map(clients, rules, ports),
-                                                              reach=wanted_reach(clients, rules, ports, present)))
+                                                              reach=wanted_reach(clients, rules, ports, present or set())))
         ports = self.assign_ports(wanted, set(units))
         present, extra = self.sync_objects({p for c, p in ports.items() if rules[c]["mode"] == "only-listed"})
         self.write_servers(ports, rules, units)
-        self.restart_owed(ports, units, present | extra)
+        self.restart_owed(ports, units, None if present is None else present | extra)
         for port in sorted(set(ports.values())):
             if units.get(port) in (None, "inactive", "failed"):
                 self.start(port, at)
@@ -751,7 +770,8 @@ class Names:
                 self.problems.append(f"the resolver of {company} (port {port}) is not answering")
                 if units.get(port) == "active":
                     self.start(port, at, again=True)
-        mapped = self.sync_map(wanted_map(clients, rules, ports), waiting, wanted_reach(clients, rules, ports, present))
+        mapped = self.sync_map(wanted_map(clients, rules, ports), waiting,
+                               wanted_reach(clients, rules, ports, present or set()))
         self.cut_owed(clients, ports)
         self.stop_unwanted(ports, units)
         self.drop_objects(extra)
