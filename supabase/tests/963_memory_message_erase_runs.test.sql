@@ -1,5 +1,5 @@
 -- @fixture 960_memory_message_erase.test.sql until "-- 3. Step 1"
--- Summary trees M3 (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §10 step 4; 20260930320000): the run table and the
+-- Summary trees M3 (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §10 step 4; 20260930441000): the run table and the
 -- scrub. Which read receipts step 1 counts as reading message 5 (i = 5; its blocks' window is 0 to 31), at the edge of
 -- each rule; a receipt stored after step 1; and the scrub of each kind of run: queued, with a card answered and not yet
 -- used, with a card that never asked, with a call still executing, with a receipt scrubbed before. On 960's tree and

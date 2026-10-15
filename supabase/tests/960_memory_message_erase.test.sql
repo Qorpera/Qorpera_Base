@@ -1,5 +1,5 @@
 -- @fixture 700_folder_state_vision_agents.test.sql until "-- 2. The vision: a new name"
--- Summary trees M3 (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §10; 20260930320000): a message's erase, steps 1 to 4.
+-- Summary trees M3 (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §10; 20260930441000): a message's erase, steps 1 to 4.
 -- The helpers; a request and its refusals; step 1 in one memory commit (the event and its input blanked, the candidate
 -- blocks deleted with their other lines kept, the run table); step 2's plan and rewrite; step 3's block-history requests;
 -- step 4's scrub of the receipts; the readers after an erase; and the privileges.
@@ -424,9 +424,11 @@ begin
 			and c.requester_kind = 'member' and c.requester_id = '70000000-0000-4000-8000-000000000001'
 			and c.operation_key like 'memerase:' || eid || ':%') then
 		raise exception 'The member''s rewrite commit: %', to_jsonb(er); end if;
-	-- A rewritten erase is past step 2: the plan is empty and a second call answers where it stands.
+	-- A rewritten erase is past step 2: its kept lines are gone, the plan is empty and a second call answers where it stands.
 	perform pg_temp.same(public.qorpera_memory_message_erase_plan('70000000-0000-4000-8000-000000000020', eid) -> 'blocks', '[]',
 		'Nothing left to plan');
+	if exists (select 1 from public.qorpera_memory_message_erase_blocks b where b.erase_id = eid and b.keep is not null) then
+		raise exception 'Kept lines outlive step 2'; end if;
 	perform pg_temp.same(pg_temp.rewrite(eid), r, 'Step 2 runs once');
 	perform pg_temp.same(to_jsonb((select count(*) from public.qorpera_folder_commits c where c.operation_key like 'memerase:%')), '2',
 		'Two commits');
@@ -546,12 +548,16 @@ end $$;
 
 do $$
 declare
-	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); v_run public.qorpera_execution_runs;
+	s uuid := pg_temp.thread('70000000-0000-4000-8000-0000000000c0'); v_run public.qorpera_execution_runs; r jsonb;
 begin
 	select * into v_run from public.qorpera_execution_runs where id = '96000000-0000-4000-8000-0000000000a1';
-	perform pg_temp.same(public.qorpera_company_context_source(v_run, 'history', (pg_temp.event(s, 7)).event_id) - 'id',
+	r :=public.qorpera_company_context_source(v_run, 'history', (pg_temp.event(s, 7)).event_id);
+	-- Master's chat images (20260930360000) list a message's images in place of its attachment count: neither names any.
+	perform pg_temp.same(r - 'id' - 'attachmentCount' - 'images',
 		jsonb_build_object('kind', 'historical_data', 'sourceKind', 'history', 'actorKind', 'company_service', 'authorUserId', null,
-			'sequence', 7, 'attachmentCount', 0, 'text', '(erased)'), 'An erased message reads (erased)');
+			'sequence', 7, 'text', '(erased)'), 'An erased message reads (erased)');
+	perform pg_temp.same(jsonb_build_array(coalesce(r -> 'attachmentCount', '0'), coalesce(r -> 'images', '[]')), '[0, []]',
+		'An erased message names no attachment or image');
 	perform pg_temp.same(public.qorpera_company_context_source(v_run, 'history', (pg_temp.event(s, 6)).event_id) -> 'text',
 		to_jsonb((pg_temp.event(s, 6)).body::text), 'Its neighbour reads as it was');
 end $$;
@@ -571,11 +577,12 @@ begin
 	from unnest(v_steps || array['public.qorpera_memory_entry_id(jsonb,uuid)', 'public.qorpera_memory_erase_drops(bigint,integer,bigint)',
 		'public.qorpera_memory_erase_candidates(text,bigint)', 'public.qorpera_memory_erase_line(public.qorpera_memory_tree_nodes)',
 		'public.qorpera_memory_erase_deletes(uuid,text,bigint,uuid)', 'public.qorpera_memory_erase_toml_manifests(uuid)',
-		'public.qorpera_memory_erase_roots(uuid,uuid)', 'public.qorpera_memory_erase_receipts(uuid,uuid,bigint)',
+		'public.qorpera_memory_erase_roots(uuid,uuid)', 'public.qorpera_memory_erase_image_folders(uuid,uuid,uuid)',
+		'public.qorpera_memory_erase_receipts(uuid,uuid,bigint)',
 		'public.qorpera_memory_message_erase_context(uuid,text)', 'public.qorpera_memory_message_erase_lock_targets(jsonb)',
 		'public.qorpera_memory_message_erase_targets(uuid,text)', 'public.qorpera_memory_message_erase_step1(jsonb,jsonb)',
 		'public.qorpera_memory_message_erase_hook(uuid,text,jsonb)', 'public.qorpera_memory_message_erase_reply(uuid)',
-		'public.qorpera_memory_message_erase_rewrite_plan(uuid,uuid)']) f,
+		'public.qorpera_memory_message_erase_rewrite_plan(uuid,uuid)', 'public.qorpera_memory_message_erase_rewritten(uuid,uuid,text)']) f,
 		unnest(array['anon', 'authenticated', 'service_role']) r
 	where has_function_privilege(r, f, 'execute') is distinct from (f = any(v_steps) and r = 'service_role');
 	if v_bad is not null then raise exception 'Wrong callers: %', v_bad; end if;

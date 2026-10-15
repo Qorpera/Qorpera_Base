@@ -19,16 +19,18 @@
 -- 5. Step 4 (qorpera_memory_message_erase_scrub): each ended run's linked receipts get P18's scrub (§6 there). W1's
 --    step scrub (§10.1) comes with W1d.
 -- 6. The readers: a parent entry id, a context source and a history line treat an erased body as opaque.
+-- 7. The room's image commit (qorpera_room_image_commit) names the conversation in its operation key, by which step 1
+--    finds an input's images folders at roots no tree knows.
 --
 -- The runtime's memory eraser drives the steps (qorpera_memory_message_erase_due). Every patched body carries the marker
--- 20260930320000 (M3) for the deploy guard.
+-- 20260930441000 (M3) for the deploy guard.
 
 set local lock_timeout = '3s';
 
 -- A second run stops here, before anything changes.
 do $$ begin
 	if to_regprocedure('public.qorpera_memory_message_erase_request(uuid,uuid,uuid,uuid)') is not null then
-		raise exception 'Memory message erase (20260930320000) is already applied'; end if;
+		raise exception 'Memory message erase (20260930441000) is already applied'; end if;
 end $$;
 
 create function pg_temp.m3_replace(p_function regprocedure, p_old text, p_new text)
@@ -72,6 +74,8 @@ create unique index qorpera_memory_message_erases_event on public.qorpera_memory
 	where state not in ('done','refused');
 create index qorpera_memory_message_erases_due on public.qorpera_memory_message_erases(updated_at)
 	where state not in ('done','refused');
+-- A conversation's open erases: a later erase's step 1 clears their kept lines.
+create index qorpera_memory_message_erases_open on public.qorpera_memory_message_erases(session_id) where state = 'open';
 
 -- One row per block: deleted by step 1 (its cutoff the delete's position, its kept lines {l, k, line}), or found by
 -- key alone (no cutoff). kind 'images' is the message's images folder, asked like a block found by key alone.
@@ -192,6 +196,47 @@ returns table (root_key text) language sql stable set search_path = '' as $$
 		or (k.key ~ '^agents/[^/]+/memory/thread/tree\.toml$' and k.key !~ '^agents/groups/')
 $$;
 
+-- The images folders by their input's id: the room's image commit makes a message's folder before its tree has a tree.toml.
+create index qorpera_folder_path_versions_image_folders on public.qorpera_folder_path_versions(environment_id,
+	(substring(path from '/images/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$')))
+	where kind = 'folder' and path ~ '/images/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
+
+-- Every images folder of C's input I at a tree root, live or not: a root its owner left before the summary wrote its
+-- first tree.toml is known to no tree (qorpera_memory_erase_roots), yet holds I's image. A client input id is unique in
+-- its conversation only, so a folder counts by where it began: made by C's image commit for I (its operation key names
+-- both, below), then wherever moves took it (a move_in's prior version is the version it moved).
+create function public.qorpera_memory_erase_image_folders(p_environment_id uuid, p_session_id uuid, p_client_input_id uuid)
+returns table (key text) language sql stable set search_path = '' as $$
+	with recursive found as (
+		select v.version, k.key
+		from public.qorpera_folder_path_versions v
+		cross join lateral (select public.qorpera_folder_key(v.path) as key) k
+		where v.environment_id = p_environment_id and v.kind = 'folder' and v.op in ('mkdir','move_in')
+			and v.path ~ '/images/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+			and substring(v.path from '/images/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$') = p_client_input_id::text
+			and k.key = public.qorpera_memory_tree_root_key(k.key) || '/images/' || p_client_input_id::text
+	), back(start, version, prior_version, op, path, commit_id) as (
+		select f.version, v.version, v.prior_version, v.op, v.path, v.commit_id
+		from found f join public.qorpera_folder_path_versions v on v.version = f.version
+		union all
+		select b.start, v.version, v.prior_version, v.op, v.path, v.commit_id
+		from back b join public.qorpera_folder_path_versions v on v.version = b.prior_version
+		where b.op = 'move_in'
+	)
+	select distinct f.key collate "C"
+	from found f
+	join back b on b.start = f.version and b.op = 'mkdir'
+	join public.qorpera_folder_commits c on c.id = b.commit_id
+	where b.path ~ ('/images/' || p_client_input_id::text || '$')
+		and c.operation_key like 'chat-image:' || p_client_input_id::text || ':' || p_session_id::text || ':%'
+$$;
+-- The room's image commit names the conversation in its operation key after the input's id.
+select pg_temp.m3_replace('public.qorpera_room_image_commit(uuid,uuid,uuid,jsonb)'::regprocedure,
+	E'\t\t\t\t''chat-image:'' || p_client_input_id::text || '':'' || extensions.gen_random_uuid()::text, v_units,\n',
+	E'\t\t\t\t-- 20260930441000 (M3): the conversation, by which a message erase finds the folders this commit makes.\n'
+	|| E'\t\t\t\t''chat-image:'' || p_client_input_id::text || '':'' || p_session_id::text || '':''\n'
+	|| E'\t\t\t\t\t|| extensions.gen_random_uuid()::text, v_units,\n');
+
 -- The read receipts whose result may hold message i of C, in the whole company (§10 step 4): a zoom of i's own line,
 -- or of a line whose children have i among their sources (start+size overlaps [i, 16·⌊i/16⌋ + 32)), and a
 -- read_context page whose range holds i.
@@ -245,7 +290,7 @@ returns jsonb language sql stable set search_path = '' as $$
 $$;
 
 -- Step 1 under the locks: the row, taken after the session row, must be pending; QME01 rolls the try back and the
--- caller tries again, QME02 refuses the erase.
+-- caller tries again, QME02 refuses the erase, QME04 (the event erased already) ends it done.
 create function public.qorpera_memory_message_erase_step1(p_context jsonb, p_units jsonb)
 returns void language plpgsql volatile security definer set search_path = '' as $$
 declare
@@ -257,6 +302,11 @@ begin
 	select * into v_row from public.qorpera_memory_message_erases where id = (p_context ->> 'eraseId')::uuid for update;
 	if not found or v_row.state <> 'pending' or v_row.environment_id <> v_env then
 		raise exception 'The erase moved on' using errcode = 'QME01'; end if;
+	-- The event erased already, under the session's lock: a request that read it before the first erase's step 1 and wrote
+	-- its row once that erase was done. Nothing is left to erase; QME04 rolls the try back and the caller ends the row.
+	if exists (select 1 from public.qorpera_session_events where session_id = v_row.session_id and sequence = v_row.sequence
+		and event_id = v_row.event_id and body = '{"erased":true}'::jsonb) then
+		raise exception 'The event is erased already' using errcode = 'QME04'; end if;
 	-- The role, under the member row's lock, as P18 checks it (ERASURE.md §3).
 	select role into v_role from public.qorpera_profile_members
 	where profile_id = v_row.profile_id and user_id = v_row.requested_by_user_id;
@@ -270,10 +320,14 @@ begin
 	update public.qorpera_shared_sessions set memory_generation = memory_generation + 1
 	where id = v_row.session_id and memory_generation = (p_context ->> 'generation')::bigint - 1;
 	if not found then raise exception 'The generation moved' using errcode = 'QME01'; end if;
+	-- An earlier erase still open is stale now: its rewrite never writes, and its kept lines (this event's among them) go.
+	update public.qorpera_memory_message_erase_blocks b set keep = null
+	from public.qorpera_memory_message_erases e
+	where e.id = b.erase_id and e.session_id = v_row.session_id and e.state = 'open' and e.id <> v_row.id and b.keep is not null;
 	update public.qorpera_session_events set body = '{"erased":true}'::jsonb
 	where session_id = v_row.session_id and sequence = v_row.sequence and event_id = v_row.event_id
 		and body <> '{"erased":true}'::jsonb;
-	if not found then raise exception 'The event is erased already' using errcode = 'QME01'; end if;
+	if not found then raise exception 'The event moved' using errcode = 'QME01'; end if;
 	-- A member's message: its input, at the turn-input step.
 	if v_row.input_id is not null then
 		perform 1 from public.qorpera_session_inputs where id = v_row.input_id for update;
@@ -297,16 +351,19 @@ begin
 				and not public.qorpera_memory_erase_drops(v_row.message_index, n.l, n.k)) end
 	from jsonb_array_elements(p_units) u
 	cross join lateral (select public.qorpera_folder_key(u ->> 'path') as key) k;
-	-- By key alone (step 3 asks them with no cutoff): each candidate block, and the images folder, with versions but not
-	-- live under the current root, and each with versions under an earlier root of C, live or not.
+	-- By key alone (step 3 asks them with no cutoff): each candidate block with versions but not live under the current
+	-- root, and each with versions under an earlier root of C, live or not; and the images folder at every root it ever
+	-- had, found by the image commit of C's that made it, where not live under the current root.
 	insert into public.qorpera_memory_message_erase_blocks(erase_id, block_key, path, kind)
 	select v_row.id, c.key, (select v.path from public.qorpera_folder_path_versions v
 			where v.environment_id = v_env and v.key_sha256 = extensions.digest(c.key, 'sha256') order by v.created_at desc limit 1),
 		c.kind
-	from (select r.root_key from public.qorpera_memory_erase_roots(v_env, v_row.session_id) r
-		union select v_root where v_root is not null) r
-	cross join lateral (select b.block_key as key, 'block' as kind from public.qorpera_memory_erase_candidates(r.root_key, v_row.message_index) b
-		union all select r.root_key || '/images/' || v_row.client_input_id::text, 'images' where v_row.client_input_id is not null) c
+	from (select b.block_key as key, 'block' as kind
+		from (select r.root_key from public.qorpera_memory_erase_roots(v_env, v_row.session_id) r
+			union select v_root where v_root is not null) r
+		cross join lateral public.qorpera_memory_erase_candidates(r.root_key, v_row.message_index) b
+		union all select i.key, 'images' from public.qorpera_memory_erase_image_folders(v_env, v_row.session_id, v_row.client_input_id) i
+		where v_row.client_input_id is not null) c
 	where exists (select 1 from public.qorpera_folder_path_versions v
 		where v.environment_id = v_env and v.key_sha256 = extensions.digest(c.key, 'sha256'))
 	on conflict (erase_id, block_key) do nothing;
@@ -350,14 +407,14 @@ select pg_temp.m3_replace('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uu
 	|| E'\tv_targets := v_targets || public.qorpera_folder_memory_targets(p_environment_id, p_operation_key);\n',
 	E'\t-- 20260930110000 (M1a): a memory commit''s generations (rank 11, FOR SHARE).\n'
 	|| E'\tv_targets := v_targets || public.qorpera_folder_memory_targets(p_environment_id, p_operation_key);\n'
-	|| E'\t-- 20260930320000 (M3): a message erase''s member, C''s owner row and C''s session row.\n'
+	|| E'\t-- 20260930441000 (M3): a message erase''s member, C''s owner row and C''s session row.\n'
 	|| E'\tv_targets := v_targets || public.qorpera_memory_message_erase_targets(p_environment_id, p_operation_key);\n');
 select pg_temp.m3_replace('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
 	E'\t-- Rank 11: the sessions the apply step writes (the hook''s), FOR UPDATE in id order (C1C §5.6).\n'
 	|| E'\tperform public.qorpera_folder_lock_sessions(p_environment_id, v_targets);\n',
 	E'\t-- Rank 11: the sessions the apply step writes (the hook''s), FOR UPDATE in id order (C1C §5.6).\n'
 	|| E'\tperform public.qorpera_folder_lock_sessions(p_environment_id, v_targets);\n'
-	|| E'\t-- 20260930320000 (M3): a message erase''s step 1, or its rewrite''s check, under the session row.\n'
+	|| E'\t-- 20260930441000 (M3): a message erase''s step 1, or its rewrite''s check, under the session row.\n'
 	|| E'\tperform public.qorpera_memory_message_erase_hook(p_environment_id, p_operation_key, p_units);\n');
 
 -- 4. Readers of an erased event ---------------------------------------------------------------------------------------
@@ -366,27 +423,27 @@ select pg_temp.m3_replace('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uu
 -- run context reads its text as (erased). Room posts never erase, so their readers stay as they are.
 select pg_temp.m3_replace('public.qorpera_append_admitted_input_events(uuid,uuid[])'::regprocedure,
 	E'\tselect event.sequence, event.event_hash, event.body #>> ''{entry,id}''\n',
-	E'\t-- 20260930320000 (M3): an erased event keeps its entry id, its event id.\n'
+	E'\t-- 20260930441000 (M3): an erased event keeps its entry id, its event id.\n'
 	|| E'\tselect event.sequence, event.event_hash, public.qorpera_memory_entry_id(event.body, event.event_id)\n');
 select pg_temp.m3_replace('public.qorpera_append_runner_transcript_event(uuid,text,uuid,text,uuid,uuid,text,jsonb,bigint)'::regprocedure,
 	E'\t\t\t\tand parent.body #>> ''{entry,id}'' = p_body #>> ''{entry,parentId}''\n',
-	E'\t\t\t\t-- 20260930320000 (M3): an erased parent keeps its entry id, its event id.\n'
+	E'\t\t\t\t-- 20260930441000 (M3): an erased parent keeps its entry id, its event id.\n'
 	|| E'\t\t\t\tand public.qorpera_memory_entry_id(parent.body, parent.event_id) = p_body #>> ''{entry,parentId}''\n');
 select pg_temp.m3_replace('public.qorpera_folder_append_transcript_event(public.qorpera_execution_runs,uuid,uuid,text,jsonb)'::regprocedure,
 	E'\t\t\twhere parent.session_id = v_session.id and parent.body #>> ''{entry,id}'' = p_body #>> ''{entry,parentId}'')\n',
-	E'\t\t\t-- 20260930320000 (M3): an erased parent keeps its entry id, its event id.\n'
+	E'\t\t\t-- 20260930441000 (M3): an erased parent keeps its entry id, its event id.\n'
 	|| E'\t\t\twhere parent.session_id = v_session.id\n'
 	|| E'\t\t\t\tand public.qorpera_memory_entry_id(parent.body, parent.event_id) = p_body #>> ''{entry,parentId}'')\n');
 select pg_temp.m3_replace(f::regprocedure,
 	E'\t\tselect event.body #>> ''{entry,id}'' into v_parent from public.qorpera_session_events as event\n',
-	E'\t\t-- 20260930320000 (M3): an erased event keeps its entry id, its event id.\n'
+	E'\t\t-- 20260930441000 (M3): an erased event keeps its entry id, its event id.\n'
 	|| E'\t\tselect public.qorpera_memory_entry_id(event.body, event.event_id) into v_parent\n'
 	|| E'\t\tfrom public.qorpera_session_events as event\n')
 from unnest(array['public.qorpera_folder_append_interaction_request(jsonb,uuid,jsonb)',
 	'public.qorpera_record_action_review(jsonb,jsonb)']) f;
 select pg_temp.m3_replace(f::regprocedure,
 	E'\tselect coalesce(event.body #>> ''{entry,id}'', event.body ->> ''entryId'') into v_parent_id\n',
-	E'\t-- 20260930320000 (M3): an erased event keeps its entry id, its event id.\n'
+	E'\t-- 20260930441000 (M3): an erased event keeps its entry id, its event id.\n'
 	|| E'\tselect coalesce(public.qorpera_memory_entry_id(event.body, event.event_id), event.body ->> ''entryId'') into v_parent_id\n')
 from unnest(array['public.qorpera_folder_send_agent_message(jsonb,text,text,text)',
 	'public.qorpera_send_runner_agent_message(uuid,text,uuid,text,uuid,text,text,text)']) f;
@@ -399,18 +456,18 @@ select pg_temp.m3_replace('public.qorpera_send_runner_agent_message(uuid,text,uu
 select pg_temp.m3_replace('public.qorpera_folder_send_coworker_message(jsonb,uuid,text,text,boolean)'::regprocedure,
 	E'\t\tselect event.body #>> ''{entry,id}'' into v_parent_entry from public.qorpera_session_events event\n'
 	|| E'\t\twhere event.session_id = v_pair and event.body #>> ''{entry,id}'' is not null order by event.sequence desc limit 1;\n',
-	E'\t\t-- 20260930320000 (M3): an erased event keeps its entry id, its event id.\n'
+	E'\t\t-- 20260930441000 (M3): an erased event keeps its entry id, its event id.\n'
 	|| E'\t\tselect public.qorpera_memory_entry_id(event.body, event.event_id) into v_parent_entry\n'
 	|| E'\t\tfrom public.qorpera_session_events event where event.session_id = v_pair\n'
 	|| E'\t\t\tand public.qorpera_memory_entry_id(event.body, event.event_id) is not null order by event.sequence desc limit 1;\n');
 select pg_temp.m3_replace('public.qorpera_company_context_source(public.qorpera_execution_runs,text,uuid)'::regprocedure,
 	E'\t\t\tcase when jsonb_typeof(v_input.body -> ''text'') = ''string'' then v_input.body ->> ''text'' else v_input.body::text end);\n',
-	E'\t\t\t-- 20260930320000 (M3): an erased message reads (erased).\n'
+	E'\t\t\t-- 20260930441000 (M3): an erased message reads (erased).\n'
 	|| E'\t\t\tcase when v_input.body = ''{"erased":true}''::jsonb then ''(erased)''\n'
 	|| E'\t\t\t\twhen jsonb_typeof(v_input.body -> ''text'') = ''string'' then v_input.body ->> ''text'' else v_input.body::text end);\n');
 select pg_temp.m3_replace('public.qorpera_company_context_source(public.qorpera_execution_runs,text,uuid)'::regprocedure,
 	E'\t\tv_text := v_event.body::text;\n',
-	E'\t\t-- 20260930320000 (M3): an erased event reads (erased).\n'
+	E'\t\t-- 20260930441000 (M3): an erased event reads (erased).\n'
 	|| E'\t\tv_text := case when v_event.body = ''{"erased":true}''::jsonb then ''(erased)'' else v_event.body::text end;\n');
 
 -- 5. The request, its status and the eraser's queue -------------------------------------------------------------------
@@ -425,7 +482,8 @@ returns jsonb language sql stable set search_path = '' as $$
 $$;
 
 -- An owner or admin asks to erase one event of a room's conversation. A second request for the same event joins the
--- first; a request for an event already erased gets that erase.
+-- first; a request for an event already erased gets that erase. One that read the event before the first erase's step 1
+-- and wrote its row once that erase was done ends done at its own step 1 (QME04).
 create function public.qorpera_memory_message_erase_request(p_environment_id uuid, p_user_id uuid, p_session_id uuid,
 	p_event_id uuid)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
@@ -569,6 +627,12 @@ begin
 				update public.qorpera_memory_message_erases set state = 'refused', last_error = v_error, updated_at = clock_timestamp()
 				where id = v_row.id;
 				return public.qorpera_memory_message_erase_reply(v_row.id);
+			-- The first erase of the event did the work: this row is done, with no commit and the generation as it was.
+			when sqlstate 'QME04' then
+				update public.qorpera_memory_message_erases
+				set state = 'done', last_error = null, done_at = clock_timestamp(), updated_at = clock_timestamp()
+				where id = v_row.id and state = 'pending';
+				return public.qorpera_memory_message_erase_reply(v_row.id);
 		end;
 	end loop;
 	-- Each block step 1 deleted gets the delete's position, the cutoff of its history (step 3).
@@ -589,7 +653,8 @@ end $$;
 
 -- The rewrite: each block step 1 deleted with a kept line not live again, at the same place under C's current root, its
 -- kept lines merged by position with the live lines the next run wrote there first (a live line wins). Each item is
--- {path, text, fileSha256, bytes, expectedVersion (null: the block is not there)}, by key; none when the owner is retired.
+-- {path, text, fileSha256, bytes, expectedVersion (null: the block is not there)}, by key; none when the owner is retired,
+-- and none unless the row is open at the session's generation (a later erase or step 2's end cleared its kept lines).
 create function public.qorpera_memory_message_erase_rewrite_plan(p_environment_id uuid, p_erase_id uuid)
 returns jsonb language sql stable set search_path = '' as $$
 	select coalesce(jsonb_agg(jsonb_build_object('path', p.key, 'text', p.text,
@@ -613,6 +678,8 @@ returns jsonb language sql stable set search_path = '' as $$
 			where n.environment_id = p_environment_id and n.block_key = k.key and n.run_id is null
 				and n.session_id = e.session_id) m) as text) p
 	where e.id = p_erase_id and e.environment_id = p_environment_id and r.root is not null and e.root_key is not null
+		and e.state = 'open'
+		and e.generation = (select s.memory_generation from public.qorpera_shared_sessions s where s.id = e.session_id)
 		and exists (select 1 from jsonb_array_elements(b.keep) x
 			where not exists (select 1 from public.qorpera_memory_tree_nodes n
 				where n.environment_id = p_environment_id and n.block_key = k.key and n.run_id is null
@@ -631,6 +698,17 @@ begin
 	v_plan := public.qorpera_memory_message_erase_rewrite_plan(p_environment_id, p_erase_id);
 	return jsonb_build_object('schema', 'qorpera.memory-message-erase-plan/v1', 'eraseId', p_erase_id,
 		'planSha256', encode(extensions.digest(convert_to(v_plan::text, 'utf8'), 'sha256'), 'hex'), 'blocks', v_plan);
+end $$;
+
+-- The row's move to step 3, its rewrite written or skipped: the kept lines go with it, so no later plan writes them.
+create function public.qorpera_memory_message_erase_rewritten(p_erase_id uuid, p_commit_id uuid, p_error text)
+returns jsonb language plpgsql volatile set search_path = '' as $$
+begin
+	update public.qorpera_memory_message_erase_blocks set keep = null where erase_id = p_erase_id and keep is not null;
+	update public.qorpera_memory_message_erases
+	set state = 'rewritten', rewrite_commit_id = p_commit_id, last_error = p_error, updated_at = clock_timestamp()
+	where id = p_erase_id;
+	return public.qorpera_memory_message_erase_reply(p_erase_id);
 end $$;
 
 -- Step 2: one memory commit at the row's generation writes the plan's blocks, each from its staged file, the plan
@@ -655,20 +733,12 @@ begin
 	if not found then raise exception 'Erase not found' using errcode = 'P0002'; end if;
 	if v_row.state <> 'open' then return public.qorpera_memory_message_erase_reply(v_row.id); end if;
 	if (select s.memory_generation from public.qorpera_shared_sessions s where s.id = v_row.session_id) <> v_row.generation then
-		update public.qorpera_memory_message_erases
-		set state = 'rewritten', last_error = 'memory_generation_stale', updated_at = clock_timestamp()
-		where id = v_row.id;
-		return public.qorpera_memory_message_erase_reply(v_row.id);
-	end if;
+		return public.qorpera_memory_message_erase_rewritten(v_row.id, null, 'memory_generation_stale'); end if;
 	v_root := public.qorpera_memory_owner_root(p_environment_id, v_row.owner_kind, v_row.owner_id);
 	v_plan := public.qorpera_memory_message_erase_rewrite_plan(p_environment_id, v_row.id);
 	if encode(extensions.digest(convert_to(v_plan::text, 'utf8'), 'sha256'), 'hex') is distinct from p_plan_sha256 then
 		raise exception 'The rewrite plan changed; plan it again' using errcode = '55000'; end if;
-	if jsonb_array_length(v_plan) = 0 then
-		update public.qorpera_memory_message_erases set state = 'rewritten', last_error = null, updated_at = clock_timestamp()
-		where id = v_row.id;
-		return public.qorpera_memory_message_erase_reply(v_row.id);
-	end if;
+	if jsonb_array_length(v_plan) = 0 then return public.qorpera_memory_message_erase_rewritten(v_row.id, null, null); end if;
 	-- Each staged file holds its block's text, in the plan's order.
 	if jsonb_typeof(p_files) is distinct from 'array' or jsonb_array_length(p_files) <> jsonb_array_length(v_plan)
 		or exists (select 1 from jsonb_array_elements(v_plan) with ordinality p(item, o)
@@ -711,17 +781,11 @@ begin
 			where id = v_row.id;
 			return public.qorpera_memory_message_erase_reply(v_row.id);
 		when sqlstate 'QME03' then
-			update public.qorpera_memory_message_erases
-			set state = 'rewritten', last_error = 'memory_generation_stale', updated_at = clock_timestamp()
-			where id = v_row.id;
-			return public.qorpera_memory_message_erase_reply(v_row.id);
+			return public.qorpera_memory_message_erase_rewritten(v_row.id, null, 'memory_generation_stale');
 	end;
 	update public.qorpera_folder_commits set requester_kind = 'member', requester_id = v_row.requested_by_user_id
 	where id = (v_result ->> 'commitId')::uuid;
-	update public.qorpera_memory_message_erases set state = 'rewritten', rewrite_commit_id = (v_result ->> 'commitId')::uuid,
-		last_error = null, updated_at = clock_timestamp()
-	where id = v_row.id;
-	return public.qorpera_memory_message_erase_reply(v_row.id);
+	return public.qorpera_memory_message_erase_rewritten(v_row.id, (v_result ->> 'commitId')::uuid, null);
 end $$;
 
 -- 8. Step 3 -----------------------------------------------------------------------------------------------------------
@@ -882,6 +946,7 @@ revoke all on function public.qorpera_memory_erase_line(public.qorpera_memory_tr
 revoke all on function public.qorpera_memory_erase_deletes(uuid, text, bigint, uuid) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_erase_toml_manifests(uuid) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_erase_roots(uuid, uuid) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_memory_erase_image_folders(uuid, uuid, uuid) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_erase_receipts(uuid, uuid, bigint) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_message_erase_context(uuid, text) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_message_erase_lock_targets(jsonb) from public, anon, authenticated, service_role;
@@ -890,6 +955,7 @@ revoke all on function public.qorpera_memory_message_erase_step1(jsonb, jsonb) f
 revoke all on function public.qorpera_memory_message_erase_hook(uuid, text, jsonb) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_message_erase_reply(uuid) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_message_erase_rewrite_plan(uuid, uuid) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_memory_message_erase_rewritten(uuid, uuid, text) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_memory_message_erase_request(uuid, uuid, uuid, uuid) from public, anon, authenticated;
 revoke all on function public.qorpera_memory_message_erase_status(uuid, uuid, uuid) from public, anon, authenticated;
 revoke all on function public.qorpera_memory_message_erase_due(integer) from public, anon, authenticated;

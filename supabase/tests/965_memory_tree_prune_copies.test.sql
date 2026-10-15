@@ -1,5 +1,5 @@
 -- @fixture 961_memory_message_erase_roots.test.sql until "-- 2. Step 1 under the new root"
--- Summary trees M3b (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §10, GC; 20260930321000): the prune's regressions, on
+-- Summary trees M3b (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §10, GC; 20260930442000): the prune's regressions, on
 -- 961's Nora, whose folder was renamed. Her block is rewritten at its new path; a member copies a partly filled version to
 -- reports/, and a write of a later version's bytes to reports/ fails its version check and leaves a conflict copy. Eight
 -- days on, the prune keeps the move_in and both copied versions; a message erase then erases the block's lives at both

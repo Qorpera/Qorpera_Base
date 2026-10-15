@@ -6,21 +6,22 @@
 -- delete or a move, both rows of a move pair and the notebook keep their rows.
 --
 -- 1. qorpera_folder_object_release: the bytes step of P18's phase 5 (C1D §9.4), now shared. The erasure step calls it
---    at the same place; the prune calls it for the hashes of the versions it deletes.
+--    at the same place; the prune calls it for the hashes of the versions it deletes. It first takes the upload intents
+--    that root the hashes FOR KEY SHARE, which the intent sweeper's FOR UPDATE SKIP LOCKED passes over (C1D §9.5).
 -- 2. qorpera_memory_tree_prune: one batch, driven by the later write (condition 3) through a partial index, in order
 --    of its age from a cursor, so each later write is read once. A version that a holder keeps (condition 4) waits in
 --    qorpera_memory_tree_prune_held and is checked again on later runs: once the copy is erased by its path, the next
 --    prune takes it. A company being deleted is passed over; its own GC takes everything.
 -- 3. pg_cron runs a batch every minute. The prune commits nothing and writes no folder history.
 --
--- The erasure step's patched body carries the marker 20260930321000 (M3b) for the deploy guard.
+-- The erasure step's patched body carries the marker 20260930442000 (M3b) for the deploy guard.
 
 set local lock_timeout = '3s';
 
 -- A second run stops here, before anything changes.
 do $$ begin
 	if to_regprocedure('public.qorpera_memory_tree_prune(integer)') is not null then
-		raise exception 'Memory tree prune (20260930321000) is already applied'; end if;
+		raise exception 'Memory tree prune (20260930442000) is already applied'; end if;
 end $$;
 
 create function pg_temp.m3b_replace(p_function regprocedure, p_old text, p_new text)
@@ -71,11 +72,17 @@ create index qorpera_memory_tree_prune_due on public.qorpera_folder_path_version
 -- 2. The bytes step ----------------------------------------------------------------------------------------------------
 
 -- Side rows for the hashes nothing roots now, where a catalog row exists (C1D §9.4). The caller has checked that folder
--- GC serves the company (qorpera_folder_gc_company) and calls this in a statement after its deletes.
+-- GC serves the company (qorpera_folder_gc_company) and calls this at read committed, in a statement after its deletes.
 create function public.qorpera_folder_object_release(p_profile_id uuid, p_hashes text[])
 returns integer language plpgsql security definer set search_path = '' as $$
 declare v_rows integer;
 begin
+	-- The upload intents that root these bytes, first (C1D §9.5): the sweeper skips one held here, and one the sweeper
+	-- holds is waited for and gone after. So the sweeper's check or this one reads the other's end, never neither.
+	perform 1 from public.qorpera_folder_upload_intents i
+	where i.id in (select o.intent_id from public.qorpera_folder_upload_intent_objects o
+		where o.profile_id = p_profile_id and o.sha256 = any (p_hashes))
+	order by i.id for key share;
 	insert into public.qorpera_folder_object_gc(profile_id, sha256, unreferenced_since)
 	select p_profile_id, h, clock_timestamp() from unnest(p_hashes) h
 	where exists (select 1 from public.qorpera_profile_objects o where o.profile_id = p_profile_id and o.sha256 = h)
@@ -98,7 +105,7 @@ select pg_temp.m3b_replace('public.qorpera_folder_erasure_step(integer,integer,i
 	'\t\t\t\torder by h collate "C"\n'
 	'\t\t\t\ton conflict (profile_id, sha256) do update\n'
 	'\t\t\t\tset unreferenced_since = greatest(public.qorpera_folder_object_gc.unreferenced_since, excluded.unreferenced_since);\n',
-	E'\t\t\t\t-- 20260930321000 (M3b): the bytes step, shared with the memory tree prune.\n'
+	E'\t\t\t\t-- 20260930442000 (M3b): the bytes step, shared with the memory tree prune.\n'
 	'\t\t\t\tperform public.qorpera_folder_object_release(v_erasure.profile_id, v_hashes);\n');
 
 -- 3. The prune ---------------------------------------------------------------------------------------------------------
@@ -208,6 +215,14 @@ begin
 		where id;
 	end if;
 
+	-- The upload intents that root any of those bytes, in one statement before any release: the sweeper holds intents of
+	-- many companies at once, and each release takes GC rows, so no release waits on an intent while holding them.
+	perform 1 from public.qorpera_folder_upload_intents i
+	where i.id in (select o.intent_id from unnest(v_profiles, v_manifests) x(p, m)
+		join public.qorpera_folder_upload_intent_objects o on o.profile_id = x.p
+		where x.m is not null and (o.sha256 = x.m or o.sha256 in (select ch.chunk_sha256 from public.qorpera_folder_file_chunks ch
+			where ch.profile_id = x.p and ch.manifest_sha256 = x.m)))
+	order by i.id for key share;
 	-- The bytes, in a statement after the deletes: each pruned manifest and its chunks, where nothing roots them now.
 	for v_profile in select distinct p from unnest(v_profiles) p loop
 		select coalesce(array_agg(h.sha256 order by h.sha256 collate "C"), '{}') into v_hashes from (
