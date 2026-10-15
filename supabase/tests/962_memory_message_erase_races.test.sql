@@ -59,7 +59,7 @@ begin
 	if r -> 'event' ->> 'erased' <> 'true' or r -> 'event' ->> 'text' is not null or r -> 'event' ->> 'sequence' <> '1' then
 		raise exception 'A: the zoom after step 1 reads: %', r; end if;
 	if pg_temp.receipt('race-a') is distinct from '0+1' then raise exception 'A: the receipt is %', pg_temp.receipt('race-a'); end if;
-	if pg_temp.erase_state(current_setting('qorpera_test.erase_a')::uuid) <> '{"state":"open","blocks":0,"runsPending":0}'
+	if pg_temp.erase_state(current_setting('qorpera_test.erase_a')::uuid) <> '{"state":"open","blocks":0,"runsPending":0,"copies":[]}'
 		or exists (select 1 from public.qorpera_memory_message_erase_runs where erase_id = current_setting('qorpera_test.erase_a')::uuid)
 		or pg_temp.generation() <> current_setting('qorpera_test.generation')::bigint + 1 then
 		raise exception 'A: the erase after the zoom: %', pg_temp.erase_state(current_setting('qorpera_test.erase_a')::uuid); end if;
@@ -156,7 +156,7 @@ declare r jsonb := public.qorpera_memory_message_erase_scrub('64800000-0000-4000
 	current_setting('qorpera_test.erase_b')::uuid);
 begin
 	if r ->> 'state' <> 'done' or r ->> 'runsPending' <> '0' or pg_temp.op_content('race-b') <> '[erased]'
-		or pg_temp.erase_state(current_setting('qorpera_test.erase_b')::uuid) <> '{"state":"done","blocks":0,"runsPending":0}' then
+		or pg_temp.erase_state(current_setting('qorpera_test.erase_b')::uuid) <> '{"state":"done","blocks":0,"runsPending":0,"copies":[]}' then
 		raise exception 'C: the next scrub: % (%)', r, pg_temp.op_content('race-b'); end if;
 end $$;
 
