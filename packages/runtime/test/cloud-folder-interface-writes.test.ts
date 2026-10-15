@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { CARDS_TABLE, NUMBERS_TABLE, PULSE_INTERFACE } from "@qorpera/cloud-client/interface-library";
+import { AREAS_TABLE, CARDS_TABLE, NUMBERS_TABLE, PULSE_INTERFACE } from "@qorpera/cloud-client/interface-library";
 import type { JsonValue } from "@qorpera/contracts";
 import { CloudCompanyFolderError } from "@qorpera/runtime/cloud-company-folder-client";
 import { cloudInterfaceWriteTools } from "@qorpera/runtime/cloud-folder-interface-writes";
@@ -175,7 +175,7 @@ const ROWS = {
 	not_a_writer:
 		"Nothing was saved. You may not write this table's rows (its [write] agents do not name you): tell the member what you would change.",
 	invalid: "Nothing was saved. Fix the problems listed and call again with a new operationKey.",
-	claim: "Nothing was saved. A needs_yes cell (a claim) is not yours to change: leave it as it is, or tell the member.",
+	claim: "Nothing was saved. You change a needs_yes cell (a claim) only for the member who supervises your area, taking an empty one for them or letting theirs go, and never an area's owner, supervisor or agents: leave it as it is, or tell the member.",
 	too_large:
 		"Nothing was saved. The rows would be larger than 64 KiB, the most a table holds for now: remove rows first, or tell the member.",
 };
@@ -744,6 +744,104 @@ it("refuses a claim, a table the agent may not write, and rows that would be too
 	);
 	expect(answer).toMatchObject({ state: "not_applied", reason: "too_large", next: ROWS.too_large });
 	expect([...claim.commits, ...closed.commits, ...large.commits]).toEqual([]);
+});
+
+const AREAS_HEAD = "area,about,owner,shared,supervisor,agents";
+const AREAS_FILES = ["tables/areas/table.toml", "tables/areas/rows.csv"];
+/** The cards, and the areas: the run's agent works in Sales, which `supervisor` supervises (or nobody, when null). */
+async function supervised(supervisor: string | null, options: Parameters<typeof folderWriterFixture>[1] = {}) {
+	const f = await fixture({ files: CARDS }, options);
+	f.seed("tables/areas/table.toml", AREAS_TABLE);
+	f.seed(
+		"tables/areas/rows.csv",
+		`${AREAS_HEAD}\nOps,,,no,${randomUUID()},${randomUUID()}\nSales,,,no,${supervisor ?? ""},${AGENT} ${f.identity.staffAgentId}\n`,
+	);
+	return f;
+}
+
+it("changes a claim for the member who supervises the agent's area, and only takes or lets go for them", async () => {
+	const supervisor = randomUUID();
+	const f = await supervised(supervisor);
+	const path = "tables/cards/rows.csv";
+	// Taken for the supervisor: the areas were read for it, and the answer is released with them.
+	const taken = await f.call("table_write", rows("cards", "take-1", [{ id: C1, holder: supervisor }]));
+	expect(read(taken)).toMatchObject({ state: "applied", outcome: "saved", changed: { updated: 1 } });
+	cites(f, taken, [...CARDS_FILES, ...AREAS_FILES]);
+	expect(f.text(path)).toBe(`${CARDS_HEAD}\n${C1},Bake,sales,${supervisor},open,,\n${C2},Sell,sales,,open,,\n`);
+	// Given to anybody else: refused before the commit.
+	const other = randomUUID();
+	const given = await f.call("table_write", rows("cards", "give-1", [{ id: C2, holder: other }]));
+	const answer = read(given);
+	expect(answer).toMatchObject({ state: "not_applied", reason: "claim", next: ROWS.claim });
+	expect(answer.problems).toEqual([expect.stringContaining("giving it to someone else is an offer")]);
+	cites(f, given, [...CARDS_FILES, ...AREAS_FILES]);
+	// A change that touches no claim reads no areas.
+	const done = await f.call("table_write", rows("cards", "done-1", [{ id: C2, state: "done" }]));
+	expect(read(done)).toMatchObject({ state: "applied" });
+	cites(f, done, CARDS_FILES);
+	// Let go for the supervisor.
+	const released = await f.call("table_write", rows("cards", "let-go-1", [{ id: C1, holder: null }]));
+	expect(read(released)).toMatchObject({ state: "applied", changed: { updated: 1 } });
+	expect(f.text(path)).toBe(`${CARDS_HEAD}\n${C1},Bake,sales,,open,,\n${C2},Sell,sales,,done,,\n`);
+	expect(f.commits).toHaveLength(3);
+	// An area nobody supervises: the agent has nobody to act for.
+	const alone = await supervised(null);
+	const refused = read(await alone.call("table_write", rows("cards", "take-1", [{ id: C1, holder: supervisor }])));
+	expect(refused).toMatchObject({ state: "not_applied", reason: "claim", next: ROWS.claim });
+	expect(refused.problems).toEqual([expect.stringContaining("no supervisor to act for")]);
+	expect(alone.commits).toEqual([]);
+});
+
+it("writes the areas but never an area's owner, supervisor or agents", async () => {
+	const supervisor = randomUUID();
+	const f = await supervised(supervisor);
+	const about = await f.call("table_write", rows("areas", "about-1", [{ area: "Sales", about: "Selling" }]));
+	expect(read(about)).toMatchObject({ state: "applied", changed: { updated: 1 } });
+	cites(f, about, AREAS_FILES);
+	const changes: [string, JsonValue][] = [
+		["owner", supervisor],
+		["supervisor", null],
+		["agents", [AGENT]],
+	];
+	for (const [column, value] of changes) {
+		const answer = await f.call("table_write", rows("areas", `${column}-1`, [{ area: "Sales", [column]: value }]));
+		expect(read(answer)).toMatchObject({
+			state: "not_applied",
+			reason: "claim",
+			problems: [`Only members change ${column}; an agent can offer, never set it.`],
+			next: ROWS.claim,
+		});
+		cites(f, answer, AREAS_FILES);
+	}
+	expect(f.commits).toHaveLength(1);
+});
+
+it("answers the folder core's claim refusal at the commit as a claim", async () => {
+	const supervisor = randomUUID();
+	// The supervisor withdrew their consent: the folder core finds no member to act for and refuses the claim.
+	const message = "nobody assigns anybody: only the member named changes holder";
+	const f = await supervised(supervisor, {
+		hook: (path) =>
+			path === "tables/cards/rows.csv"
+				? { outcome: "refused", reason: "structured_rule", problems: [{ code: "claim", message }] }
+				: null,
+	});
+	const answer = await f.call("table_write", rows("cards", "take-1", [{ id: C1, holder: supervisor }]));
+	expect(read(answer)).toEqual({
+		schema: "qorpera.table-write-result/v1",
+		state: "not_applied",
+		operationKey: "take-1",
+		table: "cards",
+		version: null,
+		receiptId: expect.any(String),
+		outcome: "refused",
+		reason: "structured_rule",
+		problems: [message],
+		next: ROWS.claim,
+	});
+	cites(f, answer, [...CARDS_FILES, ...AREAS_FILES]);
+	expect(f.commits).toHaveLength(1);
+	expect(f.text("tables/cards/rows.csv")).toBe(CARDS_ROWS);
 });
 
 it("refuses a table that is not there, and answers one it cannot read with its problems", async () => {
