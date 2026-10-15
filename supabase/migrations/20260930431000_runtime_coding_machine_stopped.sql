@@ -21,9 +21,13 @@ do $$ begin
 		raise exception '5g-1b (20260930431000) is already applied'; end if;
 end $$;
 
--- 1. Each recorded stop, by the start it ended, with the attachments its record ended. Internal.
+-- 1. Each recorded stop, by the start it ended, with the attachments its record ended. Internal. The machine key is
+-- checked at commit: by then the record holds the machine's sessions, so the check's KEY SHARE on the machine comes
+-- after them, in the coding order a plan and an admission keep (session, then machine FOR UPDATE). Checked at the
+-- insert, it would come before them, and a record waiting for a planning turn's session while that turn waits for the
+-- machine would deadlock. Removing the machine still removes its stops at once.
 create table public.qorpera_coding_machine_outside_stops (
-	machine_id uuid not null references public.qorpera_coding_machines(id) on delete cascade,
+	machine_id uuid not null references public.qorpera_coding_machines(id) on delete cascade deferrable initially deferred,
 	start_operation_id uuid not null,
 	detached jsonb not null default '[]'::jsonb check (jsonb_typeof(detached) = 'array'),
 	recorded_at timestamptz not null default clock_timestamp(),
@@ -57,9 +61,11 @@ $$;
 -- session attached to it is detached, each with the commands last seen running there, and each gets one MACHINE_STOPPED
 -- event, commands or not. The guest kept nothing of the sessions across the stop, so there is nothing for the executor
 -- to take off first. The stop's own row is taken first: a second record of the same stop (at once, waiting for the
--- first, or long after) answers what the first did and touches no session. The machine is read without a lock and only
--- its sessions are locked after that row, which no other call takes, so no coding call's lock order changes. Answers the
--- sessions the stop detached, with the attachment each had.
+-- first, or long after) answers what the first did and touches no session. Locks: that row, which no other call takes;
+-- then the sessions, in worker order as the keeper takes them; the machine only at commit, the row's deferred key check
+-- (KEY SHARE). The machine is read without a lock. So a record never holds the machine while it waits for a session, and
+-- a plan or an admission that holds its session and waits for the machine FOR UPDATE finishes first (test 522). Answers
+-- the sessions the stop detached, with the attachment each had.
 create function public.qorpera_record_coding_machine_stopped(p_machine_id uuid, p_start_operation_id uuid, p_owner text,
 	p_binding_text text, p_machine_id_sha256 text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
