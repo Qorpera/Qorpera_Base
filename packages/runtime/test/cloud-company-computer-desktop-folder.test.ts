@@ -686,7 +686,10 @@ describe("a drain's and a capture's boundary", () => {
 
 	it("asks nothing before a capture of a desktop without `/company`, and lets one go once its reads are released", async () => {
 		const f = await mounted();
-		await expect(capture(f, undefined)).resolves.toBeUndefined();
+		// Not through `capture`: an explicit undefined would take its default epoch.
+		await expect(
+			f.folders.capture(binding.screenId, undefined, new AbortController().signal, performance.now() + 15000),
+		).resolves.toBeUndefined();
 		expect(f.ops()).toEqual(["mount"]);
 		f.answer(
 			"boundary",
