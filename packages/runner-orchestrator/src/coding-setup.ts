@@ -88,7 +88,12 @@ export interface CodingSetup {
 	/** tmux windows, each with its terminals. */
 	readonly terminals: readonly (readonly CodingSetupTerminal[])[];
 	readonly ports: readonly { readonly port: number; readonly name: string | null }[];
-	readonly env: Readonly<Record<string, string>>;
+	/** Set on the machine for every process (devcontainer `containerEnv`). */
+	readonly containerEnv: Readonly<Record<string, string>>;
+	/** Set on top of `containerEnv` for the session's commands and terminals (devcontainer `remoteEnv`). A value may
+	 * refer to `${containerEnv:…}`, so the two scopes stay apart; null unsets a variable the base or `containerEnv`
+	 * sets. */
+	readonly remoteEnv: Readonly<Record<string, string | null>>;
 	/** Other repositories added beside the session's worktree, as GitHub `<owner>/<name>` in lower case (5a's
 	 * `repository`). The grant decides at attach which of them the session gets. */
 	readonly repositoryDependencies: readonly string[];
@@ -150,7 +155,8 @@ function draft(format: CodingSetupFormat | null): Draft {
 		start: [],
 		terminals: [],
 		ports: [],
-		env: {},
+		containerEnv: {},
+		remoteEnv: {},
 		repositoryDependencies: [],
 		features: {},
 		featureInstallOrder: [],
@@ -665,7 +671,7 @@ const START_KEYS = ["postStartCommand", "postAttachCommand"] as const;
 
 /** devcontainer.json (the containers.dev reference): onCreateCommand, updateContentCommand and postCreateCommand
  * install, postStartCommand and postAttachCommand start, forwardPorts gives the ports, containerEnv and remoteEnv the
- * environment, remoteUser (else containerUser) the user. Paths are relative to `.devcontainer`. Variables such as
+ * environment's two scopes, remoteUser (else containerUser) the user. Paths are relative to `.devcontainer`. Variables such as
  * `${localEnv:…}` stay as written: the devcontainer CLI fills them in the builder VM (5h-4). */
 function devcontainerSetup(root: JsonObject, problems: Problems): Mapped {
 	const setup = draft("devcontainer");
@@ -715,7 +721,8 @@ function devcontainerSetup(root: JsonObject, problems: Problems): Mapped {
 		setup.ports = ports.list;
 	}
 
-	const env = new Map<string, string>();
+	const containerEnv = new Map<string, string>();
+	const remoteEnv = new Map<string, string | null>();
 	for (const key of ["containerEnv", "remoteEnv"]) {
 		const value = field(key);
 		const variables = value === undefined ? null : objectOf(value, `/${key}`, problems);
@@ -727,14 +734,16 @@ function devcontainerSetup(root: JsonObject, problems: Problems): Mapped {
 					"INVALID_VALUE",
 					"Not a variable name: letters, digits and _, not starting with a digit.",
 				);
-			// remoteEnv's null unsets a variable containerEnv set.
-			else if (entry === null && key === "remoteEnv") env.delete(variable);
+			// remoteEnv's null is kept: it unsets a variable the base or containerEnv sets.
+			else if (entry === null && key === "remoteEnv") remoteEnv.set(variable, null);
 			else if (typeof entry !== "string" || entry.includes("\0"))
 				problems.refuse(at, "WRONG_TYPE", "Must be a string without a NUL character.");
-			else env.set(variable, entry);
+			else if (key === "remoteEnv") remoteEnv.set(variable, entry);
+			else containerEnv.set(variable, entry);
 		}
 	}
-	setup.env = Object.fromEntries(env);
+	setup.containerEnv = Object.fromEntries(containerEnv);
+	setup.remoteEnv = Object.fromEntries(remoteEnv);
 
 	const features = field("features");
 	if (features !== undefined) {

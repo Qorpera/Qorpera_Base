@@ -50,7 +50,8 @@ const EMPTY = {
 	start: [],
 	terminals: [],
 	ports: [],
-	env: {},
+	containerEnv: {},
+	remoteEnv: {},
 	repositoryDependencies: [],
 	features: {},
 	featureInstallOrder: [],
@@ -462,7 +463,8 @@ describe("devcontainer.json", () => {
 				{ port: 3000, name: null },
 				{ port: 9229, name: null },
 			],
-			env: { NODE_ENV: "development", EXTRA: variable },
+			containerEnv: { NODE_ENV: "development", DROP: "x" },
+			remoteEnv: { DROP: null, EXTRA: variable },
 			features: {
 				"ghcr.io/devcontainers/features/node:1": { version: "22" },
 				"ghcr.io/devcontainers/features/git:1": "latest",
@@ -566,6 +568,28 @@ describe("the setup digest", () => {
 		expect(second.digest).not.toBe(first.digest);
 	});
 
+	it("keeps devcontainer's two environment scopes and remoteEnv's unsets apart", async () => {
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: a devcontainer variable, which stays as written.
+		const extended = "${containerEnv:PATH}:/extra";
+		const withPath = (path: string) =>
+			devcontainer(
+				JSON.stringify({ image: "node:22", containerEnv: { PATH: path }, remoteEnv: { PATH: extended } }),
+			);
+		const tools = await withPath("/tools");
+		expect(tools.setup.containerEnv).toEqual({ PATH: "/tools" });
+		expect(tools.setup.remoteEnv).toEqual({ PATH: extended });
+		expect((await withPath("/other")).digest).not.toBe(tools.digest);
+		const container = await devcontainer('{"image":"node:22","containerEnv":{"PATH":"/tools"}}');
+		const remote = await devcontainer('{"image":"node:22","remoteEnv":{"PATH":"/tools"}}');
+		expect(remote.digest).not.toBe(container.digest);
+
+		const unset = await devcontainer('{"image":"node:22","remoteEnv":{"NODE_VERSION":null}}');
+		const omitted = await devcontainer('{"image":"node:22"}');
+		expect(unset.refused).toBe(false);
+		expect(unset.setup.remoteEnv).toEqual({ NODE_VERSION: null });
+		expect(unset.digest).not.toBe(omitted.digest);
+	});
+
 	it("refuses a named Dockerfile that is missing, not a file or over 1 MiB", async () => {
 		const text = '{"build":{"dockerfile":"Dockerfile"}}';
 		const cases: [Tree, string][] = [
@@ -589,10 +613,10 @@ describe("the setup digest", () => {
 		});
 		const canonical =
 			'{"base":{"args":{},"contents":null,"context":".cursor","dockerfile":".cursor/Dockerfile","kind":"dockerfile",' +
-			'"target":null},"chromeExecutablePath":null,"enableTesting":true,"env":{},"featureInstallOrder":[],"features":{},' +
-			'"format":"cursor","initialize":[],"install":[{"commands":[{"name":null,"run":{"shell":"npm ci"}}],"from":"install"}],' +
-			'"mcp":{"allowlist":[],"disableAll":false},"name":null,"ports":[],"repositoryDependencies":[],"start":[],' +
-			'"terminals":[],"user":null}';
+			'"target":null},"chromeExecutablePath":null,"containerEnv":{},"enableTesting":true,"featureInstallOrder":[],' +
+			'"features":{},"format":"cursor","initialize":[],"install":[{"commands":[{"name":null,"run":{"shell":"npm ci"}}],' +
+			'"from":"install"}],"mcp":{"allowlist":[],"disableAll":false},"name":null,"ports":[],"remoteEnv":{},' +
+			'"repositoryDependencies":[],"start":[],"terminals":[],"user":null}';
 		const frame = (text: string) => {
 			const bytes = Buffer.from(text, "utf8");
 			const length = Buffer.alloc(8);
