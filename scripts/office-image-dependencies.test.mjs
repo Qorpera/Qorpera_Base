@@ -97,3 +97,12 @@ test("the candidate builder copies every confinement key of the office unit and 
 	assert.match(source, /fail "nested VM unexpectedly has a NIC"/);
 	assert.match(source, /\[\[ \$\(hostname\) == qorpera-testvm-node01 \]\]/);
 });
+
+test("the candidate carries the pinned folder program and leaves the folder's units stopped", () => {
+	const source = readFileSync(join(repositoryRoot, "scripts/build-office-image-candidate.sh"), "utf-8");
+	assert.match(source, /node scripts\/build-folder-program\.mjs --out "\$work\/qorpera-folder"/);
+	assert.match(source, /package-company-computer\.mjs --out "\$push\/package" --folder-program "\$work\/qorpera-folder"/);
+	for (const unit of ["helper.service", "helper.socket", "mount@.service"])
+		assert.match(source, new RegExp(`qorpera-office-folder-${unit.replace(".", "\\.")} static`));
+	assert.match(source, /sha256sum \/opt\/qorpera-folder\/qorpera-folder/);
+});
