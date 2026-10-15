@@ -1,9 +1,8 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
+import { isUuid, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import type { LxdCodeHostClient, LxdCreateInstanceRequest, LxdInstanceRecord, LxdProjectRecord } from "./lxd-client.ts";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const SHA = /^[0-9a-f]{64}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const GiB = 1024 ** 3;
 const STOPPED = 102,
@@ -18,7 +17,7 @@ export const CODE_HOST_INSTANCE = "code-host";
 export const CODE_HOST_PROJECT = /^qorpera-codehost-([0-9a-f]{32})$/;
 
 export function codeHostProject(companyId: string): string {
-	if (typeof companyId !== "string" || !UUID.test(companyId)) throw new Error("INVALID_CODE_HOST_COMPANY");
+	if (!isUuid(companyId)) throw new Error("INVALID_CODE_HOST_COMPANY");
 	return `qorpera-codehost-${companyId.replaceAll("-", "")}`;
 }
 
@@ -27,7 +26,7 @@ export function codeHostCompany(project: string): string | undefined {
 	const hex = CODE_HOST_PROJECT.exec(project)?.[1];
 	if (!hex) return undefined;
 	const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-	return UUID.test(id) ? id : undefined;
+	return isUuid(id) ? id : undefined;
 }
 
 /** A node's code hosts: each made from this image with these limits, at most `running` of them started at once.
@@ -60,7 +59,7 @@ export function parseCodeHostPolicy(value: unknown): Readonly<CodeHostPolicy> {
 		Array.isArray(input) ||
 		Object.keys(input).sort().join() !== [...CODE_HOST_POLICY_KEYS].sort().join() ||
 		typeof input.imageFingerprint !== "string" ||
-		!SHA.test(input.imageFingerprint) ||
+		!SHA256_HEX_PATTERN.test(input.imageFingerprint) ||
 		typeof input.storagePool !== "string" ||
 		!NAME.test(input.storagePool) ||
 		!whole(input.cpus, 1, 64) ||
