@@ -902,11 +902,12 @@ shows it in the notices. An area's `supervisor` is now offered like any other cl
 454). While a row's consent is live, rule 9 refuses a save that adds an agent to its `agents` unless the consent's
 member makes it; removing one stays free. Anyone else who may write the rows offers a hired agent to the supervisor
 with `qorpera_offer_interface_agent` (`supabase/CLIENT-CONTRACT.md`, "Supervision consent"). It is an offer like a
-cell's (§5), kept with its agent and its consent, at most one open per row and agent. The supervisor's save that puts
-the agent in the row accepts it, before that save's consent ends are settled; the offers' calls decline and withdraw
-it; it lapses when the consent ends. A cell's settle leaves agents' offers alone. The web client reads them with the
-other offers and doesn't draw them yet. Not built yet: the board's Consent, Withdraw and agent offers; agents' own
-offers and `table_write`'s claims (a row write still refuses a claim); work alone; and clearing a leaver's cells.
+cell's (§5), kept with its agent and its consent, at most one open per row and agent. The supervisor's save of the
+rows that puts the agent in the row accepts it, before that save's consent ends are settled (a definition saved alone
+accepts none, even when a new key names another row that holds the agent); the offers' calls decline and withdraw it;
+it lapses when the consent ends. A cell's settle leaves agents' offers alone. The web client reads them with the other
+offers and doesn't draw them yet. Not built yet: the board's Consent, Withdraw and agent offers; agents' own offers and
+`table_write`'s claims (a row write still refuses a claim); work alone; and clearing a leaver's cells.
 
 **Built: I9c, the web** (`packages/web/src/cloud/interface-offers.ts`, `app/interface-offers.ts`,
 `app/interface-claims.ts`, `app/views/interface.ts`). The client reads the company's open offers when it opens, after

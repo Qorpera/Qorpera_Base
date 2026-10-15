@@ -203,19 +203,21 @@ select pg_temp.i9b_agents_replace('public.qorpera_interface_offer_json(public.qo
 	$new$		'state', p_offer.state, 'agent', p_offer.agent_id /* 20260930372000 (I9b) */,$new$);
 
 -- After a save of the areas, before the consents it ends: an agent offered under a consent that is still live is
--- accepted once its row holds the agent. Only the consent's member adds it there (rule 9), so the save is theirs.
+-- accepted when the consent's member saves the rows and its row holds the agent. Only they add it there (rule 9); a
+-- definition saved alone checks no rows, and a new key can name another row that holds the agent, so no other save
+-- accepts.
 select pg_temp.i9b_agents_replace(
 	'public.qorpera_interface_supervision_settle(uuid,uuid,uuid,text,uuid,boolean)'::regprocedure,
 	$old$	perform 1 from public.qorpera_interface_supervisions s
 	where s.environment_id = p_environment_id and s.table_id = v_table and s.state = 'live' order by s.id for update;$old$,
 	$new$	perform 1 from public.qorpera_interface_supervisions s
 	where s.environment_id = p_environment_id and s.table_id = v_table and s.state = 'live' order by s.id for update;
-	-- 20260930372000 (I9b): the agents offered to a consent's member that its row now holds.
+	-- 20260930372000 (I9b): the agents offered to a consent's member that its row holds after their save of the rows.
 	update public.qorpera_interface_offers o set state = 'accepted', closed_at = clock_timestamp(), row_key = null,
 		column_name = null
 	from public.qorpera_interface_supervisions s
-	where o.environment_id = p_environment_id and o.table_id = v_table and o.state = 'open' and o.agent_id is not null
-		and s.id = o.supervision_id and s.state = 'live'
+	where v_member and o.environment_id = p_environment_id and o.table_id = v_table and o.state = 'open'
+		and o.agent_id is not null and s.id = o.supervision_id and s.state = 'live' and s.user_id = v_by
 		and exists (select 1 from jsonb_array_elements(v_typed) t
 			where t.value -> 'key' = s.row_key and jsonb_typeof(t.value -> 'values' -> 'agents') = 'array'
 				and (t.value -> 'values' -> 'agents') ? o.agent_id::text);$new$);

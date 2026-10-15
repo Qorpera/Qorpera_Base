@@ -254,9 +254,11 @@ begin
 end $$;
 
 -- 6. An open offer lapses when its consent ends. Withdrawn: until member 2 consents again nobody supervises Sales, and
--- anyone adds its agents. Released: member 2 clears the cell. Gone: member 2 renames the area.
+-- anyone adds its agents. Released: member 2 clears the cell. Gone: member 2 renames the area. And a definition saved
+-- alone accepts no offer, though a new key makes the row keyed Sales one that holds the agent.
 do $$
-declare r jsonb; v_o uuid; v_id uuid := pg_temp.i9b_live('["Sales"]');
+declare r jsonb; v_o uuid; v_id uuid := pg_temp.i9b_live('["Sales"]'); v_owner jsonb := pg_temp.member(1);
+	v_areas jsonb := pg_temp.tbl('86400000-0000-4000-8000-000000000012', 'areas');
 	c_m constant text := '63400000-0000-4000-8000-000000000002';
 	c_a1 constant text := '63400000-0000-4000-8000-0000000000a1'; c_a2 constant text := '63400000-0000-4000-8000-0000000000a2';
 begin
@@ -294,6 +296,25 @@ begin
 		array[array['Sales',c_m,c_m,c_a2,'yes'], array['Ops','','','','no']])), 1, 'saved');
 	if pg_temp.i9b_live('["Sales"]') is null or exists (select 1 from public.qorpera_interface_offers o where o.state = 'open') then
 		raise exception 'Sales back: %', (select jsonb_agg(to_jsonb(o)) from public.qorpera_interface_offers o where o.state = 'open'); end if;
+
+	-- Member 4 gives the areas an `about` that names each the other way round and adds A to Ops (nobody's), and A is
+	-- offered to Sales. The owner keys the areas by `about`: the row keyed Sales is Ops's, with A and no supervisor. No
+	-- save of member 2's added A, so the consent ends released and A's offer lapses. The key back, member 2 consents again.
+	v_id := pg_temp.i9b_live('["Sales"]');
+	perform pg_temp.expect(pg_temp.save_rows(pg_temp.member(4), 'i9b-agents-0407', 'tables/areas/rows.csv',
+		pg_temp.rows(array['area','about','owner','supervisor','agents','shared'],
+			array[array['Sales','Ops',c_m,c_m,c_a2,'yes'], array['Ops','Sales','','',c_a1,'no']])), 1, 'saved');
+	v_o := pg_temp.i9b_made(pg_temp.i9b_offer(4, pg_temp.i9b_ask('Sales', c_a1)));
+	perform pg_temp.expect(pg_temp.commit(v_owner, 'i9b-agents-0408', jsonb_build_array(
+		pg_temp.p16_write(v_owner, 'tables/areas/table.toml',
+			jsonb_set(v_areas, '{columns,1,optional}', 'false') || '{"key":["about"]}'))), 1, 'saved');
+	if pg_temp.i9b_consent_state(v_id) is distinct from 'released' or pg_temp.i9b_state(v_o) is distinct from 'lapsed' then
+		raise exception 'A new key: %, %', pg_temp.i9b_consent_state(v_id), pg_temp.i9b_state(v_o); end if;
+	perform pg_temp.expect(pg_temp.commit(v_owner, 'i9b-agents-0409', jsonb_build_array(
+		pg_temp.p16_write(v_owner, 'tables/areas/table.toml', v_areas))), 1, 'saved');
+	r := pg_temp.i9b_call(pg_temp.i9b_user(2), format('select public.qorpera_consent_interface_supervision(%L, %L::jsonb)',
+		'63400000-0000-4000-8000-000000000020', '{"key":["Sales"]}'));
+	if r ->> 'created' is distinct from 'true' then raise exception 'Consented again after the key: %', r; end if;
 end $$;
 
 -- 7. A paused company: no offering; the supervisor still declines and a maker still withdraws. Then the pause is lifted.
