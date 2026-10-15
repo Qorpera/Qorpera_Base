@@ -33,6 +33,7 @@ import {
 	type CompanyComputerScreenshotPublisher,
 	PersistentCompanyComputerBrowser,
 } from "./cloud-company-computer-guest.ts";
+import { CompanyComputerHookCaptureBoxes } from "./cloud-company-computer-hook-capture.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import {
 	CompanyComputerActionFailedError,
@@ -751,6 +752,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		let automation: CompanyComputerGuestAutomation | undefined;
 		// One publisher for the session's whole life: a capture it keeps for the perform answer outlives a new automation.
 		const screenshots = this.#options.screenshots(input.run);
+		// So are the boxes its hook captures sealed (E3c-3), each kept for its perform answer only.
+		const captures = new CompanyComputerHookCaptureBoxes();
 		const signal = AbortSignal.any([stop.signal, this.#stop.signal, input.run.signal]);
 		const admitted = async (exact: CompanyComputerScreenBinding, checked: AbortSignal): Promise<void> => {
 			assertCompanyComputerScreenBinding(exact, binding);
@@ -857,6 +860,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						browser = undefined;
 						driving = undefined;
 						automation = undefined;
+						captures.clear();
 						// Settled failures whose drain got no answer mid-run get one more try
 						// before the lease is released, so an outage does not drain the desktop.
 						await cloudToolRequest(
@@ -960,6 +964,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						fillKey: this.#options.fillKey,
 						filled: this.#filledOn(binding.screenOrdinal),
 						siteStops: this.#siteStops,
+						captureTarget: (target, checked) => input.effects.hookCaptureTarget(target, checked),
+						captures,
 					});
 					return automation.perform(action, currentLease, { ...context, signal: checked }, operation);
 				},
@@ -973,6 +979,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			close: session.close,
 			ended: () => ended,
 			screenshot: (receiptId) => screenshots.takeInline?.(receiptId),
+			capture: (receiptId) => captures.take(receiptId),
 			endpoint: {
 				capabilities: endpoint.capabilities,
 				resourceTarget: endpoint.resourceTarget,

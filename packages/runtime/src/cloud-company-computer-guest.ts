@@ -23,6 +23,13 @@ import {
 	fillCompanyAccountBox,
 } from "./cloud-company-computer-account-fill.ts";
 import { CompanyComputerBrowserNetworkPausedError } from "./cloud-company-computer-browser-control.ts";
+import type { CompanyComputerHookCaptureTarget } from "./cloud-company-computer-effect-control.ts";
+import type { CompanyComputerGuestEffectInput } from "./cloud-company-computer-endpoint.ts";
+import {
+	type CompanyComputerHookCaptureBoxes,
+	CompanyHookCaptureRefusedError,
+	captureCompanyHookSecret,
+} from "./cloud-company-computer-hook-capture.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import { CompanyComputerActionFailedError, companyComputerActionCheck } from "./cloud-company-computer-leases.ts";
 import {
@@ -40,6 +47,7 @@ import {
 	readCompanyComputerSiteStop,
 } from "./cloud-company-computer-site-stops.ts";
 import { type CompanyComputerAction, parseCompanyComputerAction } from "./cloud-company-computer-tools.ts";
+import { sealEventHookCapture } from "./cloud-event-hook-capture-box.ts";
 
 export { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 
@@ -399,6 +407,18 @@ function companyComputerSiteRefusal(action: string, tabId: string | undefined): 
 	};
 }
 
+/** A tab showing a secret nothing can hide again goes, with the secret in it. The agent's next action is told its tab
+ * closed (never moved to another tab), and the window keeps a tab, as at start. The answer is why it could not, if so. */
+async function closeShowingTab(context: BrowserContext, page: Page): Promise<unknown> {
+	try {
+		if (context.pages().every((other) => other === page || other.isClosed())) await context.newPage();
+		await page.close();
+		return undefined;
+	} catch (error) {
+		return error;
+	}
+}
+
 /** Where a long snapshot is cut, at or before `limit`: after the last whitespace, or the last line's end when a hidden
  * value holds whitespace itself; 0 when there is none. */
 export function companyComputerSnapshotCut(text: string, limit: number, linesOnly: boolean): number {
@@ -423,6 +443,13 @@ export class CompanyComputerGuestAutomation {
 	/** Secrets the vault typed on this screen, hidden wherever the agent would see them (shared across runs). */
 	readonly #filled: CompanyComputerFilledValues;
 	readonly #siteStops: CompanyComputerSiteStops;
+	/** Where a vault_capture's box goes (E3c-3), as this office reads it from the database for that one call. */
+	readonly #captureTarget?: (
+		input: CompanyComputerGuestEffectInput,
+		signal: AbortSignal,
+	) => Promise<CompanyComputerHookCaptureTarget>;
+	/** The boxes vault_captures sealed, each kept for its call's answer only (the session's, outliving this automation). */
+	readonly #captures?: CompanyComputerHookCaptureBoxes;
 	#tabLease?: string;
 	#page?: Page;
 
@@ -440,6 +467,11 @@ export class CompanyComputerGuestAutomation {
 		filled?: CompanyComputerFilledValues;
 		/** The sites this computer stopped on (A1-4c), shared by its screens. */
 		siteStops?: CompanyComputerSiteStops;
+		captureTarget?: (
+			input: CompanyComputerGuestEffectInput,
+			signal: AbortSignal,
+		) => Promise<CompanyComputerHookCaptureTarget>;
+		captures?: CompanyComputerHookCaptureBoxes;
 	}) {
 		assertCompanyComputerScreenBinding(options.binding, options.binding);
 		assertCompanyComputerGuestLayout(options.layout);
@@ -455,6 +487,8 @@ export class CompanyComputerGuestAutomation {
 		this.#fillKey = options.fillKey;
 		this.#filled = options.filled ?? new CompanyComputerFilledValues();
 		this.#siteStops = options.siteStops ?? new CompanyComputerSiteStops();
+		this.#captureTarget = options.captureTarget;
+		this.#captures = options.captures;
 	}
 
 	/**
@@ -744,7 +778,7 @@ export class CompanyComputerGuestAutomation {
 			// another site stays open. The refusal is the call's answer, so the agent reads why and can go on to mark
 			// the account (an error would reach it only as an unconfirmed outcome).
 			const actedOn = page.url();
-			if (["navigate", "click", "fill", "press", "vault_fill"].includes(action.action)) {
+			if (["navigate", "click", "fill", "press", "vault_fill", "vault_capture"].includes(action.action)) {
 				const showing = await readCompanyComputerSiteStop(page);
 				if (showing) this.#siteStops.add(actedOn, showing);
 				if (
@@ -754,6 +788,8 @@ export class CompanyComputerGuestAutomation {
 				)
 					return companyComputerSiteRefusal(action.action, this.#tabIds.get(page));
 			}
+			// A vault_capture's box, held for the call's answer only once the page shows no check (a stop answer has none).
+			let captured: Readonly<Record<string, string>> | undefined;
 			if (action.action === "navigate")
 				await this.#pageCall(() => page.goto(action.url, { waitUntil: "domcontentloaded", timeout: 10_000 }));
 			else if (action.action === "click" || action.action === "fill") {
@@ -819,22 +855,61 @@ export class CompanyComputerGuestAutomation {
 				try {
 					await fillCompanyAccountBox(page, box, opened);
 				} catch (error) {
-					// Typed where nothing can empty it: the tab goes, with the value in it. The agent's next action is told
-					// its tab closed (never moved to another tab), and the window keeps a tab, as at start.
-					let cause: unknown;
-					if (error instanceof CompanyAccountFillRefusedError && error.reason === "ACCOUNT_FILL_LOST") {
-						const context = this.#browser.context;
-						try {
-							if (context.pages().every((other) => other === page || other.isClosed())) await context.newPage();
-							await page.close();
-						} catch (closeError) {
-							cause = closeError;
-						}
-					}
+					// Typed where nothing can empty it: the tab goes, with the value in it.
+					const cause =
+						error instanceof CompanyAccountFillRefusedError && error.reason === "ACCOUNT_FILL_LOST"
+							? await closeShowingTab(this.#browser.context, page)
+							: undefined;
 					// The reason, never the value: a page that is not the account's, or a box of the wrong kind.
 					throw new CompanyComputerActionFailedError(
 						new Error(
 							error instanceof CompanyAccountFillRefusedError ? error.reason : "ACCOUNT_FILL_FAILED",
+							cause === undefined ? undefined : { cause },
+						),
+					);
+				}
+			} else if (action.action === "vault_capture") {
+				// A Stripe hook's signing secret, read off its page into the vault (E3c-3). Where the box goes this office
+				// reads from the database itself (the native host could name a key of its own); the one value the named
+				// control shows is read while the page is covered, and sealed to it. The agent, the screen and the native
+				// host never see the value; the box leaves only in this call's answer, to the vault.
+				const read = this.#captureTarget;
+				if (!read || !this.#captures) throw new CompanyComputerActionNotStartedError("VAULT_CAPTURE_UNAVAILABLE");
+				const receipt = { receiptId: effect.receiptId, idempotencyKey: effect.idempotencyKey };
+				const target = await read({ operation, identity: effect.identity, lease, receipt }, signal).catch(
+					(error: unknown) => {
+						throw new CompanyComputerActionNotStartedError("VAULT_CAPTURE_UNAVAILABLE", { cause: error });
+					},
+				);
+				const control = page.getByRole(action.role, { name: action.name, exact: true });
+				if ((await this.#pageCall(() => control.count())) !== 1)
+					throw new CompanyComputerActionNotStartedError("BROWSER_TARGET_AMBIGUOUS");
+				await companyComputerActionCheck(this.#browser.assertActive(signal));
+				signal.throwIfAborted();
+				const field = action.field;
+				try {
+					// Every value the page shows is hidden from then on, wherever the agent would see it.
+					const value = await captureCompanyHookSecret(page, control, target, (shown) =>
+						this.#filled.add(shown, field),
+					);
+					captured = sealEventHookCapture({ value, site: target.site }, target.capturePublicKey, {
+						companyId: target.companyId,
+						companyComputerId: target.companyComputerId,
+						computerGeneration: target.computerGeneration,
+						receiptId: target.receiptId,
+						hookId: target.hookId,
+						field: target.field,
+					});
+				} catch (error) {
+					// Shown where nothing can mask it again: the tab goes, with the secret in it.
+					const cause =
+						error instanceof CompanyHookCaptureRefusedError && error.reason === "VAULT_CAPTURE_NOT_HIDDEN"
+							? await closeShowingTab(this.#browser.context, page)
+							: undefined;
+					// The reason, never the value: another error's message may quote the page.
+					throw new CompanyComputerActionFailedError(
+						new Error(
+							error instanceof CompanyHookCaptureRefusedError ? error.reason : "VAULT_CAPTURE_FAILED",
 							cause === undefined ? undefined : { cause },
 						),
 					);
@@ -918,6 +993,7 @@ export class CompanyComputerGuestAutomation {
 					},
 				};
 			}
+			if (captured) this.#captures?.hold(effect.receiptId, captured);
 			return { kind: "json", value: { action: action.action, tabId: this.#tabIds.get(page)!, completed: true } };
 		}
 		if (action.kind === "shell" && action.action !== undefined) {

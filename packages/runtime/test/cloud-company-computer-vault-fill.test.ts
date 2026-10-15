@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { CompanyComputerFillKey, sealCompanyAccountFill } from "@qorpera/runtime/cloud-company-account-fill-box";
 import {
 	COMPANY_ACCOUNT_FILLED_ATTRIBUTE,
@@ -10,10 +10,16 @@ import {
 	companyComputerSnapshotCut,
 } from "@qorpera/runtime/cloud-company-computer-guest";
 import {
+	CompanyComputerHookCaptureBoxes,
+	CompanyHookCaptureRefusedError,
+	captureCompanyHookSecret,
+} from "@qorpera/runtime/cloud-company-computer-hook-capture";
+import {
 	COMPANY_COMPUTER_SITE_SAMPLE,
 	CompanyComputerSiteStops,
 } from "@qorpera/runtime/cloud-company-computer-site-stops";
 import type { CompanyComputerAction } from "@qorpera/runtime/cloud-company-computer-tools";
+import { openEventHookCapture } from "@qorpera/runtime/cloud-event-hook-capture-box";
 import type { BrowserContext, Page } from "playwright-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -23,6 +29,13 @@ import {
 	computerLease,
 	computerOperation,
 } from "./fixtures/company-computer.ts";
+
+// The page side of a vault_capture has its own tests (cloud-company-computer-hook-capture.test.ts); here it is the
+// office's part around it.
+vi.mock("../src/cloud-company-computer-hook-capture.ts", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../src/cloud-company-computer-hook-capture.ts")>()),
+	captureCompanyHookSecret: vi.fn(),
+}));
 
 const account = computerId(60);
 /** With the generator's symbols, which a page address percent-encodes. */
@@ -69,6 +82,9 @@ function office(
 		lose?: boolean;
 		/** Meanwhile the page opens a second tab. */
 		popup?: boolean;
+		/** Where a vault_capture's box goes, and the boxes held for answers (E3c-3). */
+		captureTarget?: ConstructorParameters<typeof CompanyComputerGuestAutomation>[0]["captureTarget"];
+		captures?: CompanyComputerHookCaptureBoxes;
 	} = {},
 ) {
 	const shown = {
@@ -279,6 +295,8 @@ function office(
 		...(key ? { fillKey: key } : {}),
 		...(options.filled ? { filled: options.filled } : {}),
 		...(options.siteStops ? { siteStops: options.siteStops } : {}),
+		...(options.captureTarget ? { captureTarget: options.captureTarget } : {}),
+		...(options.captures ? { captures: options.captures } : {}),
 	});
 	return {
 		automation,
@@ -1074,5 +1092,179 @@ describe("text shaped like a hook's signing secret (E3c-3)", () => {
 		f.shown.text = "Signing secret whsec_•••••••• Reveal";
 		await expect(screenshot(f, "browser")).resolves.toMatchObject({ kind: "json" });
 		expect(f.page.screenshot).toHaveBeenCalledOnce();
+	});
+});
+
+describe("vault_capture of a Stripe hook's signing secret on the Company Computer (E3c-3)", () => {
+	const captureSecret = vi.mocked(captureCompanyHookSecret);
+	afterEach(() => {
+		captureSecret.mockReset();
+	});
+	const capture: CompanyComputerAction = {
+		kind: "browser",
+		action: "vault_capture",
+		role: "button",
+		name: "Reveal",
+		hook,
+		field: "signing_secret",
+	};
+	const address = "https://dashboard.stripe.com/webhooks/we_1";
+	/** The vault's capture key for the hook: the office has its public half only. */
+	function recipient() {
+		const pair = generateKeyPairSync("x25519");
+		const raw = pair.publicKey.export({ format: "der", type: "spki" }).subarray(12);
+		return { privateKey: pair.privateKey, publicKey: Buffer.from(raw).toString("base64url") };
+	}
+	const identity = () => {
+		const binding = computerBinding();
+		return {
+			companyId: binding.companyId,
+			companyComputerId: binding.companyComputerId,
+			computerGeneration: binding.computerGeneration,
+			receiptId: computerEffect().receiptId,
+			hookId: hook,
+			field: "signing_secret" as const,
+		};
+	};
+	/** An office that reads where the box goes from the database, as the guest's endpoint does. */
+	function capturing(key = recipient(), filled = new CompanyComputerFilledValues()) {
+		const captures = new CompanyComputerHookCaptureBoxes();
+		const captureTarget = vi.fn(async () => ({
+			...identity(),
+			address,
+			site: "dashboard.stripe.com",
+			capturePublicKey: key.publicKey,
+		}));
+		const f = office({ url: address, filled, captureTarget, captures });
+		return { ...f, vault: key, filled, captures, captureTarget };
+	}
+	const answer = async (f: ReturnType<typeof office>) =>
+		((await perform(f, capture)) as unknown as { value: Record<string, unknown> }).value;
+	const caught = (f: ReturnType<typeof office>) =>
+		perform(f, capture).then(
+			(content) => {
+				throw new Error(`answered ${JSON.stringify(content)}`);
+			},
+			(error: unknown) => error as Error,
+		);
+
+	it("clicks nothing on an office that cannot read where the box goes", async () => {
+		const captures = new CompanyComputerHookCaptureBoxes();
+		for (const f of [
+			office({ url: address }),
+			office({ url: address, captures }),
+			office({ url: address, captureTarget: vi.fn() }),
+		]) {
+			expect(await caught(f)).toMatchObject({
+				name: "CompanyComputerActionNotStartedError",
+				message: "VAULT_CAPTURE_UNAVAILABLE",
+			});
+			expect(f.page.getByRole).not.toHaveBeenCalled();
+		}
+		// The database refuses the call (no such hook, not this run's): its reason travels as the cause.
+		const f = capturing();
+		const refusal = new Error("OFFICE_HOOK_CAPTURE_INVALID");
+		f.captureTarget.mockRejectedValueOnce(refusal);
+		const error = await caught(f);
+		expect(error).toMatchObject({
+			name: "CompanyComputerActionNotStartedError",
+			message: "VAULT_CAPTURE_UNAVAILABLE",
+		});
+		expect(error.cause).toBe(refusal);
+		expect(f.page.getByRole).not.toHaveBeenCalled();
+		expect(captureSecret).not.toHaveBeenCalled();
+	});
+
+	it("clicks nothing when the control names no one element", async () => {
+		const f = capturing();
+		f.page.getByRole.mockReturnValueOnce({ count: async () => 2 } as never);
+		expect(await caught(f)).toMatchObject({
+			name: "CompanyComputerActionNotStartedError",
+			message: "BROWSER_TARGET_AMBIGUOUS",
+		});
+		expect(captureSecret).not.toHaveBeenCalled();
+	});
+
+	it("seals the value to the hook's capture key, and holds the box for this call's answer only", async () => {
+		const f = capturing();
+		captureSecret.mockImplementationOnce(async (_page, _control, _hook, seen) => {
+			seen(hookSecret);
+			return hookSecret;
+		});
+		expect(await answer(f)).toEqual({ action: "vault_capture", tabId: expect.anything(), completed: true });
+		expect(f.captureTarget).toHaveBeenCalledWith(
+			expect.objectContaining({
+				identity: computerEffect().identity,
+				receipt: { receiptId: computerEffect().receiptId, idempotencyKey: computerEffect().idempotencyKey },
+			}),
+			expect.any(AbortSignal),
+		);
+		expect(f.page.getByRole).toHaveBeenCalledWith("button", { name: "Reveal", exact: true });
+		expect(captureSecret).toHaveBeenCalledWith(
+			f.page,
+			expect.anything(),
+			expect.objectContaining({ address, site: "dashboard.stripe.com" }),
+			expect.any(Function),
+		);
+		// What the page showed stays hidden from the agent from now on.
+		expect(f.filled.current()).toEqual([hookSecret]);
+		const box = f.captures.take(computerEffect().receiptId);
+		expect(f.captures.take(computerEffect().receiptId)).toBeUndefined();
+		expect(JSON.stringify(box)).not.toContain(hookSecret);
+		await expect(
+			openEventHookCapture(f.vault.privateKey, f.vault.publicKey, box, identity(), async (got) => ({
+				...got,
+				value: got.value.toString("utf8"),
+			})),
+		).resolves.toMatchObject({ field: "signing_secret", value: hookSecret, site: "dashboard.stripe.com" });
+	});
+
+	it("closes the tab that still shows the value, and fails with the reason, never the page's words", async () => {
+		const f = capturing();
+		captureSecret.mockRejectedValueOnce(new CompanyHookCaptureRefusedError("VAULT_CAPTURE_NOT_HIDDEN"));
+		expect(await caught(f)).toMatchObject({
+			name: "CompanyComputerActionFailedError",
+			message: "VAULT_CAPTURE_NOT_HIDDEN",
+		});
+		// The only tab: a blank one opens first, so the window stays.
+		expect(f.context.newPage.mock.invocationCallOrder[0]).toBeLessThan(f.page.close.mock.invocationCallOrder[0]!);
+		expect(f.captures.take(computerEffect().receiptId)).toBeUndefined();
+		// Another refusal leaves the tab, the page masked again.
+		const wrong = capturing();
+		captureSecret.mockRejectedValueOnce(new CompanyHookCaptureRefusedError("VAULT_CAPTURE_WRONG_HOOK"));
+		expect(await caught(wrong)).toMatchObject({ message: "VAULT_CAPTURE_WRONG_HOOK" });
+		expect(wrong.page.close).not.toHaveBeenCalled();
+		// Any other error may quote the page: only its kind travels.
+		const other = capturing();
+		captureSecret.mockRejectedValueOnce(new Error(`Timeout waiting for ${hookSecret}`));
+		const error = await caught(other);
+		expect(error).toMatchObject({ name: "CompanyComputerActionFailedError", message: "VAULT_CAPTURE_FAILED" });
+		expect((error.cause as Error).cause).toBeUndefined();
+		// A key the box cannot be sealed to.
+		const unsealed = capturing({ ...recipient(), publicKey: "short" });
+		captureSecret.mockResolvedValueOnce(hookSecret);
+		expect(await caught(unsealed)).toMatchObject({ message: "VAULT_CAPTURE_FAILED" });
+		expect(unsealed.captures.take(computerEffect().receiptId)).toBeUndefined();
+		expect(unsealed.page.close).not.toHaveBeenCalled();
+	});
+
+	it("answers a check the click brought up with the stop and no box, and reads nothing on a stopped page", async () => {
+		const f = capturing();
+		captureSecret.mockImplementationOnce(async () => {
+			f.shown.title = "Just a moment…";
+			return hookSecret;
+		});
+		expect(await answer(f)).toMatchObject({
+			action: "vault_capture",
+			completed: true,
+			stop: "SITE_STOP_HUMAN_CHECK",
+		});
+		expect(f.captures.take(computerEffect().receiptId)).toBeUndefined();
+		// A page that already shows a check: refused before the database is asked.
+		const shown = capturing();
+		shown.shown.frames = ["https://www.google.com/recaptcha/api2/anchor?k=x&size=normal"];
+		expect(await answer(shown)).toMatchObject({ completed: false, refused: { code: "SITE_STOPPED" } });
+		expect(shown.captureTarget).not.toHaveBeenCalled();
+		expect(captureSecret).toHaveBeenCalledOnce();
 	});
 });
