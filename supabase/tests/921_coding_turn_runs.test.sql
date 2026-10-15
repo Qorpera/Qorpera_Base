@@ -215,7 +215,7 @@ begin
 	perform pg_temp.ct_log(v_run3, false);
 	v_key := 'agents/alice/memory/thread/runs/' || v_run3 || '/log/00000000.jsonl';
 	v_wide := '{"j":0,"tool":"coding_run_command","call":"call-921","args":"{\"command\":\"npm test\"}","args_bytes":22,'
-		'"args_hash":null,"result":null,"reads":[],"releases":[],"text":"","at":"2026-10-09T12:00:00Z"}' || E'\n';
+		'"args_hash":null,"result":null,"reads":[],"releases":[],"paths":[],"text":"","at":"2026-10-09T12:00:00Z"}' || E'\n';
 	v_narrow := format('{"j":0,"tool":"coding_run_command","call":"call-921","args_hash":"%s","narrow":true,"finished":false,'
 		'"releases":[],"at":"2026-10-09T12:00:00Z"}', repeat('c', 64)) || E'\n';
 	perform pg_temp.base_assert(public.qorpera_memory_step_narrow(c_env, (v_bind3 ->> 'jobId')::uuid, v_run3, c_paths)
