@@ -90,11 +90,11 @@ pub fn shared(rest: &str) -> bool {
 	!rest.is_empty() && !object(rest) && rest != "worktrees" && !rest.starts_with("worktrees/") && !session_local(rest)
 }
 
-/// The shared file a lock stands for (`rest` is below `repo.git/`): `X` for `X.lock`, where `X` is a ref (`refs/**`,
-/// `HEAD`), `packed-refs` or `shallow`. Its exclusive create takes the lease on `X`.
+/// The shared file a lock stands for (`rest` is below `repo.git/`): `X` for `X.lock`, where `X` is a ref (`refs/**`),
+/// `packed-refs` or `shallow`. Its exclusive create takes the lease on `X`. The core leases nothing else (5b).
 pub fn locked(rest: &str) -> Option<&str> {
 	let target = rest.strip_suffix(".lock")?;
-	let ok = matches!(target, "HEAD" | "packed-refs" | "shallow") || target.starts_with("refs/");
+	let ok = matches!(target, "packed-refs" | "shallow") || target.starts_with("refs/");
 	ok.then_some(target)
 }
 
@@ -160,7 +160,7 @@ mod tests {
 		assert!(!alternates("objects/info/packs"));
 		assert_eq!(locked("refs/heads/x.lock"), Some("refs/heads/x"));
 		assert_eq!(locked("packed-refs.lock"), Some("packed-refs"));
-		assert_eq!(locked("HEAD.lock"), Some("HEAD"));
+		assert_eq!(locked("HEAD.lock"), None);
 		assert_eq!(locked("worktrees/w/index.lock"), None);
 		assert_eq!(locked("config.lock"), None);
 		assert_eq!(locked("refs/heads/x"), None);

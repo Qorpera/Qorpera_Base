@@ -5,8 +5,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CoreAnswerError, SupabaseFolderCore } from "../src/folder-service/core.ts";
 import {
 	type GitUnit,
+	gitBatches,
+	gitFolders,
 	gitLockTarget,
 	gitPlace,
+	gitPublishedObject,
 	gitReflog,
 	gitRefused,
 	gitShared,
@@ -56,9 +59,9 @@ describe("git paths", () => {
 		expect(gitPlace("code/acme/app/worktrees/w1/src/a.ts")).toMatchObject({ worker: "w1", rest: "src/a.ts" });
 	});
 
-	it("takes leases on refs, HEAD, packed-refs and shallow only", () => {
+	it("takes leases on refs, packed-refs and shallow only", () => {
 		expect(gitLockTarget(`${R}/refs/heads/main.lock`)).toBe(`${R}/refs/heads/main`);
-		expect(gitLockTarget(`${R}/HEAD.lock`)).toBe(`${R}/HEAD`);
+		expect(gitLockTarget(`${R}/HEAD.lock`)).toBeNull();
 		expect(gitLockTarget(`${R}/packed-refs.lock`)).toBe(`${R}/packed-refs`);
 		expect(gitLockTarget(`${R}/shallow.lock`)).toBe(`${R}/shallow`);
 		expect(gitLockTarget(`${R}/config.lock`)).toBeNull();
@@ -116,6 +119,49 @@ describe("git paths", () => {
 		for (const rest of ["objects/ab/cdef", "objects/pack/pack-1.pack", "refs/heads/main", "worktrees/w1/index"])
 			expect(gitUnpublished(`${R}/${rest}`), rest).toBe(false);
 		expect(gitUnpublished("code/acme/app/worktrees/w1/yarn.lock")).toBe(false);
+	});
+
+	it("carries only git's objects in a lock's publish, as the core takes them", () => {
+		const sha1 = "0123456789abcdef0123456789abcdef01234567";
+		const sha256 = `${sha1}${"89abcdef".repeat(3)}`;
+		for (const rest of [
+			`objects/${sha1.slice(0, 2)}/${sha1.slice(2)}`,
+			`objects/${sha256.slice(0, 2)}/${sha256.slice(2)}`,
+			...["pack", "idx", "rev", "bitmap", "mtimes", "promisor"].map((kind) => `objects/pack/pack-${sha1}.${kind}`),
+			`objects/pack/pack-${sha256}.pack`,
+		])
+			expect(gitPublishedObject(`${R}/${rest}`), rest).toBe(true);
+		for (const rest of [
+			"objects/ab/cdef",
+			"objects/info/packs",
+			"objects/info/commit-graph",
+			"objects/info/commit-graphs/commit-graph-chain",
+			"objects/pack/multi-pack-index",
+			`objects/pack/pack-${sha1}.keep`,
+			`objects/pack/tmp_pack_${sha1}`,
+			`objects/incoming-Q1/pack/pack-${sha1}.pack`,
+			"refs/heads/main",
+		])
+			expect(gitPublishedObject(`${R}/${rest}`), rest).toBe(false);
+		expect(gitPublishedObject(`code/acme/app/worktrees/w1/objects/pack/pack-${sha1}.pack`)).toBe(false);
+	});
+
+	it("splits git's units into change sets the core takes, the folders made for them counted", () => {
+		const object = (i: number) => ({
+			path: `${R}/objects/${(i % 200).toString(16).padStart(2, "0")}/${i.toString(16).padStart(38, "0")}`,
+		});
+		expect(gitFolders(object(171).path)).toEqual([`${R}/objects`, `${R}/objects/ab`]);
+		expect(gitFolders(MAIN_LOG)).toEqual([`${R}/logs`, `${R}/logs/refs`, `${R}/logs/refs/heads`]);
+		expect(gitFolders(`${R}/packed-refs`)).toEqual([]);
+		const [ab, ab2, cd] = [object(171), object(371), object(205)];
+		const ref = { path: MAIN };
+		expect(gitBatches([ab, ab2, cd, ref], 5)).toEqual([[ab, ab2], [cd], [ref]]);
+		// 800 objects in 200 folders: the first 799 with `objects` and its 200 folders make 1000.
+		const units = Array.from({ length: 800 }, (_, i) => object(i));
+		const batches = gitBatches(units);
+		expect(batches.map((batch) => batch.length)).toEqual([799, 1]);
+		expect(batches.flat()).toEqual(units);
+		expect(gitBatches([])).toEqual([]);
 	});
 });
 
@@ -202,7 +248,7 @@ describe("the core's git leases", () => {
 		await expect(coreAnswering([7]).core.gitLeasesDrop(ENV, actor)).rejects.toBeInstanceOf(CoreAnswerError);
 	});
 
-	it("the stand-in core holds one lease per file and publishes all or nothing", async () => {
+	it("the stand-in core holds one lease per file and lands a ref only at the versions its lease found", async () => {
 		const core = new FakeCore();
 		core.openView("git-view", PASS);
 		core.openView("other-view", PASS);
@@ -210,6 +256,7 @@ describe("the core's git leases", () => {
 		const lease = await core.gitLeaseTake(ENV, actor, MAIN);
 		expect(lease).toMatchObject({ state: "held", versions: { file: null, reflog: null, packedRefs: null } });
 		expect(await core.gitLeaseTake(ENV, other, MAIN)).toMatchObject({ state: "busy" });
+		expect(await core.gitLeaseTake(ENV, actor, MAIN)).toEqual(lease);
 		core.gitRefusals.set(`${R}/refs/stash`, "git_stash");
 		expect(await core.gitLeaseTake(ENV, other, `${R}/refs/stash`)).toEqual({ state: "refused", reason: "git_stash" });
 		if (lease.state !== "held") throw new Error("not held");
@@ -220,14 +267,16 @@ describe("the core's git leases", () => {
 			mediaType: "text/plain",
 			executable: false,
 		};
+		// A stale ref: its objects land all the same.
 		const stale = await core.gitPublish(ENV, actor, lease.leaseId, "k1", [
+			{ op: "write", path: `${R}/objects/ab/cdef`, file: ref },
 			{ op: "write", path: MAIN, file: ref, expectedVersion: v(3) },
 		]);
 		expect(stale).toMatchObject({
 			published: false,
-			seq: null,
-			units: [{ outcome: "conflict", reason: "version_changed" }],
+			units: [{ outcome: "saved" }, { outcome: "conflict", reason: "version_changed" }],
 		});
+		expect(core.entries.get(`${R}/objects/ab/cdef`)?.kind).toBe("file");
 		expect(core.gitLeases.has(MAIN)).toBe(true);
 		const saved = await core.gitPublish(ENV, actor, lease.leaseId, "k2", [
 			{ op: "write", path: `${R}/objects/ab/cdef`, file: ref },
@@ -236,8 +285,19 @@ describe("the core's git leases", () => {
 		expect(saved).toMatchObject({ published: true, units: [{ outcome: "saved" }, { outcome: "saved" }] });
 		expect(core.entries.get(`${R}/refs/heads`)?.kind).toBe("folder");
 		expect(core.gitLeases.has(MAIN)).toBe(false);
+		// The lease ended: its release answers released, a publish under it is refused.
+		expect(await core.gitLeaseRelease(ENV, actor, lease.leaseId, null)).toBeNull();
+		await expect(
+			core.gitPublish(ENV, actor, lease.leaseId, "k3", [
+				{ op: "write", path: MAIN, file: ref, expectedVersion: null },
+			]),
+		).rejects.toMatchObject({ reason: "denied", said: "Folder git lease is unavailable" });
 		const again = await core.gitLeaseTake(ENV, other, MAIN);
 		expect(again).toMatchObject({ state: "held", versions: { file: core.entries.get(MAIN)?.version } });
+		if (again.state !== "held") throw new Error("not held");
+		// A ref written with no version lands only onto nothing.
+		const blind = await core.gitPublish(ENV, other, again.leaseId, "k4", [{ op: "write", path: MAIN, file: ref }]);
+		expect(blind).toMatchObject({ published: false, units: [{ outcome: "conflict" }] });
 		expect(await core.gitLeasesDrop(ENV, other)).toEqual([MAIN]);
 		expect(await core.gitLeasesDrop(ENV, other)).toEqual([]);
 	});
@@ -261,7 +321,10 @@ const MAIN = `${R}/refs/heads/main`;
 const MAIN_LOG = `${R}/logs/refs/heads/main`;
 const TOPIC = `${R}/refs/heads/topic`;
 const TOPIC_LOG = `${R}/logs/refs/heads/topic`;
-const OBJECT = `${R}/objects/ab/cdef01`;
+const OBJECT = `${R}/objects/ab/${"cdef01".padEnd(38, "0")}`;
+/** A second loose object, in a folder of its own. */
+const NAME_CD = "ef0123".padEnd(38, "0");
+const OBJECT_CD = `${R}/objects/cd/${NAME_CD}`;
 const LOG = "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d";
 const receipt = (n: number): CoreReceipt => ({
 	resourceId: v(60),
@@ -334,6 +397,9 @@ describe("the lock protocol in the folder service", () => {
 		const { core, open } = await repo();
 		const view = await open("first");
 		await write(view, OBJECT, "blob");
+		// Not an object: the core takes none of these in a publish, so it stays for the boundary.
+		await view.mkdir(`${R}/objects/info`);
+		await write(view, `${R}/objects/info/packs`, "P pack-1.pack\n");
 		await write(view, `${MAIN}.lock`, "3333\n", true);
 		expect(core.gitLeases.get(MAIN)?.viewId).toBe(SESSIONS.first.viewId);
 		await write(view, MAIN_LOG, "0000 1111\n1111 3333\n");
@@ -369,7 +435,42 @@ describe("the lock protocol in the folder service", () => {
 			core.entries.get(MAIN)?.version,
 		);
 		expect(core.entries.has(`${MAIN}.lock`)).toBe(false);
+		expect(core.entries.has(`${R}/objects/info/packs`)).toBe(false);
 	});
+
+	it("saves a publish's objects first when it would take more than the core's 1000 units", async () => {
+		const { core, open } = await repo();
+		const view = await open("first");
+		// 740 objects in 256 folders, with `objects`, the ref, its log and their folders: 1004 units in one change set.
+		for (let n = 0; n < 256; n++) {
+			const folder = n.toString(16).padStart(2, "0");
+			if (folder !== "ab") await view.mkdir(`${R}/objects/${folder}`);
+		}
+		const objects: string[] = [];
+		for (let i = 0; i < 740; i++) {
+			const path = `${R}/objects/${(i % 256).toString(16).padStart(2, "0")}/${i.toString(16).padStart(38, "0")}`;
+			await write(view, path, `object ${i}`);
+			objects.push(path);
+		}
+		await write(view, `${MAIN}.lock`, "3333\n", true);
+		await write(view, MAIN_LOG, "0000 1111\n1111 3333\n");
+		const before = core.commits.length;
+		await view.rename({ from: `${MAIN}.lock`, to: MAIN, noReplace: false });
+		const saves = core.commits.slice(before);
+		expect(saves).toHaveLength(1);
+		expect(saves[0]?.units.flatMap((u) => (u.op === "write" ? [u.path] : [])).sort()).toEqual([...objects].sort());
+		expect(saves[0]?.units.filter((u) => u.op === "mkdir")).toHaveLength(257);
+		expect(core.gitPublishes).toEqual([
+			{
+				leaseId: expect.any(String),
+				units: [expect.objectContaining({ path: MAIN }), expect.objectContaining({ path: MAIN_LOG })],
+				published: true,
+			},
+		]);
+		for (const path of objects) expect(core.entries.get(path)?.kind).toBe("file");
+		expect(core.entries.get(MAIN)?.fileSha256).toBe(hashOf("3333\n"));
+		expect(core.gitLeases.size).toBe(0);
+	}, 60_000);
 
 	it("refuses a lock another session holds, a shared file written without its lock, and session-local files", async () => {
 		const { core, open } = await repo();
@@ -437,17 +538,15 @@ describe("the lock protocol in the folder service", () => {
 		const { core, service, open } = await repo();
 		const view = await open("first");
 		await view.mkdir(`${R}/objects/cd`);
-		await write(view, `${R}/objects/cd/ef0123`, "commit");
+		await write(view, OBJECT_CD, "commit");
 		await write(view, `${MAIN}.lock`, "3333\n", true);
 		await view.rename({ from: `${MAIN}.lock`, to: MAIN, noReplace: false });
-		expect(core.entries.get(`${R}/objects/cd/ef0123`)?.fileSha256).toBe(hashOf("commit"));
+		expect(core.entries.get(OBJECT_CD)?.fileSha256).toBe(hashOf("commit"));
 		await service.poll();
 		await service.settled();
 		expect(await names(view, `${R}/objects`)).toEqual(["ab", "cd"]);
 		const listed = (await view.list(`${R}/objects/cd`, undefined)).entries;
-		expect(listed.map((e) => [e.name, e.version])).toEqual([
-			["ef0123", core.entries.get(`${R}/objects/cd/ef0123`)?.version],
-		]);
+		expect(listed.map((e) => [e.name, e.version])).toEqual([[NAME_CD, core.entries.get(OBJECT_CD)?.version]]);
 	});
 
 	it("shows a ref published in a new ref folder once the view catches up", async () => {
@@ -488,7 +587,7 @@ describe("the lock protocol in the folder service", () => {
 		for (const view of [first, second]) {
 			await write(view, OBJECT, "blob");
 			await view.mkdir(`${R}/objects/cd`);
-			await write(view, `${R}/objects/cd/ef0123`, "tree");
+			await write(view, OBJECT_CD, "tree");
 		}
 		await first.publish();
 		const object = core.entries.get(OBJECT);
@@ -497,13 +596,13 @@ describe("the lock protocol in the folder service", () => {
 		const answer = await second.publish();
 		expect(answer.paths.map((p) => p.outcome)).toEqual(answer.paths.map(() => "saved"));
 		expect(core.entries.get(OBJECT)?.fileSha256).toBe(hashOf("blob"));
-		expect(core.entries.get(`${R}/objects/cd/ef0123`)?.fileSha256).toBe(hashOf("tree"));
+		expect(core.entries.get(OBJECT_CD)?.fileSha256).toBe(hashOf("tree"));
 		expect([...core.entries.keys()].filter((p) => p.startsWith(`${R}/objects`)).sort()).toEqual([
 			`${R}/objects`,
 			`${R}/objects/ab`,
 			OBJECT,
 			`${R}/objects/cd`,
-			`${R}/objects/cd/ef0123`,
+			OBJECT_CD,
 		]);
 	});
 
@@ -592,6 +691,36 @@ describe("the lock protocol in the folder service", () => {
 		const other = await open("second");
 		await write(other, `${MAIN}.lock`, "4444\n", true);
 		expect(core.gitLeases.get(MAIN)?.viewId).toBe(SESSIONS.second.viewId);
+	});
+
+	it("drops a lock whose lease the core ended, with what was to land under it", async () => {
+		const { core, open } = await repo();
+		const view = await open("first");
+		await write(view, `${TOPIC}.lock`, "", true);
+		await view.unlink(TOPIC, undefined);
+		await view.unlink(TOPIC_LOG, undefined);
+		// The core dropped the view's leases meanwhile.
+		core.gitLeases.clear();
+		await refused(view.unlink(`${TOPIC}.lock`, undefined), "BUSY");
+		expect(core.entries.has(TOPIC)).toBe(true);
+		expect(await names(view, `${R}/refs/heads`)).toEqual(["main", "topic"]);
+		const other = await open("second");
+		await write(other, `${TOPIC}.lock`, "", true);
+		expect(core.gitLeases.get(TOPIC)?.viewId).toBe(SESSIONS.second.viewId);
+	});
+
+	it("drops a lease whose take was never answered when its view publishes final", async () => {
+		const { core, open } = await repo();
+		const view = await open("first");
+		const take = core.gitLeaseTake.bind(core);
+		core.gitLeaseTake = async (...args) => {
+			await take(...args);
+			throw new Error("The database did not answer");
+		};
+		await refused(write(view, `${MAIN}.lock`, "3333\n", true), "UNAVAILABLE");
+		expect(core.gitLeases.get(MAIN)?.viewId).toBe(SESSIONS.first.viewId);
+		expect(await view.publish(true)).toMatchObject({ closed: true });
+		expect(core.gitLeases.size).toBe(0);
 	});
 
 	it("keeps the time a file showed while pending after its publish, until another version arrives", async () => {

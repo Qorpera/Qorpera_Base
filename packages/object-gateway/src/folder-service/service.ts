@@ -18,13 +18,15 @@ import {
 } from "./core.ts";
 import {
 	type GitUnit,
+	gitBatches,
 	gitDir,
+	gitFolders,
 	gitGuarded,
 	gitLockTarget,
+	gitPublishedObject,
 	gitReflog,
 	gitRefused,
 	gitSharedPath,
-	gitUnpublished,
 } from "./git.ts";
 import type { CoreAccess, Grant, MountGrants } from "./mounts.ts";
 import { type NasObjects, ObjectIntegrityError, ObjectUnavailableError } from "./objects.ts";
@@ -218,6 +220,8 @@ interface GitLock {
 const GIT_CATCH_UP_ROUNDS = 3;
 /** Tries of a git publish with no answer, under one operation key. */
 const GIT_PUBLISH_TRIES = 3;
+/** The core's word (42501) for a lease that is not this view's any more: it ended, so its units cannot land. */
+const GIT_LEASE_GONE = "Folder git lease is unavailable";
 
 /** The report of a boundary that published and settled nothing: every path it planned stays pending, what it would
  * drop included (the next boundary that settles drops it). */
@@ -375,6 +379,9 @@ class View {
 	readonly handles = new Set<number>();
 	/** The git locks it holds (git.ts), by the shared file each guards. */
 	readonly gitLeases = new Map<string, GitLock>();
+	/** The core may hold a git lease of this view's that `gitLeases` does not list (a take or a release whose answer
+	 * never came): the next final boundary drops the view's leases all the same. */
+	gitUnsure = false;
 	/** What git publishes made that the feed had not brought back when they were answered: settled at `seq`. */
 	readonly gitUnsettled: { readonly seq: number; readonly made: ReadonlyMap<string, string> }[] = [];
 	/** The reads its machine logged (protocol 3, F3 4c), by log. They are kept with the view only: after it connects
@@ -1419,6 +1426,7 @@ export class FolderService {
 		try {
 			lease = await this.#core.gitLeaseTake(view.environmentId, actor, target);
 		} catch (error) {
+			if (!(error instanceof CoreRefusal)) view.gitUnsure = true;
 			throw this.#gitError(error);
 		}
 		if (lease.state === "busy") throw new ProtocolError(ErrorCode.exists, "Another session holds this git lock");
@@ -1445,7 +1453,9 @@ export class FolderService {
 			return await create();
 		} catch (error) {
 			view.gitLeases.delete(target);
-			await this.#core.gitLeaseRelease(view.environmentId, actor, lock.leaseId, null).catch(() => undefined);
+			await this.#core.gitLeaseRelease(view.environmentId, actor, lock.leaseId, null).catch(() => {
+				view.gitUnsure = true;
+			});
 			throw error;
 		}
 	}
@@ -1494,7 +1504,7 @@ export class FolderService {
 		const objects = `${gitDir(target)}/objects/`;
 		const files: { path: string; at: string; node: PendingFile; expectedVersion?: string | null }[] = [];
 		for (const [path, n] of pending.nodes())
-			if (n.kind === "file" && n.open === 0 && path.startsWith(objects) && !gitUnpublished(path))
+			if (n.kind === "file" && n.open === 0 && path.startsWith(objects) && gitPublishedObject(path))
 				files.push({ path, at: path, node: n });
 		files.push({ path: target, at: from, node, expectedVersion: lock.versions.file });
 		if (log?.kind === "file" && log.content !== undefined)
@@ -1516,23 +1526,52 @@ export class FolderService {
 			made.push({ path: file.path, at: file.at, version });
 		}
 		await this.#gitReadGate(view);
+		// What a change set saved: the live versions of the files made, which show again once the feed has it.
+		const saved = (outcomes: CommitAnswer["units"], files: typeof made): Map<string, string> => {
+			const settled = new Map<string, string>();
+			outcomes.forEach((outcome, i) => {
+				const unit = files[i];
+				if (!unit || outcome.outcome !== "saved" || !outcome.version) return;
+				this.#alias(view, unit.path, unit.version, outcome.version);
+				settled.set(unit.at, unit.version);
+			});
+			return settled;
+		};
+		// A change set takes at most GIT_UNITS units, the folders made for them among them. A publish that would take more
+		// saves its objects first, in plain change sets of the view's (objects take no lease), and carries the ref alone.
+		let first = 0;
+		if (gitBatches(units).length > 1) {
+			first = units.findIndex((unit) => unit.op === "write" && unit.expectedVersion !== undefined);
+			let at = 0;
+			for (const batch of gitBatches(units.slice(0, first))) {
+				const folders = [...new Set(batch.flatMap((unit) => gitFolders(unit.path)))];
+				const writes = batch.flatMap((unit): CommitUnit[] =>
+					unit.op === "write" ? [{ op: "write", path: unit.path, file: unit.file }] : [],
+				);
+				const mkdirs = folders.map((path): CommitUnit => ({ op: "mkdir", path }));
+				const objects = await this.#commit(view, actor, `folder-view:${view.key}:git:${randomUUID()}`, [
+					...mkdirs,
+					...writes,
+				]);
+				if (!objects) throw new ProtocolError(ErrorCode.unavailable, "The git objects could not be saved now");
+				if (objects.units.some((outcome) => outcome.outcome !== "saved"))
+					throw new ProtocolError(ErrorCode.denied, "The core refused the git objects");
+				const settled = saved(objects.units.slice(folders.length), made.slice(at, at + batch.length));
+				if (objects.seq !== null) view.gitUnsettled.push({ seq: objects.seq, made: settled });
+				at += batch.length;
+			}
+		}
 		const key = `folder-view:${view.key}:git:${randomUUID()}`;
 		let answer: GitPublish | undefined;
 		for (let attempt = 1; !answer; attempt++)
 			try {
-				answer = await this.#core.gitPublish(view.environmentId, actor, lock.leaseId, key, units);
+				answer = await this.#core.gitPublish(view.environmentId, actor, lock.leaseId, key, units.slice(first));
 			} catch (error) {
 				if (error instanceof CoreRefusal || attempt === GIT_PUBLISH_TRIES) throw this.#gitError(error);
 			}
 		if (!answer.published) throw new ProtocolError(ErrorCode.busy, "A git file changed since its lock was taken");
 		view.gitLeases.delete(target);
-		const settled = new Map<string, string>();
-		answer.units.forEach((outcome, i) => {
-			const unit = made[i];
-			if (!unit || outcome.outcome !== "saved" || !outcome.version) return;
-			this.#alias(view, unit.path, unit.version, outcome.version);
-			settled.set(unit.at, unit.version);
-		});
+		const settled = saved(answer.units, made.slice(first));
 		// The lock file is gone at once (git renamed it); what it published shows as the feed brings it. `from` stays in
 		// the later settling: a folder made for the ref (`refs/heads/feature/` for `feature/foo`) is live only then.
 		pending.settlePaths(new Map([[from, node.version]]));
@@ -1614,8 +1653,9 @@ export class FolderService {
 					units.length > 0 ? units : null,
 				);
 			} catch (error) {
-				// A lease the core no longer holds (it ended with an answer that never came through) is gone here too.
-				if (!(error instanceof CoreRefusal && error.reason === "invalid")) throw this.#gitError(error);
+				// A lease the core no longer holds (the view's leases were dropped) is gone here too, and what was to land
+				// under it did not. Any other refusal (units the core does not take) leaves the lease held.
+				if (!(error instanceof CoreRefusal && error.said === GIT_LEASE_GONE)) throw this.#gitError(error);
 			}
 			view.gitLeases.delete(target);
 			published = units.length === 0 || answer?.published === true;
@@ -1634,13 +1674,14 @@ export class FolderService {
 	/** At a final boundary the view lets go of its git locks: a lock a killed git left goes, with its lease, so other
 	 * sessions may take it. (The core drops them when the view ends, too.) */
 	async #gitSweep(view: View): Promise<void> {
-		if (view.gitLeases.size === 0) return;
+		if (view.gitLeases.size === 0 && !view.gitUnsure) return;
 		try {
 			await this.#core.gitLeasesDrop(view.environmentId, this.#gitActor(view));
 		} catch (error) {
 			this.#log(`folder-service: ${view.key}: its git locks could not be let go now: ${(error as Error).message}`);
 			return;
 		}
+		view.gitUnsure = false;
 		const guarded = [...view.gitLeases.keys()].flatMap((target) => gitGuarded(target));
 		view.gitLeases.clear();
 		view.pending?.drop(guarded);

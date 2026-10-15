@@ -58,6 +58,51 @@ export function gitObjectPath(path: string): boolean {
 	return place.kind === "git" && gitObject(place.rest);
 }
 
+/** A git object a lock's publish carries (5b's `qorpera_folder_git_object`): a loose object (SHA-1 or SHA-256) or a
+ * pack's own file. Anything else under `objects/` (`info/packs`, a commit-graph, a multi-pack index) is not one. */
+export function gitPublishedObject(path: string): boolean {
+	const place = gitPlace(path);
+	return (
+		place.kind === "git" &&
+		/^objects\/([0-9a-f]{2}\/[0-9a-f]{38}([0-9a-f]{24})?|pack\/pack-[0-9a-f]{40}([0-9a-f]{24})?\.(pack|idx|rev|bitmap|mtimes|promisor))$/.test(
+			place.rest,
+		)
+	);
+}
+
+/** The most units one change set takes (core §3), the folders the core makes for a git change's among them. */
+export const GIT_UNITS = 1000;
+
+/** The folders the core makes for a git change's unit at `path` (5b): each from the repo's own (`objects`, `refs`,
+ * `logs`) down to the unit's. */
+export function gitFolders(path: string): string[] {
+	const parts = path.split("/");
+	const folders: string[] = [];
+	for (let n = 5; n < parts.length; n++) folders.push(parts.slice(0, n).join("/"));
+	return folders;
+}
+
+/** Git's units in change sets the core takes, in order: at most `most` units each, the folders made for them among
+ * them. */
+export function gitBatches<T extends { readonly path: string }>(units: readonly T[], most = GIT_UNITS): T[][] {
+	const batches: T[][] = [];
+	let batch: T[] = [];
+	let folders = new Set<string>();
+	for (const unit of units) {
+		const own = gitFolders(unit.path);
+		const added = own.filter((folder) => !folders.has(folder)).length;
+		if (batch.length > 0 && batch.length + 1 + folders.size + added > most) {
+			batches.push(batch);
+			batch = [];
+			folders = new Set();
+		}
+		batch.push(unit);
+		for (const folder of own) folders.add(folder);
+	}
+	if (batch.length > 0) batches.push(batch);
+	return batches;
+}
+
 /** A file that would make git read objects from elsewhere (`rest` is below `repo.git/`). */
 export function gitAlternates(rest: string): boolean {
 	const file = rest.endsWith(".lock") ? rest.slice(0, -".lock".length) : rest;
@@ -82,14 +127,14 @@ export function gitSharedPath(path: string): boolean {
 	return place.kind === "git" && gitShared(place.rest);
 }
 
-/** The shared file `X` a lock `path` (`X.lock`) stands for, where `X` is a ref (`refs/**`, `HEAD`), `packed-refs` or
+/** The shared file `X` a lock `path` (`X.lock`) stands for, where `X` is a ref (`refs/**`), `packed-refs` or
  * `shallow`: the lock's exclusive create takes the core's lease on `X`, its rename onto `X` publishes, and its removal
- * gives the lease back. */
+ * gives the lease back. The core leases nothing else (5b): `HEAD` is the platform's, so its lock is refused here. */
 export function gitLockTarget(path: string): string | null {
 	const place = gitPlace(path);
 	if (place.kind !== "git" || !place.rest.endsWith(".lock")) return null;
 	const target = place.rest.slice(0, -".lock".length);
-	const ok = target === "HEAD" || target === "packed-refs" || target === "shallow" || target.startsWith("refs/");
+	const ok = target === "packed-refs" || target === "shallow" || target.startsWith("refs/");
 	return ok ? `${place.area}/repo.git/${target}` : null;
 }
 

@@ -380,6 +380,7 @@ export class FakeCore implements FolderCore {
 		const view = this.#check(actor, environmentId);
 		if (final && view?.kind !== "computer_shell_command") throw new CoreRefusal("invalid");
 		if (units.length === 0 && !final) throw new CoreRefusal("invalid");
+		if (units.length > 1000) throw new CoreRefusal("invalid", "Change set is invalid");
 		if (view?.kind === "computer_shell_command" && view.ended && !final)
 			throw new CoreRefusal("denied", COMMAND_ENDED);
 		// The view's read set is checked again before its save (20260928469330): a read it no longer sees refuses it.
@@ -641,9 +642,11 @@ export class FakeCore implements FolderCore {
 		this.#check(actor, environmentId);
 		const reason = this.gitRefusals.get(path);
 		if (reason) return { state: "refused", reason } as const;
-		if (this.gitLeases.has(path))
+		// The view's own lease answers held again; another's, busy.
+		const held = this.gitLeases.get(path);
+		if (held && held.viewId !== actor.viewId)
 			return { state: "busy", leaseUntil: "2026-10-05T12:02:00.000Z", reason: null } as const;
-		const leaseId = v(this.#nextLease++);
+		const leaseId = held?.leaseId ?? v(this.#nextLease++);
 		this.gitLeases.set(path, { viewId: actor.viewId, leaseId });
 		const place = gitPlace(path);
 		const live = (p: string) => this.entries.get(p)?.version ?? null;
@@ -665,8 +668,17 @@ export class FakeCore implements FolderCore {
 		leaseId: string,
 		units: readonly unknown[] | null,
 	) {
-		this.gitLeases.delete(this.#leased(environmentId, actor, leaseId));
-		return units === null ? null : this.#gitApply(leaseId, units as GitUnit[]);
+		if (units === null) {
+			// Released, held or not (it may have ended already).
+			this.#check(actor, environmentId);
+			const held = [...this.gitLeases].find(([, l]) => l.leaseId === leaseId && l.viewId === actor.viewId);
+			if (held) this.gitLeases.delete(held[0]);
+			return null;
+		}
+		const path = this.#leased(environmentId, actor, leaseId);
+		const answer = this.#gitApply(leaseId, units as GitUnit[]);
+		this.gitLeases.delete(path);
+		return answer;
 	}
 
 	async gitLeasesDrop(environmentId: string, actor: Extract<FolderActor, { kind: "view" }>) {
@@ -689,32 +701,29 @@ export class FakeCore implements FolderCore {
 		return answer;
 	}
 
-	/** The file `leaseId` leases for the view: refused (22023) when the view does not hold it. */
+	/** The file `leaseId` leases for the view: refused (42501) when the view does not hold it (it ended, or is another's). */
 	#leased(environmentId: string, actor: Extract<FolderActor, { kind: "view" }>, leaseId: string): string {
 		this.#check(actor, environmentId);
 		const held = [...this.gitLeases].find(([, l]) => l.leaseId === leaseId && l.viewId === actor.viewId);
-		if (!held) throw new CoreRefusal("invalid", "Git lease is not held");
+		if (!held) throw new CoreRefusal("denied", "Folder git lease is unavailable");
 		return held[0];
 	}
 
-	/** One git change set, whole or not at all: an object already there is saved as it is, missing parents are made. */
+	/** One git change set: its objects land (one already there is saved as it is), and the ref and its log land at the
+	 * versions the lease found or not at all (one written with none, onto nothing). Missing parents are made; the folders
+	 * the core makes for it (each from the repo's own down) count against its 1000 units. */
 	#gitApply(leaseId: string, units: readonly GitUnit[]): GitPublish {
+		const folders = new Set<string>();
+		for (const u of units) {
+			const segments = u.path.split("/");
+			for (let n = 5; n < segments.length; n++) folders.add(segments.slice(0, n).join("/"));
+		}
+		if (units.length + folders.size > 1000) throw new CoreRefusal("invalid", "Change set is invalid");
 		const live = (path: string) => this.entries.get(path)?.version ?? null;
 		const commitId = v(this.#nextVersion++);
-		const stale = units.some((u) => u.expectedVersion !== undefined && live(u.path) !== u.expectedVersion);
+		const changed = (u: GitUnit) => !gitObjectPath(u.path) && live(u.path) !== (u.expectedVersion ?? null);
+		const stale = units.some(changed);
 		this.gitPublishes.push({ leaseId, units, published: !stale });
-		if (stale)
-			return {
-				commitId,
-				seq: null,
-				published: false,
-				units: units.map((_, i) => ({
-					unit: i + 1,
-					outcome: "conflict",
-					reason: "version_changed",
-					version: null,
-				})),
-			};
 		const now = "2026-10-05T12:00:00.000Z";
 		const changes: FeedChange[] = [];
 		const outcomes = units.map((u, i): CommitOutcome => {
@@ -724,6 +733,8 @@ export class FakeCore implements FolderCore {
 				reason: null,
 				version,
 			});
+			if (stale && !gitObjectPath(u.path))
+				return { unit: i + 1, outcome: "conflict", reason: "version_changed", version: null };
 			const old = this.entries.get(u.path);
 			if (u.op === "delete") {
 				this.entries.delete(u.path);
@@ -755,7 +766,7 @@ export class FakeCore implements FolderCore {
 			seq = ++this.seq;
 			this.journal.push({ seq, kind: "change_set", changes });
 		}
-		return { commitId, seq, published: true, units: outcomes };
+		return { commitId, seq, published: !stale, units: outcomes };
 	}
 
 	async renewView(viewId: string, pass: string, unsavedSince: string | null): Promise<ViewRenewal> {
