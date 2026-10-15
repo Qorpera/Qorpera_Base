@@ -212,8 +212,8 @@ $new$);
 --     owner or administrator; a company secret without a grant never serves;
 --   - for a name both have, the company's.
 -- Only secrets this broker sealed, under names still allowed. The repository's live grants are taken first, as an
--- operation's grant is (rank 8), then the secrets in id order, then their current versions; one audit row each. The
--- values never reach this database.
+-- operation's grant is (rank 8), and only those taken serve; then the secrets in id order, then their current
+-- versions; one audit row each. The values never reach this database.
 create function public.qorpera_authorize_coding_environment(
 	p_broker_authority_id uuid,
 	p_broker_capability_sha256 text,
@@ -228,6 +228,7 @@ declare
 	v_session public.qorpera_coding_sessions%rowtype;
 	v_worker public.qorpera_runtime_workers%rowtype;
 	v_repository text;
+	v_grant_ids uuid[];
 	v_secret_ids uuid[];
 	v_secret public.qorpera_cloud_secrets%rowtype;
 	v_version public.qorpera_cloud_secret_versions%rowtype;
@@ -295,13 +296,17 @@ begin
 		raise exception 'coding session member is unavailable' using errcode = '42501';
 	end if;
 	v_repository := lower((v_session.repository ->> 'owner') || '/' || (v_session.repository ->> 'name'));
-	-- The repository's live grants before the secrets: a withdrawal, a Disconnect or an issuer's demotion that commits
-	-- while this waits is read below, and none can end a grant while this serves it.
-	perform 1 from public.qorpera_coding_environment_grants as environment_grant
-	where environment_grant.profile_id = v_session.profile_id
-		and environment_grant.environment_id = v_session.environment_id
-		and environment_grant.repository = v_repository and environment_grant.status = 'active'
-	order by environment_grant.id for share;
+	-- The repository's live grants before the secrets, and only those serve: a withdrawal, a Disconnect or an issuer's
+	-- demotion that commits while this waits is read below, none can end a grant while this serves it, and a grant made
+	-- meanwhile (not taken here) serves from the next read.
+	select coalesce(array_agg(locked.id), '{}'::uuid[]) into v_grant_ids
+	from (
+		select environment_grant.id from public.qorpera_coding_environment_grants as environment_grant
+		where environment_grant.profile_id = v_session.profile_id
+			and environment_grant.environment_id = v_session.environment_id
+			and environment_grant.repository = v_repository and environment_grant.status = 'active'
+		order by environment_grant.id for share
+	) as locked;
 	with granted as (
 		select secret.id, secret.secret_name
 		from public.qorpera_cloud_secrets as secret
@@ -311,8 +316,8 @@ begin
 			and public.qorpera_coding_environment_name_allowed(secret.secret_name)
 			and exists (
 				select 1 from public.qorpera_coding_environment_grants as environment_grant
-				where environment_grant.secret_id = secret.id and environment_grant.repository = v_repository
-					and environment_grant.status = 'active'
+				where environment_grant.id = any(v_grant_ids) and environment_grant.secret_id = secret.id
+					and environment_grant.repository = v_repository and environment_grant.status = 'active'
 					and exists (
 						select 1 from public.qorpera_profile_members as issuer
 						where issuer.profile_id = environment_grant.profile_id

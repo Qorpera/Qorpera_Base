@@ -1,13 +1,15 @@
 -- @fixture 528_coding_environment_broker.test.sql until "-- 1. What serves ---"
 -- F3 step 5j-1 (migration 20260930438000): the secret broker's read of a coding session's environment
 -- (qorpera_authorize_coding_environment) against other connections, on 528's fixture. The read shares the
--- repository's live grants before it takes the secrets, so a grant it serves can't end under it, and one that ends
--- while it waits is read as ended:
+-- repository's live grants before it takes the secrets and serves only those, so a grant it serves can't end under it,
+-- one that ends while it waits is read as ended, and one made while it waits serves from the next read:
 -- 1. A read waiting for a rotation of a granted secret holds that secret's grant: the owner's withdrawal waits for the
 --    read at the grant, the read serves the rotated version, then the withdrawal lands.
 -- 2. A read waiting behind an open withdrawal sees it once it commits: the member's own shared_name (74) serves
 --    instead.
 -- 3. The same behind the administrator's demotion: admin_key (78) no longer serves.
+-- 4. A grant made while a read waits at the grants, for a secret then rotated and the grant withdrawn, does not serve
+--    that read (review r2 F1): the read neither waits for the rotation nor serves the rotated version.
 
 -- Row locks show only across connections, so 528's fixture is committed here and removed again at the end (969's
 -- harness): the test refuses to run beside other connections to this database, whose rows the cleanup could not tell
@@ -237,6 +239,53 @@ begin
 	v_read := pg_temp.r529_collect('r529_broker');
 	perform pg_temp.base_assert(pg_temp.r529_served(v_read) = 'PERSONAL_KEY=75.1,SHARED_NAME=74.1',
 		format('3: the read behind the demotion served the administrator''s grant: %s', pg_temp.r529_served(v_read)));
+end $$;
+
+-- 4. The owner's withdrawal of path's grant (79) is open; the read waits for it at the grants. Meanwhile the owner
+--    gives sentry_dsn (72) to the repository, and the holder rotates it to version 2 and keeps it. The withdrawal
+--    commits: the read, which did not take sentry_dsn's new grant, neither waits for the rotation nor serves it. The
+--    owner then withdraws that grant, and the holder commits.
+do $$
+declare v_given jsonb; v_waited boolean; v_withdrawal jsonb; v_read jsonb;
+begin
+	perform dblink_exec('r529_member', 'begin');
+	perform * from dblink('r529_member', pg_temp.r529_withdraw('52800000-0000-4000-8000-000000000079'))
+		as call(result jsonb);
+	perform dblink_send_query('r529_broker', pg_temp.r529_read());
+	if not pg_temp.r529_waits('broker', 'member', 'public.qorpera_coding_environment_grants') then
+		perform dblink_exec('r529_member', 'rollback');
+		raise exception '4: the read must wait for the open withdrawal at the grants: %',
+			pg_temp.r529_collect('r529_broker');
+	end if;
+	perform dblink_exec('r529_hold', 'begin');
+	perform dblink_exec('r529_hold', $q$set local request.jwt.claims =
+		'{"role":"authenticated","sub":"92400000-0000-4000-8000-000000000001"}'$q$);
+	perform dblink_exec('r529_hold', 'set local role authenticated');
+	select result into strict v_given from dblink('r529_hold', format(
+		'select public.qorpera_grant_coding_environment_secret(%L, %L, %L)', '92400000-0000-4000-8000-000000000010',
+		'52800000-0000-4000-8000-000000000072', 'Qorpera/Qorpera_Base')) as call(result jsonb);
+	perform dblink_exec('r529_hold', 'commit');
+	perform dblink_exec('r529_hold', 'begin');
+	perform dblink_exec('r529_hold', 'set local session_replication_role = replica');
+	perform dblink_exec('r529_hold', $q$insert into public.qorpera_cloud_secret_versions(secret_id, version,
+		broker_authority_id, key_id, encrypted_envelope, envelope_sha256, created_by_user_id)
+		values ('52800000-0000-4000-8000-000000000072', 2, '52800000-0000-4000-8000-000000000040', 'company-kek-1',
+			convert_to('envelope 72 v2', 'UTF8'),
+			encode(extensions.digest(convert_to('envelope 72 v2', 'UTF8'), 'sha256'), 'hex'),
+			'92400000-0000-4000-8000-000000000001')$q$);
+	perform dblink_exec('r529_hold', $q$update public.qorpera_cloud_secrets set current_version = 2
+		where id = '52800000-0000-4000-8000-000000000072'$q$);
+	perform dblink_exec('r529_member', 'commit');
+	v_waited := pg_temp.r529_waits('broker', 'hold', 'public.qorpera_cloud_secrets');
+	select result into strict v_withdrawal
+	from dblink('r529_member', pg_temp.r529_withdraw('52800000-0000-4000-8000-000000000072')) as call(result jsonb);
+	perform dblink_exec('r529_hold', 'commit');
+	v_read := pg_temp.r529_collect('r529_broker');
+	perform pg_temp.base_assert(v_given ->> 'status' = 'active' and not v_waited
+		and v_withdrawal ->> 'status' = 'revoked'
+		and pg_temp.r529_served(v_read) = 'PERSONAL_KEY=75.1,SHARED_NAME=74.1',
+		format('4: the read served a grant made while it waited: given %s, waited %s, withdrawn %s, served %s',
+			v_given ->> 'status', v_waited, v_withdrawal ->> 'status', pg_temp.r529_served(v_read)));
 end $$;
 
 select pg_temp.r529_cleanup();

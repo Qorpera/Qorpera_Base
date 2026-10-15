@@ -380,12 +380,13 @@ begin
 		and position('order by environment_grant.id for update nowait' in v_revoke)
 			> position('update public.qorpera_cloud_secret_operation_grants' in v_revoke)
 		and position('update public.qorpera_cloud_secret_operation_grants' in v_revoke) > 0, 'Disconnect''s order');
-	-- The broker only reads: it shares the repository's grants, then the secrets and their versions, and updates
-	-- nothing (529 races it).
+	-- The broker only reads: it shares the repository's grants, then the secrets and their versions, serves only the
+	-- grants it took, and updates nothing (529 races it).
 	perform pg_temp.base_assert(position('order by environment_grant.id for share' in v_broker) > 0
 		and position('order by environment_grant.id for share' in v_broker) < position('for share of secret' in v_broker)
+		and position('environment_grant.id = any(v_grant_ids)' in v_broker) > 0
 		and position('for update' in v_broker) = 0 and position('for no key update' in v_broker) = 0,
-		'the broker''s read shares the grants before the secrets, and takes share locks only');
+		'the broker''s read shares the grants before the secrets, serves only those, and takes share locks only');
 end $$;
 
 rollback;
