@@ -122,12 +122,15 @@ export function folderKey(path: string): string {
 	return path.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFKC");
 }
 
-/** The core's reserved paths (`qorpera_folder_path_reserved`), by folded key. */
+/** The core's reserved paths (`qorpera_folder_path_reserved`), by folded key: git's directories only below
+ * code/<owner>/<name>/ (20260930446100). */
 function reserved(key: string): boolean {
 	const parts = key.split("/");
+	const code = parts[0] === "code";
 	return (
 		[".qorpera", "trail", "inbox", "credentials", "secrets"].includes(parts[0]!) ||
-		(parts[0] !== "code" && parts.some((p) => p === ".git" || p === "node_modules"))
+		(!code && parts.includes("node_modules")) ||
+		parts.some((p, i) => (p === ".git" || p === "repo.git") && (!code || i < 3))
 	);
 }
 
