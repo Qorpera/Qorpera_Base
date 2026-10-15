@@ -1,3 +1,4 @@
+import { folderKey } from "@qorpera/contracts";
 import type { CloudCompanyTreeEntry } from "./node/cloud-company-snapshot.ts";
 
 export interface CloudCompanyPathPlan {
@@ -18,7 +19,7 @@ export function parseCloudCompanyPath(value: unknown, allowRoot = false): string
 		value.normalize("NFC") !== value
 	)
 		throw new Error("Invalid Company File path");
-	for (const candidate of [value, value.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFKC")]) {
+	for (const candidate of [value, folderKey(value)]) {
 		if (
 			/[\u0000-\u001f\u007f-\u009f\\%]/.test(candidate) ||
 			candidate.split("/").length !== value.split("/").length ||

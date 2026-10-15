@@ -122,6 +122,9 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 		assert.ok(!names([file]).includes("hosted-db"), file);
 	// The rolling update rehearsal and the packets it runs.
 	for (const file of ["scripts/test-runtime-roll.mjs", "scripts/runtime-roll.mjs"]) assert.ok(names([file]).includes("hosted-db"), file);
+	// The folder key script and the key it checks against the core's (a contracts change runs every step).
+	for (const file of ["scripts/test-folder-key.mjs", "packages/contracts/src/folder-key.ts"])
+		assert.ok(names([file]).includes("hosted-db"), file);
 	assert.ok(!names(["packages/runtime/test/fixtures/company-computer-guest.ts"]).includes("hosted-db"));
 	assert.equal(STEPS.find((step) => step.name === "hosted-db").build, true);
 });

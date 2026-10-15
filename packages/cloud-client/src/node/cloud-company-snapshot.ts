@@ -7,6 +7,7 @@ import {
 	claimCompanyRuntimeLock,
 	releaseCompanyRuntimeLock,
 } from "@qorpera/company/company-runtime-lock";
+import { folderKey } from "@qorpera/contracts";
 import type {
 	CloudContentAddressedStore,
 	CloudFileReference,
@@ -247,7 +248,7 @@ function normalizedRelativePath(path: string): string {
 }
 
 function pathCollisionKey(path: string): string {
-	return path.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFKC");
+	return folderKey(path);
 }
 
 function shouldOmit(path: string, contractVersion: CloudCompanyTreeContractVersion = TREE_CONTRACT_VERSION): boolean {
