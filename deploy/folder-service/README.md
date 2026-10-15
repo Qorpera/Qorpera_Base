@@ -10,7 +10,7 @@ install reference. Every node and machine step is the coordinator's, at a cut.
 | `qorpera-folder-service.cjs` | node host, `qorpera-objects` (a drop-in; see "Reading the objects") | The folder service (from `packages/object-gateway/src/folder-service/`). Holds the service credential; never talks to LXD. |
 | `qorpera-folder` | node host (`bridge`), machine (`mount`) | The folder program (from `crates/qorpera-folder/`), built by `scripts/build-folder-program.mjs`; its recorded build is `folder-program-linux-x64.json`. |
 | `qorpera-folder-service.socket` | node host | `/run/qorpera-folder/service.sock`, 0660, group `qorpera-folder-bridge`: only the bridge connects. |
-| `qorpera-folder-control.socket` | node host with coding machines | `/run/qorpera-folder-control/control.sock`, 0600, user `qorpera-coding-executor`: only the coding executor connects, to ask its machines' boundaries and say when it restarted one (F3 5c). |
+| `qorpera-folder-control.socket` | node host with coding or test machines | `/run/qorpera-folder-control/control.sock`, 0600, user `qorpera-coding-executor`: only the executor connects, to ask its machines' boundaries and say when it restarted one (F3 5c), and to open and close a test machine's command windows (F3 6b). |
 | `qorpera-folder-service.service` | node host | The service, started by its socket. |
 | `qorpera-folder-bridge.service` | node host, `qorpera-folder-bridge` (+ group `lxd`) | vsock port 5250 to the socket, naming each machine as LXD sees it. No credential. |
 | `qorpera-folder-mount@.service` | execution host, from the shared-execution package | One read-only mount per instance: `/srv/qorpera-folder/<id>` from `/etc/qorpera-folder/mounts/<id>.json`. |
@@ -74,11 +74,19 @@ present its own coding sessions' views, and `codingExecutorUid` (`id -u qorpera-
 control socket lets ask their boundaries and say when it restarted one. Both stay unset until coding machines use the folder; a company's code host
 needs neither (its project is `qorpera-codehost-<company id without dashes>`).
 
+`testMachineProjects` (F3 step 6b, `deploy/first-node/RUNTIME-FOLDER-TEST-MACHINES.md`) names the LXD projects of this
+node's agents' test machines (on our nodes `machines`). A machine there named `qorpera-machine-<placement id without
+dashes>` may present its own boot's view; an image builder (`qorpera-machine-build-…`) never does. The same
+`codingExecutorUid` is the only uid the control socket lets open and close a test machine's command windows and ask its
+boundaries. A project listed here and in `companyMachineProjects` or `codingMachineProjects` stops the service at start.
+It stays unset until test machines use the folder.
+
 Which machine is served a core view is the core's to say: the view's first renewal says its kind and machine, and from
 then on a run box is served only to a `runBoxHosts` machine (read-only), a computer desktop or a shell command's view
 (step 4b) only to the company machine named after its allocation (read-write), a coding session's view only to its own
 coding machine in a `codingMachineProjects` project and a code host's view only to its company's code host (step 5c,
-read-write), and any other kind to no machine yet. A renewal that says another kind or machine closes the view.
+read-write), a test machine's view only to its own instance in a `testMachineProjects` project (step 6b, read-write),
+and any other kind to no machine yet. A renewal that says another kind or machine closes the view.
 
 `storageRoot` is where the service sees the object gateway's store: `/srv/qorpera/objects`, a path inside the
 service's own mount namespace. The drop-in below binds the store there ("Reading the objects"). The store is the
@@ -168,8 +176,9 @@ InaccessiblePaths=-/var/lib/qorpera-acceptance-phql-a1 -/run/credentials/qorpera
   but `1` (the service) and the check's own, fails on the gateway's, lists only `objects`, prints 1, and the `touch`
   fails with "Read-only file system" (were it to succeed, the bind is not read-only: remove the file as root).
 - `systemctl enable --now qorpera-folder-service.socket qorpera-folder-bridge.service`
-- On a node with coding machines (step 5c), once the `qorpera-coding-executor` account exists and `config.json` names
-  its uid (`codingExecutorUid`) and the projects (`codingMachineProjects`): `systemctl enable --now
+- On a node with coding machines (step 5c) or test machines (step 6b), once the `qorpera-coding-executor` account
+  exists and `config.json` names its uid (`codingExecutorUid`) and the projects (`codingMachineProjects`,
+  `testMachineProjects`): `systemctl enable --now
   qorpera-folder-control.socket`, then `systemctl restart qorpera-folder-service.service` if it is running (systemd
   passes the control socket only to a service it starts after the socket listens). The journal then says "serving the
   control socket from systemd". Check: `stat -c '%U %a' /run/qorpera-folder-control
