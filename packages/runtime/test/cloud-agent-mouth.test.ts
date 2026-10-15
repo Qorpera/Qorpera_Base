@@ -1,8 +1,6 @@
-import { request } from "node:http";
 import {
 	CLOUD_AGENT_SEND_SCHEMA,
 	CloudAgentMouth,
-	type CloudAgentMouthConnection,
 	type CloudAgentSendInput,
 	type CloudAgentSendReceipt,
 	parseCloudAgentSendInput,
@@ -27,37 +25,13 @@ function receipt(input: CloudAgentSendInput): CloudAgentSendReceipt {
 	};
 }
 
-async function start(
+function create(
 	send: (input: CloudAgentSendInput) => Promise<CloudAgentSendReceipt>,
 	signal?: AbortSignal,
-): Promise<{ mouth: CloudAgentMouth; connection: CloudAgentMouthConnection }> {
+): CloudAgentMouth {
 	const mouth = new CloudAgentMouth(runId, send, signal);
 	mouths.push(mouth);
-	return { mouth, connection: await mouth.start() };
-}
-
-function rpc(
-	connection: CloudAgentMouthConnection,
-	method: string,
-	params?: unknown,
-	headers: Record<string, string> = {},
-): Promise<Response> {
-	return fetch(connection.url, {
-		method: "POST",
-		headers: {
-			"content-type": "application/json",
-			accept: "application/json, text/event-stream",
-			authorization: `Bearer ${connection.bearerToken}`,
-			...headers,
-		},
-		body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-	});
-}
-
-async function send(connection: CloudAgentMouthConnection, input: unknown): Promise<unknown> {
-	const response = await rpc(connection, "tools/call", { name: "send_message", arguments: input });
-	expect(response.status).toBe(200);
-	return response.json();
+	return mouth;
 }
 
 afterEach(async () => {
@@ -92,71 +66,6 @@ describe("cloud agent public mouth", () => {
 			expect(() => parseCloudAgentSendReceipt(invalid, runId)).toThrow("Invalid send receipt");
 	});
 
-	it("exposes one run-scoped tool over authenticated loopback MCP", async () => {
-		const deliver = vi.fn(async (input: CloudAgentSendInput) => receipt(input));
-		const { mouth, connection } = await start(deliver);
-		expect(mouth.diagnosticState).toBe("uninitialized");
-		expect((await rpc(connection, "tools/list", {}, { authorization: "" })).status).toBe(403);
-		expect(mouth.diagnosticState).toBe("uninitialized");
-		expect(connection.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
-		const initialized = await rpc(connection, "initialize", { protocolVersion: "2025-06-18" });
-		expect(mouth.diagnosticState).toBe("initialized");
-		expect(await initialized.json()).toMatchObject({
-			result: {
-				protocolVersion: "2025-06-18",
-				instructions: expect.stringContaining("only public voice"),
-			},
-		});
-		const listed = await rpc(connection, "tools/list");
-		expect(mouth.diagnosticState).toBe("ready");
-		expect(await listed.json()).toMatchObject({
-			result: {
-				tools: [
-					{
-						name: "send_message",
-						inputSchema: {
-							additionalProperties: false,
-							required: ["text", "phase", "idempotencyKey"],
-						},
-					},
-				],
-			},
-		});
-		const rejectedHeaders: Record<string, string>[] = [
-			{ authorization: "" },
-			{ authorization: `Bearer ${"x".repeat(43)}` },
-			{ origin: "https://untrusted.example" },
-		];
-		for (const headers of rejectedHeaders)
-			expect((await rpc(connection, "tools/list", {}, headers)).status).toBe(403);
-		const reboundStatus = await new Promise<number | undefined>((resolve, reject) => {
-			const incoming = request(
-				connection.url,
-				{
-					method: "POST",
-					headers: {
-						host: "untrusted.example",
-						authorization: `Bearer ${connection.bearerToken}`,
-					},
-				},
-				(response) => {
-					response.resume();
-					resolve(response.statusCode);
-				},
-			);
-			incoming.once("error", reject);
-			incoming.end();
-		});
-		expect(reboundStatus).toBe(403);
-		expect((await rpc(connection, "tools/list", {}, { "mcp-protocol-version": "invalid" })).status).toBe(400);
-		expect((await rpc(connection, "tools/list", {}, { "content-type": "text/plain" })).status).toBe(400);
-		expect(
-			(await fetch(connection.url, { headers: { authorization: `Bearer ${connection.bearerToken}` } })).status,
-		).toBe(405);
-		expect((await rpc({ ...connection, url: `${connection.url}/other` }, "tools/list")).status).toBe(404);
-		expect(deliver).not.toHaveBeenCalled();
-	});
-
 	it("confirms durable sends immediately and deduplicates replay after a lost response", async () => {
 		const durable = new Map<string, CloudAgentSendReceipt>();
 		let loseFirstResponse = true;
@@ -169,24 +78,23 @@ describe("cloud agent public mouth", () => {
 			}
 			return committed;
 		});
-		const { mouth, connection } = await start(deliver);
-		const progress = { idempotencyKey: "progress-1", text: "Checking the Company File", phase: "progress" };
-		const failed = await send(connection, progress);
-		expect(mouth.diagnosticState).toBe("send-unconfirmed");
-		expect(failed).toMatchObject({ result: { isError: true } });
-		expect(JSON.stringify(failed)).not.toContain("private database");
-		const replayed = await send(connection, progress);
-		expect(mouth.diagnosticState).toBe("delivered");
-		expect(replayed).toMatchObject({ result: { structuredContent: { messageId, sequence: 1 } } });
-		expect(await send(connection, progress)).toEqual(replayed);
+		const mouth = create(deliver);
+		const progress: CloudAgentSendInput = {
+			idempotencyKey: "progress-1",
+			text: "Checking the Company File",
+			phase: "progress",
+		};
+		await expect(mouth.send(progress)).rejects.toThrow();
+		const replayed = await mouth.send(progress);
+		expect(replayed).toMatchObject({ messageId, sequence: 1 });
+		expect(await mouth.send(progress)).toEqual(replayed);
 		expect(durable.size).toBe(1);
-		const final = { idempotencyKey: "final-1", text: "Finished", phase: "final" };
-		expect(await send(connection, final)).toMatchObject({
-			result: { structuredContent: { messageId: finalMessageId } },
-		});
+		const final: CloudAgentSendInput = { idempotencyKey: "final-1", text: "Finished", phase: "final" };
+		expect(await mouth.send(final)).toMatchObject({ messageId: finalMessageId });
 		expect(await mouth.finish()).toEqual({ messageCount: 2, finalMessageId });
 		expect(deliver).toHaveBeenCalledTimes(4);
-		expect((await rpc(connection, "tools/list")).status).toBe(403);
+		await expect(mouth.send(progress)).rejects.toThrow("Mouth is closed");
+		expect(deliver).toHaveBeenCalledTimes(4);
 	});
 
 	it("serializes simultaneous sends and waits for the cloud receipt before acknowledging", async () => {
@@ -195,18 +103,19 @@ describe("cloud agent public mouth", () => {
 			release = resolve;
 		});
 		const calls: string[] = [];
-		const { mouth, connection } = await start(async (input) => {
+		const mouth = create(async (input) => {
 			calls.push(input.idempotencyKey);
 			if (input.phase === "progress") await gate;
 			return receipt(input);
 		});
 		let acknowledged = false;
-		const progress = send(connection, { idempotencyKey: "first", text: "Working", phase: "progress" }).then(() => {
+		const progress = mouth.send({ idempotencyKey: "first", text: "Working", phase: "progress" }).then(() => {
 			acknowledged = true;
 		});
 		await vi.waitFor(() => expect(calls).toEqual(["first"]));
-		const final = send(connection, { idempotencyKey: "last", text: "Done", phase: "final" });
+		const final = mouth.send({ idempotencyKey: "last", text: "Done", phase: "final" });
 		expect(acknowledged).toBe(false);
+		expect(calls).toEqual(["first"]);
 		release();
 		await Promise.all([progress, final]);
 		expect(calls).toEqual(["first", "last"]);
@@ -214,27 +123,57 @@ describe("cloud agent public mouth", () => {
 	});
 
 	it("rejects missing final delivery, but permits an explicitly silent job with no audience", async () => {
-		const first = await start(async (input) => receipt(input));
-		await expect(first.mouth.finish()).rejects.toThrow("without a final send");
-		const second = await start(async (input) => receipt(input));
-		await send(second.connection, { idempotencyKey: "ack", text: "On it", phase: "progress" });
-		await expect(second.mouth.finish()).rejects.toThrow("without a final send");
-		const silent = await start(async (input) => receipt(input));
-		await expect(silent.mouth.finish(false)).resolves.toEqual({ messageCount: 0, finalMessageId: null });
+		const first = create(async (input) => receipt(input));
+		await expect(first.finish()).rejects.toThrow("without a final send");
+		const second = create(async (input) => receipt(input));
+		await second.send({ idempotencyKey: "ack", text: "On it", phase: "progress" });
+		await expect(second.finish()).rejects.toThrow("without a final send");
+		const silent = create(async (input) => receipt(input));
+		await expect(silent.finish(false)).resolves.toEqual({ messageCount: 0, finalMessageId: null });
 	});
 
-	it("revokes a run token on cancellation and does not treat malformed receipts as delivery", async () => {
+	it("refuses sends on cancellation and does not treat malformed receipts as delivery", async () => {
 		const abort = new AbortController();
 		const deliver = vi.fn(async (input: CloudAgentSendInput) => ({ ...receipt(input), runId: sessionId }));
-		const { mouth, connection } = await start(deliver, abort.signal);
-		const input = { idempotencyKey: "final", text: "Done", phase: "final" };
-		expect(await send(connection, { ...input, sessionId })).toMatchObject({ result: { isError: true } });
+		const mouth = create(deliver, abort.signal);
+		const input: CloudAgentSendInput = { idempotencyKey: "final", text: "Done", phase: "final" };
+		expect(() => mouth.send({ ...input, sessionId } as CloudAgentSendInput)).toThrow("Invalid send arguments");
 		expect(deliver).not.toHaveBeenCalled();
-		expect(await send(connection, input)).toMatchObject({ result: { isError: true } });
+		await expect(mouth.send(input)).rejects.toThrow("Invalid send receipt");
 		await expect(mouth.finish()).rejects.toThrow("without a final send");
-		const active = await start(deliver, abort.signal);
+		const active = create(deliver, abort.signal);
 		abort.abort(new Error("run cancelled"));
-		expect((await rpc(active.connection, "tools/list")).status).toBe(403);
-		await expect(active.mouth.finish()).rejects.toThrow("run cancelled");
+		await expect(active.send(input)).rejects.toThrow("run cancelled");
+		await expect(active.finish()).rejects.toThrow("run cancelled");
+		expect(deliver).toHaveBeenCalledTimes(1);
+	});
+
+	it("closes after the send in flight and refuses the sends that have not started", async () => {
+		let release: () => void = () => undefined;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const deliver = vi.fn(async (input: CloudAgentSendInput) => {
+			if (input.phase === "progress") await gate;
+			return receipt(input);
+		});
+		const mouth = create(deliver);
+		const progress = mouth.send({ idempotencyKey: "first", text: "Working", phase: "progress" });
+		await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(1));
+		const queued = mouth.send({ idempotencyKey: "last", text: "Done", phase: "final" });
+		const refused = expect(queued).rejects.toThrow("Mouth is closed");
+		let closed = false;
+		const closing = mouth.close().then(() => {
+			closed = true;
+		});
+		await Promise.resolve();
+		expect(closed).toBe(false);
+		release();
+		await closing;
+		await expect(progress).resolves.toMatchObject({ messageId });
+		await refused;
+		const later = mouth.send({ idempotencyKey: "later", text: "Later", phase: "progress" });
+		await expect(later).rejects.toThrow("Mouth is closed");
+		expect(deliver).toHaveBeenCalledTimes(1);
 	});
 });

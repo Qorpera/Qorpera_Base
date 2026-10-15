@@ -75,7 +75,7 @@ they answer 42501 "native host call is refused".
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-170 functions, grouped for navigation. Signatures: see the migration that defines each.
+154 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
@@ -191,8 +191,7 @@ they answer 42501 "native host call is refused".
     login lapsed works);
   - only the member whose plan pays retries a failed run on it
     (`qorpera_resolve_failed_execution_run` 'retry': 55000 for anyone else;
-    acknowledging stays open) or a change's review on it
-    (`qorpera_retry_company_proposal_review`: 42501 for anyone else).
+    acknowledging stays open).
 - `qorpera_select_member_session_account(p_profile_id, p_session_id)` and
   `qorpera_choose_member_session_account(p_profile_id, p_session_id,
   p_connection_id)` (20260930059000, the payer never changes without the
@@ -261,29 +260,13 @@ and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
 - `qorpera_stage_operation_receipt_objects`
 
 
-### Company File, snapshots, proposals, workspaces (21)
+### Company File, snapshots, workspaces (5)
 
-- `qorpera_accept_company_proposal`
-- `qorpera_append_company_proposal_comment`
-- `qorpera_capture_company_substrate_version`
-- `qorpera_capture_company_substrate_version_v2`
 - `qorpera_company_uses_path_gateway`
 - `qorpera_get_company_file`
-- `qorpera_get_company_proposal`
 - `qorpera_get_company_snapshot`
-- `qorpera_get_company_substrate_version`
-- `qorpera_list_company_proposal_comments`
-- `qorpera_list_company_proposals`
 - `qorpera_list_company_snapshots`
-- `qorpera_list_company_substrate_operations`
 - `qorpera_list_company_workspaces`
-- `qorpera_prepare_company_file_proposal`
-- `qorpera_prepare_company_file_revision`
-- `qorpera_publish_company_file_revision`
-- `qorpera_rebase_company_proposal`
-- `qorpera_reject_company_proposal`
-- `qorpera_retry_company_proposal_review`
-- `qorpera_submit_company_proposal`
 
 
 ### Organization and staff (4)
@@ -705,9 +688,10 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   (names beginning `mail-` belong to mailboxes, from 20260928299650),
   purpose, proof or limit. From 20260930280000 (E4b) a `folder-v2` company
   then refuses a `stripe`, `github` or `hmac-sha256` proof with 0A000 ("A
-  Stripe hook comes later: its secret is taken from Stripe's screen", or "A
-  signed hook is opened through the vault") and makes nothing: its signed
-  hooks are opened by agents through the vault (E3b, E3c).
+  signed hook is opened through the vault"; until 20260930344000, E3c-1, a
+  `stripe` one got "A Stripe hook comes later: its secret is taken from
+  Stripe's screen") and makes nothing: its signed hooks are opened by agents
+  through the vault (E3b, E3c).
 - `qorpera_set_event_hook_status(p_hook_id, p_status)` with `active`,
   `paused` or `removed` → the same descriptor. Removing is final (55000
   afterwards) and frees the name. Owners and admins only.
@@ -722,7 +706,13 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
 - Signed hooks (20260928409980_runtime_event_signed_hooks, step W1b): the
   descriptor of a `stripe`, `github` or `hmac-sha256` (Standard Webhooks,
   also Svix's headers) hook carries `signingSecret` (`connectorId`
-  `event_hook`, `secretName` `h<hook id without hyphens>`, `ready`). On a
+  `event_hook`, `secretName` `h<hook id without hyphens>`, `ready`). From
+  20260930344000 (E3c-1) a `stripe` hook's `signingSecret` also carries, once
+  the vault has its secret, `version` (the current one), `capturedAt` (when
+  that version was stored) and, if a delivery was refused under that
+  version, `lastRefusal` `{receivedAt, reason}` (the newest one). A `github`
+  or `hmac-sha256` hook's keeps exactly `connectorId`, `secretName` and
+  `ready`, and so does a `stripe` hook's before its first capture. On a
   snapshot-v1 company an owner or admin saves the sender's signing secret with
   `qorpera_begin_cloud_secret_capture(company, environment, 'company', null,
   'event_hook', secretName, purpose)` and then
@@ -773,12 +763,11 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
 - Sender names (20260928319810_runtime_company_mail_sender_names): `qorpera_create_company_mailbox` also reserves
   (22023) any local part that reads as Qorpera (case, separators, accents, full width and look-alike letters or
   digits folded), and no email goes out when the agent's or the company's name or the mailbox reads as Qorpera.
-- Attachments (20260928429984_runtime_company_mail_attachments, step M2c-1): agents save a received email's
-  attachment into the company folder with the runtime tool `save_attachment`, and attach company files to
-  `send_mail`; there is no client surface. A saved attachment is an ordinary company file, written through the path
-  gateway. Fetches live in `qorpera_mail_attachment_fetches`, closed to every API role; the `mail-attachments` Edge
-  Function stores attachments as the company's objects in `qorpera-profile-objects`, counted in its storage
-  allowance.
+- Attachments (20260928429984_runtime_company_mail_attachments, step M2c-1): agents attach company files to
+  `send_mail`; there is no client surface. Saving a received email's attachment (the runtime tool `save_attachment`)
+  served only snapshot-v1 companies: C-P4 removed the tool, and legacy sweep D4 (20260930333000) dropped its request.
+  Fetches live in `qorpera_mail_attachment_fetches`, closed to every API role; the `mail-attachments` Edge Function,
+  which stores attachments as the company's objects in `qorpera-profile-objects`, stays until step E.
 - Members read mail (20260928439980_runtime_company_mail_member_read, step I5a; for the Mailbox): any member calls
   `qorpera_member_mail_addresses(p_environment_id)`, `qorpera_member_mail_threads(p_environment_id, p_request)`
   (`{address?, state?, before?: {lastAt, thread}, limit ≤ 50}` → `{threads, nextBefore?}`),
@@ -861,13 +850,15 @@ a write under `human-tasks/` waits for P31.
 
 - `qorpera_member_folder_read(environment, path)`: `{schema: "qorpera.folder-read/v1", asOfSeq, found, entry}`,
   `entry` null when not found; an entry has
-  `path`, `kind` (`file` or `folder`), `version`, `seq`, `updatedAt` and, for a file, `manifestSha256`,
-  `fileSha256`, `bytes`, `mediaType`, `executable`.
+  `path`, `kind` (`file`, `folder` or `symlink`), `version`, `seq`, `updatedAt` and, for a file, `manifestSha256`,
+  `fileSha256`, `bytes`, `mediaType`, `executable`; for a link (`20260930380000_folder_links`), its `target`, the
+  text it holds, never resolved. Nothing is below a link.
 - `qorpera_member_folder_list(environment, parent, after, limit)`: `qorpera.folder-list/v1`, one folder's entries in
   folder-key order (`parent` null for the top), at most `limit` (1 to 1,000); `next` is the path to pass as `after`
   for the next page, null on the last.
 - `qorpera_member_folder_path_history(environment, path, before, limit)`: `qorpera.folder-path-history/v1`, a path's
-  versions newest first (1 to 100 a page), each `{version, seq, op, kind, path, at, by}` and the content fields; a
+  versions newest first (1 to 100 a page), each `{version, seq, op, kind, path, at, by}` and the content fields (a
+  link's `target`, except on a delete); a
   `move_in` has `from` and a `move_out` has `to` when the member may read that path. `next` is a version to pass as
   `before`.
 - `qorpera_member_folder_history(environment, before, limit)`: `qorpera.folder-history/v1`, the change sets newest
@@ -876,7 +867,8 @@ a write under `human-tasks/` waits for P31.
   whose first 1,000 versions the member may read is left out (the feed still shows it). `next` is a seq to pass as
   `before`.
 - `qorpera_member_folder_changes(environment, after_seq, limit, cursor?)`: the folder feed (`qorpera.folder-feed/v1`,
-  core §6), each change set with `by` and `at`. Follow it from `next` (`afterSeq`, `cursor`); on `resync`, read
+  core §6), each change set with `by` and `at`; a link's change has its `target`. Follow it from `next` (`afterSeq`,
+  `cursor`); on `resync`, read
   again from the top.
 - `by` is `{kind: "member", userId}`, `{kind: "agent", staffAgentId}` or `{kind: "platform"}`.
 - `qorpera_member_folder_object(environment, sha256)`: the object gateway's check for one object (a manifest or a
@@ -1112,7 +1104,6 @@ Member requests authenticate with the user token; the gateway checks
 Supabase authority, hashes uploads server-side, and confirms the catalog
 only after durable storage.
 
-- `GET/PUT /v1/member-company-objects/…` — content-addressed objects
 - `GET /v1/member-folder-objects/<environmentId>/<sha256>` — a folder-v2 company's bytes for a member (folder core
   C4, P27b), one manifest or chunk of a file the member may read, now or in a version they may read
   (`qorpera_member_folder_object`, checked before and after the read). Behind the member company gateway like the

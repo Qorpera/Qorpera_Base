@@ -37,14 +37,14 @@ The cloud runtime owns execution, receipts, authorization fences, provider crede
 | Requirement | Public integration | Product status at baseline |
 | --- | --- | --- |
 | Member identity and connection | Host PKCE/member token; SDK `NativeSubscriptionControlPlane` for provider connections/sponsorship | Auth exists; provider Connections panel remains a placeholder. |
-| Governed live Company File and review | `CloudMemberCompanyFileClient`, reader, exact path/version/operation keys | Reads, edits, upload, download and protected review already composed. |
+| Governed live Company File and review | `CloudMemberCompanyFileClient` and its reader (both deleted with snapshot-v1 in legacy sweep step C; a folder-v2 company uses `CloudMemberFolderClient`), exact path/version/operation keys | Reads, edits, upload, download and protected review already composed. |
 | Submit work and expose only the mouth | Member input contract; sponsored turns through `NativeSubscriptionControlPlane`; explicit-send transcript projection | Input/attachment submission and send projection exist. Sponsored admission for sessions without a binding needs integration. |
 | Human interruptibility | `CloudSessionRunControl.read/cancel` with exact session/run | Missing at baseline; Track B is wiring it. |
 | Progress, results and reconnect | Canonical transcript and inputs; SDK turn provenance; fresh member reads after reconnect | Transcript reconstruction exists; sponsored turn provenance/error display needs integration. |
 | Wake bus | Cloud-owned scheduling/dedup/silence | No browser wake executor. Test outcomes with every client offline against accepted release. |
 | Shared office/start/access | `CloudMemberCompanyComputerClient` factories | Start/status/cancel and observed-version grants exist. |
 | Watch/control/private sign-in | SDK views, `MemberCompanyBrowserSession`, browser recovery | Explicit trusted WSS origin, private acknowledgement, consent and cleanup exist. Viewer closure does not stop work or end privacy. |
-| Artifacts and activity | SDK file exports, attachments, `CloudMemberCompanyPresence` | Explicit verified downloads and lossy read-only activity exist; no raw runtime credential or local path authority. |
+| Artifacts and activity | SDK file exports (deleted with snapshot-v1 in legacy sweep step C), attachments, `CloudMemberCompanyPresence` | Explicit verified downloads and lossy read-only activity exist; no raw runtime credential or local path authority. |
 | VM reset and durability | Track A's governed runtime lifecycle | No invented member reset API. Runtime release gate remains open. |
 
 ## Checkpoint procedure
