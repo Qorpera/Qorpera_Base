@@ -3308,14 +3308,20 @@ export class LxdUnixClient
 			{ name, description: "", config: { ...config } },
 			signal,
 		);
-		await this.#waitForOperation(result, signal);
+		const envelope = record(result.body, "LXD response");
+		if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD request failed");
+		// A project's create answers synchronously, with null metadata.
+		if (envelope.type !== "sync") await this.#waitForOperation(result, signal);
 	}
 
 	async deleteProject(name: string, signal?: AbortSignal): Promise<boolean> {
 		if (!INSTANCE_NAME.test(name)) throw new Error("LXD project name is invalid");
 		const result = await this.#request("DELETE", `/1.0/projects/${encodeURIComponent(name)}`, undefined, signal);
 		if (result.status === 404) return false;
-		await this.#waitForOperation(result, signal);
+		const envelope = record(result.body, "LXD response");
+		if (result.status < 200 || result.status >= 300) throw lxdError(result, "LXD request failed");
+		// A project's delete answers synchronously, with or without metadata.
+		if (envelope.type !== "sync") await this.#waitForOperation(result, signal);
 		return true;
 	}
 
