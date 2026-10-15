@@ -986,7 +986,11 @@ describe.skipIf(!program)("links through a real FUSE mount", () => {
 			m.requests.flatMap((request) =>
 				request.kind === Kind.link ? [request.body as { from: string; fromBase?: string; to: string }] : [],
 			);
-		expect(hardLinks().map((made) => made.to).sort()).toEqual(["docs/node-copy", "docs/py-copy"]);
+		expect(
+			hardLinks()
+				.map((made) => made.to)
+				.sort(),
+		).toEqual(["docs/node-copy", "docs/py-copy"]);
 		const reads = (await m.journal()).flatMap((line) => (line.read ? [line.read] : []));
 		// Each hard link is a read of its source at the version it showed, and each readlink a read of the link.
 		for (const made of hardLinks())
