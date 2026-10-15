@@ -11,7 +11,6 @@ export * from "./cloud-company-computer-views.ts";
 export * from "./cloud-file-transfer.ts";
 export * from "./cloud-member-browser-recovery.ts";
 export * from "./cloud-member-company-computer.ts";
-export * from "./cloud-member-company-file.ts";
 export * from "./cloud-member-company-presence.ts";
 export * from "./cloud-member-folder.ts";
 export * from "./cloud-native-subscription-control.ts";
