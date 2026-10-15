@@ -13,7 +13,7 @@
  * <agent folder>/memory/log/YYYY-MM.md, one fact per line as
  * "- (YYYY-MM-DD) <fact>", a note as "- (YYYY-MM-DD) [note] <fact>". The files
  * are ordinary versioned Company File objects: writes and forgets go through the
- * governed mutation gateway with the exact expected version (no silent
+ * folder core's commits (CloudFolderNotebooks) with the exact expected version (no silent
  * last-writer-wins), and history stays in the revision ledger.
  *
  * A fact is one fact wherever it sits: a write that is already recorded
@@ -35,11 +35,11 @@ import {
 import type { JsonValue } from "@qorpera/contracts";
 import {
 	CloudCompanyHeadConflict,
-	type CloudCompanyPathGateway,
 	CloudCompanyPathNotText,
 	type CloudCompanyPathResult,
 } from "./cloud-company-path-gateway.ts";
 import { CloudCompanyPathVersionChanged } from "./cloud-company-path-refusal.ts";
+import type { CloudFolderNotebookGateway } from "./cloud-folder-notebooks.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import { type CloudNativeTool, type CloudToolContext, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 import { CloudRuntimeDiagnosticError, type CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
@@ -68,8 +68,6 @@ const READ_CONCURRENCY = 8;
 const LINE = /^- \((\d{4}-\d{2}-\d{2})\) (.+)$/;
 const LOG_FILE = /^\d{4}-\d{2}\.md$/;
 const NOTE_TAG = "[note] ";
-
-export type CloudMemoryGateway = Pick<CloudCompanyPathGateway, "readTrusted" | "listTrusted" | "mutate">;
 
 export interface CloudMemoryFact {
 	readonly date: string;
@@ -178,8 +176,8 @@ function ageDays(date: string, at: Date): number {
 	return Number.isFinite(then) ? Math.floor((at.getTime() - then) / 86_400_000) : Number.POSITIVE_INFINITY;
 }
 
-async function readFile(gateway: CloudMemoryGateway, path: string, signal: AbortSignal): Promise<NotebookFile> {
-	let found: Awaited<ReturnType<CloudMemoryGateway["readTrusted"]>>;
+async function readFile(gateway: CloudFolderNotebookGateway, path: string, signal: AbortSignal): Promise<NotebookFile> {
+	let found: Awaited<ReturnType<CloudFolderNotebookGateway["readTrusted"]>>;
 	try {
 		found = await gateway.readTrusted(path, signal);
 	} catch (error) {
@@ -200,7 +198,7 @@ async function readFile(gateway: CloudMemoryGateway, path: string, signal: Abort
 /** Every monthly log file, newest first. The gateway pages the listing to its end,
  * and an absent log folder lists empty. A failed listing is a failure, never an
  * empty notebook: a search that could not read must not answer "not found". */
-async function logFiles(gateway: CloudMemoryGateway, log: string, signal: AbortSignal): Promise<string[]> {
+async function logFiles(gateway: CloudFolderNotebookGateway, log: string, signal: AbortSignal): Promise<string[]> {
 	return (await gateway.listTrusted(log, signal))
 		.filter((item) => item.kind === "file" && LOG_FILE.test(item.path.slice(log.length + 1)))
 		.map((item) => item.path)
@@ -216,7 +214,7 @@ interface Notebook {
 
 /** The whole notebook as it is now, for dedupe, forget and recall. */
 async function readNotebook(
-	gateway: CloudMemoryGateway,
+	gateway: CloudFolderNotebookGateway,
 	paths: { profile: string; log: string },
 	signal: AbortSignal,
 ): Promise<Notebook> {
@@ -284,7 +282,7 @@ function budget<T>(items: T[], size: (item: T) => number, maxBytes: number, maxC
  * Reads use the trusted lane, so this runs before the first acknowledgement
  * and spends no read budget. */
 export async function composeCloudAgentMemory(
-	gateway: CloudMemoryGateway,
+	gateway: CloudFolderNotebookGateway,
 	agentFolder: string,
 	at: Date,
 	signal: AbortSignal,
@@ -374,7 +372,7 @@ export async function retryingCloudCompanyChange<T>(
  * operation key is `<keyPrefix>-folder-<digest of folder and version>`. Returns the receipt of a
  * folder a member must approve first (a protected path proposes), else null. Skills share it. */
 export async function ensureCloudCompanyFolders(
-	gateway: CloudMemoryGateway,
+	gateway: CloudFolderNotebookGateway,
 	path: string,
 	context: CloudToolContext,
 	keyPrefix: string,
@@ -414,7 +412,7 @@ export async function ensureCloudCompanyFolders(
 /** The cloud derives the owner from the run: a notebook is always the executing agent's own, in
  * its folder as the company keeps it (place, from the run's context). */
 export function cloudMemoryTools(
-	gateway: CloudMemoryGateway,
+	gateway: CloudFolderNotebookGateway,
 	identity: CloudNativeToolIdentity,
 	place: CloudAgentFolderPlace,
 	now: () => Date = () => new Date(),

@@ -10,7 +10,6 @@ import {
 	type CloudAgentSendInput,
 	type CloudAgentSendReceipt,
 	parseCloudAgentSendInput,
-	parseCloudAgentSendReceipt,
 } from "@qorpera/runtime/cloud-agent-mouth";
 import { CLOUD_CODEX_BOUNDARY_VERSION, runCloudCodexToolSession } from "@qorpera/runtime/cloud-codex-tool-session";
 import {
@@ -225,24 +224,6 @@ export async function runOfficialCodexBoundaryProbe(
 		await writeFile(secretFile, secret);
 		await symlink(canonicalFile, join(root, "company-alias"));
 		await link(canonicalFile, join(root, "company-hardlink"));
-		const connection = await mouth.start();
-		const mouthCall = async (method: string, params: JsonValue = {}): Promise<Record<string, unknown>> => {
-			const response = await fetch(connection.url, {
-				method: "POST",
-				headers: {
-					authorization: `Bearer ${connection.bearerToken}`,
-					"content-type": "application/json",
-					accept: "application/json",
-				},
-				body: JSON.stringify({ jsonrpc: "2.0", id: randomUUID(), method, params }),
-				signal: AbortSignal.any([abort.signal, AbortSignal.timeout(5_000)]),
-			});
-			assert(response.ok);
-			const value = (await response.json()) as { result: Record<string, unknown> };
-			return value.result;
-		};
-		await mouthCall("initialize");
-		await mouthCall("tools/list");
 		const sendTool: CloudNativeTool = {
 			name: "send_message",
 			description: "Only public voice. Send progress, then final. Reuse exact idempotency keys for retries.",
@@ -261,10 +242,9 @@ export async function runOfficialCodexBoundaryProbe(
 				const input = parseCloudAgentSendInput(value);
 				return { ...input };
 			},
+			// In process, as a company run delivers: a lost receipt reaches the model only as an unconfirmed outcome.
 			async execute(value) {
-				const result = await mouthCall("tools/call", { name: "send_message", arguments: value });
-				if (result.isError) throw new Error("Send unconfirmed");
-				return { kind: "json", value: { ...parseCloudAgentSendReceipt(result.structuredContent, runId) } };
+				return { kind: "json", value: { ...(await mouth.send(parseCloudAgentSendInput(value))) } };
 			},
 		};
 		const readTool: CloudNativeTool = {

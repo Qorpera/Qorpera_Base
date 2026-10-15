@@ -240,10 +240,12 @@ function eventRows(value: unknown, index: number): Row[] {
 	}
 	const attachments = (event.attachments === null ? [] : list(event.attachments, "its event's attachments")).map(
 		(item) => {
-			const attachment = parseClosedRecord(item, "an attachment", ["mediaType", "bytes"]);
+			// A member's image names its company-folder path, where company_read opens it.
+			const attachment = parseClosedRecord(item, "an attachment", ["mediaType", "bytes"], ["path"]);
 			if (attachment.mediaType !== null && typeof attachment.mediaType !== "string") throw invalid("an attachment");
 			if (attachment.bytes !== null) whole(attachment.bytes, "an attachment's size");
-			return `${attachment.mediaType || "file"}${attachment.bytes === null ? "" : ` (${attachment.bytes} bytes)`}`;
+			const path = attachment.path === undefined ? null : nonEmpty(attachment.path, "an attachment's path");
+			return `${attachment.mediaType || "file"}${attachment.bytes === null ? "" : ` (${attachment.bytes} bytes)`}${path === null ? "" : ` at ${path}`}`;
 		},
 	);
 	const quotes = (event.quotes === null ? [] : list(event.quotes, "its event's quotes")).map((item, position) => {

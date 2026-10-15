@@ -250,7 +250,9 @@ select pg_temp.folder_test_machine_credits_patch('public.qorpera_folder_commit(u
 select pg_temp.folder_test_machine_credits_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
 	$old$		-- Authority on every path the unit touches (a subtree's boundaries included): write on what changes,
 		-- read on a copy's source. A member as C1a; a run's agent for its requester and audience (C1B §3).
-		if v_ok and v_actor_kind in ('member','run','view') then$old$,
+		-- 20260930231000 (W1b): not a memory commit's unit in its run's own log, which the run writes as itself (§4.3).
+		if v_ok and v_actor_kind in ('member','run','view') and not (v_actor_kind = 'run'
+			and public.qorpera_memory_run_log_admits(p_environment_id, p_operation_key, v_auth_actor, v_op, v_path, v_unit)) then$old$,
 	$new$		-- 20260930421000: 2. a credited command that no longer runs on the view's machine and placement refuses the
 		-- unit (command_ended); 3. a credited agent off staff denies it. Then its authority is checked once for each
 		-- credited command's agent and member, each in the starter's place within the view's principal set; a unit
@@ -272,7 +274,9 @@ select pg_temp.folder_test_machine_credits_patch('public.qorpera_folder_commit(u
 			end if;
 		-- Authority on every path the unit touches (a subtree's boundaries included): write on what changes,
 		-- read on a copy's source. A member as C1a; a run's agent for its requester and audience (C1B §3).
-		if v_ok and v_actor_kind in ('member','run','view') then$new$);
+		-- 20260930231000 (W1b): not a memory commit's unit in its run's own log, which the run writes as itself (§4.3).
+		if v_ok and v_actor_kind in ('member','run','view') and not (v_actor_kind = 'run'
+			and public.qorpera_memory_run_log_admits(p_environment_id, p_operation_key, v_auth_actor, v_op, v_path, v_unit)) then$new$);
 select pg_temp.folder_test_machine_credits_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
 	$old$		if v_ok and v_op = 'write' then
 			if v_unit ? 'expectedVersion' and v_unit -> 'expectedVersion' <> 'null'::jsonb then$old$,
