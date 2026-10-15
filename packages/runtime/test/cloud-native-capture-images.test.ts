@@ -93,7 +93,7 @@ it("does not execute a screenshot when the native image adapter is unavailable",
 	expect(f.execute).not.toHaveBeenCalled();
 });
 
-it.each([
+it.each<JsonValue>([
 	{
 		screenId: asset.screenId,
 		surface: "desktop",
