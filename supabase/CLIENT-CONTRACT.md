@@ -75,7 +75,7 @@ they answer 42501 "native host call is refused".
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-154 functions, grouped for navigation. Signatures: see the migration that defines each.
+157 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
@@ -766,8 +766,8 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
 - Attachments (20260928429984_runtime_company_mail_attachments, step M2c-1): agents attach company files to
   `send_mail`; there is no client surface. Saving a received email's attachment (the runtime tool `save_attachment`)
   served only snapshot-v1 companies: C-P4 removed the tool, and legacy sweep D4 (20260930333000) dropped its request.
-  Fetches live in `qorpera_mail_attachment_fetches`, closed to every API role; the `mail-attachments` Edge Function,
-  which stores attachments as the company's objects in `qorpera-profile-objects`, stays until step E.
+  Legacy sweep D7 (20260930336000) dropped the fetch lane behind it: the fetch table, the worker's functions and the
+  `mail-attachments` Edge Function.
 - Members read mail (20260928439980_runtime_company_mail_member_read, step I5a; for the Mailbox): any member calls
   `qorpera_member_mail_addresses(p_environment_id)`, `qorpera_member_mail_threads(p_environment_id, p_request)`
   (`{address?, state?, before?: {lastAt, thread}, limit ≤ 50}` → `{threads, nextBefore?}`),
@@ -1035,6 +1035,42 @@ Images no input lists are deleted a day after the input's last upload, by a swee
 whole folder of an input never posted, and the images a posted input does not list. Erasing a message (memory step
 M3) deletes that message's images (its input's folder) with its lines. The memory zoom's `attachments` stay `{mediaType, bytes}` for
 now; an image's path comes to the zoom with the runtime that opens it.
+
+### Coding environment secrets (20260930438000_coding_environment_secrets)
+
+The environment variables of a coding session's commands (an npm token, a Sentry DSN). Each is a vault secret captured
+like any other (`qorpera_begin_cloud_secret_capture`, the broker's screen, completion) with the connector id
+`environment`, owned by the company (owners and administrators capture those) or by the member. Its secret name is the
+variable's name in lower case: `npm_token` for `NPM_TOKEN`. A name is `[a-z][a-z0-9_]{0,63}`, never one the coding
+machine sets itself (`home`, `path`, `tmpdir`, `user`, `shell`, `lang`, `tz`, the proxy and certificate variables, and
+any name that starts `lc_`, `git_`, `ld_`, `dyld_`, `ssh_`, `xdg_`, `docker_` or `qorpera_`), and never one that names
+a harness's login or provider (`anthropic_`, `claude_`, `codex_`, `openai_`), so no secret changes who pays for a
+session. The begin refuses any other name with 22023 "That name is not available for an environment variable". A
+value never comes back to a client.
+
+A coding session gets its member's own environment secrets and the company's that an owner or administrator granted on
+its repository; a company secret with no grant reaches no session. When the member's and a granted company secret have
+the same name, the company's wins.
+
+- `qorpera_list_coding_environment(profile, environment)`: `[{schema: "qorpera.coding-environment-secret/v1",
+  secretId, name, ownerKind, purpose, version, grants, createdAt, updatedAt}]`, the company's environment secrets and
+  the caller's own, by name. `name` is the variable's (upper case); `grants` lists a company secret's live grants,
+  `[{grantId, repository, issuedByUserId, createdAt}]` by repository (always `[]` for a member's). Every member may
+  read it, a viewer too; anyone else gets `[]`.
+- `qorpera_grant_coding_environment_secret(profile, secret, repository)`: an owner or administrator gives a company
+  environment secret to the coding sessions of one GitHub repository, `owner/name` in any case (kept in lower case, as
+  GitHub compares names). Answers `{schema: "qorpera.coding-environment-grant/v1", grantId, secretId, repository,
+  issuedByUserId, status, createdAt}`; granting it again answers the live grant. Refusals: 42501 "coding environment
+  grants need an owner or administrator", 22023 "A repository is named owner/name", 42501 "company environment secret
+  is unavailable" (a member's secret, another connector's, a disconnected one, or a name no longer allowed).
+- `qorpera_revoke_coding_environment_grant(profile, grant)`: an owner or administrator withdraws a grant. The same
+  answer with `status: "revoked"`, also for one already withdrawn; 42501 "coding environment grant is unavailable" for
+  a grant the company does not have.
+
+A grant also ends when its secret is disconnected (`qorpera_revoke_cloud_secret`), and for good when the member who
+gave it stops being an owner or administrator or leaves: promoting them again revives none, so another owner or
+administrator grants it again. Rotating the secret keeps its grants. A member's own environment secrets end when they
+leave, as their other secrets do.
 
 ## 3. Realtime
 

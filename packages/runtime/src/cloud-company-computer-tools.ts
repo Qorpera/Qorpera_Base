@@ -79,6 +79,48 @@ export const COMPANY_COMPUTER_SHELL_DEFAULT_WRITE_WAIT_MS = 1_000;
 /** A reply must reach the run within the native call's 25-second deadline. */
 export const COMPANY_COMPUTER_SHELL_MAX_WAIT_MS = 15_000;
 
+/**
+ * Why the office gave a run's screen back before its action (F3 4d, RUNTIME-FOLDER-COMPANY-MACHINES.md "A refused or
+ * unanswered open"): the core refused the desktop's folder view (its reason is the message), or did not answer before
+ * the action's deadline. No desktop runs for a run without `/company`.
+ */
+export interface CompanyComputerFolderRefusal {
+	readonly code: "COMPANY_FOLDER_REFUSED" | "COMPANY_FOLDER_UNAVAILABLE";
+	readonly message: string;
+}
+
+export const COMPANY_COMPUTER_FOLDER_UNAVAILABLE_MESSAGE = "company folder is unavailable";
+
+/** The answer to an action whose screen the office gave back for the folder: nothing was done. */
+export function companyComputerFolderGiveBack(
+	action: CompanyComputerAction,
+	refusal: CompanyComputerFolderRefusal,
+): CompanyComputerToolContent {
+	const name = "action" in action ? action.action : undefined;
+	return {
+		kind: "json",
+		value: {
+			...(name ? { action: name } : {}),
+			completed: false,
+			refused: { code: refusal.code, message: refusal.message },
+		},
+	};
+}
+
+/** Whether an action's answer says the office gave its screen back for the folder. */
+export function isCompanyComputerFolderGiveBack(content: CompanyComputerToolContent): boolean {
+	if (content.kind !== "json") return false;
+	const value = content.value;
+	if (!value || typeof value !== "object" || Array.isArray(value) || value.completed !== false) return false;
+	const refused = value.refused;
+	return (
+		!!refused &&
+		typeof refused === "object" &&
+		!Array.isArray(refused) &&
+		(refused.code === "COMPANY_FOLDER_REFUSED" || refused.code === "COMPANY_FOLDER_UNAVAILABLE")
+	);
+}
+
 export interface CompanyComputerToolArguments {
 	operationKey: string;
 	action: CompanyComputerAction;
@@ -559,7 +601,7 @@ export function createCompanyComputerTools(options: {
 					"One driver per screen; member takeover cancels agent control. Keep operationKey stable for the same logical work. " +
 					"Writes, navigation, input and shell are effect-checked with durable receipts; an uncertain result requires reconciliation, never a new key. " +
 					"Screen release gives up occupancy without deleting desktop/browser state; idle policy controls power. " +
-					"After a confirmed screen-admission refusal, explicitly open the screen again to retry; no action is replayed automatically. " +
+					"After a confirmed admission or folder refusal, explicitly open the screen again to retry; no action is replayed automatically. " +
 					"Use browser list_tabs then select_tab for multiple or closed tabs. Tab IDs belong to this admitted screen session; " +
 					"list_tabs returns bounded title/URL previews and nextAfterTabId for pagination. Restart listing if its cursor closes. " +
 					"Browser snapshots report semantic roles and text, not pixels. In replies and saved reports, preserve the observed roles: a link is not a footer link and a button is not a primary action unless evidence explicitly establishes that placement or hierarchy. Describe a text-only finding as reported by the snapshot, not visually verified; actual appearance requires screenshot evidence. " +
@@ -659,6 +701,15 @@ export function createCompanyComputerTools(options: {
 					if (parsed.action.kind === "screen" && parsed.action.action === "release") {
 						closed = true;
 						await active.close();
+					} else if (isCompanyComputerFolderGiveBack(content)) {
+						// The office gave the screen back for the folder (F3 4d): the lease goes after the result's final
+						// check, as on release. Like an admission refusal, only an explicit open asks for it again. The
+						// answer is read here, not in perform, so a completed receipt's replay gives the screen back too.
+						admissionRefused = true;
+						const refused = Promise.reject(new Error("COMPUTER_SCREEN_GIVEN_BACK"));
+						refused.catch(() => undefined);
+						opening = refused;
+						await active.close().catch(() => undefined);
 					}
 					return content;
 				},

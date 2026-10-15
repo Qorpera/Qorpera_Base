@@ -60,7 +60,7 @@ print(json.dumps({'boot':pathlib.Path('/proc/sys/kernel/random/boot_id').read_te
 // The runtime lines the shapes below mirror. A change to any of them stops the launcher until the shapes follow.
 export const RUNTIME_PINS = [
 	{ file: "packages/runtime/src/cloud-company-computer-linux-host.ts", from: "export function companyComputerLinuxSandboxArgs(tmpBytes = 67108864): string[] {", to: "}", sha256: "39208f0c978cdd1be87ddf399819e8519d58a3f3546ee93f19fb729a6b17bef4" },
-	{ file: "packages/runtime/src/cloud-company-computer-linux-desktop.ts", from: "files.push(await openCompanyComputerLinuxDirectory(layout.workbenchRoot, false));", to: 'stdin: "ignore",', sha256: "774a016b1967b68d13d5b74fd90d4639da2e737154e3ecec8cfda8ee5e00acdd" },
+	{ file: "packages/runtime/src/cloud-company-computer-linux-desktop.ts", from: "files.push(await openCompanyComputerLinuxDirectory(layout.workbenchRoot, false));", to: 'stdin: "ignore",', sha256: "2daff5dfbb976754f6dc8cbda7a60c83c8f0743fcb1f653c3e224bcf420317ad" },
 	{ file: "packages/runtime/src/cloud-company-computer-linux-commands.ts", from: "const workbench = await openCompanyComputerLinuxDirectory(this.#layout.workbenchRoot, false);", to: 'stdin: "pipe",', sha256: "48ddc6b2a1d2a0b553f91535dbfb4ad7ca8917b694951794775845ee811c498f" },
 	{ file: "packages/runtime/src/cloud-company-computer-linux-shell.ts", from: "export const COMPANY_COMPUTER_SHELL_TMP_BYTES = 512 * 1024 * 1024;", to: 'const SHELL_IMAGE_DIRECTORIES = ["/etc/ssl/certs", "/etc/alternatives", "/etc/fonts", "/etc/xdg"];', sha256: "111a5c1758d6189b6442dbd1fadd3429f09dfddda287532d434ad4c3eb0552ed" },
 	{ file: "packages/runtime/src/cloud-company-computer-linux-shell.ts", from: "files.push(await openCompanyComputerLinuxDirectory(layout.workbenchRoot, false));", to: "pipeCount: 2,", sha256: "532e140b088a2c3d8f09ffe3585bdebad9b2f9794c1ba88e1cdd4a41bd49c849" },
@@ -100,7 +100,9 @@ const setenv = (values) => Object.entries(values).flatMap(([name, value]) => ["-
 
 /**
  * The runtime's three namespace shapes with the guest's own private surface replaced by stand-ins under `dir`
- * (pinned above). `{ folder: true }` marks where the folder goes: just before `--chdir`, as 4d places it.
+ * (pinned above). `{ folder: true }` marks where the folder goes: after the shape's last other mount, with only the
+ * environment and the start after it. The desktop's is where 4d-2a puts it, before its environment, which names it in
+ * `QORPERA_COMPANY_FOLDER`; the shell's and a command's are where 4d places them.
  */
 export function remountShapes(dir) {
 	const standin = (name, directory = true) => ({ path: `${dir}/standin/${name}`, directory });
@@ -114,8 +116,8 @@ export function remountShapes(dir) {
 			...["--size", "33554432", "--tmpfs", "/var/tmp", ...network],
 			...[["/etc/passwd", false], ["/etc/group", false], ["/etc/nsswitch.conf", false], ["/etc/fonts", true], ["/etc/xdg", true], ["/etc/X11", true], ["/etc/dbus-1", true], ["/etc/ssl/certs", true]].map(([path, directory]) => ({ requiredRoBind: path, directory })),
 			...["--symlink", "../usr/lib/os-release", "/etc/os-release"],
-			...setenv({ HOME, PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8", QORPERA_WORKBENCH_ROOT: WORKBENCH, QORPERA_DESKTOP_HOME: HOME, QORPERA_SCREEN_STATE_ROOT: "/screen-state", QORPERA_SCREEN_RUNTIME_ROOT: "/run/qorpera", QORPERA_SCREEN_WALLPAPER: `/screen-state/${SCREEN}/wallpaper.png` }),
 			{ folder: true },
+			...setenv({ HOME, PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8", QORPERA_WORKBENCH_ROOT: WORKBENCH, QORPERA_DESKTOP_HOME: HOME, QORPERA_SCREEN_STATE_ROOT: "/screen-state", QORPERA_SCREEN_RUNTIME_ROOT: "/run/qorpera", QORPERA_SCREEN_WALLPAPER: `/screen-state/${SCREEN}/wallpaper.png`, QORPERA_COMPANY_FOLDER: "/company" }),
 			...start,
 		],
 	};

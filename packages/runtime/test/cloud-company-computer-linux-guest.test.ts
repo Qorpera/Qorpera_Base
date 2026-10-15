@@ -6,8 +6,13 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import type { CompanyComputerPrivacyChallenge } from "@qorpera/cloud-client/cloud-company-computer-privacy";
 import type { CompanyComputerViewerGrant } from "@qorpera/cloud-client/cloud-company-computer-viewer";
+import { CompanyComputerDesktopFolders } from "@qorpera/runtime/cloud-company-computer-desktop-folder";
 import { companyComputerFailureDiagnostic } from "@qorpera/runtime/cloud-company-computer-diagnostics";
 import { CloudCompanyComputerEffectControl } from "@qorpera/runtime/cloud-company-computer-effect-control";
+import type {
+	askCompanyComputerFolderHelper,
+	CompanyComputerFolderRequest,
+} from "@qorpera/runtime/cloud-company-computer-folder-helper-client";
 import { CompanyComputerScreenActionGate } from "@qorpera/runtime/cloud-company-computer-leases";
 import { CompanyComputerLinuxCommands } from "@qorpera/runtime/cloud-company-computer-linux-commands";
 import { CompanyComputerLinuxGuest } from "@qorpera/runtime/cloud-company-computer-linux-guest";
@@ -239,7 +244,9 @@ afterEach(async () => {
 	for (const directory of temporary.splice(0)) await rm(directory, { recursive: true, force: true });
 	vi.restoreAllMocks();
 });
-async function fixture(options: { browser?: boolean; desktop?: boolean } = {}) {
+async function fixture(
+	options: { browser?: boolean; desktop?: boolean; folderHelper?: typeof askCompanyComputerFolderHelper } = {},
+) {
 	const source = nativeToolAuthorityFixture();
 	const run = await CloudNativeToolRun.open(
 		source.binding,
@@ -316,6 +323,11 @@ async function fixture(options: { browser?: boolean; desktop?: boolean } = {}) {
 			if (args.p_action === "finish") return { state: "drained" };
 			return { state: "admitted", resourceLeaseId: computerId(81), validForMs: 30000 };
 		}
+		if (method === "qorpera_folder_view_open") {
+			const opened = order.filter((entry) => entry.startsWith(method)).length;
+			return { schema: "qorpera.folder-view/v1", viewId: computerId(200 + opened), pass: `fixture-pass-${opened}` };
+		}
+		if (method === "qorpera_folder_view_close") return {};
 		throw new Error(`Unexpected fixture RPC ${method}`);
 	});
 	const boundary = { assertReady: vi.fn(async () => undefined) };
@@ -342,6 +354,9 @@ async function fixture(options: { browser?: boolean; desktop?: boolean } = {}) {
 		captureRoot: "/run/office-captures",
 		registry: { call },
 		screenLifecycle,
+		...(options.folderHelper
+			? { folders: new CompanyComputerDesktopFolders({ registry: { call }, ask: options.folderHelper }) }
+			: {}),
 		boundary,
 		screenshots: () => ({
 			publish: async () => {
@@ -1557,5 +1572,180 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		).rejects.toThrow("OFFICE_GATE_CHANGED");
 		await f.guest.privacy.fence({ ...f.challenge, version: 2 }, f.run.signal);
 		await expect(f.guest.privacy.fence(f.challenge, f.run.signal)).rejects.toThrow("OFFICE_PRIVACY_CHANGED");
+	});
+});
+
+/** The folder helper as the screen's mount asks it: each request takes the next answer queued for its op. */
+function folderHelper() {
+	const asked: CompanyComputerFolderRequest[] = [];
+	const queued = new Map<string, unknown[]>();
+	const ask = vi.fn(async (request: CompanyComputerFolderRequest) => {
+		asked.push(request);
+		return queued.get(request.op)?.shift();
+	});
+	return {
+		asked,
+		ask: ask as unknown as typeof askCompanyComputerFolderHelper,
+		answer: (op: CompanyComputerFolderRequest["op"], ...answers: unknown[]) => {
+			queued.set(op, [...(queued.get(op) ?? []), ...answers]);
+		},
+		ops: () => asked.map((request) => request.op),
+	};
+}
+
+describe("each desktop's mount of the company folder (helper stand-in; the mount itself has its own tests)", () => {
+	it("starts a run's desktop on the run's mount, keeps it while the mount runs, and starts it again on a mount made again", async () => {
+		const h = folderHelper();
+		const f = await fixture({ folderHelper: h.ask });
+		const name = `desktop-${f.binding.screenId}`;
+		const session = await f.create();
+		const open = f.operation({ kind: "screen", action: "open" });
+		h.answer("mount", { answer: "mounted" }, { answer: "mounted" });
+		await session.endpoint.perform(open, f.lease, f.effect());
+		expect(h.asked).toEqual([
+			{
+				op: "mount",
+				name,
+				view: { environmentId: f.binding.environmentId, viewId: computerId(201), pass: "fixture-pass-1" },
+			},
+		]);
+		expect(physical.launch).toHaveBeenCalledOnce();
+		expect(physical.launch.mock.calls[0][2]).toEqual({ company: { name, epoch: 1 } });
+		// The same run on a mount that still runs: the desktop goes on as it is.
+		h.answer("list", { answer: "list", mounts: [{ name, viewId: computerId(201), program: "running" }] });
+		await session.endpoint.perform(open, f.lease, f.effect());
+		expect(physical.launch).toHaveBeenCalledOnce();
+		// The mount's program ended: the mount is made again, on a new view, and the desktop starts again on it.
+		h.answer("list", { answer: "list", mounts: [{ name, viewId: computerId(201), program: "closed" }] });
+		h.answer("unmount", { answer: "closed", unmounted: true });
+		await session.endpoint.perform(open, f.lease, f.effect());
+		expect(h.ops()).toEqual(["mount", "list", "list", "unmount", "mount"]);
+		expect(displays[0].stop).toHaveBeenCalledOnce();
+		expect(physical.launch).toHaveBeenCalledTimes(2);
+		expect(physical.launch.mock.calls[1][2]).toEqual({ company: { name, epoch: 2 } });
+		expect(f.order.filter((entry) => entry.startsWith("qorpera_folder_view"))).toEqual([
+			"qorpera_folder_view_open:read",
+			"qorpera_folder_view_close:read",
+			"qorpera_folder_view_open:read",
+		]);
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("gives a run's screen back, with no desktop, when its mount cannot be made", async () => {
+		const h = folderHelper();
+		const f = await fixture({ folderHelper: h.ask });
+		const session = await f.create();
+		h.answer("mount", { answer: "failed" });
+		await expect(
+			session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect()),
+		).resolves.toEqual({
+			kind: "json",
+			value: {
+				action: "open",
+				completed: false,
+				refused: { code: "COMPANY_FOLDER_UNAVAILABLE", message: "company folder is unavailable" },
+			},
+		});
+		expect(physical.launch).not.toHaveBeenCalled();
+		expect(f.order.filter((entry) => entry.startsWith("qorpera_folder_view"))).toEqual([
+			"qorpera_folder_view_open:read",
+			"qorpera_folder_view_close:read",
+		]);
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("unmounts a mount made after its run's open was cancelled, a minute later with no desktop", async () => {
+		const h = folderHelper();
+		const f = await fixture({ folderHelper: h.ask });
+		const session = await f.create();
+		const mounting = computerDeferred<unknown>();
+		h.answer("mount", mounting.promise);
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const cancel = new AbortController();
+		const asked = session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, {
+			...f.effect(),
+			signal: cancel.signal,
+		});
+		asked.catch(() => undefined);
+		await vi.waitFor(() => expect(h.ops()).toEqual(["mount"]));
+		cancel.abort(new Error("fixture cancelled the open"));
+		await expect(asked).rejects.toThrow();
+		// The helper answers after the caller left: nothing starts on that mount, and it goes after a minute.
+		mounting.resolve({ answer: "mounted" });
+		h.answer("unmount", { answer: "saved", report: { commitId: null, seq: null, paths: [] }, unmounted: true });
+		await vi.advanceTimersByTimeAsync(59_000);
+		expect(h.ops()).toEqual(["mount"]);
+		await vi.advanceTimersByTimeAsync(1_000);
+		await vi.waitFor(() => expect(f.order).toContain("qorpera_folder_view_close:read"));
+		expect(h.asked.at(-1)).toEqual({
+			op: "unmount",
+			name: `desktop-${f.binding.screenId}`,
+			final: false,
+			timeoutMs: 30000,
+		});
+		expect(physical.launch).not.toHaveBeenCalled();
+	});
+	it("moves the mount to the view of a member who takes control, and a shared viewer asks nothing", async () => {
+		const h = folderHelper();
+		const f = await fixture({ folderHelper: h.ask });
+		const name = `desktop-${f.binding.screenId}`;
+		const session = await f.create();
+		h.answer("mount", { answer: "mounted" });
+		await session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect());
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		expect(h.ops()).toEqual(["mount"]);
+		h.answer("switch", { answer: "switched" });
+		const viewer = f.sharedViewer();
+		await f.guest.viewer.connect(
+			{
+				...viewer,
+				mode: "control",
+				lease: {
+					...f.lease,
+					epoch: 1,
+					driver: { kind: "member", memberId: viewer.memberId, sessionId: viewer.viewerSessionId },
+				},
+			},
+			new AbortController().signal,
+		);
+		expect(h.asked.at(-1)).toEqual({
+			op: "switch",
+			name,
+			view: { environmentId: f.binding.environmentId, viewId: computerId(202), pass: "fixture-pass-2" },
+		});
+		// The member's view reaches the running desktop through the same mount: nothing starts again.
+		expect(physical.launch).toHaveBeenCalledOnce();
+		expect(displays[0].stop).not.toHaveBeenCalled();
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("starts a desktop a viewer opened without a mount again on the first run's mount", async () => {
+		const h = folderHelper();
+		const f = await fixture({ folderHelper: h.ask });
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		expect(physical.launch.mock.calls[0][2]).toEqual({ company: undefined });
+		const session = await f.create();
+		h.answer("mount", { answer: "mounted" });
+		await session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect());
+		expect(displays[0].stop).toHaveBeenCalledOnce();
+		expect(physical.launch.mock.calls[1][2]).toEqual({
+			company: { name: `desktop-${f.binding.screenId}`, epoch: 1 },
+		});
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("unmounts the screen's mount, and closes its view, once its desktop has stopped", async () => {
+		const h = folderHelper();
+		const f = await fixture({ folderHelper: h.ask });
+		const session = await f.create();
+		h.answer("mount", { answer: "mounted" });
+		await session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect());
+		h.answer("unmount", { answer: "saved", report: { commitId: null, seq: null, paths: [] }, unmounted: true });
+		await session.close();
+		await f.guest.stopResources(f.binding, new AbortController().signal);
+		expect(displays[0].stop).toHaveBeenCalledOnce();
+		await vi.waitFor(() => expect(f.order).toContain("qorpera_folder_view_close:read"));
+		expect(h.asked.at(-1)).toEqual({
+			op: "unmount",
+			name: `desktop-${f.binding.screenId}`,
+			final: false,
+			timeoutMs: 30000,
+		});
 	});
 });
