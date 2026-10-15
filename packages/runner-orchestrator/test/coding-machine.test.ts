@@ -452,12 +452,16 @@ describe("a coding machine's journaled lifecycle", () => {
 		for (const expected of ["pending", "pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
 		const instance = f.instance();
 		if (!instance) throw new Error("missing fixture VM");
-		// What was written down and done to the VM when the executor is told; the first call fails.
-		const seen: [number, number][] = [];
+		// The stop the executor is told of, and what was written down and done to the VM by then; the first call fails.
+		const seen: [string, number, number][] = [];
 		let fail = true;
-		const stoppedFromOutside = vi.fn(async (signal: AbortSignal) => {
+		const stoppedFromOutside = vi.fn(async (startOperationId: string, signal: AbortSignal) => {
 			expect(signal).toBe(f.controller.signal);
-			seen.push([(await outsideStops(f)).length, f.client.submitInstanceOperation.mock.calls.length]);
+			seen.push([
+				startOperationId,
+				(await outsideStops(f)).length,
+				f.client.submitInstanceOperation.mock.calls.length,
+			]);
 			if (fail) {
 				fail = false;
 				throw new Error("CODING_HOST_MACHINE_STOPPED_UNCONFIRMED");
@@ -480,11 +484,15 @@ describe("a coding machine's journaled lifecycle", () => {
 		instance.statusCode = 102;
 		expect((await reconcile("stopped")).state).toBe("stopped");
 		for (const expected of ["pending", "deleted"]) expect((await reconcile("deleted")).state).toBe(expected);
+		// Each stop is named by the start it ended, the same each time it is seen, as its record next to the journal is.
+		const [first, second] = (await outsideStops(f)).map((stop) => stop.operationId);
+		expect(first).toMatch(/^[0-9a-f-]{36}$/);
+		expect(second).not.toBe(first);
 		expect(seen).toEqual([
-			[1, 2],
-			[1, 2],
-			[2, 3],
-			[2, 3],
+			[first, 1, 2],
+			[first, 1, 2],
+			[second, 2, 3],
+			[second, 2, 3],
 		]);
 		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual([
 			"create",

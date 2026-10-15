@@ -389,8 +389,10 @@ export interface CodingMachineReconcileOptions {
 	 * once that stop is written down and before anything else is done to the
 	 * machine (a start, a delete, or waiting for an operator), each time it is
 	 * seen so. The executor ends the machine's attachments here. A failure
-	 * fails the reconcile. */
-	stoppedFromOutside?: (signal: AbortSignal) => Promise<void>;
+	 * fails the reconcile. `startOperationId` names the stop: the LXD operation
+	 * of the start it ended, the same each time that stop is seen and no other
+	 * stop's, since the next start comes only after this call succeeds. */
+	stoppedFromOutside?: (startOperationId: string, signal: AbortSignal) => Promise<void>;
 }
 export interface CodingMachineReconcileResult {
 	/** absent: never created; deleted: our journaled delete and no instance. */
@@ -786,7 +788,7 @@ export async function reconcileCodingMachine(
 							current.events.length ? current.segment : current.segment - 1,
 							tail,
 						);
-						await options.stoppedFromOutside?.(options.signal);
+						await options.stoppedFromOutside?.(tail.operationId as string, options.signal);
 						options.signal.throwIfAborted();
 						if (tooOften) return result("recovery-required");
 					}

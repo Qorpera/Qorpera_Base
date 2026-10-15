@@ -3,9 +3,11 @@
 -- from outside"). Only the executor that planned the machine records the stop, with its exact custody. Every session
 -- attached to the machine is detached and gets one MACHINE_STOPPED event ("The machine stopped"), naming the commands
 -- last seen running there, commands or not; the next turn's context lists those commands as stopped for that reason.
--- A session on another machine is not touched, and a second record of the same stop changes nothing. 928's helpers on
--- 924's base: Alice's run, three of its coding sessions (cancelled, so their first turn ended), b1 and b2 attached to
--- the owner's machine d1 on exec-521, b3 to a second machine d2.
+-- A session on another machine is not touched. A stop is named by the start it ended: a second record of the same stop,
+-- even one that arrives after the machine started again and a session attached anew, answers what the first did and
+-- changes nothing; the next stop is recorded afresh. 928's helpers on 924's base: Alice's run, three of its coding
+-- sessions (cancelled, so their first turn ended), b1 and b2 attached to the owner's machine d1 on exec-521, b3 to a
+-- second machine d2.
 
 do $$
 declare v_alice jsonb := pg_temp.c3_alice();
@@ -47,12 +49,14 @@ begin
 	set local session_replication_role = origin;
 	return v_token;
 end $$;
--- The executor's record of p_machine stopped from outside, under p_role's claims and with this custody.
+-- The executor's record of p_machine stopped from outside after the start p_start, under p_role's claims and with this
+-- custody.
 create function pg_temp.ms_stopped(p_machine uuid, p_owner text default 'exec-521', p_binding text default '{}',
-	p_sha256 text default repeat('7', 64), p_role text default 'service_role') returns jsonb language plpgsql as $$
+	p_sha256 text default repeat('7', 64), p_role text default 'service_role',
+	p_start uuid default '52100000-0000-4000-8000-0000000000e1') returns jsonb language plpgsql as $$
 begin
 	perform pg_temp.base_claims(p_role, case p_role when 'authenticated' then '92400000-0000-4000-8000-000000000001'::uuid end);
-	return public.qorpera_record_coding_machine_stopped(p_machine, p_owner, p_binding, p_sha256);
+	return public.qorpera_record_coding_machine_stopped(p_machine, p_start, p_owner, p_binding, p_sha256);
 end $$;
 -- The executor's step events in a session's thread, oldest first.
 create function pg_temp.ms_events(p_worker uuid) returns jsonb language sql as $$
@@ -94,6 +98,9 @@ from (values
 	(quote_literal('52100000-0000-4000-8000-0000000000d1'), 'exec-521', '{"number":2}', repeat('7', 64), 'Coding machine custody differs'),
 	(quote_literal('52100000-0000-4000-8000-0000000000d1'), 'exec-521', '{ }', repeat('7', 64), 'Coding machine custody differs')
 ) v(machine, owner, binding, sha256, message);
+-- No start named.
+select pg_temp.base_error($q$select pg_temp.ms_stopped('52100000-0000-4000-8000-0000000000d1', p_start => null)$q$, '22023',
+	'Coding machine input invalid');
 -- A removed machine (undone after).
 do $$
 begin
@@ -111,6 +118,7 @@ end $$;
 select pg_temp.base_assert(not pg_temp.ms_detached(w.id) and pg_temp.ms_events(w.id) = '[]'::jsonb, 'nothing changed: ' || w.id)
 from unnest(array['52100000-0000-4000-8000-0000000000b1', '52100000-0000-4000-8000-0000000000b2',
 	'52100000-0000-4000-8000-0000000000b3']::uuid[]) w(id);
+select pg_temp.base_assert(not exists (select 1 from public.qorpera_coding_machine_outside_stops), 'no stop kept');
 
 -- 2. The stop: every session on d1 is detached, each with one MACHINE_STOPPED event; d2's session is not touched -------
 do $$
@@ -144,12 +152,50 @@ begin
 		and pg_temp.ms_events('52100000-0000-4000-8000-0000000000b3') = '[]'::jsonb, 'another machine''s session is not touched');
 end $$;
 
--- 3. The same stop recorded again changes nothing ------------------------------------------------------------------------
-select pg_temp.base_assert(pg_temp.ms_stopped('52100000-0000-4000-8000-0000000000d1') = '{"schema":"qorpera.coding-machine-stopped/v1",
-	"machineId":"52100000-0000-4000-8000-0000000000d1","detached":[]}'::jsonb
-	and jsonb_array_length(pg_temp.ms_events('52100000-0000-4000-8000-0000000000b1')) = 1
-	and jsonb_array_length(pg_temp.ms_events('52100000-0000-4000-8000-0000000000b2')) = 1
-	and not pg_temp.ms_detached('52100000-0000-4000-8000-0000000000b3'), 'a second record detaches nobody');
+-- 3. The same stop recorded again answers the same and changes nothing, even once b2 attached anew after the machine
+-- started again (an abandoned try's request that reached SQL late); the next stop ends that attachment ---------------
+do $$
+declare v_first jsonb := jsonb_build_object('schema', 'qorpera.coding-machine-stopped/v1',
+		'machineId', '52100000-0000-4000-8000-0000000000d1', 'detached', jsonb_build_array(
+			jsonb_build_object('workerId', '52100000-0000-4000-8000-0000000000b1', 'attachmentToken', current_setting('qorpera_test.ms_b1')),
+			jsonb_build_object('workerId', '52100000-0000-4000-8000-0000000000b2', 'attachmentToken', current_setting('qorpera_test.ms_b2'))));
+	v_result jsonb; v_fresh uuid;
+begin
+	v_result := pg_temp.ms_stopped('52100000-0000-4000-8000-0000000000d1');
+	perform pg_temp.base_assert(v_result = v_first, 'a retry gets the first answer: ' || v_result::text);
+	perform pg_temp.base_assert(jsonb_array_length(pg_temp.ms_events('52100000-0000-4000-8000-0000000000b1')) = 1
+		and jsonb_array_length(pg_temp.ms_events('52100000-0000-4000-8000-0000000000b2')) = 1
+		and not pg_temp.ms_detached('52100000-0000-4000-8000-0000000000b3'), 'a retry detaches nobody');
+	v_fresh := pg_temp.ms_attach('52100000-0000-4000-8000-0000000000b2', '52100000-0000-4000-8000-0000000000d1',
+		'[{"commandId":"52100000-0000-4000-8000-0000000000c4","turn":1,"command":"npm run e2e"}]');
+	v_result := pg_temp.ms_stopped('52100000-0000-4000-8000-0000000000d1');
+	perform pg_temp.base_assert(v_result = v_first, 'the late record gets the first answer: ' || v_result::text);
+	perform pg_temp.base_assert((pg_temp.c3_session('52100000-0000-4000-8000-0000000000b2')).attachment_token = v_fresh
+		and (pg_temp.c3_session('52100000-0000-4000-8000-0000000000b2')).running_commands
+			= '[{"commandId":"52100000-0000-4000-8000-0000000000c4","turn":1,"command":"npm run e2e"}]'::jsonb
+		and jsonb_array_length(pg_temp.ms_events('52100000-0000-4000-8000-0000000000b2')) = 1,
+		'the fresh attachment is not touched: ' || to_jsonb(pg_temp.c3_session('52100000-0000-4000-8000-0000000000b2'))::text);
+	-- The machine stops from outside again, after its next start: that stop ends b2's fresh attachment.
+	v_result := pg_temp.ms_stopped('52100000-0000-4000-8000-0000000000d1', p_start => '52100000-0000-4000-8000-0000000000e2');
+	perform pg_temp.base_assert(v_result = jsonb_build_object('schema', 'qorpera.coding-machine-stopped/v1',
+		'machineId', '52100000-0000-4000-8000-0000000000d1', 'detached', jsonb_build_array(
+			jsonb_build_object('workerId', '52100000-0000-4000-8000-0000000000b2', 'attachmentToken', v_fresh))),
+		'the next stop: ' || v_result::text);
+	perform pg_temp.base_assert(pg_temp.ms_detached('52100000-0000-4000-8000-0000000000b2')
+		and pg_temp.ms_events('52100000-0000-4000-8000-0000000000b2') -> 1 -> 'body' = jsonb_build_object('text',
+			'The machine stopped; 1 command was stopped', 'reason', 'MACHINE_STOPPED',
+			'stopped', '[{"commandId":"52100000-0000-4000-8000-0000000000c4","turn":1,"command":"npm run e2e"}]'::jsonb,
+			'moreStopped', 0)
+		and jsonb_array_length(pg_temp.ms_events('52100000-0000-4000-8000-0000000000b2')) = 2
+		and jsonb_array_length(pg_temp.ms_events('52100000-0000-4000-8000-0000000000b1')) = 1,
+		'b2 is told of the second stop: ' || pg_temp.ms_events('52100000-0000-4000-8000-0000000000b2')::text);
+	perform pg_temp.base_assert((select jsonb_agg(jsonb_build_array(s.start_operation_id, s.detached) order by s.start_operation_id)
+		from public.qorpera_coding_machine_outside_stops s where s.machine_id = '52100000-0000-4000-8000-0000000000d1')
+		= jsonb_build_array(jsonb_build_array('52100000-0000-4000-8000-0000000000e1', v_first -> 'detached'),
+			jsonb_build_array('52100000-0000-4000-8000-0000000000e2', v_result -> 'detached'))
+		and not exists (select 1 from public.qorpera_coding_machine_outside_stops s
+			where s.machine_id <> '52100000-0000-4000-8000-0000000000d1'), 'each stop kept once, with its answer');
+end $$;
 
 -- 4. The reason's words; the others keep theirs ---------------------------------------------------------------------------
 select pg_temp.base_assert(public.qorpera_coding_stopped_event(v.reason, v.stopped) ->> 'text' = v.text, 'the words for ' || v.reason)
@@ -184,13 +230,15 @@ begin
 end $$;
 
 -- 6. Grants and markers ---------------------------------------------------------------------------------------------------
-select pg_temp.base_assert(has_function_privilege('service_role', 'public.qorpera_record_coding_machine_stopped(uuid,text,text,text)', 'execute')
+select pg_temp.base_assert(has_function_privilege('service_role', 'public.qorpera_record_coding_machine_stopped(uuid,uuid,text,text,text)', 'execute')
 	and not exists (select 1 from unnest(array['anon','authenticated','qorpera_secret_broker']) r(role)
-		where has_function_privilege(r.role, 'public.qorpera_record_coding_machine_stopped(uuid,text,text,text)', 'execute'))
+		where has_function_privilege(r.role, 'public.qorpera_record_coding_machine_stopped(uuid,uuid,text,text,text)', 'execute'))
 	and not exists (select 1 from unnest(array['anon','authenticated','service_role','qorpera_secret_broker']) r(role)
-		where has_function_privilege(r.role, 'public.qorpera_coding_stopped_event(text,jsonb)', 'execute')),
-	'only the executor records a stop; the words stay internal');
-select pg_temp.base_assert(not exists (select 1 from unnest(array['public.qorpera_record_coding_machine_stopped(uuid,text,text,text)',
+		where has_function_privilege(r.role, 'public.qorpera_coding_stopped_event(text,jsonb)', 'execute')
+			or has_table_privilege(r.role, 'public.qorpera_coding_machine_outside_stops', 'select,insert,update,delete,truncate,references,trigger'))
+	and (select relrowsecurity from pg_class where oid = 'public.qorpera_coding_machine_outside_stops'::regclass),
+	'only the executor records a stop; the words and the kept stops stay internal');
+select pg_temp.base_assert(not exists (select 1 from unnest(array['public.qorpera_record_coding_machine_stopped(uuid,uuid,text,text,text)',
 		'public.qorpera_coding_stopped_event(text,jsonb)']) f(name)
 	where position('20260930431000' in pg_get_functiondef(f.name::regprocedure)) = 0), 'each new or replaced function names this migration');
 

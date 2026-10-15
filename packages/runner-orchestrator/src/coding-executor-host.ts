@@ -545,7 +545,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		desiredState: CodingMachineDesiredState,
 		authorize: (intent: CodingMachineIntent, signal: AbortSignal) => Promise<unknown>,
 		signal: AbortSignal,
-		stoppedFromOutside?: (signal: AbortSignal) => Promise<void>,
+		stoppedFromOutside?: (startOperationId: string, signal: AbortSignal) => Promise<void>,
 	): Promise<"running" | "stopped" | "absent" | "deleted"> {
 		const checked = AbortSignal.any([
 			signal,
@@ -913,8 +913,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				async (_intent, checked) => authorize(checked),
 				signal,
 				// Stopped from outside: its sessions are told, and their folders come off before it starts again.
-				async (checked) => {
-					await this.#recordMachineStopped(machine, checked);
+				async (startOperationId, checked) => {
+					await this.#recordMachineStopped(machine, startOperationId, checked);
 					await this.#unplugStopped(machine, authorize, "CODING_MACHINE_STOP_DETACH_UNCONFIRMED", checked);
 				},
 			);
@@ -1369,13 +1369,20 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * reconcile has just written that stop down) lost every session's boot: each
 	 * attachment on it ends in SQL with the commands last seen running there,
 	 * stopped for MACHINE_STOPPED, and its next boot installs the helpers again.
-	 * A second call for the same stop finds nothing attached. */
-	async #recordMachineStopped(machine: Readonly<LxdCodingMachineBinding>, signal: AbortSignal): Promise<void> {
+	 * SQL keeps each stop once, by the start it ended: a retry, or an abandoned
+	 * try's request that reaches SQL only after the machine started again and
+	 * sessions attached anew, gets the first record's answer and ends nothing. */
+	async #recordMachineStopped(
+		machine: Readonly<LxdCodingMachineBinding>,
+		startOperationId: string,
+		signal: AbortSignal,
+	): Promise<void> {
 		const value = record(
 			await this.#call(
 				"qorpera_record_coding_machine_stopped",
 				{
 					p_machine_id: machine.machineId,
+					p_start_operation_id: startOperationId,
 					p_owner: this.#options.owner,
 					p_binding_text: lxdCodingMachinePlan(machine).text,
 					p_machine_id_sha256: this.#options.machineIdSha256,
@@ -2060,7 +2067,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			async (_intent, checked) => this.#custody(journal, text, "stop", checked),
 			budget,
 			// Stopped from outside: each attachment ends as MACHINE_STOPPED, so the SLEEP records below find none.
-			member ? (checked) => this.#recordMachineStopped(member, checked) : undefined,
+			member ? (start, checked) => this.#recordMachineStopped(member, start, checked) : undefined,
 		);
 		if (state === "stopped" && member)
 			await this.#unplugStopped(
@@ -2149,7 +2156,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			"deleted",
 			async (_intent, checked) => this.#custody(journal, text, "delete", checked),
 			budget,
-			member ? (checked) => this.#recordMachineStopped(member, checked) : undefined,
+			member ? (start, checked) => this.#recordMachineStopped(member, start, checked) : undefined,
 		);
 		if (state !== "deleted" && state !== "absent") throw new Error("CODING_HOST_VM_RECOVERY_REQUIRED");
 		await release(text);
