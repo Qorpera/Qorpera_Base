@@ -13,10 +13,10 @@ node scripts/run-on-node.mjs --machine node01 --sudo --no-status -- \
   bash scripts/build-office-image-candidate.sh [--stage] </dev/null
 ```
 
-It needs the default `--install` (esbuild and the packaged Playwright come from `npm ci`). It refuses any machine but
-`qorpera-testvm-node01`, a remote LXD, a base that is not the staged split image named by
-[`office-image-dependencies.json`](../lxd-company-computer-guest/office-image-dependencies.json), and less than
-32 GiB free for LXD. KVM and `vhost_vsock` must already be loaded; the run never loads a module. Before it creates
+It needs the default `--install` (esbuild and the packaged Playwright come from `npm ci`) and Docker for the folder
+program. It refuses any machine but `qorpera-testvm-node01`, a remote LXD, a base that is not the staged split image
+named by [`office-image-dependencies.json`](../lxd-company-computer-guest/office-image-dependencies.json), and less
+than 32 GiB free for LXD. KVM and `vhost_vsock` must already be loaded; the run never loads a module. Before it creates
 the VM it waits until the test machine has 6 GiB available, so the 4 GiB VM never pushes a test run out of memory.
 
 ## What it does
@@ -31,7 +31,9 @@ the VM it waits until the test machine has 6 GiB available, so the 4 GiB VM neve
    installs them offline: the debs, Node.js under `/usr` (one `/usr/bin/node`), Chrome for Testing at
    `/usr/lib/qorpera-chromium`, uv, mise and `fd`. It masks the self-update units and turns swap off for good. Then
    it runs every toolbox check as root.
-4. The office package installer runs from the checkout's package ([`INSTALLATION.md`](../lxd-company-computer-guest/INSTALLATION.md)):
+4. The test machine builds the company folder's program in its pinned Rust image, and the package carries it with the
+   helper and their units (`--folder-program`; the packager takes only the pinned build). The office package installer
+   runs from that package ([`INSTALLATION.md`](../lxd-company-computer-guest/INSTALLATION.md)):
    `--measure-dependencies`, a spec for uid and gid 20045 (the A1 office account), `--check`, then `--apply`. It
    leaves the office service disabled.
 5. The toolbox probe (`packages/runtime/test/fixtures/company-computer-linux-toolbox-probe.ts`) runs as the office
@@ -41,6 +43,8 @@ the VM it waits until the test machine has 6 GiB available, so the 4 GiB VM neve
    then runs every toolbox check of the recipe; each must exit 0 and print a version.
 6. It checks that the office service is still installed, disabled and never started. The node's activation starts it
    (preparation, then the service-start request); its credentials exist only once preparation writes them for a boot.
+   The folder's helper socket, helper service and mount template are static and never started, and the installed
+   folder program is the pinned one.
 7. It removes the build inputs, cleans cloud-init and the journal, stops the VM and publishes the candidate in the
    claimed project.
 
@@ -57,11 +61,11 @@ them.
 
 The evidence between `OFFICE_IMAGE_CANDIDATE_EVIDENCE_BEGIN` and `OFFICE_IMAGE_CANDIDATE_EVIDENCE_END` gives the base
 and candidate fingerprints, the stage path, the recipe and package manifest hashes, the size of the apt closure, the
-installer's dependency measurements, the toolbox's first lines as root and from the shell, and the office unit's state.
+installer's dependency measurements, the toolbox's first lines as root and from the shell, the office unit's state, the
+folder program's sha256 and the folder's unit files.
 
 ## What it does not cover
 
-- Until 4e-2, the image has no folder program, helper or folder units.
 - The installer's measurements pin the office's own executables, not the toolbox. The recipe pins the inputs and the
   candidate's fingerprint pins the result.
 - Provenance and signing are unchanged; the coordinator's release of the real image covers them.
