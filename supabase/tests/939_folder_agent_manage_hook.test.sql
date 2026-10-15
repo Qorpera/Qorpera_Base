@@ -3,8 +3,9 @@
 -- agent's manage_hook opens an address hook or a mailbox for its company, and pauses, resumes or removes one. The request's
 -- shape and E1's rules come before the run; then the wake's acknowledgement, then the requester's role (an owner or an
 -- admin; a worker never). A replay answers from the receipt, with a hook's address read again from its row and never
--- stored; E1's caps, names and marks hold; another company's hook is never found; a signed proof is refused on the host's
--- path (the vault opens it, E3b: test 987) and Stripe's comes later. Runs are 647's hand-built runs with their native rows.
+-- stored; E1's caps, names and marks hold; another company's hook is never found; a signed proof, Stripe's too, is refused
+-- on the host's path (the vault opens it, E3b: test 987, E3c-1: test 419). Runs are 647's hand-built runs with their
+-- native rows.
 
 create function pg_temp.e3a_hook(p_binding jsonb, p_request jsonb) returns jsonb language sql as $$
 	select public.qorpera_folder_manage_hook(p_binding, p_request)
@@ -117,8 +118,7 @@ begin
 		(pg_temp.e3a_create('k1', 'orders', repeat('p', 513)), '22023', c_purpose),
 		(pg_temp.e3a_create('k1', 'orders', 'Orders.', '{"proof":"carrier-pigeon"}'), '22023',
 			'A hook is proven by its address, or by a Stripe, GitHub or HMAC-SHA256 signature'),
-		(pg_temp.e3a_create('k1', 'orders', 'Orders.', '{"proof":"stripe"}'), '0A000',
-			'A Stripe hook comes later: its secret is taken from Stripe''s screen'),
+		(pg_temp.e3a_create('k1', 'orders', 'Orders.', '{"proof":"stripe"}'), '0A000', 'A signed hook is opened through the vault'),
 		(pg_temp.e3a_create('k1', 'orders', 'Orders.', '{"proof":"github"}'), '0A000', 'A signed hook is opened through the vault'),
 		(pg_temp.e3a_create('k1', 'orders', 'Orders.', '{"proof":"hmac-sha256"}'), '22023',
 			'An HMAC hook names the site its secret is typed into'),

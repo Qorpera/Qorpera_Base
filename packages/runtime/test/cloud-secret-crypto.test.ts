@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { sealEventHookCapture } from "@qorpera/runtime/cloud-event-hook-capture-box";
 import { CloudSecretKeyring } from "@qorpera/runtime/cloud-secret-crypto";
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 function identity(companyId: string, keyId: string) {
 	return { companyId, environmentId: randomUUID(), secretId: randomUUID(), version: 1, keyId };
@@ -68,4 +69,87 @@ it("serves a company's own key and derived keys side by side, and refuses a key 
 	expect(() => new CloudSecretKeyring({}, {})).toThrow("Cloud secret keyring is empty");
 	expect(() => new CloudSecretKeyring({}, { short: randomBytes(16) })).toThrow("Cloud secret keyring is invalid");
 	keyring.close();
+});
+
+describe("hook capture keys (E3c)", () => {
+	const company = "0f0e0d0c-0b0a-4908-8706-050403020100";
+	const hook = {
+		companyId: company,
+		environmentId: "3F0E0D0C-0B0A-4908-8706-050403020103",
+		secretId: "2F0E0D0C-0B0A-4908-8706-050403020102",
+		keyId: "vault-root-1",
+	};
+	const call = {
+		companyId: company,
+		companyComputerId: randomUUID(),
+		computerGeneration: 2,
+		receiptId: randomUUID(),
+		hookId: randomUUID(),
+		field: "signing_secret" as const,
+	};
+
+	it("derives a hook's key pair from the company's key, the same on every copy of the vault, fixed value", () => {
+		// Computed apart from this code (Python: RFC 5869 and RFC 7748 by hand), from the company key above.
+		const expected = "PH8MpQfEuGM3XxWI0DGXiGS3gDnXsC_MBrgZ5fq3siU";
+		const master = Buffer.from(Array.from({ length: 32 }, (_, index) => index));
+		const derived = new CloudSecretKeyring({}, { "vault-root-1": master });
+		const own = new CloudSecretKeyring({
+			"vault-root-1": Buffer.from("755b45a9b70ddefcd1a4fafc4e263014a631178d3df962ddc154bc171e15883b", "hex"),
+		});
+		expect(derived.capturePublicKey(hook)).toBe(expected);
+		expect(own.capturePublicKey(hook)).toBe(expected);
+		// The salt is the lowercase ids.
+		expect(
+			derived.capturePublicKey({
+				...hook,
+				environmentId: hook.environmentId.toLowerCase(),
+				secretId: hook.secretId.toLowerCase(),
+			}),
+		).toBe(expected);
+		expect(expected).toMatch(/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/);
+		derived.close();
+		own.close();
+	});
+
+	it("keeps hooks, environments and companies apart, and needs the company's key", () => {
+		const keyring = new CloudSecretKeyring({ "company-kek-1": randomBytes(32) }, { "vault-root-1": randomBytes(32) });
+		const base = keyring.capturePublicKey(hook);
+		for (const other of [
+			{ ...hook, secretId: randomUUID() },
+			{ ...hook, environmentId: randomUUID() },
+			{ ...hook, companyId: randomUUID() },
+			{ ...hook, keyId: "company-kek-1" },
+		])
+			expect(keyring.capturePublicKey(other)).not.toBe(base);
+		expect(() => keyring.capturePublicKey({ ...hook, keyId: "unknown-kek" })).toThrow(
+			"Cloud secret wrapping key is unavailable",
+		);
+		for (const bad of [
+			{ ...hook, secretId: "x" },
+			{ ...hook, keyId: " " },
+		])
+			expect(() => keyring.capturePublicKey(bad)).toThrow("Hook capture key identity is invalid");
+		keyring.close();
+	});
+
+	it("opens a capture sealed to the hook's public key, on any copy of the vault, and nowhere else", async () => {
+		const master = randomBytes(32);
+		const nodeOne = new CloudSecretKeyring({}, { "vault-root-1": master });
+		const nodeTwo = new CloudSecretKeyring({}, { "vault-root-1": Buffer.from(master) });
+		const value = "whsec_Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56";
+		const box = sealEventHookCapture({ value, site: "dashboard.stripe.com" }, nodeOne.capturePublicKey(hook), call);
+		await expect(nodeTwo.openCapture(hook, box, call, async (got) => got.value.toString("utf8"))).resolves.toBe(
+			value,
+		);
+		await expect(
+			nodeTwo.openCapture({ ...hook, secretId: randomUUID() }, box, call, async () => "opened"),
+		).rejects.toThrow("Hook capture box does not open here");
+		const other = new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) });
+		await expect(other.openCapture(hook, box, call, async () => "opened")).rejects.toThrow(
+			"Hook capture box does not open here",
+		);
+		nodeOne.close();
+		nodeTwo.close();
+		other.close();
+	});
 });

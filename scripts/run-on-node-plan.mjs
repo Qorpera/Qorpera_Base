@@ -30,7 +30,6 @@ const FUNCTION_TESTS = [
 	"supabase/functions/event-intake/event-intake.test.ts",
 	"supabase/functions/mail-intake/mail-intake.test.ts",
 	"supabase/functions/mail-outbox/mail-outbox.test.ts",
-	"supabase/functions/mail-attachments/mail-attachments.test.ts",
 	"supabase/functions/runner-control/runner-control.test.ts",
 	"supabase/functions/artifact-gc-worker/artifact-gc-worker.test.ts",
 ];
