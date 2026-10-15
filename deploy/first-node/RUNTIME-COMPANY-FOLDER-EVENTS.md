@@ -817,8 +817,11 @@ screenshots are refused while it is shown (`PRIVATE_FIELD_ON_SCREEN`). This also
   `vault_capture`, never after, so the office's perform is never repeated; and the redaction cuts `whsec_` secrets
   from every answer the tool boundary returns, its digest and run log included (a coding child's own shell is not
   that boundary's).
-- **E3c-3, the office image:** `vault_capture`'s page checks, cover, reveal, read and seal, the shape guard, the
-  registry method and the perform answer's box.
+- **E3c-3, the office image (built):** `vault_capture`'s page checks, cover, reveal, read and seal, the shape guard, the
+  registry method and the perform answer's box. The office reads where the box goes from the database
+  (`qorpera_native_office_hook_capture`), never from the native host. Every way a read ends masks the page again with a
+  reload under the cover; a page that still shows the value has its tab closed. The box is held for the call's answer
+  only once the page shows no check, so a stop answer carries none, and the gateway refuses a done read without one.
 - **E3c-4, the hold** (migration `20260930345000`, SQL test 420): the verifier's finish, intake's readiness and
   `lastRefusal`'s hold.
 
