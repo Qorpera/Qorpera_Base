@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -107,4 +108,37 @@ test("the candidate builder copies every confinement key of the office unit and 
 	// fusermount3 as root is evidence only: it never fails the build.
 	assert.match(source, /' >"\$work\/fusermount3-stdio.json"\n/);
 	assert.match(source, /fusermount3AsRoot: \{kernel: /);
+});
+
+test("the candidate builder's apt runs none of this machine's apt hooks", () => {
+	const source = readFileSync(join(repositoryRoot, "scripts/build-office-image-candidate.sh"), "utf-8");
+	const written = source.match(/^printf '%s\\n' ((?:'[^']*' )+)>"\$apt_root\/apt\.conf"\nexport APT_CONFIG="\$apt_root\/apt\.conf"\n/m);
+	assert.ok(written, "the builder writes apt its own configuration");
+	assert.ok(source.indexOf("export APT_CONFIG=") < source.indexOf('apt-get "${apt_options[@]}"'));
+	const own = [...written[1].matchAll(/'([^']*)'/g)].map((match) => match[1]);
+	// A machine whose apt.conf.d has update hooks, found through Dir the way apt finds / by default.
+	const dir = mkdtempSync(join(tmpdir(), "office-apt-"));
+	try {
+		const host = join(dir, "host");
+		for (const path of ["etc/apt/apt.conf.d", "etc/apt/sources.list.d", "var/lib/apt/lists/partial", "var/lib/dpkg",
+			"var/cache/apt/archives/partial"])
+			mkdirSync(join(host, path), { recursive: true });
+		writeFileSync(join(host, "etc/apt/sources.list"), "");
+		writeFileSync(join(host, "var/lib/dpkg/status"), "");
+		writeFileSync(join(host, "etc/apt/apt.conf.d/50sentinel"),
+			`APT::Update::Pre-Invoke { "touch ${dir}/pre"; };\nAPT::Update::Post-Invoke-Success { "touch ${dir}/post"; };\n`);
+		const update = (name, lines) => {
+			writeFileSync(join(dir, name), [`Dir "${host}/";`, `Dir::State::status "${host}/var/lib/dpkg/status";`, ...lines].join("\n"));
+			execFileSync("apt-get", ["-q", "-o", "Debug::NoLocking=1", "-o", "APT::Sandbox::User=root", "update"],
+				{ env: { ...process.env, APT_CONFIG: join(dir, name) }, stdio: "pipe", timeout: 30000 });
+			const ran = ["pre", "post"].filter((hook) => existsSync(join(dir, hook)));
+			for (const hook of ran) rmSync(join(dir, hook));
+			return ran;
+		};
+		// The sentinel hooks run when the machine's configuration is read, and not under the builder's.
+		assert.deepEqual(update("machine.conf", []), ["pre", "post"]);
+		assert.deepEqual(update("builder.conf", own), []);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });

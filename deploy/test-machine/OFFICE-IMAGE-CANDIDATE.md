@@ -25,8 +25,9 @@ the VM it waits until the test machine has 6 GiB available, so the 4 GiB VM neve
    VM with no profile, so no network card. It checks that the VM has no link but `lo`.
 2. The test machine fetches everything the VM installs. apt resolves the recipe's packages against the VM's own
    package database and archive sources, with private lists; the test machine's own apt state is neither used nor
-   changed. apt checks each deb against the archive's signed lists. Each pinned download is checked against its
-   sha256. The recipe's own Node.js fills an npm cache with `typescript` and `tsx`.
+   changed. apt reads only the builder's own configuration file (`APT_CONFIG`), so the test machine's `apt.conf.d`
+   hooks, which run as root, never run. apt checks each deb against the archive's signed lists. Each pinned download
+   is checked against its sha256. The recipe's own Node.js fills an npm cache with `typescript` and `tsx`.
 3. In the VM, [`install-office-image-dependencies.sh`](../lxd-company-computer-guest/install-office-image-dependencies.sh)
    installs them offline: the debs, Node.js under `/usr` (one `/usr/bin/node`), Chrome for Testing at
    `/usr/lib/qorpera-chromium`, uv, mise and `fd`. It masks the self-update units and turns swap off for good. Then

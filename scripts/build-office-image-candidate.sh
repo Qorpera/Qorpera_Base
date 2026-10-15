@@ -143,7 +143,9 @@ lx exec "$vm" -- true
 echo "cloud-init in the build VM: $(lx exec "$vm" -- cloud-init status --wait 2>&1 | tail -1)"
 
 # Everything the VM installs, fetched here. apt resolves the recipe against the guest's own package database and
-# its own archive sources, with private lists: this machine's apt state and sources are neither used nor changed.
+# its own archive sources, with private lists: this machine's apt state and sources are neither used nor changed. apt
+# reads only its own configuration file: this machine's apt.conf and apt.conf.d, whose hooks (command-not-found's,
+# update-notifier's) run as root and write outside $work, stay out. -o options come too late to keep them out.
 cd "$repo"
 push="$work/push"
 deps="$push/dependencies"
@@ -154,6 +156,8 @@ cp "$recipe" "$deps/office-image-dependencies.json"
 cp deploy/lxd-company-computer-guest/install-office-image-dependencies.sh "$push/"
 lx file pull "$vm/var/lib/dpkg/status" "$work/vm-status"
 lx file pull "$vm/etc/apt/sources.list.d/ubuntu.sources" "$apt_root/sources/ubuntu.sources"
+printf '%s\n' 'Dir::Etc::main "/dev/null";' 'Dir::Etc::parts "/dev/null";' >"$apt_root/apt.conf"
+export APT_CONFIG="$apt_root/apt.conf"
 apt_options=(-q -o Debug::NoLocking=1 -o APT::Sandbox::User=root -o APT::Architecture=amd64 -o APT::Architectures=amd64
 	-o Dir::Etc::sourcelist=/dev/null -o Dir::Etc::sourceparts="$apt_root/sources"
 	-o Dir::Etc::preferences=/dev/null -o Dir::Etc::preferencesparts="$apt_root/preferences"
