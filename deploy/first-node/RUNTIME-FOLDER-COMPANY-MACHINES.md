@@ -41,15 +41,16 @@ coordinator chose shape B on 4 October 2026 (C2 §8).
 **Not in step 4:** coding machines (step 5) and test machines (step 6). From the 2026-10-14 amendment, links (items 4
 and 5) and the machine's own caches for dependencies and builds (item 8) are slices of their own, for every machine
 ([RUNTIME-COMPANY-FOLDER.md](RUNTIME-COMPANY-FOLDER.md), "Decided on 14 October 2026"). The links' slices are
-[RUNTIME-FOLDER-LINKS.md](RUNTIME-FOLDER-LINKS.md) (LK1 to LK6); step 4's acceptance (4g) shows them (amendment item
-10).
+[RUNTIME-FOLDER-LINKS.md](RUNTIME-FOLDER-LINKS.md) (LK1 to LK6), and the caches' are
+[RUNTIME-FOLDER-MACHINE-CACHES.md](RUNTIME-FOLDER-MACHINE-CACHES.md) (MC1 to MC3, with the folder helper passing each
+owner's cache folder in MC3); step 4's acceptance (4g) shows them (amendment item 10).
 
 ## The parts
 
 | Part | Step 4 adds |
 | --- | --- |
-| Folder core (SQL) | renew says the view's kind and machine (4a); shell command views, C1b-3b's `computer_shell_command`, for offline commands only (4b) |
-| Folder service (node host) | desktop views served to their own company machine only, read-write, published after a quiet period; `unsaved_since` reported (4a); command views (4b); reads released with the view actor; a newer view takes over a mount's pending changes; a view kept while its last publish has no answer or a refusal that may lift (4c) |
+| Folder core (SQL) | renew says the view's kind and machine (4a); shell command views, C1b-3b's `computer_shell_command`, for offline commands (4b) and networked ones (4b-2) |
+| Folder service (node host) | desktop views served to their own company machine only, read-write, published after a quiet period; `unsaved_since` reported (4a); command views (4b), published after a quiet period while the command runs (4b-2); reads released with the view actor; a newer view takes over a mount's pending changes; a view kept while its last publish has no answer or a refusal that may lift (4c) |
 | Folder program (in the VM) | logs what each mount reads, in its state folder; moves a running mount to a newer view; publishes for a mount whose program exited (4c) |
 | Office service (in the VM) | opens and closes the views, and gives a screen back when its view is refused; asks for boundaries at command output reads and ends, screen captures, drains and stops; offline and networked commands; its stop control publishes the mounts a stopped service left (4d) |
 | Mount helper (in the VM, new) | the one new root piece: mounts, moves, lists and unmounts a view's folder program; brings up an offline command's `lo` (under (b): starts the command) (4d) |
@@ -103,8 +104,8 @@ as a holder change reaches it, before it serves the new holder's first action:
   desktop tells the member to restart the computer to get `/company`;
 - **a command** whose view is refused or not answered does not start. Its tool result says why.
 
-**Commands.** Each offline `computer_shell` command gets its own view, opened before the command runs (4b). Its owner
-is the run that started it. A networked command has no view (below).
+**Commands.** Each `computer_shell` command gets its own view, opened before the command runs (4b), a networked one's
+as an offline one's (4b-2, amended 14 October 2026: below). Its owner is the run that started it.
 
 **Which machine may present a view** (the node's check, 4a). The node's bridge names the machine behind each vsock
 CID (`{project, name, physicalId}`, from LXD). A company machine is named after its allocation:
@@ -129,9 +130,9 @@ for its view: it was killed, or its machine lost the link. The service's view ou
   round 15). A machine that connects with the view meanwhile joins it. Files its program still holds open wait, and
   keep the view, until a restarted mount or the helper's publisher (each holding the mount's `daemon.lock`) says that
   program is gone and they go back to their last fixed save, or the view ends (4c-3);
-- a command view is published only when asked (4b). When its last connection leaves, the service keeps it in the same
-  way until a publish asked for it gets an answer other than those, or it closes. A closed command view goes: a move is
-  only between desktop views (above);
+- a command view is published when asked (4b), and after a quiet period while held (4b-2), but not when its last
+  connection leaves. Then the service keeps it in the same way until a publish asked for it gets an answer other than
+  those, or it closes. A closed command view goes: a move is only between desktop views (above);
 - so the helper's boundary on a mount whose program exited still finds them (below). A core that does not answer for
   longer than a view's lease (120 s, C1b-3 §1) lets the view expire, and what the service held for it goes then: that
   is every view's lease, not this plan's.
@@ -416,7 +417,7 @@ stops the run that read it, and a later save from that mount is rechecked agains
 | Mount | Publishes |
 | --- | --- |
 | Desktop | about 2 s after its last change (the folder service's quiet period, 4a); when its last connection leaves (4a; kept while its publish has no answer or a refusal that may lift, 4c); before a drain's or a stop's acknowledgement (4d). Its reads are also released before a screen capture reaches the holding run (4d) |
-| Command | when the command's output is read and when it ends (the office service asks the helper, 4d); its last publish when its last process ends, which closes the view (C1b-3 §8 `final`, 4b), and then the office service unmounts it (4d). Nothing when its last connection leaves: the service keeps its changes for the next boundary the helper asks (above, 4b) |
+| Command | about 2 s after its last change while its mount holds the view (the folder service's quiet period, 4b-2; amended 14 October 2026); when the command's output is read and when it ends (the office service asks the helper, 4d); its last publish when its last process ends, which closes the view (C1b-3 §8 `final`, 4b), and then the office service unmounts it (4d). Nothing when its last connection leaves: the service keeps its changes for the next boundary the helper asks (above, 4b) |
 
 **Drains and stops.** "The node publishes those final changes before it acknowledges the drain" (C1b-3 §3). Today
 `stopResources` stops sessions, the browser, the shell and then the desktop, and `drain.ts` then acknowledges. 4d
@@ -520,3 +521,5 @@ only if a rule is wrong (review round 10).
   out-of-memory kill) would then end its desktop or command, and lose what it had not handed to the service: its
   open files' unsent bytes. What the service holds for the view and the reads the program logged still reach the
   core (above). Record that loss case, as founder decision 3 records a machine's, before 4d merges.
+  The loss case applies whether or not the remount is proven: the restarted program's abandon hello drops what the
+  dead one had not committed, and [OFFICE-FOLDER-REMOUNT.md](../test-machine/OFFICE-FOLDER-REMOUNT.md) records it.

@@ -707,7 +707,7 @@ describe("a boundary whose release is not taken", () => {
 			refused: "denied",
 			paths: [{ path: "docs/out.md", outcome: "refused", reason: "denied", kept: true }],
 		});
-		// A command's view never publishes unasked: it is let go as it is.
+		// Refused for good, a command's view is let go as it is, and nothing publishes it.
 		other.release();
 		await settle();
 		const before = gone.coreView.renewals;

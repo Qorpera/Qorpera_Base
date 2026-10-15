@@ -154,6 +154,20 @@ describe("webhooks and mailboxes", () => {
 		expect(cardOf(webhook.id)?.textContent).toContain("The address could not be copied. Select it and copy it.");
 	});
 
+	it("shows the last event a Stripe hook refused under the secret the vault read, and why (E3c-2)", async () => {
+		const refused: EventHook = {
+			...stripe,
+			signingSecretReady: true,
+			lastReceivedAt: timestamp,
+			lastRefusal: { receivedAt: timestamp, reason: "The Stripe signature does not match" },
+		};
+		setup([refused]);
+		await settle();
+		expect(cardOf(stripe.id)?.querySelector(".hook-state")?.textContent).toMatch(
+			/^Active · Last event .+ · Last refused event .+: The Stripe signature does not match · Signed by Stripe$/,
+		);
+	});
+
 	it("shows other members names, purposes and states, without addresses or actions", async () => {
 		const role = { manage: false };
 		setup([webhook, mailbox], { canManage: () => role.manage });
@@ -440,6 +454,19 @@ describe("event hook client", () => {
 				PROJECT_URL,
 			).signingSecretReady,
 		).toBe(false);
+		// A Stripe hook's last refused event comes whole, or not at all.
+		const lastRefusal = { receivedAt: timestamp, reason: "The Stripe signature does not match" };
+		const signed = (refusal: unknown) =>
+			parseEventHook(
+				descriptor({
+					proof: "stripe",
+					signingSecret: { connectorId: "stripe", secretName: "webhook", ready: true, lastRefusal: refusal },
+				}),
+				PROJECT_URL,
+			);
+		expect(signed(lastRefusal)).toMatchObject({ signingSecretReady: true, lastRefusal });
+		for (const bad of [null, "x", { receivedAt: timestamp }, { ...lastRefusal, reason: "" }, { reason: "x" }])
+			expect(signed(bad)).not.toHaveProperty("lastRefusal");
 		expect(() => parseEventHook(descriptor({ status: "removed" }), PROJECT_URL)).toThrow("Invalid hook.");
 		expect(() => parseEventHook(descriptor({ schema: "qorpera.event-hook/v2" }), PROJECT_URL)).toThrow(
 			"Invalid hook.",
