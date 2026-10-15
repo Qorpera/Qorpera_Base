@@ -612,7 +612,15 @@ describe("a view's pending changes", () => {
 		refused(() => f.view.mkdir("Secrets"), "NOT_PERMITTED");
 		refused(() => f.view.mkdir("docs/.git"), "NOT_PERMITTED");
 		refused(() => f.view.mkdir("docs/NODE_MODULES"), "NOT_PERMITTED");
-		f.view.mkdir("code/repo/.git");
+		// git's directories only below code/<owner>/<name>/; there a name may hold '%' and ':' or be a device name.
+		refused(() => f.view.mkdir("code/repo/.git"), "NOT_PERMITTED");
+		refused(() => f.view.mkdir("docs/repo.git"), "NOT_PERMITTED");
+		refused(() => f.view.mkdir("docs/a%b"), "BAD_REQUEST");
+		f.view.mkdir("code/repo/app");
+		f.view.mkdir("code/repo/app/repo.git");
+		f.view.mkdir("code/repo/app/.git");
+		f.view.mkdir("code/repo/app/a%b:c");
+		f.view.mkdir("code/repo/app/CON.txt");
 		refused(() => f.view.mkdir("docs/plan.md"), "EXISTS");
 		refused(() => f.view.rmdir("docs"), "NOT_EMPTY");
 		refused(() => f.view.rename("docs", "docs/inside"), "BAD_REQUEST");

@@ -272,6 +272,23 @@ describe("reads and listings", () => {
 		]);
 	});
 
+	it("pages a code area by names only code/ holds, its cursor one of them (20260930446100)", async () => {
+		const first = Array.from({ length: 200 }, (_, index) => `code/acme/a%${String(index).padStart(3, "0")}`);
+		const pages = [
+			{
+				schema: "qorpera.folder-list/v1",
+				asOfSeq: 5,
+				entries: first.map((path) => folderEntry(path)),
+				next: "code/acme/a%199",
+			},
+			{ schema: "qorpera.folder-list/v1", asOfSeq: 6, entries: [folderEntry("code/acme/con:x")], next: null },
+		];
+		const { client, calls } = fixture(() => pages.shift());
+		const all = await client.listAll("code/acme", { recursive: true, maxEntries: 201 }, signal());
+		expect(all.entries.map((entry) => entry.path)).toEqual([...first, "code/acme/con:x"]);
+		expect(calls.map((call) => call.args.p_after)).toEqual([null, "code/acme/a%199"]);
+	});
+
 	it("stops a whole listing at the caller's bound", async () => {
 		const first = Array.from({ length: 200 }, (_, index) => `t/${String(index).padStart(3, "0")}`);
 		const { client, calls } = fixture(() => ({
@@ -726,6 +743,50 @@ describe("commits", () => {
 		).rejects.toThrow("Invalid Company File path");
 		expect(calls).toEqual([]);
 		expect(bytes.put).not.toHaveBeenCalled();
+	});
+
+	it("takes the names only code/ holds there, a new folder's contents by their joined paths, as SQL does", async () => {
+		const { client, calls } = fixture((_method, args) =>
+			saved((args.p_units as Record<string, unknown>[]).map((unit) => ({ op: unit.op, path: unit.path as string }))),
+		);
+		const result = await client.commit(
+			"tool-call-5:code",
+			[
+				{ op: "mkdir", path: "code/acme/app/main/a%b" },
+				{
+					op: "new_folder",
+					path: "code/acme/app/main/c:d",
+					contents: [
+						{ path: "CON.txt", kind: "folder" },
+						{ path: "CON.txt/50%", kind: "file", content: { text: "x" } },
+					],
+				},
+			],
+			{},
+			signal(),
+		);
+		expect(result.units.map((unit) => unit.outcome)).toEqual(["saved", "saved"]);
+		expect(calls[0]!.args.p_units).toEqual([
+			{ op: "mkdir", path: "code/acme/app/main/a%b" },
+			{
+				op: "new_folder",
+				path: "code/acme/app/main/c:d",
+				contents: [
+					{ path: "CON.txt", kind: "folder" },
+					{ path: "CON.txt/50%", kind: "file", file: stagedFile("x", "text/plain") },
+				],
+			},
+		]);
+		// Elsewhere they stay refused, inside a new folder too, before anything is sent.
+		for (const unit of [
+			{ op: "mkdir", path: "docs/a%b" },
+			{ op: "new_folder", path: "docs/x", contents: [{ path: "c:d", kind: "folder" }] },
+			{ op: "new_folder", path: "docs/x", contents: [{ path: "", kind: "folder" }] },
+		] as const)
+			await expect(client.commit("tool-call-5:docs", [unit], {}, signal())).rejects.toThrow(
+				"Invalid Company File path",
+			);
+		expect(calls).toHaveLength(1);
 	});
 
 	it("stages by content and media type, and names text by its path", async () => {
