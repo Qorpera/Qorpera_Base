@@ -12,6 +12,7 @@ import {
 import { fitsOneResult } from "@qorpera/runtime/cloud-worker-tools";
 import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
+import { PNG_SIGNATURE, pngFile, pngHeader, pngRows } from "./fixtures/png-fixture.ts";
 
 const runs: CloudNativeToolRun[] = [];
 afterEach(() => {
@@ -139,6 +140,91 @@ it("cuts a window whose answer would not fit one result, so the model sees all i
 	expect(answer.text).toBe("<".repeat(answer.bytesRead));
 	expect(answer.nextOffset).toBe(answer.bytesRead);
 	expect(f.releases[0]?.p_output_sha256).toBe(sha(String(content.value)));
+});
+
+/** A 2×1 PNG: a red pixel, then a blue one. */
+const RED_BLUE = pngFile(pngHeader(2, 1, 8, 2), pngRows([[255, 0, 0, 0, 0, 255]]));
+
+it("shows an image read from its start as one PNG made here, after a released answer that names its hash", async () => {
+	const f = await fixture();
+	f.seed("photos/pair.png", RED_BLUE, "image/png");
+	const stored = f.files.get("photos/pair.png");
+	const content = await f.call("company_read", { path: "photos/pair.png", offset: 0, limit: 4 });
+	const png = content.image?.png ?? Buffer.alloc(0);
+	expect(parse(content)).toEqual({
+		path: "photos/pair.png",
+		kind: "image",
+		version: stored?.version,
+		mediaType: "image/png",
+		totalBytes: RED_BLUE.byteLength,
+		width: 2,
+		height: 1,
+		shownWidth: 2,
+		shownHeight: 1,
+		imageSha256: content.image?.sha256,
+	});
+	expect(png.subarray(0, 8)).toEqual(PNG_SIGNATURE);
+	expect(content.image?.sha256).toBe(createHash("sha256").update(png).digest("hex"));
+	expect(f.releases).toHaveLength(1);
+	expect(f.releases[0]).toMatchObject({
+		p_release_id: content.companyReadId,
+		p_output_sha256: sha(String(content.value)),
+		p_reads: [{ path: "photos/pair.png", version: stored?.version, fileSha256: stored?.file.fileSha256 }],
+	});
+	// Its own start says what it is, whatever type it was stored with.
+	f.seed("photos/pair.bin", RED_BLUE, "application/octet-stream");
+	const untyped = await f.call("company_read", { path: "photos/pair.bin", offset: 0, limit: 4 });
+	expect(parse(untyped)).toMatchObject({ kind: "image", mediaType: "image/png", imageSha256: content.image?.sha256 });
+	// Read from anywhere else, it is a window of its bytes like any file.
+	const window = await f.call("company_read", { path: "photos/pair.png", offset: 1, limit: 4 });
+	expect(parse(window)).toMatchObject({ kind: "file", text: "PNG\r", nextOffset: 5 });
+	expect(window.image).toBeUndefined();
+	// An SVG is text.
+	f.seed("photos/logo.svg", "<svg/>", "image/svg+xml");
+	expect(parse(await f.call("company_read", { path: "photos/logo.svg", offset: 0, limit: 64 }))).toMatchObject({
+		kind: "file",
+		text: "<svg/>",
+	});
+});
+
+it("refuses an image it does not show by name, before releasing anything", async () => {
+	const f = await fixture();
+	const refused = async (bytes: Uint8Array | string, mediaType: string, text: string) => {
+		f.seed("photos/refused", bytes, mediaType);
+		await refuses(f.call("company_read", { path: "photos/refused", offset: 0, limit: 4096 }), CloudToolRefusal, text);
+	};
+	const opening = "; open it on the company's computer";
+	// Another format, named by its own start or by its type.
+	await refused(
+		Buffer.from("II*\0 a TIFF file", "latin1"),
+		"image/tiff",
+		`COMPANY_IMAGE_FORMAT_UNSUPPORTED: only PNG, JPEG, GIF and WebP images are shown here, and this one is TIFF${opening}`,
+	);
+	await refused(
+		"not a picture",
+		"image/heic",
+		`COMPANY_IMAGE_FORMAT_UNSUPPORTED: only PNG, JPEG, GIF and WebP images are shown here${opening}`,
+	);
+	// A type that says PNG over bytes that are not one.
+	await refused(
+		"not a picture",
+		"image/png",
+		`COMPANY_IMAGE_UNREADABLE: the file is not the image its type says${opening}`,
+	);
+	// Too many pixels, from the header alone; too many bytes, before reading it.
+	await refused(
+		Buffer.concat([PNG_SIGNATURE, pngHeader(8000, 6000, 8, 2)]),
+		"image/png",
+		`COMPANY_IMAGE_TOO_LARGE: the image has 8000×6000 pixels, more than the 40 million shown here${opening}`,
+	);
+	const huge = Buffer.alloc(64 * 1024 * 1024 + 1);
+	PNG_SIGNATURE.copy(huge);
+	await refused(huge, "image/png", `COMPANY_IMAGE_TOO_LARGE: the file is larger than 64 MiB${opening}`);
+	// A damaged PNG.
+	const damaged = Buffer.from(RED_BLUE);
+	damaged[29] ^= 1;
+	await refused(damaged, "image/png", `COMPANY_IMAGE_UNREADABLE: a PNG chunk is damaged${opening}`);
+	expect(f.releases).toHaveLength(0);
 });
 
 it("reads a folder and an absent path: a folder is released, nothing is for an absent path", async () => {
