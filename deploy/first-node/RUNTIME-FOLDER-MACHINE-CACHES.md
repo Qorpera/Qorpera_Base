@@ -40,7 +40,8 @@ and the like work in `/company` at the speed of a local disk. What they make is 
 published, other machines and views see nothing of it, and the web app, `company_list`, `company_search` and the
 history never show it. In a git repository, a file or folder that git ignores stays on the machine too, unless git
 tracks it. The cache outlives the mount and the command, so the next command in that folder on the machine does not
-install again. Old caches are removed when unused or when the disk runs short.
+install again. Old dependencies and builds are removed when unused or when the disk runs short; what is cache only
+because git ignores it stays until its worktree goes.
 
 ## The rules
 
@@ -156,14 +157,24 @@ is never under `/run`, which empties at every start and is memory.
 
 ## Removing old caches
 
-The program removes old caches when it starts and once an hour while it runs:
-- a cache folder at the top of a cache (each `node_modules`, `dist` and so on) unused for 14 days goes;
-- when the disk has less than 10% free, the least recently used go first, until 15% is free;
-- a cache folder that any program has open is never removed: each program holds a shared lock on each top cache
-  folder it serves; removal takes it exclusively without waiting, and skips the folder when it cannot;
-- a cache folder whose published parent is gone (rule above) goes at the next pass.
-"Used" is kept in a small file per top cache folder, beside the cache and outside every mount, updated at most once an
-hour. A removed cache is built again by the next install or build, as on a fresh machine.
+A cache is removed by its **top entries**: a cache folder or a cache file whose parent is published (each
+`node_modules` and `dist`, an ignored `.env` or `debug.log` in a worktree). What is under a top cache folder goes with
+it.
+- **What may be removed.** A top entry made by its name (rules 2 and 3, and §6's list in a worktree) holds what an
+  install or a build makes again. A top entry that is cache only because git ignores it (rule 4) may hold what nothing
+  makes again: a `.env`, a local database, notes. The program never removes those on its own. They go with their
+  published parent (below) or when someone removes them, as on a local disk.
+- The program removes old caches when it starts and once an hour while it runs:
+  - a top entry made by its name and unused for 14 days goes;
+  - when the disk has less than 10% free, the least recently used of those go first, until 15% is free or none is
+    left. A writer then gets `ENOSPC`, as on a full local disk;
+  - a top entry of either kind whose published parent is gone (rule above) goes at the next pass. So a worktree that
+    is removed takes its ignored files with it.
+- **An open entry is never removed.** Each program holds a shared lock on each top entry it serves; removal takes it
+  exclusively without waiting, and skips the entry when it cannot.
+- Each top entry has a small record beside the cache and outside every mount: how it was made, when it was last used
+  (updated at most once an hour), and its lock. A removed cache is built again by the next install or build, as on a
+  fresh machine.
 
 ## What does not change
 
@@ -181,7 +192,7 @@ hour. A removed cache is built again by the next install or build, as on a fresh
 |---|---|---|
 | MC1 | Folder program: rules 1, 2, 3, 5 and 6 everywhere, on 5d's local layer and cache list (one table of names, shared with rule 4's worktree list); listings; the edge (`EXDEV`, `rmdir`, a published folder's rename moving its cache, a gone parent dropping it); boundaries not waiting for cache files. A new build record and the installer pins | FUSE tests with the stand-in service: `npm install` (from a local registry folder, no network) in a project folder outside `code/` making `node_modules` that the service never sees, a second view listing nothing there; `pip install` into `.venv`; `.pnpm-store` at the top; `build` made in a project (cache) and in a plain folder (published); a file named `build` published; `Build` published; a name where the node has an entry not cache, and the node's later entry winning; `rmdir` `ENOTEMPTY` with a cache inside, `rm -r` removing it; `mv` of the parent moving the cache; the parent removed by another view dropping it; a folder renamed across the edge `EXDEV` and `mv` copying; a hard link across `EXDEV`; links and hard links inside the cache; a boundary while a cache file is open |
 | MC2 | Folder program: rule 4's ignore rules (every `.gitignore` and `info/exclude`, with negation, folder patterns and `**`, from a pinned crate that follows git's rules, or a small matcher if the build's dependency review prefers it), on 5d's index reader for what is tracked; a file renamed across the edge (published from the cache, moved into it while pending); `git add -f` of an ignored path moving it into the folder | FUSE tests with real git (the pinned version): a file and a folder ignored by the top `.gitignore`, by one in a subfolder, and by `info/exclude`, never published; a negated pattern published; a tracked path under an ignored pattern published; `git add -f` of an ignored file and folder published at the next boundary; an editor's atomic save over a published file from an ignored temporary name, and over an ignored file from a plain one; a changed `.gitignore` deciding only new names; the cases checked against `git check-ignore` |
-| MC3 | Where the cache lives: `--cache-dir`; no kernel cache for cache files; the per-owner key on company machines (the folder helper passes `--cache-dir /var/lib/qorpera-folder/cache/<owner>`), and per machine on coding and test machines (their setups pass it, if they are on master by then, else they take the flag in their own slice); removing old caches with its locks; the speed measure (above). Updates RUNTIME-FOLDER-COMPANY-MACHINES.md "Mounts in the VM" | FUSE tests: `tsc --noEmit` and a load of a few thousand small files timed on the cache and on the plain disk, the numbers in the PR body; two mounts on one cache folder, a write in one read at once in the other; a mount started again finding its cache; two owners' mounts not seeing each other's cache; removal of an unused cache, of the least recently used when the disk is short (the test gives a size limit in place of the disk's free space), never of an open one, and of one whose parent is gone; the helper's tests: `mount` passing the owner's cache folder for a desktop and a command, the same for one agent's desktop and commands, another for a member's view |
+| MC3 | Where the cache lives: `--cache-dir`; no kernel cache for cache files; the per-owner key on company machines (the folder helper passes `--cache-dir /var/lib/qorpera-folder/cache/<owner>`), and per machine on coding and test machines (their setups pass it, if they are on master by then, else they take the flag in their own slice); removing old caches by top entry, with their records and locks; the speed measure (above). Updates RUNTIME-FOLDER-COMPANY-MACHINES.md "Mounts in the VM" | FUSE tests: `tsc --noEmit` and a load of a few thousand small files timed on the cache and on the plain disk, the numbers in the PR body; two mounts on one cache folder, a write in one read at once in the other; a mount started again finding its cache; two owners' mounts not seeing each other's cache; removal of an unused cache folder, of the least recently used when the disk is short (the test gives a size limit in place of the disk's free space), never of an open folder or an open top cache file, and of one whose parent is gone; an ignored file and an ignored folder at a worktree's top (each its own top entry) kept past 14 days and when the disk is short, the writer then getting `ENOSPC`, and removed with their worktree; the helper's tests: `mount` passing the owner's cache folder for a desktop and a command, the same for one agent's desktop and commands, another for a member's view |
 
 **Order.**
 - MC1 builds on 5d's local layer, so it starts once #1096 has merged. It changes the same program files as LK4 (links),
