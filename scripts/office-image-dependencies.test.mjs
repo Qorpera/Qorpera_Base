@@ -125,8 +125,9 @@ test("the candidate builder's apt runs none of this machine's apt hooks", () => 
 			mkdirSync(join(host, path), { recursive: true });
 		writeFileSync(join(host, "etc/apt/sources.list"), "");
 		writeFileSync(join(host, "var/lib/dpkg/status"), "");
+		// With no sources nothing is fetched, so Post-Invoke-Success (command-not-found's) never runs; Post-Invoke does.
 		writeFileSync(join(host, "etc/apt/apt.conf.d/50sentinel"),
-			`APT::Update::Pre-Invoke { "touch ${dir}/pre"; };\nAPT::Update::Post-Invoke-Success { "touch ${dir}/post"; };\n`);
+			`APT::Update::Pre-Invoke { "touch ${dir}/pre"; };\nAPT::Update::Post-Invoke { "touch ${dir}/post"; };\n`);
 		const update = (name, lines) => {
 			writeFileSync(join(dir, name), [`Dir "${host}/";`, `Dir::State::status "${host}/var/lib/dpkg/status";`, ...lines].join("\n"));
 			execFileSync("apt-get", ["-q", "-o", "Debug::NoLocking=1", "-o", "APT::Sandbox::User=root", "update"],
