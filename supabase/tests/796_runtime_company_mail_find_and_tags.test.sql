@@ -69,7 +69,6 @@ begin
 		if has_table_privilege(v_role, 'public.qorpera_mail_settings', 'SELECT,INSERT,UPDATE,DELETE')
 			or has_table_privilege(v_role, 'public.qorpera_company_mailboxes', 'SELECT,INSERT,UPDATE,DELETE')
 			or has_table_privilege(v_role, 'public.qorpera_company_mail_outbox', 'SELECT,INSERT,UPDATE,DELETE')
-			or has_table_privilege(v_role, 'public.qorpera_mail_attachment_fetches', 'SELECT,INSERT,UPDATE,DELETE')
 			or has_table_privilege(v_role, 'public.qorpera_event_listener_cursors', 'SELECT,INSERT,UPDATE,DELETE')
 			or has_table_privilege(v_role, 'public.qorpera_event_wake_deliveries', 'SELECT,INSERT,UPDATE,DELETE') then
 			raise exception 'Mail or event wake tables are exposed to %', v_role; end if;

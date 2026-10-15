@@ -1,4 +1,18 @@
-import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from "node:crypto";
+import {
+	createCipheriv,
+	createDecipheriv,
+	createHash,
+	createPrivateKey,
+	createPublicKey,
+	hkdfSync,
+	type KeyObject,
+	randomBytes,
+} from "node:crypto";
+import {
+	type EventHookCapture,
+	type EventHookCaptureIdentity,
+	openEventHookCapture,
+} from "./cloud-event-hook-capture-box.ts";
 
 const ENVELOPE_SCHEMA = "qorpera.cloud-secret-envelope/v1";
 const PAYLOAD_SCHEMA = "qorpera.cloud-secret-payload/v1";
@@ -288,6 +302,35 @@ function derivedWrappingKey(masterKey: Uint8Array, companyId: string): Buffer {
 	return Buffer.from(hkdfSync("sha256", masterKey, "qorpera.company-kek/v1", companyId.toLowerCase(), 32));
 }
 
+/** The PKCS#8 prefix (RFC 8410) of an X25519 private key, for a raw 32-byte seed. */
+const PKCS8_X25519 = Buffer.from("302e020100300506032b656e04220420", "hex");
+const SPKI_X25519_BYTES = 12;
+
+/** Which Stripe hook's capture key: the hook's reserved secret, under one of the company's keys (E3c). */
+export interface CloudHookCaptureKeyIdentity {
+	readonly companyId: string;
+	readonly environmentId: string;
+	readonly secretId: string;
+	readonly keyId: string;
+}
+
+/** A hook's capture key pair from the company's key: HKDF-SHA256 with its own info, salted with the reserved
+ * secret id and the environment (lowercase, "secretId:environmentId"), as an X25519 seed. Nothing is stored:
+ * both copies of the vault derive the same pair, and the office seals to its public half. */
+function captureKey(companyKey: Uint8Array, identity: CloudHookCaptureKeyIdentity): KeyObject {
+	if (![identity.companyId, identity.environmentId, identity.secretId].every((value) => UUID.test(value)))
+		throw new Error("Hook capture key identity is invalid");
+	const salt = `${identity.secretId.toLowerCase()}:${identity.environmentId.toLowerCase()}`;
+	const seed = Buffer.from(hkdfSync("sha256", companyKey, salt, "qorpera.event-hook-capture-key/v1", 32));
+	const der = Buffer.concat([PKCS8_X25519, seed]);
+	try {
+		return createPrivateKey({ key: der, format: "der", type: "pkcs8" });
+	} finally {
+		seed.fill(0);
+		der.fill(0);
+	}
+}
+
 /** A broker keyring never exposes raw key material to an adapter. It holds each company's own keys
  * and, for the shared vault (Vault By Default), master keys from which each company's key is derived. */
 export class CloudSecretKeyring {
@@ -346,6 +389,41 @@ export class CloudSecretKeyring {
 		} finally {
 			derived.fill(0);
 		}
+	}
+
+	/** A hook's capture private key, under the key the company's envelopes use: its own key, or the derived one. */
+	#captureKey(identity: CloudHookCaptureKeyIdentity): KeyObject {
+		if (!KEY_ID.test(identity.keyId)) throw new Error("Hook capture key identity is invalid");
+		const own = this.#keys.get(identity.keyId);
+		if (own) return captureKey(own, identity);
+		const master = this.#derived.get(identity.keyId);
+		if (!master) throw new Error("Cloud secret wrapping key is unavailable");
+		const derived = derivedWrappingKey(master, identity.companyId);
+		try {
+			return captureKey(derived, identity);
+		} finally {
+			derived.fill(0);
+		}
+	}
+
+	/** The public half the office seals a hook's captured secret to (32 raw bytes, base64url). */
+	capturePublicKey(identity: CloudHookCaptureKeyIdentity): string {
+		const spki = createPublicKey(this.#captureKey(identity)).export({ format: "der", type: "spki" });
+		return Buffer.from(spki.subarray(SPKI_X25519_BYTES)).toString("base64url");
+	}
+
+	/** The captured secret inside a box the office sealed to this hook's capture key for exactly this call. */
+	async openCapture<T>(
+		identity: CloudHookCaptureKeyIdentity,
+		box: unknown,
+		expected: EventHookCaptureIdentity,
+		callback: (capture: EventHookCapture) => Promise<T>,
+		nowMs = Date.now(),
+	): Promise<T> {
+		const privateKey = this.#captureKey(identity);
+		const spki = createPublicKey(privateKey).export({ format: "der", type: "spki" });
+		const recipient = Buffer.from(spki.subarray(SPKI_X25519_BYTES)).toString("base64url");
+		return openEventHookCapture(privateKey, recipient, box, expected, callback, nowMs);
 	}
 
 	close(): void {

@@ -42,6 +42,8 @@ const HOOK_NAME = /^[a-z][a-z0-9-]{0,63}$/;
 const MAILBOX_NAME = /^[a-z0-9]([a-z0-9._-]{0,62}[a-z0-9])?$/;
 /** The site a signed hook's secret may be typed into, as A1's account sites are (E3b). */
 const HOST = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+/** Where a Stripe hook's secret is read, and nowhere else (E3c). */
+const STRIPE_SITE = "dashboard.stripe.com";
 /** The keys of each kind of change, as the database checks them. */
 const HOOK_REQUEST_KEYS = {
 	hook: ["action", "kind", "name", "purpose", "proof", "site", "maxBodyBytes", "perMinute", "operationKey"],
@@ -135,6 +137,7 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
 export const CLOUD_LIST_HOOKS_TOOL_DESCRIPTION =
 	"List your company's hooks: where other services send events, such as a website form, a payment provider or a monitoring alert. " +
 	"Each hook has an id, a name, what it is for, its proof (address: anyone with the address may post; stripe, github, hmac-sha256: the sender signs; mail: a company mailbox, which receives email at its email address, and at that address with a +tag (agents+stripe@… reaches agents@…), and sends it with send_mail), its status and when it last received something. " +
+	"A signed hook's signingSecret says whether the vault holds its secret (ready). A Stripe hook's also has the version the vault read off Stripe's page, when (capturedAt), and the last event refused under it (lastRefusal: when and why); events refused after a capture usually mean the endpoint's secret changed at Stripe, so read it again with computer_browser vault_capture. " +
 	"When an owner or admin started this run, each hook also has its address and path, and url, the full address a sending service posts to, once the platform has one; never share an address outside the company. " +
 	"A routine wakes on a hook's events with manage_routine and the trigger kind event, using the hook's id.";
 
@@ -166,8 +169,9 @@ export const CLOUD_MANAGE_HOOK_TOOL_DESCRIPTION =
 	"Open a hook or a mailbox for your company, or pause, resume or remove one by its name (hook, as list_hooks shows it). " +
 	"A hook (action create, kind hook) is an address where another service posts events, such as a website form, a monitoring alert or a no-code automation: name is lowercase letters, digits and hyphens, starts with a letter, has at most 64 characters and does not start with mail-; purpose is one line saying what it is for (at most 512 characters); maxBodyBytes (1024 to 262144, default 65536) and perMinute (1 to 120, default 60) limit what it takes. " +
 	"Anyone with a hook's address may post to it: the result has its address and path, and url, the full address the sending service posts to, once the platform has one. Give the address only to that service, and never put it anywhere else; list_hooks shows it again. " +
-	"proof is address unless the sender signs its events: github for GitHub's webhooks, hmac-sha256 for a service that signs as Standard Webhooks do (a whsec_ secret, as Svix's). A signed hook takes only events signed with its secret. The vault makes the secret and keeps it: you never see it, and nobody can show it to you. " +
-	"site is the host name where the secret may be typed into the sender's settings, and nowhere else: github.com unless you name another for github, and required for hmac-sha256; the result names it as secretSite. To put the secret into the sender's settings, open its settings page on secretSite and use computer_browser vault_fill with role textbox, the box's name, hook (the hook's id) and field signing_secret: the vault types it into that box as a password, and only on secretSite. A Stripe hook comes later. " +
+	"proof is address unless the sender signs its events: github for GitHub's webhooks, hmac-sha256 for a service that signs as Standard Webhooks do (a whsec_ secret, as Svix's), stripe for Stripe's. A signed hook takes only events signed with its secret. The vault makes the secret (Stripe makes a Stripe hook's) and keeps it: you never see it, and nobody can show it to you. " +
+	"site is the host name where the secret may be typed into the sender's settings, and nowhere else: github.com unless you name another for github, required for hmac-sha256, and dashboard.stripe.com for stripe; the result names it as secretSite. To put the secret into the sender's settings, open its settings page on secretSite and use computer_browser vault_fill with role textbox, the box's name, hook (the hook's id) and field signing_secret: the vault types it into that box as a password, and only on secretSite. " +
+	"A Stripe hook goes the other way: open one per Stripe endpoint, test mode apart from live mode; add the endpoint at Stripe with the hook's url, then on the endpoint's page on dashboard.stripe.com use computer_browser vault_capture with the role (button or link) and name of the control that reveals its signing secret, hook and field signing_secret: the vault reads the secret off the page itself, and until it has, the hook can check no event. " +
 	"A mailbox (action create, kind mailbox) receives email at localPart@ the company's mail domain: localPart is 1 to 64 lowercase letters, digits, dots, hyphens and underscores, starting and ending with a letter or digit, never two dots in a row; its hook is named mail- and the localPart. Find and read what arrives with find_mail and read_event, and send from it with send_mail. " +
 	"A company has at most 50 hooks, mailboxes included, and at most 20 mailboxes. Opening one is reviewed before it happens, like any action outside the company. " +
 	"pause makes a hook refuse what is sent to it until resume; remove ends it for good and frees a mailbox's address for any company to take, so a removal is reviewed first too. " +
@@ -177,7 +181,7 @@ export const CLOUD_MANAGE_HOOK_TOOL_DESCRIPTION =
 
 /** The fields a change to the company's hooks takes, each checked as the database checks it, so the model learns what to
  * fix before the change is reviewed. A GitHub or HMAC hook takes its site, github.com by default for GitHub (E3b); a
- * Stripe hook is refused here with its plain reason: it comes later (E3c). */
+ * Stripe hook's is dashboard.stripe.com, named or not, where its secret is read (E3c). */
 function parseHookRequest(value: JsonValue): JsonValue {
 	if (!value || typeof value !== "object" || Array.isArray(value))
 		throw new CloudToolArgumentRefusal("manage_hook takes an object with action and operationKey");
@@ -216,25 +220,33 @@ function parseHookRequest(value: JsonValue): JsonValue {
 		throw new CloudToolArgumentRefusal(
 			"name uses lowercase letters, digits and hyphens, starts with a letter, has at most 64 characters and does not start with mail-",
 		);
-	if (a.proof === "stripe")
-		throw new CloudToolArgumentRefusal("A Stripe hook comes later: its secret is taken from Stripe's screen");
-	if (a.proof !== undefined && a.proof !== "address" && a.proof !== "github" && a.proof !== "hmac-sha256")
-		throw new CloudToolArgumentRefusal("proof is address, github or hmac-sha256");
-	const proof = a.proof === "github" || a.proof === "hmac-sha256" ? a.proof : undefined;
+	if (
+		a.proof !== undefined &&
+		a.proof !== "address" &&
+		a.proof !== "github" &&
+		a.proof !== "hmac-sha256" &&
+		a.proof !== "stripe"
+	)
+		throw new CloudToolArgumentRefusal("proof is address, github, hmac-sha256 or stripe");
+	const proof = a.proof === "github" || a.proof === "hmac-sha256" || a.proof === "stripe" ? a.proof : undefined;
 	if (!proof && a.site !== undefined)
 		throw new CloudToolArgumentRefusal("Only a signed hook names the site its secret is typed into");
 	if (proof === "hmac-sha256" && a.site === undefined)
 		throw new CloudToolArgumentRefusal("An HMAC hook names the site its secret is typed into");
-	// As A1's account sites: a lowercase host name.
+	// As A1's account sites: a lowercase host name. A Stripe hook's secret is read on Stripe's dashboard, and only there.
 	const site = !proof
 		? undefined
 		: a.site === undefined
-			? "github.com"
+			? proof === "stripe"
+				? STRIPE_SITE
+				: "github.com"
 			: typeof a.site === "string"
 				? a.site.trim().toLowerCase()
 				: "";
 	if (site !== undefined && (site.length > 253 || !HOST.test(site)))
 		throw new CloudToolArgumentRefusal("A site is a host name such as github.com");
+	if (proof === "stripe" && site !== STRIPE_SITE)
+		throw new CloudToolArgumentRefusal("A Stripe hook's secret is taken from dashboard.stripe.com");
 	const limit = (key: "maxBodyBytes" | "perMinute", least: number, most: number): number | undefined => {
 		const field = a[key];
 		if (field === undefined) return undefined;
@@ -582,7 +594,7 @@ export function cloudEventTools(
 				name: { type: "string", pattern: HOOK_NAME.source },
 				localPart: { type: "string", pattern: MAILBOX_NAME.source },
 				purpose: { type: "string", minLength: 1, maxLength: 512 },
-				proof: { type: "string", enum: ["address", "github", "hmac-sha256"] },
+				proof: { type: "string", enum: ["address", "github", "hmac-sha256", "stripe"] },
 				site: { type: "string", maxLength: 253 },
 				maxBodyBytes: { type: "integer", minimum: 1024, maximum: 262144 },
 				perMinute: { type: "integer", minimum: 1, maximum: 120 },
