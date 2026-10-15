@@ -829,6 +829,10 @@ class FakeExecStream {
 	stdinEnded = false;
 	killed = false;
 	socket = "";
+	/** The fd whose upgrade it never answers, as an LXD that stalls the handshake. */
+	withhold?: string;
+	withheldSeen = false;
+	withheldClosed = false;
 	readonly #sockets = new Set<Socket>();
 	readonly #connected = new Map<string, Socket>();
 	#ended?: number;
@@ -888,6 +892,19 @@ class FakeExecStream {
 		const key = request.headers["sec-websocket-key"];
 		if (url.pathname !== `${EXEC_OPERATION}/websocket` || !fd || fd === "control" || typeof key !== "string") {
 			socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+			return;
+		}
+		if (fd === this.withhold) {
+			this.withheldSeen = true;
+			// Reads on, so the client's end of the connection is seen; the server keeps its sockets half open.
+			const closed = (): void => {
+				this.withheldClosed = true;
+				socket.destroy();
+			};
+			socket.once("end", closed);
+			socket.once("error", closed);
+			socket.once("close", closed);
+			socket.resume();
 			return;
 		}
 		this.upgrades.push(fd);
@@ -1051,6 +1068,38 @@ describe("LXD exec stream", () => {
 		controller.abort();
 		await expect(call).rejects.toThrow("LXD exec stream was stopped");
 		await vi.waitFor(() => expect(stopped.killed).toBe(true));
+	});
+
+	it("stops a handshake LXD never answers at the deadline or on the signal, well before its own timeout", async () => {
+		const timed = await fake(() => ({ hold: true }));
+		timed.withhold = "2";
+		const started = Date.now();
+		await expect(
+			new LxdUnixClient(timed.socket, 30).execInstanceStream("coding", "coding-vm", { ...request, timeoutMs: 300 }),
+		).rejects.toThrow("LXD exec stream was stopped");
+		// The handshake's own timeout is 10 s.
+		expect(Date.now() - started).toBeLessThan(3_000);
+		await vi.waitFor(() => expect(timed.withheldClosed).toBe(true));
+		// The stdout websocket already connected is closed too.
+		expect(timed.upgrades).toEqual(["1"]);
+		await vi.waitFor(() => expect(timed.killed).toBe(true));
+		const stopped = await fake(() => ({ hold: true }));
+		stopped.withhold = "1";
+		const controller = new AbortController();
+		const call = new LxdUnixClient(stopped.socket, 30).execInstanceStream(
+			"coding",
+			"coding-vm",
+			request,
+			controller.signal,
+		);
+		await vi.waitFor(() => expect(stopped.withheldSeen).toBe(true));
+		const abortedAt = Date.now();
+		controller.abort();
+		await expect(call).rejects.toThrow("LXD exec stream was stopped");
+		expect(Date.now() - abortedAt).toBeLessThan(1_000);
+		await vi.waitFor(() => expect(stopped.withheldClosed).toBe(true));
+		expect(stopped.upgrades).toEqual([]);
+		expect(stopped.stdinEnded).toBe(false);
 	});
 
 	it("fails when a stream ends without its end message", async () => {

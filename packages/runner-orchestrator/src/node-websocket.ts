@@ -19,6 +19,8 @@ export interface NodeWebSocketHandlers {
 export interface NodeWebSocketOptions {
 	/** Connect over this Unix socket (a `ws:` URL; its host is then only the Host header). */
 	readonly socketPath?: string;
+	/** Stops a handshake still pending: its request is destroyed and the connect rejects at once. */
+	readonly signal?: AbortSignal;
 }
 
 /** A WebSocket client (RFC 6455) on node:http and node:https. It needs no WebAssembly, so it runs under
@@ -44,7 +46,8 @@ export class NodeWebSocket {
 		socket.once("close", () => this.#end("WebSocket connection closed"));
 	}
 
-	/** Opens `ws:` or `wss:` `url`. Rejects when the handshake is refused, fails or takes longer than `timeoutMs`. */
+	/** Opens `ws:` or `wss:` `url`. Rejects when the handshake is refused, fails, takes longer than `timeoutMs` or is
+	 * stopped by `options.signal`. */
 	static connect(
 		url: URL,
 		handlers: NodeWebSocketHandlers,
@@ -55,7 +58,12 @@ export class NodeWebSocket {
 		const secure = url.protocol === "wss:";
 		if (options.socketPath !== undefined && secure) throw new Error("A Unix socket WebSocket URL must use ws:");
 		const key = randomBytes(16).toString("base64");
+		const { signal } = options;
 		return new Promise((resolve, reject) => {
+			if (signal?.aborted) {
+				reject(new Error("WebSocket handshake was stopped"));
+				return;
+			}
 			const request = (secure ? httpsRequest : httpRequest)({
 				protocol: secure ? "https:" : "http:",
 				...(options.socketPath === undefined
@@ -71,7 +79,14 @@ export class NodeWebSocket {
 				},
 				timeout: timeoutMs,
 			});
+			// Destroying the request closes its connection; its error event then rejects.
+			const stopped = (): void => {
+				request.destroy(new Error("WebSocket handshake was stopped"));
+			};
+			signal?.addEventListener("abort", stopped, { once: true });
+			const settled = (): void => signal?.removeEventListener("abort", stopped);
 			request.once("upgrade", (response, socket: Socket, head: Buffer) => {
+				settled();
 				const accept = createHash("sha1").update(`${key}${ACCEPT_GUID}`).digest("base64");
 				if (
 					response.statusCode !== 101 ||
@@ -87,11 +102,15 @@ export class NodeWebSocket {
 				resolve(connection);
 			});
 			request.once("response", (response) => {
+				settled();
 				response.resume();
 				reject(new Error(`WebSocket handshake was refused (${response.statusCode ?? 0})`));
 			});
 			request.once("timeout", () => request.destroy(new Error("WebSocket handshake timed out")));
-			request.once("error", reject);
+			request.once("error", (error) => {
+				settled();
+				reject(error);
+			});
 			request.end();
 		});
 	}

@@ -3246,7 +3246,8 @@ export class LxdUnixClient
 						},
 					},
 					EXEC_STREAM_CONNECT_MS,
-					{ socketPath: this.#socketPath },
+					// The deadline and the signal also stop a handshake LXD has not answered yet.
+					{ socketPath: this.#socketPath, signal: checked },
 				);
 				sockets.push(socket);
 				if (failure || checked.aborted) {
