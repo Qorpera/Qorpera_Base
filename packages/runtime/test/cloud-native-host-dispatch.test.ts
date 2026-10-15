@@ -103,12 +103,20 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			[...text.matchAll(/set budget = 'long' where name = '(qorpera_[a-z0-9_]+)'/g)].map((m) => m[1]),
 		),
 	);
+	// The legacy sweep's step D takes calls out again (D4: save_attachment's request), found in every migration.
+	const deleted = /delete from public\.qorpera_native_host_calls where name = '(qorpera_[a-z0-9_]+)'/g;
+	const removed = new Set(
+		readdirSync(new URL("../../../supabase/migrations/", import.meta.url)).flatMap((name) =>
+			[...read(name).matchAll(deleted)].map((m) => m[1]),
+		),
+	);
 	const expected = new Map(
 		rows
-			.filter(([, , scope]) => scope !== "identity")
+			.filter(([, name, scope]) => scope !== "identity" && !removed.has(name))
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
 	expect(rows).toHaveLength(105);
+	expect([...removed]).toEqual(["qorpera_native_mail_attachment"]);
 	expect(new Map(NATIVE_HOST_CALLS)).toEqual(expected);
 	expect([...NATIVE_HOST_CALLS].filter(([, budget]) => budget === "long")).toEqual([
 		["qorpera_fence_native_context", "long"],
@@ -159,8 +167,6 @@ it("classifies every database call the host's clients can make: inside a job, be
 		"qorpera_check_runtime_office_viewer",
 		"qorpera_native_binding_proven",
 		"qorpera_native_office_browser_grant",
-		"qorpera_native_office_file_export",
-		"qorpera_native_office_file_import",
 		"qorpera_office_screen_browser_grant",
 		"qorpera_record_runtime_screen_event",
 		"qorpera_redeem_runtime_office_viewer",
