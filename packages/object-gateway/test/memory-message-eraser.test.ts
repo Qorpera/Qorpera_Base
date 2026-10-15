@@ -76,33 +76,44 @@ async function rejection(pass: Promise<number>): Promise<string> {
 }
 
 /**
- * The queue as the database keeps it (migrations 20260930441000 and 20260930443000): the longest waiting first, past
- * the resting ones. Listing an erase moves it behind every other one, as a step that moves it on does; a step that
- * failed rolled back and moves nothing; a done or refused erase leaves the queue.
+ * The queue as the database keeps it (migrations 20260930441000 and 20260930443000): the longest waiting first, then
+ * the smaller id, past the resting ones. Listing moves nothing; taking an erase moves it behind every other one, as a
+ * step that moves it on does; a step that failed rolled back and moves nothing; a done or refused erase leaves the
+ * queue. Each row waits a moment less than the one before it, unless it names its own time.
  */
 class Queue {
-	readonly #rows: { id: string; state: string }[];
+	readonly #rows: { id: string; state: string; at: number }[];
+	#clock: number;
 
-	constructor(...rows: { id: string; state: string }[]) {
-		this.#rows = rows;
+	constructor(...rows: { id: string; state: string; at?: number }[]) {
+		this.#rows = rows.map((row, n) => ({ ...row, at: row.at ?? n }));
+		this.#clock = rows.length;
 	}
 
 	add(id: string, state: string): void {
-		this.#rows.push({ id, state });
+		this.#rows.push({ id, state, at: this.#clock++ });
 	}
 
 	list(args: Record<string, unknown>): unknown[] {
 		const resting = new Set(args.p_resting as string[]);
-		const listed = this.#rows.filter((row) => !resting.has(row.id)).slice(0, args.p_limit as number);
-		for (const row of listed) this.#rows.push(...this.#rows.splice(this.#rows.indexOf(row), 1));
-		return listed.map((row) => due(row.state, row.id));
+		return this.#rows
+			.filter((row) => !resting.has(row.id))
+			.sort((a, b) => a.at - b.at || Number(a.id > b.id) - Number(a.id < b.id))
+			.slice(0, args.p_limit as number)
+			.map((row) => due(row.state, row.id));
+	}
+
+	take(id: string): boolean {
+		const row = this.#rows.find((entry) => entry.id === id);
+		if (row) row.at = this.#clock++;
+		return row !== undefined;
 	}
 
 	settle(id: string, state: string): void {
 		const at = this.#rows.findIndex((row) => row.id === id);
 		if (at < 0) return;
-		this.#rows.splice(at, 1);
-		if (state !== "done" && state !== "refused") this.#rows.push({ id, state });
+		if (state === "done" || state === "refused") this.#rows.splice(at, 1);
+		else this.#rows[at] = { id, state, at: this.#clock++ };
 	}
 }
 
@@ -112,8 +123,9 @@ const eraseIds = (count: number, from: number) =>
 
 /**
  * The database and the store as the eraser sees them: every call recorded, the queue answered from `queue` (else
- * `due`), each plan from `plans` (else the two blocks), and each step from `steps` (a state, an error it throws, or the
- * answer itself; else the state it moves the erase to).
+ * `due`), each plan from `plans` (else the two blocks), each step from `steps` (a state, an error it throws, or the
+ * answer itself; else the state it moves the erase to), and each take from `steps` too (an error it throws, or the
+ * answer; else the queue's, or true).
  */
 function database(
 	options: {
@@ -137,6 +149,13 @@ function database(
 			switch (method) {
 				case "qorpera_memory_message_erase_due":
 					return options.queue?.list(args) ?? options.due ?? [];
+				case "qorpera_memory_message_erase_take": {
+					const queued = steps.get(method) ?? [];
+					const answer =
+						queued.length > 0 ? queued.shift() : (options.queue?.take(args.p_erase_id as string) ?? true);
+					if (answer instanceof Error) throw answer;
+					return answer;
+				}
 				case "qorpera_memory_message_erase_plan":
 					return plans.length > 0 ? plans.shift() : plan(args.p_erase_id as string);
 				case "qorpera_memory_message_erase_open":
@@ -203,7 +222,7 @@ function database(
 		},
 	};
 	const eraser = new MemoryMessageEraser({ authority: authority as never, store, replication });
-	/** The eraser's own calls, by step: `due`, `open`, `plan`, `rewrite`, `ask` and `scrub`. */
+	/** The eraser's own calls, by step: `due`, `take`, `open`, `plan`, `rewrite`, `ask` and `scrub`. */
 	const sequence = () =>
 		calls.filter((call) => call.method.startsWith(ERASE)).map((call) => call.method.slice(ERASE.length));
 	const rewrites = () => calls.filter((call) => call.method === `${ERASE}rewrite`).map((call) => call.args);
@@ -230,11 +249,12 @@ describe("MemoryMessageEraser", () => {
 	it("carries a pending erase through its four steps to done", async () => {
 		const run = database({ due: [due("pending")] });
 		expect(await run.eraser.eraseDue(10)).toBe(1);
-		expect(run.sequence()).toEqual(["due", "open", "plan", "rewrite", "ask", "scrub"]);
+		expect(run.sequence()).toEqual(["due", "take", "open", "plan", "rewrite", "ask", "scrub"]);
 		const ids = { p_environment_id: environmentId, p_erase_id: eraseId };
 		const steps = run.calls.filter((call) => call.method.startsWith(ERASE));
 		expect(steps.map((call) => call.args)).toEqual([
 			{ p_limit: 10, p_resting: [] },
+			{ p_erase_id: eraseId },
 			ids,
 			ids,
 			{ ...ids, p_plan_sha256: plan().planSha256, p_files: expect.any(Array) },
@@ -278,10 +298,10 @@ describe("MemoryMessageEraser", () => {
 	});
 
 	it.each([
-		["pending", "qorpera_memory_message_erase_open", ["due", "open"]],
-		["open", "qorpera_memory_message_erase_rewrite", ["due", "plan", "rewrite"]],
-		["rewritten", "qorpera_memory_message_erase_ask", ["due", "ask"]],
-		["requested", "qorpera_memory_message_erase_scrub", ["due", "scrub"]],
+		["pending", "qorpera_memory_message_erase_open", ["due", "take", "open"]],
+		["open", "qorpera_memory_message_erase_rewrite", ["due", "take", "plan", "rewrite"]],
+		["rewritten", "qorpera_memory_message_erase_ask", ["due", "take", "ask"]],
+		["requested", "qorpera_memory_message_erase_scrub", ["due", "take", "scrub"]],
 	])("leaves a %s erase to the next pass when its step leaves it there", async (state, method, sequence) => {
 		const run = database({ due: [due(state)], steps: { [method]: [state] } });
 		expect(await run.eraser.eraseDue()).toBe(1);
@@ -291,7 +311,7 @@ describe("MemoryMessageEraser", () => {
 	it("stops at refused", async () => {
 		const run = database({ due: [due("pending")], steps: { qorpera_memory_message_erase_open: ["refused"] } });
 		expect(await run.eraser.eraseDue()).toBe(1);
-		expect(run.sequence()).toEqual(["due", "open"]);
+		expect(run.sequence()).toEqual(["due", "take", "open"]);
 	});
 
 	it("plans again when the plan moved before the rewrite took it (423), and rests it a second time", async () => {
@@ -303,7 +323,7 @@ describe("MemoryMessageEraser", () => {
 			steps: { qorpera_memory_message_erase_rewrite: [moved()] },
 		});
 		expect(await run.eraser.eraseDue()).toBe(1);
-		expect(run.sequence()).toEqual(["due", "plan", "rewrite", "plan", "rewrite", "ask", "scrub"]);
+		expect(run.sequence()).toEqual(["due", "take", "plan", "rewrite", "plan", "rewrite", "ask", "scrub"]);
 		expect(run.rewrites().map((args) => args.p_plan_sha256)).toEqual([plan().planSha256, shorter.planSha256]);
 		expect(run.rewrites().map((args) => (args.p_files as unknown[]).length)).toEqual([2, 1]);
 		const twice = database({
@@ -311,7 +331,7 @@ describe("MemoryMessageEraser", () => {
 			steps: { qorpera_memory_message_erase_rewrite: [moved(), moved()] },
 		});
 		expect(await twice.eraser.eraseDue()).toBe(1);
-		expect(twice.sequence()).toEqual(["due", "plan", "rewrite", "plan", "rewrite"]);
+		expect(twice.sequence()).toEqual(["due", "take", "plan", "rewrite", "plan", "rewrite"]);
 	});
 
 	it.each([
@@ -323,7 +343,7 @@ describe("MemoryMessageEraser", () => {
 			steps: { qorpera_memory_message_erase_open: [error] },
 		});
 		expect(await run.eraser.eraseDue()).toBe(2);
-		expect(run.sequence()).toEqual(["due", "open", "open", "plan", "rewrite", "ask", "scrub"]);
+		expect(run.sequence()).toEqual(["due", "take", "open", "take", "open", "plan", "rewrite", "ask", "scrub"]);
 		const opened = run.calls.filter((call) => call.method === `${ERASE}open`);
 		expect(opened.map((call) => call.args.p_erase_id)).toEqual([eraseId, otherEraseId]);
 	});
@@ -340,7 +360,43 @@ describe("MemoryMessageEraser", () => {
 			steps: { qorpera_memory_message_erase_open: [answer] },
 		});
 		expect(await rejection(run.eraser.eraseDue())).toBe(code);
-		expect(run.sequence()).toEqual(["due", "open", "scrub"]);
+		expect(run.sequence()).toEqual(["due", "take", "open", "take", "scrub"]);
+	});
+
+	it("leaves an erase it cannot take now (a step holds it, or it ended meanwhile), and takes the next", async () => {
+		const run = database({
+			due: [due("pending"), due("requested", otherEraseId)],
+			steps: { qorpera_memory_message_erase_take: [false] },
+		});
+		expect(await run.eraser.eraseDue(10)).toBe(1);
+		expect(run.sequence()).toEqual(["due", "take", "take", "scrub"]);
+		const invalid = database({
+			due: [due("pending"), due("requested", otherEraseId)],
+			steps: { qorpera_memory_message_erase_take: ["yes"] },
+		});
+		expect(await rejection(invalid.eraser.eraseDue(10))).toBe("take_invalid");
+		expect(invalid.sequence()).toEqual(["due", "take", "take", "scrub"]);
+	});
+
+	it("lists first in the next pass the erase due with one whose staging the deadline cut off", async () => {
+		// Two erases due at the same time, so the smaller id comes first, as in the database. Each pass's deadline comes
+		// while the first one's blocks are being staged, before its rewrite.
+		const queue = new Queue({ id: otherEraseId, state: "requested", at: 0 }, { id: eraseId, state: "open", at: 0 });
+		let deadline = new AbortController();
+		const run = database({
+			queue,
+			onCall: (method) => {
+				if (method !== "qorpera_folder_open_upload") return;
+				deadline.abort();
+				throw new Error("This operation was aborted");
+			},
+		});
+		expect(await run.eraser.eraseDue(10, deadline.signal)).toBe(1);
+		deadline = new AbortController();
+		expect(await run.eraser.eraseDue(10, deadline.signal)).toBe(2);
+		expect(run.sequence()).toEqual(["due", "take", "plan", "due", "take", "scrub", "take", "plan"]);
+		const taken = run.calls.filter((call) => call.method === `${ERASE}take`).map((call) => call.args.p_erase_id);
+		expect(taken).toEqual([eraseId, otherEraseId, eraseId]);
 	});
 
 	it("rests an erase whose step failed for a minute, naming it for the queue to pass over", async () => {
@@ -387,7 +443,7 @@ describe("MemoryMessageEraser", () => {
 				vi.setSystemTime(start + passes++ * 5_000);
 				expect(await run.eraser.eraseDue(10)).toBe(10);
 			}
-			// Each of the 1,001 had its one turn, then the one behind them: each pass, the queue listed ten not listed yet.
+			// Each of the 1,001 had its one turn, then the one behind them: each pass took ten that no pass had taken yet.
 			expect(passes).toBe(101);
 			expect(
 				called("open")
@@ -447,6 +503,7 @@ describe("MemoryMessageEraser", () => {
 				fetch: async (input, init) => {
 					const method = new URL(String(input)).pathname.slice("/rest/v1/rpc/".length);
 					asked.push(method.slice(ERASE.length));
+					if (method === `${ERASE}take`) return Response.json(true);
 					if (method === `${ERASE}due`) {
 						const resting = JSON.parse(String(init?.body)).p_resting as string[];
 						const queue = [due("pending"), due("requested", otherEraseId)];
@@ -460,15 +517,15 @@ describe("MemoryMessageEraser", () => {
 			});
 			const eraser = new MemoryMessageEraser({ authority, store: {} as never, replication: {} as never });
 			expect(await eraser.eraseDue(10)).toBe(1);
-			expect(asked).toEqual(["due", "open"]);
+			expect(asked).toEqual(["due", "take", "open"]);
 			// While the circuit is open, a pass asks nothing at all.
 			vi.setSystemTime(start + 1_000);
 			await expect(eraser.eraseDue(10)).rejects.toMatchObject({ status: 503 });
-			expect(asked).toEqual(["due", "open"]);
+			expect(asked).toEqual(["due", "take", "open"]);
 			// Once it is closed again, the next pass carries the other erase; the queue passes over the resting first one.
 			vi.setSystemTime(start + 6_000);
 			expect(await eraser.eraseDue(10)).toBe(1);
-			expect(asked).toEqual(["due", "open", "due", "scrub"]);
+			expect(asked).toEqual(["due", "take", "open", "due", "take", "scrub"]);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -480,7 +537,7 @@ describe("MemoryMessageEraser", () => {
 	])("rewrites nothing when %s is not the plan's", async (_field, entry) => {
 		const run = database({ due: [due("open")], plans: [plan(eraseId, [entry])] });
 		expect(await rejection(run.eraser.eraseDue())).toBe("plan_invalid");
-		expect(run.sequence()).toEqual(["due", "plan"]);
+		expect(run.sequence()).toEqual(["due", "take", "plan"]);
 	});
 
 	it.each([
@@ -490,7 +547,7 @@ describe("MemoryMessageEraser", () => {
 	])("stages nothing for a plan %s", async (_why, answer) => {
 		const run = database({ due: [due("open")], plans: [answer] });
 		expect(await rejection(run.eraser.eraseDue())).toBe("plan_invalid");
-		expect(run.sequence()).toEqual(["due", "plan"]);
+		expect(run.sequence()).toEqual(["due", "take", "plan"]);
 		expect(run.calls.some((call) => call.method.startsWith("qorpera_folder_"))).toBe(false);
 	});
 
@@ -518,7 +575,7 @@ describe("MemoryMessageEraser", () => {
 			},
 		});
 		expect(await cut.eraser.eraseDue(10, deadline.signal)).toBe(1);
-		expect(cut.sequence()).toEqual(["due", "open"]);
+		expect(cut.sequence()).toEqual(["due", "take", "open"]);
 		// A step the deadline cut off says nothing about its erase: the pass ends quietly.
 		const ended = new AbortController();
 		const failed = database({
@@ -529,6 +586,6 @@ describe("MemoryMessageEraser", () => {
 			},
 		});
 		expect(await failed.eraser.eraseDue(10, ended.signal)).toBe(1);
-		expect(failed.sequence()).toEqual(["due", "open"]);
+		expect(failed.sequence()).toEqual(["due", "take", "open"]);
 	});
 });

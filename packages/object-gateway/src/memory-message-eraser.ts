@@ -23,10 +23,11 @@ import type { ObjectGatewayReplication } from "./replication.ts";
  *
  * Each pass reads the queue (`_due`, the longest waiting first) and steps each erase on until a step leaves it where it
  * was (it waits on a lock, a run, P18 or its next block) or it is done or refused. A step that rolled back leaves the
- * row as it was, so the next pass carries on from the state the row holds. The queue moves each erase it lists behind
- * every other erase due (migration 20260930443000), so passes go round it, and an erase whose step failed also rests a
- * minute, which the queue passes over: ones that keep failing or waiting never hold its head. Problems are reported as
- * codes, never with a message.
+ * row as it was, so the next pass carries on from the state the row holds. Before an erase's first step, a pass takes
+ * it (`_take`, migration 20260930443000), which moves it behind every other erase due: the queue lists first the ones
+ * no pass took since, those a pass listed but never reached included, so passes go round it. An erase whose step
+ * failed also rests a minute, which the queue passes over: ones that keep failing or waiting never hold its head.
+ * Problems are reported as codes, never with a message.
  * Built switched off: the gateway runs it only with QORPERA_MEMORY_MESSAGE_ERASER=1.
  */
 
@@ -179,8 +180,9 @@ export class MemoryMessageEraser {
 
 	/**
 	 * Steps the due erases on, at most `max` of them, until `signal` ends (no new step is taken then); returns how many
-	 * were taken. Each pass takes the longest waiting erases the queue lists, which moves them behind every other erase
-	 * due, and names the resting ones for the queue to pass over. An erase whose step failed rests (`REST_MS`).
+	 * were taken. Each pass names the resting ones for the queue to pass over and takes the longest waiting erases it
+	 * lists, one at a time: taking one moves it behind every other erase due, before its first step. One a step holds
+	 * now, or done or refused meanwhile, is not taken. An erase whose step failed rests (`REST_MS`).
 	 * - A lock conflict or a state that refuses the call now (423) only rests it.
 	 * - An outage rests it and ends the pass: the database client's circuit may have opened on it, and would refuse
 	 *   the next erase's step without asking the database.
@@ -202,8 +204,9 @@ export class MemoryMessageEraser {
 		let failed: string | null = null;
 		for (const erase of queue) {
 			if (signal.aborted || taken >= max) break;
-			taken++;
 			try {
+				if (!(await this.#take(erase, signal))) continue;
+				taken++;
 				await this.#carry(erase, signal);
 			} catch (error) {
 				// A call the pass's deadline cut off says nothing about its erase: its step lands once, in that call or
@@ -218,6 +221,16 @@ export class MemoryMessageEraser {
 		}
 		if (failed !== null) problem(failed);
 		return taken;
+	}
+
+	/** Takes an erase for this pass, in a call of its own; false when a step holds it now, or it is done or refused. */
+	async #take(erase: DueErase, signal: AbortSignal): Promise<boolean> {
+		const answer = await this.#options.authority.publisher(
+			"qorpera_memory_message_erase_take",
+			{ p_erase_id: erase.eraseId },
+			signal,
+		);
+		return typeof answer === "boolean" ? answer : problem("take_invalid");
 	}
 
 	/** Rests an erase for `REST_MS`; when `MAX_DUE` already rest, the oldest rest ends early. */
