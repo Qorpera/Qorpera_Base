@@ -75,7 +75,7 @@ they answer 42501 "native host call is refused".
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-154 functions, grouped for navigation. Signatures: see the migration that defines each.
+151 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
@@ -229,15 +229,14 @@ they answer 42501 "native host call is refused".
 - `qorpera_set_provider_connection_status`
 
 
-### Objects, artifacts, retention (23)
+### Objects, artifacts, retention (20)
 
 A folder-v2 company keeps its bytes in its company folder and has no artifacts: `qorpera_register_artifact_v2`,
 `qorpera_create_artifact_index`, `qorpera_create_artifact_retention_hold`, `qorpera_complete_object_reachability_graph`
 and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
+The raw object reads and uploads by hash and the read lease went with legacy sweep E3 (20260930450000).
 
 - `qorpera_append_object_reachability_entries`
-- `qorpera_authorize_profile_object_download`
-- `qorpera_authorize_profile_object_upload`
 - `qorpera_begin_object_reachability_graph`
 - `qorpera_cancel_artifact_gc_plan`
 - `qorpera_cancel_artifact_gc_plan_v2`
@@ -248,7 +247,6 @@ and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
 - `qorpera_create_object_restore_proof`
 - `qorpera_get_artifact_index`
 - `qorpera_get_object_reachability_graph`
-- `qorpera_issue_profile_object_read_lease`
 - `qorpera_list_artifact_gc_audit`
 - `qorpera_list_artifact_gc_candidates`
 - `qorpera_list_artifact_gc_plans`
