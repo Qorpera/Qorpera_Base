@@ -431,11 +431,12 @@ describe("Stripe hooks in the vault", () => {
 				message,
 			});
 		}
-		// 40003: the store's outcome is unknown, so the native host asks the same call again.
-		for (const error of [
-			databaseError("40003", "hook secret capture outcome is unconfirmed"),
-			new Error("connection terminated"),
-		]) {
+		// 40003: another capture of the hook stored the version this one read. It reads again for the same receipt and
+		// box, a few times; a store whose outcome is unknown otherwise is unconfirmed at once.
+		for (const [error, attempts] of [
+			[databaseError("40003", "hook secret capture outcome is unconfirmed"), 3],
+			[new Error("connection terminated"), 1],
+		] as const) {
 			const sent: Uint8Array[] = [];
 			const f = stripeFixture({
 				storeHookCapture: vi.fn(async (_request, version: EventHookCaptureVersion) => {
@@ -446,9 +447,49 @@ describe("Stripe hooks in the vault", () => {
 			await expect(f.vault.capture(captureRequest(f.box()), AbortSignal.timeout(5000))).rejects.toThrow(
 				"Event hook capture unconfirmed",
 			);
-			expect(sent).toHaveLength(1);
-			expect(sent[0]?.every((byte) => byte === 0)).toBe(true);
+			expect(sent).toHaveLength(attempts);
+			expect(f.read).toHaveBeenCalledTimes(attempts);
+			expect(sent.every((envelope) => envelope.every((byte) => byte === 0))).toBe(true);
 		}
+	});
+
+	it("reads again after a store that met another capture, and stores the next version or answers the same secret", async () => {
+		const lost = databaseError("40003", "hook secret capture outcome is unconfirmed");
+		// The other capture stored another secret as version 1: this one goes on as version 2.
+		const raced = stripeFixture();
+		vi.mocked(
+			raced.authority.storeHookCapture as NonNullable<EventHookAuthority["storeHookCapture"]>,
+		).mockRejectedValueOnce(lost);
+		raced.read
+			.mockResolvedValueOnce(raced.captureContext())
+			.mockResolvedValueOnce(raced.captureContext({ version: 2, current: raced.held(`${stripeSecret}Qr`) }));
+		expect(await raced.vault.capture(captureRequest(raced.box()), AbortSignal.timeout(5000))).toEqual({
+			schema: "qorpera.event-hook-capture-answer/v1",
+			hook: hookId,
+			version: 2,
+			unchanged: false,
+		});
+		expect(raced.read).toHaveBeenCalledTimes(2);
+		expect(raced.stored.map((version) => version.version)).toEqual([2]);
+		await expect(opened(raced.keyring, raced.stored[0] as EventHookCaptureVersion)).resolves.toEqual({
+			signing_secret: stripeSecret,
+		});
+		// The other capture stored this same secret: the answer is its version, unchanged, and nothing more is stored.
+		const same = stripeFixture();
+		vi.mocked(
+			same.authority.storeHookCapture as NonNullable<EventHookAuthority["storeHookCapture"]>,
+		).mockRejectedValueOnce(lost);
+		same.read
+			.mockResolvedValueOnce(same.captureContext())
+			.mockResolvedValueOnce(same.captureContext({ version: 2, current: same.held(stripeSecret) }));
+		expect(await same.vault.capture(captureRequest(same.box()), AbortSignal.timeout(5000))).toEqual({
+			schema: "qorpera.event-hook-capture-answer/v1",
+			hook: hookId,
+			version: 1,
+			unchanged: true,
+		});
+		expect(same.authority.storeHookCapture).toHaveBeenCalledTimes(1);
+		expect(same.stored).toEqual([]);
 	});
 
 	it("refuses a secret read off another site or too long ago, and stores nothing from a box not for this call", async () => {

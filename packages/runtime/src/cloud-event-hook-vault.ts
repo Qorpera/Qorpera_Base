@@ -57,6 +57,8 @@ const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
  * the run's authority and the wake's (refused in the model's words, or asked again: 40P01, QRC01, 55P03). Their
  * messages hold no value. */
 const REFUSALS = new Set(["0A000", "22023", "23505", "42501", "54000", "55000", "55P03", "40P01", "QRC01", "P0002"]);
+/** How many times a capture reads and stores before a race it keeps losing (40003) is left unconfirmed. */
+const CAPTURE_ATTEMPTS = 3;
 
 /** One manage_hook create of a signed hook, as the runtime checked it. The database checks it again. */
 export interface EventHookCreate {
@@ -698,14 +700,22 @@ export class EventHookVault {
 	/**
 	 * One vault_capture of a Stripe hook's secret (E3c-2): the version the vault holds after it, or the database's
 	 * refusal. The box opens only for this call's computer, boot and hook; the secret is never in an answer, a log or
-	 * an error. A call asked again answers what it stored.
+	 * an error. A call asked again answers what it stored. A store that met another capture of the hook (40003: the
+	 * version it read is no longer the next) reads again for the same receipt and box, a few times, never the page.
 	 */
 	async capture(
 		request: EventHookCaptureRequest,
 		signal: AbortSignal,
 	): Promise<EventHookCaptureAnswer | EventHookRefusal> {
 		try {
-			return await this.#capture(request, signal);
+			for (let attempt = 1; ; attempt += 1) {
+				try {
+					return await this.#capture(request, signal);
+				} catch (error) {
+					if (attempt >= CAPTURE_ATTEMPTS || (error as { code?: unknown } | null)?.code !== "40003") throw error;
+					signal.throwIfAborted();
+				}
+			}
 		} catch (error) {
 			const refused = refusal(error);
 			if (refused) return refused;
