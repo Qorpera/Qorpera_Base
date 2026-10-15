@@ -3,7 +3,8 @@
 -- takes the conversation's session FOR UPDATE and reads receipts in a later statement; a zoom stores its receipt, then
 -- takes the session FOR SHARE. So an erase first makes the zoom wait and read the erased event (its run is not the
 -- erase's), and a zoom first makes step 1 wait and record the zoom's run. Step 4's scrub takes each operation receipt
--- SKIP LOCKED: one held elsewhere leaves the run pending, and the next scrub ends it. Ada's thread has no room, so the
+-- SKIP LOCKED: one held elsewhere leaves the run pending, and the next scrub ends it. A duplicate request's row, written
+-- once the first erase is done, ends done at its step 1 with nothing changed. Ada's thread has no room, so the
 -- erase rows are written here as the request would write them (owner ...01). The fixture goes at the end.
 
 -- An erase row of a message of Ada's thread, as the request writes it.
@@ -157,6 +158,37 @@ begin
 	if r ->> 'state' <> 'done' or r ->> 'runsPending' <> '0' or pg_temp.op_content('race-b') <> '[erased]'
 		or pg_temp.erase_state(current_setting('qorpera_test.erase_b')::uuid) <> '{"state":"done","blocks":0,"runsPending":0}' then
 		raise exception 'C: the next scrub: % (%)', r, pg_temp.op_content('race-b'); end if;
+end $$;
+
+-- D. A duplicate after the first erase is done. A request that read the first message's event before erase A's step 1
+-- writes its row once A is done (the event's index lets one row in at a time): fence_two's insert waits for fence_one,
+-- which ends A. The duplicate's step 1 finds the event erased under the session's lock: it is done, with no commit, no
+-- blocks and the generation as it was.
+select set_config('qorpera_test.generation', pg_temp.generation()::text, false);
+select dblink_exec('fence_one', 'begin');
+select dblink_exec('fence_one', format('update public.qorpera_memory_message_erases set state = %L, done_at = clock_timestamp() '
+	'where id = %L', 'done', current_setting('qorpera_test.erase_a')));
+select dblink_send_query('fence_two', format('insert into public.qorpera_memory_message_erases(environment_id, profile_id, '
+	'session_id, event_id, sequence, message_index, requested_by_user_id) select environment_id, profile_id, session_id, '
+	'event_id, sequence, message_index, requested_by_user_id from public.qorpera_memory_message_erases where id = %L '
+	'returning to_jsonb(id)::text', current_setting('qorpera_test.erase_a')));
+do $$
+begin
+	if not pg_temp.waits_for('fence_two', 'fence_one') then raise exception 'D: the duplicate did not wait for erase A'; end if;
+end $$;
+select dblink_exec('fence_one', 'commit');
+do $$
+declare d uuid; r jsonb;
+begin
+	if not pg_temp.finishes_unblocked('fence_two', 'fence_one') then raise exception 'D: the duplicate was not written'; end if;
+	d := (pg_temp.answer('fence_two') #>> '{}')::uuid;
+	r := public.qorpera_memory_message_erase_open('64800000-0000-4000-8000-000000000020', d);
+	if r ->> 'state' <> 'done' or r ->> 'blocks' <> '0' or r ->> 'runsPending' <> '0'
+		or pg_temp.generation() <> current_setting('qorpera_test.generation')::bigint
+		or not exists (select 1 from public.qorpera_memory_message_erases e where e.id = d and e.commit_id is null
+			and e.generation is null and e.done_at is not null and e.last_error is null) then
+		raise exception 'D: the duplicate after the first erase: % %', r,
+			(select to_jsonb(e) from public.qorpera_memory_message_erases e where e.id = d); end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;

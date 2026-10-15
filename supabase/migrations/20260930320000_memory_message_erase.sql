@@ -247,7 +247,7 @@ returns jsonb language sql stable set search_path = '' as $$
 $$;
 
 -- Step 1 under the locks: the row, taken after the session row, must be pending; QME01 rolls the try back and the
--- caller tries again, QME02 refuses the erase.
+-- caller tries again, QME02 refuses the erase, QME04 (the event erased already) ends it done.
 create function public.qorpera_memory_message_erase_step1(p_context jsonb, p_units jsonb)
 returns void language plpgsql volatile security definer set search_path = '' as $$
 declare
@@ -259,6 +259,11 @@ begin
 	select * into v_row from public.qorpera_memory_message_erases where id = (p_context ->> 'eraseId')::uuid for update;
 	if not found or v_row.state <> 'pending' or v_row.environment_id <> v_env then
 		raise exception 'The erase moved on' using errcode = 'QME01'; end if;
+	-- The event erased already, under the session's lock: a request that read it before the first erase's step 1 and wrote
+	-- its row once that erase was done. Nothing is left to erase; QME04 rolls the try back and the caller ends the row.
+	if exists (select 1 from public.qorpera_session_events where session_id = v_row.session_id and sequence = v_row.sequence
+		and event_id = v_row.event_id and body = '{"erased":true}'::jsonb) then
+		raise exception 'The event is erased already' using errcode = 'QME04'; end if;
 	-- The role, under the member row's lock, as P18 checks it (ERASURE.md §3).
 	select role into v_role from public.qorpera_profile_members
 	where profile_id = v_row.profile_id and user_id = v_row.requested_by_user_id;
@@ -279,7 +284,7 @@ begin
 	update public.qorpera_session_events set body = '{"erased":true}'::jsonb
 	where session_id = v_row.session_id and sequence = v_row.sequence and event_id = v_row.event_id
 		and body <> '{"erased":true}'::jsonb;
-	if not found then raise exception 'The event is erased already' using errcode = 'QME01'; end if;
+	if not found then raise exception 'The event moved' using errcode = 'QME01'; end if;
 	-- A member's message: its input, at the turn-input step.
 	if v_row.input_id is not null then
 		perform 1 from public.qorpera_session_inputs where id = v_row.input_id for update;
@@ -431,7 +436,8 @@ returns jsonb language sql stable set search_path = '' as $$
 $$;
 
 -- An owner or admin asks to erase one event of a room's conversation. A second request for the same event joins the
--- first; a request for an event already erased gets that erase.
+-- first; a request for an event already erased gets that erase. One that read the event before the first erase's step 1
+-- and wrote its row once that erase was done ends done at its own step 1 (QME04).
 create function public.qorpera_memory_message_erase_request(p_environment_id uuid, p_user_id uuid, p_session_id uuid,
 	p_event_id uuid)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
@@ -574,6 +580,12 @@ begin
 				get stacked diagnostics v_error = message_text;
 				update public.qorpera_memory_message_erases set state = 'refused', last_error = v_error, updated_at = clock_timestamp()
 				where id = v_row.id;
+				return public.qorpera_memory_message_erase_reply(v_row.id);
+			-- The first erase of the event did the work: this row is done, with no commit and the generation as it was.
+			when sqlstate 'QME04' then
+				update public.qorpera_memory_message_erases
+				set state = 'done', last_error = null, done_at = clock_timestamp(), updated_at = clock_timestamp()
+				where id = v_row.id and state = 'pending';
 				return public.qorpera_memory_message_erase_reply(v_row.id);
 		end;
 	end loop;
