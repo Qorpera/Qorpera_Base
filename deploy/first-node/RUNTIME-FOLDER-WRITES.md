@@ -159,7 +159,10 @@ first publishes what is pending (a boundary, as when the machine asks), then is 
 - moving or removing a folder with changes inside it, or one something was moved out of;
 - reusing a path a moved or removed folder left (`rm -rf D; mkdir D`);
 - changing a file this view moved, or moving a file this view changed;
-- the move that would close a ring of moves taking each other's places (a swap, `mv a t; mv b a; mv t b`).
+- the move that would close a ring of moves taking each other's places (a swap, `mv a t; mv b a; mv t b`);
+- a change at a path that a pending file, link or folder spells otherwise (another machine renamed the live one only in
+  case beside it): a save renamed over the new spelling, or an edit, mode change or removal there, would be a second
+  unit at one path in the core, and a replacement's base must stay the one its own save saw.
 If what blocks it is still pending after that boundary (a file open for writing inside the folder being moved), the
 change fails with `EBUSY`. The machine sees the change take longer; nothing else differs.
 

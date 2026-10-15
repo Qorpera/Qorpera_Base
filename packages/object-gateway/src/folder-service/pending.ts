@@ -476,6 +476,8 @@ export class PendingView {
 				fail(ErrorCode.exists, "A link has this name");
 			if (r.kind === "live") {
 				if (r.entry.kind === "folder") fail(ErrorCode.notAFile, "Not a file");
+				if (this.#foldsWithPending(path))
+					throw new PublishFirst("a change at a path a pending one spells otherwise");
 				node = this.#fromLive(r.entry, r.source, options.base);
 				this.#set(path, node);
 			} else {
@@ -662,6 +664,8 @@ export class PendingView {
 		if (!r) fail(ErrorCode.notFound, "No such file");
 		if ((r.kind === "live" ? r.entry.kind : r.node.kind) === "folder") fail(ErrorCode.notAFile, "Not a file");
 		checkRemovable(path);
+		if (r.kind === "live" && this.#foldsWithPending(path))
+			throw new PublishFirst("a change at a path a pending one spells otherwise");
 		this.#remove(r, base);
 	}
 
@@ -676,6 +680,8 @@ export class PendingView {
 		// What moved out of it publishes first: its removal must not be able to take them if their moves fail.
 		if (r.kind === "live" && this.#movesOutBelow(r.source))
 			throw new PublishFirst("removing a folder something was moved out of");
+		if (r.kind === "live" && this.#foldsWithPending(path))
+			throw new PublishFirst("a change at a path a pending one spells otherwise");
 		this.#remove(r, base);
 	}
 
@@ -729,6 +735,7 @@ export class PendingView {
 			if (origin !== undefined && this.#cycle(origin, to))
 				throw new PublishFirst("moves that take each other's places");
 		}
+		if (this.#foldsWithPending(to, from)) throw new PublishFirst("a change at a path a pending one spells otherwise");
 		// The moving node: a pending one as it is, or one made from the live entry, at the writer's base.
 		let node: PendingFile | PendingFolder | PendingLink;
 		if (source.kind === "node") node = source.node;
@@ -787,6 +794,8 @@ export class PendingView {
 		if ((r.kind === "live" ? r.entry.kind : r.node.kind) !== "file") return;
 		if (r.kind === "live" && r.entry.executable === executable) return;
 		if (r.kind === "node" && this.#moved(path, r.node)) throw new PublishFirst("a change to a file this view moved");
+		if (r.kind === "live" && this.#foldsWithPending(path))
+			throw new PublishFirst("a change at a path a pending one spells otherwise");
 		const node = r.kind === "node" ? (r.node as PendingFile) : this.#fromLive(r.entry, r.source, base);
 		if (r.kind === "live") this.#set(path, node);
 		if (node.executable === executable) return;
@@ -823,6 +832,17 @@ export class PendingView {
 			if (name !== nameOf(path) && folderKey(name) === key && this.resolve(join(parentOf(path), name)))
 				fail(ErrorCode.exists, "A path differing only in case exists");
 		if (this.#freedFolder(path)) throw new PublishFirst("reusing a path a folder this view moved or removed left");
+	}
+
+	/** A file, link or folder pending at a path spelled otherwise than `path` that folds alike (beside a live entry
+	 * another machine renamed only in case): its unit and one made at `path` would be at one path in the core, where a
+	 * new one's base is the removal at that folded key, so what is pending publishes first. `except`: what a rename
+	 * moves from. */
+	#foldsWithPending(path: string, except?: string): boolean {
+		const key = folderKey(path);
+		for (const [p, node] of this.#nodes)
+			if (p !== path && p !== except && node.kind !== "gone" && folderKey(p) === key) return true;
+		return false;
 	}
 
 	#newFile(): PendingFile {

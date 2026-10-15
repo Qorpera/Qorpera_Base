@@ -115,6 +115,15 @@ function setup(paths: Record<string, Content>) {
 			seq++;
 			view.liveChanged([path]);
 		},
+		/** Another machine's move of a file (a rename only in case, too): a new version at the new path. */
+		move(from: string, to: string) {
+			const e = state.get(folderKey(from))!;
+			state.delete(folderKey(from));
+			state.set(folderKey(to), { ...e, path: to, version: version() });
+			tree = treeOf(state);
+			seq++;
+			view.liveChanged([from, to]);
+		},
 		/** Publishes the boundary: every unit must save, and the folder must then be what the view showed (but what the
 		 * boundary keeps pending). */
 		publish(): CommitUnit[] {
@@ -611,6 +620,36 @@ describe("a view's pending changes", () => {
 		expect(f.publish()).toEqual([
 			{ op: "move", from: "Docs", to: "docs", expectedVersion: expect.any(String), asOfSeq: 10 },
 		]);
+	});
+
+	it("publishes first a change at a path a pending save spells otherwise, so the save keeps its own base", () => {
+		const f = setup({ "plan.md": "v1" });
+		const base = f.view.get("plan.md")!.version;
+		write(f.view, "plan.md.new", "mine");
+		f.view.rename("plan.md.new", "plan.md", { noReplace: false, toBase: base });
+		// Another machine renames the file only in case: both names show.
+		f.move("plan.md", "Plan.md");
+		const moved = f.view.get("Plan.md")!.version;
+		write(f.view, "next.tmp", "next");
+		// A second save renamed over the new name, an edit, a mode change or a removal there would pair with the save's
+		// replacement by folded key.
+		publishFirst(() => f.view.rename("next.tmp", "Plan.md", { noReplace: false, toBase: moved }));
+		publishFirst(() => write(f.view, "Plan.md", "edited", { base: moved }));
+		publishFirst(() => f.view.setExecutable("Plan.md", true, moved));
+		publishFirst(() => f.view.unlink("Plan.md", moved));
+		// Nothing changed: the save still replaces the version it saw (the core's conflict), the new name stays live.
+		const units = f.plan().units.map((u) => u.unit);
+		expect(units).toHaveLength(2);
+		expect(units).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ op: "write", path: "plan.md", expectedVersion: base }),
+				expect.objectContaining({ op: "write", path: "next.tmp" }),
+			]),
+		);
+		expect(f.commit(units)).toEqual(
+			units.map((u) => (u.op === "write" && u.path === "plan.md" ? "conflict" : "saved")),
+		);
+		expect(f.view.get("Plan.md")!.version).toBe(moved);
 	});
 
 	it("refuses at once what the folder never takes, folded as the core folds", () => {
