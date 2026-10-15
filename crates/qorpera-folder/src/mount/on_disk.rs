@@ -8,7 +8,8 @@ use super::*;
 use crate::git::{self, Place};
 use crate::index;
 use crate::local::{self, is_local, Area, Up};
-use crate::proto::{split, Entry};
+use crate::proto::{split, Entry, CHUNK, MAX_CHUNKS};
+use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
@@ -207,12 +208,35 @@ impl Shared {
 	/// every worktree's. A move that fails stays on the list (`cache.rs`), tried again at the worktree's next index and
 	/// every few seconds (`mount.rs`); until none is left, `qorpera-folder publish` refuses the view's boundaries.
 	pub(super) fn move_caches(&self, local: &Local, worktree: Option<&str>) {
-		let _held = local.moving.lock().unwrap();
+		let mut held = local.moving.lock().unwrap();
 		let moves = local.cache.lock().unwrap().moves(worktree);
 		for (worktree, name) in moves {
-			match self.move_in(local, &worktree, &name) {
+			match self.move_in(local, &mut held, &worktree, &name) {
 				Ok(()) => local.cache.lock().unwrap().moved(&worktree, &name),
 				Err(e) => eprintln!("qorpera-folder: the {name} caches in {worktree} could not move into the folder yet (errno {e})"),
+			}
+		}
+		// A write kept for a move that is done or no longer to be made (its file left the disk, or is a cache again) is
+		// closed empty and removed: a handle of the view's left open keeps its boundaries from publishing.
+		let moves = local.cache.lock().unwrap().moves(None);
+		let left: Vec<String> =
+			held.keys().filter(|path| !moves.iter().any(|(w, n)| in_cache(path, w, n))).cloned().collect();
+		for path in left {
+			let writer = held.remove(&path).expect("held");
+			let removed = match self.link.close_write(writer.handle, 0) {
+				Ok(version) => match self.link.unlink(&path, Some(version)) {
+					Err(f) if f.errno() != libc::ENOENT => Err(f),
+					_ => Ok(()),
+				},
+				Err(f) if again(&f) => {
+					held.insert(path.clone(), writer);
+					Err(f)
+				}
+				// The node has no such handle open any more.
+				Err(_) => Ok(()),
+			};
+			if let Err(f) = removed {
+				eprintln!("qorpera-folder: the kept write of {path} could not be given up yet (errno {})", f.errno());
 			}
 		}
 	}
@@ -220,7 +244,7 @@ impl Shared {
 	/// Moves `worktree`'s cache folders named `name` into the folder as files the session wrote, published at the
 	/// session's boundary: git tracks files under that name now, so they are the worktree's. One a move did not finish
 	/// is in the node's folder already, with what is left of it on the disk.
-	fn move_in(&self, local: &Local, worktree: &str, name: &str) -> Result<(), i32> {
+	fn move_in(&self, local: &Local, held: &mut HashMap<String, Writer>, worktree: &str, name: &str) -> Result<(), i32> {
 		let mut todo = vec![worktree.to_string()];
 		while let Some(dir) = todo.pop() {
 			let Ok(read) = fs::read_dir(local.disk(Area::Cache, &dir)) else { continue };
@@ -234,7 +258,7 @@ impl Shared {
 					continue;
 				}
 				if child == name {
-					self.move_folder(local, &join(&dir, &child), &entry.path())?;
+					self.move_folder(local, held, &join(&dir, &child), &entry.path())?;
 				} else if node.contains(&child) {
 					// A folder of the node's with caches in it.
 					todo.push(join(&dir, &child));
@@ -247,7 +271,7 @@ impl Shared {
 
 	/// Each file leaves the disk once it is in the folder, and each folder once it is empty: what stays is what has not
 	/// moved yet, and what cannot (links wait for the folder's own), seen in the folder's place as a cache's are.
-	fn move_folder(&self, local: &Local, path: &str, disk: &Path) -> Result<(), i32> {
+	fn move_folder(&self, local: &Local, held: &mut HashMap<String, Writer>, path: &str, disk: &Path) -> Result<(), i32> {
 		let made = |p: &str| match self.link.mkdir(p) {
 			Err(f) if f.errno() != libc::EEXIST => Err(f.errno()),
 			_ => Ok(()),
@@ -259,7 +283,7 @@ impl Shared {
 			if meta.is_dir() {
 				made(&to)?;
 			} else if meta.is_file() {
-				self.write_in(&to, &disk.join(rel), meta.permissions().mode() & 0o100 != 0)?;
+				self.write_in(held, &to, &disk.join(rel), meta.permissions().mode() & 0o100 != 0)?;
 				fs::remove_file(disk.join(rel)).map_err(local::errno)?;
 			} else {
 				eprintln!("qorpera-folder: {to} is not a file or a folder, and stays out of the folder");
@@ -273,31 +297,74 @@ impl Shared {
 		Ok(())
 	}
 
-	/// Writes the disk's file `disk` to the folder's `path`, as the session's new file.
-	fn write_in(&self, path: &str, disk: &Path, executable: bool) -> Result<(), i32> {
-		let request =
-			OpenRequest { path: path.to_string(), base: None, create: true, exclusive: false, truncate: true };
-		let opened = self.link.open_write(&request).map_err(|f| f.errno())?;
-		let mut writer = Writer::new(opened.handle, opened.size);
+	/// Writes the disk's file `disk` to the folder's `path`, as the session's new file. A write the node did not take
+	/// is kept in `held` with its handle, as the mount keeps a close it did not take (`again`), and the next move
+	/// writes the file again from the start through it: a handle left open would keep the file from every boundary.
+	fn write_in(&self, held: &mut HashMap<String, Writer>, path: &str, disk: &Path, executable: bool) -> Result<(), i32> {
 		let mut file = fs::File::open(disk).map_err(local::errno)?;
-		let mut buf = vec![0; MAX_READ as usize];
-		let mut at = 0;
-		loop {
-			let n = file.read(&mut buf).map_err(local::errno)?;
-			if n == 0 {
-				break;
+		let mut writer = match held.remove(path) {
+			Some(writer) => writer,
+			None => {
+				let request =
+					OpenRequest { path: path.to_string(), base: None, create: true, exclusive: false, truncate: true };
+				let opened = self.link.open_write(&request).map_err(|f| f.errno())?;
+				Writer::new(opened.handle, opened.size)
 			}
-			writer.write(&self.link, at, &buf[..n]).map_err(|f| f.errno())?;
-			at += n as u64;
-		}
-		let size = writer.finish(&self.link).map_err(|f| f.errno())?;
-		let mut version = self.link.close_write(writer.handle, size).map_err(|f| f.errno())?;
+		};
+		let mut version = match self.send(&mut writer, &mut file) {
+			Ok(version) => version,
+			Err(Sent::Disk(e)) => {
+				held.insert(path.to_string(), writer);
+				return Err(e);
+			}
+			Err(Sent::Node(f)) => {
+				// Kept for an answer the node may get past; after any other, the handle is not the node's any more.
+				if again(&f) {
+					held.insert(path.to_string(), writer);
+				}
+				return Err(f.errno());
+			}
+		};
 		if executable {
 			version = self.link.set_executable(path, Some(version), true).map_err(|f| f.errno())?;
 		}
 		self.versions.lock().unwrap().saved(path, &version);
 		Ok(())
 	}
+
+	/// Writes `file` through `writer` from its start and closes it: the version the close made.
+	fn send(&self, writer: &mut Writer, file: &mut fs::File) -> Result<String, Sent> {
+		writer.truncate(&self.link, 0).map_err(Sent::Node)?;
+		let mut buf = vec![0; MAX_READ as usize];
+		let mut at = 0;
+		loop {
+			let n = file.read(&mut buf).map_err(|e| Sent::Disk(local::errno(e)))?;
+			if n == 0 {
+				break;
+			}
+			// Past what the node takes, checked here so the writer's own refusal is never taken for the node's.
+			if at + n as u64 > MAX_CHUNKS * CHUNK {
+				return Err(Sent::Disk(libc::EFBIG));
+			}
+			writer.write(&self.link, at, &buf[..n]).map_err(Sent::Node)?;
+			at += n as u64;
+		}
+		let size = writer.finish(&self.link).map_err(Sent::Node)?;
+		self.link.close_write(writer.handle, size).map_err(Sent::Node)
+	}
+}
+
+/// Why a cache's file was not written into the folder: the disk's error, or the node's.
+enum Sent {
+	Disk(i32),
+	Node(Fail),
+}
+
+/// Whether the folder's `path` is in `worktree`'s cache folders named `name`.
+fn in_cache(path: &str, worktree: &str, name: &str) -> bool {
+	let Some(rest) = path.strip_prefix(worktree).and_then(|r| r.strip_prefix('/')) else { return false };
+	let folders = rest.rsplit_once('/').map_or("", |(folders, _)| folders);
+	folders.split('/').any(|folder| folder == name)
 }
 
 impl FolderFs {
@@ -650,5 +717,20 @@ impl FolderFs {
 		if let (Some(local), Some((worktree, data))) = (&self.s.local, read) {
 			self.s.indexed_data(local, &worktree, to, &data);
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn a_kept_write_belongs_to_a_move_only_inside_a_folder_of_its_name() {
+		let w = "code/o/n/worktrees/w";
+		assert!(in_cache("code/o/n/worktrees/w/node_modules/x.js", w, "node_modules"));
+		assert!(in_cache("code/o/n/worktrees/w/pkg/node_modules/a/x.js", w, "node_modules"));
+		assert!(!in_cache("code/o/n/worktrees/w/src/node_modules", w, "node_modules"));
+		assert!(!in_cache("code/o/n/worktrees/w2/node_modules/x.js", w, "node_modules"));
+		assert!(!in_cache("code/o/n/worktrees/w/src/x.js", w, "node_modules"));
 	}
 }

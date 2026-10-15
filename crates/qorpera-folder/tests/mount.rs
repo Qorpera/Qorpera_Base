@@ -368,6 +368,52 @@ fn a_close_the_node_does_not_take_at_once_is_tried_again_until_it_does() {
 	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
 }
 
+/// An index as git writes it (version 2, SHA-1) that tracks `paths`.
+fn git_index(paths: &[&str]) -> Vec<u8> {
+	let mut out = b"DIRC".to_vec();
+	out.extend_from_slice(&2u32.to_be_bytes());
+	out.extend_from_slice(&(paths.len() as u32).to_be_bytes());
+	for path in paths {
+		let start = out.len();
+		out.extend_from_slice(&[0; 40]);
+		out.extend_from_slice(&[0xab; 20]);
+		out.extend_from_slice(&(path.len() as u16).to_be_bytes());
+		out.extend_from_slice(path.as_bytes());
+		let len = out.len() - start;
+		out.resize(start + (len + 8) / 8 * 8, 0);
+	}
+	out.extend_from_slice(&[0; 20]);
+	out
+}
+
+#[test]
+fn a_cache_move_the_node_does_not_take_at_once_goes_on_through_the_same_handle() {
+	if !wanted() {
+		return;
+	}
+	let node = FakeNode::writable();
+	node.put("code/o/n/worktrees/w/README", "readme", false);
+	node.put("code/o/n/repo.git/worktrees/w/HEAD", "ref: refs/heads/main\n", false);
+	let (company, runner) = start(&node);
+	// The worktree's node_modules is a cache git does not track: on the machine's disk, not in the folder.
+	let modules = company.join("code/o/n/worktrees/w/node_modules");
+	std::fs::create_dir(&modules).unwrap();
+	std::fs::write(modules.join("x.js"), "cached").unwrap();
+	assert!(!node.exists("code/o/n/worktrees/w/node_modules"));
+	// Git comes to track it while a boundary settles: the node answers BUSY to the move's first chunk.
+	let git = company.join("code/o/n/repo.git/worktrees/w");
+	std::fs::write(git.join("index.lock"), git_index(&["node_modules/x.js"])).unwrap();
+	node.busy(1, 0);
+	std::fs::rename(git.join("index.lock"), git.join("index")).unwrap();
+	// The move goes on through the handle it opened, so none is left open at the node to keep its boundaries back.
+	let moved = || node.content("code/o/n/worktrees/w/node_modules/x.js").is_some_and(|c| c == b"cached");
+	let done = eventually(Duration::from_secs(20), || moved() && node.open_handles() == 0);
+	assert!(done, "moved: {}, handles open at the node: {}", moved(), node.open_handles());
+	assert_eq!(std::fs::read(modules.join("x.js")).unwrap(), b"cached");
+	node.close_view();
+	assert!(matches!(runner.join().unwrap(), Stop::ViewClosed));
+}
+
 #[test]
 fn one_writer_per_file_across_duplicated_inherited_and_truncating_descriptors() {
 	if !wanted() {

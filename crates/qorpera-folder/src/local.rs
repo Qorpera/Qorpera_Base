@@ -19,6 +19,7 @@
 
 use crate::cache::CacheList;
 use crate::git;
+use crate::writer::Writer;
 use fuser::{FileAttr, FileType, INodeNo};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
@@ -107,6 +108,31 @@ fn forget(names: &mut Names, ino: u64, up: &Up, name: &str) {
 	}
 }
 
+/// `ino`'s latest name: its folder, name and area.
+fn latest(names: &Names, ino: u64) -> Option<(Up, String, Area)> {
+	names.get(&ino).and_then(|all| all.last()).cloned()
+}
+
+/// `ino`'s path in the folder by its latest names (`up` gives the path of a mount folder above it).
+fn path_in(names: &Names, ino: u64) -> Option<(String, Area)> {
+	let (mut up, name, area) = latest(names, ino)?;
+	let mut parts = vec![name];
+	loop {
+		match up {
+			Up::Mount(path) => {
+				parts.push(path);
+				parts.reverse();
+				return Some((parts.join("/"), area));
+			}
+			Up::Local(ino) => {
+				let (next, name, _) = latest(names, ino)?;
+				parts.push(name);
+				up = next;
+			}
+		}
+	}
+}
+
 pub struct Local {
 	root: PathBuf,
 	/// By local inode: the names it is known by (the folder it is in, its name, its area), the latest last. A file with
@@ -119,8 +145,9 @@ pub struct Local {
 	handles: Mutex<HashMap<u64, File>>,
 	next_fh: AtomicU64,
 	pub cache: Mutex<CacheList>,
-	/// Held while cache folders move into the folder (`mount/on_disk.rs`), so no two move the same.
-	pub moving: Mutex<()>,
+	/// Held while cache folders move into the folder (`mount/on_disk.rs`), so no two move the same; with the writes of a
+	/// move the node did not take, by the file's path, so the next move goes on through the same handle.
+	pub moving: Mutex<HashMap<String, Writer>>,
 	owner: (u32, u32),
 }
 
@@ -159,7 +186,7 @@ impl Local {
 			handles: Mutex::new(HashMap::new()),
 			next_fh: AtomicU64::new(1),
 			cache: Mutex::new(CacheList::open(&root.join("cache-left.jsonl"), marker)?),
-			moving: Mutex::new(()),
+			moving: Mutex::new(HashMap::new()),
 			owner,
 		})
 	}
@@ -201,50 +228,47 @@ impl Local {
 
 	/// The local inode's folder, name and area.
 	pub fn name(&self, ino: u64) -> Option<(Up, String, Area)> {
-		self.names.lock().unwrap().get(&ino).and_then(|all| all.last()).cloned()
+		latest(&self.names.lock().unwrap(), ino)
 	}
 
 	/// The local inode's path in the folder (`up` gives the path of a mount folder above it).
 	pub fn path(&self, ino: u64) -> Option<(String, Area)> {
-		let (mut up, name, area) = self.name(ino)?;
-		let mut names = vec![name];
-		loop {
-			match up {
-				Up::Mount(path) => {
-					names.push(path);
-					names.reverse();
-					return Some((names.join("/"), area));
-				}
-				Up::Local(ino) => {
-					let (next, name, _) = self.name(ino)?;
-					names.push(name);
-					up = next;
-				}
-			}
-		}
+		path_in(&self.names.lock().unwrap(), ino)
 	}
 
 	/// Where the local inode is on the disk.
 	pub fn disk_of(&self, ino: u64) -> Result<(PathBuf, Area), i32> {
-		let (path, area) = self.path(ino).ok_or(libc::ENOENT)?;
+		self.disk_at(&self.names.lock().unwrap(), ino)
+	}
+
+	/// `disk_of` by `names`. What changes a local file or its names finds it with the names held until it is done, so
+	/// no unlink or rename between finding and changing it (of a hard link's name, or a folder above) has it change
+	/// another file by the same name.
+	fn disk_at(&self, names: &Names, ino: u64) -> Result<(PathBuf, Area), i32> {
+		let (path, area) = path_in(names, ino).ok_or(libc::ENOENT)?;
 		Ok((self.disk(area, &path), area))
 	}
 
-	/// Where `name` in `up` is on the disk, with its area (for a mount folder, the area `area` says).
-	pub fn disk_in(&self, up: &Up, name: &str, area: Area) -> Result<(PathBuf, Area), i32> {
+	/// Where `name` in `up` is on the disk, by `names` (`disk_at`), with its area (for a mount folder, the area `area`
+	/// says).
+	fn disk_under(&self, names: &Names, up: &Up, name: &str, area: Area) -> Result<(PathBuf, Area), i32> {
 		match up {
 			Up::Mount(path) => Ok((self.disk(area, &crate::proto::join(path, name)), area)),
-			Up::Local(ino) => self.disk_of(*ino).map(|(dir, area)| (dir.join(name), area)),
+			Up::Local(ino) => self.disk_at(names, *ino).map(|(dir, area)| (dir.join(name), area)),
 		}
 	}
 
 	/// The entry for `name` in `up`, from the disk, now known by its inode.
 	pub fn entry(&self, up: Up, name: &str, area: Area) -> Result<FileAttr, i32> {
-		let (disk, area) = self.disk_in(&up, name, area)?;
 		let mut names = self.names.lock().unwrap();
-		let meta = fs::symlink_metadata(&disk).map_err(errno)?;
-		known(&mut names, meta.ino() | LOCAL, up, name, area);
-		drop(names);
+		let (disk, area) = self.disk_under(&names, &up, name, area)?;
+		self.known_at(&mut names, up, name, area, &disk)
+	}
+
+	/// `name` in `up`, at `disk`, now known by its inode (`names` held since it was found or made there).
+	fn known_at(&self, names: &mut Names, up: Up, name: &str, area: Area, disk: &Path) -> Result<FileAttr, i32> {
+		let meta = fs::symlink_metadata(disk).map_err(errno)?;
+		known(names, meta.ino() | LOCAL, up, name, area);
 		Ok(self.attr(&meta))
 	}
 
@@ -299,9 +323,9 @@ impl Local {
 
 	/// The entries of a local folder, each now known by its inode.
 	pub fn children(&self, ino: u64) -> Result<Vec<(u64, FileType, String)>, i32> {
-		let (disk, area) = self.disk_of(ino)?;
 		let mut out = Vec::new();
 		let mut names = self.names.lock().unwrap();
+		let (disk, area) = self.disk_at(&names, ino)?;
 		for entry in fs::read_dir(disk).map_err(errno)?.flatten() {
 			let (Ok(meta), Some(name)) = (entry.metadata(), entry.file_name().to_str().map(str::to_string)) else {
 				continue;
@@ -324,29 +348,34 @@ impl Local {
 	/// Creates a file and opens it: its attributes and the handle.
 	pub fn create(&self, up: Up, name: &str, area: Area, mode: u32, flags: i32) -> Result<(FileAttr, u64), i32> {
 		self.make_room(&up, area)?;
-		let (disk, _) = self.disk_in(&up, name, area)?;
 		let mut options = open_options(flags);
 		options.create(true).mode(mode & 0o7777);
 		if flags & libc::O_EXCL != 0 {
 			options.create_new(true);
 		}
+		let mut names = self.names.lock().unwrap();
+		let (disk, area) = self.disk_under(&names, &up, name, area)?;
 		let file = options.open(&disk).map_err(errno)?;
-		let attr = self.entry(up, name, area)?;
-		Ok((attr, self.hold(file)))
+		let meta = file.metadata().map_err(errno)?;
+		known(&mut names, meta.ino() | LOCAL, up, name, area);
+		drop(names);
+		Ok((self.attr(&meta), self.hold(file)))
 	}
 
 	pub fn mkdir(&self, up: Up, name: &str, area: Area, mode: u32) -> Result<FileAttr, i32> {
 		self.make_room(&up, area)?;
-		let (disk, _) = self.disk_in(&up, name, area)?;
+		let mut names = self.names.lock().unwrap();
+		let (disk, area) = self.disk_under(&names, &up, name, area)?;
 		fs::DirBuilder::new().mode(mode & 0o7777).create(&disk).map_err(errno)?;
-		self.entry(up, name, area)
+		self.known_at(&mut names, up, name, area, &disk)
 	}
 
 	pub fn symlink(&self, up: Up, name: &str, area: Area, target: &Path) -> Result<FileAttr, i32> {
 		self.make_room(&up, area)?;
-		let (disk, _) = self.disk_in(&up, name, area)?;
+		let mut names = self.names.lock().unwrap();
+		let (disk, area) = self.disk_under(&names, &up, name, area)?;
 		std::os::unix::fs::symlink(target, &disk).map_err(errno)?;
-		self.entry(up, name, area)
+		self.known_at(&mut names, up, name, area, &disk)
 	}
 
 	pub fn readlink(&self, ino: u64) -> Result<Vec<u8>, i32> {
@@ -356,19 +385,20 @@ impl Local {
 
 	/// A second name for a local file, in the same area.
 	pub fn link(&self, ino: u64, up: Up, name: &str, area: Area) -> Result<FileAttr, i32> {
-		let (from, from_area) = self.disk_of(ino)?;
+		let mut names = self.names.lock().unwrap();
+		let (from, from_area) = self.disk_at(&names, ino)?;
 		if from_area != area {
 			return Err(libc::EXDEV);
 		}
 		self.make_room(&up, area)?;
-		let (to, _) = self.disk_in(&up, name, area)?;
+		let (to, area) = self.disk_under(&names, &up, name, area)?;
 		fs::hard_link(from, &to).map_err(errno)?;
-		self.entry(up, name, area)
+		self.known_at(&mut names, up, name, area, &to)
 	}
 
 	pub fn unlink(&self, up: &Up, name: &str, area: Area) -> Result<(), i32> {
-		let (disk, _) = self.disk_in(up, name, area)?;
 		let mut names = self.names.lock().unwrap();
+		let (disk, _) = self.disk_under(&names, up, name, area)?;
 		let ino = fs::symlink_metadata(&disk).map_err(errno)?.ino() | LOCAL;
 		fs::remove_file(disk).map_err(errno)?;
 		forget(&mut names, ino, up, name);
@@ -376,8 +406,8 @@ impl Local {
 	}
 
 	pub fn rmdir(&self, up: &Up, name: &str, area: Area) -> Result<(), i32> {
-		let (disk, _) = self.disk_in(up, name, area)?;
 		let mut names = self.names.lock().unwrap();
+		let (disk, _) = self.disk_under(&names, up, name, area)?;
 		let ino = fs::symlink_metadata(&disk).map_err(errno)?.ino() | LOCAL;
 		fs::remove_dir(disk).map_err(errno)?;
 		forget(&mut names, ino, up, name);
@@ -393,8 +423,9 @@ impl Local {
 		no_replace: bool,
 		exchange: bool,
 	) -> Result<(), i32> {
-		let (source, from_area) = self.disk_in(from.0, from.1, area)?;
-		let (target, to_area) = self.disk_in(to.0, to.1, area)?;
+		let mut names = self.names.lock().unwrap();
+		let (source, from_area) = self.disk_under(&names, from.0, from.1, area)?;
+		let (target, to_area) = self.disk_under(&names, to.0, to.1, area)?;
 		if from_area != to_area {
 			return Err(libc::EXDEV);
 		}
@@ -408,7 +439,6 @@ impl Local {
 		};
 		let c = |p: &Path| std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(|_| libc::EINVAL);
 		let (source_c, target_c) = (c(&source)?, c(&target)?);
-		let mut names = self.names.lock().unwrap();
 		let ino_at = |p: &Path| fs::symlink_metadata(p).ok().map(|m| m.ino() | LOCAL);
 		let (moved, replaced) = (ino_at(&source), ino_at(&target));
 		// SAFETY: two valid C strings; renameat2 reads them only.
@@ -443,7 +473,8 @@ impl Local {
 		size: Option<u64>,
 		times: (Option<std::time::SystemTime>, Option<std::time::SystemTime>),
 	) -> Result<FileAttr, i32> {
-		let (disk, _) = self.disk_of(ino)?;
+		let names = self.names.lock().unwrap();
+		let (disk, _) = self.disk_at(&names, ino)?;
 		if let Some(mode) = mode {
 			fs::set_permissions(&disk, fs::Permissions::from_mode(mode & 0o7777)).map_err(errno)?;
 		}
@@ -461,13 +492,23 @@ impl Local {
 			// A folder or a file alike: opened for reading only, as utimensat would need no more.
 			File::open(&disk).and_then(|f| f.set_times(t)).map_err(errno)?;
 		}
+		drop(names);
 		self.getattr(ino)
 	}
 
-	/// Opens a local file: the handle.
+	/// Opens a local file: the handle. It is found and opened with the names held (`disk_at`), and what was opened is
+	/// checked to be `ino` before a truncate touches it.
 	pub fn open_file(&self, ino: u64, flags: i32) -> Result<u64, i32> {
-		let (disk, _) = self.disk_of(ino)?;
-		let file = open_options(flags).open(disk).map_err(errno)?;
+		let names = self.names.lock().unwrap();
+		let (disk, _) = self.disk_at(&names, ino)?;
+		let file = open_options(flags & !libc::O_TRUNC).custom_flags(libc::O_NOFOLLOW).open(disk).map_err(errno)?;
+		drop(names);
+		if file.metadata().map_err(errno)?.ino() | LOCAL != ino {
+			return Err(libc::ESTALE);
+		}
+		if flags & libc::O_TRUNC != 0 {
+			file.set_len(0).map_err(errno)?;
+		}
 		Ok(self.hold(file))
 	}
 
@@ -579,6 +620,7 @@ pub fn name_str(name: &OsStr) -> Option<&str> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use std::sync::atomic::AtomicBool;
 
 	fn local(tag: &str, view: &str) -> (Local, PathBuf) {
 		let dir = std::env::temp_dir().join(format!("qorpera-local-{tag}-{}", std::process::id()));
@@ -668,6 +710,43 @@ mod tests {
 		assert_eq!(l.path(a).unwrap().0, "code/o/n/worktrees/w/target/d");
 		l.unlink(&up, "d", Area::Cache).unwrap();
 		assert_eq!(l.path(a).unwrap().0, "code/o/n/worktrees/w/target/a");
+		fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn an_open_by_a_hard_links_name_never_reaches_the_file_that_took_its_place() {
+		let (l, dir) = local("link-race", "v1");
+		let up = Up::Mount("code/o/n/worktrees/w/target".to_string());
+		let (attr, fh) = l.create(up.clone(), "a", Area::Cache, 0o644, libc::O_WRONLY).unwrap();
+		l.release(fh);
+		let a = attr.ino.0;
+		let sub = Up::Local(l.mkdir(up.clone(), "subdir", Area::Cache, 0o755).unwrap().ino.0);
+		let victim = dir.join("cache/code/o/n/worktrees/w/target/subdir/b");
+		let stop = AtomicBool::new(false);
+		std::thread::scope(|s| {
+			// `a`'s second name comes and goes, another file taking its place each time.
+			let other = s.spawn(|| {
+				while !stop.load(Ordering::SeqCst) {
+					l.link(a, sub.clone(), "b", Area::Cache).unwrap();
+					l.unlink(&sub, "b", Area::Cache).unwrap();
+					let (_, fh) = l.create(sub.clone(), "b", Area::Cache, 0o644, libc::O_WRONLY).unwrap();
+					assert_eq!(l.write(fh, 0, b"other").unwrap(), 5);
+					l.release(fh);
+					assert_eq!(fs::read(&victim).unwrap(), b"other", "an open of a reached the file that took b");
+					l.unlink(&sub, "b", Area::Cache).unwrap();
+				}
+			});
+			let opens = (0..2000).try_for_each(|_| {
+				let fh = l.open_file(a, libc::O_WRONLY | libc::O_TRUNC)?;
+				let wrote = l.write(fh, 0, b"a");
+				l.release(fh);
+				wrote.map(drop)
+			});
+			stop.store(true, Ordering::SeqCst);
+			other.join().unwrap();
+			assert_eq!(opens, Ok(()));
+		});
+		assert_eq!(fs::read(dir.join("cache/code/o/n/worktrees/w/target/a")).unwrap(), b"a");
 		fs::remove_dir_all(&dir).unwrap();
 	}
 

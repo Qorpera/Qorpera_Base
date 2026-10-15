@@ -484,6 +484,22 @@ describe("the lock protocol in the folder service", () => {
 		expect(core.gitPublishes).toEqual([]);
 	});
 
+	it("lets one of a view's racing creates of a lock take it, the others EEXIST, and keeps its lease", async () => {
+		const { core, open } = await repo();
+		const view = await open("first");
+		const creates = await Promise.allSettled(
+			["3333\n", "4444\n", "5555\n"].map((text) => write(view, `${MAIN}.lock`, text, true)),
+		);
+		expect(creates.filter((c) => c.status === "fulfilled")).toHaveLength(1);
+		for (const c of creates) if (c.status === "rejected") expect(c.reason).toMatchObject({ code: "EXISTS" });
+		expect(core.gitLeases.get(MAIN)?.viewId).toBe(SESSIONS.first.viewId);
+		await refused(write(await open("second"), `${MAIN}.lock`, "6666\n", true), "EXISTS");
+		await write(view, MAIN_LOG, "0000 1111\n1111 3333\n");
+		await view.rename({ from: `${MAIN}.lock`, to: MAIN, noReplace: false });
+		expect(core.gitPublishes.map((p) => p.published)).toEqual([true]);
+		expect(core.gitLeases.size).toBe(0);
+	});
+
 	it("answers a rename over a ref that changed since its lock with BUSY, and gives the lease back at the unlink", async () => {
 		const { core, open } = await repo();
 		const view = await open("first");

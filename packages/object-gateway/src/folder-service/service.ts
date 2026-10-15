@@ -379,6 +379,9 @@ class View {
 	readonly handles = new Set<number>();
 	/** The git locks it holds (git.ts), by the shared file each guards. */
 	readonly gitLeases = new Map<string, GitLock>();
+	/** The shared files whose lock a create is taking now: one at a time, so a second create can never hand back the
+	 * lease the first took. */
+	readonly gitTaking = new Set<string>();
 	/** The core may hold a git lease of this view's that `gitLeases` does not list (a take or a release whose answer
 	 * never came): the next final boundary drops the view's leases all the same. */
 	gitUnsure = false;
@@ -699,6 +702,9 @@ export class FolderService {
 					});
 				// Creating a git lock file takes the lock (git.ts); a shared git file changes only under its lock.
 				const target = gitLockTarget(request.path);
+				// Another create of the lock while one takes it fails as on a disk, and git tries again.
+				if (target !== null && request.create && view.gitTaking.has(target))
+					throw new ProtocolError(ErrorCode.exists, "Another git command is taking this lock");
 				const take = target !== null && request.create && !view.gitLeases.has(target);
 				if (!take) this.#gitGuard(view, request.path);
 				const opened = take ? await this.#gitLock(view, target, open) : await open();
@@ -1422,6 +1428,20 @@ export class FolderService {
 	 * those. */
 	async #gitLock<T>(view: View, target: string, create: () => Promise<T>): Promise<T> {
 		const actor = this.#gitActor(view);
+		view.gitTaking.add(target);
+		try {
+			return await this.#gitTake(view, actor, target, create);
+		} finally {
+			view.gitTaking.delete(target);
+		}
+	}
+
+	async #gitTake<T>(
+		view: View,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		target: string,
+		create: () => Promise<T>,
+	): Promise<T> {
 		let lease: GitLease;
 		try {
 			lease = await this.#core.gitLeaseTake(view.environmentId, actor, target);
