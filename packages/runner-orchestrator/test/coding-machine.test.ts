@@ -367,9 +367,9 @@ describe("a coding machine's journaled lifecycle", () => {
 		instance.status = "Stopped";
 		instance.statusCode = 102;
 		// A VM that never stops by itself keeps the start's evidence for an operator.
-		expect(
-			(await reconcileCodingMachine({ ...f.options, plan: { ...f.journal, selfStops: undefined } })).state,
-		).toBe("recovery-required");
+		expect((await reconcileCodingMachine({ ...f.options, plan: { ...f.journal, selfStops: undefined } })).state).toBe(
+			"recovery-required",
+		);
 		// A stop needs no effect; a run starts it again on the same disk.
 		expect((await f.reconcile("stopped")).state).toBe("stopped");
 		for (const expected of ["pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
@@ -405,6 +405,8 @@ describe("a coding machine's journaled lifecycle", () => {
 		try {
 			vi.setSystemTime(new Date("2026-10-15T08:00:00Z"));
 			const f = await fixture();
+			const stoppedFromOutside = vi.fn(async () => {});
+			Object.assign(f.options, { stoppedFromOutside });
 			for (const expected of ["pending", "pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
 			const stopFromOutside = (at: string) => {
 				vi.setSystemTime(new Date(at));
@@ -414,7 +416,12 @@ describe("a coding machine's journaled lifecycle", () => {
 				instance.statusCode = 102;
 			};
 			// Four outside stops spread over more than an hour: each time it is started again.
-			for (const at of ["2026-10-15T08:10:00Z", "2026-10-15T08:40:00Z", "2026-10-15T09:00:00Z", "2026-10-15T09:15:00Z"]) {
+			for (const at of [
+				"2026-10-15T08:10:00Z",
+				"2026-10-15T08:40:00Z",
+				"2026-10-15T09:00:00Z",
+				"2026-10-15T09:15:00Z",
+			]) {
 				stopFromOutside(at);
 				for (const expected of ["pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
 			}
@@ -425,7 +432,11 @@ describe("a coding machine's journaled lifecycle", () => {
 			vi.setSystemTime(new Date("2026-10-15T12:00:00Z"));
 			expect((await f.reconcile()).state).toBe("recovery-required");
 			expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(6);
-			expect((await outsideStops(f)).map(({ count, sequence, observedAt }) => [count, sequence, observedAt])).toEqual([
+			// The executor hears of every stop each time it is seen, the refused ones too: 4 restarts, then 5 refusals.
+			expect(stoppedFromOutside).toHaveBeenCalledTimes(9);
+			expect(
+				(await outsideStops(f)).map(({ count, sequence, observedAt }) => [count, sequence, observedAt]),
+			).toEqual([
 				[1, 5, "2026-10-15T08:10:00.000Z"],
 				[2, 8, "2026-10-15T08:40:00.000Z"],
 				[3, 11, "2026-10-15T09:00:00.000Z"],
@@ -435,6 +446,52 @@ describe("a coding machine's journaled lifecycle", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+	it("hands a member's outside stop to the executor once it is written down, before anything is done to the VM", async () => {
+		const f = await fixture();
+		for (const expected of ["pending", "pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
+		const instance = f.instance();
+		if (!instance) throw new Error("missing fixture VM");
+		// What was written down and done to the VM when the executor is told; the first call fails.
+		const seen: [number, number][] = [];
+		let fail = true;
+		const stoppedFromOutside = vi.fn(async (signal: AbortSignal) => {
+			expect(signal).toBe(f.controller.signal);
+			seen.push([(await outsideStops(f)).length, f.client.submitInstanceOperation.mock.calls.length]);
+			if (fail) {
+				fail = false;
+				throw new Error("CODING_HOST_MACHINE_STOPPED_UNCONFIRMED");
+			}
+		});
+		const reconcile = (desiredState: "running" | "stopped" | "deleted", plan = f.journal) =>
+			reconcileCodingMachine({ ...f.options, plan, desiredState, stoppedFromOutside });
+		expect((await reconcile("running")).state).toBe("running");
+		instance.status = "Stopped";
+		instance.statusCode = 102;
+		// A VM that never stops by itself has nothing to tell.
+		expect((await reconcile("running", { ...f.journal, selfStops: undefined })).state).toBe("recovery-required");
+		expect(stoppedFromOutside).not.toHaveBeenCalled();
+		// A failure fails the run before its start; the next run tells it again, then starts it.
+		await expect(reconcile("running")).rejects.toThrow("CODING_HOST_MACHINE_STOPPED_UNCONFIRMED");
+		expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(2);
+		for (const expected of ["pending", "running"]) expect((await reconcile("running")).state).toBe(expected);
+		// Stopped from outside again: told before the stop is settled and before the delete.
+		instance.status = "Stopped";
+		instance.statusCode = 102;
+		expect((await reconcile("stopped")).state).toBe("stopped");
+		for (const expected of ["pending", "deleted"]) expect((await reconcile("deleted")).state).toBe(expected);
+		expect(seen).toEqual([
+			[1, 2],
+			[1, 2],
+			[2, 3],
+			[2, 3],
+		]);
+		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual([
+			"create",
+			"start",
+			"start",
+			"delete",
+		]);
 	});
 	it("rolls over a member's full journal that ends with a start whose VM stopped by itself", async () => {
 		const f = await fixture();

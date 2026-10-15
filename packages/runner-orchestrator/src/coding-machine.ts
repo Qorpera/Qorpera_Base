@@ -385,6 +385,12 @@ export interface CodingMachineReconcileOptions {
 	signal: AbortSignal;
 	/** The node's agent plug (default: its plug tool), for a plan with an agent card. */
 	plug?: AgentPlug;
+	/** A member's machine that LXD shows stopped after its settled start: called
+	 * once that stop is written down and before anything else is done to the
+	 * machine (a start, a delete, or waiting for an operator), each time it is
+	 * seen so. The executor ends the machine's attachments here. A failure
+	 * fails the reconcile. */
+	stoppedFromOutside?: (signal: AbortSignal) => Promise<void>;
 }
 export interface CodingMachineReconcileResult {
 	/** absent: never created; deleted: our journaled delete and no instance. */
@@ -773,12 +779,17 @@ export async function reconcileCodingMachine(
 				let expected: "running" | "stopped" = tail.action === "start" ? "running" : "stopped";
 				if (expected === "running" && seen === "stopped") {
 					// A disposable VM that stopped by itself after its start is stopped. So is a member's machine,
-					// each time written down, until it stops by itself too often.
-					if (
-						plan.selfStops &&
-						(await recordOutsideStop(root, current.events.length ? current.segment : current.segment - 1, tail))
-					)
-						return result("recovery-required");
+					// each time written down and its sessions told, until it stops by itself too often.
+					if (plan.selfStops) {
+						const tooOften = await recordOutsideStop(
+							root,
+							current.events.length ? current.segment : current.segment - 1,
+							tail,
+						);
+						await options.stoppedFromOutside?.(options.signal);
+						options.signal.throwIfAborted();
+						if (tooOften) return result("recovery-required");
+					}
 					if (plan.disposable || plan.selfStops) expected = "stopped";
 				}
 				if (seen !== expected) return result("recovery-required");

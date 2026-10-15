@@ -235,6 +235,8 @@ async function fixture() {
 		duringKeep: null as (() => Promise<unknown>) | null,
 		/** Runs inside the attach call, before SQL answers: a slow attach. */
 		duringAttach: null as (() => void) | null,
+		/** The machine stopped from outside after its settled start: the next reconcile hands that stop over, until a start. */
+		stoppedFromOutside: false,
 	};
 	// The watchdog: a generation's lease renews while live and never again once run out.
 	mocked.refresh.mockImplementation(async (scope: { workerId: string }, tokenSha256: string, ttlMs: number) => {
@@ -356,6 +358,14 @@ async function fixture() {
 				if (attachments.get(String(args.p_worker_id)) === args.p_attachment_token)
 					attachments.delete(String(args.p_worker_id));
 				return { schema: "qorpera.coding-detached/v1", workerId: args.p_worker_id, state: "detached" };
+			case "qorpera_record_coding_machine_stopped": {
+				if (args.p_owner !== "coding-host" || args.p_binding_text !== plan.text)
+					throw new Error("Coding machine custody differs");
+				// Every attachment on the machine ends as MACHINE_STOPPED; a second call finds none.
+				const detached = [...attachments].map(([workerId, attachmentToken]) => ({ workerId, attachmentToken }));
+				attachments.clear();
+				return { schema: "qorpera.coding-machine-stopped/v1", machineId: args.p_machine_id, detached };
+			}
 			case "qorpera_archive_quiet_coding_sessions":
 				return 0;
 		}
@@ -470,9 +480,12 @@ async function fixture() {
 	mocked.reconcile.mockImplementation(async (input: CodingMachineReconcileOptions) => {
 		const intent = input.desiredState === "running" ? "run" : input.desiredState === "stopped" ? "stop" : "delete";
 		await input.authorize(intent, input.signal);
+		// As coding-machine.ts does: the outside stop goes to the executor before anything is done to the machine.
+		if (state.stoppedFromOutside && lxd.exists && !lxd.running) await input.stoppedFromOutside?.(input.signal);
 		if (input.desiredState === "running") {
 			lxd.exists = true;
 			lxd.running = true;
+			state.stoppedFromOutside = false;
 		} else if (input.desiredState === "stopped") lxd.running = false;
 		else lxd.exists = false;
 		return { state: input.desiredState };
@@ -1028,6 +1041,82 @@ describe("a coding turn on its member's machine", () => {
 		expect(new Set(mocked.refresh.mock.calls.map((call) => call[1]))).toEqual(new Set([hash(token!)]));
 		// The scope of the second turn names the second turn.
 		await f.host.commandTransport(f.scope(), async () => undefined, f.signal);
+	});
+	it("ends every attachment of a machine stopped from outside and unplugs its folders before the next turn starts it", async () => {
+		const f = await fixture();
+		const second = f.another();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		await f.host.prepareWorkspace(second, f.turnOf(second), f.signal);
+		f.host.endTurn(f.claim);
+		f.host.endTurn(second);
+		const token = f.attachments.get(f.claim.workerId);
+		// A node restart: LXD shows the machine stopped after its settled start.
+		f.lxd.running = false;
+		f.state.stoppedFromOutside = true;
+		const running: boolean[] = [];
+		const apply = vi.mocked(f.client.replaceInstanceDevices).getMockImplementation()!;
+		vi.mocked(f.client.replaceInstanceDevices).mockClear();
+		vi.mocked(f.client.replaceInstanceDevices).mockImplementation(async (...args) => {
+			running.push(f.lxd.running);
+			await apply(...args);
+		});
+		f.renew(f.claim);
+		f.claim.sequence = 2;
+		f.sequences.set(f.claim.workerId, 2);
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		// Both sessions' attachments ended in one record, before anything else was done to the machine.
+		expect(f.calls("qorpera_record_coding_machine_stopped")).toEqual([
+			{
+				p_machine_id: f.machine.machineId,
+				p_owner: "coding-host",
+				p_binding_text: f.plan.text,
+				p_machine_id_sha256: "f".repeat(64),
+			},
+		]);
+		const recorded =
+			f.call.mock.invocationCallOrder[
+				f.call.mock.calls.findIndex((c) => c[0] === "qorpera_record_coding_machine_stopped")
+			]!;
+		expect(recorded).toBeLessThan(vi.mocked(f.client.replaceInstanceDevices).mock.invocationCallOrder[0]!);
+		// Their folders came off while it was stopped; once started, only this turn's session went back on, newly attached.
+		expect(vi.mocked(f.client.replaceInstanceDevices).mock.calls.map((call) => call[2])).toEqual([
+			f.base,
+			{ ...f.base, ...f.sessionDevices(f.claim.workerId) },
+		]);
+		expect(running).toEqual([false, true]);
+		expect(f.lxd.devices).toEqual({ ...f.base, ...f.sessionDevices(f.claim.workerId) });
+		expect([...f.attachments.keys()]).toEqual([f.claim.workerId]);
+		expect(f.attachments.get(f.claim.workerId)).not.toBe(token);
+		await f.host.commandTransport(f.scope(), async () => undefined, f.signal);
+	});
+	it("starts nothing while the outside stop is not recorded, and records it on the next try", async () => {
+		const f = await fixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		f.lxd.running = false;
+		f.state.stoppedFromOutside = true;
+		const answer = f.call.getMockImplementation()!;
+		f.call.mockImplementation(async (method, args, signal) =>
+			method === "qorpera_record_coding_machine_stopped"
+				? {
+						schema: "qorpera.coding-machine-stopped/v1",
+						machineId: args.p_machine_id,
+						detached: [{ workerId: "x" }],
+					}
+				: answer(method, args, signal),
+		);
+		f.renew(f.claim);
+		f.claim.sequence = 2;
+		f.sequences.set(f.claim.workerId, 2);
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow(
+			"CODING_HOST_MACHINE_STOPPED_UNCONFIRMED",
+		);
+		expect(f.lxd.running).toBe(false);
+		expect(f.lxd.devices).toEqual({ ...f.base, ...f.sessionDevices(f.claim.workerId) });
+		f.call.mockImplementation(answer);
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(f.calls("qorpera_record_coding_machine_stopped")).toHaveLength(2);
+		expect(f.lxd).toMatchObject({ running: true, devices: { ...f.base, ...f.sessionDevices(f.claim.workerId) } });
 	});
 	it("takes a new generation when the guest's lease is gone or too close to running out for a renewal to reach it", async () => {
 		const f = await fixture();
@@ -1847,6 +1936,38 @@ describe("housekeeping of a member's machines", () => {
 		expect((await k.host.housekeep(k.signal))[0]?.state).toBe("done");
 		expect(k.lxd.running).toBe(false);
 		expect(k.calls("qorpera_record_coding_session_detached")).toHaveLength(1);
+	});
+	it("ends the attachments of a machine stopped from outside as MACHINE_STOPPED before it sleeps or goes", async () => {
+		const f = await fixture();
+		await awake(f);
+		const token = f.attachments.get(f.claim.workerId);
+		f.state.listed = [f.entry({ sleepDue: true })];
+		f.lxd.running = false;
+		f.state.stoppedFromOutside = true;
+		expect((await f.host.housekeep(f.signal))[0]?.state).toBe("done");
+		expect(f.client.execInstance).not.toHaveBeenCalled();
+		expect(f.calls("qorpera_record_coding_machine_stopped")).toHaveLength(1);
+		// The sleep's own record comes after it, for an attachment already ended.
+		const order = (method: string) =>
+			f.call.mock.invocationCallOrder[f.call.mock.calls.findIndex((c) => c[0] === method)]!;
+		expect(order("qorpera_record_coding_machine_stopped")).toBeLessThan(
+			order("qorpera_record_coding_session_detached"),
+		);
+		expect(f.calls("qorpera_record_coding_session_detached")).toEqual([
+			expect.objectContaining({ p_attachment_token: token, p_reason: "SLEEP", p_stopped: [] }),
+		]);
+		expect(f.attachments.size).toBe(0);
+		expect(f.lxd).toMatchObject({ exists: true, running: false, devices: f.base });
+		// A machine removed after such a stop: seen again by the delete, which finds nothing attached.
+		const g = await fixture();
+		await awake(g);
+		g.state.listed = [g.entry({ removeDue: true, superseded: true })];
+		g.lxd.running = false;
+		g.state.stoppedFromOutside = true;
+		expect((await g.host.housekeep(g.signal))[0]?.state).toBe("done");
+		expect(reconciled()).toEqual(["stopped", "deleted"]);
+		expect(g.calls("qorpera_record_coding_machine_stopped")).toHaveLength(2);
+		expect(g.lxd.exists).toBe(false);
 	});
 	it("polls a pending stop until it settles", async () => {
 		const f = await fixture();
