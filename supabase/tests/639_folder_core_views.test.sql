@@ -416,7 +416,7 @@ begin
 		or not exists (select 1 from public.qorpera_folder_run_read_records rec, jsonb_array_elements(rec.reads) x
 			where rec.run_id = (t ->> 'runId')::uuid and x ->> 'path' = 'cread/c.txt') then
 		raise exception 'A coding view''s reads during a turn land in the turn''s read set'; end if;
-	-- 20260930395000 (step 5a): and in the machine's.
+	-- 20260930445000 (step 5a): and in the machine's.
 	if not exists (select 1 from public.qorpera_coding_machine_reads where coding_machine_id = cm)
 		or not exists (select 1 from public.qorpera_coding_machine_read_records rec, jsonb_array_elements(rec.reads) x
 			where rec.coding_machine_id = cm and x ->> 'path' = 'cread/c.txt') then

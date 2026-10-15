@@ -157,7 +157,7 @@ create function pg_temp.vactor(p_name text) returns jsonb language sql as $$
 	from (select current_setting('qorpera_test.' || p_name)::jsonb v) x
 $$;
 -- Keeps a view's 120 s lease fresh before each race. One folder service renews them all (a coding session's view needs
--- one, 20260930396000).
+-- one, 20260930446000).
 create function pg_temp.renew(p_name text) returns void language plpgsql as $$
 declare v jsonb := current_setting('qorpera_test.' || p_name)::jsonb; r jsonb;
 begin
@@ -685,7 +685,7 @@ begin
 		is distinct from 'closed' then raise exception 'The final closes its view'; end if;
 end $$;
 
--- M. A coding view's commit checks its own read set and its machine's at rank 10 without writing them (20260930395000),
+-- M. A coding view's commit checks its own read set and its machine's at rank 10 without writing them (20260930445000),
 -- so it holds no read-set row while it waits for its session at the anchor step. A commit that re-stamped a moved pair
 -- there would close a cycle: qorpera_keep_coding_attachments holds the session FOR UPDATE and waits to mark the machine
 -- busy, and a release holds the machine FOR SHARE and waits for the pair (40P01). The session archived in C comes back;

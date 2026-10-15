@@ -1,5 +1,5 @@
 -- @fixture 647_folder_core_run_fence.test.sql until "-- The checks start here: a test that runs after this file's fixture part stops at this line."
--- Step 5a, the coding machine's read set (migration 20260930395000; deploy/first-node/RUNTIME-FOLDER-CODING-MACHINES.md,
+-- Step 5a, the coding machine's read set (migration 20260930445000; deploy/first-node/RUNTIME-FOLDER-CODING-MACHINES.md,
 -- "Reads"). One machine with three sessions of agent A for member ...02. It proves:
 -- - a coding view's release lands in the machine's set and in every turn leased on the machine (fan-out);
 -- - a release id the machine has used refuses other reads, from any session's view;

@@ -1,4 +1,4 @@
--- 20260930396100: step 5b, part 1 of 4: names under code/ (deploy/first-node/RUNTIME-FOLDER-CODING-MACHINES.md, "Code areas
+-- 20260930446100: step 5b, part 1 of 4: names under code/ (deploy/first-node/RUNTIME-FOLDER-CODING-MACHINES.md, "Code areas
 -- and git"; RUNTIME-COMPANY-FOLDER.md §6 "Names").
 -- 1. '.git' and 'repo.git' are refused at any depth outside code/<owner>/<name>/ and accepted inside it: a repository's
 --    git directory is code/<owner>/<name>/repo.git, and its worktrees' '.git' files sit deeper. node_modules stays
@@ -12,7 +12,7 @@ set local lock_timeout = '3s';
 -- 1. The reserved names. -----------------------------------------------------------------------------------------------
 
 -- Adapter-only and system names never enter the folder. Dependency caches are allowed only under code/, and git's
--- directories ('.git', 'repo.git') only below code/<owner>/<name>/ (20260930396100).
+-- directories ('.git', 'repo.git') only below code/<owner>/<name>/ (20260930446100).
 create or replace function public.qorpera_folder_path_reserved(p_key text)
 returns boolean language sql immutable set search_path = '' as $$
 	select split_part(p_key, '/', 1) in ('.qorpera','trail','inbox','credentials','secrets')
@@ -24,7 +24,7 @@ $$;
 
 -- 2. Names under code/. ------------------------------------------------------------------------------------------------
 
--- A valid company path. Under code/ (by its key), '%', ':' and device names are allowed (20260930396100).
+-- A valid company path. Under code/ (by its key), '%', ':' and device names are allowed (20260930446100).
 create or replace function public.qorpera_company_path_valid(p_path text, p_root boolean default false)
 returns boolean language plpgsql immutable set search_path = '' as $$
 declare v_candidate text; v_part text; v_code boolean;
