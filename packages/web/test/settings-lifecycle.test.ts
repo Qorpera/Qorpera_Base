@@ -1492,4 +1492,73 @@ describe("settings session lifecycle", () => {
 		expect(sdkRpcs(f)).toEqual([...companyReads, "qorpera_list_coding_environment"]);
 		expect(memberReads()).toEqual([[connectionsUrl, expect.objectContaining({ method: "POST" })]]);
 	});
+	it("reads My connections' coding variables again after Company connections gives one to a repository", async () => {
+		const f = await setup();
+		const companyToken = {
+			schema: "qorpera.coding-environment-secret/v1",
+			secretId: id(30),
+			name: "NPM_TOKEN",
+			ownerKind: "company",
+			purpose: "Installs private packages",
+			version: 1,
+			grants: [] as unknown[],
+			createdAt: timestamp,
+			updatedAt: timestamp,
+		};
+		const memberToken = {
+			...companyToken,
+			secretId: id(32),
+			ownerKind: "member",
+			purpose: "My own token",
+			grants: [],
+		};
+		const grant = { grantId: id(41), repository: "acme/web", issuedByUserId: userA.id, createdAt: timestamp };
+		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
+			if (name === "qorpera_list_coding_environment") return structuredClone([companyToken, memberToken]);
+			if (name === "qorpera_grant_coding_environment_secret") {
+				companyToken.grants = [grant];
+				return { schema: "qorpera.coding-environment-grant/v1", status: "active", secretId: id(30), ...grant };
+			}
+			throw new Error("Unexpected RPC");
+		});
+		const card = (owner: string, secretId: string) =>
+			f.root.querySelector<HTMLElement>(`[data-coding-environment="${owner}"] [data-variable="${secretId}"]`)!;
+		const press = (root: Element, label: string) =>
+			[...root.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent === label)!.click();
+		const reach = () => card("member", id(32)).querySelector(".hook-state")?.textContent;
+		open(f.root);
+		click(f.root, "#settings-tab-my-connections");
+		await draw();
+		expect(reach()).toBe("Your coding sessions get it.");
+
+		click(f.root, "#settings-tab-company-connections");
+		await draw();
+		press(card("company", id(30)), "Give to a repository");
+		const repository = f.root.querySelector<HTMLInputElement>('input[aria-label="Repository for NPM_TOKEN"]')!;
+		repository.value = "acme/web";
+		repository.dispatchEvent(new Event("input"));
+		press(card("company", id(30)), "Add");
+		await draw();
+		// The company's list and then the member's are read again.
+		const reads = [
+			"qorpera_list_coding_environment",
+			"qorpera_list_cloud_secret_connections",
+			"qorpera_list_coding_environment",
+			"qorpera_list_event_hooks",
+			"qorpera_grant_coding_environment_secret",
+			"qorpera_list_coding_environment",
+			"qorpera_list_coding_environment",
+		];
+		expect(sdkRpcs(f)).toEqual(reads);
+
+		click(f.root, "#settings-tab-my-connections");
+		await draw();
+		expect(reach()).toBe("Your coding sessions get it. In acme/web, the company's NPM_TOKEN is used instead.");
+		// Switching tabs alone reads nothing again.
+		click(f.root, "#settings-tab-company-connections");
+		await draw();
+		click(f.root, "#settings-tab-my-connections");
+		await draw();
+		expect(sdkRpcs(f)).toEqual(reads);
+	});
 });

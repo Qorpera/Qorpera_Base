@@ -1,5 +1,5 @@
-import type { Cloud } from "./client.ts";
-import { createSecretCapture } from "./connectors.ts";
+import { type Cloud, CloudRpcError } from "./client.ts";
+import { createSecretCapture, type HostedConnectorCaptureTicket } from "./connectors.ts";
 import {
 	array,
 	boundedInteger,
@@ -65,6 +65,8 @@ export const CODING_VALUE_MAXIMUM_BYTES = 32 * 1024;
 /** The SQL's repository rule (owner/name, any case). */
 export const CODING_REPOSITORY = /^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/;
 const STORED_REPOSITORY = /^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9_][a-z0-9_.-]{0,99}$/;
+/** A kept capture ticket is reused only while it has this long left; tickets live ten minutes. */
+const KEPT_TICKET_MARGIN_MS = 60_000;
 
 /** Why the broker would refuse a value, checked first so the member sees why; undefined when it would not. */
 export function codingValueProblem(value: string): "short" | "long" | "nul" | undefined {
@@ -122,7 +124,8 @@ function parseGrantChange(value: unknown, status: "active" | "revoked"): CodingE
 export interface WebCodingEnvironment {
 	/** The company's variables and the caller's own, by name; never a value. */
 	list(signal?: AbortSignal): Promise<CodingEnvironmentVariable[]>;
-	/** Saves a value at the company's broker, as a new variable or over an existing one's. */
+	/** Saves a value at the company's broker, as a new variable or over an existing one's. A try that failed after
+	 * its ticket was issued leaves that ticket to the next try for the same variable. */
 	capture(input: CodingEnvironmentCapture, signal?: AbortSignal): Promise<void>;
 	/** Gives a company variable to one repository's coding sessions; giving it again is the same grant. */
 	grant(secretId: string, repository: string, signal?: AbortSignal): Promise<CodingEnvironmentGrant>;
@@ -145,6 +148,22 @@ export function createWebCodingEnvironment(
 	)
 		throw new Error("Invalid company for coding variables.");
 	const capture = createSecretCapture(cloud, profile, fetchImplementation);
+	// A ticket whose send failed, by the variable it saves; never the value. SQL allows one open replacement of a
+	// variable and a ticket stays open ten minutes, so the next try reuses it rather than ask for one SQL refuses.
+	const kept = new Map<string, HostedConnectorCaptureTicket>();
+	async function sendKeeping(
+		key: string,
+		issued: HostedConnectorCaptureTicket,
+		fields: Readonly<Record<string, string>>,
+		signal: AbortSignal | undefined,
+	): Promise<void> {
+		try {
+			await capture.send(issued, fields, signal);
+		} catch (error) {
+			kept.set(key, issued);
+			throw error;
+		}
+	}
 	return {
 		async list(signal) {
 			signal?.throwIfAborted();
@@ -162,15 +181,44 @@ export function createWebCodingEnvironment(
 			if (codingValueProblem(input.value)) throw new Error("The broker would refuse this value.");
 			if (input.existingSecretId !== undefined && !UUID_PATTERN.test(input.existingSecretId))
 				throw new Error("Invalid variable.");
-			const issued = await capture.ticket({
+			const target = {
 				ownerKind: input.ownerKind,
 				ownerUserId: input.ownerKind === "member" ? memberId : null,
 				connectorId: "environment",
 				secretName: input.name.toLowerCase(),
 				purpose: input.purpose,
 				existingSecretId: input.existingSecretId,
-			});
-			await capture.send(issued, { value: input.value }, signal);
+			};
+			const fields = { value: input.value };
+			// A ticket also fixes the purpose, so a new variable whose purpose changed asks for its own.
+			const key = `${input.ownerKind}\n${input.name}\n${input.existingSecretId ?? ""}\n${input.purpose}`;
+			const reused = kept.get(key);
+			kept.delete(key);
+			if (reused !== undefined && Date.parse(reused.expiresAt) - Date.now() > KEPT_TICKET_MARGIN_MS) {
+				try {
+					await capture.send(reused, fields, signal);
+					return;
+				} catch (error) {
+					if (signal?.aborted) {
+						kept.set(key, reused);
+						throw error;
+					}
+					// The broker refuses a used ticket as it refuses any other, so the earlier try may have saved the
+					// value. A fresh ticket tells: SQL refuses a second open replacement of one variable (23505).
+					const fresh = await capture.ticket(target).catch((begin: unknown) => {
+						const duplicate = begin instanceof CloudRpcError && begin.code === "23505";
+						// For a new variable, 23505 means the earlier try saved it: the caller hears that, the ticket goes.
+						if (duplicate && input.existingSecretId === undefined) throw begin;
+						// Otherwise the kept ticket may still be open (a replacement's 23505 says it is, so nothing was
+						// saved and the broker's error is the one to show): the next try sends with it again.
+						kept.set(key, reused);
+						throw duplicate ? error : begin;
+					});
+					await sendKeeping(key, fresh, fields, signal);
+					return;
+				}
+			}
+			await sendKeeping(key, await capture.ticket(target), fields, signal);
 		},
 		async grant(secretId, repository, signal) {
 			signal?.throwIfAborted();

@@ -75,6 +75,7 @@ function setup(
 	variables: CodingEnvironmentVariable[] = everything,
 	access: CodingEnvironmentAccess = manager,
 	configure?: (client: WebCodingEnvironment) => void,
+	onChange?: () => void,
 ) {
 	const state = { variables: structuredClone(variables), next: 80 };
 	const client: WebCodingEnvironment = {
@@ -108,7 +109,7 @@ function setup(
 		}),
 	};
 	configure?.(client);
-	view = new CodingEnvironmentView(client, new AbortController().signal, { owner, access });
+	view = new CodingEnvironmentView(client, new AbortController().signal, { owner, access, onChange });
 	document.body.append(view.el);
 	return { client, state };
 }
@@ -124,27 +125,41 @@ const press = (root: Element, label: string) =>
 		.click();
 const dialog = () => [...document.querySelectorAll<HTMLElement>('[role="alertdialog"]')].at(-1)!;
 const outcome = () => view!.el.querySelector(".service-outcome")?.textContent;
-const field = (label: string) => view!.el.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+const field = (label: string) =>
+	view!.el.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+		`input[aria-label="${label}"], textarea[aria-label="${label}"]`,
+	)!;
+
+/** Types text into a field. */
+function fill(label: string, text: string): void {
+	field(label).value = text;
+	field(label).dispatchEvent(new Event("input"));
+}
+
+/** Pastes text into a field as a browser does: the paste event carries the text as it came, and the field then holds
+ * it with every line break read back as LF. */
+function paste(label: string, text: string): void {
+	const event = new Event("paste", { bubbles: true, cancelable: true });
+	const clipboardData = { getData: (type: string) => (type === "text/plain" ? text : "") };
+	Object.defineProperty(event, "clipboardData", { value: clipboardData });
+	field(label).dispatchEvent(event);
+	fill(label, text);
+}
 
 /** No field in the page holds the value any more. */
 function forgotten(value: string): void {
-	for (const input of document.querySelectorAll("input")) expect(input.value).not.toBe(value);
+	for (const input of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input, textarea"))
+		expect(input.value).not.toBe(value);
 	expect(document.body.innerHTML).not.toContain(value);
 }
 
-/** Opens the add form if needed, fills it in and sends it. */
+/** Opens the add form if needed, fills it in and presses Add (Enter in the value field is a line break). */
 function add(name: string, purpose: string, value: string): void {
 	if (!view!.el.querySelector("form.hook-form")) press(view!.el, "Add a variable");
-	const form = view!.el.querySelector<HTMLFormElement>("form.hook-form")!;
-	for (const [label, text] of [
-		["Variable name", name],
-		["What it is for", purpose],
-		["Value", value],
-	] as const) {
-		field(label).value = text;
-		field(label).dispatchEvent(new Event("input"));
-	}
-	form.requestSubmit();
+	fill("Variable name", name);
+	fill("What it is for", purpose);
+	fill("Value", value);
+	press(view!.el.querySelector("form.hook-form")!, "Add");
 }
 
 describe("environment variables for coding", () => {
@@ -281,13 +296,51 @@ describe("environment variables for coding", () => {
 		forgotten("fake-value-2");
 	});
 
+	it("says an earlier try to save a value is still open, and replaces a name saved elsewhere meanwhile", async () => {
+		const { client, state } = setup("company");
+		await settle();
+		const refused = () =>
+			new CloudRpcError("qorpera_begin_cloud_secret_capture", { message: "duplicate key value", code: "23505" });
+		// An earlier page's try left this variable's replacement open.
+		vi.mocked(client.capture).mockRejectedValueOnce(refused());
+		press(cardOf(companyLone.secretId)!, "Replace value");
+		fill("New value for SENTRY_TOKEN", "fake-value-3");
+		press(cardOf(companyLone.secretId)!, "Save value");
+		await settle();
+		expect(cardOf(companyLone.secretId)?.textContent).toContain(
+			"An earlier try to save this value is still open. Try again in a few minutes.",
+		);
+		forgotten("fake-value-3");
+
+		// Another admin saved the same new name meanwhile: the list is read again and the next try replaces it.
+		vi.mocked(client.capture).mockImplementationOnce(async (input) => {
+			state.variables.push({ ...companyLone, secretId: id(81), name: input.name, grants: [] });
+			throw refused();
+		});
+		add("DEPLOY_KEY", "Deploys", "fake-value-4");
+		await settle();
+		expect(outcome()).toBe("It could not be changed. Try again.");
+		expect(cardOf(id(81))).not.toBeNull();
+		add("DEPLOY_KEY", "Deploys", "fake-value-5");
+		await settle();
+		expect(client.capture).toHaveBeenLastCalledWith(
+			expect.objectContaining({ name: "DEPLOY_KEY", existingSecretId: id(81) }),
+			expect.any(AbortSignal),
+		);
+	});
+
 	it("replaces a value from its card, and keeps the form empty after a failure", async () => {
 		const { client } = setup("company");
 		await settle();
 		press(cardOf(companyToken.secretId)!, "Replace value");
 		const value = field("New value for NPM_TOKEN");
-		expect(value.type).toBe("password");
+		// A textarea, so a multiline value keeps its line breaks.
+		expect(value.tagName).toBe("TEXTAREA");
+		expect(value.className).toBe("service-token");
+		expect(value.getAttribute("rows")).toBe("3");
 		expect(value.getAttribute("autocomplete")).toBe("off");
+		expect(value.getAttribute("autocapitalize")).toBe("off");
+		expect(value.getAttribute("spellcheck")).toBe("false");
 		expect(document.activeElement).toBe(value);
 
 		vi.mocked(client.capture).mockRejectedValueOnce(new Error("offline"));
@@ -299,7 +352,7 @@ describe("environment variables for coding", () => {
 		forgotten("fake-value-3");
 
 		field("New value for NPM_TOKEN").value = "fake-value-4";
-		field("New value for NPM_TOKEN").form!.requestSubmit();
+		press(cardOf(companyToken.secretId)!, "Save value");
 		expect(labels(cardOf(companyToken.secretId)!)).toContain("Saving…");
 		await settle();
 		expect(client.capture).toHaveBeenLastCalledWith(
@@ -315,9 +368,51 @@ describe("environment variables for coding", () => {
 		expect(cardOf(companyToken.secretId)?.textContent).toContain(
 			"The value of NPM_TOKEN is replaced. Coding sessions in acme/web get the new one from their next start.",
 		);
-		expect(view!.el.querySelector('input[type="password"]')).toBeNull();
+		expect(view!.el.querySelector("textarea")).toBeNull();
 		expect((document.activeElement as HTMLElement).dataset.focusKey).toBe(`coding-replace:${companyToken.secretId}`);
 		forgotten("fake-value-4");
+	});
+
+	it("sends a pasted multiline value byte for byte, for a new variable and over an existing one", async () => {
+		const { client } = setup("member", [memberOwn]);
+		await settle();
+		const added = "line one\nline two\r\nline three\n";
+		press(view!.el, "Add a variable");
+		expect(field("Value").tagName).toBe("TEXTAREA");
+		fill("Variable name", "DEPLOY_KEY");
+		fill("What it is for", "Clones private submodules");
+		paste("Value", added);
+		// The field reads its line breaks back as LF; the paste is what is sent.
+		expect(field("Value").value).toBe("line one\nline two\nline three\n");
+		press(view!.el.querySelector("form.hook-form")!, "Add");
+		await settle();
+		expect(client.capture).toHaveBeenLastCalledWith(
+			expect.objectContaining({ name: "DEPLOY_KEY", value: added, existingSecretId: undefined }),
+			expect.any(AbortSignal),
+		);
+		forgotten(added);
+
+		const replaced = "fake key\r\nsecond line\r\nthird line\r\n";
+		press(cardOf(memberOwn.secretId)!, "Replace value");
+		paste("New value for GH_PACKAGES", replaced);
+		press(cardOf(memberOwn.secretId)!, "Save value");
+		await settle();
+		expect(client.capture).toHaveBeenLastCalledWith(
+			expect.objectContaining({ name: "GH_PACKAGES", value: replaced, existingSecretId: memberOwn.secretId }),
+			expect.any(AbortSignal),
+		);
+		forgotten(replaced);
+
+		// A value changed after its paste is sent as the field shows it.
+		press(cardOf(memberOwn.secretId)!, "Replace value");
+		paste("New value for GH_PACKAGES", "fake value\r\nmore");
+		fill("New value for GH_PACKAGES", `${field("New value for GH_PACKAGES").value}!`);
+		press(cardOf(memberOwn.secretId)!, "Save value");
+		await settle();
+		expect(client.capture).toHaveBeenLastCalledWith(
+			expect.objectContaining({ value: "fake value\nmore!" }),
+			expect.any(AbortSignal),
+		);
 	});
 
 	it("refuses a short new value before any call", async () => {
@@ -428,7 +523,7 @@ describe("environment variables for coding", () => {
 		expect(buttons(view!.el)).toEqual([]);
 		expect(cards()).toEqual([companyToken.secretId, companyLone.secretId]);
 		expect(reach(companyToken.secretId)).toBe("Coding sessions in acme/web get it.");
-		expect(view!.el.querySelector("input")).toBeNull();
+		expect(view!.el.querySelector("input, textarea")).toBeNull();
 	});
 
 	it("shows a viewer's own variables read-only, and redraws when the role changes", async () => {
@@ -447,13 +542,13 @@ describe("environment variables for coding", () => {
 		expect(labels(view!.el)).toContain("Add a variable");
 		press(view!.el, "Add a variable");
 		press(cardOf(memberOwn.secretId)!, "Replace value");
-		expect(view!.el.querySelector('input[type="password"]')).not.toBeNull();
+		expect(view!.el.querySelector('textarea[aria-label="New value for GH_PACKAGES"]')).not.toBeNull();
 
 		// Losing the right closes every form.
 		role.write = false;
 		view!.update();
 		expect(buttons(view!.el)).toEqual([]);
-		expect(view!.el.querySelector("input")).toBeNull();
+		expect(view!.el.querySelector("input, textarea")).toBeNull();
 	});
 
 	it("says when the list could not be read, and reads it again", async () => {
@@ -470,5 +565,85 @@ describe("environment variables for coding", () => {
 		expect(client.list).toHaveBeenCalledTimes(2);
 		expect(view!.el.querySelector('[role="alert"]')).toBeNull();
 		expect(cards()).toEqual([memberToken.secretId, memberOwn.secretId]);
+	});
+
+	// The view tells whoever it is given, for either owner; Settings gives it only to the company's, since a member's
+	// own variables change nothing the company's tab shows.
+	it("tells the other tab after each change that reached the cloud, once its own read has started", async () => {
+		const onChange = vi.fn();
+		const { client } = setup("company", everything, manager, undefined, onChange);
+		await settle();
+		/** onChange was called this often, the last time just after a read that started after the change. */
+		const told = (times: number, change: { mock: { invocationCallOrder: number[] } }) => {
+			expect(onChange).toHaveBeenCalledTimes(times);
+			const read = vi.mocked(client.list).mock.invocationCallOrder.at(-1)!;
+			expect(read).toBeGreaterThan(change.mock.invocationCallOrder.at(-1)!);
+			expect(read).toBeLessThan(onChange.mock.invocationCallOrder.at(-1)!);
+		};
+
+		// Refused before any call: nothing changed.
+		press(cardOf(companyLone.secretId)!, "Give to a repository");
+		fill("Repository for SENTRY_TOKEN", "acme web");
+		press(cardOf(companyLone.secretId)!, "Add");
+		expect(onChange).not.toHaveBeenCalled();
+		fill("Repository for SENTRY_TOKEN", "acme/api");
+		press(cardOf(companyLone.secretId)!, "Add");
+		await settle();
+		told(1, vi.mocked(client.grant));
+
+		// Not confirmed: nothing changed.
+		const row = () =>
+			cardOf(companyToken.secretId)!.querySelector<HTMLElement>(`[data-grant="${webGrant.grantId}"]`)!;
+		press(row(), "Remove");
+		press(dialog(), "Cancel");
+		await settle();
+		expect(onChange).toHaveBeenCalledTimes(1);
+		press(row(), "Remove");
+		press(dialog(), "Remove");
+		await settle();
+		told(2, vi.mocked(client.revokeGrant));
+
+		press(cardOf(companyToken.secretId)!, "Replace value");
+		fill("New value for NPM_TOKEN", "fake-value-3");
+		press(cardOf(companyToken.secretId)!, "Save value");
+		await settle();
+		told(3, vi.mocked(client.capture));
+
+		add("DEPLOY_KEY", "Deploys", "fake-value-4");
+		await settle();
+		told(4, vi.mocked(client.capture));
+
+		press(cardOf(companyLone.secretId)!, "Remove");
+		press(dialog(), "Remove");
+		await settle();
+		told(5, vi.mocked(client.remove));
+
+		// A refusal may still have changed something, so the other tab reads too.
+		vi.mocked(client.capture).mockRejectedValueOnce(new Error("offline"));
+		press(cardOf(companyToken.secretId)!, "Replace value");
+		fill("New value for NPM_TOKEN", "fake-value-5");
+		press(cardOf(companyToken.secretId)!, "Save value");
+		await settle();
+		expect(cardOf(companyToken.secretId)?.textContent).toContain("It could not be changed. Try again.");
+		told(6, vi.mocked(client.capture));
+	});
+
+	it("reads its list again when the other tab changed it, and not once it is gone", async () => {
+		const { client, state } = setup("member");
+		await settle();
+		expect(reach(memberToken.secretId)).toBe(
+			"Your coding sessions get it. In acme/web, the company's NPM_TOKEN is used instead.",
+		);
+		// Company connections takes the company's NPM_TOKEN back from acme/web.
+		state.variables.find((variable) => variable.secretId === companyToken.secretId)!.grants = [];
+		view!.reload();
+		await settle();
+		expect(client.list).toHaveBeenCalledTimes(2);
+		expect(reach(memberToken.secretId)).toBe("Your coding sessions get it.");
+
+		view!.dispose();
+		view!.reload();
+		await settle();
+		expect(client.list).toHaveBeenCalledTimes(2);
 	});
 });

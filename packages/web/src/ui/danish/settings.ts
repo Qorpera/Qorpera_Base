@@ -465,6 +465,8 @@ export const SETTINGS: Record<string, string> = {
 	"The value can't contain a null character.": "Værdien må ikke indeholde et nul-tegn.",
 	"That name is taken by the coding machine or an AI provider's sign-in. Choose another.":
 		"Det navn bruges af kodemaskinen eller af et login hos en AI-udbyder. Vælg et andet.",
+	"An earlier try to save this value is still open. Try again in a few minutes.":
+		"Et tidligere forsøg på at gemme værdien er stadig åbent. Prøv igen om et par minutter.",
 	"Write the repository as owner/name, for example acme/web.": "Skriv repositoriet som ejer/navn, f.eks. acme/web.",
 	"{name} is saved. Your coding sessions get it from their next start.":
 		"{name} er gemt. Dine kodesessioner får den fra deres næste start.",

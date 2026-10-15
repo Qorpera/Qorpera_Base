@@ -57,12 +57,40 @@ function repositories(grants: readonly CodingEnvironmentGrant[]): string {
 	return grants.map((grant) => grant.repository).join(", ");
 }
 
+/** A value's field, read only when its form is sent; every draw makes a new, empty one. A textarea keeps a multiline
+ * value's line breaks but reads each back as LF, so while the field holds just what was last pasted into it, the
+ * paste is what is sent, CR and all. */
+function valueField(options: { class?: string; placeholder: string; label: string; focusKey: string }): {
+	field: HTMLTextAreaElement;
+	read(): string;
+} {
+	let pasted: string | undefined;
+	const field = h("textarea", {
+		class: options.class,
+		rows: "3",
+		autocomplete: "off",
+		autocapitalize: "off",
+		spellcheck: "false",
+		placeholder: options.placeholder,
+		"aria-label": options.label,
+		onpaste: (event: ClipboardEvent) => {
+			pasted = event.clipboardData?.getData("text/plain");
+		},
+	});
+	field.dataset.focusKey = options.focusKey;
+	return {
+		field,
+		read: () => (pasted !== undefined && pasted.replace(/\r\n?/g, "\n") === field.value ? pasted : field.value),
+	};
+}
+
 export class CodingEnvironmentView {
 	readonly el = h("div", { class: "coding-environment" });
 	readonly #client: WebCodingEnvironment;
 	readonly #owner: CodingEnvironmentOwner;
 	readonly #lifetime = new AbortController();
 	readonly #access: CodingEnvironmentAccess;
+	readonly #onChange: (() => void) | undefined;
 	#drawnManage: boolean | undefined;
 	/** This owner's variables and, for a member, the company's too: a company variable granted on a repository wins
 	 * there over the member's of the same name. */
@@ -86,11 +114,18 @@ export class CodingEnvironmentView {
 	constructor(
 		client: WebCodingEnvironment,
 		signal: AbortSignal,
-		options: { owner: CodingEnvironmentOwner; access?: CodingEnvironmentAccess },
+		options: {
+			owner: CodingEnvironmentOwner;
+			access?: CodingEnvironmentAccess;
+			/** Called after each change of this view's that reached the cloud, saved or refused (a refusal may still
+			 * have changed something), once this view's own read has started. */
+			onChange?: () => void;
+		},
 	) {
 		this.#client = client;
 		this.#owner = options.owner;
 		this.#access = options.access ?? FULL_ACCESS;
+		this.#onChange = options.onChange;
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.#draw();
@@ -106,6 +141,12 @@ export class CodingEnvironmentView {
 			this.#open = undefined;
 		}
 		this.#draw();
+	}
+
+	/** Reads the list again because the other tab's view changed it: a company variable given to a repository, or
+	 * taken back, changes which of the member's own is used there. Nothing after dispose. */
+	reload(): void {
+		void this.#refresh();
 	}
 
 	dispose(): void {
@@ -139,6 +180,13 @@ export class CodingEnvironmentView {
 		return again.read;
 	}
 
+	/** After a change that reached the cloud: reads this view's list again, then tells whoever shows it too. */
+	#changed(focusKey?: string): Promise<void> {
+		const read = this.#refresh(focusKey);
+		this.#onChange?.();
+		return read;
+	}
+
 	async #read(focusKey?: string): Promise<void> {
 		try {
 			const variables = await this.#client.list(this.#lifetime.signal);
@@ -160,11 +208,16 @@ export class CodingEnvironmentView {
 	}
 
 	/** Why a change was refused, in the interface language. */
-	#failure(error: unknown, kind: "capture" | "grant" | "other"): string {
+	#failure(error: unknown, kind: "add" | "replace" | "grant" | "other"): string {
 		if (error instanceof CloudRpcError) {
+			const capture = kind === "add" || kind === "replace";
 			// The cloud keeps the names the coding machine sets itself and the AI providers' sign-ins.
-			if (kind === "capture" && error.code === "22023" && error.message.includes("not available"))
+			if (capture && error.code === "22023" && error.message.includes("not available"))
 				return t("That name is taken by the coding machine or an AI provider's sign-in. Choose another.");
+			// The cloud allows one open replacement of a variable: an earlier page's try left one, which closes
+			// within ten minutes.
+			if (kind === "replace" && error.code === "23505")
+				return t("An earlier try to save this value is still open. Try again in a few minutes.");
 			if (kind === "grant" && error.code === "22023")
 				return t("Write the repository as owner/name, for example acme/web.");
 			if (error.denied) return t(OWNER_TEXT[this.#owner].readOnly);
@@ -224,14 +277,15 @@ export class CodingEnvironmentView {
 			this.#draft = { name: "", purpose: "" };
 			this.#outcome = { key: `variable:${name}`, tone: "ok", text: this.#saved(name, existing) };
 			this.#draw(`coding-add:${this.#owner}`);
-			await this.#refresh(`coding-add:${this.#owner}`);
+			await this.#changed(`coding-add:${this.#owner}`);
 		} catch (error) {
 			if (this.#lifetime.signal.aborted) return;
 			this.#working = undefined;
-			this.#outcome = { key: "add", tone: "error", text: this.#failure(error, "capture") };
+			this.#outcome = { key: "add", tone: "error", text: this.#failure(error, existing ? "replace" : "add") };
 			this.#draw(`coding-name:${this.#owner}`);
-			// The name was added elsewhere meanwhile: once it is listed, the next try replaces its value.
-			if (error instanceof CloudRpcError && error.code === "23505") await this.#refresh();
+			// A lost answer may still have saved it, and a name added elsewhere meanwhile (23505) is replaced by the
+			// next try once it is listed.
+			await this.#changed();
 		}
 	}
 
@@ -265,10 +319,10 @@ export class CodingEnvironmentView {
 			focus = `coding-replace:${variable.secretId}`;
 		} catch (error) {
 			if (!this.#lifetime.signal.aborted)
-				this.#outcome = { key, tone: "error", text: this.#failure(error, "capture") };
+				this.#outcome = { key, tone: "error", text: this.#failure(error, "replace") };
 		} finally {
 			this.#working = undefined;
-			if (!this.#lifetime.signal.aborted) await this.#refresh(focus);
+			if (!this.#lifetime.signal.aborted) await this.#changed(focus);
 		}
 	}
 
@@ -296,7 +350,7 @@ export class CodingEnvironmentView {
 				this.#outcome = { key: `variable:${variable.name}`, tone: "error", text: this.#failure(error, "other") };
 		} finally {
 			this.#working = undefined;
-			if (!this.#lifetime.signal.aborted) await this.#refresh(`coding-add:${this.#owner}`);
+			if (!this.#lifetime.signal.aborted) await this.#changed(`coding-add:${this.#owner}`);
 		}
 	}
 
@@ -339,7 +393,7 @@ export class CodingEnvironmentView {
 				this.#outcome = { key, tone: "error", text: this.#failure(error, "grant") };
 		} finally {
 			this.#working = undefined;
-			if (!this.#lifetime.signal.aborted) await this.#refresh(focus);
+			if (!this.#lifetime.signal.aborted) await this.#changed(focus);
 		}
 	}
 
@@ -369,7 +423,7 @@ export class CodingEnvironmentView {
 				this.#outcome = { key: `variable:${variable.name}`, tone: "error", text: this.#failure(error, "other") };
 		} finally {
 			this.#working = undefined;
-			if (!this.#lifetime.signal.aborted) await this.#refresh(`coding-give:${variable.secretId}`);
+			if (!this.#lifetime.signal.aborted) await this.#changed(`coding-give:${variable.secretId}`);
 		}
 		// A grant withdrawn elsewhere meanwhile is refused here, but what the member asked for is done.
 		if (
@@ -419,18 +473,16 @@ export class CodingEnvironmentView {
 	/** A variable's new value: the services' token form. Its field is drawn empty every time. */
 	#valueForm(variable: CodingEnvironmentVariable): HTMLElement {
 		const id = variable.secretId;
-		const field = h("input", {
-			type: "password",
+		const value = valueField({
 			class: "service-token",
-			autocomplete: "off",
-			spellcheck: "false",
 			placeholder: t("Paste the new value"),
-			"aria-label": t("New value for {name}", { name: variable.name }),
+			label: t("New value for {name}", { name: variable.name }),
+			focusKey: `coding-new-value:${id}`,
 		});
-		field.dataset.focusKey = `coding-new-value:${id}`;
+		// Enter in the field is a line break, so the button saves.
 		const save = button(
 			this.#working === `replace:${id}` ? t("Saving…") : t("Save value"),
-			() => void this.#replace(variable, field.value),
+			() => void this.#replace(variable, value.read()),
 			{ primary: true, disabled: Boolean(this.#working) },
 		);
 		const cancel = button(t("Cancel"), () => this.#close(variable, `coding-replace:${id}`), {
@@ -442,11 +494,11 @@ export class CodingEnvironmentView {
 				class: "service-token-form",
 				onsubmit: (event: Event) => {
 					event.preventDefault();
-					void this.#replace(variable, field.value);
+					void this.#replace(variable, value.read());
 				},
 			},
 			h("small", null, t("Once saved, a value is never shown again.")),
-			h("div", { class: "service-token-row" }, field, save, cancel),
+			h("div", { class: "service-token-row" }, value.field, save, cancel),
 		);
 	}
 
@@ -599,15 +651,13 @@ export class CodingEnvironmentView {
 			},
 		});
 		purpose.dataset.focusKey = `coding-purpose:${owner}`;
-		// Read only when the form is sent; every draw makes a new, empty field.
-		const value = h("input", {
-			type: "password",
-			autocomplete: "off",
-			spellcheck: "false",
+		// Read only when the form is sent; every draw makes a new, empty field. Enter in it is a line break, so the
+		// button sends the form.
+		const value = valueField({
 			placeholder: t("Paste the value"),
-			"aria-label": t("Value"),
+			label: t("Value"),
+			focusKey: `coding-value:${owner}`,
 		});
-		value.dataset.focusKey = `coding-value:${owner}`;
 		const add = h(
 			"button",
 			{ type: "submit", class: "btn btn-primary", disabled: Boolean(this.#working) },
@@ -625,13 +675,13 @@ export class CodingEnvironmentView {
 				class: "hook-form",
 				onsubmit: (event: Event) => {
 					event.preventDefault();
-					void this.#add(value.value);
+					void this.#add(value.read());
 				},
 			},
 			name,
 			h("small", null, t("Capital letters, digits and underscores, starting with a letter.")),
 			purpose,
-			value,
+			value.field,
 			h("small", null, t("Once saved, a value is never shown again.")),
 			this.#outcomeLine("add"),
 			h("div", { class: "hook-form-actions" }, add, cancel),

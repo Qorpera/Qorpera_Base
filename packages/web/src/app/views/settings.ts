@@ -443,10 +443,12 @@ export class SettingsView {
 							undefined,
 					},
 				});
+				// Where a company variable is given decides where a member's own of that name is used, so My
+				// connections reads its list again after each change here (opened later, it reads one anyway).
 				this.#companyEnvironment = new CodingEnvironmentView(
 					createWebCodingEnvironment(this.#api.cloud, environment, memberId),
 					signal(),
-					{ owner: "company", access: { canManage } },
+					{ owner: "company", access: { canManage }, onChange: () => this.#memberEnvironment?.reload() },
 				);
 				this.#hooks = new HooksView(createWebEventHooks(this.#api.cloud, environment), signal(), {
 					access: { canManage },
