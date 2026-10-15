@@ -182,7 +182,8 @@ $old$,
 		where c.id in (select x.id::uuid from jsonb_array_elements(p_units) u
 				cross join lateral jsonb_array_elements_text(u.value -> 'credits') x(id))
 			and c.machine_id = v_view.company_machine_id and c.placement_id = v_view.placement_id and c.ended_at is null;
-		if exists (select 1 from jsonb_each(v_credits) e where (e.value ->> 'jobId')::uuid <> all (v_job_locks)) then
+		if exists (select 1 from jsonb_each(v_credits) e where e.value ->> 'jobId' is not null
+				and (e.value ->> 'jobId')::uuid <> all (v_job_locks)) then
 			raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message', 'Company folder view changed',
 				'details', 'folder_view_changed', 'hint', null)::text, detail = '{"status":409,"headers":{}}';
 		end if;
