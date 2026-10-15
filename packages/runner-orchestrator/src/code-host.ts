@@ -327,6 +327,8 @@ export class LxdCodeHosts {
 		const fresh = !host.started;
 		await this.#turn(host, signal);
 		try {
+			// The wait for a start has no bound: the project is checked again before its VM is touched.
+			await this.#project(host, signal, true);
 			let instance = await this.#client.getInstance(host.project, CODE_HOST_INSTANCE, signal);
 			if (instance && !codeHostInstanceMatches(this.#policy, host.project, instance)) {
 				// Made under another policy (another image, other limits): its disk is scratch.
@@ -347,8 +349,9 @@ export class LxdCodeHosts {
 			else if (instance.statusCode !== RUNNING) throw new Error("CODE_HOST_STATE_UNAVAILABLE");
 			await this.#agent(host, signal);
 		} catch (error) {
-			// Started for this job only: stop it again rather than hold a start until it idles out.
-			if (fresh) await this.#halt(host, AbortSignal.timeout(this.#agentWaitMs)).catch(() => undefined);
+			// Started for this job only: stop it again rather than hold a start until it idles out, unless its project
+			// was refused meanwhile (it then keeps the start, and its idle stop tries again).
+			if (fresh) await this.#stopChecked(host, AbortSignal.timeout(this.#agentWaitMs)).catch(() => undefined);
 			throw error;
 		}
 	}
@@ -445,19 +448,23 @@ export class LxdCodeHosts {
 		if (!host.started || host.jobs > 0) return;
 		clearTimeout(host.idle);
 		host.idle = undefined;
-		const signal = AbortSignal.timeout(this.#agentWaitMs);
 		try {
-			// Its project is checked again: one refused since is not touched, and the host keeps its start.
-			if (await this.#project(host, signal, false)) await this.#halt(host, signal);
-			else {
-				// The project is gone, and its VM with it.
-				host.started = false;
-				this.#notify();
-			}
+			await this.#stopChecked(host, AbortSignal.timeout(this.#agentWaitMs));
 		} catch (error) {
 			this.#log({ event: "code-host-error", step: "stop", project: host.project, error });
 			if (!this.#closed) this.#rest(host);
 			throw error;
+		}
+	}
+
+	/** Its project is checked again first: one refused since is not touched (this throws), and the host keeps its
+	 * start. */
+	async #stopChecked(host: Host, signal: AbortSignal): Promise<void> {
+		if (await this.#project(host, signal, false)) await this.#halt(host, signal);
+		else {
+			// The project is gone, and its VM with it.
+			host.started = false;
+			this.#notify();
 		}
 	}
 
