@@ -190,16 +190,20 @@ export class CodingSecretMaskStream {
 		}
 	}
 
+	/** The ranges stay sorted and apart. A match ends at the byte just read, so
+	 * it ends at or after every range so far and can only reach back into the
+	 * last ones: those that end at or after its start merge into it. */
 	#mask(start: number, end: number): void {
-		const merged: [number, number][] = [];
-		let range: [number, number] = [start, end];
-		for (const existing of this.#masked) {
-			if (existing[1] < range[0] || range[1] < existing[0]) merged.push(existing);
-			else range = [Math.min(range[0], existing[0]), Math.max(range[1], existing[1])];
+		let from = start;
+		let to = end;
+		while (this.#masked.length > 0) {
+			const last = this.#masked[this.#masked.length - 1];
+			if (last[1] < from) break;
+			from = Math.min(from, last[0]);
+			to = Math.max(to, last[1]);
+			this.#masked.pop();
 		}
-		merged.push(range);
-		merged.sort((a, b) => a[0] - b[0]);
-		this.#masked = merged;
+		this.#masked.push([from, to]);
 	}
 
 	/** Returns the raw bytes before `boundary` with each masked range as `***`.

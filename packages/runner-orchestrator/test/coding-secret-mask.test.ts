@@ -140,6 +140,16 @@ describe("coding secret mask", () => {
 		expectEverySplit(periodic, "[ababababab]", "[***]");
 	});
 
+	it("masks many separate matches in one chunk without going back over the earlier ones", () => {
+		const numbers = new CodingSecretMask(["12345678"]);
+		const stream = numbers.stream();
+		const started = performance.now();
+		const out = Buffer.concat([stream.push(bytes("12345678 ".repeat(100_000))), stream.end()]).toString();
+		// Merging each match with every earlier one took billions of steps here.
+		expect(performance.now() - started).toBeLessThan(5_000);
+		expect(out).toBe("*** ".repeat(100_000));
+	});
+
 	it("masks UTF-8 and binary values", () => {
 		const unicode = new CodingSecretMask(["pässwörd-ünïcode"]);
 		expectEverySplit(unicode, "p=pässwörd-ünïcode;", "p=***;");
