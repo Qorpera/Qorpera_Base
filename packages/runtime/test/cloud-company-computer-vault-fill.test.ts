@@ -67,6 +67,14 @@ interface FakeNode {
 	matches?(selector: string): boolean;
 }
 
+/** A node as the browser draws it: an element (1), with an open shadow root or children, or text (3). */
+interface FakeDrawn {
+	nodeType: 1 | 3;
+	textContent: string | null;
+	childNodes?: FakeDrawn[];
+	shadowRoot?: { childNodes: FakeDrawn[] };
+}
+
 /**
  * One sign-in page with one password box. Every evaluate of the screen check runs the real in-page function
  * against this fake document: its title and address, its text, its boxes and an open shadow root.
@@ -94,6 +102,8 @@ function office(
 		/** Another box on the page, not marked private (a "show password" that made a new one). */
 		other: { value: "" },
 		shadowText: "",
+		/** The page's body as the browser draws it (its nodes, open shadow roots in place), when the test gives one. */
+		body: undefined as FakeDrawn[] | undefined,
 		/** A box inside the open shadow root. */
 		shadowBox: { value: "" },
 		/** Extra boxes and shadow roots on the page, to reach the check's limits. */
@@ -127,6 +137,7 @@ function office(
 			document: {
 				title: shown.title,
 				documentElement: { innerText: shown.text },
+				...(shown.body ? { body: { childNodes: shown.body } } : {}),
 				querySelectorAll: () => [
 					node(element, () => attributes.has(COMPANY_ACCOUNT_FILLED_ATTRIBUTE)),
 					node(shown.other, () => false),
@@ -1092,6 +1103,34 @@ describe("text shaped like a hook's signing secret (E3c-3)", () => {
 		f.shown.text = "Signing secret whsec_•••••••• Reveal";
 		await expect(screenshot(f, "browser")).resolves.toMatchObject({ kind: "json" });
 		expect(f.page.screenshot).toHaveBeenCalledOnce();
+	});
+
+	it("takes no picture while a page draws one split across two open shadow roots", async () => {
+		const piece = (textContent: string): FakeDrawn => ({ nodeType: 3, textContent });
+		for (const surface of ["browser", "desktop"] as const) {
+			const f = office();
+			f.shown.text = "Signing secret Reveal";
+			// `whsec_` in the outer root, the rest in a nested root of its own: no root's text holds it whole.
+			f.shown.body = [
+				{
+					nodeType: 1,
+					textContent: "",
+					shadowRoot: {
+						childNodes: [
+							{ nodeType: 1, textContent: "whsec_", childNodes: [piece("whsec_")] },
+							{
+								nodeType: 1,
+								textContent: "",
+								shadowRoot: { childNodes: [piece(secret.slice("whsec_".length))] },
+							},
+						],
+					},
+				},
+			];
+			await expect(screenshot(f, surface), surface).rejects.toThrow("PRIVATE_FIELD_ON_SCREEN");
+			expect(f.page.screenshot).not.toHaveBeenCalled();
+			expect(f.commands.capturePng).not.toHaveBeenCalled();
+		}
 	});
 });
 

@@ -496,6 +496,7 @@ export class CompanyComputerGuestAutomation {
 	 * No picture while a page shows a secret the vault typed: as text, in its title or address, or in a box that is
 	 * not marked private (a "show password" that made a new box). The page is read; it is never told the value.
 	 * Nor while it shows text shaped like a hook's signing secret (E3c-3), so every page is read, a fresh screen's too.
+	 * Its text is read as the browser draws it too, so a value split across nodes or shadow roots is seen whole.
 	 */
 	async #assertFilledNotShown(page: Page): Promise<void> {
 		for (const frame of page.frames()) {
@@ -513,13 +514,82 @@ export class CompanyComputerGuestAutomation {
 						interface Root {
 							querySelectorAll(selector: string): Iterable<Node>;
 						}
+						/** A node as the browser draws it: an element (1) or text (3). */
+						interface Drawn {
+							readonly nodeType: number;
+							readonly nodeName?: string;
+							readonly textContent: string | null;
+							readonly childNodes?: Iterable<Drawn>;
+							readonly shadowRoot?: { readonly childNodes?: Iterable<Drawn> } | null;
+							assignedNodes?(options: { flatten: boolean }): Iterable<Drawn>;
+						}
+						interface Rect {
+							readonly top: number;
+							readonly bottom: number;
+							readonly left: number;
+							readonly right: number;
+						}
 						const global = globalThis as unknown as {
-							document: Root & { title: string; documentElement: { innerText?: string } | null };
+							document: Root & {
+								title: string;
+								documentElement: { innerText?: string } | null;
+								body?: { readonly childNodes?: Iterable<Drawn> } | null;
+								createRange?(): { selectNodeContents(node: Drawn): void; getClientRects(): ArrayLike<Rect> };
+							};
 							location: { href: string };
+							getComputedStyle?(node: unknown): { readonly visibility: string; readonly display: string };
 						};
 						const document = global.document;
+						const range = document.createRange?.();
+						// The text again as the browser draws it, read as the hook capture reads it
+						// (cloud-company-computer-hook-capture.ts): open shadow roots and slots in place, and a piece of text
+						// continues the one before it when no box's edge but a plain inline one comes between them or when it
+						// starts where that one ends, on its line, so a value split across nodes, roots or slots is seen whole.
+						// Past 4 MB the read stops; the check then refuses anyway.
+						let drawn = "";
+						let end: Rect | undefined;
+						let broken = true;
+						const read = (nodes: Iterable<Drawn> | undefined, shown: boolean): void => {
+							for (const node of nodes ?? []) {
+								if (drawn.length > 4_000_000) return;
+								if (node.nodeType === 1) {
+									const style = global.getComputedStyle?.(node);
+									const edge =
+										node.nodeName === "BR" ||
+										!/^(inline|contents|none)$|^ruby/.test(style?.display ?? "inline");
+									broken ||= edge;
+									read(
+										node.shadowRoot?.childNodes ?? node.assignedNodes?.({ flatten: true }) ?? node.childNodes,
+										(style?.visibility ?? "visible") === "visible",
+									);
+									broken ||= edge;
+								}
+								if (node.nodeType !== 3 || !shown) continue;
+								range?.selectNodeContents(node);
+								const rects = range?.getClientRects() ?? [];
+								const first = rects[0];
+								if (range && !first) continue;
+								const touching =
+									end !== undefined &&
+									first !== undefined &&
+									first.top < end.bottom &&
+									end.top < first.bottom &&
+									Math.abs(first.left - end.right) <= 1;
+								drawn += `${broken && !touching ? "\n" : ""}${node.textContent ?? ""}`;
+								broken = false;
+								end = rects[rects.length - 1];
+							}
+						};
+						const body = document.body;
+						if (body)
+							read(body.childNodes, (global.getComputedStyle?.(body).visibility ?? "visible") === "visible");
 						// Everything the page shows, or null past 4 MB of it (more than this check reads): then no picture.
-						const parts = [document.title, global.location.href, document.documentElement?.innerText ?? ""];
+						const parts = [
+							document.title,
+							global.location.href,
+							document.documentElement?.innerText ?? "",
+							drawn,
+						];
 						let size = parts.reduce((total, part) => total + part.length, 0);
 						// Boxes not marked private, and the text and boxes inside open shadow roots (innerText skips them).
 						const roots: Root[] = [document];
