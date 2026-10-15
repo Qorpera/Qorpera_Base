@@ -29,14 +29,9 @@ begin
 			and procedure.proname <> 'qorpera_authorize_coding_machine') then
 		raise exception 'Machine admission lost the pause'; end if;
 
-	-- API-key runs: the model gateway meters but never refuses or ends a run over a per-run budget.
-	if (select prosrc from pg_proc where oid = 'public.qorpera_runner_broker_reserve_model_request(uuid,text,uuid,text,uuid,text,text,text,bigint,bigint)'::regprocedure)
-			like '%v_policy.max_calls%'
-		or (select prosrc from pg_proc where oid = 'public.qorpera_runner_broker_finalize_model_request(uuid,text,uuid,text,uuid,text,text,bigint,bigint,bigint,jsonb,text)'::regprocedure)
-			like '%least(v_policy.max_cost_microusd%'
-		or (select prosrc from pg_proc where oid = 'public.qorpera_runner_model_gateway_authority(uuid)'::regprocedure)
-			not like '%9007199254740991%'
-		or (select prosrc from pg_proc where oid = 'public.qorpera_reserve_execution_sponsor_authority(uuid)'::regprocedure)
+	-- API-key runs: the sponsor's authority has no monthly budget. (The runner broker's model gateway, which metered
+	-- without a per-run budget, is gone since 20260930334000.)
+	if (select prosrc from pg_proc where oid = 'public.qorpera_reserve_execution_sponsor_authority(uuid)'::regprocedure)
 			like '%monthly_microusd%' then
 		raise exception 'An API-key budget or per-run cap is still enforced'; end if;
 

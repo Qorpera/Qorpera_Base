@@ -47,7 +47,6 @@ insert into grants_expected(signature, authenticated, service_role) values
 	('public.qorpera_runner_job_json(public.qorpera_runner_jobs)', false, false),
 	('public.qorpera_runner_model_policy_json(public.qorpera_runner_model_policies)', false, false),
 	('public.qorpera_runner_usage_json(public.qorpera_runner_usage_observations)', false, false),
-	('public.qorpera_runner_model_gateway_authority(uuid)', false, false),
 	('public.qorpera_profile_invitation_delivery_json(uuid)', false, false),
 	('public.qorpera_execution_compute_available(public.qorpera_execution_runs)', false, false),
 	('public.qorpera_execution_sponsor_available(public.qorpera_execution_runs)', false, false),
@@ -67,7 +66,7 @@ insert into grants_expected(signature, authenticated, service_role) values
 do $$
 declare v_row record; v_function regprocedure; v_owner oid; v_acl aclitem[];
 begin
-	perform pg_temp.grants_assert((select count(*) from grants_expected) = 44, 'the suite covers all 44 functions');
+	perform pg_temp.grants_assert((select count(*) from grants_expected) = 43, 'the suite covers all 43 functions');
 	for v_row in select * from grants_expected order by signature loop
 		-- A signature that no longer resolves fails here rather than passing quietly.
 		v_function := v_row.signature::regprocedure;
