@@ -5,9 +5,25 @@
 --    allowed only under code/, as before.
 -- 2. Under code/, a name may hold '%' and ':' and may be a device name (con, aux, ...), as git's own names may. NFC, the
 --    other characters refused everywhere, the trailing dot or space and no case-only siblings (the entries' key) stay.
--- Both functions are replaced whole. Neither is ever narrowed, so rows saved under the old rules stay valid.
+-- 3. So a folder moved or copied out of code/ is refused ('reserved') when a name below it is one only code/ holds,
+--    spelled as it would be stored: the unit is refused, not the change set (the entries' path check would abort it).
+-- Both functions are replaced whole. Neither is ever narrowed, so rows saved under the old rules stay valid. The commit
+-- (qorpera_folder_commit) is patched in place, and names this migration (20260930446100).
 
 set local lock_timeout = '3s';
+
+-- Applies each (old, new) pair in turn, each old text exactly once, then runs the result.
+create or replace function pg_temp.s5b_patch(p_target regprocedure, p_edits text[]) returns void language plpgsql as $$
+declare v_definition text := pg_get_functiondef(p_target); v_found integer;
+begin
+	for i in 1..cardinality(p_edits) / 2 loop
+		v_found := (length(v_definition) - length(replace(v_definition, p_edits[2 * i - 1], ''))) / length(p_edits[2 * i - 1]);
+		if v_found <> 1 then
+			raise exception 'Step 5b anchor found % time(s) in %, expected 1: %', v_found, p_target, left(p_edits[2 * i - 1], 80); end if;
+		v_definition := replace(v_definition, p_edits[2 * i - 1], p_edits[2 * i]);
+	end loop;
+	execute v_definition;
+end $$;
 
 -- 1. The reserved names. -----------------------------------------------------------------------------------------------
 
@@ -47,3 +63,19 @@ begin
 	return true;
 end
 $$;
+
+-- 3. A folder leaving code/. -------------------------------------------------------------------------------------------
+
+select pg_temp.s5b_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)', array[
+	$old$				where public.qorpera_folder_path_reserved(public.qorpera_folder_key(v_path || '/' || (c.value ->> 'path')))))) then
+$old$,
+	$new$				where public.qorpera_folder_path_reserved(public.qorpera_folder_key(v_path || '/' || (c.value ->> 'path')))))
+			-- 20260930446100 (step 5b): a folder moved or copied out of code/ takes no name only code/ holds ('%', ':', a
+			-- device name), each descendant spelled as it will be stored (qorpera_folder_apply_unit).
+			or (v_op in ('move','copy') and v_row.kind = 'folder'
+				and split_part(v_key, '/', 1) = 'code' and split_part(v_to_key, '/', 1) <> 'code'
+				and exists (select 1 from public.qorpera_folder_entries e
+					where e.environment_id = p_environment_id and e.kind <> 'claim'
+						and e.key_text like public.qorpera_folder_under(v_key)
+						and not public.qorpera_company_path_valid(v_eff_to || substr(e.path, char_length(v_row.path) + 1))))) then
+$new$]);

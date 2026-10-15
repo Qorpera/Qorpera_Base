@@ -108,6 +108,7 @@
 
 ### Changed
 
+- `parseCloudCompanyPath` takes under code/ (by the key's first name) the names only code/ holds: '%' and ':' in a name, and device names (F3 step 5b, part 1; `deploy/first-node/RUNTIME-FOLDER-CODING-MACHINES.md`, "Code areas and git"; migration `20260930446100`, SQL test 488). Elsewhere they stay refused. The new `parseCloudCompanyInnerPath(parent, path)` checks a new folder's content by its joined path, as the folder core does.
 - The human-task skill (`COMPANY_STATE_HUMAN_TASK_SKILL`) says when the asking agent is woken, as H2c (P31) wakes it: when someone else changes its task (done, declined, accepted, returned, cancelled, a new person, a hand-off to it) and once when the task is overdue, never for its own changes, and the Co-Founder in its place when it is gone.
 
 - The seeded Co-Founder's `agent.md` has no colour (it was `blue`), so the web shows its native gold crown and a member can still pick blue for it.
