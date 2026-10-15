@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # F3 4d-3: proof of option (c') for "Who makes the namespaces" (RUNTIME-FOLDER-COMPANY-MACHINES.md) in a disposable
 # nested VM with no NIC, on a prepared substrate like #1007's, not a built office image. The office and helper unit files
-# are copied as they are; scripts/fixtures/office-command-namespaces.py runs one offline and one networked command.
+# are copied as they are; scripts/fixtures/office-command-namespaces.py runs one offline and one networked command,
+# each once through its own stand-in for the helper's child and once through `qorpera-folder command` (4d-4a).
 #
 # node scripts/run-on-node.mjs --machine node01 --sudo --no-install --no-status -- \
 #   bash scripts/prove-office-command-namespaces-vm.sh </dev/null
@@ -133,7 +134,10 @@ sha() { sha256sum "$1" | awk '{print $1}'; }
 echo "Nested VM: $project/$vm UUID=$uuid image=$fingerprint folder=$folder_sha"
 
 dir="/run/qorpera-cmdns-$uuid"
-for mode in offline networked; do
+# Each mode twice: the probe's own A and B ("fixture"), then the real launcher in their place ("launcher").
+for run in fixture-offline fixture-networked launcher-offline launcher-networked; do
+	kind=${run%%-*}
+	mode=${run#*-}
 	lx exec "$vm" -- install -d -m 0755 "$dir"
 	lx file push "$probe" "$vm$dir/probe.py"
 	lx file push "$work/qorpera-folder" "$vm$dir/qorpera-folder"
@@ -145,20 +149,21 @@ for mode in offline networked; do
 		[[ $(lx exec "$vm" -- sha256sum "$dir/${pair%%:*}" | awk '{print $1}') == "${pair#*:}" ]] || fail "${pair%%:*} changed on its way into the guest"
 	done
 	timeout 240 lxc --force-local --project "$project" exec "$vm" -- systemd-run --quiet --wait --pipe --collect \
-		--unit "qorpera-cmdns-probe-$mode" --property RuntimeMaxSec=200 --property KillMode=control-group \
-		-- python3 "$dir/probe.py" probe "$dir" "$mode" </dev/null >"$work/$mode.json" || true
+		--unit "qorpera-cmdns-probe-$run" --property RuntimeMaxSec=200 --property KillMode=control-group \
+		-- python3 "$dir/probe.py" probe "$dir" "$mode" "$kind" </dev/null >"$work/$run.json" || true
 	lx exec "$vm" -- python3 "$dir/probe.py" cleanup "$dir" || true
-	jq -e . "$work/$mode.json" >/dev/null || { cat "$work/$mode.json" >&2; fail "$mode probe printed no record"; }
+	jq -e . "$work/$run.json" >/dev/null || { cat "$work/$run.json" >&2; fail "$run probe printed no record"; }
 done
 
 jq -n --arg image "$fingerprint" --arg uuid "$uuid" --arg folder "$folder_sha" \
 	--arg probe "$(sha "$probe")" --arg office "$(sha "$office")" --arg helper "$(sha "$helper")" \
 	--arg kernel "$(lx exec "$vm" -- uname -r)" --arg bwrap "$(lx exec "$vm" -- bwrap --version)" \
-	--slurpfile offline "$work/offline.json" --slurpfile networked "$work/networked.json" \
-	'{schema: "qorpera.office-command-namespaces.v2", imageKind: "prepared-substrate", image: $image, vmUuid: $uuid,
+	--slurpfile fo "$work/fixture-offline.json" --slurpfile fn "$work/fixture-networked.json" \
+	--slurpfile lo "$work/launcher-offline.json" --slurpfile ln "$work/launcher-networked.json" \
+	'{schema: "qorpera.office-command-namespaces.v3", imageKind: "prepared-substrate", image: $image, vmUuid: $uuid,
 	  kernel: $kernel, bwrap: $bwrap, sha256: {folderProgram: $folder, probe: $probe, officeUnit: $office, helperUnit: $helper},
-	  offline: $offline[0], networked: $networked[0],
-	  result: (if $offline[0].result == "passed" and $networked[0].result == "passed" then "passed" else "failed" end)}' \
+	  fixture: {offline: $fo[0], networked: $fn[0]}, launcher: {offline: $lo[0], networked: $ln[0]},
+	  result: (if [$fo[0], $fn[0], $lo[0], $ln[0]] | all(.result == "passed") then "passed" else "failed" end)}' \
 	>"$work/evidence.json"
-[[ $(jq -r .result "$work/evidence.json") == passed ]] || fail "a mode failed; see the evidence"
-echo "PASS: office command namespaces (option c'), offline and networked"
+[[ $(jq -r .result "$work/evidence.json") == passed ]] || fail "a run failed; see the evidence"
+echo "PASS: office command namespaces (option c'), offline and networked, by the probe's starter and by qorpera-folder command"
