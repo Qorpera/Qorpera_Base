@@ -1062,7 +1062,9 @@ export class ConversationView {
 			opener: element,
 			// The message is redrawn as it changes; focus goes back to the new one.
 			findOpener: () =>
-				this.#log.querySelector<HTMLElement>(`article.message[data-message-id="${CSS.escape(item.id)}"]`),
+				[...this.#log.querySelectorAll<HTMLElement>("article.message")].find(
+					(message) => message.dataset.messageId === item.id,
+				) ?? null,
 		});
 	}
 

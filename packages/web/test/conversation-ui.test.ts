@@ -386,7 +386,7 @@ describe("conversation UI boundaries", () => {
 		const opened = message.dispatchEvent(
 			new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }),
 		);
-		const menu = document.querySelector<HTMLElement>("[role=menu]");
+		const menu = document.querySelector<HTMLElement>(".context-menu");
 		return { offered: !opened, menu, items: [...(menu?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])] };
 	};
 	const notices = (root: ParentNode) => [...root.querySelectorAll(".notice")].map((item) => item.textContent);
@@ -431,7 +431,7 @@ describe("conversation UI boundaries", () => {
 		expect(first.menu?.getAttribute("aria-label")).toBe(`Message from ${named(messages()[0]!).author}`);
 		expect(first.items.map((item) => item.textContent)).toEqual(["Erase message"]);
 		first.menu!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-		expect(document.querySelector("[role=menu]")).toBeNull();
+		expect(document.querySelector(".context-menu")).toBeNull();
 		// The erased one and the one still on its way keep the browser's own menu.
 		expect(messageMenu(messages()[1]!).offered).toBe(false);
 		expect(messageMenu(messages()[2]!).offered).toBe(false);
