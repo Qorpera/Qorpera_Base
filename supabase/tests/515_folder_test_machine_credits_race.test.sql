@@ -162,7 +162,9 @@ begin
 end $$;
 
 -- C. Run B moves to a new job ...b3 while a credited save waits at its old job. The save does not hold the new job, so
--- the caller retries (409); the retry takes the new job and saves under run B.
+-- the caller retries (409); the retry takes the new job and saves under run B. No code moves a run's job today
+-- (qorpera_execution_runs.job_id never changes), so the rows are forged here to reach the retry guard: the old job
+-- gives up run B first, since a job's run_id is unique.
 do $$
 declare r jsonb; c public.qorpera_folder_commits; v_state text;
 begin
@@ -170,6 +172,8 @@ begin
 	perform * from dblink('fence_two', $q$select 1 from public.qorpera_runner_jobs where id = '51500000-0000-4000-8000-0000000000b2'
 		for update$q$) as t(x integer);
 	perform dblink_exec('fence_two', $q$set local session_replication_role = replica$q$);
+	perform dblink_exec('fence_two', $q$update public.qorpera_runner_jobs set run_id = null
+		where id = '51500000-0000-4000-8000-0000000000b2'$q$);
 	perform dblink_exec('fence_two', $q$insert into public.qorpera_runner_jobs(id, profile_id, environment_id, substrate_version_id,
 		client_job_id, required_capability, job_type, payload, created_by_user_id, status, runner_id, client_lease_id, lease_token_sha256,
 		lease_expires_at, run_id)
