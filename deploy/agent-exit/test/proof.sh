@@ -953,15 +953,15 @@ pass "a machine never reaches another company's resolver"
 ip netns exec plugged python3 -c 'import socket, time; s = socket.create_connection(("1.1.1.1", 8443)); time.sleep(600)' &
 pids+=($!)
 wait_for "shows 'dport=8443' ip netns exec qexit conntrack -L -s 10.210.1.2 2>/dev/null"
-resolver=$(resolver_pid 10002)
+resolver2=$(resolver_pid 10002)
 not_listed=$(counted refused_not_listed)
 python3 "$work/db.py" "$db" 'c1=only:only.test'
 wait_for "names_is \"s['reach'] == {'10.210.1.1': 'open', '10.210.1.2': 'only_10002'} and s['problems'] == []\""
 [[ $(reach_map) == "10.210.1.1:open 10.210.1.2:only_10002" ]] || fail "the reach map: $(reach_map)"
 [[ $(cat "$servers_dir/10002.mode") == only-listed ]] || fail "the mode file: $(cat "$servers_dir/10002.mode")"
 wait_for "asks plugged 10.210.0.1 unlisted.test NXDOMAIN"
-[[ $(resolver_pid 10002) != "$resolver" ]] || fail "the switch reloaded c1's resolver; it must restart it"
-resolver=$(resolver_pid 10002)
+[[ $(resolver_pid 10002) != "$resolver2" ]] || fail "the switch reloaded c1's resolver; it must restart it"
+resolver2=$(resolver_pid 10002)
 shows 'dport=8443' ip netns exec qexit conntrack -L -s 10.210.1.2 2>/dev/null && fail "a connection made before the switch goes on"
 refused_now plugged 1.1.1.1 443 || fail "an address no listed name gave reached"
 asks plugged 8.8.8.8 only.test NXDOMAIN || fail "a blocked name: $(ask_code plugged 8.8.8.8 only.test)"
@@ -982,12 +982,12 @@ pass "only listed: unlisted names are no such name; the machine reaches TCP 443 
 # A wider list reloads the resolver; a narrower one restarts it with its set emptied and ends the connections again.
 python3 "$work/db.py" "$db" 'c1=only:only.test+listed.test,more.test'
 wait_for "asks plugged 10.210.0.1 more.test 'NOERROR 1.1.1.1'"
-[[ $(resolver_pid 10002) == "$resolver" ]] || fail "a wider list restarted the resolver"
+[[ $(resolver_pid 10002) == "$resolver2" ]] || fail "a wider list restarted the resolver"
 shows 'dst=1.0.0.1 sport=[0-9]* dport=443' ip netns exec qexit conntrack -L -s 10.210.1.2 2>/dev/null ||
 	fail "a wider list ended a connection"
 python3 "$work/db.py" "$db" 'c1=only:only.test+more.test'
 wait_for "asks plugged 10.210.0.1 listed.test NXDOMAIN"
-[[ $(resolver_pid 10002) != "$resolver" ]] || fail "a narrower list only reloaded the resolver"
+[[ $(resolver_pid 10002) != "$resolver2" ]] || fail "a narrower list only reloaded the resolver"
 wait_for "names_is \"s['problems'] == [] and not __import__('os').path.exists('$servers_dir/10002.owed')\""
 shows 'dst=1.0.0.1 sport=[0-9]* dport=443' ip netns exec qexit conntrack -L -s 10.210.1.2 2>/dev/null &&
 	fail "a connection to an address no longer listed goes on"
@@ -1019,7 +1019,9 @@ done
 asks agent 10.210.0.1 open.test "NOERROR 1.1.1.1" || fail "c0's machine lost DNS"
 [[ $(reach_map) == "10.210.1.1:open" ]] || fail "the reach map with c1's rules not usable: $(reach_map)"
 refused_now plugged 1.1.1.1 443 || fail "c1's machine reached a site with its rules not usable"
-wait_for "grep -q '\"dst\":\"1.1.1.1\",\"event\":\"refused\".*\"rule\":\"rules_unknown\"' $log_file"
+# A flow refused once is logged once an hour: 443 to 1.1.1.1 was refused before (not listed), port 80 never was.
+refused_now plugged 1.1.1.1 80 || fail "c1's machine reached a site on port 80 with its rules not usable"
+wait_for "grep -q '\"dport\":80,\"dst\":\"1.1.1.1\",\"event\":\"refused\".*\"rule\":\"rules_unknown\"' $log_file"
 connects agent 1.1.1.1 443 || fail "c0's machine lost its way out"
 if bash "$tool" verify 2>"$work/verify.err"; then fail "verify passed with a company's rules not usable"; fi
 grep -q "names: c1: its rules are not as the rules reader writes them" "$work/verify.err" || fail "verify: $(cat "$work/verify.err")"
@@ -1076,6 +1078,8 @@ wait_for "bash $tool verify >/dev/null 2>&1"
 pass "without a rules file no machine has DNS or a way out; a rules reader silent for too long fails verify, its last rules stay"
 
 # A resolver that dies is started again on its port.
+resolver=$(resolver_pid 10001)
+[[ -n $resolver ]] || fail "c0's resolver is not running"
 kill "$resolver"
 wait_for "[[ -n \$(resolver_pid 10001) && \$(resolver_pid 10001) != $resolver ]]"
 wait_for "asks agent 10.210.0.1 blocked.test NXDOMAIN"
@@ -1420,7 +1424,6 @@ ip netns del qexit
 bash "$tool" up >/dev/null
 dns_is "10.210.1.1:10001" || fail "up did not fill the DNS map: $(dns_map) / $(dns_allowed)"
 [[ $(reach_map) == "10.210.1.1:open" ]] || fail "up did not fill the reach map: $(reach_map)"
-connects agent 1.1.1.1 443 || fail "the agent machine has no way out after up"
 for _ in $(seq 1 150); do grep -q "watches an old namespace" "$work/log.out" && break; sleep 0.2; done
 grep -q "watches an old namespace" "$work/log.out" || fail "the logger kept watching the old namespace: $(tail -3 "$work/log.out")"
 bash "$tool" verify 2>"$work/verify3.err" && fail "verify passed with the name service in the old namespace"
@@ -1441,7 +1444,8 @@ exit_mac=$(ip -n qexit -br link show br0 | awk '{print $3}')
 ip -n agent neigh replace 10.210.0.1 lladdr "$exit_mac" dev eth0 nud permanent
 asks agent 10.210.0.1 blocked.test NXDOMAIN ||
 	fail "c0's machine after the rebuild: $(ask_code agent 10.210.0.1 blocked.test)"
-pass "after an interrupted rebuild the logger leaves the old namespace by itself, verify fails until DNS follows, and a company's resolver left there is restarted into the new one"
+connects agent 1.1.1.1 443 || fail "the agent machine has no way out after the rebuild"
+pass "after an interrupted rebuild the logger leaves the old namespace by itself, verify fails until DNS follows, and a company's resolver left there is restarted into the new one; up filled reach and the machine goes out"
 
 # --- Fail closed -------------------------------------------------------------------------------------------------
 if bash "$tool" down 2>"$work/down.err"; then fail "down went ahead with a machine plugged in"; fi
