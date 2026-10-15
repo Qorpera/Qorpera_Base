@@ -154,6 +154,13 @@ async function fixture() {
 	};
 }
 
+/** The outside stops written next to the machine's journal, oldest first. */
+async function outsideStops(f: Awaited<ReturnType<typeof fixture>>) {
+	const root = join(f.journalRoot, f.value.machineId);
+	const names = (await readdir(root)).filter((name) => name.startsWith("outside-stop-")).sort();
+	return Promise.all(names.map(async (name) => JSON.parse(await readFile(join(root, name), "utf8"))));
+}
+
 async function retainedHistory(
 	f: Awaited<ReturnType<typeof fixture>>,
 	count: 381 | 384,
@@ -232,11 +239,13 @@ describe("a coding machine's journaled lifecycle", () => {
 	it("rolls over a disposable VM's full journal that ends with a start whose VM stopped by itself", async () => {
 		const f = await fixture();
 		const root = await retainedHistory(f, 381, "succeeded", "start");
-		const plan = { ...f.journal, disposable: true as const };
+		const plan = { ...f.journal, disposable: true as const, selfStops: undefined };
 		const reconcile = (desiredState: "running" | "stopped" | "deleted" = "running") =>
 			reconcileCodingMachine({ ...f.options, plan, desiredState });
-		// A coding machine never accepts that journal (a start after a start).
-		await expect(f.reconcile()).rejects.toThrow("CODING_MACHINE_JOURNAL_INVALID");
+		// A journal for a VM that never stops by itself never accepts it (a start after a start).
+		await expect(
+			reconcileCodingMachine({ ...f.options, plan: { ...f.journal, selfStops: undefined } }),
+		).rejects.toThrow("CODING_MACHINE_JOURNAL_INVALID");
 		expect((await reconcile()).state).toBe("pending");
 		expect(JSON.parse(await readFile(join(root, "segment-000001", "checkpoint.json"), "utf8"))).toMatchObject({
 			segment: 1,
@@ -350,16 +359,107 @@ describe("a coding machine's journaled lifecycle", () => {
 		expect(() => assertLxdCodingMachineInstance(f.value, storage, instance)).toThrow("CODING_MACHINE_DRIFTED");
 		await expect(f.reconcile()).rejects.toThrow("CODING_MACHINE_DRIFTED");
 	});
-	it("does not restart externally stopped VM using historical start evidence", async () => {
+	it("settles a member's machine that stopped by itself (the host watchdog, a node reboot) as stopped", async () => {
 		const f = await fixture();
-		await f.reconcile();
-		await f.reconcile();
-		await f.reconcile();
+		for (const expected of ["pending", "pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
 		const instance = f.instance();
 		if (!instance) throw new Error("missing fixture VM");
 		instance.status = "Stopped";
 		instance.statusCode = 102;
-		expect((await f.reconcile()).state).toBe("recovery-required");
+		// A VM that never stops by itself keeps the start's evidence for an operator.
+		expect(
+			(await reconcileCodingMachine({ ...f.options, plan: { ...f.journal, selfStops: undefined } })).state,
+		).toBe("recovery-required");
+		// A stop needs no effect; a run starts it again on the same disk.
+		expect((await f.reconcile("stopped")).state).toBe("stopped");
+		for (const expected of ["pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
+		// Stopped by itself again, it is deleted without a stop of its own.
+		instance.status = "Stopped";
+		instance.statusCode = 102;
+		for (const expected of ["pending", "deleted"]) expect((await f.reconcile("deleted")).state).toBe(expected);
+		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual([
+			"create",
+			"start",
+			"start",
+			"delete",
+		]);
+		// Each outside stop is written down once, after the start it ended, and numbered.
+		const started = async (sequence: number) =>
+			JSON.parse(
+				await readFile(join(f.journalRoot, f.value.machineId, `${String(sequence).padStart(6, "0")}.json`), "utf8"),
+			).operationId;
+		expect(await outsideStops(f)).toEqual([
+			{
+				schema: "qorpera.coding-machine-outside-stop/v1",
+				segment: 0,
+				sequence: 5,
+				operationId: await started(5),
+				count: 1,
+				observedAt: expect.any(String),
+			},
+			expect.objectContaining({ segment: 0, sequence: 8, operationId: await started(8), count: 2 }),
+		]);
+	});
+	it("waits for an operator once a member's machine stops by itself a fourth time within an hour", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			vi.setSystemTime(new Date("2026-10-15T08:00:00Z"));
+			const f = await fixture();
+			for (const expected of ["pending", "pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
+			const stopFromOutside = (at: string) => {
+				vi.setSystemTime(new Date(at));
+				const instance = f.instance();
+				if (!instance) throw new Error("missing fixture VM");
+				instance.status = "Stopped";
+				instance.statusCode = 102;
+			};
+			// Four outside stops spread over more than an hour: each time it is started again.
+			for (const at of ["2026-10-15T08:10:00Z", "2026-10-15T08:40:00Z", "2026-10-15T09:00:00Z", "2026-10-15T09:15:00Z"]) {
+				stopFromOutside(at);
+				for (const expected of ["pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
+			}
+			// A fifth makes four within the hour (08:40 to 09:30): the old rule, for every intent, and it stays.
+			stopFromOutside("2026-10-15T09:30:00Z");
+			for (const desired of ["running", "stopped", "deleted", "running"] as const)
+				expect((await f.reconcile(desired)).state).toBe("recovery-required");
+			vi.setSystemTime(new Date("2026-10-15T12:00:00Z"));
+			expect((await f.reconcile()).state).toBe("recovery-required");
+			expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(6);
+			expect((await outsideStops(f)).map(({ count, sequence, observedAt }) => [count, sequence, observedAt])).toEqual([
+				[1, 5, "2026-10-15T08:10:00.000Z"],
+				[2, 8, "2026-10-15T08:40:00.000Z"],
+				[3, 11, "2026-10-15T09:00:00.000Z"],
+				[4, 14, "2026-10-15T09:15:00.000Z"],
+				[5, 17, "2026-10-15T09:30:00.000Z"],
+			]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+	it("rolls over a member's full journal that ends with a start whose VM stopped by itself", async () => {
+		const f = await fixture();
+		const root = await retainedHistory(f, 381, "succeeded", "start");
+		expect((await f.reconcile()).state).toBe("pending");
+		expect(JSON.parse(await readFile(join(root, "segment-000001", "checkpoint.json"), "utf8"))).toMatchObject({
+			segment: 1,
+			previousEventCount: 381,
+		});
+		expect((await f.reconcile()).state).toBe("pending");
+		expect((await f.reconcile()).state).toBe("running");
+		expect((await f.reconcile("stopped")).state).toBe("pending");
+		expect((await f.reconcile("stopped")).state).toBe("stopped");
+		// The stop is written down once, after the start that ended the old segment.
+		expect(await outsideStops(f)).toEqual([expect.objectContaining({ segment: 0, sequence: 380, count: 1 })]);
+	});
+	it("never takes a member's VM that LXD shows in any other state for stopped", async () => {
+		const f = await fixture();
+		for (const expected of ["pending", "pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
+		const instance = f.instance();
+		if (!instance) throw new Error("missing fixture VM");
+		instance.status = "Starting";
+		instance.statusCode = 106;
+		expect((await f.reconcile("stopped")).state).toBe("recovery-required");
+		expect((await f.reconcile("deleted")).state).toBe("recovery-required");
 		expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(2);
 	});
 	it("rejects stale or mismatched admission before physical calls", async () => {
