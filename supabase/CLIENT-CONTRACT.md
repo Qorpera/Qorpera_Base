@@ -914,7 +914,7 @@ now, `key` the row's typed key (a JSON array, as the client's table parse gives 
   cell is already offered to `to`, with that open offer. A refusal is `{schema, ok: false, reason, message}`, show the
   message:
   - `gone`: "This table is gone." or "This row is gone.";
-  - `column`: "Only a member column that needs a yes can be offered." (also an area's `supervisor`);
+  - `column`: "Only a member column that needs a yes can be offered.";
   - `changed`: "That changed while you were looking." (the cell is not `was`);
   - `not_yours`: "Only the member it names can offer it.";
   - `member`: "Offer it to another member of the company.";
@@ -928,6 +928,43 @@ now, `key` the row's typed key (a JSON array, as the client's table parse gives 
   truncated}`, the open offers on live tables the caller may read, between members of the company, newest first, at
   most 500. Every member who reads the table sees its offers. Read it again after a folder change to the table and on
   focus; an offer settles with the save that changes its cell.
+
+### Supervision consent (20260930371000_interface_supervision)
+
+Folder-v2 companies only (Interfaces I9b; `deploy/first-node/RUNTIME-INTERFACES.md` §5.1 "Supervision"). A member
+supervises the agents of an area (a row of `tables/areas`) by consent: their own save of the areas' rows that puts them
+in a row's `supervisor` cell (a take, or an offer of the cell they accept) consents. While the consent is live, the
+agents the row's `agents` cell holds take and release claimed cells as that member. A `supervisor` cell with no live
+consent decides nothing: its agents act for no one. A consent ends `released` (a save leaves the cell naming someone
+else or no one), `gone` (the row deleted, or its key changed), `withdrawn` (its member's call below) or `left` (its
+member left the company); a save that keeps a cell its member had withdrawn consents to nothing, the consent call is the
+way back. A consent is `{id, table, folder, key, user, state, at, endedAt}`: `table` is the areas table's id, `folder`
+its folder, `key` the row's typed key (a JSON array, as the client's table parse gives it; null once ended), `user` the
+supervising member. Each call answers 42501 for a caller who is not a member of a folder-v2 company with that
+environment.
+
+- `qorpera_consent_interface_supervision(environment, {key})`: the member the row's `supervisor` cell names consents
+  again. Answers `{schema: "qorpera.interface-supervision/v1", ok: true, created, supervision}`; `created` is false
+  while a consent to that row is live, with that consent (a consent being withdrawn meanwhile is waited for, and a new
+  one made). A refusal is `{schema, ok: false, reason, message}`, show the
+  message: `gone` "This area is gone." (no such row, or the areas unreadable to the caller), `not_yours` "Only the
+  member it names as supervisor can consent.". A request of another shape is 22023 (`key` a non-empty array, at most
+  4,096 bytes), a paused or deleting company 55000.
+- `qorpera_withdraw_interface_supervision(environment, supervision)` (its member only): `{schema, ok: true, changed,
+  supervision}`; `changed` is false when the consent had already ended, with the consent as it is. The file is
+  unchanged. Anyone else gets 42501 "This supervision is not yours to withdraw", an unknown consent 22023. It works in
+  a paused company.
+- `qorpera_member_interface_supervisions(environment)`: `{schema: "qorpera.member-interface-supervisions/v1",
+  supervisions, truncated}`, the live consents of current members on the areas, when the caller may read them, newest
+  first, at most 500. Read it again after a folder change to `tables/areas` and on focus. A row whose `supervisor` cell
+  names a member with no consent here is waiting for theirs: offer them "Consent" when it names the caller.
+- Member notification `interface_supervision_ended` (subject
+  `qorpera.member-notification.interface-supervision-ended/v1`: `supervisionId, tableId, key (null when longer than
+  1,024 bytes), supervisorUserId, reason ('released'|'gone'|'withdrawn'|'left'), byUserId (null when no member ended
+  it), at`): a consent ended, told once to the company's owners and admins, the supervisor and the member the area's
+  `owner` named before the end (before the save, when a save ended it), each while a member who may read the areas,
+  never the member who ended it. A key the supervisor
+  changed in their own save that consents to the renamed row tells nobody.
 
 ### Chat images (20260930260000_chat_images)
 
