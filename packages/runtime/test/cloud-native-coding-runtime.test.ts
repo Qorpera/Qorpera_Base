@@ -692,7 +692,7 @@ describe("the coding composition of a native turn", () => {
 	});
 	it("takes a command the machine's stop from outside ended, and refuses a reason it does not know", () => {
 		const workerId = randomUUID(),
-			repository = { host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" };
+			repository = { host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" } as const;
 		const stopped = { commandId: randomUUID(), turn: 1, command: "npm run dev", reason: "MACHINE_STOPPED" };
 		const context = (reason: string) => ({
 			schema: "qorpera.coding-turn-context/v2",
