@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
+import { companyPathKey } from "@qorpera/cloud-client/company-state-files";
 import { type JsonValue, UUID_PATTERN } from "@qorpera/contracts";
 import {
 	type CloudCompanyFolderClient,
@@ -212,7 +213,7 @@ export function cloudFolderFileTools(options: {
 	};
 
 	/** One change set of one unit, under the call's receipt. */
-	const change = (
+	const change = async (
 		tool: MutationTool,
 		request: { operationKey: string; path: string },
 		target: Record<string, JsonValue>,
@@ -222,7 +223,7 @@ export function cloudFolderFileTools(options: {
 	): Promise<CloudToolContent> => {
 		// A commit no one can complete would fence this run's later operations: refuse before writing anything.
 		if (!operations.completesFolderCommits) throw new Error("This run cannot complete folder writes");
-		return operations.execute({
+		const content = await operations.execute({
 			operation: {
 				tool,
 				toolVersion: TOOL_VERSION,
@@ -258,6 +259,12 @@ export function cloudFolderFileTools(options: {
 			signal: context.signal,
 			...(context.observation ? { observation: context.observation } : {}),
 		});
+		// A change of the company's pages and tables shows in the run's conversation, with Undo (Interfaces I10): SQL
+		// notes each of the run's commits there once, a replay's too. Its failure is a folder error, never a refusal,
+		// so the call is unconfirmed: the same call again notes it.
+		if (/^(?:interfaces|tables)\//.test(companyPathKey(request.path)))
+			await folder.noteInterfaceChanges(context.signal);
+		return content;
 	};
 
 	const tools: CloudNativeTool[] = [

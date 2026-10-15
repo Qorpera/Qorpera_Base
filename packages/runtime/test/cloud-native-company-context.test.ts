@@ -1,4 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
+import {
+	COMPANY_STATE_COFOUNDER_HANDLE,
+	COMPANY_STATE_FIRST_TODO_PATH,
+	companyStateSeedTree,
+} from "@qorpera/cloud-client/company-state-files";
 import type { JsonValue } from "@qorpera/contracts";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
 import {
@@ -13,6 +18,7 @@ import {
 	parseCloudNativeCompanyContext,
 } from "@qorpera/runtime/cloud-native-company-context";
 import { CLOUD_TOOL_RESULT_INSTRUCTIONS, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { cloudRuntimeHireBehavior } from "@qorpera/runtime/cloud-runtime-hire-overlays";
 import { type CloudWakeKind, parseCloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { expect, it, vi } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
@@ -629,6 +635,49 @@ it.each(["cofounder", "employee"] as const)(
 		expect(encoded).not.toContain("\u202e");
 	},
 );
+
+it("points the Co-Founder at the company folder's own files, with no formation file or stages (P28b)", () => {
+	const cofounder = cloudRuntimeHireBehavior("cofounder");
+	// The paths the creation's seed tree writes (companyStateSeedTree, #749).
+	for (const path of ["vision/vision.md", "agents/sections.md", "agent.md"]) expect(cofounder).toContain(path);
+	// Jonas, 4 October 2026: the first job is the onboarding. The Co-Founder drafts the vision in its own words and
+	// revises it until every founder approves; only then does it write the file, close its first todo and propose hires.
+	expect(cofounder).toContain("Your first job is the onboarding: building the vision with the founders");
+	expect(cofounder).toContain("Read vision/vision.md first");
+	expect(cofounder).toContain("when it says nothing yet, say that you will shape it together");
+	expect(cofounder).toContain("write the whole vision in your own words, post it in the thread as a draft");
+	expect(cofounder).toContain("Revise it and post it again until every founder approves it");
+	expect(cofounder).toContain(
+		"Only then write it to vision/vision.md, with the company's name as its first line, and close your first todo, Start with the founders",
+	);
+	expect(cofounder).toContain("Then propose the first hires");
+	expect(cofounder).toContain("hire no one before the vision is agreed unless a founder asks you to");
+	expect(cofounder).not.toContain("blank page");
+	// Every path and the first todo's title it names are the seed tree's.
+	const seeded = companyStateSeedTree({
+		companyName: "Nordlys Kaffe",
+		cofounderId: "33333333-3333-4333-8333-333333333334",
+		firstTodo: { id: "44444444-4444-4444-8444-444444444445", requestedBy: null },
+	});
+	const paths = new Set(seeded.map((entry) => entry.path));
+	for (const path of ["vision/vision.md", "agents/sections.md"]) expect(paths.has(path)).toBe(true);
+	expect(paths.has(`agents/${COMPANY_STATE_COFOUNDER_HANDLE}/agent.md`)).toBe(true);
+	const todo = seeded.find((entry) => entry.path === COMPANY_STATE_FIRST_TODO_PATH);
+	expect(todo?.text).toContain("title: Start with the founders");
+	expect(todo?.text).toContain("Done when every founder has agreed their part of the vision.");
+	// Stage keys such as "research" are ordinary words; the snapshot-v1 formation file's stage list, schema and
+	// paths are not.
+	for (const overlay of [cofounder, cloudRuntimeHireBehavior("employee")]) {
+		for (const key of [
+			"source_inventory, discovery, research, vision_proposal, goals_ratified, responsibility_map, operating",
+			"stage keys",
+			"qorpera.company-formation/v1",
+			"formation.json",
+			"organization/",
+		])
+			expect(overlay).not.toContain(key);
+	}
+});
 
 it("keeps a large hire charter pageable with its admitted hash rather than silently dropping job instructions", async () => {
 	const f = nativeCompanyContextFixture();

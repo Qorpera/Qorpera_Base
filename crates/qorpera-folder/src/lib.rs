@@ -13,4 +13,5 @@ pub mod relay;
 pub mod transport;
 pub mod tree;
 pub mod versions;
+pub mod viewfile;
 pub mod writer;
