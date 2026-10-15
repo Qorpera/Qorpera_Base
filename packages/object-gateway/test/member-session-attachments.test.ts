@@ -164,7 +164,6 @@ async function fixture() {
 			authority: objects,
 			replication,
 			controlToken: "synthetic-control",
-			verifierToken: "synthetic-verifier",
 			memberFiles: { member, publisher },
 		}),
 	);
@@ -260,7 +259,7 @@ describe("a member's chat images on folder-v2", () => {
 		service.state.posted = true;
 		expect((await service.request("input", null)).status).toBe(403);
 	});
-	it.each(["synthetic-control", "synthetic-verifier", "synthetic-native", "other-member"])(
+	it.each(["synthetic-control", "synthetic-native", "other-member"])(
 		"does not accept %s as member authority",
 		async (bearer) => {
 			const service = await fixture();

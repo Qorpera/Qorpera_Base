@@ -248,6 +248,7 @@ describe("public member Company File gateway", () => {
 			404,
 		],
 		["a snapshot-v1 upload", request(`/v1/member-company-file/${id}/uploads`, { method: "PUT", body: "x" }), 404],
+		["a member file export", request(`/v1/member-file-exports/${id}/${id}/${"b".repeat(64)}`), 404],
 	] as const)
 		it(`rejects ${name} before forwarding`, async () => {
 			const response = await forwardMemberCompanyGateway(req, {
@@ -391,19 +392,16 @@ describe("public member Company File gateway", () => {
 		);
 		assert.equal(response.status, 200);
 	});
-	for (const path of [
-		`/v1/member-folder-objects/${id}/${"b".repeat(64)}`,
-		`/v1/member-file-exports/${id}/${id}/${"b".repeat(64)}`,
-	])
-		it(`supports governed read route ${path.split("/")[2]}`, async () => {
-			assert.equal(
-				(
-					await forwardMemberCompanyGateway(request(path), {
-						upstreamUrl,
-						fetchImplementation: async () => new Response("ok"),
-					})
-				).status,
-				200,
-			);
-		});
+	it("supports the governed folder object read route", async () => {
+		const path = `/v1/member-folder-objects/${id}/${"b".repeat(64)}`;
+		assert.equal(
+			(
+				await forwardMemberCompanyGateway(request(path), {
+					upstreamUrl,
+					fetchImplementation: async () => new Response("ok"),
+				})
+			).status,
+			200,
+		);
+	});
 });
