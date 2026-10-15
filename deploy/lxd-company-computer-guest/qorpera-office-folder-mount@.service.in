@@ -7,6 +7,10 @@ Type=exec
 # The helper made the state folder empty, and the mountpoint inside a parent it bound onto itself and shared: a
 # desktop's or a command's namespace binds the parent, so a mount made again reaches it. The office account reaches
 # the mount (allow_other) and owns what it writes; the view file and the state folder stay root's.
+# A kill of the whole cgroup (systemctl kill, systemd-oomd) also kills the ExecStopPost umount below, which systemd
+# forks into that cgroup: the dead mount stays, and the program would meet ENOTCONN on it (Q3, #1084). Take it away
+# first; with no mount there, umount fails and the `-` ignores that.
+ExecStartPre=-/usr/bin/umount -l /run/qorpera-folder/mounts/%i/company
 ExecStart=/opt/qorpera-folder/qorpera-folder mount --view-file /run/qorpera-folder/views/%i.json --mountpoint /run/qorpera-folder/mounts/%i/company --state-dir /run/qorpera-folder/state/%i --allow-other yes --owner-uid @OFFICE_UID@ --owner-gid @OFFICE_GID@
 # A program killed hard leaves its mount behind; take it away.
 ExecStopPost=-/usr/bin/umount -l /run/qorpera-folder/mounts/%i/company
