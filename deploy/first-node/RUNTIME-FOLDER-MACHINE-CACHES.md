@@ -39,8 +39,8 @@ On any machine that carries the folder, `npm install`, `pip install` into a virt
 and the like work in `/company` at the speed of a local disk. What they make is the machine's own: it is never
 published, other machines and views see nothing of it, and the web app, `company_list`, `company_search` and the
 history never show it. In a git repository, a file or folder that git ignores stays on the machine too, unless git
-tracks it. The cache outlives the mount and the command, so the next command on the machine does not install again.
-Old caches are removed when unused or when the disk runs short.
+tracks it. The cache outlives the mount and the command, so the next command in that folder on the machine does not
+install again. Old caches are removed when unused or when the disk runs short.
 
 ## The rules
 
@@ -115,18 +115,29 @@ is never under `/run`, which empties at every start and is memory.
   again when another view finds them). The cache moves out of it, because a cache is shared by several mounts and a
   session's git files are not.
 - **Who passes it** is the trusted side that starts the program: on company machines the folder helper
-  (`cloud-company-computer-folder-helper.ts`, step 4), on coding machines the coding setup (step 5), on test machines
-  6d's guest. Without the flag, the program keeps its cache under `--local-dir`, for that mount only (5d's behaviour).
+  (`cloud-company-computer-folder-helper.ts`, step 4), on coding machines the guest agent (step 5's 5f and 5g), on test
+  machines 6d's guest. Without the flag, the program keeps its cache under `--local-dir`, for that mount only (5d's
+  behaviour).
+- **Coding machines** (step 5's plan, from its owner on 15 October): the guest agent starts one folder program per
+  session, each with its own uid and worktree (`worktrees/<worker>/`), and gives each its own `--local-dir`,
+  `/var/lib/qorpera-folder/local/<worker>`. A member's parallel sessions run their programs at once on the one
+  machine. They share the machine's `--cache-dir`.
 - **The key.** Company machines carry many owners: desktop holders change, and every offline command gets a view and
   a mount of its own (4b). A cache made from one owner's files must not show in a view of another owner with a
   narrower authority. So:
   - **company machines:** one cache per owner on the machine: `/var/lib/qorpera-folder/cache/<owner>`, where the
     owner is the agent of an agent's view, or the member of a member's view. A desktop's mount and all of one agent's
     commands share it, so `npm install` in one command and `npm test` in the next work as on one disk;
-  - **coding and test machines:** one cache per machine. Root inside the machine already joins its sessions (contract
-    item 11, "Root makes one member's sessions on one machine no walls between each other"), so walls between their
-    caches would protect nothing;
+  - **coding and test machines:** one cache per machine, `/var/lib/qorpera-folder/cache/machine`. Root inside the
+    machine already joins its sessions (contract item 11, "Root makes one member's sessions on one machine no walls
+    between each other"), so walls between their caches would protect nothing;
   - decision 1 below keeps company machines on one cache per owner.
+- **A cache is kept at its path.** A `node_modules` made in one folder serves that folder only. A command on a company
+  machine that works in the folder the last one worked in finds it. A new coding session works in a new worktree, so
+  it installs again, as a new git worktree on a local disk does; the package managers' own stores in the user's home
+  on the machine (npm's, pip's, cargo's) keep that install off the network. `.pnpm-store` at the top of `/company` is
+  one per cache, so pnpm's sessions share it. A cache kept by content (a lockfile's hash, say) to carry
+  `node_modules` from one worktree to the next is not in this plan.
 - **Several mounts at once.** Several folder programs can serve one cache folder at a time (a desktop and two commands
   of one agent). So a cache file has no kernel cache of its own (time-outs of zero for its names and attributes, and
   no kept pages), and every request reaches the program, which asks the disk. A process sees what another mount wrote
