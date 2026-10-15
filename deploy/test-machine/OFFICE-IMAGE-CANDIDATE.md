@@ -30,7 +30,8 @@ the VM it waits until the test machine has 6 GiB available, so the 4 GiB VM neve
 3. In the VM, [`install-office-image-dependencies.sh`](../lxd-company-computer-guest/install-office-image-dependencies.sh)
    installs them offline: the debs, Node.js under `/usr` (one `/usr/bin/node`), Chrome for Testing at
    `/usr/lib/qorpera-chromium`, uv, mise and `fd`. It masks the self-update units and turns swap off for good. Then
-   it runs every toolbox check as root.
+   it runs every toolbox check as root, and `fusermount3 --version`: FUSE is root's (the folder helper mounts), so it
+   is not in the toolbox.
 4. The office package installer runs from the checkout's package ([`INSTALLATION.md`](../lxd-company-computer-guest/INSTALLATION.md)):
    `--measure-dependencies`, a spec for uid and gid 20045 (the A1 office account), `--check`, then `--apply`. It
    leaves the office service disabled.
@@ -38,7 +39,9 @@ the VM it waits until the test machine has 6 GiB available, so the 4 GiB VM neve
    account in a `systemd-run` unit carrying the installed office unit's 31 confinement and limit settings. It starts a
    computer's shell host, which runs the image's `/usr/bin/node` through its read-only `/usr` and refuses any
    capability, a missing `no_new_privs` or limits above the office unit's. The shell finds that Node.js and no swap,
-   then runs every toolbox check of the recipe; each must exit 0 and print a version.
+   then runs every toolbox check of the recipe; each must exit 0 and print a version. The build fails on any AppArmor
+   `file_inherit` denial while the probe runs: a confined program whose profile has no unix rule loses the shell's
+   output socket on exec, and then exits 0 and prints nothing.
 6. It checks that the office service is still installed, disabled and never started. The node's activation starts it
    (preparation, then the service-start request); its credentials exist only once preparation writes them for a boot.
 7. It removes the build inputs, cleans cloud-init and the journal, stops the VM and publishes the candidate in the
@@ -57,11 +60,15 @@ them.
 
 The evidence between `OFFICE_IMAGE_CANDIDATE_EVIDENCE_BEGIN` and `OFFICE_IMAGE_CANDIDATE_EVIDENCE_END` gives the base
 and candidate fingerprints, the stage path, the recipe and package manifest hashes, the size of the apt closure, the
-installer's dependency measurements, the toolbox's first lines as root and from the shell, and the office unit's state.
+installer's dependency measurements, the toolbox's first lines as root and from the shell, root's `fusermount3`
+version, the AppArmor denials while the probe ran, and the office unit's state.
 
 ## What it does not cover
 
 - Until 4e-2, the image has no folder program, helper or folder units.
+- A program under an enforcing AppArmor profile without unix rules (Ubuntu's `fusermount3` is one) prints nothing
+  from a computer's shell, because the shell host's pipes are UNIX sockets. No toolbox program has such a profile;
+  the shell host's side is product design, outside this slice.
 - The installer's measurements pin the office's own executables, not the toolbox. The recipe pins the inputs and the
   candidate's fingerprint pins the result.
 - Provenance and signing are unchanged; the coordinator's release of the real image covers them.

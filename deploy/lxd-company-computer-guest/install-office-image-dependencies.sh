@@ -106,3 +106,7 @@ for check in "${checks[@]}"; do
 	out=$(PATH=/usr/local/bin:/usr/bin:/bin HOME="$work/home" $check 2>&1) || fail "$check failed: $out"
 	echo "toolbox: $check: ${out%%$'\n'*}"
 done
+# FUSE is root's: the folder helper mounts, and a computer's shell can mount nothing, so it is not in the toolbox.
+out=$(fusermount3 --version 2>&1) || fail "fusermount3 --version failed: $out"
+[[ $out == "fusermount3 version: "* ]] || fail "fusermount3 --version: $out"
+echo "folder: fusermount3 --version: $out"

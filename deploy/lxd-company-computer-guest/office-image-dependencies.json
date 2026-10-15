@@ -120,7 +120,6 @@
     ["zip", "--version"],
     ["unzip", "-v"],
     ["soffice", "--version"],
-    ["libreoffice", "--version"],
-    ["fusermount3", "--version"]
+    ["libreoffice", "--version"]
   ]
 }
