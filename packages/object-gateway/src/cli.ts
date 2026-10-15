@@ -9,6 +9,7 @@ import { ObjectGatewayFolderGc } from "./folder-gc.ts";
 import { ObjectGatewayJournal } from "./journal.ts";
 import { SupabaseMemberCompanyAuthority } from "./member-company-authority.ts";
 import { MemberCompanyObservations } from "./member-observability.ts";
+import { MemoryMessageEraser } from "./memory-message-eraser.ts";
 import { migrateLegacyObjects } from "./migration.ts";
 import { FileSystemObjectStore } from "./object-store.ts";
 import { ObjectReadLeases } from "./read-lease.ts";
@@ -69,6 +70,20 @@ const codingResults =
 	process.env.QORPERA_CODING_RESULTS_WRITER === "1"
 		? new CodingResultsWriter({
 				workerId: process.env.QORPERA_CODING_RESULTS_WORKER_ID?.trim() || randomUUID(),
+				authority: new SupabaseMemberCompanyAuthority({
+					projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
+					publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
+					secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
+				}),
+				store,
+				replication,
+			})
+		: undefined;
+// The memory message eraser (M3): off unless QORPERA_MEMORY_MESSAGE_ERASER=1; the coordinator turns it on. Its own
+// database client and its own loop, as the connection-file writer's.
+const memoryErase =
+	process.env.QORPERA_MEMORY_MESSAGE_ERASER === "1"
+		? new MemoryMessageEraser({
 				authority: new SupabaseMemberCompanyAuthority({
 					projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
 					publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
@@ -209,6 +224,23 @@ if (process.argv[2] === "migrate") {
 	const codingResultsWrites = setInterval(() => {
 		void writeCodingResults();
 	}, 5_000);
+	// The memory message eraser's own loop, every 5 s, as the coding results writer's: one pass at a time, at most ten
+	// erases and 30 s per tick.
+	let erasing = false;
+	const eraseMemoryMessages = async (): Promise<void> => {
+		if (!memoryErase || erasing) return;
+		erasing = true;
+		try {
+			await memoryErase.eraseDue(10, AbortSignal.timeout(30_000));
+		} catch {
+			process.stderr.write("Memory message eraser requires operator attention\n");
+		} finally {
+			erasing = false;
+		}
+	};
+	const memoryErasures = setInterval(() => {
+		void eraseMemoryMessages();
+	}, 5_000);
 	// Company creation's own loop: one drain at a time, at most five companies and 120 s per tick.
 	let creating = false;
 	const createCompanies = async (): Promise<void> => {
@@ -234,6 +266,7 @@ if (process.argv[2] === "migrate") {
 			clearInterval(maintenance);
 			clearInterval(connectionFileWrites);
 			clearInterval(codingResultsWrites);
+			clearInterval(memoryErasures);
 			clearInterval(companyCreations);
 			server.close(() => process.exit(0));
 		});
