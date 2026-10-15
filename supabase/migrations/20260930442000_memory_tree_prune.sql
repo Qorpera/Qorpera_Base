@@ -14,14 +14,14 @@
 --    prune takes it. A company being deleted is passed over; its own GC takes everything.
 -- 3. pg_cron runs a batch every minute. The prune commits nothing and writes no folder history.
 --
--- The erasure step's patched body carries the marker 20260930321000 (M3b) for the deploy guard.
+-- The erasure step's patched body carries the marker 20260930442000 (M3b) for the deploy guard.
 
 set local lock_timeout = '3s';
 
 -- A second run stops here, before anything changes.
 do $$ begin
 	if to_regprocedure('public.qorpera_memory_tree_prune(integer)') is not null then
-		raise exception 'Memory tree prune (20260930321000) is already applied'; end if;
+		raise exception 'Memory tree prune (20260930442000) is already applied'; end if;
 end $$;
 
 create function pg_temp.m3b_replace(p_function regprocedure, p_old text, p_new text)
@@ -105,7 +105,7 @@ select pg_temp.m3b_replace('public.qorpera_folder_erasure_step(integer,integer,i
 	'\t\t\t\torder by h collate "C"\n'
 	'\t\t\t\ton conflict (profile_id, sha256) do update\n'
 	'\t\t\t\tset unreferenced_since = greatest(public.qorpera_folder_object_gc.unreferenced_since, excluded.unreferenced_since);\n',
-	E'\t\t\t\t-- 20260930321000 (M3b): the bytes step, shared with the memory tree prune.\n'
+	E'\t\t\t\t-- 20260930442000 (M3b): the bytes step, shared with the memory tree prune.\n'
 	'\t\t\t\tperform public.qorpera_folder_object_release(v_erasure.profile_id, v_hashes);\n');
 
 -- 3. The prune ---------------------------------------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 -- @fixture 961_memory_message_erase_roots.test.sql until "-- 2. Step 1 under the new root"
--- Summary trees M3b (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §10, GC; 20260930321000): the 7-day prune of
+-- Summary trees M3b (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §10, GC; 20260930442000): the 7-day prune of
 -- replaced tree versions, on 961's Nora (her folder renamed, so her tree's files start at the new root with a move_in).
 -- A block version replaced by a write at least 7 days old is pruned with its bytes. Kept: the current version, one
 -- replaced less than 7 days ago, a life's first version (here the move_in), the last version before a delete, both rows

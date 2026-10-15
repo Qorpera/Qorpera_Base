@@ -1,5 +1,5 @@
 -- @fixture 942_memory_tree_generation.test.sql until "-- A. An erase holds Nora's conversation"
--- Summary trees M3b (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §10 GC; 20260930321000) against the upload intent
+-- Summary trees M3b (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §10 GC; 20260930442000) against the upload intent
 -- sweeper (C1D §9.5), on 942's committed company. An intent expired between 1 and 24 hours ago roots its bytes, and the
 -- sweep removes it. The prune takes the intents that root the bytes it releases FOR KEY SHARE before its checks: a sweep
 -- holding the intent makes the prune wait and read it gone, so the prune queues the bytes; a prune holding it makes the

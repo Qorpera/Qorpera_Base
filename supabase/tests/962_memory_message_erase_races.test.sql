@@ -1,5 +1,5 @@
 -- @fixture 944_memory_zoom_erase_race.test.sql until "-- A. The erase first"
--- Summary trees M3 (RUNTIME-AGENT-MEMORY-TREE.md §10; 20260930320000) under concurrency, on 944's committed thread. Step 1
+-- Summary trees M3 (RUNTIME-AGENT-MEMORY-TREE.md §10; 20260930441000) under concurrency, on 944's committed thread. Step 1
 -- takes the conversation's session FOR UPDATE and reads receipts in a later statement; a zoom stores its receipt, then
 -- takes the session FOR SHARE. So an erase first makes the zoom wait and read the erased event (its run is not the
 -- erase's), and a zoom first makes step 1 wait and record the zoom's run. Step 4's scrub takes each operation receipt

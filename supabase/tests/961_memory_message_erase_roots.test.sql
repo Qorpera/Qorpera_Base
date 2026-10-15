@@ -1,5 +1,5 @@
 -- @fixture 960_memory_message_erase.test.sql until "-- 1. The helpers: an entry"
--- Summary trees M3 (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §10; 20260930320000): a message's erase across its
+-- Summary trees M3 (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §10; 20260930441000): a message's erase across its
 -- owner's life. A member's message with an image, its agent renamed first (the tree and the image under an earlier root),
 -- its agent deleted (no root, nothing to rewrite), its agent hired again; a later erase of the conversation, a block live
 -- again, another request at a block's key, a member who is no longer an owner or admin, and an image written before

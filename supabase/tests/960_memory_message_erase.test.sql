@@ -1,5 +1,5 @@
 -- @fixture 700_folder_state_vision_agents.test.sql until "-- 2. The vision: a new name"
--- Summary trees M3 (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §10; 20260930320000): a message's erase, steps 1 to 4.
+-- Summary trees M3 (deploy/first-node/RUNTIME-AGENT-MEMORY-TREE.md §10; 20260930441000): a message's erase, steps 1 to 4.
 -- The helpers; a request and its refusals; step 1 in one memory commit (the event and its input blanked, the candidate
 -- blocks deleted with their other lines kept, the run table); step 2's plan and rewrite; step 3's block-history requests;
 -- step 4's scrub of the receipts; the readers after an erase; and the privileges.

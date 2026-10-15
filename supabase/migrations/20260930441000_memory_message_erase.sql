@@ -21,14 +21,14 @@
 -- 6. The readers: a parent entry id, a context source and a history line treat an erased body as opaque.
 --
 -- The runtime's memory eraser drives the steps (qorpera_memory_message_erase_due). Every patched body carries the marker
--- 20260930320000 (M3) for the deploy guard.
+-- 20260930441000 (M3) for the deploy guard.
 
 set local lock_timeout = '3s';
 
 -- A second run stops here, before anything changes.
 do $$ begin
 	if to_regprocedure('public.qorpera_memory_message_erase_request(uuid,uuid,uuid,uuid)') is not null then
-		raise exception 'Memory message erase (20260930320000) is already applied'; end if;
+		raise exception 'Memory message erase (20260930441000) is already applied'; end if;
 end $$;
 
 create function pg_temp.m3_replace(p_function regprocedure, p_old text, p_new text)
@@ -382,14 +382,14 @@ select pg_temp.m3_replace('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uu
 	|| E'\tv_targets := v_targets || public.qorpera_folder_memory_targets(p_environment_id, p_operation_key);\n',
 	E'\t-- 20260930110000 (M1a): a memory commit''s generations (rank 11, FOR SHARE).\n'
 	|| E'\tv_targets := v_targets || public.qorpera_folder_memory_targets(p_environment_id, p_operation_key);\n'
-	|| E'\t-- 20260930320000 (M3): a message erase''s member, C''s owner row and C''s session row.\n'
+	|| E'\t-- 20260930441000 (M3): a message erase''s member, C''s owner row and C''s session row.\n'
 	|| E'\tv_targets := v_targets || public.qorpera_memory_message_erase_targets(p_environment_id, p_operation_key);\n');
 select pg_temp.m3_replace('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
 	E'\t-- Rank 11: the sessions the apply step writes (the hook''s), FOR UPDATE in id order (C1C §5.6).\n'
 	|| E'\tperform public.qorpera_folder_lock_sessions(p_environment_id, v_targets);\n',
 	E'\t-- Rank 11: the sessions the apply step writes (the hook''s), FOR UPDATE in id order (C1C §5.6).\n'
 	|| E'\tperform public.qorpera_folder_lock_sessions(p_environment_id, v_targets);\n'
-	|| E'\t-- 20260930320000 (M3): a message erase''s step 1, or its rewrite''s check, under the session row.\n'
+	|| E'\t-- 20260930441000 (M3): a message erase''s step 1, or its rewrite''s check, under the session row.\n'
 	|| E'\tperform public.qorpera_memory_message_erase_hook(p_environment_id, p_operation_key, p_units);\n');
 
 -- 4. Readers of an erased event ---------------------------------------------------------------------------------------
@@ -398,27 +398,27 @@ select pg_temp.m3_replace('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uu
 -- run context reads its text as (erased). Room posts never erase, so their readers stay as they are.
 select pg_temp.m3_replace('public.qorpera_append_admitted_input_events(uuid,uuid[])'::regprocedure,
 	E'\tselect event.sequence, event.event_hash, event.body #>> ''{entry,id}''\n',
-	E'\t-- 20260930320000 (M3): an erased event keeps its entry id, its event id.\n'
+	E'\t-- 20260930441000 (M3): an erased event keeps its entry id, its event id.\n'
 	|| E'\tselect event.sequence, event.event_hash, public.qorpera_memory_entry_id(event.body, event.event_id)\n');
 select pg_temp.m3_replace('public.qorpera_append_runner_transcript_event(uuid,text,uuid,text,uuid,uuid,text,jsonb,bigint)'::regprocedure,
 	E'\t\t\t\tand parent.body #>> ''{entry,id}'' = p_body #>> ''{entry,parentId}''\n',
-	E'\t\t\t\t-- 20260930320000 (M3): an erased parent keeps its entry id, its event id.\n'
+	E'\t\t\t\t-- 20260930441000 (M3): an erased parent keeps its entry id, its event id.\n'
 	|| E'\t\t\t\tand public.qorpera_memory_entry_id(parent.body, parent.event_id) = p_body #>> ''{entry,parentId}''\n');
 select pg_temp.m3_replace('public.qorpera_folder_append_transcript_event(public.qorpera_execution_runs,uuid,uuid,text,jsonb)'::regprocedure,
 	E'\t\t\twhere parent.session_id = v_session.id and parent.body #>> ''{entry,id}'' = p_body #>> ''{entry,parentId}'')\n',
-	E'\t\t\t-- 20260930320000 (M3): an erased parent keeps its entry id, its event id.\n'
+	E'\t\t\t-- 20260930441000 (M3): an erased parent keeps its entry id, its event id.\n'
 	|| E'\t\t\twhere parent.session_id = v_session.id\n'
 	|| E'\t\t\t\tand public.qorpera_memory_entry_id(parent.body, parent.event_id) = p_body #>> ''{entry,parentId}'')\n');
 select pg_temp.m3_replace(f::regprocedure,
 	E'\t\tselect event.body #>> ''{entry,id}'' into v_parent from public.qorpera_session_events as event\n',
-	E'\t\t-- 20260930320000 (M3): an erased event keeps its entry id, its event id.\n'
+	E'\t\t-- 20260930441000 (M3): an erased event keeps its entry id, its event id.\n'
 	|| E'\t\tselect public.qorpera_memory_entry_id(event.body, event.event_id) into v_parent\n'
 	|| E'\t\tfrom public.qorpera_session_events as event\n')
 from unnest(array['public.qorpera_folder_append_interaction_request(jsonb,uuid,jsonb)',
 	'public.qorpera_record_action_review(jsonb,jsonb)']) f;
 select pg_temp.m3_replace(f::regprocedure,
 	E'\tselect coalesce(event.body #>> ''{entry,id}'', event.body ->> ''entryId'') into v_parent_id\n',
-	E'\t-- 20260930320000 (M3): an erased event keeps its entry id, its event id.\n'
+	E'\t-- 20260930441000 (M3): an erased event keeps its entry id, its event id.\n'
 	|| E'\tselect coalesce(public.qorpera_memory_entry_id(event.body, event.event_id), event.body ->> ''entryId'') into v_parent_id\n')
 from unnest(array['public.qorpera_folder_send_agent_message(jsonb,text,text,text)',
 	'public.qorpera_send_runner_agent_message(uuid,text,uuid,text,uuid,text,text,text)']) f;
@@ -431,18 +431,18 @@ select pg_temp.m3_replace('public.qorpera_send_runner_agent_message(uuid,text,uu
 select pg_temp.m3_replace('public.qorpera_folder_send_coworker_message(jsonb,uuid,text,text,boolean)'::regprocedure,
 	E'\t\tselect event.body #>> ''{entry,id}'' into v_parent_entry from public.qorpera_session_events event\n'
 	|| E'\t\twhere event.session_id = v_pair and event.body #>> ''{entry,id}'' is not null order by event.sequence desc limit 1;\n',
-	E'\t\t-- 20260930320000 (M3): an erased event keeps its entry id, its event id.\n'
+	E'\t\t-- 20260930441000 (M3): an erased event keeps its entry id, its event id.\n'
 	|| E'\t\tselect public.qorpera_memory_entry_id(event.body, event.event_id) into v_parent_entry\n'
 	|| E'\t\tfrom public.qorpera_session_events event where event.session_id = v_pair\n'
 	|| E'\t\t\tand public.qorpera_memory_entry_id(event.body, event.event_id) is not null order by event.sequence desc limit 1;\n');
 select pg_temp.m3_replace('public.qorpera_company_context_source(public.qorpera_execution_runs,text,uuid)'::regprocedure,
 	E'\t\t\tcase when jsonb_typeof(v_input.body -> ''text'') = ''string'' then v_input.body ->> ''text'' else v_input.body::text end);\n',
-	E'\t\t\t-- 20260930320000 (M3): an erased message reads (erased).\n'
+	E'\t\t\t-- 20260930441000 (M3): an erased message reads (erased).\n'
 	|| E'\t\t\tcase when v_input.body = ''{"erased":true}''::jsonb then ''(erased)''\n'
 	|| E'\t\t\t\twhen jsonb_typeof(v_input.body -> ''text'') = ''string'' then v_input.body ->> ''text'' else v_input.body::text end);\n');
 select pg_temp.m3_replace('public.qorpera_company_context_source(public.qorpera_execution_runs,text,uuid)'::regprocedure,
 	E'\t\tv_text := v_event.body::text;\n',
-	E'\t\t-- 20260930320000 (M3): an erased event reads (erased).\n'
+	E'\t\t-- 20260930441000 (M3): an erased event reads (erased).\n'
 	|| E'\t\tv_text := case when v_event.body = ''{"erased":true}''::jsonb then ''(erased)'' else v_event.body::text end;\n');
 
 -- 5. The request, its status and the eraser's queue -------------------------------------------------------------------
