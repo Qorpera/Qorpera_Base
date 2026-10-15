@@ -193,8 +193,10 @@ interface Host {
 /** The coding executor's code hosts on its node. A company's jobs share its code host: the first starts it (and
  * makes its project and VM when missing, or the VM again when made under another policy), and it stops
  * `idleStopMs` after the last. At most the policy's `running` are started at once: a job for another company
- * stops the least recently used idle one, else waits its turn. The executor only ever touches projects named like
- * a code host's, and refuses (logs, touches nothing) one whose settings differ or that holds anything else. */
+ * stops the least recently used idle one, else waits its turn. A code host counts against `running` until its stop
+ * is confirmed. The executor only ever touches projects named like a code host's, and refuses (logs, touches
+ * nothing) one whose settings differ or that holds anything else, checked again before every stop: a refused
+ * project's code host keeps its start. */
 export class LxdCodeHosts {
 	readonly #client: LxdCodeHostClient;
 	readonly #policy: Readonly<CodeHostPolicy>;
@@ -239,7 +241,8 @@ export class LxdCodeHosts {
 	}
 
 	/** At the executor's start: every code host still started is stopped, since one without its executor would keep
-	 * its views open, and one made under another policy goes. Returns how many were stopped. */
+	 * its views open, and one made under another policy goes. Returns how many were stopped. One that may still run
+	 * (its stop failed, or its project is refused) counts against `running`, and its stop is tried again later. */
 	async housekeep(signal: AbortSignal): Promise<number> {
 		let stopped = 0;
 		for (const name of await this.#client.listProjectNames(signal)) {
@@ -248,7 +251,14 @@ export class LxdCodeHosts {
 			const host = this.#host(companyId);
 			try {
 				await this.#step(host, async () => {
-					if (host.jobs > 0 || !(await this.#project(host, signal, false))) return;
+					if (host.jobs > 0) return;
+					// Its VM may run: it counts until its stop is confirmed.
+					host.started = true;
+					if (!(await this.#project(host, signal, false))) {
+						host.started = false;
+						this.#notify();
+						return;
+					}
 					clearTimeout(host.idle);
 					host.idle = undefined;
 					if (await this.#halt(host, signal)) stopped += 1;
@@ -261,6 +271,8 @@ export class LxdCodeHosts {
 					}
 				});
 			} catch (error) {
+				// Still counted: its idle stop, another company's start or close() tries its stop again.
+				this.#rest(host);
 				if (signal.aborted) throw error;
 				this.#log({ event: "code-host-error", step: "housekeep", project: name, error });
 			}
@@ -363,6 +375,9 @@ export class LxdCodeHosts {
 		if (host.started) return;
 		const turn = {};
 		this.#turns.push(turn);
+		// Idle hosts this turn failed to stop (a refused project, an error of LXD's): they keep their starts, and their
+		// own idle stops try again.
+		const failed = new Set<Host>();
 		try {
 			for (;;) {
 				if (this.#turns[0] === turn) {
@@ -371,9 +386,11 @@ export class LxdCodeHosts {
 						host.started = true;
 						return;
 					}
-					const idle = hosts.filter((h) => h.started && h.jobs === 0).sort((a, b) => a.lastUsed - b.lastUsed)[0];
+					const idle = hosts
+						.filter((h) => h.started && h.jobs === 0 && !failed.has(h))
+						.sort((a, b) => a.lastUsed - b.lastUsed)[0];
 					if (idle) {
-						await this.#step(idle, () => this.#stopIdle(idle));
+						await this.#step(idle, () => this.#stopIdle(idle)).catch(() => failed.add(idle));
 						continue;
 					}
 				}
@@ -428,8 +445,15 @@ export class LxdCodeHosts {
 		if (!host.started || host.jobs > 0) return;
 		clearTimeout(host.idle);
 		host.idle = undefined;
+		const signal = AbortSignal.timeout(this.#agentWaitMs);
 		try {
-			await this.#halt(host, AbortSignal.timeout(this.#agentWaitMs));
+			// Its project is checked again: one refused since is not touched, and the host keeps its start.
+			if (await this.#project(host, signal, false)) await this.#halt(host, signal);
+			else {
+				// The project is gone, and its VM with it.
+				host.started = false;
+				this.#notify();
+			}
 		} catch (error) {
 			this.#log({ event: "code-host-error", step: "stop", project: host.project, error });
 			if (!this.#closed) this.#rest(host);

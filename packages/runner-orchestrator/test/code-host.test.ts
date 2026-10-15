@@ -41,6 +41,8 @@ class FakeLxd implements LxdCodeHostClient {
 	agentDown = 0;
 	/** What LXD makes differs from the request. */
 	made?: (instance: LxdInstanceRecord & { config: Record<string, string> }) => void;
+	/** The next this many stops fail. */
+	failStop = 0;
 	async getProject(name: string): Promise<LxdProjectRecord | undefined> {
 		const project = this.projects.get(name);
 		if (!project) return undefined;
@@ -102,6 +104,10 @@ class FakeLxd implements LxdCodeHostClient {
 		this.calls.push(`${action} ${project}`);
 		const instance = this.instances.get(project);
 		if (!instance) throw new Error("Instance not found");
+		if (action === "stop" && this.failStop > 0) {
+			this.failStop -= 1;
+			throw new Error("Failed to stop instance");
+		}
 		instance.status = action === "start" ? "Running" : "Stopped";
 		instance.statusCode = action === "start" ? 103 : 102;
 	}
@@ -454,11 +460,74 @@ describe("LxdCodeHosts", () => {
 				error: new Error("CODE_HOST_PROJECT_DIFFERS"),
 			},
 		]);
-		// Nothing started counts against `running` afterwards.
+		// Only the refused project's code host still counts against `running`, since it may run: the next company
+		// starts at once, and the one after stops that one rather than touch the refused project.
+		events.length = 0;
 		await codeHosts.use(company(5), signal(), async () => undefined);
 		await codeHosts.use(company(6), signal(), async () => undefined);
-		expect([lxd.running(company(5)), lxd.running(company(6))]).toEqual([true, true]);
+		expect([3, 5, 6].map((n) => lxd.running(company(n)))).toEqual([true, false, true]);
+		expect(events).toEqual([
+			{ event: "code-host", step: "project-made", project: codeHostProject(company(5)) },
+			{ event: "code-host", step: "project-made", project: codeHostProject(company(6)) },
+			{ event: "code-host-error", step: "refused", project: refused },
+			{ event: "code-host-error", step: "stop", project: refused, error: new Error("CODE_HOST_PROJECT_DIFFERS") },
+			{ event: "code-host", step: "stopped", project: codeHostProject(company(5)) },
+		]);
 		await codeHosts.close();
+		expect(lxd.running(company(3))).toBe(true);
+	});
+	it.each(["another company's start", "close"])(
+		"keeps a code host whose stop failed at the executor's start counted, and stops it at %s",
+		async (later) => {
+			const { lxd, events, codeHosts } = hosts({ running: 1 });
+			const [project, next] = [1, 2].map((n) => codeHostProject(company(n)));
+			await lxd.createProject(project, CODE_HOST_PROJECT_CONFIG);
+			await lxd.createInstance(project, codeHostRequest(policy, company(1)));
+			await lxd.setInstancePower(project, "code-host", "start");
+			lxd.calls.length = 0;
+			lxd.failStop = 1;
+			await expect(codeHosts.housekeep(signal())).resolves.toBe(0);
+			expect(lxd.running(company(1))).toBe(true);
+			expect(events).toEqual([
+				{ event: "code-host-error", step: "housekeep", project, error: new Error("Failed to stop instance") },
+			]);
+			if (later === "close") {
+				await codeHosts.close();
+				expect(lxd.calls).toEqual([`stop ${project}`, `stop ${project}`]);
+			} else {
+				await codeHosts.use(company(2), signal(), async () => undefined);
+				expect(lxd.calls).toEqual([
+					`stop ${project}`,
+					`project ${next}`,
+					`stop ${project}`,
+					`create ${next}`,
+					`start ${next}`,
+					`exec ${next}`,
+				]);
+				await codeHosts.close();
+			}
+			expect(lxd.running(company(1))).toBe(false);
+		},
+	);
+	it("keeps the start of a code host whose project was changed after its use, and never stops it", async () => {
+		const { lxd, events, codeHosts } = hosts({ running: 1, idleStopMs: 20 });
+		const [project, next] = [1, 2].map((n) => codeHostProject(company(n)));
+		await codeHosts.use(company(1), signal(), async () => undefined);
+		(lxd.projects.get(project) as { config: Record<string, string> }).config.restricted = "false";
+		lxd.calls.length = 0;
+		// Its idle stop refuses the project, and so does its next job.
+		await vi.waitFor(() => expect(events).toContainEqual({ event: "code-host-error", step: "refused", project }));
+		await expect(codeHosts.use(company(1), signal(), async () => "ran")).rejects.toThrow("CODE_HOST_PROJECT_DIFFERS");
+		// Another company waits for its start rather than stop the refused project's code host, until its job ends.
+		const abort = new AbortController();
+		const waiting = codeHosts.use(company(2), abort.signal, async () => "ran");
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		abort.abort(new Error("JOB_CANCELLED"));
+		await expect(waiting).rejects.toThrow("JOB_CANCELLED");
+		await codeHosts.close();
+		expect(lxd.running(company(1))).toBe(true);
+		expect(lxd.calls).toEqual([`project ${next}`]);
+		expect(events).not.toContainEqual({ event: "code-host", step: "stopped", project });
 	});
 	it("removes a company's code host and project after its runs ended", async () => {
 		const { lxd, events, codeHosts } = hosts();
