@@ -136,9 +136,12 @@ begin
 	end loop;
 	perform dblink_send_query('wake_locker',
 		'begin; lock table realtime.messages in access exclusive mode; select pg_sleep(30)');
+	-- Locks in this database only: hosted-db's scripts run beside the SQL tests in copies of it, whose tables have
+	-- the same oids.
 	for v_rows in 1..500 loop
 		exit when exists (select 1 from pg_catalog.pg_locks where relation = 'realtime.messages'::regclass
-			and mode = 'AccessExclusiveLock');
+			and mode = 'AccessExclusiveLock'
+			and database = (select oid from pg_catalog.pg_database where datname = current_database()));
 		perform pg_sleep(0.01);
 	end loop;
 	v_started := clock_timestamp();
@@ -302,10 +305,12 @@ begin
 	end loop;
 	perform dblink_send_query('switch_locker',
 		'begin; lock table public.qorpera_orchestrator_wake_settings in access exclusive mode; select pg_sleep(30)');
+	-- This database's lock only, as above.
 	for v_waits in 1..500 loop
 		exit when exists (select 1 from pg_catalog.pg_locks
 			where relation = 'public.qorpera_orchestrator_wake_settings'::regclass
-				and mode = 'AccessExclusiveLock' and granted);
+				and mode = 'AccessExclusiveLock' and granted
+				and database = (select oid from pg_catalog.pg_database where datname = current_database()));
 		perform pg_sleep(0.01);
 	end loop;
 	v_started := clock_timestamp();
@@ -318,7 +323,8 @@ begin
 	perform dblink_disconnect('switch_locker');
 	for v_waits in 1..500 loop
 		exit when not exists (select 1 from pg_catalog.pg_locks
-			where relation = 'public.qorpera_orchestrator_wake_settings'::regclass and mode = 'AccessExclusiveLock');
+			where relation = 'public.qorpera_orchestrator_wake_settings'::regclass and mode = 'AccessExclusiveLock'
+				and database = (select oid from pg_catalog.pg_database where datname = current_database()));
 		perform pg_sleep(0.01);
 	end loop;
 	-- The same transaction, as if new to the once-per-transaction guard, with the lock gone.

@@ -63,9 +63,10 @@ server-verifiable facts. A catalog that clients could write would reintroduce
 that defect one layer down — a client could claim an object exists, and the
 GC's exclusivity analysis would believe it.
 
-The pattern already exists in the codebase: the runner broker hashes uploaded
-bytes Edge-side, refuses `upsert`, and re-downloads pre-existing objects to
-verify them before trusting the address. The gateway generalizes that.
+The runner broker's object lane (removed in `20260930334000`) used the same
+pattern: it hashed uploaded bytes Edge-side, refused `upsert`, and re-downloaded
+pre-existing objects to verify them before trusting the address. The gateway
+generalizes that.
 
 **3. Authorization.** The RLS insert policy on `storage.objects` currently
 enforces profile-prefix containment plus `qorpera_profile_object_writes_allowed`

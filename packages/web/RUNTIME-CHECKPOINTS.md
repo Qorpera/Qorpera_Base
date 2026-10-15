@@ -37,7 +37,7 @@ The cloud runtime owns execution, receipts, authorization fences, provider crede
 | Requirement | Public integration | Product status at baseline |
 | --- | --- | --- |
 | Member identity and connection | Host PKCE/member token; SDK `NativeSubscriptionControlPlane` for provider connections/sponsorship | Auth exists; provider Connections panel remains a placeholder. |
-| Governed live Company File and review | `CloudMemberCompanyFileClient`, reader, exact path/version/operation keys | Reads, edits, upload, download and protected review already composed. |
+| Governed live Company File and review | `CloudMemberCompanyFileClient` and its reader (both deleted with snapshot-v1 in legacy sweep step C; a folder-v2 company uses `CloudMemberFolderClient`), exact path/version/operation keys | Reads, edits, upload, download and protected review already composed. |
 | Submit work and expose only the mouth | Member input contract; sponsored turns through `NativeSubscriptionControlPlane`; explicit-send transcript projection | Input/attachment submission and send projection exist. Sponsored admission for sessions without a binding needs integration. |
 | Human interruptibility | `CloudSessionRunControl.read/cancel` with exact session/run | Missing at baseline; Track B is wiring it. |
 | Progress, results and reconnect | Canonical transcript and inputs; SDK turn provenance; fresh member reads after reconnect | Transcript reconstruction exists; sponsored turn provenance/error display needs integration. |
