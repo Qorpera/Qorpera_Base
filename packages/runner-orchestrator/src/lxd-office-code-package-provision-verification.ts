@@ -14,6 +14,7 @@ import {
 	parseCompanyComputerResetPlan,
 } from "@qorpera/contracts";
 import {
+	OFFICE_IMAGE_FOLDER_MOUNT_UNIT,
 	parseOfficeImageInstallationSpec,
 	parseOfficeImagePackage,
 	renderOfficeImageMount,
@@ -97,6 +98,7 @@ function installedInventory(
 	target: readonly LxdOfficeCodePackageProvisionArtifact[],
 	receiptBytes: Buffer,
 	mountBytes: Buffer,
+	folderMountBytes: Buffer | undefined,
 	statement: ReturnType<typeof parseCompanyComputerCodePackageProvisionEnvelope>["statement"],
 ) {
 	if (
@@ -134,18 +136,24 @@ function installedInventory(
 	});
 	if (officeDigest(spec.dependencies) !== statement.compatibility.unchangedExternalDependenciesSha256)
 		throw new Error("base dependencies differ");
-	const mount = base.find((a) => a.file === "qorpera-office-private.mount.in");
-	if (!mount || !Buffer.isBuffer(mountBytes) || mountBytes.length !== mount.bytes || hash(mountBytes) !== mount.sha256)
-		throw new Error("base mount template differs");
-	const rendered = Buffer.from(
-		renderOfficeImageMount(new TextDecoder("utf8", { fatal: true }).decode(mountBytes), spec.uid, spec.gid),
-	);
-	const expected: LxdOfficeCodePackageInstalledArtifact[] = base.map((a) => ({
-		path: a.path,
-		mode: a.mode,
-		bytes: a.file === mount.file ? rendered.length : a.bytes,
-		sha256: a.file === mount.file ? hash(rendered) : a.sha256,
-	}));
+	// The installer renders each mount template with the office account's ids. Only newer packages carry the company
+	// folder's, and its bytes come exactly when the base carries it.
+	const rendered = new Map<string, Buffer>();
+	for (const [file, bytes, required] of [
+		["qorpera-office-private.mount.in", mountBytes, true],
+		[`${OFFICE_IMAGE_FOLDER_MOUNT_UNIT}.in`, folderMountBytes, false],
+	] as const) {
+		const template = base.find((a) => a.file === file);
+		if (!required && !template && bytes === undefined) continue;
+		if (!template || !Buffer.isBuffer(bytes) || bytes.length !== template.bytes || hash(bytes) !== template.sha256)
+			throw new Error("base mount template differs");
+		const text = new TextDecoder("utf8", { fatal: true }).decode(bytes);
+		rendered.set(file, Buffer.from(renderOfficeImageMount(text, spec.uid, spec.gid)));
+	}
+	const expected: LxdOfficeCodePackageInstalledArtifact[] = base.map((a) => {
+		const unit = rendered.get(a.file);
+		return { path: a.path, mode: a.mode, bytes: unit?.length ?? a.bytes, sha256: unit ? hash(unit) : a.sha256 };
+	});
 	for (const file of ["qorpera-company-computer.service", "qorpera-company-computer-preparation.service"]) {
 		const a = base.find((a) => a.file === file)!;
 		expected.push({ path: `/opt/qorpera-office/${file}`, mode: 0o444, bytes: a.bytes, sha256: a.sha256 });
@@ -195,7 +203,13 @@ export function verifyLxdOfficeCodePackageProvision(
 	envelopeValue: unknown,
 	planValue: unknown,
 	trust: LxdOfficeCodePackageProvisionTrust,
-	manifests: { base: Buffer; target: Buffer; baseInstallationReceipt: Buffer; baseMountTemplate: Buffer },
+	manifests: {
+		base: Buffer;
+		target: Buffer;
+		baseInstallationReceipt: Buffer;
+		baseMountTemplate: Buffer;
+		baseFolderMountTemplate?: Buffer;
+	},
 	resetPlanValue: unknown,
 ) {
 	try {
@@ -272,6 +286,7 @@ export function verifyLxdOfficeCodePackageProvision(
 			target.artifacts,
 			manifests.baseInstallationReceipt,
 			manifests.baseMountTemplate,
+			manifests.baseFolderMountTemplate,
 			statement,
 		);
 		return Object.freeze({
