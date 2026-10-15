@@ -60,6 +60,8 @@ const MAX_ANSWER_BYTES = 16 * 1024 * 1024;
 const CODE = /^[A-Z][A-Z_]{0,63}$/;
 /** A boundary publishes what each open view of the machine has pending and releases its reads first. */
 const TIMEOUT_MS = 20_000;
+/** The longest delay Node's timers keep; a longer one fires after 1 ms. */
+const MAX_TIMEOUT_MS = 2_147_483_647;
 
 export interface CodingFolderControlOptions {
 	readonly path?: string;
@@ -76,7 +78,8 @@ export class CodingFolderControl {
 	readonly #timeoutMs: number;
 	constructor(options: CodingFolderControlOptions = {}) {
 		const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
-		if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error("Invalid folder control timeout");
+		if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS)
+			throw new Error("Invalid folder control timeout");
 		this.#path = options.path ?? CODING_FOLDER_CONTROL_SOCKET;
 		this.#timeoutMs = timeoutMs;
 	}

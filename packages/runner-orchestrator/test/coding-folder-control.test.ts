@@ -265,8 +265,9 @@ describe("the folder service's control socket", () => {
 		expect(f.connections()).toBe(1);
 	});
 
-	it("refuses a timeout that is not a positive whole number of milliseconds", () => {
-		for (const timeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])
+	it("refuses a timeout that is not a positive whole number of milliseconds a Node timer keeps", () => {
+		for (const timeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])
 			expect(() => new CodingFolderControl({ timeoutMs })).toThrow("Invalid folder control timeout");
+		expect(() => new CodingFolderControl({ timeoutMs: 2_147_483_647 })).not.toThrow();
 	});
 });
