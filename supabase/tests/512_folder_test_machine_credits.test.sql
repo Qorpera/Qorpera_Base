@@ -6,7 +6,7 @@
 -- unit without credits is checked for the starter. The commit acts as the first valid command by start: its agent, its
 -- member and its run while the run's job is leased; the commit row lists every valid command in start order. A command
 -- that ends while the commit waits for the anchor refuses the commit. The true race needs a second connection and is
--- not run here: a test trigger ends the command inside the commit instead, after the units are decided. The office,
+-- not run here: a test trigger ends the command inside the commit instead, before the units are decided. The office,
 -- machine, run and view helpers are 510's, 639's and 632's.
 
 -- A command on the anchor's machine and placement, from the run (its agent and requester), started at p_started.
