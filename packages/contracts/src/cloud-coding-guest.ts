@@ -224,10 +224,10 @@ const REQUEST_SCHEMAS: Record<CodingGuestVerb, string> = {
 };
 
 /** The view's three fields are printable ASCII without spaces: the folder program reads them from a file. */
-export function parseCodingGuestView(value: unknown): CodingGuestView {
-	const view = object(value, "environmentId,pass,viewId", "Invalid coding guest view");
+function codingView(value: unknown, error: string): CodingGuestView {
+	const view = object(value, "environmentId,pass,viewId", error);
 	if (!Object.values(view).every((field) => typeof field === "string" && /^[\x21-\x7e]{1,256}$/.test(field)))
-		throw new Error("Invalid coding guest view");
+		throw new Error(error);
 	return Object.freeze({
 		environmentId: view.environmentId as string,
 		viewId: view.viewId as string,
@@ -248,7 +248,7 @@ export function parseCodingGuestRequest<V extends CodingGuestVerb>(verb: V, valu
 		sessionUid(input.uid, error);
 		sessionUid(input.gid, error);
 	}
-	if (verb === "mount") return Object.freeze({ ...input, view: parseCodingGuestView(input.view) }) as never;
+	if (verb === "mount") return Object.freeze({ ...input, view: codingView(input.view, error) }) as never;
 	if (verb === "run") {
 		const environment = input.environment;
 		if (

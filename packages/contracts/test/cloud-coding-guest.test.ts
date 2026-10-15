@@ -58,7 +58,7 @@ describe("coding guest requests", () => {
 		["another verb's schema", "cancel", { schema: "qorpera.coding-guest-session/v1", workerId, commandId }],
 		["an extra key", "run", { ...run, user: "root" }],
 		["a missing key", "run", Object.fromEntries(Object.entries(run).filter(([key]) => key !== "timeoutMs"))],
-		["an upper-case worker id", "run", { ...run, workerId: workerId.toUpperCase() }],
+		["an upper-case worker id", "run", { ...run, workerId: "ABCDEF12-1234-4234-8234-000000000001" }],
 		["a root uid", "run", { ...run, uid: 0 }],
 		["a uid above the session range", "mount", { ...mount, gid: CODING_GUEST.maxUid + 1 }],
 		["a blank command", "run", { ...run, command: " \n" }],
