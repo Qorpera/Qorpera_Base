@@ -1,6 +1,7 @@
 # Dependencies and builds on the machine: the plan
 
-Status: plan, for review before it is built. It builds the contract's "2026-10-14 amendment: machines work in the
+Status: plan, for review before it is built; the coordinator chose the first option of all four questions on
+15 October ("Decisions" at the end). It builds the contract's "2026-10-14 amendment: machines work in the
 folder as on their own disk", item 8 (dependencies and builds stay on the machine), and the line of its "For the build"
 list that says the folder program keeps item 8's caches on the machine. It replaces
 [RUNTIME-COMPANY-FOLDER.md](RUNTIME-COMPANY-FOLDER.md) §6 "The per-session cache" and finishes what
@@ -55,6 +56,7 @@ cache too.
    `.tox`, `.gradle`, `.turbo`, `.next`, `.nuxt`, `.svelte-kit`, `.parcel-cache`.
    - `.pnpm-store` is here because pnpm makes its store at the top of the file system its project is on when that is
      another file system than the user's home. That top is `/company`.
+   - `vendor` and `.yarn` are left out on purpose: projects often commit them.
 3. **Build names, in a project.** A new folder named `dist`, `build`, `target`, `out`, `coverage` or `.cache` is cache
    when its parent folder is a project: it holds `package.json`, `Cargo.toml`, `pyproject.toml`, `setup.py`,
    `requirements.txt`, `go.mod`, `pom.xml`, `build.gradle`, `build.gradle.kts`, `Gemfile`, `composer.json`, `mix.exs`,
@@ -70,7 +72,7 @@ cache too.
      (`git add -f`), it moves into the folder as a pending change and is published at the next boundary, as 5d does
      for a cache folder whose name leaves the list;
    - a name that left the list stays off it (§6).
-   Repositories live only in code areas: `.git` stays refused outside `code/` (question 3 below).
+   Repositories live only in code areas: `.git` stays refused outside `code/` (decision 3 below).
 5. **Names match exactly.** `Build` and `BUILD` (Bazel's file) are not `build`. Rules 2 and 3 decide folders only: a
    file named `build` is published. Rule 4 decides files and folders.
 6. **A change of the rules does not move what exists.** A `.gitignore` that changes, or a project file that appears or
@@ -124,12 +126,22 @@ is never under `/run`, which empties at every start and is memory.
   - **coding and test machines:** one cache per machine. Root inside the machine already joins its sessions (contract
     item 11, "Root makes one member's sessions on one machine no walls between each other"), so walls between their
     caches would protect nothing;
-  - question 1 below asks whether company machines should share one cache per machine as well.
+  - decision 1 below keeps company machines on one cache per owner.
 - **Several mounts at once.** Several folder programs can serve one cache folder at a time (a desktop and two commands
   of one agent). So a cache file has no kernel cache of its own (time-outs of zero for its names and attributes, and
   no kept pages), and every request reaches the program, which asks the disk. A process sees what another mount wrote
   at once, as on one disk. What two programs run at once in one project (two `npm install`s) is the user's business,
   as on any disk.
+- **Speed.** With no kernel cache, every `stat` and `open` in a `node_modules` goes through the program, which can
+  make `tsc`, `npm test` or a large `require` tree much slower than a local disk. "At the speed of a local disk" is
+  the point of item 8, so MC3 measures it:
+  - its tests time the same project on a mount's cache and on the plain disk under it: `tsc --noEmit` on a project
+    with its dependencies installed, and loading a few thousand small files;
+  - the PR body gives the numbers;
+  - if the cache is more than about twice as slow, this plan names the fix before it is built. The two candidates are
+    a kernel cache for cache files that the program clears when another mount writes (FUSE's notify calls, with the
+    cache's writes told to every program serving it), and FUSE passthrough, where the machine's kernel has it. A fix
+    may not load kernel modules or change sysctls on the test machines.
 
 ## Removing old caches
 
@@ -158,13 +170,13 @@ hour. A removed cache is built again by the next install or build, as on a fresh
 |---|---|---|
 | MC1 | Folder program: rules 1, 2, 3, 5 and 6 everywhere, on 5d's local layer and cache list (one table of names, shared with rule 4's worktree list); listings; the edge (`EXDEV`, `rmdir`, a published folder's rename moving its cache, a gone parent dropping it); boundaries not waiting for cache files. A new build record and the installer pins | FUSE tests with the stand-in service: `npm install` (from a local registry folder, no network) in a project folder outside `code/` making `node_modules` that the service never sees, a second view listing nothing there; `pip install` into `.venv`; `.pnpm-store` at the top; `build` made in a project (cache) and in a plain folder (published); a file named `build` published; `Build` published; a name where the node has an entry not cache, and the node's later entry winning; `rmdir` `ENOTEMPTY` with a cache inside, `rm -r` removing it; `mv` of the parent moving the cache; the parent removed by another view dropping it; a folder renamed across the edge `EXDEV` and `mv` copying; a hard link across `EXDEV`; links and hard links inside the cache; a boundary while a cache file is open |
 | MC2 | Folder program: rule 4's ignore rules (every `.gitignore` and `info/exclude`, with negation, folder patterns and `**`, from a pinned crate that follows git's rules, or a small matcher if the build's dependency review prefers it), on 5d's index reader for what is tracked; a file renamed across the edge (published from the cache, moved into it while pending); `git add -f` of an ignored path moving it into the folder | FUSE tests with real git (the pinned version): a file and a folder ignored by the top `.gitignore`, by one in a subfolder, and by `info/exclude`, never published; a negated pattern published; a tracked path under an ignored pattern published; `git add -f` of an ignored file and folder published at the next boundary; an editor's atomic save over a published file from an ignored temporary name, and over an ignored file from a plain one; a changed `.gitignore` deciding only new names; the cases checked against `git check-ignore` |
-| MC3 | Where the cache lives: `--cache-dir`; no kernel cache for cache files; the per-owner key on company machines (the folder helper passes `--cache-dir /var/lib/qorpera-folder/cache/<owner>`), and per machine on coding and test machines (their setups pass it, if they are on master by then, else they take the flag in their own slice); removing old caches with its locks. Updates RUNTIME-FOLDER-COMPANY-MACHINES.md "Mounts in the VM" | FUSE tests: two mounts on one cache folder, a write in one read at once in the other; a mount started again finding its cache; two owners' mounts not seeing each other's cache; removal of an unused cache, of the least recently used when the disk is short (the test gives a size limit in place of the disk's free space), never of an open one, and of one whose parent is gone; the helper's tests: `mount` passing the owner's cache folder for a desktop and a command, the same for one agent's desktop and commands, another for a member's view |
+| MC3 | Where the cache lives: `--cache-dir`; no kernel cache for cache files; the per-owner key on company machines (the folder helper passes `--cache-dir /var/lib/qorpera-folder/cache/<owner>`), and per machine on coding and test machines (their setups pass it, if they are on master by then, else they take the flag in their own slice); removing old caches with its locks; the speed measure (above). Updates RUNTIME-FOLDER-COMPANY-MACHINES.md "Mounts in the VM" | FUSE tests: `tsc --noEmit` and a load of a few thousand small files timed on the cache and on the plain disk, the numbers in the PR body; two mounts on one cache folder, a write in one read at once in the other; a mount started again finding its cache; two owners' mounts not seeing each other's cache; removal of an unused cache, of the least recently used when the disk is short (the test gives a size limit in place of the disk's free space), never of an open one, and of one whose parent is gone; the helper's tests: `mount` passing the owner's cache folder for a desktop and a command, the same for one agent's desktop and commands, another for a member's view |
 
 **Order.**
 - MC1 builds on 5d's local layer, so it starts once #1096 has merged. It changes the same program files as LK4 (links),
   so it comes after LK4 too.
 - MC2 needs MC1's table and 5d's index reader. MC3 needs MC1, and its helper part changes step 4's folder helper
-  (owner qorpera-80 is told first).
+  (its owner, qorpera-80, is told before MC3 changes it).
 - Step 4's acceptance (4g) shows item 8 on company machines (amendment item 10), so 4g waits for MC1 and MC3. Step
   6's 6e waits for item 8's caches in the program (RUNTIME-FOLDER-TEST-MACHINES.md, Order). A test machine builds in
   worktrees, where 5d's cache already holds; MC3 makes that cache outlive the machine's mounts.
@@ -177,20 +189,19 @@ helper ships with the runtime.
 **Deferred (needs Codex).** None of these slices needs a model. Each step's acceptance run (4g, 5's and 6f) shows a
 real install on a live machine.
 
-## Proposals and questions
+## Decisions
 
-These need the coordinator's choice before MC3 (question 1) and MC1 (questions 2 to 4). The plan builds the first
-option of each unless told otherwise.
+The coordinator chose the first option of each question on 15 October. The plan above builds them.
 
-1. **The key on company machines.** (a) One cache per owner on the machine (above): a cache made from one agent's
-   files never shows in another agent's or a member's view. A takeover by a member starts with an empty cache, and the
-   next install is slower. (b) One cache per machine, as on coding machines: faster, but a build's output (which can
-   hold the text of files it read) shows to every holder whose view reaches the folder.
-2. **The name lists.** Rules 2 and 3 as above. A name added later is a one-line change in the program; a name dropped
-   would leave existing caches where they are (rule 6).
-3. **Git repositories outside code areas.** (a) `.git` stays refused outside `code/` (today's rule): repositories
-   live in code areas, where git's rules decide. (b) A `.git` outside `code/` is a cache: `git init` works anywhere,
-   but that repository's history stays on the one machine and is never published.
-4. **Ignored files and folders.** (a) In a worktree, files and folders that git ignores are both cache (the
-   amendment's words: "what its `.gitignore` leaves out"). So a `.env` or a `*.log` stays on the machine. (b) Only
-   ignored folders are cache, and ignored files are published.
+1. **The key on company machines: one cache per owner on the machine** (above). Views can differ in authority, and a
+   build's output can hold the text of the files it read, so a cache made from one agent's files never shows in
+   another agent's or a member's view. A takeover by a member starts with an empty cache, and its first install is
+   slower; that is accepted. Not chosen: one cache per machine, as on coding machines.
+2. **The name lists: rules 2 and 3 as written.** `vendor` and `.yarn` stay out, because projects often commit them. A
+   name added later is a one-line change in the program; a name dropped would leave existing caches where they are
+   (rule 6).
+3. **Git repositories outside code areas: `.git` stays refused outside `code/`** (today's rule). Repositories live in
+   code areas, where git's rules decide. Not chosen: a `.git` outside `code/` as a cache, whose history would stay on
+   one machine.
+4. **Ignored files and folders: both are cache in a worktree.** That is the amendment's words ("what its `.gitignore`
+   leaves out"), and it keeps a `.env` or a `*.log` on the machine. Not chosen: only ignored folders as cache.
