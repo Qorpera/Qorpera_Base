@@ -490,14 +490,16 @@ export function describeCloudAction(
 						? action.hook
 							? "Type a hook's signing secret into a web page"
 							: "Type a company account's sign-in into a web page"
-						: verb === "press"
-							? "Press a key in the browser"
-							: "Click in the browser";
+						: verb === "vault_capture"
+							? "Read a hook's signing secret off a web page into the vault"
+							: verb === "press"
+								? "Press a key in the browser"
+								: "Click in the browser";
 		target = text(action.url) || (action.name ? `${text(action.role)} "${text(action.name, 200)}"` : null);
 		quote("text", action.text);
 		add("key", action.key);
-		// The vault types the value; the card names the account (or the signed hook) and which of its values, never
-		// the value.
+		// The vault types the value (or reads a Stripe hook's into itself); the card names the account (or the signed
+		// hook) and which of its values, never the value.
 		add("account", action.account);
 		add("hook", action.hook);
 		add("field", action.field);

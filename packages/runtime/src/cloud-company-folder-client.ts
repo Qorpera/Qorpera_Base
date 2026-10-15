@@ -95,7 +95,7 @@ export const CLOUD_HOOK_REFUSALS: ReadonlyMap<string, string> = new Map([
 			["22023", "Only a signed hook names the site its secret is typed into"],
 			["22023", "An HMAC hook names the site its secret is typed into"],
 			["22023", "A site is a host name such as github.com"],
-			["0A000", "A Stripe hook comes later: its secret is taken from Stripe's screen"],
+			["22023", "A Stripe hook's secret is taken from dashboard.stripe.com"],
 			["22023", "A mailbox name is 1 to 64 lowercase letters, digits, dots, hyphens and underscores"],
 			["22023", "This mailbox name is reserved"],
 			["22023", "A mailbox name that reads as Qorpera is reserved"],
@@ -1226,7 +1226,8 @@ export class CloudCompanyFolderClient {
 	 * deadlock is asked again. SQL's refusals come back as `refused`, unless an earlier call with the key ended without
 	 * a checked answer: that call may have changed the hook, so the outcome is unknown. A signed hook's creation goes
 	 * through the secret broker, which makes its secret and opens it under the same key (E3b-2); its answer names the
-	 * site the secret may be typed into, and the hook's secret is there. */
+	 * site the secret may be typed into, and the hook's secret is there. A Stripe hook's secret is Stripe's: it opens
+	 * with none, and the vault reads it off dashboard.stripe.com later (E3c-2). */
 	async manageHook(
 		request: CloudCompanyFolderHookRequest,
 		signal: AbortSignal,
@@ -1264,7 +1265,8 @@ export class CloudCompanyFolderClient {
 				hook.environmentId !== this.#identity.environmentId ||
 				hook.status !== HOOK_STATUS[request.action] ||
 				// A signed hook's creation names the site its secret may be typed into, and the secret is the hook's own and
-				// there; an unsigned creation has none. A change to a hook already open may find either.
+				// there; a Stripe hook's is not yet, until the vault reads it off Stripe's page (E3c). An unsigned creation
+				// has none. A change to a hook already open may find either.
 				(signed
 					? input.secretSite !== signed.site ||
 						!signingSecret ||
@@ -1273,7 +1275,7 @@ export class CloudCompanyFolderClient {
 						Object.keys(signingSecret).length !== 3 ||
 						(signingSecret as Record<string, unknown>).connectorId !== "event_hook" ||
 						(signingSecret as Record<string, unknown>).secretName !== `h${String(hook.id).replaceAll("-", "")}` ||
-						(signingSecret as Record<string, unknown>).ready !== true
+						(signingSecret as Record<string, unknown>).ready !== (signed.proof !== "stripe")
 					: request.action === "create" && signingSecret !== undefined) ||
 				(request.action !== "create"
 					? hook.name !== request.hook || address !== undefined
