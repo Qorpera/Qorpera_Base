@@ -20,7 +20,14 @@ function fixture() {
 		stdout: Buffer.alloc(0),
 		stderr: Buffer.alloc(0),
 	}));
-	const guest = new LxdCodingGuestClient({ machine, client: { execInstanceStream } });
+	// Like the LXD client, the exec fails when stdout goes past its bound.
+	const bounded: LxdInstanceExecStreamClient["execInstanceStream"] = async (project, name, request, signal) => {
+		const result = await execInstanceStream(project, name, request, signal);
+		if (result.stdout.byteLength > request.maxStdoutBytes)
+			throw new Error("LXD exec stream output exceeded its bound");
+		return result;
+	};
+	const guest = new LxdCodingGuestClient({ machine, client: { execInstanceStream: bounded } });
 	const workerId = randomUUID();
 	const commandId = randomUUID();
 	const view = { environmentId: randomUUID(), viewId: randomUUID(), pass: PASS };
@@ -203,7 +210,6 @@ describe("LxdCodingGuestClient", () => {
 			Buffer.from(`${text}\n${text}\n`),
 			Buffer.from(`﻿${text}\n`),
 			Buffer.concat([Buffer.from(text.slice(0, -1)), Buffer.from([0xc3, 0x28]), Buffer.from("}\n")]),
-			Buffer.from(`${" ".repeat(131073)}${text}\n`),
 			line({ ...mounted, workerId: randomUUID() }),
 			line({ ...mounted, viewId: randomUUID() }),
 			line({ ...mounted, mount: "maybe" }),
@@ -217,13 +223,41 @@ describe("LxdCodingGuestClient", () => {
 				"CODING_GUEST_ANSWER_INVALID",
 			);
 		}
-		// The bound is the whole line: a line just inside it is read.
+		// The bound is the whole line, its newline included: a line of exactly 131072 bytes is read, and one byte more is
+		// refused, by the exec's own bound as by the line's.
+		const atBound = Buffer.from(`${" ".repeat(131071 - text.length)}${text}\n`);
+		expect(atBound.byteLength).toBe(131072);
+		at.execInstanceStream.mockResolvedValueOnce({ exitCode: 0, stdout: atBound, stderr: Buffer.alloc(0) });
+		await expect(at.guest.mount(at.mount, new AbortController().signal)).resolves.toEqual(mounted);
+		at.execInstanceStream.mockResolvedValueOnce({
+			exitCode: 0,
+			stdout: Buffer.from(` ${atBound.toString("utf8")}`),
+			stderr: Buffer.alloc(0),
+		});
+		expect((await rejection(at.guest.mount(at.mount, new AbortController().signal))).message).toBe(
+			"LXD exec stream output exceeded its bound",
+		);
+	});
+	it("refuses an output line over its bound even when its page leaves room for it", async () => {
+		const at = fixture();
+		const answer = {
+			schema: "qorpera.coding-guest-output/v1",
+			workerId: at.workerId,
+			...at.command,
+			offset: 10,
+			bytes: 0,
+			gap: 0,
+		};
+		const text = JSON.stringify(answer);
+		// 131073 bytes with the newline: within the exec's bound of the line plus the page, past the line's own.
 		at.execInstanceStream.mockResolvedValueOnce({
 			exitCode: 0,
 			stdout: Buffer.from(`${" ".repeat(131072 - text.length)}${text}\n`),
 			stderr: Buffer.alloc(0),
 		});
-		await expect(at.guest.mount(at.mount, new AbortController().signal)).resolves.toEqual(mounted);
+		expect((await rejection(at.guest.output(at.output, new AbortController().signal))).message).toBe(
+			"CODING_GUEST_ANSWER_INVALID",
+		);
 	});
 
 	it("refuses an invalid or oversized request before any exec, without quoting it", async () => {

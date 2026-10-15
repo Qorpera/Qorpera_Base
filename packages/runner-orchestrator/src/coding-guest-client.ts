@@ -22,7 +22,7 @@ import type { LxdInstanceExecStreamClient } from "./lxd-client.ts";
 // read only after the exec ended, against the request it answers, and anything else fails the call.
 
 const INVALID = "CODING_GUEST_ANSWER_INVALID";
-/** An answer line: a status answer's commands fit well inside it. */
+/** An answer line, its newline included: a status answer's commands fit well inside it. */
 const LINE_BYTES = 131072;
 /** Node's own message when the agent crashed; never read. */
 const STDERR_BYTES = 16384;
@@ -128,7 +128,7 @@ function readAnswer<V extends CodingGuestVerb>(
 	stdout: Buffer,
 ): { answer: CodingGuestAnswers[V]; bytes: Buffer } {
 	const end = stdout.indexOf(0x0a);
-	if (end < 0 || end > LINE_BYTES) throw new Error(INVALID);
+	if (end < 0 || end + 1 > LINE_BYTES) throw new Error(INVALID);
 	const bytes = stdout.subarray(end + 1);
 	let refusal: CodingGuestRefusal | undefined;
 	let answer: CodingGuestAnswers[V] | undefined;
