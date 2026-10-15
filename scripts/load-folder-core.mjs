@@ -181,7 +181,8 @@ let logLinesBeforeLoad = 0;
 let end = 0;
 const running = () => performance.now() < end;
 
-/** One RPC as PostgREST runs it: one transaction on a pooled connection, request.path and claims set. */
+/** One RPC as PostgREST runs it: one transaction on a pooled connection, request.path and claims set. A null kind
+ * records nothing: the caller records the call as part of a larger one (an upload's). */
 async function call(kind, rpc, sql, params, deadlineMs, { rollback = false, expected = [] } = {}) {
 	if (options.rtt) await sleep(options.rtt);
 	const started = performance.now();
@@ -215,7 +216,7 @@ async function call(kind, rpc, sql, params, deadlineMs, { rollback = false, expe
 		gaveUp: ended - started + options.rtt > deadlineMs,
 		failure: failure && expected.includes(failure.name) ? { ...failure, expected: true } : failure,
 	};
-	record(kind, sample);
+	if (kind) record(kind, sample);
 	return { value, failure, sample };
 }
 
@@ -258,16 +259,58 @@ const commit = (kind, runRow, key, units, receipt = null) =>
 		PATH_DEADLINE,
 		{ expected: ["paused", "busy"] },
 	);
-// The upload's kind says what it carried: new bytes, bytes the company has (reused), or a subtree's file.
-const seal = (runRow, text, kind = "write-upload") =>
-	call(
-		kind,
-		"qorpera_folder_seal_upload",
-		"select loadfolder.seal($1::jsonb, $2) as value",
-		[runRow.actor, text],
-		PATH_DEADLINE,
-		{ expected: ["paused", "busy"] },
+/**
+ * The gateway's upload as the run, one call each as the gateway makes them: open the intent, confirm each object the
+ * open did not find present (the gateway has stored it), seal. (In one transaction, a confirm that inserts an object
+ * would hold the company's storage usage row until the seal, so a GC finish deleting the object the next confirm waits
+ * on would deadlock with it.) The upload's kind says what it carried: new bytes, bytes the company has (reused), or a
+ * subtree's file. Its sample is the whole upload, each call with its round trip, as a tool waits for it; a failed call
+ * ends it. The manifest is loadfolder.manifest's, which also names GC's texts.
+ */
+async function seal(runRow, text, kind = "write-upload") {
+	const calls = [];
+	const step = async (rpc, sql, params) => {
+		const result = await call(null, rpc, sql, params, PATH_DEADLINE, { expected: ["paused", "busy"] });
+		calls.push(result);
+		return result;
+	};
+	const upload = () => {
+		const samples = calls.map((result) => result.sample);
+		const sample = {
+			startedAt: samples[0].startedAt,
+			endedAt: samples.at(-1).endedAt,
+			totalMs: samples.reduce((sum, each) => sum + each.totalMs, 0),
+			queueMs: samples.reduce((sum, each) => sum + each.queueMs, 0),
+			queriedAt: samples[0].queriedAt,
+			gaveUp: samples.some((each) => each.gaveUp),
+			failure: samples.at(-1).failure,
+		};
+		record(kind, sample);
+		return { value: calls.at(-1).value, failure: calls.at(-1).failure, sample };
+	};
+	const opened = await step(
+		"qorpera_folder_open_upload",
+		"select jsonb_build_object('manifest', m, 'open', public.qorpera_folder_open_upload($1::uuid, $2::jsonb, m)) as value from loadfolder.manifest($3) m",
+		[ENVIRONMENT, runRow.actor, text],
 	);
+	if (opened.failure) return upload();
+	const { manifest, open } = opened.value;
+	const objects = [...JSON.parse(manifest).chunks, { sha256: sha256(manifest), bytes: Buffer.byteLength(manifest, "utf8") }];
+	for (const object of objects.filter((each) => !open.present.includes(each.sha256))) {
+		const confirmed = await step(
+			"qorpera_folder_confirm_object",
+			"select public.qorpera_folder_confirm_object($1::uuid, $2::jsonb, $3::uuid, $4, $5::bigint) as value",
+			[ENVIRONMENT, runRow.actor, open.intentId, object.sha256, object.bytes],
+		);
+		if (confirmed.failure) return upload();
+	}
+	await step(
+		"qorpera_folder_seal_upload",
+		"select public.qorpera_folder_seal_upload($1::uuid, $2::jsonb, $3::uuid) as value",
+		[ENVIRONMENT, runRow.actor, open.intentId],
+	);
+	return upload();
+}
 
 // Who held a grant on load/restricted when: per agent, its grants as [granted (committed), revokeBegan, revoked].
 const grants = new Map();
