@@ -38,6 +38,7 @@ import {
 import { type SearchAnswer, searchView } from "./search.ts";
 import { type FolderStaging, mediaTypeOf, type Upload } from "./staging.ts";
 import { nameOf, type TreeEntry, ViewTree } from "./view-tree.ts";
+import { type CommandWindow, CommandWindows, type CreditedUnit, CreditTags } from "./windows.ts";
 
 /** What a machine's feed connection is sent. */
 export interface ChangeMessage {
@@ -197,6 +198,9 @@ function mayLift(refused: Report["refused"]): boolean {
 	return refused === "stopped" || refused === "run_ended";
 }
 
+/** What a change changed, for a test machine's credits (F3 6b): these paths, or a rename's. */
+type Changed = readonly string[] | { readonly from: string; readonly to: string };
+
 /** A change set refused whole that is not settled: what it carried stays pending, to be published again. A command's
  * (only its final closes its view), and a desktop's refused in a way that may lift (F3 4c). A coding session's too, but
  * at its last boundary, where a refusal that may not lift is final (F3 5c, the plan's rule 4). */
@@ -349,6 +353,8 @@ class View {
 	renewing: Promise<void> = Promise.resolve();
 	/** Its pending changes, once listed (a writable view only). */
 	pending: PendingView | undefined;
+	/** A test machine's view (F3 6b): the command windows each pending path was changed in, for its units' credits. */
+	readonly credit = new CreditTags();
 	quiet: ReturnType<typeof setTimeout> | undefined;
 	/** One boundary at a time. */
 	publishing: Promise<Report> = Promise.resolve({ commitId: null, seq: null, paths: [] });
@@ -500,6 +506,8 @@ export class FolderService {
 	 * start (never dropped, so a count is never seen again): a machine boundary a restart crossed may have missed a read
 	 * lost before it, which the restart cleared. */
 	readonly #restarts = new Map<string, number>();
+	/** The command windows open on the test machines (F3 6b), which the executor opens and closes. */
+	readonly #windows = new CommandWindows();
 
 	constructor(options: FolderServiceOptions) {
 		this.#core = options.core;
@@ -535,7 +543,9 @@ export class FolderService {
 	 * every open view of the machine publishes what it has pending, each after every read the machine was served is
 	 * released (#boundaryOf), and the answer comes only after the reads served until then are released too (rule 3).
 	 * `final`: the views whose last boundary this is, before the executor closes them; a refusal that may not lift is
-	 * final there (rule 4). A view of the machine this service does not hold open has no report, but an error. */
+	 * final there (rule 4). A view of the machine this service does not hold open has no report, but an error. A test
+	 * machine's the same (F3 6b), by its placement's id, but its view's last boundary is a final: the core closes the
+	 * view with it. */
 	async boundary(machine: string, final: readonly string[] = []): Promise<MachineBoundary> {
 		if (this.#stopping) throw new ProtocolError(ErrorCode.unavailable, STOPPING);
 		return this.#machineBoundary(machine, final);
@@ -548,9 +558,11 @@ export class FolderService {
 	 * unproven. A boundary of the machine still out answers `unproven` (#machineBoundary). */
 	restarted(machine: string): void {
 		this.#restarts.set(machine, (this.#restarts.get(machine) ?? 0) + 1);
+		// A test machine's commands ended with it (F3 6b).
+		this.#windows.clear(machine);
 		const views = this.#machineViews(machine);
 		if (views.some((view) => view.unreleased)) {
-			this.#log(`folder-service: coding machine ${machine} restarted with reads unreleased; its views are unproven`);
+			this.#log(`folder-service: machine ${machine} restarted with reads unreleased; its views are unproven`);
 			for (const view of views) {
 				view.unproven = true;
 				view.logs.clear();
@@ -558,19 +570,51 @@ export class FolderService {
 			}
 		}
 		if (this.#lostMachines.delete(machine))
-			this.#log(
-				`folder-service: coding machine ${machine} restarted; its views opened from now on are proven again`,
-			);
+			this.#log(`folder-service: machine ${machine} restarted; its views opened from now on are proven again`);
+	}
+
+	/** A command started on a test machine (F3 6b, the plan's "Command windows"), which the executor says over the
+	 * control socket: what the machine changes from now until the window closes is credited to the command. Said again,
+	 * it changes nothing. */
+	openWindow(machine: string, window: CommandWindow): void {
+		if (this.#stopping) throw new ProtocolError(ErrorCode.unavailable, STOPPING);
+		this.#windows.open(machine, window);
+	}
+
+	/** The command ended (F3 6b): its window closes, and the machine has a boundary, answered once what it changed until
+	 * then was published or refused. A unit the core refuses because the command ended is refused as any other, and
+	 * never credited to the starter instead. Said again, it is one more boundary. */
+	async closeWindow(machine: string, commandId: string): Promise<MachineBoundary> {
+		this.#windows.close(machine, commandId);
+		if (this.#stopping) throw new ProtocolError(ErrorCode.unavailable, STOPPING);
+		return this.#machineBoundary(machine, []);
 	}
 
 	async #machineBoundary(machine: string, final: readonly string[]): Promise<MachineBoundary> {
 		const restarts = this.#restarts.get(machine);
-		const views = this.#machineViews(machine).filter((view) => view.lease !== undefined);
+		const views = this.#machineViews(machine).flatMap((view) =>
+			view.lease ? [{ viewId: view.lease.viewId, view }] : [],
+		);
+		// A test machine's view whose final may have closed it, with no answer (F3 6b), is closed but kept for that
+		// final: named final again, it asks it again.
+		for (const viewId of final) {
+			const view = this.#views.get(`view:${viewId}`);
+			if (view?.closed && view.finalOut && view.access?.testMachine && view.access.machine === machine)
+				views.push({ viewId, view });
+		}
 		const reports = await Promise.all(
-			views.map(async (view): Promise<MachineViewReport> => {
-				const viewId = view.lease?.viewId ?? "";
+			views.map(async ({ viewId, view }): Promise<MachineViewReport> => {
+				const last = final.includes(viewId);
 				try {
-					const report = await this.#inTurn(view, () => this.#boundary(view, false, final.includes(viewId)));
+					const report = await this.#inTurn(view, () => {
+						if (!last || !view.access?.testMachine) return this.#boundary(view, false, last);
+						// A test machine's last boundary is final: the core closes its view with it. What the quiet period
+						// would have published goes with it.
+						if (view.quiet) clearTimeout(view.quiet);
+						view.quiet = undefined;
+						this.#windows.clear(machine);
+						return this.#boundary(view, true);
+					});
 					return { viewId, report };
 				} catch (error) {
 					if (!(error instanceof ProtocolError))
@@ -649,9 +693,7 @@ export class FolderService {
 			for (const view of left)
 				this.#log(`folder-service: ${view.key}: not stopped cleanly: reads unreleased or changes unpublished`);
 			for (const machine of this.#lostMachines)
-				this.#log(
-					`folder-service: coding machine ${machine}: not stopped cleanly: a read it was served went unreleased`,
-				);
+				this.#log(`folder-service: machine ${machine}: not stopped cleanly: a read it was served went unreleased`);
 			return false;
 		}
 		try {
@@ -855,7 +897,9 @@ export class FolderService {
 			open: async (request) => {
 				// What the path showed before the open: an open of a file is a read of it, as a machine's program logs one.
 				let shown: TreeEntry | undefined;
-				const opened = await this.#change(view, (pending) => {
+				// An open changes the file only when it may make it, or cuts it to nothing.
+				const changes = request.create || request.truncate ? [request.path] : [];
+				const opened = await this.#change(view, changes, (pending) => {
 					const base = this.#base(view, request.path, request.base);
 					shown = pending.get(request.path);
 					return pending.openWrite(request.path, {
@@ -884,20 +928,24 @@ export class FolderService {
 				// with no chunk sent. Its bytes become its own from the origin's chunks first, and the close cuts them.
 				const origin = view.pending?.originToCopy(handle);
 				if (origin && size !== origin.bytes) await this.#beginFromOrigin(view, handle, origin);
-				const node = await this.#change(view, (pending) => pending.close(handle, size));
+				// Its writes were credited as their chunks came: the close changes the file itself only when it cuts it.
+				const file = view.pending?.file(handle);
+				const cuts = file !== undefined && Math.ceil(size / CHUNK_BYTES) < (file.content?.chunks.length ?? 0);
+				const cut = cuts ? this.#pathOfNode(view, file) : undefined;
+				const node = await this.#change(view, cut ? [cut] : [], (pending) => pending.close(handle, size));
 				view.handles.delete(handle);
 				for (const key of [...view.uploads.keys()]) if (key.startsWith(`${handle}:`)) view.uploads.delete(key);
 				const path = node.open === 0 ? this.#pathOfNode(view, node) : undefined;
 				if (path !== undefined) await this.#stage(view, node, path).catch(() => undefined);
 				return { version: node.version };
 			},
-			mkdir: async (path) => this.#change(view, (pending) => pending.mkdir(path)),
+			mkdir: async (path) => this.#change(view, [path], (pending) => pending.mkdir(path)),
 			unlink: async (path, base) =>
-				this.#change(view, (pending) => pending.unlink(path, this.#base(view, path, base))),
+				this.#change(view, [path], (pending) => pending.unlink(path, this.#base(view, path, base))),
 			rmdir: async (path, base) =>
-				this.#change(view, (pending) => pending.rmdir(path, this.#base(view, path, base))),
+				this.#change(view, [path], (pending) => pending.rmdir(path, this.#base(view, path, base))),
 			rename: async (request) =>
-				this.#change(view, (pending) => {
+				this.#change(view, { from: request.from, to: request.to }, (pending) => {
 					const fromBase = this.#base(view, request.from, request.fromBase);
 					const toBase = this.#base(view, request.to, request.toBase);
 					pending.rename(request.from, request.to, {
@@ -907,7 +955,7 @@ export class FolderService {
 					});
 				}),
 			setExecutable: async (path, executable, base) =>
-				this.#change(view, (pending) => {
+				this.#change(view, [path], (pending) => {
 					pending.setExecutable(path, executable, this.#base(view, path, base));
 					// The version the path shows now: a save, so the machine's version map takes it.
 					return { version: pending.get(path)?.version ?? "" };
@@ -1215,6 +1263,7 @@ export class FolderService {
 		view.tree = undefined;
 		view.pending?.clear();
 		view.pending = undefined;
+		view.credit.clear();
 		for (const upload of view.uploads.values()) upload.upload?.abort();
 		view.uploads.clear();
 		view.handles.clear();
@@ -1262,6 +1311,7 @@ export class FolderService {
 		view.closed = "No machine holds the view";
 		view.tree = undefined;
 		view.pending?.clear();
+		view.credit.clear();
 		view.intents.clear();
 		this.#forgetReads(view);
 		if (view.quiet) clearTimeout(view.quiet);
@@ -1276,7 +1326,7 @@ export class FolderService {
 	#forgetReads(view: View): void {
 		const machine = view.access?.machine;
 		if (machine !== undefined && view.unreleased) {
-			this.#log(`folder-service: ${view.key}: reads served to coding machine ${machine} went unreleased`);
+			this.#log(`folder-service: ${view.key}: reads served to machine ${machine} went unreleased`);
 			this.#lostMachines.add(machine);
 			for (const other of this.#machineViews(machine)) other.unproven = true;
 		}
@@ -1562,8 +1612,12 @@ export class FolderService {
 	// ---- Writes (F3 step 3, RUNTIME-FOLDER-WRITES.md) --------------------------------------------------------------
 
 	/** One change to the view's pending changes. A change that needs what is pending published first publishes it,
-	 * then is made again; if it is still blocked then, the machine hears BUSY. */
-	async #change<T>(view: View, change: (pending: PendingView) => T): Promise<T> {
+	 * then is made again; if it is still blocked then, the machine hears BUSY. `changed`: what it changes, for a test
+	 * machine's credits (F3 6b). */
+	async #change<T>(view: View, changed: Changed, change: (pending: PendingView) => T): Promise<T> {
+		// Credited to the command windows open as the machine asked it, before it waits for a boundary: a window that
+		// closes meanwhile keeps it.
+		const tags = this.#windowsOf(view);
 		await this.#quiet(view);
 		const pending = view.pending;
 		if (!pending) throw new ProtocolError(ErrorCode.readOnly, "This view is read-only");
@@ -1583,8 +1637,17 @@ export class FolderService {
 				throw again;
 			}
 		}
+		if (tags && "from" in changed) view.credit.rename(changed.from, changed.to, tags);
+		else if (tags) view.credit.tag(changed, tags);
 		this.#touch(view);
 		return answer;
+	}
+
+	/** What a test machine's change made now is credited to (F3 6b): its open windows' commands, or its starter. None
+	 * for any other view. */
+	#windowsOf(view: View): readonly string[] | undefined {
+		const machine = view.access?.machine;
+		return view.access?.testMachine && machine !== undefined ? this.#windows.tags(machine) : undefined;
 	}
 
 	/** Waits for a running boundary (a change never lands while one is deciding what it publishes), and gets a boundary
@@ -1699,6 +1762,8 @@ export class FolderService {
 	 * starts the gateway's put; the last waits for the gateway, then sets the chunk in the file. A chunk the actor
 	 * holds already is not sent on. */
 	async #chunk(view: View, part: ChunkPart): Promise<void> {
+		// Credited as a change is (#change): to the windows open as the machine sent it.
+		const tags = this.#windowsOf(view);
 		await this.#quiet(view);
 		const pending = view.pending;
 		const staging = this.#staging;
@@ -1771,6 +1836,10 @@ export class FolderService {
 			throw error instanceof ProtocolError
 				? error
 				: new ProtocolError(ErrorCode.unavailable, "The chunk could not be saved now");
+		}
+		if (tags) {
+			const path = this.#pathOfNode(view, pending.file(part.handle));
+			if (path !== undefined) view.credit.tag([path], tags);
 		}
 		this.#touch(view);
 	}
@@ -2027,10 +2096,15 @@ export class FolderService {
 			view.heard = "answered";
 			return { commitId: null, seq: null, paths: [...entries, ...dropped] };
 		}
-		const units = await this.#structured(
+		const structured = await this.#structured(
 			view,
 			plan.units.map((u) => u.unit),
 		);
+		// A test machine's units name the commands they are credited to (F3 6b); asked again, they name the same.
+		const units = structured.map((unit, i): CreditedUnit => {
+			const credits = view.credit.credits(plan.units[i]?.paths ?? []);
+			return credits ? { ...unit, credits } : unit;
+		});
 		const key = `folder-view:${view.key}:${randomUUID()}`;
 		// The version each file this boundary publishes bytes for has now, as the machine heard it.
 		const made = new Map<string, string>();
@@ -2568,6 +2642,8 @@ export class FolderService {
 			}
 		const before = [...pending.nodes().keys()];
 		pending.settle(new Set([...keepAll].filter((p) => pending.nodes().has(p))));
+		// What still waits keeps its credits, to go with it when it is published (F3 6b).
+		view.credit.prune([...pending.nodes().keys(), ...pending.removed().keys()]);
 		if (pending.empty) view.intents.clear();
 		// Nothing left unsaved (a lock or swap file a program still holds is none): the next renewal tells the core so,
 		// and the desktop's seat is free again.

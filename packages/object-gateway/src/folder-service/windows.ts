@@ -106,9 +106,11 @@ export class CreditTags {
 		return ids.size === 0 ? undefined : [...ids].sort();
 	}
 
-	/** After a boundary settled: forgets the paths no longer pending. */
-	prune(pending: (key: string) => boolean): void {
-		for (const key of [...this.#tags.keys()]) if (!pending(key)) this.#tags.delete(key);
+	/** After a boundary settled: forgets every path but these, which are still pending. */
+	prune(pending: Iterable<string>): void {
+		const left = new Set<string>();
+		for (const path of pending) left.add(folderKey(path));
+		for (const key of [...this.#tags.keys()]) if (!left.has(key)) this.#tags.delete(key);
 	}
 
 	clear(): void {
