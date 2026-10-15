@@ -28,10 +28,12 @@ NoNewPrivileges=yes
 #   CAP_SETUID      setresuid to the office account for the command.
 #   CAP_SETGID      setresgid and setgroups to the office account for the command.
 #   CAP_NET_ADMIN   bring lo up in an offline command's new network namespace (a networked command keeps the computer's).
+#   CAP_KILL        the launcher stays root and the command runs as the office account: a stop's SIGTERM and SIGKILL to
+#                   the command's process group, and the signal 0 that checks the pinned shell still runs.
 # No CAP_SETPCAP: the child sets its bounding set and securebits inside the shell's user namespace, with the
 # capabilities the join gives it there.
 # No RestrictNamespaces: the child's last setns is CLONE_NEWUSER, into the shell's user namespace.
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_CHROOT CAP_SYS_PTRACE CAP_SETUID CAP_SETGID CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_CHROOT CAP_SYS_PTRACE CAP_SETUID CAP_SETGID CAP_NET_ADMIN CAP_KILL
 DevicePolicy=closed
 # A command inherits this filter, so it holds the office account's set (AF_UNIX AF_INET AF_INET6 AF_NETLINK), plus
 # AF_VSOCK for the helper's own transport. The child brings lo up through an AF_INET socket, and before exec adds its

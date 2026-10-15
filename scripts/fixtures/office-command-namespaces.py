@@ -54,6 +54,7 @@ from pathlib import Path
 import pwd
 import re
 import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -1065,7 +1066,17 @@ def probe(directory, mode, kind):
         record["afterHelperRestart"] = {"command": alive(command), "setsidChild": bool(setsid) and all(alive(p) for p in setsid),
                                         "starterA": alive(a_pid), "top": alive(top_pid)}
 
-        # The office's stop kills the shell's cgroup, now holding A, the command and its setsid child.
+        if kind == "launcher":
+            # A run's stop, as the helper sends it: SIGTERM to A, which sends the command's process group SIGTERM, then
+            # SIGKILL two seconds later, and ends. A is root and the command the office account, so this needs the helper
+            # unit's CAP_KILL. The setsid child left the group: it lasts until the office's stop.
+            os.kill(a_pid, signal.SIGTERM)
+            settled(lambda: not alive(command) and not alive(a_pid), 10)
+            record["afterLauncherStop"] = {"command": alive(command), "starterA": alive(a_pid),
+                                           "setsidChild": bool(setsid) and all(alive(p) for p in setsid)}
+
+        # The office's stop kills the shell's cgroup, now holding A, the command and its setsid child (with the launcher,
+        # only the setsid child is left by then).
         begun = time.monotonic()
         run("systemctl", "stop", "qorpera-cmdns-shell.service", timeout=100)
         record["stopSeconds"] = round(time.monotonic() - begun, 2)
@@ -1179,6 +1190,9 @@ def checks_for(record, node_errors):
         # helper sees), and the mount namespace it made for it.
         started = st["started"]
         checks["launcherReportedStart"] = started["pid"] == co["pid"] and f"mnt:[{started['mntns']}]" == c["ns"]["mnt"]
+        # The launcher's own stop ends the command's group and then itself; a process that left the group stays.
+        checks["launcherStopEndedGroup"] = record["afterLauncherStop"] == {"command": False, "starterA": False,
+                                                                           "setsidChild": True}
     if record["mode"] == "networked":
         checks.update({
             "sharesComputerNetns": c["ns"]["net"] == so["ns"]["net"],
@@ -1275,6 +1289,8 @@ def synthetic_record(mode, kind):
               "remount": {"list": ["after.txt", "before.txt", "from-command.txt"]}, "nodeHasCommandWrite": True,
               "afterHelperRestart": {"command": True, "setsidChild": True, "starterA": True, "top": False},
               "afterOfficeStop": {"command": False, "setsidChild": False, "starterA": False}}
+    if kind == "launcher":
+        record["afterLauncherStop"] = {"command": False, "starterA": False, "setsidChild": True}
     if mode == "networked":
         record["filterInCommandNetns"] = True
     return record
@@ -1384,6 +1400,8 @@ def selftest():
             })
         else:
             flips["launcherReportedStart"] = lambda r: r["starter"]["started"].update(mntns=4026532302)
+            # A launcher without CAP_KILL: its SIGTERM and SIGKILL to the office account's group fail, and it waits on.
+            flips["launcherStopEndedGroup"] = lambda r: r["afterLauncherStop"].update(command=True, starterA=True)
         if mode == "networked":
             flips.update({
                 "sharesComputerNetns": lambda r: r["command"]["ns"].update(net="net:[1]"),
