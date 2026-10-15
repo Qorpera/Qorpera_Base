@@ -410,7 +410,7 @@ function companyComputerSiteRefusal(action: string, tabId: string | undefined): 
 
 /** A tab showing a secret nothing can hide again goes, with the secret in it. The agent's next action is told its tab
  * closed (never moved to another tab), and the window keeps a tab, as at start. The answer is why it could not, if so. */
-async function closeShowingTab(context: BrowserContext, page: Page): Promise<unknown> {
+export async function closeCompanyComputerShowingTab(context: BrowserContext, page: Page): Promise<unknown> {
 	try {
 		if (context.pages().every((other) => other === page || other.isClosed())) await context.newPage();
 		await page.close();
@@ -861,7 +861,7 @@ export class CompanyComputerGuestAutomation {
 					// Typed where nothing can empty it: the tab goes, with the value in it.
 					const cause =
 						error instanceof CompanyAccountFillRefusedError && error.reason === "ACCOUNT_FILL_LOST"
-							? await closeShowingTab(this.#browser.context, page)
+							? await closeCompanyComputerShowingTab(this.#browser.context, page)
 							: undefined;
 					// The reason, never the value: a page that is not the account's, or a box of the wrong kind.
 					throw new CompanyComputerActionFailedError(
@@ -919,7 +919,7 @@ export class CompanyComputerGuestAutomation {
 						// Shown where nothing can mask it again: the tab goes, with the secret in it.
 						const cause =
 							reason === "VAULT_CAPTURE_NOT_HIDDEN"
-								? await closeShowingTab(this.#browser.context, page)
+								? await closeCompanyComputerShowingTab(this.#browser.context, page)
 								: undefined;
 						// The reason, never the value: another error's message may quote the page.
 						throw new CompanyComputerActionFailedError(

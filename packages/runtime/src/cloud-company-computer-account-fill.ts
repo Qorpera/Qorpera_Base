@@ -249,18 +249,19 @@ export class CompanyComputerFilledValues {
 	}
 
 	/**
-	 * Each value's spellings as patterns; an authenticator code only as a number of its own. Then any text shaped like
-	 * a hook's signing secret (E3c-3), typed by the vault or not: hidden the same way, on every screen.
+	 * Any text shaped like a hook's signing secret (E3c-3), typed by the vault or not, first: hidden whole, so a part of
+	 * one recorded as a value cannot cut it and leave the rest. Then each value's spellings as patterns; an
+	 * authenticator code only as a number of its own.
 	 */
 	#forms(): RegExp[] {
 		return [
+			new RegExp(COMPANY_COMPUTER_SECRET_SHAPE.source, "g"),
 			...this.current().flatMap((value) => {
 				const code = /^\d+$/.test(value);
 				return [...new Set([value, ...companyComputerUrlForms(value)])].map(
 					(form) => new RegExp(code ? `(?<!\\d)${form}(?!\\d)` : form.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"),
 				);
 			}),
-			new RegExp(COMPANY_COMPUTER_SECRET_SHAPE.source, "g"),
 		];
 	}
 }

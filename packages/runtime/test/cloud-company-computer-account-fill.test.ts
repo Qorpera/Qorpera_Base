@@ -398,6 +398,12 @@ describe("filled values on one screen", () => {
 		expect(filled.hide("whsec_A%252BBCDEFGHIJKLMNOP and whsec_Q%25252FRSTUVWXYZ012345")).toBe(
 			"[hidden] and [hidden]",
 		);
+		// A part of a secret recorded as a value (a refused read keeps what it saw) cuts no secret: the whole one goes first.
+		const partial = new CompanyComputerFilledValues();
+		partial.add("whsec_A", "signing_secret");
+		expect(partial.hideText("whsec_A%252BBCDEFGHIJKLMNOP")).toBe("[hidden]");
+		expect(partial.hide(`Signing secret ${secret} Copy`)).toBe("Signing secret [hidden] Copy");
+		expect(partial.hideText(`Moved to https://x.example/?s=${twice}`)).toBe("Moved to https://x.example/?s=[hidden]");
 		for (const text of ["Signing secret whsec_•••••••• Reveal", "Starts with whsec_", "whsec_... (hidden)"])
 			expect(filled.shows(text), text).toBe(false);
 	});

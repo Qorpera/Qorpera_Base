@@ -27,7 +27,8 @@ interface FakeBox {
 
 /** Stripe's endpoint page: `before` until the click, then each of `shown` in turn (the last stays) and the box
  * `revealedBox` until a reload, which shows `reloaded`. Its `boxes` are always there. An element's open shadow root
- * shows `shadow.revealed` after the click and `shadow.reloaded` after a reload, beside a value it does not render. */
+ * shows `shadow.revealed` after the click and `shadow.reloaded` after a reload, beside a value it does not render;
+ * with `shadow.contents`, as text in a wrapper that draws no box (`display: contents`). */
 function fakeStripe(
 	options: {
 		url?: string;
@@ -36,7 +37,7 @@ function fakeStripe(
 		reloaded?: string;
 		boxes?: FakeBox[];
 		revealedBox?: FakeBox;
-		shadow?: { revealed?: string; reloaded?: string };
+		shadow?: { revealed?: string; reloaded?: string; contents?: boolean };
 		inFrame?: boolean;
 		reloadFails?: boolean;
 		clickFails?: boolean;
@@ -102,8 +103,27 @@ function fakeStripe(
 									querySelectorAll: () => [],
 									childNodes: [
 										{ nodeType: 3, textContent: "Signing secret" },
-										{ nodeType: 1, textContent: "", innerText: `${secret}0`, checkVisibility: () => false },
-										{ nodeType: 1, textContent: "", innerText: shadowText, checkVisibility: () => true },
+										{
+											nodeType: 1,
+											textContent: `${secret}0`,
+											innerText: `${secret}0`,
+											checkVisibility: () => false,
+											childNodes: [{ nodeType: 3, textContent: `${secret}0`, laidOut: false }],
+										},
+										options.shadow?.contents
+											? {
+													nodeType: 1,
+													textContent: shadowText,
+													innerText: shadowText,
+													checkVisibility: () => false,
+													childNodes: [{ nodeType: 3, textContent: shadowText }],
+												}
+											: {
+													nodeType: 1,
+													textContent: shadowText,
+													innerText: shadowText,
+													checkVisibility: () => true,
+												},
 									],
 								},
 								hasAttribute: () => false,
@@ -113,6 +133,15 @@ function fakeStripe(
 			(globalThis as { document?: unknown }).document = {
 				body: { innerText: current() },
 				querySelectorAll: () => [...boxes, ...hosts],
+				createRange: () => {
+					let node: { laidOut?: boolean } | undefined;
+					return {
+						selectNodeContents: (text: { laidOut?: boolean }) => {
+							node = text;
+						},
+						getClientRects: () => ({ length: node?.laidOut === false ? 0 : 1 }),
+					};
+				},
 			};
 			return (script as (arg: unknown) => unknown)(arg);
 		}),
@@ -182,13 +211,16 @@ describe("a Stripe hook's signing secret read off its page (E3c-3)", () => {
 	});
 
 	it("reads a value an open shadow root renders, never one it does not", async () => {
-		const stripe = fakeStripe({ shown: [endpoint], shadow: { revealed: `${secret} Hide` } });
-		const seen: string[] = [];
-		await expect(
-			captureCompanyHookSecret(stripe.page, stripe.control, hook, (value) => seen.push(value), timing),
-		).resolves.toBe(secret);
-		expect(seen).not.toContain(`${secret}0`);
-		expect(stripe.calls).toContain("uncover");
+		// Through a wrapper that draws no box too (`display: contents`): its text draws in its place.
+		for (const contents of [false, true]) {
+			const stripe = fakeStripe({ shown: [endpoint], shadow: { revealed: `${secret} Hide`, contents } });
+			const seen: string[] = [];
+			await expect(
+				captureCompanyHookSecret(stripe.page, stripe.control, hook, (value) => seen.push(value), timing),
+			).resolves.toBe(secret);
+			expect(seen).not.toContain(`${secret}0`);
+			expect(stripe.calls).toContain("uncover");
+		}
 	});
 
 	it("refuses a page that is not the hook's site, before anything is clicked or covered", async () => {
@@ -295,10 +327,12 @@ describe("a Stripe hook's signing secret read off its page (E3c-3)", () => {
 	});
 
 	it("keeps the cover on a page that still shows the value after the reload, or cannot reload: the tab must go", async () => {
-		// The value left in an open shadow root counts too: a host's text leaves its shadow root out.
+		// The value left in an open shadow root counts too: a host's text leaves its shadow root out. So does one in a
+		// wrapper there that draws no box.
 		for (const options of [
 			{ reloaded: `${endpoint} ${secret}` },
 			{ shadow: { reloaded: secret } },
+			{ shadow: { reloaded: secret, contents: true } },
 			{ reloadFails: true },
 		]) {
 			const stripe = fakeStripe(options);

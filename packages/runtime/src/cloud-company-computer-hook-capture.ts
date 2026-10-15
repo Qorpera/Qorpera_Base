@@ -196,29 +196,50 @@ interface PageNode {
 	readonly value?: unknown;
 	readonly shadowRoot: PageRoot | null;
 	hasAttribute(name: string): boolean;
-	checkVisibility?(): boolean;
 }
 interface PageRoot {
 	querySelectorAll(selector: string): Iterable<PageNode>;
-	/** A shadow root's own children: elements (1) and text (3). */
-	readonly childNodes?: Iterable<{
-		readonly nodeType: number;
-		readonly textContent: string | null;
-		readonly innerText?: string;
-		checkVisibility?(): boolean;
-	}>;
+	/** A shadow root's own children. */
+	readonly childNodes?: Iterable<PageChild>;
+}
+/** A node in a shadow root: an element (1) or text (3). */
+interface PageChild {
+	readonly nodeType: number;
+	readonly textContent: string | null;
+	readonly innerText?: string;
+	readonly childNodes?: Iterable<PageChild>;
+	checkVisibility?(): boolean;
+}
+interface PageDocument extends PageRoot {
+	readonly body: { innerText: string } | null;
+	createRange?(): { selectNodeContents(node: PageChild): void; getClientRects(): { readonly length: number } };
 }
 
 /**
  * What a person sees on the page's own document: its rendered text and the values its boxes show, in open shadow
- * roots too (a host's text leaves its shadow root out, so each root's rendered children are read). A password box
- * shows dots, and a box the vault filled holds a value of the vault's own, so neither is read.
+ * roots too (a host's text leaves its shadow root out, so each root's rendered children are read, through wrappers
+ * that draw no box of their own). A password box shows dots, and a box the vault filled holds a value of the vault's
+ * own, so neither is read.
  */
 async function readTopDocument(page: Page): Promise<{ url: string; text: string }> {
 	const text: unknown = await page.evaluate((attribute) => {
-		const document = (globalThis as unknown as { document: PageRoot & { body: { innerText: string } | null } })
-			.document;
+		const document = (globalThis as unknown as { document: PageDocument }).document;
 		const parts = [document.body?.innerText ?? ""];
+		const drawn = (node: PageChild): boolean => {
+			const range = document.createRange?.();
+			if (!range) return true;
+			range.selectNodeContents(node);
+			return range.getClientRects().length > 0;
+		};
+		// Read what the browser draws, unless it says it does not: an element with a box by its rendered text. One
+		// without a box shows nothing of its own, but under `display: contents` its children draw in its place, so
+		// each is asked in turn; text by whether it takes space on the page.
+		const rendered = (nodes: Iterable<PageChild> | undefined): void => {
+			for (const child of nodes ?? [])
+				if (child.nodeType === 1 && child.checkVisibility?.() !== false) parts.push(child.innerText ?? "");
+				else if (child.nodeType === 1) rendered(child.childNodes);
+				else if (child.nodeType === 3 && drawn(child)) parts.push(child.textContent ?? "");
+		};
 		const walk = (root: PageRoot): void => {
 			for (const node of root.querySelectorAll("*")) {
 				if (
@@ -230,10 +251,7 @@ async function readTopDocument(page: Page): Promise<{ url: string; text: string 
 				)
 					parts.push(node.value);
 				if (!node.shadowRoot) continue;
-				// Read unless the browser says it is not rendered: text there is the host's to show.
-				for (const child of node.shadowRoot.childNodes ?? [])
-					if (child.nodeType === 1 && child.checkVisibility?.() !== false) parts.push(child.innerText ?? "");
-					else if (child.nodeType === 3 && node.checkVisibility?.() !== false) parts.push(child.textContent ?? "");
+				rendered(node.shadowRoot.childNodes);
 				walk(node.shadowRoot);
 			}
 		};
