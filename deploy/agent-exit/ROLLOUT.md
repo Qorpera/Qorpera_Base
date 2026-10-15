@@ -36,9 +36,10 @@ Each check changes nothing. Every one must hold on both nodes before step 1.
 A node that already runs the exit from an earlier release takes E3 alone instead: `README.md`, "Adding E3 to a node
 that runs the exit" (its steps, check and undo). One that runs E3 already takes E7 alone: "Adding E7 to a node that
 runs the exit", and one that runs E7 takes E8b alone: "Adding E8b to a node that runs the exit", then E8b-2 (step 9).
-One that runs E8b takes step 9 alone. A fresh node gets E7 with this step, its brake off (step 4c), the rules reader,
-off until its login is placed (step 8), and the names reconciler of E8b-2, which gives each company with rules its own
-resolver once the reader runs.
+One that runs E8b takes step 9 alone, and one that runs E8b-2 takes step 10 alone. A fresh node gets E7 with this
+step, its brake off (step 4c), the rules reader, off until its login is placed (step 8), and the names reconciler of
+E8b-2 and E8c-1, which gives each company with rules its own resolver once the reader runs and holds a company in
+"only listed" mode to its list (step 10 says when that company's resolver restarts).
 
 First the NAS for the logs (E3): the mount unit of `README.md`, "The mount", written to
 `/etc/systemd/system/srv-qorpera-agent\x2dexit\x2dlogs.mount`, then:
@@ -300,6 +301,10 @@ The demand's refusal list keeps `NODE_AGENT_EXIT_UNHEALTHY`; nothing writes it o
   candidate is left). Repair: `systemctl reload qorpera-agent-exit.service` (`README.md`, "Health and failure").
 - The Company Computer's second card comes with E6 and the next office image (step 7); until then its browser keeps
   its own network.
+- "Only listed" (E8c-1): when a company switches mode or narrows its list, its resolver restarts (about a second
+  without names) and, unless it is now "open", its machines' connections end. A wider list only reloads it. The
+  exit's reload empties the only-listed sets: until a machine asks for a name again, its new connections to that
+  name's address are refused.
 
 ## Step 7 (E6): the Company Computer's agent card, with the next office image
 
@@ -372,17 +377,67 @@ E8b-2 to a node that runs the exit", says why this order):
 bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules
 systemctl enable --now qorpera-agent-exit-names.service
 systemctl reload qorpera-agent-exit.service
-systemctl restart qorpera-agent-plug.service
+systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service
 ```
+
+From a release with E8c-1 this brings it too: the reload's rules send each machine on by the map `reach`, so a company
+in "only listed" mode reaches its listed names only, over TCP 443 (README.md, "Where a company's machines may go").
 
 Check, within 30 seconds:
 - `X verify` prints `qorpera-agent-exit: healthy`;
 - `cat /run/qorpera-agent-exit/names.json` shows `"problems": []`, a resolver (port) for each plugged company with
   rules and each verified machine in `mapped` (its company's port, or 53 for a company without rules);
 - `systemctl list-units 'qorpera-agent-exit-resolver@*'` lists those resolvers `active`;
-- `X status` lists the exit's map `dns_port` with the same addresses and ports.
+- `X status` lists the exit's map `dns_port` with the same addresses and ports;
+- with E8c-1, `ip netns exec qexit nft list map inet qorpera_agent_exit reach` has an element for each verified machine.
 
 Undo: from a checkout of the previous release, `install-agent-exit.sh` with its reader package, then
 `systemctl reload qorpera-agent-exit.service`, `systemctl disable --now qorpera-agent-exit-names.service`,
-`systemctl stop 'qorpera-agent-exit-resolver@*.service'` and `systemctl restart qorpera-agent-plug.service`: every
-machine's DNS goes to the main dnsmasq again.
+`systemctl stop 'qorpera-agent-exit-resolver@*.service'`,
+`rm -f /run/qorpera-agent-exit/names/*.mode /run/qorpera-agent-exit/names/*.owed` (E8c-1's; so a later step 9
+restarts the "only listed" resolvers again) and
+`systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service`: every machine's DNS goes to the main
+dnsmasq again, and every machine goes out as before.
+
+## Step 10 (E8c-1): "only listed" by address, on a node that runs E8b-2
+
+For a node that took step 9 from a release before E8c-1; one that takes step 9 from a release with E8c-1 has it
+already. Per node, node 1 then node 2. Only while the node's rules reader runs (`"ok":true` and a fresh `readAt`):
+without rules a machine reaches nothing outside. No kernel module is loaded. As root, from the checkout of the release
+head with the reader's package built, in one go (`README.md`, "Adding E8c-1 to a node that runs the exit"):
+
+```bash
+bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules
+systemctl restart qorpera-agent-exit-names.service
+systemctl reload qorpera-agent-exit.service
+systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service
+```
+
+What the companies see:
+- a company in "only listed" mode has its resolver restarted once, when the names reconciler restarts: about a second
+  in which its machines get no names, and from then on every name not listed is "no such name". Once the reload is
+  done its machines' connections end, and they reach the addresses of their listed names over TCP 443 only;
+- later, the same restart (about a second without names) happens whenever a company switches mode either way, or
+  narrows its "only listed" list. Its machines' connections end too, unless it switched to "open". A wider list only
+  reloads the resolver, with no gap and no connection ended;
+- every later reload of the exit (`systemctl reload qorpera-agent-exit.service`, `up`) empties the only-listed sets: a
+  machine's new connections to a listed name's address are refused until it asks for that name again (the reconciler
+  reloads the resolvers, which empties their caches, within seconds);
+- companies in "open" mode and without rules see nothing new.
+
+Check, within 30 seconds:
+- `X verify` prints `qorpera-agent-exit: healthy`;
+- `cat /run/qorpera-agent-exit/names.json` shows `"problems": []`;
+- `ip netns exec qexit nft list map inet qorpera_agent_exit reach` has an element for each verified machine: `goto
+  open`, or `goto only_<port>` for a company in "only listed" mode (its port in `names.json`'s `resolvers`);
+- for each such company, `cat /run/qorpera-agent-exit/names/<port>.mode` says `only-listed` and no `<port>.owed` is
+  left in that folder.
+
+Undo: from a checkout of the previous release, `install-agent-exit.sh` with its reader package, then
+`systemctl reload qorpera-agent-exit.service` (its rules let every machine out as before),
+`systemctl restart qorpera-agent-exit-names.service`,
+`rm -f /run/qorpera-agent-exit/names/*.mode /run/qorpera-agent-exit/names/*.owed` (so a later step 10 restarts the
+"only listed" resolvers again), `systemctl stop 'qorpera-agent-exit-resolver@*.service'` (the names reconciler starts
+each again on its port, as the previous release runs it) and
+`systemctl restart qorpera-agent-plug.service qorpera-agent-exit-log.service`. An "only listed" company then has its
+block list enforced and every other name answered again.
