@@ -386,6 +386,39 @@ describe("writes through the mount", () => {
 		expect(core.entries.has("plan.md")).toBe(false);
 	});
 
+	it("publishes a save first when the file another machine renamed only in case beside it is moved away", async () => {
+		const { root, core, service, open } = await fixture();
+		core.seed([await storeFile(root, "plan.md", "v1", 1, BIG)]);
+		const view = await open();
+		const old = core.entries.get("plan.md")!;
+		await write(view, "plan.md.new", "mine");
+		await view.rename({ from: "plan.md.new", to: "plan.md", toBase: old.version, noReplace: false });
+		core.commitChanges([
+			{ ...old, op: "move_out" },
+			{ ...old, path: "Plan.md", version: v(8), op: "move_in", priorVersion: old.version },
+		]);
+		await service.poll();
+		await service.settled();
+		// The new name moved away, then removed: the save publishes first (a conflict), so removing what moved never
+		// leaves the save replacing v8 in place of the version it saw.
+		await view.rename({ from: "Plan.md", to: "moved.md", fromBase: v(8), noReplace: false });
+		expect(core.commits).toHaveLength(1);
+		expect(core.commits[0]!.units).toEqual([
+			expect.objectContaining({ op: "write", path: "plan.md", expectedVersion: old.version }),
+		]);
+		expect([...core.copies.values()].flat()).toEqual([expect.objectContaining({ path: "plan.md", kind: "file" })]);
+		await view.unlink("moved.md", v(8));
+		expect((await view.publish()).paths).toEqual([{ path: "Plan.md", outcome: "saved" }]);
+		expect(core.commits.at(-1)!.units).toEqual([
+			expect.objectContaining({ op: "delete", path: "Plan.md", expectedVersion: v(8) }),
+		]);
+		expect(core.entries.has("Plan.md")).toBe(false);
+		expect(core.entries.has("plan.md")).toBe(false);
+		expect(core.entries.has("moved.md")).toBe(false);
+		for (const unit of core.commits.flatMap((c) => c.units))
+			expect(unit).not.toMatchObject({ path: "plan.md", expectedVersion: v(8) });
+	});
+
 	it("keeps a stale save as a conflict when the service restarted between the read and the save", async () => {
 		const { root, core, open, restart } = await fixture();
 		core.seed([await storeFile(root, "plan.md", "v1", 1, BIG)]);

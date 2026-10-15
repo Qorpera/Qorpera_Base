@@ -115,14 +115,28 @@ function setup(paths: Record<string, Content>) {
 			seq++;
 			view.liveChanged([path]);
 		},
-		/** Another machine's move of a file (a rename only in case, too): a new version at the new path. */
-		move(from: string, to: string) {
-			const e = state.get(folderKey(from))!;
-			state.delete(folderKey(from));
-			state.set(folderKey(to), { ...e, path: to, version: version() });
+		/** Another machine's new files, folders and links. */
+		make(paths: Record<string, Content>) {
+			for (const [key, e] of folderOf(paths)) state.set(key, e);
 			tree = treeOf(state);
 			seq++;
-			view.liveChanged([from, to]);
+			view.liveChanged(Object.keys(paths));
+		},
+		/** Another machine's move of a file, or a folder with what is in it (a rename only in case, too): a new version
+		 * at each new path. */
+		move(from: string, to: string) {
+			const key = folderKey(from);
+			const moved = [...state].filter(([k]) => k === key || k.startsWith(`${key}/`)).map(([, e]) => e);
+			for (const e of moved) state.delete(folderKey(e.path));
+			const paths: string[] = [];
+			for (const e of moved) {
+				const path = to + e.path.slice(from.length);
+				state.set(folderKey(path), { ...e, path, version: version() });
+				paths.push(e.path, path);
+			}
+			tree = treeOf(state);
+			seq++;
+			view.liveChanged(paths);
 		},
 		/** Publishes the boundary: every unit must save, and the folder must then be what the view showed (but what the
 		 * boundary keeps pending). */
@@ -631,11 +645,12 @@ describe("a view's pending changes", () => {
 		f.move("plan.md", "Plan.md");
 		const moved = f.view.get("Plan.md")!.version;
 		write(f.view, "next.tmp", "next");
-		// A second save renamed over the new name, an edit, a mode change or a removal there would pair with the save's
-		// replacement by folded key.
+		// A second save renamed over the new name, an edit, a mode change, a move away (removed or replaced later) or a
+		// removal there would pair with the save's replacement by folded key.
 		publishFirst(() => f.view.rename("next.tmp", "Plan.md", { noReplace: false, toBase: moved }));
 		publishFirst(() => write(f.view, "Plan.md", "edited", { base: moved }));
 		publishFirst(() => f.view.setExecutable("Plan.md", true, moved));
+		publishFirst(() => f.view.rename("Plan.md", "moved.md", { noReplace: false, fromBase: moved }));
 		publishFirst(() => f.view.unlink("Plan.md", moved));
 		// Nothing changed: the save still replaces the version it saw (the core's conflict), the new name stays live.
 		const units = f.plan().units.map((u) => u.unit);
@@ -650,6 +665,75 @@ describe("a view's pending changes", () => {
 			units.map((u) => (u.op === "write" && u.path === "plan.md" ? "conflict" : "saved")),
 		);
 		expect(f.view.get("Plan.md")!.version).toBe(moved);
+	});
+
+	it("publishes first a new name at a path, or below a folder, that a pending one spells otherwise", () => {
+		const f = setup({ "v2.md": "two", Docs: null });
+		write(f.view, "Docs/new.md", "mine");
+		f.view.mkdir("site");
+		// Another machine renames the folder only in case, and makes a folder the new one's name spells otherwise.
+		f.move("Docs", "docs");
+		f.make({ Site: null, "Site/latest": { link: "v1.md" } });
+		// In the core a new name there is the pending file's path, or goes into the pending folder's unit (a conflict).
+		publishFirst(() => write(f.view, "docs/new.md", "again"));
+		publishFirst(() => f.view.symlink("Site/CuXXXXXX", "v2.md"));
+		publishFirst(() => f.view.mkdir("Site/sub"));
+		publishFirst(() => f.view.link("v2.md", "Site/v2.md", undefined, () => undefined));
+		publishFirst(() => f.view.rename("v2.md", "Site/v2.md"));
+		// Inside the pending folder itself a new name is its own.
+		write(f.view, "site/index.html", "<p>");
+		const units = f.plan().units.map((u) => u.unit);
+		expect(units).toHaveLength(2);
+		expect(units).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ op: "write", path: "Docs/new.md" }),
+				expect.objectContaining({
+					op: "new_folder",
+					path: "site",
+					contents: [expect.objectContaining({ path: "index.html", kind: "file" })],
+				}),
+			]),
+		);
+		expect(f.commit(units)).toEqual(units.map((u) => (u.op === "new_folder" ? "conflict" : "saved")));
+	});
+
+	it("publishes first the move or removal of a folder another machine renamed only in case after a change in it", () => {
+		const f = setup({ docs: null, "docs/a.md": "a", notes: null });
+		const base = f.view.get("docs/a.md")!.version;
+		write(f.view, "docs/a.md", "mine", { base });
+		write(f.view, "notes/new.md", "new");
+		f.move("docs", "Docs");
+		f.move("notes", "Notes");
+		// Neither change shows under the new spelling, but in the core each is in the folder.
+		expect(Object.keys(shown(f.view)).sort()).toEqual(["Docs", "Docs/a.md", "Notes"]);
+		publishFirst(() => f.view.rename("Docs", "docs"));
+		publishFirst(() => f.view.rename("Notes", "elsewhere"));
+		publishFirst(() => f.view.rmdir("Notes"));
+		const units = f.plan().units.map((u) => u.unit);
+		expect(units).toHaveLength(2);
+		expect(units).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ op: "write", path: "docs/a.md", expectedVersion: base }),
+				expect.objectContaining({ op: "write", path: "notes/new.md" }),
+			]),
+		);
+		// The save conflicts (the move made a new version); the new file goes into the folder.
+		expect(f.commit(units)).toEqual(
+			units.map((u) => (u.op === "write" && u.path === "docs/a.md" ? "conflict" : "saved")),
+		);
+	});
+
+	it("folds a name never published with nothing", () => {
+		const f = setup({ "plan.md": "v1" });
+		write(f.view, "notes.md.swp", "swap");
+		f.create("notes.md.SWP", "theirs");
+		const theirs = f.view.get("notes.md.SWP")!.version;
+		// A swap file is no unit, so a save at a published name it spells otherwise does not wait for it.
+		write(f.view, "notes.md.SWP", "mine", { base: theirs });
+		expect(f.publish()).toEqual([
+			{ op: "write", path: "notes.md.SWP", file: expect.any(Object), expectedVersion: theirs },
+		]);
+		expect(f.view.get("notes.md.swp")).toMatchObject({ kind: "file", bytes: 4 });
 	});
 
 	it("refuses at once what the folder never takes, folded as the core folds", () => {

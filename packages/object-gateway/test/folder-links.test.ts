@@ -416,6 +416,77 @@ describe("links on protocol 4", () => {
 			expect(unit).not.toMatchObject({ path: "docs/latest", expectedVersion: v(8) });
 	});
 
+	it("publishes `ln -sf`'s link first when the old one another machine renamed only in case beside it is moved away", async () => {
+		const { core, service, open } = await fixture();
+		core.seed([folder("docs"), link("docs/latest", "v1.md", 3)]);
+		const view = await open();
+		const made = await view.symlink("docs/CuXXXXXX", "v2.md");
+		await view.rename({
+			from: "docs/CuXXXXXX",
+			fromBase: made.version,
+			to: "docs/latest",
+			toBase: v(3),
+			noReplace: false,
+		});
+		const old = core.entries.get("docs/latest")!;
+		core.commitChanges([
+			{ ...old, op: "move_out" },
+			{ ...old, path: "docs/LATEST", version: v(8), op: "move_in", priorVersion: old.version },
+		]);
+		await service.poll();
+		await service.settled();
+		// The new name moved away, then removed: the link publishes first (a conflict), so removing what moved never
+		// leaves the link replacing v8 in place of the version it saw.
+		await view.rename({ from: "docs/LATEST", fromBase: v(8), to: "docs/old", noReplace: false });
+		expect(core.commits).toHaveLength(1);
+		expect(core.commits[0]!.units).toEqual([
+			{ op: "symlink", path: "docs/latest", target: "v2.md", expectedVersion: v(3) },
+		]);
+		expect([...core.copies.values()].flat()).toEqual([
+			expect.objectContaining({ path: "docs/latest", kind: "symlink", target: "v2.md" }),
+		]);
+		expect(names(await view.list("docs", undefined))).toEqual(["old"]);
+		await view.unlink("docs/old", undefined);
+		expect((await view.publish()).paths).toEqual([{ path: "docs/LATEST", outcome: "saved" }]);
+		expect(core.commits.at(-1)!.units).toEqual([
+			expect.objectContaining({ op: "delete", path: "docs/LATEST", expectedVersion: v(8) }),
+		]);
+		expect(core.entries.has("docs/LATEST")).toBe(false);
+		expect(core.entries.has("docs/latest")).toBe(false);
+		expect(core.entries.has("docs/old")).toBe(false);
+		for (const unit of core.commits.flatMap((c) => c.units))
+			expect(unit).not.toMatchObject({ path: "docs/latest", expectedVersion: v(8) });
+	});
+
+	it("publishes a new folder first when `ln -sf` runs in one another machine made, spelled otherwise", async () => {
+		const { core, service, open } = await fixture();
+		const view = await open();
+		await view.mkdir("docs");
+		core.commitChanges([
+			{ ...folder("Docs", 5), op: "mkdir" },
+			{ ...link("Docs/latest", "v1.md", 6), op: "write" },
+		]);
+		await service.poll();
+		await service.settled();
+		// In the core the new link would go into the pending folder's unit: the folder publishes first.
+		const made = await view.symlink("Docs/CuXXXXXX", "v2.md");
+		expect(core.commits).toHaveLength(1);
+		expect(core.commits[0]!.units).toEqual([{ op: "mkdir", path: "docs" }]);
+		await view.rename({
+			from: "Docs/CuXXXXXX",
+			fromBase: made.version,
+			to: "Docs/latest",
+			toBase: v(6),
+			noReplace: false,
+		});
+		expect((await view.publish()).paths).toEqual([{ path: "Docs/latest", outcome: "saved" }]);
+		expect(core.commits.at(-1)!.units).toEqual([
+			{ op: "symlink", path: "Docs/latest", target: "v2.md", expectedVersion: v(6) },
+		]);
+		expect(core.entries.get("Docs/latest")).toMatchObject({ kind: "symlink", target: "v2.md" });
+		expect(core.entries.has("Docs/CuXXXXXX")).toBe(false);
+	});
+
 	it("makes a hard link to a live file a write of the source's own reference, putting no byte again", async () => {
 		const { root, core, uploads, open } = await fixture();
 		const source = await storeFile(root, "docs/a.md", "alpha", 2, BIG);

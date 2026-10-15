@@ -156,13 +156,17 @@ before what goes in it. Then:
 **Changes that publish what is pending first.** A change that could not be published together with what is pending
 first publishes what is pending (a boundary, as when the machine asks), then is made on the live folder. These are:
 - any change inside a folder this view moved (the move publishes first, then the change lands at the new path);
-- moving or removing a folder with changes inside it, or one something was moved out of;
+- moving or removing a folder with changes inside it, or one something was moved out of (inside it spelled in any
+  case: a change made before another machine renamed it only in case is inside it in the core);
 - reusing a path a moved or removed folder left (`rm -rf D; mkdir D`);
 - changing a file this view moved, or moving a file this view changed;
 - the move that would close a ring of moves taking each other's places (a swap, `mv a t; mv b a; mv t b`);
 - a change at a path that a pending file, link or folder spells otherwise (another machine renamed the live one only in
-  case beside it): a save renamed over the new spelling, or an edit, mode change or removal there, would be a second
-  unit at one path in the core, and a replacement's base must stay the one its own save saw.
+  case beside it): a save renamed over the new spelling, or an edit, mode change, move away or removal there, would be
+  a second unit at one path in the core, and a replacement's base must stay the one its own save saw. (A move away
+  counts: removing or replacing the moved entry later removes it at its live path.) So does a new name there, or below
+  a folder a pending new one spells otherwise (another machine made or renamed the live one beside it): in the core it
+  would be the pending path, or go into the new folder's unit. A name never published folds with nothing.
 If what blocks it is still pending after that boundary (a file open for writing inside the folder being moved), the
 change fails with `EBUSY`. The machine sees the change take longer; nothing else differs.
 

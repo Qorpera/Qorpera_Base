@@ -427,13 +427,30 @@ export class PendingView {
 		}
 	}
 
-	/** Pending changes at or below the live folder `path`: nodes below it, or entries moved out from below it. */
+	/** Pending changes at or below the live folder `path`: nodes below it, or entries moved out from below it. By folded
+	 * key: a change made under the folder before another machine renamed it only in case is below it in the core. */
 	#pendingBelow(path: string, live: string): boolean {
-		for (const p of this.#nodes.keys()) if (p !== path && within(p, path)) return true;
+		const key = folderKey(path);
+		const liveKey = folderKey(live);
+		for (const p of this.#nodes.keys()) if (p !== path && within(folderKey(p), key)) return true;
 		for (const node of this.#nodes.values())
-			if (node.kind !== "gone" && node.origin && node.origin.path !== live && within(node.origin.path, live))
+			if (
+				node.kind !== "gone" &&
+				node.origin &&
+				node.origin.path !== live &&
+				within(folderKey(node.origin.path), liveKey)
+			)
 				return true;
-		for (const p of this.#removed.keys()) if (p !== live && within(p, live)) return true;
+		for (const p of this.#removed.keys()) if (p !== live && within(folderKey(p), liveKey)) return true;
+		return false;
+	}
+
+	/** A pending file, link or folder below the folder `path` by folded key. One made in it before another machine
+	 * renamed it only in case does not show in it, but in the core it is in it. A name never published is no unit. */
+	#hiddenBelow(path: string): boolean {
+		const key = folderKey(path);
+		for (const [p, node] of this.#nodes)
+			if (node.kind !== "gone" && !unpublished(p) && folderKey(p).startsWith(`${key}/`)) return true;
 		return false;
 	}
 
@@ -680,6 +697,8 @@ export class PendingView {
 		// What moved out of it publishes first: its removal must not be able to take them if their moves fail.
 		if (r.kind === "live" && this.#movesOutBelow(r.source))
 			throw new PublishFirst("removing a folder something was moved out of");
+		if (r.kind === "live" && this.#hiddenBelow(path))
+			throw new PublishFirst("removing a folder with changes inside it");
 		if (r.kind === "live" && this.#foldsWithPending(path))
 			throw new PublishFirst("a change at a path a pending one spells otherwise");
 		this.#remove(r, base);
@@ -728,7 +747,7 @@ export class PendingView {
 			if (target.kind === "live" && target.entry.kind === "folder" && this.#pendingBelow(to, target.source))
 				throw new PublishFirst("replacing a folder with changes inside it");
 		} else {
-			if (folderKey(from) !== folderKey(to)) this.#newName(to);
+			if (folderKey(from) !== folderKey(to)) this.#newName(to, from);
 			if (this.#freedFolder(to)) throw new PublishFirst("reusing a path a folder this view moved or removed left");
 			// Moves that take each other's places (a swap, a ring) publish one at a time.
 			const origin = source.kind === "live" ? source.source : source.node.origin?.path;
@@ -736,6 +755,10 @@ export class PendingView {
 				throw new PublishFirst("moves that take each other's places");
 		}
 		if (this.#foldsWithPending(to, from)) throw new PublishFirst("a change at a path a pending one spells otherwise");
+		// A live entry moved away is removed from its live path once the move is removed or replaced in turn.
+		const leaves = source.kind === "live" ? source.source : source.node.origin?.path;
+		if (leaves !== undefined && this.#foldsWithPending(leaves, from))
+			throw new PublishFirst("a change at a path a pending one spells otherwise");
 		// The moving node: a pending one as it is, or one made from the live entry, at the writer's base.
 		let node: PendingFile | PendingFolder | PendingLink;
 		if (source.kind === "node") node = source.node;
@@ -818,8 +841,9 @@ export class PendingView {
 	// ---- Inside ----------------------------------------------------------------------------------------------------
 
 	/** A new name in an existing folder: allowed, and not a sibling's spelled otherwise (`EEXIST`); a path a moved or
-	 * removed live folder left publishes what is pending first. */
-	#newName(path: string): void {
+	 * removed live folder left, or one a pending file, link or folder spells otherwise, or a folder above it (beside a
+	 * live one another machine made or renamed), publishes what is pending first. `except`: what a rename moves from. */
+	#newName(path: string, except?: string): void {
 		const parent = this.resolve(parentOf(path));
 		if (!parent) fail(ErrorCode.notFound, "No such folder");
 		if ((parent.kind === "live" ? parent.entry.kind : parent.node.kind) !== "folder")
@@ -832,16 +856,25 @@ export class PendingView {
 			if (name !== nameOf(path) && folderKey(name) === key && this.resolve(join(parentOf(path), name)))
 				fail(ErrorCode.exists, "A path differing only in case exists");
 		if (this.#freedFolder(path)) throw new PublishFirst("reusing a path a folder this view moved or removed left");
+		// Under a parent spelled otherwise, a pending one at its path is no sibling: in the core it is the same path, or
+		// a new folder this name would go into.
+		let at = "";
+		for (const name of path.split("/")) {
+			at = join(at, name);
+			if (this.#foldsWithPending(at, except))
+				throw new PublishFirst("a change at a path a pending one spells otherwise");
+		}
 	}
 
 	/** A file, link or folder pending at a path spelled otherwise than `path` that folds alike (beside a live entry
 	 * another machine renamed only in case): its unit and one made at `path` would be at one path in the core, where a
-	 * new one's base is the removal at that folded key, so what is pending publishes first. `except`: what a rename
-	 * moves from. */
+	 * new one's base is the removal at that folded key, so what is pending publishes first. A name never published is
+	 * no unit, so it folds with nothing. `except`: what a rename moves from. */
 	#foldsWithPending(path: string, except?: string): boolean {
+		if (unpublished(path)) return false;
 		const key = folderKey(path);
 		for (const [p, node] of this.#nodes)
-			if (p !== path && p !== except && node.kind !== "gone" && folderKey(p) === key) return true;
+			if (p !== path && p !== except && node.kind !== "gone" && !unpublished(p) && folderKey(p) === key) return true;
 		return false;
 	}
 
