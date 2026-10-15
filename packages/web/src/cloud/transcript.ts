@@ -322,7 +322,7 @@ function messageFromEntry(entry: Entry, event: HostedSessionEvent, legacy: boole
 }
 
 /** An event a member erased (20260930441000): the cloud replaces its body with exactly `{"erased": true}`. */
-function isErased(body: JsonValue): boolean {
+export function isErased(body: JsonValue): boolean {
 	const record = asRecord(body);
 	return record?.erased === true && Object.keys(record).length === 1;
 }

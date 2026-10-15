@@ -12,6 +12,7 @@ import { CloudRpcError } from "../src/cloud/client.ts";
 import type { CodingSession } from "../src/cloud/coding-session.ts";
 import { createWebSessionRunControl } from "../src/cloud/session-run-control.ts";
 import type { TranscriptItem, TranscriptMessage } from "../src/cloud/transcript.ts";
+import type { HostedSessionEvent } from "../src/cloud/types.ts";
 import appCss from "../src/styles/app.css?raw";
 import conversationCss from "../src/styles/conversation.css?raw";
 import tokensCss from "../src/styles/tokens.css?raw";
@@ -21,6 +22,7 @@ import { markdown, markdownBubbles } from "../src/ui/markdown.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
 import {
 	deferred,
+	event,
 	fixture,
 	id,
 	placeholderLabel,
@@ -263,6 +265,120 @@ describe("conversation UI boundaries", () => {
 		const bubbles = messages.map((message) => message.querySelector(".bubble")?.textContent);
 		expect(bubbles).toEqual(["(erased)", "(erased)"]);
 		expect(messages.every((message) => message.classList.contains("message-erased"))).toBe(true);
+	});
+	/** A thread the controller reads from a cloud whose `history` and erasure `generation` the test changes; `hold`
+	 * keeps the forward read after one sequence on its way until released. */
+	async function erasable(history: HostedSessionEvent[], generation: number) {
+		const f = fixture();
+		const server: {
+			history: HostedSessionEvent[];
+			generation: number;
+			hold?: { after: number; reached: ReturnType<typeof deferred<void>>; until: Promise<void> };
+		} = { history, generation };
+		vi.mocked(f.api.readSessionEvents).mockImplementation(async (_session, after = 0) => {
+			if (server.hold?.after === after) {
+				server.hold.reached.resolve();
+				await server.hold.until;
+			}
+			return server.history.filter((item) => item.sequence > after);
+		});
+		vi.mocked(f.api.readSessionMemoryGeneration).mockImplementation(async () => server.generation);
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+		const view = new ConversationView(company, session.sessionId, {});
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			company.stop();
+		};
+		await settle();
+		const bubbles = () =>
+			[...view.el.querySelectorAll(".message")].map((message) => message.querySelector(".bubble")?.textContent);
+		return { ...f, server, company, bubbles };
+	}
+	const erasedCopy = (item: HostedSessionEvent): HostedSessionEvent => ({ ...item, body: { erased: true } });
+	it("draws a message it showed as (erased) once a full read finds the erase; no read brings it back", async () => {
+		const before = event(1, "Before");
+		const reply = event(2, "Reply");
+		const f = await erasable([before, reply], 0);
+		expect(f.bubbles()).toEqual(["Before", "Reply"]);
+		// The erase rewrites the event in place, under the same sequence, and raises the generation.
+		f.server.history = [erasedCopy(before), reply];
+		f.server.generation = 1;
+		// A read of new events only does not see it; the next full read (the open thread's clock) does.
+		await f.company.loadConversation(session.sessionId, { eventsOnly: true });
+		expect(f.bubbles()).toEqual(["Before", "Reply"]);
+		vi.mocked(f.api.readSessionEvents).mockClear();
+		await f.company.loadConversation(session.sessionId);
+		await settle();
+		expect(f.bubbles()).toEqual(["(erased)", "Reply"]);
+		expect(vi.mocked(f.api.readSessionEvents).mock.calls.map((call) => call[1])).toEqual([2, 0]);
+		// A later erase, read beside a copy of the first message from before its erase: that copy does not bring the
+		// words back.
+		f.server.history = [before, erasedCopy(reply)];
+		f.server.generation = 2;
+		await f.company.loadConversation(session.sessionId);
+		await settle();
+		expect(f.bubbles()).toEqual(["(erased)", "(erased)"]);
+		// The same generation again reads only what came after.
+		vi.mocked(f.api.readSessionEvents).mockClear();
+		await f.company.loadConversation(session.sessionId);
+		expect(vi.mocked(f.api.readSessionEvents).mock.calls.map((call) => call[1])).toEqual([2]);
+	});
+	it("reads a thread again when its first read finds a generation an erase may have raised meanwhile", async () => {
+		const before = event(1, "Before");
+		const f = fixture();
+		// The first read of the history is from before the erase; the generation read beside it is from after.
+		vi.mocked(f.api.readSessionEvents)
+			.mockResolvedValueOnce([before])
+			.mockResolvedValue([erasedCopy(before)]);
+		vi.mocked(f.api.readSessionMemoryGeneration).mockResolvedValue(1);
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+		const view = new ConversationView(company, session.sessionId, {});
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			company.stop();
+		};
+		await settle();
+		expect([...view.el.querySelectorAll(".message .bubble")].map((bubble) => bubble.textContent)).toEqual([
+			"(erased)",
+		]);
+		expect(company.conversation(session.sessionId).get().memoryGeneration).toBe(1);
+	});
+	it.each([
+		["after the thread was read again", false],
+		["while the thread is read again", true],
+	] as const)("reads every event again when a Show earlier from before an erase lands %s", async (_when, during) => {
+		const f = await erasable([event(5, "Five")], 0);
+		const state = f.company.conversation(session.sessionId);
+		// The thread opened at its newest events: older ones wait for Show earlier.
+		state.set({ hasEarlier: true });
+		const earlier = deferred<HostedSessionEvent[]>();
+		vi.mocked(f.api.readSessionEventsTail).mockReturnValue(earlier.promise);
+		const showing = f.company.loadEarlier(session.sessionId);
+		// Meanwhile an older message is erased; a full read finds it and reads what the thread has (event 5 on) again.
+		f.server.history = [erasedCopy(event(3, "Three")), event(5, "Five")];
+		f.server.generation = 1;
+		const until = deferred<void>();
+		if (during) f.server.hold = { after: 4, reached: deferred<void>(), until: until.promise };
+		const loading = f.company.loadConversation(session.sessionId);
+		if (f.server.hold) await f.server.hold.reached.promise;
+		else await loading;
+		// Show earlier lands with its copy from before the erase.
+		earlier.resolve([event(3, "Three")]);
+		await showing;
+		until.resolve();
+		await loading;
+		await settle();
+		expect(f.bubbles()).toEqual(["Three", "Five"]);
+		expect(state.get().memoryGeneration).toBeUndefined();
+		// The next full read reads every event again.
+		await f.company.loadConversation(session.sessionId);
+		await settle();
+		expect(f.bubbles()).toEqual(["(erased)", "Five"]);
+		expect(state.get().memoryGeneration).toBe(1);
 	});
 	it("closes attachment previews and clears private drafts when the account signs out", async () => {
 		const f = fixture(),
