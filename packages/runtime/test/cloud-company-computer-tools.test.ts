@@ -18,6 +18,7 @@ import {
 } from "@qorpera/runtime/cloud-company-computer-leases";
 import { CompanyComputerRegistryUnansweredError } from "@qorpera/runtime/cloud-company-computer-registry-http";
 import {
+	type CompanyComputerFolderRefusal,
 	createCompanyComputerTools,
 	parseCompanyComputerAction,
 	parseCompanyComputerToolArguments,
@@ -62,7 +63,7 @@ function toolHarness(capabilities: readonly ("browser" | "desktop" | "shell")[] 
 		stopBrowser: vi.fn(async (): Promise<void> => undefined),
 	};
 	const gate = new CompanyComputerScreenActionGate();
-	const prepareScreen = vi.fn(async (): Promise<void> => undefined);
+	const prepareScreen = vi.fn(async (): Promise<CompanyComputerFolderRefusal | undefined> => undefined);
 	const endpoint = new CompanyComputerGuestEndpoint({
 		binding: computerBinding(),
 		capabilities,
@@ -185,6 +186,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		});
 		harness.prepareScreen.mockImplementation(async () => {
 			order.push("ready");
+			return undefined;
 		});
 		harness.automation.perform.mockImplementation(async () => {
 			order.push("execute");
@@ -203,7 +205,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 
 	it("does not report an open screen before the actual display becomes ready", async () => {
 		const harness = toolHarness();
-		const ready = computerDeferred<void>();
+		const ready = computerDeferred<undefined>();
 		harness.prepareScreen.mockReturnValue(ready.promise);
 		let returned = false;
 		const result = harness.call("computer_screen", { kind: "screen", action: "open" }).then((value) => {
@@ -213,7 +215,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		await vi.waitFor(() => expect(harness.prepareScreen).toHaveBeenCalledOnce());
 		expect(returned).toBe(false);
 		expect(harness.effects.finish).not.toHaveBeenCalled();
-		ready.resolve();
+		ready.resolve(undefined);
 		await result;
 		expect(returned).toBe(true);
 		expect(harness.effects.finish).toHaveBeenCalledOnce();
@@ -248,7 +250,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 
 	it("does not dispatch after cancelled preparation resolves late", async () => {
 		const harness = toolHarness();
-		const ready = computerDeferred<void>();
+		const ready = computerDeferred<undefined>();
 		harness.prepareScreen.mockReturnValue(ready.promise);
 		const stop = new AbortController();
 		const result = harness.endpoint
@@ -256,7 +258,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			.catch((error: unknown) => error);
 		await vi.waitFor(() => expect(harness.prepareScreen).toHaveBeenCalledOnce());
 		stop.abort();
-		ready.resolve();
+		ready.resolve(undefined);
 		expect(await result).toBeInstanceOf(Error);
 		expect(harness.automation.perform).not.toHaveBeenCalled();
 		expect(harness.effects.finish).not.toHaveBeenCalled();
@@ -808,6 +810,68 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			"COMPUTER_RUN_MISMATCH",
 		);
 		expect(harness.screens.acquire).toHaveBeenCalledOnce();
+	});
+
+	it("gives the screen back after the final check when the office refuses its folder, and only an explicit open asks again", async () => {
+		const harness = toolHarness();
+		harness.prepareScreen.mockResolvedValueOnce({
+			code: "COMPANY_FOLDER_REFUSED",
+			message: "Folder view holder is not current",
+		});
+		await expect(
+			harness.call("computer_browser", { kind: "browser", action: "snapshot" }, "given-back:1"),
+		).resolves.toEqual({
+			kind: "json",
+			value: {
+				action: "snapshot",
+				completed: false,
+				refused: { code: "COMPANY_FOLDER_REFUSED", message: "Folder view holder is not current" },
+			},
+		});
+		expect(harness.order).toEqual(["receipt-completed", "released"]);
+		expect(harness.automation.perform).not.toHaveBeenCalled();
+		// The run's next action does not take the screen again by itself.
+		await expect(
+			harness.call("computer_browser", { kind: "browser", action: "snapshot" }, "given-back:2"),
+		).rejects.toThrow("COMPUTER_SCREEN_GIVEN_BACK");
+		expect(harness.screens.acquire).toHaveBeenCalledOnce();
+		// An explicit open does, and the run's actions work again.
+		await harness.call("computer_screen", { kind: "screen", action: "open" }, "given-back:3");
+		await harness.call("computer_browser", { kind: "browser", action: "snapshot" }, "given-back:4");
+		expect(harness.screens.acquire).toHaveBeenCalledTimes(2);
+		expect(harness.automation.perform).toHaveBeenCalledOnce();
+	});
+
+	it("gives the screen back again when a refused open's completed receipt is replayed under the same key", async () => {
+		const harness = toolHarness();
+		harness.prepareScreen.mockResolvedValueOnce({
+			code: "COMPANY_FOLDER_UNAVAILABLE",
+			message: "company folder is unavailable",
+		});
+		const refused = {
+			kind: "json",
+			value: {
+				action: "open",
+				completed: false,
+				refused: { code: "COMPANY_FOLDER_UNAVAILABLE", message: "company folder is unavailable" },
+			},
+		};
+		await expect(harness.call("computer_screen", { kind: "screen", action: "open" }, "replay:1")).resolves.toEqual(
+			refused,
+		);
+		expect(harness.order).toEqual(["receipt-completed", "released"]);
+		// The same open again takes a new lease, gets the stored refusal back, and gives that lease back too.
+		await expect(harness.call("computer_screen", { kind: "screen", action: "open" }, "replay:1")).resolves.toEqual(
+			refused,
+		);
+		expect(harness.prepareScreen).toHaveBeenCalledOnce();
+		expect(harness.screens.acquire).toHaveBeenCalledTimes(2);
+		expect(harness.order).toEqual(["receipt-completed", "released", "released"]);
+		await expect(
+			harness.call("computer_browser", { kind: "browser", action: "snapshot" }, "replay:2"),
+		).rejects.toThrow("COMPUTER_SCREEN_GIVEN_BACK");
+		expect(harness.screens.acquire).toHaveBeenCalledTimes(2);
+		expect(harness.automation.perform).not.toHaveBeenCalled();
 	});
 
 	it("refuses foreign runtime caller identity before acquiring a resource", async () => {
