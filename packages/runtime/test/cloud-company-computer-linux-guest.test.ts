@@ -369,7 +369,7 @@ async function fixture(
 	const gate = new CompanyComputerScreenActionGate();
 	const effects = new CloudCompanyComputerEffectControl({ run, scope, control: { call } });
 	const create = () => guest.createSession({ run, descriptor, lease, gate, effects });
-	const operation = (action: { kind: string; [key: string]: string | number }) => ({
+	const operation = (action: { kind: string; [key: string]: string | number | boolean }) => ({
 		...computerOperation(),
 		tool: `computer_${action.kind}`,
 		arguments: action,
@@ -496,6 +496,24 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		const next = await f.create();
 		await next.endpoint.perform(f.operation(action), f.lease, f.effect());
 		expect(shells).toHaveLength(1);
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+
+	it("refuses a start that says whether it gets a network: no office before offline commands runs one", async () => {
+		// A runtime with offline commands names the network in every start. An office without them refuses that start,
+		// at the check and at the action, rather than run an offline command in the shell's network.
+		const f = await fixture();
+		const session = await f.create();
+		for (const network of [false, true]) {
+			const operation = f.operation({ kind: "shell", action: "start", command: "npm test", network, waitMs: 0 });
+			await expect(session.endpoint.authorize(operation, f.run.identity, f.lease, f.run.signal)).rejects.toThrow(
+				"INVALID_COMPUTER_ARGUMENTS",
+			);
+			await expect(session.endpoint.perform(operation, f.lease, f.effect())).rejects.toThrow(
+				"INVALID_COMPUTER_ARGUMENTS",
+			);
+		}
+		expect(shells.flatMap((shell) => shell.start.mock.calls)).toEqual([]);
 		expect(f.failure).not.toHaveBeenCalled();
 	});
 
