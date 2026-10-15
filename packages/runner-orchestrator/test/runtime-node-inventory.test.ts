@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
+import { codeHostProject, codeHostRequest } from "../src/code-host.ts";
 import { executionHostIdentityDevice } from "../src/execution-host-identity.ts";
 import type { LxdHostInventory, LxdHostInventoryInstance } from "../src/lxd-client.ts";
 import {
@@ -11,6 +12,7 @@ import {
 	reconcileRuntimeNodeInventory,
 	runtimeNodeInstanceConfiguration,
 	runtimeNodeInstanceConfigurationSha256,
+	runtimeNodeReserved,
 } from "../src/runtime-node-inventory.ts";
 import {
 	RuntimeNodeInventoryObserver,
@@ -1217,6 +1219,197 @@ describe("image build space (identical nodes, 2026-09-28)", () => {
 			memoryBytes: 1024,
 		};
 		expect(() => parseRuntimeNodeInventoryPolicy({ ...base, infrastructure: [infra], buildSpace: space })).toThrow(
+			"INVALID_NODE_INVENTORY_POLICY",
+		);
+	});
+});
+
+describe("code hosts (F3 step 5e)", () => {
+	const hosts = {
+		imageFingerprint: "c".repeat(64),
+		storagePool: "qorpera-vm",
+		cpus: 1,
+		memoryBytes: 1024 ** 3,
+		rootDiskBytes: 20 * 1024 ** 3,
+		running: 2,
+	};
+	const company = (n: number) => `${String(n).repeat(8)}-0000-4000-8000-000000000000`;
+	/** A code host exactly as the executor makes it, with what LXD adds. */
+	function codeHost(companyId: string, statusCode = 103): TestInstance {
+		const request = codeHostRequest(hosts, companyId),
+			config = {
+				...request.config,
+				"volatile.uuid": randomUUID(),
+				"volatile.base_image": hosts.imageFingerprint,
+				"image.os": "Ubuntu",
+			};
+		return {
+			name: "code-host",
+			project: codeHostProject(companyId),
+			location: "none",
+			type: "virtual-machine",
+			config,
+			expandedConfig: { ...config },
+			devices: structuredClone(request.devices) as TestInstance["devices"],
+			expandedDevices: structuredClone(request.devices) as TestInstance["devices"],
+			profiles: [],
+			status: statusCode === 102 ? "Stopped" : statusCode === 110 ? "Frozen" : "Running",
+			statusCode,
+		};
+	}
+	function withHosts() {
+		const f = fixture();
+		f.context.policy = f.policy = { ...f.policy, codeHosts: { ...hosts } };
+		return f;
+	}
+	it("accepts code hosts exactly as the executor makes them, at most `running` of them not stopped", () => {
+		const f = withHosts();
+		f.inventory.instances.push(codeHost(company(1)), codeHost(company(2)), codeHost(company(3), 102));
+		let result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.state).toBe("ready");
+		expect(result.entries.slice(4).map((e) => [e.category, e.reason, e.state, e.cpuMillis, e.allocation])).toEqual([
+			["code-host", null, "running", 1000, null],
+			["code-host", null, "running", 1000, null],
+			["code-host", null, "suspended", 1000, null],
+		]);
+		f.inventory.instances[6].status = "Running";
+		f.inventory.instances[6].statusCode = 103;
+		result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.state).toBe("unavailable");
+		expect(result.entries.slice(4).map((e) => e.reason)).toEqual(Array(3).fill("CODE_HOST_SPACE_EXCEEDED"));
+	});
+	it("never accepts a frozen code host, which would hold its memory outside the count", () => {
+		const f = withHosts();
+		f.inventory.instances.push(codeHost(company(1), 110));
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.entries[4]).toMatchObject({ category: "code-host", reason: "INSTANCE_AUTHORITY_DIFFERS" });
+		expect(result.state).toBe("unavailable");
+	});
+	const both = (i: TestInstance, key: string, value: string) => {
+		i.config[key] = value;
+		i.expandedConfig[key] = value;
+	};
+	it.each<[string, (i: TestInstance) => void]>([
+		["another image", (i) => both(i, "volatile.base_image", "d".repeat(64))],
+		["other limits", (i) => both(i, "limits.cpu", "2")],
+		["/dev/lxd", (i) => both(i, "security.devlxd", "true")],
+		["another company's marker", (i) => both(i, "user.qorpera.company_id", company(2))],
+		["another user key", (i) => both(i, "user.qorpera.purpose", "x")],
+		["a raw LXD key", (i) => both(i, "raw.qemu", "-S")],
+		[
+			"a NIC from a profile",
+			(i) => {
+				i.expandedDevices.eth0 = { type: "nic", network: "qorpera0", name: "eth0" };
+			},
+		],
+		[
+			"a profile",
+			(i) => {
+				i.profiles = ["default"];
+			},
+		],
+		[
+			"a host path",
+			(i) => {
+				i.devices.data = { type: "disk", path: "/data", source: "/srv" };
+				i.expandedDevices.data = { ...i.devices.data };
+			},
+		],
+		[
+			"another name",
+			(i) => {
+				i.name = "code-host-2";
+			},
+		],
+		[
+			"a container",
+			(i) => {
+				i.type = "container";
+			},
+		],
+		[
+			"two physical ids",
+			(i) => {
+				i.expandedConfig["volatile.uuid"] = randomUUID();
+			},
+		],
+	])("reports a VM in a code host project with %s as unregistered", (_, change) => {
+		const f = withHosts(),
+			i = codeHost(company(1));
+		change(i);
+		f.inventory.instances.push(i);
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.entries[4]).toMatchObject({ category: "unmanaged", reason: "UNREGISTERED_INSTANCE" });
+		expect(result.state).toBe("unavailable");
+	});
+	it("without the policy's codeHosts an exact code host is unregistered", () => {
+		const f = fixture();
+		f.inventory.instances.push(codeHost(company(1)));
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).entries[4]).toMatchObject({
+			category: "unmanaged",
+			reason: "UNREGISTERED_INSTANCE",
+		});
+	});
+	it("never takes a guest in a code host project for its allocation", () => {
+		const f = withHosts();
+		f.inventory.instances[0].project = codeHostProject(company(1));
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.entries[0]).toMatchObject({ category: "unmanaged", allocation: null, reason: "UNREGISTERED_INSTANCE" });
+		expect(result.state).toBe("unavailable");
+	});
+	it("counts `running` code hosts against headroom whether any runs or not", () => {
+		const f = withHosts();
+		f.context.headroomCpuMillis = 2999;
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context)).toMatchObject({
+			headroomValid: false,
+			state: "unavailable",
+		});
+		f.context.headroomCpuMillis = 3000;
+		f.context.headroomMemoryBytes = 3 * 1024 ** 3 - 1;
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).headroomValid).toBe(false);
+		f.context.headroomMemoryBytes = 3 * 1024 ** 3;
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context)).toMatchObject({
+			headroomValid: true,
+			state: "ready",
+		});
+		expect(runtimeNodeReserved(f.policy)).toEqual({ cpuMillis: 3000, memoryBytes: 3 * 1024 ** 3 });
+	});
+	it("parses the block strictly, and keeps infrastructure and the build space out of code host projects", () => {
+		const base = fixture().policy;
+		expect(parseRuntimeNodeInventoryPolicy({ ...base, codeHosts: hosts }).codeHosts).toEqual(hosts);
+		expect(parseRuntimeNodeInventoryPolicy(base)).not.toHaveProperty("codeHosts");
+		const { running: _running, ...withoutRunning } = hosts;
+		for (const bad of [
+			{ ...hosts, extra: 1 },
+			withoutRunning,
+			{ ...hosts, cpus: 0 },
+			{ ...hosts, cpus: 1.5 },
+			{ ...hosts, memoryBytes: 1024 ** 3 + 1 },
+			{ ...hosts, rootDiskBytes: 9 * 1024 ** 3 },
+			{ ...hosts, running: 65 },
+			{ ...hosts, imageFingerprint: "C".repeat(64) },
+			{ ...hosts, storagePool: "../pool" },
+			"default",
+			null,
+		])
+			expect(() => parseRuntimeNodeInventoryPolicy({ ...base, codeHosts: bad })).toThrow(
+				"INVALID_NODE_INVENTORY_POLICY",
+			);
+		const project = codeHostProject(company(1)),
+			infra = {
+				project,
+				name: "exec",
+				physicalId: randomUUID(),
+				type: "virtual-machine",
+				configurationSha256: sha,
+				cpuMillis: 1000,
+				memoryBytes: 1024,
+			};
+		expect(() => parseRuntimeNodeInventoryPolicy({ ...base, codeHosts: hosts, infrastructure: [infra] })).toThrow(
+			"INVALID_NODE_INVENTORY_POLICY",
+		);
+		const space = { project, network: "qorpera0", cpuMillis: 2000, memoryBytes: 4 * 1024 ** 3 };
+		expect(() => parseRuntimeNodeInventoryPolicy({ ...base, buildSpace: space })).toThrow(
 			"INVALID_NODE_INVENTORY_POLICY",
 		);
 	});
