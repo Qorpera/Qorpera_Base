@@ -32,6 +32,7 @@ export const SHARED: Record<string, string> = {
 	"New agent": "Ny agent",
 	Cancel: "Annuller",
 	Back: "Tilbage",
+	Open: "Åbn",
 	Remove: "Fjern",
 	Edit: "Rediger",
 	Send: "Send",

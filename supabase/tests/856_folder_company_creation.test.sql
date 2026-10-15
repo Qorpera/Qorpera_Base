@@ -2,8 +2,8 @@
 -- company on folder-v2 with nothing seeded; Start records one creation; the worker's claim, release, fail and the one
 -- creation transaction (completed, retry, failed, stale, replay) with the Co-Founder and its silent first run (the
 -- kickoff's exact shape, the first-run row, the turn request with and without a usable login, no wake); ready, the
--- founders' setup state and the hub; the guards (departure, the old chain, enabling, delete); requeue; each patch is in
--- place. The operator path is in 858, races in 857.
+-- founders' setup state and the hub; the guards (departure, enabling, delete); requeue; each patch is in place. The
+-- operator path is in 858, races in 857.
 begin;
 
 insert into auth.users(id,email,email_confirmed_at,raw_user_meta_data) values
@@ -293,21 +293,26 @@ begin
 			and path in ('','rules')) is distinct from 2 then
 		raise exception 'Open did not switch the folder core on'; end if;
 	if exists (select 1 from public.qorpera_profile_staff where profile_id = v_profile)
-		or exists (select 1 from public.qorpera_company_bootstrap_jobs where profile_id = v_profile)
 		or exists (select 1 from public.qorpera_company_cofounders where profile_id = v_profile)
 		or exists (select 1 from public.qorpera_folder_entries where environment_id = v_environment.id)
 		or exists (select 1 from public.qorpera_folder_company_creations where profile_id = v_profile) then
 		raise exception 'Open seeded something'; end if;
 end $$;
 
--- A creation id the old path used names a company with a bootstrap job: never a table.
-select pg_temp.as_user('85600000-0000-4000-8000-000000000001');
-set local role authenticated;
-select public.qorpera_create_cloud_company('85600000-0000-4000-8000-000000000101','Gammel',2) \g /dev/null
-select pg_temp.refused($$select public.qorpera_open_company_founding('85600000-0000-4000-8000-000000000101','Gammel')$$,'23505');
-reset role;
-select set_config('qorpera_test.old',(select profile_id::text from public.qorpera_company_creation_requests
-	where client_creation_id = '85600000-0000-4000-8000-000000000101'),true);
+-- A company not on the folder core, and touched (an event hook): made by hand, since the old chain that made one went
+-- with legacy sweep D1 (20260930330000). Seed and enabling refuse it.
+select pg_temp.as_service();
+insert into public.qorpera_profiles(id,name,created_by_user_id) values
+	('85600000-0000-4000-8000-000000000101','Gammel','85600000-0000-4000-8000-000000000001');
+insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role) values
+	('85600000-0000-4000-8000-000000000101','85600000-0000-4000-8000-000000000001','anna@example.test','Anna','owner');
+insert into public.qorpera_company_environments(id,profile_id,name,contract_version,created_by_user_id) values
+	('85600000-0000-4000-8000-000000000111','85600000-0000-4000-8000-000000000101','Gammel',2,'85600000-0000-4000-8000-000000000001');
+set local session_replication_role = replica;
+insert into public.qorpera_event_hooks(profile_id,environment_id,name,purpose,proof,address) values
+	('85600000-0000-4000-8000-000000000101','85600000-0000-4000-8000-000000000111','old-hook','Test.','address',repeat('a',43));
+set local session_replication_role = origin;
+select set_config('qorpera_test.old','85600000-0000-4000-8000-000000000101',true);
 
 -- 2. Start: one creation -----------------------------------------------------------------------------------------------
 
@@ -400,7 +405,7 @@ begin
 		exception when sqlstate '22023' then null;
 		end;
 	end loop;
-	-- A snapshot-v1 company (the old chain) is never seeded.
+	-- A company not on the folder core is never seeded.
 	begin
 		perform public.qorpera_folder_company_seed(current_setting('qorpera_test.old')::uuid, pg_temp.seed_input());
 		raise exception 'Seed took a snapshot-v1 company' using errcode = 'QTF01';
@@ -685,24 +690,19 @@ begin
 	if v_result ->> 'state' is distinct from 'completed' then raise exception 'A resumed creation: %', v_result; end if;
 end $$;
 
--- The answers before the commit: the old chain, a Co-Founder already recorded, the kickoff member gone. Each is final,
--- nothing is committed, and the setting is clear. (Rows made by hand, triggers off: none of these can arise through
--- the API since seed and the bootstrap refuse them.)
+-- The answers before the commit: a Co-Founder already recorded, the kickoff member gone. Each is final, nothing is
+-- committed, and the setting is clear. (Rows made by hand, triggers off: neither can arise through the API, since seed
+-- and the departure guard refuse them.)
 do $$
-declare v_case text; v_n integer := 16; v_profile uuid; v_claim jsonb; v_result jsonb; v_creation public.qorpera_folder_company_creations;
+declare v_case text; v_n integer := 17; v_profile uuid; v_claim jsonb; v_result jsonb; v_creation public.qorpera_folder_company_creations;
 	v_env uuid;
 begin
-	foreach v_case in array array['old_chain', 'cofounder_exists', 'kickoff_member_left'] loop
+	foreach v_case in array array['cofounder_exists', 'kickoff_member_left'] loop
 		v_profile := pg_temp.open_seeded(v_n, 'Before ' || v_n);
 		v_claim := pg_temp.claim(('85600000-0000-4000-8000-0000000000' || v_n)::uuid);
 		v_env := (v_claim ->> 'environmentId')::uuid;
 		set local session_replication_role = replica;
-		if v_case = 'old_chain' then
-			insert into public.qorpera_company_bootstrap_jobs(profile_id, environment_id, created_by_user_id, cofounder_staff_agent_id,
-				formation_id, member_session_id, formation_document, cofounder_agent_document, hidden_until_ready, first_run_required)
-			values (v_profile, v_env, '85600000-0000-4000-8000-000000000003', extensions.gen_random_uuid(), extensions.gen_random_uuid(),
-				extensions.gen_random_uuid(), '{}', '{}', true, true);
-		elsif v_case = 'cofounder_exists' then
+		if v_case = 'cofounder_exists' then
 			insert into public.qorpera_company_cofounders(profile_id, environment_id, staff_agent_id, formation_id, created_by_user_id)
 			values (v_profile, v_env, extensions.gen_random_uuid(), null, '85600000-0000-4000-8000-000000000003');
 		else
@@ -806,9 +806,7 @@ begin
 	perform pg_temp.as_service();
 end $$;
 
--- The old chain on a folder-v2 company, and the folder core on a company the old chain started.
-select pg_temp.refused(format($$select public.qorpera_enqueue_company_bootstrap(%L,true)$$,
-	current_setting('qorpera_test.second')),'55000');
+-- The folder core on a touched company.
 select pg_temp.as_service();
 select pg_temp.refused(format($$select public.qorpera_folder_enable(%L)$$,
 	(select id from public.qorpera_company_environments where profile_id = current_setting('qorpera_test.old')::uuid)),'55000');
@@ -853,10 +851,8 @@ begin
 			or public.qorpera_folder_company_ready(profile.id))
 $n$),
 		('public.qorpera_guard_founder_departure()',
-			$n$		raise exception 'Company setup must finish before the founder it runs for leaves or steps down'
-			using errcode = '42501';
-	end if;
-	-- 20260930010000 (P14a): so does a folder-v2 creation, for the member who started it.
+			$n$	-- Company setup acts for the founder it was queued for: a folder-v2 creation, for the member who started it
+	-- (20260930010000, P14a). 20260930330000 (legacy sweep D1): the old chain's bootstrap job is gone.
 	if exists (select 1 from public.qorpera_folder_company_creations as creation
 		where creation.profile_id = old.profile_id and creation.kickoff_user_id = old.user_id
 			and creation.state in ('queued', 'leased')) then
@@ -866,15 +862,14 @@ $n$),
 	return coalesce(new, old);
 $n$),
 		('public.qorpera_profile_team_info(uuid)',
-			$n$					where job.profile_id = p_profile_id and job.created_by_user_id = auth.uid()
-						and job.state in ('queued', 'leased'))
-				-- 20260930010000 (P14a): nor a folder-v2 creation.
+			$n$				-- 20260930010000 (P14a): nor a folder-v2 creation they started. 20260930330000 (legacy sweep D1): the old
+				-- chain's bootstrap job is gone.
 				and not exists (select 1 from public.qorpera_folder_company_creations as creation
 					where creation.profile_id = p_profile_id and creation.kickoff_user_id = auth.uid()
 						and creation.state in ('queued', 'leased')),
 $n$),
 		('public.qorpera_stop_company_work(uuid)',
-			$n$	where profile_id = p_profile_id and state in ('queued', 'leased');
+			$n$	-- 20260930330000 (legacy sweep D1): the old chain's bootstrap job is gone; nothing to block.
 	-- 20260930010000 (P14a): a folder-v2 creation not yet made is blocked. One a worker holds now (its row sits before
 	-- the fence) is skipped: it refuses after its fence (the pause covers a deletion) or completes, and the finisher's next
 	-- pass marks it. A release never turns blocked back into queued.
@@ -885,13 +880,6 @@ $n$),
 		where creation.profile_id = p_profile_id and creation.state in ('queued', 'leased') for update skip locked);
 
 	-- Coding:$n$),
-		('public.qorpera_enqueue_company_bootstrap(uuid,boolean)',
-			$n$	v_job public.qorpera_company_bootstrap_jobs%rowtype; v_owner uuid;
-begin
-	-- 20260930010000 (P14a): a folder-v2 company never runs the old chain.
-	if public.qorpera_company_is_folder_v2(p_profile_id) then
-		raise exception 'The folder core sets this company up' using errcode = '55000'; end if;
-$n$),
 		('public.qorpera_company_founding_json(uuid)',
 			$n$'companyReady',public.qorpera_folder_company_ready(p_profile_id),
 			-- 20260930010000 (P14a): pending, ready or failed.

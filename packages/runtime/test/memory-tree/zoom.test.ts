@@ -20,6 +20,8 @@ const RUN = "97200000-0000-4000-8000-000000000003";
 const INPUT = "97200000-0000-4000-8000-000000000004";
 /** Bo's thread memory, which holds the tree's blocks. */
 const ROOT = "agents/bo/memory/thread";
+/** A member's image in Bo's thread, where company_read opens it. */
+const IMAGE = `${ROOT}/images/${INPUT}/${"a".repeat(64)}.png`;
 /** Bo's thread opened as `.`, the conversation the run is in. */
 const HERE = 'conversation . "Bo (thread)"';
 /** The end of a piece that leaves text: the code point it stopped at, which is the next `from`, and the total. */
@@ -312,6 +314,7 @@ describe("memory zoom tool", () => {
 				attachments: [
 					{ mediaType: "application/pdf", bytes: 123456 },
 					{ mediaType: null, bytes: null },
+					{ mediaType: "image/png", bytes: 2048, path: IMAGE },
 				],
 				cardType: "email_draft",
 				card: { subject: "Q3 & <numbers>" },
@@ -323,7 +326,7 @@ describe("memory zoom tool", () => {
 		try {
 			const rows = [
 				"5|Ada (2026-10-04 09:12 UTC): Please send <the plan> & the numbers",
-				"[2 attachments: application/pdf (123456 bytes); file]",
+				`[3 attachments: application/pdf (123456 bytes); file; image/png (2048 bytes) at ${IMAGE}]`,
 				`[quote 1] ${JSON.stringify(QUOTE)}`,
 				'card email_draft: {"subject":"Q3 & <numbers>"}',
 				`work: run:${RUN}`,
@@ -452,6 +455,8 @@ describe("memory zoom tool", () => {
 			["b16", { line: "2+1" }, message({ quotes: [{ ...QUOTE, trust: "trusted" }] })],
 			["b17", { line: "2+1" }, message({ card: { approved: true } })],
 			["b18", { line: "2+1" }, message({ eventHash: "E".repeat(64) })],
+			["b19", { line: "2+1" }, message({ attachments: [{ mediaType: "image/png", bytes: 2048, path: "" }] })],
+			["b20", { line: "2+1" }, message({ attachments: [{ mediaType: "image/png", bytes: 2048, url: IMAGE }] })],
 		];
 		let current: unknown = null;
 		const f = await fixture(() => current);

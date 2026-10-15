@@ -110,6 +110,8 @@ export class CompanyInterfaceOffers implements InterfaceOfferActions {
 		let state: InterfaceOffersState | undefined;
 		try {
 			state = await this.#calls.list();
+			// The offers of agents to an area's supervisor (I9b) wait for the Members board: the pages draw cells' offers.
+			state = { ...state, offers: state.offers.filter((offer) => offer.agent === null) };
 		} catch (error) {
 			// Not deployed, or not answered for this member: there are no offers to draw. Anything else keeps the last.
 			if (!(error instanceof CloudRpcError && (error.missing || error.denied))) return;

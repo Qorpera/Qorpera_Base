@@ -520,3 +520,5 @@ only if a rule is wrong (review round 10).
   out-of-memory kill) would then end its desktop or command, and lose what it had not handed to the service: its
   open files' unsent bytes. What the service holds for the view and the reads the program logged still reach the
   core (above). Record that loss case, as founder decision 3 records a machine's, before 4d merges.
+  The loss case applies whether or not the remount is proven: the restarted program's abandon hello drops what the
+  dead one had not committed, and [OFFICE-FOLDER-REMOUNT.md](../test-machine/OFFICE-FOLDER-REMOUNT.md) records it.
