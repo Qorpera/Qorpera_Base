@@ -293,6 +293,7 @@ const restoreButtons = (host: HTMLElement) =>
 			null,
 	);
 const status = (host: HTMLElement) => visibleText(host.querySelector(".files-status"));
+const retries = (host: HTMLElement) => visibleText(host.querySelector(".files-retries"));
 
 describe("a folder-v2 company's Company File", () => {
 	it("lists the top folder, folders first, and enters a folder", async () => {
@@ -489,14 +490,15 @@ describe("a folder-v2 company's Company File", () => {
 		fake.client.commit.mockRejectedValueOnce(new Error("The answer was lost"));
 		await click(restoreButtons(host)[1]);
 		await settle();
-		expect(status(host)).toBe("readme.txt could not be restored just now.Try again");
-		await click(host.querySelector(".files-status button"));
+		expect(retries(host)).toBe("readme.txt could not be restored just now.Try again");
+		await click(host.querySelector(".files-retries button"));
 		await settle();
 		const [lost, again] = fake.client.commit.mock.calls.slice(-2);
 		expect(again?.[0]).toBe(lost?.[0]);
 		expect(again?.[1]).toEqual(lost?.[1]);
 		expect(again?.[1]).toEqual([unit]);
 		expect(status(host)).toBe("Restored readme.txt.");
+		expect(retries(host)).toBe("");
 		expect(host.querySelector(".files-text")?.textContent).toBe("older");
 		// A folder at the path now is never replaced: nothing is sent.
 		await click(action(host, "History"));
@@ -507,6 +509,75 @@ describe("a folder-v2 company's Company File", () => {
 		await settle();
 		expect(status(host)).toBe("readme.txt is a folder now, so this version can't be restored.");
 		expect(fake.client.commit).toHaveBeenCalledTimes(sent);
+	});
+
+	it("keeps a lost restore's Try again through the hint and the poll, and sends it again from Restore too", async () => {
+		vi.useFakeTimers();
+		const { fake, src, host } = await opened();
+		await click(row(host, "readme.txt"));
+		await click(action(host, "History"));
+		// The core saves the restore, and its answer is lost on the way back.
+		const save = fake.client.commit.getMockImplementation()!;
+		fake.client.commit.mockImplementationOnce(async (...args) => {
+			await save(...args);
+			throw new Error("The answer was lost");
+		});
+		await click(restoreButtons(host)[1]);
+		await settle();
+		expect(fake.contents.get("readme.txt")).toBe("older");
+		const lost = "readme.txt could not be restored just now.Try again";
+		expect(retries(host)).toBe(lost);
+		// The restore's own hint, and the slow poll after it, each sync and say nothing; the Try again stays.
+		fake.bump(5);
+		fake.changes.push({
+			asOfSeq: 5,
+			resync: false,
+			events: [
+				{
+					kind: "change_set",
+					seq: 5,
+					commitId: id(301),
+					at,
+					by: { kind: "member", userId: me },
+					changes: [
+						{
+							unitNo: 1,
+							op: "write",
+							kind: "file",
+							path: "readme.txt",
+							version: id(108),
+							priorVersion: id(101),
+							updatedAt: at,
+							file: file("older"),
+							target: null,
+						},
+					],
+				},
+			],
+			next: { afterSeq: 5, cursor: null },
+			more: false,
+		});
+		src.hint(5);
+		await vi.advanceTimersByTimeAsync(1100);
+		await settle();
+		expect(fake.client.changes).toHaveBeenCalledTimes(1);
+		expect(host.querySelector(".files-text")?.textContent).toBe("older");
+		expect(status(host)).toBe("");
+		expect(retries(host)).toBe(lost);
+		await vi.advanceTimersByTimeAsync(61_000);
+		await settle();
+		expect(fake.client.changes).toHaveBeenCalledTimes(2);
+		expect(retries(host)).toBe(lost);
+		// Restore on the same version sends the lost change set again, which the core answers once.
+		await click(action(host, "History"));
+		await click(restoreButtons(host)[1]);
+		await settle();
+		const [first, again] = fake.client.commit.mock.calls;
+		expect(fake.client.commit).toHaveBeenCalledTimes(2);
+		expect(again?.[0]).toBe(first?.[0]);
+		expect(again?.[1]).toEqual(first?.[1]);
+		expect(status(host)).toBe("Restored readme.txt.");
+		expect(retries(host)).toBe("");
 	});
 
 	it("follows the hint from the feed: redraws the folder it touched and the open file", async () => {

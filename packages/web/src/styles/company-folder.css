@@ -19,8 +19,8 @@
 .files-tool:hover { background: var(--hover); color: var(--text); }
 .files-tool .icon { width: 16px; height: 16px; }
 
-.files-status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 8px; font-size: 13px; color: var(--text-muted); }
-.files-status:empty { display: none; }
+.files-status, .files-retries { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 8px; font-size: 13px; color: var(--text-muted); }
+.files-status:empty, .files-retries:empty { display: none; }
 
 .files-crumbs { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 32px; margin-bottom: 6px; }
 .files-crumb-trail { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; min-width: 0; font-size: 14px; }

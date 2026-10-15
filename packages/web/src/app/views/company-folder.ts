@@ -111,6 +111,8 @@ export class CompanyFolderBrowser {
 	readonly #when: Intl.DateTimeFormat;
 	readonly #root = h("div", { class: "files-root" });
 	readonly #status = h("div", { class: "files-status", role: "status" });
+	/** The restores whose answer was lost, each with its Try again; no other message or sync clears them. */
+	readonly #retries = h("div", { class: "files-retries", role: "status" });
 	readonly #crumbs = h("nav", { class: "files-crumbs", "aria-label": t("Folder path") });
 	readonly #list = h("ul", { class: "files-list", "aria-label": t("Files") });
 	readonly #more = button(t("More files"), () => void this.#run(() => this.#load(this.#dir, true)), { small: true });
@@ -134,6 +136,8 @@ export class CompanyFolderBrowser {
 	/** Where the feed is followed from: everything up to it is on screen. */
 	#position: CloudMemberFolderFeedPosition | null = null;
 	#opened: Opened | null = null;
+	/** A restore whose answer was lost, by path, until it or another restore there has an answer. */
+	readonly #lost = new Map<string, { key: string; unit: CloudMemberFolderUnit; version: string }>();
 	#busy = false;
 	#disposed = false;
 
@@ -180,6 +184,7 @@ export class CompanyFolderBrowser {
 				),
 			),
 			this.#status,
+			this.#retries,
 			this.#root,
 		);
 		host.addEventListener(
@@ -745,6 +750,12 @@ export class CompanyFolderBrowser {
 	 * file's as a write of its reference, a link's as a link to its target. It replaces what the path holds now at the
 	 * version just read, a file or a link; a folder there now is left alone. */
 	async #restore(path: string, version: CloudMemberFolderVersion): Promise<void> {
+		// This version's restore whose answer was lost is sent again as it was, not as a new change set.
+		const lost = this.#lost.get(path);
+		if (lost?.version === version.version) {
+			await this.#commitRestore(path, lost.key, lost.unit, lost.version);
+			return;
+		}
 		const read = await this.#client!.read(path, this.#signal());
 		this.#live();
 		const now = read.entry;
@@ -756,24 +767,24 @@ export class CompanyFolderBrowser {
 		const unit: CloudMemberFolderUnit = version.file
 			? { op: "write", path, file: version.file, ...expected }
 			: { op: "symlink", path, target: version.target ?? "", ...expected };
-		await this.#commitRestore(path, `web:folder-restore:${crypto.randomUUID()}`, unit);
+		await this.#commitRestore(path, `web:folder-restore:${crypto.randomUUID()}`, unit, version.version);
 	}
 
 	/** Sends a restore; when its answer is lost, trying again sends the same change set, which the core answers once. */
-	async #commitRestore(path: string, key: string, unit: CloudMemberFolderUnit): Promise<void> {
+	async #commitRestore(path: string, key: string, unit: CloudMemberFolderUnit, version: string): Promise<void> {
 		const name = baseName(path);
 		let answer: CloudMemberFolderCommit;
 		try {
 			answer = await this.#client!.commit(key, [unit], this.#signal());
 		} catch {
 			this.#live();
-			this.#say(
-				t("{name} could not be restored just now.", { name }),
-				button(t("Try again"), () => void this.#run(() => this.#commitRestore(path, key, unit)), { small: true }),
-			);
+			this.#lost.set(path, { key, unit, version });
+			this.#drawRetries();
 			return;
 		}
 		this.#live();
+		this.#lost.delete(path);
+		this.#drawRetries();
 		const result = answer.units[0];
 		if (result?.outcome === "saved") {
 			this.#say(t("Restored {name}.", { name }));
@@ -789,6 +800,18 @@ export class CompanyFolderBrowser {
 					(result?.problems ?? []).map((problem) => problem.message),
 				),
 			);
+	}
+
+	#drawRetries(): void {
+		replace(
+			this.#retries,
+			...[...this.#lost].flatMap(([path, { key, unit, version }]) => [
+				h("span", null, t("{name} could not be restored just now.", { name: baseName(path) })),
+				button(t("Try again"), () => void this.#run(() => this.#commitRestore(path, key, unit, version)), {
+					small: true,
+				}),
+			]),
+		);
 	}
 
 	/** The company's change sets, newest first, with the files in each this member may read. */

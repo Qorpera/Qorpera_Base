@@ -131,9 +131,11 @@ async function gateway(
 			return "stored" as const;
 		},
 	};
+	const fetched: string[] = [];
 	const store = {
 		async get(profile: string, hash: string): Promise<Uint8Array> {
 			expect(profile).toBe(profileId);
+			fetched.push(hash);
 			const bytes = options.readable?.get(hash);
 			if (!bytes) throw new Error("Object not found");
 			return bytes;
@@ -167,7 +169,7 @@ async function gateway(
 	const commits = () => calls.filter((call) => call.method === "qorpera_folder_commit");
 	const staged = () => calls.filter((call) => call.method === "qorpera_folder_open_upload");
 	const read = () => calls.filter((call) => call.method === "qorpera_folder_authorize_object_download");
-	return { calls, stored, send, commits, staged, read };
+	return { calls, stored, fetched, send, commits, staged, read };
 }
 
 const request = (units: unknown[], operationKey = "web:34000000-0000-4000-8000-0000000000d1") => ({
@@ -390,6 +392,47 @@ describe("a member's change set to a folder-v2 company", () => {
 		const big = { ...existing("x", "application/octet-stream").file, bytes: 100 * 1024 * 1024 };
 		expect((await g.send(request([{ op: "write", path: "drafts/big.bin", file: big }]))).status).toBe(200);
 		expect(g.read()).toHaveLength(reads);
+	});
+
+	it("fetches nothing a reference or its manifest says is small but is not, a readable object posing as a manifest", async () => {
+		// Any text the member may read can pose as a manifest: this one says one byte and lists a 4 MiB chunk 64 times.
+		const chunk = new Uint8Array(4 * 1024 * 1024);
+		const forged = (bytes: number, chunks: { sha256: string; bytes: number }[]) => {
+			const text = new TextEncoder().encode(
+				JSON.stringify({
+					schema: "qorpera.cloud-file-manifest/v2",
+					fileSha256: digest("x"),
+					bytes,
+					mediaType: "text/markdown",
+					executable: false,
+					chunks,
+				}),
+			);
+			const file = { manifestSha256: digest(text), fileSha256: digest("x"), bytes, mediaType: "text/markdown" };
+			return { text, file: { ...file, executable: false } };
+		};
+		const manifests = [
+			forged(
+				1,
+				Array.from({ length: 64 }, () => ({ sha256: digest(chunk), bytes: chunk.byteLength })),
+			),
+			// The chunk's size as the manifest gives it, which the catalog's is not.
+			forged(1, [{ sha256: digest(chunk), bytes: 1 }]),
+			forged(2, [
+				{ sha256: digest("x"), bytes: 1 },
+				{ sha256: digest("x"), bytes: 0 },
+				{ sha256: digest("x"), bytes: 1 },
+			]),
+		];
+		const g = await gateway({
+			readable: new Map([[digest(chunk), chunk], ...manifests.map((m) => [m.file.manifestSha256, m.text] as const)]),
+		});
+		const write = (file: unknown) => g.send(request([{ op: "write", path: "agents/nora/agent.md", file }]));
+		for (const manifest of manifests) expect((await write(manifest.file)).status).toBe(400);
+		// A readable object over a manifest's bound, named as the manifest.
+		expect((await write({ ...manifests[1]?.file, manifestSha256: digest(chunk) })).status).toBe(400);
+		expect(g.fetched).toEqual(manifests.map((m) => m.file.manifestSha256));
+		expect(g.commits()).toEqual([]);
 	});
 
 	it("takes a write's text or its file, exactly one, and a reference only in the core's shape", async () => {
