@@ -211,8 +211,9 @@ $new$);
 --   - the company's environment secrets granted on its repository (owner/name, lower case) by an issuer who is still an
 --     owner or administrator; a company secret without a grant never serves;
 --   - for a name both have, the company's.
--- Only secrets this broker sealed, under names still allowed. The secrets are taken in id order, then their current
--- versions; one audit row each. The values never reach this database.
+-- Only secrets this broker sealed, under names still allowed. The repository's live grants are taken first, as an
+-- operation's grant is (rank 8), then the secrets in id order, then their current versions; one audit row each. The
+-- values never reach this database.
 create function public.qorpera_authorize_coding_environment(
 	p_broker_authority_id uuid,
 	p_broker_capability_sha256 text,
@@ -294,6 +295,13 @@ begin
 		raise exception 'coding session member is unavailable' using errcode = '42501';
 	end if;
 	v_repository := lower((v_session.repository ->> 'owner') || '/' || (v_session.repository ->> 'name'));
+	-- The repository's live grants before the secrets: a withdrawal, a Disconnect or an issuer's demotion that commits
+	-- while this waits is read below, and none can end a grant while this serves it.
+	perform 1 from public.qorpera_coding_environment_grants as environment_grant
+	where environment_grant.profile_id = v_session.profile_id
+		and environment_grant.environment_id = v_session.environment_id
+		and environment_grant.repository = v_repository and environment_grant.status = 'active'
+	order by environment_grant.id for share;
 	with granted as (
 		select secret.id, secret.secret_name
 		from public.qorpera_cloud_secrets as secret

@@ -11,7 +11,7 @@
 -- 4. The issuer's demotion and removal end its grants for good: a later promotion revives none.
 -- 5. Disconnect ends the secret's grants with the secret; a used environment secret always names its coding worker.
 -- 6. The bodies: each patched function names the migration, and the locks keep rank 8's order.
--- The broker's read is 528's.
+-- The broker's read is 528's, and its races 529's.
 
 insert into public.qorpera_cloud_secret_broker_authorities(id, profile_id, service_origin, key_id, capability_sha256)
 values ('52700000-0000-4000-8000-000000000040', '92400000-0000-4000-8000-000000000010', 'https://broker.example.test',
@@ -380,10 +380,12 @@ begin
 		and position('order by environment_grant.id for update nowait' in v_revoke)
 			> position('update public.qorpera_cloud_secret_operation_grants' in v_revoke)
 		and position('update public.qorpera_cloud_secret_operation_grants' in v_revoke) > 0, 'Disconnect''s order');
-	-- The broker only reads: it shares the secrets and their versions, and updates nothing.
-	perform pg_temp.base_assert(position('for share of secret' in v_broker) > 0
+	-- The broker only reads: it shares the repository's grants, then the secrets and their versions, and updates
+	-- nothing (529 races it).
+	perform pg_temp.base_assert(position('order by environment_grant.id for share' in v_broker) > 0
+		and position('order by environment_grant.id for share' in v_broker) < position('for share of secret' in v_broker)
 		and position('for update' in v_broker) = 0 and position('for no key update' in v_broker) = 0,
-		'the broker''s read takes share locks only');
+		'the broker''s read shares the grants before the secrets, and takes share locks only');
 end $$;
 
 rollback;
