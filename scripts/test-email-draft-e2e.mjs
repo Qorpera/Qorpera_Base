@@ -21,8 +21,8 @@ function run(command, args, options = {}) {
 }
 try {
 	const migrations = migrationNames();
-	// The harness addresses the database as qorpera_test in this container.
-	database = await hostedDatabase("qorpera_test");
+	// Not qorpera_test: the suite's SQL tests use that database while this script runs beside them.
+	database = await hostedDatabase("qorpera_email_draft");
 	const container = database.container;
 	const fixture = expandTestFixture("620_member_email_drafts.test.sql", (name) => readFileSync(join(root, "supabase/tests", name), "utf8"));
 	const end = fixture.indexOf("do $$ declare v jsonb; begin");
@@ -32,7 +32,7 @@ try {
 	writeFileSync(join(temporary, "openssl.cnf"), "[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=127.0.0.1\n[ext]\nsubjectAltName=IP:127.0.0.1\nbasicConstraints=critical,CA:TRUE\n");
 	run("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-config", join(temporary, "openssl.cnf"), "-keyout", join(temporary, "key.pem"), "-out", join(temporary, "cert.pem")]);
 	await build({ entryPoints: [join(root, "scripts/fixtures/email-draft-e2e.mjs")], outfile: join(temporary, "harness.mjs"), bundle: true, platform: "node", format: "esm", target: "node22", logLevel: "warning" });
-	run(process.execPath, [join(temporary, "harness.mjs"), container, temporary], { stdio: "inherit", env: { ...process.env, NODE_EXTRA_CA_CERTS: join(temporary, "cert.pem") } });
+	run(process.execPath, [join(temporary, "harness.mjs"), container, temporary, database.database], { stdio: "inherit", env: { ...process.env, NODE_EXTRA_CA_CERTS: join(temporary, "cert.pem") } });
 	console.log(`Email draft E2E passed (${migrations.length} real migrations; simulated Gmail; no real LLM or email delivery)`);
 } finally {
 	database?.close();
