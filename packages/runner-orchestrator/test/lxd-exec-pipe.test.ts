@@ -5,6 +5,8 @@ import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type LxdExecPipeRequest, LxdUnixClient } from "../src/lxd-client.ts";
 import { serverFrame } from "./helpers/realtime-fake.ts";
@@ -47,6 +49,9 @@ class FakeExecPipe {
 	readonly inputMessages: number[] = [];
 	unmaskedFrames = 0;
 	input = Buffer.alloc(0);
+	inputBytes = 0;
+	/** Counts stdin without keeping it or its messages' sizes, as a command that streams it on. */
+	discardInput = false;
 	inputEnded = false;
 	killed = false;
 	holdInput = false;
@@ -180,6 +185,8 @@ class FakeExecPipe {
 				}
 				if (fd !== "0" || this.inputEnded) continue;
 				if (opcode === 0x2) {
+					this.inputBytes += payload.byteLength;
+					if (this.discardInput) continue;
 					this.inputMessages.push(payload.byteLength);
 					this.input = Buffer.concat([this.input, payload]);
 				} else if (opcode === 0x1) {
@@ -239,9 +246,13 @@ describe("LXD exec pipe", () => {
 	afterEach(() => {
 		for (const fake of fakes.splice(0)) fake.close();
 	});
-	async function fake(command: FakeCommand, options: { holdInput?: boolean } = {}): Promise<FakeExecPipe> {
+	async function fake(
+		command: FakeCommand,
+		options: { holdInput?: boolean; discardInput?: boolean } = {},
+	): Promise<FakeExecPipe> {
 		const exec = new FakeExecPipe(command);
 		exec.holdInput = options.holdInput ?? false;
+		exec.discardInput = options.discardInput ?? false;
 		fakes.push(exec);
 		await exec.start();
 		return exec;
@@ -388,6 +399,53 @@ describe("LXD exec pipe", () => {
 		exec.releaseInput();
 		expect((await call).stdout.toString()).toBe(String(64 * MESSAGE));
 		expect(pulled).toBe(64);
+	});
+
+	it("keeps none of a long, finely chunked input once it is sent, while the command still runs", async () => {
+		setFlagsFromString("--expose-gc");
+		const gc = runInNewContext("gc") as () => void;
+		// A target a WeakRef was made or read for in this task stays until the task ends.
+		const collect = async () => {
+			await delay(0);
+			gc();
+		};
+		const chunks = 16_384;
+		const size = 4096;
+		let finish = (): void => undefined;
+		const exec = await fake(
+			async (io) => {
+				await io.input();
+				await new Promise<void>((resolveFinish) => {
+					finish = resolveFinish;
+				});
+				return 0;
+			},
+			{ discardInput: true },
+		);
+		const sent: WeakRef<Uint8Array>[] = [];
+		await collect();
+		const before = process.memoryUsage().arrayBuffers;
+		const call = run(exec, {
+			stdin: (async function* () {
+				for (let index = 0; index < chunks; index++) {
+					const chunk = Buffer.alloc(size, index);
+					sent.push(new WeakRef(chunk));
+					yield chunk;
+				}
+			})(),
+		});
+		try {
+			await vi.waitFor(() => expect(exec.inputEnded).toBe(true), { timeout: 20_000 });
+			expect(exec.inputBytes).toBe(chunks * size);
+			await collect();
+			expect(process.memoryUsage().arrayBuffers - before).toBeLessThan((chunks * size) / 8);
+			expect(sent.filter((chunk) => chunk.deref() !== undefined).length).toBeLessThan(chunks / 100);
+		} finally {
+			finish();
+			// The call ends within the test, whatever failed.
+			await call.catch(() => undefined);
+		}
+		expect((await call).exitCode).toBe(0);
 	});
 
 	it("kills a command stopped by its signal while its input waits, and closes the source", async () => {
