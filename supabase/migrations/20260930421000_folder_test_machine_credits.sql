@@ -13,6 +13,13 @@
 -- 5. The hook and the review act as the commit's actor; a review binds the commit's run (review_required without one).
 -- 6. After the anchor step (the machine FOR SHARE, which every command end waits for), a saved unit whose credited
 --    command has ended refuses the commit ("Folder view command has ended", 42501).
+-- 7. Lock order. Step 2 locks the job of the starter's live run and the jobs of the credited commands' runs (a plain
+--    read of the commands on the view's machine and placement that have not ended) FOR KEY SHARE, in one id order,
+--    before the view row; the fence, the ranks, the paths and the anchor step follow as before. A completion, or any
+--    change that ends a lease, takes its one job FOR UPDATE first, so it waits for this commit. The credits (2. and 4.)
+--    are read after these locks: a credited run counts only while its job, held here, is leased, and a credited run
+--    that moved to a job not held here makes the caller retry (409, as for the starter). The open takes no job, and
+--    every caller that locks several jobs takes them in id order, so no wait closes a cycle.
 -- The read set's fan-out to the commands' runs and the take-in (part 3) and the crashed service refusal (part 4) come
 -- later.
 --
@@ -76,6 +83,8 @@ $old$,
 	-- the view's own principal set; a unit's credits and the one being checked.
 	v_credits_unit integer; v_credits jsonb := '{}'::jsonb; v_credit_ids uuid[] := '{}'; v_credit_actor jsonb;
 	v_starter_auth jsonb; v_unit_credits text[]; v_credit_no integer;
+	-- 20260930421000: 7. the jobs step 2 holds (the starter's live run's and the credited runs').
+	v_job_locks uuid[] := '{}';
 $new$);
 
 -- 1. Shape, with the other unit checks: only malformed requests raise.
@@ -111,6 +120,34 @@ select pg_temp.folder_test_machine_credits_patch('public.qorpera_folder_commit(u
 		if p_review_id is not null and v_run_actor is null and v_credits_unit is null then
 			raise exception 'Only a run carries a review' using errcode = '22023'; end if;$new$);
 
+-- 7. Step 2 locks the credited runs' jobs with the starter's, in one id order, before the view row.
+select pg_temp.folder_test_machine_credits_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
+	$old$		if v_run_actor is not null then
+			perform 1 from public.qorpera_runner_jobs where id = (v_run_actor ->> 'jobId')::uuid
+				and run_id = (v_run_actor ->> 'runId')::uuid for key share;
+			if not found then raise exception 'Run is unavailable' using errcode = '42501'; end if;
+		end if;$old$,
+	$new$		-- 20260930421000: with the jobs of the runs of the commands a test machine's units credit (plain reads: those on
+		-- the view's machine and placement that have not ended), all in one id order. A completion, or any change that
+		-- ends a lease, takes its job FOR UPDATE first and so waits for this commit; the credits are read after this.
+		if v_credits_unit is not null then
+			select coalesce(array_agg(distinct r.job_id), '{}') into v_job_locks
+			from public.qorpera_company_machine_commands c
+			join public.qorpera_folder_views fv on fv.id = (p_actor ->> 'viewId')::uuid
+				and fv.company_machine_id = c.machine_id and fv.placement_id = c.placement_id
+			join public.qorpera_execution_runs r on r.id = c.run_id
+			where c.id in (select x.id::uuid from jsonb_array_elements(p_units) u
+					cross join lateral jsonb_array_elements_text(u.value -> 'credits') x(id))
+				and c.ended_at is null and r.job_id is not null;
+		end if;
+		if v_run_actor is not null then
+			v_job_locks := v_job_locks || (v_run_actor ->> 'jobId')::uuid;
+		end if;
+		perform 1 from public.qorpera_runner_jobs where id = any (v_job_locks) order by id for key share;
+		if v_run_actor is not null and not exists (select 1 from public.qorpera_runner_jobs
+				where id = (v_run_actor ->> 'jobId')::uuid and run_id = (v_run_actor ->> 'runId')::uuid) then
+			raise exception 'Run is unavailable' using errcode = '42501'; end if;$new$);
+
 -- 2. The valid commands, 3. their principals' rows with the commit's own locks, 4. and 5. the actor for the hook.
 select pg_temp.folder_test_machine_credits_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure,
 	$old$	elsif v_actor_kind = 'member' then
@@ -127,9 +164,11 @@ $old$,
 
 	-- 20260930421000 (C1B §8): a test machine's credits. 2. A credited command is valid while it runs on the view's
 	-- machine and placement; each valid one with its agent, its member and its run while the run's job is leased (the
-	-- view's resolve rule), and all of them in start order. Plain reads: no command row is locked, the anchor step
-	-- re-checks the saved units' commands. 3. Each credited agent's staff row (rank 2) and member's row (rank 1) go with
-	-- the commit's own locks, not required: a unit whose principals do not stand is denied, not the commit.
+	-- view's resolve rule), and all of them in start order. Read after step 2's job locks (7.), so a run's lease is
+	-- decided under its job's lock; a run that moved to a job step 2 does not hold makes the caller retry, and the retry
+	-- takes that job first. No command row is locked: the anchor step re-checks the saved units' commands. 3. Each
+	-- credited agent's staff row (rank 2) and member's row (rank 1) go with the commit's own locks, not required: a unit
+	-- whose principals do not stand is denied, not the commit.
 	-- 4. and 5. The first valid command is the commit's actor and the hook's, unless it is the starter's own.
 	if v_credits_unit is not null then
 		select coalesce(jsonb_object_agg(c.id::text, jsonb_build_object('staffAgentId', c.staff_agent_id,
@@ -143,6 +182,10 @@ $old$,
 		where c.id in (select x.id::uuid from jsonb_array_elements(p_units) u
 				cross join lateral jsonb_array_elements_text(u.value -> 'credits') x(id))
 			and c.machine_id = v_view.company_machine_id and c.placement_id = v_view.placement_id and c.ended_at is null;
+		if exists (select 1 from jsonb_each(v_credits) e where (e.value ->> 'jobId')::uuid <> all (v_job_locks)) then
+			raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message', 'Company folder view changed',
+				'details', 'folder_view_changed', 'hint', null)::text, detail = '{"status":409,"headers":{}}';
+		end if;
 		v_starter_auth := v_auth_actor;
 		v_targets := v_targets || coalesce((select jsonb_agg(t.target) from jsonb_each(v_credits) e
 			cross join lateral (values
