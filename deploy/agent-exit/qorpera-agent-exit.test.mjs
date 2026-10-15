@@ -6,7 +6,7 @@
 // container's own network namespaces. It never loads or unloads a kernel module itself (the kernel loads nftables'
 // and the bridge's modules on demand and keeps them) and changes no sysctl of the machine's own namespace; the test
 // checks that the machine's bridges are all still there afterwards, and that the queue modules of E8c-2's server name
-// checker were not loaded (the proof covers the exit without them; test/prove-sni-vm.sh proves the checker in a
+// checker were not loaded (the proof covers the exit without them; test/prove-names-vm.sh proves the checker in a
 // throwaway VM). The one thing a proof must never do on a shared test machine is unload a module: `modprobe -r
 // br_netfilter` also unloads `bridge`, which destroys every bridge on the machine (3 October, an E2b draft run bare on
 // a test machine did that, not this proof).

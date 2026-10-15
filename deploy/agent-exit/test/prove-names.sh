@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Each company's names (E8b-2) and where its machines may go (E8c-1) on real systemd and a real LXD, inside the
-# throwaway VM test/prove-names-vm.sh makes (never on a node, never on a shared test machine: it loads br_netfilter,
-# installs the exit's units, a group and a user, and changes this kernel's tables). Run it only through that script:
+# Each company's names (E8b-2) and where its machines may go (E8c-1, and E8c-2's server name check) on real systemd and a
+# real LXD, inside the throwaway VM test/prove-names-vm.sh makes (never on a node, never on a shared test machine: it
+# loads br_netfilter, nft_queue and nfnetlink_queue, installs the exit's units, a group and a user, and changes this
+# kernel's tables). Run it only through that script:
 #
 #   node scripts/run-on-node.mjs --machine node01 --sudo --no-status -- \
 #     bash deploy/agent-exit/test/prove-names-vm.sh </dev/null
@@ -24,6 +25,12 @@
 #   dnsmasq (in its sandbox, as nobody) puts each address it gives out in the company's set, and its machines reach TCP
 #   443 on those only; the exit's reload empties the set and the reconciler reloads the resolver; a narrower list
 #   restarts it again; back to open, the company's chain and set go;
+# - the server name check (E8c-2): without the queue modules, "only listed" goes by address alone and the checker does
+#   not start; with them loaded (here only) and the exit reloaded, a TLS hello to a listed address passes only with a
+#   listed name (also a hello in pieces, and one past a packet), and is refused (a reset, the logger's
+#   `name_not_listed`) with an unlisted or blocked name, no name, no TLS, too big or too slow; with the checker stopped,
+#   new flows wait and verify says why, while a judged flow goes on; a killed checker comes back each time, and a flow it
+#   was judging is refused; back to open, nothing is queued;
 # - the exit fails closed: rules that cannot be used, or no rules file, leave the machines no DNS and no way out, and
 #   verify says why;
 # - a company whose last machine goes gives its resolver and its port back; the exit's stop (step 1's undo) stops every
@@ -245,11 +252,16 @@ ip -n inet addr add 9.9.9.9/32 dev lo
 ip -n inet addr add 1.1.1.1/32 dev lo
 for upstream in 9.9.9.9 1.1.1.1; do ip route add "$upstream/32" via 198.51.100.1; done
 cat >"$work/serve.py" <<'EOF'
-import socket, threading
-# A web server on 198.51.100.1:80 and :443 (plain HTTP on both) and 198.51.100.2:443: reads the request, answers "ok",
-# closes. Each connection has a thread of its own, so one that sends nothing is held open.
-def serve(c):
+import socket, ssl, sys, threading
+# A web server on 198.51.100.1:80 (plain HTTP) and :443 and 198.51.100.2:443 (HTTPS, one self-signed certificate for
+# every name): reads the request, answers "ok", closes. Each connection has a thread of its own, so one that sends
+# nothing is held open.
+tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+tls.load_cert_chain(sys.argv[1], sys.argv[2])
+def serve(c, port):
     try:
+        if port == 443:
+            c = tls.wrap_socket(c, server_side=True)
         c.recv(65536)
         c.sendall(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok")
     except OSError:
@@ -257,7 +269,7 @@ def serve(c):
     c.close()
 def listen(s):
     while True:
-        threading.Thread(target=serve, args=(s.accept()[0],), daemon=True).start()
+        threading.Thread(target=serve, args=(s.accept()[0], s.getsockname()[1]), daemon=True).start()
 bound = []
 for where in [("198.51.100.1", 80), ("198.51.100.1", 443), ("198.51.100.2", 443)]:
     s = socket.socket()
@@ -415,7 +427,76 @@ with open(path + ".tmp", "w") as f:
 os.replace(path + ".tmp", path)
 EOF
 rules() { python3 "$work/db.py" "$db" "$@"; }
-ip netns exec inet python3 "$work/serve.py" >"$work/serve.out" 2>&1 &
+# A TLS client for the server name check (E8c-2), run in a machine: `hello.py ADDRESS NAME [--pieces N,N..] [--gap S]
+# [--pad BYTES] [--wait S] [--timeout S] [--plain]` sends its ClientHello for NAME ("-": no server name) to port 443 in
+# pieces of these sizes (the rest last), GAP seconds apart, ends the handshake, waits WAIT seconds and asks for "/". It
+# prints the answer ("ok"), "refused" (the connection reset), "timeout" or "failed: why". --pad makes the ClientHello
+# that much bigger (ALPN names); --plain sends a plain HTTP request instead.
+cat >"$work/hello.py" <<'EOF'
+import argparse, socket, ssl, time
+p = argparse.ArgumentParser()
+p.add_argument("address")
+p.add_argument("name")
+p.add_argument("--pieces", default="")
+p.add_argument("--gap", type=float, default=0.3)
+p.add_argument("--pad", type=int, default=0)
+p.add_argument("--wait", type=float, default=0)
+p.add_argument("--timeout", type=float, default=10)
+p.add_argument("--plain", action="store_true")
+a = p.parse_args()
+def answer():
+    s = socket.create_connection((a.address, 443), timeout=a.timeout)
+    s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    if a.plain:
+        s.sendall(b"GET / HTTP/1.0\r\n\r\n")
+        return s.recv(65536)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    if a.pad:
+        context.set_alpn_protocols(["x" * 250] * (a.pad // 251 + 1) + ["http/1.1"])
+    incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
+    tls = context.wrap_bio(incoming, outgoing, server_hostname=None if a.name == "-" else a.name)
+    def run(call):
+        while True:
+            try:
+                result = call()
+            except ssl.SSLWantReadError:
+                s.sendall(outgoing.read())
+                data = s.recv(65536)
+                if not data:
+                    raise ConnectionResetError("closed")
+                incoming.write(data)
+                continue
+            s.sendall(outgoing.read())
+            return result
+    try:
+        tls.do_handshake()
+    except ssl.SSLWantReadError:
+        pass
+    hello, at = outgoing.read(), 0
+    for size in [int(n) for n in a.pieces.split(",") if n]:
+        s.sendall(hello[at:at + size])
+        at += size
+        time.sleep(a.gap)
+    s.sendall(hello[at:])
+    run(tls.do_handshake)
+    time.sleep(a.wait)
+    run(lambda: tls.write(b"GET / HTTP/1.0\r\n\r\n"))
+    return run(lambda: tls.read(65536))
+try:
+    print(answer().partition(b"\r\n\r\n")[2].decode() or "empty")
+except socket.timeout:
+    print("timeout")
+except (ConnectionResetError, BrokenPipeError):
+    print("refused")
+except Exception as error:
+    print(f"failed: {error!r}")
+EOF
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 -subj /CN=stand-in \
+	-keyout "$work/serve.key" -out "$work/serve.crt" >"$work/openssl.out" 2>&1 ||
+	fail "cannot make the stand-in's certificate: $(cat "$work/openssl.out")"
+ip netns exec inet python3 "$work/serve.py" "$work/serve.crt" "$work/serve.key" >"$work/serve.out" 2>&1 &
 pids+=($!)
 ip netns exec inet python3 "$work/upstream.py" 9.9.9.9,1.1.1.1 "$work/upstream.log" >"$work/upstream.out" 2>&1 &
 pids+=($!)
@@ -639,9 +720,9 @@ for server in 10.210.0.1 9.9.9.9; do
 	expect m2 "$server" open.example.com NXDOMAIN
 	expect m2 "$server" other.example.com NXDOMAIN
 done
-page=$(in_m m2 python3 -c 'import urllib.request; print(urllib.request.urlopen("http://listed.example.com:443/", timeout=5).read().decode())' 2>&1) ||
-	fail "m2 could not fetch http://listed.example.com:443/: $page"
-[[ $page == ok ]] || fail "m2 fetched http://listed.example.com:443/: $page"
+page=$(in_m m2 python3 -c 'import ssl, urllib.request; print(urllib.request.urlopen("https://listed.example.com/", context=ssl._create_unverified_context(), timeout=5).read().decode())' 2>&1) ||
+	fail "m2 could not fetch https://listed.example.com/: $page"
+[[ $page == ok ]] || fail "m2 fetched https://listed.example.com/: $page"
 [[ $(set_addresses allow_10002) == 198.51.100.1 ]] || fail "allow_10002 holds: $(set_addresses allow_10002)"
 expect_tcp m2 198.51.100.1 80 refused
 expect_tcp m2 198.51.100.2 443 refused
@@ -688,6 +769,104 @@ expect_tcp m2 198.51.100.2 443 open
 expect_tcp m2 198.51.100.1 80 open
 within 30 healthy
 pass "$C2 back to open: its resolver asks for every name again, only_10002 and allow_10002 go, m2 reaches any address"
+
+# --- The server name check (E8c-2): the queue modules loaded in this VM ---------------------------------------------
+# Until here the queue modules were not loaded (prove-names-vm.sh checks the test machine never gets them): "only
+# listed" went by address alone, so a ClientHello for any name reached a listed name's address.
+SNI=qorpera-agent-exit-sni.service
+sni_state() { systemctl is-active "$SNI" 2>/dev/null || true; }
+sni_pid() { systemctl show -p MainPID --value "$SNI"; }
+hello() { in_m m2 python3 /root/hello.py "$@" 2>&1; }
+expect_hello() {
+	local got
+	got=$(hello "${@:2}") || true
+	[[ $got == "$1" ]] || fail "m2's hello ${*:2}: \"$got\", not \"$1\""
+}
+refused_names() {
+	local text
+	text=$(ip netns exec qexit nft list counter inet qorpera_agent_exit refused_name)
+	grep -o 'packets [0-9]*' <<<"$text" | cut -d' ' -f2
+}
+# conntrack's line of a flow of m2's to 198.51.100.1:443 in this state with this mark.
+flow_is() { shows "$1 src=$a2 dst=198.51.100.1 sport=[0-9]* dport=443 .* mark=$2 " ip netns exec qexit conntrack -L -s "$a2" 2>/dev/null; }
+for module in nft_queue nfnetlink_queue; do [[ ! -d /sys/module/$module ]] || fail "$module was loaded before the proof loaded it"; done
+lx file push "$work/hello.py" m2/root/hello.py >/dev/null
+rules "$C2=only:no.listed.example.com+listed.example.com"
+within 30 'only && says m2 10.210.0.1 listed.example.com "NOERROR 198.51.100.1"'
+[[ $(sni_state) != active ]] || fail "the server name checker runs without the queue modules"
+ip netns exec qexit nft list chain inet qorpera_agent_exit sni >/dev/null 2>&1 && fail "the sni chain without the queue modules"
+shows 'only listed by address alone (no queue modules)' "$X" check || fail "check: $("$X" check 2>&1)"
+expect_hello ok 198.51.100.1 listed.example.com
+expect_hello ok 198.51.100.1 unlisted.example.com
+healthy || fail "not healthy without the queue modules: $(verify_problems)"
+pass "without the queue modules only listed goes by address alone: no checker, no sni chain, and a ClientHello for a name not listed reaches a listed name's address; verify and check say nothing is wrong"
+
+modprobe nft_queue
+modprobe nfnetlink_queue
+shows 'server names checked' "$X" check || fail "check with the queue modules: $("$X" check 2>&1)"
+# ROLLOUT.md's step: the exit's reload puts the sni chain in and starts the checker.
+systemctl reload qorpera-agent-exit.service
+within 30 '[[ $(sni_state) == active ]] && only && healthy'
+ip netns exec qexit nft list chain inet qorpera_agent_exit sni >/dev/null || fail "no sni chain after the reload"
+within 30 'says m2 10.210.0.1 listed.example.com "NOERROR 198.51.100.1" && [[ $(set_addresses allow_10002) == 198.51.100.1 ]]'
+refused=$(refused_names)
+expect_hello ok 198.51.100.1 listed.example.com
+flow_is '[A-Z_]*' 2 || fail "a listed name's flow is not marked judged (2)"
+expect_hello ok 198.51.100.1 two.listed.example.com
+expect_hello ok 198.51.100.1 listed.example.com --pad 3000 --pieces 1,5,100
+expect_hello refused 198.51.100.1 no.listed.example.com
+expect_hello refused 198.51.100.1 unlisted.example.com
+flow_is '[A-Z_]*' 3 || fail "a refused flow is not marked refused (3)"
+expect_hello refused 198.51.100.1 -
+expect_hello refused 198.51.100.1 listed.example.com --plain
+expect_hello refused 198.51.100.1 listed.example.com --pad 20000
+expect_hello refused 198.51.100.1 listed.example.com --pieces 10 --gap 7
+expect_tcp m1 198.51.100.1 443 open
+(($(refused_names) >= refused + 6)) || fail "refused_name went from $refused to $(refused_names)"
+within 30 'shows "\"dst\":\"198.51.100.1\",\"event\":\"refused\".*\"rule\":\"name_not_listed\"" cat "$LOGS"/flows-*.jsonl'
+healthy || fail "not healthy with the server name check: $(verify_problems)"
+pass "with the queue modules (loaded in this VM only) and the exit reloaded, m2's flows to a listed name's address go on only with a ClientHello for a listed name or one under it (also one in pieces and segments), judged once (mark 2); a blocked name under a listed one, a name not listed, no name, no TLS, a ClientHello over 16 KiB or slower than 5 s are reset (mark 3), counted in refused_name and logged as name_not_listed; m1 (open) is not checked"
+
+# No bypass: a judged flow goes on while the checker is down, a new one gets nowhere, and verify says why.
+in_m m2 python3 /root/hello.py 198.51.100.1 listed.example.com --wait 10 >"$work/held-hello.out" 2>&1 &
+pids+=($!)
+within 30 'flow_is ESTABLISHED 2'
+systemctl stop "$SNI"
+verify_says "$NOT_HEALTHY no server name checker on queue 0: only-listed port 443 flows are refused" ||
+	fail "verify with the checker stopped: $(verify_problems)"
+expect_hello timeout 198.51.100.1 listed.example.com --timeout 3
+within 30 '[[ -s $work/held-hello.out ]]'
+[[ $(cat "$work/held-hello.out") == ok ]] || fail "a judged flow while the checker was down: $(cat "$work/held-hello.out")"
+systemctl start "$SNI"
+within 30 healthy
+expect_hello ok 198.51.100.1 listed.example.com
+pass "with the checker stopped a judged flow goes on, a new flow gets nowhere (no bypass) and verify says why; started again, flows are judged again"
+
+# A killed checker comes back a second later, every time (no start limit); a flow it was judging is refused.
+restarts=$(systemctl show -p NRestarts --value "$SNI")
+for kill in 1 2 3 4 5 6; do
+	pid=$(sni_pid)
+	systemctl kill -s KILL "$SNI"
+	within 30 '[[ $(sni_state) == active && $(sni_pid) != 0 && $(sni_pid) != "$pid" ]]'
+done
+(($(systemctl show -p NRestarts --value "$SNI") >= restarts + 6)) || fail "the checker restarted $restarts, then $(systemctl show -p NRestarts --value "$SNI") times"
+within 30 healthy
+in_m m2 python3 /root/hello.py 198.51.100.1 listed.example.com --pieces 10 --gap 6 >"$work/cut-hello.out" 2>&1 &
+pids+=($!)
+within 30 'flow_is ESTABLISHED 1'
+systemctl kill -s KILL "$SNI"
+within 30 '[[ -s $work/cut-hello.out ]]'
+[[ $(cat "$work/cut-hello.out") == refused ]] || fail "a flow judged when the checker was killed: $(cat "$work/cut-hello.out")"
+within 30 healthy
+expect_hello ok 198.51.100.1 listed.example.com
+pass "a killed checker is back within a second or two, six times in a row; the flow it was judging is refused, new flows are judged again"
+
+# Back to open: no flow of m2's is checked; the modules stay loaded (this VM goes after the proof).
+rules "$C2=other.example.com"
+within 30 "names_is \"s['reach'] == {'$a1': 'open', '$a2': 'open'} and s['problems'] == []\""
+expect_hello ok 198.51.100.1 unlisted.example.com
+within 30 healthy
+pass "$C2 back to open: m2's flows to 443 are not checked"
 
 # --- The exit fails closed -----------------------------------------------------------------------------------------
 rules "$C2=bad"

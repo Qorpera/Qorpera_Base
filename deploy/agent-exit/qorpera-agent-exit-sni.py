@@ -507,6 +507,9 @@ class Checker:
                     print("the exit's namespace was made again: leaving, to be started in the new one",
                           file=sys.stderr, flush=True)
                     return
+                # The status says how the rules file is now, also when no flow is being judged.
+                self.rules_at = time.monotonic()
+                self.read_rules()
                 self.write_status(last)
 
 

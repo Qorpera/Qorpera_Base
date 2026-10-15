@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Proof of each company's names (E8b-2) on real systemd and a real LXD, run as root on a test machine:
+# Proof of each company's names (E8b-2) and where its machines may go (E8c) on real systemd and a real LXD, run as
+# root on a test machine:
 #
 #   node scripts/run-on-node.mjs --machine node01 --sudo --no-status -- \
 #     bash deploy/agent-exit/test/prove-names-vm.sh </dev/null
@@ -12,12 +13,13 @@
 #     env QORPERA_AGENT_EXIT_PROOF_PREVIOUS=<dir> bash deploy/agent-exit/test/prove-names-vm.sh </dev/null
 #
 # It changes nothing of the test machine: it makes a throwaway VM in the test machine's LXD, with no network card at all,
-# and runs test/prove-names.sh inside it. That VM has its own kernel, systemd and LXD: it loads br_netfilter, installs
-# and switches on the exit and plugs real LXD containers in, as a node would. Everything the VM needs is fetched or built
-# on the test machine and pushed in, because the VM has no network: LXD's snaps, the container image, the reader's
-# package from this checkout, this folder (and the previous release's), and the packages the exit needs, among them the
-# nodes' Node, exactly those apt would install on the VM's own package list. Before and after, the test machine's links
-# (but Docker's), nft table names, a few sysctls and its network modules are compared, as test/prove-lxd-vm.sh does.
+# and runs test/prove-names.sh inside it. That VM has its own kernel, systemd and LXD: it loads br_netfilter (and, for
+# the server name check, nft_queue and nfnetlink_queue), installs and switches on the exit and plugs real LXD containers
+# in, as a node would. Everything the VM needs is fetched or built on the test machine and pushed in, because the VM has
+# no network: LXD's snaps, the container image, the reader's package from this checkout, this folder (and the previous
+# release's), and the packages the exit needs, among them the nodes' Node, exactly those apt would install on the VM's
+# own package list. Before and after, the test machine's links (but Docker's), nft table names, a few sysctls and its
+# network modules (the queue modules among them) are compared, as test/prove-lxd-vm.sh does.
 # (LXD itself loads vhost_vsock for any VM; it is not one of them.) Everything it made is removed at the end, also on
 # failure. Prints PASS lines, the inner proof's, then ALL PASSED.
 set -euo pipefail
@@ -61,7 +63,7 @@ machine_state() {
 	sysctl net.ipv4.ip_forward net.ipv4.conf.all.rp_filter net.netfilter.nf_conntrack_max 2>/dev/null
 	cat /proc/sys/net/bridge/bridge-nf-call-iptables 2>/dev/null || echo "no br_netfilter"
 }
-WATCHED_MODULES="br_netfilter bridge stp llc tun macvlan macvtap vhost_net nft_meta_bridge nf_conntrack_bridge"
+WATCHED_MODULES="br_netfilter bridge stp llc tun macvlan macvtap vhost_net nft_meta_bridge nf_conntrack_bridge nft_queue nfnetlink_queue"
 modules() { awk '{print $1}' /proc/modules | sort; }
 
 work=$(mktemp -d)
