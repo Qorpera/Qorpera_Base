@@ -107,6 +107,7 @@ import {
 import {
 	type CloudWakeControl,
 	cloudCoworkerMessageTool,
+	cloudWakeIsConversationPost,
 	cloudWakeIsOwnThread,
 	parseCloudWakeEnvelope,
 } from "./cloud-wake-bus.ts";
@@ -349,14 +350,15 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				runId: binding.runId,
 				agentFolder: cloudAgentFolder(context.identity.companyId, context.identity.staffAgentId, agentFolders),
 			});
-			// Summary trees (RUNTIME-AGENT-MEMORY-TREE.md §5.3, M1b-4a): an agent's run in its own thread may see the
-			// primary view of its conversation, with the branches (§5.5), instead of the history before it. The host call
-			// answers whether it does (the company is listed once its trees are written); a run that has the view has zoom
-			// and the conversation's prompt cache key (§6.2). A worker is not one; it gets its parent's view (W4).
+			// Summary trees (RUNTIME-AGENT-MEMORY-TREE.md §5.3, M1b-4a, M4c): an agent's run on a post in a conversation,
+			// its own thread or a group chat it is in, may see the primary view of that conversation, with the branches
+			// (§5.5, its other conversations), instead of the history before it. The host call answers whether it does
+			// (the company is listed once its trees are written); a run that has the view has zoom and the conversation's
+			// prompt cache key (§6.2). A worker is not one; it gets its parent's view (W4).
 			const memoryTree =
 				context.identity.audienceKind === "company" &&
 				context.identity.sessionId !== null &&
-				cloudWakeIsOwnThread(wake) &&
+				cloudWakeIsConversationPost(wake) &&
 				!cloudWorkerToolFilter(wake).isWorker;
 			const composeContext = async () => {
 				presence = this.#presenceFactory?.(binding, context.identity, signal);
@@ -605,6 +607,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			};
 			try {
 				stage = "native-tools";
+				// Whether the run had a machine, whose changes are noted after it (Interfaces I10, below).
+				let machine = false;
 				const result = await runCloudNativeRunToolSession({
 					observability,
 					binding,
@@ -699,6 +703,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						)
 							throw new Error("Cloud context identity changed before execution");
 						const computer = await this.#computerSession?.(run, operations);
+						if (computer) machine = true;
 						// The node's folder search (F3, "Light threads"): a run on a host that has it. A worker gets it
 						// too: it only reads.
 						const folderSearch = this.#folderSearch
@@ -922,6 +927,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								: {}),
 						};
 					},
+				}).finally(async () => {
+					// What the run's machine saved under interfaces/ or tables/ (its shell, its screen) shows in its
+					// conversation with Undo, as a tool's change does (Interfaces I10): SQL notes each of the run's commits
+					// there once, now that the machine is closed. A note that fails leaves the change without its line; the
+					// run's outcome stands.
+					if (machine && context.identity.sessionId !== null)
+						await folder.client.noteInterfaceChanges(signal).catch((error: unknown) => {
+							console.error(
+								`The run's interface changes were not noted (${cloudRuntimeErrorCategory(error, signal)})`,
+							);
+						});
 				});
 				stage = "public-completion";
 				const delivery = await mouth.finish(wake.policy.final === "required");

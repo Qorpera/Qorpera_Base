@@ -93,7 +93,7 @@ before any lock. The error is 0A000, "This Company File path does not serve fold
   upload intents.
 - **The member whole-tree lane:** `prepare_` and `publish_company_file_revision`, `prepare_company_file_proposal`,
   `submit_` and `rebase_company_proposal`. The v149 activation guard only checks that their text still contains the
-  company fence, which it does.
+  company fence, which it does. Legacy sweep D2 (20260930331000) dropped them, with the rest of the old proposal lane.
 - **The approval and member-command actors** (`company_path_approved_actor`, `member_company_path_command_actor`)
   refuse before their company fence.
 - **The office's Company File transfers** (`native_office_company_file_source`, `confirm_office_company_file_import`):
@@ -139,7 +139,8 @@ for each that must not be refused (the Storage policies and the bootstrap claim 
 turn: the test failed for 31 of 34. The other three (`runner_begin_company_revision_graph`, `runner_authorize_` and
 `_finalize_company_revision_verification`) call `runner_company_revision_snapshot` first, whose own guard refuses;
 they keep theirs in case that call moves. Legacy sweep D1 (20260930330000) removed the bootstrap claim's and the staff
-writers' cases with the functions.
+writers' cases with the functions, and legacy sweep D2 (20260930331000) the whole-tree lane's. `folder-v2` proposals
+are tested by 926, 927 and 937.
 
 ## 5. C1c-2: run paths on the folder fence
 

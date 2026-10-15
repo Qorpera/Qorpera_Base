@@ -1,8 +1,8 @@
 -- @fixture 658_folder_core_run_completion.test.sql until "-- The checks start here: a test that runs after this file's fixture part stops at this line."
 -- Company folder core, C3 (P23 part 2, migration 20260930002210): the runner broker's model of a folder-v2 run. The broker
 -- describes it in the path lane's shape with no substrate anywhere, and the run then completes through the folder lane
--- (the round trip); the substrate's operations and artifacts refuse, as does a proposal review. Snapshot-v1 keeps its
--- describe. Runs are 647's hand-built runs, prepared as 658 prepares them.
+-- (the round trip); a proposal review's description refuses. Snapshot-v1 keeps its describe. Runs are 647's hand-built
+-- runs, prepared as 658 prepares them.
 
 create function pg_temp.describe(b jsonb) returns jsonb language sql as $$
 	select public.qorpera_runner_broker_describe((b ->> 'runnerId')::uuid, repeat('f', 64), (b ->> 'jobId')::uuid, repeat('a', 64))
@@ -43,14 +43,10 @@ begin
 		raise exception '1: the described run completes unchanged: %', r; end if;
 end $$;
 
--- 2. The substrate's operations and artifacts, and a proposal review's description, refuse on folder-v2.
+-- 2. A proposal review's description refuses on folder-v2.
 do $$
 declare h jsonb := pg_temp.human(); b jsonb := h -> 'binding';
 begin
-	perform pg_temp.refuses(format('select public.qorpera_runner_broker_list_operations(%L, %L, %L, %L, 0, 10)', b ->> 'runnerId', repeat('f', 64),
-		b ->> 'jobId', repeat('a', 64)), '0A000', 'This Company File path does not serve folder-v2 companies');
-	perform pg_temp.refuses(format('select public.qorpera_runner_broker_list_artifacts(%L, %L, %L, %L, 0, 10)', b ->> 'runnerId', repeat('f', 64),
-		b ->> 'jobId', repeat('a', 64)), '0A000', 'This Company File path does not serve folder-v2 companies');
 	set local session_replication_role = replica;
 	update public.qorpera_execution_runs set source_kind = 'proposal_review', input_ids = '{}' where id = (b ->> 'runId')::uuid;
 	set local session_replication_role = origin;

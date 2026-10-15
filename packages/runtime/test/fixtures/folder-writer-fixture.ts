@@ -106,6 +106,12 @@ export async function folderWriterFixture(
 	const workerRequests: Record<string, unknown>[] = [];
 	const cancels: Record<string, unknown>[] = [];
 	const archives: Record<string, unknown>[] = [];
+	// The interface change notes asked for (I10), and the commits with no note yet that saved something under
+	// interfaces/ or tables/ (a table's rows aside), which SQL notes.
+	const notes: Record<string, unknown>[] = [];
+	let unnoted = 0;
+	const noted = (path: string) =>
+		/^(?:interfaces|tables)\//.test(path.toLowerCase()) && !/^tables\/[^/]+\/rows\.csv$/.test(path.toLowerCase());
 	// Routine key → how the index runs it, where that differs from its file.
 	const routineStates = new Map<string, FolderWriterRoutineState>();
 	// Whether the requester's login pays, as the last login preparation found it.
@@ -459,6 +465,7 @@ export async function folderWriterFixture(
 				// The folder's clock moves only when a unit is saved.
 				const any = results.some((result) => result.outcome === "saved");
 				if (any) seq += 1;
+				if (results.some((result) => result.outcome === "saved" && noted(result.path))) unnoted += 1;
 				return {
 					schema: "qorpera.folder-commit/v1",
 					commitId: randomUUID(),
@@ -603,6 +610,13 @@ export async function folderWriterFixture(
 					next: page.length === (args.p_limit as number) ? (page.at(-1) ?? null) : null,
 				};
 			}
+			// The run's interface changes in its conversation (I10): one note a commit, so a call notes what is left.
+			if (method === "qorpera_folder_note_interface_changes") {
+				notes.push(structuredClone(args));
+				const made = unnoted;
+				unnoted = 0;
+				return { schema: "qorpera.interface-change-notes/v1", noted: made };
+			}
 			if (method === "qorpera_folder_record_release") {
 				releases.push(structuredClone(args));
 				return {
@@ -694,6 +708,7 @@ export async function folderWriterFixture(
 		workerRequests,
 		cancels,
 		archives,
+		notes,
 		routineStates,
 		ledger,
 		operationControl,

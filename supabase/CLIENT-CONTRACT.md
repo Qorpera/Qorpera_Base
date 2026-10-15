@@ -75,7 +75,7 @@ they answer 42501 "native host call is refused".
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-151 functions, grouped for navigation. Signatures: see the migration that defines each.
+135 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
 ### Members, presence, friends, feedback (18)
@@ -191,8 +191,7 @@ they answer 42501 "native host call is refused".
     login lapsed works);
   - only the member whose plan pays retries a failed run on it
     (`qorpera_resolve_failed_execution_run` 'retry': 55000 for anyone else;
-    acknowledging stays open) or a change's review on it
-    (`qorpera_retry_company_proposal_review`: 42501 for anyone else).
+    acknowledging stays open).
 - `qorpera_select_member_session_account(p_profile_id, p_session_id)` and
   `qorpera_choose_member_session_account(p_profile_id, p_session_id,
   p_connection_id)` (20260930059000, the payer never changes without the
@@ -260,29 +259,13 @@ and `qorpera_cancel_artifact_gc_plan(_v2)` answer 0A000 for it (20260930041000).
 - `qorpera_retry_artifact_gc_plan`
 
 
-### Company File, snapshots, proposals, workspaces (21)
+### Company File, snapshots, workspaces (5)
 
-- `qorpera_accept_company_proposal`
-- `qorpera_append_company_proposal_comment`
-- `qorpera_capture_company_substrate_version`
-- `qorpera_capture_company_substrate_version_v2`
 - `qorpera_company_uses_path_gateway`
 - `qorpera_get_company_file`
-- `qorpera_get_company_proposal`
 - `qorpera_get_company_snapshot`
-- `qorpera_get_company_substrate_version`
-- `qorpera_list_company_proposal_comments`
-- `qorpera_list_company_proposals`
 - `qorpera_list_company_snapshots`
-- `qorpera_list_company_substrate_operations`
 - `qorpera_list_company_workspaces`
-- `qorpera_prepare_company_file_proposal`
-- `qorpera_prepare_company_file_revision`
-- `qorpera_publish_company_file_revision`
-- `qorpera_rebase_company_proposal`
-- `qorpera_reject_company_proposal`
-- `qorpera_retry_company_proposal_review`
-- `qorpera_submit_company_proposal`
 
 
 ### Organization and staff (4)
@@ -840,13 +823,15 @@ a write under `human-tasks/` waits for P31.
 
 - `qorpera_member_folder_read(environment, path)`: `{schema: "qorpera.folder-read/v1", asOfSeq, found, entry}`,
   `entry` null when not found; an entry has
-  `path`, `kind` (`file` or `folder`), `version`, `seq`, `updatedAt` and, for a file, `manifestSha256`,
-  `fileSha256`, `bytes`, `mediaType`, `executable`.
+  `path`, `kind` (`file`, `folder` or `symlink`), `version`, `seq`, `updatedAt` and, for a file, `manifestSha256`,
+  `fileSha256`, `bytes`, `mediaType`, `executable`; for a link (`20260930380000_folder_links`), its `target`, the
+  text it holds, never resolved. Nothing is below a link.
 - `qorpera_member_folder_list(environment, parent, after, limit)`: `qorpera.folder-list/v1`, one folder's entries in
   folder-key order (`parent` null for the top), at most `limit` (1 to 1,000); `next` is the path to pass as `after`
   for the next page, null on the last.
 - `qorpera_member_folder_path_history(environment, path, before, limit)`: `qorpera.folder-path-history/v1`, a path's
-  versions newest first (1 to 100 a page), each `{version, seq, op, kind, path, at, by}` and the content fields; a
+  versions newest first (1 to 100 a page), each `{version, seq, op, kind, path, at, by}` and the content fields (a
+  link's `target`, except on a delete); a
   `move_in` has `from` and a `move_out` has `to` when the member may read that path. `next` is a version to pass as
   `before`.
 - `qorpera_member_folder_history(environment, before, limit)`: `qorpera.folder-history/v1`, the change sets newest
@@ -855,7 +840,8 @@ a write under `human-tasks/` waits for P31.
   whose first 1,000 versions the member may read is left out (the feed still shows it). `next` is a seq to pass as
   `before`.
 - `qorpera_member_folder_changes(environment, after_seq, limit, cursor?)`: the folder feed (`qorpera.folder-feed/v1`,
-  core §6), each change set with `by` and `at`. Follow it from `next` (`afterSeq`, `cursor`); on `resync`, read
+  core §6), each change set with `by` and `at`; a link's change has its `target`. Follow it from `next` (`afterSeq`,
+  `cursor`); on `resync`, read
   again from the top.
 - `by` is `{kind: "member", userId}`, `{kind: "agent", staffAgentId}` or `{kind: "platform"}`.
 - `qorpera_member_folder_object(environment, sha256)`: the object gateway's check for one object (a manifest or a
