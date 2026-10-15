@@ -75,9 +75,25 @@ test("the in-guest installer reads the recipe the way the recipe is written", ()
 
 test("the in-guest installer stays offline and leaves swap off", () => {
 	assert.match(installer, /sha256sum --check --strict/);
-	assert.match(installer, /apt-get install --yes --no-install-recommends --no-download /);
+	assert.match(installer, /apt-get install --yes --no-install-recommends --no-download -o DPkg::Lock::Timeout=600 /);
 	assert.match(installer, /npm install --global --prefix \/usr --offline /);
 	assert.match(installer, /systemctl mask swap\.target/);
 	assert.match(installer, /wc -l <\/proc\/swaps\) == 1/);
 	assert.doesNotMatch(installer, /\b(apt-get update|curl|wget)\b/);
+});
+
+test("the candidate builder copies every confinement key of the office unit and stays offline", () => {
+	const builder = join(repositoryRoot, "scripts/build-office-image-candidate.sh");
+	execFileSync("bash", ["-n", builder]);
+	const source = readFileSync(builder, "utf-8");
+	const keys = source.match(/grep -E '\^\(([A-Za-z|]+)\)='\)/)[1].split("|");
+	const unit = readFileSync(join(guest, "qorpera-company-computer.service"), "utf-8").split("\n");
+	const copied = unit.filter((line) => keys.includes(line.split("=", 1)[0]));
+	assert.equal(Number(source.match(/\(\(\$\{#properties\[@\]\} == (\d+)\)\)/)[1]), copied.length * 2);
+	for (const key of keys) assert.ok(copied.some((line) => line.startsWith(`${key}=`)), `${key} is not in the office unit`);
+	for (const key of ["User", "NoNewPrivileges", "CapabilityBoundingSet", "MemoryMax", "TasksMax", "CPUQuota"])
+		assert.ok(keys.includes(key), key);
+	assert.match(source, /--vm --no-profiles /);
+	assert.match(source, /fail "nested VM unexpectedly has a NIC"/);
+	assert.match(source, /\[\[ \$\(hostname\) == qorpera-testvm-node01 \]\]/);
 });

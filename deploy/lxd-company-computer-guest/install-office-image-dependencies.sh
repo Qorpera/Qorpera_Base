@@ -42,9 +42,11 @@ query sha256sums >"$dir/downloads.sha256"
 # The image never updates itself; the office installer masks the same units again.
 systemctl mask apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service
 mapfile -t packages < <(query packages)
-# apt orders the pushed closure itself (pre-dependencies included) and has nothing to download.
+# apt orders the pushed closure itself (pre-dependencies included) and has nothing to download. A job the
+# timers started at boot, before the masks, holds the lock until it gives up offline.
 if compgen -G "$dir/debs/*.deb" >/dev/null; then
-	apt-get install --yes --no-install-recommends --no-download -o DPkg::Options::=--force-confold "$dir"/debs/*.deb
+	apt-get install --yes --no-install-recommends --no-download -o DPkg::Lock::Timeout=600 \
+		-o DPkg::Options::=--force-confold "$dir"/debs/*.deb
 fi
 for name in "${packages[@]}"; do
 	[[ $(dpkg-query -W -f '${db:Status-Status}' "$name" 2>/dev/null) == installed ]] || fail "$name is not installed"
@@ -99,5 +101,5 @@ mkdir -m 0700 "$work/home"
 for check in "${checks[@]}"; do
 	# shellcheck disable=SC2086 # each check is a command and its one flag
 	out=$(PATH=/usr/local/bin:/usr/bin:/bin HOME="$work/home" $check 2>&1) || fail "$check failed: $out"
-	echo "$check: ${out%%$'\n'*}"
+	echo "toolbox: $check: ${out%%$'\n'*}"
 done
