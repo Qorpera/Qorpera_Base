@@ -1,5 +1,5 @@
 -- @fixture 490_folder_git_rules.test.sql until "-- A coding session writes its own worktree"
--- git's leases (20260930396300; F3 step 5b, part 3: deploy/first-node/RUNTIME-FOLDER-CODING-MACHINES.md, "Code areas and
+-- git's leases (20260930446300; F3 step 5b, part 3: deploy/first-node/RUNTIME-FOLDER-CODING-MACHINES.md, "Code areas and
 -- git"). A coding session or a code host takes the lease on a shared file X of a repo.git (refs/**, packed-refs, shallow).
 -- Another valid view's lease answers busy, a git rule answers refused, and a lease lives as long as its view. A code
 -- host's gc block answers new takes busy ('maintenance'). Publish and release are 492's. The office, code/acme/app and
@@ -16,8 +16,8 @@ declare v_def text := pg_get_functiondef('public.qorpera_folder_commit(uuid,json
 		'public.qorpera_folder_git_repository_lock(uuid,text,boolean)', 'public.qorpera_folder_git_repository(text)',
 		'public.qorpera_folder_git_land(uuid,jsonb,uuid,text,jsonb,boolean)'];
 begin
-	if strpos(v_def, '20260930396300') = 0 or strpos(v_def, '20260930396200') = 0 or strpos(v_def, '20260930396000') = 0
-		or strpos(v_def, '20260930395000') = 0 then raise exception 'The commit lost a marker'; end if;
+	if strpos(v_def, '20260930446300') = 0 or strpos(v_def, '20260930446200') = 0 or strpos(v_def, '20260930446000') = 0
+		or strpos(v_def, '20260930445000') = 0 then raise exception 'The commit lost a marker'; end if;
 	if exists (select 1 from unnest(array['anon','authenticated']) r(role) cross join unnest(v_api) f(sig)
 			where has_function_privilege(r.role, f.sig, 'EXECUTE'))
 		or exists (select 1 from unnest(v_api) f(sig) where not has_function_privilege('service_role', f.sig, 'EXECUTE')) then
