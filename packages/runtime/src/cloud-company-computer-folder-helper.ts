@@ -1,31 +1,40 @@
-import { spawn } from "node:child_process";
-import { chmod, link, lstat, mkdir, readdir, rename, rm, rmdir, writeFile } from "node:fs/promises";
-import { createServer, type Server } from "node:net";
+import { type ChildProcess, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { chmod, link, lstat, mkdir, readdir, readlink, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import { createServer, type Server, type Socket } from "node:net";
+import type { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import {
+	COMPANY_COMPUTER_COMMAND_MOUNT,
 	COMPANY_COMPUTER_FOLDER_ANSWER_BYTES,
 	COMPANY_COMPUTER_FOLDER_REQUEST_BYTES,
 	COMPANY_COMPUTER_FOLDER_ROOT,
+	COMPANY_COMPUTER_FOLDER_RUN_CHUNK_BYTES,
+	COMPANY_COMPUTER_FOLDER_RUN_LINE_BYTES,
 	type CompanyComputerFolderAnswer,
 	type CompanyComputerFolderAnswers,
 	type CompanyComputerFolderBoundary,
 	type CompanyComputerFolderMount,
 	type CompanyComputerFolderRequest,
+	type CompanyComputerFolderRunEvent,
+	type CompanyComputerFolderRunInput,
 	type CompanyComputerFolderView,
 	companyComputerFolderPaths,
 	isCompanyComputerFolderName,
 	isCompanyComputerFolderReport,
 	isCompanyComputerFolderView,
 	parseCompanyComputerFolderRequest,
+	parseCompanyComputerFolderRunInput,
 } from "./cloud-company-computer-folder-helper-client.ts";
 import { readCompanyComputerLinuxMetadata } from "./cloud-company-computer-linux-host.ts";
 import { integer, properties, systemctl } from "./cloud-company-computer-systemd.ts";
 
 /**
  * The office's folder helper (RUNTIME-FOLDER-COMPANY-MACHINES.md, "Mounts in the VM"): the one root piece that mounts
- * the company folder for a desktop or a command, moves a desktop's mount to a newer view, asks a mount's boundary and
- * takes mounts away. The office service runs with no capabilities, no devices and no `AF_VSOCK`, so it asks this
- * helper over qorpera-office-folder-helper.socket; the stop control, root, asks it too.
+ * the company folder for a desktop or a command, starts a command with its mount at `/company`, moves a desktop's mount
+ * to a newer view, asks a mount's boundary and takes mounts away. The office service runs with no capabilities, no
+ * devices and no `AF_VSOCK`, so it asks this helper over qorpera-office-folder-helper.socket; the stop control, root,
+ * asks it too.
  *
  * A name is held exactly while its view file exists: the helper writes it first and removes it last, so a helper that
  * stopped half way leaves a name that `list` shows and `drop` takes away.
@@ -45,6 +54,12 @@ const SWITCH_MS = 20000;
 /** How long a boundary waits for a program that is just exiting, to tell exit 3 from any other exit. */
 const SETTLE_MS = 5000;
 const POLL_MS = 200;
+/** How often a run whose command exited looks for processes left in its mount namespace. */
+const ENDED_POLL_MS = 1000;
+/** How long `qorpera-folder command` may take to report its start; it gives up itself after 20 s. */
+const LAUNCH_MS = 30000;
+/** A report line of `qorpera-folder command` at most. */
+const COMMAND_REPORT_BYTES = 4096;
 const PROOF_SCHEMA = "qorpera.folder-view-proof/v1";
 
 export function companyComputerFolderUnit(name: string): string {
@@ -77,6 +92,12 @@ export interface CompanyComputerFolderHelperSystem {
 	/** Runs the folder program once. `code` is null when it did not exit by itself in time; `stdout` is undefined when
 	 * it printed more than an answer can carry. */
 	publish(args: readonly string[], timeoutMs: number): Promise<{ code: number | null; stdout: Buffer | undefined }>;
+	/** Starts `qorpera-folder command` with these arguments. Its stdin, stdout and stderr are the command's, and fd 3
+	 * carries its reports; all four are pipes. */
+	launch(args: readonly string[]): ChildProcess;
+	/** Whether a process is left in the mount namespace with this inode, and that namespace is the command's of this
+	 * mount (`isCompanyComputerCommandNamespace`): nsfs reuses the inodes of namespaces that ended. */
+	namespaceInUse(mntns: number, name: string): Promise<boolean>;
 }
 
 /** A program that exited 3: the node closed or refused its view, and systemd does not start it again. */
@@ -132,6 +153,8 @@ export function companyComputerFolderBoundaryAnswer(
 }
 
 export interface CompanyComputerMountEntry {
+	/** The mount's root within its filesystem. */
+	readonly root: string;
 	readonly mountpoint: string;
 	readonly optional: readonly string[];
 	readonly fstype: string;
@@ -149,6 +172,7 @@ export function parseCompanyComputerMountinfo(text: string): CompanyComputerMoun
 			const dash = fields.indexOf("-", 6);
 			if (dash < 0 || fields.length < dash + 3) throw new Error("COMPANY_COMPUTER_FOLDER_MOUNTS_UNCONFIRMED");
 			return {
+				root: decode(fields[3]),
 				mountpoint: decode(fields[4]),
 				optional: fields.slice(6, dash),
 				fstype: fields[dash + 1],
@@ -156,6 +180,84 @@ export function parseCompanyComputerMountinfo(text: string): CompanyComputerMoun
 			};
 		});
 }
+
+/**
+ * A command's mount namespace, from its own mount table: the top mount at the command mount is a clone of that
+ * command's mount parent (shown as deleted once the helper took the parent away). The command holds no capability over
+ * the namespace, which the initial user namespace owns, so it cannot make this true of another one.
+ */
+export function isCompanyComputerCommandNamespace(
+	entries: readonly CompanyComputerMountEntry[],
+	name: string,
+): boolean {
+	const top = entries.filter((entry) => entry.mountpoint === COMPANY_COMPUTER_COMMAND_MOUNT).at(-1);
+	return top?.root.replace(/\/\/deleted$/, "").endsWith(`/mounts/${name}`) ?? false;
+}
+
+/** What `qorpera-folder command` reports on fd 3: the command's start (with its mount namespace's inode), its exit,
+ * or why it did not start. */
+export type CompanyComputerFolderCommandReport =
+	| { readonly t: "started"; readonly pid: number; readonly mntns: number }
+	| { readonly t: "exit"; readonly code: number | null; readonly signal: string | null }
+	| { readonly t: "failed"; readonly error: string };
+
+export function parseCompanyComputerFolderCommandReport(line: string): CompanyComputerFolderCommandReport | undefined {
+	let value: unknown;
+	try {
+		value = JSON.parse(line);
+	} catch {
+		return undefined;
+	}
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+	const report = value as Record<string, unknown>,
+		keys = Object.keys(report).sort().join();
+	const positive = (field: unknown) => Number.isSafeInteger(field) && (field as number) > 0;
+	switch (report.t) {
+		case "started":
+			return keys === "mntns,pid,t" && positive(report.pid) && positive(report.mntns)
+				? { t: "started", pid: report.pid as number, mntns: report.mntns as number }
+				: undefined;
+		case "exit":
+			return keys === "code,signal,t" &&
+				(report.code === null ||
+					(Number.isSafeInteger(report.code) && (report.code as number) >= 0 && (report.code as number) <= 255)) &&
+				(report.signal === null || (typeof report.signal === "string" && /^SIG[A-Z0-9]{1,12}$/.test(report.signal)))
+				? { t: "exit", code: report.code as number | null, signal: report.signal as string | null }
+				: undefined;
+		case "failed":
+			return keys === "error,t" && typeof report.error === "string"
+				? { t: "failed", error: report.error }
+				: undefined;
+		default:
+			return undefined;
+	}
+}
+
+/** A command mount's record of its command (`command.json` in its state folder): the command's mount namespace, null
+ * while it starts and for good if it never did, and whether no process is left in it. */
+interface CommandRecord {
+	readonly mntns: number | null;
+	readonly ended: boolean;
+}
+
+function isCommandRecord(value: unknown): value is CommandRecord {
+	if (typeof value !== "object" || value === null || Object.keys(value).sort().join() !== "ended,mntns") return false;
+	const { mntns, ended } = value as Record<string, unknown>;
+	return typeof ended === "boolean" && (mntns === null || (Number.isSafeInteger(mntns) && (mntns as number) > 0));
+}
+
+/** A run's start: the launcher, once it reported the command started, or the answer that ran nothing. */
+type Launched =
+	| {
+			readonly answer: "started";
+			readonly child: ChildProcess;
+			readonly mntns: number;
+			/** Settles once the launcher exited and its pipes closed. */
+			readonly closed: Promise<void>;
+			/** The launcher's exit report, once it came. */
+			readonly exit: () => { readonly code: number | null; readonly signal: string | null } | undefined;
+	  }
+	| { readonly answer: Exclude<CompanyComputerFolderAnswers["run"]["answer"], "started"> };
 
 /** The top mount at the mountpoint is the folder program's. */
 function served(entries: readonly CompanyComputerMountEntry[], mountpoint: string): boolean {
@@ -183,6 +285,8 @@ export interface CompanyComputerFolderHelperOptions {
 	readonly switchMs?: number;
 	readonly settleMs?: number;
 	readonly pollMs?: number;
+	readonly endedPollMs?: number;
+	readonly launchMs?: number;
 	readonly log?: (line: string) => void;
 }
 
@@ -193,8 +297,11 @@ export class CompanyComputerFolderHelper {
 	readonly #switchMs: number;
 	readonly #settleMs: number;
 	readonly #pollMs: number;
+	readonly #endedPollMs: number;
+	readonly #launchMs: number;
 	readonly #log: (line: string) => void;
-	/** Each name's requests run one after another; `list` waits for none. */
+	/** Each name's requests, and a run's start, run one after another; `list`, `ended` and a command's life wait for
+	 * none. */
 	readonly #queues = new Map<string, Promise<unknown>>();
 
 	constructor(system: CompanyComputerFolderHelperSystem, options: CompanyComputerFolderHelperOptions = {}) {
@@ -204,6 +311,8 @@ export class CompanyComputerFolderHelper {
 		this.#switchMs = options.switchMs ?? SWITCH_MS;
 		this.#settleMs = options.settleMs ?? SETTLE_MS;
 		this.#pollMs = options.pollMs ?? POLL_MS;
+		this.#endedPollMs = options.endedPollMs ?? ENDED_POLL_MS;
+		this.#launchMs = options.launchMs ?? LAUNCH_MS;
 		this.#log = options.log ?? ((line) => console.error(line));
 	}
 
@@ -228,27 +337,157 @@ export class CompanyComputerFolderHelper {
 			if (entry.startsWith(".")) await rm(`${this.#root}/views/${entry}`, { force: true });
 	}
 
-	answer(request: CompanyComputerFolderRequest): Promise<CompanyComputerFolderAnswer> {
+	/** Every request but `run`, which has a connection of its own (`run`). */
+	answer(request: Exclude<CompanyComputerFolderRequest, { op: "run" }>): Promise<CompanyComputerFolderAnswer> {
 		if (request.op === "list")
 			return this.#list().catch((): CompanyComputerFolderAnswers["list"] => ({ answer: "failed" }));
-		return this.#queued(request);
+		if (request.op === "ended")
+			return this.#ended(request.name).catch((): CompanyComputerFolderAnswers["ended"] => ({ answer: "failed" }));
+		return this.#enqueue(request.name, () => this.#perform(request));
 	}
 
-	#queued(request: Exclude<CompanyComputerFolderRequest, { op: "list" }>): Promise<CompanyComputerFolderAnswer> {
-		const before = this.#queues.get(request.name) ?? Promise.resolve();
-		const result = before.then(() => this.#run(request));
+	/**
+	 * A run, on the connection its request came on: the answer line, then, after `started`, the command's output, its
+	 * exit and `ended`, as the office service's writes and stop come in. The connection ends after `ended`. An asker
+	 * that leaves earlier, or sends a malformed line, stops the command; its mount's `ended` still answers.
+	 */
+	run(request: Extract<CompanyComputerFolderRequest, { op: "run" }>, socket: Socket, rest: Buffer): void {
+		let child: ChildProcess | undefined,
+			left = false,
+			finished = false,
+			blocked = false;
+		const inputs: CompanyComputerFolderRunInput[] = [];
+		const paused = new Set<Readable>();
+		const send = (line: CompanyComputerFolderAnswer<"run"> | CompanyComputerFolderRunEvent): void => {
+			if (!left && !socket.destroyed && !socket.write(`${JSON.stringify(line)}\n`)) blocked = true;
+		};
+		const resume = (): void => {
+			blocked = false;
+			for (const stream of paused) stream.resume();
+			paused.clear();
+		};
+		socket.on("drain", resume);
+		const leave = (): void => {
+			if (left) return;
+			left = true;
+			if (!finished) socket.destroy();
+			resume();
+			// A launcher that exited has no process left to signal: a stop after the command's exit does nothing.
+			child?.kill("SIGTERM");
+		};
+		// The shell host's write and stop; both wait for the start.
+		const apply = (input: CompanyComputerFolderRunInput): void => {
+			if (!child) {
+				inputs.push(input);
+				return;
+			}
+			if (input.t === "stop") {
+				child.kill("SIGTERM");
+				return;
+			}
+			const stdin = child.stdin;
+			if (!stdin || stdin.writableEnded) return;
+			const data = Buffer.from(input.data, "base64");
+			if (data.length) stdin.write(data);
+			if (input.end) stdin.end();
+		};
+		const chunks: Buffer[] = [];
+		let length = 0;
+		const take = (bytes: Buffer): void => {
+			let next = bytes;
+			for (let newline = next.indexOf(0x0a); newline >= 0 && !left; newline = next.indexOf(0x0a)) {
+				if (length + newline >= COMPANY_COMPUTER_FOLDER_RUN_LINE_BYTES) return void leave();
+				chunks.push(next.subarray(0, newline));
+				next = next.subarray(newline + 1);
+				let input: CompanyComputerFolderRunInput | undefined;
+				try {
+					input = parseCompanyComputerFolderRunInput(
+						new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks)),
+					);
+				} catch {
+					input = undefined;
+				}
+				chunks.length = 0;
+				length = 0;
+				if (!input) return void leave();
+				apply(input);
+			}
+			if (left || !next.length) return;
+			length += next.length;
+			if (length >= COMPANY_COMPUTER_FOLDER_RUN_LINE_BYTES) return void leave();
+			chunks.push(next);
+		};
+		take(rest);
+		socket.on("data", take);
+		socket.on("end", leave);
+		socket.on("close", leave);
+		socket.on("error", leave);
+		void this.#enqueue(request.name, () => this.#launch(request))
+			.catch((error: unknown): Launched => {
+				this.#log(`folder-helper: run ${request.name}: ${String(error)}`);
+				return { answer: "failed" };
+			})
+			.then((launched) => {
+				if (launched.answer !== "started") {
+					finished = true;
+					send({ answer: launched.answer });
+					socket.end();
+					return;
+				}
+				child = launched.child;
+				send({ answer: "started" });
+				for (const stream of [child.stdout, child.stderr]) {
+					if (!stream) continue;
+					stream.on("data", (bytes: Buffer) => {
+						for (let offset = 0; offset < bytes.length; offset += COMPANY_COMPUTER_FOLDER_RUN_CHUNK_BYTES)
+							send({
+								t: "out",
+								data: bytes
+									.subarray(offset, offset + COMPANY_COMPUTER_FOLDER_RUN_CHUNK_BYTES)
+									.toString("base64"),
+							});
+						if (blocked && !left && !stream.isPaused()) {
+							stream.pause();
+							paused.add(stream);
+						}
+					});
+				}
+				child.stdin?.on("error", () => undefined);
+				for (const input of inputs.splice(0)) apply(input);
+				if (left) child.kill("SIGTERM");
+				void launched.closed.then(async () => {
+					send({ t: "exit", ...(launched.exit() ?? { code: null, signal: null }) });
+					// Background jobs, and programs that left the command's process group, keep its mount in use.
+					while (!left && (await this.#system.namespaceInUse(launched.mntns, request.name).catch(() => true)))
+						await delay(this.#endedPollMs);
+					if (left) return;
+					await this.#markEnded(request.name, launched.mntns).catch((error: unknown) =>
+						this.#log(`folder-helper: run ${request.name}: ${String(error)}`),
+					);
+					finished = true;
+					send({ t: "ended" });
+					socket.end();
+				});
+			});
+	}
+
+	#enqueue<T>(name: string, task: () => Promise<T>): Promise<T> {
+		const before = this.#queues.get(name) ?? Promise.resolve();
+		const result = before.then(task);
 		const settled = result.then(
 			() => undefined,
 			() => undefined,
 		);
-		this.#queues.set(request.name, settled);
+		this.#queues.set(name, settled);
 		void settled.then(() => {
-			if (this.#queues.get(request.name) === settled) this.#queues.delete(request.name);
+			if (this.#queues.get(name) === settled) this.#queues.delete(name);
 		});
 		return result;
 	}
 
-	async #run(request: Exclude<CompanyComputerFolderRequest, { op: "list" }>): Promise<CompanyComputerFolderAnswer> {
+	async #perform(
+		request: Exclude<CompanyComputerFolderRequest, { op: "list" | "ended" | "run" }>,
+	): Promise<CompanyComputerFolderAnswer> {
 		switch (request.op) {
 			case "mount":
 				return this.#mount(request.name, request.view).catch((): CompanyComputerFolderAnswers["mount"] => ({
@@ -485,9 +724,154 @@ export class CompanyComputerFolderHelper {
 			throw new Error("COMPANY_COMPUTER_FOLDER_PROOF_UNCONFIRMED");
 		return (value as { view: CompanyComputerFolderView }).view;
 	}
+
+	/** Starts a command mount's one command, once its launcher reported the start. */
+	async #launch(request: Extract<CompanyComputerFolderRequest, { op: "run" }>): Promise<Launched> {
+		const { name } = request;
+		const paths = companyComputerFolderPaths(name, this.#root);
+		if (!(await this.#held(name))) return { answer: "unknown" };
+		// A command's mount is its own: once a command was claimed, even one that never started, none other runs in it.
+		if ((await this.#readRecord(name).catch(() => null)) !== undefined) return { answer: "refused" };
+		if (await this.#closed(companyComputerFolderUnit(name))) return { answer: "closed" };
+		if (!served(parseCompanyComputerMountinfo(await this.#system.mountinfo()), paths.mountpoint)) {
+			this.#log(`folder-helper: run ${name}: its mount is not served`);
+			return { answer: "failed" };
+		}
+		await this.#writeRecord(name, { mntns: null, ended: false }, false);
+		const child = this.#system.launch([
+			"command",
+			"--shell-pid",
+			String(request.shellPid),
+			"--tree",
+			paths.parent,
+			"--network",
+			request.network ? "yes" : "no",
+			"--",
+			"/usr/bin/bash",
+			"--noprofile",
+			"--norc",
+			"-c",
+			request.command,
+		]);
+		const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+		let exit: { readonly code: number | null; readonly signal: string | null } | undefined;
+		// The first report decides the start; the launcher sends its exit report last.
+		const first = await new Promise<CompanyComputerFolderCommandReport | undefined>((resolve) => {
+			let decided = false,
+				broken = false;
+			const decide = (report: CompanyComputerFolderCommandReport | undefined): void => {
+				if (decided) return;
+				decided = true;
+				clearTimeout(timer);
+				resolve(report);
+			};
+			const timer = setTimeout(() => decide(undefined), this.#launchMs);
+			child.on("error", () => decide(undefined));
+			const reports = child.stdio[3] as Readable | null | undefined;
+			if (!reports) return decide(undefined);
+			const report = (text: string | undefined): void => {
+				const parsed = text === undefined ? undefined : parseCompanyComputerFolderCommandReport(text);
+				if (!decided) return void decide(parsed);
+				if (parsed?.t === "exit") exit = { code: parsed.code, signal: parsed.signal };
+				else
+					this.#log(
+						`folder-helper: run ${name}: ${parsed?.t === "failed" ? JSON.stringify(parsed.error) : "a malformed report"}`,
+					);
+			};
+			const chunks: Buffer[] = [];
+			let length = 0;
+			reports.on("data", (bytes: Buffer) => {
+				let next = bytes;
+				for (let newline = next.indexOf(0x0a); newline >= 0 && !broken; newline = next.indexOf(0x0a)) {
+					if (length + newline > COMMAND_REPORT_BYTES) break;
+					chunks.push(next.subarray(0, newline));
+					next = next.subarray(newline + 1);
+					let text: string | undefined;
+					try {
+						text = new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks));
+					} catch {
+						text = undefined;
+					}
+					chunks.length = 0;
+					length = 0;
+					report(text);
+				}
+				if (broken) return;
+				length += next.length;
+				if (length > COMMAND_REPORT_BYTES) {
+					// No line that long comes from the launcher: its reports are not read any more.
+					broken = true;
+					report(undefined);
+				} else chunks.push(next);
+			});
+			reports.on("error", () => decide(undefined));
+			reports.once("end", () => decide(undefined));
+		});
+		if (first?.t === "started") {
+			await this.#writeRecord(name, { mntns: first.mntns, ended: false }, true).catch((error: unknown) =>
+				this.#log(`folder-helper: run ${name}: its record: ${String(error)}`),
+			);
+			this.#log(`folder-helper: run ${name}: started`);
+			return { answer: "started", child, mntns: first.mntns, closed, exit: () => exit };
+		}
+		// A launcher that reported its failure exits by itself; any other is stopped. Its pipes drain so it can go.
+		if (first?.t !== "failed") child.kill("SIGKILL");
+		child.stdout?.resume();
+		child.stderr?.resume();
+		this.#log(
+			`folder-helper: run ${name}: failed: ${first?.t === "failed" ? JSON.stringify(first.error) : "no start report"}`,
+		);
+		return { answer: "failed" };
+	}
+
+	async #ended(name: string): Promise<CompanyComputerFolderAnswers["ended"]> {
+		if (!(await this.#held(name))) return { answer: "unknown" };
+		const record = await this.#readRecord(name);
+		if (record === undefined || record.mntns === null) return { answer: "unknown" };
+		if (record.ended) return { answer: "ended" };
+		if (await this.#system.namespaceInUse(record.mntns, name)) return { answer: "running" };
+		await this.#markEnded(name, record.mntns);
+		return { answer: "ended" };
+	}
+
+	/** Records that no process is left in the command's mount namespace, if the record is still that command's. */
+	async #markEnded(name: string, mntns: number): Promise<void> {
+		const record = await this.#readRecord(name);
+		if (record?.mntns === mntns && !record.ended) await this.#writeRecord(name, { mntns, ended: true }, true);
+	}
+
+	async #readRecord(name: string): Promise<CommandRecord | undefined> {
+		let text: string;
+		try {
+			text = await readCompanyComputerLinuxMetadata(
+				`${companyComputerFolderPaths(name, this.#root).state}/command.json`,
+				4096,
+			);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+			throw error;
+		}
+		const value: unknown = JSON.parse(text);
+		if (!isCommandRecord(value)) throw new Error("COMPANY_COMPUTER_FOLDER_RECORD_UNCONFIRMED");
+		return value;
+	}
+
+	/** Writes the record in one step: a first one only if there is none (the command's claim), or a newer one in place
+	 * of the old. */
+	async #writeRecord(name: string, record: CommandRecord, replace: boolean): Promise<void> {
+		const state = companyComputerFolderPaths(name, this.#root).state,
+			next = `${state}/.command-${randomUUID()}`;
+		await writeFile(next, `${JSON.stringify(record)}\n`, { mode: 0o600, flag: "wx" });
+		try {
+			if (replace) await rename(next, `${state}/command.json`);
+			else await link(next, `${state}/command.json`);
+		} finally {
+			await rm(next, { force: true });
+		}
+	}
 }
 
-/** One request line per connection, one answer line back. */
+/** One request line per connection, one answer line back; a run's connection carries the run after its answer. */
 export function createCompanyComputerFolderHelperServer(helper: CompanyComputerFolderHelper): Server {
 	const server = createServer({ allowHalfOpen: true }, (socket) => {
 		const chunks: Buffer[] = [];
@@ -508,7 +892,8 @@ export function createCompanyComputerFolderHelperServer(helper: CompanyComputerF
 			const newline = chunk.indexOf(0x0a);
 			const part = newline < 0 ? chunk : chunk.subarray(0, newline);
 			length += part.length;
-			if (length >= COMPANY_COMPUTER_FOLDER_REQUEST_BYTES) {
+			// A run's request carries its command; every other request fits in a request line.
+			if (length >= COMPANY_COMPUTER_FOLDER_RUN_LINE_BYTES) {
 				done = true;
 				clearTimeout(timer);
 				return reply({ answer: "invalid" });
@@ -525,12 +910,19 @@ export function createCompanyComputerFolderHelperServer(helper: CompanyComputerF
 			} catch {
 				request = undefined;
 			}
-			if (!request) return reply({ answer: "invalid" });
+			if (!request || (request.op !== "run" && length >= COMPANY_COMPUTER_FOLDER_REQUEST_BYTES))
+				return reply({ answer: "invalid" });
+			if (request.op === "run") {
+				helper.run(request, socket, chunk.subarray(newline + 1));
+				return;
+			}
 			// The answer comes even if the asker left: the mount stays consistent, and `list` shows it.
 			void helper.answer(request).then(reply);
 		});
 	});
-	server.maxConnections = 64;
+	// A run's connection lasts its command's life. The office's own task limit bounds its commands, so this is no cap
+	// of its own.
+	server.maxConnections = 1024;
 	return server;
 }
 
@@ -613,6 +1005,35 @@ export function createLinuxCompanyComputerFolderHelperSystem(): CompanyComputerF
 					resolve(killed ? { code: null, stdout: undefined } : { code, stdout: Buffer.concat(chunks) });
 				});
 			});
+		},
+		launch: (args) =>
+			spawn(COMPANY_COMPUTER_FOLDER_PROGRAM, args, {
+				cwd: "/",
+				env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
+				stdio: ["pipe", "pipe", "pipe", "pipe"],
+			}),
+		async namespaceInUse(mntns, name) {
+			const wanted = `mnt:[${mntns}]`;
+			// Undefined when the task's link does not read (it exited, or it is a leader whose other threads still run).
+			const inside = async (task: string): Promise<boolean | undefined> => {
+				const target = await readlink(`${task}/ns/mnt`).catch(() => undefined);
+				if (target !== wanted) return target === undefined ? undefined : false;
+				const entries = await readCompanyComputerLinuxMetadata(`${task}/mountinfo`, 1048576)
+					.then(parseCompanyComputerMountinfo)
+					.catch(() => undefined);
+				return entries !== undefined && isCompanyComputerCommandNamespace(entries, name);
+			};
+			for (const pid of await readdir("/proc")) {
+				if (!/^[1-9][0-9]*$/.test(pid)) continue;
+				let found = await inside(`/proc/${pid}`);
+				if (found === undefined)
+					for (const tid of await readdir(`/proc/${pid}/task`).catch((): string[] => [])) {
+						if (tid !== pid) found = await inside(`/proc/${pid}/task/${tid}`);
+						if (found !== undefined) break;
+					}
+				if (found) return true;
+			}
+			return false;
 		},
 	};
 }
