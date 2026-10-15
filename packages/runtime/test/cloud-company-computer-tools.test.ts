@@ -18,6 +18,7 @@ import {
 } from "@qorpera/runtime/cloud-company-computer-leases";
 import { CompanyComputerRegistryUnansweredError } from "@qorpera/runtime/cloud-company-computer-registry-http";
 import {
+	type CompanyComputerFolderRefusal,
 	createCompanyComputerTools,
 	parseCompanyComputerAction,
 	parseCompanyComputerToolArguments,
@@ -62,7 +63,7 @@ function toolHarness(capabilities: readonly ("browser" | "desktop" | "shell")[] 
 		stopBrowser: vi.fn(async (): Promise<void> => undefined),
 	};
 	const gate = new CompanyComputerScreenActionGate();
-	const prepareScreen = vi.fn(async (): Promise<void> => undefined);
+	const prepareScreen = vi.fn(async (): Promise<CompanyComputerFolderRefusal | undefined> => undefined);
 	const endpoint = new CompanyComputerGuestEndpoint({
 		binding: computerBinding(),
 		capabilities,
@@ -156,6 +157,24 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 				},
 			},
 		]);
+		// And vault_capture: a Stripe hook's id and the control that shows its secret, which the vault reads (E3c-2).
+		expect(
+			actions.filter((schema) => (schema.properties.action as { const: string }).const === "vault_capture"),
+		).toEqual([
+			{
+				type: "object",
+				additionalProperties: false,
+				required: ["kind", "action", "role", "name", "hook", "field"],
+				properties: {
+					kind: { const: "browser" },
+					action: { const: "vault_capture" },
+					role: { enum: ["button", "link"] },
+					name: { type: "string", maxLength: 512 },
+					hook: { type: "string", pattern: expect.any(String) },
+					field: { const: "signing_secret" },
+				},
+			},
+		]);
 	});
 
 	it("keeps authorization free of physical launch and prepares only after receipt admission", async () => {
@@ -167,6 +186,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		});
 		harness.prepareScreen.mockImplementation(async () => {
 			order.push("ready");
+			return undefined;
 		});
 		harness.automation.perform.mockImplementation(async () => {
 			order.push("execute");
@@ -185,7 +205,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 
 	it("does not report an open screen before the actual display becomes ready", async () => {
 		const harness = toolHarness();
-		const ready = computerDeferred<void>();
+		const ready = computerDeferred<undefined>();
 		harness.prepareScreen.mockReturnValue(ready.promise);
 		let returned = false;
 		const result = harness.call("computer_screen", { kind: "screen", action: "open" }).then((value) => {
@@ -195,7 +215,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		await vi.waitFor(() => expect(harness.prepareScreen).toHaveBeenCalledOnce());
 		expect(returned).toBe(false);
 		expect(harness.effects.finish).not.toHaveBeenCalled();
-		ready.resolve();
+		ready.resolve(undefined);
 		await result;
 		expect(returned).toBe(true);
 		expect(harness.effects.finish).toHaveBeenCalledOnce();
@@ -230,7 +250,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 
 	it("does not dispatch after cancelled preparation resolves late", async () => {
 		const harness = toolHarness();
-		const ready = computerDeferred<void>();
+		const ready = computerDeferred<undefined>();
 		harness.prepareScreen.mockReturnValue(ready.promise);
 		const stop = new AbortController();
 		const result = harness.endpoint
@@ -238,7 +258,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			.catch((error: unknown) => error);
 		await vi.waitFor(() => expect(harness.prepareScreen).toHaveBeenCalledOnce());
 		stop.abort();
-		ready.resolve();
+		ready.resolve(undefined);
 		expect(await result).toBeInstanceOf(Error);
 		expect(harness.automation.perform).not.toHaveBeenCalled();
 		expect(harness.effects.finish).not.toHaveBeenCalled();
@@ -744,6 +764,29 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 		).toThrow("INVALID_COMPUTER_ARGUMENTS");
 	});
 
+	it("reads a vault_capture of a Stripe hook's secret as a button or link, the hook and its secret, never a value (E3c-2)", () => {
+		const capture = {
+			kind: "browser",
+			action: "vault_capture",
+			role: "button",
+			name: "Reveal",
+			hook: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+			field: "signing_secret",
+		};
+		expect(parseCompanyComputerAction(capture)).toEqual({ ...capture, hook: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" });
+		expect(parseCompanyComputerAction({ ...capture, role: "link" })).toMatchObject({ role: "link" });
+		for (const bad of [
+			{ ...capture, value: "whsec_x" },
+			{ ...capture, account: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" },
+			{ ...capture, field: "password" },
+			{ ...capture, role: "textbox" },
+			{ ...capture, hook: "stripe-payments" },
+			{ ...capture, hook: 1 },
+			{ ...capture, name: " " },
+		])
+			expect(() => parseCompanyComputerAction(bad), JSON.stringify(bad)).toThrow("INVALID_COMPUTER_ARGUMENTS");
+	});
+
 	it("bounds input and validates coordinates before cloud acquisition", async () => {
 		const harness = toolHarness();
 		await expect(
@@ -767,6 +810,68 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			"COMPUTER_RUN_MISMATCH",
 		);
 		expect(harness.screens.acquire).toHaveBeenCalledOnce();
+	});
+
+	it("gives the screen back after the final check when the office refuses its folder, and only an explicit open asks again", async () => {
+		const harness = toolHarness();
+		harness.prepareScreen.mockResolvedValueOnce({
+			code: "COMPANY_FOLDER_REFUSED",
+			message: "Folder view holder is not current",
+		});
+		await expect(
+			harness.call("computer_browser", { kind: "browser", action: "snapshot" }, "given-back:1"),
+		).resolves.toEqual({
+			kind: "json",
+			value: {
+				action: "snapshot",
+				completed: false,
+				refused: { code: "COMPANY_FOLDER_REFUSED", message: "Folder view holder is not current" },
+			},
+		});
+		expect(harness.order).toEqual(["receipt-completed", "released"]);
+		expect(harness.automation.perform).not.toHaveBeenCalled();
+		// The run's next action does not take the screen again by itself.
+		await expect(
+			harness.call("computer_browser", { kind: "browser", action: "snapshot" }, "given-back:2"),
+		).rejects.toThrow("COMPUTER_SCREEN_GIVEN_BACK");
+		expect(harness.screens.acquire).toHaveBeenCalledOnce();
+		// An explicit open does, and the run's actions work again.
+		await harness.call("computer_screen", { kind: "screen", action: "open" }, "given-back:3");
+		await harness.call("computer_browser", { kind: "browser", action: "snapshot" }, "given-back:4");
+		expect(harness.screens.acquire).toHaveBeenCalledTimes(2);
+		expect(harness.automation.perform).toHaveBeenCalledOnce();
+	});
+
+	it("gives the screen back again when a refused open's completed receipt is replayed under the same key", async () => {
+		const harness = toolHarness();
+		harness.prepareScreen.mockResolvedValueOnce({
+			code: "COMPANY_FOLDER_UNAVAILABLE",
+			message: "company folder is unavailable",
+		});
+		const refused = {
+			kind: "json",
+			value: {
+				action: "open",
+				completed: false,
+				refused: { code: "COMPANY_FOLDER_UNAVAILABLE", message: "company folder is unavailable" },
+			},
+		};
+		await expect(harness.call("computer_screen", { kind: "screen", action: "open" }, "replay:1")).resolves.toEqual(
+			refused,
+		);
+		expect(harness.order).toEqual(["receipt-completed", "released"]);
+		// The same open again takes a new lease, gets the stored refusal back, and gives that lease back too.
+		await expect(harness.call("computer_screen", { kind: "screen", action: "open" }, "replay:1")).resolves.toEqual(
+			refused,
+		);
+		expect(harness.prepareScreen).toHaveBeenCalledOnce();
+		expect(harness.screens.acquire).toHaveBeenCalledTimes(2);
+		expect(harness.order).toEqual(["receipt-completed", "released", "released"]);
+		await expect(
+			harness.call("computer_browser", { kind: "browser", action: "snapshot" }, "replay:2"),
+		).rejects.toThrow("COMPUTER_SCREEN_GIVEN_BACK");
+		expect(harness.screens.acquire).toHaveBeenCalledTimes(2);
+		expect(harness.automation.perform).not.toHaveBeenCalled();
 	});
 
 	it("refuses foreign runtime caller identity before acquiring a resource", async () => {

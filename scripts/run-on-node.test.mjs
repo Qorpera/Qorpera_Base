@@ -117,8 +117,8 @@ test("each run takes a free runner user and installs and runs as that user", () 
 	assert.doesNotMatch(runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" }), /npm ci|build:web-sdk/);
 });
 
-test("at most three runs execute at once, in arrival order, with two vitest workers each", () => {
-	assert.equal(CPU_SLOTS, 3);
+test("at most five runs execute at once, in arrival order, with two vitest workers each", () => {
+	assert.equal(CPU_SLOTS, 5);
 	const script = runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true" });
 	// The queue ticket sorts by arrival and stays locked by its waiting run (fd 7); only the first ticket
 	// may take a slot; a ticket nobody holds belongs to a dead run and is dropped, whatever its pid became.
@@ -131,15 +131,15 @@ test("at most three runs execute at once, in arrival order, with two vitest work
 	assert.match(script, /\{ exec 8>"\/run\/lock\/qorpera-test-machine-\$candidate\.lock"; \} 2>\/dev\/null \|\| continue/);
 	// A killed run's leftovers under the runner user are ended once its lock is held.
 	assert.match(script, /sudo -n pkill -KILL -u "\$runner"/);
-	assert.match(script, /for candidate in \$\(seq 1 3\); do/);
-	assert.match(script, /waiting for a slot in the CPU lane \(3 runs at a time\), queue position \$position/);
-	assert.match(script, /in slot \$slot of 3 in the CPU lane \(/);
+	assert.match(script, /for candidate in \$\(seq 1 5\); do/);
+	assert.match(script, /waiting for a slot in the CPU lane \(5 runs at a time\), queue position \$position/);
+	assert.match(script, /in slot \$slot of 5 in the CPU lane \(/);
 	// The slot is taken before the runner user, and both stay locked for the session (fds 9 and 8).
 	assert.ok(script.indexOf("qorpera-test-machine-slot") < script.indexOf("qorpera-test-machine-$candidate"));
-	// vCPUs / 3 workers per run (2 on 6 vCPUs, 4 on 12), at least 1.
-	assert.match(script, /export VITEST_MAX_WORKERS=\$\(\( \$\(nproc\) \/ 3 > 0 \? \$\(nproc\) \/ 3 : 1 \)\)/);
-	for (const [cpus, workers] of [[6, 2], [10, 3], [12, 4], [2, 1]])
-		assert.equal(spawnSync("bash", ["-c", `echo $(( ${cpus} / 3 > 0 ? ${cpus} / 3 : 1 ))`], { encoding: "utf8" }).stdout.trim(), String(workers));
+	// vCPUs / 5 workers per run (2 on 10 or 12 vCPUs), at least 1.
+	assert.match(script, /export VITEST_MAX_WORKERS=\$\(\( \$\(nproc\) \/ 5 > 0 \? \$\(nproc\) \/ 5 : 1 \)\)/);
+	for (const [cpus, workers] of [[6, 1], [10, 2], [12, 2], [2, 1]])
+		assert.equal(spawnSync("bash", ["-c", `echo $(( ${cpus} / 5 > 0 ? ${cpus} / 5 : 1 ))`], { encoding: "utf8" }).stdout.trim(), String(workers));
 	assert.match(parseArgs(["--sudo", "--", "npm", "test"]).command.join(" "), /npm test/);
 });
 
@@ -180,7 +180,7 @@ test("a quick run queues for the quick slots only, a normal run for the CPU slot
 			.replaceAll(`seq 1 ${slots}`, "seq 1 N")
 			.replace(/in the (quick|CPU) lane \(\d+ runs? at a time\)/, "LANE")
 			.replace(/of \d+ in the (quick|CPU) lane/, "LANE");
-	assert.equal(neutral(quick, "quick-", 1), neutral(cpu, "", 3));
+	assert.equal(neutral(quick, "quick-", QUICK_SLOTS), neutral(cpu, "", CPU_SLOTS));
 	for (const script of [quick, cpu]) {
 		assert.match(script, /flock -n "\$t" true 2>\/dev\/null && rm -f "\$t"/);
 		assert.match(script, /if \[ "\$position" = 1 \]; then/);
@@ -226,7 +226,7 @@ test("a run goes to the machine with the most free slots; ties keep list order; 
 	assert.deepEqual(names([{ ...idle("node02"), busy: 2 }, { ...idle("node01"), busy: 1 }]), ["node01", "node02"]);
 	assert.deepEqual(names([{ ...idle("node02"), busy: 1 }, { ...idle("node01"), busy: 1 }]), ["node02", "node01"]);
 	// Both full: the shorter queue.
-	assert.deepEqual(names([{ ...idle("node02"), busy: 3, waiting: 4 }, { ...idle("node01"), busy: 3, waiting: 1 }]), [
+	assert.deepEqual(names([{ ...idle("node02"), busy: 5, waiting: 4 }, { ...idle("node01"), busy: 5, waiting: 1 }]), [
 		"node01",
 		"node02",
 	]);
@@ -234,34 +234,34 @@ test("a run goes to the machine with the most free slots; ties keep list order; 
 	assert.deepEqual(names([{ ...idle("node02"), busy: 1, waiting: 2 }, { ...idle("node01"), busy: 2 }]), ["node01", "node02"]);
 	assert.deepEqual(names([{ ...idle("node02"), arriving: 2 }, { ...idle("node01"), busy: 1 }]), ["node01", "node02"]);
 	// A free slot beats a queue, whatever the load.
-	assert.deepEqual(names([{ ...idle("node02"), busy: 3, waiting: 1, load: 0.5 }, { ...idle("node01"), busy: 2, load: 9 }]), [
+	assert.deepEqual(names([{ ...idle("node02"), busy: 5, waiting: 1, load: 0.5 }, { ...idle("node01"), busy: 2, load: 9 }]), [
 		"node01",
 		"node02",
 	]);
 	assert.deepEqual(names([idle("node02"), { name: "node01", unreachable: "connect failed: No route to host" }]), ["node02"]);
 	assert.deepEqual(names([{ name: "node02", unreachable: "a" }, { name: "node01", unreachable: "b" }]), []);
 	// A closed machine takes no automatic runs, however free; a run that names it still goes there.
-	assert.deepEqual(names([{ ...idle("node02"), busy: 3, waiting: 5 }, { ...idle("node01"), closed: true }]), ["node02"]);
+	assert.deepEqual(names([{ ...idle("node02"), busy: 4, waiting: 5 }, { ...idle("node01"), closed: true }]), ["node02"]);
 	assert.deepEqual(names([{ ...idle("node01"), closed: true }], true), ["node01"]);
 	assert.deepEqual(names([{ ...idle("node01"), closed: true }]), []);
 	// So does a machine whose setup has not finished.
-	assert.deepEqual(names([{ ...idle("node02"), busy: 3 }, { ...idle("node01"), setUp: false }]), ["node02"]);
+	assert.deepEqual(names([{ ...idle("node02"), busy: 4 }, { ...idle("node01"), setUp: false }]), ["node02"]);
 	assert.deepEqual(names([{ ...idle("node01"), setUp: false }], true), ["node01"]);
 	assert.equal(
-		describeProbes([{ ...idle("node02"), busy: 3, waiting: 2 }, { name: "node01", unreachable: "no answer in 12 s" }]),
-		"node02 3/3 slots busy, 2 waiting, quick 0/1; node01 unreachable (no answer in 12 s)",
+		describeProbes([{ ...idle("node02"), busy: 5, waiting: 2 }, { name: "node01", unreachable: "no answer in 12 s" }]),
+		"node02 5/5 slots busy, 2 waiting, quick 0/1; node01 unreachable (no answer in 12 s)",
 	);
 	assert.equal(
 		describeProbes([{ ...idle("node01"), closed: true, busy: 1, arriving: 2, quickBusy: 1, quickWaiting: 2 }]),
-		"node01 closed, 1/3 slots busy, 0 waiting, 2 arriving, quick 1/1 + 2 waiting",
+		"node01 closed, 1/5 slots busy, 0 waiting, 2 arriving, quick 1/1 + 2 waiting",
 	);
-	assert.equal(describeProbes([{ ...idle("node01"), setUp: false }]), "node01 not set up, 0/3 slots busy, 0 waiting, quick 0/1");
+	assert.equal(describeProbes([{ ...idle("node01"), setUp: false }]), "node01 not set up, 0/5 slots busy, 0 waiting, quick 0/1");
 });
 
 test("a quick run goes to the machine with the free quick slot, however full its CPU slots", () => {
 	const idle = (name) => ({ name, busy: 0, waiting: 0, quickBusy: 0, quickWaiting: 0, arriving: 0, closed: false, setUp: true, cpus: 10, load: 0.1 });
 	const names = (probes, quick) => rankMachines(probes, false, quick).map((probe) => probe.name);
-	const probes = [{ ...idle("node02"), quickBusy: 1 }, { ...idle("node01"), busy: 3, waiting: 4, arriving: 1 }];
+	const probes = [{ ...idle("node02"), quickBusy: 1 }, { ...idle("node01"), busy: 5, waiting: 4, arriving: 1 }];
 	assert.deepEqual(names(probes, true), ["node01", "node02"]);
 	assert.deepEqual(runOrder(probes, false, true), ["node01", "node02"]);
 	// Any other run ranks by the CPU lane, as before.
@@ -278,7 +278,7 @@ test("machines that did not answer are tried only when no answering machine is o
 	const idle = (name) => ({ name, busy: 0, waiting: 0, arriving: 0, closed: false, setUp: true, cpus: 10, load: 0.1 });
 	const silent = (name) => ({ name, unreachable: "Connection timed out during banner exchange" });
 	// An open machine that answered takes the run, even a full one: its failure is then the run's real error.
-	assert.deepEqual(runOrder([silent("node02"), { ...idle("node01"), busy: 3, waiting: 2 }], false), ["node01"]);
+	assert.deepEqual(runOrder([silent("node02"), { ...idle("node01"), busy: 4, waiting: 2 }], false), ["node01"]);
 	assert.deepEqual(runOrder([idle("node02"), idle("node01")], false), ["node02", "node01"]);
 	// A slow probe alone does not fail a run: the copy's own connection decides.
 	assert.deepEqual(runOrder([silent("node02"), silent("node01")], false), ["node02", "node01"]);
@@ -299,7 +299,7 @@ test("probes: a free machine gives the others a short grace; otherwise every pro
 		});
 	const timing = { graceMs: 150, timeoutMs: 1500 };
 	const free = { busy: 1, waiting: 0, arriving: 0, closed: false, setUp: true };
-	const full = { busy: 3, waiting: 4, arriving: 0, closed: false, setUp: true };
+	const full = { busy: 4, waiting: 4, arriving: 0, closed: false, setUp: true };
 
 	let started = Date.now();
 	let probes = await probeAll(machines, asker({ node02: { ms: 10, value: free } }), timing);
@@ -369,7 +369,7 @@ test("the probe reads the locks the run script takes and counts runs still being
 	assert.match(probe, /5<\/run\/lock\/qorpera-test-machine-slot"\$i\.lock"/);
 	assert.match(script, /ticket=\/run\/lock\/qorpera-test-machine-queue\//);
 	assert.match(probe, /for t in \/run\/lock\/qorpera-test-machine-queue\/\*; do/);
-	assert.match(probe, /for i in \$\(seq 1 3\); do \{ flock -n 5 \|\| busy=\$\(\(busy \+ 1\)\); \}/);
+	assert.match(probe, /for i in \$\(seq 1 5\); do \{ flock -n 5 \|\| busy=\$\(\(busy \+ 1\)\); \}/);
 	assert.match(probe, /\[ -e \/etc\/qorpera-test-machine-closed \] && closed=1; \[ -e \/etc\/qorpera-test-machine-versions \] && setup=1/);
 	// The quick lane's slots and queue, which a quick run's script takes, are counted apart.
 	const quick = runScript({ run: "R", runDir: "/r", treeDir: "/t", files: 1, copySeconds: 0, install: false, build: false, runCommand: "true", quick: true });

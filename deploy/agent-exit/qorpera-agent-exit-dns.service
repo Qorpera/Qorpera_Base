@@ -9,8 +9,10 @@ ConditionPathExists=/run/netns/qexit
 [Service]
 NetworkNamespacePath=/run/netns/qexit
 ExecStart=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh dns
-# The agent plug (E2) reloads after removing a machine's lease file.
-ExecReload=/bin/kill -HUP $MAINPID
+# The agent plug (E2) reloads after removing a machine's lease file. dnsmasq runs as nobody by then, and signalling
+# another user's process takes CAP_KILL, which the bounding set below keeps from dnsmasq: the reload alone runs
+# without it ("+").
+ExecReload=+/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=2
 # dnsmasq parses what agent road machines send: keep it to what it needs.

@@ -11,9 +11,10 @@ import { HttpCloudSecretBrokerService } from "../../packages/runtime/src/cloud-s
 import { CloudSecretKeyring } from "../../packages/runtime/src/cloud-secret-crypto.ts";
 import { EmailDraftClient } from "../../packages/web/src/cloud/email-drafts.ts";
 
-const [container, temporary] = process.argv.slice(2);
+const [container, temporary, database] = process.argv.slice(2);
 // Only a disposable container its driver started: its own, or the hosted-db suite's.
 if (!/^qorpera-(email-e2e|hosted-db)-[0-9]+-[a-f0-9]{8}$/.test(container ?? "")) throw new Error("An owned isolated E2E container is required");
+if (!/^[a-z][a-z0-9_]{0,62}$/.test(database ?? "")) throw new Error("The E2E database name is required");
 // The 924 folder-v2 company: its owner reviews a draft Bob raised in Bob's thread.
 const owner = "92400000-0000-4000-8000-000000000001";
 const interaction = "62000000-0000-4000-8000-000000000003";
@@ -48,7 +49,7 @@ const providerFetch = async (input, init) => {
 };
 
 function sql(statement) {
-	const result = spawnSync("docker", ["exec", "-i", container, "psql", "-X", "-qAt", "-U", "postgres", "-d", "qorpera_test", "-v", "ON_ERROR_STOP=1"], { input: statement, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+	const result = spawnSync("docker", ["exec", "-i", container, "psql", "-X", "-qAt", "-U", "postgres", "-d", database, "-v", "ON_ERROR_STOP=1"], { input: statement, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
 	if (result.error) throw result.error;
 	if (result.status !== 0) throw new Error(result.stderr || result.stdout);
 	return result.stdout.trim();

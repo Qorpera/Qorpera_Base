@@ -197,6 +197,12 @@ function pageState(key: string): PageState {
 	return state;
 }
 
+/** Forgets what was chosen on a page drawn as `name`: a review card's preview, once its card is answered (step I10,
+ * views/interface-preview.ts). */
+export function forgetInterfacePage(company: CompanyController, name: string): void {
+	pages.delete(`${company.userId}/${company.profile.profileId}/${name}`);
+}
+
 const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
 
 /** An id an element can carry, from any text. */

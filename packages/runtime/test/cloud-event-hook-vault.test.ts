@@ -72,7 +72,7 @@ function fillRequest(): EventHookFillRequest {
 	};
 }
 
-function hookRequest(overrides: Partial<EventHookCreate> = {}): EventHookRequest {
+function hookRequest(overrides: Partial<EventHookCreate> = {}): EventHookRequest & { request: EventHookCreate } {
 	return {
 		binding: nativeToolAuthorityFixture().binding,
 		request: {
@@ -280,7 +280,7 @@ describe("event hook vault", () => {
 			["22023", "An HMAC hook names the site its secret is typed into"],
 			["22023", "A site is a host name such as github.com"],
 			["23505", "operation key is already used for different hook work"],
-			["0A000", "A Stripe hook comes later: its secret is taken from Stripe's screen"],
+			["0A000", "This hook takes no secret from a page"],
 			["54000", "A company has at most 50 hooks"],
 			["55000", "Company execution is paused"],
 			["42501", "hook secret envelope is unavailable"],
@@ -539,7 +539,6 @@ describe("event hook requests", () => {
 			wire({ action: "pause" }),
 			wire({ kind: "mailbox" }),
 			wire({ proof: "address" }),
-			wire({ proof: "stripe" }),
 			wire({ operationKey: "-bad" }),
 			wire({ operationKey: "k".repeat(193) }),
 			wire({ name: "n".repeat(65) }),

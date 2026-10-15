@@ -313,7 +313,8 @@ that carries outside content (§4) keeps its outside-content mark when it is sho
     were looking.". A file that keeps changing past the retries also says "That changed while you were looking.". A
     refusal shows its problems.
   - A card stays where it is, saving, until the save has landed and the folder's feed shows the change.
-  - An area's `supervisor` is not taken from a board; it waits for consent records (I9b).
+  - An area's `supervisor` is not taken from a board yet: a take there is a consent (§5.1), which the board shows with
+    I9b's web part.
 - **Offer and its answers on a board (built in I9c).** They act on each card's own `holder` column too.
   - **Offer** shows where Take or Release could (a card no one holds, or the viewer's own) when the block lists it. It
     opens the members the card may go to: each other member who may change the table's rows, but those it is offered
@@ -455,16 +456,16 @@ A `needs_yes` member column holds who has something: a card's holder, or an area
 - **Take:** a member may put their own id in an empty cell.
 - **Release:** a member may clear a cell that names them.
 - **Offer:** the member a cell names, or anyone when the cell is empty, may offer it to another member, through the
-  `offer` button (an agent through `table_write` once supervision is built, I9b). The platform keeps the offer as
+  `offer` button (an agent through `table_write` once I9b's agent offers are built). The platform keeps the offer as
   its own record (below); it changes nothing in the file. When they say yes, they save the cell with their own id,
   and the save is allowed because the open offer names them. Not now, a dismissal or no answer changes nothing.
 - **Offers (built in I9c):**
   - The platform keeps offers as its own records, not as 16.2 review cards. An offer names the table by its id (so
     it follows a moved folder), the row's key, the column, who made it (`from`), the cell as they read it (`was`:
     them, or empty) and the member it is offered to (`to`). It is open, accepted, declined, withdrawn or lapsed.
-  - Only a `needs_yes` member column is offered, and not an area's `supervisor`, which waits for consent records
-    (I9b). Both members must be allowed to write the table's rows (`[write]`, rule 5, and the folder). A cell holds
-    one open offer per member it is offered to; offering it again answers the open one.
+  - Only a `needs_yes` member column is offered, an area's `owner` and `supervisor` too: accepting an area's
+    `supervisor` is a consent (§5.1, I9b). Both members must be allowed to write the table's rows (`[write]`, rule 5,
+    and the folder). A cell holds one open offer per member it is offered to; offering it again answers the open one.
   - Accepting is the member's own save of that cell (rule 8's accept). After every save of the table's rows or
     definition, the platform settles its open offers: a cell that now names `to` accepts the offer, a cell still as it
     was keeps it open, and anything else lapses it (another value, the row gone, the column no longer a claim). So a
@@ -473,7 +474,7 @@ A `needs_yes` member column holds who has something: a card's holder, or an area
   - Every member who may read the table sees its open offers, between members of the company. An offer to or from a
     member who left is not listed, and is not closed for it.
   - In a paused company no offer is made; declining, withdrawing and the list still work.
-  - Agents offer for their supervisor when supervision is built (I9b).
+  - Agents offer for their supervisor when I9b's agent offers are built.
 - **Agents act for their supervisor** (§5.1):
   - an agent may take for its supervisor, release what its supervisor holds, and offer what its supervisor holds or
     what is empty;
@@ -512,17 +513,21 @@ Jonas, 2 October 2026 (decision 4); contract amendment item 10.
     `supervisor` cell, or accept a supervisor request. Taking an area's `owner` cell offers its supervision to the
     taker on the same screen.
   - They can withdraw it at any time. It also ends when they release the area, when the area's row is deleted or its
-    key changes, or when they leave the company; the owners are told.
+    key changes, or when they leave the company; the owners and admins, the supervisor and the area's owner are told
+    (not the member who ended it).
   - A cell that names a member with no live consent record decides nothing, and the board shows the area as waiting
-    for that member.
+    for that member. A save that keeps the cell makes no consent (after a withdrawal, say); the member consents again
+    with a call of their own.
 - **Adding agents needs the supervisor's yes.** While an area has a live consent record, a member other than the
-  supervisor who adds an agent to its `agents` makes an offer to the supervisor. The file changes only when the supervisor says yes. Agents never change
-  `agents`.
+  supervisor who adds an agent to its `agents` makes an offer to the supervisor; the save check refuses their save
+  that adds it. The file changes only when the supervisor says yes, by saving the agent into `agents`. Removing an
+  agent needs no yes. Agents never change `agents`.
 - **One area per agent.** An agent sits in at most one area's `agents`; the save check refuses a second, because it
   decides who pays.
 - A member's own messages still run on their own account.
 - **Areas grant nothing.** They are not the retired responsibility objects (2026-09-20 amendment, item 1).
-- **Until it is built** (step I9b, S2), today's rules apply.
+- **Built so far** (I9b): the consent records, an agent's self (§6.1 rule 8) and adding agents by offer. Until the
+  rest is built (agents' offers, work alone, and clearing a leaver's cells), today's rules apply to it.
 
 ### 5.2 The table store (later)
 
@@ -711,8 +716,8 @@ parser's codes for (1), `structured_rule` with these codes for the rest.
    - **For each cell that changes:**
      - an agent changing an areas member-only column is refused;
      - *self* is the member, or for an agent its supervisor: the area's supervisor with a live consent record, for the
-       area whose `agents` holds it (§5.1). Until supervision is built (I9b), an agent has none, so it changes no
-       claimed cell;
+       area whose `agents` holds it (§5.1), whoever started the run. An agent in no area, or in one whose
+       supervisor has no live consent, has none, so it changes no claimed cell;
      - no *self*: refused;
      - otherwise the change passes only as one of:
        - **take:** it was empty and is now *self*;
@@ -725,7 +730,8 @@ parser's codes for (1), `structured_rule` with these codes for the rest.
    - its `table.toml` keeps `owner` (`member`, `needs_yes`), `supervisor` (`member`, `needs_yes`) and `agents`
      (`agents`), each `optional`, by name and type;
    - after a rows save, no agent id is in more than one row's `agents` (one area per agent);
-   - the supervisor's yes for adding agents waits for consent records (I9b).
+   - while a row's consent is live (§5.1), a save that adds an agent to its `agents` is its supervisor's; anyone
+     else offers the agent to them (built in I9b).
 
 **Index effects:** none until I7. Decide reads the stored parses on the path versions: the main interface, a table's
 definition and its rows. F2's per-table index row (keyed by the table's id) is the lock a rows save and a definition
@@ -834,8 +840,8 @@ Take and release (§3.3) write the member's own rows with the folder's member cl
 field's text in `rows.csv` and keep every other byte as written (a first line without the holder column gets it at its
 end). A rows file with rows that don't fit its definition is not written. Lookup columns are drawn as names or a count,
 and the folder reader reads the tables that board parts and lookups name. The Members page's People view draws its
-table; its `file:rules/shared-areas.md` block came with the folder pages (below). Offers came with I9c (below);
-supervision (I9b) is not built.
+table; its `file:rules/shared-areas.md` block came with the folder pages (below). Offers came with I9c, and the
+supervision's consent records with I9b (below); the board doesn't show them yet.
 
 **Built: I5c** (web; `packages/web/src/cloud/mail.ts`, `app/company-mail.ts`, `app/interface-mail.ts`,
 `app/interface-badge.ts`, `app/views/interface-mail.ts`). The `mail` and `mail_addresses` sources read the member mail
@@ -876,6 +882,32 @@ them; the list reads no files and takes no lock. Rule 8 gains its accept. The sa
 offers after its rows or definition change, and lapses them when its folder is deleted. Removing the table's index row
 (erasure) removes its offers. Test 866 races an offer against a rows save both ways: an offer behind a save reads the
 cell the save left, and a save behind an offer settles it.
+
+**Built: I9b, the consent records** (`supabase/migrations/20260930371000_interface_supervision.sql`, tests 451–453
+and 458).
+Consents are kept in `qorpera_interface_supervisions` (§5.1), at most one live per area row. The save hook's apply
+settles them after each save of `tables/areas`' rows or definition: a member's own rows save that puts them in a
+row's `supervisor` cell, where the stored row didn't name them, makes one; a cell that now names someone else or no one
+ends it released, and a row gone (deleted, or its key changed) ends it gone. A member withdraws theirs, consents again
+to a cell that names them, and lists the live ones with three calls (`supabase/CLIENT-CONTRACT.md`, "Supervision
+consent"); a member's leaving ends theirs (left), and their cells keep naming them. Rule 8's *self* for an agent is its
+area's supervisor while their consent is live and they are a member; the agent's commit holds that consent FOR SHARE,
+so a withdrawal or a leaving waits for it. An agent's commit with a unit in `tables/` also holds the areas table's
+index row FOR SHARE at rank 5, before its paths, so a save of the areas waits for it or goes first. Consent and
+withdraw hold that row FOR SHARE too, and a consent called while its live one is being withdrawn makes a new one.
+Each end is told once (`interface_supervision_ended`), and the web client
+shows it in the notices. An area's `supervisor` is now offered like any other claimed cell.
+
+**Built: I9b, adding agents by offer** (`supabase/migrations/20260930372000_interface_supervision_agents.sql`, test
+454). While a row's consent is live, rule 9 refuses a save that adds an agent to its `agents` unless the consent's
+member makes it; removing one stays free. Anyone else who may write the rows offers a hired agent to the supervisor
+with `qorpera_offer_interface_agent` (`supabase/CLIENT-CONTRACT.md`, "Supervision consent"). It is an offer like a
+cell's (§5), kept with its agent and its consent, at most one open per row and agent. The supervisor's save of the
+rows that puts the agent in the row accepts it, before that save's consent ends are settled (a definition saved alone
+accepts none, even when a new key names another row that holds the agent); the offers' calls decline and withdraw it;
+it lapses when the consent ends. A cell's settle leaves agents' offers alone. The web client reads them with the other
+offers and doesn't draw them yet. Not built yet: the board's Consent, Withdraw and agent offers; agents' own offers and
+`table_write`'s claims (a row write still refuses a claim); work alone; and clearing a leaver's cells.
 
 **Built: I9c, the web** (`packages/web/src/cloud/interface-offers.ts`, `app/interface-offers.ts`,
 `app/interface-claims.ts`, `app/views/interface.ts`). The client reads the company's open offers when it opens, after

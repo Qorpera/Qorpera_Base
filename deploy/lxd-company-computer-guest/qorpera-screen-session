@@ -80,6 +80,20 @@ if [[ -e ${screen_state}/backdrops ]]; then
 		fi
 	done
 fi
+# The company folder, when the office service bound this desktop's mount (F3 4d, "A desktop's mount"): Terminal and
+# Files open there, and Desktop, Documents and Downloads are it. Without one, or while its program restarts (the
+# bare mountpoint is root's), they stay in the workbench. Caches and thumbnails are kept in memory (the runtime
+# root), never on the computer's disk.
+folder_root=${workbench_root}
+if [[ ${QORPERA_COMPANY_FOLDER:-} == /company && -d /company && -x /company ]]; then
+	folder_root=/company
+fi
+cache_dir="${runtime_dir}/cache"
+mkdir -p "${cache_dir}"
+if [[ -L ${cache_dir} || $(/usr/bin/realpath -e -- "${cache_dir}") != "${cache_dir}" ]]; then
+	echo "Unsafe desktop cache alias." >&2
+	exit 65
+fi
 # One flat dark bar along the bottom edge is the whole desktop chrome: the three
 # office tools centred (browser, files, terminal), the date at the left and the
 # time at the right. There is no
@@ -758,11 +772,16 @@ DESKTOP
 # starts another. The idle entries are what the panel needs; the other states
 # only change the icon. Entries of an earlier revision are not used any more.
 dock_helper=/usr/local/bin/qorpera-screen-browser
-write_dock_launcher terminal 4 idle Terminal "Shell in the company workbench" "${dock_helper} terminal" "${workbench_root}"
-write_dock_launcher files 5 idle Files "Company workbench files" "${dock_helper} files" "${workbench_root}"
+if [[ ${folder_root} == /company ]]; then
+	folder_name="company folder"
+else
+	folder_name="company workbench"
+fi
+write_dock_launcher terminal 4 idle Terminal "Shell in the ${folder_name}" "${dock_helper} terminal" "${folder_root}"
+write_dock_launcher files 5 idle Files "Files of the ${folder_name}" "${dock_helper} files" "${folder_root}"
 write_dock_launcher browser 6 idle Browser "Company browser on this screen" "${dock_helper}" ""
-cosmetic write_dock_launcher terminal 4 running Terminal "Shell in the company workbench" "${dock_helper} terminal" "${workbench_root}"
-cosmetic write_dock_launcher files 5 running Files "Company workbench files" "${dock_helper} files" "${workbench_root}"
+cosmetic write_dock_launcher terminal 4 running Terminal "Shell in the ${folder_name}" "${dock_helper} terminal" "${folder_root}"
+cosmetic write_dock_launcher files 5 running Files "Files of the ${folder_name}" "${dock_helper} files" "${folder_root}"
 for state in launching launching-2 running failed; do
 	cosmetic write_dock_launcher browser 6 "${state}" Browser "Company browser on this screen" "${dock_helper}" ""
 done
@@ -799,8 +818,18 @@ ColorCursor=#7ee787
 ColorCursorUseDefault=FALSE
 ColorPalette=#1b1f2a;#f47067;#7ee787;#f5a524;#5aa9ff;#c297ff;#56d4dd;#c9ced8;#565d6b;#ff938a;#a5f3ae;#ffd166;#8cc4ff;#d8b9ff;#8ae7ee;#ffffff
 TERMINAL
+# Without the company folder the desktop keeps the usual folders in its home.
+if [[ ${folder_root} == /company ]]; then
+	cosmetic write_desktop_file "${screen_state}/config/user-dirs.dirs" <<'DIRS'
+XDG_DESKTOP_DIR="/company"
+XDG_DOCUMENTS_DIR="/company"
+XDG_DOWNLOAD_DIR="/company"
+DIRS
+else
+	rm -f -- "${screen_state}/config/user-dirs.dirs" 2>/dev/null || true
+fi
 rm -rf -- "${scratch}"
-cd "${workbench_root}"
+cd "${folder_root}"
 mkdir -p /tmp/.ICE-unix
 chmod 1777 /tmp/.ICE-unix
 xvnc_pid=""
@@ -851,7 +880,7 @@ if [[ ${ready} != true ]]; then echo "Display did not become ready." >&2; exit 1
 /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 HOME="${desktop_home}" DISPLAY="${display}" \
 	SHELL=/usr/bin/bash TZ="${time_zone}" QORPERA_SCREEN_BACKDROPS="${backdrops}" \
 	XDG_RUNTIME_DIR="${runtime_dir}" XDG_CONFIG_HOME="${screen_state}/config" \
-	XDG_CACHE_HOME="${screen_state}/cache" XDG_DATA_HOME="${screen_state}/data" \
+	XDG_CACHE_HOME="${cache_dir}" XDG_DATA_HOME="${screen_state}/data" \
 	/usr/bin/setsid /usr/bin/dbus-run-session -- /usr/local/bin/qorpera-screen-xfce "${wallpaper}" >&2 &
 session_pid=$!
 ready=false

@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
 	buildContainerName,
 	expandTestFixture,
 	POSTGRES_IMAGE,
 	parseArguments,
+	SQL_TEST_DATABASES,
 	selectTests,
 	sortMigrationNames,
+	splitTests,
+	startInTurn,
 } from "./test-hosted-db.mjs";
 import {
 	bestSnapshot,
@@ -126,6 +133,42 @@ test("a script attaches only to a hosted-db container with valid snapshot names"
 	assert.throws(attach({ container: "qorpera-hosted-db-42-0123abcd", snapshots: [{ applied: -1, database: "x" }] }), /Invalid hosted database snapshot/);
 });
 
+test("the shared-server scripts start one at a time, each after the one before it ends, failed or not", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "qorpera-hosted-db-in-turn-"));
+	try {
+		const log = join(directory, "log");
+		const script = (name, code) => {
+			const file = join(directory, `${name}.mjs`);
+			writeFileSync(
+				file,
+				`import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(log)}, "start ${name}\\n");
+await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+console.log("${name} sees " + process.env.QORPERA_IN_TURN);
+appendFileSync(${JSON.stringify(log)}, "end ${name}\\n");
+process.exitCode = ${code};
+`,
+			);
+			return file;
+		};
+		const scripts = [script("a", 0), script("b", 3), script("c", 0)];
+		const started = startInTurn(scripts, { QORPERA_IN_TURN: "the cluster" });
+		assert.deepEqual(started.map(([name]) => name), scripts);
+		const results = await Promise.all(started.map(([, exited]) => exited));
+		assert.deepEqual(
+			results.map(({ code, output }) => [code, output]),
+			[
+				[0, "a sees the cluster\n"],
+				[3, "b sees the cluster\n"],
+				[0, "c sees the cluster\n"],
+			],
+		);
+		assert.equal(readFileSync(log, "utf8"), "start a\nend a\nstart b\nend b\nstart c\nend c\n");
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
 test("--only keeps the named tests in order and refuses a value that matches none", () => {
 	assert.deepEqual(parseArguments([]), { withScripts: false, only: null });
 	assert.deepEqual(parseArguments(["--scripts", "--only", "811,818"]), { withScripts: true, only: ["811", "818"] });
@@ -147,4 +190,53 @@ test("--only keeps the named tests in order and refuses a value that matches non
 	assert.deepEqual(selectTests(tests, ["818_", "001"]), ["001_a.test.sql", "818_race.test.sql"]);
 	assert.deepEqual(selectTests(tests, ["818"]), ["818_race.test.sql", "8180_other.test.sql"]);
 	assert.throws(() => selectTests(tests, ["811", "999"]), /No hosted database test starts with: 999/);
+});
+
+test("the SQL tests split into contiguous runs, and --only keeps one run on qorpera_test", () => {
+	const tests = [
+		"000_schema_smoke.test.sql",
+		"040_account_separation.test.sql",
+		"200_deleted_profile_object_gc.test.sql",
+		"625_kept_rows.test.sql",
+		"819_last.test.sql",
+		"820_first.test.sql",
+		"8200_longer.test.sql",
+		"999_end.test.sql",
+	];
+	const split = splitTests(tests, null);
+	assert.deepEqual(split, [
+		["qorpera_test", tests.slice(0, 5)],
+		["qorpera_test_2", tests.slice(5)],
+	]);
+	// Every test runs once, in its usual order.
+	assert.deepEqual(split.flatMap(([, part]) => part), tests);
+	assert.deepEqual(splitTests(tests, ["8"]), [["qorpera_test", tests]]);
+	assert.deepEqual(splitTests(tests.slice(0, 3), null), [["qorpera_test", tests.slice(0, 3)]]);
+	assert.deepEqual(
+		splitTests(tests, null, [
+			["a", ""],
+			["b", "1"],
+			["c", "9"],
+		]),
+		[
+			["a", tests.slice(0, 2)],
+			["b", tests.slice(2, 7)],
+			["c", tests.slice(7)],
+		],
+	);
+	assert.equal(SQL_TEST_DATABASES[0][0], "qorpera_test");
+	assert.equal(SQL_TEST_DATABASES[0][1], "");
+	for (let i = 1; i < SQL_TEST_DATABASES.length; i++) assert.ok(SQL_TEST_DATABASES[i - 1][1] < SQL_TEST_DATABASES[i][1]);
+});
+
+test("the tests that keep rows for later tests stay in the first database", () => {
+	const tests = readdirSync(join(dirname(fileURLToPath(import.meta.url)), "..", "supabase", "tests"))
+		.filter((name) => name.endsWith(".test.sql"))
+		.sort();
+	const [[first, kept], ...rest] = splitTests(tests, null);
+	assert.equal(first, "qorpera_test");
+	assert.ok(rest.length >= 1);
+	assert.deepEqual([kept, ...rest.map(([, part]) => part)].flat(), tests);
+	// The tests that keep rows (000 first, 040 and its readers up to 200, then 120, 260, 595, 625) are all 625 or below.
+	for (const test of tests.filter((name) => name < "626")) assert.ok(kept.includes(test), test);
 });
