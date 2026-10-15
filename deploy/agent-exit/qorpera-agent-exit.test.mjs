@@ -5,9 +5,11 @@
 // network-less throwaway container that plays a node. Every namespace, bridge, link and rule it makes lives inside the
 // container's own network namespaces. It never loads or unloads a kernel module itself (the kernel loads nftables'
 // and the bridge's modules on demand and keeps them) and changes no sysctl of the machine's own namespace; the test
-// checks that the machine's bridges are all still there afterwards. The one thing a proof must never do on a shared
-// test machine is unload a module: `modprobe -r br_netfilter` also unloads `bridge`, which destroys every bridge on
-// the machine (3 October, an E2b draft run bare on a test machine did that, not this proof).
+// checks that the machine's bridges are all still there afterwards, and that the queue modules of E8c-2's server name
+// checker were not loaded (the proof covers the exit without them; test/prove-sni-vm.sh proves the checker in a
+// throwaway VM). The one thing a proof must never do on a shared test machine is unload a module: `modprobe -r
+// br_netfilter` also unloads `bridge`, which destroys every bridge on the machine (3 October, an E2b draft run bare on
+// a test machine did that, not this proof).
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -2809,6 +2811,10 @@ describe("the exit on a stand-in node", { skip: dockerUsable ? false : "needs Li
 					.filter(Boolean),
 			);
 		const before = bridges();
+		// Nor load the queue modules of E8c-2's server name checker: the proof covers the exit without them (a queue rule,
+		// even under nft -c, or a queue socket would load them on the machine's kernel).
+		const queueModules = () => ["nft_queue", "nfnetlink_queue"].filter((name) => existsSync(`/sys/module/${name}`));
+		const modulesBefore = queueModules();
 		const proof = spawnSync(
 			"docker",
 			["run", "--rm", "--privileged", "--network", "none", "-v", `${here}:/w:ro`, image, "bash", "/w/test/proof.sh"],
@@ -2819,6 +2825,11 @@ describe("the exit on a stand-in node", { skip: dockerUsable ? false : "needs Li
 			["docker0", "lxdbr0", "testmach0"].filter((name) => before.has(name) && !after.has(name)),
 			[],
 			"a bridge of the machine running the proof disappeared",
+		);
+		assert.deepEqual(
+			queueModules().filter((name) => !modulesBefore.includes(name)),
+			[],
+			"the proof loaded a queue module on the machine running it",
 		);
 		assert.equal(proof.status, 0, `${proof.stdout}\n${proof.stderr}`);
 		assert.match(proof.stdout, /ALL PASSED/);
