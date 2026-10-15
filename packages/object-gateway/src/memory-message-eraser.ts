@@ -219,7 +219,7 @@ export class MemoryMessageEraser {
 		let state: EraseState = erase.state;
 		for (let steps = 0; steps < STEPS_PER_ERASE && !signal.aborted; steps++) {
 			if (state === "done" || state === "refused") return;
-			const next =
+			const next: EraseState =
 				state === "open"
 					? await this.#rewrite(erase, signal)
 					: stepState(await this.#call(STEP_RPCS[state], erase, {}, signal), erase.eraseId);
