@@ -44,13 +44,15 @@ begin
 		'agents/alice/memory/thread/runs/' || p_run, extensions.gen_random_uuid(), extensions.gen_random_uuid());
 	set local session_replication_role = origin;
 end $$;
--- A finished step of a run's log, narrow or not, as W1b's apply indexes its line (triggers off).
-create function pg_temp.ct_step(p_run uuid, p_j integer, p_narrow boolean) returns void language plpgsql as $$
+-- A manage_worker step of a run's log (call call-921-<j>), finished or pending, narrow or not, as W1b's apply indexes its
+-- line (triggers off).
+create function pg_temp.ct_step(p_run uuid, p_j integer, p_narrow boolean, p_finished boolean default true) returns void
+language plpgsql as $$
 begin
 	set local session_replication_role = replica;
 	insert into public.qorpera_memory_run_steps(environment_id, run_id, j, tool, call_id, narrow, erased, finished, line_sha256,
 		fixed_sha256, block_path, block_key, block_path_version, commit_id)
-	values ('92400000-0000-4000-8000-000000000020', p_run, p_j, 'manage_worker', 'call-921-' || p_j, p_narrow, false, true,
+	values ('92400000-0000-4000-8000-000000000020', p_run, p_j, 'manage_worker', 'call-921-' || p_j, p_narrow, false, p_finished,
 		repeat('a', 64), repeat('b', 64), 'agents/alice/memory/thread/runs/' || p_run || '/log/00000000.jsonl',
 		'agents/alice/memory/thread/runs/' || p_run || '/log/00000000.jsonl', extensions.gen_random_uuid(), extensions.gen_random_uuid())
 	on conflict (environment_id, run_id, j) do update set narrow = excluded.narrow;
@@ -278,11 +280,13 @@ declare c_env constant uuid := '92400000-0000-4000-8000-000000000020'; c_id cons
 	v_claim jsonb; v_token uuid; v_wakes jsonb; v_bind jsonb; v_y jsonb; v_s uuid := (pg_temp.c3_alice() ->> 'runId')::uuid;
 	v_t1 uuid; v_y_run uuid; v_t2 uuid;
 begin
-	-- Step 7 of Alice's run dispatches it; that step is narrow.
+	-- Step 7 of Alice's run dispatches it: a narrow manage_worker step, pending in her log (which is not narrow) while
+	-- the call runs, which the dispatch names with its call id (W4a-2).
+	perform pg_temp.ct_log(v_s, false);
+	perform pg_temp.ct_step(v_s, 7, true, p_finished => false);
 	v_result := pg_temp.c3_dispatch(v_alice, 'ct-dispatch-c', c_folder, pg_temp.c3_brief(c_id, p_title => 'Fix the signup page'),
-		'{"parentStep":7}');
+		'{"parentStep":7,"parentCall":"call-921-7"}');
 	perform pg_temp.base_assert(v_result -> 'units' -> 0 ->> 'outcome' = 'saved', 'session c''s dispatch: ' || v_result::text);
-	perform pg_temp.ct_step(v_s, 7, true);
 	-- Its first turn: claimed, begun, a run a runner leases.
 	perform pg_temp.base_claims('service_role');
 	v_claim := public.qorpera_claim_coding_session('exec-988', 60);
