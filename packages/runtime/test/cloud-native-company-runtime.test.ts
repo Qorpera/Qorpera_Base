@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CompanyComputerScreenLease } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
-import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
 import { CLOUD_AGENT_HEAD_BYTES, CLOUD_AGENT_HEAD_SCHEMA } from "@qorpera/runtime/cloud-agent-head";
 import type { CloudAgentSendReceipt } from "@qorpera/runtime/cloud-agent-mouth";
 import {
@@ -19,6 +18,7 @@ import type {
 	CloudCompanyPathPresence,
 	CloudCompanyPathPresenceFactory,
 } from "@qorpera/runtime/cloud-company-path-presence";
+import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
 import { compileCloudNativeCompanyInstructions } from "@qorpera/runtime/cloud-native-company-context";
 import { CloudNativeCompanyRuntime } from "@qorpera/runtime/cloud-native-company-runtime";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
@@ -199,18 +199,6 @@ async function fixture(
 					parentRunId: null,
 					causal: { rootId: randomUUID(), agentIds: [wakeIdentity.staffAgentId] },
 				};
-	const objects = new Map<string, Uint8Array>();
-	const transport: CloudObjectTransport = {
-		async put(path, bytes) {
-			objects.set(path, Uint8Array.from(bytes));
-			return "stored";
-		},
-		async get(path) {
-			const bytes = objects.get(path);
-			if (!bytes) throw new Error("Missing synthetic object");
-			return bytes;
-		},
-	};
 	// A background worker of the same agent: blank, read-only here, and without a conversation.
 	const workerId = randomUUID();
 	const workerParentRunId = randomUUID();
@@ -252,7 +240,6 @@ async function fixture(
 			},
 		},
 	};
-	const store = new CloudContentAddressedStore(transport);
 	const observations: CloudRuntimeObservation[] = [];
 	let nativeStarted = false;
 	const connectorGrantId = randomUUID();
@@ -273,7 +260,6 @@ async function fixture(
 		adapterSha256: "b".repeat(64),
 		destinationOrigin: "https://api.linear.app",
 	};
-	const decisions: Record<string, unknown>[] = [];
 	const reviewedTools: string[] = [];
 	/** The kernel's answer to whether any node can serve machines (an Error: the call fails). */
 	let machinesAnswer: unknown = true;
@@ -354,6 +340,11 @@ async function fixture(
 			}
 			if (method === "qorpera_folder_agent_proposals" && proposalsAnswer !== undefined) return proposalsAnswer;
 			expect(args.p_binding).toEqual(f.binding);
+			// What a run's machine saved under interfaces/ or tables/, noted in its conversation (Interfaces I10).
+			if (method === "qorpera_folder_note_interface_changes") {
+				expect(args.p_request).toEqual({});
+				return { schema: "qorpera.interface-change-notes/v1", noted: 1 };
+			}
 			if (method === "qorpera_begin_native_company_execution_v2") {
 				if (nativeStarted) throw new Error("Earlier native execution requires reconciliation");
 				nativeStarted = true;
@@ -386,21 +377,6 @@ async function fixture(
 			}
 			if (method === "qorpera_read_native_wake")
 				return structuredClone(mode === "company-worker" ? workerWake : wake);
-			if (method === "qorpera_decide_agent_routine") {
-				decisions.push(args.p_request as Record<string, unknown>);
-				return {
-					schema: "qorpera.agent-routine-receipt/v1",
-					runId: f.binding.runId,
-					receiptId: randomUUID(),
-					action: "upsert",
-					routine: {
-						routineKey: "invoice-watch",
-						status: "active",
-						version: 2,
-						nextRunAt: "2026-09-02T10:00:00Z",
-					},
-				};
-			}
 			if (method === "qorpera_describe_agent_open_work") {
 				if (mode === "company-worker") throw new Error("A worker keeps no todos");
 				return {
@@ -610,7 +586,6 @@ async function fixture(
 					},
 				})
 			: { call: pathCall },
-		objectStore: () => store,
 		command: [process.execPath, rpcFixture, mode, evidence],
 		binarySha256,
 		timeoutMs: 10_000,
@@ -694,12 +669,10 @@ async function fixture(
 		proposalsAnswer: (value: unknown) => {
 			proposalsAnswer = value;
 		},
-		decisions,
 		folderReads,
 		folderFiles,
 		folderReleases,
 		reviewedTools,
-		store,
 		deliveries,
 		evidence,
 		identityRoot,
@@ -717,22 +690,15 @@ async function fixture(
 
 it("binds path presence to the run and closes it with the native execution", async () => {
 	const observe = vi.fn<CloudCompanyPathPresence["observe"]>();
-	const claim = vi.fn<CloudCompanyPathPresence["claim"]>((path) => ({
-		schema: "qorpera.company-path-presence-view/v1",
-		state: "available",
-		observedAt: Date.now(),
-		paths: [{ path, participants: [] }],
-	}));
 	const close = vi.fn(async () => {});
-	const presence = vi.fn<CloudCompanyPathPresenceFactory>(() => ({ observe, claim, close }));
+	const presence = vi.fn<CloudCompanyPathPresenceFactory>(() => ({ observe, close }));
 	const f = await fixture("company-runtime", false, presence);
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(result.delivery.messageCount).toBe(2);
 	expect(presence).toHaveBeenCalledOnce();
 	expect(presence.mock.calls[0][0]).toEqual(f.binding);
-	// Only a file-event wake observes at startup; the folder core's file tools claim no presence.
+	// Only a file-event wake observes at startup; the folder core's file tools observe no presence.
 	expect(observe).not.toHaveBeenCalled();
-	expect(claim).not.toHaveBeenCalled();
 	expect(close).toHaveBeenCalledOnce();
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	expect(JSON.stringify(evidence.fenced.outputs)).not.toContain("qorpera.company-path-presence-view/v1");
@@ -771,8 +737,7 @@ it.each(["available", "unavailable"])(
 			};
 		});
 		const close = vi.fn(async () => {});
-		const claim = vi.fn<CloudCompanyPathPresence["claim"]>();
-		const f = await fixture("company-silent", false, () => ({ observe, claim, close }));
+		const f = await fixture("company-silent", false, () => ({ observe, close }));
 		const commitId = randomUUID();
 		Object.assign(f.wake, {
 			source: { kind: "company-file", id: commitId, occurrenceKey: `file:7:1` },
@@ -820,6 +785,13 @@ it("composes office tools with the actual admitted native run and existing effec
 	expect(f.control.completeToolOperation).toHaveBeenCalledTimes(1);
 	expect(f.officeClose).toHaveBeenCalledTimes(1);
 	expect(f.officeCall.mock.calls.filter(([, args]) => args.p_action === "release")).toHaveLength(1);
+	// What the machine saved under interfaces/ or tables/ is noted in the run's conversation once, after it closed
+	// (Interfaces I10).
+	const notes = f.pathCall.mock.calls.flatMap(([method], index) =>
+		method === "qorpera_folder_note_interface_changes" ? [f.pathCall.mock.invocationCallOrder[index]] : [],
+	);
+	expect(notes).toHaveLength(1);
+	expect(notes[0]).toBeGreaterThan(f.officeClose.mock.invocationCallOrder[0]);
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
 	expect(names).toContain("computer_shell");
@@ -841,6 +813,36 @@ it("fails the native result when office cleanup is unconfirmed, without repeatin
 	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow("cleanup");
 	expect(f.officeEndpoint.perform).toHaveBeenCalledTimes(1);
 	expect(f.officeClose).toHaveBeenCalledTimes(1);
+	// A failed run's machine changes are noted too.
+	const methods = f.pathCall.mock.calls.map(([method]) => method);
+	expect(methods.filter((method) => method === "qorpera_folder_note_interface_changes")).toHaveLength(1);
+});
+
+it("keeps the run's outcome when its machine's changes could not be noted, and logs the category only", async () => {
+	const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	try {
+		const f = await fixture("company-office");
+		const original = f.pathCall.getMockImplementation()!;
+		f.pathCall.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_folder_note_interface_changes")
+				throw new CloudCompanyFolderRpcError("55000", "PRIVATE_NOTE_ERROR");
+			return original(method, args, signal);
+		});
+		const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		expect(result.delivery.messageCount).toBe(2);
+		expect(f.officeClose).toHaveBeenCalledTimes(1);
+		expect(logged.mock.calls.filter(([line]) => String(line).startsWith("The run's interface changes"))).toEqual([
+			["The run's interface changes were not noted (authority_unavailable)"],
+		]);
+	} finally {
+		logged.mockRestore();
+	}
+});
+
+it("asks for no interface change notes after a run with no machine: its tools note their own", async () => {
+	const f = await fixture("company-runtime");
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_folder_note_interface_changes");
 });
 
 it("closes an initialized office session when native execution admission fails", async () => {
@@ -1179,11 +1181,11 @@ it("has a dynamic routine run decide its next run before its final message", asy
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
 	// The early final and the save of its own routine never reached the kernel: the host showed the model why.
-	expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_manage_agent_routine")).toBe(false);
+	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_manage_agent_routine");
 	const sends = f.control.sendMessage.mock.calls.map(([, input]) => input);
 	expect(sends.map((input) => input.idempotencyKey)).toEqual(["progress", "final"]);
 	// The decision goes to the routine's file (the next test), never to the kernel's own decision.
-	expect(f.decisions).toEqual([]);
+	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_decide_agent_routine");
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
 	expect(names).toContain("decide_routine");
@@ -1213,7 +1215,7 @@ it("has a folder-v2 dynamic routine run decide through its routine file, settled
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
 	// The decision went to the routine's file, not the kernel's legacy decision: no file there, so nothing is owed.
-	expect(f.decisions).toEqual([]);
+	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_decide_agent_routine");
 	expect(f.folderReads).toContain(`agents/nora/routines/${f.wake.routine?.routineKey}.md`);
 	// Not found at its key: its folder is listed for the file carrying its id (the wake is read once: a second read
 	// would claim held messages).
@@ -1687,12 +1689,16 @@ it("offers no card in a group chat, where the kernel lets the agent stay silent"
 
 /** What the summary tree's lines say, so a test finds them in the developer instructions. */
 const MEMORY_LINE = "MEMORY_LINE_CANARY";
+/** What the line of Nora's thread says, as a group chat's run shows it in its branch. */
+const BRANCH_LINE = "BRANCH_LINE_CANARY";
 
 /**
  * A folder-v2 run of Nora's, a post in the agent's own thread unless `final` says otherwise, whose host answers the
- * summary tree's calls (RUNTIME-AGENT-MEMORY-TREE.md §5.3, M1b-4a): qorpera_memory_view answers the run's conversation
- * with the tree of its first two messages (or `view`), there are no branches, and the release and the record accept
- * unless they are given an error to throw. The fixture composes the run's model request and keeps the reply.
+ * summary tree's calls (RUNTIME-AGENT-MEMORY-TREE.md §5.3, M1b-4a, M4c): qorpera_memory_view answers the run's
+ * conversation with the tree of its first two messages (or `view`), and the release and the record accept unless they
+ * are given an error to throw. A post in a group chat (final optional) is in the group chat "Launch", whose run has
+ * Nora's thread as its one branch, one message long; her own thread's run has none. The fixture composes the run's
+ * model request and keeps the reply.
  */
 async function memoryTreeFixture(
 	options: {
@@ -1707,8 +1713,9 @@ async function memoryTreeFixture(
 	if (options.final !== null) roomWake(f, options.final ?? "required");
 	f.folderFiles.set("note.md", "The company note.\n");
 	const sessionId = f.context.identity.sessionId as string;
+	const group = options.final === "optional";
 	// A line for each of the two messages, and one for both.
-	const root = "agents/nora/memory/thread";
+	const root = group ? "agents/groups/launch/memory" : "agents/nora/memory/thread";
 	const blocks: { path: string; version: string }[] = [];
 	const lines: { l: number; k: number; text: string; block: number }[] = [];
 	for (let l = 0; l < 2; l += 1)
@@ -1718,6 +1725,18 @@ async function memoryTreeFixture(
 			if (block < 0) block = blocks.push({ path, version: randomUUID() }) - 1;
 			lines.push({ l, k, text: `${MEMORY_LINE} ${l}.${k}`, block });
 		}
+	const thread = {
+		sessionId: randomUUID(),
+		generation: 1,
+		messages: 1,
+		root: "agents/nora/memory/thread",
+		nodeBytes: 512,
+		blocks: [{ path: `agents/nora/memory/thread/${memoryBlockPath(0, 0)}`, version: randomUUID() }],
+		lines: [{ l: 0, k: 0, text: BRANCH_LINE, block: 0 }],
+	};
+	const branches = group
+		? [{ ref: "thread:nora", kind: "thread", name: "Nora", sessionId: thread.sessionId, messages: 1 }]
+		: [];
 	const original = f.pathCall.getMockImplementation()!;
 	f.pathCall.mockImplementation(async (method, args, signal) => {
 		if (!method.startsWith("qorpera_memory_")) return original(method, args, signal);
@@ -1730,13 +1749,16 @@ async function memoryTreeFixture(
 			}
 			return {
 				schema: MEMORY_VIEW_SCHEMA,
-				conversation: { sessionId, kind: "thread", name: null },
+				conversation: { sessionId, kind: group ? "group" : "thread", name: group ? "Launch" : null },
 				messages: 2,
 				lastSequence: 2,
 				tree: { sessionId, generation: 3, messages: 2, root, nodeBytes: 512, blocks, lines },
 			};
 		}
-		if (method === "qorpera_memory_branches") return { schema: MEMORY_BRANCHES_SCHEMA, branches: [], trees: [] };
+		if (method === "qorpera_memory_branches") {
+			const trees = (request.sessions as string[]).includes(thread.sessionId) ? [thread] : [];
+			return { schema: MEMORY_BRANCHES_SCHEMA, branches, trees };
+		}
 		if (method === "qorpera_memory_release") {
 			if (options.release) throw options.release;
 			return {
@@ -1793,9 +1815,56 @@ it("shows an own-thread run its summary tree, released and recorded before the m
 	);
 });
 
+it("shows a group-chat run the chat's summary tree, with the agent's own thread as a branch", async () => {
+	const f = await memoryTreeFixture({ final: "optional" });
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	// The list of branches, then the tree of the one there is.
+	expect(memoryTreeCalls(f)).toEqual([
+		"qorpera_memory_view",
+		"qorpera_memory_branches",
+		"qorpera_memory_branches",
+		"qorpera_memory_release",
+		"qorpera_memory_view_record",
+	]);
+	const calls = f.pathCall.mock.calls;
+	const requests = (name: string) =>
+		calls
+			.filter(([method]) => method === name)
+			.map(([, args]) => (args as { p_request: Record<string, unknown> }).p_request);
+	const [list, read] = requests("qorpera_memory_branches");
+	expect(list).toEqual({ sessions: [] });
+	expect(read?.sessions).toHaveLength(1);
+	// The lines of the chat and of the thread are released together, before the model starts.
+	const [release] = requests("qorpera_memory_release");
+	const released = (release?.blocks as { path: string }[]).map((block) => block.path);
+	expect(released.filter((path) => path.startsWith("agents/groups/launch/memory/"))).not.toHaveLength(0);
+	expect(released).toContain(`agents/nora/memory/thread/${memoryBlockPath(0, 0)}`);
+	expect(requests("qorpera_memory_view_record")).toEqual([expect.objectContaining({ step: 0, messages: 2 })]);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const instructions: string = evidence.threadParameters.developerInstructions;
+	expect(instructions).toContain(`<conversation ref="." name="Launch (group chat)">`);
+	expect(instructions).toContain(MEMORY_LINE);
+	const context = JSON.parse(evidence.turnParameters.input[0].text);
+	expect(context).toMatchObject({
+		conversationMessages: 2,
+		branches: [{ ref: "thread:nora", name: "Nora (thread)", messages: 1 }],
+	});
+	expect(context.branches[0].lines.join("\n")).toContain(BRANCH_LINE);
+	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
+	expect(names).toContain("zoom");
+	// The chat's own cache key: its session, for this agent and payer (§6.2).
+	expect(evidence.context.agent.promptCacheKey).toBe(
+		memoryPromptCacheKey({
+			payerLoginConnectionId: f.context.identity.providerConnectionId,
+			agentId: f.context.identity.staffAgentId,
+			conversationId: f.context.identity.sessionId as string,
+		}),
+	);
+});
+
 it.each([
-	{ run: "a post in a group chat", mode: "company-context", final: "optional" },
 	{ run: "a routine's run", mode: "company-dynamic", final: null },
+	{ run: "a background worker", mode: "company-worker", final: null },
 ] as const)("asks no summary tree for $run, and gives it no zoom", async ({ mode, final }) => {
 	const f = await memoryTreeFixture({ mode, final });
 	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
@@ -2067,13 +2136,6 @@ it.each([
 			if (presenceFails) throw new Error("Presence is unavailable");
 			return {
 				observe: async () => ({ state: "unavailable" }) as never,
-				// As the real claim answers before it holds any observation: at once, unavailable.
-				claim: (path) => ({
-					schema: "qorpera.company-path-presence-view/v1",
-					state: "unavailable",
-					observedAt: Date.now(),
-					paths: [{ path, participants: [] }],
-				}),
 				close: async () => {},
 			};
 		});
@@ -2501,8 +2563,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// master's folder-v2 values at a2d6cb27a, which the legacy sweep (step C, C-P1) kept byte for byte, with
 	// Interfaces' save_interface and table_write (I8b) after table_read: the names in their order, each name with
 	// its description, and the catalog text the run's start hashes (it holds no ids). Since C-P4, read_event's
-	// description no longer names save_attachment, so the last two moved; and since I9b, table_write's description
-	// says an agent changes a claim for its area's supervisor. Every other tool is as on master.
+	// description no longer names save_attachment, so the last two moved. Since chat images, company_read's description
+	// says it shows an image, and since I9b, table_write's description says an agent changes a claim for its area's
+	// supervisor, so they moved again; every other tool is as on master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2537,9 +2600,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"df136394e0fffa1b09efaf176a30396b8133ec77ea04c03c370485c5d896675e",
+		"287dd53d97b9f89410b84e1865521952a6f97622b9fb56532ce8fee51f3ae662",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"a324066a9328fcadaf0ba4e2675abc126686d0c27d3e07585938cd087a46ae91",
+		"924b2d0ace3497116e54999a5a8eccc1149cec06b03101d222dbeaa78be34faf",
 	);
 });

@@ -36,6 +36,13 @@ wait_for() {
 	done
 	fail "timed out waiting for: $1"
 }
+# Whether a command's output has a line that matches: `shows PATTERN COMMAND...` (PATTERN as grep's basic one). The
+# output is read whole first. Piped into `grep -q`, a command still writing after the first match dies of SIGPIPE, and
+# pipefail fails the check although the line is there.
+shows() {
+	local out
+	out=$("${@:2}") && grep -q -- "$1" <<<"$out"
+}
 lx() { lxc --project "$PROJECT" "$@" </dev/null; }
 in_m() {
 	local m=$1
@@ -48,6 +55,7 @@ diagnose() {
 	[[ -n ${work:-} && -d ${work:-/nonexistent} ]] || return 0
 	echo "--- dns.log"; tail -n 20 "$work/log/dns.log" 2>/dev/null
 	echo "--- plug"; cat "$work/run/plug.json" 2>/dev/null; tail -n 5 "$work/plug.out" 2>/dev/null
+	echo "--- names"; cat "$work/run/names.json" 2>/dev/null; tail -n 5 "$work/names.out" 2>/dev/null
 	echo "--- logs"; cat "$work/run/logs.json" "$work/run/ship.json" 2>/dev/null; tail -n 5 "$work/ship.out" 2>/dev/null
 	echo "--- bridge rules"; nft list table bridge qorpera_agent_exit_bridge 2>/dev/null | head -60
 	echo "--- fdb"; bridge fdb show br qagent0 2>/dev/null | grep -v permanent | head
@@ -131,6 +139,41 @@ start_plug() {
 	plug_pid=$!
 }
 start_plug
+# The names reconciler (E8b), with the rules reader's stand-in: no company here has rules, so every machine keeps the
+# main dnsmasq and no resolver starts (test/prove-names.sh proves the companies' resolvers on real LXD).
+cat >"$work/rules-reader.py" <<'EOF'
+import datetime, json, os, sys, time
+# Every second, as the reader writes them: each company with a machine in the client map argv[1] without rules in
+# argv[2], and the status in argv[3].
+clients, rules_path, status_path = sys.argv[1:4]
+def write(path, text, mode):
+    with open(path + ".tmp", "w") as f:
+        f.write(text)
+    os.chmod(path + ".tmp", mode)
+    os.replace(path + ".tmp", path)
+print("ready", flush=True)
+while True:
+    companies = set()
+    for name in os.listdir(clients) if os.path.isdir(clients) else ():
+        try:
+            companies.add(json.load(open(os.path.join(clients, name)))["company"])
+        except (OSError, ValueError, KeyError):
+            pass
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    write(rules_path, json.dumps({"schema": "qorpera.agent-exit-rules/v1",
+                                  "companies": dict.fromkeys(sorted(companies))}, sort_keys=True) + "\n", 0o600)
+    write(status_path, json.dumps({"schema": "qorpera.agent-exit-rules-status/v1", "checkedAt": now, "readAt": now,
+                                   "ok": True, "problem": None, "companies": len(companies)}) + "\n", 0o644)
+    time.sleep(1)
+EOF
+export QORPERA_AGENT_EXIT_RULES_STATUS=$work/rules-status.json
+install -d -m 0700 "$work/state/rules"
+python3 "$work/rules-reader.py" "$work/state/clients" "$work/state/rules/rules.json" "$QORPERA_AGENT_EXIT_RULES_STATUS" \
+	>"$work/rules.out" 2>&1 &
+pids+=($!)
+wait_for "grep -q ready $work/rules.out"
+QORPERA_AGENT_EXIT_NAMES_INTERVAL=1 bash "$tool" names >"$work/names.out" 2>&1 &
+pids+=($!)
 # The logs' tender and shipper, as their timers run them on a node (more often here).
 (while :; do
 	bash "$tool" logs >>"$work/logs.out" 2>&1 || true
@@ -168,8 +211,8 @@ mac2=$(lx config device get m2 eth0 hwaddr)
 port2=$(lx config get m2 volatile.eth0.host_name)
 pass "two LXD machines plugged in the creators' way get their addresses by DHCP from the exit"
 
-in_m m1 python3 -c 'import urllib.request; print(urllib.request.urlopen("http://198.51.100.1/", timeout=5).read().decode())' |
-	grep -qx ok || fail "a machine cannot reach the stand-in internet"
+[[ $(in_m m1 python3 -c 'import urllib.request; print(urllib.request.urlopen("http://198.51.100.1/", timeout=5).read().decode())') == ok ]] ||
+	fail "a machine cannot reach the stand-in internet"
 host_legs=$(conntrack -L -s "$a1" 2>/dev/null | grep -c . || true)
 ((host_legs == 0)) || fail "the node tracks the bridged leg despite notrack: $(conntrack -L -s "$a1" 2>&1)"
 for target in 10.201.0.1:22 192.168.1.40:2049 100.64.0.1:443; do reach m1 "${target%:*}" "${target#*:}" && fail "$target reachable"; done
@@ -289,7 +332,7 @@ nft delete table bridge qae2b_lxd6
 handle=$(nft -a list chain bridge qorpera_agent_exit_bridge forward | awk '/ether type ip6 accept/ {print $NF}')
 nft delete rule bridge qorpera_agent_exit_bridge forward handle "$handle"
 start_plug
-wait_for "! nft list set bridge qorpera_agent_exit_bridge clients | grep -q 0e:51:0a:d2:99:98" 100
+wait_for "! shows 0e:51:0a:d2:99:98 nft list set bridge qorpera_agent_exit_bridge clients" 100
 wait_for "reach m1 198.51.100.1 80" 100
 pass "LXD isolates each machine's port, and its MAC and IPv6 filters hold on their own"
 # Another address than its own (in the range, and another machine's), towards the internet: the exit counts every
@@ -324,7 +367,7 @@ count6=$(nft list chain bridge qae2b_count seen)
 nft delete table bridge qae2b_count
 pass "another address, another machine's address, another MAC or any IPv6 from a machine's card gets nothing through"
 in_m m2 ping -c 1 -W 2 10.210.0.1 >/dev/null || fail "m2 cannot ping the exit"
-wait_for "ip -n qexit neigh show $a2 | grep -q $mac2"
+wait_for "shows $mac2 ip -n qexit neigh show $a2"
 in_m m1 python3 /root/spoof.py garp "$a2"
 in_m m1 python3 /root/spoof.py garp "$a1" "$mac2"
 # The DHCPDECLINE reaches the bridge (counted before its rules: they hook forward at filter - 5, and the bridge
@@ -353,9 +396,9 @@ nft add table bridge qae2b_flood
 nft add chain bridge qae2b_flood seen '{ type filter hook forward priority 100; }'
 nft add rule bridge qae2b_flood seen oifname "$port2" ether daddr "$mac1" counter
 bridge fdb del "$mac1" dev "$host_if" master 2>/dev/null || true
-bridge fdb show br qagent0 | grep -q "$mac1 dev $host_if" && fail "m1's MAC is still in the bridge table"
+shows "$mac1 dev $host_if" bridge fdb show br qagent0 && fail "m1's MAC is still in the bridge table"
 ip netns exec qexit ping -c 1 -W 1 "$a1" >/dev/null 2>&1 || true
-nft list chain bridge qae2b_flood seen | grep -q 'packets 0 ' || fail "the exit's frame to a forgotten MAC reached another machine"
+shows 'packets 0 ' nft list chain bridge qae2b_flood seen || fail "the exit's frame to a forgotten MAC reached another machine"
 nft delete table bridge qae2b_flood
 pass "a frame from the exit to a MAC the bridge has forgotten reaches no other machine"
 
@@ -387,8 +430,8 @@ pass "an up reload keeps the ports and pairs by itself: running machines keep th
 
 # --- The reconciler against LXD ------------------------------------------------------------------------------------
 in_m m1 sh -c 'nohup python3 -c "import socket, time; s = socket.create_connection((\"198.51.100.1\", 8443)); time.sleep(3600)" >/dev/null 2>&1 &'
-wait_for "ip netns exec qexit conntrack -L -s $a1 2>/dev/null | grep -q 'dport=8443'"
-wait_for "conntrack -L -s 10.209.255.2 2>/dev/null | grep -q 'dport=8443'"
+wait_for "shows dport=8443 ip netns exec qexit conntrack -L -s $a1 2>/dev/null"
+wait_for "shows dport=8443 conntrack -L -s 10.209.255.2 2>/dev/null"
 lx stop --force m1
 wait_for "test -e $work/run/plug-stopped/$a1" 100
 exit_left=$(ip netns exec qexit conntrack -L -s "$a1" 2>/dev/null || true)
@@ -516,7 +559,7 @@ handle=$(nft -a list chain inet qorpera_agent_exit_host raw_prerouting | awk '/n
 nft delete rule inet qorpera_agent_exit_host raw_prerouting handle "$handle"
 for kind in churn refused udp spoofed; do flood "$kind, tracked" "$kind"; done
 bash "$tool" up >/dev/null
-nft list chain inet qorpera_agent_exit_host raw_prerouting | grep -q notrack || fail "up did not restore notrack"
+shows notrack nft list chain inet qorpera_agent_exit_host raw_prerouting || fail "up did not restore notrack"
 ip netns exec qexit conntrack -F >/dev/null 2>&1 || true
 read -r idle _ < <(in_m m1 python3 /root/flood.py churn 5000)
 in_m m2 sh -c 'nohup python3 /root/flood.py silent 16000 >/dev/null 2>&1 &'

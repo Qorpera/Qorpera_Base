@@ -156,6 +156,24 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 				},
 			},
 		]);
+		// And vault_capture: a Stripe hook's id and the control that shows its secret, which the vault reads (E3c-2).
+		expect(
+			actions.filter((schema) => (schema.properties.action as { const: string }).const === "vault_capture"),
+		).toEqual([
+			{
+				type: "object",
+				additionalProperties: false,
+				required: ["kind", "action", "role", "name", "hook", "field"],
+				properties: {
+					kind: { const: "browser" },
+					action: { const: "vault_capture" },
+					role: { enum: ["button", "link"] },
+					name: { type: "string", maxLength: 512 },
+					hook: { type: "string", pattern: expect.any(String) },
+					field: { const: "signing_secret" },
+				},
+			},
+		]);
 	});
 
 	it("keeps authorization free of physical launch and prepares only after receipt admission", async () => {
@@ -742,6 +760,29 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 				field: "signing_secret",
 			}),
 		).toThrow("INVALID_COMPUTER_ARGUMENTS");
+	});
+
+	it("reads a vault_capture of a Stripe hook's secret as a button or link, the hook and its secret, never a value (E3c-2)", () => {
+		const capture = {
+			kind: "browser",
+			action: "vault_capture",
+			role: "button",
+			name: "Reveal",
+			hook: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+			field: "signing_secret",
+		};
+		expect(parseCompanyComputerAction(capture)).toEqual({ ...capture, hook: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" });
+		expect(parseCompanyComputerAction({ ...capture, role: "link" })).toMatchObject({ role: "link" });
+		for (const bad of [
+			{ ...capture, value: "whsec_x" },
+			{ ...capture, account: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" },
+			{ ...capture, field: "password" },
+			{ ...capture, role: "textbox" },
+			{ ...capture, hook: "stripe-payments" },
+			{ ...capture, hook: 1 },
+			{ ...capture, name: " " },
+		])
+			expect(() => parseCompanyComputerAction(bad), JSON.stringify(bad)).toThrow("INVALID_COMPUTER_ARGUMENTS");
 	});
 
 	it("bounds input and validates coordinates before cloud acquisition", async () => {
