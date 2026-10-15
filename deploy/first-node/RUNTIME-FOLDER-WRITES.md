@@ -24,7 +24,7 @@ a test machine's command) stays read-only until its step wires review in. So not
 
 **Not in step 3:** review of an agent's deletes, moves and delegation units, and proposals (steps 4–6, with the run
 that owns the view); per-command attribution (steps 4 and 6); desktop notifications (step 4); code areas (step 5);
-restore in the web app (the Interfaces session's file page; below).
+restore in the web app (RUNTIME-FOLDER-LINKS.md's LK6; below).
 
 ## The parts
 
@@ -303,7 +303,8 @@ numbers decide whether step 4 needs more (packing small files, batching intents)
 
 **Restore in the web app** (§9 step 3) is a write of an old version's file reference through the member commit route.
 The core already lets an actor reference bytes of an old version it may read (C1D §7), so it needs no core change.
-It belongs with the web file page and history (P27, the Interfaces session).
+It is built in the web file page's history by RUNTIME-FOLDER-LINKS.md's LK6, one restore button for any old version,
+a file's or a link's (moved from P27 with the Interfaces session's agreement, 14 October).
 
 ## Proposals and questions
 
