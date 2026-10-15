@@ -301,7 +301,7 @@ export class ConversationView {
 	/** Undo of an agent's interface change, by its commit, while the member is in this thread. */
 	readonly #undos = new Map<string, InterfaceUndoState>();
 	/** Each message drawn in the thread: what it is and who wrote it, for its right-click menu. */
-	readonly #messageItems = new WeakMap<Element, { item: TranscriptMessage; author: string }>();
+	readonly #messageItems = new WeakMap<Element, { item: TranscriptMessage; author: string; mine: boolean }>();
 	/** The member's latest erase of a message here, from the ask until it is done or fails (summary trees M3c). */
 	#erase: EraseLine | undefined;
 	readonly #run: SessionRunView | undefined;
@@ -1045,7 +1045,7 @@ export class ConversationView {
 		)
 			return;
 		event.preventDefault();
-		const { item, author } = drawn;
+		const { item, author, mine } = drawn;
 		const point = menuPoint(event, element);
 		openContextMenu({
 			label: t("Message from {name}", { name: author }),
@@ -1056,7 +1056,7 @@ export class ConversationView {
 					label: t("Erase message"),
 					icon: "trash",
 					danger: true,
-					select: () => void this.#eraseMessage(item, author),
+					select: () => void this.#eraseMessage(item, author, mine),
 				},
 			],
 			opener: element,
@@ -1070,10 +1070,11 @@ export class ConversationView {
 
 	/** Erase one message for the whole company once the member confirms. The line above the composer says how it goes,
 	 * and the thread shows "(erased)" in its place once the cloud has blanked it (a full read, M3d). */
-	async #eraseMessage(item: TranscriptMessage, author: string): Promise<void> {
+	async #eraseMessage(item: TranscriptMessage, author: string, mine: boolean): Promise<void> {
 		const erases = this.#actions.messageErases;
 		const signal = this.#lifetime.signal;
-		const what = { author, time: fmtTime(item.createdAt) };
+		// Mid-sentence, the member's own message is "from you", not "from You".
+		const what = { author: mine ? t("you") : author, time: fmtTime(item.createdAt) };
 		if (
 			!erases ||
 			!(await confirmDialog(
@@ -2023,7 +2024,7 @@ export class ConversationView {
 			if (base?.key === itemKey && base.time === time) {
 				base.input = input;
 				drawn.set(slot, base);
-				this.#messageItems.set(base.element, { item, author });
+				this.#messageItems.set(base.element, { item, author, mine });
 				return base.element;
 			}
 			const entry = this.#drawMessage(
@@ -2047,7 +2048,7 @@ export class ConversationView {
 			const former = this.#drawn.get(slot)?.element;
 			if (!base && former) replaced.set(entry.element, former);
 			drawn.set(slot, entry);
-			this.#messageItems.set(entry.element, { item, author });
+			this.#messageItems.set(entry.element, { item, author, mine });
 			return entry.element;
 		};
 		// A card's actions reach the thread's agent as it is when clicked, not as it was drawn.

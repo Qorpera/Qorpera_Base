@@ -390,10 +390,11 @@ describe("conversation UI boundaries", () => {
 		return { offered: !opened, menu, items: [...(menu?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])] };
 	};
 	const notices = (root: ParentNode) => [...root.querySelectorAll(".notice")].map((item) => item.textContent);
-	/** The words the thread names a message by: its author and time, as its own label reads. */
+	/** The words the thread names a message by: its author and time, as its own label reads; mid-sentence, the
+	 * member's own message is from "you". */
 	const named = (message: Element) => {
 		const [author, time] = message.getAttribute("aria-label")!.split(" · ");
-		return { author: author!, time: time! };
+		return { author: author === "You" ? "you" : author!, time: time! };
 	};
 	const erases = (answers: MessageErase["state"][]) => {
 		const erase = (state: MessageErase["state"]): MessageErase => ({
@@ -456,6 +457,8 @@ describe("conversation UI boundaries", () => {
 		const f = await erasable([before, reply], 0, { messageErases: route });
 		const message = f.view.el.querySelector(".message")!;
 		const what = named(message);
+		// The member's own message.
+		expect(what.author).toBe("you");
 		messageMenu(message).items[0]!.click();
 		await settle();
 		const dialog = document.querySelector(".modal-backdrop")!;
