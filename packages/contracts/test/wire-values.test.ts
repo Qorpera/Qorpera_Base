@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	isUuid,
 	normalizeUuid,
+	POSTGRES_UUID_PATTERN,
 	parseBoundedText,
 	parseClosedRecord,
 	parseInteger,
@@ -16,6 +17,20 @@ import {
 const lower = "0f5d6a1e-7c1b-4a6e-9f10-2b3c4d5e6f70";
 
 describe("wire values", () => {
+	it("keeps PostgreSQL storage UUID grammar separate from runtime identity admission", () => {
+		for (const value of [
+			"00000000-0000-0000-0000-000000000000",
+			"ffffffff-ffff-ffff-ffff-ffffffffffff",
+			"0f5d6a1e-7c1b-0a6e-cf10-2b3c4d5e6f70",
+		]) {
+			expect(POSTGRES_UUID_PATTERN.test(value)).toBe(true);
+			expect(isUuid(value)).toBe(false);
+		}
+		expect(POSTGRES_UUID_PATTERN.test(lower)).toBe(true);
+		for (const value of [lower.toUpperCase(), `${lower}\n`, ` ${lower}`, lower.replaceAll("-", ""), `${lower}0`])
+			expect(POSTGRES_UUID_PATTERN.test(value)).toBe(false);
+		expect(POSTGRES_UUID_PATTERN.flags).toBe("");
+	});
 	it("takes a UUID in either letter case only where it hands back the lower case the database prints", () => {
 		expect(parseUuid(lower, "id")).toBe(lower);
 		expect(parseUuid(lower.toUpperCase(), "id")).toBe(lower);
