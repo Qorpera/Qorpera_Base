@@ -9,7 +9,7 @@ select set_config(
 	true
 );
 
-select public.qorpera_create_hosted_profile('Fixture profile', 'Fixture environment', 1);
+select public.qorpera_folder_company_open('10000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-0000000000c1', 'Fixture profile');
 
 do $$
 begin

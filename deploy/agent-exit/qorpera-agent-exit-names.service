@@ -1,0 +1,13 @@
+[Unit]
+Description=Qorpera agent exit: the names reconciler (each company's resolver and the exit's DNS map, E8b)
+Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/first-node/RUNTIME-AGENT-EXIT.md
+After=qorpera-agent-exit.service
+ConditionPathExists=/run/netns/qexit
+
+[Service]
+ExecStart=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh names
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=qorpera-agent-exit.service

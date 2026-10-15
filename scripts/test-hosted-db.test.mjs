@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
 	buildContainerName,
@@ -7,6 +10,7 @@ import {
 	parseArguments,
 	selectTests,
 	sortMigrationNames,
+	startInTurn,
 } from "./test-hosted-db.mjs";
 import {
 	bestSnapshot,
@@ -124,6 +128,42 @@ test("a script attaches only to a hosted-db container with valid snapshot names"
 	assert.throws(attach({ container: "production-db", snapshots: [] }), /Invalid hosted database container/);
 	assert.throws(attach({ container: "qorpera-hosted-db-42-0123abcd", snapshots: [{ applied: 1, database: "x;y" }] }), /Invalid hosted database name/);
 	assert.throws(attach({ container: "qorpera-hosted-db-42-0123abcd", snapshots: [{ applied: -1, database: "x" }] }), /Invalid hosted database snapshot/);
+});
+
+test("the shared-server scripts start one at a time, each after the one before it ends, failed or not", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "qorpera-hosted-db-in-turn-"));
+	try {
+		const log = join(directory, "log");
+		const script = (name, code) => {
+			const file = join(directory, `${name}.mjs`);
+			writeFileSync(
+				file,
+				`import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(log)}, "start ${name}\\n");
+await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+console.log("${name} sees " + process.env.QORPERA_IN_TURN);
+appendFileSync(${JSON.stringify(log)}, "end ${name}\\n");
+process.exitCode = ${code};
+`,
+			);
+			return file;
+		};
+		const scripts = [script("a", 0), script("b", 3), script("c", 0)];
+		const started = startInTurn(scripts, { QORPERA_IN_TURN: "the cluster" });
+		assert.deepEqual(started.map(([name]) => name), scripts);
+		const results = await Promise.all(started.map(([, exited]) => exited));
+		assert.deepEqual(
+			results.map(({ code, output }) => [code, output]),
+			[
+				[0, "a sees the cluster\n"],
+				[3, "b sees the cluster\n"],
+				[0, "c sees the cluster\n"],
+			],
+		);
+		assert.equal(readFileSync(log, "utf8"), "start a\nend a\nstart b\nend b\nstart c\nend c\n");
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
 });
 
 test("--only keeps the named tests in order and refuses a value that matches none", () => {

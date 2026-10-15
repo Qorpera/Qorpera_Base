@@ -371,6 +371,7 @@ export const SETTINGS: Record<string, string> = {
 	"The company's webhooks and mailboxes could not be read.": "Virksomhedens webhooks og postkasser kunne ikke hentes.",
 	"Waiting for its signing secret": "Venter på sin signeringsnøgle",
 	"Last event {time}": "Seneste hændelse {time}",
+	"Last refused event {time}: {reason}": "Seneste afviste hændelse {time}: {reason}",
 	"No events yet": "Ingen hændelser endnu",
 	"Last email {time}": "Seneste e-mail {time}",
 	"No email yet": "Ingen e-mail endnu",

@@ -590,8 +590,8 @@ and its refusals), `cloud-company-computer-native` (the hook route and a host wi
 
 E3c comes in four PRs: **E3c-1** the database (migration `20260930344000`, SQL test 419), **E3c-2** the broker and the
 runtime, **E3c-3** the office image, and **E3c-4** the hold (migration `20260930345000`, SQL test 420). The coordinator
-agreed the design on 9 October. E3c-1 and E3c-4 are built (below). E3c-2, E3c-3 and E3c-4 ship together in one
-release; until then `manage_hook` refuses a Stripe hook (§5.7, E3b-2).
+agreed the design on 9 October. E3c-1, E3c-2 and E3c-4 are built (below). E3c-2, E3c-3 and E3c-4 ship together in
+one release; until then `manage_hook` refuses a Stripe hook (§5.7, E3b-2).
 
 **What it is for.** An agent opens a Stripe hook with `manage_hook`, adds its URL as an endpoint in Stripe, and then
 moves the endpoint's signing secret (`whsec_…`) from Stripe's page into the vault with `vault_capture`. The model never
@@ -818,13 +818,16 @@ screenshots are refused while it is shown (`PRIVATE_FIELD_ON_SCREEN`). This also
   Empty ones are left out, so a Stripe hook before its first capture, and every GitHub or HMAC hook, keeps exactly
   `connectorId`, `secretName` and `ready`. The five broker functions are granted to `qorpera_secret_broker` only.
 
-**Next: E3c-2 and E3c-3, in one release with E3c-4.**
-- **E3c-2, the broker and the runtime:** `manage_hook`'s Stripe create (its E3b-2 refusal goes, and its description says
+**E3c-2, E3c-3 and E3c-4 ship in one release.**
+- **E3c-2, the broker and the runtime (built):** `manage_hook`'s Stripe create (its E3b-2 refusal goes, and its description says
   one hook per Stripe endpoint, test and live mode apart); the folder client's new refusal words and its signed-create
   check (a Stripe create answers `ready: false`, and `version` and `capturedAt` appear only after a capture); the
   keyring's capture key, and the Stripe opening and `rekey` on `/v1/event-hooks`; `/v1/event-hook-captures`, the native
   host's relay and the review card; Settings' Stripe state; and the redaction of secret-shaped text in every text tool
-  result that reaches the model.
+  result that reaches the model. The native host asks the broker for the `rekey` before it sends the office its
+  `vault_capture`, never after, so the office's perform is never repeated; and the redaction cuts `whsec_` secrets
+  from every answer the tool boundary returns, its digest and run log included (a coding child's own shell is not
+  that boundary's).
 - **E3c-3, the office image:** `vault_capture`'s page checks, cover, reveal, read and seal, the shape guard, the
   registry method and the perform answer's box.
 - **E3c-4, the hold** (migration `20260930345000`, SQL test 420) is built: the verifier's finish, intake's readiness,

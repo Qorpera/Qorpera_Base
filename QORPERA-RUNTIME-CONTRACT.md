@@ -344,7 +344,10 @@ one more, a completed formation reopened, or other fields) is normally refused
 before it becomes a proposal, as `COMPANY_FORMATION_REFUSED` (nothing was written; the
 result names the current stage and revision and the one allowed next write).
 The projection still enforces the rule when the proposal is approved
-(2026-09-28).
+(2026-09-28). (Superseded by the 2026-09-27 amendment "the company folder
+layout": a company folder has no `organization/formation.json`, whose content
+belongs in `vision/vision.md`, and the runtime has had no
+`COMPANY_FORMATION_REFUSED` since legacy sweep step C, C-P6, 2026-10-14.)
 
 The Company File is worked on as one live folder. Every agent and member
 edits the same live objects in place through the live mount or Company File

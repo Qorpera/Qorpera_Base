@@ -93,11 +93,14 @@ every task of the user on the machine. When all runs shared `tester`, a few para
 past 512 and bubblewrap failed with "Creating new namespace failed: Resource temporarily unavailable".
 When all 16 are busy, a run waits (up to an hour).
 
-At most three runs execute at once, and each runs vitest with `VITEST_MAX_WORKERS` = vCPUs / 3 (2 on
-6 vCPUs, 4 on 12; a `--env VITEST_MAX_WORKERS=n` on the command wins), so the three slots together use the
+At most four runs execute at once, and each runs vitest with `VITEST_MAX_WORKERS` = vCPUs / 4 (2 on
+10 vCPUs, 3 on 12; a `--env VITEST_MAX_WORKERS=n` on the command wins), so the four slots together use the
 machine's vCPUs. The record notes the load and the uncapped test processes (older clients) at start. A full
 `npm test` is about 881 CPU-seconds; on 2026-09-29 two full runs plus other sessions drove the load to 22
-and timing-bound tests failed that pass on a quiet machine. Later runs wait in arrival order and print
+and timing-bound tests failed that pass on a quiet machine. On 2026-10-14, with three slots, both machines
+had all three busy and 3-4 runs waiting at load 4-6 on 10 vCPUs, with ~12 GiB of 15.5 available and no memory
+pressure, so a fourth slot was added. A client from before that change still takes only slots 1-3, so while
+it is first in the queue it waits for one of those even when slot 4 is free. Later runs wait in arrival order and print
 their queue position; the record notes the slot and the time spent queued. Each runner user keeps its own npm cache, so
 `npm ci` takes about 30 s the first time and 5-6 s after that. The run directory is
 deleted afterwards (`--keep` keeps it; it then belongs to the runner user, so use sudo inside it). At the start of every run, runs older than a day (by the UTC time
@@ -118,12 +121,12 @@ the machines `passedOver`.
 
 Several sessions can use a machine at once. Each run has its own directory and runner user, and the
 hosted-db harness names its containers per process. Slots, queue, runner users, npm caches and worktree copies
-are per machine: two machines run six suites at once.
+are per machine: two machines run eight suites at once.
 
 ### Which machine
 
 One run, one machine. At the start the wrapper asks every listed machine at once, over SSH and read-only, how
-many of its three slots runs hold, how many runs wait in its queue and how many are still being copied there
+many of its four slots runs hold, how many runs wait in its queue and how many are still being copied there
 (a marker per run, from its first SSH call until it takes a queue ticket). A probe answers in about a second;
 its connection must reach the machine within 6 s. Once one machine has answered with a free slot, the others
 get 2 s more; otherwise every probe gets up to 12 s. The wrapper takes the machine with the most free slots,
