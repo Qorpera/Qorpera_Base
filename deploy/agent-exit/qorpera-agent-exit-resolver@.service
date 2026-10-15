@@ -1,0 +1,30 @@
+[Unit]
+Description=Qorpera agent exit: one company's resolver on port %i (dnsmasq in the exit's namespace, E8b)
+Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/first-node/RUNTIME-AGENT-EXIT.md
+After=qorpera-agent-exit.service
+# At shutdown LXD stops the machines first, so they lose names only after they are gone.
+Before=snap.lxd.daemon.service
+ConditionPathExists=/run/netns/qexit
+
+# The names reconciler (qorpera-agent-exit-names.service) starts and stops these, one per company with rules; it is
+# never enabled.
+[Service]
+NetworkNamespacePath=/run/netns/qexit
+ExecStart=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh resolver %i
+# The names reconciler reloads after rewriting the company's servers file. As for the dns unit, the reload runs
+# without the bounding set below ("+"): dnsmasq runs as nobody, and signalling it takes CAP_KILL.
+ExecReload=+/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=2
+# dnsmasq parses what agent road machines send: keep it to what it needs (as the dns unit).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/run/qorpera-agent-exit /var/log/qorpera-agent-exit
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX AF_PACKET
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW CAP_SETUID CAP_SETGID CAP_CHOWN
