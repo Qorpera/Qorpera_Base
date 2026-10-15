@@ -125,6 +125,37 @@ export interface FolderCore {
 		reads: readonly ReleasedRead[],
 		signal?: AbortSignal,
 	): Promise<ReleaseAnswer>;
+	/** Takes the lease on one shared git file for a view creating its lock file `<path>.lock` (5b, core §6): the view
+	 * holds it until it renames the lock onto the file (`gitPublish`) or removes it (`gitLeaseRelease`). */
+	gitLeaseTake(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		path: string,
+		signal?: AbortSignal,
+	): Promise<GitLease>;
+	/** Ends a lease: with no units it publishes nothing; with deletes of the file and its reflog it publishes those. */
+	gitLeaseRelease(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		leaseId: string,
+		units: readonly unknown[] | null,
+		signal?: AbortSignal,
+	): Promise<GitPublish | null>;
+	/** Drops every lease the view holds, as at a boundary; answers the files whose leases it dropped. */
+	gitLeasesDrop(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		signal?: AbortSignal,
+	): Promise<readonly string[]>;
+	/** Publishes a lease's file and reflog with the objects they name, whole or not at all; a publish ends the lease. */
+	gitPublish(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		leaseId: string,
+		operationKey: string,
+		units: readonly unknown[],
+		signal?: AbortSignal,
+	): Promise<GitPublish>;
 }
 
 /** One file a commit kept on its receipt: the unit (1-based, as the answer numbers them) and the file in it. */
@@ -346,6 +377,67 @@ export function parseReleaseAnswer(value: unknown, releaseId: string, reads: num
 	return { releaseId, replay: answer.replay };
 }
 
+/** The versions a git lease's holder writes over (5b): the file, its reflog and `packed-refs`, each null when no such
+ * file is live. */
+export interface GitVersions {
+	readonly file: string | null;
+	readonly reflog: string | null;
+	readonly packedRefs: string | null;
+}
+
+/** A lease on one shared git file (5b `qorpera_folder_git_lease_take`, core §6's lock protocol): held by this view,
+ * busy while another view (or the platform's maintenance) holds it, or refused for the path. */
+export type GitLease =
+	| { readonly state: "held"; readonly leaseId: string; readonly path: string; readonly versions: GitVersions }
+	| { readonly state: "busy"; readonly leaseUntil: string; readonly reason: string | null }
+	| { readonly state: "refused"; readonly reason: string };
+
+/** A git publish: one change set, saved whole or not at all. */
+export interface GitPublish extends CommitAnswer {
+	readonly published: boolean;
+}
+
+export function parseGitLease(value: unknown, path: string): GitLease {
+	const answer = answerRecord(value, "git lease");
+	if (answer.schema !== "qorpera.folder-git-lease/v1") invalidAnswer("git lease");
+	if (answer.state === "held") {
+		if (typeof answer.leaseId !== "string" || answer.leaseId === "" || answer.path !== path)
+			invalidAnswer("git lease");
+		const versions = answerRecord(answer.versions, "git lease versions");
+		return {
+			state: "held",
+			leaseId: answer.leaseId,
+			path,
+			versions: {
+				file: liveVersionOf(versions.file),
+				reflog: liveVersionOf(versions.reflog),
+				packedRefs: liveVersionOf(versions.packedRefs),
+			},
+		};
+	}
+	if (answer.state === "busy") {
+		const reason = answer.reason ?? null;
+		if (typeof answer.leaseUntil !== "string" || (reason !== null && typeof reason !== "string"))
+			invalidAnswer("git lease busy");
+		return { state: "busy", leaseUntil: answer.leaseUntil, reason };
+	}
+	if (answer.state === "refused" && typeof answer.reason === "string")
+		return { state: "refused", reason: answer.reason };
+	invalidAnswer("git lease state");
+}
+
+export function parseGitPublish(value: unknown, units: number): GitPublish {
+	const answer = parseCommitAnswer(value, units);
+	const published = answerRecord(value, "git publish").published;
+	if (typeof published !== "boolean") invalidAnswer("git publish");
+	return { ...answer, published };
+}
+
+export function parseDroppedLeases(value: unknown): readonly string[] {
+	if (!Array.isArray(value) || value.some((path) => typeof path !== "string")) invalidAnswer("dropped git leases");
+	return value as string[];
+}
+
 /** The core's answer did not have the shape this service knows. Counted as an unavailable dependency. */
 export class CoreAnswerError extends ObjectDependencyError {
 	constructor(what: string) {
@@ -373,6 +465,10 @@ function answerRecord(value: unknown, what: string): Record<string, unknown> {
 function versionOf(value: unknown): string {
 	if (typeof value !== "string" || !isUuid(value)) invalidAnswer("version");
 	return value;
+}
+
+function liveVersionOf(value: unknown): string | null {
+	return value === null || value === undefined ? null : versionOf(value);
 }
 
 function seqOf(value: unknown, what: string): number {
@@ -749,6 +845,71 @@ export class SupabaseFolderCore implements FolderCore {
 			),
 			releaseId,
 			reads.length,
+		);
+	}
+
+	async gitLeaseTake(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		path: string,
+		signal?: AbortSignal,
+	) {
+		return parseGitLease(
+			await this.#rpc(
+				"qorpera_folder_git_lease_take",
+				{ p_environment_id: environmentId, p_actor: actorJson(actor), p_path: path },
+				signal,
+			),
+			path,
+		);
+	}
+
+	async gitLeaseRelease(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		leaseId: string,
+		units: readonly unknown[] | null,
+		signal?: AbortSignal,
+	) {
+		const answer = await this.#rpc(
+			"qorpera_folder_git_lease_release",
+			{ p_environment_id: environmentId, p_actor: actorJson(actor), p_lease_id: leaseId, p_units: units },
+			signal,
+		);
+		return units === null ? null : parseGitPublish(answer, units.length);
+	}
+
+	async gitLeasesDrop(environmentId: string, actor: Extract<FolderActor, { kind: "view" }>, signal?: AbortSignal) {
+		return parseDroppedLeases(
+			await this.#rpc(
+				"qorpera_folder_git_leases_drop",
+				{ p_environment_id: environmentId, p_actor: actorJson(actor) },
+				signal,
+			),
+		);
+	}
+
+	async gitPublish(
+		environmentId: string,
+		actor: Extract<FolderActor, { kind: "view" }>,
+		leaseId: string,
+		operationKey: string,
+		units: readonly unknown[],
+		signal?: AbortSignal,
+	) {
+		return parseGitPublish(
+			await this.#rpc(
+				"qorpera_folder_git_publish",
+				{
+					p_environment_id: environmentId,
+					p_actor: actorJson(actor),
+					p_lease_id: leaseId,
+					p_operation_key: operationKey,
+					p_units: units,
+				},
+				signal,
+			),
+			units.length,
 		);
 	}
 

@@ -237,7 +237,7 @@ fn serve(mut s: Stream, state: Arc<Mutex<State>>) {
 		}
 		// As the node does: the machine's protocol echoed.
 		let ok =
-			HelloOk { protocol: hello.protocol, view_id: hello.view_id.clone(), as_of_seq: st.seq, read_only: !st.writable, switchable: false };
+			HelloOk { protocol: hello.protocol, view_id: hello.view_id.clone(), as_of_seq: st.seq, read_only: !st.writable, switchable: false, code_host: false };
 		send_json(&mut s, kind::HELLO_OK, &ok).unwrap();
 	}
 	if hello.role == Role::Feed {

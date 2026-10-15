@@ -1,3 +1,4 @@
+import { gitObjectPath, gitSharedPath } from "./git.ts";
 import { type FileRef, folderKey, type LiveRef, type PendingFile, type PendingView, unpublished } from "./pending.ts";
 import { parentOf } from "./view-tree.ts";
 
@@ -129,7 +130,8 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 	};
 	const deletes: (Item & { kind: "delete" })[] = [];
 	for (const [path, ref] of removed) {
-		if (removedFolder(path)) continue;
+		// A git directory's shared file goes only with its lease (git.ts): a removal without one is dropped.
+		if (removedFolder(path) || gitSharedPath(path)) continue;
 		const inside = [...removed].filter(([p]) => below(p, path));
 		// A folder's removal takes everything in it as of its position: a file in it whose live version is not the one
 		// its own removal named (it changed before that removal, from a base the machine had not seen) would go
@@ -163,8 +165,10 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 
 	// A new folder whose whole content is new and published here is one unit with its content (§2 "Units").
 	const absorbed = new Set<Item>();
+	// Not a git directory's objects folder: another session may make the same one first, which a `mkdir` of it is saved
+	// over (5b), a `new_folder` not.
 	for (const create of [...creates].sort((a, b) => a.path.length - b.path.length)) {
-		if (absorbed.has(create)) continue;
+		if (absorbed.has(create) || gitObjectPath(create.path)) continue;
 		const inside = [...nodes].filter(([p]) => below(p, create.path));
 		const eligible = inside.every(([p, n]) => {
 			if (unpublished(p)) return true;

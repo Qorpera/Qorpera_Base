@@ -68,6 +68,22 @@ drains admitted old work before moving pending state, keeps a closed desktop for
 under the successor's upload scope, and replays any unanswered commit with its original actor and operation key.
 The office helper and live activation remain separate slices of `RUNTIME-FOLDER-COMPANY-MACHINES.md`.
 
+Git on the mount (F3 step 5d; `RUNTIME-COMPANY-FOLDER.md` §6, `RUNTIME-FOLDER-CODING-MACHINES.md`). In a code area's
+`code/<owner>/<name>/repo.git`, the session's own git files (`config`, `hooks/**`, `info/**` and each worktree's
+`config.worktree`) live on the machine's disk under `--local-dir` (default `<state-dir>/local`, `src/local.rs`): seeded
+from the published copy when first used, never published, so a hook one session writes runs in that session alone.
+The company's code host keeps none of them on its disk: its `code_host` view (the node says so in its hello answer)
+writes and publishes the copies the sessions seed theirs from.
+Cache folders in a worker's worktree (`node_modules`, `target`, `dist`, `build` and the rest of `src/git.rs`'s list)
+live there too, kept out of the company folder. The program reads the worktree's index (`src/index.rs`) each time git
+renames a new one into place; a name the index holds as a folder leaves that worktree's list for good
+(`src/cache.rs`, kept in `local/cache-left.jsonl`), and its files move into the mount as pending files. Under
+`repo.git`, objects aside, every lookup asks the node (no kernel cache), and an exclusive create of a ref's, `HEAD`'s,
+`packed-refs`' or `shallow`'s lock drops what the kernel holds of that file, its log and `packed-refs`, so git reads
+the versions the node's lease answered with (`src/mount/on_disk.rs`). `objects/info/alternates` and changing an
+object's times answer EPERM. The lock protocol itself (the lease on a lock's create, the publish on its rename or
+removal) is the folder service's (`packages/object-gateway/src/folder-service/git.ts`).
+
 Tests run in the pinned Rust image on the node 2 test machine (`node scripts/run-on-node.mjs changed`, step
 `folder-program`); the FUSE tests need `QORPERA_FOLDER_FUSE_TESTS=1`, root and `/dev/fuse`. Release builds:
 `node scripts/build-folder-program.mjs --out <file>`. Build output never goes in this folder (`CARGO_TARGET_DIR`).

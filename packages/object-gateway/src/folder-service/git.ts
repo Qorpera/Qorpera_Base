@@ -1,0 +1,140 @@
+/** Git on the mount (deploy/first-node/RUNTIME-COMPANY-FOLDER.md §6 "Git on the mount"; crates/qorpera-folder/src/git.rs
+ * is the program's half): what a path in a code area `code/<owner>/<name>/` is to git, and so what this service does
+ * with it. The core holds the leases on git's shared files and the version check at the rename that publishes one;
+ * this service asks for them as git locks and renames, and keeps out of the folder what must never be in it. */
+
+import type { FileRef } from "./pending.ts";
+
+/** A unit of a git publish or of a lease's release (5b): a file written over the version it names (none for an
+ * object, which is its content; null for a file that must not exist yet), or a file deleted. */
+export type GitUnit =
+	| { readonly op: "write"; readonly path: string; readonly file: FileRef; readonly expectedVersion?: string | null }
+	| { readonly op: "delete"; readonly path: string; readonly expectedVersion: string };
+
+export type GitPlace =
+	/** Not in a code area's `repo.git/` or `worktrees/<worker>/`. */
+	| { readonly kind: "other" }
+	/** In the shared git directory: `area` is `code/<owner>/<name>`, `rest` the path below `repo.git/` ("" for
+	 * `repo.git` itself). */
+	| { readonly kind: "git"; readonly area: string; readonly rest: string }
+	/** In a worker's worktree: `rest` is the path below `worktrees/<worker>/` ("" for the worktree itself). */
+	| { readonly kind: "worktree"; readonly area: string; readonly worker: string; readonly rest: string };
+
+const OTHER: GitPlace = { kind: "other" };
+
+/** Where `path` is in a code area. */
+export function gitPlace(path: string): GitPlace {
+	if (!path.startsWith("code/")) return OTHER;
+	const parts = path.split("/");
+	if (parts.length < 4) return OTHER;
+	const area = parts.slice(0, 3).join("/");
+	if (parts[3] === "repo.git") return { kind: "git", area, rest: parts.slice(4).join("/") };
+	if (parts[3] === "worktrees" && parts.length > 4)
+		return { kind: "worktree", area, worker: parts[4], rest: parts.slice(5).join("/") };
+	return OTHER;
+}
+
+/** A git file each session keeps its own copy of on its machine's disk, never published (`rest` is below
+ * `repo.git/`): the repository's `config`, `hooks/**` and `info/**`, and a worktree's `config.worktree`, with the
+ * locks git writes them through. Git runs what they say, so a copy published by one session would run in every other. */
+export function gitSessionLocal(rest: string): boolean {
+	const parts = rest.split("/");
+	if (rest === "config" || rest === "config.lock" || parts[0] === "hooks" || parts[0] === "info") return true;
+	return (
+		parts.length === 3 &&
+		parts[0] === "worktrees" &&
+		(parts[2] === "config.worktree" || parts[2] === "config.worktree.lock")
+	);
+}
+
+/** Under `repo.git/objects` (`rest` is below `repo.git/`). */
+export function gitObject(rest: string): boolean {
+	return rest === "objects" || rest.startsWith("objects/");
+}
+
+/** A path under a code area's `repo.git/objects`. */
+export function gitObjectPath(path: string): boolean {
+	const place = gitPlace(path);
+	return place.kind === "git" && gitObject(place.rest);
+}
+
+/** A file that would make git read objects from elsewhere (`rest` is below `repo.git/`). */
+export function gitAlternates(rest: string): boolean {
+	const file = rest.endsWith(".lock") ? rest.slice(0, -".lock".length) : rest;
+	return file === "objects/info/alternates" || file === "objects/info/http-alternates";
+}
+
+/** A shared file other sessions change (`rest` is below `repo.git/`): everything in the git directory but objects, the
+ * workers' own files and the session-local ones. */
+export function gitShared(rest: string): boolean {
+	return (
+		rest !== "" &&
+		!gitObject(rest) &&
+		rest !== "worktrees" &&
+		!rest.startsWith("worktrees/") &&
+		!gitSessionLocal(rest)
+	);
+}
+
+/** A shared file or folder of a git directory, by its full path: only a lease publishes it, never a boundary. */
+export function gitSharedPath(path: string): boolean {
+	const place = gitPlace(path);
+	return place.kind === "git" && gitShared(place.rest);
+}
+
+/** The shared file `X` a lock `path` (`X.lock`) stands for, where `X` is a ref (`refs/**`, `HEAD`), `packed-refs` or
+ * `shallow`: the lock's exclusive create takes the core's lease on `X`, its rename onto `X` publishes, and its removal
+ * gives the lease back. */
+export function gitLockTarget(path: string): string | null {
+	const place = gitPlace(path);
+	if (place.kind !== "git" || !place.rest.endsWith(".lock")) return null;
+	const target = place.rest.slice(0, -".lock".length);
+	const ok = target === "HEAD" || target === "packed-refs" || target === "shallow" || target.startsWith("refs/");
+	return ok ? `${place.area}/repo.git/${target}` : null;
+}
+
+/** The git directory (`code/<owner>/<name>/repo.git`) the shared file `target` is in. */
+export function gitDir(target: string): string {
+	const place = gitPlace(target);
+	if (place.kind !== "git") throw new Error(`${target} is not in a git directory`);
+	return `${place.area}/repo.git`;
+}
+
+/** The files a lock on the shared file `target` guards: the file, its log, and the locks git writes them through. */
+export function gitGuarded(target: string): readonly string[] {
+	const reflog = gitReflog(target);
+	return [target, `${target}.lock`, reflog, `${reflog}.lock`];
+}
+
+/** The reflog of the shared file `target` (`code/<owner>/<name>/repo.git/X`). */
+export function gitReflog(target: string): string {
+	const place = gitPlace(target);
+	if (place.kind !== "git") throw new Error(`${target} is not in a git directory`);
+	return `${place.area}/repo.git/logs/${place.rest}`;
+}
+
+/** Whether a write to `path` is refused: an alternates file, and in a session's view a session-local git file (the
+ * program keeps those on the machine's disk, so one reaching this service is a program that would publish its hooks).
+ * The code host's view (`codeHost`) writes the published copies sessions seed theirs from: there they are plain files,
+ * published at a boundary. */
+export function gitRefused(path: string, codeHost = false): boolean {
+	const place = gitPlace(path);
+	return place.kind === "git" && ((!codeHost && gitSessionLocal(place.rest)) || gitAlternates(place.rest));
+}
+
+/** A file git makes in the git directory that a boundary never publishes: an object or pack it has not finished
+ * (`tmp_*`, a push's `incoming-*` quarantine), a pack's `.keep`, and every lock (a shared file's goes with its lease,
+ * a worker's own is git's until it renames it). A git killed midway leaves them; they stay this view's. */
+export function gitUnpublished(path: string): boolean {
+	const place = gitPlace(path);
+	if (place.kind !== "git") return false;
+	const parts = place.rest.split("/");
+	const name = parts[parts.length - 1];
+	if (name.endsWith(".lock")) return true;
+	if (!gitObject(place.rest)) return false;
+	return (
+		name.startsWith("tmp_") ||
+		parts.some((part) => part.startsWith("incoming-")) ||
+		(parts[1] === "pack" && name.endsWith(".keep"))
+	);
+}

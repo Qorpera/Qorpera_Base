@@ -147,7 +147,10 @@ test("the folder program runs its own step in the pinned Rust image", () => {
 	assert.ok(!names(["packages/object-gateway/src/cli.ts"]).includes("folder-program"));
 	const command = STEPS.find((step) => step.name === "folder-program").commands.join(" ");
 	assert.match(command, /rust:1\.95\.0-slim-bookworm@sha256:[0-9a-f]{64} sh -c 'cargo test --locked && cargo build/);
-	assert.match(command, /node:24\.21\.0-bookworm-slim@sha256:[0-9a-f]{64} sh -c 'node \.\.\/\.\.\/scripts\/folder-program-artifact\.mjs --check \/out\/qorpera-folder && node .* test\/folder-mount-e2e\.test\.ts'/);
+	assert.match(command, /node:24\.21\.0-bookworm-slim@sha256:[0-9a-f]{64} sh -c 'node \.\.\/\.\.\/scripts\/folder-program-artifact\.mjs --check \/out\/qorpera-folder && node .* test\/folder-mount-e2e\.test\.ts test\/folder-git-e2e\.test\.ts'/);
+	// The runs with real git use the pinned git, built once per test machine and checked against its digest.
+	assert.match(command, /git-2\.56\.0\.tar\.xz && echo "[0-9a-f]{64}  git\.tar\.xz" \| sha256sum -c -/);
+	assert.match(command, /-e QORPERA_GIT_BIN=\/git\/2\.56\.0\/bin\/git .*-v qorpera-git-2\.56\.0:\/git:ro/);
 	// A changed build record is checked against a build of today's source.
 	assert.ok(names(["deploy/folder-service/folder-program-linux-x64.json"]).includes("folder-program"));
 	assert.match(command, /--device \/dev\/fuse/);

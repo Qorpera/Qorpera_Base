@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import { COMPANY_STATE_SEEDED_PATHS } from "@qorpera/cloud-client/company-state-files";
+import { gitRefused, gitSharedPath, gitUnpublished } from "./git.ts";
 import { ErrorCode, ProtocolError, type WireEntry } from "./protocol.ts";
 import { byteOrder, nameOf, parentOf, type TreeEntry, type ViewTree, wireEntry } from "./view-tree.ts";
 
@@ -110,9 +111,10 @@ export function neverPublished(name: string): boolean {
 	);
 }
 
-/** A path in a place never published: a lock, swap, backup or trash name, or inside a trash folder. */
+/** A path in a place never published: a lock, swap, backup or trash name, or inside a trash folder; in a git
+ * directory, what git has not finished, and its shared files, which only their lease publishes (git.ts). */
 export function unpublished(path: string): boolean {
-	return path.split("/").some(neverPublished);
+	return path.split("/").some(neverPublished) || gitUnpublished(path) || gitSharedPath(path);
 }
 
 const SEEDED = new Set<string>(COMPANY_STATE_SEEDED_PATHS);
@@ -145,13 +147,14 @@ function fail(code: ErrorCode, message: string): never {
 }
 
 /** A new name the folder accepts: the Company File's path rules (`EINVAL`), and not a reserved path (`EPERM`). */
-function checkNewPath(path: string): void {
+function checkNewPath(path: string, codeHost: boolean): void {
 	try {
 		parseCloudCompanyPath(path);
 	} catch {
 		fail(ErrorCode.badRequest, "The folder does not accept this name");
 	}
 	if (reserved(folderKey(path))) fail(ErrorCode.notPermitted, "This name is reserved");
+	if (gitRefused(path, codeHost)) fail(ErrorCode.notPermitted, "Git keeps this file on the machine, or refuses it");
 }
 
 /** Seeded paths, a lone `agent.md` or `group.md`, and agent and group folders may not go, or go elsewhere (§2,
@@ -200,11 +203,14 @@ export class PendingView {
 	 * handle goes back to. Writes no close fixed are not in it. */
 	readonly #fixed = new WeakMap<PendingFile, Pick<PendingFile, "content" | "version" | "staged" | "executable">>();
 	#nextHandle = 1;
+	readonly #codeHost: boolean;
 
-	constructor(live: () => ViewTree, seq: () => number, now: () => number = Date.now) {
+	/** `codeHost`: the code host's view, which writes git's session-local files too (git.ts `gitRefused`). */
+	constructor(live: () => ViewTree, seq: () => number, now: () => number = Date.now, codeHost = false) {
 		this.#live = live;
 		this.#seq = seq;
 		this.#now = now;
+		this.#codeHost = codeHost;
 	}
 
 	/** The service atomically moves this overlay, including open handles, onto a successor desktop's live tree. */
@@ -697,7 +703,7 @@ export class PendingView {
 		if (!parent) fail(ErrorCode.notFound, "No such folder");
 		if ((parent.kind === "live" ? parent.entry.kind : parent.node.kind) !== "folder")
 			fail(ErrorCode.notAFolder, "Not a folder");
-		checkNewPath(path);
+		checkNewPath(path, this.#codeHost);
 		const key = folderKey(nameOf(path));
 		const names = new Set<string>(this.#children.get(parentOf(path)) ?? []);
 		if (parent.source !== null) for (const name of this.#live().names(parent.source)) names.add(name);
@@ -830,6 +836,33 @@ export class PendingView {
 	settle(keep: ReadonlySet<string>): void {
 		for (const path of [...this.#nodes.keys()]) if (!keep.has(path)) this.#unset(path);
 		this.#removed.clear();
+	}
+
+	/** After a git publish (git.ts): the view shows the live files again where `made` names the version it published,
+	 * unless the file changed or opened since. A new folder above them (an objects folder git made) shows live again
+	 * too once the core has it and nothing in it is pending: else it would hide what was published into it. */
+	settlePaths(made: ReadonlyMap<string, string>): void {
+		for (const [path, version] of made) {
+			const node = this.#nodes.get(path);
+			if (node?.kind === "file" && node.version === version && node.open === 0) this.#unset(path);
+		}
+		for (const path of made.keys())
+			for (let p = parentOf(path); p !== ""; p = parentOf(p)) {
+				const node = this.#nodes.get(p);
+				if (node?.kind !== "folder" || node.origin || this.#children.has(p)) break;
+				if (this.#live().get(p)?.kind !== "folder") break;
+				this.#unset(p);
+			}
+	}
+
+	/** Before a git lock is taken (git.ts): what the view holds of the files the lock guards goes, so git reads them as
+	 * the core has them. A file still open stays. */
+	drop(paths: readonly string[]): void {
+		for (const path of paths) {
+			const node = this.#nodes.get(path);
+			if (node?.kind === "gone" || (node?.kind === "file" && node.open === 0)) this.#unset(path);
+			if (node?.kind !== "file" || node.open === 0) this.#removed.delete(path);
+		}
 	}
 
 	/** Forgets everything (the view closed). Open handles stay valid but detached. */

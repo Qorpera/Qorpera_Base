@@ -65,6 +65,9 @@ pub struct HelloOk {
 	pub read_only: bool,
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub switchable: bool,
+	/// A company's code host: it publishes git's session-local files like any other, so none goes in `--local-dir`.
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub code_host: bool,
 }
 
 /// The first frame from the bridge on the node: the peer's CID as the node's kernel reported it, and the

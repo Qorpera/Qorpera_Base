@@ -789,7 +789,7 @@ mod tests {
 						write_frame(&mut s, kind::ERROR, &serde_json::to_vec(&e).unwrap()).unwrap();
 						return;
 					}
-					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 7, read_only: true, switchable: false };
+					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 7, read_only: true, switchable: false, code_host: false };
 					write_frame(&mut s, kind::HELLO_OK, &serde_json::to_vec(&ok).unwrap()).unwrap();
 					for _ in 0..drop_after {
 						let Ok((k, body)) = read_frame(&mut s) else { return };
@@ -855,7 +855,7 @@ mod tests {
 					std::thread::spawn(move || {
 						let (_, body) = read_frame(&mut s).unwrap();
 						let hello: Hello = serde_json::from_slice(&body).unwrap();
-						let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: false };
+						let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: false, code_host: false };
 						write_frame(&mut s, kind::HELLO_OK, &json(&ok)).unwrap();
 						let mut taken = 0;
 						while let Ok((kind, body)) = read_frame(&mut s) {
@@ -911,7 +911,7 @@ mod tests {
 					let (_, body) = read_frame(&mut s).unwrap();
 					let hello: Hello = serde_json::from_slice(&body).unwrap();
 					seen.lock().unwrap().push((hello.role, hello.abandon));
-					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: true };
+					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: true, code_host: false };
 					write_frame(&mut s, kind::HELLO_OK, &json(&ok)).unwrap();
 					while let Ok((k, _)) = read_frame(&mut s) {
 						assert_eq!(k, kind::MKDIR);
@@ -1016,7 +1016,7 @@ mod tests {
 					let (_, body) = read_frame(&mut s).unwrap();
 					let hello: Hello = serde_json::from_slice(&body).unwrap();
 					assert_eq!(hello.protocol, PROTOCOL);
-					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: false };
+					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: false, code_host: false };
 					write_frame(&mut s, kind::HELLO_OK, &serde_json::to_vec(&ok).unwrap()).unwrap();
 					let done = |s: &mut std::os::unix::net::UnixStream, body: &str| write_frame(s, kind::DONE, body.as_bytes()).unwrap();
 					while let Ok((k, body)) = read_frame(&mut s) {
@@ -1092,7 +1092,7 @@ mod tests {
 				std::thread::spawn(move || {
 					let (_, body) = read_frame(&mut s).unwrap();
 					let hello: Hello = serde_json::from_slice(&body).unwrap();
-					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: false };
+					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: false, code_host: false };
 					write_frame(&mut s, kind::HELLO_OK, &serde_json::to_vec(&ok).unwrap()).unwrap();
 					while let Ok((k, body)) = read_frame(&mut s) {
 						let mut offset = 0;
@@ -1146,7 +1146,7 @@ mod tests {
 					std::thread::spawn(move || {
 						let Ok((_, body)) = read_frame(&mut s) else { return };
 						let hello: Hello = serde_json::from_slice(&body).unwrap();
-						let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: false };
+						let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: false, code_host: false };
 						write_frame(&mut s, kind::HELLO_OK, &serde_json::to_vec(&ok).unwrap()).unwrap();
 						while let Ok((k, body)) = read_frame(&mut s) {
 							assert_eq!(k, kind::MKDIR);
@@ -1219,7 +1219,7 @@ mod tests {
 				std::thread::spawn(move || {
 					let (_, body) = read_frame(&mut s).unwrap();
 					let hello: Hello = serde_json::from_slice(&body).unwrap();
-					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: false };
+					let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: false, code_host: false };
 					write_frame(&mut s, kind::HELLO_OK, &serde_json::to_vec(&ok).unwrap()).unwrap();
 					while let Ok((k, _)) = read_frame(&mut s) {
 						std::thread::sleep(delay);
@@ -1339,7 +1339,7 @@ mod tests {
 						let (_, bytes) = read_frame(&mut stream).unwrap();
 						let hello: Hello = serde_json::from_slice(&bytes).unwrap();
 						let old = hello.view_id == "first";
-						let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: true };
+						let ok = HelloOk { protocol: PROTOCOL, view_id: hello.view_id, as_of_seq: 1, read_only: false, switchable: true, code_host: false };
 						write_frame(&mut stream, kind::HELLO_OK, &json(&ok)).unwrap();
 						while let Ok((request, _)) = read_frame(&mut stream) {
 							assert_eq!(request, kind::READ);
