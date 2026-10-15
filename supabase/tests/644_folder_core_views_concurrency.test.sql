@@ -157,7 +157,7 @@ create function pg_temp.vactor(p_name text) returns jsonb language sql as $$
 	from (select current_setting('qorpera_test.' || p_name)::jsonb v) x
 $$;
 -- Keeps a view's 120 s lease fresh before each race. One folder service renews them all (a coding session's view needs
--- one, 20260930396000).
+-- one, 20260930446000).
 create function pg_temp.renew(p_name text) returns void language plpgsql as $$
 declare v jsonb := current_setting('qorpera_test.' || p_name)::jsonb; r jsonb;
 begin

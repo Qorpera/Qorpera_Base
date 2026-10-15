@@ -1,5 +1,5 @@
 -- @fixture 639_folder_core_views.test.sql until "-- A run box: opened by its run"
--- The folder service that serves a view, and the code host's view (20260930396000; F3 step 5a:
+-- The folder service that serves a view, and the code host's view (20260930446000; F3 step 5a:
 -- deploy/first-node/RUNTIME-FOLDER-CODING-MACHINES.md, "The folder service"). A coding or code host view is renewed by
 -- the service that serves it: the first renewal names it (served_by), a renewal from another service closes the view as
 -- 'service_crashed', and a clean stop lets go of the service's views, which stay open. The code host's view is opened
@@ -14,15 +14,15 @@ begin
 	select string_agg(f.sig, ', ') into v_lost from (values
 			('qorpera_folder_view_renew(uuid,text,timestamptz,uuid)', '20260930104000'),
 			('qorpera_folder_view_open(uuid,jsonb,text,jsonb)', '20260930183000'),
-			('qorpera_folder_view_valid(public.qorpera_folder_views)', '20260930396000'),
-			('qorpera_folder_view_resolve(uuid,uuid,jsonb)', '20260930396000'),
-			('qorpera_folder_actor_allowed(uuid,uuid,jsonb,text,text)', '20260930396000'),
-			('qorpera_folder_actor_keys_allowed(uuid,uuid,jsonb,text,text[],text)', '20260930396000'),
-			('qorpera_folder_paths_authority(uuid,uuid,jsonb,text[])', '20260930396000'),
-			('qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)', '20260930395000'),
-			('qorpera_folder_record_view_release(uuid,uuid,jsonb,uuid,jsonb,text,text)', '20260930395000'),
-			('qorpera_folder_run_inherit_view_reads(uuid,jsonb,uuid,uuid)', '20260930396000')) f(sig, earlier)
-		where strpos(pg_get_functiondef(('public.' || f.sig)::regprocedure), '20260930396000') = 0
+			('qorpera_folder_view_valid(public.qorpera_folder_views)', '20260930446000'),
+			('qorpera_folder_view_resolve(uuid,uuid,jsonb)', '20260930446000'),
+			('qorpera_folder_actor_allowed(uuid,uuid,jsonb,text,text)', '20260930446000'),
+			('qorpera_folder_actor_keys_allowed(uuid,uuid,jsonb,text,text[],text)', '20260930446000'),
+			('qorpera_folder_paths_authority(uuid,uuid,jsonb,text[])', '20260930446000'),
+			('qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)', '20260930445000'),
+			('qorpera_folder_record_view_release(uuid,uuid,jsonb,uuid,jsonb,text,text)', '20260930445000'),
+			('qorpera_folder_run_inherit_view_reads(uuid,jsonb,uuid,uuid)', '20260930446000')) f(sig, earlier)
+		where strpos(pg_get_functiondef(('public.' || f.sig)::regprocedure), '20260930446000') = 0
 			or strpos(pg_get_functiondef(('public.' || f.sig)::regprocedure), f.earlier) = 0;
 	if v_lost is not null then raise exception 'Lost a marker: %', v_lost; end if;
 	if has_function_privilege('authenticated', 'public.qorpera_folder_service_stopped(uuid)', 'EXECUTE')

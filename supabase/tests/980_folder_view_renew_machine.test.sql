@@ -3,14 +3,14 @@
 -- deploy/first-node/RUNTIME-FOLDER-COMPANY-MACHINES.md). The open answer carries the view's kind and machine_id: the
 -- allocation of the office's activation for a desktop, the coding machine's allocation for a coding session, null for
 -- a run box. The closed answer is unchanged, and so is what renew checks and sets. The office, screen and helpers are
--- 639's. Since 20260930396000 the answer also names the company, and a coding session's coding machine (null for every
+-- 639's. Since 20260930446000 the answer also names the company, and a coding session's coding machine (null for every
 -- other kind); a coding session's renewal names its folder service (487 covers the service).
 
--- Renew carries this migration's marker (and 20260930396000's) and is still the service's alone.
+-- Renew carries this migration's marker (and 20260930446000's) and is still the service's alone.
 do $$
 declare v_definition text := pg_get_functiondef('public.qorpera_folder_view_renew(uuid,text,timestamptz,uuid)'::regprocedure);
 begin
-	if strpos(v_definition, '20260930104000') = 0 or strpos(v_definition, '20260930396000') = 0 then
+	if strpos(v_definition, '20260930104000') = 0 or strpos(v_definition, '20260930446000') = 0 then
 		raise exception 'renew has lost a marker'; end if;
 	if has_function_privilege('authenticated', 'public.qorpera_folder_view_renew(uuid,text,timestamptz,uuid)', 'EXECUTE')
 		or has_function_privilege('anon', 'public.qorpera_folder_view_renew(uuid,text,timestamptz,uuid)', 'EXECUTE')
