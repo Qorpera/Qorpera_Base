@@ -6,6 +6,7 @@ import {
 	parseInteractionAnswerInput,
 	parseInteractionRequest,
 } from "./interactions.ts";
+import { type InterfaceChange, parseInterfaceChange } from "./interface-changes.ts";
 import { type MessageQuote, parseQuotes } from "./quotes.ts";
 import { SESSION_IMAGE_TYPES } from "./session-attachments.ts";
 import type { HostedSessionEvent, HostedStaffSpeaker, JsonValue, PendingSessionInput } from "./types.ts";
@@ -90,6 +91,15 @@ export interface TranscriptNote {
 	createdAt: string;
 }
 
+/** An agent's change to the company's interfaces or tables, saved without review: one line with Undo (Interfaces I10). */
+export interface TranscriptInterfaceChange {
+	kind: "interface_change";
+	id: string;
+	sequence: number;
+	change: InterfaceChange;
+	createdAt: string;
+}
+
 /** A typed card the agent raised, with the member's answer once there is one
  * (queued or written). An answer whose card is not in the loaded window is dropped. */
 export interface TranscriptInteraction {
@@ -109,6 +119,7 @@ export type TranscriptItem =
 	| TranscriptCard
 	| TranscriptPeerLink
 	| TranscriptNote
+	| TranscriptInterfaceChange
 	| TranscriptInteraction;
 
 export interface TranscriptProjection {
@@ -390,6 +401,17 @@ export function projectTranscript(
 						text: info.text.slice(0, 512),
 						createdAt: event.createdAt,
 					});
+				else {
+					const change = parseInterfaceChange(info);
+					if (change)
+						items.push({
+							kind: "interface_change",
+							id: event.eventId,
+							sequence: event.sequence,
+							change,
+							createdAt: event.createdAt,
+						});
+				}
 			} else hiddenCount++;
 			continue;
 		}

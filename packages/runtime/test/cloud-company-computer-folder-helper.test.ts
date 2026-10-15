@@ -629,6 +629,11 @@ describe("the folder helper's machine", () => {
 		expect(lines).toContain(
 			`ExecStart=${COMPANY_COMPUTER_FOLDER_PROGRAM} mount --view-file ${template(at.view)} --mountpoint ${template(at.mountpoint)} --state-dir ${template(at.state)} --allow-other yes --owner-uid @OFFICE_UID@ --owner-gid @OFFICE_GID@`,
 		);
+		// Before each start too: a kill of the whole cgroup kills the stop-post umount with it (Q3, #1084).
+		expect(lines.indexOf(`ExecStartPre=-/usr/bin/umount -l ${template(at.mountpoint)}`)).toBeGreaterThan(-1);
+		expect(lines.indexOf(`ExecStartPre=-/usr/bin/umount -l ${template(at.mountpoint)}`)).toBeLessThan(
+			lines.findIndex((line) => line.startsWith("ExecStart=")),
+		);
 		expect(lines).toContain(`ExecStopPost=-/usr/bin/umount -l ${template(at.mountpoint)}`);
 		expect(lines).toContain("RestartPreventExitStatus=3");
 		expect(lines).toContain("DeviceAllow=/dev/fuse rw");

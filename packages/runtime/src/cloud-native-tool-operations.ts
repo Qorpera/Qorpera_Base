@@ -13,7 +13,7 @@ import {
 	type CloudToolRefusal,
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
-import type { BeginCloudRunnerOperationInput, CompleteCloudRunnerOperationInput } from "./cloud-runner-broker.ts";
+import type { BeginCloudRunnerOperationInput } from "./cloud-runner-broker.ts";
 import {
 	CloudRuntimeDiagnosticError,
 	type CloudRuntimeObservationSpan,
@@ -118,7 +118,7 @@ export interface CloudNativeToolOperationControlPlane {
 	): Promise<unknown>;
 	completeToolOperation(
 		binding: CloudNativeToolBinding,
-		input: CompleteCloudRunnerOperationInput,
+		input: CompleteToolOperationInput,
 		signal: AbortSignal,
 	): Promise<unknown>;
 	/** A folder-v2 writer's completion, naming the folder commit that carried its receipt
@@ -129,6 +129,13 @@ export interface CloudNativeToolOperationControlPlane {
 		input: CompleteFolderToolOperationInput,
 		signal: AbortSignal,
 	): Promise<unknown>;
+}
+
+/** A completion that names no folder commit: folder-v2 refuses a snapshot or a proposal there. */
+export interface CompleteToolOperationInput {
+	receiptId: string;
+	inputSha256: string;
+	result: JsonValue;
 }
 
 export interface CompleteFolderToolOperationInput {
@@ -151,8 +158,6 @@ export interface CloudNativeToolOperation {
 
 export interface CloudNativeToolOperationOutput {
 	content: CloudToolContent;
-	outputSnapshotId?: string;
-	proposalId?: string;
 	/** The folder commit that carried this operation's receipt (a folder-v2 writer), whatever its units' outcomes. */
 	folderCommitId?: string;
 	/** That commit parked the change for a member's review instead of saving it. */
@@ -400,16 +405,13 @@ export class CloudNativeToolOperations {
 				// An effect may have happened even if this or completion fails. Its executing receipt remains a fence.
 				signal.throwIfAborted();
 				const content = record(output.content);
-				const revisions = [output.outputSnapshotId, output.proposalId, output.folderCommitId].filter(
-					(value) => value !== undefined,
-				);
 				if (
 					Object.keys(content).sort().join() !== "kind,value" ||
 					(content.kind !== "text" && content.kind !== "json") ||
 					(content.kind === "text" && typeof content.value !== "string") ||
-					revisions.some((value) => typeof value !== "string" || !UUID.test(value)) ||
-					revisions.length > 1 ||
-					(operation.requiresCompanyRevision && revisions.length === 0) ||
+					(output.folderCommitId !== undefined &&
+						(typeof output.folderCommitId !== "string" || !UUID.test(output.folderCommitId))) ||
+					(operation.requiresCompanyRevision && output.folderCommitId === undefined) ||
 					(output.folderCommitId !== undefined &&
 						(!operation.requiresCompanyRevision || !this.#control.completeFolderToolOperation)) ||
 					(output.proposed !== undefined && (output.proposed !== true || output.folderCommitId === undefined))
@@ -418,7 +420,6 @@ export class CloudNativeToolOperations {
 				const storedResult = JSON.parse(
 					cloudToolJsonText({ schema: RESULT_SCHEMA, inputSha256: digest, content }, 48 * 1024),
 				) as JsonValue;
-				const { outputSnapshotId, proposalId } = output;
 				// SQL echoes the commit id in lower case; send and compare it that way.
 				const folderCommitId =
 					output.folderCommitId === undefined ? undefined : parseUuid(output.folderCommitId, "Folder commit id");
@@ -434,13 +435,7 @@ export class CloudNativeToolOperations {
 									)
 								: this.#control.completeToolOperation(
 										this.#run.binding,
-										{
-											receiptId,
-											inputSha256: digest,
-											result: storedResult,
-											...(outputSnapshotId ? { outputSnapshotId } : {}),
-											...(proposalId ? { proposalId } : {}),
-										},
+										{ receiptId, inputSha256: digest, result: storedResult },
 										requestSignal,
 									),
 						signal,
@@ -465,7 +460,7 @@ export class CloudNativeToolOperations {
 					content: structuredClone(record(storedResult).content) as CloudToolContent,
 					receiptId: completed.receipt_id,
 					// The canonical completion confirms the submitted, run-owned revision/proposal link.
-					outcome: proposalId || output.proposed ? "proposed" : "succeeded",
+					outcome: output.proposed ? "proposed" : "succeeded",
 					...(output.proposed ? { parked: true as const } : {}),
 				};
 			});

@@ -26,8 +26,9 @@ export class CloudCompanyPathRpcMissing extends CloudRuntimeDiagnosticError {
 	}
 }
 
-/** Only the Company File gateway promotes a transaction refusal at its initial
- * admission, before it stages objects or attempts a commit.
+/** Only a notebook or skill write (CloudFolderNotebooks) raises this: the folder
+ * core denied the change, or an update_skill deletion is outside the agent's own
+ * skills or has no approval to record, refused before any receipt.
  * Never infer this brand from an HTTP status, diagnostic category or raw text. */
 export class CloudCompanyPathToolRefusal extends CloudRuntimeDiagnosticError {
 	constructor() {
@@ -44,12 +45,10 @@ export class CloudCompanyPathRpcPrecondition extends CloudRuntimeDiagnosticError
 	}
 }
 
-/** Only the Company File gateway promotes a precondition refusal of its own
- * check, prepare or commit. Each of those transactions replays a completed
- * operation key before it tests the expected version (or another precondition
- * on the path's current state), and a refusal rolls it back whole: the path is
- * not as the caller last saw it and this mutation wrote nothing (contract 5.2:
- * a typed stale-version result). Never infer this brand from any other RPC or text. */
+/** Only a notebook or skill write (CloudFolderNotebooks) raises this, for a
+ * folder commit that answered a conflict: the path is not as the caller last saw
+ * it and this change wrote nothing (contract 5.2: a typed stale-version result).
+ * Never infer this brand from any other RPC or text. */
 export class CloudCompanyPathVersionChanged extends CloudRuntimeDiagnosticError {
 	constructor() {
 		super("stale_version", "Company File path version changed");
@@ -65,10 +64,8 @@ export class CloudCompanyPathRpcParentMissing extends CloudRuntimeDiagnosticErro
 	}
 }
 
-/** Only the Company File gateway's mutate() promotes a missing-folder refusal
- * of its own check, prepare or commit (each runs the same check, which a
- * refusal rolls back whole), or finds the plan's own folder missing from the
- * entries prepare listed, before its commit. The gateway never invents parent
+/** Only a notebook or skill write (CloudFolderNotebooks) raises this, for a
+ * folder commit refused as parent_missing. The folder core never invents parent
  * folders: this write or mkdir changed nothing, and succeeds once the folder
  * exists. Never infer this brand from any other RPC or text. */
 export class CloudCompanyPathParentMissing extends CloudRuntimeDiagnosticError {
