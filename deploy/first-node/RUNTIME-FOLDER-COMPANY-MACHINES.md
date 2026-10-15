@@ -303,9 +303,12 @@ takes a third (amended 15 October 2026):
   namespace for a networked command, then `chroot`s into the shell's root through `/proc/<shell>/root`. It makes a
   mount namespace, and a network namespace for an offline command, both owned by the initial user namespace, so the
   office account can neither change them nor bring `lo` down. It brings an offline command's `lo` up and binds the
-  command's mount at `/company` with fd-based mounts (`open_tree`, `move_mount`, `openat2` with `RESOLVE_IN_ROOT` and
-  `RESOLVE_NO_SYMLINKS`), because the tree belongs to the office account. Before it runs the command it closes every
-  fd but the command's stdio (`close_range`), drops to the office account with exactly the shell's capability sets
+  command's mount at `/company` with fd-based mounts (`open_tree`, `move_mount`), because the tree belongs to the
+  office account. It finds the mount point from the shell's root one name at a time with `O_PATH | O_NOFOLLOW |
+  O_DIRECTORY` and no `..`, as `openat2` with `RESOLVE_IN_ROOT | RESOLVE_NO_SYMLINKS` would: the helper unit keeps
+  `RestrictSUIDSGID`, whose filter answers `openat2` with `ENOSYS`, because a command inherits it as the office's own
+  commands do. Before it runs the command it closes every fd but the command's stdio (`close_range`), drops to the
+  office account with exactly the shell's capability sets
   (bounding, effective, permitted, inheritable and ambient, read from `/proc/<shell>/status`), sets
   no-new-privileges, and adds a filter that refuses `clone3` and new user namespaces and leaves the office's address
   families only. So widening the helper unit never widens what a command gets (the unit says why it holds each

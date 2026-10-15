@@ -47,15 +47,13 @@ CLONE_NEWNS = 0x00020000
 CLONE_NEWUSER = 0x10000000
 CLONE_NEWNET = 0x40000000
 NR = {"socket": 41, "clone": 56, "unshare": 272, "setns": 308, "seccomp": 317, "open_tree": 428, "move_mount": 429,
-      "clone3": 435, "close_range": 436, "openat2": 437, "mount_setattr": 442}
+      "clone3": 435, "close_range": 436, "mount_setattr": 442}
 OPEN_TREE_CLONE = 1
 AT_FDCWD = -100
 AT_EMPTY_PATH = 0x1000
 AT_RECURSIVE = 0x8000
 MOVE_MOUNT_F_EMPTY_PATH = 0x04
 MOVE_MOUNT_T_EMPTY_PATH = 0x40
-RESOLVE_NO_SYMLINKS = 0x04
-RESOLVE_IN_ROOT = 0x10
 MS_REC = 0x4000
 MS_PRIVATE = 0x40000
 MS_SLAVE = 0x80000
@@ -678,6 +676,25 @@ def lo_up():
         fcntl.ioctl(sock.fileno(), SIOCSIFFLAGS, struct.pack("16sH22x", b"lo", flags | IFF_UP))
 
 
+def open_in_root(path, root="/"):
+    """An O_PATH fd on a directory under the (chrooted) root, resolved one name at a time: no link followed, no `..`.
+    This is what openat2 with RESOLVE_IN_ROOT | RESOLVE_NO_SYMLINKS would do, but the helper unit's RestrictSUIDSGID
+    filter answers openat2 with ENOSYS (it can't see openat2's mode), and the helper keeps that filter because a command
+    inherits it, as the office's own commands do."""
+    names = path.strip("/").split("/")
+    assert all(name not in ("", ".", "..") for name in names), path
+    fd = os.open(root, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for name in names:
+            # O_NOFOLLOW with O_PATH opens a link itself, which O_DIRECTORY then refuses (ENOTDIR).
+            fd, parent = os.open(name, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd), fd
+            os.close(parent)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def run_b(networked, tree_fd, root_fd, writer, office_uid, office_gid, shell_caps, before):
     """B: in the shell's pid namespace (A's setns applies to its children), still root in the initial user namespace."""
     os.fchdir(root_fd)
@@ -692,13 +709,11 @@ def run_b(networked, tree_fd, root_fd, writer, office_uid, office_gid, shell_cap
         lo_up()
     # The shell's root belongs to the office account: resolve the target without following a link and without leaving
     # the root, then attach the pinned tree to it by fd. The attached copy only receives the helper's remounts.
-    root = os.open("/", os.O_PATH | os.O_DIRECTORY)
-    how = struct.pack("QQQ", os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC, 0, RESOLVE_IN_ROOT | RESOLVE_NO_SYMLINKS)
-    target = syscall("openat2", root, COMPANY_PARENT.lstrip("/").encode(), how, ctypes.c_size_t(len(how)))
+    target = open_in_root(COMPANY_PARENT)
     syscall("move_mount", tree_fd, b"", target, b"", MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH)
     attr = struct.pack("QQQQ", 0, 0, MS_SLAVE, 0)
     syscall("mount_setattr", tree_fd, b"", AT_EMPTY_PATH | AT_RECURSIVE, attr, ctypes.c_size_t(len(attr)))
-    for fd in (tree_fd, target, root):
+    for fd in (tree_fd, target):
         os.close(fd)
     # Only stdio and the report pipe stay open, and the pipe closes before exec.
     if writer > 3:
@@ -1043,6 +1058,26 @@ def selftest():
     assert propagation(mountinfo, "/run/x") == []
     assert propagation(mountinfo, "/run/x/company") == ["master:42", "propagate_from:40"]
     assert propagation(mountinfo, "/run/y") is None
+
+    # The mount point's walk: a link or a missing name is refused, and so is any empty, `.` or `..` name. O_PATH is
+    # Linux's, where the proof runs; elsewhere only the names are checked.
+    with tempfile.TemporaryDirectory() as root:
+        os.makedirs(f"{root}/run/qorpera-company/company")
+        os.symlink("qorpera-company", f"{root}/run/linked")
+        if hasattr(os, "O_PATH"):
+            os.close(open_in_root("/run/qorpera-company", root))
+            for bad, code in (("/run/linked", errno.ENOTDIR), ("/run/missing", errno.ENOENT)):
+                try:
+                    os.close(open_in_root(bad, root))
+                    raise AssertionError(f"{bad} opened")
+                except OSError as error:
+                    assert error.errno == code, (bad, error)
+        for bad in ("/run/../etc", "/run//x", "/run/./x", "/"):
+            try:
+                open_in_root(bad, root)
+                raise AssertionError(f"{bad} opened")
+            except AssertionError as error:
+                assert str(error) == bad, error
 
     for mode in ("offline", "networked"):
         record = synthetic_record(mode)
