@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { type CloudCodingRepository, parseCloudCodingRepository } from "@qorpera/contracts";
+import { type CloudCodingRepository, isUuid, parseCloudCodingRepository } from "@qorpera/contracts";
 
 /** The code host's jobs (5e, RUNTIME-FOLDER-CODING-MACHINES.md "The code host"): every git command that must not run as
  * a member's root. Each job runs in the company's code host VM, through its `code_host` view of `/company` (code/
@@ -70,7 +70,6 @@ export class CodeHostJobFailure extends Error {
 	}
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const ZERO = "0".repeat(40);
 const MiB = 1024 ** 2;
@@ -157,8 +156,8 @@ function sha(value: unknown): string {
 	if (typeof value !== "string" || !SHA.test(value)) throw new Error("INVALID_CODE_HOST_JOB");
 	return value;
 }
-function uuid(value: unknown): string {
-	if (typeof value !== "string" || !UUID.test(value)) throw new Error("INVALID_CODE_HOST_JOB");
+function workerIdOf(value: unknown): string {
+	if (!isUuid(value)) throw new Error("INVALID_CODE_HOST_JOB");
 	return value;
 }
 function closed<T extends string>(value: unknown, keys: readonly T[]): Record<T, unknown> {
@@ -685,7 +684,7 @@ export interface CodeWorktreeAdded {
 export async function addCodeWorktree(job: CodeHostJob, value: CodeWorktree): Promise<CodeWorktreeAdded> {
 	const input = closed(value, ["repository", "workerId", "baseSha"]);
 	const repository = repositoryOf(input.repository),
-		workerId = uuid(input.workerId),
+		workerId = workerIdOf(input.workerId),
 		baseSha = sha(input.baseSha);
 	const branch = `qorpera/coding/${workerId}`;
 	return withJob(job, repository, async (run) => {
@@ -738,7 +737,7 @@ export async function exportCodeBranch(
 ): Promise<{ headSha: string; bundle: Buffer }> {
 	const input = closed(value, ["repository", "workerId", "branch"]);
 	const repository = repositoryOf(input.repository),
-		workerId = uuid(input.workerId);
+		workerId = workerIdOf(input.workerId);
 	if (!Number.isSafeInteger(options?.maximumBytes) || options.maximumBytes < 1)
 		throw new Error("INVALID_CODE_HOST_JOB");
 	if (input.branch !== `qorpera/coding/${workerId}`)
