@@ -30,6 +30,7 @@ import { CodingMachineUnavailable } from "./coding-executor.ts";
 import { type CodingBrokerGitRunner, pushCloudCodingBundle } from "./coding-git.ts";
 import { fetchCloudCodingSeed, resolveCloudCodingBase } from "./coding-git-seed.ts";
 import { LxdCodingGitTransfer } from "./coding-git-transfer.ts";
+import { CodingHostLeases } from "./coding-host-lease.ts";
 import { LxdCodingLeaseTransport } from "./coding-lease-transport.ts";
 import {
 	assertLxdCodingMachineInstance,
@@ -137,6 +138,9 @@ export interface LxdCodingExecutorHostOptions {
 	keepDeadlineMs?: number;
 	/** The node's agent plug (default: its plug tool, deploy/agent-exit). */
 	agentPlug?: AgentPlug;
+	/** The leases that let this node's member machines run, read by the host
+	 * watchdog (default: /run/qorpera-coding-host). */
+	hostLeases?: CodingHostLeases;
 }
 /** A session this process hot-plugged into its member's machine during a turn,
  * before the turn recorded its attachment in SQL: a failure until then
@@ -317,6 +321,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	readonly #options: LxdCodingExecutorHostOptions;
 	readonly #storage: CodingNasStorage;
 	readonly #placement: CodingMachineStorage;
+	readonly #hostLeases: CodingHostLeases;
 	#storageWork: Promise<unknown> = Promise.resolve();
 	readonly #machineWork = new Map<string, Promise<unknown>>();
 	readonly #prepared = new Map<string, Prepared>();
@@ -366,6 +371,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		this.#storage = createCodingNasStorage(storagePolicy);
 		if (options.journalRoot !== this.#storage.controlPath) throw new Error("CODING_HOST_JOURNAL_NOT_ON_NAS");
 		this.#placement = Object.freeze({ policy: storagePolicy, machineIdSha256: options.machineIdSha256 });
+		this.#hostLeases = options.hostLeases ?? new CodingHostLeases();
 		this.#options = {
 			...options,
 			storagePolicy,
@@ -906,6 +912,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const journal = lxdCodingMachineJournalPlan(machine, this.#placement);
 		const bootId = await this.#exclusive(machine.machineId, signal, async () => {
 			await this.#run(claim, machine, storage, signal, true);
+			// SQL reserves it on this node now: its lease comes before its start, and the keeper renews it.
+			await this.#hostLeases.renew(journal);
 			const authorize = async (checked: AbortSignal) => this.#run(claim, machine, storage, checked);
 			await this.#reconcile(
 				journal,
@@ -1436,7 +1444,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (after && assertLxdCodingMachineInstance(machine, this.#placement, after).length) throw new Error(unconfirmed);
 	}
 
-	/** One keeper pass over this executor's awake machines that carry attached
+	/** One keeper pass: first the host lease of every member machine SQL reserves
+	 * on this node, then this executor's awake machines that carry attached
 	 * sessions: observe what runs inside, renew each session's attachment in SQL
 	 * with that observation, and renew its guest lease under the renewed deadline.
 	 * The machines are kept side by side, each within its own deadline, and the
@@ -1452,9 +1461,38 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			signal,
 		);
 		if (!Array.isArray(listed)) throw new Error("CODING_HOST_MACHINE_LIST_INVALID");
-		const entries = listed
+		const reserved = listed
 			.map((value) => this.#listed(value))
-			.filter((entry) => entry.kind === "member" && entry.reserved && entry.instanceSha256 && entry.attached.length);
+			.filter((entry) => entry.kind === "member" && entry.reserved && entry.instanceSha256);
+		// Every member machine SQL still reserves on this node may run another 90 seconds, attached or not: the
+		// host watchdog stops the rest. A lease that cannot be written is that machine's failure.
+		const unplanned: CodingKeepOutcome[] = [],
+			holders: CodingMachineJournalPlan[] = [];
+		for (const entry of reserved)
+			try {
+				holders.push(this.#journal(entry).journal);
+			} catch (error) {
+				unplanned.push({
+					machineId: entry.machineId,
+					workerId: null,
+					step: "keep",
+					state: "failed",
+					code: errorCodeOf(error),
+				});
+			}
+		const held = (await this.#hostLeases.hold(holders)).map(
+			({ machineId, error }): CodingKeepOutcome => ({
+				machineId,
+				workerId: null,
+				step: "keep",
+				state: "failed",
+				code: errorCodeOf(error),
+			}),
+		);
+		// A machine with no plan would fail its sessions' keep the same way: it is reported once.
+		const entries = reserved.filter(
+			(entry) => entry.attached.length && !unplanned.some(({ machineId }) => machineId === entry.machineId),
+		);
 		const kept = new Set(entries.flatMap((entry) => entry.attached.map(({ workerId }) => workerId)));
 		const outcomes = (
 			await Promise.all(
@@ -1490,7 +1528,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			}
 		const released = this.#released;
 		this.#released = [];
-		return [...released, ...outcomes];
+		return [...released, ...unplanned, ...held, ...outcomes];
 	}
 	/** Waits for every take-off the keeper started, and returns the outcomes no
 	 * pass has reported yet. */
@@ -2069,13 +2107,16 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// Stopped from outside: each attachment ends as MACHINE_STOPPED, so the SLEEP records below find none.
 			member ? (start, checked) => this.#recordMachineStopped(member, start, checked) : undefined,
 		);
-		if (state === "stopped" && member)
+		if (state === "stopped" && member) {
+			// Stopped, it needs no lease; one left behind lapses all the same.
+			await this.#hostLeases.drop(journal).catch(() => undefined);
 			await this.#unplugStopped(
 				member,
 				(checked) => this.#custody(journal, text, "stop", checked),
 				"CODING_MACHINE_SLEEP_DETACH_UNCONFIRMED",
 				budget,
 			);
+		}
 		const slept = record(
 			await this.#call(
 				"qorpera_suspend_coding_machine",
@@ -2159,6 +2200,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			member ? (start, checked) => this.#recordMachineStopped(member, start, checked) : undefined,
 		);
 		if (state !== "deleted" && state !== "absent") throw new Error("CODING_HOST_VM_RECOVERY_REQUIRED");
+		if (entry.kind === "member") await this.#hostLeases.drop(journal).catch(() => undefined);
 		await release(text);
 	}
 	async #recordError(

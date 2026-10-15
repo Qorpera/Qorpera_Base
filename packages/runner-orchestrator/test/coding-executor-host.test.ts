@@ -1,14 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cloudCodingSessionLayout, parseCloudCodingNasPolicy } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodingMachineUnavailable, type CodingSessionClaim, type CodingTurnState } from "../src/coding-executor.ts";
 import { codingHostId, LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../src/coding-executor-host.ts";
+import { CodingHostLeases, judgeCodingHostLease } from "../src/coding-host-lease.ts";
 import {
 	type CodingMachineReconcileOptions,
 	type LxdCodingMachineBinding,
+	lxdCodingMachineName,
 	lxdCodingMachinePlan,
 	lxdCodingSessionDevices,
 	lxdCodingSessionStorage,
@@ -111,6 +113,14 @@ async function fixture() {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "coding-host-")));
 	roots.push(root);
 	await mkdir(join(root, "control"), { mode: 0o700 });
+	// The node's host leases, on the node's own clock.
+	const hostRoot = join(root, "host"),
+		hostClock = { bootId: randomUUID(), uptimeMs: 7_200_000 };
+	await mkdir(hostRoot, { mode: 0o700 });
+	const hostLeases = new CodingHostLeases({
+		root: hostRoot,
+		clock: { bootId: async () => hostClock.bootId, uptimeMs: async () => hostClock.uptimeMs },
+	});
 	const repository = { host: "github.com" as const, owner: "Qorpera", name: "app", baseBranch: "main" };
 	const profileId = randomUUID(),
 		environmentId = randomUUID(),
@@ -539,6 +549,7 @@ async function fixture() {
 			withRepositoryToken: vi.fn(async (_scope, _repository, use) => use("test-token-never-sent-to-guest")),
 		},
 		agentPlug: testAgentPlug,
+		hostLeases,
 	};
 	const host = new LxdCodingExecutorHost(options),
 		signal = new AbortController().signal;
@@ -603,6 +614,15 @@ async function fixture() {
 		entry,
 		signal,
 		submission,
+		hostRoot,
+		hostClock,
+		/** What the host watchdog would judge the machine's lease now. */
+		hostLease: (machineId = machine.machineId) =>
+			judgeCodingHostLease(lxdCodingMachineName(machineId), vmPolicy.project, {
+				root: hostRoot,
+				bootId: hostClock.bootId,
+				nowMs: hostClock.uptimeMs,
+			}),
 		baseSha,
 		pullRequest,
 		scope: (of: CodingSessionClaim = claim) => ({
@@ -1906,6 +1926,94 @@ describe("a session between its turns", () => {
 	});
 });
 
+describe("the host lease of a member's machine", () => {
+	it("is written before the machine starts and renewed by each pass while SQL reserves it here, attached or not", async () => {
+		const f = await fixture();
+		const reconcile = mocked.reconcile.getMockImplementation()!;
+		const leased: string[] = [];
+		mocked.reconcile.mockImplementation(async (input: CodingMachineReconcileOptions) => {
+			leased.push(`${input.desiredState}: ${await f.hostLease()}`);
+			return reconcile(input);
+		});
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(leased).toEqual(["running: live"]);
+		f.host.endTurn(f.claim);
+		const unattached = randomUUID(),
+			asleep = randomUUID();
+		f.state.listed = [
+			f.entry(),
+			f.entry({ machineId: unattached, binding: { ...f.machine, machineId: unattached }, attached: [] }),
+			f.entry({
+				machineId: asleep,
+				binding: { ...f.machine, machineId: asleep },
+				attached: [],
+				reserved: false,
+				asleepSince: new Date().toISOString(),
+			}),
+		];
+		f.hostClock.uptimeMs += 89_999;
+		expect(await f.hostLease()).toBe("live");
+		f.hostClock.uptimeMs += 1;
+		expect(await f.hostLease()).toBe("lapsed");
+		expect(await f.host.keep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+		]);
+		expect(await f.hostLease()).toBe("live");
+		expect(await f.hostLease(unattached)).toBe("live");
+		// Asleep, it holds no capacity here and may not run.
+		expect(await f.hostLease(asleep)).toBe("missing");
+		const name = lxdCodingMachineName(f.machine.machineId);
+		expect(JSON.parse(await readFile(join(f.hostRoot, `${name}.json`), "utf8"))).toEqual({
+			schema: "qorpera.coding-host-lease/v1",
+			project: "coding",
+			name,
+			machineId: f.machine.machineId,
+			bootId: f.hostClock.bootId,
+			renewedAtBootMs: f.hostClock.uptimeMs,
+			expiresAtBootMs: f.hostClock.uptimeMs + 90_000,
+		});
+		// SQL no longer lists them: no renewal, and the next pass after they lapse removes them.
+		f.state.listed = [];
+		f.hostClock.uptimeMs += 90_000;
+		expect(await f.host.keep(f.signal)).toEqual([]);
+		expect(await readdir(f.hostRoot)).toEqual([]);
+	});
+	it("starts no machine whose lease cannot be written", async () => {
+		const f = await fixture();
+		await chmod(f.hostRoot, 0o755);
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow(
+			"CODING_HOST_LEASE_ROOT_UNPROTECTED",
+		);
+		expect(reconciled()).toEqual([]);
+		expect(f.lxd.running).toBe(false);
+	});
+	it("reports each machine whose lease a pass cannot write, and still keeps its sessions", async () => {
+		const f = await fixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		f.state.listed = [f.entry()];
+		await chmod(f.hostRoot, 0o755);
+		expect(await f.host.keep(f.signal)).toEqual([
+			{
+				machineId: f.machine.machineId,
+				workerId: null,
+				step: "keep",
+				state: "failed",
+				code: "CODING_HOST_LEASE_ROOT_UNPROTECTED",
+			},
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+		]);
+		await chmod(f.hostRoot, 0o700);
+		// A listed machine its binding does not name gets no lease, and its failure is reported once.
+		const stray = randomUUID();
+		f.state.listed = [f.entry({ machineId: stray })];
+		expect(await f.host.keep(f.signal)).toEqual([
+			{ machineId: stray, workerId: null, step: "keep", state: "failed", code: "CODING_HOST_MACHINE_LIST_INVALID" },
+		]);
+		expect(await f.hostLease(stray)).toBe("missing");
+	});
+});
+
 describe("housekeeping of a member's machines", () => {
 	async function awake(f: Fixture) {
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
@@ -1974,6 +2082,25 @@ describe("housekeeping of a member's machines", () => {
 			},
 		]);
 		expect(f.calls("qorpera_record_coding_machine_error")).toEqual([]);
+	});
+	it("drops the machine's host lease once it is stopped, and once it is deleted", async () => {
+		const f = await fixture();
+		await awake(f);
+		expect(await f.hostLease()).toBe("live");
+		f.state.observed.set(f.claim.workerId, { cpuUsageUsec: 0, running: [] });
+		f.state.listed = [f.entry({ sleepDue: true })];
+		expect(await f.host.housekeep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, step: "sleep", state: "done" },
+		]);
+		expect(await f.hostLease()).toBe("missing");
+		// One a keeper pass wrote while it stopped goes with its delete.
+		await f.options.hostLeases?.renew({ project: "coding", machineId: f.machine.machineId });
+		f.state.listed = [f.entry({ removeDue: true, reserved: false, asleepSince: new Date().toISOString() })];
+		expect(await f.host.housekeep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, step: "delete", state: "done" },
+		]);
+		expect(f.lxd.exists).toBe(false);
+		expect(await f.hostLease()).toBe("missing");
 	});
 	it("still powers off when the quiesce fails or the agent is gone, and skips it for a stopped machine", async () => {
 		const f = await fixture();
