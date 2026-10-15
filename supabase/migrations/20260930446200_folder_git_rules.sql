@@ -1,4 +1,4 @@
--- 20260930396200: step 5b, part 2 of 4: git's rules in the folder's commit (deploy/first-node/RUNTIME-FOLDER-CODING-
+-- 20260930446200: step 5b, part 2 of 4: git's rules in the folder's commit (deploy/first-node/RUNTIME-FOLDER-CODING-
 -- MACHINES.md, "Code areas and git"; RUNTIME-COMPANY-FOLDER.md §6 "Git on the mount" and §7 item 9, as amended there).
 -- A repository is code/<owner>/<name>/: repo.git/ (bare), main/ (the default branch) and worktrees/<workerId>/.
 -- 1. qorpera_folder_git_refusal: the rule a key breaks. The platform, a code host's view included, has none. A member
@@ -15,7 +15,7 @@
 -- 3. Under repo.git, a write of an object onto its own bytes and a mkdir onto a folder are saved as they stand, with no
 --    change (git writes what it already has). An object with other bytes is refused for all but the platform
 --    ('git_object_delete'). A conflict there keeps no conflict copy.
--- Every patched body names this migration (20260930396200), and every earlier marker in it stays.
+-- Every patched body names this migration (20260930446200), and every earlier marker in it stays.
 
 set local lock_timeout = '3s';
 
@@ -41,8 +41,9 @@ returns boolean language sql immutable set search_path = '' as $$
 		|| '|pack/pack-[0-9a-f]{40}([0-9a-f]{24})?\.(pack|idx|rev|bitmap|mtimes|promisor))$'), false)
 $$;
 
--- The git rule a key breaks, or null. p_op is what happens at the key: 'write' (a file), 'mkdir', 'delete' (a file),
--- 'rmdir', or 'move' (a key a move, copy or new folder produces, carried whole). p_class is 'platform', 'member' or
+-- The git rule a key breaks, or null. p_op is what happens at the key: 'write' (a file), 'symlink' (a link, 20260930380000),
+-- 'mkdir', 'delete' (a file or a link), 'rmdir', or 'move' (a key a move, copy or new folder produces, carried whole). A
+-- link is a file's write, but git writes none under repo.git: there it is the platform's. p_class is 'platform', 'member' or
 -- 'session'; p_worker is a coding view's worker (keys are case-folded, as a uuid's text is).
 create function public.qorpera_folder_git_refusal(p_key text, p_op text, p_class text, p_worker uuid)
 returns text language plpgsql immutable set search_path = '' as $$
@@ -55,7 +56,7 @@ begin
 		return case when v_n >= 5 and p_class = 'session' and v_part[5] is distinct from p_worker::text then 'git_other_worker' end;
 	end if;
 	if v_part[4] <> 'repo.git' then return null; end if;
-	if v_n = 4 or p_op = 'move' then return 'git_platform_only'; end if;
+	if v_n = 4 or p_op in ('move','symlink') then return 'git_platform_only'; end if;
 	v_rest := array_to_string(v_part[5:v_n], '/');
 	if v_rest ~ '^(logs/)?refs/stash(/|$)' then return 'git_stash'; end if;
 	if v_rest ~ '^objects/pack/[^/]*\.keep$' then return 'git_keep_file'; end if;
@@ -90,7 +91,7 @@ create function public.qorpera_folder_git_unit_refusal(p_environment_id uuid, p_
 returns text language sql stable security definer set search_path = '' as $$
 	select k.reason from (
 		select p_key as key, public.qorpera_folder_git_refusal(p_key, p_unit ->> 'op', p_class, p_worker) as reason
-		where p_unit ->> 'op' in ('write','mkdir')
+		where p_unit ->> 'op' in ('write','symlink','mkdir')
 		union all
 		select e.key_text, public.qorpera_folder_git_refusal(e.key_text,
 			case when e.kind = 'folder' then 'rmdir' else 'delete' end, p_class, p_worker)
@@ -123,7 +124,7 @@ $$;
 select pg_temp.s5b_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)', array[
 	$old$v_view_agent boolean := false; v_turn_run uuid;$old$,
 	$new$v_view_agent boolean := false; v_turn_run uuid;
-	v_git_class text; v_git_worker uuid; v_unchanged boolean; -- 20260930396200$new$,
+	v_git_class text; v_git_worker uuid; v_unchanged boolean; -- 20260930446200$new$,
 	$old$	else
 		v_hook_actor := p_actor;
 	end if;
@@ -132,7 +133,7 @@ select pg_temp.s5b_patch('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uui
 	$new$	else
 		v_hook_actor := p_actor;
 	end if;
-	-- 20260930396200 (step 5b): who git's rules see (qorpera_folder_git_refusal). The platform and a code host's view
+	-- 20260930446200 (step 5b): who git's rules see (qorpera_folder_git_refusal). The platform and a code host's view
 	-- have none; a member restores; every other actor is a session, and only a coding view names its worker.
 	v_git_class := case when v_actor_kind = 'platform' or v_view.kind = 'code_host' then 'platform'
 		when v_actor_kind = 'member' then 'member' else 'session' end;
@@ -145,7 +146,7 @@ $old$,
 	$new$			v_ok := false; v_reason := 'reserved';
 		end if;
 
-		-- 20260930396200 (step 5b): git's rules in code areas, on every key the unit removes or produces.
+		-- 20260930446200 (step 5b): git's rules in code areas, on every key the unit removes or produces.
 		if v_ok and v_git_class <> 'platform'
 			and (split_part(v_key, '/', 1) = 'code' or split_part(coalesce(v_to_key, ''), '/', 1) = 'code') then
 			v_reason := public.qorpera_folder_git_unit_refusal(p_environment_id, v_unit, v_key, v_to_key, v_git_class, v_git_worker);
@@ -154,7 +155,7 @@ $old$,
 $new$,
 	$old$		if v_ok and v_op = 'write' then
 			if v_unit ? 'expectedVersion'$old$,
-	$new$		-- 20260930396200 (step 5b): under repo.git, an object written onto its own bytes and a mkdir onto a folder are
+	$new$		-- 20260930446200 (step 5b): under repo.git, an object written onto its own bytes and a mkdir onto a folder are
 		-- saved as they stand, with no change (git writes what it already has). An object with other bytes is refused
 		-- for all but the platform.
 		v_unchanged := false;
@@ -176,12 +177,12 @@ $new$,
 	$old$		if v_ok then
 			v_version := public.qorpera_folder_apply_unit($old$,
 	$new$		if v_ok and v_unchanged then
-			v_version := v_row.version; -- 20260930396200: saved as it stands
+			v_version := v_row.version; -- 20260930446200: saved as it stands
 		elsif v_ok then
 			v_version := public.qorpera_folder_apply_unit($new$,
-	$old$		if not v_ok and v_op in ('write','new_folder') and v_reason in ('version_changed','exists','unseen_change','missing') then$old$,
-	$new$		if not v_ok and v_op in ('write','new_folder') and v_reason in ('version_changed','exists','unseen_change','missing')
-			and v_key !~ '^code/[^/]+/[^/]+/repo\.git(/|$)' then -- 20260930396200: none under repo.git$new$
+	$old$		if not v_ok and v_op in ('write','new_folder','symlink') and v_reason in ('version_changed','exists','unseen_change','missing') then$old$,
+	$new$		if not v_ok and v_op in ('write','new_folder','symlink') and v_reason in ('version_changed','exists','unseen_change','missing')
+			and v_key !~ '^code/[^/]+/[^/]+/repo\.git(/|$)' then -- 20260930446200: none under repo.git$new$
 ]);
 
 -- Grants ----------------------------------------------------------------------------------------------------------------

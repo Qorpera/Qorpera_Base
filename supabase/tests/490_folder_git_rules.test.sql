@@ -1,5 +1,5 @@
 -- @fixture 487_folder_view_served_by_code_host.test.sql until "-- A coding session's view: renewed only with a service."
--- git's rules in the folder's commit (20260930396200; F3 step 5b: deploy/first-node/RUNTIME-FOLDER-CODING-MACHINES.md,
+-- git's rules in the folder's commit (20260930446200; F3 step 5b: deploy/first-node/RUNTIME-FOLDER-CODING-MACHINES.md,
 -- "Code areas and git"). Under code/<owner>/<name>/, a coding session writes its own worktree and git's objects, and a
 -- ref only through a lease; main/ and the rest of repo.git are the platform's. A member restores; the platform and a code
 -- host's view have no rule. Under repo.git an object written onto its own bytes and a folder that is there are saved as
@@ -9,7 +9,7 @@
 do $$
 declare v_def text := pg_get_functiondef('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)'::regprocedure);
 begin
-	if strpos(v_def, '20260930396200') = 0 or strpos(v_def, '20260930396000') = 0 or strpos(v_def, '20260930395000') = 0 then
+	if strpos(v_def, '20260930446200') = 0 or strpos(v_def, '20260930446000') = 0 or strpos(v_def, '20260930445000') = 0 then
 		raise exception 'The commit lost a marker'; end if;
 	if exists (select 1 from unnest(array['anon','authenticated','service_role']) r(role)
 		cross join unnest(array['public.qorpera_folder_git_object(text)', 'public.qorpera_folder_git_refusal(text,text,text,uuid)',
@@ -36,6 +36,11 @@ begin
 		(d || 'worktrees/' || x || '/a', 'write', 'session', true, 'git_other_worker'),
 		(d || 'worktrees/' || x || '/a', 'write', 'member', true, null),
 		(d || 'worktrees/' || w || '/a', 'write', 'session', false, 'git_other_worker'),
+		(d || 'worktrees/' || w || '/link', 'symlink', 'session', true, null),
+		(d || 'worktrees/' || x || '/link', 'symlink', 'session', true, 'git_other_worker'),
+		(g || 'refs/heads/link', 'symlink', 'session', true, 'git_platform_only'),
+		(g || 'refs/heads/link', 'symlink', 'member', true, 'git_platform_only'),
+		(g || 'refs/heads/link', 'symlink', 'platform', true, null),
 		(d || 'notes.md', 'write', 'session', true, null),
 		('code/acme/app', 'rmdir', 'session', true, null),
 		('code/acme', 'move', 'session', true, null),
@@ -134,8 +139,8 @@ begin
 		raise exception 'Setup: %', r; end if;
 end $$;
 
--- A coding session writes its own worktree (its .git file too), git's objects and packs, refs' folders, its own admin
--- files under repo.git/worktrees/, and code areas git does not own.
+-- A coding session writes its own worktree (its .git file and links too), git's objects and packs, refs' folders, its
+-- own admin files under repo.git/worktrees/, and code areas git does not own.
 do $$
 declare cv jsonb := pg_temp.cv(1); w1 text := pg_temp.wk(1); d text := 'code/acme/app/'; g text := 'code/acme/app/repo.git/';
 	a jsonb := pg_temp.stage('git-alpha'); b jsonb := pg_temp.stage('git-beta'); r jsonb;
@@ -150,12 +155,14 @@ begin
 		jsonb_build_object('op','write','path',g || 'objects/pack/pack-' || repeat('e', 40) || '.pack','file',b),
 		jsonb_build_object('op','mkdir','path',g || 'refs/heads/qorpera'),
 		jsonb_build_object('op','write','path',g || 'worktrees/' || w1 || '/HEAD','file',a),
-		jsonb_build_object('op','write','path',d || 'notes.md','file',a)));
-	for i in 1..9 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+		jsonb_build_object('op','write','path',d || 'notes.md','file',a),
+		jsonb_build_object('op','symlink','path',d || 'worktrees/' || w1 || '/src/link','target','a.txt')));
+	for i in 1..10 loop perform pg_temp.expect(r, i, 'saved'); end loop;
 end $$;
 
 -- What it may not do: main/, other workers' worktrees and admin files, main/'s admin files, refs without a lease, the
--- stash, a pack's keep file, removing an object, git's other files, and anything moved, copied or made whole into repo.git.
+-- stash, a pack's keep file, removing an object, git's other files, and anything moved, copied, made whole or linked into
+-- repo.git.
 -- A move's source is removed, as a delete's is, and a unit that removes a folder is held to every key below it.
 do $$
 declare cv jsonb := pg_temp.cv(1); w1 text := pg_temp.wk(1); w2 text := pg_temp.wk(2); d text := 'code/acme/app/';
@@ -187,12 +194,14 @@ begin
 			'expectedVersion',pg_temp.ver(g || 'objects/ab/' || repeat('d', 38))),
 		jsonb_build_object('op','new_folder','path',g || 'info','contents','[]'::jsonb),
 		jsonb_build_object('op','delete','path','code/acme/app','expectedVersion',pg_temp.ver('code/acme/app')),
-		jsonb_build_object('op','delete','path',d || 'worktrees','expectedVersion',pg_temp.ver(d || 'worktrees'))));
+		jsonb_build_object('op','delete','path',d || 'worktrees','expectedVersion',pg_temp.ver(d || 'worktrees')),
+		jsonb_build_object('op','symlink','path',g || 'refs/heads/link','target','main'),
+		jsonb_build_object('op','symlink','path',d || 'worktrees/' || w2 || '/link','target','x')));
 	perform pg_temp.refused(r, array['git_platform_only', 'git_other_worker', 'git_other_worker', 'git_platform_only',
 		'git_platform_only', 'git_lease_required', 'git_lease_required', 'git_lease_required', 'git_stash', 'git_keep_file',
 		'git_platform_only', 'git_platform_only', 'git_platform_only', 'git_platform_only', 'git_object_delete',
 		'git_object_delete', 'git_object_delete', 'git_platform_only', 'git_platform_only', 'git_object_delete',
-		'git_platform_only', 'git_platform_only', 'git_other_worker']);
+		'git_platform_only', 'git_platform_only', 'git_other_worker', 'git_platform_only', 'git_other_worker']);
 	if r -> 'seq' <> 'null'::jsonb then raise exception 'A refused commit took a seq: %', r; end if;
 end $$;
 
