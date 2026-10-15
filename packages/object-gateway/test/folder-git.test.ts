@@ -14,7 +14,13 @@ import {
 } from "../src/folder-service/git.ts";
 import type { Transport } from "../src/folder-service/https-request.ts";
 import { NasObjects } from "../src/folder-service/objects.ts";
-import { type BridgeInfo, type Hello, ProtocolError } from "../src/folder-service/protocol.ts";
+import {
+	type BridgeInfo,
+	type CoreReceipt,
+	type Hello,
+	ProtocolError,
+	type ReadLogEntry,
+} from "../src/folder-service/protocol.ts";
 import { FolderService, type ViewHandle } from "../src/folder-service/service.ts";
 import { FolderStaging } from "../src/folder-service/staging.ts";
 import {
@@ -256,6 +262,15 @@ const MAIN_LOG = `${R}/logs/refs/heads/main`;
 const TOPIC = `${R}/refs/heads/topic`;
 const TOPIC_LOG = `${R}/logs/refs/heads/topic`;
 const OBJECT = `${R}/objects/ab/cdef01`;
+const LOG = "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d";
+const receipt = (n: number): CoreReceipt => ({
+	resourceId: v(60),
+	resourceRevision: n,
+	grantId: v(61),
+	grantRevision: 1,
+});
+/** A read of `main` the machine logged, as its read log hands it over. */
+const readOfMain = (seq: number): ReadLogEntry => ({ seq, path: MAIN, version: v(101), authority: receipt(1) });
 
 /** A code area's git directory with two branches, two shell commands' views on it (two sessions, as the core opens
  * them), and the node's service. */
@@ -435,6 +450,20 @@ describe("the lock protocol in the folder service", () => {
 		]);
 	});
 
+	it("shows a ref published in a new ref folder once the view catches up", async () => {
+		const { core, service, open } = await repo();
+		const view = await open("first");
+		const feature = `${R}/refs/heads/feature`;
+		await view.mkdir(feature);
+		await write(view, `${feature}/foo.lock`, "3333\n", true);
+		await view.rename({ from: `${feature}/foo.lock`, to: `${feature}/foo`, noReplace: false });
+		expect(core.entries.get(`${feature}/foo`)?.fileSha256).toBe(hashOf("3333\n"));
+		await service.poll();
+		await service.settled();
+		const listed = (await view.list(feature, undefined)).entries;
+		expect(listed.map((e) => [e.name, e.version])).toEqual([["foo", core.entries.get(`${feature}/foo`)?.version]]);
+	});
+
 	it("publishes the code host's config and hooks as plain files at its boundary, and no session's", async () => {
 		const { core, open, openAs } = await repo(codeHostGrants());
 		core.openView(CODE_HOST.viewId, CODE_HOST.pass, { kind: "code_host", machineId: null });
@@ -500,6 +529,52 @@ describe("the lock protocol in the folder service", () => {
 		expect(core.gitLeases.size).toBe(0);
 		expect(await names(view, `${R}/refs/heads`)).toEqual(["main"]);
 		expect(await names(view, `${R}/logs/refs/heads`)).toEqual(["main"]);
+	});
+
+	it("releases the machine's reads before a branch's deletion is published", async () => {
+		const { core, open } = await repo();
+		const view = await open("first");
+		await view.reads({ log: LOG, reads: [readOfMain(1)], lost: false });
+		await write(view, `${TOPIC}.lock`, "", true);
+		await view.unlink(TOPIC, undefined);
+		await view.unlink(TOPIC_LOG, undefined);
+		expect(core.releases).toEqual([]);
+		await view.unlink(`${TOPIC}.lock`, undefined);
+		expect(core.releases.map((r) => r.reads.map((read) => read.path))).toEqual([[MAIN]]);
+		expect(core.gitPublishes).toMatchObject([{ published: true }]);
+		expect(core.entries.has(TOPIC)).toBe(false);
+	});
+
+	it("publishes no git change when the core refuses the machine's reads", async () => {
+		const { core, open } = await repo();
+		const view = await open("first");
+		await view.reads({ log: LOG, reads: [readOfMain(1)], lost: false });
+		core.releaseRefusal = "denied";
+		await write(view, `${MAIN}.lock`, "3333\n", true);
+		await refused(view.rename({ from: `${MAIN}.lock`, to: MAIN, noReplace: false }), "DENIED");
+		await write(view, `${TOPIC}.lock`, "", true);
+		await view.unlink(TOPIC, undefined);
+		await refused(view.unlink(`${TOPIC}.lock`, undefined), "DENIED");
+		expect(core.gitPublishes).toEqual([]);
+		expect(core.entries.get(MAIN)?.fileSha256).toBe(hashOf("1111\n"));
+		expect(core.entries.has(TOPIC)).toBe(true);
+	});
+
+	it("publishes no git change once the machine lost its read log, but still gives an unused lease back", async () => {
+		const { core, open } = await repo();
+		const view = await open("first");
+		await view.reads({ log: LOG, reads: [readOfMain(1)], lost: true });
+		await write(view, `${MAIN}.lock`, "3333\n", true);
+		await refused(view.rename({ from: `${MAIN}.lock`, to: MAIN, noReplace: false }), "DENIED");
+		await view.unlink(`${MAIN}.lock`, undefined);
+		expect(core.gitLeases.has(MAIN)).toBe(false);
+		await write(view, `${TOPIC}.lock`, "", true);
+		await view.unlink(TOPIC, undefined);
+		await view.unlink(TOPIC_LOG, undefined);
+		await refused(view.unlink(`${TOPIC}.lock`, undefined), "DENIED");
+		expect(core.gitPublishes).toEqual([]);
+		expect(core.releases).toEqual([]);
+		expect(core.entries.has(TOPIC)).toBe(true);
 	});
 
 	it("drops the leases of a git killed midway when its view publishes final, and never publishes a lock", async () => {

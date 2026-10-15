@@ -1345,7 +1345,7 @@ pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 	};
 	let local = match (options.local.take().or_else(|| options.state.as_ref().map(|s| s.join("local"))), writable) {
 		(Some(dir), true) => Some(
-			Local::open(&dir, &ok.view_id, owner)
+			Local::open(&dir, &ok.view_id, owner, options.state.as_ref().map(|s| s.join(crate::cache::MOVING)))
 				.map_err(|e| Failed::Other(format!("the local folder {}: {e}", dir.display())))?,
 		),
 		_ => None,
@@ -1429,6 +1429,19 @@ pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 			}
 		})
 	};
+	if shared.local.is_some() {
+		// Cache folders git came to track whose move into the folder did not finish (`mount/on_disk.rs`).
+		let shared = shared.clone();
+		let watching = watching.clone();
+		std::thread::spawn(move || {
+			while watching.load(Ordering::SeqCst) {
+				std::thread::sleep(Duration::from_secs(5));
+				if let Some(local) = shared.local.as_ref() {
+					shared.move_caches(local, None);
+				}
+			}
+		});
+	}
 	eprintln!("qorpera-folder: mounted at {} with {} threads", options.mountpoint.display(), options.threads);
 	let why = stop_rx.recv().map_err(|_| Failed::Other("every stop channel closed".into()))?;
 	if !matches!(why, Stop::Ended(_)) {

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, readlink, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -631,16 +631,24 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 			await at.service.poll();
 			expect(await readdir(join(second.company, AREA, "worktrees/w1"))).not.toContain("node_modules");
 
-			// Once the index has it, it is the worktree's like any other folder: published at the next boundary.
+			// Once the index has it, it is the worktree's like any other folder: published at the next boundary. A link in
+			// it is not a file yet, and stays on the disk where it was.
+			await mkdir(join(first.worktree, "node_modules", ".bin"));
+			await symlink("../pkg/index.js", join(first.worktree, "node_modules", ".bin", "tool"));
 			await first.git("add", "node_modules/pkg/index.js");
 			await first.git("commit", "-q", "-m", "vendored");
 			const again = await first.publish();
 			expect(again.code, again.out).toBe(0);
-			expect(held(at.core, cached)).toEqual([cached, `${cached}/pkg`, `${cached}/pkg/index.js`]);
+			const files = [cached, `${cached}/.bin`, `${cached}/pkg`, `${cached}/pkg/index.js`];
+			expect(held(at.core, cached)).toEqual(files);
 			await at.service.poll();
 			const there = join(second.company, cached, "pkg/index.js");
 			expect(await eventually(async () => (await readFile(there, "utf8")) === "module.exports = 1;\n")).toBe(true);
-			expect(await first.git("status", "--porcelain")).toBe("");
+			expect(await readlink(join(first.worktree, "node_modules", ".bin", "tool"))).toBe("../pkg/index.js");
+			expect(await readFile(join(first.worktree, "node_modules", ".bin", "tool"), "utf8")).toBe(
+				"module.exports = 1;\n",
+			);
+			expect((await first.git("status", "--porcelain")).trim()).toBe("?? node_modules/.bin/");
 		},
 		TIMEOUT,
 	);

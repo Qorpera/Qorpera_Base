@@ -1,7 +1,7 @@
 //! qorpera-folder: the company folder inside a Qorpera machine, and the node's vsock bridge to the
 //! folder service. See README.md and deploy/first-node/RUNTIME-FOLDER-SERVICE.md.
 
-use qorpera_folder::{bridge, link, lxd, mount, proto, reads::ReadLog, relay, viewfile::{self, DaemonLock, ViewFile}};
+use qorpera_folder::{bridge, cache, link, lxd, mount, proto, reads::ReadLog, relay, viewfile::{self, DaemonLock, ViewFile}};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -240,6 +240,12 @@ fn publish(args: &[String]) -> Result<ExitCode, Usage> {
 			return Ok(print_report(&report, o.contains_key("json")));
 		}
 	};
+	if state.join(cache::MOVING).try_exists().unwrap_or(true) {
+		// The mount has cache folders git came to track still to move into the folder (cache.rs): a boundary now would
+		// leave their files out.
+		eprintln!("qorpera-folder: cache folders git now tracks are still moving into the folder; publish again shortly");
+		return Ok(ExitCode::FAILURE);
+	}
 	let report = match link::Link::new(addr, view, 1).with_reads(reads.clone()).with_view_file(store, false, abandon).publish_final(o.contains_key("final")) {
 		Ok(r) => r,
 		Err(f) if f.report.is_some() => {

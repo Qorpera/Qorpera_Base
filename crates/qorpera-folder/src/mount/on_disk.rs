@@ -197,18 +197,29 @@ impl Shared {
 	}
 
 	/// `worktree`'s index tracks `paths` now: the names under which it tracks files leave its cache list, and their
-	/// cache folders move into the folder (`move_in`).
+	/// cache folders move into the folder (`move_caches`).
 	fn indexed(&self, local: &Local, worktree: &str, paths: &[String]) {
-		let leaving = local.cache.lock().unwrap().indexed(worktree, paths);
-		for name in leaving {
-			if let Err(e) = self.move_in(local, worktree, &name) {
-				eprintln!("qorpera-folder: the {name} caches in {worktree} could not move into the folder (errno {e})");
+		local.cache.lock().unwrap().indexed(worktree, paths);
+		self.move_caches(local, Some(worktree));
+	}
+
+	/// Moves the cache folders of the names that left a worktree's list into the folder (`move_in`): `worktree`'s, or
+	/// every worktree's. A move that fails stays on the list (`cache.rs`), tried again at the worktree's next index and
+	/// every few seconds (`mount.rs`); until none is left, `qorpera-folder publish` refuses the view's boundaries.
+	pub(super) fn move_caches(&self, local: &Local, worktree: Option<&str>) {
+		let _held = local.moving.lock().unwrap();
+		let moves = local.cache.lock().unwrap().moves(worktree);
+		for (worktree, name) in moves {
+			match self.move_in(local, &worktree, &name) {
+				Ok(()) => local.cache.lock().unwrap().moved(&worktree, &name),
+				Err(e) => eprintln!("qorpera-folder: the {name} caches in {worktree} could not move into the folder yet (errno {e})"),
 			}
 		}
 	}
 
 	/// Moves `worktree`'s cache folders named `name` into the folder as files the session wrote, published at the
-	/// session's boundary: git tracks files under that name now, so they are the worktree's.
+	/// session's boundary: git tracks files under that name now, so they are the worktree's. One a move did not finish
+	/// is in the node's folder already, with what is left of it on the disk.
 	fn move_in(&self, local: &Local, worktree: &str, name: &str) -> Result<(), i32> {
 		let mut todo = vec![worktree.to_string()];
 		while let Some(dir) = todo.pop() {
@@ -222,11 +233,11 @@ impl Shared {
 				if !entry.file_type().is_ok_and(|t| t.is_dir()) {
 					continue;
 				}
-				if node.contains(&child) {
+				if child == name {
+					self.move_folder(local, &join(&dir, &child), &entry.path())?;
+				} else if node.contains(&child) {
 					// A folder of the node's with caches in it.
 					todo.push(join(&dir, &child));
-				} else if child == name {
-					self.move_folder(local, &join(&dir, &child), &entry.path())?;
 				}
 			}
 			self.tree.lock().unwrap().invalidate([dir.as_str()]);
@@ -234,24 +245,32 @@ impl Shared {
 		Ok(())
 	}
 
+	/// Each file leaves the disk once it is in the folder, and each folder once it is empty: what stays is what has not
+	/// moved yet, and what cannot (links wait for the folder's own), seen in the folder's place as a cache's are.
 	fn move_folder(&self, local: &Local, path: &str, disk: &Path) -> Result<(), i32> {
 		let made = |p: &str| match self.link.mkdir(p) {
 			Err(f) if f.errno() != libc::EEXIST => Err(f.errno()),
 			_ => Ok(()),
 		};
 		made(path)?;
-		for (rel, meta) in local.walk(disk).map_err(local::errno)? {
-			let to = join(path, &rel);
+		let walked = local.walk(disk).map_err(local::errno)?;
+		for (rel, meta) in &walked {
+			let to = join(path, rel);
 			if meta.is_dir() {
 				made(&to)?;
 			} else if meta.is_file() {
-				self.write_in(&to, &disk.join(&rel), meta.permissions().mode() & 0o100 != 0)?;
+				self.write_in(&to, &disk.join(rel), meta.permissions().mode() & 0o100 != 0)?;
+				fs::remove_file(disk.join(rel)).map_err(local::errno)?;
 			} else {
-				// Links wait for the folder's own (they are not files yet).
 				eprintln!("qorpera-folder: {to} is not a file or a folder, and stays out of the folder");
 			}
 		}
-		fs::remove_dir_all(disk).map_err(local::errno)
+		// Deepest first (the walk gives a folder before what is in it); one with a link left in it stays.
+		for (rel, _) in walked.iter().rev().filter(|(_, m)| m.is_dir()) {
+			let _ = fs::remove_dir(disk.join(rel));
+		}
+		let _ = fs::remove_dir(disk);
+		Ok(())
 	}
 
 	/// Writes the disk's file `disk` to the folder's `path`, as the session's new file.

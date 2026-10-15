@@ -88,11 +88,30 @@ pub fn seeded_names(seed: &str) -> &'static [&'static str] {
 	}
 }
 
+type Names = HashMap<u64, Vec<(Up, String, Area)>>;
+
+/// `ino` is known by `name` in `up`, its latest name.
+fn known(names: &mut Names, ino: u64, up: Up, name: &str, area: Area) {
+	let all = names.entry(ino).or_default();
+	all.retain(|(u, n, _)| !(*u == up && n == name));
+	all.push((up, name.to_string(), area));
+}
+
+/// `name` in `up` no longer names `ino`.
+fn forget(names: &mut Names, ino: u64, up: &Up, name: &str) {
+	if let Some(all) = names.get_mut(&ino) {
+		all.retain(|(u, n, _)| !(u == up && n == name));
+		if all.is_empty() {
+			names.remove(&ino);
+		}
+	}
+}
+
 pub struct Local {
 	root: PathBuf,
-	/// By local inode: the folder it is in, its name, and its area. A file with more than one name (a hard link) is
-	/// known by the last one looked up.
-	names: Mutex<HashMap<u64, (Up, String, Area)>>,
+	/// By local inode: the names it is known by (the folder it is in, its name, its area), the latest last. A file with
+	/// more than one name (a hard link) is found by the latest, and by one left when that one goes.
+	names: Mutex<Names>,
 	/// The seeds done, written through to `seeded` so a program started again does not seed over the session's changes.
 	seeded: Mutex<HashSet<String>>,
 	/// Held while a seed is copied, so a second lookup waits for it rather than finding half of it.
@@ -100,12 +119,15 @@ pub struct Local {
 	handles: Mutex<HashMap<u64, File>>,
 	next_fh: AtomicU64,
 	pub cache: Mutex<CacheList>,
+	/// Held while cache folders move into the folder (`mount/on_disk.rs`), so no two move the same.
+	pub moving: Mutex<()>,
 	owner: (u32, u32),
 }
 
 impl Local {
-	/// The local folder `root` (made 0700 if missing) for view `view`, its files owned by `owner` in the mount.
-	pub fn open(root: &Path, view: &str, owner: (u32, u32)) -> io::Result<Local> {
+	/// The local folder `root` (made 0700 if missing) for view `view`, its files owned by `owner` in the mount; `marker`
+	/// is there while a cache folder git came to track has not moved into the folder (`cache.rs`).
+	pub fn open(root: &Path, view: &str, owner: (u32, u32), marker: Option<PathBuf>) -> io::Result<Local> {
 		fs::DirBuilder::new().recursive(true).mode(0o700).create(root)?;
 		let mark = root.join("view");
 		if fs::read_to_string(&mark).ok().as_deref() != Some(view) {
@@ -136,7 +158,8 @@ impl Local {
 			seeding: Mutex::new(()),
 			handles: Mutex::new(HashMap::new()),
 			next_fh: AtomicU64::new(1),
-			cache: Mutex::new(CacheList::open(&root.join("cache-left.jsonl"))?),
+			cache: Mutex::new(CacheList::open(&root.join("cache-left.jsonl"), marker)?),
+			moving: Mutex::new(()),
 			owner,
 		})
 	}
@@ -178,7 +201,7 @@ impl Local {
 
 	/// The local inode's folder, name and area.
 	pub fn name(&self, ino: u64) -> Option<(Up, String, Area)> {
-		self.names.lock().unwrap().get(&ino).cloned()
+		self.names.lock().unwrap().get(&ino).and_then(|all| all.last()).cloned()
 	}
 
 	/// The local inode's path in the folder (`up` gives the path of a mount folder above it).
@@ -218,9 +241,10 @@ impl Local {
 	/// The entry for `name` in `up`, from the disk, now known by its inode.
 	pub fn entry(&self, up: Up, name: &str, area: Area) -> Result<FileAttr, i32> {
 		let (disk, area) = self.disk_in(&up, name, area)?;
+		let mut names = self.names.lock().unwrap();
 		let meta = fs::symlink_metadata(&disk).map_err(errno)?;
-		let ino = meta.ino() | LOCAL;
-		self.names.lock().unwrap().insert(ino, (up, name.to_string(), area));
+		known(&mut names, meta.ino() | LOCAL, up, name, area);
+		drop(names);
 		Ok(self.attr(&meta))
 	}
 
@@ -267,7 +291,7 @@ impl Local {
 				continue;
 			};
 			let ino = meta.ino() | LOCAL;
-			names.insert(ino, (Up::Mount(dir.to_string()), name.clone(), area));
+			known(&mut names, ino, Up::Mount(dir.to_string()), &name, area);
 			out.push((ino, kind(&meta.file_type()), name));
 		}
 		out
@@ -283,7 +307,7 @@ impl Local {
 				continue;
 			};
 			let child = meta.ino() | LOCAL;
-			names.insert(child, (Up::Local(ino), name.clone(), area));
+			known(&mut names, child, Up::Local(ino), &name, area);
 			out.push((child, kind(&meta.file_type()), name));
 		}
 		Ok(out)
@@ -344,12 +368,20 @@ impl Local {
 
 	pub fn unlink(&self, up: &Up, name: &str, area: Area) -> Result<(), i32> {
 		let (disk, _) = self.disk_in(up, name, area)?;
-		fs::remove_file(disk).map_err(errno)
+		let mut names = self.names.lock().unwrap();
+		let ino = fs::symlink_metadata(&disk).map_err(errno)?.ino() | LOCAL;
+		fs::remove_file(disk).map_err(errno)?;
+		forget(&mut names, ino, up, name);
+		Ok(())
 	}
 
 	pub fn rmdir(&self, up: &Up, name: &str, area: Area) -> Result<(), i32> {
 		let (disk, _) = self.disk_in(up, name, area)?;
-		fs::remove_dir(disk).map_err(errno)
+		let mut names = self.names.lock().unwrap();
+		let ino = fs::symlink_metadata(&disk).map_err(errno)?.ino() | LOCAL;
+		fs::remove_dir(disk).map_err(errno)?;
+		forget(&mut names, ino, up, name);
+		Ok(())
 	}
 
 	/// Renames within one area; `exchange` swaps the two (RENAME_EXCHANGE), `no_replace` refuses an existing target.
@@ -376,6 +408,9 @@ impl Local {
 		};
 		let c = |p: &Path| std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(|_| libc::EINVAL);
 		let (source_c, target_c) = (c(&source)?, c(&target)?);
+		let mut names = self.names.lock().unwrap();
+		let ino_at = |p: &Path| fs::symlink_metadata(p).ok().map(|m| m.ino() | LOCAL);
+		let (moved, replaced) = (ino_at(&source), ino_at(&target));
 		// SAFETY: two valid C strings; renameat2 reads them only.
 		let done = unsafe {
 			libc::renameat2(libc::AT_FDCWD, source_c.as_ptr(), libc::AT_FDCWD, target_c.as_ptr(), flags)
@@ -383,15 +418,19 @@ impl Local {
 		if done != 0 {
 			return Err(io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO));
 		}
-		let mut names = self.names.lock().unwrap();
-		let moved = fs::symlink_metadata(&target).map(|m| m.ino() | LOCAL);
-		if let Ok(ino) = moved {
-			names.insert(ino, (to.0.clone(), to.1.to_string(), area));
+		if moved.is_some() && moved == replaced {
+			// Two names of one file: the rename left both.
+			return Ok(());
 		}
-		if exchange {
-			if let Ok(ino) = fs::symlink_metadata(&source).map(|m| m.ino() | LOCAL) {
-				names.insert(ino, (from.0.clone(), from.1.to_string(), area));
-			}
+		if let Some(ino) = replaced {
+			forget(&mut names, ino, to.0, to.1);
+		}
+		if let Some(ino) = moved {
+			forget(&mut names, ino, from.0, from.1);
+			known(&mut names, ino, to.0.clone(), to.1, area);
+		}
+		if let (true, Some(ino)) = (exchange, replaced) {
+			known(&mut names, ino, from.0.clone(), from.1, area);
 		}
 		Ok(())
 	}
@@ -543,7 +582,7 @@ mod tests {
 
 	fn local(tag: &str, view: &str) -> (Local, PathBuf) {
 		let dir = std::env::temp_dir().join(format!("qorpera-local-{tag}-{}", std::process::id()));
-		(Local::open(&dir, view, (1000, 1000)).unwrap(), dir)
+		(Local::open(&dir, view, (1000, 1000), None).unwrap(), dir)
 	}
 
 	#[test]
@@ -600,16 +639,49 @@ mod tests {
 	}
 
 	#[test]
+	fn a_hard_link_keeps_the_names_left() {
+		let (l, dir) = local("links", "v1");
+		let up = Up::Mount("code/o/n/worktrees/w/target".to_string());
+		let made = |name: &str| {
+			let (attr, fh) = l.create(up.clone(), name, Area::Cache, 0o644, libc::O_WRONLY).unwrap();
+			assert_eq!(l.write(fh, 0, name.as_bytes()).unwrap() as usize, name.len());
+			l.release(fh);
+			attr.ino.0
+		};
+		let a = made("a");
+		l.link(a, up.clone(), "b", Area::Cache).unwrap();
+		l.unlink(&up, "b", Area::Cache).unwrap();
+		let b = made("b");
+		assert_eq!(l.path(a).unwrap().0, "code/o/n/worktrees/w/target/a");
+		let fh = l.open_file(a, libc::O_RDONLY).unwrap();
+		assert_eq!(l.read(fh, 0, 100).unwrap(), b"a");
+		l.release(fh);
+		// A name of a file replaced by a rename.
+		l.link(a, up.clone(), "c", Area::Cache).unwrap();
+		l.rename((&up, "b"), (&up, "c"), Area::Cache, false, false).unwrap();
+		assert_eq!(l.path(a).unwrap().0, "code/o/n/worktrees/w/target/a");
+		assert_eq!(l.path(b).unwrap().0, "code/o/n/worktrees/w/target/c");
+		// Two names of one file swapped: both stay.
+		l.link(a, up.clone(), "d", Area::Cache).unwrap();
+		l.rename((&up, "a"), (&up, "d"), Area::Cache, false, false).unwrap();
+		assert!(dir.join("cache/code/o/n/worktrees/w/target/a").exists());
+		assert_eq!(l.path(a).unwrap().0, "code/o/n/worktrees/w/target/d");
+		l.unlink(&up, "d", Area::Cache).unwrap();
+		assert_eq!(l.path(a).unwrap().0, "code/o/n/worktrees/w/target/a");
+		fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
 	fn another_views_git_files_go_and_its_caches_stay() {
 		let (l, dir) = local("views", "v1");
 		l.put("code/o/n/repo.git/config", Some(b"[core]\n"), false).unwrap();
 		l.mark_seeded("code/o/n/repo.git");
 		l.mkdir(Up::Mount("code/o/n/worktrees/w".to_string()), "node_modules", Area::Cache, 0o755).unwrap();
 		drop(l);
-		let again = Local::open(&dir, "v1", (0, 0)).unwrap();
+		let again = Local::open(&dir, "v1", (0, 0), None).unwrap();
 		assert!(again.seeded("code/o/n/repo.git") && dir.join("git/code/o/n/repo.git/config").exists());
 		drop(again);
-		let other = Local::open(&dir, "v2", (0, 0)).unwrap();
+		let other = Local::open(&dir, "v2", (0, 0), None).unwrap();
 		assert!(!other.seeded("code/o/n/repo.git") && !dir.join("git/code/o/n/repo.git/config").exists());
 		assert!(dir.join("cache/code/o/n/worktrees/w/node_modules").is_dir());
 		let walked: Vec<String> =

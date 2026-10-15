@@ -1515,12 +1515,7 @@ export class FolderService {
 			);
 			made.push({ path: file.path, at: file.at, version });
 		}
-		// The reads reach the read sets before anything made from them is published (the log's rule 1).
-		const release = await this.#releaseReads(view);
-		if (release === "unanswered")
-			throw new ProtocolError(ErrorCode.busy, "The machine's reads have not got through yet");
-		if (release !== "released")
-			throw new ProtocolError(ErrorCode.denied, `The core refused the machine's reads (${release})`);
+		await this.#gitReadGate(view);
 		const key = `folder-view:${view.key}:git:${randomUUID()}`;
 		let answer: GitPublish | undefined;
 		for (let attempt = 1; !answer; attempt++)
@@ -1538,15 +1533,27 @@ export class FolderService {
 			this.#alias(view, unit.path, unit.version, outcome.version);
 			settled.set(unit.at, unit.version);
 		});
-		// The lock file is gone at once (git renamed it); what it published shows as the feed brings it.
+		// The lock file is gone at once (git renamed it); what it published shows as the feed brings it. `from` stays in
+		// the later settling: a folder made for the ref (`refs/heads/feature/` for `feature/foo`) is live only then.
 		pending.settlePaths(new Map([[from, node.version]]));
-		settled.delete(from);
 		this.#push(view, [from]);
 		if (answer.seq !== null) {
 			view.gitUnsettled.push({ seq: answer.seq, made: settled });
 			await this.#gitCatchUpTo(view, answer.seq);
 		}
 		return answer;
+	}
+
+	/** A boundary's read gate, before a git change is published: a view whose machine lost its read log publishes
+	 * nothing more, and the machine's reads reach the read sets before anything made from them (the log's rule 1). */
+	async #gitReadGate(view: View): Promise<void> {
+		if (view.unproven)
+			throw new ProtocolError(ErrorCode.denied, "The machine lost its read log, so nothing it makes is published");
+		const release = await this.#releaseReads(view);
+		if (release === "unanswered")
+			throw new ProtocolError(ErrorCode.busy, "The machine's reads have not got through yet");
+		if (release !== "released")
+			throw new ProtocolError(ErrorCode.denied, `The core refused the machine's reads (${release})`);
 	}
 
 	/** Reads the feed a few rounds until the view has change set `seq`. */
@@ -1596,12 +1603,8 @@ export class FolderService {
 				const staged = await this.#stage(view, log, reflog);
 				if (!staged) throw new ProtocolError(ErrorCode.unavailable, "The git change could not be staged now");
 				units.push({ op: "write", path: reflog, file: staged, expectedVersion: lock.versions.reflog });
-				const release = await this.#releaseReads(view);
-				if (release === "unanswered")
-					throw new ProtocolError(ErrorCode.busy, "The machine's reads have not got through yet");
-				if (release !== "released")
-					throw new ProtocolError(ErrorCode.denied, `The core refused the machine's reads (${release})`);
 			}
+			if (units.length > 0) await this.#gitReadGate(view);
 			let answer: GitPublish | null = null;
 			try {
 				answer = await this.#core.gitLeaseRelease(
