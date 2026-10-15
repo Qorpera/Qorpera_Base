@@ -670,15 +670,16 @@ function abandons(requests: { kind: number; body: unknown }[]): string[] {
 	});
 }
 
-/** Runs a tool in the mounted folder, as an agent's shell does. */
+/** Runs a tool in the mounted folder, as an agent's shell does. A shell changes into the folder after it starts: Node's
+ * spawn holds this process until the child is in its folder, and a lookup the mount asks the service for (in this
+ * process) would then wait until the program's request times out. */
 function run(
 	command: string,
 	args: string[],
 	cwd: string,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	return new Promise((resolve) => {
-		const child = spawn(command, args, {
-			cwd,
+		const child = spawn("sh", ["-c", 'cd "$0" && exec "$@"', cwd, command, ...args], {
 			stdio: ["ignore", "pipe", "pipe"],
 			env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
 		});
