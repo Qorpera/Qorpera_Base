@@ -29,12 +29,7 @@ class FakeAuthority implements ObjectGatewayAuthority {
 		bytes: number,
 		lease: string,
 	): Promise<ObjectDeletionAuthorization> {
-		if (
-			!this.allowDeletion ||
-			profile !== profileId ||
-			lease !== leaseId ||
-			this.objects.get(sha256) !== bytes
-		) {
+		if (!this.allowDeletion || profile !== profileId || lease !== leaseId || this.objects.get(sha256) !== bytes) {
 			throw new Error("invalid deletion");
 		}
 		this.authorizedDeletes.set(authorizationId, sha256);
