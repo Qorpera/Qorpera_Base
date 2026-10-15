@@ -137,13 +137,11 @@ begin
 	perform pg_temp.not_refused($q$select public.qorpera_member_company_path_command_actor('64600000-0000-4000-8000-0000000000d3', repeat('e', 64), true)$q$);
 end $$;
 
--- The office's Company File transfers, the runner broker's whole-tree lane and completion's legacy lane (by the job).
+-- The office's Company File source, the runner broker's whole-tree lane and completion's legacy lane (by the job).
 do $$
 declare b jsonb := '{"jobId":"64600000-0000-4000-8000-0000000000c1"}'; s jsonb := '{"jobId":"64600000-0000-4000-8000-0000000000c2"}';
 begin
 	perform pg_temp.refuses(format('select public.qorpera_native_office_company_file_source(%L, %L)', b, '{}'));
-	perform pg_temp.refuses(format('select public.qorpera_confirm_office_company_file_import(%L, %L, %L, %L, %L, %L)', b, '{}', '{}', '{}',
-		extensions.gen_random_uuid(), '{}'));
 	-- Since C3's runner broker lane (P23, test 829) the broker describes a folder-v2 run: no longer refused as folder-v2.
 	perform pg_temp.not_refused($q$select public.qorpera_runner_broker_describe('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
 		'64600000-0000-4000-8000-0000000000c1', repeat('a', 64))$q$);
@@ -155,8 +153,6 @@ begin
 	perform pg_temp.not_refused($q$select public.qorpera_complete_runner_job_v6('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
 		'64600000-0000-4000-8000-0000000000c2', repeat('a', 64), null, null, null, '{}')$q$);
 	perform pg_temp.not_refused(format('select public.qorpera_native_office_company_file_source(%L, %L)', s, '{}'));
-	perform pg_temp.not_refused(format('select public.qorpera_confirm_office_company_file_import(%L, %L, %L, %L, %L, %L)', s, '{}', '{}', '{}',
-		extensions.gen_random_uuid(), '{}'));
 	-- The binding check behind these refusals: a job id in any spelling uuid input accepts names the job; anything else
 	-- names none.
 	if not public.qorpera_binding_is_folder_v2(jsonb_build_object('jobId', upper(b ->> 'jobId')))

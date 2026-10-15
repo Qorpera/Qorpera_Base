@@ -98,7 +98,8 @@ before any lock. The error is 0A000, "This Company File path does not serve fold
 - **The approval and member-command actors** (`company_path_approved_actor`, `member_company_path_command_actor`)
   refuse before their company fence.
 - **The office's Company File transfers** (`native_office_company_file_source`, `confirm_office_company_file_import`):
-  the folder views replace them (C1b-3). The binding names no company, so the guard reads the run's job.
+  the folder views replace them (C1b-3). The binding names no company, so the guard reads the run's job. Legacy sweep
+  D3 (20260930332000) dropped the confirmation, with the office's file import and export.
 - **The runner broker's whole-tree lane** (`runner_broker_describe`, `runner_broker_authorize_input_object`),
   **completion's legacy lane** (`complete_runner_job_v6`) and **the runner's revision lane**
   (`runner_prepare_company_revision`, `runner_begin_`, `_append_` and `_complete_company_revision_graph`,
@@ -141,8 +142,8 @@ for each that must not be refused (the Storage policies and the bootstrap claim 
 turn: the test failed for 31 of 34. The other three (`runner_begin_company_revision_graph`, `runner_authorize_` and
 `_finalize_company_revision_verification`) call `runner_company_revision_snapshot` first, whose own guard refuses;
 they keep theirs in case that call moves. Legacy sweep D1 (20260930330000) removed the bootstrap claim's and the staff
-writers' cases with the functions, and legacy sweep D2 (20260930331000) the whole-tree lane's. `folder-v2` proposals
-are tested by 926, 927 and 937.
+writers' cases with the functions, legacy sweep D2 (20260930331000) the whole-tree lane's, and legacy sweep D3
+(20260930332000) the office import confirmation's. `folder-v2` proposals are tested by 926, 927 and 937.
 
 ## 5. C1c-2: run paths on the folder fence
 
