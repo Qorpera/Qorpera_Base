@@ -1,5 +1,5 @@
 import { createHash, randomInt } from "node:crypto";
-import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
+import { parseCloudCompanyInnerPath, parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import {
 	COMPANY_STATE_PARSER_VERSION,
 	type CompanyStateProblem,
@@ -894,9 +894,9 @@ function plan(unit: CloudCompanyFolderUnit): PlannedUnit {
 				op: "new_folder",
 				sql: { op: "new_folder", path },
 				contents: unit.contents.map((item) => {
-					const inner = parseCloudCompanyPath(item.path);
-					// SQL checks the joined path for the whole change set; a bad one is this unit's, not a defect.
-					const whole = parseCloudCompanyPath(`${path}/${inner}`);
+					// SQL checks only the joined path, for the whole change set; a bad one is this unit's, not a defect.
+					const inner = parseCloudCompanyInnerPath(path, item.path);
+					const whole = `${path}/${inner}`;
 					return item.kind === "folder" ? { path: inner } : { path: inner, file: planned(item.content, whole) };
 				}),
 			};

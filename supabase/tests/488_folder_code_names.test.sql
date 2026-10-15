@@ -76,4 +76,27 @@ begin
 		raise exception 'qorpera_company_path_valid decides by the key''s first part'; end if;
 end $$;
 
+-- A folder moved or copied out of code/ takes no name only code/ holds: that unit is refused, the change set's others save.
+do $$
+declare r jsonb;
+begin
+	r := pg_temp.commit('{"kind":"platform"}', 'n488-out-tree', '[{"op":"mkdir","path":"code/acme/src"},
+		{"op":"mkdir","path":"code/acme/src/lib"},{"op":"mkdir","path":"code/acme/src/lib/a%b"},{"op":"mkdir","path":"code/acme/dev"},
+		{"op":"mkdir","path":"code/acme/dev/x:y"},{"op":"mkdir","path":"code/acme/plain"},{"op":"mkdir","path":"code/acme/plain/lib"}]');
+	for i in 1..7 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	r := pg_temp.commit('{"kind":"platform"}', 'n488-out', '[{"op":"copy","from":"code/acme/src","to":"docs/src"},
+		{"op":"move","from":"code/acme/dev","to":"docs/dev"},{"op":"move","from":"code","to":"docs/code"},
+		{"op":"mkdir","path":"docs/kept"},{"op":"copy","from":"code/acme/plain","to":"docs/plain"},
+		{"op":"copy","from":"code/acme/src","to":"code/src"}]');
+	for i in 1..3 loop perform pg_temp.expect(r, i, 'refused', 'reserved'); end loop;
+	for i in 4..6 loop perform pg_temp.expect(r, i, 'saved'); end loop;
+	if (pg_temp.read('docs/src') ->> 'found')::boolean or (pg_temp.read('docs/dev') ->> 'found')::boolean
+		or (pg_temp.read('docs/code') ->> 'found')::boolean
+		or (pg_temp.read('code/acme/dev/x:y') ->> 'found')::boolean is not true
+		or (pg_temp.read('docs/kept') ->> 'found')::boolean is not true
+		or (pg_temp.read('docs/plain/lib') ->> 'found')::boolean is not true
+		or (pg_temp.read('code/src/lib/a%b') ->> 'found')::boolean is not true then
+		raise exception 'A folder left code/ with a name only code/ holds, or the change set''s other units did not save'; end if;
+end $$;
+
 rollback;
