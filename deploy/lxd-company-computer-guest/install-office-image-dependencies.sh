@@ -42,11 +42,14 @@ query sha256sums >"$dir/downloads.sha256"
 # The image never updates itself; the office installer masks the same units again.
 systemctl mask apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service
 mapfile -t packages < <(query packages)
-# apt orders the pushed closure itself (pre-dependencies included) and has nothing to download. A job the
-# timers started at boot, before the masks, holds the lock until it gives up offline.
+# apt orders the pushed closure itself (pre-dependencies included) and has nothing to download: debs/ is its archive
+# cache, and each deb there is already "downloaded" (apt-get download names them the way the cache does). A deb named on
+# the command line is otherwise fetched again from its own path, which --no-download refuses. A job the timers started
+# at boot, before the masks, holds the lock until it gives up offline.
 if compgen -G "$dir/debs/*.deb" >/dev/null; then
+	mkdir -p "$dir/debs/partial"
 	apt-get install --yes --no-install-recommends --no-download -o DPkg::Lock::Timeout=600 \
-		-o DPkg::Options::=--force-confold "$dir"/debs/*.deb
+		-o Dir::Cache::Archives="$dir/debs/" -o DPkg::Options::=--force-confold "$dir"/debs/*.deb
 fi
 for name in "${packages[@]}"; do
 	[[ $(dpkg-query -W -f '${db:Status-Status}' "$name" 2>/dev/null) == installed ]] || fail "$name is not installed"
