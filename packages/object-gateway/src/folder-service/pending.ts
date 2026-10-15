@@ -631,6 +631,11 @@ export class PendingView {
 			if (origin !== undefined && this.#cycle(origin, to))
 				throw new PublishFirst("moves that take each other's places");
 		}
+		// A new folder's pending nodes move with it, each to a name the folder takes there (a name only code/ holds stays
+		// in code/): all checked before anything moves.
+		const moved: [string, Node][] = [];
+		for (const [path, n] of this.#nodes) if (path !== from && within(path, from)) moved.push([path, n]);
+		for (const [path, n] of moved) if (n.kind !== "gone") checkNewPath(to + path.slice(from.length));
 		// The moving node: a pending one as it is, or one made from the live entry, at the writer's base.
 		let node: PendingFile | PendingFolder;
 		if (source.kind === "node") node = source.node;
@@ -648,9 +653,7 @@ export class PendingView {
 				mtimeMs: source.entry.mtimeMs,
 			};
 		if (target) this.#remove(target, options.toBase, true);
-		// A new folder's pending nodes move with it; then `from` is hidden if the live folder still shows something.
-		const moved: [string, Node][] = [];
-		for (const [path, n] of this.#nodes) if (path !== from && within(path, from)) moved.push([path, n]);
+		// Then `from` is hidden if the live folder still shows something.
 		for (const [path] of moved) this.#unset(path);
 		this.#unset(from);
 		this.#hide(from);
