@@ -795,7 +795,8 @@ Decisions:
   client `hosted-primary.ts`) and the seven `create_shared_session` functions open `folder-v2` conversations, and
   `ensure_staff_session` adds a kickoff input that nothing delivers (part 1's session materializer skips `folder-v2`).
   Nothing is lost, since every later input refuses. C3 and C4 refuse or deliver them. 3b's answers keep the gc fence
-  on `folder-v2` until 3b.
+  on `folder-v2` until 3b. Legacy sweep D15 (20260930414000) later dropped the seven `create_shared_session`
+  functions.
 - Who creates a `folder-v2` office, and who owns the machine-event and worker drains on `folder-v2`, are decided with
   3f and 3j. 3f decided the drains: they go with 3i (§6.5).
 
