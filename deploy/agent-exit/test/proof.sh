@@ -1371,7 +1371,8 @@ ip netns exec qexit true || fail "a refused down changed the exit"
 bash "$tool" verify >/dev/null || fail "a refused down left the exit unhealthy"
 pass "down refuses while a machine is plugged in and changes nothing"
 # The exit crashes: its namespace and everything in it disappear while the machine stays plugged in.
-for pid in $(ip netns pids qexit); do kill -9 "$pid"; done
+# A process listed may have ended before its kill (as in the exit tool's own loop).
+for pid in $(ip netns pids qexit); do kill -9 "$pid" 2>/dev/null || true; done
 ip netns del qexit
 sleep 0.5
 connects agent 1.1.1.1 443 && fail "the machine still reaches the internet with the exit gone"
