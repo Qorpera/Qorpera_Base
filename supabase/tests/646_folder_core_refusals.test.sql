@@ -1,7 +1,6 @@
 -- Company folder core, C1c-1 (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1C.md): every legacy path and old writer
 -- refuses a folder-v2 company (0A000) before it locks anything, and a snapshot-v1 company is not affected. Legacy rows a
--- guard looks up (a run's job, proposals, member commands, a bootstrap job) are made by hand, with foreign keys and
--- triggers off.
+-- guard looks up (a run's job, proposals, member commands) are made by hand, with foreign keys and triggers off.
 begin;
 
 insert into auth.users(id,email) values
@@ -118,46 +117,6 @@ end $$;
 reset role;
 select pg_temp.as_service();
 
--- The member whole-tree lane.
-do $$
-begin
-	perform pg_temp.as_member('64600000-0000-4000-8000-000000000001');
-	perform pg_temp.refuses($q$select public.qorpera_prepare_company_file_revision('64600000-0000-4000-8000-000000000020',
-		extensions.gen_random_uuid(), null, repeat('d', 64), 10, 3, 1, 1)$q$);
-	perform pg_temp.refuses($q$select public.qorpera_publish_company_file_revision('64600000-0000-4000-8000-000000000020',
-		extensions.gen_random_uuid(), null)$q$);
-	perform pg_temp.refuses($q$select public.qorpera_prepare_company_file_proposal('64600000-0000-4000-8000-000000000020',
-		extensions.gen_random_uuid(), extensions.gen_random_uuid(), repeat('d', 64), 10, 3, 1, 1)$q$);
-	perform pg_temp.refuses($q$select public.qorpera_submit_company_proposal('64600000-0000-4000-8000-000000000020',
-		extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'session_turn', extensions.gen_random_uuid(), extensions.gen_random_uuid(),
-		extensions.gen_random_uuid(), 0, 'Reason.', null, 'Title', '{}')$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_prepare_company_file_revision('64600000-0000-4000-8000-000000000021',
-		extensions.gen_random_uuid(), null, repeat('d', 64), 10, 3, 1, 1)$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_publish_company_file_revision('64600000-0000-4000-8000-000000000021',
-		extensions.gen_random_uuid(), null)$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_prepare_company_file_proposal('64600000-0000-4000-8000-000000000021',
-		extensions.gen_random_uuid(), extensions.gen_random_uuid(), repeat('d', 64), 10, 3, 1, 1)$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_submit_company_proposal('64600000-0000-4000-8000-000000000021',
-		extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'run', extensions.gen_random_uuid(), extensions.gen_random_uuid(),
-		extensions.gen_random_uuid(), 0, 'policy', null, 'Title', '{}')$q$);
-	perform pg_temp.as_service();
-	perform pg_temp.fx($q$insert into public.qorpera_company_proposals(id, profile_id, environment_id, client_proposal_id, proposal_snapshot_id,
-		execution_kind, execution_id, execution_claimant_id, trail_end_sequence, reason, title, created_by_user_id)
-		values ('64600000-0000-4000-8000-0000000000d1', '64600000-0000-4000-8000-000000000010', '64600000-0000-4000-8000-000000000020',
-			extensions.gen_random_uuid(), extensions.gen_random_uuid(), 'run', extensions.gen_random_uuid(), extensions.gen_random_uuid(),
-			0, 'policy', 'Title', '64600000-0000-4000-8000-000000000001')$q$);
-	perform pg_temp.as_member('64600000-0000-4000-8000-000000000001');
-	perform pg_temp.refuses($q$select public.qorpera_rebase_company_proposal('64600000-0000-4000-8000-0000000000d1',
-		extensions.gen_random_uuid(), extensions.gen_random_uuid(), extensions.gen_random_uuid())$q$);
-	perform pg_temp.as_service();
-	perform pg_temp.fx($q$update public.qorpera_company_proposals set profile_id = '64600000-0000-4000-8000-000000000011',
-		environment_id = '64600000-0000-4000-8000-000000000021' where id = '64600000-0000-4000-8000-0000000000d1'$q$);
-	perform pg_temp.as_member('64600000-0000-4000-8000-000000000001');
-	perform pg_temp.not_refused($q$select public.qorpera_rebase_company_proposal('64600000-0000-4000-8000-0000000000d1',
-		extensions.gen_random_uuid(), extensions.gen_random_uuid(), extensions.gen_random_uuid())$q$);
-	perform pg_temp.as_service();
-end $$;
-
 -- The approval and member-command actors, before their company fence.
 do $$
 begin
@@ -188,59 +147,16 @@ begin
 	-- Since C3's runner broker lane (P23, test 829) the broker describes a folder-v2 run: no longer refused as folder-v2.
 	perform pg_temp.not_refused($q$select public.qorpera_runner_broker_describe('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
 		'64600000-0000-4000-8000-0000000000c1', repeat('a', 64))$q$);
-	perform pg_temp.refuses($q$select public.qorpera_runner_broker_authorize_input_object('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
-		'64600000-0000-4000-8000-0000000000c1', repeat('a', 64), repeat('b', 64))$q$);
 	-- Since C1c-2c part 2, completion's folder-v2 lane replaces its refusal (test 658): no longer refused as folder-v2.
 	perform pg_temp.not_refused($q$select public.qorpera_complete_runner_job_v6('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
 		'64600000-0000-4000-8000-0000000000c1', repeat('a', 64), null, null, null, '{}')$q$);
 	perform pg_temp.not_refused($q$select public.qorpera_runner_broker_describe('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
 		'64600000-0000-4000-8000-0000000000c2', repeat('a', 64))$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_runner_broker_authorize_input_object('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
-		'64600000-0000-4000-8000-0000000000c2', repeat('a', 64), repeat('b', 64))$q$);
 	perform pg_temp.not_refused($q$select public.qorpera_complete_runner_job_v6('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
 		'64600000-0000-4000-8000-0000000000c2', repeat('a', 64), null, null, null, '{}')$q$);
 	perform pg_temp.not_refused(format('select public.qorpera_native_office_company_file_source(%L, %L)', s, '{}'));
 	perform pg_temp.not_refused(format('select public.qorpera_confirm_office_company_file_import(%L, %L, %L, %L, %L, %L)', s, '{}', '{}', '{}',
 		extensions.gen_random_uuid(), '{}'));
-	-- The runner's revision lane.
-	perform pg_temp.refuses($q$select public.qorpera_runner_prepare_company_revision('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
-		'64600000-0000-4000-8000-0000000000c1', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid(), repeat('d', 64), 10, 3, 1, 1)$q$);
-	perform pg_temp.refuses($q$select public.qorpera_runner_begin_company_revision_graph('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
-		'64600000-0000-4000-8000-0000000000c1', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid(), extensions.gen_random_uuid(),
-		repeat('d', 64), repeat('d', 64), 1, 1)$q$);
-	perform pg_temp.refuses($q$select public.qorpera_runner_append_company_revision_graph('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
-		'64600000-0000-4000-8000-0000000000c1', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid(), '[]')$q$);
-	perform pg_temp.refuses($q$select public.qorpera_runner_complete_company_revision_graph('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
-		'64600000-0000-4000-8000-0000000000c1', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid())$q$);
-	perform pg_temp.refuses($q$select public.qorpera_runner_company_revision_snapshot('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
-		'64600000-0000-4000-8000-0000000000c1', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid())$q$);
-	perform pg_temp.refuses($q$select public.qorpera_runner_authorize_company_revision_verification('64600000-0000-4000-8000-0000000000c9',
-		repeat('a', 64), '64600000-0000-4000-8000-0000000000c1', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid(),
-		extensions.gen_random_uuid())$q$);
-	perform pg_temp.refuses($q$select public.qorpera_runner_finalize_company_revision_verification('64600000-0000-4000-8000-0000000000c9',
-		repeat('a', 64), '64600000-0000-4000-8000-0000000000c1', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid(),
-		extensions.gen_random_uuid())$q$);
-	perform pg_temp.refuses($q$select public.qorpera_runner_broker_authorize_company_file_object('64600000-0000-4000-8000-0000000000c9',
-		repeat('a', 64), '64600000-0000-4000-8000-0000000000c1', repeat('a', 64), repeat('b', 64), 1, 'text/plain')$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_runner_prepare_company_revision('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
-		'64600000-0000-4000-8000-0000000000c2', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid(), repeat('d', 64), 10, 3, 1, 1)$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_runner_broker_authorize_company_file_object('64600000-0000-4000-8000-0000000000c9',
-		repeat('a', 64), '64600000-0000-4000-8000-0000000000c2', repeat('a', 64), repeat('b', 64), 1, 'text/plain')$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_runner_begin_company_revision_graph('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
-		'64600000-0000-4000-8000-0000000000c2', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid(), extensions.gen_random_uuid(),
-		repeat('d', 64), repeat('d', 64), 1, 1)$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_runner_append_company_revision_graph('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
-		'64600000-0000-4000-8000-0000000000c2', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid(), '[]')$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_runner_complete_company_revision_graph('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
-		'64600000-0000-4000-8000-0000000000c2', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid())$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_runner_company_revision_snapshot('64600000-0000-4000-8000-0000000000c9', repeat('a', 64),
-		'64600000-0000-4000-8000-0000000000c2', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid())$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_runner_authorize_company_revision_verification('64600000-0000-4000-8000-0000000000c9',
-		repeat('a', 64), '64600000-0000-4000-8000-0000000000c2', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid(),
-		extensions.gen_random_uuid())$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_runner_finalize_company_revision_verification('64600000-0000-4000-8000-0000000000c9',
-		repeat('a', 64), '64600000-0000-4000-8000-0000000000c2', repeat('a', 64), extensions.gen_random_uuid(), extensions.gen_random_uuid(),
-		extensions.gen_random_uuid())$q$);
 	-- The binding check behind these refusals: a job id in any spelling uuid input accepts names the job; anything else
 	-- names none.
 	if not public.qorpera_binding_is_folder_v2(jsonb_build_object('jobId', upper(b ->> 'jobId')))
@@ -249,52 +165,14 @@ begin
 		raise exception 'A binding names its folder-v2 job in any spelling uuid input accepts, and nothing else'; end if;
 end $$;
 
--- The snapshot bootstrap: the worker skips a folder-v2 company's job, and finalizing it or seeding a Co-Founder refuses.
-do $$
-begin
-	perform pg_temp.fx($q$update public.qorpera_company_bootstrap_jobs set state = 'blocked', lease_owner = null, lease_expires_at = null where state in ('queued','leased')$q$);
-	perform pg_temp.fx($q$insert into public.qorpera_company_bootstrap_jobs(id, profile_id, environment_id, created_by_user_id,
-		cofounder_staff_agent_id, formation_id, member_session_id, formation_document, cofounder_agent_document, hidden_until_ready,
-		first_run_required, state) values ('64600000-0000-4000-8000-0000000000d4', '64600000-0000-4000-8000-000000000010',
-		'64600000-0000-4000-8000-000000000020', '64600000-0000-4000-8000-000000000001', extensions.gen_random_uuid(),
-		extensions.gen_random_uuid(), extensions.gen_random_uuid(), '{}', '{}', false, false, 'queued')$q$);
-	if public.qorpera_claim_company_bootstrap(extensions.gen_random_uuid(), 60) is not null then
-		raise exception 'The bootstrap worker claims no folder-v2 job'; end if;
-	perform pg_temp.refuses($q$select public.qorpera_finalize_company_bootstrap('64600000-0000-4000-8000-0000000000d4',
-		extensions.gen_random_uuid(), '{}', '{}', '{}', '{}', '{}')$q$);
-	perform pg_temp.refuses($q$select public.qorpera_seed_company_cofounder('64600000-0000-4000-8000-000000000010',
-		'64600000-0000-4000-8000-000000000001')$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_seed_company_cofounder('64600000-0000-4000-8000-000000000011',
-		'64600000-0000-4000-8000-000000000001')$q$);
-	-- A snapshot-v1 company's queued job is still claimed.
-	perform pg_temp.fx($q$insert into public.qorpera_company_bootstrap_jobs(id, profile_id, environment_id, created_by_user_id,
-		cofounder_staff_agent_id, formation_id, member_session_id, formation_document, cofounder_agent_document, hidden_until_ready,
-		first_run_required, state) values ('64600000-0000-4000-8000-0000000000d5', '64600000-0000-4000-8000-000000000011',
-		'64600000-0000-4000-8000-000000000021', '64600000-0000-4000-8000-000000000001', extensions.gen_random_uuid(),
-		extensions.gen_random_uuid(), extensions.gen_random_uuid(), '{}', '{}', false, false, 'queued')$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_finalize_company_bootstrap('64600000-0000-4000-8000-0000000000d5',
-		extensions.gen_random_uuid(), '{}', '{}', '{}', '{}', '{}')$q$);
-	set local session_replication_role = replica;
-	if public.qorpera_claim_company_bootstrap(extensions.gen_random_uuid(), 60) ->> 'jobId' is distinct from '64600000-0000-4000-8000-0000000000d5' then
-		raise exception 'The worker still claims a snapshot-v1 job'; end if;
-	set local session_replication_role = origin;
-end $$;
-
--- The old row writers (contract 5.6).
+-- The old row writer (contract 5.6); the old roster writers went with legacy sweep D1 (20260930330000).
 do $$
 begin
 	perform pg_temp.as_member('64600000-0000-4000-8000-000000000001');
-	perform pg_temp.refuses($q$select public.qorpera_put_profile_staff('64600000-0000-4000-8000-000000000010', extensions.gen_random_uuid(),
-		'Agent', 'Role', 'Charter.', null, null, 'green', 'round', null, null, null, 'active', 'active', statement_timestamp(), null)$q$);
-	perform pg_temp.refuses($q$select public.qorpera_delete_profile_staff('64600000-0000-4000-8000-000000000010', extensions.gen_random_uuid(), 1)$q$);
 	perform pg_temp.refuses($q$select public.qorpera_put_staff_provider_model('64600000-0000-4000-8000-000000000010', extensions.gen_random_uuid(),
 		'openai', 'gpt-test', null)$q$);
 	perform pg_temp.not_refused($q$select public.qorpera_put_staff_provider_model('64600000-0000-4000-8000-000000000011',
 		'64600000-0000-4000-8000-0000000000a1', 'openai', 'gpt-test', null)$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_put_profile_staff('64600000-0000-4000-8000-000000000011', extensions.gen_random_uuid(),
-		'Agent', 'Role', 'Charter.', null, null, 'green', 'round', null, null, null, 'active', 'active', statement_timestamp(), null)$q$);
-	perform pg_temp.not_refused($q$select public.qorpera_delete_profile_staff('64600000-0000-4000-8000-000000000011',
-		'64600000-0000-4000-8000-0000000000a1', 1)$q$);
 	perform pg_temp.as_service();
 end $$;
 

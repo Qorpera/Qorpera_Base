@@ -273,7 +273,7 @@ it("loads the exact host-generated AGENTS.md bytes without enabling ambient inst
 	await expect(stat(recorded.threadParameters.cwd)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-it.each(["capture-image", "response-first"])(
+it.each(["capture-image", "missing-capture-image"])(
 	"requires the image capability and transports a capture above the text-message budget: %s",
 	async (mode) => {
 		const pixels = Buffer.alloc(2 * 1024 * 1024);
@@ -316,7 +316,7 @@ it.each(["capture-image", "response-first"])(
 			prompt: "Capture fixture",
 			signal,
 		});
-		if (mode === "response-first") {
+		if (mode === "missing-capture-image") {
 			await expect(result).rejects.toThrow("requires capture image support");
 			expect(execute).not.toHaveBeenCalled();
 		} else {

@@ -139,13 +139,13 @@ begin
 		'That changed while you were looking.');
 	perform pg_temp.i9c_refused(pg_temp.i9c_offer(2, pg_temp.i9c_ask('t3', null, 5)), 'changed');
 	perform pg_temp.i9c_refused(pg_temp.i9c_offer(2, pg_temp.i9c_ask('t2', 2, 5)), 'changed');
-	-- Only a needs_yes member column; an area's supervisor waits for consent records (its owner is offered like any).
+	-- Only a needs_yes member column; an area's supervisor and owner are offered like any (20260930371000, I9b).
 	perform pg_temp.i9c_refused(pg_temp.i9c_offer(2, pg_temp.i9c_ask('t1', null, 4, 'helper')), 'column',
 		'Only a member column that needs a yes can be offered.');
 	perform pg_temp.i9c_refused(pg_temp.i9c_offer(2, pg_temp.i9c_ask('t1', null, 4, 'task')), 'column');
 	perform pg_temp.i9c_refused(pg_temp.i9c_offer(2, pg_temp.i9c_ask('t1', null, 4, 'nobody')), 'column');
 	perform pg_temp.i9c_refused(pg_temp.i9c_offer(2, pg_temp.i9c_ask('Sales', null, 4, 'supervisor',
-		'86400000-0000-4000-8000-000000000012')), 'column');
+		'86400000-0000-4000-8000-000000000012')), 'gone', 'This row is gone.');
 	perform pg_temp.i9c_refused(pg_temp.i9c_offer(2, pg_temp.i9c_ask('Sales', null, 4, 'owner',
 		'86400000-0000-4000-8000-000000000012')), 'gone', 'This row is gone.');
 	-- A row or a table that isn't there.

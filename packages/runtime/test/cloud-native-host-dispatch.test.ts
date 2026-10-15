@@ -72,7 +72,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 		...rowsOf(read("20260928439970_folder_run_view_open.sql")),
 		// The worker tools on folder-v2 (F2-5b-2), a coding session's archive (C3b), the proposal calls (P40b), agents'
 		// hooks and mailboxes (E3a), zoom and its release (M1b-3), the primary view and its record (M1b-4a) and branches
-		// (M4), found by name: a release re-slots the file.
+		// (M4), and an agent's page change in its conversation (I10), found by name: a release re-slots the file.
 		...[
 			"_folder_state_worker_files.sql",
 			"_folder_coding_archive.sql",
@@ -82,6 +82,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			"_memory_release.sql",
 			"_memory_view.sql",
 			"_memory_branches.sql",
+			"_interface_change_notes.sql",
 		].flatMap((suffix) =>
 			rowsOf(
 				read(
@@ -114,7 +115,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, name, scope]) => scope !== "identity" && !removed.has(name))
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(100);
+	expect(rows).toHaveLength(101);
 	expect([...removed]).toEqual([
 		"qorpera_native_mail_attachment",
 		"qorpera_manage_agent_todo",

@@ -75,7 +75,7 @@ Hosted-primary RPCs
   |-- PostgreSQL: profiles, members, environments, sessions, event indexes
   |-- private object storage: profile-scoped SHA-256 chunks and file manifests
   |-- runner-control: hashed pairing/session tokens and short-lived job leases
-  `-- runner-broker: lease-scoped verified substrate reads and bounded artifact writes
+  `-- runner-broker: lease-scoped run description and native provider authority
 
 Local company kernel
   |-- company folder and Git

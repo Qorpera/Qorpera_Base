@@ -77,7 +77,8 @@ What it changes in the build:
 [RUNTIME-FOLDER-COMPANY-MACHINES.md](RUNTIME-FOLDER-COMPANY-MACHINES.md) (a
 follow-up to 4b for networked commands' views and quiet publishing, 4d, and
 4e's toolbox), and new slices for links: the core's link entries, the write
-protocol, the folder program and service, and the server-side tools.
+protocol, the folder program and service, and the server-side tools
+([RUNTIME-FOLDER-LINKS.md](RUNTIME-FOLDER-LINKS.md)).
 
 ## Decided on 2 October 2026 (light threads)
 
@@ -275,6 +276,8 @@ live before the next:
 
 Step 3's plan, its slices and its live proof: [RUNTIME-FOLDER-WRITES.md](RUNTIME-FOLDER-WRITES.md).
 Step 4's: [RUNTIME-FOLDER-COMPANY-MACHINES.md](RUNTIME-FOLDER-COMPANY-MACHINES.md).
+Step 5's: [RUNTIME-FOLDER-CODING-MACHINES.md](RUNTIME-FOLDER-CODING-MACHINES.md).
+Step 6's: [RUNTIME-FOLDER-TEST-MACHINES.md](RUNTIME-FOLDER-TEST-MACHINES.md).
 
 Steps 4, 5 and 6 do not depend on each other. Milestone M3 of the Rebuild Map
 is reached when two machines on two nodes edit the same folder live and
