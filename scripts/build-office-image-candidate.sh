@@ -227,11 +227,21 @@ while IFS= read -r line; do
 done < <(lx exec "$vm" -- cat /etc/systemd/system/qorpera-company-computer.service |
 	grep -E '^(User|Group|WorkingDirectory|Environment|KillMode|UMask|LimitCORE|PrivateTmp|PrivateDevices|ProtectSystem|ProtectHome|ProtectProc|ProcSubset|ProtectHostname|ProtectClock|ProtectKernelTunables|ProtectKernelLogs|ProtectKernelModules|ProtectControlGroups|NoNewPrivileges|CapabilityBoundingSet|AmbientCapabilities|RestrictNamespaces|RestrictAddressFamilies|RestrictSUIDSGID|LockPersonality|MemoryMax|MemorySwapMax|TasksMax|CPUQuota|InaccessiblePaths)=')
 ((${#properties[@]} == 62)) || fail "the office unit's confinement keys changed: ${properties[*]}"
+since=$(lx exec "$vm" -- date +%s)
+probe_status=0
 lx exec "$vm" -- systemd-run --quiet --wait --pipe --collect --unit qorpera-toolbox-probe "${properties[@]}" \
 	--property "ReadWritePaths=$probe" --property RuntimeMaxSec=900 \
 	/usr/bin/node "$probe/company-computer-linux-toolbox-probe.mjs" "$probe" "$probe/office-image-dependencies.json" \
-	>"$work/probe.json"
+	>"$work/probe.json" || probe_status=$?
+# AppArmor's denials while it ran go into the evidence. A command's output reaches the shell host over a socket, and
+# a confined program whose profile has no unix rule gets that descriptor replaced on exec (file_inherit): it exits 0
+# and prints nothing.
+lx exec "$vm" -- journalctl -o cat --no-pager --since "@$since" | { grep 'apparmor="DENIED"' || true; } |
+	sort -u >"$work/apparmor-denials"
+((probe_status == 0)) || fail "toolbox probe exited $probe_status; AppArmor denials: $(cat "$work/apparmor-denials")"
 jq -e '.result == "passed" and .uid == '"$office_id" "$work/probe.json" >/dev/null || fail "toolbox probe: $(cat "$work/probe.json")"
+! grep -q 'operation="file_inherit"' "$work/apparmor-denials" ||
+	fail "AppArmor took a descriptor from a probed command: $(cat "$work/apparmor-denials")"
 
 # After the whole build the office service is still disabled and has never started. Its credentials exist only once
 # the node's preparation writes them for a boot; the node's activation starts it (preparation, then service-start).
@@ -280,9 +290,12 @@ jq -n --slurpfile measured "$work/measured.json" --slurpfile probe "$work/probe.
 	--arg package "$(sha256sum "$push/package/manifest.json" | awk '{print $1}')" \
 	--arg closure "$(wc -l <"$work/wanted")" --rawfile root "$work/root-toolbox.txt" --rawfile office "$work/office-unit" \
 	--arg folder "$(awk '{print $1}' "$work/folder-program")" --rawfile folderUnits "$work/folder-unit-files" \
+	--rawfile denials "$work/apparmor-denials" \
 	'{base: $base, candidate: $candidate, staged: (if $staged == "" then null else $staged end), recipeSha256: $recipe,
 	packageManifestSha256: $package, aptClosurePackages: ($closure | tonumber), dependencies: $measured[0],
 	rootToolbox: ($root | split("\n") | map(select(startswith("toolbox: ")) | ltrimstr("toolbox: "))), shellToolbox: $probe[0],
+	rootFolder: ($root | split("\n") | map(select(startswith("folder: ")) | ltrimstr("folder: "))),
+	probeAppArmorDenials: ($denials | split("\n") | map(select(. != ""))),
 	officeUnit: ($office | split("\n") | map(select(. != "") | split("=") | {key: .[0], value: (.[1:] | join("="))}) | from_entries),
 	folderProgramSha256: $folder, folderUnitFiles: ($folderUnits | split("\n") | map(select(. != "") | split(" ") | map(select(. != "")))),
 	network: "none"}' >"$work/evidence.json"

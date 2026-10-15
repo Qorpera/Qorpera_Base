@@ -60,9 +60,9 @@ print(json.dumps({'boot':pathlib.Path('/proc/sys/kernel/random/boot_id').read_te
 // The runtime lines the shapes below mirror. A change to any of them stops the launcher until the shapes follow.
 export const RUNTIME_PINS = [
 	{ file: "packages/runtime/src/cloud-company-computer-linux-host.ts", from: "export function companyComputerLinuxSandboxArgs(tmpBytes = 67108864): string[] {", to: "}", sha256: "39208f0c978cdd1be87ddf399819e8519d58a3f3546ee93f19fb729a6b17bef4" },
-	{ file: "packages/runtime/src/cloud-company-computer-linux-desktop.ts", from: "files.push(await openCompanyComputerLinuxDirectory(layout.workbenchRoot, false));", to: 'stdin: "ignore",', sha256: "774a016b1967b68d13d5b74fd90d4639da2e737154e3ecec8cfda8ee5e00acdd" },
+	{ file: "packages/runtime/src/cloud-company-computer-linux-desktop.ts", from: "files.push(await openCompanyComputerLinuxDirectory(layout.workbenchRoot, false));", to: 'stdin: "ignore",', sha256: "27507db349a6fd4491d77a8973743edf0eae92e74b571fe154769faa65e527c2" },
 	{ file: "packages/runtime/src/cloud-company-computer-linux-commands.ts", from: "const workbench = await openCompanyComputerLinuxDirectory(this.#layout.workbenchRoot, false);", to: 'stdin: "pipe",', sha256: "48ddc6b2a1d2a0b553f91535dbfb4ad7ca8917b694951794775845ee811c498f" },
-	{ file: "packages/runtime/src/cloud-company-computer-linux-shell.ts", from: "export const COMPANY_COMPUTER_SHELL_TMP_BYTES = 512 * 1024 * 1024;", to: 'const SHELL_IMAGE_DIRECTORIES = ["/etc/ssl/certs", "/etc/alternatives", "/etc/fonts", "/etc/xdg"];', sha256: "111a5c1758d6189b6442dbd1fadd3429f09dfddda287532d434ad4c3eb0552ed" },
+	{ file: "packages/runtime/src/cloud-company-computer-linux-shell.ts", from: "export const COMPANY_COMPUTER_SHELL_TMP_BYTES = 512 * 1024 * 1024;", to: 'const SHELL_IMAGE_DIRECTORIES = ["/etc/ssl/certs", "/etc/alternatives", "/etc/fonts", "/etc/xdg", "/etc/libreoffice"];', sha256: "3a40c2ca43e9bde7c283eb2b55ab32461328a9dde1c5b7b14c893b9b7ddb51c3" },
 	{ file: "packages/runtime/src/cloud-company-computer-linux-shell.ts", from: "files.push(await openCompanyComputerLinuxDirectory(layout.workbenchRoot, false));", to: "pipeCount: 2,", sha256: "532e140b088a2c3d8f09ffe3585bdebad9b2f9794c1ba88e1cdd4a41bd49c849" },
 	{ file: "packages/runtime/src/cloud-company-computer-linux-network.ts", from: 'export const COMPANY_COMPUTER_AGENT_EXIT_DNS = "10.210.0.1";', to: 'export const COMPANY_COMPUTER_HOSTS = "127.0.0.1\\tlocalhost\\n::1\\tlocalhost ip6-localhost ip6-loopback\\n";', sha256: "d59958ee52f793e2efdb12eac71e1344a7451bc6e3bf8842955a4228c2a9c5d3" },
 	// The workbench every namespace binds and starts in.
@@ -113,6 +113,7 @@ export function remountShapes(dir) {
 			...["--bind-fd", "3", WORKBENCH, "--bind-fd", "4", HOME, "--bind-fd", "5", `/screen-state/${SCREEN}`, "--bind-fd", "6", "/tmp/.X11-unix", "--bind-fd", "7", "/run/qorpera", "--ro-bind-fd", "8", "/etc/machine-id"],
 			...["--size", "33554432", "--tmpfs", "/var/tmp", ...network],
 			...[["/etc/passwd", false], ["/etc/group", false], ["/etc/nsswitch.conf", false], ["/etc/fonts", true], ["/etc/xdg", true], ["/etc/X11", true], ["/etc/dbus-1", true], ["/etc/ssl/certs", true]].map(([path, directory]) => ({ requiredRoBind: path, directory })),
+			{ optionalRoBind: "/etc/libreoffice", directory: true },
 			...["--symlink", "../usr/lib/os-release", "/etc/os-release"],
 			...setenv({ HOME, PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8", QORPERA_WORKBENCH_ROOT: WORKBENCH, QORPERA_DESKTOP_HOME: HOME, QORPERA_SCREEN_STATE_ROOT: "/screen-state", QORPERA_SCREEN_RUNTIME_ROOT: "/run/qorpera", QORPERA_SCREEN_WALLPAPER: `/screen-state/${SCREEN}/wallpaper.png` }),
 			{ folder: true },
@@ -131,7 +132,7 @@ export function remountShapes(dir) {
 			...sandboxArgs(512 * 1024 * 1024),
 			...["--bind-fd", "5", WORKBENCH, "--bind-fd", "6", HOME, ...network],
 			...["/etc/passwd", "/etc/group", "/etc/nsswitch.conf", "/etc/ld.so.cache", "/etc/ssl/openssl.cnf"].map((path) => ({ optionalRoBind: path, directory: false })),
-			...["/etc/ssl/certs", "/etc/alternatives", "/etc/fonts", "/etc/xdg"].map((path) => ({ optionalRoBind: path, directory: true })),
+			...["/etc/ssl/certs", "/etc/alternatives", "/etc/fonts", "/etc/xdg", "/etc/libreoffice"].map((path) => ({ optionalRoBind: path, directory: true })),
 			...setenv({ HOME, PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8", SHELL: "/usr/bin/bash", TERM: "dumb" }),
 			{ folder: true },
 			...start,
