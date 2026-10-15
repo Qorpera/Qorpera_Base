@@ -12,7 +12,7 @@
 
 set local lock_timeout = '3s';
 
--- Applies each (old, new) pair in turn, each old text exactly once, then runs the result (as 20260930396300).
+-- Applies each (old, new) pair in turn, each old text exactly once, then runs the result (as 20260930446300).
 create or replace function pg_temp.s5b_patch(p_target regprocedure, p_edits text[]) returns void language plpgsql as $$
 declare v_definition text := pg_get_functiondef(p_target); v_found integer;
 begin
