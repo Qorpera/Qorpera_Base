@@ -1637,8 +1637,10 @@ export class FolderService {
 				throw again;
 			}
 		}
-		if (tags && "from" in changed) view.credit.rename(changed.from, changed.to, tags);
-		else if (tags) view.credit.tag(changed, tags);
+		if (tags !== undefined) {
+			if ("from" in changed) view.credit.rename(changed.from, changed.to, tags);
+			else view.credit.tag(changed, tags);
+		}
 		this.#touch(view);
 		return answer;
 	}
