@@ -842,6 +842,9 @@ Decisions:
 - **Refusals** (0A000): `append_session_input`, `request_session_turn` and its v2; the conversation attachment uploads;
   and any `folder-v2` input with images, inserted or changed (the upload check returned early for every company off
   the path gateway).
+  - **Legacy sweep D17 (20260930416000)** dropped the conversation attachment uploads (the begin, the stage, the fetch
+    and their table) with the snapshot-v1 arm of the input trigger; the trigger keeps its `folder-v2` arm
+    (20260930260000), where a chat image is a folder file.
 - Not in 3a: `member_manage_company_machine` goes with 3f. `member_office_catalog` takes the gc fence before checking
   membership on either core; that is fixed on its own (it affects live companies).
 
