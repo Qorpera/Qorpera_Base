@@ -1177,6 +1177,10 @@ could exist, and every office path took the gc fence (the company row `FOR UPDAT
 - **Legacy sweep F2c (20260930292000)** left the office reservation only its `folder-v2` path:
   `reserve_runtime_machine` takes the machine fence on every company, and its office branch accepts only a ready
   `folder-v2` Company File (`path_gateway_version = 1` is gone).
+- **Legacy sweep D16 (20260930415000)** dropped the governed Company Computer and the legacy computer teardown
+  (20260828017000, 20260828013500) with their tables. The interlock and `register_runtime_office` admit another
+  company computer only through the office's own binding, and company computer work (a turn, run, runner or
+  assignment of worker class `company_computer`) is refused outright, with the governed guards' errors (42501).
 - **Who creates a folder-v2 office** (the coordinator, 3 October): the folder mode of `qorpera_register_runtime_office`,
   called as the company's owner the first time the company needs its computer. Today no product path registers a
   company's first computer (later ones come from `add_runtime_office_computer`); the coordinator does it, and P38

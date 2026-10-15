@@ -61,8 +61,6 @@ insert into p13_allowed(name, kind, reason) values
 	('qorpera_verify_company_path_tree', 'legacy', 'Old tree proof; its caller, the old path lane''s routes, refuses folder-v2 first (finalize_company_bootstrap went with legacy sweep D1, 20260930330000).'),
 	('qorpera_wake_path_authorized', 'legacy', 'Old file wake check; folder-v2 callers dispatch to folder bodies first, and manage_agent_worker refuses at company_path_actor.'),
 	('qorpera_sync_company_file_listener', 'legacy', 'Takes the fence only for an old file-wake cursor; folder-v2 file wakes use the P29 listener.'),
-	('qorpera_register_governed_company_computer', 'legacy', 'Old logical computers (C1C §13); no caller.'),
-	('qorpera_register_legacy_company_computer_teardown', 'legacy', 'Old logical computers (C1C §13); no caller.'),
 	-- Artifacts: every path that makes an artifact, and every member function that would take the fence over one,
 	-- refuses folder-v2 first (20260930041000, pinned below), and a folder-v2 company has no snapshots. So these are
 	-- reached only through a snapshot-v1 company's artifacts and snapshots.
