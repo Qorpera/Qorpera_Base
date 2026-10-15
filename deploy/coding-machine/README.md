@@ -107,9 +107,9 @@ the machine, the proof gives both Docker daemons runtime drop-ins with it, and t
 environment (BuildKit has its client fetch registry tokens). A node's coding machine has no proxy: its traffic leaves
 through its own card.
 
-Result on node 2's test machine (15 Oct 2026, run `20261015T190638-82463-47437557`, 13 min with the build), ALL PASSED:
-- the image (1761 MiB, `8c00dee8f8aa…`) built in 10 min and was in the coding project's store;
-- a machine from it booted to running in 68 s, its LXD agent answering without cloud-init; no `/dev/lxd`; the root
+Result on node 2's test machine (15 Oct 2026, run `20261015T222308-36186-33338610`, 20 min with the build), ALL PASSED:
+- the image (2010 MiB, `d77d51f170d6…`) built in 14 min and was in the coding project's store;
+- a machine from it booted to running in 62 s, its LXD agent answering without cloud-init; no `/dev/lxd`; the root
   grew to the disk; IPv4 by DHCP on its one card, no IPv6, DNS and HTTPS; apt's self-update units masked, no snapd,
   no failed unit;
 - git 2.56.0 without system configuration, Node 24.21.0, Chromium 151.0.7922.34, Python 3.14.4, Go 1.26.8, Rust
@@ -119,5 +119,9 @@ Result on node 2's test machine (15 Oct 2026, run `20261015T190638-82463-4743755
 - its rootless daemon started on first use, `sudo docker` reached the system daemon, compose built and ran redis +
   web, stdin's end reached a container through the socket, a rootless container's memory and processor limits held,
   and `sudo docker` bound `/company` and the session's mount path;
+- after the system daemon ran containers, forwarding was on and the `FORWARD` policy still `ACCEPT`;
 - headless Chromium rendered as the session with its sandbox on; tmux and git ran as the session;
+- as the session, `tsc`, tsx and node ran TypeScript; gcc, clang, g++ and clang++ built and ran; Ruby with gem and
+  bundler, uv (a project with a package) and pip answered; mise installed Node.js 22.20.0 into its home; LibreOffice
+  converted a document to PDF; sqlite3, zip, unzip, ripgrep, fd and jq worked;
 - the test machine's modules, sysctls, nft rules, links and LXD state were the same before and after.
