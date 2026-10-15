@@ -740,7 +740,7 @@ fn supervise(b: libc::pid_t, proc: &OwnedFd, start: &OwnedFd, ack: OwnedFd, sign
 	let mut message = Vec::new();
 	let mut mntns = None;
 	let mut starting = true;
-	let mut end = None;
+	let mut end: Option<(Option<i32>, Option<String>)> = None;
 	let mut kill_at: Option<Instant> = None;
 	let mut killed = false;
 	loop {
