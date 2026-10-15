@@ -163,7 +163,10 @@ end $$;
 -- D. A duplicate after the first erase is done. A request that read the first message's event before erase A's step 1
 -- writes its row once A is done (the event's index lets one row in at a time): fence_two's insert waits for fence_one,
 -- which ends A. The duplicate's step 1 finds the event erased under the session's lock: it is done, with no commit, no
--- blocks and the generation as it was.
+-- blocks and the generation as it was. Its status names the copy A's step 3 found, which A leaves.
+insert into public.qorpera_memory_message_erase_blocks(erase_id, block_key, path, kind, copies)
+values (current_setting('qorpera_test.erase_a')::uuid, 'ada-1', 'memory/ada-1.md', 'block',
+	'[{"environmentId":"64800000-0000-4000-8000-000000000020","path":"notes/ada.md","live":true}]');
 select set_config('qorpera_test.generation', pg_temp.generation()::text, false);
 select dblink_exec('fence_one', 'begin');
 select dblink_exec('fence_one', format('update public.qorpera_memory_message_erases set state = %L, done_at = clock_timestamp() '
@@ -189,6 +192,9 @@ begin
 			and e.generation is null and e.done_at is not null and e.last_error is null) then
 		raise exception 'D: the duplicate after the first erase: % %', r,
 			(select to_jsonb(e) from public.qorpera_memory_message_erases e where e.id = d); end if;
+	if pg_temp.erase_state(d) <> '{"state":"done","blocks":0,"runsPending":0,"copies":[{"environmentId":'
+		'"64800000-0000-4000-8000-000000000020","path":"notes/ada.md","live":true}]}' then
+		raise exception 'D: the duplicate names A''s copy: %', pg_temp.erase_state(d); end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['fence_one','fence_two','fence_three','fence_four']) name;
