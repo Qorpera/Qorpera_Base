@@ -1,8 +1,8 @@
 {
 	"cloud-client": {
-		"uuidPatterns": 23,
-		"recordHelpers": 17,
-		"uuidHelpers": 10,
+		"uuidPatterns": 19,
+		"recordHelpers": 15,
+		"uuidHelpers": 9,
 		"sha256Helpers": 1
 	},
 	"company": {
@@ -38,7 +38,7 @@
 	"runtime": {
 		"uuidPatterns": 60,
 		"recordHelpers": 31,
-		"uuidHelpers": 13,
+		"uuidHelpers": 12,
 		"sha256Helpers": 4
 	},
 	"web": {

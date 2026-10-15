@@ -392,6 +392,55 @@ it("answers a folder that changed after the listing that found it empty as a con
 	expect(f.files.has("busy/new.md")).toBe(true);
 });
 
+it("notes a change of the company's pages and tables in the run's conversation, a replay's too (I10)", async () => {
+	const f = await fixture({
+		files: { "interfaces/pulse/README.md": "About Pulse.\n", "docs/plan.md": "plan" },
+		folders: ["Tables"],
+	});
+	const note = vi.spyOn(f.folder, "noteInterfaceChanges");
+	const asked = { p_binding: f.binding, p_request: {} };
+	const version = (path: string) => f.files.get(path)?.version as string;
+	const readme = {
+		path: "interfaces/pulse/README.md",
+		operationKey: "write-1",
+		expectedVersion: version("interfaces/pulse/README.md"),
+		text: "About Pulse, by the agent.\n",
+	};
+	expect(parse(await f.call("company_write", readme))).toMatchObject({ state: "applied" });
+	// A folder by its path in any case: the folder's paths are one path in any case.
+	const mkdir = { path: "Tables/leads", operationKey: "mkdir-1", expectedVersion: null };
+	expect(parse(await f.call("company_mkdir", mkdir))).toMatchObject({ state: "applied" });
+	// SQL notes each of the run's commits there once.
+	expect(f.notes).toEqual([asked, asked]);
+	expect(await Promise.all(note.mock.results.map((result) => result.value))).toEqual([1, 1]);
+	// A change anywhere else is no page's or table's: no note is asked for.
+	const plan = { path: "docs/plan.md", operationKey: "write-2", expectedVersion: version("docs/plan.md") };
+	expect(parse(await f.call("company_write", { ...plan, text: "two" }))).toMatchObject({ state: "applied" });
+	expect(f.notes).toHaveLength(2);
+	// A note that fails after the commit is a folder error, never a refusal (which says nothing happened): the call is
+	// unconfirmed.
+	const folder = parse(await f.call("company_read", { path: "Tables/leads", offset: 0, limit: 4 })).version as string;
+	const deletion = { path: "Tables/leads", operationKey: "delete-1", expectedVersion: folder };
+	note.mockRejectedValueOnce(new CloudCompanyFolderError("unavailable"));
+	const error = await f.call("company_delete", deletion).then(
+		() => null,
+		(thrown: unknown) => thrown,
+	);
+	expect(error).toBeInstanceOf(CloudCompanyFolderError);
+	expect(error).not.toBeInstanceOf(CloudToolRefusal);
+	expect(f.folders.has("Tables/leads")).toBe(false);
+	expect(f.notes).toEqual([asked, asked]);
+	// The same call again, as a later turn makes it: its receipt answers, nothing is committed twice, and the change
+	// gets its note.
+	const commits = f.commits.length;
+	const tools = cloudFolderFileTools({ folder: f.folder, operations: f.operations(), identity: f.identity });
+	const again = tools[4] as CloudNativeTool;
+	expect(parse(await again.execute(again.parseArguments(deletion), f.context))).toMatchObject({ state: "applied" });
+	expect(f.commits).toHaveLength(commits);
+	expect(f.notes).toEqual([asked, asked, asked]);
+	await expect(note.mock.results.at(-1)?.value).resolves.toBe(1);
+});
+
 it("refuses a deletion with no approval before anything is written", async () => {
 	const f = await fixture({ files: { "docs/old.md": "old" } });
 	const { actionReviewId: _approval, ...context } = f.context;

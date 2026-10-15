@@ -9,10 +9,7 @@ const MAX_PROFILE_NAME_LENGTH = 120;
 const MAX_SESSION_TITLE_LENGTH = 256;
 const MAX_AGENT_ID_LENGTH = 128;
 const MAX_EVENT_BODY_BYTES = 256 * 1024;
-const MAX_TREE_MANIFEST_BYTES = 8 * 1024 * 1024;
 const MAX_TREE_BYTES = 1024 * 1024 * 1024 * 1024;
-const MAX_ARTIFACT_INDEX_ENTRIES = 5_000;
-const MAX_REACHABILITY_OBJECTS = 400_000;
 const MAX_REACHABILITY_STORAGE_BYTES = 2 * 1024 * 1024 * 1024 * 1024;
 
 export const HOSTED_PROFILE_ROLES = ["owner", "admin", "contributor", "viewer"] as const;
@@ -44,15 +41,6 @@ export type HostedCompanyOperationType = (typeof HOSTED_COMPANY_OPERATION_TYPES)
 
 export const HOSTED_ARTIFACT_ROOT_CONTRACTS = ["qorpera.object/v1", "qorpera.cloud-file-manifest/v1"] as const;
 export type HostedArtifactRootContract = (typeof HOSTED_ARTIFACT_ROOT_CONTRACTS)[number];
-export const HOSTED_ARTIFACT_GC_PLAN_STATUSES = [
-	"waiting",
-	"deleting",
-	"retrying",
-	"completed",
-	"cancelled",
-	"failed",
-] as const;
-export type HostedArtifactGcPlanStatus = (typeof HOSTED_ARTIFACT_GC_PLAN_STATUSES)[number];
 
 export interface HostedProfile {
 	profileType: "cloud";
@@ -270,70 +258,6 @@ export interface HostedArtifactIndexEntry extends HostedArtifact {
 	ordinal: number;
 }
 
-export interface HostedArtifactRetentionHold {
-	holdId: string;
-	profileId: string;
-	artifactId: string;
-	clientHoldId: string;
-	reason: string;
-	expiresAt?: string;
-	createdByUserId: string;
-	createdAt: string;
-	releasedByUserId?: string;
-	releasedAt?: string;
-}
-
-export interface HostedArtifactGcCandidate extends HostedArtifact {
-	objectDeletionReady: boolean;
-	reachabilityReady: boolean;
-	reachabilityGraphId?: string;
-	deletableObjectCount: number;
-	deletableStorageBytes: number;
-	blockedReason?: string;
-}
-
-export interface HostedArtifactGcPlan {
-	planId: string;
-	profileId: string;
-	artifactId: string;
-	graphId: string;
-	restoreProofId: string;
-	clientPlanId: string;
-	status: HostedArtifactGcPlanStatus;
-	objectCount: number;
-	storageBytes: number;
-	pendingObjectCount: number;
-	deletedObjectCount: number;
-	retainedObjectCount: number;
-	notBefore: string;
-	nextAttemptAt: string;
-	attemptCount: number;
-	lastError?: string;
-	createdByUserId: string;
-	createdAt: string;
-	startedAt?: string;
-	completedAt?: string;
-	cancelledByUserId?: string;
-	cancelledAt?: string;
-}
-
-export interface HostedArtifactGcAuditReceipt {
-	receiptId: number;
-	planId: string;
-	eventType:
-		| "created"
-		| "claimed"
-		| "object_batch_acknowledged"
-		| "retrying"
-		| "failed"
-		| "completed"
-		| "cancelled"
-		| "manual_retry";
-	payload: JsonValue;
-	actorUserId?: string;
-	createdAt: string;
-}
-
 export interface HostedCompanyOperation {
 	profileId: string;
 	sequence: number;
@@ -384,25 +308,6 @@ export interface AppendHostedSessionEventInput {
 	/** Last sequence observed by the caller. The append fails if the trail advanced. */
 	expectedSequence?: number;
 	execution?: ExecutionIdentity;
-}
-
-export interface RegisterHostedArtifactInput {
-	environmentId: string;
-	clientArtifactId: string;
-	sessionId?: string;
-	artifactType: string;
-	name: string;
-	rootObjectSha256: string;
-	rootContract: HostedArtifactRootContract;
-	contentSha256: string;
-	bytes: number;
-	mediaType: string;
-}
-
-export interface CreateHostedArtifactIndexInput {
-	environmentId: string;
-	clientIndexId: string;
-	artifactIds: string[];
 }
 
 export interface HostedPrimaryTransport {
@@ -461,62 +366,8 @@ export interface HostedPrimaryTransport {
 		p_body: JsonValue;
 	}): Promise<unknown>;
 	listSessionInputs(input: { p_session_id: string; p_after_position: number; p_limit: number }): Promise<unknown>;
-	claimSessionTurn(input: {
-		p_session_id: string;
-		p_claimant_id: string;
-		p_lease_seconds: number;
-		p_company_snapshot_id: string;
-		p_staff_version: number;
-	}): Promise<unknown>;
-	renewSessionTurn(input: {
-		p_session_id: string;
-		p_turn_id: string;
-		p_claimant_id: string;
-		p_lease_seconds: number;
-	}): Promise<unknown>;
-	completeSessionTurn(input: {
-		p_session_id: string;
-		p_turn_id: string;
-		p_claimant_id: string;
-		p_trail_end_sequence: number;
-	}): Promise<unknown>;
-	quarantineSessionTurn(input: {
-		p_session_id: string;
-		p_turn_id: string;
-		p_claimant_id: string;
-		p_reason: string;
-	}): Promise<unknown>;
-	listSessionRecoveries(input: {
-		p_session_id: string;
-		p_after_completed_at: string | null;
-		p_after_id: string | null;
-		p_limit: number;
-	}): Promise<unknown>;
-	listSessionExecutionRunRecoveries(input: { p_session_id: string; p_limit: number }): Promise<unknown>;
 	listStaffExecutionActivity(input: { p_environment_id: string }): Promise<unknown>;
 	resolveFailedExecutionRun(input: { p_run_id: string; p_action: "retry" | "discard" }): Promise<unknown>;
-	resolveSessionRecovery(input: {
-		p_session_id: string;
-		p_turn_id: string;
-		p_resolution: "retry" | "discard";
-	}): Promise<unknown>;
-	getSessionTurnStatus(input: { p_session_id: string; p_turn_id: string; p_claimant_id: string }): Promise<unknown>;
-	claimWake(input: {
-		p_environment_id: string;
-		p_wake_key: string;
-		p_claimant_id: string;
-		p_lease_seconds: number;
-		p_staff_agent_id: string;
-		p_company_snapshot_id: string;
-		p_staff_version: number;
-	}): Promise<unknown>;
-	renewWake(input: {
-		p_environment_id: string;
-		p_wake_key: string;
-		p_claimant_id: string;
-		p_lease_seconds: number;
-	}): Promise<unknown>;
-	completeWake(input: { p_environment_id: string; p_wake_key: string; p_claimant_id: string }): Promise<unknown>;
 	beginOperationReceipt(input: {
 		p_execution_kind: HostedOperationExecution["kind"];
 		p_execution_id: string;
@@ -568,38 +419,6 @@ export interface HostedPrimaryTransport {
 	}): Promise<unknown>;
 	readSessionEvents(input: { p_session_id: string; p_after_sequence: number; p_limit: number }): Promise<unknown>;
 	getCompanyFile(input: { p_environment_id: string }): Promise<unknown>;
-	registerArtifact(input: {
-		p_environment_id: string;
-		p_client_artifact_id: string;
-		p_session_id: string | null;
-		p_artifact_type: string;
-		p_name: string;
-		p_root_object_sha256: string;
-		p_root_contract: HostedArtifactRootContract;
-		p_content_sha256: string;
-		p_bytes: number;
-		p_media_type: string;
-	}): Promise<unknown>;
-	createArtifactIndex(input: {
-		p_environment_id: string;
-		p_client_index_id: string;
-		p_artifact_ids: string[];
-	}): Promise<unknown>;
-	getArtifactIndex(input: { p_index_id: string }): Promise<unknown>;
-	listArtifactIndexEntries(input: { p_index_id: string; p_after_ordinal: number; p_limit: number }): Promise<unknown>;
-	createArtifactRetentionHold(input: {
-		p_artifact_id: string;
-		p_client_hold_id: string;
-		p_reason: string;
-		p_expires_at: string | null;
-	}): Promise<unknown>;
-	releaseArtifactRetentionHold(input: { p_hold_id: string }): Promise<unknown>;
-	listArtifactGcCandidates(input: { p_profile_id: string; p_limit: number }): Promise<unknown>;
-	createArtifactGcPlan(input: { p_artifact_id: string; p_client_plan_id: string }): Promise<unknown>;
-	listArtifactGcPlans(input: { p_profile_id: string; p_limit: number }): Promise<unknown>;
-	listArtifactGcAudit(input: { p_plan_id: string; p_after_id: number; p_limit: number }): Promise<unknown>;
-	cancelArtifactGcPlan(input: { p_plan_id: string }): Promise<unknown>;
-	retryArtifactGcPlan(input: { p_plan_id: string }): Promise<unknown>;
 }
 
 export interface HostedPrimaryDatabase {
@@ -685,80 +504,12 @@ export interface HostedPrimaryDatabase {
 				Args: { p_session_id: string; p_after_position: number; p_limit: number };
 				Returns: JsonValue;
 			};
-			qorpera_claim_session_turn: {
-				Args: {
-					p_session_id: string;
-					p_claimant_id: string;
-					p_lease_seconds: number;
-					p_company_snapshot_id: string;
-					p_staff_version: number;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_renew_session_turn_v2: {
-				Args: { p_session_id: string; p_turn_id: string; p_claimant_id: string; p_lease_seconds: number };
-				Returns: JsonValue;
-			};
-			qorpera_complete_session_turn_v2: {
-				Args: {
-					p_session_id: string;
-					p_turn_id: string;
-					p_claimant_id: string;
-					p_trail_end_sequence: number;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_quarantine_session_turn: {
-				Args: { p_session_id: string; p_turn_id: string; p_claimant_id: string; p_reason: string };
-				Returns: JsonValue;
-			};
-			qorpera_list_session_recoveries: {
-				Args: {
-					p_session_id: string;
-					p_after_completed_at: string | null;
-					p_after_id: string | null;
-					p_limit: number;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_list_session_execution_run_recoveries: {
-				Args: { p_session_id: string; p_limit: number };
-				Returns: JsonValue;
-			};
 			qorpera_list_staff_execution_activity: {
 				Args: { p_environment_id: string };
 				Returns: JsonValue;
 			};
 			qorpera_resolve_failed_execution_run: {
 				Args: { p_run_id: string; p_action: string };
-				Returns: JsonValue;
-			};
-			qorpera_resolve_session_recovery: {
-				Args: { p_session_id: string; p_turn_id: string; p_resolution: string };
-				Returns: JsonValue;
-			};
-			qorpera_get_session_turn_status: {
-				Args: { p_session_id: string; p_turn_id: string; p_claimant_id: string };
-				Returns: JsonValue;
-			};
-			qorpera_claim_wake_v2: {
-				Args: {
-					p_environment_id: string;
-					p_wake_key: string;
-					p_claimant_id: string;
-					p_lease_seconds: number;
-					p_staff_agent_id: string;
-					p_company_snapshot_id: string;
-					p_staff_version: number;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_renew_wake: {
-				Args: { p_environment_id: string; p_wake_key: string; p_claimant_id: string; p_lease_seconds: number };
-				Returns: JsonValue;
-			};
-			qorpera_complete_wake: {
-				Args: { p_environment_id: string; p_wake_key: string; p_claimant_id: string };
 				Returns: JsonValue;
 			};
 			qorpera_begin_operation_receipt: {
@@ -838,64 +589,6 @@ export interface HostedPrimaryDatabase {
 				Returns: JsonValue;
 			};
 			qorpera_get_company_file: { Args: { p_environment_id: string }; Returns: JsonValue };
-			qorpera_register_artifact_v2: {
-				Args: {
-					p_environment_id: string;
-					p_client_artifact_id: string;
-					p_session_id: string | null;
-					p_artifact_type: string;
-					p_name: string;
-					p_root_object_sha256: string;
-					p_root_contract: HostedArtifactRootContract;
-					p_content_sha256: string;
-					p_bytes: number;
-					p_media_type: string;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_create_artifact_index: {
-				Args: { p_environment_id: string; p_client_index_id: string; p_artifact_ids: string[] };
-				Returns: JsonValue;
-			};
-			qorpera_get_artifact_index: { Args: { p_index_id: string }; Returns: JsonValue };
-			qorpera_list_artifact_index_entries: {
-				Args: { p_index_id: string; p_after_ordinal: number; p_limit: number };
-				Returns: JsonValue;
-			};
-			qorpera_create_artifact_retention_hold: {
-				Args: {
-					p_artifact_id: string;
-					p_client_hold_id: string;
-					p_reason: string;
-					p_expires_at: string | null;
-				};
-				Returns: JsonValue;
-			};
-			qorpera_release_artifact_retention_hold: { Args: { p_hold_id: string }; Returns: JsonValue };
-			qorpera_list_artifact_gc_candidates: {
-				Args: { p_profile_id: string; p_limit: number };
-				Returns: JsonValue;
-			};
-			qorpera_create_artifact_gc_plan: {
-				Args: { p_artifact_id: string; p_client_plan_id: string };
-				Returns: JsonValue;
-			};
-			qorpera_list_artifact_gc_plans: {
-				Args: { p_profile_id: string; p_limit: number };
-				Returns: JsonValue;
-			};
-			qorpera_list_artifact_gc_audit: {
-				Args: { p_plan_id: string; p_after_id: number; p_limit: number };
-				Returns: JsonValue;
-			};
-			qorpera_cancel_artifact_gc_plan: {
-				Args: { p_plan_id: string };
-				Returns: JsonValue;
-			};
-			qorpera_retry_artifact_gc_plan: {
-				Args: { p_plan_id: string };
-				Returns: JsonValue;
-			};
 		};
 	};
 }
@@ -985,48 +678,6 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 		return data;
 	}
 
-	async claimSessionTurn(input: Parameters<HostedPrimaryTransport["claimSessionTurn"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_claim_session_turn", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async renewSessionTurn(input: Parameters<HostedPrimaryTransport["renewSessionTurn"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_renew_session_turn_v2", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async completeSessionTurn(input: Parameters<HostedPrimaryTransport["completeSessionTurn"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_complete_session_turn_v2", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async quarantineSessionTurn(
-		input: Parameters<HostedPrimaryTransport["quarantineSessionTurn"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_quarantine_session_turn", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async listSessionRecoveries(
-		input: Parameters<HostedPrimaryTransport["listSessionRecoveries"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_list_session_recoveries", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async listSessionExecutionRunRecoveries(
-		input: Parameters<HostedPrimaryTransport["listSessionExecutionRunRecoveries"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_list_session_execution_run_recoveries", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
 	async listStaffExecutionActivity(
 		input: Parameters<HostedPrimaryTransport["listStaffExecutionActivity"]>[0],
 	): Promise<unknown> {
@@ -1039,38 +690,6 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 		input: Parameters<HostedPrimaryTransport["resolveFailedExecutionRun"]>[0],
 	): Promise<unknown> {
 		const { data, error } = await this.client.rpc("qorpera_resolve_failed_execution_run", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async resolveSessionRecovery(
-		input: Parameters<HostedPrimaryTransport["resolveSessionRecovery"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_resolve_session_recovery", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async getSessionTurnStatus(input: Parameters<HostedPrimaryTransport["getSessionTurnStatus"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_get_session_turn_status", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async claimWake(input: Parameters<HostedPrimaryTransport["claimWake"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_claim_wake_v2", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async renewWake(input: Parameters<HostedPrimaryTransport["renewWake"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_renew_wake", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async completeWake(input: Parameters<HostedPrimaryTransport["completeWake"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_complete_wake", input);
 		if (error) throw rpcError(error);
 		return data;
 	}
@@ -1246,86 +865,6 @@ export class SupabaseHostedPrimaryTransport implements HostedPrimaryTransport {
 		if (error) throw rpcError(error);
 		return data;
 	}
-
-	async registerArtifact(input: Parameters<HostedPrimaryTransport["registerArtifact"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_register_artifact_v2", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async createArtifactIndex(input: Parameters<HostedPrimaryTransport["createArtifactIndex"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_create_artifact_index", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async getArtifactIndex(input: Parameters<HostedPrimaryTransport["getArtifactIndex"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_get_artifact_index", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async listArtifactIndexEntries(
-		input: Parameters<HostedPrimaryTransport["listArtifactIndexEntries"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_list_artifact_index_entries", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async createArtifactRetentionHold(
-		input: Parameters<HostedPrimaryTransport["createArtifactRetentionHold"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_create_artifact_retention_hold", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async releaseArtifactRetentionHold(
-		input: Parameters<HostedPrimaryTransport["releaseArtifactRetentionHold"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_release_artifact_retention_hold", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async listArtifactGcCandidates(
-		input: Parameters<HostedPrimaryTransport["listArtifactGcCandidates"]>[0],
-	): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_list_artifact_gc_candidates", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async createArtifactGcPlan(input: Parameters<HostedPrimaryTransport["createArtifactGcPlan"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_create_artifact_gc_plan", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async listArtifactGcPlans(input: Parameters<HostedPrimaryTransport["listArtifactGcPlans"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_list_artifact_gc_plans", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async listArtifactGcAudit(input: Parameters<HostedPrimaryTransport["listArtifactGcAudit"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_list_artifact_gc_audit", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async cancelArtifactGcPlan(input: Parameters<HostedPrimaryTransport["cancelArtifactGcPlan"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_cancel_artifact_gc_plan", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
-
-	async retryArtifactGcPlan(input: Parameters<HostedPrimaryTransport["retryArtifactGcPlan"]>[0]): Promise<unknown> {
-		const { data, error } = await this.client.rpc("qorpera_retry_artifact_gc_plan", input);
-		if (error) throw rpcError(error);
-		return data;
-	}
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -1373,13 +912,6 @@ function sessionEventType(value: unknown): HostedSessionEventType {
 		throw new Error("Hosted primary returned invalid event type");
 	}
 	return value as HostedSessionEventType;
-}
-
-function artifactRootContract(value: unknown): HostedArtifactRootContract {
-	if (!HOSTED_ARTIFACT_ROOT_CONTRACTS.some((candidate) => candidate === value)) {
-		throw new Error("Hosted primary returned invalid artifact root contract");
-	}
-	return value as HostedArtifactRootContract;
 }
 
 function jsonValue(value: unknown, seen = new Set<object>()): JsonValue {
@@ -1826,256 +1358,6 @@ function boundedInteger(value: unknown, label: string, minimum: number, maximum:
 	return value as number;
 }
 
-function parseArtifact(value: unknown): HostedArtifact {
-	const input = record(value, "artifact");
-	const sessionId = input.session_id;
-	if (typeof input.root_object_sha256 !== "string" || !SHA256_PATTERN.test(input.root_object_sha256)) {
-		throw new Error("Hosted primary returned invalid artifact root object hash");
-	}
-	if (typeof input.content_sha256 !== "string" || !SHA256_PATTERN.test(input.content_sha256)) {
-		throw new Error("Hosted primary returned invalid artifact content hash");
-	}
-	const artifactType = nonEmptyString(input.artifact_type, "artifact type", 64);
-	if (!/^[a-z][a-z0-9_-]{0,63}$/.test(artifactType)) {
-		throw new Error("Hosted primary returned invalid artifact type");
-	}
-	const mediaType = nonEmptyString(input.media_type, "artifact media type", 256);
-	if (mediaType !== mediaType.trim().toLowerCase() || !mediaType.includes("/") || /[\r\n\0]/.test(mediaType)) {
-		throw new Error("Hosted primary returned invalid artifact media type");
-	}
-	return {
-		artifactId: uuid(input.artifact_id, "artifact id"),
-		profileId: uuid(input.profile_id, "artifact profile id"),
-		environmentId: uuid(input.environment_id, "artifact environment id"),
-		clientArtifactId: uuid(input.client_artifact_id, "artifact client id"),
-		...(sessionId === null || sessionId === undefined ? {} : { sessionId: uuid(sessionId, "artifact session id") }),
-		artifactType,
-		name: nonEmptyString(input.name, "artifact name", 256),
-		rootObjectSha256: input.root_object_sha256,
-		rootContract: artifactRootContract(input.root_contract),
-		contentSha256: input.content_sha256,
-		bytes: boundedInteger(input.bytes, "artifact bytes", 0, MAX_TREE_BYTES),
-		mediaType,
-		createdByUserId: uuid(input.created_by_user_id, "artifact creator id"),
-		createdAt: timestamp(input.created_at, "artifact creation time"),
-		eligibleForGcAt: timestamp(input.eligible_for_gc_at, "artifact garbage-collection eligibility time"),
-	};
-}
-
-function parseArtifactIndex(value: unknown): HostedArtifactIndex {
-	const input = record(value, "artifact index");
-	if (input.contract_version !== 1) throw new Error("Hosted primary returned invalid artifact index contract");
-	if (typeof input.content_sha256 !== "string" || !SHA256_PATTERN.test(input.content_sha256)) {
-		throw new Error("Hosted primary returned invalid artifact index content hash");
-	}
-	return {
-		indexId: uuid(input.index_id, "artifact index id"),
-		profileId: uuid(input.profile_id, "artifact index profile id"),
-		environmentId: uuid(input.environment_id, "artifact index environment id"),
-		clientIndexId: uuid(input.client_index_id, "artifact client index id"),
-		contractVersion: 1,
-		contentSha256: input.content_sha256,
-		artifactCount: boundedInteger(input.artifact_count, "artifact index count", 0, MAX_ARTIFACT_INDEX_ENTRIES),
-		totalBytes: boundedInteger(
-			input.total_bytes,
-			"artifact index total bytes",
-			0,
-			MAX_TREE_BYTES * MAX_ARTIFACT_INDEX_ENTRIES,
-		),
-		createdByUserId: uuid(input.created_by_user_id, "artifact index creator id"),
-		createdAt: timestamp(input.created_at, "artifact index creation time"),
-	};
-}
-
-function parseArtifactIndexEntry(value: unknown): HostedArtifactIndexEntry {
-	const input = record(value, "artifact index entry");
-	return {
-		...parseArtifact(input),
-		ordinal: boundedInteger(input.ordinal, "artifact index ordinal", 1, MAX_ARTIFACT_INDEX_ENTRIES),
-	};
-}
-
-function parseArtifactRetentionHold(value: unknown): HostedArtifactRetentionHold {
-	const input = record(value, "artifact retention hold");
-	const expiresAt = input.expires_at;
-	const releasedByUserId = input.released_by_user_id;
-	const releasedAt = input.released_at;
-	if (
-		(releasedByUserId === null || releasedByUserId === undefined) !==
-		(releasedAt === null || releasedAt === undefined)
-	) {
-		throw new Error("Hosted primary returned inconsistent artifact retention release state");
-	}
-	return {
-		holdId: uuid(input.hold_id, "artifact retention hold id"),
-		profileId: uuid(input.profile_id, "artifact retention profile id"),
-		artifactId: uuid(input.artifact_id, "artifact retention artifact id"),
-		clientHoldId: uuid(input.client_hold_id, "artifact retention client id"),
-		reason: nonEmptyString(input.reason, "artifact retention reason", 500),
-		...(expiresAt === null || expiresAt === undefined
-			? {}
-			: { expiresAt: timestamp(expiresAt, "artifact retention expiry") }),
-		createdByUserId: uuid(input.created_by_user_id, "artifact retention creator id"),
-		createdAt: timestamp(input.created_at, "artifact retention creation time"),
-		...(releasedByUserId === null || releasedByUserId === undefined
-			? {}
-			: {
-					releasedByUserId: uuid(releasedByUserId, "artifact retention releasing user id"),
-					releasedAt: timestamp(releasedAt, "artifact retention release time"),
-				}),
-	};
-}
-
-function parseArtifactGcCandidate(value: unknown): HostedArtifactGcCandidate {
-	const input = record(value, "artifact garbage-collection candidate");
-	if (typeof input.object_deletion_ready !== "boolean") {
-		throw new Error("Hosted primary returned invalid artifact deletion readiness");
-	}
-	if (typeof input.reachability_ready !== "boolean") {
-		throw new Error("Hosted primary returned invalid artifact reachability readiness");
-	}
-	if (input.object_deletion_ready && !input.reachability_ready) {
-		throw new Error("Hosted primary returned unsafe artifact deletion readiness");
-	}
-	const reachabilityGraphId = input.reachability_graph_id;
-	const blockedReason = input.blocked_reason;
-	if (input.object_deletion_ready && blockedReason !== null && blockedReason !== undefined) {
-		throw new Error("Hosted primary returned inconsistent artifact deletion blocker");
-	}
-	return {
-		...parseArtifact(input),
-		objectDeletionReady: input.object_deletion_ready,
-		reachabilityReady: input.reachability_ready,
-		...(reachabilityGraphId === null || reachabilityGraphId === undefined
-			? {}
-			: { reachabilityGraphId: uuid(reachabilityGraphId, "artifact reachability graph id") }),
-		deletableObjectCount: boundedInteger(
-			input.deletable_object_count,
-			"artifact deletable object count",
-			0,
-			MAX_REACHABILITY_OBJECTS,
-		),
-		deletableStorageBytes: boundedInteger(
-			input.deletable_storage_bytes,
-			"artifact deletable storage bytes",
-			0,
-			MAX_REACHABILITY_STORAGE_BYTES,
-		),
-		...(blockedReason === null || blockedReason === undefined
-			? {}
-			: { blockedReason: nonEmptyString(blockedReason, "artifact deletion blocker", 500) }),
-	};
-}
-
-function parseArtifactGcPlan(value: unknown): HostedArtifactGcPlan {
-	const input = record(value, "artifact cleanup plan");
-	const status = input.status;
-	if (!HOSTED_ARTIFACT_GC_PLAN_STATUSES.some((candidate) => candidate === status)) {
-		throw new Error("Hosted primary returned invalid artifact cleanup status");
-	}
-	const objectCount = boundedInteger(input.object_count, "artifact cleanup object count", 0, MAX_REACHABILITY_OBJECTS);
-	const pendingObjectCount = boundedInteger(
-		input.pending_object_count,
-		"artifact cleanup pending count",
-		0,
-		MAX_REACHABILITY_OBJECTS,
-	);
-	const deletedObjectCount = boundedInteger(
-		input.deleted_object_count,
-		"artifact cleanup deleted count",
-		0,
-		MAX_REACHABILITY_OBJECTS,
-	);
-	const retainedObjectCount = boundedInteger(
-		input.retained_object_count,
-		"artifact cleanup retained count",
-		0,
-		MAX_REACHABILITY_OBJECTS,
-	);
-	if (pendingObjectCount + deletedObjectCount + retainedObjectCount !== objectCount) {
-		throw new Error("Hosted primary returned inconsistent artifact cleanup counts");
-	}
-	const lastError = input.last_error;
-	const startedAt = input.started_at;
-	const completedAt = input.completed_at;
-	const cancelledByUserId = input.cancelled_by_user_id;
-	const cancelledAt = input.cancelled_at;
-	if ((status === "completed") !== (typeof completedAt === "string")) {
-		throw new Error("Hosted primary returned inconsistent artifact cleanup completion");
-	}
-	if (
-		(cancelledByUserId === null || cancelledByUserId === undefined) !==
-		(cancelledAt === null || cancelledAt === undefined)
-	) {
-		throw new Error("Hosted primary returned inconsistent artifact cleanup cancellation");
-	}
-	return {
-		planId: uuid(input.plan_id, "artifact cleanup plan id"),
-		profileId: uuid(input.profile_id, "artifact cleanup profile id"),
-		artifactId: uuid(input.artifact_id, "artifact cleanup artifact id"),
-		graphId: uuid(input.graph_id, "artifact cleanup graph id"),
-		restoreProofId: uuid(input.restore_proof_id, "artifact cleanup restore proof id"),
-		clientPlanId: uuid(input.client_plan_id, "artifact cleanup client id"),
-		status: status as HostedArtifactGcPlanStatus,
-		objectCount,
-		storageBytes: boundedInteger(
-			input.storage_bytes,
-			"artifact cleanup storage bytes",
-			0,
-			MAX_REACHABILITY_STORAGE_BYTES,
-		),
-		pendingObjectCount,
-		deletedObjectCount,
-		retainedObjectCount,
-		notBefore: timestamp(input.not_before, "artifact cleanup recovery time"),
-		nextAttemptAt: timestamp(input.next_attempt_at, "artifact cleanup retry time"),
-		attemptCount: boundedInteger(input.attempt_count, "artifact cleanup attempt count", 0, 1000),
-		...(lastError === null || lastError === undefined
-			? {}
-			: { lastError: nonEmptyString(lastError, "artifact cleanup error", 1000) }),
-		createdByUserId: uuid(input.created_by_user_id, "artifact cleanup creator id"),
-		createdAt: timestamp(input.created_at, "artifact cleanup creation time"),
-		...(typeof startedAt === "string" ? { startedAt: timestamp(startedAt, "artifact cleanup start time") } : {}),
-		...(typeof completedAt === "string"
-			? { completedAt: timestamp(completedAt, "artifact cleanup completion time") }
-			: {}),
-		...(cancelledByUserId === null || cancelledByUserId === undefined
-			? {}
-			: {
-					cancelledByUserId: uuid(cancelledByUserId, "artifact cleanup cancelling user id"),
-					cancelledAt: timestamp(cancelledAt, "artifact cleanup cancellation time"),
-				}),
-	};
-}
-
-function parseArtifactGcAuditReceipt(value: unknown): HostedArtifactGcAuditReceipt {
-	const input = record(value, "artifact cleanup audit receipt");
-	const eventType = input.event_type;
-	if (
-		eventType !== "created" &&
-		eventType !== "claimed" &&
-		eventType !== "object_batch_acknowledged" &&
-		eventType !== "retrying" &&
-		eventType !== "failed" &&
-		eventType !== "completed" &&
-		eventType !== "cancelled" &&
-		eventType !== "manual_retry"
-	) {
-		throw new Error("Hosted primary returned invalid artifact cleanup audit event");
-	}
-	const actorUserId = input.actor_user_id;
-	return {
-		receiptId: boundedInteger(input.receipt_id, "artifact cleanup receipt id", 1, Number.MAX_SAFE_INTEGER),
-		planId: uuid(input.plan_id, "artifact cleanup receipt plan id"),
-		eventType,
-		payload: jsonValue(input.payload),
-		...(actorUserId === null || actorUserId === undefined
-			? {}
-			: { actorUserId: uuid(actorUserId, "artifact cleanup receipt actor id") }),
-		createdAt: timestamp(input.created_at, "artifact cleanup receipt time"),
-	};
-}
-
 function array(value: unknown, label: string): unknown[] {
 	if (!Array.isArray(value)) throw new Error(`Hosted primary returned invalid ${label}`);
 	return value;
@@ -2130,45 +1412,6 @@ export interface PendingSessionInputPage {
 	hasMore: boolean;
 }
 
-export interface HostedOperationRecoveryReceipt {
-	operationId: string;
-	operationKind: string;
-	/** `outcome_unknown`: the run was cut off while it ran, and a resume settled it (W5). */
-	status: "executing" | "completed" | "ambiguous" | "cancelled" | "outcome_unknown";
-	recoveryResolution?: "confirmed_completed" | "confirmed_not_run";
-	createdAt: string;
-}
-
-export interface HostedSessionRecovery {
-	turnId: string;
-	companySnapshotId: string;
-	staffVersion: number;
-	trailStartSequence: number;
-	trailEndSequence: number;
-	failureReason: string;
-	claimedAt: string;
-	failedAt: string;
-	operationReceipts: HostedOperationRecoveryReceipt[];
-	inputs: SessionTurnInput[];
-}
-
-export interface HostedSessionRecoveryPage {
-	items: HostedSessionRecovery[];
-	hasMore: boolean;
-	nextCompletedAt?: string;
-	nextId?: string;
-}
-
-export interface HostedExecutionRunRecovery {
-	runId: string;
-	sessionId: string;
-	failureReason: string;
-	failedAt: string;
-	operationReceipts: HostedOperationRecoveryReceipt[];
-	inputs: SessionTurnInput[];
-	proposalId?: string;
-}
-
 export interface HostedStaffExecutionActivity {
 	runId: string;
 	staffAgentId: string;
@@ -2176,32 +1419,6 @@ export interface HostedStaffExecutionActivity {
 	jobStatus: "queued" | "leased" | "completed" | "failed" | "cancelled";
 	activity: "waiting" | "working" | "needs_attention";
 	updatedAt: string;
-}
-
-export type SessionTurnClaim =
-	| { claimed: true; turnId: string; companySnapshotId: string; staffVersion: number; inputs: SessionTurnInput[] }
-	| { claimed: false; reason: "turn-in-flight" | "queue-empty" | "stale-revision" };
-
-export type SessionTurnStatus =
-	| { status: "unavailable" }
-	| {
-			status: "active" | "completed" | "quarantined" | "review_pending";
-			inputCount: number;
-			remainingInputCount: number;
-	  };
-
-export class SessionTurnOwnershipError extends Error {
-	constructor(action: "renew" | "complete") {
-		super(`Session turn ownership was lost before ${action}`);
-		this.name = "SessionTurnOwnershipError";
-	}
-}
-
-export class WakeOwnershipError extends Error {
-	constructor(action: "renew" | "complete") {
-		super(`Wake ownership was lost before ${action}`);
-		this.name = "WakeOwnershipError";
-	}
 }
 
 function parseStaffSessionHandle(value: unknown): StaffSessionHandle {
@@ -2223,26 +1440,6 @@ function parseStaffSessionHandle(value: unknown): StaffSessionHandle {
 		created: payload.created === true,
 		createdByUserId: uuid(payload.created_by_user_id, "Session creator"),
 		createdAt: timestamp(payload.created_at, "Session creation time"),
-	};
-}
-
-function parseSessionTurnClaim(value: unknown): SessionTurnClaim {
-	const payload = record(value, "session turn claim");
-	if (payload.claimed !== true) {
-		const reason =
-			payload.reason === "turn-in-flight"
-				? "turn-in-flight"
-				: payload.reason === "stale-revision"
-					? "stale-revision"
-					: "queue-empty";
-		return { claimed: false, reason };
-	}
-	return {
-		claimed: true,
-		turnId: uuid(payload.turn_id, "session turn id"),
-		companySnapshotId: uuid(payload.company_snapshot_id, "claimed Company File revision"),
-		staffVersion: boundedInteger(payload.staff_version, "claimed staff version", 1, Number.MAX_SAFE_INTEGER),
-		inputs: parseSessionInputs(payload.inputs, "session turn inputs"),
 	};
 }
 
@@ -2311,115 +1508,6 @@ function parsePendingSessionInputs(value: unknown): PendingSessionInputPage {
 	};
 }
 
-function parseSessionRecoveryPage(value: unknown): HostedSessionRecoveryPage {
-	const page = record(value, "session recovery page");
-	const items = array(page.items, "session recoveries").map((entry) => {
-		const recovery = record(entry, "session recovery");
-		const operationReceipts = array(recovery.operation_receipts, "session recovery operation receipts").map(
-			(entry) => {
-				const receipt = record(entry, "session recovery operation receipt");
-				const recoveryResolution = receipt.recovery_resolution;
-				const parsedRecoveryResolution: HostedOperationRecoveryReceipt["recoveryResolution"] =
-					recoveryResolution === "confirmed_completed" || recoveryResolution === "confirmed_not_run"
-						? recoveryResolution
-						: undefined;
-				if (
-					!["executing", "completed", "ambiguous", "cancelled", "outcome_unknown"].includes(String(receipt.status))
-				) {
-					throw new Error("Hosted primary returned invalid session recovery receipt status");
-				}
-				return {
-					operationId: uuid(receipt.operation_id, "Session recovery operation id"),
-					operationKind: nonEmptyString(receipt.operation_kind, "Session recovery operation kind", 64),
-					status: receipt.status as HostedOperationRecoveryReceipt["status"],
-					...(parsedRecoveryResolution ? { recoveryResolution: parsedRecoveryResolution } : {}),
-					createdAt: timestamp(receipt.created_at, "Session recovery operation creation time"),
-				};
-			},
-		);
-		return {
-			turnId: uuid(recovery.turn_id, "Session recovery turn id"),
-			companySnapshotId: uuid(recovery.company_snapshot_id, "Session recovery Company File revision"),
-			staffVersion: boundedInteger(
-				recovery.staff_version,
-				"Session recovery staff version",
-				1,
-				Number.MAX_SAFE_INTEGER,
-			),
-			trailStartSequence: boundedInteger(
-				recovery.trail_start_sequence,
-				"Session recovery trail start",
-				0,
-				Number.MAX_SAFE_INTEGER,
-			),
-			trailEndSequence: boundedInteger(
-				recovery.trail_end_sequence,
-				"Session recovery trail end",
-				0,
-				Number.MAX_SAFE_INTEGER,
-			),
-			failureReason: nonEmptyString(recovery.failure_reason, "Session recovery reason", 2048),
-			claimedAt: timestamp(recovery.claimed_at, "Session recovery claim time"),
-			failedAt: timestamp(recovery.failed_at, "Session recovery failure time"),
-			operationReceipts,
-			inputs: parseSessionInputs(recovery.inputs, "session recovery inputs"),
-		};
-	});
-	const nextCompletedAt = page.next_completed_at;
-	const nextId = page.next_id;
-	return {
-		items,
-		hasMore: page.has_more === true,
-		...(nextCompletedAt === null || nextCompletedAt === undefined
-			? {}
-			: { nextCompletedAt: timestamp(nextCompletedAt, "Session recovery next cursor time") }),
-		...(nextId === null || nextId === undefined ? {} : { nextId: uuid(nextId, "Session recovery next cursor id") }),
-	};
-}
-
-function parseExecutionRunRecovery(value: unknown): HostedExecutionRunRecovery {
-	const recovery = record(value, "execution run recovery");
-	const run = record(recovery.run, "execution run recovery run");
-	const job = record(recovery.job, "execution run recovery job");
-	if (run.source_kind !== "session_turn" || (job.status !== "failed" && job.status !== "cancelled")) {
-		throw new Error("Hosted primary returned an invalid execution run recovery");
-	}
-	const operationReceipts: HostedOperationRecoveryReceipt[] = array(
-		recovery.operations,
-		"execution run recovery operations",
-	).map((entry) => {
-		const receipt = record(entry, "execution run recovery operation");
-		if (!["executing", "completed", "ambiguous", "cancelled", "outcome_unknown"].includes(String(receipt.status))) {
-			throw new Error("Hosted primary returned an invalid execution run recovery operation");
-		}
-		const recoveryResolution = receipt.recovery_resolution;
-		return {
-			operationId: uuid(receipt.operation_id, "Execution run recovery operation id"),
-			operationKind: nonEmptyString(receipt.operation_kind, "Execution run recovery operation kind", 64),
-			status: receipt.status as HostedOperationRecoveryReceipt["status"],
-			...(recoveryResolution === "confirmed_completed" || recoveryResolution === "confirmed_not_run"
-				? { recoveryResolution }
-				: {}),
-			createdAt: timestamp(receipt.created_at, "Execution run recovery operation creation time"),
-		};
-	});
-	const proposalId = recovery.proposal_id;
-	return {
-		runId: uuid(run.run_id, "Execution run recovery id"),
-		sessionId: uuid(run.session_id, "Execution run recovery session id"),
-		failureReason:
-			typeof job.last_error === "string"
-				? nonEmptyString(job.last_error, "Execution run recovery reason", 2048)
-				: "Cloud runner execution was cancelled.",
-		failedAt: timestamp(job.finished_at ?? job.cancelled_at, "Execution run recovery failure time"),
-		operationReceipts,
-		inputs: parseSessionInputs(recovery.inputs, "execution run recovery inputs"),
-		...(proposalId === null || proposalId === undefined
-			? {}
-			: { proposalId: uuid(proposalId, "Execution run recovery proposal id") }),
-	};
-}
-
 function parseStaffExecutionActivity(value: unknown): HostedStaffExecutionActivity {
 	const activity = record(value, "staff execution activity");
 	if (
@@ -2441,31 +1529,6 @@ function parseStaffExecutionActivity(value: unknown): HostedStaffExecutionActivi
 		activity: activity.activity as HostedStaffExecutionActivity["activity"],
 		updatedAt: timestamp(activity.updated_at, "Staff execution activity time"),
 	};
-}
-
-export type WakeClaimResult =
-	| { claimed: true; executionId: string; companySnapshotId: string; staffVersion: number }
-	| { claimed: false; reason: "in-flight" | "already-run" | "stale-revision" | "requires-review" };
-
-function parseWakeClaimResult(value: unknown): WakeClaimResult {
-	const payload = record(value, "wake claim");
-	if (payload.claimed === true) {
-		return {
-			claimed: true,
-			executionId: uuid(payload.execution_id, "wake execution id"),
-			companySnapshotId: uuid(payload.company_snapshot_id, "wake company snapshot id"),
-			staffVersion: boundedInteger(payload.staff_version, "wake staff version", 1, Number.MAX_SAFE_INTEGER),
-		};
-	}
-	const reason =
-		payload.reason === "requires-review"
-			? "requires-review"
-			: payload.reason === "already-run"
-				? "already-run"
-				: payload.reason === "stale-revision"
-					? "stale-revision"
-					: "in-flight";
-	return { claimed: false, reason };
 }
 
 export interface HostedFriend {
@@ -2623,123 +1686,6 @@ export class QorperaHostedPrimary {
 		throw new Error("Session input queue exceeded its bounded read contract");
 	}
 
-	async claimSessionTurn(
-		sessionId: string,
-		claimantId: string,
-		companySnapshotId: string,
-		staffVersion: number,
-		leaseSeconds = 120,
-	): Promise<SessionTurnClaim> {
-		requiredUuid(sessionId, "Session id");
-		requiredUuid(claimantId, "Claimant id");
-		requiredUuid(companySnapshotId, "Company File revision");
-		if (!Number.isSafeInteger(staffVersion) || staffVersion < 1) throw new Error("Staff version is invalid");
-		return parseSessionTurnClaim(
-			await this.transport.claimSessionTurn({
-				p_session_id: sessionId,
-				p_claimant_id: claimantId,
-				p_lease_seconds: leaseSeconds,
-				p_company_snapshot_id: companySnapshotId,
-				p_staff_version: staffVersion,
-			}),
-		);
-	}
-
-	async renewSessionTurn(sessionId: string, turnId: string, claimantId: string, leaseSeconds = 120): Promise<void> {
-		requiredUuid(sessionId, "Session id");
-		requiredUuid(turnId, "Turn id");
-		requiredUuid(claimantId, "Claimant id");
-		const result = record(
-			await this.transport.renewSessionTurn({
-				p_session_id: sessionId,
-				p_turn_id: turnId,
-				p_claimant_id: claimantId,
-				p_lease_seconds: leaseSeconds,
-			}),
-			"session turn renewal",
-		);
-		if (boundedInteger(result.renewed, "Renewed input count", 0, Number.MAX_SAFE_INTEGER) === 0) {
-			throw new SessionTurnOwnershipError("renew");
-		}
-	}
-
-	async completeSessionTurn(
-		sessionId: string,
-		turnId: string,
-		claimantId: string,
-		trailEndSequence: number,
-	): Promise<void> {
-		requiredUuid(sessionId, "Session id");
-		requiredUuid(turnId, "Turn id");
-		requiredUuid(claimantId, "Claimant id");
-		boundedInteger(trailEndSequence, "trail end sequence", 0, Number.MAX_SAFE_INTEGER);
-		const result = record(
-			await this.transport.completeSessionTurn({
-				p_session_id: sessionId,
-				p_turn_id: turnId,
-				p_claimant_id: claimantId,
-				p_trail_end_sequence: trailEndSequence,
-			}),
-			"session turn completion",
-		);
-		if (boundedInteger(result.completed, "Completed input count", 0, Number.MAX_SAFE_INTEGER) === 0) {
-			throw new SessionTurnOwnershipError("complete");
-		}
-	}
-
-	async quarantineSessionTurn(sessionId: string, turnId: string, claimantId: string, reason: string): Promise<void> {
-		requiredUuid(sessionId, "Session id");
-		requiredUuid(turnId, "Turn id");
-		requiredUuid(claimantId, "Claimant id");
-		const result = record(
-			await this.transport.quarantineSessionTurn({
-				p_session_id: sessionId,
-				p_turn_id: turnId,
-				p_claimant_id: claimantId,
-				p_reason: requiredText(reason, "Quarantine reason", 2048),
-			}),
-			"session turn quarantine",
-		);
-		if (boundedInteger(result.quarantined, "Quarantined turn count", 0, 1) === 0) {
-			throw new SessionTurnOwnershipError("complete");
-		}
-	}
-
-	async listSessionRecoveries(
-		sessionId: string,
-		after?: { completedAt: string; turnId: string },
-		limit = 10,
-	): Promise<HostedSessionRecoveryPage> {
-		requiredUuid(sessionId, "Session id");
-		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) {
-			throw new Error("Session recovery page size is invalid");
-		}
-		if (after) {
-			timestamp(after.completedAt, "Session recovery cursor time");
-			requiredUuid(after.turnId, "Session recovery cursor id");
-		}
-		return parseSessionRecoveryPage(
-			await this.transport.listSessionRecoveries({
-				p_session_id: sessionId,
-				p_after_completed_at: after?.completedAt ?? null,
-				p_after_id: after?.turnId ?? null,
-				p_limit: limit,
-			}),
-		);
-	}
-
-	async listSessionExecutionRunRecoveries(sessionId: string, limit = 20): Promise<HostedExecutionRunRecovery[]> {
-		requiredUuid(sessionId, "Session id");
-		boundedInteger(limit, "Execution run recovery limit", 1, 20);
-		return array(
-			await this.transport.listSessionExecutionRunRecoveries({
-				p_session_id: sessionId,
-				p_limit: limit,
-			}),
-			"execution run recoveries",
-		).map(parseExecutionRunRecovery);
-	}
-
 	async listStaffExecutionActivity(environmentId: string): Promise<HostedStaffExecutionActivity[]> {
 		requiredUuid(environmentId, "Environment id");
 		return array(
@@ -2756,116 +1702,6 @@ export class QorperaHostedPrimary {
 		);
 		if (result.resolved !== true || result.action !== action || result.run_id !== runId) {
 			throw new Error("Hosted primary returned an invalid execution run recovery resolution");
-		}
-	}
-
-	async resolveSessionRecovery(
-		sessionId: string,
-		turnId: string,
-		resolution: "retry" | "discard",
-	): Promise<{ resolution: "retry" | "discard"; inputCount: number }> {
-		requiredUuid(sessionId, "Session id");
-		requiredUuid(turnId, "Session recovery turn id");
-		const result = record(
-			await this.transport.resolveSessionRecovery({
-				p_session_id: sessionId,
-				p_turn_id: turnId,
-				p_resolution: resolution,
-			}),
-			"session recovery resolution",
-		);
-		if (result.resolved !== true || (result.resolution !== "retry" && result.resolution !== "discard")) {
-			throw new Error("Hosted primary returned invalid session recovery resolution");
-		}
-		return {
-			resolution: result.resolution,
-			inputCount: boundedInteger(result.input_count, "Session recovery input count", 0, 32),
-		};
-	}
-
-	async getSessionTurnStatus(sessionId: string, turnId: string, claimantId: string): Promise<SessionTurnStatus> {
-		requiredUuid(sessionId, "Session id");
-		requiredUuid(turnId, "Turn id");
-		requiredUuid(claimantId, "Claimant id");
-		const result = record(
-			await this.transport.getSessionTurnStatus({
-				p_session_id: sessionId,
-				p_turn_id: turnId,
-				p_claimant_id: claimantId,
-			}),
-			"session turn status",
-		);
-		if (result.status === "unavailable") return { status: "unavailable" };
-		if (
-			result.status !== "active" &&
-			result.status !== "completed" &&
-			result.status !== "quarantined" &&
-			result.status !== "review_pending"
-		) {
-			throw new Error("Hosted primary returned invalid session turn status");
-		}
-		return {
-			status: result.status,
-			inputCount: boundedInteger(result.input_count, "Session turn input count", 1, 32),
-			remainingInputCount: boundedInteger(result.remaining_input_count, "Session turn remaining input count", 0, 32),
-		};
-	}
-
-	async claimWake(
-		environmentId: string,
-		wakeKey: string,
-		claimantId: string,
-		staffAgentId: string,
-		companySnapshotId: string,
-		staffVersion: number,
-		leaseSeconds = 300,
-	): Promise<WakeClaimResult> {
-		requiredUuid(environmentId, "Environment id");
-		requiredUuid(claimantId, "Claimant id");
-		requiredUuid(staffAgentId, "Staff agent id");
-		requiredUuid(companySnapshotId, "Company snapshot id");
-		if (!Number.isSafeInteger(staffVersion) || staffVersion < 1) throw new Error("Staff version must be positive");
-		return parseWakeClaimResult(
-			await this.transport.claimWake({
-				p_environment_id: environmentId,
-				p_wake_key: requiredText(wakeKey, "Wake key", 200),
-				p_claimant_id: claimantId,
-				p_lease_seconds: leaseSeconds,
-				p_staff_agent_id: staffAgentId,
-				p_company_snapshot_id: companySnapshotId,
-				p_staff_version: staffVersion,
-			}),
-		);
-	}
-
-	async renewWake(environmentId: string, wakeKey: string, claimantId: string, leaseSeconds = 300): Promise<void> {
-		requiredUuid(environmentId, "Environment id");
-		requiredUuid(claimantId, "Claimant id");
-		const result = record(
-			await this.transport.renewWake({
-				p_environment_id: environmentId,
-				p_wake_key: requiredText(wakeKey, "Wake key", 200),
-				p_claimant_id: claimantId,
-				p_lease_seconds: leaseSeconds,
-			}),
-			"wake renewal",
-		);
-		if (boundedInteger(result.renewed, "Renewed wake count", 0, 1) === 0) throw new WakeOwnershipError("renew");
-	}
-
-	async completeWake(environmentId: string, wakeKey: string, claimantId: string): Promise<void> {
-		requiredUuid(environmentId, "Environment id");
-		requiredUuid(claimantId, "Claimant id");
-		const result = record(
-			await this.transport.completeWake({
-				p_environment_id: environmentId,
-				p_wake_key: requiredText(wakeKey, "Wake key", 200),
-				p_claimant_id: claimantId,
-			}),
-			"wake completion",
-		);
-		if (boundedInteger(result.completed, "Completed wake count", 0, 1) === 0) {
-			throw new WakeOwnershipError("complete");
 		}
 	}
 
@@ -3109,169 +1945,6 @@ export class QorperaHostedPrimary {
 	async getCompanyFile(environmentId: string): Promise<HostedCompanyFile> {
 		requiredUuid(environmentId, "Environment id");
 		return parseCompanyFile(await this.transport.getCompanyFile({ p_environment_id: environmentId }));
-	}
-
-	async registerArtifact(input: RegisterHostedArtifactInput): Promise<HostedArtifact> {
-		requiredUuid(input.environmentId, "Environment id");
-		requiredUuid(input.clientArtifactId, "Client artifact id");
-		if (input.sessionId) requiredUuid(input.sessionId, "Artifact session id");
-		if (!/^[a-z][a-z0-9_-]{0,63}$/.test(input.artifactType)) throw new Error("Artifact type is invalid");
-		if (!SHA256_PATTERN.test(input.rootObjectSha256)) throw new Error("Artifact root object SHA-256 is invalid");
-		if (!HOSTED_ARTIFACT_ROOT_CONTRACTS.includes(input.rootContract)) {
-			throw new Error("Artifact root contract is invalid");
-		}
-		if (!SHA256_PATTERN.test(input.contentSha256)) throw new Error("Artifact content SHA-256 is invalid");
-		boundedInteger(input.bytes, "artifact bytes", 0, MAX_TREE_BYTES);
-		if (
-			input.rootContract === "qorpera.object/v1" &&
-			(input.rootObjectSha256 !== input.contentSha256 || input.bytes > MAX_TREE_MANIFEST_BYTES)
-		) {
-			throw new Error("Direct artifact object does not match its content");
-		}
-		const mediaType = input.mediaType.trim().toLowerCase();
-		if (!mediaType.includes("/") || mediaType.length > 256 || /[\r\n\0]/.test(mediaType)) {
-			throw new Error("Artifact media type is invalid");
-		}
-		return parseArtifact(
-			await this.transport.registerArtifact({
-				p_environment_id: input.environmentId,
-				p_client_artifact_id: input.clientArtifactId,
-				p_session_id: input.sessionId ?? null,
-				p_artifact_type: input.artifactType,
-				p_name: requiredText(input.name, "Artifact name", 256),
-				p_root_object_sha256: input.rootObjectSha256,
-				p_root_contract: input.rootContract,
-				p_content_sha256: input.contentSha256,
-				p_bytes: input.bytes,
-				p_media_type: mediaType,
-			}),
-		);
-	}
-
-	async createArtifactIndex(input: CreateHostedArtifactIndexInput): Promise<HostedArtifactIndex> {
-		requiredUuid(input.environmentId, "Environment id");
-		requiredUuid(input.clientIndexId, "Client artifact index id");
-		if (input.artifactIds.length > MAX_ARTIFACT_INDEX_ENTRIES) throw new Error("Artifact index is too large");
-		const artifactIds = [...input.artifactIds].sort();
-		for (const artifactId of artifactIds) requiredUuid(artifactId, "Artifact id");
-		if (new Set(artifactIds).size !== artifactIds.length) throw new Error("Artifact index contains duplicate ids");
-		return parseArtifactIndex(
-			await this.transport.createArtifactIndex({
-				p_environment_id: input.environmentId,
-				p_client_index_id: input.clientIndexId,
-				p_artifact_ids: artifactIds,
-			}),
-		);
-	}
-
-	async getArtifactIndex(indexId: string): Promise<HostedArtifactIndex> {
-		requiredUuid(indexId, "Artifact index id");
-		return parseArtifactIndex(await this.transport.getArtifactIndex({ p_index_id: indexId }));
-	}
-
-	async listArtifactIndexEntries(indexId: string, afterOrdinal = 0, limit = 200): Promise<HostedArtifactIndexEntry[]> {
-		requiredUuid(indexId, "Artifact index id");
-		if (!Number.isSafeInteger(afterOrdinal) || afterOrdinal < 0 || afterOrdinal > MAX_ARTIFACT_INDEX_ENTRIES) {
-			throw new Error("Artifact index cursor must be between 0 and 5000");
-		}
-		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
-			throw new Error("Artifact index page size must be between 1 and 500");
-		}
-		return array(
-			await this.transport.listArtifactIndexEntries({
-				p_index_id: indexId,
-				p_after_ordinal: afterOrdinal,
-				p_limit: limit,
-			}),
-			"artifact index entry list",
-		).map(parseArtifactIndexEntry);
-	}
-
-	async createArtifactRetentionHold(
-		artifactId: string,
-		clientHoldId: string,
-		reason: string,
-		expiresAt?: string,
-	): Promise<HostedArtifactRetentionHold> {
-		requiredUuid(artifactId, "Artifact id");
-		requiredUuid(clientHoldId, "Client artifact retention id");
-		if (expiresAt !== undefined && (!Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now())) {
-			throw new Error("Artifact retention expiry must be in the future");
-		}
-		return parseArtifactRetentionHold(
-			await this.transport.createArtifactRetentionHold({
-				p_artifact_id: artifactId,
-				p_client_hold_id: clientHoldId,
-				p_reason: requiredText(reason, "Artifact retention reason", 500),
-				p_expires_at: expiresAt ?? null,
-			}),
-		);
-	}
-
-	async releaseArtifactRetentionHold(holdId: string): Promise<HostedArtifactRetentionHold> {
-		requiredUuid(holdId, "Artifact retention hold id");
-		return parseArtifactRetentionHold(await this.transport.releaseArtifactRetentionHold({ p_hold_id: holdId }));
-	}
-
-	async listArtifactGcCandidates(profileId: string, limit = 200): Promise<HostedArtifactGcCandidate[]> {
-		requiredUuid(profileId, "Profile id");
-		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
-			throw new Error("Artifact garbage-collection page size must be between 1 and 500");
-		}
-		return array(
-			await this.transport.listArtifactGcCandidates({ p_profile_id: profileId, p_limit: limit }),
-			"artifact garbage-collection candidate list",
-		).map(parseArtifactGcCandidate);
-	}
-
-	async createArtifactGcPlan(artifactId: string, clientPlanId: string): Promise<HostedArtifactGcPlan> {
-		requiredUuid(artifactId, "Artifact id");
-		requiredUuid(clientPlanId, "Client artifact cleanup plan id");
-		return parseArtifactGcPlan(
-			await this.transport.createArtifactGcPlan({
-				p_artifact_id: artifactId,
-				p_client_plan_id: clientPlanId,
-			}),
-		);
-	}
-
-	async listArtifactGcPlans(profileId: string, limit = 100): Promise<HostedArtifactGcPlan[]> {
-		requiredUuid(profileId, "Profile id");
-		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
-			throw new Error("Artifact cleanup page size must be between 1 and 500");
-		}
-		return array(
-			await this.transport.listArtifactGcPlans({ p_profile_id: profileId, p_limit: limit }),
-			"artifact cleanup plan list",
-		).map(parseArtifactGcPlan);
-	}
-
-	async listArtifactGcAudit(planId: string, afterReceiptId = 0, limit = 200): Promise<HostedArtifactGcAuditReceipt[]> {
-		requiredUuid(planId, "Artifact cleanup plan id");
-		if (!Number.isSafeInteger(afterReceiptId) || afterReceiptId < 0) {
-			throw new Error("Artifact cleanup receipt cursor must be a non-negative integer");
-		}
-		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
-			throw new Error("Artifact cleanup receipt page size must be between 1 and 500");
-		}
-		return array(
-			await this.transport.listArtifactGcAudit({
-				p_plan_id: planId,
-				p_after_id: afterReceiptId,
-				p_limit: limit,
-			}),
-			"artifact cleanup audit list",
-		).map(parseArtifactGcAuditReceipt);
-	}
-
-	async cancelArtifactGcPlan(planId: string): Promise<HostedArtifactGcPlan> {
-		requiredUuid(planId, "Artifact cleanup plan id");
-		return parseArtifactGcPlan(await this.transport.cancelArtifactGcPlan({ p_plan_id: planId }));
-	}
-
-	async retryArtifactGcPlan(planId: string): Promise<HostedArtifactGcPlan> {
-		requiredUuid(planId, "Artifact cleanup plan id");
-		return parseArtifactGcPlan(await this.transport.retryArtifactGcPlan({ p_plan_id: planId }));
 	}
 
 	async createSession(input: CreateHostedSessionInput): Promise<HostedSession> {
