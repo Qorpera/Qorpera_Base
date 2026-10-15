@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -218,7 +219,14 @@ describe("code host seed", () => {
 		).rejects.toMatchObject({ code: "CODE_HOST_SEED_INCOMPLETE" });
 		expect(await exists(c.repo)).toBe(false);
 		const commands = c.log.length;
-		for (const baseBranch of ["qorpera", "qorpera/coding", `qorpera/coding/${randomUUID()}`])
+		for (const baseBranch of [
+			"qorpera",
+			"qorpera/coding",
+			`qorpera/coding/${randomUUID()}`,
+			"QORPERA",
+			"Qorpera/Coding",
+			`QORPERA/coding/${randomUUID().toUpperCase()}`,
+		])
 			await expect(
 				seedCodeArea(c.job, {
 					repository: { ...f.repository, baseBranch },
@@ -227,6 +235,88 @@ describe("code host seed", () => {
 				}),
 			).rejects.toMatchObject({ code: "CODE_HOST_BASE_IS_A_WORKER_BRANCH" });
 		expect(c.log).toHaveLength(commands);
+	});
+
+	it("moves the base and main/ together: a seed racing one that holds the base fails, and main/ ends at the base", async () => {
+		const { f, c } = await seeded();
+		const unchanged = await f.bundle("refs/heads/main"),
+			second = await f.commit({ "README.md": "two\n" }, "two"),
+			toSecond = await f.bundle("main", `^${f.baseSha}`),
+			third = await f.commit({ "README.md": "three\n" }, "three"),
+			toThird = await f.bundle("main", `^${f.baseSha}`);
+		const paused = join(f.root, "paused"),
+			release = join(f.root, "release"),
+			slow = join(f.root, "slow-git"),
+			quick = join(f.root, "quick-git");
+		// A's git stops at main/'s checkout, inside its transaction, until the test lets it go.
+		await writeFile(
+			slow,
+			`#!/bin/sh\nfor a do [ "$a" = checkout ] && { : >"${paused}"; while [ ! -e "${release}" ]; do sleep 0.05; done; break; }; done\nexec ${GIT} "$@"\n`,
+		);
+		// B's git gives up on a held lock at once rather than after the settings' 10 s.
+		await writeFile(quick, `#!/bin/sh\nexec ${GIT} -c core.filesRefLockTimeout=0 "$@"\n`);
+		await chmod(slow, 0o755);
+		await chmod(quick, 0o755);
+		const a = { ...c.job, layout: { ...c.job.layout, git: slow } },
+			b = { ...c.job, layout: { ...c.job.layout, git: quick } };
+		const first = seedCodeArea(a, { repository: f.repository, baseSha: second, bundle: toSecond });
+		let settled = false;
+		void first
+			.catch(() => {})
+			.finally(() => {
+				settled = true;
+			});
+		try {
+			while (!settled && !(await exists(paused))) await delay(20);
+			// A seed that ended before its checkout fails here with its own error, not at the test's timeout.
+			if (settled) await first;
+			expect(await exists(paused)).toBe(true);
+			await expect(
+				seedCodeArea(b, { repository: f.repository, baseSha: third, bundle: toThird }),
+			).rejects.toMatchObject({ code: "CODE_HOST_BASE_MOVED" });
+			// An unchanged base takes the lock too.
+			await expect(
+				seedCodeArea(b, { repository: f.repository, baseSha: f.baseSha, bundle: unchanged }),
+			).rejects.toMatchObject({ code: "CODE_HOST_BASE_MOVED" });
+		} finally {
+			await writeFile(release, "");
+		}
+		expect(await first).toEqual({ state: "updated", baseSha: second, restored: [] });
+		expect(await readFile(join(c.code, "main/README.md"), "utf8")).toBe("two\n");
+		expect(await readCodeAreaBase(c.job, f.repository)).toBe(second);
+		expect(await seedCodeArea(b, { repository: f.repository, baseSha: third, bundle: toThird })).toEqual({
+			state: "updated",
+			baseSha: third,
+			restored: [],
+		});
+		expect(await readFile(join(c.code, "main/README.md"), "utf8")).toBe("three\n");
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+
+		// A seed stopped between the two: the base is not reported, and the next seed of it moves main/.
+		await writeFile(join(c.repo, "worktrees/main/HEAD"), `${second}\n`);
+		expect(await readCodeAreaBase(c.job, f.repository)).toBeNull();
+		expect(
+			await seedCodeArea(c.job, {
+				repository: f.repository,
+				baseSha: third,
+				bundle: await f.bundle("refs/heads/main"),
+			}),
+		).toEqual({ state: "unchanged", baseSha: third, restored: [] });
+		expect(await readFile(join(c.repo, "worktrees/main/HEAD"), "utf8")).toBe(`${third}\n`);
+		expect(await readCodeAreaBase(c.job, f.repository)).toBe(third);
+
+		// A half-made main/ is made again, under the same lock.
+		await rm(join(c.repo, "worktrees/main"), { recursive: true });
+		expect(await readCodeAreaBase(c.job, f.repository)).toBeNull();
+		expect(
+			await seedCodeArea(c.job, {
+				repository: f.repository,
+				baseSha: third,
+				bundle: await f.bundle("refs/heads/main"),
+			}),
+		).toEqual({ state: "unchanged", baseSha: third, restored: ["code/qorpera/example/main"] });
+		expect(await readFile(join(c.code, "main/.git"), "utf8")).toBe(`gitdir: ${c.repo}/worktrees/main\n`);
+		expect(await readCodeAreaBase(c.job, f.repository)).toBe(third);
 	});
 
 	it("refuses a link on the way to the code area", async () => {

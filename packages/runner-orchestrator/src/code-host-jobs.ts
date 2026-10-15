@@ -170,11 +170,13 @@ function closed<T extends string>(value: unknown, keys: readonly T[]): Record<T,
 		throw new Error("INVALID_CODE_HOST_JOB");
 	return value as Record<T, unknown>;
 }
-/** A base branch that is a worker branch, or a folder of them, would collide with sessions' branches. */
+/** A base branch that is a worker branch, or a folder of them, would collide with sessions' branches; in the folder,
+ * names that differ only by case are one name. */
 function repositoryOf(value: unknown): CloudCodingRepository {
 	const repository = parseCloudCodingRepository(value),
-		base = repository.baseBranch;
-	if (base === "qorpera" || base === "qorpera/coding" || base.startsWith("qorpera/coding/"))
+		base = repository.baseBranch,
+		key = base.split("/").map(folderKey).join("/");
+	if (key === "qorpera" || key === "qorpera/coding" || key.startsWith("qorpera/coding/"))
 		throw new CodeHostRefusal("CODE_HOST_BASE_IS_A_WORKER_BRANCH", [base]);
 	return repository;
 }
@@ -623,46 +625,66 @@ export async function seedCodeArea(job: CodeHostJob, value: CodeAreaSeed): Promi
 			if (indexed.status !== 0) throw new CodeHostJobFailure("CODE_HOST_SEED_FAILED", tail(indexed.stderr));
 		}
 		const old = area.seeded ? await run.ref(base) : null;
-		if (old !== baseSha) {
-			const swapped = await run.git(run.repo, ["update-ref", "--no-deref", base, baseSha, old ?? ZERO]);
-			if (swapped.status !== 0) throw new CodeHostJobFailure("CODE_HOST_BASE_MOVED", tail(swapped.stderr));
-		}
-		await followMain(run, area.main, baseSha);
+		await moveBase(run, area.main, base, baseSha, old ?? ZERO);
 		return { state: !old ? "seeded" : old === baseSha ? "unchanged" : "updated", baseSha, restored: run.restored };
 	});
 }
 
-/** main/: a locked, detached worktree at the default branch, platform-only. A half-made one is made again. The seed
- * checked the commit's names. */
-async function followMain(run: Run, state: "present" | "partial" | "none", commit: string): Promise<void> {
-	if (state === "present") {
-		await run.gitOk(
-			`${run.repo}/worktrees/main`,
-			[`--work-tree=${run.main}`, "checkout", "--quiet", "--force", "--detach", commit],
-			"CODE_HOST_MAIN_FAILED",
-		);
-		return;
-	}
-	if (state === "partial") {
-		const removed = await run.command(["/usr/bin/rm", "-rf", "--", run.main, `${run.repo}/worktrees/main`]);
-		if (removed.status !== 0) throw new CodeHostJobFailure("CODE_HOST_MAIN_FAILED", tail(removed.stderr));
-		run.restored.push(run.relative(run.main));
-	}
-	await run.gitOk(
+/** The base ref and main/ move together. One `update-ref --stdin` transaction takes the base ref's lock (the folder's
+ * lease, so for every job of every code host of the company) with the compare-and-swap, or only the check when the
+ * base is unchanged; main/ is moved while the lock is held, and only then is the ref committed (aborted when main/
+ * failed). A seed racing this one fails its own transaction, so no job moves main/ after a later base. main/ is a
+ * locked, detached worktree at the default branch, platform-only; a half-made one is made again. Exit 10: the lock
+ * or the swap, 11: main/. */
+const MOVE_BASE = `git=$1 repo=$2 dir=$3 ref=$4 new=$5 old=$6 state=$7 main=$8 reason=$9
+mkfifo -m 0600 "$dir/base.in" "$dir/base.out" || exit 1
+"$git" --no-replace-objects --git-dir="$repo" update-ref --no-deref --stdin <"$dir/base.in" >"$dir/base.out" &
+pid=$!
+exec 3>"$dir/base.in" 4<"$dir/base.out"
+answer() { IFS= read -r line <&4 && [ "$line" = "$1: ok" ]; }
+finish() { exec 3>&- 4<&-; wait "$pid"; s=$?; [ "$1" -ne 0 ] && exit "$1"; exit "$s"; }
+printf 'start\\n' >&3; answer start || finish 10
+if [ "$new" = "$old" ]; then printf 'verify %s %s\\n' "$ref" "$old"; else printf 'update %s %s %s\\n' "$ref" "$new" "$old"; fi >&3
+printf 'prepare\\n' >&3; answer prepare || finish 10
+case $state in
+present) "$git" --no-replace-objects --git-dir="$repo/worktrees/main" --work-tree="$main" checkout --quiet --force --detach "$new" ;;
+*) { [ "$state" = none ] || rm -rf -- "$main" "$repo/worktrees/main"; } &&
+	"$git" --no-replace-objects --git-dir="$repo" worktree add --quiet --lock --reason "$reason" --detach "$main" "$new" &&
+	{ printf 'gitdir: %s/worktrees/main\\n' "$repo" | cmp -s - "$main/.git" || { echo "main/ did not get the admin directory worktrees/main" >&2; false; }; } ;;
+esac || { printf 'abort\\n' >&3; answer abort; finish 11; }
+printf 'commit\\n' >&3; answer commit || finish 10
+finish 0`;
+
+async function moveBase(run: Run, state: "present" | "partial" | "none", base: string, commit: string, old: string) {
+	const moved = await run.sh(MOVE_BASE, [
+		run.layout.git,
 		run.repo,
-		["worktree", "add", "--quiet", "--lock", "--reason", MAIN_LOCK, "--detach", run.main, commit],
-		"CODE_HOST_MAIN_FAILED",
-	);
-	if (!(await run.read(`${run.main}/.git`))?.equals(Buffer.from(`gitdir: ${run.repo}/worktrees/main\n`)))
-		throw new CodeHostJobFailure("CODE_HOST_MAIN_FAILED", "main/ did not get the admin directory worktrees/main");
+		run.directory,
+		base,
+		commit,
+		old,
+		state,
+		run.main,
+		MAIN_LOCK,
+	]);
+	if (moved.status === 10) throw new CodeHostJobFailure("CODE_HOST_BASE_MOVED", tail(moved.stderr));
+	if (moved.status === 11) throw new CodeHostJobFailure("CODE_HOST_MAIN_FAILED", tail(moved.stderr));
+	if (moved.status !== 0) throw new CodeHostJobFailure("CODE_HOST_SEED_FAILED", tail(moved.stderr));
+	if (state === "partial") run.restored.push(run.relative(run.main));
 }
 
-/** The code area's base commit, or null before the first seed: lets the broker skip an unchanged bundle. */
+/** The code area's base commit, or null before the first seed or while main/ is not at it (a seed stopped between
+ * the two): lets the broker skip an unchanged bundle only when nothing is left to do. */
 export async function readCodeAreaBase(job: CodeHostJob, value: CloudCodingRepository): Promise<string | null> {
 	const repository = repositoryOf(value);
-	return withJob(job, repository, async (run) =>
-		(await run.prepare()).seeded ? run.ref(`refs/heads/${repository.baseBranch}`) : null,
-	);
+	return withJob(job, repository, async (run) => {
+		const area = await run.prepare();
+		if (!area.seeded || area.main !== "present") return null;
+		const base = await run.ref(`refs/heads/${repository.baseBranch}`);
+		return base && (await run.read(`${run.repo}/worktrees/main/HEAD`))?.equals(Buffer.from(`${base}\n`))
+			? base
+			: null;
+	});
 }
 
 export interface CodeWorktree {
