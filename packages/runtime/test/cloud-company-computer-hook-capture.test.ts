@@ -7,9 +7,29 @@ import type { Locator, Page } from "playwright-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const realDocument = (globalThis as { document?: unknown }).document;
+const realGetComputedStyle = (globalThis as { getComputedStyle?: unknown }).getComputedStyle;
 afterEach(() => {
 	(globalThis as { document?: unknown }).document = realDocument;
+	(globalThis as { getComputedStyle?: unknown }).getComputedStyle = realGetComputedStyle;
 	vi.useRealTimers();
+});
+
+/** Where a fake page draws a piece of text: a line 10 high from `top`, from `left` to `right`. */
+interface FakeRect {
+	top: number;
+	bottom: number;
+	left: number;
+	right: number;
+}
+const line = (top: number, left: number, right: number): FakeRect => ({ top, bottom: top + 10, left, right });
+/** Text drawn at `box`, or not laid out (`null`). */
+const drawnText = (textContent: string, box: FakeRect | null) => ({ nodeType: 3, textContent, box });
+/** An element with its computed `display` and `visibility` (inline and visible unless named). */
+const element = (style: { display?: string; visibility?: string }, ...childNodes: object[]) => ({
+	nodeType: 1,
+	textContent: null,
+	style: { display: "inline", visibility: "visible", ...style },
+	childNodes,
 });
 
 const address = `${"a".repeat(20)}B_-${"c".repeat(20)}`;
@@ -27,8 +47,11 @@ interface FakeBox {
 
 /** Stripe's endpoint page: `before` until the click, then each of `shown` in turn (the last stays) and the box
  * `revealedBox` until a reload, which shows `reloaded`. Its `boxes` are always there. An element's open shadow root
- * shows `shadow.revealed` after the click and `shadow.reloaded` after a reload, beside a value it does not render;
- * with `shadow.contents`, as text in a wrapper that draws no box (`display: contents`). */
+ * shows `shadow.revealed` after the click and `shadow.reloaded` after a reload, on a line of its own, beside values
+ * it does not draw (`display: none`, `visibility: hidden`). With `shadow.split`, its first six letters and the rest
+ * are two nodes: `inline` in one run of a wrapper that draws no box (`display: contents`), the rest wrapped onto
+ * the next line; `touching` as two flex items, the rest starting where the first ends; `apart` as two flex items,
+ * the rest on the next line. */
 function fakeStripe(
 	options: {
 		url?: string;
@@ -37,7 +60,7 @@ function fakeStripe(
 		reloaded?: string;
 		boxes?: FakeBox[];
 		revealedBox?: FakeBox;
-		shadow?: { revealed?: string; reloaded?: string; contents?: boolean };
+		shadow?: { revealed?: string; reloaded?: string; split?: "inline" | "touching" | "apart" };
 		inFrame?: boolean;
 		reloadFails?: boolean;
 		clickFails?: boolean;
@@ -93,56 +116,60 @@ function fakeStripe(
 				hasAttribute: (name: string) => box.private === true && name === "data-qorpera-private",
 			}));
 			const shadowText = reloaded ? options.shadow?.reloaded : revealed ? options.shadow?.revealed : undefined;
+			const split = options.shadow?.split;
+			const [head, rest] = [shadowText?.slice(0, 6) ?? "", shadowText?.slice(6) ?? ""];
+			const drawnValue =
+				split === undefined
+					? element({ display: "block" }, drawnText(shadowText ?? "", line(20, 0, 300)))
+					: split === "inline"
+						? element(
+								{ display: "contents" },
+								element({}, drawnText(head, line(20, 250, 300))),
+								element({}, drawnText(rest, line(30, 0, 250))),
+							)
+						: element(
+								{ display: "flex" },
+								element({ display: "block" }, drawnText(head, line(20, 0, 50))),
+								element(
+									{ display: "block" },
+									drawnText(rest, split === "touching" ? line(20, 50, 300) : line(30, 0, 250)),
+								),
+							);
 			const hosts =
 				shadowText === undefined
 					? []
 					: [
 							{
+								nodeType: 1,
 								tagName: "STRIPE-SECRET",
+								textContent: null,
 								shadowRoot: {
 									querySelectorAll: () => [],
 									childNodes: [
-										{ nodeType: 3, textContent: "Signing secret" },
-										{
-											nodeType: 1,
-											textContent: `${secret}0`,
-											innerText: `${secret}0`,
-											checkVisibility: () => false,
-											childNodes: [{ nodeType: 3, textContent: `${secret}0`, laidOut: false }],
-										},
-										options.shadow?.contents
-											? {
-													nodeType: 1,
-													textContent: shadowText,
-													innerText: shadowText,
-													checkVisibility: () => false,
-													childNodes: [{ nodeType: 3, textContent: shadowText }],
-												}
-											: {
-													nodeType: 1,
-													textContent: shadowText,
-													innerText: shadowText,
-													checkVisibility: () => true,
-												},
+										drawnText("Signing secret", line(0, 0, 80)),
+										element({ display: "none" }, drawnText(`${secret}0`, null)),
+										element({ visibility: "hidden" }, drawnText(`${secret}1`, line(0, 80, 300))),
+										drawnValue,
 									],
 								},
 								hasAttribute: () => false,
-								checkVisibility: () => true,
 							},
 						];
 			(globalThis as { document?: unknown }).document = {
-				body: { innerText: current() },
+				body: { innerText: current(), childNodes: hosts },
 				querySelectorAll: () => [...boxes, ...hosts],
 				createRange: () => {
-					let node: { laidOut?: boolean } | undefined;
+					let node: { box?: FakeRect | null } | undefined;
 					return {
-						selectNodeContents: (text: { laidOut?: boolean }) => {
+						selectNodeContents: (text: { box?: FakeRect | null }) => {
 							node = text;
 						},
-						getClientRects: () => ({ length: node?.laidOut === false ? 0 : 1 }),
+						getClientRects: () => (node?.box ? [node.box] : []),
 					};
 				},
 			};
+			(globalThis as { getComputedStyle?: unknown }).getComputedStyle = (node: { style?: object }) =>
+				node.style ?? { display: "inline", visibility: "visible" };
 			return (script as (arg: unknown) => unknown)(arg);
 		}),
 		context: () => ({
@@ -210,17 +237,24 @@ describe("a Stripe hook's signing secret read off its page (E3c-3)", () => {
 		expect(stripe.calls.filter((call) => call === "reload")).toHaveLength(1);
 	});
 
-	it("reads a value an open shadow root renders, never one it does not", async () => {
-		// Through a wrapper that draws no box too (`display: contents`): its text draws in its place.
-		for (const contents of [false, true]) {
-			const stripe = fakeStripe({ shown: [endpoint], shadow: { revealed: `${secret} Hide`, contents } });
+	it("reads a value an open shadow root draws, also split across nodes, never one it does not draw", async () => {
+		// Split, it reads whole where no block's edge comes between its pieces (a wrapper that draws no box, a line
+		// wrapped between them) or where the rest starts where the first piece ends.
+		for (const split of [undefined, "inline", "touching"] as const) {
+			const stripe = fakeStripe({ shown: [endpoint], shadow: { revealed: `${secret} Hide`, split } });
 			const seen: string[] = [];
 			await expect(
 				captureCompanyHookSecret(stripe.page, stripe.control, hook, (value) => seen.push(value), timing),
 			).resolves.toBe(secret);
 			expect(seen).not.toContain(`${secret}0`);
+			expect(seen).not.toContain(`${secret}1`);
 			expect(stripe.calls).toContain("uncover");
 		}
+		// Two blocks on two lines read as two lines, and neither shows a value.
+		const apart = fakeStripe({ shown: [endpoint], shadow: { revealed: `${secret} Hide`, split: "apart" } });
+		expect(await refusal(captureCompanyHookSecret(apart.page, apart.control, hook, () => undefined, timing))).toBe(
+			"VAULT_CAPTURE_NOT_SHOWN",
+		);
 	});
 
 	it("refuses a page that is not the hook's site, before anything is clicked or covered", async () => {
@@ -327,12 +361,13 @@ describe("a Stripe hook's signing secret read off its page (E3c-3)", () => {
 	});
 
 	it("keeps the cover on a page that still shows the value after the reload, or cannot reload: the tab must go", async () => {
-		// The value left in an open shadow root counts too: a host's text leaves its shadow root out. So does one in a
-		// wrapper there that draws no box.
+		// The value left in an open shadow root counts too: a host's text leaves its shadow root out. So does one split
+		// across nodes that draw it as one.
 		for (const options of [
 			{ reloaded: `${endpoint} ${secret}` },
 			{ shadow: { reloaded: secret } },
-			{ shadow: { reloaded: secret, contents: true } },
+			{ shadow: { reloaded: secret, split: "inline" as const } },
+			{ shadow: { reloaded: secret, split: "touching" as const } },
 			{ reloadFails: true },
 		]) {
 			const stripe = fakeStripe(options);

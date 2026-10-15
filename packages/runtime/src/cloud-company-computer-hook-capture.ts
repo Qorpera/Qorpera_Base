@@ -202,44 +202,84 @@ interface PageRoot {
 	/** A shadow root's own children. */
 	readonly childNodes?: Iterable<PageChild>;
 }
-/** A node in a shadow root: an element (1) or text (3). */
+/** A node on the page: an element (1) or text (3). */
 interface PageChild {
 	readonly nodeType: number;
+	readonly nodeName?: string;
 	readonly textContent: string | null;
-	readonly innerText?: string;
 	readonly childNodes?: Iterable<PageChild>;
-	checkVisibility?(): boolean;
+	/** An element's open shadow root, drawn in place of its children. */
+	readonly shadowRoot?: PageRoot | null;
+	/** A slot's nodes, drawn in its place (its own children when none is assigned to it). */
+	assignedNodes?(options: { flatten: boolean }): Iterable<PageChild>;
+}
+/** Where a piece of text is drawn on the page. */
+interface PageRect {
+	readonly top: number;
+	readonly bottom: number;
+	readonly left: number;
+	readonly right: number;
 }
 interface PageDocument extends PageRoot {
-	readonly body: { innerText: string } | null;
-	createRange?(): { selectNodeContents(node: PageChild): void; getClientRects(): { readonly length: number } };
+	readonly body: { readonly innerText: string; readonly childNodes?: Iterable<PageChild> } | null;
+	createRange?(): { selectNodeContents(node: PageChild): void; getClientRects(): ArrayLike<PageRect> };
 }
 
 /**
- * What a person sees on the page's own document: its rendered text and the values its boxes show, in open shadow
- * roots too (a host's text leaves its shadow root out, so each root's rendered children are read, through wrappers
- * that draw no box of their own). A password box shows dots, and a box the vault filled holds a value of the vault's
- * own, so neither is read.
+ * What a person sees on the page's own document: its rendered text, that text again as the browser draws it (open
+ * shadow roots in place, which the first leaves out, and pieces of text drawn as one read as one), and the values its
+ * boxes show, in open shadow roots too. A password box shows dots, and a box the vault filled holds a value of the
+ * vault's own, so neither is read.
  */
 async function readTopDocument(page: Page): Promise<{ url: string; text: string }> {
 	const text: unknown = await page.evaluate((attribute) => {
-		const document = (globalThis as unknown as { document: PageDocument }).document;
-		const parts = [document.body?.innerText ?? ""];
-		const drawn = (node: PageChild): boolean => {
-			const range = document.createRange?.();
-			if (!range) return true;
-			range.selectNodeContents(node);
-			return range.getClientRects().length > 0;
+		const scope = globalThis as unknown as {
+			document: PageDocument;
+			getComputedStyle?(node: unknown): { readonly visibility: string; readonly display: string };
 		};
-		// Read what the browser draws, unless it says it does not: an element with a box by its rendered text. One
-		// without a box shows nothing of its own, but under `display: contents` its children draw in its place, so
-		// each is asked in turn; text by whether it takes space on the page.
-		const rendered = (nodes: Iterable<PageChild> | undefined): void => {
-			for (const child of nodes ?? [])
-				if (child.nodeType === 1 && child.checkVisibility?.() !== false) parts.push(child.innerText ?? "");
-				else if (child.nodeType === 1) rendered(child.childNodes);
-				else if (child.nodeType === 3 && drawn(child)) parts.push(child.textContent ?? "");
+		const document = scope.document;
+		const body = document.body;
+		const range = document.createRange?.();
+		// Each piece of text the browser draws (none under `display: none` or `visibility: hidden`), in the order it
+		// draws them: a host's open shadow root in place of its children, a slot's nodes in place of the slot. A piece
+		// continues the one before it when no box's edge but a plain inline one comes between them (as a line of text
+		// reads, also where it wraps between them) or when it starts where that one ends, on its line, so a value split
+		// across nodes, roots or slots reads whole. Any other piece starts a new line, as one after a `<br>` or a
+		// button's text beside the value does.
+		let drawn = "";
+		let end: PageRect | undefined;
+		let broken = true;
+		const read = (nodes: Iterable<PageChild> | undefined, shown: boolean): void => {
+			for (const node of nodes ?? []) {
+				if (node.nodeType === 1) {
+					const style = scope.getComputedStyle?.(node);
+					const edge =
+						node.nodeName === "BR" || !/^(inline|contents|none)$|^ruby/.test(style?.display ?? "inline");
+					broken ||= edge;
+					read(
+						node.shadowRoot?.childNodes ?? node.assignedNodes?.({ flatten: true }) ?? node.childNodes,
+						(style?.visibility ?? "visible") === "visible",
+					);
+					broken ||= edge;
+				}
+				if (node.nodeType !== 3 || !shown) continue;
+				range?.selectNodeContents(node);
+				const rects = range?.getClientRects() ?? [];
+				const first = rects[0];
+				if (range && !first) continue;
+				const touching =
+					end !== undefined &&
+					first !== undefined &&
+					first.top < end.bottom &&
+					end.top < first.bottom &&
+					Math.abs(first.left - end.right) <= 1;
+				drawn += `${broken && !touching ? "\n" : ""}${node.textContent ?? ""}`;
+				broken = false;
+				end = rects[rects.length - 1];
+			}
 		};
+		if (body) read(body.childNodes, (scope.getComputedStyle?.(body).visibility ?? "visible") === "visible");
+		const parts = [body?.innerText ?? "", drawn];
 		const walk = (root: PageRoot): void => {
 			for (const node of root.querySelectorAll("*")) {
 				if (
@@ -250,9 +290,7 @@ async function readTopDocument(page: Page): Promise<{ url: string; text: string 
 					!node.hasAttribute(attribute)
 				)
 					parts.push(node.value);
-				if (!node.shadowRoot) continue;
-				rendered(node.shadowRoot.childNodes);
-				walk(node.shadowRoot);
+				if (node.shadowRoot) walk(node.shadowRoot);
 			}
 		};
 		walk(document);

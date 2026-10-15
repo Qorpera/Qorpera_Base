@@ -12,21 +12,35 @@ const hook = { address, site: "dashboard.stripe.com" };
 const secret = "whsec_AbCdEfGhIjKlMnOpQrStUvWxYz012345+/=";
 const timing = { revealMs: 3_000, settleMs: 100, pollMs: 20 };
 
+const rest = secret.slice("whsec_".length);
+/** The secret split in one run of a wrapper that draws no box (`display: contents`), the rest drawn by a nested open
+ * shadow root through its slot. */
+const nested = `<div style="display: contents"><span>whsec_</span><secret-rest>${rest}</secret-rest></div>`;
+/** The review's case: the secret split across two spans in a wrapper that draws no box. */
+const spans = `<div style="display: contents"><span>whsec_</span><span>${rest}</span></div>`;
+/** The secret split across two flex items, the rest drawn where the first piece ends. */
+const flexItems = `<div style="display: flex"><span>whsec_</span><span>${rest}</span></div>`;
+
 /**
- * Stripe's endpoint page, in a real browser: Reveal draws the secret in an open shadow root as text in a wrapper that
- * draws no box (`display: contents`), beside a value it does not draw (a `hidden` one). With `stays`, the reveal is
- * kept for the tab, so a reload shows it again.
+ * Stripe's endpoint page, in a real browser: Reveal draws `value` in an open shadow root, beside values it does not
+ * draw (a `hidden` one and a `visibility: hidden` one). With `stays`, the reveal is kept for the tab, so a reload
+ * shows it again.
  */
-function endpointPage(stays: boolean): string {
+function endpointPage(stays: boolean, value: string): string {
 	return `<!doctype html><title>Webhook</title>
 <p>Webhook endpoint https://x.supabase.co/functions/v1/event-intake/${address}</p>
 <p>Signing secret</p><stripe-secret></stripe-secret><button>Reveal</button>
 <script>
+customElements.define("secret-rest", class extends HTMLElement {
+	connectedCallback() {
+		if (!this.shadowRoot) this.attachShadow({ mode: "open" }).innerHTML = "<b><slot></slot></b>";
+	}
+});
 customElements.define("stripe-secret", class extends HTMLElement {
 	connectedCallback() {
 		const root = this.attachShadow({ mode: "open" });
 		const show = () => {
-			root.innerHTML = '<style>span { color: gray }</style><span hidden>${secret}0</span><div style="display: contents">${secret}</div>';
+			root.innerHTML = '<style>span { color: gray }</style><span hidden>${secret}0</span><span style="visibility: hidden">${secret}1</span>${value}';
 		};
 		if (sessionStorage.getItem("shown")) show();
 		document.querySelector("button").addEventListener("click", () => {
@@ -47,36 +61,43 @@ describe.skipIf(!executablePath)("a Stripe hook's signing secret read in Chromiu
 		await browser?.close();
 	});
 
-	async function opened(stays: boolean) {
+	async function opened(stays: boolean, value: string) {
 		const context = await browser.newContext();
 		const page = await context.newPage();
 		await page.route("https://dashboard.stripe.com/**", (route) =>
-			route.fulfill({ contentType: "text/html", body: endpointPage(stays) }),
+			route.fulfill({ contentType: "text/html", body: endpointPage(stays, value) }),
 		);
 		await page.goto("https://dashboard.stripe.com/test/webhooks/we_1");
 		return { context, page };
 	}
 	const coverShown = "document.querySelector('[popover]:popover-open') !== null";
 
-	it("reads the value a boxless wrapper in a shadow root draws, never the one it does not, and uncovers the page", async () => {
-		const { context, page } = await opened(false);
-		const seen: string[] = [];
-		await expect(
-			captureCompanyHookSecret(
-				page,
-				page.getByRole("button", { name: "Reveal" }),
-				hook,
-				(v) => seen.push(v),
-				timing,
-			),
-		).resolves.toBe(secret);
-		expect(seen).not.toContain(`${secret}0`);
-		expect(await page.evaluate(coverShown)).toBe(false);
-		await context.close();
-	});
+	it.each([
+		["across a nested shadow root's slot", nested],
+		["across two flex items that touch", flexItems],
+	])(
+		"reads the value a shadow root draws split %s, never the ones it does not draw, and uncovers the page",
+		async (_, value) => {
+			const { context, page } = await opened(false, value);
+			const seen: string[] = [];
+			await expect(
+				captureCompanyHookSecret(
+					page,
+					page.getByRole("button", { name: "Reveal" }),
+					hook,
+					(v) => seen.push(v),
+					timing,
+				),
+			).resolves.toBe(secret);
+			expect(seen).not.toContain(`${secret}0`);
+			expect(seen).not.toContain(`${secret}1`);
+			expect(await page.evaluate(coverShown)).toBe(false);
+			await context.close();
+		},
+	);
 
-	it("keeps the cover on a page that draws the value there again after the reload, and the guest closes the tab", async () => {
-		const { context, page } = await opened(true);
+	it("keeps the cover on a page that draws the value split across two spans again after the reload, and the guest closes the tab", async () => {
+		const { context, page } = await opened(true, spans);
 		const seen: string[] = [];
 		const refused = await captureCompanyHookSecret(
 			page,
