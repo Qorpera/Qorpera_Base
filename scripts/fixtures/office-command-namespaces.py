@@ -16,11 +16,24 @@ shell and the starter run under keys copied from the real office and helper unit
 namespace gets the real plumb's veth, address, route and filter. No SQL, model, vsock provenance or production
 request authorization is claimed.
 """
+import os
+import sys
+
+# A command's fds as it came across exec, listed before the imports below run: ctypes and the others may open fds of
+# their own. The listing's own is the fourth. Each one's target too, so a check that fails says what was left open.
+if sys.argv[1:2] == ["command"]:
+    EXEC_FDS = sorted(int(name) for name in os.listdir("/proc/self/fd"))
+    EXEC_FD_TARGETS = {}
+    for _fd in EXEC_FDS:
+        try:
+            EXEC_FD_TARGETS[str(_fd)] = os.readlink(f"/proc/self/fd/{_fd}")
+        except OSError:
+            EXEC_FD_TARGETS[str(_fd)] = "closed"
+
 import ctypes
 import errno
 import fcntl
 import json
-import os
 from pathlib import Path
 import pwd
 import re
@@ -28,7 +41,6 @@ import shutil
 import socket
 import struct
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -426,8 +438,6 @@ def plumb_networked(shell_pid):
 
 # --- The command: it records its own state, then holds until a stop ends it. No attack on any process. ---
 def command_main(mode):
-    # Before this process opens anything: the fds it was handed across exec (the fourth is the listing's own).
-    exec_fds = sorted(int(name) for name in os.listdir("/proc/self/fd"))
     share = Path(SHARE)
     child = os.fork()
     if child == 0:
@@ -436,7 +446,7 @@ def command_main(mode):
         while True:
             time.sleep(1)
     s = status()
-    record = {"execFds": exec_fds, "pid": os.getpid(), "setsidChild": child,
+    record = {"execFds": EXEC_FDS, "execFdTargets": EXEC_FD_TARGETS, "pid": os.getpid(), "setsidChild": child,
               "uid": list(os.getresuid()), "gid": list(os.getresgid()), "groups": os.getgroups(),
               "caps": caps_of(), "seccomp": s["Seccomp"], "seccompFilters": s.get("Seccomp_filters"),
               "ns": ns_links(), "nsOwner": ns_owners(),
