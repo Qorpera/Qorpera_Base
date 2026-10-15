@@ -2225,17 +2225,11 @@ export class FolderService {
 	): void {
 		view.unsettled = undefined;
 		this.#notePublished(view, settlement, written, moved);
-		// A kept file or link whose unit named the version it replaced replaces that version again.
-		const replacing: string[] = [];
-		for (const { unit } of settlement.plan.units)
-			if ((unit.op === "write" || unit.op === "symlink") && unit.expectedVersion && settlement.keep.has(unit.path))
-				replacing.push(unit.path);
 		this.#settleNodes(
 			view,
 			settlement.keep,
 			settlement.plan.units.flatMap((u) => u.paths),
 			settlement.saved,
-			replacing,
 		);
 	}
 
@@ -2283,7 +2277,6 @@ export class FolderService {
 		keep: ReadonlySet<string>,
 		paths: readonly string[],
 		saved: ReadonlySet<string> = new Set(),
-		replacing: readonly string[] = [],
 	): void {
 		const pending = view.pending;
 		if (!pending) return;
@@ -2295,7 +2288,7 @@ export class FolderService {
 				if (!saved.has(parent)) keepAll.add(parent);
 			}
 		const before = [...pending.nodes().keys()];
-		pending.settle(new Set([...keepAll].filter((p) => pending.nodes().has(p))), replacing);
+		pending.settle(new Set([...keepAll].filter((p) => pending.nodes().has(p))));
 		if (pending.empty) view.intents.clear();
 		// Nothing left unsaved (a lock or swap file a program still holds is none): the next renewal tells the core so,
 		// and the desktop's seat is free again.

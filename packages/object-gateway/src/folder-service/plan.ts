@@ -79,8 +79,9 @@ function below(path: string, folder: string): boolean {
  * writing, bytes not staged yet, and names never published, as one change set. `PendingView` keeps every pending
  * change publishable that way: each unit names a live path as it is, no unit needs a version another unit makes, and
  * no unit's failure can lose another's work. A removed folder is one subtree removal; a new folder whose whole content
- * is new is one `new_folder`; a new file or link where the view removed a live file or link is that path's next
- * version. Units are ordered so a path is freed before it is filled, and a new folder made before what goes in it.
+ * is new is one `new_folder`; a new file or link that replaces a live one names the version it replaces, which its
+ * node holds (`PendingView`). Units are ordered so a path is freed before it is filled, and a new folder made before
+ * what goes in it.
  */
 export function planBoundary(view: PendingView, staged: (node: PendingFile) => FileRef | undefined): BoundaryPlan {
 	const keep = new Set<string>();
@@ -107,7 +108,8 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 		}
 		if (node.kind === "symlink") {
 			// A link is never changed in place: made, or moved.
-			if (!node.origin) links.push({ kind: "link", path, target: node.target, paths: [path] });
+			if (!node.origin)
+				links.push({ kind: "link", path, target: node.target, expected: node.replaces?.version, paths: [path] });
 			else if (node.origin.path !== path)
 				moves.push({ kind: "move", from: node.origin.path, to: path, ref: node.origin, paths: [path] });
 			continue;
@@ -132,7 +134,7 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 			continue;
 		}
 		if (origin) writes.push({ kind: "write", path, file, expected: origin.version, paths: [path] });
-		else news.push({ kind: "new", path, file, paths: [path] });
+		else news.push({ kind: "new", path, file, expected: node.replaces?.version, paths: [path] });
 	}
 
 	// Removals: one per removed folder, with what was removed inside it.
@@ -164,15 +166,6 @@ export function planBoundary(view: PendingView, staged: (node: PendingFile) => F
 			ref: ref.kind === "folder" ? { ...ref, asOfSeq } : ref,
 			paths: [path, ...inside.map(([p]) => p)],
 		});
-	}
-
-	// A new file or link where the view removed a live file or link (its folder still there) is that path's next
-	// version: an editor's temporary file renamed over its target, or `ln -sf`'s link renamed over the old one.
-	for (const item of [...news, ...links]) {
-		const index = deletes.findIndex((d) => d.ref.kind !== "folder" && folderKey(d.path) === folderKey(item.path));
-		if (index < 0) continue;
-		item.expected = deletes[index]!.ref.version;
-		deletes.splice(index, 1);
 	}
 
 	// A new folder whose whole content is new and published here is one unit with its content (§2 "Units").

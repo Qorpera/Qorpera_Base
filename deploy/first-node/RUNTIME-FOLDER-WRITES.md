@@ -128,6 +128,11 @@ first, and its last boundary is final: one change set with everything pending, o
 - a file created or changed: `write` (with `expectedVersion` when it had a base);
 - a rename or move, of a file or a folder: `move`; a temporary file renamed over its target is a `write` of the
   target;
+- a new file or link that replaces a live one (a temporary file renamed over it, `ln -sf`, or one made where the view
+  removed it): a `write` or `symlink` naming the version the machine saw there. The new file or link holds that version
+  itself from then on, and nothing else done at that path, spelled in any case, changes it: such a change is a unit of
+  its own, and the replacement conflicts if the version it names is gone. Removed, or moved to another path, it lets
+  the live one go: removed at that version, or shown again if another machine changed it since;
 - a new folder with everything created inside it: one `new_folder`;
 - a deleted folder with everything inside it: one `delete` with `asOfSeq`; a deleted file: `delete`;
 - `mkdir` of an empty folder: `mkdir`.
@@ -161,12 +166,12 @@ first publishes what is pending (a boundary, as when the machine asks), then is 
 - reusing a path a moved or removed folder left (`rm -rf D; mkdir D`);
 - changing a file this view moved, or moving a file this view changed;
 - the move that would close a ring of moves taking each other's places (a swap, `mv a t; mv b a; mv t b`);
-- a change at a path that a pending file, link or folder spells otherwise (another machine renamed the live one only in
-  case beside it): a save renamed over the new spelling, or an edit, mode change, move away or removal there, would be
-  a second unit at one path in the core, and a replacement's base must stay the one its own save saw. (A move away
-  counts: removing or replacing the moved entry later removes it at its live path.) So does a new name there, or below
-  a folder a pending new one spells otherwise (another machine made or renamed the live one beside it): in the core it
-  would be the pending path, or go into the new folder's unit. A name never published folds with nothing.
+- a new name at a path that a pending file, link or folder spells otherwise, or below a pending new folder spelled
+  otherwise (another machine made or renamed the live one beside it): in the core it would be the pending path, whose
+  unit this one would need the version of, or go into the new folder's unit. A name never published is no unit, so it
+  folds with nothing until it is renamed to a published one, even only in case (`x.swp` to `x.SWP`). (A change to the
+  live entry beside it, spelled otherwise, needs nothing published first: it is a unit of its own at that path, before
+  or after the pending one's.)
 If what blocks it is still pending after that boundary (a file open for writing inside the folder being moved), the
 change fails with `EBUSY`. The machine sees the change take longer; nothing else differs.
 

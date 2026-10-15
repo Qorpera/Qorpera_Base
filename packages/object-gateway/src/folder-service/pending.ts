@@ -46,6 +46,9 @@ export interface PendingFile {
 	readonly kind: "file";
 	/** The live file it was opened, renamed or moved from; none for a new file. */
 	origin: LiveRef | undefined;
+	/** A new file's: the live file or link it replaces, at the writer's base (`PendingView`, "A new file or link that
+	 * replaces a live one"). */
+	replaces: LiveRef | undefined;
 	/** New bytes; none while its bytes are still the origin's (a rename, or only the executable bit), or the live
 	 * version's a hard link copied (`copyOf`). */
 	content: Content | undefined;
@@ -79,6 +82,8 @@ export interface PendingLink {
 	readonly kind: "symlink";
 	/** The live link it was renamed or moved from; none for a new link. */
 	origin: LiveRef | undefined;
+	/** A new link's: the live file or link it replaces, at the writer's base (`ln -sf`). */
+	replaces: LiveRef | undefined;
 	readonly target: string;
 	version: string;
 	mtimeMs: number;
@@ -200,10 +205,13 @@ function checkMove(from: string, to: string): void {
  * boundary publishes them. Memory only.
  *
  * Pending nodes are keyed by the view's paths; a live path the view removed or moved away is hidden by a gone node,
- * and a moved folder shows its live origin's children. Every live entry the view removed is kept by its live path,
- * with its base. A change that would need what is pending published first throws `PublishFirst`, so that every
- * boundary is one change set whose units each name a live path as it is: no unit needs a version another makes, and
- * no unit's failure loses another's work. Outside a moved folder, the view's paths are the live paths.
+ * and a moved folder shows its live origin's children. A new file or link that replaces a live file or link (an
+ * editor's save through a temporary file, `ln -sf`, or one made where the view removed one) holds that one's base
+ * itself (`replaces`) until it is published or goes: no other change, at that path in any case, moves it. Every other
+ * live entry the view removed is kept by its live path, with its base, as a removal of its own. A change that would
+ * need what is pending published first throws `PublishFirst`, so that every boundary is one change set whose units
+ * each name a live path as it is: no unit needs a version another makes, and no unit's failure loses another's work.
+ * Outside a moved folder, the view's paths are the live paths.
  */
 export class PendingView {
 	#live: () => ViewTree;
@@ -485,6 +493,7 @@ export class PendingView {
 			if (!options.create) fail(ErrorCode.notFound, "No such file");
 			this.#newName(path);
 			node = this.#newFile();
+			node.replaces = this.#takeRemoved(path);
 			this.#set(path, node);
 		} else {
 			if (options.exclusive) fail(ErrorCode.exists, "The file exists");
@@ -493,8 +502,6 @@ export class PendingView {
 				fail(ErrorCode.exists, "A link has this name");
 			if (r.kind === "live") {
 				if (r.entry.kind === "folder") fail(ErrorCode.notAFile, "Not a file");
-				if (this.#foldsWithPending(path))
-					throw new PublishFirst("a change at a path a pending one spells otherwise");
 				node = this.#fromLive(r.entry, r.source, options.base);
 				this.#set(path, node);
 			} else {
@@ -624,7 +631,8 @@ export class PendingView {
 		if (this.resolve(path)) fail(ErrorCode.exists, "The path exists");
 		this.#newName(path);
 		const version = randomUUID();
-		this.#set(path, { kind: "symlink", origin: undefined, target, version, mtimeMs: this.#now() });
+		const replaces = this.#takeRemoved(path);
+		this.#set(path, { kind: "symlink", origin: undefined, replaces, target, version, mtimeMs: this.#now() });
 		return version;
 	}
 
@@ -644,7 +652,14 @@ export class PendingView {
 		let made: PendingFile | PendingLink;
 		const version = randomUUID();
 		const mtimeMs = this.#now();
-		const link = (target: string): PendingLink => ({ kind: "symlink", origin: undefined, target, version, mtimeMs });
+		const link = (target: string): PendingLink => ({
+			kind: "symlink",
+			origin: undefined,
+			replaces: undefined,
+			target,
+			version,
+			mtimeMs,
+		});
 		if (source.kind === "live") {
 			if (source.entry.kind === "folder") fail(ErrorCode.notPermitted, "A folder has no hard links");
 			let entry: TreeEntry | undefined = source.entry;
@@ -671,6 +686,7 @@ export class PendingView {
 		}
 		if (this.resolve(to)) fail(ErrorCode.exists, "The path exists");
 		this.#newName(to);
+		made.replaces = this.#takeRemoved(to);
 		this.#set(to, made);
 		return version;
 	}
@@ -681,8 +697,6 @@ export class PendingView {
 		if (!r) fail(ErrorCode.notFound, "No such file");
 		if ((r.kind === "live" ? r.entry.kind : r.node.kind) === "folder") fail(ErrorCode.notAFile, "Not a file");
 		checkRemovable(path);
-		if (r.kind === "live" && this.#foldsWithPending(path))
-			throw new PublishFirst("a change at a path a pending one spells otherwise");
 		this.#remove(r, base);
 	}
 
@@ -699,8 +713,6 @@ export class PendingView {
 			throw new PublishFirst("removing a folder something was moved out of");
 		if (r.kind === "live" && this.#hiddenBelow(path))
 			throw new PublishFirst("removing a folder with changes inside it");
-		if (r.kind === "live" && this.#foldsWithPending(path))
-			throw new PublishFirst("a change at a path a pending one spells otherwise");
 		this.#remove(r, base);
 	}
 
@@ -747,18 +759,14 @@ export class PendingView {
 			if (target.kind === "live" && target.entry.kind === "folder" && this.#pendingBelow(to, target.source))
 				throw new PublishFirst("replacing a folder with changes inside it");
 		} else {
-			if (folderKey(from) !== folderKey(to)) this.#newName(to, from);
+			// A name never published renamed only in case to a published one is a new name there too.
+			if (folderKey(from) !== folderKey(to) || (unpublished(from) && !unpublished(to))) this.#newName(to, from);
 			if (this.#freedFolder(to)) throw new PublishFirst("reusing a path a folder this view moved or removed left");
 			// Moves that take each other's places (a swap, a ring) publish one at a time.
 			const origin = source.kind === "live" ? source.source : source.node.origin?.path;
 			if (origin !== undefined && this.#cycle(origin, to))
 				throw new PublishFirst("moves that take each other's places");
 		}
-		if (this.#foldsWithPending(to, from)) throw new PublishFirst("a change at a path a pending one spells otherwise");
-		// A live entry moved away is removed from its live path once the move is removed or replaced in turn.
-		const leaves = source.kind === "live" ? source.source : source.node.origin?.path;
-		if (leaves !== undefined && this.#foldsWithPending(leaves, from))
-			throw new PublishFirst("a change at a path a pending one spells otherwise");
 		// The moving node: a pending one as it is, or one made from the live entry, at the writer's base.
 		let node: PendingFile | PendingFolder | PendingLink;
 		if (source.kind === "node") node = source.node;
@@ -772,6 +780,7 @@ export class PendingView {
 					version: options.fromBase ?? source.entry.version,
 					entry: source.entry,
 				},
+				replaces: undefined,
 				target: source.entry.target!,
 				version: source.entry.version,
 				mtimeMs: source.entry.mtimeMs,
@@ -788,21 +797,23 @@ export class PendingView {
 				version: source.entry.version,
 				mtimeMs: source.entry.mtimeMs,
 			};
-		if (target) this.#remove(target, options.toBase, true);
+		// A new file or link renamed only in case still replaces the live one it replaced. Renamed elsewhere, over another
+		// path, or to a name never published, it lets that one go; over a file or link, it replaces that one instead, and
+		// elsewhere what the view removed at its new name. (One renamed from a name never published replaced nothing.)
+		const fresh = node.kind !== "folder" && node.origin === undefined ? node : undefined;
+		const lets =
+			fresh && (target !== undefined || folderKey(from) !== folderKey(to) || unpublished(from) || unpublished(to));
+		const shown = fresh && lets ? this.#release(fresh) : undefined;
+		const take = fresh !== undefined && !unpublished(to);
+		const replaces = target ? this.#replaced(target, to, options.toBase, take) : undefined;
 		// A new folder's pending nodes move with it; then `from` is hidden if the live folder still shows something.
 		const moved: [string, Node][] = [];
 		for (const [path, n] of this.#nodes) if (path !== from && within(path, from)) moved.push([path, n]);
 		for (const [path] of moved) this.#unset(path);
 		this.#unset(from);
-		// A new file or link moving off what it replaced, which the feed has changed since: the newer version shows. One
-		// renamed only in case still replaces it, and keeps that version's removal.
-		const left =
-			node.kind !== "folder" &&
-			node.origin === undefined &&
-			folderKey(from) !== folderKey(to) &&
-			this.#dropReplaced(from);
-		if (!left) this.#hide(from);
+		if (shown !== from) this.#hide(from);
 		this.#dropUnder(to);
+		if (fresh && lets) fresh.replaces = target ? replaces : this.#takeRemoved(to);
 		this.#set(to, node);
 		for (const [path, n] of moved) this.#set(to + path.slice(from.length), n);
 		node.mtimeMs = this.#now();
@@ -817,8 +828,6 @@ export class PendingView {
 		if ((r.kind === "live" ? r.entry.kind : r.node.kind) !== "file") return;
 		if (r.kind === "live" && r.entry.executable === executable) return;
 		if (r.kind === "node" && this.#moved(path, r.node)) throw new PublishFirst("a change to a file this view moved");
-		if (r.kind === "live" && this.#foldsWithPending(path))
-			throw new PublishFirst("a change at a path a pending one spells otherwise");
 		const node = r.kind === "node" ? (r.node as PendingFile) : this.#fromLive(r.entry, r.source, base);
 		if (r.kind === "live") this.#set(path, node);
 		if (node.executable === executable) return;
@@ -831,11 +840,11 @@ export class PendingView {
 
 	/** The feed changed these live paths. A removal whose live entry changed since is dropped, so the view shows the
 	 * newer version again: a removal never takes a version the machine did not see. (A subtree removal or a move
-	 * refuses changes it did not see by its `asOfSeq`; a save conflicts by its base.) A removal a new file or link
-	 * replaced stays while that node does: its unit names the version replaced, so the core refuses it as a conflict
-	 * rather than writing over, or bringing back, a version the machine never saw. */
+	 * refuses changes it did not see by its `asOfSeq`; a save conflicts by its base.) A new file or link keeps the base
+	 * of the live one it replaces: its unit names that version, so the core refuses it as a conflict rather than writing
+	 * over, or bringing back, a version the machine never saw. */
 	liveChanged(paths: readonly string[]): void {
-		for (const path of paths) if (!this.#replacing(path)) this.#dropStale(path);
+		for (const path of paths) this.#dropStale(path);
 	}
 
 	// ---- Inside ----------------------------------------------------------------------------------------------------
@@ -853,35 +862,34 @@ export class PendingView {
 		const names = new Set<string>(this.#children.get(parentOf(path)) ?? []);
 		if (parent.source !== null) for (const name of this.#live().names(parent.source)) names.add(name);
 		for (const name of names)
-			if (name !== nameOf(path) && folderKey(name) === key && this.resolve(join(parentOf(path), name)))
+			if (
+				name !== nameOf(path) &&
+				folderKey(name) === key &&
+				join(parentOf(path), name) !== except &&
+				this.resolve(join(parentOf(path), name))
+			)
 				fail(ErrorCode.exists, "A path differing only in case exists");
 		if (this.#freedFolder(path)) throw new PublishFirst("reusing a path a folder this view moved or removed left");
-		// Under a parent spelled otherwise, a pending one at its path is no sibling: in the core it is the same path, or
-		// a new folder this name would go into.
+		// Under a parent spelled otherwise (another machine made or renamed one only in case), a pending file, link or
+		// folder at its path is no sibling, and does not show: in the core it is the same path, whose unit this one's
+		// would need the version of, or a new folder this name would go into, so it publishes first. A name never
+		// published is no unit: it folds with nothing.
+		if (unpublished(path)) return;
 		let at = "";
 		for (const name of path.split("/")) {
 			at = join(at, name);
-			if (this.#foldsWithPending(at, except))
-				throw new PublishFirst("a change at a path a pending one spells otherwise");
+			const key = folderKey(at);
+			for (const [p, node] of this.#nodes)
+				if (p !== at && p !== except && node.kind !== "gone" && !unpublished(p) && folderKey(p) === key)
+					throw new PublishFirst("a new name at a path a pending one spells otherwise");
 		}
-	}
-
-	/** A file, link or folder pending at a path spelled otherwise than `path` that folds alike (beside a live entry
-	 * another machine renamed only in case): its unit and one made at `path` would be at one path in the core, where a
-	 * new one's base is the removal at that folded key, so what is pending publishes first. A name never published is
-	 * no unit, so it folds with nothing. `except`: what a rename moves from. */
-	#foldsWithPending(path: string, except?: string): boolean {
-		if (unpublished(path)) return false;
-		const key = folderKey(path);
-		for (const [p, node] of this.#nodes)
-			if (p !== path && p !== except && node.kind !== "gone" && !unpublished(p) && folderKey(p) === key) return true;
-		return false;
 	}
 
 	#newFile(): PendingFile {
 		return {
 			kind: "file",
 			origin: undefined,
+			replaces: undefined,
 			content: { chunks: [], size: 0 },
 			copyOf: undefined,
 			executable: false,
@@ -897,6 +905,7 @@ export class PendingView {
 		return {
 			kind: "file",
 			origin: { path: source, kind: "file", version: base ?? entry.version, entry },
+			replaces: undefined,
 			content: undefined,
 			copyOf: undefined,
 			executable: entry.executable,
@@ -913,6 +922,7 @@ export class PendingView {
 		return {
 			kind: "file",
 			origin: undefined,
+			replaces: undefined,
 			content: undefined,
 			copyOf: entry,
 			executable: entry?.executable ?? false,
@@ -938,7 +948,7 @@ export class PendingView {
 			// A file replaced by a save keeps the save's base, so the save conflicts instead.
 			if (!save && r.entry.kind !== "folder" && base !== undefined && base !== r.entry.version)
 				fail(ErrorCode.stale, "The file changed since the machine saw it");
-			this.#setRemoved(r.source, {
+			this.#removed.set(r.source, {
 				path: r.source,
 				kind: r.entry.kind,
 				version: base ?? r.entry.version,
@@ -957,43 +967,59 @@ export class PendingView {
 				return;
 			}
 			if (origin)
-				this.#setRemoved(origin.path, origin.kind === "folder" ? { ...origin, asOfSeq: this.#seq() } : origin);
-			// A new file or link that replaced a live one the feed has changed since: the newer version shows again. (One
-			// renamed over it, `save`, replaces the same version in its place.)
-			else if (!save && r.node.kind !== "folder" && this.#dropReplaced(r.path)) return;
+				this.#removed.set(origin.path, origin.kind === "folder" ? { ...origin, asOfSeq: this.#seq() } : origin);
+			// A new file or link lets the live one it replaced go: removed at its base, or shown again if newer.
+			else if (r.node.kind !== "folder" && this.#release(r.node) === r.path) return;
 		}
 		this.#hide(r.path);
 	}
 
-	/** Records the removal of the live entry at `path`, the one the machine sees there: it stands for the path in any
-	 * case. A removal of the same path spelled otherwise whose live entry has gone since (another machine renamed it
-	 * only in case, to `path`) goes, so a new file or link there replaces one version, the one the machine saw. */
-	#setRemoved(path: string, ref: LiveRef): void {
-		const key = folderKey(path);
-		for (const p of [...this.#removed.keys()]) if (p !== path && folderKey(p) === key) this.#dropStale(p);
-		this.#removed.set(path, ref);
-	}
+	// ---- A new file or link that replaces a live one ---------------------------------------------------------------
+	//
+	// It holds the live one's base itself, taken once: when it is renamed over the live one (an editor's save through
+	// a temporary file, `ln -sf`), over a pending one that replaced it, or made where the view removed it. Its unit
+	// names that version; nothing the view does at that path later, in any case, changes it. Only the node's own
+	// removal, its move to another path (or over another), or its publication lets it go.
 
-	/** A live file or link the view removed at `path` that a new one holds: one at that path, in any case, whose unit
-	 * replaces that version (an editor's save through a temporary file, `ln -sf`, or a file made where one was
-	 * removed). */
-	#replacing(path: string): boolean {
-		if (!this.#removed.has(path)) return false;
-		const key = folderKey(path);
-		for (const name of this.#children.get(parentOf(path)) ?? []) {
-			const at = join(parentOf(path), name);
-			const node = this.#nodes.get(at);
-			if ((node?.kind === "file" || node?.kind === "symlink") && !node.origin && folderKey(at) === key) return true;
+	/** What a new file or link renamed over `target` (at `to`, a published name when `take`) replaces: the live file or
+	 * link there, at the writer's base, or what a pending one there replaced or was opened from. The target goes. */
+	#replaced(target: Resolved, to: string, base: string | undefined, take: boolean): LiveRef | undefined {
+		if (take && target.kind === "node" && target.node.kind !== "folder" && !this.#moved(target.path, target.node)) {
+			const ref = target.node.replaces ?? target.node.origin;
+			this.#dropUnder(target.path);
+			this.#unset(target.path);
+			return ref;
 		}
-		return false;
+		this.#remove(target, base, true);
+		return take ? this.#takeRemoved(to) : undefined;
 	}
 
-	/** A new file or link at `path` goes (removed, or moved away): the removal of the live one it replaced goes with it
-	 * if the feed has changed that since, and the newer version shows. Answers whether it did. */
-	#dropReplaced(path: string): boolean {
+	/** The removal of a live file or link at `path` (in any case) that a new one made there replaces instead: it leaves
+	 * the removals, and the live one stays hidden. A name never published replaces nothing: it is no unit. */
+	#takeRemoved(path: string): LiveRef | undefined {
+		if (unpublished(path)) return undefined;
 		const key = folderKey(path);
-		for (const p of this.#removed.keys()) if (folderKey(p) === key) return this.#dropStale(p);
-		return false;
+		for (const [p, ref] of this.#removed)
+			if (ref.kind !== "folder" && folderKey(p) === key) {
+				this.#removed.delete(p);
+				if (p !== path) this.#hide(p);
+				return ref;
+			}
+		return undefined;
+	}
+
+	/** A new file or link lets the live one it replaced go: that one is removed at the writer's base if the feed has not
+	 * changed it since; else its newer version shows again, as a conflict would leave it. Answers where it shows. */
+	#release(node: PendingFile | PendingLink): string | undefined {
+		const base = node.replaces;
+		if (!base) return undefined;
+		node.replaces = undefined;
+		if (this.#live().get(base.path)?.version === base.version) {
+			this.#removed.set(base.path, base);
+			return undefined;
+		}
+		if (this.#nodes.get(base.path)?.kind === "gone") this.#unset(base.path);
+		return base.path;
 	}
 
 	/** Drops a file's or link's removal whose live entry changed since the machine saw it. Answers whether it did. */
@@ -1059,13 +1085,15 @@ export class PendingView {
 
 	/** After a boundary: the view shows the live folder again, except the nodes the boundary keeps (`keep`: files
 	 * still open, names never published, and new bytes the core did not save). Every removal and move was published
-	 * (saved, or failed losing nothing), so the gone nodes go too, and the removals but those `replacing` names: a kept
-	 * new file or link whose unit replaced the live one (an editor's save or `ln -sf` the core did not take) replaces
-	 * the same version again at the next boundary. */
-	settle(keep: ReadonlySet<string>, replacing: readonly string[] = []): void {
+	 * (saved, or failed losing nothing), so the gone nodes and the removals go too. A kept new file or link that
+	 * replaces a live one (an editor's save or `ln -sf` the core did not take) keeps its base, and replaces the same
+	 * version again at the next boundary; the live one stays hidden where it is spelled otherwise. */
+	settle(keep: ReadonlySet<string>): void {
 		for (const path of [...this.#nodes.keys()]) if (!keep.has(path)) this.#unset(path);
-		const replaced = new Set(replacing.map(folderKey));
-		for (const path of [...this.#removed.keys()]) if (!replaced.has(folderKey(path))) this.#removed.delete(path);
+		this.#removed.clear();
+		for (const [path, node] of [...this.#nodes])
+			if ((node.kind === "file" || node.kind === "symlink") && node.replaces && node.replaces.path !== path)
+				this.#hide(node.replaces.path);
 	}
 
 	/** Forgets everything (the view closed). Open handles stay valid but detached. */

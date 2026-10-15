@@ -636,35 +636,55 @@ describe("a view's pending changes", () => {
 		]);
 	});
 
-	it("publishes first a change at a path a pending save spells otherwise, so the save keeps its own base", () => {
-		const f = setup({ "plan.md": "v1" });
-		const base = f.view.get("plan.md")!.version;
-		write(f.view, "plan.md.new", "mine");
-		f.view.rename("plan.md.new", "plan.md", { noReplace: false, toBase: base });
-		// Another machine renames the file only in case: both names show.
-		f.move("plan.md", "Plan.md");
-		const moved = f.view.get("Plan.md")!.version;
-		write(f.view, "next.tmp", "next");
-		// A second save renamed over the new name, an edit, a mode change, a move away (removed or replaced later) or a
-		// removal there would pair with the save's replacement by folded key.
-		publishFirst(() => f.view.rename("next.tmp", "Plan.md", { noReplace: false, toBase: moved }));
-		publishFirst(() => write(f.view, "Plan.md", "edited", { base: moved }));
-		publishFirst(() => f.view.setExecutable("Plan.md", true, moved));
-		publishFirst(() => f.view.rename("Plan.md", "moved.md", { noReplace: false, fromBase: moved }));
-		publishFirst(() => f.view.unlink("Plan.md", moved));
-		// Nothing changed: the save still replaces the version it saw (the core's conflict), the new name stays live.
-		const units = f.plan().units.map((u) => u.unit);
-		expect(units).toHaveLength(2);
-		expect(units).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ op: "write", path: "plan.md", expectedVersion: base }),
-				expect.objectContaining({ op: "write", path: "next.tmp" }),
-			]),
-		);
-		expect(f.commit(units)).toEqual(
-			units.map((u) => (u.op === "write" && u.path === "plan.md" ? "conflict" : "saved")),
-		);
-		expect(f.view.get("Plan.md")!.version).toBe(moved);
+	it("keeps a pending save's own base whatever changes at a path it spells otherwise", () => {
+		// Each a unit of its own: in the core it is at the save's path too, where it runs before or after the save.
+		const changes: [string, (f: ReturnType<typeof setup>, moved: string) => void][] = [
+			[
+				"a second save renamed over it",
+				(f, moved) => {
+					write(f.view, "next.tmp", "next");
+					f.view.rename("next.tmp", "Plan.md", { noReplace: false, toBase: moved });
+				},
+			],
+			["an edit", (f, moved) => write(f.view, "Plan.md", "edited", { base: moved })],
+			["a mode change", (f, moved) => f.view.setExecutable("Plan.md", true, moved)],
+			["a move away", (f, moved) => f.view.rename("Plan.md", "moved.md", { noReplace: false, fromBase: moved })],
+			[
+				"a move away, then its removal",
+				(f, moved) => {
+					f.view.rename("Plan.md", "moved.md", { noReplace: false, fromBase: moved });
+					f.view.unlink("moved.md");
+				},
+			],
+			[
+				"a move away, then a save over it",
+				(f, moved) => {
+					f.view.rename("Plan.md", "moved.md", { noReplace: false, fromBase: moved });
+					write(f.view, "next.tmp", "next");
+					f.view.rename("next.tmp", "moved.md", { noReplace: false });
+				},
+			],
+			["a removal", (f, moved) => f.view.unlink("Plan.md", moved)],
+		];
+		for (const [what, change] of changes) {
+			const f = setup({ "plan.md": "v1" });
+			const base = f.view.get("plan.md")!.version;
+			write(f.view, "plan.md.new", "mine");
+			f.view.rename("plan.md.new", "plan.md", { noReplace: false, toBase: base });
+			// Another machine renames the file only in case: both names show.
+			f.move("plan.md", "Plan.md");
+			const moved = f.view.get("Plan.md")!.version;
+			change(f, moved);
+			// The save still replaces the version it saw, and nothing else does: the core's conflict, whatever the order.
+			const units = f.plan().units.map((u) => u.unit);
+			expect(
+				units.filter((u) => "expectedVersion" in u && u.expectedVersion === base),
+				what,
+			).toEqual([expect.objectContaining({ op: "write", path: "plan.md" })]);
+			expect(f.commit(units), what).toEqual(
+				units.map((u) => (u.op === "write" && u.path === "plan.md" ? "conflict" : "saved")),
+			);
+		}
 	});
 
 	it("publishes first a new name at a path, or below a folder, that a pending one spells otherwise", () => {
@@ -680,6 +700,9 @@ describe("a view's pending changes", () => {
 		publishFirst(() => f.view.mkdir("Site/sub"));
 		publishFirst(() => f.view.link("v2.md", "Site/v2.md", undefined, () => undefined));
 		publishFirst(() => f.view.rename("v2.md", "Site/v2.md"));
+		// A name never published is no unit, until it is renamed, even only in case, to a published one.
+		write(f.view, "Site/draft.swp", "swap");
+		publishFirst(() => f.view.rename("Site/draft.swp", "Site/draft.SWP"));
 		// Inside the pending folder itself a new name is its own.
 		write(f.view, "site/index.html", "<p>");
 		const units = f.plan().units.map((u) => u.unit);
@@ -734,6 +757,47 @@ describe("a view's pending changes", () => {
 			{ op: "write", path: "notes.md.SWP", file: expect.any(Object), expectedVersion: theirs },
 		]);
 		expect(f.view.get("notes.md.swp")).toMatchObject({ kind: "file", bytes: 4 });
+	});
+
+	it("publishes a name never published, renamed only in case to where the view removed a file, as its next version", () => {
+		const f = setup({ "notes.SWP": "v1" });
+		const base = f.view.get("notes.SWP")!.version;
+		f.view.unlink("notes.SWP", base);
+		write(f.view, "notes.swp", "mine");
+		f.view.rename("notes.swp", "notes.SWP");
+		expect(f.publish()).toEqual([
+			{ op: "write", path: "notes.SWP", file: expect.any(Object), expectedVersion: base },
+		]);
+	});
+
+	it("keeps a pending save's own base when what it replaced, renamed to a name never published here, is removed", () => {
+		const f = setup({ "notes.SWP": "v1", docs: null, "docs/latest.SWP": { link: "v1.md" } });
+		const file = f.view.get("notes.SWP")!.version;
+		const link = f.view.get("docs/latest.SWP")!.version;
+		write(f.view, "notes.SWP.new", "mine");
+		f.view.rename("notes.SWP.new", "notes.SWP", { noReplace: false, toBase: file });
+		f.view.symlink("docs/CuXXXXXX", "v2.md");
+		f.view.rename("docs/CuXXXXXX", "docs/latest.SWP", { noReplace: false, toBase: link });
+		// Another machine renames each only in case, to a name this machine never publishes (the member route takes it);
+		// the machine then removes it there.
+		f.move("notes.SWP", "notes.swp");
+		f.move("docs/latest.SWP", "docs/latest.swp");
+		const theirs = f.view.get("notes.swp")!.version;
+		const theirLink = f.view.get("docs/latest.swp")!.version;
+		f.view.unlink("notes.swp", theirs);
+		f.view.unlink("docs/latest.swp", theirLink);
+		// Each removal is a unit of its own; each save still replaces the version it saw, so it conflicts.
+		const units = f.plan().units.map((u) => u.unit);
+		expect(units).toHaveLength(4);
+		expect(units).toEqual(
+			expect.arrayContaining([
+				{ op: "delete", path: "notes.swp", expectedVersion: theirs },
+				{ op: "delete", path: "docs/latest.swp", expectedVersion: theirLink },
+				expect.objectContaining({ op: "write", path: "notes.SWP", expectedVersion: file }),
+				{ op: "symlink", path: "docs/latest.SWP", target: "v2.md", expectedVersion: link },
+			]),
+		);
+		expect(f.commit(units)).toEqual(units.map((u) => (u.op === "delete" ? "saved" : "conflict")));
 	});
 
 	it("refuses at once what the folder never takes, folded as the core folds", () => {

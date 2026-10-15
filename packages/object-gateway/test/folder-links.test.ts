@@ -368,7 +368,7 @@ describe("links on protocol 4", () => {
 		expect(core.entries.has("docs/latest")).toBe(false);
 	});
 
-	it("publishes `ln -sf`'s link first when another is renamed over the old one another machine renamed only in case beside it", async () => {
+	it("publishes `ln -sf`'s link, and another renamed over the old one another machine renamed only in case beside it, as two units", async () => {
 		const { core, service, open } = await fixture();
 		core.seed([folder("docs"), link("docs/latest", "v1.md", 3)]);
 		const view = await open();
@@ -388,8 +388,8 @@ describe("links on protocol 4", () => {
 		]);
 		await service.poll();
 		await service.settled();
-		// Another `ln -sf` over the new name, at the version there: the first link publishes first, still replacing the
-		// version it saw (a conflict, kept on the receipt), so it never takes the second link's base.
+		// Another `ln -sf` over the new name, at the version there: in the core a unit at the first link's path too. The
+		// first link still replaces the version it saw (a conflict, kept on the receipt): it never takes v8.
 		const next = await view.symlink("docs/CuYYYYYY", "v3.md");
 		await view.rename({
 			from: "docs/CuYYYYYY",
@@ -398,25 +398,41 @@ describe("links on protocol 4", () => {
 			toBase: v(8),
 			noReplace: false,
 		});
+		expect(names(await view.list("docs", undefined))).toEqual(["LATEST", "latest"]);
+		const report = await view.publish();
 		expect(core.commits).toHaveLength(1);
+		expect(core.commits[0]!.units).toHaveLength(2);
 		expect(core.commits[0]!.units).toEqual(
-			expect.arrayContaining([{ op: "symlink", path: "docs/latest", target: "v2.md", expectedVersion: v(3) }]),
+			expect.arrayContaining([
+				{ op: "symlink", path: "docs/latest", target: "v2.md", expectedVersion: v(3) },
+				{ op: "symlink", path: "docs/LATEST", target: "v3.md", expectedVersion: v(8) },
+			]),
 		);
+		expect(report.paths).toHaveLength(2);
+		expect(report.paths).toEqual(
+			expect.arrayContaining([
+				{ path: "docs/LATEST", outcome: "saved" },
+				{
+					path: "docs/latest",
+					outcome: "conflict",
+					reason: "version_changed",
+					receipt: report.commitId,
+					target: "v2.md",
+				},
+			]),
+		);
+		expect(names(await view.list("docs", undefined))).toEqual(["LATEST"]);
+		expect(core.entries.get("docs/LATEST")).toMatchObject({ kind: "symlink", target: "v3.md" });
+		expect(core.entries.has("docs/CuYYYYYY")).toBe(false);
 		expect([...core.copies.values()].flat()).toEqual([
 			expect.objectContaining({ path: "docs/latest", kind: "symlink", target: "v2.md" }),
 		]);
-		expect(names(await view.list("docs", undefined))).toEqual(["LATEST"]);
-		// The second link replaces the version it named.
-		const report = await view.publish();
-		expect(new Set(report.paths.map((p) => p.outcome))).toEqual(new Set(["saved"]));
-		expect(core.entries.get("docs/LATEST")).toMatchObject({ kind: "symlink", target: "v3.md" });
 		expect(core.entries.has("docs/latest")).toBe(false);
-		expect(core.entries.has("docs/CuYYYYYY")).toBe(false);
 		for (const unit of core.commits.flatMap((c) => c.units))
 			expect(unit).not.toMatchObject({ path: "docs/latest", expectedVersion: v(8) });
 	});
 
-	it("publishes `ln -sf`'s link first when the old one another machine renamed only in case beside it is moved away", async () => {
+	it("keeps `ln -sf`'s link a conflict when the old one another machine renamed only in case beside it is moved away and removed", async () => {
 		const { core, service, open } = await fixture();
 		core.seed([folder("docs"), link("docs/latest", "v1.md", 3)]);
 		const view = await open();
@@ -428,6 +444,7 @@ describe("links on protocol 4", () => {
 			toBase: v(3),
 			noReplace: false,
 		});
+		// Another machine renames the old link only in case, and its change reaches the view: both names show.
 		const old = core.entries.get("docs/latest")!;
 		core.commitChanges([
 			{ ...old, op: "move_out" },
@@ -435,27 +452,86 @@ describe("links on protocol 4", () => {
 		]);
 		await service.poll();
 		await service.settled();
-		// The new name moved away, then removed: the link publishes first (a conflict), so removing what moved never
-		// leaves the link replacing v8 in place of the version it saw.
+		// The new name moved away, then removed: v8's removal is a unit of its own, and the link still replaces the
+		// version it saw (a conflict), never v8.
 		await view.rename({ from: "docs/LATEST", fromBase: v(8), to: "docs/old", noReplace: false });
+		expect(names(await view.list("docs", undefined))).toEqual(["latest", "old"]);
+		await view.unlink("docs/old", undefined);
+		const report = await view.publish();
 		expect(core.commits).toHaveLength(1);
 		expect(core.commits[0]!.units).toEqual([
+			expect.objectContaining({ op: "delete", path: "docs/LATEST", expectedVersion: v(8) }),
 			{ op: "symlink", path: "docs/latest", target: "v2.md", expectedVersion: v(3) },
 		]);
+		expect(report.paths).toHaveLength(2);
+		expect(report.paths).toEqual(
+			expect.arrayContaining([
+				{ path: "docs/LATEST", outcome: "saved" },
+				{
+					path: "docs/latest",
+					outcome: "conflict",
+					reason: "version_changed",
+					receipt: report.commitId,
+					target: "v2.md",
+				},
+			]),
+		);
+		expect(core.entries.has("docs/LATEST")).toBe(false);
+		expect(core.entries.has("docs/old")).toBe(false);
 		expect([...core.copies.values()].flat()).toEqual([
 			expect.objectContaining({ path: "docs/latest", kind: "symlink", target: "v2.md" }),
 		]);
-		expect(names(await view.list("docs", undefined))).toEqual(["old"]);
-		await view.unlink("docs/old", undefined);
-		expect((await view.publish()).paths).toEqual([{ path: "docs/LATEST", outcome: "saved" }]);
-		expect(core.commits.at(-1)!.units).toEqual([
-			expect.objectContaining({ op: "delete", path: "docs/LATEST", expectedVersion: v(8) }),
-		]);
-		expect(core.entries.has("docs/LATEST")).toBe(false);
 		expect(core.entries.has("docs/latest")).toBe(false);
-		expect(core.entries.has("docs/old")).toBe(false);
 		for (const unit of core.commits.flatMap((c) => c.units))
 			expect(unit).not.toMatchObject({ path: "docs/latest", expectedVersion: v(8) });
+	});
+
+	it("keeps `ln -sf`'s link a conflict when the old one, renamed to a name never published here, is removed", async () => {
+		const { core, service, open } = await fixture();
+		core.seed([folder("docs"), link("docs/latest.SWP", "v1.md", 3)]);
+		const view = await open();
+		const made = await view.symlink("docs/CuXXXXXX", "v2.md");
+		await view.rename({
+			from: "docs/CuXXXXXX",
+			fromBase: made.version,
+			to: "docs/latest.SWP",
+			toBase: v(3),
+			noReplace: false,
+		});
+		// Another machine renames the old link only in case, to a name this machine never publishes (the member route
+		// takes it), and its change reaches the view; the machine then removes it there.
+		const old = core.entries.get("docs/latest.SWP")!;
+		core.commitChanges([
+			{ ...old, op: "move_out" },
+			{ ...old, path: "docs/latest.swp", version: v(8), op: "move_in", priorVersion: old.version },
+		]);
+		await service.poll();
+		await service.settled();
+		await view.unlink("docs/latest.swp", v(8));
+		// The removal is a unit of its own; the link still replaces the version it saw, so it conflicts.
+		const report = await view.publish();
+		expect(core.commits).toHaveLength(1);
+		expect(core.commits[0]!.units).toEqual([
+			expect.objectContaining({ op: "delete", path: "docs/latest.swp", expectedVersion: v(8) }),
+			{ op: "symlink", path: "docs/latest.SWP", target: "v2.md", expectedVersion: v(3) },
+		]);
+		expect(report.paths).toHaveLength(2);
+		expect(report.paths).toEqual(
+			expect.arrayContaining([
+				{ path: "docs/latest.swp", outcome: "saved" },
+				{
+					path: "docs/latest.SWP",
+					outcome: "conflict",
+					reason: "version_changed",
+					receipt: report.commitId,
+					target: "v2.md",
+				},
+			]),
+		);
+		expect(core.entries.has("docs/latest.SWP")).toBe(false);
+		expect(core.entries.has("docs/latest.swp")).toBe(false);
+		for (const unit of core.commits.flatMap((c) => c.units))
+			expect(unit).not.toMatchObject({ path: "docs/latest.SWP", expectedVersion: v(8) });
 	});
 
 	it("publishes a new folder first when `ln -sf` runs in one another machine made, spelled otherwise", async () => {
